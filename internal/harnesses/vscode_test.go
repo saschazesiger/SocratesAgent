@@ -24,7 +24,7 @@ func TestVSCodeUsesPrivateSocketAndPersistentData(t *testing.T) {
 	if value, ok := plan.Env["VSCODE_IPC_HOOK_CLI"]; !ok || value != "" {
 		t.Fatal("parent IPC must be cleared")
 	}
-	if plan.Argv[len(plan.Argv)-1] != req.Cwd || plan.Discover != DiscoverNone {
+	if plan.Argv[len(plan.Argv)-1] != req.Cwd {
 		t.Fatalf("unexpected workspace: %#v", plan)
 	}
 	// The editor's memory belongs to the folder, not to the session.
@@ -33,10 +33,6 @@ func TestVSCodeUsesPrivateSocketAndPersistentData(t *testing.T) {
 	}
 	if len(plan.Files) == 0 || plan.Files[0].Mode != 0600 {
 		t.Fatal("missing isolated config")
-	}
-	_, err = (VSCode{}).ResumePlan(context.Background(), req)
-	if err != ErrNoResume {
-		t.Fatalf("resume = %v", err)
 	}
 }
 

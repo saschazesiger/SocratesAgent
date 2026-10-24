@@ -6,7 +6,6 @@ import (
 	"log"
 	"time"
 
-	"github.com/saschazesiger/SocratesAgent/internal/harnesses"
 	"github.com/saschazesiger/SocratesAgent/internal/store"
 )
 
@@ -22,13 +21,13 @@ const sweepEvery = time.Minute
 
 // park closes the terminal of a session that is done and tells every tab
 // watching it that it is gone.
-//
-// An answer being typed into it is stopped first, as a delete and a restart
-// stop it: the terminal it types into is about to close, and a dialog that
-// went on saying "Choosing Postgres…" for a model step would be telling the
-// person about a terminal that is not there any more.
 func (s *Server) park(ctx context.Context, id string) error {
-	s.answers.stop(id, reasonDone)
+	if row, err := s.store.GetSession(id); err == nil && row.IsChat() {
+		// A chat has no terminal to close: its host parks as soon as it is
+		// idle, and the next message resumes it.
+		s.chats.park(id)
+		return nil
+	}
 	if err := s.manager.Park(ctx, id); err != nil {
 		return err
 	}
@@ -43,16 +42,14 @@ func (s *Server) deleteSession(ctx context.Context, id string) error {
 	// A title run writing into a row that is being removed is nothing good.
 	s.titles.forget(id)
 	s.push.forget(id)
-	// An answer being typed into a pane that is being torn down is the one
-	// thing the operator could do that nobody asked for.
-	s.answers.forget(id)
+	if row, err := s.store.GetSession(id); err == nil && row.IsChat() {
+		s.chats.remove(ctx, id)
+	}
 	if err := s.manager.Delete(ctx, id); err != nil {
-		s.answers.revive(id)
 		return err
 	}
-	harnesses.ForgetOpenCodeAccess(id)
 	// After the delete rather than before it, so that a turn the detector
-	// commits in between cannot start a digest of a session that is going.
+	// commits in between cannot start a verdict on a session that is going.
 	s.digests.forget(id)
 	s.events.poke()
 	return nil

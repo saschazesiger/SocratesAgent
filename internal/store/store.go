@@ -32,10 +32,30 @@ var ErrNotFound = errors.New("not found")
 // Version 7 replaces the archive and the flag with a status per session.
 // Version 8 is one migration for two features that landed together: prepared
 // sessions (the drafts table and sessions.start_at) and the bucket mirror
-// (mirror_pending, the local list of what still has to be uploaded).
+// (mirror_pending, the local list of what still had to be uploaded).
 // Version 9 adds the cost ledger (cost_convs, cost_hours) and the local record
 // of which transcripts it was last read from (cost_seen); see costs.go.
-const SchemaVersion = 9
+// Version 10 adds chats: sessions.kind tells a chat from a terminal, and
+// chat_outbox holds the commands an agent host has not acknowledged yet.
+// Version 11 is the end of the bucket as the store of record: the data
+// directory is the only truth and the bucket a backup of it
+// (internal/backup), so mirror_pending and the mirror's kv rows go.
+// Version 12 adds the accounts a chat runs on (accounts.go), which replace
+// the sign-in profiles.
+const SchemaVersion = 12
+
+// accountsVersion is the schema that brought accounts. A database brought up
+// to it from an older one is of a build whose agents ran on their own
+// folders in HOME and on the profiles, which the accounts migration
+// (internal/accounts) takes over, once.
+const accountsVersion = 12
+
+// accountsPendingKey marks that migration as still to do. It is written in
+// the same upgrade that brings the accounts table, before the new version
+// is, so no crash can leave an old installation's database at the new
+// version without it - and a new database never has it, so a data
+// directory made by this build never takes anything from HOME.
+const accountsPendingKey = "accounts.migration"
 
 // Store wraps the database handle.
 type Store struct {
@@ -45,20 +65,6 @@ type Store struct {
 	// to. It is guarded by mu, like every other write.
 	revMark int64
 	mu      sync.Mutex // serialises writes; SQLite has a single writer anyway
-
-	// The change tracking the bucket mirror is built on; see mirror.go.
-	// tracking says whether committed writes are recorded in mirror_pending,
-	// and observer is told about them once the write lock is released.
-	// changed collects the object names of the write in progress, and
-	// pendingAt is the last stamp handed to a pending row - both guarded by
-	// mu.
-	tracking atomic.Bool
-	// fenced is set by a mirror that may no longer upload; nothing is
-	// "backed up" from then on.
-	fenced    atomic.Bool
-	observer  atomic.Pointer[func(objects ...string)]
-	changed   []string
-	pendingAt int64
 }
 
 const schema = `
@@ -100,14 +106,15 @@ CREATE TABLE IF NOT EXISTS sessions (
   active_at      INTEGER NOT NULL DEFAULT 0,
   status         TEXT NOT NULL DEFAULT 'in_progress',
   status_at      INTEGER NOT NULL DEFAULT 0,
-  start_at       INTEGER NOT NULL DEFAULT 0
+  start_at       INTEGER NOT NULL DEFAULT 0,
+  kind           TEXT NOT NULL DEFAULT 'terminal'
 );
 
 -- The prompt a prepared session will be started with. It is a table of its
--- own rather than a column because it is written on every pause in typing,
--- and each of those writes is an upload: a draft of a hundred kilobytes must
--- not drag the whole session row to the bucket with it, nor the row the draft.
--- rev is what tells two devices editing one draft apart.
+-- own rather than a column because it is written on every pause in typing:
+-- a draft of a hundred kilobytes must not be rewritten with every change to
+-- the session row, nor the row with every keystroke. rev is what tells two
+-- devices editing one draft apart.
 CREATE TABLE IF NOT EXISTS drafts (
   session_id TEXT PRIMARY KEY,
   text       TEXT NOT NULL DEFAULT '',
@@ -115,17 +122,10 @@ CREATE TABLE IF NOT EXISTS drafts (
   updated_at INTEGER NOT NULL
 );
 
--- What has been written here and not yet uploaded to the bucket, by object
--- name. It is in the database, beside the writes it describes, so that a crash
--- between a write and its upload loses neither.
-CREATE TABLE IF NOT EXISTS mirror_pending (
-  object TEXT PRIMARY KEY,
-  at     INTEGER NOT NULL
-);
 -- The cost ledger: what every conversation any CLI had on this machine cost,
 -- by UTC hour and model (costs.go). It outlives the sessions and the
--- transcripts it was read from, which is why it is a table and an object in
--- the bucket of its own rather than something computed when it is asked for.
+-- transcripts it was read from, which is why it is a table of its own rather
+-- than something computed when it is asked for.
 CREATE TABLE IF NOT EXISTS cost_convs (
   key        TEXT PRIMARY KEY,
   harness    TEXT NOT NULL,
@@ -151,11 +151,50 @@ CREATE TABLE IF NOT EXISTS cost_hours (
   PRIMARY KEY (key, hour, model)
 );
 -- Which state of a conversation's transcripts the ledger was last computed
--- from. It describes files on this disk, so it is never mirrored.
+-- from. It describes files on this disk.
 CREATE TABLE IF NOT EXISTS cost_seen (
   key         TEXT PRIMARY KEY,
   fingerprint TEXT NOT NULL
 );
+
+-- The commands to a chat's agent host that it has not acknowledged yet. A
+-- command is written here before it is sent and deleted when the host says it
+-- has journaled it, so a server that crashes in between sends it again, and
+-- the host - idempotent on client_id - acts on it once. It describes this
+-- machine's hosts.
+CREATE TABLE IF NOT EXISTS chat_outbox (
+  chat_id    TEXT NOT NULL,
+  client_id  TEXT NOT NULL,
+  command    TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (chat_id, client_id)
+);
+
+-- The accounts the chats run on: one agent's subscription login or API key
+-- each (accounts.go). The login itself is in the account's folder, written by
+-- the agent; an API key is here, sealed under the data directory's own key,
+-- and never leaves the server in the clear. origin is where the migration
+-- moved the account's folder from, which a link there still points at.
+CREATE TABLE IF NOT EXISTS accounts (
+  id            TEXT PRIMARY KEY,
+  agent         TEXT NOT NULL,
+  label         TEXT NOT NULL,
+  kind          TEXT NOT NULL,
+  created_at    INTEGER NOT NULL,
+  sort_order    INTEGER NOT NULL DEFAULT 0,
+  state         TEXT NOT NULL DEFAULT 'needs_sign_in',
+  state_detail  TEXT NOT NULL DEFAULT '',
+  email         TEXT NOT NULL DEFAULT '',
+  plan          TEXT NOT NULL DEFAULT '',
+  provider      TEXT NOT NULL DEFAULT '',
+  origin        TEXT NOT NULL DEFAULT '',
+  limits        TEXT NOT NULL DEFAULT '',
+  limits_at     INTEGER NOT NULL DEFAULT 0,
+  limited_until INTEGER NOT NULL DEFAULT 0,
+  secret        BLOB,
+  updated_at    INTEGER NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_accounts_origin ON accounts(origin) WHERE origin <> '';
 
 -- The unique index on client_id is what makes creating a session safe to
 -- retry: the same key can only ever produce one session.
@@ -192,7 +231,6 @@ func Open(path string) (*Store, error) {
 	seed := seedRev(db)
 	st.rev.Store(seed)
 	st.revMark = seed
-	st.pendingAt = seedPendingAt(db)
 	return st, nil
 }
 
@@ -252,6 +290,11 @@ func (s *Store) bump() int64 {
 	return v
 }
 
+// PreUpgradeCopy is where the upgrade of the database at path to this build's
+// schema left the copy of it as it was: the file a build before this one can
+// open again, where the upgraded one is refused by it as newer.
+func PreUpgradeCopy(path string) string { return path + fmt.Sprintf(".pre-v%d.bak", SchemaVersion) }
+
 // migrate brings the file at path to SchemaVersion. The version lives in
 // SQLite's own user_version pragma rather than in a table of our own, so that
 // the check costs nothing and works on a database that has no tables yet.
@@ -293,7 +336,7 @@ func migrate(db *sql.DB, path string) error {
 		// above, in the old build), so without this copy a rollback has
 		// nothing to start from. version 0 is a file no build has written
 		// to yet - a new database - and has nothing worth a copy.
-		if err := backup(db, path+fmt.Sprintf(".pre-v%d.bak", SchemaVersion)); err != nil {
+		if err := backup(db, PreUpgradeCopy(path)); err != nil {
 			return fmt.Errorf("back up the database before migrating: %w", err)
 		}
 	}
@@ -307,10 +350,25 @@ func migrate(db *sql.DB, path string) error {
 	if _, err := db.Exec(`DELETE FROM kv WHERE key LIKE 'chat.%'`); err != nil {
 		return fmt.Errorf("drop the old conversations: %w", err)
 	}
+	// The mirror's queue of uploads and its record of the bucket it was
+	// synchronised with describe a bucket that is no longer read. The backup
+	// keeps its own bookkeeping outside the database.
+	if _, err := db.Exec(`DROP TABLE IF EXISTS mirror_pending`); err != nil {
+		return fmt.Errorf("drop the mirror's queue: %w", err)
+	}
+	if _, err := db.Exec(`DELETE FROM kv WHERE key LIKE 'mirror.%'`); err != nil {
+		return fmt.Errorf("drop the mirror's records: %w", err)
+	}
 	// CREATE TABLE IF NOT EXISTS does nothing to a table that is already
 	// there, so a column added to an existing table has to be added by hand.
 	if err := addSessionColumns(db); err != nil {
 		return err
+	}
+	if legacy || (version > 0 && version < accountsVersion) {
+		if _, err := db.Exec(`INSERT INTO kv(key, value) VALUES(?, 'pending') ON CONFLICT(key) DO NOTHING`,
+			accountsPendingKey); err != nil {
+			return fmt.Errorf("mark the accounts migration: %w", err)
+		}
 	}
 	// PRAGMA takes no bound parameters, and the value is a constant.
 	if _, err := db.Exec(fmt.Sprintf(`PRAGMA user_version = %d`, SchemaVersion)); err != nil {
@@ -447,16 +505,6 @@ func backup(db *sql.DB, dest string) error {
 	return nil
 }
 
-// Backup writes a consistent copy of the database to dest, replacing a file
-// that is there. It is for a step about to replace the local state wholesale
-// - connecting this data directory to a bucket whose state wins - so that a
-// mistake there can be undone by hand.
-func (s *Store) Backup(dest string) error {
-	s.lock()
-	defer s.unlock()
-	return vacuumInto(s.db, dest)
-}
-
 // vacuumInto copies the database to dest with VACUUM INTO.
 func vacuumInto(db *sql.DB, dest string) error {
 	// VACUUM INTO refuses to overwrite, and a second attempt after a failed
@@ -485,6 +533,7 @@ func addSessionColumns(db *sql.DB) error {
 		{"status", `TEXT NOT NULL DEFAULT 'in_progress'`},
 		{"status_at", `INTEGER NOT NULL DEFAULT 0`},
 		{"start_at", `INTEGER NOT NULL DEFAULT 0`},
+		{"kind", `TEXT NOT NULL DEFAULT 'terminal'`},
 	} {
 		has, err := hasColumn(db, "sessions", col[0])
 		if err != nil {
@@ -634,40 +683,38 @@ func (s *Store) GetKV(key string) (string, error) {
 
 // SetKV writes a raw value.
 //
-// Writing the value a key already holds changes nothing, and is not a change
-// the bucket hears about: the server writes its normalised settings back on
-// every start, and each of those was otherwise one more upload of the same
-// object.
+// Writing the value a key already holds changes nothing, not even the file:
+// the server writes its normalised settings back on every start, and a
+// database that changed on every start would be a new backup every start.
 func (s *Store) SetKV(key, value string) error {
-	s.lock()
-	defer s.unlock()
-	res, err := s.db.Exec(`INSERT INTO kv(key, value) VALUES(?, ?)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err := s.db.Exec(`INSERT INTO kv(key, value) VALUES(?, ?)
 		ON CONFLICT(key) DO UPDATE SET value = excluded.value WHERE kv.value IS NOT excluded.value`, key, value)
-	if err != nil {
-		return err
-	}
-	if n, err := res.RowsAffected(); (err != nil || n > 0) && MirroredKV(key) {
-		s.touch(KVObject(key))
-	}
-	return nil
+	return err
 }
 
 // DeleteKV removes a value, and says nothing when there was none: the callers
 // are cleanups after a session that may never have had one.
 func (s *Store) DeleteKV(key string) error {
-	s.lock()
-	defer s.unlock()
-	res, err := s.db.Exec(`DELETE FROM kv WHERE key = ?`, key)
-	if err != nil {
-		return err
-	}
-	// Deleting a key that was never there is the common case for these
-	// cleanups, and it is not a change the bucket has to hear about.
-	if n, err := res.RowsAffected(); (err != nil || n > 0) && MirroredKV(key) {
-		s.touch(KVObject(key))
-	}
-	return nil
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err := s.db.Exec(`DELETE FROM kv WHERE key = ?`, key)
+	return err
 }
+
+// AccountsMigrationPending reports whether this database came from a build
+// before accounts and the accounts migration has not finished on it yet.
+func (s *Store) AccountsMigrationPending() (bool, error) {
+	_, err := s.GetKV(accountsPendingKey)
+	if errors.Is(err, ErrNotFound) {
+		return false, nil
+	}
+	return err == nil, err
+}
+
+// FinishAccountsMigration records that the accounts migration is done.
+func (s *Store) FinishAccountsMigration() error { return s.DeleteKV(accountsPendingKey) }
 
 // GetJSON decodes a JSON value stored under key.
 func (s *Store) GetJSON(key string, out any) error {

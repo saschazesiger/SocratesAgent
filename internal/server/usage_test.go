@@ -3,21 +3,14 @@ package server
 import (
 	"context"
 	"fmt"
-	"net"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"os"
 	"path/filepath"
-	"strconv"
 	"testing"
-	"time"
-
-	"github.com/saschazesiger/SocratesAgent/internal/harnesses"
-	"github.com/saschazesiger/SocratesAgent/internal/store"
 )
 
-func TestClaudeLimitsAndSessionCost(t *testing.T) {
+func TestClaudeLimits(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("CLAUDE_CONFIG_DIR", home)
 	if err := os.WriteFile(filepath.Join(home, ".credentials.json"), []byte(`{
@@ -40,133 +33,5 @@ func TestClaudeLimitsAndSessionCost(t *testing.T) {
 	got := s.claudeLimits(context.Background(), home)
 	if len(got.Windows) != 3 || got.Windows[0].Label != "5h" || got.Windows[1].Label != "7d" || got.Windows[2].Label != "Fable" {
 		t.Fatalf("windows = %#v", got.Windows)
-	}
-
-	project := filepath.Join(home, "projects", "-work")
-	if err := os.MkdirAll(project, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	transcript := filepath.Join(project, "conversation.jsonl")
-	if err := os.WriteFile(transcript, []byte("{\"type\":\"cost-state\",\"totalCostUSD\":1.2345}\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	cost := claudeSessionCost(home, "conversation")
-	if cost == nil || *cost != 1.2345 {
-		t.Fatalf("cost = %v", cost)
-	}
-}
-
-func TestCodexUsageReadsWeeklyWindowAndEstimatesCost(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "rollout.jsonl")
-	content := `{"type":"turn_context","payload":{"model":"gpt-5.6-sol"}}` + "\n" +
-		`{"type":"event_msg","payload":{"type":"token_count","rate_limits":{"primary":{"used_percent":11,"window_minutes":300,"resets_at":1788607667},"secondary":{"used_percent":24,"window_minutes":10080,"resets_at":1788771352}}}}` + "\n" +
-		`{"type":"token_usage_record","payload":{"thread_token_usage":{"input_tokens":1000000,"cached_input_tokens":400000,"cache_write_input_tokens":100000,"output_tokens":200000}}}` + "\n"
-	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	windows, cost := codexUsage(path, "an-old-session-model")
-	if len(windows) != 2 || windows[0].Label != "5h" || windows[1].Label != "7d" || windows[1].UsedPercent != 24 {
-		t.Fatalf("windows = %#v", windows)
-	}
-	// 500k normal input, 400k cached, 100k cache write, 200k output.
-	if cost == nil || *cost != 6.66 {
-		t.Fatalf("cost = %v, want 6.66", cost)
-	}
-}
-
-func TestLastJSONIgnoresPartialFirstLine(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "large.jsonl")
-	prefix := make([]byte, usageTailBytes)
-	for i := range prefix {
-		prefix[i] = 'x'
-	}
-	data := append(prefix, []byte("\n{\"wanted\":true}\n")...)
-	if err := os.WriteFile(path, data, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if !lastJSON(path, func(line []byte) bool { return string(line) == `{"wanted":true}` }) {
-		t.Fatal("did not find final complete line")
-	}
-}
-
-func TestOpenCodeSessionCostUsesItsAuthenticatedSessionAPI(t *testing.T) {
-	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		user, password, ok := r.BasicAuth()
-		if !ok || user != "agent" || password != "secret" {
-			t.Errorf("basic auth = %q, %q, %v", user, password, ok)
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
-			return
-		}
-		if r.URL.Path != "/session/ses_one" || r.URL.Query().Get("directory") != "/work tree" {
-			t.Errorf("request URL = %s", r.URL.String())
-			http.Error(w, "bad URL", http.StatusBadRequest)
-			return
-		}
-		fmt.Fprint(w, `{"id":"ses_one","cost":2.3456}`)
-	}))
-	defer api.Close()
-	u, err := url.Parse(api.URL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, portText, err := net.SplitHostPort(u.Host)
-	if err != nil {
-		t.Fatal(err)
-	}
-	port, err := strconv.Atoi(portText)
-	if err != nil {
-		t.Fatal(err)
-	}
-	cost := openCodeSessionCost(context.Background(), api.Client(), harnesses.ServerAccess{
-		Port: port, Username: "agent", Password: "secret",
-	}, "ses_one", "/work tree")
-	if cost == nil || *cost != 2.3456 {
-		t.Fatalf("cost = %v", cost)
-	}
-}
-
-// The header reads the session's usage view, and every renewal in it is in the
-// one shape a browser is sure to parse - and a window whose renewal has passed
-// since the reading was taken is empty again, as it is in the sheet.
-func TestSessionUsageViewNormalizesRenewals(t *testing.T) {
-	e := newEnv(t)
-	e.do(t, e.client, "POST", "/api/setup", `{"password":"a-good-password"}`)
-	e.srv.dataDir = t.TempDir()
-	dir := harnesses.ClaudeConfigDirFor(e.srv.dataDir, "")
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, ".credentials.json"),
-		[]byte(`{"claudeAiOauth":{"accessToken":"secret","expiresAt":4102444800000}}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	future := time.Now().Add(150 * time.Minute).In(time.FixedZone("CEST", 2*3600))
-	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprintf(w, `{"five_hour":{"utilization":42,"resets_at":%q},"seven_day":{"utilization":80,"resets_at":%q}}`,
-			future.Format("2006-01-02T15:04:05.000000-07:00"), time.Now().Add(-time.Minute).UTC().Format(time.RFC3339))
-	}))
-	defer api.Close()
-	e.srv.usageURL, e.srv.usageHTTP = api.URL, api.Client()
-	row := &store.Session{ID: "limits", Harness: "claude", Workdir: e.srv.dataDir, WorkdirMode: "custom", State: store.StateRunning}
-	if err := e.store.CreateSession(row); err != nil {
-		t.Fatal(err)
-	}
-
-	res, payload := e.do(t, e.client, "GET", "/api/sessions/limits/usage", "")
-	if res.StatusCode != http.StatusOK {
-		t.Fatalf("usage: %d", res.StatusCode)
-	}
-	windows, _ := payload["windows"].([]any)
-	if len(windows) != 2 {
-		t.Fatalf("windows = %#v", payload["windows"])
-	}
-	five, _ := windows[0].(map[string]any)
-	want := future.UTC().Truncate(time.Second).Format(time.RFC3339)
-	if five["label"] != "5h" || five["used_percent"] != 42.0 || five["resets_at"] != want {
-		t.Fatalf("the five-hour window = %#v, want resets_at %s", five, want)
-	}
-	week, _ := windows[1].(map[string]any)
-	if week["label"] != "7d" || week["used_percent"] != 0.0 || week["resets_at"] != nil {
-		t.Fatalf("a renewed window = %#v", week)
 	}
 }

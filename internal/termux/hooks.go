@@ -143,8 +143,25 @@ func (m *Manager) serveHooks(ln net.Listener) {
 		if err != nil {
 			return
 		}
+		// Counted under the lock Close marks the manager closed under, so a
+		// connection is either one Close waits for or one it turns away.
+		m.mu.Lock()
+		if m.closed {
+			m.mu.Unlock()
+			conn.Close()
+			return
+		}
+		m.hookConns[conn] = true
+		m.hookWG.Add(1)
+		m.mu.Unlock()
 		go func() {
-			defer conn.Close()
+			defer m.hookWG.Done()
+			defer func() {
+				m.mu.Lock()
+				delete(m.hookConns, conn)
+				m.mu.Unlock()
+				conn.Close()
+			}()
 			scanner := bufio.NewScanner(conn)
 			for scanner.Scan() {
 				var h Hook
@@ -242,8 +259,9 @@ func (m *Manager) sessionClosed(id string) {
 }
 
 // exitStatus turns what tmux reported into one number. A pane killed by a
-// signal has no status at all and a signal number instead, which is rendered
-// the way a shell renders it.
+// signal has no status at all and a signal instead, which is rendered the way
+// a shell renders it. tmux names the signal by number on Linux and by name
+// ("kill") on macOS and the BSDs; see signalByName.
 func exitStatus(status, signal string) int {
 	if n, err := strconv.Atoi(strings.TrimSpace(status)); err == nil {
 		return n
@@ -251,7 +269,40 @@ func exitStatus(status, signal string) int {
 	if n, err := strconv.Atoi(strings.TrimSpace(signal)); err == nil && n > 0 {
 		return 128 + n
 	}
+	if n := signalByName(signal); n > 0 {
+		return 128 + n
+	}
 	return -1
+}
+
+// collectExits makes the tmux server reap the programs of panes it already
+// shows as dead, which is what gives such a pane its exit status and fires
+// its pane-died hook.
+//
+// tmux hears of a program's end twice: end of file on the pane's terminal
+// makes the pane dead, and SIGCHLD gives it the status, and pane-died waits
+// for both. Up to 3.5 a tmux built with libutempter - Debian's and Ubuntu's -
+// can lose the second. The end of file is where it removes the pane's utmp
+// record, libutempter puts SIGCHLD to SIG_DFL while its helper runs, and the
+// SIGCHLD of a program whose exit lands in that moment is discarded: the
+// program stays an unreaped zombie, the pane has no status and the hook never
+// fires, until some other child of the server happens to exit. tmux 3.4 here
+// did that to 2 of 40 panes killed at birth on a busy CPU, and to 4 of 20 in
+// TestSignalKilledPaneIsReported [V]. tmux 3.6 fixed it by sending itself
+// SIGCHLD after each utempter call; this is the same signal, sent from
+// outside. It is harmless otherwise: the server only reaps what has exited.
+func (m *Manager) collectExits(ctx context.Context) {
+	out, err := m.tmux.Run(ctx, "display-message", "-p", "#{pid}")
+	if err != nil {
+		return
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(out))
+	if err != nil || pid <= 1 {
+		return
+	}
+	if err := sendSIGCHLD(pid); err != nil {
+		m.logf("could not ask tmux to collect the exit status of a dead pane: %v", err)
+	}
 }
 
 // paneIsDead asks tmux, and answers yes when there is no pane at all: a

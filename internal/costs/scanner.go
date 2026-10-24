@@ -154,6 +154,30 @@ type spend struct {
 	requests                             int64
 }
 
+// Spend is one request, or one turn, counted from outside this package: a
+// chat's journal (internal/server) is summed into the same rows as the
+// transcripts are. Input excludes the cached tokens, as the ledger keeps it.
+type Spend struct {
+	At                                   int64 // Unix milliseconds
+	Model                                string
+	Input, Output, CacheRead, CacheWrite float64
+	CostUSD                              float64
+	// Priced is false for a spend whose model had no known price.
+	Priced   bool
+	Requests int64
+}
+
+// Hourly sums spends into the ledger's rows, and reports the first and last
+// moment it saw.
+func Hourly(list []Spend) ([]store.CostRow, int64, int64) {
+	spends := make([]spend, len(list))
+	for i, s := range list {
+		spends[i] = spend{at: s.At, model: s.Model, input: s.Input, output: s.Output, cacheRead: s.CacheRead,
+			cacheWrite: s.CacheWrite, cost: s.CostUSD, priced: s.Priced, requests: s.Requests}
+	}
+	return hourly(spends)
+}
+
 // hourly sums spends into the ledger's rows, and reports the first and last
 // moment it saw.
 func hourly(spends []spend) (rows []store.CostRow, first, last int64) {

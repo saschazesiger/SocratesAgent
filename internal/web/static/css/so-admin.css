@@ -10,12 +10,14 @@
  *   .so-admin-group    the program cards, one block of the page
  *   .so-admin-actions  a wrapping row of buttons inside a card
  *   .so-admin-checks   a wrapping row of checkboxes
- *   .so-admin-add      the "new profile" inline form under the list
  *   .so-admin-foot     the second Save and the version at the page's end
  *   .so-state          a status line: __line (chip and facts), __tip (the "i")
  *   .so-rows           a list of editable rows with hairlines between them
  *   .so-preset         one preset directory: name, path, remove
- *   .so-profile        one profile: grip, __main (__name, logins), __actions
+ *   .so-account-groups the Accounts card's list: one .so-account-group per
+ *                      agent, its __title, rows and Add button
+ *   .so-account        one account: grip, __main (__name, __state, __meters),
+ *                      __actions; data-account-state is its state
  *   .so-model          one model of a short list: grip, __name, effort, remove
  *   .so-grip           the drag handle of a row; the row being dragged
  *                      carries data-state="dragging"
@@ -50,6 +52,22 @@
   gap: var(--ds-space-3);
 }
 
+/* A notice whose button stands under its sentence (the old mirror's
+   "Delete them"), as a limit card's does, not beside it in a column of its
+   own. */
+.so-admin-stack {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--ds-space-2);
+}
+
+/* "(this one)" under the machine's name in the snapshot table. */
+.so-admin-own {
+  display: block;
+  color: var(--ds-text-2);
+}
+
 .so-admin-notice:empty {
   display: none;
 }
@@ -70,10 +88,6 @@
 
 .so-admin-checks {
   gap: var(--ds-space-2) var(--ds-space-6);
-}
-
-.so-admin-add {
-  align-items: flex-end;
 }
 
 .so-admin-foot {
@@ -131,7 +145,7 @@
   gap: var(--ds-space-2);
 }
 
-.so-profile,
+.so-account,
 .so-model {
   display: grid;
   align-items: center;
@@ -141,12 +155,12 @@
   background: var(--ds-surface);
 }
 
-.so-profile:first-child,
+.so-account:first-child,
 .so-model:first-child {
   border-top: 1px solid var(--ds-line);
 }
 
-.so-profile {
+.so-account {
   grid-template-columns: auto minmax(0, 1fr) auto;
 }
 
@@ -155,18 +169,14 @@
   padding-block: var(--ds-space-2);
 }
 
-.so-profile__main,
+.so-account__main,
 .so-model__name {
   display: grid;
   gap: var(--ds-space-1);
   min-width: 0;
 }
 
-.so-profile__main > .ds-input {
-  max-width: var(--so-name-field-width);
-}
-
-.so-profile__name {
+.so-account__name {
   display: flex;
   flex-wrap: wrap;
   align-items: baseline;
@@ -176,11 +186,57 @@
   color: var(--ds-text);
 }
 
-.so-profile__actions {
+.so-account__name > svg {
+  flex: none;
+  align-self: center;
+  color: var(--ds-text-2);
+}
+
+.so-account__state {
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
+  gap: var(--ds-space-1) var(--ds-space-3);
+}
+
+.so-account__meters {
+  max-width: var(--so-account-meters-width);
+}
+
+.so-account__meters:empty {
+  display: none;
+}
+
+.so-account__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
   justify-content: flex-end;
   gap: var(--ds-space-1);
+}
+
+.so-account-groups {
+  display: grid;
+  gap: var(--ds-space-6);
+}
+
+.so-account-group {
+  display: grid;
+  gap: var(--ds-space-2);
+  min-width: 0;
+}
+
+.so-account-group > .ds-add-row {
+  justify-self: start;
+}
+
+.so-account-group__title {
+  display: flex;
+  align-items: center;
+  gap: var(--ds-space-2);
+  margin: 0;
+  font: var(--ds-font-subtitle);
+  color: var(--ds-text);
 }
 
 .so-model__name > .so-ellipsis:first-child {
@@ -193,7 +249,7 @@
   touch-action: none;
 }
 
-.so-profile[data-state="dragging"],
+.so-account[data-state="dragging"],
 .so-model[data-state="dragging"] {
   position: relative;
   z-index: var(--ds-z-raised);
@@ -202,8 +258,15 @@
   box-shadow: var(--ds-elev-2);
 }
 
-:is(.so-profile, .so-model)[data-state="dragging"] .so-grip {
+:is(.so-account, .so-model)[data-state="dragging"] .so-grip {
   cursor: grabbing;
+}
+
+/* Touch mode: the account rows' small buttons - sign in, "i", rename,
+   delete, the grip - are a finger's target, as in a chat (so-chat.css). */
+.ds-theme.so-touch .so-account .ds-btn--sm {
+  --ds-btn-height: var(--so-touch-target);
+  --ds-btn-icon-size: var(--so-touch-target);
 }
 
 /* ── Program cards ───────────────────────────────────────────────────── */
@@ -288,6 +351,11 @@
   border-radius: var(--ds-radius-xs);
 }
 
+/* A finger's target in touch mode, like every other control. */
+.ds-theme.so-touch .so-disclosure > summary {
+  min-height: var(--so-touch-target);
+}
+
 .so-disclosure > summary:focus-visible {
   outline: var(--ds-focus-outline);
   outline-offset: var(--ds-focus-offset);
@@ -319,11 +387,11 @@
     grid-column: 1 / -1;
   }
 
-  .so-profile {
+  .so-account {
     grid-template-columns: auto minmax(0, 1fr);
   }
 
-  .so-profile__actions {
+  .so-account__actions {
     grid-column: 2;
     justify-content: flex-start;
   }

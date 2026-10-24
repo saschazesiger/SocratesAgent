@@ -7,14 +7,11 @@
  *                      backdrop, the connection alert above it
  *   .so-auth__card     that card, --so-auth-width wide
  *   .so-auth__submit   the card's one main action, the width of the card
- *   .so-steps          where setup is: one segment per step, the current one
- *                      aria-current="step", a finished one data-state="done"
  *   .so-optional       the quiet "optional" after a field's label
- *   .so-choice         a question the connect form asks before it goes on:
- *                      its buttons in a column
- *   .so-status         the waiting view of a configured bucket: its status
- *                      chip, the reason and what can be done, as rows
- *   .so-status__row    a chip or button and what goes beside it
+ *   .so-restore-offer  setup's offer to restore from a backup instead: a
+ *                      line and its button
+ *   .so-restore-pick   the snapshots of a backup and the button that
+ *                      restores the one chosen
  *   .so-costs-*        the costs page: its head actions, the filters, the
  *                      chart and its tip, the share bar of a table row
  */
@@ -70,81 +67,19 @@
   font-weight: var(--ds-weight-regular);
 }
 
-.so-choice {
+.so-restore-offer,
+.so-restore-pick {
   display: grid;
   gap: var(--ds-space-3);
+  justify-items: start;
 }
 
-.so-choice > p {
+.so-restore-pick {
+  justify-items: stretch;
+}
+
+.so-restore-offer > p {
   margin: 0;
-}
-
-.so-status {
-  display: grid;
-  gap: var(--ds-space-4);
-}
-
-.so-status__row {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--ds-space-2) var(--ds-space-3);
-}
-
-.so-status__row > p {
-  margin: 0;
-}
-
-/* The steps of setup: a bar per step with its name under it. */
-.so-steps {
-  display: grid;
-  grid-auto-flow: column;
-  grid-auto-columns: minmax(0, 1fr);
-  gap: var(--ds-space-2);
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-.so-steps > li {
-  display: grid;
-  gap: var(--ds-space-2);
-  color: var(--ds-text-3);
-  font: var(--ds-font-caption);
-}
-
-.so-steps > li::before {
-  content: "";
-  block-size: var(--ds-space-1);
-  border-radius: var(--ds-radius-action);
-  background: var(--ds-line);
-  transition: background-color var(--ds-dur-medium) var(--ds-ease);
-}
-
-.so-steps > li[aria-current="step"],
-.so-steps > li[data-state="done"] {
-  color: var(--ds-text-2);
-}
-
-.so-steps > li[aria-current="step"] {
-  color: var(--ds-primary);
-  font-weight: var(--ds-weight-label);
-}
-
-.so-steps > li[aria-current="step"]::before,
-.so-steps > li[data-state="done"]::before {
-  background: var(--ds-primary);
-}
-
-@media (forced-colors: active) {
-  .so-steps > li::before {
-    background: GrayText;
-  }
-
-  .so-steps > li[aria-current="step"]::before,
-  .so-steps > li[data-state="done"]::before {
-    background: Highlight;
-  }
 }
 
 /* ── Costs ───────────────────────────────────────────────────────────── */
@@ -301,6 +236,20 @@
 .so-chart-tip > .so-chart-tip__more {
   margin-block-start: var(--ds-space-1);
   color: var(--ds-text-3);
+}
+
+/* A breakdown where only some rows open a chat (costs.js table): those rows
+   are pressed whole, their link stretched over them (ds-table__row-link), as
+   in DS's interactive table; the others stay still. Separate borders, which
+   a positioned row needs, as DS's interactive table has them. */
+.so-costs-links {
+  border-collapse: separate;
+  border-spacing: 0;
+}
+
+.so-costs-links tbody tr:has(.ds-table__row-link) {
+  position: relative;
+  cursor: pointer;
 }
 
 /* The name cell of a breakdown row: the name, what it is, and its share of

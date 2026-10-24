@@ -10,12 +10,24 @@
  *   .so-mark         the activity ring and outcome badge around an agent mark
  *                    (session list and Home); DS has no ring around an avatar
  *   .so-field-row    a field and its Dictate/Clear button side by side
+ *   .so-mic          a field's own microphone (keyboard.js micButton), on
+ *                    every page that has one: the session page, Admin
  *   .so-break        a path or id that must wrap anywhere
  *   .so-ellipsis     one line, cut with an ellipsis
  *   .so-conn         the connection slot net.js renders its alert into
  *   .so-page-head    the page header with actions at its end
  *   .so-info         the "i" button of infoTip() (api.js): a hook for tests and
  *                    callers, no rule of its own
+ *   .so-signin       an account's sign-in dialog body (accounts.js): __code
+ *                    (__value, the code to type on the agent's page, and its
+ *                    Copy), __wait, __providers
+ *   .so-account-form the body of the "Add an account" dialog
+ *   [data-so-toast-room]  a dialog keeping the strip at its bottom for the
+ *                    messages shown in it (api.js keepDialogRoom)
+ *
+ * In touch mode (.so-touch) DS's fields, check rows, switch rows, the
+ * combobox's "Show all" and its options are given a finger's height (they
+ * have no hook).
  */
 
 /* X1 */
@@ -151,6 +163,11 @@ body[data-stale] .so-mark[data-ring="busy"]::after {
   align-items: flex-start;
 }
 
+/* A field's microphone keeps its size beside the field it fills. */
+.so-mic {
+  flex: none;
+}
+
 .so-break {
   overflow-wrap: anywhere;
   min-width: 0;
@@ -188,4 +205,118 @@ body[data-stale] .so-mark[data-ring="busy"]::after {
 
 .so-page-head > .ds-page-head {
   flex: 1 1 var(--so-page-head-basis);
+}
+
+/* ── The top bar of every page ───────────────────────────────────────── */
+
+/* On a phone every page's bar is the same: its way back or its drawer, the
+   Socrates mark without its name, and the page's own controls. */
+@media (max-width: 600px) {
+  .ds-topbar .ds-brand__name {
+    display: none;
+  }
+}
+
+/* ── Touch mode: a finger's target ───────────────────────────────────── */
+
+/* DS sizes its buttons through hooks (theme.css), but a field, a check row,
+   a switch row and a combobox's "Show all" are 40px with no hook to say
+   otherwise. In touch mode - a phone, a car - they are as tall as a button,
+   so every target a finger is asked to find is at least 48px. Only the size:
+   colour, radius, type and motion stay DS's. */
+.ds-theme.so-touch :is(.ds-check, .ds-switch) {
+  min-height: var(--so-touch-target);
+}
+
+.ds-theme.so-touch .ds-input:not(textarea) {
+  min-height: var(--so-touch-target);
+}
+
+.ds-theme.so-touch .ds-combo__input {
+  padding-right: calc(var(--so-touch-target) + var(--ds-space-1));
+}
+
+.ds-theme.so-touch .ds-combo__toggle {
+  width: var(--so-touch-target);
+  height: var(--so-touch-target);
+}
+
+/* A combobox with nothing to list is a plain field (combobox.js): it has no
+   arrow, so its text runs to the field's own padding. After the rule above,
+   which it overrides on a touch screen too. */
+.ds-theme .ds-combo[data-unlisted] > .ds-combo__input {
+  padding-right: var(--ds-space-3);
+}
+
+/* An option of one line ("Fable", "Custom path…") is as tall as a finger;
+   one with a description is taller already. */
+.ds-theme.so-touch .ds-combo__option {
+  min-height: var(--so-touch-target);
+  align-content: center;
+}
+
+/* The mark in a top bar is a link home: a finger's target around it. */
+.ds-theme.so-touch .ds-topbar .ds-brand {
+  min-width: var(--so-touch-target);
+  min-height: var(--so-touch-target);
+  justify-content: center;
+}
+
+/* ── Accounts ────────────────────────────────────────────────────────── */
+
+.so-signin,
+.so-account-form {
+  display: grid;
+  gap: var(--ds-space-4);
+  min-width: 0;
+}
+
+.so-signin > p {
+  margin: 0;
+}
+
+.so-signin__code {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--ds-space-2);
+}
+
+/* The code is read off one screen and typed on another: large, in the code
+   face, every character distinct. */
+.so-signin__value {
+  font: var(--ds-font-title);
+  font-family: var(--so-font-mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--ds-text);
+  overflow-wrap: anywhere;
+}
+
+.so-signin__wait {
+  justify-content: flex-start;
+}
+
+.so-signin__providers {
+  max-height: var(--so-signin-list-max);
+  overflow-y: auto;
+}
+
+/* ── Messages over a dialog ───────────────────────────────────────────── */
+
+/* A message shown while a dialog is open stands in it, at the bottom edge
+   (DS). The dialog keeps that strip while it shows (api.js
+   keepDialogRoom): its box - an action sheet at the bottom, the question
+   on the whole screen, a form over the keyboard - ends above the messages
+   rather than under them, and scrolls inside what is left. */
+.ds-theme dialog.ds-dialog[data-so-toast-room] {
+  padding-bottom: var(--so-toast-room);
+}
+
+/* A phone on its side with its keyboard up (keybar.js data-so-short) has a
+   strip of screen for the dialog being typed into, and a message standing
+   in it - or the room kept for one - left no room for the question (at
+   844x200, 41px for the field). The messages wait out of sight until the
+   keyboard goes: one that stays is still there then. */
+.ds-theme.so-touch[data-so-short] dialog.ds-dialog[open] > .ds-toasts {
+  visibility: hidden;
 }

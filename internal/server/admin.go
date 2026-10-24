@@ -12,7 +12,6 @@ import (
 	"github.com/saschazesiger/SocratesAgent/internal/catalog"
 	"github.com/saschazesiger/SocratesAgent/internal/config"
 	"github.com/saschazesiger/SocratesAgent/internal/googletts"
-	"github.com/saschazesiger/SocratesAgent/internal/harnesses"
 	"github.com/saschazesiger/SocratesAgent/internal/openrouter"
 	"github.com/saschazesiger/SocratesAgent/internal/termux"
 	"github.com/saschazesiger/SocratesAgent/internal/tunnel"
@@ -33,6 +32,12 @@ func (s *Server) handlePreferences(w http.ResponseWriter, r *http.Request) {
 	settings := s.Settings()
 	writeJSON(w, http.StatusOK, map[string]any{
 		"language": settings.Voice.Language,
+		// Whether a key is set, never the key: dictation and Status say they
+		// need one before anything is recorded or sent (voice.js voiceKey).
+		"openrouter": strings.TrimSpace(settings.OpenRouter.APIKey) != "",
+		// The same for Text-to-Speech: Read aloud says it needs a key
+		// before anything is sent (voice.js ttsKey).
+		"tts": googletts.New(settings.Voice.GoogleAPIKey).Configured(),
 		"terminal": map[string]any{
 			"scrollback": settings.Terminal.Scrollback,
 			"font_size":  settings.Terminal.FontSize,
@@ -164,7 +169,8 @@ func (s *Server) handleDiagnostics(w http.ResponseWriter, r *http.Request) {
 		add("Workspace", true, "writable", root)
 	}
 
-	// The four programs, each with the state directory it cannot work without.
+	// The programs. Which accounts the agents are signed in to is the
+	// Accounts card's to say, each account on its own row.
 	snapshot := s.catalog.Get(r.Context())
 	for _, id := range config.KnownHarnesses {
 		agent, ok := snapshot.Agent(id)
@@ -172,12 +178,6 @@ func (s *Server) handleDiagnostics(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		results = append(results, harnessCheck(agent))
-		if extra, ok := harnessStateCheck(id); ok {
-			results = append(results, extra)
-		}
-		if id == config.HarnessClaude && agent.Installed {
-			results = append(results, claudeSignInCheck())
-		}
 	}
 
 	// OpenRouter. Since Socrates became a harness this key answers nothing but
@@ -336,66 +336,6 @@ func clean(text string) string {
 	return text
 }
 
-// harnessStateCheck is the one directory or file each coding agent keeps its
-// own state in. They are checked because each is a silent failure otherwise:
-// an unwritable CLAUDE_CONFIG_DIR is a theme that never pins, and an
-// unreadable Codex or OpenCode database is a session that can never be
-// resumed after a reboot.
-func harnessStateCheck(id string) (checkResult, bool) {
-	switch id {
-	case config.HarnessClaude:
-		dir := harnesses.ClaudeConfigDir()
-		row := checkResult{Name: "Claude Code state", Summary: "writable", Detail: dir}
-		if err := writableDir(dir); err != nil {
-			row.Summary, row.Detail = "not writable", err.Error()
-		} else {
-			row.OK = true
-		}
-		return row, true
-	case config.HarnessCodex:
-		path := filepath.Join(harnesses.CodexHome(), "state_5.sqlite")
-		row := checkResult{Name: "Codex state", Summary: "readable", Detail: path}
-		if err := readable(path); err != nil {
-			row.Summary, row.Detail = "not readable", err.Error()
-		} else {
-			row.OK = true
-		}
-		return row, true
-	case config.HarnessOpenCode:
-		path := harnesses.OpenCodeDBPath()
-		row := checkResult{Name: "OpenCode state", Summary: "readable", Detail: path}
-		if err := readable(path); err != nil {
-			row.Summary, row.Detail = "not readable", err.Error()
-		} else {
-			row.OK = true
-		}
-		return row, true
-	}
-	return checkResult{}, false
-}
-
-// claudeSignInCheck is whether Claude Code has been through its own first run
-// here. Socrates starts the program; it does not log it in, and it cannot skip
-// the questions that come before a prompt. Without this the dashboard shows a
-// row of green for a machine on which every session opens on "Choose the text
-// style" or on the sign-in screen.
-func claudeSignInCheck() checkResult {
-	onboarded, account := harnesses.ClaudeSignIn("", "")
-	row := checkResult{Name: "Claude Code sign-in"}
-	switch {
-	case onboarded && account != "":
-		row.OK, row.Summary, row.Detail = true, "signed in", account
-	case onboarded:
-		row.OK, row.Summary = true, "first run done"
-		row.Detail = "No account is stored, so this installation is using an API key or a third-party provider."
-	default:
-		row.Summary = "not signed in yet"
-		row.Detail = "Run `claude` once in a shell on this machine, as this user, and answer its first-run questions. " +
-			"A session started before that opens on them instead of on a prompt."
-	}
-	return row
-}
-
 // tunnelCheck is the remote-access row, unchanged in substance from the one
 // the dashboard has always shown.
 func (s *Server) tunnelCheck(settings config.Settings) checkResult {
@@ -489,19 +429,6 @@ func writableDir(dir string) error {
 		return err
 	}
 	return os.Remove(probe)
-}
-
-// readable proves a file exists and can be opened, which for a state database
-// is the whole question.
-func readable(path string) error {
-	if strings.TrimSpace(path) == "" {
-		return errors.New("this machine has no home directory to look in")
-	}
-	f, err := os.Open(path)
-	if err != nil {
-		return err
-	}
-	return f.Close()
 }
 
 // voiceCheck says whether an answer can be read out loud at all. It asks

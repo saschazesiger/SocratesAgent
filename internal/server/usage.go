@@ -1,30 +1,22 @@
 package server
 
-// The usage reader deliberately uses the files and endpoint the two CLIs use
-// themselves. The shapes follow the small, proven readers in
-// ArrivaRUS/claude-codex-limits and Stargod-0812/starline; keeping the parser
-// here avoids installing either application or adding a runtime dependency.
+// An account's usage windows, read from the endpoint Claude Code uses itself.
+// The shapes follow the small, proven readers in ArrivaRUS/claude-codex-limits
+// and Stargod-0812/starline; keeping the parser here avoids installing either
+// application or adding a runtime dependency. Codex's come from codex itself
+// (accounts.ReadCodexUsage), and every agent's from its chats' rate_limit
+// events.
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
-	"fmt"
 	"io"
 	"net/http"
-	neturl "net/url"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
-
-	"github.com/saschazesiger/SocratesAgent/internal/costs"
-	"github.com/saschazesiger/SocratesAgent/internal/harnesses"
-	"github.com/saschazesiger/SocratesAgent/internal/store"
 )
-
-const usageTailBytes int64 = 2 << 20
 
 type usageWindow struct {
 	Label       string  `json:"label"`
@@ -36,57 +28,13 @@ type usageLimits struct {
 	Windows []usageWindow `json:"windows,omitempty"`
 }
 
-type sessionUsageView struct {
-	Windows []usageWindow `json:"windows,omitempty"`
-	CostUSD *float64      `json:"cost_usd,omitempty"`
-}
-
-func (s *Server) handleSessionUsage(w http.ResponseWriter, r *http.Request) {
-	row, err := s.store.GetSession(r.PathValue("id"))
-	if errors.Is(err, store.ErrNotFound) {
-		writeError(w, http.StatusNotFound, "session not found")
-		return
-	}
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-
-	view := sessionUsageView{}
-	// Limits and costs belong to the account the session runs in, so they are
-	// read from that profile's directories.
-	profile := sessionProfile(row)
-	switch row.Harness {
-	case "claude":
-		dir := harnesses.ClaudeConfigDirFor(s.dataDir, profile)
-		view.Windows = s.claudeLimits(r.Context(), dir).Windows
-		view.CostUSD = claudeSessionCost(dir, row.CLISessionID)
-	case "codex":
-		path := codexRollout(harnesses.CodexHomeFor(s.dataDir, profile), row.CLISessionID)
-		view.Windows, view.CostUSD = codexUsage(path, row.Model)
-	case "opencode":
-		if access, ok := s.manager.OpenCodeAccessOf(row.ID); ok {
-			view.CostUSD = openCodeSessionCost(r.Context(), s.usageHTTP, access, row.CLISessionID, row.Workdir)
-		}
-	case "shell":
-		zero := 0.0
-		view.CostUSD = &zero
-	}
-	// The header shows when each window renews, so a reading is passed on as
-	// it stands now - the same rule the new-session sheet's meters follow.
-	if view.Windows != nil {
-		view.Windows = current(view.Windows, time.Now())
-	}
-	writeJSON(w, http.StatusOK, view)
-}
-
 // claudeLimits caches one account-wide reading per Claude Code directory - so
-// per profile - for a minute. A missing or expired login simply yields no
+// per account - for a minute. A missing or expired login simply yields no
 // windows; Claude Code refreshes its own login the next time it works, so
 // Socrates never races it by writing credentials.
 //
 // The lock is held only around the cache, not across the request: the
-// new-session sheet asks for every profile at once.
+// new-session sheet asks for every account at once.
 func (s *Server) claudeLimits(ctx context.Context, dir string) usageLimits {
 	s.usageMu.Lock()
 	if s.claudeUsage == nil {
@@ -180,191 +128,9 @@ type cachedLimits struct {
 	at     time.Time
 }
 
-func claudeSessionCost(dir, id string) *float64 {
-	if id == "" || dir == "" {
-		return nil
-	}
-	matches, _ := filepath.Glob(filepath.Join(dir, "projects", "*", id+".jsonl"))
-	for _, path := range matches {
-		var row struct {
-			Type         string  `json:"type"`
-			TotalCostUSD float64 `json:"totalCostUSD"`
-		}
-		if lastJSON(path, func(line []byte) bool {
-			if !bytes.Contains(line, []byte(`"type":"cost-state"`)) {
-				return false
-			}
-			return json.Unmarshal(line, &row) == nil && row.Type == "cost-state"
-		}) {
-			cost := row.TotalCostUSD
-			return &cost
-		}
-	}
-	return nil
-}
-
-func codexRollout(home, id string) string {
-	if id == "" || home == "" {
-		return ""
-	}
-	root := filepath.Join(home, "sessions")
-	var found string
-	_ = filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
-		if err != nil || found != "" {
-			return err
-		}
-		if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".jsonl") && strings.Contains(entry.Name(), id) {
-			found = path
-			return filepath.SkipAll
-		}
-		return nil
-	})
-	return found
-}
-
-func codexUsage(path, model string) ([]usageWindow, *float64) {
-	if path == "" {
-		return nil, nil
-	}
-	var windows []usageWindow
-	var tokens struct {
-		Type    string `json:"type"`
-		Payload struct {
-			Thread struct {
-				Input      float64 `json:"input_tokens"`
-				Cached     float64 `json:"cached_input_tokens"`
-				CacheWrite float64 `json:"cache_write_input_tokens"`
-				Output     float64 `json:"output_tokens"`
-			} `json:"thread_token_usage"`
-		} `json:"payload"`
-	}
-	lastJSON(path, func(line []byte) bool {
-		if !bytes.Contains(line, []byte(`"rate_limits"`)) {
-			return false
-		}
-		var row struct {
-			Payload struct {
-				RateLimits struct {
-					Primary   codexWindow `json:"primary"`
-					Secondary codexWindow `json:"secondary"`
-				} `json:"rate_limits"`
-			} `json:"payload"`
-		}
-		if json.Unmarshal(line, &row) != nil {
-			return false
-		}
-		for _, win := range []codexWindow{row.Payload.RateLimits.Primary, row.Payload.RateLimits.Secondary} {
-			if win.UsedPercent == nil {
-				continue
-			}
-			label := "5h"
-			if win.WindowMinutes >= 2*24*60 {
-				label = "7d"
-			}
-			windows = append(windows, usageWindow{Label: label, UsedPercent: *win.UsedPercent, ResetsAt: epochTime(win.ResetsAt)})
-		}
-		return len(windows) > 0
-	})
-
-	if !lastJSON(path, func(line []byte) bool {
-		if !bytes.Contains(line, []byte(`"type":"token_usage_record"`)) {
-			return false
-		}
-		return json.Unmarshal(line, &tokens) == nil && tokens.Type == "token_usage_record"
-	}) {
-		return windows, nil
-	}
-	// Codex writes the effective model at the start of each turn. It may differ
-	// from the model the session was created with after an in-TUI model change.
-	effectiveModel := model
-	lastJSON(path, func(line []byte) bool {
-		if !bytes.Contains(line, []byte(`"type":"turn_context"`)) {
-			return false
-		}
-		var turn struct {
-			Payload struct {
-				Model string `json:"model"`
-			} `json:"payload"`
-		}
-		if json.Unmarshal(line, &turn) != nil || turn.Payload.Model == "" {
-			return false
-		}
-		effectiveModel = turn.Payload.Model
-		return true
-	})
-	u := tokens.Payload.Thread
-	cost, ok := costs.CodexCost(effectiveModel, u.Input, u.Cached, u.CacheWrite, u.Output)
-	if !ok {
-		return windows, nil
-	}
-	return windows, &cost
-}
-
-func openCodeSessionCost(ctx context.Context, client *http.Client, access harnesses.ServerAccess, id, directory string) *float64 {
-	if client == nil || access.Port <= 0 || id == "" {
-		return nil
-	}
-	endpoint := fmt.Sprintf("http://127.0.0.1:%d/session/%s", access.Port, neturl.PathEscape(id))
-	if directory != "" {
-		endpoint += "?directory=" + neturl.QueryEscape(directory)
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
-	if err != nil {
-		return nil
-	}
-	req.SetBasicAuth(access.Username, access.Password)
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return nil
-	}
-	var session struct {
-		Cost *float64 `json:"cost"`
-	}
-	if json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&session) != nil {
-		return nil
-	}
-	return session.Cost
-}
-
-type codexWindow struct {
-	UsedPercent   *float64 `json:"used_percent"`
-	WindowMinutes float64  `json:"window_minutes"`
-	ResetsAt      int64    `json:"resets_at"`
-}
-
 func epochTime(epoch int64) string {
 	if epoch <= 0 {
 		return ""
 	}
 	return time.Unix(epoch, 0).UTC().Format(time.RFC3339)
-}
-
-// lastJSON walks complete lines from the end of a bounded tail. All fields we
-// need are emitted after each answer, so old transcript history is irrelevant.
-func lastJSON(path string, accept func([]byte) bool) bool {
-	f, err := os.Open(path)
-	if err != nil {
-		return false
-	}
-	defer f.Close()
-	info, err := f.Stat()
-	if err != nil {
-		return false
-	}
-	start := max(int64(0), info.Size()-usageTailBytes)
-	buf := make([]byte, info.Size()-start)
-	if _, err := f.ReadAt(buf, start); err != nil && err != io.EOF {
-		return false
-	}
-	lines := bytes.Split(buf, []byte{'\n'})
-	for i := len(lines) - 1; i >= 0; i-- {
-		if accept(bytes.TrimSpace(lines[i])) {
-			return true
-		}
-	}
-	return false
 }

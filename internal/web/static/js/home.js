@@ -86,28 +86,6 @@ function waitsOnYou(ctx, session) {
 }
 
 /**
- * textQuestion says whether a session that is idle ended its last answer by
- * asking something in prose. That is a question too, as far as the person is
- * concerned - it is only not a menu - and the digest is the one thing that
- * can tell.
- */
-function textQuestion(digest) {
-  return !!(digest && digest.question && digest.question.source === 'text');
-}
-
-/**
- * unconfirmed says whether a session counted as asking only by a question in
- * prose that a restarted server has not read yet (session.js `carriedOver`):
- * it may have been answered at the machine while there was no server. It
- * stays counted - a question still open must not leave the card for the
- * moment of the read - but is said to be checked, with no Answer, until the
- * read says whether it still asks.
- */
-function unconfirmed(act, digest) {
-  return !!act && act.state !== 'waiting' && textQuestion(digest) && !!digest.carried;
-}
-
-/**
  * cardsOf is every card one session counts in. A session is in several at
  * once - working and waiting for a review - except a done one, which is in
  * Done and nowhere else: what is finished is not also running or ready.
@@ -142,8 +120,7 @@ export function cardsOf(ctx, session) {
   }
   if (!LIVE_STATES.has(session.state)) return cards;
   if (!act) return cards;
-  const asksInProse = textQuestion(ctx.digestOf(session.id));
-  if (act.state === 'waiting' || (act.state === 'idle' && asksInProse)) cards.push('questions');
+  if (act.state === 'waiting') cards.push('questions');
   else if (act.state === 'busy') cards.push('running');
   else if (act.state === 'tasks') cards.push('tasks');
   // A turn whose verdict is still being read is over, with something about
@@ -208,7 +185,8 @@ export function staleWords(at, now = Date.now()) {
  * event stream's {status, updatedAt, blocked, pollEvery, resuming, quiet};
  * `reachable` whether the last attempt to read the list got through. The
  * kind is 'live' or 'polling' (current: nothing is dimmed), or 'connecting'
- * or 'offline' (old: dimmed).
+ * or 'offline' (old: dimmed); `first` marks the first look, before anything
+ * has been heard.
  */
 export function connectionLine(conn, reachable, now = Date.now()) {
   const { status, updatedAt, blocked, pollEvery, resuming, quiet } = conn;
@@ -222,7 +200,7 @@ export function connectionLine(conn, reachable, now = Date.now()) {
     // The first look, before anything has been heard at all - and before
     // anything has failed: a page whose every read has failed is offline,
     // not still connecting, whatever it has never heard.
-    return { kind: 'connecting', words: 'Connecting…' };
+    return { kind: 'connecting', words: 'Connecting…', first: true };
   }
   if (resuming) {
     // Shown again after its stream was closed for being hidden, and on its
@@ -308,6 +286,7 @@ export function mountHome(ctx) {
               <span class="so-home__q-words">
                 <button class="ds-card__action so-home__q-action" type="button" data-action="questions" aria-pressed="false">Questions</button>
                 <span class="so-home__q-note"></span>
+                <span class="ds-meta so-home__q-meta" hidden></span>
               </span>
               <span class="so-home__q-end">
                 <span class="ds-status ds-status--warning so-home__q-status" hidden>${raw(icon('waiting', 16))}<span>Waiting for you</span></span>
@@ -349,6 +328,7 @@ export function mountHome(ctx) {
       qFigure: $('.so-home__q-figure'),
       qAction: $('.so-home__q-action'),
       qNote: $('.so-home__q-note'),
+      qMeta: $('.so-home__q-meta'),
       qStatus: $('.so-home__q-status'),
       qAnswer: $('.so-home__q-answer'),
       tiles,
@@ -369,9 +349,12 @@ export function mountHome(ctx) {
       case 'new': ctx.newSession(); break;
       case 'questions':
         if (questionQueue(ctx).length) ctx.openQuestions('');
-        else choose('questions');
+        else { choose('questions'); showList(); }
         break;
-      case 'card': choose(filter === target.dataset.card ? 'all' : target.dataset.card); break;
+      case 'card':
+        choose(filter === target.dataset.card ? 'all' : target.dataset.card);
+        showList();
+        break;
       case 'seg': choose(target.dataset.filter); break;
       case 'open': if (card) ctx.select(card.dataset.id); break;
       case 'answer': if (card) ctx.openQuestions(card.dataset.id); break;
@@ -382,6 +365,26 @@ export function mountHome(ctx) {
   function choose(key) {
     filter = key;
     render({ live: false });
+  }
+
+  // showList brings the list a tile filtered into view when nothing of its
+  // first row can be seen - on a phone the nine tiles fill the screen, and a
+  // tap that only changed a list nobody could see looked like a tap that did
+  // nothing. Only as far as that row: the tile just tapped and the page's
+  // head stay where they are (at a desk, where the list shows already,
+  // nothing moves at all).
+  const SEEN = 48;
+  function showList() {
+    if (!built) return;
+    const head = built.listTitle.closest('.so-home__list-head');
+    const first = [...built.list.children].find((node) => node.getClientRects().length)
+      || (built.empty && !built.empty.hidden ? built.empty : null) || head;
+    if (!first) return;
+    const room = host.getBoundingClientRect();
+    const at = first.getBoundingClientRect();
+    if (at.top >= room.top && at.top + Math.min(at.height, SEEN) <= room.bottom) return;
+    const calm = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    first.scrollIntoView({ block: 'nearest', behavior: calm ? 'auto' : 'smooth' });
   }
 
   // `live` is false only for the person's own tap: a list they reordered
@@ -409,6 +412,14 @@ export function mountHome(ctx) {
     // answered rather than filtered with.
     const waiting = asking.length;
     const q = built;
+    // The last question answered while the focus is on the card - back
+    // from the dialog its Answer opened - leaves nothing there to be on:
+    // the focus goes to Home's heading rather than staying on a grey "0
+    // Nothing to answer", or on an Answer that hides.
+    if (!waiting && q.questions.dataset.state === 'asking' && q.questions.contains(document.activeElement)) {
+      const heading = host.querySelector('.ds-page-head__title');
+      if (heading) heading.focus({ preventScroll: true });
+    }
     q.questions.dataset.state = waiting ? 'asking' : 'none';
     q.questions.dataset.value = String(waiting);
     figure(q.qFigure, waiting);
@@ -417,9 +428,15 @@ export function mountHome(ctx) {
     q.qAction.setAttribute('aria-label', waiting
       ? waiting + (waiting === 1 ? ' question' : ' questions') + '. Answer'
       : 'No questions');
-    setText(q.qNote, waiting
-      ? (waiting === 1 ? asking[0].title : 'The oldest: ' + asking[0].title)
-      : 'Nothing to answer');
+    // The question itself, as the push and the dialog say it, and under it
+    // whose it is; a session whose words are not read yet is named instead.
+    const first = waiting ? asking[0] : null;
+    const words = first ? questionWords(first) : '';
+    setText(q.qNote, !first ? 'Nothing to answer' : words || first.title);
+    const meta = !first ? '' : [words ? first.title : '', waiting > 1 ? 'the oldest of ' + waiting : '']
+      .filter(Boolean).join(' · ');
+    setText(q.qMeta, meta.charAt(0).toUpperCase() + meta.slice(1));
+    q.qMeta.hidden = !meta;
     q.qStatus.hidden = !waiting;
     q.qAnswer.hidden = !waiting;
 
@@ -431,6 +448,12 @@ export function mountHome(ctx) {
       tile.node.setAttribute('aria-pressed', filter === card.key ? 'true' : 'false');
       figure(tile.value, count);
       setText(tile.note, count ? cardSub(card.key, members, now) : card.none);
+      // A line of names may be cut (so-home.css): the tip has all of it.
+      const tip = count ? tile.note.textContent : '';
+      if ((tile.note.dataset.tip || '') !== tip) {
+        if (tip) tile.note.dataset.tip = tip;
+        else delete tile.note.dataset.tip;
+      }
     }
     for (const button of built.segs) {
       button.setAttribute('aria-pressed', button.dataset.filter === filter ? 'true' : 'false');
@@ -476,6 +499,16 @@ export function mountHome(ctx) {
 
   function setText(node, text) {
     if (node.textContent !== text) node.textContent = text;
+  }
+
+  // questionWords is the first open question of a session, in its own words
+  // (REBUILD.md §5.4), from its digest: '' while it has not been read.
+  function questionWords(session) {
+    const digest = ctx.digestOf(session.id);
+    const question = digest && digest.question;
+    if (!question) return '';
+    const item = Array.isArray(question.items) ? question.items.find((one) => one && String(one.text || '').trim()) : null;
+    return String((item && item.text) || '').trim();
   }
 
   // What a card says under its number: the one fact about its sessions that
@@ -566,7 +599,7 @@ export function mountHome(ctx) {
     if (digest && digest.summary) line = digest.summary;
     else if (digest && digest.phase === 'pending') line = '…';
     else if (isPrepared(session) && session.draft_preview) line = String(session.draft_preview);
-    const offer = asking && !unconfirmed(act, digest);
+    const offer = asking;
     const state = asking ? 'asking' : unread ? 'unread' : done ? 'done' : '';
 
     return html`<div class="ds-card ds-card--interactive so-home__card" data-ds-key="${session.id}" data-id="${session.id}" data-state="${state}">
@@ -604,10 +637,12 @@ export function mountHome(ctx) {
   function stateChip(session, cards, act, outcome, judging, now) {
     const said = stateWords(session, cards, act, now);
     let tone = '';
-    let glyph = 'info';
+    // A session counted in none of the cards below is one that is there,
+    // running and quiet - a Shell, mostly: its own mark, not "info".
+    let glyph = session.harness === 'shell' ? 'shell' : 'activity';
     if (cards.includes('done')) glyph = 'archive';
     else if (cards.includes('questions')) {
-      tone = unconfirmed(act, ctx.digestOf(session.id)) ? 'running' : 'warning';
+      tone = 'warning';
       glyph = 'waiting';
     } else if (cards.includes('running') || cards.includes('tasks') || judging) tone = 'running';
     else if (outcome && outcome.phase === 'ready' && OUTCOME_ICON[outcome.kind]
@@ -636,10 +671,8 @@ export function mountHome(ctx) {
       // Not running, and what it finished before it stopped is unread.
       said = words.state[session.state] || '';
       if (cards.includes('finished')) said = said ? said + ' · Finished' : 'Finished';
-    } else if (cards.includes('questions')) {
-      if (act && act.state === 'waiting') said = words.activity.waiting;
-      else said = unconfirmed(act, ctx.digestOf(session.id)) ? 'Checking whether it still asks…' : 'Asks in its last answer';
-    } else if (cards.includes('running')) said = words.activity.busy;
+    } else if (cards.includes('questions')) said = words.activity.waiting;
+    else if (cards.includes('running')) said = words.activity.busy;
     else if (cards.includes('tasks')) {
       said = act && act.state === 'idle' ? (act.unread ? 'Finished · ' : '') + 'Checking how it went…'
         : 'A background task is running';
@@ -692,10 +725,25 @@ export function mountHome(ctx) {
     }
   }
 
+  // countOf is how many sessions a tile's filter holds now.
+  function countOf(key) {
+    if (key === 'questions') return questionQueue(ctx).length;
+    return ctx.sessions().filter((session) => cardsOf(ctx, session).includes(key)).length;
+  }
+
   return {
     show() {
       if (!built) built = build();
-      host.hidden = false;
+      // Coming back to Home from a session is a new visit: it opens at its
+      // head, where a question that came meanwhile is, rather than where the
+      // list was scrolled to last time, and a tile's filter that has nothing
+      // left in it is "Needs you" again rather than a list that says
+      // nothing is here. Within a visit both stay as they were put.
+      if (host.hidden) {
+        if (filter !== 'needs' && filter !== 'all' && !countOf(filter)) filter = 'needs';
+        host.hidden = false;
+        host.scrollTop = 0;
+      }
       if (!timer) timer = setInterval(render, REDRAW_EVERY);
       render();
     },

@@ -1139,12 +1139,16 @@ the bytes xterm.js would have sent, the window reports from the size Socrates ow
 8x18 for the pixel form, which nothing on this side can know), and XTVERSION and DSR are taken
 out of the stream and left unanswered - nothing answers them today either, and an invented
 answer would be worse than tmux's own timeout.
+tmux 3.8 adds a seventh, DECRQM for synchronized output (`CSI ? 2026 $ p`): it is answered
+`CSI ? 2026 ; 2 $ y`, what xterm.js 6 says before anything sets the mode, so tmux wraps its
+redraws in synchronized updates as it would for the browser; any other mode is answered 0.
 
 **WP5 / §D.2 — reply-shaped client input is dropped.** Belt and braces for a page loaded
 against an older Socrates or a reply held across a reload: a device attributes reply, a three
-number window report, a cursor position report and an XTVERSION answer are dropped on the input
-path, everything else is passed through byte for byte, and bracketed paste is respected so that
-pasted text is delivered as it was pasted. The one keystroke this cannot tell from a report is
+number window report, a cursor position report, a mode report (`CSI ? Pd ; Ps $ y` and
+`CSI Pd ; Ps $ y`) and an XTVERSION answer are dropped on the input path, everything else is
+passed through byte for byte, and bracketed paste is respected so that pasted text is
+delivered as it was pasted. The one keystroke this cannot tell from a report is
 shift with F3 under xterm's modified function key encoding, which is the same `CSI 1 ; 2 R` as
 a cursor at the top left; a corrupted command line is the worse of the two to keep.
 
@@ -2059,3 +2063,837 @@ handshake ceiling - is in HOME.md itself now, not here.
 - **§3 — `/tasks [done]`** in the faketui works through a three-task list and records it as
   Claude Code 2.1 does; the `outcome` scenario reads the verdict from it.
 
+
+## Rebuild
+
+Deviations from REBUILD.md (binding plan of 2026-10-23), per work package.
+
+**WP2 / §2.2 — more event types than the list, and user messages carry their text inline.**
+§2.2 lists the types a UI needs; driving three CLIs and keeping exactly-once needs a few more:
+`message.state` (pending → queued → delivered, which is how "queued" chips and re-delivery after a
+dead host work), `part.delta` (coalesced appends; without it a streaming part would be rewritten
+whole four times a second, quadratic in its length), `ask.delivered` (whether an answer reached
+the agent, so a host that died in between delivers it as a message), `conversation`, `tasks`,
+`usage`, `command` (so the `client_id` of an interrupt or a model change is in the journal and
+acted on once) and `notice`. A user message is one `message` event with `text` and `attachments`
+rather than a message plus parts, so it can never be journaled half. AGENT-HOST.md §2 is the full
+list.
+
+**WP2 / §2.2 — delta offsets are UTF-16 code units.** Live deltas and the coalesced journal lines
+overlap; both carry the offset they start at, so a client applies them idempotently. The unit is
+the one a browser's string length counts in.
+
+**WP2 / §2.1 — a dead host is proven by its lock, not its PID.** The spike proposed "socket refuses
+and the host PID is gone". The host holds `flock` on `chats/<id>/host.lock` for its whole life;
+the kernel releases it however the host ends, and a PID can be reused. The server stops a chat's
+scope only when it can take that lock.
+
+**WP2 / §2.1 — the server keeps no copy of the journal on disk.** The spike's server kept its own
+`recv.jsonl` as its resume point. Here host and server share the data folder, so the server's
+resume point is the host's journal as the server read it at start; it never writes the file.
+
+**WP2 / §2.1 — a CLI that exits on its own ends its host.** The host records the failed turn and
+`process{failed}` and exits; the next command starts a new host that resumes the conversation.
+Restarting the CLI inside the same host would be a second resume path next to the one parking
+already needs.
+
+**WP2 / §2.1 — `compact` is `command{name: "compact"}`, and `switch_account` is not implemented** (superseded by WP7: `POST /api/chats/{id}/account` sends `switch_account`).
+Compacting is one of the agent's commands, so it goes through the one command op. Switching
+accounts needs accounts (WP7); the op name is reserved in AGENT-HOST.md §4.3.
+
+**WP2 / spike S4 §8.8 — the socket fallback is under the temporary directory.** When
+`<data>/run/chats/<id>.sock` is too long for `sun_path`, the socket is
+`$TMPDIR/socrates-<uid>/<hash of the data folder>/<id>.sock` rather than `/run/socrates/chats/`,
+which a non-root server could not create. Both sides compute the same path.
+
+**WP2 / §7 — filing a chat as done parks its host.** A done terminal has its pane closed; a done
+chat has its host parked (when idle) and resumes on the next message. Deleting a chat stops its
+host and scope and removes `chats/<id>/`; the working directory is kept as for every session.
+
+**WP2 — the "chat routes are gone" test lost `/api/chats`.** `TestTheChatRoutesAreGone` asserted
+that nothing answers there; the rebuild's chats do (`POST /api/chats`). The other old paths are
+still asserted absent.
+
+**WP3 / §3.1 — more flags than the plan's argv.** `--replay-user-messages` (the delivery receipt
+§2.1 already relies on), `--forward-subagent-text` (a subagent's text and thinking reach the
+stream, so its group shows what it said), `--settings` with the terminal launcher's policy keys
+(`disableRemoteControl`, `cleanupPeriodDays: 90`, `skipDangerousModePermissionPrompt`,
+`ultracode`), and `--session-id <uuid>` for a new conversation. `--append-system-prompt` is wired
+(`Options.AppendSystemPrompt`) but empty until WP6 writes the ask_user guidance.
+
+**WP3 / §3.1 — thinking is asked for as a summary.** Claude Code streams thinking blocks with no
+text by default (`thinking.display: "updates"`); a reasoning part would always be empty. The
+adapter sends `set_max_thinking_tokens{thinking_display: "summarized"}` after `initialize`;
+verified live, reasoning parts then carry the summary.
+
+**WP3 / §2.2 — one more event type, `agent.info`.** The composer's slash-command palette, the
+model picker and the account divider need what the CLI says about itself (`initialize`'s
+commands, models and account, the init's version and permission mode). That is chat state, not a
+part of any message, so it is an event of its own (`Projection.Agent`).
+
+**WP3 / §2.2 — the rebuild is wired through host.json.** A host does not know a chat's
+conversation when its journal is gone, so the server writes the row's `cli_session_id` into
+`host.json` (`conversation`). Since the WP5 integration a host whose journal names no conversation
+resumes that one, and with an empty journal asks `Start` to rebuild (`StartSpec.Rebuild`) — one
+mechanism for all three adapters (below).
+
+**WP3 / §3.1 — workflow agents' calls come from their transcripts.** The stream carries a
+workflow's phases and each agent's state and last tool (`task_progress.workflow_progress`), but not
+the agents' calls (research/09 §3). To give every agent its own tool rows, the adapter reads
+`<transcriptDir>/agent-<id>.jsonl` every 500 ms while the workflow runs. Task subagents need no
+such reading: their frames are streamed with `parent_tool_use_id`.
+
+**WP3 / §3.1 — API key and ultracode arrive as adapter variables in the environment.**
+`StartSpec` has no field for either, and the Claude adapter builds the CLI environment from
+scratch, so an ambient `ANTHROPIC_API_KEY` must never pass. An API-key account puts its key in
+`SOCRATES_CLAUDE_API_KEY`, and the ultracode session option is `SOCRATES_CLAUDE_ULTRACODE=1`; the
+adapter turns them into `ANTHROPIC_API_KEY` and the `ultracode` setting and passes neither on.
+
+**WP3 / §3.1 — plan mode is a command.** Switching plan mode on is `Command("plan")` (off:
+`Command("plan", "off")`, back to `bypassPermissions`), through `set_permission_mode`, rather than
+a host op of its own; the plan card itself goes through the generic ask path as planned.
+**WP4 / §4.3 — the stripped retry is a copy under a new thread id.** "Retry with reasoning and
+compaction items stripped from the rollout, on a copy" cannot be done by pointing codex at the
+copy: `thread/fork`/`thread/resume` with `path` refuse a paginated thread ("stale path", verified
+against 0.164). The copy, which ends before the refused turn so its message is not replayed twice, is
+written next to the original under a fresh UUIDv7 and resumed by that
+id, so the chat's conversation id changes (a `conversation` event says so). The original is never
+rewritten; codex itself appends the refused turn to it.
+
+**WP4 / §4.3 — the chain runs on any `invalid_encrypted_content`, not only after a switch.** The
+error can only come from replayed reasoning, so the adapter does not need to know a switch
+happened. Each step runs at most once per app-server process and continues the same journal turn
+(the failed attempt is not shown as a turn of its own). Verified against the real binary with a
+scripted model that binds its encrypted reasoning to an account; spike S2 stays waived, so real
+ChatGPT accounts were not tried.
+
+**WP4 / §3.2 — messages during a turn are steered, and "queued" until codex takes them up.** The
+host's semantics ("queued by the agent") map onto `turn/steer`: the message is `queued` when codex
+accepts it and `delivered` when its `userMessage` item (our id as `clientUserMessageId`) shows up,
+which 0.164 does at the next step, even cutting a streaming answer short. A turn that cannot be
+steered (compaction, review) holds messages and sends them when it ends, and so does a turn that
+ended without taking one up. A one-line message starting with `!` runs `thread/shellCommand`
+(REBUILD lists it as a command; this lets the composer need no special case).
+
+**WP4 / §3.2 — `thread/fork` is not wired; `/plan` is.** Nothing in the UI forks a chat yet. Plan
+mode (`collaborationMode: plan`) is a palette command because Codex's `request_user_input` only
+exists there.
+
+**WP4 / §5.3 — Codex's own questions are declined until WP6** (superseded by WP6: they become ask_user's questions). Approvals are accepted (always
+allow). `item/tool/requestUserInput` gets a JSON-RPC error and an MCP elicitation a `decline`, each
+with a notice, so no turn waits for ever; WP6 replaces them through `codex.HandleRequest` and adds
+`ask_user` through `codex.RegisterTool`.
+
+**WP4 / §2.2 — a rebuilt Codex history leaves out subagent threads.** The history comes back from
+`thread/turns/list` + `thread/items/list` (the WP5 integration replaced the adapter's own
+`thread.json` with the host's `conversation`, so a chat whose whole folder is gone is rebuilt too).
+
+**WP4 / HARNESS-POLICY — the app-server runs without `--strict-config` and with a per-process trust
+override.** `--strict-config` would refuse to start on a `config.toml` written by a newer or older
+codex, which for a chat is a host that never comes up; the two `-c` keys the adapter passes are
+covered by the real-binary tests. With `approvalPolicy: never` and `danger-full-access`,
+`thread/start` writes no trust entry into `config.toml` (verified, contrary to research/04 §1.4,
+which used other policies), so the working directory is trusted by the same inline-table `-c`
+override the TUI used.
+
+**WP4 — token usage counts cached input apart, and there is no cost.** Codex's `inputTokens`
+include the cached ones; the journal's `input` excludes them (`cache_read` has them), as Claude
+reports it. Codex reports no price, so `cost_usd` stays 0 (the cost ledger keeps reading rollouts).
+
+**WP4 — shared code.** `internal/agent/palette.go` holds `CommandInfo`, the palette entry; `main.go`
+imports the adapter so that both the server and its hosts register `codex`.
+
+**WP5 / §2.2 — queued messages wait in the OpenCode adapter, not in OpenCode.** A `prompt_async`
+sent during a turn is stored by OpenCode at once and taken into the running turn at its next step,
+and `abort` leaves such messages unanswered (verified against 1.19.4). The adapter therefore holds a
+message sent during a turn (`queued`) and posts it after `session.idle`, one turn per message. An
+interrupt ends the running turn; the queue then runs.
+
+**WP5 / §3.3 — the adapter chooses OpenCode's message ids.** Every prompt carries a `messageID` of
+OpenCode's own ascending form, which is how a journal message is matched to OpenCode's (revert and
+fork by journal id, and recognising a message a dead host had already handed over). The mapping is
+kept in `chats/<id>/agent/opencode.json`.
+
+**WP5 / §3.3 — diffs come from the edit tools.** `session.diff` was always empty in research/05,
+so a diff part is made per completed edit/apply_patch tool (its `metadata`), and for `write` only
+when it created the file (OpenCode keeps no diff for an overwrite).
+
+**WP5 / §3.3 — account switching is an adapter method.** `SwitchAccount(ctx, account, env)` does the
+park-and-resume of research/06 inside one host; the `switch_account` host op, the
+`account.switched` event and the UI are WP7's. Two API-key accounts (environment) and one
+OAuth-style account (its own `auth.json`) were tested on the fake; the real binary was tested with
+a real and a bogus OpenRouter key.
+
+**WP5 / integration — one rebuild, one palette.** WP3 (host-side `agent.Rebuilder` before boot),
+WP4 (Codex's own `thread.json`) and WP5 (`Start` with a flag) each wired the lost-journal rebuild;
+they are now one: host.json's `conversation` (the row's `cli_session_id`), resumed when the journal
+names none, with `StartSpec.Rebuild` when the journal has no message, and `Start` writes the
+history (OpenCode and Codex need their live CLI to read it, Claude reads its files) followed by
+`notice{rebuilt}` or `notice{history_unavailable}`. Likewise the palette: `agent.info`'s `commands`
+(`agent.AgentInfo`, `Projection.Palette()`) for every adapter, the fake included, replacing
+WP4's static `RegisterCommands` registry and WP5's `commands` event; Claude's `argument_hint` is
+now `args`. Adapters also get the data folder (`StartSpec.DataDir`). AGENT-HOST.md §2, §5, §6.
+
+**WP5 — `ask_user` is not wired yet** (superseded by WP6). The `MCPServers` and `QuestionHandler` hooks are in place;
+until WP6, OpenCode's own question tool stays denied and a question that still arrives is rejected
+with a notice, and `Answer` reports `ErrAskGone`.
+
+**WP6 / §5.3 — Codex threads run with a granular approval policy.** §3.2 says `approvalPolicy:
+never`. Verified against codex 0.164: under `never`, codex declines an MCP server's elicitation
+itself, so "elicitations are converted to the same payload" could never happen. Threads now start
+and resume with `{granular: {sandbox_approval: false, rules: false, skill_approval: false,
+request_permissions: false, mcp_elicitations: true}}`: every permission category is rejected, as
+under `never` (decision §1 holds: with `danger-full-access` nothing needs one), and only
+elicitations come through, to be asked like ask_user. The model's permission instructions change
+from "approval policy is never" to the list of rejected categories; the whole real-binary suite
+passes under it.
+
+**WP6 / §5.3 — the guidance is not everywhere a system prompt.** Claude gets it with
+`--append-system-prompt`. A codex thread has no system prompt of Socrates': the guidance begins the
+developer instructions of every thread the adapter starts (codex's equivalent), and the tool's
+description repeats the rules in short for threads started before. OpenCode gets it as the MCP
+server's `instructions`, which OpenCode 1.19.4 puts into the system prompt for a connected server;
+no instructions file is written.
+
+**WP6 / §2.1 — "idle excludes a pending ask_user" means a call that waits.** WP2 kept a host up
+while any ask was open, so an ask left by an interrupted turn (or a `via: "message"` one) kept its
+host alive for ever (the WP2 review). A call that waits on the person is always inside a running
+turn or a background task, which already keep the host; a local tool's call (`mcp-ask`) does not
+outlive its turn either, so its open connection does not keep the host, and the host refuses a
+local tool's question asked outside a turn (it comes from a call already withdrawn). An open ask
+outside them has no call to wait in, and its answer goes as a message through whichever host is
+up, so it no longer keeps the host. Interrupts and recovery do not close open asks: a question
+survives everything (§5.3), and the chat stays `waiting` until it is answered or the person moves
+on (next entry).
+
+**WP6 / §5.3–5.4 — a message from the person closes a question nobody waits on (`ask.closed`).**
+The plan has no way for a question to stop being open other than an answer. With asks surviving
+interrupts, "Stop, then write something else" left the chat `waiting` for ever, its badge and Home
+card on the obsolete question, while the agent worked on what was written (the WP6 review), and
+`Summary` ranked the old ask above the running turn. A user message now closes every open ask no
+call waits on any more (its turn has ended, or it was meant to be answered as the next message):
+the host journals `ask.closed` with the message. A message sent while the call still waits closes
+nothing. A closed ask is not open (not `waiting`, not on the badge or Home), and still takes an
+answer, which goes as a message: nothing typed is refused. `waiting` also now means an open ask of
+the running turn, or any open ask while no turn runs: an ask of an earlier turn no longer hides a
+running one. The chat card shows a closed ask as "Not answered" with "Answer anyway".
+
+**WP6 / §2.1 — host protocol 2: one op for a local tool.** OpenCode runs its MCP servers as its own
+children, so its `socrates mcp-ask` has to reach the host: the `ask` op journals an ask of the
+running turn and answers it on the same connection (`answer` frame). It needs protocol 2; the
+server's own ops did not change, and the server still accepts hosts of protocol 1. An answer goes
+to the tool only while its connection is open and the ask's turn runs (an interrupt withdraws the
+call before the tool lets go of its connection); otherwise it goes as a message. An `ask` while no
+turn runs is refused. A tool's connection (`since` = `NoEvents`) gets no live deltas.
+
+**WP6 / §5.1 and §5.2 — the shapes, made exact.** A call is checked and normalised before anyone
+sees it (`askuser.Parse`): defaults applied, ids filled in, a header longer than 24 characters
+clipped rather than refused, the kind inferred from the options (and the names models give kinds
+mapped), option lists of plain labels taken, a `default` that fits nothing dropped; a call that
+cannot be asked goes back to the model with every problem listed. §5.2 has no place for a number or
+a yes/no: a confirm answer is `selected: ["yes"|"no"]` with `value: true|false`, a number answer
+carries `value`, and `min`/`max` bound a number question's value too. The payload carries `part_id`
+(the tool part of the call) and `source` (when the questions came from the agent's own
+mechanism); an MCP elicitation's questions offer no "You decide", and a form without fields is one
+yes-or-no question (accept or decline). The limits of §5.1 (20 questions, 12 options) bind the
+model's calls only: a converted payload keeps every field and choice, because one cut off could not
+be answered the way its mechanism requires. A question left without an id is `q<n>` by place, never
+an id the model gave another one. An elicitation form has no place for a note, a general note or a
+question back: when the answer has one, the form gets its values and the whole answer also goes to
+the agent as a message (`ErrAskDeferred`), so the model reads what the person wrote.
+
+**WP5 / §3.3 — `@opencode-ai/plugin` is not pre-installed.** The plan asks for the shared config
+folder's `node_modules/@opencode-ai/plugin` to exist before the first serve, because a stop that
+caught OpenCode's own first-start install hung (research/06 §3.5). OpenCode 1.19.4 installs it with
+its embedded npm, in the background, on the first start in a fresh data folder; doing that ahead
+would mean driving that installer from the install step, with network, for a package Socrates never
+uses (it loads no plugin). The hang is bounded instead: every stop is SIGTERM, then SIGKILL after
+5 s (`TestStopKillsAServerThatIgnoresTerm`), and a start after a cut-off install installs again.
+Offline, the install fails and the server works on.
+
+**WP5 / §3.3 — the tools an OpenCode chat runs see the layout's XDG folders.** OpenCode's shell and
+bash tool inherit the server's environment, so `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_STATE_HOME`
+and `XDG_CACHE_HOME` point into `<data>/agents/opencode` for them too. Caches kept there (Go's
+build cache, pip's, uv's) land in the shared `cache/`, which the backup leaves out
+(`paths.NotBackedUp`); npm keeps its cache in `~/.npm`, not under XDG. What tools keep in the
+account's data and state homes (uv's Pythons and tools, pipx's environments) is left out too: of
+`accounts/<acct>/` the backup takes only `opencode/` and `state/opencode/`, where OpenCode keeps
+the account's own (`paths.BackedUpOnly`). A tool that finds its configuration only through
+`XDG_CONFIG_HOME` (gh's login, git's `~/.config/git/config`) does not see the user's in an OpenCode
+chat; the variables a tool has for that (`GH_CONFIG_DIR`, `GIT_CONFIG_GLOBAL`) pass through, so
+WP7, which builds the chat's environment, can set them. Giving tools the user's XDG values back
+would take a plugin on OpenCode's `shell.env` hook, which was not tried.
+
+**WP5 / §4.3 — an OpenCode gap is left to the package that needs it.** After a `limited` turn
+the adapter runs its queue as after any other, so queued messages go into the account at its
+limit; holding them until a switch or a "continue" belongs with the limit card and the
+auto-switch (WP7). AGENT-HOST.md §10 and HANDOFF.md §4 name it. (The catch-up's `GET /question`,
+the other gap the WP5 fixes found, came with WP6.)
+
+**WP1 / REBUILD.md §6.2 — chunks are named by an HMAC of their content, not by its SHA-256.**
+§6.2 says `chunks/<sha256>`. The name is HMAC-SHA256 under a key derived from the passphrase
+(as the work package's brief asked), so equal content is still stored once, but the bucket's
+owner cannot tell which well-known file a chunk is by hashing it. A restore checks every chunk
+against its name on top of the GCM tag.
+
+**WP1 / REBUILD.md §6.2 and §10 — no multipart upload.** §6.2 and the WP1 row ask for one. No
+object is larger than a chunk (8 MiB and its envelope), so a put is one request and multipart
+would be code nothing calls. What was needed is streamed downloads (`s3.Client.GetStream`),
+which a restore uses; the 256 MiB cap stays on responses read into memory only.
+
+**WP1 / REBUILD.md §10 — migration step 1 (§8) is not in WP1.** The WP1 row names it; the
+brief for WP1 defers moving `~/.claude`, `~/.codex` and the OpenCode folders into the new
+layout to the packages that start using it. WP1 defines the layout (`internal/paths`) and
+backs up whatever is in the data directory; `profiles/` and `sessions/` stay where they are.
+
+**WP1 / REBUILD.md §6.1 — `backup.json` holds the interval too, and `SOCRATES_S3_*` is read
+once.** The interval is a field of `backup.json` rather than of the settings document, so the
+Backup card is one form with one save. The `SOCRATES_S3_*` environment no longer configures
+anything at runtime: it, or `s3.json` when `SOCRATES_S3_BUCKET` is unset (the mirror's own
+precedence), is carried over into `backup.json` once (the bucket and the passphrase, under the
+prefix `backup/v1/` inside the old one) and the card owns it from then on. "Once" is the marker
+`backup.migrated`, written at the first start on a data directory that holds an installation
+whatever the carry-over found, so a backup turned off stays off; a new machine that is not set
+up or restored yet carries nothing over. `s3.json` is left in place for a build that is rolled
+back.
+
+**WP1 — the snapshot list reads every manifest once.** A listing of the bucket gives a
+snapshot's host and time; its size and number of files are in its sealed manifest. Manifests
+never change, so each is downloaded once (four at a time) and kept under
+`cache/backup/manifests`, which garbage collection also reads. A new machine about to be
+restored reads them all on its first listing.
+
+**WP1 — what else the backup leaves out.** Besides §6.1's `run/`, `cache/` and `backup.json`:
+today's top-level `bin/`, `tmux.sock`, `tmux.conf`, `hook.sock`, `update-state/`,
+`updates.json`, `updates.log`, the schema migration copies `socrates.db.pre-*.bak`, `s3.json`,
+the terminal byte journals `sessions/*/journal.raw*`, code-server's `logs` and caches under
+`vscode/*/`, sockets of any name, `backup.migrated`, the working directories inside the data
+directory (the workspace root, the preset directories, the default `workspaces/` that keeps a
+moved root's older dynamic directories, and every session's and chat's own directory, but never
+one of Socrates' own parts, `paths.Own`), and SQLite's `-wal`, `-shm` and `-journal` beside a
+database (which is copied consistently instead). The list is `paths.NotBackedUp` and
+`server.BackupExclusions`.
+
+**WP1 — a notice on the session page.** The brief removes the storage banner and asks for the
+24-hour warning in `/api/state` and on the Backup card; §6.2 also calls for "a notice". The
+banner's slot under the top bar now shows that one warning (`js/backup.js`), with a link to the
+card, and nothing else.
+
+**WP1 — a lock on the data directory.** `socrates` and `socrates restore` take
+`run/socrates.lock` (flock), so a restore cannot write under a running server and two servers
+cannot share one data directory. `reexec_windows.go` went with connect mode: the tree did not
+build for Windows before this change either (`internal/proc`, `internal/termux`).
+
+**WP1 — `SOCRATES_BACKUP_WARN_AFTER`.** A Go duration that shortens the 24 hours before the
+warning, for the browser suite's `backup` scenario; unset in production.
+
+**WP1 — schema 11, not 10.** WP2 took version 10 (sessions.kind, chat_outbox) first; the
+migration that drops `mirror_pending` and the `mirror.*` rows is version 11.
+
+**WP1 — a chat's launch spec is backed up without its environment.** `chats/<id>/host.json`
+will carry the environment built from the chat's account (WP7), which can hold an API key. The
+backup leaves its `env` field out (`paths.Redacted`), and the host's `host.lock`, `host.log`
+and socket (`run/chats/`) entirely; the journal and the adapter's `agent/` state go in whole.
+The server writes the spec again before every launch, so a restored chat loses nothing. WP7:
+credentials should still live in the account folders or the store, not only in the spec.
+
+**WP8 / §7 and §9 — the browser suite keeps the agent terminals (`SOCRATES_AGENT_TERMINALS`)** (superseded by WP10: the agent terminals and the variable are gone).
+Every agent with an adapter is a chat when a session is made from the sheet or prepared, so a
+prepared Claude Code session in the suite became a chat run by the faketui stand-in, which speaks
+no protocol (the `prestart` scenario failed on the branch before this package). The server keeps
+Claude Code, Codex and OpenCode terminals for the sheet and PreStart while
+`SOCRATES_AGENT_TERMINALS=1` is set, and the e2e harness sets it for every server, so the
+scenarios written for agent terminals keep testing them until WP11 moves the suite to the protocol
+fakes; WP10 removes the switch with the agent terminals. The scripted agent is a chat either way,
+and `POST /api/chats` makes a chat of any agent with an adapter. The `design` scenario runs with
+the scripted agent on, so its sheet names one program more.
+
+**WP8 / §7.1 — the chat's controls are in its composer, not in a header of its own.** The page's
+top bar already carries the session's title, the microphone and ⋮ (rename, file, Compact the
+conversation, Download the conversation, delete), so a chat gets no second header: the model and
+effort picker, the account slot (WP7, `useAccountPicker` in `composer.js`) and the usage "i" sit in
+the composer's bar, beside what they change. Status (spoken) is hidden for a chat until it reads
+the journal (WP9); it read a terminal's screen. "Export transcript" downloads the projection as
+JSON (`GET /api/chats/{id}?history=1`).
+
+**WP8 / §5.4 — the question dialog answers at a desk too.** The card in the chat shows the title,
+"n of m answered" and the first open question, and its Answer opens the dialog: centred at a desk,
+the whole screen on a phone and in touch mode. One place answers every kind with its details,
+context, notes and counter-question; twenty questions answered inside a card would be a second
+dialog. A plan's card answers the plan (Approve, Keep planning with a note) and the dialog leaves
+plans out.
+
+**WP8 / §5.2 — how kinds without options answer.** §5.2 gives `selected` and `other`; the view
+puts a text question's answer and a number question's number (as typed, checked against
+`min`/`max`) in `other`, a confirm question's in `selected` (`"yes"`/`"no"`), and sends every
+question of the call, `skipped` when it was neither answered nor delegated. "n of m answered"
+counts the questions the person had in hand (changed, or moved past); a preselected default
+nobody looked at is not counted.
+
+**WP8 / §2.3 — Stop is a request, not an outbox item.** A message or an answer written offline is
+still wanted when the connection is back; a Stop is not (it would interrupt whatever turn runs
+then), so Stop calls `POST /api/chats/{id}/interrupt` when it is pressed, says when that failed,
+and is not kept for later.
+
+**WP8 — an image a tool made is a file chip.** Nothing serves a chat's files to the browser yet, so
+an `image` part shows its name, with the path behind the "i", rather than the picture.
+
+**WP8 / §7.1 — the composer's draft over an empty one is not a conflict.** The composer keeps
+PreStart's revision rule, with one difference: a text this browser wrote on an older revision is
+saved over the server's when the server's draft is empty, rather than asking which to keep. The
+composer's draft is emptied by every message sent, so "changed on another device" against an
+empty text would be asked after most sends from another device, and there is nothing in it to
+lose. A text typed before the saved draft has loaded is this browser's own text, by the same rule.
+
+**WP8 / §7.1 — Home's Questions card walks one kind of question at a time.** A walk that starts at
+a chat's question goes through the chats' questions in their dialog (`askdialog.js`); one that
+starts at a terminal's goes through the terminals' in theirs (`question.js`). Joining the two
+walks would be work for a dialog WP10 removes with the agent terminals; until then the other
+kind's questions are reached from their sessions, or from the card once the oldest kind's are
+answered.
+
+**WP1 / REBUILD.md §6.2 — "point to folder" is on the session's menu, not on the restore page.**
+§6.2 lists the missing working directories per chat after a restore. The restore page ends in a
+restart and the sign-in, so the list is where the sessions are: `GET /api/sessions` marks a row
+whose folder is not on the machine (`workdir_missing`; not a prepared session's typed-in folder,
+which is made when it starts), its ⋮ menu offers **Point to folder**, and
+`PUT /api/sessions/{id}/workdir` takes a folder that exists (a preset, or a typed-in one under the
+new-session rules) and parks a chat's host so its next message starts there. The chat view's
+dock says the same with the same action; it shows once WP8 mounts the view.
+
+**WP1 — a backup waits for an installation, and needs the database.** Not in §6.2: a data
+directory that holds no installation (no password, no sessions, nothing in its folders) or whose
+restore is staged is not backed up, and a `backup.json` found on one gets a host id of its own; a
+snapshot without `socrates.db` is not written, "latest" is the newest snapshot that holds it, and
+one without it cannot be restored. Otherwise a new machine, started before its restore, wrote an
+empty snapshot that "latest" restored and that retention counted as the old machine's newest.
+
+**WP1 / REBUILD.md §6.2 — the warning is about more than a day without a snapshot.** §6.2 warns
+after 24 h without a successful snapshot, "nothing else". A run can succeed while what it took,
+or the bucket, is not well, so the same warning, after the same time, also names a database
+whose earlier copy has stood in for it, and a garbage collection that has kept failing: an
+object under `snapshots/` that is not named like a snapshot stops it before a chunk is deleted,
+and the bucket then grows without limit while every run says "Backed up". The Backup card shows
+a collection that failed at once (`gc_error`), and `warning_about` says which warning it is.
+
+**WP9 / §7 — a chat's line on Home is its journal's words, not a model's summary.** "Read the
+journal instead of the screen" could mean handing the journal to the home model. It does not: the
+line is what the journal already says (`chatLine`, AGENT-HOST.md §3): the question while the chat
+waits, the call that runs or the text being written while a turn runs, the first line of the last
+answer between turns. It costs nothing, is current with the event that changed it, and needs no
+key. The model is still asked where a judgement is wanted: the title, the spoken Status and the
+outcome.
+
+**WP9 / §7 — a chat is a digest on the event stream, with `source: "ask"` and a `news` field.**
+Home, the sidebar, the page's notifier and the badge already read digests, so a chat's reading is
+one (`phase: ready`, its line as `summary`, its open ask as `question`) rather than a frame of its
+own: the browser contract is unchanged. Its question's `source` is `ask`, which no terminal path
+reads as a prompt or as a question in prose. The optional `news` (what a notification about the
+chat says now) is new; a terminal's digest has none.
+
+**WP9 / §5.4 — a turn the person stopped is not pushed.** A terminal's turn that ends after Esc is
+"Finished" like any other. A chat knows that somebody pressed Stop (an interrupt or stop command
+journaled during the turn, `Turn.Stopped`), and that person has seen it end; neither the push nor
+the page's own notification says so, and with outcomes on it is not judged (a verdict would be a
+model call for a notification nobody sends). A turn interrupted by anything else (a host that died)
+is pushed as "Stopped · …".
+
+**WP9 — answering a chat's question and Stop mark it read.** Typing an answer into a terminal
+cleared its unread mark; a chat's answer went through a route that did not, so the mark set when
+the question was asked stayed, and the turn the answer let go on was never news (no chime, no
+notification, no push). Both routes now mark the chat read, as sending a message does.
+
+**WP9 / §7 — a chat's verdict is a call of its own.** A terminal's outcome is asked in the same
+read as its digest; a chat has no digest read. Its turn end puts the same outcome on pending and
+`judgeChat` asks the home model alone, with the outcome rules the terminal's read uses
+(`outcomeRules`, factored out of `outcomeSystemPrompt` without changing that text) and a system
+prompt of its own that opens with `You judge the turn a coding agent has just ended`, so a stand-in
+gateway can tell it apart.
+
+**WP9 / §4.4 — one source per chat for its cost: the journal.** REBUILD.md §4.4 says the ledger
+keeps scanning the shared transcript folders and the journal's account makes the split. A shared
+`projects/` folder cannot say which account wrote a request, and counting a chat from both would
+count it twice, so a chat is counted from its journal alone, in a ledger named by the chat and one
+per account; the conversations its journal names are the chat's for good (the scanner skips them,
+and a ledger it made of one before is removed), and everything else in the shared folders - which
+are now scanned as a root - is counted from its transcript as before. Codex's journal has tokens
+and no price, so its tokens are priced with the ledger's Codex rates; a Claude chat's cost is the
+CLI's own `cost_usd`, per turn rather than per request.
+
+**WP9 / AGENT-HOST.md §10 — a brief per chat, and its history only while it is used.** The server
+no longer keeps every journal in memory: `chats/<id>/summary.json` (written by the server, left
+out of the backup) holds what Home, the badge, the push and the pump need, and is believed only
+while the journal still ends at its seq; the history is read on demand and let go after ten minutes
+unused. A chat's brief is part of its folder, which the host otherwise owns: it is the one file
+there the server writes besides `host.json`.
+
+**WP9 / §2.2 — a lost chat folder is rebuilt when the chat is opened.** The rebuild path was in
+place (the row's conversation in `host.json`); what was missing was a host. One is started when
+the chat's stream is opened and its journal is empty while its row knows a conversation, rather
+than for every such chat at start, which after a restore could be hundreds of agents at once.
+
+**WP9 / §3.1 — Ultracode is a field of `host.json`, and changing it parks the agent.** The server
+does not build a chat's environment (WP7 does), so it does not put `SOCRATES_CLAUDE_ULTRACODE` into
+`env`: `host.json` says `ultracode`, and the host adds the variable to whatever environment the CLI
+gets - the account's, at the start and with every `switch_account` - and takes away one the
+environment brought, so an ambient value never decides. The option
+is a launch setting of the CLI; switching it in a running Claude chat's ⋮ saves it and parks the
+agent as soon as it is idle, so the next message resumes the conversation with it.
+
+**WP9 / §7 — a chat is named at its first turn, from its first message.** The terminal rule (name
+at the first turn somebody asked for) holds for a chat: the namer is given the first message and
+whatever the first answer has said by then, which is usually nothing. Waiting for the first answer
+would leave a long first turn under its placeholder name for its whole length.
+
+**WP9 / §7 — Status for a chat has two phases on screen.** A terminal's Status reports its phases
+on the terminal socket, which a chat does not have; the chat's dock shows the page's own first
+phase ("Reading the chat") and then the answer, which is read out as before. The notice with the
+whole answer and its details (state, model, language) is in the dock too, above the ticker: a
+terminal has both over its pane, which a chat hides.
+
+**WP9 — the server's test binary registers the three agents' adapters.** To test Ultracode, the
+prepared chat's start and the lost-folder rebuild through real hosts for Claude, Codex and
+OpenCode, `internal/server`'s test binary imports their adapters (with fakeclaude, fakecodex and
+fakeopencode on the PATH) and, like the browser suite, sets `SOCRATES_AGENT_TERMINALS=1`, so that
+its many tests of agent terminals still make terminals; a test that wants a prepared Claude chat
+unsets it for itself.
+
+**WP7 / §4.3 — the server decides an automatic switch; the host only carries it out.** §4.3 has
+"the host switches to the recommended account". The host knows neither the other accounts, nor
+their limits, nor their keys; the server has all three. So at a `limited` turn's end the server
+picks the account (the recommender of the Accounts card) and sends the same `switch_account` a
+person's "Continue with" sends, with `continue`; the mechanics (interrupt, park and relaunch, or
+OpenCode's `SwitchAccount`, the divider with its reason) are the host's, as planned.
+
+**WP7 / §4.3 — "re-send the interrupted turn" is a message that says to go on.** After the switch
+the new account is sent "Continue where you left off." (`agenthost.ContinueText`), a user message
+with its own `client_id`. The conversation is resumed with the stopped turn in it, so the agent has
+what it was doing; sending the person's message again would put it in the conversation, the
+journal and the chat twice, and would repeat whatever the turn had already done.
+
+**WP7 / §4.3 — the account sits in the composer's bar, not in a chat header.** "The chat header
+shows the account next to the model": in the chat view (WP8) the model is in the composer's bar,
+so the account is beside it there, through `useAccountPicker`. It shows for an agent with two
+accounts or more; with one there is nothing to pick. "Switch now" during a turn interrupts and has
+the new account carry the turn on (`continue`); "After this turn" waits for it.
+
+**WP7 / §4.1 — more fields than the list.** The accounts table also keeps `state` (signed in, needs
+sign-in, failed) with why, the OpenCode provider of a key, `origin` (the folder the migration moved
+the login out of; what makes the migration idempotent and what keeps such an account from being
+deleted while HOME links to it) and `limited_until` (when a limit it ran into renews, so the
+recommendation passes over it). A limit that does not say when it renews is held for an hour.
+
+**WP7 / §4.2 — Claude Code signs in with `claude auth login --claudeai`, in a Shell that stays.**
+The flag is the subscription sign-in, which is what an account of that kind is; without it Claude
+Code first asks which kind. The Shell runs in a fresh directory (Dynamic) and stays a shell when
+the sign-in ends, so its outcome can be read there; the account's state follows its folder.
+
+**WP7 / §4.2 — OpenCode's sign-in offers the providers' OAuth methods only.** `GET /provider/auth`
+also lists API-key methods; a key is an account of its own kind, passed per process as
+`OPENCODE_AUTH_CONTENT` (§4.1), never written with `PUT /auth`, so the sign-in leaves it out.
+
+**WP7 / §4.1 — a Codex key is kept sealed as well.** Codex logs a key in itself (`account/login/
+start {type: apiKey}` into the account's `CODEX_HOME`), and that file is what codex reads. The key
+is kept sealed in the store too, like every key, so that "Replace the key" and a restore have it.
+
+**WP7 / §6.1 — an OpenCode account's folder is `agents/opencode/accounts/<id>/`.** WP5's layout
+keeps every OpenCode account's data home under OpenCode's own folder (one shared database, each
+account its own `auth.json`); Claude Code's and Codex's are `accounts/<id>/` as planned.
+
+**WP7 / §4.2 — the keys are sealed with a key file in the data folder.** "The existing vault": the
+vault's AES-GCM, with a new key, `<data>/secrets.key` (0600, made once), since the vault's only key
+so far was the backup's passphrase, which the server does not hold. The file is backed up with the
+store (a restore needs both); `host.json`'s `env` and `secret_env` are not. A chat's key variables
+are sealed again for that chat, so `host.json` and the outbox hold only ciphertext.
+
+**WP7 / §8 step 1 — the folders are renamed and the old paths become links.** "Move" is a rename
+(the same inodes, never a copy: two copies of an OAuth login rotate each other out, which is what
+logged the person out every few minutes), and `~/.claude`, `~/.claude.json`, `~/.codex`,
+`~/.local/share/opencode`, `~/.config/opencode` and every profile's folders become links to where
+they went, so a terminal or a CLI started by hand uses the same files. Claude Code writes
+`.claude.json` through the link (checked against 2.1.309). A folder on another file system is not
+moved (a rename there is a copy): that account says "sign in here". The Default OpenCode account's
+database becomes the shared one; a profile's own, when there is one, stays in its folder unread.
+What would collide in a shared folder is kept beside it as `<name>.pre-rebuild`. Steps 3 and 4
+(the agent sessions' clean cut, the old S3 objects) are WP10's.
+
+**WP7 / §8 step 2 — a lost profile becomes an account for each agent its sessions ran.** A profile
+held all three agents, an account is one; a profile whose folders are gone becomes a "Sign in
+again" account for each agent its sessions used, and a Claude Code one when it has none.
+
+**WP7 — deleting an account removes its folder.** Socrates never writes, refreshes or deletes a
+login, except here: an account is its folder, and the person asked for it to go. The server
+refuses while a chat runs on it, and for an account the migration moved in from HOME, which HOME's
+links point at (one made of a profile goes, with the link left in the profile's place).
+
+**WP7 — a chat that names no account gets one at launch.** A chat made by a client that does not
+send `account` (the API, PreStart's "Automatic", a chat from before WP7) runs on its agent's
+recommended account, else its first, else a new "Default" subscription that has to be signed in;
+the choice is written to the row. A fresh install has no account until then.
+
+**WP7 — the server's tests keep the agent terminals.** `internal/server` now registers the Claude
+Code, Codex and OpenCode adapters (through `internal/accounts`), which makes those three chats in
+its tests; the tests written for their terminals set `SOCRATES_AGENT_TERMINALS=1` in `TestMain`,
+as the browser suite does.
+
+**WP7 — the dashboard's Profiles card is gone; the profiles stay for terminals.** Accounts replace
+profiles for chats (§4.1). The terminal-only plumbing (`/api/profiles`, the sheet's profile field
+for an agent terminal, `harnesses/profiles.go`) stays until WP10 removes the agent terminals;
+taking it out now would widen this package into theirs.
+
+**WP7 review / §8 — the migration runs only on a data folder of the build before.** "On the first
+start of the new version" read as "on every data folder without a marker", so a new one (a trial
+`-data /tmp/x`, an e2e run in live mode, `node e2e/shots.mjs`) took the machine's real logins into a
+folder that was deleted afterwards. The store now marks a database it brings up to schema 12 from an
+older one (`kv accounts.migration`, written before the new version, so no crash leaves an old
+database upgraded without it); only a marked data folder migrates, and finishing clears the mark,
+which replaces the `accounts.migrated` file. A data folder in the temporary directory never takes a
+folder from outside it, so a rehearsal on a copy of `/var/lib/socrates` there leaves HOME alone.
+
+**WP7 review / §8 step 1 before step 3 — the moves are atomic instead of waiting for the clean
+cut.** §8 lists stopping the old agent terminals (step 3, WP10) after the moves, and the tmux scope
+survives a restart, so the moves run under live agents. Each move is now one step on Linux
+(`renameat2(RENAME_EXCHANGE)` of the folder with a link made at its new place), so an agent writing
+by path never finds the old path missing or makes a second folder - and a second login - there; the
+shared folders are swapped for their links before they are merged, so a recreated `projects/` can no
+longer block the account for good. WP10 should still run the clean cut before `accounts.Migrate`.
+This uses `golang.org/x/sys/unix`, already in the module graph (modernc.org/sqlite needs it); go.mod
+lists it as a direct requirement now.
+
+**WP7 review / §8 — one folder that cannot move holds up nothing else.** A failing source is logged
+and tried again at the next start (the mark stays) while the others move. A link of the person's own
+to somewhere else (dotfiles) is left like a folder on another file system: its account is made and
+says why, and `~/.claude.json` stays beside it. A lost profile's account has the origin
+`lost:<profile>:<agent>` (it moved nothing in), and can be deleted.
+
+**WP7 review / AGENT-HOST §4.3 — a switch after the turn is acknowledged twice.** It lived only in
+the host and was acknowledged at once, which emptied the outbox: a host that died before the turn
+ended lost it while the composer kept announcing it. The ack now says `pending`, the server keeps the
+command until the host's second, final ack (made, or replaced by a newer switch), and a host launched
+meanwhile starts on its account. The field is additive; the protocol version stays 2. A switch
+without `env` is refused rather than run on the environment of the account the chat is on.
+
+**WP7 review / AGENT-HOST §10 — Codex holds its queue after a limit too.** §10 named OpenCode; Codex
+had the same cause (the messages it never took up were started at once, each into the account at its
+limit). Held messages no longer count as a turn an "after this turn" switch waits for.
+
+**WP7 review / research 08 §3 and 06 — the divider's "i" and a refused sign-in.** The divider says
+who the new account is, that the next reply may be slower, and Claude's "can't use thinking from
+another organization" as a hint (`notice{foreign_thinking}`, folded into the divider by the chat)
+instead of a warning line. An `error{auth}` (OpenCode's ProviderAuthError or a 401, among them a
+refresh token two chats renewed at once) marks the account "Sign in again" although its `auth.json`
+is still there, until a sign-in, a new key or a completed turn on it.
+
+**WP7 review — the e-mail stays behind the "i".** The quiet line beside an account's name in the
+sheet, the picker and the Admin list said the e-mail; it says the kind now, and the e-mail and the
+plan are in the account's "i" and the divider's.
+
+**WP7 + WP9 / §4.3 — a chat's limit is one notification, the accounts'.** WP9 pushes every chat
+turn's end in its journal's words, a limited one as "Limit reached · <why>"; WP7 pushes a limit
+itself, with when it renews and on which account, once per account it is stopped on, and not at all
+when the chat's automatic switch moved it on. Together a limit was pushed twice, and once more as
+news after the automatic switch had already dealt with it. A limited turn of a chat whose journal
+names its account is now no news of the turn's end (the brief's `news` is empty, `newsOf`), so
+neither the turn-end push nor the page says it; the accounts push it, skipping a chat filed
+Background as every turn's end does, and tell the pages in the same words by a `news` frame on the
+event stream (HOME.md §1.2), which the page's own notification and chime say on a device without
+Web Push. It is still judged with outcomes on (`chatHub.judgeable`): how far the turn got is worth
+knowing, and the verdict pushes nothing more. A chat's turn end whose `news` is empty - a turn the
+person stopped, too - is not heard on the page either: the chime and the notification are one piece
+of news.
+
+**WP7 + WP9 / §4.4 — a chat's turns are on the account they ran on from the first turn.** WP9's
+ledger learnt a chat's first account from its first switch's `from`, so a chat that never switched
+had its cost on a ledger with no account. Every `turn.started` names its account now (WP7), and the
+ledger puts each turn there (`chat-<id>@<account>`); the costs page names the accounts. Only a
+journal from before accounts still has turns with none.
+
+**WP7 + WP9 / §5.4 — a switch made now stops the turn as a Stop does.** WP9 pushes and judges an
+interrupted turn unless somebody asked it to stop (an `interrupt` or `stop` command journaled while
+it ran); WP7's "Switch now" interrupts the running turn too, at the person's word, and the new
+account carries it on. Such a turn was pushed as "Stopped · …" and judged, a moment before the
+turn that carries it on. A `switch_account` journaled while a turn runs now marks it stopped, unless
+it waits for the turn - the journaled command says its `when` in `args` (`after_turn`), an additive
+field of the command event - or goes to the account the turn already runs on: the host is there and
+interrupts nothing (a host launched on the account of a switch still in the outbox, which reaches it
+while the first turn runs).
+
+**WP10 / §8.3 — the lost profiles' accounts are made before the clean cut, and the cut before
+the moves.** The brief puts the clean cut first; the lost profiles' accounts (a database write,
+nothing moves) come before it, because which agents a lost profile ran is read off its sessions -
+the very rows the cut removes - and a start killed after the cut would otherwise make every lost
+profile a Claude Code account. A rerun also keeps the agents an earlier run made a lost profile's
+accounts for. The backup tar is written when there is anything to cut, as it is when there is
+anything to move.
+
+**WP10 / §8.3 — "simple and lossless", spelled out.** A prepared agent terminal becomes a prepared
+chat in place (`Store.MakePreparedChat`): its agent, folder, model, effort, schedule, Ultracode and
+draft stay. Its profile becomes its account once the moves have made the accounts: the default
+profile the agent's Default account (none: the chat makes one when it starts, as any chat does), a
+named profile its `profile:` or `lost:` account, one that left the profile to its start an account
+left to its start. Only a named profile with no account of that agent loses something - the
+sign-in it was prepared for - and that prepared session is removed and logged.
+
+**WP10 / §F.7 — the agents' state rows left the diagnostics.** "Claude Code state", "Codex state",
+"OpenCode state" and "Claude Code sign-in" checked the folders an agent's terminal needed (a
+writable `CLAUDE_CONFIG_DIR` for the theme pin, the Codex and OpenCode databases for discovery,
+Claude Code's first run). A chat runs on an account's folder, and the Accounts card says each
+account's state, so the rows went with the terminals; the program rows stay.
+
+**WP10 / DESIGN rev 11 — the usage strip is gone.** Its limits were a sign-in profile's, read for
+the session on screen; a Shell has no limits of its own, and a chat says its usage under its "i"
+and in its account picker. The strip, its dialog and `GET /api/sessions/{id}/usage` went with the
+profiles.
+
+**WP10 / brief — the Shell's process tree is its busy, not "tasks".** The brief keeps "busy/idle
+of a shell, its process tree for 'tasks', exit status". The Shell's layer reads its foreground
+command and whether the shell has a child, which is busy - a script run by `bash` - as it always
+was; no Shell ever reported `tasks`, which only an agent's turn has. VS Code keeps quiescence, a
+dead pane is unknown with its exit status, and a terminal's resume note is never "fresh": it has
+no conversation to lose.
+
+**WP10 / e2e — three Shell scenarios no longer start an agent.** `exitoverlay` ends a Shell with
+`exit 7`, `backpressure` prints its two hundred lines from a shell loop, and `lighttheme` keeps the
+palette part only (the white pane and the sixteen colours drawn at 4.5:1): the Codex theme flag it
+also checked is gone with the agents' terminals, and the white answer to a program's colour query
+is termux's `TestOSCRespondsWhite`.
+
+**WP10 / §8.4 — "once the first snapshot exists" is this machine's snapshot.** The Backup card
+offers the mirror's objects for deletion once the backup holds a snapshot whose host is this
+machine's (read off the snapshot listing, which opens and starts nothing), and only for a backup
+whose prefix ends in `backup/v1/` - the one a mirror's configuration was carried over into; a
+prefix of the person's own has no known mirror beside it.
+
+**WP10 — a draft saved during a prepared chat's start is a conflict.** The test of a save racing
+a start expected "started"; a prepared session is a chat now, whose draft is its composer once it
+runs, and its start takes the first message out of it, so the late save is answered as the
+conflict it is with what the composer now holds.
+
+**WP11 / §9 — three scenarios did not come over to the chats.** "Port every ADAPT scenario" with
+the same intent; three have none left. `tasks-opencode`: OpenCode's subagents run inside the turn
+that started them, so an OpenCode turn never ends with work still running and its adapter reports
+no background tasks (`tasks-claude` and `tasks-codex` cover the hourglass). `home-unread` and
+`home-language`: both were about a question read off an agent's screen in prose, by the model, in
+the person's language; a chat's question is its agent's own ask_user call, in the agent's words,
+and nothing reads a screen. Inside ported scenarios the same reason took OpenCode's permission card
+(a chat allows every permission and says so in a notice, which `home-opencode` asserts instead),
+the old dialog's "Another device is answering" step (a chat's answer is taken by the server at
+once, so the second device goes straight to "Answered on another device"), and the questions asked
+in prose in `home-quiet`, `home-kinds` and `home-restart` (replaced there by a second chat's
+ask_user question, the plan's card, and a third question).
+
+**WP11 / §9 — `livesession` types nothing.** The terminal version typed `/status`, which cost
+nothing in the TUI; in `claude -p` a slash command is a message, and whether it reaches the model
+is the CLI's to decide. The chat version asserts what the CLI says without a turn - its answer to
+initialize, with its version and its commands - and that no turn ran.
+
+**WP11 / brief — the README pictures are five, and the fakes take them.** `shots.mjs` used the
+real CLIs whenever all three were installed; it now uses the protocol fakes, and takes the Admin
+pictures against the real CLIs only with `SOCRATES_LIVE_AGENTS=1` (it starts no chat with them).
+The pictures are a chat at a desk, Home, a question on a phone, Admin's accounts and Admin's
+backup (`screenshot-home.png` and `screenshot-backup.png` are new). The people in them write in
+words: `fakeclaude` runs a script for a message the `claude.scripts.json` beside it names (a file,
+because a chat's CLI gets no variable of the suite's), and its `/readme` script is the turn the
+desk picture shows.
+
+**WP11 — what the ported scenarios found, fixed in the product.** Each was a scenario that failed
+for a reason in the code, not in the test:
+- A chat started without a model ran on the CLI's own default, not Admin's default model and
+  effort (DECISIONS "Admin (the basics only)"): `POST /api/chats` and a prepared chat's start fill
+  them in, and the catalogue hands them to the sheet.
+- Codex's background terminals were not reported, so a turn that left one running was "finished":
+  the adapter polls `thread/backgroundTerminals/list` every 2 s after a turn and reports the count
+  as tasks.
+- Status's phases reached only a terminal's viewers; a chat's page has no terminal socket, so its
+  ticker heard nothing. They go on the event stream too.
+- A chat filed Done that was sent a message stayed done, and the sweep would have put its agent to
+  rest mid-turn; a message picks it up again, as "Pick it up again" does a terminal.
+- A chat's unread mark was lost across a server restart: its host reported before the detector had
+  read the marks back. `ReportActivity` reads them first.
+- A Shell's pane that tmux listed as dead before it had the exit status was marked "Exit status
+  -1" by the poll on a busy machine. The cause is tmux up to 3.5 built with libutempter, which can
+  lose the program's SIGCHLD; origin/rebuild's fix is cherry-picked (the review pass below): the
+  poll leaves such a pane to the pane-died hook and sends the server the SIGCHLD that makes it
+  collect the status.
+- The account picker's renewal time was drawn once; it follows the clock (every 15 s), and a
+  window whose reset has passed counts as empty.
+- The question dialog: a question asked for (a tapped notification, `#q=`) while the page could
+  not read it opened another chat's question or said there was none; it now waits for the
+  connection (three tries in two minutes) and opens the one asked for. A double tap chose the
+  option drawn under the second tap, and a phone on its side showed the first option under the
+  bar: a new question takes no tap for 600 ms (a key is never a stray tap), and below 500 px the
+  question is scrolled to the top. What was asked while the dialog was open joins the walk at its
+  end. And the dialog had lost the connection line HOME.md gives it ("The dialog says it too"); it
+  has it again, with "This question may already have been answered" - except for the page's first
+  "Connecting…", which HOME.md lists too: the chats' dialog reads its questions from the server as
+  it opens, so on a page that has not connected yet they are as current as they can be, and the
+  line would only push the first option off a phone on its side.
+
+**WP10 + WP11 review — what the fix pass changed against the plan and the briefs.**
+- §8 "a backup of the old data folder first": the tar is that now. Its database is the copy the
+  store made before it upgraded the file (`store.PreUpgradeCopy`, `socrates.db.pre-v12.bak`),
+  because the build before refuses the upgraded one; and it keeps what that build reads and the
+  backup engine leaves out - the mirror's `s3.json` and the agent terminals' `sessions/<id>/`
+  folders with their journals, which the clean cut then deletes. HANDOFF §3 says how to go back.
+- §8.1, OpenCode: `opencode.db` moves to the shared `agents/opencode/opencode.db` as before, and a
+  relative link to it is left where it was, so an `opencode` run by hand in a Shell opens the same
+  database (AGENT-HOST.md §11).
+- §8.2: the lost profiles' accounts are made first (see above) and then put below every other
+  account, so no agent's list offers a "Sign in again" account above its Default one.
+- §8.3, the brief's "log what was removed, once": each agent terminal is said as it is removed,
+  and a delete removes the session's folder before its row, so a start killed in the middle
+  leaves a row the next start removes (and says), never a folder no row leads to.
+- The sheet refused every agent on a machine whose tmux was too old; only the Shell needs tmux.
+- `POST /api/sessions/{id}/digest` ("Read again" of the dialog WP11 removed) is gone with its
+  helpers; the resume note's `fresh`/`resumed_from` of a terminal went with the agent terminals.
+- origin/rebuild's fixes for a lost exit status (e1d0745, 83e82da, 1a388e4) and for a cut-short
+  backup upload (29f7bd3) are cherry-picked; wp10's own exit-status change (785b0f6) is reverted
+  in their favour, so the merge meets one version of those lines.
+- DECISIONS rev 7, "a tap says exactly when": the account menu and the sheet's account list say a
+  limit's renewal by the clock as well ("today at 15:42", "on Tue at 09:10"), the menu's lines
+  wrap instead of being cut, and a week's countdown reads in days.
+- The chat names a file a call worked on relative to the chat's folder when it is inside it (the
+  whole path stays behind the call's "i"), and a diff of an absolute path keeps its leading slash.
+- The default workspace root follows `-data` (DESIGN.md said `<data>/workspaces`; it was the
+  environment's data directory whatever `-data` said).
+
+## Phone pass (2026-10-24)
+
+The phone pass (branch `mobile`, merged into `integ` after WP10 and WP11) audited every screen at
+390, 360, 430 and on its side in touch mode, fixed what it found, and was audited twice again;
+the four final audits (a desk, a phone, a deploy rehearsal, the real binaries) followed on
+`integ`. What departs from REBUILD §7.1, DESIGN.md or DASHBOARD-STYLE.md:
+
+- **Glyphs from Lucide.** Where Dashboard-Style 1.6.2 has no glyph a phone needs (microphone,
+  stop in a circle, keyboard, upload, clipboard, Enter, paperclip, speaker, terminal), `ui.js`
+  `LUCIDE` holds Lucide's, drawn by DS's own `icon()`; `GLYPH` names what each control means. Each
+  goes when DS ships it (DASHBOARD-STYLE.md, "Icons").
+- **Icons rather than text buttons** on the top bar, the composer, the key bar, the question
+  dialog and a failed message (Status, the microphone, Keys, Read aloud, Ask back, Back, Open
+  chat, Copy, Paste, Upload, retry and edit), each with its name and its tip. On a phone at 480 px
+  and below the session's status and the outcome beside the name are their glyph alone too.
+- **Touch mode's fields.** A tap on any field but the terminal's types at once; a focus the page
+  gives by itself (a dialog opening on its field, the composer of a chat that opens) raises no
+  keyboard; a button that brings a field to type in (Rename, Other, Add a note, Anything else,
+  Ask the agent back, Keep planning, Custom path) gives it the keyboard with that tap and
+  brings it into sight (`keyboard.js` `typeHere`). The keyboard switch is the terminal's alone.
+- **A session's menu on a phone is an action sheet** under the session's name, and a menu that is
+  cut short at a desk fades at its foot.
+- **Snackbars** stand above the dock, the key bar and a keyboard, and a dialog keeps the strip
+  they stand in.
+- **What a turn cost is said once**, under its last answer (OpenCode answers a step at a time),
+  and a turn's end ("Interrupted", "Failed") stands under that turn, above a message sent while it
+  ran; a limit's card stays the chat's newest word.
+- **A model "change" to the same model draws no line**: the CLI naming the alias's full id at a
+  first turn or after a switch is not a change.
+- **A program that could not list its models** keeps the sheet's model field, a plain one with
+  no list's arrow, for an id typed in or nothing (its own default); Admin says so in words, the
+  program's error behind the "i".
+- **A question stands where it was asked.** An ask that names its tool part (`part_id`, §10 of
+  AGENT-HOST.md) is drawn at that call inside the answer, and its own timeline entry draws
+  nothing; one that names none cuts its turn's answers where they were, and what they say after
+  it is drawn under its card (`chatfold.js` `cutAtAsk`). The reply to a question is never above
+  it, and Copy and the "i" go under the last piece that says anything.
+- **Costs lists a chat once**, whatever accounts it ran on; the Account table splits its spend.
+- **Read aloud needs a Text-to-Speech key** and says so before anything is sent
+  (`/api/preferences` `tts`), as dictation, Status and naming do for OpenRouter's.

@@ -16,8 +16,9 @@
 // of it per session.
 
 import {
-  api, el, toast, infoTip, confirmDialog, alertDialog, errorMessage, isOffline, isBusyConflict,
-  setClass, onWake, clientKey, CONNECTION_GRACE, restoreFocus, setFocusFallback,
+  api, el, toast, infoTip, confirmDialog, alertDialog, promptDialog, errorMessage, isOffline, isBusyConflict,
+  setClass, onWake, clientKey, CONNECTION_GRACE, restoreFocus, setFocusFallback, toastsStay, onToastsStay,
+  keepDialogRoom,
 } from './api.js';
 import { connectionSource } from './net.js';
 import { agentMark, agentMarkHtml } from './logos.js';
@@ -25,24 +26,31 @@ import {
   MORE_KEY, SHELVES, PREPARED, IDE, foldersOf, folderKeyOf, ideOf, isPrepared, momentOf, movesRow,
 } from './folders.js';
 import * as harnesses from './harnesses.js';
+import * as accounts from './accounts.js';
 import { createTerm, measurePane, loadTerminalFonts } from './term.js';
 import { mountAssist } from './assist.js';
 import { mountNotify } from './notify.js';
 import { mountTransfer } from './transfer.js';
 import { mountKeyBar, keyBarWanted, setKeyBarWanted, followViewport } from './keybar.js';
-import { initKeyboard, guard, watchFrame, dictated, touchScreen, setTouchMode } from './keyboard.js';
+import {
+  initKeyboard, guard, watchFrame, dictated, touchScreen, setTouchMode, showKeyboardSwitch, typeHere,
+} from './keyboard.js';
 import { mountPrestart, forgetDraft, whenShort } from './prestart.js';
-import { mountStorageBanner } from './storage.js';
 import { mountEvents } from './events.js';
 import { mountHome, questionQueue, connectionLine } from './home.js';
-import { openQuestions, updateQuestions, questionsOpen, closeQuestions } from './question.js';
 import {
   OUTCOME_WORDS, CHECKING_WORDS, outcomeCurrent, outcomeMark, outcomeLine, outcomeIconHtml,
 } from './outcome.js';
 import {
   icon, html, raw, morph, flipMorph, showOverlay, hideOverlay, overlayOpen, M,
-  faces, iconEl,
+  faces, iconEl, edgeCue,
 } from './ui.js';
+import { mountBackupNotice } from './backup.js';
+import { setVoiceKey, voiceKey, onVoiceKey, keyMissing, setTtsKey } from './voice.js';
+import { explainNoKey } from './dictate.js';
+import { mountChat } from './chatview.js';
+import { chatOutbox, queueCommand, settled } from './chatoutbox.js';
+import { openChatAsks, askDialogOpen, closeAskDialog, refreshAskDialog } from './askdialog.js';
 
 /* ------------------------------------------------------------- transport */
 
@@ -671,17 +679,6 @@ const state = {
   // The seq of the start frame of each naming in progress, so the ceiling of
   // one naming does not end the next one of the same session.
   titleStarts: new Map(),
-  // The current session's quota/cost poll. A generation number makes a slow
-  // answer for the previous session harmless after a quick row switch.
-  usageTimer: null,
-  usageGeneration: 0,
-  // The session that poll is for, so a newer row of the same session keeps it.
-  usageFor: '',
-  usageRefresh: null,
-  // The last reading, which the countdowns are redrawn from between polls,
-  // and the timer that does it.
-  usage: null,
-  usageTick: null,
   // Status and the microphone, mounted once in boot().
   assist: null,
   // Copy, paste and upload, mounted once in boot().
@@ -693,17 +690,18 @@ const state = {
   // The panel a prepared session is shown in instead of a terminal,
   // mounted once in boot().
   prestart: null,
+  // The chat view, which stands where the pane does for a session that is a
+  // chat (chatview.js), mounted once in boot().
+  chat: null,
   // Home, the page the stage shows when no session is open, and the event
   // stream that keeps it - and the sidebar - live whatever is on the stage.
   // Both mounted once in boot().
   home: null,
   events: null,
-  // What a model last read off each session's screen (HOME.md §1.3), and the
-  // answer the operator is giving to each (§1.4), keyed by session id. Both
-  // in memory only, like the activity: the server re-derives the one and
-  // keeps the other for two minutes, and a hello carries both again.
+  // Each chat's reading (HOME.md §1.3): what it is doing and what it asks,
+  // keyed by session id. In memory only, like the activity: the server
+  // makes it from the chat's journal, and a hello carries it again.
   digests: new Map(),
-  answers: new Map(),
   // The verdict on each session's last turn (outcome.js), keyed by id: the
   // same kind of thing, re-derived by the server and carried by every hello.
   outcomes: new Map(),
@@ -721,23 +719,25 @@ const state = {
   // the first question, and the page does not yet know whether there is one
   // (questionsWhenKnown).
   questionsWanted: false,
+  // A question asked for from outside the page that could not be shown yet
+  // (questionWhenKnown): {id, since, tries}, or null.
+  questionWanted: null,
 };
 
 const dom = {};
 const ids = ['sidebar', 'navScrim', 'menuBtn', 'blankIDE', 'homeBtn', 'sideCollapse', 'newSession', 'sessionList',
-  'activityLive', 'sessionTitle', 'titleRegen', 'sessionStatus', 'sessionOutcome', 'sessionUsage',
+  'activityLive', 'sessionTitle', 'titleRegen', 'sessionStatus', 'sessionOutcome',
   'transfer', 'copyBtn', 'pasteBtn', 'uploadBtn',
   'statusBtn', 'kbBtn', 'optionsBtn',
   'stage', 'termWrap', 'term', 'termOverlay', 'termLines', 'termNotice',
   'termTicker', 'tickerWindow',
-  'micBtn', 'micText',
+  'micBtn',
   'recSheet', 'recMeter', 'recTime', 'recSend', 'recCancel',
-  'keybar', 'logout', 'prestart', 'home'];
+  'keybar', 'logout', 'prestart', 'chat', 'home'];
 for (const id of ids) dom[id] = document.getElementById(id);
-// The frame's own parts: the app, the bar's contents, the line the usage
-// strip takes on a phone, the row menu and the two dialogs of the bar.
-for (const id of ['app', 'topbar', 'sessionTitleText', 'usageLine', 'sessionMenu', 'optionsDialog', 'usageDialog',
-  'usageReading']) dom[id] = document.getElementById(id);
+// The frame's own parts: the app, the bar's contents, the row menu and the
+// options dialog of the bar.
+for (const id of ['app', 'topbar', 'sessionTitleText', 'sessionMenu', 'optionsDialog']) dom[id] = document.getElementById(id);
 
 const STATE_WORDS = {
   running: 'Running', starting: 'Starting', resuming: 'Resuming',
@@ -829,6 +829,16 @@ function deleteWords(session) {
 
 function sessionOf(id) { return state.sessions.find((s) => s.id === id) || null; }
 
+/**
+ * isChat says whether a session is a chat that has started: an agent driven
+ * through its protocol and drawn by the chat view, not a terminal. A
+ * prepared chat is still its PreStart panel.
+ */
+function isChat(session) { return !!session && session.kind === 'chat' && !isPrepared(session); }
+
+// chatShown says whether the chat view is what the stage shows.
+function chatShown() { return !!state.chat && !!state.chat.shownId(); }
+
 /* -------------------------------------------------------- the session list */
 
 // renderList draws everything the list and the activity are shown in: the
@@ -858,9 +868,10 @@ function drawOutcomeTag() {
   if (tag.dataset.key === key) return;
   tag.dataset.key = key;
   tag.dataset.kind = pending ? 'checking' : kind;
-  morph(tag, html`${raw(pending ? TASKS_SVG : outcomeIconHtml(kind, 16))}<span>${
-    pending ? 'Checking…' : (kind === 'error' ? 'Not checked' : OUTCOME_WORDS[kind])
-  }</span>`);
+  const words = pending ? 'Checking…' : (kind === 'error' ? 'Not checked' : OUTCOME_WORDS[kind]);
+  morph(tag, html`${raw(pending ? TASKS_SVG : outcomeIconHtml(kind, 16))}<span>${words}</span>`);
+  // Its glyph alone on a phone (so-frame.css), so the words are its name.
+  tag.setAttribute('aria-label', words);
   tag.setAttribute('data-tip', outcomeLine(outcome));
 }
 
@@ -878,9 +889,23 @@ function showOutcome() {
 
 function drawLive() {
   if (state.home) state.home.render();
-  updateQuestions();
   tellAsking();
   questionsWhenKnown();
+  questionWhenKnown();
+  refreshAsking();
+}
+
+// refreshAsking takes what the chats ask now into the question dialog while
+// it is open - a question asked meanwhile joins the walk, and a chat renamed
+// is called by its new name - once each time that changes.
+let askingSeen = '';
+function refreshAsking() {
+  if (!askDialogOpen()) { askingSeen = ''; return; }
+  const asking = questionQueue(homeCtx()).filter((session) => isChat(session));
+  const seen = asking.map((session) => session.id + '\u0000' + session.title + '\u0000' + ((activityOf(session) || {}).since || '')).join('\n');
+  if (seen === askingSeen) return;
+  askingSeen = seen;
+  refreshAskDialog({ sessions: asking, view: state.chat }).catch(() => { /* the walk goes on as it was */ });
 }
 
 function drawList() {
@@ -1218,7 +1243,7 @@ function rowHtml(session) {
 
   return html`<div class="so-row" data-ds-key="${'row:' + id}" data-id="${id}" data-status="${status}"${prepared ? html` data-prepared` : ''}${unread ? html` data-unread` : ''}><a class="ds-drawer__item so-row__open" href="${'#' + id}"${attached ? html` aria-current="page"` : ''}><span class="so-mark" data-tip="${word}"${ring ? html` data-ring="${ring}"` : ''}>${raw(agentMarkHtml(session.harness, 20))}${
     badge ? html`<span class="so-mark__badge" data-kind="${badge}" aria-hidden="true">${raw(badgeIcon)}</span>` : ''
-  }</span><span class="so-row__text"><span class="so-row__label"${state.titling.has(id) ? html` data-titling` : ''}>${session.title}</span>${
+  }</span><span class="so-row__text"><span class="so-row__label" data-tip="${session.title}"${state.titling.has(id) ? html` data-titling` : ''}>${session.title}</span>${
     // The first line of a prepared session's prompt, which is what tells two
     // of them apart before either has a name of its own.
     preview ? html`<span class="so-row__preview">${preview}</span>` : ''
@@ -1232,41 +1257,65 @@ function rowHtml(session) {
 // The technical detail of a session - what it runs, where it works, what it
 // runs on, which conversation it is holding, how often it has been brought
 // back. It is never in the words of a row: the "Info" item of the row's menu
-// is the one place it is shown, for the list and for the header alike.
-function rowFacts(session) {
+// is the one place it is shown, for the list and for the header alike. Each
+// fact is a label and its value, in plain words.
+//
+// A chat's model is the one its composer shows: the model and effort the
+// chat runs on now, which a change from the model menu makes newer than
+// the row's (`running`, from the chat's journal), else the row's.
+const CONVERSATION_WORDS = {
+  pending: 'Being started',
+  known: 'Can be picked up again',
+  verified: 'Can be picked up again',
+  lost: 'Lost; the next start begins a new one',
+};
+
+function rowFacts(session, running = null) {
   const facts = [
-    harnesses.label(session.harness),
-    STATE_WORDS[session.state] || session.state,
-    session.workdir,
+    ['Program', harnesses.label(session.harness)],
+    ['State', STATE_WORDS[session.state] || session.state],
+    ['Folder', session.workdir],
   ];
-  if (session.options?.profile) facts.push('Profile: ' + harnesses.profileName(session.options.profile));
-  if (session.options?.ultracode) facts.push('Ultracode on');
-  if (isPrepared(session)) {
-    if (session.options?.profile_auto) facts.push('Profile: chosen when it starts');
-    if (Number(session.start_at)) facts.push('Starts by itself ' + new Date(Number(session.start_at)).toLocaleString());
+  const account = session.options?.account
+    ? accounts.labelOf(session.options.account) || session.options.account
+    : isPrepared(session) ? 'Chosen when it starts' : '';
+  if (account || session.options?.auto_switch) {
+    facts.push(['Account', [account, session.options?.auto_switch ? 'switches at a limit' : ''].filter(Boolean).join(' · ')]);
+  }
+  if (session.options?.ultracode) facts.push(['Ultracode', 'On']);
+  if (isPrepared(session) && Number(session.start_at)) {
+    facts.push(['Starts by itself', new Date(Number(session.start_at)).toLocaleString()]);
+  }
+  // The model and effort by the names the sheet and the composer give them
+  // ("Sonnet · High"), not the ids the CLI was started with.
+  const model = (running && running.model) || session.model;
+  const effort = running && running.model ? running.effort : session.effort;
+  if (model) {
+    const known = harnesses.modelOf(session.harness, model);
+    facts.push(['Model', (known ? known.label || known.id : model) + (effort ? ' · ' + harnesses.effortLabel(effort) : '')]);
   }
   const act = activityOf(session);
   if (act && ACTIVITY_WORDS[act.state]) {
-    // What it is doing, why the detector thinks so, and since when. All three
-    // are facts about the machine, so all three live behind the "i".
-    facts.push(ACTIVITY_WORDS[act.state]
+    // What it is doing and since when. How the detector came to think so
+    // is no fact a person can use.
+    facts.push(['Doing', ACTIVITY_WORDS[act.state]
       + (act.note ? ' · ' + act.note : '')
-      + (act.source ? ' · ' + act.source : '')
-      + (act.since ? ' · since ' + clockOf(act.since) : ''));
+      + (act.since ? ' · since ' + clockOf(act.since) : '')]);
   }
   const outcome = outcomeOf(session);
   if (outcome) {
-    facts.push(outcomeLine(outcome));
+    facts.push(['Last turn', outcomeLine(outcome)]);
     if (outcome.phase === 'ready' && Array.isArray(outcome.todos) && outcome.todos.length) {
-      facts.push('Open: ' + outcome.todos.join(' · '));
+      facts.push(['Still open', outcome.todos.join(' · ')]);
     }
   }
-  if (session.model) facts.push(session.model + (session.effort ? ' · ' + session.effort : ''));
-  if (session.cli_session_state && session.cli_session_state !== 'none') {
-    facts.push('conversation ' + session.cli_session_state);
+  if (CONVERSATION_WORDS[session.cli_session_state]) {
+    facts.push(['Conversation', CONVERSATION_WORDS[session.cli_session_state]]);
   }
-  if (session.resume_count) facts.push('resumed ' + session.resume_count + '×');
-  return facts.filter(Boolean);
+  if (session.resume_count) {
+    facts.push(['Brought back', session.resume_count === 1 ? 'Once' : session.resume_count + ' times']);
+  }
+  return facts.filter(([, value]) => value);
 }
 
 // clockOf is when a state was committed, as a time of day.
@@ -1297,6 +1346,7 @@ let notifier = null;
 function mergeActivity(sessions, { full = false } = {}) {
   if (!sessions) return;
   let changed = false;
+  const readHere = [];
   for (const [id, picture] of Object.entries(sessions)) {
     if (!picture || typeof picture !== 'object') continue;
     const prev = state.activity.get(id) || null;
@@ -1308,6 +1358,9 @@ function mergeActivity(sessions, { full = false } = {}) {
     // An `unknown` from a session that is running is not known yet: see heldOver.
     const next = heldOver(id, picture, prev);
     state.activity.set(id, next);
+    // A chat on screen is read as it is written: the turn it finished there
+    // is not news to come back to later.
+    if (next.unread && chatOnScreen(id)) readHere.push(id);
     if (prev && prev.state === next.state && prev.unread === next.unread && prev.note === next.note) continue;
     changed = true;
     const session = sessionOf(id);
@@ -1332,6 +1385,12 @@ function mergeActivity(sessions, { full = false } = {}) {
     if (heldLine.has(id)) followAnnounce(id, next);
   }
   if (changed) renderList();
+  for (const id of readHere) markRead(id);
+}
+
+// chatOnScreen says whether a chat is what the person is looking at now.
+function chatOnScreen(id) {
+  return chatShown() && state.chat.shownId() === id && document.visibilityState === 'visible';
 }
 
 /**
@@ -1531,18 +1590,18 @@ function applyList(rows, { rev, source = 'hello' } = {}) {
   if (state.current) {
     const fresh = sessionOf(state.current.id);
     if (fresh) applySession(fresh);
-    else if (state.prestart && state.prestart.shownId() === state.current.id) {
-      // A prepared session deleted on another device. A terminal finds
-      // out through its socket; a panel has none, and would otherwise go
-      // on saving into a session that is not there.
+    else if ((state.prestart && state.prestart.shownId() === state.current.id)
+      || (state.chat && state.chat.shownId() === state.current.id)) {
+      // A prepared session or a chat deleted on another device. A terminal
+      // finds out through its socket; a panel has none, and would otherwise
+      // go on saving into a session that is not there - nor does a chat,
+      // whose stream would go on asking for one.
       detach();
       showHome({ replace: true });
     }
   }
   // What is known about a session that is gone goes with it.
-  for (const map of [state.digests, state.answers]) {
-    for (const id of [...map.keys()]) if (!sessionOf(id)) map.delete(id);
-  }
+  for (const id of [...state.digests.keys()]) if (!sessionOf(id)) state.digests.delete(id);
   renderList();
   // The tab was asked for a session the list could not yet prove was there
   // - a notification opened while the network was down - and this is the
@@ -1553,51 +1612,29 @@ function applyList(rows, { rev, source = 'hello' } = {}) {
 
 /* ------------------------------------------------------ the event stream */
 
-// What the stream hands over that the list does not: the digest of each
-// session and the answer run of each. A hello replaces both maps, because a
-// hello is the whole state at that moment; a frame changes one entry.
+// What the stream hands over that the list does not: the digest and the
+// verdict of each session. A hello replaces both maps, because a hello is
+// the whole state at that moment; a frame changes one entry.
 function replaceMap(map, entries) {
   map.clear();
   if (!entries || typeof entries !== 'object') return;
   for (const [id, value] of Object.entries(entries)) if (value) map.set(id, value);
 }
 
-// replaceAnswers is replaceMap for the runs, with one exception: a run that
-// started after the moment the state was read (`now`, the server's clock, as
-// `started` is) is newer than the picture, not ended by it. That is a poll
-// that was in flight while this page's own answer went in.
-function replaceAnswers(entries, now) {
-  const keep = [];
-  const at = Number(now) || 0;
-  if (at > 0) {
-    for (const [id, run] of state.answers) if (Number(run.started) > at) keep.push([id, run]);
-  }
-  replaceMap(state.answers, entries);
-  for (const [id, run] of keep) if (!state.answers.has(id)) state.answers.set(id, run);
-}
-
 // carriedOver is a digest with what the page held for the session kept in
-// it while the new one is still being read. The server keeps the previous
-// summary, context and question while a digest is pending, so Home does not
-// blink; a server that has just restarted has nothing to keep - its digests
-// lived in memory - and its first word about every session is a pending
-// digest with nothing in it. The page keeps what it had instead, until the
-// new server has read the screen and says what is there now. A question
-// kept that way is `carried`: this server has not seen it yet, and it may
-// have been answered at the machine while there was no server to see it.
-// Home keeps a question in prose counted, but says it is checking whether it
-// still asks, and offers no Answer, until the read says (home.js).
+// it while the new one is still being read: a pending digest with nothing
+// in it - a server that has just restarted and has not read the chat's
+// journal yet - would otherwise blank Home's line until the read is in.
 function carriedOver(held, digest) {
   if (!held || !digest || digest.phase !== 'pending' || digest.question || digest.summary || digest.context) return digest;
-  const question = held.question || null;
-  return { ...digest, summary: held.summary || '', context: held.context || '', question, carried: !!question };
+  return { ...digest, summary: held.summary || '', context: held.context || '', question: held.question || null };
 }
 
 // replaceDigests is the hello's digests. A running session the hello has no
 // digest for is one a restarted server has not read yet - a server only
 // forgets the digest of a session that was deleted - so what the page held
-// stays, as pending, until it has: a question asked in prose would
-// otherwise leave the Questions card for the moment of the read.
+// stays, as pending, until it has: Home's line and its question would
+// otherwise go for the moment of the read.
 //
 // Whether a session is running is what the hello's own rows say (`rows`),
 // not the list the page held before it: across a reboot that list still
@@ -1619,7 +1656,7 @@ function replaceDigests(entries, rows) {
     }
     const session = listed ? listed.get(id) : sessionOf(id);
     if (!session) continue;
-    if (session.state === 'running') state.digests.set(id, { ...digest, phase: 'pending', carried: !!digest.question });
+    if (session.state === 'running') state.digests.set(id, { ...digest, phase: 'pending' });
     else state.digests.set(id, { ...digest, question: null, phase: digest.phase === 'pending' ? 'ready' : digest.phase });
   }
 }
@@ -1647,37 +1684,14 @@ function outcomeFrame(id, outcome) {
   renderList();
 }
 
-function answerFrame(id, run) {
-  if (run) state.answers.set(id, run); else state.answers.delete(id);
-  drawLive();
-}
-
-// adoptDigest is a digest that came back on an HTTP answer - a Read again, a
-// refusal that says the question changed. The stream may already have
-// delivered a newer one (the "ready" after the "pending" this answer
-// carries), and an answer slower than the stream must not put the older one
-// back. Revisions only go up within one server's life; a server that
-// restarted is told apart by its hello, which replaces the map.
-function adoptDigest(id, digest) {
-  if (!digest) return;
-  const held = state.digests.get(id);
-  if (held && Number(held.rev) >= Number(digest.rev)) return;
-  digestFrame(id, digest);
-}
-
-const RUN_ORDER = { waiting: 0, thinking: 1, acting: 1, done: 2, error: 2 };
-
-// adoptRun is a run that came back on an HTTP answer or a poll, under the
-// same rule: only a later picture of the same run, or a run started later.
-function adoptRun(id, run) {
-  if (!run) return;
-  const held = state.answers.get(id);
-  if (held && held.run_id === run.run_id) {
-    const was = RUN_ORDER[held.phase] || 0;
-    const now = RUN_ORDER[run.phase] || 0;
-    if (was > now || (was === now && (Number(held.step) || 0) > (Number(run.step) || 0))) return;
-  } else if (held && Number(held.started) > Number(run.started)) return;
-  answerFrame(id, run);
+// newsFrame is news about a session in a notification's words, which the
+// server found outside its activity: a chat stopped at its account's limit
+// (notify.told). Not for a session the page cannot name, nor for one filed
+// in the background, as at a turn's end (mergeActivity).
+function newsFrame(id, news) {
+  const session = sessionOf(id);
+  if (!session || harnesses.isTool(session.harness) || statusOf(session) === 'background') return;
+  if (notifier && news.body) notifier.told(id, { body: news.body, kind: news.kind === 'question' ? 'question' : 'finished' });
 }
 
 function mountStream() {
@@ -1688,7 +1702,6 @@ function mountStream() {
         replaceDigests(data.digests, data.sessions);
         state.digestsHeard = true;
       }
-      if ('answers' in data) replaceAnswers(data.answers, data.now);
       if ('outcomes' in data) replaceMap(state.outcomes, data.outcomes);
       if (Array.isArray(data.sessions)) applyList(data.sessions, { rev: data.rev, source: 'hello' });
       else drawLive();
@@ -1698,14 +1711,16 @@ function mountStream() {
     title: (frame) => titleFrame(frame),
     digest: digestFrame,
     outcome: outcomeFrame,
-    answer: answerFrame,
+    news: newsFrame,
+    // A chat's Status phases come this way; a terminal's come on its own
+    // socket (onControl), and are not taken twice.
+    phase: (frame) => {
+      if (state.assist && isChat(state.current) && state.current.id === frame.id) state.assist.statusFrame(frame);
+    },
     // A pong: the page is as current as the moment its ping was sent, which
     // is what a question asked for by a notification is waiting to know -
     // and a badge a push wrote over (badgeWrittenElsewhere).
-    fresh: () => {
-      updateQuestions();
-      tellAsking();
-    },
+    fresh: () => tellAsking(),
     status: () => drawLive(),
     // A poll that could not be answered while the stream is down. It is said
     // on Home and in the sidebar's empty state rather than in a toast: it
@@ -1715,7 +1730,7 @@ function mountStream() {
       state.reachable = false;
       renderList();
     },
-    fast: () => homeShown() || questionsOpen(),
+    fast: () => homeShown() || askDialogOpen(),
   });
 }
 
@@ -1733,35 +1748,6 @@ function streamConnection() {
   };
 }
 
-// questionsCtx is what the question dialog is drawn from: the same queue
-// the Questions card counts, and the maps the stream keeps current.
-const questionsCtx = {
-  queue: () => questionQueue(homeCtx()),
-  sessionOf,
-  activityOf,
-  digestOf: (id) => state.digests.get(id) || null,
-  answerOf: (id) => state.answers.get(id) || null,
-  adoptDigest,
-  adoptRun,
-  folderOf: (session) => folderLabelOf(session),
-  // Delivering: live, and not a stream that is quiet and being checked -
-  // the runs are asked about meanwhile rather than waited for.
-  live: () => !!state.events && state.events.live() && !state.events.quiet(),
-  // How current what the dialog shows is, by Home's rule: the dialog is a
-  // modal over Home, and Home's own line is behind it.
-  connection: () => connectionLine(streamConnection(), state.reachable),
-  // The moment the page's state is known to be the server's as of, and
-  // whether the last attempt to read one got through: a question asked for
-  // by a link is only called gone once a state newer than the link says so.
-  freshAt: () => (state.events ? state.events.stateAt() : 0),
-  // Whether the digests have been handed over at all since the page loaded:
-  // a question in prose is only found by its digest, and a page that has
-  // none yet cannot say there is no question (question.js `beingRead`).
-  digestsHeard: () => state.digestsHeard,
-  reachable: () => state.reachable,
-  select: (id) => selectSession(id),
-};
-
 // The sidebar's own tests, handed to Home so that it counts with them rather
 // than with copies of them.
 function homeCtx() {
@@ -1775,16 +1761,79 @@ function homeCtx() {
   };
 }
 
-/** showQuestions opens the question dialog, at one session or the oldest. */
+/**
+ * showQuestions opens the question dialog, at one chat or the oldest
+ * question. Only a chat asks: its question is a structured ask, answered in
+ * the chats' dialog (askdialog.js).
+ */
 function showQuestions(id) {
-  openQuestions(questionsCtx, id || '');
-  if (state.events) {
-    state.events.refresh();
-    // A session asked for - a notification, a link, a row - is only called
-    // not asking against a state newer than the ask, and a stream that says
-    // it is live may be a socket that died quietly: it is asked now.
-    if (id) state.events.confirm();
+  const target = id ? sessionOf(id) : questionQueue(homeCtx())[0];
+  if (isChat(target)) showChatQuestions(target.id);
+  // A Shell or an editor never asks: a link to its question has nothing to
+  // open, and says so.
+  else if (target) toast('Nothing is waiting for an answer there.');
+  else if (id) {
+    // A chat this tab does not hold yet - one made while it was offline, a
+    // list that could not be read - is looked for again once the page holds
+    // a current state; one the current list does not have is gone.
+    if (knownCurrent() && state.questionWanted && state.questionWanted.tries > 0) {
+      state.questionWanted = null;
+      toast('That chat is not here any more.');
+    } else wantQuestion(id);
   }
+}
+
+// wantQuestion keeps a question asked for until the page can show it.
+function wantQuestion(id) {
+  const kept = state.questionWanted && state.questionWanted.id === id ? state.questionWanted : null;
+  state.questionWanted = { id, since: kept ? kept.since : Date.now(), tries: kept ? kept.tries : 0 };
+}
+
+/**
+ * questionWhenKnown shows a question asked for from outside the page - a
+ * notification tapped on a phone whose connection had gone - that could not
+ * be shown when it was asked for, the moment the page holds a current state
+ * again. It is tried a few times, for two minutes at most: a question that
+ * is still not there by then was answered or went with its chat.
+ */
+function questionWhenKnown() {
+  const wanted = state.questionWanted;
+  if (!wanted) return;
+  if (Date.now() - wanted.since > 120000 || wanted.tries >= 3 || !homeShown() || askDialogOpen()) {
+    state.questionWanted = null;
+    return;
+  }
+  if (!knownCurrent()) return;
+  wanted.tries += 1;
+  showQuestions(wanted.id);
+}
+
+/**
+ * showChatQuestions opens the chats' question dialog over every chat that is
+ * asking, oldest question first, at the one asked for. `only` keeps it to
+ * that chat - the Answer of a card in the chat itself.
+ */
+function showChatQuestions(chatId, { askId = '', only = false } = {}) {
+  const asking = only ? [] : questionQueue(homeCtx()).filter((session) => isChat(session));
+  const wanted = sessionOf(chatId);
+  if (wanted && !asking.some((session) => session.id === chatId)) asking.unshift(wanted);
+  openChatAsks({
+    sessions: asking,
+    chatId,
+    askId,
+    view: state.chat,
+    // "Open chat": the dialog has closed itself, and the chat takes the stage.
+    openChat: (id) => selectSession(id),
+    // What is asked while the dialog walks joins the walk.
+    asking: () => questionQueue(homeCtx()).filter((session) => isChat(session)),
+    // No connection to read the question over: it opens once there is one.
+    unreachable: () => {
+      if (!state.questionWanted || state.questionWanted.id !== chatId) toast('No connection. The question opens as soon as it is back.');
+      wantQuestion(chatId);
+    },
+    // Home's connection line, which the dialog over it says too.
+    connection: () => connectionLine(streamConnection(), state.reachable),
+  });
 }
 
 /**
@@ -1813,7 +1862,7 @@ function questionOnHome(id, { replace = false } = {}) {
 // session" closes it: a modal left in front would hold the session asked for
 // inert behind it.
 function openOnNews(id) {
-  closeQuestions();
+  closeAskDialog();
   state.wanted = id;
   if (!state.current || state.current.id !== id) selectSession(id);
 }
@@ -1822,8 +1871,8 @@ function openOnNews(id) {
  * questionsOnHome is `#questions`, the address of the app's "Questions"
  * shortcut: Home, and the dialog over it at the oldest question - or Home
  * alone when nothing is asking. Whether anything is is only known once the
- * page holds a current state (a question in prose is in the digests a hello
- * brings), so a cold start waits for one (questionsWhenKnown).
+ * page holds a current state (the activity a hello brings), so a cold start
+ * waits for one (questionsWhenKnown).
  */
 function questionsOnHome({ replace = false } = {}) {
   if (!homeShown()) showHome({ replace });
@@ -1836,7 +1885,7 @@ function questionsWhenKnown() {
   if (!state.questionsWanted) return;
   // Gone from Home in the meantime, or opened some other way: the person
   // has moved on, and the dialog is not put in front of what they went to.
-  if (!homeShown() || questionsOpen()) { state.questionsWanted = false; return; }
+  if (!homeShown() || askDialogOpen()) { state.questionsWanted = false; return; }
   if (!knownCurrent() || !state.digestsHeard) return;
   state.questionsWanted = false;
   if (questionQueue(homeCtx()).length) showQuestions('');
@@ -1895,13 +1944,6 @@ function badgeWrittenElsewhere() {
   if (state.events) state.events.confirm();
 }
 
-// folderLabelOf is the name the sidebar gives a session's folder.
-function folderLabelOf(session) {
-  const key = folderKeyOf(session);
-  const folder = foldersOf(state.sessions).find((one) => one.key === key);
-  return folder ? folder.label : '';
-}
-
 /**
  * openWanted attaches the session this tab is meant to be on, if the list now
  * has it and nothing is attached.
@@ -1926,6 +1968,28 @@ function openWanted() {
 
 /* ---------------------------------------------------- the session actions */
 
+// pointFolder points a session whose folder is not on this machine - one a
+// restore brought back without its code (REBUILD §6.2) - at the folder its
+// code is in now. The session starts or resumes there from then on.
+async function pointFolder(session, opener) {
+  const dir = await promptDialog({
+    title: 'Point to folder',
+    body: 'This session\'s folder is not on this machine. Where is its code now? It works in that folder from now on.',
+    label: 'Folder',
+    value: session.workdir,
+    confirmLabel: 'Use this folder',
+    opener,
+  });
+  if (!dir) return;
+  try {
+    const data = await api('/api/sessions/' + encodeURIComponent(session.id) + '/workdir', { method: 'PUT', body: { workdir: dir } });
+    if (data.session) replaceSession(data.session);
+    toast('The session works in that folder now.', 'success');
+  } catch (err) {
+    toast(errorMessage(err), 'error');
+  }
+}
+
 async function renameSession(session, opener) {
   const title = await promptTitle(session.title, opener);
   if (title === null || title === session.title) return;
@@ -1945,7 +2009,7 @@ function promptTitle(current, opener) {
   return new Promise((resolve) => {
     const input = el('input', {
       class: 'ds-input', type: 'text', id: 'renameInput', value: current, autofocus: true,
-      'aria-labelledby': 'renameTitle',
+      'aria-labelledby': 'renameTitle', enterkeyhint: 'done',
     });
     const cancel = el('button', { class: 'ds-btn ds-btn--text', type: 'button', 'data-close': true, text: 'Cancel' });
     const accept = el('button', { class: 'ds-btn ds-btn--primary', type: 'button', text: 'Rename' });
@@ -1977,6 +2041,9 @@ function promptTitle(current, opener) {
       resolve(answer);
       hideOverlay(dialog, { remove: true }).then(() => { restoreFocus(was); paneAfter(was); });
     }, { once: true });
+    // Rename is asked for by a tap (the menu's item, the name itself): the
+    // field the dialog opens on takes the keyboard with that focus.
+    typeHere(input, { focus: false });
     showOverlay(dialog, was).then(() => input.select());
   });
 }
@@ -1986,13 +2053,23 @@ function promptTitle(current, opener) {
 // facts are drawn - a row is a mark and a name, and nothing else.
 function infoDialog(session, opener) {
   const close = el('button', { class: 'ds-btn ds-btn--text', type: 'button', 'data-close': true, autofocus: true, text: 'Close' });
+  const list = el('dl', { class: 'ds-facts so-facts' });
+  const draw = (running) => list.replaceChildren(...rowFacts(session, running).map(([label, value]) => el('div', {},
+    el('dt', { text: label }), el('dd', { class: 'so-fact', text: value }))));
   const dialog = el('dialog', { class: 'ds-dialog so-info-dialog', 'aria-labelledby': 'infoTitle' },
     el('div', { class: 'ds-dialog__backdrop', 'data-close': true }),
     el('div', { class: 'ds-dialog__box' },
       el('h2', { class: 'ds-dialog__title so-break', id: 'infoTitle', text: session.title }),
-      el('ul', { class: 'ds-plain-list so-facts' },
-        ...rowFacts(session).map((line) => el('li', { class: 'so-fact so-break', text: line }))),
+      list,
       el('div', { class: 'ds-dialog__actions' }, close)));
+  // A chat this page has read says its model at once; another one is asked.
+  const running = isChat(session) && state.chat ? state.chat.modelOf(session.id) : null;
+  draw(running);
+  if (isChat(session) && !running) {
+    api('/api/chats/' + encodeURIComponent(session.id))
+      .then((data) => { if (data && data.chat && data.chat.model && dialog.isConnected) draw({ model: data.chat.model, effort: data.chat.effort || '' }); })
+      .catch(() => {});
+  }
   dialog.addEventListener('close', () => {
     hideOverlay(dialog, { remove: true }).then(() => paneAfter(document.activeElement));
   }, { once: true });
@@ -2009,9 +2086,12 @@ async function setStatus(session, status) {
       method: 'POST', body: { status },
     });
     const open = state.current && state.current.id === session.id;
-    if (status === 'done' && open) detach();
+    if (status === 'done' && open && !isChat(session)) detach();
     replaceSession(data.session);
-    if (status === 'done') toast('Done. Its terminal was closed; the session is deleted in 24 hours.');
+    if (status === 'done') {
+      toast(isChat(session) ? 'Done. Its agent was put to rest; the chat is deleted in 24 hours.'
+        : 'Done. Its terminal was closed; the session is deleted in 24 hours.');
+    }
     else if (isDone(session) && open) attach(data.session);
   } catch (err) { toast(actionFailed(err, 'That session could not be refiled.'), 'error'); }
 }
@@ -2024,7 +2104,9 @@ async function deleteSession(session) {
       ? 'The editor is stopped. What it remembers - open files, unsaved changes, layout - is kept for this folder and comes back the next time it is opened.'
       : isPrepared(session)
         ? 'The prepared session and its prompt are removed. Nothing was started.'
-        : 'The terminal is closed and the session is removed. The working directory and everything in it are kept.',
+        : isChat(session)
+          ? 'The agent is stopped and the conversation is removed. The working directory and everything in it are kept.'
+          : 'The terminal is closed and the session is removed. The working directory and everything in it are kept.',
     confirmLabel: editor ? 'Close' : 'Delete',
     danger: true,
   });
@@ -2052,6 +2134,53 @@ function downloadJournal(session) {
   window.open('/api/sessions/' + encodeURIComponent(session.id) + '/journal', '_blank');
 }
 
+// setAutoSwitch turns a chat's switch of account at a limit on or off.
+async function setAutoSwitch(session, on) {
+  try {
+    const data = await accounts.setAutoSwitch(session.id, on);
+    if (data.session) replaceSession(data.session);
+    toast(on ? 'At a limit, this chat goes on with the account that has the most left.'
+      : 'At a limit, this chat stops and asks.');
+  } catch (err) {
+    toast(errorMessage(err), 'error');
+  }
+}
+
+// compactChat asks a chat's agent to compact its conversation: the palette's
+// /compact, sent once by its client_id like everything a chat is told. It
+// says what became of it, whether the chat is on screen or not: taken,
+// refused (the chat shows it as not run until it is dismissed there), or
+// kept for when the connection is back.
+function compactChat(session) {
+  const clientId = queueCommand(session.id, 'compact', '', '/compact');
+  if (navigator.onLine === false) toast('Offline. Compact goes to the agent when the connection is back.');
+  settled(clientId).then(
+    () => toast('Compacting the conversation.'),
+    (err) => toast('The conversation could not be compacted: ' + errorMessage(err), 'error'),
+  );
+}
+
+// setUltracode switches a Claude Code chat's Ultracode on or off. Its agent
+// is put to rest as soon as it is idle and takes the option up with the next
+// message, so nothing that runs is cut short; the toast says so.
+async function setUltracode(session, on) {
+  try {
+    const data = await api('/api/chats/' + encodeURIComponent(session.id) + '/options', {
+      method: 'POST', attempts: 2, body: { ultracode: on },
+    });
+    if (data && data.session) replaceSession(data.session);
+    toast(on ? 'Ultracode is on from the next message.' : 'Ultracode is off from the next message.');
+  } catch (err) {
+    toast(errorMessage(err), 'error');
+  }
+}
+
+// exportChat opens the whole conversation as the server holds it: every
+// message, part and question, as JSON.
+function exportChat(session) {
+  window.open('/api/chats/' + encodeURIComponent(session.id) + '?history=1', '_blank');
+}
+
 function replaceSession(next) {
   if (!next) return;
   const at = state.sessions.findIndex((s) => s.id === next.id);
@@ -2068,17 +2197,97 @@ function replaceSession(next) {
 // opens it; what each of its items does is kept here, by data-action, and run
 // by one listener (wire). DS.overlay closes the menu once that ran.
 const menuActions = new Map();
+// The actions that must run inside the tap that chose them - reading the
+// clipboard, opening a file picker - rather than once the menu has gone.
+const menuInTap = new Set();
 
 // menuItemHtml is one item of the menu: its glyph and its words. A status is
-// one of a set, so it is a radio item whose check shows where it stands.
-function menuItemHtml(action, label, glyph, checked) {
+// one of a set, so it is a radio item whose check shows where it stands. A
+// switch (a checkbox item) also says On or Off at its end, because a check
+// that is simply not there reads as an action, not as a switch that is off.
+function menuItemHtml(action, label, glyph, checked, role = 'menuitemradio') {
   if (checked !== undefined) {
-    return html`<button class="ds-menu__item" role="menuitemradio" type="button" data-action="${action}" aria-checked="${checked ? 'true' : 'false'}">${raw(icon('check', 20, 'ds-menu__check'))}<span class="ds-menu__label">${label}</span></button>`;
+    const state = role === 'menuitemcheckbox'
+      ? html`<span class="so-menu-state" aria-hidden="true">${checked ? 'On' : 'Off'}</span>` : '';
+    return html`<button class="ds-menu__item" role="${role}" type="button" data-action="${action}" aria-checked="${checked ? 'true' : 'false'}">${raw(icon('check', 20, 'ds-menu__check'))}<span class="ds-menu__label">${label}</span>${state}</button>`;
   }
   return html`<button class="ds-menu__item" role="menuitem" type="button" data-action="${action}">${raw(icon(glyph, 20))}<span class="ds-menu__label">${label}</span></button>`;
 }
 
-async function openRowMenu(anchor, id) {
+// A phone has no room for a menu of eleven rows hanging from a button: from
+// a row low in the list it would scroll inside itself with nothing to say
+// so, and Delete would be below the end. There - a narrow window, or a short
+// one under a finger, a phone on its side - the same items rise from the
+// bottom edge in a dialog of their own (an action sheet), under the
+// session's name.
+const actionSheetWanted = () => window.matchMedia('(max-width: 600px)').matches
+  || (touchScreen() && window.matchMedia('(max-height: 500px)').matches);
+
+// openActionSheet shows the items of a menu in that dialog. An item closes
+// it and then runs, so a dialog it opens (Rename, Delete) is the only one on
+// screen.
+function openActionSheet(anchor, title, items) {
+  const titleId = 'actionsTitle';
+  const list = el('div', { class: 'so-actions__list', role: 'menu', 'aria-labelledby': titleId });
+  morph(list, html`${items}`);
+  const close = el('button', {
+    class: 'ds-btn ds-btn--quiet ds-btn--icon', type: 'button', 'data-close': true,
+    'aria-label': 'Close', 'data-tip': 'Close',
+  }, iconEl('close', 20));
+  const dialog = el('dialog', { class: 'ds-dialog so-actions', 'aria-labelledby': titleId },
+    el('div', { class: 'ds-dialog__backdrop', 'data-close': true }),
+    el('div', { class: 'ds-dialog__box' },
+      el('div', { class: 'so-actions__head' },
+        el('h2', { class: 'ds-dialog__title so-break', id: titleId, text: title }), close),
+      list));
+  let chosen = null;
+  list.addEventListener('click', (event) => {
+    const item = event.target.closest('[data-action]');
+    if (!item || item.getAttribute('aria-disabled') === 'true') return;
+    const run = menuActions.get(item.dataset.action) || null;
+    if (run && menuInTap.has(item.dataset.action)) run();
+    else chosen = run;
+    hideOverlay(dialog);
+  });
+  // The items are a menu: the arrows move between them, as in DS's.
+  list.addEventListener('keydown', (event) => {
+    const all = [...list.querySelectorAll('.ds-menu__item')];
+    const at = all.indexOf(document.activeElement);
+    const to = { ArrowDown: at + 1, ArrowUp: at - 1, Home: 0, End: all.length - 1 }[event.key];
+    if (to === undefined || !all.length) return;
+    event.preventDefault();
+    all[(to + all.length) % all.length].focus();
+  });
+  dialog.addEventListener('close', () => {
+    anchor.setAttribute('aria-expanded', 'false');
+    const run = chosen;
+    chosen = null;
+    hideOverlay(dialog, { remove: true }).then(() => { if (!run) paneAfter(anchor); });
+    if (run) run();
+  }, { once: true });
+  anchor.setAttribute('aria-expanded', 'true');
+  showOverlay(dialog, anchor).then(() => {
+    const first = list.querySelector('.ds-menu__item');
+    if (first && dialog.open) first.focus({ preventScroll: true });
+  });
+}
+
+// afterMenu runs `fn` once the row menu has gone (DS.overlay closes it after
+// an item's own handler has run).
+function afterMenu(fn) {
+  const menu = dom.sessionMenu;
+  if (menu.hidden) { requestAnimationFrame(fn); return; }
+  const watch = new MutationObserver(() => {
+    if (!menu.hidden) return;
+    watch.disconnect();
+    fn();
+  });
+  watch.observe(menu, { attributes: true, attributeFilter: ['hidden'] });
+}
+
+// openRowMenu is a session's menu, from its row's ⋮ or - with `device`, and
+// then with this device's options as its last item - from the top bar's.
+async function openRowMenu(anchor, id, { device = false } = {}) {
   const session = sessionOf(id);
   const menu = dom.sessionMenu;
   if (!session || !menu) return;
@@ -2093,14 +2302,30 @@ async function openRowMenu(anchor, id) {
   // A prepared session has no terminal, so no keys, no scrollback and no
   // status to file it under yet: it can be looked at, named and deleted.
   const prepared = isPrepared(session);
+  // A chat has no scrollback either: its conversation is its history, and
+  // compacting it is something to ask of its agent.
+  const chat = isChat(session);
   menuActions.clear();
+  menuInTap.clear();
   const items = [];
-  const add = (action, label, glyph, run, checked) => {
+  const add = (action, label, glyph, run, checked, role) => {
     menuActions.set(action, run);
-    items.push(menuItemHtml(action, label, glyph, checked));
+    items.push(menuItemHtml(action, label, glyph, checked, role));
   };
+  // A phone's top bar has no room for copy, paste and upload (so-stage.css):
+  // for the terminal on the stage they are the first items of its menu.
+  if (state.transfer && state.term && state.current && state.current.id === session.id
+    && window.matchMedia('(max-width: 600px)').matches) {
+    add('copy', 'Copy', 'copy', () => state.transfer.copy(anchor));
+    add('paste', 'Paste', 'paste', () => state.transfer.paste());
+    add('upload', 'Upload a file', 'upload', () => state.transfer.upload());
+    menuInTap.add('paste');
+    menuInTap.add('upload');
+    items.push(html`<div class="ds-menu__divider" role="separator"></div>`);
+  }
   add('info', 'Info', 'info', () => infoDialog(session, anchor));
   if (!editor) add('rename', 'Rename', 'pencil', () => renameSession(session, anchor));
+  if (!editor && session.workdir_missing) add('folder', 'Point to folder', 'folder', () => pointFolder(session, anchor));
   if (!editor && !prepared) {
     items.push(html`<div class="ds-menu__divider" role="separator"></div><p class="so-menu-heading" aria-hidden="true">Status</p>`);
     for (const one of STATUSES) {
@@ -2109,10 +2334,48 @@ async function openRowMenu(anchor, id) {
   }
   items.push(html`<div class="ds-menu__divider" role="separator"></div>`);
   if (editor && state.current?.id === session.id) add('reload', 'Reload editor', 'sync', () => attach(session));
-  if (!prepared) add('journal', editor ? 'Download server log' : 'Download scrollback', 'download', () => downloadJournal(session));
+  if (chat) {
+    // Claude Code's session option, which its agent takes up from the next
+    // message on.
+    if (session.harness === 'claude') {
+      const on = !!(session.options && session.options.ultracode);
+      add('ultracode', 'Ultracode', '', () => setUltracode(session, !on), on, 'menuitemcheckbox');
+    }
+    add('compact', 'Compact the conversation', 'archive', () => compactChat(session));
+    add('export', 'Download the conversation', 'download', () => exportChat(session));
+    // Off unless asked for, per chat: at a limit the chat goes on with the
+    // account that has the most left instead of stopping (REBUILD.md §4.3).
+    if (!prepared) {
+      const on = !!session.options?.auto_switch;
+      add('auto-switch', 'Switch accounts at a limit', '', () => setAutoSwitch(session, !on), on, 'menuitemcheckbox');
+    }
+  } else if (!prepared) {
+    add('journal', editor ? 'Download server log' : 'Download scrollback', 'download', () => downloadJournal(session));
+  }
   add('delete', editor ? 'Close VS Code' : 'Delete', editor ? 'close' : 'trash', () => deleteSession(session));
+  if (device) {
+    items.push(html`<div class="ds-menu__divider" role="separator"></div>`);
+    // Once the menu has gone, so that its leaving - which puts the focus
+    // back on the ⋮ and says it is shut - does not happen under the dialog.
+    add('device', 'This device\u2026', 'settings', () => afterMenu(() => openOptions(anchor)));
+  }
+  if (actionSheetWanted()) {
+    openActionSheet(anchor, session.title, items);
+    return;
+  }
+  anchor.setAttribute('aria-controls', 'sessionMenu');
   morph(menu, html`${items}`);
-  showOverlay(menu, anchor);
+  showOverlay(menu, anchor).then(() => menuCue());
+  menuCue();
+}
+
+// menuCue says, by a fade at its foot, that the row menu goes on below what
+// fits: at 1280x800 a chat's twelve items were cut exactly at Ultracode, with
+// Compact, Download, the limit switch and Delete out of sight.
+let menuCueCheck = null;
+function menuCue() {
+  if (!menuCueCheck) menuCueCheck = edgeCue(dom.sessionMenu);
+  else menuCueCheck();
 }
 
 /* ------------------------------------------------------ the options dialog */
@@ -2143,8 +2406,28 @@ function syncOptions() {
 
 function openOptions(anchor) {
   syncOptions();
+  anchor.setAttribute('aria-controls', 'optionsDialog');
   anchor.setAttribute('aria-expanded', 'true');
   showOverlay(dom.optionsDialog, anchor);
+}
+
+// barMenuSession is the session the top bar's ⋮ is the menu of: the one on
+// the stage, when one is.
+function barMenuSession() {
+  return !homeShown() && state.current ? sessionOf(state.current.id) || state.current : null;
+}
+
+// drawBarMenu says on the top bar's ⋮ what a press opens: the menu of the
+// session on the stage, or this device's options.
+function drawBarMenu() {
+  const button = dom.optionsBtn;
+  const session = barMenuSession();
+  const words = !session ? 'Options for this device' : isChat(session) ? 'Chat actions' : 'Session actions';
+  if (button.getAttribute('aria-label') !== words) {
+    button.setAttribute('aria-label', words);
+    button.setAttribute('data-tip', words);
+  }
+  button.setAttribute('aria-haspopup', session && !actionSheetWanted() ? 'menu' : 'dialog');
 }
 
 // setOption is one switch of the options dialog, pressed.
@@ -2201,7 +2484,7 @@ function homeShown() { return !!state.home && state.home.shown(); }
  *
  * Nothing is attached while it is shown - no terminal, no socket, no panel -
  * so nothing on it can take the focus, and the top bar is reset to the state
- * it has with no session: no status, no usage, no copy and paste.
+ * it has with no session: no status, no copy and paste.
  */
 function showHome({ replace = false } = {}) {
   if (state.pendingAttach) { clearTimeout(state.pendingAttach); state.pendingAttach = null; }
@@ -2212,7 +2495,6 @@ function showHome({ replace = false } = {}) {
   dom.termWrap.hidden = true;
   setTitleText('Home');
   dom.titleRegen.hidden = true;
-  stopUsage();
   if (state.assist) state.assist.attached();
   if (state.transfer) state.transfer.attached();
   dom.sessionStatus.hidden = true;
@@ -2253,6 +2535,12 @@ function applySession(session) {
     attach(session);
     return;
   }
+  // A row that changed what it is under the view showing it - a chat that is
+  // prepared again after a start that failed - is drawn as what it is now.
+  if (state.chat && state.chat.shownId() === session.id && !isChat(session)) {
+    attach(session);
+    return;
+  }
   // And the other way: a start this page saw as "starting" - and so opened
   // a terminal for - that failed before anything ran, and was put back to
   // prepared with the reason. The terminal has nothing to show (the server
@@ -2272,210 +2560,17 @@ function applySession(session) {
   drawOutcomeTag();
 
   // What it runs and on which model is in the list's mark and in "Info" in
-  // the row's menu; the bar keeps its width for the name. A prepared
-  // session has no conversation to cost anything yet, and its panel shows
-  // each profile's limits where the profile is chosen.
+  // the row's menu; the bar keeps its width for the name. A chat says what
+  // it used under its own "i" (chatview.js), and a prepared one shows its
+  // account's limits where the account is chosen.
   if (isPrepared(session)) {
-    stopUsage();
     if (state.prestart) state.prestart.update(session);
-  } else {
-    startUsage(session);
+  } else if (isChat(session)) {
+    if (state.chat) state.chat.update(session);
   }
 
   drawOverlay(session);
   renderList();
-}
-
-const USAGE_REFRESH = 30000;
-// How often the countdowns are redrawn from the reading on screen. A reading
-// is asked for every thirty seconds, but one that cannot be had - no signal,
-// a slow endpoint - must not leave "2h 36m" standing for an hour.
-const USAGE_TICK = 15000;
-
-// What each window is called where there is room to say it.
-const WINDOW_NAMES = { '5h': '5-hour limit', '7d': 'Weekly limit', Fable: 'Fable weekly limit' };
-
-function stopUsage() {
-  state.usageGeneration += 1;
-  if (state.usageTimer) clearInterval(state.usageTimer);
-  if (state.usageTick) clearInterval(state.usageTick);
-  state.usageTimer = null;
-  state.usageTick = null;
-  state.usageFor = '';
-  state.usageRefresh = null;
-  state.usage = null;
-  if (dom.usageDialog && dom.usageDialog.open) hideOverlay(dom.usageDialog);
-  dom.sessionUsage.hidden = true;
-  morph(dom.sessionUsage, '');
-  dom.sessionUsage.removeAttribute('data-tip');
-  placeUsage();
-}
-
-function startUsage(session) {
-  // applySession runs on every newer row of the session on screen - a list
-  // refresh, a rename, a found conversation - and each is a good moment to
-  // read the numbers again. But the reading on screen stays until the new one
-  // is in: starting over emptied the strip first, so the limits blinked away
-  // on every refresh and, on a phone, the bar lost its second line and the
-  // pane was resized twice for nothing.
-  if (session && state.usageTimer && state.usageFor === session.id && state.usageRefresh) {
-    state.usageRefresh();
-    return;
-  }
-  stopUsage();
-  if (!session || session.harness === 'vscode') return;
-  state.usageFor = session.id;
-  placeUsage();
-  const generation = state.usageGeneration;
-  const refresh = async () => {
-    try {
-      const usage = await api('/api/sessions/' + encodeURIComponent(session.id) + '/usage', {
-        attempts: 1, timeout: 10000,
-      });
-      if (generation !== state.usageGeneration || !state.current || state.current.id !== session.id) return;
-      state.usage = usage;
-      drawUsage(usage);
-    } catch { /* quota is useful context, never a reason to disturb the terminal */ }
-  };
-  refresh();
-  state.usageRefresh = refresh;
-  state.usageTimer = setInterval(refresh, USAGE_REFRESH);
-  state.usageTick = setInterval(() => {
-    if (generation === state.usageGeneration && state.usage) drawUsage(state.usage);
-  }, USAGE_TICK);
-}
-
-/**
- * limitWindows is a reading's windows as they stand now: the share used,
- * clamped, and how long until each renews. A window whose renewal has passed
- * since the reading was taken has renewed, and is empty until the next
- * reading says otherwise - the same rule the server applies.
- */
-function limitWindows(usage, now = Date.now()) {
-  const windows = Array.isArray(usage && usage.windows) ? usage.windows : [];
-  return windows.filter((w) => w && w.label).map((w) => {
-    const at = w.resets_at ? new Date(w.resets_at).getTime() : NaN;
-    const renewed = Number.isFinite(at) && at <= now;
-    const used = renewed ? 0 : Math.max(0, Math.min(100, Math.round(Number(w.used_percent) || 0)));
-    const left = renewed ? '' : harnesses.untilReset(w, now);
-    return { label: w.label, used, left, renewed, at: left ? at : NaN };
-  });
-}
-
-function drawUsage(usage) {
-  const parts = [];
-  const details = [];
-  for (const window of limitWindows(usage)) {
-    // How long until the window renews is shown, not only hovered: whether
-    // 80% is a problem depends on whether it is gone in ten minutes.
-    parts.push(html`<span class="so-usage__part" data-window="${window.label}"><span class="so-usage__label">${window.label}</span> <span class="so-usage__used">${window.used + '%'}</span>${
-      window.left ? html` <span class="so-usage__reset">(${window.left}<span class="so-usage__left"> left</span>)</span>` : ''
-    }</span>`);
-    details.push(window.label + ': ' + window.used + '% used'
-      + (window.left ? ' · resets in ' + window.left + ' (' + renewalTime(window.at) + ')' : ''));
-  }
-  if (Number.isFinite(usage && usage.cost_usd)) {
-    const value = Number(usage.cost_usd);
-    const shown = value > 0 && value < .01 ? '<$0.01' : '$' + value.toFixed(2);
-    parts.push(html`<span class="so-usage__part so-usage__cost">${'~' + shown}</span>`);
-    details.push('Estimated session API-equivalent cost: $' + value.toFixed(4));
-  }
-  // One line inside the button: the button lays out its children with a gap
-  // of its own, which is not the spacing of the parts.
-  morph(dom.sessionUsage, parts.length ? html`<span class="so-usage__line">${parts}</span>` : '');
-  dom.sessionUsage.setAttribute('data-tip', details.join('\n'));
-  dom.sessionUsage.setAttribute('aria-label', details.join('. ') || 'Usage');
-  dom.sessionUsage.hidden = parts.length === 0;
-  placeUsage();
-  fitUsage();
-  // The reading that is open says what the strip now says, and goes with it.
-  if (dom.usageDialog && dom.usageDialog.open) {
-    if (parts.length === 0) hideOverlay(dom.usageDialog);
-    else drawUsageReading();
-  }
-}
-
-/**
- * fitUsage keeps the strip on its one line where its width is given to it -
- * a phone's, where it is the line under the bar. Three windows and a cost are
- * more than 360px say in full, so it gives up, in order, its spacing, the
- * cost (which the reading behind a tap still has) and a step of type size
- * before anything about a limit. What is still too wide can be swiped along:
- * nothing is cut off where it cannot be reached.
- */
-function fitUsage() {
-  const strip = dom.sessionUsage;
-  strip.removeAttribute('data-fit');
-  if (strip.hidden) return;
-  for (const level of ['1', '2', '3']) {
-    if (strip.scrollWidth <= strip.clientWidth + 1) return;
-    strip.setAttribute('data-fit', level);
-  }
-}
-
-// The narrow layout, where the bar has no room for the strip: there it is a
-// line of its own at the top of the column, under the bar.
-const usageNarrow = window.matchMedia('(max-width: 700px)');
-
-/**
- * placeUsage puts the strip where the window has room for it: in the bar,
- * before its actions, or on the line under the bar on a phone. It is the same
- * button either way, so its listeners and its open reading come along.
- */
-function placeUsage() {
-  const strip = dom.sessionUsage;
-  const line = dom.usageLine;
-  if (!strip || !line) return;
-  if (usageNarrow.matches) {
-    if (strip.parentElement !== line) line.append(strip);
-  } else if (strip.parentElement !== dom.topbar) {
-    dom.topbar.insertBefore(strip, dom.topbar.querySelector('.so-topbar__actions'));
-  }
-  // The line is there for as long as a session's usage is being read, before
-  // the first reading is in: a line that came with the reading would shrink
-  // the stage under a terminal that has just been fitted to it.
-  line.hidden = !usageNarrow.matches || (strip.hidden && !state.usageFor);
-}
-
-/**
- * renewalTime is when a window renews, the way a clock on a wall says it:
- * "today 14:30", "tomorrow 09:00", or the weekday and date for later.
- */
-function renewalTime(at, now = new Date()) {
-  const when = new Date(at);
-  if (!Number.isFinite(when.getTime())) return '';
-  const clock = when.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-  const day = (d) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
-  const days = Math.round((day(when) - day(now)) / 86400000);
-  if (days === 0) return 'today ' + clock;
-  if (days === 1) return 'tomorrow ' + clock;
-  return when.toLocaleDateString([], { weekday: 'short', day: 'numeric', month: 'short' }) + ', ' + clock;
-}
-
-/**
- * openUsage is the whole reading behind the strip: each window, how full it
- * is, and when exactly it renews. It is what the tooltip says at a desk, for
- * a touch screen that has no tooltips.
- */
-function openUsage(anchor) {
-  if (!state.usage) return;
-  drawUsageReading();
-  anchor.setAttribute('aria-expanded', 'true');
-  showOverlay(dom.usageDialog, anchor);
-}
-
-// drawUsageReading fills the usage dialog from the reading on screen.
-function drawUsageReading() {
-  const usage = state.usage || {};
-  const rows = limitWindows(usage).map((window) => html`<div class="so-usage-row" data-window="${window.label}"><div class="so-usage-row__head"><span class="so-usage-row__name">${WINDOW_NAMES[window.label] || window.label}</span><span class="so-usage-row__used">${window.used + '% used'}</span></div><div class="ds-progress ds-progress--flat so-usage-row__meter" style="${'--ds-progress: ' + window.used / 100}"><div class="ds-progress__track" role="progressbar" aria-label="${(WINDOW_NAMES[window.label] || window.label) + ' used'}" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${window.used}"><div class="ds-progress__bar"></div></div></div><div class="so-usage-row__reset">${
-    window.left ? 'Resets in ' + window.left + ' · ' + renewalTime(window.at)
-      : window.renewed ? 'Renewed · waiting for the next reading'
-        : 'No renewal time reported'
-  }</div></div>`);
-  if (Number.isFinite(usage.cost_usd)) {
-    rows.push(html`<div class="so-usage-row so-usage-row--cost"><div class="so-usage-row__head"><span class="so-usage-row__name">This session</span><span class="so-usage-row__used">${'~$' + Number(usage.cost_usd).toFixed(2)}</span></div><div class="so-usage-row__reset">Estimated API-equivalent cost</div></div>`);
-  }
-  morph(dom.usageReading, html`${rows}`);
 }
 
 // drawOverlay is §E.7's table. Everything it can say is a state the session is
@@ -2536,6 +2631,8 @@ function wireCover() {
 // coverMarkup is what the cover says for a session, or null when the pane is
 // free.
 function coverMarkup(session) {
+  // A chat has no pane to cover: it says how it is in its own dock.
+  if (isChat(session)) return null;
   const title = (words) => html`<h2 class="ds-dialog__title" id="termOverlayTitle">${words}</h2>`;
   const actions = (...buttons) => html`<div class="ds-dialog__actions">${buttons}</div>`;
   // The way out is where the focus lands when the cover comes up.
@@ -2558,12 +2655,19 @@ function coverMarkup(session) {
     else state.resuming = false;
   }
   switch (drawn) {
-    case 'exited':
+    case 'exited': {
       // Why a pane ended is the one fact the cover is raised for, so it is a
-      // plain line under the sentence rather than behind an "i".
+      // plain line under the sentence rather than behind an "i" - when it is
+      // known: -1 is the store's "tmux did not say" (a shell left with
+      // `exit` sometimes ends before tmux has its status), not a status, and
+      // "Exit status -1" read as a failure that never happened.
+      const status = Number(session.exit_status);
+      const why = !Number.isInteger(status) || status < 0 ? ''
+        : status === 0 ? 'It ended normally.' : 'It ended with exit status ' + status + '.';
       return html`${title('The session ended.')}
-        <p class="so-pane__detail" id="termOverlayText">${'Exit status ' + session.exit_status}</p>
+        ${why ? html`<p class="so-pane__detail" id="termOverlayText">${why}</p>` : ''}
         ${actions(button('delete', 'Delete'), actionButton(session, 'Restart', 'Restarting'))}`;
+    }
     case 'failed':
       return html`${title('The session could not start.')}
         ${session.fail_reason ? html`<p class="so-pane__detail" id="termOverlayText">${session.fail_reason}</p>` : ''}
@@ -2597,6 +2701,13 @@ const NOTICE_LINGER = 6000;
 // The timer of the line that is up, which decides when it goes. There is only
 // ever one notice, so there is only ever one of it.
 let noticeTimer = null;
+// The element the line is up in: over the pane of a terminal, in the dock of a
+// chat (where the pane is hidden), as the ticker is.
+let noticeIn = null;
+
+function noticeHost() {
+  return chatShown() ? state.chat.noticeBox() : dom.termNotice;
+}
 
 // The mark each kind of notice leads with; anything else is information.
 const NOTICE_ICON = { status: 'summarize', desync: 'sync', resized: 'monitor', resumed: 'history' };
@@ -2606,8 +2717,11 @@ const NOTICE_ICON = { status: 'summarize', desync: 'sync', resized: 'monitor', r
 // being detached - rather than for "this has been read".
 function clearNotice() {
   if (noticeTimer) { clearTimeout(noticeTimer); noticeTimer = null; }
-  M.cancel(dom.termNotice);
-  dom.termNotice.hidden = true;
+  for (const host of new Set([dom.termNotice, noticeIn])) {
+    if (!host) continue;
+    M.cancel(host);
+    host.hidden = true;
+  }
 }
 
 // notice draws the thin line at the top of the pane (a ds-alert). It never
@@ -2621,7 +2735,10 @@ function clearNotice() {
 // sentence. §E.10 rule 3: it goes behind the "i" and never into the line
 // itself.
 function notice(kind, text, onDismiss, facts, extra) {
-  const host = dom.termNotice;
+  const host = noticeHost();
+  // A line up in the other place goes with no ceremony: it is not on screen.
+  if (noticeIn && noticeIn !== host) clearNotice();
+  noticeIn = host;
   // A new line replaces the one that is up, so the space is free for the next
   // one and no timer from the old line reaches the new one.
   if (noticeTimer) { clearTimeout(noticeTimer); noticeTimer = null; }
@@ -2711,9 +2828,11 @@ let ideGeneration = 0;
 function detach() {
   ideGeneration += 1;
   dom.stage.removeAttribute('data-ide');
+  showKeyboardSwitch(false);
   if (state.assist) state.assist.attached();
   if (state.keybar) { state.keybar.dispose(); state.keybar = null; }
   dom.keybar.hidden = true;
+  placeToasts();
   if (state.socket) { state.socket.stop(); state.socket = null; }
   if (state.term) { state.term.dispose(); state.term = null; }
   dom.term.replaceChildren();
@@ -2722,8 +2841,10 @@ function detach() {
   state.resuming = false;
   if (state.transfer) state.transfer.attached();
   // A prepared session's panel stands where the pane does; whatever comes
-  // next - a terminal, another panel, nothing - starts from the pane.
+  // next - a terminal, another panel, nothing - starts from the pane. So
+  // does a chat.
   if (state.prestart) state.prestart.hide();
+  if (state.chat) state.chat.hide();
   dom.termWrap.hidden = false;
 }
 
@@ -2751,14 +2872,27 @@ function attach(session) {
     if (state.transfer) state.transfer.attached();
     return;
   }
+  // A chat is drawn by the page: its conversation and its composer stand
+  // where the pane would, whatever it is filed as - a done chat's agent is
+  // put to rest, and its conversation is still there to read.
+  if (isChat(session)) {
+    dom.termWrap.hidden = true;
+    if (notifier) notifier.hush(session.id);
+    state.chat.show(session);
+    if (state.assist) state.assist.attached();
+    if (state.transfer) state.transfer.attached();
+    return;
+  }
   // A done session has no terminal to open, and opening it must not start one:
   // the overlay applySession drew is all there is until it is picked up.
   if (isDone(session)) return;
   // A session that was just opened is still settling: see notify.hush.
   if (notifier) notifier.hush(session.id);
   if (session.harness === 'vscode') {
-    // The stage holds an editor: no lines over it, no inset around it.
+    // The stage holds an editor: no lines over it, no inset around it. Its
+    // fields wait for the keyboard switch, as the terminal's does.
     dom.stage.setAttribute('data-ide', '');
+    showKeyboardSwitch(true);
     openIDE(session, ideGeneration);
     return;
   }
@@ -2816,6 +2950,7 @@ function attach(session) {
   // it is focused below in this same tick - before the keyboard switch would
   // otherwise have seen it.
   guard(state.term.term.textarea);
+  showKeyboardSwitch(true);
   // The two controls in the header. A recording that belonged to the session
   // before this one is cancelled here, so its words can never be typed into
   // the terminal that has just taken the screen.
@@ -2951,8 +3086,98 @@ function applyKeyBar() {
   if (state.keybar) showKeyBar(keyBarWanted());
 }
 
+// placeToasts keeps the snackbars off what a finger needs (DS
+// --ds-toast-bottom, "to stay above a bar pinned there"; --ds-toast-left),
+// and an error stays until it is closed:
+//   - the region in an open side sheet (DS moves it there and places it):
+//     the sheet covers the page, and its body keeps room for a message that
+//     stays (api.js reserveToasts);
+//   - the region in an open dialog (DS moves it there and leaves it where
+//     it stood): at the bottom edge, past a keyboard, and the dialog keeps
+//     that strip (api.js keepDialogRoom) - what stands at the page's bottom
+//     is under the dialog's scrim;
+//   - the modal drawer open: beside it where the window is wide enough for
+//     the messages to stand there (as beside the docked drawer, DS), else
+//     above its foot (Costs, Admin, Sign out), the session list keeping
+//     room at its end to scroll its last rows clear;
+//   - the key bar shown: above it - a message over Esc and Ctrl is a key bar
+//     a thumb cannot use;
+//   - a chat shown: above its dock, and above "Latest" (chatview.js says
+//     how much room it needs), and while a message that stays shows, the
+//     conversation keeps its height at its end, so that the last answer and
+//     its Copy can scroll clear of it.
+// The key bar and the dock stand at the bottom of the app, which is as
+// tall as what can be seen (keybar.js --so-app-h): a keyboard that only
+// shrinks the visual viewport adds its height. Heights only, never where
+// something stands, which a keyboard moves before or after this runs.
+// Every edge holds the safe area already, which the region adds as its
+// margin. Only a left this set is taken back.
+let chatToastRoom = 0;
+let toastLeft = '';
+const TOASTS_BESIDE = window.matchMedia('(min-width: 601px)');
+function placeToasts() {
+  const region = document.getElementById('toasts');
+  if (!region) return;
+  const vv = window.visualViewport;
+  const keyboard = vv ? Math.max(0, Math.round(window.innerHeight - vv.offsetTop - vv.height)) : 0;
+  const inSheet = !!region.closest('.ds-sheet');
+  const inDialog = !inSheet && !!region.closest('dialog.ds-dialog[open]');
+  const drawer = dom.app.hasAttribute('data-drawer-open') && drawerModal();
+  // The messages' height: nothing while there are none.
+  const stack = region.querySelector('.ds-toast') ? region.offsetHeight : 0;
+  let room = 0;
+  let list = 0;
+  let left = '';
+  if (inSheet) {
+    room = 0;
+  } else if (inDialog) {
+    room = keyboard;
+  } else if (drawer) {
+    if (TOASTS_BESIDE.matches) {
+      left = 'calc(var(--ds-drawer-width) + env(safe-area-inset-left) + var(--ds-space-6))';
+    } else {
+      const foot = dom.sidebar.querySelector('.so-drawer-foot');
+      room = foot ? foot.offsetHeight : 0;
+    }
+  } else if (!dom.keybar.hidden && dom.keybar.offsetHeight) {
+    room = dom.keybar.offsetHeight + keyboard;
+  } else if (chatToastRoom) {
+    room = chatToastRoom + keyboard;
+  }
+  // The drawer's list keeps its room under a dialog opened from it (a
+  // row's ⋮), rather than jumping under the scrim.
+  if (drawer && !inSheet && !TOASTS_BESIDE.matches) list = stack;
+  const value = room ? 'calc(' + room + 'px + var(--ds-space-3) - env(safe-area-inset-bottom, 0px))' : '';
+  if (region.style.getPropertyValue('--ds-toast-bottom') !== value) {
+    if (value) region.style.setProperty('--ds-toast-bottom', value);
+    else region.style.removeProperty('--ds-toast-bottom');
+  }
+  if (!inSheet && !inDialog) {
+    const now = region.style.getPropertyValue('--ds-toast-left');
+    if (left && now !== left) region.style.setProperty('--ds-toast-left', left);
+    else if (!left && toastLeft && now === toastLeft) region.style.removeProperty('--ds-toast-left');
+    toastLeft = left;
+  }
+  const reserve = list ? list + 'px' : '';
+  if (dom.sidebar.style.getPropertyValue('--so-drawer-reserve') !== reserve) {
+    if (reserve) dom.sidebar.style.setProperty('--so-drawer-reserve', reserve);
+    else dom.sidebar.style.removeProperty('--so-drawer-reserve');
+  }
+  // A chat on screen with a message that stays over its end: the
+  // conversation is that much longer (so-chat.css --so-chat-reserve), and
+  // one read at its end stays there (chatview.js).
+  const chatReserve = chatToastRoom && stack && toastsStay() ? 'calc(' + stack + 'px + var(--ds-space-3))' : '';
+  if (dom.chat.style.getPropertyValue('--so-chat-reserve') !== chatReserve) {
+    if (chatReserve) dom.chat.style.setProperty('--so-chat-reserve', chatReserve);
+    else dom.chat.style.removeProperty('--so-chat-reserve');
+  }
+  // The lift a dialog's room is measured from may just have changed.
+  keepDialogRoom();
+}
+
 function showKeyBar(on) {
   dom.keybar.hidden = !on;
+  placeToasts();
   // A modifier armed on a bar nobody can see would transform the next key
   // typed with nothing on screen to say why.
   if (!on && state.keybar) state.keybar.clear();
@@ -2978,6 +3203,9 @@ function renameRow(id, title) {
   renderList();
 }
 
+// Whether the server is being asked if there is a key to name with.
+let regenAsking = false;
+
 // drawTitling shows in the header whether the session on screen is being
 // named: the name pulses and the arrow beside it turns. An editor is named
 // after its folder, so it has no arrow.
@@ -2985,10 +3213,39 @@ function drawTitling(id) {
   const titling = state.titling.has(id);
   dom.sessionTitle.toggleAttribute('data-titling', titling);
   dom.titleRegen.hidden = !state.current || state.current.harness === IDE;
-  // While a name is being thought of, the sparkles turn into a spinner and a
+  // While a name is being thought of - or the server is asked whether there
+  // is a key to think of one with - the sparkles turn into a spinner and a
   // second press does nothing (wire).
-  if (titling) dom.titleRegen.setAttribute('aria-busy', 'true');
+  if (titling || regenAsking) dom.titleRegen.setAttribute('aria-busy', 'true');
   else dom.titleRegen.removeAttribute('aria-busy');
+  // A name is thought of by a model on OpenRouter: without a key the tip
+  // says why a press only explains, as Status's and Speak's do.
+  const tip = voiceKey() === false ? 'Needs an OpenRouter key (Admin, Voice)' : 'Name this session again from what it is about';
+  if (dom.titleRegen.getAttribute('data-tip') !== tip) dom.titleRegen.setAttribute('data-tip', tip);
+}
+
+// renameAgain is the sparkles' press: a new name for the session on screen,
+// or - with no OpenRouter key, asked again first - the dialog that says
+// where one is added, before anything is sent.
+async function renameAgain() {
+  const session = state.current;
+  if (!session || regenAsking || dom.titleRegen.getAttribute('aria-busy') === 'true') return;
+  if (voiceKey() === false) {
+    regenAsking = true;
+    drawTitling(session.id);
+    let missing = false;
+    try {
+      missing = await keyMissing();
+    } finally {
+      regenAsking = false;
+      if (state.current) drawTitling(state.current.id);
+    }
+    if (missing) {
+      explainNoKey('title', dom.titleRegen);
+      return;
+    }
+  }
+  retitleSession(session);
 }
 
 // retitleSession asks for a new name for the session on screen, from what it
@@ -3017,7 +3274,12 @@ async function retitleSession(session, { unnamed = false, prompt } = {}) {
     if (data && data.session) replaceSession(data.session);
   } catch (err) {
     if (unnamed) toast('Could not name the session: ' + errorMessage(err), 'error');
-    else alertDialog({ title: 'Could not name the session', body: errorMessage(err) });
+    else if (err && Number(err.status) === 409 && /openrouter api key/i.test(String(err.message || ''))) {
+      // The server has no key to name it with (a key taken away since the
+      // page knew of one): said the way the press says it, with Admin.
+      setVoiceKey(false);
+      explainNoKey('title', dom.titleRegen);
+    } else alertDialog({ title: 'Could not name the session', body: errorMessage(err) });
   } finally {
     state.titling.delete(session.id);
     state.namingHere.delete(session.id);
@@ -3116,10 +3378,6 @@ function onControl(sessionId, frame) {
   // so this frame is about whichever session it names and not about the one
   // this socket is attached to.
   if (frame.t === 'title') { titleFrame(frame); return; }
-  // The answer the operator is giving is broadcast on the session's own
-  // sockets as well as on the event stream, so a dialog opened over this
-  // terminal hears it even while the stream is reconnecting.
-  if (frame.t === 'answer') { if (frame.id) answerFrame(frame.id, frame.run || null); return; }
   // A verdict is about whichever session it names, as a title is.
   if (frame.t === 'outcome') { if (frame.id) outcomeFrame(frame.id, frame.outcome || null); return; }
   if (!state.current || state.current.id !== sessionId) return;
@@ -3165,13 +3423,13 @@ function onControl(sessionId, frame) {
       break;
     case 'notice':
       if (frame.kind === 'resumed') {
-        const text = 'Resumed after a restart.'
-          + (frame.fresh ? ' The previous conversation could not be resumed, so this one starts fresh.' : '');
-        notice('resumed', text, () => {
+        // A terminal has no conversation to lose: its resume is a new shell
+        // in the same folder, and that is all the banner has to say.
+        notice('resumed', 'Resumed after a restart.', () => {
           api('/api/sessions/' + encodeURIComponent(sessionId) + '/ack-resume', { method: 'POST' })
             .then((data) => replaceSession(data.session))
             .catch(() => { /* the flag stays up and the banner comes back */ });
-        }, frame.resumed_from ? ['conversation ' + frame.resumed_from] : null);
+        });
       }
       break;
     case 'input_lost':
@@ -3210,7 +3468,9 @@ function onStatus(status) {
 
 function updateStale() {
   if (state.assist) state.assist.live();
-  const stale = !state.live
+  // A chat keeps its own reckoning of its stream (chatview.js), by the same
+  // grace.
+  const stale = chatShown() ? state.chat.stale() : !state.live
     && (navigator.onLine === false || Date.now() - (state.lostAt || Date.now()) >= CONNECTION_GRACE);
   document.body.toggleAttribute('data-stale', stale);
   dom.termWrap.toggleAttribute('data-stale', stale);
@@ -3228,7 +3488,8 @@ function selectSession(id) {
   // Already open - unless it is a prepared session showing something other
   // than its panel, which a click is the way back from.
   const panelShown = state.prestart && state.prestart.shownId() === id;
-  if (state.current && state.current.id === id && (panelShown
+  const chatOpen = !!state.chat && state.chat.shownId() === id;
+  if (state.current && state.current.id === id && (panelShown || chatOpen
     || (!isPrepared(session) && (state.socket || dom.stage.hasAttribute('data-ide'))))) return;
   markRead(id);
   state.wanted = id;
@@ -3303,12 +3564,9 @@ function measureForStart() {
   }
 }
 
-// prepareSession stores a session with its settings and nothing else, and
-// opens its panel, where the first prompt is written and Start is pressed.
-// The size is sent along because a scheduled start has no page to measure
-// one: it starts at the size the session was prepared at.
+// prepareSession stores a chat with its settings and nothing else, and opens
+// its panel, where the first prompt is written and Start is pressed.
 async function prepareSession(pick) {
-  const size = measureForStart();
   try {
     const data = await api('/api/sessions', {
       method: 'POST',
@@ -3320,13 +3578,11 @@ async function prepareSession(pick) {
         harness: pick.harness,
         model: pick.model,
         effort: pick.effort,
-        profile: pick.profile || undefined,
-        profile_auto: pick.profile_auto || undefined,
         ultracode: pick.ultracode || undefined,
+        account: pick.account || undefined,
+        auto_switch: pick.auto_switch || undefined,
         workdir_mode: pick.workdir_mode,
         workdir: pick.workdir,
-        cols: size.cols || undefined,
-        rows: size.rows || undefined,
       },
     });
     replaceSession(data.session);
@@ -3334,7 +3590,7 @@ async function prepareSession(pick) {
     location.hash = '#' + data.session.id;
     attach(data.session);
     // The prompt is the next thing to do, so the cursor is put there. On a
-    // touch screen the field stays muted until the keyboard is asked for.
+    // touch screen it raises no keyboard until a finger lands on it.
     const field = state.prestart && state.prestart.field();
     if (field) field.focus({ preventScroll: true });
   } catch (err) {
@@ -3353,6 +3609,11 @@ async function newSession() {
     await prepareSession(pick);
     return;
   }
+  if (pick.chat) {
+    await startChat(pick);
+    return;
+  }
+  // A Shell: a folder, and the size of the pane it is about to be drawn in.
   const size = measureForStart();
   try {
     const data = await api('/api/sessions', {
@@ -3362,10 +3623,6 @@ async function newSession() {
       body: {
         client_id: clientKey(),
         harness: pick.harness,
-        model: pick.model,
-        effort: pick.effort,
-        profile: pick.profile || undefined,
-        ultracode: pick.ultracode || undefined,
         workdir_mode: pick.workdir_mode,
         workdir: pick.workdir,
         cols: size.cols || undefined,
@@ -3377,6 +3634,38 @@ async function newSession() {
     state.wanted = data.session.id;
     location.hash = '#' + data.session.id;
     attach(data.session);
+  } catch (err) {
+    toast(errorMessage(err), 'error');
+  }
+}
+
+// startChat makes a chat (AGENT-HOST.md §7): its host comes up at once, so
+// the first message finds the agent warm, and the chat takes the stage with
+// the cursor in its composer. The client_id makes a create retried over a
+// link that dropped the same chat.
+async function startChat(pick) {
+  try {
+    const data = await api('/api/chats', {
+      method: 'POST',
+      attempts: 2,
+      timeout: 30000,
+      body: {
+        client_id: clientKey(),
+        harness: pick.harness,
+        model: pick.model,
+        effort: pick.effort,
+        ultracode: pick.ultracode || undefined,
+        account: pick.account || undefined,
+        auto_switch: pick.auto_switch || undefined,
+        workdir_mode: pick.workdir_mode,
+        workdir: pick.workdir,
+      },
+    });
+    replaceSession(data.session);
+    state.wanted = data.session.id;
+    location.hash = '#' + data.session.id;
+    attach(data.session);
+    if (state.chat) state.chat.focus();
   } catch (err) {
     toast(errorMessage(err), 'error');
   }
@@ -3452,7 +3741,7 @@ function paneAfter(button) {
     const now = document.activeElement;
     if (now && now !== document.body && now !== button) return;
     if (button && now === button) {
-      if (!button.matches('.so-row__more, #sessionTitle, #optionsBtn, #sessionUsage')) return;
+      if (!button.matches('.so-row__more, #sessionTitle, #optionsBtn')) return;
       button.blur();
     }
     keepTypingAlive();
@@ -3467,6 +3756,25 @@ function paneAfter(button) {
 function setTitleText(text) {
   const host = dom.sessionTitleText || dom.sessionTitle;
   if (host.textContent !== text) host.textContent = text;
+  // The name may be cut on a phone; the tip has all of it. A tap renames it
+  // (the session's menu says so too). Home has no name to say again.
+  const button = dom.sessionTitle;
+  if (state.current && text) {
+    button.setAttribute('data-tip', text);
+    button.setAttribute('aria-description', 'Rename');
+  } else {
+    button.removeAttribute('data-tip');
+    button.removeAttribute('aria-description');
+  }
+  // Home has nothing to rename: its words stand in the bar as words, not as
+  // a button that a tap does nothing with.
+  const home = document.getElementById('homeTitle');
+  if (home) {
+    if (home.textContent !== text) home.textContent = text;
+    home.hidden = !!state.current;
+    button.hidden = !state.current;
+  }
+  drawBarMenu();
 }
 
 // The status chip beside the name: where the person filed the session, as an
@@ -3478,6 +3786,11 @@ function drawStatusChip(status) {
   chip.dataset.status = status;
   if (chip.hidden) return;
   chip.className = ('ds-status ' + (STATUS_CHIP[status] || '')).trim();
+  // On a phone the chip is its glyph alone (so-frame.css): the words are its
+  // name and its tip there, as on the list's rows.
+  chip.setAttribute('role', 'img');
+  chip.setAttribute('aria-label', STATUS_WORDS[status]);
+  chip.dataset.tip = STATUS_WORDS[status];
   morph(chip, html`${raw(icon(STATUS_GLYPH[status], 16))}<span>${STATUS_WORDS[status]}</span>`);
 }
 
@@ -3545,7 +3858,15 @@ function wire() {
   if (dom.sideCollapse) {
     dom.sideCollapse.addEventListener('click', () => showSidebar(!sidebarCollapsed()));
   }
-  dom.optionsBtn.addEventListener('click', (event) => openOptions(event.currentTarget));
+  // The top bar's ⋮: the menu of the session on the stage - in the chat's or
+  // the terminal's own header, where it is looked for - with this device's
+  // options as its last item; on Home, this device's options.
+  dom.optionsBtn.addEventListener('click', (event) => {
+    const button = event.currentTarget;
+    const session = barMenuSession();
+    if (session) openRowMenu(button, session.id, { device: true });
+    else openOptions(button);
+  });
   // The two buttons say whether their dialog is open: DS.overlay keeps
   // aria-expanded for menus, and a dialog's opener says it here.
   // Once one has gone, DS has put the focus back on its button - and a
@@ -3559,37 +3880,22 @@ function wire() {
     hideOverlay(dialog).then(() => paneAfter(button));
   });
   backToPane(dom.optionsDialog, dom.optionsBtn);
-  backToPane(dom.usageDialog, dom.sessionUsage);
   dom.optionsDialog.addEventListener('change', (event) => {
     const input = event.target.closest('[data-option]');
     if (input) setOption(input.dataset.option, input.checked);
   });
   wireList();
-  dom.sessionUsage.addEventListener('click', (event) => openUsage(event.currentTarget));
-  // The strip is fitted to the width it has, and that changes with the bar
-  // and with the line it takes on a phone.
-  if (window.ResizeObserver) {
-    const fit = new ResizeObserver(() => fitUsage());
-    fit.observe(dom.topbar);
-    fit.observe(dom.usageLine);
-  } else window.addEventListener('resize', fitUsage);
-  usageNarrow.addEventListener('change', () => { placeUsage(); fitUsage(); });
   // The name is edited where it is read.
   dom.sessionTitle.addEventListener('click', () => {
     if (state.current) renameSession(state.current, dom.sessionTitle);
   });
-  dom.titleRegen.addEventListener('click', () => {
-    if (dom.titleRegen.getAttribute('aria-busy') !== 'true') retitleSession(state.current);
-  });
+  dom.titleRegen.addEventListener('click', () => renameAgain());
+  onVoiceKey(() => { if (state.current) drawTitling(state.current.id); });
   dom.sessionOutcome.addEventListener('click', () => showOutcome());
-  // The on-screen keyboard, which on a touch screen this button raises and
-  // puts away and nothing else does. With no field focused, it is raised for
-  // the pane.
-  // A prepared session has no pane; its prompt is the field there is.
-  initKeyboard(dom.kbBtn, () => {
-    if (state.term) return state.term.term.textarea;
-    return state.prestart ? state.prestart.field() : null;
-  });
+  // The terminal's on-screen keyboard, which on a touch screen this button
+  // raises and puts away and nothing else does. Every other field - a chat's
+  // composer, a prepared session's prompt, a dialog's - raises it by a tap.
+  initKeyboard(dom.kbBtn, () => (state.term ? state.term.term.textarea : null));
   dom.logout.addEventListener('click', async () => {
     if (notifier) await notifier.signOut();
     try { await api('/api/logout', { method: 'POST' }); } catch { /* going anyway */ }
@@ -3626,6 +3932,8 @@ function wire() {
   const back = () => {
     if (document.visibilityState !== 'visible') return;
     badgeWrittenElsewhere();
+    // A chat that finished a turn while the page was away is read now.
+    if (chatShown()) markRead(state.chat.shownId());
   };
   document.addEventListener('visibilitychange', back);
   window.addEventListener('pageshow', back);
@@ -3692,10 +4000,13 @@ async function boot() {
     dom,
     notice,
     // A prepared session has nothing to summarize and no terminal to speak
-    // into; its prompt field carries a microphone of its own.
+    // into; its prompt field carries a microphone of its own. A chat is
+    // spoken into through its composer.
     current: () => (isPrepared(state.current) ? null : state.current),
-    live: () => state.live,
-    insert: (text) => insertIntoTerm(text),
+    live: () => (chatShown() ? state.chat.live() : state.live),
+    insert: (text) => (chatShown() ? state.chat.insert(text) : insertIntoTerm(text)),
+    // The ticker is over the pane of a terminal and in the dock of a chat.
+    ticker: () => (chatShown() ? state.chat.ticker() : { box: dom.termTicker, line: dom.tickerWindow }),
   });
   // Copy, paste and upload, for whichever terminal is on screen.
   state.transfer = mountTransfer({
@@ -3717,17 +4028,17 @@ async function boot() {
     // "Needs an answer" opens the question itself, on Home, the way the
     // address `#q=` does: the dialog has its own way into the session.
     question: (id) => questionOnHome(id),
-    // A turn that ended on a question in prose is a question too, though its
-    // news was "Finished": the digest that found the question says so.
-    asksInProse: (id) => {
-      const digest = state.digests.get(id);
-      return !!(digest && digest.question && digest.question.source === 'text');
-    },
     // A turn's end whose verdict is being read waits for it (outcome.js).
     outcome: (id) => state.outcomes.get(id) || null,
     questionOf: (id) => {
       const digest = state.digests.get(id);
       return (digest && digest.question) || null;
+    },
+    // A chat's notification says what its push says, from its reading.
+    chatNews: (id) => {
+      if (!isChat(sessionOf(id))) return undefined;
+      const digest = state.digests.get(id);
+      return digest ? String(digest.news || '') : undefined;
     },
     // A permission the browser answers late lands in a menu still open.
     changed: () => syncOptions(),
@@ -3735,9 +4046,9 @@ async function boot() {
     // this page may know a newer one.
     pushed: () => badgeWrittenElsewhere(),
   });
-  // The panel of a prepared session. Its Start ends where a new session's
-  // does: the row it answers with replaces the prepared one, and
-  // applySession turns the panel into that session's terminal.
+  // The panel of a prepared session. Its Start ends where a new chat's does:
+  // the row it answers with replaces the prepared one, and applySession
+  // turns the panel into that chat.
   state.prestart = mountPrestart({
     host: dom.prestart,
     replace: (row) => replaceSession(row),
@@ -3746,9 +4057,18 @@ async function boot() {
       if (error) toast('The session could not start.', 'error');
     },
     refresh: () => refreshList(),
-    measure: () => measureForStart(),
     nameFromPrompt: (session, prompt) => retitleSession(session, { unnamed: true, prompt }),
   });
+  // The chat view, for every session that is a chat. What a chat was told
+  // while it was not on screen - or before a reload - is on its way from the
+  // first moment, whatever is on the stage.
+  state.chat = mountChat({
+    host: dom.chat,
+    status: () => updateStale(),
+    openAsk: (chatId, askId) => showChatQuestions(chatId, { askId, only: true }),
+    toastRoom: (room) => { chatToastRoom = room; placeToasts(); },
+  });
+  chatOutbox().pump();
   // Home, drawn from the sidebar's own state and tests.
   state.home = mountHome({
     host: dom.home,
@@ -3763,8 +4083,37 @@ async function boot() {
     openQuestions: (id) => showQuestions(id),
   });
   followViewport();
-  // Whether the bucket is taking what is done here. Silent while it is.
-  mountStorageBanner(document.getElementById('storageBanner'));
+  // On a short screen the drawer's foot is its icons alone (so-frame.css):
+  // their names, which are their labels anyway, are their tips as well.
+  const shortDrawer = window.matchMedia('(max-height: 500px)');
+  const footTips = () => {
+    for (const item of dom.sidebar.querySelectorAll('.so-drawer-foot > .ds-drawer__item')) {
+      if (shortDrawer.matches) item.setAttribute('data-tip', item.getAttribute('aria-label') || item.textContent.trim());
+      else item.removeAttribute('data-tip');
+    }
+  };
+  shortDrawer.addEventListener('change', footTips);
+  footTips();
+  // A key bar that changes height - a phone turned on its side - takes the
+  // snackbars with it, and so do a keyboard that comes or goes, the drawer
+  // opened or closed, and a message more or less (the drawer's reserve).
+  if (window.ResizeObserver) {
+    new ResizeObserver(() => placeToasts()).observe(dom.keybar);
+    const toasts = document.getElementById('toasts');
+    if (toasts) new ResizeObserver(() => placeToasts()).observe(toasts);
+  }
+  window.addEventListener('resize', () => placeToasts());
+  if (window.visualViewport) window.visualViewport.addEventListener('resize', () => placeToasts());
+  new MutationObserver(() => placeToasts()).observe(dom.app, { attributes: true, attributeFilter: ['data-drawer-open'] });
+  // DS moves the region into a sheet that opens, and back; into a dialog
+  // as it opens, and back once it has gone.
+  new MutationObserver(() => placeToasts()).observe(document.body, { childList: true });
+  new MutationObserver((records) => { if (records.some((r) => r.target.localName === 'dialog')) placeToasts(); })
+    .observe(document.body, { attributes: true, attributeFilter: ['open'], subtree: true });
+  // A message that stays comes or goes: the conversation's room with it.
+  onToastsStay(() => placeToasts());
+  // Whether the backup has worked in the last day. Silent while it has.
+  mountBackupNotice(document.getElementById('backupNotice'));
   // Read before anything is fetched. Home is the landing page whatever the
   // address was (HOME.md §2.3), except for the two forms a notification
   // opens a tab with - a question, and a session - and the app's
@@ -3775,12 +4124,14 @@ async function boot() {
   // The catalogue decides whether a folder offers VS Code, so the list is
   // drawn again once it is in.
   harnesses.load().then(() => renderList()).catch(() => { /* the sheet says so when it is opened */ });
-  // The sheet starts a session in the profile of the ones already active in
-  // its folder, and this list is where it finds them.
-  harnesses.useSessions(() => state.sessions);
   try {
     const prefs = await api('/api/preferences', { attempts: 1, timeout: 8000 });
     if (prefs && prefs.terminal) state.terminal = { ...state.terminal, ...prefs.terminal };
+    // Whether there is an OpenRouter key, for the microphones and Status to
+    // say so before anything is recorded (voice.js), when the server tells.
+    if (prefs && typeof prefs.openrouter === 'boolean') setVoiceKey(prefs.openrouter, { told: true });
+    // And whether Text-to-Speech has one, for Read aloud (askdialog.js).
+    if (prefs && typeof prefs.tts === 'boolean') setTtsKey(prefs.tts, { told: true });
   } catch { /* the defaults above are the shipped ones */ }
   // A session a notification asked for is wanted before the list is read, so
   // that an offline start opens it the moment the list can prove it exists.

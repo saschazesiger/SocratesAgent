@@ -130,7 +130,7 @@ func TestEventStreamHelloAndTheList(t *testing.T) {
 	e := newSessionEnv(t)
 	client := e.dialEvents(t)
 	hello := client.hello()
-	for _, key := range []string{"sessions", "rev", "digests", "answers", "now"} {
+	for _, key := range []string{"sessions", "rev", "digests", "outcomes", "now"} {
 		if _, ok := hello[key]; !ok {
 			t.Fatalf("hello has no %q: %#v", key, hello)
 		}
@@ -167,7 +167,7 @@ func TestEventStreamHelloAndTheList(t *testing.T) {
 	if res.StatusCode != http.StatusOK {
 		t.Fatalf("GET /api/home: %d", res.StatusCode)
 	}
-	for _, key := range []string{"sessions", "rev", "digests", "answers", "now"} {
+	for _, key := range []string{"sessions", "rev", "digests", "outcomes", "now"} {
 		if _, ok := home[key]; !ok {
 			t.Fatalf("/api/home has no %q: %#v", key, home)
 		}
@@ -389,7 +389,7 @@ func TestHomeStateShapes(t *testing.T) {
 		t.Fatalf("GET /api/home: %d", res.StatusCode)
 	}
 	raw, _ := json.Marshal(home)
-	for _, want := range []string{`"digests":{}`, `"answers":{}`, `"sessions":[]`} {
+	for _, want := range []string{`"digests":{}`, `"outcomes":{}`, `"sessions":[]`} {
 		if !strings.Contains(string(raw), want) {
 			t.Fatalf("/api/home = %s, want %s", raw, want)
 		}

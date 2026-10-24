@@ -26,16 +26,12 @@ const (
 	KindOpenCode Kind = Kind(config.HarnessOpenCode)
 )
 
-// ErrNoResume is what a harness without a conversation answers. Shell and
-// VS Code restart in the same directory, using their persistent files.
-var ErrNoResume = errors.New("this harness starts fresh rather than resuming")
-
 // ErrNoModels is what a harness with no model list answers. It is not a
 // failure - the shell has no models - and the catalogue treats it as one.
 var ErrNoModels = errors.New("this harness has no model list")
 
-// Harness is one of the five programs, seen as everything that has to be
-// decided before it starts.
+// Harness is one of the five programs, as the catalogue sees it: what it is
+// called, where its binary is found, and what it can be run on.
 type Harness interface {
 	Kind() Kind
 	Label() string
@@ -43,20 +39,18 @@ type Harness interface {
 	// override.
 	DefaultBinary() string
 	VersionArgs() []string
-	// Plan builds the argv, environment and generated files of a fresh
-	// session.
-	Plan(ctx context.Context, req PlanRequest) (LaunchPlan, error)
-	// ResumePlan builds the same for continuing req.CLISession. It answers
-	// ErrNoResume when this harness cannot resume, and the caller uses Plan.
-	ResumePlan(ctx context.Context, req PlanRequest) (LaunchPlan, error)
-	// VerifyCLISession reports whether the stored id can still be resumed. A
-	// false with a nil error means the conversation is gone; an error means
-	// the question could not be answered, which is a different thing and the
-	// callers treat it differently.
-	VerifyCLISession(ctx context.Context, req PlanRequest) (bool, error)
 	// DiscoverModels fills the model picker, and answers ErrNoModels when
 	// there is nothing to pick.
 	DiscoverModels(ctx context.Context, bin string) (Catalog, error)
+}
+
+// Terminal is a harness that runs in a terminal of its own: a Shell, and VS
+// Code, which rides the same substrate. A resume after a reboot is a fresh
+// start in the same folder, so one plan is all either needs.
+type Terminal interface {
+	Harness
+	// Plan builds the argv, environment and generated files of a session.
+	Plan(ctx context.Context, req PlanRequest) (LaunchPlan, error)
 }
 
 // Registry is the five harnesses in the order the picker offers them.
@@ -72,6 +66,17 @@ func Get(id string) (Harness, bool) {
 		}
 	}
 	return nil, false
+}
+
+// TerminalOf returns the harness of an id when it is one that runs in a
+// terminal, and false for the coding agents, which run as chats.
+func TerminalOf(id string) (Terminal, bool) {
+	h, ok := Get(id)
+	if !ok {
+		return nil, false
+	}
+	t, ok := h.(Terminal)
+	return t, ok
 }
 
 // sessionDir is where everything Socrates generates for one session lives. It
@@ -109,14 +114,15 @@ func defaultTerm() string {
 	return terminalName
 }
 
-// baseEnv is the terminal environment every session gets, whichever program it
-// runs.
+// baseEnv is the terminal environment every terminal gets, whichever program
+// it runs.
 //
-// COLORFGBG is the load-bearing one: Claude Code decides light from dark by
-// reading the last field of it, and 15 is white. The others decide from the
-// OSC 11 answer, which tmux gives them from the window style with nobody
-// attached - but a wrong palette on a white page is unreadable rather than
-// merely ugly, so both levers are pulled for all five.
+// COLORFGBG says the background is white (the last field, 15), which is how
+// a program run in the shell - an editor, a pager - that reads it decides
+// light from dark. The others decide from the OSC 11 answer, which tmux gives
+// them from the window style with nobody attached - but a wrong palette on a
+// white page is unreadable rather than merely ugly, so both levers are
+// pulled.
 //
 // TMUX is blanked so that a program which refuses to run "inside tmux" - and
 // several check exactly this variable - runs anyway. It is Socrates' tmux, and
@@ -130,29 +136,6 @@ func baseEnv(req PlanRequest) map[string]string {
 		"SOCRATES_SESSION": req.SessionID,
 		"SOCRATES":         "1",
 	}
-}
-
-// resolvedCwd is the working directory as the kernel - and therefore every CLI
-// that asks for its own - reports it: with the symlinks gone.
-//
-// Both trust mechanisms key a stored entry by the working directory, and both
-// programs look it up under the name they read back from the process rather
-// than the one Socrates handed them. A workspace root reached through a link -
-// /tmp on macOS, a linked projects directory, a home that is a symlink - would
-// otherwise be trusted under a name neither program ever asks about, and the
-// session would open on the trust prompt with the entry sitting in the file.
-//
-// A path that cannot be resolved is returned unchanged: the caller is about to
-// start a program in it, and the unresolved name is a better guess than none.
-func resolvedCwd(cwd string) string {
-	if cwd == "" {
-		return cwd
-	}
-	real, err := filepath.EvalSymlinks(cwd)
-	if err != nil {
-		return cwd
-	}
-	return real
 }
 
 // ---------------------------------------------------------------- binaries
@@ -178,18 +161,6 @@ func resolveBinary(override, fallback string) (string, error) {
 		return "", err
 	}
 	return abs, nil
-}
-
-// ---------------------------------------------------------------- argv bits
-
-// flag appends "--name value" when the value is not empty, and nothing at all
-// when it is. Nearly every option of every harness is optional, so this is the
-// shape most of the argv building takes.
-func flag(argv []string, name, value string) []string {
-	if strings.TrimSpace(value) == "" {
-		return argv
-	}
-	return append(argv, name, value)
 }
 
 // homeDir is where a CLI keeps its own state. It reads HOME and nothing else:

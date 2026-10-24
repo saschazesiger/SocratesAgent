@@ -310,9 +310,25 @@ func TestPaneDeathIsReported(t *testing.T) {
 // TestDeadPaneKeepsLastScreen is why remain-on-exit-format is emptied: with
 // tmux's own format, a client attaching after the pane died sees "Pane is
 // dead" *instead of* the screen the user was looking at.
+//
+// The program ends only once its line is on the pane. One that prints and
+// exits at birth is not the case here, and not one whose words tmux 3.4 keeps:
+// on a busy CPU its exit can be handled before its output has been read, and
+// the pane's terminal is closed with the line still in it - bare tmux 3.4,
+// with nothing of ours on the socket, left 2 of 120 such panes empty, and 0 of
+// 120 that ended after their line was on screen [V].
 func TestDeadPaneKeepsLastScreen(t *testing.T) {
 	l := newLab(t)
-	row := l.create(shellSpec(t.TempDir(), "/bin/sh", "-c", "echo the-last-thing-it-said; exit 3"))
+	dir := t.TempDir()
+	gate := filepath.Join(dir, "end-now")
+	row := l.create(shellSpec(dir, "/bin/sh", "-c",
+		"echo the-last-thing-it-said; while [ ! -e "+ShellQuote(gate)+" ]; do sleep 0.05; done; exit 3"))
+	waitFor(t, 10*time.Second, "the line to be on the pane", func() bool {
+		return strings.Contains(l.tmuxOut("capture-pane", "-p", "-t", row.TmuxName), "the-last-thing-it-said")
+	})
+	if err := os.WriteFile(gate, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
 	waitFor(t, 10*time.Second, "the pane to die", func() bool {
 		return l.tmuxOut("list-panes", "-t", row.TmuxName, "-F", "#{pane_dead}") == "1"
 	})
@@ -534,6 +550,32 @@ func TestSignalKilledPaneIsReported(t *testing.T) {
 	l.Poll(context.Background())
 	if got, _ = l.store.GetSession(row.ID); got.ExitStatus != 128+9 {
 		t.Fatalf("the poll changed the status to %d", got.ExitStatus)
+	}
+}
+
+// TestExitStatusReadsASignalByNumberAndByName: tmux renders
+// #{pane_dead_signal} through sig2name, which is the signal's number on Linux
+// and its sys_signame name ("kill") on macOS and the BSDs. Both are the same
+// death.
+func TestExitStatusReadsASignalByNumberAndByName(t *testing.T) {
+	cases := []struct {
+		status, signal string
+		want           int
+	}{
+		{"0", "", 0},
+		{"3", "", 3},
+		{"", "9", 128 + 9},
+		{"", "kill", 128 + 9},
+		{"", "KILL", 128 + 9},
+		{"", "SIGKILL", 128 + 9},
+		{"", "int", 128 + 2},
+		{"", "", -1},
+		{"", "no-such-signal", -1},
+	}
+	for _, c := range cases {
+		if got := exitStatus(c.status, c.signal); got != c.want {
+			t.Errorf("exitStatus(%q, %q) = %d, want %d", c.status, c.signal, got, c.want)
+		}
 	}
 }
 
@@ -828,9 +870,13 @@ func TestPaneStateTellsTheThreeCasesApart(t *testing.T) {
 
 	live := l.create(shellSpec(t.TempDir()))
 	dead := l.create(shellSpec(t.TempDir(), "/bin/sh", "-c", "exit 4"))
+	// Tmux's own word that the pane is dead, which is what paneStateOf
+	// reads. The row follows with the pane-died hook, which is not this
+	// test's subject - and which a tmux that lost the program's SIGCHLD
+	// runs only once it is sent one (collectExits), by a poll this lab
+	// does not run.
 	waitFor(t, 10*time.Second, "the second program to exit", func() bool {
-		got, err := l.store.GetSession(dead.ID)
-		return err == nil && got.State == store.StateExited
+		return l.tmuxOut("list-panes", "-t", dead.TmuxName, "-F", "#{pane_dead}") == "1"
 	})
 
 	for _, c := range []struct {

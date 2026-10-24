@@ -1,6 +1,7 @@
-# build output
+# build output: make build writes ./socrates, a plain `go build` in a clone
+# named after the repository writes ./SocratesAgent
 /socrates
-/faketui
+/SocratesAgent
 *.exe
 
 # local data

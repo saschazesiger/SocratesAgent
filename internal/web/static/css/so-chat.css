@@ -1,0 +1,1351 @@
+/*
+ * so-chat.css: the chat view (chatview.js), its parts (chatparts.js), the
+ * composer (composer.js) and the chat's question dialog (askdialog.js, on
+ * top of so-question.css). Tokens only (--ds-* and the chat --so-* of
+ * theme.css), unlayered, and never restyling a .ds-* component: alerts,
+ * cards, buttons, menus, fields and status chips are Dashboard-Style's own,
+ * placed and spaced from here.
+ *
+ *   .so-chat               the view: fills the stage, the conversation above
+ *                          the dock. [data-stale] while its stream is not
+ *                          live (the conversation is dimmed), [data-dropping]
+ *                          while a file is held over it
+ *   .so-chat__scroll       the conversation's scroller; "Latest" (an icon)
+ *                          sticks to its bottom edge (.so-chat__jump)
+ *   .so-chat__log          the timeline, one .so-chat__entry per message,
+ *                          question and line, at reading width
+ *   .so-chat__dock         under it: the state line (what did not happen,
+ *                          the connection, the agent), the task list pinned
+ *                          while the conversation's own is out of sight,
+ *                          and the composer
+ *   .so-msg                a message, data-role user | assistant; a user's
+ *                          is a bubble with its state chip (.so-msg__chip);
+ *                          an answer ends in Copy and its "i" (.so-msg__foot)
+ *   .so-part               one part of an answer, data-kind and data-state
+ *   .so-md                 Markdown as the agent wrote it; .so-code is a
+ *                          fenced block with its language and Copy
+ *   .so-reasoning          the agent's thinking, shut until opened
+ *   .so-tool               a tool call: one row (.so-tool__head) that opens
+ *                          to its input and output; [data-group] for a
+ *                          subagent or a workflow, whose parts are nested in
+ *                          .so-group, a workflow's by phase (.so-phases)
+ *   .so-diff               the unified diff viewer, one file per .so-diff__file
+ *                          ([data-single]: the only one, not collapsible)
+ *   .so-todo               a task list; [data-pinned] above the composer
+ *   .so-plan, .so-ask      the plan card and the question card (DS cards)
+ *   .so-line               a line between messages: a notice, a command, a
+ *                          model or an account change, an interrupted turn;
+ *                          .so-line-alert for the ones that are alerts
+ *   .so-status-mark        a part's state as an icon or the spinner
+ *   .so-composer           the field (.so-composer__field), its files, the
+ *                          command palette, a line of what the buttons do
+ *                          not say (.so-composer__hint) and the bar of
+ *                          buttons under it, the action slot (Stop, Send)
+ *                          at its end; one row on a short screen
+ *   .so-askdlg             the question dialog (so-question.css) with the
+ *                          chat's extras: option details, context, You
+ *                          decide, Other, a note, Ask back
+ *
+ * Hooks without rules of their own, for the scripts and the tests:
+ * .so-chat__composer (the composer's slot in the dock), .so-composer__picker
+ * (the hidden file input), .so-composer__attach, .so-model-menu (the model
+ * and effort menu, a DS menu), .so-account-menu (the account menu of
+ * accountpicker.js, a DS menu), .so-composer__account-btn, .so-ask-back, .so-ask-delegate, .so-ask-note,
+ * .so-ask-other, .so-q-back, .so-q-close, .so-q-own-field, .so-ask__open,
+ * .so-refused (a DS alert: the server would not take an answer).
+ */
+
+/* ── The view ────────────────────────────────────────────────────────── */
+
+.so-chat {
+  position: relative;
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  background: var(--ds-surface);
+}
+
+.so-chat[hidden] {
+  display: none;
+}
+
+.so-chat[data-dropping] {
+  outline: var(--ds-focus-width) dashed var(--ds-primary);
+  outline-offset: calc(-1 * var(--ds-space-2));
+}
+
+.so-chat__scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: var(--ds-line-2) transparent;
+  padding-inline: env(safe-area-inset-left, 0px) env(safe-area-inset-right, 0px);
+}
+
+.so-chat__log {
+  display: flex;
+  flex: 1 0 auto;
+  flex-direction: column;
+  gap: var(--ds-space-5);
+  width: 100%;
+  max-width: var(--so-chat-measure);
+  margin-inline: auto;
+  padding: var(--ds-space-6) var(--ds-space-6) var(--ds-space-4);
+  /* While a message that stays stands over the end of the conversation,
+     the end is that much further down (session.js placeToasts), so the
+     last answer and its Copy scroll clear of it. */
+  padding-bottom: calc(var(--ds-space-4) + var(--so-chat-reserve, 0px));
+  transition: opacity var(--ds-dur-fast) var(--ds-ease-in-out);
+}
+
+/* What may be behind is dimmed, as a stale terminal is. */
+.so-chat[data-stale] .so-chat__log {
+  opacity: var(--ds-state-stale);
+}
+
+.so-chat__entry {
+  min-width: 0;
+}
+
+.so-chat__empty,
+.so-chat__loading {
+  margin: auto;
+}
+
+/* "Latest": in the scroller's flow after the log, held at its bottom edge
+   while the person reads further up. */
+.so-chat__jump {
+  position: sticky;
+  bottom: var(--ds-space-3);
+  align-self: center;
+  flex: none;
+  margin-block: var(--ds-space-2);
+}
+
+.so-chat__jump[hidden] {
+  display: none;
+}
+
+/* ── The dock ────────────────────────────────────────────────────────── */
+
+.so-chat__dock {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-space-2);
+  width: 100%;
+  max-width: var(--so-chat-measure);
+  margin-inline: auto;
+  padding: var(--ds-space-2) var(--ds-space-6) var(--ds-space-4);
+  padding-left: calc(var(--ds-space-6) + env(safe-area-inset-left, 0px));
+  padding-right: calc(var(--ds-space-6) + env(safe-area-inset-right, 0px));
+  padding-bottom: calc(var(--ds-space-4) + env(safe-area-inset-bottom, 0px));
+}
+
+.so-chat__state:empty {
+  display: none;
+}
+
+/* The arc spinner where an alert has its 20px icon. */
+.so-chat__spin {
+  display: grid;
+  flex: none;
+  place-items: center;
+  inline-size: var(--ds-space-5);
+  block-size: var(--ds-space-5);
+}
+
+.so-chat__todo {
+  max-height: var(--so-chat-todo-max);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  border: 1px solid var(--ds-line);
+  border-radius: var(--ds-radius-card);
+  padding: var(--ds-space-3) var(--ds-space-4);
+}
+
+.so-chat__todo[hidden] {
+  display: none;
+}
+
+/* ── Messages ────────────────────────────────────────────────────────── */
+
+.so-msg {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-space-3);
+  min-width: 0;
+}
+
+.so-msg[data-role="user"] {
+  align-items: flex-end;
+  gap: var(--ds-space-1);
+}
+
+.so-msg__bubble {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-space-2);
+  max-width: var(--so-chat-bubble-max);
+  min-width: 0;
+  padding: var(--ds-space-3) var(--ds-space-4);
+  border-radius: var(--ds-radius-lg);
+  background: var(--ds-surface-high);
+  color: var(--ds-text);
+}
+
+.so-msg__text {
+  margin: 0;
+  font: var(--ds-font-reading);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.so-msg__label {
+  margin: 0;
+}
+
+/* Not the agent's yet: the bubble says so with its chip, and is quieter. */
+.so-msg[data-role="user"]:is([data-state="local"], [data-state="sending"], [data-state="pending"], [data-state="queued"]) .so-msg__bubble {
+  opacity: var(--ds-state-stale);
+}
+
+.so-msg__chip {
+  flex: none;
+}
+
+.so-msg__error {
+  margin: 0;
+  max-width: var(--so-chat-bubble-max);
+  color: var(--ds-on-error-container);
+  text-align: end;
+}
+
+.so-msg__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--ds-space-2);
+  margin-top: var(--ds-space-2);
+}
+
+.so-msg__files {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--ds-space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.so-msg__wait {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--ds-space-2);
+  margin: 0;
+}
+
+/* Copy and the "i" under an answer: a quiet row as tall as a line of
+   meta, whose buttons keep a finger's target by reaching into the space
+   around it (and the first one lines its glyph up with the text). */
+.so-msg__foot {
+  display: flex;
+  align-items: center;
+  gap: var(--ds-space-1);
+  min-height: var(--ds-space-8);
+  margin-top: calc(-1 * var(--ds-space-1));
+}
+
+.so-msg__foot > .ds-btn {
+  margin-block: calc((var(--ds-space-8) - var(--ds-btn-icon-size, var(--ds-space-8))) / 2);
+}
+
+.so-msg__foot > .ds-btn:first-child {
+  margin-inline-start: calc((var(--ds-space-5) - var(--ds-btn-icon-size, var(--ds-space-8))) / 2);
+}
+
+/* A file a message carries, or one a part shows. */
+.so-attachment {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--ds-space-2);
+  max-width: 100%;
+  min-width: 0;
+  padding: var(--ds-space-1) var(--ds-space-3);
+  border: 1px solid var(--ds-line);
+  border-radius: var(--ds-radius-chip);
+  background: var(--ds-surface);
+  color: var(--ds-text);
+  font: var(--ds-font-body);
+}
+
+.so-attachment > svg {
+  flex: none;
+  color: var(--ds-text-2);
+}
+
+/* ── Parts ───────────────────────────────────────────────────────────── */
+
+.so-part {
+  min-width: 0;
+}
+
+.so-status-mark {
+  display: inline-grid;
+  flex: none;
+  place-items: center;
+  inline-size: var(--ds-space-5);
+  block-size: var(--ds-space-5);
+  color: var(--ds-text-2);
+}
+
+.so-status-mark[data-state="done"] {
+  color: var(--ds-success);
+}
+
+.so-status-mark[data-state="error"] {
+  color: var(--ds-error);
+}
+
+/* A details row: no marker of the browser's (the chevron says it), the row
+   is the target. */
+.so-reasoning > summary,
+.so-tool > summary,
+.so-diff__file > summary,
+.so-ask-context > summary {
+  display: flex;
+  align-items: center;
+  gap: var(--ds-space-2);
+  min-height: var(--so-chat-row-height);
+  list-style: none;
+  cursor: pointer;
+  border-radius: var(--ds-radius-md);
+}
+
+.so-reasoning > summary::-webkit-details-marker,
+.so-tool > summary::-webkit-details-marker,
+.so-diff__file > summary::-webkit-details-marker,
+.so-ask-context > summary::-webkit-details-marker {
+  display: none;
+}
+
+.so-reasoning > summary:focus-visible,
+.so-tool > summary:focus-visible,
+.so-diff__file > summary:focus-visible,
+.so-ask-context > summary:focus-visible {
+  outline: var(--ds-focus-width) solid var(--ds-focus);
+  outline-offset: var(--ds-focus-offset);
+}
+
+.so-reasoning > summary .ds-chevron,
+.so-tool > summary .ds-chevron,
+.so-diff__file > summary .ds-chevron,
+.so-ask-context > summary .ds-chevron {
+  flex: none;
+}
+
+/* The thinking: one quiet line until it is opened. */
+.so-reasoning__head {
+  color: var(--ds-text-2);
+  font: var(--ds-font-label);
+}
+
+.so-reasoning__body {
+  padding: var(--ds-space-2) 0 var(--ds-space-2) var(--ds-space-6);
+  border-left: 2px solid var(--ds-line);
+  color: var(--ds-text-2);
+}
+
+/* ── Markdown ────────────────────────────────────────────────────────── */
+
+.so-md {
+  color: var(--ds-text);
+  font: var(--ds-font-reading);
+  overflow-wrap: anywhere;
+}
+
+.so-md > :first-child {
+  margin-top: 0;
+}
+
+.so-md > :last-child {
+  margin-bottom: 0;
+}
+
+.so-md :is(p, ul, ol, blockquote, table, pre, .so-code) {
+  margin: 0 0 var(--ds-space-3);
+}
+
+.so-md :is(ul, ol) {
+  padding-left: var(--ds-space-6);
+}
+
+.so-md li + li {
+  margin-top: var(--ds-space-1);
+}
+
+.so-md h1,
+.so-md h2 {
+  margin: var(--ds-space-5) 0 var(--ds-space-2);
+  font: var(--ds-font-title);
+}
+
+.so-md h3,
+.so-md h4,
+.so-md h5,
+.so-md h6 {
+  margin: var(--ds-space-4) 0 var(--ds-space-2);
+  font: var(--ds-font-subtitle);
+}
+
+.so-md a {
+  color: var(--ds-link);
+  text-decoration-thickness: var(--ds-link-underline-thickness);
+  text-underline-offset: var(--ds-link-underline-offset);
+}
+
+.so-md blockquote {
+  padding-left: var(--ds-space-4);
+  border-left: 3px solid var(--ds-line-2);
+  color: var(--ds-text-2);
+}
+
+.so-md hr {
+  margin: var(--ds-space-4) 0;
+  border: 0;
+  border-top: 1px solid var(--ds-line);
+}
+
+/* A wide table scrolls inside itself, never the page. */
+.so-md table {
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+  border-collapse: collapse;
+  font: var(--ds-font-body);
+}
+
+.so-md :is(th, td) {
+  padding: var(--ds-space-2) var(--ds-space-3);
+  border: 1px solid var(--ds-line);
+  text-align: start;
+  vertical-align: top;
+}
+
+.so-md th {
+  font-weight: var(--ds-weight-label);
+  background: var(--ds-surface-low);
+}
+
+/* A fenced block: its language, Copy, and a scroll of its own. */
+.so-code {
+  min-width: 0;
+  border: 1px solid var(--ds-line);
+  border-radius: var(--ds-radius-md);
+  background: var(--ds-code-bg);
+  overflow: hidden;
+}
+
+.so-code__bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--ds-space-2);
+  padding: var(--ds-space-1) var(--ds-space-1) var(--ds-space-1) var(--ds-space-3);
+  border-bottom: 1px solid var(--ds-line);
+}
+
+.so-code__lang {
+  color: var(--ds-text-2);
+  font: var(--ds-font-meta);
+}
+
+.so-code__copy {
+  flex: none;
+}
+
+.so-code__pre,
+.so-mono {
+  margin: 0;
+  max-width: 100%;
+  overflow-x: auto;
+  font: var(--so-font-code);
+  white-space: pre;
+  tab-size: 4;
+}
+
+.so-code__pre {
+  padding: var(--ds-space-3);
+}
+
+/* Inline code wears DS's own chip (base.css); the code of a block is the
+   block's text, not a chip on every line. */
+.so-code__pre > code {
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+}
+
+.so-mono {
+  padding: var(--ds-space-2) var(--ds-space-3);
+  border-radius: var(--ds-radius-md);
+  background: var(--ds-code-bg);
+}
+
+/* ── Tool calls ──────────────────────────────────────────────────────── */
+
+.so-tool {
+  min-width: 0;
+  border: 1px solid var(--ds-line);
+  border-radius: var(--ds-radius-md);
+  background: var(--ds-surface);
+}
+
+.so-tool__head {
+  padding: 0 var(--ds-space-2) 0 var(--ds-space-3);
+  font: var(--ds-font-body);
+}
+
+.so-tool__icon {
+  display: grid;
+  flex: none;
+  place-items: center;
+  color: var(--ds-text-2);
+}
+
+.so-tool__name {
+  flex: none;
+  color: var(--ds-text);
+  font-weight: var(--ds-weight-label);
+}
+
+.so-tool__summary {
+  flex: 1 1 auto;
+  color: var(--ds-text-2);
+}
+
+.so-tool__progress {
+  flex: 0 1 auto;
+  color: var(--ds-text-2);
+  font: var(--ds-font-meta);
+}
+
+.so-tool__time {
+  flex: none;
+  min-width: var(--ds-space-8);
+  color: var(--ds-text-3);
+  font: var(--ds-font-meta);
+  font-variant-numeric: tabular-nums;
+  text-align: end;
+}
+
+.so-tool__time:empty {
+  display: none;
+}
+
+/* The call's "i" stands at the end of the body's first line, beside what
+   the call was given, its prompt or its phases; everything else takes the
+   whole width. A single file's diff has it in its head. */
+.so-tool__body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: var(--ds-space-2);
+  padding: 0 var(--ds-space-3) var(--ds-space-3);
+}
+
+.so-tool__body > * {
+  grid-column: 1 / -1;
+  min-width: 0;
+}
+
+.so-tool__body > .so-info:first-child {
+  grid-column: 2;
+  grid-row: 1;
+}
+
+.so-tool__body > .so-info:first-child + * {
+  grid-column: 1;
+  grid-row: 1;
+}
+
+/* Under a workflow or several files it closes the body, at the end of a
+   line as tall as a line of meta, its target reaching into the padding. */
+.so-tool__body > .so-info:last-child:not(:first-child) {
+  justify-self: end;
+  margin-block: calc((var(--ds-space-8) - var(--ds-btn-icon-size, var(--ds-space-8))) / 2);
+}
+
+.so-tool__out {
+  max-height: var(--so-chat-output-max);
+  overflow-y: auto;
+}
+
+.so-tool__out[data-state="error"] {
+  color: var(--ds-on-error-container);
+}
+
+.so-tool__wait {
+  margin: 0;
+}
+
+.so-tool__prompt,
+.so-tool__result {
+  color: var(--ds-text-2);
+}
+
+/* A subagent or a workflow: what it did, nested under its row. */
+.so-tool[data-group] {
+  border-color: var(--ds-line-2);
+}
+
+.so-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-space-2);
+  min-width: 0;
+  padding-left: var(--ds-space-3);
+  border-left: 2px solid var(--ds-line);
+}
+
+.so-phases {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-space-3);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.so-phase {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-space-2);
+}
+
+.so-phase__head {
+  display: flex;
+  align-items: center;
+  gap: var(--ds-space-2);
+  min-height: var(--ds-space-8);
+}
+
+.so-phase__no {
+  display: grid;
+  flex: none;
+  place-items: center;
+  inline-size: var(--ds-space-6);
+  block-size: var(--ds-space-6);
+  border: 1px solid var(--ds-line-2);
+  border-radius: var(--ds-radius-action);
+  color: var(--ds-text-2);
+  font: var(--ds-font-caption);
+  font-variant-numeric: tabular-nums;
+}
+
+.so-phase[data-state="done"] .so-phase__no {
+  border-color: var(--ds-success);
+  color: var(--ds-success);
+}
+
+.so-phase__title {
+  flex: 1 1 auto;
+  min-width: 0;
+  font: var(--ds-font-label);
+}
+
+.so-phase__state {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: var(--ds-space-1);
+  color: var(--ds-text-2);
+  font: var(--ds-font-meta);
+}
+
+/* ── Diffs ───────────────────────────────────────────────────────────── */
+
+.so-diff {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-space-2);
+  min-width: 0;
+}
+
+.so-diff__file {
+  min-width: 0;
+  border: 1px solid var(--ds-line);
+  border-radius: var(--ds-radius-md);
+  overflow: hidden;
+}
+
+.so-diff__head {
+  padding: 0 var(--ds-space-2) 0 var(--ds-space-3);
+  background: var(--ds-surface-low);
+  font: var(--ds-font-body);
+}
+
+/* The only file of a diff: its name over its lines, nothing to open. */
+.so-diff__file[data-single] > .so-diff__head {
+  display: flex;
+  align-items: center;
+  gap: var(--ds-space-2);
+  min-height: var(--so-chat-row-height);
+}
+
+.so-diff__path {
+  flex: 1 1 auto;
+  font: var(--so-font-code);
+}
+
+.so-diff__status {
+  flex: none;
+  color: var(--ds-text-2);
+  font: var(--ds-font-meta);
+}
+
+.so-diff__count {
+  display: inline-flex;
+  flex: none;
+  gap: var(--ds-space-2);
+  font: var(--ds-font-meta);
+  font-variant-numeric: tabular-nums;
+}
+
+.so-diff__added {
+  color: var(--ds-on-success-container);
+}
+
+.so-diff__removed {
+  color: var(--ds-on-error-container);
+}
+
+/* The lines: two numbers, the sign and the code, the code scrolling
+   sideways inside the file and never the page. */
+.so-diff__body {
+  display: grid;
+  grid-template-columns: var(--so-diff-no-width) var(--so-diff-no-width) var(--ds-space-4) minmax(max-content, 1fr);
+  max-width: 100%;
+  overflow-x: auto;
+  font: var(--so-font-code);
+  tab-size: 4;
+}
+
+.so-diff__hunk,
+.so-diff__line {
+  display: contents;
+}
+
+.so-diff__hunk-head {
+  grid-column: 1 / -1;
+  padding: var(--ds-space-1) var(--ds-space-3);
+  background: var(--ds-surface-low);
+  color: var(--ds-text-2);
+  white-space: pre;
+}
+
+.so-diff__no {
+  padding-inline: var(--ds-space-1);
+  color: var(--ds-text-3);
+  text-align: end;
+  user-select: none;
+}
+
+.so-diff__sign {
+  text-align: center;
+  user-select: none;
+}
+
+.so-diff__code {
+  padding-inline-end: var(--ds-space-3);
+  white-space: pre;
+}
+
+.so-diff__line[data-type="add"] > * {
+  background: var(--ds-success-container);
+  color: var(--ds-on-success-container);
+}
+
+.so-diff__line[data-type="del"] > * {
+  background: var(--ds-error-container);
+  color: var(--ds-on-error-container);
+}
+
+.so-diff__line[data-type="meta"] > * {
+  color: var(--ds-text-3);
+}
+
+/* ── Task lists ──────────────────────────────────────────────────────── */
+
+.so-todo {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-space-2);
+}
+
+.so-todo__head {
+  display: flex;
+  align-items: center;
+  gap: var(--ds-space-2);
+  font: var(--ds-font-label);
+}
+
+.so-todo__count {
+  margin-inline-start: auto;
+  color: var(--ds-text-2);
+  font: var(--ds-font-meta);
+  font-variant-numeric: tabular-nums;
+}
+
+.so-todo__list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-space-1);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.so-todo__item {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--ds-space-2);
+  font: var(--ds-font-body);
+}
+
+.so-todo__mark {
+  display: grid;
+  flex: none;
+  place-items: center;
+  inline-size: var(--ds-space-5);
+  block-size: var(--ds-space-5);
+  color: var(--ds-text-2);
+}
+
+.so-todo__item[data-status="completed"] .so-todo__mark {
+  color: var(--ds-success);
+}
+
+.so-todo__item[data-status="completed"] .so-todo__text {
+  color: var(--ds-text-2);
+  text-decoration: line-through;
+}
+
+.so-todo__text {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/* ── The plan and the question cards ─────────────────────────────────── */
+
+.so-plan,
+.so-ask {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-space-3);
+}
+
+.so-plan__title,
+.so-ask__title {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--ds-space-2);
+}
+
+.so-plan__note,
+.so-ask__progress,
+.so-ask__done {
+  margin: 0;
+}
+
+.so-plan__answer {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-space-3);
+}
+
+.so-plan__field {
+  margin: 0;
+}
+
+.so-plan__input {
+  resize: vertical;
+}
+
+.so-ask__question {
+  margin: 0;
+  font: var(--ds-font-subtitle);
+  overflow-wrap: anywhere;
+}
+
+/* ── Lines between messages ──────────────────────────────────────────── */
+
+.so-line {
+  display: flex;
+  align-items: center;
+  gap: var(--ds-space-2);
+  min-height: var(--ds-space-8);
+  color: var(--ds-text-2);
+  font: var(--ds-font-meta);
+}
+
+.so-line > svg {
+  flex: none;
+}
+
+/* A divider: the hairline on both sides of what it says. */
+.so-line::before,
+.so-line::after {
+  content: "";
+  flex: 1 1 var(--ds-space-6);
+  border-top: 1px solid var(--ds-line);
+}
+
+.so-line__text {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  text-align: center;
+}
+
+.so-line__command {
+  font: var(--so-font-code);
+}
+
+/* A notice inside an answer is the agent's, not a divider. */
+.so-part.so-line::before,
+.so-part.so-line::after {
+  content: none;
+}
+
+.so-line-alert {
+  min-width: 0;
+}
+
+/* ── The composer ────────────────────────────────────────────────────── */
+
+.so-composer {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-space-2);
+}
+
+.so-composer__conflict {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-space-2);
+}
+
+.so-composer__conflict[hidden],
+.so-composer__palette[hidden],
+.so-composer__files[hidden] {
+  display: none;
+}
+
+.so-composer__theirs {
+  max-height: var(--so-conflict-preview-max);
+  overflow: auto;
+  white-space: pre-wrap;
+}
+
+/* The field: as tall as its text up to a part of what can be seen (the
+   app's height, which shrinks with a phone's keyboard), and then it
+   scrolls. Reading type, through the field's font hook. */
+.so-composer__input {
+  --ds-input-font: var(--ds-font-reading);
+  width: 100%;
+  min-height: var(--ds-space-10);
+  max-height: var(--so-composer-max);
+  resize: none;
+  overflow-y: auto;
+}
+
+.ds-theme.so-touch .so-composer__input {
+  min-height: var(--so-touch-target);
+}
+
+/* What the buttons do not say: that a message written during a turn waits
+   for it, that another device changed the draft. */
+.so-composer__hint {
+  margin: 0;
+  padding-inline: var(--ds-space-1);
+}
+
+.so-composer__hint:empty {
+  display: none;
+}
+
+.so-composer__files {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--ds-space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.so-composer__file[data-state="failed"] {
+  border-color: var(--ds-error);
+}
+
+/* A long name wraps; the chip's own buttons keep their width. */
+.so-composer__file-name {
+  min-width: 0;
+}
+
+.so-composer__file > .ds-btn,
+.so-composer__file > .ds-meta {
+  flex: none;
+}
+
+/* One row, never two: what has a name gives way (its words end in an
+   ellipsis) before a button moves. */
+.so-composer__bar {
+  display: flex;
+  align-items: center;
+  gap: var(--ds-space-1);
+  min-width: 0;
+}
+
+/* Between the settings and the action slot. */
+.so-composer__gap {
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+.so-composer__model {
+  min-width: 0;
+  max-width: 50%;
+}
+
+.so-composer__model-text {
+  display: block;
+}
+
+.so-composer__account[hidden],
+.so-composer__usage[hidden],
+.so-composer__stop[hidden],
+.so-composer__send[hidden] {
+  display: none;
+}
+
+.so-composer__account {
+  display: inline-flex;
+  min-width: 0;
+  max-width: 40%;
+}
+
+.so-composer__account > .ds-btn {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.so-composer__account-text {
+  display: block;
+}
+
+/* The account menu takes the menu's full width, so that an account's usage
+   line wraps as little as it can. */
+.so-account-menu {
+  min-width: min(280px, calc(100vw - 2 * var(--ds-space-2)));
+}
+
+/* An account item of the chat's account menu: its name over its usage. The
+   usage line wraps rather than being cut: when a limit renews is the end of
+   it, and on a phone nothing else says it. */
+.so-account-menu__text {
+  display: grid;
+  min-width: 0;
+  padding-block: var(--ds-space-1);
+}
+
+.so-account-menu__name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Who it is, its usage and when it renews: all of it, on two lines if it
+   takes two. */
+.so-account-menu__meta {
+  font: var(--ds-font-meta);
+  color: var(--ds-text-2);
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+/* The accounts a limit card offers to go on with, on a line of their own
+   under its words. */
+.so-line-alert__stack {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--ds-space-2);
+}
+
+.so-line-alert__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--ds-space-2);
+}
+
+/* In its own line a button does not hang into the words above it, as an
+   alert's button beside them does. */
+.so-line-alert__actions > .ds-btn {
+  margin: 0;
+}
+
+.so-composer__attach,
+.so-composer__usage,
+.so-composer__dictate,
+.so-composer__stop,
+.so-composer__send {
+  flex: none;
+}
+
+/* The command palette: over the field, as long as its list, then it
+   scrolls. */
+.so-composer__palette {
+  position: absolute;
+  inset-inline: 0;
+  bottom: calc(100% + var(--ds-space-1));
+  z-index: var(--ds-z-popover);
+  max-height: var(--so-palette-max);
+  margin: 0;
+  padding: var(--ds-space-1);
+  overflow-y: auto;
+  list-style: none;
+  border: 1px solid var(--ds-line);
+  border-radius: var(--ds-radius-md);
+  background: var(--ds-surface);
+  box-shadow: var(--ds-elev-popover);
+}
+
+.so-palette__item {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  min-height: var(--so-chat-row-height);
+  justify-content: center;
+  padding: var(--ds-space-1) var(--ds-space-3);
+  border-radius: var(--ds-radius-sm);
+  cursor: pointer;
+}
+
+.so-palette__item[aria-selected="true"],
+.so-palette__item:hover {
+  background: var(--ds-surface-high);
+}
+
+.so-palette__name {
+  font: var(--so-font-code);
+}
+
+.so-palette__args,
+.so-palette__desc {
+  color: var(--ds-text-2);
+}
+
+.so-palette__desc {
+  font: var(--ds-font-meta);
+}
+
+/* ── The question dialog's extras ────────────────────────────────────── */
+
+.so-ask-body {
+  gap: var(--ds-space-4);
+}
+
+.so-ask-title {
+  margin: 0;
+  color: var(--ds-text-2);
+  font: var(--ds-font-label);
+}
+
+.so-ask-context {
+  min-width: 0;
+}
+
+.so-ask-context__head {
+  color: var(--ds-text-2);
+  font: var(--ds-font-label);
+}
+
+.so-ask-context__body {
+  padding: var(--ds-space-2) 0 var(--ds-space-2) var(--ds-space-4);
+  border-left: 2px solid var(--ds-line);
+}
+
+.so-ask-option {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--ds-space-1);
+  min-width: 0;
+}
+
+.so-ask-more {
+  align-self: flex-start;
+}
+
+.so-ask-details {
+  padding: var(--ds-space-3) var(--ds-space-4);
+  border-radius: var(--ds-radius-md);
+  background: var(--ds-surface-low);
+}
+
+.so-ask-extras {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--ds-space-2);
+}
+
+.so-ask-general {
+  align-self: flex-start;
+}
+
+.so-ask-followup {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-space-2);
+}
+
+.so-ask-range {
+  color: var(--ds-text-2);
+  font: var(--ds-font-meta);
+}
+
+.so-ask-number {
+  max-width: var(--so-name-field-width);
+}
+
+.so-ask-problem {
+  margin: 0;
+}
+
+/* Touch mode: the compact buttons ("i", Copy, Details, Try again, the
+   model) are a finger's target through theme.css, on every page. */
+
+/* ── Phones ──────────────────────────────────────────────────────────── */
+
+@media (max-width: 600px) {
+  .so-chat__log {
+    gap: var(--ds-space-4);
+    padding: var(--ds-space-4) var(--ds-space-4) var(--ds-space-3);
+    padding-bottom: calc(var(--ds-space-3) + var(--so-chat-reserve, 0px));
+  }
+
+  .so-chat__dock {
+    padding: var(--ds-space-1) var(--ds-space-2) var(--ds-space-2);
+    padding-left: calc(var(--ds-space-2) + env(safe-area-inset-left, 0px));
+    padding-right: calc(var(--ds-space-2) + env(safe-area-inset-right, 0px));
+    padding-bottom: calc(var(--ds-space-2) + env(safe-area-inset-bottom, 0px));
+  }
+
+  .so-chat__todo {
+    padding: var(--ds-space-2) var(--ds-space-3);
+  }
+
+  .so-msg__bubble {
+    max-width: 100%;
+  }
+
+  /* The top bar's Speak writes into the composer, so the composer's own
+     Dictate gives its room to Stop and Send; the chat's usage is the model
+     menu's last item, and the model's effort is said in that menu. */
+  .so-composer__dictate,
+  .so-composer__usage,
+  .so-composer__model-effort {
+    display: none;
+  }
+
+  /* While Stop and Send share the slot, the account is its mark. */
+  .so-composer__bar[data-crowded] .so-composer__account-text {
+    display: none;
+  }
+
+  /* The model keeps enough room for its name to be read. */
+  .so-composer__model {
+    min-width: calc(var(--ds-space-10) + var(--ds-space-12));
+    max-width: none;
+  }
+
+  /* An account's name is short and is what the button is for: it keeps
+     its width, and the model gives way first. */
+  .so-composer__account {
+    flex: 0 1 auto;
+    max-width: 45%;
+  }
+
+  .so-tool__progress,
+  .so-tool__time {
+    display: none;
+  }
+}
+
+/* ── Short screens ───────────────────────────────────────────────────── */
+
+/* A phone on its side, with its keyboard up most of all: the composer is
+   one row - the field, and the bar beside it - and the field stops at a
+   part of what can be seen, so the conversation keeps its share. Speak is
+   in the top bar, so the composer's own Dictate goes. */
+@media (max-height: 500px) {
+  .so-chat__dock {
+    padding-top: var(--ds-space-1);
+    padding-bottom: calc(var(--ds-space-1) + env(safe-area-inset-bottom, 0px));
+  }
+
+  .so-composer {
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: flex-end;
+    column-gap: var(--ds-space-2);
+  }
+
+  .so-composer > * {
+    flex: 1 0 100%;
+  }
+
+  .so-composer > .so-composer__field {
+    flex: 1 1 0;
+    min-width: calc(var(--ds-space-12) * 4);
+  }
+
+  .so-composer > .so-composer__bar {
+    flex: 0 1 auto;
+  }
+
+  /* The bar is as wide as what is in it, so a share of it is no measure:
+     the bar was sized to the account's whole name and the account then cut
+     to 40% of that ("M…" for "Main" when no model list shares the bar).
+     An account is held to a length of its own. */
+  .so-composer__account {
+    max-width: calc(var(--ds-space-12) * 4);
+  }
+
+  .so-composer > .so-composer__hint {
+    order: -1;
+  }
+
+  .so-composer__input {
+    max-height: calc(var(--so-app-h, 100dvh) * 0.3);
+  }
+
+  .so-composer__dictate,
+  .so-composer__gap {
+    display: none;
+  }
+
+  /* The question dialog's body is as dense as so-question.css makes it on
+     a short screen: its first option above the buttons. */
+  .so-ask-body {
+    gap: var(--ds-space-2);
+  }
+}

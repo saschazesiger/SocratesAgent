@@ -1,5 +1,12 @@
 # Home, questions and the answer operator — binding specification
 
+> **Since the rebuild (REBUILD.md §5.4 and §7; WP6, WP9, WP10)** Home's questions are the chats':
+> each is an agent's `ask_user` call (or a question of its own converted to one), read from the
+> chat's journal, and the dialog is the chats' (`askdialog.js`, AGENT-HOST.md §7). The answer
+> operator, the screen digest and the questions read in prose went with the agents' terminals.
+> Home itself - the cards, the counts, the connection line (in the dialog too), the stream and the
+> poll, the badge and the push - holds, read from the journal for a chat (AGENT-HOST.md §3).
+
 Revision 3 (2026-10-20: the outcome of a turn, §5). Revision 2 (2026-10-19; revision 1 the same day, revision 2 after its review: the answer
 policy and the key vocabulary, the run ending when the answer is taken, revs and activity seqs
 from the clock, the signed-out close code, the per-login handshake ceiling). Extends DESIGN.md
@@ -75,6 +82,7 @@ Server → client frames (JSON text, key `t`):
 {"t":"title","id":"…","phase":"start|done|error","title":"…","text":"…"}
 {"t":"digest","id":"<sessionID>","digest":<digest>|null}
 {"t":"answer","id":"<sessionID>","run":<run>|null}
+{"t":"news","id":"<sessionID>","body":"…","kind":"finished"}
 {"t":"tick","now":1792390854374}
 {"t":"pong","id":7}
 ```
@@ -94,6 +102,9 @@ Server → client frames (JSON text, key `t`):
   microseconds when the process started (below 2^53), so a seq from before a restart is never
   above one after it. `since` only moves with the state and cannot order two pictures of one
   commit.
+- `news` is something to notify about that is not an edge of the activity, in the words the push
+  says it in: a chat stopped at its account's limit (AGENT-HOST.md §11 "At a limit"). The page's
+  own notification and chime say it, as for a turn's end, where Web Push does not.
 - `tick` every 15 s, so the client can tell a dead connection from a quiet one (§2.2).
 - **Signed out.** The login the stream was opened with is checked again on every `tick`
   (`ValidLogin`), and signing out or a new password calls `s.events.revoke()`, which ends every
@@ -565,7 +576,9 @@ question sessions, oldest first (the one asked for first), "2 of 3" with Previou
   a plan approval's plan - is read with the first item, under which it is drawn), a second tap stops
   (the assist.js `say()` pattern). Never automatic. Its failure, and a dictation's, is said on the
   dialog's status line (kept for 10 s, or until the next Read aloud or another question) - never
-  only as a toast, which is under the top layer.
+  only as a toast, which is under the top layer. With no Text-to-Speech key (`/api/preferences`
+  `tts`, voice.js `ttsKey`) its tip says "Needs a Text-to-Speech key (Admin, Voice)" and a tap
+  opens the Close / Open Admin dialog dictation has without an OpenRouter key; nothing is sent.
 - While the digest is `pending`: "Reading the question…" with the previous content dimmed;
   `error`: the sentence and **Try again** (`POST …/digest`) and Open session. An `error` that
   still holds its question is not answered (the server refuses it until it is read again): Send

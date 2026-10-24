@@ -20,9 +20,9 @@
 // recording of a recording, so a second caller is answered with nothing
 // rather than with a second microphone.
 
-import { el, toast, errorMessage, fmtClock } from './api.js';
+import { el, toast, errorMessage, fmtClock, openDialog } from './api.js';
 import { showOverlay, hideOverlay } from './ui.js';
-import { dictateOnce } from './voice.js';
+import { dictateOnce, voiceKey, onVoiceKey, keyMissing } from './voice.js';
 
 // How many bars the level meter has, and how far a frame may fall. The decay
 // is what makes a voice look like a voice: the peak of a syllable stays up for
@@ -123,6 +123,7 @@ function stopMeter() {
 // the one microphone on this page is doing:
 //
 //   idle          nothing is open
+//   asking        the server is asked whether an OpenRouter key is set yet
 //   opening       the microphone has been asked for and has not answered yet
 //   recording     the sheet is up and audio is arriving
 //   transcribing  the audio has gone to the server, the words are coming back
@@ -197,6 +198,41 @@ export function mountRecSheet() {
   buildMeter();
 }
 
+/* ---------------------------------------------------------- no key yet */
+
+const NO_KEY_WORDS = {
+  dictate: {
+    title: 'Dictation needs an OpenRouter key',
+    body: 'What you say is turned into text through OpenRouter, and no key is set yet. Add one in Admin, under Voice.',
+  },
+  status: {
+    title: 'Status needs an OpenRouter key',
+    body: 'Status is written by a model on OpenRouter, and no key is set yet. Add one in Admin, under Voice.',
+  },
+  title: {
+    title: 'Naming needs an OpenRouter key',
+    body: 'A session is named by a model on OpenRouter, and no key is set yet. Add one in Admin, under Voice.',
+  },
+  read: {
+    title: 'Read aloud needs a Text-to-Speech key',
+    body: 'Questions are read out by Google Cloud Text-to-Speech, and no key is set yet. Add one in Admin, under Voice.',
+  },
+};
+
+/**
+ * explainNoKey says, before anything is recorded or sent, that what was
+ * pressed needs a key (OpenRouter's, or Text-to-Speech's for Read aloud) and
+ * where it is added - in a dialog rather
+ * than a toast, because it is the answer to the tap and has a way on: Admin.
+ * It works over a dialog too (a field's own microphone in the rename dialog).
+ */
+export function explainNoKey(what = 'dictate', opener = null) {
+  const words = NO_KEY_WORDS[what] || NO_KEY_WORDS.dictate;
+  const admin = el('a', { class: 'ds-btn ds-btn--primary', href: '/admin#voiceCard', text: 'Open Admin' });
+  const close = el('button', { class: 'ds-btn ds-btn--text', type: 'button', 'data-close': true, autofocus: true, text: 'Close' });
+  return openDialog({ title: words.title, body: words.body, actions: [close, admin], opener }).shown;
+}
+
 /**
  * record listens once and hands back what was said, as one line.
  *
@@ -210,8 +246,27 @@ export function mountRecSheet() {
  * in a modal dialog: a toast is drawn under the top layer such a dialog is
  * in, and would be a sentence nobody sees.
  */
-export async function record({ onError } = {}) {
+export async function record({ onError, opener = null } = {}) {
   if (phase !== 'idle') return '';
+  // Nothing is recorded that cannot be transcribed. Whether the key is
+  // still missing is a round trip, and the microphone is taken for it
+  // ('asking'): a second press meanwhile - a double click, a tap again on a
+  // slow network - found the phase still idle and opened a second "needs a
+  // key" dialog, or with a key a second recording that the sheet could not
+  // stop.
+  if (voiceKey() === false) {
+    setPhase('asking');
+    let missing = false;
+    try {
+      missing = await keyMissing();
+    } finally {
+      setPhase('idle');
+    }
+    if (missing) {
+      await explainNoKey('dictate', opener);
+      return '';
+    }
+  }
   mountRecSheet();
   setPhase('opening');
   try {
@@ -232,6 +287,12 @@ export async function record({ onError } = {}) {
     // no keystroke, no request, and nothing said about it.
     return oneLine(text);
   } catch (err) {
+    if (err && err.noKey) {
+      // Learnt only now, from the refusal: from here on it is said before
+      // the next recording. The dialog waits for the sheet to have gone.
+      setTimeout(() => explainNoKey('dictate', opener), 0);
+      return '';
+    }
     const sentence = (err && err.userMessage) || errorMessage(err);
     if (onError) onError(sentence); else toast(sentence, 'error');
     return '';
@@ -269,7 +330,7 @@ export function mountDictation(ctx) {
     // sentence that was never about it - which is the one thing a control that
     // types into somebody's terminal must not do.
     const spokenTo = (ctx.current() || {}).id || '';
-    const text = await record();
+    const text = await record({ opener: dom.micBtn });
     if (!text) return;
     if (((ctx.current() || {}).id || '') !== spokenTo) {
       toast('That was said to another session, so it was not typed.');
@@ -285,6 +346,12 @@ export function mountDictation(ctx) {
     // An editor is typed into with its own keys; there is no pane to speak
     // into.
     btn.hidden = !session || session.harness === 'vscode';
+    // The tip says where the words go, or - with no key - why a press only
+    // explains. A press is still taken: it is the one place that says how
+    // to get a key.
+    const into = session && session.kind === 'chat' ? 'Dictate into this chat' : 'Dictate into the terminal';
+    const tip = voiceKey() === false ? 'Needs an OpenRouter key (Admin, Voice)' : into;
+    if (btn.getAttribute('data-tip') !== tip) btn.setAttribute('data-tip', tip);
     // The pill is shut while a recording is being opened, is running, or is
     // being turned into words: all three are one recording, and a second tap
     // in any of them would start a second microphone. It is shut with no
@@ -292,14 +359,17 @@ export function mountDictation(ctx) {
     // Transcribing is the button's busy face instead (the spinner and the
     // word), which blocks the pointer as well; a disabled button would grey
     // the spinner out. The resting face keeps saying Speak.
-    btn.disabled = !session || !ctx.live() || (phase !== 'idle' && phase !== 'transcribing');
-    if (phase === 'transcribing') btn.setAttribute('aria-busy', 'true');
+    // Asking the server whether a key is set is the busy face too: the tap
+    // landed, and a second one does nothing.
+    btn.disabled = !session || !ctx.live() || (phase !== 'idle' && phase !== 'transcribing' && phase !== 'asking');
+    if (phase === 'transcribing' || phase === 'asking') btn.setAttribute('aria-busy', 'true');
     else btn.removeAttribute('aria-busy');
     btn.setAttribute('aria-label', phase === 'transcribing' ? 'Transcribing…' : 'Speak');
   }
 
   if (dom.micBtn) dom.micBtn.addEventListener('click', () => dictate());
   onRecPhase(paint);
+  onVoiceKey(paint);
   paint();
 
   return {

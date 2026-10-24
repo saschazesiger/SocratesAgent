@@ -2,7 +2,6 @@ package server
 
 import (
 	"context"
-	"log"
 	"net"
 	"net/http"
 	"net/http/httputil"
@@ -162,7 +161,7 @@ func (s *Server) startIDE(w http.ResponseWriter, r *http.Request, id string, whe
 		writeError(w, http.StatusBadRequest, "VS Code is switched off in the dashboard")
 		return
 	}
-	h, _ := harnesses.Get(config.HarnessVSCode)
+	h, _ := harnesses.TerminalOf(config.HarnessVSCode)
 	ctx, cancel := context.WithTimeout(r.Context(), createTimeout)
 	defer cancel()
 	if _, err := s.store.GetSession(id); err == nil {
@@ -181,7 +180,6 @@ func (s *Server) startIDE(w http.ResponseWriter, r *http.Request, id string, whe
 		Cwd:       folder,
 		Settings:  settings,
 		DataDir:   s.dataDir,
-		Logf:      log.Printf,
 	})
 	if err != nil {
 		if mode == store.WorkdirDynamic {

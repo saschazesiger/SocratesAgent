@@ -13,6 +13,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -359,8 +361,10 @@ func TestTerminalHelloAndReplayAfterDrop(t *testing.T) {
 	rendered := first.settle()
 	first.drop()
 
-	// Output the tab could not have seen, produced while it was away.
-	if _, err := e.tmux("send-keys", "-t", "soc_"+id, "echo mark-two", "Enter"); err != nil {
+	// Output the tab could not have seen, produced while it was away. The
+	// quotes keep the typed line from containing what the command prints (see
+	// TestTerminalOfflineThenOnline).
+	if _, err := e.tmux("send-keys", "-t", "soc_"+id, "echo mark-t''wo", "Enter"); err != nil {
 		t.Fatalf("send-keys: %v", err)
 	}
 	e.waitForPane(id, "mark-two")
@@ -376,10 +380,10 @@ func TestTerminalHelloAndReplayAfterDrop(t *testing.T) {
 	second.waitFor("mark-two")
 
 	screen := second.screen()
-	// Two occurrences: the line tmux echoed and the line the shell printed.
-	// Anything the tab had already rendered would be a third.
-	if strings.Count(screen, "mark-two") != 2 {
-		t.Fatalf("the gap was not delivered exactly once:\n%q", screen)
+	// The line the shell printed, once. A gap delivered twice, or with what
+	// the tab had already rendered, would print it twice.
+	if n := strings.Count(screen, "mark-two"); n != 1 {
+		t.Fatalf("the gap was not delivered exactly once: its output is there %d times:\n%q", n, screen)
 	}
 	if strings.Contains(screen, "mark-one") {
 		t.Fatalf("the reconnect replayed what the tab had already seen:\n%q", screen)
@@ -450,7 +454,11 @@ func TestTerminalInputIsExactlyOnce(t *testing.T) {
 	c := e.dialWS(id, "viewer=tab-a&cols=100&rows=30")
 	c.hello()
 
-	c.send(1, "echo mark-alpha\r")
+	// The quotes keep the typed line from containing what the command prints,
+	// so the count below is of runs, not echoes: a line typed before the
+	// shell is at its prompt is echoed by the terminal and again by a shell
+	// that edits its own line - bash does, and macOS's sh is bash.
+	c.send(1, "echo mark-al''pha\r")
 	c.waitFor("mark-alpha")
 	ack := c.waitCtrl("input_ack")
 	if got := floatOf(t, ack, "seq"); got != 1 {
@@ -458,7 +466,7 @@ func TestTerminalInputIsExactlyOnce(t *testing.T) {
 	}
 
 	// The same frame again, exactly as a reconnecting client would resend it.
-	c.send(1, "echo mark-alpha\r")
+	c.send(1, "echo mark-al''pha\r")
 	// And one with a hole in front of it.
 	c.send(9, "echo mark-never\r")
 	c.await("the rejection of the gap", 10*time.Second, func() bool {
@@ -477,9 +485,9 @@ func TestTerminalInputIsExactlyOnce(t *testing.T) {
 	if err != nil {
 		t.Fatalf("capture-pane: %v", err)
 	}
-	// The command line the user typed, and the line the shell printed: two.
-	if n := strings.Count(screen, "mark-alpha"); n != 2 {
-		t.Fatalf("mark-alpha appears %d times, want 2:\n%s", n, screen)
+	// The line the shell printed, once: the resend was not typed again.
+	if n := strings.Count(screen, "mark-alpha"); n != 1 {
+		t.Fatalf("mark-alpha was printed %d times, want once:\n%s", n, screen)
 	}
 	if strings.Contains(screen, "mark-never") {
 		t.Fatalf("a frame with a gap in front of it was written:\n%s", screen)
@@ -499,8 +507,13 @@ func TestTerminalReloadWithFramesInFlight(t *testing.T) {
 	first := e.dialWS(id, "viewer=tab-a&cols=100&rows=30")
 	first.hello()
 
-	first.send(1, "echo one-in-flight\r")
-	first.send(2, "echo two-in-flight\r")
+	// The quotes keep each typed line from containing what its command
+	// prints, so that the count below is of commands run and not of how often
+	// a line was echoed: input typed ahead of a busy shell is echoed by the
+	// terminal, and then once more by a shell that edits its own line - bash
+	// does, and macOS's sh is bash.
+	first.send(1, "echo one-in-''flight\r")
+	first.send(2, "echo two-in-''flight\r")
 	first.waitFor("two-in-flight")
 	rendered := first.settle()
 	// iOS kills the tab. The frames were written; the acknowledgement may
@@ -514,16 +527,17 @@ func TestTerminalReloadWithFramesInFlight(t *testing.T) {
 	}
 	// The client renumbers from input_ack + 1, which is what the next
 	// keystroke is.
-	second.send(3, "echo after-reload\r")
+	second.send(3, "echo after-''reload\r")
 	second.waitFor("after-reload")
 	time.Sleep(300 * time.Millisecond)
 	screen, err := e.tmux("capture-pane", "-p", "-t", "soc_"+id)
 	if err != nil {
 		t.Fatalf("capture-pane: %v", err)
 	}
+	// Each command ran once: none was lost, and none was typed twice.
 	for _, marker := range []string{"one-in-flight", "two-in-flight", "after-reload"} {
-		if n := strings.Count(screen, marker); n != 2 {
-			t.Fatalf("%s appears %d times, want 2:\n%s", marker, n, screen)
+		if n := strings.Count(screen, marker); n != 1 {
+			t.Fatalf("%s was printed %d times, want once:\n%s", marker, n, screen)
 		}
 	}
 }
@@ -671,17 +685,13 @@ func TestTerminalForeignOriginIsRefused(t *testing.T) {
 // frame with its status, which is what the overlay is drawn from.
 func TestTerminalExitNotice(t *testing.T) {
 	e := newSessionEnv(t)
-	res, session := e.create(fmt.Sprintf(
-		`{"harness":"claude","workdir_mode":"custom","workdir":%q,"cols":100,"rows":30}`, e.work))
-	if res.StatusCode != http.StatusCreated {
-		t.Fatalf("create: %d %#v", res.StatusCode, session)
-	}
-	id := sessionID(t, session)
+	id := e.shellSession(100, 30)
 	c := e.dialWS(id, "viewer=tab-a&cols=100&rows=30")
 	c.hello()
-	c.waitFor("FAKE claude")
+	c.send(1, "echo exit-probe-4\r")
+	c.waitFor("exit-probe-4")
 
-	c.send(1, "/exit 7\r")
+	c.send(2, "exit 7\r")
 	exit := c.waitCtrl("exit")
 	if got := floatOf(t, exit, "status"); got != 7 {
 		t.Fatalf("the exit frame carried status %v, want 7", got)
@@ -694,13 +704,7 @@ func TestTerminalExitNotice(t *testing.T) {
 // no transport to say it on.
 func TestTerminalResumeNotice(t *testing.T) {
 	e := newSessionEnv(t)
-	res, session := e.create(fmt.Sprintf(
-		`{"harness":"claude","workdir_mode":"custom","workdir":%q,"cols":100,"rows":30}`, e.work))
-	if res.StatusCode != http.StatusCreated {
-		t.Fatalf("create: %d %#v", res.StatusCode, session)
-	}
-	id := sessionID(t, session)
-	e.waitForPane(id, "FAKE claude")
+	id := e.shellSession(100, 30)
 
 	// The reboot, as far as Socrates can tell it apart from one.
 	if _, err := e.tmux("kill-server"); err != nil {
@@ -718,10 +722,11 @@ func TestTerminalResumeNotice(t *testing.T) {
 		t.Fatalf("the socket opened on a session that was not resumed: %#v", got)
 	}
 	notice := c.waitCtrl("notice")
-	if notice["kind"] != "resumed" {
+	if notice["kind"] != "resumed" || notice["cli"] != "shell" {
 		t.Fatalf("the notice was %#v", notice)
 	}
-	c.waitFor("FAKE claude")
+	c.send(1, "echo resumed-probe-5\r")
+	c.waitFor("resumed-probe-5")
 }
 
 // blackHole is a connection that stops carrying anything the moment the test
@@ -825,7 +830,12 @@ func TestTerminalOfflineThenOnline(t *testing.T) {
 	// socket.
 	setOffline(true)
 	t.Cleanup(func() { setOffline(false) })
-	if _, err := e.tmux("send-keys", "-t", "soc_"+id, "echo while-offline", "Enter"); err != nil {
+	// The quotes keep the typed line from containing what the command prints:
+	// a shell that edits its own line - bash does, and macOS's sh is bash -
+	// echoes it a key or two at a time, and tmux colours each piece on its
+	// own, so the echo is not one string in the stream however often it is
+	// delivered.
+	if _, err := e.tmux("send-keys", "-t", "soc_"+id, "echo while-off''line", "Enter"); err != nil {
 		t.Fatal(err)
 	}
 	e.waitForPane(id, "while-offline")
@@ -841,8 +851,8 @@ func TestTerminalOfflineThenOnline(t *testing.T) {
 		t.Fatalf("input_ack = %d after the tunnel, want 1", ack)
 	}
 	back.waitFor("while-offline")
-	if strings.Count(back.screen(), "while-offline") != 2 {
-		t.Fatalf("the gap was not delivered exactly once:\n%q", back.screen())
+	if n := strings.Count(back.screen(), "while-offline"); n != 1 {
+		t.Fatalf("the gap was not delivered exactly once: its output is there %d times:\n%q", n, back.screen())
 	}
 
 	// And the terminal takes input again, which is the half that wedged.
@@ -862,43 +872,86 @@ func TestTerminalSlowReaderStaysFlat(t *testing.T) {
 	e := newSessionEnv(t)
 	id := e.shellSession(100, 30)
 
-	slow := e.dialWSRaw(id, "viewer=tab-slow&cols=100&rows=30", nil) // Never read.
-	_ = slow
+	// Never read, and on a socket that holds almost nothing: its writer is
+	// stuck within a frame or two, and from then on the ring is the only
+	// place this viewer's bytes can go.
+	narrow := e.narrowServer()
+	conn, _, err := websocket.Dial(context.Background(),
+		"ws"+strings.TrimPrefix(narrow.URL, "http")+"/api/sessions/"+id+"/ws?viewer=tab-slow&cols=100&rows=30",
+		e.dialOptions(nil))
+	if err != nil {
+		t.Fatalf("dial the slow viewer: %v", err)
+	}
+	t.Cleanup(func() { _ = conn.CloseNow() })
 	fast := e.dialWS(id, "viewer=tab-fast&cols=100&rows=30")
 	fast.hello()
 
-	// Rather more than the ring holds, as fast as the shell can print it.
-	// The marker is split in the command line so that the shell's echo of what
-	// was typed cannot satisfy the wait: only the loop's own output can.
-	fast.send(1, "i=0; while [ $i -lt 40000 ]; do echo \"line $i xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\"; i=$((i+1)); done; echo spin-d''one\r")
-	fast.waitFor("spin-done")
-	e.waitForPane(id, "spin-done")
-
-	// The slow viewer's terminal is still attached and its ring is still one
-	// megabyte: it fell behind in a fixed allocation instead of in the heap.
-	var ring *termViewer
-	for _, tv := range e.srv.hub.forSession(id) {
-		if tv.viewerID == "tab-slow" {
-			ring = tv
+	var slow *termViewer
+	var viewer *termux.Viewer
+	for wait := time.Now().Add(10 * time.Second); viewer == nil && time.Now().Before(wait); time.Sleep(20 * time.Millisecond) {
+		for _, tv := range e.srv.hub.forSession(id) {
+			if tv.viewerID == "tab-slow" {
+				slow = tv
+			}
+		}
+		if slow != nil {
+			viewer = slow.current()
 		}
 	}
-	if ring == nil {
-		t.Fatal("the slow viewer was forgotten")
-	}
-	viewer := ring.current()
 	if viewer == nil {
-		t.Fatal("the slow viewer lost its terminal")
+		t.Fatal("the slow viewer never got its terminal")
 	}
-	head, base := viewer.Ring().Head(), viewer.Ring().Base()
-	if head-base > 1<<20 {
+
+	// More than the ring holds has to reach this viewer's terminal, and a
+	// flood from the pane cannot be relied on for that. tmux stops sending a
+	// client that falls behind and repaints it once the flood is over, so
+	// what a burst of forty thousand lines gives a viewer depends on how fast
+	// the machine runs the shell against this process: some 800 KB at best,
+	// which is less than the ring, and under 100 KB on a busy runner, reading
+	// and stalled viewer alike. A repaint tmux always sends whole. So the
+	// screen is made dear to paint, every cell its own two colours, and the
+	// slow viewer's terminal is repainted until its ring has had more than it
+	// holds - which a reader that waited for the socket would never let it
+	// have.
+	var paint strings.Builder
+	paint.WriteString("\x1b[H\x1b[2J")
+	for cell := 0; cell < 28*100; cell++ {
+		fmt.Fprintf(&paint, "\x1b[38;5;%dm\x1b[48;5;%dm%c", 16+cell%216, 16+(cell*7+100)%216, 'A'+cell%26)
+		if cell%100 == 99 {
+			paint.WriteString("\x1b[0m\r\n")
+		}
+	}
+	painted := filepath.Join(t.TempDir(), "paint")
+	if err := os.WriteFile(painted, []byte(paint.String()), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fast.send(1, "cat '"+painted+"'; echo paint''ed\r")
+	fast.waitFor("painted")
+
+	ring := viewer.Ring()
+	repaints := 0
+	for deadline := time.Now().Add(20 * time.Second); ring.Base() == 0 && time.Now().Before(deadline); repaints++ {
+		if out, err := e.tmux("refresh-client", "-t", viewer.TTY()); err != nil {
+			t.Fatalf("repaint the slow viewer: %v: %s", err, out)
+		}
+	}
+	head, base := ring.Head(), ring.Base()
+	if base == 0 {
+		t.Fatalf("the slow viewer's terminal took only %d bytes in %d repaints; its reader waited for a socket nobody reads",
+			head, repaints)
+	}
+	// It fell behind in a fixed allocation instead of in the heap.
+	if head-base > termux.RingSize {
 		t.Fatalf("the ring holds %d bytes, which is more than it was given", head-base)
 	}
-	// The pane went on producing while nobody read that socket, which is the
-	// point: the reader's only job is to append, and it never waits for a
-	// viewer. How much tmux renders for a client that is behind is tmux's
-	// business, so the assertion is that it kept going and stayed bounded.
-	if head < 100000 {
-		t.Fatalf("the pane produced only %d bytes; the stalled viewer held it up", head)
+
+	// Neither the pane nor the other viewer was held up, and the slow viewer
+	// still has its terminal.
+	fast.send(2, "echo still-f''ine\r")
+	fast.waitFor("still-fine")
+	e.waitForPane(id, "still-fine")
+	if slow.current() == nil {
+		t.Fatal("the slow viewer lost its terminal")
 	}
 }
 
@@ -1008,12 +1061,6 @@ func (c *orderedClient) rendered() uint64 {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return uint64(len(c.out))
-}
-
-func (c *orderedClient) screen() string {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return string(c.out)
 }
 
 func (c *orderedClient) close() {
@@ -1230,33 +1277,59 @@ func TestTerminalSlowReaderIsGivenUpOn(t *testing.T) {
 
 	fast := e.dialWS(id, "viewer=tab-fast&cols=100&rows=30")
 	fast.hello()
-	fast.send(1, "timeout 3 base64 -w 90 /dev/urandom; echo spin-d''one\r")
-	fast.waitFor("spin-done")
 
+	// The stalled viewer is in the hub before its socket is: wait for both,
+	// or its socket being gone says nothing.
 	var stalled *termViewer
-	for _, tv := range e.srv.hub.forSession(id) {
-		if tv.viewerID == "tab-slow" {
-			stalled = tv
+	attached := func() bool {
+		stalled.mu.Lock()
+		defer stalled.mu.Unlock()
+		return stalled.conn != nil
+	}
+	for wait := time.Now().Add(10 * time.Second); time.Now().Before(wait); time.Sleep(20 * time.Millisecond) {
+		for _, tv := range e.srv.hub.forSession(id) {
+			if tv.viewerID == "tab-slow" {
+				stalled = tv
+			}
+		}
+		if stalled != nil && attached() {
+			break
 		}
 	}
 	if stalled == nil {
 		t.Fatal("the stalled viewer was forgotten altogether")
 	}
-	deadline := time.Now().Add(20 * time.Second)
-	for time.Now().Before(deadline) {
-		stalled.mu.Lock()
-		gone := stalled.conn == nil
-		stalled.mu.Unlock()
-		if gone {
-			break
-		}
+	if !attached() {
+		t.Fatal("the stalled viewer's socket was never taken on")
+	}
+
+	// Random bytes, so that the socket's compression cannot fold them away,
+	// from a program every unix has - a Mac has no timeout(1) - and for as
+	// long as it takes. How much a loopback socket takes in before its writer
+	// blocks is the system's to decide, and Linux and macOS size and grow it
+	// differently, so the output goes on until the server has given up on the
+	// viewer, or until the deadline says it never will. It is stopped by a
+	// file rather than by ^C, which also throws away whatever is typed after
+	// it before the shell has read it.
+	stop := filepath.Join(t.TempDir(), "stop")
+	fast.send(1, "while [ ! -e '"+stop+"' ]; do od -An -tx1 -N 65536 /dev/urandom; done; echo spin-d''one\r")
+	start := time.Now()
+	for deadline := start.Add(20 * time.Second); attached() && time.Now().Before(deadline); {
 		time.Sleep(50 * time.Millisecond)
 	}
+	took := time.Since(start)
 	stalled.mu.Lock()
 	live, kept := stalled.conn, stalled.viewer != nil
 	stalled.mu.Unlock()
+	if err := os.WriteFile(stop, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fast.waitFor("spin-done")
 	if live != nil {
-		t.Fatal("the server is still writing to a viewer that stopped taking frames")
+		screen := fast.screen()
+		t.Fatalf("the server is still writing to a viewer that stopped taking frames, after %s of output "+
+			"of which the reading viewer was given %d bytes, ending:\n%q",
+			took.Round(time.Millisecond), len(screen), screen[max(0, len(screen)-400):])
 	}
 	if !kept {
 		t.Fatal("the stalled viewer lost its terminal instead of its socket")
@@ -1431,18 +1504,29 @@ func TestTerminalEveryKeystrokeAfterHelloReachesThePane(t *testing.T) {
 		c.send(uint64(i+1), line[i:i+1])
 	}
 
-	// The pane ran it: the echo's own output line is the marker and nothing
-	// else, which no partial delivery can produce.
+	// The pane ran it: the echo's own output line ends in the whole marker,
+	// which no partial delivery can produce. It need not start the line:
+	// typed this early, the line is echoed by the terminal before the shell
+	// has printed its first prompt, and the prompt then lands in front of
+	// the output ("# abc…0123"). The typed line is the one with "echo ".
+	ran := func(pane string) bool {
+		for _, row := range strings.Split(pane, "\n") {
+			if strings.HasSuffix(row, marker) && !strings.Contains(row, "echo ") {
+				return true
+			}
+		}
+		return false
+	}
 	deadline := time.Now().Add(20 * time.Second)
 	pane := ""
 	for time.Now().Before(deadline) {
 		pane, _ = e.tmux("capture-pane", "-p", "-J", "-t", termux.TmuxName(id))
-		if strings.Contains(pane, "\n"+marker) {
+		if ran(pane) {
 			break
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	if !strings.Contains(pane, "\n"+marker) {
+	if !ran(pane) {
 		t.Fatalf("the pane never ran the whole line; it shows:\n%s", pane)
 	}
 
@@ -1557,8 +1641,9 @@ func TestTerminalLateTerminalReplyNeverReachesThePane(t *testing.T) {
 	ack := uint64(floatOf(t, hello, "input_ack"))
 
 	// The replies the browser held while it was away, in the order xterm.js
-	// sends them, and then the command.
-	back.send(ack+1, "\x1b[?1;2c\x1b[>0;276;0c\x1b[8;30;100t\x1b[4;540;800t")
+	// sends them - the mode report is its answer to the synchronized output
+	// question tmux 3.8 asks - and then the command.
+	back.send(ack+1, "\x1b[?1;2c\x1b[>0;276;0c\x1b[?2026;2$y\x1b[8;30;100t\x1b[4;540;800t")
 	back.send(ack+2, "echo after-the-outage\r")
 	back.waitFor("after-the-outage")
 	time.Sleep(500 * time.Millisecond)
@@ -1567,7 +1652,7 @@ func TestTerminalLateTerminalReplyNeverReachesThePane(t *testing.T) {
 	if err != nil {
 		t.Fatalf("capture-pane: %v", err)
 	}
-	for _, corruption := range []string{"1;2c", "0;276;0c", "8;30;100t", "command not found"} {
+	for _, corruption := range []string{"1;2c", "0;276;0c", "2026;2$y", "8;30;100t", "command not found"} {
 		if strings.Contains(screen, corruption) {
 			t.Fatalf("a stale terminal report was typed into the pane (%q):\n%s", corruption, screen)
 		}
@@ -1627,14 +1712,10 @@ func TestActivityReachesEveryOpenSocket(t *testing.T) {
 	}
 
 	// A session nobody is watching starts working. Its state has to reach the
-	// socket that is attached to a different session altogether.
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
-	if err := e.srv.Sessions().SendKeys(ctx, other, []termux.Key{
-		{Text: "sleep 4"}, {Name: "Enter"},
-	}); err != nil {
-		t.Fatalf("send-keys: %v", err)
-	}
+	// socket that is attached to a different session altogether. Somebody
+	// typed the command, as a viewer's keystrokes tell the detector.
+	e.srv.Sessions().NoteInput(other)
+	e.typeLine(other, "sleep 4")
 	c.activityOf(other, func(a map[string]any) bool { return a["state"] == "busy" })
 
 	// And when it finishes, the row is unread: work ended and nobody saw it.

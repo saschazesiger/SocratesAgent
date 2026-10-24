@@ -1,13 +1,12 @@
-// The browser harness: one real `socrates` binary, one real server, real tmux
-// sessions, and Playwright driving the page.
+// The browser harness: one real `socrates` binary, one real server with its
+// agent hosts, real tmux for the Shell, and Playwright driving the page.
 //
 // One thing has to be arranged before a browser can see a session: the CLIs.
-// A suite that needed three logged-in accounts would not be a suite, so
-// `e2e/fakebin/faketui` is built once and linked onto PATH under all three
-// names. It is a terminal program, not a protocol speaker - which is what the
-// product now runs - and it writes the same state files the real ones write,
-// so the discovery and resume paths are exercised rather than mocked. The
-// Shell harness needs no fake at all: /bin/sh is the thing under test.
+// A suite that needed three logged-in accounts would not be a suite, so the
+// scripted CLIs - e2e/fakebin/fakeclaude, fakecodex and fakeopencode, which
+// speak each agent's own protocol - are built once and put on PATH under the
+// names the chats run. The Shell needs no fake at all: /bin/sh is the thing
+// under test.
 //
 // With SOCRATES_LIVE_AGENTS=1 a scenario can ask for `live: true` instead, and
 // then the fakes stay off PATH and the real, logged-in CLIs are used.
@@ -16,7 +15,7 @@ import { chromium } from '/opt/browser-testing/node_modules/playwright-core/inde
 import { createServer } from 'node:http';
 import { createServer as createSocketServer } from 'node:net';
 import { spawn, execFileSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, realpathSync, rmSync, mkdirSync, symlinkSync, readdirSync, existsSync } from 'node:fs';
+import { mkdtempSync, realpathSync, rmSync, mkdirSync, readdirSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -54,6 +53,7 @@ export function scratchDir(prefix) {
 // sweep removes one tracked directory and whatever tmux server belongs to it.
 function sweep(dir) {
   killTmux(dir);
+  killHosts(dir);
   rmSync(dir, { recursive: true, force: true });
   litter.delete(dir);
 }
@@ -97,16 +97,15 @@ const CHROME = process.env.SOCRATES_E2E_CHROME || defaultChrome();
 export const PASSWORD = 'socrates-e2e';
 export const LIVE = process.env.SOCRATES_LIVE_AGENTS === '1';
 
-// The three fake CLIs are one program under three names, built once per run.
-// The Go-overlay trick the old suite used is gone with the adapter registry it
-// pointed at: `socrates` is now built plainly.
+// The three scripted CLIs, built once per run under the names the chats
+// run, and `socrates` itself, built plainly.
 function buildFakes() {
   const dir = scratchDir('socrates-e2e-');
   const bin = join(dir, 'bin');
   mkdirSync(bin);
-  const faketui = join(bin, 'faketui');
-  execFileSync('go', ['build', '-o', faketui, './e2e/fakebin/faketui'], { cwd: REPO });
-  for (const name of ['claude', 'codex', 'opencode']) symlinkSync(faketui, join(bin, name));
+  for (const [name, pkg] of [['claude', 'fakeclaude'], ['codex', 'fakecodex'], ['opencode', 'fakeopencode']]) {
+    execFileSync('go', ['build', '-o', join(bin, name), './e2e/fakebin/' + pkg], { cwd: REPO });
+  }
   execFileSync('go', ['build', '-o', join(dir, 'socrates'), '.'], { cwd: REPO });
   return { dir, bin, exe: join(dir, 'socrates') };
 }
@@ -135,14 +134,11 @@ export function cleanupBuild() {
 
 // ------------------------------------------------------------- the bucket
 //
-// S3 is mandatory: a Socrates with no bucket serves the connect page and
-// nothing else, so every scenario needs one. e2e/fakebin/fakes3 is the
-// in-memory store the mirror's unit tests use (internal/s3/s3fake), served on
-// a real port. It is started once per run, and every server gets its own
-// prefix on it - by default one named after its data directory, so that a
-// scenario's restart finds its own state again and no two scenarios ever see
-// each other's. A scenario that wants a second data directory on the same
-// state (`s3restore`) passes the first one's prefix.
+// Socrates runs without a bucket: the data directory is its only store, and
+// S3 holds a backup of it. Only the scenarios about that backup want one, so
+// e2e/fakebin/fakes3 - the in-memory store the backup's unit tests use
+// (internal/s3/s3fake), served on a real port - is started the first time one
+// asks for it, and each of them backs up under a prefix of its own.
 //
 // The credentials and the region are s3fake's defaults and the passphrase is
 // the suite's own. None of it is a secret: the store dies with the run.
@@ -195,48 +191,61 @@ function stopFakeS3() {
 }
 
 // fakeS3Switch flips the fake's own switches: 'down?status=503' makes every S3
-// request fail until 'up'. Only the storage banner scenario breaks the bucket
-// on purpose, and it puts it back in a finally.
+// request fail until 'up'. Only the backup scenario breaks the bucket on
+// purpose, and it puts it back in a finally.
 export async function fakeS3Switch(what) {
   const url = await ensureFakeS3();
   const res = await fetch(url + '/_fakes3/' + what, { method: 'POST' });
   if (res.status !== 204) throw new Error('fakes3 refused ' + what + ': ' + res.status);
 }
 
-// s3Env is the environment that points a server at its prefix on the fake.
-// A null prefix is a server with no bucket at all, which serves the connect
-// page.
-export function s3Env(prefix) {
-  // An empty bucket name, not a missing one: the environment the suite was
-  // started from must not hand a bucket to a server that is meant to have none.
-  if (prefix === null) return { SOCRATES_S3_BUCKET: '' };
-  if (!fakeS3 || !fakeS3.url) throw new Error('the fake bucket is not running: await ensureFakeS3() first');
+// backupForm is the Backup card's (and the restore form's) fields for a
+// prefix on the fake, as the API takes them.
+export async function backupForm(prefix) {
+  const url = await ensureFakeS3();
   return {
-    SOCRATES_S3_ENDPOINT: fakeS3.url,
-    SOCRATES_S3_REGION: S3.region,
-    SOCRATES_S3_BUCKET: S3.bucket,
-    SOCRATES_S3_PREFIX: prefix,
-    SOCRATES_S3_ACCESS_KEY_ID: S3.accessKeyID,
-    SOCRATES_S3_SECRET_ACCESS_KEY: S3.secretAccessKey,
-    SOCRATES_S3_PATH_STYLE: 'true',
-    SOCRATES_S3_PASSPHRASE: S3.passphrase,
+    endpoint: url, region: S3.region, bucket: S3.bucket, prefix,
+    access_key_id: S3.accessKeyID, secret_access_key: S3.secretAccessKey,
+    path_style: true, passphrase: S3.passphrase, interval_minutes: 10,
   };
 }
 
-// prefixFor is the prefix a data directory gets when the scenario does not
-// name one.
+// prefixFor is the backup prefix of a data directory.
 export const prefixFor = (data) => 'e2e/' + basename(data) + '/';
 
-export async function waitForHealth(url, deadlineMs = 25000) {
+// STARTUP is how long a server may take to answer its first health check.
+export const STARTUP = 25000;
+
+/**
+ * waitForHealth waits until the server at url answers its health check.
+ *
+ * Handed the server it started (`spawned`), it also waits until that server
+ * says it is listening there, and gives up as soon as it has exited: another
+ * suite on this machine - another worktree's, say - may hold the port, and
+ * then a healthy answer is that suite's server, not this one. An error for a
+ * port that was taken says so (`taken`), so a start can try another one.
+ */
+export async function waitForHealth(url, deadlineMs = STARTUP, spawned = null) {
   const until = Date.now() + deadlineMs;
+  const mine = spawned ? 'open ' + url + ' in your browser' : '';
   while (Date.now() < until) {
-    try {
-      const res = await fetch(url + '/api/health');
-      if (res.ok) return;
-    } catch { /* not up yet */ }
+    if (spawned && (spawned.server.exitCode !== null || spawned.server.signalCode !== null)) {
+      const said = oneLog(spawned.log);
+      const err = new Error('the server at ' + url + ' exited before it served: ' + said);
+      err.taken = /address already in use/.test(said);
+      throw err;
+    }
+    if (!spawned || spawned.log.join('').includes(mine)) {
+      // Each look is bounded: one request that hangs must not spend the
+      // whole wait.
+      try {
+        const res = await fetch(url + '/api/health', { signal: AbortSignal.timeout(3000) });
+        if (res.ok) return;
+      } catch { /* not up yet */ }
+    }
     await new Promise((r) => setTimeout(r, 120));
   }
-  throw new Error('the server never became healthy at ' + url);
+  throw new Error('the server never became healthy at ' + url + ' in ' + Math.round(deadlineMs / 1000) + ' s');
 }
 
 // Ports 5000-5099 are this machine's budget for browser runs. Which of them
@@ -247,6 +256,11 @@ export async function waitForHealth(url, deadlineMs = 25000) {
 const PORT_LOW = 5000;
 const PORT_HIGH = 5099;
 const claimed = new Set();
+// Where this run starts looking. Another suite on the machine walks the same
+// range, and two that both start at the bottom take the same ports at the
+// same moments; one that loses the race finds out from its server's own log
+// (waitForHealth) and moves on.
+const PORT_FIRST = process.pid % (PORT_HIGH - PORT_LOW + 1);
 
 function canListen(port) {
   return new Promise((resolve) => {
@@ -256,9 +270,15 @@ function canListen(port) {
   });
 }
 
+// The ports of the range that the Fetch standard calls bad (SIP's): Node's
+// fetch and the browser both refuse to talk to them, so a server there is
+// never reached, however healthy it is.
+const BAD_PORTS = new Set([5060, 5061]);
+
 export async function freePort() {
-  for (let port = PORT_LOW; port <= PORT_HIGH; port += 1) {
-    if (claimed.has(port)) continue;
+  for (let i = 0; i <= PORT_HIGH - PORT_LOW; i += 1) {
+    const port = PORT_LOW + ((PORT_FIRST + i) % (PORT_HIGH - PORT_LOW + 1));
+    if (claimed.has(port) || BAD_PORTS.has(port)) continue;
     if (await canListen(port)) {
       claimed.add(port);
       return port;
@@ -268,17 +288,37 @@ export async function freePort() {
     + ' is in use; something from an earlier run is still listening');
 }
 
-export function spawnServer({ data, port, live = false, env = {}, s3prefix }) {
+// ambient is the suite's own environment without what names an agent's
+// folders or carries a credential: a fake run must never find the machine's
+// real Claude Code, Codex or OpenCode state through a variable the scenario
+// did not set, and must never hand one of this machine's keys to a child.
+function ambient(live) {
+  const out = { ...process.env };
+  if (live) return out;
+  for (const name of Object.keys(out)) {
+    if (/^(ANTHROPIC_|CLAUDE_CODE_|OPENCODE_|SOCRATES_S3_)/.test(name)
+      || ['OPENAI_API_KEY', 'XDG_CONFIG_HOME', 'XDG_CACHE_HOME', 'XDG_STATE_HOME'].includes(name)) {
+      delete out[name];
+    }
+  }
+  return out;
+}
+
+// pathFirst is a directory a scenario puts in front of the fakes - a stub
+// tmux - and never instead of them: a PATH of its own in env would hand the
+// server the machine's real CLIs, which a fake run must never find.
+export function spawnServer({ data, port, live = false, env = {}, pathFirst = '' }) {
+  if ('PATH' in env) throw new Error('a scenario puts a directory on PATH with pathFirst, never a PATH of its own');
   const { exe, bin } = binaries(live);
   const server = spawn(exe, ['-addr', '127.0.0.1:' + port, '-data', data], {
     env: {
-      ...process.env,
-      // The bucket comes before anything the scenario passes, so that a
-      // scenario can still override a single variable. undefined is "this
-      // data directory's own prefix", null is "no bucket at all".
-      ...s3Env(s3prefix === undefined ? prefixFor(data) : s3prefix),
+      ...ambient(live),
+      // The environment the suite was started from must not hand a server
+      // the bucket of the mirror Socrates once had, which a start would
+      // carry over into its backup.json.
+      SOCRATES_S3_BUCKET: '',
       // A live run must find the real CLIs, so the fakes stay off its PATH.
-      PATH: (bin ? bin + ':' : '') + process.env.PATH,
+      PATH: [pathFirst, bin, process.env.PATH].filter(Boolean).join(':'),
       // Sessions get their working directory under the run's own data
       // directory. Without this the workspace root is derived from HOME, which
       // a live run does not override - and a real agent turned loose in
@@ -288,14 +328,13 @@ export function spawnServer({ data, port, live = false, env = {}, s3prefix }) {
       SOCRATES_WORKSPACE_ROOT: join(data, 'workspaces'),
       // Every CLI's own state goes under the run's data directory, so that a
       // fake run can neither read nor write the machine's real credentials,
-      // transcripts or session databases - and so that a scenario can assert
-      // on what the fakes wrote.
+      // transcripts or session databases. (A chat's agent gets its account's
+      // folders from the server on top of these.)
       ...(live ? {} : {
         HOME: data,
         CODEX_HOME: join(data, 'codex'),
         XDG_DATA_HOME: join(data, 'xdg'),
         CLAUDE_CONFIG_DIR: join(data, 'claude'),
-        FAKE_LOG: join(data, 'fake.log'),
       }),
       ...env,
     },
@@ -311,6 +350,9 @@ export function spawnServer({ data, port, live = false, env = {}, s3prefix }) {
 }
 
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// oneLog is the end of a server's log on one line.
+const oneLog = (log) => log.join('').replace(/\s+/g, ' ').slice(-1500);
 
 // tmuxSock is the socket a run's server puts its tmux server on.
 export function tmuxSock(data) { return join(data, 'tmux.sock'); }
@@ -348,13 +390,27 @@ export function killTmux(data) {
   } catch { /* no server is the good case */ }
 }
 
-// readFakeLog returns every launch the fake CLIs recorded, newest last.
-export function readFakeLog(data) {
+// agentProcessesOf lists the agent hosts still running for a run's data
+// directory, and the CLIs under them: a chat's host is started in a session
+// of its own and outlives its server by design, so neither killing the server
+// nor deleting the folder ends it.
+export function agentProcessesOf(data) {
+  let out = '';
   try {
-    return readFileSync(join(data, 'fake.log'), 'utf8')
-      .split('\n').filter(Boolean).map((line) => JSON.parse(line));
-  } catch {
-    return [];
+    out = execFileSync('ps', ['-eo', 'pid=,ppid=,args='], { stdio: ['ignore', 'pipe', 'ignore'] }).toString();
+  } catch { return []; }
+  const procs = out.split('\n').map((line) => /^\s*(\d+)\s+(\d+)\s+(.*)$/.exec(line)).filter(Boolean)
+    .map(([, pid, ppid, args]) => ({ pid: Number(pid), ppid: Number(ppid), args }));
+  const hosts = procs.filter((p) => / agent-host /.test(' ' + p.args + ' ')
+    && (' ' + p.args + ' ').includes(' --data ' + data + ' '));
+  const ids = new Set(hosts.map((p) => p.pid));
+  return [...hosts, ...procs.filter((p) => ids.has(p.ppid))];
+}
+
+// killHosts is the same backstop for the agent hosts.
+function killHosts(data) {
+  for (const p of agentProcessesOf(data)) {
+    try { process.kill(p.pid, 'SIGKILL'); } catch { /* already gone */ }
   }
 }
 
@@ -373,19 +429,6 @@ export async function mockOpenRouter(context, { text = 'hello from the microphon
   }));
 }
 
-// DIGEST_MARKER is the sentence every digest instruction opens with
-// (digestMarker in internal/server/digest.go).
-export const DIGEST_MARKER = 'You read the terminal of a coding session for Home';
-
-// isDigest says whether a completion request is one of Home's digests.
-export function isDigest(json) {
-  const first = json && Array.isArray(json.messages) && json.messages[0];
-  return !!first && typeof first.content === 'string' && first.content.startsWith(DIGEST_MARKER);
-}
-
-// NOTHING_ASKED is the digest of a session that asks nothing.
-const NOTHING_ASKED = JSON.stringify({ summary: 'Working in the e2e workspace.', context: '', question: null });
-
 /**
  * openRouterStub is the same fixed answer, served over HTTP.
  *
@@ -398,39 +441,28 @@ const NOTHING_ASKED = JSON.stringify({ summary: 'Working in the e2e workspace.',
  * It answers both routes Transcribe can take: /chat/completions for an audio
  * capable chat model and /audio/transcriptions for a dedicated one.
  *
- * `replies` is a queue for the one caller that needs a different answer every
- * time: the operator loop asks the model again after every step, and a stub
- * that repeated itself would drive the same keystroke until the run ran out of
- * steps. Each completion takes the next entry; when the queue is empty the
- * fixed `text` is the answer again, so a scenario only has to script the steps
- * it cares about.
+ * `replies` is a queue for a caller that needs a different answer each time
+ * (a chat named again gets a new name). Each completion takes the next entry;
+ * when the queue is empty the fixed `text` is the answer again, so a scenario
+ * only has to script the answers it cares about.
  *
  * `delay` holds every answer back for that many milliseconds, for a scenario
  * that has to see what the page does while it waits. `refuse`, when set on
  * the returned stub, is an HTTP status every completion is refused with.
  *
- * Home digests every coding session on its own (internal/server/digest.go),
- * whatever a scenario is about, so a server with a key calls the gateway for
- * those too, at moments no scenario chooses. They are told apart by the
- * sentence every digest instruction opens with, kept in `digests` rather
- * than `calls`, and never take an entry of the queue: a scenario that counts
- * what it asked for, or scripts the operator's steps, counts and scripts
- * exactly that. Unless `answer` says otherwise a digest is told that nothing
- * is being asked.
- *
- * `answer` is for a scenario that is about those calls - Home's digests and
- * the answer operator - which arrive in an order no queue can predict. It is
- * handed each completion's request as JSON and returns the reply, or
- * undefined to leave it to the queue and `text`. Every call keeps its request
+ * `answer` is for a scenario whose calls arrive in an order no queue can
+ * predict - a chat's name and the verdict on its turn, asked for by the same
+ * server at moments no scenario chooses. It is handed each completion's
+ * request as JSON and returns the reply, or undefined to leave it to the
+ * queue and `text`. Every call keeps its request
  * as `json`, so a scenario can read what the server asked. It may return a
  * promise, to hold one call back for as long as a scenario needs, and
  * `{ status, message }` refuses that one call with that HTTP status.
  */
 export async function openRouterStub({ text = 'hello from the microphone', replies = [], delay = 0, answer = null } = {}) {
   const calls = [];
-  const digests = [];
   const queue = [...replies];
-  const stub = { calls, digests, text, replies: queue, refuse: 0 };
+  const stub = { calls, text, replies: queue, refuse: 0 };
   const server = createServer((req, res) => {
     const chunks = [];
     req.on('data', (chunk) => { chunks.push(chunk); });
@@ -439,8 +471,7 @@ export async function openRouterStub({ text = 'hello from the microphone', repli
       let json = null;
       try { json = JSON.parse(raw.toString('utf8')); } catch { /* a recording, not JSON */ }
       const completion = String(req.url || '').includes('chat/completions');
-      const digest = completion && isDigest(json);
-      (digest ? digests : calls).push({ path: req.url, bytes: raw.length, json });
+      calls.push({ path: req.url, bytes: raw.length, json });
       if (completion && stub.refuse) {
         res.writeHead(stub.refuse, { 'content-type': 'application/json' });
         res.end(JSON.stringify({ error: { message: 'refused by the e2e stub' } }));
@@ -456,7 +487,6 @@ export async function openRouterStub({ text = 'hello from the microphone', repli
         res.end(JSON.stringify({ error: { message: reply.message || 'refused by the e2e stub' } }));
         return;
       }
-      if (reply === undefined && digest) reply = NOTHING_ASKED;
       if (reply === undefined) reply = completion && queue.length ? queue.shift() : text;
       res.writeHead(200, { 'content-type': 'application/json' });
       res.end(JSON.stringify({ text: reply, choices: [{ message: { content: reply } }] }));
@@ -476,12 +506,25 @@ export async function start(options = {}) {
   const live = !!options.live;
   const data = scratchDir('socrates-data-');
   mkdirSync(join(data, 'workspaces'), { recursive: true });
-  const port = options.port || await freePort();
-  const url = 'http://127.0.0.1:' + port;
-  await ensureFakeS3();
-  const s3prefix = options.s3prefix === undefined ? prefixFor(data) : options.s3prefix;
-  const spawned = spawnServer({ data, port, live, env: options.env, s3prefix });
-  await waitForHealth(url);
+  let port = options.port || await freePort();
+  let url = 'http://127.0.0.1:' + port;
+  let spawned = null;
+  for (let attempt = 1; ; attempt += 1) {
+    spawned = spawnServer({ data, port, live, env: options.env, pathFirst: options.pathFirst });
+    const failed = await waitForHealth(url, STARTUP, spawned).then(() => null, (err) => err);
+    if (!failed) break;
+    // A server that never served is not left running for the rest of the
+    // run, where its pipes would keep the run from ever ending.
+    spawned.server.kill('SIGKILL');
+    if (failed.taken && !options.port && attempt < 5) {
+      port = await freePort();
+      url = 'http://127.0.0.1:' + port;
+      continue;
+    }
+    // A server that never answered says why in its own log, and the run is
+    // the only place that log is ever seen.
+    throw new Error(failed.message + '; its log ends: ' + oneLog(spawned.log));
+  }
 
   const browser = await chromium.launch({
     executablePath: CHROME,
@@ -515,7 +558,7 @@ export async function start(options = {}) {
   page.on('pageerror', (err) => errors.push('pageerror: ' + err.message));
 
   const s = {
-    page, context, browser, url, port, data, errors, live, s3prefix,
+    page, context, browser, url, port, data, errors, live,
     server: spawned.server, log: spawned.log, exited: spawned.exited,
   };
 
@@ -527,9 +570,9 @@ export async function start(options = {}) {
     const outcome = await Promise.race([s.exited, wait(9000).then(() => 'timeout')]);
     if (outcome === 'timeout') { s.server.kill('SIGKILL'); await s.exited; }
     if (between) await between();
-    const again = spawnServer({ data, port, live, env: { ...(options.env || {}), ...env }, s3prefix });
+    const again = spawnServer({ data, port, live, env: { ...(options.env || {}), ...env }, pathFirst: options.pathFirst });
     s.server = again.server; s.log = again.log; s.exited = again.exited;
-    await waitForHealth(url);
+    await waitForHealth(url, STARTUP, again);
     return outcome;
   };
 
@@ -542,6 +585,12 @@ export async function start(options = {}) {
   // littering the machine.
   s.stop = async () => {
     const left = { sessions: 'not checked', tmux: ['not checked'] };
+    // A server that went away by itself took the reason with it into its
+    // log, which nothing else ever shows.
+    if (s.server.exitCode !== null || s.server.signalCode !== null) {
+      console.log('  NOTE the server had exited (' + (s.server.signalCode || s.server.exitCode)
+        + ') before the scenario stopped it; its log ends: ' + oneLog(s.log));
+    }
     try {
       await s.context.setOffline(false).catch(() => {});
       if (s.context.unrouteAll) await s.context.unrouteAll().catch(() => {});
@@ -571,6 +620,15 @@ export async function start(options = {}) {
     ok(left.sessions === 0, 'the scenario left no sessions behind', String(left.sessions));
     ok(left.tmux.length === 0, 'the scenario left no tmux session and no tmux server behind',
       left.tmux.length + ' sessions' + (left.tmux.length ? ' (' + left.tmux.join(',') + ')' : ''));
+    // A deleted chat's host is stopped by the server before it answers; one
+    // still running is a leak, which the sweep below then ends.
+    let hosts = agentProcessesOf(data);
+    for (let i = 0; i < 20 && hosts.length; i += 1) {
+      await wait(250);
+      hosts = agentProcessesOf(data);
+    }
+    ok(hosts.length === 0, 'the scenario left no agent host behind',
+      hosts.length + ' processes' + (hosts.length ? ' (' + hosts.map((p) => p.pid + ' ' + p.args.split(' ').slice(0, 2).join(' ')).join(', ') + ')' : ''));
     // The backstop: whatever the assertion just found does not stay on the
     // machine.
     sweep(data);
@@ -596,17 +654,20 @@ export async function setup(page, url) {
 
 // On a phone the session list is a drawer and "New session" lives in it. This
 // is the tap that gets to it, and a no-op on a window wide enough to show it.
+//
+// A drawer that is open is waited for, never tapped again: under load it is
+// still sliding in when a fixed pause has passed, its panel is over the menu
+// button by then, and a second tap lands in the panel and never comes back.
 export async function ensureNav(page) {
-  const onScreen = () => page.evaluate(() => {
-    const side = document.getElementById('sidebar');
-    return side.getBoundingClientRect().left > -10;
-  });
-  for (let i = 0; i < 4; i += 1) {
-    if (await onScreen()) return;
-    await page.click('#menuBtn');
-    await wait(320);
+  const onScreen = () => document.getElementById('sidebar').getBoundingClientRect().left > -10;
+  for (let i = 0; i < 3; i += 1) {
+    if (await page.evaluate(onScreen)) return;
+    if (!(await page.evaluate(() => document.getElementById('app').hasAttribute('data-drawer-open')))) {
+      await page.click('#menuBtn');
+    }
+    if (await page.waitForFunction(onScreen, null, { timeout: 10000 }).then(() => true, () => false)) return;
   }
-  if (!(await onScreen())) throw new Error('the session list never came out');
+  throw new Error('the session list never came out');
 }
 
 export function shot(page, name) {
@@ -663,6 +724,14 @@ export function skipScenario(name, title, why) {
 
 /** finish sweeps anything the assertions did not catch and prints the totals. */
 export function finish() {
+  // A server still running here belongs to a scenario that is over; left
+  // alone, its pipes would keep the run from ending. The fake bucket is the
+  // run's own, and cleanupBuild stops it.
+  for (const child of servers) {
+    if (fakeS3 && child === fakeS3.child) continue;
+    console.log('NOTE a server was still running at the end of the run (' + child.spawnargs.slice(1).join(' ') + ')');
+    try { child.kill('SIGKILL'); } catch { /* already gone */ }
+  }
   cleanupBuild();
   console.log('\n' + '-'.repeat(66));
   for (const sc of totals.scenarios) {

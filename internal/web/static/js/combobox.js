@@ -38,7 +38,12 @@ const LIST_MAX = 200;
  *                      for anything whose value is a key.
  * options.emptyText    what the list says when nothing matches.
  *
- * Returns { node, input, setValue(value, notify), value(), isOpen(), focus() }.
+ * With nothing to list at all - a program that could not list its models -
+ * the field is a plain one: no arrow, and no list that only says nothing
+ * matches. items() is asked again whenever the field is opened or given a
+ * value, and by refresh() when the caller knows the list changed.
+ *
+ * Returns { node, input, setValue(value, notify), value(), isOpen(), focus(), refresh() }.
  */
 export function combobox(options = {}) {
   const {
@@ -73,7 +78,7 @@ export function combobox(options = {}) {
     'aria-controls': id + '-list',
   });
   const toggle = el('button', {
-    class: 'ds-combo__toggle', type: 'button', tabindex: '-1', 'aria-label': 'Show all',
+    class: 'ds-combo__toggle', type: 'button', tabindex: '-1', 'aria-label': 'Show all', 'data-tip': 'Show all',
   }, iconEl('chevronDown', 20));
   const list = el('ul', { class: 'ds-combo__list', id: id + '-list', role: 'listbox' });
   const status = el('p', { class: 'ds-combo__status', role: 'status' });
@@ -93,9 +98,20 @@ export function combobox(options = {}) {
 
   const isOpen = () => input.getAttribute('aria-expanded') === 'true';
 
+  // refresh hides the arrow while there is nothing to list (and closes a
+  // list that has emptied), and answers whether there is anything.
+  function refresh() {
+    const none = !(items() || []).length;
+    toggle.hidden = none;
+    node.toggleAttribute('data-unlisted', none);
+    if (none && isOpen()) close();
+    return !none;
+  }
+
   function setValue(next, notify = true) {
     current = next ?? '';
     input.value = shown(current);
+    refresh();
     if (notify) onChange(current);
   }
 
@@ -150,6 +166,7 @@ export function combobox(options = {}) {
   }
 
   function open(query) {
+    if (!refresh()) return;
     filtered = matches(query ?? '');
     // Start on the entry that is already chosen, so enter is a no-op.
     active = filtered.findIndex((item) => item.value === current);
@@ -267,6 +284,8 @@ export function combobox(options = {}) {
     if (!isOpen()) open('');
   });
 
+  refresh();
+
   return {
     node,
     input,
@@ -274,6 +293,7 @@ export function combobox(options = {}) {
     value: () => current,
     isOpen,
     focus: () => input.focus(),
+    refresh,
   };
 }
 
@@ -322,7 +342,7 @@ export function dropdown(options = {}) {
     'aria-label': label || null,
   }, face);
   const toggle = el('button', {
-    class: 'ds-combo__toggle', type: 'button', tabindex: '-1', 'aria-label': 'Show all',
+    class: 'ds-combo__toggle', type: 'button', tabindex: '-1', 'aria-label': 'Show all', 'data-tip': 'Show all',
   }, iconEl('chevronDown', 20));
   const list = el('ul', { class: 'ds-combo__list', id: id + '-list', role: 'listbox', 'aria-label': label || null });
   const popup = el('div', { class: 'ds-combo__popup', hidden: true }, list);

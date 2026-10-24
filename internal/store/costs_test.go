@@ -20,107 +20,53 @@ func sampleLedger() CostLedger {
 	}
 }
 
-func TestCostObjectNames(t *testing.T) {
-	if got := CostObject(CostKey("claude", "a/b")); got != "costs/claude/a%2Fb.json" {
-		t.Fatalf("CostObject = %q", got)
-	}
-	kind, key, err := ParseObject("costs/claude/a%2Fb.json")
-	if err != nil || kind != ObjectCost || key != "claude/a/b" {
-		t.Fatalf("ParseObject = %v %q %v", kind, key, err)
-	}
-	for _, bad := range []string{"costs/", "costs/x.json", "costs/claude/.json", "costs/claude/x"} {
-		if kind, _, err := ParseObject(bad); err == nil || kind != ObjectUnknown {
-			t.Errorf("ParseObject(%q) accepted it", bad)
-		}
-	}
-}
-
 // A ledger is written once, an unchanged one is not written again, and it
-// travels through the bucket's export and import whole.
+// reads back whole.
 func TestCostLedgerRoundTrip(t *testing.T) {
-	src := openTest(t)
-	src.EnableMirrorTracking()
+	st := openTest(t)
 	l := sampleLedger()
-	changed, err := src.PutCostLedger(l)
+	changed, err := st.PutCostLedger(l)
 	if err != nil || !changed {
 		t.Fatalf("first put: %v %v", changed, err)
 	}
-	object := CostObject(l.Key())
-	if !reflect.DeepEqual(pendingNames(t, src), []string{object}) {
-		t.Fatalf("pending = %v", pendingNames(t, src))
-	}
-	src.ClearPending(object, mustPendingAt(t, src, object))
-	if changed, err := src.PutCostLedger(sampleLedger()); err != nil || changed {
+	if changed, err := st.PutCostLedger(sampleLedger()); err != nil || changed {
 		t.Fatalf("an unchanged ledger was written again: %v %v", changed, err)
 	}
-	if len(pendingNames(t, src)) != 0 {
-		t.Fatal("an unchanged ledger is pending upload")
-	}
-
-	names, err := src.AllObjects()
+	got, err := st.GetCostLedger(l.Key())
 	if err != nil {
 		t.Fatal(err)
 	}
-	found := false
-	for _, n := range names {
-		found = found || n == object
-	}
-	if !found {
-		t.Fatalf("%s missing from %v", object, names)
-	}
-
-	data, ok, err := src.ExportObject(object)
-	if err != nil || !ok {
-		t.Fatalf("export: %v %v", ok, err)
-	}
-	dst := openTest(t)
-	dst.EnableMirrorTracking()
-	if err := dst.SetCostFingerprint(l.Key(), "old"); err != nil {
-		t.Fatal(err)
-	}
-	if err := dst.ImportObject(object, data); err != nil {
-		t.Fatal(err)
-	}
-	got, err := dst.GetCostLedger(l.Key())
-	if err != nil {
-		t.Fatal(err)
-	}
-	want, _ := src.GetCostLedger(l.Key())
+	want := sampleLedger()
+	want.normalise()
 	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("imported %+v, want %+v", got, want)
+		t.Fatalf("read %+v, want %+v", got, want)
 	}
-	if fps, _ := dst.CostFingerprints(); fps[l.Key()] != "" {
-		t.Fatal("an imported ledger kept the fingerprint of the transcripts on this disk")
-	}
-	if len(pendingNames(t, dst)) != 0 {
-		t.Fatal("a download is pending upload")
-	}
-	all, err := dst.ListCostLedgers()
+	all, err := st.ListCostLedgers()
 	if err != nil || len(all) != 1 || len(all[0].Rows) != 2 {
 		t.Fatalf("list = %+v %v", all, err)
 	}
-
-	if err := dst.DeleteObject(object); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := dst.GetCostLedger(l.Key()); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("after delete: %v", err)
+	if _, err := st.GetCostLedger("claude/nope"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("a missing ledger: %v", err)
 	}
 }
 
-func mustPendingAt(t *testing.T, st *Store, object string) int64 {
-	t.Helper()
-	list, err := st.ListPending()
+// The ledgers under one prefix are found by it, and no other.
+func TestCostKeysWithPrefix(t *testing.T) {
+	st := openTest(t)
+	for _, conv := range []string{"chat-c1", "chat-c1@acct-a", "chat-c10", "chat-c2", "x-chat-c1"} {
+		l := sampleLedger()
+		l.ConvID = conv
+		if _, err := st.PutCostLedger(l); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := st.CostKeysWithPrefix("claude/chat-c1")
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, p := range list {
-		if p.Object == object {
-			return p.At
-		}
+	if want := []string{"claude/chat-c1", "claude/chat-c10", "claude/chat-c1@acct-a"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("keys %v, want %v", got, want)
 	}
-	t.Fatalf("%s is not pending", object)
-	return 0
 }
 
 // A schema 8 database gains the ledger's tables and keeps its sessions.
@@ -149,5 +95,48 @@ func TestMigrationToSchema9(t *testing.T) {
 	}
 	if _, err := st.PutCostLedger(sampleLedger()); err != nil {
 		t.Fatalf("the ledger after the migration: %v", err)
+	}
+}
+
+// A schema 10 database loses the bucket mirror's queue and its records, and
+// keeps everything else.
+func TestMigrationToSchema11(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "socrates.db")
+	st, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateSession(newSession("a1")); err != nil {
+		t.Fatal(err)
+	}
+	for _, q := range []string{
+		`CREATE TABLE mirror_pending (object TEXT PRIMARY KEY, at INTEGER NOT NULL)`,
+		`INSERT INTO mirror_pending VALUES ('kv/settings', 1)`,
+		`INSERT INTO kv VALUES ('mirror.bucket_id', 'b-1'), ('mirror.meta', '{}'), ('settings', '{}')`,
+		`PRAGMA user_version = 10`,
+	} {
+		if _, err := st.db.Exec(q); err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+	}
+	st.Close()
+	st, err = Open(path)
+	if err != nil {
+		t.Fatalf("opening a schema 10 database: %v", err)
+	}
+	defer st.Close()
+	if ok, err := hasTable(st.db, "mirror_pending"); err != nil || ok {
+		t.Fatalf("mirror_pending is still there: %v %v", ok, err)
+	}
+	for _, key := range []string{"mirror.bucket_id", "mirror.meta"} {
+		if _, err := st.GetKV(key); !errors.Is(err, ErrNotFound) {
+			t.Fatalf("%s survived the migration: %v", key, err)
+		}
+	}
+	if _, err := st.GetKV("settings"); err != nil {
+		t.Fatalf("the settings did not survive the migration: %v", err)
+	}
+	if _, err := st.GetSession("a1"); err != nil {
+		t.Fatal(err)
 	}
 }

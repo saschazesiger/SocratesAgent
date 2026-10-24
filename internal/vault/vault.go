@@ -1,10 +1,11 @@
 // Package vault encrypts what Socrates puts in its bucket.
 //
-// The bucket is somebody else's computer. It holds the password hash, the
-// login cookies, push keys and every session's settings, and none of that
-// should be readable - or quietly replaceable - by whoever can read the
-// bucket. So every object is sealed on this side with AES-256-GCM under a
-// key derived from a passphrase that is never written to the bucket.
+// The bucket is somebody else's computer. It holds the backup of the whole
+// data directory - the password hash, the login cookies, push keys, every
+// session and every agent's logins and transcripts - and none of that should
+// be readable, or quietly replaceable, by whoever can read the bucket. So
+// every object is sealed on this side with AES-256-GCM under a key derived
+// from a passphrase that is never written to the bucket.
 //
 // Each sealed object binds its own object key as additional authenticated
 // data. Without that, someone with write access to the bucket could not
@@ -18,17 +19,25 @@
 // always destroy data; detecting rollback would need a signed index, which
 // is more machinery than the threat (a hostile storage provider replaying
 // a stale settings row) is worth.
+//
+// The same sealing keeps the API keys of the accounts out of the clear on
+// this machine, under a key of the data directory's own (LoadOrCreateKeyFile)
+// rather than one derived from a passphrase.
 package vault
 
 import (
 	"bytes"
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/hmac"
 	"crypto/pbkdf2"
 	"crypto/rand"
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
+	"runtime"
 )
 
 const (
@@ -97,6 +106,17 @@ func NewSalt() ([]byte, error) {
 // iterations is the count recorded in meta.json (Iterations for a new
 // bucket).
 func DeriveKey(passphrase string, salt []byte, iterations int) (*Key, error) {
+	raw, err := DeriveSecret(passphrase, salt, iterations)
+	if err != nil {
+		return nil, err
+	}
+	return NewKey(raw)
+}
+
+// DeriveSecret is DeriveKey's stretched passphrase as raw bytes, for a caller
+// that derives more than one key from it (Subkey) rather than using it as
+// the sealing key itself.
+func DeriveSecret(passphrase string, salt []byte, iterations int) ([]byte, error) {
 	if passphrase == "" {
 		return nil, errors.New("vault: empty passphrase")
 	}
@@ -110,7 +130,16 @@ func DeriveKey(passphrase string, salt []byte, iterations int) (*Key, error) {
 	if err != nil {
 		return nil, fmt.Errorf("vault: %w", err)
 	}
-	return NewKey(raw)
+	return raw, nil
+}
+
+// Subkey derives an independent key of KeySize bytes from a secret for one
+// purpose, named by label: HMAC-SHA256(secret, label). Two labels give two
+// keys that say nothing about each other or about the secret.
+func Subkey(secret []byte, label string) []byte {
+	mac := hmac.New(sha256.New, secret)
+	mac.Write([]byte(label))
+	return mac.Sum(nil)
 }
 
 // NewKey wraps 32 raw key bytes. DeriveKey is the normal way to get a Key;
@@ -186,4 +215,67 @@ func VerifyCheck(k *Key, check []byte) error {
 		return errors.New("vault: the check value has unexpected contents")
 	}
 	return nil
+}
+
+// LoadKeyFile reads a raw key kept in a file of its own: the data directory's
+// key that seals what Socrates keeps of its accounts (an API key in the
+// store, the environment a chat's agent host is handed). It is not derived
+// from anything, so it opens nothing anywhere else.
+//
+// A key file others can read is made the owner's alone (0600) as it is
+// read: whoever reads it opens every key it sealed.
+func LoadKeyFile(path string) (*Key, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	if fi, err := os.Stat(path); err == nil && runtime.GOOS != "windows" && fi.Mode().Perm()&0o077 != 0 {
+		if err := os.Chmod(path, 0o600); err != nil {
+			return nil, fmt.Errorf("vault: %s can be read by others and could not be made private: %w", path, err)
+		}
+	}
+	if len(raw) != KeySize {
+		return nil, fmt.Errorf("vault: %s holds %d bytes, not a key of %d", path, len(raw), KeySize)
+	}
+	return NewKey(raw)
+}
+
+// LoadOrCreateKeyFile is LoadKeyFile, making the key first when the file is
+// not there: random bytes, mode 0600, written whole under another name and
+// linked into place, so that a crash never leaves half a key and two starts
+// at once agree on one.
+func LoadOrCreateKeyFile(path string) (*Key, error) {
+	key, err := LoadKeyFile(path)
+	if !errors.Is(err, os.ErrNotExist) {
+		return key, err
+	}
+	raw := make([]byte, KeySize)
+	if _, err := rand.Read(raw); err != nil {
+		return nil, err
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return nil, err
+	}
+	defer os.Remove(tmp.Name())
+	if err := tmp.Chmod(0o600); err != nil {
+		tmp.Close()
+		return nil, err
+	}
+	if _, err := tmp.Write(raw); err != nil {
+		tmp.Close()
+		return nil, err
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return nil, err
+	}
+	if err := tmp.Close(); err != nil {
+		return nil, err
+	}
+	if err := os.Link(tmp.Name(), path); err != nil && !errors.Is(err, os.ErrExist) {
+		return nil, err
+	}
+	// Whoever linked first made the key; this one reads it.
+	return LoadKeyFile(path)
 }

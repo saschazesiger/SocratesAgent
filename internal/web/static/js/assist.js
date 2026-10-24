@@ -11,8 +11,10 @@
 
 import { api, toast, errorMessage, isOffline } from './api.js';
 import { M } from './ui.js';
-import { speak, stopSpeaking, onSpeechError } from './voice.js';
-import { mountDictation } from './dictate.js';
+import {
+  speak, stopSpeaking, onSpeechError, voiceKey, setVoiceKey, onVoiceKey, noKeyRefusal, keyMissing,
+} from './voice.js';
+import { mountDictation, explainNoKey } from './dictate.js';
 
 // How long a finished status keeps the ticker before the line goes. Long
 // enough to read one line, and the same number as NOTICE_LINGER in session.js
@@ -31,6 +33,8 @@ const path = (id, suffix) => '/api/sessions/' + encodeURIComponent(id) + suffix;
  *   current   the session on screen, or null
  *   live      whether the socket is up
  *   insert    put one line of text into the pane, as if it had been typed
+ *   ticker    where the ticker line is drawn: {box, line}, the pane's for a
+ *             terminal and the dock's for a chat
  */
 export function mountAssist(ctx) {
   const { dom } = ctx;
@@ -58,19 +62,26 @@ export function mountAssist(ctx) {
   // changed. A line that is already up is not rolled again.
   const ticker = (() => {
     let shown = '';
+    // The slots the line is in: a session that changed from a terminal to a
+    // chat under it takes the line along to where the new one draws it.
+    let slots = null;
+    function hide() {
+      if (!slots || slots.box.hidden) return;
+      slots.box.hidden = true;
+      slots.line.replaceChildren();
+      shown = '';
+    }
     return {
       show(text) {
+        const next = ctx.ticker();
+        if (slots && slots.box !== next.box) hide();
+        slots = next;
         if (!text || text === shown) return;
         shown = text;
-        dom.termTicker.hidden = false;
-        M.roll(dom.tickerWindow, text);
+        slots.box.hidden = false;
+        M.roll(slots.line, text);
       },
-      hide() {
-        if (dom.termTicker.hidden) return;
-        dom.termTicker.hidden = true;
-        dom.tickerWindow.replaceChildren();
-        shown = '';
-      },
+      hide,
     };
   })();
 
@@ -109,10 +120,17 @@ export function mountAssist(ctx) {
       // disabled for it: a disabled button would grey the spinner out.
       if (busyStatus) btn.setAttribute('aria-busy', 'true');
       else btn.removeAttribute('aria-busy');
-      const label = speaking ? 'Stop reading' : 'Summarize this session';
-      btn.setAttribute('aria-label', label);
-      btn.setAttribute('data-tip', label);
-      // An editor has no screen to summarise.
+      // What it is, in the label a reader hears, and what a press does, in
+      // the tip - or, with no OpenRouter key, why a press only explains.
+      const chat = !!session && session.kind === 'chat';
+      const label = speaking ? 'Stop reading' : chat ? 'Status of this chat' : 'Status of this session';
+      const tip = speaking ? 'Stop reading'
+        : voiceKey() === false ? 'Needs an OpenRouter key (Admin, Voice)'
+          : chat ? 'Say what this chat is doing' : 'Say what this session is doing';
+      if (btn.getAttribute('aria-label') !== label) btn.setAttribute('aria-label', label);
+      if (btn.getAttribute('data-tip') !== tip) btn.setAttribute('data-tip', tip);
+      // An editor has no screen to summarise. A chat is summarised from its
+      // journal, a terminal from its screen.
       btn.hidden = !session || session.harness === 'vscode';
       // Stopping is always available, even with the socket down: the sound is
       // already on this device and turning it off asks the server nothing.
@@ -138,11 +156,23 @@ export function mountAssist(ctx) {
   async function runStatus() {
     const session = ctx.current();
     if (!session || busyStatus) return;
+    // Nothing is asked that cannot be answered: without a key the press
+    // says where one is added, before anything is sent.
+    if (voiceKey() === false) {
+      busyStatus = true;
+      const missing = await keyMissing().finally(() => { busyStatus = false; });
+      if (missing) {
+        explainNoKey('status', dom.statusBtn);
+        return;
+      }
+    }
     busyStatus = true;
     // The first phase locally, before the request has even left: on a bad
     // connection the server's own first frame is a second away, and a tap with
-    // nothing on screen reads as a tap that did not land.
-    setStatusPhase('capturing', 'Reading the screen');
+    // nothing on screen reads as a tap that did not land. A chat is read from
+    // its journal, not its screen.
+    const chat = session.kind === 'chat';
+    setStatusPhase('capturing', chat ? 'Reading the chat' : 'Reading the screen');
     paint();
     try {
       const data = await api(path(session.id, '/status'), {
@@ -150,16 +180,27 @@ export function mountAssist(ctx) {
       });
       const text = String((data && data.text) || '').trim();
       if (!text) {
-        setStatusPhase('error', 'There was nothing to say about that screen.');
-        toast('There was nothing to say about that screen.');
+        const nothing = chat ? 'There was nothing to say about that chat.' : 'There was nothing to say about that screen.';
+        setStatusPhase('error', nothing);
+        toast(nothing);
         return;
       }
+      setVoiceKey(true);
       ctx.notice('status', text, null, statusFacts(data || {}));
       setStatusPhase('done', text);
       busyStatus = false;
       paint();
       await say(text);
     } catch (err) {
+      if (noKeyRefusal(err)) {
+        // Learnt from the refusal: said in the dialog that shows the way to
+        // a key, and before the next press. The line it held goes.
+        setVoiceKey(false);
+        statusLine = '';
+        paintTicker();
+        explainNoKey('status', dom.statusBtn);
+        return;
+      }
       setStatusPhase('error', assistFailed(err, 'That session could not be summarised.'));
       toast(assistFailed(err, 'That session could not be summarised.'), 'error');
     } finally {
@@ -223,6 +264,7 @@ export function mountAssist(ctx) {
       if (speaking) stopReading(); else runStatus();
     });
   }
+  onVoiceKey(() => paint());
   paint();
 
   return {

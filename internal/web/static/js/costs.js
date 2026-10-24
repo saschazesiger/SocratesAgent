@@ -6,11 +6,13 @@
 // says it is, and what lets a filter answer at once rather than after a
 // round trip: a year of hourly rows is a few thousand arrays.
 //
-// The ledger lives in the bucket like the sessions do, so the numbers survive
-// a restore on another machine; the transcripts they were read from do not.
+// The ledger lives in the database like the sessions do, so the numbers survive
+// a restore from the backup; and a CLI that prunes its transcripts does not
+// take their cost with it.
 
 import { api, el, errorMessage, onWake } from './api.js';
 import { M, html, raw, icon, morph } from './ui.js';
+import * as harnesses from './harnesses.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -42,6 +44,8 @@ const state = {
   range: '30d',
   filters: { harness: '', profile: '', profileSet: false, project: '', model: '' },
   slot: new Map(), // model -> series slot, by all-time cost
+  names: new Map(), // model id -> how the page names it (modelNames)
+  accounts: new Map(), // account id -> how the page names it (accountNames)
   timer: null,
   loading: false,
   expanded: new Set(),
@@ -62,6 +66,16 @@ function moneyAxis(v) {
   if (v >= 1000) return '$' + (v / 1000).toFixed(v >= 10000 ? 0 : 1).replace(/\.0$/, '') + 'K';
   if (v >= 10 || v === 0) return '$' + Math.round(v);
   return '$' + v.toFixed(v < 1 ? 2 : 1).replace(/\.0+$/, '');
+}
+
+// axisMoney is a tick's label: below a dollar a step, as many decimals as
+// the step needs, so that a chart whose biggest day is a cent does not say
+// "$0.01" at three ticks (moneyAxis rounds to cents).
+function axisMoney(v, step) {
+  if (step >= 1 || v === 0) return moneyAxis(v);
+  let digits = 2;
+  while (digits < 6 && Math.abs(Math.round(step * 10 ** digits) - step * 10 ** digits) > 1e-6) digits += 1;
+  return '$' + v.toFixed(digits).replace(/(\.\d\d\d*?)0+$/, '$1');
 }
 
 // tokens is the compact count: 950, 12.3K, 4.1M, 13.6B.
@@ -109,10 +123,62 @@ function projectLabel(project) {
   return baseName(project);
 }
 
+// profileLabel names what a ledger is filed under. A conversation's
+// "profile", as the server names it, is the account it ran on: a chat's
+// account, or for a conversation from before accounts the sign-in profile it
+// ran in, which the migration made an account. The page says account, which
+// is what a person has now.
 function profileLabel(id) {
   const names = state.data ? state.data.profiles : {};
   if (names && names[id] !== undefined) return names[id];
   return id ? id + ' (deleted)' : 'Default';
+}
+
+// modelNames is how the page names each model: as the rest of the app does,
+// by the harness catalogue's label ("Sonnet" for the claude-sonnet-… a
+// transcript records), else by its id. Two ids that would read the same keep
+// their ids beside the name. The id itself stays in the CSV and under the
+// name in the By model table.
+function modelNames(rows) {
+  const harnessOf = new Map();
+  for (const r of rows) if (!harnessOf.has(r.model)) harnessOf.set(r.model, r.conv.harness);
+  const named = new Map();
+  for (const [model, harness] of harnessOf) {
+    let found = null;
+    try { found = harnesses.modelOf(harness, model); } catch { /* no catalogue yet */ }
+    named.set(model, found ? (found.label || found.id) : model);
+  }
+  const uses = new Map();
+  for (const name of named.values()) uses.set(name, (uses.get(name) || 0) + 1);
+  for (const [model, name] of named) if (uses.get(name) > 1 && name !== model) named.set(model, name + ' (' + model + ')');
+  return named;
+}
+
+function modelName(model) {
+  return state.names.get(model) || model;
+}
+
+// accountNames names each account with the program it belongs to ("Claude
+// Code · Default"): every agent has a Default account, and three rows and
+// three filter entries that all said "Default" could not be told apart. A
+// key that spans programs - the conversations from before accounts, filed
+// under the profile they ran in - keeps its plain name.
+function accountNames(rows) {
+  const agents = new Map();
+  for (const r of rows) {
+    if (!agents.has(r.conv.profile)) agents.set(r.conv.profile, new Set());
+    agents.get(r.conv.profile).add(r.conv.harness);
+  }
+  const named = new Map();
+  for (const [id, set] of agents) {
+    const one = set.size === 1 ? [...set][0] : '';
+    named.set(id, (one ? (HARNESS[one] || one) + ' · ' : '') + profileLabel(id));
+  }
+  return named;
+}
+
+function accountName(id) {
+  return state.accounts.get(id) || profileLabel(id);
 }
 
 function convLabel(conv) {
@@ -145,7 +211,7 @@ function decode(data) {
 function matches(r) {
   const f = state.filters;
   if (f.harness && r.conv.harness !== f.harness) return false;
-  // The default profile's id is empty, so "a profile is chosen" is a flag
+  // The default account's id is empty, so "an account is chosen" is a flag
   // of its own.
   if (f.profileSet && r.conv.profile !== f.profile) return false;
   if (f.project && r.conv.project !== f.project) return false;
@@ -281,11 +347,11 @@ function drawFilters() {
   fillSelect($('fHarness'), 'harness',
     seen((r) => r.conv.harness).sort(byCost((r) => r.conv.harness)).map((h) => [h, HARNESS[h] || h]), 'All programs');
   fillSelect($('fProfile'), 'profile',
-    seen((r) => r.conv.profile).sort(byCost((r) => r.conv.profile)).map((p) => [p, profileLabel(p)]), 'All profiles');
+    seen((r) => r.conv.profile).sort(byCost((r) => r.conv.profile)).map((p) => [p, accountName(p)]), 'All accounts');
   fillSelect($('fProject'), 'project',
     seen((r) => r.conv.project).sort(byCost((r) => r.conv.project)).map((p) => [p, projectLabel(p)]), 'All projects');
   fillSelect($('fModel'), 'model',
-    seen((r) => r.model).sort(byCost((r) => r.model)).map((m) => [m, m]), 'All models');
+    seen((r) => r.model).sort(byCost((r) => r.model)).map((m) => [m, modelName(m)]), 'All models');
   const f = state.filters;
   $('fClear').hidden = !(f.harness || f.profileSet || f.project || f.model);
 }
@@ -325,13 +391,15 @@ function drawTiles(filtered, days) {
   const rangeName = RANGES.find((r) => r.id === state.range).label;
   $('tRangeLabel').textContent = rangeName === 'All' ? 'All time' : rangeName;
   figure('tRange', total);
-  $('tRangeNote').textContent = `${requests.toLocaleString()} requests · ${tokens(used)} tokens`;
+  $('tRangeNote').textContent = `${requests.toLocaleString()} ${requests === 1 ? 'request' : 'requests'} · ${tokens(used)} ${used === 1 ? 'token' : 'tokens'}`;
   figure('tPerDay', days ? total / days : 0);
   $('tPerDayNote').textContent = `average over ${days} ${days === 1 ? 'day' : 'days'}`;
   figure('tToday', todayCost);
   $('tTodayNote').textContent = dayShort.format(now);
   figure('tMonth', monthCost);
-  $('tMonthNote').textContent = pace ? 'on pace for ' + moneyAxis(pace) : monthLong.format(now);
+  // Under a dollar in cents, as the tiles say it: "on pace for $0" beside a
+  // month of <$0.01 read as nothing spent.
+  $('tMonthNote').textContent = pace ? 'on pace for ' + (pace < 1 ? money(pace) : moneyAxis(pace)) : monthLong.format(now);
 }
 
 // ------------------------------------------------------------------ chart
@@ -399,7 +467,7 @@ function drawChart(filtered, range) {
   const slots = [...present.keys()].sort((a, b) => a - b);
   const slotName = (slot) => {
     const models = [...present.get(slot)];
-    return slot < SERIES || models.length === 1 ? models[0] : 'Other models';
+    return slot < SERIES || models.length === 1 ? modelName(models[0]) : 'Other models';
   };
 
   const peak = list.reduce((m, b) => Math.max(m, b.total), 0);
@@ -418,10 +486,15 @@ function drawChart(filtered, range) {
   const height = px(box, '--so-chart-height', 240);
   const gapPx = px(box, '--so-chart-gap', 2);
   const radius = px(box, '--ds-radius-xs', 4);
-  const m = { top: 12, right: 8, bottom: 26, left: 52 };
+  const { top, step } = niceTicks(peak);
+  const ticks = [];
+  for (let v = 0; v <= top + step / 2; v += step) ticks.push(v);
+  // The labels' column is as wide as its longest label: a step of a
+  // twentieth of a cent ("$0.0005") is wider than one of dollars.
+  const widest = Math.max(...ticks.map((v) => axisMoney(v, step).length));
+  const m = { top: 12, right: 8, bottom: 26, left: Math.max(52, 12 + Math.ceil(widest * 6.5)) };
   const plotW = width - m.left - m.right;
   const plotH = height - m.top - m.bottom;
-  const { top, step } = niceTicks(peak);
   const y = (v) => m.top + plotH - (v / top) * plotH;
   const band = plotW / Math.max(1, list.length);
   const barW = Math.max(2, Math.min(24, band - 2));
@@ -430,11 +503,11 @@ function drawChart(filtered, range) {
     'aria-label': `${$('chartTitle').textContent}: ${$('chartSub').textContent}` });
   const hover = svg('rect', { x: 0, y: m.top, width: band, height: plotH, class: 'so-chart__hover', visibility: 'hidden' });
   root.append(hover);
-  for (let v = 0; v <= top + step / 2; v += step) {
+  for (const v of ticks) {
     const yy = Math.round(y(v)) + 0.5;
     root.append(svg('line', { x1: m.left, x2: width - m.right, y1: yy, y2: yy, class: v === 0 ? 'so-chart__base' : 'so-chart__grid' }));
     const label = svg('text', { x: m.left - 8, y: yy + 4, 'text-anchor': 'end', class: 'so-chart__axis' });
-    label.textContent = moneyAxis(v);
+    label.textContent = axisMoney(v, step);
     root.append(label);
   }
 
@@ -481,7 +554,7 @@ function drawChart(filtered, range) {
     const title = monthly ? monthLong.format(dayFromKey(b.key)) : dayLong.format(dayFromKey(b.key));
     const lines = [...b.models.entries()].sort((a, c) => c[1] - a[1]);
     morph(tip, html`<p class="so-chart-tip__title">${title}</p><p class="so-chart-tip__total">${money(b.total)}</p>${
-      lines.slice(0, 6).map(([model, cost]) => html`<p class="so-chart-tip__row"><span class="so-swatch" data-series="${seriesKey(seriesOf(model))}"></span><span class="so-chart-tip__name">${model}</span><span class="so-chart-tip__value">${money(cost)}</span></p>`)}${
+      lines.slice(0, 6).map(([model, cost]) => html`<p class="so-chart-tip__row"><span class="so-swatch" data-series="${seriesKey(seriesOf(model))}"></span><span class="so-chart-tip__name">${modelName(model)}</span><span class="so-chart-tip__value">${money(cost)}</span></p>`)}${
       lines.length > 6 ? html`<p class="so-chart-tip__more">and ${lines.length - 6} more</p>` : ''}`);
     tip.hidden = false;
     const rect = box.getBoundingClientRect();
@@ -529,6 +602,13 @@ function table(id, groups, { column, name, sub, onPick, picked, href, limit = LI
   const open = state.expanded.has(id);
   const shown = open ? groups : groups.slice(0, limit);
   const peak = groups.reduce((m, g) => Math.max(m, g.cost), 0);
+  // A row that opens its chat is pressed whole, not by its 18px of text: the
+  // link stretches over its row (ds-table__row-link). When every row opens
+  // something the table is DS's interactive one; when some have nothing to
+  // open (a session deleted, a conversation from outside Socrates) only the
+  // rows that do are (so-costs-links).
+  const linked = href ? shown.filter((g) => href(g)).length : 0;
+  const rowsOpen = onPick || (linked > 0 && linked === shown.length);
   const rows = shown.map((g, i) => {
     const used = g.input + g.output + g.cacheRead + g.cacheWrite;
     const label = name(g);
@@ -539,7 +619,7 @@ function table(id, groups, { column, name, sub, onPick, picked, href, limit = LI
     const lead = onPick
       ? html`<button class="ds-link-btn ds-table__row-link" type="button" data-pick="${i}" aria-pressed="${on ? 'true' : 'false'}" title="${title}">${on ? raw(icon('check', 16)) : ''}${label}</button>`
       : target
-        ? html`<a class="ds-link-btn" href="${target}">${label}</a>`
+        ? html`<a class="ds-link-btn ds-table__row-link" href="${target}">${label}</a>`
         : html`<span>${label}</span>`;
     return html`<tr data-ds-key="${'k:' + g.key}"${on ? raw(' class="ds-table__row--selected"') : ''}>
       <td class="ds-col--text so-costs-name">${lead}${detail ? html`<small class="so-costs-sub">${detail}</small>` : ''}<span class="so-costs-bar" aria-hidden="true"><span style="--so-share: ${peak ? (g.cost / peak).toFixed(4) : 0}"></span></span></td>
@@ -549,7 +629,7 @@ function table(id, groups, { column, name, sub, onPick, picked, href, limit = LI
       <td class="ds-num ds-col--secondary">${g.requests.toLocaleString()}</td>
     </tr>`;
   });
-  morph(box, html`<div class="ds-table-wrap"><table class="ds-table ds-table--dense${onPick ? ' ds-table--interactive' : ''}">
+  morph(box, html`<div class="ds-table-wrap"><table class="ds-table ds-table--dense${rowsOpen ? ' ds-table--interactive' : (linked ? ' so-costs-links' : '')}">
     <thead><tr>
       <th scope="col">${column}</th><th scope="col" class="ds-num">Cost</th><th scope="col" class="ds-num ds-col--secondary">Share</th>
       <th scope="col" class="ds-num ds-col--secondary">Tokens</th><th scope="col" class="ds-num ds-col--secondary">Requests</th>
@@ -578,8 +658,10 @@ function drawTables(filtered) {
   });
   table('tModel', groupBy(filtered, (r) => r.model), {
     column: 'Model',
-    name: (g) => g.key,
-    sub: (g) => (g.unpriced && g.cost === 0 ? `${g.unpriced.toLocaleString()} requests without a known price` : ''),
+    name: (g) => modelName(g.key),
+    sub: (g) => [modelName(g.key) !== g.key ? g.key : '',
+      g.unpriced && g.cost === 0 ? `${g.unpriced.toLocaleString()} ${g.unpriced === 1 ? 'request' : 'requests'} without a known price` : '']
+      .filter(Boolean).join(' · '),
     onPick: (g) => toggleFilter('model', g.key), picked: (g) => f.model !== '' && f.model === g.key,
   });
   table('tMonthly', groupBy(filtered, (r) => r.month), {
@@ -598,20 +680,32 @@ function drawTables(filtered) {
     onPick: (g) => toggleFilter('harness', g.key), picked: (g) => f.harness !== '' && f.harness === g.key,
   });
   table('tProfile', groupBy(filtered, (r) => r.conv.profile), {
-    column: 'Profile',
-    name: (g) => profileLabel(g.key),
+    column: 'Account',
+    name: (g) => accountName(g.key),
     onPick: (g) => toggleFilter('profile', g.key), picked: (g) => f.profileSet && f.profile === g.key,
   });
-  table('tConv', groupBy(filtered, (r) => r.conv.key), {
+  // A chat is one row, whatever accounts it ran on: its ledgers are kept
+  // per account (the account in the key), and a chat that went on with
+  // another one at a limit was two rows of the same name, date and link.
+  // What each account spent is the Account table's.
+  const chatOf = (r) => (r.conv.session_id ? r.conv.harness + '/' + r.conv.session_id : r.conv.key);
+  const lastAt = new Map();
+  for (const r of filtered) {
+    const key = chatOf(r);
+    lastAt.set(key, Math.max(lastAt.get(key) || 0, r.conv.last_at || 0));
+  }
+  table('tConv', groupBy(filtered, chatOf), {
     column: 'Conversation',
     name: (g) => convLabel(g.sample.conv),
     sub: (g) => {
       const c = g.sample.conv;
-      const when = c.last_at ? dayShort.format(new Date(c.last_at)) : '';
+      const at = lastAt.get(g.key);
+      const when = at ? dayShort.format(new Date(at)) : '';
       return [HARNESS[c.harness] || c.harness, projectLabel(c.project), when, c.live ? '' : (c.session_id ? 'session deleted' : 'not started from Socrates')]
         .filter(Boolean).join(' · ');
     },
-    href: (g) => (g.sample.conv.live ? '/#' + encodeURIComponent(g.sample.conv.session_id) : ''),
+    // #open=: a page that starts on a bare #<id> starts on Home (routeOf).
+    href: (g) => (g.sample.conv.live ? '/#open=' + encodeURIComponent(g.sample.conv.session_id) : ''),
   });
 }
 
@@ -619,6 +713,8 @@ function drawTables(filtered) {
 
 function render() {
   if (!state.data) return;
+  state.names = modelNames(state.rows);
+  state.accounts = accountNames(state.rows);
   $('costsLoading').hidden = true;
   const none = state.rows.length === 0;
   $('costsNone').hidden = !none;
@@ -653,14 +749,9 @@ function drawState() {
   } else {
     morph(line, data.scanned_at ? html`Updated ${clock.format(new Date(data.scanned_at))}` : '');
   }
-  const backup = !data.mirrored
-    ? 'This Socrates has no bucket, so the ledger is kept on this machine only.'
-    : data.pending
-      ? `${data.pending} ${data.pending === 1 ? 'conversation is' : 'conversations are'} waiting to be backed up to the bucket.`
-      : 'The ledger is backed up to the bucket and comes back with a restore.';
   $('costsNote').textContent = 'Estimated at the published API prices from the transcripts Claude Code, Codex and OpenCode keep '
     + '(OpenCode prices its answers itself). A subscription is billed differently: this is what the same work would cost on the API. '
-    + 'Days are this device\'s days. ' + backup;
+    + 'Days are this device\'s days. The ledger is part of the data directory, and of its backup when one is set up.';
   $('costsNoneText').textContent = data.scanning
     ? 'Socrates is reading the transcripts on this machine; what they cost shows up here in a moment.'
     : 'They show up here once Claude Code, Codex or OpenCode has had a conversation on this machine.';
@@ -701,7 +792,7 @@ function csvCell(v) {
 function downloadCsv(rows, range) {
   const groups = groupBy(rows, (r) => `${r.day}\u0000${r.conv.key}\u0000${r.model}`)
     .sort((a, b) => (a.sample.day === b.sample.day ? b.cost - a.cost : (a.sample.day < b.sample.day ? -1 : 1)));
-  const lines = [['date', 'project', 'folder', 'program', 'profile', 'model', 'conversation', 'cost_usd',
+  const lines = [['date', 'project', 'folder', 'program', 'account', 'model', 'conversation', 'cost_usd',
     'input_tokens', 'output_tokens', 'cache_read_tokens', 'cache_write_tokens', 'requests'].join(',')];
   for (const g of groups) {
     const c = g.sample.conv;
@@ -733,5 +824,8 @@ document.addEventListener('pointerdown', (ev) => {
   if (!ev.target.closest('#chart') && !ev.target.closest('#chartTip')) $('chartTip').hidden = true;
 });
 onWake(() => load());
+// The catalogue names the models; the page is drawn again once it is in (it
+// is usually there at once, from this browser's copy).
+harnesses.load().then(() => render()).catch(() => { /* the ids stay */ });
 document.addEventListener('visibilitychange', () => { if (!document.hidden) load(); });
 load();

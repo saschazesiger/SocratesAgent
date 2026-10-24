@@ -42,103 +42,31 @@ func (c gatewayCall) last() string {
 	return c.Messages[len(c.Messages)-1].Content
 }
 
-func (c gatewayCall) joined() string {
-	parts := make([]string, 0, len(c.Messages))
-	for _, m := range c.Messages {
-		parts = append(parts, m.Role+": "+m.Content)
-	}
-	return strings.Join(parts, "\n---\n")
-}
-
-// isDigest is whether a call is one of Home's digests rather than a step of
-// the operator, the namer or the Status button. Digests are made on the
-// server's own time, whenever a coding session finishes a turn or starts
-// asking, so a test that counts the calls it caused would count them too;
-// they are told apart by what they ask, and answered from their own queue.
-func (c gatewayCall) isDigest() bool {
-	return len(c.Messages) > 0 && strings.HasPrefix(c.Messages[0].Content, digestMarker)
-}
-
-// scriptedGateway answers /chat/completions with the next reply in its queue,
-// falling back to a fixed one when the queue runs out. The operator loop needs
-// a different answer per step, which is the whole reason it is a queue.
-//
-// Digests have a queue, a fallback, a refusal and a gate of their own, so
-// that the operator's script is never eaten by a digest and a digest test
-// can hold its calls without holding anything else.
+// scriptedGateway answers /chat/completions with one fixed reply, or with the
+// refusal it was told to give.
 type scriptedGateway struct {
 	srv *httptest.Server
 
 	mu       sync.Mutex
-	replies  []string
 	fallback string
 	status   int
 	body     string
 	calls    []gatewayCall
-	gate     chan struct{}
-
-	digestReplies  []string
-	digestFallback string
-	digestStatus   int
-	digestBody     string
-	digestCalls    []gatewayCall
-	digestGate     chan struct{}
-	// digestLive and digestPeak are how many digest calls are in flight now,
-	// and the most there ever were at once.
-	digestLive int
-	digestPeak int
 }
 
 func newGateway(t *testing.T) *scriptedGateway {
 	t.Helper()
-	g := &scriptedGateway{
-		fallback:       `{"actions":[],"done":true,"summary":"nothing to do"}`,
-		digestFallback: `{"summary":"Working on it.","context":"","question":null}`,
-	}
+	g := &scriptedGateway{fallback: "Nothing to say."}
 	g.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		raw, _ := io.ReadAll(r.Body)
 		var call gatewayCall
 		_ = json.Unmarshal(raw, &call)
 
 		g.mu.Lock()
-		var gate chan struct{}
-		var status int
-		var body, reply string
-		if call.isDigest() {
-			g.digestCalls = append(g.digestCalls, call)
-			gate, status, body = g.digestGate, g.digestStatus, g.digestBody
-			reply = g.digestFallback
-			if len(g.digestReplies) > 0 {
-				reply, g.digestReplies = g.digestReplies[0], g.digestReplies[1:]
-			}
-			g.digestLive++
-			if g.digestLive > g.digestPeak {
-				g.digestPeak = g.digestLive
-			}
-			defer func() {
-				g.mu.Lock()
-				g.digestLive--
-				g.mu.Unlock()
-			}()
-		} else {
-			g.calls = append(g.calls, call)
-			gate, status, body = g.gate, g.status, g.body
-			reply = g.fallback
-			if len(g.replies) > 0 {
-				reply, g.replies = g.replies[0], g.replies[1:]
-			}
-		}
+		g.calls = append(g.calls, call)
+		status, body, reply := g.status, g.body, g.fallback
 		g.mu.Unlock()
 
-		if gate != nil {
-			// A gateway that has not answered yet is a run stuck in
-			// "thinking", which is where a cancel has to be able to reach it.
-			select {
-			case <-gate:
-			case <-r.Context().Done():
-				return
-			}
-		}
 		w.Header().Set("Content-Type", "application/json")
 		if status != 0 {
 			w.WriteHeader(status)
@@ -157,12 +85,6 @@ func newGateway(t *testing.T) *scriptedGateway {
 	return g
 }
 
-func (g *scriptedGateway) script(replies ...string) {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	g.replies = append([]string{}, replies...)
-}
-
 func (g *scriptedGateway) always(reply string) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -175,22 +97,6 @@ func (g *scriptedGateway) refuse(status int, message string) {
 	g.status, g.body = status, fmt.Sprintf(`{"error":{"message":%q}}`, message)
 }
 
-func (g *scriptedGateway) block() {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	g.gate = make(chan struct{})
-}
-
-func (g *scriptedGateway) release() {
-	g.mu.Lock()
-	gate := g.gate
-	g.gate = nil
-	g.mu.Unlock()
-	if gate != nil {
-		close(gate)
-	}
-}
-
 func (g *scriptedGateway) seen() []gatewayCall {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -201,56 +107,6 @@ func (g *scriptedGateway) count() int {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	return len(g.calls)
-}
-
-// digestScript, digestAlways, digestRefuse, digestBlock and digestRelease
-// are script, always, refuse, block and release for the digests alone.
-func (g *scriptedGateway) digestScript(replies ...string) {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	g.digestReplies = append([]string{}, replies...)
-}
-
-func (g *scriptedGateway) digestAlways(reply string) {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	g.digestFallback = reply
-}
-
-func (g *scriptedGateway) digestRefuse(status int, message string) {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	g.digestStatus, g.digestBody = status, fmt.Sprintf(`{"error":{"message":%q}}`, message)
-}
-
-func (g *scriptedGateway) digestBlock() {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	g.digestGate = make(chan struct{})
-}
-
-func (g *scriptedGateway) digestRelease() {
-	g.mu.Lock()
-	gate := g.digestGate
-	g.digestGate = nil
-	g.mu.Unlock()
-	if gate != nil {
-		close(gate)
-	}
-}
-
-func (g *scriptedGateway) digestsSeen() []gatewayCall {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	return append([]gatewayCall{}, g.digestCalls...)
-}
-
-// digestState is how many digest calls are in flight, and the most there
-// ever were at once.
-func (g *scriptedGateway) digestState() (live, peak int) {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	return g.digestLive, g.digestPeak
 }
 
 /* ------------------------------------------------------------- the set up */
@@ -270,7 +126,7 @@ func newAssistEnv(t *testing.T) *assistEnv {
 	e.configureOpenRouter(t, map[string]any{
 		"base_url": gw.srv.URL, "api_key": "k",
 		"status_model": "test/status-model", "title_model": "test/title-model",
-		"home_model": "test/home-model", "operator_model": "test/operator-model",
+		"home_model": "test/home-model",
 	})
 	return &assistEnv{sessionEnv: e, gw: gw, id: e.shellSession(100, 30)}
 }

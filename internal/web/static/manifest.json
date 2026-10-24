@@ -2,7 +2,7 @@
   "id": "/",
   "name": "Socrates",
   "short_name": "Socrates",
-  "description": "A web terminal for Claude Code, Codex, OpenCode and your shell.",
+  "description": "Chats with Claude Code, Codex and OpenCode, and a terminal for your shell.",
   "lang": "en",
   "dir": "ltr",
   "start_url": "/",
@@ -23,7 +23,7 @@
     {
       "name": "Questions",
       "short_name": "Questions",
-      "description": "The questions and permission prompts your agents are waiting on",
+      "description": "The questions your agents are waiting on",
       "url": "/#questions",
       "icons": [{ "src": "/static/img/icon-192.png", "sizes": "192x192", "type": "image/png" }]
     },

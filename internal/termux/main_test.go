@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/saschazesiger/SocratesAgent/internal/store"
+	"github.com/saschazesiger/SocratesAgent/internal/testhome"
 )
 
 // TestMain lets the test binary stand in for the Socrates executable.
@@ -33,7 +34,7 @@ func TestMain(m *testing.M) {
 			os.Exit(runSpawnHelper(os.Args[2:]))
 		}
 	}
-	os.Exit(m.Run())
+	os.Exit(testhome.Main(m))
 }
 
 func runSinkHelper(args []string) int {

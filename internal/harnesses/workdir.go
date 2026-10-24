@@ -145,6 +145,37 @@ func checkCustom(settings config.Settings, path string) (string, error) {
 	return clean, nil
 }
 
+// PointWorkdir is the folder a session is pointed to when its own is not on
+// this machine - a restore brings the chats back, not the code they worked
+// on (REBUILD §6.2). It answers the way of choosing it and the cleaned path:
+// a preset when the path is one, otherwise a typed-in directory under the
+// same rules as a new session's. Unlike a new session's, the folder must be
+// there already: pointing a session at a folder that does not exist would
+// only move what is missing.
+func PointWorkdir(settings config.Settings, path string) (string, string, error) {
+	clean, err := checkPath(path)
+	if err != nil {
+		return "", "", err
+	}
+	mode := WorkdirCustom
+	for _, p := range settings.Workspace.Presets {
+		if filepath.Clean(strings.TrimSpace(p.Path)) == clean {
+			mode = WorkdirPreset
+			break
+		}
+	}
+	if mode == WorkdirCustom {
+		if clean, err = checkCustom(settings, clean); err != nil {
+			return "", "", err
+		}
+	}
+	info, err := os.Stat(clean)
+	if err != nil || !info.IsDir() {
+		return "", "", fmt.Errorf("there is no folder %s on this machine", clean)
+	}
+	return mode, clean, nil
+}
+
 // CheckWorkdir is ResolveWorkdir for a prepared session: the same rules, and
 // nothing made. A prepared session may wait for days, and a directory created
 // for it now would be an empty directory in the workspace for every draft
@@ -170,16 +201,21 @@ func CheckWorkdir(settings config.Settings, mode, path string) (string, error) {
 
 // blockedPath reports whether a path is one of the places an agent may never
 // be given, either exactly or - for the kernel's own filesystems, where
-// nothing at all is a workspace - anywhere underneath.
+// nothing at all is a workspace - anywhere underneath. Each place is matched
+// as written and as it resolves, because on some systems it is itself a
+// link: macOS's /etc is /private/etc, so a link to /etc resolves to a name
+// the list would not otherwise know.
 func blockedPath(path string) bool {
 	for _, blocked := range blockedRoots {
-		if path == blocked {
+		if path == blocked || path == resolveExisting(blocked) {
 			return true
 		}
 	}
 	for _, tree := range blockedTrees {
-		if path == tree || strings.HasPrefix(path, tree+string(os.PathSeparator)) {
-			return true
+		for _, t := range []string{tree, resolveExisting(tree)} {
+			if path == t || strings.HasPrefix(path, t+string(os.PathSeparator)) {
+				return true
+			}
 		}
 	}
 	return false

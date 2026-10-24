@@ -13,7 +13,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/saschazesiger/SocratesAgent/internal/config"
 	"github.com/saschazesiger/SocratesAgent/internal/store"
 	"github.com/saschazesiger/SocratesAgent/internal/termux"
 	"github.com/saschazesiger/SocratesAgent/internal/webpush"
@@ -23,12 +22,13 @@ import (
 //
 // The page's own notification (notify.js) needs the page to be running, and a
 // phone in a pocket has suspended it. So the server sends the same news - a
-// session finished, or started needing an answer - through the browser
+// chat finished a turn, or started needing an answer - through the browser
 // vendor's push service, and the service worker shows it. A finished turn is
 // news by the page's rule exactly (notify.completed), applied here to the
-// same committed activity changes the page hears. A question is news by a
-// wider one (asks): every new prompt the person is stopped on, also one a
-// session at rest opened, and it waits a moment for its own words (hold).
+// same committed activity changes the page hears, in the words of the chat's
+// journal. A question is news by a wider one (asks): every new question the
+// person is stopped on, in its own words, which the journal has the moment
+// it is asked.
 //
 // Every message also carries how many sessions are asking, and which: the
 // number on the app icon, and the questions still worth a notification.
@@ -42,11 +42,6 @@ const (
 	// pushSubsMax bounds the list: every browser that ever turned the switch
 	// on and never turned it off is in it until its push service says gone.
 	pushSubsMax = 32
-	// pushQuestionWait is the longest a question waits for the digest that
-	// reads its words (pendingAsk). The read of a prompt is the first in the
-	// queue and takes a few seconds; a model that is slower than this, or
-	// down, costs the words, not the notification.
-	pushQuestionWait = 8 * time.Second
 	// pushBodyRunes bounds a question's words in a notification: about what
 	// a lock screen shows before it cuts the rest off anyway.
 	pushBodyRunes = 180
@@ -74,31 +69,27 @@ type pusher struct {
 	// questions a phone keeps in its notification centre. Nil, or a set that
 	// could not be counted, leaves both as the phone has them.
 	asking func() []string
-	// wait is how long a question waits for its digest (pushQuestionWait),
-	// a field so that the tests can run it in milliseconds.
-	wait time.Duration
+	// chatAsk and chatTurn are what a chat's journal says (chatHub): the
+	// question it asks, and how its last turn ended - false for a turn that
+	// is no news, one the person stopped themselves.
+	chatAsk  func(id string) string
+	chatTurn func(id string) (string, bool)
 
 	// counting is held while the asking set is counted and stamped, and
 	// counted is the last stamp (stamp). It is a lock of its own, taken by
-	// nothing that holds another: the count takes the digester's lock and
-	// the detector's, which mu is taken under.
+	// nothing that holds another: the count takes the chats' locks, which mu
+	// is taken under.
 	counting sync.Mutex
 	counted  int64
 
 	mu   sync.Mutex
 	keys webpush.Keys
 	prev map[string]termux.Activity
-	// finished is every session whose last push was "Finished", with the
-	// Since of the idle it was sent for: a turn that ended by asking in prose
-	// is announced again as a question once its digest has read it so.
-	finished map[string]int64
-	// asked is every session a question has been pushed for - or is on its
-	// way for - since it was last seen working or idle. A prompt that drops
-	// out of sight for a tick and comes back is the prompt the phone was
-	// already told about, not a second question.
+	// asked is every chat a question has been pushed for since it was last
+	// seen working or idle. A question that drops out of sight for a tick and
+	// comes back is the question the phone was already told about, not a
+	// second one.
 	asked map[string]bool
-	// pending is every question waiting for its digest (hold).
-	pending map[string]*pendingAsk
 	// checking says whether the outcome of the idle at since is still being
 	// read (digester.outcomePending), and finishing is every "Finished"
 	// waiting for it (holdFinished); outcomeWait is how long one waits, a
@@ -110,33 +101,15 @@ type pusher struct {
 	stopped bool
 }
 
-// pendingAsk is one question that has not been pushed yet. A notification
-// that says "Needs an answer" makes the person open the app to find out what
-// is asked; one that says "Run the migrations against production?" can be
-// answered from where it is read, and the digest that reads the prompt for
-// Home is seconds away. So the push waits for it, a little: until the digest
-// of this very prompt is in, or has failed, or until wait is over.
-type pendingAsk struct {
-	title string
-	// since is the waiting commit the question is for. A read made in any
-	// other commit is a read of some other screen.
-	since int64
-	// note is the detector's word on the prompt ("permission prompt"), for
-	// the generic words when there is nothing better.
-	note  string
-	timer *time.Timer
-	// overdue is a wait that ran out while the detector could not say what
-	// the session was doing: it is sent the moment the prompt is seen again,
-	// and dropped if the session is seen anywhere else.
-	overdue bool
-}
-
 // pendingFinish is one turn's end that has not been pushed yet, because its
 // outcome is being read: a notification that says "Partly done · 2 open:
 // tests" is one that does not need the app opened to find out how the work
 // was left.
 type pendingFinish struct {
 	title string
+	// body is what it says when no verdict comes: "Finished", or a chat's
+	// own words for how its turn ended.
+	body string
 	// since is the idle the turn ended on, which the outcome is for.
 	since int64
 	timer *time.Timer
@@ -145,12 +118,9 @@ type pendingFinish struct {
 func newPusher(st *store.Store) *pusher {
 	p := &pusher{
 		st:          st,
-		wait:        pushQuestionWait,
 		outcomeWait: outcomeWait,
 		prev:        map[string]termux.Activity{},
-		finished:    map[string]int64{},
 		asked:       map[string]bool{},
-		pending:     map[string]*pendingAsk{},
 		finishing:   map[string]*pendingFinish{},
 	}
 	p.send = p.deliver
@@ -284,9 +254,9 @@ const (
 	pushTest     = "test"
 )
 
-// news is notify.completed's "Finished" on the server: a session went from
+// news is notify.completed's "Finished" on the server: a chat went from
 // working to finished, and the unread mark was set by this very change. It
-// answers the line a notification says, or "" for no news. A session that
+// answers the line a notification says, or "" for no news. A chat that
 // starts asking is asks.
 func news(prev, next termux.Activity) string {
 	if prev.State != termux.StateBusy && prev.State != termux.StateTasks {
@@ -301,15 +271,12 @@ func news(prev, next termux.Activity) string {
 	return ""
 }
 
-// asks is whether a committed change is a session starting to ask: a prompt
-// reached from work, from background work or from the prompt - a question
-// at the end of a turn, the next permission prompt after one was approved,
-// a menu a command opened. Not from unknown: that is the detector finding its
-// footing after a restart or a relaunch, or a prompt that dropped out of
-// sight for a tick and came back. And only with the unread mark, which the
-// detector sets only for a session somebody has typed at: a harness's own
-// menu at startup ("Do you trust this folder?") is not news, it is what the
-// person who started the session is looking at.
+// asks is whether a committed change is a chat starting to ask: a question
+// reached from work, from background work or from rest. Not from unknown:
+// that is the detector finding its footing after a restart, or a question
+// that dropped out of sight for a tick and came back. And only with the
+// unread mark, which the detector sets only for a chat somebody has sent
+// something: an agent's start-up is not news.
 func asks(prev, next termux.Activity) bool {
 	if next.State != termux.StateWaiting || !next.Unread {
 		return false
@@ -327,17 +294,10 @@ func (p *pusher) observe(id string, next termux.Activity) {
 	p.mu.Lock()
 	prev, seen := p.prev[id]
 	p.prev[id] = next
-	if prev.State != next.State {
-		// Whatever the turn's end asked, the session has moved on from it.
-		delete(p.finished, id)
-	}
-	due, dueBody := p.followLocked(id, next)
+	p.followLocked(id, next)
 	p.followFinishedLocked(id, next)
-	ask := seen && asks(prev, next) && !p.asked[id] && p.pending[id] == nil
+	ask := seen && asks(prev, next) && !p.asked[id]
 	p.mu.Unlock()
-	if due != nil {
-		p.notify(id, due.title, dueBody, pushQuestion)
-	}
 	if !seen {
 		return
 	}
@@ -349,28 +309,63 @@ func (p *pusher) observe(id string, next termux.Activity) {
 	if err != nil {
 		return
 	}
-	// A shell and an editor take no turns, so they never finish one. And a
+	// Only a chat takes turns: a Shell and an editor never finish one. And a
 	// service filed background finishes turns so as not to interrupt anyone:
 	// no chime and no notification (DEVIATIONS.md), as the page's own
-	// notifier has it - also for a prompt it stops on, which Home still counts
-	// as a question.
-	if row.Harness == config.HarnessShell || row.Harness == config.HarnessVSCode ||
-		row.Status == store.StatusBackground {
+	// notifier has it - also for a question it stops on, which Home still
+	// counts.
+	if !row.IsChat() || row.Status == store.StatusBackground {
 		return
 	}
 	if ask {
-		p.hold(id, row.Title, next)
+		p.askChat(id, row.Title, next)
 		return
+	}
+	if p.chatTurn != nil {
+		words, news := p.chatTurn(id)
+		if !news {
+			return
+		}
+		body = words
 	}
 	// A turn whose outcome is being read waits for it.
 	if p.checking != nil && p.checking(id, next.Since) {
-		p.holdFinished(id, row.Title, next)
+		p.holdFinished(id, row.Title, body, next)
 		return
 	}
-	p.mu.Lock()
-	p.finished[id] = next.Since
-	p.mu.Unlock()
 	p.notify(id, row.Title, body, pushFinished)
+}
+
+// followLocked moves the questions along with a committed change: a chat
+// seen working or idle has moved on from whatever it asked, so its next
+// question is a new one. Called with the lock held.
+func (p *pusher) followLocked(id string, next termux.Activity) {
+	switch next.State {
+	case termux.StateBusy, termux.StateTasks, termux.StateIdle:
+		delete(p.asked, id)
+	}
+}
+
+// askChat pushes the question a chat has just started asking, at once and in
+// its own words: the ask in its journal is the question. Only for the commit
+// it was found in, and once until the chat is seen working or idle again.
+func (p *pusher) askChat(id, title string, at termux.Activity) {
+	p.mu.Lock()
+	now, ok := p.prev[id]
+	if p.stopped || !ok || now.State != termux.StateWaiting || now.Since != at.Since || p.asked[id] {
+		p.mu.Unlock()
+		return
+	}
+	p.asked[id] = true
+	p.mu.Unlock()
+	body := ""
+	if p.chatAsk != nil {
+		body = oneLine(p.chatAsk(id), pushBodyRunes)
+	}
+	if body == "" {
+		body = "Needs an answer"
+	}
+	p.notify(id, title, body, pushQuestion)
 }
 
 // followFinishedLocked moves a "Finished" that waits for its outcome along with
@@ -397,14 +392,14 @@ func (p *pusher) followFinishedLocked(id string, next termux.Activity) {
 // holdFinished puts a turn's end on the wait for its outcome. The row was read
 // without the lock, so the commit it was read for has to still be the
 // session's last one.
-func (p *pusher) holdFinished(id, title string, at termux.Activity) {
+func (p *pusher) holdFinished(id, title, body string, at termux.Activity) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	now, ok := p.prev[id]
 	if p.stopped || !ok || now.State != termux.StateIdle || now.Since != at.Since || p.finishing[id] != nil {
 		return
 	}
-	rec := &pendingFinish{title: title, since: at.Since}
+	rec := &pendingFinish{title: title, body: body, since: at.Since}
 	rec.timer = time.AfterFunc(p.outcomeWait, func() { p.expireFinished(id, rec) })
 	p.finishing[id] = rec
 }
@@ -418,17 +413,16 @@ func (p *pusher) expireFinished(id string, rec *pendingFinish) {
 		return
 	}
 	p.dropFinishedLocked(id, rec)
-	p.finished[id] = rec.since
 	p.mu.Unlock()
-	p.notify(id, rec.title, "Finished", pushFinished)
+	p.notify(id, rec.title, rec.body, pushFinished)
 }
 
 // judged is the digester's verdict on a turn's end. A "Finished" waiting for
 // exactly this idle goes out now, saying how the turn left the work; a
 // verdict that came after the wait was over has nothing left to say, as the
 // turn's end was pushed already. The digester calls it with its own lock held
-// (read).
-func (p *pusher) judged(id string, o outcome, q *digestQuestion) {
+// (judgedLocked).
+func (p *pusher) judged(id string, o outcome) {
 	p.mu.Lock()
 	rec := p.finishing[id]
 	if rec == nil || rec.since != o.Since {
@@ -436,28 +430,23 @@ func (p *pusher) judged(id string, o outcome, q *digestQuestion) {
 		return
 	}
 	p.dropFinishedLocked(id, rec)
-	body, kind := outcomeBody(o, q)
-	if kind == pushFinished {
-		p.finished[id] = rec.since
-	}
 	p.mu.Unlock()
-	p.notify(id, rec.title, body, kind)
+	p.notify(id, rec.title, outcomeBody(o), pushFinished)
 }
 
 // releaseFinished is the outcomes switched off: every turn's end that was
 // waiting for one is pushed now.
 func (p *pusher) releaseFinished() {
 	p.mu.Lock()
-	type due struct{ id, title string }
+	type due struct{ id, title, body string }
 	var out []due
 	for id, rec := range p.finishing {
 		p.dropFinishedLocked(id, rec)
-		p.finished[id] = rec.since
-		out = append(out, due{id, rec.title})
+		out = append(out, due{id, rec.title, rec.body})
 	}
 	p.mu.Unlock()
 	for _, d := range out {
-		p.notify(d.id, d.title, "Finished", pushFinished)
+		p.notify(d.id, d.title, d.body, pushFinished)
 	}
 }
 
@@ -471,12 +460,11 @@ func (p *pusher) dropFinishedLocked(id string, rec *pendingFinish) {
 	delete(p.finishing, id)
 }
 
-// outcomeBody is what the notification of a judged turn says, and what a tap
-// on it opens. A turn that ends by asking is pushed as the question it asks,
-// as a prompt's is; one that failed to be judged is "Finished".
-func outcomeBody(o outcome, q *digestQuestion) (string, string) {
+// outcomeBody is what the notification of a judged turn says; one that
+// failed to be judged is "Finished".
+func outcomeBody(o outcome) string {
 	if o.Phase != digestReady {
-		return "Finished", pushFinished
+		return "Finished"
 	}
 	with := func(label, rest string) string {
 		if rest = strings.TrimSpace(rest); rest == "" {
@@ -486,161 +474,18 @@ func outcomeBody(o outcome, q *digestQuestion) (string, string) {
 	}
 	switch o.Kind {
 	case outcomeComplete:
-		return with("Complete", o.Reason), pushFinished
+		return with("Complete", o.Reason)
 	case outcomePartial:
 		if len(o.Todos) > 0 {
-			return with("Partly done", fmt.Sprintf("%d open: %s", len(o.Todos), o.Todos[0])), pushFinished
+			return with("Partly done", fmt.Sprintf("%d open: %s", len(o.Todos), o.Todos[0]))
 		}
-		return with("Partly done", o.Reason), pushFinished
+		return with("Partly done", o.Reason)
 	case outcomeBlocked:
-		return with("Blocked", o.Reason), pushFinished
+		return with("Blocked", o.Reason)
 	case outcomeNeedsInput:
-		if q != nil {
-			return questionBody(q, ""), pushQuestion
-		}
-		return with("Waiting on you", o.Reason), pushFinished
+		return with("Waiting on you", o.Reason)
 	}
-	return "Finished", pushFinished
-}
-
-// followLocked moves the questions along with a committed change. A session
-// seen working or idle has moved on from whatever it asked: the next prompt
-// is a new question, and a question still waiting for its digest was
-// answered at the machine before the phone was told, so it is never sent.
-// A session back on its prompt after a tick of unknown is on the prompt it
-// was held for, in a new commit - which is the commit its digest now reads -
-// and one whose wait ran out meanwhile is due now. But not a session whose
-// pane is gone or dead: the program that asked has ended, and whatever
-// prompt is seen next - the menu a relaunched one opens on, an update notice
-// - is another program's screen, not this question. Called with the lock
-// held; it answers the question that is due and what it says, for the caller
-// to send once the lock is let go.
-func (p *pusher) followLocked(id string, next termux.Activity) (*pendingAsk, string) {
-	rec := p.pending[id]
-	switch next.State {
-	case termux.StateBusy, termux.StateTasks, termux.StateIdle:
-		delete(p.asked, id)
-		if rec != nil {
-			p.dropLocked(id, rec)
-		}
-	case termux.StateUnknown:
-		// The detector commits this source only for a pane tmux says is
-		// absent or dead, never for one it merely could not read.
-		if next.Source != activitySourcePane {
-			break
-		}
-		delete(p.asked, id)
-		if rec != nil {
-			p.dropLocked(id, rec)
-		}
-	case termux.StateWaiting:
-		if rec == nil {
-			return nil, ""
-		}
-		rec.since, rec.note = next.Since, next.Note
-		if rec.overdue {
-			p.dropLocked(id, rec)
-			return rec, questionBody(nil, rec.note)
-		}
-	}
-	return nil, ""
-}
-
-// hold puts a question on the wait for its digest (pendingAsk). The row was
-// read without the lock, so the commit it was read for has to still be the
-// session's last one: a forget in between, or a change the detector has
-// committed since, and there is nothing to hold.
-func (p *pusher) hold(id, title string, at termux.Activity) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	now, ok := p.prev[id]
-	if p.stopped || !ok || now.State != termux.StateWaiting || now.Since != at.Since || p.asked[id] || p.pending[id] != nil {
-		return
-	}
-	rec := &pendingAsk{title: title, since: at.Since, note: at.Note}
-	// The callback takes the lock this holds, so it cannot see the record
-	// before the timer is in it.
-	rec.timer = time.AfterFunc(p.wait, func() { p.expire(id, rec) })
-	p.pending[id] = rec
-	p.asked[id] = true
-}
-
-// expire is a question whose digest did not come in time: it is pushed with
-// the generic words, which is better than a question nobody is told about.
-// Unless the detector cannot say right now whether the session is still on
-// it - then it goes the moment the prompt is seen again (followLocked).
-func (p *pusher) expire(id string, rec *pendingAsk) {
-	p.mu.Lock()
-	if p.pending[id] != rec {
-		// Sent, answered or forgotten while the timer was firing.
-		p.mu.Unlock()
-		return
-	}
-	rec.timer = nil
-	if p.prev[id].State != termux.StateWaiting {
-		rec.overdue = true
-		p.mu.Unlock()
-		return
-	}
-	p.dropLocked(id, rec)
-	body := questionBody(nil, rec.note)
-	p.mu.Unlock()
-	p.notify(id, rec.title, body, pushQuestion)
-}
-
-// read is the digester's word on a session it has finished reading: in is
-// the activity the screen was read in, now the session's last committed
-// one, and q the question the read found - nil for a read that found none,
-// that failed, or that could not be made for want of a key. A question
-// waiting for exactly this read goes out now, with the question's own words
-// when there are some and the generic ones when there are not.
-//
-// The digester calls it with its own lock held, so it takes nothing but the
-// pusher's lock and sends from a goroutine of its own (notify): the order is
-// digester.mu, then pusher.mu, and never the other way round.
-func (p *pusher) read(id string, in, now termux.Activity, q *digestQuestion) {
-	p.mu.Lock()
-	rec := p.pending[id]
-	// The read has to be of this very prompt: made in its commit, and the
-	// session still in it. A read of the screen before the prompt, finished a
-	// moment after it appeared, is the turn's summary, not its question.
-	if rec == nil || in.State != termux.StateWaiting || now.State != termux.StateWaiting ||
-		in.Since != rec.since || now.Since != rec.since {
-		p.mu.Unlock()
-		return
-	}
-	if q != nil && q.Source != questionMenu {
-		q = nil
-	}
-	p.dropLocked(id, rec)
-	body := questionBody(q, rec.note)
-	p.mu.Unlock()
-	p.notify(id, rec.title, body, pushQuestion)
-}
-
-// dropLocked takes a question off the wait. Called with the lock held.
-func (p *pusher) dropLocked(id string, rec *pendingAsk) {
-	if rec.timer != nil {
-		rec.timer.Stop()
-		rec.timer = nil
-	}
-	delete(p.pending, id)
-}
-
-// questionBody is what a notification about a question says: the question
-// itself, on one line and short enough for a lock screen, or - with no words
-// read - what kind of answer is wanted. note is the detector's word on the
-// prompt.
-func questionBody(q *digestQuestion, note string) string {
-	if q != nil && len(q.Items) > 0 {
-		if text := oneLine(q.Items[0].Text, pushBodyRunes); text != "" {
-			return text
-		}
-	}
-	if note == "permission prompt" || (q != nil && q.Kind == "confirm") {
-		return "Needs your permission"
-	}
-	return "Needs an answer"
+	return "Finished"
 }
 
 // notify sends one session's news. Questions are high urgency: an answer is
@@ -670,37 +515,10 @@ func pushTopic(id string) string {
 	return hex.EncodeToString(sum[:16])
 }
 
-// askedInProse is a digest that read a question in prose at the end of a
-// turn whose end was pushed as "Finished": Home counts it as a question, so
-// the phone is told the same, on the same topic - the "Finished" is replaced -
-// and a tap opens the question rather than the terminal. Only for the very
-// idle that was announced, and only while nobody has looked at it: a person
-// who read the session has seen the question. It says the question, as a
-// prompt's push does. The digester calls it with its lock held (read).
-func (p *pusher) askedInProse(id, title string, now termux.Activity, q *digestQuestion) {
-	p.mu.Lock()
-	since, ok := p.finished[id]
-	if ok && now.State == termux.StateIdle && now.Since == since {
-		delete(p.finished, id)
-	} else {
-		ok = false
-	}
-	p.mu.Unlock()
-	if !ok || !now.Unread {
-		return
-	}
-	// Filed background since its turn ended: it is not announced again, as a
-	// question or as anything else.
-	if row, err := p.st.GetSession(id); err != nil || row.Status == store.StatusBackground {
-		return
-	}
-	p.notify(id, title, questionBody(q, ""), pushQuestion)
-}
-
 // payload is a note as it goes out, with the asking set as it stands now.
 // It is counted here, on the goroutine that sends and with no lock held,
 // rather than where the news was found: that is under the digester's lock or
-// the pusher's, and the count takes both.
+// the pusher's.
 func (p *pusher) payload(note pushNote) []byte {
 	if p.asking != nil {
 		p.counting.Lock()
@@ -751,32 +569,25 @@ func (p *pusher) broadcast(note pushNote, msg webpush.Message) {
 	}
 }
 
-// forget drops what was remembered about a deleted session, and a question
-// about it that has not gone out yet never will.
+// forget drops what was remembered about a deleted session, and a turn's
+// end about it that has not gone out yet never will.
 func (p *pusher) forget(id string) {
 	p.mu.Lock()
 	delete(p.prev, id)
-	delete(p.finished, id)
 	delete(p.asked, id)
-	if rec := p.pending[id]; rec != nil {
-		p.dropLocked(id, rec)
-	}
 	if rec := p.finishing[id]; rec != nil {
 		p.dropFinishedLocked(id, rec)
 	}
 	p.mu.Unlock()
 }
 
-// stop drops every question still waiting for its words, and holds no more:
-// the server is going, and a timer that fired after it would push from a
-// store that is closed.
+// stop drops every turn's end still waiting for its verdict, and holds no
+// more: the server is going, and a timer that fired after it would push from
+// a store that is closed.
 func (p *pusher) stop() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.stopped = true
-	for id, rec := range p.pending {
-		p.dropLocked(id, rec)
-	}
 	for id, rec := range p.finishing {
 		p.dropFinishedLocked(id, rec)
 	}

@@ -54,10 +54,6 @@ function backoffDelay(attempt, { base = 600, max = 20000 } = {}) {
   return Math.round(raw * (0.75 + Math.random() * 0.5));
 }
 
-function storageGet(key) {
-  try { return localStorage.getItem(key); } catch { return null; }
-}
-
 function storageSet(key, value) {
   try { localStorage.setItem(key, value); } catch { /* private mode, quota */ }
 }
@@ -250,7 +246,9 @@ export function connectionSource({ global = true } = {}) {
       source.status = 'idle';
       liveStreams.delete(source);
       globalStreams.delete(source);
-      if (streamsHealthy() && connection.status !== LIVE) setConnection(LIVE);
+      // The last stream going is no news from the server: a device with no
+      // network stays offline (a chat left for Home while in a tunnel).
+      if (navigator.onLine !== false && streamsHealthy() && connection.status !== LIVE) setConnection(LIVE);
     },
   };
 }
@@ -281,6 +279,27 @@ window.addEventListener('online', () => {
 // The line counts the seconds to the next attempt, so it is redrawn this often
 // while it shows. Data cadence, not motion.
 const CONN_TICK_MS = 1000;
+
+// A view that says the connection where the person is looking - a chat's
+// dock, right over its composer - stands in for the bar while it does, so
+// the same outage is not said twice on one screen.
+let saidElsewhere = false;
+
+/** connectionSaidElsewhere says whether such a view says it right now. */
+export function connectionSaidElsewhere(on) {
+  if (saidElsewhere === !!on) return;
+  saidElsewhere = !!on;
+  emitConnection();
+}
+
+/** retryConnection is the bar's Retry, for a view that stands in for it. */
+export function retryConnection() {
+  if (connection.retryNow) connection.retryNow();
+  wake('manual');
+}
+
+// A phone's line keeps to what is wrong and how old the screen is.
+const narrow = window.matchMedia('(max-width: 600px)');
 
 // mountConnectionBar puts one honest line at the top of the page. It is the
 // answer to "is what I am looking at still true?", and it is never hidden
@@ -315,12 +334,11 @@ export function mountConnectionBar() {
   countdown.className = 'ds-meta';
   const retry = document.createElement('button');
   retry.type = 'button';
-  retry.className = 'ds-btn ds-btn--text ds-btn--sm';
-  retry.textContent = 'Retry';
-  retry.addEventListener('click', () => {
-    if (connection.retryNow) connection.retryNow();
-    wake('manual');
-  });
+  retry.className = 'ds-btn ds-btn--quiet ds-btn--icon';
+  retry.setAttribute('aria-label', 'Try to connect now');
+  retry.dataset.tip = 'Retry';
+  retry.append(iconEl('sync', 18));
+  retry.addEventListener('click', () => retryConnection());
   alert.append(iconEl('wifiOff', 20), label, countdown, retry);
   slot.replaceChildren(alert);
 
@@ -334,7 +352,7 @@ export function mountConnectionBar() {
     // being swapped for another one is not something anyone needs to read.
     const live = !state.degraded;
     document.body.toggleAttribute('data-conn-lost', !live);
-    if (live) {
+    if (live || saidElsewhere) {
       if (ticker) { clearInterval(ticker); ticker = null; }
       if (shown) {
         shown = false;
@@ -354,7 +372,7 @@ export function mountConnectionBar() {
       : headline + ' Nothing on this screen is updating.');
     const wait = state.retryAt ? Math.max(0, Math.round((state.retryAt - Date.now()) / 1000)) : 0;
     setText(countdown, offline
-      ? 'Waiting for signal'
+      ? (narrow.matches ? '' : 'Waiting for signal')
       : (wait > 0 ? 'Retrying in ' + wait + 's' : 'Reconnecting…'));
 
     if (!shown) {
@@ -729,28 +747,92 @@ export class LiveStream {
 // need be - until it lands. The server side of every queued action carries an
 // idempotency key, so a retry that turns out to be a duplicate is a no-op
 // rather than a second message.
+//
+// Every tab of the browser shares the queue in storage, one key per item
+// (`socrates.outbox.<name>.<id>`). One array under one key was a
+// read-modify-write, and a tab's view of local storage can lag a write
+// another tab has just made: a tab whose send had just failed wrote its copy
+// of the queue back with the attempt counted, over a message the other tab
+// had queued a moment before, and that message was gone (2 of 20 messages
+// queued from two tabs at once). Now a tab writes only the item it adds or
+// changes and removes only the one it sent, so nothing it writes can take
+// another tab's item with it. What another tab writes is taken in when the
+// browser says so (`storage`). Two tabs may both send the same item, which
+// its idempotency key makes one - and one of them may then put back an item
+// the other has just sent, which goes out once more as the same no-op.
+//
+// The items go out in the order they were queued: `seq` is one more than the
+// highest a tab can see when it adds one, so a tab's own items keep their
+// order, and two tabs' items that were queued at the same moment go in the
+// order of their times.
 export class Outbox {
   constructor(name, send) {
-    this.key = 'socrates.outbox.' + name;
+    this.prefix = 'socrates.outbox.' + name + '.';
     this.send = send;
-    this.items = this.load();
+    this.items = this.load() || [];
     this.listeners = new Set();
     this.timer = null;
     this.running = false;
     onWake(() => this.pump());
+    window.addEventListener('storage', (event) => {
+      if (event.key !== null && !event.key.startsWith(this.prefix)) return;
+      const stored = this.load();
+      if (!stored) return;
+      this.items = stored;
+      this.tell();
+      this.pump();
+    });
   }
 
+  // load is the queue as storage holds it, in order, or null when storage
+  // cannot be read at all (a private window): this tab's own copy is all there
+  // is then.
   load() {
+    let store;
     try {
-      const raw = storageGet(this.key);
-      const parsed = raw ? JSON.parse(raw) : [];
-      return Array.isArray(parsed) ? parsed : [];
-    } catch { return []; }
+      store = window.localStorage;
+      if (!store) return null;
+    } catch { return null; }
+    try {
+      const keys = [];
+      for (let i = 0; i < store.length; i += 1) {
+        const key = store.key(i);
+        if (key && key.startsWith(this.prefix)) keys.push(key);
+      }
+      const items = [];
+      for (const key of keys) {
+        try {
+          const item = JSON.parse(store.getItem(key));
+          if (item && item.id) items.push(item);
+        } catch { /* a damaged entry is not an item */ }
+      }
+      return items.sort(inOrder);
+    } catch { return null; }
   }
 
-  persist() {
-    if (!this.items.length) storageRemove(this.key);
-    else storageSet(this.key, JSON.stringify(this.items));
+  // read is one item as storage holds it now, or null when it is not there
+  // any more - sent, or dropped, from this tab or another.
+  read(id) {
+    const stored = this.load();
+    return (stored || this.items).find((item) => item.id === id) || null;
+  }
+
+  // write puts one item into storage (or takes it out, for null), then takes
+  // in the queue as storage holds it and tells the listeners.
+  write(id, item) {
+    const key = this.prefix + id;
+    if (item) storageSet(key, JSON.stringify(item));
+    else storageRemove(key);
+    const stored = this.load();
+    if (stored) this.items = stored;
+    else {
+      const rest = this.items.filter((one) => one.id !== id);
+      this.items = item ? [...rest, item].sort(inOrder) : rest;
+    }
+    this.tell();
+  }
+
+  tell() {
     const snapshot = this.items.slice();
     for (const listener of this.listeners) {
       try { listener(snapshot); } catch { /* ignore */ }
@@ -764,37 +846,31 @@ export class Outbox {
   }
 
   add(payload) {
+    const queued = this.load() || this.items;
     const item = {
       id: clientKey(),
+      seq: queued.reduce((high, one) => Math.max(high, Number(one.seq) || 0), 0) + 1,
       payload,
       attempts: 0,
       state: 'pending',
       error: '',
       createdAt: Date.now(),
     };
-    this.items.push(item);
-    this.persist();
+    this.write(item.id, item);
     this.pump();
     return item;
   }
 
   drop(id) {
-    this.items = this.items.filter((item) => item.id !== id);
-    this.persist();
+    this.write(id, null);
   }
 
   // retry puts a failed item back in the queue, either one of them or all.
   retry(id) {
-    let touched = false;
-    for (const item of this.items) {
-      if (id && item.id !== id) continue;
-      if (item.state !== 'failed') continue;
-      item.state = 'pending';
-      item.attempts = 0;
-      item.error = '';
-      touched = true;
+    for (const item of this.load() || this.items) {
+      if ((id && item.id !== id) || item.state !== 'failed') continue;
+      this.write(item.id, { ...item, state: 'pending', attempts: 0, error: '' });
     }
-    if (touched) this.persist();
     this.pump();
   }
 
@@ -803,35 +879,48 @@ export class Outbox {
   async pump() {
     if (this.running) return;
     if (this.timer) { clearTimeout(this.timer); this.timer = null; }
+    const stored = this.load();
+    if (stored) this.items = stored;
     const next = this.items.find((item) => item.state === 'pending');
     if (!next) return;
     this.running = true;
+    const attempts = (next.attempts || 0) + 1;
+    let failure = null;
     try {
-      next.attempts += 1;
       await this.send(next.payload, next);
-      this.items = this.items.filter((item) => item.id !== next.id);
-      this.persist();
-      this.running = false;
-      this.pump();
     } catch (err) {
-      this.running = false;
-      const permanent = err instanceof HttpError && !shouldRetry(err);
-      next.error = (err && err.message) || 'Could not send.';
-      if (permanent) {
-        next.state = 'failed';
-        this.persist();
-        this.pump();
-        return;
-      }
-      this.persist();
-      // In a dead zone there is nothing to gain from trying every few seconds,
-      // and a phone in a car pays for it in battery. Waiting long is safe
-      // because coming back online, or simply looking at the screen, wakes the
-      // queue immediately.
-      const delay = navigator.onLine === false
-        ? 30000
-        : backoffDelay(next.attempts, { base: 900, max: 20000 });
-      this.timer = setTimeout(() => this.pump(), delay);
+      failure = err || new Error('Could not send.');
     }
+    this.running = false;
+    if (!failure) {
+      this.write(next.id, null);
+      this.pump();
+      return;
+    }
+    const permanent = failure instanceof HttpError && !shouldRetry(failure);
+    const error = failure.message || 'Could not send.';
+    // Counted on the item as it is now: another tab may have sent it, or the
+    // person dropped it, while this attempt was on its way.
+    const now = this.read(next.id);
+    if (now) this.write(next.id, { ...now, attempts, error, state: permanent ? 'failed' : now.state });
+    if (permanent) {
+      this.pump();
+      return;
+    }
+    // In a dead zone there is nothing to gain from trying every few seconds,
+    // and a phone in a car pays for it in battery. Waiting long is safe
+    // because coming back online, or simply looking at the screen, wakes the
+    // queue immediately.
+    const delay = navigator.onLine === false
+      ? 30000
+      : backoffDelay(attempts, { base: 900, max: 20000 });
+    this.timer = setTimeout(() => this.pump(), delay);
   }
+}
+
+// inOrder is the order an Outbox sends in: the order the items were queued.
+function inOrder(a, b) {
+  return ((Number(a.seq) || 0) - (Number(b.seq) || 0))
+    || ((Number(a.createdAt) || 0) - (Number(b.createdAt) || 0))
+    || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
 }

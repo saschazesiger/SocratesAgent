@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"path"
 	"regexp"
 	"strings"
 	"testing"
@@ -117,7 +118,9 @@ func TestServiceWorkerCarriesTheVersion(t *testing.T) {
 // new import makes silently.
 func TestServiceWorkerShellHoldsTheWholeChatImportGraph(t *testing.T) {
 	worker := string(assets["sw.js"])
-	relative := regexp.MustCompile(`from\s+["']\./([^"'?]+)`)
+	// Modules import each other as ./name.js and the vendored ones as
+	// ../vendor/...: both are part of the graph.
+	relative := regexp.MustCompile(`from\s+["'](\./|\.\./vendor/)([^"'?]+)`)
 	seen := map[string]bool{}
 	var walk func(name string)
 	walk = func(name string) {
@@ -125,21 +128,25 @@ func TestServiceWorkerShellHoldsTheWholeChatImportGraph(t *testing.T) {
 			return
 		}
 		seen[name] = true
-		data, ok := assets["js/"+name]
+		data, ok := assets[name]
 		if !ok {
-			t.Fatalf("session.js's import graph names js/%s, which is not embedded", name)
+			t.Fatalf("session.js's import graph names %s, which is not embedded", name)
 		}
 		for _, m := range relative.FindAllStringSubmatch(string(data), -1) {
-			walk(m[1])
+			if m[1] == "./" {
+				walk(path.Join(path.Dir(name), m[2]))
+			} else {
+				walk("vendor/" + m[2])
+			}
 		}
 	}
-	walk("session.js")
+	walk("js/session.js")
 	if len(seen) < 5 {
 		t.Fatalf("walked only %d modules, so this proves nothing", len(seen))
 	}
 	for name := range seen {
-		if !strings.Contains(worker, "'/static/js/"+name+"'") {
-			t.Errorf("sw.js does not precache /static/js/%s, which the session page imports", name)
+		if !strings.Contains(worker, "'/static/"+name+"'") {
+			t.Errorf("sw.js does not precache /static/%s, which the session page imports", name)
 		}
 	}
 	// The page itself and its stylesheets are what everything else hangs off.
@@ -349,6 +356,45 @@ func TestVendoredDashboardStyleIsUntouched(t *testing.T) {
 	}
 	if !listed["ds.css"] || !listed["ds.js"] {
 		t.Fatal("the vendored copy has no ds.css or ds.js")
+	}
+}
+
+// The chat view's Markdown renderer and sanitizer are vendored as published:
+// the copy has to match vendor/markdown/SHA256SUMS, with nothing missing and
+// nothing added, or `make vendor-markdown` would throw a local change away -
+// and a sanitizer edited by hand is not the sanitizer that was reviewed.
+func TestVendoredMarkdownIsUntouched(t *testing.T) {
+	const dir = "static/vendor/markdown"
+	sums, err := files.ReadFile(dir + "/SHA256SUMS")
+	if err != nil {
+		t.Fatalf("no vendored Markdown renderer: %v", err)
+	}
+	listed := map[string]bool{}
+	for _, line := range strings.Split(strings.TrimSpace(string(sums)), "\n") {
+		want, name, ok := strings.Cut(line, "  ")
+		if !ok {
+			t.Fatalf("SHA256SUMS line %q is not in sha256sum format", line)
+		}
+		listed[name] = true
+		data, err := files.ReadFile(dir + "/" + name)
+		if err != nil {
+			t.Errorf("%s is listed but missing", name)
+			continue
+		}
+		if got := fmt.Sprintf("%x", sha256.Sum256(data)); got != want {
+			t.Errorf("%s was edited: the vendored copy is replaced as a whole by make vendor-markdown", name)
+		}
+	}
+	for name := range assets {
+		rel, ok := strings.CutPrefix(name, "vendor/markdown/")
+		if ok && rel != "SHA256SUMS" && rel != "VERSIONS" && !listed[rel] {
+			t.Errorf("%s was added to the vendored copy", name)
+		}
+	}
+	for _, name := range []string{"marked.esm.js", "purify.es.js", "LICENSE-marked", "LICENSE-dompurify"} {
+		if !listed[name] {
+			t.Errorf("SHA256SUMS does not cover %s", name)
+		}
 	}
 }
 

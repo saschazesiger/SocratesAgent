@@ -5,9 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
 	"net/http"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -17,15 +15,17 @@ import (
 	"github.com/saschazesiger/SocratesAgent/internal/termux"
 )
 
-// Prepared sessions ("PreStart"): a session whose settings and first prompt
+// Prepared sessions ("PreStart"): a chat whose settings and first message
 // are written before anything runs, and which starts - by a button, or by
-// itself at a time - exactly as a new session with those settings would.
+// itself at a time - exactly as a new chat with those settings would, its
+// draft the first message (REBUILD.md §7). A Shell has nothing to send a
+// first message to, and VS Code is opened from a folder.
 //
 //	POST  /api/sessions {"prestart":true, …}   201 {"session":<session>}
 //	PATCH /api/sessions/{id}/prestart          {"session":<session>}
 //	                                           409 once it has started
-//	GET   /api/sessions/{id}/draft             {"text","rev","updated_at","backed_up"}
-//	PUT   /api/sessions/{id}/draft             {"rev","updated_at","backed_up"}
+//	GET   /api/sessions/{id}/draft             {"text","rev","updated_at"}
+//	PUT   /api/sessions/{id}/draft             {"rev","updated_at"}
 //	                                           409 {"conflict":true,"text","rev","updated_at"}
 //	                                           409 {"error","started":true}
 //	                                           413 over maxDraftBytes
@@ -37,14 +37,14 @@ import (
 // Start is idempotent: a session that is no longer prepared is answered with
 // its row, whoever started it.
 
-// maxDraftBytes is the largest prompt a draft may hold. It is well under the
-// kernel's 128 KB limit on one argument, which is where the prompt ends up.
+// maxDraftBytes is the largest first message a draft may hold. A draft is
+// saved on every pause in the typing, and a hundred kilobytes is a long
+// letter already.
 const maxDraftBytes = 100 << 10
 
-// prestartHarnesses are the harnesses a session can be prepared for: the
-// three that take a prompt. A shell has nothing to send one to, and VS Code
-// is opened from a folder.
-func prestartHarness(id string) bool {
+// agentHarness is whether a harness is one of the three coding agents, which
+// run as chats only (REBUILD.md §1): a session of one is never a terminal.
+func agentHarness(id string) bool {
 	switch id {
 	case string(harnesses.KindClaude), string(harnesses.KindCodex), string(harnesses.KindOpenCode):
 		return true
@@ -52,20 +52,15 @@ func prestartHarness(id string) bool {
 	return false
 }
 
-// prestartOptions is what a prepared row keeps in its options beyond what a
-// running session keeps: whether the profile is to be chosen at start.
-type prestartOptions struct {
-	Profile     string `json:"profile"`
-	ProfileAuto bool   `json:"profile_auto"`
-	Ultracode   bool   `json:"ultracode"`
-}
-
-func readPrestartOptions(raw json.RawMessage) prestartOptions {
-	var o prestartOptions
+// readUltracode is whether a row's options ask for Ultracode.
+func readUltracode(raw json.RawMessage) bool {
+	var o struct {
+		Ultracode bool `json:"ultracode"`
+	}
 	if len(raw) > 0 {
 		_ = json.Unmarshal(raw, &o)
 	}
-	return o
+	return o.Ultracode
 }
 
 // withOption sets or removes one key of an options object. A value of nil,
@@ -99,7 +94,7 @@ func checkStartAt(at int64, now time.Time) *launchError {
 	return nil
 }
 
-// createPrestart stores a prepared session: the checks a launch would make,
+// createPrestart stores a prepared chat: the checks a start would make,
 // minus everything that touches the machine.
 func (s *Server) createPrestart(w http.ResponseWriter, body createSessionBody) {
 	settings := s.Settings()
@@ -107,8 +102,8 @@ func (s *Server) createPrestart(w http.ResponseWriter, body createSessionBody) {
 	if harnessID == "" {
 		harnessID = settings.Workspace.DefaultHarness
 	}
-	if !prestartHarness(harnessID) {
-		writeError(w, http.StatusBadRequest, "only Claude Code, Codex and OpenCode sessions can be prepared")
+	if !chatAgent(harnessID) {
+		writeError(w, http.StatusBadRequest, "only an agent's chat can be prepared: a Shell has nothing to send a first message to")
 		return
 	}
 	if len(body.Prompt) > maxDraftBytes {
@@ -119,15 +114,18 @@ func (s *Server) createPrestart(w http.ResponseWriter, body createSessionBody) {
 		writeError(w, refused.status, refused.msg)
 		return
 	}
-	spec := launchSpec{
-		Harness: harnessID, Model: body.Model, Effort: body.Effort,
-		Profile: body.Profile, Ultracode: body.Ultracode, Options: body.Options, Cols: body.Cols, Rows: body.Rows,
-	}
-	h, refused := s.checkLaunch(&spec, settings)
-	if refused != nil {
+	// A chat is bound by its agent, folder, model and effort, its account,
+	// and a Claude Code chat by Ultracode.
+	if refused := checkChatHarness(harnessID, settings); refused != nil {
 		writeError(w, refused.status, refused.msg)
 		return
 	}
+	if refused := s.checkChatAccount(harnessID, body.Account); refused != nil {
+		writeError(w, refused.status, refused.msg)
+		return
+	}
+	options := withOption(body.Options, "ultracode", chatUltracode(harnessID, body.Ultracode))
+	options = withChatAccount(options, body.Account, body.AutoSwitch)
 	mode := strings.TrimSpace(body.WorkdirMode)
 	if mode == "" {
 		mode = harnesses.WorkdirDynamic
@@ -137,24 +135,21 @@ func (s *Server) createPrestart(w http.ResponseWriter, body createSessionBody) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	// The profile is chosen at start only when nobody chose one now.
-	options := withOption(spec.Options, "profile_auto", body.ProfileAuto && spec.Profile == "")
 
 	row := &store.Session{
 		ID:          termux.NewID(),
 		ClientID:    strings.TrimSpace(body.ClientID),
-		Title:       sessionTitle(body.Title, h.Label(), workdir, mode),
+		Title:       sessionTitle(body.Title, chatLabel(harnessID), workdir, mode),
 		TitleSource: titleSource(body.Title),
-		Harness:     spec.Harness,
-		Model:       spec.Model,
-		Effort:      spec.Effort,
+		Harness:     harnessID,
+		Model:       strings.TrimSpace(body.Model),
+		Effort:      strings.TrimSpace(body.Effort),
 		Workdir:     workdir,
 		WorkdirMode: mode,
 		Options:     options,
 		State:       store.StatePrestart,
-		Cols:        spec.Cols,
-		Rows:        spec.Rows,
 		StartAt:     body.StartAt,
+		Kind:        store.KindChat,
 	}
 	id := row.ID
 	if err := s.store.CreateSession(row); err != nil {
@@ -182,12 +177,12 @@ type prestartPatch struct {
 	Harness     *string `json:"harness"`
 	Model       *string `json:"model"`
 	Effort      *string `json:"effort"`
-	Profile     *string `json:"profile"`
-	ProfileAuto *bool   `json:"profile_auto"`
 	Ultracode   *bool   `json:"ultracode"`
 	WorkdirMode *string `json:"workdir_mode"`
 	Workdir     *string `json:"workdir"`
 	StartAt     *int64  `json:"start_at"`
+	Account     *string `json:"account"`
+	AutoSwitch  *bool   `json:"auto_switch"`
 }
 
 func (s *Server) handlePatchPrestart(w http.ResponseWriter, r *http.Request) {
@@ -213,10 +208,16 @@ func (s *Server) handlePatchPrestart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	options := readPrestartOptions(row.Options)
+	if !row.IsChat() {
+		// A prepared terminal of an agent is from before the agents were
+		// chats; the migration made it a chat or took it away (§8.3).
+		writeError(w, http.StatusConflict, "this prepared session is not a chat, and only a chat can be prepared now")
+		return
+	}
+
 	harnessID, model, effort := row.Harness, row.Model, row.Effort
 	mode, path := row.WorkdirMode, row.Workdir
-	profile, auto, ultracode, startAt := options.Profile, options.ProfileAuto, options.Ultracode, row.StartAt
+	ultracode, startAt := readUltracode(row.Options), row.StartAt
 	if body.Harness != nil {
 		harnessID = strings.TrimSpace(*body.Harness)
 		if harnessID != row.Harness && body.Ultracode == nil && harnessID != string(harnesses.KindClaude) {
@@ -230,18 +231,6 @@ func (s *Server) handlePatchPrestart(w http.ResponseWriter, r *http.Request) {
 	}
 	if body.Effort != nil {
 		effort = *body.Effort
-	}
-	if body.Profile != nil {
-		profile = strings.TrimSpace(*body.Profile)
-		if profile != "" && body.ProfileAuto == nil {
-			auto = false
-		}
-	}
-	if body.ProfileAuto != nil {
-		auto = *body.ProfileAuto
-	}
-	if auto {
-		profile = ""
 	}
 	if body.Ultracode != nil {
 		ultracode = *body.Ultracode
@@ -263,20 +252,30 @@ func (s *Server) handlePatchPrestart(w http.ResponseWriter, r *http.Request) {
 		startAt = *body.StartAt
 	}
 
-	if !prestartHarness(harnessID) {
-		writeError(w, http.StatusBadRequest, "only Claude Code, Codex and OpenCode sessions can be prepared")
-		return
-	}
 	settings := s.Settings()
-	spec := launchSpec{
-		Harness: harnessID, Model: model, Effort: effort, Profile: profile, Ultracode: ultracode,
-		Options: stripChoices(row.Options),
-	}
-	h, refused := s.checkLaunch(&spec, settings)
-	if refused != nil {
+	// A prepared chat stays a chat: it can change to another agent that has
+	// one, and to nothing else.
+	if refused := checkChatHarness(harnessID, settings); refused != nil {
 		writeError(w, refused.status, refused.msg)
 		return
 	}
+	opts := readChatOptions(row.Options)
+	if body.Account != nil {
+		opts.Account = strings.TrimSpace(*body.Account)
+	}
+	if body.AutoSwitch != nil {
+		opts.AutoSwitch = *body.AutoSwitch
+	}
+	if harnessID != row.Harness && body.Account == nil {
+		// An account is one agent's: another agent starts on its own.
+		opts.Account = ""
+	}
+	if refused := s.checkChatAccount(harnessID, opts.Account); refused != nil {
+		writeError(w, refused.status, refused.msg)
+		return
+	}
+	options := withOption(stripChoices(row.Options), "ultracode", chatUltracode(harnessID, ultracode))
+	options = withChatAccount(options, opts.Account, opts.AutoSwitch)
 	workdir, err := harnesses.CheckWorkdir(settings, mode, path)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -287,14 +286,14 @@ func (s *Server) handlePatchPrestart(w http.ResponseWriter, r *http.Request) {
 	// the placeholder too. (The store keeps a name somebody gave, even one
 	// given a moment ago from another device.)
 	var title string
-	if row.TitleSource == "" && (spec.Harness != row.Harness || mode != row.WorkdirMode || workdir != row.Workdir) {
-		title = sessionTitle("", h.Label(), workdir, mode)
+	if row.TitleSource == "" && (harnessID != row.Harness || mode != row.WorkdirMode || workdir != row.Workdir) {
+		title = sessionTitle("", chatLabel(harnessID), workdir, mode)
 	}
 	err = s.store.UpdatePrestart(id, store.PrestartSettings{
 		Title:   title,
-		Harness: spec.Harness, Model: spec.Model, Effort: spec.Effort,
+		Harness: harnessID, Model: strings.TrimSpace(model), Effort: strings.TrimSpace(effort),
 		WorkdirMode: mode, Workdir: workdir,
-		Options: withOption(spec.Options, "profile_auto", auto),
+		Options: options,
 		StartAt: startAt,
 	})
 	switch {
@@ -309,11 +308,12 @@ func (s *Server) handlePatchPrestart(w http.ResponseWriter, r *http.Request) {
 	s.answerWithSession(w, id)
 }
 
-// stripChoices is a prepared row's options without the choices that
-// checkLaunch writes back from the settings, so that a choice taken away is
-// not kept by the old options.
+// stripChoices is a prepared row's options without the choices a change
+// writes back from its settings, so that a choice taken away is not kept by
+// the old options - and without the profile a prepared terminal of an agent
+// was given before the agents were chats.
 func stripChoices(raw json.RawMessage) json.RawMessage {
-	for _, key := range []string{"profile", "profile_auto", "ultracode"} {
+	for _, key := range []string{"profile", "profile_auto", "ultracode", "account", "auto_switch"} {
 		raw = withOption(raw, key, nil)
 	}
 	if string(raw) == "{}" {
@@ -334,7 +334,6 @@ func (s *Server) handleGetDraft(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"text": draft.Text, "rev": draft.Rev, "updated_at": draft.UpdatedAt,
-		"backed_up": s.store.IsBackedUp(store.DraftObject(row.ID)),
 	})
 }
 
@@ -389,7 +388,6 @@ func (s *Server) handlePutDraft(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"rev": draft.Rev, "updated_at": draft.UpdatedAt,
-		"backed_up": s.store.IsBackedUp(store.DraftObject(row.ID)),
 	})
 }
 
@@ -398,22 +396,11 @@ func (s *Server) handleStartSession(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	var body struct {
-		Cols int `json:"cols"`
-		Rows int `json:"rows"`
-	}
-	if !readJSON(w, r, &body) {
-		return
-	}
-	if err := checkSize(body.Cols, body.Rows); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
 	// Started or put back, the row has moved.
 	defer s.events.poke()
 	ctx, cancel := context.WithTimeout(r.Context(), createTimeout)
 	defer cancel()
-	next, status, err := s.startPrepared(ctx, row.ID, body.Cols, body.Rows, false)
+	next, status, err := s.startPrepared(ctx, row.ID, false)
 	if err != nil {
 		if next == nil {
 			writeError(w, status, err.Error())
@@ -425,15 +412,14 @@ func (s *Server) handleStartSession(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"session": s.view(next)})
 }
 
-// startPrepared starts a prepared session, from its row and its draft, through
-// launch - the same path a new session takes. cols and rows are the size the
-// page measured; zero keeps the row's own. scheduled is the scheduler's call,
-// which claims the schedule under the same lock before it starts anything.
+// startPrepared starts a prepared chat, from its row and its draft
+// (startPreparedChat). scheduled is the scheduler's call, which claims the
+// schedule under the same lock before it starts anything.
 //
 // It answers the row as it is afterwards, an HTTP status, and the error. A
 // session that is not prepared any more is not an error: somebody started it,
 // and the answer is the session they started.
-func (s *Server) startPrepared(ctx context.Context, id string, cols, rows int, scheduled bool) (*store.Session, int, error) {
+func (s *Server) startPrepared(ctx context.Context, id string, scheduled bool) (*store.Session, int, error) {
 	unlock := s.starts.lock(id)
 	defer unlock()
 	row, err := s.store.GetSession(id)
@@ -467,171 +453,14 @@ func (s *Server) startPrepared(ctx context.Context, id string, cols, rows int, s
 		}
 	}
 
-	failed := func(status int, err error) (*store.Session, int, error) {
-		if recordErr := s.store.SetPrestartFailure(id, err.Error()); recordErr != nil &&
-			!errors.Is(recordErr, store.ErrNotPrestart) {
-			log.Printf("session %s: could not record why it did not start: %v", id, recordErr)
-		}
-		current, getErr := s.store.GetSession(id)
-		if getErr != nil {
-			return nil, status, err
-		}
-		return current, status, err
+	if !row.IsChat() {
+		return row, http.StatusConflict, errors.New("this prepared session is not a chat, and only a chat can be started from one now")
 	}
-	if err := s.manager.Available(); err != nil {
-		return failed(http.StatusServiceUnavailable, err)
-	}
-	spec, err := s.prestartSpec(ctx, row, cols, rows)
-	if err != nil {
-		return failed(http.StatusInternalServerError, err)
-	}
-	next, err := s.launch(ctx, spec, row)
-	var refused *launchError
-	switch {
-	case errors.As(err, &refused):
-		return failed(refused.status, refused)
-	case errors.Is(err, store.ErrNotPrestart):
-		// Started by somebody else between the read above and the manager's
-		// own check - which the lock makes impossible from this server, and
-		// which a second process on one database is not.
-		if scheduled {
-			// That start was not this one: no "Started" for it.
-			return next, http.StatusConflict, errNotDue
-		}
-		return next, http.StatusOK, nil
-	case err != nil && next != nil:
-		if next.State == store.StatePrestart {
-			// Nothing ran, and the manager has already put the reason on
-			// the row.
-			return next, http.StatusInternalServerError, err
-		}
-		// The program was started and did not get far: a failed session
-		// like any other, with its restart button.
-		return next, http.StatusOK, err
-	case err != nil:
-		return failed(http.StatusInternalServerError, err)
-	}
-	return next, http.StatusOK, nil
+	return s.startPreparedChat(ctx, row)
 }
 
 // errNotDue is the scheduler being told it lost its claim.
 var errNotDue = errors.New("the schedule was changed before it was due")
-
-// prestartSpec is the launch a prepared row stands for: its settings, its
-// draft as the first prompt, and the profile with the most headroom when it
-// asked for that.
-func (s *Server) prestartSpec(ctx context.Context, row *store.Session, cols, rows int) (launchSpec, error) {
-	options := readPrestartOptions(row.Options)
-	spec := launchSpec{
-		ID:          row.ID,
-		Harness:     row.Harness,
-		Model:       row.Model,
-		Effort:      row.Effort,
-		Profile:     options.Profile,
-		Ultracode:   options.Ultracode,
-		WorkdirMode: row.WorkdirMode,
-		Workdir:     row.Workdir,
-		Options:     stripChoices(row.Options),
-		Cols:        row.Cols,
-		Rows:        row.Rows,
-	}
-	// The name is passed on only when somebody gave one, which is what a
-	// session created from the sheet does: the placeholder a prepared row
-	// was listed under is not a name.
-	if row.TitleSource == store.TitleUser {
-		spec.Title = row.Title
-	}
-	if cols > 0 && rows > 0 {
-		spec.Cols, spec.Rows = cols, rows
-	}
-	if options.ProfileAuto {
-		spec.Profile = s.autoProfile(ctx, row, options.Profile)
-	}
-	draft, err := s.store.GetDraft(row.ID)
-	if err != nil && !errors.Is(err, store.ErrNotFound) {
-		return spec, err
-	}
-	spec.Prompt = draft.Text
-	return spec, nil
-}
-
-// autoProfile is the profile a session asked to be started "automatically"
-// runs in, chosen here at the moment of the start, because a scheduled start
-// has no sheet. An active session of the same program in the same folder
-// comes first: Claude Code sessions in one profile can reach each other, and
-// a session started beside another is meant to. Otherwise it is the
-// recommendation the sheet shows - the most usage left before it renews. A
-// harness with nothing to choose by - no readings yet, or no limits at all,
-// like OpenCode - keeps fallback.
-func (s *Server) autoProfile(ctx context.Context, row *store.Session, fallback string) string {
-	views, err := s.profileViews()
-	if err != nil {
-		log.Printf("could not read the profiles to choose one: %v", err)
-		return fallback
-	}
-	s.fillLimits(ctx, views)
-	recommended, haveRecommended := recommendProfiles(views, time.Now())[row.Harness]
-	if row.WorkdirMode != store.WorkdirDynamic {
-		rows, err := s.store.ListSessions()
-		if err != nil {
-			log.Printf("could not read the sessions to choose a profile: %v", err)
-		} else if id, ok := companionProfile(views, companionProfiles(rows, row.Harness, row.Workdir, row.ID), recommended); ok {
-			return id
-		}
-	}
-	if haveRecommended {
-		return recommended
-	}
-	return fallback
-}
-
-// companionProfiles is the profiles the active sessions of a program in one
-// folder run in, each with the last moment one of them was active. A session
-// is active while its program runs and nobody has called it done, and self is
-// the session being started.
-// The sheet's companions (harnesses.js) are the same rule.
-func companionProfiles(rows []store.Session, harnessID, workdir, self string) map[string]int64 {
-	out := map[string]int64{}
-	if workdir == "" {
-		return out
-	}
-	workdir = filepath.Clean(workdir)
-	for i := range rows {
-		row := &rows[i]
-		if row.ID == self || row.Harness != harnessID || row.Status == store.StatusDone {
-			continue
-		}
-		if row.State != store.StateRunning && row.State != store.StateStarting {
-			continue
-		}
-		if row.Workdir == "" || filepath.Clean(row.Workdir) != workdir {
-			continue
-		}
-		id := sessionProfile(row)
-		out[id] = max(out[id], row.ActiveAt)
-	}
-	return out
-}
-
-// companionProfile is the one of the companions' profiles a new session
-// joins: the recommended one when it is among them, and otherwise the one
-// whose session was active last. A profile deleted since is not one.
-func companionProfile(views []profileView, companions map[string]int64, recommended string) (string, bool) {
-	best, bestAt, found := "", int64(0), false
-	for _, v := range views {
-		at, ok := companions[v.ID]
-		if !ok {
-			continue
-		}
-		if v.ID == recommended {
-			return v.ID, true
-		}
-		if !found || at > bestAt {
-			best, bestAt, found = v.ID, at, true
-		}
-	}
-	return best, found
-}
 
 // answerWithSessionCode is answerWithSession with a status of its own, and
 // tells every other open page the same way.
@@ -653,6 +482,18 @@ func (s *Server) started(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if row, err := s.store.GetSession(r.PathValue("id")); err == nil && row.State == store.StatePrestart {
 			writeError(w, http.StatusConflict, "this session has not been started yet")
+			return
+		}
+		next(w, r)
+	}
+}
+
+// terminal refuses the routes that only a terminal has - its socket, its
+// scrollback, its relaunch - for a chat, which has no pane.
+func (s *Server) terminal(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if row, err := s.store.GetSession(r.PathValue("id")); err == nil && row.IsChat() {
+			writeError(w, http.StatusConflict, "this session is a chat and has no terminal")
 			return
 		}
 		next(w, r)

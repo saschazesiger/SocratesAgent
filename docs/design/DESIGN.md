@@ -2,6 +2,12 @@
 
 **Revision 4** (2026-09-02). Supersedes revisions 1, 2 and 3 in full.
 
+> **Since the rebuild (REBUILD.md; WP10, 2026-10-24) Claude Code, Codex and OpenCode run only as
+> chats** through their own protocols (AGENT-HOST.md). What this specification says about running
+> them in a terminal - their launchers and resume, the screen-reading activity layers, the answer
+> operator and the screen digest, the sign-in profiles and the usage strip - is history, marked
+> where it stands. The tmux substrate, the transport, the Shell, VS Code and the key bar hold.
+
 - **rev 11** (2026-10-16) — **the options menu.** The top bar's `⋮` (`#optionsBtn`) is no longer
   the session's menu: it holds what belongs to this device, as switches that stay open while they
   are pressed — **Key bar**, **Touch mode**, **Sound** and **Notifications** — and it is there
@@ -103,7 +109,7 @@ Repo: `/root/SocratesAgent`, module `github.com/saschazesiger/SocratesAgent`, Go
 - [H. Testing](#h-testing) — Go tests against real tmux, the PTY fake CLIs, 20 e2e scenarios, CI
 - [I. Work packages](#i-work-packages) — WP1…WP10 (WP9 split into 9a/9b) with scope, acceptance and dependencies
 - [J. Risks and mitigations](#j-risks-and-mitigations)
-- [K. S3 as the store of record](#k-s3-as-the-store-of-record) — the bucket layout, encryption, write-through, start and hydrate, the lease, connect mode, the storage banner
+- [K. S3 as the store of record](#k-s3-as-the-store-of-record) — the bucket layout, encryption, write-through, start and hydrate, the lease, connect mode, the storage banner (superseded by REBUILD.md §6, 2026-10-23)
 - [L. Prepared sessions (PreStart) and the scheduled start](#l-prepared-sessions-prestart-and-the-scheduled-start) — the row, one launch path, the prompt file, the scheduler, the panel
 - [Appendix A: reviewer notes not adopted](#appendix-a-reviewer-notes-not-adopted)
 - [Appendix B: quick reference](#appendix-b-quick-reference-for-an-implementer)
@@ -951,6 +957,8 @@ type PlanRequest struct {
 
 ## C.1 White background — the verified strategy, per CLI
 
+> Superseded for the agents by REBUILD.md §3: they run as chats, and no agent is launched in a terminal (WP10).
+
 This is the single most-likely-to-be-fudged part of the spec, so the mechanism is stated once and
 then applied per CLI.
 
@@ -1132,6 +1140,8 @@ what they configured. `-l` is omitted when `settings.Harnesses.Shell.Login` is f
 
 ## C.5 Claude Code
 
+> Superseded for the agents by REBUILD.md §3: they run as chats, and no agent is launched in a terminal (WP10).
+
 ### Launch argv
 
 ```
@@ -1229,6 +1239,8 @@ attempted anyway.
 
 ## C.6 Codex
 
+> Superseded for the agents by REBUILD.md §3: they run as chats, and no agent is launched in a terminal (WP10).
+
 ### Launch argv
 
 ```
@@ -1322,6 +1334,8 @@ fresh. Both unreadable ⇒ error ⇒ try the resume anyway; a failed resume show
 which is honest.
 
 ## C.7 OpenCode
+
+> Superseded for the agents by REBUILD.md §3: they run as chats, and no agent is launched in a terminal (WP10).
 
 ### Launch argv
 
@@ -1418,6 +1432,8 @@ must degrade to a fresh session, because guessing wrong costs the user a crashed
 
 ## C.8 Reboot detection and the resume flow
 
+> The agents' resume is superseded by REBUILD.md §2.1 (a chat resumes through its host); a Shell starts a new shell in its folder.
+
 Reboot is detected in `Adopt` (§A.8): **the store says `running` and the tmux session is
 absent**. That is the definition; there is no uptime check, no boot-id file, nothing else.
 
@@ -1459,6 +1475,8 @@ A restart triggered from the exit overlay is the same path with `state` forced t
 | `extra_env` | key=value list | `KEY` matches `[A-Za-z_][A-Za-z0-9_]*` | `-e KEY=VALUE` | start |
 
 ## C.10 Admin option catalogue — Claude Code
+
+> Superseded for the agents by REBUILD.md §3: they run as chats, and no agent is launched in a terminal (WP10).
 
 All keys under `harnesses.claude.*`. Every one is **start-only** unless marked otherwise.
 
@@ -1539,6 +1557,8 @@ error, not a launch-time surprise).
 
 ## C.11 Admin option catalogue — Codex
 
+> Superseded for the agents by REBUILD.md §3: they run as chats, and no agent is launched in a terminal (WP10).
+
 All keys under `harnesses.codex.*`, all start-only.
 
 **Model & effort**: `models[]`, `default_model` (→ `-m`), `default_effort`
@@ -1584,6 +1604,8 @@ launch loudly; the session goes to `state='failed'` with the CLI's stderr in `fa
 `CODEX_INTERNAL_ORIGINATOR_OVERRIDE=socrates`.
 
 ## C.12 Admin option catalogue — OpenCode
+
+> Superseded for the agents by REBUILD.md §3: they run as chats, and no agent is launched in a terminal (WP10).
 
 All keys under `harnesses.opencode.*`, all start-only.
 
@@ -2075,6 +2097,8 @@ the vendor files get the same immutable caching as everything else, with no chan
 Verify this in `embed_test.go`.
 
 ## E.3 The new-session sheet
+
+> Superseded in part by REBUILD.md §7: the sheet offers the agents as chats and the Shell as a terminal with a folder only; the profile field is gone (WP10).
 
 Three steps in one sheet, revealed progressively; `harnesses.js` owns it.
 
@@ -2852,6 +2876,8 @@ Everything must pass under `go test -race ./...`.
 
 ## H.2 Fake CLIs for e2e
 
+> Superseded by REBUILD.md §9: the suite runs the scripted protocol fakes (`e2e/fakebin/fakeclaude`, `fakecodex`, `fakeopencode`); `faketui` is gone (WP10).
+
 The existing `internal/harness/fakes` binaries speak the old protocols and are deleted. The new
 fakes are **PTY TUIs**, not protocol speakers, and they need no API access at all.
 
@@ -2907,6 +2933,10 @@ about where a CLI writes its state and how it refuses.**
   OpenRouter mocking.
 
 ## H.3 e2e scenarios
+
+> Superseded by REBUILD.md §9 and WP11: the agents' scenarios run against the chats and the
+> protocol fakes, and `e2e/README.md` is the list of what each scenario proves now. The table below
+> is the plan of the terminal build.
 
 `e2e/run.mjs` keeps its shape: `ALL` is a table of `[name, title, fn, opts?]`, bare scenario names
 on the command line select a subset, `finish()` prints the table. Always
@@ -3277,6 +3307,11 @@ overlay conventions.
 
 # K. S3 as the store of record
 
+> **Superseded (2026-10-23) by REBUILD.md §6.** S3 is no longer the store of record: the
+> data directory is the only truth, and the bucket holds an encrypted, incremental backup of it
+> (`internal/backup`) that nothing reads while Socrates runs. The mirror, the lease, connect
+> mode and the storage banner are gone. What follows is history.
+
 Added 2026-10-13. Binding like the rest; the decision is DECISIONS.md "Revision 6".
 
 ## K.1 What is where
@@ -3425,6 +3460,10 @@ all while the bucket is fine.
 
 ## L.1 The row
 
+> Since accounts (REBUILD.md §4, WP7) a prepared chat carries the account it was given, or none,
+> and one with none starts on the account the sheet would recommend (the most usage left for the
+> time until it renews); `profile_auto` and `profile` are dropped from its options.
+
 `state = 'prestart'`: settings, no `tmux_name`, no directories, nothing running. `drafts(session_id,
 text, rev, updated_at)` holds the prompt; a save is optimistic (`base_rev`, 409 with the current
 text on a mismatch) and bumps the store revision, so the list's `draft_rev`/`draft_preview` tell
@@ -3443,6 +3482,10 @@ drift. Start is idempotent (a started row answers with itself), takes the row fr
 `fail_reason` and removes what it made. The draft stays, read-only, until the session is deleted.
 
 ## L.3 The prompt reaches the program without tmux
+
+> Superseded for the agents by REBUILD.md §7: a prepared chat's prompt is its first message, sent
+> through the chat's host like any other, and no prompt file is written. A prepared session is a
+> chat's (a Shell is not prepared).
 
 A tmux command message is limited to about 16 KB; a prompt may be 100 KB. The plan writes it to
 `<sessiondir>/initial-prompt` (0600) and wraps the argv in a POSIX `sh -c` script that reads the
@@ -3495,6 +3538,11 @@ whatever it was called. It answers when the name is there — a prepared session
 Added 2026-10-22.
 
 ## M.1 What is counted
+
+> Since accounts (REBUILD.md §4 and §6.1, WP7) the transcripts are also read from the agents'
+> shared folders under the data directory (`agents/claude`, `agents/codex`, `agents/opencode`),
+> where every account's conversations are kept; what this section calls a profile is an account,
+> and an old profile's folder under `<data>/profiles` is still read.
 
 Every conversation any CLI had on this machine, under every profile directory on the disk (a deleted
 profile's included), whether a session still exists for it or not (`internal/costs`):

@@ -11,9 +11,10 @@
 // server, which is the real boundary: a stale copy degrades to "the server
 // refuses that directory", never to a session in the wrong place.
 
-import { api, el, toast } from './api.js';
+import { api, el, infoTip, toast } from './api.js';
+import * as accounts from './accounts.js';
 import { combobox, dropdown } from './combobox.js';
-import { dictated } from './keyboard.js';
+import { dictated, typeHere } from './keyboard.js';
 import { agentMark } from './logos.js';
 import { hideOverlay, html, icon, iconEl, morph, raw, showOverlay, watchScrolled } from './ui.js';
 
@@ -98,7 +99,6 @@ export async function load(force = false) {
       cached = {
         harnesses: data.harnesses || [],
         workspace: data.workspace || EMPTY_WORKSPACE,
-        profiles: data.profiles || [],
         sessions_available: data.sessions_available !== false,
         sessions_error: data.sessions_error || '',
         refreshed_at: data.refreshed_at || Date.now(),
@@ -132,81 +132,6 @@ export function snapshot() {
 }
 
 export function list() { return snapshot().harnesses; }
-// profiles is every sign-in profile, the default one first. A catalogue from
-// before profiles existed has none, and the sheet then offers no choice.
-export function profiles() { return snapshot().profiles || []; }
-
-// refreshProfiles asks again which profiles there are and who is signed in to
-// them. The catalogue is loaded once per page, but a profile added in the
-// dashboard or signed in to a minute ago is exactly what the next sheet has
-// to show. A failure keeps what was there.
-export async function refreshProfiles() {
-  try {
-    const data = await api('/api/profiles', { attempts: 1, timeout: 8000 });
-    if (!cached) return;
-    cached.profiles = data.profiles || [];
-    cached.recommended = data.recommended || {};
-    if (!fromStorage) writeCache(cached);
-  } catch { /* the copy we have is the answer */ }
-}
-
-// recommendedProfile is the profile a new session of a program starts in when
-// nobody chooses: the account with the most usage left for the time until it
-// renews. undefined when there is nothing to choose by - no limits are known
-// for the program, or there is one profile.
-export function recommendedProfile(harnessId) {
-  const recommended = snapshot().recommended || {};
-  return Object.prototype.hasOwnProperty.call(recommended, harnessId) ? recommended[harnessId] : undefined;
-}
-
-// The sessions the page knows of, handed over by session.js, which keeps the
-// list. The sheet only reads it, to find the sessions a new one would join.
-let sessionList = () => [];
-
-export function useSessions(read) { sessionList = read; }
-
-const sameDir = (a, b) => String(a || '').replace(/\/+$/, '') === String(b || '').replace(/\/+$/, '');
-
-// companions is the profiles the active sessions of a program in one folder
-// run in, each with how many there are and when one was last active. Claude
-// Code sessions in one profile can reach each other, so a session started
-// beside another joins its profile. A session is active while its program
-// runs and nobody has called it done. The server's companionProfiles (internal/server/prestart.go) is the same rule.
-function companions(harnessId, workdir) {
-  const out = new Map();
-  if (!harnessId || !workdir) return out;
-  for (const s of sessionList() || []) {
-    if (s.harness !== harnessId || s.status === 'done') continue;
-    if (s.state !== 'running' && s.state !== 'starting') continue;
-    if (!sameDir(s.workdir, workdir)) continue;
-    const id = s.options?.profile || '';
-    const seen = out.get(id) || { count: 0, activeAt: 0 };
-    out.set(id, { count: seen.count + 1, activeAt: Math.max(seen.activeAt, s.active_at || 0) });
-  }
-  return out;
-}
-
-// companionProfile is the profile among the companions' a new session joins:
-// the recommended one when it is among them, and otherwise the one active
-// last. undefined when there is none to join.
-function companionProfile(found, harnessId) {
-  const recommended = recommendedProfile(harnessId);
-  let best;
-  for (const p of profiles()) {
-    const seen = found.get(p.id);
-    if (!seen) continue;
-    if (p.id === recommended) return p.id;
-    if (best === undefined || seen.activeAt > found.get(best).activeAt) best = p.id;
-  }
-  return best;
-}
-
-// limitWindows is the two windows a profile's limits are judged by.
-function limitWindows(profile, harnessId) {
-  const windows = ((profile && profile.limits) || {})[harnessId] || [];
-  return windows.filter((w) => w.label === '5h' || w.label === '7d');
-}
-
 // untilReset is how long a limit window has until it renews, the way a
 // person says it: "2h 36m", "3d 4h", "12m". Empty when the window says
 // nothing about it, or its reset is already behind it.
@@ -229,14 +154,16 @@ export function resetDetail(window) {
   return 'resets in ' + left + ' (' + new Date(window.resets_at).toLocaleString() + ')';
 }
 
-// profileName is what a session's profile is called, for the session's facts.
-export function profileName(id) {
-  const found = profiles().find((p) => p.id === (id || ''));
-  return found ? found.name : (id ? id : 'Default');
-}
-
 export function workspace() { return snapshot().workspace || EMPTY_WORKSPACE; }
 export function harness(id) { return list().find((h) => h.id === id) || null; }
+
+/**
+ * isChat says whether a session of this program is a chat - driven through
+ * its protocol and drawn by the page (REBUILD.md §3) - rather than a
+ * terminal. Every coding agent is one; the Shell and VS Code are the
+ * terminals.
+ */
+export function isChat(id) { return !!id && !isTool(id); }
 
 /**
  * ideAvailable says whether a folder offers a VS Code: whether the dashboard
@@ -280,8 +207,29 @@ export function modelItems(id) {
   }));
 }
 
+// modelOf is a model's entry in what the sheet offers. Claude Code names
+// the model an alias resolved to ("claude-sonnet-5-5" for "sonnet") in what
+// it reports, which is what a chat's journal holds: that is the alias's
+// entry, so a chat says "Sonnet" rather than the id.
 export function modelOf(id, modelId) {
-  return offered(id).find((m) => m.id === modelId) || null;
+  const list = offered(id);
+  const exact = list.find((m) => m.id === modelId);
+  if (exact || !/^claude-/i.test(String(modelId || ''))) return exact || null;
+  const wide = /\[1m\]$/i.test(modelId) ? '[1m]' : '';
+  const words = String(modelId).toLowerCase().replace(/\[1m\]$/, '').split(/[-_.]/).slice(1);
+  for (const word of words) {
+    const alias = list.find((m) => m.id === word + wide);
+    if (alias) return alias;
+  }
+  return null;
+}
+
+// modelByWords is the entry a typed model names by its label ("Sonnet 1M"),
+// for a field that shows labels and takes ids.
+function modelByWords(id, typed) {
+  const words = String(typed || '').trim().toLowerCase();
+  if (!words) return null;
+  return offered(id).find((m) => m.id === typed || String(m.label || '').toLowerCase() === words) || null;
 }
 
 // defaultModelFor is what the picker starts on: the first of the dashboard's
@@ -297,11 +245,20 @@ export function defaultModelFor(id) {
 }
 
 // needsModel is false for Shell, which runs a login shell and has nothing to
-// choose. §E.3: the whole step is hidden, not disabled.
+// choose. §E.3: the whole step is hidden, not disabled. A program that could
+// not list its models still has the step: an id typed into it is passed on,
+// and an empty one starts the program on its own default (unlisted).
 export function needsModel(id) {
   const found = harness(id);
   if (!found) return !isTool(id);
-  return (found.models || []).length > 0 || !!found.default_model;
+  return (found.models || []).length > 0 || !!found.default_model || unlisted(found);
+}
+
+// unlisted is an installed program whose model listing failed and that names
+// no default: its model field takes an id, and may be left empty.
+function unlisted(found) {
+  return !!found && !!found.installed && !!found.error
+    && !(found.models || []).length && !found.default_model;
 }
 
 // harnessCard is one program as the form offers it: a radio card with the
@@ -318,67 +275,14 @@ function harnessCard(entry, name) {
       usable ? null : el('small', { class: 'ds-radio__note' }, iconEl('alert', 16), 'Not installed')));
 }
 
-// The programs a profile means something to. VS Code is not on the sheet, and
-// it has no sign-in of its own.
-const PROFILE_HARNESSES = ['claude', 'codex', 'opencode', 'shell'];
-
-const PROFILE_KEY = 'socrates.profile';
-
-// The profile the last session was started in is where the next one starts:
-// somebody working for a client all afternoon should not have to say so on
-// every sheet. It is a per-browser convenience and nothing more.
-function lastProfile() {
-  try { return localStorage.getItem(PROFILE_KEY) || ''; } catch { return ''; }
-}
-
-function rememberProfile(id) {
-  try { localStorage.setItem(PROFILE_KEY, id); } catch { /* private window */ }
-}
-
-// accountLabel is the line under a profile's name: who this program is
-// signed in as there.
-function accountLabel(profile, harnessId) {
-  const login = (profile.accounts || {})[harnessId];
-  if (!login) return '';
-  if (login.account) return login.account;
-  return login.signed_in ? 'signed in' : 'not signed in';
-}
-
-// signInHint says how to sign a program in to a profile it is not signed in
-// to yet. Claude Code asks by itself; the other two are signed in from a shell.
-function signInHint(profile, harnessId) {
-  const login = (profile.accounts || {})[harnessId];
-  if (!login || login.signed_in) return '';
-  if (harnessId === 'claude') return 'Claude Code is not signed in to ' + profile.name + ' yet; the session opens on its sign-in.';
-  if (harnessId === 'codex') return 'Codex is not signed in to ' + profile.name + ' yet. Start a Shell in this profile and run codex login --device-auth.';
-  if (harnessId === 'opencode') return 'OpenCode has no provider in ' + profile.name + ' yet. Start a Shell in this profile and run opencode auth login.';
-  return '';
-}
-
-// profileEntry is a profile as the dropdown's list shows it: its name, the
-// account this program is signed in as there, and a meter for each limit
-// window - how full each account is and how long until it renews, which is
-// what choosing between them comes down to. Two tags in the meta line say why
-// one would be picked: the sessions of this program already active in it in
-// this folder, and the most usage left.
-function profileEntry(profile, harnessId, recommended, here) {
-  const meta = [];
-  const account = accountLabel(profile, harnessId);
-  if (account) meta.push(html`<span>${account}</span>`);
-  if (here) {
-    meta.push(html`<span data-tag="here" title="Sessions in one profile can reach each other">${(here > 1 ? here + ' ' : '') + 'running here'}</span>`);
-  }
-  if (recommended) meta.push(html`<span data-tag="recommended">most left</span>`);
-  return html`<span class="ds-combo__name">${profile.name}</span>${
-    meta.length ? html`<span class="ds-combo__meta">${meta.map((part, i) => (i ? html` · ${part}` : part))}</span>` : ''
-  }${usageMeters(profile, harnessId)}`;
-}
-
-// usageMeters is a profile's limit windows as flat DS progress bars, each
-// with its window, how much of it is used and how long until it renews. The
-// figure is always written out: the bar alone would say it by length only.
-function usageMeters(profile, harnessId) {
-  const windows = limitWindows(profile, harnessId);
+/**
+ * limitMeters is an account's limit windows ({label, used_percent,
+ * resets_at}) as flat DS progress bars, the five hours and the week, each
+ * with how much of it is used and how long until it renews. The figure is
+ * always written out: the bar alone would say it by length only.
+ */
+export function limitMeters(all) {
+  const windows = (all || []).filter((w) => w.label === '5h' || w.label === '7d');
   if (!windows.length) return '';
   return html`<div class="so-limits">${windows.map((w) => {
     const used = Math.max(0, Math.min(100, Math.round(Number(w.used_percent) || 0)));
@@ -388,10 +292,10 @@ function usageMeters(profile, harnessId) {
   })}</div>`;
 }
 
-// profileFace is what the closed profile field shows: the name, and quieter
-// beside it the account it means for this program.
-function profileFace(name, account) {
-  return html`<span class="so-drop__value">${name}</span>${account ? html`<span class="so-drop__meta">${account}</span>` : ''}`;
+// accountFace is what the closed account field shows: the name, and quieter
+// beside it who is signed in there.
+function accountFace(name, who) {
+  return html`<span class="so-drop__value">${name}</span>${who ? html`<span class="so-drop__meta">${who}</span>` : ''}`;
 }
 
 // The value a directory option carries. A preset is a mode and a path, and one
@@ -439,38 +343,38 @@ function dynamicPreview(id) {
   return root.replace(/\/$/, '') + '/' + (id || 'session') + '-' + stamp + '-…';
 }
 
+// The programs a session can be prepared for: the agents, whose first message
+// a prepared chat holds. A shell has nothing to send one to and VS Code is
+// opened from a folder. The server's createPrestart (internal/server/
+// prestart.go) is the real boundary.
+export function canPrestart(id) { return isChat(id); }
 
-// The programs a session can be prepared for: the three a first prompt can be
-// handed to. A shell has nothing to send one to and VS Code is opened from a
-// folder. The server's prestartHarness (internal/server/prestart.go) is the
-// same list, and the real boundary.
-export const PRESTART_HARNESSES = ['claude', 'codex', 'opencode'];
-
-export function canPrestart(id) { return PRESTART_HARNESSES.includes(id); }
-
-// The profile dropdown's value for "choose when it starts". A profile id is
-// generated by the server and never starts with an @.
-const AUTO_PROFILE = '@auto';
+// The account dropdown's value for "choose when it starts"; an account id is
+// a-<hex>.
+const AUTO_ACCOUNT = '@auto';
 
 /**
- * settingsForm builds the controls a session is bound by: the program, how a
- * shell runs, the sign-in profile, the working directory, the model, the
- * effort and Ultracode. The new-session sheet and the panel of a prepared
- * session both draw theirs with it, so the two can never offer different
- * choices or say different things about them - a prepared session has to
- * start exactly as the sheet would have started it.
+ * settingsForm builds the controls a session is bound by: the program, the
+ * working directory, the model, the effort, Ultracode and the account. A chat
+ * (isChat) is asked for its folder, model, effort and account - agent,
+ * folder, model, account - whether it may switch accounts by itself at a
+ * limit, and Claude Code for Ultracode too; a Shell for its folder and
+ * nothing else. The new-session sheet and the panel of a prepared session
+ * both draw theirs with it, so the two can never offer different choices or
+ * say different things about them - a prepared session has to start exactly
+ * as the sheet would have started it.
  *
  * Every element id is `prefix` and the field's name, which is how the sheet
  * keeps the ids it has always had (nsHarness, nsDir, nsModelField, ...) and
  * the panel gets ids of its own (psHarness, ...).
  *
  *   include(entry)            which programs are offered at all
- *   deferredProfile(harness)  whether "Automatic" may leave the profile to
- *                             the moment the session starts - true for a
- *                             prepared session, whose start can be hours away
+ *   deferredAccount(harness)  whether "Automatic" may leave the account to
+ *                             the moment the chat starts - true for a
+ *                             prepared chat, whose start can be hours away
  *   onChange(kind)            called after a change the person made; kind is
- *                             harness, shell, profile, dir, model, effort or
- *                             ultracode. Nothing calls it for set().
+ *                             harness, dir, model, effort, ultracode, account
+ *                             or auto_switch. Nothing calls it for set().
  *
  * It hands back the node to put on the page and the calls that read and
  * write it.
@@ -479,7 +383,7 @@ export function settingsForm(options = {}) {
   const {
     prefix = 'ns',
     include = (entry) => entry.id !== 'vscode',
-    deferredProfile = () => false,
+    deferredAccount = () => false,
     onChange = () => {},
   } = options;
   const id = (name) => prefix + name;
@@ -499,18 +403,11 @@ export function settingsForm(options = {}) {
     el('legend', { class: 'ds-field__label', text: 'Program' }),
     el('div', { class: 'so-settings__groups' }, harnessRow, toolsRow));
 
-  // Which sign-ins the session runs on. Only there when the dashboard has
-  // more profiles than the default one.
-  const profileRow = el('div', { id: id('Profile') });
-  const profileHint = el('small', { class: 'ds-field__hint', id: id('ProfileHint') });
-  const profileField = el('div', { class: 'ds-field', id: id('ProfileField'), hidden: true },
-    el('label', { class: 'ds-field__label', for: id('ProfileInput'), text: 'Profile' }), profileRow, profileHint);
-
   const dirRow = el('div', { id: id('Dir') });
   const dirPath = el('input', {
     class: 'ds-input', type: 'text', id: id('DirPath'), spellcheck: 'false', 'aria-label': 'Directory path',
     autocorrect: 'off', autocapitalize: 'none', placeholder: '/srv/projects/socrates',
-    'aria-describedby': id('DirHint'),
+    'aria-describedby': id('DirHint'), enterkeyhint: 'go',
   });
   const dirHint = el('small', { class: 'ds-field__hint so-break', id: id('DirHint') });
   const dirField = el('div', { class: 'ds-field', id: id('DirField') },
@@ -538,8 +435,33 @@ export function settingsForm(options = {}) {
         + 'which uses much more of the account’s limits.',
     }));
 
-  const node = el('div', { class: 'so-settings' }, harnessField, profileField,
-    dirField, modelField, effortField, ultracodeField);
+  // A chat runs on an account (REBUILD.md §4), the last thing it is asked
+  // for: a dropdown of every account of the agent with how full it is and
+  // when it renews, the one with the most left marked. A prepared chat may
+  // leave it to its start.
+  const accountRow = el('div', { id: id('Account') });
+  const accountHint = el('small', { class: 'ds-field__hint', id: id('AccountHint') });
+  const accountSignIn = el('button', {
+    class: 'ds-btn ds-btn--text ds-btn--sm', type: 'button', id: id('AccountSignIn'), hidden: true, text: 'Sign in',
+  });
+  const accountField = el('div', { class: 'ds-field', id: id('AccountField'), hidden: true },
+    el('label', { class: 'ds-field__label', for: id('AccountInput'), text: 'Account' }), accountRow,
+    el('div', { class: 'so-settings__note' }, accountHint, accountSignIn));
+
+  // Off unless asked for, on every opening: a chat that moves to another
+  // account by itself spends that account's limits too.
+  const autoSwitchInput = el('input', { type: 'checkbox', id: id('AutoSwitch'), 'aria-describedby': id('AutoSwitchHint') });
+  const autoSwitchField = el('div', { class: 'ds-field', id: id('AutoSwitchField'), hidden: true },
+    el('label', { class: 'ds-check' }, autoSwitchInput, el('span', { text: 'Switch accounts at a limit' })),
+    el('small', {
+      class: 'ds-field__hint', id: id('AutoSwitchHint'),
+      text: 'When the account reaches a limit, the chat goes on with the account that has the most left.',
+    }));
+
+  // agent, folder, model and effort (and Ultracode, Claude Code's), then the
+  // account (REBUILD.md §7).
+  const node = el('div', { class: 'so-settings' }, harnessField,
+    dirField, modelField, effortField, ultracodeField, accountField, autoSwitchField);
 
   /* -------------------------------------------------------------- state */
 
@@ -548,8 +470,8 @@ export function settingsForm(options = {}) {
   const entries = list().filter((entry) => entry.id !== 'vscode' && include(entry));
   const space = workspace();
   const pick = {
-    harness: '', model: '', effort: '', mode: DYNAMIC, workdir: '',
-    profile: lastProfile(), profileChosen: false, profileAuto: false, profileJoined: false, ultracode: false,
+    harness: '', model: '', effort: '', mode: DYNAMIC, workdir: '', ultracode: false,
+    account: '', accountChosen: false, autoSwitch: false,
   };
 
   // Ultracode starts off on every opening: it costs a great deal more of the
@@ -615,16 +537,22 @@ export function settingsForm(options = {}) {
     if (pick.mode !== CUSTOM) return;
     pick.workdir = dirPath.value.trim();
     renderDir();
-    if (pick.harness) renderProfile();
     onChange('dir');
   });
 
+  // The field says a model's name, as its list does; what is typed is a
+  // name from the list or an id the CLI takes.
   const picker = combobox({
     value: '',
     items: () => modelItems(pick.harness),
     placeholder: 'Pick a model, or type its id',
+    display: (value) => {
+      const model = modelOf(pick.harness, value);
+      return model ? (model.label || model.id) : value;
+    },
     onChange: (value) => {
-      pick.model = value.trim();
+      const named = modelByWords(pick.harness, value);
+      pick.model = named ? named.id : value.trim();
       // A model brings its own starting effort - the one set for it in the
       // dashboard, or the CLI's.
       const model = modelOf(pick.harness, pick.model);
@@ -636,42 +564,49 @@ export function settingsForm(options = {}) {
   picker.input.id = id('ModelInput');
   modelHost.append(dictated(picker.node, picker.input));
 
-  // The profile is a dropdown rather than a row of cards: with more than
-  // three profiles the cards would push the rest of the form off the screen,
-  // and every entry in the list still shows how full its account is, so the
-  // choice is made with the numbers in view. A prepared session has one more
-  // entry on top: leave it to the moment it starts, when the numbers that
-  // decide it are the ones that matter.
-  const profilePicker = dropdown({
-    value: pick.profile,
-    id: id('ProfileInput'),
-    label: 'Sign-in profile',
+  const accountPicker = dropdown({
+    value: '',
+    id: id('AccountInput'),
+    label: 'Account',
     items: () => [
-      ...(deferredProfile(pick.harness) ? [{ value: AUTO_PROFILE, auto: true }] : []),
-      ...profiles().map((p) => ({ value: p.id, profile: p })),
+      ...(deferredAccount(pick.harness) ? [{ value: AUTO_ACCOUNT, auto: true }] : []),
+      ...accounts.forAgent(pick.harness).map((a) => ({ value: a.id, account: a })),
     ],
-    renderItem: (item) => (item.auto ? autoEntry() : profileEntry(item.profile, pick.harness,
-      recommendedProfile(pick.harness) === item.value && profiles().length > 1,
-      companions(pick.harness, pick.workdir).get(item.value)?.count || 0)),
-    renderValue: (item) => (item.auto ? profileFace('Automatic', '')
-      : profileFace(item.profile.name, accountLabel(item.profile, pick.harness))),
+    renderItem: (item) => (item.auto ? autoAccountEntry() : accounts.entry(item.account, {
+      recommended: item.value === accounts.recommended(pick.harness) && accounts.forAgent(pick.harness).length > 1,
+    })),
+    renderValue: (item) => (item.auto ? accountFace('Automatic', '') : accountFace(item.account.label, accounts.who(item.account))),
     onChange: (value) => {
-      if (value === AUTO_PROFILE) {
-        pick.profileChosen = false;
-        pick.profileAuto = true;
-      } else {
-        pick.profile = value;
-        pick.profileChosen = true;
-        pick.profileAuto = false;
-        pick.profileJoined = false;
-        rememberProfile(value);
-      }
-      renderProfileHint();
-      onChange('profile');
+      pick.account = value;
+      pick.accountChosen = true;
+      renderAccountHint();
+      onChange('account');
     },
   });
-  profilePicker.button.setAttribute('aria-describedby', id('ProfileHint'));
-  profileRow.append(profilePicker.node);
+  accountPicker.button.setAttribute('aria-describedby', id('AccountHint'));
+  accountRow.append(accountPicker.node);
+  // The button under the field signs the chosen account in, or adds the
+  // agent's first.
+  accountSignIn.addEventListener('click', async () => {
+    if (!accounts.forAgent(pick.harness).length) {
+      const made = await accounts.addAccountDialog(accountSignIn, pick.harness);
+      if (made) {
+        pick.account = made.id;
+        pick.accountChosen = true;
+      }
+    } else {
+      const chosen = accounts.byId(pick.account);
+      if (!chosen) return;
+      await accounts.signIn(chosen, accountSignIn);
+    }
+    renderAccount();
+    onChange('account');
+  });
+  autoSwitchInput.checked = false;
+  autoSwitchInput.addEventListener('change', () => {
+    pick.autoSwitch = autoSwitchInput.checked;
+    onChange('auto_switch');
+  });
 
   /* ------------------------------------------------------------ drawing */
 
@@ -681,17 +616,21 @@ export function settingsForm(options = {}) {
     // Only "Custom path…" has anything left to ask, so it is the only choice
     // that puts a second field on the form.
     dirPathRow.hidden = mode !== CUSTOM;
-    if (mode === CUSTOM && focus) dirPath.focus();
+    // Picked by a tap: the path is what is left to type, so it takes the
+    // keyboard at once.
+    if (mode === CUSTOM && focus) typeHere(dirPath);
     renderDir();
-    // Another folder has other sessions to join.
-    if (pick.harness) renderProfile();
   }
 
   function renderDir() {
     // `false`: the field is being told what was chosen, not told to choose.
     dirPicker.setValue(dirValue(pick.mode, pick.workdir), false);
-    if (pick.mode === DYNAMIC) dirHint.textContent = dynamicPreview(pick.harness);
-    else if (pick.mode === PRESET) dirHint.textContent = pick.workdir;
+    // Where a dynamic session's folder will be is a path nobody reads on the
+    // way to a chat: the line says what it is, its "i" the path.
+    if (pick.mode === DYNAMIC) {
+      dirHint.replaceChildren('A new folder of its own, made when it starts.',
+        infoTip([dynamicPreview(pick.harness)], { label: 'The folder it will get' }));
+    } else if (pick.mode === PRESET) dirHint.textContent = pick.workdir;
     // The path is in the field right above: the hint says what it has to be.
     else dirHint.textContent = 'An absolute path on this machine.';
   }
@@ -713,66 +652,74 @@ export function settingsForm(options = {}) {
     for (const input of effortRow.querySelectorAll('input')) input.checked = input.value === pick.effort;
   }
 
-  // deferred says whether the profile is left to the start right now.
-  function deferred() {
-    return !profileField.hidden && !pick.profileChosen && pick.profileAuto && deferredProfile(pick.harness);
-  }
-
-  // renderProfile offers the sign-in profiles to the programs that sign in -
-  // and to a shell, which is where Codex and OpenCode are signed in to one. Each choice says which account it means for this program, which
-  // is the whole point of choosing.
-  function renderProfile() {
-    const all = profiles();
-    const wanted = all.length > 1 && PROFILE_HARNESSES.includes(pick.harness);
-    profileField.hidden = !wanted;
-    if (!wanted) return;
-    // Until somebody picks a profile, the program decides: the profile an
-    // active session of the same program in this folder runs in, so the two
-    // can reach each other; else the account with the most usage left before
-    // it renews, where that is known; and the last one chosen otherwise. A
-    // session that starts later decides later, by the same rule.
-    pick.profileJoined = false;
-    if (!pick.profileChosen) {
-      if (deferredProfile(pick.harness)) {
-        pick.profileAuto = true;
-      } else {
-        const joined = companionProfile(companions(pick.harness, pick.workdir), pick.harness);
-        const recommended = recommendedProfile(pick.harness);
-        pick.profileJoined = joined !== undefined;
-        pick.profileAuto = pick.profileJoined || (recommended !== undefined && all.some((p) => p.id === recommended));
-        pick.profile = pick.profileJoined ? joined : pick.profileAuto ? recommended : lastProfile();
-      }
+  // renderAccount offers a chat its agent's accounts. Until somebody picks
+  // one, the chat starts on the one with the most usage left; a prepared chat
+  // leaves that to its start. With no account at all the chat would start on
+  // a Default account the server makes for it, not signed in yet: the field
+  // says so, and adds one.
+  function renderAccount() {
+    const list = isChat(pick.harness) ? accounts.forAgent(pick.harness) : [];
+    accountField.hidden = !isChat(pick.harness);
+    accountRow.hidden = !list.length;
+    // Switching needs somewhere to switch to.
+    autoSwitchField.hidden = list.length < 2;
+    if (autoSwitchField.hidden) {
+      pick.autoSwitch = false;
+      autoSwitchInput.checked = false;
     }
-    if (!all.some((p) => p.id === pick.profile)) pick.profile = '';
-    // `false`: the field is being told what was chosen, and the entries are
-    // drawn again for the program now on the form.
-    profilePicker.setValue(deferred() ? AUTO_PROFILE : pick.profile, false);
-    renderProfileHint();
+    if (!list.length) {
+      pick.account = '';
+      pick.accountChosen = false;
+      accountHint.textContent = 'No ' + label(pick.harness) + ' account yet. Add one, or the chat starts on a new '
+        + 'Default account that has to be signed in first.';
+      accountSignIn.hidden = !isChat(pick.harness);
+      accountSignIn.textContent = 'Add an account';
+      return;
+    }
+    const known = pick.account === AUTO_ACCOUNT ? deferredAccount(pick.harness) : list.some((a) => a.id === pick.account);
+    if (!pick.accountChosen || !known) {
+      pick.accountChosen = false;
+      const best = accounts.best(pick.harness);
+      pick.account = deferredAccount(pick.harness) ? AUTO_ACCOUNT : (best ? best.id : '');
+    }
+    accountPicker.setValue(pick.account, false);
+    renderAccountHint();
   }
 
-  function renderProfileHint() {
-    const chosen = deferred() ? null : profiles().find((p) => p.id === pick.profile);
-    const signIn = chosen ? signInHint(chosen, pick.harness) : '';
+  function renderAccountHint() {
+    const chosen = accounts.byId(pick.account);
     let words = '';
-    if (deferred()) {
-      words = 'Chosen when the session starts: the profile of an active ' + label(pick.harness)
-        + ' session in this folder, or else the one with the most usage left at that moment.';
-    } else if (pick.profileJoined) {
-      words = 'Chosen automatically: another ' + label(pick.harness)
-        + ' session in this folder runs in it, and sessions in one profile can reach each other.';
-    } else if (pick.profileAuto) words = 'Chosen automatically: the most usage left before it renews.';
-    profileHint.textContent = signIn || words;
+    accountSignIn.hidden = true;
+    if (pick.account === AUTO_ACCOUNT) {
+      words = 'Chosen when the chat starts: the account with the most usage left at that moment.';
+    } else if (chosen && !accounts.usable(chosen)) {
+      // A subscription signs in from here; a key that was refused is
+      // replaced on the dashboard's Accounts card.
+      const key = chosen.kind === 'api_key';
+      words = key ? 'The key of ' + chosen.label + ' was not taken; replace it on the dashboard.'
+        : chosen.label + ' is not signed in yet.';
+      accountSignIn.hidden = key;
+      accountSignIn.textContent = 'Sign in';
+    } else if (chosen && accounts.renewal(chosen)) {
+      words = chosen.label + ' is at its limit and ' + accounts.renewal(chosen) + '.';
+    } else if (!pick.accountChosen && chosen && chosen.id === accounts.recommended(pick.harness)
+      && accounts.forAgent(pick.harness).length > 1) {
+      words = 'Chosen automatically: the most usage left before it renews.';
+    }
+    accountHint.textContent = words;
   }
 
   function selectHarness(harnessId) {
     pick.harness = harnessId;
+    // Another agent has other accounts.
+    pick.accountChosen = false;
+    // Ultracode is Claude Code's option.
     ultracodeField.hidden = harnessId !== 'claude';
     if (ultracodeField.hidden && pick.ultracode) {
       // Ultracode is Claude Code's; another program does not carry it along.
       pick.ultracode = false;
       ultracodeInput.checked = false;
     }
-    renderProfile();
     // Both groups are one choice, so the card is checked by its value across
     // both: a script's choice (selectDefault, set) shows like a tap would.
     for (const input of harnessField.querySelectorAll('input[name="' + harnessName + '"]')) {
@@ -780,12 +727,20 @@ export function settingsForm(options = {}) {
     }
     // Shell has nothing to run on, so the step is not there at all.
     modelField.hidden = !needsModel(harnessId);
+    // With no list to pick from, the field is for an id, or for nothing.
+    picker.input.placeholder = unlisted(harness(harnessId))
+      ? 'Default, or a model’s id' : 'Pick a model, or type its id';
     pick.model = modelField.hidden ? '' : defaultModelFor(harnessId);
     picker.setValue(pick.model, false);
     const model = modelOf(harnessId, pick.model);
-    pick.effort = model && model.default_effort ? model.default_effort : '';
+    // The dashboard's default effort goes with the model a chat starts on;
+    // any other model brings its own.
+    const entry = harness(harnessId);
+    pick.effort = entry && entry.default_effort && pick.model === entry.default_model ? entry.default_effort
+      : (model && model.default_effort ? model.default_effort : '');
     renderEffort();
     renderDir();
+    renderAccount();
   }
 
   /* ---------------------------------------------------------------- api */
@@ -796,29 +751,31 @@ export function settingsForm(options = {}) {
     /** harness is the program chosen right now. */
     harness: () => pick.harness,
 
-    /**
-     * value is what a session is created or prepared with. profile_auto is
-     * only ever true where the profile is left to the start.
-     */
+    /** value is what a session is created or prepared with. */
     value() {
-      const later = deferred();
       return {
         harness: pick.harness,
         model: modelField.hidden ? '' : pick.model,
         effort: pick.effort,
-        profile: profileField.hidden || later ? '' : pick.profile,
-        profile_auto: later,
         ultracode: !ultracodeField.hidden && pick.ultracode,
         workdir_mode: pick.mode,
         workdir: pick.workdir,
+        account: accountField.hidden || pick.account === AUTO_ACCOUNT ? '' : pick.account,
+        auto_switch: !autoSwitchField.hidden && pick.autoSwitch,
       };
     },
 
     /** missing is what still has to be chosen, as a sentence; '' when nothing. */
     missing() {
       if (!entries.length) return 'There is no program to start yet.';
-      if (!pick.harness || (!modelField.hidden && !pick.model)) return 'Pick a program and a model first.';
+      if (!pick.harness || (!modelField.hidden && !pick.model && !unlisted(harness(pick.harness)))) return 'Pick a program and a model first.';
       if (pick.mode === CUSTOM && !pick.workdir) return 'Type the directory this session should work in.';
+      // A chat started now needs an account it can run on; a prepared one
+      // can be signed in to before it starts.
+      const chosen = accountField.hidden ? null : accounts.byId(pick.account);
+      if (chosen && !accounts.usable(chosen) && !deferredAccount(pick.harness)) {
+        return 'Sign in to ' + chosen.label + ' first, or pick another account.';
+      }
       return '';
     },
 
@@ -838,13 +795,25 @@ export function settingsForm(options = {}) {
       }
       const entry = harness(pick.harness);
       if (entry) {
-        if (entry.error) parts.push(entry.error);
-        if (entry.installed && !entry.static && !defaultModelFor(entry.id) && !pick.model && !modelField.hidden) {
+        // The program's own error is detail (details() below); the line
+        // says what it means here.
+        if (entry.error) {
+          parts.push(entry.installed
+            ? entry.label + ' could not list its models. Type a model’s id, or leave it empty for its own default.'
+            : entry.label + ' is not installed on this machine.');
+        }
+        if (entry.installed && !entry.static && !defaultModelFor(entry.id) && !pick.model && !modelField.hidden && !unlisted(entry)) {
           parts.push('Pick a model - ' + entry.label + ' does not name a default.');
         }
       }
       if (stale()) parts.push('Showing the programs from your last visit.');
       return parts;
+    },
+
+    /** details is the technical side of notes(): what goes behind its "i". */
+    details() {
+      const entry = harness(pick.harness);
+      return entry && entry.error ? [entry.error] : [];
     },
 
     /**
@@ -876,15 +845,15 @@ export function settingsForm(options = {}) {
         pick.ultracode = !!values.ultracode && !ultracodeField.hidden;
         ultracodeInput.checked = pick.ultracode;
       }
-      if (values.profile_auto) {
-        pick.profileChosen = false;
-        pick.profileAuto = true;
-      } else if (values.profile !== undefined) {
-        pick.profileChosen = true;
-        pick.profileAuto = false;
-        pick.profile = values.profile || '';
+      if (values.account !== undefined) {
+        pick.accountChosen = !!values.account;
+        pick.account = values.account || '';
       }
-      renderProfile();
+      if (values.auto_switch !== undefined) {
+        pick.autoSwitch = !!values.auto_switch;
+        autoSwitchInput.checked = pick.autoSwitch;
+      }
+      renderAccount();
       if (values.workdir_mode !== undefined) {
         const mode = values.workdir_mode || DYNAMIC;
         if (mode === CUSTOM) dirPath.value = values.workdir || '';
@@ -895,28 +864,29 @@ export function settingsForm(options = {}) {
     /** refresh draws again what depends on the catalogue or on the caller. */
     refresh() {
       if (!pick.harness) return;
-      renderProfile();
+      renderAccount();
     },
 
-    /** refreshProfiles asks again who is signed in where, then draws it. */
-    async refreshProfiles() {
-      await refreshProfiles();
-      if (node.isConnected && pick.harness) renderProfile();
+    /** refreshAccounts reads the accounts and their usage again, then draws them. */
+    async refreshAccounts() {
+      await accounts.load().catch(() => { /* the copy this browser kept */ });
+      if (node.isConnected && pick.harness) renderAccount();
     },
   };
 }
 
-// autoEntry is the "Automatic" entry of a prepared session's profile list,
-// drawn the way a profile is so the list reads as one list.
-function autoEntry() {
-  return html`<span class="ds-combo__name">Automatic</span><span class="ds-combo__meta">a session running in this folder, or the most usage left</span>`;
+// autoAccountEntry is the "Automatic" entry of a prepared chat's accounts,
+// drawn the way an account is so the list reads as one list.
+function autoAccountEntry() {
+  return html`<span class="ds-combo__name">Automatic</span><span class="ds-combo__meta">the account with the most usage left when it starts</span>`;
 }
 
 /**
  * openNewSessionSheet asks the questions a session is bound by. It resolves
- * with {harness, model, effort, profile, profile_auto,
- * ultracode, workdir_mode, workdir, prestart} or null if the person backed
- * out.
+ * with {harness, model, effort, ultracode, workdir_mode, workdir, account,
+ * auto_switch, prestart, chat} or null if the person backed out. `chat` says the agent is a chat: agent,
+ * folder, model and account are all it asks; a Shell is a folder and nothing
+ * else.
  *
  * The catalogue is loaded first, but a failure is not fatal: the stored copy
  * is used and the hint says where it came from.
@@ -942,12 +912,12 @@ export async function openNewSessionSheet() {
   }
 
   // PreStart is off on every opening: what the sheet is for, most of the
-  // time, is a terminal now.
+  // time, is a chat now.
   let prestartOn = false;
   const prepared = (harnessId) => prestartOn && canPrestart(harnessId);
   const form = settingsForm({
     prefix: 'ns',
-    deferredProfile: prepared,
+    deferredAccount: prepared,
     onChange: () => render(),
   });
   // The form is built again on every opening, from the catalogue as it is
@@ -964,20 +934,22 @@ export async function openNewSessionSheet() {
     start.textContent = later ? 'Prepare' : 'Start session';
     const snap = snapshot();
     const parts = [];
-    // A prepared session runs nothing, so a machine that cannot run sessions
-    // right now is no reason to refuse one.
-    const blocked = !later && snap.sessions_available === false;
+    // What the machine can lack is a usable tmux, and only a terminal runs in
+    // one: a chat - started now or prepared - runs in an agent host of its
+    // own, so the reason is the Shell's alone.
+    const blocked = !isChat(harnessId) && snap.sessions_available === false;
     if (blocked && snap.sessions_error) parts.push(snap.sessions_error);
     parts.push(...form.notes());
     const words = parts.join(' ');
-    if (hintText) hintText.textContent = words;
+    const detail = form.details();
+    if (hintText) hintText.replaceChildren(words, ...(words && detail.length ? [infoTip(detail, { label: 'Details' })] : []));
     hint.hidden = !words;
     start.disabled = !!form.missing() || blocked;
   }
 
   form.selectDefault();
   render();
-  form.refreshProfiles().then(() => { if (sheet.open) render(); });
+  form.refreshAccounts().then(() => { if (sheet.open) render(); });
 
   // The sheet is one element that is opened again and again, so every handler
   // this call adds is taken off with it. Without that, the second opening
@@ -999,7 +971,7 @@ export async function openNewSessionSheet() {
     if (prestartInput) {
       prestartInput.addEventListener('change', () => {
         prestartOn = prestartInput.checked;
-        // The profile list gains or loses "Automatic" with it.
+        // The account list gains or loses "Automatic" with it.
         form.refresh();
         render();
       }, on);
@@ -1010,10 +982,24 @@ export async function openNewSessionSheet() {
         toast(missing);
         return;
       }
-      finish({ ...form.value(), prestart: prepared(form.harness()) });
+      finish({ ...form.value(), prestart: prepared(form.harness()), chat: isChat(form.harness()) });
     }, on);
     sheet.addEventListener('close', () => finish(null), on);
+    // It opens on the program chosen, not on its Close: the first focusable
+    // control, Close took the focus with a ring after a key had been
+    // pressed (the Escape that put the sheet away last time), its tooltip
+    // came with it, and the first Escape only put the tooltip away.
+    for (const one of sheet.querySelectorAll('[autofocus]')) one.removeAttribute('autofocus');
+    const chosen = sheet.querySelector('#nsForm input[type="radio"]:checked');
+    if (chosen) chosen.setAttribute('autofocus', '');
     showOverlay(sheet);
+    // The form is drawn anew on every opening, but the sheet is one element
+    // and kept where its body was scrolled to: a sheet put away near its
+    // bottom opened again with the programs out of sight. Set once it is
+    // open: a closed sheet is not rendered on a phone, and a scroll set on
+    // it then is lost.
+    const body = sheet.querySelector('.ds-sheet__body');
+    if (body) body.scrollTop = 0;
   });
 }
 

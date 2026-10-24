@@ -24,6 +24,7 @@ import (
 
 	"github.com/saschazesiger/SocratesAgent/internal/costs"
 	"github.com/saschazesiger/SocratesAgent/internal/harnesses"
+	"github.com/saschazesiger/SocratesAgent/internal/paths"
 	"github.com/saschazesiger/SocratesAgent/internal/store"
 )
 
@@ -85,25 +86,34 @@ func (c *costLedger) refresh() {
 	}
 }
 
-// roots are the directories of every account on this machine: the default
-// one, and every profile directory on the disk - a profile that was deleted
-// still has the conversations it had.
+// roots are the directories of every account on this machine: the agents'
+// own folders in HOME, every profile directory on the disk - the profiles
+// before accounts left theirs under <data>/profiles, and a profile that was
+// deleted still has the conversations it had - and the agents' shared
+// folders, where every account's transcripts are kept once accounts share
+// them (REBUILD.md §6.1). A conversation found under two of them is one.
 func (c *costLedger) roots() []costs.Root {
 	dataDir := c.s.dataDir
+	layout := paths.New(dataDir)
 	roots := []costs.Root{{
-		ClaudeDir:   harnesses.ClaudeConfigDirFor(dataDir, ""),
-		CodexHome:   harnesses.CodexHomeFor(dataDir, ""),
-		OpenCodeDir: harnesses.OpenCodeDataDirFor(dataDir, ""),
+		ClaudeDir:   harnesses.ClaudeConfigDir(),
+		CodexHome:   harnesses.CodexHome(),
+		OpenCodeDir: harnesses.OpenCodeDataDir(),
+	}, {
+		ClaudeDir:   layout.Agent("claude"),
+		CodexHome:   layout.Agent("codex"),
+		OpenCodeDir: layout.Agent("opencode"),
 	}}
 	dirs, _ := filepath.Glob(filepath.Join(dataDir, "profiles", "*"))
 	sort.Strings(dirs)
 	for _, dir := range dirs {
-		id := filepath.Base(dir)
+		// A profile's folders, as the build before accounts laid them out:
+		// OpenCode's under the XDG data home it was started with.
 		roots = append(roots, costs.Root{
-			Profile:     id,
-			ClaudeDir:   harnesses.ClaudeConfigDirFor(dataDir, id),
-			CodexHome:   harnesses.CodexHomeFor(dataDir, id),
-			OpenCodeDir: harnesses.OpenCodeDataDirFor(dataDir, id),
+			Profile:     filepath.Base(dir),
+			ClaudeDir:   filepath.Join(dir, "claude"),
+			CodexHome:   filepath.Join(dir, "codex"),
+			OpenCodeDir: filepath.Join(dir, "xdg-data", "opencode"),
 		})
 	}
 	return roots
@@ -131,13 +141,27 @@ func (c *costLedger) pass() {
 		return
 	}
 	for i := range rows {
-		if rows[i].CLISessionID != "" {
+		if rows[i].CLISessionID != "" && !rows[i].IsChat() {
 			bySession[store.CostKey(rows[i].Harness, rows[i].CLISessionID)] = &rows[i]
 		}
 	}
 
+	// The chats first: their journals are what they cost, and what they own
+	// is no transcript's to count (chatcosts.go).
+	owned, fresh := c.chatLedgers(rows, seen)
+	for key := range fresh {
+		if _, err := st.DeleteCostLedger(key); err != nil {
+			log.Printf("costs: %s: %v", key, err)
+		}
+	}
 	changed := 0
 	for _, conv := range c.scanner.Scan(c.roots(), seen) {
+		if owned[conv.Key()] {
+			if err := st.SetCostFingerprint(conv.Key(), conv.Fingerprint); err != nil {
+				log.Printf("costs: %s: %v", conv.Key(), err)
+			}
+			continue
+		}
 		ledger := store.CostLedger{
 			CostConversation: store.CostConversation{
 				Harness: conv.Harness, ConvID: conv.ID, Profile: conv.Profile,
@@ -188,8 +212,6 @@ func (c *costLedger) pass() {
 type costsView struct {
 	Scanning  bool              `json:"scanning"`
 	ScannedAt int64             `json:"scanned_at"`
-	Mirrored  bool              `json:"mirrored"`
-	Pending   int               `json:"pending"`
 	Profiles  map[string]string `json:"profiles"`
 	Convs     []costConvView    `json:"conversations"`
 	Models    []string          `json:"models"`
@@ -211,6 +233,14 @@ type costConvView struct {
 	FirstAt int64 `json:"first_at"`
 	LastAt  int64 `json:"last_at"`
 }
+
+// legacyProfilesKey is where the build before accounts kept its sign-in
+// profiles, and defaultProfileName what it called the one with no id: the
+// agents' own folders in HOME.
+const (
+	legacyProfilesKey  = "profiles"
+	defaultProfileName = "Default"
+)
 
 // moreProject is the project of every conversation in a directory Socrates
 // made for one session, the sidebar's "More Chats" (folders.js).
@@ -238,22 +268,28 @@ func (s *Server) handleCosts(w http.ResponseWriter, r *http.Request) {
 	view := costsView{
 		Scanning:  s.costs.running.Load() || s.costs.lastPass.Load() == 0,
 		ScannedAt: s.costs.lastPass.Load(),
-		Mirrored:  s.store.MirrorTracking(),
 		Profiles:  map[string]string{"": defaultProfileName},
 		Convs:     []costConvView{},
 		Models:    []string{},
 		Rows:      [][10]float64{},
 	}
-	if list, err := s.loadProfiles(); err == nil {
-		for _, p := range list {
+	// A conversation from before accounts names the profile it ran in, and
+	// the profiles' names are still in the store, where the accounts
+	// migration read them from.
+	var profiles []struct {
+		ID   string `json:"id"`
+		Name string `json:"name"`
+	}
+	if err := s.store.GetJSON(legacyProfilesKey, &profiles); err == nil {
+		for _, p := range profiles {
 			view.Profiles[p.ID] = p.Name
 		}
 	}
-	if pending, err := s.store.ListPending(); err == nil {
-		for _, p := range pending {
-			if strings.HasPrefix(p.Object, "costs/") {
-				view.Pending++
-			}
+	// A chat's ledgers are kept per account, the account's id as the
+	// profile (chatcosts.go).
+	if list, err := s.store.ListAccounts(); err == nil {
+		for _, a := range list {
+			view.Profiles[a.ID] = a.Label
 		}
 	}
 

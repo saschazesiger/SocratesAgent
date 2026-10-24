@@ -9,7 +9,7 @@
 // while it is visible (and for half a minute after it is hidden), whatever is
 // on the stage, and everything that is about the whole machine rather than
 // one pane comes through it: the list, the activity, the names, the digests
-// and the answer runs.
+// and the verdicts.
 //
 // The rules are the terminal socket's, scaled down to a stream nobody types
 // into: a connection is not live until it has said `hello`; a connection that
@@ -90,7 +90,7 @@ const POLL_SLOW = 15000;
  *
  * `ctx`:
  *   hello(state)         a full resync: {sessions, rev, digests, outcomes,
- *                        answers, now}.
+ *                        now}.
  *                        Every hello and every successful fallback poll is
  *                        one; a poll of a server too old for /api/home has
  *                        only `sessions`.
@@ -100,7 +100,10 @@ const POLL_SLOW = 15000;
  *   digest(id, digest)   a digest changed, or went (null)
  *   outcome(id, outcome) the verdict on a session's last turn changed, or
  *                        went (null)
- *   answer(id, run)      an answer run changed, or went (null)
+ *   news(id, {body, kind}) news about a session the server found outside its
+ *                        activity, in a notification's words: a chat's limit
+ *   phase(frame)         a phase of a spoken Status being made, {id, phase,
+ *                        text}: a chat's, which has no terminal socket
  *   fresh()              a pong came back: the state on the page is the
  *                        server's as of the ping (stateAt)
  *   status(status)       'live' | 'connecting' | 'offline', whenever it moves,
@@ -427,8 +430,11 @@ export function mountEvents(ctx) {
       case 'outcome':
         if (frame.id) hand('outcome', frame.id, frame.outcome || null);
         break;
-      case 'answer':
-        if (frame.id) hand('answer', frame.id, frame.run || null);
+      case 'news':
+        if (frame.id) hand('news', frame.id, { body: String(frame.body || ''), kind: String(frame.kind || '') });
+        break;
+      case 'status':
+        if (frame.id) hand('phase', frame);
         break;
       case 'pong': {
         const sent = pings.get(frame.id);

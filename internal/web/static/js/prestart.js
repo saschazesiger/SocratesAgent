@@ -1,12 +1,12 @@
 // The panel of a prepared session ("PreStart").
 //
-// A prepared session is a session whose settings and first prompt are written
-// before anything runs. It has no terminal, so its panel stands where the
-// pane would: the same settings the new-session sheet asks for (drawn by the
-// same code, harnesses.settingsForm), a large field for the prompt, a time at
-// which it may start by itself, and Start. Start is the same launch a new
-// session takes on the server, and the prompt goes in as the program's first
-// one - after which the session is an ordinary one and this panel is gone.
+// A prepared session is a chat whose settings and first message are written
+// before anything runs. Nothing runs yet, so its panel stands where the chat
+// will: the same settings the new-session sheet asks for (drawn by the same
+// code, harnesses.settingsForm), a large field for the prompt, a time at
+// which it may start by itself, and Start. Start is the same start a new chat
+// takes on the server, and the prompt goes in as its first message - after
+// which the session is an ordinary chat and this panel is gone.
 //
 // The prompt is the one thing here that can be long and that somebody may
 // spend a quarter of an hour on, on a phone, in a tunnel. So it is never only
@@ -41,10 +41,6 @@ const SETTINGS_DEBOUNCE = 400;
 const RETRY_MIN = 2000;
 const RETRY_MAX = 60000;
 
-// How often, after a save the bucket had not taken yet, the panel asks
-// whether it has - so that "Saved" becomes "Backed up" without a keystroke.
-const BACKUP_CHECKS = [3000, 7000, 15000, 30000];
-
 // The largest prompt the server keeps (maxDraftBytes in
 // internal/server/prestart.go). Checked here too, so that a prompt that is
 // too long says so while it is being written rather than failing to save.
@@ -53,8 +49,8 @@ const MAX_DRAFT_BYTES = 100 << 10;
 // How close a scheduled start has to be before the panel keeps an eye on the
 // clock for it. The list arrives on the event stream as it changes (and is
 // polled every five to fifteen seconds only while the stream is down); this
-// is what makes the switch to the terminal follow the start within a second
-// or two even then.
+// is what makes the switch to the chat follow the start within a second or
+// two even then.
 const SCHEDULE_WATCH = 10 * 60 * 1000;
 
 const encoder = new TextEncoder();
@@ -119,14 +115,15 @@ async function call(method, path, body, timeout = 15000) {
 // inWords is a distance in time the way a person says it: "in 2 h 15 min",
 // "in 3 d 4 h", "in 40 s".
 export function inWords(ms) {
-  if (ms < 60000) return 'in ' + Math.max(1, Math.ceil(ms / 1000)) + ' s';
+  // Each number held to its unit by a no-break space.
+  if (ms < 60000) return 'in ' + Math.max(1, Math.ceil(ms / 1000)) + '\u00a0s';
   const minutes = Math.round(ms / 60000);
   const days = Math.floor(minutes / 1440);
   const hours = Math.floor((minutes % 1440) / 60);
   const rest = minutes % 60;
-  if (days > 0) return 'in ' + days + ' d' + (hours ? ' ' + hours + ' h' : '');
-  if (hours > 0) return 'in ' + hours + ' h' + (rest ? ' ' + rest + ' min' : '');
-  return 'in ' + rest + ' min';
+  if (days > 0) return 'in ' + days + '\u00a0d' + (hours ? ' ' + hours + '\u00a0h' : '');
+  if (hours > 0) return 'in ' + hours + '\u00a0h' + (rest ? ' ' + rest + '\u00a0min' : '');
+  return 'in ' + rest + '\u00a0min';
 }
 
 const two = (n) => String(n).padStart(2, '0');
@@ -163,8 +160,8 @@ function settingsOf(session) {
     model: session.model || '',
     effort: session.effort || '',
     ultracode: !!options.ultracode,
-    profile: options.profile || '',
-    profile_auto: !!options.profile_auto,
+    account: options.account || '',
+    auto_switch: !!options.auto_switch,
     workdir_mode: session.workdir_mode || harnesses.DYNAMIC,
     workdir: session.workdir || '',
   };
@@ -172,14 +169,15 @@ function settingsOf(session) {
 
 // Which fields a change of one kind sends. A program brings its own model
 // and effort and takes Ultracode away from anything but Claude Code; the
-// profile is not sent with it, because a form whose profiles have not been
-// read yet would send "the default" for a profile nobody touched.
+// account is not sent with it, because a form whose accounts have not been
+// read yet would send "automatic" for an account nobody touched.
 const PATCH_FIELDS = {
   harness: ['harness', 'model', 'effort', 'ultracode'],
   model: ['model', 'effort'],
   effort: ['effort'],
-  profile: ['profile', 'profile_auto'],
   ultracode: ['ultracode'],
+  account: ['account'],
+  auto_switch: ['auto_switch'],
   dir: ['workdir_mode', 'workdir'],
 };
 
@@ -190,9 +188,8 @@ const PATCH_FIELDS = {
  *
  *   host             the element the panel is drawn in (#prestart)
  *   replace(row)     a newer row of the session from the server
- *   started(row, e)  the session started: attach it the way a new one is
+ *   started(row, e)  the session started: open it the way a new one is
  *   refresh()        read the session list again now
- *   measure()        the {cols, rows} the terminal it becomes will have
  *   nameFromPrompt(session, text)
  *                    name the session after the prompt written so far
  *
@@ -241,9 +238,10 @@ function openPanel(ctx, first) {
     // the server holds at it - null while that is not known.
     loaded: false,
     loadError: '',
+    // The server's own words about a failed load, behind the line's "i".
+    loadDetail: '',
     rev: 0,
     saved: null,
-    backedUp: false,
     saving: null,
     again: false,
     offline: false,
@@ -253,7 +251,6 @@ function openPanel(ctx, first) {
     saveTimer: null,
     retryTimer: null,
     retryDelay: 0,
-    backupTimer: null,
     // The settings: what is waiting to be sent, and what is on its way.
     patch: {},
     patchTimer: null,
@@ -278,7 +275,7 @@ function openPanel(ctx, first) {
   // main one, the time and the settings at the side (under the prompt on a
   // phone, where the prompt is what the screen is for).
   const textarea = el('textarea', {
-    class: 'ds-input so-prestart__text', id: 'psPrompt', rows: '14', spellcheck: 'true',
+    class: 'ds-input so-prestart__text', id: 'psPrompt', rows: '4', spellcheck: 'true',
     placeholder: 'What should it do? This is sent as the first prompt the moment the session starts.',
     'aria-describedby': 'psSave',
   });
@@ -347,11 +344,13 @@ function openPanel(ctx, first) {
 
   // setAtHint is the line under the time: what is set, or why it is not.
   // An error wears the icon DS gives a field's error, and marks the field.
-  function setAtHint(text, error = false) {
+  // The server's own sentence, when there is one, is behind its "i".
+  function setAtHint(text, error = false, detail = '') {
     atHint.classList.toggle('ds-field__hint--error', error);
     if (error) startAt.setAttribute('aria-invalid', 'true');
     else startAt.removeAttribute('aria-invalid');
-    atHint.replaceChildren(...(error ? [iconEl('alertCircle', 16)] : []), text);
+    atHint.replaceChildren(...(error ? [iconEl('alertCircle', 16)] : []), text,
+      ...(detail ? [infoTip([detail], { label: 'Why it was not saved' })] : []));
   }
 
   // drawLine writes one of the two status lines (the prompt's, the
@@ -371,15 +370,17 @@ function openPanel(ctx, first) {
     if (st.closed) return;
     form = harnesses.settingsForm({
       prefix: 'ps',
-      include: (entry) => harnesses.canPrestart(entry.id),
-      deferredProfile: () => true,
+      // A prepared session is a chat (the server holds it to that), so it
+      // offers the agents.
+      include: (entry) => harnesses.isChat(entry.id),
+      deferredAccount: () => true,
       onChange: (kind) => settingsChanged(kind),
     });
     form.selectDefault();
     applySettings(true);
     settingsHost.replaceChildren(form.node);
     drawSettingsLine();
-    form.refreshProfiles().then(() => { if (!st.closed) applySettings(true); });
+    form.refreshAccounts().then(() => { if (!st.closed) applySettings(true); });
   });
 
   /* ------------------------------------------------------------ events */
@@ -444,7 +445,10 @@ function openPanel(ctx, first) {
   function insertText(text) {
     // Dictation into a field that has not loaded would be overwritten by
     // what loads; the microphone waits like the keyboard does.
-    if (!st.loaded || textarea.readOnly) { toast('The prompt is still loading.', 'error'); return; }
+    // Asked of the draft, not of the field: on a touch screen a field nobody
+    // has tapped is read-only for the keyboard's sake (keyboard.js), and
+    // speaking into it is exactly what it is there for.
+    if (!st.loaded || textarea.disabled) { toast('The prompt is still loading.', 'error'); return; }
     const value = textarea.value;
     const from = Number.isInteger(textarea.selectionStart) ? textarea.selectionStart : value.length;
     const to = Number.isInteger(textarea.selectionEnd) ? textarea.selectionEnd : from;
@@ -472,6 +476,7 @@ function openPanel(ctx, first) {
     st.loading = true;
     const local = readBuffer(id);
     st.loadError = '';
+    st.loadDetail = '';
     drawStatus();
     const res = await call('GET', path + '/draft');
     st.loading = false;
@@ -481,7 +486,6 @@ function openPanel(ctx, first) {
       st.loaded = true;
       st.rev = server.rev;
       st.saved = server.text;
-      st.backedUp = !!res.data.backed_up;
       st.retryDelay = 0;
       textarea.disabled = false;
       textarea.readOnly = false;
@@ -495,7 +499,6 @@ function openPanel(ctx, first) {
       } else {
         setText(server.text);
         forgetDraft(id);
-        if (!st.backedUp) watchBackup();
       }
       drawStatus();
       return;
@@ -521,7 +524,8 @@ function openPanel(ctx, first) {
     textarea.disabled = true;
     st.loadError = res.status === 0
       ? 'Offline – the prompt loads when the connection is back.'
-      : 'The prompt could not be loaded: ' + (res.data.error || 'HTTP ' + res.status);
+      : 'The prompt could not be loaded.';
+    st.loadDetail = res.status === 0 ? '' : (res.data.error || 'HTTP ' + res.status);
     drawStatus();
     retryLater();
   }
@@ -545,11 +549,11 @@ function openPanel(ctx, first) {
       const res = await call('PUT', path + '/draft', { text, base_rev: st.rev });
       st.saving = null;
       if (res.status === 200) {
-        acknowledged(text, Number(res.data.rev) || st.rev + 1, !!res.data.backed_up);
+        acknowledged(text, Number(res.data.rev) || st.rev + 1);
       } else if (res.status === 409 && res.data.conflict) {
         const theirs = { text: String(res.data.text || ''), rev: Number(res.data.rev) || 0 };
         // Two devices that typed the same thing do not disagree.
-        if (theirs.text === text) acknowledged(text, theirs.rev, false);
+        if (theirs.text === text) acknowledged(text, theirs.rev);
         else if (!st.closed) enterConflict(theirs);
       } else if (res.status === 409 || res.status === 404) {
         // Started, from here or anywhere else, or deleted: its prompt is the
@@ -586,17 +590,15 @@ function openPanel(ctx, first) {
     return st.saving;
   }
 
-  function acknowledged(text, rev, backedUp) {
+  function acknowledged(text, rev) {
     st.rev = rev;
     st.saved = text;
-    st.backedUp = backedUp;
     st.offline = false;
     st.error = '';
     st.retryDelay = 0;
     clearTimeout(st.retryTimer);
     if (textarea.value === text) {
       forgetDraft(id);
-      if (!backedUp) watchBackup();
     } else {
       // Typed on while it was on its way: the copy here is now based on the
       // revision just made, and the rest follows.
@@ -621,24 +623,6 @@ function openPanel(ctx, first) {
     if (st.patchOffline && Object.keys(st.patch).length) sendPatch();
   }
 
-  // watchBackup asks a few times whether the bucket has the saved text yet,
-  // so that the line under the field can say so. It is a courtesy: a page
-  // that never hears it still has the text saved on the server.
-  function watchBackup(step = 0) {
-    clearTimeout(st.backupTimer);
-    if (step >= BACKUP_CHECKS.length) return;
-    st.backupTimer = setTimeout(async () => {
-      if (st.closed || dirty() || st.saving || st.conflict) return;
-      const res = await call('GET', path + '/draft');
-      if (st.closed || res.status !== 200) return;
-      const rev = Number(res.data.rev) || 0;
-      if (rev !== st.rev) { refetched(res.data); return; }
-      st.backedUp = !!res.data.backed_up;
-      drawStatus();
-      if (!st.backedUp) watchBackup(step + 1);
-    }, BACKUP_CHECKS[step]);
-  }
-
   // refetch reads the draft again because the list says another device
   // saved a newer one. Only a panel with nothing unsaved takes it: one that
   // has is about to find out by its own save, and to ask.
@@ -657,7 +641,6 @@ function openPanel(ctx, first) {
     if (rev < st.rev) return;
     st.rev = rev;
     st.saved = String(data.text || '');
-    st.backedUp = !!data.backed_up;
     setText(st.saved);
     drawStatus();
   }
@@ -727,17 +710,16 @@ function openPanel(ctx, first) {
       kind = 'error';
     } else if (dirty()) {
       text = 'Saving…';
-    } else if (st.backedUp) {
-      text = 'Backed up';
-      kind = 'ok';
     } else {
       text = 'Saved';
       kind = 'ok';
     }
     // The server's own sentence is a fact about the machine, and it goes
     // behind an "i" like every other.
-    drawLine(saveLine, text, kind, st.loaded && dirty() && st.error && !st.offline
-      ? infoTip([st.error], { label: 'Why it was not saved' }) : null);
+    let detail = null;
+    if (!st.loaded && st.loadError && st.loadDetail) detail = infoTip([st.loadDetail], { label: 'Why it could not be loaded' });
+    else if (st.loaded && dirty() && st.error && !st.offline) detail = infoTip([st.error], { label: 'Why it was not saved' });
+    drawLine(saveLine, text, kind, detail);
     drawStart();
   }
 
@@ -802,7 +784,7 @@ function openPanel(ctx, first) {
         // saying what is really set.
         if (!st.closed) {
           drawSchedule(true);
-          setAtHint('Not saved: ' + (res.data.error || 'HTTP ' + res.status), true);
+          setAtHint('That time was not saved.', true, res.data.error || 'HTTP ' + res.status);
         }
       } else {
         st.patchError = res.data.error || 'HTTP ' + res.status;
@@ -818,10 +800,12 @@ function openPanel(ctx, first) {
   function drawSettingsLine() {
     let text = '';
     let kind = '';
-    if (st.patchError) { text = 'Not saved: ' + st.patchError; kind = 'error'; }
+    if (st.patchError) { text = 'The settings were not saved.'; kind = 'error'; }
     else if (st.patchOffline) { text = 'Offline – the settings are saved when the connection is back.'; kind = 'offline'; }
     else if (Object.keys(st.patch).length || st.patching) text = 'Saving…';
-    drawLine(settingsLine, text, kind);
+    // The server's own sentence goes behind the line's "i".
+    drawLine(settingsLine, text, kind,
+      st.patchError ? infoTip([st.patchError], { label: 'Why they were not saved' }) : null);
   }
 
   /* ---------------------------------------------------------- schedule */
@@ -845,7 +829,7 @@ function openPanel(ctx, first) {
   }
 
   // watchDue reads the list right after a scheduled start falls due, so the
-  // panel turns into the terminal the moment the server has started it.
+  // panel turns into the chat the moment the server has started it.
   //
   // The time is only remembered once the timers are armed: a schedule set
   // hours ahead is armed by the 30 s tick that finds it within reach.
@@ -893,7 +877,7 @@ function openPanel(ctx, first) {
     setFaceLabel(startButton, Number(session.start_at) ? 'Start now' : 'Start');
     // Busy shows the spinner face (after DS's loader delay, so a quick start
     // shows nothing) and blocks the button; the outcome is said by a toast
-    // or by the terminal that takes the panel's place.
+    // or by the chat that takes the panel's place.
     if (st.starting) startButton.setAttribute('aria-busy', 'true');
     else startButton.removeAttribute('aria-busy');
   }
@@ -920,10 +904,7 @@ function openPanel(ctx, first) {
           : 'The prompt could not be saved, so the session was not started.', 'error');
         return;
       }
-      const size = ctx.measure() || {};
-      const res = await call('POST', path + '/start', {
-        cols: size.cols || undefined, rows: size.rows || undefined,
-      }, 60000);
+      const res = await call('POST', path + '/start', {}, 60000);
       if (st.closed) return;
       if (res.status === 200 && res.data.session) {
         forgetDraft(id);
@@ -967,15 +948,29 @@ function openPanel(ctx, first) {
     st.closed = true;
     clearTimeout(st.saveTimer);
     clearTimeout(st.retryTimer);
-    clearTimeout(st.backupTimer);
     clearTimeout(st.patchTimer);
     clearInterval(st.tick);
     for (const timer of st.dueTimers) clearTimeout(timer);
     unwake();
     host.removeEventListener('keydown', onKey);
+    if (window.visualViewport) window.visualViewport.removeEventListener('resize', regrow);
     host.hidden = true;
     host.replaceChildren();
   }
+
+  // The field's least height is a share of what can be seen
+  // (--so-prompt-min-height), which a phone's keyboard changes: its height
+  // is taken again then - in the next frame, once the app's new height is
+  // written - and a field being typed into is brought into what is left,
+  // so that it ends where the person can see it end.
+  function regrow() {
+    requestAnimationFrame(() => {
+      if (st.closed) return;
+      grow();
+      if (document.activeElement === textarea) textarea.scrollIntoView({ block: 'nearest' });
+    });
+  }
+  if (window.visualViewport) window.visualViewport.addEventListener('resize', regrow);
 
   drawSchedule();
   drawFailure();

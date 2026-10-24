@@ -10,6 +10,11 @@ These are binding. The design spec must implement them; it may add detail but no
 > history.
 
 ## Product
+
+> **Superseded for the agents (2026-10-23) by REBUILD.md §1 and §7:** Claude Code, Codex and
+> OpenCode run as chats through their own protocols; only the Shell (and a folder's VS Code) is a
+> terminal, and an agent's terminal is refused since WP10.
+
 - Socrates is no longer a web chat. A "chat" (rename to "session" in code; UI label "Session") is an
   interactive terminal running one of: **Shell** (user's login shell / bash), **Claude Code**,
   **Codex**, **OpenCode**.
@@ -32,12 +37,15 @@ These are binding. The design spec must implement them; it may add detail but no
 - Output journal: Socrates keeps its own append-only byte log per session (for reconnect replay and
   scrollback) AND relies on tmux for the live screen. On (re)attach the browser must show the
   correct current screen immediately (tmux redraw), not a replay of megabytes.
-- Machine reboot: tmux sessions are gone. Socrates stores the CLI's own session/thread id per
+- *The agents' part superseded by REBUILD.md §2.1 (a chat resumes through its agent host); the
+  Shell's holds.* Machine reboot: tmux sessions are gone. Socrates stores the CLI's own session/thread id per
   session (Claude `--session-id`/`--resume`, Codex `resume <id>`, OpenCode `--session`) and the
   working directory, and on next open restarts the CLI with resume in the same directory.
   For Shell, it just starts a new shell in the same directory. UI must show "resumed after
   restart" clearly.
-- Network loss on the phone: the client shows a visible disconnected state, buffers typed input
+- *For a chat superseded by REBUILD.md §2.2 and §2.3: what is sent waits in the page's outbox and goes
+  once, and the chat stream replays the journal from the last event the page had.* Network loss
+  on the phone: the client shows a visible disconnected state, buffers typed input
   locally, and on reconnect resumes the byte stream from the last acknowledged sequence number
   (no duplicated or lost keystrokes; use seq-numbered frames both ways). Keep net.js style
   status bar and sw.js app shell.
@@ -58,6 +66,11 @@ These are binding. The design spec must implement them; it may add detail but no
   disclosure but not required in v1 beyond model + directory.
 
 ## Admin (the basics only) — 2026-09-02, supersedes the section above
+
+> The settings hold. The fixed policy for the agents is the chats' since REBUILD.md §3: `claude -p`
+> over its control protocol, `codex app-server` and `opencode serve`, still with every permission
+> allowed; it lives in the adapters (`internal/agent/*`, AGENT-HOST.md §5), and HARNESS-POLICY.md's
+> terminal launches are history.
 - The dashboard exposes **basic settings only**. Per harness: whether it is offered, the binary
   path (discovered, overridable), the model short list, the default model, and the default
   reasoning effort for Claude Code and Codex. Nothing else.
@@ -94,9 +107,18 @@ These are binding. The design spec must implement them; it may add detail but no
     the microphone is a pill in the session's top bar, and its transcript is typed into the pane
     itself — on the prompt, without the `⏎`, because a transcript is a guess. TTS is now only
     **Status**, which reads a summary of the screen; nothing else is read out loud.
+  - *For the chats (REBUILD.md §7, WP9):* a chat has a composer again, and the microphone's
+    transcript goes into it, still for the person to send; **Status** reads a chat from its
+    journal, a Shell from its screen.
 - Design rules: all-white, agent marks (logos.js), technical detail hover-only, subtle motion.
 
 ## Delete
+
+> **Reversed for the agents (2026-10-23) by REBUILD.md §2 and §3:** they run through protocol
+> adapters again (`internal/agent/claude`, `codex`, `opencode`), each in an agent host of its own
+> (`internal/agenthost`) with a journal per chat. Neither is the code deleted here: both were
+> written new for the rebuild.
+
 - internal/harness protocol adapters (claude/codex/opencode event normalisation) and their fakes,
   internal/engine, messages/runs/steps tables, chat.js transcript UI, SSE chat transport,
   agent-host in its current form (replace by tmux management).
@@ -125,7 +147,8 @@ These are binding. The design spec must implement them; it may add detail but no
 Binding like the rest. These supersede the bullets marked **Superseded 2026-09-02** above; the
 superseded text stays where it is, because the history is the reason.
 
-- **No line input under the terminal.** The composer, its microphone, its Send button, the pending
+- *A chat has a composer (REBUILD.md §7); what follows holds for the Shell's terminal.*
+  **No line input under the terminal.** The composer, its microphone, its Send button, the pending
   lines and the drafts it kept are gone on every device. It existed to fight autocorrect by
   holding a whole line, and it cost the page a second field, a second microphone and a promise
   about text nobody had sent yet. Single keys go into the pane; a whole sentence goes to the chat.
@@ -190,6 +213,11 @@ Detail: `docs/design/DESIGN.md` §E.2, §E.3, §E.7 and §E.8 (revision 5).
 
 ## Revision 6 — the bucket, prepared sessions and the scheduled start, 2026-10-13
 
+> **Superseded (2026-10-23) by REBUILD.md §6.** S3 is no longer the store of record: the
+> data directory is the only truth, and the bucket holds an encrypted, incremental backup of it
+> (`internal/backup`) that nothing reads while Socrates runs. The mirror, the lease, connect
+> mode and the storage banner are gone. What follows is history.
+
 Binding like the rest. Detail: `docs/design/DESIGN.md` §K and §L.
 
 - **S3 is the store of record, and it is mandatory.** Socrates' own state — settings, the password
@@ -217,7 +245,8 @@ Binding like the rest. Detail: `docs/design/DESIGN.md` §K and §L.
 - **The S3 client is hand written**, standard library only, like `webpush`. The deployed store
   (Hetzner, Ceph RGW) needs `x-amz-content-sha256` on every request and compares `If-Match` against
   the unquoted ETag; both are pinned.
-- **PreStart: a session can be prepared before anything runs** — Claude Code, Codex and OpenCode
+- *PreStart holds (REBUILD.md §7): a prepared chat's prompt is its first message, sent as any
+  message is, and no prompt file is written.* **PreStart: a session can be prepared before anything runs** — Claude Code, Codex and OpenCode
   only, switched on in the new-session sheet (off every time it opens). Its panel shows the sheet's
   own settings (one form builder for both) and a large prompt field that saves itself and is backed
   up through the bucket. **Start is exactly a new session's start** — one server function for both —
@@ -261,10 +290,15 @@ Binding like the rest. Detail: `docs/design/DESIGN.md` §K and §L.
 - **Touch mode can be set by hand, per device, and the setting wins.** *Why:* the guess is right
   for a phone and wrong for a tablet in a keyboard case or a browser that hides its finger, and
   the mistake was not one the person could correct.
-- **The limits say when they renew, and a tap says exactly when.** *Why:* whether 80% matters
+- *The limits are an account's since REBUILD.md §4 (WP7), shown in a chat's account picker and the
+  new-session sheet; the usage strip went with the profiles.* **The limits say when they renew,
+  and a tap says exactly when.** *Why:* whether 80% matters
   depends on whether the window renews in ten minutes, and on a phone a tooltip does not exist.
 
 ## Revision 8 — the outcome of a turn, 2026-10-20
+
+> The verdict is a chat's alone since WP10 (REBUILD.md §7): it is read from the chat's journal,
+> and no screen is read for it any more.
 
 - **A finished turn can be judged: complete, partly done, waiting on you, blocked.** Optional,
   off by default, one switch in Admin. *Why:* the detector says a session is at its prompt, not

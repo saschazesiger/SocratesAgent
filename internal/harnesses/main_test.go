@@ -3,16 +3,12 @@ package harnesses
 import (
 	"os"
 	"testing"
+
+	"github.com/saschazesiger/SocratesAgent/internal/testhome"
 )
 
-// TestMain exists for one reason: the fake CLI this package builds is shared
-// by every test through a sync.Once, so no single test can own the directory
-// it lives in and t.TempDir cannot clean it up. Removing it here is the only
-// point at which the last test that needs it has finished.
+// TestMain runs every test of this package in a home of its own, so that no
+// version probe or path this package reads can reach a real agent's folder.
 func TestMain(m *testing.M) {
-	code := m.Run()
-	if fakeTUIDir != "" {
-		_ = os.RemoveAll(fakeTUIDir)
-	}
-	os.Exit(code)
+	os.Exit(testhome.Main(m))
 }
