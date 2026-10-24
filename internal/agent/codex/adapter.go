@@ -96,7 +96,7 @@ type adapter struct {
 	steered map[string]agent.Outgoing
 	agents  map[string]*subagent
 	running int
-	asks    map[string]chan json.RawMessage
+	waits   agent.Waits
 	calls   map[string]*call
 	limits  map[string]agent.Event
 	context int64
@@ -112,7 +112,6 @@ func newAdapter() *adapter {
 		turns:   map[string]*turn{},
 		steered: map[string]agent.Outgoing{},
 		agents:  map[string]*subagent{},
-		asks:    map[string]chan json.RawMessage{},
 		calls:   map[string]*call{},
 		limits:  map[string]agent.Event{},
 	}
@@ -294,10 +293,19 @@ type threadResult struct {
 	Model string `json:"model"`
 }
 
+// approvalPolicy is "never" for everything that is a permission (decision §1:
+// always allow; with danger-full-access nothing needs one), but lets MCP
+// elicitations through: those are questions a server puts to the person,
+// which "never" would decline on its own (research/04 §2.1), and they are
+// asked like ask_user. The model's instructions say the same as for "never":
+// every category it could ask for is rejected.
+var approvalPolicy = map[string]any{"granular": map[string]any{"sandbox_approval": false, "rules": false,
+	"skill_approval": false, "request_permissions": false, "mcp_elicitations": true}}
+
 // policy is what every thread is started and resumed with (decision §1:
 // always allow everything).
 func (a *adapter) policy(params map[string]any) map[string]any {
-	params["approvalPolicy"] = "never"
+	params["approvalPolicy"] = approvalPolicy
 	params["sandbox"] = "danger-full-access"
 	if a.spec.Workdir != "" {
 		params["cwd"] = a.spec.Workdir
@@ -306,7 +314,8 @@ func (a *adapter) policy(params map[string]any) map[string]any {
 }
 
 // startThread starts a new thread. instructions, when set, are developer
-// instructions for it (a handoff summary).
+// instructions for it (a handoff summary), after the ask_user guidance that
+// every thread's developer instructions begin with.
 func (a *adapter) startThread(ctx context.Context, instructions string) error {
 	params := a.policy(map[string]any{})
 	a.mu.Lock()
@@ -321,9 +330,11 @@ func (a *adapter) startThread(ctx context.Context, instructions string) error {
 	if tools := dynamicToolSpecs(); len(tools) > 0 {
 		params["dynamicTools"] = tools
 	}
+	developer := askGuidance
 	if instructions != "" {
-		params["developerInstructions"] = instructions
+		developer += "\n\n" + instructions
 	}
+	params["developerInstructions"] = developer
 	var res threadResult
 	if err := a.rpc.call(ctx, "thread/start", params, &res); err != nil {
 		return a.startErr("codex could not start a thread", err)
@@ -604,6 +615,9 @@ func (a *adapter) flush() {
 
 // ---------------------------------------------------------------- commands
 
+// Interrupt ends the active turn. Once codex has taken the interrupt, the
+// turn's requests are withdrawn at once, as its end would withdraw them: an
+// answer from then on goes as a message, never to a call codex dropped.
 func (a *adapter) Interrupt(ctx context.Context) error {
 	a.mu.Lock()
 	t, thread := a.active, a.thread
@@ -617,19 +631,24 @@ func (a *adapter) Interrupt(ctx context.Context) error {
 		// The turn ended on its own meanwhile.
 		return nil
 	}
-	return err
+	if err != nil {
+		return err
+	}
+	a.mu.Lock()
+	for _, c := range a.calls {
+		if c.turn == t {
+			c.cancel()
+		}
+	}
+	a.mu.Unlock()
+	return nil
 }
 
+// Answer hands an answer to the call waiting on it (agent.Waits). A call
+// whose wait ended (its turn ended or was interrupted, codex withdrew it) is
+// gone even before its goroutine has let go of it.
 func (a *adapter) Answer(_ context.Context, askID string, answer json.RawMessage) error {
-	a.mu.Lock()
-	ch := a.asks[askID]
-	delete(a.asks, askID)
-	a.mu.Unlock()
-	if ch == nil {
-		return agent.ErrAskGone
-	}
-	ch <- answer
-	return nil
+	return a.waits.Answer(askID, answer)
 }
 
 func (a *adapter) SetModel(_ context.Context, model, effort string) error {

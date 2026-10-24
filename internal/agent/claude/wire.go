@@ -282,5 +282,12 @@ type controlRequest struct {
 	Input      json.RawMessage `json:"input"`
 	ToolUseID  string          `json:"tool_use_id"`
 	ServerName string          `json:"server_name"`
-	Message    json.RawMessage `json:"message"`
+	// Message is the JSON-RPC message of an mcp_message, and the text of an
+	// elicitation.
+	Message json.RawMessage `json:"message"`
+	// An elicitation's server, mode and form (research/03 §4.3).
+	MCPServerName   string          `json:"mcp_server_name"`
+	Mode            string          `json:"mode"`
+	RequestedSchema json.RawMessage `json:"requested_schema"`
+	PropertyOrder   []string        `json:"property_order"`
 }

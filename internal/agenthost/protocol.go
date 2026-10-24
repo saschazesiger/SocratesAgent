@@ -19,11 +19,19 @@ import (
 // The host protocol's versions. A server speaks every version from
 // MinProtocol to Protocol, so a host of the previous build - one that was busy
 // with a turn or an open question when the service was updated, and may stay
-// busy for a day - is still understood.
+// busy for a day - is still understood. Version 2 added the ask op of a local
+// tool (`socrates mcp-ask`); the server's own ops are those of version 1.
 const (
-	Protocol    = 1
+	Protocol    = 2
 	MinProtocol = 1
+	// AskProtocol is the first version with OpAsk.
+	AskProtocol = 2
 )
+
+// NoEvents is the since of a connection that wants no events at all, beyond
+// any journal: a local tool's, which only asks. It gets no live deltas
+// either.
+const NoEvents int64 = 1 << 62
 
 // Command ops, client to host.
 const (
@@ -35,6 +43,10 @@ const (
 	OpCommand   = "command"
 	OpPark      = "park"
 	OpStop      = "stop"
+	// OpAsk is a local tool's question (protocol 2): the host journals it as
+	// an ask of the running turn, acknowledges it with its ask id, and sends
+	// the answer on the same connection, as an answer frame, when it comes.
+	OpAsk = "ask"
 )
 
 // Frame types, host to client.
@@ -44,6 +56,8 @@ const (
 	FrameDelta = "delta"
 	FrameAck   = "ack"
 	FrameError = "err"
+	// FrameAnswer is the answer to a connection's own ask (OpAsk).
+	FrameAnswer = "answer"
 )
 
 // Error codes of an err frame.
@@ -85,6 +99,8 @@ type Command struct {
 	Effort      string             `json:"effort,omitempty"`
 	Name        string             `json:"name,omitempty"`
 	Args        string             `json:"args,omitempty"`
+	// Payload is an ask op's question: an ask_user payload.
+	Payload json.RawMessage `json:"payload,omitempty"`
 }
 
 // Hello is the host's first frame.
@@ -112,6 +128,15 @@ type Ack struct {
 	// first; ByDevice is that device.
 	AnsweredElsewhere bool   `json:"answered_elsewhere,omitempty"`
 	ByDevice          string `json:"by_device,omitempty"`
+	// AskID is the id an ask op's question was journaled under.
+	AskID string `json:"ask_id,omitempty"`
+}
+
+// Answer is the answer to an ask a connection asked (OpAsk).
+type Answer struct {
+	T      string          `json:"t"`
+	AskID  string          `json:"ask_id"`
+	Answer json.RawMessage `json:"answer"`
 }
 
 // Fail is a command the host refused.
@@ -125,12 +150,13 @@ type Fail struct {
 
 // Frame is one decoded frame from the host: exactly one field is set.
 type Frame struct {
-	T     string
-	Hello *Hello
-	Event *agent.Event
-	Delta *agent.Delta
-	Ack   *Ack
-	Fail  *Fail
+	T      string
+	Hello  *Hello
+	Event  *agent.Event
+	Delta  *agent.Delta
+	Ack    *Ack
+	Fail   *Fail
+	Answer *Answer
 }
 
 // DecodeFrame reads one line from the host.
@@ -159,6 +185,9 @@ func DecodeFrame(line []byte) (Frame, error) {
 	case FrameError:
 		f.Fail = &Fail{}
 		err = json.Unmarshal(line, f.Fail)
+	case FrameAnswer:
+		f.Answer = &Answer{}
+		err = json.Unmarshal(line, f.Answer)
 	default:
 		err = errors.New("unknown frame type " + head.T)
 	}

@@ -41,7 +41,22 @@
 //	/argv            says its command line
 //	/compact         compacts (as the slash command does)
 //	/model X         a local command answer, "Set model to X"
+//	/mcp             says the in-process MCP servers initialize declared,
+//	                 their configs and the tools their tools/list gave
+//	/askuser [JSON]  calls the socrates server's ask_user (a call of two
+//	                 questions, or the JSON given) through mcp_message, waits
+//	                 for the result and says it; an interrupt withdraws the
+//	                 call (notifications/cancelled, then control_cancel_request)
+//	/askdrop         calls ask_user and withdraws the call at once with
+//	                 notifications/cancelled alone, as an abort right after
+//	                 the call does, then says "ask_user was withdrawn"
+//	/elicit [url]    an MCP elicitation of a form with two fields (or of a
+//	                 URL); says the answer
 //	anything else    "you said: <text>"
+//
+// After initialize it does the MCP handshake (initialize,
+// notifications/initialized, tools/list) with every server in sdkMcpServers,
+// as the real CLI does, and lists their tools as mcp__<server>__<tool>.
 package main
 
 import (
@@ -90,6 +105,14 @@ type fake struct {
 	lastUUID   string
 	results    int
 	interrupts int
+	// The in-process MCP servers: their configs as initialize gave them,
+	// the tools they listed, the handshake's end (nil before initialize),
+	// and the next JSON-RPC id.
+	mcpConfigs map[string]json.RawMessage
+	mcpServers []string
+	mcpTools   []string
+	mcpReady   chan struct{}
+	rpcID      int
 }
 
 // job is one turn to run: a user message, or a background task reporting.
@@ -251,10 +274,12 @@ func contentText(raw json.RawMessage) string {
 
 func (f *fake) control(id string, raw json.RawMessage) {
 	var req struct {
-		Subtype  string          `json:"subtype"`
-		Model    string          `json:"model"`
-		Mode     string          `json:"mode"`
-		Settings json.RawMessage `json:"settings"`
+		Subtype    string                     `json:"subtype"`
+		Model      string                     `json:"model"`
+		Mode       string                     `json:"mode"`
+		Settings   json.RawMessage            `json:"settings"`
+		MCPServers []string                   `json:"sdkMcpServers"`
+		MCPConfigs map[string]json.RawMessage `json:"sdkMcpServerConfigs"`
 	}
 	_ = json.Unmarshal(raw, &req)
 	ok := func(resp any) {
@@ -278,6 +303,11 @@ func (f *fake) control(id string, raw json.RawMessage) {
 			"current_permission_mode": f.mode,
 			"pid":                     os.Getpid(),
 		})
+		ready := make(chan struct{})
+		f.mu.Lock()
+		f.mcpServers, f.mcpConfigs, f.mcpReady = req.MCPServers, req.MCPConfigs, ready
+		f.mu.Unlock()
+		go f.mcpHandshake(ready)
 	case "interrupt":
 		f.mu.Lock()
 		if f.cancel != nil {
@@ -325,6 +355,77 @@ func (f *fake) ask(ctx context.Context, request map[string]any) (json.RawMessage
 		f.mu.Unlock()
 		f.out(map[string]any{"type": "control_cancel_request", "request_id": id})
 		return nil, false
+	}
+}
+
+// mcpRequest sends one JSON-RPC message to an in-process MCP server and
+// waits for its response; a notification is answered too, with an empty
+// result. When ctx ends first the call is withdrawn, as an aborted MCP client
+// does: notifications/cancelled, then the control request is cancelled.
+func (f *fake) mcpRequest(ctx context.Context, server, method string, params any, notify bool) (json.RawMessage, bool) {
+	msg := map[string]any{"jsonrpc": "2.0", "method": method}
+	if params != nil {
+		msg["params"] = params
+	}
+	var rpcID int
+	if !notify {
+		f.mu.Lock()
+		rpcID = f.rpcID
+		f.rpcID++
+		f.mu.Unlock()
+		msg["id"] = rpcID
+	}
+	id := newUUID()
+	ch := make(chan json.RawMessage, 1)
+	f.mu.Lock()
+	f.waiting[id] = ch
+	f.mu.Unlock()
+	f.out(map[string]any{"type": "control_request", "request_id": id,
+		"request": map[string]any{"subtype": "mcp_message", "server_name": server, "message": msg}})
+	select {
+	case r := <-ch:
+		var resp struct {
+			MCPResponse json.RawMessage `json:"mcp_response"`
+		}
+		_ = json.Unmarshal(r, &resp)
+		return resp.MCPResponse, true
+	case <-ctx.Done():
+		f.mu.Lock()
+		delete(f.waiting, id)
+		f.mu.Unlock()
+		f.mcpRequest(context.Background(), server, "notifications/cancelled",
+			map[string]any{"requestId": rpcID, "reason": "AbortError: the operation was aborted"}, true)
+		f.out(map[string]any{"type": "control_cancel_request", "request_id": id})
+		return nil, false
+	}
+}
+
+// mcpHandshake connects every in-process server and lists its tools; ready
+// closes when it is done, and the first turn waits for that.
+func (f *fake) mcpHandshake(ready chan struct{}) {
+	defer close(ready)
+	f.mu.Lock()
+	servers := append([]string(nil), f.mcpServers...)
+	f.mu.Unlock()
+	ctx := context.Background()
+	for _, server := range servers {
+		_, _ = f.mcpRequest(ctx, server, "initialize", map[string]any{"protocolVersion": "2025-11-25", "capabilities": map[string]any{},
+			"clientInfo": map[string]any{"name": "claude-code", "version": version}}, false)
+		_, _ = f.mcpRequest(ctx, server, "notifications/initialized", nil, true)
+		raw, _ := f.mcpRequest(ctx, server, "tools/list", map[string]any{}, false)
+		var list struct {
+			Result struct {
+				Tools []struct {
+					Name string `json:"name"`
+				} `json:"tools"`
+			} `json:"result"`
+		}
+		_ = json.Unmarshal(raw, &list)
+		f.mu.Lock()
+		for _, tool := range list.Result.Tools {
+			f.mcpTools = append(f.mcpTools, "mcp__"+server+"__"+tool.Name)
+		}
+		f.mu.Unlock()
 	}
 }
 
@@ -385,10 +486,17 @@ func (f *fake) turn(ctx context.Context, j job) {
 		f.out(map[string]any{"type": "command_lifecycle", "command_uuid": j.uuid, "state": "started", "uuid": newUUID(), "session_id": f.session})
 	}
 	f.mu.Lock()
+	ready := f.mcpReady
+	f.mu.Unlock()
+	if ready != nil {
+		<-ready
+	}
+	f.mu.Lock()
 	model := f.model
+	tools := append([]string{"Task", "Bash", "Edit", "Read", "Write", "TaskCreate", "TaskUpdate", "Workflow", "ExitPlanMode"}, f.mcpTools...)
 	f.mu.Unlock()
 	f.out(map[string]any{"type": "system", "subtype": "init", "cwd": f.cwd, "session_id": f.session, "model": model,
-		"tools":          []string{"Task", "Bash", "Edit", "Read", "Write", "TaskCreate", "TaskUpdate", "Workflow", "ExitPlanMode"},
+		"tools":          tools,
 		"slash_commands": []string{"compact", "model", "shout", "doctor"}, "terminal_slash_commands": []string{"doctor"},
 		"permissionMode": f.mode, "claude_code_version": version, "uuid": newUUID()})
 	switch {
@@ -481,6 +589,18 @@ func (t *turnRun) script() {
 		t.say(strings.Join(vars, "\n"))
 	case "/argv":
 		t.say(strings.Join(t.f.args, " "))
+	case "/mcp":
+		t.f.mu.Lock()
+		configs, _ := json.Marshal(t.f.mcpConfigs)
+		text := fmt.Sprintf("servers: %s\nconfigs: %s\ntools: %s", strings.Join(t.f.mcpServers, ","), configs, strings.Join(t.f.mcpTools, ","))
+		t.f.mu.Unlock()
+		t.say(text)
+	case "/askuser":
+		t.askUser(rest)
+	case "/askdrop":
+		t.askDrop()
+	case "/elicit":
+		t.elicit(strings.TrimSpace(rest) == "url")
 	default:
 		t.say("you said: " + t.job.text)
 	}
@@ -959,6 +1079,102 @@ func (t *turnRun) plan() {
 	}
 	t.result(id, r.Message, "Error: "+r.Message, true, "")
 	t.say("Keeping on planning: " + r.Message)
+}
+
+// askCall is the ask_user call /askuser makes without arguments.
+const askCall = `{"title":"Setup","questions":[` +
+	`{"id":"db","header":"Database","question":"Which database?","kind":"single",` +
+	`"options":[{"id":"pg","label":"PostgreSQL","recommended":true},{"id":"sqlite","label":"SQLite"}]},` +
+	`{"id":"name","question":"What is it called?","kind":"text"}]}`
+
+// askUser is the model calling the socrates server's ask_user: the tool_use,
+// then the call over mcp_message, which blocks until the host answers it.
+func (t *turnRun) askUser(arg string) {
+	f := t.f
+	t.closeText()
+	if t.apiMsg == "" {
+		t.msgStart()
+	}
+	input := json.RawMessage(askCall)
+	if strings.TrimSpace(arg) != "" {
+		input = json.RawMessage(arg)
+	}
+	id := "toolu_fake_" + randHex(10)
+	name := "mcp__socrates__ask_user"
+	f.out(t.se(map[string]any{"type": "content_block_start", "index": t.index,
+		"content_block": map[string]any{"type": "tool_use", "id": id, "name": name, "input": map[string]any{}}}))
+	t.assistant(map[string]any{"type": "tool_use", "id": id, "name": name, "input": input}, "")
+	f.out(t.se(map[string]any{"type": "content_block_stop", "index": t.index}))
+	t.index++
+	raw, ok := f.mcpRequest(t.ctx, "socrates", "tools/call", map[string]any{"name": "ask_user", "arguments": input,
+		"_meta": map[string]any{"claudecode/toolUseId": id, "progressToken": 7}}, false)
+	if !ok {
+		t.result(id, "[Tool call interrupted by user]", nil, true, "")
+		t.cut = true
+		return
+	}
+	var resp struct {
+		Result struct {
+			Content []struct {
+				Text string `json:"text"`
+			} `json:"content"`
+			IsError bool `json:"isError"`
+		} `json:"result"`
+		Error *struct {
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	_ = json.Unmarshal(raw, &resp)
+	text := ""
+	if len(resp.Result.Content) > 0 {
+		text = resp.Result.Content[0].Text
+	}
+	if resp.Error != nil {
+		text, resp.Result.IsError = resp.Error.Message, true
+	}
+	t.result(id, text, nil, resp.Result.IsError, "")
+	if resp.Result.IsError {
+		t.say("ask_user failed: " + text)
+		return
+	}
+	t.say("ask_user returned: " + text)
+}
+
+// askDrop is a call of ask_user withdrawn the moment it is made: the
+// tools/call, and right behind it its notifications/cancelled, without a
+// control_cancel_request, so that only the JSON-RPC id ties the two.
+func (t *turnRun) askDrop() {
+	f := t.f
+	f.mu.Lock()
+	rpcID := f.rpcID
+	f.rpcID++
+	f.mu.Unlock()
+	f.out(map[string]any{"type": "control_request", "request_id": newUUID(),
+		"request": map[string]any{"subtype": "mcp_message", "server_name": "socrates", "message": map[string]any{
+			"jsonrpc": "2.0", "id": rpcID, "method": "tools/call",
+			"params": map[string]any{"name": "ask_user", "arguments": json.RawMessage(askCall)}}}})
+	f.mcpRequest(context.Background(), "socrates", "notifications/cancelled",
+		map[string]any{"requestId": rpcID, "reason": "AbortError: the operation was aborted"}, true)
+	t.say("ask_user was withdrawn")
+}
+
+// elicit is an MCP server asking the person through the CLI: a form, or a
+// URL to open.
+func (t *turnRun) elicit(url bool) {
+	mode := "form"
+	if url {
+		mode = "url"
+	}
+	resp, ok := t.f.ask(t.ctx, map[string]any{"subtype": "elicitation", "mcp_server_name": "lab", "message": "Pick a colour.",
+		"mode": mode, "property_order": []string{"colour", "notes"},
+		"requested_schema": map[string]any{"type": "object", "required": []string{"colour"}, "properties": map[string]any{
+			"colour": map[string]any{"type": "string", "title": "Colour", "enum": []string{"red", "green", "blue"}},
+			"notes":  map[string]any{"type": "string", "title": "Notes"}}}})
+	if !ok {
+		t.cut = true
+		return
+	}
+	t.say("elicitation: " + string(resp))
 }
 
 func (t *turnRun) limit() {

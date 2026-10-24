@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/saschazesiger/SocratesAgent/internal/agent"
+	"github.com/saschazesiger/SocratesAgent/internal/agent/askuser"
 )
 
 // ErrRunning is a host started for a chat that already has one. It is not a
@@ -113,6 +114,9 @@ type host struct {
 	ending     bool
 	conns      map[*hostConn]struct{}
 	parkAfter  time.Duration
+	// tools are the asks a local tool's connection waits on (OpAsk), by ask
+	// id: the answer goes back on that connection.
+	tools map[string]*hostConn
 
 	done     chan struct{}
 	doneOnce sync.Once
@@ -158,6 +162,7 @@ func Run(opts Options) error {
 		rec:        agent.NewRecorder(journal, events, 0),
 		spawns:     make(chan spawnReq),
 		conns:      map[*hostConn]struct{}{},
+		tools:      map[string]*hostConn{},
 		lastActive: time.Now(),
 		parkAfter:  time.Duration(spec.ParkAfterMS) * time.Millisecond,
 		done:       make(chan struct{}),
@@ -376,7 +381,7 @@ func (h *host) boot() {
 	spec := agent.StartSpec{
 		ChatID: h.opts.ChatID, Workdir: h.spec.Workdir, StateDir: filepath.Join(h.dir, stateDir),
 		DataDir: h.opts.DataDir, Env: env, Account: h.spec.Account, Model: h.spec.Model, Effort: h.spec.Effort,
-		ResumeID: resume, Rebuild: rebuild, Spawn: h.spawn, Binary: h.spec.Binary,
+		ResumeID: resume, Rebuild: rebuild, Spawn: h.spawn, Binary: h.spec.Binary, AskCommand: h.askCommand(),
 	}
 	if resume == "" && len(pending) > 0 {
 		spec.First, pending = &pending[0], pending[1:]
@@ -417,6 +422,18 @@ func (h *host) boot() {
 		h.deliverAsMessage(ctx, &unsent[i], unsent[i].Answer, unsent[i].Deliver != agent.ViaMessage)
 	}
 	h.touch()
+}
+
+// askCommand is `socrates mcp-ask --socket <this host's socket>`, ask_user as
+// a stdio MCP server for a CLI that starts its MCP servers itself (OpenCode):
+// this very binary, which is what the host was started as.
+func (h *host) askCommand() []string {
+	exe, err := os.Executable()
+	if err != nil {
+		log.Printf("ask_user has no command: %v", err)
+		return nil
+	}
+	return []string{exe, "mcp-ask", "--socket", h.sock}
 }
 
 // failStart records why the CLI did not come up and ends the host after the
@@ -513,7 +530,7 @@ func (h *host) cliExited(err error) {
 // journal already has is acknowledged again without being acted on: that is
 // what makes a command sent twice - by a server that lost the first ack, or
 // by a new server after a crash - arrive once.
-func (h *host) handle(cmd Command) any {
+func (h *host) handle(c *hostConn, cmd Command) any {
 	if cmd.Op == OpStop {
 		go h.stop(cmd.ClientID)
 		return Ack{T: FrameAck, ClientID: cmd.ClientID, Op: cmd.Op}
@@ -539,6 +556,8 @@ func (h *host) handle(cmd Command) any {
 		return h.send(ctx, cmd)
 	case OpAnswer:
 		return h.answer(ctx, cmd)
+	case OpAsk:
+		return h.toolAsk(c, cmd)
 	case OpInterrupt, OpSetModel, OpCommand, OpPark:
 		return h.control(ctx, cmd)
 	}
@@ -564,7 +583,17 @@ func (h *host) send(ctx context.Context, cmd Command) any {
 	}
 	msg := agent.Event{Type: agent.TypeMessage, MessageID: newID("m_"), Role: agent.RoleUser,
 		State: agent.MessagePending, ClientID: cmd.ClientID, Text: cmd.Text, Attachments: cmd.Attachments}
-	events, err := h.rec.EmitDurable(msg)
+	// A question no call waits on any more is left behind by this message:
+	// the person moved on (pressed Stop and wrote something else, or wrote
+	// instead of answering a question meant for the next message). It stops
+	// counting as waiting; an answer that still comes goes as a message.
+	batch := []agent.Event{msg}
+	h.rec.View(func(p *agent.Projection) {
+		for _, a := range p.Unwaited() {
+			batch = append(batch, agent.Event{Type: agent.TypeAskClosed, AskID: a.ID})
+		}
+	})
+	events, err := h.rec.EmitDurable(batch...)
 	if err != nil {
 		return fail(cmd, CodeFailed, "the message could not be journaled: "+err.Error())
 	}
@@ -606,12 +635,77 @@ func (h *host) answer(ctx context.Context, cmd Command) any {
 	return Ack{T: FrameAck, ClientID: cmd.ClientID, Op: cmd.Op, Seq: events[0].Seq}
 }
 
+// toolAsk is a local tool's question (OpAsk, `socrates mcp-ask`): an ask of
+// the running turn whose answer goes back on the connection that asked, for
+// as long as it stays open. A connection that closes first (the CLI withdrew
+// the call, or exited) leaves the ask open; its answer then goes as a message.
+// A question outside a turn is refused: the CLI calls its tools only inside
+// one, so it comes from a call already withdrawn, whose cancel overtook it.
+func (h *host) toolAsk(c *hostConn, cmd Command) any {
+	if c == nil || c.proto < AskProtocol {
+		return fail(cmd, CodeBadRequest, fmt.Sprintf("ask needs protocol %d", AskProtocol))
+	}
+	if h.adapter == nil {
+		return fail(cmd, CodeNotRunning, "the agent is not running")
+	}
+	if askuser.Decode(cmd.Payload) == nil {
+		return fail(cmd, CodeBadRequest, "an ask needs an ask_user payload")
+	}
+	ev := agent.Event{Type: agent.TypeAsk, AskID: newID("ask_"), Payload: cmd.Payload}
+	h.rec.View(func(p *agent.Projection) {
+		if p.Turn != nil {
+			ev.TurnID = p.Turn.ID
+		}
+	})
+	if ev.TurnID == "" {
+		return fail(cmd, CodeBadRequest, "no turn is running, so nothing can wait for an answer")
+	}
+	h.mu.Lock()
+	h.tools[ev.AskID] = c
+	h.mu.Unlock()
+	events, err := h.rec.EmitDurable(ev)
+	if err != nil {
+		h.mu.Lock()
+		delete(h.tools, ev.AskID)
+		h.mu.Unlock()
+		return fail(cmd, CodeFailed, "the question could not be journaled: "+err.Error())
+	}
+	return Ack{T: FrameAck, ClientID: cmd.ClientID, Op: cmd.Op, Seq: events[0].Seq, AskID: ev.AskID}
+}
+
+// answerTool hands an answer to the local tool waiting on the ask, and
+// reports whether one took it. A call outlives neither its connection nor
+// its turn: once the turn ended (an interrupt), the CLI has withdrawn the
+// call even if the tool's connection has not closed yet.
+func (h *host) answerTool(ask *agent.Ask, answer json.RawMessage) bool {
+	h.mu.Lock()
+	c := h.tools[ask.ID]
+	delete(h.tools, ask.ID)
+	h.mu.Unlock()
+	if c == nil {
+		return false
+	}
+	live := false
+	h.rec.View(func(p *agent.Projection) {
+		live = p.Turn != nil && p.Turn.ID == ask.TurnID
+	})
+	if !live {
+		return false
+	}
+	raw, _ := json.Marshal(Answer{T: FrameAnswer, AskID: ask.ID, Answer: answer})
+	return c.sendNow(raw)
+}
+
 // deliver gets an answer to the agent: through the call that asked, if it is
 // still waiting, and as a user message if it is not.
 func (h *host) deliver(ctx context.Context, ask *agent.Ask, answer json.RawMessage) {
 	if ask.Deliver == agent.ViaMessage {
 		// The agent asked for the answer as its next message.
 		h.deliverAsMessage(ctx, ask, answer, false)
+		return
+	}
+	if h.answerTool(ask, answer) {
+		h.record(agent.Event{Type: agent.TypeAskDelivered, AskID: ask.ID, Via: agent.ViaTool})
 		return
 	}
 	if h.adapter != nil {
@@ -701,16 +795,25 @@ func (h *host) control(ctx context.Context, cmd Command) any {
 // ------------------------------------------------------- parking and ending
 
 // idle is whether the host may park: the CLI is up and doing nothing that
-// parking would cut short - no turn, no question being waited on, no
+// parking would cut short - no turn (a question being waited on is always
+// inside one: a local tool's too, whose call does not outlive its turn), no
 // background task, and no user message it has not taken up yet (one that
 // was acknowledged a moment ago and is still on its way into the agent).
+//
+// An open ask outside a running turn does not keep the host: its call is
+// gone (the turn was interrupted, or the host before this one died) or never
+// waited (an ask answered as the next message), so its answer goes to the
+// agent as a message whenever it comes, through whichever host is up then.
+// The ask itself stays open across parks, host deaths and recoveries, and
+// the chat stays "waiting" until it is answered or the person writes
+// something else (REBUILD.md §5.3: a question survives everything).
 func (h *host) idle() bool {
 	if h.adapter == nil || h.isEnding() {
 		return false
 	}
 	busy := false
 	h.rec.View(func(p *agent.Projection) {
-		busy = p.Turn != nil || len(p.OpenAsks()) > 0 || len(p.Undelivered()) > 0
+		busy = p.Turn != nil || len(p.Undelivered()) > 0
 	})
 	return !busy && h.adapter.Background() == 0
 }
@@ -834,10 +937,34 @@ func (h *host) drained(last int64) bool {
 type hostConn struct {
 	h       *host
 	c       net.Conn
+	proto   int
 	replies chan []byte
-	sent    atomic.Int64
-	gone    chan struct{}
-	once    sync.Once
+	// urgent are lines written in their turn like replies, by a sender that
+	// waits to learn whether they were.
+	urgent chan urgentLine
+	sent   atomic.Int64
+	gone   chan struct{}
+	once   sync.Once
+}
+
+type urgentLine struct {
+	line []byte
+	done chan bool
+}
+
+// sendNow writes one line to the client and reports whether it was written.
+// Once the writer has taken the line it always says how the write went, and
+// that is the answer even when the client hangs up the moment it has read
+// the line, as a local tool does with its answer: the connection being gone
+// by then does not unsay the write.
+func (c *hostConn) sendNow(line []byte) bool {
+	u := urgentLine{line: line, done: make(chan bool, 1)}
+	select {
+	case c.urgent <- u:
+	case <-c.gone:
+		return false
+	}
+	return <-u.done
 }
 
 func (c *hostConn) close() {
@@ -877,7 +1004,8 @@ func (h *host) serve(nc net.Conn) {
 		return
 	}
 	_ = nc.SetReadDeadline(time.Time{})
-	c := &hostConn{h: h, c: nc, replies: make(chan []byte, 256), gone: make(chan struct{})}
+	c := &hostConn{h: h, c: nc, proto: min(hello.Proto, Protocol), replies: make(chan []byte, 256),
+		urgent: make(chan urgentLine), gone: make(chan struct{})}
 	c.sent.Store(hello.Since)
 	h.mu.Lock()
 	h.conns[c] = struct{}{}
@@ -886,11 +1014,17 @@ func (h *host) serve(nc net.Conn) {
 		c.close()
 		h.mu.Lock()
 		delete(h.conns, c)
+		// A local tool that went away no longer waits on its asks.
+		for id, t := range h.tools {
+			if t == c {
+				delete(h.tools, id)
+			}
+		}
 		h.mu.Unlock()
 	}()
 	var process string
 	h.rec.View(func(p *agent.Projection) { process = p.Process })
-	if err := writeFrame(nc, Hello{T: FrameHello, Proto: min(hello.Proto, Protocol), Version: h.opts.Version,
+	if err := writeFrame(nc, Hello{T: FrameHello, Proto: c.proto, Version: h.opts.Version,
 		Chat: h.opts.ChatID, Harness: h.spec.Harness, HostPID: os.Getpid(), CLIPID: int(h.cliPID.Load()),
 		LastSeq: h.rec.Feed().Last(), Process: process}); err != nil {
 		return
@@ -906,7 +1040,7 @@ func (h *host) serve(nc net.Conn) {
 		if err := json.Unmarshal(line, &cmd); err != nil {
 			reply = Fail{T: FrameError, Code: CodeBadRequest, Msg: "a command must be JSON: " + err.Error()}
 		} else {
-			reply = h.handle(cmd)
+			reply = h.handle(c, cmd)
 		}
 		raw, _ := json.Marshal(reply)
 		select {
@@ -927,6 +1061,10 @@ func (c *hostConn) write(since int64) {
 	var replies [][]byte
 	for {
 		events, deltas := sub.Pull(next)
+		if since >= NoEvents {
+			// A connection that asked for no events wants no deltas.
+			deltas = nil
+		}
 		for _, ev := range events {
 			if !c.send(EncodeEvent(ev)) {
 				return
@@ -949,6 +1087,12 @@ func (c *hostConn) write(since int64) {
 		case <-sub.Wake():
 		case r := <-c.replies:
 			replies = append(replies, r)
+		case u := <-c.urgent:
+			ok := c.send(u.line)
+			u.done <- ok
+			if !ok {
+				return
+			}
 		case <-c.gone:
 			return
 		}

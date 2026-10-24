@@ -4,11 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"os/exec"
 	"sort"
-	"strings"
 	"sync"
+
+	"github.com/saschazesiger/SocratesAgent/internal/agent/askuser"
 )
 
 // Adapter drives one agent CLI for one chat, inside that chat's agent host.
@@ -110,6 +110,11 @@ type StartSpec struct {
 	// its opening prompt at start. An adapter that has no use for that sends
 	// it right after starting.
 	First *Outgoing
+	// AskCommand is the command line of `socrates mcp-ask` for this chat:
+	// ask_user as a stdio MCP server that reaches this host over its socket,
+	// for a CLI that starts its MCP servers as processes of its own
+	// (OpenCode). Empty outside a host.
+	AskCommand []string
 	// Spawn starts a CLI child: on the host's locked main thread, in a
 	// process group of its own, with SIGKILL as its parent-death signal, so
 	// that a host that dies takes its CLI with it (REBUILD.md §2.1). An
@@ -191,25 +196,15 @@ func Harnesses() []string {
 	return out
 }
 
-// AnswerText is the user message an answer becomes when the call that asked
-// is gone. It says what it is, so that the agent continues from the answer
-// rather than taking it for a new request. WP6 renders the full ask_user
-// answer shape; anything else is passed on as it came.
+// AnswerText is the user message an answer becomes when it goes to the agent
+// as a message (AGENT-HOST.md §4.4): what was asked and what the person
+// answered, readable, and the answer as ask_user would have returned it
+// (askuser.MessageText). It says what it is, so that the agent continues from
+// the answer rather than taking it for a new request.
 func AnswerText(ask *Ask, answer json.RawMessage) string {
-	var b strings.Builder
-	b.WriteString("Answer to your earlier question")
-	var payload struct {
-		Title string `json:"title"`
+	var payload json.RawMessage
+	if ask != nil {
+		payload = ask.Payload
 	}
-	if ask != nil && json.Unmarshal(ask.Payload, &payload) == nil && strings.TrimSpace(payload.Title) != "" {
-		fmt.Fprintf(&b, " (%s)", strings.TrimSpace(payload.Title))
-	}
-	b.WriteString(":\n")
-	var s string
-	if json.Unmarshal(answer, &s) == nil {
-		b.WriteString(s)
-	} else {
-		b.Write(answer)
-	}
-	return b.String()
+	return askuser.MessageText(payload, answer)
 }

@@ -72,6 +72,8 @@ func main() {
 			return
 		case "agent-host":
 			os.Exit(agenthost.Main(args[1:], version))
+		case "mcp-ask":
+			os.Exit(agenthost.MCPAskMain(args[1:], version))
 		}
 	}
 

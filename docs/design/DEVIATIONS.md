@@ -2234,6 +2234,70 @@ now `args`. Adapters also get the data folder (`StartSpec.DataDir`). AGENT-HOST.
 until WP6, OpenCode's own question tool stays denied and a question that still arrives is rejected
 with a notice, and `Answer` reports `ErrAskGone`.
 
+**WP6 / §5.3 — Codex threads run with a granular approval policy.** §3.2 says `approvalPolicy:
+never`. Verified against codex 0.164: under `never`, codex declines an MCP server's elicitation
+itself, so "elicitations are converted to the same payload" could never happen. Threads now start
+and resume with `{granular: {sandbox_approval: false, rules: false, skill_approval: false,
+request_permissions: false, mcp_elicitations: true}}`: every permission category is rejected, as
+under `never` (decision §1 holds: with `danger-full-access` nothing needs one), and only
+elicitations come through, to be asked like ask_user. The model's permission instructions change
+from "approval policy is never" to the list of rejected categories; the whole real-binary suite
+passes under it.
+
+**WP6 / §5.3 — the guidance is not everywhere a system prompt.** Claude gets it with
+`--append-system-prompt`. A codex thread has no system prompt of Socrates': the guidance begins the
+developer instructions of every thread the adapter starts (codex's equivalent), and the tool's
+description repeats the rules in short for threads started before. OpenCode gets it as the MCP
+server's `instructions`, which OpenCode 1.19.4 puts into the system prompt for a connected server;
+no instructions file is written.
+
+**WP6 / §2.1 — "idle excludes a pending ask_user" means a call that waits.** WP2 kept a host up
+while any ask was open, so an ask left by an interrupted turn (or a `via: "message"` one) kept its
+host alive for ever (the WP2 review). A call that waits on the person is always inside a running
+turn or a background task, which already keep the host; a local tool's call (`mcp-ask`) does not
+outlive its turn either, so its open connection does not keep the host, and the host refuses a
+local tool's question asked outside a turn (it comes from a call already withdrawn). An open ask
+outside them has no call to wait in, and its answer goes as a message through whichever host is
+up, so it no longer keeps the host. Interrupts and recovery do not close open asks: a question
+survives everything (§5.3), and the chat stays `waiting` until it is answered or the person moves
+on (next entry).
+
+**WP6 / §5.3–5.4 — a message from the person closes a question nobody waits on (`ask.closed`).**
+The plan has no way for a question to stop being open other than an answer. With asks surviving
+interrupts, "Stop, then write something else" left the chat `waiting` for ever, its badge and Home
+card on the obsolete question, while the agent worked on what was written (the WP6 review), and
+`Summary` ranked the old ask above the running turn. A user message now closes every open ask no
+call waits on any more (its turn has ended, or it was meant to be answered as the next message):
+the host journals `ask.closed` with the message. A message sent while the call still waits closes
+nothing. A closed ask is not open (not `waiting`, not on the badge or Home), and still takes an
+answer, which goes as a message: nothing typed is refused. `waiting` also now means an open ask of
+the running turn, or any open ask while no turn runs: an ask of an earlier turn no longer hides a
+running one. The chat card shows a closed ask as "Not answered" with "Answer anyway".
+
+**WP6 / §2.1 — host protocol 2: one op for a local tool.** OpenCode runs its MCP servers as its own
+children, so its `socrates mcp-ask` has to reach the host: the `ask` op journals an ask of the
+running turn and answers it on the same connection (`answer` frame). It needs protocol 2; the
+server's own ops did not change, and the server still accepts hosts of protocol 1. An answer goes
+to the tool only while its connection is open and the ask's turn runs (an interrupt withdraws the
+call before the tool lets go of its connection); otherwise it goes as a message. An `ask` while no
+turn runs is refused. A tool's connection (`since` = `NoEvents`) gets no live deltas.
+
+**WP6 / §5.1 and §5.2 — the shapes, made exact.** A call is checked and normalised before anyone
+sees it (`askuser.Parse`): defaults applied, ids filled in, a header longer than 24 characters
+clipped rather than refused, the kind inferred from the options (and the names models give kinds
+mapped), option lists of plain labels taken, a `default` that fits nothing dropped; a call that
+cannot be asked goes back to the model with every problem listed. §5.2 has no place for a number or
+a yes/no: a confirm answer is `selected: ["yes"|"no"]` with `value: true|false`, a number answer
+carries `value`, and `min`/`max` bound a number question's value too. The payload carries `part_id`
+(the tool part of the call) and `source` (when the questions came from the agent's own
+mechanism); an MCP elicitation's questions offer no "You decide", and a form without fields is one
+yes-or-no question (accept or decline). The limits of §5.1 (20 questions, 12 options) bind the
+model's calls only: a converted payload keeps every field and choice, because one cut off could not
+be answered the way its mechanism requires. A question left without an id is `q<n>` by place, never
+an id the model gave another one. An elicitation form has no place for a note, a general note or a
+question back: when the answer has one, the form gets its values and the whole answer also goes to
+the agent as a message (`ErrAskDeferred`), so the model reads what the person wrote.
+
 **WP1 / REBUILD.md §6.2 — chunks are named by an HMAC of their content, not by its SHA-256.**
 §6.2 says `chunks/<sha256>`. The name is HMAC-SHA256 under a key derived from the passphrase
 (as the work package's brief asked), so equal content is still stored once, but the bucket's

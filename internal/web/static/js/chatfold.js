@@ -242,7 +242,7 @@ export function apply(chat, ev) {
       if (!chat.asks.has(ev.ask_id)) {
         chat.asks.set(ev.ask_id, {
           id: ev.ask_id, turnId: ev.turn_id || '', payload: ev.payload || {}, at: ev.at, seq,
-          answered: false, answer: null, byDevice: '', clientId: '', delivered: '', deliver: ev.via || '',
+          answered: false, answer: null, byDevice: '', clientId: '', delivered: '', deliver: ev.via || '', closed: false,
         });
         chat.timeline.push({ key: 'a:' + ev.ask_id, type: 'ask', id: ev.ask_id });
         chat.rev += 1;
@@ -263,6 +263,16 @@ export function apply(chat, ev) {
       const ask = chat.asks.get(ev.ask_id);
       if (ask) {
         ask.delivered = ev.via || '';
+        chat.rev += 1;
+      }
+      break;
+    }
+    case 'ask.closed': {
+      // The person wrote something else after the call was gone: nobody
+      // waits for the answer any more, though it may still come.
+      const ask = chat.asks.get(ev.ask_id);
+      if (ask && !ask.answered && !ask.closed) {
+        ask.closed = true;
         chat.rev += 1;
       }
       break;
@@ -334,9 +344,9 @@ export function applyLive(chat, frame) {
   return true;
 }
 
-/** openAsks is every question nobody has answered yet, oldest first. */
+/** openAsks is every question nobody has answered or closed yet, oldest first. */
 export function openAsks(chat) {
-  return [...chat.asks.values()].filter((ask) => !ask.answered).sort((a, b) => a.seq - b.seq);
+  return [...chat.asks.values()].filter((ask) => !ask.answered && !ask.closed).sort((a, b) => a.seq - b.seq);
 }
 
 /** busy says whether a turn is running. */
