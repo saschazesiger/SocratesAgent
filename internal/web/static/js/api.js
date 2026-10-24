@@ -249,8 +249,51 @@ export function toast(message, kind = 'info', { persistent = false, timeout, act
   const close = handle.el && handle.el.querySelector('.ds-toast__close');
   if (close && !close.hasAttribute('data-tip')) close.setAttribute('data-tip', close.getAttribute('aria-label') || 'Close');
   showing.set(key, handle);
-  handle.closed.then(() => { if (showing.get(key) === handle) showing.delete(key); });
+  const stays = persistent || sort === 'error' || !!action;
+  if (stays) {
+    staying.add(handle);
+    watchReserve();
+    requestAnimationFrame(reserveToasts);
+  }
+  handle.closed.then(() => {
+    if (showing.get(key) === handle) showing.delete(key);
+    if (staying.delete(handle)) requestAnimationFrame(reserveToasts);
+  });
   return handle;
+}
+
+// A message that stays until it is closed keeps room at the end of what
+// scrolls under it - the open sheet's body, or the page's view (Admin,
+// Costs) - so that the last actions there can scroll clear of it (DS
+// data-toast-reserve and --ds-toast-reserve): its height and its distance
+// from the bottom edge. The session page's view does not scroll; what
+// stands at its bottom moves the messages instead (session.js
+// placeToasts). The region moves into a sheet that opens and back out
+// when it closes (DS), and the room moves with it.
+const staying = new Set();
+let reserveWatched = false;
+
+function watchReserve() {
+  if (reserveWatched) return;
+  reserveWatched = true;
+  new MutationObserver(() => { if (staying.size || document.querySelector('[data-toast-reserve]')) reserveToasts(); })
+    .observe(document.body, { childList: true });
+}
+
+function reserveToasts() {
+  const node = document.getElementById('toasts');
+  const sheet = node && staying.size ? node.closest('.ds-sheet') : null;
+  const target = !node || !staying.size ? null
+    : sheet ? sheet.querySelector('.ds-sheet__body') : document.querySelector('.ds-view:not(.so-view)');
+  for (const one of document.querySelectorAll('[data-toast-reserve]')) {
+    if (one === target) continue;
+    one.removeAttribute('data-toast-reserve');
+    one.style.removeProperty('--ds-toast-reserve');
+  }
+  if (!target) return;
+  const room = Math.max(0, Math.round(window.innerHeight - node.getBoundingClientRect().top));
+  target.setAttribute('data-toast-reserve', '');
+  target.style.setProperty('--ds-toast-reserve', room + 'px');
 }
 
 // isBusyConflict is the one refusal that passes on its own: the session is still
