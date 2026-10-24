@@ -8,7 +8,8 @@
  *                    bar, the banners and the key bar leave
  *   .so-topbar       the bar's contents after the brand: the name, its marks
  *                    and .so-topbar__actions
- *   .so-title        the session's name, a text button that renames it
+ *   .so-title        the session's name, a text button that renames it;
+ *                    .so-title__home the words "Home" in its place on Home
  *   .so-outcome      the verdict on the last turn, beside the name
  *   .so-drawer-toggle  puts the session list away at a desk
  *   .so-drawer-actions, .so-drawer-foot  the drawer's first and last rows
@@ -94,6 +95,14 @@
   min-width: 0;
 }
 
+/* Home's place in the bar: the same words, not a button. */
+.so-title__home {
+  align-self: center;
+  padding-inline: var(--ds-space-3);
+  color: var(--ds-text);
+  font: var(--ds-font-subtitle);
+}
+
 /* While a name is being thought of, the old one steps back. */
 .so-title__button[data-titling] {
   --ds-btn-color: var(--ds-text-3);
@@ -113,6 +122,11 @@
   .so-title__button {
     --ds-btn-font: var(--ds-font-label);
     --ds-btn-padding-x: var(--ds-space-2);
+  }
+
+  .so-title__home {
+    padding-inline: var(--ds-space-2);
+    font: var(--ds-font-label);
   }
 
   .so-title__text {

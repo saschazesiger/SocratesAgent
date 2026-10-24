@@ -3621,6 +3621,14 @@ function setTitleText(text) {
     button.removeAttribute('data-tip');
     button.removeAttribute('aria-description');
   }
+  // Home has nothing to rename: its words stand in the bar as words, not as
+  // a button that a tap does nothing with.
+  const home = document.getElementById('homeTitle');
+  if (home) {
+    if (home.textContent !== text) home.textContent = text;
+    home.hidden = !!state.current;
+    button.hidden = !state.current;
+  }
   drawBarMenu();
 }
 
