@@ -2807,9 +2807,10 @@ for a reason in the code, not in the test:
 - A chat's unread mark was lost across a server restart: its host reported before the detector had
   read the marks back. `ReportActivity` reads them first.
 - A Shell's pane that tmux listed as dead before it had the exit status was marked "Exit status
-  -1" by the poll on a busy machine, which could even overwrite the status the pane-died hook had
-  recorded. An unknown status is never written over a known one, and a running row waits one more
-  poll for it.
+  -1" by the poll on a busy machine. The cause is tmux up to 3.5 built with libutempter, which can
+  lose the program's SIGCHLD; origin/rebuild's fix is cherry-picked (the review pass below): the
+  poll leaves such a pane to the pane-died hook and sends the server the SIGCHLD that makes it
+  collect the status.
 - The account picker's renewal time was drawn once; it follows the clock (every 15 s), and a
   window whose reset has passed counts as empty.
 - The question dialog: a question asked for (a tapped notification, `#q=`) while the page could
@@ -2823,3 +2824,31 @@ for a reason in the code, not in the test:
   "Connecting…", which HOME.md lists too: the chats' dialog reads its questions from the server as
   it opens, so on a page that has not connected yet they are as current as they can be, and the
   line would only push the first option off a phone on its side.
+
+**WP10 + WP11 review — what the fix pass changed against the plan and the briefs.**
+- §8 "a backup of the old data folder first": the tar is that now. Its database is the copy the
+  store made before it upgraded the file (`store.PreUpgradeCopy`, `socrates.db.pre-v12.bak`),
+  because the build before refuses the upgraded one; and it keeps what that build reads and the
+  backup engine leaves out - the mirror's `s3.json` and the agent terminals' `sessions/<id>/`
+  folders with their journals, which the clean cut then deletes. HANDOFF §3 says how to go back.
+- §8.1, OpenCode: `opencode.db` moves to the shared `agents/opencode/opencode.db` as before, and a
+  relative link to it is left where it was, so an `opencode` run by hand in a Shell opens the same
+  database (AGENT-HOST.md §11).
+- §8.2: the lost profiles' accounts are made first (see above) and then put below every other
+  account, so no agent's list offers a "Sign in again" account above its Default one.
+- §8.3, the brief's "log what was removed, once": each agent terminal is said as it is removed,
+  and a delete removes the session's folder before its row, so a start killed in the middle
+  leaves a row the next start removes (and says), never a folder no row leads to.
+- The sheet refused every agent on a machine whose tmux was too old; only the Shell needs tmux.
+- `POST /api/sessions/{id}/digest` ("Read again" of the dialog WP11 removed) is gone with its
+  helpers; the resume note's `fresh`/`resumed_from` of a terminal went with the agent terminals.
+- origin/rebuild's fixes for a lost exit status (e1d0745, 83e82da, 1a388e4) and for a cut-short
+  backup upload (29f7bd3) are cherry-picked; wp10's own exit-status change (785b0f6) is reverted
+  in their favour, so the merge meets one version of those lines.
+- DECISIONS rev 7, "a tap says exactly when": the account menu and the sheet's account list say a
+  limit's renewal by the clock as well ("today at 15:42", "on Tue at 09:10"), the menu's lines
+  wrap instead of being cut, and a week's countdown reads in days.
+- The chat names a file a call worked on relative to the chat's folder when it is inside it (the
+  whole path stays behind the call's "i"), and a diff of an absolute path keeps its leading slash.
+- The default workspace root follows `-data` (DESIGN.md said `<data>/workspaces`; it was the
+  environment's data directory whatever `-data` said).
