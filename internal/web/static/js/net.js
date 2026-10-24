@@ -246,7 +246,9 @@ export function connectionSource({ global = true } = {}) {
       source.status = 'idle';
       liveStreams.delete(source);
       globalStreams.delete(source);
-      if (streamsHealthy() && connection.status !== LIVE) setConnection(LIVE);
+      // The last stream going is no news from the server: a device with no
+      // network stays offline (a chat left for Home while in a tunnel).
+      if (navigator.onLine !== false && streamsHealthy() && connection.status !== LIVE) setConnection(LIVE);
     },
   };
 }
