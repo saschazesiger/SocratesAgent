@@ -3,6 +3,7 @@ package termux
 import (
 	"context"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -107,6 +108,7 @@ func (m *Manager) Adopt(ctx context.Context) error {
 	}
 
 	known := map[string]bool{}
+	unreaped := false
 	for i := range rows {
 		row := &rows[i]
 		known[row.TmuxName] = true
@@ -118,10 +120,17 @@ func (m *Manager) Adopt(ctx context.Context) error {
 		case !ok:
 			_ = m.st.SetSessionStateFrom(row.ID, row.State, store.StateNeedsResume, row.ExitStatus, "")
 		case p.dead:
+			// With no status yet the row is marked ended without one, and
+			// the server is woken for it: the pane-died hook it then runs
+			// writes the real one over it.
+			unreaped = unreaped || p.deadStatus < 0
 			m.markExited(row, p.deadStatus)
 		default:
 			m.adopt(ctx, row, p)
 		}
+	}
+	if unreaped {
+		m.wakeServer(ctx)
 	}
 
 	for name, p := range panes {
@@ -254,7 +263,9 @@ func (m *Manager) Poll(ctx context.Context) {
 		return
 	}
 	m.notePollSuccess()
-	m.applyPanes(rows, panes)
+	if m.applyPanes(rows, panes) {
+		m.wakeServer(ctx)
+	}
 }
 
 // notePollFailure records one failed poll and reports whether that is now
@@ -274,8 +285,10 @@ func (m *Manager) notePollSuccess() {
 	m.mu.Unlock()
 }
 
-// applyPanes moves each row to what tmux says about it.
-func (m *Manager) applyPanes(rows []store.Session, panes map[string]pane) {
+// applyPanes moves each row to what tmux says about it, and reports whether
+// a running session's pane is dead with no exit status yet - a server to wake
+// (wakeServer).
+func (m *Manager) applyPanes(rows []store.Session, panes map[string]pane) (unreaped bool) {
 	for i := range rows {
 		row := &rows[i]
 		if row.IsChat() || (row.State != store.StateRunning && row.State != store.StateStarting &&
@@ -294,15 +307,20 @@ func (m *Manager) applyPanes(rows []store.Session, panes map[string]pane) {
 				_ = m.st.SetSessionStateFrom(row.ID, row.State, store.StateNeedsResume, row.ExitStatus, "")
 			}
 		case p.dead && p.deadStatus < 0:
-			// tmux can list a pane as dead before it has its exit status (its
-			// terminal closed, its program not reaped yet), and on a busy
-			// machine a poll reads that moment. The status follows with the
-			// pane-died hook or the next poll: an unknown one is never
-			// written over the one the hook recorded, and a running row
-			// waits one more poll for it before it is marked with none.
+			// tmux lists a pane as dead before it has its exit status (its
+			// terminal closed, its program not reaped yet), and a poll can
+			// read that moment - or a server that missed the program's end
+			// (wakeServer), which the poll's report wakes. The status
+			// follows with the pane-died hook or the next poll: an unknown
+			// one is never written over the one the hook recorded, and a
+			// running row waits one more poll for it before it is marked
+			// with none.
 			m.clearMissing(row.ID)
-			if row.State != store.StateExited && m.noteUnknownExit(row.ID) {
-				m.markExited(row, p.deadStatus)
+			if row.State != store.StateExited {
+				unreaped = true
+				if m.noteUnknownExit(row.ID) {
+					m.markExited(row, p.deadStatus)
+				}
 			}
 		case p.dead:
 			m.clearMissing(row.ID)
@@ -326,6 +344,31 @@ func (m *Manager) applyPanes(rows []store.Session, panes map[string]pane) {
 				_ = m.st.SetSessionStateFrom(row.ID, row.State, store.StateRunning, -1, "")
 			}
 		}
+	}
+	return unreaped
+}
+
+// wakeServer sends the tmux server the SIGCHLD it may have missed.
+//
+// tmux 3.4 can miss one: the pane's program has ended and tmux has closed the
+// pane, which is what makes it dead, but the program is still the server's
+// unreaped child - a zombie - so there is no exit status and no pane-died
+// hook, and nothing wakes the server until another of its children ends,
+// which for a lone Shell can be never. On a loaded machine about one `exit 7`
+// in twenty ended like that, and a SIGCHLD sent to the server reaped it at
+// once and ran the hook with the real status. One that was not missed costs
+// the server a wait that finds nothing.
+func (m *Manager) wakeServer(ctx context.Context) {
+	out, err := m.tmux.Run(ctx, "display-message", "-p", "#{pid}")
+	if err != nil {
+		return
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(out))
+	if err != nil || pid <= 1 {
+		return
+	}
+	if err := m.signalChildEnded(pid); err != nil {
+		m.logf("could not wake the tmux server (pid %d) for a pane with no exit status: %v", pid, err)
 	}
 }
 

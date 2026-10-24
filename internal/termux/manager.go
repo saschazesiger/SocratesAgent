@@ -100,8 +100,11 @@ type Manager struct {
 	// unknownExit counts the polls that found a pane dead before tmux had
 	// its exit status (applyPanes).
 	unknownExit map[string]int
-	hookLn      net.Listener
-	closed      bool
+	// signalChildEnded tells a process that one of its children ended
+	// (wakeServer); a test sees what it is sent to.
+	signalChildEnded func(pid int) error
+	hookLn           net.Listener
+	closed           bool
 
 	// locks serialises everything that relaunches one session.
 	locks map[string]*sync.Mutex
@@ -148,6 +151,8 @@ func New(st *store.Store, cfg Config) (*Manager, error) {
 		unknownExit: map[string]int{},
 		locks:       map[string]*sync.Mutex{},
 		plans:       map[string]harnesses.LaunchPlan{},
+
+		signalChildEnded: signalChildEnded,
 	}
 	m.act = newActivity(m)
 
