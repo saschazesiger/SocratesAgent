@@ -11,9 +11,11 @@ the migration) and WP11 (the e2e suite and the docs) on top. It is **not merged 
 every push to `main` is installed on the server by GitHub Actions, and the nightly update builds
 `origin/main` too, so the merge is the deployment (§6).
 
-At the time of writing `origin/rebuild` carries CI and test fixes made beside this branch (19
-commits: test flakes on macOS and under load, a backup upload that no longer cuts the others
-short). Merge them with `wp10` before the final run of §6.
+At the time of writing `origin/rebuild` carries CI and test fixes made beside this branch (test
+flakes on macOS and under load, a backup upload that no longer cuts the others short); three of
+them, test fixes the final race run needed, are on `wp10` too (cherry-picked: the stream reads
+under the lock, the killed host's child, the ack that reads the turn's end first). Merge the rest
+with `wp10` before the final run of §6.
 
 Binding documents, in order:
 
