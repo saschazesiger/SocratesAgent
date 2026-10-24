@@ -85,24 +85,6 @@ func (d *digester) askChatJudge(id string, settings config.Settings, model strin
 	return got.Outcome, ""
 }
 
-// rejudgeChat is a person asking for a chat's verdict to be read again: the
-// verdict on the idle the chat is at.
-func (d *digester) rejudgeChat(id string) {
-	d.mu.Lock()
-	a := d.seen[id]
-	o := d.outcomes[id]
-	again := o != nil && a.State == termux.StateIdle && o.Since == a.Since && o.Phase != digestPending &&
-		outcomesOn(d.srv)
-	if again {
-		o.Phase, o.Error, o.Due = digestPending, "", 0
-		d.publishOutcomeLocked(id, o)
-	}
-	d.mu.Unlock()
-	if again {
-		go d.judgeChat(id, a)
-	}
-}
-
 // endedTurn is the turn a chat ended last, as its judge is told it.
 func (h *chatHub) endedTurn(id string) (chatTurn, bool) {
 	p, err := h.peer(id)

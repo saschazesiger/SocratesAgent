@@ -389,11 +389,9 @@ func (s *Server) routes() {
 	mux.HandleFunc("GET /api/costs", s.auth(s.handleCosts))
 	// What a terminal is doing, said out loud.
 	mux.HandleFunc("POST /api/sessions/{id}/status", s.auth(s.handleSessionStatus))
-	// Home: the event stream, its hello as a poll, and a chat's verdict read
-	// again.
+	// Home: the event stream, and its hello as a poll.
 	mux.HandleFunc("GET /api/events", s.auth(s.handleEvents))
 	mux.HandleFunc("GET /api/home", s.auth(s.handleHome))
-	mux.HandleFunc("POST /api/sessions/{id}/digest", s.auth(s.handleDigestNow))
 	mux.HandleFunc("GET /api/sessions/{id}/journal", s.auth(s.terminal(s.started(s.handleJournal))))
 	mux.HandleFunc("POST /api/sessions/{id}/upload", s.auth(s.started(s.handleUpload)))
 	mux.HandleFunc("GET /api/sessions/{id}/ws", s.auth(s.terminal(s.started(s.handleSessionWS))))

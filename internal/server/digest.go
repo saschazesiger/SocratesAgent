@@ -20,7 +20,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"net/http"
 	"strings"
 	"sync"
 	"time"
@@ -286,21 +285,4 @@ func clipRunes(text string, n int) string {
 		return text
 	}
 	return strings.TrimSpace(string(runes[:n-1])) + "…"
-}
-
-/* ------------------------------------------------------------ the route */
-
-// handleDigestNow is the dialog's "Read again", and its "Try again" after an
-// error. A chat's reading is its journal, current already; what can be read
-// again is the verdict on its last turn.
-func (s *Server) handleDigestNow(w http.ResponseWriter, r *http.Request) {
-	row, ok := s.session(w, r)
-	if !ok {
-		return
-	}
-	if !row.IsChat() {
-		writeError(w, http.StatusBadRequest, "only a chat has a reading to read again")
-		return
-	}
-	writeJSON(w, http.StatusAccepted, map[string]any{"digest": s.chats.rejudge(row.ID)})
 }
