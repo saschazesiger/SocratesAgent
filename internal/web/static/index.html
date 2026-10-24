@@ -136,9 +136,11 @@
          throttled, so a busy machine does not talk over itself. -->
     <div class="ds-sr" id="activityLive" role="status" aria-live="polite"></div>
     <div class="so-drawer-foot">
-      <a class="ds-drawer__item" href="/costs" data-icon="barChart"><span class="ds-drawer__label">Costs</span></a>
-      <a class="ds-drawer__item" href="/admin" data-icon="settings"><span class="ds-drawer__label">Admin</span></a>
-      <button class="ds-drawer__item" id="logout" type="button" data-icon="logout"><span class="ds-drawer__label">Sign out</span></button>
+      <!-- On a short screen these are their icons alone (so-frame.css): the
+           names are the labels, and then the tips too (session.js). -->
+      <a class="ds-drawer__item" href="/costs" aria-label="Costs" data-icon="barChart"><span class="ds-drawer__label">Costs</span></a>
+      <a class="ds-drawer__item" href="/admin" aria-label="Admin" data-icon="settings"><span class="ds-drawer__label">Admin</span></a>
+      <button class="ds-drawer__item" id="logout" type="button" aria-label="Sign out" data-icon="logout"><span class="ds-drawer__label">Sign out</span></button>
     </div>
   </nav>
 

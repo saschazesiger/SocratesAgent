@@ -3940,6 +3940,17 @@ async function boot() {
     openQuestions: (id) => showQuestions(id),
   });
   followViewport();
+  // On a short screen the drawer's foot is its icons alone (so-frame.css):
+  // their names, which are their labels anyway, are their tips as well.
+  const shortDrawer = window.matchMedia('(max-height: 500px)');
+  const footTips = () => {
+    for (const item of dom.sidebar.querySelectorAll('.so-drawer-foot > .ds-drawer__item')) {
+      if (shortDrawer.matches) item.setAttribute('data-tip', item.getAttribute('aria-label') || item.textContent.trim());
+      else item.removeAttribute('data-tip');
+    }
+  };
+  shortDrawer.addEventListener('change', footTips);
+  footTips();
   // A key bar that changes height - a phone turned on its side - takes the
   // snackbars with it, and so do a keyboard that comes or goes, the drawer
   // opened or closed, and a message more or less (the drawer's reserve).

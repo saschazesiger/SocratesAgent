@@ -185,6 +185,33 @@
   padding: var(--ds-space-2) var(--ds-space-3) calc(var(--ds-space-3) + env(safe-area-inset-bottom));
 }
 
+/* A phone on its side has the height of a few rows: the drawer's brand
+   goes (the top bar under the scrim has it) and its foot is one row of its
+   three icons, so that the session list keeps the height. */
+@media (max-height: 500px) {
+  .so-app .ds-drawer__head {
+    display: none;
+  }
+
+  .so-drawer-foot {
+    display: flex;
+    gap: var(--ds-space-2);
+    padding-top: var(--ds-space-1);
+    padding-bottom: calc(var(--ds-space-1) + env(safe-area-inset-bottom));
+  }
+
+  .so-drawer-foot > .ds-drawer__item {
+    flex: none;
+    justify-content: center;
+    width: var(--so-touch-target);
+    padding: 0;
+  }
+
+  .so-drawer-foot .ds-drawer__label {
+    display: none;
+  }
+}
+
 /* A session list is longer than a list of destinations: its rows are a
    step denser than a drawer item, and a finger's size in touch mode. While
    the snackbars stand above the foot of the open drawer, the list keeps
