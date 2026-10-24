@@ -8147,12 +8147,10 @@ async function homedeeplink() {
 // home-reconnect: the server restarts under an open Home, which says so and
 // comes back to the right numbers by itself.
 async function homereconnect() {
-  const { s, stub } = await homeServer();
+  const s = await homeChats();
   try {
-    const id = await makeAgent(s, 'Pick a database');
     await awaitHome(s.page, (h) => h.shown && h.conn === 'live', 10000);
-    const asked = await askQuestion(s, id);
-    ok(!!asked.digest, 'the question is read', asked.digest ? asked.digest.phase : 'no digest');
+    const { id, askId } = await askingChat(s, 'Pick a database');
     const before = await awaitHome(s.page, (h) => h.counts.questions === 1 && h.conn === 'live', 10000);
     ok(before.ok && before.seen.connText === 'Live', 'Home is live and counts the question', before.seen.connText);
     await s.page.evaluate(() => {
@@ -8173,25 +8171,24 @@ async function homereconnect() {
       story.join(' > '));
     const after = await awaitHome(s.page, (h) => h.counts.questions === 1 && h.counts.ready === 0, 10000);
     ok(after.ok, 'and the numbers are right again', JSON.stringify(after.seen.counts));
-    const summary = await awaitHome(s.page, (h) => h.rows.some((r) => r.id === id && r.summary === 'Asks which database to use'), 20000);
-    ok(summary.ok, 'the new server reads the question again, and its line comes back', took(summary));
+    const summary = await awaitHome(s.page, (h) => h.rows.some((r) => r.id === id && r.summary === HOME_QUESTION && r.answer), 20000);
+    ok(summary.ok, 'the new server has the question from the chat’s journal, its words on the card', took(summary));
 
-    const fresh = await makeAgent(s, 'Made after the restart');
+    const fresh = await makeChat(s, 'claude', { title: 'Made after the restart' });
     const counted = await awaitHome(s.page, (h) => h.counts.ready === 1, 10000);
     ok(counted.ok, 'a session made after the restart is counted live', JSON.stringify(counted.seen.counts) + ' ' + fresh);
     ok(await s.page.evaluate(() => window.__sameHome === true), 'all of it without a reload', 'same page');
 
     // Away long enough for several handshakes to be refused, with the
-    // question answered at the machine meanwhile. A poll that gets through
-    // before the next handshake is not a proxy that blocks WebSockets:
-    // Home never says "Updated every 5 s" over numbers nobody confirmed,
-    // and comes back Live without the answered question.
+    // question answered on another device the moment the server is back. A
+    // poll that gets through before the next handshake is not a proxy that
+    // blocks WebSockets: Home never says "Updated every 5 s" over numbers
+    // nobody confirmed, and comes back Live without the answered question.
     await awaitHome(s.page, (h) => h.conn === 'live' && h.counts.questions === 1, 15000);
     await s.page.evaluate(() => { window.__conn = []; });
-    await s.restart({}, async () => {
-      execFileSync('tmux', ['-S', tmuxSock(s.data), 'send-keys', '-t', 'soc_' + id, '1']);
-      await wait(3000);
-    });
+    await s.restart({}, async () => { await wait(3000); });
+    const elsewhere = await answerFrom(s, id, askId, { db: ['postgres'] }, 'the phone');
+    ok(elsewhere.status() === 200, 'the question is answered on another device as the server comes back', String(elsewhere.status()));
     const relive = await s.page.waitForFunction(() => window.__conn.length > 0
       && window.__conn[window.__conn.length - 1].startsWith('live'), null, { timeout: 30000 }).then(() => true, () => false);
     await wait(6000);
@@ -8199,7 +8196,7 @@ async function homereconnect() {
     ok(relive && longStory.some((c) => c.startsWith('connecting')) && !longStory.some((c) => c.startsWith('polling') || /Updated every/.test(c)),
       'after a longer outage Home says Reconnecting… and then Live, never "Updated every 5 s"', longStory.join(' > '));
     const recounted = await awaitHome(s.page, (h) => h.conn === 'live' && h.counts.questions === 0, 20000);
-    ok(recounted.ok, 'and the question answered at the machine while it was away is no longer counted', JSON.stringify(recounted.seen.counts));
+    ok(recounted.ok, 'and the question answered elsewhere while it was away is no longer counted', JSON.stringify(recounted.seen.counts));
 
     // A quick look at another app keeps the stream: no new handshake, and
     // Home never says Reconnecting… when it is looked at again.
@@ -8278,10 +8275,7 @@ async function homereconnect() {
     await other.context.close();
     ok(unexpected(s.errors, RESTART_NOISE).length === 0, 'no unexpected console errors',
       unexpected(s.errors, RESTART_NOISE).join(' | ') || '0');
-  } finally {
-    await s.stop();
-    await stub.close();
-  }
+  } finally { await s.stop(); }
 }
 
 // home-touch: the reference device is a car. Big buttons, a dialog that is
@@ -8469,84 +8463,87 @@ const focusOf = (page) => page.evaluate(() => {
 // Errors a page logs for a request a scenario refused on purpose.
 const REFUSED_NOISE = /status of 400|status of 404|status of 500|status of 409|NotAllowedError|NotFoundError|Requested device not found|Permission denied/;
 
-// home-focus: the field an answer of one's own is typed into keeps the
-// keyboard, and its words, through every redraw of the dialog; the voice's
-// failures are said in the dialog and stay there.
+// toastOnTop is the newest toast's words, when it is on top of everything
+// - the question dialog included - where it is drawn, else ''.
+const toastOnTop = (page) => page.evaluate(() => {
+  const all = [...document.querySelectorAll('#toasts .ds-toast')];
+  const last = all[all.length - 1];
+  if (!last || !last.checkVisibility()) return '';
+  const r = last.getBoundingClientRect();
+  const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+  return hit && last.contains(hit) ? last.textContent.replace(/\s+/g, ' ').trim() : '';
+});
+
+// home-focus: the field an answer of one's own is written into keeps the
+// keyboard, and its words, while another chat asks, the chat is renamed and
+// the dialog is drawn again; the voice's failures are said where they can be
+// seen, over the dialog.
 async function homefocus() {
-  const { s, stub } = await homeServer();
+  const s = await homeChats();
   try {
-    const alpha = await makeAgent(s, 'Alpha asks');
-    const beta = await makeAgent(s, 'Beta asks');
-    const gamma = await makeAgent(s, 'Gamma asks later');
     await awaitHome(s.page, (h) => h.shown, 10000);
-    const one = await askQuestion(s, alpha);
+    const alpha = await askingChat(s, 'Alpha asks');
     await wait(800);
-    const two = await askQuestion(s, beta);
-    ok(!!one.digest && !!two.digest, 'two sessions ask', [one, two].map((q) => q.digest ? q.digest.phase : 'none').join(','));
+    await askingChat(s, 'Beta asks');
+    const gamma = await makeChat(s, 'claude', { title: 'Gamma asks later' });
     await awaitHome(s.page, (h) => h.counts.questions === 2, 10000);
-    const posts = answerPosts(s.page);
+    const posts = [];
+    s.page.on('request', (req) => { if (req.method() === 'POST' && /\/asks\/[^/]+\/answer$/.test(req.url())) posts.push(req.postData()); });
 
-    await s.page.click('.so-home__questions');
-    await awaitSheet(s.page, (d) => !!d && d.session === 'Alpha asks' && d.options.length === 2, 10000);
-    await s.page.click('.so-q-own-field');
+    await s.page.click('.so-home__q-action');
+    await awaitAsk(s.page, (d) => !!d && d.session === 'Alpha asks' && d.options.length === 2, 10000);
+    await s.page.click('dialog.so-askdlg [data-action="other"]');
+    await s.page.waitForSelector('#ask-db-other', { timeout: 5000 });
     await s.page.keyboard.type('Use MariaDB, ');
-    // A third question joins the walk: the counter changes, the body must not.
-    tmuxType(s, gamma, '/question');
-    const joined = await awaitSheet(s.page, (d) => !!d && d.counter === '1 of 3', 30000);
-    const afterJoin = await focusOf(s.page);
-    ok(joined.ok && afterJoin === 'own', 'a third session asking leaves the keyboard in the field',
-      JSON.stringify({ counter: joined.seen && joined.seen.counter, focus: afterJoin }));
+    // A third question joins the walk: the counter changes, the field must
+    // not.
+    await tellChat(s, gamma, '/askuser ' + JSON.stringify(DB_ASK));
+    const joined = await awaitAsk(s.page, (d) => !!d && d.top === 'Questions · 1 of 3', 30000);
+    ok(joined.ok && joined.seen.focus === 'own:ask-db-other', 'a third chat asking joins the walk and leaves the keyboard in the field',
+      JSON.stringify({ top: joined.seen && joined.seen.top, focus: joined.seen && joined.seen.focus }));
 
-    // A rename, and a fresh read of the same question.
-    await s.context.request.patch(s.url + '/api/sessions/' + alpha, { data: { title: 'Alpha renamed' } });
-    const renamed = await awaitSheet(s.page, (d) => !!d && d.session === 'Alpha renamed', 10000);
+    // A rename, drawn into the dialog.
+    await s.context.request.patch(s.url + '/api/sessions/' + alpha.id, { data: { title: 'Alpha renamed' } });
+    const renamed = await awaitAsk(s.page, (d) => !!d && d.session === 'Alpha renamed', 10000);
     await s.page.keyboard.type('with 2 ');
-    const before = await awaitDigest(s, alpha, (d) => d.phase === 'ready', 5000);
-    await wait(3200); // the gap a "Read again" is held to
-    await s.context.request.post(s.url + '/api/sessions/' + alpha + '/digest', { data: {} });
-    const reread = await awaitDigest(s, alpha, (d) => d.phase === 'ready' && d.rev !== (before && before.rev), 15000);
     await wait(800);
-    const afterRead = await focusOf(s.page);
-    ok(renamed.ok && !!reread && afterRead === 'own', 'a rename and a fresh read of the question leave it there too',
-      JSON.stringify({ title: renamed.seen && renamed.seen.session, reread: !!reread, focus: afterRead }));
+    ok(renamed.ok && (await askLook(s.page)).focus === 'own:ask-db-other', 'a rename is drawn into the dialog and leaves the field as it was',
+      JSON.stringify({ title: renamed.seen && renamed.seen.session, focus: (await askLook(s.page)).focus }));
     await s.page.keyboard.type('replicas');
-    const whole = (await sheetLook(s.page)).ownValue;
+    const whole = await s.page.$eval('#ask-db-other', (n) => n.value);
     ok(whole === 'Use MariaDB, with 2 replicas' && posts.length === 0,
       'every word typed is in the field, and nothing was sent on the way', JSON.stringify({ whole, posts: posts.length }));
-    await s.page.keyboard.press('Enter');
-    const logged = await awaitAnswerLogged(s, 1);
-    const sent = posts[0] && posts[0].answers && posts[0].answers[0];
-    ok(posts.length === 1 && !!sent && sent.text === 'Use MariaDB, with 2 replicas' && (sent.choices || []).length === 0,
-      'Enter sends the words, not an option', JSON.stringify(posts));
-    ok(logged[0] && logged[0].answers[0].text === 'Use MariaDB, with 2 replicas',
-      'and the fake got exactly them', JSON.stringify(logged[0] && logged[0].answers));
+    await s.page.click('dialog.so-askdlg [data-action="send"]');
+    const got = await returned(s, alpha.id);
+    ok(posts.length === 1 && !!got && got.answers.db.other === 'Use MariaDB, with 2 replicas' && got.answers.db.selected.length === 0,
+      'Send sends the words, not an option, and the agent got exactly them', JSON.stringify({ posts: posts.length, got: got && got.answers.db }));
 
-    // The next question: Read aloud fails, and the failure stays.
-    const onBeta = await awaitSheet(s.page, (d) => !!d && d.session === 'Beta asks' && d.options.length === 2, 20000);
+    // The next question: Read aloud fails, and the failure is said over
+    // the dialog, and stays.
+    const onBeta = await awaitAsk(s.page, (d) => !!d && d.session === 'Beta asks' && d.options.length === 2, 20000);
     ok(onBeta.ok, 'the dialog moves on to the next question', onBeta.seen && onBeta.seen.session);
     await s.page.route('**/api/voice/speak', (route) => route.fulfill({
       status: 400, contentType: 'application/json', body: JSON.stringify({ error: 'no voice key is configured here' }),
     }));
-    await s.page.click('.so-q-read');
-    const refused = await awaitSheet(s.page, (d) => !!d && !!d.status && /no voice key/.test(d.status.text), 8000);
-    ok(refused.ok && refused.seen.status.kind === 'error', 'a Read aloud that fails says why, in the dialog',
-      JSON.stringify(refused.seen && refused.seen.status));
-    await s.context.request.patch(s.url + '/api/sessions/' + alpha, { data: { title: 'Alpha renamed twice' } });
+    await wait(700);
+    await s.page.click('dialog.so-askdlg [data-action="read"]');
+    let spoken = '';
+    for (let i = 0; i < 40 && !/no voice key/.test(spoken); i += 1) { spoken = await toastOnTop(s.page); await wait(200); }
+    ok(/no voice key/.test(spoken), 'a Read aloud that fails says why, on top of the dialog', spoken);
+    await s.context.request.patch(s.url + '/api/sessions/' + alpha.id, { data: { title: 'Alpha renamed twice' } });
     await wait(1500);
-    const kept = await sheetLook(s.page);
-    ok(!!kept && !!kept.status && /no voice key/.test(kept.status.text), 'and it is still said after the next live frame',
-      JSON.stringify(kept && kept.status));
+    const kept = await toastOnTop(s.page);
+    ok(/no voice key/.test(kept) && !!(await askLook(s.page)), 'and it is still said after the next live frame, the dialog still up', kept);
     // Dictation on a machine with no microphone.
-    const micBefore = kept && kept.status ? kept.status.text : '';
-    await s.page.click('.so-q-own .so-mic');
-    const deaf = await awaitSheet(s.page, (d) => !!d && !!d.status && d.status.kind === 'error' && d.status.text !== micBefore, 8000);
-    ok(deaf.ok, 'a dictation that cannot start is said in the dialog, not under it', JSON.stringify(deaf.seen && deaf.seen.status));
-    await s.page.click('.so-q-close');
+    await s.page.click('dialog.so-askdlg [data-action="other"]');
+    await s.page.waitForSelector('dialog.so-askdlg .so-q-own .so-mic', { timeout: 5000 });
+    await s.page.click('dialog.so-askdlg .so-q-own .so-mic');
+    let deaf = '';
+    for (let i = 0; i < 40 && (!deaf || deaf === kept); i += 1) { deaf = await toastOnTop(s.page); await wait(200); }
+    ok(!!deaf && deaf !== kept, 'a dictation that cannot start is said on top of the dialog too', deaf);
+    await s.page.click('dialog.so-askdlg [data-action="close"]');
     ok(unexpected(s.errors, REFUSED_NOISE).length === 0, 'no unexpected console errors', unexpected(s.errors, REFUSED_NOISE).join(' | ') || '0');
-  } finally {
-    await s.stop();
-    await stub.close();
-  }
+  } finally { await s.stop(); }
 }
 
 // home-retry: an answer the operator could not give is offered again, and
@@ -9910,66 +9907,64 @@ async function homedevices() {
   }
 }
 
-// home-followup: the program takes the answer and asks its next question at
-// once, slower to read than the dialog's "Answered" lasts. The open dialog
-// takes the follow-up up - it never closes on "All questions answered" while
-// Home counts it - and holds Send until it is read, so the old answer is not
-// given to it.
+// home-followup: the agent asks its next question right after the dialog's
+// answer - the next message in its queue asks again - and the open dialog
+// takes the follow-up up rather than closing under it; the follow-up gets the
+// answer given to it, and only that.
 async function homefollowup() {
-  const { s, stub, ctl } = await homeServer();
+  const s = await homeChats();
   let stop = false;
   let loop = null;
   try {
-    const id = await makeAgent(s, 'Asks a follow-up');
     await awaitHome(s.page, (h) => h.shown, 10000);
-    const asked = await askQuestion(s, id);
+    const { id } = await askingChat(s, 'Asks a follow-up');
+    const followAsk = askFor('And which cache should it use?', ['Redis', 'Memcached']);
+    // Queued behind the turn that asks, so it asks the moment that turn
+    // ends: right after the answer.
+    ok((await tellChat(s, id, '/askuser ' + JSON.stringify(followAsk))) === 200, 'the follow-up waits in the chat’s queue', 'queued');
     await awaitHome(s.page, (h) => h.counts.questions === 1, 10000);
-    await s.page.click('.so-home__questions');
-    await awaitSheet(s.page, (d) => !!d && d.options.length === 2 && !d.reading, 10000);
-    // Every read from now on takes 2.5 s.
-    ctl.digest = async () => { await wait(2500); return undefined; };
+    await s.page.click('.so-home__q-action');
+    await awaitAsk(s.page, (d) => !!d && d.options.length === 2, 10000);
     const seen = [];
-    let asking = false;
+    let answered = false;
     loop = (async () => {
       while (!stop) {
-        const d = await sheetLook(s.page).catch(() => null);
+        const d = await askLook(s.page).catch(() => null);
         const h = await homeLook(s.page).catch(() => ({ counts: {} }));
-        seen.push({ asking, q: h.counts.questions, d: d && { finished: d.finished, reading: !!d.reading,
-          send: d.send && !d.send.hidden && !d.send.disabled, status: d.status && d.status.text } });
+        seen.push({ answered, q: h.counts.questions, d: d && { question: d.question, finished: d.finished } });
         await wait(100);
       }
     })();
-    await s.page.click('.so-q-option[data-label="SQLite"]');
-    await s.page.click('.so-q-send');
-    await awaitAnswerLogged(s, 1, 30000);
-    await awaitActivity(s, id, (a) => a.state !== 'waiting', 10000);
-    tmuxType(s, id, '/question');
-    asking = true;
-    const followUp = await awaitSheet(s.page, (d) => !!d && d.question === HOME_QUESTION && !d.reading && !d.finished
-      && (!d.status || !/^Answered/.test(d.status.text)) && d.options.every((o) => o.pressed !== 'true'), 15000);
-    ok(!!asked.digest && followUp.ok, 'the follow-up is taken up by the open dialog once it is read',
-      JSON.stringify(followUp.seen && { q: followUp.seen.question, finished: followUp.seen.finished, reading: followUp.seen.reading, status: followUp.seen.status }));
-    const closedWhileAsked = seen.filter((one) => one.asking && !one.d && one.q > 0);
-    ok(closedWhileAsked.length === 0, 'the dialog never closed while Home counted the follow-up',
-      JSON.stringify(closedWhileAsked.slice(0, 3)));
-    const sendWhileReading = seen.filter((one) => one.asking && one.d && one.d.reading && one.d.send);
-    ok(sendWhileReading.length === 0, 'and Send stayed off while it was being read', JSON.stringify(sendWhileReading.slice(0, 3)));
+    await s.page.click('dialog.so-askdlg .so-q-option[data-option="sqlite"]');
+    await s.page.click('dialog.so-askdlg [data-action="send"]');
+    answered = true;
+    const first = await returned(s, id);
+    const followUp = await awaitAsk(s.page, (d) => !!d && d.question === 'And which cache should it use?' && !d.finished
+      && d.options.every((o) => o.pressed !== 'true'), 15000);
+    ok(!!first && first.answers.db.selected.join() === 'sqlite' && followUp.ok,
+      'the first is answered, and the follow-up is taken up by the open dialog',
+      JSON.stringify({ first: first && first.answers.db.selected, now: followUp.seen && { q: followUp.seen.question, finished: followUp.seen.finished } }));
     stop = true;
     await loop;
-    await s.page.click('.so-q-option[data-label="Postgres"]');
-    await s.page.click('.so-q-send');
-    const both = await awaitAnswerLogged(s, 2, 30000);
-    await wait(2000);
-    const all = answersLogged(s);
-    ok(both.length === 2 && all.length === 2 && all[1].answers[0].choices.join(',') === 'Postgres',
-      'the follow-up gets the answer given to it, Postgres, and only that', JSON.stringify(all.map((e) => e.answers[0].choices)));
-    ok(await sheetShut(s.page, 20000), 'and then the dialog closes', 'shut');
+    const closedWhileAsked = seen.filter((one) => one.answered && !one.d && one.q > 0);
+    ok(closedWhileAsked.length === 0, 'the dialog never closed while Home counted the follow-up', JSON.stringify(closedWhileAsked.slice(0, 3)));
+    await s.page.click('dialog.so-askdlg .so-q-option[data-option="redis"]');
+    await s.page.click('dialog.so-askdlg [data-action="send"]');
+    let second = null;
+    for (const end = Date.now() + 15000; Date.now() < end && !second; await wait(200)) {
+      const said = ((await historyOf(s, id)).messages || []).filter((m) => m.role === 'assistant').map(textOf)
+        .filter((t) => t.startsWith('ask_user returned: '));
+      if (said.length >= 2) second = JSON.parse(said[1].slice('ask_user returned: '.length).split('\n')[0]);
+    }
+    const asks = (await historyOf(s, id)).asks || [];
+    ok(!!second && second.answers.db.selected.join() === 'redis' && asks.length === 2 && asks.every((a) => a.answered),
+      'the follow-up gets the answer given to it, Redis, and only that', JSON.stringify({ second: second && second.answers.db.selected, asks: asks.length }));
+    ok(await askShut(s.page, 20000), 'and then the dialog closes', 'shut');
     ok(unexpected(s.errors).length === 0, 'no console errors', unexpected(s.errors).join(' | ') || '0');
   } finally {
     stop = true;
     if (loop) await loop.catch(() => {});
     await s.stop();
-    await stub.close();
   }
 }
 
