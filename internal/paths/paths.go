@@ -8,7 +8,9 @@
 //	socrates.db               settings, logins, sessions, drafts, push, cost ledger
 //	chats/<id>/               a chat's journal, launch spec, attachments and adapter state
 //	agents/claude|codex|opencode/  the agents' shared transcripts and data
-//	accounts/<id>/            one account's CLAUDE_CONFIG_DIR, CODEX_HOME or OpenCode auth
+//	accounts/<id>/            one account's CLAUDE_CONFIG_DIR or CODEX_HOME (an OpenCode
+//	                          account's data home is agents/opencode/accounts/<id>/)
+//	secrets.key               the key that seals the accounts' API keys (0600)
 //	terminals/<id>/           a Shell terminal's journal
 //	sessions/<id>/            today's per-session files (plan.json, journal.raw, ...)
 //	profiles/<id>/            today's per-profile CLI state, until accounts replace it
@@ -55,6 +57,14 @@ const (
 	// been carried over, or found missing, so that it is never carried over
 	// again (internal/backup).
 	BackupMigrated = "backup.migrated"
+	// SecretsKey is the data directory's own key, which seals what Socrates
+	// keeps of the accounts: an API key in the store, and the environment a
+	// chat's agent host is handed (internal/accounts). It is backed up with
+	// the database it opens, so that a restore keeps the keys.
+	SecretsKey = "secrets.key"
+	// PreRebuildBackup is the name the migration's backup gets beside the
+	// data directory: <data>.pre-rebuild.tar.
+	PreRebuildBackup = ".pre-rebuild.tar"
 	// Bin is where Socrates downloads programs of its own (cloudflared).
 	Bin = "bin"
 	// TmuxSocket, TmuxConf and HookSocket are the private tmux server's.
@@ -95,10 +105,11 @@ const (
 // Redacted are files that are backed up without some of what they hold, as
 // path.Match patterns relative to the data directory and the top-level JSON
 // fields left out. A chat's launch spec carries the environment built from
-// its account (WP7), which can hold an API key; the server writes the spec
-// again before every launch, so a restored chat loses nothing by it.
+// its account, and an API key in it only sealed (secret_env); neither is
+// kept, as a second line of defence, because the server writes the spec
+// again before every launch and a restored chat loses nothing by it.
 var Redacted = map[string][]string{
-	Chats + "/*/" + ChatSpec: {"env"},
+	Chats + "/*/" + ChatSpec: {"env", "secret_env"},
 }
 
 // NotBackedUp are the parts of the data directory the backup leaves out, as
@@ -142,6 +153,10 @@ var NotBackedUp = []string{
 	Chats + "/*/" + ChatSpec + ".tmp",
 	Chats + "/*/" + ChatSummary,
 	Chats + "/*/" + ChatSummary + ".tmp",
+	// Codex's own logs of an account (log/ and its logs database), the
+	// "codex logs" of REBUILD.md §6.1.
+	Accounts + "/*/log",
+	Accounts + "/*/logs_*.sqlite*",
 	"lost+found",
 }
 
@@ -159,7 +174,7 @@ var BackedUpOnly = map[string][]string{
 // own are the parts of the data directory that are Socrates' state: a folder
 // inside one of them is never a working directory to leave out of a backup,
 // whatever a session row says.
-var own = []string{DB, Chats, Agents, Accounts, Terminals, Sessions, Profiles, VSCode, VSCodeExtensions}
+var own = []string{DB, Chats, Agents, Accounts, Terminals, Sessions, Profiles, VSCode, VSCodeExtensions, SecretsKey}
 
 // Own reports whether rel - a slash separated path relative to the data
 // directory - is one of Socrates' own parts or inside one.
@@ -213,8 +228,14 @@ func (l Layout) Chat(id string) string { return filepath.Join(l.Path(Chats), id)
 // Agent is the shared folder of one agent (claude, codex, opencode).
 func (l Layout) Agent(name string) string { return filepath.Join(l.Path(Agents), name) }
 
-// Account is the folder of one account.
+// Account is the folder of one account: its CLAUDE_CONFIG_DIR or CODEX_HOME.
 func (l Layout) Account(id string) string { return filepath.Join(l.Path(Accounts), id) }
+
+// SecretsKey is the data directory's own key file.
+func (l Layout) SecretsKey() string { return l.Path(SecretsKey) }
+
+// PreRebuildBackup is the migration's backup beside the data directory.
+func (l Layout) PreRebuildBackup() string { return l.Root + PreRebuildBackup }
 
 // Terminal is the folder of one Shell terminal.
 func (l Layout) Terminal(id string) string { return filepath.Join(l.Path(Terminals), id) }

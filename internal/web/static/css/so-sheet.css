@@ -9,6 +9,8 @@
  *     __groups                 the agents' and the tools' groups, one under the other
  *     __programs               a group of program cards (.ds-radios) laid out as a grid
  *     __program                one program card (.ds-radio): its mark above its name
+ *     __note                   a field's hint with a button at its end (the account's
+ *                              Sign in)
  *   .so-drop                   the dropdown: a .ds-combo whose field is a button
  *   .so-limits                 a profile's limit windows in the dropdown's list, each
  *                              a flat .ds-progress with its figures
@@ -18,6 +20,18 @@
   display: grid;
   gap: var(--ds-space-4);
   min-width: 0;
+}
+
+.so-settings__note {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--ds-space-1) var(--ds-space-2);
+  min-width: 0;
+}
+
+.so-settings__note > .ds-field__hint:empty {
+  display: none;
 }
 
 /* ── Program cards ───────────────────────────────────────────────────── */

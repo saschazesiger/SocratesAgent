@@ -15,6 +15,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -503,15 +504,52 @@ func (p *chatPeer) launch(ctx context.Context) error {
 		log.Printf("chats: %s: the agent host died during a turn; starting a new one", p.id)
 		_ = p.hub.srv.store.NoteResume(p.id)
 	}
+	spec := agenthost.Spec{
+		ChatID: p.id, Harness: row.Harness, Workdir: row.Workdir, Model: model, Effort: effort,
+		Conversation: row.CLISessionID, ParkAfterMS: p.hub.parkAfterFor().Milliseconds(),
+		Ultracode: chatUltracode(row.Harness, readPrestartOptions(row.Options).Ultracode),
+	}
+	if err := p.accountSpec(row, &spec); err != nil {
+		return err
+	}
 	lctx, cancel := context.WithTimeout(ctx, chatLaunchWait)
 	defer cancel()
 	entry, _ := p.hub.srv.Settings().Harnesses.Entry(row.Harness)
-	return p.hub.launcher.Launch(lctx, agenthost.Spec{
-		ChatID: p.id, Harness: row.Harness, Workdir: row.Workdir, Model: model, Effort: effort,
-		Binary:       strings.TrimSpace(entry.Binary),
-		Conversation: row.CLISessionID, ParkAfterMS: p.hub.parkAfterFor().Milliseconds(),
-		Ultracode: chatUltracode(row.Harness, readPrestartOptions(row.Options).Ultracode),
-	})
+	spec.Binary = strings.TrimSpace(entry.Binary)
+	return p.hub.launcher.Launch(lctx, spec)
+}
+
+// accountSpec puts the chat's account into its launch spec: the account and
+// the environment built for it, the key sealed for this chat. A switch still
+// in the outbox is where the chat is going, so the host starts on its
+// account at once (and journals the divider with its reason) rather than on
+// the old one only to be switched a moment later.
+func (p *chatPeer) accountSpec(row *store.Session, spec *agenthost.Spec) error {
+	h := p.hub.srv.accounts
+	acct, err := h.forChat(row)
+	if err != nil {
+		return fmt.Errorf("the chat's account: %w", err)
+	}
+	pending, err := p.hub.srv.store.Outbox(p.id)
+	if err != nil {
+		return err
+	}
+	for i := len(pending) - 1; i >= 0; i-- {
+		var cmd agenthost.Command
+		if json.Unmarshal(pending[i].Command, &cmd) != nil || cmd.Op != agenthost.OpSwitchAccount {
+			continue
+		}
+		if target, err := p.hub.srv.store.GetAccount(cmd.Account); err == nil && target.Agent == row.Harness {
+			acct, spec.SwitchReason = target, cmd.Reason
+		}
+		break
+	}
+	env, sealed, err := h.chatEnv(acct, p.id)
+	if err != nil {
+		return err
+	}
+	spec.Account, spec.Env, spec.SecretEnv = acct.ID, env, sealed
+	return nil
 }
 
 // serve runs one connection: every unacknowledged command goes again, then
@@ -542,7 +580,10 @@ func (p *chatPeer) serve(conn *agenthost.Conn) {
 		case f.Delta != nil:
 			feed.Delta(*f.Delta)
 		case f.Ack != nil:
-			p.reply(f.Ack.ClientID, chatReply{ack: f.Ack}, true)
+			// A switch that waits for the turn stays in the outbox until it
+			// is made: a host that dies meanwhile is followed by one started
+			// on its account (accountSpec).
+			p.reply(f.Ack.ClientID, chatReply{ack: f.Ack}, !f.Ack.Pending)
 		case f.Fail != nil:
 			p.reply(f.Fail.ClientID, chatReply{fail: f.Fail}, !keepForNextHost(f.Fail))
 		}
@@ -571,7 +612,7 @@ func keepForNextHost(f *agenthost.Fail) bool {
 	if f.Code != agenthost.CodeNotRunning && f.Code != agenthost.CodeStopping {
 		return false
 	}
-	return f.Op == agenthost.OpSend || f.Op == agenthost.OpAnswer
+	return f.Op == agenthost.OpSend || f.Op == agenthost.OpAnswer || f.Op == agenthost.OpSwitchAccount
 }
 
 // drop closes the connection to the host, which keeps running.
@@ -602,6 +643,7 @@ func (p *chatPeer) apply(ev agent.Event) {
 	if ev.Seq != last+1 {
 		log.Printf("chats: %s: events %d to %d are missing", p.id, last+1, ev.Seq-1)
 	}
+	turnAccount := accountOfTurn(p.proj, nil)
 	p.feed.Append(ev)
 	p.proj.Apply(ev)
 	p.brief = briefOf(p.proj)
@@ -617,7 +659,19 @@ func (p *chatPeer) apply(ev agent.Event) {
 		p.rebuilding = false
 	}
 	held := p.rebuilding
+	var limits map[string]agent.RateLimit
+	if ev.Type == agent.TypeTurnEnded && ev.Outcome == agent.OutcomeLimited {
+		limits = make(map[string]agent.RateLimit, len(p.proj.RateLimits))
+		for k, v := range p.proj.RateLimits {
+			limits[k] = v
+		}
+	}
 	p.mu.Unlock()
+	// A rebuild's history is no news to the accounts either: a turn that
+	// completed long ago says nothing of a limit or a sign-in now.
+	if !held {
+		p.noteAccount(ev, turnAccount, limits)
+	}
 	if ev.Type == agent.TypeConversation && ev.ConversationID != "" {
 		if err := p.hub.srv.store.SetChatConversation(p.id, ev.ConversationID); err != nil && !errors.Is(err, store.ErrNotFound) {
 			log.Printf("chats: %s: could not record the conversation id: %v", p.id, err)
@@ -771,6 +825,11 @@ type createChatBody struct {
 	Title       string `json:"title"`
 	// Ultracode is Claude Code's session option (chatUltracode).
 	Ultracode bool `json:"ultracode"`
+	// Account is the account the chat runs on, empty for the recommended
+	// one of its agent; AutoSwitch moves it to another when a limit is
+	// reached (REBUILD.md §4.3, off unless asked for).
+	Account    string `json:"account"`
+	AutoSwitch bool   `json:"auto_switch"`
 	// Message is the first message, sent once the chat exists.
 	Message *chatMessageBody `json:"message"`
 }
@@ -804,6 +863,10 @@ func (s *Server) handleCreateChat(w http.ResponseWriter, r *http.Request) {
 		writeError(w, refused.status, refused.msg)
 		return
 	}
+	if refused := s.checkChatAccount(harness, body.Account); refused != nil {
+		writeError(w, refused.status, refused.msg)
+		return
+	}
 	if body.Message != nil {
 		if status, msg := checkMessage(body.Message); status != 0 {
 			writeError(w, status, msg)
@@ -830,8 +893,8 @@ func (s *Server) handleCreateChat(w http.ResponseWriter, r *http.Request) {
 		ID: id, ClientID: clientID, Title: sessionTitle(body.Title, label, workdir, mode),
 		TitleSource: titleSource(body.Title), Harness: harness, Model: strings.TrimSpace(body.Model),
 		Effort: strings.TrimSpace(body.Effort), Workdir: workdir, WorkdirMode: mode,
-		Options: withOption(nil, "ultracode", chatUltracode(harness, body.Ultracode)),
-		Kind:    store.KindChat, State: store.StateRunning,
+		Kind: store.KindChat, State: store.StateRunning,
+		Options: withChatAccount(withOption(nil, "ultracode", chatUltracode(harness, body.Ultracode)), body.Account, body.AutoSwitch),
 	}
 	if err := s.store.CreateSession(row); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())

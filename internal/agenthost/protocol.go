@@ -43,11 +43,31 @@ const (
 	OpCommand   = "command"
 	OpPark      = "park"
 	OpStop      = "stop"
+	// OpSwitchAccount moves the chat to another account: the running turn
+	// is interrupted gracefully, the CLI is parked and started again with the
+	// other account's environment on the same conversation, and the journal
+	// gets an account.switched divider. With When = WhenAfterTurn it waits
+	// for the agent to be done instead (AGENT-HOST.md §4.3).
+	OpSwitchAccount = agent.OpSwitchAccount
 	// OpAsk is a local tool's question (protocol 2): the host journals it as
 	// an ask of the running turn, acknowledges it with its ask id, and sends
 	// the answer on the same connection, as an answer frame, when it comes.
 	OpAsk = "ask"
 )
+
+// When a switch_account takes effect.
+const (
+	// WhenNow interrupts a running turn and switches at once.
+	WhenNow = "now"
+	// WhenAfterTurn switches once no turn runs and the agent has taken up
+	// every message: the switch after this turn. The journaled command says
+	// it in its args, so the turn is not taken for one the switch stopped.
+	WhenAfterTurn = agent.SwitchAfterTurn
+)
+
+// ContinueText is the message a switch with Continue sends on the new
+// account, so that the turn the limit stopped goes on.
+const ContinueText = "Continue where you left off."
 
 // Frame types, host to client.
 const (
@@ -101,6 +121,17 @@ type Command struct {
 	Args        string             `json:"args,omitempty"`
 	// Payload is an ask op's question: an ask_user payload.
 	Payload json.RawMessage `json:"payload,omitempty"`
+
+	// A switch_account's account, the CLI environment built for it (without
+	// its key), the key's variables sealed for this chat (SealEnv), why it
+	// switches (the divider's reason), when, and whether to send
+	// ContinueText on the new account once it is up.
+	Account   string   `json:"account,omitempty"`
+	Env       []string `json:"env,omitempty"`
+	SecretEnv string   `json:"secret_env,omitempty"`
+	Reason    string   `json:"reason,omitempty"`
+	When      string   `json:"when,omitempty"`
+	Continue  bool     `json:"continue,omitempty"`
 }
 
 // Hello is the host's first frame.
@@ -130,6 +161,10 @@ type Ack struct {
 	ByDevice          string `json:"by_device,omitempty"`
 	// AskID is the id an ask op's question was journaled under.
 	AskID string `json:"ask_id,omitempty"`
+	// Pending is a switch_account that waits for the turn to end: taken,
+	// not made yet. The client keeps it to send again until the final ack
+	// of the same client_id, which comes once it is made or replaced.
+	Pending bool `json:"pending,omitempty"`
 }
 
 // Answer is the answer to an ask a connection asked (OpAsk).

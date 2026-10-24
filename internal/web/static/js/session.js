@@ -25,6 +25,7 @@ import {
   MORE_KEY, SHELVES, PREPARED, IDE, foldersOf, folderKeyOf, ideOf, isPrepared, momentOf, movesRow,
 } from './folders.js';
 import * as harnesses from './harnesses.js';
+import * as accounts from './accounts.js';
 import { createTerm, measurePane, loadTerminalFonts } from './term.js';
 import { mountAssist } from './assist.js';
 import { mountNotify } from './notify.js';
@@ -1256,6 +1257,8 @@ function rowFacts(session) {
     session.workdir,
   ];
   if (session.options?.profile) facts.push('Profile: ' + harnesses.profileName(session.options.profile));
+  if (session.options?.account) facts.push('Account: ' + (accounts.labelOf(session.options.account) || session.options.account));
+  if (session.options?.auto_switch) facts.push('Switches accounts at a limit');
   if (session.options?.ultracode) facts.push('Ultracode on');
   if (isPrepared(session)) {
     if (session.options?.profile_auto) facts.push('Profile: chosen when it starts');
@@ -2138,6 +2141,18 @@ function downloadJournal(session) {
   window.open('/api/sessions/' + encodeURIComponent(session.id) + '/journal', '_blank');
 }
 
+// setAutoSwitch turns a chat's switch of account at a limit on or off.
+async function setAutoSwitch(session, on) {
+  try {
+    const data = await accounts.setAutoSwitch(session.id, on);
+    if (data.session) replaceSession(data.session);
+    toast(on ? 'At a limit, this chat goes on with the account that has the most left.'
+      : 'At a limit, this chat stops and asks.');
+  } catch (err) {
+    toast(errorMessage(err), 'error');
+  }
+}
+
 // compactChat asks a chat's agent to compact its conversation: the palette's
 // /compact, sent once by its client_id like everything a chat is told. It
 // says what became of it, whether the chat is on screen or not: taken,
@@ -2243,6 +2258,12 @@ async function openRowMenu(anchor, id) {
     }
     add('compact', 'Compact the conversation', 'archive', () => compactChat(session));
     add('export', 'Download the conversation', 'download', () => exportChat(session));
+    // Off unless asked for, per chat: at a limit the chat goes on with the
+    // account that has the most left instead of stopping (REBUILD.md §4.3).
+    if (!prepared) {
+      const on = !!session.options?.auto_switch;
+      add('auto-switch', 'Switch accounts at a limit', '', () => setAutoSwitch(session, !on), on, 'menuitemcheckbox');
+    }
   } else if (!prepared) {
     add('journal', editor ? 'Download server log' : 'Download scrollback', 'download', () => downloadJournal(session));
   }
@@ -3501,6 +3522,8 @@ async function prepareSession(pick) {
         profile: pick.profile || undefined,
         profile_auto: pick.profile_auto || undefined,
         ultracode: pick.ultracode || undefined,
+        account: pick.account || undefined,
+        auto_switch: pick.auto_switch || undefined,
         workdir_mode: pick.workdir_mode,
         workdir: pick.workdir,
         cols: size.cols || undefined,
@@ -3580,6 +3603,8 @@ async function startChat(pick) {
         model: pick.model,
         effort: pick.effort,
         ultracode: pick.ultracode || undefined,
+        account: pick.account || undefined,
+        auto_switch: pick.auto_switch || undefined,
         workdir_mode: pick.workdir_mode,
         workdir: pick.workdir,
       },

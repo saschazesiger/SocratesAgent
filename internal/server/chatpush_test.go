@@ -70,10 +70,17 @@ func TestAChatsPushesSayWhatItsJournalSays(t *testing.T) {
 		t.Fatalf("the push after the answer: %+v", done)
 	}
 
+	// A limit is the accounts' to push (accountHub.onLimit): when it renews
+	// and on which account, once - not the turn's end as well.
 	c.send(t, id, "m2", "/limit")
 	limited := pushOfKind(t, sent, pushFinished, 10*time.Second)
-	if limited.Body != "Limit reached · The usage limit of this account is reached." {
+	if !strings.HasPrefix(limited.Body, "Limit reached — renews in ") || !strings.HasSuffix(limited.Body, "(Default)") {
 		t.Fatalf("the limit's push: %+v", limited)
+	}
+	select {
+	case s := <-sent:
+		t.Fatalf("a limit was pushed twice: %+v", s.note)
+	case <-time.After(time.Second):
 	}
 
 	// Stopped by the person: unread, as any turn's end, and pushed to nobody.

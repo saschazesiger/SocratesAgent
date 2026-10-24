@@ -64,6 +64,26 @@ func TestTheBrowserFoldsAChatAsTheServerDoes(t *testing.T) {
 	}
 }
 
+// Claude's word that it goes on without another organization's thinking is
+// a hint on the switch that caused it, not a line of its own; any other
+// notice stays one.
+func TestTheForeignThinkingNoticeGoesOnTheSwitch(t *testing.T) {
+	events := []agent.Event{
+		{Type: agent.TypeAccountSwitched, From: "a-1", To: "a-2", Reason: "testing"},
+		{Type: agent.TypeMessage, MessageID: "m1", Role: agent.RoleUser, State: agent.MessageDelivered, Text: "go on"},
+		{Type: agent.TypeTurnStarted, TurnID: "t1", MessageID: "m1", Account: "a-2"},
+		{Type: agent.TypeNotice, Code: agent.NoticeForeignThinking, Text: "set aside"},
+		{Type: agent.TypeNotice, Code: "compacted", Text: "compacted"},
+	}
+	for i := range events {
+		events[i].Seq, events[i].At = int64(i+1), int64(1000+i)
+	}
+	got := runFold(t, events, `chat.timeline.filter((e) => e.type === 'line').map((e) => e.line.kind + ':' + (e.line.hint || e.line.text || ''))`)
+	if got != `["account:set aside","notice:compacted"]` {
+		t.Fatalf("lines %s", got)
+	}
+}
+
 // foldedView is what both folds are compared on: every message with its
 // parts (and theirs), and every question.
 func foldedView(p *agent.Projection) string {
@@ -127,6 +147,21 @@ func foldedView(p *agent.Projection) string {
 // describes the result the way foldedView does.
 func foldInBrowser(t *testing.T, events []agent.Event) string {
 	t.Helper()
+	return runFold(t, events, `(() => {
+  const parts = (list) => list.map((p) => ({ id: p.id, kind: p.kind, state: p.state, text: p.text, children: parts(p.children) }));
+  const messages = chat.timeline.filter((e) => e.type === 'message').map((e) => chat.messages.get(e.id))
+    .map((m) => ({ id: m.id, role: m.role, state: m.state, text: m.text, parts: parts(m.parts) }));
+  const asks = [...chat.asks.values()].sort((a, b) => a.seq - b.seq)
+    .map((a) => ({ id: a.id, answered: a.answered, answer: a.answer, by_device: a.byDevice, delivered: a.delivered }));
+  return { messages, asks, open: fold.openAsks(chat).map((a) => a.id), running: fold.busy(chat),
+    outcome: chat.lastTurn ? chat.lastTurn.outcome : '' };
+})()`)
+}
+
+// runFold folds the events with the real chatfold.js in node and prints
+// expr, a JavaScript expression over fold (the module) and chat, as JSON.
+func runFold(t *testing.T, events []agent.Event, expr string) string {
+	t.Helper()
 	node, err := exec.LookPath("node")
 	if err != nil {
 		t.Skip("node is not installed, so the browser module cannot be run")
@@ -152,13 +187,7 @@ import { readFileSync } from 'node:fs';
 const fold = await import(` + strconv.Quote("file://"+module) + `);
 const chat = fold.newChat();
 for (const ev of JSON.parse(readFileSync(` + strconv.Quote(journal) + `, 'utf8'))) fold.apply(chat, ev);
-const parts = (list) => list.map((p) => ({ id: p.id, kind: p.kind, state: p.state, text: p.text, children: parts(p.children) }));
-const messages = chat.timeline.filter((e) => e.type === 'message').map((e) => chat.messages.get(e.id))
-  .map((m) => ({ id: m.id, role: m.role, state: m.state, text: m.text, parts: parts(m.parts) }));
-const asks = [...chat.asks.values()].sort((a, b) => a.seq - b.seq)
-  .map((a) => ({ id: a.id, answered: a.answered, answer: a.answer, by_device: a.byDevice, delivered: a.delivered }));
-console.log(JSON.stringify({ messages, asks, open: fold.openAsks(chat).map((a) => a.id), running: fold.busy(chat),
-  outcome: chat.lastTurn ? chat.lastTurn.outcome : '' }));
+console.log(JSON.stringify(` + expr + `));
 `
 	cmd := exec.Command(node, "--input-type=module", "-e", script)
 	var complaints strings.Builder

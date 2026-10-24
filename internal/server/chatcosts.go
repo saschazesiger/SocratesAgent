@@ -5,9 +5,10 @@ package server
 // One source per chat: its journal. Every turn's end carries what it used -
 // Claude's cost_usd (the CLI's own price), Codex's tokens (priced here by the
 // ledger's Codex rates), OpenCode's cost (OpenCode prices its answers itself)
-// - and every turn has the account it ran on (the account.switched events),
-// which the CLIs' transcripts cannot say once every account's transcripts
-// are in one shared folder. The transcripts of a chat's conversations are
+// - and every turn has the account it ran on (turn.started's account, and
+// the account.switched events of a journal from before accounts), which the
+// CLIs' transcripts cannot say once every account's transcripts are in one
+// shared folder. The transcripts of a chat's conversations are
 // therefore never counted as well: every conversation id a chat's journal
 // names, and the row's own, is the chat's, kept in the store for good so
 // that a chat that is deleted does not hand its transcripts back to the
@@ -16,11 +17,12 @@ package server
 // A chat's ledger is named by the chat, not by its conversation: /clear, a
 // Codex thread copied for a stripped retry and a conversation lost and
 // started again are one chat. Each account a chat ran on is a ledger of its
-// own (chat-<id> for the account it started on, chat-<id>@<account> after a
-// switch), so the costs page splits them by account the way it splits the
-// transcripts by profile. A ledger is the journal's sum as it reads now: one
-// the read no longer makes (the account it started on, once the first switch
-// says which one that was) is taken away, so that no turn is counted twice.
+// own (chat-<id>@<account>), so the costs page splits them by account the way
+// it splits the transcripts by profile. A turn of a journal from before
+// accounts names none: it is on chat-<id> until the first switch says (its
+// from) which account it ran on. A ledger is the journal's sum as it reads
+// now: one the read no longer makes is taken away, so that no turn is
+// counted twice.
 //
 // A journal that was lost with its folder is a new one: the history its host
 // writes back was counted when it ran, in the lost journal's ledgers, which
@@ -75,6 +77,9 @@ func readChatCosts(path, harness, model string) (chatCosts, error) {
 	account := ""
 	switched := false
 	turnModel := map[string]string{}
+	// turnAccount is the account each turn says it runs on (turn.started);
+	// a turn that names none is on the account the switches say.
+	turnAccount := map[string]string{}
 	seen := map[string]bool{}
 	err := agent.ScanJournal(path, func(ev agent.Event) {
 		switch ev.Type {
@@ -89,6 +94,10 @@ func readChatCosts(path, harness, model string) (chatCosts, error) {
 			if ev.Model != "" {
 				model = ev.Model
 			}
+		case agent.TypeTurnStarted:
+			if ev.Account != "" && ev.TurnID != "" {
+				turnAccount[ev.TurnID] = ev.Account
+			}
 		case agent.TypeConversation:
 			if id := strings.TrimSpace(ev.ConversationID); id != "" && !seen[id] {
 				seen[id] = true
@@ -102,10 +111,11 @@ func readChatCosts(path, harness, model string) (chatCosts, error) {
 				out.spends = map[string][]costs.Spend{}
 				out.gen = strconv.FormatInt(ev.At, 10)
 				account, switched = "", false
+				turnAccount = map[string]string{}
 			}
 		case agent.TypeAccountSwitched:
-			// The turns before the first switch ran on the account it
-			// switched from.
+			// The turns before the first switch that named no account ran
+			// on the account it switched from.
 			if !switched && account == "" && ev.From != "" {
 				if before := out.spends[""]; len(before) > 0 {
 					out.spends[ev.From] = append(out.spends[ev.From], before...)
@@ -118,8 +128,12 @@ func readChatCosts(path, harness, model string) (chatCosts, error) {
 			if m == "" {
 				m = model
 			}
+			on := turnAccount[ev.TurnID]
+			if on == "" {
+				on = account
+			}
 			if s, ok := turnSpend(harness, m, ev); ok {
-				out.spends[account] = append(out.spends[account], s)
+				out.spends[on] = append(out.spends[on], s)
 			}
 		}
 	})

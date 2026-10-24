@@ -2531,7 +2531,8 @@ than for every such chat at start, which after a restore could be hundreds of ag
 **WP9 / §3.1 — Ultracode is a field of `host.json`, and changing it parks the agent.** The server
 does not build a chat's environment (WP7 does), so it does not put `SOCRATES_CLAUDE_ULTRACODE` into
 `env`: `host.json` says `ultracode`, and the host adds the variable to whatever environment the CLI
-gets - and takes away one the environment brought, so an ambient value never decides. The option
+gets - the account's, at the start and with every `switch_account` - and takes away one the
+environment brought, so an ambient value never decides. The option
 is a launch setting of the CLI; switching it in a running Claude chat's ⋮ saves it and parks the
 agent as soon as it is idle, so the next message resumes the conversation with it.
 
@@ -2552,3 +2553,155 @@ OpenCode, `internal/server`'s test binary imports their adapters (with fakeclaud
 fakeopencode on the PATH) and, like the browser suite, sets `SOCRATES_AGENT_TERMINALS=1`, so that
 its many tests of agent terminals still make terminals; a test that wants a prepared Claude chat
 unsets it for itself.
+
+**WP7 / §4.3 — the server decides an automatic switch; the host only carries it out.** §4.3 has
+"the host switches to the recommended account". The host knows neither the other accounts, nor
+their limits, nor their keys; the server has all three. So at a `limited` turn's end the server
+picks the account (the recommender of the Accounts card) and sends the same `switch_account` a
+person's "Continue with" sends, with `continue`; the mechanics (interrupt, park and relaunch, or
+OpenCode's `SwitchAccount`, the divider with its reason) are the host's, as planned.
+
+**WP7 / §4.3 — "re-send the interrupted turn" is a message that says to go on.** After the switch
+the new account is sent "Continue where you left off." (`agenthost.ContinueText`), a user message
+with its own `client_id`. The conversation is resumed with the stopped turn in it, so the agent has
+what it was doing; sending the person's message again would put it in the conversation, the
+journal and the chat twice, and would repeat whatever the turn had already done.
+
+**WP7 / §4.3 — the account sits in the composer's bar, not in a chat header.** "The chat header
+shows the account next to the model": in the chat view (WP8) the model is in the composer's bar,
+so the account is beside it there, through `useAccountPicker`. It shows for an agent with two
+accounts or more; with one there is nothing to pick. "Switch now" during a turn interrupts and has
+the new account carry the turn on (`continue`); "After this turn" waits for it.
+
+**WP7 / §4.1 — more fields than the list.** The accounts table also keeps `state` (signed in, needs
+sign-in, failed) with why, the OpenCode provider of a key, `origin` (the folder the migration moved
+the login out of; what makes the migration idempotent and what keeps such an account from being
+deleted while HOME links to it) and `limited_until` (when a limit it ran into renews, so the
+recommendation passes over it). A limit that does not say when it renews is held for an hour.
+
+**WP7 / §4.2 — Claude Code signs in with `claude auth login --claudeai`, in a Shell that stays.**
+The flag is the subscription sign-in, which is what an account of that kind is; without it Claude
+Code first asks which kind. The Shell runs in a fresh directory (Dynamic) and stays a shell when
+the sign-in ends, so its outcome can be read there; the account's state follows its folder.
+
+**WP7 / §4.2 — OpenCode's sign-in offers the providers' OAuth methods only.** `GET /provider/auth`
+also lists API-key methods; a key is an account of its own kind, passed per process as
+`OPENCODE_AUTH_CONTENT` (§4.1), never written with `PUT /auth`, so the sign-in leaves it out.
+
+**WP7 / §4.1 — a Codex key is kept sealed as well.** Codex logs a key in itself (`account/login/
+start {type: apiKey}` into the account's `CODEX_HOME`), and that file is what codex reads. The key
+is kept sealed in the store too, like every key, so that "Replace the key" and a restore have it.
+
+**WP7 / §6.1 — an OpenCode account's folder is `agents/opencode/accounts/<id>/`.** WP5's layout
+keeps every OpenCode account's data home under OpenCode's own folder (one shared database, each
+account its own `auth.json`); Claude Code's and Codex's are `accounts/<id>/` as planned.
+
+**WP7 / §4.2 — the keys are sealed with a key file in the data folder.** "The existing vault": the
+vault's AES-GCM, with a new key, `<data>/secrets.key` (0600, made once), since the vault's only key
+so far was the backup's passphrase, which the server does not hold. The file is backed up with the
+store (a restore needs both); `host.json`'s `env` and `secret_env` are not. A chat's key variables
+are sealed again for that chat, so `host.json` and the outbox hold only ciphertext.
+
+**WP7 / §8 step 1 — the folders are renamed and the old paths become links.** "Move" is a rename
+(the same inodes, never a copy: two copies of an OAuth login rotate each other out, which is what
+logged the person out every few minutes), and `~/.claude`, `~/.claude.json`, `~/.codex`,
+`~/.local/share/opencode`, `~/.config/opencode` and every profile's folders become links to where
+they went, so a terminal or a CLI started by hand uses the same files. Claude Code writes
+`.claude.json` through the link (checked against 2.1.309). A folder on another file system is not
+moved (a rename there is a copy): that account says "sign in here". The Default OpenCode account's
+database becomes the shared one; a profile's own, when there is one, stays in its folder unread.
+What would collide in a shared folder is kept beside it as `<name>.pre-rebuild`. Steps 3 and 4
+(the agent sessions' clean cut, the old S3 objects) are WP10's.
+
+**WP7 / §8 step 2 — a lost profile becomes an account for each agent its sessions ran.** A profile
+held all three agents, an account is one; a profile whose folders are gone becomes a "Sign in
+again" account for each agent its sessions used, and a Claude Code one when it has none.
+
+**WP7 — deleting an account removes its folder.** Socrates never writes, refreshes or deletes a
+login, except here: an account is its folder, and the person asked for it to go. The server
+refuses while a chat runs on it, and for an account the migration moved in from HOME, which HOME's
+links point at (one made of a profile goes, with the link left in the profile's place).
+
+**WP7 — a chat that names no account gets one at launch.** A chat made by a client that does not
+send `account` (the API, PreStart's "Automatic", a chat from before WP7) runs on its agent's
+recommended account, else its first, else a new "Default" subscription that has to be signed in;
+the choice is written to the row. A fresh install has no account until then.
+
+**WP7 — the server's tests keep the agent terminals.** `internal/server` now registers the Claude
+Code, Codex and OpenCode adapters (through `internal/accounts`), which makes those three chats in
+its tests; the tests written for their terminals set `SOCRATES_AGENT_TERMINALS=1` in `TestMain`,
+as the browser suite does.
+
+**WP7 — the dashboard's Profiles card is gone; the profiles stay for terminals.** Accounts replace
+profiles for chats (§4.1). The terminal-only plumbing (`/api/profiles`, the sheet's profile field
+for an agent terminal, `harnesses/profiles.go`) stays until WP10 removes the agent terminals;
+taking it out now would widen this package into theirs.
+
+**WP7 review / §8 — the migration runs only on a data folder of the build before.** "On the first
+start of the new version" read as "on every data folder without a marker", so a new one (a trial
+`-data /tmp/x`, an e2e run in live mode, `node e2e/shots.mjs`) took the machine's real logins into a
+folder that was deleted afterwards. The store now marks a database it brings up to schema 12 from an
+older one (`kv accounts.migration`, written before the new version, so no crash leaves an old
+database upgraded without it); only a marked data folder migrates, and finishing clears the mark,
+which replaces the `accounts.migrated` file. A data folder in the temporary directory never takes a
+folder from outside it, so a rehearsal on a copy of `/var/lib/socrates` there leaves HOME alone.
+
+**WP7 review / §8 step 1 before step 3 — the moves are atomic instead of waiting for the clean
+cut.** §8 lists stopping the old agent terminals (step 3, WP10) after the moves, and the tmux scope
+survives a restart, so the moves run under live agents. Each move is now one step on Linux
+(`renameat2(RENAME_EXCHANGE)` of the folder with a link made at its new place), so an agent writing
+by path never finds the old path missing or makes a second folder - and a second login - there; the
+shared folders are swapped for their links before they are merged, so a recreated `projects/` can no
+longer block the account for good. WP10 should still run the clean cut before `accounts.Migrate`.
+This uses `golang.org/x/sys/unix`, already in the module graph (modernc.org/sqlite needs it); go.mod
+lists it as a direct requirement now.
+
+**WP7 review / §8 — one folder that cannot move holds up nothing else.** A failing source is logged
+and tried again at the next start (the mark stays) while the others move. A link of the person's own
+to somewhere else (dotfiles) is left like a folder on another file system: its account is made and
+says why, and `~/.claude.json` stays beside it. A lost profile's account has the origin
+`lost:<profile>:<agent>` (it moved nothing in), and can be deleted.
+
+**WP7 review / AGENT-HOST §4.3 — a switch after the turn is acknowledged twice.** It lived only in
+the host and was acknowledged at once, which emptied the outbox: a host that died before the turn
+ended lost it while the composer kept announcing it. The ack now says `pending`, the server keeps the
+command until the host's second, final ack (made, or replaced by a newer switch), and a host launched
+meanwhile starts on its account. The field is additive; the protocol version stays 2. A switch
+without `env` is refused rather than run on the environment of the account the chat is on.
+
+**WP7 review / AGENT-HOST §10 — Codex holds its queue after a limit too.** §10 named OpenCode; Codex
+had the same cause (the messages it never took up were started at once, each into the account at its
+limit). Held messages no longer count as a turn an "after this turn" switch waits for.
+
+**WP7 review / research 08 §3 and 06 — the divider's "i" and a refused sign-in.** The divider says
+who the new account is, that the next reply may be slower, and Claude's "can't use thinking from
+another organization" as a hint (`notice{foreign_thinking}`, folded into the divider by the chat)
+instead of a warning line. An `error{auth}` (OpenCode's ProviderAuthError or a 401, among them a
+refresh token two chats renewed at once) marks the account "Sign in again" although its `auth.json`
+is still there, until a sign-in, a new key or a completed turn on it.
+
+**WP7 review — the e-mail stays behind the "i".** The quiet line beside an account's name in the
+sheet, the picker and the Admin list said the e-mail; it says the kind now, and the e-mail and the
+plan are in the account's "i" and the divider's.
+
+**WP7 + WP9 / §4.3 — a chat's limit is one push, the accounts'.** WP9 pushes every chat turn's end
+in its journal's words, a limited one as "Limit reached · <why>"; WP7 pushes a limit itself, with
+when it renews and on which account, once per account it is stopped on, and not at all when the
+chat's automatic switch moved it on. Together a limit was pushed twice, and once more as news after
+the automatic switch had already dealt with it. The turn-end push now leaves a limited turn of a
+chat whose journal names its account to the accounts (`chatHub.turnWords`); the page's own
+notification, on a device without Web Push, still says the journal's words.
+
+**WP7 + WP9 / §4.4 — a chat's turns are on the account they ran on from the first turn.** WP9's
+ledger learnt a chat's first account from its first switch's `from`, so a chat that never switched
+had its cost on a ledger with no account. Every `turn.started` names its account now (WP7), and the
+ledger puts each turn there (`chat-<id>@<account>`); the costs page names the accounts. Only a
+journal from before accounts still has turns with none.
+
+**WP7 + WP9 / §5.4 — a switch made now stops the turn as a Stop does.** WP9 pushes and judges an
+interrupted turn unless somebody asked it to stop (an `interrupt` or `stop` command journaled while
+it ran); WP7's "Switch now" interrupts the running turn too, at the person's word, and the new
+account carries it on. Such a turn was pushed as "Stopped · …" and judged, a moment before the
+turn that carries it on. A `switch_account` journaled while a turn runs now marks it stopped, unless
+it waits for the turn: the journaled command says its `when` in `args` (`after_turn`), an additive
+field of the command event.

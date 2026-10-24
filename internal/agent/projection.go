@@ -50,6 +50,7 @@ type Projection struct {
 type Turn struct {
 	ID        string  `json:"id"`
 	MessageID string  `json:"message_id,omitempty"`
+	Account   string  `json:"account,omitempty"`
 	StartedAt int64   `json:"started_at"`
 	EndedAt   int64   `json:"ended_at,omitempty"`
 	Outcome   string  `json:"outcome,omitempty"`
@@ -57,8 +58,9 @@ type Turn struct {
 	CostUSD   float64 `json:"cost_usd,omitempty"`
 	Error     string  `json:"error,omitempty"`
 	// Stopped is set when somebody asked the turn to stop while it ran (an
-	// interrupt or a stop the host took): an interrupted turn that is not
-	// Stopped was ended by something else, such as a host that died.
+	// interrupt, a stop or a switch to another account made now, as the
+	// host took them): an interrupted turn that is not Stopped was ended by
+	// something else, such as a host that died.
 	Stopped bool `json:"stopped,omitempty"`
 }
 
@@ -168,7 +170,10 @@ func (p *Projection) Apply(ev Event) {
 	}
 	switch ev.Type {
 	case TypeTurnStarted:
-		p.Turn = &Turn{ID: ev.TurnID, MessageID: ev.MessageID, StartedAt: ev.At}
+		p.Turn = &Turn{ID: ev.TurnID, MessageID: ev.MessageID, Account: ev.Account, StartedAt: ev.At}
+		if ev.Account != "" {
+			p.Account = ev.Account
+		}
 	case TypeTurnEnded:
 		p.endTurn(ev)
 	case TypeMessage:
@@ -228,7 +233,10 @@ func (p *Projection) Apply(ev Event) {
 	case TypeAgentInfo:
 		p.Agent = ev.Content
 	case TypeCommand:
-		if (ev.Op == OpInterrupt || ev.Op == OpStop) && p.Turn != nil {
+		// A switch to another account made now stops the running turn as
+		// much as a Stop does; one that waits for the turn does not.
+		stops := ev.Op == OpInterrupt || ev.Op == OpStop || (ev.Op == OpSwitchAccount && ev.Args != SwitchAfterTurn)
+		if stops && p.Turn != nil {
 			p.Turn.Stopped = true
 		}
 	}
@@ -452,6 +460,8 @@ type Summary struct {
 	LastOutcome    string `json:"last_outcome,omitempty"`
 	Model          string `json:"model,omitempty"`
 	Effort         string `json:"effort,omitempty"`
+	// Account is the account the chat ran on last, as the journal says.
+	Account string `json:"account,omitempty"`
 	// Asked is whether anybody has sent the chat anything, which is what the
 	// unread rule waits for.
 	Asked bool `json:"asked"`
@@ -464,6 +474,7 @@ func (p *Projection) Summary() Summary {
 	s := Summary{
 		LastSeq: p.LastSeq, LastAt: p.LastAt, TurnRunning: p.Turn != nil, OpenAsks: len(p.OpenAsks()),
 		Tasks: p.Tasks, Process: p.Process, ConversationID: p.ConversationID, Model: p.Model, Effort: p.Effort,
+		Account: p.Account,
 	}
 	if p.LastTurn != nil {
 		s.LastOutcome = p.LastTurn.Outcome

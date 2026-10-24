@@ -8,3 +8,7 @@ const FakeHarness = "fake"
 // FakeEnv switches the scripted agent on: it is registered only in a process
 // whose environment has FakeEnv=1, so a production server never offers it.
 const FakeEnv = "SOCRATES_FAKE_AGENT"
+
+// FakeKeyEnv is where an API-key account's key reaches the scripted agent's
+// CLI, the way SOCRATES_CLAUDE_API_KEY reaches Claude Code's adapter.
+const FakeKeyEnv = "SOCRATES_FAKE_API_KEY"

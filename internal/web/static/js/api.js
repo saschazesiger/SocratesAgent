@@ -96,8 +96,10 @@ let dialogSeq = 0;
 // resolves with what the person answered. The native `close` event comes at
 // the start of every way out - Escape, the backdrop, a [data-close] button,
 // an accept that calls close - so it is the one place the answer is given.
-// The dialog leaves the page once its exit has played.
-function openDialog({ title, body, lines, code, field, actions, alert, opener }) {
+// The dialog leaves the page once its exit has played. `field` is any node
+// the dialog holds between its text and its actions; a caller with a form of
+// its own sets the answer with dialog.answer(value) before closing it.
+export function openDialog({ title, body, lines, code, field, actions, alert, opener }) {
   const id = 'dlg' + (++dialogSeq);
   const box = el('div', { class: 'ds-dialog__box' },
     el('h2', { class: 'ds-dialog__title', id: id + '-title', text: title }),

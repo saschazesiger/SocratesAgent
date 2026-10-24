@@ -39,6 +39,11 @@ func TestExcluded(t *testing.T) {
 		"accounts/a1/uv":                                     false,
 		"vscode/ab12/User":                                   false,
 		"accounts/a1/run":                                    false,
+		"accounts/a1/log":                                    true,
+		"accounts/a1/logs_2.sqlite":                          true,
+		"accounts/a1/state_5.sqlite":                         false,
+		"accounts/a1/.credentials.json":                      false,
+		"secrets.key":                                        false,
 		"chats/run":                                          false,
 	} {
 		if got := Excluded(rel); got != want {
@@ -74,5 +79,8 @@ func TestRel(t *testing.T) {
 	}
 	if l.DB() != "/var/lib/socrates/socrates.db" || l.Path(Lock) != "/var/lib/socrates/run/socrates.lock" {
 		t.Errorf("paths: %s %s", l.DB(), l.Path(Lock))
+	}
+	if l.PreRebuildBackup() != "/var/lib/socrates.pre-rebuild.tar" || l.SecretsKey() != "/var/lib/socrates/secrets.key" {
+		t.Errorf("paths: %s %s", l.PreRebuildBackup(), l.SecretsKey())
 	}
 }

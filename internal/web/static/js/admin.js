@@ -21,7 +21,7 @@
 // a status chip with its word, the technical detail behind the "i".
 
 import {
-  api, el, toast, isOffline, errorMessage, onWake, infoTip, confirmDialog, alertDialog,
+  api, el, toast, isOffline, errorMessage, onWake, infoTip, confirmDialog, alertDialog, promptDialog, openDialog,
 } from './api.js';
 import { DS, M, html, raw, icon, iconEl, morph, flipMorph, watchScrolled, ms, setFaceLabel, faces } from './ui.js';
 import { agentMark } from './logos.js';
@@ -29,6 +29,7 @@ import { speak, speechKind } from './voice.js';
 import { combobox } from './combobox.js';
 import { dictated } from './keyboard.js';
 import * as harnesses from './harnesses.js';
+import * as accounts from './accounts.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -235,8 +236,9 @@ async function load() {
   renderDefaultHarness();
   renderPresets();
   bind();
-  loadProfiles();
-  loadHarnesses().then(settleHash);
+  loadAccounts();
+  // The groups are headed with the agents' names, which the catalogue has.
+  loadHarnesses().then(() => { renderAccounts(); settleHash(); });
   refreshTmux();
   refreshUpdates();
   watchUpdatesCard();
@@ -589,132 +591,173 @@ function gripButton(label, rowSelector, done) {
   return grip;
 }
 
-/* -------------------------------------------------------------- profiles */
+/* -------------------------------------------------------------- accounts */
 
-// Profiles are not part of the settings document: each change is its own
-// request and is live at once, because a profile is a directory on the
-// machine and the document's Save would otherwise be what decides when a
-// directory full of sign-ins is deleted.
+// Accounts are not part of the settings document: each change is its own
+// request and is live at once, because an account is a sign-in and a folder
+// on the machine (accounts.js has the list and the sign-in flows).
 
-const LOGIN_NAMES = [['claude', 'Claude'], ['codex', 'Codex'], ['opencode', 'OpenCode']];
-
-async function loadProfiles() {
-  const host = $('profileList');
+async function loadAccounts() {
+  const host = $('accountList');
   if (!host) return;
   try {
-    const data = await api('/api/profiles');
-    renderProfiles(data.profiles || []);
+    await accounts.load();
+    renderAccounts();
   } catch (err) {
     host.replaceChildren(alertEl('error', errorMessage(err)));
   }
 }
 
-// loginSummary is one part per program, and the sessions in the profile.
-function loginSummary(profile) {
-  const accounts = profile.accounts || {};
-  const out = LOGIN_NAMES.map(([id, name]) => {
-    const login = accounts[id] || {};
-    const who = login.account || (login.signed_in ? 'signed in' : 'not signed in');
-    const limits = ((profile.limits || {})[id] || [])
-      .filter((w) => w.label === '5h' || w.label === '7d')
-      .map((w) => {
-        const left = harnesses.untilReset(w);
-        return w.label + ' ' + Math.round(w.used_percent) + '%' + (left ? ', ' + left + ' left' : '');
-      }).join(', ');
-    return name + ': ' + who + (limits ? ' (' + limits + ')' : '');
-  });
-  if (profile.sessions) out.push(profile.sessions + ' session' + (profile.sessions === 1 ? '' : 's'));
-  return out;
+// renderAccounts is one group per agent, each with its accounts in order and
+// a way to add one.
+function renderAccounts() {
+  const host = $('accountList');
+  if (!host) return;
+  host.replaceChildren(...accounts.agents().map((agentId) => {
+    const list = accounts.forAgent(agentId);
+    const rows = el('div', { class: 'so-rows', 'data-agent': agentId },
+      list.length ? list.map(accountRow)
+        : el('p', { class: 'ds-meta', text: 'No ' + harnesses.label(agentId) + ' account yet.' }));
+    const add = el('button', {
+      class: 'ds-btn ds-btn--text ds-add-row', type: 'button', 'data-agent': agentId,
+      onclick: async (event) => {
+        await accounts.addAccountDialog(event.currentTarget, agentId);
+        renderAccounts();
+      },
+    }, iconEl('plus', 16), 'Add a ' + harnesses.label(agentId) + ' account');
+    return el('section', { class: 'so-account-group', 'data-agent': agentId, 'aria-label': harnesses.label(agentId) },
+      el('h3', { class: 'so-account-group__title' }, agentMark(agentId, 20), el('span', { text: harnesses.label(agentId) })),
+      rows, add);
+  }));
 }
 
-function renderProfiles(list) {
-  $('profileList').replaceChildren(...list.map(profileRow));
-}
-
-// The order of the list is the order the new-session sheet offers the
-// profiles in, and it is saved the moment a row is let go.
-async function saveProfileOrder(host, before) {
-  const order = [...host.querySelectorAll('.so-profile')].map((row) => row.dataset.id);
-  if (order.join('\n') === before.join('\n')) return;
+// The order of the lists is the order the sheet and the chats offer the
+// accounts in, saved the moment a row is let go; it is one order across
+// every agent.
+async function saveAccountOrder() {
+  const order = [...document.querySelectorAll('#accountList .so-account')].map((row) => row.dataset.id);
   try {
-    await api('/api/profiles/order', { method: 'PUT', body: { order } });
+    await api('/api/accounts/order', { method: 'PUT', body: { order } });
+    await accounts.load();
   } catch (err) {
     toast(errorMessage(err), 'error');
-    await loadProfiles();
+    await loadAccounts();
   }
 }
 
-function profileRow(profile) {
-  const logins = el('p', { class: 'ds-meta' },
-    el('span', { class: 'ds-parts' }, el('span', { class: 'ds-parts__list' },
-      loginSummary(profile).map((part) => el('span', { text: part })))));
-  const grip = gripButton('Move ' + profile.name, '.so-profile', saveProfileOrder);
-  const row = (main, actions) => el('div', { class: 'so-profile', 'data-id': profile.id }, grip, main, actions);
-  if (profile.default) {
-    return row(el('div', { class: 'so-profile__main' },
-      el('p', { class: 'so-profile__name' }, el('span', { text: profile.name }),
-        el('span', { class: 'ds-meta', text: 'the CLIs’ own sign-ins' })),
-      logins), null);
+function accountRow(account) {
+  const signedIn = account.state === 'signed_in';
+  const key = account.kind === 'api_key';
+  const name = el('p', { class: 'so-account__name' }, accounts.iconFor(account, 16), el('span', { text: account.label }),
+    el('span', { class: 'ds-meta', text: accounts.KIND_WORDS[account.kind] || account.kind }));
+  const state = el('div', { class: 'so-account__state' });
+  morph(state, html`${accounts.stateChip(account)}${account.recommended ? html`<span class="ds-meta" data-tag="recommended">most left</span>` : ''}${accounts.renewal(account) ? html`<span class="ds-meta">${accounts.renewal(account)}</span>` : ''}`);
+  const meters = el('div', { class: 'so-account__meters' });
+  morph(meters, accounts.meters(account));
+  const actions = [];
+  if (!signedIn) {
+    actions.push(el('button', {
+      class: 'ds-btn ds-btn--sm', type: 'button', 'data-action': 'signin',
+      text: key ? 'Enter the key' : (account.state_detail ? 'Sign in again' : 'Sign in'),
+      onclick: (event) => signInAccount(account, event.currentTarget),
+    }));
+  } else {
+    actions.push(el('button', {
+      class: 'ds-btn ds-btn--quiet ds-btn--icon ds-btn--sm', type: 'button', 'data-action': 'signin',
+      'aria-label': (key ? 'Replace the key of ' : 'Sign in again to ') + account.label,
+      'data-tip': key ? 'Replace the key' : 'Sign in again',
+      onclick: (event) => signInAccount(account, event.currentTarget),
+    }, iconEl(key ? 'key' : 'sync', 18)));
   }
-  const name = el('input', {
-    class: 'ds-input', type: 'text', maxlength: '40', value: profile.name,
-    'aria-label': 'Name of ' + profile.name,
-  });
-  const rename = facedButton('Rename', 'Saving', 'Renamed');
-  const remove = el('button', { class: 'ds-btn ds-btn--sm ds-btn--text', type: 'button', text: 'Delete…' });
-  rename.addEventListener('click', async () => {
-    const next = name.value.trim();
-    if (!next || next === profile.name) return;
-    try {
-      await busy(rename, api('/api/profiles/' + encodeURIComponent(profile.id), { method: 'PATCH', body: { name: next } }));
-      toast('Renamed to ' + next + '.', 'success');
-      await loadProfiles();
-    } catch (err) {
-      toast(errorMessage(err), 'error');
-    }
-  });
-  name.addEventListener('keydown', (event) => {
-    if (event.key === 'Enter') { event.preventDefault(); rename.click(); }
-  });
-  // Deleting takes the profile's sign-ins and conversations with it, so it
-  // asks first, opening on Cancel, and the button says what it does.
-  remove.addEventListener('click', async () => {
-    const yes = await confirmDialog({
-      title: 'Delete ' + profile.name + '?',
-      body: 'Its sign-ins and conversations are deleted with it. A session still running in it keeps it from being deleted.',
-      confirmLabel: 'Delete ' + profile.name,
-      danger: true,
-      opener: remove,
-    });
-    if (!yes) return;
-    try {
-      await api('/api/profiles/' + encodeURIComponent(profile.id), { method: 'DELETE' });
-      toast(profile.name + ' and its sign-ins were deleted.');
-      await loadProfiles();
-    } catch (err) {
-      toast(errorMessage(err), 'error');
-    }
-  });
-  return row(el('div', { class: 'so-profile__main' }, name, logins),
-    el('div', { class: 'so-profile__actions' }, rename, remove));
+  actions.push(infoTip(accounts.facts(account), { label: 'About ' + account.label }));
+  actions.push(el('button', {
+    class: 'ds-btn ds-btn--quiet ds-btn--icon ds-btn--sm', type: 'button', 'data-action': 'rename',
+    'aria-label': 'Rename ' + account.label, 'data-tip': 'Rename',
+    onclick: (event) => renameAccount(account, event.currentTarget),
+  }, iconEl('pencil', 18)));
+  actions.push(el('button', {
+    class: 'ds-btn ds-btn--quiet ds-btn--icon ds-btn--sm', type: 'button', 'data-action': 'delete',
+    'aria-label': 'Delete ' + account.label, 'data-tip': 'Delete',
+    onclick: (event) => deleteAccount(account, event.currentTarget),
+  }, iconEl('trash', 18)));
+  const grip = gripButton('Move ' + account.label, '.so-account', saveAccountOrder);
+  return el('div', { class: 'so-account', 'data-id': account.id, 'data-account-state': account.state },
+    grip, el('div', { class: 'so-account__main' }, name, state, meters),
+    el('div', { class: 'so-account__actions' }, actions));
 }
 
-async function addProfile() {
-  const input = $('profileName');
-  const name = input.value.trim();
-  if (!name) {
-    toast('Give the profile a name first.');
-    input.focus();
+// signInAccount runs a subscription's sign-in, or takes a new key for an
+// API-key account.
+async function signInAccount(account, opener) {
+  if (account.kind === 'api_key') {
+    const keyValue = await promptSecret('A new key for ' + account.label, opener);
+    if (!keyValue) return;
+    try {
+      await api('/api/accounts/' + encodeURIComponent(account.id), { method: 'PATCH', body: { key: keyValue }, timeout: 45000 });
+      toast('The key of ' + account.label + ' was replaced.', 'success');
+    } catch (err) {
+      toast(errorMessage(err), 'error');
+    }
+    await loadAccounts();
     return;
   }
+  await accounts.signIn(account, opener);
+  await loadAccounts();
+}
+
+// promptSecret asks for a key in a field that does not show it.
+async function promptSecret(title, opener) {
+  const input = el('input', { class: 'ds-input', type: 'password', id: 'accountKeyAgain', autocomplete: 'off', spellcheck: 'false', autofocus: true });
+  const field = el('div', { class: 'ds-field' }, el('label', { class: 'ds-field__label', for: 'accountKeyAgain', text: 'API key' }), input);
+  const cancel = el('button', { class: 'ds-btn ds-btn--text', type: 'button', 'data-close': true, text: 'Cancel' });
+  const accept = el('button', { class: 'ds-btn ds-btn--primary', type: 'button', text: 'Save the key' });
+  const { dialog, shown } = openDialog({ title, body: 'It is kept encrypted on this machine and is never shown again.', field, actions: [cancel, accept], opener });
+  const done = () => {
+    dialog.answer(input.value.trim());
+    DS.overlay.close(dialog);
+  };
+  accept.addEventListener('click', done);
+  input.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter' && !event.isComposing) {
+      event.preventDefault();
+      done();
+    }
+  });
+  const answer = await shown;
+  return answer || '';
+}
+
+async function renameAccount(account, opener) {
+  const next = await promptDialog({ title: 'Rename ' + account.label, label: 'Name', value: account.label, confirmLabel: 'Rename', opener });
+  if (!next || next === account.label) return;
   try {
-    await busy($('profileAdd'), api('/api/profiles', { method: 'POST', body: { name } }));
-    input.value = '';
-    toast(name + ' was added. Start a session in it to sign in.', 'success');
-    await loadProfiles();
+    await api('/api/accounts/' + encodeURIComponent(account.id), { method: 'PATCH', body: { label: next } });
+    toast('Renamed to ' + next + '.', 'success');
   } catch (err) {
     toast(errorMessage(err), 'error');
   }
+  await loadAccounts();
+}
+
+// Deleting takes the account's sign-in with it, so it asks first, opening on
+// Cancel, and the button says what it does. The server refuses an account a
+// chat runs on, and the agent's own sign-in moved in from HOME.
+async function deleteAccount(account, opener) {
+  const yes = await confirmDialog({
+    title: 'Delete ' + account.label + '?',
+    body: 'Its sign-in goes with it. Chats that run on it have to move to another account first.',
+    confirmLabel: 'Delete ' + account.label,
+    danger: true,
+    opener,
+  });
+  if (!yes) return;
+  try {
+    await api('/api/accounts/' + encodeURIComponent(account.id), { method: 'DELETE' });
+    toast(account.label + ' was deleted.');
+  } catch (err) {
+    toast(errorMessage(err), 'error');
+  }
+  await loadAccounts();
 }
 
 /* ------------------------------------------------------- the tmux engine */
@@ -1155,7 +1198,7 @@ function optionField(harness, option) {
 // modelList is the person's own short list for one harness: the models the
 // new-session sheet offers, in this order, each with the effort it starts on.
 // An empty list means the sheet offers everything the program reported. A
-// row moves by its grip, like a profile.
+// row moves by its grip, like an account.
 function modelList(harness) {
   const path = optionPath(harness.id, 'models');
   const picks = () => (optionValue(harness.id, 'models') || []).map((p) => ({ id: p.id, effort: p.effort || '' }));
@@ -1257,10 +1300,6 @@ function bind() {
     const row = presetRow();
     M.flip(host, () => host.append(row));
     row.querySelector('input').focus();
-  });
-  $('profileAdd').addEventListener('click', addProfile);
-  $('profileName').addEventListener('keydown', (event) => {
-    if (event.key === 'Enter') { event.preventDefault(); addProfile(); }
   });
   $('windowSize').addEventListener('change', renderWindowSizeHint);
   $('tunnelStart').addEventListener('click', startTunnel);
@@ -1478,6 +1517,8 @@ function renderTunnelStatus(status) {
 
 onWake(() => {
   if (document.visibilityState === 'hidden' || !settings) return;
+  // Back from a sign-in in a terminal, or on another device.
+  loadAccounts();
   refreshTunnel();
   refreshTmux();
   refreshUpdates();

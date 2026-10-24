@@ -133,9 +133,14 @@ func (s *Server) createPrestart(w http.ResponseWriter, body createSessionBody) {
 			writeError(w, refused.status, refused.msg)
 			return
 		}
+		if refused := s.checkChatAccount(harnessID, body.Account); refused != nil {
+			writeError(w, refused.status, refused.msg)
+			return
+		}
 		spec.Model, spec.Effort, spec.Profile = strings.TrimSpace(spec.Model), strings.TrimSpace(spec.Effort), ""
 		spec.Ultracode = chatUltracode(harnessID, spec.Ultracode)
 		spec.Options = withOption(spec.Options, "ultracode", spec.Ultracode)
+		spec.Options = withChatAccount(spec.Options, body.Account, body.AutoSwitch)
 	} else {
 		h, refused := s.checkLaunch(&spec, settings)
 		if refused != nil {
@@ -205,6 +210,9 @@ type prestartPatch struct {
 	WorkdirMode *string `json:"workdir_mode"`
 	Workdir     *string `json:"workdir"`
 	StartAt     *int64  `json:"start_at"`
+	// Account and AutoSwitch are a prepared chat's.
+	Account    *string `json:"account"`
+	AutoSwitch *bool   `json:"auto_switch"`
 }
 
 func (s *Server) handlePatchPrestart(w http.ResponseWriter, r *http.Request) {
@@ -298,6 +306,22 @@ func (s *Server) handlePatchPrestart(w http.ResponseWriter, r *http.Request) {
 		spec.Options = withOption(spec.Options, "ultracode", spec.Ultracode)
 		auto = false
 		label = chatLabel(harnessID)
+		opts := readChatOptions(row.Options)
+		if body.Account != nil {
+			opts.Account = strings.TrimSpace(*body.Account)
+		}
+		if body.AutoSwitch != nil {
+			opts.AutoSwitch = *body.AutoSwitch
+		}
+		if harnessID != row.Harness && body.Account == nil {
+			// An account is one agent's: another agent starts on its own.
+			opts.Account = ""
+		}
+		if refused := s.checkChatAccount(harnessID, opts.Account); refused != nil {
+			writeError(w, refused.status, refused.msg)
+			return
+		}
+		spec.Options = withChatAccount(spec.Options, opts.Account, opts.AutoSwitch)
 	} else {
 		if !prestartHarness(harnessID) {
 			writeError(w, http.StatusBadRequest, "only Claude Code, Codex and OpenCode sessions can be prepared")

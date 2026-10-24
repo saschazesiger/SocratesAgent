@@ -418,7 +418,7 @@ func (a *Adapter) handleError(gen int, session string, e *ocError) {
 	code := "agent_error"
 	switch {
 	case e.Name == errProviderAuth || e.Data.StatusCode == http.StatusUnauthorized:
-		code = "auth"
+		code = agent.ErrorAuth
 		text += " (the account may need to sign in again)"
 	case e.Data.StatusCode == http.StatusTooManyRequests:
 		code = "rate_limit"
@@ -485,6 +485,7 @@ func (a *Adapter) endTurnLocked() {
 		outcome = agent.OutcomeFailed
 	}
 	a.failedTurn = outcome != agent.OutcomeCompleted
+	a.held = outcome == agent.OutcomeLimited
 	usage := &agent.Usage{Context: t.context, Window: a.windows[t.model]}
 	var cost float64
 	var events []agent.Event

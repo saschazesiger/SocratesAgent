@@ -77,9 +77,17 @@ type Spec struct {
 	Model   string `json:"model,omitempty"`
 	Effort  string `json:"effort,omitempty"`
 	// Account and Env are the chat's account and the CLI environment built
-	// for it (WP7). Env empty is the host's own environment, scrubbed.
-	Account string   `json:"account,omitempty"`
-	Env     []string `json:"env,omitempty"`
+	// for it (internal/accounts). Env empty is the host's own environment,
+	// scrubbed. An API-key account's key is never in Env: SecretEnv carries
+	// the variables that hold it, sealed for this chat (SealEnv), and the
+	// host opens them when it starts the CLI.
+	Account   string   `json:"account,omitempty"`
+	Env       []string `json:"env,omitempty"`
+	SecretEnv string   `json:"secret_env,omitempty"`
+	// SwitchReason is why Account differs from the account the journal last
+	// ran on, when the server moved a parked chat to another account: the
+	// host journals the account.switched divider with it as it starts.
+	SwitchReason string `json:"switch_reason,omitempty"`
 	// Binary is the harness's configured program (the dashboard's binary
 	// setting), empty for the one on the PATH.
 	Binary string `json:"binary,omitempty"`

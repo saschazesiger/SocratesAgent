@@ -153,7 +153,17 @@ const (
 	// NoticeHistoryUnavailable: the journal was missing, and the CLI's own
 	// transcript could not be read back either; the conversation goes on.
 	NoticeHistoryUnavailable = "history_unavailable"
+	// NoticeForeignThinking: resumed on an account of another organization,
+	// Claude Code goes on without the earlier thinking and keeps it for the
+	// way back (research/08). The chat shows it on the account switch.
+	NoticeForeignThinking = "foreign_thinking"
 )
+
+// ErrorAuth is an error event's code for a sign-in or key the provider
+// refused: the account has to sign in again (OpenCode's ProviderAuthError or
+// a 401, research/06 - among them a refresh token two chats of one account
+// renewed at the same moment).
+const ErrorAuth = "auth"
 
 // Delivery routes of an answer (ask.delivered's Via).
 const (
@@ -163,12 +173,17 @@ const (
 
 // Command ops as journaled in TypeCommand events.
 const (
-	OpInterrupt = "interrupt"
-	OpSetModel  = "set_model"
-	OpCommand   = "command"
-	OpPark      = "park"
-	OpStop      = "stop"
+	OpInterrupt     = "interrupt"
+	OpSetModel      = "set_model"
+	OpCommand       = "command"
+	OpPark          = "park"
+	OpStop          = "stop"
+	OpSwitchAccount = "switch_account"
 )
+
+// SwitchAfterTurn is the Args of a journaled switch_account that waits for
+// the running turn instead of stopping it.
+const SwitchAfterTurn = "after_turn"
 
 // Event is one journal line, and the shape every adapter's protocol is mapped
 // onto. The fields are flat and all optional except Seq, At and Type; which
@@ -226,6 +241,9 @@ type Event struct {
 	From   string `json:"from,omitempty"`
 	To     string `json:"to,omitempty"`
 	Reason string `json:"reason,omitempty"`
+	// Account is the account a turn runs on (turn.started): the host stamps
+	// it, so that what a turn cost can be told apart per account.
+	Account string `json:"account,omitempty"`
 
 	Model  string `json:"model,omitempty"`
 	Effort string `json:"effort,omitempty"`

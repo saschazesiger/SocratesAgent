@@ -54,6 +54,8 @@ func EnableFake() {
 //	/sleep S         a turn that works for S seconds
 //	/bg S            a turn that leaves a background task running for S seconds
 //	/limit           the account's limit stops the turn
+//	/refused         the provider refuses the account's sign-in (an error of code auth)
+//	/account         which account the CLI runs on, and whether it has a key
 //	/crash           the CLI child dies in the middle of the turn
 //	/orphan          a tool process that escapes the CLI's process group
 //	anything else    "you said: …" with the turn number of the conversation
@@ -126,6 +128,25 @@ func (f *fakeAdapter) Start(ctx context.Context, spec StartSpec, out Emitter) er
 	go f.work()
 	f.poke()
 	return nil
+}
+
+// fakeUltracodeEnv is the Claude adapter's ultracode switch
+// (claude.UltracodeEnv), which the fake reports so a test sees the chat's
+// option reach the CLI on whatever account it runs.
+const fakeUltracodeEnv = "SOCRATES_CLAUDE_ULTRACODE"
+
+// accountLine says which account the CLI was started on, and whether a key
+// came with it - its length, never the key itself - and ultracode with it.
+func (f *fakeAdapter) accountLine() string {
+	key, _ := lookupEnv(f.spec.Env, FakeKeyEnv)
+	line := fmt.Sprintf("account %s, no key", f.spec.Account)
+	if key != "" {
+		line = fmt.Sprintf("account %s, a key of %d characters", f.spec.Account, len(key))
+	}
+	if on, _ := lookupEnv(f.spec.Env, fakeUltracodeEnv); on == "1" {
+		line += ", ultracode"
+	}
+	return line
 }
 
 // startChild starts the process that stands in for the CLI. It is a real
@@ -456,6 +477,12 @@ func (f *fakeAdapter) turn(ctx context.Context, msg Outgoing, n int) {
 		)
 		t.end(OutcomeLimited, "The usage limit of this account is reached.")
 		return
+	case "/refused":
+		f.out.Emit(Event{Type: TypeError, Code: ErrorAuth, Text: "The provider refused the sign-in (401)."})
+		t.end(OutcomeFailed, "The provider refused the sign-in (401).")
+		return
+	case "/account":
+		t.say(f.accountLine())
 	case "/crash":
 		t.say("about to crash")
 		f.crash()

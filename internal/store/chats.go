@@ -66,8 +66,9 @@ func (s *Store) ClearOutbox(chatID string) error {
 	return err
 }
 
-// SetChatOptions replaces a chat's options (Ultracode, for one): what its
-// next host is started with.
+// SetChatOptions replaces a chat's options - Ultracode, its account and its
+// automatic switch: what its next host is started with. It is not a status
+// change and does not move the row.
 func (s *Store) SetChatOptions(id string, options json.RawMessage) error {
 	value := "{}"
 	if len(options) > 0 {

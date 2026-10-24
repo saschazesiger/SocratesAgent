@@ -215,3 +215,63 @@ func TestAChatsLedgersFollowItsJournal(t *testing.T) {
 		t.Fatalf("after the rebuild %v", got)
 	}
 }
+
+// Every turn says the account it runs on (turn.started), so a chat that
+// never switched is on its account's ledger from its first turn, a switch
+// moves nothing that was counted, and the costs page names the account.
+func TestAChatsTurnsAreOnTheAccountTheyRanOn(t *testing.T) {
+	env := adminEnv(t)
+	empty := t.TempDir()
+	t.Setenv("CLAUDE_CONFIG_DIR", filepath.Join(empty, "claude"))
+	t.Setenv("CODEX_HOME", filepath.Join(empty, "codex"))
+	t.Setenv("XDG_DATA_HOME", filepath.Join(empty, "xdg"))
+	data := env.srv.dataDir
+	if err := env.store.CreateAccount(&store.Account{ID: "a-000000000001", Agent: "claude", Label: "Work",
+		Kind: "subscription", State: "signed_in"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := env.store.CreateSession(&store.Session{ID: "chat1", Title: "A chat", Harness: "claude", Workdir: "/w",
+		WorkdirMode: "custom", Kind: store.KindChat, State: store.StateRunning}); err != nil {
+		t.Fatal(err)
+	}
+	turn := func(id, account string, cost float64) []agent.Event {
+		return []agent.Event{
+			{Type: agent.TypeTurnStarted, TurnID: id, Account: account},
+			{Type: agent.TypeMessage, MessageID: "a" + id, Role: agent.RoleAssistant, TurnID: id, Model: "claude-opus-5-5"},
+			{Type: agent.TypeTurnEnded, TurnID: id, Outcome: agent.OutcomeCompleted, CostUSD: cost},
+		}
+	}
+	ledgers := func() map[string]store.CostLedger {
+		t.Helper()
+		all, err := env.store.ListCostLedgers()
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := map[string]store.CostLedger{}
+		for _, l := range all {
+			out[l.ConvID] = l
+		}
+		return out
+	}
+
+	journalOf(t, data, "chat1", turn("t1", "a-000000000001", 1)...)
+	env.srv.costs.pass()
+	got := ledgers()
+	if l, ok := got["chat-chat1@a-000000000001"]; len(got) != 1 || !ok || l.Profile != "a-000000000001" ||
+		len(l.Rows) != 1 || !near(l.Rows[0].CostUSD, 1) {
+		t.Fatalf("a chat that never switched %v", got)
+	}
+	res, body := env.do(t, env.client, "GET", "/api/costs", "")
+	if names, _ := body["profiles"].(map[string]any); res.StatusCode != 200 || names["a-000000000001"] != "Work" {
+		t.Fatalf("the costs page's names %d %v", res.StatusCode, body["profiles"])
+	}
+
+	journalOf(t, data, "chat1", append([]agent.Event{{Type: agent.TypeAccountSwitched, From: "a-000000000001",
+		To: "a-000000000002"}}, turn("t2", "a-000000000002", 0.5)...)...)
+	env.srv.costs.pass()
+	got = ledgers()
+	if len(got) != 2 || !near(got["chat-chat1@a-000000000001"].Rows[0].CostUSD, 1) ||
+		!near(got["chat-chat1@a-000000000002"].Rows[0].CostUSD, 0.5) {
+		t.Fatalf("after the switch %v", got)
+	}
+}

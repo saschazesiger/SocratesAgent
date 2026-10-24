@@ -42,7 +42,8 @@
  * Hooks without rules of their own, for the scripts and the tests:
  * .so-chat__composer (the composer's slot in the dock), .so-composer__picker
  * (the hidden file input), .so-composer__attach, .so-model-menu (the model
- * and effort menu, a DS menu), .so-ask-back, .so-ask-delegate, .so-ask-note,
+ * and effort menu, a DS menu), .so-account-menu (the account menu of
+ * accountpicker.js, a DS menu), .so-composer__account-btn, .so-ask-back, .so-ask-delegate, .so-ask-note,
  * .so-ask-other, .so-q-back, .so-q-close, .so-q-own-field, .so-ask__open,
  * .so-refused (a DS alert: the server would not take an answer).
  */
@@ -970,6 +971,42 @@
 .so-composer__account {
   display: inline-flex;
   min-width: 0;
+  max-width: 40%;
+}
+
+.so-composer__account > .ds-btn {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.so-composer__account-text {
+  display: block;
+}
+
+/* An account item of the chat's account menu: its name over its usage. */
+.so-account-menu__text {
+  display: grid;
+  min-width: 0;
+  padding-block: var(--ds-space-1);
+}
+
+.so-account-menu__name,
+.so-account-menu__meta {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.so-account-menu__meta {
+  font: var(--ds-font-meta);
+  color: var(--ds-text-2);
+}
+
+/* The accounts a limit card offers to go on with, under its words. */
+.so-line-alert__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--ds-space-2);
+  margin-top: var(--ds-space-2);
 }
 
 /* The hint takes what room there is, and pushes the buttons to the end. */
@@ -1150,6 +1187,13 @@
   .so-composer__model {
     flex: 1 1 0;
     max-width: none;
+  }
+
+  /* An account's name is short and is what the button is for: it keeps
+     its width, and the model gives way first. */
+  .so-composer__account {
+    flex: 0 1 auto;
+    max-width: 45%;
   }
 
   .so-tool__progress,

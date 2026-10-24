@@ -19,6 +19,10 @@
 // always destroy data; detecting rollback would need a signed index, which
 // is more machinery than the threat (a hostile storage provider replaying
 // a stale settings row) is worth.
+//
+// The same sealing keeps the API keys of the accounts out of the clear on
+// this machine, under a key of the data directory's own (LoadOrCreateKeyFile)
+// rather than one derived from a passphrase.
 package vault
 
 import (
@@ -31,6 +35,9 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
+	"runtime"
 )
 
 const (
@@ -208,4 +215,67 @@ func VerifyCheck(k *Key, check []byte) error {
 		return errors.New("vault: the check value has unexpected contents")
 	}
 	return nil
+}
+
+// LoadKeyFile reads a raw key kept in a file of its own: the data directory's
+// key that seals what Socrates keeps of its accounts (an API key in the
+// store, the environment a chat's agent host is handed). It is not derived
+// from anything, so it opens nothing anywhere else.
+//
+// A key file others can read is made the owner's alone (0600) as it is
+// read: whoever reads it opens every key it sealed.
+func LoadKeyFile(path string) (*Key, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	if fi, err := os.Stat(path); err == nil && runtime.GOOS != "windows" && fi.Mode().Perm()&0o077 != 0 {
+		if err := os.Chmod(path, 0o600); err != nil {
+			return nil, fmt.Errorf("vault: %s can be read by others and could not be made private: %w", path, err)
+		}
+	}
+	if len(raw) != KeySize {
+		return nil, fmt.Errorf("vault: %s holds %d bytes, not a key of %d", path, len(raw), KeySize)
+	}
+	return NewKey(raw)
+}
+
+// LoadOrCreateKeyFile is LoadKeyFile, making the key first when the file is
+// not there: random bytes, mode 0600, written whole under another name and
+// linked into place, so that a crash never leaves half a key and two starts
+// at once agree on one.
+func LoadOrCreateKeyFile(path string) (*Key, error) {
+	key, err := LoadKeyFile(path)
+	if !errors.Is(err, os.ErrNotExist) {
+		return key, err
+	}
+	raw := make([]byte, KeySize)
+	if _, err := rand.Read(raw); err != nil {
+		return nil, err
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return nil, err
+	}
+	defer os.Remove(tmp.Name())
+	if err := tmp.Chmod(0o600); err != nil {
+		tmp.Close()
+		return nil, err
+	}
+	if _, err := tmp.Write(raw); err != nil {
+		tmp.Close()
+		return nil, err
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return nil, err
+	}
+	if err := tmp.Close(); err != nil {
+		return nil, err
+	}
+	if err := os.Link(tmp.Name(), path); err != nil && !errors.Is(err, os.ErrExist) {
+		return nil, err
+	}
+	// Whoever linked first made the key; this one reads it.
+	return LoadKeyFile(path)
 }

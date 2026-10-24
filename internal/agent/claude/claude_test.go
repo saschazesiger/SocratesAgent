@@ -17,12 +17,17 @@ import (
 	"time"
 
 	"github.com/saschazesiger/SocratesAgent/internal/agent"
+	"github.com/saschazesiger/SocratesAgent/internal/agenthost"
 	"github.com/saschazesiger/SocratesAgent/internal/testhome"
 )
 
 var fakeBin string
 
 func TestMain(m *testing.M) {
+	// The test binary is also `socrates agent-host` (host_test.go).
+	if len(os.Args) > 1 && os.Args[1] == "agent-host" {
+		os.Exit(agenthost.Main(os.Args[2:], "test"))
+	}
 	dir, err := os.MkdirTemp("", "fakeclaude-")
 	if err != nil {
 		panic(err)
@@ -826,6 +831,24 @@ func TestStartRebuildsALostJournal(t *testing.T) {
 	}
 	send(t, b, "m2", "again")
 	r2.turnsEnded(t, 2)
+}
+
+// Resumed on an account of another organization, Claude Code says it goes
+// on without the earlier thinking: a hint for the switch, not a warning.
+func TestTheThinkingOfAnotherOrganizationIsAHint(t *testing.T) {
+	e := newEnv(t)
+	a, r := start(t, e, "")
+	send(t, a, "m1", "/foreign")
+	evs := r.turnsEnded(t, 1)
+	var notices []agent.Event
+	for _, ev := range evs {
+		if ev.Type == agent.TypeNotice {
+			notices = append(notices, ev)
+		}
+	}
+	if len(notices) != 1 || notices[0].Code != agent.NoticeForeignThinking || !strings.Contains(notices[0].Text, "switch back") {
+		t.Fatalf("notices:\n%s", dump(evs))
+	}
 }
 
 func TestLimitsRetriesImagesAndCommands(t *testing.T) {

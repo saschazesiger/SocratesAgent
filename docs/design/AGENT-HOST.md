@@ -31,11 +31,13 @@ rows; the terminal-only routes (`…/ws`, `…/journal`, `…/resume`, `…/rest
 | Path | Written by | What |
 |---|---|---|
 | `<data>/chats/<id>/events.jsonl` | host | the journal (§3); the chat history Socrates renders and backs up |
-| `<data>/chats/<id>/host.json` | server, before every launch | launch spec: harness, workdir, model, effort, account, env, `binary` (the harness's binary setting, `StartSpec.Binary`), `conversation` (the row's `cli_session_id`: resumed, and rebuilt into an empty journal, when the journal names none), `ultracode` (the chat's option; the host puts `SOCRATES_CLAUDE_ULTRACODE=1` into the CLI's environment exactly when it is set, §5.1), `park_after_ms` |
+| `<data>/chats/<id>/host.json` | server, before every launch | launch spec: harness, workdir, model, effort, `account` (its id), `env` (the account's environment without any key, §11), `secret_env` (the account's key variables, sealed for this chat, §11), `switch_reason` (why the account differs from the journal's, when a switch was asked for while no host ran), `binary` (the harness's binary setting, `StartSpec.Binary`), `conversation` (the row's `cli_session_id`: resumed, and rebuilt into an empty journal, when the journal names none), `ultracode` (the chat's option; the host puts `SOCRATES_CLAUDE_ULTRACODE=1` into the CLI's environment exactly when it is set, on top of the account's environment, at the start and at every switch, §5.1), `park_after_ms` |
 | `<data>/chats/<id>/summary.json` | server | the chat's brief (§6): its `Summary`, Home's line and question, the words of its notification, and the seq they are true at; believed only while the journal still ends at that seq; not backed up |
 | `<data>/chats/<id>/host.lock` | host | `flock`ed for the host's whole life: **the** evidence a host is alive |
 | `<data>/chats/<id>/host.log` | host (and `systemd-run`) | the host's stdout/stderr; a file, never a pipe |
 | `<data>/chats/<id>/agent/` | adapter | the adapter's own state (the fake keeps its conversations here) |
+| `<data>/secrets.key` | server, once (0600) | the key every API key and every chat's `secret_env` is sealed with (§11) |
+| `<data>/accounts/<acct>/` | server (folder), the agent's own sign-in (login) | a Claude Code or Codex account's `CLAUDE_CONFIG_DIR` / `CODEX_HOME`; an OpenCode account's is `<data>/agents/opencode/accounts/<acct>/` (§5.3, §11) |
 | `<data>/run/chats/<id>.sock` | host | the socket; if that path is ≥ 104 bytes, `$TMPDIR/socrates-<uid>/<sha256(data)[:6]>/<id>.sock` (both sides compute it) |
 
 Chat ids are `[A-Za-z0-9_-]{1,64}` (the server uses 32 hex characters); they become file, socket
@@ -49,7 +51,7 @@ is one `agent.Event`: a flat JSON object, all fields optional except `seq`, `at`
 
 | type | fields | meaning |
 |---|---|---|
-| `turn.started` | `turn_id`, `message_id`? | the agent took up a user message (or started on its own) |
+| `turn.started` | `turn_id`, `message_id`?, `account`? | the agent took up a user message (or started on its own). `account` is the account the turn runs on (WP7): the host stamps it on every turn, so a turn's cost belongs to the account that paid for it (the cost ledger, WP9). A journal written before accounts has none |
 | `turn.ended` | `turn_id`, `outcome` (`completed`\|`interrupted`\|`failed`\|`limited`), `usage`, `cost_usd`, `text` (why) | end of the turn |
 | `message` | `message_id`, `role` (`user`\|`assistant`), `state`, `client_id`?, `text`?, `attachments`?, `answer_to`?, `turn_id`?, `model`? | creates a message. **User messages carry text and attachments inline**; assistant messages are containers for parts |
 | `message.state` | `message_id`, `state` | user: `pending` (journaled by the host) → `queued` (the agent holds it behind a running turn) → `delivered` (taken up), or `cancelled` (the agent dropped it unread; not handed to it again). Assistant: `streaming` → `done`\|`interrupted` |
@@ -59,7 +61,7 @@ is one `agent.Event`: a flat JSON object, all fields optional except `seq`, `at`
 | `ask.answered` | `ask_id`, `answer`, `by_device`, `client_id` | the first answer; later ones are refused (§4.4) |
 | `ask.delivered` | `ask_id`, `via` (`tool`\|`message`) | how the answer reached the agent |
 | `ask.closed` | `ask_id` | nobody waits for the answer any more: the person sent a message after the call was gone (§4.4). It is no longer open, and can still be answered (as a message) |
-| `account.switched` | `from`, `to`, `reason` | divider (WP7) |
+| `account.switched` | `from`, `to` (account ids), `reason` | the chat runs on another account from here on (WP7, §11): a line between the turns. `from` is empty for the first account a journal names |
 | `model.changed` | `model`, `effort` | for the turns that follow |
 | `rate_limit` | `window`, `used` (0..1), `resets_at` (Unix s) | one usage window |
 | `usage` | `usage.context`, `usage.window` | context in use, outside a turn's end |
@@ -67,9 +69,9 @@ is one `agent.Event`: a flat JSON object, all fields optional except `seq`, `at`
 | `conversation` | `conversation_id` | the CLI's own id, needed to resume |
 | `tasks` | `count` | background tasks still running |
 | `agent.info` | `content`: an `agent.AgentInfo` `{agent, version?, commands: [{name, args?, description?}]}` plus the adapter's own fields (Claude's in §5.1) | what the CLI says about itself; `commands` is **the** composer palette (`Projection.Palette()`), each name what `Adapter.Command` takes. The newest wins (`Projection.Agent`) |
-| `command` | `op` (`interrupt`\|`set_model`\|`command`\|`park`\|`stop`), `client_id`, `model`/`effort`, `text` (command name), `args` | a command the host accepted; recorded so its `client_id` is acted on once |
+| `command` | `op` (`interrupt`\|`set_model`\|`command`\|`park`\|`stop`\|`switch_account`), `client_id`, `model`/`effort`, `text` (command name), `args` (a slash command's arguments; a switch's `when`), `to`/`reason` (a switch's account and why) | a command the host accepted; recorded so its `client_id` is acted on once. An `interrupt`, a `stop` or a `switch_account` that does not wait for the turn (`args` other than `after_turn`) marks the running turn as stopped by somebody (`Turn.Stopped`: not pushed, not judged) |
 | `notice` | `code`, `text`, `ask_id`? | a line of its own. Host codes: `resumed`, `answer_as_message`, `conversation_lost`; every adapter's rebuild: `rebuilt`, `history_unavailable` |
-| `error` | `code`, `text`, `message_id`? | a failure that is not a turn's end (e.g. `send_failed`, `rate_limit`) |
+| `error` | `code`, `text`, `message_id`? | a failure that is not a turn's end (e.g. `send_failed`, `rate_limit`, `switch_failed`: the other account's agent did not start, and the chat is back on its account) |
 
 **Nesting.** A part with `parent_part_id` belongs inside that part: the parts a subagent or a
 workflow produced go inside the tool part that started it (Claude `Task`/`Agent` and
@@ -212,8 +214,11 @@ asks a model to read a screen; it is the projection.
   `chatTurnPrompt` writes it; Read again judges it again.
 - **Costs** (`chatcosts.go`): the journal is the one source of a chat's cost - Claude's `cost_usd`,
   Codex's tokens priced by the ledger's Codex rates, OpenCode's own price - in a ledger named by the
-  chat: `chat-<id>` until the first `account.switched`, then `chat-<id>@<account>` for every
-  account, the one it started on included (the switch's `from`). Each pass that reads a journal
+  chat and the account: `chat-<id>@<account>`, the account a turn's `turn.started` names (WP7), so
+  a chat that never switched is on its account from its first turn; the account's id is the
+  ledger's profile, which the costs page names after the account. A turn of a journal from before
+  accounts names none: it is on the account the first `account.switched` came from, and on
+  `chat-<id>` until there is one. Each pass that reads a journal
   writes its ledgers and removes the ones of that journal it no longer makes. A journal rebuilt
   after its folder was lost (`notice{rebuilt|history_unavailable}`) does not count the history it
   got back, which was counted when it ran, and leaves the lost journal's ledgers as they are; what it
@@ -268,7 +273,29 @@ version understand each other. A connection asks for no events with `since` = `N
 | `stop` | `client_id`? | stops the CLI now, records an interrupted turn, exits |
 | `ask` (version 2) | `payload` (an `ask_user` payload) | a local tool's question (`socrates mcp-ask`, §5.3): journals `ask{turn_id: the running turn}` and acks with its `ask_id`; the answer comes back on this connection as an `answer` frame (§4.4). Refused (`bad_request`) on a connection that said hello with protocol 1, without a payload, or while no turn runs (the CLI calls tools only inside a turn, so such a question comes from a call already withdrawn), `not_running` without an agent |
 
-Reserved for WP7: `switch_account` (park + relaunch with the other account's env, `account.switched`).
+| `switch_account` | `client_id`, `account`, `env` (required), `secret_env`, `reason`?, `when` (`now`\|`after_turn`), `continue`? | WP7, §11: journals `command{to, reason}`; `after_turn` while a turn runs (or a message waits that a limit does not hold) keeps it until the turn ends and acks it `pending` at once, then once more without `pending` when it is made or a newer switch replaces it; otherwise interrupts a running turn and waits for its end (30 s), moves the agent to the account, journals `account.switched` and acks. Without `env`: `bad_request` |
+
+**switch_account.** The account's whole environment comes with the command: `env` without any
+key, and the key variables in `secret_env`, sealed for this chat (§11), which the host opens with
+the data folder's key and joins only in memory. A command without `env` is refused: the
+environment the host runs on holds the current account's key. A switch kept for after the turn is
+acked `{"pending": true}`; the server answers the request but keeps the command in its outbox, so
+a host that dies before the turn ends is followed by one launched on that account (§11, the
+newest `switch_account` in the outbox goes into `host.json`), and the repeat the server sends on
+every connect is acked `dup` and `pending` while the host still holds it. Messages a limit holds
+(§5.2, §5.3) do not count as a turn to wait for. The move is `AccountSwitcher.SwitchAccount` where
+the adapter has one (OpenCode, §5.3), else `Park` and `Start` of a new adapter with the
+environment and the same `ResumeID` (`agent.ErrConversationNotFound` → a fresh conversation with
+`notice{conversation_lost}`). The divider is journaled before the new agent starts, so the events
+of the next turn come after it; a start that fails journals `error{switch_failed}`, a divider back
+and restarts the old account. Messages the agent had not taken up are handed to the new one. With
+`continue`, the new account is then sent `agenthost.ContinueText` ("Continue where you left off.")
+as a user message with `client_id` `<the switch's client_id>:continue`: what "Continue with" and the
+automatic switch at a limit send. A switch to the account the chat is on journals nothing, and
+continues only when the last turn ended `limited` or `interrupted` and the agent has taken nothing
+up since: a second "Continue with", one from another device or an automatic switch on top of one
+by hand does not make the agent continue twice. A host that boots with a spec whose `account` differs from the journal's last
+(the switch was asked for while no host ran) journals `account.switched{reason: switch_reason}` first.
 
 Commands are processed one at a time per host, in arrival order. **Idempotency:** a `client_id`
 the projection has already seen is acked `dup` and not acted on. The set is rebuilt from the
@@ -313,8 +340,8 @@ Rules every adapter keeps:
 
 1. Start its CLI with `StartSpec.Spawn(cmd)`, never `cmd.Start()`: Spawn forks on the host's
    locked main thread with `Setpgid` and `Pdeathsig=SIGKILL`.
-2. Use `StartSpec.Env` as the CLI's whole environment (WP7 builds it per account; empty today means
-   the host's scrubbed environment — the host has already removed `INVOCATION_ID`, `NOTIFY_SOCKET`,
+2. Use `StartSpec.Env` as the CLI's whole environment (the server builds it per account, §11; empty
+   means the host's scrubbed environment — the host has already removed `INVOCATION_ID`, `NOTIFY_SOCKET`,
    `WATCHDOG_*`, `JOURNAL_STREAM`, `LISTEN_*`).
 3. Emit `conversation` as soon as the CLI says its id; resume `StartSpec.ResumeID` when set, and
    when the CLI does not know it fail `Start` with an error that wraps
@@ -473,8 +500,7 @@ package comment.
 `StartSpec.Env` as its whole environment. The binary is `StartSpec.Binary` (the dashboard's
 setting: a path, or a name looked up on `Env`'s `PATH`), else `SOCRATES_CODEX_BIN` from `Env`,
 else `codex` on `Env`'s `PATH` (`agent.ResolveBinary`). An empty `Env` is refused (exec would
-otherwise pass the host's own); until WP7 the host fills it with its scrubbed environment, so
-codex uses `~/.codex`. What WP7 puts in it per account: `PATH`, `HOME`, `LANG`/`LC_*` and `TZ` as the host has them,
+otherwise pass the host's own); the server fills it per account (§11). What is in it: `PATH`, `HOME`, `LANG`/`LC_*` and `TZ` as the host has them,
 `CODEX_HOME` = the account's home prepared with `codex.PrepareHome` (its `auth.json` is the
 login; an API-key account is logged in there with `account/login/start {type: apiKey}`, so no
 `OPENAI_API_KEY` is needed), and nothing of the service's (`INVOCATION_ID`, `NOTIFY_SOCKET`,
@@ -494,7 +520,9 @@ stdin (the app-server exits at once; the thread is on disk); Stop kills the proc
 `queued`; codex takes it up at its next step (0.164 cuts a streaming answer short for it) and the
 `userMessage` item carrying that id → `delivered`. A turn that cannot be steered (compaction,
 review: `activeTurnNotSteerable`) or a `!` line during a turn → held (`queued`) and sent when the turn
-ends; so is a steered message a turn ended without taking up. A message whose text is one line
+ends; so is a steered message a turn ended without taking up — except after a `limited` turn, when
+the adapter **holds** its queue (as OpenCode's, §5.3) until the next `Send` lets it go (the person
+asked for it); a switch starts another adapter, which the host hands what was never taken up. A message whose text is one line
 starting with `!` runs `thread/shellCommand` as a turn of its own.
 
 **Turns.** A journal turn is a root turn of the chat's thread (ids are the adapter's own, `t_…`, so
@@ -694,7 +722,9 @@ new process does not come up, the adapter reports `Exited` and refuses further s
 the failure; the next host resumes and re-sends what is undelivered). The caller journals
 `account.switched`. API-key
 accounts may pass `OPENCODE_AUTH_CONTENT` in `env`; OAuth accounts keep `auth.json` in their data
-home (research/06 §3.2). After a `limited` turn the queue runs on (§10).
+home (research/06 §3.2). After a `limited` turn the adapter **holds** its queue: the messages
+queued behind it are not posted into the account at its limit, until `SwitchAccount` (they run on
+the new account) or the next `Send` (the person asked for it) lets it go.
 
 ## 6. Lifecycle
 
@@ -788,13 +818,16 @@ key (the existing `Outbox` in `net.js`).
 
 | Route | Body | Answers |
 |---|---|---|
-| `POST /api/chats` | `client_id`, `harness`, `model`, `effort`, `workdir_mode`, `workdir`, `title`, `ultracode` (Claude Code only; dropped for any other agent), `message`?{`client_id`,`text`,`attachments`} | 201 `{session, chat: <summary>, message?}`; 200 the same for a repeated `client_id`; 400 for a harness without an adapter. The host is launched at once |
+| `POST /api/chats` | `client_id`, `harness`, `model`, `effort`, `workdir_mode`, `workdir`, `title`, `ultracode` (Claude Code only; dropped for any other agent), `account`?, `auto_switch`?, `message`?{`client_id`,`text`,`attachments`} | 201 `{session, chat: <summary>, message?}`; 200 the same for a repeated `client_id`; 400 for a harness without an adapter, or an account of another agent. No `account`: the recommended one when the host launches (§11). The host is launched at once |
 | `GET /api/chats/{id}` | – | `{session, chat: <summary>, asks: [open asks], host_error?}`; `?history=1` adds `messages` (the whole projection) |
 | `POST /api/chats/{id}/messages` | `client_id`, `text`, `attachments` | 200 `{client_id, seq, dup}`; 202 `{client_id, queued: true}` when the host has not acked within 10 s (it will receive it once) |
 | `POST /api/chats/{id}/interrupt` | `client_id` | as messages; 200 `{idle: true}` when nothing runs and no host is up |
 | `POST /api/chats/{id}/asks/{ask}/answer` | `client_id`, `answer` (any JSON), `device` | 200 / 202 as messages; **409 `{answered_elsewhere: true, by_device}`** when another device answered; 404 for an unknown ask |
 | `POST /api/chats/{id}/model` | `client_id`, `model`, `effort` | as messages (a `set_model` command) |
 | `POST /api/chats/{id}/command` | `client_id`, `name`, `args` | as messages; 409 `{code: "unsupported"}` for a command the agent does not have |
+| `POST /api/chats/{id}/account` | `client_id`, `account`, `when`? (`now`\|`after_turn`), `continue`? | as messages (a `switch_account` command, §4.3); 409 for an account of another agent or one not signed in, 404 for none |
+| `PUT /api/chats/{id}/auto-switch` | `on` | `{session}`: the chat's switch at a limit (§11), kept in the row's options |
+| `/api/accounts…` | §11 | the accounts |
 | `POST /api/chats/{id}/attachments` | multipart, one or more `file` parts | `{files: [attachment]}`: stored under `chats/<id>/attachments/` (a copy in the working directory's uploads); a message may only name paths this route handed out, else 400 |
 | `POST /api/chats/{id}/options` | `ultracode` | the row's options changed (400 for Ultracode on another agent), and the agent parked as soon as it is idle so the next message resumes with them; `{session}` |
 | `POST /api/sessions/{id}/status`, `…/title`, `…/digest` | – | the spoken Status, naming again and Read again of every session; for a chat read from its journal (§3), Read again judging its last turn again |
@@ -832,8 +865,12 @@ own words (a text question's answer, a number question's number as typed, or "Ot
 `delegated` ("You decide") and `skipped` (neither answered nor delegated); `general_note` and
 `follow_up` (a counter-question instead of answers) are `null` when empty. A plan
 (`payload.kind: "plan"`) is answered from its card, `{decision: "approve"}` or `{decision:
-"keep_planning", note}`, never from the question dialog. The account picker (WP7) plugs into the
-composer through `useAccountPicker(draw)` in `composer.js`.
+"keep_planning", note}`, never from the question dialog. The account picker (WP7,
+`accountpicker.js`) plugs into the composer through `useAccountPicker(draw)` in `composer.js`:
+the account the chat runs on (the journal's, else the row's), a switch on its way ("A → B"), and
+a menu of the agent's accounts with their usage; during a turn it asks "Switch now" (interrupt and
+continue) or "After this turn". The fold keeps `account` from `turn.started` and
+`account.switched`, and the switch asked for (`command{switch_account}`) until it happens.
 
 A new session is a chat for every agent with an adapter, from the sheet and from PreStart; the
 server lists them as the catalogue's `chats`. `SOCRATES_AGENT_TERMINALS=1` keeps Claude Code,
@@ -943,15 +980,36 @@ attachment(s): …`).
   the installed codex with `internal/agent/codex/fakemodel` as its model provider (a scripted
   Responses API whose encrypted reasoning is bound to an account; `e2e/fakebin/fakemodel` serves
   it on a port).
+- Accounts (WP7): `internal/store` (the table, the order, origin once, the upgrade of a schema-9
+  database through 10, 11 and 12); `internal/vault` (the key file made once); `internal/accounts`
+  (the environment of each kind: the allow-list, no service variable, no key; the sealed key
+  variables; Codex's device code and key against `fakecodex`; the migration rehearsed on a
+  synthetic HOME and a schema-9 store: folders renamed with their inodes, links back, writes
+  through a link landing in the one file, no second copy of any login, the tar, run twice, and
+  cut short after each of its steps - between a move and its link, and inside a swap - and run again
+  to the same result; a new data folder and a temporary one leave HOME alone; the multi-account
+  folders stay; one folder that cannot move holds up nothing; the old path is never missing while
+  it moves); `internal/agenthost`
+  through real hosts with the fake (A → B → A with the keys in no file, a switch during a turn
+  interrupting it and continuing in order, after the turn acked pending then final, the divider at
+  boot, a key sealed for another chat refused, a switch without an environment refused, a second
+  Continue to the same account saying nothing); each adapter's switch A → B → A in a real host
+  (`fakeclaude`, `fakecodex`, `fakeopencode`) keeping its conversation; Codex's and OpenCode's held
+  queue after a limit, and an "after this turn" switch made while OpenCode holds it; Claude's
+  foreign-thinking notice; `internal/server` (the routes and that no answer, `host.json`, journal,
+  log or outbox holds a key, a switch while running and while parked, an "after this turn" switch
+  surviving a killed host, a limit stopping the chat or switching it and pushed once, Codex's device
+  code, Claude's sign-in in a Shell, OpenCode's provider sign-in, a refused sign-in until the next
+  one); `internal/web` (the foreign-thinking hint folded into the divider); `e2e/run.mjs`
+  `accounts` (touch mode on a phone) and `chat-account` ("Switch now" on a phone) in the browser.
+- Accounts and the rest together (WP7 + WP9): Ultracode kept across a switch through a real host;
+  a chat that never switched on its account's ledger from its first turn, and the costs page naming
+  the account; a chat's limit pushed once, in the accounts' words; a turn a switch made now stopped
+  neither pushed nor judged, one a switch after the turn waited for still news; a lost folder's
+  rebuilt history leaving its account's limit as it was.
 
 ## 10. Known limits, for the packages that follow
 
-- `StartSpec.Env`/`Account` are passed through but nothing fills them until WP7. The cost ledger
-  splits a chat by `account.switched` (`chat-<id>@<account>`, the account id as the ledger's
-  profile); the costs page names profiles only, so WP7 adds the accounts' names to its `profiles`.
-  The account a journal starts on is known only from its first switch's `from`, so the turns of a
-  chat that never switched, and of a rebuilt journal before its first switch, are on a ledger with
-  no account.
 - A chat folder lost while the server runs and holds the chat's history is not noticed: the next
   host's journal starts again at seq 1, which the server's copy (further along) ignores. A lost
   folder is found at the next start (the brief is in the folder too) and rebuilt when opened.
@@ -967,14 +1025,158 @@ attachment(s): …`).
   `notifications/cancelled` and `control_cancel_request`, both handled. `TestLiveAskUser`
   (`SOCRATES_CLAUDE_LIVE=1`) checks the handshake, `_meta claudecode/toolUseId`, the blocking call
   and the cancel on an interrupt against the real binary; it has not run yet.
-- The Claude adapter's replay receipt is in (§5.1). Ultracode and an API-key account reach it
-  only through `StartSpec.Env` (`SOCRATES_CLAUDE_ULTRACODE`, `SOCRATES_CLAUDE_API_KEY`); the server
-  sets neither yet (WP7, WP9).
-- OpenCode, for WP7: a turn that ends `limited` lets the queue run like any other, so each queued
-  message is posted into the account at its limit and ends `limited` too. The limit card and the
-  auto-switch (REBUILD §4.3) need the adapter to hold the queue after a limited turn until the chat
-  switches (`SwitchAccount` runs it on the new account) or is told to continue.
+- The Claude adapter's replay receipt is in (§5.1). An API-key account reaches it through
+  `SOCRATES_CLAUDE_API_KEY` in the sealed `secret_env` (§11); Ultracode (`SOCRATES_CLAUDE_ULTRACODE`)
+  is the chat's option (`host.json` `ultracode`), which the host adds on top of the account's
+  environment when it starts the CLI and again with every `switch_account`.
+- For the feeds and the cost ledger (WP9): every `turn.started` names its `account` (an id of
+  `GET /api/accounts`), and `account.switched{from, to}` marks each move. The ledger puts each turn
+  on the account its `turn.started` names (§3, Costs), and the costs page names the accounts. A
+  journal from before WP7 names none: its turns are on the account its first switch's `from` says,
+  and until there is one on `chat-<id>`, with no account. The server keeps a chat's account in its
+  row's options (`account`, `auto_switch`).
+- For WP10: the terminal-only profiles (`/api/profiles`, `harnesses/profiles.go`, the sheet's
+  profile field for terminals) stay as they were; the dashboard's Profiles card is gone, and the
+  migration took every profile's logins into accounts (§11).
 
-- The Claude adapter's replay receipt is in (§5.1). An API-key account reaches it only through
-  `StartSpec.Env` (`SOCRATES_CLAUDE_API_KEY`), which WP7 sets; Ultracode is the host's (`host.json`
-  `ultracode`).
+## 11. Accounts (WP7)
+
+A chat runs on an **account**: one agent's subscription or API key (REBUILD.md §4). The code is
+`internal/accounts` (model rules, environment, folders, sealing, sign-in flows, migration),
+`internal/store/accounts.go` (schema 12), `internal/server/accounts.go` and `chataccount.go`, and
+`internal/agenthost/switch.go` / `secretenv.go`.
+
+**Model.** Table `accounts`: `id` (`a-` and 12 hex digits, also the folder's name), `agent`
+(`claude`, `codex`, `opencode`; `fake` when the scripted agent is registered), `label` (≤ 40),
+`kind` (`subscription` | `api_key`), `sort_order` (one order across all agents, the person's),
+`state` (`signed_in` | `needs_sign_in` | `error`) and `state_detail`, `email`/`plan` (what the
+agent last said about the login), `provider` (an OpenCode key's provider), `origin` (the folder
+the migration moved the login out of; unique), `limits`/`limits_at` (the last usage reading),
+`limited_until` (when a limit the account ran into renews), `secret` (the sealed key). The state is
+read again from the folder whenever the list is read (`accounts.Detect`: Claude's
+`.credentials.json` or `primaryApiKey`, Codex's `auth.json`, OpenCode's `auth.json` providers, a
+key for an API-key account), so a login that appears or goes is seen without Socrates touching it.
+
+**Folders.** Claude Code: `<data>/accounts/<acct>/` is `CLAUDE_CONFIG_DIR`, prepared with
+`claude.PrepareConfigDir` (its conversations shared through `<data>/agents/claude`). Codex: the same
+path is `CODEX_HOME`, prepared with `codex.PrepareHome` (`<data>/agents/codex`). OpenCode:
+`<data>/agents/opencode/accounts/<acct>/` is `XDG_DATA_HOME` (§5.3, `Layout.PrepareAccount`). The
+login in a folder is written by the agent's own sign-in, and read, never written, refreshed or
+deleted, by Socrates — except that deleting an account removes its folder, which the server refuses
+while a chat runs on it and for an account the migration moved in (a link in HOME points at it).
+
+**Environment** (`accounts.Env`, what `host.json`'s `env` holds). From the server's own
+environment only an allow-list passes: `PATH`, `HOME`, `USER`, `LOGNAME`, `SHELL`, `LANG`,
+`LANGUAGE`, `LC_*`, `TZ`, `TMPDIR`, the CA bundle and proxy variables, `SOCRATES_CODEX_BIN` and
+`SOCRATES_OPENCODE_BIN` (the binary overrides). Never a service's variables (`INVOCATION_ID`,
+`NOTIFY_SOCKET`, `JOURNAL_STREAM`, …) and never any key (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY` of
+the server's environment do not pass). Then the account's folder variable (`CLAUDE_CONFIG_DIR`,
+`CODEX_HOME`, OpenCode's `XDG_DATA_HOME` and its tool configuration).
+
+**Secrets.** An API key is sealed (`internal/vault`, AES-256-GCM, additional data
+`account:<acct>`) with `<data>/secrets.key` (32 random bytes, 0600, made once by a link so two
+starts cannot make two) and kept in `accounts.secret`; no answer, page, log or journal carries it
+(the store's `Account.Secret` is never encoded). For a chat the server opens it and seals the
+variables that carry it — `SOCRATES_CLAUDE_API_KEY` (the Claude adapter passes it as
+`ANTHROPIC_API_KEY`), `OPENCODE_AUTH_CONTENT` (`{"<provider>":{"type":"api","key":…}}`),
+`SOCRATES_FAKE_API_KEY` — again, for that chat only (`agenthost.SealEnv`, additional data
+`chat-env:<chat>`, base64): `host.json`'s `secret_env`, and a `switch_account` command's (so the
+outbox in SQLite holds only ciphertext). **How the host gets the environment:** it reads `env` and
+`secret_env` from `host.json` (or the command), opens `secret_env` with `secrets.key` of its
+`--data` folder, refuses one sealed for another chat, and joins the two in memory for
+`StartSpec.Env`. A Codex key is also logged in by codex itself (`account/login/start {type:
+apiKey}` into the account's `CODEX_HOME`), so no Codex chat needs a key variable. The backup leaves
+out `host.json`'s `env` and `secret_env` (`paths.Redacted`), takes `secrets.key` with the store
+(both are needed to read the keys back), and leaves out the accounts' logs.
+
+**Sign-in** (`POST /api/accounts/{id}/signin`; a flow lives 15 minutes, one per account):
+
+- Claude Code: a Shell terminal session (dynamic folder) that runs `claude auth login --claudeai`
+  with the account's `CLAUDE_CONFIG_DIR`, then stays a shell; the answer is `{session}` and the
+  page goes there. The account is signed in once its folder has the login. (Detection reads
+  `.credentials.json`; on macOS Claude Code keeps the login in the Keychain, which is not read, so
+  such an account shows as not signed in there.)
+- Codex: a short-lived `codex app-server` with the account's environment:
+  `account/login/start {type: chatgptDeviceCode}` → `{verificationUrl, userCode}` shown with a Copy,
+  `account/login/completed` ends it; Cancel sends `account/login/cancel`. The identity is
+  `account/read`.
+- OpenCode: `opencode serve` on the account's data home; `GET /provider/auth` lists the providers
+  and their OAuth methods (a key is an account of its own), `POST /provider/{p}/oauth/authorize
+  {method, inputs}` → the page and either `auto` (the provider calls back; the flow waits) or `code`
+  (the person pastes it: `POST …/signin/code`), then `/provider/{p}/oauth/callback`.
+- An API key: the form; `PATCH /api/accounts/{id} {key}` replaces it.
+
+**Routes.**
+
+| Route | Body | Answers |
+|---|---|---|
+| `GET /api/accounts` | – | `{accounts: [<account>], recommended: {<agent>: <id>}, agents}`; each with `limits` (5h/7d windows), `chats` (how many run on it), `recommended`, `signin` (a flow under way) |
+| `POST /api/accounts` | `agent`, `kind`, `label`, `key`?, `provider`? | 201 `{account}` |
+| `PATCH /api/accounts/{id}` | `label`?, `key`?, `provider`? | `{account}` |
+| `DELETE /api/accounts/{id}` | – | `{ok}`; 409 while a chat runs on it or for one that holds an agent's own sign-in from HOME (`origin` `~/.claude`, `~/.codex`, `~/.local/share/opencode`); one made of a profile goes, with the link left in the profile's place |
+| `PUT /api/accounts/order` | `order`: every id | `{ok}`; 409 when the list changed |
+| `POST`/`GET`/`DELETE /api/accounts/{id}/signin`, `POST …/signin/code` | above | `{signin: <flow>}` or `{session}` |
+
+**A chat's account.** Kept in its row's options (`account`, `auto_switch`). A chat that names none
+(or one deleted since) gets the recommended account of its agent at launch, else its first, else a
+new "Default" subscription; the choice is written back. The launch puts the newest
+`switch_account` still in the outbox into `host.json` (§4.3: a switch asked for while parked).
+
+**Limits and the recommendation.** Claude Code's windows are read for the account's folder as the
+dashboard reads usage; Codex's with `account/rateLimits/read` (a short-lived app-server, every 5
+minutes at most); every other account's are the last `rate_limit` events its chats reported. The
+recommended account of an agent is, of its signed-in accounts that have not run into a limit,
+the one with the most headroom: what is left of the week per hour until it renews, times what is
+left of the five hours (`headroom`); one with no reading is recommended only when every account
+with one is at its limit.
+
+**At a limit** (`turn.ended{limited}`): the account's `limited_until` is the latest renewal of the
+turn's windows (an hour when none was said). A chat with `auto_switch` (off unless set, from the
+sheet or the chat's ⋮) is switched by the server to the recommended other account, `when: now`,
+`continue: true`, `client_id` `auto-<turn>`, reason "The limit of <label> was reached."; without
+it, or with no account to go to, the person is told by push ("Limit reached — renews in …") and the
+limit card offers "Continue with <account>" for each account with room (the same switch, sent by
+the browser). Codex and OpenCode hold their queue meanwhile (§5.2, §5.3), so the messages queued
+behind the limit do not each run into it. A chat is pushed once per account it is stopped on,
+until a turn gets through again.
+
+**A refused sign-in** (`error{code: auth}`, `agent.ErrorAuth`: OpenCode's `ProviderAuthError` or a
+401, among them a refresh token two chats of one OAuth account renewed at the same moment,
+research/06): the account's state becomes `error` with "Sign in again" (an API key: "Replace it"),
+although its login is still on disk; a switch to it is refused until a sign-in, a new key or a
+turn on it that completes brings it back.
+
+**The divider's "i"** carries the reason, who the new account is (`email`, `plan`, as last
+reported), what Claude set aside (`notice{foreign_thinking}`: resumed on another organization's
+account, Claude Code goes on without the earlier thinking and keeps it for the way back,
+research/08; the chat folds it into the newest divider) and that the next reply may be slower (the
+new account has none of the conversation's cache).
+
+**Migration** (`accounts.Migrate`, at server start while the store marks it due): it runs only on
+a data folder of the build before accounts. The store writes `kv accounts.migration = pending` in
+the same upgrade that brings schema 12 to an older database (before the new version is written),
+and the migration clears it when every source is done; a data folder this build makes has no mark
+and never takes anything from HOME — a new installation, `socrates -data /tmp/x`, an e2e run in
+live mode. Nor is a folder outside the temporary directory moved into a data folder inside it (a
+rehearsal on a copy). The logins of the machine's HOME (`~/.claude` with `~/.claude.json`,
+`~/.codex`, `~/.local/share/opencode` with `~/.config/opencode`) and of every profile become
+accounts by **renaming** their folders into the account folders (the same inodes: never a copy,
+never two copies of a login), and the old path becomes a link to the new one, so a terminal or a
+CLI started by hand still finds the same login and writes go to the one file. The rename and the
+link are **one step** on Linux: a link is made at the new place and exchanged with the folder
+(`renameat2(RENAME_EXCHANGE)`), so the old path is never missing and an agent writing by path
+meanwhile never makes a second folder there; a file system that cannot exchange gets a rename and
+then the link. The shared folders inside (`projects/`, `sessions/`, …) are swapped for their links
+the same way before their content is merged into `<data>/agents/<agent>/` (what both have stays
+aside as `<name>.pre-rebuild`). First a tar of the data folder and the moved folders,
+`<data>.pre-rebuild.tar` (0600): it holds the logins **unencrypted**, and the agents' live SQLite
+files as they were read (a running agent may leave a torn copy; the moved originals are whole) —
+delete it once the accounts work. Idempotent and safe to interrupt: each account is made once per
+`origin`, a source is planned from its account row as well as from the disk (a run cut short
+between a rename and its link is finished), and every step looks at the disk before acting. A
+source that fails is logged and tried again at the next start while the others go on. A folder on
+another file system (EXDEV), or one that is a link of the person's own to elsewhere, is left where
+it is, and its account says why. A lost profile's account has the origin `lost:<profile>:<agent>`.
+`~/.codex-multi` and `~/.config/opencode-multi-auth` are left alone, also when `CODEX_HOME` points
+into one. WP10 runs the clean cut (§8.3, stopping the old agent terminals) before it.
+

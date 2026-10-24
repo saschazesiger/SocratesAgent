@@ -40,7 +40,22 @@ var ErrNotFound = errors.New("not found")
 // Version 11 is the end of the bucket as the store of record: the data
 // directory is the only truth and the bucket a backup of it
 // (internal/backup), so mirror_pending and the mirror's kv rows go.
-const SchemaVersion = 11
+// Version 12 adds the accounts a chat runs on (accounts.go), which replace
+// the sign-in profiles.
+const SchemaVersion = 12
+
+// accountsVersion is the schema that brought accounts. A database brought up
+// to it from an older one is of a build whose agents ran on their own
+// folders in HOME and on the profiles, which the accounts migration
+// (internal/accounts) takes over, once.
+const accountsVersion = 12
+
+// accountsPendingKey marks that migration as still to do. It is written in
+// the same upgrade that brings the accounts table, before the new version
+// is, so no crash can leave an old installation's database at the new
+// version without it - and a new database never has it, so a data
+// directory made by this build never takes anything from HOME.
+const accountsPendingKey = "accounts.migration"
 
 // Store wraps the database handle.
 type Store struct {
@@ -154,6 +169,32 @@ CREATE TABLE IF NOT EXISTS chat_outbox (
   created_at INTEGER NOT NULL,
   PRIMARY KEY (chat_id, client_id)
 );
+
+-- The accounts the chats run on: one agent's subscription login or API key
+-- each (accounts.go). The login itself is in the account's folder, written by
+-- the agent; an API key is here, sealed under the data directory's own key,
+-- and never leaves the server in the clear. origin is where the migration
+-- moved the account's folder from, which a link there still points at.
+CREATE TABLE IF NOT EXISTS accounts (
+  id            TEXT PRIMARY KEY,
+  agent         TEXT NOT NULL,
+  label         TEXT NOT NULL,
+  kind          TEXT NOT NULL,
+  created_at    INTEGER NOT NULL,
+  sort_order    INTEGER NOT NULL DEFAULT 0,
+  state         TEXT NOT NULL DEFAULT 'needs_sign_in',
+  state_detail  TEXT NOT NULL DEFAULT '',
+  email         TEXT NOT NULL DEFAULT '',
+  plan          TEXT NOT NULL DEFAULT '',
+  provider      TEXT NOT NULL DEFAULT '',
+  origin        TEXT NOT NULL DEFAULT '',
+  limits        TEXT NOT NULL DEFAULT '',
+  limits_at     INTEGER NOT NULL DEFAULT 0,
+  limited_until INTEGER NOT NULL DEFAULT 0,
+  secret        BLOB,
+  updated_at    INTEGER NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_accounts_origin ON accounts(origin) WHERE origin <> '';
 
 -- The unique index on client_id is what makes creating a session safe to
 -- retry: the same key can only ever produce one session.
@@ -317,6 +358,12 @@ func migrate(db *sql.DB, path string) error {
 	// there, so a column added to an existing table has to be added by hand.
 	if err := addSessionColumns(db); err != nil {
 		return err
+	}
+	if legacy || (version > 0 && version < accountsVersion) {
+		if _, err := db.Exec(`INSERT INTO kv(key, value) VALUES(?, 'pending') ON CONFLICT(key) DO NOTHING`,
+			accountsPendingKey); err != nil {
+			return fmt.Errorf("mark the accounts migration: %w", err)
+		}
 	}
 	// PRAGMA takes no bound parameters, and the value is a constant.
 	if _, err := db.Exec(fmt.Sprintf(`PRAGMA user_version = %d`, SchemaVersion)); err != nil {
@@ -650,6 +697,19 @@ func (s *Store) DeleteKV(key string) error {
 	_, err := s.db.Exec(`DELETE FROM kv WHERE key = ?`, key)
 	return err
 }
+
+// AccountsMigrationPending reports whether this database came from a build
+// before accounts and the accounts migration has not finished on it yet.
+func (s *Store) AccountsMigrationPending() (bool, error) {
+	_, err := s.GetKV(accountsPendingKey)
+	if errors.Is(err, ErrNotFound) {
+		return false, nil
+	}
+	return err == nil, err
+}
+
+// FinishAccountsMigration records that the accounts migration is done.
+func (s *Store) FinishAccountsMigration() error { return s.DeleteKV(accountsPendingKey) }
 
 // GetJSON decodes a JSON value stored under key.
 func (s *Store) GetJSON(key string, out any) error {

@@ -161,6 +161,8 @@ function settingsOf(session) {
     ultracode: !!options.ultracode,
     profile: options.profile || '',
     profile_auto: !!options.profile_auto,
+    account: options.account || '',
+    auto_switch: !!options.auto_switch,
     workdir_mode: session.workdir_mode || harnesses.DYNAMIC,
     workdir: session.workdir || '',
   };
@@ -176,6 +178,8 @@ const PATCH_FIELDS = {
   effort: ['effort'],
   profile: ['profile', 'profile_auto'],
   ultracode: ['ultracode'],
+  account: ['account'],
+  auto_switch: ['auto_switch'],
   dir: ['workdir_mode', 'workdir'],
 };
 
@@ -378,6 +382,7 @@ function openPanel(ctx, first) {
     settingsHost.replaceChildren(form.node);
     drawSettingsLine();
     form.refreshProfiles().then(() => { if (!st.closed) applySettings(true); });
+    form.refreshAccounts().then(() => { if (!st.closed) applySettings(true); });
   });
 
   /* ------------------------------------------------------------ events */

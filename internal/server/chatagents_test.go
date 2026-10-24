@@ -24,11 +24,8 @@ import (
 // The three agents' adapters are in this test binary - which is also every
 // host it launches - with their scripted CLIs (e2e/fakebin) on the PATH.
 // Like the browser suite, the binary keeps the agent terminals for the sheet
-// and PreStart (AgentTerminalsEnv), so that the tests written for Claude
-// Code, Codex and OpenCode terminals still make terminals.
-func init() {
-	os.Setenv(AgentTerminalsEnv, "1")
-}
+// and PreStart (AgentTerminalsEnv, set in TestMain), so that the tests
+// written for Claude Code, Codex and OpenCode terminals still make terminals.
 
 var (
 	fakeAgentsOnce sync.Once
@@ -169,6 +166,17 @@ func TestALostChatFolderIsRebuiltFromTheTranscript(t *testing.T) {
 			if s := c.srv.chats.chats[id].summary(); s.LastSeq != 0 {
 				t.Fatalf("the lost folder still has events: %+v", s)
 			}
+			// Its account is at a limit now, which a turn the rebuild gets
+			// back - completed long ago - says nothing of.
+			row, err := c.store.GetSession(id)
+			if err != nil {
+				t.Fatal(err)
+			}
+			acct := readChatOptions(row.Options).Account
+			until := time.Now().Add(time.Hour).UnixMilli()
+			if err := c.store.SetAccountLimitedUntil(acct, until); err != nil {
+				t.Fatal(err)
+			}
 			sent := catch(c.srv.push)
 			if err := c.srv.push.add(pushSub{Subscription: testSubscription("https://push.example.net/a")}); err != nil {
 				t.Fatal(err)
@@ -202,6 +210,9 @@ func TestALostChatFolderIsRebuiltFromTheTranscript(t *testing.T) {
 			case s := <-sent:
 				t.Fatalf("the rebuilt history was pushed: %+v", s.note)
 			case <-time.After(700 * time.Millisecond):
+			}
+			if a, err := c.store.GetAccount(acct); err != nil || a.LimitedUntil != until {
+				t.Fatalf("the rebuilt history moved the account's limit: %+v %v", a, err)
 			}
 			if a := c.srv.manager.ActivityOf(id); a.Unread || a.State != termux.StateIdle {
 				t.Fatalf("after the rebuild the chat is %+v", a)

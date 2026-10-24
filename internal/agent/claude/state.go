@@ -383,8 +383,15 @@ func (s *state) system(f *frame) {
 			"The model API failed%s; retrying in %.0f s (attempt %d of %d).",
 			status, float64(f.RetryDelay)/1000, f.Attempt, f.MaxRetries)})
 	case "informational":
-		if f.Level != "info" && strings.TrimSpace(f.Content) != "" {
-			s.emit(agent.Event{Type: agent.TypeNotice, Code: "informational", Text: strings.TrimSpace(f.Content)})
+		switch content := strings.TrimSpace(f.Content); {
+		case strings.Contains(content, "thinking from another organization"):
+			// Resumed on an account of another organization, Claude Code
+			// sets the earlier thinking aside and keeps it for the way back
+			// (research/08): a hint on the account switch, not a warning.
+			s.emit(agent.Event{Type: agent.TypeNotice, Code: agent.NoticeForeignThinking,
+				Text: "The earlier thinking was written under another organization, so this account's Claude goes on without it. It is kept for a switch back."})
+		case f.Level != "info" && content != "":
+			s.emit(agent.Event{Type: agent.TypeNotice, Code: "informational", Text: content})
 		}
 	case "task_started":
 		s.taskStarted(f)

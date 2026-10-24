@@ -268,6 +268,13 @@ func (s *Server) handleCosts(w http.ResponseWriter, r *http.Request) {
 			view.Profiles[p.ID] = p.Name
 		}
 	}
+	// A chat's ledgers are kept per account, the account's id as the
+	// profile (chatcosts.go).
+	if list, err := s.store.ListAccounts(); err == nil {
+		for _, a := range list {
+			view.Profiles[a.ID] = a.Label
+		}
+	}
 
 	root := filepath.Clean(s.Settings().Workspace.Root)
 	models := map[string]int{}

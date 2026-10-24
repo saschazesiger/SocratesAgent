@@ -357,11 +357,17 @@ func (h *chatHub) askWords(id string) string {
 }
 
 // turnWords is what a push about a chat's ended turn says, and false for a
-// turn that is no news (turnNews), by its brief.
+// turn that is no news (turnNews), by its brief. A turn its account's limit
+// stopped is pushed by the accounts instead (accountHub.onLimit): with when
+// the limit renews and on which account, once per account, and not at all
+// when the chat switches to another account by itself.
 func (h *chatHub) turnWords(id string) (string, bool) {
 	b, ok := h.briefOfChat(id)
 	if !ok {
 		return "Finished", true
+	}
+	if b.Question == nil && b.Summary.LastOutcome == agent.OutcomeLimited && b.Summary.Account != "" {
+		return "", false
 	}
 	return b.News, b.News != ""
 }

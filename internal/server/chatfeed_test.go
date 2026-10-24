@@ -156,6 +156,18 @@ func TestTheNewsOfAnEndedTurn(t *testing.T) {
 	if got, ok := turnNews(died); !ok || got != "Stopped · Half way" {
 		t.Fatalf("died: %q %v", got, ok)
 	}
+	// Stopped for a switch to another account made now: as a Stop. One that
+	// waits for the turn stops nothing, so a turn that then dies is news.
+	switched := fold(append(turnOpen("1", "x"), agent.Event{Type: agent.TypeCommand, Op: agent.OpSwitchAccount,
+		ClientID: "w", To: "acct-b", Args: "now"}, turnEnd("1", agent.OutcomeInterrupted, ""))...)
+	if _, ok := turnNews(switched); ok {
+		t.Fatal("a turn the switch stopped is news")
+	}
+	waited := fold(append(turnOpen("1", "x"), agent.Event{Type: agent.TypeCommand, Op: agent.OpSwitchAccount,
+		ClientID: "w", To: "acct-b", Args: agent.SwitchAfterTurn}, turnEnd("1", agent.OutcomeInterrupted, ""))...)
+	if got, ok := turnNews(waited); !ok || got != "Stopped" {
+		t.Fatalf("a switch after the turn: %q %v", got, ok)
+	}
 }
 
 func TestATurnAsAModelIsToldIt(t *testing.T) {

@@ -40,6 +40,11 @@ func TestMain(m *testing.M) {
 			os.Exit(agenthost.MCPAskMain(os.Args[2:], "test"))
 		}
 	}
+	// The real adapters are registered here too (the accounts package
+	// imports them), but the tests drive Claude Code, Codex and OpenCode
+	// through faketui terminals, as the browser suite does; the chats run the
+	// scripted agent. A test that wants an agent's chat says so by name.
+	os.Setenv(AgentTerminalsEnv, "1")
 	code := testhome.Main(m)
 	// The fake CLI directory is shared by every test through a sync.Once, so
 	// no single test owns it and t.TempDir cannot remove it. Here is the one
