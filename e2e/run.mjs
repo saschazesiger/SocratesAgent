@@ -8285,25 +8285,26 @@ async function homereconnect() {
 }
 
 // home-touch: the reference device is a car. Big buttons, a dialog that is
-// the whole screen, and the keyboard button where the field is - and the
-// phone, at its own size.
+// the whole screen, the keyboard button's copy where the fields are, taps
+// that land in a hurry and send nothing they should not - and the phone, at
+// its own size and on its side.
 async function hometouch() {
-  const { s, stub, ctl } = await homeServer();
+  const s = await homeChats();
   try {
-    const id = await makeAgent(s, 'Pick a database');
-    const asked = await askQuestion(s, id);
-    ok(!!asked.digest, 'the question is read', asked.digest ? asked.digest.phase : 'no digest');
-
+    const first = await askingChat(s, 'Pick a database');
+    const posts = [];
     const car = await deviceOf(s, { viewport: { width: 1280, height: 800 }, hasTouch: true, userAgent: TESLA_AGENT });
+    car.page.on('request', (req) => { if (req.method() === 'POST' && /\/asks\/[^/]+\/answer$/.test(req.url())) posts.push(req.url()); });
     await car.page.goto(s.url + '/', { waitUntil: 'domcontentloaded' });
     const home = await awaitHome(car.page, (h) => h.shown && h.counts.questions === 1, 15000);
     const touch = await car.page.evaluate(() => document.documentElement.classList.contains('so-touch'));
     ok(home.ok && touch, 'the car lands on Home in touch mode, with the question counted', JSON.stringify({ touch, counts: home.seen.counts }));
     await shot(car.page, 'home-tesla');
 
-    // A double tap on the Questions card: the first opens the dialog, whose
-    // first option is drawn right under the finger, and the second must not
-    // choose it - nor a third send it - before the person has read anything.
+    // A double tap on the Questions card, and then a triple one: the first
+    // tap opens the dialog, whose first option is drawn right under the
+    // finger, and the second must not choose it - nor a third send it -
+    // before the person has read anything.
     const card = await car.page.locator('.so-home__questions').boundingBox();
     const centre = { x: card.x + card.width / 2, y: card.y + card.height / 2 };
     const tapCard = async (times) => {
@@ -8317,38 +8318,36 @@ async function hometouch() {
     const underFinger = await car.page.evaluate(({ x, y }) => {
       const node = document.elementFromPoint(x, y);
       const option = node && node.closest('.so-q-option');
-      return option ? 'option:' + option.dataset.label : (node ? node.className : '');
+      return option ? 'option:' + option.dataset.option : (node ? node.className : '');
     }, centre);
-    const doubled = await sheetLook(car.page);
-    ok(!!doubled && doubled.options.length === 2 && doubled.options.every((o) => o.pressed !== 'true')
-      && !!doubled.send && doubled.send.disabled,
+    const doubled = await askLook(car.page);
+    ok(!!doubled && doubled.options.length === 2 && doubled.options.every((o) => o.pressed !== 'true') && posts.length === 0,
       'a double tap on the Questions card opens the dialog and chooses nothing, though an option is drawn under the finger',
-      JSON.stringify({ under: underFinger, options: doubled && doubled.options.map((o) => o.label + '=' + o.pressed), send: doubled && doubled.send }));
+      JSON.stringify({ under: underFinger, options: doubled && doubled.options.map((o) => o.id + '=' + o.pressed), posts: posts.length }));
     await car.page.keyboard.press('Escape');
-    await sheetShut(car.page, 5000);
+    await askShut(car.page, 5000);
     await wait(600);
     await tapCard(3);
     await wait(2000);
-    const tripled = await sheetLook(car.page);
-    ok(answersLogged(s).length === 0 && !!tripled && tripled.options.every((o) => o.pressed !== 'true')
-      && !(tripled.status && /Answer|Choosing|Sending/.test(tripled.status.text)),
-      'a triple tap on it sends nothing: the second tap does not choose, so the third has nothing to send',
-      JSON.stringify({ logged: answersLogged(s).map((e) => e.answers), status: tripled && tripled.status,
-        options: tripled && tripled.options.map((o) => o.label + '=' + o.pressed) }));
+    const tripled = await askLook(car.page);
+    const stillOpen = (await chatOf(s, first.id)).asks.length;
+    ok(!!tripled && posts.length === 0 && stillOpen === 1 && tripled.options.every((o) => o.pressed !== 'true'),
+      'a triple tap sends nothing: the second tap does not choose, so the third has nothing to send',
+      JSON.stringify({ posts: posts.length, open: stillOpen, options: tripled && tripled.options.map((o) => o.id + '=' + o.pressed) }));
     // A deliberate tap, once the dialog has been on screen a moment, is taken.
     await wait(400);
-    const optionBox = await car.page.locator('.so-q-option[data-label="SQLite"]').boundingBox();
+    const optionBox = await car.page.locator('dialog.so-askdlg .so-q-option[data-option="sqlite"]').boundingBox();
     await car.page.touchscreen.tap(optionBox.x + optionBox.width / 2, optionBox.y + optionBox.height / 2);
-    const deliberate = await awaitSheet(car.page, (d) => !!d && d.options.some((o) => o.label === 'SQLite' && o.pressed === 'true'), 3000);
+    const deliberate = await awaitAsk(car.page, (d) => !!d && d.options.some((o) => o.id === 'sqlite' && o.pressed === 'true'), 3000);
     ok(deliberate.ok, 'a tap once the dialog has been on screen a moment chooses the option under it',
-      JSON.stringify(deliberate.seen && deliberate.seen.options.map((o) => o.label + '=' + o.pressed)));
+      JSON.stringify(deliberate.seen && deliberate.seen.options.map((o) => o.id + '=' + o.pressed)));
     await car.page.keyboard.press('Escape');
-    await sheetShut(car.page, 5000);
+    await askShut(car.page, 5000);
 
     await car.page.tap('.so-home__questions');
-    await awaitSheet(car.page, (d) => !!d && d.options.length === 2, 10000);
-    await sheetSettled(car.page);
-    const shown = await awaitSheet(car.page, (d) => !!d && d.options.length === 2, 1000);
+    await awaitAsk(car.page, (d) => !!d && d.options.length === 2, 10000);
+    await askSettled(car.page);
+    const shown = await awaitAsk(car.page, (d) => !!d && d.options.length === 2, 1000);
     const look = shown.seen || {};
     ok(shown.ok && look.box.x === 0 && look.box.y === 0 && look.box.w >= look.viewport.w - 1 && look.box.h >= look.viewport.h - 1,
       'the dialog is the whole screen', JSON.stringify({ box: look.box, viewport: look.viewport }));
@@ -8356,75 +8355,69 @@ async function hometouch() {
       'the options are at least 64 px high in 20 px type', JSON.stringify(look.options && look.options.map((o) => o.h + 'px/' + o.size)));
     ok(look.kb, 'the keyboard button’s copy is in the dialog', String(look.kb));
     await shot(car.page, 'home-question-tesla');
-    await car.page.tap('.so-q-option[data-label="Postgres"]');
-    await car.page.tap('.so-q-send');
-    const logged = await awaitAnswerLogged(s, 1);
-    ok(logged[0] && logged[0].answers[0].choices.join(',') === 'Postgres', 'a tap in the car answers', JSON.stringify(logged[0] && logged[0].answers));
-    ok(await sheetShut(car.page, 15000), 'and the dialog closes', 'shut');
+    await car.page.tap('dialog.so-askdlg .so-q-option[data-option="postgres"]');
+    await car.page.tap('dialog.so-askdlg [data-action="send"]');
+    const got = await returned(s, first.id);
+    ok(!!got && got.answers.db.selected.join() === 'postgres' && posts.length === 1, 'a tap in the car answers, once',
+      JSON.stringify({ got: got && got.answers.db.selected, posts: posts.length }));
+    ok(await askShut(car.page, 15000), 'and the dialog closes', 'shut');
     await car.context.close();
 
-    // The phone, with the same question asked again.
-    await awaitActivity(s, id, (a) => a.state === 'idle', 15000);
-    const again = await askQuestion(s, id);
-    ok(!!again.digest, 'the question is asked again', again.digest ? again.digest.phase : 'no digest');
+    // The phone, with a question of its own.
+    const second = await askingChat(s, 'Pick a database for the phone');
+    const phonePosts = [];
     const phone = await deviceOf(s, { viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
+    phone.page.on('request', (req) => { if (req.method() === 'POST' && /\/asks\/[^/]+\/answer$/.test(req.url())) phonePosts.push(req.url()); });
     await phone.page.goto(s.url + '/', { waitUntil: 'domcontentloaded' });
     const onPhone = await awaitHome(phone.page, (h) => h.shown && h.counts.questions === 1, 15000);
     ok(onPhone.ok && onPhone.seen.overflow <= 1, 'Home fits a phone without scrolling sideways', String(onPhone.seen.overflow));
     await shot(phone.page, 'home-phone');
     await phone.page.tap('.so-home__questions');
-    await awaitSheet(phone.page, (d) => !!d && d.options.length === 2, 10000);
-    await sheetSettled(phone.page);
-    const sheet = await awaitSheet(phone.page, (d) => !!d && d.options.length === 2, 1000);
+    await awaitAsk(phone.page, (d) => !!d && d.options.length === 2, 10000);
+    await askSettled(phone.page);
+    const sheet = await awaitAsk(phone.page, (d) => !!d && d.options.length === 2, 1000);
     const small = sheet.seen || {};
     ok(sheet.ok && small.box.w >= small.viewport.w - 1 && small.box.h >= small.viewport.h - 1 && small.overflow <= 1
       && small.options.every((o) => o.h >= 64 && o.w <= small.viewport.w),
       'on a phone the dialog is the whole screen too, and nothing in it is wider than the phone',
       JSON.stringify({ box: small.box, overflow: small.overflow, options: small.options && small.options.map((o) => o.w + 'x' + o.h) }));
     await shot(phone.page, 'home-question-phone');
-    const portraitName = await phone.page.locator('dialog.so-question .so-q-read').ariaSnapshot();
-    ok(/Read aloud/.test(portraitName), 'on a phone Read aloud still has a name a screen reader says', portraitName);
+    const readName = await phone.page.locator('dialog.so-askdlg [data-action="read"]').ariaSnapshot();
+    ok(/Read aloud/.test(readName), 'on a phone Read aloud still has a name a screen reader says', readName);
 
-    // A double tap on Send, on the left of it: Cancel takes the place Send
-    // leaves, and the second tap lands on it - and is not taken.
-    ctl.operator = async () => { await wait(1500); return undefined; };
-    const tapSaid = await sheetSaid(phone.page);
-    const cancels = [];
-    phone.page.on('request', (req) => { if (req.method() === 'POST' && /\/answer\/cancel$/.test(req.url())) cancels.push(req.url()); });
-    await phone.page.tap('.so-q-option[data-label="SQLite"]');
-    const sendBox = await phone.page.locator('.so-q-send').boundingBox();
-    const finger = { x: sendBox.x + 40, y: sendBox.y + sendBox.height / 2 };
+    // A double tap on Send: the second tap lands on what takes Send's place,
+    // and the answer goes once.
+    await phone.page.tap('dialog.so-askdlg .so-q-option[data-option="sqlite"]');
+    const sendBox = await phone.page.locator('dialog.so-askdlg [data-action="send"]').boundingBox();
+    const finger = { x: sendBox.x + sendBox.width / 2, y: sendBox.y + sendBox.height / 2 };
     await phone.page.touchscreen.tap(finger.x, finger.y);
     await wait(250);
     const under = await phone.page.evaluate(({ x, y }) => {
       const node = document.elementFromPoint(x, y);
-      return node ? (node.closest('button') || node).className : '';
+      return node ? ((node.closest('button') || node).dataset.action || node.className) : '';
     }, finger);
     await phone.page.touchscreen.tap(finger.x, finger.y);
-    const tapped = await awaitAnswerLogged(s, 2, 30000);
-    const tapRun = await awaitRunEnd(s, id, 30000);
-    await sheetShut(phone.page, 15000);
-    const tapWords = await tapSaid();
-    ok(tapped.length === 2 && tapped[1].answers[0].choices.join(',') === 'SQLite' && !!tapRun && tapRun.phase === 'done'
-      && cancels.length === 0 && !tapWords.some((w) => /cancel/i.test(w)),
-      'a double tap on Send sends the answer once and does not cancel it, though the second tap lands where Cancel appeared',
-      JSON.stringify({ under, cancels: cancels.length, run: tapRun && [tapRun.phase, tapRun.error], said: tapWords }));
-    ctl.operator = null;
+    const phoneGot = await returned(s, second.id);
+    await askShut(phone.page, 15000);
+    await wait(1000);
+    const history = await historyOf(s, second.id);
+    ok(!!phoneGot && phoneGot.answers.db.selected.join() === 'sqlite' && phonePosts.length === 1
+      && (history.asks || []).filter((a) => a.answered).length === 1,
+      'a double tap on Send sends the answer once', JSON.stringify({ under, posts: phonePosts.length, got: phoneGot && phoneGot.answers.db.selected }));
     await phone.context.close();
-    await awaitActivity(s, id, (a) => a.state === 'idle', 15000);
-    await askQuestion(s, id);
 
     // The phone on its side: the dialog opens with an option to tap.
+    const third = await askingChat(s, 'Pick a database on its side');
     for (const [width, height] of [[844, 390], [740, 360]]) {
       const side = await deviceOf(s, { viewport: { width, height }, hasTouch: true, isMobile: true });
-      await side.page.goto(s.url + '/#q=' + id, { waitUntil: 'domcontentloaded' });
-      await awaitSheet(side.page, (d) => !!d && d.options.length === 2, 15000);
-      await sheetSettled(side.page);
+      await side.page.goto(s.url + '/#q=' + third.id, { waitUntil: 'domcontentloaded' });
+      await awaitAsk(side.page, (d) => !!d && d.options.length === 2, 15000);
+      await askSettled(side.page);
       const fit = await side.page.evaluate(() => {
-        const dialog = document.querySelector('dialog.so-question');
-        const first = dialog.querySelector('.so-q-option').getBoundingClientRect();
+        const dialog = document.querySelector('dialog.so-askdlg');
+        const option = dialog.querySelector('.so-q-option').getBoundingClientRect();
         const bar = dialog.querySelector('.so-q-actions').getBoundingClientRect();
-        return { top: Math.round(first.top), bottom: Math.round(first.bottom), bar: Math.round(bar.top), h: innerHeight };
+        return { top: Math.round(option.top), bottom: Math.round(option.bottom), bar: Math.round(bar.top), h: innerHeight };
       });
       ok(fit.top >= 0 && fit.bottom <= fit.bar && fit.bottom <= fit.h,
         width + 'x' + height + ': the first option is whole on screen, above the buttons', JSON.stringify(fit));
@@ -8432,10 +8425,7 @@ async function hometouch() {
       await side.context.close();
     }
     ok(unexpected(s.errors).length === 0, 'no console errors', unexpected(s.errors).join(' | ') || '0');
-  } finally {
-    await s.stop();
-    await stub.close();
-  }
+  } finally { await s.stop(); }
 }
 
 // calledAs is the title of the session a digest or operator request is about.
