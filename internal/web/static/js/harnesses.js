@@ -687,7 +687,11 @@ export function settingsForm(options = {}) {
     pick.model = modelField.hidden ? '' : defaultModelFor(harnessId);
     picker.setValue(pick.model, false);
     const model = modelOf(harnessId, pick.model);
-    pick.effort = model && model.default_effort ? model.default_effort : '';
+    // The dashboard's default effort goes with the model a chat starts on;
+    // any other model brings its own.
+    const entry = harness(harnessId);
+    pick.effort = entry && entry.default_effort && pick.model === entry.default_model ? entry.default_effort
+      : (model && model.default_effort ? model.default_effort : '');
     renderEffort();
     renderDir();
     renderAccount();

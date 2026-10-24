@@ -260,6 +260,21 @@ func chatAgents() []string {
 	return out
 }
 
+// chatModel is the model and effort a new chat runs on: the ones asked for,
+// else the dashboard's defaults for its agent (an effort asked for without a
+// model goes with the default model).
+func chatModel(settings config.Settings, harness, model, effort string) (string, string) {
+	model, effort = strings.TrimSpace(model), strings.TrimSpace(effort)
+	if model != "" {
+		return model, effort
+	}
+	defaultModel, defaultEffort := settings.Harnesses.Defaults(harness)
+	if effort == "" {
+		effort = defaultEffort
+	}
+	return defaultModel, effort
+}
+
 // checkChatHarness is the rule a chat's agent is held to: it has an adapter,
 // and the dashboard has not switched it off.
 func checkChatHarness(harness string, settings config.Settings) *launchError {
@@ -303,6 +318,7 @@ func (s *Server) startPreparedChat(ctx context.Context, row *store.Session) (*st
 	}
 	next := *row
 	next.Workdir = workdir
+	next.Model, next.Effort = chatModel(settings, row.Harness, row.Model, row.Effort)
 	next.Title = sessionTitle("", chatLabel(row.Harness), workdir, row.WorkdirMode)
 	if err := s.store.BeginStart(&next); err != nil {
 		if errors.Is(err, store.ErrNotPrestart) {

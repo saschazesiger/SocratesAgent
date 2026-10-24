@@ -889,10 +889,11 @@ func (s *Server) handleCreateChat(w http.ResponseWriter, r *http.Request) {
 		mode = harnesses.WorkdirDynamic
 	}
 	label := chatLabel(harness)
+	model, effort := chatModel(settings, harness, body.Model, body.Effort)
 	row := &store.Session{
 		ID: id, ClientID: clientID, Title: sessionTitle(body.Title, label, workdir, mode),
-		TitleSource: titleSource(body.Title), Harness: harness, Model: strings.TrimSpace(body.Model),
-		Effort: strings.TrimSpace(body.Effort), Workdir: workdir, WorkdirMode: mode,
+		TitleSource: titleSource(body.Title), Harness: harness, Model: model,
+		Effort: effort, Workdir: workdir, WorkdirMode: mode,
 		Kind: store.KindChat, State: store.StateRunning,
 		Options: withChatAccount(withOption(nil, "ultracode", chatUltracode(harness, body.Ultracode)), body.Account, body.AutoSwitch),
 	}

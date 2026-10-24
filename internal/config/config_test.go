@@ -297,3 +297,23 @@ func TestAssistModelsAreDefaulted(t *testing.T) {
 		t.Errorf("a chosen model was replaced: %#v", s.OpenRouter)
 	}
 }
+
+// The dashboard's Default model and Default effort are each agent's own, and
+// a program that has none of them says so with nothing.
+func TestHarnessDefaultsAreEachAgentsOwn(t *testing.T) {
+	h := DefaultHarnesses()
+	h.Claude.DefaultModel, h.Claude.DefaultEffort = "opus", "high"
+	h.Codex.DefaultModel, h.Codex.DefaultEffort = "gpt-5.6-terra", "xhigh"
+	h.OpenCode.DefaultModel = "anthropic/claude-sonnet-4-5"
+	for _, tc := range []struct{ id, model, effort string }{
+		{HarnessClaude, "opus", "high"},
+		{HarnessCodex, "gpt-5.6-terra", "xhigh"},
+		{HarnessOpenCode, "anthropic/claude-sonnet-4-5", ""},
+		{HarnessShell, "", ""},
+		{"fake", "", ""},
+	} {
+		if model, effort := h.Defaults(tc.id); model != tc.model || effort != tc.effort {
+			t.Errorf("%s: %q %q, want %q %q", tc.id, model, effort, tc.model, tc.effort)
+		}
+	}
+}

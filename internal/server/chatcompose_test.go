@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/saschazesiger/SocratesAgent/internal/agent"
+	"github.com/saschazesiger/SocratesAgent/internal/config"
 	"github.com/saschazesiger/SocratesAgent/internal/store"
 )
 
@@ -265,5 +266,27 @@ func TestEveryAgentIsAChat(t *testing.T) {
 		"workdir_mode": "custom", "workdir": c.data})
 	if code != http.StatusBadRequest {
 		t.Fatalf("a prepared Shell: %d %v", code, made)
+	}
+}
+
+// A chat made without a model of its own runs on the dashboard's default
+// model and effort for its agent; a model asked for keeps the effort asked
+// for, and an effort asked for alone goes with the default model.
+func TestAChatWithoutAModelRunsOnTheDefaults(t *testing.T) {
+	var settings config.Settings
+	settings.Harnesses = config.DefaultHarnesses()
+	settings.Harnesses.Claude.DefaultModel, settings.Harnesses.Claude.DefaultEffort = "opus", "high"
+	for _, tc := range []struct{ harness, model, effort, wantModel, wantEffort string }{
+		{"claude", "", "", "opus", "high"},
+		{"claude", " haiku ", "", "haiku", ""},
+		{"claude", "haiku", "low", "haiku", "low"},
+		{"claude", "", "max", "opus", "max"},
+		{"codex", "", "", "", ""},
+		{agent.FakeHarness, "", "", "", ""},
+	} {
+		model, effort := chatModel(settings, tc.harness, tc.model, tc.effort)
+		if model != tc.wantModel || effort != tc.wantEffort {
+			t.Errorf("%s %q %q: %q %q, want %q %q", tc.harness, tc.model, tc.effort, model, effort, tc.wantModel, tc.wantEffort)
+		}
 	}
 }

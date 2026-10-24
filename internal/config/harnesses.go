@@ -154,6 +154,21 @@ func (h HarnessSettings) Entry(id string) (Common, bool) {
 	return Common{}, false
 }
 
+// Defaults is the model and effort a chat of the agent id starts on when it
+// is started without a choice of its own: the dashboard's Default model and
+// Default effort, empty for a program that has neither.
+func (h HarnessSettings) Defaults(id string) (model, effort string) {
+	switch id {
+	case HarnessClaude:
+		return h.Claude.DefaultModel, h.Claude.DefaultEffort
+	case HarnessCodex:
+		return h.Codex.DefaultModel, h.Codex.DefaultEffort
+	case HarnessOpenCode:
+		return h.OpenCode.DefaultModel, ""
+	}
+	return "", ""
+}
+
 // normalize tidies the parts a person types into. It never changes a switch:
 // the dashboard sends the whole document, and a program that was turned off
 // has to stay off, so Enabled is only ever set to true in Default().

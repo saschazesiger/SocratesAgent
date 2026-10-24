@@ -34,11 +34,23 @@ func (s *Server) answerCatalog(w http.ResponseWriter, snap catalog.Snapshot) {
 	if presets == nil {
 		presets = []config.PresetDir{}
 	}
-	agents := snap.Agents
+	agents := append([]catalog.Agent{}, snap.Agents...)
+	// The dashboard's Default model and Default effort are what the sheet
+	// starts an agent's chat on, as a chat made without a choice of its own
+	// runs on them (chatModel).
+	for i := range agents {
+		model, effort := settings.Harnesses.Defaults(agents[i].ID)
+		if model != "" {
+			agents[i].DefaultModel = model
+		}
+		if effort != "" {
+			agents[i].DefaultEffort = effort
+		}
+	}
 	// The scripted agent of the tests has no CLI to probe; it is offered
 	// like one when it is switched on, with two models to choose from.
 	if _, ok := agent.Lookup(agent.FakeHarness); ok {
-		agents = append(append([]catalog.Agent{}, agents...), fakeCatalogEntry())
+		agents = append(agents, fakeCatalogEntry())
 	}
 	payload := map[string]any{
 		"harnesses": agents,
