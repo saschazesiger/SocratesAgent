@@ -10536,9 +10536,11 @@ async function chatstream() {
     await page.waitForSelector('#newSessionSheet[open]', { timeout: 15000 });
     await page.waitForSelector('#newSessionSheet .so-settings__program[data-value="fake"]', { timeout: 10000 });
     await page.click('#newSessionSheet .so-settings__program[data-value="fake"]');
+    // The profile field went with the profiles (WP10): a step that is not
+    // there is a step not asked.
     const steps = await page.evaluate(() => Object.fromEntries(['nsHarnessField', 'nsDirField', 'nsModelField',
       'nsEffortField', 'nsProfileField', 'nsUltracodeField'].map((one) => [one.replace(/^ns|Field$/g, '').toLowerCase(),
-      !document.getElementById(one).hidden])));
+      !!document.getElementById(one) && !document.getElementById(one).hidden])));
     ok(steps.harness && steps.dir && steps.model && !steps.profile && !steps.ultracode,
       'the sheet asks a chat for its agent, its folder and its model, and nothing else', JSON.stringify(steps));
     await page.keyboard.press('Escape');
