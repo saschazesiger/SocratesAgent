@@ -2806,6 +2806,10 @@ for a reason in the code, not in the test:
   rest mid-turn; a message picks it up again, as "Pick it up again" does a terminal.
 - A chat's unread mark was lost across a server restart: its host reported before the detector had
   read the marks back. `ReportActivity` reads them first.
+- A Shell's pane that tmux listed as dead before it had the exit status was marked "Exit status
+  -1" by the poll on a busy machine, which could even overwrite the status the pane-died hook had
+  recorded. An unknown status is never written over a known one, and a running row waits one more
+  poll for it.
 - The account picker's renewal time was drawn once; it follows the clock (every 15 s), and a
   window whose reset has passed counts as empty.
 - The question dialog: a question asked for (a tapped notification, `#q=`) while the page could
