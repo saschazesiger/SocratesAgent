@@ -6233,13 +6233,15 @@ async function keyboard() {
       'the key bar and touch mode are in the options menu, touch mode on', JSON.stringify(offered));
     await closeOptions(s.page);
 
-    // The dialog that asks for one line of text is a field like any other.
+    // The dialog that asks for one line of text was asked for by the tap
+    // that opened it - Rename is a request to type - so its field opens
+    // with the keyboard (keyboard.js typeHere), a microphone beside it.
     await s.page.click('#sessionTitle');
     await s.page.waitForSelector('dialog.so-rename[open]', { timeout: 10000 });
     await wait(400);
     const rename = await keyboardable(s.page);
-    ok(rename.fields.length === 1 && rename.fields[0].muted && rename.mics.length === 1 && rename.copies === 0,
-      'so is the rename dialog: it opens on its field without a keyboard, with a microphone beside it',
+    ok(rename.fields.length === 1 && !rename.fields[0].muted && rename.mics.length === 1 && rename.copies === 0,
+      'the rename dialog, asked for by a tap, opens on its field with the keyboard, a microphone beside it',
       JSON.stringify({ fields: rename.fields, mics: rename.mics, copies: rename.copies }));
     const renaming = await tapTyped(s.page, '#renameInput', ' again');
     ok(renaming.focus === 'dialog' && !renaming.muted && renaming.typed,

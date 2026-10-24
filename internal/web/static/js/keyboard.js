@@ -30,7 +30,9 @@
 // the sheet somebody was reading. So such a field is muted too until a finger
 // lands on it, freed by that tap (before the browser moves the focus, so the
 // tap's own focus raises the keyboard natively), and muted again once the
-// focus has left it.
+// focus has left it. A field a button brings because the person asked to
+// type - Rename, the question dialog's Other, a plan's Keep planning - is
+// not the page's own doing: that tap frees it (typeHere).
 //
 // None of this applies to a device with a mouse and no sign of a finger:
 // there the fields are ordinary fields and the button is not shown. Whether a
