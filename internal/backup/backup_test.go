@@ -1418,7 +1418,9 @@ func TestABackupWhoseMetaWentAwayIsOpenedAgain(t *testing.T) {
 // An object under snapshots/ that is not named like a snapshot - a host id
 // written into backup.json by hand, a format a later build writes - stops
 // garbage collection: the chunks it may refer to are not deleted. A host id
-// that is not spelled like one is replaced by a new one.
+// that is not spelled like one is replaced by a new one. The runs still
+// succeed, so the status says the collection failed, and once it has failed
+// for a day the warning says the bucket keeps growing.
 func TestGarbageCollectionStopsAtAnObjectItCannotRead(t *testing.T) {
 	clk := newClock()
 	b := newBucket(t, clk)
@@ -1451,6 +1453,30 @@ func TestGarbageCollectionStopsAtAnObjectItCannotRead(t *testing.T) {
 	if _, ok := b.fake.Object("backups", orphanKey); !ok {
 		t.Fatal("a chunk was collected while a snapshot could not be read")
 	}
+	failedAt := clk.Now().UnixMilli()
+	if st := e.Status(); !strings.Contains(st.GCError, "Prod_1/20261023T120000.000Z.json") || st.GCSince != failedAt ||
+		st.Warning != "" || st.LastError != "" {
+		t.Fatalf("the status after a collection that stopped: %+v", st)
+	}
+
+	// A day on it still fails: the warning says so, and so does a restart.
+	clk.Add(25 * time.Hour)
+	write(t, filepath.Join(src, "chats/c1/events.jsonl"), []byte("w"), 0o600)
+	if _, err := e.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	const warning = "Cleaning up the bucket first failed 25 hours ago and has not worked since: the bucket keeps growing."
+	if st := e.Status(); st.Warning != warning || st.WarningAbout != warnGC || st.Overdue || st.GCSince != failedAt {
+		t.Fatalf("a day of collections that stopped: %+v", st)
+	}
+	again, err := New(Options{DataDir: src, Version: "test", Now: clk.Now, Iterations: 1000})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if w := again.Warning(); w != warning {
+		t.Fatalf("after a restart: %q", w)
+	}
+
 	b.fake.DeleteObject("backups", "socrates/backup/v1/"+snapshotDir+"Prod_1/20261023T120000.000Z.json")
 	clk.Add(10 * time.Minute)
 	write(t, filepath.Join(src, "chats/c1/events.jsonl"), []byte("z"), 0o600)
@@ -1459,6 +1485,9 @@ func TestGarbageCollectionStopsAtAnObjectItCannotRead(t *testing.T) {
 	}
 	if _, ok := b.fake.Object("backups", orphanKey); ok {
 		t.Fatal("the orphan outlived the collection once every snapshot could be read")
+	}
+	if st := e.Status(); st.GCError != "" || st.GCSince != 0 || st.Warning != "" {
+		t.Fatalf("after a collection that got through: %+v", st)
 	}
 }
 

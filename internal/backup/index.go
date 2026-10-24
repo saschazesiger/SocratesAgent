@@ -175,6 +175,24 @@ type state struct {
 	Skipped  []string         `json:"skipped,omitempty"`
 	Withheld []string         `json:"withheld,omitempty"`
 	Kept     map[string]int64 `json:"kept,omitempty"`
+	// GCError is why the last garbage collection stopped before it was
+	// through, and GCSince when the collections began failing. A run that
+	// wrote its snapshot succeeded either way, so this is the only trace of
+	// a bucket that no chunk is deleted from any more.
+	GCError string `json:"gc_error,omitempty"`
+	GCSince int64  `json:"gc_since,omitempty"`
+}
+
+// noteGC records how a garbage collection ended.
+func (st *state) noteGC(err error, now int64) {
+	if err == nil {
+		st.GCError, st.GCSince = "", 0
+		return
+	}
+	st.GCError = err.Error()
+	if st.GCSince == 0 {
+		st.GCSince = now
+	}
 }
 
 // noteGaps records what a good run could not take, and since when each

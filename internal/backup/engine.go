@@ -474,9 +474,17 @@ func (e *Engine) backup(ctx context.Context, cfg Config, prog *progress) (*RunIn
 	if e.now().Sub(time.UnixMilli(idx.LastGC)) >= gcEvery {
 		prog.setPhase("tidying up")
 		done, err := e.prune(ctx, r, idx, cfg.HostID)
+		if err == nil || ctx.Err() == nil {
+			// A collection cut short by the run's end says nothing about
+			// the bucket.
+			e.mu.Lock()
+			e.st.noteGC(err, e.now().UnixMilli())
+			e.mu.Unlock()
+		}
 		if err != nil {
 			// The snapshot is written; a collection that failed is tried
-			// again after the next run and is not this run's failure.
+			// again after the next run and is not this run's failure, but
+			// the status says so (state.GCError).
 			log.Printf("backup: pruning: %v", err)
 		} else if done.Pruned > 0 || done.Deleted > 0 {
 			log.Printf("backup: pruned %d snapshots and %d chunks", done.Pruned, done.Deleted)
@@ -763,10 +771,14 @@ type Status struct {
 	LastErrorAt int64  `json:"last_error_at,omitempty"`
 	NextRun     int64  `json:"next_run,omitempty"`
 	// Warning is the one thing a person should be told: a backup.json that
-	// cannot be read, no backup that succeeded for WarnAfter (Overdue), or
-	// a database whose older copy has stood in for it that long.
-	Warning string `json:"warning,omitempty"`
-	Overdue bool   `json:"overdue,omitempty"`
+	// cannot be read, no backup that succeeded for WarnAfter (Overdue), a
+	// database whose older copy has stood in for it that long, or a
+	// garbage collection that has failed that long. WarningAbout says which
+	// ("broken", "overdue", "kept" or "gc"), so the card can put the right
+	// details behind its "i".
+	Warning      string `json:"warning,omitempty"`
+	WarningAbout string `json:"warning_about,omitempty"`
+	Overdue      bool   `json:"overdue,omitempty"`
 	// OtherHosts wrote snapshots into the same bucket in the last
 	// WarnAfter.
 	OtherHosts []string `json:"other_hosts,omitempty"`
@@ -778,7 +790,20 @@ type Status struct {
 	Skipped  []string   `json:"skipped,omitempty"`
 	Withheld []string   `json:"withheld,omitempty"`
 	Kept     []KeptCopy `json:"kept,omitempty"`
+	// GCError is why the last garbage collection stopped before it
+	// deleted what nothing refers to, and GCSince since when collections
+	// have failed (state.GCError).
+	GCError string `json:"gc_error,omitempty"`
+	GCSince int64  `json:"gc_since,omitempty"`
 }
+
+// What Status.Warning is about.
+const (
+	warnBroken  = "broken"
+	warnOverdue = "overdue"
+	warnKept    = "kept"
+	warnGC      = "gc"
+)
 
 // KeptCopy is a database that could not be copied, whose earlier copy
 // stands in for it, and since when.
@@ -797,10 +822,11 @@ func (e *Engine) Status() Status {
 		OtherHosts: e.others, Broken: e.broken,
 	}
 	if e.cfg == nil {
-		st.Warning, _ = e.warningLocked()
+		st.Warning, st.WarningAbout = e.warningLocked()
 		return st
 	}
 	st.Skipped, st.Withheld, st.Kept = e.st.Skipped, e.st.Withheld, e.keptLocked()
+	st.GCError, st.GCSince = e.st.GCError, e.st.GCSince
 	pub := e.cfg.Public()
 	st.Config = &pub
 	if !e.nextRun.IsZero() {
@@ -811,7 +837,8 @@ func (e *Engine) Status() Status {
 		st.Phase = e.running.getPhase()
 		st.Files, st.Bytes, st.Uploaded = e.running.files.Load(), e.running.bytes.Load(), e.running.uploaded.Load()
 	}
-	st.Warning, st.Overdue = e.warningLocked()
+	st.Warning, st.WarningAbout = e.warningLocked()
+	st.Overdue = st.WarningAbout == warnOverdue
 	return st
 }
 
@@ -833,16 +860,18 @@ func (e *Engine) keptLocked() []KeptCopy {
 	return out
 }
 
-// warningLocked is the one sentence a person is warned with, and whether it
-// is that no backup has succeeded for WarnAfter: a backup.json that cannot
-// be read is said at once, an overdue backup next, and a database whose
-// older copy has stood in for it for WarnAfter last.
-func (e *Engine) warningLocked() (string, bool) {
+// warningLocked is the one sentence a person is warned with, and what it is
+// about: a backup.json that cannot be read is said at once, an overdue backup
+// next, then a database whose older copy has stood in for it for WarnAfter,
+// and last a garbage collection that has failed for WarnAfter. A collection
+// that failed once is no warning: the next run tries it again, and the card
+// says so meanwhile.
+func (e *Engine) warningLocked() (string, string) {
 	if e.broken != "" {
-		return "Backups are off: backup.json cannot be read. Save the Backup settings again to write a good one.", false
+		return "Backups are off: backup.json cannot be read. Save the Backup settings again to write a good one.", warnBroken
 	}
 	if e.cfg == nil {
-		return "", false
+		return "", ""
 	}
 	var good int64
 	if e.st.LastSuccess != nil {
@@ -856,9 +885,9 @@ func (e *Engine) warningLocked() (string, bool) {
 	switch {
 	case e.now().Sub(since) < e.opts.WarnAfter:
 	case good == 0:
-		return "No backup has succeeded since Socrates started " + ago(e.now().Sub(since)) + ".", true
+		return "No backup has succeeded since Socrates started " + ago(e.now().Sub(since)) + ".", warnOverdue
 	default:
-		return "The last successful backup was " + ago(e.now().Sub(since)) + ".", true
+		return "The last successful backup was " + ago(e.now().Sub(since)) + ".", warnOverdue
 	}
 	// Which databases is Status.Kept, behind the card's "i": a path is not
 	// for the sentence itself.
@@ -875,12 +904,16 @@ func (e *Engine) warningLocked() (string, bool) {
 	switch {
 	case stale == 1:
 		return "The backup holds a database as it was " + ago(e.now().Sub(time.UnixMilli(oldest))) +
-			": it could not be copied since.", false
+			": it could not be copied since.", warnKept
 	case stale > 1:
 		return fmt.Sprintf("The backup holds %d databases as they were %s: they could not be copied since.",
-			stale, ago(e.now().Sub(time.UnixMilli(oldest)))), false
+			stale, ago(e.now().Sub(time.UnixMilli(oldest)))), warnKept
 	}
-	return "", false
+	if e.st.GCError != "" && e.now().Sub(time.UnixMilli(e.st.GCSince)) >= e.opts.WarnAfter {
+		return "Cleaning up the bucket first failed " + ago(e.now().Sub(time.UnixMilli(e.st.GCSince))) +
+			" and has not worked since: the bucket keeps growing.", warnGC
+	}
+	return "", ""
 }
 
 // ago says a duration the way a sentence does.

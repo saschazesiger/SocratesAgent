@@ -1653,18 +1653,28 @@ function renderBackup(status, fillForm) {
   const alerts = [];
   const kept = status.kept || [];
   const keptTip = kept.map((k) => k.path + ': could not be copied since ' + new Date(k.since).toLocaleString());
+  const gcTip = [status.gc_error || ''];
+  const gcLabel = 'Why the bucket is not cleaned up';
   if (status.broken) alerts.push(backupAlert('error', status.warning, [status.broken], 'Why backup.json cannot be read'));
   else if (status.warning) {
-    // A warning that is neither of the other two is about the databases
-    // kept as an earlier copy, which its "i" names.
-    alerts.push(backupAlert('warning', status.warning, status.overdue ? [] : keptTip, 'Databases kept as an earlier copy'));
+    // What the warning is about decides what its "i" holds: the databases
+    // kept as an earlier copy, or why the clean-up of the bucket stopped.
+    const [tip, label] = status.warning_about === 'kept' ? [keptTip, 'Databases kept as an earlier copy']
+      : status.warning_about === 'gc' ? [gcTip, gcLabel] : [[], 'Details'];
+    alerts.push(backupAlert('warning', status.warning, tip, label));
   }
   if (kind === 'error' && status.last_error && !status.broken) {
     alerts.push(backupAlert('error', firstSentence(status.last_error), [status.last_error], 'What went wrong'));
   }
-  if (kept.length && !status.warning) {
+  if (kept.length && status.warning_about !== 'kept') {
     alerts.push(backupAlert('warning', (kept.length === 1 ? 'A database' : kept.length + ' databases')
       + ' could not be copied in the last run; the backup holds an earlier copy.', keptTip, 'Databases kept as an earlier copy'));
+  }
+  // A run that wrote its snapshot succeeded, so a clean-up that stopped would
+  // otherwise leave the card at "Backed up" while the bucket grows.
+  if (status.gc_error && status.warning_about !== 'gc') {
+    alerts.push(backupAlert('warning', 'The bucket could not be cleaned up after the last backup: it keeps growing until it can be.',
+      gcTip, gcLabel));
   }
   if (status.skipped && status.skipped.length) {
     alerts.push(backupAlert('warning', (status.skipped.length === 1 ? 'A database' : status.skipped.length + ' databases')

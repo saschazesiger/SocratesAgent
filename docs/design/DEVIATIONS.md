@@ -2316,3 +2316,11 @@ restore is staged is not backed up, and a `backup.json` found on one gets a host
 snapshot without `socrates.db` is not written, "latest" is the newest snapshot that holds it, and
 one without it cannot be restored. Otherwise a new machine, started before its restore, wrote an
 empty snapshot that "latest" restored and that retention counted as the old machine's newest.
+
+**WP1 / REBUILD.md §6.2 — the warning is about more than a day without a snapshot.** §6.2 warns
+after 24 h without a successful snapshot, "nothing else". A run can succeed while what it took,
+or the bucket, is not well, so the same warning, after the same time, also names a database
+whose earlier copy has stood in for it, and a garbage collection that has kept failing: an
+object under `snapshots/` that is not named like a snapshot stops it before a chunk is deleted,
+and the bucket then grows without limit while every run says "Backed up". The Backup card shows
+a collection that failed at once (`gc_error`), and `warning_about` says which warning it is.
