@@ -121,7 +121,7 @@ func TestStreamingTurnAndUsage(t *testing.T) {
 	if live.String() != want {
 		t.Fatalf("live deltas %q", live.String())
 	}
-	if u := end.Usage; u == nil || u.Input != 60 || u.CacheRead != 40 || u.Output != 60 || u.Reasoning != 10 || u.Window != 200000 {
+	if u := end.Usage; u == nil || u.Input != 50 || u.CacheRead != 40 || u.CacheWrite != 10 || u.Output != 60 || u.Reasoning != 10 || u.Window != 200000 {
 		t.Fatalf("usage %+v", end.Usage)
 	}
 

@@ -374,10 +374,7 @@ func (h *host) boot() {
 	if resume == "" && h.spec.Conversation != "" {
 		resume, rebuild = h.spec.Conversation, empty
 	}
-	env := h.spec.Env
-	if len(env) == 0 {
-		env = os.Environ()
-	}
+	env := withUltracode(h.spec.Env, h.spec.Ultracode)
 	spec := agent.StartSpec{
 		ChatID: h.opts.ChatID, Workdir: h.spec.Workdir, StateDir: filepath.Join(h.dir, stateDir),
 		DataDir: h.opts.DataDir, Env: env, Account: h.spec.Account, Model: h.spec.Model, Effort: h.spec.Effort,
@@ -1134,4 +1131,28 @@ func readLine(r *bufio.Reader) ([]byte, error) {
 			return nil, err
 		}
 	}
+}
+
+// UltracodeEnv is the variable that switches the Claude adapter's ultracode
+// setting on (AGENT-HOST.md §5.1).
+const UltracodeEnv = "SOCRATES_CLAUDE_ULTRACODE"
+
+// withUltracode is the CLI's environment - the spec's, or this host's own -
+// with the ultracode instruction as the chat's option says, whatever the
+// environment it came from held.
+func withUltracode(spec []string, on bool) []string {
+	base := spec
+	if len(base) == 0 {
+		base = os.Environ()
+	}
+	env := make([]string, 0, len(base)+1)
+	for _, kv := range base {
+		if !strings.HasPrefix(kv, UltracodeEnv+"=") {
+			env = append(env, kv)
+		}
+	}
+	if on {
+		env = append(env, UltracodeEnv+"=1")
+	}
+	return env
 }

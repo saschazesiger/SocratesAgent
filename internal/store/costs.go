@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"sort"
 	"strings"
+	"unicode/utf8"
 )
 
 // The cost ledger is what every conversation a CLI had on this machine cost:
@@ -163,6 +164,53 @@ func writeCostLedger(db *sql.DB, l CostLedger) error {
 		}
 	}
 	return tx.Commit()
+}
+
+// DeleteCostLedger removes a conversation's ledger, and reports whether there
+// was one: a conversation another source counts now (a chat's journal) must
+// not be counted twice.
+func (s *Store) DeleteCostLedger(key string) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	tx, err := s.db.Begin()
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
+	res, err := tx.Exec(`DELETE FROM cost_convs WHERE key = ?`, key)
+	if err != nil {
+		return false, err
+	}
+	if _, err := tx.Exec(`DELETE FROM cost_hours WHERE key = ?`, key); err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return n > 0, tx.Commit()
+}
+
+// CostKeysWithPrefix is the key of every ledger whose key begins with
+// prefix: the ledgers one source writes under names of its own (a chat's,
+// one per account), so that it can take away the ones it no longer writes.
+func (s *Store) CostKeysWithPrefix(prefix string) ([]string, error) {
+	// SQLite's substr counts characters, not bytes.
+	rows, err := s.db.Query(`SELECT key FROM cost_convs WHERE substr(key, 1, ?) = ? ORDER BY key`,
+		utf8.RuneCountInString(prefix), prefix)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var key string
+		if err := rows.Scan(&key); err != nil {
+			return nil, err
+		}
+		out = append(out, key)
+	}
+	return out, rows.Err()
 }
 
 // ListCostLedgers returns every conversation and its hours, the whole ledger.

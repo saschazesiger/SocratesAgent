@@ -51,7 +51,7 @@ func (st *chatStream) end(code websocket.StatusCode, reason string) {
 }
 
 func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
-	_, p, ok := s.chatOf(w, r)
+	row, p, ok := s.chatOf(w, r)
 	if !ok {
 		return
 	}
@@ -78,6 +78,9 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	conn.SetReadLimit(eventsReadLimit)
+	// A chat whose folder was lost while its row knows the conversation
+	// gets its history back from the CLI's transcript as it is opened.
+	p.rebuildIfLost(row)
 	if err := s.serveChatStream(conn, token, p); err != nil && !errors.Is(err, context.Canceled) {
 		log.Printf("chat stream %s: %v", p.id, err)
 	}
@@ -115,7 +118,11 @@ func (s *Server) serveChatStream(conn *websocket.Conn, token string, p *chatPeer
 		delete(h.streams, st)
 		h.mu.Unlock()
 	}()
-	sub := p.feed.Subscribe()
+	feed, sub, err := p.subscribe()
+	if err != nil {
+		_ = conn.Close(websocket.StatusInternalError, "the chat could not be read")
+		return err
+	}
 	defer sub.Close()
 
 	write := func(payload []byte) error {
@@ -124,7 +131,7 @@ func (s *Server) serveChatStream(conn *websocket.Conn, token string, p *chatPeer
 		return conn.Write(wctx, websocket.MessageText, payload)
 	}
 	frame, _ := json.Marshal(map[string]any{
-		"t": "hello", "chat": p.summary(), "last_seq": p.feed.Last(), "now": time.Now().UnixMilli(),
+		"t": "hello", "chat": p.summary(), "last_seq": feed.Last(), "now": time.Now().UnixMilli(),
 	})
 	if err := write(frame); err != nil {
 		_ = conn.CloseNow()

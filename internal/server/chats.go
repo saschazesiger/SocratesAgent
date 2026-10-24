@@ -20,6 +20,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/saschazesiger/SocratesAgent/internal/agent"
@@ -50,10 +51,17 @@ const (
 type chatHub struct {
 	srv      *Server
 	launcher *agenthost.Launcher
-	// parkAfter overrides the setting when it is set, and ackWait is how long
-	// a request waits for an ack: fields so that a test can run them fast.
-	parkAfter time.Duration
-	ackWait   time.Duration
+	// parkAfter overrides the setting when it is set, ackWait is how long a
+	// request waits for an ack, and unloadAfter how long a chat nobody uses
+	// keeps its history in memory (chatbrief.go): fields so that a test can
+	// run them fast.
+	parkAfter   time.Duration
+	ackWait     time.Duration
+	unloadAfter time.Duration
+	// rev numbers the chats' readings for Home (nextRev), and folds counts
+	// the journals read into memory, which is what a start from briefs saves.
+	rev   atomic.Int64
+	folds atomic.Int64
 
 	mu      sync.Mutex
 	chats   map[string]*chatPeer
@@ -73,17 +81,19 @@ func newChatHub(s *Server) *chatHub {
 		srv: s,
 		launcher: &agenthost.Launcher{DataDir: s.dataDir, Binary: bin, Scope: agenthost.ServiceScope(),
 			Logf: log.Printf},
-		ackWait: defaultChatAckWait,
-		chats:   map[string]*chatPeer{},
-		streams: map[*chatStream]struct{}{},
-		ctx:     ctx,
-		cancel:  cancel,
+		ackWait:     defaultChatAckWait,
+		unloadAfter: defaultChatUnloadAfter,
+		chats:       map[string]*chatPeer{},
+		streams:     map[*chatStream]struct{}{},
+		ctx:         ctx,
+		cancel:      cancel,
 	}
 }
 
 // start reattaches to every host that is still running, and recovers the
 // chats whose host died while it had work: a turn running, or a command not
-// yet acknowledged. Every other chat stays parked until it is sent something.
+// yet acknowledged. Every other chat stays parked until it is sent something,
+// and is known by its brief alone: its history is read when it is wanted.
 func (h *chatHub) start() {
 	rows, err := h.srv.store.ListSessions()
 	if err != nil {
@@ -102,8 +112,17 @@ func (h *chatHub) start() {
 		p.report()
 		if p.wantsPump() {
 			p.kick()
+			continue
 		}
+		// A chat whose brief had to be made from its journal keeps it for
+		// the next start, and gives the history back now.
+		p.mu.Lock()
+		if p.proj != nil && !p.pumping {
+			p.unloadLocked()
+		}
+		p.mu.Unlock()
 	}
+	go h.janitor()
 }
 
 // close lets go of every host without stopping one: they keep running, and
@@ -123,6 +142,15 @@ func (h *chatHub) close() {
 	for _, p := range peers {
 		p.drop()
 	}
+	// What every chat with its history in memory is as of now is kept, so
+	// the next server starts from it rather than from the journal.
+	for _, p := range peers {
+		p.mu.Lock()
+		if p.proj != nil {
+			p.saveBriefLocked()
+		}
+		p.mu.Unlock()
+	}
 	for _, st := range streams {
 		st.end(eventsGoingAway, "the server is stopping")
 	}
@@ -136,7 +164,9 @@ func (h *chatHub) parkAfterFor() time.Duration {
 	return time.Duration(h.srv.Settings().Chats.ParkAfterMinutes) * time.Minute
 }
 
-// peer is the chat with this id, loaded from its journal the first time.
+// peer is the chat with this id. The first time, it is known by its brief
+// when the brief kept on disk is still the journal's, and its history is
+// read and folded otherwise.
 func (h *chatHub) peer(id string) (*chatPeer, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -146,12 +176,12 @@ func (h *chatHub) peer(id string) (*chatPeer, error) {
 	if !agenthost.ValidChatID(id) {
 		return nil, errors.New("not a chat id")
 	}
-	events, err := agent.ReadJournal(agenthost.JournalPath(h.srv.dataDir, id))
-	if err != nil {
+	p := &chatPeer{hub: h, id: id, waiters: map[string][]chan chatReply{}}
+	if b, ok := readBrief(h.srv.dataDir, id); ok {
+		p.brief = b
+	} else if err := p.loadLocked(); err != nil {
 		return nil, err
 	}
-	p := &chatPeer{hub: h, id: id, feed: agent.NewFeed(events), proj: agent.Fold(events),
-		waiters: map[string][]chan chatReply{}}
 	h.chats[id] = p
 	return p, nil
 }
@@ -163,6 +193,14 @@ func (h *chatHub) remove(ctx context.Context, id string) {
 	if err == nil {
 		p.stopHost(ctx)
 		p.drop()
+		p.mu.Lock()
+		p.gone = true
+		if p.lineTimer != nil {
+			p.lineTimer.Stop()
+			p.lineTimer = nil
+		}
+		p.mu.Unlock()
+		h.srv.events.publish(map[string]any{"t": "digest", "id": id, "digest": nil})
 	}
 	h.mu.Lock()
 	delete(h.chats, id)
@@ -212,15 +250,21 @@ type chatReply struct {
 	fail *agenthost.Fail
 }
 
-// chatPeer is one chat as this server holds it: the journal in memory, its
-// projection, and the connection to its host while there is one.
+// chatPeer is one chat as this server holds it: its brief, the journal in
+// memory with its projection while anything uses them (chatbrief.go), and
+// the connection to its host while there is one.
 type chatPeer struct {
 	hub *chatHub
 	id  string
 
-	mu      sync.Mutex
+	mu sync.Mutex
+	// brief is always the chat as of its last event; feed and proj are its
+	// history, nil while it is not in memory, and used is when it was last
+	// wanted.
+	brief   chatBrief
 	feed    *agent.Feed
 	proj    *agent.Projection
+	used    time.Time
 	conn    *agenthost.Conn
 	pumping bool
 	waiters map[string][]chan chatReply
@@ -237,12 +281,24 @@ type chatPeer struct {
 	// warm asks the pump to start a host although the chat has nothing for
 	// it yet: a new chat, whose first message should find the agent up.
 	warm bool
+	// rebuilding is a host started on a lost journal (launch), which writes
+	// the history back before anything new happens: its turns ended long
+	// ago, and the detector is told the activity once they are all in
+	// (apply), not turn by turn.
+	rebuilding bool
+	// shown is the reading of the chat Home was last told and shownAt when;
+	// lineTimer tells a line held back by chatLineGap (publishReadingLocked).
+	shown     digest
+	shownAt   time.Time
+	lineTimer *time.Timer
+	// gone is a chat being deleted: nothing more is written for it.
+	gone bool
 }
 
 func (p *chatPeer) summary() agent.Summary {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	return p.proj.Summary()
+	return p.brief.Summary
 }
 
 // needsHost is whether the chat has work a host must be there for: a command
@@ -254,7 +310,7 @@ func (p *chatPeer) needsHost() bool {
 }
 
 func (p *chatPeer) needsHostLocked() bool {
-	if p.proj.Turn != nil {
+	if p.brief.Summary.TurnRunning {
 		return true
 	}
 	pending, err := p.hub.srv.store.Outbox(p.id)
@@ -280,6 +336,12 @@ func (p *chatPeer) kick() {
 
 func (p *chatPeer) kickLocked() {
 	if p.pumping || p.hub.ctx.Err() != nil {
+		return
+	}
+	// The pump applies what the host says to the history, so the history is
+	// in memory for as long as it runs.
+	if err := p.loadLocked(); err != nil {
+		log.Printf("chats: %s: could not read the journal: %v", p.id, err)
 		return
 	}
 	p.pumping = true
@@ -345,7 +407,7 @@ func (p *chatPeer) settle(failedToConnect bool) bool {
 	alive, _ := p.hub.launcher.Alive(p.id)
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	failed := p.proj.Process == agent.ProcessFailed && p.proj.Turn == nil
+	failed := p.brief.Summary.Process == agent.ProcessFailed && !p.brief.Summary.TurnRunning
 	if (!alive && !p.needsHostLocked()) || (failed && !failedToConnect) {
 		p.pumping = false
 		return true
@@ -359,7 +421,7 @@ func (p *chatPeer) settle(failedToConnect bool) bool {
 func (p *chatPeer) connect(ctx context.Context) (*agenthost.Conn, error) {
 	sock := agenthost.SocketPath(p.hub.srv.dataDir, p.id)
 	dctx, cancel := context.WithTimeout(ctx, chatDialWait)
-	conn, err := agenthost.Dial(dctx, sock, p.feed.Last())
+	conn, err := agenthost.Dial(dctx, sock, p.lastSeq())
 	cancel()
 	if err == nil {
 		return conn, nil
@@ -385,7 +447,30 @@ func (p *chatPeer) connect(ctx context.Context) (*agenthost.Conn, error) {
 	}
 	dctx, cancel = context.WithTimeout(ctx, chatDialWait)
 	defer cancel()
-	return agenthost.Dial(dctx, sock, p.feed.Last())
+	return agenthost.Dial(dctx, sock, p.lastSeq())
+}
+
+// lastSeq is the last event this server has of the chat.
+func (p *chatPeer) lastSeq() int64 {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.brief.Seq
+}
+
+// rebuildIfLost starts a host for a chat whose journal is gone while its row
+// still knows the conversation - a folder lost, a backup restored without it:
+// the launch writes the conversation into host.json, and the host rebuilds the
+// history from the CLI's own transcript (AGENT-HOST.md §6). It is done when
+// the chat is opened rather than at start, so that a restore with many such
+// chats does not start an agent for each.
+func (p *chatPeer) rebuildIfLost(row *store.Session) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if row.CLISessionID == "" || p.brief.Seq != 0 || p.pumping {
+		return
+	}
+	p.warm = true
+	p.kickLocked()
 }
 
 // errNoHost is a connect that found no host and no reason to start one.
@@ -404,10 +489,14 @@ func (p *chatPeer) launch(ctx context.Context) error {
 		return err
 	}
 	p.mu.Lock()
-	busy := p.proj.Turn != nil
+	busy := p.brief.Summary.TurnRunning
+	// A journal with no conversation and no message, of a chat whose row
+	// knows its conversation, is one the host rebuilds as it starts
+	// (AGENT-HOST.md §6): a folder lost, a backup restored without it.
+	p.rebuilding = row.CLISessionID != "" && p.brief.Summary.ConversationID == "" && !p.brief.Summary.Asked
 	model, effort := row.Model, row.Effort
-	if p.proj.Model != "" {
-		model, effort = p.proj.Model, p.proj.Effort
+	if p.brief.Summary.Model != "" {
+		model, effort = p.brief.Summary.Model, p.brief.Summary.Effort
 	}
 	p.mu.Unlock()
 	if busy {
@@ -421,6 +510,7 @@ func (p *chatPeer) launch(ctx context.Context) error {
 		ChatID: p.id, Harness: row.Harness, Workdir: row.Workdir, Model: model, Effort: effort,
 		Binary:       strings.TrimSpace(entry.Binary),
 		Conversation: row.CLISessionID, ParkAfterMS: p.hub.parkAfterFor().Milliseconds(),
+		Ultracode: chatUltracode(row.Harness, readPrestartOptions(row.Options).Ultracode),
 	})
 }
 
@@ -429,6 +519,7 @@ func (p *chatPeer) launch(ctx context.Context) error {
 func (p *chatPeer) serve(conn *agenthost.Conn) {
 	p.mu.Lock()
 	p.conn, p.hostErr = conn, ""
+	feed := p.feed
 	pending, err := p.hub.srv.store.Outbox(p.id)
 	if err != nil {
 		log.Printf("chats: %s: could not read the outbox: %v", p.id, err)
@@ -449,7 +540,7 @@ func (p *chatPeer) serve(conn *agenthost.Conn) {
 		case f.Event != nil:
 			p.apply(*f.Event)
 		case f.Delta != nil:
-			p.feed.Delta(*f.Delta)
+			feed.Delta(*f.Delta)
 		case f.Ack != nil:
 			p.reply(f.Ack.ClientID, chatReply{ack: f.Ack}, true)
 		case f.Fail != nil:
@@ -460,8 +551,15 @@ func (p *chatPeer) serve(conn *agenthost.Conn) {
 	if p.conn == conn {
 		p.conn = nil
 	}
+	// A host that went before its rebuild was in leaves the detector with
+	// what the journal says now.
+	held := p.rebuilding
+	p.rebuilding = false
 	p.mu.Unlock()
 	conn.Close()
+	if held {
+		p.report()
+	}
 }
 
 // keepForNextHost is whether a refused command stays in the outbox for the
@@ -491,6 +589,11 @@ func (p *chatPeer) drop() {
 // is not applied twice.
 func (p *chatPeer) apply(ev agent.Event) {
 	p.mu.Lock()
+	if err := p.loadLocked(); err != nil {
+		p.mu.Unlock()
+		log.Printf("chats: %s: could not read the journal: %v", p.id, err)
+		return
+	}
 	last := p.feed.Last()
 	if ev.Seq <= last {
 		p.mu.Unlock()
@@ -501,13 +604,28 @@ func (p *chatPeer) apply(ev agent.Event) {
 	}
 	p.feed.Append(ev)
 	p.proj.Apply(ev)
+	p.brief = briefOf(p.proj)
+	// Home hears what the chat now says before the detector hears what it
+	// now does, so a page that is told the chat asks has its question.
+	p.publishReadingLocked()
+	// A rebuild's history is in once its notice is, or once the agent is
+	// up without one (there was nothing to write back). Until then its
+	// turns are not news: told one by one, the first of them would be
+	// announced - chime, push, verdict - as a turn that has just ended.
+	if p.rebuilding && (ev.Type == agent.TypeNotice && (ev.Code == agent.NoticeRebuilt || ev.Code == agent.NoticeHistoryUnavailable) ||
+		ev.Type == agent.TypeProcess && ev.State != agent.ProcessStarting) {
+		p.rebuilding = false
+	}
+	held := p.rebuilding
 	p.mu.Unlock()
 	if ev.Type == agent.TypeConversation && ev.ConversationID != "" {
 		if err := p.hub.srv.store.SetChatConversation(p.id, ev.ConversationID); err != nil && !errors.Is(err, store.ErrNotFound) {
 			log.Printf("chats: %s: could not record the conversation id: %v", p.id, err)
 		}
 	}
-	p.report()
+	if !held {
+		p.report()
+	}
 }
 
 // report hands the chat's activity to the detector when it has changed:
@@ -516,7 +634,7 @@ func (p *chatPeer) report() {
 	p.reportMu.Lock()
 	defer p.reportMu.Unlock()
 	p.mu.Lock()
-	s := p.proj.Summary()
+	s := p.brief.Summary
 	if s.Activity == p.reported && s.Asked == p.asked {
 		p.mu.Unlock()
 		return
@@ -651,6 +769,8 @@ type createChatBody struct {
 	WorkdirMode string `json:"workdir_mode"`
 	Workdir     string `json:"workdir"`
 	Title       string `json:"title"`
+	// Ultracode is Claude Code's session option (chatUltracode).
+	Ultracode bool `json:"ultracode"`
 	// Message is the first message, sent once the chat exists.
 	Message *chatMessageBody `json:"message"`
 }
@@ -710,7 +830,8 @@ func (s *Server) handleCreateChat(w http.ResponseWriter, r *http.Request) {
 		ID: id, ClientID: clientID, Title: sessionTitle(body.Title, label, workdir, mode),
 		TitleSource: titleSource(body.Title), Harness: harness, Model: strings.TrimSpace(body.Model),
 		Effort: strings.TrimSpace(body.Effort), Workdir: workdir, WorkdirMode: mode,
-		Kind: store.KindChat, State: store.StateRunning,
+		Options: withOption(nil, "ultracode", chatUltracode(harness, body.Ultracode)),
+		Kind:    store.KindChat, State: store.StateRunning,
 	}
 	if err := s.store.CreateSession(row); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -789,6 +910,11 @@ func (s *Server) handleGetChat(w http.ResponseWriter, r *http.Request) {
 	}
 	body := map[string]any{"session": s.view(row)}
 	p.mu.Lock()
+	if err := p.loadLocked(); err != nil {
+		p.mu.Unlock()
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
 	body["chat"] = p.proj.Summary()
 	body["asks"] = p.proj.OpenAsks()
 	if r.URL.Query().Get("history") == "1" {
@@ -831,9 +957,11 @@ func (s *Server) handleChatMessage(w http.ResponseWriter, r *http.Request) {
 	}
 	// A repeat of a message the journal has is answered from it, before its
 	// attachments are looked at again.
-	p.mu.Lock()
-	_, seen := p.proj.Seen(body.ClientID)
-	p.mu.Unlock()
+	seen := false
+	if err := p.view(func(proj *agent.Projection) { _, seen = proj.Seen(body.ClientID) }); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
 	if !seen {
 		if status, msg := s.checkAttachments(p.id, body.Attachments); status != 0 {
 			writeError(w, status, msg)
@@ -855,9 +983,11 @@ func (s *Server) sendMessage(ctx context.Context, p *chatPeer, m *chatMessageBod
 // command submits a command and words the outcome. A client_id this chat's
 // journal already has is answered from it, without a host.
 func (p *chatPeer) command(ctx context.Context, cmd agenthost.Command) (int, map[string]any) {
-	p.mu.Lock()
-	seq, seen := p.proj.Seen(cmd.ClientID)
-	p.mu.Unlock()
+	var seq int64
+	seen := false
+	if err := p.view(func(proj *agent.Projection) { seq, seen = proj.Seen(cmd.ClientID) }); err != nil {
+		return http.StatusInternalServerError, map[string]any{"error": err.Error()}
+	}
 	if seen {
 		return http.StatusOK, map[string]any{"client_id": cmd.ClientID, "seq": seq, "dup": true}
 	}
@@ -904,12 +1034,13 @@ func (s *Server) handleChatInterrupt(w http.ResponseWriter, r *http.Request) {
 	// Nothing is running and no host is there: there is nothing to stop, and
 	// starting a host to tell it so would be the opposite of an interrupt.
 	p.mu.Lock()
-	idle := p.proj.Turn == nil && p.conn == nil
+	idle := !p.brief.Summary.TurnRunning && p.conn == nil
 	p.mu.Unlock()
 	if idle {
 		writeJSON(w, http.StatusOK, map[string]any{"client_id": body.ClientID, "idle": true})
 		return
 	}
+	s.manager.MarkRead(p.id)
 	code, answer := p.command(r.Context(), agenthost.Command{Op: agenthost.OpInterrupt, ClientID: body.ClientID})
 	writeJSON(w, code, answer)
 }
@@ -933,14 +1064,17 @@ func (s *Server) handleChatAnswer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	askID := r.PathValue("ask")
-	p.mu.Lock()
-	ask := p.proj.Ask(askID)
+	var ask *agent.Ask
 	var answered bool
 	var by, answeredBy string
-	if ask != nil {
-		answered, by, answeredBy = ask.Answered, ask.ByDevice, ask.ClientID
+	if err := p.view(func(proj *agent.Projection) {
+		if ask = proj.Ask(askID); ask != nil {
+			answered, by, answeredBy = ask.Answered, ask.ByDevice, ask.ClientID
+		}
+	}); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
 	}
-	p.mu.Unlock()
 	switch {
 	case ask == nil:
 		writeError(w, http.StatusNotFound, "this chat never asked that question")
@@ -950,6 +1084,9 @@ func (s *Server) handleChatAnswer(w http.ResponseWriter, r *http.Request) {
 			"answered_elsewhere": true, "by_device": by})
 		return
 	}
+	// Answering is having seen the chat, as typing the answer into a
+	// terminal is: the turn it lets go on ends unread again, and is news.
+	s.manager.MarkRead(p.id)
 	code, answer := p.command(r.Context(), agenthost.Command{Op: agenthost.OpAnswer, ClientID: body.ClientID,
 		AskID: askID, Answer: body.Answer, Device: strings.TrimSpace(body.Device)})
 	writeJSON(w, code, answer)

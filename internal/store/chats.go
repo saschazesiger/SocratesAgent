@@ -1,6 +1,9 @@
 package store
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"errors"
+)
 
 // OutboxEntry is one command on its way to a chat's agent host.
 type OutboxEntry struct {
@@ -61,6 +64,19 @@ func (s *Store) ClearOutbox(chatID string) error {
 	defer s.mu.Unlock()
 	_, err := s.db.Exec(`DELETE FROM chat_outbox WHERE chat_id = ?`, chatID)
 	return err
+}
+
+// SetChatOptions replaces a chat's options (Ultracode, for one): what its
+// next host is started with.
+func (s *Store) SetChatOptions(id string, options json.RawMessage) error {
+	value := "{}"
+	if len(options) > 0 {
+		if !json.Valid(options) {
+			return errors.New("session options are not valid JSON")
+		}
+		value = string(options)
+	}
+	return s.update(id, `options = ?`, value)
 }
 
 // SetChatConversation records the agent's own conversation id of a chat, as

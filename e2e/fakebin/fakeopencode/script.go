@@ -18,7 +18,8 @@ import (
 // The turns, by the text of the user's message:
 //
 //	/stream N [ms]   a text part of N deltas, ms apart (default 20 × 10 ms)
-//	/reason          a reasoning part, then text
+//	/reason          a reasoning part, then text; its tokens count 7 of
+//	                 reasoning, apart from the output, as OpenCode's do
 //	/tool            a bash tool streaming three lines of output, in a step of
 //	                 its own, then text in a second step
 //	/edit            an edit tool with a unified diff, then text
@@ -208,6 +209,8 @@ type turn struct {
 	msg  map[string]any
 	// pause is how long a tool runs before its first line.
 	pause time.Duration
+	// reasoned is the reasoning tokens the turn's last step reports.
+	reasoned int
 }
 
 var errAborted = errors.New("aborted")
@@ -225,7 +228,7 @@ func (t *turn) wait(d time.Duration) error {
 func (t *turn) step() {
 	t.msg = map[string]any{"id": newID("msg"), "role": "assistant", "parentID": t.user, "sessionID": t.sid,
 		"mode": "build", "agent": "build", "modelID": "model", "providerID": "fake", "cost": 0,
-		"tokens": tokens(0, 0), "time": map[string]any{"created": time.Now().UnixMilli()}}
+		"tokens": tokens(0, 0, 0), "time": map[string]any{"created": time.Now().UnixMilli()}}
 	_ = withStore(func(st *store) error {
 		sess := st.Sessions[t.sid]
 		sess.Messages = append(sess.Messages, &message{Info: t.msg, Parts: []map[string]any{}})
@@ -235,8 +238,8 @@ func (t *turn) step() {
 	t.part(map[string]any{"type": "step-start", "snapshot": "0000"})
 }
 
-func tokens(in, out int) map[string]any {
-	return map[string]any{"total": in + out, "input": in, "output": out, "reasoning": 0,
+func tokens(in, out, reasoning int) map[string]any {
+	return map[string]any{"total": in + out + reasoning, "input": in, "output": out, "reasoning": reasoning,
 		"cache": map[string]any{"read": 0, "write": 0}}
 }
 
@@ -309,8 +312,8 @@ func (t *turn) say(chunks []string, wait time.Duration) error {
 
 // finish ends the step's message.
 func (t *turn) finish(reason string, in, out int) {
-	t.part(map[string]any{"type": "step-finish", "reason": reason, "snapshot": "0000", "cost": 0.001, "tokens": tokens(in, out)})
-	t.msg["tokens"], t.msg["cost"], t.msg["finish"] = tokens(in, out), 0.001, reason
+	t.part(map[string]any{"type": "step-finish", "reason": reason, "snapshot": "0000", "cost": 0.001, "tokens": tokens(in, out, t.reasoned)})
+	t.msg["tokens"], t.msg["cost"], t.msg["finish"] = tokens(in, out, t.reasoned), 0.001, reason
 	t.msg["time"] = map[string]any{"created": t.msg["time"].(map[string]any)["created"], "completed": time.Now().UnixMilli()}
 	t.saveInfo()
 }
@@ -399,6 +402,7 @@ func (t *turn) play(text string) error {
 		t.s.publish("message.part.delta", map[string]any{"sessionID": t.sid, "messageID": t.msg["id"], "partID": p["id"], "field": "text", "delta": "thinking it over"})
 		p["text"], p["time"] = "thinking it over", map[string]any{"start": time.Now().UnixMilli(), "end": time.Now().UnixMilli()}
 		t.part(p)
+		t.reasoned = 7
 		if err := t.say([]string{"reasoned"}, 5*time.Millisecond); err != nil {
 			return err
 		}

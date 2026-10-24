@@ -320,7 +320,9 @@ func TestChatCreateIsIdempotentAndHasNoTerminal(t *testing.T) {
 	if !row.IsChat() || row.Harness != "fake" {
 		t.Fatalf("row %+v", row)
 	}
-	if code, _ := c.post(t, "/api/chats", map[string]any{"client_id": "x", "harness": "claude"}); code != http.StatusBadRequest {
+	// The test binary has the adapters of the three agents (chatagents_test.go);
+	// a Shell has none.
+	if code, _ := c.post(t, "/api/chats", map[string]any{"client_id": "x", "harness": "shell"}); code != http.StatusBadRequest {
 		t.Fatalf("a harness with no adapter: %d", code)
 	}
 	if res, _ := c.do(t, c.client, "POST", "/api/sessions/"+id+"/restart", ""); res.StatusCode != http.StatusConflict {
@@ -403,9 +405,14 @@ func TestChatTurnFinishesWhileTheServerIsDown(t *testing.T) {
 
 // The host is killed in the middle of a turn: the server notices, confirms it
 // dead, starts a new one, which records the turn as interrupted and resumes
-// the conversation.
+// the conversation. Nobody stopped that turn, so it is news: pushed as
+// "Stopped" with what it had said, unread, and on Home with its words.
 func TestChatRecoversAKilledHost(t *testing.T) {
 	c := newChatEnv(t, time.Hour)
+	sent := catch(c.srv.push)
+	if err := c.srv.push.add(pushSub{Subscription: testSubscription("https://push.example.net/a")}); err != nil {
+		t.Fatal(err)
+	}
 	id := c.create(t)
 	c.send(t, id, "m1", "/stream 500 10")
 	events := c.waitJournal(t, id, 10*time.Second, "streaming", func(evs []agent.Event) bool {
@@ -428,6 +435,15 @@ func TestChatRecoversAKilledHost(t *testing.T) {
 	}
 	if row, _ := c.store.GetSession(id); !row.Resumed {
 		t.Fatal("the row does not say the chat resumed")
+	}
+	if push := pushOfKind(t, sent, pushFinished, 10*time.Second); !strings.HasPrefix(push.Body, "Stopped · w1 w2") {
+		t.Fatalf("the push of the killed turn: %+v", push)
+	}
+	if a := c.waitActivity(t, id, termux.StateIdle); !a.Unread {
+		t.Fatalf("the killed turn left the chat %+v", a)
+	}
+	if b, _ := c.srv.chats.briefOfChat(id); !strings.HasPrefix(b.Line, "w1 w2") || !strings.HasPrefix(b.News, "Stopped · w1 w2") {
+		t.Fatalf("Home's line %q, the news %q", b.Line, b.News)
 	}
 	c.send(t, id, "m2", "after")
 	events = c.waitJournal(t, id, 10*time.Second, "the next turn", turnsEnded(2))

@@ -34,6 +34,10 @@ func TestMain(m *testing.M) {
 			os.Exit(runTmuxHook(os.Args[2:]))
 		case "agent-host":
 			os.Exit(agenthost.Main(os.Args[2:], "test"))
+		case "mcp-ask":
+			// An OpenCode chat's ask_user server, which its host runs as
+			// this binary (agenthost.MCPAskMain).
+			os.Exit(agenthost.MCPAskMain(os.Args[2:], "test"))
 		}
 	}
 	code := testhome.Main(m)

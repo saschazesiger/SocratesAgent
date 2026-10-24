@@ -50,6 +50,25 @@ func TestCostLedgerRoundTrip(t *testing.T) {
 	}
 }
 
+// The ledgers under one prefix are found by it, and no other.
+func TestCostKeysWithPrefix(t *testing.T) {
+	st := openTest(t)
+	for _, conv := range []string{"chat-c1", "chat-c1@acct-a", "chat-c10", "chat-c2", "x-chat-c1"} {
+		l := sampleLedger()
+		l.ConvID = conv
+		if _, err := st.PutCostLedger(l); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := st.CostKeysWithPrefix("claude/chat-c1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"claude/chat-c1", "claude/chat-c10", "claude/chat-c1@acct-a"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("keys %v, want %v", got, want)
+	}
+}
+
 // A schema 8 database gains the ledger's tables and keeps its sessions.
 func TestMigrationToSchema9(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "socrates.db")

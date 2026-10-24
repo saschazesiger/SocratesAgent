@@ -685,13 +685,14 @@ func (a *adapter) turnPlan(p notification) {
 }
 
 // tokenUsage adds each model call's tokens to its turn, and reports the
-// context in use. Codex counts cached input inside the input; the journal
-// counts it apart.
+// context in use. Codex counts the cached and the cache-written input inside
+// the input; the journal counts them apart. Its output counts the reasoning
+// in, as the journal's does.
 func (a *adapter) tokenUsage(p notification) {
 	t, ag := a.turnFor(p.ThreadID, p.TurnID)
 	last := p.TokenUsage.Last
 	if t != nil && !t.ended {
-		t.usage.Input += last.InputTokens - last.CachedInputTokens
+		t.usage.Input += last.InputTokens - last.CachedInputTokens - last.CacheWriteInputTokens
 		t.usage.CacheRead += last.CachedInputTokens
 		t.usage.CacheWrite += last.CacheWriteInputTokens
 		t.usage.Output += last.OutputTokens

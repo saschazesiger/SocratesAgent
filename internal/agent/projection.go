@@ -56,6 +56,10 @@ type Turn struct {
 	Usage     *Usage  `json:"usage,omitempty"`
 	CostUSD   float64 `json:"cost_usd,omitempty"`
 	Error     string  `json:"error,omitempty"`
+	// Stopped is set when somebody asked the turn to stop while it ran (an
+	// interrupt or a stop the host took): an interrupted turn that is not
+	// Stopped was ended by something else, such as a host that died.
+	Stopped bool `json:"stopped,omitempty"`
 }
 
 // Message is one message with its parts in the order they were created.
@@ -223,6 +227,10 @@ func (p *Projection) Apply(ev Event) {
 		p.Tasks = ev.Count
 	case TypeAgentInfo:
 		p.Agent = ev.Content
+	case TypeCommand:
+		if (ev.Op == OpInterrupt || ev.Op == OpStop) && p.Turn != nil {
+			p.Turn.Stopped = true
+		}
 	}
 }
 

@@ -87,6 +87,10 @@ type Spec struct {
 	// host whose journal names none resumes it, and an empty journal gets
 	// the history back from it (StartSpec.Rebuild, REBUILD.md §2.2).
 	Conversation string `json:"conversation,omitempty"`
+	// Ultracode is the session option of a Claude Code chat: dynamic
+	// workflows on every task. The host says it to the adapter in the CLI's
+	// environment (UltracodeEnv), and nowhere else.
+	Ultracode bool `json:"ultracode,omitempty"`
 	// ParkAfterMS is how long the host may be idle before it parks.
 	ParkAfterMS int64 `json:"park_after_ms"`
 }

@@ -24,6 +24,7 @@ import (
 
 	"github.com/saschazesiger/SocratesAgent/internal/costs"
 	"github.com/saschazesiger/SocratesAgent/internal/harnesses"
+	"github.com/saschazesiger/SocratesAgent/internal/paths"
 	"github.com/saschazesiger/SocratesAgent/internal/store"
 )
 
@@ -86,14 +87,21 @@ func (c *costLedger) refresh() {
 }
 
 // roots are the directories of every account on this machine: the default
-// one, and every profile directory on the disk - a profile that was deleted
-// still has the conversations it had.
+// one, every profile directory on the disk - a profile that was deleted
+// still has the conversations it had - and the agents' shared folders, where
+// every account's transcripts are kept once accounts share them
+// (REBUILD.md §6.1). A conversation found under two of them is one.
 func (c *costLedger) roots() []costs.Root {
 	dataDir := c.s.dataDir
+	layout := paths.New(dataDir)
 	roots := []costs.Root{{
 		ClaudeDir:   harnesses.ClaudeConfigDirFor(dataDir, ""),
 		CodexHome:   harnesses.CodexHomeFor(dataDir, ""),
 		OpenCodeDir: harnesses.OpenCodeDataDirFor(dataDir, ""),
+	}, {
+		ClaudeDir:   layout.Agent("claude"),
+		CodexHome:   layout.Agent("codex"),
+		OpenCodeDir: layout.Agent("opencode"),
 	}}
 	dirs, _ := filepath.Glob(filepath.Join(dataDir, "profiles", "*"))
 	sort.Strings(dirs)
@@ -131,13 +139,27 @@ func (c *costLedger) pass() {
 		return
 	}
 	for i := range rows {
-		if rows[i].CLISessionID != "" {
+		if rows[i].CLISessionID != "" && !rows[i].IsChat() {
 			bySession[store.CostKey(rows[i].Harness, rows[i].CLISessionID)] = &rows[i]
 		}
 	}
 
+	// The chats first: their journals are what they cost, and what they own
+	// is no transcript's to count (chatcosts.go).
+	owned, fresh := c.chatLedgers(rows, seen)
+	for key := range fresh {
+		if _, err := st.DeleteCostLedger(key); err != nil {
+			log.Printf("costs: %s: %v", key, err)
+		}
+	}
 	changed := 0
 	for _, conv := range c.scanner.Scan(c.roots(), seen) {
+		if owned[conv.Key()] {
+			if err := st.SetCostFingerprint(conv.Key(), conv.Fingerprint); err != nil {
+				log.Printf("costs: %s: %v", conv.Key(), err)
+			}
+			continue
+		}
 		ledger := store.CostLedger{
 			CostConversation: store.CostConversation{
 				Harness: conv.Harness, ConvID: conv.ID, Profile: conv.Profile,

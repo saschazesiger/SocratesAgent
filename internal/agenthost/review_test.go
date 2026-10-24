@@ -72,3 +72,27 @@ func TestHostStartsAFreshConversationWhenTheOldOneIsGone(t *testing.T) {
 		t.Fatalf("the new conversation said %q", got)
 	}
 }
+
+// The CLI's environment says ultracode exactly as the chat's option does:
+// on when asked, and off - whatever the environment it came from held -
+// when not.
+func TestTheChatsOptionDecidesUltracode(t *testing.T) {
+	t.Setenv(UltracodeEnv, "1")
+	has := func(env []string) bool {
+		for _, kv := range env {
+			if kv == UltracodeEnv+"=1" {
+				return true
+			}
+		}
+		return false
+	}
+	if env := withUltracode(nil, false); has(env) || len(env) == 0 {
+		t.Fatalf("the host's own environment kept ultracode: %v", has(env))
+	}
+	if env := withUltracode([]string{"PATH=/bin", UltracodeEnv + "=1"}, false); has(env) || len(env) != 1 {
+		t.Fatalf("a spec's environment kept it: %v", env)
+	}
+	if env := withUltracode([]string{"PATH=/bin"}, true); !has(env) || len(env) != 2 {
+		t.Fatalf("asked for, it is not there: %v", env)
+	}
+}

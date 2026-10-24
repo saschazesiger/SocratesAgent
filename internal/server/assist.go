@@ -74,13 +74,6 @@ func (s *Server) handleSessionStatus(w http.ResponseWriter, r *http.Request) {
 
 	ctx, cancel := context.WithTimeout(r.Context(), statusTimeout)
 	defer cancel()
-	s.emitStatus(row.ID, statusPhaseCapturing, "Reading the screen")
-	screen, err := s.manager.CapturePane(ctx, row.ID, statusScreenLines)
-	if err != nil {
-		s.emitStatus(row.ID, statusPhaseError, "That screen could not be read.")
-		writeError(w, http.StatusBadRequest, "this session has no terminal to read: "+err.Error())
-		return
-	}
 	activity := s.manager.ActivityOf(row.ID)
 	language := config.NormalizeLanguage(settings.Voice.Language)
 	// The verdict on the turn the session is resting after, if there is one.
@@ -88,13 +81,32 @@ func (s *Server) handleSessionStatus(w http.ResponseWriter, r *http.Request) {
 	if o, ok := s.digests.outcomeOf(row.ID); ok && activity.State == termux.StateIdle && o.Since == activity.Since {
 		verdict = outcomeWords(o)
 	}
+	var prompt string
+	if row.IsChat() {
+		// A chat is told from its journal: its last turn, and what runs now.
+		text, state := s.chats.statusOf(row.ID)
+		if text == "" {
+			writeError(w, http.StatusBadRequest, "this chat has nothing to say yet: send it a message first")
+			return
+		}
+		prompt = chatStatusPrompt(row.Harness, state, language, verdict, text)
+	} else {
+		s.emitStatus(row.ID, statusPhaseCapturing, "Reading the screen")
+		screen, err := s.manager.CapturePane(ctx, row.ID, statusScreenLines)
+		if err != nil {
+			s.emitStatus(row.ID, statusPhaseError, "That screen could not be read.")
+			writeError(w, http.StatusBadRequest, "this session has no terminal to read: "+err.Error())
+			return
+		}
+		prompt = statusPrompt(row.Harness, activity.State, language, verdict, screen)
+	}
 
 	temperature := 0.2
 	client := openrouter.New(settings.OpenRouter.BaseURL, settings.OpenRouter.APIKey)
 	s.emitStatus(row.ID, statusPhaseAsking, "Asking "+model)
 	res, err := client.Chat(ctx, openrouter.ChatRequest{
 		Model:       model,
-		Messages:    []openrouter.Message{{Role: "user", Content: statusPrompt(row.Harness, activity.State, language, verdict, screen)}},
+		Messages:    []openrouter.Message{{Role: "user", Content: prompt}},
 		Temperature: &temperature,
 		MaxTokens:   300,
 	}, nil)
@@ -144,6 +156,20 @@ func statusPrompt(harness string, state termux.State, language, verdict, screen 
 		prompt += "\nA check of the turn that just ended says: " + verdict + ". Mention it."
 	}
 	return prompt + "\nScreen:\n" + screen
+}
+
+// chatStatusPrompt is statusPrompt for a chat, which is told from its
+// journal (chatNow) rather than shown as a screen.
+func chatStatusPrompt(harness string, state termux.State, language, verdict, chat string) string {
+	prompt := "You are told what a chat with " + chatLabel(harness) + ", a coding agent, is doing. It is " +
+		stateWords(state) + ". In one to three short sentences, say what a person needs to know: if it is " +
+		"working, what it is working on; if it has finished, what the answer is; if it is waiting, what it " +
+		"is asking and what the choices are. Speak plainly - this is read out loud, so no markdown, no code, " +
+		"no file paths unless they are the point. Answer in " + config.LanguageName(language) + "."
+	if verdict != "" {
+		prompt += "\nA check of the turn that just ended says: " + verdict + ". Mention it."
+	}
+	return prompt + "\nThe chat:\n" + chat
 }
 
 // stateWords is the committed state as a sentence fragment.
@@ -341,10 +367,6 @@ func (d *titleDriver) run(ctx context.Context, sessionID string) {
 	if row.Harness == config.HarnessShell {
 		return
 	}
-	// A chat has no screen; its name comes from its journal (WP9).
-	if row.IsChat() {
-		return
-	}
 	namer, ok := d.srv.titleNamer()
 	if !ok {
 		// Not configured is not a fault: automatic names are simply off, and
@@ -354,14 +376,25 @@ func (d *titleDriver) run(ctx context.Context, sessionID string) {
 
 	d.srv.emitTitle(sessionID, titlePhaseStart, "", "")
 	title, problem := "", ""
-	screen, err := d.srv.manager.CapturePane(ctx, sessionID, titleScreenLines)
-	switch {
-	case err != nil:
-		problem = "the screen could not be read: " + err.Error()
-	case strings.TrimSpace(screen) == "":
-		problem = "the screen was empty, so there was nothing to name the session after"
-	default:
-		title, problem = namer.ask(ctx, titlePrompt(row.Harness, screen))
+	if row.IsChat() {
+		// A chat has no screen: it is named after its first message, and
+		// what its first answer has said so far.
+		first, answer := d.srv.chats.firstExchange(sessionID)
+		if first == "" {
+			problem = "the chat's first message could not be read, so there was nothing to name it after"
+		} else {
+			title, problem = namer.ask(ctx, chatTitlePrompt(row.Harness, first, answer, false))
+		}
+	} else {
+		screen, err := d.srv.manager.CapturePane(ctx, sessionID, titleScreenLines)
+		switch {
+		case err != nil:
+			problem = "the screen could not be read: " + err.Error()
+		case strings.TrimSpace(screen) == "":
+			problem = "the screen was empty, so there was nothing to name the session after"
+		default:
+			title, problem = namer.ask(ctx, titlePrompt(row.Harness, screen))
+		}
 	}
 	if deleted := ctx.Err() == context.Canceled; deleted {
 		// forget: the session is gone, and so is anybody to tell.
@@ -492,7 +525,9 @@ func (s *Server) handleRetitleSession(w http.ResponseWriter, r *http.Request) {
 		// The field can be ahead of the saved draft by a pause in the typing.
 		prompt = strings.TrimSpace(body.Prompt)
 	}
-	if prompt == "" {
+	// A started chat's draft is what its composer holds, not a first prompt:
+	// its first message is in its journal.
+	if prompt == "" && (!row.IsChat() || row.State == store.StatePrestart) {
 		if draft, err := s.store.GetDraft(row.ID); err == nil {
 			prompt = strings.TrimSpace(draft.Text)
 		}
@@ -510,17 +545,32 @@ func (s *Server) handleRetitleSession(w http.ResponseWriter, r *http.Request) {
 	result := make(chan string, 1)
 	launched := s.titles.launch(row.ID, func(ctx context.Context, id string) {
 		s.emitTitle(id, titlePhaseStart, "", "")
-		screen := ""
-		if row.State != store.StatePrestart {
-			// A session whose program has ended has no pane, and then the
-			// first prompt is all there is.
-			screen, _ = s.manager.CapturePane(ctx, id, titleScreenLines)
-		}
 		title, problem := "", ""
-		if prompt == "" && strings.TrimSpace(screen) == "" {
-			problem = "there was nothing to name the session after: no first prompt, and no screen"
+		if chat := row.IsChat() && row.State != store.StatePrestart; chat {
+			// A chat is named again from its journal: its first message, and
+			// where the conversation has got to.
+			first, _ := s.chats.firstExchange(id)
+			if prompt == "" {
+				prompt = first
+			}
+			latest := s.chats.latestExchange(id)
+			if prompt == "" && latest == "" {
+				problem = "there was nothing to name the chat after: it has no message yet"
+			} else {
+				title, problem = namer.ask(ctx, chatTitlePrompt(row.Harness, prompt, latest, true))
+			}
 		} else {
-			title, problem = namer.ask(ctx, retitlePrompt(row.Harness, prompt, screen))
+			screen := ""
+			if row.State != store.StatePrestart {
+				// A session whose program has ended has no pane, and then the
+				// first prompt is all there is.
+				screen, _ = s.manager.CapturePane(ctx, id, titleScreenLines)
+			}
+			if prompt == "" && strings.TrimSpace(screen) == "" {
+				problem = "there was nothing to name the session after: no first prompt, and no screen"
+			} else {
+				title, problem = namer.ask(ctx, retitlePrompt(row.Harness, prompt, screen))
+			}
 		}
 		if ctx.Err() == context.Canceled {
 			result <- "the session was deleted"
@@ -586,6 +636,36 @@ func retitlePrompt(harness, prompt, screen string) string {
 	}
 	if screen != "" {
 		b.WriteString("\nScreen:\n" + screen)
+	}
+	return b.String()
+}
+
+// chatTitlePrompt is the naming instruction of a chat: its first message,
+// and the first answer (later) or where the conversation has got to (again).
+func chatTitlePrompt(harness, first, more string, again bool) string {
+	label := chatLabel(harness)
+	var b strings.Builder
+	b.WriteString("Below is the first message a user wrote in a chat with " + label)
+	switch {
+	case more != "" && again:
+		b.WriteString(", and the latest exchange of the chat")
+	case more != "":
+		b.WriteString(", and the start of its first answer")
+	}
+	b.WriteString(". Give this chat a title that says what it is about, as short and plain as possible: " +
+		"2 to 5 words, in English even if the chat is in another language. " +
+		"Name the task, not the program - never mention " + label + ". ")
+	if again && more != "" {
+		b.WriteString("Where the latest exchange shows the work has moved on, name what it is about now. ")
+	}
+	b.WriteString("Answer with the title and nothing else: no quotation marks, no full stop at the end, " +
+		"no markdown, no explanation.\nFirst message:\n" + clipRunes(first, retitlePromptRunes))
+	if more != "" {
+		if again {
+			b.WriteString("\nThe latest exchange:\n" + more)
+		} else {
+			b.WriteString("\nThe first answer, so far:\n" + more)
+		}
 	}
 	return b.String()
 }

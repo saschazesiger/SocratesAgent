@@ -656,7 +656,7 @@ func (c *tcx) end(status string, terr map[string]any) {
 }
 
 func tokens() map[string]any {
-	return map[string]any{"totalTokens": 160, "inputTokens": 100, "cachedInputTokens": 40, "cacheWriteInputTokens": 0,
+	return map[string]any{"totalTokens": 160, "inputTokens": 100, "cachedInputTokens": 40, "cacheWriteInputTokens": 10,
 		"outputTokens": 60, "reasoningOutputTokens": 10}
 }
 

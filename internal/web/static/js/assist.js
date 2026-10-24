@@ -31,6 +31,8 @@ const path = (id, suffix) => '/api/sessions/' + encodeURIComponent(id) + suffix;
  *   current   the session on screen, or null
  *   live      whether the socket is up
  *   insert    put one line of text into the pane, as if it had been typed
+ *   ticker    where the ticker line is drawn: {box, line}, the pane's for a
+ *             terminal and the dock's for a chat
  */
 export function mountAssist(ctx) {
   const { dom } = ctx;
@@ -58,19 +60,26 @@ export function mountAssist(ctx) {
   // changed. A line that is already up is not rolled again.
   const ticker = (() => {
     let shown = '';
+    // The slots the line is in: a session that changed from a terminal to a
+    // chat under it takes the line along to where the new one draws it.
+    let slots = null;
+    function hide() {
+      if (!slots || slots.box.hidden) return;
+      slots.box.hidden = true;
+      slots.line.replaceChildren();
+      shown = '';
+    }
     return {
       show(text) {
+        const next = ctx.ticker();
+        if (slots && slots.box !== next.box) hide();
+        slots = next;
         if (!text || text === shown) return;
         shown = text;
-        dom.termTicker.hidden = false;
-        M.roll(dom.tickerWindow, text);
+        slots.box.hidden = false;
+        M.roll(slots.line, text);
       },
-      hide() {
-        if (dom.termTicker.hidden) return;
-        dom.termTicker.hidden = true;
-        dom.tickerWindow.replaceChildren();
-        shown = '';
-      },
+      hide,
     };
   })();
 
@@ -112,9 +121,9 @@ export function mountAssist(ctx) {
       const label = speaking ? 'Stop reading' : 'Summarize this session';
       btn.setAttribute('aria-label', label);
       btn.setAttribute('data-tip', label);
-      // An editor has no screen to summarise, and neither has a chat: its
-      // summary is to be read from its journal, which Status does not do yet.
-      btn.hidden = !session || session.harness === 'vscode' || session.kind === 'chat';
+      // An editor has no screen to summarise. A chat is summarised from its
+      // journal, a terminal from its screen.
+      btn.hidden = !session || session.harness === 'vscode';
       // Stopping is always available, even with the socket down: the sound is
       // already on this device and turning it off asks the server nothing.
       btn.disabled = speaking ? false : (!usable && !busyStatus);
@@ -142,8 +151,10 @@ export function mountAssist(ctx) {
     busyStatus = true;
     // The first phase locally, before the request has even left: on a bad
     // connection the server's own first frame is a second away, and a tap with
-    // nothing on screen reads as a tap that did not land.
-    setStatusPhase('capturing', 'Reading the screen');
+    // nothing on screen reads as a tap that did not land. A chat is read from
+    // its journal, and its phases are only these.
+    const chat = session.kind === 'chat';
+    setStatusPhase('capturing', chat ? 'Reading the chat' : 'Reading the screen');
     paint();
     try {
       const data = await api(path(session.id, '/status'), {
@@ -151,8 +162,9 @@ export function mountAssist(ctx) {
       });
       const text = String((data && data.text) || '').trim();
       if (!text) {
-        setStatusPhase('error', 'There was nothing to say about that screen.');
-        toast('There was nothing to say about that screen.');
+        const nothing = chat ? 'There was nothing to say about that chat.' : 'There was nothing to say about that screen.';
+        setStatusPhase('error', nothing);
+        toast(nothing);
         return;
       }
       ctx.notice('status', text, null, statusFacts(data || {}));

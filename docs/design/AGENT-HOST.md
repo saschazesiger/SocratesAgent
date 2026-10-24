@@ -31,7 +31,8 @@ rows; the terminal-only routes (`…/ws`, `…/journal`, `…/resume`, `…/rest
 | Path | Written by | What |
 |---|---|---|
 | `<data>/chats/<id>/events.jsonl` | host | the journal (§3); the chat history Socrates renders and backs up |
-| `<data>/chats/<id>/host.json` | server, before every launch | launch spec: harness, workdir, model, effort, account, env, `binary` (the harness's binary setting, `StartSpec.Binary`), `conversation` (the row's `cli_session_id`: resumed, and rebuilt into an empty journal, when the journal names none), `park_after_ms` |
+| `<data>/chats/<id>/host.json` | server, before every launch | launch spec: harness, workdir, model, effort, account, env, `binary` (the harness's binary setting, `StartSpec.Binary`), `conversation` (the row's `cli_session_id`: resumed, and rebuilt into an empty journal, when the journal names none), `ultracode` (the chat's option; the host puts `SOCRATES_CLAUDE_ULTRACODE=1` into the CLI's environment exactly when it is set, §5.1), `park_after_ms` |
+| `<data>/chats/<id>/summary.json` | server | the chat's brief (§6): its `Summary`, Home's line and question, the words of its notification, and the seq they are true at; believed only while the journal still ends at that seq; not backed up |
 | `<data>/chats/<id>/host.lock` | host | `flock`ed for the host's whole life: **the** evidence a host is alive |
 | `<data>/chats/<id>/host.log` | host (and `systemd-run`) | the host's stdout/stderr; a file, never a pipe |
 | `<data>/chats/<id>/agent/` | adapter | the adapter's own state (the fake keeps its conversations here) |
@@ -84,6 +85,9 @@ whose shape the adapters define (WP3–5 must document theirs here); a tool part
 goes into `text`** so that every stream is a `part.delta`.
 
 `usage` object: `input`, `output`, `cache_read`, `cache_write`, `reasoning`, `context`, `window`.
+Each token is counted once, the same way for every agent: `input` is the input neither read from
+the cache nor written to it, `output` counts the reasoning in, and `reasoning` says how much of it
+was reasoning.
 Attachment: `name`, `path` (absolute), `mime`, `size`.
 
 **Asks** (WP6, `internal/agent/askuser`). Every agent asks with Socrates' own tool, `ask_user`
@@ -170,6 +174,53 @@ run, else `idle`. `open_asks` counts every open ask.
 The server reports it to the terminal detector with `termux.ReportActivity` (committed exactly, no
 debounce; note `question` for waiting; `asked` = the chat has a user message). The unread mark, row
 ordering (`MovesRow`), refiling into in-progress, the `activity` frames and push are the terminals'.
+Answering a chat's question and stopping its turn mark it read, as a message does (typing at a
+terminal does the same), so the turn an answer lets go on ends unread again.
+
+**What the rest of Socrates reads** (WP9, `internal/server/chatfeed.go`, `chatbrief.go`): none of it
+asks a model to read a screen; it is the projection.
+
+- **Home's line** (`chatLine`): while the chat waits, the first open question's text; while a turn
+  runs, the newest running top-level tool part as a person says it (`toolLine`: "Running go test",
+  "Editing main.go", "Subagent: …", "Workflow: …", from Claude's `summary`/`command`/`path`, Codex's
+  `command`/`changes`, OpenCode's `title`/`input`), else the first line of the newest text part,
+  else the person's message; between turns the first line of the last turn's answer, "Failed: …",
+  "Limit reached: …" or "Stopped". Markdown is taken off; a subagent's own words never are the line.
+- **The reading**: every chat is a `digest` on the event stream, the hello and `GET /api/home`,
+  beside the terminals': `phase: ready`, `state` = the activity, `summary` = the line, `question` =
+  the open ask the chat waits on as a digest question (`source: "ask"`, `kind` single→`choice`,
+  multi, confirm, text/number→`text`, plan; one item per question with its options), and `news`
+  (below). It is published when it changes - before the activity report, so a page told that a
+  chat waits has its question - and a line whose words alone changed at most once a second.
+- **Badge and push**: the asking set counts a chat whose brief says `waiting` (`askable` rows, the
+  rule Home's Questions card uses). A question is pushed the moment the chat starts asking, with the
+  first question's words; a finished turn with how it ended and a line of its answer ("Finished ·
+  …", "Failed · …", "Limit reached · …", "Stopped · …" for a turn a dead host left), and not at all
+  for a turn the person stopped (`Turn.Stopped`, an `interrupt`/`stop` command journaled while it
+  ran). That sentence is the brief's `news` and the reading's `news` field, which the page's own
+  notification shows too.
+- **Titles**: at the first turn somebody asked for, the title runner names the chat from its first
+  message and what its first answer has said so far; "name again" uses the first message and the
+  latest exchange (never the composer's draft).
+- **Spoken Status**: `POST /api/sessions/{id}/status` tells the status model the chat from its
+  journal (`chatNow`): the last turn - message, answer, calls and how they went, task list - what
+  runs now, the question it waits on with its choices, and its background tasks.
+- **Outcome judge** (`chatjudge.go`): with outcomes on, a chat's turn end puts the outcome on
+  pending exactly as a terminal's does - except a turn that is no news (stopped by the person),
+  which gets no verdict - and `judgeChat` asks the home model in a call of its own
+  (its system prompt opens with `You judge the turn a coding agent has just ended`) with the turn as
+  `chatTurnPrompt` writes it; Read again judges it again.
+- **Costs** (`chatcosts.go`): the journal is the one source of a chat's cost - Claude's `cost_usd`,
+  Codex's tokens priced by the ledger's Codex rates, OpenCode's own price - in a ledger named by the
+  chat: `chat-<id>` until the first `account.switched`, then `chat-<id>@<account>` for every
+  account, the one it started on included (the switch's `from`). Each pass that reads a journal
+  writes its ledgers and removes the ones of that journal it no longer makes. A journal rebuilt
+  after its folder was lost (`notice{rebuilt|history_unavailable}`) does not count the history it
+  got back, which was counted when it ran, and leaves the lost journal's ledgers as they are; what it
+  adds goes into `chat-<id>~<the notice's at>[@<account>]`. Every conversation id the journal
+  names, and the row's, is the chat's for good (kv `costs.chat_conversations`): the transcript
+  scanner skips it, and a ledger it made of one before is removed. The agents' shared folders
+  (`agents/claude|codex|opencode`) are a root of the scanner like the profiles'.
 
 ## 4. Host protocol (version 2)
 
@@ -292,7 +343,7 @@ Rules every adapter keeps:
 | diff / plan / todo | Edit `structuredPatch` → `diff`; `ExitPlanMode` → `plan`; Task* → `todo` | `turn/diff/updated` → `diff`; `plan` item | edit/apply_patch/write metadata → `diff`; `todowrite` → `todo` |
 | turn end | `result` (`is_error`, `terminal_reason`) | `turn/completed` status | `session.idle` (outcome from `session.error` / `info.error` / the limit) |
 | limits | `rate_limit_event` → `rate_limit` | `account/rateLimits/updated` | `session.status retry` with `action.reason`, or a 429 error |
-| usage | `result.usage`, `total_cost_usd` delta | `thread/tokenUsage/updated` | `step-finish` → `usage`; assistant `info.tokens`/`cost` summed per turn |
+| usage | `result.usage`, `total_cost_usd` delta | `thread/tokenUsage/updated` | `step-finish` → `usage`; assistant `info.tokens`/`cost` summed per turn (`output` = OpenCode's output + reasoning, which it counts apart) |
 | `ask_user` (WP6) | in-process MCP server `socrates` over the control protocol (`mcp__socrates__ask_user`), blocking | dynamic tool `ask_user`, blocking; code-mode models: returns at once, `via:"message"` | local MCP server `socrates mcp-ask` (`socrates_ask_user`), waiting in the host (§4.4), with progress |
 | guidance | `--append-system-prompt` | the thread's developer instructions | the MCP server's `instructions` (OpenCode puts them into the system prompt) |
 | own questions | `AskUserQuestion` disallowed; MCP elicitations asked as forms | `request_user_input`, async questions, MCP elicitation forms asked; tool-call approvals accepted | `question` denied; one that arrives is asked |
@@ -321,7 +372,8 @@ verified against 2.1.309). Fixed argv: `--input-format stream-json --output-form
 `CLAUDE_CONFIG_DIR`; plus `IS_SANDBOX=1` as root and `CLAUDE_CODE_ENABLE_TODO_TOOLS=1`. Two
 variables of the spec are instructions to the adapter, not passed on: `SOCRATES_CLAUDE_API_KEY`
 (an API-key account; becomes `ANTHROPIC_API_KEY`) and `SOCRATES_CLAUDE_ULTRACODE=1` (the session
-option). `claude.PrepareConfigDir(accountDir, <data>/agents/claude)` links `projects/`, `tasks/`,
+option, which the host sets from `host.json`'s `ultracode` and takes away otherwise,
+`agenthost.UltracodeEnv`). `claude.PrepareConfigDir(accountDir, <data>/agents/claude)` links `projects/`, `tasks/`,
 `plans/`, `todos/` of an account's config dir into the shared folder (relative symlinks); WP7 calls
 it before an account's first run. An account switch is `Interrupt` (when busy), `Park`, `Start`
 with the other account's env and the same `ResumeID` (tested against fakeclaude).
@@ -451,8 +503,10 @@ for a command (compact, review, shell) have no `message_id`. `turn/completed` st
 `completed`, `interrupted`, `failed` (`usageLimitExceeded` → `limited`, plus `error{rate_limit}`); an
 `error` notification with `willRetry` → `notice{retrying}`, without it the turn ends failed if
 `turn/completed` does not follow within 30 s. `turn.ended.usage` sums the turn's model calls
-(`tokenUsage.last`; codex counts cached input inside the input, the journal apart: `input` =
-input − cached, `cache_read` = cached), `context`/`window` from the last call;
+(`tokenUsage.last`; codex counts the cached and the cache-written input inside the input, the
+journal apart: `input` = input − cached − cache-written, `cache_read` = cached, `cache_write` =
+cache-written; its output counts the reasoning in, as the journal's does), `context`/`window` from
+the last call;
 `usage{context, window}` follows each call. `account/rateLimits/updated` → one `rate_limit` per
 window that changed: `five_hour` (300 min), `weekly` (10080 min), else `<n>m`; `used` = percent/100.
 Cost is not reported by codex (0).
@@ -696,9 +750,21 @@ retried with backoff (200 ms → 5 s), never replaced.
 
 **Server side** (`chatHub`, one `chatPeer` per chat):
 
-- At start, every chat's journal file is read (feed + projection), its activity reported, and a
-  pump started for every chat whose host is alive or that needs one (turn running, or outbox
-  non-empty). The resume point is the last seq in the journal file it read.
+- At start, every chat is known by its **brief** (`summary.json`) when the journal still ends at
+  the brief's seq (`agent.LastSeq`, read from the file's end), and its journal is read and folded
+  only otherwise (and the brief written); its activity is reported, and a pump started for every
+  chat whose host is alive or that needs one (turn running, or outbox non-empty). The resume point
+  is the brief's seq. The history - feed and projection - is read when something needs it (a
+  stream, a command, the pump, `GET /api/chats/{id}`, the namer, Status, the judge) and let go
+  (brief kept) once nothing has used it for ten minutes; a closing server keeps the brief of every
+  chat it holds. Measured on 300 chats of 200 turns: folding every journal took 4.2 s and 535 MB
+  of heap; starting from the briefs 137 ms and 0.7 MB.
+- A chat whose journal is empty while its row knows a conversation (its folder was lost, or a backup
+  restored without it) gets a host when its stream is opened, which rebuilds the history from the
+  CLI's transcript (`host.json` carries the conversation); not at start, so a restore of many such
+  chats starts no agent for each. The turns it writes back are not news: the server tells the
+  detector the chat's activity once the history is in (its `notice{rebuilt|history_unavailable}`,
+  or the agent up without one), so they ring no chime and get no push, unread mark or verdict.
 - The pump connects (launching/recovering), resends the whole outbox in order, applies frames
   (events only forward: seq ≤ last is ignored, a gap is logged), and reconnects whenever the host
   is still alive, because a host can start a turn or report a task on its own. It stops when the
@@ -722,7 +788,7 @@ key (the existing `Outbox` in `net.js`).
 
 | Route | Body | Answers |
 |---|---|---|
-| `POST /api/chats` | `client_id`, `harness`, `model`, `effort`, `workdir_mode`, `workdir`, `title`, `message`?{`client_id`,`text`,`attachments`} | 201 `{session, chat: <summary>, message?}`; 200 the same for a repeated `client_id`; 400 for a harness without an adapter. The host is launched at once |
+| `POST /api/chats` | `client_id`, `harness`, `model`, `effort`, `workdir_mode`, `workdir`, `title`, `ultracode` (Claude Code only; dropped for any other agent), `message`?{`client_id`,`text`,`attachments`} | 201 `{session, chat: <summary>, message?}`; 200 the same for a repeated `client_id`; 400 for a harness without an adapter. The host is launched at once |
 | `GET /api/chats/{id}` | – | `{session, chat: <summary>, asks: [open asks], host_error?}`; `?history=1` adds `messages` (the whole projection) |
 | `POST /api/chats/{id}/messages` | `client_id`, `text`, `attachments` | 200 `{client_id, seq, dup}`; 202 `{client_id, queued: true}` when the host has not acked within 10 s (it will receive it once) |
 | `POST /api/chats/{id}/interrupt` | `client_id` | as messages; 200 `{idle: true}` when nothing runs and no host is up |
@@ -730,6 +796,8 @@ key (the existing `Outbox` in `net.js`).
 | `POST /api/chats/{id}/model` | `client_id`, `model`, `effort` | as messages (a `set_model` command) |
 | `POST /api/chats/{id}/command` | `client_id`, `name`, `args` | as messages; 409 `{code: "unsupported"}` for a command the agent does not have |
 | `POST /api/chats/{id}/attachments` | multipart, one or more `file` parts | `{files: [attachment]}`: stored under `chats/<id>/attachments/` (a copy in the working directory's uploads); a message may only name paths this route handed out, else 400 |
+| `POST /api/chats/{id}/options` | `ultracode` | the row's options changed (400 for Ultracode on another agent), and the agent parked as soon as it is idle so the next message resumes with them; `{session}` |
+| `POST /api/sessions/{id}/status`, `…/title`, `…/digest` | – | the spoken Status, naming again and Read again of every session; for a chat read from its journal (§3), Read again judging its last turn again |
 | `GET`/`PUT /api/sessions/{id}/draft` | `text`, `base_rev` | the composer's draft, with PreStart's revision rule (409 `{conflict, text, rev}` when another device saved first); a prepared chat's draft is its first message |
 | `GET /api/chats/{id}/stream` | WebSocket | below |
 | `PUT /api/sessions/{id}/workdir` | `workdir` (a folder that exists) | 200 `{session}`; 400 for a folder that is not there or not allowed; 409 while a turn runs. A host that is up is sent `park`, not `stop`: a turn that started a moment ago, which the server has not heard of yet, finishes in the old folder, and the next message starts the agent in the new one (REBUILD §6.2: a restored chat whose folder is missing) |
@@ -825,7 +893,20 @@ attachment(s): …`).
   id recorded, activity + unread; server restart mid-turn; server down 30 s while the turn ends;
   host SIGKILLed mid-turn; exactly-once across a server crash after sending; two devices on one
   stream; two devices answering; answer after the call is gone; park and resume; queued messages;
-  hello and 4401.
+  hello and 4401. WP9: the line, the question and the reading on Home (and its order before the
+  activity), the briefs (300-chat start measured, a stale brief read again, the history let go and
+  read back), the badge and every push wording (a Stop pushed to nobody, a killed host's turn pushed
+  as "Stopped" and unread), the title from the first
+  message and again from the journal (never over a name the person chose), Status from the journal,
+  the outcome judge (verdict, held push, Read again, a judge that fails, a stopped turn not judged),
+  the cost ledger (each agent's pricing with every token once, the account split with no ledger
+  left behind, a rebuilt journal's own ledgers, the transcript of a chat's conversation never
+  counted, also after the chat is deleted, the shared folders scanned), Ultracode reaching a Claude
+  chat's CLI and its change from the ⋮, a prepared chat started by the clock, and a lost chat folder
+  rebuilt when opened with no push for the history it gets back - the last three through real hosts with fakeclaude, fakecodex and fakeopencode, whose
+  adapters the server's test binary registers.
+- e2e (`run.mjs`, the scripted agent): `chat-home`, `chat-push`, `chat-title`, `chat-status`,
+  `chat-outcome`, `chat-prestart`, `chat-ultracode`.
 - `e2e/chats.mjs`: the real binary, SIGKILL of the server mid-turn, replay, duplicates, two-device
   answers, the session list.
 - ask_user (WP6): `internal/agent/askuser` (schema limits, the checks and their messages, the
@@ -865,11 +946,15 @@ attachment(s): …`).
 
 ## 10. Known limits, for the packages that follow
 
-- The server reads every chat's journal into memory at start and keeps it (feed + projection).
-  Fine for tens of chats; WP9 may want a projection snapshot and lazy loading.
-- `StartSpec.Env`/`Account` are passed through but nothing fills them until WP7.
-- Titles, Home's question text, push wording and outcomes do not read the journal yet (WP9); a chat
-  gets the generic "Finished"/"needs you" from activity alone.
+- `StartSpec.Env`/`Account` are passed through but nothing fills them until WP7. The cost ledger
+  splits a chat by `account.switched` (`chat-<id>@<account>`, the account id as the ledger's
+  profile); the costs page names profiles only, so WP7 adds the accounts' names to its `profiles`.
+  The account a journal starts on is known only from its first switch's `from`, so the turns of a
+  chat that never switched, and of a rebuilt journal before its first switch, are on a ledger with
+  no account.
+- A chat folder lost while the server runs and holds the chat's history is not noticed: the next
+  host's journal starts again at seq 1, which the server's copy (further along) ignores. A lost
+  folder is found at the next start (the brief is in the folder too) and rebuilt when opened.
 - ask_user (WP6) for the views (WP8): an `ask` payload is `askuser.Payload` (§2, Asks) or Claude's
   plan card (`kind: "plan"`); `source` says when the questions came from one of the agent's own
   mechanisms (an elicitation offers no "You decide", `allow_delegate: false`); `part_id` names the
@@ -889,3 +974,7 @@ attachment(s): …`).
   message is posted into the account at its limit and ends `limited` too. The limit card and the
   auto-switch (REBUILD §4.3) need the adapter to hold the queue after a limited turn until the chat
   switches (`SwitchAccount` runs it on the new account) or is told to continue.
+
+- The Claude adapter's replay receipt is in (§5.1). An API-key account reaches it only through
+  `StartSpec.Env` (`SOCRATES_CLAUDE_API_KEY`), which WP7 sets; Ultracode is the host's (`host.json`
+  `ultracode`).
