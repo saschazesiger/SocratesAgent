@@ -351,6 +351,12 @@ func (s *Store) UpdateSessionTitle(id, title string) error {
 	return s.update(id, `title = ?, title_source = ?`, title, TitleUser)
 }
 
+// SetSessionWorkdir points a session at another working directory, and says
+// how it was chosen.
+func (s *Store) SetSessionWorkdir(id, mode, workdir string) error {
+	return s.update(id, `workdir = ?, workdir_mode = ?`, workdir, mode)
+}
+
 // SetAutoSessionTitle records the name the title run came up with, and marks
 // the session as named so the run never happens again.
 //

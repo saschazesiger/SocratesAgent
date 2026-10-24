@@ -140,6 +140,9 @@ Everything Socrates keeps is in its data directory, `/var/lib/socrates`
 (`SOCRATES_DATA_DIR`): the database with the settings, the password, sign-ins,
 sessions and prepared prompts, and beside it the sessions' files, profiles and
 VS Code's state. It needs nothing else to run, and it never waits on a network.
+Not in it yet are the default sign-ins and transcripts of Claude Code, Codex
+and OpenCode (`~/.claude`, `~/.codex`, `~/.local/share/opencode`): a restored
+machine has its profiles' sign-ins, and is signed in to the default ones again.
 
 **Admin → Backup** backs that folder up to an S3 bucket - Hetzner Object
 Storage, AWS S3, Cloudflare R2, MinIO, anything S3-compatible. Every 10
@@ -183,10 +186,12 @@ The restored machine keeps backing up into the same bucket, as a machine of
 its own: snapshots are kept apart by machine, and the card says when another
 machine wrote one in the last day.
 
-An installation that had the bucket mirror of earlier versions (`s3.json`, or
-`SOCRATES_S3_*` in `/etc/socrates.env`) is carried over by itself: the backup
-goes into the same bucket under `backup/v1/` inside the old prefix, and the
-mirror's objects are left as they were.
+An installation that had the bucket mirror of earlier versions (`SOCRATES_S3_*`
+in `/etc/socrates.env`, or else `s3.json`) is carried over by itself, once, at
+its first start: the backup goes into the same bucket under `backup/v1/` inside
+the old prefix, and the mirror's objects are left as they were. From then on
+the card owns the configuration; **Turn off backups** there removes
+`backup.json`, and the variables do not bring it back.
 
 ## More than one account
 

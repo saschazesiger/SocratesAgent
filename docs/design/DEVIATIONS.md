@@ -2345,9 +2345,13 @@ backs up whatever is in the data directory; `profiles/` and `sessions/` stay whe
 **WP1 / REBUILD.md §6.1 — `backup.json` holds the interval too, and `SOCRATES_S3_*` is read
 once.** The interval is a field of `backup.json` rather than of the settings document, so the
 Backup card is one form with one save. The `SOCRATES_S3_*` environment no longer configures
-anything at runtime: like `s3.json`, it is carried over into `backup.json` once (the bucket and
-the passphrase, under the prefix `backup/v1/` inside the old one) and the card owns it from
-then on. `s3.json` is left in place for a build that is rolled back.
+anything at runtime: it, or `s3.json` when `SOCRATES_S3_BUCKET` is unset (the mirror's own
+precedence), is carried over into `backup.json` once (the bucket and the passphrase, under the
+prefix `backup/v1/` inside the old one) and the card owns it from then on. "Once" is the marker
+`backup.migrated`, written at the first start on a data directory that holds an installation
+whatever the carry-over found, so a backup turned off stays off; a new machine that is not set
+up or restored yet carries nothing over. `s3.json` is left in place for a build that is rolled
+back.
 
 **WP1 — the snapshot list reads every manifest once.** A listing of the bucket gives a
 snapshot's host and time; its size and number of files are in its sealed manifest. Manifests
@@ -2359,9 +2363,12 @@ restored reads them all on its first listing.
 today's top-level `bin/`, `tmux.sock`, `tmux.conf`, `hook.sock`, `update-state/`,
 `updates.json`, `updates.log`, the schema migration copies `socrates.db.pre-*.bak`, `s3.json`,
 the terminal byte journals `sessions/*/journal.raw*`, code-server's `logs` and caches under
-`vscode/*/`, sockets of any name, the workspace root and preset directories when they lie inside
-the data directory, and SQLite's `-wal`, `-shm` and `-journal` beside a database (which is
-copied consistently instead). The list is `paths.NotBackedUp`.
+`vscode/*/`, sockets of any name, `backup.migrated`, the working directories inside the data
+directory (the workspace root, the preset directories, the default `workspaces/` that keeps a
+moved root's older dynamic directories, and every session's and chat's own directory, but never
+one of Socrates' own parts, `paths.Own`), and SQLite's `-wal`, `-shm` and `-journal` beside a
+database (which is copied consistently instead). The list is `paths.NotBackedUp` and
+`server.BackupExclusions`.
 
 **WP1 — a notice on the session page.** The brief removes the storage banner and asks for the
 24-hour warning in `/api/state` and on the Backup card; §6.2 also calls for "a notice". The
@@ -2440,3 +2447,27 @@ starts at a terminal's goes through the terminals' in theirs (`question.js`). Jo
 walks would be work for a dialog WP10 removes with the agent terminals; until then the other
 kind's questions are reached from their sessions, or from the card once the oldest kind's are
 answered.
+
+**WP1 / REBUILD.md §6.2 — "point to folder" is on the session's menu, not on the restore page.**
+§6.2 lists the missing working directories per chat after a restore. The restore page ends in a
+restart and the sign-in, so the list is where the sessions are: `GET /api/sessions` marks a row
+whose folder is not on the machine (`workdir_missing`; not a prepared session's typed-in folder,
+which is made when it starts), its ⋮ menu offers **Point to folder**, and
+`PUT /api/sessions/{id}/workdir` takes a folder that exists (a preset, or a typed-in one under the
+new-session rules) and parks a chat's host so its next message starts there. The chat view's
+dock says the same with the same action; it shows once WP8 mounts the view.
+
+**WP1 — a backup waits for an installation, and needs the database.** Not in §6.2: a data
+directory that holds no installation (no password, no sessions, nothing in its folders) or whose
+restore is staged is not backed up, and a `backup.json` found on one gets a host id of its own; a
+snapshot without `socrates.db` is not written, "latest" is the newest snapshot that holds it, and
+one without it cannot be restored. Otherwise a new machine, started before its restore, wrote an
+empty snapshot that "latest" restored and that retention counted as the old machine's newest.
+
+**WP1 / REBUILD.md §6.2 — the warning is about more than a day without a snapshot.** §6.2 warns
+after 24 h without a successful snapshot, "nothing else". A run can succeed while what it took,
+or the bucket, is not well, so the same warning, after the same time, also names a database
+whose earlier copy has stood in for it, and a garbage collection that has kept failing: an
+object under `snapshots/` that is not named like a snapshot stops it before a chunk is deleted,
+and the bucket then grows without limit while every run says "Backed up". The Backup card shows
+a collection that failed at once (`gc_error`), and `warning_about` says which warning it is.

@@ -8,6 +8,7 @@ func TestExcluded(t *testing.T) {
 		"cache":                     true,
 		"backup.json":               true,
 		"s3.json":                   true,
+		"backup.migrated":           true,
 		"tmux.sock":                 true,
 		"updates.log":               true,
 		"update-state":              true,
@@ -42,6 +43,17 @@ func TestExcluded(t *testing.T) {
 	} {
 		if got := Excluded(rel); got != want {
 			t.Errorf("Excluded(%q) = %v, want %v", rel, got, want)
+		}
+	}
+}
+
+func TestOwn(t *testing.T) {
+	for rel, want := range map[string]bool{
+		"chats": true, "chats/c1": true, "socrates.db": true, "agents/claude": true, "vscode-extensions/x": true,
+		"workspaces/w1": false, "projects/p": false, "chatsx": false,
+	} {
+		if got := Own(rel); got != want {
+			t.Errorf("Own(%q) = %v, want %v", rel, got, want)
 		}
 	}
 }

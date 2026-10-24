@@ -19,7 +19,7 @@
 // person sends meanwhile is on screen as "Not sent yet" until it is, then as
 // "Sent" until the journal has it.
 
-import { alertDialog, toast, fmtTokens, CONNECTION_GRACE } from './api.js';
+import { api, alertDialog, promptDialog, toast, errorMessage, fmtTokens, CONNECTION_GRACE } from './api.js';
 import { html, morph, raw, icon } from './ui.js';
 import { agentMarkHtml } from './logos.js';
 import * as harnesses from './harnesses.js';
@@ -317,6 +317,11 @@ export function mountChat(ctx) {
       line = navigator.onLine === false
         ? html`<div class="ds-alert ds-alert--warning" data-ds-key="offline">${raw(icon('wifiOff', 20))}<span class="ds-alert__text">Offline. The chat may be behind; what you send goes out when the connection is back.</span></div>`
         : html`<div class="ds-alert ds-alert--warning" data-ds-key="reconnecting"><span class="so-chat__spin" aria-hidden="true"><span class="ds-spinner"></span></span><span class="ds-alert__text">Reconnecting… The chat may be behind.</span></div>`;
+    } else if (session.workdir_missing && !chat.turn) {
+      // A restore brings the chats back, not the code they worked on
+      // (REBUILD §6.2): the conversation stays readable, and the agent can
+      // go on once it is told where the folder is on this machine.
+      line = html`<div class="ds-alert ds-alert--warning" data-ds-key="workdir">${raw(icon('alert', 20))}<span class="ds-alert__text">This chat's folder is not on this machine.</span><button class="ds-btn ds-btn--quiet ds-btn--icon ds-btn--sm so-info" type="button" data-action="info" aria-label="The missing folder" data-tip="${session.workdir}">${raw(icon('info', 18))}</button><button class="ds-btn ds-btn--sm" type="button" data-action="point-folder">Point to folder</button></div>`;
     } else if (chat.process === 'failed' && !chat.turn) {
       line = html`<div class="ds-alert ds-alert--error" data-ds-key="failed">${raw(icon('alertCircle', 20))}<span class="ds-alert__text">The agent could not start. Send a message to try again.</span><button class="ds-btn ds-btn--quiet ds-btn--icon ds-btn--sm so-info" type="button" data-action="info" aria-label="Why it did not start" data-tip="${chat.processDetail || 'No detail was given.'}">${raw(icon('info', 18))}</button></div>`;
     } else if (chat.process === 'starting') {
@@ -460,6 +465,9 @@ export function mountChat(ctx) {
         if (composer) composer.insert(item.payload.text || '');
         break;
       }
+      case 'point-folder':
+        pointFolder(target);
+        break;
       case 'jump':
         stuck = true;
         scroller.scrollTo({ top: scroller.scrollHeight, behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' });
@@ -498,6 +506,31 @@ export function mountChat(ctx) {
   });
   window.addEventListener('online', () => schedule());
   window.addEventListener('offline', () => schedule());
+
+  // pointFolder asks where the chat's code is on this machine and points the
+  // chat there; the agent works in it from the next message on.
+  async function pointFolder(opener) {
+    const current = session;
+    const dir = await promptDialog({
+      title: 'Point to folder',
+      body: 'Where is this chat\'s code on this machine? The agent works in that folder from the next message on.',
+      label: 'Folder',
+      value: current.workdir,
+      confirmLabel: 'Use this folder',
+      opener,
+    });
+    if (!dir) return;
+    try {
+      const data = await api('/api/sessions/' + encodeURIComponent(current.id) + '/workdir', { method: 'PUT', body: { workdir: dir } });
+      if (session && session.id === current.id && data.session) {
+        session = data.session;
+        schedule();
+      }
+      toast('The chat works in that folder now.', 'success');
+    } catch (err) {
+      toast(errorMessage(err), 'error');
+    }
+  }
 
   /* --------------------------------------------------------------- api */
 

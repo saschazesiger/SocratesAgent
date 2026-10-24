@@ -225,7 +225,7 @@ func main() {
 	// ever. What does not make it is backed up by the next start.
 	if backups != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), shutdownBackup)
-		if err := backups.Close(ctx); err != nil && !errors.Is(err, backup.ErrNotConfigured) {
+		if err := backups.Close(ctx); err != nil && !errors.Is(err, backup.ErrNotConfigured) && !errors.Is(err, backup.ErrNotInstalled) {
 			log.Printf("backup: the last backup before the stop: %v", err)
 		}
 		cancel()

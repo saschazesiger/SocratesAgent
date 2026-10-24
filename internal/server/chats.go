@@ -600,12 +600,23 @@ func (p *chatPeer) unwait(clientID string, ch chan chatReply) {
 }
 
 // stopHost ends the chat's host and its CLI, for a delete.
-func (p *chatPeer) stopHost(ctx context.Context) {
+func (p *chatPeer) stopHost(ctx context.Context) { p.endHost(ctx, agenthost.OpStop) }
+
+// parkHost asks the chat's host to park as soon as it is idle, and waits a
+// while for it to go. The host is the one that knows whether a turn runs: a
+// message another device sent a moment ago may have started one the server
+// has not heard of yet, and a park lets it finish where a stop would cut it
+// off.
+func (p *chatPeer) parkHost(ctx context.Context) { p.endHost(ctx, agenthost.OpPark) }
+
+// endHost sends the host op, stop or park, and waits up to chatStopWait for
+// the host to be gone.
+func (p *chatPeer) endHost(ctx context.Context, op string) {
 	p.mu.Lock()
 	conn := p.conn
 	p.mu.Unlock()
 	if conn != nil {
-		_ = conn.Send(agenthost.Command{Op: agenthost.OpStop})
+		_ = conn.Send(agenthost.Command{Op: op})
 	}
 	deadline := time.Now().Add(chatStopWait)
 	for time.Now().Before(deadline) && ctx.Err() == nil {

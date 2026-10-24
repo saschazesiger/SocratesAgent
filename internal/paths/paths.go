@@ -51,6 +51,10 @@ const (
 	// before the backup. It is read once, to carry its bucket over into
 	// BackupConfig, and left where it is for a build that is rolled back.
 	LegacyS3Config = "s3.json"
+	// BackupMigrated marks a data directory whose mirror configuration has
+	// been carried over, or found missing, so that it is never carried over
+	// again (internal/backup).
+	BackupMigrated = "backup.migrated"
 	// Bin is where Socrates downloads programs of its own (cloudflared).
 	Bin = "bin"
 	// TmuxSocket, TmuxConf and HookSocket are the private tmux server's.
@@ -113,6 +117,7 @@ var NotBackedUp = []string{
 	UpdatesStatus,
 	UpdatesLog,
 	BackupConfig,
+	BackupMigrated,
 	LegacyS3Config,
 	TmuxSocket,
 	TmuxConf,
@@ -142,6 +147,23 @@ var NotBackedUp = []string{
 var BackedUpOnly = map[string][]string{
 	Agents + "/opencode/accounts/*":       {"opencode", "state"},
 	Agents + "/opencode/accounts/*/state": {"opencode"},
+}
+
+// own are the parts of the data directory that are Socrates' state: a folder
+// inside one of them is never a working directory to leave out of a backup,
+// whatever a session row says.
+var own = []string{DB, Chats, Agents, Accounts, Terminals, Sessions, Profiles, VSCode, VSCodeExtensions}
+
+// Own reports whether rel - a slash separated path relative to the data
+// directory - is one of Socrates' own parts or inside one.
+func Own(rel string) bool {
+	first, _, _ := strings.Cut(rel, "/")
+	for _, name := range own {
+		if first == name {
+			return true
+		}
+	}
+	return false
 }
 
 // Excluded reports whether rel - a slash separated path relative to the data

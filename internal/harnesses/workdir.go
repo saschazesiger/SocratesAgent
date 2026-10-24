@@ -145,6 +145,37 @@ func checkCustom(settings config.Settings, path string) (string, error) {
 	return clean, nil
 }
 
+// PointWorkdir is the folder a session is pointed to when its own is not on
+// this machine - a restore brings the chats back, not the code they worked
+// on (REBUILD §6.2). It answers the way of choosing it and the cleaned path:
+// a preset when the path is one, otherwise a typed-in directory under the
+// same rules as a new session's. Unlike a new session's, the folder must be
+// there already: pointing a session at a folder that does not exist would
+// only move what is missing.
+func PointWorkdir(settings config.Settings, path string) (string, string, error) {
+	clean, err := checkPath(path)
+	if err != nil {
+		return "", "", err
+	}
+	mode := WorkdirCustom
+	for _, p := range settings.Workspace.Presets {
+		if filepath.Clean(strings.TrimSpace(p.Path)) == clean {
+			mode = WorkdirPreset
+			break
+		}
+	}
+	if mode == WorkdirCustom {
+		if clean, err = checkCustom(settings, clean); err != nil {
+			return "", "", err
+		}
+	}
+	info, err := os.Stat(clean)
+	if err != nil || !info.IsDir() {
+		return "", "", fmt.Errorf("there is no folder %s on this machine", clean)
+	}
+	return mode, clean, nil
+}
+
 // CheckWorkdir is ResolveWorkdir for a prepared session: the same rules, and
 // nothing made. A prepared session may wait for days, and a directory created
 // for it now would be an empty directory in the workspace for every draft

@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
+	"slices"
 	"sort"
 	"sync"
 	"time"
@@ -28,6 +30,16 @@ var (
 	ErrBusy = errors.New("a backup is already running")
 	// ErrNotConfigured is a run asked for with no backup configured.
 	ErrNotConfigured = errors.New("no backup is configured")
+	// ErrNotInstalled is a run asked for on a data directory that holds no
+	// installation yet: a new machine neither set up nor restored, or one
+	// whose restore waits to be moved into place. Its snapshot would be an
+	// empty one, newer than every real snapshot in the bucket and so the
+	// one "latest" restores; a run waits until there is something to back
+	// up, and is not a failure.
+	ErrNotInstalled = errors.New("this data directory holds no installation yet, so there is nothing to back up")
+	// ErrNoDatabase is a walk that did not take the database. A snapshot
+	// without it restores no installation, and is not written.
+	ErrNoDatabase = errors.New("the snapshot would not hold the database, so it was not written")
 )
 
 // Options configure an Engine.
@@ -90,6 +102,10 @@ type Engine struct {
 	// listedFor is the backup whose chunks have been listed in this
 	// process (its place and salt).
 	listedFor string
+	// broken is why backup.json could not be read, while it cannot: the
+	// backup is off, and says so rather than looking as though it had
+	// never been set up.
+	broken string
 
 	wake   chan struct{}
 	stop   context.CancelFunc
@@ -97,14 +113,20 @@ type Engine struct {
 }
 
 // New loads the configuration - carrying the bucket mirror's over first, for
-// a data directory that has one - and the state of the last runs. It does
-// not touch the network.
+// an installation that had one (MigrateConfig) - and the state of the last
+// runs. It does not touch the network.
 func New(opts Options) (*Engine, error) {
 	opts.defaults()
-	if migrated, err := MigrateConfig(opts.DataDir, opts.Getenv); err != nil {
-		log.Printf("backup: could not carry the bucket mirror's configuration over: %v", err)
-	} else if migrated {
-		log.Printf("backup: the bucket the mirror used is now the backup's, under the prefix %s", DefaultPrefix)
+	if ok, err := installed(opts.DataDir); err == nil && ok {
+		if migrated, err := MigrateConfig(opts.DataDir, opts.Getenv); err != nil {
+			log.Printf("backup: could not carry the bucket mirror's configuration over: %v", err)
+		} else if migrated {
+			prefix := DefaultPrefix
+			if cfg, err := LoadConfig(opts.DataDir); err == nil && cfg != nil {
+				prefix = cfg.Prefix
+			}
+			log.Printf("backup: the bucket the mirror used is now the backup's, under the prefix %s", prefix)
+		}
 	}
 	e := &Engine{
 		opts:    opts,
@@ -114,11 +136,21 @@ func New(opts Options) (*Engine, error) {
 	}
 	cfg, err := LoadConfig(opts.DataDir)
 	if err != nil {
-		// A broken backup.json is backups off, said on the admin page,
-		// where saving the form writes a good one.
+		// A broken backup.json is backups off, said on the admin page and
+		// in the notice, until saving the form writes a good one.
 		log.Printf("backup: %v", err)
-		e.st.LastError, e.st.LastErrorAt = err.Error(), opts.Now().UnixMilli()
+		e.broken = err.Error()
 		return e, nil
+	}
+	// A backup.json on a data directory that holds no installation was
+	// brought from another machine, to restore from: its host id is that
+	// machine's. Whatever this one becomes - restored, or set up afresh - it
+	// backs up as a machine of its own, and never into the other's
+	// snapshots and their retention.
+	if cfg != nil && cfg.HostID != "" {
+		if ok, err := installed(opts.DataDir); err == nil && !ok {
+			cfg.HostID = ""
+		}
 	}
 	if cfg != nil && cfg.HostID == "" {
 		cfg.HostID = NewHostID()
@@ -165,7 +197,7 @@ func (e *Engine) Start(ctx context.Context) {
 			if e.Config() == nil {
 				continue
 			}
-			if _, err := e.Run(ctx); err != nil && !errors.Is(err, ErrBusy) && ctx.Err() == nil {
+			if _, err := e.Run(ctx); err != nil && !errors.Is(err, ErrBusy) && !errors.Is(err, ErrNotInstalled) && ctx.Err() == nil {
 				log.Printf("backup: %v", err)
 			}
 		}
@@ -261,22 +293,30 @@ func (e *Engine) begin() *progress {
 	return prog
 }
 
-// runLocked is a run, with the run lock held.
+// runLocked is a run, with the run lock held. A data directory without an
+// installation is ErrNotInstalled, and leaves the state as it was.
 func (e *Engine) runLocked(ctx context.Context, cfg Config, prog *progress) (*RunInfo, error) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	e.mu.Lock()
-	e.cancel = cancel
-	e.st.LastAttempt = e.now().UnixMilli()
-	e.mu.Unlock()
 	defer func() {
 		e.mu.Lock()
 		e.running, e.cancel = nil, nil
 		e.mu.Unlock()
 		e.poke()
 	}()
+	ok, err := installed(e.opts.DataDir)
+	if err == nil && !ok {
+		return nil, ErrNotInstalled
+	}
+	e.mu.Lock()
+	e.cancel = cancel
+	e.st.LastAttempt = e.now().UnixMilli()
+	e.mu.Unlock()
 
-	info, err := e.backup(ctx, cfg, prog)
+	var info *RunInfo
+	if err == nil {
+		info, err = e.backup(ctx, cfg, prog)
+	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if err != nil {
@@ -288,6 +328,7 @@ func (e *Engine) runLocked(ctx context.Context, cfg Config, prog *progress) (*Ru
 		} else {
 			e.st.LastSuccess = info
 		}
+		e.st.noteGaps(info, e.now().UnixMilli())
 	}
 	if serr := e.st.save(e.opts.DataDir); serr != nil {
 		log.Printf("backup: could not record the run: %v", serr)
@@ -301,12 +342,24 @@ func (e *Engine) repoOf(ctx context.Context, cfg Config) (*repo, error) {
 	key := cfg.Place() + "\x00" + cfg.AccessKeyID + "\x00" + cfg.SecretAccessKey + "\x00" + cfg.Passphrase +
 		"\x00" + cfg.Region + fmt.Sprint(cfg.PathStyle)
 	e.mu.Lock()
-	if e.repo != nil && e.repoFor == key {
-		r := e.repo
-		e.mu.Unlock()
-		return r, nil
-	}
+	cached, cachedFor := e.repo, e.repoFor
 	e.mu.Unlock()
+	if cached != nil && cachedFor == key {
+		// meta.json is read again at every run. One that was deleted - a
+		// lifecycle rule, a prefix emptied - or replaced by another backup's
+		// must not go on being written to with the old salt, every new
+		// snapshot referring to chunks that are gone: the backup is opened
+		// again, which starts a new one at an empty place and refuses a
+		// place that has objects but no meta.json.
+		m, err := cached.readMeta(ctx)
+		switch {
+		case err == nil && m.Salt == cached.salt:
+			return cached, nil
+		case err != nil && !errors.Is(err, s3.ErrNotFound):
+			return nil, err
+		}
+		log.Printf("backup: meta.json at %s is gone or was replaced; opening the backup there again", cfg.Place())
+	}
 	r, err := openRepo(ctx, cfg, true, e.opts.Iterations)
 	if err != nil {
 		return nil, err
@@ -350,14 +403,19 @@ func (e *Engine) backup(ctx context.Context, cfg Config, prog *progress) (*RunIn
 		return nil, err
 	}
 	defer os.RemoveAll(tmp)
-	layout := paths.New(e.opts.DataDir)
+	// The walk starts from where the data directory's path leads. A data
+	// directory moved onto a volume of its own and left behind as a
+	// symbolic link is still the whole installation, and a walk does not
+	// descend into a root that is a link: it would back up nothing, and
+	// report success.
+	root, err := filepath.EvalSymlinks(e.opts.DataDir)
+	if err != nil {
+		return nil, err
+	}
+	layout := paths.New(root)
 	var exclude []string
 	if e.opts.Exclude != nil {
-		for _, p := range e.opts.Exclude() {
-			if rel, ok := layout.Rel(p); ok {
-				exclude = append(exclude, rel)
-			}
-		}
+		exclude = excludedRels(paths.New(e.opts.DataDir), layout, e.opts.Exclude())
 	}
 	prog.setPhase("backing up")
 	snap := &snapshotter{layout: layout, repo: r, idx: idx, exclude: exclude, tmp: tmp, prog: prog}
@@ -369,6 +427,13 @@ func (e *Engine) backup(ctx context.Context, cfg Config, prog *progress) (*RunIn
 		return nil, walkErr
 	}
 	idx.Files = snap.files
+	if !installation(snap.entries) {
+		_ = idx.save(e.opts.DataDir)
+		if slices.Contains(snap.skipped, paths.DB) {
+			return nil, fmt.Errorf("%w: %s could not be copied", ErrNoDatabase, paths.DB)
+		}
+		return nil, ErrNoDatabase
+	}
 
 	hostname, _ := os.Hostname()
 	e.mu.Lock()
@@ -385,7 +450,7 @@ func (e *Engine) backup(ctx context.Context, cfg Config, prog *progress) (*RunIn
 	}
 	info := &RunInfo{
 		Uploaded: prog.uploaded.Load(), Chunks: int(prog.chunks.Load()),
-		Skipped: snap.skipped, Kept: snap.kept,
+		Skipped: snap.skipped, Kept: snap.kept, Withheld: snap.withheld,
 	}
 	if prev := cachedManifest(e.opts.DataDir, prevID); prev != nil && prev.Host == cfg.HostID && sameEntries(prev.Entries, m.Entries) {
 		sum := prev.Summary()
@@ -409,9 +474,17 @@ func (e *Engine) backup(ctx context.Context, cfg Config, prog *progress) (*RunIn
 	if e.now().Sub(time.UnixMilli(idx.LastGC)) >= gcEvery {
 		prog.setPhase("tidying up")
 		done, err := e.prune(ctx, r, idx, cfg.HostID)
+		if err == nil || ctx.Err() == nil {
+			// A collection cut short by the run's end says nothing about
+			// the bucket.
+			e.mu.Lock()
+			e.st.noteGC(err, e.now().UnixMilli())
+			e.mu.Unlock()
+		}
 		if err != nil {
 			// The snapshot is written; a collection that failed is tried
-			// again after the next run and is not this run's failure.
+			// again after the next run and is not this run's failure, but
+			// the status says so (state.GCError).
 			log.Printf("backup: pruning: %v", err)
 		} else if done.Pruned > 0 || done.Deleted > 0 {
 			log.Printf("backup: pruned %d snapshots and %d chunks", done.Pruned, done.Deleted)
@@ -424,6 +497,40 @@ func (e *Engine) backup(ctx context.Context, cfg Config, prog *progress) (*RunIn
 		log.Printf("backup: could not list the snapshots: %v", err)
 	}
 	return info, nil
+}
+
+// installed reports whether a data directory holds an installation to back
+// up: one that is set up or restored (HoldsStore), and not about to be
+// replaced by a restore that is staged.
+func installed(dataDir string) (bool, error) {
+	if RestorePending(dataDir) {
+		return false, nil
+	}
+	holds, _, err := HoldsStore(dataDir)
+	return holds, err
+}
+
+// excludedRels is each of dirs that lies inside the data directory, relative
+// to it. A folder may be named by either spelling of the data directory's
+// path - the configured one, which may run through a symbolic link, or the
+// one it resolves to - or by a link of its own that leads inside.
+func excludedRels(configured, resolved paths.Layout, dirs []string) []string {
+	var out []string
+	for _, p := range dirs {
+		rel, ok := configured.Rel(p)
+		if !ok {
+			rel, ok = resolved.Rel(p)
+		}
+		if !ok {
+			if real, err := filepath.EvalSymlinks(p); err == nil {
+				rel, ok = resolved.Rel(real)
+			}
+		}
+		if ok {
+			out = append(out, rel)
+		}
+	}
+	return out
 }
 
 // manifest is a snapshot's manifest, from the kept copy when there is one.
@@ -572,8 +679,25 @@ func (e *Engine) SetConfig(ctx context.Context, next Config) error {
 		return err
 	}
 	e.mu.Lock()
-	e.cfg = saved
+	e.cfg, e.broken = saved, ""
 	e.started = e.now()
+	e.mu.Unlock()
+	e.poke()
+	return nil
+}
+
+// Disable turns backups off: backup.json is removed, and the bucket and
+// what is in it are left as they are. A run that is going on finishes. The
+// mirror's configuration of earlier builds is not carried over again.
+func (e *Engine) Disable() error {
+	if err := os.Remove(paths.New(e.opts.DataDir).BackupConfig()); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	if err := markMigrated(e.opts.DataDir); err != nil {
+		return err
+	}
+	e.mu.Lock()
+	e.cfg, e.broken, e.others = nil, "", nil
 	e.mu.Unlock()
 	e.poke()
 	return nil
@@ -646,11 +770,46 @@ type Status struct {
 	LastError   string `json:"last_error,omitempty"`
 	LastErrorAt int64  `json:"last_error_at,omitempty"`
 	NextRun     int64  `json:"next_run,omitempty"`
-	// Warning is set when no backup has succeeded for WarnAfter.
-	Warning string `json:"warning,omitempty"`
+	// Warning is the one thing a person should be told: a backup.json that
+	// cannot be read, no backup that succeeded for WarnAfter (Overdue), a
+	// database whose older copy has stood in for it that long, or a
+	// garbage collection that has failed that long. WarningAbout says which
+	// ("broken", "overdue", "kept" or "gc"), so the card can put the right
+	// details behind its "i".
+	Warning      string `json:"warning,omitempty"`
+	WarningAbout string `json:"warning_about,omitempty"`
+	Overdue      bool   `json:"overdue,omitempty"`
 	// OtherHosts wrote snapshots into the same bucket in the last
 	// WarnAfter.
 	OtherHosts []string `json:"other_hosts,omitempty"`
+	// Broken is why backup.json cannot be read: the backup is off until
+	// the form is saved again.
+	Broken string `json:"broken,omitempty"`
+	// Skipped, Withheld and Kept are what the last good run could not take
+	// as it is (state.Skipped).
+	Skipped  []string   `json:"skipped,omitempty"`
+	Withheld []string   `json:"withheld,omitempty"`
+	Kept     []KeptCopy `json:"kept,omitempty"`
+	// GCError is why the last garbage collection stopped before it
+	// deleted what nothing refers to, and GCSince since when collections
+	// have failed (state.GCError).
+	GCError string `json:"gc_error,omitempty"`
+	GCSince int64  `json:"gc_since,omitempty"`
+}
+
+// What Status.Warning is about.
+const (
+	warnBroken  = "broken"
+	warnOverdue = "overdue"
+	warnKept    = "kept"
+	warnGC      = "gc"
+)
+
+// KeptCopy is a database that could not be copied, whose earlier copy
+// stands in for it, and since when.
+type KeptCopy struct {
+	Path  string `json:"path"`
+	Since int64  `json:"since"`
 }
 
 // Status says how the backup stands.
@@ -660,11 +819,14 @@ func (e *Engine) Status() Status {
 	st := Status{
 		Configured: e.cfg != nil, LastSuccess: e.st.LastSuccess, CheckedAt: e.st.CheckedAt,
 		LastAttempt: e.st.LastAttempt, LastError: e.st.LastError, LastErrorAt: e.st.LastErrorAt,
-		OtherHosts: e.others,
+		OtherHosts: e.others, Broken: e.broken,
 	}
 	if e.cfg == nil {
+		st.Warning, st.WarningAbout = e.warningLocked()
 		return st
 	}
+	st.Skipped, st.Withheld, st.Kept = e.st.Skipped, e.st.Withheld, e.keptLocked()
+	st.GCError, st.GCSince = e.st.GCError, e.st.GCSince
 	pub := e.cfg.Public()
 	st.Config = &pub
 	if !e.nextRun.IsZero() {
@@ -675,7 +837,8 @@ func (e *Engine) Status() Status {
 		st.Phase = e.running.getPhase()
 		st.Files, st.Bytes, st.Uploaded = e.running.files.Load(), e.running.bytes.Load(), e.running.uploaded.Load()
 	}
-	st.Warning = e.warningLocked()
+	st.Warning, st.WarningAbout = e.warningLocked()
+	st.Overdue = st.WarningAbout == warnOverdue
 	return st
 }
 
@@ -683,13 +846,33 @@ func (e *Engine) Status() Status {
 func (e *Engine) Warning() string {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if e.cfg == nil {
-		return ""
-	}
-	return e.warningLocked()
+	text, _ := e.warningLocked()
+	return text
 }
 
-func (e *Engine) warningLocked() string {
+// keptLocked is state.Kept in path order.
+func (e *Engine) keptLocked() []KeptCopy {
+	out := make([]KeptCopy, 0, len(e.st.Kept))
+	for rel, since := range e.st.Kept {
+		out = append(out, KeptCopy{Path: rel, Since: since})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
+	return out
+}
+
+// warningLocked is the one sentence a person is warned with, and what it is
+// about: a backup.json that cannot be read is said at once, an overdue backup
+// next, then a database whose older copy has stood in for it for WarnAfter,
+// and last a garbage collection that has failed for WarnAfter. A collection
+// that failed once is no warning: the next run tries it again, and the card
+// says so meanwhile.
+func (e *Engine) warningLocked() (string, string) {
+	if e.broken != "" {
+		return "Backups are off: backup.json cannot be read. Save the Backup settings again to write a good one.", warnBroken
+	}
+	if e.cfg == nil {
+		return "", ""
+	}
 	var good int64
 	if e.st.LastSuccess != nil {
 		good = e.st.LastSuccess.At
@@ -699,13 +882,38 @@ func (e *Engine) warningLocked() string {
 	if good > 0 {
 		since = time.UnixMilli(good)
 	}
-	if e.now().Sub(since) < e.opts.WarnAfter {
-		return ""
+	switch {
+	case e.now().Sub(since) < e.opts.WarnAfter:
+	case good == 0:
+		return "No backup has succeeded since Socrates started " + ago(e.now().Sub(since)) + ".", warnOverdue
+	default:
+		return "The last successful backup was " + ago(e.now().Sub(since)) + ".", warnOverdue
 	}
-	if good == 0 {
-		return "No backup has succeeded since Socrates started " + ago(e.now().Sub(since)) + "."
+	// Which databases is Status.Kept, behind the card's "i": a path is not
+	// for the sentence itself.
+	var oldest int64
+	stale := 0
+	for _, k := range e.keptLocked() {
+		if e.now().Sub(time.UnixMilli(k.Since)) >= e.opts.WarnAfter {
+			stale++
+			if oldest == 0 || k.Since < oldest {
+				oldest = k.Since
+			}
+		}
 	}
-	return "The last successful backup was " + ago(e.now().Sub(since)) + "."
+	switch {
+	case stale == 1:
+		return "The backup holds a database as it was " + ago(e.now().Sub(time.UnixMilli(oldest))) +
+			": it could not be copied since.", warnKept
+	case stale > 1:
+		return fmt.Sprintf("The backup holds %d databases as they were %s: they could not be copied since.",
+			stale, ago(e.now().Sub(time.UnixMilli(oldest)))), warnKept
+	}
+	if e.st.GCError != "" && e.now().Sub(time.UnixMilli(e.st.GCSince)) >= e.opts.WarnAfter {
+		return "Cleaning up the bucket first failed " + ago(e.now().Sub(time.UnixMilli(e.st.GCSince))) +
+			" and has not worked since: the bucket keeps growing.", warnGC
+	}
+	return "", ""
 }
 
 // ago says a duration the way a sentence does.
@@ -729,7 +937,8 @@ func Explain(err error) string {
 	case err == nil:
 		return ""
 	case errors.Is(err, ErrWrongPassphrase), errors.Is(err, ErrMetaMissing), errors.Is(err, ErrNoBackup),
-		errors.Is(err, ErrNotEmpty), errors.Is(err, ErrBusy), errors.Is(err, ErrNotConfigured):
+		errors.Is(err, ErrNotEmpty), errors.Is(err, ErrBusy), errors.Is(err, ErrNotConfigured),
+		errors.Is(err, ErrNotInstalled), errors.Is(err, ErrNoDatabase):
 		return err.Error()
 	case errors.Is(err, s3.ErrAccessDenied):
 		return "the bucket refused these credentials: " + err.Error()
@@ -739,6 +948,8 @@ func Explain(err error) string {
 		return "the backup did not finish in time: " + err.Error()
 	case errors.Is(err, ErrCorrupt):
 		return "the backup is damaged: " + err.Error()
+	case errors.Is(err, ErrTooLarge):
+		return err.Error()
 	}
 	var s3err *s3.Error
 	if errors.As(err, &s3err) {

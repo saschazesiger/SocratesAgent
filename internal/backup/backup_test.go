@@ -90,9 +90,28 @@ func (b *bucket) keys(prefix string) []string {
 	return b.fake.Keys("backups", "socrates/backup/v1/"+prefix)
 }
 
-// engine is an Engine on dataDir backing up into b.
+// install makes dataDir an installation, as a server that has been set up
+// leaves it: a database with a password. A backup leaves a data directory
+// without one alone.
+func install(t *testing.T, dataDir string) {
+	t.Helper()
+	if _, err := os.Stat(filepath.Join(dataDir, paths.DB)); err == nil {
+		return
+	}
+	if err := os.MkdirAll(dataDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	db := openDB(t, filepath.Join(dataDir, paths.DB), false)
+	if _, err := db.Exec(`CREATE TABLE kv(key TEXT PRIMARY KEY, value TEXT); CREATE TABLE sessions(id TEXT);
+		INSERT INTO kv VALUES ('password_hash', 'pbkdf2-sha256$1$a$b')`); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// engine is an Engine on dataDir, an installation, backing up into b.
 func engine(t *testing.T, dataDir string, b *bucket, clk *clock, host string) *Engine {
 	t.Helper()
+	install(t, dataDir)
 	if err := SaveConfig(dataDir, b.config(host)); err != nil {
 		t.Fatal(err)
 	}
@@ -269,9 +288,15 @@ func tree(t *testing.T, root string, skip func(rel string) bool) map[string]node
 	return out
 }
 
+// copiedDB is a database the backup copies rather than reads, and which
+// therefore does not come back byte for byte; it is checked by its rows.
+func copiedDB(rel string) bool {
+	return strings.HasPrefix(rel, "agents/opencode/opencode.db") || strings.HasPrefix(rel, paths.DB)
+}
+
 func notRestored(rel string) bool {
 	return paths.Excluded(rel) || rel == "hook.sock" || rel == "workspaces" || strings.HasPrefix(rel, "workspaces/") ||
-		strings.HasPrefix(rel, "agents/opencode/opencode.db")
+		copiedDB(rel)
 }
 
 // The first snapshot holds everything that is not left out, and a restore of
@@ -310,8 +335,31 @@ func TestFirstSnapshotRestoresByteIdentical(t *testing.T) {
 	}
 
 	dest := restoreInto(t, b, "latest")
+	sameTree(t, src, dest)
+	// Looked for before the restored database is opened, which makes a
+	// write-ahead log of its own.
+	for _, left := range []string{"restore.pending", "agents/opencode/opencode.db-wal"} {
+		if _, err := os.Lstat(filepath.Join(dest, left)); err == nil {
+			t.Errorf("%s is left in the restored directory", left)
+		}
+	}
+	if entries, _ := filepath.Glob(filepath.Join(dest, ".restore-*")); len(entries) != 0 {
+		t.Errorf("staging left behind: %v", entries)
+	}
+	db := openDB(t, filepath.Join(dest, "agents/opencode/opencode.db"), true)
+	var n int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM msg`).Scan(&n); err != nil || n != 2 {
+		t.Fatalf("the restored database: %d rows, %v", n, err)
+	}
+}
+
+// sameTree compares a backed up data directory with its restore: every path
+// that is not left out is there, with its mode, content, link target and
+// time, and nothing else is.
+func sameTree(t *testing.T, src, dest string) {
+	t.Helper()
 	want := tree(t, src, notRestored)
-	got := tree(t, dest, func(rel string) bool { return strings.HasPrefix(rel, "agents/opencode/opencode.db") })
+	got := tree(t, dest, copiedDB)
 	if len(want) < 15 {
 		t.Fatalf("only %d paths to compare: %v", len(want), want)
 	}
@@ -331,18 +379,144 @@ func TestFirstSnapshotRestoresByteIdentical(t *testing.T) {
 			t.Errorf("%s was restored but is not backed up", rel)
 		}
 	}
-	db := openDB(t, filepath.Join(dest, "agents/opencode/opencode.db"), true)
-	var n int
-	if err := db.QueryRow(`SELECT COUNT(*) FROM msg`).Scan(&n); err != nil || n != 2 {
-		t.Fatalf("the restored database: %d rows, %v", n, err)
+}
+
+// A data directory that is a symbolic link to where it really is - moved
+// onto a volume of its own - is backed up whole rather than as an empty
+// snapshot, and a workspace named through the link is still left out.
+func TestASymlinkedDataDirectoryIsBackedUpWhole(t *testing.T) {
+	clk := newClock()
+	b := newBucket(t, clk)
+	real := t.TempDir()
+	populate(t, real)
+	link := filepath.Join(t.TempDir(), "socrates")
+	if err := os.Symlink(real, link); err != nil {
+		t.Fatal(err)
 	}
-	for _, left := range []string{"restore.pending", "agents/opencode/opencode.db-wal"} {
-		if _, err := os.Lstat(filepath.Join(dest, left)); err == nil {
-			t.Errorf("%s is left in the restored directory", left)
-		}
+	e := engine(t, link, b, clk, "host-a")
+	e.opts.Exclude = excludeWorkspaces(link)
+	info, err := e.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
 	}
-	if entries, _ := filepath.Glob(filepath.Join(dest, ".restore-*")); len(entries) != 0 {
-		t.Errorf("staging left behind: %v", entries)
+	if info.Files < 7 {
+		t.Fatalf("the snapshot of a linked data directory holds %d files: %+v", info.Files, info)
+	}
+	sameTree(t, real, restoreInto(t, b, "latest"))
+}
+
+// A machine that holds no installation yet - new, with the old machine's
+// backup.json copied over to restore from, or with a restore waiting to be
+// moved into place - writes nothing into the bucket, fails no run, and takes
+// a host id of its own; once it is set up it backs up under that id.
+func TestNothingIsBackedUpBeforeTheMachineIsSetUp(t *testing.T) {
+	clk := newClock()
+	b := newBucket(t, clk)
+	fresh := t.TempDir()
+	if err := SaveConfig(fresh, b.config("old-machine")); err != nil {
+		t.Fatal(err)
+	}
+	e, err := New(Options{DataDir: fresh, Now: clk.Now, Iterations: 1000})
+	if err != nil {
+		t.Fatal(err)
+	}
+	host := e.Config().HostID
+	if host == "old-machine" || host == "" {
+		t.Fatalf("a machine with nothing installed kept the host id %q", host)
+	}
+	if saved, _ := LoadConfig(fresh); saved == nil || saved.HostID != host {
+		t.Fatalf("the new host id was not saved: %+v", saved)
+	}
+	if _, err := e.Run(context.Background()); !errors.Is(err, ErrNotInstalled) {
+		t.Fatalf("a run on a machine with nothing installed: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := e.Close(ctx); !errors.Is(err, ErrNotInstalled) {
+		t.Fatalf("the last run at a stop: %v", err)
+	}
+	if n := b.puts.Load(); n != 0 {
+		t.Fatalf("%d objects were written for a machine with nothing installed", n)
+	}
+	if st := e.Status(); st.LastError != "" || st.LastAttempt != 0 || st.LastSuccess != nil {
+		t.Fatalf("a run that waits for an installation is recorded: %+v", st)
+	}
+
+	install(t, fresh)
+	write(t, paths.New(fresh).Path(paths.RestorePending), []byte(`{"staging":".restore-x"}`), 0o600)
+	if _, err := e.Run(context.Background()); !errors.Is(err, ErrNotInstalled) {
+		t.Fatalf("a run while a restore waits to be moved into place: %v", err)
+	}
+	if err := os.Remove(paths.New(fresh).Path(paths.RestorePending)); err != nil {
+		t.Fatal(err)
+	}
+	info, err := e.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(info.ID, host+"/") {
+		t.Fatalf("the set up machine's snapshot is %s, not under %s", info.ID, host)
+	}
+	if again, err := New(Options{DataDir: fresh, Now: clk.Now, Iterations: 1000}); err != nil || again.Config().HostID != host {
+		t.Fatalf("an installed machine's host id changed: %v %v", again.Config(), err)
+	}
+}
+
+// A snapshot without the database is no installation: a run that would
+// write one fails instead, and a restore of "latest" passes over one an
+// earlier build wrote for the newest real snapshot; asked for by name, it is
+// refused.
+func TestASnapshotWithoutTheDatabaseIsNeitherWrittenNorRestored(t *testing.T) {
+	clk := newClock()
+	b := newBucket(t, clk)
+	src := t.TempDir()
+	write(t, filepath.Join(src, "chats/c1/events.jsonl"), []byte("real\n"), 0o600)
+	e := engine(t, src, b, clk, "host-a")
+	real, err := e.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	clk.Add(10 * time.Minute)
+	write(t, filepath.Join(src, "chats/c1/events.jsonl"), []byte("real, and more\n"), 0o600)
+	e.opts.Exclude = func() []string { return []string{filepath.Join(src, paths.DB)} }
+	if _, err := e.Run(context.Background()); !errors.Is(err, ErrNoDatabase) {
+		t.Fatalf("a run that did not take the database: %v", err)
+	}
+	if got := b.keys(snapshotDir); len(got) != 1 {
+		t.Fatalf("snapshots after a run without the database: %v", got)
+	}
+	if st := e.Status(); !strings.Contains(st.LastError, "database") {
+		t.Fatalf("the failed run says %q", st.LastError)
+	}
+
+	r, err := openRepo(context.Background(), b.config(""), false, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	empty := &Manifest{Format: manifestFormat, ID: snapshotID("host-new", clk.Now().Add(time.Hour)), Host: "host-new",
+		CreatedAt: clk.Now().Add(time.Hour).UnixMilli(), Entries: []Entry{}}
+	if err := r.putManifest(context.Background(), empty); err != nil {
+		t.Fatal(err)
+	}
+	list, err := List(context.Background(), b.config(""), t.TempDir())
+	if err != nil || len(list) != 2 || list[0].ID != empty.ID || !list[0].Empty || list[1].Empty {
+		t.Fatalf("the list: %+v %v", list, err)
+	}
+	dest := restoreInto(t, b, "latest")
+	if raw, err := os.ReadFile(filepath.Join(dest, "chats/c1/events.jsonl")); err != nil || string(raw) != "real\n" {
+		t.Fatalf("latest restored %q %v, not the snapshot %s", raw, err, real.ID)
+	}
+	if _, err := os.Stat(filepath.Join(dest, paths.DB)); err != nil {
+		t.Fatalf("latest restored no database: %v", err)
+	}
+	other := t.TempDir()
+	if _, err := Restore(context.Background(), RestoreOptions{Config: b.config(""), Snapshot: empty.ID, DataDir: other}); err == nil ||
+		!strings.Contains(err.Error(), "holds no database") {
+		t.Fatalf("a restore of the empty snapshot by name: %v", err)
+	}
+	if RestorePending(other) {
+		t.Fatal("the refused restore left a marker")
 	}
 }
 
@@ -483,6 +657,103 @@ func TestSQLiteWrittenDuringTheBackupCopiesConsistently(t *testing.T) {
 	}
 }
 
+// A database that grew in its first table goes up as the chunks its new and
+// changed pages lie in: the copy keeps the database's page order, so the
+// pages of the table after it - and their chunks - are the ones the bucket
+// already holds.
+func TestADatabaseThatGrewUploadsOnlyItsChangedChunks(t *testing.T) {
+	clk := newClock()
+	b := newBucket(t, clk)
+	src := t.TempDir()
+	path := filepath.Join(src, "agents/opencode/opencode.db")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	db := openDB(t, path, false)
+	// Half a MiB of messages, then 16 MiB of parts after them: the second
+	// of the three chunks holds parts only.
+	if _, err := db.Exec(`CREATE TABLE message(id INTEGER PRIMARY KEY, body BLOB);
+		CREATE TABLE part(id INTEGER PRIMARY KEY, body BLOB);
+		WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 120)
+		INSERT INTO message(body) SELECT randomblob(4000) FROM n;
+		WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 4100)
+		INSERT INTO part(body) SELECT randomblob(4000) FROM n;
+		PRAGMA wal_checkpoint(TRUNCATE)`); err != nil {
+		t.Fatal(err)
+	}
+	e := engine(t, src, b, clk, "host-a")
+	first, err := e.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 30)
+		INSERT INTO message(body) SELECT randomblob(4000) FROM n`); err != nil {
+		t.Fatal(err)
+	}
+	clk.Add(10 * time.Minute)
+	second, err := e.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	chunksOf := func(id string) []string {
+		m := cachedManifest(src, id)
+		if m == nil {
+			t.Fatalf("no manifest %s", id)
+		}
+		for _, entry := range m.Entries {
+			if entry.Path == "agents/opencode/opencode.db" {
+				return entry.Chunks
+			}
+		}
+		t.Fatalf("%s holds no opencode.db", id)
+		return nil
+	}
+	before, after := chunksOf(first.ID), chunksOf(second.ID)
+	if len(before) != 3 || len(after) != 3 {
+		t.Fatalf("the database is %d chunks, then %d", len(before), len(after))
+	}
+	if after[1] != before[1] || second.Chunks != 2 {
+		t.Fatalf("after 30 rows in the first table the middle chunk changed (%v) and %d chunks went up",
+			after[1] != before[1], second.Chunks)
+	}
+}
+
+// A file rewritten in place with the same size and, on a coarse clock, the
+// same time, just after a run read it, is not taken for unchanged by the next
+// run: one changed that close to being read is read again.
+func TestAFileChangedAsItWasReadIsReadAgain(t *testing.T) {
+	clk := newClock()
+	b := newBucket(t, clk)
+	src := t.TempDir()
+	file := filepath.Join(src, "chats/c1/state.json")
+	write(t, file, []byte(`{"turn":1}`), 0o600)
+	info, err := os.Stat(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := engine(t, src, b, clk, "host-a")
+	if _, err := e.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	// Rewritten within the same tick: same size, same time.
+	write(t, file, []byte(`{"turn":2}`), 0o600)
+	if err := os.Chtimes(file, info.ModTime(), info.ModTime()); err != nil {
+		t.Fatal(err)
+	}
+	clk.Add(10 * time.Minute)
+	second, err := e.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Unchanged {
+		t.Fatalf("the rewrite was taken for no change: %+v", second)
+	}
+	dest := restoreInto(t, b, "latest")
+	if raw, err := os.ReadFile(filepath.Join(dest, "chats/c1/state.json")); err != nil || string(raw) != `{"turn":2}` {
+		t.Fatalf("restored %q %v", raw, err)
+	}
+}
+
 // A wrong passphrase is refused before anything is written or restored.
 func TestAWrongPassphraseIsRefused(t *testing.T) {
 	clk := newClock()
@@ -498,6 +769,7 @@ func TestAWrongPassphraseIsRefused(t *testing.T) {
 
 	before := b.puts.Load()
 	other := t.TempDir()
+	install(t, other)
 	if err := SaveConfig(other, wrong); err != nil {
 		t.Fatal(err)
 	}
@@ -746,6 +1018,74 @@ func TestRestoreIsRefusedIntoAStore(t *testing.T) {
 	}
 }
 
+// A start that died while it moved a staged restore into place finishes the
+// move the next time: what had been moved stays, the rest follows, the new
+// server's own files (its socket, run/, backup.json) are left alone, and a
+// third start has nothing left to do.
+func TestApplyPendingFinishesAMoveCutShort(t *testing.T) {
+	clk := newClock()
+	b := newBucket(t, clk)
+	src := t.TempDir()
+	write(t, filepath.Join(src, "chats/c1/events.jsonl"), []byte("one"), 0o600)
+	write(t, filepath.Join(src, "chats/c2/events.jsonl"), []byte("two"), 0o600)
+	write(t, filepath.Join(src, "agents/claude/projects/p.jsonl"), []byte("claude"), 0o600)
+	write(t, filepath.Join(src, "agents/codex/history.jsonl"), []byte("codex"), 0o600)
+	e := engine(t, src, b, clk, "host-a")
+	if _, err := e.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	dest := t.TempDir()
+	write(t, filepath.Join(dest, paths.TmuxSocket), []byte("socket"), 0o600)
+	write(t, filepath.Join(dest, "run/socrates.lock"), []byte("1"), 0o600)
+	if err := SaveConfig(dest, b.config("")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Restore(context.Background(), RestoreOptions{Config: b.config(""), DataDir: dest}); err != nil {
+		t.Fatal(err)
+	}
+	stages, _ := filepath.Glob(filepath.Join(dest, paths.RestoreStagingPrefix+"*"))
+	if len(stages) != 1 {
+		t.Fatalf("staging directories: %v", stages)
+	}
+	// The first start moved chats/ whole and agents/claude into a fresh
+	// agents/, and died.
+	if err := os.Rename(filepath.Join(stages[0], "chats"), filepath.Join(dest, "chats")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dest, "agents"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(filepath.Join(stages[0], "agents/claude"), filepath.Join(dest, "agents/claude")); err != nil {
+		t.Fatal(err)
+	}
+
+	id, err := ApplyPending(dest)
+	if err != nil || id == "" {
+		t.Fatalf("the second start: %q %v", id, err)
+	}
+	for rel, want := range map[string]string{
+		"chats/c1/events.jsonl": "one", "chats/c2/events.jsonl": "two", "agents/claude/projects/p.jsonl": "claude",
+		"agents/codex/history.jsonl": "codex", paths.TmuxSocket: "socket", "run/socrates.lock": "1",
+	} {
+		if raw, err := os.ReadFile(filepath.Join(dest, rel)); err != nil || string(raw) != want {
+			t.Errorf("%s: %q %v, want %q", rel, raw, err, want)
+		}
+	}
+	if cfg, err := LoadConfig(dest); err != nil || cfg == nil || cfg.Bucket != "backups" {
+		t.Errorf("backup.json after the move: %+v %v", cfg, err)
+	}
+	if _, err := os.Stat(filepath.Join(dest, paths.DB)); err != nil {
+		t.Errorf("the database was not moved: %v", err)
+	}
+	if left, _ := filepath.Glob(filepath.Join(dest, paths.RestoreStagingPrefix+"*")); len(left) != 0 || RestorePending(dest) {
+		t.Fatalf("left behind: %v, marker %v", left, RestorePending(dest))
+	}
+	if id, err := ApplyPending(dest); err != nil || id != "" {
+		t.Fatalf("a third start: %q %v", id, err)
+	}
+}
+
 // A run cut short - the bucket refusing a chunk half way - writes no
 // manifest, so every snapshot in the bucket still has all its chunks; the
 // next run finishes the work without sending again what did arrive.
@@ -805,12 +1145,17 @@ func TestARunCutShortLeavesNoManifestWithMissingChunks(t *testing.T) {
 }
 
 // The mirror's s3.json becomes backup.json, in the same bucket under a
-// prefix of its own, and so does a SOCRATES_S3_* environment.
+// prefix of its own, and so does a SOCRATES_S3_* environment, which wins over
+// an s3.json as it did for the mirror. It happens once: a backup.json
+// removed to turn backups off is not made again, and nothing happens on a
+// machine that is not set up yet.
 func TestTheMirrorsConfigurationIsCarriedOver(t *testing.T) {
+	noEnv := func(string) string { return "" }
+	legacy := []byte(`{"endpoint":"https://hel1.example.com","region":"hel1",
+		"bucket":"b1","prefix":"socrates/","access_key_id":"AK","secret_access_key":"SK","path_style":true,"passphrase":"pp"}`)
 	dir := t.TempDir()
-	write(t, filepath.Join(dir, paths.LegacyS3Config), []byte(`{"endpoint":"https://hel1.example.com","region":"hel1",
-		"bucket":"b1","prefix":"socrates/","access_key_id":"AK","secret_access_key":"SK","path_style":true,"passphrase":"pp"}`), 0o600)
-	migrated, err := MigrateConfig(dir, func(string) string { return "" })
+	write(t, filepath.Join(dir, paths.LegacyS3Config), legacy, 0o600)
+	migrated, err := MigrateConfig(dir, noEnv)
 	if err != nil || !migrated {
 		t.Fatalf("migrate: %v %v", migrated, err)
 	}
@@ -825,22 +1170,54 @@ func TestTheMirrorsConfigurationIsCarriedOver(t *testing.T) {
 	if info, err := os.Stat(filepath.Join(dir, paths.BackupConfig)); err != nil || info.Mode().Perm() != 0o600 {
 		t.Fatalf("backup.json: %v %v", info, err)
 	}
-	if again, err := MigrateConfig(dir, func(string) string { return "" }); err != nil || again {
+	if again, err := MigrateConfig(dir, noEnv); err != nil || again {
 		t.Fatalf("a second migration: %v %v", again, err)
+	}
+	if err := os.Remove(filepath.Join(dir, paths.BackupConfig)); err != nil {
+		t.Fatal(err)
+	}
+	if again, err := MigrateConfig(dir, noEnv); err != nil || again {
+		t.Fatalf("a migration after backup.json was removed: %v %v", again, err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, paths.BackupConfig)); err == nil {
+		t.Fatal("backups turned off by removing backup.json came back")
 	}
 
 	env := map[string]string{"SOCRATES_S3_BUCKET": "b2", "SOCRATES_S3_ACCESS_KEY_ID": "AK2",
 		"SOCRATES_S3_SECRET_ACCESS_KEY": "SK2", "SOCRATES_S3_PASSPHRASE": "pp2"}
+	getenv := func(k string) string { return env[k] }
 	dir2 := t.TempDir()
-	if migrated, err := MigrateConfig(dir2, func(k string) string { return env[k] }); err != nil || !migrated {
+	write(t, filepath.Join(dir2, paths.LegacyS3Config), legacy, 0o600)
+	if migrated, err := MigrateConfig(dir2, getenv); err != nil || !migrated {
 		t.Fatalf("migrate from the environment: %v %v", migrated, err)
 	}
 	cfg, _ = LoadConfig(dir2)
 	if cfg.Bucket != "b2" || cfg.Prefix != DefaultPrefix || cfg.Passphrase != "pp2" {
-		t.Fatalf("from the environment: %+v", cfg)
+		t.Fatalf("from the environment, over a stale s3.json: %+v", cfg)
 	}
-	if migrated, _ := MigrateConfig(t.TempDir(), func(string) string { return "" }); migrated {
+
+	nothing := t.TempDir()
+	if migrated, _ := MigrateConfig(nothing, noEnv); migrated {
 		t.Fatal("a directory with nothing to carry over got a backup.json")
+	}
+	if migrated, _ := MigrateConfig(nothing, getenv); migrated {
+		t.Fatal("an environment set after the upgrade was carried over")
+	}
+
+	// The engine carries over only on a machine that holds an installation:
+	// a new one with the old /etc/socrates.env waits to be set up or
+	// restored.
+	fresh := t.TempDir()
+	if _, err := New(Options{DataDir: fresh, Getenv: getenv}); err != nil {
+		t.Fatal(err)
+	}
+	if cfg, _ := LoadConfig(fresh); cfg != nil {
+		t.Fatalf("a machine with nothing installed carried the environment over: %+v", cfg)
+	}
+	install(t, fresh)
+	e, err := New(Options{DataDir: fresh, Getenv: getenv})
+	if err != nil || e.Config() == nil || e.Config().Bucket != "b2" {
+		t.Fatalf("once installed: %+v %v", e.Config(), err)
 	}
 }
 
@@ -872,8 +1249,269 @@ func TestStatusWarnsAfterADayWithoutABackup(t *testing.T) {
 		t.Fatal("a run against a bucket that is down succeeded")
 	}
 	st := e.Status()
-	if !strings.Contains(st.Warning, "last successful backup was 25 hours ago") || st.LastError == "" {
+	if !strings.Contains(st.Warning, "last successful backup was 25 hours ago") || !st.Overdue || st.LastError == "" {
 		t.Fatalf("a day after the last good run: %+v", st)
+	}
+}
+
+// A database that stops copying is not quietly backed up as its old copy
+// for ever: the status names it, unchanged runs included, and once its copy
+// is a day old the warning says so. A launch spec that cannot be redacted is
+// left out and named as such, not as a database.
+func TestWhatARunCouldNotTakeIsSaid(t *testing.T) {
+	clk := newClock()
+	b := newBucket(t, clk)
+	src := t.TempDir()
+	dbPath := filepath.Join(src, "agents/opencode/opencode.db")
+	if err := os.MkdirAll(filepath.Dir(dbPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	db := openDB(t, dbPath, false)
+	if _, err := db.Exec(`CREATE TABLE msg(id INTEGER PRIMARY KEY, text TEXT); INSERT INTO msg(text) VALUES ('hello')`); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+	e := engine(t, src, b, clk, "host-a")
+	if _, err := e.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	// The database is damaged past opening, and a spec is not JSON.
+	for _, companion := range []string{"-wal", "-shm"} {
+		os.Remove(dbPath + companion)
+	}
+	write(t, dbPath, append(append([]byte{}, sqliteMagic...), bytes.Repeat([]byte{0xff}, 4096)...), 0o600)
+	write(t, filepath.Join(src, "chats/c1/host.json"), []byte(`{"env": [`), 0o600)
+	clk.Add(10 * time.Minute)
+	info, err := e.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(info.Kept) != 1 || info.Kept[0] != "agents/opencode/opencode.db" || len(info.Withheld) != 1 ||
+		info.Withheld[0] != "chats/c1/host.json" || len(info.Skipped) != 0 {
+		t.Fatalf("the run: %+v", info)
+	}
+	st := e.Status()
+	if len(st.Kept) != 1 || st.Kept[0].Since != clk.Now().UnixMilli() || len(st.Withheld) != 1 || st.Warning != "" {
+		t.Fatalf("the status after it: %+v", st)
+	}
+
+	// A day of unchanged runs later the database still stands in with its
+	// old copy, and that is a warning.
+	for i := 0; i < 5; i++ {
+		clk.Add(5 * time.Hour)
+		info, err := e.Run(context.Background())
+		if err != nil || !info.Unchanged {
+			t.Fatalf("run %d: %+v %v", i, info, err)
+		}
+	}
+	st = e.Status()
+	if len(st.Kept) != 1 || st.Kept[0].Path != "agents/opencode/opencode.db" || st.Overdue ||
+		st.Warning != "The backup holds a database as it was 25 hours ago: it could not be copied since." {
+		t.Fatalf("a day on: %+v", st)
+	}
+
+	// Fixed, the next run copies it again and the warning goes.
+	if err := os.Remove(dbPath); err != nil {
+		t.Fatal(err)
+	}
+	db = openDB(t, dbPath, false)
+	if _, err := db.Exec(`CREATE TABLE msg(id INTEGER PRIMARY KEY, text TEXT)`); err != nil {
+		t.Fatal(err)
+	}
+	clk.Add(10 * time.Minute)
+	if _, err := e.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if st := e.Status(); len(st.Kept) != 0 || st.Warning != "" {
+		t.Fatalf("after the database copied again: %+v", st)
+	}
+}
+
+// A backup.json that cannot be read is said at once - on the card and in
+// the notice - rather than shown as backups never set up; saving a good
+// configuration ends it. Turning backups off removes backup.json for good:
+// the mirror's configuration is not carried over again at the next start.
+func TestABrokenConfigurationWarnsAndOffStaysOff(t *testing.T) {
+	clk := newClock()
+	b := newBucket(t, clk)
+	dir := t.TempDir()
+	install(t, dir)
+	write(t, filepath.Join(dir, paths.BackupConfig), []byte(`{"bucket": `), 0o600)
+	e, err := New(Options{DataDir: dir, Now: clk.Now, Iterations: 1000})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st := e.Status(); st.Configured || st.Broken == "" || !strings.Contains(st.Warning, "backup.json cannot be read") {
+		t.Fatalf("with a broken backup.json: %+v", st)
+	}
+	if !strings.Contains(e.Warning(), "Backups are off") {
+		t.Fatalf("the notice: %q", e.Warning())
+	}
+	if err := e.SetConfig(context.Background(), b.config("")); err != nil {
+		t.Fatal(err)
+	}
+	if st := e.Status(); !st.Configured || st.Broken != "" || st.Warning != "" {
+		t.Fatalf("after saving a good one: %+v", st)
+	}
+
+	env := map[string]string{"SOCRATES_S3_BUCKET": "b2", "SOCRATES_S3_ACCESS_KEY_ID": "AK2",
+		"SOCRATES_S3_SECRET_ACCESS_KEY": "SK2", "SOCRATES_S3_PASSPHRASE": "pp2"}
+	if err := e.Disable(); err != nil {
+		t.Fatal(err)
+	}
+	if st := e.Status(); st.Configured || st.Warning != "" {
+		t.Fatalf("turned off: %+v", st)
+	}
+	if _, err := e.Run(context.Background()); !errors.Is(err, ErrNotConfigured) {
+		t.Fatalf("a run after turning off: %v", err)
+	}
+	again, err := New(Options{DataDir: dir, Now: clk.Now, Getenv: func(k string) string { return env[k] }})
+	if err != nil || again.Config() != nil {
+		t.Fatalf("the next start: %+v %v", again.Config(), err)
+	}
+}
+
+// meta.json is read again at every run. A prefix emptied while Socrates runs
+// starts a new backup there - every chunk uploaded again, not taken for
+// present - and one that lost only its meta.json is refused rather than
+// written to with a salt nobody can read back.
+func TestABackupWhoseMetaWentAwayIsOpenedAgain(t *testing.T) {
+	clk := newClock()
+	b := newBucket(t, clk)
+	src := t.TempDir()
+	write(t, filepath.Join(src, "chats/c1/events.jsonl"), []byte("history\n"), 0o600)
+	e := engine(t, src, b, clk, "host-a")
+	if _, err := e.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	oldMeta, _ := b.fake.Object("backups", "socrates/backup/v1/meta.json")
+	for _, key := range b.keys("") {
+		b.fake.DeleteObject("backups", key)
+	}
+	clk.Add(10 * time.Minute)
+	info, err := e.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	newMeta, ok := b.fake.Object("backups", "socrates/backup/v1/meta.json")
+	if !ok || bytes.Equal(newMeta, oldMeta) || info.Unchanged || info.Chunks == 0 {
+		t.Fatalf("after the prefix was emptied: meta %v, run %+v", ok, info)
+	}
+	dest := restoreInto(t, b, "latest")
+	if raw, err := os.ReadFile(filepath.Join(dest, "chats/c1/events.jsonl")); err != nil || string(raw) != "history\n" {
+		t.Fatalf("restored: %q %v", raw, err)
+	}
+
+	b.fake.DeleteObject("backups", "socrates/backup/v1/meta.json")
+	clk.Add(10 * time.Minute)
+	write(t, filepath.Join(src, "chats/c1/events.jsonl"), []byte("history, and more\n"), 0o600)
+	before := len(b.keys(snapshotDir))
+	if _, err := e.Run(context.Background()); !errors.Is(err, ErrMetaMissing) {
+		t.Fatalf("a run after meta.json alone went: %v", err)
+	}
+	if got := len(b.keys(snapshotDir)); got != before {
+		t.Fatalf("%d snapshots were written without a meta.json", got-before)
+	}
+}
+
+// An object under snapshots/ that is not named like a snapshot - a host id
+// written into backup.json by hand, a format a later build writes - stops
+// garbage collection: the chunks it may refer to are not deleted. A host id
+// that is not spelled like one is replaced by a new one. The runs still
+// succeed, so the status says the collection failed, and once it has failed
+// for a day the warning says the bucket keeps growing.
+func TestGarbageCollectionStopsAtAnObjectItCannotRead(t *testing.T) {
+	clk := newClock()
+	b := newBucket(t, clk)
+	src := t.TempDir()
+	write(t, filepath.Join(src, "chats/c1/events.jsonl"), []byte("x"), 0o600)
+	e := engine(t, src, b, clk, "Prod_1")
+	if host := e.Config().HostID; host == "Prod_1" || !validHostID.MatchString(host) {
+		t.Fatalf("a hand-written host id was kept: %q", host)
+	}
+	if _, err := e.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	r, err := openRepo(context.Background(), b.config(""), false, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	orphan := random(t, 300)
+	orphanName := r.chunkName(orphan)
+	if _, err := r.putChunk(context.Background(), orphanName, orphan); err != nil {
+		t.Fatal(err)
+	}
+	b.fake.PutObject("backups", "socrates/backup/v1/"+snapshotDir+"Prod_1/20261023T120000.000Z.json", []byte("sealed"))
+	orphanKey := "socrates/backup/v1/" + chunkDir + orphanName
+
+	clk.Add(25 * time.Hour)
+	write(t, filepath.Join(src, "chats/c1/events.jsonl"), []byte("y"), 0o600)
+	if _, err := e.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := b.fake.Object("backups", orphanKey); !ok {
+		t.Fatal("a chunk was collected while a snapshot could not be read")
+	}
+	failedAt := clk.Now().UnixMilli()
+	if st := e.Status(); !strings.Contains(st.GCError, "Prod_1/20261023T120000.000Z.json") || st.GCSince != failedAt ||
+		st.Warning != "" || st.LastError != "" {
+		t.Fatalf("the status after a collection that stopped: %+v", st)
+	}
+
+	// A day on it still fails: the warning says so, and so does a restart.
+	clk.Add(25 * time.Hour)
+	write(t, filepath.Join(src, "chats/c1/events.jsonl"), []byte("w"), 0o600)
+	if _, err := e.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	const warning = "Cleaning up the bucket first failed 25 hours ago and has not worked since: the bucket keeps growing."
+	if st := e.Status(); st.Warning != warning || st.WarningAbout != warnGC || st.Overdue || st.GCSince != failedAt {
+		t.Fatalf("a day of collections that stopped: %+v", st)
+	}
+	again, err := New(Options{DataDir: src, Version: "test", Now: clk.Now, Iterations: 1000})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if w := again.Warning(); w != warning {
+		t.Fatalf("after a restart: %q", w)
+	}
+
+	b.fake.DeleteObject("backups", "socrates/backup/v1/"+snapshotDir+"Prod_1/20261023T120000.000Z.json")
+	clk.Add(10 * time.Minute)
+	write(t, filepath.Join(src, "chats/c1/events.jsonl"), []byte("z"), 0o600)
+	if _, err := e.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := b.fake.Object("backups", orphanKey); ok {
+		t.Fatal("the orphan outlived the collection once every snapshot could be read")
+	}
+	if st := e.Status(); st.GCError != "" || st.GCSince != 0 || st.Warning != "" {
+		t.Fatalf("after a collection that got through: %+v", st)
+	}
+}
+
+// A snapshot whose manifest would be larger than a restore reads is not
+// written; the run fails and says why.
+func TestASnapshotTooLargeToRestoreIsNotWritten(t *testing.T) {
+	clk := newClock()
+	b := newBucket(t, clk)
+	src := t.TempDir()
+	for i := 0; i < 40; i++ {
+		write(t, filepath.Join(src, fmt.Sprintf("agents/claude/projects/p/%02d.jsonl", i)), random(t, 100), 0o600)
+	}
+	e := engine(t, src, b, clk, "host-a")
+	saved := maxManifest
+	maxManifest = 4 << 10
+	t.Cleanup(func() { maxManifest = saved })
+	if _, err := e.Run(context.Background()); !errors.Is(err, ErrTooLarge) {
+		t.Fatalf("a run with a manifest too large to restore: %v", err)
+	}
+	if got := b.keys(snapshotDir); len(got) != 0 {
+		t.Fatalf("snapshots: %v", got)
+	}
+	if st := e.Status(); !strings.Contains(st.LastError, "too large to be restored") {
+		t.Fatalf("the status says %q", st.LastError)
 	}
 }
 

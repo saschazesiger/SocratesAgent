@@ -13762,7 +13762,7 @@ const ALL = [
   ['clipboard', 'copy and paste: the keys, a plain drag, a click, a middle click, and OSC 52', clipboard],
   ['touchcopy', 'a finger held on the pane selects, grows and copies', touchcopy],
   ['transfer', 'copy, paste and upload buttons, a pasted image, and the phone layout', transfer],
-  ['prestart', 'a prepared session: its prompt kept and backed up, Start, and a start by the clock', prestart],
+  ['prestart', 'a prepared session: its prompt kept, Start, and a start by the clock', prestart],
   ['chat-stream', 'a chat: streaming, Markdown, replay, queued, Stop, the draft, the palette, the model, the lines, PreStart', chatstream],
   ['chat-tools', 'tool rows, the diff viewer, a subagent, a workflow, and the task list pinned while it runs', chattools],
   ['chat-offline', 'what a chat is told offline (two tabs, a model, an answer), or whose answer was lost, or left across a reload: delivered once', chatoffline],

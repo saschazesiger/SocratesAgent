@@ -673,3 +673,103 @@ func TestChatStreamHelloAndRevoke(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 }
+
+// A chat restored onto a machine without its folder says so in the session
+// list, and is pointed to a folder that is there: the agent then runs in it.
+// A folder that is not there is refused, and so is a terminal that runs.
+func TestAChatWhoseFolderIsMissingIsPointedToAnother(t *testing.T) {
+	c := newChatEnv(t, time.Hour)
+	gone := filepath.Join(t.TempDir(), "old-project")
+	if err := os.MkdirAll(gone, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	code, body := c.post(t, "/api/chats", map[string]any{"client_id": "create-" + t.Name(), "harness": "fake",
+		"workdir_mode": "custom", "workdir": gone})
+	if code != http.StatusCreated {
+		t.Fatalf("create: %d %v", code, body)
+	}
+	id := body["session"].(map[string]any)["id"].(string)
+	c.send(t, id, "m1", "hello")
+	c.waitJournal(t, id, 10*time.Second, "the first reply", turnsEnded(1))
+	if err := os.RemoveAll(gone); err != nil {
+		t.Fatal(err)
+	}
+	_, got := c.do(t, c.client, "GET", "/api/sessions/"+id, "")
+	if got["session"].(map[string]any)["workdir_missing"] != true {
+		t.Fatalf("a chat without its folder: %v", got["session"])
+	}
+
+	put := func(dir string) (int, map[string]any) {
+		raw, _ := json.Marshal(map[string]string{"workdir": dir})
+		res, body := c.do(t, c.client, "PUT", "/api/sessions/"+id+"/workdir", string(raw))
+		return res.StatusCode, body
+	}
+	if code, body := put(filepath.Join(t.TempDir(), "nowhere")); code != http.StatusBadRequest {
+		t.Fatalf("a folder that is not there: %d %v", code, body)
+	}
+	here := t.TempDir()
+	code, body = put(here)
+	session, _ := body["session"].(map[string]any)
+	if code != http.StatusOK || session["workdir"] != here || session["workdir_missing"] == true || session["workdir_mode"] != "custom" {
+		t.Fatalf("pointed to %s: %d %v", here, code, body)
+	}
+	if alive, _ := c.srv.chats.launcher.Alive(id); alive {
+		t.Fatal("the host in the old folder is still up")
+	}
+	c.send(t, id, "m2", "again")
+	c.waitJournal(t, id, 10*time.Second, "the reply in the new folder", turnsEnded(2))
+
+	if err := c.store.CreateSession(&store.Session{ID: "term", Title: "Shell", Harness: "shell", Workdir: here,
+		WorkdirMode: "custom", TmuxName: "t-term", State: store.StateRunning}); err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := json.Marshal(map[string]string{"workdir": t.TempDir()})
+	if res, _ := c.do(t, c.client, "PUT", "/api/sessions/term/workdir", string(raw)); res.StatusCode != http.StatusConflict {
+		t.Fatalf("a running terminal pointed elsewhere: %d", res.StatusCode)
+	}
+}
+
+// A turn the server has not heard of yet when a chat is pointed to another
+// folder - another device's message, taken up a moment before - is not cut
+// off: the host finishes it in the old folder and parks, and the next message
+// starts the agent in the new one.
+func TestPointingAChatElsewhereLetsATurnThatJustStartedFinish(t *testing.T) {
+	c := newChatEnv(t, time.Hour)
+	id := c.create(t)
+	c.send(t, id, "m1", "/sleep 1.5")
+	p, err := c.srv.chats.peer(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for !p.summary().TurnRunning {
+		if time.Now().After(deadline) {
+			t.Fatal("the turn never started")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	// The server's view is a moment behind the host's, as it is when the
+	// turn starts between the handler's look and what it sends the host.
+	p.mu.Lock()
+	p.proj.Turn = nil
+	p.mu.Unlock()
+
+	here := t.TempDir()
+	raw, _ := json.Marshal(map[string]string{"workdir": here})
+	if res, body := c.do(t, c.client, "PUT", "/api/sessions/"+id+"/workdir", string(raw)); res.StatusCode != http.StatusOK {
+		t.Fatalf("pointed to %s: %d %v", here, res.StatusCode, body)
+	}
+	events := c.waitJournal(t, id, 10*time.Second, "the host's end", func(evs []agent.Event) bool {
+		process := agent.Fold(evs).Process
+		return process == agent.ProcessParked || process == agent.ProcessExited
+	})
+	if last := agent.Fold(events); last.Process != agent.ProcessParked || last.LastTurn == nil ||
+		last.LastTurn.Outcome != agent.OutcomeCompleted {
+		t.Fatalf("the host ended %q, the turn %+v", last.Process, last.LastTurn)
+	}
+	c.send(t, id, "m2", "again")
+	c.waitJournal(t, id, 10*time.Second, "the reply in the new folder", turnsEnded(2))
+	if spec, err := agenthost.ReadSpec(c.data, id); err != nil || spec.Workdir != here {
+		t.Fatalf("the next host's folder: %q %v", spec.Workdir, err)
+	}
+}

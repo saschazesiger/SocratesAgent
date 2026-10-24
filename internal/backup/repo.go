@@ -58,12 +58,13 @@ const (
 )
 
 // maxSealed bounds what one object of the backup may make a reader take in:
-// a chunk and its envelope, with room to spare. A manifest is bounded by
-// maxManifest.
-const (
-	maxSealed   = ChunkSize + 1<<16
-	maxManifest = 256 << 20
-)
+// a chunk and its envelope, with room to spare.
+const maxSealed = ChunkSize + 1<<16
+
+// maxManifest bounds a manifest, sealed and opened, both when it is written
+// and when it is read, so that no snapshot is written that a restore would
+// refuse. It is a variable so that a test can lower it.
+var maxManifest = 256 << 20
 
 var (
 	// ErrWrongPassphrase is a passphrase that does not open the backup at
@@ -78,6 +79,9 @@ var (
 	ErrMetaMissing = errors.New("this place holds backup objects but no meta.json; put it back, or choose another prefix")
 	// ErrCorrupt is an object that opened but is not what its name says.
 	ErrCorrupt = errors.New("a backup object is damaged")
+	// ErrTooLarge is a snapshot whose manifest would be larger than a
+	// restore reads: it is not written.
+	ErrTooLarge = errors.New("the snapshot is too large to be restored, so it was not written")
 )
 
 // meta is meta.json.
@@ -383,7 +387,8 @@ func parseSnapshotID(id string) (string, time.Time, error) {
 	return host, at, nil
 }
 
-// putManifest seals and uploads a snapshot's manifest.
+// putManifest seals and uploads a snapshot's manifest, unless it is larger
+// than a restore reads.
 func (r *repo) putManifest(ctx context.Context, m *Manifest) error {
 	plain, err := json.Marshal(m)
 	if err != nil {
@@ -393,6 +398,10 @@ func (r *repo) putManifest(ctx context.Context, m *Manifest) error {
 	sealed, err := vault.Seal(r.seal, name, encode(plain))
 	if err != nil {
 		return err
+	}
+	if len(plain) > maxManifest || len(sealed) > maxManifest {
+		return fmt.Errorf("%w: the list of the %d paths in it is %d MiB, more than the %d MiB a restore reads",
+			ErrTooLarge, len(m.Entries), max(len(plain), len(sealed))>>20, maxManifest>>20)
 	}
 	ctx, cancel := context.WithTimeout(ctx, chunkTimeout)
 	defer cancel()
@@ -410,7 +419,7 @@ func (r *repo) getManifest(ctx context.Context, id string) (*Manifest, error) {
 		return nil, err
 	}
 	defer body.Close()
-	sealed, err := io.ReadAll(io.LimitReader(body, maxManifest+1))
+	sealed, err := io.ReadAll(io.LimitReader(body, int64(maxManifest)+1))
 	if err != nil {
 		return nil, err
 	}
@@ -421,7 +430,7 @@ func (r *repo) getManifest(ctx context.Context, id string) (*Manifest, error) {
 	if err != nil {
 		return nil, fmt.Errorf("snapshot %s: %w (%v)", id, ErrCorrupt, err)
 	}
-	plain, err := decode(payload, maxManifest)
+	plain, err := decode(payload, int64(maxManifest))
 	if err != nil {
 		return nil, fmt.Errorf("snapshot %s: %w", id, err)
 	}
@@ -445,26 +454,38 @@ type snapRef struct {
 // listSnapshots lists every snapshot at this place, of every host, oldest
 // first. An object under snapshots/ that is not named like one is left out.
 func (r *repo) listSnapshots(ctx context.Context) ([]snapRef, error) {
+	refs, _, err := r.listSnapshotObjects(ctx)
+	return refs, err
+}
+
+// listSnapshotObjects is listSnapshots, and the names of the objects under
+// snapshots/ that are not named like a snapshot: garbage collection cannot
+// tell which chunks they refer to.
+func (r *repo) listSnapshotObjects(ctx context.Context) ([]snapRef, []string, error) {
 	ctx, cancel := context.WithTimeout(ctx, listTimeout)
 	defer cancel()
 	infos, err := r.c.List(ctx, r.key(snapshotDir))
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	out := make([]snapRef, 0, len(infos))
+	var strays []string
 	for _, info := range infos {
-		id, ok := strings.CutSuffix(strings.TrimPrefix(info.Key, r.key(snapshotDir)), ".json")
+		name := strings.TrimPrefix(info.Key, r.key(snapshotDir))
+		id, ok := strings.CutSuffix(name, ".json")
 		if !ok {
+			strays = append(strays, snapshotDir+name)
 			continue
 		}
 		host, at, err := parseSnapshotID(id)
 		if err != nil {
+			strays = append(strays, snapshotDir+name)
 			continue
 		}
 		out = append(out, snapRef{ID: id, Host: host, At: at})
 	}
 	sortRefs(out)
-	return out, nil
+	return out, strays, nil
 }
 
 // listChunks lists every chunk at this place with the moment it was written.

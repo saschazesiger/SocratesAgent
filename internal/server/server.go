@@ -391,6 +391,7 @@ func (s *Server) routes() {
 	mux.HandleFunc("POST /api/sessions", s.auth(s.handleCreateSession))
 	mux.HandleFunc("GET /api/sessions/{id}", s.auth(s.handleGetSession))
 	mux.HandleFunc("PATCH /api/sessions/{id}", s.auth(s.handleRenameSession))
+	mux.HandleFunc("PUT /api/sessions/{id}/workdir", s.auth(s.handleSetWorkdir))
 	// A new name, from a model, because somebody asked for one.
 	mux.HandleFunc("POST /api/sessions/{id}/title", s.auth(s.handleRetitleSession))
 	mux.HandleFunc("DELETE /api/sessions/{id}", s.auth(s.endingViewers(s.handleDeleteSession)))
@@ -478,6 +479,7 @@ func (s *Server) routes() {
 	mux.HandleFunc("GET /api/backup/snapshots", s.auth(s.handleBackupSnapshots))
 	mux.HandleFunc("POST /api/backup/test", s.auth(s.handleBackupTest))
 	mux.HandleFunc("PUT /api/backup/config", s.auth(s.handleBackupConfig))
+	mux.HandleFunc("DELETE /api/backup/config", s.auth(s.handleBackupOff))
 	// Restore: a new machine, from the setup page, before there is a
 	// password (backup.go says when it is allowed).
 	mux.HandleFunc("POST /api/restore/snapshots", s.handleRestoreSnapshots)

@@ -42,6 +42,9 @@ const journalDownloadMax = 16 << 20
 //	                                    request that already made one
 //	GET    /api/sessions/{id}       {"session":<session>}
 //	PATCH  /api/sessions/{id}       {"session":<session>}
+//	PUT    /api/sessions/{id}/workdir {"session":<session>}; 400 for a folder
+//	                                    that is not there or not allowed, 409
+//	                                    while a terminal runs or a chat works
 //	DELETE /api/sessions/{id}       {"ok":true,"workdir":"…","workdir_kept":true}
 //	POST   …/file,
 //	       …/resume, …/restart,
@@ -103,6 +106,11 @@ type sessionView struct {
 	// is fetched on its own; it can be a hundred kilobytes per session.
 	DraftRev     int64  `json:"draft_rev,omitempty"`
 	DraftPreview string `json:"draft_preview,omitempty"`
+	// WorkdirMissing is a session whose working directory is not on this
+	// machine: one restored from another's backup, which brings the
+	// sessions and not their code. The page offers to point it to a folder
+	// (PUT …/workdir) rather than let it fail to start.
+	WorkdirMissing bool `json:"workdir_missing,omitempty"`
 }
 
 func (s *Server) view(row *store.Session) sessionView {
@@ -123,6 +131,7 @@ func (s *Server) viewWith(row *store.Session, drafts map[string]store.DraftMeta)
 		v.DraftRev, v.DraftPreview = meta.Rev, meta.Preview
 	}
 	v.Activity = s.manager.ActivityOf(row.ID)
+	v.WorkdirMissing = workdirMissing(row)
 	if row.Status == store.StatusDone {
 		v.DeleteAt = row.StatusAt + DoneRetention.Milliseconds()
 	}
@@ -132,6 +141,18 @@ func (s *Server) viewWith(row *store.Session, drafts map[string]store.DraftMeta)
 		}
 	}
 	return v
+}
+
+// workdirMissing is whether a session's folder is not on this machine. A
+// prepared session's typed-in folder is only made when it starts, so it is not
+// missing before then; a preset one is never made, and a prepared session
+// whose preset is gone would fail to start.
+func workdirMissing(row *store.Session) bool {
+	if row.Workdir == "" || (row.State == store.StatePrestart && row.WorkdirMode != harnesses.WorkdirPreset) {
+		return false
+	}
+	info, err := os.Stat(row.Workdir)
+	return err != nil || !info.IsDir()
 }
 
 func (s *Server) views(rows []store.Session) []sessionView {
@@ -513,6 +534,60 @@ func (s *Server) handleRenameSession(w http.ResponseWriter, r *http.Request) {
 	if err := s.store.UpdateSessionTitle(row.ID, title); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
+	}
+	s.answerWithSession(w, row.ID)
+}
+
+// handleSetWorkdir points a session at another folder: one whose own is not
+// on this machine, because a restore brings the sessions back and not the
+// code they worked on (REBUILD §6.2). A terminal that runs is in its folder
+// already, and a chat in the middle of a turn is left to finish, so both are
+// refused. A chat's host that is up is asked to park rather than stopped: a
+// turn that started after the look at it finishes in the old folder, and the
+// next host starts the agent in the new one.
+func (s *Server) handleSetWorkdir(w http.ResponseWriter, r *http.Request) {
+	row, ok := s.session(w, r)
+	if !ok {
+		return
+	}
+	var body struct {
+		Workdir string `json:"workdir"`
+	}
+	if !readJSON(w, r, &body) {
+		return
+	}
+	mode, workdir, err := harnesses.PointWorkdir(s.Settings(), body.Workdir)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	var chat *chatPeer
+	if row.IsChat() {
+		p, err := s.chats.peer(row.ID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		p.mu.Lock()
+		working := p.proj.Turn != nil
+		p.mu.Unlock()
+		if working {
+			writeError(w, http.StatusConflict, "the chat is in the middle of a turn; stop it first")
+			return
+		}
+		chat = p
+	} else if row.State == store.StateRunning {
+		writeError(w, http.StatusConflict, "the session is running in its folder")
+		return
+	}
+	if err := s.store.SetSessionWorkdir(row.ID, mode, workdir); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if chat != nil {
+		ctx, cancel := context.WithTimeout(r.Context(), chatStopWait+time.Second)
+		defer cancel()
+		chat.parkHost(ctx)
 	}
 	s.answerWithSession(w, row.ID)
 }

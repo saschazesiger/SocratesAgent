@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"log"
 	"net/url"
 	"os"
 	"path"
@@ -20,7 +21,8 @@ import (
 
 	"github.com/saschazesiger/SocratesAgent/internal/paths"
 
-	_ "modernc.org/sqlite"
+	"modernc.org/sqlite"
+	sqlite3 "modernc.org/sqlite/lib"
 )
 
 // ChunkSize is the length of every chunk of a file but its last. A file that
@@ -60,6 +62,10 @@ type RunInfo struct {
 	// snapshot; Kept are those whose earlier copy stands in for them.
 	Skipped []string `json:"skipped,omitempty"`
 	Kept    []string `json:"kept,omitempty"`
+	// Withheld are files that may hold a secret the backup leaves out
+	// (paths.Redacted) and that could not be read as the JSON they should
+	// be: they are not in this snapshot rather than in it whole.
+	Withheld []string `json:"withheld,omitempty"`
 }
 
 // progress is a run as it goes, read by Status while it runs.
@@ -101,12 +107,13 @@ type snapshotter struct {
 	err    error
 	cancel context.CancelFunc
 
-	buf     []byte
-	files   map[string]fileState
-	entries []Entry
-	skipped []string
-	kept    []string
-	copies  int
+	buf      []byte
+	files    map[string]fileState
+	entries  []Entry
+	skipped  []string
+	kept     []string
+	withheld []string
+	copies   int
 }
 
 // walk reads the whole data directory into entries, and returns once every
@@ -263,15 +270,25 @@ func (s *snapshotter) companion(p string) bool {
 	return false
 }
 
+// racyWindow is how close to the moment a file is read its modification
+// time may be for the index not to vouch for it. A file rewritten in place
+// with the same size within one tick of the file system's clock keeps its
+// size and time, and a run that read it in that tick would take the old
+// content for the current one until the file changed again - the last
+// write before a quiet night missing from every snapshot. Such a file is
+// read again by the next run, as git does with a "racily clean" one.
+const racyWindow = 2 * time.Second
+
 // file backs up one regular file and returns its entry, or nil for a
 // database that could not be copied and has no earlier copy to stand in.
 func (s *snapshotter) file(ctx context.Context, p, rel string, info fs.FileInfo) (*Entry, error) {
+	readAt := time.Now()
 	now := fileState{Size: info.Size(), MTime: info.ModTime().UnixNano()}
 	entry := &Entry{Path: rel, Type: TypeFile, Mode: unixMode(info.Mode()), MTime: now.MTime}
 	prev, known := s.idx.Files[rel]
 	// A file whose size and time are what they were is what it was; only a
 	// changed one is read, and only to see whether it is a database now.
-	sameStat := known && prev.Size == now.Size && prev.MTime == now.MTime
+	sameStat := known && !prev.Racy && prev.Size == now.Size && prev.MTime == now.MTime
 	if sameStat {
 		now.SQLite = prev.SQLite
 	} else {
@@ -280,6 +297,8 @@ func (s *snapshotter) file(ctx context.Context, p, rel string, info fs.FileInfo)
 	if now.SQLite {
 		now.WALSize, now.WALMTime = walStat(p)
 	}
+	racy := func(mtime int64) bool { return mtime != 0 && time.Unix(0, mtime).After(readAt.Add(-racyWindow)) }
+	now.Racy = racy(now.MTime) || racy(now.WALMTime)
 	if sameStat && prev.WALSize == now.WALSize && prev.WALMTime == now.WALMTime && s.remoteHas(prev.Chunks) {
 		s.files[rel] = prev
 		entry.Size, entry.Chunks = prev.Stored, prev.Chunks
@@ -297,6 +316,7 @@ func (s *snapshotter) file(ctx context.Context, p, rel string, info fs.FileInfo)
 			// A database that will not copy must not stop every other file
 			// from being backed up. Its last good copy stands in for it;
 			// without one it is left out, and the run says so.
+			log.Printf("backup: %s could not be copied: %v", rel, err)
 			if known && prev.SQLite && s.remoteHas(prev.Chunks) {
 				s.kept = append(s.kept, rel)
 				s.files[rel] = prev
@@ -314,7 +334,8 @@ func (s *snapshotter) file(ctx context.Context, p, rel string, info fs.FileInfo)
 		if err := redact(p, copyPath, fields); err != nil {
 			// A file that may hold a secret and cannot be read as the JSON
 			// it should be is left out rather than backed up whole.
-			s.skipped = append(s.skipped, rel)
+			log.Printf("backup: %s is left out: %v", rel, err)
+			s.withheld = append(s.withheld, rel)
 			return nil, nil
 		}
 		defer os.Remove(copyPath)
@@ -442,10 +463,14 @@ func walStat(p string) (int64, int64) {
 }
 
 // copySQLite makes a consistent copy of a database that may be written to
-// while it is read: VACUUM INTO over a read-only connection, which reads one
-// transaction's view of the database, write-ahead log included, and writes it
-// out whole. A raw copy of the file could pair half of one write with half of
-// another.
+// while it is read, with SQLite's online-backup API (REBUILD §6.2). One step
+// copies every page under one read transaction, write-ahead log included, so
+// the copy never pairs half of one write with half of another the way a raw
+// copy of the file could. It also keeps the database's own page order: a
+// database that changed in a few pages changes only the chunks those pages
+// lie in. VACUUM INTO, which packs the database anew, would move every page
+// after a table that grew, and nearly every chunk of a busy database would
+// go up again at every run.
 func copySQLite(ctx context.Context, src, dst string) error {
 	dsn := (&url.URL{Scheme: "file", Path: src, RawQuery: "mode=ro&_pragma=busy_timeout(30000)"}).String()
 	db, err := sql.Open("sqlite", dsn)
@@ -453,12 +478,61 @@ func copySQLite(ctx context.Context, src, dst string) error {
 		return err
 	}
 	defer db.Close()
-	db.SetMaxOpenConns(1)
 	if err := os.Remove(dst); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return err
 	}
-	_, err = db.ExecContext(ctx, `VACUUM INTO ?`, dst)
-	return err
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	return conn.Raw(func(driverConn any) error {
+		source, ok := driverConn.(interface {
+			NewBackup(string) (*sqlite.Backup, error)
+		})
+		if !ok {
+			return errors.New("the SQLite driver has no online backup")
+		}
+		bk, err := source.NewBackup((&url.URL{Scheme: "file", Path: dst}).String())
+		if err != nil {
+			return err
+		}
+		deadline := time.Now().Add(copyBusyWait)
+		for {
+			more, err := bk.Step(-1)
+			if err == nil && !more {
+				return bk.Finish()
+			}
+			// A writer that holds the database for a moment - a checkpoint,
+			// a rollback-journal commit - is waited out, as the busy
+			// timeout waits for a query.
+			if err != nil && (!sqliteBusy(err) || time.Now().After(deadline)) {
+				_ = bk.Finish()
+				return err
+			}
+			select {
+			case <-ctx.Done():
+				_ = bk.Finish()
+				return ctx.Err()
+			case <-time.After(100 * time.Millisecond):
+			}
+		}
+	})
+}
+
+// copyBusyWait is how long a copy waits for a database another process
+// holds locked before it gives up for this run.
+const copyBusyWait = 30 * time.Second
+
+// sqliteBusy reports whether err is SQLite saying the database is locked
+// for the moment.
+func sqliteBusy(err error) bool {
+	var se *sqlite.Error
+	if !errors.As(err, &se) {
+		return false
+	}
+	code := se.Code() & 0xff
+	return code == sqlite3.SQLITE_BUSY || code == sqlite3.SQLITE_LOCKED
 }
 
 // unixMode is the permission bits of a mode, with setuid, setgid and sticky

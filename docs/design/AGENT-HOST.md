@@ -732,10 +732,11 @@ key (the existing `Outbox` in `net.js`).
 | `POST /api/chats/{id}/attachments` | multipart, one or more `file` parts | `{files: [attachment]}`: stored under `chats/<id>/attachments/` (a copy in the working directory's uploads); a message may only name paths this route handed out, else 400 |
 | `GET`/`PUT /api/sessions/{id}/draft` | `text`, `base_rev` | the composer's draft, with PreStart's revision rule (409 `{conflict, text, rev}` when another device saved first); a prepared chat's draft is its first message |
 | `GET /api/chats/{id}/stream` | WebSocket | below |
+| `PUT /api/sessions/{id}/workdir` | `workdir` (a folder that exists) | 200 `{session}`; 400 for a folder that is not there or not allowed; 409 while a turn runs. A host that is up is sent `park`, not `stop`: a turn that started a moment ago, which the server has not heard of yet, finishes in the old folder, and the next message starts the agent in the new one (REBUILD §6.2: a restored chat whose folder is missing) |
 
 Sending a message clears the chat's unread mark (as typing at a terminal does). Chats appear in
 `GET /api/sessions` and the event stream like every session, with `kind: "chat"` and their
-`activity`.
+`activity`, and `workdir_missing` when their folder is not on this machine.
 
 **Stream** (`socrates.chat.v1`): the same per-login handshake ceiling as `/api/events`, origin
 check, compression. Client's first frame within 10 s: `{"t":"hello","since":<seq>}` (else closed

@@ -6,6 +6,8 @@ import (
 	"slices"
 	"sort"
 	"strings"
+
+	"github.com/saschazesiger/SocratesAgent/internal/paths"
 )
 
 // manifestFormat is the version of the manifest. A manifest of a later
@@ -63,11 +65,15 @@ type Summary struct {
 	Files int   `json:"files"`
 	// Own is a snapshot of this machine.
 	Own bool `json:"own,omitempty"`
+	// Empty is a snapshot without the database, which restores no
+	// installation: "latest" passes it by, and a restore refuses it. No
+	// build writes one any more; earlier ones could.
+	Empty bool `json:"empty,omitempty"`
 }
 
 // Summary sums a manifest up.
 func (m *Manifest) Summary() Summary {
-	s := Summary{ID: m.ID, Host: m.Host, Hostname: m.Hostname, At: m.CreatedAt}
+	s := Summary{ID: m.ID, Host: m.Host, Hostname: m.Hostname, At: m.CreatedAt, Empty: !installation(m.Entries)}
 	for _, e := range m.Entries {
 		if e.Type == TypeFile {
 			s.Size += e.Size
@@ -75,6 +81,17 @@ func (m *Manifest) Summary() Summary {
 		}
 	}
 	return s
+}
+
+// installation reports whether entries hold the database: what makes a
+// snapshot an installation rather than a folder of files.
+func installation(entries []Entry) bool {
+	for _, e := range entries {
+		if e.Path == paths.DB && e.Type == TypeFile {
+			return true
+		}
+	}
+	return false
 }
 
 // chunkSet is every chunk a manifest refers to.
@@ -130,19 +147,23 @@ func sortRefs(refs []snapRef) {
 	})
 }
 
-// resolve finds the snapshot an id names among refs: an exact id, or
-// "latest" for the newest of every host.
-func resolve(refs []snapRef, id string) (snapRef, error) {
+// resolve finds the snapshots an id may name among refs, in the order a
+// restore tries them: an exact id, or for "latest" every snapshot of every
+// host, newest first, of which the restore takes the first that holds an
+// installation.
+func resolve(refs []snapRef, id string) ([]snapRef, error) {
 	if len(refs) == 0 {
-		return snapRef{}, ErrNoBackup
+		return nil, ErrNoBackup
 	}
 	if id == "" || id == "latest" {
-		return refs[len(refs)-1], nil
+		out := slices.Clone(refs)
+		slices.Reverse(out)
+		return out, nil
 	}
 	for _, r := range refs {
 		if r.ID == id {
-			return r, nil
+			return []snapRef{r}, nil
 		}
 	}
-	return snapRef{}, fmt.Errorf("there is no snapshot %q", id)
+	return nil, fmt.Errorf("there is no snapshot %q", id)
 }

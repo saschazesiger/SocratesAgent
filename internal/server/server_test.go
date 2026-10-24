@@ -88,6 +88,15 @@ type testEnv struct {
 
 func newEnv(t *testing.T) *testEnv {
 	t.Helper()
+	return newEnvWith(t, false)
+}
+
+// newEnvWith is newEnv, with the database inside the data directory, where
+// main keeps it, when inData is set: the server a backup of the data
+// directory is taken from. Every other test keeps it beside the data
+// directory, so that a restore into one never replaces an open database.
+func newEnvWith(t *testing.T, inData bool) *testEnv {
+	t.Helper()
 	// One root for the whole environment, taken first so that its removal is
 	// the last cleanup to run. Everything the server keeps on disk lives under
 	// it, and the cleanup registered below - which stops the server, the
@@ -95,7 +104,11 @@ func newEnv(t *testing.T) *testEnv {
 	// goroutine of the server is still writing into it comes straight back,
 	// and that is how a test leaves a tree behind.
 	root := t.TempDir()
-	st, err := store.Open(filepath.Join(root, "db", "test.db"))
+	dbPath := filepath.Join(root, "db", "test.db")
+	if inData {
+		dbPath = filepath.Join(root, "data", "socrates.db")
+	}
+	st, err := store.Open(dbPath)
 	if err != nil {
 		t.Fatalf("store: %v", err)
 	}

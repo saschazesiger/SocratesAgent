@@ -161,11 +161,11 @@ type ObjectInfo struct {
 
 // PutOptions are the conditions a Put can carry.
 //
-// Conditional writes are how a single writer is enforced cheaply: create the
-// lease only if absent (IfNoneMatch "*"), replace it only if it is still the
-// version we read (IfMatch). Not every S3 compatible store honours them, and
-// one that does not simply ignores the header and overwrites. Use
-// ProbeConditional to find out which kind of store you are talking to.
+// Conditional writes create an object only if it is absent (IfNoneMatch
+// "*") or replace it only if it is still the version read (IfMatch). Not
+// every S3 compatible store honours them, and one that does not simply
+// ignores the header and overwrites: a caller that depends on the condition
+// reads the object back, as a new backup's meta.json is.
 type PutOptions struct {
 	// IfMatch, when set, makes the write succeed only if the current ETag
 	// equals it. Pass the ETag as Get/Head/Put returned it; it is sent

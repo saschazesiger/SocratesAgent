@@ -43,10 +43,9 @@ type index struct {
 	// LastGC is when the last garbage collection finished.
 	LastGC int64 `json:"last_gc,omitempty"`
 
+	// remote is Remote as a set. It is made again from a listing of the
+	// bucket once per start of Socrates and at every garbage collection.
 	remote map[string]bool
-	// listed is whether Remote has been compared with the bucket in this
-	// process: once per run of Socrates the listing is the truth again.
-	listed bool
 }
 
 // fileState is one file as the last snapshot read it.
@@ -62,6 +61,9 @@ type fileState struct {
 	// consistent copy's for a database.
 	Stored int64    `json:"stored"`
 	Chunks []string `json:"chunks"`
+	// Racy is a file changed within racyWindow of being read, which the
+	// next run reads again whatever its size and time say.
+	Racy bool `json:"racy,omitempty"`
 }
 
 func cacheDir(dataDir string) string { return paths.New(dataDir).Path(paths.BackupCache) }
@@ -166,6 +168,49 @@ type state struct {
 	// CheckedAt is the last run that found nothing changed since the last
 	// snapshot, which is as good as a snapshot for being up to date.
 	CheckedAt int64 `json:"checked_at,omitempty"`
+	// Skipped, Withheld and Kept are what the last good run - one that
+	// wrote a snapshot or found nothing new - could not take as it is: an
+	// unchanged run writes no snapshot that would say so. Kept holds, for
+	// each database whose earlier copy stands in for it, since when.
+	Skipped  []string         `json:"skipped,omitempty"`
+	Withheld []string         `json:"withheld,omitempty"`
+	Kept     map[string]int64 `json:"kept,omitempty"`
+	// GCError is why the last garbage collection stopped before it was
+	// through, and GCSince when the collections began failing. A run that
+	// wrote its snapshot succeeded either way, so this is the only trace of
+	// a bucket that no chunk is deleted from any more.
+	GCError string `json:"gc_error,omitempty"`
+	GCSince int64  `json:"gc_since,omitempty"`
+}
+
+// noteGC records how a garbage collection ended.
+func (st *state) noteGC(err error, now int64) {
+	if err == nil {
+		st.GCError, st.GCSince = "", 0
+		return
+	}
+	st.GCError = err.Error()
+	if st.GCSince == 0 {
+		st.GCSince = now
+	}
+}
+
+// noteGaps records what a good run could not take, and since when each
+// database has been standing in with an older copy.
+func (st *state) noteGaps(info *RunInfo, now int64) {
+	st.Skipped, st.Withheld = info.Skipped, info.Withheld
+	kept := make(map[string]int64, len(info.Kept))
+	for _, rel := range info.Kept {
+		since, ok := st.Kept[rel]
+		if !ok {
+			since = now
+		}
+		kept[rel] = since
+	}
+	st.Kept = kept
+	if len(kept) == 0 {
+		st.Kept = nil
+	}
 }
 
 func loadState(dataDir string) state {
