@@ -20,8 +20,8 @@
 // under the new home.
 //
 // A long temporary directory (macOS gives every user one under /var/folders)
-// is replaced by /tmp: the tests put tmux and agent-host sockets under
-// t.TempDir(), and a Unix socket path has a limit of about 104 bytes.
+// is replaced by /tmp, resolved: the tests put tmux and agent-host sockets
+// under t.TempDir(), and a Unix socket path has a limit of about 104 bytes.
 package testhome
 
 import (
@@ -80,8 +80,12 @@ func Isolate() (func(), error) {
 		}
 	}
 	if runtime.GOOS != "windows" && len(os.TempDir()) > len(shortTemp) {
-		if info, err := os.Stat(shortTemp); err == nil && info.IsDir() {
-			_ = os.Setenv("TMPDIR", shortTemp)
+		// The resolved name, because macOS's /tmp is a link to /private/tmp
+		// and code under test resolves the directories it is handed.
+		if short, err := filepath.EvalSymlinks(shortTemp); err == nil {
+			if info, err := os.Stat(short); err == nil && info.IsDir() {
+				_ = os.Setenv("TMPDIR", short)
+			}
 		}
 	}
 	root, err := os.MkdirTemp("", "socrates-testhome-")

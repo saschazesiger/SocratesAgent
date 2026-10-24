@@ -112,8 +112,8 @@ func TestIsolatePointsEverythingAtATemporaryHome(t *testing.T) {
 			t.Errorf("%s is still set", kv)
 		}
 	}
-	if runtime.GOOS != "windows" && len(os.TempDir()) > len(shortTemp) {
-		t.Errorf("the temporary directory %q is longer than %q", os.TempDir(), shortTemp)
+	if short, err := filepath.EvalSymlinks(shortTemp); err == nil && runtime.GOOS != "windows" && len(os.TempDir()) > len(short) {
+		t.Errorf("the temporary directory %q is longer than %q", os.TempDir(), short)
 	}
 	if cache := os.Getenv("GOCACHE"); cache != "" && strings.HasPrefix(cache, home) {
 		t.Errorf("GOCACHE moved into the temporary home: %q", cache)

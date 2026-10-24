@@ -170,16 +170,21 @@ func CheckWorkdir(settings config.Settings, mode, path string) (string, error) {
 
 // blockedPath reports whether a path is one of the places an agent may never
 // be given, either exactly or - for the kernel's own filesystems, where
-// nothing at all is a workspace - anywhere underneath.
+// nothing at all is a workspace - anywhere underneath. Each place is matched
+// as written and as it resolves, because on some systems it is itself a
+// link: macOS's /etc is /private/etc, so a link to /etc resolves to a name
+// the list would not otherwise know.
 func blockedPath(path string) bool {
 	for _, blocked := range blockedRoots {
-		if path == blocked {
+		if path == blocked || path == resolveExisting(blocked) {
 			return true
 		}
 	}
 	for _, tree := range blockedTrees {
-		if path == tree || strings.HasPrefix(path, tree+string(os.PathSeparator)) {
-			return true
+		for _, t := range []string{tree, resolveExisting(tree)} {
+			if path == t || strings.HasPrefix(path, t+string(os.PathSeparator)) {
+				return true
+			}
 		}
 	}
 	return false
