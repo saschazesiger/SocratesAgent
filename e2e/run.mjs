@@ -8703,85 +8703,96 @@ async function homerunlost() {
   } finally { await s.stop(); }
 }
 
-// home-opencode: OpenCode's question tool, from its event stream to Home,
-// the dialog and the answer in its pane.
+// home-opencode: an OpenCode chat's questions from Home's dialog - its
+// ask_user call (the MCP server OpenCode starts with the serve), answered
+// with an option and with words of one's own, and its own question tool,
+// should one still arrive - and a permission it asks for, which the chat
+// allows by itself and never puts to anyone.
 async function homeopencode() {
-  const { s, stub } = await homeServer();
+  const s = await homeChats();
   try {
-    const id = await makeAgent(s, 'OpenCode asks', 'opencode');
     await awaitHome(s.page, (h) => h.shown, 10000);
-    const asked = await askQuestion(s, id);
-    ok(!!asked.waiting && !!asked.digest, 'OpenCode’s question tool is seen as waiting, and the question is read',
-      JSON.stringify({ waiting: asked.waiting, items: asked.digest && asked.digest.question.items.map((i) => i.text) }));
-    const card = await awaitHome(s.page, (h) => h.counts.questions === 1 && h.asking, 10000);
-    ok(card.ok, 'Home counts it as a question', JSON.stringify(card.seen.counts));
-    await s.page.click('.so-home__questions');
-    const shown = await awaitSheet(s.page, (d) => !!d && d.question === HOME_QUESTION && d.options.length === 2, 10000);
-    ok(shown.ok && shown.seen.session === 'OpenCode asks', 'the dialog shows it', JSON.stringify(shown.seen && { q: shown.seen.question, s: shown.seen.session }));
-    await s.page.click('.so-q-option[data-label="SQLite"]');
-    await s.page.click('.so-q-send');
-    const logged = await awaitAnswerLogged(s, 1);
-    ok(logged[0] && logged[0].answers[0].choices.join(',') === 'SQLite', 'OpenCode got SQLite',
-      JSON.stringify(logged[0] && { via: logged[0].via, answers: logged[0].answers }));
-    const left = await awaitActivity(s, id, (a) => a.state !== 'waiting', 10000);
-    ok(!!left, 'and is no longer waiting', JSON.stringify(left));
-    ok(await sheetShut(s.page, 15000), 'the dialog closes', 'shut');
-    const after = await awaitHome(s.page, (h) => h.counts.questions === 0, 10000);
-    ok(after.ok, 'and the card is back to zero', JSON.stringify(after.seen.counts));
-
-    // The card shows its highlight in colour only, as OpenCode's does: an
-    // answer of one's own goes in by the last row's digit, the words and Enter.
-    await awaitActivity(s, id, (a) => a.state === 'idle', 15000);
-    const again = await askQuestion(s, id);
-    const plain = paneOf(s, id);
-    ok(!!again.digest && !/[›❯]/.test(plain) && /1\. Postgres/.test(plain),
-      'the question card numbers its rows and shows no cursor in its text', oneLine(plain).slice(-200));
-    const OWN = 'Use DuckDB instead';
-    const posted = await answerVia(s, id, again.digest && again.digest.rev, [{ item: 0, choices: [], text: OWN }]);
-    const owned = await awaitRunEnd(s, id, 40000);
-    const ownLogged = await awaitAnswerLogged(s, 2);
-    ok(posted.status === 202 && !!owned && owned.phase === 'done' && ownLogged[1] && ownLogged[1].answers[0].text === OWN,
-      'an answer of one’s own reaches the card', JSON.stringify({ status: posted.status, run: owned && [owned.phase, owned.error], logged: ownLogged[1] && ownLogged[1].answers }));
-
-    // Its permission card: Allow always from the dialog, then Reject - both
-    // taken by moving the colour-only highlight with Right.
-    const permit = async () => {
-      await awaitActivity(s, id, (a) => a.state === 'idle', 15000);
-      tmuxType(s, id, '/question permit');
-      const waiting = await awaitActivity(s, id, (a) => a.state === 'waiting', 15000);
-      const digest = waiting && await awaitDigest(s, id, (d) => d.phase === 'ready' && !!d.question
-        && d.question.items[0].text === OC_PERMIT_QUESTION, 20000);
-      return { waiting, digest };
+    const id = await makeChat(s, 'opencode', { title: 'OpenCode asks' });
+    const ask = async (text) => {
+      await awaitChat(s, id, (b) => idle(b), 20000);
+      const said = await tellChat(s, id, text);
+      return said === 200 ? openAskOf(s, id, 20000) : '';
     };
-    const card1 = await permit();
-    ok(!!card1.waiting && !!card1.digest, 'OpenCode’s permission card is seen as waiting, and read',
-      JSON.stringify({ waiting: card1.waiting && card1.waiting.state, options: card1.digest && card1.digest.question.items[0].options.map((o) => o.label) }));
+    const asked = await ask('/askuser ' + JSON.stringify(DB_ASK));
+    const card = await awaitHome(s.page, (h) => h.counts.questions === 1 && h.rows.some((r) => r.id === id && r.answer), 10000);
+    ok(!!asked && card.ok, 'OpenCode’s ask_user call is a question Home counts', JSON.stringify({ ask: asked, counts: card.seen.counts }));
+    await s.page.click('.so-home__q-action');
+    const shown = await awaitAsk(s.page, (d) => !!d && d.question === HOME_QUESTION && d.options.length === 2, 10000);
+    ok(shown.ok && shown.seen.session === 'OpenCode asks', 'the dialog shows it, under the chat’s name',
+      JSON.stringify(shown.seen && { q: shown.seen.question, s: shown.seen.session }));
+    await s.page.click('dialog.so-askdlg .so-q-option[data-option="sqlite"]');
+    await s.page.click('dialog.so-askdlg [data-action="send"]');
+    const got = await returned(s, id, 20000);
+    ok(!!got && got.answers.db.selected.join() === 'sqlite', 'OpenCode got SQLite', JSON.stringify(got && got.answers.db));
+    ok(await askShut(s.page, 15000), 'the dialog closes', 'shut');
+    const after = await awaitHome(s.page, (h) => h.counts.questions === 0, 10000);
+    ok(after.ok && ((await chatOf(s, id)).asks || []).length === 0, 'and the chat asks nothing any more', JSON.stringify(after.seen.counts));
+
+    // An answer of one's own, from the chat's card.
+    const OWN = 'Use DuckDB instead';
+    const again = await ask('/askuser ' + JSON.stringify(DB_ASK));
     await awaitHome(s.page, (h) => h.rows.some((r) => r.id === id && r.answer), 10000);
     await s.page.click('.so-home__card[data-id="' + id + '"] .so-home__answer');
-    const three = await awaitSheet(s.page, (d) => !!d && d.question === OC_PERMIT_QUESTION && d.options.length === 3, 10000);
-    ok(three.ok, 'the dialog offers its three options', JSON.stringify(three.seen && three.seen.options.map((o) => o.label)));
-    await s.page.click('.so-q-option[data-label="Allow always"]');
-    await s.page.click('.so-q-send');
-    const always = await awaitRunEnd(s, id, 40000);
-    const alwaysLogged = await awaitAnswerLogged(s, 3);
-    ok(!!always && always.phase === 'done' && alwaysLogged[2] && alwaysLogged[2].kind === 'permit'
-      && alwaysLogged[2].answers[0].choices.join(',') === 'Allow always',
-      'Allow always, chosen in the dialog, is what the card took', JSON.stringify({ run: always && [always.phase, always.error], logged: alwaysLogged[2] }));
-    await sheetShut(s.page, 15000);
-    const card2 = await permit();
-    const rejected = await answerVia(s, id, card2.digest && card2.digest.rev, [{ item: 0, choices: ['Reject'], text: '' }]);
-    const reject = await awaitRunEnd(s, id, 40000);
-    const rejectLogged = await awaitAnswerLogged(s, 4);
-    const left2 = await awaitActivity(s, id, (a) => a.state !== 'waiting', 10000);
-    ok(rejected.status === 202 && !!reject && reject.phase === 'done' && rejectLogged[3]
-      && rejectLogged[3].answers[0].choices.join(',') === 'Reject' && !!left2,
-      'and Reject is delivered too, and the session no longer waits',
-      JSON.stringify({ run: reject && [reject.phase, reject.error], logged: rejectLogged[3] && rejectLogged[3].answers, state: left2 && left2.state }));
+    await awaitAsk(s.page, (d) => !!d && d.options.length === 2, 10000);
+    await s.page.click('dialog.so-askdlg [data-action="other"]');
+    await s.page.fill('#ask-db-other', OWN);
+    await s.page.click('dialog.so-askdlg [data-action="send"]');
+    const ownAt = Date.now();
+    let own = null;
+    while (!own && Date.now() - ownAt < 20000) {
+      const said = ((await historyOf(s, id)).messages || []).filter((m) => m.role === 'assistant').map(textOf)
+        .filter((t) => t.startsWith('ask_user returned: '));
+      if (said.length === 2) own = JSON.parse(said[1].slice('ask_user returned: '.length).split('\n')[0]);
+      else await wait(200);
+    }
+    ok(!!again && !!own && own.answers.db.other === OWN && own.answers.db.selected.length === 0,
+      'an answer of one’s own reaches OpenCode as the words, with no option', JSON.stringify(own && own.answers.db));
+    await askShut(s.page, 15000);
+
+    // OpenCode's own question tool: its labels are the options, and what is
+    // chosen goes back as OpenCode's list of labels.
+    const own2 = await ask('/question');
+    await awaitHome(s.page, (h) => h.counts.questions === 1, 10000);
+    await s.page.click('.so-home__q-action');
+    const colour = await awaitAsk(s.page, (d) => !!d && d.question === 'Which colour?', 10000);
+    ok(!!own2 && colour.ok && colour.seen.options.map((o) => o.label).join() === 'Red,Blue',
+      'OpenCode’s own question tool is a question too, its labels the options',
+      JSON.stringify(colour.seen && colour.seen.options.map((o) => o.label)));
+    await s.page.click('dialog.so-askdlg .so-q-option:has-text("Blue")');
+    await s.page.click('dialog.so-askdlg [data-action="send"]');
+    const blue = await awaitChat(s, id, (b) => idle(b), 20000);
+    const reply = ((await historyOf(s, id)).messages || []).filter((m) => m.role === 'assistant').map(textOf).pop() || '';
+    ok(idle(blue) && reply === 'question: [["Blue"]]', 'and Blue is what OpenCode got', reply);
+    await askShut(s.page, 15000);
+
+    // A permission OpenCode asks for is allowed by the chat itself: nobody
+    // is asked, and the chat says so.
+    await awaitChat(s, id, (b) => idle(b), 20000);
+    const permitted = await tellChat(s, id, '/perm');
+    let askedAny = false;
+    const permAt = Date.now();
+    let permEnd = null;
+    while (!permEnd && Date.now() - permAt < 20000) {
+      const body = await chatOf(s, id);
+      if ((body.asks || []).length) askedAny = true;
+      const last = ((await historyOf(s, id)).messages || []).filter((m) => m.role === 'assistant').map(textOf).pop() || '';
+      if (last === 'perm: always' && idle(body)) permEnd = last;
+      else await wait(150);
+    }
+    const quiet = await homeLook(s.page);
+    ok(permitted === 200 && permEnd === 'perm: always' && !askedAny && quiet.counts.questions === 0,
+      'a permission OpenCode asks for is allowed always, and puts no question to anyone',
+      JSON.stringify({ reply: permEnd, asked: askedAny, questions: quiet.counts.questions }));
+    await openChat(s.page, id);
+    const NOTICE = 'OpenCode asked for permission to use bash (rm -rf build); it was allowed, as every permission is.';
+    ok(await awaitLog(s.page, NOTICE, 10000), 'and the chat says what it allowed', NOTICE);
     ok(unexpected(s.errors).length === 0, 'no console errors', unexpected(s.errors).join(' | ') || '0');
-  } finally {
-    await s.stop();
-    await stub.close();
-  }
+  } finally { await s.stop(); }
 }
 
 // streamProxy is a reverse proxy in front of the server whose upgrades can be
@@ -11918,7 +11929,7 @@ const ALL = [
   ['home-focus', 'the field of one’s own answer keeps the keyboard through every redraw, and the voice says what failed', homefocus],
   ['home-retry', 'an answer refused for good, one the server could not take just now, and one to a chat deleted on its way', homeretry],
   ['home-runlost', 'the dialog opened again mid-answer, an answer sent across a server restart, and a reply lost on the way back', homerunlost],
-  ['home-opencode', 'OpenCode’s question card and permission card from the dialog: an option, an own answer, Allow always and Reject', homeopencode],
+  ['home-opencode', 'an OpenCode chat’s questions from the dialog - ask_user with an option and an own answer, its own question tool - and a permission it allows itself', homeopencode],
   ['home-stream', 'a late list, a handshake that hangs, a refused upgrade and an offline Home', homestream],
   ['home-quiet', 'a tap on a stream that died quietly, polls across a restart, a long hide, a naming cut off, a server never reached', homequiet],
   ['home-kinds', 'a multi-select, two tabs and their review, a plan sent back and approved, and a question in prose', homekinds],
