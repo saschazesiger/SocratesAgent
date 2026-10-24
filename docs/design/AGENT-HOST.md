@@ -296,7 +296,12 @@ the adapter has one (OpenCode, §5.3), else `Park` and `Start` of a new adapter 
 environment and the same `ResumeID` (`agent.ErrConversationNotFound` → a fresh conversation with
 `notice{conversation_lost}`). The divider is journaled before the new agent starts, so the events
 of the next turn come after it; a start that fails journals `error{switch_failed}`, a divider back
-and restarts the old account. Messages the agent had not taken up are handed to the new one. With
+and restarts the old account. Messages the agent had not taken up are handed to the new one. A new
+adapter started on the account the journal's last turn was `limited` on, with nothing run since -
+the old account again after a switch that failed, or a new host on it (§6) - gets that turn as
+`StartSpec.Held` and holds what it is handed as the adapter before it did (§5.2, §5.3): the
+turn's `account` (stamped by the host on `turn.started`) against the account it starts on decides.
+On another account nothing is held: that is what the switch, by hand or automatic, was for. With
 `continue`, the new account is then sent `agenthost.ContinueText` ("Continue where you left off.")
 as a user message with `client_id` `<the switch's client_id>:continue`: what "Continue with" and the
 automatic switch at a limit send. A switch to the account the chat is on journals nothing, and
@@ -766,7 +771,10 @@ journal's conversation id — or, when the journal names none, the spec's `conve
 was lost, or the chat was made from an existing conversation such as a fork), with
 `StartSpec.Rebuild` set when the journal has no message at all (§5) — (`First` = the first
 undelivered message when there is no conversation yet), `StartSpec.DataDir` = the data folder,
-`StartSpec.AskCommand` = `<this binary> mcp-ask --socket <the host's socket>` (§5.3), `process{ready}`, re-send undelivered messages, deliver unsent answers as messages. A start
+`StartSpec.AskCommand` = `<this binary> mcp-ask --socket <the host's socket>` (§5.3), `process{ready}`, re-send undelivered messages, deliver unsent answers as messages (`StartSpec.Held`
+= the journal's last turn when it was `limited` on the spec's `account` and nothing ran since, §4.3:
+what the host before held stays held; a command other than a message that brings the host up
+does not let it go). A start
 that fails journals `process{failed, detail}` and the host exits 2 s later. A start that fails
 with an error wrapping `agent.ErrConversationNotFound` (the CLI does not know the conversation to
 resume) is retried once as a new conversation (no rebuild) with `notice{conversation_lost}`: the history stays in
@@ -944,7 +952,9 @@ attachment(s): …`).
   waited on (in its turn) or with a background task; in process, a message handed to the adapter
   with its place among the turns when a limited turn ends between its journal write and its `Send`, and a
   command sent as the host starts that waits for the agent (the command lock is boot's before the socket
-  accepts); **systemd scope** (root + systemd only): host in `socrates-test-agents-<id>.scope`
+  accepts), and `StartSpec.Held` at boot and at a switch - the limited turn on its own account only (a
+  boot there, a switch that failed), nothing on another (a boot there, a switch made, the automatic one
+  with its continue); **systemd scope** (root + systemd only): host in `socrates-test-agents-<id>.scope`
   with `OOMPolicy=continue`, `Reap` refuses a live host, an orphan keeps the scope after SIGKILL and
   `Reap` ends it.
 - `internal/server` (real hosts; Linux): create idempotency, terminal routes refused, conversation

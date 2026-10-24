@@ -376,12 +376,16 @@ func (h *host) boot() {
 		h.failStart(fmt.Errorf("there is no adapter for %q", h.spec.Harness))
 		return
 	}
-	var resume string
+	var resume, held string
 	var pending []agent.Outgoing
 	var unsent []agent.Ask
 	empty := false
 	h.rec.View(func(p *agent.Projection) {
 		resume, empty = p.ConversationID, len(p.Messages) == 0
+		// A host before this one that stopped at the limit of the account
+		// this one starts on held what the agent had not taken up; the new
+		// adapter holds it too, and the person's next message lets it go.
+		held = heldFor(p, h.spec.Account)
 		for _, m := range p.Undelivered() {
 			pending = append(pending, outgoing(m))
 		}
@@ -416,7 +420,7 @@ func (h *host) boot() {
 	spec := agent.StartSpec{
 		ChatID: h.opts.ChatID, Workdir: h.spec.Workdir, StateDir: filepath.Join(h.dir, stateDir),
 		DataDir: h.opts.DataDir, Env: env, Account: h.spec.Account, Model: h.spec.Model, Effort: h.spec.Effort,
-		ResumeID: resume, Rebuild: rebuild, Spawn: h.spawn, Binary: h.spec.Binary, AskCommand: h.askCommand(),
+		ResumeID: resume, Rebuild: rebuild, Held: held, Spawn: h.spawn, Binary: h.spec.Binary, AskCommand: h.askCommand(),
 	}
 	if resume == "" && len(pending) > 0 {
 		spec.First, pending = &pending[0], pending[1:]
