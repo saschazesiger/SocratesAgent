@@ -78,6 +78,16 @@ type Adapter interface {
 	PID() int
 }
 
+// AccountSwitcher is an adapter that moves its chat to another account
+// itself, without being parked and started again: OpenCode, whose queue of
+// messages lives in the adapter and has to survive the switch (AGENT-HOST.md
+// §5.3). The host interrupts a running turn first either way. Any other
+// adapter is switched by the host: Park, then a new adapter Started with the
+// other account's environment on the same conversation.
+type AccountSwitcher interface {
+	SwitchAccount(ctx context.Context, account string, env []string) error
+}
+
 // StartSpec is everything an adapter needs to bring its CLI up.
 type StartSpec struct {
 	ChatID string
@@ -88,8 +98,10 @@ type StartSpec struct {
 	// DataDir is the Socrates data folder, for an adapter whose CLI keeps
 	// state shared between chats under it (<data>/agents/<harness>).
 	DataDir string
-	// Env is the CLI's whole environment, built for the chat's account. It is
-	// never the host's own environment passed through.
+	// Env is the CLI's whole environment, built for the chat's account
+	// (internal/accounts), with an API key in it when the account is one. It
+	// is never the host's own environment passed through. Account is that
+	// account's id.
 	Env     []string
 	Account string
 	Model   string

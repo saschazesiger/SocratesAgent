@@ -50,6 +50,7 @@ type Projection struct {
 type Turn struct {
 	ID        string  `json:"id"`
 	MessageID string  `json:"message_id,omitempty"`
+	Account   string  `json:"account,omitempty"`
 	StartedAt int64   `json:"started_at"`
 	EndedAt   int64   `json:"ended_at,omitempty"`
 	Outcome   string  `json:"outcome,omitempty"`
@@ -164,7 +165,10 @@ func (p *Projection) Apply(ev Event) {
 	}
 	switch ev.Type {
 	case TypeTurnStarted:
-		p.Turn = &Turn{ID: ev.TurnID, MessageID: ev.MessageID, StartedAt: ev.At}
+		p.Turn = &Turn{ID: ev.TurnID, MessageID: ev.MessageID, Account: ev.Account, StartedAt: ev.At}
+		if ev.Account != "" {
+			p.Account = ev.Account
+		}
 	case TypeTurnEnded:
 		p.endTurn(ev)
 	case TypeMessage:
@@ -444,6 +448,8 @@ type Summary struct {
 	LastOutcome    string `json:"last_outcome,omitempty"`
 	Model          string `json:"model,omitempty"`
 	Effort         string `json:"effort,omitempty"`
+	// Account is the account the chat ran on last, as the journal says.
+	Account string `json:"account,omitempty"`
 	// Asked is whether anybody has sent the chat anything, which is what the
 	// unread rule waits for.
 	Asked bool `json:"asked"`
@@ -456,6 +462,7 @@ func (p *Projection) Summary() Summary {
 	s := Summary{
 		LastSeq: p.LastSeq, LastAt: p.LastAt, TurnRunning: p.Turn != nil, OpenAsks: len(p.OpenAsks()),
 		Tasks: p.Tasks, Process: p.Process, ConversationID: p.ConversationID, Model: p.Model, Effort: p.Effort,
+		Account: p.Account,
 	}
 	if p.LastTurn != nil {
 		s.LastOutcome = p.LastTurn.Outcome

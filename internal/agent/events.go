@@ -226,6 +226,9 @@ type Event struct {
 	From   string `json:"from,omitempty"`
 	To     string `json:"to,omitempty"`
 	Reason string `json:"reason,omitempty"`
+	// Account is the account a turn runs on (turn.started): the host stamps
+	// it, so that what a turn cost can be told apart per account.
+	Account string `json:"account,omitempty"`
 
 	Model  string `json:"model,omitempty"`
 	Effort string `json:"effort,omitempty"`

@@ -117,6 +117,12 @@ type host struct {
 	// tools are the asks a local tool's connection waits on (OpAsk), by ask
 	// id: the answer goes back on that connection.
 	tools map[string]*hostConn
+	// account is the account the CLI runs on now, and env its whole
+	// environment, the account's key opened into it; a switch changes both
+	// (switch.go). pending is a switch waiting for the agent to be done.
+	account string
+	env     []string
+	pending *pendingSwitch
 
 	done     chan struct{}
 	doneOnce sync.Once
@@ -378,6 +384,16 @@ func (h *host) boot() {
 	if len(env) == 0 {
 		env = os.Environ()
 	}
+	secret, err := h.openSecretEnv(h.spec.SecretEnv)
+	if err != nil {
+		h.failStart(err)
+		return
+	}
+	env = joinEnv(env, secret)
+	h.mu.Lock()
+	h.account, h.env = h.spec.Account, env
+	h.mu.Unlock()
+	h.noteBootAccount()
 	spec := agent.StartSpec{
 		ChatID: h.opts.ChatID, Workdir: h.spec.Workdir, StateDir: filepath.Join(h.dir, stateDir),
 		DataDir: h.opts.DataDir, Env: env, Account: h.spec.Account, Model: h.spec.Model, Effort: h.spec.Effort,
@@ -389,7 +405,7 @@ func (h *host) boot() {
 	ad := factory()
 	ctx, cancel := context.WithTimeout(context.Background(), startWait)
 	defer cancel()
-	err := ad.Start(ctx, spec, emitter{h})
+	err = ad.Start(ctx, spec, emitter{h})
 	if err != nil && resume != "" && errors.Is(err, agent.ErrConversationNotFound) {
 		// The CLI no longer has the conversation (its transcript is gone, or
 		// it belongs to an account this chat no longer uses). A host that
@@ -454,7 +470,16 @@ func outgoing(m *agent.Message) agent.Outgoing {
 // emitter is the adapter's Emitter.
 type emitter struct{ h *host }
 
-func (e emitter) Emit(events ...agent.Event) { e.h.record(events...) }
+// Emit records the adapter's events. A turn is stamped with the account it
+// runs on, which only the host knows (AGENT-HOST.md §2).
+func (e emitter) Emit(events ...agent.Event) {
+	for i := range events {
+		if events[i].Type == agent.TypeTurnStarted && events[i].Account == "" {
+			events[i].Account = e.h.currentAccount()
+		}
+	}
+	e.h.record(events...)
+}
 
 func (e emitter) Delta(messageID, partID, text string) {
 	e.h.rec.Delta(messageID, partID, text)
@@ -468,6 +493,13 @@ func (h *host) record(events ...agent.Event) {
 		log.Printf("journal: %v", err)
 	}
 	h.touch()
+	for _, ev := range events {
+		if ev.Type == agent.TypeTurnEnded {
+			// A switch that waits for the agent to be done may be due.
+			go h.runPending()
+			break
+		}
+	}
 }
 
 func (h *host) touch() {
@@ -560,6 +592,8 @@ func (h *host) handle(c *hostConn, cmd Command) any {
 		return h.toolAsk(c, cmd)
 	case OpInterrupt, OpSetModel, OpCommand, OpPark:
 		return h.control(ctx, cmd)
+	case OpSwitchAccount:
+		return h.switchCmd(cmd)
 	}
 	return fail(cmd, CodeBadRequest, "unknown command "+cmd.Op)
 }
@@ -808,7 +842,7 @@ func (h *host) control(ctx context.Context, cmd Command) any {
 // the chat stays "waiting" until it is answered or the person writes
 // something else (REBUILD.md §5.3: a question survives everything).
 func (h *host) idle() bool {
-	if h.adapter == nil || h.isEnding() {
+	if h.adapter == nil || h.isEnding() || h.hasPending() {
 		return false
 	}
 	busy := false
@@ -830,6 +864,7 @@ func (h *host) idleLoop() {
 			return
 		case <-tick.C:
 		}
+		h.runPending()
 		h.mu.Lock()
 		quiet, wanted := time.Since(h.lastActive), h.parkWanted
 		h.mu.Unlock()
@@ -876,6 +911,9 @@ func (h *host) stop(clientID string) {
 	h.cmdMu.Lock()
 	defer h.cmdMu.Unlock()
 	log.Print("stopping")
+	h.mu.Lock()
+	h.pending = nil
+	h.mu.Unlock()
 	if h.adapter != nil {
 		_ = h.adapter.Stop()
 	}

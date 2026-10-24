@@ -54,6 +54,7 @@ func EnableFake() {
 //	/sleep S         a turn that works for S seconds
 //	/bg S            a turn that leaves a background task running for S seconds
 //	/limit           the account's limit stops the turn
+//	/account         which account the CLI runs on, and whether it has a key
 //	/crash           the CLI child dies in the middle of the turn
 //	/orphan          a tool process that escapes the CLI's process group
 //	anything else    "you said: …" with the turn number of the conversation
@@ -126,6 +127,20 @@ func (f *fakeAdapter) Start(ctx context.Context, spec StartSpec, out Emitter) er
 	go f.work()
 	f.poke()
 	return nil
+}
+
+// FakeKeyEnv is where an API-key account's key reaches the scripted agent's
+// CLI, the way SOCRATES_CLAUDE_API_KEY reaches Claude Code's adapter.
+const FakeKeyEnv = "SOCRATES_FAKE_API_KEY"
+
+// accountLine says which account the CLI was started on, and whether a key
+// came with it - its length, never the key itself.
+func (f *fakeAdapter) accountLine() string {
+	key, _ := lookupEnv(f.spec.Env, FakeKeyEnv)
+	if key == "" {
+		return fmt.Sprintf("account %s, no key", f.spec.Account)
+	}
+	return fmt.Sprintf("account %s, a key of %d characters", f.spec.Account, len(key))
 }
 
 // startChild starts the process that stands in for the CLI. It is a real
@@ -456,6 +471,8 @@ func (f *fakeAdapter) turn(ctx context.Context, msg Outgoing, n int) {
 		)
 		t.end(OutcomeLimited, "The usage limit of this account is reached.")
 		return
+	case "/account":
+		t.say(f.accountLine())
 	case "/crash":
 		t.say("about to crash")
 		f.crash()
