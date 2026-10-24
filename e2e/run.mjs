@@ -6685,7 +6685,7 @@ async function restore() {
 // at once. And beside it, the limits: how full each window is, how long until
 // it renews, and - a tap away, because a phone has no tooltip - when exactly.
 async function optionsmenu() {
-  const s = await start({ viewport: { width: 1280, height: 720 } });
+  const s = await start({ viewport: { width: 1280, height: 720 }, env: FAKE_AGENT });
   try {
     await setup(s.page, s.url);
     await useDomRenderer(s);
@@ -6833,157 +6833,97 @@ async function optionsmenu() {
 
     /* ------------------------------------------------------- the limits */
 
-    // A reading until the strip has drawn it, and then none: everything after
-    // that is the page's own clock. The five-hour window renews in 2h 36m and
-    // some seconds, so its countdown crosses a minute while it is on screen;
-    // the Fable window renews in a few seconds, and is empty once it has.
+    // A chat's limits are its account's (REBUILD.md §4.3): the account button
+    // in its composer says how full the account it runs on is and, at a
+    // limit, when that renews, and its menu says it for every account of the
+    // agent. A reading until the button has drawn it, and then none: the
+    // minutes after that are the page's own clock. The five-hour window
+    // renews in 2 h 36 min and some seconds, so its countdown crosses a minute
+    // while it is on screen; the spare account's renews in a few seconds, and
+    // is empty again once it has.
+    const post = async (path, data) => (await s.context.request.post(s.url + path, { data })).json();
+    const work = (await post('/api/accounts', { agent: 'fake', kind: 'api_key', label: 'Work', key: 'sk-work-0123456789' })).account;
+    const spare = (await post('/api/accounts', { agent: 'fake', kind: 'api_key', label: 'Spare', key: 'sk-spare-0123456789' })).account;
     const at = Date.now();
     const five = new Date(at + (2 * 60 + 36) * 60000 + 20000).toISOString();
     const week = new Date(at + ((3 * 24 + 4) * 60 + 30) * 60000).toISOString();
     const lapsing = new Date(at + 25000).toISOString();
     let failing = false;
     let refused = 0;
-    await s.page.route('**/api/sessions/*/usage', (route) => {
+    await s.context.route('**/api/accounts', async (route) => {
+      if (route.request().method() !== 'GET') return route.fallback();
       if (failing) { refused += 1; return route.abort(); }
-      return route.fulfill({
-        contentType: 'application/json',
-        body: JSON.stringify({
-          windows: [
-            { label: '5h', used_percent: 42.4, resets_at: five },
-            { label: '7d', used_percent: 30, resets_at: week },
-            { label: 'Fable', used_percent: 90, resets_at: lapsing },
-          ],
-          cost_usd: 1.25,
-        }),
-      });
+      const res = await route.fetch();
+      const body = await res.json();
+      for (const one of body.accounts || []) {
+        if (one.id === work.id) one.limits = [{ label: '5h', used_percent: 100, resets_at: five }, { label: '7d', used_percent: 30, resets_at: week }];
+        if (one.id === spare.id) one.limits = [{ label: '5h', used_percent: 100, resets_at: lapsing }, { label: '7d', used_percent: 12, resets_at: week }];
+      }
+      return route.fulfill({ response: res, json: body });
     });
-    await reloadBack(s.page);
-    await s.page.waitForFunction(() => /5h\s*42%/.test(document.getElementById('sessionUsage')?.innerText || ''),
-      null, { timeout: 20000 });
-    const strip = await s.page.$eval('#sessionUsage', (n) => ({ text: n.innerText.replace(/\s+/g, ' ').trim(), title: n.getAttribute('data-tip') || '' }));
-    ok(/5h 42% \(2h 37m left\)/.test(strip.text) && /7d 30% \(3d 4h left\)/.test(strip.text)
-      && /Fable 90% \(1m left\)/.test(strip.text) && /~\$1\.25/.test(strip.text),
-      'the strip says how full each window is and how long until it renews', strip.text);
-    ok(/5h: 42% used · resets in 2h 37m \((today|tomorrow) /.test(strip.title),
-      'and the tooltip says when, by the clock', oneLine(strip.title));
+    const chat = await makeChat(s, 'fake', { account: work.id });
+    await s.page.reload({ waitUntil: 'domcontentloaded' });
+    await s.page.waitForSelector('#home:not([hidden])', { timeout: 20000 });
+    await openChat(s.page, chat);
+    const button = () => s.page.$eval('#chat .so-composer__account-btn', (n) => ({
+      text: n.textContent.trim(), tip: n.getAttribute('data-tip') || '', state: n.dataset.state || '',
+    })).catch(() => null);
+    await s.page.waitForSelector('#chat .so-composer__account:not([hidden]) .so-composer__account-btn', { timeout: 15000 });
+    const face = await button();
+    ok(face && face.text === 'Work' && face.state === 'limited' && face.tip === '5h 100% · 7d 30% · renews in 2 h 37 min',
+      'the composer names the account, says how full each window is and when its limit renews', JSON.stringify(face));
+    const menuOf = async () => {
+      await s.page.click('#chat .so-composer__account-btn');
+      await s.page.waitForSelector('.so-account-menu:not([hidden]) [data-account]', { timeout: 5000 });
+      const items = await s.page.$$eval('.so-account-menu [data-account]', (n) => n.map((one) => one.innerText.replace(/\s+/g, ' ').trim()));
+      await s.page.keyboard.press('Escape');
+      await s.page.waitForSelector('.so-account-menu', { state: 'hidden', timeout: 5000 }).catch(() => {});
+      return items;
+    };
+    const listed = await menuOf();
+    ok(/Work .*5h 100% · 7d 30% · renews in 2 h 37 min/.test(listed[0] || '') && /Spare .*renews in 1 min/.test(listed[1] || ''),
+      'and its menu says it for every account of the agent', JSON.stringify(listed));
+    await wait(300);
+    await shot(s.page, 'options-limits-desk');
     failing = true;
 
-    // The reading behind a tap.
-    await s.page.click('#sessionUsage');
-    await s.page.waitForSelector('#usageDialog[open] .so-usage-row', { timeout: 5000 });
-    const pop = await s.page.evaluate((times) => ({
-      rows: [...document.querySelectorAll('#usageDialog .so-usage-row')].map((row) => ({
-        name: row.querySelector('.so-usage-row__name')?.textContent,
-        used: row.querySelector('.so-usage-row__used')?.textContent,
-        reset: row.querySelector('.so-usage-row__reset')?.textContent,
-        meter: (row.querySelector('[role="progressbar"]')?.getAttribute('aria-valuenow') || '') + (row.querySelector('[role="progressbar"]') ? '%' : ''),
-      })),
-      clocks: times.map((t) => new Date(t).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })),
-      expanded: document.getElementById('sessionUsage').getAttribute('aria-expanded'),
-    }), [five, week]);
-    const [r5, r7, rf, rc] = pop.rows;
-    ok(pop.rows.length === 4 && r5.name === '5-hour limit' && r5.used === '42% used' && r5.meter === '42%'
-      && r7.name === 'Weekly limit' && rf.name === 'Fable weekly limit' && rc.used === '~$1.25',
-      'a tap opens every window by name, with its share and a meter, and the cost', JSON.stringify(pop.rows));
-    ok(/^Resets in 2h 37m · (today|tomorrow) /.test(r5.reset) && r5.reset.endsWith(pop.clocks[0]),
-      'the five-hour window says when exactly it renews', r5.reset + ' vs ' + pop.clocks[0]);
-    ok(/^Resets in 3d 4h · /.test(r7.reset) && r7.reset.endsWith(pop.clocks[1]),
-      'and so does the week, with its day', r7.reset + ' vs ' + pop.clocks[1]);
-    ok(pop.expanded === 'true', 'the strip says its reading is open', pop.expanded);
-    await wait(300);
-    await shot(s.page, 'options-usage-desk');
-
-    // The countdowns move with no new reading at all - every request after
-    // the first fails - and the open reading moves with them. The Fable
-    // window renews on screen and is empty again.
+    // The countdown moves with no new reading at all - every request after
+    // the first fails - and the spare account's limit renews on screen.
     const ticked = await s.page.waitForFunction(() => {
-      const text = document.getElementById('sessionUsage').innerText.replace(/\s+/g, ' ');
-      return /5h 42% \(2h 36m left\)/.test(text) && /Fable 0%/.test(text) && !/Fable 0% \(/.test(text);
-    }, null, { timeout: 30000 }).then(() => true).catch(() => false);
-    const afterTick = await s.page.evaluate(() => ({
-      strip: document.getElementById('sessionUsage').innerText.replace(/\s+/g, ' ').trim(),
-      fable: [...document.querySelectorAll('#usageDialog[open] .so-usage-row')]
-        .map((row) => row.textContent).find((t) => /Fable/.test(t)) || 'closed',
-    }));
-    ok(ticked, 'the countdown goes on with the network failing, and a renewed window reads 0%', afterTick.strip);
-    ok(/0% used/.test(afterTick.fable) && /Renewed/.test(afterTick.fable),
-      'and the open reading says the same', afterTick.fable);
-    for (let i = 0; i < 40 && refused === 0; i += 1) await wait(500);
+      const n = document.querySelector('#chat .so-composer__account-btn');
+      return !!n && /renews in 2 h 36 min$/.test(n.getAttribute('data-tip') || '');
+    }, null, { timeout: 45000 }).then(() => true, () => false);
+    ok(ticked, 'the countdown goes on with the network failing', JSON.stringify(await button()));
+    for (let i = 0; i < 40 && Date.now() < Date.parse(lapsing) + 1000; i += 1) await wait(500);
+    const renewed = await menuOf();
+    ok(/Spare .*5h 0% · 7d 12%/.test(renewed[1] || '') && !/Spare .*renews in/.test(renewed[1] || ''),
+      'and a limit that renewed on screen is an empty window again', JSON.stringify(renewed));
+    for (let i = 0; i < 20 && refused === 0; i += 1) await wait(500);
     ok(refused >= 1, 'it went on asking all the while, and was refused', refused + ' refused request(s)');
-    await s.page.keyboard.press('Escape');
-    await s.page.waitForSelector('#usageDialog[open]', { state: 'detached', timeout: 3000 });
 
-    // A phone: the strip is the line under the bar, every limit and its
-    // countdown on it, nothing off the edge; the reading opens on screen.
+    // A phone: the button is in the composer, nothing off the edge, and the
+    // menu opens on screen.
     await s.page.setViewportSize({ width: 360, height: 740 });
     await wait(500);
     const phone = await s.page.evaluate(() => {
-      const strip = document.getElementById('sessionUsage');
-      const box = strip.getBoundingClientRect();
-      const parts = [...strip.querySelectorAll('.so-usage__part')]
-        .filter((p) => p.checkVisibility())
-        .map((p) => { const r = p.getBoundingClientRect(); return { text: p.innerText.replace(/\s+/g, ' '), left: r.left, right: r.right }; });
-      return {
-        overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
-        stripLeft: box.left, stripRight: box.right,
-        fits: strip.scrollWidth <= strip.clientWidth + 1,
-        level: strip.getAttribute('data-fit') || '',
-        parts,
-        under: strip.getBoundingClientRect().top >= document.querySelector('.ds-topbar').getBoundingClientRect().bottom - 1,
-      };
+      const b = document.querySelector('#chat .so-composer__account-btn').getBoundingClientRect();
+      return { left: Math.round(b.left), right: Math.round(b.right), vw: innerWidth,
+        overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth };
     });
-    const inside = phone.parts.every((p) => p.left >= phone.stripLeft - 1 && p.right <= phone.stripRight + 1);
-    ok(phone.overflow <= 1 && phone.fits && inside && phone.under,
-      'on a phone every limit and its countdown fit on the line under the bar', JSON.stringify(phone));
-    ok(phone.parts.filter((p) => /\(\d/.test(p.text)).length >= 2,
-      'with the countdowns still there', phone.parts.map((p) => p.text).join(' · '));
-    await s.page.click('#sessionUsage');
-    await s.page.waitForSelector('#usageDialog[open] .so-usage-row', { timeout: 5000 });
-    const popBox = await s.page.$eval('#usageDialog .ds-dialog__box', (n) => {
+    ok(phone.left >= 0 && phone.right <= phone.vw && phone.overflow <= 1,
+      'on a phone the account button fits the composer, and nothing scrolls sideways', JSON.stringify(phone));
+    await s.page.click('#chat .so-composer__account-btn');
+    await s.page.waitForSelector('.so-account-menu:not([hidden]) [data-account]', { timeout: 5000 });
+    await wait(400);
+    const popBox = await s.page.$eval('.so-account-menu', (n) => {
       const r = n.getBoundingClientRect();
       return { left: r.left, right: r.right, top: r.top, bottom: r.bottom, w: innerWidth, h: innerHeight };
     });
-    ok(popBox.left >= 0 && popBox.right <= popBox.w && popBox.bottom <= popBox.h,
-      'and its reading opens inside the screen', JSON.stringify(popBox));
-    await wait(300);
-    await shot(s.page, 'options-usage-phone');
+    ok(popBox.left >= 0 && popBox.right <= popBox.w && popBox.top >= 0 && popBox.bottom <= popBox.h,
+      'and its menu opens inside the screen', JSON.stringify(popBox));
+    await shot(s.page, 'options-limits-phone');
     await s.page.keyboard.press('Escape');
-
-    // The worst a reading can be, on the narrowest phone in use: three full
-    // windows, each days from renewing, and a cost. The strip tightens
-    // itself, and the countdowns of the limits are the last thing it gives up.
-    failing = false;
-    const far = new Date(Date.now() + ((6 * 24 + 23) * 60 + 30) * 60000).toISOString();
-    await s.page.unroute('**/api/sessions/*/usage');
-    await s.page.route('**/api/sessions/*/usage', (route) => route.fulfill({
-      contentType: 'application/json',
-      body: JSON.stringify({
-        windows: [
-          { label: '5h', used_percent: 100, resets_at: new Date(Date.now() + (4 * 60 + 59) * 60000).toISOString() },
-          { label: '7d', used_percent: 100, resets_at: far },
-          { label: 'Fable', used_percent: 100, resets_at: far },
-        ],
-        cost_usd: 1234.5,
-      }),
-    }));
-    await s.page.setViewportSize({ width: 360, height: 740 });
-    await reloadBack(s.page);
-    await s.page.waitForFunction(() => /Fable\s*100%/.test(document.getElementById('sessionUsage')?.innerText || ''),
-      null, { timeout: 20000 });
-    await wait(300);
-    const worst = await s.page.evaluate(() => {
-      const strip = document.getElementById('sessionUsage');
-      return {
-        fits: strip.scrollWidth <= strip.clientWidth + 1,
-        level: strip.getAttribute('data-fit') || '',
-        text: [...strip.querySelectorAll('.so-usage__part')].filter((p) => p.checkVisibility())
-          .map((p) => p.innerText.replace(/\s+/g, ' ')).join(' · '),
-        overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
-      };
-    });
-    ok(worst.fits && worst.overflow <= 1 && (worst.text.match(/\(\d/g) || []).length === 3,
-      'the fullest reading still fits a 360px phone with all three countdowns', JSON.stringify(worst));
-    await shot(s.page, 'options-usage-worst');
+    await s.context.unroute('**/api/accounts');
 
     // The options menu on the phone, too.
     await openOptions(s.page);
@@ -6996,7 +6936,6 @@ async function optionsmenu() {
     await wait(300);
     await shot(s.page, 'options-menu-phone');
     await closeOptions(s.page);
-    await s.page.unroute('**/api/sessions/*/usage');
 
     ok(id && unexpected(s.errors, OFFLINE_NOISE).length === 0, 'no unexpected console errors',
       unexpected(s.errors, OFFLINE_NOISE).join(' | ') || '0');
@@ -12263,7 +12202,7 @@ const ALL = [
   ['typeafteroutage', 'a cut socket, a locked phone, and a pane that still takes keystrokes', typeafteroutage],
   ['typekeepsfocus', 'a dialog, the ⋮ menu and two sessions: the keys still land in the pane', typekeepsfocus],
   ['keyboard', 'on a touch screen only the button raises the keyboard, in every dialog too', keyboard],
-  ['options', 'the ⋮ is this device\u2019s options, and the limits say when they renew', optionsmenu],
+  ['options', 'the ⋮ is this device\u2019s options, and a chat\u2019s account says when its limit renews', optionsmenu],
   ['design', 'white surfaces, marks, hover-only detail and motion that does not restart', design],
   ['clipboard', 'copy and paste: the keys, a plain drag, a click, a middle click, and OSC 52', clipboard],
   ['touchcopy', 'a finger held on the pane selects, grows and copies', touchcopy],
