@@ -53,6 +53,7 @@ export function scratchDir(prefix) {
 // sweep removes one tracked directory and whatever tmux server belongs to it.
 function sweep(dir) {
   killTmux(dir);
+  killHosts(dir);
   rmSync(dir, { recursive: true, force: true });
   litter.delete(dir);
 }
@@ -389,6 +390,30 @@ export function killTmux(data) {
   } catch { /* no server is the good case */ }
 }
 
+// hostsOf lists the agent hosts still running for a run's data directory, and
+// the CLIs under them: a chat's host is started in a session of its own and
+// outlives its server by design, so neither killing the server nor deleting
+// the folder ends it.
+export function hostsOf(data) {
+  let out = '';
+  try {
+    out = execFileSync('ps', ['-eo', 'pid=,ppid=,args='], { stdio: ['ignore', 'pipe', 'ignore'] }).toString();
+  } catch { return []; }
+  const procs = out.split('\n').map((line) => /^\s*(\d+)\s+(\d+)\s+(.*)$/.exec(line)).filter(Boolean)
+    .map(([, pid, ppid, args]) => ({ pid: Number(pid), ppid: Number(ppid), args }));
+  const hosts = procs.filter((p) => / agent-host /.test(' ' + p.args + ' ')
+    && (' ' + p.args + ' ').includes(' --data ' + data + ' '));
+  const ids = new Set(hosts.map((p) => p.pid));
+  return [...hosts, ...procs.filter((p) => ids.has(p.ppid))];
+}
+
+// killHosts is the same backstop for the agent hosts.
+function killHosts(data) {
+  for (const p of hostsOf(data)) {
+    try { process.kill(p.pid, 'SIGKILL'); } catch { /* already gone */ }
+  }
+}
+
 // mockOpenRouter answers every OpenRouter call with one fixed transcription,
 // so the dictation scenario needs no key and spends nothing.
 //
@@ -595,6 +620,15 @@ export async function start(options = {}) {
     ok(left.sessions === 0, 'the scenario left no sessions behind', String(left.sessions));
     ok(left.tmux.length === 0, 'the scenario left no tmux session and no tmux server behind',
       left.tmux.length + ' sessions' + (left.tmux.length ? ' (' + left.tmux.join(',') + ')' : ''));
+    // A deleted chat's host is stopped by the server before it answers; one
+    // still running is a leak, which the sweep below then ends.
+    let hosts = hostsOf(data);
+    for (let i = 0; i < 20 && hosts.length; i += 1) {
+      await wait(250);
+      hosts = hostsOf(data);
+    }
+    ok(hosts.length === 0, 'the scenario left no agent host behind',
+      hosts.length + ' processes' + (hosts.length ? ' (' + hosts.map((p) => p.pid + ' ' + p.args.split(' ').slice(0, 2).join(' ')).join(', ') + ')' : ''));
     // The backstop: whatever the assertion just found does not stay on the
     // machine.
     sweep(data);

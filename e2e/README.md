@@ -137,12 +137,14 @@ durability the product exists for — so a scenario that only killed the server
 would leak them.
 
 `stop()` therefore deletes every session the scenario made, *then* takes the
-server down, and then **asserts** that no session row and no tmux session or
-tmux server survives on `<data>/tmux.sock`. Both are ordinary assertions and
-appear in every scenario's count, so a scenario that starts leaking fails rather
-than quietly littering. A `tmux kill-server` backstop runs afterwards
-regardless, and the run kills any server it started that is still there when it
-ends.
+server down, and then **asserts** that no session row, no tmux session or
+tmux server on `<data>/tmux.sock`, and no agent host of `<data>` (nor a CLI
+under one) survives. All three are ordinary assertions and appear in every
+scenario's count, so a scenario that starts leaking fails rather than quietly
+littering. A `tmux kill-server` and a kill of the run's hosts are the backstop
+afterwards regardless, and a run that ends or is interrupted kills any server it
+started, and the hosts and tmux servers of its data directories, that are still
+there.
 
 The suite still has the machinery for a quarantined scenario, and nothing uses
 it. `scenario(name, title, fn, { quarantine: 'why' })` lets a scenario print
