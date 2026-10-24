@@ -6,9 +6,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"math"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -42,10 +45,11 @@ func TestATurnStreamsAndEnds(t *testing.T) {
 		}
 		var names []string
 		for _, c := range p.Palette() {
-			names = append(names, c.Name)
+			names = append(names, c.Name+" "+c.Args)
 		}
-		if strings.Join(names, ",") != "compact,shell,agent,init,review,hello" {
-			t.Fatalf("commands %v", names)
+		want := "compact |shell <command>|agent build|plan|init |review <arguments>|hello <arg1> <arg2>"
+		if strings.Join(names, "|") != want {
+			t.Fatalf("commands %q", names)
 		}
 	})
 	if r.rec.deltas < 5 {
@@ -153,6 +157,25 @@ func TestASubagentIsNestedInItsTaskPart(t *testing.T) {
 			t.Fatalf("children %+v", task.Children)
 		}
 	})
+	// The subagent's model call is the turn's too: 0.001 each, 50 + 5 tokens
+	// for the subagent's.
+	wantCost := func(rec *recorder, what string) {
+		rec.view(func(p *agent.Projection, _ []agent.Event) {
+			if lt := p.LastTurn; lt == nil || math.Abs(lt.CostUSD-0.002) > 1e-9 || lt.Usage == nil || lt.Usage.Input != 1001+50 {
+				t.Fatalf("%s turn %+v usage %+v", what, lt, lt.Usage)
+			}
+		})
+	}
+	wantCost(r.rec, "the live")
+	sid := r.conversation()
+	_ = r.a.Park(context.Background())
+	spec := r.spec(sid)
+	spec.Rebuild = true
+	spec.StateDir = filepath.Join(r.data, "chats", "c2", "agent")
+	if err := r.start(spec); err != nil {
+		t.Fatal(err)
+	}
+	wantCost(r.rec, "the rebuilt")
 }
 
 func TestMessagesSentDuringATurnWaitAndRunInOrder(t *testing.T) {
@@ -181,6 +204,20 @@ func TestMessagesSentDuringATurnWaitAndRunInOrder(t *testing.T) {
 	}
 }
 
+// A turn that is over before OpenCode answers its post does not hold up the
+// messages queued behind it.
+func TestATurnThatEndsBeforeItsPostIsAnsweredLetsTheQueueRun(t *testing.T) {
+	r := newRig(t)
+	r.mustStart("")
+	r.send("/sleep 0.3")
+	r.send("/beforeack")
+	last := r.send("after")
+	r.waitTurns(3)
+	if order := r.rec.turnOrder(); order[len(order)-2] != "start "+last {
+		t.Fatalf("turns %q", order)
+	}
+}
+
 func TestInterruptEndsTheTurnAndTheQueueRuns(t *testing.T) {
 	r := newRig(t)
 	r.mustStart("")
@@ -195,6 +232,29 @@ func TestInterruptEndsTheTurnAndTheQueueRuns(t *testing.T) {
 	if got[0] != agent.OutcomeInterrupted || got[1] != agent.OutcomeCompleted {
 		t.Fatalf("outcomes %v", got)
 	}
+}
+
+// An answer an interrupt cut short is interrupted, not done.
+func TestAnInterruptedAnswerIsNotDone(t *testing.T) {
+	r := newRig(t)
+	r.mustStart("")
+	r.send("/stream 200 20")
+	eventually(t, 5*time.Second, "the answer to stream", func() bool { return r.rec.count(agent.TypePartDelta, nil) >= 3 })
+	if err := r.a.Interrupt(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := r.waitTurns(1); got[0] != agent.OutcomeInterrupted {
+		t.Fatalf("outcome %v", got)
+	}
+	r.rec.view(func(p *agent.Projection, _ []agent.Event) {
+		for _, m := range p.Messages {
+			for _, part := range m.Parts {
+				if part.Kind == agent.PartText && part.State != agent.PartInterrupted {
+					t.Fatalf("the cut-short answer is %s: %q", part.State, part.Text)
+				}
+			}
+		}
+	})
 }
 
 func TestALimitRetryStopsTheTurnAsLimited(t *testing.T) {
@@ -246,11 +306,15 @@ func TestErrorsPermissionsAndQuestions(t *testing.T) {
 		t.Fatalf("a second answer: %v", err)
 	}
 	got := r.waitTurns(4)
-	if got[0] != agent.OutcomeFailed {
+	if got[0] != agent.OutcomeFailed || got[1] != agent.OutcomeCompleted {
 		t.Fatalf("outcomes %v", got)
 	}
 	if _, ok := r.rec.first(agent.TypeError, func(ev agent.Event) bool { return ev.Code == "auth" && contains(ev.Text, "User not found") }); !ok {
 		t.Fatal("no auth error")
+	}
+	// The error OpenCode repeats after the failed turn is idle is not news.
+	if n := r.rec.count(agent.TypeError, nil); n != 1 {
+		t.Fatalf("%d errors", n)
 	}
 	if _, ok := r.rec.first(agent.TypeNotice, func(ev agent.Event) bool { return ev.Code == NoticePermission }); !ok {
 		t.Fatal("no permission notice")
@@ -317,6 +381,25 @@ func TestShellLinesCommandsAndCompaction(t *testing.T) {
 	})
 	if _, ok := r.rec.first(agent.TypeNotice, func(ev agent.Event) bool { return ev.Code == NoticeCompacted }); !ok {
 		t.Fatal("no compacted notice")
+	}
+}
+
+// A shell line (like a slash command or a compaction) runs for as long as it
+// takes, past the wait every other call has, and what was sent meanwhile
+// waits for it to end.
+func TestALongShellLineIsNotCutOff(t *testing.T) {
+	r := newRig(t)
+	r.wait = 300 * time.Millisecond
+	r.mustStart("")
+	first := r.send("!sleep 1")
+	second := r.send("after")
+	r.waitTurns(2)
+	want := []string{"start " + first, "end completed", "start " + second, "end completed"}
+	if got := r.rec.turnOrder(); strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Fatalf("turns %q, want %q", got, want)
+	}
+	if !contains(r.lastText(), "you said: after") {
+		t.Fatalf("text %q", r.lastText())
 	}
 }
 
@@ -426,6 +509,22 @@ func TestParkResumeRebuildAndRedelivery(t *testing.T) {
 	if strings.Join(users, "|") != "/tool|hello|again" || len(outcomes) != 3 {
 		t.Fatalf("rebuilt users %q outcomes %v", users, outcomes)
 	}
+	// The conversation is written after its history: until then, a new host
+	// would rebuild again.
+	r.rec.view(func(_ *agent.Projection, events []agent.Event) {
+		conv, rebuilt := -1, -1
+		for i, ev := range events {
+			switch {
+			case ev.Type == agent.TypeConversation:
+				conv = i
+			case ev.Type == agent.TypeNotice && ev.Code == agent.NoticeRebuilt:
+				rebuilt = i
+			}
+		}
+		if rebuilt < 0 || conv < rebuilt {
+			t.Fatalf("the conversation is event %d, the rebuilt notice %d", conv, rebuilt)
+		}
+	})
 	if len(texts) != 3 || texts[0] != "The tool finished." {
 		t.Fatalf("rebuilt texts %q", texts)
 	}
@@ -481,6 +580,40 @@ func TestACrashIsReportedAndItsRunningToolInterrupted(t *testing.T) {
 	r.send("go on")
 	if got := r.waitTurns(1); got[0] != agent.OutcomeCompleted {
 		t.Fatalf("after the crash: %v", got)
+	}
+}
+
+// A process that dies while text streams leaves OpenCode without that text;
+// the next start interrupts the message and keeps the journal's text, and
+// the start after it writes nothing again.
+func TestACrashKeepsTheStreamedTextAndIsInterruptedOnce(t *testing.T) {
+	r := newRig(t)
+	r.mustStart("")
+	sid := r.conversation()
+	r.send("/crashtext")
+	select {
+	case <-r.rec.exited:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the crash was not reported")
+	}
+	journal := r.rec
+	if got := journal.lastText(); got != "partial answer" {
+		t.Fatalf("streamed %q before the crash", got)
+	}
+	r.mustStart(sid)
+	interrupted := func(ev agent.Event) bool { return ev.State == agent.MessageInterrupted }
+	if n := r.rec.count(agent.TypeMessageState, interrupted); n != 1 {
+		t.Fatalf("%d messages interrupted after the crash", n)
+	}
+	// The resume's events, applied to the journal the crash left.
+	r.rec.view(func(_ *agent.Projection, events []agent.Event) { journal.Emit(events...) })
+	if got := journal.lastText(); got != "partial answer" {
+		t.Fatalf("text after the resume %q", got)
+	}
+	_ = r.a.Park(context.Background())
+	r.mustStart(sid)
+	if n := r.rec.count(agent.TypeMessageState, interrupted); n != 0 {
+		t.Fatalf("a second start interrupted %d messages again", n)
 	}
 }
 
@@ -540,6 +673,43 @@ func TestAQuestionAskedWhileTheStreamWasClosed(t *testing.T) {
 	}
 }
 
+// A permission asked while /event was closed is found by the catch-up and
+// answered, so the turn does not wait for ever.
+func TestAPermissionAskedWhileTheStreamWasClosedIsAnswered(t *testing.T) {
+	r := newRig(t)
+	r.mustStart("")
+	r.send("/dropperm")
+	if got := r.waitTurns(1); got[0] != agent.OutcomeCompleted {
+		t.Fatalf("outcome %v", got)
+	}
+	if r.lastText() != "perm: always" {
+		t.Fatalf("text %q", r.lastText())
+	}
+	if n := r.rec.count(agent.TypeNotice, func(ev agent.Event) bool { return ev.Code == NoticePermission }); n != 1 {
+		t.Fatalf("%d permission notices", n)
+	}
+}
+
+// After a resume, a catch-up does not write the subagents of the history
+// again: the journal has them.
+func TestACatchUpLeavesEarlierSubagentsAlone(t *testing.T) {
+	r := newRig(t)
+	r.mustStart("")
+	sid := r.conversation()
+	r.send("/subagent")
+	r.waitTurns(1)
+	_ = r.a.Park(context.Background())
+	r.mustStart(sid)
+	r.send("/dropstream")
+	r.waitTurns(1)
+	eventually(t, 5*time.Second, "the catch-up", func() bool {
+		return contains(r.lastText(), "after the drop")
+	})
+	if n := r.rec.count(agent.TypePart, func(ev agent.Event) bool { return ev.ParentPartID != "" }); n != 0 {
+		t.Fatalf("the catch-up wrote %d subagent parts of an earlier turn", n)
+	}
+}
+
 func TestSwitchingAccountKeepsTheSession(t *testing.T) {
 	r := newRig(t)
 	keyA := `OPENCODE_AUTH_CONTENT={"fake":{"type":"api","key":"KEY-A"}}`
@@ -556,8 +726,10 @@ func TestSwitchingAccountKeepsTheSession(t *testing.T) {
 		t.Fatalf("account a: %q", r.lastText())
 	}
 	pidA := r.a.PID()
-	// A switch during a turn interrupts it first.
+	// A switch during a turn interrupts it first, and what was queued behind
+	// it runs on the new account.
 	r.send("/sleep 30")
+	r.send("/whoami")
 	eventually(t, 5*time.Second, "the slow turn", func() bool { return r.rec.count(agent.TypeTurnStarted, nil) == 2 })
 	ctx := context.Background()
 	if err := r.a.SwitchAccount(ctx, "b", append(append([]string{}, r.env...), keyB)); err != nil {
@@ -569,10 +741,9 @@ func TestSwitchingAccountKeepsTheSession(t *testing.T) {
 	if got := r.rec.turns(); got[1] != agent.OutcomeInterrupted {
 		t.Fatalf("the turn the switch cut short: %v", got)
 	}
-	r.send("/whoami")
 	r.waitTurns(3)
 	if r.lastText() != "account: fake:KEY-B (env)" {
-		t.Fatalf("account b: %q", r.lastText())
+		t.Fatalf("the queued message ran as %q", r.lastText())
 	}
 	// An OAuth-style account keeps its credentials in its own data home.
 	layout := NewLayout(r.data)
@@ -612,6 +783,30 @@ func TestSwitchingAccountKeepsTheSession(t *testing.T) {
 	}
 }
 
+// A switch whose new process does not come up leaves no chat that only looks
+// alive: the adapter reports its end, and takes nothing more.
+func TestAFailedSwitchEndsTheAdapter(t *testing.T) {
+	r := newRig(t)
+	r.mustStart("")
+	r.send("hello")
+	r.waitTurns(1)
+	ctx := context.Background()
+	if err := r.a.SwitchAccount(ctx, "b", append(append([]string{}, r.env...), "FAKEOPENCODE_REFUSE=1")); err == nil {
+		t.Fatal("the switch succeeded")
+	}
+	select {
+	case err := <-r.rec.exited:
+		if err == nil {
+			t.Fatal("exited without an error")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the failed switch was not reported")
+	}
+	if err := r.a.Send(ctx, agent.Outgoing{MessageID: "m_after", Text: "after"}); !errors.Is(err, errStopped) {
+		t.Fatalf("send after the failed switch: %v", err)
+	}
+}
+
 func TestStopKillsAServerThatIgnoresTerm(t *testing.T) {
 	r := newRig(t)
 	r.env = append(r.env, "FAKEOPENCODE_IGNORE_TERM=1")
@@ -635,6 +830,21 @@ func TestStopKillsAServerThatIgnoresTerm(t *testing.T) {
 	}
 }
 
+// A server that dies before its event stream opens fails the start; that is
+// not reported as the death of a chat's process as well.
+func TestAServerThatDiesBeforeItsStreamOpensOnlyFailsTheStart(t *testing.T) {
+	r := newRig(t)
+	r.env = append(r.env, "FAKEOPENCODE_EXIT_ON_EVENT=1")
+	if err := r.start(r.spec("")); err == nil {
+		t.Fatal("started")
+	}
+	select {
+	case err := <-r.rec.exited:
+		t.Fatalf("a failed start was also reported as an exit: %v", err)
+	case <-time.After(500 * time.Millisecond):
+	}
+}
+
 func TestStartRefusesAMissingBinaryAndMigratesOnce(t *testing.T) {
 	r := newRig(t)
 	r.env = []string{"PATH=" + t.TempDir()}
@@ -643,8 +853,25 @@ func TestStartRefusesAMissingBinaryAndMigratesOnce(t *testing.T) {
 	if err := (New()).Start(context.Background(), spec, newRecorder()); err == nil {
 		t.Fatal("started without a binary")
 	}
+	// The migration is one of the chat's children: it goes through Spawn.
 	r = newRig(t)
-	r.mustStart("")
+	var mu sync.Mutex
+	var spawned []string
+	spec = r.spec("")
+	spec.Spawn = func(cmd *exec.Cmd) error {
+		mu.Lock()
+		spawned = append(spawned, strings.Join(cmd.Args[1:], " "))
+		mu.Unlock()
+		return spawnPG(cmd)
+	}
+	if err := r.start(spec); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	if len(spawned) == 0 || spawned[0] != "db select 1" {
+		t.Fatalf("spawned %q", spawned)
+	}
+	mu.Unlock()
 	layout := NewLayout(r.data)
 	stamp, err := os.Stat(filepath.Join(layout.Root, migrateStamp))
 	if err != nil {
@@ -655,5 +882,42 @@ func TestStartRefusesAMissingBinaryAndMigratesOnce(t *testing.T) {
 	again, err := os.Stat(filepath.Join(layout.Root, migrateStamp))
 	if err != nil || !again.ModTime().Equal(stamp.ModTime()) {
 		t.Fatalf("migrated again: %v", err)
+	}
+}
+
+// The dashboard's binary setting reaches the adapter through the spec: a path
+// as it is, a bare name on the chat's PATH, and either wins over BinaryEnv.
+func TestTheConfiguredBinaryIsRun(t *testing.T) {
+	r := newRig(t)
+	r.env = []string{"PATH=/nonexistent", "HOME=" + r.data, BinaryEnv + "=" + filepath.Join(t.TempDir(), "missing")}
+	spec := r.spec("")
+	spec.Binary = filepath.Join(fakeBin, "opencode")
+	if err := r.start(spec); err != nil {
+		t.Fatalf("start with the configured path: %v", err)
+	}
+	r.send("hello")
+	if got := r.waitTurns(1); got[0] != agent.OutcomeCompleted {
+		t.Fatalf("outcome %v", got)
+	}
+	_ = r.a.Park(context.Background())
+
+	named := t.TempDir()
+	if err := os.Symlink(filepath.Join(fakeBin, "opencode"), filepath.Join(named, "opencode-custom")); err != nil {
+		t.Fatal(err)
+	}
+	r.env[0] = "PATH=" + named
+	spec = r.spec(r.conversation())
+	spec.Binary = "opencode-custom"
+	if err := r.start(spec); err != nil {
+		t.Fatalf("start with the configured name: %v", err)
+	}
+	if r.a.bin != filepath.Join(named, "opencode-custom") {
+		t.Fatalf("ran %s", r.a.bin)
+	}
+	_ = r.a.Park(context.Background())
+
+	spec.Binary = filepath.Join(t.TempDir(), "missing")
+	if err := (New()).Start(context.Background(), spec, newRecorder()); err == nil {
+		t.Fatal("a missing configured binary started")
 	}
 }

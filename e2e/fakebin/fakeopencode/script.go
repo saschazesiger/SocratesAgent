@@ -28,13 +28,19 @@ import (
 //	/limit           retry with a free-tier-limit action, every second, until
 //	                 aborted (research/06 §3.7)
 //	/retry           one plain retry, then a normal answer
-//	/error           an APIError 401 on the message and session.error
+//	/error           an APIError 401 on the message and session.error, and
+//	                 after session.idle a second session.error with a stack
+//	                 trace, as OpenCode 1.19.4 sends
 //	/perm            permission.asked; the reply goes into the answer
 //	/question [unseen]  question.asked; the answers go into the answer.
 //	                 unseen: every /event stream is closed first, so that only
 //	                 a reader of GET /question learns of it
+//	/dropperm        every /event stream is closed, then /perm: only a reader
+//	                 of GET /permission sees the question
 //	/sleep S         text, then S seconds of work
 //	/crash           a running bash tool, and the process exits on the spot
+//	/crashtext       a text part streams "partial answer", and the process
+//	                 exits before the part ends (so its stored text is "")
 //	/dropstream      text, every /event stream is closed, then more text that
 //	                 only a reader of GET …/message sees
 //	/whoami          "account: <identity>"
@@ -45,12 +51,16 @@ import (
 //	                 server: a running tool part until the call returns, then
 //	                 "ask_user returned: <result>"; an abort withdraws the call
 //	                 with notifications/cancelled
+//	/beforeack       an answer, and prompt_async answers only once the turn
+//	                 is over
 //	anything else    "you said: <text> (turn N of <session>)"
 
 var commands = []map[string]any{
 	{"name": "init", "description": "guided AGENTS.md setup", "source": "command", "template": "init"},
 	{"name": "review", "description": "review changes", "source": "command", "template": "review", "hints": []string{"$ARGUMENTS"}},
-	{"name": "hello", "description": "say hello", "source": "command", "template": "hello $ARGUMENTS"},
+	{"name": "hello", "description": "say hello", "source": "command", "template": "hello $1 and $2", "hints": []string{"$1", "$2"}},
+	// A project's command named like one the adapter has itself.
+	{"name": "shell", "description": "a project's shell command", "source": "command", "template": "shell"},
 }
 
 type promptBody struct {
@@ -92,7 +102,7 @@ func (s *srv) userMessage(sid, id, agent string, parts []map[string]any) {
 	}
 }
 
-func (s *srv) prompt(sid string, body promptBody) {
+func (s *srv) prompt(sid string, body promptBody) *run {
 	var parts []map[string]any
 	for _, p := range body.Parts {
 		switch p.Type {
@@ -103,7 +113,7 @@ func (s *srv) prompt(sid string, body promptBody) {
 		}
 	}
 	s.userMessage(sid, body.MessageID, body.Agent, parts)
-	s.ensureRun(sid)
+	return s.ensureRun(sid)
 }
 
 // ensureRun starts the session's loop unless it runs.
@@ -113,7 +123,7 @@ func (s *srv) ensureRun(sid string) *run {
 		s.mu.Unlock()
 		return r
 	}
-	r := &run{cancel: make(chan struct{})}
+	r := &run{cancel: make(chan struct{}), done: make(chan struct{})}
 	s.runs[sid] = r
 	s.mu.Unlock()
 	s.publish("session.status", map[string]any{"sessionID": sid, "status": map[string]any{"type": "busy"}})
@@ -130,6 +140,14 @@ func (s *srv) loop(sid string, r *run) {
 		s.mu.Unlock()
 		s.publish("session.status", map[string]any{"sessionID": sid, "status": map[string]any{"type": "idle"}})
 		s.publish("session.idle", map[string]any{"sessionID": sid})
+		if r.failure != nil {
+			data, _ := r.failure["data"].(map[string]any)
+			msg, _ := data["message"].(string)
+			s.publish("session.error", map[string]any{"sessionID": sid, "error": map[string]any{"name": "UnknownError",
+				"data": map[string]any{"message": r.failure["name"].(string) + ": " + msg +
+					"\n    at SessionPrompt.run (/$bunfs/root/chunk-577s80tf.js:50:14576)"}}})
+		}
+		close(r.done)
 	}()
 	for {
 		sess, _ := loadSession(sid)
@@ -188,6 +206,8 @@ type turn struct {
 	user string
 	n    int
 	msg  map[string]any
+	// pause is how long a tool runs before its first line.
+	pause time.Duration
 }
 
 var errAborted = errors.New("aborted")
@@ -334,6 +354,9 @@ func (t *turn) tool(name string, input map[string]any, lines []string, meta map[
 	}
 	p["state"] = map[string]any{"status": "running", "input": input, "time": map[string]any{"start": start}}
 	t.part(p)
+	if err := t.wait(t.pause); err != nil {
+		return p, err
+	}
 	out := ""
 	for _, l := range lines {
 		if err := t.wait(20 * time.Millisecond); err != nil {
@@ -437,8 +460,13 @@ func (t *turn) play(text string) error {
 		t.msg["error"] = e
 		t.finish("error", 10, 0)
 		t.s.publish("session.error", map[string]any{"sessionID": t.sid, "error": e})
+		t.run.failure = e
 		return nil
-	case "/perm", "/question":
+	case "/perm", "/question", "/dropperm":
+		if word == "/dropperm" {
+			t.s.dropStreams()
+			word = "/perm"
+		}
 		answer, err := t.ask(word, firstOr(fields, "") == "unseen")
 		if err != nil {
 			return err
@@ -459,6 +487,14 @@ func (t *turn) play(text string) error {
 			"state": map[string]any{"status": "running", "input": map[string]any{"command": "sleep 100"},
 				"time": map[string]any{"start": time.Now().UnixMilli()}}})
 		_ = p
+		os.Exit(3)
+	case "/crashtext":
+		p := t.part(map[string]any{"type": "text", "text": "", "time": map[string]any{"start": time.Now().UnixMilli()}})
+		for _, c := range []string{"partial ", "answer"} {
+			t.s.publish("message.part.delta", map[string]any{"sessionID": t.sid, "messageID": t.msg["id"],
+				"partID": p["id"], "field": "text", "delta": c})
+		}
+		time.Sleep(200 * time.Millisecond)
 		os.Exit(3)
 	case "/dropstream":
 		if err := t.say([]string{"before the drop"}, 5*time.Millisecond); err != nil {
@@ -536,11 +572,12 @@ func (t *turn) ask(kind string, unseen bool) (string, error) {
 	ch := make(chan string, 1)
 	if kind == "/perm" {
 		id := newID("per")
+		asked := map[string]any{"id": id, "sessionID": t.sid, "permission": "bash",
+			"patterns": []string{"rm -rf build"}, "always": []string{"rm *"}, "metadata": map[string]any{}}
 		t.s.mu.Lock()
-		t.s.pending[id] = ch
+		t.s.pending[id], t.s.asked[id] = ch, asked
 		t.s.mu.Unlock()
-		t.s.publish("permission.asked", map[string]any{"id": id, "sessionID": t.sid, "permission": "bash",
-			"patterns": []string{"rm -rf build"}, "always": []string{"rm *"}, "metadata": map[string]any{}})
+		t.s.publish("permission.asked", asked)
 	} else {
 		id := newID("que")
 		props := map[string]any{"id": id, "sessionID": t.sid, "questions": []map[string]any{{
@@ -558,12 +595,21 @@ func (t *turn) ask(kind string, unseen bool) (string, error) {
 	case a := <-ch:
 		return a, nil
 	case <-t.run.cancel:
+		t.s.mu.Lock()
+		for id, c := range t.s.pending {
+			if c == ch {
+				delete(t.s.pending, id)
+				delete(t.s.asked, id)
+			}
+		}
+		t.s.mu.Unlock()
 		return "", errAborted
 	}
 }
 
 // shell runs a "!" line: a user message and a bash tool in an assistant
-// message, answered when it is done. A busy session refuses it.
+// message, answered when it is done. A busy session refuses it. "sleep S"
+// runs for S seconds.
 func (s *srv) shell(w http.ResponseWriter, r *http.Request, sid string) {
 	var body struct {
 		MessageID string `json:"messageID"`
@@ -599,6 +645,10 @@ func (s *srv) shell(w http.ResponseWriter, r *http.Request, sid string) {
 	s.userMessage(sid, id, body.Agent, []map[string]any{{"type": "text", "synthetic": true,
 		"text": "The following tool was executed by the user"}})
 	t := &turn{s: s, sid: sid, run: run, user: id}
+	if secs, ok := strings.CutPrefix(body.Command, "sleep "); ok {
+		f, _ := strconv.ParseFloat(secs, 64)
+		t.pause = time.Duration(f * float64(time.Second))
+	}
 	t.step()
 	if _, err := t.tool("bash", map[string]any{"command": body.Command}, []string{"fake shell: " + body.Command + "\n"}, nil, body.Command); err != nil {
 		t.aborted()

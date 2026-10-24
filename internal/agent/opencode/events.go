@@ -109,9 +109,14 @@ func (a *Adapter) handleMessage(gen int, m ocMessage) {
 		return
 	}
 	if m.SessionID != a.session {
-		if _, child := a.children[m.SessionID]; child && m.Role == "user" {
-			// The task's prompt to the subagent: the task part shows it.
-			a.childPrompts[m.ID] = true
+		if _, child := a.children[m.SessionID]; child {
+			switch m.Role {
+			case "user":
+				// The task's prompt to the subagent: the task part shows it.
+				a.childPrompts[m.ID] = true
+			case "assistant":
+				a.childStepLocked(m)
+			}
 		}
 		return
 	}
@@ -180,9 +185,15 @@ func (a *Adapter) assistantLocked(m ocMessage) {
 		return
 	}
 	as.done = true
+	// What still streams ends with the message: complete, or cut short by
+	// the abort or the error the message ended with.
+	end := agent.PartDone
+	if m.Error != nil {
+		end = agent.PartInterrupted
+	}
 	for id, sp := range a.parts {
 		if sp.msg == m.ID && sp.parent == "" && sp.state == agent.PartStreaming {
-			a.emitPartLocked(id, sp.msg, sp.parent, converted{kind: sp.kind, state: agent.PartDone, text: sp.text, content: sp.content})
+			a.emitPartLocked(id, sp.msg, sp.parent, converted{kind: sp.kind, state: end, text: sp.text, content: sp.content})
 		}
 	}
 	state := agent.MessageDone
@@ -190,6 +201,21 @@ func (a *Adapter) assistantLocked(m ocMessage) {
 		state = agent.MessageInterrupted
 	}
 	a.out.Emit(agent.Event{Type: agent.TypeMessageState, MessageID: m.ID, State: state})
+}
+
+// childStepLocked counts a subagent's model call into the running turn:
+// OpenCode keeps what a subagent used and cost with its own session.
+func (a *Adapter) childStepLocked(m ocMessage) {
+	if a.turn == nil {
+		return
+	}
+	as := a.assistants[m.ID]
+	if as == nil {
+		as = &asstMsg{parent: m.ParentID, child: true}
+		a.assistants[m.ID] = as
+		a.turn.assistants = append(a.turn.assistants, m.ID)
+	}
+	as.tokens, as.cost = m.Tokens, m.Cost
 }
 
 func (a *Adapter) handlePart(gen int, p ocPart) {
@@ -222,10 +248,20 @@ func (a *Adapter) handlePart(gen int, p ocPart) {
 	if !ok {
 		return
 	}
-	if c.child != "" {
-		a.children[c.child] = childSession{msg: msg, parent: p.ID}
+	// A task part that names a subagent for the first time runs it from
+	// now on, a new one or one it resumes. A part that named it before (one
+	// a catch-up repeats, or one of the history) leaves it where it is.
+	if sp := a.parts[p.ID]; c.child != "" && (sp == nil || sp.child != c.child) {
+		var since int64
+		if p.State != nil {
+			since = p.State.Time.Start
+		}
+		a.children[c.child] = childSession{msg: msg, parent: p.ID, since: since}
 	}
 	a.emitPartLocked(p.ID, msg, parent, c)
+	if c.child != "" {
+		a.parts[p.ID].child = c.child
+	}
 	if c.diff != nil {
 		if sp := a.parts[p.ID]; sp != nil && !sp.diff {
 			sp.diff = true
@@ -258,16 +294,26 @@ func (a *Adapter) stepLocked(tokens ocTokens) {
 }
 
 // emitPartLocked writes a part when it changed since it was last written:
-// text that only grew is a delta, anything else the part whole.
+// text that only grew while the part streams is a delta, anything else the
+// part whole, and so is a part's end. What a catch-up read is older than
+// what /event may have said meanwhile: a part never goes back from its end,
+// and text that lags the deltas of a part still streaming (OpenCode stores
+// the text when the part ends) is not news.
 func (a *Adapter) emitPartLocked(id, msg, parent string, c converted) {
 	sp := a.parts[id]
+	if sp != nil && !live(sp.state) && live(c.state) {
+		return
+	}
 	if sp != nil && sp.kind == c.kind && sp.state == c.state && bytes.Equal(sp.content, c.content) {
 		switch {
 		case c.text == sp.text:
 			return
+		case !live(c.state):
 		case strings.HasPrefix(c.text, sp.text):
 			a.out.Delta(sp.msg, id, c.text[len(sp.text):])
 			sp.text = c.text
+			return
+		case strings.HasPrefix(sp.text, c.text):
 			return
 		}
 	}
@@ -279,6 +325,9 @@ func (a *Adapter) emitPartLocked(id, msg, parent string, c converted) {
 	a.out.Emit(agent.Event{Type: agent.TypePart, MessageID: sp.msg, PartID: id, ParentPartID: sp.parent,
 		Kind: c.kind, State: c.state, Text: c.text, Content: c.content})
 }
+
+// live is a part state that has not ended.
+func live(state string) bool { return state == agent.PartStreaming || state == agent.PartRunning }
 
 func (a *Adapter) handleDelta(gen int, partID, text string) {
 	a.mu.Lock()
@@ -360,6 +409,11 @@ func (a *Adapter) handleError(gen int, session string, e *ocError) {
 		}
 		return
 	}
+	if a.turn == nil && a.failedTurn {
+		// The repeat of what the turn that just ended failed with.
+		a.failedTurn = false
+		return
+	}
 	text := e.text()
 	code := "agent_error"
 	switch {
@@ -394,6 +448,7 @@ func (a *Adapter) beginTurnLocked(oc string) {
 		a.endTurnLocked()
 	}
 	u.started = true
+	a.failedTurn = false
 	t := &turnState{id: newTurnID(), user: oc, our: u.our, adopt: u.adopt, model: a.model}
 	if u.adopt {
 		t.user = ""
@@ -429,6 +484,7 @@ func (a *Adapter) endTurnLocked() {
 	case t.failure != "":
 		outcome = agent.OutcomeFailed
 	}
+	a.failedTurn = outcome != agent.OutcomeCompleted
 	usage := &agent.Usage{Context: t.context, Window: a.windows[t.model]}
 	var cost float64
 	var events []agent.Event
@@ -443,7 +499,7 @@ func (a *Adapter) endTurnLocked() {
 		usage.CacheRead += as.tokens.Cache.Read
 		usage.CacheWrite += as.tokens.Cache.Write
 		cost += as.cost
-		if !as.done {
+		if !as.done && !as.child {
 			as.done = true
 			state := agent.MessageDone
 			if outcome != agent.OutcomeCompleted {
@@ -452,9 +508,11 @@ func (a *Adapter) endTurnLocked() {
 			events = append(events, agent.Event{Type: agent.TypeMessageState, MessageID: id, State: state})
 		}
 	}
-	if usage.Context == 0 && len(t.assistants) > 0 {
-		if as := a.assistants[t.assistants[len(t.assistants)-1]]; as != nil {
+	for i := len(t.assistants) - 1; i >= 0 && usage.Context == 0; i-- {
+		// The context is the chat's own, not a subagent's.
+		if as := a.assistants[t.assistants[i]]; as != nil && !as.child {
 			usage.Context = as.tokens.context()
+			break
 		}
 	}
 	text := ""
@@ -473,10 +531,14 @@ func (a *Adapter) endTurnLocked() {
 func (a *Adapter) handlePermission(gen int, p ocPermission) {
 	a.mu.Lock()
 	_, child := a.children[p.SessionID]
-	ours := a.gen == gen && (p.SessionID == a.session || child)
+	// A catch-up lists what /event may also have said.
+	ours := a.gen == gen && (p.SessionID == a.session || child) && validID(p.ID, "per") && !a.allowed[p.ID]
+	if ours {
+		a.allowed[p.ID] = true
+	}
 	cl := a.cl
 	a.mu.Unlock()
-	if !ours || !validID(p.ID, "per") {
+	if !ours {
 		return
 	}
 	go func() {

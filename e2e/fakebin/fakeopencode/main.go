@@ -11,6 +11,9 @@
 //	fakeopencode db "select 1"          creates or migrates the store
 //	fakeopencode serve --hostname 127.0.0.1 --port 0
 //
+// serve refuses another address and a missing OPENCODE_SERVER_PASSWORD, so
+// that the tests notice an adapter that would expose a chat's server.
+//
 // Like the real one, serve refuses a store that was never migrated, and its
 // identity is the account's credentials: OPENCODE_AUTH_CONTENT when it is
 // set, otherwise $XDG_DATA_HOME/opencode/auth.json (/whoami says which).
@@ -49,7 +52,7 @@ func main() {
 		}
 		fmt.Println("1")
 	case "serve":
-		if err := serve(); err != nil {
+		if err := serve(args[1:]); err != nil {
 			fmt.Fprintln(os.Stderr, "Error:", err)
 			os.Exit(1)
 		}
@@ -199,17 +202,44 @@ type srv struct {
 	// config names.
 	mcp       map[string]*mcpClient
 	mcpConfig map[string]mcpConfig
+	// asked are the pending permissions, as GET /permission lists them.
+	asked map[string]map[string]any
 }
 
 // run is a session's loop while it works.
 type run struct {
 	cancel chan struct{}
 	once   sync.Once
+	// done is closed once a prompt's loop has ended and said so.
+	done chan struct{}
+	// failure is the error a turn of the loop ended with, which OpenCode
+	// says again after session.idle: the rejected prompt, with a stack
+	// trace.
+	failure map[string]any
 }
 
 func (r *run) stop() { r.once.Do(func() { close(r.cancel) }) }
 
-func serve() error {
+// serve listens like `opencode serve --hostname 127.0.0.1 --port 0`. Unlike
+// the real one, it refuses anything that would expose a chat's server: another
+// address, or no password.
+func serve(args []string) error {
+	host := ""
+	for i := 0; i+1 < len(args); i++ {
+		if args[i] == "--hostname" {
+			host = args[i+1]
+		}
+	}
+	if host != "127.0.0.1" {
+		return fmt.Errorf("serve must bind 127.0.0.1, not %q", host)
+	}
+	if os.Getenv("OPENCODE_SERVER_PASSWORD") == "" {
+		return errors.New("serve without OPENCODE_SERVER_PASSWORD")
+	}
+	if os.Getenv("FAKEOPENCODE_REFUSE") == "1" {
+		// A server that cannot start for this account.
+		return errors.New("refused to serve")
+	}
 	var migrated bool
 	if err := withStore(func(st *store) error {
 		migrated = st.Migrated
@@ -221,7 +251,8 @@ func serve() error {
 		return errors.New("Failed query: CREATE TABLE workspace (the database was never migrated)")
 	}
 	s := &srv{password: os.Getenv("OPENCODE_SERVER_PASSWORD"), subs: map[chan []byte]chan struct{}{},
-		runs: map[string]*run{}, pending: map[string]chan string{}, questions: map[string]map[string]any{}}
+		runs: map[string]*run{}, pending: map[string]chan string{}, questions: map[string]map[string]any{},
+		asked: map[string]map[string]any{}}
 	s.startMCP()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -266,7 +297,7 @@ func (s *srv) dropStreams() {
 
 func (s *srv) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	user, pass, ok := r.BasicAuth()
-	if s.password != "" && (!ok || user != "opencode" || pass != s.password) {
+	if !ok || user != "opencode" || pass != s.password {
 		w.Header().Set("WWW-Authenticate", `Basic realm="opencode"`)
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return
@@ -290,6 +321,14 @@ func (s *srv) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		list := []map[string]any{}
 		for _, q := range s.questions {
 			list = append(list, q)
+		}
+		s.mu.Unlock()
+		writeJSON(w, 200, list)
+	case r.Method == http.MethodGet && path == "permission":
+		s.mu.Lock()
+		list := []any{}
+		for _, p := range s.asked {
+			list = append(list, p)
 		}
 		s.mu.Unlock()
 		writeJSON(w, 200, list)
@@ -327,6 +366,7 @@ func (s *srv) resolve(w http.ResponseWriter, id, answer string) {
 	ch := s.pending[id]
 	delete(s.pending, id)
 	delete(s.questions, id)
+	delete(s.asked, id)
 	s.mu.Unlock()
 	if ch == nil {
 		notFound(w, "request "+id)
@@ -337,6 +377,10 @@ func (s *srv) resolve(w http.ResponseWriter, id, answer string) {
 }
 
 func (s *srv) events(w http.ResponseWriter, r *http.Request) {
+	if os.Getenv("FAKEOPENCODE_EXIT_ON_EVENT") == "1" {
+		// A server that dies before its event stream opens.
+		os.Exit(4)
+	}
 	fl, ok := w.(http.Flusher)
 	if !ok {
 		http.Error(w, "no streaming", 500)
@@ -459,7 +503,13 @@ func (s *srv) sessionRoute(w http.ResponseWriter, r *http.Request, id string, re
 			writeJSON(w, 400, map[string]any{"name": "BadRequest", "data": map[string]any{"message": err.Error()}})
 			return
 		}
-		s.prompt(id, body)
+		r := s.prompt(id, body)
+		if len(body.Parts) > 0 && body.Parts[0].Text == "/beforeack" && r.done != nil {
+			// The turn is over, and said so on /event, before the post is
+			// answered.
+			<-r.done
+			time.Sleep(300 * time.Millisecond)
+		}
 		w.WriteHeader(http.StatusNoContent)
 	case r.Method == http.MethodPost && op == "abort":
 		s.mu.Lock()

@@ -2298,6 +2298,34 @@ an id the model gave another one. An elicitation form has no place for a note, a
 question back: when the answer has one, the form gets its values and the whole answer also goes to
 the agent as a message (`ErrAskDeferred`), so the model reads what the person wrote.
 
+**WP5 / §3.3 — `@opencode-ai/plugin` is not pre-installed.** The plan asks for the shared config
+folder's `node_modules/@opencode-ai/plugin` to exist before the first serve, because a stop that
+caught OpenCode's own first-start install hung (research/06 §3.5). OpenCode 1.19.4 installs it with
+its embedded npm, in the background, on the first start in a fresh data folder; doing that ahead
+would mean driving that installer from the install step, with network, for a package Socrates never
+uses (it loads no plugin). The hang is bounded instead: every stop is SIGTERM, then SIGKILL after
+5 s (`TestStopKillsAServerThatIgnoresTerm`), and a start after a cut-off install installs again.
+Offline, the install fails and the server works on.
+
+**WP5 / §3.3 — the tools an OpenCode chat runs see the layout's XDG folders.** OpenCode's shell and
+bash tool inherit the server's environment, so `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_STATE_HOME`
+and `XDG_CACHE_HOME` point into `<data>/agents/opencode` for them too. Caches kept there (Go's
+build cache, pip's, uv's) land in the shared `cache/`, which the backup leaves out
+(`paths.NotBackedUp`); npm keeps its cache in `~/.npm`, not under XDG. What tools keep in the
+account's data and state homes (uv's Pythons and tools, pipx's environments) is left out too: of
+`accounts/<acct>/` the backup takes only `opencode/` and `state/opencode/`, where OpenCode keeps
+the account's own (`paths.BackedUpOnly`). A tool that finds its configuration only through
+`XDG_CONFIG_HOME` (gh's login, git's `~/.config/git/config`) does not see the user's in an OpenCode
+chat; the variables a tool has for that (`GH_CONFIG_DIR`, `GIT_CONFIG_GLOBAL`) pass through, so
+WP7, which builds the chat's environment, can set them. Giving tools the user's XDG values back
+would take a plugin on OpenCode's `shell.env` hook, which was not tried.
+
+**WP5 / §4.3 — an OpenCode gap is left to the package that needs it.** After a `limited` turn
+the adapter runs its queue as after any other, so queued messages go into the account at its
+limit; holding them until a switch or a "continue" belongs with the limit card and the
+auto-switch (WP7). AGENT-HOST.md §10 and HANDOFF.md §4 name it. (The catch-up's `GET /question`,
+the other gap the WP5 fixes found, came with WP6.)
+
 **WP1 / REBUILD.md §6.2 — chunks are named by an HMAC of their content, not by its SHA-256.**
 §6.2 says `chunks/<sha256>`. The name is HMAC-SHA256 under a key derived from the passphrase
 (as the work package's brief asked), so equal content is still stored once, but the bucket's

@@ -163,9 +163,6 @@ func convertTool(p ocPart) converted {
 		tc := TodoContent{Todos: []Todo{}}
 		_ = json.Unmarshal(todos, &tc.Todos)
 		raw, _ := json.Marshal(tc)
-		if state == agent.PartRunning {
-			text = ""
-		}
 		return converted{kind: agent.PartTodo, state: state, content: raw}
 	}
 	tc := ToolContent{Tool: p.Tool, CallID: p.CallID, Title: st.Title, StartedAt: st.Time.Start}

@@ -418,10 +418,11 @@ package comment.
 
 **Process.** `codex app-server --listen stdio:// -c check_for_update_on_startup=false
 -c projects={"<resolved workdir>"={trust_level="trusted"}}`, started through Spawn with
-`StartSpec.Env` as its whole environment. An empty `Env` is refused (exec would otherwise pass
-the host's own); until WP7 the host fills it with its scrubbed environment, so codex uses
-`~/.codex`. What WP7 puts in it per account: `PATH` (and `SOCRATES_CODEX_BIN` for a binary
-that is not the first `codex` on it), `HOME`, `LANG`/`LC_*` and `TZ` as the host has them,
+`StartSpec.Env` as its whole environment. The binary is `StartSpec.Binary` (the dashboard's
+setting: a path, or a name looked up on `Env`'s `PATH`), else `SOCRATES_CODEX_BIN` from `Env`,
+else `codex` on `Env`'s `PATH` (`agent.ResolveBinary`). An empty `Env` is refused (exec would
+otherwise pass the host's own); until WP7 the host fills it with its scrubbed environment, so
+codex uses `~/.codex`. What WP7 puts in it per account: `PATH`, `HOME`, `LANG`/`LC_*` and `TZ` as the host has them,
 `CODEX_HOME` = the account's home prepared with `codex.PrepareHome` (its `auth.json` is the
 login; an API-key account is logged in there with `account/login/start {type: apiKey}`, so no
 `OPENAI_API_KEY` is needed), and nothing of the service's (`INVOCATION_ID`, `NOTIFY_SOCKET`,
@@ -512,7 +513,7 @@ follow (`notice{plan_mode}`); `shell <command>` → `thread/shellCommand`.
 **Lost journal** (`Start` with `Rebuild`, §5): the history is written back first from `thread/turns/list` + `thread/items/list` (paginated): per
 turn the user messages (`delivered`, the codex `clientId` as `message_id`), `turn.started`, the
 assistant message with its items as parts, `turn.ended` (a turn codex died in is `interrupted`),
-then `notice{rebuilt}`. Subagent threads are not replayed. `agent.info` carries `codex.Commands`.
+then `notice{rebuilt}` (also for a thread with no turn yet). Subagent threads are not replayed. `agent.info` carries `codex.Commands`.
 
 **Accounts** (mechanics; WP7 drives them). `codex.PrepareHome(home, <data>/agents/codex)` makes an
 account's `CODEX_HOME` with `sessions/` and `archived_sessions/` as relative symlinks into the
@@ -539,7 +540,8 @@ Registered as `opencode` (imported by `main.go`). Research: research/05
 
 **Process.** One `opencode serve --hostname 127.0.0.1 --port 0` per host, started through Spawn in
 the workdir; the URL is read from its `listening on` line (`--port 0` tries 4096 first). The binary
-is `SOCRATES_OPENCODE_BIN` from `StartSpec.Env`, else `opencode` on that environment's `PATH`. Its
+is `StartSpec.Binary` (a path, or a name looked up on `StartSpec.Env`'s `PATH`), else
+`SOCRATES_OPENCODE_BIN` from `StartSpec.Env`, else `opencode` on that environment's `PATH`. Its
 environment is `StartSpec.Env` without `OPENCODE_*`/`XDG_*` (except `OPENCODE_AUTH_CONTENT`), plus
 the layout, `OPENCODE_SERVER_USERNAME/PASSWORD` (32 random bytes per process),
 `OPENCODE_CONFIG_CONTENT` (share disabled, autoupdate off, `permission`: `external_directory`,
@@ -552,33 +554,47 @@ Park and Stop: abort if a turn runs, SIGTERM to the process group, SIGKILL after
 **Layout** (`opencode.Layout`, `NewLayout(dataDir)`): `<data>/agents/opencode/opencode.db`
 (`OPENCODE_DB` of every process), shared `snapshot/ storage/ tool-output/ plans/ worktree/ repos/
 config/ cache/`, and per account `accounts/<acct>/` as `XDG_DATA_HOME` (its `opencode/auth.json`,
-the shared folders linked in by relative symlinks) with `state/` as `XDG_STATE_HOME`.
+the shared folders linked in by relative symlinks) with `state/` as `XDG_STATE_HOME`. The tools a
+chat runs inherit these; the backup leaves out `cache/`, and of an account's folder takes only
+`opencode/` and `state/opencode/` (`paths.BackedUpOnly`).
 `PrepareAccount(acct)` makes it (idempotent; every start calls it, WP7 calls it on creating an
-account). `Migrate` runs `opencode db "select 1"` once per binary build (stamp `migrated`, under
-`migrate.lock`) before any serve. `StartSpec.Account` empty is `default`.
+account). `Migrate` runs `opencode db "select 1"` through Spawn once per binary build (stamp
+`migrated`, under `migrate.lock`) before any serve. `StartSpec.Account` empty is `default`.
 
 **Session.** New: `POST /session`. Resume: `GET /session/{id}`; 404 (or a malformed id) wraps
 `ErrConversationNotFound`. On resume, an assistant message that never completed (a dead process)
-has its streaming/running parts written as `interrupted`. `Rebuild` reads the whole history
-from `GET /session/{id}/message` (and the task children's).
+has its running tool parts and itself written as `interrupted`, once (`agent/opencode.json` keeps
+which); its text and reasoning stay as the journal streamed them (OpenCode stores a part's text only
+when the part ends), and the host's recovery interrupts them. `Rebuild` reads the whole history
+from `GET /session/{id}/message` (and the task children's: each task part gets what its subagent
+did while it ran), and writes the `conversation` after it,
+so that a host that dies while it reads leaves a journal the next host rebuilds again.
 
 **Turns.** A message is posted with `prompt_async` and a message id of OpenCode's own form chosen by
 the adapter (`msg_` + 48-bit ms×4096+counter + 14 base-62), kept in `agent/opencode.json` (journal
 id → OpenCode id) so that revert/fork can name it and a message the previous host already handed
 over is recognised (`delivered` without a second turn). `delivered` + `turn.started` when the post
-is accepted; one turn per user message; every step is an assistant `message`. **While a turn runs,
+is accepted; one turn per user message; every step is an assistant `message`. `turn.ended`'s usage
+and cost add up the turn's steps and its subagents' (OpenCode keeps those with the child session),
+live and in a rebuild. **While a turn runs,
 messages wait in the adapter (`queued`) and go one by one after `session.idle`** (DEVIATIONS).
 A `!line` is `POST /shell`. Turn outcome: `limited` (a `retry` status with `action.reason`, which is
 then aborted, or a 429), else `interrupted` (`MessageAbortedError`), else `failed` (any other error;
-`error{code: auth}` for 401/ProviderAuthError with "sign in again"), else `completed`. Other
+`error{code: auth}` for 401/ProviderAuthError with "sign in again"), else `completed`. The
+`session.error` OpenCode 1.19.4 repeats after a failed turn's `session.idle` (the rejected prompt,
+with a stack trace) is dropped: the turn's error and end said it. Other
 retries: `notice{retry}` per attempt. `permission.asked` → replied `always` + `notice{permission_allowed}`.
 `question.asked` (OpenCode's own tool, denied, should one still arrive) → `ask{ask_id:
 "ask_<que id>", source: question}`, answered by `POST /question/{id}/reply` with one list of labels
 per question (`askuser.OpenCodeAnswers`); `question.replied`/`question.rejected`, a reply OpenCode
 refuses and a process started since make it `ErrAskGone`; one it cannot read is rejected +
 `notice{question_rejected}`. After `/event` drops, it is reopened and caught up from
-`GET …/message`, `GET /question` (a question asked meanwhile is asked then; each question is asked
-once, however often the event and the list bring it) and `/session/status`.
+`GET …/message` (the session's, and its subagents' since this process started or resumed them),
+`GET /permission` (each still pending is answered `always`), `GET /question` (a question asked
+meanwhile is asked then; each question is asked once, however often the event and the list bring
+it) and `/session/status`. A catch-up never takes a part back from its end, and never replaces
+streamed text with the shorter text OpenCode stored; a part always ends with the part whole,
+never a delta.
 
 **ask_user.** The config's `mcp.socrates = {type: "local", command: StartSpec.AskCommand, timeout:
 86400000}`: the host's `<socrates> mcp-ask --socket <its socket>` (`agenthost.MCPAskMain`, the same
@@ -604,7 +620,7 @@ sees an ask_user answer: the host routes it (§4.4).
 | `tool` todowrite | `todo` | – | `TodoContent{todos:[{content, status, priority}]}` |
 | completed edit / apply_patch / write of a new file | `diff`, id `<tool part>-diff` | – | `DiffContent{tool_part, files:[{path, patch, additions, deletions, status}]}` |
 | `file` | `image` / `file` | – | `FileContent{mime, filename, url (file:// only)}` |
-| a task child session's parts | as above | | with `parent_part_id` = the task part |
+| a task child session's parts | as above | | with `parent_part_id` = the task part running it (the newest to name the child: a task with `task_id` resumes an earlier task's) |
 
 **Commands** (`Command(name, args)`): `compact` (`/summarize`, a turn), `shell <cmd>`, `agent
 build|plan` (for every following prompt, kept across hosts; `notice{agent}`), `revert <message>`
@@ -612,14 +628,19 @@ build|plan` (for every following prompt, kept across hosts; `notice{agent}`), `r
 (`notice{forked, conversation_id}` — a new chat made with it as its `cli_session_id` resumes it,
 its history rebuilt), and any name from `GET /command` (a turn whose user message is `/name args`). `agent.info`
 (`{agent, version, commands}`) lists `compact`, `shell`, `agent` and OpenCode's commands (`hints`
-as `args`) at start. `SetModel`: `provider/model`
+as `args`, `$ARGUMENTS` shown as `<arguments>` and `$1` as `<arg1>`; one named like a command the
+adapter handles itself is left out) at start. `SetModel`: `provider/model`
 and the effort as `variant`, both sent with every prompt.
 
 **Account switch** (mechanics for WP7): `(*opencode.Adapter).SwitchAccount(ctx, account, env)`
-interrupts a running turn and waits for it, stops the process, and starts one for the other
-account's data home and `env` on the same session; the caller journals `account.switched`. API-key
+interrupts a running turn and waits for it (30 s, then the stop ends it as `interrupted`), stops the
+process, and starts one for the other account's data home and `env` on the same session; the queue
+holds meanwhile, so queued messages and those sent during the switch run on the new account. When the
+new process does not come up, the adapter reports `Exited` and refuses further sends (the host records
+the failure; the next host resumes and re-sends what is undelivered). The caller journals
+`account.switched`. API-key
 accounts may pass `OPENCODE_AUTH_CONTENT` in `env`; OAuth accounts keep `auth.json` in their data
-home (research/06 §3.2).
+home (research/06 §3.2). After a `limited` turn the queue runs on (§10).
 
 ## 6. Lifecycle
 
@@ -863,3 +884,7 @@ attachment(s): …`).
 - The Claude adapter's replay receipt is in (§5.1). Ultracode and an API-key account reach it
   only through `StartSpec.Env` (`SOCRATES_CLAUDE_ULTRACODE`, `SOCRATES_CLAUDE_API_KEY`); the server
   sets neither yet (WP7, WP9).
+- OpenCode, for WP7: a turn that ends `limited` lets the queue run like any other, so each queued
+  message is posted into the account at its limit and ends `limited` too. The limit card and the
+  auto-switch (REBUILD §4.3) need the adapter to hold the queue after a limited turn until the chat
+  switches (`SwitchAccount` runs it on the new account) or is told to continue.

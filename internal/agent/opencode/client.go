@@ -16,9 +16,8 @@ import (
 	"time"
 )
 
-// requestWait bounds every call but the long ones (a slash command, a shell
-// line and a summary run until they are done, and run off the host's
-// command path).
+// requestWait bounds every call made without a deadline of its own, but the
+// long ones (long).
 const requestWait = 30 * time.Second
 
 // client talks to one serve process: Basic auth on every request, and the
@@ -28,10 +27,12 @@ type client struct {
 	pass string
 	dir  string
 	hc   *http.Client
+	// wait is requestWait, shorter in a test.
+	wait time.Duration
 }
 
 func newClient(base, password, dir string) *client {
-	return &client{base: base, pass: password, dir: dir, hc: &http.Client{}}
+	return &client{base: base, pass: password, dir: dir, hc: &http.Client{}, wait: requestWait}
 }
 
 // apiError is a call OpenCode refused.
@@ -83,14 +84,22 @@ func (c *client) request(ctx context.Context, method, path string, body any) (*h
 }
 
 // call does one request and decodes a JSON answer into out (nil: ignored).
-// An answer that is not JSON is an error: OpenCode serves its web UI's HTML
-// with 200 for any path it has no route for (research/05 §5).
+// A ctx without a deadline gets the client's wait. An answer that is not
+// JSON is an error: OpenCode serves its web UI's HTML with 200 for any path
+// it has no route for (research/05 §5).
 func (c *client) call(ctx context.Context, method, path string, body, out any) error {
 	if _, has := ctx.Deadline(); !has {
 		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, requestWait)
+		ctx, cancel = context.WithTimeout(ctx, c.wait)
 		defer cancel()
 	}
+	return c.long(ctx, method, path, body, out)
+}
+
+// long is call with no wait of its own, for what OpenCode answers only once
+// it is done (a slash command, a shell line, a summary: research/05 §7),
+// which can take as long as a turn does. Only ctx ends it.
+func (c *client) long(ctx context.Context, method, path string, body, out any) error {
 	req, err := c.request(ctx, method, path, body)
 	if err != nil {
 		return err

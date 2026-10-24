@@ -15,8 +15,8 @@ import (
 	"github.com/saschazesiger/SocratesAgent/internal/agent"
 )
 
-// The real-binary test is off unless SOCRATES_OPENCODE_REAL=1. It runs the
-// installed opencode on a free model, in a data folder of its own:
+// The real-binary tests are off unless SOCRATES_OPENCODE_REAL=1. This one
+// runs the installed opencode on a free model, in a data folder of its own:
 //
 //	SOCRATES_OPENCODE_REAL=1            run it
 //	SOCRATES_OPENCODE_REAL_DIR=<dir>    the data folder (default: a temp dir)
@@ -31,30 +31,13 @@ import (
 // It never touches ~/.local/share/opencode or ~/.config/opencode: every
 // process gets the layout's paths.
 func TestRealOpenCode(t *testing.T) {
-	if os.Getenv("SOCRATES_OPENCODE_REAL") != "1" {
-		t.Skip("set SOCRATES_OPENCODE_REAL=1 to run against the installed opencode")
-	}
-	bin, err := exec.LookPath("opencode")
-	if err != nil {
-		t.Skip("no opencode on PATH")
-	}
 	model := firstNonEmpty(os.Getenv("SOCRATES_OPENCODE_REAL_MODEL"), "openrouter/nvidia/nemotron-3.5-lightning:free")
 	auth := os.Getenv("SOCRATES_OPENCODE_REAL_AUTH")
 	data := os.Getenv("SOCRATES_OPENCODE_REAL_DIR")
 	if data == "" {
 		data = t.TempDir()
 	}
-	work := filepath.Join(data, "work")
-	if err := os.MkdirAll(work, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if git, err := exec.LookPath("git"); err == nil {
-		cmd := exec.Command(git, "init", "-q", work)
-		if out, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("git init: %v %s", err, out)
-		}
-	}
-	base := []string{"PATH=" + filepath.Dir(bin) + string(os.PathListSeparator) + os.Getenv("PATH"), "HOME=" + data}
+	work, base := realOpenCode(t, data)
 	envA := append(append([]string{}, base...), "OPENCODE_AUTH_CONTENT="+auth)
 	if auth == "" {
 		envA = base
@@ -230,6 +213,66 @@ func TestRealOpenCode(t *testing.T) {
 	if alive(pid) {
 		t.Fatalf("opencode %d outlived Stop", pid)
 	}
+}
+
+// A turn on a model that does not exist fails with its error said once,
+// although OpenCode says it again right after session.idle, and the message
+// queued behind it runs. It needs no provider and no quota.
+func TestRealOpenCodeSaysAFailedTurnsErrorOnce(t *testing.T) {
+	data := t.TempDir()
+	work, base := realOpenCode(t, data)
+	r := &rig{t: t, data: data, work: work, env: base}
+	spec := r.spec("")
+	spec.Model, spec.Account = "opencode/no-such-model-socrates", "a"
+	if err := r.start(spec); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	defer func() { _ = r.a.Stop() }()
+	r.send("Reply with exactly: PONG")
+	r.send("Reply with exactly: SECOND")
+	eventually(t, 2*time.Minute, "two turns", func() bool { return len(r.rec.turns()) >= 2 })
+	// The repeat comes milliseconds after the turn's end.
+	time.Sleep(time.Second)
+	if got := r.rec.turns(); got[0] != agent.OutcomeFailed || got[1] != agent.OutcomeFailed {
+		t.Fatalf("turns %v %s", got, r.dump())
+	}
+	if n := r.rec.count(agent.TypeError, nil); n != 2 {
+		t.Fatalf("%d errors for two failed turns: %s", n, r.dump())
+	}
+}
+
+// realOpenCode skips the test unless SOCRATES_OPENCODE_REAL=1 and opencode
+// is on PATH. It makes the working directory in data (a git repository) and
+// returns it, and the environment for the process: data as its home, and the
+// network as the test has it (a proxy and its CA), nothing else of the
+// test's environment.
+func realOpenCode(t *testing.T, data string) (string, []string) {
+	t.Helper()
+	if os.Getenv("SOCRATES_OPENCODE_REAL") != "1" {
+		t.Skip("set SOCRATES_OPENCODE_REAL=1 to run against the installed opencode")
+	}
+	bin, err := exec.LookPath("opencode")
+	if err != nil {
+		t.Skip("no opencode on PATH")
+	}
+	work := filepath.Join(data, "work")
+	if err := os.MkdirAll(work, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if git, err := exec.LookPath("git"); err == nil {
+		cmd := exec.Command(git, "init", "-q", work)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git init: %v %s", err, out)
+		}
+	}
+	base := []string{"PATH=" + filepath.Dir(bin) + string(os.PathListSeparator) + os.Getenv("PATH"), "HOME=" + data}
+	for _, key := range []string{"HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "NO_PROXY", "no_proxy",
+		"SSL_CERT_FILE", "NODE_EXTRA_CA_CERTS"} {
+		if v, ok := os.LookupEnv(key); ok {
+			base = append(base, key+"="+v)
+		}
+	}
+	return work, base
 }
 
 // bogusKeys is auth with every API key spoiled.

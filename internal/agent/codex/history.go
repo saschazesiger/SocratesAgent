@@ -87,10 +87,10 @@ func (a *adapter) rebuild(ctx context.Context, thread string) error {
 		}
 		a.out.Emit(historyEvents(ht, items)...)
 	}
-	if len(turns) > 0 {
-		a.out.Emit(agent.Event{Type: agent.TypeNotice, Code: agent.NoticeRebuilt,
-			Text: fmt.Sprintf("The history of this chat was read back from Codex (%d turns).", len(turns))})
-	}
+	// Always said, as StartSpec.Rebuild has it, even when there was no turn
+	// to read back.
+	a.out.Emit(agent.Event{Type: agent.TypeNotice, Code: agent.NoticeRebuilt,
+		Text: fmt.Sprintf("The history of this chat was read back from Codex (%d turns).", len(turns))})
 	return nil
 }
 

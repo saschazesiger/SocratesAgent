@@ -78,7 +78,7 @@ func (t *rebuiltTurn) assistant(m ocMessageWithParts, child func(string) []ocMes
 	complete := m.Info.Time.Completed > 0
 	events := []agent.Event{{Type: agent.TypeMessage, MessageID: m.Info.ID, Role: agent.RoleAssistant,
 		State: agent.MessageStreaming, TurnID: t.id, Model: m.Info.model()}}
-	events = append(events, finalParts(m.Info.ID, "", m.Parts, complete, child, 0)...)
+	events = append(events, t.finalParts(m.Info.ID, "", m.Parts, complete, child, 0)...)
 	state := agent.MessageDone
 	switch {
 	case !complete:
@@ -88,25 +88,31 @@ func (t *rebuiltTurn) assistant(m ocMessageWithParts, child func(string) []ocMes
 	case m.Info.Error != nil:
 		state, t.outcome, t.failure = agent.MessageInterrupted, agent.OutcomeFailed, m.Info.Error.text()
 	}
-	tok := m.Info.Tokens
+	t.count(m.Info)
+	if c := m.Info.Tokens.context(); c > 0 {
+		t.usage.Context = c
+	}
+	return append(events, agent.Event{Type: agent.TypeMessageState, MessageID: m.Info.ID, State: state})
+}
+
+// count adds what one model call, the chat's or a subagent's, used and cost.
+func (t *rebuiltTurn) count(m ocMessage) {
+	tok := m.Tokens
 	t.usage.Input += tok.Input
 	t.usage.Output += tok.Output
 	t.usage.Reasoning += tok.Reasoning
 	t.usage.CacheRead += tok.Cache.Read
 	t.usage.CacheWrite += tok.Cache.Write
-	if c := tok.context(); c > 0 {
-		t.usage.Context = c
-	}
-	t.cost += m.Info.Cost
-	return append(events, agent.Event{Type: agent.TypeMessageState, MessageID: m.Info.ID, State: state})
+	t.cost += m.Cost
 }
 
 // maxNesting bounds subagents inside subagents in a rebuild.
 const maxNesting = 4
 
 // finalParts are a message's parts as they ended, nested under parent, with
-// each task part followed by its subagent's parts inside it.
-func finalParts(msg, parent string, parts []ocPart, complete bool, child func(string) []ocMessageWithParts, depth int) []agent.Event {
+// each task part followed by its subagent's parts inside it, whose usage and
+// cost count into the turn.
+func (t *rebuiltTurn) finalParts(msg, parent string, parts []ocPart, complete bool, child func(string) []ocMessageWithParts, depth int) []agent.Event {
 	var events []agent.Event
 	for _, p := range parts {
 		c, ok := convertPart(p)
@@ -128,12 +134,24 @@ func finalParts(msg, parent string, parts []ocPart, complete bool, child func(st
 		}
 		if c.child != "" && depth < maxNesting && child != nil {
 			for _, cm := range child(c.child) {
-				if cm.Info.Role != "assistant" {
+				if cm.Info.Role != "assistant" || !ranFor(p, cm.Info) {
 					continue
 				}
-				events = append(events, finalParts(msg, p.ID, cm.Parts, cm.Info.Time.Completed > 0, child, depth+1)...)
+				t.count(cm.Info)
+				events = append(events, t.finalParts(msg, p.ID, cm.Parts, cm.Info.Time.Completed > 0, child, depth+1)...)
 			}
 		}
 	}
 	return events
+}
+
+// ranFor reports whether a subagent's message was made while the task part
+// ran it: a task can resume an earlier task's subagent (task_id), and each
+// task part shows what the subagent did for it.
+func ranFor(task ocPart, m ocMessage) bool {
+	if task.State == nil {
+		return true
+	}
+	start, end := task.State.Time.Start, task.State.Time.End
+	return m.Time.Created >= start && (end == 0 || m.Time.Created <= end)
 }

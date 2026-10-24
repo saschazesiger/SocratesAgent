@@ -10,7 +10,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -25,7 +24,8 @@ import (
 const Harness = "codex"
 
 // BinEnv names the codex binary in a chat's environment, for a binary that is
-// not the first `codex` on its PATH (the settings' binary, or a fake).
+// not the first `codex` on its PATH when the dashboard configured none (a
+// fake, in the tests).
 const BinEnv = "SOCRATES_CODEX_BIN"
 
 // Version is what the adapter calls itself in initialize's clientInfo; it ends
@@ -144,7 +144,7 @@ func (a *adapter) launch() error {
 		// environment is always explicit (AGENT-HOST.md §5.2).
 		return errors.New("codex needs the chat's environment, and the launch spec has none")
 	}
-	bin, err := codexBinary(a.spec.Env)
+	bin, err := codexBinary(a.spec)
 	if err != nil {
 		return err
 	}
@@ -202,25 +202,14 @@ func tomlString(s string) string {
 	return strings.ReplaceAll(string(quoted), "\u007f", `\u007F`)
 }
 
-// codexBinary is BinEnv from the environment, else `codex` on its PATH.
-func codexBinary(env []string) (string, error) {
-	if bin := envValue(env, BinEnv); bin != "" {
-		return bin, nil
+// codexBinary is the program to run: the dashboard's binary setting, else
+// BinEnv from the chat's environment, else codex on its PATH.
+func codexBinary(spec agent.StartSpec) (string, error) {
+	bin, err := agent.ResolveBinary(spec.Env, "codex", spec.Binary, envValue(spec.Env, BinEnv))
+	if err != nil {
+		return "", fmt.Errorf("codex is not installed: %w", err)
 	}
-	path := envValue(env, "PATH")
-	if path == "" {
-		path = os.Getenv("PATH")
-	}
-	for _, dir := range filepath.SplitList(path) {
-		if dir == "" {
-			continue
-		}
-		p := filepath.Join(dir, "codex")
-		if fi, err := os.Stat(p); err == nil && !fi.IsDir() && fi.Mode()&0o111 != 0 {
-			return p, nil
-		}
-	}
-	return "", errors.New("codex is not installed: no codex on the PATH")
+	return bin, nil
 }
 
 func envValue(env []string, key string) string {
