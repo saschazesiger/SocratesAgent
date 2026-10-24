@@ -389,17 +389,24 @@ export function mountHome(ctx) {
     render({ live: false });
   }
 
-  // showList brings the list a tile filtered into view when it is below the
-  // fold - on a phone the nine tiles fill the screen, and a tap that only
-  // changed a list nobody could see looked like a tap that did nothing.
+  // showList brings the list a tile filtered into view when nothing of its
+  // first row can be seen - on a phone the nine tiles fill the screen, and a
+  // tap that only changed a list nobody could see looked like a tap that did
+  // nothing. Only as far as that row: the tile just tapped and the page's
+  // head stay where they are (at a desk, where the list shows already,
+  // nothing moves at all).
+  const SEEN = 48;
   function showList() {
-    const head = built && built.listTitle.closest('.so-home__list-head');
-    if (!head) return;
+    if (!built) return;
+    const head = built.listTitle.closest('.so-home__list-head');
+    const first = [...built.list.children].find((node) => node.getClientRects().length)
+      || (built.empty && !built.empty.hidden ? built.empty : null) || head;
+    if (!first) return;
     const room = host.getBoundingClientRect();
-    const at = head.getBoundingClientRect();
-    if (at.top >= room.top && at.top < room.bottom - room.height / 3) return;
+    const at = first.getBoundingClientRect();
+    if (at.top >= room.top && at.top + Math.min(at.height, SEEN) <= room.bottom) return;
     const calm = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-    head.scrollIntoView({ block: 'start', behavior: calm ? 'auto' : 'smooth' });
+    first.scrollIntoView({ block: 'nearest', behavior: calm ? 'auto' : 'smooth' });
   }
 
   // `live` is false only for the person's own tap: a list they reordered
