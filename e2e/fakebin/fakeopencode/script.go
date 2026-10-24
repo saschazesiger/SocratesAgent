@@ -31,7 +31,9 @@ import (
 //	/retry           one plain retry, then a normal answer
 //	/error           an APIError 401 on the message and session.error, and
 //	                 after session.idle a second session.error with a stack
-//	                 trace, as OpenCode 1.19.4 sends
+//	                 trace, as OpenCode 1.19.4 sends (FAKEOPENCODE_REPEAT_LAG_MS
+//	                 after the idle, 0 by default: the next message may be
+//	                 posted and its turn begun by then)
 //	/perm            permission.asked; the reply goes into the answer
 //	/question [unseen]  question.asked; the answers go into the answer.
 //	                 unseen: every /event stream is closed first, so that only
@@ -142,6 +144,9 @@ func (s *srv) loop(sid string, r *run) {
 		s.publish("session.status", map[string]any{"sessionID": sid, "status": map[string]any{"type": "idle"}})
 		s.publish("session.idle", map[string]any{"sessionID": sid})
 		if r.failure != nil {
+			if ms, err := strconv.Atoi(os.Getenv("FAKEOPENCODE_REPEAT_LAG_MS")); err == nil {
+				time.Sleep(time.Duration(ms) * time.Millisecond)
+			}
 			data, _ := r.failure["data"].(map[string]any)
 			msg, _ := data["message"].(string)
 			s.publish("session.error", map[string]any{"sessionID": sid, "error": map[string]any{"name": "UnknownError",

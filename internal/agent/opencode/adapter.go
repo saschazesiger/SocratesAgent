@@ -122,8 +122,12 @@ type Adapter struct {
 	// failedTurn is a turn that ended without completing, the last one to
 	// end. OpenCode says a failed turn's error once more after
 	// session.idle (the rejected prompt, with a stack trace); the turn's end
-	// said it already.
+	// said it already. owed is what failed turns failed with whose repeat has
+	// not come yet: the idle posts the next queued message, so the repeat
+	// can come once that message's turn began, and is known by what it says
+	// (repeatLocked).
 	failedTurn bool
+	owed       []string
 	// commands are the names GET /command listed: what Command posts to
 	// /command.
 	commands map[string]bool
@@ -228,8 +232,11 @@ type turnState struct {
 	limited    bool
 	limitSaid  bool
 	failure    string
-	context    int64
-	model      string
+	// errors are the texts of the errors the turn failed with, which
+	// OpenCode may say again after its end.
+	errors  []string
+	context int64
+	model   string
 }
 
 // persisted is what the adapter keeps beside the journal: the session, the

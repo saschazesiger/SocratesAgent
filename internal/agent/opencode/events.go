@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -176,6 +177,7 @@ func (a *Adapter) assistantLocked(m ocMessage) {
 			t.aborted = true
 		default:
 			t.failure = m.Error.text()
+			t.erred(m.Error.text())
 			if m.Error.Data.StatusCode == http.StatusTooManyRequests {
 				t.limited = true
 			}
@@ -409,10 +411,19 @@ func (a *Adapter) handleError(gen int, session string, e *ocError) {
 		}
 		return
 	}
+	if a.repeatLocked(e) {
+		// The repeat of what a failed turn failed with, which may come
+		// once the next turn began: not that turn's.
+		a.failedTurn = false
+		return
+	}
 	if a.turn == nil && a.failedTurn {
 		// The repeat of what the turn that just ended failed with.
 		a.failedTurn = false
 		return
+	}
+	if a.turn != nil {
+		a.turn.erred(e.text())
 	}
 	text := e.text()
 	code := "agent_error"
@@ -436,6 +447,41 @@ func (a *Adapter) handleError(gen int, session string, e *ocError) {
 		a.turn.limitSaid = a.turn.limitSaid || code == "rate_limit"
 	}
 	a.out.Emit(agent.Event{Type: agent.TypeError, Code: code, Text: text})
+}
+
+// maxOwed bounds the failed turns' errors whose repeat is waited for.
+const maxOwed = 8
+
+// repeatLocked says whether e is OpenCode's repeat of an error a failed turn
+// ended with, and if so takes it off what is owed. The repeat is the
+// prompt_async handler's rejection: an UnknownError of the error's stack,
+// "<name>: <message>\n    at …" (research/05 §2.3). It comes after the
+// failed turn's session.idle, by which time the idle may have posted the
+// next queued message and its turn begun, so it is known by what it says,
+// not by whether a turn runs.
+func (a *Adapter) repeatLocked(e *ocError) bool {
+	if e.Name != errUnknown {
+		return false
+	}
+	head, _, stack := strings.Cut(e.Data.Message, "\n    at ")
+	if !stack {
+		return false
+	}
+	head = strings.TrimSpace(head)
+	for i, text := range a.owed {
+		if head == text || strings.HasSuffix(head, ": "+text) {
+			a.owed = slices.Delete(a.owed, i, i+1)
+			return true
+		}
+	}
+	return false
+}
+
+// erred keeps the text of an error the turn failed with, once.
+func (t *turnState) erred(text string) {
+	if text != "" && !slices.Contains(t.errors, text) {
+		t.errors = append(t.errors, text)
+	}
 }
 
 // beginTurnLocked starts the turn of a user message OpenCode took up, once.
@@ -485,6 +531,15 @@ func (a *Adapter) endTurnLocked() {
 		outcome = agent.OutcomeFailed
 	}
 	a.failedTurn = outcome != agent.OutcomeCompleted
+	for _, text := range t.errors {
+		if !slices.Contains(a.owed, text) {
+			a.owed = append(a.owed, text)
+		}
+	}
+	if len(a.owed) > maxOwed {
+		// Repeats that never came.
+		a.owed = slices.Delete(a.owed, 0, len(a.owed)-maxOwed)
+	}
 	a.held = ""
 	if outcome == agent.OutcomeLimited {
 		a.held = t.id
