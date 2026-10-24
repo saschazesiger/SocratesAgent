@@ -1,6 +1,7 @@
 // The end-to-end suite. Every scenario drives the real binary through a real
-// browser, against real tmux sessions, and every assertion prints the value it
-// measured beside its verdict.
+// browser - its chats against the protocol fakes of the three agents (or the
+// scripted agent), its Shell against real tmux - and every assertion prints
+// the value it measured beside its verdict.
 //
 //   make e2e                     the whole suite
 //   node e2e/run.mjs             the same
@@ -10,8 +11,8 @@
 
 import {
   start, setup, shot, ok, scenario, skipScenario, finish, ensureNav, wait,
-  readFakeLog, killTmux, openRouterStub, fakeS3Switch, backupForm, prefixFor, sessionsOn, windowSize, scratchDir, PASSWORD, LIVE, SHOTS,
-  tmuxSock, DIGEST_MARKER, freePort, spawnServer, waitForHealth, REPO,
+  killTmux, openRouterStub, fakeS3Switch, backupForm, prefixFor, sessionsOn, windowSize, scratchDir, PASSWORD, LIVE, SHOTS,
+  tmuxSock, freePort, spawnServer, waitForHealth, REPO,
 } from './harness.mjs';
 import http from 'node:http';
 import net from 'node:net';
@@ -234,20 +235,6 @@ const contrastOf = (a, b) => {
   const [x, y] = [lum(a), lum(b)].sort((p, q) => q - p);
   return (x + 0.05) / (y + 0.05);
 };
-
-// firstRow is the topmost line the pane is showing. It is the assertion that
-// catches a window that was resized under the program: tmux reflows on a
-// shrink, and on 3.6 that puts the head of the first wrapped line into the
-// scrollback, so what is left at the top is the middle of a sentence.
-const firstRow = (page) => page.evaluate(() => {
-  const rows = document.querySelector('#term .xterm-rows');
-  if (!rows) return '';
-  for (const row of rows.children) {
-    const text = row.innerText.replace(/\u00a0/g, ' ').trimEnd();
-    if (text.trim()) return text;
-  }
-  return '';
-});
 
 /* --------------------------------------------------------- 1. createshell */
 
@@ -2068,11 +2055,6 @@ async function sessionRow(s, id) {
   return (await res.json()).session;
 }
 
-// launchesOf is every time one fake CLI was started, oldest first.
-const launchesOf = (s, name) => readFakeLog(s.data).filter((entry) => entry.name === name);
-const lastLaunch = (s, name) => launchesOf(s, name).slice(-1)[0] || null;
-const argvOf = (entry) => (entry && entry.argv ? entry.argv.join(' ') : '');
-
 // journalOf is every byte the pane has printed, which is what a scenario about
 // a launch has to read: the banner is written before the first viewer has
 // resized the window, so the screen may have reflowed it away, while the
@@ -2108,71 +2090,6 @@ async function journalHas(s, id, needle, timeout = 20000) {
   }
 }
 
-// conversationOf asks the program itself which conversation it is in. The fake
-// answers `/id` the way each real CLI knows its own session, and it is the only
-// answer in this suite that does not come from Socrates - which is what makes
-// it worth comparing a resume against.
-async function conversationOf(page) {
-  await typeLine(page, '/id');
-  await awaitScreen(page, 'session ', 20000);
-  const text = await screen(page);
-  const found = /session (\S+)/.exec(text);
-  return found ? found[1] : '';
-}
-
-// startWithModel drives the sheet the way `startSession` does and picks a
-// model on the way through, which is the step §E.3 hides for Shell and which
-// no other scenario exercises.
-async function startWithModel(page, harness, modelLabel) {
-  // The hash already names whatever session this tab is on, so the wait below
-  // is for it to become a different one - a second session started in the same
-  // tab is otherwise "finished" before it has begun.
-  const was = await page.evaluate(() => location.hash.slice(1));
-  await ensureNav(page);
-  await page.click('#newSession');
-  await page.waitForSelector('#newSessionSheet[open]', { timeout: 15000 });
-  await page.waitForSelector('#newSessionSheet .so-settings__program[data-value="' + harness + '"]', { timeout: 10000 });
-  await page.click('#newSessionSheet .so-settings__program[data-value="' + harness + '"]');
-  // The model step is hidden for Shell and pre-filled for a harness that names
-  // a default. Where it is neither - OpenCode reports models and no default -
-  // the sheet waits for a choice, which is what a person would make.
-  const wantsModel = await page.$eval('#nsModelField', (n) => !n.hidden);
-  const chosen = await page.$eval('#nsModel .ds-combo__input', (n) => n.value.trim());
-  if (wantsModel && (modelLabel || !chosen)) {
-    await page.click('#nsModel .ds-combo__input');
-    await page.waitForSelector('#nsModel .ds-combo__option', { timeout: 5000 });
-    await page.click(modelLabel
-      ? '#nsModel .ds-combo__option:has(.ds-combo__name:text-is("' + modelLabel + '"))'
-      : '#nsModel .ds-combo__option');
-  }
-  await page.click('#nsStart');
-  await page.waitForSelector('#newSessionSheet[open]', { state: 'detached', timeout: 30000 });
-  await page.waitForFunction((before) => location.hash.length > 1 && location.hash.slice(1) !== before,
-    was, { timeout: 30000 });
-  return page.evaluate(() => location.hash.slice(1));
-}
-
-// waitForCLISession polls until the discoverer has learned which conversation
-// this pane is holding. Codex and OpenCode both write nothing until a turn has
-// happened, so the caller types one first and this is the wait afterwards.
-//
-// The id itself is deliberately not in the API - `cli_session_id` is
-// `json:"-"` on the row - so `cli_session_state` reaching `known` is how the
-// browser's side of the world learns that a conversation was found, and the
-// resume argv is where the id itself is checked. `pending` is the watcher
-// still looking, which is where a session sits until its first turn.
-const CLI_FOUND = ['known', 'verified'];
-
-async function waitForCLISession(s, id, timeout = 30000) {
-  const until = Date.now() + timeout;
-  let row = await sessionRow(s, id);
-  while (Date.now() < until && !(row && CLI_FOUND.includes(row.cli_session_state))) {
-    await wait(500);
-    row = await sessionRow(s, id);
-  }
-  return row;
-}
-
 // waitForState polls the API until a session reaches one of the states asked
 // for, and answers with the last row it saw either way.
 async function waitForState(s, id, states, timeout = 40000) {
@@ -2183,36 +2100,6 @@ async function waitForState(s, id, states, timeout = 40000) {
     row = await sessionRow(s, id);
   }
   return row;
-}
-
-// waitForAck polls until the server has lowered the resumed flag, which is
-// what dismissing the banner asks it to do.
-async function waitForAck(s, id, timeout = 10000) {
-  const until = Date.now() + timeout;
-  let row = await sessionRow(s, id);
-  while (Date.now() < until && row && row.resumed !== false) {
-    await wait(300);
-    row = await sessionRow(s, id);
-  }
-  return row;
-}
-
-// endAndRestart is §E.7's exit overlay driven from the browser: the program is
-// told to end, the overlay comes up, and Restart is pressed. It answers with
-// the number of launches the fake had recorded before the restart, so the
-// caller can say which record is the relaunch.
-async function endAndRestart(s, name, code) {
-  const before = launchesOf(s, name).length;
-  await typeLine(s.page, '/exit ' + code);
-  await s.page.waitForSelector('#termOverlay[data-state="open"] .ds-dialog__title', { timeout: 25000 });
-  const words = await s.page.$eval('#termOverlay .ds-dialog__title', (n) => n.textContent);
-  ok(/The session ended/.test(words), name + ': the overlay says the session ended', oneLine(words));
-  await s.page.click('#termRestart');
-  await s.page.waitForFunction(() => {
-    const node = document.getElementById('termOverlay');
-    return node && node.hidden;
-  }, null, { timeout: 40000 });
-  return before;
 }
 
 /* ------------------------------------------------- the agents, as chats */
@@ -7309,18 +7196,6 @@ function gate() {
   return { promise, release };
 }
 
-// awaitActivity waits for the server to say something about what a session
-// is doing, and hands back the activity it saw (or null).
-async function awaitActivity(s, id, test, timeout = 20000) {
-  const until = Date.now() + timeout;
-  while (Date.now() < until) {
-    const row = await sessionRow(s, id);
-    if (row && row.activity && test(row.activity)) return row.activity;
-    await wait(250);
-  }
-  return null;
-}
-
 // tmuxType is a person at the machine itself, typing into the pane through
 // tmux: no browser is attached to the session it types into.
 function tmuxType(s, id, text, enter = true) {
@@ -8401,44 +8276,6 @@ async function hometouch() {
   } finally { await s.stop(); }
 }
 
-// calledAs is the title of the session a digest or operator request is about.
-function calledAs(text) {
-  const named = String(text).match(/session (?:is called )?"((?:[^"\\]|\\.)*)"/);
-  return named ? JSON.parse('"' + named[1] + '"') : '';
-}
-
-// answerPosts keeps every POST /answer the page sends from now on.
-function answerPosts(page) {
-  const posts = [];
-  page.on('request', (req) => {
-    if (req.method() === 'POST' && /\/api\/sessions\/[^/]+\/answer$/.test(req.url())) {
-      try { posts.push(JSON.parse(req.postData() || 'null')); } catch { posts.push(req.postData()); }
-    }
-  });
-  return posts;
-}
-
-// awaitRunEnd waits for a session's answer run to end, and hands it back.
-async function awaitRunEnd(s, id, timeout = 30000) {
-  const until = Date.now() + timeout;
-  let run = null;
-  while (Date.now() < until) {
-    run = await answerRunOf(s, id);
-    if (run && (run.phase === 'done' || run.phase === 'error' || run.phase === 'cancelled')) return run;
-    await wait(250);
-  }
-  return run;
-}
-
-// focusOf is what has the keyboard in the question dialog.
-const focusOf = (page) => page.evaluate(() => {
-  const at = document.activeElement;
-  if (!at) return 'none';
-  if (at.classList.contains('so-q-own-field')) return 'own';
-  if (at.classList.contains('so-q-option')) return 'option:' + at.dataset.label;
-  return at.className || at.tagName;
-});
-
 // Errors a page logs for a request a scenario refused on purpose.
 const REFUSED_NOISE = /status of 400|status of 404|status of 500|status of 409|NotAllowedError|NotFoundError|Requested device not found|Permission denied/;
 
@@ -9186,55 +9023,6 @@ async function homequiet() {
     await s.stop();
     await stub.close();
   }
-}
-
-// sheetSaid keeps every line the dialog shows - its progress line, its note
-// and its last word - in order, and the moment it closed.
-async function sheetSaid(page) {
-  await page.evaluate(() => {
-    window.__sheetSaid = [];
-    const look = () => {
-      const dialog = document.querySelector('dialog.so-question');
-      if (!dialog || !dialog.open) return ['closed'];
-      const line = dialog.querySelector('.so-q-status:not([hidden])');
-      const note = dialog.querySelector('.so-q-note');
-      const last = dialog.querySelector('.so-q-finished-title');
-      return [line ? line.textContent.trim() : '', note ? 'note: ' + note.textContent.trim() : '',
-        last ? last.textContent.trim() : ''].filter(Boolean);
-    };
-    const keep = () => {
-      for (const one of look()) {
-        if (window.__sheetSaid[window.__sheetSaid.length - 1] !== one) window.__sheetSaid.push(one);
-      }
-    };
-    new MutationObserver(keep).observe(document.body, { childList: true, subtree: true, characterData: true, attributes: true });
-    keep();
-  });
-  return () => page.evaluate(() => window.__sheetSaid.slice());
-}
-
-// answerVia is an answer given over the API, as a dialog gives it.
-async function answerVia(s, id, rev, answers, text = '') {
-  const res = await s.context.request.post(s.url + '/api/sessions/' + encodeURIComponent(id) + '/answer',
-    { data: { digest_rev: Number(rev) || 0, answers, text } });
-  let data = null;
-  try { data = await res.json(); } catch { /* no body */ }
-  return { status: res.status(), data };
-}
-
-// panePid is the process the pane runs: the program itself.
-function panePid(s, id) {
-  return execFileSync('tmux', ['-S', tmuxSock(s.data), 'list-panes', '-t', 'soc_' + id, '-F', '#{pane_pid}'])
-    .toString().trim();
-}
-
-// askInProse ends a turn on a question in prose, the way a real one ends: the
-// program works, and its answer closes on a question with the prompt open.
-async function askInProse(s, id) {
-  tmuxType(s, id, '/busy 8000');
-  await awaitActivity(s, id, (a) => a.state === 'busy', 10000);
-  tmuxType(s, id, '/textq');
-  return awaitDigest(s, id, (d) => d.phase === 'ready' && !!d.question && d.question.source === 'text', 25000);
 }
 
 // home-kinds: the kinds of question a chat asks, from Home. A multi-select

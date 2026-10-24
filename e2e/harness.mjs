@@ -1,5 +1,5 @@
-// The browser harness: one real `socrates` binary, one real server, real tmux
-// sessions, and Playwright driving the page.
+// The browser harness: one real `socrates` binary, one real server with its
+// agent hosts, real tmux for the Shell, and Playwright driving the page.
 //
 // One thing has to be arranged before a browser can see a session: the CLIs.
 // A suite that needed three logged-in accounts would not be a suite, so the
@@ -15,7 +15,7 @@ import { chromium } from '/opt/browser-testing/node_modules/playwright-core/inde
 import { createServer } from 'node:http';
 import { createServer as createSocketServer } from 'node:net';
 import { spawn, execFileSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, realpathSync, rmSync, mkdirSync, readdirSync, existsSync } from 'node:fs';
+import { mkdtempSync, realpathSync, rmSync, mkdirSync, readdirSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -313,14 +313,13 @@ export function spawnServer({ data, port, live = false, env = {} }) {
       SOCRATES_WORKSPACE_ROOT: join(data, 'workspaces'),
       // Every CLI's own state goes under the run's data directory, so that a
       // fake run can neither read nor write the machine's real credentials,
-      // transcripts or session databases - and so that a scenario can assert
-      // on what the fakes wrote.
+      // transcripts or session databases. (A chat's agent gets its account's
+      // folders from the server on top of these.)
       ...(live ? {} : {
         HOME: data,
         CODEX_HOME: join(data, 'codex'),
         XDG_DATA_HOME: join(data, 'xdg'),
         CLAUDE_CONFIG_DIR: join(data, 'claude'),
-        FAKE_LOG: join(data, 'fake.log'),
       }),
       ...env,
     },
@@ -376,16 +375,6 @@ export function killTmux(data) {
   } catch { /* no server is the good case */ }
 }
 
-// readFakeLog returns every launch the fake CLIs recorded, newest last.
-export function readFakeLog(data) {
-  try {
-    return readFileSync(join(data, 'fake.log'), 'utf8')
-      .split('\n').filter(Boolean).map((line) => JSON.parse(line));
-  } catch {
-    return [];
-  }
-}
-
 // mockOpenRouter answers every OpenRouter call with one fixed transcription,
 // so the dictation scenario needs no key and spends nothing.
 //
@@ -401,19 +390,6 @@ export async function mockOpenRouter(context, { text = 'hello from the microphon
   }));
 }
 
-// DIGEST_MARKER is the sentence every digest instruction opens with
-// (digestMarker in internal/server/digest.go).
-export const DIGEST_MARKER = 'You read the terminal of a coding session for Home';
-
-// isDigest says whether a completion request is one of Home's digests.
-export function isDigest(json) {
-  const first = json && Array.isArray(json.messages) && json.messages[0];
-  return !!first && typeof first.content === 'string' && first.content.startsWith(DIGEST_MARKER);
-}
-
-// NOTHING_ASKED is the digest of a session that asks nothing.
-const NOTHING_ASKED = JSON.stringify({ summary: 'Working in the e2e workspace.', context: '', question: null });
-
 /**
  * openRouterStub is the same fixed answer, served over HTTP.
  *
@@ -426,39 +402,28 @@ const NOTHING_ASKED = JSON.stringify({ summary: 'Working in the e2e workspace.',
  * It answers both routes Transcribe can take: /chat/completions for an audio
  * capable chat model and /audio/transcriptions for a dedicated one.
  *
- * `replies` is a queue for the one caller that needs a different answer every
- * time: the operator loop asks the model again after every step, and a stub
- * that repeated itself would drive the same keystroke until the run ran out of
- * steps. Each completion takes the next entry; when the queue is empty the
- * fixed `text` is the answer again, so a scenario only has to script the steps
- * it cares about.
+ * `replies` is a queue for a caller that needs a different answer each time
+ * (a chat named again gets a new name). Each completion takes the next entry;
+ * when the queue is empty the fixed `text` is the answer again, so a scenario
+ * only has to script the answers it cares about.
  *
  * `delay` holds every answer back for that many milliseconds, for a scenario
  * that has to see what the page does while it waits. `refuse`, when set on
  * the returned stub, is an HTTP status every completion is refused with.
  *
- * Home digests every coding session on its own (internal/server/digest.go),
- * whatever a scenario is about, so a server with a key calls the gateway for
- * those too, at moments no scenario chooses. They are told apart by the
- * sentence every digest instruction opens with, kept in `digests` rather
- * than `calls`, and never take an entry of the queue: a scenario that counts
- * what it asked for, or scripts the operator's steps, counts and scripts
- * exactly that. Unless `answer` says otherwise a digest is told that nothing
- * is being asked.
- *
- * `answer` is for a scenario that is about those calls - Home's digests and
- * the answer operator - which arrive in an order no queue can predict. It is
- * handed each completion's request as JSON and returns the reply, or
- * undefined to leave it to the queue and `text`. Every call keeps its request
+ * `answer` is for a scenario whose calls arrive in an order no queue can
+ * predict - a chat's name and the verdict on its turn, asked for by the same
+ * server at moments no scenario chooses. It is handed each completion's
+ * request as JSON and returns the reply, or undefined to leave it to the
+ * queue and `text`. Every call keeps its request
  * as `json`, so a scenario can read what the server asked. It may return a
  * promise, to hold one call back for as long as a scenario needs, and
  * `{ status, message }` refuses that one call with that HTTP status.
  */
 export async function openRouterStub({ text = 'hello from the microphone', replies = [], delay = 0, answer = null } = {}) {
   const calls = [];
-  const digests = [];
   const queue = [...replies];
-  const stub = { calls, digests, text, replies: queue, refuse: 0 };
+  const stub = { calls, text, replies: queue, refuse: 0 };
   const server = createServer((req, res) => {
     const chunks = [];
     req.on('data', (chunk) => { chunks.push(chunk); });
@@ -467,8 +432,7 @@ export async function openRouterStub({ text = 'hello from the microphone', repli
       let json = null;
       try { json = JSON.parse(raw.toString('utf8')); } catch { /* a recording, not JSON */ }
       const completion = String(req.url || '').includes('chat/completions');
-      const digest = completion && isDigest(json);
-      (digest ? digests : calls).push({ path: req.url, bytes: raw.length, json });
+      calls.push({ path: req.url, bytes: raw.length, json });
       if (completion && stub.refuse) {
         res.writeHead(stub.refuse, { 'content-type': 'application/json' });
         res.end(JSON.stringify({ error: { message: 'refused by the e2e stub' } }));
@@ -484,7 +448,6 @@ export async function openRouterStub({ text = 'hello from the microphone', repli
         res.end(JSON.stringify({ error: { message: reply.message || 'refused by the e2e stub' } }));
         return;
       }
-      if (reply === undefined && digest) reply = NOTHING_ASKED;
       if (reply === undefined) reply = completion && queue.length ? queue.shift() : text;
       res.writeHead(200, { 'content-type': 'application/json' });
       res.end(JSON.stringify({ text: reply, choices: [{ message: { content: reply } }] }));
