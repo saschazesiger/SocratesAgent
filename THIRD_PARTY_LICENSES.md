@@ -16,8 +16,10 @@ Three groups, and they are legally different:
 - **Shipped in the web assets** — the xterm.js terminal and its addons, MIT,
   vendored as minified bundles under `internal/web/static/vendor/`, and the
   Dashboard-Style design system the interface is built on, MIT, vendored under
-  `internal/web/static/vendor/dashboard-style/` with its `LICENSE`; all of it is
-  embedded into the binary. Shipping the binary ships those files, so their
+  `internal/web/static/vendor/dashboard-style/` with its `LICENSE`, and the chat
+  view's Markdown renderer (marked, MIT) and sanitizer (DOMPurify,
+  Apache-2.0 or MPL-2.0), vendored under `internal/web/static/vendor/markdown/`;
+  all of it is embedded into the binary. Shipping the binary ships those files, so their
   notice travels here.
 - **Installed by `scripts/install.sh`** — a handful of Debian or Ubuntu
   packages (`tmux` among them), the three CLIs and code-server.
@@ -149,6 +151,25 @@ from the same repository.
 The pin is `internal/web/static/vendor/VERSIONS` and `make vendor-xterm`
 re-downloads exactly that set, checking it against `vendor/SHA256SUMS`. The
 `.js.map` files the tarballs also carry are deliberately not shipped.
+
+The chat view renders what an agent writes as Markdown with
+[marked](https://marked.js.org/) and passes the result through
+[DOMPurify](https://github.com/cure53/DOMPurify) before it reaches the page.
+Both are vendored as the ES modules the packages publish, unmodified (DOMPurify's
+`purify.es.mjs` is stored as `purify.es.js`, byte for byte, so the server stamps
+its address like every other module's), with no CDN.
+
+| Package | Version | Licence | Registry |
+| --- | --- | --- | --- |
+| `marked` | 18.1.0 | MIT, © 2018+ MarkedJS, © 2011-2018 Christopher Jeffrey | <https://registry.npmjs.org/marked> |
+| `dompurify` | 3.4.16 | Apache-2.0 or MPL-2.0 (Socrates takes it under Apache-2.0), © Cure53 and other contributors | <https://registry.npmjs.org/dompurify> |
+
+The licence texts ship beside them as
+[`internal/web/static/vendor/markdown/LICENSE-marked`](internal/web/static/vendor/markdown/LICENSE-marked)
+and [`internal/web/static/vendor/markdown/LICENSE-dompurify`](internal/web/static/vendor/markdown/LICENSE-dompurify).
+The pin is `internal/web/static/vendor/markdown/VERSIONS`; `make vendor-markdown`
+re-downloads exactly that set and checks it against `vendor/markdown/SHA256SUMS`,
+which `internal/web/embed_test.go` also checks on every test run.
 
 ## code-server
 

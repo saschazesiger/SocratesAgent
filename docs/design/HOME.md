@@ -75,6 +75,7 @@ Server → client frames (JSON text, key `t`):
 {"t":"title","id":"…","phase":"start|done|error","title":"…","text":"…"}
 {"t":"digest","id":"<sessionID>","digest":<digest>|null}
 {"t":"answer","id":"<sessionID>","run":<run>|null}
+{"t":"news","id":"<sessionID>","body":"…","kind":"finished"}
 {"t":"tick","now":1792390854374}
 {"t":"pong","id":7}
 ```
@@ -94,6 +95,9 @@ Server → client frames (JSON text, key `t`):
   microseconds when the process started (below 2^53), so a seq from before a restart is never
   above one after it. `since` only moves with the state and cannot order two pictures of one
   commit.
+- `news` is something to notify about that is not an edge of the activity, in the words the push
+  says it in: a chat stopped at its account's limit (AGENT-HOST.md §11 "At a limit"). The page's
+  own notification and chime say it, as for a turn's end, where Web Push does not.
 - `tick` every 15 s, so the client can tell a dead connection from a quiet one (§2.2).
 - **Signed out.** The login the stream was opened with is checked again on every `tick`
   (`ValidLogin`), and signing out or a new password calls `s.events.revoke()`, which ends every

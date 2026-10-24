@@ -18,7 +18,7 @@ import (
 
 func TestJournalRotatesWhileRunning(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "journal.raw")
+	path := newJournal(t, dir)
 
 	// Twenty numbered lines through a sink that may hold ten of them: the
 	// point is that rotation happens while the session runs, because the user
@@ -66,8 +66,7 @@ func TestJournalRotatesWhileRunning(t *testing.T) {
 // without -o: a re-issued pipe replaces a running sink, so the new one starts
 // against a file that already has content and must not truncate it.
 func TestJournalSinkRestartAppends(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "journal.raw")
+	path := newJournal(t, t.TempDir())
 	if err := journalSink(strings.NewReader("first half\n"), path, 1<<20, 1); err != nil {
 		t.Fatalf("the first sink failed: %v", err)
 	}
@@ -81,6 +80,31 @@ func TestJournalSinkRestartAppends(t *testing.T) {
 	if string(got) != "first half\nsecond half\n" {
 		t.Fatalf("a restarted sink truncated the journal: %q", got)
 	}
+}
+
+// TestJournalSinkMakesNoJournal: a sink that starts after its journal has
+// gone - the session is being removed, and its pipe was replaced or its server
+// killed before the sink got this far - leaves the directory as it found it,
+// so that the removal's rmdir does not fail with "directory not empty".
+func TestJournalSinkMakesNoJournal(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "journal.raw")
+	if err := journalSink(strings.NewReader("late output\n"), path, 1<<20, 1); err == nil {
+		t.Fatal("a sink without a journal ran")
+	}
+	if entries, err := os.ReadDir(dir); err != nil || len(entries) != 0 {
+		t.Fatalf("a sink without a journal left %v (%v) behind", entries, err)
+	}
+}
+
+// newJournal is the empty journal attachJournal makes before it starts a sink.
+func newJournal(t *testing.T, dir string) string {
+	t.Helper()
+	path := filepath.Join(dir, "journal.raw")
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
 }
 
 func TestTailJournalReachesIntoTheRotatedFile(t *testing.T) {

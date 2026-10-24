@@ -10,12 +10,12 @@
 
 import {
   start, setup, shot, ok, scenario, skipScenario, finish, ensureNav, wait,
-  readFakeLog, killTmux, openRouterStub, fakeS3Switch, sessionsOn, windowSize, scratchDir, PASSWORD, LIVE, SHOTS,
-  tmuxSock, DIGEST_MARKER, freePort, spawnServer, waitForHealth,
+  readFakeLog, killTmux, openRouterStub, fakeS3Switch, backupForm, prefixFor, sessionsOn, windowSize, scratchDir, PASSWORD, LIVE, SHOTS,
+  tmuxSock, DIGEST_MARKER, freePort, spawnServer, waitForHealth, REPO,
 } from './harness.mjs';
 import http from 'node:http';
 import net from 'node:net';
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 // The one thing the harness cannot hand over: when a session was last used is
@@ -2347,22 +2347,20 @@ async function createclaude() {
 // by the sheet with the account each choice means, and reaches the launched
 // program as the directory its CLI keeps the account in - and it cannot be
 // deleted while a session still runs in it.
+// The dashboard's Profiles card is gone with the accounts (WP7): a chat runs
+// on an account, and a terminal's profile is made through the API until the
+// terminal-only plumbing goes too (WP10).
 async function profiles() {
   const s = await start({ viewport: { width: 1280, height: 900 } });
   try {
     await setup(s.page, s.url);
     await useDomRenderer(s);
-    await s.page.goto(s.url + '/admin', { waitUntil: 'domcontentloaded' });
-    await s.page.waitForSelector('#profileList .so-profile', { timeout: 20000 });
-    await s.page.fill('#profileName', 'Business');
-    await s.page.click('#profileAdd');
-    await s.page.waitForFunction(() => document.querySelectorAll('#profileList .so-profile').length === 2,
-      null, { timeout: 10000 });
+    const made0 = await s.context.request.post(s.url + '/api/profiles', { data: { name: 'Business' } });
+    ok(made0.status() === 201, 'the profile is added', String(made0.status()));
     const listed = await (await s.context.request.get(s.url + '/api/profiles')).json();
     const business = (listed.profiles || []).find((p) => p.name === 'Business');
-    ok(!!business && /^p-[0-9a-f]{12}$/.test(business.id), 'the dashboard added the profile',
+    ok(!!business && /^p-[0-9a-f]{12}$/.test(business.id), 'with an id of the server\'s choosing',
       JSON.stringify(listed.profiles));
-    await shot(s.page, 'profiles-admin');
 
     await open(s);
     await ensureNav(s.page);
@@ -2497,32 +2495,6 @@ async function profiles() {
     ok(alone.face === 'Business' && alone.here.length === 0,
       'a done session is not joined: the sheet starts on the last profile again', JSON.stringify(alone));
     await s.page.click('#nsCancel');
-
-    // The dashboard's order is the sheet's: a row moves by its grip, with the
-    // arrow keys or dragged, and the order is saved as soon as it is let go.
-    const order = async () => ((await (await s.context.request.get(s.url + '/api/profiles')).json()).profiles || [])
-      .map((p) => p.name).join(',');
-    await s.page.goto(s.url + '/admin', { waitUntil: 'domcontentloaded' });
-    await s.page.waitForFunction(() => document.querySelectorAll('#profileList .so-profile').length === 2,
-      null, { timeout: 20000 });
-    await s.page.focus('#profileList .so-profile[data-id="' + business.id + '"] .so-grip');
-    await s.page.keyboard.press('ArrowUp');
-    let moved = '';
-    for (let i = 0; i < 40 && moved !== 'Business,Default'; i++) { await s.page.waitForTimeout(100); moved = await order(); }
-    ok(moved === 'Business,Default', 'the arrow keys move a profile up the list', moved);
-    const grip = await s.page.$eval('#profileList .so-profile[data-id="' + business.id + '"] .so-grip', (n) => {
-      const box = n.getBoundingClientRect();
-      return { x: box.x + box.width / 2, y: box.y + box.height / 2 };
-    });
-    const last = await s.page.$eval('#profileList .so-profile:last-child', (n) => n.getBoundingClientRect().bottom);
-    await s.page.mouse.move(grip.x, grip.y);
-    await s.page.mouse.down();
-    await s.page.mouse.move(grip.x, last - 4, { steps: 8 });
-    await s.page.mouse.up();
-    for (let i = 0; i < 40 && moved !== 'Default,Business'; i++) { await s.page.waitForTimeout(100); moved = await order(); }
-    ok(moved === 'Default,Business', 'and dragging puts it back', moved);
-    const rows = await s.page.$$eval('#profileList .so-profile', (nodes) => nodes.map((n) => n.dataset.id));
-    ok(rows.join(',') === ',' + business.id, 'where the list shows it', rows.join(','));
 
     ok(unexpected(s.errors).length === 0, 'no unexpected console errors', unexpected(s.errors).join(' | ') || '0');
   } finally { await s.stop(); }
@@ -3293,7 +3265,7 @@ async function lighttheme() {
 // surfaces, a mark wherever a harness is named, technical strings only behind
 // an "i", and motion that does not restart when a list re-renders.
 async function design() {
-  const s = await start({ viewport: { width: 1280, height: 720 } });
+  const s = await start({ viewport: { width: 1280, height: 720 }, env: FAKE_AGENT });
   try {
     await setup(s.page, s.url);
     await useDomRenderer(s);
@@ -3334,8 +3306,9 @@ async function design() {
         mark: (n.querySelector('.so-agent') || { dataset: {} }).dataset.agent || 'none',
       })));
     // VS Code is opened from a folder's head in the list, not from the sheet
-    // (`pages` pins the same four), so the sheet names four programs.
-    ok(sheetMarks.map((one) => one.harness).join(',') === 'claude,codex,opencode,shell'
+    // (`pages` pins the same four), so the sheet names four programs - and
+    // the scripted agent, which this scenario's server offers for its chat.
+    ok(sheetMarks.map((one) => one.harness).filter((h) => h !== 'fake').join(',') === 'claude,codex,opencode,shell'
       && sheetMarks.every((one) => one.mark === one.harness),
       'the sheet gives every harness its own mark', JSON.stringify(sheetMarks));
 
@@ -3622,6 +3595,63 @@ async function design() {
     ok(railCols > wideCols,
       'and the pane is re-measured when the stage changes width',
       railCols + ' px (put away) -> ' + wideCols + ' px (column)');
+
+    /* -------------------------------------------------------- the chat view */
+
+    // The chat view keeps the same rules: it is on the white panel, its row
+    // wears its agent's mark, and streaming patches only what changed - a
+    // part that did not change keeps its element, and what turns keeps
+    // turning while the answer streams.
+    const chatId = await startChat(s.page);
+    const chatSurfaces = await s.page.evaluate(() => Object.fromEntries(['#chat', '#chat .so-chat__scroll',
+      '#chat .so-chat__log', '#chat .so-chat__dock', '#chat .so-composer']
+      .map((sel) => [sel, getComputedStyle(document.querySelector(sel)).backgroundColor])));
+    ok(Object.values(chatSurfaces).every(white), 'the chat is on the white panel too', JSON.stringify(chatSurfaces));
+    const chatMark = await s.page.evaluate((sel) =>
+      (document.querySelector(sel + ' .so-agent') || { dataset: {} }).dataset.agent || 'none', rowSel(chatId));
+    ok(chatMark === 'fake', 'and its row wears its agent’s mark', chatMark);
+    await say(s.page, '/md 50');
+    await s.page.waitForFunction(() => {
+      const msgs = document.querySelectorAll('#chat .so-msg[data-role="assistant"]');
+      const msg = msgs[msgs.length - 1];
+      const text = msg && msg.querySelector('.so-part[data-kind="text"]');
+      return !!text && text.textContent.length > 40 && !!msg.querySelector('.so-reasoning[data-state="done"]');
+    }, null, { timeout: 15000 });
+    const streamed = (stamp) => s.page.evaluate(({ sel, stamp: mark }) => {
+      const msgs = document.querySelectorAll('#chat .so-msg[data-role="assistant"]');
+      const msg = msgs[msgs.length - 1];
+      const users = document.querySelectorAll('#chat .so-msg[data-role="user"]');
+      const nodes = {
+        reasoning: msg.querySelector('.so-reasoning'), text: msg.querySelector('.so-part[data-kind="text"]'),
+        message: msg, question: users[users.length - 1], stop: document.querySelector('#chat .so-composer__stop'),
+      };
+      if (mark) for (const node of Object.values(nodes)) node.wp8Stamp = mark;
+      const ring = document.querySelector(sel + ' .so-mark');
+      const anim = ring ? ring.getAnimations({ subtree: true })[0] : null;
+      return {
+        kept: Object.entries(nodes).filter(([, node]) => node.wp8Stamp === 'drawn once').map(([name]) => name),
+        length: nodes.text.textContent.length,
+        ring: anim ? { start: Number(anim.startTime), at: Number(anim.currentTime) } : null,
+      };
+    }, { sel: rowSel(chatId), stamp });
+    const atStart = await streamed('drawn once');
+    await s.page.waitForFunction((was) => {
+      const msgs = document.querySelectorAll('#chat .so-msg[data-role="assistant"]');
+      return msgs[msgs.length - 1].querySelector('.so-part[data-kind="text"]').textContent.length > was + 300;
+    }, atStart.length, { timeout: 20000 });
+    const midway = await streamed('');
+    ok(midway.kept.join(',') === 'reasoning,text,message,question,stop',
+      'while an answer streams, every element that was drawn is the one still there',
+      midway.kept.join(',') + ' (' + atStart.length + ' -> ' + midway.length + ' characters)');
+    ok(!!atStart.ring && !!midway.ring && midway.ring.start === atStart.ring.start && midway.ring.at > atStart.ring.at,
+      'and the ring on its row turns on through every delta, never started again',
+      JSON.stringify({ before: atStart.ring, after: midway.ring }));
+    await awaitLog(s.page, 'The tests in', 30000);
+    const ended = await streamed('');
+    ok(['reasoning', 'text', 'message', 'question'].every((name) => ended.kept.includes(name)),
+      'and the end of the turn redraws the answer in place', ended.kept.join(','));
+    await shot(s.page, 'design-chat');
+    await clickRow(s.page, id);
 
     /* ----------------------------------- a line that puts itself away */
 
@@ -6523,17 +6553,14 @@ async function prestart() {
     ok(group.shelf === 'prestart' && group.open && group.first && group.folder,
       'its row is on its folder\'s PreStart shelf, open, above the folder\'s sessions', JSON.stringify(group));
 
-    // The prompt saves itself, and the bucket takes it.
+    // The prompt saves itself.
     await page.waitForFunction(() => !document.getElementById('psPrompt').disabled, null, { timeout: 10000 });
     await page.fill('#psPrompt', PREPARED_PROMPT);
-    await page.waitForFunction(() => /Saved|Backed up/.test(document.getElementById('psSave').textContent),
-      null, { timeout: 10000 });
+    const saved = await page.waitForFunction(() => /^Saved$/.test(document.getElementById('psSave').textContent.trim()),
+      null, { timeout: 10000 }).then(() => true, () => false);
     let draft = await draftOf(s, id);
     ok(draft.text === PREPARED_PROMPT, 'the prompt reached the server as typed', JSON.stringify(draft.text));
-    const backed = await page.waitForFunction(() => /Backed up/.test(document.getElementById('psSave').textContent),
-      null, { timeout: 40000 }).then(() => true, () => false);
-    ok(backed, 'and the panel says it is backed up once the bucket has it',
-      await page.$eval('#psSave', (n) => n.textContent.trim()));
+    ok(saved, 'and the panel says it is saved', await page.$eval('#psSave', (n) => n.textContent.trim()));
 
     // A setting changed in the panel is saved on its own.
     await page.waitForSelector('#psModel .ds-combo__input', { timeout: 10000 });
@@ -6635,13 +6662,112 @@ async function prestart() {
   } finally { await s.stop(); }
 }
 
-// s3restore is the reason the bucket exists: a machine that is gone, and a
-// new one with an empty data directory that comes back with everything.
-async function s3restore() {
+// backupStatus is GET /api/backup.
+async function backupStatus(s) {
+  return (await s.context.request.get(s.url + '/api/backup')).json();
+}
+
+// awaitBackup polls the status until `test` holds, and answers with the last
+// one either way.
+async function awaitBackup(s, test, timeout = 30000) {
+  let st = await backupStatus(s);
+  const until = Date.now() + timeout;
+  while (!test(st) && Date.now() < until) {
+    await wait(300);
+    st = await backupStatus(s);
+  }
+  return st;
+}
+
+// chipOf is what the Backup card's status line says.
+const chipOf = (page) => page.$eval('#backupStatus .so-state__line', (n) => n.textContent.replace(/\s+/g, ' ').trim()).catch(() => '');
+
+// backup is the Backup card: a bucket configured from it, a backup on demand
+// that lists its snapshot, a run that fails while the bucket is down and says
+// so, the day-without-a-backup warning (shortened for the suite) on the card,
+// in /api/state and on the session page, and the warning gone after the
+// next good run.
+async function backup() {
+  const s = await start({ viewport: { width: 1280, height: 800 }, env: { SOCRATES_BACKUP_WARN_AFTER: '20s' } });
+  try {
+    await setup(s.page, s.url);
+    await s.page.goto(s.url + '/admin#backupCard', { waitUntil: 'domcontentloaded' });
+    await s.page.waitForFunction(() => /Not configured/.test(document.querySelector('#backupStatus').textContent), null, { timeout: 15000 });
+    ok(true, 'the card says backups are not configured', await chipOf(s.page));
+    const before = await (await s.context.request.get(s.url + '/api/state')).json();
+    ok(before.backup && !before.backup.warning, 'and an unconfigured backup warns nobody', JSON.stringify(before.backup));
+
+    const form = await backupForm(prefixFor(s.data));
+    await s.page.fill('#backupEndpoint', form.endpoint);
+    await s.page.fill('#backupRegion', form.region);
+    await s.page.fill('#backupBucket', form.bucket);
+    await s.page.fill('#backupPrefix', form.prefix);
+    await s.page.fill('#backupKey', form.access_key_id);
+    await s.page.fill('#backupSecret', form.secret_access_key);
+    await s.page.fill('#backupPassphrase', form.passphrase);
+    await s.page.click('#backupTest');
+    const tested = await s.page.waitForSelector('.ds-toast', { timeout: 15000 }).then((n) => n.textContent()).catch(() => '');
+    ok(/answers/.test(tested), 'Test connection reaches the bucket', oneLine(tested));
+    await s.page.click('#backupSave');
+    await s.page.waitForFunction(() => /No backup yet/.test(document.querySelector('#backupStatus').textContent), null, { timeout: 20000 });
+    ok(true, 'saved, it waits for its first backup', await chipOf(s.page));
+    const secretShown = await s.page.$eval('#backupSecret', (n) => ({ value: n.value, placeholder: n.placeholder }));
+    ok(secretShown.value === '' && secretShown.placeholder === 'Unchanged', 'the secret is never shown again', JSON.stringify(secretShown));
+
+    await s.page.click('#backupRun');
+    const done = await s.page.waitForFunction(() => /Backed up/.test(document.querySelector('#backupStatus').textContent), null, { timeout: 30000 })
+      .then(() => true, () => false);
+    ok(done, 'Back up now ends in "Backed up"', await chipOf(s.page));
+    const rows = await s.page.waitForFunction(() => document.querySelectorAll('#backupSnapshotList tr').length > 0, null, { timeout: 20000 })
+      .then(() => s.page.$$eval('#backupSnapshotList tr', (trs) => trs.map((tr) => tr.textContent.replace(/\s+/g, ' ').trim())), () => []);
+    ok(rows.length === 1 && /this one/.test(rows[0]), 'and the snapshot is listed, as this machine\'s', JSON.stringify(rows));
+
+    // The bucket goes away, and something changes.
+    await fakeS3Switch('down?status=503');
+    try {
+      await useDomRenderer(s);
+      await s.page.click('#backupRun');
+      const failed = await s.page.waitForFunction(() => /Last backup failed/.test(document.querySelector('#backupStatus').textContent)
+        && document.querySelector('#backupDetail .ds-alert--error'), null, { timeout: 30000 }).then(() => true, () => false);
+      ok(failed, 'a run against a bucket that is down says it failed, and why', await chipOf(s.page));
+      const tip = await s.page.$eval('#backupStatus .so-info', (n) => n.getAttribute('data-tip')).catch(() => '');
+      ok(/503|ServiceUnavailable/.test(tip), 'with what the bucket said behind the "i"', oneLine(tip || ''));
+
+      // A day is twenty seconds in this suite.
+      const warned = await awaitBackup(s, (st) => !!st.warning, 40000);
+      ok(/last successful backup/.test(warned.warning || ''), 'the status warns once the last good backup is too old', warned.warning);
+      const state = await (await s.context.request.get(s.url + '/api/state')).json();
+      ok(state.backup && /last successful backup/.test(state.backup.warning || ''), 'and so does /api/state', JSON.stringify(state.backup));
+      await s.page.reload({ waitUntil: 'domcontentloaded' });
+      const cardWarns = await s.page.waitForSelector('#backupDetail .ds-alert--warning', { timeout: 15000 }).then((n) => n.textContent(), () => '');
+      ok(/last successful backup/.test(cardWarns), 'and the card', oneLine(cardWarns));
+      await s.page.goto(s.url + '/', { waitUntil: 'domcontentloaded' });
+      const notice = await s.page.waitForSelector('#backupNotice:not([hidden])', { timeout: 15000 }).then((n) => n.textContent(), () => '');
+      ok(/last successful backup/.test(notice), 'and the session page, with a way to the card', oneLine(notice));
+    } finally {
+      await fakeS3Switch('up');
+    }
+
+    await s.page.goto(s.url + '/admin#backupCard', { waitUntil: 'domcontentloaded' });
+    await s.page.waitForSelector('#backupRun:not([disabled])', { timeout: 15000 });
+    await s.page.click('#backupRun');
+    const healed = await awaitBackup(s, (st) => !st.running && !st.warning && !st.last_error, 30000);
+    ok(!healed.warning && !healed.last_error, 'the next good run takes the warning and the error away', JSON.stringify({ warning: healed.warning, error: healed.last_error }));
+    const snaps = ((await (await s.context.request.get(s.url + '/api/backup/snapshots')).json()).snapshots) || [];
+    ok(snaps.length === 2, 'and there are two snapshots now', String(snaps.length));
+    ok(unexpected(s.errors, /503|502|409/).length === 0, 'no console errors', unexpected(s.errors, /503|502|409/).join(' | ') || '0');
+  } finally { await s.stop(); }
+}
+
+// restore is the reason the backup exists: machine A is backed up and lost,
+// and machine B - a new data directory - is restored from the setup page and
+// signs in with A's password to A's sessions, prompt and settings.
+async function restore() {
   const a = await start({ viewport: { width: 1280, height: 720 } });
   let aStopped = false;
   let ids = {};
-  let cookie = '';
+  let snapshot = '';
+  const form = await backupForm(prefixFor(a.data));
   try {
     await setup(a.page, a.url);
     await useDomRenderer(a);
@@ -6653,70 +6779,69 @@ async function s3restore() {
     })).json();
     ids = { shell: shell.session && shell.session.id, prepared: prepared.session && prepared.session.id };
     ok(!!ids.shell && !!ids.prepared, 'server A has a running session and a prepared one', JSON.stringify(ids));
+    const saved = await a.context.request.put(a.url + '/api/backup/config', { data: form });
+    ok(saved.ok(), 'its backup is configured', String(saved.status()));
+    await a.context.request.post(a.url + '/api/backup/run', { data: {} });
+    const st = await awaitBackup(a, (x) => !x.running && !!x.last_success, 30000);
+    snapshot = st.last_success && st.last_success.id;
+    ok(!!snapshot && !st.last_error, 'and it is backed up', JSON.stringify({ id: snapshot, error: st.last_error }));
 
-    // Wait for the mirror to have nothing left to upload, so what is being
-    // tested is the restore and not a race with the flusher.
-    let status = {};
-    const until = Date.now() + 20000;
-    while (Date.now() < until) {
-      status = await (await a.context.request.get(a.url + '/api/storage')).json();
-      if (status.state === 'ok' && status.pending === 0) break;
-      await wait(400);
-    }
-    ok(status.state === 'ok' && status.pending === 0, 'and the bucket holds all of it',
-      JSON.stringify({ state: status.state, pending: status.pending, prefix: status.storage && status.storage.prefix }));
-    const cookies = await a.context.cookies(a.url);
-    cookie = cookies.map((c) => c.name + '=' + c.value).join('; ');
-
-    // Machine A goes away: the server is stopped the way systemd stops it,
-    // and then everything it had on its disk is gone - data directory, tmux
-    // server, the panes in it.
+    // Machine A goes away with everything on its disk: data directory, tmux
+    // server, the panes in it. Killed, not stopped, so the snapshot taken
+    // above is the one there is.
     await a.context.close().catch(() => {});
     await a.browser.close().catch(() => {});
-    a.server.kill('SIGTERM');
-    const outcome = await Promise.race([a.exited, wait(15000).then(() => 'timeout')]);
-    if (outcome === 'timeout') a.server.kill('SIGKILL');
-    ok(outcome !== 'timeout', 'server A stopped cleanly, letting go of the bucket', JSON.stringify(outcome));
-    const released = a.log.join('');
+    a.server.kill('SIGKILL');
+    await a.exited;
     killTmux(a.data);
     rmSync(a.data, { recursive: true, force: true });
     aStopped = true;
-    ok(!/storage: .*(failed|error)/i.test(released), 'and said nothing about failing to flush',
-      oneLine((released.match(/storage: [^\n]*/g) || []).join(' | ') || 'no storage lines'));
   } catch (err) {
     ok(false, 'server A set the scene', String(err && err.stack || err));
   } finally {
     if (!aStopped) {
-      // Something went wrong before A was taken down on purpose: tidy it the
-      // usual way so nothing leaks, and leave B out of it.
       await a.stop();
       return;
     }
   }
 
-  // Machine B: a new data directory, the same bucket and prefix.
-  const b = await start({ viewport: { width: 1280, height: 720 }, s3prefix: a.s3prefix });
+  const b = await start({ viewport: { width: 1280, height: 720 } });
   try {
-    ok(b.data !== a.data, 'server B runs on a data directory of its own', b.data);
-    const state = await (await fetch(b.url + '/api/state')).json();
-    ok(state.mode === 'normal' && state.setup_required === false,
-      'it starts from the bucket, with no setup to do', JSON.stringify({ mode: state.mode, setup_required: state.setup_required }));
-    const carried = await (await fetch(b.url + '/api/state', { headers: { cookie } })).json();
-    ok(carried.authenticated === true, 'the sign-in made on server A is still valid on server B', String(carried.authenticated));
+    await b.page.goto(b.url + '/setup', { waitUntil: 'domcontentloaded' });
+    await b.page.waitForSelector('#restoreOffer:not([hidden])', { timeout: 15000 });
+    ok(true, 'a new machine\'s setup page offers a restore');
+    await b.page.click('#restoreOpen');
+    await b.page.fill('#rEndpoint', form.endpoint);
+    await b.page.fill('#rRegion', form.region);
+    await b.page.fill('#rBucket', form.bucket);
+    await b.page.fill('#rPrefix', form.prefix);
+    await b.page.fill('#rKey', form.access_key_id);
+    await b.page.fill('#rSecret', form.secret_access_key);
+    await b.page.fill('#rPassphrase', 'not the passphrase');
+    await b.page.click('#findBtn');
+    const refused = await b.page.waitForSelector('#rPassphraseError:not([hidden])', { timeout: 20000 }).then((n) => n.textContent(), () => '');
+    ok(/passphrase/i.test(refused), 'a wrong passphrase is refused at the field', oneLine(refused));
+    await b.page.fill('#rPassphrase', form.passphrase);
+    await b.page.click('#findBtn');
+    await b.page.waitForSelector('#snapshotBox:not([hidden])', { timeout: 20000 });
+    const listed = await b.page.$$eval('#snapshotList .ds-radio', (n) => n.map((x) => x.textContent.replace(/\s+/g, ' ').trim()));
+    ok(listed.length === 1 && /files/.test(listed[0]), 'it lists the snapshot with its machine, size and files', JSON.stringify(listed));
+    await b.page.check('#snapshotList input[value="' + snapshot + '"]');
+    await b.page.click('#restoreBtn');
+    const back = await b.page.waitForFunction(() => location.pathname === '/login', null, { timeout: 90000 }).then(() => true, () => false);
+    ok(back, 'the restore runs, Socrates starts again on it, and the page goes to the sign-in', b.page.url());
 
-    await b.page.goto(b.url + '/login', { waitUntil: 'domcontentloaded' });
     await b.page.fill('#password', PASSWORD);
     await b.page.click('#submit');
     await b.page.waitForFunction(() => location.pathname === '/', null, { timeout: 15000 }).catch(() => {});
-    await b.page.waitForSelector('#newSession', { timeout: 15000 });
-    ok(true, 'the same password signs in');
+    await b.page.waitForSelector('#newSession', { state: 'attached', timeout: 15000 });
+    ok(true, 'machine A\'s password signs in');
 
-    const listed = ((await (await b.context.request.get(b.url + '/api/sessions')).json()).sessions || []);
-    const byId = Object.fromEntries(listed.map((x) => [x.id, x]));
+    const sessions = ((await (await b.context.request.get(b.url + '/api/sessions')).json()).sessions || []);
+    const byId = Object.fromEntries(sessions.map((x) => [x.id, x]));
     ok(byId[ids.shell] && byId[ids.shell].title === 'restore shell'
       && byId[ids.prepared] && byId[ids.prepared].title === 'restore draft',
-      'both sessions are listed, under the same ids and names',
-      listed.map((x) => x.title + ':' + x.state).join(', '));
+      'both sessions are listed, under the same ids and names', sessions.map((x) => x.title + ':' + x.state).join(', '));
     ok(byId[ids.prepared] && byId[ids.prepared].state === 'prestart', 'the prepared one is still prepared',
       byId[ids.prepared] && byId[ids.prepared].state);
     ok(byId[ids.shell] && byId[ids.shell].state !== 'running', 'and the one whose pane was on machine A is not taken for running',
@@ -6725,124 +6850,15 @@ async function s3restore() {
     ok(draft.text === PREPARED_PROMPT, 'the prepared prompt is intact', JSON.stringify(draft.text));
     const settings = await (await b.context.request.get(b.url + '/api/settings')).json();
     const webgl = settings && settings.settings && settings.settings.terminal && settings.settings.terminal.webgl;
-    ok(webgl === false, 'and so is a setting made on server A', JSON.stringify(webgl));
-
-    // Every start of the page lands on Home (HOME.md §2.3), so an address set
-    // before the page has started is put back to #home; the row is opened the
-    // way a person opens it, once Home and the list are up.
-    await b.page.waitForSelector('#home:not([hidden])', { timeout: 20000 });
-    await b.page.waitForSelector('#sessionList .so-row[data-id="' + ids.prepared + '"]', { state: 'attached', timeout: 20000 });
-    await b.page.evaluate((target) => { location.hash = '#' + target; }, ids.prepared);
-    await panelUp(b.page);
-    const shown = await b.page.waitForFunction((want) => document.getElementById('psPrompt').value === want,
-      PREPARED_PROMPT, { timeout: 10000 }).then(() => true, () => false);
-    ok(shown, 'the panel on server B shows it');
-    ok(unexpected(b.errors).length === 0, 'no console errors', unexpected(b.errors).join(' | ') || '0');
+    ok(webgl === false, 'and so is a setting made on machine A', JSON.stringify(webgl));
+    const st = await backupStatus(b);
+    ok(st.configured && st.config && st.config.prefix === form.prefix && st.config.host_id
+      && !snapshot.startsWith(st.config.host_id + '/'),
+      'machine B goes on backing up into the same bucket, as a machine of its own',
+      JSON.stringify({ prefix: st.config && st.config.prefix, host: st.config && st.config.host_id, from: snapshot }));
+    ok(unexpected(b.errors, /401|503|ERR_CONNECTION_REFUSED|Failed to fetch/).length === 0, 'no console errors',
+      unexpected(b.errors, /401|503|ERR_CONNECTION_REFUSED|Failed to fetch/).join(' | ') || '0');
   } finally { await b.stop(); }
-}
-
-// storageOf is the short storage summary a signed-in page is given.
-async function storageOf(s) {
-  const state = await (await s.context.request.get(s.url + '/api/state')).json();
-  return state.storage || {};
-}
-
-// awaitStorage polls the summary until `test` holds, and answers with the
-// last one either way.
-async function awaitStorage(s, test, timeout) {
-  const until = Date.now() + timeout;
-  let st = await storageOf(s);
-  while (Date.now() < until && !test(st)) {
-    await wait(500);
-    st = await storageOf(s);
-  }
-  return st;
-}
-
-// bannerOf is what the storage banner shows, read off the page after it has
-// been told to look again - the page reads the state on a wake, which is
-// what a person coming back to the tab does.
-async function bannerOf(page, test, timeout = 15000) {
-  const read = () => page.evaluate(() => {
-    const node = document.getElementById('storageBanner');
-    return { shown: !!node && !node.hidden, kind: node ? node.dataset.kind || '' : '', text: node ? node.textContent.trim() : '' };
-  });
-  const until = Date.now() + timeout;
-  let seen = await read();
-  while (Date.now() < until && !test(seen)) {
-    await page.evaluate(() => window.dispatchEvent(new Event('focus')));
-    await wait(700);
-    seen = await read();
-  }
-  return seen;
-}
-
-async function storagebanner() {
-  const a = await start({ viewport: { width: 1280, height: 720 } });
-  let b = null;
-  try {
-    await setup(a.page, a.url);
-    await open(a);
-    let banner = await bannerOf(a.page, (x) => !x.shown, 3000);
-    ok(!banner.shown, 'with the bucket answering there is no storage banner', JSON.stringify(banner));
-
-    // The bucket goes away. A change made now is kept here and queued.
-    await fakeS3Switch('down?status=503');
-    try {
-      await a.context.request.post(a.url + '/api/sessions', {
-        data: { prestart: true, harness: 'claude', title: 'written while offline', prompt: 'kept here' },
-      });
-      const st = await awaitStorage(a, (x) => x.state === 'offline', 20000);
-      ok(st.state === 'offline' && st.pending > 0, 'the server notices and counts what is waiting',
-        JSON.stringify({ state: st.state, pending: st.pending, error: st.last_error }));
-      banner = await bannerOf(a.page, (x) => x.shown && x.kind === 'offline');
-      ok(banner.shown && /^Storage unreachable since \d\d:\d\d\. \d+ changes? (is|are) waiting to be backed up\./.test(banner.text),
-        'the page says the storage is unreachable, since when, and how much is waiting', banner.text);
-    } finally {
-      await fakeS3Switch('up');
-    }
-    const back = await awaitStorage(a, (x) => x.state === 'ok' && x.pending === 0, 90000);
-    ok(back.state === 'ok' && back.pending === 0, 'once the bucket answers again the queue goes up by itself',
-      JSON.stringify({ state: back.state, pending: back.pending }));
-    banner = await bannerOf(a.page, (x) => !x.shown);
-    ok(!banner.shown, 'and the banner leaves', JSON.stringify(banner));
-
-    // A second Socrates on the same bucket: it may not start while this one
-    // holds it, it says who does, and it can take it over with the password.
-    b = await start({ viewport: { width: 1280, height: 720 }, s3prefix: a.s3prefix });
-    const waiting = await (await fetch(b.url + '/api/state')).json();
-    const connect = waiting.connect || {};
-    ok(waiting.mode === 'connect' && connect.reason === 'leased' && !!(connect.lease && connect.lease.host),
-      'a second server on the same bucket waits on the connect page, naming the holder',
-      JSON.stringify({ mode: waiting.mode, reason: connect.reason, host: connect.lease && connect.lease.host }));
-    await b.page.goto(b.url + '/setup', { waitUntil: 'domcontentloaded' });
-    await b.page.waitForSelector('#takeoverBox:not([hidden])', { timeout: 10000 });
-    const says = await b.page.$eval('#storageReason', (n) => n.textContent.trim()).catch(() => '');
-    ok(/in use by/.test(says), 'its page says the bucket is in use, and by whom', says);
-    await b.page.fill('#takeoverPassword', PASSWORD);
-    await b.page.click('#takeoverBtn');
-    const until = Date.now() + 60000;
-    let mode = 'connect';
-    while (Date.now() < until && mode !== 'normal') {
-      await wait(500);
-      try { mode = (await (await fetch(b.url + '/api/state')).json()).mode; } catch { /* restarting */ }
-    }
-    ok(mode === 'normal', 'the password takes the bucket over, and the second server starts', mode);
-
-    // The first one finds out the next time it writes, and stops writing.
-    await a.context.request.put(a.url + '/api/settings', { data: { settings: { terminal: { webgl: false } } } });
-    const fenced = await awaitStorage(a, (x) => x.fenced, 45000);
-    ok(fenced.fenced && fenced.state === 'fenced', 'the first server sees the lease is no longer its own',
-      JSON.stringify({ state: fenced.state, holder: fenced.lease && fenced.lease.host }));
-    banner = await bannerOf(a.page, (x) => x.shown && x.kind === 'fenced');
-    ok(banner.shown && /^Another Socrates( \([^)]+\))? took over this bucket\. Changes made here are no longer backed up\./.test(banner.text),
-      'and its page says another Socrates took the bucket over', banner.text);
-    const bad = unexpected(a.errors, RESTART_NOISE);
-    ok(bad.length === 0, 'no console errors', bad.join(' | ') || '0');
-  } finally {
-    if (b) await b.stop();
-    await a.stop();
-  }
 }
 
 /* ------------------------------------------------------------- options */
@@ -9953,7 +9969,7 @@ async function homequiet() {
       JSON.stringify({ controlled, lines }));
     await new Promise((resolve) => holder.close(resolve));
     holder = null;
-    const again = spawnServer({ data: s.data, port: s.port, s3prefix: s.s3prefix });
+    const again = spawnServer({ data: s.data, port: s.port });
     s.server = again.server; s.log = again.log; s.exited = again.exited;
     await waitForHealth(s.url);
     const recovered = await awaitHome(s.page, (h) => h.conn === 'live', 45000);
@@ -12574,6 +12590,1937 @@ async function homelatecard() {
   }
 }
 
+/* ------------------------------------------------------------- the chats */
+
+// The chat scenarios run against the scripted agent (internal/agent/fake.go,
+// AGENT-HOST.md §8), which a server registers when SOCRATES_FAKE_AGENT=1 is
+// in its environment: what a message says is what its turn does (/stream,
+// /tools, /askmany, /plan ...), and what it sends has the shapes of Claude's
+// and Codex's content, so the view is measured on what the real adapters
+// send.
+const FAKE_AGENT = { SOCRATES_FAKE_AGENT: '1' };
+
+// chatServer is a signed-in server with the scripted agent.
+async function chatServer(options = {}) {
+  const s = await start({
+    viewport: { width: 1280, height: 860 }, ...options, env: { ...FAKE_AGENT, ...(options.env || {}) },
+  });
+  await setup(s.page, s.url);
+  return s;
+}
+
+// chatUp waits for the chat view to be what the stage shows.
+const chatUp = (page, timeout = 20000) =>
+  page.waitForSelector('#chat:not([hidden]) .so-composer__input', { timeout });
+
+// startChat drives the sheet to a chat with the scripted agent, the way a
+// person starts one, and waits for its composer.
+async function startChat(page) {
+  const was = await page.evaluate(() => location.hash.slice(1));
+  await ensureNav(page);
+  await page.click('#newSession');
+  await page.waitForSelector('#newSessionSheet[open]', { timeout: 15000 });
+  await page.waitForSelector('#newSessionSheet .so-settings__program[data-value="fake"]', { timeout: 10000 });
+  await page.click('#newSessionSheet .so-settings__program[data-value="fake"]');
+  await page.click('#nsStart');
+  await page.waitForSelector('#newSessionSheet[open]', { state: 'detached', timeout: 30000 });
+  await page.waitForFunction((before) => location.hash.length > 1 && location.hash.slice(1) !== before,
+    was, { timeout: 30000 });
+  await chatUp(page);
+  return page.evaluate(() => location.hash.slice(1));
+}
+
+// openChat goes to a chat through its address, as a link to it would.
+async function openChat(page, id) {
+  await page.waitForSelector(rowSel(id), { state: 'attached', timeout: 20000 });
+  await page.evaluate((target) => { location.hash = '#' + target; }, id);
+  await chatUp(page);
+}
+
+// say writes a message and sends it: Enter at a desk, Send on a touch screen.
+async function say(page, text, { button = false } = {}) {
+  await page.fill('#chat .so-composer__input', text);
+  if (button) await page.click('#chat .so-composer__send');
+  else await page.press('#chat .so-composer__input', 'Enter');
+}
+
+const logText = (page) => page.$eval('#chat .so-chat__log', (n) => n.innerText).catch(() => '');
+
+// awaitLog waits for the conversation on screen to show something.
+const awaitLog = (page, needle, timeout = 20000) => page.waitForFunction((want) => {
+  const log = document.querySelector('#chat .so-chat__log');
+  return !!log && log.innerText.includes(want);
+}, needle, { timeout }).then(() => true, () => false);
+
+// chatOf is GET /api/chats/{id} (the summary and the open questions), and
+// historyOf the whole projection (?history=1), as the server holds them.
+async function chatOf(s, id) {
+  const res = await s.context.request.get(s.url + '/api/chats/' + encodeURIComponent(id));
+  return res.json();
+}
+
+async function historyOf(s, id) {
+  const res = await s.context.request.get(s.url + '/api/chats/' + encodeURIComponent(id) + '?history=1');
+  return ((await res.json()).messages) || { messages: [] };
+}
+
+const userTexts = (history) => (history.messages || []).filter((m) => m.role === 'user').map((m) => m.text);
+
+// awaitChat polls the summary until `test` holds, and answers the last one
+// either way.
+async function awaitChat(s, id, test, timeout = 20000) {
+  const until = Date.now() + timeout;
+  let body = await chatOf(s, id);
+  while (!(body.chat && test(body)) && Date.now() < until) {
+    await wait(200);
+    body = await chatOf(s, id);
+  }
+  return body;
+}
+
+const idle = (body) => !body.chat.turn_running && !body.chat.queued;
+
+// lastAnswer is the newest assistant message as the page shows it.
+const lastAnswer = (page) => page.evaluate(() => {
+  const all = [...document.querySelectorAll('#chat .so-msg[data-role="assistant"]')];
+  return all.length ? all[all.length - 1].innerText : '';
+});
+
+// sideScroll is how far the page can be scrolled sideways: 0 is not at all.
+const sideScroll = (page) => page.evaluate(() => {
+  const root = document.scrollingElement;
+  return Math.max(root.scrollWidth - root.clientWidth, document.body.scrollWidth - window.innerWidth, 0);
+});
+
+// chat-stream: a chat from the sheet; a streamed answer whose element is
+// never rebuilt; Markdown and the thinking; a reload that replays the
+// journal; a message queued behind a turn; Stop; the draft; the palette;
+// the model picker; the lines between messages; usage behind the "i"; and a
+// prepared chat whose draft becomes its first message.
+async function chatstream() {
+  const s = await chatServer();
+  const { page } = s;
+  try {
+    // The sheet asks a chat for its agent, its folder and its model.
+    await ensureNav(page);
+    await page.click('#newSession');
+    await page.waitForSelector('#newSessionSheet[open]', { timeout: 15000 });
+    await page.waitForSelector('#newSessionSheet .so-settings__program[data-value="fake"]', { timeout: 10000 });
+    await page.click('#newSessionSheet .so-settings__program[data-value="fake"]');
+    const steps = await page.evaluate(() => Object.fromEntries(['nsHarnessField', 'nsDirField', 'nsModelField',
+      'nsEffortField', 'nsProfileField', 'nsUltracodeField'].map((one) => [one.replace(/^ns|Field$/g, '').toLowerCase(),
+      !document.getElementById(one).hidden])));
+    ok(steps.harness && steps.dir && steps.model && !steps.profile && !steps.ultracode,
+      'the sheet asks a chat for its agent, its folder and its model, and nothing else', JSON.stringify(steps));
+    await page.keyboard.press('Escape');
+    await page.waitForSelector('#newSessionSheet[open]', { state: 'detached', timeout: 10000 }).catch(() => {});
+    const id = await startChat(page);
+    const stage = await page.evaluate(() => ({
+      chat: !document.getElementById('chat').hidden,
+      term: document.getElementById('termWrap').hidden,
+      focus: document.activeElement && document.activeElement.classList.contains('so-composer__input'),
+    }));
+    const row = await sessionRow(s, id);
+    ok(row.kind === 'chat' && stage.chat && stage.term, 'a chat is a session of kind chat, drawn by the page where a terminal would stand',
+      JSON.stringify({ kind: row.kind, ...stage }));
+    ok(stage.focus, 'and the cursor is in its composer', String(stage.focus));
+    const empty = await page.$eval('#chat .so-chat__empty', (n) => n.innerText.replace(/\s+/g, ' ').trim()).catch(() => '');
+    ok(/Ask Scripted agent/.test(empty), 'an empty chat says what it is for', empty);
+
+    // A streamed answer: one element for its text from the first delta to
+    // the last.
+    await say(page, '/stream 60 40');
+    await page.waitForFunction(() => {
+      const parts = document.querySelectorAll('#chat .so-msg[data-role="assistant"] .so-part[data-kind="text"]');
+      const last = parts[parts.length - 1];
+      return !!last && /w3 /.test(last.textContent);
+    }, null, { timeout: 15000 });
+    await page.evaluate(() => {
+      const parts = document.querySelectorAll('#chat .so-msg[data-role="assistant"] .so-part[data-kind="text"]');
+      const last = parts[parts.length - 1];
+      last.wp8Stamp = 'first';
+      last.closest('.so-msg').wp8Stamp = 'first';
+    });
+    const user = await page.$eval('#chat .so-msg[data-role="user"]', (n) => n.innerText).catch(() => '');
+    ok(/\/stream 60 40/.test(user), 'the message is in the conversation, as the person wrote it', oneLine(user));
+    const done = await awaitLog(page, 'w60', 20000);
+    const kept = await page.evaluate(() => {
+      const parts = document.querySelectorAll('#chat .so-msg[data-role="assistant"] .so-part[data-kind="text"]');
+      const last = parts[parts.length - 1];
+      return { part: last && last.wp8Stamp, message: last && last.closest('.so-msg').wp8Stamp, text: last ? last.textContent.slice(-12) : '' };
+    });
+    ok(done && kept.part === 'first' && kept.message === 'first',
+      'the answer streams into the element its first words were drawn in, to the last word', JSON.stringify(kept));
+    const summary = await awaitChat(s, id, idle);
+    ok(summary.chat.last_outcome === 'completed', 'and the turn ends completed', summary.chat.last_outcome);
+
+    // Markdown, and the thinking before it, shut.
+    await say(page, '/md 5');
+    await awaitLog(page, 'The tests in', 20000);
+    await awaitChat(s, id, idle);
+    const md = await page.evaluate(() => {
+      const msgs = document.querySelectorAll('#chat .so-msg[data-role="assistant"]');
+      const msg = msgs[msgs.length - 1];
+      const think = msg.querySelector('.so-reasoning');
+      const link = msg.querySelector('.so-md a');
+      return {
+        h2: !!msg.querySelector('.so-md h2'), list: msg.querySelectorAll('.so-md ol li').length,
+        table: msg.querySelectorAll('.so-md table td').length, code: !!msg.querySelector('.so-code code'),
+        lang: (msg.querySelector('.so-code__lang') || {}).textContent, copy: !!msg.querySelector('.so-code [data-action="copy-code"]'),
+        target: link && link.getAttribute('target'), rel: link && link.getAttribute('rel'),
+        img: msg.querySelectorAll('img').length,
+        thinking: !!think, shut: !!think && !think.open, thought: think ? think.querySelector('summary').textContent.trim() : '',
+        body: think ? !!think.querySelector('.so-reasoning__body') : null,
+      };
+    });
+    ok(md.h2 && md.list === 3 && md.table >= 6 && md.code && md.lang === 'go' && md.copy,
+      'Markdown is drawn: a heading, a list, a table, and a code block with its language and Copy', JSON.stringify(md));
+    ok(md.target === '_blank' && /noopener/.test(md.rel || '') && md.img === 0,
+      'a link opens beside the app, and nothing is fetched that was not asked for', JSON.stringify(md));
+    ok(md.thinking && md.shut && /^Thought/.test(md.thought) && md.body === false,
+      'the thinking before it is one line, shut', JSON.stringify(md));
+    await page.click('#chat .so-reasoning > summary');
+    const opened = await page.waitForFunction(() => {
+      const all = document.querySelectorAll('#chat .so-reasoning');
+      const think = all[all.length - 1];
+      return think.open && /A list, the code and a table/.test(think.textContent);
+    }, null, { timeout: 5000 }).then(() => true, () => false);
+    ok(opened, 'and opens to what the agent thought');
+
+    // Usage and cost, behind the "i".
+    await page.click('#chat .so-composer__usage');
+    const usage = await page.waitForSelector('dialog .ds-dialog__title:text-is("Usage of this chat")', { timeout: 5000 })
+      .then(() => page.$eval('dialog[open]', (n) => n.innerText), () => '');
+    ok(/Cost so far: \$/.test(usage) && /Scripted agent 1\.0\.0/.test(usage),
+      'the chat’s usage and cost are behind its "i"', oneLine(usage));
+    await page.keyboard.press('Escape');
+
+    // A reload replays the journal into the same conversation.
+    const before = await logText(page);
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await page.waitForSelector('#home:not([hidden])', { timeout: 20000 });
+    await openChat(page, id);
+    const replayed = await awaitLog(page, 'w60', 20000) && await awaitLog(page, 'The tests in', 5000);
+    const after = await logText(page);
+    ok(replayed && after.replace(/\s+/g, ' ').includes('you said') === before.replace(/\s+/g, ' ').includes('you said'),
+      'after a reload the conversation is replayed from the journal', oneLine(after.slice(-160)));
+
+    // A message sent during a turn is queued, and taken up after it.
+    await say(page, '/sleep 4');
+    await page.waitForSelector('#chat .so-composer__stop:not([hidden])', { timeout: 10000 });
+    await say(page, 'after the sleep');
+    const queued = await page.waitForSelector('#chat .so-msg[data-role="user"][data-state="queued"] .so-msg__chip', { timeout: 10000 })
+      .then((n) => n.innerText(), () => '');
+    ok(/Queued/.test(queued), 'a message sent while the agent works is shown queued', queued);
+    const taken = await awaitLog(page, 'you said: after the sleep', 20000);
+    const unqueued = await page.$$eval('#chat .so-msg[data-role="user"][data-state="queued"]', (n) => n.length);
+    ok(taken && unqueued === 0, 'and the agent takes it up when it is done', String(unqueued) + ' still queued');
+
+    // Stop while busy.
+    await say(page, '/sleep 30');
+    await page.waitForSelector('#chat .so-composer__stop:not([hidden])', { timeout: 10000 });
+    await page.click('#chat .so-composer__stop');
+    const stopped = await page.waitForSelector('#chat .so-line[data-kind="interrupted"], #chat .so-msg[data-state="interrupted"]', { timeout: 15000 })
+      .then(() => true, () => false);
+    const stopGone = await page.waitForSelector('#chat .so-composer__stop', { state: 'hidden', timeout: 10000 }).then(() => true, () => false);
+    const outcome = (await awaitChat(s, id, idle)).chat.last_outcome;
+    ok(stopped && stopGone && outcome === 'interrupted', 'Stop interrupts the turn, says so, and goes away', outcome);
+
+    // The draft is saved as it is written, and is there after a reload.
+    await page.fill('#chat .so-composer__input', 'half a thought, not sent');
+    let draft = { text: '' };
+    for (let i = 0; i < 20 && draft.text !== 'half a thought, not sent'; i += 1) {
+      await wait(300);
+      draft = await draftOf(s, id);
+    }
+    ok(draft.text === 'half a thought, not sent', 'the composer saves its draft on the server as it is written', JSON.stringify(draft.text));
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await page.waitForSelector('#home:not([hidden])', { timeout: 20000 });
+    await openChat(page, id);
+    const back = await page.waitForFunction(() => document.querySelector('#chat .so-composer__input').value === 'half a thought, not sent',
+      null, { timeout: 10000 }).then(() => true, () => false);
+    ok(back, 'and it is back in the composer after a reload', await page.$eval('#chat .so-composer__input', (n) => n.value));
+
+    // Two devices writing the same draft: the second save is refused, and
+    // the person chooses, as with a prepared session's prompt.
+    await page.fill('#chat .so-composer__input', '');
+    for (let i = 0; i < 20 && draft.text !== ''; i += 1) {
+      await wait(300);
+      draft = await draftOf(s, id);
+    }
+    const phone = await s.context.request.put(s.url + '/api/sessions/' + id + '/draft',
+      { data: { text: 'written on the phone', base_rev: draft.rev } });
+    await page.fill('#chat .so-composer__input', 'written at the desk');
+    const conflict = await page.waitForSelector('#chat .so-composer__conflict:not([hidden])', { timeout: 10000 })
+      .then((n) => n.innerText(), () => '');
+    ok(phone.ok() && /changed on another device/.test(conflict) && /written on the phone/.test(conflict),
+      'a draft changed on another device in between is not overwritten: both texts are shown', oneLine(conflict));
+    await page.click('#chat [data-action="keep-mine"]');
+    for (let i = 0; i < 20 && draft.text !== 'written at the desk'; i += 1) {
+      await wait(300);
+      draft = await draftOf(s, id);
+    }
+    ok(draft.text === 'written at the desk', 'and Keep mine saves this one over it', JSON.stringify(draft.text));
+    await page.fill('#chat .so-composer__input', '');
+
+    // The palette: the commands the agent reported, and one run from it.
+    await page.fill('#chat .so-composer__input', '/');
+    const palette = await page.waitForSelector('#chat .so-composer__palette:not([hidden])', { timeout: 5000 })
+      .then(() => page.$$eval('#chat .so-palette__item', (n) => n.map((one) => one.dataset.command)), () => []);
+    ok(palette.join(',') === 'compact,context', 'a slash opens the commands the agent reported (agent.info)', palette.join(','));
+    await page.press('#chat .so-composer__input', 'Enter');
+    const chosen = await page.$eval('#chat .so-composer__input', (n) => n.value);
+    await page.press('#chat .so-composer__input', 'Enter');
+    const compacted = await awaitLog(page, 'The conversation was compacted.', 15000);
+    const line = await page.$eval('#chat .so-line[data-kind="command"]', (n) => n.innerText.trim()).catch(() => '');
+    ok(chosen === '/compact ' && compacted && line === '/compact', 'Enter takes the first, and the command runs as a command',
+      JSON.stringify({ chosen, line }));
+
+    // The model and its effort.
+    await page.click('#chat .so-composer__model');
+    await page.waitForSelector('.so-model-menu:not([hidden]) [data-model="fake-large"]', { timeout: 5000 });
+    await page.click('.so-model-menu [data-model="fake-large"]');
+    await awaitLog(page, 'Model: Fake large', 15000);
+    await page.click('#chat .so-composer__model');
+    await page.waitForSelector('.so-model-menu:not([hidden]) [data-effort="low"]', { timeout: 5000 });
+    await page.click('.so-model-menu [data-effort="low"]');
+    const changed = await awaitLog(page, 'Model: Fake large · Low', 15000);
+    const label = await page.$eval('#chat .so-composer__model-text', (n) => n.textContent);
+    const summed = await awaitChat(s, id, (b) => b.chat.effort === 'low');
+    ok(changed && label === 'Fake large · Low' && summed.chat.model === 'fake-large',
+      'the model and effort picker changes them for the turns that follow, and says so',
+      JSON.stringify({ label, model: summed.chat.model, effort: summed.chat.effort }));
+
+    // The lines between messages, and a limit with when it renews.
+    await say(page, '/dividers');
+    await awaitLog(page, 'Every kind of line was written.', 15000);
+    await say(page, '/limit');
+    const limit = await page.waitForSelector('#chat [data-kind="limit"]', { timeout: 15000 })
+      .then((n) => n.innerText(), () => '');
+    const lines = await page.$$eval('#chat .so-line, #chat .so-line-alert', (n) => n.map((one) => one.dataset.kind + ':' + one.innerText.trim()));
+    ok(lines.some((l) => /^notice:The conversation was compacted/.test(l)) && lines.some((l) => /^account:Switched from Work to Personal/.test(l))
+      && lines.some((l) => /^error:A message could not be handed/.test(l)),
+      'notices, an account switch and an error are lines of their own', JSON.stringify(lines));
+    ok(/Limit reached — renews in (1 h 5\d min|2 h)/.test(limit), 'a limit says so, with when it renews', oneLine(limit));
+
+    // A prepared chat: its draft is the first message when it starts.
+    await ensureNav(page);
+    await page.click('#newSession');
+    await page.waitForSelector('#newSessionSheet[open]', { timeout: 15000 });
+    await page.click('#newSessionSheet .so-settings__program[data-value="fake"]');
+    const offered = await page.$eval('#nsPrestartField', (n) => !n.hidden);
+    await page.click('#nsPrestart');
+    await page.click('#nsStart');
+    await page.waitForSelector('#newSessionSheet[open]', { state: 'detached', timeout: 30000 });
+    await page.waitForSelector('#prestart:not([hidden]) #psPrompt', { timeout: 15000 });
+    const pid = await page.evaluate(() => location.hash.slice(1));
+    await page.waitForFunction(() => !document.getElementById('psPrompt').disabled, null, { timeout: 10000 });
+    await page.fill('#psPrompt', 'the first words, prepared');
+    await page.waitForFunction(() => /^Saved$/.test(document.getElementById('psSave').textContent.trim()), null, { timeout: 10000 }).catch(() => {});
+    const prow = await sessionRow(s, pid);
+    ok(offered && prow.kind === 'chat' && prow.state === 'prestart', 'a chat can be prepared, and is a prepared chat',
+      JSON.stringify({ offered, kind: prow.kind, state: prow.state }));
+    await page.click('#psStart');
+    const started = await chatUp(page, 30000).then(() => true, () => false);
+    const first = await awaitLog(page, 'you said: the first words, prepared', 20000);
+    const history = await historyOf(s, pid);
+    const composer = await page.$eval('#chat .so-composer__input', (n) => n.value).catch(() => 'none');
+    ok(started && first && userTexts(history).join('|') === 'the first words, prepared' && composer === '',
+      'Start turns the panel into the chat, its draft the first message, sent once, and the composer empty',
+      JSON.stringify({ started, users: userTexts(history), composer }));
+    await shot(page, 'chat-stream');
+    // The refused draft is the browser's own report of the conflict above.
+    const refusedDraft = /status of 409 \(Conflict\) @ \S+\/draft$/;
+    ok(unexpected(s.errors, refusedDraft).length === 0, 'no console errors', unexpected(s.errors, refusedDraft).join(' | ') || '0');
+  } finally { await s.stop(); }
+}
+
+// chat-tools: tool rows that open to their input and output, a failed one,
+// the diff viewer with both content shapes, a subagent's group, a workflow's
+// phases and agents, and the task list pinned above the composer while the
+// turn works through it.
+async function chattools() {
+  const s = await chatServer();
+  const { page } = s;
+  try {
+    const id = await startChat(page);
+    await say(page, '/tools');
+    await awaitLog(page, 'Done with the tools.', 20000);
+    const rows = await page.$$eval('#chat .so-tool', (n) => n.map((one) => ({
+      kind: one.dataset.kind, state: one.dataset.state, open: one.open,
+      name: (one.querySelector('.so-tool__name') || {}).textContent,
+      summary: (one.querySelector('.so-tool__summary') || {}).textContent,
+      time: (one.querySelector('.so-tool__time') || {}).textContent,
+    })));
+    const by = (name) => rows.find((r) => r.name === name) || {};
+    ok(by('Read').open === false && by('Bash').open === false && by('Bash').summary === 'go test ./server/...'
+      && /s$/.test(by('Bash').time || ''),
+      'a tool call is one row - its name, what it did, how long - shut', JSON.stringify(rows.slice(0, 2)));
+    ok(by('Grep').state === 'error', 'a call that failed says so', JSON.stringify(by('Grep')));
+    await page.click('#chat .so-tool[data-kind="tool"]:has(.so-tool__name:text-is("Bash")) > summary');
+    const output = await page.waitForSelector('#chat .so-tool[open] .so-tool__out', { timeout: 5000 })
+      .then((n) => n.innerText(), () => '');
+    const input = await page.$eval('#chat .so-tool[open] .so-code code', (n) => n.textContent).catch(() => '');
+    ok(/--- PASS: TestHandleGet/.test(output) && input === 'go test ./server/...',
+      'and opens to the command it ran and what it printed', oneLine(input + ' | ' + output));
+
+    const diffs = await page.$$eval('#chat .so-tool[data-kind="diff"]', (n) => n.map((one) => ({
+      open: one.open,
+      files: [...one.querySelectorAll('.so-diff__file')].map((f) => ({
+        path: f.querySelector('.so-diff__path').textContent,
+        added: f.querySelectorAll('.so-diff__line[data-type="add"]').length,
+        removed: f.querySelectorAll('.so-diff__line[data-type="del"]').length,
+      })),
+      count: (one.querySelector('.so-tool__head .so-diff__count') || {}).textContent,
+    })));
+    ok(diffs.length === 2 && diffs.every((d) => d.open) && diffs[0].files.length === 1
+      && diffs[0].files[0].added === 6 && diffs[0].files[0].removed === 2,
+      'an edit is open on its diff: the file, the lines added and removed', JSON.stringify(diffs[0]));
+    ok(diffs[1] && diffs[1].files.length === 2 && diffs[1].files[1].path.endsWith('handler_test.go'),
+      'and a change to two files (Codex’s shape) is one viewer with both', JSON.stringify(diffs[1]));
+    const numbers = await page.$eval('#chat .so-diff__line[data-type="add"]', (n) => [...n.querySelectorAll('.so-diff__no')].map((c) => c.textContent));
+    ok(numbers[0] === '' && Number(numbers[1]) >= 10, 'every line has its numbers in the old and the new file', JSON.stringify(numbers));
+
+    // A subagent: its own calls nested under its row.
+    await say(page, '/subagent');
+    await awaitLog(page, 'The subagent finished.', 20000);
+    const group = await page.$eval('#chat .so-tool[data-group]', (n) => ({
+      open: n.open, name: n.querySelector('.so-tool__name').textContent,
+      nested: [...n.querySelectorAll('.so-group > .so-part')].map((p) => p.dataset.kind),
+      text: (n.querySelector('.so-group .so-part[data-kind="text"]') || {}).textContent,
+    })).catch(() => null);
+    ok(!!group && group.open && group.name === 'Task' && group.nested.join(',') === 'text,tool' && /Looking around/.test(group.text),
+      'a subagent is a group with what it said and did nested inside', JSON.stringify(group));
+
+    // A workflow: its phases, and every agent's live state.
+    await say(page, '/workflow 900');
+    const live = await page.waitForFunction(() => {
+      const wf = [...document.querySelectorAll('#chat .so-tool[data-group]')]
+        .filter((n) => n.querySelector(':scope > summary .so-tool__name').textContent === 'Workflow').pop();
+      if (!wf || !wf.querySelector('.so-phases')) return null;
+      const phases = [...wf.querySelectorAll('.so-phase')].map((p) => p.dataset.state);
+      const running = wf.querySelectorAll('.so-phase .so-tool[data-state="running"] .ds-spinner').length;
+      return phases.length === 3 && running > 0 ? { phases, running } : null;
+    }, null, { timeout: 15000 }).then((h) => h.jsonValue(), () => null);
+    ok(!!live, 'a workflow shows its three phases and its agents at work, each turning', JSON.stringify(live));
+    await awaitLog(page, 'The workflow finished.', 20000);
+    const finished = await page.evaluate(() => {
+      const wf = [...document.querySelectorAll('#chat .so-tool[data-group]')]
+        .filter((n) => n.querySelector(':scope > summary .so-tool__name').textContent === 'Workflow').pop();
+      return {
+        phases: [...wf.querySelectorAll('.so-phase')].map((p) => p.querySelector('.so-phase__title').textContent + ':' + p.dataset.state),
+        agents: wf.querySelectorAll('.so-phase .so-tool[data-state="done"]').length,
+        progress: (wf.querySelector('.so-tool__progress') || {}).textContent,
+      };
+    });
+    ok(finished.phases.join(',') === 'Plan:done,Build:done,Review:done' && finished.agents === 4 && finished.progress === '4 of 4 agents',
+      'and when it is through, every phase and every agent is done', JSON.stringify(finished));
+
+    // The task list, pinned while the turn works through it.
+    await say(page, '/todo 900');
+    const pinned = await page.waitForSelector('#chat .so-chat__todo:not([hidden]) .so-todo[data-pinned]', { timeout: 10000 })
+      .then(() => page.$eval('#chat .so-chat__todo', (n) => ({
+        items: [...n.querySelectorAll('.so-todo__item')].map((i) => i.dataset.status),
+        count: n.querySelector('.so-todo__count').textContent,
+        above: n.getBoundingClientRect().bottom <= document.querySelector('#chat .so-composer').getBoundingClientRect().top + 1,
+      })), () => null);
+    ok(!!pinned && pinned.items.length === 3 && pinned.items.includes('in_progress') && pinned.above,
+      'a task list is pinned above the composer while the turn works through it', JSON.stringify(pinned));
+    await awaitLog(page, 'All three tasks are done.', 20000);
+    const unpinned = await page.waitForSelector('#chat .so-chat__todo', { state: 'hidden', timeout: 5000 }).then(() => true, () => false);
+    const inMessage = await page.$$eval('#chat .so-msg .so-part[data-kind="todo"] .so-todo__item[data-status="completed"]', (n) => n.length);
+    ok(unpinned && inMessage >= 3, 'and once the turn is over it is in the answer, not pinned', JSON.stringify({ unpinned, inMessage }));
+    await shot(page, 'chat-tools');
+    ok(unexpected(s.errors).length === 0, 'no console errors', unexpected(s.errors).join(' | ') || '0');
+    void id;
+  } finally { await s.stop(); }
+}
+
+// chat-offline: a message written with no network is queued visibly and
+// delivered once when it comes back; a message whose answer was lost on
+// the way back is sent again and still arrives once; and so is everything
+// else a chat is told while it cannot be reached: what two tabs wrote, a
+// model chosen offline (before the message after it), an answer to a
+// question. Typing before the saved draft has loaded keeps what was typed,
+// and a command the agent refused says it did not run.
+async function chatoffline() {
+  const s = await chatServer();
+  const { page } = s;
+  try {
+    const id = await startChat(page);
+    await say(page, 'hello');
+    await awaitLog(page, 'you said: hello', 20000);
+
+    await s.context.setOffline(true);
+    await page.evaluate(() => window.dispatchEvent(new Event('offline')));
+    await say(page, 'written in a tunnel');
+    const local = await page.waitForSelector('#chat .so-msg[data-role="user"][data-state="local"] .so-msg__chip', { timeout: 15000 })
+      .then((n) => n.innerText(), () => '');
+    const kept = await page.evaluate(() => JSON.parse(localStorage.getItem('socrates.outbox.chats') || '[]')
+      .map((item) => item.payload.text));
+    ok(/Not sent yet/.test(local) && kept.includes('written in a tunnel'),
+      'a message written offline is on screen as not sent yet, and kept in this browser', JSON.stringify({ local, kept }));
+    const said = await page.$eval('#chat .so-chat__state', (n) => n.innerText).catch(() => '');
+    ok(/Offline/.test(said), 'and the chat says it is offline', oneLine(said));
+    await wait(1500);
+    await s.context.setOffline(false);
+    await page.evaluate(() => window.dispatchEvent(new Event('online')));
+    const arrived = await awaitLog(page, 'you said: written in a tunnel', 30000);
+    await awaitChat(s, id, idle);
+    const once = userTexts(await historyOf(s, id)).filter((t) => t === 'written in a tunnel').length;
+    const empty = await page.evaluate(() => JSON.parse(localStorage.getItem('socrates.outbox.chats') || '[]').length);
+    ok(arrived && once === 1 && empty === 0, 'back online it is delivered, exactly once, and the outbox is empty',
+      JSON.stringify({ arrived, once, empty }));
+
+    // The server takes a message, and its answer never reaches the page:
+    // the outbox sends it again with the same client_id, and it is one
+    // message all the same.
+    let cut = 0;
+    await page.route('**/api/chats/*/messages', async (route) => {
+      if (cut === 0) {
+        cut += 1;
+        await route.fetch().catch(() => null);
+        await route.abort('connectionreset');
+        return;
+      }
+      await route.continue();
+    });
+    await say(page, 'its answer was lost');
+    const delivered = await awaitLog(page, 'you said: its answer was lost', 30000);
+    await awaitChat(s, id, idle);
+    const twice = userTexts(await historyOf(s, id)).filter((t) => t === 'its answer was lost').length;
+    const turns = (await logText(page)).split('you said: its answer was lost').length - 1;
+    ok(cut === 1 && delivered && twice === 1 && turns === 1,
+      'a send whose answer was lost is repeated and is still one message and one turn',
+      JSON.stringify({ cut, twice, turns }));
+    await page.unroute('**/api/chats/*/messages');
+
+    // Offline across a reload: the outbox outlives the page.
+    await s.context.setOffline(true);
+    await page.evaluate(() => window.dispatchEvent(new Event('offline')));
+    await say(page, 'kept across a reload');
+    await page.waitForSelector('#chat .so-msg[data-role="user"][data-state="local"]', { timeout: 15000 });
+    await s.context.setOffline(false);
+    await page.route('**/api/chats/*/messages', (route) => route.abort('internetdisconnected'));
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await page.waitForSelector('#home:not([hidden])', { timeout: 20000 });
+    const still = await page.evaluate(() => JSON.parse(localStorage.getItem('socrates.outbox.chats') || '[]')
+      .map((item) => item.payload.text));
+    await page.unroute('**/api/chats/*/messages');
+    await openChat(page, id);
+    await page.evaluate(() => window.dispatchEvent(new Event('online')));
+    const later = await awaitLog(page, 'you said: kept across a reload', 30000);
+    await awaitChat(s, id, idle);
+    const one = userTexts(await historyOf(s, id)).filter((t) => t === 'kept across a reload').length;
+    ok(still.includes('kept across a reload') && later && one === 1,
+      'a message still waiting when the page is reloaded goes out after it, once', JSON.stringify({ still, one }));
+
+    // Typing before the saved draft has come back from the server: what
+    // was typed stays in the field, and it is what is saved.
+    await page.route('**/api/sessions/*/draft', async (route) => {
+      if (route.request().method() === 'GET') await wait(2500);
+      await route.continue().catch(() => {});
+    });
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await page.waitForSelector('#home:not([hidden])', { timeout: 20000 });
+    await openChat(page, id);
+    await page.fill('#chat .so-composer__input', 'typed while the draft was loading');
+    await wait(3500);
+    const typed = await page.$eval('#chat .so-composer__input', (n) => n.value);
+    let early = { text: '' };
+    for (let i = 0; i < 20 && early.text !== 'typed while the draft was loading'; i += 1) {
+      await wait(300);
+      early = await draftOf(s, id);
+    }
+    await page.unroute('**/api/sessions/*/draft');
+    ok(typed === 'typed while the draft was loading' && early.text === typed,
+      'what is typed before the saved draft has loaded stays, and is the draft that is saved',
+      JSON.stringify({ typed, saved: early.text }));
+    await page.fill('#chat .so-composer__input', '');
+
+    // Two tabs of one browser, offline: each one's message is kept in the
+    // one queue, and both go out once, though the tab that wrote first is
+    // closed before the connection is back.
+    const other = await s.context.newPage();
+    await other.goto(s.url + '/#open=' + id, { waitUntil: 'domcontentloaded' });
+    await chatUp(other);
+    await s.context.setOffline(true);
+    for (const tab of [page, other]) await tab.evaluate(() => window.dispatchEvent(new Event('offline')));
+    await say(other, 'from the second tab');
+    await other.waitForSelector('#chat .so-msg[data-role="user"][data-state="local"]', { timeout: 15000 });
+    await say(page, 'from the first tab');
+    await page.waitForSelector('#chat .so-msg[data-role="user"][data-state="local"]', { timeout: 15000 });
+    const queuedTabs = await page.evaluate(() => JSON.parse(localStorage.getItem('socrates.outbox.chats') || '[]')
+      .map((item) => item.payload.text));
+    await other.close();
+    await s.context.setOffline(false);
+    await page.evaluate(() => window.dispatchEvent(new Event('online')));
+    const fromFirst = await awaitLog(page, 'you said: from the first tab', 30000);
+    const fromSecond = await awaitLog(page, 'you said: from the second tab', 30000);
+    await awaitChat(s, id, idle);
+    const tabTexts = userTexts(await historyOf(s, id));
+    ok(queuedTabs.includes('from the second tab') && queuedTabs.includes('from the first tab') && fromFirst && fromSecond
+      && tabTexts.filter((t) => t === 'from the second tab').length === 1 && tabTexts.filter((t) => t === 'from the first tab').length === 1,
+      'two tabs offline share one queue: neither drops the other’s message, and each arrives once', JSON.stringify({ queuedTabs }));
+
+    // A model chosen offline is kept in the queue too, before the message
+    // written after it, and the button shows it at once.
+    const before = await page.$eval('#chat .so-composer__model-text', (n) => n.textContent);
+    const target = /^Fake large/.test(before) ? 'fake-small' : 'fake-large';
+    const targetLabel = target === 'fake-large' ? 'Fake large' : 'Fake small';
+    await s.context.setOffline(true);
+    await page.evaluate(() => window.dispatchEvent(new Event('offline')));
+    await page.click('#chat .so-composer__model');
+    await page.waitForSelector('.so-model-menu:not([hidden]) [data-model="' + target + '"]', { timeout: 5000 });
+    await page.click('.so-model-menu [data-model="' + target + '"]');
+    const shownModel = await page.$eval('#chat .so-composer__model-text', (n) => n.textContent);
+    await say(page, 'after the model');
+    const queuedKinds = await page.evaluate(() => JSON.parse(localStorage.getItem('socrates.outbox.chats') || '[]')
+      .map((item) => item.payload.kind));
+    await s.context.setOffline(false);
+    await page.evaluate(() => window.dispatchEvent(new Event('online')));
+    await awaitLog(page, 'you said: after the model', 30000);
+    const modelled = await awaitChat(s, id, (b) => b.chat.model === target && idle(b));
+    const order = await logText(page);
+    ok(shownModel.startsWith(targetLabel) && queuedKinds.join(',') === 'model,message' && modelled.chat.model === target
+      && order.lastIndexOf('Model: ' + targetLabel) < order.lastIndexOf('after the model'),
+      'a model chosen offline is queued before the message after it, and changes it', JSON.stringify({ shownModel, queuedKinds, model: modelled.chat.model }));
+
+    // An answer given offline: its card says it is on its way, not that the
+    // question still waits; the dialog opened again says so as well; and
+    // back online it is delivered once.
+    await say(page, '/ask');
+    const offAsk = await openAskCard(page);
+    await s.context.setOffline(true);
+    await page.evaluate(() => window.dispatchEvent(new Event('offline')));
+    await page.click('#chat .so-ask__open');
+    await page.waitForSelector('dialog.so-askdlg .so-q-option[data-option="a"]', { timeout: 10000 });
+    await page.click('dialog.so-askdlg .so-q-option[data-option="a"]');
+    await page.click('dialog.so-askdlg [data-action="send"]');
+    await page.click('dialog.so-askdlg [data-action="close"]');
+    await page.waitForSelector('dialog.so-askdlg', { state: 'detached', timeout: 5000 });
+    const cardSel = '#chat .so-ask[data-ask="' + offAsk + '"]';
+    const waitingCard = await page.waitForSelector(cardSel + '[data-state="local"]', { timeout: 5000 })
+      .then((n) => n.innerText(), () => '');
+    const askedAgain = !!(await page.$(cardSel + ' .so-ask__open'));
+    // Reloaded with the answer still unable to get out.
+    await page.route('**/api/chats/*/asks/*/answer', (route) => route.abort('internetdisconnected'));
+    await s.context.setOffline(false);
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await page.waitForSelector('#home:not([hidden])', { timeout: 20000 });
+    await openChat(page, id);
+    const reopened = await page.waitForSelector(cardSel + '[data-state="local"], ' + cardSel + '[data-state="sending"]', { timeout: 15000 })
+      .then((n) => n.getAttribute('data-state'), () => '');
+    await page.unroute('**/api/chats/*/asks/*/answer');
+    await page.evaluate(() => window.dispatchEvent(new Event('online')));
+    const answeredCard = await page.waitForSelector(cardSel + '[data-state="answered"]', { timeout: 30000 }).then(() => true, () => false);
+    await awaitChat(s, id, idle);
+    const given = await askOf(s, id, offAsk);
+    ok(/Not sent yet/.test(waitingCard) && !askedAgain && !!reopened && answeredCard && !!given && given.answered
+      && JSON.stringify(given.answer.answers.q1.selected) === '["a"]',
+      'an answer given offline is on its card as not sent yet - after a reload too - and is delivered once',
+      oneLine(JSON.stringify({ waitingCard, askedAgain, reopened, answeredCard, answer: given && given.answer })));
+
+    // A command the agent refused after the journal had it: the line says
+    // it did not run, and Dismiss lets it go.
+    await page.route('**/api/chats/*/command', async (route) => {
+      await route.fetch().catch(() => null);
+      await route.fulfill({ status: 409, contentType: 'application/json',
+        body: JSON.stringify({ error: 'the agent has no such command', code: 'unsupported' }) });
+    });
+    await say(page, '/context ');
+    const notRun = await page.waitForSelector('#chat .so-line[data-kind="command"][data-state="failed"]', { timeout: 15000 })
+      .then((n) => n.innerText(), () => '');
+    await page.unroute('**/api/chats/*/command');
+    await page.click('#chat .so-line[data-kind="command"][data-state="failed"] [data-action="outbox-drop"]').catch(() => {});
+    const dismissed = await page.waitForSelector('#chat .so-line[data-kind="command"][data-state="failed"]', { state: 'detached', timeout: 5000 })
+      .then(() => true, () => false);
+    const leftOver = await page.evaluate(() => JSON.parse(localStorage.getItem('socrates.outbox.chats') || '[]').length);
+    ok(/Not run/.test(notRun) && dismissed && leftOver === 0, 'a command the agent refused says it did not run, until it is dismissed',
+      oneLine(JSON.stringify({ notRun, dismissed, leftOver })));
+    await awaitChat(s, id, idle);
+
+    // An answer the server refuses for good: the dialog gives the question
+    // back with the reason, the card says it was not sent, and Answer again
+    // opens on what was chosen.
+    await say(page, '/ask');
+    const refusedAsk = await openAskCard(page);
+    const refusedSel = '#chat .so-ask[data-ask="' + refusedAsk + '"]';
+    await page.route('**/api/chats/*/asks/*/answer', (route) => route.fulfill({ status: 404, contentType: 'application/json',
+      body: JSON.stringify({ error: 'this chat never asked that question' }) }));
+    await page.click(refusedSel + ' .so-ask__open');
+    await page.waitForSelector('dialog.so-askdlg .so-q-option[data-option="b"]', { timeout: 10000 });
+    await page.click('dialog.so-askdlg .so-q-option[data-option="b"]');
+    await page.click('dialog.so-askdlg [data-action="send"]');
+    const inDialog = await page.waitForSelector('dialog.so-askdlg .so-refused', { timeout: 10000 }).then((n) => n.innerText(), () => '');
+    await page.unroute('**/api/chats/*/asks/*/answer');
+    await page.click('dialog.so-askdlg [data-action="close"]');
+    await page.waitForSelector('dialog.so-askdlg', { state: 'detached', timeout: 5000 });
+    const onCard = await page.waitForSelector(refusedSel + '[data-state="failed"]', { timeout: 5000 }).then((n) => n.innerText(), () => '');
+    await page.click(refusedSel + ' [data-action="ask-again"]');
+    const keptChoice = await page.waitForSelector('dialog.so-askdlg .so-q-option[data-option="b"][aria-pressed="true"]', { timeout: 10000 })
+      .then(() => true, () => false);
+    await page.click('dialog.so-askdlg [data-action="send"]');
+    const settledCard = await page.waitForSelector(refusedSel + '[data-state="answered"]', { timeout: 20000 }).then(() => true, () => false);
+    await awaitChat(s, id, idle);
+    ok(/never asked that question/.test(inDialog) && /Not sent/.test(onCard) && keptChoice && settledCard,
+      'an answer refused for good says why, in the dialog and on its card, and is answered again from what was chosen',
+      oneLine(JSON.stringify({ inDialog, onCard, keptChoice, settledCard })));
+
+    // The connections this scenario cut, and the refusal it made up, are its
+    // own doing.
+    const cutNoise = new RegExp(OFFLINE_NOISE.source + '|ERR_CONNECTION_RESET|status of 40[49]');
+    ok(unexpected(s.errors, cutNoise).length === 0, 'no unexpected console errors',
+      unexpected(s.errors, cutNoise).join(' | ') || '0');
+  } finally { await s.stop(); }
+}
+
+// answerAll walks the dialog through the full ask_user call of the scripted
+// agent (/askmany): every kind of question, with a detail opened, a note,
+// Other beside two options (beside three it is one too many), a refused
+// number, and a general note.
+async function answerAll(page) {
+  // 1. single, PostgreSQL preselected (its default): details, context, then SQLite and a note.
+  await page.waitForSelector('dialog.so-askdlg .so-q-text', { timeout: 10000 });
+  const first = await page.evaluate(() => ({
+    title: document.querySelector('dialog.so-askdlg .so-ask-title').textContent,
+    step: document.querySelector('dialog.so-askdlg .so-q-step').innerText,
+    chosen: [...document.querySelectorAll('dialog.so-askdlg .so-q-option[aria-pressed="true"]')].map((n) => n.dataset.option),
+    recommended: !!document.querySelector('dialog.so-askdlg .so-q-option[data-option="pg"] .so-q-recommended'),
+  }));
+  await page.click('dialog.so-askdlg .so-ask-more');
+  const details = await page.waitForSelector('dialog.so-askdlg .so-ask-details', { timeout: 5000 }).then((n) => n.innerText(), () => '');
+  await page.click('dialog.so-askdlg .so-q-body > .so-ask-context:last-of-type > summary').catch(() => {});
+  await page.click('dialog.so-askdlg .so-q-option[data-option="sqlite"]');
+  await page.click('dialog.so-askdlg [data-action="note"]');
+  await page.fill('#ask-db-note', 'keep it small');
+  await page.click('dialog.so-askdlg [data-action="forward"]');
+  // 2. multi, 1 to 3: three chosen, a fourth refused.
+  await page.waitForSelector('dialog.so-askdlg .so-q-option[data-option="dark"]', { timeout: 5000 });
+  const hint = await page.$eval('dialog.so-askdlg .so-q-detail', (n) => n.textContent);
+  for (const one of ['dark', 'search', 'export', 'offline']) await page.click('dialog.so-askdlg .so-q-option[data-option="' + one + '"]');
+  const multi = await page.$$eval('dialog.so-askdlg .so-q-option[aria-pressed="true"]', (n) => n.map((one) => one.dataset.option));
+  // One in the person's own words is a fourth as well, until one of the
+  // three is let go.
+  await page.click('dialog.so-askdlg [data-action="other"]');
+  await page.fill('#ask-features-other', 'an audit log');
+  await page.click('dialog.so-askdlg [data-action="forward"]');
+  const otherCounted = await page.waitForSelector('dialog.so-askdlg .so-ask-problem', { timeout: 5000 }).then((n) => n.innerText(), () => '');
+  await page.click('dialog.so-askdlg .so-q-option[data-option="export"]');
+  await page.click('dialog.so-askdlg [data-action="forward"]');
+  // 3. text.
+  await page.waitForSelector('#ask-name-other', { timeout: 5000 });
+  await page.fill('#ask-name-other', 'Atlas');
+  await page.click('dialog.so-askdlg [data-action="forward"]');
+  // 4. confirm, Yes preselected: No.
+  await page.waitForSelector('dialog.so-askdlg .so-q-option[data-option="no"]', { timeout: 5000 });
+  const confirmDefault = await page.$$eval('dialog.so-askdlg .so-q-option[aria-pressed="true"]', (n) => n.map((one) => one.dataset.option));
+  await page.click('dialog.so-askdlg .so-q-option[data-option="no"]');
+  await page.click('dialog.so-askdlg [data-action="forward"]');
+  // 5. number, 1 to 10, 2 preselected: 20 is refused, 3 is taken.
+  await page.waitForSelector('#ask-replicas-other', { timeout: 5000 });
+  const numberDefault = await page.$eval('#ask-replicas-other', (n) => n.value);
+  await page.fill('#ask-replicas-other', '20');
+  await page.click('dialog.so-askdlg [data-action="send"]');
+  const refused = await page.waitForSelector('dialog.so-askdlg .so-ask-problem', { timeout: 5000 }).then((n) => n.innerText(), () => '');
+  await page.fill('#ask-replicas-other', '3');
+  await page.click('dialog.so-askdlg [data-action="general"]');
+  await page.fill('#ask-all-general', 'ship it on Friday');
+  await page.click('dialog.so-askdlg [data-action="send"]');
+  return { first, details, hint, multi, otherCounted, confirmDefault, numberDefault, refused };
+}
+
+// The answer the walk above gives, exactly as REBUILD.md §5.2 has it.
+const ANSWER_ALL = {
+  answers: {
+    db: { selected: ['sqlite'], other: null, note: 'keep it small', delegated: false, skipped: false },
+    features: { selected: ['dark', 'search'], other: 'an audit log', note: null, delegated: false, skipped: false },
+    name: { selected: [], other: 'Atlas', note: null, delegated: false, skipped: false },
+    migrate: { selected: ['no'], other: null, note: null, delegated: false, skipped: false },
+    replicas: { selected: [], other: '3', note: null, delegated: false, skipped: false },
+  },
+  general_note: 'ship it on Friday',
+  follow_up: null,
+};
+
+// askOf is one ask of a chat, as the server holds it.
+async function askOf(s, id, askId) {
+  const history = await historyOf(s, id);
+  return (history.asks || []).find((a) => a.id === askId) || null;
+}
+
+// openAskCard waits for the newest open question card and answers its id.
+async function openAskCard(page) {
+  const card = await page.waitForSelector('#chat .so-ask[data-state="open"]', { timeout: 15000 });
+  return card.getAttribute('data-ask');
+}
+
+// chat-ask: the question card and the dialog at a desk, every kind of
+// question answered in the exact shape of REBUILD §5.2, progress kept
+// across a closed dialog, a plan sent back and approved, an answer that
+// goes as the next message, a counter-question, Home's Questions card, and
+// two devices: the second is told it was answered on the other.
+async function chatask() {
+  const s = await chatServer();
+  const { page } = s;
+  try {
+    const id = await startChat(page);
+    await say(page, '/askmany');
+    const askId = await openAskCard(page);
+    const card = await page.$eval('#chat .so-ask[data-state="open"]', (n) => ({
+      title: n.querySelector('.so-ask__title').textContent, progress: n.querySelector('.so-ask__progress').textContent,
+      question: n.querySelector('.so-ask__question').textContent, status: n.querySelector('.ds-status').innerText,
+    }));
+    ok(card.title === 'Deployment setup' && card.progress === '0 of 5 answered' && card.question === 'Which database should the service use?'
+      && /Waiting for you/.test(card.status),
+      'the card in the chat has the title, how far it is, and the first open question', JSON.stringify(card));
+    const ring = await awaitRow(page, id, (r) => r.waiting, 10000);
+    ok(ring.ok, 'the chat’s row says it is waiting for an answer', took(ring));
+
+    // Halfway, closed, and opened again where it was left.
+    await page.click('#chat .so-ask__open');
+    await page.waitForSelector('dialog.so-askdlg .so-q-option[data-option="pg"]', { timeout: 10000 });
+    await page.click('dialog.so-askdlg .so-q-option[data-option="mysql"]');
+    await page.click('dialog.so-askdlg [data-action="close"]');
+    await page.waitForSelector('dialog.so-askdlg', { state: 'detached', timeout: 5000 });
+    const progress = await page.waitForFunction(() => {
+      const n = document.querySelector('#chat .so-ask[data-state="open"] .so-ask__progress');
+      return n && n.textContent === '1 of 5 answered' ? n.textContent : null;
+    }, null, { timeout: 5000 }).then((h) => h.jsonValue(), () => '');
+    await page.click('#chat .so-ask__open');
+    await page.waitForSelector('dialog.so-askdlg .so-q-option[data-option="mysql"][aria-pressed="true"]', { timeout: 5000 });
+    ok(progress === '1 of 5 answered', 'a dialog closed halfway leaves the card saying how far it got, and opens where it was left', progress);
+
+    const walk = await answerAll(page);
+    ok(walk.first.title === 'Deployment setup' && /Question 1 of 5/.test(walk.first.step) && walk.first.recommended,
+      'one question per step, with the batch’s title and the recommended option marked', JSON.stringify(walk.first));
+    ok(/JSONB/.test(walk.details), 'an option opens to its details', oneLine(walk.details));
+    ok(walk.hint === 'Choose 1 to 3.' && walk.multi.join(',') === 'dark,search,export' && /Choose up to 3/.test(walk.otherCounted),
+      'a multi-select says how many, and takes no more than its maximum, its own words counted as one',
+      JSON.stringify({ hint: walk.hint, multi: walk.multi, other: walk.otherCounted }));
+    ok(walk.confirmDefault.join(',') === 'yes' && walk.numberDefault === '2', 'a question’s default is preselected',
+      JSON.stringify({ confirm: walk.confirmDefault, number: walk.numberDefault }));
+    ok(/largest number it takes is 10/.test(walk.refused), 'a number out of range is refused, and says why', walk.refused);
+    const answered = await page.waitForSelector('dialog.so-askdlg .so-q-finished', { timeout: 15000 }).then((n) => n.innerText(), () => '');
+    ok(/Answered/.test(answered), 'Send answers, and the dialog says it is answered', oneLine(answered));
+    await page.waitForSelector('dialog.so-askdlg', { state: 'detached', timeout: 10000 }).catch(() => {});
+    const ask = await askOf(s, id, askId);
+    ok(!!ask && JSON.stringify(ask.answer) === JSON.stringify(ANSWER_ALL),
+      'the agent gets the answer in exactly the shape of REBUILD §5.2', JSON.stringify(ask && ask.answer));
+    const reply = await awaitLog(page, 'you answered:', 15000);
+    const done = await page.$eval('#chat .so-ask[data-ask="' + askId + '"]', (n) => ({ state: n.dataset.state, text: n.innerText }));
+    ok(reply && done.state === 'answered' && /Database: SQLite/.test(done.text),
+      'the agent goes on, and the card says what was answered', oneLine(JSON.stringify(done)));
+
+    // You decide, and a counter-question instead of answers.
+    await say(page, '/ask');
+    await openAskCard(page);
+    await page.click('#chat .so-ask__open');
+    await page.waitForSelector('dialog.so-askdlg [data-action="delegate"]', { timeout: 10000 });
+    await page.click('dialog.so-askdlg [data-action="delegate"]');
+    const pressed = await page.$eval('dialog.so-askdlg [data-action="delegate"]', (n) => n.getAttribute('aria-pressed'));
+    await page.click('dialog.so-askdlg [data-action="ask-back"]');
+    await page.fill('#ask-all-followUp', 'What does A cost?');
+    await page.click('dialog.so-askdlg [data-action="send"]');
+    await page.waitForSelector('dialog.so-askdlg', { state: 'detached', timeout: 10000 }).catch(() => {});
+    const back = await awaitLog(page, 'you answered:', 15000);
+    const asks = (await historyOf(s, id)).asks || [];
+    const counter = asks[asks.length - 1].answer;
+    ok(pressed === 'true' && back && counter.follow_up === 'What does A cost?' && counter.answers.q1.delegated === true,
+      '"You decide" and a counter-question go back to the agent', JSON.stringify(counter));
+
+    // A plan: sent back with a note, then approved.
+    await say(page, '/plan');
+    await page.waitForSelector('#chat .so-plan[data-decision="pending"] [data-action="plan-note"]', { timeout: 15000 });
+    const planCard = await page.$eval('#chat .so-plan[data-decision="pending"]', (n) => n.innerText);
+    await page.click('#chat .so-plan [data-action="plan-note"]');
+    await page.fill('#chat .so-plan__input', 'add a test first');
+    await page.click('#chat .so-plan [data-action="plan-send"]');
+    const sentBack = await awaitLog(page, 'Planning on: add a test first', 15000);
+    const decided = await page.$eval('#chat .so-plan', (n) => ({ decision: n.dataset.decision, text: n.innerText }));
+    ok(/Add the `?404`? branch|Add the 404 branch/.test(planCard) && sentBack && decided.decision === 'keep_planning'
+      && /Note: add a test first/.test(decided.text),
+      'a plan is a card: Keep planning with a note sends it back, and the card says so', oneLine(JSON.stringify(decided)));
+    await say(page, '/plan');
+    await page.waitForSelector('#chat .so-plan[data-decision="pending"] [data-action="plan-approve"]', { timeout: 15000 });
+    await page.click('#chat .so-plan[data-decision="pending"] [data-action="plan-approve"]');
+    const approved = await awaitLog(page, 'The plan is approved; starting on it.', 15000);
+    const approvedCards = await page.$$eval('#chat .so-plan[data-decision="approved"]', (n) => n.length);
+    ok(approved && approvedCards === 1, 'and Approve lets the agent go ahead', String(approvedCards));
+
+    // A question whose answer is the next message (Codex's code mode).
+    await say(page, '/asknext');
+    await openAskCard(page);
+    await page.click('#chat .so-ask__open');
+    await page.waitForSelector('dialog.so-askdlg [data-action="delegate"]', { timeout: 10000 });
+    for (let i = 0; i < 5; i += 1) {
+      const last = await page.$('dialog.so-askdlg [data-action="send"]');
+      if (last) break;
+      await page.click('dialog.so-askdlg [data-action="forward"]');
+    }
+    await page.click('dialog.so-askdlg [data-action="send"]');
+    await page.waitForSelector('dialog.so-askdlg', { state: 'detached', timeout: 10000 }).catch(() => {});
+    const asMessage = await page.waitForSelector('#chat .so-msg[data-role="user"] .so-msg__label', { timeout: 15000 })
+      .then((n) => n.innerText(), () => '');
+    ok(/Answer to a question/.test(asMessage), 'an answer that goes as the next message is shown as one', asMessage);
+    await awaitChat(s, id, idle);
+
+    // Home: the Questions card opens a chat's question in the dialog.
+    await say(page, '/ask');
+    const homeAsk = await openAskCard(page);
+    await page.click('#homeBtn').catch(() => page.evaluate(() => { location.hash = '#home'; }));
+    await page.waitForSelector('#home:not([hidden])', { timeout: 10000 });
+    await page.waitForSelector('#home .so-home__questions[data-state="asking"]', { timeout: 15000 });
+    await page.click('#home .so-home__q-action');
+    const fromHome = await page.waitForSelector('dialog.so-askdlg .so-q-text', { timeout: 10000 }).then((n) => n.innerText(), () => '');
+    ok(fromHome === 'Pick one', 'Home’s Questions card opens a chat’s question in the dialog', fromHome);
+
+    // Two devices on one question. The second is a browser of its own: what
+    // this one answered is this one's, and the other knows only the login.
+    const signedIn = await s.context.storageState();
+    const device = await s.browser.newContext({ viewport: { width: 1024, height: 800 }, storageState: { cookies: signedIn.cookies, origins: [] } });
+    const other = await device.newPage();
+    await other.goto(s.url + '/#open=' + id, { waitUntil: 'domcontentloaded' });
+    await other.waitForSelector('#chat:not([hidden]) .so-ask[data-state="open"]', { timeout: 20000 });
+    await other.click('#chat .so-ask__open');
+    await other.waitForSelector('dialog.so-askdlg .so-q-option[data-option="b"]', { timeout: 10000 });
+    await page.click('dialog.so-askdlg .so-q-option[data-option="a"]');
+    await page.click('dialog.so-askdlg [data-action="send"]');
+    const elsewhere = await other.waitForSelector('dialog.so-askdlg .so-q-finished', { timeout: 15000 })
+      .then((n) => n.innerText(), () => '');
+    ok(/Answered on another device/.test(elsewhere), 'the other device’s open dialog says it was answered on another device', oneLine(elsewhere));
+    await other.click('dialog.so-askdlg [data-action="next"]').catch(() => {});
+    await page.waitForSelector('dialog.so-askdlg', { state: 'detached', timeout: 10000 }).catch(() => {});
+    await openChat(page, id);
+    const otherCard = await other.waitForSelector('#chat .so-ask[data-ask="' + homeAsk + '"][data-state="elsewhere"]', { timeout: 10000 })
+      .then((n) => n.innerText(), () => '');
+    ok(/Answered on another device/.test(otherCard), 'and so does its card in the chat', oneLine(otherCard));
+
+    // The second device answers after the first, its answer held by a
+    // connection that was down: the server refuses it (409), and the device
+    // says so instead of sending it twice.
+    await say(page, '/ask');
+    const late = await openAskCard(page);
+    await other.waitForSelector('#chat .so-ask[data-ask="' + late + '"][data-state="open"]', { timeout: 15000 });
+    await other.click('#chat .so-ask[data-ask="' + late + '"] .so-ask__open');
+    await other.waitForSelector('dialog.so-askdlg .so-q-option[data-option="b"]', { timeout: 10000 });
+    await other.route('**/asks/*/answer', (route) => route.abort('internetdisconnected'));
+    await other.click('dialog.so-askdlg .so-q-option[data-option="b"]');
+    await other.click('dialog.so-askdlg [data-action="send"]');
+    await page.click('#chat .so-ask[data-ask="' + late + '"] .so-ask__open');
+    await page.waitForSelector('dialog.so-askdlg .so-q-option[data-option="a"]', { timeout: 10000 });
+    await page.click('dialog.so-askdlg .so-q-option[data-option="a"]');
+    await page.click('dialog.so-askdlg [data-action="send"]');
+    await awaitChat(s, id, (b) => !(b.asks || []).some((a) => a.id === late));
+    const conflict = other.waitForResponse((res) => /\/answer$/.test(res.url()) && res.status() === 409, { timeout: 30000 })
+      .then(() => true, () => false);
+    await other.unroute('**/asks/*/answer');
+    await other.evaluate(() => window.dispatchEvent(new Event('online')));
+    const refused = await conflict;
+    const told = await other.waitForSelector('dialog.so-askdlg .so-q-finished', { timeout: 15000 }).then((n) => n.innerText(), () => '');
+    const lateAsk = await askOf(s, id, late);
+    ok(refused && /Answered on another device/.test(told) && lateAsk.answer.answers.q1.selected[0] === 'a',
+      'an answer sent after another device’s is refused, and the device is told it was answered on the other',
+      JSON.stringify({ refused, told: oneLine(told), kept: lateAsk.answer.answers.q1.selected }));
+    await device.close();
+    await shot(page, 'chat-ask');
+    ok(unexpected(s.errors).length === 0, 'no console errors', unexpected(s.errors).join(' | ') || '0');
+  } finally { await s.stop(); }
+}
+
+// chat-attach: files from the button, dropped on the chat and pasted as an
+// image, each uploaded to a path the server chose, and the message that
+// carries all three.
+async function chatattach() {
+  const s = await chatServer();
+  const { page } = s;
+  try {
+    const id = await startChat(page);
+    const chooser = page.waitForEvent('filechooser');
+    await page.click('#chat .so-composer__attach');
+    await (await chooser).setFiles({ name: 'notes.txt', mimeType: 'text/plain', buffer: Buffer.from('a few notes\n') });
+    await page.waitForSelector('#chat .so-composer__file[data-state="ready"]', { timeout: 15000 });
+
+    // A file held over the chat and let go.
+    await page.evaluate(() => {
+      const data = new DataTransfer();
+      data.items.add(new File(['x,y\n1,2\n'], 'table.csv', { type: 'text/csv' }));
+      const target = document.querySelector('#chat .so-chat__log');
+      target.dispatchEvent(new DragEvent('dragover', { dataTransfer: data, bubbles: true, cancelable: true }));
+      target.dispatchEvent(new DragEvent('drop', { dataTransfer: data, bubbles: true, cancelable: true }));
+    });
+    // An image pasted into the field.
+    await page.evaluate(() => {
+      const bytes = Uint8Array.from(atob('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII='), (c) => c.charCodeAt(0));
+      const data = new DataTransfer();
+      data.items.add(new File([bytes], 'pasted.png', { type: 'image/png' }));
+      const field = document.querySelector('#chat .so-composer__input');
+      field.focus();
+      field.dispatchEvent(new ClipboardEvent('paste', { clipboardData: data, bubbles: true, cancelable: true }));
+    });
+    const ready = await page.waitForFunction(() => {
+      const files = [...document.querySelectorAll('#chat .so-composer__file')];
+      return files.length === 3 && files.every((f) => f.dataset.state === 'ready')
+        ? files.map((f) => f.querySelector('.so-ellipsis').textContent) : null;
+    }, null, { timeout: 20000 }).then((h) => h.jsonValue(), () => null);
+    ok(!!ready && ready.join(',') === 'notes.txt,table.csv,pasted.png',
+      'a file from the button, one dropped on the chat and a pasted image are uploaded before sending', JSON.stringify(ready));
+
+    await say(page, 'here are three files');
+    const reply = await awaitLog(page, 'with 3 attachment(s)', 20000);
+    const history = await historyOf(s, id);
+    const message = (history.messages || []).find((m) => m.role === 'user' && m.text === 'here are three files');
+    const files = (message && message.attachments) || [];
+    const dir = s.data + '/chats/' + id + '/attachments/';
+    ok(reply && files.length === 3 && files.every((f) => f.path.startsWith(dir)),
+      'the message carries them at paths the server chose, in the chat’s own folder',
+      JSON.stringify(files.map((f) => ({ name: f.name, path: f.path.replace(s.data, '<data>'), mime: f.mime }))));
+    ok(files.some((f) => f.mime === 'image/png') && files.some((f) => /text\/csv|text\/plain/.test(f.mime)),
+      'with their types', JSON.stringify(files.map((f) => f.mime)));
+    const shown = await page.$$eval('#chat .so-msg[data-role="user"] .so-msg__files .so-attachment', (n) => n.map((one) => one.innerText.trim()));
+    const cleared = await page.$$eval('#chat .so-composer__file', (n) => n.length);
+    ok(shown.length === 3 && cleared === 0, 'the bubble lists the files, and the composer is empty again', JSON.stringify({ shown, cleared }));
+
+    // A path the server did not hand out is refused.
+    const forged = await s.context.request.post(s.url + '/api/chats/' + id + '/messages', {
+      data: { client_id: 'forged-1', text: 'look', attachments: [{ name: 'passwd', path: '/etc/passwd' }] },
+    });
+    ok(forged.status() === 400, 'a message naming a file anywhere else is refused', String(forged.status()));
+    ok(unexpected(s.errors).length === 0, 'no console errors', unexpected(s.errors).join(' | ') || '0');
+  } finally { await s.stop(); }
+}
+
+// chat-phone: a chat at 390 × 844 with a finger: touch mode and its 48 px
+// targets, no sideways scroll however wide the answer, a composer that
+// stays above the keyboard, and the question dialog as the whole screen
+// with options a thumb can hit.
+async function chatphone() {
+  const s = await chatServer({ viewport: { width: 390, height: 844 }, touch: true });
+  const { page } = s;
+  try {
+    const id = await startChat(page);
+    const mode = await page.evaluate(() => document.documentElement.classList.contains('so-touch'));
+    const shut = await page.$eval('#chat .so-composer__input', (n) => n.readOnly);
+    await page.click('#kbBtn');
+    const typing = await page.waitForFunction(() => !document.querySelector('#chat .so-composer__input').readOnly, null,
+      { timeout: 5000 }).then(() => true, () => false);
+    ok(mode && shut && typing, 'a phone is in touch mode by itself, and its keyboard button opens the composer for typing',
+      JSON.stringify({ mode, shut, typing }));
+
+    await say(page, '/md 5', { button: true });
+    await awaitLog(page, 'The tests in', 20000);
+    await say(page, '/tools', { button: true });
+    await awaitLog(page, 'Done with the tools.', 20000);
+    const wide = await sideScroll(page);
+    const codeScrolls = await page.$$eval('#chat .so-code__pre', (n) => n.some((one) => one.scrollWidth > one.clientWidth));
+    ok(wide === 0, 'a long line, a code block and a diff do not make the page scroll sideways', wide + ' px');
+    ok(codeScrolls, 'the code block scrolls inside itself instead', String(codeScrolls));
+
+    const targets = await page.evaluate(() => {
+      const box = (sel) => {
+        const n = document.querySelector(sel);
+        if (!n || n.hidden) return null;
+        const r = n.getBoundingClientRect();
+        return { w: Math.round(r.width), h: Math.round(r.height) };
+      };
+      return {
+        send: box('#chat .so-composer__send'), attach: box('#chat .so-composer__attach'),
+        model: box('#chat .so-composer__model'), speak: box('#micBtn'),
+        usage: box('#chat .so-composer__usage'), copy: box('#chat .so-code__copy'),
+        tool: box('#chat .so-tool > summary'),
+      };
+    });
+    ok(Object.values(targets).every((t) => t && t.h >= 48), 'every control of the composer and a tool row is a 48 px target', JSON.stringify(targets));
+
+    // The keyboard: the app is as tall as what can be seen (--so-app-h,
+    // which keybar.js writes from the visual viewport), and the composer is
+    // at its bottom, above the keyboard.
+    await page.focus('#chat .so-composer__input');
+    await page.evaluate(() => document.documentElement.style.setProperty('--so-app-h', '480px'));
+    await wait(300);
+    const raised = await page.evaluate(() => {
+      const composer = document.querySelector('#chat .so-composer').getBoundingClientRect();
+      const field = document.querySelector('#chat .so-composer__input').getBoundingClientRect();
+      return { bottom: Math.round(composer.bottom), field: Math.round(field.bottom), top: Math.round(field.top) };
+    });
+    ok(raised.bottom <= 480 && raised.top > 0, 'with the keyboard up the composer is above it, in view', JSON.stringify(raised));
+    await page.evaluate(() => document.documentElement.style.removeProperty('--so-app-h'));
+
+    // The question dialog: the whole screen, one question, big options.
+    await say(page, '/askmany', { button: true });
+    await openAskCard(page);
+    await page.click('#chat .so-ask__open');
+    await page.waitForSelector('dialog.so-askdlg .so-q-option', { timeout: 10000 });
+    await wait(400);
+    const dialog = await page.evaluate(() => {
+      const box = document.querySelector('dialog.so-askdlg .so-q-shell').getBoundingClientRect();
+      const options = [...document.querySelectorAll('dialog.so-askdlg .so-q-option')].map((n) => Math.round(n.getBoundingClientRect().height));
+      const read = document.querySelector('dialog.so-askdlg [data-action="read"]').getBoundingClientRect();
+      return { w: Math.round(box.width), h: Math.round(box.height), vw: innerWidth, vh: innerHeight, options, read: Math.round(read.height) };
+    });
+    ok(dialog.w === dialog.vw && dialog.h >= dialog.vh - 1, 'the question dialog is the whole screen', JSON.stringify(dialog));
+    ok(dialog.options.every((h) => h >= 64) && dialog.read >= 48, 'with options of at least 64 px and big actions', JSON.stringify(dialog));
+    const dialogWide = await page.evaluate(() => {
+      const scroll = document.querySelector('dialog.so-askdlg .so-q-scroll');
+      return scroll.scrollWidth - scroll.clientWidth;
+    });
+    ok(dialogWide <= 0, 'and nothing in it scrolls sideways', dialogWide + ' px');
+    await page.click('dialog.so-askdlg [data-action="delegate"]');
+    for (let i = 0; i < 5; i += 1) {
+      if (await page.$('dialog.so-askdlg [data-action="send"]')) break;
+      await page.click('dialog.so-askdlg [data-action="forward"]');
+    }
+    await page.click('dialog.so-askdlg [data-action="send"]');
+    const answered = await awaitLog(page, 'you answered:', 15000);
+    ok(answered, 'and Send answers from the phone', String(answered));
+    await shot(page, 'chat-phone');
+    ok(unexpected(s.errors).length === 0, 'no console errors', unexpected(s.errors).join(' | ') || '0');
+    void id;
+  } finally { await s.stop(); }
+}
+
+/* ------------------------------------------- what the rest reads of a chat */
+
+// The rest of Socrates reads a chat from its journal (WP9): Home's line and
+// question, the notification and the badge, the name, the spoken Status, the
+// verdict on a turn, and a prepared chat's start by the clock.
+
+// goHome puts Home on the stage the way the drawer's button does.
+async function goHome(page) {
+  await ensureNav(page);
+  await page.click('#homeBtn');
+  await page.waitForSelector('#home:not([hidden])', { timeout: 10000 });
+}
+
+// tellChat sends a chat a message through its route, as a composer on
+// another device would: the page under test is wherever the scenario left
+// it.
+async function tellChat(s, id, text) {
+  const res = await s.context.request.post(s.url + '/api/chats/' + encodeURIComponent(id) + '/messages', {
+    data: { client_id: 'e2e-' + Math.random().toString(36).slice(2), text },
+  });
+  return res.status();
+}
+
+// openAskOf is the id of a chat's first open question, from the server.
+async function openAskOf(s, id, timeout = 15000) {
+  const body = await awaitChat(s, id, (b) => (b.asks || []).length > 0, timeout);
+  return ((body.asks || [])[0] || {}).id || '';
+}
+
+// homeCardOf is one chat's card on Home as it is drawn.
+const homeCardOf = (page, id) => page.evaluate((one) => {
+  // A card the list let go of fades out in place and is marked meanwhile.
+  const card = document.querySelector('#home .so-home__card[data-id="' + one + '"]:not([data-ds-leaving])');
+  if (!card) return null;
+  const summary = card.querySelector('.so-home__card-summary');
+  return {
+    state: card.dataset.state || '',
+    summary: summary && !summary.hidden ? summary.textContent : '',
+    status: (card.querySelector('.so-home__card-status') || {}).textContent || '',
+    answer: !card.querySelector('.so-home__answer').hidden,
+    badge: (card.querySelector('.so-mark__badge') || { dataset: {} }).dataset.kind || '',
+    reason: (card.querySelector('.so-home__reason') || {}).textContent || '',
+    todos: [...card.querySelectorAll('.so-home__todos li')].map((li) => li.textContent),
+  };
+}, id);
+
+async function awaitHomeCard(page, id, test, timeout = 20000) {
+  const started = Date.now();
+  let seen = null;
+  while (Date.now() - started < timeout) {
+    seen = await homeCardOf(page, id);
+    if (seen && test(seen)) return { ok: true, ms: Date.now() - started, seen };
+    await wait(150);
+  }
+  return { ok: false, ms: Date.now() - started, seen };
+}
+
+// chat-home: Home reads a chat from its journal. Its card says what it does
+// - the call that runs, then what it said - and it is counted in Running
+// while it works and in Finished once it is done unseen; a question it asks
+// is the Questions card, the question's own words on the chat's card, and
+// Answer opens the chat's dialog at it, at a desk and on a phone.
+async function chathome() {
+  const s = await chatServer();
+  const { page } = s;
+  try {
+    const id = await startChat(page);
+    await goHome(page);
+    // Every session, not only the ones that need you: a chat at work does
+    // not.
+    await page.click('#home [data-action="seg"][data-filter="all"]');
+    ok((await tellChat(s, id, '/workflow 1500')) === 200, 'the chat is sent a workflow while Home is open', '/workflow 1500');
+    const working = await awaitHome(page, (h) => h.counts.running === 1
+      && h.rows.some((r) => r.id === id && r.summary === 'Workflow: Ship the feature'), 15000);
+    ok(working.ok, 'while it works, Home counts it in Running and its card says what runs', took(working));
+    const finished = await awaitHome(page, (h) => h.counts.finished === 1 && h.counts.running === 0
+      && h.rows.some((r) => r.id === id && r.summary === 'The workflow finished.'), 30000);
+    ok(finished.ok, 'done and unseen, it is Finished, and its card says what it said', took(finished));
+
+    ok((await tellChat(s, id, '/askmany')) === 200, 'then it is sent a batch of questions', '/askmany');
+    const asking = await awaitHome(page, (h) => h.asking && h.counts.questions === 1
+      && h.rows.some((r) => r.id === id && r.summary === 'Which database should the service use?' && r.answer), 15000);
+    ok(asking.ok, 'it is the Questions card, its card has the first question’s words and an Answer', took(asking));
+    const card = await homeCardOf(page, id);
+    ok(card && card.state === 'asking' && /Needs an answer/.test(card.status), 'and the card says it needs an answer',
+      JSON.stringify(card));
+    await page.click('#home .so-home__card[data-id="' + id + '"] [data-action="answer"]');
+    const asked = await page.waitForSelector('dialog.so-askdlg .so-q-text', { timeout: 10000 }).then((n) => n.innerText(), () => '');
+    ok(asked === 'Which database should the service use?', 'Answer opens the chat’s own dialog at the question', asked);
+    await page.click('dialog.so-askdlg [data-action="close"]');
+    await page.waitForSelector('dialog.so-askdlg', { state: 'detached', timeout: 5000 }).catch(() => {});
+    await shot(page, 'chat-home');
+
+    // A phone: the same card and the same question, the dialog the whole
+    // screen, nothing to scroll sideways.
+    const signedIn = await s.context.storageState();
+    const phone = await s.browser.newContext({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true,
+      storageState: { cookies: signedIn.cookies, origins: [] } });
+    const small = await phone.newPage();
+    await small.goto(s.url + '/#home', { waitUntil: 'domcontentloaded' });
+    const there = await awaitHome(small, (h) => h.shown && h.asking
+      && h.rows.some((r) => r.id === id && r.summary === 'Which database should the service use?'), 20000);
+    ok(there.ok && there.seen.overflow <= 1, 'on a phone Home shows the chat’s question, and does not scroll sideways',
+      JSON.stringify({ ok: there.ok, overflow: there.seen && there.seen.overflow }));
+    await small.click('#home .so-home__card[data-id="' + id + '"] [data-action="answer"]');
+    const box = await small.waitForSelector('dialog.so-askdlg .ds-dialog__box', { timeout: 10000 })
+      .then((n) => n.boundingBox(), () => null);
+    ok(!!box && box.width >= 380, 'and Answer opens the question as the whole screen', JSON.stringify(box));
+    await phone.close();
+    ok(unexpected(s.errors).length === 0, 'no console errors', unexpected(s.errors).join(' | ') || '0');
+  } finally { await s.stop(); }
+}
+
+// chat-push: the page's own notification and the app's badge say what a
+// chat's journal says - the question's words when it asks, with the badge
+// counting it; how its turn ended with a line of its answer; the badge back
+// to nothing once it is answered - nothing for a turn the person stopped,
+// and a limit in the accounts' words, once. The browser is stubbed as in the
+// notify scenario.
+async function chatpush() {
+  const s = await chatServer();
+  const { page } = s;
+  try {
+    await page.addInitScript(() => {
+      try { localStorage.setItem('socrates.notify', 'on'); } catch { /* the stub says so */ }
+      // No push service: the page's own notification is the one this
+      // device gets.
+      delete window.PushManager;
+      window.__badges = [];
+      navigator.setAppBadge = (n) => { window.__badges.push(n); return Promise.resolve(); };
+      navigator.clearAppBadge = () => { window.__badges.push(0); return Promise.resolve(); };
+    });
+    await stubNotify(page);
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    const id = await startChat(page);
+    const title = await page.$eval(rowSel(id) + ' .so-row__label', (n) => n.textContent.trim());
+    await goHome(page);
+    // A chat just opened is settling: what it does in its first seconds is
+    // not announced (notify.js hush).
+    await wait(5500);
+    const notes = () => page.evaluate(() => (window.__notes || []).slice());
+    const badges = () => page.evaluate(() => (window.__badges || []).slice());
+    const noteAfter = async (count, timeout = 15000) => {
+      const until = Date.now() + timeout;
+      while (Date.now() < until) {
+        const all = await notes();
+        if (all.length > count) return all[all.length - 1];
+        await wait(150);
+      }
+      return null;
+    };
+
+    let before = (await notes()).length;
+    await tellChat(s, id, 'hello');
+    const said = await noteAfter(before);
+    ok(!!said && said.title === title && /^Finished · you said: hello/.test(said.options.body)
+      && said.options.data && said.options.data.kind === 'finished',
+      'a finished turn says so, with a line of the answer', JSON.stringify(said && { title: said.title, body: said.options.body }));
+
+    before = (await notes()).length;
+    await tellChat(s, id, '/ask');
+    const asked = await noteAfter(before);
+    ok(!!asked && asked.options.body === 'Pick one' && asked.options.data && asked.options.data.kind === 'question',
+      'a question says what it asks', JSON.stringify(asked && asked.options.body));
+    const counted = await page.waitForFunction(() => (window.__badges || []).slice(-1)[0] === 1, null, { timeout: 10000 })
+      .then(() => true, () => false);
+    ok(counted, 'and the badge counts it', JSON.stringify(await badges()));
+
+    before = (await notes()).length;
+    const ask = await openAskOf(s, id);
+    const res = await s.context.request.post(s.url + '/api/chats/' + id + '/asks/' + ask + '/answer', {
+      data: { client_id: 'e2e-answer', answer: { answers: { q1: { selected: ['a'] } } }, device: 'e2e' },
+    });
+    const done = await noteAfter(before);
+    ok(res.status() === 200 && !!done && /^Finished · you answered:/.test(done.options.body),
+      'once it is answered, the turn it lets go on is news of its own', JSON.stringify(done && done.options.body));
+    const cleared = await page.waitForFunction(() => (window.__badges || []).slice(-1)[0] === 0, null, { timeout: 10000 })
+      .then(() => true, () => false);
+    ok(cleared, 'and the badge says nothing is asked', JSON.stringify(await badges()));
+
+    // Stopped by the person: no news, heard or shown.
+    const beeps = () => page.evaluate(() => (window.__beeps || []).length);
+    await tellChat(s, id, '/sleep 20');
+    await awaitChat(s, id, (b) => b.chat.turn_running, 10000);
+    before = (await notes()).length;
+    let rang = await beeps();
+    await s.context.request.post(s.url + '/api/chats/' + id + '/interrupt', { data: { client_id: 'e2e-stop' } });
+    await awaitChat(s, id, idle, 15000);
+    await wait(1500);
+    ok((await notes()).length === before && (await beeps()) === rang, 'a turn the person stopped is no notification and no chime',
+      JSON.stringify({ notes: (await notes()).length - before, chimes: (await beeps()) - rang }));
+
+    // A limit is the accounts' news: when it renews and on which account, as
+    // its push says it - once, and not the turn's end as well.
+    before = (await notes()).length;
+    rang = await beeps();
+    await tellChat(s, id, '/limit');
+    const limited = await noteAfter(before);
+    ok(!!limited && /^Limit reached — renews in .+ \(.+\)$/.test(limited.options.body)
+      && limited.options.data && limited.options.data.kind === 'finished',
+      'a limit says when it renews and on which account', JSON.stringify(limited && limited.options.body));
+    await wait(1500);
+    ok((await notes()).length === before + 1 && (await beeps()) === rang + 1, 'and is said once, with one chime',
+      JSON.stringify({ notes: (await notes()).length - before, chimes: (await beeps()) - rang }));
+    ok(unexpected(s.errors).length === 0, 'no console errors', unexpected(s.errors).join(' | ') || '0');
+  } finally { await s.stop(); }
+}
+
+// chat-title: a chat names itself from its first message, through the title
+// model, in the sidebar and the header, with no reload.
+async function chattitle() {
+  const want = 'Config loader rename';
+  const stub = await openRouterStub({ text: '"' + want + '."', delay: 800 });
+  const s = await chatServer();
+  const { page } = s;
+  try {
+    await pointGateway(s, stub);
+    const id = await startChat(page);
+    const before = await page.$eval(rowSel(id) + ' .so-row__label', (n) => n.textContent.trim());
+    ok(before.startsWith('Scripted agent'), 'it starts life under the placeholder name', before);
+    await say(page, 'Please rename the config loader');
+    const named = await page.waitForFunction((arg) => {
+      const node = document.querySelector(arg.sel);
+      const head = document.getElementById('sessionTitle');
+      return !!node && node.textContent.trim() === arg.want && !!head && head.textContent.trim() === arg.want;
+    }, { sel: rowSel(id) + ' .so-row__label', want }, { timeout: 30000 }).then(() => true, () => false);
+    ok(named, 'the row and the header take the name, with no reload', want);
+    const calls = stub.calls.filter((c) => String(c.path).includes('chat/completions'));
+    const prompt = calls.length ? String(((calls[0].json || {}).messages || []).slice(-1)[0].content || '') : '';
+    ok(calls.length === 1 && prompt.includes('First message:\nPlease rename the config loader'),
+      'it was named after its first message, once', oneLine(prompt).slice(0, 160));
+    await say(page, 'And the tests');
+    await awaitLog(page, 'you said: And the tests', 15000);
+    await wait(800);
+    ok(stub.calls.filter((c) => String(c.path).includes('chat/completions')).length === 1,
+      'a later message does not rename it', String(stub.calls.length));
+    ok(unexpected(s.errors).length === 0, 'no console errors', unexpected(s.errors).join(' | ') || '0');
+  } finally {
+    await s.stop();
+    await stub.close();
+  }
+}
+
+// chat-status: Status is there for a chat and says it from its journal, on
+// the chat's own line and out loud.
+async function chatstatus() {
+  const words = 'The agent ran echo and said hello.';
+  const stub = await openRouterStub({ text: words });
+  const s = await chatServer({ args: ['--autoplay-policy=no-user-gesture-required'] });
+  const { page } = s;
+  try {
+    await pointGateway(s, stub);
+    const spoken = await stubSpeech(s.context);
+    const id = await startChat(page);
+    await say(page, '/tool');
+    await awaitLog(page, 'line 3', 15000);
+    await awaitChat(s, id, idle);
+    const button = await page.waitForSelector('#statusBtn:not([hidden]):not([disabled])', { timeout: 10000 }).then(() => true, () => false);
+    ok(button, 'a chat has the Status button', String(button));
+    await page.click('#statusBtn');
+    const line = await page.waitForFunction((want) => {
+      const box = document.querySelector('#chat .so-chat__dock .so-ticker');
+      return !!box && !box.hidden && box.textContent.includes(want);
+    }, words, { timeout: 30000 }).then(() => true, () => false);
+    ok(line, 'what the model said is the line in the chat’s dock', words);
+    // The whole answer is the notice, in the dock too: the terminal's is over
+    // its pane, which a chat hides.
+    const told = await page.waitForFunction((want) => {
+      const box = document.querySelector('#chat .so-chat__dock .so-notice');
+      if (!box || box.hidden || !box.textContent.includes(want)) return null;
+      const info = box.querySelector('.so-info');
+      return { height: box.getBoundingClientRect().height, tip: info ? info.getAttribute('data-tip') : '' };
+    }, words, { timeout: 10000 }).then((h) => h.jsonValue(), () => null);
+    ok(!!told && told.height > 0 && /state idle/.test(told.tip),
+      'and the whole answer is the notice in the dock, its details behind the “i”', JSON.stringify(told));
+    // The picture once the notice and the line have come in.
+    await wait(800);
+    await shot(page, 'chat-status');
+    const read = await (async () => {
+      const until = Date.now() + 15000;
+      while (Date.now() < until && !spoken.includes(words)) await wait(150);
+      return spoken.includes(words);
+    })();
+    ok(read, 'and it is read out loud', JSON.stringify(spoken));
+    const calls = stub.calls.filter((c) => String(c.path).includes('chat/completions'));
+    const prompt = calls.map((c) => String(((c.json || {}).messages || []).slice(-1)[0].content || ''))
+      .find((p) => p.startsWith('You are told what a chat with')) || '';
+    ok(prompt.includes('a chat with Scripted agent') && prompt.includes('/tool') && prompt.includes('Running echo hello'),
+      'the model was told the chat from its journal: the message and the call', oneLine(prompt).slice(0, 200));
+
+    // A phone: the button in the bar, the line in the dock, nothing to
+    // scroll sideways.
+    const signedIn = await s.context.storageState();
+    const phone = await s.browser.newContext({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true,
+      storageState: { cookies: signedIn.cookies, origins: [] } });
+    await phone.route('**/api/voice/speak', (route) => route.fulfill({ status: 200, contentType: 'audio/wav', body: silentWav() }));
+    const small = await phone.newPage();
+    await small.goto(s.url + '/#open=' + id, { waitUntil: 'domcontentloaded' });
+    await chatUp(small);
+    await small.waitForSelector('#statusBtn:not([hidden]):not([disabled])', { timeout: 10000 });
+    await small.tap('#statusBtn');
+    const onPhone = await small.waitForFunction((want) => {
+      const box = document.querySelector('#chat .so-chat__dock .so-ticker');
+      const note = document.querySelector('#chat .so-chat__dock .so-notice');
+      if (!box || box.hidden || !box.textContent.includes(want)) return null;
+      if (!note || note.hidden || !note.textContent.includes(want)) return null;
+      const r = box.getBoundingClientRect();
+      const n = note.getBoundingClientRect();
+      const text = note.querySelector('.ds-alert__text');
+      const root = document.scrollingElement;
+      return { left: r.left, right: r.right, noteLeft: n.left, noteRight: n.right,
+        cut: text ? text.scrollWidth - text.clientWidth : -1, overflow: Math.max(root.scrollWidth - root.clientWidth, 0) };
+    }, words, { timeout: 30000 }).then((h) => h.jsonValue(), () => null);
+    ok(!!onPhone && onPhone.left >= 0 && onPhone.right <= 390 && onPhone.overflow <= 1,
+      'on a phone the line is in the dock, inside the screen', JSON.stringify(onPhone));
+    ok(!!onPhone && onPhone.noteLeft >= 0 && onPhone.noteRight <= 390 && onPhone.cut <= 1,
+      'and so is the whole answer, not cut', JSON.stringify(onPhone));
+    await wait(800);
+    await shot(small, 'chat-status-phone');
+    await phone.close();
+    ok(unexpected(s.errors).length === 0, 'no console errors', unexpected(s.errors).join(' | ') || '0');
+  } finally {
+    await s.stop();
+    await stub.close();
+  }
+}
+
+// chat-outcome: with outcomes on, a chat's ended turn is judged from its
+// journal: the hourglass while it is read, then the verdict on the row and
+// on Home, and the notification that waited for it says it. A turn the
+// person stopped is not judged; one a limit stopped is, and is said as the
+// limit.
+async function chatoutcome() {
+  const judged = [];
+  const stub = await openRouterStub({
+    delay: 600,
+    answer: (json) => {
+      const system = String(((json.messages || [])[0] || {}).content || '');
+      if (!system.startsWith('You judge the turn a coding agent has just ended')) return 'Echo run';
+      judged.push(String(((json.messages || []).slice(-1)[0] || {}).content || ''));
+      return JSON.stringify({ outcome: { kind: 'partial', reason: 'The echo ran; the tests are not written.', todos: ['Write the tests'] } });
+    },
+  });
+  const s = await chatServer();
+  const { page } = s;
+  try {
+    await page.addInitScript(() => {
+      try { localStorage.setItem('socrates.notify', 'on'); } catch { /* the stub says so */ }
+      delete window.PushManager;
+    });
+    await stubNotify(page);
+    const saved = await s.context.request.put(s.url + '/api/settings', {
+      data: { settings: { openrouter: { api_key: 'e2e-key', base_url: stub.url, outcomes: true } } },
+    });
+    ok(saved.ok(), 'the gateway is the stub and the outcomes are on', saved.status());
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    const id = await startChat(page);
+    await goHome(page);
+    // A chat just opened is settling (notify.js hush).
+    await wait(5500);
+    const before = (await page.evaluate(() => (window.__notes || []).length));
+    await tellChat(s, id, '/tool');
+    const glass = await awaitRow(page, id, (r) => !!r.glass, 15000);
+    ok(glass.ok, 'while the turn is judged, its row has the hourglass', took(glass));
+    const verdict = await awaitHomeCard(page, id, (c) => c.badge === 'partial' && c.todos.join() === 'Write the tests', 20000);
+    ok(verdict.ok && /Partly done/.test(verdict.seen.status) && /tests are not written/.test(verdict.seen.reason),
+      'then the verdict is on Home: partly done, why, and what is open', JSON.stringify(verdict.seen));
+    const row = await awaitRow(page, id, (r) => !r.glass, 5000);
+    ok(row.ok, 'and the hourglass is gone from the row', took(row));
+    ok(judged.length === 1 && judged[0].includes('/tool') && judged[0].includes('Running echo hello'),
+      'the judge was told the turn from the journal', oneLine(judged[0] || '').slice(0, 200));
+    const note = await page.waitForFunction((count) => {
+      const all = window.__notes || [];
+      return all.length > count ? all[all.length - 1].options.body : null;
+    }, before, { timeout: 15000 }).then((h) => h.jsonValue(), () => '');
+    ok(/^Partly done · 1 open: Write the tests/.test(note), 'the notification waited for the verdict and says it', note);
+    await shot(page, 'chat-outcome');
+
+    // A turn the person stopped is no news: it is not judged, and nothing
+    // waits for a verdict to say it.
+    const judgedBefore = judged.length;
+    const notesBefore = await page.evaluate(() => (window.__notes || []).length);
+    await tellChat(s, id, '/sleep 20');
+    await awaitChat(s, id, (b) => b.chat.turn_running, 10000);
+    await s.context.request.post(s.url + '/api/chats/' + id + '/interrupt', { data: { client_id: 'e2e-stop' } });
+    await awaitChat(s, id, idle, 15000);
+    await wait(2500);
+    const notesAfter = await page.evaluate(() => (window.__notes || []).length);
+    ok(judged.length === judgedBefore && notesAfter === notesBefore,
+      'a turn the person stopped is not judged and is no notification',
+      JSON.stringify({ judged: judged.length - judgedBefore, notes: notesAfter - notesBefore }));
+
+    // A turn a limit stopped is judged - how far it got is worth knowing -
+    // and its notification is the accounts' words, not the verdict's.
+    await tellChat(s, id, '/limit');
+    const limitVerdict = await awaitHomeCard(page, id, (c) => c.badge === 'partial', 20000);
+    ok(limitVerdict.ok && judged.length === judgedBefore + 1, 'a turn a limit stopped is judged',
+      JSON.stringify({ seen: limitVerdict.seen, judged: judged.length - judgedBefore }));
+    const limitNote = await page.waitForFunction((count) => {
+      const all = window.__notes || [];
+      return all.length > count ? all[all.length - 1].options.body : null;
+    }, notesAfter, { timeout: 15000 }).then((h) => h.jsonValue(), () => '');
+    await wait(1500);
+    const notesLimit = await page.evaluate(() => (window.__notes || []).length);
+    ok(/^Limit reached — renews in /.test(limitNote) && notesLimit === notesAfter + 1,
+      'and its one notification says the limit', JSON.stringify({ note: limitNote, notes: notesLimit - notesAfter }));
+    ok(unexpected(s.errors).length === 0, 'no console errors', unexpected(s.errors).join(' | ') || '0');
+  } finally {
+    await s.stop();
+    await stub.close();
+  }
+}
+
+// chat-prestart: a prepared chat started by the clock ("Start
+// automatically"): its draft is the first message, sent once, and the panel
+// that was on screen turns into the chat.
+async function chatprestart() {
+  const s = await chatServer();
+  const { page } = s;
+  try {
+    await ensureNav(page);
+    await page.click('#newSession');
+    await page.waitForSelector('#newSessionSheet[open]', { timeout: 15000 });
+    await page.click('#newSessionSheet .so-settings__program[data-value="fake"]');
+    await page.click('#nsPrestart');
+    await page.click('#nsStart');
+    await page.waitForSelector('#newSessionSheet[open]', { state: 'detached', timeout: 30000 });
+    await page.waitForSelector('#prestart:not([hidden]) #psPrompt', { timeout: 15000 });
+    const id = await page.evaluate(() => location.hash.slice(1));
+    await page.waitForFunction(() => !document.getElementById('psPrompt').disabled, null, { timeout: 10000 });
+    await page.fill('#psPrompt', 'start this by itself');
+    await page.waitForFunction(() => /^Saved$/.test(document.getElementById('psSave').textContent.trim()), null, { timeout: 10000 }).catch(() => {});
+    const at = Date.now() + 4000;
+    const set = await s.context.request.patch(s.url + '/api/sessions/' + id + '/prestart', { data: { start_at: at } });
+    ok(set.ok(), 'it is set to start by itself in a few seconds', set.status());
+    const started = await chatUp(page, 40000).then(() => true, () => false);
+    const first = await awaitLog(page, 'you said: start this by itself', 20000);
+    const history = await historyOf(s, id);
+    const row = await sessionRow(s, id);
+    ok(started && first && userTexts(history).join('|') === 'start this by itself' && row.kind === 'chat' && row.state === 'running',
+      'the clock starts it: the panel is the chat, its draft the first message, once', JSON.stringify({ started, first, users: userTexts(history), state: row.state }));
+    const draft = await s.context.request.get(s.url + '/api/sessions/' + id + '/draft').then((r) => r.json());
+    ok(draft.text === '', 'and the draft is empty afterwards', JSON.stringify(draft.text));
+    ok(unexpected(s.errors).length === 0, 'no console errors', unexpected(s.errors).join(' | ') || '0');
+  } finally { await s.stop(); }
+}
+
+// chat-ultracode: Ultracode is Claude Code's, a chat's as a terminal's: the
+// sheet offers it for Claude Code and not for another agent, and a Claude
+// chat's ⋮ switches it, where another chat's has no such item.
+async function chatultracode() {
+  const s = await chatServer();
+  const { page } = s;
+  try {
+    await ensureNav(page);
+    await page.click('#newSession');
+    await page.waitForSelector('#newSessionSheet[open]', { timeout: 15000 });
+    await page.click('#newSessionSheet .so-settings__program[data-value="claude"]');
+    const forClaude = await page.$eval('#nsUltracodeField', (n) => !n.hidden);
+    await page.click('#newSessionSheet .so-settings__program[data-value="fake"]');
+    const forFake = await page.$eval('#nsUltracodeField', (n) => !n.hidden);
+    ok(forClaude && !forFake, 'the sheet offers Ultracode for Claude Code, and not for another agent',
+      JSON.stringify({ forClaude, forFake }));
+    await page.keyboard.press('Escape');
+    await page.waitForSelector('#newSessionSheet[open]', { state: 'detached', timeout: 10000 }).catch(() => {});
+    const fake = await startChat(page);
+    const made = await s.context.request.post(s.url + '/api/chats', {
+      data: { client_id: 'e2e-claude-chat', harness: 'claude', workdir_mode: 'dynamic' },
+    });
+    const claude = (await made.json()).session.id;
+    ok(made.status() === 201, 'a Claude Code chat is made', made.status());
+    await page.waitForSelector(rowSel(claude), { state: 'attached', timeout: 15000 });
+    const itemOf = async (id) => {
+      await ensureNav(page);
+      await page.waitForSelector(rowSel(id), { timeout: 15000 });
+      await page.$eval(rowSel(id), (n) => n.scrollIntoView({ block: 'center' }));
+      // A list that is drawn again under the tap (a new row arriving) puts
+      // the menu away; it is opened again.
+      for (let tries = 0; tries < 3; tries += 1) {
+        await page.click(rowSel(id) + ' .so-row__more', { force: true });
+        if (await page.waitForSelector(MENU + ' .ds-menu__item', { timeout: 3000 }).then(() => true, () => false)) break;
+      }
+      const item = await page.$eval(MENU, (menu) => {
+        const node = menu.querySelector('[data-action="ultracode"]');
+        return node ? { role: node.getAttribute('role'), checked: node.getAttribute('aria-checked') } : null;
+      });
+      return item;
+    };
+    const closeMenu = async () => {
+      await page.keyboard.press('Escape');
+      await page.waitForSelector(MENU, { state: 'detached', timeout: 5000 }).catch(() => {});
+    };
+    const fakeItem = await itemOf(fake);
+    await closeMenu();
+    const before = await itemOf(claude);
+    ok(!fakeItem && before && before.role === 'menuitemcheckbox' && before.checked === 'false',
+      'a Claude chat’s ⋮ has Ultracode, off, and another chat’s has none', JSON.stringify({ fakeItem, before }));
+    await page.click(MENU + ' [data-action="ultracode"]');
+    const toast = await page.waitForFunction(() => [...document.querySelectorAll('#toasts .ds-toast, #toasts [role="status"]')]
+      .some((n) => /Ultracode is on from the next message/.test(n.textContent)), null, { timeout: 10000 }).then(() => true, () => false);
+    const row = await sessionRow(s, claude);
+    await page.waitForSelector(MENU, { state: 'detached', timeout: 5000 }).catch(() => {});
+    const after = await itemOf(claude);
+    await closeMenu();
+    ok(toast && row.options && row.options.ultracode === true && after && after.checked === 'true',
+      'switched on, it says from when, and the chat keeps it', JSON.stringify({ toast, options: row.options, after }));
+    ok(unexpected(s.errors).length === 0, 'no console errors', unexpected(s.errors).join(' | ') || '0');
+  } finally { await s.stop(); }
+}
+
+/* -------------------------------------------------------------- accounts */
+
+// fakeCodexBin builds the scripted Codex app-server (e2e/fakebin/fakecodex),
+// whose device-code sign-in a Codex account goes through.
+let fakeCodexPath = '';
+function fakeCodexBin() {
+  if (fakeCodexPath) return fakeCodexPath;
+  const dir = scratchDir('socrates-e2e-fakecodex-');
+  fakeCodexPath = join(dir, 'codex');
+  execFileSync('go', ['build', '-o', fakeCodexPath, './e2e/fakebin/fakecodex'], { cwd: REPO });
+  return fakeCodexPath;
+}
+
+async function accountsOf(s) {
+  const res = await s.context.request.get(s.url + '/api/accounts');
+  return (await res.json()).accounts || [];
+}
+
+const accountRowSel = (id) => '#accountList .so-account[data-id="' + id + '"]';
+
+// filesHolding is every file under dir whose bytes contain needle.
+function filesHolding(dir, needle) {
+  const out = [];
+  const walk = (at) => {
+    let entries = [];
+    try { entries = readdirSync(at, { withFileTypes: true }); } catch { return; }
+    for (const entry of entries) {
+      const path = join(at, entry.name);
+      if (entry.isDirectory()) walk(path);
+      else if (entry.isFile()) {
+        try { if (readFileSync(path).includes(needle)) out.push(path); } catch { /* a socket or gone */ }
+      }
+    }
+  };
+  walk(dir);
+  return out;
+}
+
+// accounts: the dashboard's Accounts card - an API-key account added, a
+// Codex subscription signed in by its device code against the scripted
+// app-server, a rename, the order, a delete refused while a chat runs on the
+// account and taken after, and the card on a phone.
+async function accountsscenario() {
+  const key = 'sk-e2e-' + 'k'.repeat(24);
+  const s = await start({
+    viewport: { width: 1280, height: 900 },
+    env: { ...FAKE_AGENT, SOCRATES_CODEX_BIN: fakeCodexBin(), FAKECODEX_LOGIN_MS: '1500' },
+  });
+  const { page } = s;
+  try {
+    await setup(page, s.url);
+    await page.goto(s.url + '/admin', { waitUntil: 'domcontentloaded' });
+    await page.waitForSelector('#accountList .so-account-group[data-agent="codex"]', { timeout: 20000 });
+    const groups = await page.$$eval('#accountList .so-account-group', (n) => n.map((g) => g.dataset.agent));
+    ok(['claude', 'codex', 'opencode'].every((a) => groups.includes(a)), 'the card has a group per agent', groups.join(','));
+    const profilesGone = await page.$('#profileList');
+    ok(!profilesGone, 'and the Profiles card is gone', String(!profilesGone));
+
+    // An API key, for the scripted agent.
+    await page.click('.so-account-group[data-agent="fake"] .ds-add-row');
+    await page.waitForSelector('dialog.ds-dialog .so-account-form', { timeout: 5000 });
+    await page.click('dialog.ds-dialog .ds-chip:has(input[value="api_key"])');
+    await page.fill('#accountLabel', 'Key one');
+    await page.fill('#accountKey', key);
+    await page.click('dialog.ds-dialog .ds-btn--primary');
+    await page.waitForSelector('dialog.ds-dialog', { state: 'detached', timeout: 15000 });
+    let list = await accountsOf(s);
+    const keyed = list.find((a) => a.label === 'Key one');
+    ok(!!keyed && keyed.kind === 'api_key' && keyed.state === 'signed_in', 'an API-key account is added and usable',
+      JSON.stringify(keyed));
+    await page.waitForSelector(accountRowSel(keyed.id) + ' [data-state="signed_in"]', { timeout: 10000 });
+    const raw = await (await s.context.request.get(s.url + '/api/accounts')).text();
+    ok(!raw.includes(key), 'the list never carries the key', String(raw.includes(key)));
+    const html = await page.content();
+    ok(!html.includes(key), 'nor does the page', String(html.includes(key)));
+    const holding = filesHolding(s.data, key);
+    ok(holding.length === 0, 'and no file in the data directory holds it in the clear', holding.join(',') || 'none');
+
+    // A Codex subscription, signed in by device code.
+    await page.click('.so-account-group[data-agent="codex"] .ds-add-row');
+    await page.waitForSelector('dialog.ds-dialog .so-account-form', { timeout: 5000 });
+    await page.fill('#accountLabel', 'Codex work');
+    await page.click('dialog.ds-dialog .ds-btn--primary');
+    const coded = await page.waitForSelector('dialog.ds-dialog .so-signin__code', { timeout: 20000 }).then(() => true, () => false);
+    const flow = coded ? await page.evaluate(() => ({
+      code: document.querySelector('dialog.ds-dialog .so-signin__value').textContent,
+      url: document.querySelector('dialog.ds-dialog a[href]')?.href || '',
+      waiting: !!document.querySelector('dialog.ds-dialog .so-signin__wait'),
+    })) : {};
+    ok(coded && flow.code && /^https?:/.test(flow.url) && flow.waiting,
+      'the sign-in shows the code to type, the page to type it on, and that it waits', JSON.stringify(flow));
+    await shot(page, 'accounts-device-code');
+    const closed = await page.waitForSelector('dialog.ds-dialog', { state: 'detached', timeout: 20000 }).then(() => true, () => false);
+    list = await accountsOf(s);
+    const codex = list.find((a) => a.label === 'Codex work');
+    ok(closed && codex && codex.state === 'signed_in' && codex.email === 'device@example.com',
+      'once the code is entered there the account is signed in, as the address Codex reports', JSON.stringify(codex));
+    await page.waitForSelector(accountRowSel(codex.id) + ' [data-state="signed_in"]', { timeout: 10000 });
+    const meters = await page.$$eval(accountRowSel(codex.id) + ' .so-limits__row', (n) => n.map((r) => r.textContent));
+    ok(meters.length === 2, 'and its five hours and its week are shown', meters.join(' | '));
+
+    // Rename.
+    await page.click(accountRowSel(keyed.id) + ' [data-action="rename"]');
+    await page.waitForSelector('dialog.ds-dialog .ds-input', { timeout: 5000 });
+    await page.fill('dialog.ds-dialog .ds-input', 'Renamed key');
+    await page.click('dialog.ds-dialog .ds-btn--primary');
+    await page.waitForFunction((id) => document.querySelector('#accountList .so-account[data-id="' + id + '"] .so-account__name')?.textContent.includes('Renamed key'),
+      keyed.id, { timeout: 10000 });
+    list = await accountsOf(s);
+    ok(list.find((a) => a.id === keyed.id).label === 'Renamed key', 'a rename is saved', list.map((a) => a.label).join(','));
+
+    // The order: a second scripted account, moved up by its grip.
+    const second = await (await s.context.request.post(s.url + '/api/accounts',
+      { data: { agent: 'fake', kind: 'subscription', label: 'Second' } })).json();
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await page.waitForSelector(accountRowSel(second.account.id), { timeout: 15000 });
+    const fakeOrder = async () => (await accountsOf(s)).filter((a) => a.agent === 'fake').map((a) => a.label).join(',');
+    ok(await fakeOrder() === 'Renamed key,Second', 'a new account goes at the end', await fakeOrder());
+    await page.focus(accountRowSel(second.account.id) + ' .so-grip');
+    await page.keyboard.press('ArrowUp');
+    let moved = '';
+    for (let i = 0; i < 40 && moved !== 'Second,Renamed key'; i++) { await wait(100); moved = await fakeOrder(); }
+    ok(moved === 'Second,Renamed key', 'the grip moves an account up, and the order is saved', moved);
+
+    // Delete: refused while a chat runs on the account, taken after.
+    const chat = await (await s.context.request.post(s.url + '/api/chats',
+      { data: { client_id: 'e2e-accounts-chat', harness: 'fake', account: keyed.id, workdir_mode: 'dynamic' } })).json();
+    ok(chat.session && chat.session.id, 'a chat runs on the renamed account', JSON.stringify(chat).slice(0, 160));
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await page.waitForSelector(accountRowSel(keyed.id), { timeout: 15000 });
+    await page.click(accountRowSel(keyed.id) + ' [data-action="delete"]');
+    await page.waitForSelector('dialog.ds-dialog .ds-btn--primary', { timeout: 5000 });
+    await page.click('dialog.ds-dialog .ds-btn--primary');
+    const toastSaid = await page.waitForFunction(() => [...document.querySelectorAll('.ds-toast, .ds-snackbar, [role="status"]')]
+      .some((n) => /chat/i.test(n.textContent) && /run|use/i.test(n.textContent)), null, { timeout: 8000 }).then(() => true, () => false);
+    list = await accountsOf(s);
+    ok(list.some((a) => a.id === keyed.id), 'an account a chat runs on is not deleted', String(list.some((a) => a.id === keyed.id)));
+    ok(toastSaid, 'and the page says why', String(toastSaid));
+    await s.context.request.delete(s.url + '/api/sessions/' + encodeURIComponent(chat.session.id));
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await page.waitForSelector(accountRowSel(keyed.id), { timeout: 15000 });
+    await page.click(accountRowSel(keyed.id) + ' [data-action="delete"]');
+    await page.waitForSelector('dialog.ds-dialog .ds-btn--primary', { timeout: 5000 });
+    await page.click('dialog.ds-dialog .ds-btn--primary');
+    await page.waitForSelector(accountRowSel(keyed.id), { state: 'detached', timeout: 10000 });
+    list = await accountsOf(s);
+    ok(!list.some((a) => a.id === keyed.id), 'with no chat on it, it is deleted', list.map((a) => a.label).join(','));
+    await shot(page, 'accounts-admin');
+
+    // The card on a phone, in touch mode.
+    await page.setViewportSize({ width: 390, height: 844 });
+    // Touch mode is this device's choice, read when the page loads: the
+    // same address with another hash would not load it again.
+    await page.evaluate(() => localStorage.setItem('socrates.touch', 'on'));
+    await page.goto(s.url + '/admin#accountsCard', { waitUntil: 'domcontentloaded' });
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await page.waitForSelector(accountRowSel(codex.id), { timeout: 15000 });
+    await wait(300);
+    const side = await page.evaluate(() => Math.max(document.scrollingElement.scrollWidth - document.scrollingElement.clientWidth, 0));
+    ok(side === 0, 'on a phone the card does not scroll sideways', side + ' px');
+    const actions = await page.$$eval(accountRowSel(codex.id) + ' .so-account__actions .ds-btn', (n) => n.map((b) => {
+      const r = b.getBoundingClientRect();
+      return { w: Math.round(r.width), h: Math.round(r.height), label: b.getAttribute('aria-label') || b.textContent };
+    }));
+    ok(actions.length >= 3 && actions.every((a) => a.label), 'its actions are icons with a name each', JSON.stringify(actions));
+    ok(actions.every((a) => a.h >= 48 && a.w >= 48), 'in touch mode each is a finger’s target', JSON.stringify(actions));
+    await shot(page, 'accounts-phone');
+    // The refused delete is a 409 the browser reports by itself.
+    const refusal = /409 \(Conflict\) @ .*\/api\/accounts\/a-/;
+    ok(unexpected(s.errors, refusal).length === 0, 'no console errors', unexpected(s.errors, refusal).join(' | ') || '0');
+  } finally { await s.stop(); }
+}
+
+// chat-account: a chat started on an account from the sheet, switched from
+// the composer's account picker while idle and while a turn runs, the line
+// each switch leaves, a limit's card and its Continue with, the automatic
+// switch from the chat's menu, and the picker on a phone.
+async function chataccount() {
+  const s = await chatServer();
+  const { page } = s;
+  const post = async (path, data) => (await s.context.request.post(s.url + path, { data })).json();
+  try {
+    const alpha = (await post('/api/accounts', { agent: 'fake', kind: 'subscription', label: 'Alpha' })).account;
+    const beta = (await post('/api/accounts', { agent: 'fake', kind: 'api_key', label: 'Beta', key: 'sk-beta-0123456789' })).account;
+    ok(alpha && beta && beta.state === 'signed_in', 'two accounts of the scripted agent', JSON.stringify([alpha, beta]).slice(0, 200));
+
+    // The sheet: agent, folder, model, account.
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await ensureNav(page);
+    await page.click('#newSession');
+    await page.waitForSelector('#newSessionSheet[open]', { timeout: 15000 });
+    await page.click('#newSessionSheet .so-settings__program[data-value="fake"]');
+    await page.waitForSelector('#nsAccountField:not([hidden]) .so-drop__field', { timeout: 10000 });
+    const order = await page.evaluate(() => [...document.querySelectorAll('#nsForm .so-settings > .ds-field:not([hidden])')].map((n) => n.id));
+    const at = (id) => order.indexOf(id);
+    ok(at('nsHarnessField') < at('nsDirField') && at('nsDirField') < at('nsModelField') && at('nsModelField') < at('nsAccountField'),
+      'the sheet asks for the agent, the folder, the model, then the account', order.join(','));
+    const auto = await page.$eval('#nsAutoSwitch', (n) => !n.checked && !n.closest('[hidden]'));
+    ok(auto, 'and offers the automatic switch, off', String(auto));
+    await page.click('#nsAccount .so-drop__field');
+    await page.waitForSelector('#nsAccount .ds-combo__option[data-value="' + alpha.id + '"]', { timeout: 5000 });
+    const offered = await page.$$eval('#nsAccount .ds-combo__option .ds-combo__name', (n) => n.map((x) => x.textContent));
+    ok(offered.join(',') === 'Alpha,Beta', 'the account list is the agent’s accounts in order', offered.join(','));
+    await page.click('#nsAccount .ds-combo__option[data-value="' + alpha.id + '"]');
+    await shot(page, 'chat-account-sheet');
+    await page.click('#nsStart');
+    await page.waitForSelector('#newSessionSheet[open]', { state: 'detached', timeout: 30000 });
+    await chatUp(page);
+    const id = await page.evaluate(() => location.hash.slice(1));
+    const row = await sessionRow(s, id);
+    ok(row.options && row.options.account === alpha.id, 'the chat is made on the account chosen', JSON.stringify(row.options));
+    await page.waitForSelector('#chat .so-composer__account:not([hidden]) .so-composer__account-btn', { timeout: 10000 });
+    const face = await page.$eval('#chat .so-composer__account-text', (n) => n.textContent);
+    ok(face === 'Alpha', 'the composer names the account', face);
+    await say(page, '/account');
+    ok(await awaitLog(page, 'account ' + alpha.id + ', no key'), 'and the agent runs on it', alpha.id);
+
+    // Switched while idle.
+    await page.click('#chat .so-composer__account-btn');
+    await page.waitForSelector('.so-account-menu:not([hidden]) [data-account="' + beta.id + '"]', { timeout: 5000 });
+    const items = await page.$$eval('.so-account-menu [data-account]', (n) => n.map((x) => x.textContent));
+    ok(items.length === 2 && items.some((t) => /Alpha/.test(t)) && items.some((t) => /Beta/.test(t)),
+      'the picker lists the accounts with their usage', items.join(' | '));
+    await page.click('.so-account-menu [data-account="' + beta.id + '"]');
+    ok(await awaitLog(page, 'Switched from Alpha to Beta'), 'a switch leaves a line in the conversation', '');
+    await say(page, '/account');
+    ok(await awaitLog(page, 'account ' + beta.id + ', a key of 18 characters'), 'and the agent runs on the new account, with its key', beta.id);
+    const faceB = await page.$eval('#chat .so-composer__account-text', (n) => n.textContent);
+    ok(faceB === 'Beta', 'the composer follows', faceB);
+
+    // Switched while a turn runs: after this turn.
+    await say(page, '/sleep 3');
+    await page.waitForSelector('#chat .so-composer__stop:not([hidden])', { timeout: 10000 });
+    await page.click('#chat .so-composer__account-btn');
+    await page.click('.so-account-menu [data-account="' + alpha.id + '"]');
+    await page.waitForSelector('dialog.ds-dialog [data-when="after_turn"]', { timeout: 5000 });
+    await shot(page, 'chat-account-when');
+    await page.click('dialog.ds-dialog [data-when="after_turn"]');
+    const pending = await page.waitForFunction(() => /Beta → Alpha/.test(document.querySelector('#chat .so-composer__account-text')?.textContent || ''),
+      null, { timeout: 8000 }).then(() => true, () => false);
+    ok(pending, 'the composer says the switch waits for the turn', String(pending));
+    ok(await awaitLog(page, 'slept', 15000), 'the turn finishes on Beta', '');
+    ok(await awaitLog(page, 'Switched from Beta to Alpha', 15000), 'and then the chat moves to Alpha', '');
+
+    // A limit, and Continue with.
+    await say(page, '/limit');
+    await page.waitForSelector('#chat [data-kind="limit"] [data-action="continue-with"]', { timeout: 15000 });
+    const card = await page.$eval('#chat [data-kind="limit"]', (n) => n.innerText);
+    ok(/Limit reached — renews in/.test(card) && /Continue with Beta/.test(card), 'the limit card says when it renews and offers Beta',
+      oneLine(card));
+    await shot(page, 'chat-account-limit');
+    await page.click('#chat [data-kind="limit"] [data-action="continue-with"][data-account="' + beta.id + '"]');
+    ok(await awaitLog(page, 'Switched from Alpha to Beta', 15000), 'Continue with switches', '');
+    ok(await awaitLog(page, 'you said: ' + 'Continue where you left off.', 15000), 'and the new account is told to go on', '');
+    const gone = await page.$('#chat [data-kind="limit"] [data-action="continue-with"]');
+    ok(!gone, 'and the card offers nothing more', String(!gone));
+
+    // The automatic switch, from the chat's menu.
+    const gamma = (await post('/api/accounts', { agent: 'fake', kind: 'subscription', label: 'Gamma' })).account;
+    await rowMenu(page);
+    await page.waitForSelector('#sessionMenu [data-action="auto-switch"][aria-checked="false"]', { timeout: 5000 });
+    await page.click('#sessionMenu [data-action="auto-switch"]');
+    const on = await (async () => {
+      for (let i = 0; i < 40; i += 1) {
+        const r = await sessionRow(s, id);
+        if (r.options && r.options.auto_switch) return true;
+        await wait(100);
+      }
+      return false;
+    })();
+    ok(on, 'the menu turns the automatic switch on', String(on));
+    const continues = () => page.evaluate(() => (document.querySelector('#chat .so-chat__log')?.innerText.match(/Continue where you left off\./g) || []).length);
+    const before = await continues();
+    await say(page, '/limit');
+    ok(await awaitLog(page, 'Switched from Beta to Gamma', 20000), 'at the next limit the chat moves by itself to the account with the most left', gamma.id);
+    // The message and the agent's "you said:" of it.
+    const told = await page.waitForFunction((was) => (document.querySelector('#chat .so-chat__log')?.innerText.match(/Continue where you left off\./g) || []).length >= was + 2,
+      before, { timeout: 15000 }).then(() => true, () => false);
+    ok(told, 'and the turn is sent again there', String(told));
+
+    // The picker on a phone, in touch mode.
+    await page.setViewportSize({ width: 390, height: 844 });
+    await option(page, 'touch');
+    await closeOptions(page);
+    await page.waitForSelector('.ds-toast--shown', { state: 'detached', timeout: 15000 }).catch(() => {});
+    await wait(400);
+    const phone = await page.evaluate(() => {
+      const b = document.querySelector('#chat .so-composer__account-btn');
+      const r = b ? b.getBoundingClientRect() : null;
+      const root = document.scrollingElement;
+      return {
+        shown: !!r && r.width > 0, h: r ? Math.round(r.height) : 0, right: r ? Math.round(r.right) : 0, vw: innerWidth,
+        side: Math.max(root.scrollWidth - root.clientWidth, 0), face: b ? b.textContent : '',
+      };
+    });
+    ok(phone.shown && phone.h >= 48 && phone.right <= phone.vw && phone.side === 0,
+      'on a phone the picker is a thumb\u2019s target in the composer, and nothing scrolls sideways', JSON.stringify(phone));
+    await page.click('#chat .so-composer__account-btn');
+    await page.waitForSelector('.so-account-menu:not([hidden]) [data-account="' + alpha.id + '"]', { timeout: 5000 });
+    await wait(400);
+    const menuBox = await page.$eval('.so-account-menu', (n) => {
+      const r = n.getBoundingClientRect();
+      const first = n.querySelector('[data-account]').getBoundingClientRect();
+      return { l: Math.round(r.left), r: Math.round(r.right), vw: innerWidth, top: Math.round(r.top), firstTop: Math.round(first.top), scrolled: n.scrollTop };
+    });
+    ok(menuBox.l >= 0 && menuBox.r <= menuBox.vw && menuBox.top >= 0 && menuBox.firstTop >= menuBox.top && menuBox.scrolled === 0,
+      'and its menu is on the screen, its first account in view', JSON.stringify(menuBox));
+    await shot(page, 'chat-account-phone');
+    await page.click('.so-account-menu [data-account="' + alpha.id + '"]');
+    ok(await awaitLog(page, 'Switched from Gamma to Alpha', 15000), 'a tap there switches too', '');
+
+    // Switched while a turn runs: now. The turn stops, the new account
+    // carries it on, and the line does not call it a limit.
+    const before2 = ((await logText(page)).match(/Continue where you left off\./g) || []).length;
+    // Touch mode's composer types through its own keyboard: the message
+    // goes in as the composer would send it.
+    await post('/api/chats/' + encodeURIComponent(id) + '/messages', { client_id: 'e2e-sleep-now', text: '/sleep 30' });
+    await page.waitForSelector('#chat .so-composer__stop:not([hidden])', { timeout: 10000 });
+    await page.click('#chat .so-composer__account-btn');
+    await page.click('.so-account-menu [data-account="' + gamma.id + '"]');
+    await page.waitForSelector('dialog.ds-dialog [data-when="now"]', { timeout: 5000 });
+    await page.click('dialog.ds-dialog [data-when="now"]');
+    ok(await awaitLog(page, 'Switched from Alpha to Gamma', 20000), 'Switch now moves a running turn to the other account', '');
+    const carried = await page.waitForFunction((was) => (document.querySelector('#chat .so-chat__log')?.innerText.match(/Continue where you left off\./g) || []).length >= was + 2,
+      before2, { timeout: 15000 }).then(() => true, () => false);
+    ok(carried, 'and the new account carries the turn on', String(carried));
+    const why = await page.$$eval('#chat [data-kind="account"] .so-info', (n) => n[n.length - 1]?.getAttribute('data-tip') || '');
+    ok(!/limit/i.test(why) && /next reply may take longer/.test(why), 'its line says nothing of a limit, and that the next reply is slower', oneLine(why));
+    ok(unexpected(s.errors).length === 0, 'no console errors', unexpected(s.errors).join(' | ') || '0');
+  } finally { await s.stop(); }
+}
+
 // -------------------------------------------------------------------- run
 
 const ALL = [
@@ -12602,7 +14549,7 @@ const ALL = [
   ['recoveredsession', 'a tmux session with no row is taken in, never killed', recoveredsession],
   ['createclaude', 'Claude Code from the sheet to the command line, and back after an exit', createclaude],
   ['createcodex', 'Codex is trusted where it works, and its conversation is found', createcodex],
-  ['profiles', 'a second set of sign-ins, from the dashboard to the command line', profiles],
+  ['profiles', 'a second set of sign-ins for a terminal, to the command line', profiles],
   ['createopencode', 'OpenCode names its session over its own authenticated server', createopencode],
   ['rebootresume', 'a machine that rebooted, and the session that comes back with its conversation', rebootresume],
   ['lighttheme', 'the white terminal, from the launch flag to the drawn pixel', lighttheme],
@@ -12629,9 +14576,24 @@ const ALL = [
   ['clipboard', 'copy and paste: the keys, a plain drag, a click, a middle click, and OSC 52', clipboard],
   ['touchcopy', 'a finger held on the pane selects, grows and copies', touchcopy],
   ['transfer', 'copy, paste and upload buttons, a pasted image, and the phone layout', transfer],
-  ['prestart', 'a prepared session: its prompt kept and backed up, Start, and a start by the clock', prestart],
-  ['s3restore', 'a machine that is gone, and a new data directory that comes back from the bucket', s3restore],
-  ['storagebanner', 'the bucket unreachable, then taken over: what the page says, and that it leaves', storagebanner],
+  ['prestart', 'a prepared session: its prompt kept, Start, and a start by the clock', prestart],
+  ['chat-stream', 'a chat: streaming, Markdown, replay, queued, Stop, the draft, the palette, the model, the lines, PreStart', chatstream],
+  ['chat-tools', 'tool rows, the diff viewer, a subagent, a workflow, and the task list pinned while it runs', chattools],
+  ['chat-offline', 'what a chat is told offline (two tabs, a model, an answer), or whose answer was lost, or left across a reload: delivered once', chatoffline],
+  ['chat-ask', 'questions: the card and the dialog, every kind, a plan, a counter-question, Home, two devices', chatask],
+  ['chat-attach', 'files from the button, dropped and pasted, at paths the server chose', chatattach],
+  ['chat-phone', 'a chat on a phone: touch targets, no sideways scroll, the keyboard, the dialog as the screen', chatphone],
+  ['chat-home', 'Home reads a chat from its journal: what it does, Running and Finished, its question on the card, at a desk and on a phone', chathome],
+  ['chat-push', 'a chat\u2019s notification and badge: the question\u2019s words, how a turn ended, nothing for a Stop, a limit once', chatpush],
+  ['chat-title', 'a chat names itself from its first message', chattitle],
+  ['chat-status', 'Status says a chat from its journal, on its line and out loud', chatstatus],
+  ['chat-outcome', 'a chat\u2019s turn judged from its journal: the hourglass, the verdict, the notification', chatoutcome],
+  ['chat-prestart', 'a prepared chat started by the clock, its draft the first message', chatprestart],
+  ['chat-ultracode', 'Ultracode for Claude Code alone: in the sheet, and in a Claude chat\u2019s menu', chatultracode],
+  ['accounts', 'the Accounts card: an API key, a Codex device code, rename, order, a delete refused then taken, a phone', accountsscenario],
+  ['chat-account', 'a chat\u2019s account: from the sheet, switched idle and after a turn, a limit\u2019s Continue with, the automatic switch, a phone', chataccount],
+  ['backup', 'the Backup card: a bucket configured, a backup on demand, a failure and the warning, and the next good run', backup],
+  ['restore', 'a machine that is gone, and a new one restored from its backup on the setup page', restore],
   ['home-landing', 'every start of the page is Home, and the button and the address go back to it', homelanding],
   ['home-live', 'the numbers on Home move by themselves, with no terminal attached', homelive],
   ['outcome', 'a turn\'s end is judged: the hourglass while it is read, then the verdict everywhere', outcome],

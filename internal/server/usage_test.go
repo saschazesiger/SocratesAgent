@@ -132,6 +132,11 @@ func TestSessionUsageViewNormalizesRenewals(t *testing.T) {
 	e := newEnv(t)
 	e.do(t, e.client, "POST", "/api/setup", `{"password":"a-good-password"}`)
 	e.srv.dataDir = t.TempDir()
+	// The default profile's directory comes from the environment; it is
+	// pointed at a folder of this test's own so that the fake login below can
+	// never land in a real ~/.claude (that logged every Claude Code on the
+	// machine out on each run).
+	t.Setenv("CLAUDE_CONFIG_DIR", filepath.Join(t.TempDir(), "claude"))
 	dir := harnesses.ClaudeConfigDirFor(e.srv.dataDir, "")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatal(err)

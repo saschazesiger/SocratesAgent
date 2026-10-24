@@ -24,8 +24,8 @@ import (
 //	POST  /api/sessions {"prestart":true, …}   201 {"session":<session>}
 //	PATCH /api/sessions/{id}/prestart          {"session":<session>}
 //	                                           409 once it has started
-//	GET   /api/sessions/{id}/draft             {"text","rev","updated_at","backed_up"}
-//	PUT   /api/sessions/{id}/draft             {"rev","updated_at","backed_up"}
+//	GET   /api/sessions/{id}/draft             {"text","rev","updated_at"}
+//	PUT   /api/sessions/{id}/draft             {"rev","updated_at"}
 //	                                           409 {"conflict":true,"text","rev","updated_at"}
 //	                                           409 {"error","started":true}
 //	                                           413 over maxDraftBytes
@@ -107,7 +107,8 @@ func (s *Server) createPrestart(w http.ResponseWriter, body createSessionBody) {
 	if harnessID == "" {
 		harnessID = settings.Workspace.DefaultHarness
 	}
-	if !prestartHarness(harnessID) {
+	chat := chatAgent(harnessID)
+	if !chat && !prestartHarness(harnessID) {
 		writeError(w, http.StatusBadRequest, "only Claude Code, Codex and OpenCode sessions can be prepared")
 		return
 	}
@@ -123,10 +124,30 @@ func (s *Server) createPrestart(w http.ResponseWriter, body createSessionBody) {
 		Harness: harnessID, Model: body.Model, Effort: body.Effort,
 		Profile: body.Profile, Ultracode: body.Ultracode, Options: body.Options, Cols: body.Cols, Rows: body.Rows,
 	}
-	h, refused := s.checkLaunch(&spec, settings)
-	if refused != nil {
-		writeError(w, refused.status, refused.msg)
-		return
+	label, kind := chatLabel(harnessID), store.KindChat
+	if chat {
+		// A chat is bound by its agent, folder, model and effort, and a
+		// Claude Code chat by Ultracode; profiles are the terminal's
+		// (accounts take the profile's place).
+		if refused := checkChatHarness(harnessID, settings); refused != nil {
+			writeError(w, refused.status, refused.msg)
+			return
+		}
+		if refused := s.checkChatAccount(harnessID, body.Account); refused != nil {
+			writeError(w, refused.status, refused.msg)
+			return
+		}
+		spec.Model, spec.Effort, spec.Profile = strings.TrimSpace(spec.Model), strings.TrimSpace(spec.Effort), ""
+		spec.Ultracode = chatUltracode(harnessID, spec.Ultracode)
+		spec.Options = withOption(spec.Options, "ultracode", spec.Ultracode)
+		spec.Options = withChatAccount(spec.Options, body.Account, body.AutoSwitch)
+	} else {
+		h, refused := s.checkLaunch(&spec, settings)
+		if refused != nil {
+			writeError(w, refused.status, refused.msg)
+			return
+		}
+		label, kind = h.Label(), store.KindTerminal
 	}
 	mode := strings.TrimSpace(body.WorkdirMode)
 	if mode == "" {
@@ -143,7 +164,7 @@ func (s *Server) createPrestart(w http.ResponseWriter, body createSessionBody) {
 	row := &store.Session{
 		ID:          termux.NewID(),
 		ClientID:    strings.TrimSpace(body.ClientID),
-		Title:       sessionTitle(body.Title, h.Label(), workdir, mode),
+		Title:       sessionTitle(body.Title, label, workdir, mode),
 		TitleSource: titleSource(body.Title),
 		Harness:     spec.Harness,
 		Model:       spec.Model,
@@ -155,6 +176,7 @@ func (s *Server) createPrestart(w http.ResponseWriter, body createSessionBody) {
 		Cols:        spec.Cols,
 		Rows:        spec.Rows,
 		StartAt:     body.StartAt,
+		Kind:        kind,
 	}
 	id := row.ID
 	if err := s.store.CreateSession(row); err != nil {
@@ -188,6 +210,9 @@ type prestartPatch struct {
 	WorkdirMode *string `json:"workdir_mode"`
 	Workdir     *string `json:"workdir"`
 	StartAt     *int64  `json:"start_at"`
+	// Account and AutoSwitch are a prepared chat's.
+	Account    *string `json:"account"`
+	AutoSwitch *bool   `json:"auto_switch"`
 }
 
 func (s *Server) handlePatchPrestart(w http.ResponseWriter, r *http.Request) {
@@ -263,19 +288,51 @@ func (s *Server) handlePatchPrestart(w http.ResponseWriter, r *http.Request) {
 		startAt = *body.StartAt
 	}
 
-	if !prestartHarness(harnessID) {
-		writeError(w, http.StatusBadRequest, "only Claude Code, Codex and OpenCode sessions can be prepared")
-		return
-	}
 	settings := s.Settings()
 	spec := launchSpec{
 		Harness: harnessID, Model: model, Effort: effort, Profile: profile, Ultracode: ultracode,
 		Options: stripChoices(row.Options),
 	}
-	h, refused := s.checkLaunch(&spec, settings)
-	if refused != nil {
-		writeError(w, refused.status, refused.msg)
-		return
+	var label string
+	if row.IsChat() {
+		// A prepared chat stays a chat: it can change to another agent that
+		// has one, and to nothing else.
+		if refused := checkChatHarness(harnessID, settings); refused != nil {
+			writeError(w, refused.status, refused.msg)
+			return
+		}
+		spec.Model, spec.Effort, spec.Profile = strings.TrimSpace(model), strings.TrimSpace(effort), ""
+		spec.Ultracode = chatUltracode(harnessID, ultracode)
+		spec.Options = withOption(spec.Options, "ultracode", spec.Ultracode)
+		auto = false
+		label = chatLabel(harnessID)
+		opts := readChatOptions(row.Options)
+		if body.Account != nil {
+			opts.Account = strings.TrimSpace(*body.Account)
+		}
+		if body.AutoSwitch != nil {
+			opts.AutoSwitch = *body.AutoSwitch
+		}
+		if harnessID != row.Harness && body.Account == nil {
+			// An account is one agent's: another agent starts on its own.
+			opts.Account = ""
+		}
+		if refused := s.checkChatAccount(harnessID, opts.Account); refused != nil {
+			writeError(w, refused.status, refused.msg)
+			return
+		}
+		spec.Options = withChatAccount(spec.Options, opts.Account, opts.AutoSwitch)
+	} else {
+		if !prestartHarness(harnessID) {
+			writeError(w, http.StatusBadRequest, "only Claude Code, Codex and OpenCode sessions can be prepared")
+			return
+		}
+		h, refused := s.checkLaunch(&spec, settings)
+		if refused != nil {
+			writeError(w, refused.status, refused.msg)
+			return
+		}
+		label = h.Label()
 	}
 	workdir, err := harnesses.CheckWorkdir(settings, mode, path)
 	if err != nil {
@@ -288,7 +345,7 @@ func (s *Server) handlePatchPrestart(w http.ResponseWriter, r *http.Request) {
 	// given a moment ago from another device.)
 	var title string
 	if row.TitleSource == "" && (spec.Harness != row.Harness || mode != row.WorkdirMode || workdir != row.Workdir) {
-		title = sessionTitle("", h.Label(), workdir, mode)
+		title = sessionTitle("", label, workdir, mode)
 	}
 	err = s.store.UpdatePrestart(id, store.PrestartSettings{
 		Title:   title,
@@ -334,7 +391,6 @@ func (s *Server) handleGetDraft(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"text": draft.Text, "rev": draft.Rev, "updated_at": draft.UpdatedAt,
-		"backed_up": s.store.IsBackedUp(store.DraftObject(row.ID)),
 	})
 }
 
@@ -389,7 +445,6 @@ func (s *Server) handlePutDraft(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"rev": draft.Rev, "updated_at": draft.UpdatedAt,
-		"backed_up": s.store.IsBackedUp(store.DraftObject(row.ID)),
 	})
 }
 
@@ -465,6 +520,10 @@ func (s *Server) startPrepared(ctx context.Context, id string, cols, rows int, s
 		if !claimed || row.StartAt <= 0 {
 			return row, http.StatusConflict, errNotDue
 		}
+	}
+
+	if row.IsChat() {
+		return s.startPreparedChat(ctx, row)
 	}
 
 	failed := func(status int, err error) (*store.Session, int, error) {
@@ -653,6 +712,18 @@ func (s *Server) started(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if row, err := s.store.GetSession(r.PathValue("id")); err == nil && row.State == store.StatePrestart {
 			writeError(w, http.StatusConflict, "this session has not been started yet")
+			return
+		}
+		next(w, r)
+	}
+}
+
+// terminal refuses the routes that only a terminal has - its socket, its
+// scrollback, its relaunch - for a chat, which has no pane.
+func (s *Server) terminal(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if row, err := s.store.GetSession(r.PathValue("id")); err == nil && row.IsChat() {
+			writeError(w, http.StatusConflict, "this session is a chat and has no terminal")
 			return
 		}
 		next(w, r)

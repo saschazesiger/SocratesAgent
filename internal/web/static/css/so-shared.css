@@ -16,6 +16,10 @@
  *   .so-page-head    the page header with actions at its end
  *   .so-info         the "i" button of infoTip() (api.js): a hook for tests and
  *                    callers, no rule of its own
+ *   .so-signin       an account's sign-in dialog body (accounts.js): __code
+ *                    (__value, the code to type on the agent's page, and its
+ *                    Copy), __wait, __providers
+ *   .so-account-form the body of the "Add an account" dialog
  */
 
 /* X1 */
@@ -188,4 +192,43 @@ body[data-stale] .so-mark[data-ring="busy"]::after {
 
 .so-page-head > .ds-page-head {
   flex: 1 1 var(--so-page-head-basis);
+}
+
+/* ── Accounts ────────────────────────────────────────────────────────── */
+
+.so-signin,
+.so-account-form {
+  display: grid;
+  gap: var(--ds-space-4);
+  min-width: 0;
+}
+
+.so-signin > p {
+  margin: 0;
+}
+
+.so-signin__code {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--ds-space-2);
+}
+
+/* The code is read off one screen and typed on another: large, in the code
+   face, every character distinct. */
+.so-signin__value {
+  font: var(--ds-font-title);
+  font-family: var(--so-font-mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--ds-text);
+  overflow-wrap: anywhere;
+}
+
+.so-signin__wait {
+  justify-content: flex-start;
+}
+
+.so-signin__providers {
+  max-height: var(--so-signin-list-max);
+  overflow-y: auto;
 }

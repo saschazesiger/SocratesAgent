@@ -491,6 +491,38 @@ func (m *Manager) ResetActivity(id string) {
 	a.fire(changes)
 }
 
+// ReportActivity commits a state the caller knows exactly, with no
+// debounce: a chat's journal says when a turn starts and ends and when a
+// question is open, so there is no screen to second-guess. asked is whether
+// anybody has sent the chat anything, which the unread mark and the filing
+// wait for as they do for a terminal (track.asked). Everything after the
+// observation - the unread rule, the row moving, the filing back into
+// progress, the frames - is the terminals' own.
+func (m *Manager) ReportActivity(id string, state State, note string, asked bool) {
+	row, err := m.st.GetSession(id)
+	if err != nil {
+		return
+	}
+	a := m.act
+	a.mu.Lock()
+	now := a.now()
+	tr := a.trackOf(id)
+	tr.running = true
+	tr.status = row.Status
+	if asked && tr.inputAt.IsZero() {
+		tr.inputAt = now
+	}
+	obs := seen(state, note)
+	if state == tr.committed.State {
+		a.commit(id, tr, obs, sourceExact, now)
+	} else {
+		a.settle(id, tr, obs, sourceExact, now)
+	}
+	changes := a.take()
+	a.mu.Unlock()
+	a.fire(changes)
+}
+
 // SubscribeActivity hands out a channel of committed changes and the function
 // that closes it. It is how the operator loop waits for a turn to end without
 // polling, and the only caller that has to keep reading: a subscriber that
@@ -576,6 +608,12 @@ func (a *activity) apply(ctx context.Context, rows []store.Session, panes map[st
 	seenRows := map[string]bool{}
 	for i := range rows {
 		row := rows[i]
+		if row.IsChat() {
+			// A chat has no pane. Its activity is reported by the chat's
+			// journal (ReportActivity); the tick only has to keep its track.
+			seenRows[row.ID] = true
+			continue
+		}
 		if row.State == store.StatePrestart {
 			// A prepared session has no pane and does no work. It is not
 			// even filed by the detector: it is where the person put it.
@@ -847,6 +885,15 @@ func (a *activity) commit(id string, tr *track, obs observation, from string, no
 	if tr.pendingCount < need {
 		return
 	}
+	a.settle(id, tr, obs, from, now)
+}
+
+// settle commits a state change that needs no more evidence: the debounce of
+// commit has passed, or the source is exact by construction, as a chat's
+// journal is.
+func (a *activity) settle(id string, tr *track, obs observation, from string, now time.Time) {
+	next := obs.state
+	prev := tr.committed
 	tr.pending, tr.pendingCount = "", 0
 	since := now.UnixMilli()
 	// A session found in the state it was in when the last process stopped
@@ -1178,7 +1225,8 @@ func (m *Manager) forgetPlan(id string) {
 type shellSource struct{}
 
 // shellNames is what "this is the shell itself" means when the launch plan
-// cannot be read.
+// cannot be read, and what a planned shell may be called instead of its own
+// name (see isTheShell).
 var shellNames = map[string]bool{
 	"sh": true, "bash": true, "zsh": true, "fish": true, "dash": true,
 	"ksh": true, "ash": true, "busybox": true, "login": true,
@@ -1198,11 +1246,22 @@ func (shellSource) Read(_ context.Context, s snapshot) observation {
 	return seen(StateIdle, "")
 }
 
+// isTheShell reports whether the foreground command is the plan's shell.
+//
+// The name is not always the plan's own. tmux names the foreground process by
+// its argv[0] on Linux but by its executable on macOS, and macOS's /bin/sh is
+// a shim that execs the shell /private/var/select/sh points at - bash, unless
+// somebody changed it - so a /bin/sh at its prompt reads as "bash" there. A
+// shell's plan whose foreground command is a shell is the shell; a nested one
+// is still told apart by hasChild, because the plan's own process is then its
+// parent.
 func isTheShell(cmd string, plan harnesses.LaunchPlan) bool {
+	cmd = strings.TrimPrefix(cmd, "-")
 	if len(plan.Argv) > 0 {
-		return cmd == filepath.Base(plan.Argv[0])
+		bin := filepath.Base(plan.Argv[0])
+		return cmd == bin || (shellNames[bin] && shellNames[cmd])
 	}
-	return shellNames[strings.TrimPrefix(cmd, "-")]
+	return shellNames[cmd]
 }
 
 // hasChild reports whether a process has a child, which is the difference

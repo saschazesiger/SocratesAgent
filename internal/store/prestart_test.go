@@ -220,8 +220,8 @@ func TestDeletingASessionDeletesItsDraft(t *testing.T) {
 	}
 }
 
-// A schema 7 database gains the drafts table, the pending table and the
-// schedule column, and its rows are untouched.
+// A schema 7 database gains the drafts table and the schedule column, and
+// its rows are untouched.
 func TestMigrationToSchema8(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "socrates.db")
 	st, err := Open(path)
@@ -233,7 +233,7 @@ func TestMigrationToSchema8(t *testing.T) {
 	}
 	// Take the database back to what schema 7 looked like.
 	for _, q := range []string{
-		`DROP TABLE drafts`, `DROP TABLE mirror_pending`,
+		`DROP TABLE drafts`,
 		`ALTER TABLE sessions DROP COLUMN start_at`, `PRAGMA user_version = 7`,
 	} {
 		if _, err := st.db.Exec(q); err != nil {
@@ -251,10 +251,8 @@ func TestMigrationToSchema8(t *testing.T) {
 	if err != nil || got.StartAt != 0 || got.Harness != "claude" {
 		t.Fatalf("the session after the migration = %#v %v", got, err)
 	}
-	for _, table := range []string{"drafts", "mirror_pending"} {
-		if ok, err := hasTable(st.db, table); err != nil || !ok {
-			t.Fatalf("table %s is missing: %v", table, err)
-		}
+	if ok, err := hasTable(st.db, "drafts"); err != nil || !ok {
+		t.Fatalf("table drafts is missing: %v", err)
 	}
 	var version int
 	if err := st.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil || version != SchemaVersion {

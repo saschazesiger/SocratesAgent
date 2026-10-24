@@ -1,8 +1,5 @@
 # Rebuild handoff (2026-10-23)
 
-> This copy lives on `main` only as a pointer. The rebuild itself, the plan (`REBUILD.md`),
-> `AGENT-HOST.md` and the research are on the branch **`rebuild`** — check it out first.
-
 Read this first if you are taking over the Socrates rebuild. It records where the work stands,
 where every piece lives, and what is left. The previous orchestrator's session ended here; nothing
 below is in anyone's head any more.
@@ -31,8 +28,10 @@ old agent terminal sessions; `~/.codex-multi` and `~/.config/opencode-multi-auth
 
 ## 2. Branches (all pushed to origin)
 
-`main` is untouched by the rebuild on purpose: the server's nightly update
-(`scripts/update.sh`, `SOCRATES_BRANCH` defaults to `main`) builds and deploys `origin/main`.
+`main` is untouched by the rebuild on purpose: **every push to `main` is installed on the server
+by GitHub Actions** (commit 87f3d08), and the nightly update (`scripts/update.sh`,
+`SOCRATES_BRANCH` defaults to `main`) builds and deploys `origin/main` as well. `main` holds only
+a pointer copy of this file.
 **Do not merge the rebuild into main until it is finished and tested end to end**; see §6.
 
 | Branch | Content | State |
@@ -105,7 +104,10 @@ All five branches are 5 commits behind `rebuild`'s tip (the WP4 review fixes).
   - **Switching:** a `switch_account` host op (reserved in WP2). It always interrupts gracefully
     first.
   - **Limits and recommender:** limits per account and the headroom recommender. Auto-switch on
-    limit is a per-chat option, off by default.
+    limit is a per-chat option, off by default. The OpenCode adapter still runs its queue after a
+    `limited` turn, so every queued message goes into the account at its limit and ends `limited`
+    as well; hold the queue after a limited turn until the switch or a "continue" (AGENT-HOST.md
+    §10).
   - **Helpers:** call `claude.PrepareConfigDir` (shares `projects/ tasks/ plans/ todos/`),
     `codex.PrepareHome` (shares `sessions/ archived_sessions/`) and
     `opencode Layout.PrepareAccount` (shared `OPENCODE_DB`, per-account `XDG_DATA_HOME`) before an
@@ -132,6 +134,12 @@ All five branches are 5 commits behind `rebuild`'s tip (the WP4 review fixes).
   - The terminal becomes Shell only.
   - Migration steps REBUILD §8.2–8.4. This is a clean cut: old agent sessions are stopped and
     their rows removed, and Shell sessions stay.
+  - §8.4's offer to delete the old mirror objects (WP1 review): WP1 deleted the code that knew
+    their names. Under the old prefix (`SOCRATES_S3_PREFIX`, often empty) they are exactly
+    `meta.json`, `lease.json`, `logins.json`, `kv/*`, `sessions/*.json`, `drafts/*.json` and
+    `costs/<harness>/<conversation>.json`. The carried-over backup lives **inside** that prefix,
+    under `backup/v1/` (its own `meta.json`, `chunks/`, `snapshots/`): delete by that allow-list
+    only, never everything under the old prefix, and never anything under `backup/`.
   - Fix `TestSavingPresetsWarnsAboutAMissingOne`.
 - **WP11 e2e and docs:**
   - Switch the e2e harness from `faketui` to `fakeclaude` / `fakecodex` / `fakeopencode` for the

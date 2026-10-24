@@ -52,6 +52,7 @@ Socrates:
 | `css/so-question.css` | the question dialog |
 | `css/so-prestart.css` | the PreStart panel |
 | `css/so-sheet.css` | the new-session sheet and the settings form it shares with PreStart |
+| `css/so-chat.css` | the chat view: the conversation and its parts, the composer, the chat's question dialog (over `so-question.css`) |
 | `css/so-admin.css` | the admin page |
 | `css/so-pages.css` | login, setup and costs |
 | `js/ui.js` | the bridge to DS: `startUI`, icons, `html```, `morph`, `flipMorph`, `ms`, `watchScrolled`, `faces`, overlays |

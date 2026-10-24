@@ -141,6 +141,10 @@ type digest struct {
 	Summary  string          `json:"summary"`
 	Context  string          `json:"context"`
 	Question *digestQuestion `json:"question"`
+	// News is what a notification about a chat says now (chatBrief.News):
+	// its question while it asks, how its last turn ended between turns, and
+	// nothing for a turn that is no news. A terminal's digest has none.
+	News string `json:"news,omitempty"`
 }
 
 type digestQuestion struct {
@@ -311,7 +315,7 @@ func codingHarness(id string) bool {
 // its last digest as it is: the last summary of a finished session is still
 // the best line Home has for it.
 func digestible(row *store.Session) bool {
-	return codingHarness(row.Harness) && row.State == store.StateRunning
+	return !row.IsChat() && codingHarness(row.Harness) && row.State == store.StateRunning
 }
 
 // get is one session's digest, and false when it has none.
@@ -1631,6 +1635,12 @@ func readTail(path string, n int64) ([]byte, error) {
 func (s *Server) handleDigestNow(w http.ResponseWriter, r *http.Request) {
 	row, ok := s.session(w, r)
 	if !ok {
+		return
+	}
+	if row.IsChat() {
+		// A chat's reading is its journal, current already; what can be read
+		// again is the verdict on its last turn.
+		writeJSON(w, http.StatusAccepted, map[string]any{"digest": s.chats.rejudge(row.ID)})
 		return
 	}
 	if !codingHarness(row.Harness) {

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/saschazesiger/SocratesAgent/internal/store"
 	"github.com/saschazesiger/SocratesAgent/internal/termux"
 )
 
@@ -188,12 +189,16 @@ func (d *digester) dropOutcomeLocked(id string) {
 // outcomeEdge is fed every committed activity change, before the activity
 // frame goes out: a turn that has just ended is put on pending here, so that a
 // page hears that its verdict is coming before it hears that the turn ended.
-// The digest the same change starts (observe) is the read that answers it.
-func (d *digester) outcomeEdge(id string, a termux.Activity) {
+// The digest the same change starts (observe) is the read that answers it;
+// for a chat, the judge it hands back, which the caller starts once the
+// pusher has seen the change too: a judge that answers at once could
+// otherwise come back before the "Finished" it is meant to hold was put on
+// the wait, and the push would go out without the verdict.
+func (d *digester) outcomeEdge(id string, a termux.Activity) (judge func()) {
 	if d == nil {
-		return
+		return nil
 	}
-	starts := false
+	starts, chat := false, false
 	if d.srv.answers == nil || !d.srv.answers.live(id) {
 		d.mu.Lock()
 		prev, had := d.oseen[id]
@@ -202,15 +207,22 @@ func (d *digester) outcomeEdge(id string, a termux.Activity) {
 	}
 	if starts {
 		// The row is read without the lock: a store read under it would hold
-		// up every frame the digester publishes.
+		// up every frame the digester publishes. A chat is judged from its
+		// journal, by a call of its own (judgeChat).
 		row, err := d.srv.store.GetSession(id)
-		starts = err == nil && digestible(row)
+		chat = err == nil && row.IsChat() && row.State == store.StateRunning
+		starts = err == nil && (digestible(row) || chat)
+		// A chat's turn the person stopped themselves gets no verdict
+		// (chatHub.judgeable).
+		if starts && chat && d.srv.chats != nil && !d.srv.chats.judgeable(id) {
+			starts = false
+		}
 	}
 
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if d.gone[id] {
-		return
+		return nil
 	}
 	prev, had := d.oseen[id]
 	d.oseen[id] = a
@@ -230,6 +242,9 @@ func (d *digester) outcomeEdge(id string, a termux.Activity) {
 		d.outcomes[id] = next
 		d.publishOutcomeLocked(id, next)
 		d.saveOutcomesLocked()
+		if chat {
+			judge = func() { d.judgeChat(id, a) }
+		}
 	case o == nil:
 	case a.State == termux.StateUnknown:
 		// The detector lost sight of the session for a moment, or has not
@@ -251,6 +266,7 @@ func (d *digester) outcomeEdge(id string, a termux.Activity) {
 		// at.
 		d.dropOutcomeLocked(id)
 	}
+	return judge
 }
 
 // outcomePending is whether the outcome of the idle at since is still being
@@ -341,7 +357,7 @@ func (d *digester) judgedLocked(id string, in termux.Activity, answer *outcomeAn
 	if o == nil || o.Phase == digestReady || in.State != termux.StateIdle || (o.Since != in.Since && o.prior != in.Since) {
 		return
 	}
-	if now, ok := d.seen[id]; ok && (now.State != termux.StateIdle || now.Since != o.Since) {
+	if now, ok := d.lastSeenLocked(id); ok && (now.State != termux.StateIdle || now.Since != o.Since) {
 		// The session left the idle while the model was thinking; the
 		// change that took it away dropped the outcome already.
 		return
@@ -359,6 +375,19 @@ func (d *digester) judgedLocked(id string, in termux.Activity, answer *outcomeAn
 	d.publishOutcomeLocked(id, o)
 	d.saveOutcomesLocked()
 	d.srv.push.judged(id, o.clone(), question)
+}
+
+// lastSeenLocked is a session's newest committed activity the digester has
+// been told of: outcomeEdge hears every commit before observe does, and a
+// verdict that is ready in between (a chat's judge, which outcomeEdge
+// starts, can be) is checked against the commit it was started for rather
+// than the one before it. Called with the lock held.
+func (d *digester) lastSeenLocked(id string) (termux.Activity, bool) {
+	now, ok := d.seen[id]
+	if edge, had := d.oseen[id]; had && (!ok || edge.Since > now.Since) {
+		return edge, true
+	}
+	return now, ok
 }
 
 // sanitizeOutcome is the model's verdict as Socrates shows it, or why there is
@@ -402,7 +431,13 @@ func sanitizeOutcome(a *outcomeAnswer, question *digestQuestion) (kind, reason s
 func outcomeSystemPrompt() string {
 	return "\nThis read is also asked for the outcome of the turn that just ended. Add to the object:\n" +
 		`"outcome":{"kind":"complete|partial|needs_input|blocked","reason":"…","todos":["…"]}` + "\n" +
-		"Judge the outcome against the last instruction the person gave the program:\n" +
+		outcomeRules() + "When a question is set, the outcome is needs_input."
+}
+
+// outcomeRules is how a verdict is judged, for a terminal's read and a
+// chat's judge alike.
+func outcomeRules() string {
+	return "Judge the outcome against the last instruction the person gave the program:\n" +
 		"- complete: everything that was asked is done and nothing is left over.\n" +
 		"- partial: this round is done but the task is not: open tasks, next steps the program " +
 		"names itself, or parts of the request it did not do.\n" +
@@ -413,8 +448,7 @@ func outcomeSystemPrompt() string {
 		"reason: one sentence of at most " + strconv.Itoa(outcomeReasonRunes) + " characters, " +
 		"in English whatever the language above, saying why.\n" +
 		"todos: for partial, up to " + strconv.Itoa(outcomeTodos) + " short English lines naming " +
-		"what is still open; [] for every other kind.\n" +
-		"When a question is set, the outcome is needs_input."
+		"what is still open; [] for every other kind.\n"
 }
 
 // outcomeWords is a finished outcome as a sentence fragment, for a model that

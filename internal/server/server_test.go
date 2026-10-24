@@ -13,8 +13,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/saschazesiger/SocratesAgent/internal/agenthost"
 	"github.com/saschazesiger/SocratesAgent/internal/store"
 	"github.com/saschazesiger/SocratesAgent/internal/termux"
+	"github.com/saschazesiger/SocratesAgent/internal/testhome"
 )
 
 // TestMain dispatches the subcommands the terminal substrate calls this
@@ -30,9 +32,20 @@ func TestMain(m *testing.M) {
 			os.Exit(runJournalSink(os.Args[2:]))
 		case "tmux-hook":
 			os.Exit(runTmuxHook(os.Args[2:]))
+		case "agent-host":
+			os.Exit(agenthost.Main(os.Args[2:], "test"))
+		case "mcp-ask":
+			// An OpenCode chat's ask_user server, which its host runs as
+			// this binary (agenthost.MCPAskMain).
+			os.Exit(agenthost.MCPAskMain(os.Args[2:], "test"))
 		}
 	}
-	code := m.Run()
+	// The real adapters are registered here too (the accounts package
+	// imports them), but the tests drive Claude Code, Codex and OpenCode
+	// through faketui terminals, as the browser suite does; the chats run the
+	// scripted agent. A test that wants an agent's chat says so by name.
+	os.Setenv(AgentTerminalsEnv, "1")
+	code := testhome.Main(m)
 	// The fake CLI directory is shared by every test through a sync.Once, so
 	// no single test owns it and t.TempDir cannot remove it. Here is the one
 	// point at which the last test that needed it has finished.
@@ -84,6 +97,15 @@ type testEnv struct {
 
 func newEnv(t *testing.T) *testEnv {
 	t.Helper()
+	return newEnvWith(t, false)
+}
+
+// newEnvWith is newEnv, with the database inside the data directory, where
+// main keeps it, when inData is set: the server a backup of the data
+// directory is taken from. Every other test keeps it beside the data
+// directory, so that a restore into one never replaces an open database.
+func newEnvWith(t *testing.T, inData bool) *testEnv {
+	t.Helper()
 	// One root for the whole environment, taken first so that its removal is
 	// the last cleanup to run. Everything the server keeps on disk lives under
 	// it, and the cleanup registered below - which stops the server, the
@@ -91,7 +113,11 @@ func newEnv(t *testing.T) *testEnv {
 	// goroutine of the server is still writing into it comes straight back,
 	// and that is how a test leaves a tree behind.
 	root := t.TempDir()
-	st, err := store.Open(filepath.Join(root, "db", "test.db"))
+	dbPath := filepath.Join(root, "db", "test.db")
+	if inData {
+		dbPath = filepath.Join(root, "data", "socrates.db")
+	}
+	st, err := store.Open(dbPath)
 	if err != nil {
 		t.Fatalf("store: %v", err)
 	}
@@ -195,14 +221,15 @@ func TestSetupAndTheAuthWall(t *testing.T) {
 	}
 }
 
-// The chat API went with the chat, and the operator's routes went with the
-// operator. Nothing in the tree may answer on those paths any more: a route
-// that survived a deletion is how a browser ends up talking to half a product.
+// The chat API of the terminal rewrite went with its chat, and the operator's
+// routes went with the operator. Nothing in the tree may answer on those paths
+// any more: a route that survived a deletion is how a browser ends up talking
+// to half a product. The rebuild's chats (chats.go) answer under /api/chats/{id}
+// with their own routes, and a chat that does not exist is a 404 there too.
 func TestTheChatRoutesAreGone(t *testing.T) {
 	env := newEnv(t)
 	env.do(t, env.client, "POST", "/api/setup", `{"password":"a-good-password"}`)
 	for _, path := range []string{
-		"/api/chats",
 		"/api/chats/anything",
 		"/api/chats/anything/events",
 		"/api/agents",

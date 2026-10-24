@@ -135,14 +135,11 @@ export function cleanupBuild() {
 
 // ------------------------------------------------------------- the bucket
 //
-// S3 is mandatory: a Socrates with no bucket serves the connect page and
-// nothing else, so every scenario needs one. e2e/fakebin/fakes3 is the
-// in-memory store the mirror's unit tests use (internal/s3/s3fake), served on
-// a real port. It is started once per run, and every server gets its own
-// prefix on it - by default one named after its data directory, so that a
-// scenario's restart finds its own state again and no two scenarios ever see
-// each other's. A scenario that wants a second data directory on the same
-// state (`s3restore`) passes the first one's prefix.
+// Socrates runs without a bucket: the data directory is its only store, and
+// S3 holds a backup of it. Only the scenarios about that backup want one, so
+// e2e/fakebin/fakes3 - the in-memory store the backup's unit tests use
+// (internal/s3/s3fake), served on a real port - is started the first time one
+// asks for it, and each of them backs up under a prefix of its own.
 //
 // The credentials and the region are s3fake's defaults and the passphrase is
 // the suite's own. None of it is a secret: the store dies with the run.
@@ -195,36 +192,26 @@ function stopFakeS3() {
 }
 
 // fakeS3Switch flips the fake's own switches: 'down?status=503' makes every S3
-// request fail until 'up'. Only the storage banner scenario breaks the bucket
-// on purpose, and it puts it back in a finally.
+// request fail until 'up'. Only the backup scenario breaks the bucket on
+// purpose, and it puts it back in a finally.
 export async function fakeS3Switch(what) {
   const url = await ensureFakeS3();
   const res = await fetch(url + '/_fakes3/' + what, { method: 'POST' });
   if (res.status !== 204) throw new Error('fakes3 refused ' + what + ': ' + res.status);
 }
 
-// s3Env is the environment that points a server at its prefix on the fake.
-// A null prefix is a server with no bucket at all, which serves the connect
-// page.
-export function s3Env(prefix) {
-  // An empty bucket name, not a missing one: the environment the suite was
-  // started from must not hand a bucket to a server that is meant to have none.
-  if (prefix === null) return { SOCRATES_S3_BUCKET: '' };
-  if (!fakeS3 || !fakeS3.url) throw new Error('the fake bucket is not running: await ensureFakeS3() first');
+// backupForm is the Backup card's (and the restore form's) fields for a
+// prefix on the fake, as the API takes them.
+export async function backupForm(prefix) {
+  const url = await ensureFakeS3();
   return {
-    SOCRATES_S3_ENDPOINT: fakeS3.url,
-    SOCRATES_S3_REGION: S3.region,
-    SOCRATES_S3_BUCKET: S3.bucket,
-    SOCRATES_S3_PREFIX: prefix,
-    SOCRATES_S3_ACCESS_KEY_ID: S3.accessKeyID,
-    SOCRATES_S3_SECRET_ACCESS_KEY: S3.secretAccessKey,
-    SOCRATES_S3_PATH_STYLE: 'true',
-    SOCRATES_S3_PASSPHRASE: S3.passphrase,
+    endpoint: url, region: S3.region, bucket: S3.bucket, prefix,
+    access_key_id: S3.accessKeyID, secret_access_key: S3.secretAccessKey,
+    path_style: true, passphrase: S3.passphrase, interval_minutes: 10,
   };
 }
 
-// prefixFor is the prefix a data directory gets when the scenario does not
-// name one.
+// prefixFor is the backup prefix of a data directory.
 export const prefixFor = (data) => 'e2e/' + basename(data) + '/';
 
 export async function waitForHealth(url, deadlineMs = 25000) {
@@ -268,15 +255,31 @@ export async function freePort() {
     + ' is in use; something from an earlier run is still listening');
 }
 
-export function spawnServer({ data, port, live = false, env = {}, s3prefix }) {
+// ambient is the suite's own environment without what names an agent's
+// folders or carries a credential: a fake run must never find the machine's
+// real Claude Code, Codex or OpenCode state through a variable the scenario
+// did not set, and must never hand one of this machine's keys to a child.
+function ambient(live) {
+  const out = { ...process.env };
+  if (live) return out;
+  for (const name of Object.keys(out)) {
+    if (/^(ANTHROPIC_|CLAUDE_CODE_|OPENCODE_|SOCRATES_S3_)/.test(name)
+      || ['OPENAI_API_KEY', 'XDG_CONFIG_HOME', 'XDG_CACHE_HOME', 'XDG_STATE_HOME'].includes(name)) {
+      delete out[name];
+    }
+  }
+  return out;
+}
+
+export function spawnServer({ data, port, live = false, env = {} }) {
   const { exe, bin } = binaries(live);
   const server = spawn(exe, ['-addr', '127.0.0.1:' + port, '-data', data], {
     env: {
-      ...process.env,
-      // The bucket comes before anything the scenario passes, so that a
-      // scenario can still override a single variable. undefined is "this
-      // data directory's own prefix", null is "no bucket at all".
-      ...s3Env(s3prefix === undefined ? prefixFor(data) : s3prefix),
+      ...ambient(live),
+      // The environment the suite was started from must not hand a server
+      // the bucket of the mirror Socrates once had, which a start would
+      // carry over into its backup.json.
+      SOCRATES_S3_BUCKET: '',
       // A live run must find the real CLIs, so the fakes stay off its PATH.
       PATH: (bin ? bin + ':' : '') + process.env.PATH,
       // Sessions get their working directory under the run's own data
@@ -286,6 +289,11 @@ export function spawnServer({ data, port, live = false, env = {}, s3prefix }) {
       // does not exist, an exec failure that reads as "claude: no such file or
       // directory".
       SOCRATES_WORKSPACE_ROOT: join(data, 'workspaces'),
+      // The agents on this suite's PATH are faketui, which speaks no
+      // protocol, so Claude Code, Codex and OpenCode stay the terminals the
+      // scenarios were written for (internal/server AgentTerminalsEnv). The
+      // chat scenarios use the scripted agent, which is a chat regardless.
+      SOCRATES_AGENT_TERMINALS: '1',
       // Every CLI's own state goes under the run's data directory, so that a
       // fake run can neither read nor write the machine's real credentials,
       // transcripts or session databases - and so that a scenario can assert
@@ -478,9 +486,7 @@ export async function start(options = {}) {
   mkdirSync(join(data, 'workspaces'), { recursive: true });
   const port = options.port || await freePort();
   const url = 'http://127.0.0.1:' + port;
-  await ensureFakeS3();
-  const s3prefix = options.s3prefix === undefined ? prefixFor(data) : options.s3prefix;
-  const spawned = spawnServer({ data, port, live, env: options.env, s3prefix });
+  const spawned = spawnServer({ data, port, live, env: options.env });
   await waitForHealth(url);
 
   const browser = await chromium.launch({
@@ -515,7 +521,7 @@ export async function start(options = {}) {
   page.on('pageerror', (err) => errors.push('pageerror: ' + err.message));
 
   const s = {
-    page, context, browser, url, port, data, errors, live, s3prefix,
+    page, context, browser, url, port, data, errors, live,
     server: spawned.server, log: spawned.log, exited: spawned.exited,
   };
 
@@ -527,7 +533,7 @@ export async function start(options = {}) {
     const outcome = await Promise.race([s.exited, wait(9000).then(() => 'timeout')]);
     if (outcome === 'timeout') { s.server.kill('SIGKILL'); await s.exited; }
     if (between) await between();
-    const again = spawnServer({ data, port, live, env: { ...(options.env || {}), ...env }, s3prefix });
+    const again = spawnServer({ data, port, live, env: { ...(options.env || {}), ...env } });
     s.server = again.server; s.log = again.log; s.exited = again.exited;
     await waitForHealth(url);
     return outcome;

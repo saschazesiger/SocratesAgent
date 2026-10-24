@@ -1,0 +1,9 @@
+# The Markdown renderer and its sanitizer, pinned as a set: the chat view
+# renders an agent's Markdown with marked and hands the result to DOMPurify
+# before it reaches the page. `make vendor-markdown` reads this file.
+#
+# package@version     file-in-tarball          vendored-as
+marked@18.1.0         lib/marked.esm.js        marked.esm.js
+marked@18.1.0         LICENSE                  LICENSE-marked
+dompurify@3.4.16      dist/purify.es.mjs       purify.es.js
+dompurify@3.4.16      LICENSE                  LICENSE-dompurify

@@ -12,8 +12,7 @@
 //
 // Two knobs let tests reach the paths a healthy store never takes:
 // SetConditional emulates a store that ignores (or refuses) conditional
-// writes, which is what the lease's write-then-read-back fallback exists
-// for; SetDown and FailNext make the store unreachable or flaky.
+// writes; SetDown, FailNext and FailOp make the store unreachable or flaky.
 //
 // It is an ordinary http.Handler, so the e2e fake binary can serve it on a
 // real port, and Start wraps it in an httptest.Server for unit tests.
@@ -45,7 +44,8 @@ const (
 	DefaultRegion          = "fake-1"
 )
 
-// maxObject bounds a PUT body. Socrates' objects are kilobytes.
+// maxObject bounds a PUT body. Socrates' largest objects are backup chunks
+// of a little over 8 MiB.
 const maxObject = 64 << 20
 
 // Conditional selects how the fake treats If-Match / If-None-Match on PUT.
@@ -55,7 +55,7 @@ const (
 	// Honour evaluates the conditions (Ceph RGW, current AWS).
 	Honour Conditional = iota
 	// Ignore accepts the headers and overwrites regardless - the dangerous
-	// kind of store, and the one the lease fallback is for.
+	// kind of store, and the reason a new backup reads its meta.json back.
 	Ignore
 	// Reject answers 501 NotImplemented to any conditional PUT.
 	Reject
@@ -78,6 +78,10 @@ type Options struct {
 	VirtualHostSuffix string
 	// Now is the clock signatures are checked against; nil is time.Now.
 	Now func() time.Time
+	// Written is the clock an object's LastModified is read off; nil is
+	// Now. A test of something that ages objects - the backup's garbage
+	// collection - moves it on without making every signature too old.
+	Written func() time.Time
 }
 
 type object struct {
@@ -113,6 +117,9 @@ func New(opts Options) *Fake {
 	}
 	if opts.Now == nil {
 		opts.Now = time.Now
+	}
+	if opts.Written == nil {
+		opts.Written = opts.Now
 	}
 	f := &Fake{
 		opts:     opts,
@@ -225,7 +232,7 @@ func (f *Fake) Object(bucket, key string) ([]byte, bool) {
 }
 
 // PutObject stores an object directly, bypassing HTTP - a stand-in for
-// another writer (a second installation taking the lease, say).
+// another writer.
 func (f *Fake) PutObject(bucket, key string, body []byte) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -234,7 +241,7 @@ func (f *Fake) PutObject(bucket, key string, body []byte) {
 		b = map[string]*object{}
 		f.buckets[bucket] = b
 	}
-	b[key] = newObject(body, f.opts.Now())
+	b[key] = newObject(body, f.opts.Written())
 }
 
 // DeleteObject removes an object directly.
@@ -352,7 +359,7 @@ func (f *Fake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			writeError(w, r, status, code, "At least one of the pre-conditions you specified did not hold")
 			return
 		}
-		o := newObject(body, f.opts.Now())
+		o := newObject(body, f.opts.Written())
 		objects[key] = o
 		w.Header().Set("ETag", o.etag)
 		w.WriteHeader(http.StatusOK)

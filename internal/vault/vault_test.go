@@ -6,6 +6,9 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"os"
+	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -177,5 +180,57 @@ func TestPBKDF2Vector(t *testing.T) {
 		"49ca9cccf179b645991664b39d77ef317c71b845b1e30bd509112041d3a19783"
 	if hex.EncodeToString(raw) != want {
 		t.Fatalf("PBKDF2 vector: %x", raw)
+	}
+}
+
+func TestAKeyFileIsMadeOnceAndKept(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "secrets.key")
+	if _, err := LoadKeyFile(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("a missing key file: %v", err)
+	}
+	first, err := LoadOrCreateKeyFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fi, err := os.Stat(path)
+	if err != nil || fi.Mode().Perm() != 0o600 || fi.Size() != KeySize {
+		t.Fatalf("the key file: %v %v", fi, err)
+	}
+	sealed, err := Seal(first, "account:a-1", []byte("sk-test"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	again, err := LoadOrCreateKeyFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plain, err := Open(again, "account:a-1", sealed)
+	if err != nil || string(plain) != "sk-test" {
+		t.Fatalf("the key read again does not open what the first sealed: %q %v", plain, err)
+	}
+	if _, err := Open(again, "account:a-2", sealed); !errors.Is(err, ErrAuth) {
+		t.Fatalf("a secret opened under another name: %v", err)
+	}
+	if entries, _ := os.ReadDir(filepath.Dir(path)); len(entries) != 1 {
+		t.Fatalf("left behind: %v", entries)
+	}
+	// One that others can read - a copy made by hand, a restore - is made
+	// the owner's alone.
+	if runtime.GOOS != "windows" {
+		if err := os.Chmod(path, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := LoadKeyFile(path); err != nil {
+			t.Fatal(err)
+		}
+		if fi, _ := os.Stat(path); fi.Mode().Perm() != 0o600 {
+			t.Fatalf("the key file stays %v", fi.Mode())
+		}
+	}
+	if err := os.WriteFile(path, []byte("short"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadOrCreateKeyFile(path); err == nil {
+		t.Fatal("a damaged key file was taken, or replaced")
 	}
 }

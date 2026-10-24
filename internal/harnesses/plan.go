@@ -88,14 +88,25 @@ type PlanRequest struct {
 	// which has no such field, so a prompt is sent exactly once. Shell and
 	// VS Code have no prompt and ignore it.
 	InitialPrompt string
-	Settings      config.Settings
-	DataDir       string
+	// SignIn makes a Shell the place an account signs in: see SignIn.
+	SignIn   *SignIn
+	Settings config.Settings
+	DataDir  string
 	// Logf is the caller's log, for the one thing a plan does that can fail
 	// without stopping the launch: pinning Claude Code's global config, whose
 	// failure costs the session its trust entry and therefore its prompt. It
 	// may be nil - the tests build requests by hand - so it is only ever
 	// reached through PlanRequest.logf.
 	Logf func(format string, args ...any)
+}
+
+// SignIn is a Shell that signs an account in (internal/accounts): the
+// variables that point the agents at the account's folder, and the agent's
+// own sign-in, which runs in the shell before the shell is the person's. It
+// is the first plan's only: a shell started again is a plain one.
+type SignIn struct {
+	Env     map[string]string
+	Command []string
 }
 
 // logf is the nil-safe form. A plan built without a log is silent, which is

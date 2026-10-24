@@ -77,6 +77,12 @@ type pusher struct {
 	// wait is how long a question waits for its digest (pushQuestionWait),
 	// a field so that the tests can run it in milliseconds.
 	wait time.Duration
+	// chatAsk and chatTurn are what a chat's journal says (chatHub): the
+	// question it asks, and how its last turn ended - false for a turn that
+	// is no news, one the person stopped themselves. A chat needs no digest
+	// to wait for: its question has its words the moment it is asked.
+	chatAsk  func(id string) string
+	chatTurn func(id string) (string, bool)
 
 	// counting is held while the asking set is counted and stamped, and
 	// counted is the last stamp (stamp). It is a lock of its own, taken by
@@ -137,6 +143,9 @@ type pendingAsk struct {
 // was left.
 type pendingFinish struct {
 	title string
+	// body is what it says when no verdict comes: "Finished", or a chat's
+	// own words for how its turn ended.
+	body string
 	// since is the idle the turn ended on, which the outcome is for.
 	since int64
 	timer *time.Timer
@@ -358,19 +367,53 @@ func (p *pusher) observe(id string, next termux.Activity) {
 		row.Status == store.StatusBackground {
 		return
 	}
+	if ask && row.IsChat() {
+		p.askChat(id, row.Title, next)
+		return
+	}
 	if ask {
 		p.hold(id, row.Title, next)
 		return
 	}
+	if row.IsChat() && p.chatTurn != nil {
+		words, news := p.chatTurn(id)
+		if !news {
+			return
+		}
+		body = words
+	}
 	// A turn whose outcome is being read waits for it.
 	if p.checking != nil && p.checking(id, next.Since) {
-		p.holdFinished(id, row.Title, next)
+		p.holdFinished(id, row.Title, body, next)
 		return
 	}
 	p.mu.Lock()
 	p.finished[id] = next.Since
 	p.mu.Unlock()
 	p.notify(id, row.Title, body, pushFinished)
+}
+
+// askChat pushes the question a chat has just started asking, at once and in
+// its own words: the ask in its journal is the question. Like hold, only for
+// the commit it was found in, and once until the chat is seen working or
+// idle again.
+func (p *pusher) askChat(id, title string, at termux.Activity) {
+	p.mu.Lock()
+	now, ok := p.prev[id]
+	if p.stopped || !ok || now.State != termux.StateWaiting || now.Since != at.Since || p.asked[id] {
+		p.mu.Unlock()
+		return
+	}
+	p.asked[id] = true
+	p.mu.Unlock()
+	body := ""
+	if p.chatAsk != nil {
+		body = oneLine(p.chatAsk(id), pushBodyRunes)
+	}
+	if body == "" {
+		body = questionBody(nil, at.Note)
+	}
+	p.notify(id, title, body, pushQuestion)
 }
 
 // followFinishedLocked moves a "Finished" that waits for its outcome along with
@@ -397,14 +440,14 @@ func (p *pusher) followFinishedLocked(id string, next termux.Activity) {
 // holdFinished puts a turn's end on the wait for its outcome. The row was read
 // without the lock, so the commit it was read for has to still be the
 // session's last one.
-func (p *pusher) holdFinished(id, title string, at termux.Activity) {
+func (p *pusher) holdFinished(id, title, body string, at termux.Activity) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	now, ok := p.prev[id]
 	if p.stopped || !ok || now.State != termux.StateIdle || now.Since != at.Since || p.finishing[id] != nil {
 		return
 	}
-	rec := &pendingFinish{title: title, since: at.Since}
+	rec := &pendingFinish{title: title, body: body, since: at.Since}
 	rec.timer = time.AfterFunc(p.outcomeWait, func() { p.expireFinished(id, rec) })
 	p.finishing[id] = rec
 }
@@ -420,7 +463,7 @@ func (p *pusher) expireFinished(id string, rec *pendingFinish) {
 	p.dropFinishedLocked(id, rec)
 	p.finished[id] = rec.since
 	p.mu.Unlock()
-	p.notify(id, rec.title, "Finished", pushFinished)
+	p.notify(id, rec.title, rec.body, pushFinished)
 }
 
 // judged is the digester's verdict on a turn's end. A "Finished" waiting for
@@ -448,16 +491,16 @@ func (p *pusher) judged(id string, o outcome, q *digestQuestion) {
 // waiting for one is pushed now.
 func (p *pusher) releaseFinished() {
 	p.mu.Lock()
-	type due struct{ id, title string }
+	type due struct{ id, title, body string }
 	var out []due
 	for id, rec := range p.finishing {
 		p.dropFinishedLocked(id, rec)
 		p.finished[id] = rec.since
-		out = append(out, due{id, rec.title})
+		out = append(out, due{id, rec.title, rec.body})
 	}
 	p.mu.Unlock()
 	for _, d := range out {
-		p.notify(d.id, d.title, "Finished", pushFinished)
+		p.notify(d.id, d.title, d.body, pushFinished)
 	}
 }
 

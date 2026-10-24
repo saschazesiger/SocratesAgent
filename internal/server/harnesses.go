@@ -3,6 +3,7 @@ package server
 import (
 	"net/http"
 
+	"github.com/saschazesiger/SocratesAgent/internal/agent"
 	"github.com/saschazesiger/SocratesAgent/internal/catalog"
 	"github.com/saschazesiger/SocratesAgent/internal/config"
 	"github.com/saschazesiger/SocratesAgent/internal/harnesses"
@@ -32,8 +33,17 @@ func (s *Server) answerCatalog(w http.ResponseWriter, snap catalog.Snapshot) {
 	if presets == nil {
 		presets = []config.PresetDir{}
 	}
+	agents := snap.Agents
+	// The scripted agent of the tests has no CLI to probe; it is offered
+	// like one when it is switched on, with two models to choose from.
+	if _, ok := agent.Lookup(agent.FakeHarness); ok {
+		agents = append(append([]catalog.Agent{}, agents...), fakeCatalogEntry())
+	}
 	payload := map[string]any{
-		"harnesses":    snap.Agents,
+		"harnesses": agents,
+		// The agents a session is a chat with rather than a terminal: the
+		// harnesses with an adapter (REBUILD.md §3), see chatAgent.
+		"chats":        chatAgents(),
 		"refreshed_at": snap.RefreshedAt,
 		"workspace": map[string]any{
 			"root":            settings.Workspace.Root,
@@ -60,4 +70,17 @@ func (s *Server) answerCatalog(w http.ResponseWriter, snap catalog.Snapshot) {
 		payload["sessions_available"] = true
 	}
 	writeJSON(w, http.StatusOK, payload)
+}
+
+// fakeCatalogEntry is the scripted agent as the new-session sheet lists it.
+func fakeCatalogEntry() catalog.Agent {
+	efforts := []string{"low", "medium", "high"}
+	return catalog.Agent{
+		ID: agent.FakeHarness, Label: chatLabel(agent.FakeHarness), Enabled: true, Installed: true, Static: true,
+		HasEffort: true, DefaultModel: "fake-small", DefaultEffort: "medium",
+		Models: []harnesses.Model{
+			{ID: "fake-small", Label: "Fake small", Efforts: efforts, DefaultEffort: "medium", Default: true},
+			{ID: "fake-large", Label: "Fake large", Efforts: efforts, DefaultEffort: "high"},
+		},
+	}
 }

@@ -61,28 +61,30 @@ func (s *Store) GetDraft(id string) (Draft, error) {
 	return d, err
 }
 
-// SaveDraft stores the text of a prepared session's prompt if baseRev is the
-// revision it was edited from, and returns what was stored.
+// SaveDraft stores the text of a prepared session's prompt, or of a chat's
+// composer, if baseRev is the revision it was edited from, and returns what
+// was stored.
 //
 // A save from an older revision is refused with ErrConflict and the current
 // draft, rather than merged or silently overwritten: two devices typing into
 // one prompt is rare, and when it happens the person is the only one who knows
-// which text they meant. A session that has been started refuses with
-// ErrNotPrestart - its prompt was sent, and editing it afterwards would be
-// editing history.
+// which text they meant. A terminal session that has been started refuses
+// with ErrNotPrestart - its prompt was sent, and editing it afterwards would
+// be editing history. A chat keeps a draft for its whole life: the next
+// message being written.
 //
 // The revision of the store moves too, which is how other devices learn from
 // the session list that the draft changed.
 func (s *Store) SaveDraft(id, text string, baseRev int64) (Draft, error) {
-	s.lock()
-	defer s.unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	tx, err := s.db.Begin()
 	if err != nil {
 		return Draft{}, err
 	}
 	defer tx.Rollback()
-	var state string
-	err = tx.QueryRow(`SELECT state FROM sessions WHERE id = ?`, id).Scan(&state)
+	var state, kind string
+	err = tx.QueryRow(`SELECT state, kind FROM sessions WHERE id = ?`, id).Scan(&state, &kind)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Draft{}, ErrNotFound
 	}
@@ -95,7 +97,9 @@ func (s *Store) SaveDraft(id, text string, baseRev int64) (Draft, error) {
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return Draft{}, err
 	}
-	if state != StatePrestart {
+	// A prepared session's draft is its first prompt; a chat's is what its
+	// composer holds. A started terminal has none.
+	if state != StatePrestart && kind != KindChat {
 		return current, ErrNotPrestart
 	}
 	if baseRev != current.Rev {
@@ -111,7 +115,6 @@ func (s *Store) SaveDraft(id, text string, baseRev int64) (Draft, error) {
 		return Draft{}, err
 	}
 	s.bump()
-	s.touch(DraftObject(id))
 	return next, nil
 }
 
@@ -222,8 +225,8 @@ func (s *Store) SetPrestartFailure(id, reason string) error {
 // every ten seconds for ever, and the exact match is what keeps a schedule
 // somebody moved in the meantime from being taken for the old one.
 func (s *Store) ClaimScheduledStart(id string, at int64) (bool, error) {
-	s.lock()
-	defer s.unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	res, err := s.db.Exec(`UPDATE sessions SET start_at = 0, updated_at = ?
 		WHERE id = ? AND state = ? AND start_at = ? AND start_at > 0`, now(), id, StatePrestart, at)
 	if err != nil {
@@ -234,7 +237,6 @@ func (s *Store) ClaimScheduledStart(id string, at int64) (bool, error) {
 		return false, err
 	}
 	s.bump()
-	s.touch(SessionObject(id))
 	return true, nil
 }
 
@@ -296,8 +298,8 @@ func (s *Store) RevertStart(prepared *Session, reason string) error {
 	if len(prepared.Options) > 0 {
 		options = string(prepared.Options)
 	}
-	s.lock()
-	defer s.unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	res, err := s.db.Exec(`UPDATE sessions SET title = CASE WHEN title_source = '' THEN ? ELSE title END, harness = ?, model = ?, effort = ?, workdir = ?, workdir_mode = ?,
 		options = ?, tmux_name = '', cli_session_id = '', cli_session_state = ?, state = ?, exit_status = -1,
 		fail_reason = ?, start_at = 0, cols = ?, rows = ?, updated_at = ?
@@ -311,7 +313,6 @@ func (s *Store) RevertStart(prepared *Session, reason string) error {
 		return ErrNotFound
 	}
 	s.bump()
-	s.touch(SessionObject(prepared.ID))
 	return nil
 }
 
@@ -319,8 +320,8 @@ func (s *Store) RevertStart(prepared *Session, reason string) error {
 // answers ErrNotFound for a row that is not there and ErrNotPrestart for one
 // that has been started.
 func (s *Store) updatePrestart(id, query string, args ...any) error {
-	s.lock()
-	defer s.unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	args = append(args, now(), id, StatePrestart)
 	res, err := s.db.Exec(`UPDATE sessions SET `+query+`, updated_at = ? WHERE id = ? AND state = ?`, args...)
 	if err != nil {
@@ -334,6 +335,5 @@ func (s *Store) updatePrestart(id, query string, args ...any) error {
 		return ErrNotPrestart
 	}
 	s.bump()
-	s.touch(SessionObject(id))
 	return nil
 }

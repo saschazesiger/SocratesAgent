@@ -48,6 +48,19 @@ type Settings struct {
 	Workspace  WorkspaceSettings  `json:"workspace"`
 	Terminal   TerminalSettings   `json:"terminal"`
 	Harnesses  HarnessSettings    `json:"harnesses"`
+	Chats      ChatSettings       `json:"chats"`
+}
+
+// DefaultParkAfterMinutes is how long a chat may sit idle before its agent
+// host parks: the CLI is stopped cleanly, and the next message resumes it
+// (REBUILD.md §2.1).
+const DefaultParkAfterMinutes = 20
+
+// ChatSettings configures the agent chats.
+type ChatSettings struct {
+	// ParkAfterMinutes is how long a chat is idle - no turn, no open
+	// question, no background task - before its CLI is stopped.
+	ParkAfterMinutes int `json:"park_after_minutes"`
 }
 
 // OpenRouterSettings configures access to the OpenRouter API. Since Socrates
@@ -312,6 +325,7 @@ func Default() Settings {
 			WebGL:        true,
 		},
 		Harnesses: DefaultHarnesses(),
+		Chats:     ChatSettings{ParkAfterMinutes: DefaultParkAfterMinutes},
 	}
 }
 
@@ -345,6 +359,9 @@ func (s *Settings) Normalize() {
 	}
 	if strings.TrimSpace(s.OpenRouter.OperatorModel) == "" {
 		s.OpenRouter.OperatorModel = d.OpenRouter.OperatorModel
+	}
+	if s.Chats.ParkAfterMinutes <= 0 {
+		s.Chats.ParkAfterMinutes = DefaultParkAfterMinutes
 	}
 	s.Voice.Language = NormalizeLanguage(s.Voice.Language)
 	if strings.TrimSpace(s.Voice.STTPrompt) == "" {

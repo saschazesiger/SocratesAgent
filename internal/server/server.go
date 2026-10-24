@@ -16,9 +16,9 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/saschazesiger/SocratesAgent/internal/backup"
 	"github.com/saschazesiger/SocratesAgent/internal/catalog"
 	"github.com/saschazesiger/SocratesAgent/internal/config"
-	"github.com/saschazesiger/SocratesAgent/internal/mirror"
 	"github.com/saschazesiger/SocratesAgent/internal/store"
 	"github.com/saschazesiger/SocratesAgent/internal/termux"
 	"github.com/saschazesiger/SocratesAgent/internal/tunnel"
@@ -96,9 +96,12 @@ type Server struct {
 	starts keyedLocks
 	sched  *scheduler
 
-	// mirror is the bucket the state is kept in (storage.go). It is set once,
-	// after New, by main; a server without one is a test.
-	mirror atomic.Pointer[mirror.Mirror]
+	// backup is the engine that backs the data directory up (backup.go),
+	// set once after New by main; restart starts Socrates again after a
+	// restore, and restoreJob is that restore.
+	backup     *backup.Engine
+	restart    func()
+	restoreJob restoreJob
 
 	// usage holds the short-lived account limit reading shared by every tab.
 	// Session costs are read from each CLI's own transcript and are not cached
@@ -116,6 +119,11 @@ type Server struct {
 
 	// costs keeps the cost ledger current (costs.go).
 	costs *costLedger
+
+	// chats is every agent chat and the host it runs in (chats.go), and
+	// accounts what they run on (accounts.go).
+	chats    *chatHub
+	accounts *accountHub
 }
 
 type attempt struct {
@@ -173,6 +181,10 @@ func New(st *store.Store, dataDir string) (*Server, error) {
 	s.answers = newOperatorDriver(s)
 	s.sched = newScheduler(s)
 	s.costs = newCostLedger(s)
+	s.chats = newChatHub(s)
+	// A chat's push says what its journal says.
+	s.push.chatAsk, s.push.chatTurn = s.chats.askWords, s.chats.turnWords
+	s.accounts = newAccountHub(s)
 	manager, err := termux.New(st, cfg)
 	if err != nil {
 		return nil, err
@@ -214,6 +226,9 @@ func managerConfig(dataDir string, settings config.Settings) termux.Config {
 // gone. A failure here is reported and not fatal: a Socrates that cannot start
 // sessions still has to serve the dashboard that says why.
 func (s *Server) StartSessions(ctx context.Context) error {
+	// Chats need no tmux: their hosts are reattached whatever the terminal
+	// engine says below.
+	s.chats.start()
 	// What every conversation cost is read from the CLIs' files, not from
 	// tmux, so a machine whose terminals cannot start still keeps its ledger.
 	s.costs.start(ctx)
@@ -239,6 +254,8 @@ func (s *Server) StartSessions(ctx context.Context) error {
 // StopSessions lets go of everything Socrates owns and nothing tmux owns: the
 // sessions themselves keep running, which is the whole point of them.
 func (s *Server) StopSessions() {
+	// The hosts keep running, like the tmux server; only the connections go.
+	s.chats.close()
 	s.push.stop()
 	if err := s.manager.Close(); err != nil {
 		log.Printf("terminal sessions: %v", err)
@@ -379,12 +396,13 @@ func (s *Server) routes() {
 	mux.HandleFunc("POST /api/sessions", s.auth(s.handleCreateSession))
 	mux.HandleFunc("GET /api/sessions/{id}", s.auth(s.handleGetSession))
 	mux.HandleFunc("PATCH /api/sessions/{id}", s.auth(s.handleRenameSession))
+	mux.HandleFunc("PUT /api/sessions/{id}/workdir", s.auth(s.handleSetWorkdir))
 	// A new name, from a model, because somebody asked for one.
 	mux.HandleFunc("POST /api/sessions/{id}/title", s.auth(s.handleRetitleSession))
 	mux.HandleFunc("DELETE /api/sessions/{id}", s.auth(s.endingViewers(s.handleDeleteSession)))
 	mux.HandleFunc("POST /api/sessions/{id}/file", s.auth(s.handleSetStatus))
-	mux.HandleFunc("POST /api/sessions/{id}/resume", s.auth(s.started(s.handleResumeSession)))
-	mux.HandleFunc("POST /api/sessions/{id}/restart", s.auth(s.started(s.handleRestartSession)))
+	mux.HandleFunc("POST /api/sessions/{id}/resume", s.auth(s.terminal(s.started(s.handleResumeSession))))
+	mux.HandleFunc("POST /api/sessions/{id}/restart", s.auth(s.terminal(s.started(s.handleRestartSession))))
 	// Prepared sessions: their settings, their draft, and the start.
 	mux.HandleFunc("PATCH /api/sessions/{id}/prestart", s.auth(s.handlePatchPrestart))
 	mux.HandleFunc("GET /api/sessions/{id}/draft", s.auth(s.handleGetDraft))
@@ -405,13 +423,36 @@ func (s *Server) routes() {
 	mux.HandleFunc("POST /api/sessions/{id}/answer", s.auth(s.handleAnswer))
 	mux.HandleFunc("GET /api/sessions/{id}/answer", s.auth(s.handleAnswerRun))
 	mux.HandleFunc("POST /api/sessions/{id}/answer/cancel", s.auth(s.handleAnswerCancel))
-	mux.HandleFunc("GET /api/sessions/{id}/journal", s.auth(s.started(s.handleJournal)))
+	mux.HandleFunc("GET /api/sessions/{id}/journal", s.auth(s.terminal(s.started(s.handleJournal))))
 	mux.HandleFunc("POST /api/sessions/{id}/upload", s.auth(s.started(s.handleUpload)))
-	mux.HandleFunc("GET /api/sessions/{id}/ws", s.auth(s.started(s.handleSessionWS)))
+	mux.HandleFunc("GET /api/sessions/{id}/ws", s.auth(s.terminal(s.started(s.handleSessionWS))))
+
+	// Chats: agents driven through their protocols, by a host per chat.
+	mux.HandleFunc("POST /api/chats", s.auth(s.handleCreateChat))
+	mux.HandleFunc("GET /api/chats/{id}", s.auth(s.handleGetChat))
+	mux.HandleFunc("POST /api/chats/{id}/messages", s.auth(s.handleChatMessage))
+	mux.HandleFunc("POST /api/chats/{id}/interrupt", s.auth(s.handleChatInterrupt))
+	mux.HandleFunc("POST /api/chats/{id}/asks/{ask}/answer", s.auth(s.handleChatAnswer))
+	mux.HandleFunc("GET /api/chats/{id}/stream", s.auth(s.handleChatStream))
+	mux.HandleFunc("POST /api/chats/{id}/model", s.auth(s.handleChatModel))
+	mux.HandleFunc("POST /api/chats/{id}/command", s.auth(s.handleChatCommand))
+	mux.HandleFunc("POST /api/chats/{id}/attachments", s.auth(s.handleChatAttachments))
+	mux.HandleFunc("POST /api/chats/{id}/options", s.auth(s.handleChatOptions))
+	mux.HandleFunc("POST /api/chats/{id}/account", s.auth(s.handleChatAccount))
+	mux.HandleFunc("PUT /api/chats/{id}/auto-switch", s.auth(s.handleChatAutoSwitch))
 
 	// The harness catalogue: what can be started, and where.
 	mux.HandleFunc("GET /api/harnesses", s.auth(s.handleHarnesses))
 	mux.HandleFunc("POST /api/harnesses/refresh", s.auth(s.handleRefreshHarnesses))
+	mux.HandleFunc("GET /api/accounts", s.auth(s.handleListAccounts))
+	mux.HandleFunc("POST /api/accounts", s.auth(s.handleCreateAccount))
+	mux.HandleFunc("PUT /api/accounts/order", s.auth(s.handleReorderAccounts))
+	mux.HandleFunc("PATCH /api/accounts/{id}", s.auth(s.handlePatchAccount))
+	mux.HandleFunc("DELETE /api/accounts/{id}", s.auth(s.handleDeleteAccount))
+	mux.HandleFunc("POST /api/accounts/{id}/signin", s.auth(s.handleAccountSignIn))
+	mux.HandleFunc("GET /api/accounts/{id}/signin", s.auth(s.handleGetAccountSignIn))
+	mux.HandleFunc("POST /api/accounts/{id}/signin/code", s.auth(s.handleAccountSignInCode))
+	mux.HandleFunc("DELETE /api/accounts/{id}/signin", s.auth(s.handleCancelAccountSignIn))
 	mux.HandleFunc("GET /api/profiles", s.auth(s.handleListProfiles))
 	mux.HandleFunc("POST /api/profiles", s.auth(s.handleCreateProfile))
 	mux.HandleFunc("PUT /api/profiles/order", s.auth(s.handleReorderProfiles))
@@ -449,11 +490,18 @@ func (s *Server) routes() {
 	mux.HandleFunc("POST /api/push/unsubscribe", s.auth(s.handlePushUnsubscribe))
 	mux.HandleFunc("POST /api/push/test", s.auth(s.handlePushTest))
 
-	// Storage: the bucket that is the store of record (storage.go).
-	mux.HandleFunc("GET /api/storage", s.auth(s.handleStorageStatus))
-	mux.HandleFunc("POST /api/storage/test", s.auth(s.handleStorageTest))
-	mux.HandleFunc("POST /api/storage/sync", s.auth(s.handleStorageSync))
-	mux.HandleFunc("PUT /api/storage/credentials", s.auth(s.handleStorageCredentials))
+	// Backup: the Backup card (backup.go).
+	mux.HandleFunc("GET /api/backup", s.auth(s.handleBackupStatus))
+	mux.HandleFunc("POST /api/backup/run", s.auth(s.handleBackupRun))
+	mux.HandleFunc("GET /api/backup/snapshots", s.auth(s.handleBackupSnapshots))
+	mux.HandleFunc("POST /api/backup/test", s.auth(s.handleBackupTest))
+	mux.HandleFunc("PUT /api/backup/config", s.auth(s.handleBackupConfig))
+	mux.HandleFunc("DELETE /api/backup/config", s.auth(s.handleBackupOff))
+	// Restore: a new machine, from the setup page, before there is a
+	// password (backup.go says when it is allowed).
+	mux.HandleFunc("POST /api/restore/snapshots", s.handleRestoreSnapshots)
+	mux.HandleFunc("POST /api/restore", s.handleRestoreStart)
+	mux.HandleFunc("GET /api/restore", s.handleRestoreStatus)
 
 	// Liveness, and the one endpoint nothing in the browser calls:
 	// scripts/update.sh asks it after a restart, because a process that is

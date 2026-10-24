@@ -1,6 +1,6 @@
-// Package s3 is the small S3 client Socrates keeps its state of record with:
-// get, put (optionally conditional), delete, head and ListObjectsV2 against
-// any S3 compatible store - AWS, Hetzner Object Storage (Ceph RGW),
+// Package s3 is the small S3 client Socrates backs its data directory up
+// with: get, put (optionally conditional), delete, head and ListObjectsV2
+// against any S3 compatible store - AWS, Hetzner Object Storage (Ceph RGW),
 // Cloudflare R2, MinIO.
 //
 // It is hand written on the standard library, like internal/webpush. The
@@ -8,13 +8,14 @@
 // the protocol that is subtle - Signature Version 4 - lives in the sigv4
 // subpackage, pinned by the AWS test vectors.
 //
-// Every object Socrates keeps is small (a session row, a settings value),
-// so bodies are plain byte slices: no streaming, no multipart.
+// No object Socrates writes is larger than a backup chunk (8 MiB and a few
+// bytes of envelope, internal/backup), so a put is one request with its body
+// in memory and there is no multipart upload. A download can be streamed
+// (GetStream), so that what a restore reads is never held whole.
 //
-// Retries are the caller's business. The mirror that writes through to the
-// bucket already keeps a queue of pending objects and backs off on its own;
-// a client that also retried underneath would only make its timing harder
-// to reason about. Timeouts come from the context.
+// Retries are the caller's business: the backup runs again on its own
+// schedule, and a client that also retried underneath would only make its
+// timing harder to reason about. Timeouts come from the context.
 package s3
 
 import (
@@ -33,9 +34,10 @@ import (
 	"github.com/saschazesiger/SocratesAgent/internal/s3/sigv4"
 )
 
-// maxBody bounds what a single response may make us read. Socrates' own
-// objects are kilobytes; a bucket answering with gigabytes is wrong, not a
-// reason to run out of memory.
+// maxBody bounds what a single response read into memory may be: a listing,
+// a manifest, a chunk. Socrates' own objects are at most a few megabytes; a
+// bucket answering with gigabytes is wrong, not a reason to run out of
+// memory. GetStream is not bounded here: its caller reads what it expects.
 const maxBody = 256 << 20
 
 // Config says where the bucket is and how to sign for it.
@@ -159,11 +161,11 @@ type ObjectInfo struct {
 
 // PutOptions are the conditions a Put can carry.
 //
-// Conditional writes are how a single writer is enforced cheaply: create the
-// lease only if absent (IfNoneMatch "*"), replace it only if it is still the
-// version we read (IfMatch). Not every S3 compatible store honours them, and
-// one that does not simply ignores the header and overwrites. Use
-// ProbeConditional to find out which kind of store you are talking to.
+// Conditional writes create an object only if it is absent (IfNoneMatch
+// "*") or replace it only if it is still the version read (IfMatch). Not
+// every S3 compatible store honours them, and one that does not simply
+// ignores the header and overwrites: a caller that depends on the condition
+// reads the object back, as a new backup's meta.json is.
 type PutOptions struct {
 	// IfMatch, when set, makes the write succeed only if the current ETag
 	// equals it. Pass the ETag as Get/Head/Put returned it; it is sent
@@ -187,6 +189,18 @@ func (c *Client) Get(ctx context.Context, key string) (Object, error) {
 		return Object{}, err
 	}
 	return Object{Body: body, ETag: resp.Header.Get("ETag"), LastModified: lastModified(resp.Header)}, nil
+}
+
+// GetStream fetches an object and hands its body over unread, for an object
+// that is better not held in memory whole. The caller closes it. A missing
+// key is an error matching ErrNotFound, and nothing is left to close.
+func (c *Client) GetStream(ctx context.Context, key string) (io.ReadCloser, ObjectInfo, error) {
+	resp, err := c.send(ctx, "GET", key, nil, nil, nil)
+	if err != nil {
+		return nil, ObjectInfo{}, err
+	}
+	info := ObjectInfo{Key: key, ETag: resp.Header.Get("ETag"), Size: resp.ContentLength, LastModified: lastModified(resp.Header)}
+	return resp.Body, info, nil
 }
 
 // Head fetches an object's metadata. A missing key matches ErrNotFound.
@@ -325,10 +339,33 @@ func (c *Client) Ping(ctx context.Context, prefix string) error {
 	return err
 }
 
-// do sends one signed request. key "" addresses the bucket itself. It
-// returns the response (body already read and closed) and the body, or an
-// error carrying the S3 error code when the status is not 2xx.
+// do sends one signed request and reads its answer. key "" addresses the
+// bucket itself. It returns the response (body already read and closed) and
+// the body, or an error carrying the S3 error code when the status is not
+// 2xx.
 func (c *Client) do(ctx context.Context, method, key string, query url.Values, h http.Header, body []byte) (*http.Response, []byte, error) {
+	resp, err := c.send(ctx, method, key, query, h, body)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer resp.Body.Close()
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxBody+1))
+	if err != nil {
+		return nil, nil, fmt.Errorf("s3: %s %s: reading response: %w", method, opName(key), err)
+	}
+	if len(data) > maxBody {
+		return nil, nil, fmt.Errorf("s3: %s %s: response larger than %d bytes", method, opName(key), maxBody)
+	}
+	return resp, data, nil
+}
+
+// maxErrorBody bounds the error document of a failed request.
+const maxErrorBody = 1 << 20
+
+// send sends one signed request and returns the response with its body
+// still open, or - when the status is not 2xx - an error carrying the S3
+// error code, with the body read and closed.
+func (c *Client) send(ctx context.Context, method, key string, query url.Values, h http.Header, body []byte) (*http.Response, error) {
 	path := c.prefix + "/" + key
 	if key == "" && c.prefix != "" {
 		path = c.prefix
@@ -348,7 +385,7 @@ func (c *Client) do(ctx context.Context, method, key string, query url.Values, h
 	}
 	req, err := http.NewRequestWithContext(ctx, method, u.String(), rd)
 	if err != nil {
-		return nil, nil, fmt.Errorf("s3: %s %s: %w", method, key, err)
+		return nil, fmt.Errorf("s3: %s %s: %w", method, key, err)
 	}
 	for k, v := range h {
 		req.Header[k] = v
@@ -358,20 +395,14 @@ func (c *Client) do(ctx context.Context, method, key string, query url.Values, h
 
 	resp, err := c.hc.Do(req)
 	if err != nil {
-		return nil, nil, fmt.Errorf("s3: %s %s: %w", method, opName(key), err)
-	}
-	defer resp.Body.Close()
-	data, err := io.ReadAll(io.LimitReader(resp.Body, maxBody+1))
-	if err != nil {
-		return nil, nil, fmt.Errorf("s3: %s %s: reading response: %w", method, opName(key), err)
-	}
-	if len(data) > maxBody {
-		return nil, nil, fmt.Errorf("s3: %s %s: response larger than %d bytes", method, opName(key), maxBody)
+		return nil, fmt.Errorf("s3: %s %s: %w", method, opName(key), err)
 	}
 	if resp.StatusCode/100 != 2 {
-		return nil, nil, newError(method, key, resp, data)
+		defer resp.Body.Close()
+		data, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBody))
+		return nil, newError(method, key, resp, data)
 	}
-	return resp, data, nil
+	return resp, nil
 }
 
 // bareETag strips the quotes (and a weak W/ marker) off an entity tag.

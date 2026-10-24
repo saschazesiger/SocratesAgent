@@ -535,6 +535,36 @@ func TestClaudeGlobalConfigTreatsAnEmptyFileAsMissing(t *testing.T) {
 	}
 }
 
+// A ~/.claude.json the accounts migration left as a link to the Default
+// account's copy stays that link: the pin is written into the copy, and
+// there is never a second file.
+func TestClaudeGlobalConfigPinWritesThroughALink(t *testing.T) {
+	l := newLab(t)
+	path := claudeGlobalConfigPath()
+	moved := filepath.Join(t.TempDir(), "accounts", "a-1", ".claude.json")
+	if err := os.MkdirAll(filepath.Dir(moved), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(moved, []byte(`{"numStartups":3}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(moved, path); err != nil {
+		t.Fatal(err)
+	}
+	if err := pinClaudeGlobalConfig(path, l.cwd, nil); err != nil {
+		t.Fatal(err)
+	}
+	if target, err := os.Readlink(path); err != nil || target != moved {
+		t.Fatalf("~/.claude.json is no longer the link: %q %v", target, err)
+	}
+	if entry := claudeProjectEntry(t, moved, l.cwd); entry["hasTrustDialogAccepted"] != true {
+		t.Errorf("the pin did not reach the account's copy: %v", entry)
+	}
+}
+
 // A file that is JSON but not a shape this understands is reported rather than
 // half-rewritten, and the caller writes the reason to the log.
 func TestClaudeGlobalConfigReportsAFileItCannotChange(t *testing.T) {

@@ -28,6 +28,12 @@ const sweepEvery = time.Minute
 // went on saying "Choosing Postgres…" for a model step would be telling the
 // person about a terminal that is not there any more.
 func (s *Server) park(ctx context.Context, id string) error {
+	if row, err := s.store.GetSession(id); err == nil && row.IsChat() {
+		// A chat has no terminal to close: its host parks as soon as it is
+		// idle, and the next message resumes it.
+		s.chats.park(id)
+		return nil
+	}
 	s.answers.stop(id, reasonDone)
 	if err := s.manager.Park(ctx, id); err != nil {
 		return err
@@ -46,6 +52,9 @@ func (s *Server) deleteSession(ctx context.Context, id string) error {
 	// An answer being typed into a pane that is being torn down is the one
 	// thing the operator could do that nobody asked for.
 	s.answers.forget(id)
+	if row, err := s.store.GetSession(id); err == nil && row.IsChat() {
+		s.chats.remove(ctx, id)
+	}
 	if err := s.manager.Delete(ctx, id); err != nil {
 		s.answers.revive(id)
 		return err

@@ -351,10 +351,16 @@ func (s *Server) homeState() (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
+	// A chat's reading is made from its journal (chatbrief.go), and sits
+	// beside the terminals' digests where a page looks for a session's line.
+	digests := s.digests.all()
+	for id, d := range s.chats.readings() {
+		digests[id] = d
+	}
 	return map[string]any{
 		"sessions": s.views(rows),
 		"rev":      rev,
-		"digests":  s.digests.all(),
+		"digests":  digests,
 		"outcomes": s.digests.outcomesAll(),
 		"answers":  s.answers.all(),
 		"now":      time.Now().UnixMilli(),

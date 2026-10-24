@@ -57,7 +57,8 @@ func PipeCommand(socratesBin, journal string, maxBytes int64, keep int) string {
 // It opens for append and tolerates being started against a file that already
 // has content, because that is the normal case: `pipe-pane` is issued without
 // -o (with it, a second call would silently close the journal instead of
-// reopening it), so a re-issued pipe replaces a running sink mid-file.
+// reopening it), so a re-issued pipe replaces a running sink mid-file. It does
+// not start against a file that is not there: see journalSink.
 func RunJournalSink(path string, maxBytes int64, keep int) error {
 	stop := WatchParentProcess(sinkOrphanCheck, func() {
 		// Nothing is buffered - every read is written straight through - so
@@ -117,16 +118,18 @@ func journalSink(r io.Reader, path string, maxBytes int64, keep int) error {
 	if keep < 0 {
 		keep = 0
 	}
-	// The session directory is made when the session is made. A sink that has
-	// to create it is a sink writing for a session that is already gone - a
-	// pane relaunched by a goroutine that outlived the thing that started it -
-	// and creating it there would resurrect a tree somebody has deleted. In a
-	// test that tree is the temporary directory, and this is how forty of them
-	// came back after t.TempDir had removed them.
-	if _, err := os.Stat(filepath.Dir(path)); err != nil {
-		return err
-	}
-	f, size, err := openJournal(path)
+	// The journal is made with the session, and by attachJournal before it
+	// starts a sink; a sink only ever opens it. One that finds none is writing
+	// for a session that is gone or going - its pipe replaced or its server
+	// killed before this process got this far, or a pane relaunched by a
+	// goroutine that outlived the thing that started it - and making the file
+	// would put back what removing that session has just taken away: once a
+	// whole tree, which is how forty temporary directories came back after
+	// t.TempDir had removed them, and with a look at the directory first, the
+	// journal alone, unlinked between that look and the open and recreated by
+	// it, so that the rmdir which came next failed with "directory not empty".
+	// Opening without O_CREATE is the look and the open in one step.
+	f, size, err := openJournal(path, 0)
 	if err != nil {
 		return err
 	}
@@ -147,7 +150,9 @@ func journalSink(r io.Reader, path string, maxBytes int64, keep int) error {
 				if err := rotate(path, keep); err != nil {
 					return err
 				}
-				if f, size, err = openJournal(path); err != nil {
+				// The one file a sink makes: the journal it has just moved
+				// aside.
+				if f, size, err = openJournal(path, os.O_CREATE); err != nil {
 					return err
 				}
 				continue
@@ -171,8 +176,9 @@ func journalSink(r io.Reader, path string, maxBytes int64, keep int) error {
 	}
 }
 
-func openJournal(path string) (*os.File, int64, error) {
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+// openJournal opens path for append; flag is os.O_CREATE or nothing.
+func openJournal(path string, flag int) (*os.File, int64, error) {
+	f, err := os.OpenFile(path, flag|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
 		return nil, 0, err
 	}

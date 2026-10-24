@@ -31,8 +31,8 @@ var askingStates = map[string]bool{
 
 // askingSet is the ids of every session that is asking, sorted.
 //
-// It reads the digester and the detector, each under its own lock, so it is
-// never called with digester.mu or pusher.mu held: the digester calls into
+// It reads the digester, the detector and the chats' briefs, each under its
+// own lock, so it is never called with digester.mu or pusher.mu held: the digester calls into
 // the pusher with its lock held, and a pusher that called back would wait on
 // the very lock that is waiting on it. The pusher calls it on the goroutine
 // that sends, after every lock has been let go.
@@ -51,6 +51,14 @@ func (s *Server) askingSet() []string {
 	out := []string{}
 	for i := range rows {
 		row := &rows[i]
+		if row.IsChat() {
+			// A chat says itself whether it asks: an open question in its
+			// journal that it waits on, which is what Home's waiting is.
+			if askable(row) && s.chats.waiting(row.ID) {
+				out = append(out, row.ID)
+			}
+			continue
+		}
 		a, ok := committedActivity(row.ID, live, seen)
 		if ok && asking(row, a, prose[row.ID]) {
 			out = append(out, row.ID)
@@ -92,13 +100,7 @@ func committedActivity(id string, live, seen map[string]termux.Activity) (termux
 // prose. A session filed background is counted, as Home counts it: it is
 // only kept from chiming and from notifying (DEVIATIONS.md).
 func asking(row *store.Session, a termux.Activity, inProse bool) bool {
-	if row.Status == store.StatusDone {
-		return false
-	}
-	if row.Harness == config.HarnessShell || row.Harness == config.HarnessVSCode {
-		return false
-	}
-	if row.State == store.StatePrestart || !askingStates[row.State] {
+	if !askable(row) {
 		return false
 	}
 	switch a.State {
@@ -108,6 +110,18 @@ func asking(row *store.Session, a termux.Activity, inProse bool) bool {
 		return inProse
 	}
 	return false
+}
+
+// askable is whether a session can be asking at all: not done, not a tool,
+// not prepared, and live.
+func askable(row *store.Session) bool {
+	if row.Status == store.StatusDone {
+		return false
+	}
+	if row.Harness == config.HarnessShell || row.Harness == config.HarnessVSCode {
+		return false
+	}
+	return row.State != store.StatePrestart && askingStates[row.State]
 }
 
 // askingView is what the asking set reads from the digester, in one look:

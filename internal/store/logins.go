@@ -7,21 +7,14 @@ import "time"
 // name up to the terminals, which is what a session means in this app now. The
 // cookie is still called socrates_session, because that is a cookie and not a
 // table, and renaming it would sign everybody out for no gain.
-//
-// The whole table is one object in the bucket (LoginsObject), so every write
-// below marks that one name: a browser signed in on this machine stays signed
-// in on the machine that restores the bucket.
 
 // CreateLogin stores a login token.
 func (s *Store) CreateLogin(token string, ttl time.Duration) error {
-	s.lock()
-	defer s.unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	ts := now()
 	_, err := s.db.Exec(`INSERT INTO logins(token, created_at, expires_at) VALUES(?, ?, ?)`,
 		token, ts, ts+ttl.Milliseconds())
-	if err == nil {
-		s.touch(LoginsObject)
-	}
 	return err
 }
 
@@ -53,18 +46,10 @@ func (s *Store) PurgeExpiredLogins() error {
 	return s.deleteLogins(`DELETE FROM logins WHERE expires_at <= ?`, now())
 }
 
-// deleteLogins runs one delete and marks the table changed only when it
-// removed something. The purge runs on a timer, and a timer that found
-// nothing to purge must not cost an upload every time it fires.
+// deleteLogins runs one delete under the write lock.
 func (s *Store) deleteLogins(query string, args ...any) error {
-	s.lock()
-	defer s.unlock()
-	res, err := s.db.Exec(query, args...)
-	if err != nil {
-		return err
-	}
-	if n, err := res.RowsAffected(); err != nil || n > 0 {
-		s.touch(LoginsObject)
-	}
-	return nil
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err := s.db.Exec(query, args...)
+	return err
 }

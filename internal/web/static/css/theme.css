@@ -80,6 +80,19 @@
   --so-prompt-min-height: max(300px, 48vh);
   --so-conflict-preview-max: 160px;
 
+  /* Chat: the conversation's reading width, how wide a person's message
+     grows, a part's one-line row, how much of a tool's output, a task list
+     and the composer show before they scroll, and a diff's line numbers. */
+  --so-chat-measure: 860px;
+  --so-chat-bubble-max: 85%;
+  --so-chat-row-height: 36px;
+  --so-chat-output-max: 320px;
+  --so-chat-todo-max: 28vh;
+  --so-composer-max: 40vh;
+  --so-palette-max: 260px;
+  --so-diff-no-width: 4ch;
+  --so-touch-target: 48px;
+
   /* Question sheet */
   --so-question-width: 720px;
   --so-option-min-height: 72px;
@@ -94,6 +107,10 @@
   --so-log-max-height: 280px;
   --so-col-status: 136px;
   --so-name-field-width: 320px;
+  --so-account-meters-width: 360px;
+
+  /* Accounts (sign-in dialog) */
+  --so-signin-list-max: 320px;
 
   /* Login, setup, costs */
   --so-auth-width: 400px;
@@ -120,6 +137,7 @@
   --so-shelf-head-height: 48px;
   --so-usage-line-height: 48px;
   --so-option-min-height: 84px;
+  --so-chat-row-height: 48px;
   --so-question-action-height: 64px;
   --so-question-width: 100%;
 }
