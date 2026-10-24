@@ -442,10 +442,6 @@ update_socrates() {
 	repo=$(setting SOCRATES_REPO "$DEFAULT_REPO")
 	branch=$(setting SOCRATES_BRANCH main)
 
-	if [ -z "$binary" ] && ! [ -x "$GO" ]; then
-		record socrates "$(installed_version)" "" failed "there is no Go to build it with"
-		return 1
-	fi
 	# Only this run uses the clone - the lock says so - so a lock file in it
 	# is one a killed run left, and would fail every git command from now on.
 	[ -d "$SRC/.git" ] && find "$SRC/.git" -name '*.lock' -type f -delete 2>/dev/null
@@ -538,6 +534,13 @@ update_socrates() {
 			return 1
 		fi
 	else
+		# Asked only of a run that has to build: one that finds the installed
+		# commit current, a repair, a commit marked bad, has nothing to build
+		# and did not fail for want of Go.
+		if ! [ -x "$GO" ]; then
+			record socrates "$before" "" failed "there is no Go to build it with"
+			return 1
+		fi
 		say "Build Socrates $version"
 		if ! (cd "$build" && retry 3 "$GO" mod download); then
 			record socrates "$before" "" failed "could not download the Go modules"
