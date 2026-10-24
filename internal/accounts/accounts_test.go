@@ -86,6 +86,12 @@ func TestAnOpenCodeChatKeepsTheToolsConfiguration(t *testing.T) {
 	if env := envMap(Env(t.TempDir(), a, []string{"HOME=" + home})); env["GIT_CONFIG_GLOBAL"] != "" {
 		t.Fatalf("GIT_CONFIG_GLOBAL would hide ~/.gitconfig: %v", env)
 	}
+	// One the service sets itself goes as it is, and does not hide the
+	// other.
+	env = envMap(Env(t.TempDir(), a, []string{"HOME=" + home, "GIT_CONFIG_GLOBAL=/etc/socrates/gitconfig"}))
+	if env["GIT_CONFIG_GLOBAL"] != "/etc/socrates/gitconfig" || env["GH_CONFIG_DIR"] != filepath.Join(home, ".config/gh") {
+		t.Fatalf("env %v", env)
+	}
 }
 
 func TestTheKeyReachesEachAgentItsOwnWay(t *testing.T) {

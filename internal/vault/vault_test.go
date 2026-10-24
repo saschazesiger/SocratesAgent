@@ -8,6 +8,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -212,6 +213,19 @@ func TestAKeyFileIsMadeOnceAndKept(t *testing.T) {
 	}
 	if entries, _ := os.ReadDir(filepath.Dir(path)); len(entries) != 1 {
 		t.Fatalf("left behind: %v", entries)
+	}
+	// One that others can read - a copy made by hand, a restore - is made
+	// the owner's alone.
+	if runtime.GOOS != "windows" {
+		if err := os.Chmod(path, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := LoadKeyFile(path); err != nil {
+			t.Fatal(err)
+		}
+		if fi, _ := os.Stat(path); fi.Mode().Perm() != 0o600 {
+			t.Fatalf("the key file stays %v", fi.Mode())
+		}
 	}
 	if err := os.WriteFile(path, []byte("short"), 0o600); err != nil {
 		t.Fatal(err)

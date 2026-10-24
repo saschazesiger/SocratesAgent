@@ -79,6 +79,7 @@ func StartSignIn(ctx context.Context, dataDir, account string, env []string, bin
 	}
 	spawn := func(cmd *exec.Cmd) error {
 		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+		setPdeathsig(cmd.SysProcAttr)
 		return cmd.Start()
 	}
 	if err := layout.Migrate(ctx, spawn, bin, processEnv(env, layout, account, "", nil)); err != nil {

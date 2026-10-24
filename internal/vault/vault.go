@@ -37,6 +37,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 )
 
 const (
@@ -220,10 +221,18 @@ func VerifyCheck(k *Key, check []byte) error {
 // key that seals what Socrates keeps of its accounts (an API key in the
 // store, the environment a chat's agent host is handed). It is not derived
 // from anything, so it opens nothing anywhere else.
+//
+// A key file others can read is made the owner's alone (0600) as it is
+// read: whoever reads it opens every key it sealed.
 func LoadKeyFile(path string) (*Key, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
+	}
+	if fi, err := os.Stat(path); err == nil && runtime.GOOS != "windows" && fi.Mode().Perm()&0o077 != 0 {
+		if err := os.Chmod(path, 0o600); err != nil {
+			return nil, fmt.Errorf("vault: %s can be read by others and could not be made private: %w", path, err)
+		}
 	}
 	if len(raw) != KeySize {
 		return nil, fmt.Errorf("vault: %s holds %d bytes, not a key of %d", path, len(raw), KeySize)

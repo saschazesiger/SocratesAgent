@@ -244,34 +244,43 @@ func Env(dataDir string, a *store.Account, base []string) []string {
 
 // toolConfig is GH_CONFIG_DIR and GIT_CONFIG_GLOBAL for an OpenCode chat,
 // where the person's configuration is only found through XDG_CONFIG_HOME.
+// Each one the service sets itself is passed as it is.
 func toolConfig(base []string, home string) []string {
-	configHome := ""
+	configHome, gh, git := "", "", ""
 	for _, kv := range base {
 		if k, v, ok := strings.Cut(kv, "="); ok {
 			switch k {
 			case "XDG_CONFIG_HOME":
 				configHome = v
-			case "GH_CONFIG_DIR", "GIT_CONFIG_GLOBAL":
-				return []string{kv}
+			case "GH_CONFIG_DIR":
+				gh = kv
+			case "GIT_CONFIG_GLOBAL":
+				git = kv
 			}
 		}
 	}
 	if configHome == "" && home != "" {
 		configHome = filepath.Join(home, ".config")
 	}
-	if configHome == "" {
-		return nil
-	}
-	var out []string
-	if fi, err := os.Stat(filepath.Join(configHome, "gh")); err == nil && fi.IsDir() {
-		out = append(out, "GH_CONFIG_DIR="+filepath.Join(configHome, "gh"))
+	if gh == "" && configHome != "" {
+		if fi, err := os.Stat(filepath.Join(configHome, "gh")); err == nil && fi.IsDir() {
+			gh = "GH_CONFIG_DIR=" + filepath.Join(configHome, "gh")
+		}
 	}
 	// GIT_CONFIG_GLOBAL replaces ~/.gitconfig as well, so it is only set
 	// where that does not exist and the XDG one does.
-	gitXDG := filepath.Join(configHome, "git", "config")
-	if _, err := os.Stat(gitXDG); err == nil && home != "" {
-		if _, err := os.Stat(filepath.Join(home, ".gitconfig")); errors.Is(err, os.ErrNotExist) {
-			out = append(out, "GIT_CONFIG_GLOBAL="+gitXDG)
+	if git == "" && configHome != "" && home != "" {
+		gitXDG := filepath.Join(configHome, "git", "config")
+		if _, err := os.Stat(gitXDG); err == nil {
+			if _, err := os.Stat(filepath.Join(home, ".gitconfig")); errors.Is(err, os.ErrNotExist) {
+				git = "GIT_CONFIG_GLOBAL=" + gitXDG
+			}
+		}
+	}
+	var out []string
+	for _, kv := range []string{gh, git} {
+		if kv != "" {
+			out = append(out, kv)
 		}
 	}
 	return out
