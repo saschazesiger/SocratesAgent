@@ -1258,11 +1258,11 @@ func TestTerminalSlowReaderIsGivenUpOn(t *testing.T) {
 	}
 
 	// Random bytes, so that the socket's compression cannot fold them away,
-	// from a program every unix has - GNU's timeout and base64 -w are not on
-	// a Mac - and for as long as it takes. How much a loopback socket takes in
-	// before its writer blocks is the system's to decide, and Linux and macOS
-	// size and grow it differently, so the output goes on until the server
-	// has given up on the viewer, or until the deadline says it never will.
+	// from a program every unix has - a Mac has no timeout(1) - and for as
+	// long as it takes. How much a loopback socket takes in before its writer
+	// blocks is the system's to decide, and Linux and macOS size and grow it
+	// differently, so the output goes on until the server has given up on the
+	// viewer, or until the deadline says it never will.
 	fast.send(1, "od -An -tx1 /dev/urandom\r")
 	start := time.Now()
 	deadline := start.Add(20 * time.Second)
