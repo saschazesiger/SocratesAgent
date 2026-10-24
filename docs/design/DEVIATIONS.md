@@ -2886,7 +2886,14 @@ the four final audits (a desk, a phone, a deploy rehearsal, the real binaries) f
   ran; a limit's card stays the chat's newest word.
 - **A model "change" to the same model draws no line**: the CLI naming the alias's full id at a
   first turn or after a switch is not a change.
-- **A program that could not list its models** keeps the sheet's model field, for an id typed
-  in or nothing (its own default); Admin says so in words, the program's error behind the "i".
+- **A program that could not list its models** keeps the sheet's model field, a plain one with
+  no list's arrow, for an id typed in or nothing (its own default); Admin says so in words, the
+  program's error behind the "i".
+- **A question stands where it was asked.** An ask that names its tool part (`part_id`, §10 of
+  AGENT-HOST.md) is drawn at that call inside the answer, and its own timeline entry draws
+  nothing; one that names none cuts its turn's answers where they were, and what they say after
+  it is drawn under its card (`chatfold.js` `cutAtAsk`). The reply to a question is never above
+  it, and Copy and the "i" go under the last piece that says anything.
+- **Costs lists a chat once**, whatever accounts it ran on; the Account table splits its spend.
 - **Read aloud needs a Text-to-Speech key** and says so before anything is sent
   (`/api/preferences` `tts`), as dictation, Status and naming do for OpenRouter's.
