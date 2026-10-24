@@ -9258,135 +9258,106 @@ async function askInProse(s, id) {
   return awaitDigest(s, id, (d) => d.phase === 'ready' && !!d.question && d.question.source === 'text', 25000);
 }
 
-// home-kinds: every kind of question the dialog answers, end to end - a
-// multi-select, a menu of two tabs with its review, a plan sent back and then
-// approved, and a question asked in prose whose "Finished" notification opens
-// the dialog.
+// home-kinds: the kinds of question a chat asks, from Home. A multi-select
+// whose taps toggle; two questions walked with Next and Back, each keeping
+// its choice; and a plan, which is not a question for the dialog: its card in
+// the chat answers it, sent back with a note and then approved. (A question
+// asked in prose was read off a terminal's screen; a chat's questions are
+// its agent's own calls, so there is no such kind.)
 async function homekinds() {
-  const { s, stub } = await homeServer();
+  const s = await homeChats();
   try {
-    const several = await makeAgent(s, 'Several at once');
-    const tabs = await makeAgent(s, 'Two tabs');
-    const planner = await makeAgent(s, 'Has a plan');
-    const prose = await makeAgent(s, 'Asks in prose');
     await awaitHome(s.page, (h) => h.shown, 10000);
+    const FEATURES = {
+      id: 'features', header: 'Features', question: 'Which features should ship first?', kind: 'multi',
+      options: [{ id: 'dark', label: 'Dark mode' }, { id: 'export', label: 'Export' }, { id: 'search', label: 'Search' }],
+    };
+    const COLOUR = {
+      id: 'colour', header: 'Colour', question: 'Which colour should the button be?', kind: 'single',
+      options: [{ id: 'red', label: 'Red' }, { id: 'blue', label: 'Blue' }],
+    };
 
     // A multi-select: taps toggle, and Send gives all that are on.
-    tmuxType(s, several, '/question multi');
-    const multi = await awaitDigest(s, several, (d) => d.phase === 'ready' && !!d.question, 20000);
-    ok(!!multi && multi.question.source === 'menu' && multi.question.items.length === 1 && multi.question.items[0].multi,
-      'a multi-select question is read as one menu - never, in the moment before its status says waiting, as a question in prose', JSON.stringify(multi && [multi.question.source, multi.state, ...multi.question.items.map((i) => i.text + '/' + i.multi)]));
-    await awaitHome(s.page, (h) => h.rows.some((r) => r.id === several && r.answer), 10000);
-    await s.page.click('.so-home__card[data-id="' + several + '"] .so-home__answer');
-    await awaitSheet(s.page, (d) => !!d && d.options.length === 3, 10000);
-    for (const label of ['Dark mode', 'Export', 'Search', 'Search']) await s.page.click('.so-q-option[data-label="' + label + '"]');
-    const ticked = await sheetLook(s.page);
-    ok(ticked.options.filter((o) => o.pressed === 'true').map((o) => o.label).join(',') === 'Dark mode,Export' && !ticked.send.disabled,
-      'each tap toggles an option, and a second tap takes it off again', JSON.stringify(ticked.options.map((o) => o.label + '=' + o.pressed)));
-    await s.page.click('.so-q-send');
-    const first = await awaitAnswerLogged(s, 1, 40000);
-    ok(first[0] && first[0].answers[0].choices.join(',') === 'Dark mode,Export',
-      'the fake got both, ticked and submitted through its menu', JSON.stringify(first[0] ? first[0].answers
-        : { run: await answerRunOf(s, several), goal: operatorCalls(stub).map((c) => String(c.json.messages[0].content).split('Goal:').pop()).slice(-1) }));
-    ok(await sheetShut(s.page, 20000), 'and the dialog closes', 'shut');
+    const several = await askingChat(s, 'Several at once', { title: 'Release', questions: [FEATURES] });
+    await awaitHome(s.page, (h) => h.rows.some((r) => r.id === several.id && r.answer), 10000);
+    await s.page.click('.so-home__card[data-id="' + several.id + '"] .so-home__answer');
+    await awaitAsk(s.page, (d) => !!d && d.options.length === 3, 10000);
+    for (const id of ['dark', 'export', 'search', 'search']) await s.page.click('dialog.so-askdlg .so-q-option[data-option="' + id + '"]');
+    const ticked = await askLook(s.page);
+    ok(ticked.options.filter((o) => o.pressed === 'true').map((o) => o.id).join() === 'dark,export',
+      'each tap toggles an option, and a second tap takes it off again', JSON.stringify(ticked.options.map((o) => o.id + '=' + o.pressed)));
+    await s.page.click('dialog.so-askdlg [data-action="send"]');
+    const first = await returned(s, several.id, 20000);
+    ok(!!first && first.answers.features.selected.join() === 'dark,export', 'the agent got both',
+      JSON.stringify(first && first.answers.features));
+    ok(await askShut(s.page, 20000), 'and the dialog closes', 'shut');
 
-    // Two tabs: the first is answered by a second tap, the second by Send,
-    // and the operator submits the review.
-    tmuxType(s, tabs, '/question multiq');
-    const multiq = await awaitDigest(s, tabs, (d) => d.phase === 'ready' && !!d.question, 20000);
-    ok(!!multiq && multiq.question.items.length === 2, 'a menu of two tabs is read as two questions',
-      JSON.stringify(multiq && multiq.question.items.map((i) => i.header)));
-    await awaitHome(s.page, (h) => h.rows.some((r) => r.id === tabs && r.answer), 10000);
-    await s.page.click('.so-home__card[data-id="' + tabs + '"] .so-home__answer');
-    const one = await awaitSheet(s.page, (d) => !!d && d.question === COLOR_QUESTION, 10000);
-    ok(one.ok && /Question 1 of 2/.test(one.seen.step), 'the dialog says "Question 1 of 2"', one.seen && one.seen.step);
-    await s.page.click('.so-q-option[data-label="Blue"]');
-    await s.page.click('.so-q-option[data-label="Blue"]');
-    const two = await awaitSheet(s.page, (d) => !!d && d.question === FEATURES_QUESTION, 5000);
-    ok(two.ok && /Question 2 of 2/.test(two.seen.step), 'a second tap goes on to "Question 2 of 2"', two.seen && two.seen.step);
-    await s.page.click('.so-q-option[data-label="Search"]');
-    await s.page.click('.so-q-send');
-    const second = await awaitAnswerLogged(s, 2, 40000);
-    const both = (second[1] || {}).answers || [];
-    ok(both.length === 2 && both[0].choices.join(',') === 'Blue' && both[1].choices.join(',') === 'Search' && !second[1].declined,
-      'the fake got Blue and Search, and its review was submitted', JSON.stringify(both));
-    ok(await sheetShut(s.page, 20000), 'and the dialog closes', 'shut');
+    // Two questions: Next goes on, Back comes back to the choice made, and
+    // Send answers both.
+    const tabs = await askingChat(s, 'Two questions', { title: 'Release', questions: [COLOUR, FEATURES] });
+    await awaitHome(s.page, (h) => h.rows.some((r) => r.id === tabs.id && r.answer), 10000);
+    await s.page.click('.so-home__card[data-id="' + tabs.id + '"] .so-home__answer');
+    const one = await awaitAsk(s.page, (d) => !!d && d.question === COLOUR.question, 10000);
+    ok(one.ok && /Question 1 of 2/.test(one.seen.step) && one.seen.actions.includes('forward') && !one.seen.actions.includes('send'),
+      'the dialog says "Question 1 of 2", and offers Next rather than Send', JSON.stringify(one.seen && { step: one.seen.step, actions: one.seen.actions }));
+    await s.page.click('dialog.so-askdlg .so-q-option[data-option="blue"]');
+    await s.page.click('dialog.so-askdlg [data-action="forward"]');
+    const two = await awaitAsk(s.page, (d) => !!d && d.question === FEATURES.question, 5000);
+    ok(two.ok && /Question 2 of 2/.test(two.seen.step) && two.seen.actions.includes('send'),
+      'Next goes on to "Question 2 of 2", the last, which sends', JSON.stringify(two.seen && { step: two.seen.step, actions: two.seen.actions }));
+    await s.page.click('dialog.so-askdlg .so-q-option[data-option="search"]');
+    await s.page.click('dialog.so-askdlg [data-action="back"]');
+    const backAgain = await awaitAsk(s.page, (d) => !!d && d.question === COLOUR.question, 5000);
+    ok(backAgain.ok && backAgain.seen.options.find((o) => o.id === 'blue').pressed === 'true',
+      'Back comes back to the first question with its choice kept', JSON.stringify(backAgain.seen && backAgain.seen.options.map((o) => o.id + '=' + o.pressed)));
+    await s.page.click('dialog.so-askdlg [data-action="forward"]');
+    const kept = await awaitAsk(s.page, (d) => !!d && d.question === FEATURES.question, 5000);
+    ok(kept.ok && kept.seen.options.filter((o) => o.pressed === 'true').map((o) => o.id).join() === 'search',
+      'and the second keeps its own', JSON.stringify(kept.seen && kept.seen.options.map((o) => o.id + '=' + o.pressed)));
+    await s.page.click('dialog.so-askdlg [data-action="send"]');
+    const second = await returned(s, tabs.id, 20000);
+    ok(!!second && second.answers.colour.selected.join() === 'blue' && second.answers.features.selected.join() === 'search',
+      'the agent got Blue and Search', JSON.stringify(second && { colour: second.answers.colour.selected, features: second.answers.features.selected }));
+    ok(await askShut(s.page, 20000), 'and the dialog closes', 'shut');
 
-    // A plan sent back with feedback: the feedback goes in, the plan comes
-    // back revised, and nothing approves it but the person.
-    tmuxType(s, planner, '/question plan');
-    const plan = await awaitDigest(s, planner, (d) => d.phase === 'ready' && !!d.question, 20000);
-    ok(!!plan && plan.question.kind === 'plan', 'a plan approval is read as one', JSON.stringify(plan && plan.question.kind));
-    await awaitHome(s.page, (h) => h.rows.some((r) => r.id === planner && r.answer), 10000);
+    // A plan: Home counts it, and its Answer opens the chat at its card,
+    // which answers it. Sent back with a note, the agent keeps planning;
+    // the next plan is approved.
+    const planner = await makeChat(s, 'claude', { title: 'Has a plan' });
+    await tellChat(s, planner, '/plan');
+    const planAsk = await openAskOf(s, planner, 20000);
+    const counted = await awaitHome(s.page, (h) => h.counts.questions === 1 && h.rows.some((r) => r.id === planner && r.answer), 10000);
+    ok(planAsk.startsWith('plan_') && counted.ok, 'a plan waiting for approval is counted as a question',
+      JSON.stringify({ ask: planAsk, questions: counted.seen.counts.questions }));
     await s.page.click('.so-home__card[data-id="' + planner + '"] .so-home__answer');
-    await awaitSheet(s.page, (d) => !!d && d.question === PLAN_QUESTION && d.own, 10000);
-    // Read aloud says the plan too, after the question, as the dialog
-    // shows it.
-    const spoken = await stubSpeech(s.context);
-    await s.page.click('.so-q-read');
-    for (let i = 0; i < 50 && !spoken.length; i += 1) await wait(100);
-    const shownDetail = await s.page.locator('dialog.so-question .so-q-detail').first().textContent().catch(() => '');
-    ok(shownDetail.includes(PLAN_DETAIL) && !!spoken[0] && spoken[0].indexOf(PLAN_DETAIL) > spoken[0].indexOf(PLAN_QUESTION)
-      && spoken[0].includes(PLAN_QUESTION),
-      'Read aloud on a plan approval says the plan the dialog shows, after the question', JSON.stringify(spoken[0] || ''));
-    await s.context.unroute('**/api/voice/speak');
-    await s.page.fill('.so-q-own-field', 'Make it smaller');
-    await s.page.click('.so-q-send');
-    const sentBack = await awaitAnswerLogged(s, 3, 40000);
-    const feedback = sentBack[2] || {};
-    ok(feedback.kind === 'plan' && feedback.approved === false && feedback.answers && feedback.answers[0].text === 'Make it smaller',
-      'the feedback is typed on the plan’s own row and sends it back', JSON.stringify(feedback.answers));
-    const fedBack = await awaitRunEnd(s, planner, 30000);
-    ok(!!fedBack && fedBack.phase === 'done' && !fedBack.error, 'that run ends as answered, not as an error',
-      JSON.stringify(fedBack && { phase: fedBack.phase, error: fedBack.error }));
-    const revised = await awaitDigest(s, planner, (d) => d.phase === 'ready' && !!d.question && d.rev > plan.rev
-      && d.question.kind === 'plan', 30000);
-    ok(!!revised, 'the revised plan is a question again', JSON.stringify(revised && { rev: revised.rev, kind: revised.question.kind }));
-    await wait(3000);
-    ok(answersLogged(s).length === 3, 'and the operator did not approve the revised plan on its own',
-      JSON.stringify(answersLogged(s).slice(2).map((l) => ({ approved: l.approved, revision: l.revision }))));
-    const planShown = (d) => !!d && d.question === PLAN_QUESTION
-      && d.options.some((o) => o.label === 'Yes, and use auto mode' && !o.disabled);
-    const settledSheet = await awaitSheet(s.page, (d) => !d || planShown(d), 8000);
-    if (!settledSheet.seen) {
-      await awaitHome(s.page, (h) => h.rows.some((r) => r.id === planner && r.answer), 10000);
-      await s.page.click('.so-home__card[data-id="' + planner + '"] .so-home__answer');
-    }
-    const again = await awaitSheet(s.page, (d) => !!d && d.question === PLAN_QUESTION
-      && d.options.some((o) => o.label === 'Yes, and use auto mode' && !o.disabled), 15000);
-    ok(again.ok, 'the dialog shows the revised plan', JSON.stringify(again.seen && { q: again.seen.question, status: again.seen.status }));
-    await s.page.click('.so-q-option[data-label="Yes, and use auto mode"]');
-    await s.page.click('.so-q-send');
-    const approved = await awaitAnswerLogged(s, 4, 40000);
-    ok(approved[3] && approved[3].approved === true && approved[3].revision === 1 && approved[3].answers[0].choices[0] === 'Yes, and use auto mode',
-      'and the person’s Yes approves it', JSON.stringify(approved[3] && { approved: approved[3].approved, revision: approved[3].revision }));
-    await sheetShut(s.page, 20000);
-
-    // A question asked in prose: Home counts it, its notification says
-    // "Finished", and a tap on it opens the question all the same.
-    const read = await askInProse(s, prose);
-    ok(!!read && read.question.items[0].text === TEXT_QUESTION, 'a turn that ends on a question in prose is read as a question',
-      JSON.stringify(read && read.question));
-    const counted = await awaitHome(s.page, (h) => h.counts.questions === 1 && h.rows.some((r) => r.id === prose && r.answer), 10000);
-    ok(counted.ok, 'Home counts it under Questions, with an Answer button', JSON.stringify(counted.seen.counts));
-    await s.page.evaluate((target) => {
-      navigator.serviceWorker.dispatchEvent(new MessageEvent('message', { data: { t: 'open', id: target, kind: 'finished' } }));
-    }, prose);
-    const tapped = await awaitSheet(s.page, (d) => !!d && d.question === TEXT_QUESTION && d.own, 10000);
-    const stage = await homeLook(s.page);
-    ok(tapped.ok && stage.title !== 'Asks in prose', 'a tap on its "Finished" notification opens the question, not the terminal',
-      JSON.stringify({ q: tapped.seen && tapped.seen.question, title: stage.title }));
-    await s.page.fill('.so-q-own-field', 'Green, please');
-    await s.page.click('.so-q-send');
-    const typed = await awaitAnswerLogged(s, 5, 40000);
-    ok(typed[4] && typed[4].kind === 'text' && typed[4].answers[0].text === 'Green, please',
-      'the answer is typed on its prompt', JSON.stringify(typed[4] && typed[4].answers));
-    ok(await sheetShut(s.page, 20000), 'and the dialog closes', 'shut');
+    const opened = await s.page.waitForFunction((want) => location.hash.slice(1) === want
+      && !!document.querySelector('#chat .so-plan[data-decision="pending"] [data-action="plan-approve"]'), planner, { timeout: 15000 })
+      .then(() => true, () => false);
+    ok(opened && !(await askLook(s.page)), 'its Answer opens the chat at the plan’s card, not the dialog',
+      await s.page.evaluate(() => location.hash + ' ' + ((document.querySelector('#chat .so-plan') || {}).dataset || {}).decision));
+    await s.page.click('#chat .so-plan[data-decision="pending"] [data-action="plan-note"]');
+    await s.page.fill('#chat .so-plan [data-plan-note]', 'Make it smaller');
+    await s.page.click('#chat .so-plan [data-action="plan-send"]');
+    const sentBack = await awaitLog(s.page, 'Keeping on planning: Make it smaller', 20000);
+    const backed = await s.page.$$eval('#chat .so-plan', (cards) => cards.map((c) => c.dataset.decision));
+    ok(sentBack && backed.join() === 'keep_planning', 'Keep planning with a note sends the plan back with it',
+      JSON.stringify({ decisions: backed }));
+    await awaitChat(s, planner, (b) => idle(b), 20000);
+    await tellChat(s, planner, '/plan');
+    await s.page.waitForSelector('#chat .so-plan[data-decision="pending"] [data-action="plan-approve"]', { timeout: 20000 });
+    await s.page.click('#chat .so-plan[data-decision="pending"] [data-action="plan-approve"]');
+    const approved = await awaitLog(s.page, 'The plan was approved.', 20000);
+    await awaitChat(s, planner, (b) => idle(b) && (b.asks || []).length === 0, 20000);
+    const decided = await s.page.$$eval('#chat .so-plan', (cards) => cards.map((c) => c.dataset.decision));
+    ok(approved && decided.join() === 'keep_planning,approved', 'and Approve approves the next one',
+      JSON.stringify({ decisions: decided }));
+    await goHome(s.page);
+    const none = await awaitHome(s.page, (h) => h.shown && h.counts.questions === 0, 10000);
+    const states = ((await (await s.context.request.get(s.url + '/api/sessions')).json()).sessions || [])
+      .map((one) => one.title + '=' + (one.activity && one.activity.state));
+    ok(none.ok, 'with nothing left to answer', JSON.stringify({ questions: none.seen.counts.questions, states }));
     ok(unexpected(s.errors).length === 0, 'no console errors', unexpected(s.errors).join(' | ') || '0');
-  } finally {
-    await s.stop();
-    await stub.close();
-  }
+  } finally { await s.stop(); }
 }
 
 // home-unread: a question asked in prose that could not be read when the turn
@@ -11955,7 +11926,7 @@ const ALL = [
   ['home-opencode', 'an OpenCode chat’s questions from the dialog - ask_user with an option and an own answer, its own question tool - and a permission it allows itself', homeopencode],
   ['home-stream', 'with chats: a late list, a handshake that hangs, a refused upgrade and an offline Home', homestream],
   ['home-quiet', 'a tap on a stream that died quietly, chats’ questions polled across a restart, a long hide, a naming cut off, a server never reached', homequiet],
-  ['home-kinds', 'a multi-select, two tabs and their review, a plan sent back and approved, and a question in prose', homekinds],
+  ['home-kinds', 'a multi-select, two questions walked with Next and Back, and a plan answered by its card: sent back, then approved', homekinds],
   ['home-unread', 'a question in prose whose read failed, or had no key, is read on the open Home once it can be', homeunread],
   ['home-honest', 'ages by the server\u2019s clock, a dialog that says it is offline, and a compressed poll', homehonest],
   ['home-language', 'a question read in German off an English screen: two tabs that share Yes and No, each given its own answer', homelanguage],
