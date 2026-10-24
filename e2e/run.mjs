@@ -9581,48 +9581,50 @@ async function homelanguage() {
   }
 }
 
-// home-restart: a server restart under an open dialog. Every question stays
-// counted and in the walk, nothing is said to be answered elsewhere, a choice
-// made before it still goes in after it, a question asked in prose comes back,
-// and every question keeps how long it has been waiting.
+// home-restart: a server restart under an open dialog. Every chat's question
+// stays counted and in the walk, nothing is said to be answered elsewhere, a
+// choice made before it still goes in after it, and every question keeps how
+// long it has been waiting. (A question asked in prose and answered at the
+// terminal while the server was down has no chat counterpart: a chat's
+// question is answered through the server, and its journal brings it back
+// whole.)
 async function homerestart() {
-  const { s, stub, ctl } = await homeServer();
+  const s = await homeChats();
   try {
-    const db = await makeAgent(s, 'Pick a database');
-    const cache = await makeAgent(s, 'Pick a cache');
-    const prose = await makeAgent(s, 'Asks in prose');
     await awaitHome(s.page, (h) => h.shown, 10000);
-    await askQuestion(s, db);
+    const db = await askingChat(s, 'Pick a database');
     await wait(1200);
-    await askQuestion(s, cache);
-    const read = await askInProse(s, prose);
+    const cache = await askingChat(s, 'Pick a cache', askFor('Which cache should we use?', ['Redis', 'Memcached']));
+    await wait(1200);
+    const queue = await askingChat(s, 'Pick a queue', askFor('Which queue should we use?', ['Kafka', 'NATS']));
+    const ids = [db.id, cache.id, queue.id];
     const all = await awaitHome(s.page, (h) => h.counts.questions === 3 && h.conn === 'live', 15000);
-    ok(all.ok && !!read, 'two menus and a question in prose are counted', JSON.stringify(all.seen.counts));
-    const sinceOf = async () => Object.fromEntries(await Promise.all([db, cache, prose]
+    ok(all.ok, 'three chats’ questions are counted', JSON.stringify(all.seen.counts));
+    const sinceOf = async () => Object.fromEntries(await Promise.all(ids
       .map(async (id) => [id, ((await sessionRow(s, id)).activity || {}).since || 0])));
     const before = await sinceOf();
     await wait(2500);
 
-    await s.page.click('.so-home__questions');
-    const opened = await awaitSheet(s.page, (d) => !!d && d.options.length === 2 && d.counter === '1 of 3', 10000);
-    ok(opened.ok && opened.seen.session === 'Pick a database', 'the dialog walks all three, oldest first', JSON.stringify(opened.seen && { c: opened.seen.counter, s: opened.seen.session }));
-    await s.page.click('.so-q-option[data-label="SQLite"]');
+    await s.page.click('.so-home__q-action');
+    const opened = await awaitAsk(s.page, (d) => !!d && d.options.length === 2 && /1 of 3$/.test(d.top), 10000);
+    ok(opened.ok && opened.seen.session === 'Pick a database', 'the dialog walks all three, oldest first',
+      JSON.stringify(opened.seen && { top: opened.seen.top, s: opened.seen.session }));
+    await s.page.click('dialog.so-askdlg .so-q-option[data-option="sqlite"]');
     await s.page.evaluate(() => {
       window.__line = [];
       const snap = () => {
         const home = document.getElementById('home');
         const count = home.querySelector('.so-home__questions');
         const conn = home.querySelector('.so-home__conn');
-        const dialog = document.querySelector('dialog.so-question');
-        const status = dialog && dialog.querySelector('.so-q-status:not([hidden])');
-        const note = dialog && dialog.querySelector('.so-q-note');
+        const dialog = document.querySelector('dialog.so-askdlg');
+        const text = (sel) => ((dialog && dialog.querySelector(sel)) || {}).textContent || '';
         const line = JSON.stringify({
           q: count ? Number(count.dataset.value) : -1,
           conn: conn ? conn.dataset.status : '',
           open: !!dialog && dialog.open,
-          counter: dialog ? ((dialog.querySelector('.so-q-counter') || {}).textContent || '') : '',
-          said: [status ? status.textContent.trim() : '', note ? note.textContent.trim() : '',
-            ((dialog && dialog.querySelector('.so-q-finished-title')) || {}).textContent || ''].filter(Boolean).join(' / '),
+          counter: text('.so-q-top-title').trim(),
+          said: [text('.so-q-status'), text('.so-q-finished .ds-empty__title'), text('.so-refused')]
+            .map((t) => t.replace(/\s+/g, ' ').trim()).filter(Boolean).join(' / '),
         });
         if (window.__line[window.__line.length - 1] !== line) window.__line.push(line);
       };
@@ -9633,72 +9635,34 @@ async function homerestart() {
 
     await s.restart();
     const back = await awaitHome(s.page, (h) => h.conn === 'live' && h.counts.questions === 3, 30000);
-    await awaitDigest(s, db, (d) => d.phase === 'ready' && !!d.question, 20000);
-    await awaitDigest(s, prose, (d) => d.phase === 'ready' && !!d.question && d.question.source === 'text', 20000);
     await wait(5000);
     const lines = (await s.page.evaluate(() => { clearInterval(window.__lineTimer); return window.__line.slice(); })).map((l) => JSON.parse(l));
     const show = (l) => 'Q=' + l.q + ' ' + l.conn + ' ' + (l.open ? l.counter + ' ' + l.said : 'closed');
     ok(back.ok, 'after the restart Home is live and counts all three again', JSON.stringify(back.seen.counts));
     const dropped = lines.filter((l) => l.conn === 'live' && l.q < 3);
-    ok(!dropped.length, 'a live Home counts every question all through the restart, the one asked in prose too, while the new server reads them again',
+    ok(!dropped.length, 'a live Home counts every question all through the restart',
       (dropped.length ? dropped.map(show) : lines.map(show)).slice(0, 12).join(' > '));
-    const told = lines.filter((l) => !l.open || /answered elsewhere|No question is waiting/.test(l.said));
+    const told = lines.filter((l) => !l.open || /another device|Nothing is waiting|not taken/.test(l.said));
     ok(!told.length && lines.every((l) => !l.counter || /of 3$/.test(l.counter)),
-      'the dialog stays open on the walk, and keeps all three in it, and never says the waiting questions went', (told.length ? told : lines).map(show).slice(0, 12).join(' > '));
-    const now = await awaitHome(s.page, (h) => h.counts.questions === 3, 20000);
-    ok(now.ok, 'the question asked in prose is read again and counted', JSON.stringify(now.seen.counts));
+      'the dialog stays open on the walk, keeps all three in it, and never says the waiting questions went',
+      (told.length ? told : lines).map(show).slice(0, 12).join(' > '));
     const after = await sinceOf();
-    ok([db, cache, prose].every((id) => before[id] > 0 && after[id] === before[id]),
-      'every question keeps the time it started waiting', JSON.stringify([db, cache, prose].map((id) => [before[id], after[id]])));
+    ok(ids.every((id) => before[id] > 0 && after[id] === before[id]),
+      'every question keeps the time it started waiting', JSON.stringify(ids.map((id) => [before[id], after[id]])));
 
-    const look = await awaitSheet(s.page, (d) => !!d && d.session === 'Pick a database' && d.send && !d.send.disabled, 10000);
-    ok(look.ok && look.seen.options.find((o) => o.label === 'SQLite').pressed === 'true',
-      'the choice made before the restart is still chosen', JSON.stringify(look.seen && look.seen.options.map((o) => o.label + '=' + o.pressed)));
-    await s.page.click('.so-q-send');
-    const logged = await awaitAnswerLogged(s, 1, 40000);
-    ok(logged[0] && logged[0].answers[0].choices.join(',') === 'SQLite', 'and Send gives it', JSON.stringify(logged[0] && logged[0].answers));
-    await s.page.click('.so-q-close').catch(() => {});
-    await sheetShut(s.page, 5000);
-
-    // A question in prose answered at the machine while the server is down,
-    // and the new server slow to read it again: the question the page held
-    // is not offered as live meanwhile - no Answer button, "Checking whether
-    // it still asks…" - and once read it is no longer counted.
-    const downAnswered = await makeAgent(s, 'Answered while down');
-    // Every session listed, so that the row stays in the list once it no
-    // longer asks.
-    await s.page.click('.so-home__seg[data-filter="all"]');
-    await askInProse(s, downAnswered);
-    const offered = await awaitHome(s.page, (h) => h.rows.some((r) => r.id === downAnswered && r.answer && /^Asks/.test(r.summary)), 15000);
-    let slowReads = false;
-    ctl.digest = async (prompt) => {
-      if (slowReads && calledAs(prompt) === 'Answered while down') await wait(4000);
-      return undefined;
-    };
-    slowReads = true;
-    await s.restart({}, async () => { tmuxType(s, downAnswered, 'Blue'); await wait(2500); });
-    const story = [];
-    let settled = null;
-    for (const until = Date.now() + 40000; Date.now() < until;) {
-      const h = await homeLook(s.page);
-      const row = h.rows.find((r) => r.id === downAnswered);
-      const meta = await s.page.$eval('.so-home__card[data-id="' + downAnswered + '"] .so-home__card-status', (n) => n.textContent).catch(() => '');
-      story.push({ conn: h.conn, answer: !!row && row.answer, summary: (row ? row.summary : '') + ' · ' + meta });
-      if (h.conn === 'live' && row && !row.answer && !/Asks|Checking whether/.test(row.summary + meta)) { settled = h; break; }
-      await wait(150);
-    }
-    const liveOffered = story.filter((l) => l.conn === 'live' && l.answer);
-    const compact = story.map((l) => l.conn + (l.answer ? '|A ' : ' ') + l.summary)
-      .filter((l, i, all) => all[i - 1] !== l);
-    ok(offered.ok && !!settled && !liveOffered.length && story.some((l) => l.conn === 'live' && /Checking whether it still asks/.test(l.summary)),
-      'a question in prose answered while the server was down is shown as being checked, with no Answer, until it is read - and then no longer asks',
-      (offered.ok ? '' : 'never offered before the restart: ' + JSON.stringify((offered.seen.rows || []).find((r) => r.id === downAnswered)) + ' ') + compact.slice(0, 10).join(' > '));
+    const look = await awaitAsk(s.page, (d) => !!d && d.session === 'Pick a database' && d.actions.includes('send'), 10000);
+    ok(look.ok && look.seen.options.find((o) => o.id === 'sqlite').pressed === 'true',
+      'the choice made before the restart is still chosen', JSON.stringify(look.seen && look.seen.options.map((o) => o.id + '=' + o.pressed)));
+    await s.page.click('dialog.so-askdlg [data-action="send"]');
+    const got = await returned(s, db.id, 30000);
+    ok(!!got && got.answers.db.selected.join() === 'sqlite', 'and Send gives it', JSON.stringify(got && got.answers.db));
+    const walked = await awaitAsk(s.page, (d) => !!d && d.session === 'Pick a cache' && /2 of 3$/.test(d.top), 10000);
+    ok(walked.ok, 'and the walk goes on to the next', JSON.stringify(walked.seen && { top: walked.seen.top, s: walked.seen.session }));
+    await s.page.click('dialog.so-askdlg [data-action="close"]').catch(() => {});
+    await askShut(s.page, 5000);
     ok(unexpected(s.errors, RESTART_NOISE).length === 0, 'no unexpected console errors',
       unexpected(s.errors, RESTART_NOISE).join(' | ') || '0');
-  } finally {
-    await s.stop();
-    await stub.close();
-  }
+  } finally { await s.stop(); }
 }
 
 // home-devices: two devices on one question. The dialog on the second follows
@@ -11945,7 +11909,7 @@ const ALL = [
   ['home-unread', 'a question in prose whose read failed, or had no key, is read on the open Home once it can be', homeunread],
   ['home-honest', 'ages by the server\u2019s clock, a dialog that says it is offline, an answer saved offline, and a compressed poll', homehonest],
   ['home-language', 'a question read in German off an English screen: two tabs that share Yes and No, each given its own answer', homelanguage],
-  ['home-restart', 'a server restart under an open dialog: every question kept, its choice, its age, and the one asked in prose', homerestart],
+  ['home-restart', 'a server restart under an open dialog: every chat\u2019s question kept in the walk, its choice and its age', homerestart],
   ['home-devices', 'two devices on one question: the second follows the first\u2019s answer, and is told when its Send crossed it', homedevices],
   ['home-followup', 'a follow-up asked right after the answer, slower to read than "Answered" lasts', homefollowup],
   ['livesession', 'one real session against the real Claude Code CLI', livesession, { live: true }],
