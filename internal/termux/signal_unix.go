@@ -25,3 +25,7 @@ func signalByName(name string) int {
 	}
 	return int(unix.SignalNum(name))
 }
+
+// sendSIGCHLD tells a process that a child of its has changed state. It is
+// how collectExits makes the tmux server reap a child it missed.
+func sendSIGCHLD(pid int) error { return unix.Kill(pid, unix.SIGCHLD) }

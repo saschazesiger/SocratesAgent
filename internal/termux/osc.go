@@ -3,6 +3,7 @@ package termux
 import (
 	"fmt"
 	"io"
+	"strconv"
 )
 
 // The colours the generated tmux configuration paints a window in. The
@@ -33,8 +34,10 @@ const (
 // Measured on tmux 3.6, an attach asks a client six things: the theme mode
 // (CSI ? 996 n), the two colours (OSC 10 and OSC 11), what terminal it is
 // (DA1, DA2, XTVERSION) and how big the text area is in cells and in pixels
-// (CSI 18 t, CSI 14 t). Every one of them is answered here, for one reason
-// that matters more than the round trip it saves.
+// (CSI 18 t, CSI 14 t). tmux 3.8 adds a seventh, whether the terminal can
+// synchronize its output (DECRQM, CSI ? 2026 $ p). Every one of them is
+// answered here, for one reason that matters more than the round trip it
+// saves.
 //
 // A reply is only a reply while the terminal is still waiting for it. tmux
 // stops waiting a fraction of a second after the attach; a reply that arrives
@@ -75,7 +78,11 @@ const (
 	queryTextCells    // CSI 18 t
 	queryTextPixels   // CSI 14 t
 	queryCursorReport // CSI 6 n
+	queryMode         // CSI ? Pd $ p
 )
+
+// syncMode is the private mode for synchronized output.
+const syncMode = 2026
 
 // Filter answers every recognised query in p and returns p without them.
 //
@@ -111,18 +118,31 @@ func (r *Responder) Filter(p []byte) []byte {
 			out = append(out, data[i])
 			i++
 		default:
-			r.answer(kind)
+			r.answer(kind, data[i:i+n])
 			i += n
 		}
 	}
 	return out
 }
 
-func (r *Responder) answer(kind queryKind) {
+func (r *Responder) answer(kind queryKind, query []byte) {
 	if r.W == nil {
 		return
 	}
 	switch kind {
+	case queryMode:
+		// DECRPM. tmux asks about one mode, synchronized output, and enables
+		// it for any answer of 1, 2 or 3. xterm.js implements it, and until
+		// a program sets it answers 2 - recognised, and reset - so that is
+		// the answer: tmux then wraps its redraws in synchronized updates,
+		// as it would for the browser itself. A mode this does not know is
+		// answered the way tmux answers one for a pane: 0, not recognised.
+		mode, _ := strconv.Atoi(string(query[3 : len(query)-2]))
+		state := 0
+		if mode == syncMode {
+			state = 2
+		}
+		fmt.Fprintf(r.W, "\x1b[?%d;%d$y", mode, state)
 	case queryForeground:
 		fmt.Fprintf(r.W, "\x1b]10;%s\x1b\\", rgbString(r.colour(r.Foreground, DefaultForeground)))
 	case queryBackground:
@@ -182,6 +202,9 @@ func matchQuery(s []byte) (int, queryKind) {
 	if n, kind := matchOSC(s, "\x1b]11;?", queryBackground); kind != queryNone {
 		return n, kind
 	}
+	if n, kind := matchModeQuery(s); kind != queryNone {
+		return n, kind
+	}
 	for _, q := range []struct {
 		seq  string
 		kind queryKind
@@ -229,6 +252,30 @@ func matchOSC(s []byte, head string, kind queryKind) (int, queryKind) {
 	return len(head) + 2, kind
 }
 
+// matchModeQuery matches a request for the state of a private mode, CSI ? Pd
+// $ p. A mode number has at most five digits, which keeps the longest partial
+// one well inside maxQuery.
+func matchModeQuery(s []byte) (int, queryKind) {
+	const head = "\x1b[?"
+	if n, k := matchExact(s, head, queryMode); k != queryMode {
+		return n, k
+	}
+	i := len(head)
+	for ; i < len(s) && i < len(head)+5 && s[i] >= '0' && s[i] <= '9'; i++ {
+	}
+	switch {
+	case i == len(s):
+		return 0, queryPartial
+	case i == len(head) || s[i] != '$':
+		return 0, queryNone
+	case i+1 == len(s):
+		return 0, queryPartial
+	case s[i+1] != 'p':
+		return 0, queryNone
+	}
+	return i + 2, queryMode
+}
+
 // matchExact reports a full match of want, or that s is a prefix of it and may
 // yet become one.
 func matchExact(s []byte, want string, kind queryKind) (int, queryKind) {
@@ -258,11 +305,12 @@ func matchExact(s []byte, want string, kind queryKind) (int, queryKind) {
 //
 // It is deliberately exact. Only well formed reports are dropped - a device
 // attributes reply, a window report with its three numbers, a cursor position
-// report, an XTVERSION reply - and everything else, every key and every
-// pasted byte, is passed through untouched. The one keystroke this cannot
-// tell apart from a report is shift with F3 under xterm's modified function
-// key encoding, which is the same CSI 1 ; 2 R a cursor at the top left would
-// send, and a corrupted command line is the worse of the two to keep.
+// report, a mode report with its mode and state, an XTVERSION reply - and
+// everything else, every key and every pasted byte, is passed through
+// untouched. The one keystroke this cannot tell apart from a report is shift
+// with F3 under xterm's modified function key encoding, which is the same
+// CSI 1 ; 2 R a cursor at the top left would send, and a corrupted command
+// line is the worse of the two to keep.
 //
 // Bracketed paste is respected: between ESC [ 200 ~ and ESC [ 201 ~ the bytes
 // are somebody's text rather than a terminal talking, and text is delivered as
@@ -317,12 +365,14 @@ func matchReply(s []byte) int {
 	return matchVersionReply(s)
 }
 
-// matchCSIReply covers the three CSI shaped reports:
+// matchCSIReply covers the CSI shaped reports:
 //
 //	ESC [ ? <params> c    the primary device attributes
 //	ESC [ > <params> c    the secondary device attributes
 //	ESC [ <n;n;n> t       a window report
 //	ESC [ <n;n> R         a cursor position report
+//	ESC [ ? <n;n> $ y     a private mode report (DECRPM)
+//	ESC [ <n;n> $ y       an ANSI mode report
 func matchCSIReply(s []byte) int {
 	if len(s) < 3 || s[1] != '[' {
 		return 0
@@ -365,6 +415,13 @@ func matchCSIReply(s []byte) int {
 			return 0
 		}
 		return i + 1
+	case '$':
+		// A mode and its state. rxvt ends its shifted editing keys in a
+		// dollar sign, with one number and no y, and none of them is this.
+		if private == '>' || params != 2 || i+1 >= len(s) || s[i+1] != 'y' {
+			return 0
+		}
+		return i + 2
 	}
 	return 0
 }

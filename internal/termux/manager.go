@@ -408,11 +408,28 @@ func (m *Manager) Create(ctx context.Context, spec Spec) (*store.Session, error)
 		row.State, row.FailReason = store.StateFailed, Stderr(err)
 		return row, err
 	}
-	if err := m.st.SetSessionState(row.ID, store.StateRunning, -1, ""); err != nil {
+	if err := m.markLaunched(row.ID, store.StateStarting); err != nil {
 		return row, err
 	}
-	row.State = store.StateRunning
-	return row, nil
+	return m.st.GetSession(row.ID)
+}
+
+// markLaunched records that a launch is done: the row goes to running, but
+// only from the state it was in while the program was being started. A
+// program that ends at once - a typo, a missing binary, a crash on start -
+// can be reported by its pane-died hook while the launch is still applying
+// the size policy and the journal, and the unconditional write this used to
+// be put the row back to running over the exit the hook had just recorded:
+// the browser was shown the exit, the row said running, and the next poll
+// recorded the exit again and showed it a second time.
+func (m *Manager) markLaunched(id, from string) error {
+	err := m.st.SetSessionStateFrom(id, from, store.StateRunning, -1, "")
+	if errors.Is(err, store.ErrNotFound) {
+		// The row moved on while the program was being started, and what
+		// moved it is newer news than this.
+		return nil
+	}
+	return err
 }
 
 // ErrNotStarted is the refusal to open, resume, restart or journal a session
@@ -509,7 +526,7 @@ func (m *Manager) StartPrestart(ctx context.Context, spec Spec) (*store.Session,
 		}
 		return current, err
 	}
-	if err := m.st.SetSessionState(row.ID, store.StateRunning, -1, ""); err != nil {
+	if err := m.markLaunched(row.ID, store.StateStarting); err != nil {
 		return &row, err
 	}
 	return m.st.GetSession(row.ID)
@@ -568,7 +585,7 @@ func (m *Manager) Relaunch(ctx context.Context, row *store.Session, plan harness
 	// had derived about this session is about to be wrong. The unread mark is
 	// kept, because work that finished before the restart is still unread.
 	m.ResetActivity(row.ID)
-	return m.st.SetSessionState(row.ID, store.StateRunning, -1, "")
+	return m.markLaunched(row.ID, row.State)
 }
 
 // paneState is what tmux can say about the session behind one row.
@@ -851,14 +868,28 @@ func (m *Manager) attachJournal(ctx context.Context, id, tmuxName string) error 
 	if m.cfg.SocratesBin == "" {
 		return nil
 	}
-	cmd := PipeCommand(m.cfg.SocratesBin, JournalPath(m.cfg.DataDir, id),
-		m.cfg.JournalMaxBytes, m.cfg.JournalKeep)
-	_, err := m.tmux.Run(ctx, "pipe-pane", "-t", tmuxName, cmd)
+	// A sink never makes its journal (see journalSink), so it is made here,
+	// for a session that is known to be there: one adopted after a restore has
+	// none, because backups leave journals out. Its directory is not made - a
+	// session without one is not ours to bring back.
+	path := JournalPath(m.cfg.DataDir, id)
+	journal, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		return err
+	}
+	if err := journal.Close(); err != nil {
+		return err
+	}
+	cmd := PipeCommand(m.cfg.SocratesBin, path, m.cfg.JournalMaxBytes, m.cfg.JournalKeep)
+	_, err = m.tmux.Run(ctx, "pipe-pane", "-t", tmuxName, cmd)
 	if err != nil && strings.Contains(strings.ToLower(Stderr(err)), "pane has exited") {
 		// The program ended before the pipe could be attached. There is
 		// nothing left to journal, and a session whose program exited at once
-		// is an exit to report, not a session that failed to start.
+		// is an exit to report, not a session that failed to start. Its hook
+		// reports it, once tmux has the status - and an exit this early is
+		// the one tmux up to 3.5 can fail to collect; see collectExits.
 		m.logf("session %s ended before its journal could be attached", id)
+		m.collectExits(ctx)
 		return nil
 	}
 	return err

@@ -217,8 +217,11 @@ func TestTransientPollFailureDoesNotResume(t *testing.T) {
 func TestPollReportsADeadPane(t *testing.T) {
 	l := newLab(t)
 	row := l.create(shellSpec(t.TempDir(), "/bin/sh", "-c", "exit 9"))
+	// Dead, and with its status: up to tmux 3.6 a pane is dead a moment
+	// before tmux knows how its program ended, and a poll in that moment
+	// rightly leaves the row alone.
 	waitFor(t, 10*time.Second, "the pane to die", func() bool {
-		return l.tmuxOut("list-panes", "-t", row.TmuxName, "-F", "#{pane_dead}") == "1"
+		return l.tmuxOut("list-panes", "-t", row.TmuxName, "-F", "#{pane_dead}:#{pane_dead_status}") == "1:9"
 	})
 	// Undo whatever the hook already recorded, so that the poll is the only
 	// thing that can put it back.
@@ -232,6 +235,43 @@ func TestPollReportsADeadPane(t *testing.T) {
 	}
 	if got.State != store.StateExited || got.ExitStatus != 9 {
 		t.Fatalf("the poll left the session at %q with status %d", got.State, got.ExitStatus)
+	}
+}
+
+// TestPollWaitsForTheExitStatus: a pane tmux shows as dead before it knows
+// how the program ended used to be recorded as exited -1, and the browser was
+// told "exited -1" before the hook brought the real status, or for good when
+// tmux had lost the SIGCHLD. The poll leaves it to the hook and to the next
+// poll, and says so, so that the caller can make tmux collect it.
+func TestPollWaitsForTheExitStatus(t *testing.T) {
+	exits := make(chan int, 4)
+	l := newLab(t, func(c *Config) {
+		c.OnExit = func(id string, status int) { exits <- status }
+	})
+	row := l.create(shellSpec(t.TempDir(), "/bin/sh"))
+	rows, err := l.store.ListSessions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !l.applyPanes(rows, parsePanes(row.TmuxName+"|1|||0|/")) {
+		t.Fatal("a dead pane without a status was not reported as unreaped")
+	}
+	if got, _ := l.store.GetSession(row.ID); got.State != store.StateRunning {
+		t.Fatalf("a dead pane without a status put the session at %q with status %d", got.State, got.ExitStatus)
+	}
+	select {
+	case status := <-exits:
+		t.Fatalf("an exit with status %d was announced before tmux knew the status", status)
+	default:
+	}
+	if l.applyPanes(rows, parsePanes(row.TmuxName+"|1|7||0|/")) {
+		t.Fatal("a dead pane with its status was reported as unreaped")
+	}
+	if got, _ := l.store.GetSession(row.ID); got.State != store.StateExited || got.ExitStatus != 7 {
+		t.Fatalf("the session is %q with status %d, want exited with 7", got.State, got.ExitStatus)
+	}
+	if status := <-exits; status != 7 {
+		t.Fatalf("the exit was announced with status %d, want 7", status)
 	}
 }
 
