@@ -454,6 +454,25 @@ func TestErrorsPermissionsAndQuestions(t *testing.T) {
 	}
 }
 
+// The error OpenCode repeats after a failed turn's session.idle comes after
+// the idle has posted the next message (2 ms after it from OpenCode 1.19.4,
+// research/05 §2.3), and may come once that message's turn began - here 200
+// ms into a turn of 600. It is the failed turn's: the next turn completes,
+// and the error is said once.
+func TestARepeatedErrorDoesNotFailTheNextTurn(t *testing.T) {
+	r := newRig(t)
+	r.env = append(r.env, "FAKEOPENCODE_REPEAT_LAG_MS=200")
+	r.mustStart("")
+	r.send("/error")
+	r.send("/sleep 0.6")
+	if got := r.waitTurns(2); got[0] != agent.OutcomeFailed || got[1] != agent.OutcomeCompleted {
+		t.Fatalf("outcomes %v", got)
+	}
+	if n := r.rec.count(agent.TypeError, nil); n != 1 {
+		t.Fatalf("%d errors", n)
+	}
+}
+
 func TestShellLinesCommandsAndCompaction(t *testing.T) {
 	r := newRig(t)
 	r.mustStart("")

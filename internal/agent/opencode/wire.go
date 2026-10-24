@@ -64,6 +64,7 @@ func (e *ocError) text() string {
 const (
 	errAborted      = "MessageAbortedError"
 	errProviderAuth = "ProviderAuthError"
+	errUnknown      = "UnknownError"
 )
 
 type ocMessage struct {

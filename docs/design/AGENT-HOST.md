@@ -692,7 +692,9 @@ A `!line` is `POST /shell`. Turn outcome: `limited` (a `retry` status with `acti
 then aborted, or a 429), else `interrupted` (`MessageAbortedError`), else `failed` (any other error;
 `error{code: auth}` for 401/ProviderAuthError with "sign in again"), else `completed`. The
 `session.error` OpenCode 1.19.4 repeats after a failed turn's `session.idle` (the rejected prompt,
-with a stack trace) is dropped: the turn's error and end said it. Other
+with a stack trace) is dropped: the turn's error and end said it. It comes after the idle posted
+the next queued message, and may come once that message's turn began, so it is known by what it
+says (`UnknownError` "`<name>: <the turn's error>\n    at …`"), not by whether a turn runs. Other
 retries: `notice{retry}` per attempt. `permission.asked` → replied `always` + `notice{permission_allowed}`.
 `question.asked` (OpenCode's own tool, denied, should one still arrive) → `ask{ask_id:
 "ask_<que id>", source: question}`, answered by `POST /question/{id}/reply` with one list of labels
