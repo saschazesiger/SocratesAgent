@@ -93,30 +93,30 @@ type VSCodeOptions struct {
 	Common
 }
 
-// ClaudeOptions is the Claude Code launch surface: which binary, and what a
-// session starts on when it was started without a choice of its own. The
-// permission policy, the settings file, the theme and the environment are
-// fixed in internal/harnesses/claude.go.
+// ClaudeOptions is what Claude Code's chats are started with: which binary,
+// and the model and effort a chat starts on when it was started without a
+// choice of its own. The permission policy and the environment are fixed in
+// its adapter (internal/agent/claude).
 type ClaudeOptions struct {
 	Common
-	DefaultModel  string `json:"default_model"`  // --model
-	DefaultEffort string `json:"default_effort"` // --effort
+	DefaultModel  string `json:"default_model"`
+	DefaultEffort string `json:"default_effort"`
 }
 
-// CodexOptions is the Codex launch surface, on the same terms.
+// CodexOptions is the same for Codex's chats.
 type CodexOptions struct {
 	Common
-	DefaultModel  string `json:"default_model"`  // -m
-	DefaultEffort string `json:"default_effort"` // -c model_reasoning_effort
+	DefaultModel  string `json:"default_model"`
+	DefaultEffort string `json:"default_effort"`
 }
 
-// OpenCodeOptions is the OpenCode launch surface. There is no default effort
-// here because OpenCode has no reasoning-effort flag: the level a model runs
-// at is part of the model id it is chosen with, which is what the Models list
-// above already carries.
+// OpenCodeOptions is the same for OpenCode's chats. There is no default
+// effort here because OpenCode has no reasoning effort of its own: the level
+// a model runs at is part of the model id it is chosen with (provider/model),
+// which is what the Models list above already carries.
 type OpenCodeOptions struct {
 	Common
-	DefaultModel string `json:"default_model"` // -m provider/model
+	DefaultModel string `json:"default_model"`
 }
 
 // CodexEfforts is a closed list because Codex does not validate the value
