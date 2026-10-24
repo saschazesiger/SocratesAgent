@@ -292,35 +292,74 @@ func TestALimitHoldsTheQueueUntilASwitchOrAMessage(t *testing.T) {
 	r := newRig(t)
 	keyB := `OPENCODE_AUTH_CONTENT={"fake":{"type":"api","key":"KEY-B"}}`
 	r.mustStart("")
-	r.send("/limit")
-	r.send("/whoami")
-	if got := r.waitTurns(1); got[0] != agent.OutcomeLimited {
-		t.Fatalf("outcome %v", got)
+	r.queueBehindAQuestion("/limit", "/whoami")
+	if got := r.waitTurns(2); got[0] != agent.OutcomeCompleted || got[1] != agent.OutcomeLimited {
+		t.Fatalf("outcomes %v", got)
 	}
 	time.Sleep(500 * time.Millisecond)
-	if got := r.rec.turns(); len(got) != 1 {
+	if got := r.rec.turns(); len(got) != 2 {
 		t.Fatalf("the queue ran into the limit: %v", got)
 	}
 	if err := r.a.SwitchAccount(context.Background(), "b", append(append([]string{}, r.env...), keyB)); err != nil {
 		t.Fatal(err)
 	}
-	if got := r.waitTurns(2); got[1] != agent.OutcomeCompleted || r.lastText() != "account: fake:KEY-B (env)" {
+	if got := r.waitTurns(3); got[2] != agent.OutcomeCompleted || r.lastText() != "account: fake:KEY-B (env)" {
 		t.Fatalf("after the switch: %v %q", got, r.lastText())
 	}
 
-	r.send("/limit")
-	r.send("held one")
-	r.waitTurns(3)
+	r.queueBehindAQuestion("/limit", "held one")
+	if got := r.waitTurns(5); got[4] != agent.OutcomeLimited {
+		t.Fatalf("outcomes %v", got)
+	}
 	time.Sleep(300 * time.Millisecond)
-	if got := r.rec.turns(); len(got) != 3 {
+	if got := r.rec.turns(); len(got) != 5 {
 		t.Fatalf("the queue ran into the limit again: %v", got)
 	}
 	r.send("/whoami")
-	if got := r.waitTurns(5); got[3] != agent.OutcomeCompleted || got[4] != agent.OutcomeCompleted {
+	if got := r.waitTurns(7); got[5] != agent.OutcomeCompleted || got[6] != agent.OutcomeCompleted {
 		t.Fatalf("after a message: %v", got)
 	}
 	if r.lastText() != "account: fake:KEY-B (env)" {
 		t.Fatalf("the person's message did not come last: %q", r.lastText())
+	}
+}
+
+// queueBehindAQuestion sends texts while a turn waits on a question of
+// OpenCode's own, checks that each one is queued, and answers the question:
+// the first of them runs then, with the others queued behind it. Sent right
+// after it instead, a message can reach the adapter after the turn of the
+// first is over: the fake's limit ends that turn within milliseconds of its
+// post (the limit is seen, the adapter aborts, OpenCode goes idle), and a
+// message sent after a limited turn ended is the person going on, which lets
+// the hold go (AGENT-HOST.md §5.3).
+func (r *rig) queueBehindAQuestion(texts ...string) {
+	r.t.Helper()
+	asked := r.rec.count(agent.TypeAsk, nil)
+	r.send("/question")
+	for _, text := range texts {
+		id := r.send(text)
+		if _, ok := r.rec.first(agent.TypeMessageState, func(ev agent.Event) bool {
+			return ev.MessageID == id && ev.State == agent.MessageQueued
+		}); !ok {
+			r.t.Fatalf("%q is not queued behind the question", text)
+		}
+	}
+	var ask agent.Event
+	eventually(r.t, 10*time.Second, "the question", func() bool {
+		n := 0
+		r.rec.view(func(_ *agent.Projection, events []agent.Event) {
+			for _, ev := range events {
+				if ev.Type == agent.TypeAsk {
+					if n++; n == asked+1 {
+						ask = ev
+					}
+				}
+			}
+		})
+		return n > asked
+	})
+	if err := r.a.Answer(context.Background(), ask.AskID, json.RawMessage(`{"answers":{"q1":{"selected":["Red"]}}}`)); err != nil {
+		r.t.Fatal(err)
 	}
 }
 
