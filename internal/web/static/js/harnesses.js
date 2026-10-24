@@ -993,6 +993,13 @@ export async function openNewSessionSheet() {
     const chosen = sheet.querySelector('#nsForm input[type="radio"]:checked');
     if (chosen) chosen.setAttribute('autofocus', '');
     showOverlay(sheet);
+    // The form is drawn anew on every opening, but the sheet is one element
+    // and kept where its body was scrolled to: a sheet put away near its
+    // bottom opened again with the programs out of sight. Set once it is
+    // open: a closed sheet is not rendered on a phone, and a scroll set on
+    // it then is lost.
+    const body = sheet.querySelector('.ds-sheet__body');
+    if (body) body.scrollTop = 0;
   });
 }
 
