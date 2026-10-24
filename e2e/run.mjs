@@ -3673,16 +3673,16 @@ async function secondTab(s, id) {
   return page;
 }
 
-// A turn that takes a measurable amount of time, in the words each program
-// understands. The three fakes carry the real furniture and the real signals.
-// There is no shell here: a shell is never given a turn, so it has no status
-// to watch and nothing to wait for the end of.
+// keepBusy gives the Claude Code chat on screen a turn that takes a
+// measurable amount of time: fakeclaude's /slow streams for that long.
 async function keepBusy(page, ms) {
-  await typeLine(page, '/busy ' + ms);
+  await say(page, work('claude', ms / 1000));
 }
 
-// activityFor is one harness's whole story: it starts working and the row says
-// so, it finishes while nobody is looking, and the name goes bold.
+// activityFor is one agent's whole story, as a chat: it starts working and
+// the row says so, it finishes while nobody is looking, and the name goes
+// bold. The chat's journal is the source (REBUILD.md §7: busy is a turn
+// running), so this is the same story for all three agents.
 async function activityFor(harness) {
   const s = await start({ viewport: { width: 1280, height: 720 } });
   try {
@@ -3692,15 +3692,15 @@ async function activityFor(harness) {
     // A second session to stand on. "Finished and nobody saw it" is only a
     // fact about a row that is not the one being looked at.
     const other = await startSession(s.page, 'shell');
-    const id = await startSession(s.page, harness);
     await s.page.waitForSelector('#term .xterm', { timeout: 20000 });
+    const id = await startChat(s.page, harness);
 
     // Start from a row that is not already turning, or "it spins while it is
     // working" would be a measurement of the moment before.
     const settled = await awaitRow(s.page, id, (r) => !r.busy, 20000);
     ok(settled.ok, harness + ' settles into idle before it is given anything to do', took(settled));
 
-    await keepBusy(s.page, 8000);
+    await say(s.page, work(harness, 8));
     const spun = await awaitRow(s.page, id, (r) => r.busy, 8000);
     ok(spun.ok, 'the row spins while ' + harness + ' is working', took(spun));
     ok(!spun.seen || spun.seen.ring === null || spun.seen.ring.name === 'ds-spin',
@@ -3712,20 +3712,20 @@ async function activityFor(harness) {
     await clickRow(s.page, other);
     const done = await awaitRow(s.page, id, (r) => !r.busy && r.unread, 30000);
     ok(done.ok, 'it stops spinning and its name goes bold when the turn ends', took(done));
-    ok(!done.seen || Number(done.seen.weight) >= 500, 'the bold is real weight (DS\u2019s label weight), not a colour',
+    ok(!done.seen || Number(done.seen.weight) >= 500, 'the bold is real weight (DS’s label weight), not a colour',
       done.seen ? done.seen.weight : 'no row');
 
     await shot(s.page, 'activity-' + harness);
-    ok(unexpected(s.errors).length === 0, 'no console errors',
-      unexpected(s.errors).join(' | ') || '0');
+    ok(unexpected(s.errors).length === 0, 'no console errors', unexpected(s.errors).join(' | ') || '0');
   } finally { await s.stop(); }
 }
 
-// tasksFor is the turn that ends while something it started is still running:
-// a background shell or a monitor under Claude Code, a background terminal
-// under Codex, a background sub-agent under OpenCode. The row is neither
-// working nor done - no ring, an hourglass on the mark's corner - and the bold
-// and the chime wait for that work to end.
+// tasksFor is the turn that ends while something it started is still
+// running: a background shell under Claude Code, a background terminal under
+// Codex. The row is neither working nor done - no ring, an hourglass on the
+// mark's corner - and the bold and the chime wait for that work to end.
+// OpenCode has no such state: its sub-agents run inside the turn that
+// started them (AGENT-HOST.md §5.3, Background() is 0).
 async function tasksFor(harness) {
   const s = await start({ viewport: { width: 1280, height: 720 } });
   try {
@@ -3733,12 +3733,12 @@ async function tasksFor(harness) {
     await useDomRenderer(s);
     await open(s);
     const other = await startSession(s.page, 'shell');
-    const id = await startSession(s.page, harness);
     await s.page.waitForSelector('#term .xterm', { timeout: 20000 });
+    const id = await startChat(s.page, harness);
     const settled = await awaitRow(s.page, id, (r) => !r.busy && !r.tasks, 20000);
     ok(settled.ok, harness + ' settles into idle first', took(settled));
 
-    await typeLine(s.page, '/bg 9000');
+    await say(s.page, '/bg 9');
     await clickRow(s.page, other);
     const pending = await awaitRow(s.page, id, (r) => r.tasks, 10000);
     ok(pending.ok, 'the turn ends with work still running, and the row says so', took(pending));
@@ -3758,46 +3758,36 @@ async function tasksFor(harness) {
     const done = await awaitRow(s.page, id, (r) => !r.tasks && !r.busy && r.unread, 30000);
     ok(done.ok, 'when the work ends the hourglass goes and the name goes bold', took(done));
     ok(!done.seen || !done.seen.glass, 'no hourglass is left behind', JSON.stringify(done.seen && done.seen.glass));
-
-    ok(unexpected(s.errors).length === 0, 'no console errors',
-      unexpected(s.errors).join(' | ') || '0');
+    ok(unexpected(s.errors).length === 0, 'no console errors', unexpected(s.errors).join(' | ') || '0');
   } finally { await s.stop(); }
 }
 
 const taskclaude = () => tasksFor('claude');
 const taskcodex = () => tasksFor('codex');
-const taskopencode = () => tasksFor('opencode');
 
 const activityclaude = () => activityFor('claude');
 const activitycodex = () => activityFor('codex');
 const activityopencode = () => activityFor('opencode');
 
-// A permission prompt is the one state that may sit for an hour: the person it
-// is waiting for is driving. So it is drawn differently from working - an amber
-// ring that does not turn - and it does not time out.
+// A question is the one state that may sit for an hour: the person it is
+// waiting for is driving. So it is drawn differently from working - an amber
+// ring that does not turn - and it does not time out. The question is Claude
+// Code's ask_user, through the in-process MCP server of the protocol fake,
+// sent from another device while this page stands on a Shell.
 async function activitywaiting() {
   const s = await start({ viewport: { width: 1280, height: 720 } });
-  let asking = null;
   try {
     await setup(s.page, s.url);
     await useDomRenderer(s);
     await open(s);
     const other = await startSession(s.page, 'shell');
-    const id = await startSession(s.page, 'claude');
     await s.page.waitForSelector('#term .xterm', { timeout: 20000 });
+    const id = await startChat(s.page, 'claude');
     await clickRow(s.page, other);
-
-    // The prompt is raised from a tab of its own, so the tab that watches the
-    // row never touches the session and the mark is honestly unseen. With the
-    // exact layer gone the only things holding `waiting` are the screen and
-    // the stickiness rule, which is the case worth testing.
-    asking = await secondTab(s, id);
-    await typeLine(asking, '/nofile');
-    await wait(500);
-    await typeLine(asking, '/ask');
+    ok((await tellChat(s, id, '/askuser')) === 200, 'Claude Code is told to ask, from another device', '/askuser');
 
     const asked = await awaitRow(s.page, id, (r) => r.waiting, 20000);
-    ok(asked.ok, 'a permission prompt draws a ring that does not turn', took(asked));
+    ok(asked.ok, 'a question draws a ring that does not turn', took(asked));
     // The amber is DS's warning role, read from the page rather than written
     // here, so a new copy of Dashboard-Style does not fail this for a shade.
     const amber = await s.page.evaluate(() => {
@@ -3808,8 +3798,6 @@ async function activitywaiting() {
       probe.remove();
       return colour;
     });
-    // The amber that used to be a dot beside the name is the ring itself: the
-    // one colour a row carries, on the mark it belongs to.
     ok(!asked.seen || (asked.seen.ring && asked.seen.ring.colour === amber),
       'and the ring, not a dot, is what goes amber',
       asked.seen && asked.seen.ring ? asked.seen.ring.colour : 'no ring');
@@ -3822,73 +3810,65 @@ async function activitywaiting() {
     const bold = await awaitRow(s.page, id, (r) => r.unread, 15000);
     ok(bold.ok, 'needing an answer is unread too', took(bold));
 
-    // HardQuiet is thirty seconds of silence, and a prompt is silent by
-    // nature: somebody is driving. This is the assertion the whole stickiness
-    // rule exists for, so it is measured rather than reasoned about.
+    // A question is silent by nature: somebody is driving. Nothing about it
+    // runs out, which is measured rather than reasoned about.
     await wait(34000);
     const still = await rowActivity(s.page, id);
-    ok(!!still && still.waiting && still.ring && still.ring.colour === amber,
-      'and thirty-four silent seconds later it is still waiting', JSON.stringify(still));
-
-    ok(unexpected(s.errors).length === 0, 'no console errors',
-      unexpected(s.errors).join(' | ') || '0');
-  } finally {
-    if (asking) await asking.close().catch(() => {});
-    await s.stop();
-  }
+    const server = await chatOf(s, id);
+    ok(!!still && still.waiting && still.ring && still.ring.colour === amber && server.asks.length === 1,
+      'and thirty-four silent seconds later it is still waiting, its question open',
+      JSON.stringify({ row: still && still.said, asks: server.asks.length }));
+    ok(unexpected(s.errors).length === 0, 'no console errors', unexpected(s.errors).join(' | ') || '0');
+  } finally { await s.stop(); }
 }
 
-// The unread mark, and the two things that take it away: opening the row, and
-// typing into the session it belongs to.
+// The unread mark, and the two things that take it away: opening the chat,
+// and sending it a message (AGENT-HOST.md §7, as typing at a terminal does).
 async function unread() {
   const s = await start({ viewport: { width: 1280, height: 720 } });
-  let working = null;
   try {
     await setup(s.page, s.url);
     await useDomRenderer(s);
     await open(s);
     const other = await startSession(s.page, 'shell');
-    const id = await startSession(s.page, 'claude');
     await s.page.waitForSelector('#term .xterm', { timeout: 20000 });
+    const id = await startChat(s.page, 'claude');
+    await say(s.page, 'hello');
+    await awaitLog(s.page, 'you said: hello', 15000);
+    await wait(800);
     const watched = await rowActivity(s.page, id);
-    ok(!watched.unread && watched.active, 'the session being looked at is never bold',
+    ok(!watched.unread && watched.active, 'the chat being looked at is never bold, even after its turn ends',
       JSON.stringify({ unread: watched.unread, active: watched.active }));
 
     await clickRow(s.page, other);
-    working = await secondTab(s, id);
-    await typeLine(working, '/busy 2500');
+    ok((await tellChat(s, id, work('claude', 2))) === 200, 'a turn is sent from another device', work('claude', 2));
     const bold = await awaitRow(s.page, id, (r) => r.unread, 30000);
     ok(bold.ok, 'a turn that ends where nobody is looking makes its name bold', took(bold));
-    ok(!bold.seen || Number(bold.seen.weight) >= 500, 'the bold is real weight (DS\u2019s label weight), not a colour',
+    ok(!bold.seen || Number(bold.seen.weight) >= 500, 'the bold is real weight (DS’s label weight), not a colour',
       bold.seen ? bold.seen.weight : 'no row');
 
-    await clickRow(s.page, id);
+    await clickChat(s.page, id);
     const opened = await awaitRow(s.page, id, (r) => !r.unread, 10000);
-    ok(opened.ok, 'opening the row is seeing it, and clears the mark', took(opened));
+    ok(opened.ok, 'opening the chat is seeing it, and clears the mark', took(opened));
     const server = await sessionRow(s, id);
     ok(server.activity && server.activity.unread === false,
-      'and the server agrees, so every other tab stops bolding it too',
-      JSON.stringify(server.activity));
+      'and the server agrees, so every other tab stops bolding it too', JSON.stringify(server.activity));
 
-    // The other way it goes away: somebody typed into that session. It is the
-    // server that decides, on an input frame it accepted, so the tab that is
-    // not typing hears about it in the ordinary way.
+    // The other way it goes away: somebody sent that chat a message. The
+    // server decides, on the message it took, so the tab that did not send
+    // it hears about it in the ordinary way.
     await clickRow(s.page, other);
-    await typeLine(working, '/busy 2500');
+    await tellChat(s, id, work('claude', 2));
     const again = await awaitRow(s.page, id, (r) => r.unread, 30000);
     ok(again.ok, 'a second turn ends unseen and the name is bold again', took(again));
-    await working.click('#term .xterm-screen');
-    await focusTerm(working);
-    await working.keyboard.type('x');
-    const typed = await awaitRow(s.page, id, (r) => !r.unread, 15000);
-    ok(typed.ok, 'and typing into that session clears it everywhere', took(typed));
-
-    ok(unexpected(s.errors).length === 0, 'no console errors',
-      unexpected(s.errors).join(' | ') || '0');
-  } finally {
-    if (working) await working.close().catch(() => {});
-    await s.stop();
-  }
+    // The message is a long turn, so the row is looked at while it runs:
+    // the mark went with the message, and comes back only when that turn
+    // ends unseen too.
+    const sent = await tellChat(s, id, work('claude', 6));
+    const cleared = await awaitRow(s.page, id, (r) => !r.unread && r.busy, 5000);
+    ok(sent === 200 && cleared.ok, 'a message sent to it clears it everywhere', took(cleared));
+    ok(unexpected(s.errors).length === 0, 'no console errors', unexpected(s.errors).join(' | ') || '0');
+  } finally { await s.stop(); }
 }
 
 /* ------------------------------- a chime and a notification when work ends */
@@ -4011,11 +3991,9 @@ const rang = (page) => page.evaluate(() => ({
 }));
 
 // drive makes one turn happen and waits for it to be over, which is the edge
-// the whole feature hangs off.
-//
-// It is a Claude session and not a shell because a shell has no turns: nothing
-// is asked of it and nothing is reported back, so its row carries no status
-// and it never chimes.
+// the whole feature hangs off. It is a Claude Code chat and not a shell
+// because a shell has no turns: nothing is asked of it and nothing is
+// reported back, so its row carries no status and it never chimes.
 async function drive(s, id, ms = 2000) {
   await keepBusy(s.page, ms);
   const spun = await awaitRow(s.page, id, (r) => r.busy, 10000);
@@ -4075,12 +4053,11 @@ async function notify() {
     await closeOptions(s.page);
 
     const opened = await rang(s.page);
-    const id = await startSession(s.page, 'claude');
-    await s.page.waitForSelector('#term .xterm', { timeout: 20000 });
-    // Every harness is busy while it starts up and idle the moment it is
-    // ready, and that is not a turn ending: a session that has just been made
-    // has been asked nothing, so nothing it does on its way to a prompt is
-    // worth a sound on a phone in somebody's pocket.
+    const id = await startChat(s.page, 'claude');
+    // An agent comes up before anybody has asked it anything, and that is
+    // not a turn ending: a chat that has just been made has been asked
+    // nothing, so nothing it does on its way to being ready is worth a sound
+    // on a phone in somebody's pocket.
     const settled = await awaitRow(s.page, id, (r) => !r.busy, 20000);
     ok(settled.ok, 'the new session settles into idle', took(settled));
     await wait(1200);
@@ -4119,13 +4096,13 @@ async function notify() {
     await wait(500);
 
     let before = await rang(s.page);
-    ok(await drive(s, id, 3000), 'a turn starts and finishes', '/busy 3000');
+    ok(await drive(s, id, 3000), 'a turn starts and finishes', work('claude', 3));
     let after = await rang(s.page);
     ok(after.beeps - before.beeps === 1, 'it chimed exactly once',
       (after.beeps - before.beeps) + ' chime(s)');
     const note = after.notes[after.notes.length - 1];
     ok(after.notes.length - before.notes.length === 1 && !!note && note.title === title
-      && note.options.body === 'Finished',
+      && /^Finished · s1 s2/.test(note.options.body),
       'and one notification named the session and said what happened',
       JSON.stringify(note || null) + ' vs ' + JSON.stringify(title));
     ok(!!note && note.options.tag === 'socrates:' + id && !!note.options.icon,
@@ -4140,7 +4117,7 @@ async function notify() {
     ok(!muted.sound.on, 'and the menu says so when it is opened again', JSON.stringify(muted.sound));
     await closeOptions(s.page);
     before = await rang(s.page);
-    ok(await drive(s, id, 3000), 'a second turn starts and finishes', '/busy 3000');
+    ok(await drive(s, id, 3000), 'a second turn starts and finishes', work('claude', 3));
     after = await rang(s.page);
     ok(after.beeps - before.beeps === 0 && after.notes.length - before.notes.length === 1,
       'muted, it is silent and still notifies',
@@ -4151,7 +4128,7 @@ async function notify() {
     await awaitNotify(s.page, false);
     await closeOptions(s.page);
     before = await rang(s.page);
-    ok(await drive(s, id, 3000), 'a third turn starts and finishes', '/busy 3000');
+    ok(await drive(s, id, 3000), 'a third turn starts and finishes', work('claude', 3));
     after = await rang(s.page);
     ok(after.notes.length - before.notes.length === 0 && after.beeps - before.beeps === 0,
       'with both off, a finished turn says nothing at all',
@@ -4177,7 +4154,7 @@ async function notify() {
     const running = await awaitRow(s.page, id, (r) => r.busy, 10000);
     ok(running.ok, 'a turn is still running when the page is reloaded', took(running));
     await reloadBack(s.page);
-    await s.page.waitForSelector('#term .xterm', { timeout: 20000 });
+    await chatUp(s.page);
     const seeded = await awaitRow(s.page, id, (r) => r.busy, 15000);
     ok(seeded.ok, 'and the reloaded page draws it as still working', took(seeded));
     const replay = await rang(s.page);
@@ -12260,12 +12237,11 @@ const ALL = [
   ['activity-claude', 'Claude Code working, finishing, and a name that goes bold', activityclaude],
   ['activity-codex', 'Codex working, finishing, and a name that goes bold', activitycodex],
   ['activity-opencode', 'OpenCode working, finishing, and a name that goes bold', activityopencode],
-  ['tasks-claude', 'Claude Code done with its turn, a shell still running: an hourglass, then bold', taskclaude],
+  ['tasks-claude', 'Claude Code done with its turn, a background shell still running: an hourglass, then bold', taskclaude],
   ['tasks-codex', 'Codex done with its turn, a background terminal still running', taskcodex],
-  ['tasks-opencode', 'OpenCode done with its turn, a background sub-agent still running', taskopencode],
-  ['activity-waiting', 'a permission prompt: a still amber ring, and no timeout', activitywaiting],
-  ['unread', 'bold when nobody saw it, gone when the row is opened or typed into', unread],
-  ['notify', 'a chime and a notification when a session stops working, and two switches in the options menu', notify],
+  ['activity-waiting', 'a question: a still amber ring, and no timeout', activitywaiting],
+  ['unread', 'bold when nobody saw it, gone when the chat is opened or sent a message', unread],
+  ['notify', 'a chime and a notification when a chat stops working, and two switches in the options menu', notify],
   ['session-title', 'a session that names itself on its first prompt', sessiontitle],
   ['status-speak', 'Status says what the screen shows, on the page and out loud', statusspeak],
   ['status-ticker', 'the phases of a status, in order, in one line', statusticker],
