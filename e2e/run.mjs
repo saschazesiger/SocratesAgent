@@ -8997,19 +8997,30 @@ async function connStory(page) {
 
 // home-quiet: Home when nothing comes, for whatever reason. A notification
 // tapped on a stream that died without a word waits for the server rather
-// than saying there is no question; a page that can only poll has its
-// questions read after a server restart; a page shown again after a long
-// look elsewhere says Reconnecting…, not Offline; a session being named when
-// the server restarted stops pulsing; and a page that never reached the
-// server says it cannot, rather than "Connecting…" for ever.
+// than saying there is no question; a page that can only poll keeps its
+// chats' questions counted across a server restart, and answers one; a page
+// shown again after a long look elsewhere says Reconnecting…, not Offline; a
+// chat being named when the server restarted stops pulsing; and a page that
+// never reached the server says it cannot, rather than "Connecting…" for
+// ever.
 async function homequiet() {
-  const { s, stub, ctl } = await homeServer();
+  // The naming held back for as long as the restart it is caught in.
+  let holdNaming = false;
+  const stub = await openRouterStub({
+    text: 'A fine name',
+    answer: async () => (holdNaming ? wait(8000).then(() => 'A fine name') : undefined),
+  });
+  const s = await homeChats();
   let p = null;
   let holder = null;
   try {
-    const tapped = await makeAgent(s, 'Asks on a quiet stream');
-    const prose = await makeAgent(s, 'Asks in prose');
-    const named = await makeAgent(s, 'Being named');
+    await pointGateway(s, stub);
+    const tapped = await makeChat(s, 'claude', { title: 'Asks on a quiet stream' });
+    const second = await makeChat(s, 'claude', { title: 'Asks while polled' });
+    const named = await makeChat(s, 'claude', { title: 'Being named' });
+    await tellChat(s, named, 'Fix the flaky parser test');
+    await awaitChat(s, named, (b) => idle(b) && !!b.chat.last_outcome, 20000);
+    await awaitChat(s, tapped, (b) => b.chat.process === 'ready', 20000);
     p = await streamProxy(s);
 
     // A half-open stream, and a tap on "Needs an answer". A second page on
@@ -9051,21 +9062,23 @@ async function homequiet() {
     await wait(1000);
     p.mute();
     const mutedAt = Date.now();
-    const asked = await askQuestion(s, tapped);
+    const said = await tellChat(s, tapped, '/askuser ' + JSON.stringify(DB_ASK));
+    const asked = said === 200 ? await openAskOf(s, tapped, 20000) : '';
     const unheard = await homeLook(quiet);
-    ok(live.ok && !!asked.digest && (unheard.conn === 'live' || unheard.connText === 'Checking…') && unheard.counts.questions === 0,
+    ok(live.ok && !!asked && (unheard.conn === 'live' || unheard.connText === 'Checking…') && unheard.counts.questions === 0,
       'a stream goes quiet with its sockets open; the page has not heard of the question',
-      JSON.stringify({ conn: unheard.connText, questions: unheard.counts.questions }));
+      JSON.stringify({ ask: asked, conn: unheard.connText, questions: unheard.counts.questions }));
+    const quietSaid = await watchAsk(quiet);
+    const quietToasts = await watchToasts(quiet);
     await quiet.evaluate((target) => {
       window.dispatchEvent(new Event('focus'));
       navigator.serviceWorker.dispatchEvent(new MessageEvent('message', { data: { t: 'open', id: target, kind: 'question' } }));
     }, tapped);
-    const quietSaid = await sheetSaid(quiet);
-    const shown = await awaitSheet(quiet, (d) => !!d && d.question === HOME_QUESTION && d.options.length === 2, 30000);
-    const quietWords = await quietSaid();
-    ok(shown.ok && !quietWords.some((w) => /No question is waiting|closed|elsewhere/.test(w)),
-      'the tap waits for the server - a pong or a new stream - and shows the question, never "no question"',
-      ((shown.ms / 1000).toFixed(1)) + ' s: ' + quietWords.join(' | '));
+    const shown = await awaitAsk(quiet, (d) => !!d && d.question === HOME_QUESTION && d.options.length === 2, 30000);
+    const quietWords = [...await quietSaid(), ...await quietToasts()];
+    ok(shown.ok && shown.seen.session === 'Asks on a quiet stream' && !quietWords.some((w) => /Nothing is waiting|not here any more|another device/.test(w)),
+      'the tap waits for the server - a pong or a new stream - and shows the question, never "nothing is waiting"',
+      ((shown.ms / 1000).toFixed(1)) + ' s: ' + (quietWords.join(' | ') || 'nothing said'));
     await quiet.close();
     // The page nobody touched: once nothing has been heard for a while it
     // asks, says "Checking…" with its numbers dimmed while it waits, and is
@@ -9089,36 +9102,45 @@ async function homequiet() {
     p.drop();
 
     // A page that can only poll, across a server restart: no stream says
-    // hello to the new server, and the question asked in prose is read all
-    // the same.
+    // hello to the new server, and the chats' questions are counted all the
+    // same, and can be answered.
     await s.page.goto('about:blank');
     p.mode = '404';
     const polled = await s.context.newPage();
     polled.on('pageerror', (err) => s.errors.push('pageerror: ' + err.message));
     await polled.goto(p.url + '/', { waitUntil: 'domcontentloaded' });
-    const read = await askInProse(s, prose);
+    const secondSaid = await tellChat(s, second, '/askuser ' + JSON.stringify(askFor('Which cache should we use?', ['Redis', 'Memcached'])));
+    const secondAsk = secondSaid === 200 ? await openAskOf(s, second, 20000) : '';
     const before = await awaitHome(polled, (h) => h.conn === 'polling' && h.counts.questions === 2, 30000);
-    ok(!!read && before.ok, 'a page polled through a proxy that refuses the stream counts both questions',
+    ok(!!secondAsk && before.ok, 'a page polled through a proxy that refuses the stream counts both questions',
       JSON.stringify({ conn: before.seen.connText, counts: before.seen.counts }));
     await s.restart();
-    const reread = await awaitDigest(s, prose, (d) => d.phase === 'ready' && !!d.question && d.question.source === 'text', 30000);
-    const after = await awaitHome(polled, (h) => h.counts.questions === 2, 20000);
-    ok(!!reread && after.ok, 'after the restart the polls alone get the question in prose read again, and counted',
-      JSON.stringify({ digest: reread && reread.phase, counts: after.seen.counts }));
-    await awaitHome(polled, (h) => h.rows.some((r) => r.id === prose && r.answer), 15000);
-    await polled.click('.so-home__card[data-id="' + prose + '"] .so-home__answer');
-    const answerable = await awaitSheet(polled, (d) => !!d && !d.reading && d.own, 15000);
-    ok(answerable.ok, 'and its dialog can be answered, not "Reading the question…"',
-      JSON.stringify(answerable.seen && { reading: answerable.seen.reading, own: answerable.seen.own }));
+    // Counted again from a poll of the new server, the turn that finished
+    // unread before the restart is still Finished.
+    const after = await awaitHome(polled, (h) => h.counts.questions === 2 && h.counts.finished === 1 && h.conn === 'polling', 30000);
+    const kept = (await chatOf(s, second)).asks || [];
+    ok(after.ok && kept.length === 1 && kept[0].id === secondAsk,
+      'after the restart the polls alone keep both questions counted, the chat’s own question still open, and the unread turn Finished',
+      JSON.stringify({ conn: after.seen.connText, counts: after.seen.counts, ask: kept.map((a) => a.id) }));
+    await awaitHome(polled, (h) => h.rows.some((r) => r.id === second && r.answer), 15000);
+    await polled.click('.so-home__card[data-id="' + second + '"] .so-home__answer');
+    const answerable = await awaitAsk(polled, (d) => !!d && d.question === 'Which cache should we use?' && d.options.length === 2, 15000);
+    if (answerable.ok) {
+      await polled.click('dialog.so-askdlg .so-q-option[data-option="redis"]');
+      await polled.click('dialog.so-askdlg [data-action="send"]');
+    }
+    const got = await returned(s, second, 20000);
+    ok(answerable.ok && !!got && got.answers.db.selected.join() === 'redis',
+      'and its dialog answers it from the polled page', JSON.stringify(got && got.answers.db.selected));
     await polled.close();
     p.close();
     p = null;
 
-    // A session being named when the server restarts, and a page that is
-    // then hidden past the moment it closes its stream.
+    // A chat being named when the server restarts, and a page that is then
+    // hidden past the moment it closes its stream.
     await s.page.goto(s.url + '/', { waitUntil: 'domcontentloaded' });
     await awaitHome(s.page, (h) => h.shown && h.conn === 'live', 20000);
-    ctl.other = async () => { await wait(8000); return 'A fine name'; };
+    holdNaming = true;
     const pulsing = () => s.page.evaluate((id) => {
       const row = document.querySelector('#sessionList [data-id="' + id + '"]');
       return !!row && !!row.querySelector('.so-row__label[data-titling]');
@@ -9128,7 +9150,7 @@ async function homequiet() {
     let pulsed = false;
     for (let i = 0; i < 30 && !pulsed; i++) { pulsed = await pulsing(); if (!pulsed) await wait(100); }
     await s.restart();
-    ctl.other = null;
+    holdNaming = false;
     await awaitHome(s.page, (h) => h.conn === 'live', 30000);
     await shownAs(s.page, 'hidden');
     await wait(33000);
@@ -9144,7 +9166,7 @@ async function homequiet() {
       'a page shown again after half a minute away says Reconnecting…, never Offline, while the network is up', back.join(' > '));
     await wait(Math.max(0, namedAt + 48000 - Date.now()));
     const still = await pulsing();
-    ok(pulsed && !still, 'a session being named when the server restarted stops pulsing once its naming is past due',
+    ok(pulsed && !still, 'a chat being named when the server restarted stops pulsing once its naming is past due',
       JSON.stringify({ pulsed, after: ((Date.now() - namedAt) / 1000).toFixed(0) + ' s', still }));
 
     // The server goes, the port answers nothing, and the page is started
@@ -11932,7 +11954,7 @@ const ALL = [
   ['home-runlost', 'the dialog opened again mid-answer, an answer sent across a server restart, and a reply lost on the way back', homerunlost],
   ['home-opencode', 'an OpenCode chat’s questions from the dialog - ask_user with an option and an own answer, its own question tool - and a permission it allows itself', homeopencode],
   ['home-stream', 'with chats: a late list, a handshake that hangs, a refused upgrade and an offline Home', homestream],
-  ['home-quiet', 'a tap on a stream that died quietly, polls across a restart, a long hide, a naming cut off, a server never reached', homequiet],
+  ['home-quiet', 'a tap on a stream that died quietly, chats’ questions polled across a restart, a long hide, a naming cut off, a server never reached', homequiet],
   ['home-kinds', 'a multi-select, two tabs and their review, a plan sent back and approved, and a question in prose', homekinds],
   ['home-unread', 'a question in prose whose read failed, or had no key, is read on the open Home once it can be', homeunread],
   ['home-honest', 'ages by the server\u2019s clock, a dialog that says it is offline, and a compressed poll', homehonest],
