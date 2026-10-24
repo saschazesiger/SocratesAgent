@@ -285,6 +285,25 @@ func TestTheMigrationMovesEveryLoginOnceAndLinksTheOldPaths(t *testing.T) {
 	if strings.Join(got, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("accounts:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
 	}
+	// The lists offer accounts in their order, and the lost profiles' are
+	// last, below every account that works.
+	st, err := store.Open(filepath.Join(data, "socrates.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ordered, err := st.ListAccounts()
+	st.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var origins []string
+	for _, a := range ordered {
+		origins = append(origins, a.Origin)
+	}
+	if !strings.HasPrefix(origins[len(origins)-1], "lost:") || !strings.HasPrefix(origins[len(origins)-2], "lost:") ||
+		strings.HasPrefix(origins[len(origins)-3], "lost:") {
+		t.Fatalf("the accounts in their order: %v", origins)
+	}
 
 	// Claude Code: the folder and its global config moved, the old paths are
 	// links, and the login is one file seen through both.

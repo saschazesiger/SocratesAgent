@@ -194,6 +194,9 @@ func Migrate(opts MigrateOptions) error {
 	if len(failed) > 0 {
 		return errors.Join(failed...)
 	}
+	if err := m.lostLast(); err != nil {
+		return err
+	}
 	// Last, once every account is made: a prepared chat whose profile's
 	// account is missing is removed, and a move that failed this time may
 	// make it at the next start.
@@ -207,6 +210,29 @@ func Migrate(opts MigrateOptions) error {
 		m.opts.Logf("accounts: the agents' folders are in %s now; the old ones are links to them", m.layout.Root)
 	}
 	return nil
+}
+
+// lostLast puts the lost profiles' accounts below the others. They were made
+// first (see Migrate) and say "Sign in again", and the lists offer accounts in
+// their order: above every Default account, they would be the first thing
+// each agent's list offered.
+func (m *migration) lostLast() error {
+	list, err := m.opts.Store.ListAccounts()
+	if err != nil {
+		return err
+	}
+	var working, lost []string
+	for _, a := range list {
+		if strings.HasPrefix(a.Origin, "lost:") {
+			lost = append(lost, a.ID)
+		} else {
+			working = append(working, a.ID)
+		}
+	}
+	if len(lost) == 0 || len(working) == 0 {
+		return nil
+	}
+	return m.opts.Store.ReorderAccounts(append(working, lost...))
 }
 
 func (m *migration) step(name string) error {
