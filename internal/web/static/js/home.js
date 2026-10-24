@@ -412,6 +412,14 @@ export function mountHome(ctx) {
     // answered rather than filtered with.
     const waiting = asking.length;
     const q = built;
+    // The last question answered while the focus is on the card - back
+    // from the dialog its Answer opened - leaves nothing there to be on:
+    // the focus goes to Home's heading rather than staying on a grey "0
+    // Nothing to answer", or on an Answer that hides.
+    if (!waiting && q.questions.dataset.state === 'asking' && q.questions.contains(document.activeElement)) {
+      const heading = host.querySelector('.ds-page-head__title');
+      if (heading) heading.focus({ preventScroll: true });
+    }
     q.questions.dataset.state = waiting ? 'asking' : 'none';
     q.questions.dataset.value = String(waiting);
     figure(q.qFigure, waiting);

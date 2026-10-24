@@ -486,7 +486,17 @@ export function openAskDialog({ items, start = 0, watch, openChat, closed, more 
     save();
     current = null;
     if (closed) closed();
-    hideOverlay(dialog, { remove: true }).then(() => restoreFocus(opener));
+    hideOverlay(dialog, { remove: true }).then(() => restoreFocus(landing(opener)));
+  }
+
+  // landing is where the focus goes back to: the opener - unless that was
+  // Home's Questions card and nothing is left to answer there, a grey "0
+  // Nothing to answer" with a ring (or its Answer, hidden by now): Home's
+  // heading then (home.js does the same when the last answer lands later).
+  function landing(was) {
+    const card = was && was.closest ? was.closest('.so-home__questions') : null;
+    if (!card || card.dataset.state === 'asking') return was;
+    return document.querySelector('#home .ds-page-head__title') || was;
   }
 
   // A keyboard that comes up shrinks what can be seen: the field being
@@ -603,10 +613,23 @@ export function openAskDialog({ items, start = 0, watch, openChat, closed, more 
 <div class="so-q-actions" data-ds-key="actions">${actionsHtml({ step, last })}</div>`);
     if (focus) {
       arm();
-      const target = shell.querySelector('.so-q-text') || shell;
-      target.focus({ preventScroll: true });
+      firstFocus().focus({ preventScroll: true });
       bringQuestionUp();
     }
+  }
+
+  // firstFocus is where a question is read from: its heading, which a
+  // screen reader starts on and where no key chooses anything - or, at a
+  // desk, a question whose answer is typed (text, a number): its field, so
+  // that what is typed lands in it without a click first. A phone keeps
+  // the heading: a field the page focuses raises no keyboard there.
+  function firstFocus() {
+    const heading = shell.querySelector('.so-q-text') || shell;
+    if (touchScreen() || st.phase !== 'ask' || st.draft.asking) return heading;
+    const q = questionsOf()[st.draft.step || 0];
+    const kind = q ? kindOf(q) : '';
+    if (kind !== 'text' && kind !== 'number') return heading;
+    return shell.querySelector('#' + CSS.escape('ask-' + q.id + '-other')) || heading;
   }
 
   // A context behind its row: "Why this matters", or the batch's title
@@ -977,8 +1000,7 @@ export function openAskDialog({ items, start = 0, watch, openChat, closed, more 
     }, CONN_EVERY);
   }
   showOverlay(dialog).then(() => {
-    const target = shell.querySelector('.so-q-text') || shell;
-    target.focus({ preventScroll: true });
+    firstFocus().focus({ preventScroll: true });
     bringQuestionUp();
   });
   return current;
