@@ -733,10 +733,25 @@ export function mountHome(ctx) {
     }
   }
 
+  // countOf is how many sessions a tile's filter holds now.
+  function countOf(key) {
+    if (key === 'questions') return questionQueue(ctx).length;
+    return ctx.sessions().filter((session) => cardsOf(ctx, session).includes(key)).length;
+  }
+
   return {
     show() {
       if (!built) built = build();
-      host.hidden = false;
+      // Coming back to Home from a session is a new visit: it opens at its
+      // head, where a question that came meanwhile is, rather than where the
+      // list was scrolled to last time, and a tile's filter that has nothing
+      // left in it is "Needs you" again rather than a list that says
+      // nothing is here. Within a visit both stay as they were put.
+      if (host.hidden) {
+        if (filter !== 'needs' && filter !== 'all' && !countOf(filter)) filter = 'needs';
+        host.hidden = false;
+        host.scrollTop = 0;
+      }
       if (!timer) timer = setInterval(render, REDRAW_EVERY);
       render();
     },
