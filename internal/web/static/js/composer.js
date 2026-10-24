@@ -302,18 +302,23 @@ export function mountComposer(host, ctx) {
   guard(input);
   input.placeholder = 'Message ' + harnesses.label(ctx.session().harness);
   // Dictation lands where the cursor is, like typing would (dictate.js).
-  const mic = micButton((text) => insert(text));
+  const mic = micButton((text) => insert(text), 'a message');
   mic.classList.add('so-composer__dictate');
   $('.so-composer__mic').replaceWith(mic);
   // Send and Stop leave the cursor in the field: the next message is
   // written where the last one was, and a phone keeps its keyboard up.
   for (const button of [sendBtn, stopBtn]) button.addEventListener('mousedown', (event) => event.preventDefault());
 
+  // A draft kept in this browser is written into the field while draftSync
+  // is still being set up (its load() starts at once), when neither `draft`
+  // nor what paint() draws exists yet: the composer is painted once at the
+  // end of mount, and only from then on by the draft.
+  let mounted = false;
   const draft = draftSync(id, {
     read: () => input.value,
-    write: (text) => { input.value = text; grow(); paint(); },
+    write: (text) => { input.value = text; grow(); if (mounted) paint(); },
     onConflict: (theirs) => drawConflict(theirs),
-    onStatus: () => paint(),
+    onStatus: () => { if (mounted) paint(); },
   });
 
   /* ---------------------------------------------------------- the field */
@@ -730,6 +735,7 @@ export function mountComposer(host, ctx) {
   }
 
   grow();
+  mounted = true;
   paint();
 
   return {

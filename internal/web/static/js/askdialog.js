@@ -498,7 +498,7 @@ export function openAskDialog({ items, start = 0, watch, openChat, closed }) {
   // its lines.
   function fieldHtml(qid, field, label, value, rows, key = 'enter') {
     const fid = 'ask-' + qid + '-' + field;
-    return html`<div class="ds-field so-q-own" data-ds-key="${fid}"><label class="ds-field__label" for="${fid}">${label}</label><div class="so-field-row so-field-row--top"><textarea class="ds-input so-q-own-field" id="${fid}" rows="${rows}" enterkeyhint="${key}" data-q="${qid}" data-field="${field}"${key !== 'enter' ? html` data-moves-on` : ''}>${value || ''}</textarea><button class="ds-btn ds-btn--quiet ds-btn--icon so-mic" type="button" data-action="dictate" data-target="${fid}" aria-label="${'Dictate: ' + label}" data-tip="Dictate">${faces(raw(icon('mic', 20)), '')}</button></div></div>`;
+    return html`<div class="ds-field so-q-own" data-ds-key="${fid}"><label class="ds-field__label" for="${fid}">${label}</label><div class="so-field-row so-field-row--top"><textarea class="ds-input so-q-own-field" id="${fid}" rows="${rows}" enterkeyhint="${key}" data-q="${qid}" data-field="${field}"${key !== 'enter' ? html` data-moves-on` : ''}>${value || ''}</textarea><button class="ds-btn ds-btn--quiet ds-btn--icon so-mic" type="button" data-action="dictate" data-target="${fid}" aria-label="${'Dictate ' + label.charAt(0).toLowerCase() + label.slice(1)}" data-tip="Dictate">${faces(raw(icon('mic', 20)), '')}</button></div></div>`;
   }
 
   function numberHtml(q, a, invalid, key) {
@@ -690,7 +690,7 @@ export function openAskDialog({ items, start = 0, watch, openChat, closed }) {
       case 'dictate': {
         if (recPhase() !== 'idle') return;
         const field = shell.querySelector('#' + CSS.escape(target.dataset.target));
-        const text = await M.busy(target, () => record(), { done: false });
+        const text = await M.busy(target, () => record({ opener: target }), { done: false });
         if (text && field && field.isConnected) {
           field.value = field.value ? field.value.replace(/\s*$/, ' ') + text : text;
           field.dispatchEvent(new Event('input', { bubbles: true }));
