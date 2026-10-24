@@ -123,6 +123,7 @@ function stopMeter() {
 // the one microphone on this page is doing:
 //
 //   idle          nothing is open
+//   asking        the server is asked whether an OpenRouter key is set yet
 //   opening       the microphone has been asked for and has not answered yet
 //   recording     the sheet is up and audio is arriving
 //   transcribing  the audio has gone to the server, the words are coming back
@@ -238,10 +239,24 @@ export function explainNoKey(what = 'dictate', opener = null) {
  */
 export async function record({ onError, opener = null } = {}) {
   if (phase !== 'idle') return '';
-  // Nothing is recorded that cannot be transcribed.
-  if (voiceKey() === false && await keyMissing()) {
-    await explainNoKey('dictate', opener);
-    return '';
+  // Nothing is recorded that cannot be transcribed. Whether the key is
+  // still missing is a round trip, and the microphone is taken for it
+  // ('asking'): a second press meanwhile - a double click, a tap again on a
+  // slow network - found the phase still idle and opened a second "needs a
+  // key" dialog, or with a key a second recording that the sheet could not
+  // stop.
+  if (voiceKey() === false) {
+    setPhase('asking');
+    let missing = false;
+    try {
+      missing = await keyMissing();
+    } finally {
+      setPhase('idle');
+    }
+    if (missing) {
+      await explainNoKey('dictate', opener);
+      return '';
+    }
   }
   mountRecSheet();
   setPhase('opening');
@@ -335,8 +350,10 @@ export function mountDictation(ctx) {
     // Transcribing is the button's busy face instead (the spinner and the
     // word), which blocks the pointer as well; a disabled button would grey
     // the spinner out. The resting face keeps saying Speak.
-    btn.disabled = !session || !ctx.live() || (phase !== 'idle' && phase !== 'transcribing');
-    if (phase === 'transcribing') btn.setAttribute('aria-busy', 'true');
+    // Asking the server whether a key is set is the busy face too: the tap
+    // landed, and a second one does nothing.
+    btn.disabled = !session || !ctx.live() || (phase !== 'idle' && phase !== 'transcribing' && phase !== 'asking');
+    if (phase === 'transcribing' || phase === 'asking') btn.setAttribute('aria-busy', 'true');
     else btn.removeAttribute('aria-busy');
     btn.setAttribute('aria-label', phase === 'transcribing' ? 'Transcribing…' : 'Speak');
   }
