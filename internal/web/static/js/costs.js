@@ -535,6 +535,13 @@ function table(id, groups, { column, name, sub, onPick, picked, href, limit = LI
   const open = state.expanded.has(id);
   const shown = open ? groups : groups.slice(0, limit);
   const peak = groups.reduce((m, g) => Math.max(m, g.cost), 0);
+  // A row that opens its chat is pressed whole, not by its 18px of text: the
+  // link stretches over its row (ds-table__row-link). When every row opens
+  // something the table is DS's interactive one; when some have nothing to
+  // open (a session deleted, a conversation from outside Socrates) only the
+  // rows that do are (so-costs-links).
+  const linked = href ? shown.filter((g) => href(g)).length : 0;
+  const rowsOpen = onPick || (linked > 0 && linked === shown.length);
   const rows = shown.map((g, i) => {
     const used = g.input + g.output + g.cacheRead + g.cacheWrite;
     const label = name(g);
@@ -545,7 +552,7 @@ function table(id, groups, { column, name, sub, onPick, picked, href, limit = LI
     const lead = onPick
       ? html`<button class="ds-link-btn ds-table__row-link" type="button" data-pick="${i}" aria-pressed="${on ? 'true' : 'false'}" title="${title}">${on ? raw(icon('check', 16)) : ''}${label}</button>`
       : target
-        ? html`<a class="ds-link-btn" href="${target}">${label}</a>`
+        ? html`<a class="ds-link-btn ds-table__row-link" href="${target}">${label}</a>`
         : html`<span>${label}</span>`;
     return html`<tr data-ds-key="${'k:' + g.key}"${on ? raw(' class="ds-table__row--selected"') : ''}>
       <td class="ds-col--text so-costs-name">${lead}${detail ? html`<small class="so-costs-sub">${detail}</small>` : ''}<span class="so-costs-bar" aria-hidden="true"><span style="--so-share: ${peak ? (g.cost / peak).toFixed(4) : 0}"></span></span></td>
@@ -555,7 +562,7 @@ function table(id, groups, { column, name, sub, onPick, picked, href, limit = LI
       <td class="ds-num ds-col--secondary">${g.requests.toLocaleString()}</td>
     </tr>`;
   });
-  morph(box, html`<div class="ds-table-wrap"><table class="ds-table ds-table--dense${onPick ? ' ds-table--interactive' : ''}">
+  morph(box, html`<div class="ds-table-wrap"><table class="ds-table ds-table--dense${rowsOpen ? ' ds-table--interactive' : (linked ? ' so-costs-links' : '')}">
     <thead><tr>
       <th scope="col">${column}</th><th scope="col" class="ds-num">Cost</th><th scope="col" class="ds-num ds-col--secondary">Share</th>
       <th scope="col" class="ds-num ds-col--secondary">Tokens</th><th scope="col" class="ds-num ds-col--secondary">Requests</th>
@@ -617,7 +624,8 @@ function drawTables(filtered) {
       return [HARNESS[c.harness] || c.harness, projectLabel(c.project), when, c.live ? '' : (c.session_id ? 'session deleted' : 'not started from Socrates')]
         .filter(Boolean).join(' · ');
     },
-    href: (g) => (g.sample.conv.live ? '/#' + encodeURIComponent(g.sample.conv.session_id) : ''),
+    // #open=: a page that starts on a bare #<id> starts on Home (routeOf).
+    href: (g) => (g.sample.conv.live ? '/#open=' + encodeURIComponent(g.sample.conv.session_id) : ''),
   });
 }
 

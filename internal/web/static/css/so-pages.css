@@ -238,6 +238,20 @@
   color: var(--ds-text-3);
 }
 
+/* A breakdown where only some rows open a chat (costs.js table): those rows
+   are pressed whole, their link stretched over them (ds-table__row-link), as
+   in DS's interactive table; the others stay still. Separate borders, which
+   a positioned row needs, as DS's interactive table has them. */
+.so-costs-links {
+  border-collapse: separate;
+  border-spacing: 0;
+}
+
+.so-costs-links tbody tr:has(.ds-table__row-link) {
+  position: relative;
+  cursor: pointer;
+}
+
 /* The name cell of a breakdown row: the name, what it is, and its share of
    the biggest row as a bar under it. */
 .so-costs-name {
