@@ -85,6 +85,9 @@ whose shape the adapters define (WP3–5 must document theirs here); a tool part
 goes into `text`** so that every stream is a `part.delta`.
 
 `usage` object: `input`, `output`, `cache_read`, `cache_write`, `reasoning`, `context`, `window`.
+Each token is counted once, the same way for every agent: `input` is the input neither read from
+the cache nor written to it, `output` counts the reasoning in, and `reasoning` says how much of it
+was reasoning.
 Attachment: `name`, `path` (absolute), `mime`, `size`.
 
 **Asks** (WP6, `internal/agent/askuser`). Every agent asks with Socrates' own tool, `ask_user`
@@ -208,11 +211,15 @@ asks a model to read a screen; it is the projection.
   `chatTurnPrompt` writes it; Read again judges it again.
 - **Costs** (`chatcosts.go`): the journal is the one source of a chat's cost - Claude's `cost_usd`,
   Codex's tokens priced by the ledger's Codex rates, OpenCode's own price - in a ledger named by the
-  chat (`chat-<id>`, and `chat-<id>@<account>` for every account after the first, split by
-  `account.switched`). Every conversation id the journal names, and the row's, is the chat's for
-  good (kv `costs.chat_conversations`): the transcript scanner skips it, and a ledger it made of one
-  before is removed. The agents' shared folders (`agents/claude|codex|opencode`) are a root of the
-  scanner like the profiles'.
+  chat: `chat-<id>` until the first `account.switched`, then `chat-<id>@<account>` for every
+  account, the one it started on included (the switch's `from`). Each pass that reads a journal
+  writes its ledgers and removes the ones of that journal it no longer makes. A journal rebuilt
+  after its folder was lost (`notice{rebuilt|history_unavailable}`) does not count the history it
+  got back, which was counted when it ran, and leaves the lost journal's ledgers as they are; what it
+  adds goes into `chat-<id>~<the notice's at>[@<account>]`. Every conversation id the journal
+  names, and the row's, is the chat's for good (kv `costs.chat_conversations`): the transcript
+  scanner skips it, and a ledger it made of one before is removed. The agents' shared folders
+  (`agents/claude|codex|opencode`) are a root of the scanner like the profiles'.
 
 ## 4. Host protocol (version 2)
 
@@ -335,7 +342,7 @@ Rules every adapter keeps:
 | diff / plan / todo | Edit `structuredPatch` → `diff`; `ExitPlanMode` → `plan`; Task* → `todo` | `turn/diff/updated` → `diff`; `plan` item | edit/apply_patch/write metadata → `diff`; `todowrite` → `todo` |
 | turn end | `result` (`is_error`, `terminal_reason`) | `turn/completed` status | `session.idle` (outcome from `session.error` / `info.error` / the limit) |
 | limits | `rate_limit_event` → `rate_limit` | `account/rateLimits/updated` | `session.status retry` with `action.reason`, or a 429 error |
-| usage | `result.usage`, `total_cost_usd` delta | `thread/tokenUsage/updated` | `step-finish` → `usage`; assistant `info.tokens`/`cost` summed per turn |
+| usage | `result.usage`, `total_cost_usd` delta | `thread/tokenUsage/updated` | `step-finish` → `usage`; assistant `info.tokens`/`cost` summed per turn (`output` = OpenCode's output + reasoning, which it counts apart) |
 | `ask_user` (WP6) | in-process MCP server `socrates` over the control protocol (`mcp__socrates__ask_user`), blocking | dynamic tool `ask_user`, blocking; code-mode models: returns at once, `via:"message"` | local MCP server `socrates mcp-ask` (`socrates_ask_user`), waiting in the host (§4.4), with progress |
 | guidance | `--append-system-prompt` | the thread's developer instructions | the MCP server's `instructions` (OpenCode puts them into the system prompt) |
 | own questions | `AskUserQuestion` disallowed; MCP elicitations asked as forms | `request_user_input`, async questions, MCP elicitation forms asked; tool-call approvals accepted | `question` denied; one that arrives is asked |
@@ -494,8 +501,10 @@ for a command (compact, review, shell) have no `message_id`. `turn/completed` st
 `completed`, `interrupted`, `failed` (`usageLimitExceeded` → `limited`, plus `error{rate_limit}`); an
 `error` notification with `willRetry` → `notice{retrying}`, without it the turn ends failed if
 `turn/completed` does not follow within 30 s. `turn.ended.usage` sums the turn's model calls
-(`tokenUsage.last`; codex counts cached input inside the input, the journal apart: `input` =
-input − cached, `cache_read` = cached), `context`/`window` from the last call;
+(`tokenUsage.last`; codex counts the cached and the cache-written input inside the input, the
+journal apart: `input` = input − cached − cache-written, `cache_read` = cached, `cache_write` =
+cache-written; its output counts the reasoning in, as the journal's does), `context`/`window` from
+the last call;
 `usage{context, window}` follows each call. `account/rateLimits/updated` → one `rate_limit` per
 window that changed: `five_hour` (300 min), `weekly` (10080 min), else `<n>m`; `used` = percent/100.
 Cost is not reported by codex (0).
@@ -913,6 +922,9 @@ attachment(s): …`).
 - `StartSpec.Env`/`Account` are passed through but nothing fills them until WP7. The cost ledger
   splits a chat by `account.switched` (`chat-<id>@<account>`, the account id as the ledger's
   profile); the costs page names profiles only, so WP7 adds the accounts' names to its `profiles`.
+  The account a journal starts on is known only from its first switch's `from`, so the turns of a
+  chat that never switched, and of a rebuilt journal before its first switch, are on a ledger with
+  no account.
 - A chat folder lost while the server runs and holds the chat's history is not noticed: the next
   host's journal starts again at seq 1, which the server's copy (further along) ignores. A lost
   folder is found at the next start (the brief is in the folder too) and rebuilt when opened.

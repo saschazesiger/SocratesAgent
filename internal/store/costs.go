@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"sort"
 	"strings"
+	"unicode/utf8"
 )
 
 // The cost ledger is what every conversation a CLI had on this machine cost:
@@ -188,6 +189,28 @@ func (s *Store) DeleteCostLedger(key string) (bool, error) {
 		return false, err
 	}
 	return n > 0, tx.Commit()
+}
+
+// CostKeysWithPrefix is the key of every ledger whose key begins with
+// prefix: the ledgers one source writes under names of its own (a chat's,
+// one per account), so that it can take away the ones it no longer writes.
+func (s *Store) CostKeysWithPrefix(prefix string) ([]string, error) {
+	// SQLite's substr counts characters, not bytes.
+	rows, err := s.db.Query(`SELECT key FROM cost_convs WHERE substr(key, 1, ?) = ? ORDER BY key`,
+		utf8.RuneCountInString(prefix), prefix)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var key string
+		if err := rows.Scan(&key); err != nil {
+			return nil, err
+		}
+		out = append(out, key)
+	}
+	return out, rows.Err()
 }
 
 // ListCostLedgers returns every conversation and its hours, the whole ledger.

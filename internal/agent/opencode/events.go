@@ -438,7 +438,9 @@ func (a *Adapter) endTurnLocked() {
 			continue
 		}
 		usage.Input += as.tokens.Input
-		usage.Output += as.tokens.Output
+		// OpenCode counts the reasoning apart from the output; the
+		// journal's output counts it in (AGENT-HOST.md §2).
+		usage.Output += as.tokens.Output + as.tokens.Reasoning
 		usage.Reasoning += as.tokens.Reasoning
 		usage.CacheRead += as.tokens.Cache.Read
 		usage.CacheWrite += as.tokens.Cache.Write

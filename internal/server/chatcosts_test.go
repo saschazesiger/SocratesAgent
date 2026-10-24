@@ -58,12 +58,17 @@ func TestAChatsCostIsReadFromItsJournal(t *testing.T) {
 		t.Fatalf("spends %+v", got.spends)
 	}
 
+	// Each kind of token once: the reasoning is a part of the output, and
+	// the input is what was neither read from the cache nor written to it.
 	codex := journalOf(t, data, "c2",
 		agent.Event{Type: agent.TypeMessage, MessageID: "a1", Role: agent.RoleAssistant, TurnID: "t1", Model: "gpt-5.4"},
-		agent.Event{Type: agent.TypeTurnEnded, TurnID: "t1", Usage: &agent.Usage{Input: 1_000_000, CacheRead: 1_000_000, Output: 1_000_000}})
+		agent.Event{Type: agent.TypeTurnEnded, TurnID: "t1", Usage: &agent.Usage{Input: 1_000_000, CacheRead: 1_000_000,
+			CacheWrite: 1_000_000, Output: 1_000_000, Reasoning: 400_000}})
 	got, _ = readChatCosts(codex, "codex", "")
-	want, _ := costs.CodexCost("gpt-5.4", 2_000_000, 1_000_000, 0, 1_000_000)
-	if s := got.spends[""]; len(s) != 1 || !s[0].Priced || !near(s[0].CostUSD, want) || s[0].Input != 1_000_000 {
+	price := costs.CodexPrices["gpt-5.4"]
+	want := price.Input + price.Cached + price.CacheWrite + price.Output
+	if s := got.spends[""]; len(s) != 1 || !s[0].Priced || !near(s[0].CostUSD, want) || s[0].Input != 1_000_000 ||
+		s[0].Output != 1_000_000 {
 		t.Fatalf("codex %+v, want %v", s, want)
 	}
 
@@ -117,7 +122,7 @@ func TestAChatIsCountedOnceFromItsJournal(t *testing.T) {
 		agent.Event{Type: agent.TypeMessage, MessageID: "a1", Role: agent.RoleAssistant, TurnID: "t1", Model: "claude-opus-5-5"},
 		agent.Event{Type: agent.TypeTurnEnded, TurnID: "t1", CostUSD: 1.5})
 	env.srv.costs.pass()
-	ledger, err := env.store.GetCostLedger("claude/" + chatLedgerID("chat1", ""))
+	ledger, err := env.store.GetCostLedger("claude/" + chatLedgerID("chat1", "", ""))
 	if err != nil || ledger.SessionID != "chat1" || ledger.Title != "A chat" || len(ledger.Rows) != 1 || !near(ledger.Rows[0].CostUSD, 1.5) {
 		t.Fatalf("the chat's ledger %+v %v", ledger, err)
 	}
@@ -137,7 +142,76 @@ func TestAChatIsCountedOnceFromItsJournal(t *testing.T) {
 	if _, err := env.store.GetCostLedger("claude/chat-conv"); err != store.ErrNotFound {
 		t.Fatalf("a deleted chat's transcript is counted: %v", err)
 	}
-	if _, err := env.store.GetCostLedger("claude/" + chatLedgerID("chat1", "")); err != nil {
+	if _, err := env.store.GetCostLedger("claude/" + chatLedgerID("chat1", "", "")); err != nil {
 		t.Fatalf("the deleted chat's cost went with it: %v", err)
+	}
+}
+
+// A chat's ledgers are its journal as it reads now: the turns before an
+// account switch move to the account they ran on and are not left behind
+// on the ledger they were counted in before. A journal rebuilt after its
+// folder was lost does not count the history it got back again, and leaves
+// the lost journal's ledgers as they were.
+func TestAChatsLedgersFollowItsJournal(t *testing.T) {
+	env := adminEnv(t)
+	empty := t.TempDir()
+	t.Setenv("CLAUDE_CONFIG_DIR", filepath.Join(empty, "claude"))
+	t.Setenv("CODEX_HOME", filepath.Join(empty, "codex"))
+	t.Setenv("XDG_DATA_HOME", filepath.Join(empty, "xdg"))
+	data := env.srv.dataDir
+	if err := env.store.CreateSession(&store.Session{ID: "chat1", Title: "A chat", Harness: "claude", Workdir: "/w",
+		WorkdirMode: "custom", Kind: store.KindChat, State: store.StateRunning}); err != nil {
+		t.Fatal(err)
+	}
+	ledgers := func() map[string]float64 {
+		t.Helper()
+		all, err := env.store.ListCostLedgers()
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := map[string]float64{}
+		for _, l := range all {
+			for _, r := range l.Rows {
+				out[l.ConvID] += r.CostUSD
+			}
+		}
+		return out
+	}
+	turn := func(id string, cost float64) []agent.Event {
+		return []agent.Event{
+			{Type: agent.TypeMessage, MessageID: "a" + id, Role: agent.RoleAssistant, TurnID: id, Model: "claude-opus-5-5"},
+			{Type: agent.TypeTurnEnded, TurnID: id, Outcome: agent.OutcomeCompleted, CostUSD: cost},
+		}
+	}
+
+	journalOf(t, data, "chat1", turn("t1", 1)...)
+	env.srv.costs.pass()
+	if got := ledgers(); len(got) != 1 || !near(got["chat-chat1"], 1) {
+		t.Fatalf("after the first turn %v", got)
+	}
+	journalOf(t, data, "chat1", append([]agent.Event{{Type: agent.TypeAccountSwitched, From: "acct-a", To: "acct-b"}},
+		turn("t2", 0.5)...)...)
+	env.srv.costs.pass()
+	if got := ledgers(); len(got) != 2 || !near(got["chat-chat1@acct-a"], 1) || !near(got["chat-chat1@acct-b"], 0.5) {
+		t.Fatalf("after the switch %v", got)
+	}
+
+	// The folder is lost and its journal rebuilt: the history comes back
+	// with what it cost (OpenCode's rebuild says so), then a new turn.
+	if err := os.RemoveAll(agenthost.ChatDir(data, "chat1")); err != nil {
+		t.Fatal(err)
+	}
+	rebuilt := append(turn("t1", 1), turn("t2", 0.5)...)
+	rebuilt = append(rebuilt, agent.Event{Type: agent.TypeNotice, Code: agent.NoticeRebuilt, At: 1_800_000_000_000})
+	journalOf(t, data, "chat1", append(rebuilt, turn("t3", 0.25)...)...)
+	env.srv.costs.pass()
+	got := ledgers()
+	total := 0.0
+	for _, cost := range got {
+		total += cost
+	}
+	if len(got) != 3 || !near(got["chat-chat1@acct-a"], 1) || !near(got["chat-chat1@acct-b"], 0.5) ||
+		!near(got["chat-chat1~1800000000000"], 0.25) || !near(total, 1.75) {
+		t.Fatalf("after the rebuild %v", got)
 	}
 }

@@ -90,7 +90,8 @@ func (t *rebuiltTurn) assistant(m ocMessageWithParts, child func(string) []ocMes
 	}
 	tok := m.Info.Tokens
 	t.usage.Input += tok.Input
-	t.usage.Output += tok.Output
+	// The journal's output counts the reasoning in, as events.go has it.
+	t.usage.Output += tok.Output + tok.Reasoning
 	t.usage.Reasoning += tok.Reasoning
 	t.usage.CacheRead += tok.Cache.Read
 	t.usage.CacheWrite += tok.Cache.Write

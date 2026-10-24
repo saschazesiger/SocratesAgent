@@ -18,13 +18,21 @@ package server
 // started again are one chat. Each account a chat ran on is a ledger of its
 // own (chat-<id> for the account it started on, chat-<id>@<account> after a
 // switch), so the costs page splits them by account the way it splits the
-// transcripts by profile.
+// transcripts by profile. A ledger is the journal's sum as it reads now: one
+// the read no longer makes (the account it started on, once the first switch
+// says which one that was) is taken away, so that no turn is counted twice.
+//
+// A journal that was lost with its folder is a new one: the history its host
+// writes back was counted when it ran, in the lost journal's ledgers, which
+// stay as they are; what the new journal adds goes into ledgers of its own
+// (chat-<id>~<when it was rebuilt>[@<account>]).
 
 import (
 	"crypto/sha256"
 	"fmt"
 	"log"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/saschazesiger/SocratesAgent/internal/agent"
@@ -37,19 +45,27 @@ import (
 // transcript scanner's ledger key of each, and the chat it belongs to.
 const chatOwnedKey = "costs.chat_conversations"
 
-// chatLedgerID is the ledger's conversation id of a chat on one account.
-func chatLedgerID(chatID, account string) string {
-	if account == "" {
-		return "chat-" + chatID
+// chatLedgerID is the ledger's conversation id of a chat on one account, in
+// one of its journals: gen is empty for the journal the chat began with, and
+// says when a lost one was rebuilt otherwise.
+func chatLedgerID(chatID, gen, account string) string {
+	id := "chat-" + chatID
+	if gen != "" {
+		id += "~" + gen
 	}
-	return "chat-" + chatID + "@" + account
+	if account != "" {
+		id += "@" + account
+	}
+	return id
 }
 
-// chatCosts is a chat's journal summed up: what each account spent, and
-// every conversation the chat had.
+// chatCosts is a chat's journal summed up: what each account spent, every
+// conversation the chat had, and which of its journals this is (gen, for
+// chatLedgerID).
 type chatCosts struct {
 	spends map[string][]costs.Spend
 	convs  []string
+	gen    string
 }
 
 // readChatCosts reads a chat's journal. model is the chat's model before
@@ -77,6 +93,15 @@ func readChatCosts(path, harness, model string) (chatCosts, error) {
 			if id := strings.TrimSpace(ev.ConversationID); id != "" && !seen[id] {
 				seen[id] = true
 				out.convs = append(out.convs, id)
+			}
+		case agent.TypeNotice:
+			// The journal was lost and begins again: the history written
+			// back (or the word that it could not be) was counted when it
+			// ran, in the ledgers of the journal that was lost.
+			if ev.Code == agent.NoticeRebuilt || ev.Code == agent.NoticeHistoryUnavailable {
+				out.spends = map[string][]costs.Spend{}
+				out.gen = strconv.FormatInt(ev.At, 10)
+				account, switched = "", false
 			}
 		case agent.TypeAccountSwitched:
 			// The turns before the first switch ran on the account it
@@ -108,19 +133,23 @@ func turnSpend(harness, model string, ev agent.Event) (costs.Spend, bool) {
 	if u == nil {
 		u = &agent.Usage{}
 	}
-	if ev.CostUSD == 0 && u.Input+u.Output+u.CacheRead+u.CacheWrite+u.Reasoning == 0 {
+	if ev.CostUSD == 0 && u.Input+u.Output+u.CacheRead+u.CacheWrite == 0 {
 		return costs.Spend{}, false
 	}
 	if model == "" {
 		model = "unknown"
 	}
-	s := costs.Spend{At: ev.At, Model: model, Input: float64(u.Input), Output: float64(u.Output + u.Reasoning),
+	// The journal's output counts the reasoning in, and its input is the
+	// input that was neither read from the cache nor written to it
+	// (AGENT-HOST.md §2), so neither is priced twice.
+	s := costs.Spend{At: ev.At, Model: model, Input: float64(u.Input), Output: float64(u.Output),
 		CacheRead: float64(u.CacheRead), CacheWrite: float64(u.CacheWrite), CostUSD: ev.CostUSD, Priced: true,
 		Requests: 1}
 	switch harness {
 	case "codex":
 		// Codex reports no price; its tokens are priced by the ledger's
-		// rates, which count the cached input inside the input.
+		// rates, which take the input the way Codex reports it, the cached
+		// and the cache-written tokens inside it.
 		s.CostUSD, s.Priced = costs.CodexCost(model, s.Input+s.CacheRead+s.CacheWrite, s.CacheRead, s.CacheWrite, s.Output)
 	case "opencode":
 		// OpenCode's own model names go without their provider, as its
@@ -133,8 +162,9 @@ func turnSpend(harness, model string, ev agent.Event) (costs.Spend, bool) {
 }
 
 // chatLedgers brings the chats' ledgers up to date: a chat whose journal
-// changed since its last pass is read again and its ledger per account
-// written. It answers every conversation the chats count, by the scanner's
+// changed since its last pass is read again, its ledger per account written
+// and a ledger of the same journal that the read no longer makes taken away.
+// It answers every conversation the chats count, by the scanner's
 // ledger key, and the ones that became the chats' in this pass.
 func (c *costLedger) chatLedgers(rows []store.Session, seen map[string]string) (owned, fresh map[string]bool) {
 	st := c.s.store
@@ -162,7 +192,7 @@ func (c *costLedger) chatLedgers(rows []store.Session, seen map[string]string) (
 		if err != nil {
 			continue
 		}
-		key := store.CostKey(row.Harness, chatLedgerID(row.ID, ""))
+		key := store.CostKey(row.Harness, chatLedgerID(row.ID, "", ""))
 		// The name and the folder go into every ledger of the chat, so a
 		// rename is a change as much as a turn is.
 		print := fmt.Sprintf("chat:v%s:%d:%d:%x", costs.Version, info.Size(), info.ModTime().UnixNano(),
@@ -178,15 +208,22 @@ func (c *costLedger) chatLedgers(rows []store.Session, seen map[string]string) (
 		for _, conv := range read.convs {
 			own(row.Harness, conv, row.ID)
 		}
+		wrote := map[string]bool{}
 		for account, list := range read.spends {
 			ledger := store.CostLedger{CostConversation: store.CostConversation{
-				Harness: row.Harness, ConvID: chatLedgerID(row.ID, account), Profile: account,
+				Harness: row.Harness, ConvID: chatLedgerID(row.ID, read.gen, account), Profile: account,
 				Workdir: row.Workdir, Title: row.Title, SessionID: row.ID,
 			}}
 			ledger.Rows, ledger.FirstAt, ledger.LastAt = costs.Hourly(list)
+			wrote[ledger.Key()] = true
 			if _, err := st.PutCostLedger(ledger); err != nil {
 				log.Printf("costs: %s: %v", ledger.Key(), err)
 			}
+		}
+		if !c.dropStaleChatLedgers(store.CostKey(row.Harness, chatLedgerID(row.ID, read.gen, "")), wrote) {
+			// Read again at the next pass, so that what is left over goes
+			// then.
+			continue
 		}
 		if err := st.SetCostFingerprint(key, print); err != nil {
 			log.Printf("costs: %s: %v", key, err)
@@ -202,4 +239,28 @@ func (c *costLedger) chatLedgers(rows []store.Session, seen map[string]string) (
 		owned[key] = true
 	}
 	return owned, fresh
+}
+
+// dropStaleChatLedgers takes away the ledgers of one journal of a chat (base,
+// its ledger on the account it started on, and base@<account>) that its read
+// did not write, and reports whether it could look. The ledgers of the chat's
+// other journals are not this read's to judge.
+func (c *costLedger) dropStaleChatLedgers(base string, wrote map[string]bool) bool {
+	st := c.s.store
+	keys, err := st.CostKeysWithPrefix(base)
+	if err != nil {
+		log.Printf("costs: %s: %v", base, err)
+		return false
+	}
+	done := true
+	for _, key := range keys {
+		if wrote[key] || key != base && !strings.HasPrefix(key, base+"@") {
+			continue
+		}
+		if _, err := st.DeleteCostLedger(key); err != nil {
+			log.Printf("costs: %s: %v", key, err)
+			done = false
+		}
+	}
+	return done
 }

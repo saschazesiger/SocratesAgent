@@ -121,6 +121,11 @@ func TestToolsStepsDiffsTodosAndReasoning(t *testing.T) {
 		if r := kinds[agent.PartReasoning]; r == nil || r.Text != "thinking it over" || r.State != agent.PartDone {
 			t.Fatalf("reasoning %+v", r)
 		}
+		// OpenCode counts the reasoning apart from the output; the
+		// journal's output counts it in.
+		if u := p.LastTurn.Usage; u == nil || u.Reasoning != 7 || u.Output != 27 {
+			t.Fatalf("the reasoning turn's usage %+v", u)
+		}
 	})
 	// The bash output streamed: at least one delta went to the tool part.
 	if n := r.rec.count(agent.TypePartDelta, func(ev agent.Event) bool { return ev.Text == "line 2\n" }); n == 0 {
