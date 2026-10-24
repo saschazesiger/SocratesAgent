@@ -129,6 +129,12 @@ func migrateWith(t *testing.T, opts MigrateOptions) error {
 	}
 	defer st.Close()
 	opts.Store, opts.Logf = st, t.Logf
+	if opts.StopTerminal == nil {
+		// The fixture's agent terminals have no tmux session behind them:
+		// stopping one is removing its row. The rehearsal in package main
+		// stops live ones through the terminal substrate.
+		opts.StopTerminal = st.DeleteSession
+	}
 	return Migrate(opts)
 }
 
@@ -388,7 +394,7 @@ func TestAnInterruptedMigrationIsFinishedByTheNextStart(t *testing.T) {
 	}
 	want := outcome(t, clean)
 	for _, step := range []string{
-		"backup", "account:" + OriginClaude, "moved:" + OriginClaude, "json:" + OriginClaude, "shared:" + OriginClaude,
+		"backup", "cut:s1", "cut:s2", "account:" + OriginClaude, "moved:" + OriginClaude, "json:" + OriginClaude, "shared:" + OriginClaude,
 		"account:" + OriginCodex, "moved:" + OriginCodex, "moved:" + OriginOpenCode, "shared:" + OriginOpenCode,
 		"account:profile:p-bbbbbbbbbbbb:claude", "moved:profile:p-bbbbbbbbbbbb:codex", "lost:lost:p-aaaaaaaaaaaa:claude",
 	} {

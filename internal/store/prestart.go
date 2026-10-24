@@ -283,6 +283,38 @@ func (s *Store) BeginStart(row *Session) error {
 	return nil
 }
 
+// MakePreparedChat turns a prepared terminal into a prepared chat with these
+// options: the clean cut of REBUILD.md §8.3, for the agents' terminals that
+// were prepared and never started. Everything else the person set - the
+// agent, the folder, the model, the schedule and the first prompt in the
+// draft - stays. It answers ErrNotPrestart for a row that is not a prepared
+// terminal any more, which a run cut short after the change finds.
+func (s *Store) MakePreparedChat(id string, options json.RawMessage) error {
+	value := "{}"
+	if len(options) > 0 {
+		if !json.Valid(options) {
+			return errors.New("session options are not valid JSON")
+		}
+		value = string(options)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	res, err := s.db.Exec(`UPDATE sessions SET kind = ?, options = ?, updated_at = ? WHERE id = ? AND state = ? AND kind = ?`,
+		KindChat, value, now(), id, StatePrestart, KindTerminal)
+	if err != nil {
+		return err
+	}
+	if n, err := res.RowsAffected(); err == nil && n == 0 {
+		var state string
+		if err := s.db.QueryRow(`SELECT state FROM sessions WHERE id = ?`, id).Scan(&state); err != nil {
+			return ErrNotFound
+		}
+		return ErrNotPrestart
+	}
+	s.bump()
+	return nil
+}
+
 // updatePrestart is `update` for a row that has to still be prepared: it
 // answers ErrNotFound for a row that is not there and ErrNotPrestart for one
 // that has been started.

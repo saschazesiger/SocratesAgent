@@ -10,6 +10,8 @@ type MigrateOptions struct {
 	Store   *store.Store
 	Env     []string
 	Logf    func(format string, args ...any)
+	// StopTerminal stops one session the way a delete does (migrate.go).
+	StopTerminal func(id string) error
 }
 
 // Migrate: Socrates runs its agents on Linux and macOS, where the folders to

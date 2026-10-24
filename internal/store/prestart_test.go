@@ -319,3 +319,32 @@ func TestStateWritesLeaveAPreparedRowAlone(t *testing.T) {
 		t.Fatalf("state = %q", got.State)
 	}
 }
+
+// The clean cut makes a prepared terminal a prepared chat in place: the row,
+// its settings and its draft stay, only what it is and its options change -
+// and only for a prepared terminal.
+func TestAPreparedTerminalBecomesAPreparedChat(t *testing.T) {
+	st := openTest(t)
+	if err := st.CreateSession(newPrestart("p1")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.SaveDraft("p1", "the first prompt", 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.MakePreparedChat("p1", json.RawMessage(`{"ultracode":true}`)); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := st.GetSession("p1")
+	if !got.IsChat() || got.State != StatePrestart || got.Model != "a-model" || string(got.Options) != `{"ultracode":true}` {
+		t.Fatalf("the prepared chat = %#v", got)
+	}
+	if draft, _ := st.GetDraft("p1"); draft.Text != "the first prompt" {
+		t.Fatalf("draft = %q", draft.Text)
+	}
+	if err := st.MakePreparedChat("p1", nil); !errors.Is(err, ErrNotPrestart) {
+		t.Fatalf("a chat made a chat again: %v", err)
+	}
+	if err := st.MakePreparedChat("nobody", nil); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("a row that is not there: %v", err)
+	}
+}

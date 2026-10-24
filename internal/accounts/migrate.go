@@ -11,6 +11,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"syscall"
@@ -22,12 +23,12 @@ import (
 	"github.com/saschazesiger/SocratesAgent/internal/store"
 )
 
-// The migration of the build before accounts (REBUILD.md §8.1-8.2), once, on
-// the first start of this one: the agents' own folders in HOME become the
-// Default account of each agent, the profiles become accounts - with their
-// logins where their folders still exist, marked "sign in again" where they
-// were lost - and every account's conversations go into the folders they
-// share.
+// The migration of the build before accounts (REBUILD.md §8.1-8.3), once, on
+// the first start of this one: the agents' terminals go (the clean cut,
+// cleancut.go), the agents' own folders in HOME become the Default account
+// of each agent, the profiles become accounts - with their logins where
+// their folders still exist, marked "sign in again" where they were lost -
+// and every account's conversations go into the folders they share.
 //
 // It runs only on a data directory of the build before: the store marks a
 // database it brings up to the schema of accounts (store.go), and nothing
@@ -48,8 +49,8 @@ import (
 // neither is one of a link the person made to somewhere else: that folder
 // stays where it is and its account has no login.
 //
-// Before anything moves, all of it - the data directory and the folders
-// about to move - is written to <data>.pre-rebuild.tar. Every step is
+// Before anything moves or goes, all of it - the data directory and the
+// folders about to move - is written to <data>.pre-rebuild.tar. Every step is
 // idempotent and decides from what is on the disk and from the accounts
 // already made, so a migration cut short anywhere (a crash, a power cut) is
 // finished by the next start without losing or doubling anything: the
@@ -66,6 +67,11 @@ type MigrateOptions struct {
 	// XDG_CONFIG_HOME.
 	Env  []string
 	Logf func(format string, args ...any)
+	// StopTerminal stops one session the way a delete does - its tmux
+	// session killed, its row and its folder removed - which is what the
+	// clean cut does to an agent's terminal. main hands the terminal
+	// substrate's own delete.
+	StopTerminal func(id string) error
 	// stopAfter ends the migration after the step of that name as a crash
 	// would, and tempDir stands in for the temporary directory, for the
 	// tests.
@@ -137,7 +143,11 @@ func Migrate(opts MigrateOptions) error {
 	if err != nil {
 		return err
 	}
-	if len(sources) > 0 || len(lost) > 0 {
+	cut, err := m.agentTerminals()
+	if err != nil {
+		return err
+	}
+	if len(sources) > 0 || len(lost) > 0 || len(cut) > 0 {
 		if err := m.backup(sources); err != nil {
 			return fmt.Errorf("the backup before the migration: %w", err)
 		}
@@ -145,15 +155,11 @@ func Migrate(opts MigrateOptions) error {
 			return err
 		}
 	}
+	// The lost profiles' accounts come first: which agents a lost profile
+	// ran is read off its sessions (plan), and the clean cut removes the
+	// agents' terminals among them, so a run cut short after it would read
+	// nothing there.
 	var failed []error
-	for _, src := range sources {
-		if err := m.move(src); err != nil {
-			if errors.Is(err, errStopped) {
-				return err
-			}
-			failed = append(failed, fmt.Errorf("move %s: %w", src.from, err))
-		}
-	}
 	for _, a := range lost {
 		err := m.opts.Store.CreateAccount(a)
 		if err == nil {
@@ -169,8 +175,30 @@ func Migrate(opts MigrateOptions) error {
 			failed = append(failed, fmt.Errorf("the account of the lost profile %s: %w", a.Label, err))
 		}
 	}
+	// Then the clean cut, before anything moves: a terminal still running
+	// an agent would write into a folder in the middle of its move.
+	if err := m.cleanCut(cut); err != nil {
+		if errors.Is(err, errStopped) {
+			return err
+		}
+		failed = append(failed, fmt.Errorf("the clean cut: %w", err))
+	}
+	for _, src := range sources {
+		if err := m.move(src); err != nil {
+			if errors.Is(err, errStopped) {
+				return err
+			}
+			failed = append(failed, fmt.Errorf("move %s: %w", src.from, err))
+		}
+	}
 	if len(failed) > 0 {
 		return errors.Join(failed...)
+	}
+	// Last, once every account is made: a prepared chat whose profile's
+	// account is missing is removed, and a move that failed this time may
+	// make it at the next start.
+	if err := m.bindPrepared(); err != nil {
+		return err
 	}
 	if err := m.opts.Store.FinishAccountsMigration(); err != nil {
 		return err
@@ -269,8 +297,10 @@ func (m *migration) plan() ([]source, []*store.Account, error) {
 		}
 		// The folders went with the move from Docker (HANDOFF.md §5): the
 		// profile becomes an account of each agent its sessions ran, or of
-		// Claude Code, to be signed in again.
-		agents := used[p.ID]
+		// Claude Code, to be signed in again. A run cut short after it made
+		// them has said which: the clean cut may have removed the sessions
+		// since.
+		agents := lostAgents(begun, p.ID, used[p.ID])
 		if len(agents) == 0 {
 			agents = []string{Claude}
 		}
@@ -280,6 +310,18 @@ func (m *migration) plan() ([]source, []*store.Account, error) {
 		}
 	}
 	return sources, lost, nil
+}
+
+// lostAgents is the agents a lost profile becomes accounts of: those its
+// sessions ran, and those an earlier run made its accounts for.
+func lostAgents(begun map[string]bool, profile string, ran []string) []string {
+	var out []string
+	for _, name := range []string{Claude, Codex, OpenCode} {
+		if begun["lost:"+profile+":"+name] || slices.Contains(ran, name) {
+			out = append(out, name)
+		}
+	}
+	return out
 }
 
 // present reports whether an agent's folder is there to move, or was moved
