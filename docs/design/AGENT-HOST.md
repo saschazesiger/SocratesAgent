@@ -886,6 +886,20 @@ attachment(s): …`).
   the installed codex with `internal/agent/codex/fakemodel` as its model provider (a scripted
   Responses API whose encrypted reasoning is bound to an account; `e2e/fakebin/fakemodel` serves
   it on a port).
+- Accounts (WP7): `internal/store` (the table, the order, origin once, the upgrade of a schema-9
+  database through 10, 11 and 12); `internal/vault` (the key file made once); `internal/accounts`
+  (the environment of each kind: the allow-list, no service variable, no key; the sealed key
+  variables; Codex's device code and key against `fakecodex`; the migration rehearsed on a
+  synthetic HOME and a schema-9 store: folders renamed with their inodes, links back, writes
+  through a link landing in the one file, no second copy of any login, the tar, run twice, and
+  cut short after each of its steps and run again to the same result); `internal/agenthost`
+  through real hosts with the fake (A → B → A with the keys in no file, a switch during a turn
+  interrupting it and continuing in order, after the turn, the divider at boot, a key sealed for
+  another chat refused); each adapter's switch A → B → A in a real host (`fakeclaude`, `fakecodex`,
+  `fakeopencode`) keeping its conversation; OpenCode's held queue after a limit; `internal/server`
+  (the routes and that no answer, `host.json`, journal, log or outbox holds a key, a switch while
+  running and while parked, a limit stopping the chat or switching it, Codex's device code);
+  `e2e/run.mjs` `accounts` and `chat-account` in the browser.
 
 ## 10. Known limits, for the packages that follow
 

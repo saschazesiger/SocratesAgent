@@ -14010,7 +14010,7 @@ const ALL = [
   ['recoveredsession', 'a tmux session with no row is taken in, never killed', recoveredsession],
   ['createclaude', 'Claude Code from the sheet to the command line, and back after an exit', createclaude],
   ['createcodex', 'Codex is trusted where it works, and its conversation is found', createcodex],
-  ['profiles', 'a second set of sign-ins, from the dashboard to the command line', profiles],
+  ['profiles', 'a second set of sign-ins for a terminal, to the command line', profiles],
   ['createopencode', 'OpenCode names its session over its own authenticated server', createopencode],
   ['rebootresume', 'a machine that rebooted, and the session that comes back with its conversation', rebootresume],
   ['lighttheme', 'the white terminal, from the launch flag to the drawn pixel', lighttheme],
