@@ -142,6 +142,54 @@ func (s *Server) handleBackupSnapshots(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"snapshots": list})
 }
 
+// handleBackupLegacy is what the bucket mirror of the build before left
+// beside the backup, which the Backup card offers to delete once the backup
+// has a snapshot of this machine (REBUILD.md §8.4).
+func (s *Server) handleBackupLegacy(w http.ResponseWriter, r *http.Request) {
+	e := s.backupEngine(w)
+	if e == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Minute)
+	defer cancel()
+	legacy, err := e.LegacyMirror(ctx)
+	if errors.Is(err, backup.ErrNotConfigured) {
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusBadGateway, backup.Explain(err))
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"legacy": legacy})
+}
+
+// handleBackupLegacyDelete deletes the mirror's objects, the card's button
+// behind its confirmation. A delete before the first snapshot is refused.
+func (s *Server) handleBackupLegacyDelete(w http.ResponseWriter, r *http.Request) {
+	e := s.backupEngine(w)
+	if e == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Minute)
+	defer cancel()
+	deleted, err := e.DeleteLegacyMirror(ctx)
+	switch {
+	case errors.Is(err, backup.ErrNotConfigured), errors.Is(err, backup.ErrNoSnapshotYet):
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	case err != nil:
+		writeJSON(w, http.StatusBadGateway, map[string]any{"error": backup.Explain(err), "deleted": deleted})
+		return
+	}
+	log.Printf("backup: deleted the %d objects the bucket mirror of the build before had left", deleted)
+	legacy, err := e.LegacyMirror(ctx)
+	if err != nil {
+		legacy = backup.LegacyMirror{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"deleted": deleted, "legacy": legacy})
+}
+
 // backupForm is the Backup card's form. Empty secrets keep the saved ones.
 type backupForm struct {
 	Endpoint        string `json:"endpoint"`

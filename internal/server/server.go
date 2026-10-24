@@ -460,6 +460,8 @@ func (s *Server) routes() {
 	mux.HandleFunc("GET /api/backup", s.auth(s.handleBackupStatus))
 	mux.HandleFunc("POST /api/backup/run", s.auth(s.handleBackupRun))
 	mux.HandleFunc("GET /api/backup/snapshots", s.auth(s.handleBackupSnapshots))
+	mux.HandleFunc("GET /api/backup/legacy", s.auth(s.handleBackupLegacy))
+	mux.HandleFunc("DELETE /api/backup/legacy", s.auth(s.handleBackupLegacyDelete))
 	mux.HandleFunc("POST /api/backup/test", s.auth(s.handleBackupTest))
 	mux.HandleFunc("PUT /api/backup/config", s.auth(s.handleBackupConfig))
 	mux.HandleFunc("DELETE /api/backup/config", s.auth(s.handleBackupOff))
