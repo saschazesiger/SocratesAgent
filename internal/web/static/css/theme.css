@@ -107,6 +107,10 @@
   --so-log-max-height: 280px;
   --so-col-status: 136px;
   --so-name-field-width: 320px;
+  --so-account-meters-width: 360px;
+
+  /* Accounts (sign-in dialog) */
+  --so-signin-list-max: 320px;
 
   /* Login, setup, costs */
   --so-auth-width: 400px;

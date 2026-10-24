@@ -387,7 +387,16 @@ function profileEntry(profile, harnessId, recommended, here) {
 // with its window, how much of it is used and how long until it renews. The
 // figure is always written out: the bar alone would say it by length only.
 function usageMeters(profile, harnessId) {
-  const windows = limitWindows(profile, harnessId);
+  return limitMeters(limitWindows(profile, harnessId));
+}
+
+/**
+ * limitMeters is limit windows ({label, used_percent, resets_at}) as flat DS
+ * progress bars, the five hours and the week: the profiles' and the
+ * accounts' (accounts.js) are drawn the same.
+ */
+export function limitMeters(all) {
+  const windows = (all || []).filter((w) => w.label === '5h' || w.label === '7d');
   if (!windows.length) return '';
   return html`<div class="so-limits">${windows.map((w) => {
     const used = Math.max(0, Math.min(100, Math.round(Number(w.used_percent) || 0)));
