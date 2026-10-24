@@ -7,7 +7,22 @@ is a real terminal in a real tmux pane and the browser is a window onto it.
 Either way a session outlives the tab, the phone, the network and an update.
 
 <p align="center">
-  <img src="docs/screenshot-session.png" alt="A Claude Code session in the browser, with a session per program in the sidebar" width="860">
+  <img src="docs/screenshot-session.png" alt="A Claude Code chat in the browser: the fix it explains, the edit it made and the tests it ran, with a chat per agent and a Shell in the sidebar" width="860">
+</p>
+
+## Home, and the questions the agents ask
+
+Every start of the page is **Home**: how many chats need an answer, are working, have background
+tasks or finished while nobody looked, and a line per chat saying what it is doing, all moving by
+themselves. An agent that needs you asks through one tool, `ask_user`, the same for all three, and
+waits for the answer however long it takes: a question with options, several at once, a plan to
+approve. **Questions** opens them one after the other, oldest first; on a phone or in a car the
+dialog is the whole screen, with big buttons, Read aloud and dictation, and an answer given offline
+goes out once the connection is back. A question answered on another device says so.
+
+<p align="center">
+  <img src="docs/screenshot-home.png" alt="Home: one chat asking which database to use, one running its tests, two that finished, and a Shell" width="640">
+  <img src="docs/screenshot-phone.png" alt="The question on a phone, as the whole screen: Postgres recommended, SQLite and MySQL as big buttons" width="200">
 </p>
 
 ## Install
@@ -113,7 +128,8 @@ open it, and a chat goes on with its conversation.
 | | |
 | --- | --- |
 | `socrates.service` | the web server: `systemctl status socrates`, `journalctl -u socrates -f` |
-| `socrates-tmux.scope` | the sessions. `systemctl stop "socrates-tmux*.scope"` ends every one of them |
+| `socrates-agents-<chat>.scope` | one chat's agent host and its CLI, which outlive the service |
+| `socrates-tmux.scope` | the Shell terminals. `systemctl stop "socrates-tmux*.scope"` ends every one of them |
 | `socrates-update.timer` | the nightly update: `systemctl list-timers socrates-update.timer`, `journalctl -u socrates-update` |
 | `/etc/socrates.env` | the listen address and what is updated |
 | `/var/lib/socrates` | the data directory: the database, the chats, the accounts and the agents' transcripts, the terminals' journals, `backup.json`, `updates.json` and `updates.log` of the last update |
@@ -158,9 +174,13 @@ a week for 26 weeks; chunks no snapshot needs any more are deleted a day later.
 The card says when the last backup ran, how large it was and what failed; a
 day without a successful one is said on the session page too.
 
+<p align="center">
+  <img src="docs/screenshot-backup.png" alt="Admin's Backup card: the bucket, when the last backup ran and its snapshot" width="760">
+</p>
+
 | backed up | left out |
 | --- | --- |
-| the database, `sessions/`, `profiles/`, `vscode/`, `vscode-extensions/`, and whatever later versions keep there (chats, agents, accounts) | working directories (the workspace root and the presets, which live in git), `run/`, `cache/`, `bin/`, sockets, the terminals' byte journals, a chat host's lock and log and the account environment in its launch spec, the updater's files, and `backup.json` itself |
+| the database and its key (`secrets.key`), `chats/` (every chat's journal and attachments), `agents/` (the agents' shared transcripts), `accounts/` (their sign-ins), `terminals/`, `sessions/`, `vscode/`, `vscode-extensions/` | working directories (the workspace root and the presets, which live in git), `run/`, `cache/`, `bin/`, sockets, the terminals' byte journals, a chat host's lock and log and the brief it makes again from the journal, OpenCode's shared cache, Codex's own logs, the updater's files, and `backup.json` itself |
 
 **Everything in the bucket is encrypted on this machine** (AES-256-GCM, with
 keys derived from your passphrase by PBKDF2-SHA256, 600 000 rounds) before it
@@ -206,6 +226,10 @@ can be moved to another account from its composer, and can be told to switch
 by itself when it reaches a limit. Every account of an agent shares its
 conversations, so a chat goes on with its history on any of them.
 
+<p align="center">
+  <img src="docs/screenshot-admin.png" alt="Admin's Accounts card: two Claude Code accounts, a Codex and an OpenCode account" width="760">
+</p>
+
 A Claude Code chat can also be started with **Ultracode** (dynamic workflows
 on every task) from the new-session sheet, and switched on or off from the
 chat's menu.
@@ -232,10 +256,9 @@ the phone locked. On an iPhone, add Socrates to the Home Screen and turn
 them on from there; Safari allows push only for an installed web app. Over
 plain http they appear only while the page is open.
 
-A question notification shows the question itself when it can be read in
-time, and tapping it opens Home with that question ready to answer. The app
-icon's badge is the number of sessions waiting for an answer (questions and
-permission prompts), and a notification for a question that has been answered
+A question notification shows the question itself, and tapping it opens Home
+with that question ready to answer. The app icon's badge is the number of chats
+waiting for an answer, and a notification for a question that has been answered
 elsewhere is removed. On Android, a long press on the installed app's icon
 offers **Questions** and **Home**.
 

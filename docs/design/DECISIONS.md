@@ -43,7 +43,7 @@ These are binding. The design spec must implement them; it may add detail but no
   working directory, and on next open restarts the CLI with resume in the same directory.
   For Shell, it just starts a new shell in the same directory. UI must show "resumed after
   restart" clearly.
-- *For a chat superseded by REBUILD.md §2.2: what is sent waits in the page's outbox and goes
+- *For a chat superseded by REBUILD.md §2.2 and §2.3: what is sent waits in the page's outbox and goes
   once, and the chat stream replays the journal from the last event the page had.* Network loss
   on the phone: the client shows a visible disconnected state, buffers typed input
   locally, and on reconnect resumes the byte stream from the last acknowledged sequence number
