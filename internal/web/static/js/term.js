@@ -141,7 +141,7 @@ export function measurePane(host, opts = {}) {
 const SLOP = 8;
 
 // How long a finger has to rest before it is selecting rather than tapping.
-const HOLD_MS = 450;
+export const HOLD_MS = 450;
 
 /* ------------------------------------------------------------ clipboard */
 

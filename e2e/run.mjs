@@ -249,6 +249,20 @@ const firstRow = (page) => page.evaluate(() => {
   return '';
 });
 
+// holdKey holds a finger on one key of the key bar for longer than a tap:
+// how a modifier is locked.
+async function holdKey(page, name) {
+  const at = await page.$eval('#keybar .so-key[data-key="' + name + '"]', (n) => {
+    const r = n.getBoundingClientRect();
+    return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+  });
+  await page.mouse.move(at.x, at.y);
+  await page.mouse.down();
+  await wait(700);
+  await page.mouse.up();
+  await wait(100);
+}
+
 /* --------------------------------------------------------- 1. createshell */
 
 // The sheet makes a Shell session, the pane comes up with a prompt in it, and
@@ -1536,19 +1550,30 @@ async function keybar() {
     ok(!(await s.page.$eval('#keybar', (n) => n.hidden)),
       'a keystroke on a real keyboard does not take the bar away', 'still on screen');
 
-    // A second tap locks it, and a locked modifier keeps transforming.
+    // A second tap takes back the first: a tap too many is undone, never a
+    // lock nobody asked for.
+    const ctrlState = () => s.page.$eval('#keybar .so-key[data-key="Control"]', (n) => (n.getAttribute('aria-pressed') === 'true' ? 'on' : 'off') + (n.hasAttribute('data-lock') ? ' lock' : ''));
     await s.page.click('#keybar .so-key[data-key="Control"]');
     await s.page.click('#keybar .so-key[data-key="Control"]');
-    const locked = await s.page.$eval('#keybar .so-key[data-key="Control"]', (n) => (n.getAttribute('aria-pressed') === 'true' ? 'on' : 'off') + (n.hasAttribute('data-lock') ? ' lock' : ''));
-    ok(/\block\b/.test(locked), 'a second tap locks Ctrl', locked);
+    const twice = await ctrlState();
+    ok(twice === 'off', 'a second tap puts an armed Ctrl away', twice);
+
+    // Held, it locks - the lock glyph and the label say so - and a locked
+    // modifier keeps transforming.
+    await holdKey(s.page, 'Control');
+    const locked = await ctrlState();
+    const lockedLooks = await s.page.$eval('#keybar .so-key[data-key="Control"]', (n) => ({
+      glyph: !!n.querySelector('svg'), label: n.getAttribute('aria-label'), tip: n.getAttribute('data-tip'),
+    }));
+    ok(/\block\b/.test(locked) && lockedLooks.glyph && /locked/.test(lockedLooks.label),
+      'a long press locks Ctrl, and it shows', locked + ' ' + JSON.stringify(lockedLooks));
     const beforeLock = (await sentBytes(s.page)).length;
     await s.page.keyboard.type('ab');
     await wait(200);
     const two = (await sentBytes(s.page)).slice(beforeLock).filter((hex) => hex.length === 2);
     ok(two.join(',') === '01,02', 'a locked Ctrl transforms every key after it', two.join(',') || 'nothing');
     await s.page.click('#keybar .so-key[data-key="Control"]');
-    ok(!/\b(on|lock)\b/.test(await s.page.$eval('#keybar .so-key[data-key="Control"]', (n) => (n.getAttribute('aria-pressed') === 'true' ? 'on' : 'off') + (n.hasAttribute('data-lock') ? ' lock' : ''))),
-      'a third tap puts it away', 'off');
+    ok(!/\b(on|lock)\b/.test(await ctrlState()), 'a tap releases it', await ctrlState());
 
     // A modifier is for the next key the person presses, and the terminal's
     // own reports are not keys. Leaving the pane for a control in the bar -
@@ -1575,8 +1600,7 @@ async function keybar() {
     // A locked Alt must not put an ESC in front of what the terminal answers.
     await s.page.click('#term .xterm-screen');
     await focusTerm(s.page);
-    await s.page.click('#keybar .so-key[data-key="Alt"]');
-    await s.page.click('#keybar .so-key[data-key="Alt"]');
+    await holdKey(s.page, 'Alt');
     const beforeBlur = (await sentBytes(s.page)).length;
     // Out of the pane to the options menu and back to it with Escape, which
     // is the menu's and not the pane's.
