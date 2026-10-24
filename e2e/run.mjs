@@ -9665,23 +9665,23 @@ async function homerestart() {
   } finally { await s.stop(); }
 }
 
-// home-devices: two devices on one question. The dialog on the second follows
-// the answer the first gave, locks its options and says whose answer it is,
-// and a Send that crossed it is told the same - and neither is counted as an
-// answer of the second device's.
+// home-devices: two devices on one chat's question. The dialog on the second
+// follows the answer the first gave and says it was answered on another
+// device; a Send that crossed it - from a device that had not heard, or on a
+// slow uplink that the other's answer overtook - is told the same; neither
+// is counted as the second device's answer; and a second tab of the same
+// browser is the same device, never "another".
 async function homedevices() {
-  const { s, stub, ctl } = await homeServer();
-  let pause = null;
+  const s = await homeChats();
   let other = null;
   try {
-    const watched = await makeAgent(s, 'Watched');
-    const crossed = await makeAgent(s, 'Crossed');
-    ctl.operator = async () => { if (pause) await pause.promise; return undefined; };
     const deaf = { on: false };
     other = await deviceOf(s, { viewport: { width: 1280, height: 800 } });
-    await other.page.routeWebSocket(/\/api\/events/, (ws) => {
+    // The other device's chat streams, which can stop passing anything on:
+    // a device that has not heard of the answer yet.
+    await other.page.routeWebSocket(/\/api\/chats\/[^/]+\/stream/, (ws) => {
       const server = ws.connectToServer();
-      server.onMessage((m) => { if (deaf.on && String(m).includes('"t":"answer"')) return; ws.send(m); });
+      server.onMessage((m) => { if (!deaf.on) ws.send(m); });
       ws.onMessage((m) => server.send(m));
     });
     await other.page.goto(s.url + '/', { waitUntil: 'domcontentloaded' });
@@ -9691,125 +9691,117 @@ async function homedevices() {
     const openOn = async (page, id) => {
       await awaitHome(page, (h) => h.rows.some((r) => r.id === id && r.answer), 15000);
       await page.click('.so-home__card[data-id="' + id + '"] .so-home__answer');
-      return awaitSheet(page, (d) => !!d && d.options.length === 2 && d.options.every((o) => !o.disabled), 10000);
+      return awaitAsk(page, (d) => !!d && d.options.length === 2 && d.actions.includes('send'), 10000);
     };
-    await askQuestion(s, watched);
-    await openOn(s.page, watched);
-    await openOn(other.page, watched);
-    const saidA = await sheetSaid(s.page);
-    const saidB = await sheetSaid(other.page);
-    pause = gate();
-    await s.page.click('.so-q-option[data-label="Postgres"]');
-    await s.page.click('.so-q-send');
-    const following = await awaitSheet(other.page, (d) => !!d && !!d.status && /Another device is answering/.test(d.status.text), 10000);
-    const b = following.seen || {};
-    ok(following.ok && /Postgres/.test(b.status.text) && b.options.every((o) => o.disabled) && b.send && b.send.hidden,
-      'the other device’s dialog follows the answer: options locked, no Send, and whose answer it is',
-      JSON.stringify(b && { status: b.status, locked: b.options && b.options.map((o) => o.disabled), send: b.send }));
-    pause.release();
-    pause = null;
-    const logged = await awaitAnswerLogged(s, 1);
-    await sheetShut(s.page, 15000);
-    await sheetShut(other.page, 15000);
+    const answeredOnce = async (id, want) => {
+      const got = await returned(s, id, 20000);
+      const asks = (await historyOf(s, id)).asks || [];
+      return { ok: !!got && got.answers.db.selected.join() === want && asks.filter((a) => a.answered).length === 1,
+        got: got && got.answers.db.selected };
+    };
+
+    const watched = await askingChat(s, 'Watched');
+    await openOn(s.page, watched.id);
+    await openOn(other.page, watched.id);
+    const saidA = await watchAsk(s.page);
+    const saidB = await watchAsk(other.page);
+    await s.page.click('dialog.so-askdlg .so-q-option[data-option="postgres"]');
+    await s.page.click('dialog.so-askdlg [data-action="send"]');
+    const followed = await awaitAsk(other.page, (d) => !!d && d.finished === 'Answered on another device', 15000);
+    const once = await answeredOnce(watched.id, 'postgres');
+    ok(followed.ok && !followed.seen.actions.includes('send'),
+      'the other device’s dialog follows the answer: answered on another device, with nothing to send',
+      JSON.stringify(followed.seen && { finished: followed.seen.finished, text: followed.seen.finishedText, actions: followed.seen.actions }));
+    ok(once.ok, 'Postgres went in, once', JSON.stringify(once.got));
+    await askShut(s.page, 15000);
     const a = await saidA();
     const bs = await saidB();
-    ok(logged.length === 1 && logged[0].answers[0].choices.join(',') === 'Postgres', 'Postgres went in, once', JSON.stringify(logged.map((l) => l.answers)));
-    ok(a.includes('All questions answered'), 'the device that answered says all its questions were answered', a.join(' | '));
-    ok(bs.some((w) => /Answered on another device/.test(w)) && !bs.includes('All questions answered'),
+    ok(a.includes('Answered') && !a.some((w) => /another device/.test(w)), 'the device that answered says Answered', a.join(' | '));
+    ok(bs.some((w) => /Answered on another device/.test(w)) && !bs.includes('Answered'),
       'the other says it was answered on another device, never that it answered it', bs.join(' | '));
+    await other.page.click('dialog.so-askdlg [data-action="next"]').catch(() => {});
+    await askShut(other.page, 10000);
 
     // A Send from a device that did not hear of the other's answer.
-    await awaitActivity(s, watched, (act) => act.state !== 'waiting', 10000);
-    await askQuestion(s, crossed);
-    pause = gate();
-    await openOn(s.page, crossed);
-    await openOn(other.page, crossed);
-    const toldB = await sheetSaid(other.page);
+    const crossed = await askingChat(s, 'Crossed');
+    await openOn(s.page, crossed.id);
+    await openOn(other.page, crossed.id);
+    const toldB = await watchAsk(other.page);
     deaf.on = true;
-    await s.page.click('.so-q-option[data-label="Postgres"]');
-    await s.page.click('.so-q-send');
-    await wait(1500);
-    await other.page.click('.so-q-option[data-label="SQLite"]');
-    await other.page.click('.so-q-send');
-    const clash = await awaitSheet(other.page, (d) => !!d && !!d.status && /Another device is already answering/.test(d.status.text), 10000);
-    ok(clash.ok && /Postgres/.test(clash.seen.status.text), 'a Send that crossed it is told another device is already answering, and with what',
-      JSON.stringify(clash.seen && clash.seen.status));
+    await s.page.click('dialog.so-askdlg .so-q-option[data-option="postgres"]');
+    await s.page.click('dialog.so-askdlg [data-action="send"]');
+    const first = await answeredOnce(crossed.id, 'postgres');
+    await other.page.click('dialog.so-askdlg .so-q-option[data-option="sqlite"]');
+    await other.page.click('dialog.so-askdlg [data-action="send"]');
+    const clash = await awaitAsk(other.page, (d) => !!d && d.finished === 'Answered on another device', 15000);
     deaf.on = false;
-    pause.release();
-    pause = null;
-    const two = await awaitAnswerLogged(s, 2);
-    await sheetShut(other.page, 15000);
+    const still = await answeredOnce(crossed.id, 'postgres');
     const words = await toldB();
-    ok(two.length === 2 && two[1].answers[0].choices.join(',') === 'Postgres', 'only Postgres went in', JSON.stringify(two.map((l) => l.answers)));
-    ok(!words.includes('All questions answered'), 'and the device that crossed it never says it answered it', words.join(' | '));
+    ok(clash.ok, 'a Send that crossed it is told it was answered on another device',
+      JSON.stringify(clash.seen && { finished: clash.seen.finished, text: clash.seen.finishedText }));
+    ok(first.ok && still.ok, 'only Postgres went in', JSON.stringify(still.got));
+    ok(!words.includes('Answered'), 'and the device that crossed it never says it answered it', words.join(' | '));
+    await other.page.click('dialog.so-askdlg [data-action="next"]').catch(() => {});
+    await askShut(other.page, 10000);
+    await askShut(s.page, 15000);
 
     // A second tab of the same browser is the same device: it is never told
     // that another device answered.
-    await awaitActivity(s, watched, (act) => act.state === 'idle', 15000);
-    await askQuestion(s, watched);
+    const tabbed = await askingChat(s, 'Two tabs');
     const tab = await s.context.newPage();
     tab.on('pageerror', (err) => s.errors.push('pageerror: ' + err.message));
     await tab.goto(s.url + '/', { waitUntil: 'domcontentloaded' });
     await awaitHome(tab, (h) => h.shown && h.conn === 'live', 15000);
-    await openOn(s.page, watched);
-    await openOn(tab, watched);
-    const tabSaid = await sheetSaid(tab);
-    await s.page.click('.so-q-option[data-label="SQLite"]');
-    await s.page.click('.so-q-send');
-    const three = await awaitAnswerLogged(s, 3);
-    await sheetShut(s.page, 15000);
-    await sheetShut(tab, 15000);
+    await openOn(s.page, tabbed.id);
+    await openOn(tab, tabbed.id);
+    const tabSaid = await watchAsk(tab);
+    await s.page.click('dialog.so-askdlg .so-q-option[data-option="sqlite"]');
+    await s.page.click('dialog.so-askdlg [data-action="send"]');
+    const third = await answeredOnce(tabbed.id, 'sqlite');
+    await askShut(s.page, 15000);
+    await awaitAsk(tab, (d) => !d || !!d.finished, 15000);
     const tabWords = await tabSaid();
-    ok(three.length === 3 && three[2].answers[0].choices.join(',') === 'SQLite' && !tabWords.some((w) => /another device/i.test(w)),
+    ok(third.ok && tabWords.includes('Answered') && !tabWords.some((w) => /another device/i.test(w)),
       'a second tab of the same browser follows the answer without being told another device gave it', tabWords.join(' | '));
     await tab.close();
 
     // A Send on a slow uplink: the second device sends first, but its
-    // request is still on its way when the first device's answer starts and
-    // reaches it on the stream. That run is not its answer - its own Send is
-    // refused for it - so it never says Answered, nor counts it as its own.
-    const slow = await makeAgent(s, 'Slow uplink');
+    // request is still on its way when the first device's answer goes in.
+    // It is refused for that, never says Answered, and nothing of it goes in.
+    const slow = await askingChat(s, 'Slow uplink');
     const uplink = { slow: false };
-    await other.page.route(/\/api\/sessions\/[^/]+\/answer$/, async (route) => {
+    await other.page.route('**/api/chats/*/asks/*/answer', async (route) => {
       if (route.request().method() !== 'POST' || !uplink.slow) return route.continue();
-      await wait(2000);
+      await wait(2500);
       await route.continue().catch(() => {});
     });
-    await askQuestion(s, slow);
-    pause = gate();
-    await openOn(s.page, slow);
-    await openOn(other.page, slow);
-    const slowA = await sheetSaid(s.page);
-    const slowB = await sheetSaid(other.page);
+    await openOn(s.page, slow.id);
+    await openOn(other.page, slow.id);
+    const slowA = await watchAsk(s.page);
+    const slowB = await watchAsk(other.page);
     uplink.slow = true;
-    await other.page.click('.so-q-option[data-label="SQLite"]');
-    await other.page.click('.so-q-send');
+    await other.page.click('dialog.so-askdlg .so-q-option[data-option="sqlite"]');
+    await other.page.click('dialog.so-askdlg [data-action="send"]');
     await wait(300);
-    await s.page.click('.so-q-option[data-label="Postgres"]');
-    await s.page.click('.so-q-send');
-    await wait(4000);
-    pause.release();
-    pause = null;
-    const four = await awaitAnswerLogged(s, 4);
-    await sheetShut(s.page, 15000);
-    await sheetShut(other.page, 15000);
+    await s.page.click('dialog.so-askdlg .so-q-option[data-option="postgres"]');
+    await s.page.click('dialog.so-askdlg [data-action="send"]');
+    const fourth = await answeredOnce(slow.id, 'postgres');
+    await askShut(s.page, 15000);
+    await awaitAsk(other.page, (d) => !d || d.finished === 'Answered on another device', 15000);
+    await wait(3000);
+    const after = await answeredOnce(slow.id, 'postgres');
     uplink.slow = false;
     const slowWordsA = await slowA();
     const slowWordsB = await slowB();
-    ok(four.length === 4 && four[3].answers[0].choices.join(',') === 'Postgres', 'only the first device’s Postgres went in',
-      JSON.stringify(four.slice(3).map((l) => l.answers)));
-    ok(slowWordsA.includes('All questions answered'), 'the device whose answer went in says so', slowWordsA.join(' | '));
-    ok(slowWordsB.some((w) => /another device/i.test(w)) && !slowWordsB.includes('All questions answered')
-      && !slowWordsB.some((w) => /^Answered(?! on another device)/.test(w)),
-      'the device whose Send was slower says another device answered, never that it answered it itself',
-      slowWordsB.join(' | '));
-    ok(unexpected(s.errors, REFUSED_NOISE).length === 0, 'no unexpected console errors',
-      unexpected(s.errors, REFUSED_NOISE).join(' | ') || '0');
+    ok(fourth.ok && after.ok, 'only the first device’s Postgres went in', JSON.stringify(after.got));
+    ok(slowWordsA.includes('Answered'), 'the device whose answer went in says so', slowWordsA.join(' | '));
+    ok(slowWordsB.some((w) => /another device/i.test(w)) && !slowWordsB.includes('Answered'),
+      'the device whose Send was overtaken says another device answered, never that it did', slowWordsB.join(' | '));
+    await other.page.unroute('**/api/chats/*/asks/*/answer');
+    ok(unexpected(s.errors, REFUSED_NOISE).length === 0, 'no unexpected console errors', unexpected(s.errors, REFUSED_NOISE).join(' | ') || '0');
   } finally {
-    if (pause) pause.release();
-    if (other) await other.context.close().catch(() => {});
+    if (other) await other.context.close();
     await s.stop();
-    await stub.close();
   }
 }
 
@@ -11910,7 +11902,7 @@ const ALL = [
   ['home-honest', 'ages by the server\u2019s clock, a dialog that says it is offline, an answer saved offline, and a compressed poll', homehonest],
   ['home-language', 'a question read in German off an English screen: two tabs that share Yes and No, each given its own answer', homelanguage],
   ['home-restart', 'a server restart under an open dialog: every chat\u2019s question kept in the walk, its choice and its age', homerestart],
-  ['home-devices', 'two devices on one question: the second follows the first\u2019s answer, and is told when its Send crossed it', homedevices],
+  ['home-devices', 'two devices on one chat\u2019s question: the second follows the first\u2019s answer, is told when its Send crossed it, and a second tab is the same device', homedevices],
   ['home-followup', 'a follow-up asked right after the answer, slower to read than "Answered" lasts', homefollowup],
   ['livesession', 'one real session against the real Claude Code CLI', livesession, { live: true }],
 ];
