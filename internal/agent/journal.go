@@ -241,16 +241,42 @@ func LastSeq(path string) (int64, error) {
 	}
 }
 
+// ScanJournal hands every whole event of a journal to fn, in order, without
+// holding the history: what a reader that only sums something up (the cost
+// of a chat's turns) reads a long journal with. It reads by readJournal's
+// rules, and a journal that does not exist has no events.
+func ScanJournal(path string, fn func(Event)) error {
+	f, err := os.Open(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	_, _, err = scanJournal(f, fn)
+	return err
+}
+
 // readJournal parses f from its start. good is the byte offset just past the
 // last whole event, and size how far the file goes.
+func readJournal(f *os.File) ([]Event, int64, int64, error) {
+	var events []Event
+	good, size, err := scanJournal(f, func(ev Event) { events = append(events, ev) })
+	if err != nil {
+		return nil, 0, 0, err
+	}
+	return events, good, size, nil
+}
+
+// scanJournal hands every whole event of f to fn, from its start.
 //
 // A line that is not an event is skipped, and so is one whose seq does not
 // move forward: the journal is only ever appended to, so neither can be
 // anything but damage, and refusing the whole history over one torn line
 // would be worse than the line.
-func readJournal(f *os.File) ([]Event, int64, int64, error) {
+func scanJournal(f *os.File, fn func(Event)) (int64, int64, error) {
 	r := bufio.NewReaderSize(f, 64<<10)
-	var events []Event
 	var offset, good int64
 	var last int64
 	for {
@@ -258,16 +284,16 @@ func readJournal(f *os.File) ([]Event, int64, int64, error) {
 		offset += int64(len(line))
 		if len(line) > 0 && len(line) <= maxLine {
 			if ev, ok := parseLine(line, last); ok {
-				events = append(events, ev)
+				fn(ev)
 				last = ev.Seq
 				good = offset
 			}
 		}
 		if errors.Is(err, io.EOF) {
-			return events, good, offset, nil
+			return good, offset, nil
 		}
 		if err != nil {
-			return nil, 0, 0, err
+			return 0, 0, err
 		}
 	}
 }

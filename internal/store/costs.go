@@ -165,6 +165,31 @@ func writeCostLedger(db *sql.DB, l CostLedger) error {
 	return tx.Commit()
 }
 
+// DeleteCostLedger removes a conversation's ledger, and reports whether there
+// was one: a conversation another source counts now (a chat's journal) must
+// not be counted twice.
+func (s *Store) DeleteCostLedger(key string) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	tx, err := s.db.Begin()
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
+	res, err := tx.Exec(`DELETE FROM cost_convs WHERE key = ?`, key)
+	if err != nil {
+		return false, err
+	}
+	if _, err := tx.Exec(`DELETE FROM cost_hours WHERE key = ?`, key); err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return n > 0, tx.Commit()
+}
+
 // ListCostLedgers returns every conversation and its hours, the whole ledger.
 func (s *Store) ListCostLedgers() ([]CostLedger, error) {
 	rows, err := s.db.Query(`SELECT key, harness, conv_id, profile, workdir, title, session_id, first_at, last_at
