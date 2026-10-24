@@ -329,7 +329,7 @@ function drawTiles(filtered, days) {
   const rangeName = RANGES.find((r) => r.id === state.range).label;
   $('tRangeLabel').textContent = rangeName === 'All' ? 'All time' : rangeName;
   figure('tRange', total);
-  $('tRangeNote').textContent = `${requests.toLocaleString()} requests · ${tokens(used)} tokens`;
+  $('tRangeNote').textContent = `${requests.toLocaleString()} ${requests === 1 ? 'request' : 'requests'} · ${tokens(used)} ${used === 1 ? 'token' : 'tokens'}`;
   figure('tPerDay', days ? total / days : 0);
   $('tPerDayNote').textContent = `average over ${days} ${days === 1 ? 'day' : 'days'}`;
   figure('tToday', todayCost);
@@ -583,7 +583,7 @@ function drawTables(filtered) {
   table('tModel', groupBy(filtered, (r) => r.model), {
     column: 'Model',
     name: (g) => g.key,
-    sub: (g) => (g.unpriced && g.cost === 0 ? `${g.unpriced.toLocaleString()} requests without a known price` : ''),
+    sub: (g) => (g.unpriced && g.cost === 0 ? `${g.unpriced.toLocaleString()} ${g.unpriced === 1 ? 'request' : 'requests'} without a known price` : ''),
     onPick: (g) => toggleFilter('model', g.key), picked: (g) => f.model !== '' && f.model === g.key,
   });
   table('tMonthly', groupBy(filtered, (r) => r.month), {
