@@ -321,3 +321,36 @@ func (h *chatHub) rejudge(id string) digest {
 	}
 	return p.reading()
 }
+
+/* -------------------------------------------------------- push and badge */
+
+// askWords is what a chat asks, in one line, while it asks: what a push about
+// the question says.
+func (h *chatHub) askWords(id string) string {
+	b, ok := h.briefOfChat(id)
+	if !ok {
+		return ""
+	}
+	return firstQuestion(b.Question)
+}
+
+// turnWords is what a push about a chat's ended turn says, and false for a
+// turn that is no news (turnNews).
+func (h *chatHub) turnWords(id string) (string, bool) {
+	p, err := h.peer(id)
+	if err != nil {
+		return "Finished", true
+	}
+	words, news := "Finished", true
+	if err := p.view(func(proj *agent.Projection) { words, news = turnNews(proj) }); err != nil {
+		return "Finished", true
+	}
+	return words, news
+}
+
+// waiting is whether a chat waits for the person: an open ask it is stopped
+// on, by its brief.
+func (h *chatHub) waiting(id string) bool {
+	b, ok := h.briefOfChat(id)
+	return ok && b.Summary.Activity == agent.ActivityWaiting
+}

@@ -180,6 +180,8 @@ func New(st *store.Store, dataDir string) (*Server, error) {
 	s.sched = newScheduler(s)
 	s.costs = newCostLedger(s)
 	s.chats = newChatHub(s)
+	// A chat's push says what its journal says.
+	s.push.chatAsk, s.push.chatTurn = s.chats.askWords, s.chats.turnWords
 	manager, err := termux.New(st, cfg)
 	if err != nil {
 		return nil, err

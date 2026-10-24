@@ -294,7 +294,7 @@ func (c toolContent) path() string {
 // "Editing main.go".
 func toolLine(part *agent.Part) string {
 	c := readToolContent(part)
-	name := strings.ToLower(c.Tool)
+	name := strings.ToLower(firstNonEmpty(c.Tool, c.Name))
 	about := strings.TrimSpace(c.Summary)
 	if about == "" {
 		about = strings.TrimSpace(c.Title)
@@ -341,7 +341,7 @@ func toolLine(part *agent.Part) string {
 		}
 		return "A workflow is running"
 	}
-	label := c.Tool
+	label := firstNonEmpty(c.Tool, c.Name)
 	if label == "" || label == "mcp" || label == "dynamic" {
 		label = firstNonEmpty(c.Name, label, "a tool")
 	}

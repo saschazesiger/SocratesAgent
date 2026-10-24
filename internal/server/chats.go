@@ -982,6 +982,7 @@ func (s *Server) handleChatInterrupt(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"client_id": body.ClientID, "idle": true})
 		return
 	}
+	s.manager.MarkRead(p.id)
 	code, answer := p.command(r.Context(), agenthost.Command{Op: agenthost.OpInterrupt, ClientID: body.ClientID})
 	writeJSON(w, code, answer)
 }
@@ -1025,6 +1026,9 @@ func (s *Server) handleChatAnswer(w http.ResponseWriter, r *http.Request) {
 			"answered_elsewhere": true, "by_device": by})
 		return
 	}
+	// Answering is having seen the chat, as typing the answer into a
+	// terminal is: the turn it lets go on ends unread again, and is news.
+	s.manager.MarkRead(p.id)
 	code, answer := p.command(r.Context(), agenthost.Command{Op: agenthost.OpAnswer, ClientID: body.ClientID,
 		AskID: askID, Answer: body.Answer, Device: strings.TrimSpace(body.Device)})
 	writeJSON(w, code, answer)
