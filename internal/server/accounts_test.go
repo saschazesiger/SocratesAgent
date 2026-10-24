@@ -4,6 +4,7 @@ package server
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -468,6 +469,125 @@ func TestARefusedSignInIsMarkedUntilItSignsInAgain(t *testing.T) {
 	}
 	if acct, _ := c.store.GetAccount(a); acct.State != accounts.SignedIn || acct.StateDetail != "" {
 		t.Fatalf("after signing in again: %+v", acct)
+	}
+}
+
+// A Claude Code subscription signs in in a Shell terminal: the route opens one
+// running Claude Code's own `auth login` with the account's folder as
+// CLAUDE_CONFIG_DIR, the login is written there by Claude Code (a stand-in
+// here), and the account is found signed in, as the plan it says.
+func TestAClaudeAccountSignsInInAShell(t *testing.T) {
+	e := newSessionEnv(t)
+	bin := filepath.Join(t.TempDir(), "claude")
+	script := "#!/bin/sh\n" +
+		`printf '%s' '{"claudeAiOauth":{"accessToken":"at","refreshToken":"rt","subscriptionType":"max"}}' > "$CLAUDE_CONFIG_DIR/.credentials.json"` + "\n" +
+		`echo "signed in with $*"` + "\n"
+	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if res, payload := e.do(t, e.client, "PUT", "/api/settings", fmt.Sprintf(`{"settings":{"harnesses":{"claude":{"binary":%q}}}}`, bin)); res.StatusCode != http.StatusOK {
+		t.Fatalf("settings: %d %v", res.StatusCode, payload)
+	}
+	res, payload := e.do(t, e.client, "POST", "/api/accounts", `{"agent":"claude","kind":"subscription","label":"Team"}`)
+	if res.StatusCode != http.StatusCreated {
+		t.Fatalf("create: %d %v", res.StatusCode, payload)
+	}
+	id := payload["account"].(map[string]any)["id"].(string)
+	res, payload = e.do(t, e.client, "POST", "/api/accounts/"+id+"/signin", `{}`)
+	if res.StatusCode != http.StatusOK || payload["session"] == nil {
+		t.Fatalf("sign in: %d %v", res.StatusCode, payload)
+	}
+	shell := payload["session"].(map[string]any)
+	if shell["harness"] != "shell" {
+		t.Fatalf("the sign-in runs in %v", shell)
+	}
+	dir := accounts.Folder(e.srv.dataDir, accounts.Claude, id)
+	for deadline := time.Now().Add(15 * time.Second); ; {
+		if _, err := os.Stat(filepath.Join(dir, ".credentials.json")); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("Claude Code was not run with the account's folder")
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	res, payload = e.do(t, e.client, "GET", "/api/accounts", "")
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("list: %d", res.StatusCode)
+	}
+	for _, raw := range payload["accounts"].([]any) {
+		a := raw.(map[string]any)
+		if a["id"] == id && (a["state"] != accounts.SignedIn || a["plan"] != "max") {
+			t.Fatalf("after the sign-in: %v", a)
+		}
+	}
+}
+
+// An OpenCode subscription signs in through OpenCode's own provider flow on a
+// server of the account: the dashboard is offered the OAuth ways, one with a
+// code to paste takes the code, and the login lands in the account's own
+// auth.json, which makes it signed in.
+func TestAnOpenCodeAccountSignsInThroughItsProvider(t *testing.T) {
+	c := newChatEnv(t, time.Hour)
+	bin := filepath.Join(t.TempDir(), "opencode")
+	build := exec.Command("go", "build", "-o", bin, "./e2e/fakebin/fakeopencode")
+	build.Dir = "../.."
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build fakeopencode: %v\n%s", err, out)
+	}
+	t.Setenv("SOCRATES_OPENCODE_BIN", bin)
+	code, raw := c.rawCall(t, "POST", "/api/accounts", map[string]any{"agent": accounts.OpenCode, "kind": accounts.Subscription, "label": "Provider"})
+	if code != http.StatusCreated {
+		t.Fatalf("create: %d %s", code, raw)
+	}
+	var made struct {
+		Account accountView `json:"account"`
+	}
+	_ = json.Unmarshal([]byte(raw), &made)
+	id := made.Account.ID
+	t.Cleanup(func() { c.rawCall(t, "DELETE", "/api/accounts/"+id+"/signin", nil) })
+	flowOf := func(raw string) accounts.Flow {
+		var out struct {
+			SignIn accounts.Flow `json:"signin"`
+		}
+		_ = json.Unmarshal([]byte(raw), &out)
+		return out.SignIn
+	}
+	code, raw = c.rawCall(t, "POST", "/api/accounts/"+id+"/signin", map[string]any{})
+	flow := flowOf(raw)
+	if code != http.StatusOK || flow.State != accounts.FlowChoose || len(flow.Providers) != 1 || flow.Providers[0].ID != "fake" {
+		t.Fatalf("the ways to sign in: %d %s", code, raw)
+	}
+	var withCode *accounts.AuthMethod
+	for i, m := range flow.Providers[0].Methods {
+		if m.Type != "oauth" {
+			t.Fatalf("a way that is not OAuth is offered: %+v", m)
+		}
+		if len(m.Prompts) > 0 {
+			withCode = &flow.Providers[0].Methods[i]
+		}
+	}
+	if withCode == nil {
+		t.Fatalf("no way with a code: %s", raw)
+	}
+	code, raw = c.rawCall(t, "POST", "/api/accounts/"+id+"/signin", map[string]any{"provider": "fake", "method": withCode.Index,
+		"inputs": map[string]string{"workspace": "acme"}})
+	if flow := flowOf(raw); code != http.StatusOK || flow.State != accounts.FlowCode {
+		t.Fatalf("the way with a code: %d %s", code, raw)
+	}
+	if code, raw := c.rawCall(t, "POST", "/api/accounts/"+id+"/signin/code", map[string]any{"code": "bad"}); code != http.StatusBadRequest {
+		t.Fatalf("a bad code: %d %s", code, raw)
+	}
+	code, raw = c.rawCall(t, "POST", "/api/accounts/"+id+"/signin/code", map[string]any{"code": "good"})
+	if flow := flowOf(raw); code != http.StatusOK || flow.State != accounts.FlowDone {
+		t.Fatalf("the good code: %d %s", code, raw)
+	}
+	auth, err := os.ReadFile(filepath.Join(accounts.Folder(c.data, accounts.OpenCode, id), "opencode", "auth.json"))
+	if err != nil || !strings.Contains(string(auth), "fake") {
+		t.Fatalf("the account's auth.json: %q %v", auth, err)
+	}
+	if acct, _ := c.store.GetAccount(id); acct.State != accounts.SignedIn {
+		t.Fatalf("after the sign-in: %+v", acct)
 	}
 }
 
