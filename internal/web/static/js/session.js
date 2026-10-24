@@ -33,7 +33,7 @@ import { mountNotify } from './notify.js';
 import { mountTransfer } from './transfer.js';
 import { mountKeyBar, keyBarWanted, setKeyBarWanted, followViewport } from './keybar.js';
 import {
-  initKeyboard, guard, watchFrame, dictated, touchScreen, setTouchMode, showKeyboardSwitch,
+  initKeyboard, guard, watchFrame, dictated, touchScreen, setTouchMode, showKeyboardSwitch, typeHere,
 } from './keyboard.js';
 import { mountPrestart, forgetDraft, whenShort } from './prestart.js';
 import { mountEvents } from './events.js';
@@ -2041,6 +2041,9 @@ function promptTitle(current, opener) {
       resolve(answer);
       hideOverlay(dialog, { remove: true }).then(() => { restoreFocus(was); paneAfter(was); });
     }, { once: true });
+    // Rename is asked for by a tap (the menu's item, the name itself): the
+    // field the dialog opens on takes the keyboard with that focus.
+    typeHere(input, { focus: false });
     showOverlay(dialog, was).then(() => input.select());
   });
 }

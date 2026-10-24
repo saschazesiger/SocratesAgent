@@ -14,7 +14,7 @@
 import { api, el, infoTip, toast } from './api.js';
 import * as accounts from './accounts.js';
 import { combobox, dropdown } from './combobox.js';
-import { dictated } from './keyboard.js';
+import { dictated, typeHere } from './keyboard.js';
 import { agentMark } from './logos.js';
 import { hideOverlay, html, icon, iconEl, morph, raw, showOverlay, watchScrolled } from './ui.js';
 
@@ -607,7 +607,9 @@ export function settingsForm(options = {}) {
     // Only "Custom path…" has anything left to ask, so it is the only choice
     // that puts a second field on the form.
     dirPathRow.hidden = mode !== CUSTOM;
-    if (mode === CUSTOM && focus) dirPath.focus();
+    // Picked by a tap: the path is what is left to type, so it takes the
+    // keyboard at once.
+    if (mode === CUSTOM && focus) typeHere(dirPath);
     renderDir();
   }
 

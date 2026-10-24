@@ -367,6 +367,30 @@ function free(node) {
   unmute(node);
 }
 
+/**
+ * typeHere is a field the person has just asked to type into: Rename, the
+ * question dialog's "Other", "Add a note", "Anything else?" and "Ask the
+ * agent back", a plan's "Keep planning", the sheet's "Custom path…". A tap on
+ * a button that brings a field is a request for the keyboard, unlike a focus
+ * the page gives a field by itself (a dialog that opens on one, the
+ * composer of a chat that opens), which stays muted. The field is freed and
+ * given the focus - from inside the tap, which is when iOS raises a keyboard
+ * for it. With `focus: false` it is only freed, for a field that takes the
+ * focus by itself in the same tap (a dialog's autofocus). Anywhere but in
+ * touch mode it is a plain focus.
+ */
+export function typeHere(node, { focus = true } = {}) {
+  if (!node) return;
+  if (touch && isField(node) && !underSwitch(node)) {
+    const had = deepActive() === node;
+    free(node);
+    // A field that had the focus muted took no keyboard with it; handing
+    // the focus over again inside the tap raises one.
+    if (had && focus) { refocus(node, true); return; }
+  }
+  if (focus && deepActive() !== node) node.focus({ preventScroll: true });
+}
+
 // A finger coming down on an ordinary field frees it before the browser
 // moves the focus, so the tap's own focus raises the keyboard the way it
 // does on any page.

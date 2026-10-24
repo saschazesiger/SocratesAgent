@@ -35,6 +35,7 @@ import { mountComposer } from './composer.js';
 import { chatOutbox, pendingFor, pendingAnswer, pendingModel, failedItem, queueAnswer, answeredHere } from './chatoutbox.js';
 import { askProgress, askDraftsRev, forgetAskDraft } from './askdialog.js';
 import { record, recPhase } from './dictate.js';
+import { typeHere } from './keyboard.js';
 
 // How many chats keep their fold in memory, so that going back to one does
 // not replay its whole journal.
@@ -636,7 +637,8 @@ export function mountChat(ctx) {
         open.set('note:' + target.dataset.part, true);
         openRev += 1;
         render();
-        host.querySelector('[data-plan-note="' + CSS.escape(target.dataset.ask) + '"]')?.focus();
+        // Keep planning was asked for by a tap: its note takes the keyboard.
+        typeHere(host.querySelector('[data-plan-note="' + CSS.escape(target.dataset.ask) + '"]'));
         break;
       case 'plan-dictate': {
         // The note's own microphone, as every other field of the chat has:

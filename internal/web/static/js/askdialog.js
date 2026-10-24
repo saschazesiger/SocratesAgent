@@ -36,7 +36,7 @@ import { queueAnswer, answeredHere, onOutbox, pendingAnswer, chatOutbox } from '
 import { newChat, apply, openAsks } from './chatfold.js';
 import { ChatStream } from './chatstream.js';
 import { record, recPhase } from './dictate.js';
-import { touchScreen } from './keyboard.js';
+import { touchScreen, typeHere } from './keyboard.js';
 import { speak, stopSpeaking } from './voice.js';
 
 // A phone on its side (so-question.css "Phones and short screens"): the
@@ -876,9 +876,11 @@ export function openAskDialog({ items, start = 0, watch, openChat, closed, more 
     }
   });
 
+  // focusField is a field a button just brought (Other, Add a note,
+  // Anything else?, Ask the agent back): asked for by a tap, so it takes the
+  // keyboard at once, not at a second tap.
   function focusField(fid) {
-    const field = shell.querySelector('#' + CSS.escape(fid));
-    if (field) field.focus();
+    typeHere(shell.querySelector('#' + CSS.escape(fid)));
   }
 
   shell.addEventListener('input', (event) => {
