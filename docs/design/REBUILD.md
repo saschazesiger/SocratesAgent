@@ -413,15 +413,20 @@ Full inventory: research `02-feature-inventory.md`. Summary:
 - Assistant text as Markdown (vendored renderer + sanitizer, pinned and checksummed like DS).
 - Reasoning collapsed by default; tool calls as compact rows (icon, one-line summary, duration)
   that expand to input/output; file edits as a diff viewer; commands with their output; todo list
-  pinned above the composer while a turn runs; subagents and workflow agents as nested collapsible
+  pinned above the composer while a turn runs and its own place in the conversation is less than
+  half in view; subagents and workflow agents as nested collapsible
   groups (a workflow shows its phases and every agent's live status, like `/workflows`); plan card;
   ask card.
 - Header: agent mark, title, model + effort picker, account picker with usage, Status (spoken),
-  ⋮ (rename, file to shelf, export transcript, compact, delete).
+  ⋮ (the chat's own menu - rename, statuses, compact, download, switch accounts at a limit,
+  Ultracode, delete - with "This device…" last; an action sheet on a phone).
 - Composer: autosaving draft (per chat, same conflict rules as PreStart), Outbox, attachments,
-  dictation pill, slash-command palette (from the agent's command list), Stop button while busy,
-  "queued" chips for messages sent during a turn.
-- Phone: composer above the keyboard (existing `--app-h` handling), 48 px targets in touch mode.
+  dictation (a mic icon), slash-command palette (from the agent's command list), Stop as an icon
+  in Send's place while busy (Stop and Send side by side once something is written during a
+  turn), "queued" chips for messages sent during a turn.
+- Phone: composer above the keyboard (existing `--app-h` handling), 48 px targets in touch mode,
+  the bar one row; the chat's usage is the model menu's last item, and "Sent now, it waits until
+  the agent is done" a line of its own above the bar.
 
 ## 8. Migration of this installation
 
