@@ -2497,6 +2497,14 @@ async function createcodex() {
       JSON.stringify({ second, again, rollouts: after.length }));
     ok(userTexts(await historyOf(s, id)).join('|') === 'the first words|the second words',
       'and the conversation on screen is the one conversation', userTexts(await historyOf(s, id)).join('|'));
+    // It runs in the folder the chat's row names, its thread works there,
+    // and its command line trusts that folder - without which codex reads
+    // neither the project's config nor its AGENTS.md (research/02 §12).
+    const row = await sessionRow(s, id);
+    const where = await answerTo(s, id, '/where');
+    ok(where === 'cwd: ' + row.workdir + ' | thread: ' + row.workdir
+      + ' | trust: projects={' + JSON.stringify(row.workdir) + '={trust_level="trusted"}}',
+    'Codex works in the chat’s folder, which its command line trusts', where);
     await shot(s.page, 'createcodex');
     ok(unexpected(s.errors).length === 0, 'no console errors', unexpected(s.errors).join(' | ') || '0');
   } finally { await s.stop(); }
@@ -2531,6 +2539,10 @@ async function createopencode() {
     const second = await answerTo(s, id, 'the second words');
     ok(second === 'you said: the second words (turn 2 of ' + session + ')',
       'and the next message is the second turn of the same session', second);
+    const row = await sessionRow(s, id);
+    const where = await answerTo(s, id, '/where');
+    ok(where === 'cwd: ' + row.workdir + ' | session: ' + row.workdir,
+      'its server runs in the chat’s folder, and the session works there', where);
     await shot(s.page, 'createopencode');
     ok(unexpected(s.errors).length === 0, 'no console errors', unexpected(s.errors).join(' | ') || '0');
   } finally { await s.stop(); }

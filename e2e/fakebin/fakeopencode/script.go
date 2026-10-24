@@ -520,6 +520,17 @@ func (t *turn) play(text string) error {
 		if err := t.say([]string{"account: " + identity()}, 5*time.Millisecond); err != nil {
 			return err
 		}
+	case "/where":
+		// Where this server runs and the folder of the session, for a
+		// scenario to compare with the chat's.
+		cwd, _ := os.Getwd()
+		dir := ""
+		if sess, err := loadSession(t.sid); err == nil {
+			dir = sess.Directory
+		}
+		if err := t.say([]string{"cwd: " + cwd + " | session: " + dir}, 5*time.Millisecond); err != nil {
+			return err
+		}
 	default:
 		reply := fmt.Sprintf("you said: %s (turn %d of %s)", text, t.n, t.sid)
 		var chunks []string

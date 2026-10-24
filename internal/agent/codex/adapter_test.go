@@ -774,3 +774,36 @@ func TestCommandsArePaletted(t *testing.T) {
 		t.Fatal("codex is not registered")
 	}
 }
+
+// The working directory is trusted on the command line, resolved, as one
+// inline table: codex splits a dotted -c key on every dot, so a folder with a
+// dot in its name - or a quote, or a link to it - would otherwise trust
+// nothing, and codex would read neither the project's config nor its
+// AGENTS.md (research/02 §12).
+func TestTheWorkingDirectoryIsTrustedOnTheCommandLine(t *testing.T) {
+	root := t.TempDir()
+	real := filepath.Join(root, `my.repo "v2"`)
+	if err := os.Mkdir(real, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(root, "link")
+	if err := os.Symlink(real, link); err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := filepath.EvalSymlinks(real)
+	if err != nil {
+		t.Fatal(err)
+	}
+	quoted, _ := json.Marshal(resolved)
+	want := "projects={" + string(quoted) + `={trust_level="trusted"}}`
+	args := appServerArgs(link)
+	if len(args) < 2 || args[len(args)-2] != "-c" || args[len(args)-1] != want {
+		t.Fatalf("the command line for a folder through a link: %q, want it to end with -c %s", args, want)
+	}
+	if got := appServerArgs(""); strings.Contains(strings.Join(got, " "), "projects=") {
+		t.Fatalf("with no folder something was trusted: %q", got)
+	}
+	if got := trustOverride("/srv/a\u007fb"); !strings.Contains(got, `\u007F`) {
+		t.Fatalf("DEL is not escaped as TOML wants it: %s", got)
+	}
+}

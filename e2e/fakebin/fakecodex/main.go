@@ -93,6 +93,11 @@ func main() {
 	}
 	s := &server{home: home, account: account, strict: os.Getenv("FAKECODEX_STRICT") == "1",
 		out: bufio.NewWriter(os.Stdout), threads: map[string]*thread{}, pending: map[int64]chan reply{}}
+	for i := 1; i+1 < len(args); i++ {
+		if args[i] == "-c" && strings.HasPrefix(args[i+1], "projects=") {
+			s.trust = args[i+1]
+		}
+	}
 	s.serve()
 }
 
@@ -100,6 +105,8 @@ type server struct {
 	home    string
 	account string
 	strict  bool
+	// trust is the -c override that trusted a project, as it was given.
+	trust string
 
 	outMu sync.Mutex
 	out   *bufio.Writer
@@ -914,6 +921,11 @@ func (c *tcx) script(text string) (string, map[string]any) {
 			who = "none"
 		}
 		ok = c.say([]string{"account: " + who + " (home " + c.s.home + ")"}, 0)
+	case "/where":
+		// Where this process runs, the thread's folder and the folder the
+		// command line trusted, for a scenario to compare with the chat's.
+		cwd, _ := os.Getwd()
+		ok = c.say([]string{"cwd: " + cwd + " | thread: " + c.th.cwd + " | trust: " + c.s.trust}, 0)
 	case "/bg":
 		c.s.mu.Lock()
 		c.th.bgUntil = time.Now().Add(time.Duration(atof(fields, 0, 1) * float64(time.Second)))
