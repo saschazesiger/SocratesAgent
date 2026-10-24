@@ -25,7 +25,7 @@ import {
 } from './api.js';
 import { DS, M, html, raw, icon, iconEl, morph, flipMorph, watchScrolled, ms, setFaceLabel, faces } from './ui.js';
 import { agentMark } from './logos.js';
-import { speak, speechKind } from './voice.js';
+import { speak, speechKind, setVoiceKey } from './voice.js';
 import { combobox } from './combobox.js';
 import { dictated } from './keyboard.js';
 import * as harnesses from './harnesses.js';
@@ -266,6 +266,9 @@ function fillForm() {
     else node.value = value ?? '';
   }
   renderWindowSizeHint();
+  // The microphones on this page ask whether there is a key to transcribe
+  // with before they record (voice.js); this page knows.
+  setVoiceKey(!!String(getPath(settings, 'openrouter.api_key') || '').trim(), { told: true });
 }
 
 function collect() {

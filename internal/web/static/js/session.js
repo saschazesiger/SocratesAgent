@@ -45,6 +45,7 @@ import {
   faces, iconEl,
 } from './ui.js';
 import { mountBackupNotice } from './backup.js';
+import { setVoiceKey } from './voice.js';
 import { mountChat } from './chatview.js';
 import { chatOutbox, queueCommand, settled } from './chatoutbox.js';
 import { openChatAsks, askDialogOpen, closeAskDialog } from './askdialog.js';
@@ -3703,6 +3704,9 @@ async function boot() {
   try {
     const prefs = await api('/api/preferences', { attempts: 1, timeout: 8000 });
     if (prefs && prefs.terminal) state.terminal = { ...state.terminal, ...prefs.terminal };
+    // Whether there is an OpenRouter key, for the microphones and Status to
+    // say so before anything is recorded (voice.js), when the server tells.
+    if (prefs && typeof prefs.openrouter === 'boolean') setVoiceKey(prefs.openrouter, { told: true });
   } catch { /* the defaults above are the shipped ones */ }
   // A session a notification asked for is wanted before the list is read, so
   // that an offline start opens it the moment the list can prove it exists.

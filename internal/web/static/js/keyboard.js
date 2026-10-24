@@ -46,7 +46,7 @@
 // the answer is remembered and wins over every sign from then on.
 
 import { el } from './api.js';
-import { M, faces, morph } from './ui.js';
+import { M, morph, html, raw, icon } from './ui.js';
 import { record, recPhase } from './dictate.js';
 
 // A touch screen is a device that shows any sign of one: a pointer that is a
@@ -569,18 +569,20 @@ export function initKeyboard(bar, pane) {
 /* ------------------------------------------------------- the microphone */
 
 /**
- * micButton is a microphone that hands what it heard to `onText`.
+ * micButton is a microphone that hands what it heard to `onText`: an icon
+ * button a thumb finds beside its field, with the busy face every working
+ * button in this app has - the spinner while the words are listened for.
  *
- * Dashboard-Style has no microphone glyph, so it is a text button ("Dictate")
- * with the busy face every working button in this app has: the spinner while
- * the words are being listened for.
- *
- * `onError`, when given, is told why a recording failed instead of a toast
- * (see record).
+ * `field` names what it fills, for the label a reader hears ("Dictate the
+ * folder"); the tip is the one word. `onError`, when given, is told why a
+ * recording failed instead of a toast (see record).
  */
-export function micButton(onText, label = 'Dictate', { onError } = {}) {
-  const button = el('button', { class: 'ds-btn so-mic', type: 'button' });
-  morph(button, faces(label, 'Listening'));
+export function micButton(onText, field = '', { onError } = {}) {
+  const label = field ? 'Dictate ' + field : 'Dictate';
+  const button = el('button', {
+    class: 'ds-btn ds-btn--quiet ds-btn--icon so-mic', type: 'button', 'aria-label': label, 'data-tip': 'Dictate',
+  });
+  morph(button, html`<span class="ds-btn__faces"><span class="ds-btn__face">${raw(icon('mic'))}</span><span class="ds-btn__face ds-btn__face--busy" aria-hidden="true"><span class="ds-spinner"></span></span></span>`);
   // A microphone that took the focus out of the pane would leave the terminal
   // unable to be typed into by the person who just filled a field.
   button.addEventListener('mousedown', (event) => event.preventDefault());
@@ -588,26 +590,43 @@ export function micButton(onText, label = 'Dictate', { onError } = {}) {
     // The one microphone is already open somewhere else: `record` would answer
     // with nothing, and a button that spun for that would be lying.
     if (recPhase() !== 'idle') return;
-    const text = await M.busy(button, () => record({ onError }), { done: false });
+    const text = await M.busy(button, () => record({ onError, opener: button }), { done: false });
     if (text) onText(text);
   });
   return button;
 }
 
+// fieldName is what a field is called where it stands - its label, the label
+// it points at, or its placeholder - in the lower case a sentence wants:
+// "Dictate the folder".
+function fieldName(input) {
+  let words = '';
+  if (input.labels && input.labels.length) words = input.labels[0].textContent;
+  else if (input.getAttribute('aria-labelledby')) {
+    const named = document.getElementById(input.getAttribute('aria-labelledby').split(/\s+/)[0]);
+    words = named ? named.textContent : '';
+  } else words = input.getAttribute('aria-label') || '';
+  words = words.replace(/\s+/g, ' ').trim();
+  if (!words) return '';
+  return words.charAt(0).toLowerCase() + words.slice(1);
+}
+
 /**
  * dictated puts a microphone beside one field and puts the field under the
- * keyboard switch. It hands back the row the two of them now sit in.
+ * keyboard's rules. It hands back the row the two of them now sit in.
  *
  * `control` is what stands in the layout - the field itself, or the wrapper a
  * combobox builds around one - and `input` is where the words go. `onText`
  * takes over from the default, which is to write the words into the field and
  * say so, because a field that is watched for changes has to be told. Beside
  * a textarea (or with `top`) the button stays at the top of the field.
+ * `name` is what the field is called in the microphone's label, when its own
+ * label cannot be found yet (a field not in the page).
  *
  * It is idempotent: a sheet that is opened twice builds its fields twice, and
  * a second row around the first would be a second microphone beside it.
  */
-export function dictated(control, input, onText, { onError, top = false } = {}) {
+export function dictated(control, input, onText, { onError, top = false, name = '' } = {}) {
   guard(input);
   const already = control.parentElement;
   if (already && already.classList.contains('so-field-row')) return already;
@@ -615,10 +634,20 @@ export function dictated(control, input, onText, { onError, top = false } = {}) 
     if (onText) { onText(text); return; }
     input.value = text;
     input.dispatchEvent(new Event('input', { bubbles: true }));
-  }, undefined, { onError });
+  }, name, { onError });
   const tall = top || input.tagName === 'TEXTAREA';
   const row = el('div', { class: tall ? 'so-field-row so-field-row--top' : 'so-field-row' });
   if (control.parentNode) control.replaceWith(row);
   row.append(control, mic);
+  // The field's label is found once the row is in the page: a sheet builds
+  // its fields before it is shown.
+  if (!name) {
+    const label = () => {
+      const found = fieldName(input);
+      if (found) mic.setAttribute('aria-label', 'Dictate ' + found);
+      return !!found;
+    };
+    if (!label()) requestAnimationFrame(() => { if (!label()) setTimeout(label, 500); });
+  }
   return row;
 }
