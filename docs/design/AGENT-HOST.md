@@ -979,6 +979,13 @@ attachment(s): …`).
   adapters the server's test binary registers.
 - e2e (`run.mjs`, the scripted agent): `chat-home`, `chat-push`, `chat-title`, `chat-status`,
   `chat-outcome`, `chat-prestart`, `chat-ultracode`.
+- WP11: every scenario of the agents' terminals moved onto the chats, against the protocol fakes
+  or the scripted agent (`e2e/README.md` says what each proves, and what did not come over), and
+  `chat-restart`, a server restart mid-turn as a desk and a phone on the chat see it.
+  `internal/server`: a finished turn still unread after a restart, a done chat picked up by a
+  message, a chat made without a model on Admin's defaults, Status's phases on the event stream;
+  `internal/agent/codex`: a background terminal reported as a task until it ends;
+  `internal/config`: each agent's own defaults.
 - `e2e/chats.mjs`: the real binary, SIGKILL of the server mid-turn, replay, duplicates, two-device
   answers, the session list.
 - ask_user (WP6): `internal/agent/askuser` (schema limits, the checks and their messages, the
