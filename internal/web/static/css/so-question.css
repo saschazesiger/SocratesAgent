@@ -89,11 +89,18 @@
   font: var(--ds-font-subtitle);
 }
 
+/* The bar's buttons keep a finger's size: the name beside them gives way
+   (at 360 with a keyboard up, Close shrank to 41px with it). */
+.so-q-top > .ds-btn {
+  flex: none;
+}
+
 /* The chat's name in the bar, only where the session row gives way (a
    short screen, below). */
 .so-q-top-session {
   display: none;
-  flex: 1 1 auto;
+  flex: 1 1 0;
+  min-width: 0;
   color: var(--ds-text-2);
   font: var(--ds-font-label);
 }
