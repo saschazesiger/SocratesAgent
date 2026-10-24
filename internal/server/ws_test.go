@@ -499,8 +499,13 @@ func TestTerminalReloadWithFramesInFlight(t *testing.T) {
 	first := e.dialWS(id, "viewer=tab-a&cols=100&rows=30")
 	first.hello()
 
-	first.send(1, "echo one-in-flight\r")
-	first.send(2, "echo two-in-flight\r")
+	// The quotes keep each typed line from containing what its command
+	// prints, so that the count below is of commands run and not of how often
+	// a line was echoed: input typed ahead of a busy shell is echoed by the
+	// terminal, and then once more by a shell that edits its own line - bash
+	// does, and macOS's sh is bash.
+	first.send(1, "echo one-in-''flight\r")
+	first.send(2, "echo two-in-''flight\r")
 	first.waitFor("two-in-flight")
 	rendered := first.settle()
 	// iOS kills the tab. The frames were written; the acknowledgement may
@@ -514,16 +519,17 @@ func TestTerminalReloadWithFramesInFlight(t *testing.T) {
 	}
 	// The client renumbers from input_ack + 1, which is what the next
 	// keystroke is.
-	second.send(3, "echo after-reload\r")
+	second.send(3, "echo after-''reload\r")
 	second.waitFor("after-reload")
 	time.Sleep(300 * time.Millisecond)
 	screen, err := e.tmux("capture-pane", "-p", "-t", "soc_"+id)
 	if err != nil {
 		t.Fatalf("capture-pane: %v", err)
 	}
+	// Each command ran once: none was lost, and none was typed twice.
 	for _, marker := range []string{"one-in-flight", "two-in-flight", "after-reload"} {
-		if n := strings.Count(screen, marker); n != 2 {
-			t.Fatalf("%s appears %d times, want 2:\n%s", marker, n, screen)
+		if n := strings.Count(screen, marker); n != 1 {
+			t.Fatalf("%s was printed %d times, want once:\n%s", marker, n, screen)
 		}
 	}
 }
@@ -825,7 +831,12 @@ func TestTerminalOfflineThenOnline(t *testing.T) {
 	// socket.
 	setOffline(true)
 	t.Cleanup(func() { setOffline(false) })
-	if _, err := e.tmux("send-keys", "-t", "soc_"+id, "echo while-offline", "Enter"); err != nil {
+	// The quotes keep the typed line from containing what the command prints:
+	// a shell that edits its own line - bash does, and macOS's sh is bash -
+	// echoes it a key or two at a time, and tmux colours each piece on its
+	// own, so the echo is not one string in the stream however often it is
+	// delivered.
+	if _, err := e.tmux("send-keys", "-t", "soc_"+id, "echo while-off''line", "Enter"); err != nil {
 		t.Fatal(err)
 	}
 	e.waitForPane(id, "while-offline")
@@ -841,8 +852,8 @@ func TestTerminalOfflineThenOnline(t *testing.T) {
 		t.Fatalf("input_ack = %d after the tunnel, want 1", ack)
 	}
 	back.waitFor("while-offline")
-	if strings.Count(back.screen(), "while-offline") != 2 {
-		t.Fatalf("the gap was not delivered exactly once:\n%q", back.screen())
+	if n := strings.Count(back.screen(), "while-offline"); n != 1 {
+		t.Fatalf("the gap was not delivered exactly once: its output is there %d times:\n%q", n, back.screen())
 	}
 
 	// And the terminal takes input again, which is the half that wedged.
