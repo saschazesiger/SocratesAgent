@@ -597,17 +597,20 @@ function answerSummary(ask) {
   if (answer.follow_up) return 'Asked back: ' + answer.follow_up;
   const answers = answer.answers || {};
   const questions = askQuestions(ask);
+  // A header that is the question itself ("What is it called?") loses its
+  // own mark before the colon: "What is it called: Atlas", not "?: Atlas".
+  const named = (q) => String(q.header || q.id).trim().replace(/\s*[?:？：]+$/, '');
   const words = questions.map((q) => {
     const a = answers[q.id];
     if (!a) return '';
-    if (a.delegated) return (q.header || q.id) + ': you decide';
+    if (a.delegated) return named(q) + ': you decide';
     if (a.skipped) return '';
     const labels = (a.selected || []).map((id) => {
       const option = (q.options || []).find((o) => String(o.id) === String(id));
       return option ? option.label : String(id);
     });
     if (a.other) labels.push(a.other);
-    return labels.length ? (q.header || q.id) + ': ' + labels.join(', ') : '';
+    return labels.length ? named(q) + ': ' + labels.join(', ') : '';
   }).filter(Boolean);
   return words.join(' · ');
 }
