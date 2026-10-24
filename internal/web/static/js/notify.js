@@ -135,6 +135,9 @@ function remember(key, on) {
  *                tray, so that a page whose state is newer writes them again
  *   outcome      the verdict a session's last turn has, or is waiting for
  *   questionOf   the question a session's digest holds, or null
+ *   chatNews     what a chat's notification says (its reading's news): a
+ *                string for a chat, '' for news that is none, and
+ *                undefined for a terminal
  *   changed      told whenever either switch moves, so a menu that is open
  *                shows where it now is
  */
@@ -258,6 +261,14 @@ export function mountNotify(ctx) {
     let body = news ? news.body : BODY[next.state];
     if (!body) return;
     if (!news && next.state === 'waiting' && next.note === 'permission prompt') body = PERMISSION_BODY;
+    // A chat says what its journal says, as its push does: its question, or
+    // how its turn ended with a line of the answer - and nothing for a turn
+    // the person stopped themselves.
+    if (!news && ctx.chatNews) {
+      const said = ctx.chatNews(id);
+      if (said === '') return;
+      if (said) body = said;
+    }
     const kind = news ? news.kind : (next.state === 'waiting' ? 'question' : 'finished');
     const title = session.title || 'Socrates';
     // One notification per session: the tag replaces the previous one, so a

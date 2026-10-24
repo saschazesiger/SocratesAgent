@@ -3911,6 +3911,12 @@ async function boot() {
       const digest = state.digests.get(id);
       return (digest && digest.question) || null;
     },
+    // A chat's notification says what its push says, from its reading.
+    chatNews: (id) => {
+      if (!isChat(sessionOf(id))) return undefined;
+      const digest = state.digests.get(id);
+      return digest ? String(digest.news || '') : undefined;
+    },
     // A permission the browser answers late lands in a menu still open.
     changed: () => syncOptions(),
     // A push wrote the icon and the tray from the set it was counted with;

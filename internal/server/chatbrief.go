@@ -53,11 +53,29 @@ type chatBrief struct {
 	// what it asks, while it asks (chatQuestion).
 	Line     string          `json:"line,omitempty"`
 	Question *digestQuestion `json:"question,omitempty"`
+	// News is what a notification about the chat says now: the push's words
+	// and the page's (newsOf).
+	News string `json:"news,omitempty"`
 }
 
 // briefOf is the brief of a projection.
 func briefOf(p *agent.Projection) chatBrief {
-	return chatBrief{Seq: p.LastSeq, Summary: p.Summary(), Line: chatLine(p), Question: chatQuestion(waitingAsk(p))}
+	b := chatBrief{Seq: p.LastSeq, Summary: p.Summary(), Line: chatLine(p), Question: chatQuestion(waitingAsk(p))}
+	b.News = newsOf(p, b.Question)
+	return b
+}
+
+// newsOf is what a notification about a chat says: what it asks while it
+// waits, and between turns how its last one ended (turnNews) - nothing for a
+// turn the person stopped themselves, or while it works.
+func newsOf(p *agent.Projection, q *digestQuestion) string {
+	if q != nil {
+		return oneLine(firstQuestion(q), pushBodyRunes)
+	}
+	if words, news := turnNews(p); news {
+		return words
+	}
+	return ""
 }
 
 func briefPath(dataDir, id string) string {
@@ -226,12 +244,12 @@ func (h *chatHub) loaded() int {
 // lock held.
 func (p *chatPeer) readingLocked(rev int64, at time.Time) digest {
 	return digest{SessionID: p.id, Rev: rev, Phase: digestReady, State: p.brief.Summary.Activity,
-		MadeAt: at.UnixMilli(), Summary: p.brief.Line, Question: p.brief.Question}
+		MadeAt: at.UnixMilli(), Summary: p.brief.Line, Question: p.brief.Question, News: p.brief.News}
 }
 
 // sameReading is whether two readings say the same thing.
 func sameReading(a, b digest) bool {
-	return a.Summary == b.Summary && a.State == b.State && reflect.DeepEqual(a.Question, b.Question)
+	return a.Summary == b.Summary && a.State == b.State && a.News == b.News && reflect.DeepEqual(a.Question, b.Question)
 }
 
 // publishReadingLocked tells every page when what the chat's reading says
@@ -339,17 +357,13 @@ func (h *chatHub) askWords(id string) string {
 }
 
 // turnWords is what a push about a chat's ended turn says, and false for a
-// turn that is no news (turnNews).
+// turn that is no news (turnNews), by its brief.
 func (h *chatHub) turnWords(id string) (string, bool) {
-	p, err := h.peer(id)
-	if err != nil {
+	b, ok := h.briefOfChat(id)
+	if !ok {
 		return "Finished", true
 	}
-	words, news := "Finished", true
-	if err := p.view(func(proj *agent.Projection) { words, news = turnNews(proj) }); err != nil {
-		return "Finished", true
-	}
-	return words, news
+	return b.News, b.News != ""
 }
 
 // waiting is whether a chat waits for the person: an open ask it is stopped

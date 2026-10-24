@@ -141,6 +141,10 @@ type digest struct {
 	Summary  string          `json:"summary"`
 	Context  string          `json:"context"`
 	Question *digestQuestion `json:"question"`
+	// News is what a notification about a chat says now (chatBrief.News):
+	// its question while it asks, how its last turn ended between turns, and
+	// nothing for a turn that is no news. A terminal's digest has none.
+	News string `json:"news,omitempty"`
 }
 
 type digestQuestion struct {
