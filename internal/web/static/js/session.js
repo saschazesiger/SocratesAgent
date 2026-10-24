@@ -45,7 +45,7 @@ import {
 import { mountBackupNotice } from './backup.js';
 import { mountChat } from './chatview.js';
 import { chatOutbox, queueCommand, settled } from './chatoutbox.js';
-import { openChatAsks, askDialogOpen, closeAskDialog } from './askdialog.js';
+import { openChatAsks, askDialogOpen, closeAskDialog, refreshAskDialog } from './askdialog.js';
 
 /* ------------------------------------------------------------- transport */
 
@@ -886,6 +886,20 @@ function drawLive() {
   tellAsking();
   questionsWhenKnown();
   questionWhenKnown();
+  refreshAsking();
+}
+
+// refreshAsking takes what the chats ask now into the question dialog while
+// it is open - a question asked meanwhile joins the walk, and a chat renamed
+// is called by its new name - once each time that changes.
+let askingSeen = '';
+function refreshAsking() {
+  if (!askDialogOpen()) { askingSeen = ''; return; }
+  const asking = questionQueue(homeCtx()).filter((session) => isChat(session));
+  const seen = asking.map((session) => session.id + '\u0000' + session.title + '\u0000' + ((activityOf(session) || {}).since || '')).join('\n');
+  if (seen === askingSeen) return;
+  askingSeen = seen;
+  refreshAskDialog({ sessions: asking, view: state.chat }).catch(() => { /* the walk goes on as it was */ });
 }
 
 function drawList() {
@@ -1789,6 +1803,8 @@ function showChatQuestions(chatId, { askId = '', only = false } = {}) {
     view: state.chat,
     // "Open chat": the dialog has closed itself, and the chat takes the stage.
     openChat: (id) => selectSession(id),
+    // What is asked while the dialog walks joins the walk.
+    asking: () => questionQueue(homeCtx()).filter((session) => isChat(session)),
     // No connection to read the question over: it opens once there is one.
     unreachable: () => {
       if (!state.questionWanted || state.questionWanted.id !== chatId) toast('No connection. The question opens as soon as it is back.');

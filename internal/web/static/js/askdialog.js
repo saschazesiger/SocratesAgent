@@ -228,24 +228,12 @@ function watchStream(chatId, ask, listener) {
   return () => stream.stop();
 }
 
-/**
- * openChatAsks opens the dialog over the open questions of chats, the
- * oldest chat first and each chat's questions in the order they were asked.
- *
- *   sessions   the chats to walk, in that order (the one asked for among them)
- *   chatId     the chat to open at
- *   askId      the ask to open at, else that chat's oldest; a closed one
- *              (the chat moved on, ask.closed) is walked too when it is the
- *              one asked for: "Answer anyway" on its card
- *   view       the chat view (chatview.js): the chat on screen is read
- *              from its fold and followed by its stream
- *   openChat(id)  the dialog's "Open chat"; also where a chat whose only
- *              open question is a plan goes, because its card answers it
- *   unreachable()  the questions could not be read for want of a
- *              connection: the caller asks again once there is one, rather
- *              than the dialog saying that it failed
- */
-export async function openChatAsks({ sessions, chatId, askId = '', view, openChat, unreachable }) {
+// collect reads the open questions of chats, the oldest chat first and each
+// chat's questions in the order they were asked: from the view's fold for
+// the chat on screen, from the server for the others. `all` has the plans,
+// which the dialog leaves to their cards; `failed` is the last read that did
+// not work.
+async function collect({ sessions, chatId = '', askId = '', view }) {
   let failed = null;
   const lists = await Promise.all(sessions.map(async (session) => {
     const live = view ? view.liveChat(session.id) : null;
@@ -266,7 +254,30 @@ export async function openChatAsks({ sessions, chatId, askId = '', view, openCha
     }
   }));
   const all = lists.flat();
-  const items = all.filter((item) => !isPlan(item.ask));
+  return { all, items: all.filter((item) => !isPlan(item.ask)), failed };
+}
+
+/**
+ * openChatAsks opens the dialog over the open questions of chats, the
+ * oldest chat first and each chat's questions in the order they were asked.
+ *
+ *   sessions   the chats to walk, in that order (the one asked for among them)
+ *   chatId     the chat to open at
+ *   askId      the ask to open at, else that chat's oldest; a closed one
+ *              (the chat moved on, ask.closed) is walked too when it is the
+ *              one asked for: "Answer anyway" on its card
+ *   view       the chat view (chatview.js): the chat on screen is read
+ *              from its fold and followed by its stream
+ *   openChat(id)  the dialog's "Open chat"; also where a chat whose only
+ *              open question is a plan goes, because its card answers it
+ *   unreachable()  the questions could not be read for want of a
+ *              connection: the caller asks again once there is one, rather
+ *              than the dialog saying that it failed
+ *   asking()   the chats asking now, for the walk to take up what was asked
+ *              while it went, once it is at its end
+ */
+export async function openChatAsks({ sessions, chatId, askId = '', view, openChat, unreachable, asking }) {
+  const { all, items, failed } = await collect({ sessions, chatId, askId, view });
   if (!items.length) {
     if (all.some((item) => item.chatId === chatId) && openChat) openChat(chatId);
     else if (failed && isOffline(failed) && unreachable) unreachable();
@@ -292,7 +303,19 @@ export async function openChatAsks({ sessions, chatId, askId = '', view, openCha
     // The card in the chat says how far this browser got: it is drawn again
     // once the dialog is put away.
     closed: () => { if (view) view.redraw(); },
+    more: asking ? async () => (await collect({ sessions: asking(), view })).items : null,
   });
+}
+
+/**
+ * refreshAskDialog takes into the open dialog what the chats asking now ask
+ * that it does not walk yet - a question asked while it was open, the one
+ * that follows an answer - and the new name of a chat renamed meanwhile.
+ */
+export async function refreshAskDialog({ sessions, view }) {
+  if (!current) return;
+  const { items } = await collect({ sessions, view });
+  if (current) current.extend(items, sessions);
 }
 
 /* ------------------------------------------------------------ the dialog */
@@ -317,8 +340,10 @@ export function closeAskDialog() { if (current) current.close(); }
  *               state; answers a function that stops following
  *   openChat(id)        the "Open chat" of the dialog
  *   closed()            the dialog has been put away
+ *   more()              the questions open now, for the walk to take up at
+ *               its end what was asked while it went
  */
-export function openAskDialog({ items, start = 0, watch, openChat, closed }) {
+export function openAskDialog({ items, start = 0, watch, openChat, closed, more = null }) {
   if (current) { current.jump(items, start); return current; }
   const opener = document.activeElement;
   const dialog = document.createElement('dialog');
@@ -397,13 +422,42 @@ export function openAskDialog({ items, start = 0, watch, openChat, closed }) {
     st.timer = setTimeout(() => next(), MOVE_ON);
   }
 
-  function next() {
+  async function next() {
     clearTimeout(st.timer);
+    // At its end the walk takes up what was asked while it went: the
+    // question that follows the one just answered, another chat's.
+    if (st.at >= st.items.length - 1 && more && !st.closed) {
+      try { extend(await more()); } catch { /* the walk ends here */ }
+      if (st.closed) return;
+    }
     if (st.at < st.items.length - 1) {
       st.at += 1;
       load();
       draw(true);
     } else close();
+  }
+
+  // extend adds the questions the walk does not have yet, and the new names
+  // of its chats, without taking the step it is at away from the person.
+  function extend(list, sessions = []) {
+    if (st.closed) return;
+    const known = new Set(st.items.map((one) => one.ask.id));
+    let changed = false;
+    for (const one of list || []) {
+      if (known.has(one.ask.id) || one.ask.answered) continue;
+      known.add(one.ask.id);
+      st.items.push(one);
+      changed = true;
+    }
+    for (const session of sessions) {
+      for (const one of st.items) {
+        if (one.chatId === session.id && one.session && session.title && one.session.title !== session.title) {
+          one.session = { ...one.session, title: session.title };
+          changed = true;
+        }
+      }
+    }
+    if (changed) draw();
   }
 
   function close() {
@@ -799,6 +853,7 @@ export function openAskDialog({ items, start = 0, watch, openChat, closed }) {
       load();
       draw(true);
     },
+    extend,
     close,
   };
   load();
