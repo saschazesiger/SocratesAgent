@@ -10,14 +10,17 @@
  *                          the dock. [data-stale] while its stream is not
  *                          live (the conversation is dimmed), [data-dropping]
  *                          while a file is held over it
- *   .so-chat__scroll       the conversation's scroller; "Latest" sticks to
- *                          its bottom edge (.so-chat__jump)
+ *   .so-chat__scroll       the conversation's scroller; "Latest" (an icon)
+ *                          sticks to its bottom edge (.so-chat__jump)
  *   .so-chat__log          the timeline, one .so-chat__entry per message,
  *                          question and line, at reading width
- *   .so-chat__dock         under it: the state line, the pinned task list and
- *                          the composer
+ *   .so-chat__dock         under it: the state line (what did not happen,
+ *                          the connection, the agent), the task list pinned
+ *                          while the conversation's own is out of sight,
+ *                          and the composer
  *   .so-msg                a message, data-role user | assistant; a user's
- *                          is a bubble with its state chip (.so-msg__chip)
+ *                          is a bubble with its state chip (.so-msg__chip);
+ *                          an answer ends in Copy and its "i" (.so-msg__foot)
  *   .so-part               one part of an answer, data-kind and data-state
  *   .so-md                 Markdown as the agent wrote it; .so-code is a
  *                          fenced block with its language and Copy
@@ -990,15 +993,18 @@
   padding-block: var(--ds-space-1);
 }
 
-.so-account-menu__name,
-.so-account-menu__meta {
+.so-account-menu__name {
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
+/* Who it is, its usage and when it renews: all of it, on two lines if it
+   takes two. */
 .so-account-menu__meta {
   font: var(--ds-font-meta);
   color: var(--ds-text-2);
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 /* The accounts a limit card offers to go on with, under its words. */

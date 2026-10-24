@@ -13016,16 +13016,27 @@ async function chattools() {
     ok(finished.phases.join(',') === 'Plan:done,Build:done,Review:done' && finished.agents === 4 && finished.progress === '4 of 4 agents',
       'and when it is through, every phase and every agent is done', JSON.stringify(finished));
 
-    // The task list, pinned while the turn works through it.
-    await say(page, '/todo 900');
+    // The task list, pinned while the turn works through it - once: while
+    // the list in the answer can be read, it is not said again over the
+    // composer; scrolled out of sight, it is.
+    await say(page, '/todo 1500');
+    await page.waitForSelector('#chat .so-msg .so-part[data-kind="todo"] .so-todo__item[data-status="in_progress"]', { timeout: 10000 });
+    await wait(300);
+    const once = await page.evaluate(() => {
+      const inline = [...document.querySelectorAll('#chat .so-msg .so-part[data-kind="todo"]')].pop().getBoundingClientRect();
+      const view = document.querySelector('#chat .so-chat__scroll').getBoundingClientRect();
+      return { inView: inline.top >= view.top && inline.bottom <= view.bottom, pinned: !document.querySelector('#chat .so-chat__todo').hidden };
+    });
+    await page.$eval('#chat .so-chat__scroll', (n) => { n.scrollTop = 0; });
     const pinned = await page.waitForSelector('#chat .so-chat__todo:not([hidden]) .so-todo[data-pinned]', { timeout: 10000 })
       .then(() => page.$eval('#chat .so-chat__todo', (n) => ({
         items: [...n.querySelectorAll('.so-todo__item')].map((i) => i.dataset.status),
         count: n.querySelector('.so-todo__count').textContent,
         above: n.getBoundingClientRect().bottom <= document.querySelector('#chat .so-composer').getBoundingClientRect().top + 1,
       })), () => null);
+    ok(once.inView && !once.pinned, 'a task list the conversation shows is not pinned a second time', JSON.stringify(once));
     ok(!!pinned && pinned.items.length === 3 && pinned.items.includes('in_progress') && pinned.above,
-      'a task list is pinned above the composer while the turn works through it', JSON.stringify(pinned));
+      'scrolled out of sight while the turn works through it, it is pinned above the composer', JSON.stringify(pinned));
     await awaitLog(page, 'All three tasks are done.', 20000);
     const unpinned = await page.waitForSelector('#chat .so-chat__todo', { state: 'hidden', timeout: 5000 }).then(() => true, () => false);
     const inMessage = await page.$$eval('#chat .so-msg .so-part[data-kind="todo"] .so-todo__item[data-status="completed"]', (n) => n.length);

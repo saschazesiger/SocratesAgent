@@ -20,7 +20,8 @@
 // "Sent" until the journal has it.
 
 import { api, alertDialog, promptDialog, toast, errorMessage, fmtTokens, CONNECTION_GRACE } from './api.js';
-import { html, morph, raw, icon } from './ui.js';
+import { html, morph, raw, icon, region } from './ui.js';
+import { connectionSaidElsewhere, retryConnection } from './net.js';
 import { agentMarkHtml } from './logos.js';
 import * as harnesses from './harnesses.js';
 import * as accounts from './accounts.js';
@@ -47,6 +48,10 @@ const SAID = new Set(['message', 'command']);
 
 // The names a usage window goes by, for the chat's "i".
 const WINDOW_WORDS = { five_hour: '5-hour limit', weekly: 'Weekly limit' };
+
+// How long the dock says that something asked for did not happen, unless it
+// is closed first. Data cadence, not motion.
+const NOTE_MS = 10000;
 
 /**
  * mountChat makes the chat view in `ctx.host` (#chat).
@@ -91,10 +96,16 @@ export function mountChat(ctx) {
   let continuing = '';
   // The asks whose answer has been seen, whose draft has been let go.
   const settledAsks = new Set();
+  // What the person asked for that did not happen - a model refused, a Stop
+  // that did not reach the agent: said in the dock, beside the composer,
+  // for a while (NOTE_MS), never over Send. { text, timer } or null.
+  let note = null;
+  // The --ds-toast-bottom this view gave the snackbars, while it shows.
+  let toastLift = '';
 
   // "Latest" is the scroller's last child and sticks to its bottom edge, so
   // it is always just above the dock, however tall the dock is.
-  morph(host, html`<div class="so-chat__scroll" data-ds-key="scroll"><div class="so-chat__log" role="log" aria-label="Conversation" aria-live="polite" aria-relevant="additions"></div><button class="ds-btn ds-btn--tonal ds-btn--sm so-chat__jump" type="button" data-action="jump" hidden>${raw(icon('arrowDown', 16))}Latest</button></div>
+  morph(host, html`<div class="so-chat__scroll" data-ds-key="scroll"><div class="so-chat__log" role="log" aria-label="Conversation" aria-live="polite" aria-relevant="additions"></div><button class="ds-btn ds-btn--tonal ds-btn--icon so-chat__jump" type="button" data-action="jump" aria-label="Jump to the latest message" data-tip="Latest" hidden>${raw(icon('arrowDown', 20))}</button></div>
 <div class="so-chat__dock" data-ds-key="dock"><div class="so-chat__state" role="status" aria-live="polite"></div><div class="ds-alert so-notice" role="status" hidden></div><div class="ds-alert so-ticker" hidden>${raw(icon('activity', 20))}<span class="ds-alert__text so-ticker__line" role="status" aria-live="polite"></span></div><div class="so-chat__todo" hidden></div><div class="so-chat__composer"></div></div>`);
   const scroller = host.querySelector('.so-chat__scroll');
   const log = host.querySelector('.so-chat__log');
@@ -108,6 +119,54 @@ export function mountChat(ctx) {
   const tickerLine = host.querySelector('.so-ticker__line');
   const todoSlot = host.querySelector('.so-chat__todo');
   const composerSlot = host.querySelector('.so-chat__composer');
+  const dock = host.querySelector('.so-chat__dock');
+
+  // The snackbars stand above the dock while a chat is shown: DS places
+  // their region by --ds-toast-bottom, here the dock's height from the
+  // bottom edge, so a "Copied." never covers Send. The region's own margin
+  // is the safe area, which the dock's height holds already.
+  function liftToasts() {
+    const node = region();
+    const mine = node.style.getPropertyValue('--ds-toast-bottom');
+    if (!session || host.hidden) {
+      if (toastLift && mine === toastLift) node.style.removeProperty('--ds-toast-bottom');
+      toastLift = '';
+      return;
+    }
+    const lift = Math.max(0, Math.round(window.innerHeight - dock.getBoundingClientRect().top));
+    const value = 'calc(' + lift + 'px + var(--ds-space-3) - env(safe-area-inset-bottom, 0px))';
+    if (value === toastLift && mine === value) return;
+    node.style.setProperty('--ds-toast-bottom', value);
+    toastLift = value;
+  }
+  new ResizeObserver(() => liftToasts()).observe(dock);
+  window.addEventListener('resize', () => liftToasts());
+  if (window.visualViewport) window.visualViewport.addEventListener('resize', () => liftToasts());
+
+  /** sayError puts what did not happen into the dock for a while. */
+  function sayError(text) {
+    if (note) clearTimeout(note.timer);
+    note = { text: String(text || ''), timer: setTimeout(() => { note = null; schedule(); }, NOTE_MS) };
+    schedule();
+  }
+
+  function dropNote() {
+    if (note) clearTimeout(note.timer);
+    note = null;
+  }
+
+  // The task list pinned over the composer is for a list that is out of
+  // sight: while the one in the conversation can be read, it is not said a
+  // second time.
+  let todoInView = false;
+  let todoWatched = null;
+  const todoWatch = new IntersectionObserver((entries) => {
+    const entry = entries.at(-1);
+    const seen = !!entry && entry.isIntersecting && entry.intersectionRatio >= 0.5;
+    if (seen === todoInView) return;
+    todoInView = seen;
+    schedule();
+  }, { root: scroller, threshold: [0, 0.5, 1] });
 
   /* ---------------------------------------------------------- the view */
 
@@ -275,7 +334,7 @@ export function mountChat(ctx) {
         markup: String(html`${userMessage({
           key: 'o:' + item.payload.client_id, text: item.payload.text, attachments: item.payload.attachments, state,
           error: failed ? item.error : '',
-        })}${failed ? html`<div class="so-msg__actions" data-ds-key="${'oa:' + item.payload.client_id}"><button class="ds-btn ds-btn--sm" type="button" data-action="outbox-retry" data-id="${item.id}">Try again</button><button class="ds-btn ds-btn--text ds-btn--sm" type="button" data-action="outbox-edit" data-id="${item.id}">Edit</button></div>` : ''}`),
+        })}${failed ? html`<div class="so-msg__actions" data-ds-key="${'oa:' + item.payload.client_id}"><button class="ds-btn ds-btn--quiet ds-btn--icon ds-btn--sm" type="button" data-action="outbox-edit" data-id="${item.id}" aria-label="Edit the message" data-tip="Edit">${raw(icon('pencil', 18))}</button><button class="ds-btn ds-btn--tonal ds-btn--icon ds-btn--sm" type="button" data-action="outbox-retry" data-id="${item.id}" aria-label="Send again" data-tip="Send again">${raw(icon('sync', 18))}</button></div>` : ''}`),
       });
     }
     for (const [clientId, one] of sent) {
@@ -351,6 +410,16 @@ export function mountChat(ctx) {
       const thisTurn = !!message && !!chat.turn.id && message.turnId === chat.turn.id;
       if (!thisTurn && todoItems(todo).every((item) => item.status === 'completed')) todo = null;
     }
+    // The list as the conversation has it, watched for whether it can be
+    // read where it is.
+    const inline = todo ? log.querySelector('[data-ds-key="' + CSS.escape('p:' + todo.id) + '"] .so-todo') : null;
+    if (inline !== todoWatched) {
+      if (todoWatched) todoWatch.unobserve(todoWatched);
+      todoWatched = inline;
+      todoInView = false;
+      if (inline) todoWatch.observe(inline);
+    }
+    if (todo && inline && todoInView) todo = null;
     todoSlot.hidden = !todo;
     morph(todoSlot, todo ? todoList(todo, { pinned: true }) : '');
   }
@@ -368,11 +437,15 @@ export function mountChat(ctx) {
   function drawState() {
     const old = stale();
     host.toggleAttribute('data-stale', old);
+    // While this line says the connection, the page's bar does not say it
+    // again (net.js).
+    connectionSaidElsewhere(old);
+    const said = note ? html`<div class="ds-alert ds-alert--error" data-ds-key="note" role="alert">${raw(icon('alertCircle', 20))}<span class="ds-alert__text">${note.text}</span><button class="ds-btn ds-btn--quiet ds-btn--icon ds-btn--sm" type="button" data-action="note-close" aria-label="Dismiss" data-tip="Dismiss">${raw(icon('close', 18))}</button></div>` : '';
     let line = '';
     if (old) {
       line = navigator.onLine === false
         ? html`<div class="ds-alert ds-alert--warning" data-ds-key="offline">${raw(icon('wifiOff', 20))}<span class="ds-alert__text">Offline. The chat may be behind; what you send goes out when the connection is back.</span></div>`
-        : html`<div class="ds-alert ds-alert--warning" data-ds-key="reconnecting"><span class="so-chat__spin" aria-hidden="true"><span class="ds-spinner"></span></span><span class="ds-alert__text">Reconnecting… The chat may be behind.</span></div>`;
+        : html`<div class="ds-alert ds-alert--warning" data-ds-key="reconnecting"><span class="so-chat__spin" aria-hidden="true"><span class="ds-spinner"></span></span><span class="ds-alert__text">Reconnecting… The chat may be behind.</span><button class="ds-btn ds-btn--quiet ds-btn--icon ds-btn--sm" type="button" data-action="reconnect" aria-label="Try to connect now" data-tip="Retry">${raw(icon('sync', 18))}</button></div>`;
     } else if (session.workdir_missing && !chat.turn) {
       // A restore brings the chats back, not the code they worked on
       // (REBUILD §6.2): the conversation stays readable, and the agent can
@@ -383,7 +456,7 @@ export function mountChat(ctx) {
     } else if (chat.process === 'starting') {
       line = html`<div class="ds-alert" data-ds-key="starting"><span class="so-chat__spin" aria-hidden="true"><span class="ds-spinner"></span></span><span class="ds-alert__text">Starting the agent…</span></div>`;
     }
-    morph(stateLine, line);
+    morph(stateLine, html`${said}${line}`);
   }
 
   // usageFacts is the chat's usage for its "i": the context it holds, what
@@ -481,12 +554,22 @@ export function mountChat(ctx) {
       case 'copy-code': {
         const code = target.closest('.so-code')?.querySelector('code');
         if (!code) return;
-        navigator.clipboard.writeText(code.textContent).then(
-          () => toast('Copied.'),
-          () => toast('The code could not be copied.', 'error'),
-        );
+        copy(code.textContent, 'The code could not be copied.');
         break;
       }
+      case 'copy-answer': {
+        const message = chat.messages.get(target.dataset.message);
+        if (!message) return;
+        copy(answerText(message), 'The answer could not be copied.');
+        break;
+      }
+      case 'note-close':
+        dropNote();
+        drawState();
+        break;
+      case 'reconnect':
+        retryConnection();
+        break;
       case 'info':
         event.preventDefault();
         alertDialog({ title: target.getAttribute('aria-label') || 'Details', lines: String(target.dataset.tip || '').split('\n'), confirmLabel: 'Close', opener: target });
@@ -542,10 +625,23 @@ export function mountChat(ctx) {
     }
   });
 
+  // A conversation read at its end stays at its end when it gets shorter:
+  // a phone's keyboard coming up, the dock growing, a turn of the screen.
+  // What the browser scrolls by itself while the height changes is not the
+  // person scrolling away from the end.
+  let scrollerHeight = 0;
   scroller.addEventListener('scroll', () => {
+    if (scroller.clientHeight !== scrollerHeight) return;
     stuck = atEnd();
     jump.hidden = stuck;
   }, { passive: true });
+
+  new ResizeObserver(() => {
+    scrollerHeight = scroller.clientHeight;
+    if (!session || !stuck) return;
+    scroller.scrollTop = scroller.scrollHeight;
+    jump.hidden = true;
+  }).observe(scroller);
 
   // Files dropped anywhere on the chat go into the composer.
   host.addEventListener('dragover', (event) => {
@@ -572,6 +668,21 @@ export function mountChat(ctx) {
   window.addEventListener('online', () => schedule());
   window.addEventListener('offline', () => schedule());
 
+  // copy puts text on the clipboard and says so above the dock.
+  function copy(text, failed) {
+    navigator.clipboard.writeText(text).then(
+      () => toast('Copied.'),
+      () => sayError(failed),
+    );
+  }
+
+  // answerText is an answer as the agent wrote it: its text parts, in
+  // Markdown, without the tool calls and the thinking around them.
+  function answerText(message) {
+    return message.parts.filter((part) => part.kind === 'text' && part.text)
+      .map((part) => part.text.trim()).join('\n\n');
+  }
+
   // continueWith moves the chat to the account a limit card's button names
   // and has the stopped turn carried on there.
   async function continueWith(button) {
@@ -583,7 +694,7 @@ export function mountChat(ctx) {
     try {
       await accounts.switchChat(current.id, button.dataset.account, { goOn: true });
     } catch (err) {
-      toast(errorMessage(err), 'error');
+      sayError('The chat could not go on with that account: ' + errorMessage(err));
     } finally {
       // From here the journal's command says the switch is on its way.
       continuing = '';
@@ -612,7 +723,7 @@ export function mountChat(ctx) {
       }
       toast('The chat works in that folder now.', 'success');
     } catch (err) {
-      toast(errorMessage(err), 'error');
+      sayError('The folder was not taken: ' + errorMessage(err));
     }
   }
 
@@ -623,6 +734,9 @@ export function mountChat(ctx) {
     if (composer) { composer.destroy(); composer = null; }
     if (frame) { cancelAnimationFrame(frame); frame = 0; }
     clearTimeout(staleTimer);
+    dropNote();
+    if (todoWatched) { todoWatch.unobserve(todoWatched); todoWatched = null; }
+    todoInView = false;
   }
 
   return {
@@ -652,6 +766,7 @@ export function mountChat(ctx) {
         usage: () => usageFacts(),
         sent: () => { stuck = true; schedule(); },
         changed: () => schedule(),
+        error: (text) => sayError(text),
       });
       stream = new ChatStream({ chatId: next.id, since: () => chat.lastSeq, onFrame, onStatus });
       stream.start();
@@ -659,6 +774,7 @@ export function mountChat(ctx) {
       // opened; the copy this browser kept is drawn meanwhile.
       accounts.load().catch(() => {});
       render();
+      liftToasts();
     },
 
     /** update takes a newer row of the chat on screen. */
@@ -671,6 +787,8 @@ export function mountChat(ctx) {
       session = null;
       host.hidden = true;
       host.removeAttribute('data-stale');
+      connectionSaidElsewhere(false);
+      liftToasts();
     },
 
     shownId: () => (session ? session.id : ''),
