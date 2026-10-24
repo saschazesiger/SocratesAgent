@@ -1241,19 +1241,31 @@ func TestTerminalSlowReaderIsGivenUpOn(t *testing.T) {
 
 	fast := e.dialWS(id, "viewer=tab-fast&cols=100&rows=30")
 	fast.hello()
-	fast.send(1, "timeout 3 base64 -w 90 /dev/urandom; echo spin-d''one\r")
-	fast.waitFor("spin-done")
 
 	var stalled *termViewer
-	for _, tv := range e.srv.hub.forSession(id) {
-		if tv.viewerID == "tab-slow" {
-			stalled = tv
+	for wait := time.Now().Add(10 * time.Second); stalled == nil && time.Now().Before(wait); {
+		for _, tv := range e.srv.hub.forSession(id) {
+			if tv.viewerID == "tab-slow" {
+				stalled = tv
+			}
+		}
+		if stalled == nil {
+			time.Sleep(20 * time.Millisecond)
 		}
 	}
 	if stalled == nil {
 		t.Fatal("the stalled viewer was forgotten altogether")
 	}
-	deadline := time.Now().Add(20 * time.Second)
+
+	// Random bytes, so that the socket's compression cannot fold them away,
+	// from a program every unix has - GNU's timeout and base64 -w are not on
+	// a Mac - and for as long as it takes. How much a loopback socket takes in
+	// before its writer blocks is the system's to decide, and Linux and macOS
+	// size and grow it differently, so the output goes on until the server
+	// has given up on the viewer, or until the deadline says it never will.
+	fast.send(1, "od -An -tx1 /dev/urandom\r")
+	start := time.Now()
+	deadline := start.Add(20 * time.Second)
 	for time.Now().Before(deadline) {
 		stalled.mu.Lock()
 		gone := stalled.conn == nil
@@ -1263,11 +1275,18 @@ func TestTerminalSlowReaderIsGivenUpOn(t *testing.T) {
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
+	took := time.Since(start)
 	stalled.mu.Lock()
 	live, kept := stalled.conn, stalled.viewer != nil
 	stalled.mu.Unlock()
+	fast.send(2, "\x03")
+	fast.send(3, "echo spin-d''one\r")
+	fast.waitFor("spin-done")
 	if live != nil {
-		t.Fatal("the server is still writing to a viewer that stopped taking frames")
+		screen := fast.screen()
+		t.Fatalf("the server is still writing to a viewer that stopped taking frames, after %s of output "+
+			"of which the reading viewer was given %d bytes, ending:\n%q",
+			took.Round(time.Millisecond), len(screen), screen[max(0, len(screen)-400):])
 	}
 	if !kept {
 		t.Fatal("the stalled viewer lost its terminal instead of its socket")
@@ -1275,7 +1294,7 @@ func TestTerminalSlowReaderIsGivenUpOn(t *testing.T) {
 
 	// The pane and the other viewer were never held up by it, and the stalled
 	// tab can come back to the terminal it left.
-	fast.send(2, "echo still-fine\r")
+	fast.send(4, "echo still-fine\r")
 	fast.waitFor("still-fine")
 	back := e.dialWS(id, "viewer=tab-slow&cols=100&rows=30")
 	hello := back.hello()
