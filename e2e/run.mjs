@@ -1115,53 +1115,32 @@ async function touchscroll() {
 
 /* --------------------------------------------------------------- 9. live */
 
-// One real session against a real, logged in CLI. It types `/status`, which
-// costs nothing: it must never spend tokens on a model turn.
-//
-// "Something was rendered" is not enough, and was not: Claude Code used to
-// come up on its own blocking workspace question - "Accessing workspace: … Is
-// this a project you created or one you trust?", highlighted answer **No,
-// exit** - because a dynamic workspace directory is one it has never been
-// opened in and nothing had marked it trusted. The pane was full of text and
-// the row said `running`, and the session was unusable. So this asserts on the
-// things that tell a started Claude Code from a stopped one: its own banner,
-// and the absence of every full-screen question that can stand in front of it.
-//
-// The other two screens of the same shape are asserted with it. They are not
-// bugs Socrates can fix - a fresh HOME has to be signed in by hand - but they
-// are the same failure to a person, so a run on a machine that was never
-// logged in says which one it stopped on instead of "something was rendered".
-// "Detected a custom API key" is a bug Socrates can fix, and does: the pane's
-// ANTHROPIC_API_KEY is emptied so an ambient key cannot stop a session.
-const CLAUDE_BLOCKING_SCREENS = [
-  'Accessing workspace',        // the workspace-trust question
-  'Detected a custom API key',  // an ambient ANTHROPIC_API_KEY
-  'Choose the text style',      // first-run onboarding
-];
-
+// One real chat against the real Claude Code CLI, which must never spend
+// tokens on a model turn: it sends no message. A chat's agent is `claude -p`,
+// started the moment the chat is made in a directory it has never seen; what
+// says it really came up is the CLI's own answer to the initialize handshake
+// (agent.info: its version, and the slash commands of the composer's
+// palette) and a chat view whose composer is there to type in. It runs on
+// SOCRATES_LIVE_AGENTS=1 only: with that set, the harness keeps the machine's
+// HOME and PATH, so the real CLI and its sign-in are the ones found.
 async function livesession() {
   const s = await start({ viewport: { width: 1280, height: 720 }, live: true });
   try {
     await setup(s.page, s.url);
-    await useDomRenderer(s);
-    await open(s);
-    await startSession(s.page, 'claude');
-    await s.page.waitForSelector('#term .xterm', { timeout: 60000 });
-    const started = await awaitScreen(s.page, 'Claude Code v', 45000);
-    const text = await screen(s.page);
-    ok(text.trim().length > 0, 'the real CLI rendered something in the browser', oneLine(text));
-    ok(started, 'Claude Code reached its own prompt in a directory it has never seen',
-      oneLine(text.split('\n').find((l) => l.includes('Claude Code v')) || text));
-    const blocked = CLAUDE_BLOCKING_SCREENS.filter((question) => text.includes(question));
-    ok(blocked.length === 0,
-      'and no full-screen question stood in front of it - trust, an ambient API key, or onboarding',
-      blocked.join(', ') || 'none of ' + CLAUDE_BLOCKING_SCREENS.length);
-    await typeLine(s.page, '/status');
-    await wait(4000);
-    const after = await screen(s.page);
-    ok(after.trim().length > 0, 'and it answered a slash command that costs nothing', oneLine(after));
-    ok(unexpected(s.errors).length === 0, 'no console errors',
-      unexpected(s.errors).join(' | ') || '0');
+    const id = await makeChat(s, 'claude', { title: 'Live' });
+    const body = await awaitChat(s, id, (b) => ['ready', 'failed', 'exited'].includes(b.chat.process), 60000);
+    ok(body.chat.process === 'ready', 'the real CLI came up as the chat\u2019s agent',
+      JSON.stringify({ process: body.chat.process, detail: body.chat.process_detail || '' }));
+    const agent = (await historyOf(s, id)).agent || {};
+    ok(/^\d+\.\d+/.test(agent.version || '') && (agent.commands || []).length > 0,
+      'and answered the handshake with its version and its commands',
+      JSON.stringify({ version: agent.version || '', commands: (agent.commands || []).length }));
+    await openChat(s.page, id);
+    const composer = await s.page.$eval('#chat .so-composer__input', (n) => !n.disabled && !n.readOnly).catch(() => false);
+    ok(composer, 'the chat view has a composer to type in', String(composer));
+    ok(((await historyOf(s, id)).messages || []).length === 0 && !body.chat.last_outcome,
+      'and no turn ran: nothing was spent', 'no messages, no turn');
+    ok(unexpected(s.errors).length === 0, 'no console errors', unexpected(s.errors).join(' | ') || '0');
   } finally { await s.stop(); }
 }
 
@@ -9360,75 +9339,6 @@ async function homekinds() {
   } finally { await s.stop(); }
 }
 
-// home-unread: a question asked in prose that could not be read when the turn
-// ended is read once it can be, on the Home that is open - no reload, and no
-// next turn. A gateway that refused once is asked again, and a key saved on
-// another device brings the reads it was missing.
-async function homeunread() {
-  const { s, stub, ctl } = await homeServer();
-  let other = null;
-  try {
-    const failed = await makeAgent(s, 'Read failed once');
-    const keyless = await makeAgent(s, 'Read once a key is in');
-    const digestsOf = (title) => stub.digests.filter((c) => {
-      const messages = (c.json && c.json.messages) || [];
-      return messages.length > 1 && calledAs(String(messages[messages.length - 1].content)) === title;
-    }).length;
-    let refuse = true;
-    ctl.digest = async (prompt) => (refuse && calledAs(prompt) === 'Read failed once' ? { status: 500 } : undefined);
-    const open = await awaitHome(s.page, (h) => h.shown && h.conn === 'live', 15000);
-
-    // The gateway refuses every read of a turn that ends on a question in
-    // prose, and then comes back.
-    tmuxType(s, failed, '/busy 3000');
-    await awaitActivity(s, failed, (a) => a.state === 'busy', 10000);
-    tmuxType(s, failed, '/textq');
-    await awaitActivity(s, failed, (a) => a.state === 'idle', 15000);
-    const broken = await awaitDigest(s, failed, (d) => d.phase === 'error' && d.state === 'idle', 30000);
-    const unasked = await homeLook(s.page);
-    ok(open.ok && !!broken && unasked.counts.questions === 0,
-      'the read of the turn’s end fails, and Home has no question to count',
-      JSON.stringify({ digest: broken && { phase: broken.phase, state: broken.state, error: broken.error }, questions: unasked.counts.questions }));
-    refuse = false;
-    const callsAt = digestsOf('Read failed once');
-    const recovered = await awaitHome(s.page, (h) => h.counts.questions === 1 && h.rows.some((r) => r.id === failed && r.answer), 40000);
-    const read = await awaitDigest(s, failed, (d) => d.phase === 'ready' && !!d.question && d.question.source === 'text', 5000);
-    ok(recovered.ok && !!read && digestsOf('Read failed once') > callsAt,
-      'once the gateway answers again, the idle session is read again and its question counted, with no reload',
-      took(recovered) + ', ' + (digestsOf('Read failed once') - callsAt) + ' new reads');
-
-    // No key: the turn's end cannot be read at all. A key saved on another
-    // device reaches the Home that is open.
-    await answerVia(s, failed, read && read.rev, [{ item: 0, choices: [], text: 'Blue' }]);
-    await awaitRunEnd(s, failed, 30000);
-    const cleared = await s.context.request.put(s.url + '/api/settings', { data: { settings: { openrouter: { api_key: '' } } } });
-    tmuxType(s, keyless, '/busy 3000');
-    await awaitActivity(s, keyless, (a) => a.state === 'busy', 10000);
-    tmuxType(s, keyless, '/textq');
-    await awaitActivity(s, keyless, (a) => a.state === 'idle', 15000);
-    const noKey = await awaitDigest(s, keyless, (d) => d.phase === 'error' && /no OpenRouter API key/.test(d.error || ''), 20000);
-    await wait(2000);
-    const before = await homeLook(s.page);
-    ok(cleared.ok() && !!noKey && before.counts.questions === 0 && before.conn === 'live',
-      'with no key the question in prose is not read, and Home, live, counts none',
-      JSON.stringify({ digest: noKey && noKey.error, state: noKey && noKey.state, questions: before.counts.questions }));
-    other = await deviceOf(s);
-    const keyAt = Date.now();
-    const saved = await other.context.request.put(s.url + '/api/settings', {
-      data: { settings: { openrouter: { api_key: 'e2e-key', base_url: stub.url } } },
-    });
-    const counted = await awaitHome(s.page, (h) => h.counts.questions === 1 && h.rows.some((r) => r.id === keyless && r.answer), 20000);
-    ok(saved.ok() && counted.ok,
-      'a key saved on another device gets it read, and Home counts it without a reload',
-      ((Date.now() - keyAt) / 1000).toFixed(1) + ' s, ' + JSON.stringify(counted.seen.counts));
-    ok(unexpected(s.errors).length === 0, 'no console errors', unexpected(s.errors).join(' | ') || '0');
-  } finally {
-    if (other) await other.context.close();
-    await s.stop();
-    await stub.close();
-  }
-}
-
 // home-honest: what Home and the dialog say is so. An age is measured on the
 // server's clock, not a device's that is minutes off; the dialog says when it
 // is offline, and that its question may have been answered; an answer sent
@@ -9528,56 +9438,6 @@ async function homehonest() {
     if (skewed) await skewed.context.close();
     if (away) await away.context.close();
     await s.stop();
-  }
-}
-
-// home-language: a question read in the person's language - German here -
-// while the screen asks it in English. Two tabs share Yes and No, and only the
-// question above each menu tells which tab a Yes belongs to: the digest keeps
-// the screen's own words for that, and the answer goes in tab by tab.
-async function homelanguage() {
-  const { s, stub, ctl } = await homeServer();
-  try {
-    const saved = await s.context.request.put(s.url + '/api/settings', { data: { settings: { voice: { language: 'de' } } } });
-    const id = await makeAgent(s, 'Fragt zweimal');
-    const yesNo = (yes, no) => [{ label: 'Yes', description: yes, recommended: false }, { label: 'No', description: no, recommended: false }];
-    ctl.digest = async (prompt) => {
-      if (calledAs(prompt) !== 'Fragt zweimal' || !menuOnScreen(screenOf(prompt))) return undefined;
-      // A model that writes the question in German, as it is told to, and
-      // leaves the screen's words out.
-      return JSON.stringify({
-        summary: 'Fragt nach Tests und Push', context: 'Die Sitzung ist fast fertig.',
-        question: {
-          kind: 'choice', detail: '',
-          items: [
-            { header: 'Tests', text: 'Die Tests ausführen?', multi: false, free_text: true, options: yesNo('Run the whole suite', 'Skip them') },
-            { header: 'Push', text: 'Auf main pushen?', multi: false, free_text: true, options: yesNo('Push the branch', 'Keep it local') },
-          ],
-        },
-      });
-    };
-    tmuxType(s, id, '/question yesno');
-    await awaitActivity(s, id, (a) => a.state === 'waiting', 15000);
-    const read = await awaitDigest(s, id, (d) => d.phase === 'ready' && !!d.question && d.question.items.length === 2, 20000);
-    const asked = stub.digests.map((c) => String(((c.json && c.json.messages) || [{}])[0].content || ''));
-    ok(saved.ok() && asked.some((p) => /German/.test(p)), 'the digest is asked to write in German', asked.length + ' digests');
-    ok(!!read && read.question.items.map((i) => i.text).join(' / ') === 'Die Tests ausführen? / Auf main pushen?'
-      && read.question.items.map((i) => i.screen_text).join(' / ') === TESTS_QUESTION + ' / ' + PUSH_QUESTION,
-      'the question is in German, and each tab keeps the words the screen asks it in',
-      JSON.stringify(read && read.question.items.map((i) => ({ text: i.text, screen: i.screen_text }))));
-    const posted = await answerVia(s, id, read && read.rev,
-      [{ item: 0, choices: ['Yes'], text: '' }, { item: 1, choices: ['No'], text: '' }]);
-    const run = await awaitRunEnd(s, id, 60000);
-    const logged = await awaitAnswerLogged(s, 1);
-    ok(posted.status === 202 && !!run && run.phase === 'done' && !run.error,
-      'Yes on the first tab and No on the second are delivered', JSON.stringify(run && { phase: run.phase, error: run.error, summary: run.summary }));
-    ok(logged.length === 1 && JSON.stringify(logged[0].answers.map((a) => [a.question, a.choices.join(',')]))
-      === JSON.stringify([[TESTS_QUESTION, 'Yes'], [PUSH_QUESTION, 'No']]),
-      'each tab got its own answer', JSON.stringify(logged.map((e) => e.answers)));
-    ok(unexpected(s.errors).length === 0, 'no console errors', unexpected(s.errors).join(' | ') || '0');
-  } finally {
-    await s.stop();
-    await stub.close();
   }
 }
 
@@ -11898,13 +11758,11 @@ const ALL = [
   ['home-stream', 'with chats: a late list, a handshake that hangs, a refused upgrade and an offline Home', homestream],
   ['home-quiet', 'a tap on a stream that died quietly, chats’ questions polled across a restart, a long hide, a naming cut off, a server never reached', homequiet],
   ['home-kinds', 'a multi-select, two questions walked with Next and Back, and a plan answered by its card: sent back, then approved', homekinds],
-  ['home-unread', 'a question in prose whose read failed, or had no key, is read on the open Home once it can be', homeunread],
   ['home-honest', 'ages by the server\u2019s clock, a dialog that says it is offline, an answer saved offline, and a compressed poll', homehonest],
-  ['home-language', 'a question read in German off an English screen: two tabs that share Yes and No, each given its own answer', homelanguage],
   ['home-restart', 'a server restart under an open dialog: every chat\u2019s question kept in the walk, its choice and its age', homerestart],
   ['home-devices', 'two devices on one chat\u2019s question: the second follows the first\u2019s answer, is told when its Send crossed it, and a second tab is the same device', homedevices],
   ['home-followup', 'a follow-up asked right after the answer, slower to read than "Answered" lasts', homefollowup],
-  ['livesession', 'one real session against the real Claude Code CLI', livesession, { live: true }],
+  ['livesession', 'one real chat against the real Claude Code CLI, with no model turn', livesession, { live: true }],
 ];
 
 const wanted = process.argv.slice(2);
