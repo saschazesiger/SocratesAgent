@@ -195,6 +195,52 @@ func ReadJournal(path string) ([]Event, error) {
 	return events, err
 }
 
+// LastSeq is the seq of the last whole event of a journal, read from its end
+// rather than its start: what a reader that holds a summary of the journal
+// as of some seq checks it against, without reading the history. A journal
+// that does not exist, or holds no whole event, is 0. Like readJournal it
+// takes a last event that lacks its newline and skips a torn or zero-filled
+// tail.
+func LastSeq(path string) (int64, error) {
+	f, err := os.Open(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return 0, err
+	}
+	size := info.Size()
+	for window := int64(64 << 10); ; window *= 2 {
+		start := max(size-window, 0)
+		buf := make([]byte, size-start)
+		if _, err := f.ReadAt(buf, start); err != nil && !errors.Is(err, io.EOF) {
+			return 0, err
+		}
+		lines := bytes.Split(buf, []byte("\n"))
+		// The first line of a window that does not start the file may be
+		// the end of a longer one, and is no event of its own.
+		first := 0
+		if start > 0 {
+			first = 1
+		}
+		for i := len(lines) - 1; i >= first; i-- {
+			if len(lines[i]) <= maxLine {
+				if ev, ok := parseLine(lines[i], 0); ok {
+					return ev.Seq, nil
+				}
+			}
+		}
+		if start == 0 || window > maxLine {
+			return 0, nil
+		}
+	}
+}
+
 // readJournal parses f from its start. good is the byte offset just past the
 // last whole event, and size how far the file goes.
 //

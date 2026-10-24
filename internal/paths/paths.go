@@ -80,6 +80,11 @@ const (
 	ChatLock    = "host.lock"
 	ChatLog     = "host.log"
 	ChatSockets = Run + "/chats"
+	// ChatSummary is the server's summary of a chat's journal as of one seq,
+	// which it starts from instead of reading the history (WP9). It is made
+	// again from the journal whenever it does not match it, so it is not
+	// backed up.
+	ChatSummary = "summary.json"
 )
 
 // Redacted are files that are backed up without some of what they hold, as
@@ -126,6 +131,8 @@ var NotBackedUp = []string{
 	Chats + "/*/" + ChatLock,
 	Chats + "/*/" + ChatLog,
 	Chats + "/*/" + ChatSpec + ".tmp",
+	Chats + "/*/" + ChatSummary,
+	Chats + "/*/" + ChatSummary + ".tmp",
 	"lost+found",
 }
 

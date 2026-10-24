@@ -296,3 +296,37 @@ func TestFeedNeverHandsADeltaOutBeforeItsEvent(t *testing.T) {
 		t.Fatalf("after 1: %+v", events)
 	}
 }
+
+// LastSeq reads the end of a journal the way readJournal reads all of it.
+func TestLastSeqReadsTheEndOfAJournal(t *testing.T) {
+	path := filepath.Join(t.TempDir(), JournalFile)
+	if seq, err := LastSeq(path); err != nil || seq != 0 {
+		t.Fatalf("a missing journal: %d %v", seq, err)
+	}
+	j, _, err := OpenJournal(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	long := strings.Repeat("x", 200<<10)
+	if _, err := j.Append(Event{Type: TypeNotice, Text: "one"}, Event{Type: TypeNotice, Text: long},
+		Event{Type: TypeNotice, Text: long}); err != nil {
+		t.Fatal(err)
+	}
+	j.Close()
+	if seq, err := LastSeq(path); err != nil || seq != 3 {
+		t.Fatalf("whole: %d %v", seq, err)
+	}
+	// A torn tail and zeros after it are skipped; a last event without its
+	// newline counts.
+	f, _ := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0o600)
+	f.WriteString(`{"seq":4,"at":1,"type":"notice","text":"cut`)
+	f.Write(make([]byte, 100))
+	f.Close()
+	if seq, _ := LastSeq(path); seq != 3 {
+		t.Fatalf("torn: %d", seq)
+	}
+	os.WriteFile(path, []byte(`{"seq":1,"at":1,"type":"notice"}`+"\n"+`{"seq":2,"at":1,"type":"notice"}`), 0o600)
+	if seq, _ := LastSeq(path); seq != 2 {
+		t.Fatalf("no final newline: %d", seq)
+	}
+}

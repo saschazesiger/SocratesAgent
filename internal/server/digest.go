@@ -1633,6 +1633,12 @@ func (s *Server) handleDigestNow(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if row.IsChat() {
+		// A chat's reading is its journal, current already; what can be read
+		// again is the verdict on its last turn.
+		writeJSON(w, http.StatusAccepted, map[string]any{"digest": s.chats.rejudge(row.ID)})
+		return
+	}
 	if !codingHarness(row.Harness) {
 		writeError(w, http.StatusBadRequest, "only a coding session has a screen worth reading for Home")
 		return

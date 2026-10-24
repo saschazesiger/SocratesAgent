@@ -115,7 +115,11 @@ func (s *Server) serveChatStream(conn *websocket.Conn, token string, p *chatPeer
 		delete(h.streams, st)
 		h.mu.Unlock()
 	}()
-	sub := p.feed.Subscribe()
+	feed, sub, err := p.subscribe()
+	if err != nil {
+		_ = conn.Close(websocket.StatusInternalError, "the chat could not be read")
+		return err
+	}
 	defer sub.Close()
 
 	write := func(payload []byte) error {
@@ -124,7 +128,7 @@ func (s *Server) serveChatStream(conn *websocket.Conn, token string, p *chatPeer
 		return conn.Write(wctx, websocket.MessageText, payload)
 	}
 	frame, _ := json.Marshal(map[string]any{
-		"t": "hello", "chat": p.summary(), "last_seq": p.feed.Last(), "now": time.Now().UnixMilli(),
+		"t": "hello", "chat": p.summary(), "last_seq": feed.Last(), "now": time.Now().UnixMilli(),
 	})
 	if err := write(frame); err != nil {
 		_ = conn.CloseNow()
