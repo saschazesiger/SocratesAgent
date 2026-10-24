@@ -370,6 +370,43 @@ func TestInterruptLimitAndCrash(t *testing.T) {
 
 // A line too long to read ends the app-server, so the host sees an exit
 // instead of calls that never come back.
+// What was queued behind a turn the limit ended is held, not posted into the
+// account at its limit: a message from the person lets it run here, in the
+// order it was sent. (A switch starts another adapter, which the host hands
+// what was never taken up.)
+func TestALimitHoldsTheQueueUntilAMessage(t *testing.T) {
+	lab := newFakeLab(t)
+	r := newRecorder()
+	a := lab.start(lab.spec("a", ""), r)
+
+	_, n := send(t, a, r, "/limit 0.3")
+	queued, _ := send(t, a, r, "queued behind the limit")
+	if end := r.turnEnd(t, n, wait); end.Outcome != agent.OutcomeLimited {
+		t.Fatalf("the turn ended %s\n%s", end.Outcome, dump(r.since(n)))
+	}
+	time.Sleep(500 * time.Millisecond)
+	for _, ev := range r.since(n) {
+		if ev.Type == agent.TypeTurnStarted && ev.MessageID == queued.MessageID {
+			t.Fatalf("the queue ran into the limit\n%s", dump(r.since(n)))
+		}
+	}
+	if s := messageState(r.projection(), queued.MessageID); s != agent.MessageQueued {
+		t.Fatalf("the held message is %q", s)
+	}
+
+	after, m := send(t, a, r, "going on")
+	r.waitFor(t, m, "the held message's turn", func(ev agent.Event) bool {
+		return ev.Type == agent.TypeTurnStarted && ev.MessageID == queued.MessageID
+	}, wait)
+	deadline := time.Now().Add(wait)
+	for messageState(r.projection(), after.MessageID) != agent.MessageDelivered {
+		if time.Now().After(deadline) {
+			t.Fatalf("the message that let the queue go was not delivered\n%s", dump(r.since(m)))
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
 func TestAnUnreadableLineEndsCodex(t *testing.T) {
 	defer func(old int) { maxLine = old }(maxLine)
 	maxLine = 256 << 10

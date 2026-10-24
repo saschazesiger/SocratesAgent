@@ -94,6 +94,12 @@ type adapter struct {
 	// handed to the running turn, by client id, until codex takes them up.
 	queue   []agent.Outgoing
 	steered map[string]agent.Outgoing
+	// held stops the queue after a turn the account's limit ended: what was
+	// queued behind it would go into the account at its limit and end
+	// limited too. An account switch (a new adapter, which the host hands
+	// what was never taken up) or a message the person sends lets it go
+	// (AGENT-HOST.md §5.2).
+	held    bool
 	agents  map[string]*subagent
 	running int
 	waits   agent.Waits
@@ -413,12 +419,19 @@ func (a *adapter) send(ctx context.Context, msg agent.Outgoing) error {
 		a.mu.Unlock()
 		return errClosed
 	}
+	// The person writing after a limit is the person going on with this
+	// account: what the limit held goes first, then this.
+	released := a.held
+	a.held = false
 	active := a.active
 	shell := isShellLine(msg.Text)
 	if active != nil && (shell || active.kind != turnNormal) || len(a.queue) > 0 {
 		a.queue = append(a.queue, msg)
 		a.mu.Unlock()
 		a.out.Emit(agent.Event{Type: agent.TypeMessageState, MessageID: msg.MessageID, State: agent.MessageQueued})
+		if released {
+			go a.flush()
+		}
 		return nil
 	}
 	a.mu.Unlock()
@@ -576,7 +589,7 @@ func (a *adapter) flush() {
 	a.sendMu.Lock()
 	defer a.sendMu.Unlock()
 	a.mu.Lock()
-	if a.ending || a.active != nil || len(a.queue) == 0 {
+	if a.ending || a.active != nil || a.held || len(a.queue) == 0 {
 		a.mu.Unlock()
 		return
 	}
