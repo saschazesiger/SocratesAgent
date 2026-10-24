@@ -13,6 +13,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -1248,19 +1250,29 @@ func TestTerminalSlowReaderIsGivenUpOn(t *testing.T) {
 	fast := e.dialWS(id, "viewer=tab-fast&cols=100&rows=30")
 	fast.hello()
 
+	// The stalled viewer is in the hub before its socket is: wait for both,
+	// or its socket being gone says nothing.
 	var stalled *termViewer
-	for wait := time.Now().Add(10 * time.Second); stalled == nil && time.Now().Before(wait); {
+	attached := func() bool {
+		stalled.mu.Lock()
+		defer stalled.mu.Unlock()
+		return stalled.conn != nil
+	}
+	for wait := time.Now().Add(10 * time.Second); time.Now().Before(wait); time.Sleep(20 * time.Millisecond) {
 		for _, tv := range e.srv.hub.forSession(id) {
 			if tv.viewerID == "tab-slow" {
 				stalled = tv
 			}
 		}
-		if stalled == nil {
-			time.Sleep(20 * time.Millisecond)
+		if stalled != nil && attached() {
+			break
 		}
 	}
 	if stalled == nil {
 		t.Fatal("the stalled viewer was forgotten altogether")
+	}
+	if !attached() {
+		t.Fatal("the stalled viewer's socket was never taken on")
 	}
 
 	// Random bytes, so that the socket's compression cannot fold them away,
@@ -1268,25 +1280,22 @@ func TestTerminalSlowReaderIsGivenUpOn(t *testing.T) {
 	// long as it takes. How much a loopback socket takes in before its writer
 	// blocks is the system's to decide, and Linux and macOS size and grow it
 	// differently, so the output goes on until the server has given up on the
-	// viewer, or until the deadline says it never will.
-	fast.send(1, "od -An -tx1 /dev/urandom\r")
+	// viewer, or until the deadline says it never will. It is stopped by a
+	// file rather than by ^C, which also throws away whatever is typed after
+	// it before the shell has read it.
+	stop := filepath.Join(t.TempDir(), "stop")
+	fast.send(1, "while [ ! -e '"+stop+"' ]; do od -An -tx1 -N 65536 /dev/urandom; done; echo spin-d''one\r")
 	start := time.Now()
-	deadline := start.Add(20 * time.Second)
-	for time.Now().Before(deadline) {
-		stalled.mu.Lock()
-		gone := stalled.conn == nil
-		stalled.mu.Unlock()
-		if gone {
-			break
-		}
+	for deadline := start.Add(20 * time.Second); attached() && time.Now().Before(deadline); {
 		time.Sleep(50 * time.Millisecond)
 	}
 	took := time.Since(start)
 	stalled.mu.Lock()
 	live, kept := stalled.conn, stalled.viewer != nil
 	stalled.mu.Unlock()
-	fast.send(2, "\x03")
-	fast.send(3, "echo spin-d''one\r")
+	if err := os.WriteFile(stop, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
 	fast.waitFor("spin-done")
 	if live != nil {
 		screen := fast.screen()
@@ -1300,7 +1309,7 @@ func TestTerminalSlowReaderIsGivenUpOn(t *testing.T) {
 
 	// The pane and the other viewer were never held up by it, and the stalled
 	// tab can come back to the terminal it left.
-	fast.send(4, "echo still-fine\r")
+	fast.send(2, "echo still-fine\r")
 	fast.waitFor("still-fine")
 	back := e.dialWS(id, "viewer=tab-slow&cols=100&rows=30")
 	hello := back.hello()
