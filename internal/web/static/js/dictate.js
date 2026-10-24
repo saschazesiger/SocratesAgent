@@ -209,6 +209,10 @@ const NO_KEY_WORDS = {
     title: 'Status needs an OpenRouter key',
     body: 'Status is written by a model on OpenRouter, and no key is set yet. Add one in Admin, under Voice.',
   },
+  title: {
+    title: 'Naming needs an OpenRouter key',
+    body: 'A session is named by a model on OpenRouter, and no key is set yet. Add one in Admin, under Voice.',
+  },
 };
 
 /**

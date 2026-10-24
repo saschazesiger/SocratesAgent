@@ -46,7 +46,8 @@ import {
   faces, iconEl,
 } from './ui.js';
 import { mountBackupNotice } from './backup.js';
-import { setVoiceKey } from './voice.js';
+import { setVoiceKey, voiceKey, onVoiceKey, keyMissing } from './voice.js';
+import { explainNoKey } from './dictate.js';
 import { mountChat } from './chatview.js';
 import { chatOutbox, queueCommand, settled } from './chatoutbox.js';
 import { openChatAsks, askDialogOpen, closeAskDialog } from './askdialog.js';
@@ -3120,6 +3121,9 @@ function renameRow(id, title) {
   renderList();
 }
 
+// Whether the server is being asked if there is a key to name with.
+let regenAsking = false;
+
 // drawTitling shows in the header whether the session on screen is being
 // named: the name pulses and the arrow beside it turns. An editor is named
 // after its folder, so it has no arrow.
@@ -3127,10 +3131,39 @@ function drawTitling(id) {
   const titling = state.titling.has(id);
   dom.sessionTitle.toggleAttribute('data-titling', titling);
   dom.titleRegen.hidden = !state.current || state.current.harness === IDE;
-  // While a name is being thought of, the sparkles turn into a spinner and a
+  // While a name is being thought of - or the server is asked whether there
+  // is a key to think of one with - the sparkles turn into a spinner and a
   // second press does nothing (wire).
-  if (titling) dom.titleRegen.setAttribute('aria-busy', 'true');
+  if (titling || regenAsking) dom.titleRegen.setAttribute('aria-busy', 'true');
   else dom.titleRegen.removeAttribute('aria-busy');
+  // A name is thought of by a model on OpenRouter: without a key the tip
+  // says why a press only explains, as Status's and Speak's do.
+  const tip = voiceKey() === false ? 'Needs an OpenRouter key (Admin, Voice)' : 'Name this session again from what it is about';
+  if (dom.titleRegen.getAttribute('data-tip') !== tip) dom.titleRegen.setAttribute('data-tip', tip);
+}
+
+// renameAgain is the sparkles' press: a new name for the session on screen,
+// or - with no OpenRouter key, asked again first - the dialog that says
+// where one is added, before anything is sent.
+async function renameAgain() {
+  const session = state.current;
+  if (!session || regenAsking || dom.titleRegen.getAttribute('aria-busy') === 'true') return;
+  if (voiceKey() === false) {
+    regenAsking = true;
+    drawTitling(session.id);
+    let missing = false;
+    try {
+      missing = await keyMissing();
+    } finally {
+      regenAsking = false;
+      if (state.current) drawTitling(state.current.id);
+    }
+    if (missing) {
+      explainNoKey('title', dom.titleRegen);
+      return;
+    }
+  }
+  retitleSession(session);
 }
 
 // retitleSession asks for a new name for the session on screen, from what it
@@ -3159,7 +3192,12 @@ async function retitleSession(session, { unnamed = false, prompt } = {}) {
     if (data && data.session) replaceSession(data.session);
   } catch (err) {
     if (unnamed) toast('Could not name the session: ' + errorMessage(err), 'error');
-    else alertDialog({ title: 'Could not name the session', body: errorMessage(err) });
+    else if (err && Number(err.status) === 409 && /openrouter api key/i.test(String(err.message || ''))) {
+      // The server has no key to name it with (a key taken away since the
+      // page knew of one): said the way the press says it, with Admin.
+      setVoiceKey(false);
+      explainNoKey('title', dom.titleRegen);
+    } else alertDialog({ title: 'Could not name the session', body: errorMessage(err) });
   } finally {
     state.titling.delete(session.id);
     state.namingHere.delete(session.id);
@@ -3764,9 +3802,8 @@ function wire() {
   dom.sessionTitle.addEventListener('click', () => {
     if (state.current) renameSession(state.current, dom.sessionTitle);
   });
-  dom.titleRegen.addEventListener('click', () => {
-    if (dom.titleRegen.getAttribute('aria-busy') !== 'true') retitleSession(state.current);
-  });
+  dom.titleRegen.addEventListener('click', () => renameAgain());
+  onVoiceKey(() => { if (state.current) drawTitling(state.current.id); });
   dom.sessionOutcome.addEventListener('click', () => showOutcome());
   // The terminal's on-screen keyboard, which on a touch screen this button
   // raises and puts away and nothing else does. Every other field - a chat's
