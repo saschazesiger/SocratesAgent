@@ -6,18 +6,19 @@ rebuild followed is `REBUILD.md`; this file is where it ended.
 
 ## 1. Where it stands
 
-The rebuild is done on branch **`wp10`**: the integration of WP1–WP9 with WP10 (the clean-up and
-the migration) and WP11 (the e2e suite and the docs) on top. It is **not merged into `main`**:
-every push to `main` is installed on the server by GitHub Actions, and the nightly update builds
-`origin/main` too, so the merge is the deployment (§6).
+The rebuild is done on branch **`integ`**: `origin/rebuild` (26a3b56, with its CI fixes: macOS, the
+Shell's substrate flakes, tmux 3.4's lost exit status and 3.8's DECRQM reply, OpenCode's and Codex's
+limit hold by journal order, OpenCode's repeated error, the backup upload) with WP10 and WP11
+(branch `wp10`, merged in 5d5a1bb) and the phone pass (branch `mobile`, merged in 1942e08) on top,
+then the fixes of the four final audits (a desk, a phone, a deploy rehearsal on a synthetic
+installation of `main`, the real binaries; `deployfix` merged in d95802d). It is **not merged into
+`main`**: every push to `main` is installed on the server by GitHub Actions, and the nightly update
+builds `origin/main` too, so the merge is the deployment (§6).
 
-At the time of writing `origin/rebuild` carries CI and test fixes made beside this branch (test
-flakes on macOS and under load, a backup upload that no longer cuts the others short); seven of
-them are on `wp10` too, cherry-picked: three test fixes the final race run needed (the stream
-reads under the lock, the killed host's child, the ack that reads the turn's end first), and from
-the review pass the lost exit status of a Shell (a pane killed by a signal read by name, tmux
-made to collect a status it lost, the poll that waits for it) and the backup upload. Merge the
-rest with `wp10` before the final run of §6.
+`integ`'s history from fa1ef20 on was rewritten before anything was pushed: that commit had put a
+28 MB debug binary (`SocratesAgent`, what `go build` without `-o` writes in a clone named after
+the repository) in the tree. The local branches `wp10` and `deployfix` still hold the old
+commits; build on `integ`, not on them.
 
 Binding documents, in order:
 
@@ -25,7 +26,8 @@ Binding documents, in order:
 2. `AGENT-HOST.md`: the agent host, its protocol, the chat event model, the adapters (§5), the
    browser API (§7) and the accounts (§11). Authoritative for everything that touches a chat, and
    kept accurate for the final code.
-3. `DEVIATIONS.md`, section "Rebuild": every accepted deviation from REBUILD.md, per package.
+3. `DEVIATIONS.md`, sections "Rebuild" and "Phone pass": every accepted deviation from REBUILD.md,
+   per package.
 4. `research/01..09-*.md`: the verified facts behind the plan (the protocols of claude 2.1.309,
    codex 0.164.0, opencode 1.19.4; the spikes).
 5. DECISIONS.md, DESIGN.md, HOME.md, ACTIVITY.md, HARNESS-POLICY.md hold where REBUILD.md did not
@@ -62,8 +64,17 @@ Binding documents, in order:
 - **One data folder, backed up to S3** (WP1): an encrypted, incremental, deduplicated backup that
   nothing reads while Socrates runs, and a restore from the setup page or `socrates restore`.
 - **Tests and docs** (WP11): every e2e scenario of the agents' terminals moved onto the chats
-  against the protocol fakes (`e2e/README.md`), a new `chat-restart`, the README with its
-  pictures retaken, and this file.
+  against the protocol fakes (`e2e/README.md`), a new `chat-restart`, and this file. The README's
+  pictures were taken again after the phone pass (`node e2e/shots.mjs`).
+- **The phone pass** (branch `mobile`, on `wp10`): an audit at 390, 360, 430 and on its side,
+  touch mode only, found 48 things, and two more audits after the fixes found fewer each time. Icons
+  rather than text buttons, with the glyphs Dashboard-Style 1.6.2 lacks taken from Lucide (`ui.js`
+  `LUCIDE`, DASHBOARD-STYLE.md); a tap on a field types at once and the keyboard switch is the
+  terminal's alone (`keyboard.js`); a session's menu as an action sheet on a phone; the question
+  dialog as the whole screen with one footer row; Stop and Send one 48px slot; snackbars placed
+  above the dock, the key bar and a keyboard; "needs an OpenRouter key" said before anything is
+  recorded; Info and the chat's "i" as labelled facts with model names, not ids. DEVIATIONS.md,
+  "Phone pass", lists what departs from REBUILD §7.1.
 
 ## 3. How to operate it
 
@@ -109,11 +120,11 @@ Binding documents, in order:
 - **Accounts**: Admin → Accounts. Claude Code signs in with `claude auth login` in a Shell the card
   opens, Codex with a device code, OpenCode through its provider, any of them with an API key.
 - **Backup and restore**: Admin → Backup; README "Storage" for the restore on a new machine.
-- **Tests**: `make check` (gofmt, vet, `go test -race`, build); `node e2e/run.mjs` (the browser
-  suite, about twenty minutes on four CPUs), `node e2e/chats.mjs` and `node e2e/asks.mjs`.
-  Against real binaries, each gated and cheap: `SOCRATES_CLAUDE_LIVE=1` (Claude's adapter and
-  ask_user), `SOCRATES_REAL_CODEX=1` (the real codex against the scripted model),
-  `SOCRATES_OPENCODE_REAL=1` (a free OpenCode model), `SOCRATES_LIVE_AGENTS=1` (e2e
+- **Tests**: `make check` (gofmt, vet, `go mod tidy -diff`, `go test -race`, build);
+  `node e2e/run.mjs` (the browser suite, about twenty minutes on four CPUs), `node e2e/chats.mjs`
+  and `node e2e/asks.mjs`. Against real binaries, each gated and cheap: `SOCRATES_CLAUDE_LIVE=1`
+  (Claude's adapter and ask_user), `SOCRATES_REAL_CODEX=1` (the real codex against the scripted
+  model), `SOCRATES_OPENCODE_REAL=1` (a free OpenCode model), `SOCRATES_LIVE_AGENTS=1` (e2e
   `livesession`, and the Admin pictures of `e2e/shots.mjs`).
 
 ## 4. Deliberately not done
@@ -155,20 +166,29 @@ Binding documents, in order:
 
 ## 6. Definition of done, and what is left before `main`
 
-1. `go build`, `go vet` (Linux, Windows, macOS) and `go test -race ./...` pass: done on `wp10`.
+1. `go build`, `go vet` (Linux, Windows, macOS) and `go test -race ./...` pass: done on `wp10`;
+   on `integ` CI ran on `origin/rebuild`'s part, and the final audits' fixes ran the packages
+   they touch. Run it whole once more on `integ`'s last commit.
 2. The whole e2e suite passes in one run, at a desk and on a phone, with `chats.mjs` and
-   `asks.mjs`: done on `wp10` (WP11's report has the counts).
+   `asks.mjs`: done on `wp10` (WP11's report has the counts); on `integ` the phone pass and the
+   final audits' fixes ran the scenarios they touch. Run it whole once more on `integ`'s last
+   commit, alone on the machine.
 3. Real runs, cheap, on the machine with the test accounts (never the build container):
    - **Claude:** a chat, a subagent, a workflow surviving a restart of a test server instance, an
      account switch A → B → A (the spike accounts under `/root/socrates-spike/claude-a` and
      `claude-b`: never log them out, never copy their credentials, keep spend on haiku), and
      `SOCRATES_CLAUDE_LIVE=1`, `SOCRATES_LIVE_AGENTS=1 node e2e/run.mjs livesession`.
-   - **OpenCode:** `SOCRATES_OPENCODE_REAL=1`, a chat on a free model.
+   - **OpenCode:** `SOCRATES_OPENCODE_REAL=1`, a chat on a free model. A whole
+     `TestRealOpenCode` needs about ten to twelve calls on one model, more than one free-tier
+     window allows (about eight calls per model in a few minutes, measured on 2a696cb): give it a
+     provider key in `SOCRATES_OPENCODE_REAL_AUTH`, or a model with more quota; on the free tier
+     alone its steps pass piecewise (every one did, in separate runs).
    - **Codex:** `SOCRATES_REAL_CODEX=1` (no working ChatGPT login on that host; the real binary
      runs against the scripted model).
 4. The migration rehearsed on a **copy** of `/var/lib/socrates` (never the original): REBUILD §8,
    the clean cut, the first backup into the existing bucket under `backup/v1/`.
-5. Merge `origin/rebuild`'s fixes (§1), run 1 and 2 again, then merge into `main`. Tell the product
+5. Merge `origin/rebuild`'s fixes (§1): done, `integ` is built on them. Run 1 and 2 again,
+   then merge into `main`. Tell the product
    owner first: the migration is one-way, and the next nightly update (or Admin → Updates) deploys
    it.
 
