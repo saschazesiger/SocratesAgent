@@ -377,6 +377,27 @@ func TestPreferencesCarryTheLanguage(t *testing.T) {
 	}
 }
 
+// The page is told whether an OpenRouter key is set, so a microphone can say
+// it needs one before anything is recorded - and only whether: the key itself
+// never leaves the server this way.
+func TestPreferencesSayWhetherAnOpenRouterKeyIsSet(t *testing.T) {
+	env := newEnv(t)
+	env.do(t, env.client, "POST", "/api/setup", `{"password":"a-good-password"}`)
+	_, prefs := env.do(t, env.client, "GET", "/api/preferences", "")
+	if prefs["openrouter"] != false {
+		t.Fatalf("openrouter without a key = %#v", prefs["openrouter"])
+	}
+	env.configureOpenRouter(t, map[string]any{"api_key": "sk-or-secret"})
+	_, prefs = env.do(t, env.client, "GET", "/api/preferences", "")
+	if prefs["openrouter"] != true {
+		t.Fatalf("openrouter with a key = %#v", prefs["openrouter"])
+	}
+	raw, _ := json.Marshal(prefs)
+	if strings.Contains(string(raw), "sk-or-secret") {
+		t.Fatalf("the key reached the page: %s", raw)
+	}
+}
+
 // A transcript that translates is not a transcript, so the instruction says so
 // in both languages - and both name a language, because there is no setting
 // left that means "work it out yourself".

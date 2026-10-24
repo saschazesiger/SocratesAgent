@@ -32,6 +32,9 @@ func (s *Server) handlePreferences(w http.ResponseWriter, r *http.Request) {
 	settings := s.Settings()
 	writeJSON(w, http.StatusOK, map[string]any{
 		"language": settings.Voice.Language,
+		// Whether a key is set, never the key: dictation and Status say they
+		// need one before anything is recorded or sent (voice.js voiceKey).
+		"openrouter": strings.TrimSpace(settings.OpenRouter.APIKey) != "",
 		"terminal": map[string]any{
 			"scrollback": settings.Terminal.Scrollback,
 			"font_size":  settings.Terminal.FontSize,
