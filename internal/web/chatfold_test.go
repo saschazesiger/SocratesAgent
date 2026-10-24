@@ -84,6 +84,53 @@ func TestTheForeignThinkingNoticeGoesOnTheSwitch(t *testing.T) {
 	}
 }
 
+// How a turn ended is said right under that turn, above what the person sent
+// while it ran: the journal has a message queued during the turn before the
+// turn's end, and "Interrupted" drawn under it read as if that message had
+// been cut short. It does not climb past the turn's own prompt (a turn
+// stopped before a word), and a limit stays the newest word, which is when
+// its card offers another account.
+func TestAnEndedTurnsLineStandsAboveWhatWasQueuedDuringIt(t *testing.T) {
+	order := `chat.timeline.map((e) => e.type === 'line' ? e.line.kind + ':' + (e.line.outcome || '') : e.id)`
+	for _, c := range []struct {
+		name    string
+		answer  bool
+		outcome string
+		want    string
+	}{
+		{"interrupted with an answer", true, agent.OutcomeInterrupted, `["m1","a1","turn:interrupted","m2","a2"]`},
+		{"interrupted before a word", false, agent.OutcomeInterrupted, `["m1","turn:interrupted","m2","a2"]`},
+		{"failed", true, agent.OutcomeFailed, `["m1","a1","turn:failed","m2","a2"]`},
+		{"limited", true, agent.OutcomeLimited, `["m1","a1","m2","turn:limited","a2"]`},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			events := []agent.Event{
+				{Type: agent.TypeMessage, MessageID: "m1", Role: agent.RoleUser, State: agent.MessageDelivered, Text: "/slow 20"},
+				{Type: agent.TypeTurnStarted, TurnID: "t1", MessageID: "m1"},
+			}
+			if c.answer {
+				events = append(events,
+					agent.Event{Type: agent.TypeMessage, MessageID: "a1", Role: agent.RoleAssistant, State: agent.MessageStreaming, TurnID: "t1"},
+					agent.Event{Type: agent.TypePart, MessageID: "a1", PartID: "p1", Kind: agent.PartText, State: agent.PartStreaming, Text: "s1 s2"})
+			}
+			events = append(events,
+				agent.Event{Type: agent.TypeMessage, MessageID: "m2", Role: agent.RoleUser, State: agent.MessageQueued, Text: "queued while working"},
+				agent.Event{Type: agent.TypeCommand, Op: agent.OpInterrupt, ClientID: "stop"},
+				agent.Event{Type: agent.TypeTurnEnded, TurnID: "t1", Outcome: c.outcome, Text: "it ended"},
+				agent.Event{Type: agent.TypeMessageState, MessageID: "m2", State: agent.MessageDelivered},
+				agent.Event{Type: agent.TypeTurnStarted, TurnID: "t2", MessageID: "m2"},
+				agent.Event{Type: agent.TypeMessage, MessageID: "a2", Role: agent.RoleAssistant, State: agent.MessageDone, TurnID: "t2"},
+				agent.Event{Type: agent.TypeTurnEnded, TurnID: "t2", Outcome: agent.OutcomeCompleted})
+			for i := range events {
+				events[i].Seq, events[i].At = int64(i+1), int64(1000+i)
+			}
+			if got := runFold(t, events, order); got != c.want {
+				t.Fatalf("timeline %s, want %s", got, c.want)
+			}
+		})
+	}
+}
+
 // foldedView is what both folds are compared on: every message with its
 // parts (and theirs), and every question.
 func foldedView(p *agent.Projection) string {

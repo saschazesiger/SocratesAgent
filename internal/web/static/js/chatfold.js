@@ -213,7 +213,28 @@ function endTurn(chat, ev) {
       turn.errorCode = error.code || '';
     }
     line(chat, ev, { kind: 'turn', outcome: turn.outcome, text: turn.error, code: turn.errorCode || '', turn });
+    if (turn.outcome !== 'limited') underTurn(chat, turn);
   }
+}
+
+// underTurn moves the line just pushed, how a turn ended, up past the
+// messages the person sent while it ran: the journal has them before the
+// turn's end (they were written then), but they are the next turn's, and
+// "Interrupted" under a message that was only queued read as if that
+// message had been cut short. It stops at anything else - the turn's own
+// answer, its own prompt, a question, another line. A limit stays where it
+// is: its card is the chat's newest word while nothing came after it, which
+// is when it offers to go on with another account (chatview.js lastLimit).
+function underTurn(chat, turn) {
+  const list = chat.timeline;
+  let at = list.length - 1;
+  while (at > 0) {
+    const before = list[at - 1];
+    const message = before.type === 'message' ? chat.messages.get(before.id) : null;
+    if (!message || message.role !== 'user' || message.id === turn.messageId || (turn.id && message.turnId === turn.id)) break;
+    at -= 1;
+  }
+  if (at < list.length - 1) list.splice(at, 0, list.pop());
 }
 
 /**
