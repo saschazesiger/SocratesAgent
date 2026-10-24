@@ -9,11 +9,13 @@
  *                        touch mode (car, kiosk)
  *   .so-q-shell          its box: the top bar, the scrolling body and the
  *                        action bar in one column
- *   .so-q-top            Close, and the step the walk is at
+ *   .so-q-top            Close, the step the walk is at, Open chat (an
+ *                        icon) at its end, and on a short screen the chat's
+ *                        name on one line (.so-q-top-session)
  *   .so-q-scroll         the session, the question, its options, the field
  *                        of one's own, and the progress line
- *   .so-q-session        the agent's mark, the title (in full, on as many
- *                        lines as it takes), Open chat (an icon)
+ *   .so-q-session        the agent's mark and the title (in full, on as many
+ *                        lines as it takes)
  *   .so-q-body           the question; [data-state="pending"] while its
  *                        answer is on its way
  *   .so-q-option         an option: a DS interactive card as a toggle
@@ -21,7 +23,7 @@
  *                        multi-select: [data-multi]) and its ring
  *   .so-q-own            the field of one's own answer (a DS field)
  *   .so-q-status         the progress line (a DS alert, data-kind)
- *   .so-q-actions        Read aloud and Back (icons), Ask back and Send;
+ *   .so-q-actions        Read aloud, Ask back and Back (icons), and Send;
  *                        .so-q-big is a button of the finger's size, an
  *                        icon one as wide as it is tall
  *   .so-q-finished       the last word (a DS empty state)
@@ -82,8 +84,23 @@
 }
 
 .so-q-top-title {
+  flex: none;
   color: var(--ds-text);
   font: var(--ds-font-subtitle);
+}
+
+/* The chat's name in the bar, only where the session row gives way (a
+   short screen, below). */
+.so-q-top-session {
+  display: none;
+  flex: 1 1 auto;
+  color: var(--ds-text-2);
+  font: var(--ds-font-label);
+}
+
+.so-q-open {
+  flex: none;
+  margin-left: auto;
 }
 
 /* ── The scrolling body ──────────────────────────────────────────────── */
@@ -121,9 +138,6 @@
   font: var(--ds-font-subtitle);
 }
 
-.so-q-open {
-  flex: none;
-}
 
 .so-q-body {
   display: flex;
@@ -353,6 +367,25 @@
   }
 }
 
+/* A narrow phone: three icons at 64px and "Send answers" are wider than
+   the row, and Send went to a row of its own (the footer 162px tall at
+   360). The icons are a finger's size here, the row stays one row, and
+   Send takes what is left. */
+@media (max-width: 400px) {
+  .so-q-actions {
+    flex-wrap: nowrap;
+  }
+
+  .so-q-big.ds-btn--icon {
+    --ds-btn-icon-size: var(--so-touch-target);
+  }
+
+  .so-q-send {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+}
+
 /* A phone on its side in a car mount has room for the question and its
    options or for the chrome around them, not both: the bars shrink to a
    finger's size and the session is one line. */
@@ -371,13 +404,52 @@
     gap: var(--ds-space-2);
   }
 
+  /* The session row is the bar's one line of name instead. */
   .so-q-session {
-    padding-bottom: 0;
-    border-bottom: 0;
+    display: none;
+  }
+
+  .so-q-top-session {
+    display: block;
   }
 
   .so-q-text {
     font: var(--ds-font-subtitle);
+  }
+
+  /* "Why this matters" stands beside the question as its icon, and opens
+     under it across the width. */
+  .so-q-body {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    column-gap: var(--ds-space-2);
+  }
+
+  .so-q-body > * {
+    grid-column: 1 / -1;
+  }
+
+  .so-q-body > .so-q-text {
+    grid-column: 1;
+    align-self: center;
+  }
+
+  .so-q-body > .so-q-text + .so-ask-context:not([open]) {
+    grid-column: 2;
+  }
+
+  .so-q-text + .so-ask-context:not([open]) > summary {
+    min-width: var(--so-touch-target);
+    justify-content: center;
+  }
+
+  .so-q-text + .so-ask-context:not([open]) > summary > span {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
   }
 
   .so-q-options {
@@ -393,4 +465,21 @@
     padding-top: var(--ds-space-2);
     padding-bottom: calc(var(--ds-space-2) + env(safe-area-inset-bottom, 0px));
   }
+}
+
+/* A phone on its side with its keyboard up has a strip of screen left
+   (keybar.js data-so-short): the question, the field being typed into and
+   the way on. Close, the session, the context and the step come back with
+   the keyboard's going, and so do Read aloud, Ask back and Back. The field
+   is brought into the strip as the keyboard comes (askdialog.js). */
+.so-touch[data-so-short] :is(.so-q-top, .so-q-session, .so-q-step, .so-q-read, .so-ask-back, .so-q-back) {
+  display: none;
+}
+
+.so-touch[data-so-short] .so-q-body > :is(.so-ask-context, .so-ask-title) {
+  display: none;
+}
+
+.so-touch[data-so-short] .so-q-scroll {
+  padding-top: var(--ds-space-2);
 }

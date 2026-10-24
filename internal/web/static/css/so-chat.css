@@ -1321,4 +1321,10 @@
   .so-composer__gap {
     display: none;
   }
+
+  /* The question dialog's body is as dense as so-question.css makes it on
+     a short screen: its first option above the buttons. */
+  .so-ask-body {
+    gap: var(--ds-space-2);
+  }
 }
