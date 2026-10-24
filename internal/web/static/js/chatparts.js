@@ -673,14 +673,15 @@ export function turnFacts(message, view = null, { outcome = true } = {}) {
   return facts;
 }
 
-// shownParts is what an answer shows: its parts, less a text that has no
-// words (an agent opens one before it knows whether it will say anything),
-// the ask_user call its question card stands for, and the agent's own notice
-// of a limit or failure that the line after it says (lineHtml).
-function shownParts(message) {
+// shownParts is what an answer shows (of `list`, a piece of its parts): its
+// parts, less a text that has no words (an agent opens one before it knows
+// whether it will say anything), the ask_user call its question card stands
+// for, and the agent's own notice of a limit or failure that the line after
+// it says (lineHtml).
+function shownParts(message, list = message.parts) {
   const ended = message.turn && (message.turn.outcome === 'limited' || message.turn.outcome === 'failed')
     ? String(message.turn.error || '').trim() : '';
-  return message.parts.filter((part) => !(part.kind === 'text' && !String(part.text || '').trim())
+  return list.filter((part) => !(part.kind === 'text' && !String(part.text || '').trim())
     && !(part.kind === 'tool' && isAskTool(part))
     && !(ended && part.kind === 'notice' && String(part.text || '').trim() === ended));
 }
@@ -709,30 +710,122 @@ function laterInTurn(message, view) {
   return false;
 }
 
+// Where the questions are drawn, by the chat's revision: a part or a
+// question that came changes it.
+const placed = new WeakMap();
+
 /**
- * assistantMessage is an answer: its parts in order, Copy for its text, and
- * what it cost behind the "i". How a turn ended other than done is the line
- * after it (lineHtml), said once: not again on the answer, and not by the
- * agent's own notice of the same words (Claude's "usage limit reached").
+ * askPlaces is where each question that names its tool part is drawn: right
+ * after the part of its answer that holds the call - the hidden ask_user
+ * call itself, or the subagent or workflow it was made in - rather than at
+ * the end of the turn, where whatever the agent did after the answer went
+ * above it. A plan is its plan part's (planHtml), and a question whose part
+ * the chat does not have stays an entry of its own (chatfold.js cutAtAsk).
+ * It answers { byPart: top part id -> asks, byMessage: message id -> asks,
+ * ids: the asks so placed }.
  */
-export function assistantMessage(message, view) {
+export function askPlaces(chat) {
+  const hit = placed.get(chat);
+  if (hit && hit.rev === chat.rev) return hit.places;
+  const places = { byPart: new Map(), byMessage: new Map(), ids: new Set() };
+  const asks = [...chat.asks.values()].sort((a, b) => a.seq - b.seq);
+  for (const ask of asks) {
+    const payload = ask.payload && typeof ask.payload === 'object' ? ask.payload : {};
+    if (payload.kind === 'plan' || !payload.part_id) continue;
+    let top = chat.parts.get(payload.part_id);
+    const seen = new Set();
+    while (top && top.parentId && !seen.has(top.id)) {
+      seen.add(top.id);
+      const parent = chat.parts.get(top.parentId);
+      if (!parent) break;
+      top = parent;
+    }
+    const message = top ? chat.messages.get(top.messageId) : null;
+    if (!message || !message.parts.includes(top)) continue;
+    for (const [map, key] of [[places.byPart, top.id], [places.byMessage, message.id]]) {
+      if (!map.has(key)) map.set(key, []);
+      map.get(key).push(ask);
+    }
+    places.ids.add(ask.id);
+  }
+  placed.set(chat, { rev: chat.rev, places });
+  return places;
+}
+
+// pieces is an answer cut where questions were asked (chatfold.js cutAtAsk):
+// for each piece, its parts, those it shows, and the question cards drawn
+// at them.
+function pieces(message, chat) {
+  const places = askPlaces(chat);
+  const cuts = message.cuts || [];
+  const out = [];
+  let from = 0;
+  for (let i = 0; i <= cuts.length; i += 1) {
+    const to = i < cuts.length ? Math.max(from, cuts[i]) : message.parts.length;
+    const list = message.parts.slice(from, to);
+    const shown = new Set(shownParts(message, list));
+    let cards = 0;
+    // Whether nothing was said after the last question of the piece.
+    let quiet = !shown.size;
+    for (const part of list) {
+      if (shown.has(part)) quiet = false;
+      const asks = places.byPart.get(part.id);
+      if (asks) {
+        cards += asks.length;
+        quiet = true;
+      }
+    }
+    out.push({ list, shown, cards, said: shown.size + cards, quiet });
+    from = to;
+  }
+  return out;
+}
+
+/**
+ * assistantMessage is an answer - or the piece of it after a question, the
+ * segment-th (chatfold.js cutAtAsk): its parts in order, the question cards
+ * where they were asked, Copy for its text, and what it cost behind the "i",
+ * under the last piece that says anything. How a turn ended other than done
+ * is the line after it (lineHtml), said once: not again on the answer, and
+ * not by the agent's own notice of the same words (Claude's "usage limit
+ * reached").
+ */
+export function assistantMessage(message, view, segment = 0) {
+  const all = pieces(message, view.chat);
+  const piece = all[segment];
+  if (!piece) return '';
+  const last = all.length - 1;
+  // The foot goes under the last piece that says anything, else the last.
+  let foot = last;
+  for (let i = last; i >= 0; i -= 1) {
+    if (all[i].said) {
+      foot = i;
+      break;
+    }
+  }
+  // An answer that showed nothing of its own - a limit, a refusal, a Stop
+  // before a word - leaves what it cost to the line of how its turn ended
+  // (silentTurnFacts).
+  const ended = message.turn && message.turn.outcome && message.turn.outcome !== 'completed';
+  const silent = ended && !all.some((one) => one.shown.size);
   // What a turn cost is the turn's, so it is said once, under its last
   // answer: OpenCode answers a step at a time, and a tool-only step drew a
   // row of its own with an "i" that said the next one's usage again.
-  const facts = laterInTurn(message, view) ? [] : turnFacts(message, view);
-  // An answer that has said nothing yet is working - unless it waits for the
-  // person, which its question card says.
+  const facts = segment === foot && !silent && !laterInTurn(message, view) ? turnFacts(message, view) : [];
+  // An answer that has said nothing yet, or nothing since its last
+  // question, is working - unless it waits for the person, which its
+  // question card says.
   const asking = [...view.chat.asks.values()].some((ask) => !ask.answered && ask.turnId && ask.turnId === message.turnId);
-  const parts = shownParts(message);
-  const working = message.state === 'streaming' && !parts.length && !asking;
-  // An answer with nothing to show is not drawn: a turn that ended
-  // otherwise than done says so on the line after it, with what it cost
-  // behind that line's "i" (silentTurnFacts).
-  const ended = message.turn && message.turn.outcome && message.turn.outcome !== 'completed';
-  if (!parts.length && !working && (ended || !facts.length)) return '';
-  const copyable = message.state !== 'streaming' && parts.some((part) => part.kind === 'text' && String(part.text || '').trim());
-  return html`<article class="so-msg" data-ds-key="${'m:' + message.id}" data-role="assistant" data-state="${message.state}">${
-    parts.map((part) => partHtml(part, view))
+  const working = segment === last && message.state === 'streaming' && piece.quiet && !asking;
+  if (!piece.said && !working && !facts.length) return '';
+  const places = askPlaces(view.chat);
+  const copyable = segment === foot && message.state !== 'streaming'
+    && message.parts.some((part) => part.kind === 'text' && String(part.text || '').trim());
+  const key = 'm:' + message.id + (segment ? '#' + (segment + 1) : '');
+  return html`<article class="so-msg" data-ds-key="${key}" data-role="assistant" data-state="${message.state}">${
+    piece.list.map((part) => html`${piece.shown.has(part) ? partHtml(part, view) : ''}${
+      (places.byPart.get(part.id) || []).map((ask) => askCard(ask, view))
+    }`)
   }${working ? html`<p class="so-msg__wait ds-meta"><span class="ds-spinner" aria-hidden="true"></span><span>Working…</span></p>` : ''}${
     copyable || facts.length ? html`<div class="so-msg__foot">${
       copyable ? html`<button class="ds-btn ds-btn--quiet ds-btn--icon ds-btn--sm so-msg__copy" type="button" data-action="copy-answer" data-message="${message.id}" aria-label="Copy the answer" data-tip="Copy">${raw(icon('copy', 18))}</button>` : ''

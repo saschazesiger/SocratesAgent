@@ -131,6 +131,52 @@ func TestAnEndedTurnsLineStandsAboveWhatWasQueuedDuringIt(t *testing.T) {
 	}
 }
 
+// What an agent says after a question is drawn under the question's card.
+// The answer of a turn is made when the turn starts, so a question that
+// names no part (the scripted agent's, OpenCode's ask_user) cuts the turn's
+// answers where they were, and what comes after it is a piece of its own
+// under the card. A question that names its tool part (Claude's, Codex's)
+// is drawn at that part, inside the answer, which is not cut; neither is an
+// answer of another turn.
+func TestAnAnswerGoesOnUnderTheQuestion(t *testing.T) {
+	order := `chat.timeline.map((e) => e.type === 'ask' ? 'ask:' + e.id : e.type === 'more' ? e.id + '#' + (e.segment + 1) : e.id)
+  .concat([...chat.messages.values()].map((m) => m.id + ' cut at ' + JSON.stringify(m.cuts)))`
+	for _, c := range []struct {
+		name    string
+		payload string
+		want    string
+	}{
+		{"no part", `{"questions":[{"id":"q","question":"?"}]}`,
+			`["u0","a0","u1","a1","ask:k1","a1#2","u0 cut at []","a0 cut at []","u1 cut at []","a1 cut at [1]"]`},
+		{"its tool part", `{"part_id":"call","questions":[{"id":"q","question":"?"}]}`,
+			`["u0","a0","u1","a1","ask:k1","u0 cut at []","a0 cut at []","u1 cut at []","a1 cut at []"]`},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			events := []agent.Event{
+				{Type: agent.TypeMessage, MessageID: "u0", Role: agent.RoleUser, State: agent.MessageDelivered, Text: "hi"},
+				{Type: agent.TypeTurnStarted, TurnID: "t0", MessageID: "u0"},
+				{Type: agent.TypeMessage, MessageID: "a0", Role: agent.RoleAssistant, State: agent.MessageDone, TurnID: "t0"},
+				{Type: agent.TypeTurnEnded, TurnID: "t0", Outcome: agent.OutcomeCompleted},
+				{Type: agent.TypeMessage, MessageID: "u1", Role: agent.RoleUser, State: agent.MessageDelivered, Text: "/ask"},
+				{Type: agent.TypeTurnStarted, TurnID: "t1", MessageID: "u1"},
+				{Type: agent.TypeMessage, MessageID: "a1", Role: agent.RoleAssistant, State: agent.MessageStreaming, TurnID: "t1"},
+				{Type: agent.TypePart, MessageID: "a1", PartID: "call", Kind: agent.PartTool, State: agent.PartRunning,
+					Content: json.RawMessage(`{"tool":"mcp__socrates__ask_user"}`)},
+				{Type: agent.TypeAsk, AskID: "k1", TurnID: "t1", Payload: json.RawMessage(c.payload)},
+				{Type: agent.TypeAskAnswered, AskID: "k1", Answer: json.RawMessage(`{"answers":{}}`)},
+				{Type: agent.TypePart, MessageID: "a1", PartID: "reply", Kind: agent.PartText, State: agent.PartDone, Text: "you answered"},
+				{Type: agent.TypeTurnEnded, TurnID: "t1", Outcome: agent.OutcomeCompleted},
+			}
+			for i := range events {
+				events[i].Seq, events[i].At = int64(i+1), int64(1000+i)
+			}
+			if got := runFold(t, events, order); got != c.want {
+				t.Fatalf("timeline %s, want %s", got, c.want)
+			}
+		})
+	}
+}
+
 // foldedView is what both folds are compared on: every message with its
 // parts (and theirs), and every question.
 func foldedView(p *agent.Projection) string {

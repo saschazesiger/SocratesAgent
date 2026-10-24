@@ -29,7 +29,7 @@ import './accountpicker.js';
 import { newChat, apply, applyLive, busy, currentTodo, seenClient } from './chatfold.js';
 import { ChatStream } from './chatstream.js';
 import {
-  assistantMessage, userMessage, lineHtml, askCard, todoList, todoItems, renewsIn, seconds, outboxState,
+  assistantMessage, userMessage, lineHtml, askCard, askPlaces, todoList, todoItems, renewsIn, seconds, outboxState,
 } from './chatparts.js';
 import { mountComposer } from './composer.js';
 import { chatOutbox, pendingFor, pendingAnswer, pendingModel, failedItem, queueAnswer, answeredHere } from './chatoutbox.js';
@@ -291,10 +291,11 @@ export function mountChat(ctx) {
     // Whether this browser is online is in what its own answers say ("Not
     // sent yet" or "Sending").
     const local = outboxRev + ':' + (navigator.onLine !== false);
-    if (entry.type === 'message') {
+    if (entry.type === 'message' || entry.type === 'more') {
       const message = chat.messages.get(entry.id);
       if (!message) return '';
       if (message.role === 'user') {
+        if (entry.type === 'more') return '';
         rev = message.rev;
         make = () => userMessage({
           key: entry.key, text: message.text, attachments: message.attachments,
@@ -302,10 +303,13 @@ export function mountChat(ctx) {
         });
       } else {
         // A plan part is drawn from the question it waits on, and from the
-        // answer this browser has on its way to it.
+        // answer this browser has on its way to it; so is a question card
+        // drawn at its call, and from this browser's draft of it as well.
         rev = message.rev + ':' + chat.askRev;
-        if (message.parts.some((part) => part.kind === 'plan')) rev += ':' + local;
-        make = () => assistantMessage(message, view);
+        if (message.parts.some((part) => part.kind === 'plan') || askPlaces(chat).byMessage.has(message.id)) {
+          rev += ':' + local + ':' + askDraftsRev();
+        }
+        make = () => assistantMessage(message, view, entry.segment || 0);
       }
     } else if (entry.type === 'ask') {
       const ask = chat.asks.get(entry.id);
@@ -317,6 +321,9 @@ export function mountChat(ctx) {
         sentAnswers.delete(ask.id);
         forgetAskDraft(ask.id);
       }
+      // A question that names its call is drawn inside the answer, where
+      // the call is (askPlaces), not here.
+      if (askPlaces(chat).ids.has(ask.id)) return '';
       // "2 of 5 answered" is read from this browser's draft of the answer,
       // which the dialog writes.
       rev = ask.rev + ':' + askDraftsRev() + ':' + local;

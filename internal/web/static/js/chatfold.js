@@ -15,7 +15,8 @@
 //   * a turn that ends other than completed leaves nothing streaming.
 //
 // On top of the server's projection it keeps what drawing needs: the order
-// of the timeline (messages, and the lines between them: notices, account
+// of the timeline (messages, the questions, the rest of an answer that went
+// on after a question, and the lines between them: notices, account
 // switches, model changes, errors, interrupted or limited turns), and a
 // revision per message and part, so that the view re-renders only what an
 // event touched and never rebuilds a part that did not change.
@@ -28,7 +29,9 @@ export function newChat() {
     messages: new Map(),
     parts: new Map(),
     asks: new Map(),
-    // The timeline: { key, type: 'message' | 'line', id | line }.
+    // The timeline: { key, type: 'message' | 'ask' | 'more' | 'line', id |
+    // line }; a 'more' is the segment-th piece of a message cut by a
+    // question (cutAtAsk).
     timeline: [],
     turn: null,
     lastTurn: null,
@@ -84,7 +87,7 @@ function messageFor(chat, ev) {
   if (message) return message;
   message = {
     id: ev.message_id, role: 'assistant', state: 'streaming', clientId: '', text: '', attachments: [],
-    answerTo: '', turnId: ev.turn_id || '', model: '', at: ev.at || 0, parts: [], rev: ++chat.rev,
+    answerTo: '', turnId: ev.turn_id || '', model: '', at: ev.at || 0, parts: [], cuts: [], rev: ++chat.rev,
   };
   chat.messages.set(message.id, message);
   chat.timeline.push({ key: 'm:' + message.id, type: 'message', id: message.id });
@@ -237,6 +240,28 @@ function underTurn(chat, turn) {
   if (at < list.length - 1) list.splice(at, 0, list.pop());
 }
 
+// cutAtAsk keeps what an answer says after a question under the question's
+// card. A card that names a tool part the chat has is drawn at that call,
+// inside the answer (chatparts.js askPlaces), and needs nothing here. Any
+// other - the scripted agent's, an ask_user of OpenCode's, which names no
+// part - comes after everything its turn's answers held when it was asked:
+// each of them is cut there, and what it gets from then on is drawn as its
+// continuation, an entry of its own under the card ('m:<id>#2'). The
+// answer was made when the turn started, so without the cut the reply to
+// the question went above it, and the answered card ended the turn.
+function cutAtAsk(chat, ask) {
+  const at = ask.payload && typeof ask.payload === 'object' ? ask.payload.part_id : '';
+  if (at && chat.parts.has(at)) return;
+  const turnId = ask.turnId || (chat.turn && chat.turn.id) || '';
+  if (!turnId) return;
+  for (const message of chat.messages.values()) {
+    if (message.role !== 'assistant' || message.turnId !== turnId) continue;
+    message.cuts.push(message.parts.length);
+    chat.timeline.push({ key: 'm:' + message.id + '#' + (message.cuts.length + 1), type: 'more', id: message.id, segment: message.cuts.length });
+    touchMessage(chat, message.id);
+  }
+}
+
 /**
  * apply folds one journal event in, and answers whether it changed anything.
  * Events have to come in seq order; one that does not move the seq forward is
@@ -274,7 +299,7 @@ export function apply(chat, ev) {
       const message = {
         id: ev.message_id, role: ev.role || 'assistant', state: ev.state || '', clientId: ev.client_id || '',
         text: ev.text || '', attachments: ev.attachments || [], answerTo: ev.answer_to || '',
-        turnId: ev.turn_id || '', model: ev.model || '', at: ev.at || 0, parts: [], rev: ++chat.rev,
+        turnId: ev.turn_id || '', model: ev.model || '', at: ev.at || 0, parts: [], cuts: [], rev: ++chat.rev,
       };
       chat.messages.set(message.id, message);
       chat.timeline.push({ key: 'm:' + message.id, type: 'message', id: message.id });
@@ -302,6 +327,7 @@ export function apply(chat, ev) {
           rev: 0,
         });
         chat.timeline.push({ key: 'a:' + ev.ask_id, type: 'ask', id: ev.ask_id });
+        cutAtAsk(chat, chat.asks.get(ev.ask_id));
         touchAsk(chat, ev.ask_id);
       }
       break;
