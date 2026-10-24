@@ -519,7 +519,14 @@ func TestParkResumeRebuildAndBackground(t *testing.T) {
 	if a.Background() != 1 {
 		t.Fatal("the background terminal does not count")
 	}
-	time.Sleep(500 * time.Millisecond)
+	// The terminal is the chat's tasks after the turn, and its end is
+	// journaled too: codex announces neither.
+	r.waitFor(t, n, "tasks while the terminal runs", func(ev agent.Event) bool {
+		return ev.Type == agent.TypeTasks && ev.Count == 1
+	}, wait)
+	r.waitFor(t, n, "no tasks once it ended", func(ev agent.Event) bool {
+		return ev.Type == agent.TypeTasks && ev.Count == 0
+	}, wait)
 	if a.Background() != 0 {
 		t.Fatal("the background terminal still counts")
 	}

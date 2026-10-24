@@ -566,8 +566,11 @@ Cost is not reported by codex (0).
 | `contextCompaction` | `notice` | streaming → done | `{notice: "compacted"}` |
 | `webSearch`, anything else | `tool` | … | `{tool: <item type>, item: <the raw item>}` |
 
-A subagent's parts outlive the turn that spawned it; `tasks{count}` counts subagents at work, and
-`Background()` adds codex's background terminals (`thread/backgroundTerminals/list`).
+A subagent's parts outlive the turn that spawned it; `tasks{count}` counts subagents at work and
+the background terminals a turn left running, which codex announces neither starting nor ending:
+after every turn the adapter counts them (`thread/backgroundTerminals/list`) every 2 s while there
+are any, and journals the count each time it changes (WP11; the row's hourglass and the unread mark
+wait for them, as for Claude Code's background tasks). `Background()` counts both too.
 
 **Server requests** are answered on goroutines of their own, so a question never holds up the
 stream: command, file-change and legacy approvals → accept; `item/permissions/requestApproval` →

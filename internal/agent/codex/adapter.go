@@ -47,6 +47,10 @@ var (
 	diffEvery = time.Second
 	// stopWait is how long Stop waits for the killed process to be reaped.
 	stopWait = 2 * time.Second
+	// terminalsEvery is how often the background terminals a turn left
+	// running are counted while there are any: codex announces neither their
+	// start nor their end.
+	terminalsEvery = 2 * time.Second
 )
 
 // adapter is one chat's app-server.
@@ -102,11 +106,15 @@ type adapter struct {
 	held    bool
 	agents  map[string]*subagent
 	running int
-	waits   agent.Waits
-	calls   map[string]*call
-	limits  map[string]agent.Event
-	context int64
-	window  int64
+	// terminals is the background terminals last counted after a turn, and
+	// watching whether they are being counted now (watchTerminals).
+	terminals int
+	watching  bool
+	waits     agent.Waits
+	calls     map[string]*call
+	limits    map[string]agent.Event
+	context   int64
+	window    int64
 	// recovered is how far the invalid_encrypted_content fallback chain got
 	// in this process (§4.3): 0 none, 1 stripped, 2 handed off.
 	recovered int
@@ -783,6 +791,47 @@ func (a *adapter) Background() int {
 		n += len(res.Data)
 	}
 	return n
+}
+
+// watchTerminals follows the background terminals codex keeps after a turn
+// (thread/backgroundTerminals/list): while there are any the chat has
+// tasks, as it has while a subagent works, and the count is journaled each
+// time it changes - so the row's hourglass, the unread mark and the push wait
+// for that work to end as they do for Claude Code's background tasks.
+func (a *adapter) watchTerminals(thread string) {
+	for {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		var res struct {
+			Data []json.RawMessage `json:"data"`
+		}
+		err := a.rpc.call(ctx, "thread/backgroundTerminals/list", map[string]any{"threadId": thread}, &res)
+		cancel()
+		a.mu.Lock()
+		// A process on its way out is counted as having none: nothing of it
+		// is still working for the chat.
+		n := len(res.Data)
+		if err != nil || a.ending {
+			n = 0
+		}
+		if n != a.terminals {
+			a.terminals = n
+			a.out.Emit(agent.Event{Type: agent.TypeTasks, Count: a.running + n})
+		}
+		if n == 0 {
+			a.watching = false
+			a.mu.Unlock()
+			return
+		}
+		a.mu.Unlock()
+		select {
+		case <-a.exited:
+			a.mu.Lock()
+			a.watching = false
+			a.mu.Unlock()
+			return
+		case <-time.After(terminalsEvery):
+		}
+	}
 }
 
 func (a *adapter) PID() int {
