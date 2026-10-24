@@ -604,21 +604,49 @@ export function userMessage({ key, text, attachments, state, answerTo, error }) 
   }${error ? html`<p class="so-msg__error ds-meta">${error}</p>` : ''}</article>`;
 }
 
-/** turnFacts is what a turn cost, for the "i" under the answer. */
-export function turnFacts(message) {
+/**
+ * turnFacts is what a turn cost, for the "i" under the answer: the model by
+ * the name the composer gives it (view.modelLabel), not the id the journal
+ * holds. `outcome` false leaves out how it ended, for the line that says so.
+ */
+export function turnFacts(message, view = null, { outcome = true } = {}) {
   const turn = message.turn;
   if (!turn) return [];
   const u = turn.usage || {};
   const facts = [];
-  if (message.model) facts.push('Model ' + message.model);
+  if (message.model) facts.push('Model ' + (view && view.modelLabel ? view.modelLabel(message.model) : message.model));
   if (u.input || u.output) facts.push(fmtTokens(u.input || 0) + ' in · ' + fmtTokens(u.output || 0) + ' out');
   if (u.cache_read || u.cache_write) facts.push('cache ' + fmtTokens(u.cache_read || 0) + ' read · ' + fmtTokens(u.cache_write || 0) + ' written');
   if (u.reasoning) facts.push(fmtTokens(u.reasoning) + ' reasoning');
   if (u.context && u.window) facts.push('context ' + fmtTokens(u.context) + ' of ' + fmtTokens(u.window));
   if (turn.cost) facts.push('$' + turn.cost.toFixed(4));
   if (turn.endedAt && turn.startedAt) facts.push(seconds(turn.endedAt - turn.startedAt));
-  if (turn.outcome && turn.outcome !== 'completed') facts.push('outcome ' + turn.outcome);
+  if (outcome && turn.outcome && turn.outcome !== 'completed') facts.push('outcome ' + turn.outcome);
   return facts;
+}
+
+// shownParts is what an answer shows: its parts, less a text that has no
+// words (an agent opens one before it knows whether it will say anything),
+// the ask_user call its question card stands for, and the agent's own notice
+// of a limit or failure that the line after it says (lineHtml).
+function shownParts(message) {
+  const ended = message.turn && (message.turn.outcome === 'limited' || message.turn.outcome === 'failed')
+    ? String(message.turn.error || '').trim() : '';
+  return message.parts.filter((part) => !(part.kind === 'text' && !String(part.text || '').trim())
+    && !(part.kind === 'tool' && isAskTool(part))
+    && !(ended && part.kind === 'notice' && String(part.text || '').trim() === ended));
+}
+
+// silentTurn is a turn whose answer showed nothing - a limit, a refusal, a
+// Stop before a word - so that the line saying how it ended carries what it
+// cost behind its own "i", rather than a row of its own with only an "i".
+function silentTurnFacts(turn, view) {
+  if (!turn || !view || !view.chat) return [];
+  for (const message of view.chat.messages.values()) {
+    if (message.role !== 'assistant' || !(message.turn === turn || (turn.id && message.turnId === turn.id))) continue;
+    return shownParts(message).length ? [] : turnFacts(message, view, { outcome: false });
+  }
+  return [];
 }
 
 /**
@@ -628,14 +656,17 @@ export function turnFacts(message) {
  * agent's own notice of the same words (Claude's "usage limit reached").
  */
 export function assistantMessage(message, view) {
-  const facts = turnFacts(message);
+  const facts = turnFacts(message, view);
   // An answer that has said nothing yet is working - unless it waits for the
   // person, which its question card says.
   const asking = [...view.chat.asks.values()].some((ask) => !ask.answered && ask.turnId && ask.turnId === message.turnId);
-  const working = message.state === 'streaming' && !message.parts.length && !asking;
-  const ended = message.turn && (message.turn.outcome === 'limited' || message.turn.outcome === 'failed')
-    ? String(message.turn.error || '').trim() : '';
-  const parts = ended ? message.parts.filter((part) => !(part.kind === 'notice' && String(part.text || '').trim() === ended)) : message.parts;
+  const parts = shownParts(message);
+  const working = message.state === 'streaming' && !parts.length && !asking;
+  // An answer with nothing to show is not drawn: a turn that ended
+  // otherwise than done says so on the line after it, with what it cost
+  // behind that line's "i" (silentTurnFacts).
+  const ended = message.turn && message.turn.outcome && message.turn.outcome !== 'completed';
+  if (!parts.length && !working && (ended || !facts.length)) return '';
   const copyable = message.state !== 'streaming' && parts.some((part) => part.kind === 'text' && String(part.text || '').trim());
   return html`<article class="so-msg" data-ds-key="${'m:' + message.id}" data-role="assistant" data-state="${message.state}">${
     parts.map((part) => partHtml(part, view))
@@ -739,16 +770,16 @@ export function lineHtml(entry, view) {
         // on a line of its own.
         return html`<div class="ds-alert ds-alert--warning so-line-alert" data-ds-key="${key}" data-kind="limit" role="status">${raw(icon('clock', 20))}<span class="ds-alert__text so-line-alert__stack"><span>${'Limit reached' + (renew ? ' — renews in ' + renew : '')}</span>${
           offers.length ? html`<span class="so-line-alert__actions">${offers.map((a) => html`<button class="ds-btn ds-btn--sm" type="button" data-action="continue-with" data-account="${a.id}">${'Continue with ' + a.label}</button>`)}</span>` : ''
-        }</span>${infoButton([l.text], 'About the limit')}</div>`;
+        }</span>${infoButton([l.text, ...silentTurnFacts(l.turn, view)], 'About the limit')}</div>`;
       }
       if (l.outcome === 'failed') {
         // An agent that died mid-turn is said in plain words; how it died
         // (the CLI's exit, a signal) is the "i"'s (agenthost cliExited).
         const died = /^The agent exited during the turn: ([\s\S]+)$/.exec(String(l.text || ''));
         const words = died ? 'The agent stopped during the turn. The next message starts it again.' : 'The turn failed.' + (l.text ? ' ' + l.text : '');
-        return html`<div class="ds-alert ds-alert--error so-line-alert" data-ds-key="${key}" data-kind="failed" role="alert">${raw(icon('alertCircle', 20))}<span class="ds-alert__text">${words}</span>${infoButton([died ? died[1] : '', l.code ? 'code ' + l.code : ''], 'Error details')}</div>`;
+        return html`<div class="ds-alert ds-alert--error so-line-alert" data-ds-key="${key}" data-kind="failed" role="alert">${raw(icon('alertCircle', 20))}<span class="ds-alert__text">${words}</span>${infoButton([died ? died[1] : '', l.code ? 'code ' + l.code : '', ...silentTurnFacts(l.turn, view)], 'Error details')}</div>`;
       }
-      return html`<div class="so-line" data-ds-key="${key}" data-kind="interrupted">${raw(icon('ban', 16))}<span class="so-line__text">Interrupted</span></div>`;
+      return html`<div class="so-line" data-ds-key="${key}" data-kind="interrupted">${raw(icon('ban', 16))}<span class="so-line__text">Interrupted</span>${infoButton(silentTurnFacts(l.turn, view), 'Usage of this answer')}</div>`;
     }
     default:
       return '';
