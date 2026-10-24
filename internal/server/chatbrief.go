@@ -22,6 +22,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"time"
 
 	"github.com/saschazesiger/SocratesAgent/internal/agent"
@@ -353,4 +354,57 @@ func (h *chatHub) turnWords(id string) (string, bool) {
 func (h *chatHub) waiting(id string) bool {
 	b, ok := h.briefOfChat(id)
 	return ok && b.Summary.Activity == agent.ActivityWaiting
+}
+
+/* ------------------------------------------------- the namer and Status */
+
+// firstExchange is a chat's first message, with what the agent has answered
+// to it so far: what the chat is named after.
+func (h *chatHub) firstExchange(id string) (first, answer string) {
+	p, err := h.peer(id)
+	if err != nil {
+		return "", ""
+	}
+	_ = p.view(func(proj *agent.Projection) {
+		for _, m := range proj.Messages {
+			if m.Role != agent.RoleUser || m.AnswerTo != "" {
+				continue
+			}
+			first = messageWords(m)
+			for _, t := range []*agent.Turn{proj.Turn, proj.LastTurn} {
+				if t != nil && t.MessageID == m.ID {
+					answer = clipRunes(turnAnswer(proj, t.ID), chatPromptRunes)
+				}
+			}
+			return
+		}
+	})
+	return first, answer
+}
+
+// latestExchange is the last thing the person said to a chat and what the
+// agent answered, in words a model reads.
+func (h *chatHub) latestExchange(id string) string {
+	p, err := h.peer(id)
+	if err != nil {
+		return ""
+	}
+	text := ""
+	_ = p.view(func(proj *agent.Projection) {
+		t := proj.Turn
+		if t == nil {
+			t = proj.LastTurn
+		}
+		if t == nil {
+			return
+		}
+		turn := readChatTurn(proj, t)
+		if turn.Prompt != "" {
+			text = "The user: " + turn.Prompt + "\n"
+		}
+		if turn.Answer != "" {
+			text += "The answer: " + turn.Answer
+		}
+	})
+	return strings.TrimSpace(text)
 }
