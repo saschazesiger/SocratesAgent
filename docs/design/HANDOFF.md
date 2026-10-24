@@ -77,7 +77,9 @@ Binding documents, in order:
   move the data folder aside, remove the links the migration left in HOME (`~/.claude`,
   `~/.claude.json`, `~/.codex`, `~/.local/share/opencode`, `~/.config/opencode`), and extract the
   tar into an empty folder and move its `data/` and `home/` entries into place. A login refreshed
-  since the migration is newer in the moved folder than in the tar.
+  since the migration is newer in the moved folder than in the tar. Reload every page that was
+  open across the update (a phone's home-screen app too): a page loaded from the build before keeps
+  its interface - PreStart with a profile, agent terminals - which the new server refuses.
 - **What runs where**: `socrates.service` (the web server), `socrates-agents-<chat>.scope` (one
   chat's host and CLI, which outlive the service), `socrates-tmux*.scope` (the Shell terminals),
   `socrates-update.timer`. Data: `/var/lib/socrates` (README "What is where"; the layout is

@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"sync/atomic"
@@ -115,6 +116,9 @@ func main() {
 
 	if err := os.MkdirAll(*dataDir, 0o700); err != nil {
 		log.Fatalf("could not create the data directory %s: %v", *dataDir, err)
+	}
+	if abs, err := filepath.Abs(*dataDir); err == nil {
+		config.UseDataDir(abs)
 	}
 	unlock, err := lockDataDir(*dataDir)
 	if err != nil {

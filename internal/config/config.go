@@ -469,8 +469,22 @@ func Slug(in string) string {
 // be a second answer to the one question every script and page relies on.
 const DefaultDataDir = "/var/lib/socrates"
 
+// inUse is the data directory this process was started on, once main has
+// read -data (UseDataDir).
+var inUse string
+
+// UseDataDir makes dir the data directory DataDir answers with, so that what
+// is derived from it - the default workspace root - follows a -data the
+// environment does not name: a trial `socrates -data /tmp/x` would otherwise
+// put its Shells' folders under /var/lib/socrates. main calls it once, before
+// anything reads a default.
+func UseDataDir(dir string) { inUse = dir }
+
 // DataDir is the directory that holds the database and the workspaces.
 func DataDir() string {
+	if inUse != "" {
+		return inUse
+	}
 	if v := strings.TrimSpace(os.Getenv("SOCRATES_DATA_DIR")); v != "" {
 		return v
 	}

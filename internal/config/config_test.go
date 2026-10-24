@@ -2,6 +2,7 @@ package config
 
 import (
 	"encoding/json"
+	"path/filepath"
 	"testing"
 )
 
@@ -34,6 +35,25 @@ func TestNormalizeFillsDefaults(t *testing.T) {
 	// voice section is a language and a pace and nothing else.
 	if s.Voice.Language != DefaultLanguage || s.Voice.TTSRate != 1 {
 		t.Errorf("voice defaults = %#v", s.Voice)
+	}
+}
+
+// The default workspace root is under the data directory the process was
+// started on, -data included, unless SOCRATES_WORKSPACE_ROOT names one.
+func TestTheWorkspaceRootFollowsTheDataDirectory(t *testing.T) {
+	t.Setenv("SOCRATES_WORKSPACE_ROOT", "")
+	t.Setenv("SOCRATES_DATA_DIR", "/srv/from-the-environment")
+	t.Cleanup(func() { UseDataDir("") })
+	if got := Default().Workspace.Root; got != filepath.Join("/srv/from-the-environment", "workspaces") {
+		t.Fatalf("without -data the root is %q", got)
+	}
+	UseDataDir("/tmp/trial")
+	if got := Default().Workspace.Root; got != filepath.Join("/tmp/trial", "workspaces") {
+		t.Fatalf("with -data /tmp/trial the root is %q", got)
+	}
+	t.Setenv("SOCRATES_WORKSPACE_ROOT", "/srv/work")
+	if got := Default().Workspace.Root; got != "/srv/work" {
+		t.Fatalf("with SOCRATES_WORKSPACE_ROOT the root is %q", got)
 	}
 }
 
