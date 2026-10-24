@@ -13955,6 +13955,19 @@ async function chatstatus() {
       return !!box && !box.hidden && box.textContent.includes(want);
     }, words, { timeout: 30000 }).then(() => true, () => false);
     ok(line, 'what the model said is the line in the chat’s dock', words);
+    // The whole answer is the notice, in the dock too: the terminal's is over
+    // its pane, which a chat hides.
+    const told = await page.waitForFunction((want) => {
+      const box = document.querySelector('#chat .so-chat__dock .so-notice');
+      if (!box || box.hidden || !box.textContent.includes(want)) return null;
+      const info = box.querySelector('.so-info');
+      return { height: box.getBoundingClientRect().height, tip: info ? info.getAttribute('data-tip') : '' };
+    }, words, { timeout: 10000 }).then((h) => h.jsonValue(), () => null);
+    ok(!!told && told.height > 0 && /state idle/.test(told.tip),
+      'and the whole answer is the notice in the dock, its details behind the “i”', JSON.stringify(told));
+    // The picture once the notice and the line have come in.
+    await wait(800);
+    await shot(page, 'chat-status');
     const read = await (async () => {
       const until = Date.now() + 15000;
       while (Date.now() < until && !spoken.includes(words)) await wait(150);
@@ -13966,7 +13979,6 @@ async function chatstatus() {
       .find((p) => p.startsWith('You are told what a chat with')) || '';
     ok(prompt.includes('a chat with Scripted agent') && prompt.includes('/tool') && prompt.includes('Running echo hello'),
       'the model was told the chat from its journal: the message and the call', oneLine(prompt).slice(0, 200));
-    await shot(page, 'chat-status');
 
     // A phone: the button in the bar, the line in the dock, nothing to
     // scroll sideways.
@@ -13981,13 +13993,22 @@ async function chatstatus() {
     await small.tap('#statusBtn');
     const onPhone = await small.waitForFunction((want) => {
       const box = document.querySelector('#chat .so-chat__dock .so-ticker');
+      const note = document.querySelector('#chat .so-chat__dock .so-notice');
       if (!box || box.hidden || !box.textContent.includes(want)) return null;
+      if (!note || note.hidden || !note.textContent.includes(want)) return null;
       const r = box.getBoundingClientRect();
+      const n = note.getBoundingClientRect();
+      const text = note.querySelector('.ds-alert__text');
       const root = document.scrollingElement;
-      return { left: r.left, right: r.right, overflow: Math.max(root.scrollWidth - root.clientWidth, 0) };
+      return { left: r.left, right: r.right, noteLeft: n.left, noteRight: n.right,
+        cut: text ? text.scrollWidth - text.clientWidth : -1, overflow: Math.max(root.scrollWidth - root.clientWidth, 0) };
     }, words, { timeout: 30000 }).then((h) => h.jsonValue(), () => null);
     ok(!!onPhone && onPhone.left >= 0 && onPhone.right <= 390 && onPhone.overflow <= 1,
       'on a phone the line is in the dock, inside the screen', JSON.stringify(onPhone));
+    ok(!!onPhone && onPhone.noteLeft >= 0 && onPhone.noteRight <= 390 && onPhone.cut <= 1,
+      'and so is the whole answer, not cut', JSON.stringify(onPhone));
+    await wait(800);
+    await shot(small, 'chat-status-phone');
     await phone.close();
     ok(unexpected(s.errors).length === 0, 'no console errors', unexpected(s.errors).join(' | ') || '0');
   } finally {

@@ -2483,7 +2483,9 @@ would leave a long first turn under its placeholder name for its whole length.
 
 **WP9 / §7 — Status for a chat has two phases on screen.** A terminal's Status reports its phases
 on the terminal socket, which a chat does not have; the chat's dock shows the page's own first
-phase ("Reading the chat") and then the answer, which is read out as before.
+phase ("Reading the chat") and then the answer, which is read out as before. The notice with the
+whole answer and its details (state, model, language) is in the dock too, above the ticker: a
+terminal has both over its pane, which a chat hides.
 
 **WP9 — the server's test binary registers the three agents' adapters.** To test Ultracode, the
 prepared chat's start and the lost-folder rebuild through real hosts for Claude, Codex and

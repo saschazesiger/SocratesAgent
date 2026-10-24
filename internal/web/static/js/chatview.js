@@ -91,13 +91,15 @@ export function mountChat(ctx) {
   // "Latest" is the scroller's last child and sticks to its bottom edge, so
   // it is always just above the dock, however tall the dock is.
   morph(host, html`<div class="so-chat__scroll" data-ds-key="scroll"><div class="so-chat__log" role="log" aria-label="Conversation" aria-live="polite" aria-relevant="additions"></div><button class="ds-btn ds-btn--tonal ds-btn--sm so-chat__jump" type="button" data-action="jump" hidden>${raw(icon('arrowDown', 16))}Latest</button></div>
-<div class="so-chat__dock" data-ds-key="dock"><div class="so-chat__state" role="status" aria-live="polite"></div><div class="ds-alert so-ticker" hidden>${raw(icon('activity', 20))}<span class="ds-alert__text so-ticker__line" role="status" aria-live="polite"></span></div><div class="so-chat__todo" hidden></div><div class="so-chat__composer"></div></div>`);
+<div class="so-chat__dock" data-ds-key="dock"><div class="so-chat__state" role="status" aria-live="polite"></div><div class="ds-alert so-notice" role="status" hidden></div><div class="ds-alert so-ticker" hidden>${raw(icon('activity', 20))}<span class="ds-alert__text so-ticker__line" role="status" aria-live="polite"></span></div><div class="so-chat__todo" hidden></div><div class="so-chat__composer"></div></div>`);
   const scroller = host.querySelector('.so-chat__scroll');
   const log = host.querySelector('.so-chat__log');
   const jump = host.querySelector('.so-chat__jump');
   const stateLine = host.querySelector('.so-chat__state');
-  // The spoken Status's one line (assist.js), in the dock where a terminal
-  // has it over its pane.
+  // The spoken Status's one line (assist.js) and the notice with its whole
+  // answer (session.js), in the dock where a terminal has them over its
+  // pane.
+  const noticeBox = host.querySelector('.so-notice');
   const tickerBox = host.querySelector('.so-ticker');
   const tickerLine = host.querySelector('.so-ticker__line');
   const todoSlot = host.querySelector('.so-chat__todo');
@@ -588,5 +590,8 @@ export function mountChat(ctx) {
 
     /** ticker is where the spoken Status says what it is doing. */
     ticker: () => ({ box: tickerBox, line: tickerLine }),
+
+    /** noticeBox is where a notice about the chat is drawn. */
+    noticeBox: () => noticeBox,
   };
 }

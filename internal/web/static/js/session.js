@@ -2723,6 +2723,13 @@ const NOTICE_LINGER = 6000;
 // The timer of the line that is up, which decides when it goes. There is only
 // ever one notice, so there is only ever one of it.
 let noticeTimer = null;
+// The element the line is up in: over the pane of a terminal, in the dock of a
+// chat (where the pane is hidden), as the ticker is.
+let noticeIn = null;
+
+function noticeHost() {
+  return chatShown() ? state.chat.noticeBox() : dom.termNotice;
+}
 
 // The mark each kind of notice leads with; anything else is information.
 const NOTICE_ICON = { status: 'summarize', desync: 'sync', resized: 'monitor', resumed: 'history' };
@@ -2732,8 +2739,11 @@ const NOTICE_ICON = { status: 'summarize', desync: 'sync', resized: 'monitor', r
 // being detached - rather than for "this has been read".
 function clearNotice() {
   if (noticeTimer) { clearTimeout(noticeTimer); noticeTimer = null; }
-  M.cancel(dom.termNotice);
-  dom.termNotice.hidden = true;
+  for (const host of new Set([dom.termNotice, noticeIn])) {
+    if (!host) continue;
+    M.cancel(host);
+    host.hidden = true;
+  }
 }
 
 // notice draws the thin line at the top of the pane (a ds-alert). It never
@@ -2747,7 +2757,10 @@ function clearNotice() {
 // sentence. §E.10 rule 3: it goes behind the "i" and never into the line
 // itself.
 function notice(kind, text, onDismiss, facts, extra) {
-  const host = dom.termNotice;
+  const host = noticeHost();
+  // A line up in the other place goes with no ceremony: it is not on screen.
+  if (noticeIn && noticeIn !== host) clearNotice();
+  noticeIn = host;
   // A new line replaces the one that is up, so the space is free for the next
   // one and no timer from the old line reaches the new one.
   if (noticeTimer) { clearTimeout(noticeTimer); noticeTimer = null; }
