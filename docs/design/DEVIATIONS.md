@@ -2097,7 +2097,7 @@ resume point is the host's journal as the server read it at start; it never writ
 Restarting the CLI inside the same host would be a second resume path next to the one parking
 already needs.
 
-**WP2 / §2.1 — `compact` is `command{name: "compact"}`, and `switch_account` is not implemented.**
+**WP2 / §2.1 — `compact` is `command{name: "compact"}`, and `switch_account` is not implemented** (superseded by WP7: `POST /api/chats/{id}/account` sends `switch_account`).
 Compacting is one of the agent's commands, so it goes through the one command op. Switching
 accounts needs accounts (WP7); the op name is reserved in AGENT-HOST.md §4.3.
 
@@ -2179,7 +2179,7 @@ ended without taking one up. A one-line message starting with `!` runs `thread/s
 mode (`collaborationMode: plan`) is a palette command because Codex's `request_user_input` only
 exists there.
 
-**WP4 / §5.3 — Codex's own questions are declined until WP6.** Approvals are accepted (always
+**WP4 / §5.3 — Codex's own questions are declined until WP6** (superseded by WP6: they become ask_user's questions). Approvals are accepted (always
 allow). `item/tool/requestUserInput` gets a JSON-RPC error and an MCP elicitation a `decline`, each
 with a notice, so no turn waits for ever; WP6 replaces them through `codex.HandleRequest` and adds
 `ask_user` through `codex.RegisterTool`.
@@ -2234,7 +2234,7 @@ history (OpenCode and Codex need their live CLI to read it, Claude reads its fil
 WP4's static `RegisterCommands` registry and WP5's `commands` event; Claude's `argument_hint` is
 now `args`. Adapters also get the data folder (`StartSpec.DataDir`). AGENT-HOST.md §2, §5, §6.
 
-**WP5 — `ask_user` is not wired yet.** The `MCPServers` and `QuestionHandler` hooks are in place;
+**WP5 — `ask_user` is not wired yet** (superseded by WP6). The `MCPServers` and `QuestionHandler` hooks are in place;
 until WP6, OpenCode's own question tool stays denied and a question that still arrives is rejected
 with a notice, and `Answer` reports `ErrAskGone`.
 
@@ -2397,7 +2397,7 @@ and socket (`run/chats/`) entirely; the journal and the adapter's `agent/` state
 The server writes the spec again before every launch, so a restored chat loses nothing. WP7:
 credentials should still live in the account folders or the store, not only in the spec.
 
-**WP8 / §7 and §9 — the browser suite keeps the agent terminals (`SOCRATES_AGENT_TERMINALS`).**
+**WP8 / §7 and §9 — the browser suite keeps the agent terminals (`SOCRATES_AGENT_TERMINALS`)** (superseded by WP10: the agent terminals and the variable are gone).
 Every agent with an adapter is a chat when a session is made from the sheet or prepared, so a
 prepared Claude Code session in the suite became a chat run by the faketui stand-in, which speaks
 no protocol (the `prestart` scenario failed on the branch before this package). The server keeps
@@ -2856,3 +2856,37 @@ for a reason in the code, not in the test:
   whole path stays behind the call's "i"), and a diff of an absolute path keeps its leading slash.
 - The default workspace root follows `-data` (DESIGN.md said `<data>/workspaces`; it was the
   environment's data directory whatever `-data` said).
+
+## Phone pass (2026-10-24)
+
+The phone pass (branch `mobile`, merged into `integ` after WP10 and WP11) audited every screen at
+390, 360, 430 and on its side in touch mode, fixed what it found, and was audited twice again;
+the four final audits (a desk, a phone, a deploy rehearsal, the real binaries) followed on
+`integ`. What departs from REBUILD §7.1, DESIGN.md or DASHBOARD-STYLE.md:
+
+- **Glyphs from Lucide.** Where Dashboard-Style 1.6.2 has no glyph a phone needs (microphone,
+  stop in a circle, keyboard, upload, clipboard, Enter, paperclip, speaker, terminal), `ui.js`
+  `LUCIDE` holds Lucide's, drawn by DS's own `icon()`; `GLYPH` names what each control means. Each
+  goes when DS ships it (DASHBOARD-STYLE.md, "Icons").
+- **Icons rather than text buttons** on the top bar, the composer, the key bar, the question
+  dialog and a failed message (Status, the microphone, Keys, Read aloud, Ask back, Back, Open
+  chat, Copy, Paste, Upload, retry and edit), each with its name and its tip. On a phone at 480 px
+  and below the session's status and the outcome beside the name are their glyph alone too.
+- **Touch mode's fields.** A tap on any field but the terminal's types at once; a focus the page
+  gives by itself (a dialog opening on its field, the composer of a chat that opens) raises no
+  keyboard; a button that brings a field to type in (Rename, Other, Add a note, Anything else,
+  Ask the agent back, Keep planning, Custom path) gives it the keyboard with that tap
+  (`keyboard.js` `typeHere`). The keyboard switch is the terminal's alone.
+- **A session's menu on a phone is an action sheet** under the session's name, and a menu that is
+  cut short at a desk fades at its foot.
+- **Snackbars** stand above the dock, the key bar and a keyboard, and a dialog keeps the strip
+  they stand in.
+- **What a turn cost is said once**, under its last answer (OpenCode answers a step at a time),
+  and a turn's end ("Interrupted", "Failed") stands under that turn, above a message sent while it
+  ran; a limit's card stays the chat's newest word.
+- **A model "change" to the same model draws no line**: the CLI naming the alias's full id at a
+  first turn or after a switch is not a change.
+- **A program that could not list its models** keeps the sheet's model field, for an id typed
+  in or nothing (its own default); Admin says so in words, the program's error behind the "i".
+- **Read aloud needs a Text-to-Speech key** and says so before anything is sent
+  (`/api/preferences` `tts`), as dictation, Status and naming do for OpenRouter's.
