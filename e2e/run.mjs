@@ -848,8 +848,50 @@ async function sessionlist() {
     const left = await (await s.context.request.get(s.url + '/api/sessions')).json();
     ok((left.sessions || []).length === 0, 'the session is gone', (left.sessions || []).length + ' left');
 
-    const { existsSync } = await import('node:fs');
     ok(existsSync(workdir), 'the working directory was kept', workdir);
+
+    /* ------------------------------------------------------------ a chat */
+
+    // A chat is a session like any other in the list: renamed and filed from
+    // its row. Done puts its agent to rest, a message picks it up again, and
+    // Delete takes the row, the agent and the chat's own folder, and leaves
+    // the work it did on disk.
+    const chat = await startChat(s.page, 'claude');
+    const chatSel = rowSel(chat);
+    const chatMenu = async (label) => {
+      await s.page.click(chatSel + ' .so-row__more');
+      await s.page.waitForSelector('#sessionMenu:not([hidden])', { timeout: 5000 });
+      await s.page.click('#sessionMenu .ds-menu__item:has(.ds-menu__label:text-is("' + label + '"))');
+    };
+    await chatMenu('Rename');
+    await s.page.waitForSelector('dialog.so-rename[open] .ds-input', { timeout: 5000 });
+    await s.page.fill('dialog.so-rename[open] .ds-input', 'A chat renamed by the suite');
+    await s.page.click('dialog.so-rename[open] .ds-btn--primary');
+    const renamedChat = await s.page.waitForFunction((sel) => {
+      const row = document.querySelector(sel);
+      return !!row && row.querySelector('.so-row__label').textContent === 'A chat renamed by the suite'
+        && document.getElementById('sessionTitle').textContent === 'A chat renamed by the suite';
+    }, chatSel, { timeout: 8000 }).then(() => true, () => false);
+    ok(renamedChat, 'a chat is renamed from its row, in the row and in the header', String(renamedChat));
+    ok((await answerTo(s, chat, 'before it is done')) === 'you said: before it is done', 'the chat has worked', 'before it is done');
+    await chatMenu('Done');
+    const parked = await until(() => hostsOf(s.data).length === 0, 20000);
+    const doneChat = (await (await s.context.request.get(s.url + '/api/sessions/' + chat)).json()).session;
+    ok(parked && doneChat.status === 'done' && doneChat.delete_at > Date.now(),
+      'Done puts the chat’s agent to rest, and keeps the chat for a while',
+      JSON.stringify({ hosts: hostsOf(s.data).length, status: doneChat.status, delete_at: doneChat.delete_at }));
+    ok((await answerTo(s, chat, 'picked up again')) === 'you said: picked up again', 'a message to it is answered', 'picked up again');
+    const pickedUp = (await (await s.context.request.get(s.url + '/api/sessions/' + chat)).json()).session;
+    ok(pickedUp.status === 'in_progress', 'and puts it back in progress', pickedUp.status);
+    const chatDir = pickedUp.workdir;
+    await chatMenu('Delete');
+    await s.page.waitForSelector('dialog.ds-dialog[open] .ds-btn--primary', { timeout: 5000 });
+    await s.page.click('dialog.ds-dialog[open] .ds-btn--primary');
+    await s.page.waitForFunction((sel) => !document.querySelector(sel), chatSel, { timeout: 10000 });
+    const gone = await until(() => hostsOf(s.data).length === 0 && !existsSync(join(s.data, 'chats', chat)), 15000);
+    ok(gone, 'deleting it takes its agent and the chat’s own folder',
+      JSON.stringify({ hosts: hostsOf(s.data).length, folder: existsSync(join(s.data, 'chats', chat)) }));
+    ok(existsSync(chatDir), 'and keeps the folder it worked in', chatDir.replace(s.data, '<data>'));
 
     await shot(s.page, 'sessionlist');
     ok(unexpected(s.errors).length === 0, 'no console errors',
@@ -5444,20 +5486,22 @@ async function folders() {
     // - and the head has to say both that something is running in there and,
     // when it ends, that nobody has seen it.
     //
-    // It takes an agent session, because a shell is one of the two programs
-    // nothing is asked of: its row carries no status, so there would be
-    // nothing for a shut folder to roll up.
-    const agent = await create('Browser agent', projects.browser, 'claude');
+    // It takes a chat, because a shell is one of the two programs nothing is
+    // asked of: its row carries no status, so there would be nothing for a
+    // shut folder to roll up. A chat in the project's directory is in the
+    // project's folder like any session.
+    const agent = await makeChat(s, 'claude', { title: 'Browser agent', workdir_mode: 'custom', workdir: projects.browser });
     await s.page.evaluate(() => window.dispatchEvent(new Event('online')));
     await s.page.waitForFunction((id) => !!document.querySelector('.so-row[data-id="' + id + '"]'),
       agent, { timeout: 20000 });
-    await clickRow(s.page, agent);
-    await s.page.waitForSelector('#term .xterm', { timeout: 20000 });
+    ok(under(await listing(s.page)).get('Browser agent') === 'projects/browser',
+      'a chat is in the folder of the directory it works in', under(await listing(s.page)).get('Browser agent'));
+    await clickChat(s.page, agent);
     const ready = await awaitRow(s.page, agent, (r) => !r.busy, 20000);
-    ok(ready.ok, 'the agent session in the project settles before it is given anything', took(ready));
-    await typeLine(s.page, '/busy 6000');
+    ok(ready.ok, 'the chat in the project settles before it is given anything', took(ready));
+    await say(s.page, work('claude', 6));
     const busyRow = await awaitRow(s.page, agent, (r) => r.busy, 10000);
-    ok(busyRow.ok, 'the session in the project is working', took(busyRow));
+    ok(busyRow.ok, 'the chat in the project is working', took(busyRow));
     await clickRow(s.page, ids.looseNew);
     await s.page.click(browserHead);
     await s.page.waitForFunction((sel) => document.querySelector(sel)
@@ -6242,6 +6286,43 @@ async function keyboard() {
       JSON.stringify({ open: carUp.open, paneOpen: carUp.paneOpen, focus: carUp.focus }));
     await carPage.close();
     await car.close();
+
+    /* ------------------------------------------------ a chat's composer */
+
+    // A chat's composer is a field like the pane: a tap on it does not raise
+    // the keyboard, the button does - for the composer, with the focus in it
+    // - and a second press puts it away again.
+    const chat = await startChat(s.page, 'claude');
+    await wait(400);
+    const composer = () => s.page.evaluate(() => {
+      const n = document.querySelector('#chat .so-composer__input');
+      return {
+        muted: n.getAttribute('inputmode') === 'none' && n.readOnly,
+        focus: document.activeElement === n,
+        open: document.getElementById('kbBtn').getAttribute('aria-pressed'),
+      };
+    });
+    const shutComposer = await composer();
+    await s.page.click('#chat .so-composer__input');
+    await wait(200);
+    const tappedComposer = await composer();
+    ok(shutComposer.muted && shutComposer.open === 'false' && tappedComposer.muted && tappedComposer.focus,
+      'a chat’s composer is muted until the button: a tap on it takes the focus with the keyboard shut',
+      JSON.stringify({ shut: shutComposer, tapped: tappedComposer }));
+    await s.page.click('#kbBtn');
+    await wait(200);
+    const upComposer = await composer();
+    ok(upComposer.open === 'true' && !upComposer.muted && upComposer.focus,
+      'the button raises the keyboard for the composer, with the focus in it', JSON.stringify(upComposer));
+    await s.page.keyboard.type('typed on the keyboard');
+    await s.page.click('#chat .so-composer__send');
+    ok(await awaitLog(s.page, 'you said: typed on the keyboard', 15000), 'and what is typed there is sent',
+      oneLine(await lastAnswer(s.page)));
+    await s.page.click('#kbBtn');
+    await wait(200);
+    const downComposer = await composer();
+    ok(downComposer.open === 'false' && downComposer.muted, 'a second press puts it away again', JSON.stringify(downComposer));
+    void chat;
 
     ok(unexpected(s.errors).length === 0, 'no console errors',
       unexpected(s.errors).join(' | ') || '0');
@@ -12248,7 +12329,7 @@ const ALL = [
   ['pages', 'every page is clean at a phone and at a desk', pages],
   ['harnesses', 'a Shell and a chat with each agent start, and are seen in the browser', harnesses],
   ['browserlayout', 'popup placement and bundled terminal font metrics', browserlayout],
-  ['sessionlist', 'rename, archive, unarchive and delete', sessionlist],
+  ['sessionlist', 'rename, file, pick up and delete: a Shell and a chat', sessionlist],
   ['folders', 'the list is folders per project, shut and reopened, and a row keeps its element', folders],
   ['exitoverlay', 'a pane that ends, its status under the sentence, and Restart', exitoverlay],
   ['webglrenders', 'the shipped renderer paints the terminal', webglrenders],
