@@ -212,6 +212,11 @@ export async function backupForm(prefix) {
 // prefixFor is the backup prefix of a data directory.
 export const prefixFor = (data) => 'e2e/' + basename(data) + '/';
 
+// STARTUP is how long a server may take to answer its health check: on a
+// machine busy with other work its start (tmux, the chats' hosts) has taken
+// more than 25 s, and nothing in the product promises a faster one.
+export const STARTUP = 60000;
+
 /**
  * waitForHealth waits until the server at url answers its health check.
  *
@@ -221,7 +226,7 @@ export const prefixFor = (data) => 'e2e/' + basename(data) + '/';
  * then a healthy answer is that suite's server, not this one. An error for a
  * port that was taken says so (`taken`), so a start can try another one.
  */
-export async function waitForHealth(url, deadlineMs = 25000, spawned = null) {
+export async function waitForHealth(url, deadlineMs = STARTUP, spawned = null) {
   const until = Date.now() + deadlineMs;
   const mine = spawned ? 'open ' + url + ' in your browser' : '';
   while (Date.now() < until) {
@@ -472,7 +477,7 @@ export async function start(options = {}) {
   let spawned = null;
   for (let attempt = 1; ; attempt += 1) {
     spawned = spawnServer({ data, port, live, env: options.env });
-    const failed = await waitForHealth(url, 25000, spawned).then(() => null, (err) => err);
+    const failed = await waitForHealth(url, STARTUP, spawned).then(() => null, (err) => err);
     if (!failed) break;
     // A server that never served is not left running for the rest of the
     // run, where its pipes would keep the run from ever ending.
@@ -533,7 +538,7 @@ export async function start(options = {}) {
     if (between) await between();
     const again = spawnServer({ data, port, live, env: { ...(options.env || {}), ...env } });
     s.server = again.server; s.log = again.log; s.exited = again.exited;
-    await waitForHealth(url, 25000, again);
+    await waitForHealth(url, STARTUP, again);
     return outcome;
   };
 

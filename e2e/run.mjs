@@ -12,7 +12,7 @@
 import {
   start, setup, shot, ok, scenario, skipScenario, finish, ensureNav, wait,
   killTmux, openRouterStub, fakeS3Switch, backupForm, prefixFor, sessionsOn, windowSize, scratchDir, PASSWORD, LIVE, SHOTS,
-  tmuxSock, freePort, spawnServer, waitForHealth, REPO,
+  tmuxSock, freePort, spawnServer, waitForHealth, STARTUP, REPO,
 } from './harness.mjs';
 import http from 'node:http';
 import net from 'node:net';
@@ -9014,7 +9014,7 @@ async function homequiet() {
     holder = null;
     const again = spawnServer({ data: s.data, port: s.port });
     s.server = again.server; s.log = again.log; s.exited = again.exited;
-    await waitForHealth(s.url, 25000, again);
+    await waitForHealth(s.url, STARTUP, again);
     const recovered = await awaitHome(s.page, (h) => h.conn === 'live', 45000);
     ok(recovered.ok, 'and it is Live once the server is back', recovered.seen && recovered.seen.connText);
     ok(unexpected(s.errors, RESTART_NOISE).filter((e) => e.startsWith('pageerror')).length === 0, 'no page errors',
