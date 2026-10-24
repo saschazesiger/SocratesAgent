@@ -1667,7 +1667,7 @@ function renderBackup(status, fillForm) {
   if (status.running) {
     kind = 'running';
     label = status.phase ? status.phase.charAt(0).toUpperCase() + status.phase.slice(1) : 'Backing up';
-    if (status.files) facts.push(status.files + ' files read', bytes(status.uploaded) + ' sent');
+    if (status.files) facts.push(status.files + ' file' + (status.files === 1 ? '' : 's') + ' read', bytes(status.uploaded) + ' sent');
   } else if (status.broken) {
     kind = 'error';
     label = 'Backups off';
@@ -1679,7 +1679,7 @@ function renderBackup(status, fillForm) {
     kind = status.overdue ? 'error' : 'ok';
     label = status.overdue ? 'Backup overdue' : 'Backed up';
     facts.push(ago(Math.max(last ? last.at : 0, status.checked_at || 0)));
-    if (last) facts.push(bytes(last.size), last.files + ' files');
+    if (last) facts.push(bytes(last.size), last.files + ' file' + (last.files === 1 ? '' : 's'));
   } else if (cfg) {
     kind = 'waiting';
     label = 'No backup yet';
