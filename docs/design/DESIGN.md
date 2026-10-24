@@ -2934,6 +2934,10 @@ about where a CLI writes its state and how it refuses.**
 
 ## H.3 e2e scenarios
 
+> Superseded by REBUILD.md §9 and WP11: the agents' scenarios run against the chats and the
+> protocol fakes, and `e2e/README.md` is the list of what each scenario proves now. The table below
+> is the plan of the terminal build.
+
 `e2e/run.mjs` keeps its shape: `ALL` is a table of `[name, title, fn, opts?]`, bare scenario names
 on the command line select a subset, `finish()` prints the table. Always
 `waitUntil: 'domcontentloaded'`, never `networkidle`.
@@ -3456,6 +3460,10 @@ all while the bucket is fine.
 
 ## L.1 The row
 
+> Since accounts (REBUILD.md §4, WP7) a prepared chat carries the account it was given, or none,
+> and one with none starts on the account the sheet would recommend (the most usage left for the
+> time until it renews); `profile_auto` and `profile` are dropped from its options.
+
 `state = 'prestart'`: settings, no `tmux_name`, no directories, nothing running. `drafts(session_id,
 text, rev, updated_at)` holds the prompt; a save is optimistic (`base_rev`, 409 with the current
 text on a mismatch) and bumps the store revision, so the list's `draft_rev`/`draft_preview` tell
@@ -3474,6 +3482,10 @@ drift. Start is idempotent (a started row answers with itself), takes the row fr
 `fail_reason` and removes what it made. The draft stays, read-only, until the session is deleted.
 
 ## L.3 The prompt reaches the program without tmux
+
+> Superseded for the agents by REBUILD.md §7: a prepared chat's prompt is its first message, sent
+> through the chat's host like any other, and no prompt file is written. A prepared session is a
+> chat's (a Shell is not prepared).
 
 A tmux command message is limited to about 16 KB; a prompt may be 100 KB. The plan writes it to
 `<sessiondir>/initial-prompt` (0600) and wraps the argv in a POSIX `sh -c` script that reads the
@@ -3526,6 +3538,11 @@ whatever it was called. It answers when the name is there — a prepared session
 Added 2026-10-22.
 
 ## M.1 What is counted
+
+> Since accounts (REBUILD.md §4 and §6.1, WP7) the transcripts are also read from the agents'
+> shared folders under the data directory (`agents/claude`, `agents/codex`, `agents/opencode`),
+> where every account's conversations are kept; what this section calls a profile is an account,
+> and an old profile's folder under `<data>/profiles` is still read.
 
 Every conversation any CLI had on this machine, under every profile directory on the disk (a deleted
 profile's included), whether a session still exists for it or not (`internal/costs`):
