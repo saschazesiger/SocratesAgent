@@ -13967,6 +13967,28 @@ async function chatstatus() {
     ok(prompt.includes('a chat with Scripted agent') && prompt.includes('/tool') && prompt.includes('Running echo hello'),
       'the model was told the chat from its journal: the message and the call', oneLine(prompt).slice(0, 200));
     await shot(page, 'chat-status');
+
+    // A phone: the button in the bar, the line in the dock, nothing to
+    // scroll sideways.
+    const signedIn = await s.context.storageState();
+    const phone = await s.browser.newContext({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true,
+      storageState: { cookies: signedIn.cookies, origins: [] } });
+    await phone.route('**/api/voice/speak', (route) => route.fulfill({ status: 200, contentType: 'audio/wav', body: silentWav() }));
+    const small = await phone.newPage();
+    await small.goto(s.url + '/#open=' + id, { waitUntil: 'domcontentloaded' });
+    await chatUp(small);
+    await small.waitForSelector('#statusBtn:not([hidden]):not([disabled])', { timeout: 10000 });
+    await small.tap('#statusBtn');
+    const onPhone = await small.waitForFunction((want) => {
+      const box = document.querySelector('#chat .so-chat__dock .so-ticker');
+      if (!box || box.hidden || !box.textContent.includes(want)) return null;
+      const r = box.getBoundingClientRect();
+      const root = document.scrollingElement;
+      return { left: r.left, right: r.right, overflow: Math.max(root.scrollWidth - root.clientWidth, 0) };
+    }, words, { timeout: 30000 }).then((h) => h.jsonValue(), () => null);
+    ok(!!onPhone && onPhone.left >= 0 && onPhone.right <= 390 && onPhone.overflow <= 1,
+      'on a phone the line is in the dock, inside the screen', JSON.stringify(onPhone));
+    await phone.close();
     ok(unexpected(s.errors).length === 0, 'no console errors', unexpected(s.errors).join(' | ') || '0');
   } finally {
     await s.stop();
@@ -14063,6 +14085,69 @@ async function chatprestart() {
   } finally { await s.stop(); }
 }
 
+// chat-ultracode: Ultracode is Claude Code's, a chat's as a terminal's: the
+// sheet offers it for Claude Code and not for another agent, and a Claude
+// chat's ⋮ switches it, where another chat's has no such item.
+async function chatultracode() {
+  const s = await chatServer();
+  const { page } = s;
+  try {
+    await ensureNav(page);
+    await page.click('#newSession');
+    await page.waitForSelector('#newSessionSheet[open]', { timeout: 15000 });
+    await page.click('#newSessionSheet .so-settings__program[data-value="claude"]');
+    const forClaude = await page.$eval('#nsUltracodeField', (n) => !n.hidden);
+    await page.click('#newSessionSheet .so-settings__program[data-value="fake"]');
+    const forFake = await page.$eval('#nsUltracodeField', (n) => !n.hidden);
+    ok(forClaude && !forFake, 'the sheet offers Ultracode for Claude Code, and not for another agent',
+      JSON.stringify({ forClaude, forFake }));
+    await page.keyboard.press('Escape');
+    await page.waitForSelector('#newSessionSheet[open]', { state: 'detached', timeout: 10000 }).catch(() => {});
+    const fake = await startChat(page);
+    const made = await s.context.request.post(s.url + '/api/chats', {
+      data: { client_id: 'e2e-claude-chat', harness: 'claude', workdir_mode: 'dynamic' },
+    });
+    const claude = (await made.json()).session.id;
+    ok(made.status() === 201, 'a Claude Code chat is made', made.status());
+    await page.waitForSelector(rowSel(claude), { state: 'attached', timeout: 15000 });
+    const itemOf = async (id) => {
+      await ensureNav(page);
+      await page.waitForSelector(rowSel(id), { timeout: 15000 });
+      await page.$eval(rowSel(id), (n) => n.scrollIntoView({ block: 'center' }));
+      // A list that is drawn again under the tap (a new row arriving) puts
+      // the menu away; it is opened again.
+      for (let tries = 0; tries < 3; tries += 1) {
+        await page.click(rowSel(id) + ' .so-row__more', { force: true });
+        if (await page.waitForSelector(MENU + ' .ds-menu__item', { timeout: 3000 }).then(() => true, () => false)) break;
+      }
+      const item = await page.$eval(MENU, (menu) => {
+        const node = menu.querySelector('[data-action="ultracode"]');
+        return node ? { role: node.getAttribute('role'), checked: node.getAttribute('aria-checked') } : null;
+      });
+      return item;
+    };
+    const closeMenu = async () => {
+      await page.keyboard.press('Escape');
+      await page.waitForSelector(MENU, { state: 'detached', timeout: 5000 }).catch(() => {});
+    };
+    const fakeItem = await itemOf(fake);
+    await closeMenu();
+    const before = await itemOf(claude);
+    ok(!fakeItem && before && before.role === 'menuitemcheckbox' && before.checked === 'false',
+      'a Claude chat’s ⋮ has Ultracode, off, and another chat’s has none', JSON.stringify({ fakeItem, before }));
+    await page.click(MENU + ' [data-action="ultracode"]');
+    const toast = await page.waitForFunction(() => [...document.querySelectorAll('#toasts .ds-toast, #toasts [role="status"]')]
+      .some((n) => /Ultracode is on from the next message/.test(n.textContent)), null, { timeout: 10000 }).then(() => true, () => false);
+    const row = await sessionRow(s, claude);
+    await page.waitForSelector(MENU, { state: 'detached', timeout: 5000 }).catch(() => {});
+    const after = await itemOf(claude);
+    await closeMenu();
+    ok(toast && row.options && row.options.ultracode === true && after && after.checked === 'true',
+      'switched on, it says from when, and the chat keeps it', JSON.stringify({ toast, options: row.options, after }));
+    ok(unexpected(s.errors).length === 0, 'no console errors', unexpected(s.errors).join(' | ') || '0');
+  } finally { await s.stop(); }
+}
+
 // -------------------------------------------------------------------- run
 
 const ALL = [
@@ -14131,6 +14216,7 @@ const ALL = [
   ['chat-status', 'Status says a chat from its journal, on its line and out loud', chatstatus],
   ['chat-outcome', 'a chat\u2019s turn judged from its journal: the hourglass, the verdict, the notification', chatoutcome],
   ['chat-prestart', 'a prepared chat started by the clock, its draft the first message', chatprestart],
+  ['chat-ultracode', 'Ultracode for Claude Code alone: in the sheet, and in a Claude chat\u2019s menu', chatultracode],
   ['backup', 'the Backup card: a bucket configured, a backup on demand, a failure and the warning, and the next good run', backup],
   ['restore', 'a machine that is gone, and a new one restored from its backup on the setup page', restore],
   ['home-landing', 'every start of the page is Home, and the button and the address go back to it', homelanding],
