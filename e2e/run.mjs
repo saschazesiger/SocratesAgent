@@ -469,6 +469,20 @@ async function pages() {
         await shot(s.page, 'pages-' + (path === '/' ? 'session' : path.slice(1)) + '-' + tag);
       }
 
+      // A chat is the page's other kind of session: clean at both sizes too,
+      // with an answer on screen.
+      s.errors.length = 0;
+      await open(s);
+      const chat = await startChat(s.page, 'claude');
+      const answered = await answerTo(s, chat, 'hello from ' + tag);
+      await wait(600);
+      const chatBad = unexpected(s.errors);
+      const chatOverflow = await s.page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+      ok(answered === 'you said: hello from ' + tag && chatBad.length === 0,
+        `a chat at ${tag} answers, with no console errors`, chatBad.join(' | ') || answered);
+      ok(chatOverflow <= 1, `a chat at ${tag} does not scroll sideways`, chatOverflow + 'px');
+      await shot(s.page, 'pages-chat-' + tag);
+
       // The sheet is DS's side sheet: docked to the right edge at full height
       // on a desk, risen from the bottom at full width on a phone (600px and
       // below). The <dialog> always covers the window, so the panel is what
@@ -2961,7 +2975,6 @@ async function deletekeepsdir() {
     const id = await startSession(s.page, 'shell');
     await s.page.waitForSelector('#term .xterm', { timeout: 15000 });
 
-    const { existsSync } = await import('node:fs');
     const row = await (await s.context.request.get(s.url + '/api/sessions/' + id)).json();
     const workdir = row.session.workdir;
     const kept = join(workdir, 'kept.txt');
@@ -3008,6 +3021,33 @@ async function deletekeepsdir() {
     ok(!existsSync(join(s.data, 'sessions', id)),
       'while what Socrates itself wrote for the session is gone',
       join('sessions', id));
+
+    // A chat the same way: its agent wrote a file, its conversation can be
+    // taken away from its row, and Delete stops the agent and removes what
+    // Socrates kept for the chat, and nothing it worked on.
+    const chat = await startChat(s.page, 'claude');
+    const chatDir = (await sessionRow(s, chat)).workdir;
+    const wrote = await answerTo(s, chat, '/write');
+    ok(wrote === 'Wrote new.txt.' && existsSync(join(chatDir, 'new.txt')), 'a chat’s agent did some work in its directory',
+      join(chatDir, 'new.txt').replace(s.data, '<data>'));
+    const exported = await s.context.request.get(s.url + '/api/chats/' + chat + '?history=1');
+    const conversation = await exported.text();
+    ok(exported.ok() && conversation.includes('Wrote new.txt.'), 'its conversation can be taken away before it goes',
+      exported.status() + ', ' + conversation.length + ' bytes');
+    await s.page.click(rowSel(chat) + ' .so-row__more');
+    await s.page.waitForSelector('#sessionMenu:not([hidden])', { timeout: 5000 });
+    const chatItems = await s.page.$$eval('#sessionMenu:not([hidden]) .ds-menu__item', (nodes) => nodes.map((n) => n.textContent.trim()));
+    ok(chatItems.includes('Download the conversation') && !chatItems.includes('Download scrollback'),
+      'and its row offers the conversation, not a scrollback', chatItems.join(' | '));
+    await s.page.click('#sessionMenu .ds-menu__item:has(.ds-menu__label:text-is("Delete"))');
+    await s.page.waitForSelector('dialog.ds-dialog[open] .ds-btn--primary', { timeout: 5000 });
+    await s.page.click('dialog.ds-dialog[open] .ds-btn--primary');
+    await s.page.waitForFunction((sel) => !document.querySelector(sel), rowSel(chat), { timeout: 10000 });
+    const stopped = await until(() => hostsOf(s.data).length === 0, 15000);
+    ok(stopped, 'deleting the chat stops its agent', hostsOf(s.data).length + ' hosts');
+    ok(!existsSync(join(s.data, 'chats', chat)) && existsSync(join(chatDir, 'new.txt')),
+      'and removes the chat’s own folder, while its working directory keeps the work',
+      JSON.stringify({ chatFolder: existsSync(join(s.data, 'chats', chat)), work: existsSync(join(chatDir, 'new.txt')) }));
 
     await shot(s.page, 'deletekeepsdir');
     ok(unexpected(s.errors).length === 0, 'no console errors',
@@ -12326,7 +12366,7 @@ const ALL = [
   ['createshell', 'the sheet makes a Shell session and the shell answers', createshell],
   ['typeandsee', 'keystrokes reach the pane and the journal agrees with the screen', typeandsee],
   ['reloadkeepsscreen', 'a reload keeps the screen and the input path', reloadkeepsscreen],
-  ['pages', 'every page is clean at a phone and at a desk', pages],
+  ['pages', 'every page, a chat included, is clean at a phone and at a desk', pages],
   ['harnesses', 'a Shell and a chat with each agent start, and are seen in the browser', harnesses],
   ['browserlayout', 'popup placement and bundled terminal font metrics', browserlayout],
   ['sessionlist', 'rename, file, pick up and delete: a Shell and a chat', sessionlist],
@@ -12344,7 +12384,7 @@ const ALL = [
   ['tmuxcard', 'the engine card on a machine whose tmux is too old', tmuxcard],
   ['twoviewers', 'two devices on one session, and one notice about the size', twoviewers],
   ['backpressure', 'two hundred lines arrive whole, on screen and in the journal', backpressure],
-  ['deletekeepsdir', 'delete kills the tmux session and keeps the work', deletekeepsdir],
+  ['deletekeepsdir', 'delete ends a Shell\u2019s tmux session and a chat\u2019s agent, and keeps the work', deletekeepsdir],
   ['recoveredsession', 'a tmux session with no row is taken in, never killed', recoveredsession],
   ['createclaude', 'Claude Code from the sheet to its command line, and back on its conversation after a crash', createclaude],
   ['createcodex', 'Codex over its app server: one thread, kept, and resumed after a rest', createcodex],
