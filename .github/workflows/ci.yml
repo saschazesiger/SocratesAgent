@@ -56,8 +56,12 @@ jobs:
       - name: Vet
         run: go vet ./...
 
+      # The default ten minutes per package is not enough room: internal/server
+      # alone took 547s on macos-latest and 575s on ubuntu-latest in run
+      # 40070833079, every test passing, so one slow runner away from a
+      # timeout that says nothing about the code.
       - name: Test
-        run: go test -race ./...
+        run: go test -race -timeout 20m ./...
 
       - name: Build
         run: go build ./...

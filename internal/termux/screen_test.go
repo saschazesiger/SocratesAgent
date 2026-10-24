@@ -224,6 +224,19 @@ func TestActivityTickAnswersForARealPane(t *testing.T) {
 	l := newLab(t)
 	dir := realDir(t, l.dataDir)
 	row := l.create(shellSpec(dir, "/bin/sh"))
+	// What the Shell layer saw, beside any verdict that fails: the answer is
+	// one name and one process table, and both differ between systems.
+	t.Cleanup(func() {
+		if !t.Failed() {
+			return
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		panes, err := l.listActivityPanes(ctx)
+		pane := panes[row.TmuxName]
+		t.Logf("activity %+v; pane command %q, pid %d (list-panes error %v); plan argv %q; the pane's process has a child: %t",
+			l.ActivityOf(row.ID), pane.command, pane.pid, err, l.planFor(row.ID).Argv, hasChild(pane.pid))
+	})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()

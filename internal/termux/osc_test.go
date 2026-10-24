@@ -4,6 +4,7 @@ package termux
 
 import (
 	"bytes"
+	"context"
 	"strings"
 	"testing"
 	"time"
@@ -163,12 +164,28 @@ func TestViewerAnswersTheAttachQueriesItself(t *testing.T) {
 	l := newLab(t)
 	row := l.create(shellSpec(t.TempDir()))
 	v := l.attach(row.ID, 100, 30)
-	// The prompt means the attach is done and tmux has asked whatever it asks.
-	// It is "#" for root and "$" for anybody else, and CI runs as somebody
-	// else.
-	waitFor(t, 10*time.Second, "the shell's prompt", func() bool {
-		out, _ := v.Ring().Since(v.Ring().Base())
-		return bytes.Contains(out, []byte("# ")) || bytes.Contains(out, []byte("$ "))
+	// Output the shell prints after the attach reaches the client after
+	// everything tmux asked it on the way in, so its arrival means the attach
+	// is done. The prompt is no such sign: one printed before the attach
+	// arrives as tmux's redraw of the screen, which from tmux 3.8 on drops the
+	// blank after it ("#\x1b[K"), and macOS's sh draws "sh-3.2$" besides. The
+	// quotes keep the typed line from containing what the command prints.
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	for _, keys := range [][]string{{"-l", "echo attach-''done"}, {"Enter"}} {
+		if _, err := l.tmux.Run(ctx, append([]string{"send-keys", "-t", row.TmuxName}, keys...)...); err != nil {
+			t.Fatalf("send-keys: %v", err)
+		}
+	}
+	var shown []byte
+	t.Cleanup(func() {
+		if t.Failed() {
+			t.Logf("the viewer was shown:\n%q", shown)
+		}
+	})
+	waitFor(t, 10*time.Second, "the shell's output after the attach", func() bool {
+		shown, _ = v.Ring().Since(v.Ring().Base())
+		return bytes.Contains(shown, []byte("attach-done"))
 	})
 	time.Sleep(300 * time.Millisecond)
 	seen, _ := v.Ring().Since(0)

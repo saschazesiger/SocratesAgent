@@ -1225,7 +1225,8 @@ func (m *Manager) forgetPlan(id string) {
 type shellSource struct{}
 
 // shellNames is what "this is the shell itself" means when the launch plan
-// cannot be read.
+// cannot be read, and what a planned shell may be called instead of its own
+// name (see isTheShell).
 var shellNames = map[string]bool{
 	"sh": true, "bash": true, "zsh": true, "fish": true, "dash": true,
 	"ksh": true, "ash": true, "busybox": true, "login": true,
@@ -1245,11 +1246,22 @@ func (shellSource) Read(_ context.Context, s snapshot) observation {
 	return seen(StateIdle, "")
 }
 
+// isTheShell reports whether the foreground command is the plan's shell.
+//
+// The name is not always the plan's own. tmux names the foreground process by
+// its argv[0] on Linux but by its executable on macOS, and macOS's /bin/sh is
+// a shim that execs the shell /private/var/select/sh points at - bash, unless
+// somebody changed it - so a /bin/sh at its prompt reads as "bash" there. A
+// shell's plan whose foreground command is a shell is the shell; a nested one
+// is still told apart by hasChild, because the plan's own process is then its
+// parent.
 func isTheShell(cmd string, plan harnesses.LaunchPlan) bool {
+	cmd = strings.TrimPrefix(cmd, "-")
 	if len(plan.Argv) > 0 {
-		return cmd == filepath.Base(plan.Argv[0])
+		bin := filepath.Base(plan.Argv[0])
+		return cmd == bin || (shellNames[bin] && shellNames[cmd])
 	}
-	return shellNames[strings.TrimPrefix(cmd, "-")]
+	return shellNames[cmd]
 }
 
 // hasChild reports whether a process has a child, which is the difference
