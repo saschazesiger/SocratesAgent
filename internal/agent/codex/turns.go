@@ -219,8 +219,11 @@ func (a *adapter) closeTurnLocked(t *turn, outcome, why string) {
 		}
 	}
 	a.queue = append(untaken, a.queue...)
-	a.held = outcome == agent.OutcomeLimited && len(a.queue) > 0
-	if len(a.queue) > 0 && !a.held {
+	a.held = ""
+	if outcome == agent.OutcomeLimited {
+		a.held = t.id
+	}
+	if len(a.queue) > 0 && a.held == "" {
 		go a.flush()
 	}
 }
