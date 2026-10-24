@@ -241,6 +241,13 @@ body[data-stale] .so-mark[data-ring="busy"]::after {
   height: var(--so-touch-target);
 }
 
+/* A combobox with nothing to list is a plain field (combobox.js): it has no
+   arrow, so its text runs to the field's own padding. After the rule above,
+   which it overrides on a touch screen too. */
+.ds-theme .ds-combo[data-unlisted] > .ds-combo__input {
+  padding-right: var(--ds-space-3);
+}
+
 /* An option of one line ("Fable", "Custom path…") is as tall as a finger;
    one with a description is taller already. */
 .ds-theme.so-touch .ds-combo__option {

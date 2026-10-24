@@ -1186,9 +1186,11 @@ function optionField(harness, option) {
       break;
     }
     case 'model': {
+      // A program that could not list its models leaves an id to type in
+      // (combobox.js: no list, so no arrow either).
       const picker = combobox({
         value: value || '',
-        placeholder: 'pick from the list, or type a model id',
+        placeholder: (harness.models || []).length ? 'Pick from the list, or type a model id' : 'Type a model id',
         items: () => (harness.models || []).map((m) => ({
           value: m.id, label: m.label || m.id, hint: m.hint || '', group: m.group || '',
         })),
@@ -1228,8 +1230,9 @@ function modelList(harness) {
   function render() {
     const list = picks();
     if (!list.length) {
-      rows.replaceChildren(el('p', { class: 'ds-meta', text: 'No short list — the new-session sheet offers every model '
-        + harness.label + ' reports.' }));
+      rows.replaceChildren(el('p', { class: 'ds-meta', text: (harness.models || []).length
+        ? 'No short list — the new-session sheet offers every model ' + harness.label + ' reports.'
+        : 'No short list — the new-session sheet takes a model’s id typed in.' }));
       return;
     }
     rows.replaceChildren(...list.map((pick) => {
@@ -1261,7 +1264,7 @@ function modelList(harness) {
 
   const picker = combobox({
     value: '',
-    placeholder: harness.static ? 'sonnet' : 'pick from the list, or type a model id',
+    placeholder: harness.static ? 'sonnet' : ((harness.models || []).length ? 'Pick from the list, or type a model id' : 'Type a model id'),
     items: () => (harness.models || []).map((m) => ({
       value: m.id, label: m.label || m.id, hint: m.hint || '', group: m.group || '',
     })),
@@ -1297,8 +1300,10 @@ function modelList(harness) {
     rows,
     el('div', { class: 'so-field-row' }, dictated(picker.node, input),
       el('button', { class: 'ds-btn', type: 'button', text: 'Add', id: 'add-model-' + harness.id, onclick: add })),
-    el('small', { class: 'ds-field__hint', text: 'Pick from what ' + harness.label + ' reports or type an id, and set the '
-      + 'effort a new session starts on. Leave the list empty to offer all of them.' }),
+    el('small', { class: 'ds-field__hint', text: (harness.models || []).length
+      ? 'Pick from what ' + harness.label + ' reports or type an id, and set the effort a new session starts on. '
+        + 'Leave the list empty to offer all of them.'
+      : 'Type a model’s id, and set the effort a new session starts on. Leave the list empty to type one in the sheet.' }),
   );
 }
 
