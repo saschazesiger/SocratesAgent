@@ -71,7 +71,16 @@ export function mountChat(ctx) {
   let stream = null;
   let composer = null;
   let frame = 0;
+  // Whether the conversation follows its end as it grows. Only the person
+  // unsticks it, by moving up (scroll, wheel, keys); moving back down to
+  // within STICK of the end sticks it again.
   let stuck = true;
+  // A finger is on the conversation: nothing scrolls it to its end under the
+  // finger, whatever the stream draws meanwhile.
+  let held = false;
+  // Where the conversation was scrolled to at the last scroll event, or by
+  // this view itself.
+  let lastTop = 0;
   let synced = false;
   let lostAt = 0;
   let staleTimer = null;
@@ -401,7 +410,11 @@ export function mountChat(ctx) {
 
   function render() {
     if (!session || !chat) return;
-    const follow = stuck || atEnd();
+    // Not "stuck or near the end": a finger that moves the conversation up
+    // a few pixels between two updates of a streaming answer is still near
+    // the end, and was put back at it at every update (measured: a drag of
+    // 8 or 25 px a move never got away from the end).
+    const follow = stuck && !held;
     const entries = chat.timeline.map((entry) => ({ key: entry.key, markup: entryMarkup(entry) }));
     const local = localEntries();
     if (synced && !chat.timeline.length && !local.length) {
@@ -416,7 +429,7 @@ export function mountChat(ctx) {
     if (composer) composer.paint();
     if (follow) {
       scroller.scrollTop = scroller.scrollHeight;
-      stuck = true;
+      lastTop = scroller.scrollTop;
     }
     showJump(!atEnd());
   }
@@ -681,17 +694,47 @@ export function mountChat(ctx) {
   // and when its end moves down: the room kept for a message that stays
   // (session.js placeToasts). What the browser scrolls by itself while the
   // height changes is not the person scrolling away from the end.
+  //
+  // Which way it moved is what counts: up, by however little, is the person
+  // reading back, and lets go of the end; down to within STICK of the end
+  // takes it again. A conversation that got shorter under an end it was
+  // read at moves up as well, onto the new end: that is not the person.
   let scrollerHeight = 0;
   scroller.addEventListener('scroll', () => {
+    const top = scroller.scrollTop;
+    const was = lastTop;
+    lastTop = top;
     if (scroller.clientHeight !== scrollerHeight) return;
-    stuck = atEnd();
-    showJump(!stuck);
+    const atBottom = scroller.scrollHeight - top - scroller.clientHeight <= 1;
+    if (top < was - 1 && !atBottom) stuck = false;
+    else if (top > was) stuck = stuck || atEnd();
+    showJump(!atEnd());
   }, { passive: true });
+  scroller.addEventListener('wheel', (event) => {
+    if (event.deltaY < 0) stuck = false;
+  }, { passive: true });
+  scroller.addEventListener('keydown', (event) => {
+    if (event.target.closest('input, textarea, select, [contenteditable]')) return;
+    if (['ArrowUp', 'PageUp', 'Home'].includes(event.key)) stuck = false;
+  });
+  scroller.addEventListener('touchstart', () => { held = true; }, { passive: true });
+  // The finger is lifted: a conversation it left at its end follows it from
+  // here. scrollend is there too because a touch whose element the stream
+  // replaced ends on that element, out of the document, and never bubbles.
+  const letGo = () => {
+    if (!held) return;
+    held = false;
+    if (stuck) schedule();
+  };
+  scroller.addEventListener('touchend', (event) => { if (!event.touches.length) letGo(); }, { passive: true });
+  scroller.addEventListener('touchcancel', letGo, { passive: true });
+  scroller.addEventListener('scrollend', letGo, { passive: true });
 
   const keepEnd = new ResizeObserver(() => {
     scrollerHeight = scroller.clientHeight;
-    if (!session || !stuck) return;
+    if (!session || !stuck || held) return;
     scroller.scrollTop = scroller.scrollHeight;
+    lastTop = scroller.scrollTop;
     showJump(false);
   });
   keepEnd.observe(scroller);
