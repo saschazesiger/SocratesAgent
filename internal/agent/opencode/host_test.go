@@ -358,8 +358,29 @@ func TestASwitchAfterTheTurnIsMadeWhileALimitHoldsTheQueue(t *testing.T) {
 	h.launch("")
 	cn := h.dial()
 	cn.until("the conversation", func(ev agent.Event) bool { return ev.Type == agent.TypeConversation })
-	cn.send("m1", "/limit")
-	cn.send("m2", "/whoami")
+	// "/limit" and "/whoami" are written while a turn waits on a question of
+	// OpenCode's own, so the journal has "/whoami" before the limited turn's
+	// end whatever the timing. Sent right after "/limit" instead, it can be
+	// written after the limit already ended that turn (within milliseconds
+	// of its post), and a message written after a limited turn is the person
+	// going on with this account, which lets the hold go (AGENT-HOST.md
+	// §5.3; rig.queueBehindAQuestion does the same without a host).
+	cn.send("q1", "/question")
+	ask := cn.until("the question", func(ev agent.Event) bool { return ev.Type == agent.TypeAsk })
+	for _, m := range []struct{ clientID, text string }{{"m1", "/limit"}, {"m2", "/whoami"}} {
+		cn.send(m.clientID, m.text)
+		msg := cn.until(m.text, func(ev agent.Event) bool { return ev.Type == agent.TypeMessage && ev.ClientID == m.clientID })
+		cn.until(m.text+" queued", func(ev agent.Event) bool {
+			return ev.Type == agent.TypeMessageState && ev.MessageID == msg.MessageID && ev.State == agent.MessageQueued
+		})
+	}
+	if err := cn.c.Send(agenthost.Command{Op: agenthost.OpAnswer, ClientID: "a1", AskID: ask.AskID,
+		Answer: json.RawMessage(`{"answers":{"q1":{"selected":["Red"]}}}`)}); err != nil {
+		t.Fatal(err)
+	}
+	if ev := cn.until("the question's turn", turnEnded); ev.Outcome != agent.OutcomeCompleted {
+		t.Fatalf("turn %+v", ev)
+	}
 	if ev := cn.until("the limited turn", turnEnded); ev.Outcome != agent.OutcomeLimited {
 		t.Fatalf("turn %+v", ev)
 	}
