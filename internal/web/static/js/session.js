@@ -868,9 +868,10 @@ function drawOutcomeTag() {
   if (tag.dataset.key === key) return;
   tag.dataset.key = key;
   tag.dataset.kind = pending ? 'checking' : kind;
-  morph(tag, html`${raw(pending ? TASKS_SVG : outcomeIconHtml(kind, 16))}<span>${
-    pending ? 'Checking…' : (kind === 'error' ? 'Not checked' : OUTCOME_WORDS[kind])
-  }</span>`);
+  const words = pending ? 'Checking…' : (kind === 'error' ? 'Not checked' : OUTCOME_WORDS[kind]);
+  morph(tag, html`${raw(pending ? TASKS_SVG : outcomeIconHtml(kind, 16))}<span>${words}</span>`);
+  // Its glyph alone on a phone (so-frame.css), so the words are its name.
+  tag.setAttribute('aria-label', words);
   tag.setAttribute('data-tip', outcomeLine(outcome));
 }
 
@@ -3772,6 +3773,11 @@ function drawStatusChip(status) {
   chip.dataset.status = status;
   if (chip.hidden) return;
   chip.className = ('ds-status ' + (STATUS_CHIP[status] || '')).trim();
+  // On a phone the chip is its glyph alone (so-frame.css): the words are its
+  // name and its tip there, as on the list's rows.
+  chip.setAttribute('role', 'img');
+  chip.setAttribute('aria-label', STATUS_WORDS[status]);
+  chip.dataset.tip = STATUS_WORDS[status];
   morph(chip, html`${raw(icon(STATUS_GLYPH[status], 16))}<span>${STATUS_WORDS[status]}</span>`);
 }
 

@@ -135,7 +135,9 @@
     -webkit-line-clamp: 2;
     line-clamp: 2;
     white-space: normal;
-    overflow-wrap: anywhere;
+    /* Between words only, unless one word is wider than the button: a
+       break anywhere let the name be squeezed to a letter a line. */
+    overflow-wrap: break-word;
     text-align: start;
   }
 }
@@ -640,6 +642,22 @@
 
   .so-title {
     min-width: 0;
+  }
+
+  /* The session's status says itself by its glyph alone (its words are its
+     label and its tip): in words it took the name's width, down to 18px of
+     a Shell's at 360. The outcome beside it does the same. */
+  .so-topbar > #sessionStatus,
+  .so-topbar > #sessionOutcome {
+    flex: none;
+  }
+
+  .so-topbar > #sessionStatus {
+    padding: var(--ds-space-1);
+  }
+
+  .so-topbar > :is(#sessionStatus, #sessionOutcome) > span:last-child {
+    display: none;
   }
 }
 
