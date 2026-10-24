@@ -749,7 +749,11 @@ the new account) or a `Send` of a message the person wrote after that turn's end
 for it; `Outgoing.AfterTurn` names the limited turn) lets it go, and the held messages run first.
 The journal's order decides, not when `Send` comes: the host journals a message before it hands it
 over, and the limit can end the turn in between, so a message whose `AfterTurn` is any other turn
-was written while the limited turn ran (or before) and is held with the rest.
+was written while the limited turn ran (or before) and is held with the rest. A new adapter on the
+limited account - a host that died while holding is followed by one on the same account, which any
+command brings up - gets the limited turn as `StartSpec.Held` (§4.3) and holds from the start, so
+what boot hands it waits again. A switch that fails ends this adapter (above), and the host after
+it starts on the account switched to, where nothing is held.
 
 ## 6. Lifecycle
 
@@ -1034,7 +1038,9 @@ attachment(s): …`).
   Continue to the same account saying nothing); each adapter's switch A → B → A in a real host
   (`fakeclaude`, `fakecodex`, `fakeopencode`) keeping its conversation; Codex's and OpenCode's held
   queue after a limit, a message written during the limited turn and handed over after its end held
-  with it, and an "after this turn" switch made while OpenCode holds it; Claude's
+  with it, an "after this turn" switch made while OpenCode holds it, and the hold kept by a new
+  adapter on the limited account (Codex after a switch that failed and after a host's death,
+  OpenCode after a host's death, each brought up by a command that is not a message); Claude's
   foreign-thinking notice; `internal/server` (the routes and that no answer, `host.json`, journal,
   log or outbox holds a key, a switch while running and while parked, an "after this turn" switch
   surviving a killed host, a limit stopping the chat or switching it and pushed once, Codex's device
