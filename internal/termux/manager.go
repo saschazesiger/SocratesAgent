@@ -97,8 +97,14 @@ type Manager struct {
 	confFallback bool
 	pollFails    int
 	missed       map[string]int
-	hookLn       net.Listener
-	closed       bool
+	// creating is every session whose Create is between writing its row and
+	// recording the launch. The row says "starting" for all of it, with no
+	// tmux session behind it yet - and for the first session of a data
+	// directory no tmux server either - which is what a lost session looks
+	// like to the poll; see Poll.
+	creating map[string]bool
+	hookLn   net.Listener
+	closed   bool
 
 	// locks serialises everything that relaunches one session.
 	locks map[string]*sync.Mutex
@@ -140,10 +146,11 @@ func New(st *store.Store, cfg Config) (*Manager, error) {
 	}
 	m := &Manager{
 		st: st, cfg: cfg,
-		live:   map[string]*liveSession{},
-		missed: map[string]int{},
-		locks:  map[string]*sync.Mutex{},
-		plans:  map[string]harnesses.LaunchPlan{},
+		live:     map[string]*liveSession{},
+		missed:   map[string]int{},
+		creating: map[string]bool{},
+		locks:    map[string]*sync.Mutex{},
+		plans:    map[string]harnesses.LaunchPlan{},
 	}
 	m.act = newActivity(m)
 
@@ -346,6 +353,19 @@ func (m *Manager) Create(ctx context.Context, spec Spec) (*store.Session, error)
 	if spec.Rows <= 0 {
 		spec.Rows = store.DefaultRows
 	}
+
+	// From the row to the launch recorded, this create is the poll's to
+	// leave alone. It is let go only after markLaunched, so a poll that read
+	// the row as starting before that finds it running when it writes, and
+	// its conditional write changes nothing.
+	m.mu.Lock()
+	m.creating[spec.ID] = true
+	m.mu.Unlock()
+	defer func() {
+		m.mu.Lock()
+		delete(m.creating, spec.ID)
+		m.mu.Unlock()
+	}()
 
 	row := &store.Session{
 		ID:              spec.ID,

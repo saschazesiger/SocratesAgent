@@ -252,6 +252,13 @@ func (m *Manager) Poll(ctx context.Context) {
 	if err != nil {
 		return
 	}
+	// A session being created is not news yet: its row is written before
+	// tmux is asked for anything, so until the create is done tmux has no
+	// session by its name - and for the first one of a data directory no
+	// server and no socket at all. Taken for lost, it was moved to
+	// needs_resume under a launch that went on to make a live pane, and every
+	// open of it then asked for a relaunch that the live pane refused.
+	rows = m.withoutCreates(rows)
 	if _, err := os.Stat(m.tmux.Sock); err != nil {
 		// No socket is evidence enough on its own: the server is not merely
 		// busy, it is not there.
@@ -272,6 +279,25 @@ func (m *Manager) Poll(ctx context.Context) {
 	if m.applyPanes(rows, panes) {
 		m.collectExits(ctx)
 	}
+}
+
+// withoutCreates leaves out the rows whose Create is still running. It is
+// asked after the rows were read, so a create that ends in between is either
+// left out or already recorded as launched, and the poll's conditional writes
+// cannot move it.
+func (m *Manager) withoutCreates(rows []store.Session) []store.Session {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if len(m.creating) == 0 {
+		return rows
+	}
+	kept := rows[:0:0]
+	for _, row := range rows {
+		if !m.creating[row.ID] {
+			kept = append(kept, row)
+		}
+	}
+	return kept
 }
 
 // notePollFailure records one failed poll and reports whether that is now

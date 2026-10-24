@@ -386,6 +386,54 @@ func TestEmptyServerIsNotAReboot(t *testing.T) {
 	}
 }
 
+// TestPollLeavesACreateInFlightAlone: the poll runs on its own clock, and a
+// create writes its row first and only then runs tmux. A poll that lands in
+// between - before the first session of a data directory has started the tmux
+// server, when there is no socket at all, or twice before new-session has made
+// the pane - must not call the new row lost. needs_resume over a pane that is
+// about to be alive is a session nobody can open: every open asks for a
+// relaunch, the relaunch is refused because the pane is running, and the page
+// says "Resuming after a restart…" for ever.
+func TestPollLeavesACreateInFlightAlone(t *testing.T) {
+	l := newLab(t)
+	ctx := context.Background()
+	for i := 0; i < 3; i++ {
+		stop := make(chan struct{})
+		polled := make(chan int)
+		go func() {
+			n := 0
+			for {
+				select {
+				case <-stop:
+					polled <- n
+					return
+				default:
+				}
+				l.Poll(ctx)
+				n++
+			}
+		}()
+		row, err := l.Create(ctx, shellSpec(t.TempDir()))
+		close(stop)
+		n := <-polled
+		if err != nil {
+			t.Fatalf("create %d: %v", i, err)
+		}
+		if row.State != store.StateRunning {
+			t.Fatalf("create %d (with %d polls beside it) answered a session in %q, want running", i, n, row.State)
+		}
+		l.Poll(ctx)
+		l.Poll(ctx)
+		if got, _ := l.store.GetSession(row.ID); got.State != store.StateRunning {
+			t.Fatalf("create %d: the polls after it left the session in %q, want running", i, got.State)
+		}
+		ready, err := l.Ensure(ctx, row.ID)
+		if err != nil || ready.State != store.StateRunning {
+			t.Fatalf("create %d: the new session could not be opened: %v (%+v)", i, err, ready)
+		}
+	}
+}
+
 // TestPollSurvivesATransientFailure drives the whole poll through a tmux that
 // fails once, rather than the counter underneath it: one bad answer must not
 // flip every session to needs_resume.
