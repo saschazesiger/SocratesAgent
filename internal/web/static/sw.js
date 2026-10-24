@@ -96,6 +96,7 @@ const SHELL = [
   '/static/js/composer.js',
   '/static/js/askdialog.js',
   '/static/js/accounts.js',
+  '/static/js/accountpicker.js',
   '/static/js/md.js',
   '/static/vendor/markdown/marked.esm.js',
   '/static/vendor/markdown/purify.es.js',

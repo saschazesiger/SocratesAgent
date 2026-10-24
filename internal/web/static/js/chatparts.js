@@ -670,8 +670,14 @@ export function lineHtml(entry, view) {
         refused ? html`<span class="ds-status ds-status--error" data-chip="failed">${raw(icon('alertCircle', 16))}<span>Not run</span></span>${infoButton([refused.error], 'Why it did not run')}<button class="ds-btn ds-btn--text ds-btn--sm" type="button" data-action="outbox-drop" data-id="${refused.id}">Dismiss</button>` : ''
       }</div>`;
     }
-    case 'account':
-      return html`<div class="so-line" data-ds-key="${key}" data-kind="account">${raw(icon('user', 16))}<span class="so-line__text">${'Switched from ' + (l.from || 'one account') + ' to ' + (l.to || 'another')}</span>${infoButton([l.reason], 'Why the account changed')}</div>`;
+    case 'account': {
+      // The journal names accounts by id; the line says what they are
+      // called now.
+      const from = view.accountLabel ? view.accountLabel(l.from) : '';
+      const to = view.accountLabel ? view.accountLabel(l.to) : '';
+      const words = from ? 'Switched from ' + from + ' to ' + (to || 'another account') : 'Now on ' + (to || 'another account');
+      return html`<div class="so-line" data-ds-key="${key}" data-kind="account" data-from="${l.from}" data-to="${l.to}">${raw(icon('user', 16))}<span class="so-line__text">${words}</span>${infoButton([l.reason], 'Why the account changed')}</div>`;
+    }
     case 'model':
       return html`<div class="so-line" data-ds-key="${key}" data-kind="model">${raw(icon('cpu', 16))}<span class="so-line__text">${'Model: ' + view.modelLabel(l.model) + (l.effort ? ' · ' + view.effortLabel(l.effort) : '')}</span></div>`;
     case 'error':
@@ -679,7 +685,12 @@ export function lineHtml(entry, view) {
     case 'turn': {
       if (l.outcome === 'limited') {
         const renew = view.renewal();
-        return html`<div class="ds-alert ds-alert--warning so-line-alert" data-ds-key="${key}" data-kind="limit" role="status">${raw(icon('clock', 20))}<span class="ds-alert__text">${'Limit reached' + (renew ? ' — renews in ' + renew : '')}</span>${infoButton([l.text], 'About the limit')}</div>`;
+        // Under the newest limit, the accounts the chat could go on with:
+        // one tap switches and has the turn carried on there.
+        const offers = view.continueWith ? view.continueWith(entry) : [];
+        return html`<div class="ds-alert ds-alert--warning so-line-alert" data-ds-key="${key}" data-kind="limit" role="status">${raw(icon('clock', 20))}<span class="ds-alert__text">${'Limit reached' + (renew ? ' — renews in ' + renew : '')}${
+          offers.length ? html`<span class="so-line-alert__actions">${offers.map((a) => html`<button class="ds-btn ds-btn--sm" type="button" data-action="continue-with" data-account="${a.id}">${'Continue with ' + a.label}</button>`)}</span>` : ''
+        }</span>${infoButton([l.text], 'About the limit')}</div>`;
       }
       if (l.outcome === 'failed') {
         return html`<div class="ds-alert ds-alert--error so-line-alert" data-ds-key="${key}" data-kind="failed" role="alert">${raw(icon('alertCircle', 20))}<span class="ds-alert__text">${'The turn failed.' + (l.text ? ' ' + l.text : '')}</span></div>`;

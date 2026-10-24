@@ -23,6 +23,8 @@ import { api, alertDialog, promptDialog, toast, errorMessage, fmtTokens, CONNECT
 import { html, morph, raw, icon } from './ui.js';
 import { agentMarkHtml } from './logos.js';
 import * as harnesses from './harnesses.js';
+import * as accounts from './accounts.js';
+import './accountpicker.js';
 import { newChat, apply, applyLive, busy, currentTodo, seenClient } from './chatfold.js';
 import { ChatStream } from './chatstream.js';
 import {
@@ -121,7 +123,41 @@ export function mountChat(ctx) {
       for (const limit of Object.values(chat.rateLimits)) if (limit.used >= 1 && limit.resetsAt > latest) latest = limit.resetsAt;
       return latest ? renewsIn(latest) : '';
     },
+    // An id the list does not have (an account deleted since) is said as
+    // the journal has it.
+    accountLabel: (id) => (id ? accounts.labelOf(id) || id : ''),
+    // continueWith is the accounts a limit card offers to go on with: only
+    // under the newest limit nothing has happened after, while no turn
+    // runs; the agent's signed-in accounts not at a limit themselves, the
+    // one with the most left first.
+    continueWith(entry) {
+      if (!session || chat.turn || !lastLimit(entry)) return [];
+      const best = accounts.recommended(session.harness);
+      return accounts.forAgent(session.harness)
+        .filter((a) => a.id !== chat.account && accounts.usable(a) && !accounts.renewal(a))
+        .sort((a, b) => (b.id === best) - (a.id === best))
+        .slice(0, 3);
+    },
   };
+
+  // lastLimit says whether a limit card is the newest word of the chat:
+  // no message, account change or other turn came after it.
+  function lastLimit(entry) {
+    for (let i = chat.timeline.length - 1; i >= 0; i -= 1) {
+      const one = chat.timeline[i];
+      if (one.key === entry.key) return true;
+      if (one.type !== 'line' || one.line.kind === 'account' || one.line.kind === 'turn') return false;
+    }
+    return false;
+  }
+
+  // The accounts are read once a chat is shown and whenever they change, and
+  // what names them (the switch lines, the limit card) is drawn again then.
+  let accountsRev = 0;
+  accounts.onChange(() => {
+    accountsRev += 1;
+    if (session) schedule();
+  });
 
   /* ------------------------------------------------------------- render */
 
@@ -182,6 +218,8 @@ export function mountChat(ctx) {
       rev = entry.rev;
       // A command line says when the agent refused what this browser sent.
       if (entry.line && entry.line.kind === 'command') rev += ':' + outboxRev;
+      // A switch line says the accounts' names, which may come later.
+      if (entry.line && entry.line.kind === 'account') rev += ':' + accountsRev;
       make = () => lineHtml(entry, view);
     }
     const hit = renders.get(entry.key);
@@ -361,6 +399,12 @@ export function mountChat(ctx) {
       case 'ev':
         if (apply(chat, f)) schedule();
         if (f.type === 'ask' || f.type === 'ask.answered' || f.type === 'ask.delivered' || f.type === 'ask.closed') tellAsk(f.ask_id);
+        // A switch, or a limit, changes what the accounts' list says: the
+        // account now in use (perhaps one made since the list was read),
+        // and which ones have room left. A replay of old events does not.
+        if (synced && (f.type === 'account.switched' || (f.type === 'turn.ended' && f.outcome === 'limited'))) {
+          accounts.load().catch(() => {});
+        }
         break;
       case 'delta':
         if (applyLive(chat, f)) schedule();
@@ -468,6 +512,9 @@ export function mountChat(ctx) {
       case 'point-folder':
         pointFolder(target);
         break;
+      case 'continue-with':
+        continueWith(target);
+        break;
       case 'jump':
         stuck = true;
         scroller.scrollTo({ top: scroller.scrollHeight, behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' });
@@ -506,6 +553,19 @@ export function mountChat(ctx) {
   });
   window.addEventListener('online', () => schedule());
   window.addEventListener('offline', () => schedule());
+
+  // continueWith moves the chat to the account a limit card's button names
+  // and has the stopped turn carried on there.
+  async function continueWith(button) {
+    const current = session;
+    button.disabled = true;
+    try {
+      await accounts.switchChat(current.id, button.dataset.account, { goOn: true });
+    } catch (err) {
+      toast(errorMessage(err), 'error');
+      button.disabled = false;
+    }
+  }
 
   // pointFolder asks where the chat's code is on this machine and points the
   // chat there; the agent works in it from the next message on.
@@ -571,6 +631,9 @@ export function mountChat(ctx) {
       });
       stream = new ChatStream({ chatId: next.id, since: () => chat.lastSeq, onFrame, onStatus });
       stream.start();
+      // Their usage moves, so the accounts are read again for every chat
+      // opened; the copy this browser kept is drawn meanwhile.
+      accounts.load().catch(() => {});
       render();
     },
 

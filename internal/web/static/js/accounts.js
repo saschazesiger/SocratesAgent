@@ -124,6 +124,37 @@ export function usageWords(account) {
 /** meters is an account's windows as the sheet's flat bars. */
 export function meters(account) { return harnesses.limitMeters(account.limits || []); }
 
+/** who is the quiet line beside an account's name: its e-mail, or its kind. */
+export function who(account) { return account.email || KIND_WORDS[account.kind] || account.kind; }
+
+/**
+ * entry is an account as a list to choose from shows it - the sheet's
+ * dropdown and a chat's account menu: its name, who it is, why it cannot be
+ * used or when its limit renews, the "most left" tag when it is the one to
+ * take, and its usage meters, so the choice is made with the numbers in view.
+ */
+export function entry(account, { recommended: best = false, current = false } = {}) {
+  const meta = [html`<span>${who(account)}</span>`];
+  if (!usable(account)) {
+    meta.push(html`<span data-tag="signin">${account.state === 'error' ? 'sign-in failed' : 'not signed in'}</span>`);
+  }
+  const renew = renewal(account);
+  if (renew) meta.push(html`<span data-tag="limited">${'at its limit, ' + renew}</span>`);
+  if (current) meta.push(html`<span data-tag="current">this chat’s</span>`);
+  if (best) meta.push(html`<span data-tag="recommended">most left</span>`);
+  return html`<span class="ds-combo__name">${account.label}</span><span class="ds-combo__meta">${meta.map((part, i) => (i ? html` · ${part}` : part))}</span>${meters(account)}`;
+}
+
+/**
+ * best is the account a new chat of an agent should start on: the one
+ * recommended, else the first that is signed in, else the first.
+ */
+export function best(agent) {
+  const list = forAgent(agent);
+  return list.find((a) => a.id === recommended(agent))
+    || list.find((a) => usable(a) && !renewal(a)) || list.find(usable) || list[0] || null;
+}
+
 /**
  * facts is what an account's "i" says: who it is, what kind, where it came
  * from. Technical detail stays behind the "i" (DESIGN §E.10).

@@ -35,6 +35,9 @@ export function newChat() {
     model: '',
     effort: '',
     account: '',
+    // A switch of account asked for that has not happened yet: { to,
+    // clientId }, until the account.switched it ends in (or its failure).
+    pendingSwitch: null,
     process: '',
     processDetail: '',
     conversation: '',
@@ -215,7 +218,10 @@ export function apply(chat, ev) {
   const before = chat.rev;
   switch (ev.type) {
     case 'turn.started':
-      chat.turn = { id: ev.turn_id || '', messageId: ev.message_id || '', startedAt: ev.at };
+      // The account a turn ran on is the one its start names (AGENT-HOST.md
+      // §2); a journal from before accounts names none.
+      if (ev.account) chat.account = ev.account;
+      chat.turn = { id: ev.turn_id || '', messageId: ev.message_id || '', startedAt: ev.at, account: ev.account || chat.account };
       chat.rev += 1;
       break;
     case 'turn.ended':
@@ -297,6 +303,7 @@ export function apply(chat, ev) {
     }
     case 'account.switched':
       chat.account = ev.to || '';
+      chat.pendingSwitch = null;
       line(chat, ev, { kind: 'account', from: ev.from || '', to: ev.to || '', reason: ev.reason || '' });
       break;
     case 'model.changed':
@@ -339,9 +346,15 @@ export function apply(chat, ev) {
       // commands (interrupt, model, park) say what they did by their effects.
       if (ev.op === 'command') {
         line(chat, ev, { kind: 'command', text: '/' + (ev.text || '') + (ev.args ? ' ' + ev.args : ''), clientId: ev.client_id || '' });
+      } else if (ev.op === 'switch_account') {
+        // The switch itself is the account.switched that follows; until
+        // then the composer says one is on its way.
+        chat.pendingSwitch = { to: ev.to || '', clientId: ev.client_id || '' };
+        chat.rev += 1;
       }
       break;
     case 'error':
+      if (ev.code === 'switch_failed') chat.pendingSwitch = null;
       line(chat, ev, { kind: 'error', code: ev.code || '', text: ev.text || '' });
       break;
     default:
