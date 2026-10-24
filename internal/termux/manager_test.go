@@ -537,6 +537,32 @@ func TestSignalKilledPaneIsReported(t *testing.T) {
 	}
 }
 
+// TestExitStatusReadsASignalByNumberAndByName: tmux renders
+// #{pane_dead_signal} through sig2name, which is the signal's number on Linux
+// and its sys_signame name ("kill") on macOS and the BSDs. Both are the same
+// death.
+func TestExitStatusReadsASignalByNumberAndByName(t *testing.T) {
+	cases := []struct {
+		status, signal string
+		want           int
+	}{
+		{"0", "", 0},
+		{"3", "", 3},
+		{"", "9", 128 + 9},
+		{"", "kill", 128 + 9},
+		{"", "KILL", 128 + 9},
+		{"", "SIGKILL", 128 + 9},
+		{"", "int", 128 + 2},
+		{"", "", -1},
+		{"", "no-such-signal", -1},
+	}
+	for _, c := range cases {
+		if got := exitStatus(c.status, c.signal); got != c.want {
+			t.Errorf("exitStatus(%q, %q) = %d, want %d", c.status, c.signal, got, c.want)
+		}
+	}
+}
+
 // TestAttachToMissingSessionFailsAtOnce: tmux answers "can't find session"
 // immediately, and retrying that for five seconds would make every attach to a
 // session that has just died cost five seconds.

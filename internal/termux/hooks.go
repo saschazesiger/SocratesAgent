@@ -242,13 +242,17 @@ func (m *Manager) sessionClosed(id string) {
 }
 
 // exitStatus turns what tmux reported into one number. A pane killed by a
-// signal has no status at all and a signal number instead, which is rendered
-// the way a shell renders it.
+// signal has no status at all and a signal instead, which is rendered the way
+// a shell renders it. tmux names the signal by number on Linux and by name
+// ("kill") on macOS and the BSDs; see signalByName.
 func exitStatus(status, signal string) int {
 	if n, err := strconv.Atoi(strings.TrimSpace(status)); err == nil {
 		return n
 	}
 	if n, err := strconv.Atoi(strings.TrimSpace(signal)); err == nil && n > 0 {
+		return 128 + n
+	}
+	if n := signalByName(signal); n > 0 {
 		return 128 + n
 	}
 	return -1
