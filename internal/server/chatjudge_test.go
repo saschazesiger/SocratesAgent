@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/saschazesiger/SocratesAgent/internal/termux"
 )
 
 // waitOutcome waits for a session's verdict to be in a phase.
@@ -108,5 +110,44 @@ func TestAChatsJudgeThatFailsLetsThePushGo(t *testing.T) {
 	}
 	if push := pushOfKind(t, sent, pushFinished, 10*time.Second); !strings.HasPrefix(push.Body, "Finished") {
 		t.Fatalf("push %+v", push)
+	}
+}
+
+// A turn the person stopped is no news, and no verdict either: nothing is
+// put on pending, the judge is not called, nothing is pushed.
+func TestAChatsStoppedTurnIsNotJudged(t *testing.T) {
+	c := newChatEnv(t, time.Hour)
+	gw := c.withGateway(t)
+	c.configureOpenRouter(t, map[string]any{"outcomes": true})
+	gw.always(`{"outcome":{"kind":"partial","reason":"It was stopped."}}`)
+	sent := catch(c.srv.push)
+	if err := c.srv.push.add(pushSub{Subscription: testSubscription("https://push.example.net/a")}); err != nil {
+		t.Fatal(err)
+	}
+	code, body := c.post(t, "/api/chats", map[string]any{"client_id": "stopped", "harness": "fake",
+		"workdir_mode": "custom", "workdir": c.data, "title": "Stopped"})
+	if code != http.StatusCreated {
+		t.Fatalf("create: %d %v", code, body)
+	}
+	id := body["session"].(map[string]any)["id"].(string)
+	c.send(t, id, "m1", "/sleep 20")
+	c.waitActivity(t, id, termux.StateBusy)
+	if code, body := c.post(t, "/api/chats/"+id+"/interrupt", map[string]any{"client_id": "stop"}); code != http.StatusOK {
+		t.Fatalf("interrupt: %d %v", code, body)
+	}
+	c.waitJournal(t, id, 10*time.Second, "the stopped turn", turnsEnded(1))
+	c.waitActivity(t, id, termux.StateIdle)
+	select {
+	case s := <-sent:
+		t.Fatalf("a turn the person stopped was pushed: %+v", s.note)
+	case <-time.After(700 * time.Millisecond):
+	}
+	if o, ok := c.srv.digests.outcomeOf(id); ok {
+		t.Fatalf("a turn the person stopped has a verdict: %+v", o)
+	}
+	for _, call := range gw.seen() {
+		if strings.HasPrefix(call.Messages[0].Content, chatJudgeMarker) {
+			t.Fatalf("the judge was asked about a stopped turn: %s", call.last())
+		}
 	}
 }

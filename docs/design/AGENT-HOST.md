@@ -206,7 +206,8 @@ asks a model to read a screen; it is the projection.
   journal (`chatNow`): the last turn - message, answer, calls and how they went, task list - what
   runs now, the question it waits on with its choices, and its background tasks.
 - **Outcome judge** (`chatjudge.go`): with outcomes on, a chat's turn end puts the outcome on
-  pending exactly as a terminal's does, and `judgeChat` asks the home model in a call of its own
+  pending exactly as a terminal's does - except a turn that is no news (stopped by the person),
+  which gets no verdict - and `judgeChat` asks the home model in a call of its own
   (its system prompt opens with `You judge the turn a coding agent has just ended`) with the turn as
   `chatTurnPrompt` writes it; Read again judges it again.
 - **Costs** (`chatcosts.go`): the journal is the one source of a chat's cost - Claude's `cost_usd`,

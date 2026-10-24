@@ -208,6 +208,14 @@ func (d *digester) outcomeEdge(id string, a termux.Activity) {
 		row, err := d.srv.store.GetSession(id)
 		chat = err == nil && row.IsChat() && row.State == store.StateRunning
 		starts = err == nil && (digestible(row) || chat)
+		// A chat's turn that is no news - one the person stopped
+		// themselves - gets no verdict either: they know how it ended,
+		// and the verdict would be a notification its push never sends.
+		if starts && chat && d.srv.chats != nil {
+			if _, news := d.srv.chats.turnWords(id); !news {
+				starts = false
+			}
+		}
 	}
 
 	d.mu.Lock()

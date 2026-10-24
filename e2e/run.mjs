@@ -14044,6 +14044,20 @@ async function chatoutcome() {
     }, before, { timeout: 15000 }).then((h) => h.jsonValue(), () => '');
     ok(/^Partly done · 1 open: Write the tests/.test(note), 'the notification waited for the verdict and says it', note);
     await shot(page, 'chat-outcome');
+
+    // A turn the person stopped is no news: it is not judged, and nothing
+    // waits for a verdict to say it.
+    const judgedBefore = judged.length;
+    const notesBefore = await page.evaluate(() => (window.__notes || []).length);
+    await tellChat(s, id, '/sleep 20');
+    await awaitChat(s, id, (b) => b.chat.turn_running, 10000);
+    await s.context.request.post(s.url + '/api/chats/' + id + '/interrupt', { data: { client_id: 'e2e-stop' } });
+    await awaitChat(s, id, idle, 15000);
+    await wait(2500);
+    const notesAfter = await page.evaluate(() => (window.__notes || []).length);
+    ok(judged.length === judgedBefore && notesAfter === notesBefore,
+      'a turn the person stopped is not judged and is no notification',
+      JSON.stringify({ judged: judged.length - judgedBefore, notes: notesAfter - notesBefore }));
     ok(unexpected(s.errors).length === 0, 'no console errors', unexpected(s.errors).join(' | ') || '0');
   } finally {
     await s.stop();

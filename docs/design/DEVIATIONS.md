@@ -2431,8 +2431,9 @@ chat says now) is new; a terminal's digest has none.
 **WP9 / §5.4 — a turn the person stopped is not pushed.** A terminal's turn that ends after Esc is
 "Finished" like any other. A chat knows that somebody pressed Stop (an interrupt or stop command
 journaled during the turn, `Turn.Stopped`), and that person has seen it end; neither the push nor
-the page's own notification says so. A turn interrupted by anything else (a host that died) is
-pushed as "Stopped · …".
+the page's own notification says so, and with outcomes on it is not judged (a verdict would be a
+model call for a notification nobody sends). A turn interrupted by anything else (a host that died)
+is pushed as "Stopped · …".
 
 **WP9 — answering a chat's question and Stop mark it read.** Typing an answer into a terminal
 cleared its unread mark; a chat's answer went through a route that did not, so the mark set when
