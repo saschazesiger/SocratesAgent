@@ -219,11 +219,17 @@ version understand each other. A connection asks for no events with `since` = `N
 | `stop` | `client_id`? | stops the CLI now, records an interrupted turn, exits |
 | `ask` (version 2) | `payload` (an `ask_user` payload) | a local tool's question (`socrates mcp-ask`, §5.3): journals `ask{turn_id: the running turn}` and acks with its `ask_id`; the answer comes back on this connection as an `answer` frame (§4.4). Refused (`bad_request`) on a connection that said hello with protocol 1, without a payload, or while no turn runs (the CLI calls tools only inside a turn, so such a question comes from a call already withdrawn), `not_running` without an agent |
 
-| `switch_account` | `client_id`, `account`, `env`, `secret_env`, `reason`?, `when` (`now`\|`after_turn`), `continue`? | WP7, §11: journals `command{to, reason}` and acks; `after_turn` while a turn runs (or a message waits) keeps it until the turn ends (a newer switch replaces it); otherwise interrupts a running turn and waits for its end (30 s), then moves the agent to the account and journals `account.switched` |
+| `switch_account` | `client_id`, `account`, `env` (required), `secret_env`, `reason`?, `when` (`now`\|`after_turn`), `continue`? | WP7, §11: journals `command{to, reason}`; `after_turn` while a turn runs (or a message waits that a limit does not hold) keeps it until the turn ends and acks it `pending` at once, then once more without `pending` when it is made or a newer switch replaces it; otherwise interrupts a running turn and waits for its end (30 s), moves the agent to the account, journals `account.switched` and acks. Without `env`: `bad_request` |
 
 **switch_account.** The account's whole environment comes with the command: `env` without any
 key, and the key variables in `secret_env`, sealed for this chat (§11), which the host opens with
-the data folder's key and joins only in memory. The move is `AccountSwitcher.SwitchAccount` where
+the data folder's key and joins only in memory. A command without `env` is refused: the
+environment the host runs on holds the current account's key. A switch kept for after the turn is
+acked `{"pending": true}`; the server answers the request but keeps the command in its outbox, so
+a host that dies before the turn ends is followed by one launched on that account (§11, the
+newest `switch_account` in the outbox goes into `host.json`), and the repeat the server sends on
+every connect is acked `dup` and `pending` while the host still holds it. Messages a limit holds
+(§5.2, §5.3) do not count as a turn to wait for. The move is `AccountSwitcher.SwitchAccount` where
 the adapter has one (OpenCode, §5.3), else `Park` and `Start` of a new adapter with the
 environment and the same `ResumeID` (`agent.ErrConversationNotFound` → a fresh conversation with
 `notice{conversation_lost}`). The divider is journaled before the new agent starts, so the events
@@ -231,8 +237,10 @@ of the next turn come after it; a start that fails journals `error{switch_failed
 and restarts the old account. Messages the agent had not taken up are handed to the new one. With
 `continue`, the new account is then sent `agenthost.ContinueText` ("Continue where you left off.")
 as a user message with `client_id` `<the switch's client_id>:continue`: what "Continue with" and the
-automatic switch at a limit send. A switch to the account the chat is on journals nothing (but
-still continues). A host that boots with a spec whose `account` differs from the journal's last
+automatic switch at a limit send. A switch to the account the chat is on journals nothing, and
+continues only when the last turn ended `limited` or `interrupted` and the agent has taken nothing
+up since: a second "Continue with", one from another device or an automatic switch on top of one
+by hand does not make the agent continue twice. A host that boots with a spec whose `account` differs from the journal's last
 (the switch was asked for while no host ran) journals `account.switched{reason: switch_reason}` first.
 
 Commands are processed one at a time per host, in arrival order. **Idempotency:** a `client_id`
@@ -457,7 +465,9 @@ stdin (the app-server exits at once; the thread is on disk); Stop kills the proc
 `queued`; codex takes it up at its next step (0.164 cuts a streaming answer short for it) and the
 `userMessage` item carrying that id → `delivered`. A turn that cannot be steered (compaction,
 review: `activeTurnNotSteerable`) or a `!` line during a turn → held (`queued`) and sent when the turn
-ends; so is a steered message a turn ended without taking up. A message whose text is one line
+ends; so is a steered message a turn ended without taking up — except after a `limited` turn, when
+the adapter **holds** its queue (as OpenCode's, §5.3) until the next `Send` lets it go (the person
+asked for it); a switch starts another adapter, which the host hands what was never taken up. A message whose text is one line
 starting with `!` runs `thread/shellCommand` as a turn of its own.
 
 **Turns.** A journal turn is a root turn of the chat's thread (ids are the adapter's own, `t_…`, so
@@ -892,14 +902,22 @@ attachment(s): …`).
   variables; Codex's device code and key against `fakecodex`; the migration rehearsed on a
   synthetic HOME and a schema-9 store: folders renamed with their inodes, links back, writes
   through a link landing in the one file, no second copy of any login, the tar, run twice, and
-  cut short after each of its steps and run again to the same result); `internal/agenthost`
+  cut short after each of its steps - between a move and its link, and inside a swap - and run again
+  to the same result; a new data folder and a temporary one leave HOME alone; the multi-account
+  folders stay; one folder that cannot move holds up nothing; the old path is never missing while
+  it moves); `internal/agenthost`
   through real hosts with the fake (A → B → A with the keys in no file, a switch during a turn
-  interrupting it and continuing in order, after the turn, the divider at boot, a key sealed for
-  another chat refused); each adapter's switch A → B → A in a real host (`fakeclaude`, `fakecodex`,
-  `fakeopencode`) keeping its conversation; OpenCode's held queue after a limit; `internal/server`
-  (the routes and that no answer, `host.json`, journal, log or outbox holds a key, a switch while
-  running and while parked, a limit stopping the chat or switching it, Codex's device code);
-  `e2e/run.mjs` `accounts` and `chat-account` in the browser.
+  interrupting it and continuing in order, after the turn acked pending then final, the divider at
+  boot, a key sealed for another chat refused, a switch without an environment refused, a second
+  Continue to the same account saying nothing); each adapter's switch A → B → A in a real host
+  (`fakeclaude`, `fakecodex`, `fakeopencode`) keeping its conversation; Codex's and OpenCode's held
+  queue after a limit, and an "after this turn" switch made while OpenCode holds it; Claude's
+  foreign-thinking notice; `internal/server` (the routes and that no answer, `host.json`, journal,
+  log or outbox holds a key, a switch while running and while parked, an "after this turn" switch
+  surviving a killed host, a limit stopping the chat or switching it and pushed once, Codex's device
+  code, Claude's sign-in in a Shell, OpenCode's provider sign-in, a refused sign-in until the next
+  one); `internal/web` (the foreign-thinking hint folded into the divider); `e2e/run.mjs`
+  `accounts` (touch mode on a phone) and `chat-account` ("Switch now" on a phone) in the browser.
 
 ## 10. Known limits, for the packages that follow
 
@@ -984,7 +1002,9 @@ out `host.json`'s `env` and `secret_env` (`paths.Redacted`), takes `secrets.key`
 
 - Claude Code: a Shell terminal session (dynamic folder) that runs `claude auth login --claudeai`
   with the account's `CLAUDE_CONFIG_DIR`, then stays a shell; the answer is `{session}` and the
-  page goes there. The account is signed in once its folder has the login.
+  page goes there. The account is signed in once its folder has the login. (Detection reads
+  `.credentials.json`; on macOS Claude Code keeps the login in the Keychain, which is not read, so
+  such an account shows as not signed in there.)
 - Codex: a short-lived `codex app-server` with the account's environment:
   `account/login/start {type: chatgptDeviceCode}` → `{verificationUrl, userCode}` shown with a Copy,
   `account/login/completed` ends it; Cancel sends `account/login/cancel`. The identity is
@@ -1002,7 +1022,7 @@ out `host.json`'s `env` and `secret_env` (`paths.Redacted`), takes `secrets.key`
 | `GET /api/accounts` | – | `{accounts: [<account>], recommended: {<agent>: <id>}, agents}`; each with `limits` (5h/7d windows), `chats` (how many run on it), `recommended`, `signin` (a flow under way) |
 | `POST /api/accounts` | `agent`, `kind`, `label`, `key`?, `provider`? | 201 `{account}` |
 | `PATCH /api/accounts/{id}` | `label`?, `key`?, `provider`? | `{account}` |
-| `DELETE /api/accounts/{id}` | – | `{ok}`; 409 while a chat runs on it or for a migrated account |
+| `DELETE /api/accounts/{id}` | – | `{ok}`; 409 while a chat runs on it or for one that holds an agent's own sign-in from HOME (`origin` `~/.claude`, `~/.codex`, `~/.local/share/opencode`); one made of a profile goes, with the link left in the profile's place |
 | `PUT /api/accounts/order` | `order`: every id | `{ok}`; 409 when the list changed |
 | `POST`/`GET`/`DELETE /api/accounts/{id}/signin`, `POST …/signin/code` | above | `{signin: <flow>}` or `{session}` |
 
@@ -1025,15 +1045,47 @@ sheet or the chat's ⋮) is switched by the server to the recommended other acco
 `continue: true`, `client_id` `auto-<turn>`, reason "The limit of <label> was reached."; without
 it, or with no account to go to, the person is told by push ("Limit reached — renews in …") and the
 limit card offers "Continue with <account>" for each account with room (the same switch, sent by
-the browser). OpenCode holds its queue meanwhile (§5.3).
+the browser). Codex and OpenCode hold their queue meanwhile (§5.2, §5.3), so the messages queued
+behind the limit do not each run into it. A chat is pushed once per account it is stopped on,
+until a turn gets through again.
 
-**Migration** (`accounts.Migrate`, at every server start until `<data>/accounts.migrated`): the
-logins of the machine's HOME (`~/.claude` with `~/.claude.json`, `~/.codex`,
-`~/.local/share/opencode`) and of every profile become accounts by **renaming** their folders into
-the account folders (the same inodes: never a copy, never two copies of a login), and the old
-path becomes a link to the new one, so a terminal or a CLI started by hand still finds the same
-login and writes go to the one file. First a tar of the data folder and the moved folders,
-`<data>.pre-rebuild.tar` (0600). Idempotent and safe to interrupt: each account is made once per
-`origin`, and every step looks at the disk before acting. A folder on another file system (EXDEV)
-is left where it is. `~/.codex-multi` and `~/.config/opencode-multi-auth` are left alone.
+**A refused sign-in** (`error{code: auth}`, `agent.ErrorAuth`: OpenCode's `ProviderAuthError` or a
+401, among them a refresh token two chats of one OAuth account renewed at the same moment,
+research/06): the account's state becomes `error` with "Sign in again" (an API key: "Replace it"),
+although its login is still on disk; a switch to it is refused until a sign-in, a new key or a
+turn on it that completes brings it back.
+
+**The divider's "i"** carries the reason, who the new account is (`email`, `plan`, as last
+reported), what Claude set aside (`notice{foreign_thinking}`: resumed on another organization's
+account, Claude Code goes on without the earlier thinking and keeps it for the way back,
+research/08; the chat folds it into the newest divider) and that the next reply may be slower (the
+new account has none of the conversation's cache).
+
+**Migration** (`accounts.Migrate`, at server start while the store marks it due): it runs only on
+a data folder of the build before accounts. The store writes `kv accounts.migration = pending` in
+the same upgrade that brings schema 12 to an older database (before the new version is written),
+and the migration clears it when every source is done; a data folder this build makes has no mark
+and never takes anything from HOME — a new installation, `socrates -data /tmp/x`, an e2e run in
+live mode. Nor is a folder outside the temporary directory moved into a data folder inside it (a
+rehearsal on a copy). The logins of the machine's HOME (`~/.claude` with `~/.claude.json`,
+`~/.codex`, `~/.local/share/opencode` with `~/.config/opencode`) and of every profile become
+accounts by **renaming** their folders into the account folders (the same inodes: never a copy,
+never two copies of a login), and the old path becomes a link to the new one, so a terminal or a
+CLI started by hand still finds the same login and writes go to the one file. The rename and the
+link are **one step** on Linux: a link is made at the new place and exchanged with the folder
+(`renameat2(RENAME_EXCHANGE)`), so the old path is never missing and an agent writing by path
+meanwhile never makes a second folder there; a file system that cannot exchange gets a rename and
+then the link. The shared folders inside (`projects/`, `sessions/`, …) are swapped for their links
+the same way before their content is merged into `<data>/agents/<agent>/` (what both have stays
+aside as `<name>.pre-rebuild`). First a tar of the data folder and the moved folders,
+`<data>.pre-rebuild.tar` (0600): it holds the logins **unencrypted**, and the agents' live SQLite
+files as they were read (a running agent may leave a torn copy; the moved originals are whole) —
+delete it once the accounts work. Idempotent and safe to interrupt: each account is made once per
+`origin`, a source is planned from its account row as well as from the disk (a run cut short
+between a rename and its link is finished), and every step looks at the disk before acting. A
+source that fails is logged and tried again at the next start while the others go on. A folder on
+another file system (EXDEV), or one that is a link of the person's own to elsewhere, is left where
+it is, and its account says why. A lost profile's account has the origin `lost:<profile>:<agent>`.
+`~/.codex-multi` and `~/.config/opencode-multi-auth` are left alone, also when `CODEX_HOME` points
+into one. WP10 runs the clean cut (§8.3, stopping the old agent terminals) before it.
 

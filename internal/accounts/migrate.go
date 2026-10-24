@@ -877,7 +877,7 @@ func (m *migration) backup(sources []source) error {
 	if err := os.Rename(tmp, dest); err != nil {
 		return err
 	}
-	m.opts.Logf("accounts: everything the migration moves is backed up in %s", dest)
+	m.opts.Logf("accounts: everything the migration moves is backed up in %s; it holds the logins unencrypted, so delete it once the accounts work", dest)
 	return nil
 }
 

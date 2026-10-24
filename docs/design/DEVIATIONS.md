@@ -2537,8 +2537,8 @@ again" account for each agent its sessions used, and a Claude Code one when it h
 
 **WP7 — deleting an account removes its folder.** Socrates never writes, refreshes or deletes a
 login, except here: an account is its folder, and the person asked for it to go. The server
-refuses while a chat runs on it, and for an account the migration moved in, which HOME's links
-point at.
+refuses while a chat runs on it, and for an account the migration moved in from HOME, which HOME's
+links point at (one made of a profile goes, with the link left in the profile's place).
 
 **WP7 — a chat that names no account gets one at launch.** A chat made by a client that does not
 send `account` (the API, PreStart's "Automatic", a chat from before WP7) runs on its agent's
@@ -2554,3 +2554,50 @@ as the browser suite does.
 profiles for chats (§4.1). The terminal-only plumbing (`/api/profiles`, the sheet's profile field
 for an agent terminal, `harnesses/profiles.go`) stays until WP10 removes the agent terminals;
 taking it out now would widen this package into theirs.
+
+**WP7 review / §8 — the migration runs only on a data folder of the build before.** "On the first
+start of the new version" read as "on every data folder without a marker", so a new one (a trial
+`-data /tmp/x`, an e2e run in live mode, `node e2e/shots.mjs`) took the machine's real logins into a
+folder that was deleted afterwards. The store now marks a database it brings up to schema 12 from an
+older one (`kv accounts.migration`, written before the new version, so no crash leaves an old
+database upgraded without it); only a marked data folder migrates, and finishing clears the mark,
+which replaces the `accounts.migrated` file. A data folder in the temporary directory never takes a
+folder from outside it, so a rehearsal on a copy of `/var/lib/socrates` there leaves HOME alone.
+
+**WP7 review / §8 step 1 before step 3 — the moves are atomic instead of waiting for the clean
+cut.** §8 lists stopping the old agent terminals (step 3, WP10) after the moves, and the tmux scope
+survives a restart, so the moves run under live agents. Each move is now one step on Linux
+(`renameat2(RENAME_EXCHANGE)` of the folder with a link made at its new place), so an agent writing
+by path never finds the old path missing or makes a second folder - and a second login - there; the
+shared folders are swapped for their links before they are merged, so a recreated `projects/` can no
+longer block the account for good. WP10 should still run the clean cut before `accounts.Migrate`.
+This uses `golang.org/x/sys/unix`, already in the module graph (modernc.org/sqlite needs it); go.mod
+lists it as a direct requirement now.
+
+**WP7 review / §8 — one folder that cannot move holds up nothing else.** A failing source is logged
+and tried again at the next start (the mark stays) while the others move. A link of the person's own
+to somewhere else (dotfiles) is left like a folder on another file system: its account is made and
+says why, and `~/.claude.json` stays beside it. A lost profile's account has the origin
+`lost:<profile>:<agent>` (it moved nothing in), and can be deleted.
+
+**WP7 review / AGENT-HOST §4.3 — a switch after the turn is acknowledged twice.** It lived only in
+the host and was acknowledged at once, which emptied the outbox: a host that died before the turn
+ended lost it while the composer kept announcing it. The ack now says `pending`, the server keeps the
+command until the host's second, final ack (made, or replaced by a newer switch), and a host launched
+meanwhile starts on its account. The field is additive; the protocol version stays 2. A switch
+without `env` is refused rather than run on the environment of the account the chat is on.
+
+**WP7 review / AGENT-HOST §10 — Codex holds its queue after a limit too.** §10 named OpenCode; Codex
+had the same cause (the messages it never took up were started at once, each into the account at its
+limit). Held messages no longer count as a turn an "after this turn" switch waits for.
+
+**WP7 review / research 08 §3 and 06 — the divider's "i" and a refused sign-in.** The divider says
+who the new account is, that the next reply may be slower, and Claude's "can't use thinking from
+another organization" as a hint (`notice{foreign_thinking}`, folded into the divider by the chat)
+instead of a warning line. An `error{auth}` (OpenCode's ProviderAuthError or a 401, among them a
+refresh token two chats renewed at once) marks the account "Sign in again" although its `auth.json`
+is still there, until a sign-in, a new key or a completed turn on it.
+
+**WP7 review — the e-mail stays behind the "i".** The quiet line beside an account's name in the
+sheet, the picker and the Admin list said the e-mail; it says the kind now, and the e-mail and the
+plan are in the account's "i" and the divider's.
