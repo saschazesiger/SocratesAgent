@@ -52,10 +52,12 @@ function facedButton(label, busyLabel, doneLabel, attrs = {}) {
 let settings = null;
 let defaults = null;
 
-// The transcription model is a searchable field rather than a plain text one,
-// so it is not in FIELDS. There is no model catalogue endpoint any more - it
-// went with the chat API - so the combobox is what it is with no items: a text
-// field that takes any id, with the id already in use offered back.
+// The OpenRouter models are ids typed by hand: there is no model catalogue
+// endpoint any more - it went with the chat API. They are plain text fields
+// with a microphone, built here (not in FIELDS) because they are built
+// before the settings arrive; a combobox with nothing to list only cost the
+// id 48px for a "Show all" that showed nothing, and at 360 the Status and
+// Title models were cut to the same "google/gemini-2.5-fla…".
 const MODEL_PICKERS = [
   ['orTranscribe', 'openrouter.transcribe_model'],
   ['orStatus', 'openrouter.status_model'],
@@ -450,23 +452,24 @@ function buildModelPickers() {
   for (const [id, path] of MODEL_PICKERS) {
     const host = $(id);
     if (!host) continue;
-    const picker = combobox({
-      value: getPath(settings, path) || '',
-      items: () => [],
-      placeholder: 'google/gemini-2.5-flash',
-      onChange: (value) => setPath(settings, path, value),
+    const input = el('input', {
+      class: 'ds-input', type: 'text', id: id + 'Input', value: getPath(settings, path) || '',
+      placeholder: 'google/gemini-2.5-flash', spellcheck: 'false', autocomplete: 'off', autocapitalize: 'off',
+      enterkeyhint: 'done',
     });
-    picker.input.id = id + 'Input';
-    pickers[id] = picker;
+    // Read on every change, as the combobox was: dictation fills the field
+    // and says so with an input event.
+    input.addEventListener('input', () => setPath(settings, path, input.value.trim()));
+    pickers[id] = input;
     host.replaceChildren();
-    host.append(dictated(picker.node, picker.input));
+    host.append(dictated(input, input));
   }
 }
 
-// syncModelPickers pushes values back into the dropdowns after a save.
+// syncModelPickers pushes values back into the fields after a save.
 function syncModelPickers() {
   for (const [id, path] of MODEL_PICKERS) {
-    if (pickers[id]) pickers[id].setValue(getPath(settings, path) || '', false);
+    if (pickers[id]) pickers[id].value = getPath(settings, path) || '';
   }
 }
 
