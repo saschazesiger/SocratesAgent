@@ -31,7 +31,9 @@ import { mountAssist } from './assist.js';
 import { mountNotify } from './notify.js';
 import { mountTransfer } from './transfer.js';
 import { mountKeyBar, keyBarWanted, setKeyBarWanted, followViewport } from './keybar.js';
-import { initKeyboard, guard, watchFrame, dictated, touchScreen, setTouchMode } from './keyboard.js';
+import {
+  initKeyboard, guard, watchFrame, dictated, touchScreen, setTouchMode, showKeyboardSwitch,
+} from './keyboard.js';
 import { mountPrestart, forgetDraft, whenShort } from './prestart.js';
 import { mountEvents } from './events.js';
 import { mountHome, questionQueue, connectionLine } from './home.js';
@@ -2585,6 +2587,7 @@ let ideGeneration = 0;
 function detach() {
   ideGeneration += 1;
   dom.stage.removeAttribute('data-ide');
+  showKeyboardSwitch(false);
   if (state.assist) state.assist.attached();
   if (state.keybar) { state.keybar.dispose(); state.keybar = null; }
   dom.keybar.hidden = true;
@@ -2644,8 +2647,10 @@ function attach(session) {
   // A session that was just opened is still settling: see notify.hush.
   if (notifier) notifier.hush(session.id);
   if (session.harness === 'vscode') {
-    // The stage holds an editor: no lines over it, no inset around it.
+    // The stage holds an editor: no lines over it, no inset around it. Its
+    // fields wait for the keyboard switch, as the terminal's does.
     dom.stage.setAttribute('data-ide', '');
+    showKeyboardSwitch(true);
     openIDE(session, ideGeneration);
     return;
   }
@@ -2703,6 +2708,7 @@ function attach(session) {
   // it is focused below in this same tick - before the keyboard switch would
   // otherwise have seen it.
   guard(state.term.term.textarea);
+  showKeyboardSwitch(true);
   // The two controls in the header. A recording that belonged to the session
   // before this one is cancelled here, so its words can never be typed into
   // the terminal that has just taken the screen.
@@ -3215,7 +3221,7 @@ async function prepareSession(pick) {
     location.hash = '#' + data.session.id;
     attach(data.session);
     // The prompt is the next thing to do, so the cursor is put there. On a
-    // touch screen the field stays muted until the keyboard is asked for.
+    // touch screen it raises no keyboard until a finger lands on it.
     const field = state.prestart && state.prestart.field();
     if (field) field.focus({ preventScroll: true });
   } catch (err) {
@@ -3486,15 +3492,10 @@ function wire() {
     if (dom.titleRegen.getAttribute('aria-busy') !== 'true') retitleSession(state.current);
   });
   dom.sessionOutcome.addEventListener('click', () => showOutcome());
-  // The on-screen keyboard, which on a touch screen this button raises and
-  // puts away and nothing else does. With no field focused, it is raised for
-  // the pane.
-  // A prepared session has no pane; its prompt is the field there is.
-  initKeyboard(dom.kbBtn, () => {
-    if (state.term) return state.term.term.textarea;
-    if (chatShown()) return state.chat.field();
-    return state.prestart ? state.prestart.field() : null;
-  });
+  // The terminal's on-screen keyboard, which on a touch screen this button
+  // raises and puts away and nothing else does. Every other field - a chat's
+  // composer, a prepared session's prompt, a dialog's - raises it by a tap.
+  initKeyboard(dom.kbBtn, () => (state.term ? state.term.term.textarea : null));
   dom.logout.addEventListener('click', async () => {
     if (notifier) await notifier.signOut();
     try { await api('/api/logout', { method: 'POST' }); } catch { /* going anyway */ }

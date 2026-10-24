@@ -6053,49 +6053,54 @@ async function touchcopy() {
 /* --------------------------------------------------------- 47. keyboard */
 
 // keyboardable is the whole promise, measured: what may raise the on-screen
-// keyboard, what may not, and the one button that does. `inputmode="none"` is
-// the request a browser is asked to honour and `readonly` is the fact it
-// cannot argue with; both are checked, because the promise is "never", and a
-// promise that holds on some phones is not one.
+// keyboard, what may not, and the one button that does it for the terminal.
+// `inputmode="none"` is the request a browser is asked to honour and
+// `readonly` is the fact it cannot argue with; both are checked, because the
+// promise is "never", and a promise that holds on some phones is not one.
 const keyboardable = (page) => page.evaluate(() => {
   const muted = (node) => !!node && node.getAttribute('inputmode') === 'none' && node.readOnly;
   const btn = document.getElementById('kbBtn');
   const pane = document.querySelector('#term textarea');
   const active = document.activeElement;
-  const copies = [...document.querySelectorAll('.so-kb-copy')];
-  const copy = copies[0];
-  const r = btn.getBoundingClientRect();
-  const c = copy ? copy.getBoundingClientRect() : null;
   return {
     shown: !!btn.checkVisibility && btn.checkVisibility(),
     open: btn.getAttribute('aria-pressed'),
     filled: btn.getAttribute('aria-pressed') === 'true',
     label: btn.getAttribute('aria-label'),
+    icon: !!btn.querySelector('svg') && !btn.innerText.trim(),
     pane: muted(pane),
     paneOpen: !!pane && !muted(pane),
-    focus: active ? (active.closest('#term') ? 'pane' : active.closest('dialog') ? 'dialog' : active.localName) : null,
+    focus: active ? (active.closest('#term') ? 'pane' : active.closest('dialog') ? 'dialog'
+      : active.closest('#chat') ? 'chat' : active.closest('#prestart') ? 'prestart' : active.localName) : null,
     focusMuted: !!active && muted(active),
     fields: [...document.querySelectorAll('input.ds-input')]
       .filter((n) => n.checkVisibility && n.checkVisibility())
       .map((n) => ({ id: n.id || n.className, muted: muted(n) })),
     mics: [...document.querySelectorAll('.so-field-row')]
       .filter((n) => n.checkVisibility && n.checkVisibility())
-      .map((row) => ({ field: !!row.querySelector('input'), mic: !!row.querySelector('.so-mic') })),
-    copies: copies.length,
-    copy: copy ? {
-      inDialog: !!copy.closest('dialog[open]'),
-      shown: copy.checkVisibility(),
-      over: Math.abs(c.left - r.left) < 2 && Math.abs(c.top - r.top) < 2,
-      open: copy.getAttribute('aria-pressed'),
-    } : null,
+      .map((row) => ({ field: !!row.querySelector('input, textarea'), mic: !!row.querySelector('.so-mic') })),
+    copies: document.querySelectorAll('.so-kb-copy').length,
     keyboardKey: !!document.querySelector('#keybar [data-key="Keyboard"]'),
   };
 });
 
-// The keyboard switch: on a touch screen nothing raises the on-screen keyboard
-// but the button in the top bar - not the pane, not a field, not a dialog - and
-// a second press puts it away. The button is pressable everywhere, dialogs
-// included, and on a device with a mouse none of it applies.
+// tapTyped taps a field the way a finger does, types into it, and says what
+// the field became: whether it had the focus, unmuted, and what is in it.
+async function tapTyped(page, selector, text) {
+  await page.tap(selector);
+  await wait(200);
+  const tapped = await keyboardable(page);
+  await page.keyboard.type(text);
+  const value = await page.$eval(selector, (n) => n.value);
+  return { focus: tapped.focus, muted: tapped.focusMuted, value, typed: value.endsWith(text) };
+}
+
+// The keyboard: on a touch screen nothing raises the terminal's on-screen
+// keyboard but the button in the top bar, and a second press puts it away;
+// the button is there only while a terminal is. Every other field - the
+// sheet's, a dialog's, a chat's composer, a prepared session's prompt - takes
+// a tap and raises the keyboard itself, but never for a focus the page gave
+// it on its own. On a device with a mouse none of it applies.
 async function keyboard() {
   // What the stub hears is what a person would say to filter that list, so the
   // words land somewhere with a visible consequence rather than in a field
@@ -6107,6 +6112,8 @@ async function keyboard() {
     viewport: { width: 1100, height: 900 },
     touch: true,
     permissions: ['microphone'],
+    // The scripted agent, for the chat whose composer is a field like any other.
+    env: FAKE_AGENT,
     args: [
       '--use-fake-ui-for-media-stream',
       '--use-fake-device-for-media-stream',
@@ -6136,7 +6143,8 @@ async function keyboard() {
     ok(off.shown && off.open === 'false' && !off.filled,
       'the button is in the bar, and the keyboard starts put away',
       JSON.stringify({ shown: off.shown, open: off.open, filled: off.filled }));
-    ok(/show the keyboard/i.test(off.label || ''), 'and it says what a press does', off.label);
+    ok(/show the keyboard/i.test(off.label || '') && off.icon, 'and it is the keyboard glyph, and says what a press does',
+      JSON.stringify({ label: off.label, icon: off.icon }));
     ok(off.pane, 'the pane cannot raise the keyboard: inputmode=none, and read-only for the phones that ignore it',
       off.pane ? 'inputmode=none and readonly' : 'an ordinary text field');
     ok(!off.keyboardKey, 'and the key bar has no keyboard key of its own any more', String(off.keyboardKey));
@@ -6223,26 +6231,28 @@ async function keyboard() {
     await wait(500);
     const sheet = await keyboardable(s.page);
     ok(sheet.fields.length >= 1 && sheet.fields.every((f) => f.muted),
-      'every field on the sheet is muted', JSON.stringify(sheet.fields));
+      'opening the sheet raises no keyboard: its fields are muted while nobody has touched them',
+      JSON.stringify(sheet.fields));
     ok(sheet.mics.length >= 1 && sheet.mics.every((row) => row.field && row.mic),
       'and every one has its microphone', JSON.stringify(sheet.mics));
-    ok(sheet.copies === 1 && sheet.copy && sheet.copy.inDialog && sheet.copy.shown && sheet.copy.over,
-      'the button is pressable over the dialog, in the very spot the bar has it',
-      JSON.stringify(sheet.copy));
+    ok(sheet.copies === 0, 'no copy of the keyboard button lies over the dialog', String(sheet.copies));
     await shot(s.page, 'keyboard-sheet');
 
-    await s.page.click('#newSessionSheet .so-kb-copy');
+    // A finger on a field is what raises its keyboard, and the typing is in
+    // it at once.
+    const onSheet = await tapTyped(s.page, '#nsDir .ds-combo__input', 'dyn');
+    ok(onSheet.focus === 'dialog' && !onSheet.muted && onSheet.typed,
+      'a tap on a field of the sheet gives it the keyboard: an ordinary field with the focus, holding what was typed',
+      JSON.stringify(onSheet));
+    // Away from the field: the list it opened closes, and the focus goes.
+    await s.page.tap('#newSessionSheet .ds-sheet__title');
     await wait(200);
-    const typing = await keyboardable(s.page);
-    ok(typing.open === 'true' && typing.copy && typing.copy.open === 'true'
-      && typing.focus === 'dialog' && !typing.focusMuted,
-      'pressed there, it raises the keyboard for the dialog\'s field',
-      JSON.stringify({ open: typing.open, copy: typing.copy, focus: typing.focus, muted: typing.focusMuted }));
-    await s.page.click('#newSessionSheet .so-kb-copy');
+    await s.page.tap('#newSessionSheet .ds-sheet__title');
     await wait(200);
-    const shut = await keyboardable(s.page);
-    ok(shut.open === 'false' && shut.fields.every((f) => f.muted),
-      'and pressed again, puts it away', JSON.stringify({ open: shut.open, fields: shut.fields }));
+    const leftSheet = await keyboardable(s.page);
+    ok(leftSheet.fields.every((f) => f.muted),
+      'a field the focus left is muted again, so the page cannot raise a keyboard over it by itself',
+      JSON.stringify(leftSheet.fields));
 
     // A field is still filled by speaking to it. What comes back is what would
     // have been typed: it goes in the field and the field is told, so the list
@@ -6273,33 +6283,72 @@ async function keyboard() {
     await s.page.waitForSelector('dialog.so-rename[open]', { timeout: 10000 });
     await wait(400);
     const rename = await keyboardable(s.page);
-    ok(rename.fields.length === 1 && rename.fields[0].muted && rename.mics.length === 1
-      && rename.copy && rename.copy.shown && rename.copy.over,
-      'so is the rename dialog: its field muted, with a microphone, and the button over it',
-      JSON.stringify({ fields: rename.fields, mics: rename.mics, copy: rename.copy }));
-    await s.page.click('dialog.so-rename .so-kb-copy');
-    await wait(200);
-    const renaming = await keyboardable(s.page);
-    ok(renaming.open === 'true' && renaming.focus === 'dialog' && !renaming.focusMuted,
-      'and the button raises the keyboard for it', JSON.stringify({ open: renaming.open, focus: renaming.focus }));
-    await s.page.click('dialog.so-rename .so-kb-copy');
-    await wait(200);
-    // A tablet in its case types on keys of its own, and a muted field is
-    // given back to them rather than swallowing the key.
+    ok(rename.fields.length === 1 && rename.fields[0].muted && rename.mics.length === 1 && rename.copies === 0,
+      'so is the rename dialog: it opens on its field without a keyboard, with a microphone beside it',
+      JSON.stringify({ fields: rename.fields, mics: rename.mics, copies: rename.copies }));
+    const renaming = await tapTyped(s.page, '#renameInput', ' again');
+    ok(renaming.focus === 'dialog' && !renaming.muted && renaming.typed,
+      'and a tap on the field raises the keyboard for it: what is typed is in it', JSON.stringify(renaming));
+    // A tablet in its case types on keys of its own, and a field the page
+    // focused (muted) is given back to them rather than swallowing the key.
+    await s.page.tap('#renameTitle');
+    await wait(150);
+    await s.page.focus('#renameInput');
+    await wait(150);
+    const refocused = await keyboardable(s.page);
     await s.page.keyboard.type('xy');
     const keyed = await s.page.evaluate(() => {
       const node = document.activeElement;
       return { value: node.value, ro: node.readOnly, dialog: !!node.closest('dialog') };
     });
-    ok(keyed.dialog && keyed.value.endsWith('xy') && !keyed.ro,
-      'a key pressed on real keys lands in the muted field', JSON.stringify(keyed));
+    ok(refocused.focusMuted && keyed.dialog && keyed.value.endsWith('xy') && !keyed.ro,
+      'a field the page focused is muted, and a key pressed on real keys still lands in it',
+      JSON.stringify({ mutedBefore: refocused.focusMuted, ...keyed }));
     await s.page.keyboard.press('Escape');
     await s.page.waitForSelector('dialog.so-rename', { state: 'detached', timeout: 10000 }).catch(() => {});
     await wait(300);
     const after = await keyboardable(s.page);
-    ok(after.copies === 0 && after.open === 'false' && after.pane,
-      'a closed dialog takes its copy of the button with it, and the pane is muted again',
-      JSON.stringify({ copies: after.copies, open: after.open, pane: after.pane }));
+    ok(after.open === 'false' && after.pane,
+      'a closed dialog leaves the switch off and the pane muted', JSON.stringify({ open: after.open, pane: after.pane }));
+
+    /* ------------------------------------------- a chat and a prepared prompt */
+
+    // A chat has no pane: the button goes, and its composer takes a tap.
+    const shellId = await s.page.evaluate(() => location.hash.slice(1));
+    await startChat(s.page);
+    await wait(400);
+    const chat = await keyboardable(s.page);
+    const composerShut = await s.page.$eval('#chat .so-composer__input', (n) => n.getAttribute('inputmode') === 'none' && n.readOnly);
+    ok(!chat.shown && composerShut, 'a chat has no keyboard button, and the cursor it puts in its composer raises no keyboard',
+      JSON.stringify({ button: chat.shown, composerMuted: composerShut }));
+    const composing = await tapTyped(s.page, '#chat .so-composer__input', 'typed after one tap');
+    ok(composing.focus === 'chat' && !composing.muted && composing.typed,
+      'a tap on the composer raises the keyboard, and what is typed is in it', JSON.stringify(composing));
+    await s.page.$eval('#chat .so-composer__input', (n) => { n.value = ''; n.dispatchEvent(new Event('input', { bubbles: true })); });
+
+    // A prepared session's prompt is the same.
+    await ensureNav(s.page);
+    await s.page.click('#newSession');
+    await s.page.waitForSelector('#newSessionSheet[open]', { timeout: 15000 });
+    await s.page.click('#newSessionSheet .so-settings__program[data-value="fake"]');
+    await s.page.click('#nsPrestart');
+    await s.page.click('#nsStart');
+    await s.page.waitForSelector('#prestart:not([hidden]) #psPrompt', { timeout: 15000 });
+    await s.page.waitForFunction(() => {
+      const n = document.querySelector('#psPrompt');
+      return n && !n.disabled && document.querySelector('#psState') && !/load/i.test(document.querySelector('#psSave').textContent);
+    }, null, { timeout: 15000 }).catch(() => {});
+    await wait(400);
+    const prepared = await keyboardable(s.page);
+    const prompting = await tapTyped(s.page, '#psPrompt', 'Write the docs');
+    ok(!prepared.shown && prompting.focus === 'prestart' && !prompting.muted && prompting.typed,
+      'and so is a prepared session\u2019s prompt: no button, and a tap that types', JSON.stringify({ button: prepared.shown, ...prompting }));
+    await s.page.evaluate((target) => { location.hash = '#' + target; }, shellId);
+    await s.page.waitForSelector('#term .xterm', { timeout: 20000 });
+    await wait(600);
+    const back = await keyboardable(s.page);
+    ok(back.shown && back.pane, 'back on the terminal the button is there again, and the pane muted',
+      JSON.stringify({ shown: back.shown, pane: back.pane }));
 
     /* ------------------------------------------------- not on a desk */
 
@@ -14570,7 +14619,7 @@ const ALL = [
   ['no-overlap', 'the microphone and the voice are never open at the same time', nooverlap],
   ['typeafteroutage', 'a cut socket, a locked phone, and a pane that still takes keystrokes', typeafteroutage],
   ['typekeepsfocus', 'a dialog, the ⋮ menu and two sessions: the keys still land in the pane', typekeepsfocus],
-  ['keyboard', 'on a touch screen only the button raises the keyboard, in every dialog too', keyboard],
+  ['keyboard', 'on a touch screen only the button raises the terminal\u2019s keyboard, and every other field takes a tap', keyboard],
   ['options', 'the ⋮ is this device\u2019s options, and the limits say when they renew', optionsmenu],
   ['design', 'white surfaces, marks, hover-only detail and motion that does not restart', design],
   ['clipboard', 'copy and paste: the keys, a plain drag, a click, a middle click, and OSC 52', clipboard],

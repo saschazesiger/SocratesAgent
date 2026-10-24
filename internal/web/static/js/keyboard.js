@@ -1,28 +1,36 @@
-// The keyboard switch.
+// The keyboard switch, and the fields that take a tap.
 //
 // On a device with no keys of its own, half the display becomes a keyboard
-// the moment anything takes the focus - over the terminal, over the sheet
-// somebody was reading - and in a CLI, where the pane takes the focus back by
-// design so that what is typed lands in the session, it opens again on every
-// tap. So on a touch screen the on-screen keyboard is not something a field
-// raises: it is raised and put away by one button in the top bar, and by
-// nothing else.
+// the moment a field takes the focus. In a terminal that is wrong every time:
+// the pane takes the focus back by design, so that what is typed lands in the
+// session, and a keyboard that came with it would open again on every tap
+// that was only meant to scroll or to select. So on a touch screen the
+// terminal's keyboard is not something the pane raises: it is raised and put
+// away by one button in the top bar, and by nothing else.
 //
-//   * Every field the page has - the pane's hidden textarea, every input, the
-//     editor inside the VS Code frame - is muted while the switch is off:
-//     `inputmode="none"`, which is the request, and read-only, which is the
-//     fact. One of the two is a hint a browser may ignore; the phones this app
-//     is used on did.
-//   * The button unmutes them and gives the focus to the field that should
-//     have it - the one in the dialog on screen, the one last typed into, or
-//     the pane - inside the tap, because iOS raises a keyboard for a focus()
-//     that a tap caused and for nothing else.
+//   * The pane - the terminal's hidden textarea, and every field of the VS
+//     Code frame, which takes its focus back the same way - is muted while the
+//     switch is off: `inputmode="none"`, which is the request, and read-only,
+//     which is the fact. One of the two is a hint a browser may ignore; the
+//     phones this app is used on did.
+//   * The button unmutes it and gives it the focus, inside the tap, because
+//     iOS raises a keyboard for a focus() that a tap caused and for nothing
+//     else.
 //   * The switch turns itself off when the keyboard goes away by some other
 //     road - the focus leaving every field, the system's own "done" or back
 //     key - so the button never says open over a screen with no keyboard.
-//   * The button is on screen everywhere: a modal dialog makes the rest of the
-//     page inert and covers it, so a copy of it is put into whichever dialog
-//     is on top, over the very spot the one in the bar occupies.
+//   * The button is in the bar only while a terminal (or an editor) is on the
+//     stage: anywhere else it would raise nothing.
+//
+// Every other field - the chat's composer, a dialog's, the sheet's, a
+// prepared session's prompt - is an ordinary field: a tap on it raises the
+// keyboard and takes what is typed at once. What it does not do is raise one
+// for a focus the page gave it by itself - a dialog that opens on its field, a
+// chat that puts its cursor in the composer - because that is a keyboard over
+// the sheet somebody was reading. So such a field is muted too until a finger
+// lands on it, freed by that tap (before the browser moves the focus, so the
+// tap's own focus raises the keyboard natively), and muted again once the
+// focus has left it.
 //
 // None of this applies to a device with a mouse and no sign of a finger:
 // there the fields are ordinary fields and the button is not shown. Whether a
@@ -70,8 +78,8 @@ function looksTouch() {
 }
 
 // becomeTouch puts the page under the switch the first time it learns it is
-// on a touch screen, with the button, its copy and every field following -
-// unless this device has said it does not want that.
+// on a touch screen, with the button and every field following - unless this
+// device has said it does not want that.
 function becomeTouch() {
   if (touchPref() === 'off') return;
   enterTouch();
@@ -83,24 +91,23 @@ function enterTouch() {
   document.documentElement.classList.add('so-touch');
   applyAll();
   paint();
-  placeCopy();
   // A field that already had the focus may have raised a keyboard before the
   // page knew better; taking the focus again muted puts it away.
   const active = deepActive();
   if (isField(active)) refocus(active);
 }
 
-// leaveTouch is touch mode turned off: the button and its copy go, the
-// switch's own keyboard is put down, and every field is an ordinary field
-// again - one a tap raises the device's keyboard for, as on any other page.
+// leaveTouch is touch mode turned off: the button goes, the switch's own
+// keyboard is put down, and every field is an ordinary field again - one a
+// tap raises the device's keyboard for, as on any other page.
 function leaveTouch() {
   if (!touch) return;
   open = false;
   touch = false;
+  freed = null;
   document.documentElement.classList.remove('so-touch');
   applyAll();
   paint();
-  placeCopy();
 }
 
 /** touchScreen is whether the page is in touch mode on this device. */
@@ -127,16 +134,24 @@ const TYPED = new Set(['', 'text', 'search', 'url', 'email', 'password', 'tel', 
 
 let open = false;
 let button = null;
-let copy = null;
 let fallback = () => null;
+// Whether a pane - a terminal or an editor - is on the stage, which is the
+// only time the button has anything to raise.
+let paneShown = false;
+// The one ordinary field a tap (or a key of the device's own) has given the
+// keyboard to. It stays unmuted while it has the focus.
+let freed = null;
+// The tap in progress on an ordinary field: the field, and whether it already
+// had the focus - muted - when the finger came down.
+let tap = null;
 // What each muted field had before it was muted, so a field that was read-only
 // or numeric on its own is given back exactly that.
 const saved = new Map();
 // The documents whose fields are under the switch: this page, and the VS Code
 // frame, which is served from the same origin.
 const docs = new Set();
-// The field that last had the focus, for a tap on the button that lands while
-// the focus is somewhere else.
+// The pane's field that last had the focus, for a tap on the button that
+// lands while the focus is somewhere else.
 let lastField = null;
 // Set while the switch itself moves the focus, so its own blur is not read as
 // the keyboard being put away.
@@ -149,8 +164,17 @@ function isField(node) {
   return node.isContentEditable || !!node.editContext;
 }
 
-// muted is whether a field may not raise a keyboard right now.
-function muted() { return touch && !open; }
+// underSwitch is whether a field is the pane's: the terminal's textarea, or
+// any field of the editor's frame. Only those wait for the button.
+function underSwitch(node) {
+  if (!node) return false;
+  if (node.ownerDocument !== document) return true;
+  return node === fallback() || (!!node.classList && node.classList.contains('xterm-helper-textarea'));
+}
+
+// wantsMute is whether a field may not raise a keyboard right now: in touch
+// mode, with the switch off, every field but the one a tap freed.
+function wantsMute(node) { return touch && !open && node !== freed; }
 
 function mute(node) {
   if (saved.has(node)) return false;
@@ -163,13 +187,16 @@ function mute(node) {
   return true;
 }
 
+// unmute gives a field back what it had. A page that made the field
+// writable itself while it was muted - PreStart's prompt once its draft has
+// loaded - has said what it wants, and keeps it.
 function unmute(node) {
   const was = saved.get(node);
   if (!was) return;
   saved.delete(node);
   if (was.mode === null) node.removeAttribute('inputmode');
   else node.setAttribute('inputmode', was.mode);
-  if (was.ro !== null) node.readOnly = was.ro;
+  if (was.ro !== null && node.readOnly) node.readOnly = was.ro;
 }
 
 function fieldsIn(root) {
@@ -185,11 +212,12 @@ function applyAll() {
   for (const doc of [...docs]) {
     if (!doc.defaultView) { docs.delete(doc); continue; }
     for (const node of fieldsIn(doc.documentElement)) {
-      if (muted()) mute(node);
+      if (wantsMute(node)) mute(node);
       else unmute(node);
     }
   }
   for (const node of [...saved.keys()]) if (!node.isConnected) saved.delete(node);
+  if (freed && !freed.isConnected) freed = null;
 }
 
 // deepActive is the focused element, looking into the VS Code frame.
@@ -209,32 +237,12 @@ function shown(node) {
     && (!node.checkVisibility || node.checkVisibility());
 }
 
-// topDialog is the modal dialog on top, if one is open: the one place a field
-// can be typed into while it is there.
-function topDialog() {
-  const modal = [...document.querySelectorAll('dialog[open]')].filter(isModal);
-  return modal.length ? modal[modal.length - 1] : null;
-}
-
-// isModal is `:modal`, for a browser old enough not to know the selector -
-// the car's Chromium may be one. There a dialog opened with showModal() is
-// told apart by the top layer putting it at a fixed position.
-function isModal(dialog) {
-  try { return dialog.matches(':modal'); } catch { /* an older selector engine */ }
-  return getComputedStyle(dialog).position === 'fixed';
-}
-
-// target is the field the keyboard is raised for.
+// target is the pane's field the button raises the keyboard for: the one
+// that has the focus, the one that last had it, or the terminal.
 function target() {
   const active = deepActive();
-  const dialog = topDialog();
-  if (dialog) {
-    if (isField(active) && dialog.contains(active)) return active;
-    if (shown(lastField) && dialog.contains(lastField)) return lastField;
-    return [...dialog.querySelectorAll(FIELD)].find((node) => isField(node) && shown(node)) || null;
-  }
-  if (isField(active)) return active;
-  if (shown(lastField)) return lastField;
+  if (isField(active) && underSwitch(active)) return active;
+  if (shown(lastField) && underSwitch(lastField)) return lastField;
   const pane = fallback();
   return isField(pane) ? pane : null;
 }
@@ -252,7 +260,7 @@ function refocus(node, raise = false) {
   moving = true;
   try {
     if (raise && node.ownerDocument === document) {
-      proxyField().focus({ preventScroll: true });
+      proxyField(node).focus({ preventScroll: true });
     } else {
       node.blur();
     }
@@ -265,30 +273,34 @@ function refocus(node, raise = false) {
 
 // The proxy is built once, and is never a field as far as the rest of this
 // module is concerned: never muted, never the one remembered, never a reason
-// to think the keyboard went away.
+// to think the keyboard went away. It stands beside the field it hands the
+// focus to - inside that field's dialog when it is in one, because a modal
+// dialog makes everything outside it inert, and an inert field takes no
+// focus.
 let proxy = null;
-function proxyField() {
-  if (proxy && proxy.isConnected) return proxy;
-  proxy = el('input', {
-    type: 'text', class: 'so-kb-proxy', 'aria-hidden': 'true', tabindex: '-1',
-    autocomplete: 'off', autocorrect: 'off', autocapitalize: 'none', spellcheck: 'false',
-  });
-  document.body.append(proxy);
+function proxyField(near) {
+  if (!proxy) {
+    proxy = el('input', {
+      type: 'text', class: 'so-kb-proxy', 'aria-hidden': 'true', tabindex: '-1', 'data-ds-keep': '',
+      autocomplete: 'off', autocorrect: 'off', autocapitalize: 'none', spellcheck: 'false',
+    });
+  }
+  const host = (near && near.closest && near.closest('dialog')) || document.body;
+  if (proxy.parentNode !== host) host.append(proxy);
   return proxy;
 }
 
-// paint says on the button and its copy whether the switch is on. The button
-// is there only in touch mode: a device with keys of its own and no sign of a
-// finger has nothing for it to raise.
+// paint says on the button whether the switch is on. The button is there
+// only in touch mode, and only while a pane is on the stage: a device with
+// keys of its own has nothing for it to raise, and neither has a chat, Home
+// or a prepared session, whose fields raise the keyboard themselves.
 function paint() {
+  if (!button) return;
   const words = open ? 'Hide the keyboard' : 'Show the keyboard';
-  if (button) button.hidden = !touch;
-  for (const one of [button, copy]) {
-    if (!one) continue;
-    one.setAttribute('aria-pressed', open ? 'true' : 'false');
-    one.setAttribute('aria-label', words);
-    one.setAttribute('data-tip', words);
-  }
+  button.hidden = !touch || !paneShown;
+  button.setAttribute('aria-pressed', open ? 'true' : 'false');
+  button.setAttribute('aria-label', words);
+  button.setAttribute('data-tip', words);
 }
 
 // openedAt is when the switch last raised the keyboard, and `reports` is
@@ -317,8 +329,8 @@ function showing() {
 export function keyboardOpen() { return open; }
 
 /**
- * setKeyboard raises or puts away the on-screen keyboard. The raising half has
- * to be called from inside a tap to work on iOS.
+ * setKeyboard raises or puts away the on-screen keyboard of the pane. The
+ * raising half has to be called from inside a tap to work on iOS.
  */
 export function setKeyboard(on) {
   if (on && touch) {
@@ -339,15 +351,92 @@ export function setKeyboard(on) {
   applyAll();
   paint();
   const active = deepActive();
-  if (isField(active)) refocus(active);
+  if (isField(active) && wantsMute(active)) refocus(active);
+}
+
+/**
+ * showKeyboardSwitch says whether a pane - the terminal, or the editor - is
+ * on the stage, which is when the button is in the bar. A pane that goes
+ * takes the keyboard it had with it.
+ */
+export function showKeyboardSwitch(on) {
+  paneShown = !!on;
+  if (!paneShown && open) setKeyboard(false);
+  paint();
+}
+
+/* ------------------------------------------------- a finger on a field */
+
+// fieldOf is the ordinary field a tap landed on: the field itself, or the
+// field a label it landed on is for.
+function fieldOf(node) {
+  if (!node || node.nodeType !== 1 || !node.closest) return null;
+  const field = node.closest(FIELD);
+  if (isField(field)) return field;
+  const label = node.closest('label');
+  const control = label && label.control;
+  return isField(control) ? control : null;
+}
+
+// free gives the keyboard to one ordinary field. The one freed before it is
+// muted again unless it still has the focus, in which case its own blur
+// mutes it (onFocusOut).
+function free(node) {
+  const was = freed;
+  freed = node;
+  if (was && was !== node && was !== deepActive() && wantsMute(was)) mute(was);
+  unmute(node);
+}
+
+// A finger coming down on an ordinary field frees it before the browser
+// moves the focus, so the tap's own focus raises the keyboard the way it
+// does on any page.
+function onFieldDown(event) {
+  if (!touch) return;
+  const node = fieldOf(event.target);
+  if (!node || underSwitch(node)) return;
+  tap = { node, focused: deepActive() === node && saved.has(node) };
+  free(node);
+}
+
+// A field that already had the focus - muted, because the page put it there
+// - took no keyboard with that focus, and keeps none by being tapped; the tap
+// hands the focus over again, which raises one.
+function onFieldClick(event) {
+  const now = tap;
+  tap = null;
+  if (!now || !touch || fieldOf(event.target) !== now.node) return;
+  if (now.focused && deepActive() === now.node) refocus(now.node, true);
+}
+
+// A finger that came down on a field and went on to scroll the page is no
+// tap: the field goes back to how it was.
+function onFieldCancel() {
+  const now = tap;
+  tap = null;
+  if (!now || freed !== now.node) return;
+  if (now.focused || deepActive() !== now.node) {
+    freed = null;
+    if (wantsMute(now.node)) mute(now.node);
+  }
 }
 
 /* ------------------------------------------ the keyboard going away itself */
 
 // The focus left one field and did not arrive in another: the keyboard is
 // gone, whatever the button says. Asked on the next tick, because a tap on the
-// pane blurs its textarea and gives it the focus straight back.
-function onFocusOut() {
+// pane blurs its textarea and gives it the focus straight back. An ordinary
+// field the focus left is muted again, so the next focus the page gives it
+// does not raise a keyboard either.
+function onFocusOut(event) {
+  const node = event.target;
+  if (!moving && isField(node) && !underSwitch(node)) {
+    setTimeout(() => {
+      if (moving || deepActive() === node) return;
+      if (freed === node) freed = null;
+      if (wantsMute(node)) mute(node);
+    }, 0);
+  }
   if (moving || !open) return;
   setTimeout(() => {
     if (!open || moving || isField(deepActive())) return;
@@ -358,11 +447,11 @@ function onFocusOut() {
 function onFocusIn(event) {
   const node = event.target;
   if (!isField(node)) return;
-  lastField = node;
+  if (underSwitch(node)) lastField = node;
   // A field nothing had muted yet - built and focused in the same tick, or
   // made editable after it was built - is muted now, and the focus is handed
   // back so the keyboard it may have asked for does not come.
-  if (muted() && mute(node)) {
+  if (wantsMute(node) && mute(node)) {
     setTimeout(() => {
       if (node.ownerDocument.activeElement === node) refocus(node);
     }, 0);
@@ -387,8 +476,8 @@ function onPointer(event) {
 }
 
 // A key pressed on keys of the device's own - a tablet in its case, a laptop
-// with a touch screen - lands in a field that is muted while the switch is
-// off, and a read-only field takes nothing. No on-screen keyboard is up then,
+// with a touch screen - lands in a field that is muted while nothing freed
+// it, and a read-only field takes nothing. No on-screen keyboard is up then,
 // so the keydown came from real keys, and the field is given back before the
 // key reaches it. The pane is left alone: xterm reads its keys from keydown,
 // read-only or not, and an unmuted pane would raise the keyboard on a tap.
@@ -396,48 +485,17 @@ const EDITING = new Set(['Backspace', 'Delete', 'Enter']);
 function onKeyDown(event) {
   if (open || !event.isTrusted || event.isComposing) return;
   const node = event.target;
-  if (!saved.has(node) || node === fallback()) return;
+  if (!saved.has(node) || underSwitch(node)) return;
   if ([...(event.key || '')].length !== 1 && !EDITING.has(event.key)) return;
-  unmute(node);
-}
-
-/* -------------------------------------------------- one button, everywhere */
-
-// placeCopy puts the button's copy into the dialog on top, over the spot the
-// real one has in the bar. A modal dialog makes everything outside it inert,
-// so the bar's own button can be seen through the backdrop and not pressed.
-function placeCopy() {
-  if (!copy) return;
-  const host = touch ? topDialog() : null;
-  if (!host) { copy.remove(); return; }
-  if (copy.parentNode !== host) {
-    host.append(copy);
-    // `position: fixed` inside a dialog is the dialog's own while its opening
-    // animation moves it, so the copy waits for the animation to end.
-    copy.style.visibility = 'hidden';
-    const running = host.getAnimations ? host.getAnimations().map((a) => a.finished) : [];
-    Promise.all(running).catch(() => {}).then(() => {
-      position();
-      copy.style.visibility = '';
-    });
-  }
-  position();
-}
-
-// position lays the copy over the bar's button. A bar with no button on
-// screen leaves it in the corner the stylesheet gives it.
-function position() {
-  if (!copy || !copy.isConnected) return;
-  const rect = button.getBoundingClientRect();
-  const px = (n) => (rect.width ? n + 'px' : '');
-  copy.style.top = px(rect.top);
-  copy.style.left = px(rect.left);
-  copy.style.width = px(rect.width);
-  copy.style.height = px(rect.height);
-  copy.style.right = rect.width ? 'auto' : '';
+  free(node);
 }
 
 /* ------------------------------------------------------------------ wiring */
+
+// Pointer events where there are any, touch events on a browser too old for
+// them: the two would otherwise both report one finger.
+const DOWN = window.PointerEvent ? 'pointerdown' : 'touchstart';
+const CANCEL = window.PointerEvent ? 'pointercancel' : 'touchcancel';
 
 function watch(doc) {
   if (!doc || !doc.documentElement || docs.has(doc)) return;
@@ -447,20 +505,19 @@ function watch(doc) {
   doc.addEventListener('keydown', onKeyDown, true);
   doc.addEventListener('pointerdown', onPointer, true);
   doc.addEventListener('touchstart', onPointer, { capture: true, passive: true });
+  if (doc === document) {
+    doc.addEventListener(DOWN, onFieldDown, { capture: true, passive: true });
+    doc.addEventListener(CANCEL, onFieldCancel, true);
+    doc.addEventListener('click', onFieldClick, true);
+  }
   new MutationObserver((records) => {
-    let dialogs = false;
     for (const r of records) {
-      if (r.type === 'attributes') { dialogs = true; continue; }
-      if (!muted()) continue;
       for (const node of r.addedNodes) {
-        if (node.nodeType !== 1 || node === copy) continue;
-        for (const field of fieldsIn(node)) mute(field);
+        if (node.nodeType !== 1) continue;
+        for (const field of fieldsIn(node)) if (wantsMute(field)) mute(field);
       }
     }
-    if (dialogs && doc === document) placeCopy();
-  }).observe(doc.documentElement, {
-    childList: true, subtree: true, attributes: true, attributeFilter: ['open'],
-  });
+  }).observe(doc.documentElement, { childList: true, subtree: true });
   applyAll();
 }
 
@@ -477,32 +534,25 @@ export function watchFrame(frame) {
 }
 
 /**
- * guard puts one field under the switch straight away, for a field that is
- * built and focused in the same tick - before the page's own watcher has seen
- * it.
+ * guard mutes one field straight away, for a field that is built and focused
+ * in the same tick - before the page's own watcher has seen it.
  */
 export function guard(input) {
-  if (input && muted()) mute(input);
+  if (input && isField(input) && wantsMute(input)) mute(input);
   return input;
 }
 
 /**
  * initKeyboard wires the button in the top bar. `pane` names the field the
- * keyboard is for when nothing else has had the focus: the terminal.
+ * keyboard is for when nothing else has had the focus: the terminal's.
  */
 export function initKeyboard(bar, pane) {
   button = bar;
   fallback = pane || (() => null);
-  // The copy wears the button's own words, long and short, so it reads the
-  // same over a dialog as the button does in the bar.
-  copy = el('button', { class: 'ds-btn so-talk so-kb-copy', type: 'button' },
-    [...bar.childNodes].map((node) => node.cloneNode(true)));
-  for (const one of [button, copy]) {
-    // The field keeps the focus: a tap that took it would put the keyboard
-    // away before the button could say whether that was wanted.
-    one.addEventListener('mousedown', (event) => event.preventDefault());
-    one.addEventListener('click', () => setKeyboard(!showing()));
-  }
+  // The field keeps the focus: a tap that took it would put the keyboard
+  // away before the button could say whether that was wanted.
+  button.addEventListener('mousedown', (event) => event.preventDefault());
+  button.addEventListener('click', () => setKeyboard(!showing()));
   watch(document);
   // A device can turn out to be one later - a tablet taken out of its dock, a
   // screen that reports its finger late. It is never turned back: a button
@@ -512,12 +562,8 @@ export function initKeyboard(bar, pane) {
     if (query.addEventListener) query.addEventListener('change', changed);
     else if (query.addListener) query.addListener(changed);
   }
-  if (window.visualViewport) {
-    window.visualViewport.addEventListener('resize', () => { onViewport(); position(); });
-  }
-  window.addEventListener('resize', position);
+  if (window.visualViewport) window.visualViewport.addEventListener('resize', onViewport);
   paint();
-  placeCopy();
 }
 
 /* ------------------------------------------------------- the microphone */

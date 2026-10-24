@@ -98,11 +98,12 @@
             <span class="ds-btn__face ds-btn__face--busy" aria-hidden="true"><span class="ds-spinner ds-spinner--sm"></span><span class="so-talk__long">Transcribing</span></span>
           </span>
         </button>
-        <!-- The on-screen keyboard. In touch mode nothing else raises it, and a
-             second press puts it away again (keyboard.js); a copy of it sits
-             over this spot in every dialog. Out of touch mode it is not shown. -->
-        <button class="ds-btn ds-btn--quiet so-talk" id="kbBtn" type="button" hidden aria-pressed="false"
-                aria-label="Show the keyboard" data-tip="Show the keyboard"><span class="so-talk__long">Keyboard</span><span class="so-talk__short" aria-hidden="true">Keys</span></button>
+        <!-- The terminal's on-screen keyboard. In touch mode nothing else
+             raises it for the pane, and a second press puts it away again
+             (keyboard.js). It is in the bar only while a terminal or an
+             editor is on the stage, and only in touch mode. -->
+        <button class="ds-btn ds-btn--quiet ds-btn--icon" id="kbBtn" type="button" hidden aria-pressed="false"
+                aria-label="Show the keyboard" data-tip="Show the keyboard" data-icon="keyboard"></button>
         <!-- The options of this device rather than of a session; what can be
              done to a session is in its row's menu. -->
         <button class="ds-btn ds-btn--quiet ds-btn--icon" id="optionsBtn" type="button"
@@ -202,7 +203,7 @@
         <label class="ds-switch"><input type="checkbox" role="switch" data-option="touch" aria-describedby="optTouchHint">
           <span class="ds-switch__track" aria-hidden="true"></span><span class="ds-switch__label">Touch mode</span>
           <span class="ds-switch__state" aria-hidden="true"><span class="ds-switch__on">On</span><span class="ds-switch__off">Off</span></span></label>
-        <small class="ds-field__hint" id="optTouchHint">Keyboard button in the top bar</small>
+        <small class="ds-field__hint" id="optTouchHint">Bigger buttons, and a keyboard button for a terminal</small>
       </div>
       <div class="ds-field">
         <label class="ds-switch"><input type="checkbox" role="switch" data-option="sound" aria-describedby="optSoundHint">

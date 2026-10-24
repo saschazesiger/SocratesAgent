@@ -20,7 +20,6 @@
  *   .so-key            one of them; aria-pressed while a modifier is armed,
  *                      data-lock (and a lock glyph) while it is locked
  *   .so-transfer       copy, paste and upload in the top bar
- *   .so-kb-copy        the keyboard switch's copy over the dialog on top
  *   .so-kb-proxy       the field the switch raises the keyboard through
  *   .so-mic            a field's own microphone (keyboard.js micButton)
  *   .so-rec            the recording dialog, .so-meter its level meter,
@@ -275,18 +274,6 @@
 }
 
 /* ── The keyboard switch ─────────────────────────────────────────────── */
-
-/* Its copy in whichever dialog is on top: laid over the bar's own button by
-   keyboard.js, and in the corner when the bar has none on screen. It stands
-   on the scrim, so it carries a ground of its own. */
-.so-kb-copy {
-  --ds-btn-bg: var(--ds-surface);
-  position: fixed;
-  top: max(var(--ds-space-3), env(safe-area-inset-top));
-  right: max(var(--ds-space-3), env(safe-area-inset-right));
-  z-index: var(--ds-z-raised);
-  margin: 0;
-}
 
 /* The field the switch raises the keyboard through on its way to the real one.
    Focusable, so neither hidden nor display: none; out of sight, and at the

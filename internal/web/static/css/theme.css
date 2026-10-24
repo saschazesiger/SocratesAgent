@@ -96,7 +96,9 @@
   --so-option-label-font: var(--ds-weight-label) 20px/28px var(--ds-font);
   --so-question-action-height: 56px;
   --so-question-grow-basis: 140px;
-  --so-kb-copy-reserve: 120px;
+  /* The keyboard button no longer has a copy over a dialog; the question
+     dialog's head (so-question.css) keeps its ordinary inset. */
+  --so-kb-copy-reserve: var(--ds-space-4);
 
   /* Admin */
   --so-log-max-height: 280px;

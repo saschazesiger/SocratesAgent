@@ -440,7 +440,10 @@ function openPanel(ctx, first) {
   function insertText(text) {
     // Dictation into a field that has not loaded would be overwritten by
     // what loads; the microphone waits like the keyboard does.
-    if (!st.loaded || textarea.readOnly) { toast('The prompt is still loading.', 'error'); return; }
+    // Asked of the draft, not of the field: on a touch screen a field nobody
+    // has tapped is read-only for the keyboard's sake (keyboard.js), and
+    // speaking into it is exactly what it is there for.
+    if (!st.loaded || textarea.disabled) { toast('The prompt is still loading.', 'error'); return; }
     const value = textarea.value;
     const from = Number.isInteger(textarea.selectionStart) ? textarea.selectionStart : value.length;
     const to = Number.isInteger(textarea.selectionEnd) ? textarea.selectionEnd : from;
