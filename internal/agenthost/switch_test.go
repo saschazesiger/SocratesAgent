@@ -197,8 +197,20 @@ func TestASwitchAfterTheTurnWaitsForIt(t *testing.T) {
 	cl.send("m1", "/sleep 1")
 	cl.until(10*time.Second, isType(agent.TypeTurnStarted))
 	cl.switchTo("s1", "acct-b", "", r, WhenAfterTurn, false)
-	cl.ack("s1", 5*time.Second)
+	// Taken, and said to wait: the server keeps it to send again.
+	if first := cl.ack("s1", 5*time.Second); !first.Pending {
+		t.Fatalf("the switch waiting for the turn was acknowledged as made: %+v", first)
+	}
+	delete(cl.acks, "s1")
+	cl.switchTo("s1", "acct-b", "", r, WhenAfterTurn, false)
+	if again := cl.ack("s1", 5*time.Second); !again.Dup || !again.Pending {
+		t.Fatalf("the repeat of a waiting switch: %+v", again)
+	}
+	delete(cl.acks, "s1")
 	cl.until(10*time.Second, isType(agent.TypeAccountSwitched))
+	if final := cl.ack("s1", 10*time.Second); final.Pending {
+		t.Fatalf("the switch made was not acknowledged for good: %+v", final)
+	}
 	events := r.journal()
 	p := agent.Fold(events)
 	if p.LastTurn == nil || p.LastTurn.Outcome != agent.OutcomeCompleted || p.Account != "acct-b" {
@@ -206,6 +218,67 @@ func TestASwitchAfterTheTurnWaitsForIt(t *testing.T) {
 	}
 	if got := cl.reply("m2", "/account"); got != "account acct-b, no key" {
 		t.Fatalf("after the switch: %q", got)
+	}
+}
+
+// A switch to the account the chat is already on - a second tap on
+// "Continue with", another device, an automatic switch on top of one by
+// hand - sends no second Continue: the first one runs, or ran.
+func TestASecondContinueToTheSameAccountSaysNothing(t *testing.T) {
+	r := newSwitchRig(t)
+	r.launchOn("acct-a", "", "")
+	cl := r.dial(0)
+	cl.reply("m1", "/limit")
+	cl.switchTo("s1", "acct-b", "", r, WhenNow, true)
+	cl.ack("s1", 30*time.Second)
+	cl.switchTo("s2", "acct-b", "", r, WhenNow, true)
+	cl.ack("s2", 30*time.Second)
+	cl.until(10*time.Second, func(ev agent.Event) bool {
+		return ev.Type == agent.TypeTurnEnded && ev.Outcome == agent.OutcomeCompleted
+	})
+	cl.switchTo("s3", "acct-b", "", r, WhenNow, true)
+	cl.ack("s3", 30*time.Second)
+	time.Sleep(300 * time.Millisecond)
+	continues := 0
+	for _, ev := range r.journal() {
+		if ev.Type == agent.TypeMessage && ev.Role == agent.RoleUser && ev.Text == ContinueText {
+			continues++
+		}
+	}
+	if continues != 1 {
+		t.Fatalf("%d continues", continues)
+	}
+}
+
+// A switch carries the whole environment of the account it goes to: one
+// without is refused, never run on the environment - and the key - of the
+// account the chat is on.
+func TestASwitchWithoutAnEnvironmentIsRefused(t *testing.T) {
+	r := newSwitchRig(t)
+	r.launchOn("acct-a", "sk-aaaa", "")
+	cl := r.dial(0)
+	if err := cl.c.Send(Command{Op: OpSwitchAccount, ClientID: "s1", Account: "acct-b"}); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.After(10 * time.Second)
+	for {
+		select {
+		case f := <-cl.frames:
+			if f.Fail != nil {
+				if f.Fail.Code != CodeBadRequest {
+					t.Fatalf("refused with %+v", f.Fail)
+				}
+				if got := cl.reply("m1", "/account"); got != "account acct-a, a key of 7 characters" {
+					t.Fatalf("after the refusal: %q", got)
+				}
+				return
+			}
+			if f.Ack != nil && f.Ack.ClientID == "s1" {
+				t.Fatalf("a switch without an environment was taken: %+v", f.Ack)
+			}
+		case <-deadline:
+			t.Fatal("no answer to the switch")
+		}
 	}
 }
 
@@ -241,7 +314,8 @@ func TestASecretOfAnotherChatIsRefused(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := cl.c.Send(Command{Op: OpSwitchAccount, ClientID: "s1", Account: "acct-b", SecretEnv: other}); err != nil {
+	if err := cl.c.Send(Command{Op: OpSwitchAccount, ClientID: "s1", Account: "acct-b", Env: []string{"PATH=" + os.Getenv("PATH")},
+		SecretEnv: other}); err != nil {
 		t.Fatal(err)
 	}
 	deadline := time.After(10 * time.Second)

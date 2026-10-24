@@ -349,3 +349,27 @@ func TestASwitchThroughTheHostKeepsTheSession(t *testing.T) {
 		t.Fatal("host.json holds the key")
 	}
 }
+
+// A switch after the turn, asked for while a limit holds the queue, is made:
+// what the limit holds waits for the switch, not the switch for it - and
+// then runs on the new account.
+func TestASwitchAfterTheTurnIsMadeWhileALimitHoldsTheQueue(t *testing.T) {
+	h := newHostRig(t)
+	h.launch("")
+	cn := h.dial()
+	cn.until("the conversation", func(ev agent.Event) bool { return ev.Type == agent.TypeConversation })
+	cn.send("m1", "/limit")
+	cn.send("m2", "/whoami")
+	if ev := cn.until("the limited turn", turnEnded); ev.Outcome != agent.OutcomeLimited {
+		t.Fatalf("turn %+v", ev)
+	}
+	if err := cn.c.Send(agenthost.Command{Op: agenthost.OpSwitchAccount, ClientID: "s1", Account: "b", Env: h.r.env,
+		When: agenthost.WhenAfterTurn}); err != nil {
+		t.Fatal(err)
+	}
+	cn.until("the divider to b", func(ev agent.Event) bool { return ev.Type == agent.TypeAccountSwitched && ev.To == "b" })
+	started := cn.until("the held message's turn", func(ev agent.Event) bool { return ev.Type == agent.TypeTurnStarted })
+	if started.Account != "b" {
+		t.Fatalf("the held message ran on %q", started.Account)
+	}
+}

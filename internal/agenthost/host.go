@@ -578,7 +578,7 @@ func (h *host) handle(c *hostConn, cmd Command) any {
 		var seen bool
 		h.rec.View(func(p *agent.Projection) { seq, seen = p.Seen(cmd.ClientID) })
 		if seen {
-			return Ack{T: FrameAck, ClientID: cmd.ClientID, Op: cmd.Op, Seq: seq, Dup: true}
+			return Ack{T: FrameAck, ClientID: cmd.ClientID, Op: cmd.Op, Seq: seq, Dup: true, Pending: h.isPending(cmd.ClientID)}
 		}
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)

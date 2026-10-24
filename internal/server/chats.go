@@ -489,7 +489,10 @@ func (p *chatPeer) serve(conn *agenthost.Conn) {
 		case f.Delta != nil:
 			p.feed.Delta(*f.Delta)
 		case f.Ack != nil:
-			p.reply(f.Ack.ClientID, chatReply{ack: f.Ack}, true)
+			// A switch that waits for the turn stays in the outbox until it
+			// is made: a host that dies meanwhile is followed by one started
+			// on its account (accountSpec).
+			p.reply(f.Ack.ClientID, chatReply{ack: f.Ack}, !f.Ack.Pending)
 		case f.Fail != nil:
 			p.reply(f.Fail.ClientID, chatReply{fail: f.Fail}, !keepForNextHost(f.Fail))
 		}

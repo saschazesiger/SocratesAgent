@@ -47,6 +47,7 @@ func (s *Server) handleChatAccount(w http.ResponseWriter, r *http.Request) {
 	p.mu.Lock()
 	seq, seen := p.proj.Seen(body.ClientID)
 	from := accountOfTurn(p.proj, row)
+	limited := p.proj.Turn == nil && p.proj.LastTurn != nil && p.proj.LastTurn.Outcome == agent.OutcomeLimited
 	p.mu.Unlock()
 	if seen {
 		writeJSON(w, http.StatusOK, map[string]any{"client_id": body.ClientID, "seq": seq, "dup": true})
@@ -79,8 +80,9 @@ func (s *Server) handleChatAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	reason := ""
-	if body.Continue && from != "" {
-		// A tap on "Continue with" under a limit says why.
+	if body.Continue && limited && from != "" {
+		// A tap on "Continue with" under a limit says why; a switch in the
+		// middle of a turn the person stopped for it is no limit.
 		label := from
 		if a, err := s.store.GetAccount(from); err == nil {
 			label = a.Label

@@ -160,6 +160,10 @@ type Ack struct {
 	ByDevice          string `json:"by_device,omitempty"`
 	// AskID is the id an ask op's question was journaled under.
 	AskID string `json:"ask_id,omitempty"`
+	// Pending is a switch_account that waits for the turn to end: taken,
+	// not made yet. The client keeps it to send again until the final ack
+	// of the same client_id, which comes once it is made or replaced.
+	Pending bool `json:"pending,omitempty"`
 }
 
 // Answer is the answer to an ask a connection asked (OpAsk).

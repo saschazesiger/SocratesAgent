@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -308,10 +309,30 @@ func TestAChatSwitchesAccountAndTheKeyStaysSealed(t *testing.T) {
 // has headroom, told to continue; with no such account it stops as well.
 func TestALimitStopsTheChatOrSwitchesIt(t *testing.T) {
 	c := newChatEnv(t, time.Hour)
+	sent := catch(c.srv.push)
+	if err := c.srv.push.add(pushSub{Subscription: testSubscription("https://push.example.net/a")}); err != nil {
+		t.Fatal(err)
+	}
+	limitPushes := func(within time.Duration) []pushNote {
+		var out []pushNote
+		deadline := time.After(within)
+		for {
+			select {
+			case one := <-sent:
+				if strings.HasPrefix(one.note.Body, "Limit reached") {
+					out = append(out, one.note)
+				}
+			case <-deadline:
+				return out
+			}
+		}
+	}
 	a := c.newAccount(t, "A", accounts.Subscription, "")
 	id := c.chatOn(t, a, true)
 	c.reply(t, id, "m0", "/limit")
-	time.Sleep(500 * time.Millisecond)
+	if got := limitPushes(time.Second); len(got) != 1 || got[0].ID != id || !strings.HasSuffix(got[0].Body, "(A)") {
+		t.Fatalf("the push of a limit with nowhere to go: %+v", got)
+	}
 	if n := count(c.journal(t, id), isEv(agent.TypeAccountSwitched)); n != 0 {
 		t.Fatalf("a switch with nowhere to go: %d", n)
 	}
@@ -325,7 +346,10 @@ func TestALimitStopsTheChatOrSwitchesIt(t *testing.T) {
 	if acct.LimitedUntil <= time.Now().UnixMilli() {
 		t.Fatalf("A is not marked limited: %d", acct.LimitedUntil)
 	}
-	time.Sleep(500 * time.Millisecond)
+	// The same limit again is not pushed twice.
+	if got := limitPushes(time.Second); len(got) != 0 {
+		t.Fatalf("the same limit was pushed again: %+v", got)
+	}
 	if n := count(c.journal(t, id), isEv(agent.TypeAccountSwitched)); n != 0 {
 		t.Fatalf("a switch with the automatic switch off: %d", n)
 	}
@@ -353,6 +377,51 @@ func TestALimitStopsTheChatOrSwitchesIt(t *testing.T) {
 	}
 	if p := agent.Fold(events); p.LastTurn == nil || p.LastTurn.Account != b {
 		t.Fatalf("the continue ran on %+v", p.LastTurn)
+	}
+}
+
+// A switch after the turn waits in the outbox, not only in the host: a host
+// killed before the turn ends is followed by one on the new account, with
+// the divider, and the switch is not lost.
+func TestASwitchAfterTheTurnSurvivesTheHost(t *testing.T) {
+	c := newChatEnv(t, time.Hour)
+	a := c.newAccount(t, "A", accounts.Subscription, "")
+	b := c.newAccount(t, "B", accounts.Subscription, "")
+	id := c.chatOn(t, a, false)
+	c.send(t, id, "m1", "/stream 500 10")
+	events := c.waitJournal(t, id, 10*time.Second, "streaming", func(evs []agent.Event) bool {
+		return count(evs, isEv(agent.TypePartDelta)) > 0
+	})
+	res, payload := c.do(t, c.client, "POST", "/api/chats/"+id+"/account",
+		`{"client_id":"s1","account":"`+b+`","when":"after_turn"}`)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("the switch: %d %v", res.StatusCode, payload)
+	}
+	if outbox, _ := c.store.Outbox(id); len(outbox) != 1 {
+		t.Fatalf("the waiting switch is not in the outbox: %d", len(outbox))
+	}
+	if err := syscall.Kill(agent.Fold(events).HostPID, syscall.SIGKILL); err != nil {
+		t.Fatal(err)
+	}
+	events = c.waitJournal(t, id, 20*time.Second, "the divider", func(evs []agent.Event) bool {
+		return count(evs, isEv(agent.TypeAccountSwitched)) == 1
+	})
+	if p := agent.Fold(events); p.Account != b {
+		t.Fatalf("the chat is on %s", p.Account)
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		outbox, _ := c.store.Outbox(id)
+		if len(outbox) == 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the switch stays in the outbox: %s", outbox[0].Command)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if got := c.reply(t, id, "m2", "/account"); !strings.HasPrefix(got, "account "+b) {
+		t.Fatalf("after the restart: %q", got)
 	}
 }
 

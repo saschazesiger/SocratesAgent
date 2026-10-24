@@ -63,6 +63,13 @@ type accountHub struct {
 
 	codexMu    sync.Mutex
 	codexUsage map[string]codexReading
+
+	// told is, per chat, the account whose limit stopped it and was pushed:
+	// a turn that runs into the same limit again before one gets through - a
+	// message queued in the CLI behind it, the person trying once more - is
+	// not pushed twice.
+	toldMu sync.Mutex
+	told   map[string]string
 }
 
 type codexReading struct {
@@ -71,7 +78,7 @@ type codexReading struct {
 }
 
 func newAccountHub(s *Server) *accountHub {
-	return &accountHub{srv: s, signins: accounts.NewSignIns(), codexUsage: map[string]codexReading{}}
+	return &accountHub{srv: s, signins: accounts.NewSignIns(), codexUsage: map[string]codexReading{}, told: map[string]string{}}
 }
 
 // keys is the data directory's keyring, made the first time it is needed.
@@ -508,6 +515,11 @@ func (h *accountHub) noteTurnEnd(p *chatPeer, id string, ev agent.Event, limits 
 	if id == "" {
 		return
 	}
+	if ev.Outcome != agent.OutcomeLimited {
+		h.toldMu.Lock()
+		delete(h.told, p.id)
+		h.toldMu.Unlock()
+	}
 	switch ev.Outcome {
 	case agent.OutcomeCompleted:
 		if a, err := h.srv.store.GetAccount(id); err == nil && a.LimitedUntil != 0 {
@@ -520,8 +532,14 @@ func (h *accountHub) noteTurnEnd(p *chatPeer, id string, ev agent.Event, limits 
 				until = l.ResetsAt * 1000
 			}
 		}
-		if until <= time.Now().UnixMilli() {
-			until = time.Now().Add(unknownRenewal).UnixMilli()
+		if now := time.Now().UnixMilli(); until <= now {
+			// No window says when it renews: the time guessed when the
+			// account ran into it stands while it lasts.
+			if a, err := h.srv.store.GetAccount(id); err == nil && a.LimitedUntil > now {
+				until = a.LimitedUntil
+			} else {
+				until = time.Now().Add(unknownRenewal).UnixMilli()
+			}
 		}
 		_ = h.srv.store.SetAccountLimitedUntil(id, until)
 		go h.onLimit(p, id, ev.TurnID, until)
@@ -558,6 +576,13 @@ func (h *accountHub) onLimit(p *chatPeer, from, turnID string, until int64) {
 				}
 			}
 		}
+	}
+	h.toldMu.Lock()
+	again := h.told[p.id] == from
+	h.told[p.id] = from
+	h.toldMu.Unlock()
+	if again {
+		return
 	}
 	body := "Limit reached"
 	if left := time.Until(time.UnixMilli(until)); left > 0 {

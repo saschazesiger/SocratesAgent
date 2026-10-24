@@ -2,6 +2,7 @@ package agenthost
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -30,6 +31,10 @@ import (
 const switchWait = 30 * time.Second
 
 // pendingSwitch is a switch_account that waits for the agent to be done.
+// It is acknowledged as pending at once, so the person's request is
+// answered, and finally once it is made or replaced: until then it stays in
+// the server's outbox, and a host that dies meanwhile is followed by one
+// the server starts on the account it names (AGENT-HOST.md §4.3).
 type pendingSwitch struct {
 	cmd Command
 	env []string
@@ -45,6 +50,32 @@ func (h *host) hasPending() bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return h.pending != nil
+}
+
+// isPending reports whether clientID is the switch that waits.
+func (h *host) isPending(clientID string) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return clientID != "" && h.pending != nil && h.pending.cmd.ClientID == clientID
+}
+
+// settle acknowledges a switch that waited for good, to every client: the
+// server takes it out of its outbox. A client that does not take the frame
+// now gets it again as a repeat, when it sends the switch again.
+func (h *host) settle(cmd Command) {
+	if cmd.ClientID == "" {
+		return
+	}
+	raw, _ := json.Marshal(Ack{T: FrameAck, ClientID: cmd.ClientID, Op: cmd.Op})
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for c := range h.conns {
+		select {
+		case c.replies <- raw:
+		case <-c.gone:
+		default:
+		}
+	}
 }
 
 // noteBootAccount journals the divider for a chat the server moved to another
@@ -71,17 +102,16 @@ func (h *host) switchCmd(cmd Command) any {
 	if h.adapter == nil {
 		return fail(cmd, CodeNotRunning, "the agent is not running")
 	}
+	// The account's whole environment comes with the switch: the one the
+	// host runs on now holds the other account's key.
+	if len(cmd.Env) == 0 {
+		return fail(cmd, CodeBadRequest, "a switch needs the account's environment")
+	}
 	secret, err := h.openSecretEnv(cmd.SecretEnv)
 	if err != nil {
 		return fail(cmd, CodeBadRequest, err.Error())
 	}
-	env := cmd.Env
-	if len(env) == 0 {
-		h.mu.Lock()
-		env = h.env
-		h.mu.Unlock()
-	}
-	env = joinEnv(env, secret)
+	env := joinEnv(cmd.Env, secret)
 	var seq int64
 	if cmd.ClientID != "" {
 		events, err := h.rec.EmitDurable(agent.Event{Type: agent.TypeCommand, ClientID: cmd.ClientID, Op: cmd.Op,
@@ -93,13 +123,17 @@ func (h *host) switchCmd(cmd Command) any {
 	}
 	h.mu.Lock()
 	// The newest choice is the one that stands.
+	replaced := h.pending
 	h.pending = nil
 	h.mu.Unlock()
+	if replaced != nil {
+		h.settle(replaced.cmd)
+	}
 	if cmd.When == WhenAfterTurn && h.busy() {
 		h.mu.Lock()
 		h.pending = &pendingSwitch{cmd: cmd, env: env}
 		h.mu.Unlock()
-		return Ack{T: FrameAck, ClientID: cmd.ClientID, Op: cmd.Op, Seq: seq}
+		return Ack{T: FrameAck, ClientID: cmd.ClientID, Op: cmd.Op, Seq: seq, Pending: true}
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), switchWait+parkWait+startWait)
 	defer cancel()
@@ -110,11 +144,33 @@ func (h *host) switchCmd(cmd Command) any {
 }
 
 // busy is whether the agent is working on something a switch after the turn
-// waits for: a turn, or a message it has not taken up.
+// waits for: a turn, or a message it has not taken up - unless what it has
+// not taken up is held behind a limit (the adapters hold their queue after a
+// limited turn), which waits for the switch.
 func (h *host) busy() bool {
 	busy := false
-	h.rec.View(func(p *agent.Projection) { busy = p.Turn != nil || len(p.Undelivered()) > 0 })
+	h.rec.View(func(p *agent.Projection) {
+		busy = p.Turn != nil || (len(p.Undelivered()) > 0 && !heldByLimit(p))
+	})
 	return busy
+}
+
+// heldByLimit reports whether the agent stopped at its account's limit and
+// has done nothing since.
+func heldByLimit(p *agent.Projection) bool {
+	return p.Turn == nil && p.LastTurn != nil && p.LastTurn.Outcome == agent.OutcomeLimited
+}
+
+// owesContinue reports whether a switch's Continue still has a turn to carry
+// on: the last one stopped (by the limit, or by the switch) and the agent has
+// taken nothing up since. A Continue sent twice - a second tap, another
+// device, an automatic switch on top of one by hand - finds the first one
+// running or done, and says nothing.
+func owesContinue(p *agent.Projection) bool {
+	if p.Turn != nil || len(p.Undelivered()) > 0 || p.LastTurn == nil {
+		return false
+	}
+	return p.LastTurn.Outcome == agent.OutcomeLimited || p.LastTurn.Outcome == agent.OutcomeInterrupted
 }
 
 // runPending makes the switch that waits for the agent once it is done. It
@@ -143,6 +199,7 @@ func (h *host) runPending() {
 	if err := h.doSwitch(ctx, p.cmd, p.env); err != nil {
 		log.Printf("the switch to %s after the turn failed: %v", p.cmd.Account, err)
 	}
+	h.settle(p.cmd)
 }
 
 // doSwitch moves the CLI to cmd.Account, with the command lock held.
@@ -161,7 +218,9 @@ func (h *host) doSwitch(ctx context.Context, cmd Command, env []string) error {
 		h.mu.Lock()
 		h.env = env
 		h.mu.Unlock()
-		if cmd.Continue {
+		owed := false
+		h.rec.View(func(p *agent.Projection) { owed = owesContinue(p) })
+		if cmd.Continue && owed {
 			h.sendContinue(ctx, cmd)
 		}
 		return nil
