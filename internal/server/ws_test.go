@@ -1645,8 +1645,9 @@ func TestTerminalLateTerminalReplyNeverReachesThePane(t *testing.T) {
 	ack := uint64(floatOf(t, hello, "input_ack"))
 
 	// The replies the browser held while it was away, in the order xterm.js
-	// sends them, and then the command.
-	back.send(ack+1, "\x1b[?1;2c\x1b[>0;276;0c\x1b[8;30;100t\x1b[4;540;800t")
+	// sends them - the mode report is its answer to the synchronized output
+	// question tmux 3.8 asks - and then the command.
+	back.send(ack+1, "\x1b[?1;2c\x1b[>0;276;0c\x1b[?2026;2$y\x1b[8;30;100t\x1b[4;540;800t")
 	back.send(ack+2, "echo after-the-outage\r")
 	back.waitFor("after-the-outage")
 	time.Sleep(500 * time.Millisecond)
@@ -1655,7 +1656,7 @@ func TestTerminalLateTerminalReplyNeverReachesThePane(t *testing.T) {
 	if err != nil {
 		t.Fatalf("capture-pane: %v", err)
 	}
-	for _, corruption := range []string{"1;2c", "0;276;0c", "8;30;100t", "command not found"} {
+	for _, corruption := range []string{"1;2c", "0;276;0c", "2026;2$y", "8;30;100t", "command not found"} {
 		if strings.Contains(screen, corruption) {
 			t.Fatalf("a stale terminal report was typed into the pane (%q):\n%s", corruption, screen)
 		}
