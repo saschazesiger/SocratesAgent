@@ -467,7 +467,8 @@ const AUTO_PROFILE = '@auto';
  * settingsForm builds the controls a session is bound by: the program, how a
  * shell runs, the sign-in profile, the working directory, the model, the
  * effort and Ultracode. A chat agent (isChat) is asked for its folder, model
- * and effort only - agent, folder, model - and a Shell for its folder. The
+ * and effort - agent, folder, model - and Claude Code for Ultracode too; a
+ * Shell for its folder. The
  * new-session sheet and the panel of a prepared session both draw theirs
  * with it, so the two can never offer different
  * choices or say different things about them - a prepared session has to
@@ -781,9 +782,8 @@ export function settingsForm(options = {}) {
 
   function selectHarness(harnessId) {
     pick.harness = harnessId;
-    // Ultracode is a Claude Code terminal's option; a chat is bound by its
-    // agent, folder and model alone.
-    ultracodeField.hidden = harnessId !== 'claude' || isChat(harnessId);
+    // Ultracode is Claude Code's option, a chat's as a terminal's.
+    ultracodeField.hidden = harnessId !== 'claude';
     if (ultracodeField.hidden && pick.ultracode) {
       // Ultracode is Claude Code's; another program does not carry it along.
       pick.ultracode = false;

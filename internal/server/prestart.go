@@ -126,13 +126,16 @@ func (s *Server) createPrestart(w http.ResponseWriter, body createSessionBody) {
 	}
 	label, kind := chatLabel(harnessID), store.KindChat
 	if chat {
-		// A chat is bound by its agent, folder, model and effort; profiles and
-		// Ultracode are the terminal's (accounts take the profile's place).
+		// A chat is bound by its agent, folder, model and effort, and a
+		// Claude Code chat by Ultracode; profiles are the terminal's
+		// (accounts take the profile's place).
 		if refused := checkChatHarness(harnessID, settings); refused != nil {
 			writeError(w, refused.status, refused.msg)
 			return
 		}
-		spec.Model, spec.Effort, spec.Profile, spec.Ultracode = strings.TrimSpace(spec.Model), strings.TrimSpace(spec.Effort), "", false
+		spec.Model, spec.Effort, spec.Profile = strings.TrimSpace(spec.Model), strings.TrimSpace(spec.Effort), ""
+		spec.Ultracode = chatUltracode(harnessID, spec.Ultracode)
+		spec.Options = withOption(spec.Options, "ultracode", spec.Ultracode)
 	} else {
 		h, refused := s.checkLaunch(&spec, settings)
 		if refused != nil {
@@ -290,7 +293,9 @@ func (s *Server) handlePatchPrestart(w http.ResponseWriter, r *http.Request) {
 			writeError(w, refused.status, refused.msg)
 			return
 		}
-		spec.Model, spec.Effort, spec.Profile, spec.Ultracode = strings.TrimSpace(model), strings.TrimSpace(effort), "", false
+		spec.Model, spec.Effort, spec.Profile = strings.TrimSpace(model), strings.TrimSpace(effort), ""
+		spec.Ultracode = chatUltracode(harnessID, ultracode)
+		spec.Options = withOption(spec.Options, "ultracode", spec.Ultracode)
 		auto = false
 		label = chatLabel(harnessID)
 	} else {

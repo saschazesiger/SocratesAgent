@@ -433,6 +433,7 @@ func (s *Server) routes() {
 	mux.HandleFunc("POST /api/chats/{id}/model", s.auth(s.handleChatModel))
 	mux.HandleFunc("POST /api/chats/{id}/command", s.auth(s.handleChatCommand))
 	mux.HandleFunc("POST /api/chats/{id}/attachments", s.auth(s.handleChatAttachments))
+	mux.HandleFunc("POST /api/chats/{id}/options", s.auth(s.handleChatOptions))
 
 	// The harness catalogue: what can be started, and where.
 	mux.HandleFunc("GET /api/harnesses", s.auth(s.handleHarnesses))

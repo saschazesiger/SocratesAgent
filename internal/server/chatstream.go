@@ -51,7 +51,7 @@ func (st *chatStream) end(code websocket.StatusCode, reason string) {
 }
 
 func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
-	_, p, ok := s.chatOf(w, r)
+	row, p, ok := s.chatOf(w, r)
 	if !ok {
 		return
 	}
@@ -78,6 +78,9 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	conn.SetReadLimit(eventsReadLimit)
+	// A chat whose folder was lost while its row knows the conversation
+	// gets its history back from the CLI's transcript as it is opened.
+	p.rebuildIfLost(row)
 	if err := s.serveChatStream(conn, token, p); err != nil && !errors.Is(err, context.Canceled) {
 		log.Printf("chat stream %s: %v", p.id, err)
 	}

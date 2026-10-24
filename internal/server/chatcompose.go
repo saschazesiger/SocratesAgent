@@ -358,3 +358,45 @@ func (s *Server) startPreparedChat(ctx context.Context, row *store.Session) (*st
 	}
 	return current, http.StatusOK, nil
 }
+
+// chatUltracode is whether a chat runs with Ultracode: asked for, and Claude
+// Code's. Another agent has no such option and does not carry it along.
+func chatUltracode(harness string, on bool) bool {
+	return on && harness == string(harnesses.KindClaude)
+}
+
+// handleChatOptions changes a started chat's session options: Ultracode, for
+// a Claude Code chat. It is a launch setting of the CLI, so the agent is
+// parked as soon as it is idle and the next message resumes the conversation
+// with it - nothing that runs is cut short.
+//
+//	POST /api/chats/{id}/options   {"ultracode": bool}   {"session":…}
+func (s *Server) handleChatOptions(w http.ResponseWriter, r *http.Request) {
+	row, p, ok := s.chatOf(w, r)
+	if !ok {
+		return
+	}
+	var body struct {
+		Ultracode *bool `json:"ultracode"`
+	}
+	if !readJSON(w, r, &body) {
+		return
+	}
+	if body.Ultracode == nil {
+		writeError(w, http.StatusBadRequest, "there is no option to change")
+		return
+	}
+	if *body.Ultracode && !chatUltracode(row.Harness, true) {
+		writeError(w, http.StatusBadRequest, "Ultracode is an option of Claude Code chats")
+		return
+	}
+	if readPrestartOptions(row.Options).Ultracode != *body.Ultracode {
+		if err := s.store.SetChatOptions(row.ID, withOption(row.Options, "ultracode", *body.Ultracode)); err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		s.events.poke()
+		s.chats.park(p.id)
+	}
+	s.answerWithSession(w, row.ID)
+}

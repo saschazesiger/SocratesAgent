@@ -2130,6 +2130,21 @@ function compactChat(session) {
   );
 }
 
+// setUltracode switches a Claude Code chat's Ultracode on or off. Its agent
+// is put to rest as soon as it is idle and takes the option up with the next
+// message, so nothing that runs is cut short; the toast says so.
+async function setUltracode(session, on) {
+  try {
+    const data = await api('/api/chats/' + encodeURIComponent(session.id) + '/options', {
+      method: 'POST', attempts: 2, body: { ultracode: on },
+    });
+    if (data && data.session) replaceSession(data.session);
+    toast(on ? 'Ultracode is on from the next message.' : 'Ultracode is off from the next message.');
+  } catch (err) {
+    toast(errorMessage(err), 'error');
+  }
+}
+
 // exportChat opens the whole conversation as the server holds it: every
 // message, part and question, as JSON.
 function exportChat(session) {
@@ -2155,9 +2170,9 @@ const menuActions = new Map();
 
 // menuItemHtml is one item of the menu: its glyph and its words. A status is
 // one of a set, so it is a radio item whose check shows where it stands.
-function menuItemHtml(action, label, glyph, checked) {
+function menuItemHtml(action, label, glyph, checked, role = 'menuitemradio') {
   if (checked !== undefined) {
-    return html`<button class="ds-menu__item" role="menuitemradio" type="button" data-action="${action}" aria-checked="${checked ? 'true' : 'false'}">${raw(icon('check', 20, 'ds-menu__check'))}<span class="ds-menu__label">${label}</span></button>`;
+    return html`<button class="ds-menu__item" role="${role}" type="button" data-action="${action}" aria-checked="${checked ? 'true' : 'false'}">${raw(icon('check', 20, 'ds-menu__check'))}<span class="ds-menu__label">${label}</span></button>`;
   }
   return html`<button class="ds-menu__item" role="menuitem" type="button" data-action="${action}">${raw(icon(glyph, 20))}<span class="ds-menu__label">${label}</span></button>`;
 }
@@ -2182,9 +2197,9 @@ async function openRowMenu(anchor, id) {
   const chat = isChat(session);
   menuActions.clear();
   const items = [];
-  const add = (action, label, glyph, run, checked) => {
+  const add = (action, label, glyph, run, checked, role) => {
     menuActions.set(action, run);
-    items.push(menuItemHtml(action, label, glyph, checked));
+    items.push(menuItemHtml(action, label, glyph, checked, role));
   };
   add('info', 'Info', 'info', () => infoDialog(session, anchor));
   if (!editor) add('rename', 'Rename', 'pencil', () => renameSession(session, anchor));
@@ -2197,6 +2212,12 @@ async function openRowMenu(anchor, id) {
   items.push(html`<div class="ds-menu__divider" role="separator"></div>`);
   if (editor && state.current?.id === session.id) add('reload', 'Reload editor', 'sync', () => attach(session));
   if (chat) {
+    // Claude Code's session option, which its agent takes up from the next
+    // message on.
+    if (session.harness === 'claude') {
+      const on = !!(session.options && session.options.ultracode);
+      add('ultracode', 'Ultracode', '', () => setUltracode(session, !on), on, 'menuitemcheckbox');
+    }
     add('compact', 'Compact the conversation', 'archive', () => compactChat(session));
     add('export', 'Download the conversation', 'download', () => exportChat(session));
   } else if (!prepared) {
@@ -3522,6 +3543,7 @@ async function startChat(pick) {
         harness: pick.harness,
         model: pick.model,
         effort: pick.effort,
+        ultracode: pick.ultracode || undefined,
         workdir_mode: pick.workdir_mode,
         workdir: pick.workdir,
       },

@@ -452,6 +452,22 @@ func (p *chatPeer) lastSeq() int64 {
 	return p.brief.Seq
 }
 
+// rebuildIfLost starts a host for a chat whose journal is gone while its row
+// still knows the conversation - a folder lost, a backup restored without it:
+// the launch writes the conversation into host.json, and the host rebuilds the
+// history from the CLI's own transcript (AGENT-HOST.md §6). It is done when
+// the chat is opened rather than at start, so that a restore with many such
+// chats does not start an agent for each.
+func (p *chatPeer) rebuildIfLost(row *store.Session) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if row.CLISessionID == "" || p.brief.Seq != 0 || p.pumping {
+		return
+	}
+	p.warm = true
+	p.kickLocked()
+}
+
 // errNoHost is a connect that found no host and no reason to start one.
 var errNoHost = errors.New("the chat has no agent host and nothing for one to do")
 
@@ -485,6 +501,7 @@ func (p *chatPeer) launch(ctx context.Context) error {
 		ChatID: p.id, Harness: row.Harness, Workdir: row.Workdir, Model: model, Effort: effort,
 		Binary:       strings.TrimSpace(entry.Binary),
 		Conversation: row.CLISessionID, ParkAfterMS: p.hub.parkAfterFor().Milliseconds(),
+		Ultracode: chatUltracode(row.Harness, readPrestartOptions(row.Options).Ultracode),
 	})
 }
 
@@ -714,6 +731,8 @@ type createChatBody struct {
 	WorkdirMode string `json:"workdir_mode"`
 	Workdir     string `json:"workdir"`
 	Title       string `json:"title"`
+	// Ultracode is Claude Code's session option (chatUltracode).
+	Ultracode bool `json:"ultracode"`
 	// Message is the first message, sent once the chat exists.
 	Message *chatMessageBody `json:"message"`
 }
@@ -773,7 +792,8 @@ func (s *Server) handleCreateChat(w http.ResponseWriter, r *http.Request) {
 		ID: id, ClientID: clientID, Title: sessionTitle(body.Title, label, workdir, mode),
 		TitleSource: titleSource(body.Title), Harness: harness, Model: strings.TrimSpace(body.Model),
 		Effort: strings.TrimSpace(body.Effort), Workdir: workdir, WorkdirMode: mode,
-		Kind: store.KindChat, State: store.StateRunning,
+		Options: withOption(nil, "ultracode", chatUltracode(harness, body.Ultracode)),
+		Kind:    store.KindChat, State: store.StateRunning,
 	}
 	if err := s.store.CreateSession(row); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
