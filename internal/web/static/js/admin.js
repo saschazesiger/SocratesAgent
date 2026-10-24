@@ -1460,9 +1460,11 @@ function renderTunnelMode() {
   $('tunnelToken').closest('.ds-field').hidden = !named;
   $('tunnelHostname').closest('.ds-field').hidden = !named;
   const local = localURL || 'the local address shown above';
+  // The choices are short, so that a phone shows them whole; what each one
+  // means is said here.
   $('tunnelModeHint').textContent = named
-    ? 'Runs your own named tunnel. In the Cloudflare dashboard, point its public hostname at ' + local + '.'
-    : 'Free and instant, but the address changes every restart and anyone with the link can reach the login page.';
+    ? 'Your own hostname, with a token from your Cloudflare account. In the Cloudflare dashboard, point its public hostname at ' + local + '.'
+    : 'A random trycloudflare.com address, free and instant, but it changes every restart and anyone with the link can reach the login page.';
 }
 
 const TUNNEL_CHIP = {
