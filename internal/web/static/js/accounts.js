@@ -115,10 +115,17 @@ export function renewal(account, now = Date.now()) {
   return 'renews in ' + h + ' h' + (m ? ' ' + m + ' min' : '');
 }
 
-/** usageWords is an account's windows in a line: "5h 40% · 7d 60%". */
-export function usageWords(account) {
+/**
+ * usageWords is an account's windows in a line: "5h 40% · 7d 60%". A window
+ * whose reset has passed is empty again, whatever the last reading said.
+ */
+export function usageWords(account, now = Date.now()) {
   return (account.limits || []).filter((w) => w.label === '5h' || w.label === '7d')
-    .map((w) => w.label + ' ' + Math.round(Number(w.used_percent) || 0) + '%').join(' · ');
+    .map((w) => {
+      const reset = w.resets_at ? new Date(w.resets_at).getTime() : 0;
+      const used = reset && reset <= now ? 0 : Number(w.used_percent) || 0;
+      return w.label + ' ' + Math.round(used) + '%';
+    }).join(' · ');
 }
 
 /** meters is an account's windows as the sheet's flat bars. */
