@@ -442,7 +442,13 @@ func (a *adapter) send(ctx context.Context, msg agent.Outgoing) error {
 	a.held = ""
 	active := a.active
 	shell := isShellLine(msg.Text)
-	if active != nil && (shell || active.kind != turnNormal) || len(a.queue) > 0 {
+	// A turn codex starts for a command (a "!" line, a compaction, a review)
+	// counts from the call on: codex answers the call before the turn's
+	// turn/started, and a turn/start in between would race that turn - it
+	// is refused ("a turn is already running"), or its turn/started taken
+	// for this message's.
+	commanding := a.expect != turnNormal
+	if active != nil && (shell || active.kind != turnNormal) || commanding || len(a.queue) > 0 {
 		a.queue = append(a.queue, msg)
 		a.mu.Unlock()
 		a.out.Emit(agent.Event{Type: agent.TypeMessageState, MessageID: msg.MessageID, State: agent.MessageQueued})
@@ -571,7 +577,7 @@ func (a *adapter) startTurn(ctx context.Context, msg agent.Outgoing) error {
 		a.starting = nil
 		a.expect, a.expectMsg = turnShell, msg.MessageID
 		a.mu.Unlock()
-		return a.rpc.call(ctx, "thread/shellCommand", map[string]any{"threadId": thread, "command": command}, nil)
+		return a.commanded(a.rpc.call(ctx, "thread/shellCommand", map[string]any{"threadId": thread, "command": command}, nil))
 	}
 	params := map[string]any{"threadId": thread, "input": input(msg), "clientUserMessageId": msg.MessageID}
 	if model != "" {
@@ -733,10 +739,10 @@ func (a *adapter) Command(ctx context.Context, name, args string) error {
 	switch strings.TrimPrefix(name, "/") {
 	case "compact":
 		a.expectTurn(turnOther)
-		return a.rpc.call(ctx, "thread/compact/start", map[string]any{"threadId": thread}, nil)
+		return a.commanded(a.rpc.call(ctx, "thread/compact/start", map[string]any{"threadId": thread}, nil))
 	case "review":
 		a.expectTurn(turnOther)
-		return a.rpc.call(ctx, "review/start", map[string]any{"threadId": thread, "target": reviewTarget(args)}, nil)
+		return a.commanded(a.rpc.call(ctx, "review/start", map[string]any{"threadId": thread, "target": reviewTarget(args)}, nil))
 	case "plan":
 		on := args != "off"
 		a.mu.Lock()
@@ -753,7 +759,7 @@ func (a *adapter) Command(ctx context.Context, name, args string) error {
 			return errors.New("the shell command is empty")
 		}
 		a.expectTurn(turnShell)
-		return a.rpc.call(ctx, "thread/shellCommand", map[string]any{"threadId": thread, "command": args}, nil)
+		return a.commanded(a.rpc.call(ctx, "thread/shellCommand", map[string]any{"threadId": thread, "command": args}, nil))
 	}
 	return agent.ErrUnknownCommand
 }
@@ -762,6 +768,23 @@ func (a *adapter) expectTurn(k turnKind) {
 	a.mu.Lock()
 	a.expect, a.expectMsg = k, ""
 	a.mu.Unlock()
+}
+
+// commanded is the end of a call that asked codex for a turn of a command's:
+// one codex refused starts no turn, so nothing waits for it any more, and
+// what was queued meanwhile goes. The caller holds sendMu.
+func (a *adapter) commanded(err error) error {
+	if err == nil {
+		return nil
+	}
+	a.mu.Lock()
+	a.expect, a.expectMsg = turnNormal, ""
+	waiting := a.active == nil && len(a.queue) > 0 && a.held == ""
+	a.mu.Unlock()
+	if waiting {
+		go a.flush()
+	}
+	return err
 }
 
 // reviewTarget reads /review's argument: nothing for the uncommitted changes,

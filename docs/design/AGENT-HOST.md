@@ -533,7 +533,9 @@ stdin (the app-server exits at once; the thread is on disk); Stop kills the proc
 `queued`; codex takes it up at its next step (0.164 cuts a streaming answer short for it) and the
 `userMessage` item carrying that id → `delivered`. A turn that cannot be steered (compaction,
 review: `activeTurnNotSteerable`) or a `!` line during a turn → held (`queued`) and sent when the turn
-ends; so is a steered message a turn ended without taking up — except after a `limited` turn, when
+ends, and so is any message while codex starts a command's turn (a `!` line, a compaction, a review:
+codex answers the call before that turn's `turn/started`, and a `turn/start` in between is refused,
+"a turn is already running"; a call codex refuses lets them go); so is a steered message a turn ended without taking up — except after a `limited` turn, when
 the adapter **holds** its queue (as OpenCode's, §5.3) until a `Send` of a message written after
 that turn's end (`AfterTurn` names it) lets it go (the person asked for it); a message written
 before the end is held with the rest, even when the host hands it over only after it, and so is one
@@ -1013,7 +1015,9 @@ attachment(s): …`).
   provider asks in a real host and goes on from the answer; skipped when its quota is used up).
 - `internal/agent/codex` against `e2e/fakebin/fakecodex` (built by the tests; a scripted app-server
   that keeps real-format rollouts, see its package comment): every mapping, steering and holding
-  (a message whose steer finds a limited turn gone before its `turn/completed` held), shell lines,
+  (a message whose steer finds a limited turn gone before its `turn/completed` held; what a turn
+  leaves - steered and not taken up, a `!` line, the message after it - each run after the one
+  before, `FAKECODEX_COMMAND_START_LAG_MS` widening the gap before a command's turn starts), shell lines,
   interrupt, limit, crash, answered requests, the dynamic-tool ask hook, park, resume, rebuild,
   the account-switch chain, and the adapter inside a real host process (SIGKILL takes codex along,
   the next host resumes; what a limit holds - a message steered into the limited turn, `/limit

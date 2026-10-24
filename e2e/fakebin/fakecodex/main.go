@@ -51,7 +51,10 @@
 //
 // Like codex, it lets a turn go before it sends the turn's turn/completed (codex
 // sends it from its event stream): a steer in between finds no active turn.
-// FAKECODEX_COMPLETED_LAG_MS widens that gap.
+// FAKECODEX_COMPLETED_LAG_MS widens that gap. It also answers a command's call
+// (a compaction, a review, a shell command) before the command's turn/started,
+// with the turn already running: a turn/start in between is refused.
+// FAKECODEX_COMMAND_START_LAG_MS widens that gap.
 package main
 
 import (
@@ -100,6 +103,9 @@ func main() {
 	if ms, err := strconv.Atoi(os.Getenv("FAKECODEX_COMPLETED_LAG_MS")); err == nil {
 		s.completedLag = time.Duration(ms) * time.Millisecond
 	}
+	if ms, err := strconv.Atoi(os.Getenv("FAKECODEX_COMMAND_START_LAG_MS")); err == nil {
+		s.commandLag = time.Duration(ms) * time.Millisecond
+	}
 	s.serve()
 }
 
@@ -108,8 +114,10 @@ type server struct {
 	account string
 	strict  bool
 	// completedLag is how long a turn's turn/completed comes after the
-	// turn is gone.
+	// turn is gone, and commandLag how long a command's turn/started comes
+	// after its call was answered.
 	completedLag time.Duration
+	commandLag   time.Duration
 
 	outMu sync.Mutex
 	out   *bufio.Writer
@@ -1030,6 +1038,7 @@ func (s *server) special(fr frame, threadID, kind, arg string) {
 		t.cancel = cancel
 		c := &tcx{s: s, th: th, t: t, ctx: ctx}
 		s.record(th, "event_msg", map[string]any{"type": "task_started", "turn_id": t.id})
+		time.Sleep(s.commandLag)
 		s.notify("turn/started", map[string]any{"threadId": th.id, "turn": map[string]any{"id": t.id, "rootTurnId": t.id, "status": "inProgress"}})
 		switch kind {
 		case "compact":
