@@ -156,7 +156,14 @@ func TestALostChatFolderIsRebuiltFromTheTranscript(t *testing.T) {
 			}
 			// The first turn is read, so that an unread mark after the
 			// rebuild is one the rebuild made: a mark from before a restart
-			// is kept, as work nobody has seen.
+			// is kept, as work nobody has seen. The detector has the turn's
+			// end, unread, first: it follows the journal a moment behind.
+			for deadline := time.Now().Add(5 * time.Second); !c.srv.manager.ActivityOf(id).Unread; {
+				if time.Now().After(deadline) {
+					t.Fatalf("the first turn never ended unread: %+v", c.srv.manager.ActivityOf(id))
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
 			c.srv.manager.MarkRead(id)
 			c.restart(t, 0, func() {
 				c.stopHosts(t)
