@@ -159,6 +159,12 @@ const (
 	NoticeForeignThinking = "foreign_thinking"
 )
 
+// ErrorAuth is an error event's code for a sign-in or key the provider
+// refused: the account has to sign in again (OpenCode's ProviderAuthError or
+// a 401, research/06 - among them a refresh token two chats of one account
+// renewed at the same moment).
+const ErrorAuth = "auth"
+
 // Delivery routes of an answer (ask.delivered's Via).
 const (
 	ViaTool    = "tool"

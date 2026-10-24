@@ -160,5 +160,9 @@ func (p *chatPeer) noteAccount(ev agent.Event, account string, limits map[string
 		h.noteIdentity(account, ev.Content)
 	case agent.TypeTurnEnded:
 		h.noteTurnEnd(p, account, ev, limits)
+	case agent.TypeError:
+		if ev.Code == agent.ErrorAuth && account != "" {
+			h.noteRefused(account)
+		}
 	}
 }

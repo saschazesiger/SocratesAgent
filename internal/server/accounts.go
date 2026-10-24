@@ -143,7 +143,7 @@ func (h *accountHub) refreshed(a store.Account) store.Account {
 	login := accounts.Detect(h.srv.dataDir, &a)
 	state, detail := a.State, a.StateDetail
 	switch {
-	case login.SignedIn:
+	case login.SignedIn && !accounts.Refused(&a):
 		state, detail = accounts.SignedIn, ""
 	case a.State == accounts.Failed:
 	default:
@@ -522,8 +522,14 @@ func (h *accountHub) noteTurnEnd(p *chatPeer, id string, ev agent.Event, limits 
 	}
 	switch ev.Outcome {
 	case agent.OutcomeCompleted:
-		if a, err := h.srv.store.GetAccount(id); err == nil && a.LimitedUntil != 0 {
-			_ = h.srv.store.SetAccountLimitedUntil(id, 0)
+		if a, err := h.srv.store.GetAccount(id); err == nil {
+			if a.LimitedUntil != 0 {
+				_ = h.srv.store.SetAccountLimitedUntil(id, 0)
+			}
+			// A turn that got through says the login works after all.
+			if accounts.Refused(a) {
+				_ = h.srv.store.SetAccountState(id, accounts.SignedIn, "")
+			}
 		}
 	case agent.OutcomeLimited:
 		var until int64
@@ -544,6 +550,25 @@ func (h *accountHub) noteTurnEnd(p *chatPeer, id string, ev agent.Event, limits 
 		_ = h.srv.store.SetAccountLimitedUntil(id, until)
 		go h.onLimit(p, id, ev.TurnID, until)
 	}
+}
+
+// noteRefused is the provider refusing an account's sign-in or key while a
+// chat used it: the account is out of use, saying why, until it signs in
+// again, gets a new key, or a turn on it gets through.
+func (h *accountHub) noteRefused(id string) {
+	a, err := h.srv.store.GetAccount(id)
+	if err != nil || accounts.Refused(a) {
+		return
+	}
+	detail := accounts.RefusedDetail
+	if a.Kind == accounts.APIKey {
+		detail = accounts.KeyRefusedDetail
+	}
+	if err := h.srv.store.SetAccountState(id, accounts.Failed, detail); err != nil {
+		log.Printf("accounts: %s: %v", id, err)
+		return
+	}
+	h.srv.events.poke()
 }
 
 // onLimit is REBUILD.md §4.3's limit: with the chat's automatic switch on,

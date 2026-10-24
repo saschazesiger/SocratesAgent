@@ -105,6 +105,19 @@ func ProfileLink(dataDir string, a *store.Account) string {
 	return ""
 }
 
+// Why an account the provider refused cannot be used until it signs in again
+// or gets a new key (agent.ErrorAuth).
+const (
+	RefusedDetail    = "The sign-in was refused when a chat used it - another chat on this account may have renewed it at the same moment. Sign in again."
+	KeyRefusedDetail = "The key was refused when a chat used it. Replace it."
+)
+
+// Refused reports whether an account is out of use because the provider
+// refused it: its login may still be on disk, but it does not work.
+func Refused(a *store.Account) bool {
+	return a.State == Failed && (a.StateDetail == RefusedDetail || a.StateDetail == KeyRefusedDetail)
+}
+
 // DefaultLabel is what the account the migration makes of an agent's own
 // sign-in is called, and the account a chat of an agent without any gets.
 const DefaultLabel = "Default"

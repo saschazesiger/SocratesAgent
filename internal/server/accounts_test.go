@@ -425,6 +425,52 @@ func TestASwitchAfterTheTurnSurvivesTheHost(t *testing.T) {
 	}
 }
 
+// A sign-in the provider refuses while a chat uses it - two chats of one
+// OAuth account renewing it at the same moment (research/06) - puts the
+// account out of use, saying to sign in again, though its login is still
+// on disk; a new sign-in brings it back.
+func TestARefusedSignInIsMarkedUntilItSignsInAgain(t *testing.T) {
+	c := newChatEnv(t, time.Hour)
+	a := c.newAccount(t, "A", accounts.Subscription, "")
+	b := c.newAccount(t, "B", accounts.Subscription, "")
+	id := c.chatOn(t, b, false)
+	c.reply(t, id, "m0", "/account")
+	res, payload := c.do(t, c.client, "POST", "/api/chats/"+id+"/account", `{"client_id":"s1","account":"`+a+`"}`)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("the switch: %d %v", res.StatusCode, payload)
+	}
+	c.reply(t, id, "m1", "/refused")
+	var got accountView
+	for deadline := time.Now().Add(10 * time.Second); ; {
+		list, _, _ := c.listAccounts(t)
+		for _, v := range list {
+			if v.ID == a {
+				got = v
+			}
+		}
+		if got.State == accounts.Failed || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if got.State != accounts.Failed || got.StateDetail != accounts.RefusedDetail {
+		t.Fatalf("the refused account: %+v", got)
+	}
+	res, _ = c.do(t, c.client, "POST", "/api/chats/"+id+"/account", `{"client_id":"s2","account":"`+b+`"}`)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("away from it: %d", res.StatusCode)
+	}
+	if res, _ := c.do(t, c.client, "POST", "/api/chats/"+id+"/account", `{"client_id":"s3","account":"`+a+`"}`); res.StatusCode != http.StatusConflict {
+		t.Fatalf("a switch to the refused account: %d", res.StatusCode)
+	}
+	if code, raw := c.rawCall(t, "POST", "/api/accounts/"+a+"/signin", map[string]any{}); code != http.StatusOK {
+		t.Fatalf("sign in again: %d %s", code, raw)
+	}
+	if acct, _ := c.store.GetAccount(a); acct.State != accounts.SignedIn || acct.StateDetail != "" {
+		t.Fatalf("after signing in again: %+v", acct)
+	}
+}
+
 // A Codex subscription signs in by device code from the dashboard: the page
 // and the code are shown, and the account is signed in once codex says so.
 func TestACodexAccountSignsInByDeviceCode(t *testing.T) {

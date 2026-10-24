@@ -54,6 +54,7 @@ func EnableFake() {
 //	/sleep S         a turn that works for S seconds
 //	/bg S            a turn that leaves a background task running for S seconds
 //	/limit           the account's limit stops the turn
+//	/refused         the provider refuses the account's sign-in (an error of code auth)
 //	/account         which account the CLI runs on, and whether it has a key
 //	/crash           the CLI child dies in the middle of the turn
 //	/orphan          a tool process that escapes the CLI's process group
@@ -466,6 +467,10 @@ func (f *fakeAdapter) turn(ctx context.Context, msg Outgoing, n int) {
 			Event{Type: TypeError, Code: "rate_limit", Text: "The usage limit of this account is reached."},
 		)
 		t.end(OutcomeLimited, "The usage limit of this account is reached.")
+		return
+	case "/refused":
+		f.out.Emit(Event{Type: TypeError, Code: ErrorAuth, Text: "The provider refused the sign-in (401)."})
+		t.end(OutcomeFailed, "The provider refused the sign-in (401).")
 		return
 	case "/account":
 		t.say(f.accountLine())
