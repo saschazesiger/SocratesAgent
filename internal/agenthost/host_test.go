@@ -292,7 +292,16 @@ func TestHostKilledMidTurnIsRecoveredAndResumes(t *testing.T) {
 	cl := r.dial(0)
 	cl.send("m1", "/stream 400 10")
 	cl.until(5*time.Second, isType(agent.TypePartDelta))
-	hostPID, cliPID := cl.c.Hello.HostPID, cl.c.Hello.CLIPID
+	// The hello names the child only when the adapter had started before the
+	// dial was answered, which it need not have: the hello does not wait for
+	// it. The journal's "ready" names it once it runs, and a delta means it
+	// does.
+	hostPID, cliPID := cl.c.Hello.HostPID, 0
+	for _, ev := range r.journal() {
+		if ev.Type == agent.TypeProcess && ev.State == agent.ProcessReady {
+			cliPID = ev.PID
+		}
+	}
 	if cliPID == 0 || !processAlive(cliPID) {
 		t.Fatalf("the fake CLI child is not running: %d", cliPID)
 	}
