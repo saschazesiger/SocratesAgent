@@ -2162,11 +2162,16 @@ async function answerTo(s, id, text, timeout = 20000) {
   const until = Date.now() + timeout;
   let said = null;
   while (said === null && Date.now() < until) {
-    const body = await chatOf(s, id);
+    // The history is read between two looks at the chat that both say it
+    // is idle at the same event: a history read while a turn was starting
+    // holds an answer that has no words yet.
+    const before = await chatOf(s, id);
     const messages = (await historyOf(s, id)).messages || [];
+    const after = await chatOf(s, id);
     const at = messages.map((m) => m.role === 'user' && m.text === text).lastIndexOf(true);
     const reply = at >= 0 ? messages.slice(at + 1).find((m) => m.role === 'assistant') : null;
-    if (reply && body.chat && idle(body)) said = textOf(reply);
+    const still = !!before.chat && !!after.chat && idle(before) && idle(after) && before.chat.last_seq === after.chat.last_seq;
+    if (reply && still) said = textOf(reply);
     else await wait(200);
   }
   if (said) await awaitLog(s.page, said.split('\n')[0].slice(0, 60), 10000);
@@ -4464,7 +4469,8 @@ async function statusspeak() {
     await open(s);
     const id = await startChat(s.page, 'claude');
     // A chat is told from its journal, so it has said something first.
-    ok((await answerTo(s, id, 'run the tests')) === 'you said: run the tests', 'the chat has done something', 'run the tests');
+    const first = await answerTo(s, id, 'run the tests');
+    ok(first === 'you said: run the tests', 'the chat has done something', first || 'no answer');
 
     // The status is held for a moment on its way out, so that what the button
     // does while it waits is measured rather than caught in passing.
@@ -4574,7 +4580,8 @@ async function statusticker() {
     await stubSpeech(s.context);
     await open(s);
     const id = await startChat(s.page, 'claude');
-    ok((await answerTo(s, id, '/tool')) === 'The command printed two lines.', 'the chat has done something', '/tool');
+    const tool = await answerTo(s, id, '/tool');
+    ok(tool === 'The command printed two lines.', 'the chat has done something', tool || 'no answer');
     const lines = await watchTicker(s.page, '#chat .so-chat__dock .so-ticker__line');
 
     await s.page.waitForSelector('#statusBtn:not([hidden]):not([disabled])', { timeout: 15000 });
