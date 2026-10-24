@@ -40,7 +40,9 @@ var ErrNotFound = errors.New("not found")
 // Version 11 is the end of the bucket as the store of record: the data
 // directory is the only truth and the bucket a backup of it
 // (internal/backup), so mirror_pending and the mirror's kv rows go.
-const SchemaVersion = 11
+// Version 12 adds the accounts a chat runs on (accounts.go), which replace
+// the sign-in profiles.
+const SchemaVersion = 12
 
 // Store wraps the database handle.
 type Store struct {
@@ -154,6 +156,32 @@ CREATE TABLE IF NOT EXISTS chat_outbox (
   created_at INTEGER NOT NULL,
   PRIMARY KEY (chat_id, client_id)
 );
+
+-- The accounts the chats run on: one agent's subscription login or API key
+-- each (accounts.go). The login itself is in the account's folder, written by
+-- the agent; an API key is here, sealed under the data directory's own key,
+-- and never leaves the server in the clear. origin is where the migration
+-- moved the account's folder from, which a link there still points at.
+CREATE TABLE IF NOT EXISTS accounts (
+  id            TEXT PRIMARY KEY,
+  agent         TEXT NOT NULL,
+  label         TEXT NOT NULL,
+  kind          TEXT NOT NULL,
+  created_at    INTEGER NOT NULL,
+  sort_order    INTEGER NOT NULL DEFAULT 0,
+  state         TEXT NOT NULL DEFAULT 'needs_sign_in',
+  state_detail  TEXT NOT NULL DEFAULT '',
+  email         TEXT NOT NULL DEFAULT '',
+  plan          TEXT NOT NULL DEFAULT '',
+  provider      TEXT NOT NULL DEFAULT '',
+  origin        TEXT NOT NULL DEFAULT '',
+  limits        TEXT NOT NULL DEFAULT '',
+  limits_at     INTEGER NOT NULL DEFAULT 0,
+  limited_until INTEGER NOT NULL DEFAULT 0,
+  secret        BLOB,
+  updated_at    INTEGER NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_accounts_origin ON accounts(origin) WHERE origin <> '';
 
 -- The unique index on client_id is what makes creating a session safe to
 -- retry: the same key can only ever produce one session.
