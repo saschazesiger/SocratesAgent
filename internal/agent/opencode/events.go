@@ -485,6 +485,7 @@ func (a *Adapter) endTurnLocked() {
 		outcome = agent.OutcomeFailed
 	}
 	a.failedTurn = outcome != agent.OutcomeCompleted
+	a.held = outcome == agent.OutcomeLimited
 	usage := &agent.Usage{Context: t.context, Window: a.windows[t.model]}
 	var cost float64
 	var events []agent.Event

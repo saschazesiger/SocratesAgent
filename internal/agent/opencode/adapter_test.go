@@ -280,6 +280,45 @@ func TestALimitRetryStopsTheTurnAsLimited(t *testing.T) {
 	}
 }
 
+// What was queued behind a turn the limit ended is held, not posted into the
+// account at its limit: a switch lets it run on the new account, and a
+// message from the person lets it run here, in the order it was sent.
+func TestALimitHoldsTheQueueUntilASwitchOrAMessage(t *testing.T) {
+	r := newRig(t)
+	keyB := `OPENCODE_AUTH_CONTENT={"fake":{"type":"api","key":"KEY-B"}}`
+	r.mustStart("")
+	r.send("/limit")
+	r.send("/whoami")
+	if got := r.waitTurns(1); got[0] != agent.OutcomeLimited {
+		t.Fatalf("outcome %v", got)
+	}
+	time.Sleep(500 * time.Millisecond)
+	if got := r.rec.turns(); len(got) != 1 {
+		t.Fatalf("the queue ran into the limit: %v", got)
+	}
+	if err := r.a.SwitchAccount(context.Background(), "b", append(append([]string{}, r.env...), keyB)); err != nil {
+		t.Fatal(err)
+	}
+	if got := r.waitTurns(2); got[1] != agent.OutcomeCompleted || r.lastText() != "account: fake:KEY-B (env)" {
+		t.Fatalf("after the switch: %v %q", got, r.lastText())
+	}
+
+	r.send("/limit")
+	r.send("held one")
+	r.waitTurns(3)
+	time.Sleep(300 * time.Millisecond)
+	if got := r.rec.turns(); len(got) != 3 {
+		t.Fatalf("the queue ran into the limit again: %v", got)
+	}
+	r.send("/whoami")
+	if got := r.waitTurns(5); got[3] != agent.OutcomeCompleted || got[4] != agent.OutcomeCompleted {
+		t.Fatalf("after a message: %v", got)
+	}
+	if r.lastText() != "account: fake:KEY-B (env)" {
+		t.Fatalf("the person's message did not come last: %q", r.lastText())
+	}
+}
+
 func TestErrorsPermissionsAndQuestions(t *testing.T) {
 	r := newRig(t)
 	r.mustStart("")

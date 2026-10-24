@@ -100,6 +100,11 @@ type Adapter struct {
 	posting bool
 	turn    *turnState
 	queue   []job
+	// held stops the queue after a turn the account's limit ended: what was
+	// queued behind it would go into the account at its limit and end
+	// limited too. An account switch, or a message the person sends, lets it
+	// go (AGENT-HOST.md §5.3).
+	held bool
 
 	users      map[string]*userMsg
 	assistants map[string]*asstMsg
@@ -779,7 +784,17 @@ func (a *Adapter) Send(ctx context.Context, msg agent.Outgoing) error {
 	if cmd, ok := strings.CutPrefix(strings.TrimSpace(msg.Text), "!"); ok && len(msg.Attachments) == 0 && strings.TrimSpace(cmd) != "" {
 		j.kind, j.args = jobShell, strings.TrimSpace(cmd)
 	}
-	return a.submit(ctx, j)
+	// The person writing after a limit is the person going on with this
+	// account: what the limit held goes first, then this.
+	a.mu.Lock()
+	released := a.held
+	a.held = false
+	a.mu.Unlock()
+	err := a.submit(ctx, j)
+	if released {
+		go a.next()
+	}
+	return err
 }
 
 // submit runs a job now, or queues it behind the running turn (or the
@@ -800,7 +815,7 @@ func (a *Adapter) submit(ctx context.Context, j job) error {
 // next runs the first queued job, if the adapter is free for it.
 func (a *Adapter) next() {
 	a.mu.Lock()
-	if a.ending || a.posting || a.turn != nil || a.switching || len(a.queue) == 0 {
+	if a.ending || a.posting || a.turn != nil || a.switching || a.held || len(a.queue) == 0 {
 		a.mu.Unlock()
 		return
 	}
@@ -1275,7 +1290,7 @@ func (a *Adapter) SwitchAccount(ctx context.Context, account string, env []strin
 		return err
 	}
 	a.mu.Lock()
-	a.switching = false
+	a.switching, a.held = false, false
 	srv, cancel, stopped := a.srv, a.cancel, a.ending
 	a.mu.Unlock()
 	if stopped {
