@@ -100,11 +100,13 @@ type Adapter struct {
 	posting bool
 	turn    *turnState
 	queue   []job
-	// held stops the queue after a turn the account's limit ended: what was
-	// queued behind it would go into the account at its limit and end
-	// limited too. An account switch, or a message the person sends, lets it
-	// go (AGENT-HOST.md §5.3).
-	held bool
+	// held is the turn the account's limit ended, which stops the queue:
+	// what was queued behind it would go into the account at its limit and
+	// end limited too. An account switch lets it go, and so does a message
+	// the person wrote after that turn's end; one written before it, though
+	// the host hands it over only now, waits with the rest (AGENT-HOST.md
+	// §5.3, agent.Outgoing.AfterTurn). Empty when nothing holds.
+	held string
 
 	users      map[string]*userMsg
 	assistants map[string]*asstMsg
@@ -785,10 +787,18 @@ func (a *Adapter) Send(ctx context.Context, msg agent.Outgoing) error {
 		j.kind, j.args = jobShell, strings.TrimSpace(cmd)
 	}
 	// The person writing after a limit is the person going on with this
-	// account: what the limit held goes first, then this.
+	// account: what the limit held goes first, then this. A message the
+	// journal has from before the limited turn's end was written while it
+	// ran, whenever it arrives: it waits with what the limit held.
 	a.mu.Lock()
-	released := a.held
-	a.held = false
+	if a.held != "" && msg.AfterTurn != a.held {
+		a.queue = append(a.queue, j)
+		a.out.Emit(agent.Event{Type: agent.TypeMessageState, MessageID: msg.MessageID, State: agent.MessageQueued})
+		a.mu.Unlock()
+		return nil
+	}
+	released := a.held != ""
+	a.held = ""
 	a.mu.Unlock()
 	err := a.submit(ctx, j)
 	if released {
@@ -815,7 +825,7 @@ func (a *Adapter) submit(ctx context.Context, j job) error {
 // next runs the first queued job, if the adapter is free for it.
 func (a *Adapter) next() {
 	a.mu.Lock()
-	if a.ending || a.posting || a.turn != nil || a.switching || a.held || len(a.queue) == 0 {
+	if a.ending || a.posting || a.turn != nil || a.switching || a.held != "" || len(a.queue) == 0 {
 		a.mu.Unlock()
 		return
 	}
@@ -1290,7 +1300,7 @@ func (a *Adapter) SwitchAccount(ctx context.Context, account string, env []strin
 		return err
 	}
 	a.mu.Lock()
-	a.switching, a.held = false, false
+	a.switching, a.held = false, ""
 	srv, cancel, stopped := a.srv, a.cancel, a.ending
 	a.mu.Unlock()
 	if stopped {

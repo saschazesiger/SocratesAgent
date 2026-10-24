@@ -163,11 +163,11 @@ func contentOf(pt *agent.Part) map[string]any {
 }
 
 // userMessage journals a user message the way the host does and returns it
-// for Send.
+// for Send, with its place among the turns (agent.Outgoing.AfterTurn).
 func userMessage(r *recorder, text string) agent.Outgoing {
 	id := newID("m_")
 	r.Emit(agent.Event{Type: agent.TypeMessage, MessageID: id, Role: agent.RoleUser, State: agent.MessagePending, Text: text})
-	return agent.Outgoing{MessageID: id, ClientID: "c" + id, Text: text}
+	return agent.Outgoing{MessageID: id, ClientID: "c" + id, Text: text, AfterTurn: r.projection().Message(id).AfterTurn}
 }
 
 func send(t *testing.T, a agent.Adapter, r *recorder, text string) (agent.Outgoing, int) {

@@ -324,14 +324,47 @@ func TestALimitHoldsTheQueueUntilASwitchOrAMessage(t *testing.T) {
 	}
 }
 
+// A message the person wrote while the limited turn ran can reach the adapter
+// only after that turn ended: the host journals it, the limit ends the turn,
+// and then the host hands it over. Its place in the journal, before the end,
+// is what counts: it is held with what the limit held, and only a message
+// written after the end lets the hold go (AGENT-HOST.md §5.3).
+func TestALimitHoldsAMessageWrittenBeforeItsEnd(t *testing.T) {
+	r := newRig(t)
+	r.mustStart("")
+	r.send("hello")
+	r.waitTurns(1)
+	before := r.lastTurn()
+	r.send("/limit")
+	if got := r.waitTurns(2); got[1] != agent.OutcomeLimited {
+		t.Fatalf("outcomes %v", got)
+	}
+	late := r.sendWrittenAfter(before, "/whoami")
+	time.Sleep(300 * time.Millisecond)
+	if got := r.rec.turns(); len(got) != 2 {
+		t.Fatalf("the message written during the limited turn ran into the limit: %v", got)
+	}
+	if s := r.messageState(late); s != agent.MessageQueued {
+		t.Fatalf("the held message is %q", s)
+	}
+	going := r.send("going on")
+	if got := r.waitTurns(4); got[2] != agent.OutcomeCompleted || got[3] != agent.OutcomeCompleted {
+		t.Fatalf("after a message: %v", got)
+	}
+	order := strings.Join(r.rec.turnOrder(), " ")
+	if !strings.HasSuffix(order, "start "+late+" end completed start "+going+" end completed") {
+		t.Fatalf("the turns ran %s", order)
+	}
+}
+
 // queueBehindAQuestion sends texts while a turn waits on a question of
 // OpenCode's own, checks that each one is queued, and answers the question:
 // the first of them runs then, with the others queued behind it. Sent right
-// after it instead, a message can reach the adapter after the turn of the
-// first is over: the fake's limit ends that turn within milliseconds of its
-// post (the limit is seen, the adapter aborts, OpenCode goes idle), and a
-// message sent after a limited turn ended is the person going on, which lets
-// the hold go (AGENT-HOST.md §5.3).
+// after it instead, a message can be written after the turn of the first is
+// over: the fake's limit ends that turn within milliseconds of its post (the
+// limit is seen, the adapter aborts, OpenCode goes idle), and a message
+// written after a limited turn ended is the person going on, which lets the
+// hold go (AGENT-HOST.md §5.3).
 func (r *rig) queueBehindAQuestion(texts ...string) {
 	r.t.Helper()
 	asked := r.rec.count(agent.TypeAsk, nil)

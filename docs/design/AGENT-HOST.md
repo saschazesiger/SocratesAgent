@@ -150,7 +150,9 @@ or whose seq does not move forward. `OpenJournal` (the host) additionally cuts a
 adds a missing final newline, so the next append starts clean.
 
 **Projection** (`agent.Projection`, `Fold(events)`, `Apply(ev)`): messages in order with their
-parts; asks; the running turn and the last one; model, effort, account, process state,
+parts, each user message with the turn that had ended last when it was journaled (`AfterTurn`,
+not serialised: its place among the turns, which goes to the adapter with it, §4.3); asks; the
+running turn and the last one; model, effort, account, process state,
 conversation id, tasks, summed usage and cost, rate limits; the `client_id → first seq` map (the
 host's dedupe set). Rules:
 
@@ -270,7 +272,7 @@ version understand each other. A connection asks for no events with `since` = `N
 
 | op | fields | host does |
 |---|---|---|
-| `send` | `client_id` (required), `text`, `attachments` | journals `message{user, pending}` and, in the same batch, `ask.closed` for every `Unwaited()` ask (§4.4), hands it to the adapter, acks with the message's seq |
+| `send` | `client_id` (required), `text`, `attachments` | journals `message{user, pending}` and, in the same batch, `ask.closed` for every `Unwaited()` ask (§4.4), hands it to the adapter with `Outgoing.AfterTurn` (the turn that had ended last when it was journaled; a turn that ends between the journal write and the `Send` does not move it), acks with the message's seq |
 | `interrupt` | `client_id`? | journals `command`, `Adapter.Interrupt` |
 | `answer` | `client_id`, `ask_id`, `answer` (JSON), `device` | §4.4 |
 | `set_model` | `client_id`?, `model`, `effort` | journals `command`, `Adapter.SetModel` (which emits `model.changed`) |
@@ -527,8 +529,11 @@ stdin (the app-server exits at once; the thread is on disk); Stop kills the proc
 `userMessage` item carrying that id → `delivered`. A turn that cannot be steered (compaction,
 review: `activeTurnNotSteerable`) or a `!` line during a turn → held (`queued`) and sent when the turn
 ends; so is a steered message a turn ended without taking up — except after a `limited` turn, when
-the adapter **holds** its queue (as OpenCode's, §5.3) until the next `Send` lets it go (the person
-asked for it); a switch starts another adapter, which the host hands what was never taken up. A message whose text is one line
+the adapter **holds** its queue (as OpenCode's, §5.3) until a `Send` of a message written after
+that turn's end (`AfterTurn` names it) lets it go (the person asked for it); a message written
+before the end is held with the rest, even when the host hands it over only after it, and so is one
+whose steer finds the turn gone; a switch starts another adapter, which the host hands what was
+never taken up. A message whose text is one line
 starting with `!` runs `thread/shellCommand` as a turn of its own.
 
 **Turns.** A journal turn is a root turn of the chat's thread (ids are the adapter's own, `t_…`, so
@@ -730,7 +735,11 @@ the failure; the next host resumes and re-sends what is undelivered). The caller
 accounts may pass `OPENCODE_AUTH_CONTENT` in `env`; OAuth accounts keep `auth.json` in their data
 home (research/06 §3.2). After a `limited` turn the adapter **holds** its queue: the messages
 queued behind it are not posted into the account at its limit, until `SwitchAccount` (they run on
-the new account) or the next `Send` (the person asked for it) lets it go.
+the new account) or a `Send` of a message the person wrote after that turn's end (the person asked
+for it; `Outgoing.AfterTurn` names the limited turn) lets it go, and the held messages run first.
+The journal's order decides, not when `Send` comes: the host journals a message before it hands it
+over, and the limit can end the turn in between, so a message whose `AfterTurn` is any other turn
+was written while the limited turn ran (or before) and is held with the rest.
 
 ## 6. Lifecycle
 
@@ -929,7 +938,8 @@ attachment(s): …`).
 - `internal/agenthost` (real host processes; Linux): dedupe; reconnect with `since` gets exactly the
   missing events (byte-identical to the journal); SIGKILL mid-turn → CLI child dead (Pdeathsig),
   recovery, resume, dedupe across hosts; park on idle → resume; no park while a question is
-  waited on (in its turn) or with a background task; **systemd scope** (root + systemd only): host in `socrates-test-agents-<id>.scope`
+  waited on (in its turn) or with a background task; in process, a message handed to the adapter
+  with its place among the turns when a limited turn ends between its journal write and its `Send`; **systemd scope** (root + systemd only): host in `socrates-test-agents-<id>.scope`
   with `OOMPolicy=continue`, `Reap` refuses a live host, an orphan keeps the scope after SIGKILL and
   `Reap` ends it.
 - `internal/server` (real hosts; Linux): create idempotency, terminal routes refused, conversation
@@ -1001,7 +1011,8 @@ attachment(s): …`).
   boot, a key sealed for another chat refused, a switch without an environment refused, a second
   Continue to the same account saying nothing); each adapter's switch A → B → A in a real host
   (`fakeclaude`, `fakecodex`, `fakeopencode`) keeping its conversation; Codex's and OpenCode's held
-  queue after a limit, and an "after this turn" switch made while OpenCode holds it; Claude's
+  queue after a limit, a message written during the limited turn and handed over after its end held
+  with it, and an "after this turn" switch made while OpenCode holds it; Claude's
   foreign-thinking notice; `internal/server` (the routes and that no answer, `host.json`, journal,
   log or outbox holds a key, a switch while running and while parked, an "after this turn" switch
   surviving a killed host, a limit stopping the chat or switching it and pushed once, Codex's device
