@@ -18,6 +18,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/saschazesiger/SocratesAgent/internal/accounts"
 	// The chat adapters register themselves for the server and the hosts.
 	_ "github.com/saschazesiger/SocratesAgent/internal/agent/claude"
 	_ "github.com/saschazesiger/SocratesAgent/internal/agent/codex"
@@ -130,6 +131,13 @@ func main() {
 	st, err := store.Open(paths.New(*dataDir).DB())
 	if err != nil {
 		log.Fatalf("could not open the database: %v", err)
+	}
+	// Once, on the first start of the build with accounts: the agents' own
+	// folders and the old profiles become accounts (REBUILD.md §8.1-8.2).
+	// One that stops half way is finished by the next start; until then the
+	// chats run on what has been moved.
+	if err := accounts.Migrate(accounts.MigrateOptions{DataDir: *dataDir, Store: st, Env: os.Environ(), Logf: log.Printf}); err != nil {
+		log.Printf("accounts: the migration did not finish (%v); the next start tries again", err)
 	}
 
 	// life ends with SIGTERM, and with a finished restore, which is a stop

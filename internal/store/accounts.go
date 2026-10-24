@@ -237,3 +237,12 @@ func (s *Store) SetSessionOptions(id string, options json.RawMessage) error {
 	}
 	return s.update(id, `options = ?`, string(options))
 }
+
+// CopyTo writes a consistent copy of the whole database to dest, which must
+// not exist yet: what a backup of the data directory takes of it.
+func (s *Store) CopyTo(dest string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err := s.db.Exec(`VACUUM INTO ?`, dest)
+	return err
+}
