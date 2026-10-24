@@ -679,3 +679,18 @@
 .so-touch[data-so-short] .so-app > .ds-topbar {
   display: none;
 }
+
+/* A menu that is cut short says so: its last visible rows fade out at its
+   foot until it is scrolled to its end (ui.js edgeCue). The fade stands at
+   the scrollport's bottom (sticky) and takes no room (its negative margin). */
+.ds-menu[data-more-below]::after {
+  content: '';
+  position: sticky;
+  bottom: 0;
+  flex: none;
+  display: block;
+  height: var(--ds-space-8);
+  margin-top: calc(-1 * var(--ds-space-8));
+  background: linear-gradient(to bottom, transparent, var(--ds-surface));
+  pointer-events: none;
+}

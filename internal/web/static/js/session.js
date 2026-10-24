@@ -43,7 +43,7 @@ import {
 } from './outcome.js';
 import {
   icon, html, raw, morph, flipMorph, showOverlay, hideOverlay, overlayOpen, M,
-  faces, iconEl,
+  faces, iconEl, edgeCue,
 } from './ui.js';
 import { mountBackupNotice } from './backup.js';
 import { setVoiceKey, voiceKey, onVoiceKey, keyMissing, setTtsKey } from './voice.js';
@@ -2365,7 +2365,17 @@ async function openRowMenu(anchor, id, { device = false } = {}) {
   }
   anchor.setAttribute('aria-controls', 'sessionMenu');
   morph(menu, html`${items}`);
-  showOverlay(menu, anchor);
+  showOverlay(menu, anchor).then(() => menuCue());
+  menuCue();
+}
+
+// menuCue says, by a fade at its foot, that the row menu goes on below what
+// fits: at 1280x800 a chat's twelve items were cut exactly at Ultracode, with
+// Compact, Download, the limit switch and Delete out of sight.
+let menuCueCheck = null;
+function menuCue() {
+  if (!menuCueCheck) menuCueCheck = edgeCue(dom.sessionMenu);
+  else menuCueCheck();
 }
 
 /* ------------------------------------------------------ the options dialog */

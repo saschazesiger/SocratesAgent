@@ -245,6 +245,21 @@ export function watchScrolled(scroller, target, { gap = '' } = {}) {
 }
 
 /**
+ * edgeCue marks a scroller that has more below what it shows
+ * (data-more-below), for a fade where it is cut (so-frame.css): a menu cut
+ * exactly between two items gave no sign that there were more under it. It
+ * answers the check, for a caller that changed what the scroller holds.
+ */
+export function edgeCue(scroller) {
+  const check = () => scroller.toggleAttribute('data-more-below',
+    scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight > 1);
+  scroller.addEventListener('scroll', check, { passive: true });
+  new ResizeObserver(check).observe(scroller);
+  check();
+  return check;
+}
+
+/**
  * faces is the markup of a button's busy and done faces (DS Button): the
  * label, the spinner with `busyLabel`, and - only when `doneLabel` is given -
  * the check with it. DS.motion.busy() switches between them.
