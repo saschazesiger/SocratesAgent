@@ -629,7 +629,7 @@ function renderAccounts() {
         await accounts.addAccountDialog(event.currentTarget, agentId);
         renderAccounts();
       },
-    }, iconEl('plus', 16), 'Add a ' + harnesses.label(agentId) + ' account');
+    }, iconEl('plus', 16), (/^[aeiou]/i.test(harnesses.label(agentId)) ? 'Add an ' : 'Add a ') + harnesses.label(agentId) + ' account');
     return el('section', { class: 'so-account-group', 'data-agent': agentId, 'aria-label': harnesses.label(agentId) },
       el('h3', { class: 'so-account-group__title' }, agentMark(agentId, 20), el('span', { text: harnesses.label(agentId) })),
       rows, add);
