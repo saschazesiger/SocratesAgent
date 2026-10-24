@@ -8852,12 +8852,13 @@ const connOf = (page) => page.evaluate(() => {
 // completes is given up on; a proxy that refuses the upgrade leaves Home
 // polled and saying so; and an offline Home says how old its numbers are.
 async function homestream() {
-  const { s, stub } = await homeServer();
+  const s = await homeChats();
   let p = null;
   try {
-    const kept = await makeAgent(s, 'Kept');
-    const doomed = await makeAgent(s, 'Deleted meanwhile');
-    // A session waiting for a review that starts working may have been filed
+    const kept = await makeChat(s, 'claude', { title: 'Kept' });
+    const doomed = await makeChat(s, 'claude', { title: 'Deleted meanwhile' });
+    await awaitChat(s, kept, (b) => b.chat.process === 'ready' && idle(b), 20000);
+    // A chat waiting for a review that starts working may have been filed
     // as in progress again, and the page asks for the list to see: that list
     // is the one held back here.
     await s.context.request.post(s.url + '/api/sessions/' + kept + '/file', { data: { status: 'review' } });
@@ -8869,19 +8870,19 @@ async function homestream() {
       const res = await route.fetch();
       lists.push({ route, res, body: await res.text() });
     });
-    tmuxType(s, kept, '/busy 3000');
+    await tellChat(s, kept, '/slow 3');
     for (let i = 0; i < 40 && !lists.length; i++) await wait(200);
     await s.context.request.delete(s.url + '/api/sessions/' + doomed);
     const moved = await awaitHome(s.page, (h) => h.counts.running === 0 && !h.rows.some((r) => r.id === doomed), 20000);
-    const settled = await awaitActivity(s, kept, (a) => a.state === 'idle', 15000);
+    const settled = await awaitChat(s, kept, (b) => idle(b) && b.chat.last_outcome === 'completed', 15000);
     for (const held of lists) await held.route.fulfill({ status: held.res.status(), headers: held.res.headers(), body: held.body });
     await s.page.unroute(/\/api\/sessions$/);
     await wait(3000);
     const after = await homeLook(s.page);
     const sidebar = await s.page.$$eval('#sessionList .so-row[data-id]', (rows) => rows.map((r) => r.dataset.id));
-    ok(lists.length > 0 && moved.ok && !!settled, 'a list was asked for while the turn ran, and held back', lists.length + ' held');
+    ok(lists.length > 0 && moved.ok && idle(settled), 'a list was asked for while the turn ran, and held back', lists.length + ' held');
     ok(!sidebar.includes(doomed) && !after.rows.some((r) => r.id === doomed) && after.counts.running === 0,
-      'when it lands late, the deleted session stays gone and the finished turn is not running again',
+      'when it lands late, the deleted chat stays gone and the finished turn is not running again',
       JSON.stringify({ sidebar: sidebar.length, counts: after.counts }));
 
     // The rest goes through a proxy.
@@ -8936,9 +8937,10 @@ async function homestream() {
     }
     ok(!!polled && /Updated every 5 s/.test(polled.text) && !polled.dim,
       'a proxy that refuses the upgrade leaves Home polled, saying so, and not dimmed', JSON.stringify(polled || await connOf(page)));
-    const madeWhilePolled = await makeAgent(s, 'Made while polled');
-    const counted = await awaitHome(page, (h) => h.rows.some((r) => r.id === madeWhilePolled) || h.counts.ready >= 2, 15000);
-    ok(counted.ok, 'and the poll keeps it current', JSON.stringify(counted.seen.counts));
+    const readyBefore = (await homeLook(page)).counts.ready;
+    const madeWhilePolled = await makeChat(s, 'claude', { title: 'Made while polled' });
+    const counted = await awaitHome(page, (h) => h.rows.some((r) => r.id === madeWhilePolled) || h.counts.ready === readyBefore + 1, 15000);
+    ok(counted.ok, 'and the poll keeps it current: a chat made meanwhile is counted', 'ready ' + readyBefore + ' > ' + counted.seen.counts.ready);
     // A slow link: each read takes four seconds, and the next poll is only
     // scheduled once it is in - so the page says how often it really updates.
     await page.route(/\/api\/home$/, async (route) => { await wait(4000); await route.continue().catch(() => {}); });
@@ -8968,7 +8970,6 @@ async function homestream() {
   } finally {
     if (p) p.close();
     await s.stop();
-    await stub.close();
   }
 }
 
@@ -11930,7 +11931,7 @@ const ALL = [
   ['home-retry', 'an answer refused for good, one the server could not take just now, and one to a chat deleted on its way', homeretry],
   ['home-runlost', 'the dialog opened again mid-answer, an answer sent across a server restart, and a reply lost on the way back', homerunlost],
   ['home-opencode', 'an OpenCode chat’s questions from the dialog - ask_user with an option and an own answer, its own question tool - and a permission it allows itself', homeopencode],
-  ['home-stream', 'a late list, a handshake that hangs, a refused upgrade and an offline Home', homestream],
+  ['home-stream', 'with chats: a late list, a handshake that hangs, a refused upgrade and an offline Home', homestream],
   ['home-quiet', 'a tap on a stream that died quietly, polls across a restart, a long hide, a naming cut off, a server never reached', homequiet],
   ['home-kinds', 'a multi-select, two tabs and their review, a plan sent back and approved, and a question in prose', homekinds],
   ['home-unread', 'a question in prose whose read failed, or had no key, is read on the open Home once it can be', homeunread],
