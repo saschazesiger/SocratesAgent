@@ -315,12 +315,14 @@ func (h *chatHub) briefOfChat(id string) (chatBrief, bool) {
 }
 
 // rejudge is "Read again" for a chat: its reading, which its journal keeps
-// current already.
+// current already, and the verdict on its last turn judged again
+// (rejudgeChat).
 func (h *chatHub) rejudge(id string) digest {
 	p, err := h.peer(id)
 	if err != nil {
 		return digest{SessionID: id}
 	}
+	h.srv.digests.rejudgeChat(id)
 	return p.reading()
 }
 

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/saschazesiger/SocratesAgent/internal/store"
 	"github.com/saschazesiger/SocratesAgent/internal/termux"
 )
 
@@ -193,7 +194,7 @@ func (d *digester) outcomeEdge(id string, a termux.Activity) {
 	if d == nil {
 		return
 	}
-	starts := false
+	starts, chat := false, false
 	if d.srv.answers == nil || !d.srv.answers.live(id) {
 		d.mu.Lock()
 		prev, had := d.oseen[id]
@@ -202,9 +203,11 @@ func (d *digester) outcomeEdge(id string, a termux.Activity) {
 	}
 	if starts {
 		// The row is read without the lock: a store read under it would hold
-		// up every frame the digester publishes.
+		// up every frame the digester publishes. A chat is judged from its
+		// journal, by a call of its own (judgeChat).
 		row, err := d.srv.store.GetSession(id)
-		starts = err == nil && digestible(row)
+		chat = err == nil && row.IsChat() && row.State == store.StateRunning
+		starts = err == nil && (digestible(row) || chat)
 	}
 
 	d.mu.Lock()
@@ -230,6 +233,9 @@ func (d *digester) outcomeEdge(id string, a termux.Activity) {
 		d.outcomes[id] = next
 		d.publishOutcomeLocked(id, next)
 		d.saveOutcomesLocked()
+		if chat {
+			go d.judgeChat(id, a)
+		}
 	case o == nil:
 	case a.State == termux.StateUnknown:
 		// The detector lost sight of the session for a moment, or has not
@@ -402,7 +408,13 @@ func sanitizeOutcome(a *outcomeAnswer, question *digestQuestion) (kind, reason s
 func outcomeSystemPrompt() string {
 	return "\nThis read is also asked for the outcome of the turn that just ended. Add to the object:\n" +
 		`"outcome":{"kind":"complete|partial|needs_input|blocked","reason":"…","todos":["…"]}` + "\n" +
-		"Judge the outcome against the last instruction the person gave the program:\n" +
+		outcomeRules() + "When a question is set, the outcome is needs_input."
+}
+
+// outcomeRules is how a verdict is judged, for a terminal's read and a
+// chat's judge alike.
+func outcomeRules() string {
+	return "Judge the outcome against the last instruction the person gave the program:\n" +
 		"- complete: everything that was asked is done and nothing is left over.\n" +
 		"- partial: this round is done but the task is not: open tasks, next steps the program " +
 		"names itself, or parts of the request it did not do.\n" +
@@ -413,8 +425,7 @@ func outcomeSystemPrompt() string {
 		"reason: one sentence of at most " + strconv.Itoa(outcomeReasonRunes) + " characters, " +
 		"in English whatever the language above, saying why.\n" +
 		"todos: for partial, up to " + strconv.Itoa(outcomeTodos) + " short English lines naming " +
-		"what is still open; [] for every other kind.\n" +
-		"When a question is set, the outcome is needs_input."
+		"what is still open; [] for every other kind.\n"
 }
 
 // outcomeWords is a finished outcome as a sentence fragment, for a model that
