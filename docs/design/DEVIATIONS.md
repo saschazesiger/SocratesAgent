@@ -2471,3 +2471,86 @@ whose earlier copy has stood in for it, and a garbage collection that has kept f
 object under `snapshots/` that is not named like a snapshot stops it before a chunk is deleted,
 and the bucket then grows without limit while every run says "Backed up". The Backup card shows
 a collection that failed at once (`gc_error`), and `warning_about` says which warning it is.
+
+**WP7 / §4.3 — the server decides an automatic switch; the host only carries it out.** §4.3 has
+"the host switches to the recommended account". The host knows neither the other accounts, nor
+their limits, nor their keys; the server has all three. So at a `limited` turn's end the server
+picks the account (the recommender of the Accounts card) and sends the same `switch_account` a
+person's "Continue with" sends, with `continue`; the mechanics (interrupt, park and relaunch, or
+OpenCode's `SwitchAccount`, the divider with its reason) are the host's, as planned.
+
+**WP7 / §4.3 — "re-send the interrupted turn" is a message that says to go on.** After the switch
+the new account is sent "Continue where you left off." (`agenthost.ContinueText`), a user message
+with its own `client_id`. The conversation is resumed with the stopped turn in it, so the agent has
+what it was doing; sending the person's message again would put it in the conversation, the
+journal and the chat twice, and would repeat whatever the turn had already done.
+
+**WP7 / §4.3 — the account sits in the composer's bar, not in a chat header.** "The chat header
+shows the account next to the model": in the chat view (WP8) the model is in the composer's bar,
+so the account is beside it there, through `useAccountPicker`. It shows for an agent with two
+accounts or more; with one there is nothing to pick. "Switch now" during a turn interrupts and has
+the new account carry the turn on (`continue`); "After this turn" waits for it.
+
+**WP7 / §4.1 — more fields than the list.** The accounts table also keeps `state` (signed in, needs
+sign-in, failed) with why, the OpenCode provider of a key, `origin` (the folder the migration moved
+the login out of; what makes the migration idempotent and what keeps such an account from being
+deleted while HOME links to it) and `limited_until` (when a limit it ran into renews, so the
+recommendation passes over it). A limit that does not say when it renews is held for an hour.
+
+**WP7 / §4.2 — Claude Code signs in with `claude auth login --claudeai`, in a Shell that stays.**
+The flag is the subscription sign-in, which is what an account of that kind is; without it Claude
+Code first asks which kind. The Shell runs in a fresh directory (Dynamic) and stays a shell when
+the sign-in ends, so its outcome can be read there; the account's state follows its folder.
+
+**WP7 / §4.2 — OpenCode's sign-in offers the providers' OAuth methods only.** `GET /provider/auth`
+also lists API-key methods; a key is an account of its own kind, passed per process as
+`OPENCODE_AUTH_CONTENT` (§4.1), never written with `PUT /auth`, so the sign-in leaves it out.
+
+**WP7 / §4.1 — a Codex key is kept sealed as well.** Codex logs a key in itself (`account/login/
+start {type: apiKey}` into the account's `CODEX_HOME`), and that file is what codex reads. The key
+is kept sealed in the store too, like every key, so that "Replace the key" and a restore have it.
+
+**WP7 / §6.1 — an OpenCode account's folder is `agents/opencode/accounts/<id>/`.** WP5's layout
+keeps every OpenCode account's data home under OpenCode's own folder (one shared database, each
+account its own `auth.json`); Claude Code's and Codex's are `accounts/<id>/` as planned.
+
+**WP7 / §4.2 — the keys are sealed with a key file in the data folder.** "The existing vault": the
+vault's AES-GCM, with a new key, `<data>/secrets.key` (0600, made once), since the vault's only key
+so far was the backup's passphrase, which the server does not hold. The file is backed up with the
+store (a restore needs both); `host.json`'s `env` and `secret_env` are not. A chat's key variables
+are sealed again for that chat, so `host.json` and the outbox hold only ciphertext.
+
+**WP7 / §8 step 1 — the folders are renamed and the old paths become links.** "Move" is a rename
+(the same inodes, never a copy: two copies of an OAuth login rotate each other out, which is what
+logged the person out every few minutes), and `~/.claude`, `~/.claude.json`, `~/.codex`,
+`~/.local/share/opencode`, `~/.config/opencode` and every profile's folders become links to where
+they went, so a terminal or a CLI started by hand uses the same files. Claude Code writes
+`.claude.json` through the link (checked against 2.1.309). A folder on another file system is not
+moved (a rename there is a copy): that account says "sign in here". The Default OpenCode account's
+database becomes the shared one; a profile's own, when there is one, stays in its folder unread.
+What would collide in a shared folder is kept beside it as `<name>.pre-rebuild`. Steps 3 and 4
+(the agent sessions' clean cut, the old S3 objects) are WP10's.
+
+**WP7 / §8 step 2 — a lost profile becomes an account for each agent its sessions ran.** A profile
+held all three agents, an account is one; a profile whose folders are gone becomes a "Sign in
+again" account for each agent its sessions used, and a Claude Code one when it has none.
+
+**WP7 — deleting an account removes its folder.** Socrates never writes, refreshes or deletes a
+login, except here: an account is its folder, and the person asked for it to go. The server
+refuses while a chat runs on it, and for an account the migration moved in, which HOME's links
+point at.
+
+**WP7 — a chat that names no account gets one at launch.** A chat made by a client that does not
+send `account` (the API, PreStart's "Automatic", a chat from before WP7) runs on its agent's
+recommended account, else its first, else a new "Default" subscription that has to be signed in;
+the choice is written to the row. A fresh install has no account until then.
+
+**WP7 — the server's tests keep the agent terminals.** `internal/server` now registers the Claude
+Code, Codex and OpenCode adapters (through `internal/accounts`), which makes those three chats in
+its tests; the tests written for their terminals set `SOCRATES_AGENT_TERMINALS=1` in `TestMain`,
+as the browser suite does.
+
+**WP7 — the dashboard's Profiles card is gone; the profiles stay for terminals.** Accounts replace
+profiles for chats (§4.1). The terminal-only plumbing (`/api/profiles`, the sheet's profile field
+for an agent terminal, `harnesses/profiles.go`) stays until WP10 removes the agent terminals;
+taking it out now would widen this package into theirs.
