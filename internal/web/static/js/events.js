@@ -102,6 +102,8 @@ const POLL_SLOW = 15000;
  *                        went (null)
  *   news(id, {body, kind}) news about a session the server found outside its
  *                        activity, in a notification's words: a chat's limit
+ *   phase(frame)         a phase of a spoken Status being made, {id, phase,
+ *                        text}: a chat's, which has no terminal socket
  *   fresh()              a pong came back: the state on the page is the
  *                        server's as of the ping (stateAt)
  *   status(status)       'live' | 'connecting' | 'offline', whenever it moves,
@@ -430,6 +432,9 @@ export function mountEvents(ctx) {
         break;
       case 'news':
         if (frame.id) hand('news', frame.id, { body: String(frame.body || ''), kind: String(frame.kind || '') });
+        break;
+      case 'status':
+        if (frame.id) hand('phase', frame);
         break;
       case 'pong': {
         const sent = pings.get(frame.id);

@@ -26,9 +26,25 @@ func TestAChatsStatusIsToldFromItsJournal(t *testing.T) {
 	c.send(t, id, "m1", "/tool")
 	c.waitJournal(t, id, 10*time.Second, "the turn", turnsEnded(1))
 	c.waitActivity(t, id, termux.StateIdle)
+	events := c.dialEvents(t)
 	res, body = c.do(t, c.client, "POST", "/api/sessions/"+id+"/status", "")
 	if res.StatusCode != http.StatusOK || body["text"] != "It ran echo and said hello." || body["state"] != "idle" {
 		t.Fatalf("status: %d %v", res.StatusCode, body)
+	}
+	// A chat has no terminal socket: its phases reach the page on the event
+	// stream, in order, the answer last.
+	var phases []string
+	events.await("the phases of the chat's status", 5*time.Second, func() bool {
+		phases = phases[:0]
+		for _, frame := range events.ctrl {
+			if frame["t"] == "status" && frame["id"] == id {
+				phases = append(phases, frame["phase"].(string))
+			}
+		}
+		return len(phases) >= 3
+	})
+	if strings.Join(phases, ",") != "asking,speaking,done" {
+		t.Fatalf("the phases on the event stream: %v", phases)
 	}
 	prompt := statusCalls(gw)[0].last()
 	for _, want := range []string{"a chat with Scripted agent", "It is idle", "The chat:", "/tool", "- Running echo hello"} {

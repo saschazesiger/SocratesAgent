@@ -1673,6 +1673,11 @@ function mountStream() {
     digest: digestFrame,
     outcome: outcomeFrame,
     news: newsFrame,
+    // A chat's Status phases come this way; a terminal's come on its own
+    // socket (onControl), and are not taken twice.
+    phase: (frame) => {
+      if (state.assist && isChat(state.current) && state.current.id === frame.id) state.assist.statusFrame(frame);
+    },
     // A pong: the page is as current as the moment its ping was sent, which
     // is what a question asked for by a notification is waiting to know -
     // and a badge a push wrote over (badgeWrittenElsewhere).

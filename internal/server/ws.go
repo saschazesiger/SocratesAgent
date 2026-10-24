@@ -1656,10 +1656,12 @@ func (s *Server) nextTitleSeq() int64 {
 //
 // Pressing Status asks a model a question over a network, and until this frame
 // existed the only evidence of that was a button that had gone quiet. It goes
-// to the session's viewers rather than to every socket because it is about the
-// screen somebody is looking at, and because two phones on one session should
-// both see it.
+// to the session's viewers because it is about the screen somebody is looking
+// at, and because two phones on one session should both see it - and to the
+// event stream, because a chat has no terminal socket: the page showing the
+// chat takes the frame up from there.
 func (s *Server) emitStatus(sessionID, phase, text string) {
 	frame := map[string]any{"t": "status", "id": sessionID, "phase": phase, "text": text}
 	s.broadcast(sessionID, func(*termViewer) any { return frame })
+	s.events.publish(frame)
 }

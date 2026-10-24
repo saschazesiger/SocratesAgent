@@ -152,7 +152,7 @@ export function mountAssist(ctx) {
     // The first phase locally, before the request has even left: on a bad
     // connection the server's own first frame is a second away, and a tap with
     // nothing on screen reads as a tap that did not land. A chat is read from
-    // its journal, and its phases are only these.
+    // its journal, not its screen.
     const chat = session.kind === 'chat';
     setStatusPhase('capturing', chat ? 'Reading the chat' : 'Reading the screen');
     paint();
