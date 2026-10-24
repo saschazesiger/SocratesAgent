@@ -3540,11 +3540,16 @@ async function design() {
       };
       return { status: read('statusBtn'), mic: read('micBtn') };
     });
+    // This server has no OpenRouter key, and then the tip says why a press
+    // only explains (assist.js, dictate.js); with one it says what a press
+    // does.
+    const NO_KEY = 'Needs an OpenRouter key (Admin, Voice)';
     ok(header.status.text === '' && header.status.svg >= 1
-      && header.status.label === 'Status of this session' && header.status.title === 'Say what this session is doing',
-      'Status is a mark, with its name in the label and what a press does in the tip', JSON.stringify(header.status));
+      && header.status.label === 'Status of this session'
+      && [NO_KEY, 'Say what this session is doing'].includes(header.status.title),
+      'Status is a mark, with its name in the label and what a press does (or why it cannot) in the tip', JSON.stringify(header.status));
     ok(header.mic.text === '' && header.mic.svg >= 1 && header.mic.label === 'Speak'
-      && header.mic.title === 'Dictate into the terminal' && header.mic.height >= 40,
+      && [NO_KEY, 'Dictate into the terminal'].includes(header.mic.title) && header.mic.height >= 40,
       'the microphone is a mark too, named Speak, at a size a thumb can hit', JSON.stringify(header.mic));
     const gone = await s.page.evaluate(() => ({
       auto: document.querySelectorAll('.auto-switch').length,
