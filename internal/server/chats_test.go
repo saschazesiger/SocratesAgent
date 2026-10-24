@@ -131,6 +131,41 @@ func (c *chatEnv) send(t *testing.T, id, clientID, text string) map[string]any {
 	return body
 }
 
+// sendTaken sends a message and takes either answer the API gives a message it
+// took (AGENT-HOST.md §7): 200 once the host journaled it, or 202 queued when
+// the host has not acked it in time - one that is still starting holds its
+// commands until the agent is up, which under load takes longer than
+// ackWait - and then the host receives it once. deliveredOnce checks that.
+func (c *chatEnv) sendTaken(t *testing.T, id, clientID, text string) {
+	t.Helper()
+	code, body := c.post(t, "/api/chats/"+id+"/messages", map[string]any{"client_id": clientID, "text": text})
+	switch {
+	case code == http.StatusOK:
+	case code == http.StatusAccepted && body["queued"] == true:
+		t.Logf("send %s: queued for the host (%v)", clientID, body["detail"])
+	default:
+		t.Fatalf("send %s: %d %v", clientID, code, body)
+	}
+}
+
+// deliveredOnce fails unless the journal has the user message of clientID
+// exactly once, taken up by the agent.
+func deliveredOnce(t *testing.T, events []agent.Event, clientID string) {
+	t.Helper()
+	n := count(events, func(ev agent.Event) bool {
+		return ev.Type == agent.TypeMessage && ev.Role == agent.RoleUser && ev.ClientID == clientID
+	})
+	state := ""
+	for _, m := range agent.Fold(events).Messages {
+		if m.ClientID == clientID {
+			state = m.State
+		}
+	}
+	if n != 1 || state != agent.MessageDelivered {
+		t.Fatalf("the message %s is in the journal %d times, %q", clientID, n, state)
+	}
+}
+
 func (c *chatEnv) journal(t *testing.T, id string) []agent.Event {
 	t.Helper()
 	events, err := agent.ReadJournal(agenthost.JournalPath(c.data, id))

@@ -838,7 +838,7 @@ key (the existing `Outbox` in `net.js`).
 |---|---|---|
 | `POST /api/chats` | `client_id`, `harness`, `model`, `effort`, `workdir_mode`, `workdir`, `title`, `ultracode` (Claude Code only; dropped for any other agent), `account`?, `auto_switch`?, `message`?{`client_id`,`text`,`attachments`} | 201 `{session, chat: <summary>, message?}`; 200 the same for a repeated `client_id`; 400 for a harness without an adapter, or an account of another agent. No `account`: the recommended one when the host launches (§11). The host is launched at once |
 | `GET /api/chats/{id}` | – | `{session, chat: <summary>, asks: [open asks], host_error?}`; `?history=1` adds `messages` (the whole projection) |
-| `POST /api/chats/{id}/messages` | `client_id`, `text`, `attachments` | 200 `{client_id, seq, dup}`; 202 `{client_id, queued: true}` when the host has not acked within 10 s (it will receive it once) |
+| `POST /api/chats/{id}/messages` | `client_id`, `text`, `attachments` | 200 `{client_id, seq, dup}`; 202 `{client_id, queued: true}` when the host has not acked within 10 s (a host still starting holds commands until its agent is up; it will receive it once) |
 | `POST /api/chats/{id}/interrupt` | `client_id` | as messages; 200 `{idle: true}` when nothing runs and no host is up |
 | `POST /api/chats/{id}/asks/{ask}/answer` | `client_id`, `answer` (any JSON), `device` | 200 / 202 as messages; **409 `{answered_elsewhere: true, by_device}`** when another device answered; 404 for an unknown ask |
 | `POST /api/chats/{id}/model` | `client_id`, `model`, `effort` | as messages (a `set_model` command) |
@@ -961,7 +961,8 @@ attachment(s): …`).
   left behind, a rebuilt journal's own ledgers, the transcript of a chat's conversation never
   counted, also after the chat is deleted, the shared folders scanned), Ultracode reaching a Claude
   chat's CLI and its change from the ⋮, a prepared chat started by the clock, and a lost chat folder
-  rebuilt when opened with no push for the history it gets back - the last three through real hosts with fakeclaude, fakecodex and fakeopencode, whose
+  rebuilt when opened with no push for the history it gets back (each message delivered once, whether the
+  host still starting acked it or it was queued for it) - the last three through real hosts with fakeclaude, fakecodex and fakeopencode, whose
   adapters the server's test binary registers.
 - e2e (`run.mjs`, the scripted agent): `chat-home`, `chat-push`, `chat-title`, `chat-status`,
   `chat-outcome`, `chat-prestart`, `chat-ultracode`.
