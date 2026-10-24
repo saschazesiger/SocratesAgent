@@ -248,13 +248,14 @@ chat's journal.
 
 ## Notifications
 
-**Notifications** in the options menu (the `⋮` at the right of the top bar)
-turns them on for this device. Over HTTPS (the
-Cloudflare tunnel, or `localhost`) they are Web Push: Socrates sends one when a
-session finishes or needs an answer, and it arrives with the page closed and
-the phone locked. On an iPhone, add Socrates to the Home Screen and turn
-them on from there; Safari allows push only for an installed web app. Over
-plain http they appear only while the page is open.
+**Notifications** in this device's options (the `⋮` at the right of the top
+bar on Home, or **This device…** at the end of a session's `⋮` menu) turns
+them on for this device. Over HTTPS (the Cloudflare tunnel, or `localhost`)
+they are Web Push: Socrates sends one when a session finishes or needs an
+answer, and it arrives with the page closed and the phone locked. On an
+iPhone, add Socrates to the Home Screen and turn them on from there; Safari
+allows push only for an installed web app. Over plain http they appear only
+while the page is open.
 
 A question notification shows the question itself, and tapping it opens Home
 with that question ready to answer. The app icon's badge is the number of chats
@@ -281,13 +282,13 @@ after writing in it, the session is named after the prompt.
 
 ## Files
 
-The paperclip in the top bar uploads files into a Shell's working directory,
-under `.socrates/uploads/` (ignored by git), and puts their paths on the
-prompt; pasting or dropping an image onto the terminal does the same. A chat
-takes files from its composer - the button, a drop or a paste - and sends them
-with the message. The two buttons beside it
-copy (the selection, or the terminal's text in a sheet you can select in) and
-paste.
+The upload button (an arrow out of a tray) in a Shell's top bar uploads files
+into its working directory, under `.socrates/uploads/` (ignored by git), and
+puts their paths on the prompt; pasting or dropping an image onto the terminal
+does the same. The two buttons beside it copy (the selection, or the
+terminal's text in a sheet you can select in) and paste; on a phone all three
+are in the Shell's `⋮` menu. A chat takes files from its composer - the
+button, a drop or a paste - and sends them with the message.
 
 ## Security
 
