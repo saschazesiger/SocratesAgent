@@ -11,9 +11,15 @@ import (
 
 // pane is one line of `list-panes -a`.
 type pane struct {
-	session     string
-	dead        bool
-	deadStatus  int
+	session    string
+	dead       bool
+	deadStatus int
+	// reaped is whether tmux knows how the program in a dead pane ended. Up
+	// to 3.6 a pane is dead from the end of file on its terminal, which can
+	// come before the SIGCHLD that gives it the status (and in tmux up to 3.5
+	// instead of it; see collectExits), and in between it is dead with
+	// neither a status nor a signal. tmux 3.7 calls such a pane alive.
+	reaped      bool
 	piped       bool
 	currentPath string
 }
@@ -35,6 +41,7 @@ func parsePanes(out string) map[string]pane {
 			session:     f[0],
 			dead:        f[1] == "1",
 			deadStatus:  exitStatus(f[2], f[3]),
+			reaped:      f[2] != "" || f[3] != "",
 			piped:       f[4] == "1",
 			currentPath: f[5],
 		}
@@ -107,6 +114,7 @@ func (m *Manager) Adopt(ctx context.Context) error {
 	}
 
 	known := map[string]bool{}
+	unreaped := false
 	for i := range rows {
 		row := &rows[i]
 		known[row.TmuxName] = true
@@ -117,11 +125,18 @@ func (m *Manager) Adopt(ctx context.Context) error {
 		switch {
 		case !ok:
 			_ = m.st.SetSessionStateFrom(row.ID, row.State, store.StateNeedsResume, row.ExitStatus, "")
+		case p.dead && !p.reaped:
+			// The hook or the poll records it, with the status tmux is about
+			// to have; see applyPanes.
+			unreaped = true
 		case p.dead:
 			m.markExited(row, p.deadStatus)
 		default:
 			m.adopt(ctx, row, p)
 		}
+	}
+	if unreaped {
+		m.collectExits(ctx)
 	}
 
 	for name, p := range panes {
@@ -254,7 +269,9 @@ func (m *Manager) Poll(ctx context.Context) {
 		return
 	}
 	m.notePollSuccess()
-	m.applyPanes(rows, panes)
+	if m.applyPanes(rows, panes) {
+		m.collectExits(ctx)
+	}
 }
 
 // notePollFailure records one failed poll and reports whether that is now
@@ -274,8 +291,9 @@ func (m *Manager) notePollSuccess() {
 	m.mu.Unlock()
 }
 
-// applyPanes moves each row to what tmux says about it.
-func (m *Manager) applyPanes(rows []store.Session, panes map[string]pane) {
+// applyPanes moves each row to what tmux says about it, and reports whether a
+// pane it left alone is dead without tmux knowing how its program ended.
+func (m *Manager) applyPanes(rows []store.Session, panes map[string]pane) (unreaped bool) {
 	for i := range rows {
 		row := &rows[i]
 		if row.IsChat() || (row.State != store.StateRunning && row.State != store.StateStarting &&
@@ -293,6 +311,14 @@ func (m *Manager) applyPanes(rows []store.Session, panes map[string]pane) {
 			if m.noteMissing(row.ID) {
 				_ = m.st.SetSessionStateFrom(row.ID, row.State, store.StateNeedsResume, row.ExitStatus, "")
 			}
+		case p.dead && !p.reaped:
+			// Not yet. Recorded now, the exit was -1, and the browser was
+			// told "exited -1" before the hook brought the real status a
+			// moment later - or never, when tmux had lost the SIGCHLD. The
+			// hook records it once tmux has the status, and so does the next
+			// poll; collectExits makes sure tmux gets it.
+			m.clearMissing(row.ID)
+			unreaped = true
 		case p.dead:
 			m.clearMissing(row.ID)
 			m.markExited(row, p.deadStatus)
@@ -314,6 +340,7 @@ func (m *Manager) applyPanes(rows []store.Session, panes map[string]pane) {
 			}
 		}
 	}
+	return unreaped
 }
 
 func (m *Manager) noteMissing(id string) bool {
