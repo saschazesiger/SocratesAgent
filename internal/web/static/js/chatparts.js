@@ -697,6 +697,18 @@ function silentTurnFacts(turn, view) {
   return [];
 }
 
+// laterInTurn is whether another answer of the same turn comes after this
+// one in the chat.
+function laterInTurn(message, view) {
+  if (!view || !view.chat || !message.turnId) return false;
+  let after = false;
+  for (const one of view.chat.messages.values()) {
+    if (one === message) { after = true; continue; }
+    if (after && one.role === 'assistant' && one.turnId === message.turnId) return true;
+  }
+  return false;
+}
+
 /**
  * assistantMessage is an answer: its parts in order, Copy for its text, and
  * what it cost behind the "i". How a turn ended other than done is the line
@@ -704,7 +716,10 @@ function silentTurnFacts(turn, view) {
  * agent's own notice of the same words (Claude's "usage limit reached").
  */
 export function assistantMessage(message, view) {
-  const facts = turnFacts(message, view);
+  // What a turn cost is the turn's, so it is said once, under its last
+  // answer: OpenCode answers a step at a time, and a tool-only step drew a
+  // row of its own with an "i" that said the next one's usage again.
+  const facts = laterInTurn(message, view) ? [] : turnFacts(message, view);
   // An answer that has said nothing yet is working - unless it waits for the
   // person, which its question card says.
   const asking = [...view.chat.asks.values()].some((ask) => !ask.answered && ask.turnId && ask.turnId === message.turnId);
