@@ -69,9 +69,11 @@
   --so-limits-bar-min: 64px;
   --so-limits-reset-width: 72px;
 
-  /* PreStart */
+  /* PreStart: the prompt's least height is a good part of the screen, and
+     never more than a share of what can be seen - the app's height, which
+     follows a phone's keyboard (keybar.js writes --so-app-h). */
   --so-prestart-side: 380px;
-  --so-prompt-min-height: max(300px, 48vh);
+  --so-prompt-min-height: min(max(300px, 48vh), calc(var(--so-app-h, 100dvh) * 0.45));
   --so-conflict-preview-max: 160px;
 
   /* Chat: the conversation's reading width, how wide a person's message

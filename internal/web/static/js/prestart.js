@@ -274,7 +274,7 @@ function openPanel(ctx, first) {
   // main one, the time and the settings at the side (under the prompt on a
   // phone, where the prompt is what the screen is for).
   const textarea = el('textarea', {
-    class: 'ds-input so-prestart__text', id: 'psPrompt', rows: '14', spellcheck: 'true',
+    class: 'ds-input so-prestart__text', id: 'psPrompt', rows: '4', spellcheck: 'true',
     placeholder: 'What should it do? This is sent as the first prompt the moment the session starts.',
     'aria-describedby': 'psSave',
   });
@@ -952,9 +952,24 @@ function openPanel(ctx, first) {
     for (const timer of st.dueTimers) clearTimeout(timer);
     unwake();
     host.removeEventListener('keydown', onKey);
+    if (window.visualViewport) window.visualViewport.removeEventListener('resize', regrow);
     host.hidden = true;
     host.replaceChildren();
   }
+
+  // The field's least height is a share of what can be seen
+  // (--so-prompt-min-height), which a phone's keyboard changes: its height
+  // is taken again then - in the next frame, once the app's new height is
+  // written - and a field being typed into is brought into what is left,
+  // so that it ends where the person can see it end.
+  function regrow() {
+    requestAnimationFrame(() => {
+      if (st.closed) return;
+      grow();
+      if (document.activeElement === textarea) textarea.scrollIntoView({ block: 'nearest' });
+    });
+  }
+  if (window.visualViewport) window.visualViewport.addEventListener('resize', regrow);
 
   drawSchedule();
   drawFailure();
