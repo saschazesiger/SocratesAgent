@@ -7065,7 +7065,7 @@ async function optionsmenu() {
     })).catch(() => null);
     await s.page.waitForSelector('#chat .so-composer__account:not([hidden]) .so-composer__account-btn', { timeout: 15000 });
     const face = await button();
-    ok(face && face.text === 'Work' && face.state === 'limited' && face.tip === '5h 100% · 7d 30% · renews in 2 h 37 min',
+    ok(face && face.text === 'Work' && face.state === 'limited' && face.tip === '5h 100% · 7d 30% · renews in 2\u00a0h 37\u00a0min',
       'the composer names the account, says how full each window is and when its limit renews', JSON.stringify(face));
     const menuOf = async () => {
       await s.page.click('#chat .so-composer__account-btn');
@@ -7097,7 +7097,7 @@ async function optionsmenu() {
     // the first fails - and the spare account's limit renews on screen.
     const ticked = await s.page.waitForFunction(() => {
       const n = document.querySelector('#chat .so-composer__account-btn');
-      return !!n && /renews in 2 h 36 min$/.test(n.getAttribute('data-tip') || '');
+      return !!n && /renews in 2\u00a0h 36\u00a0min$/.test(n.getAttribute('data-tip') || '');
     }, null, { timeout: 45000 }).then(() => true, () => false);
     ok(ticked, 'the countdown goes on with the network failing', JSON.stringify(await button()));
     for (let i = 0; i < 40 && Date.now() < Date.parse(lapsing) + 1000; i += 1) await wait(500);
@@ -7134,7 +7134,7 @@ async function optionsmenu() {
       const item = meta.closest('.ds-menu__item').getBoundingClientRect();
       return { text: meta.textContent, cut: meta.scrollWidth > meta.clientWidth + 1 || box.bottom > item.bottom + 1 || box.right > item.right + 1 };
     }));
-    const work360 = lines.find((l) => new RegExp('renews in 2 h 3\\d min, (today|tomorrow) at ' + clocks[0].clock).test(l.text));
+    const work360 = lines.find((l) => new RegExp('renews in 2\u00a0h 3\\d\u00a0min, (today|tomorrow) at ' + clocks[0].clock).test(l.text));
     ok(lines.length === 3 && lines.every((l) => !l.cut) && !!work360,
       'every account’s line is whole on a 360px phone, with when its limit renews by the clock',
       lines.map((l) => (l.cut ? 'CUT ' : '') + l.text).join(' | '));
@@ -8362,7 +8362,11 @@ async function hometouch() {
       'the dialog is the whole screen', JSON.stringify({ box: look.box, viewport: look.viewport }));
     ok(shown.ok && look.options.every((o) => o.h >= 64 && o.size === '20px'),
       'the options are at least 64 px high in 20 px type', JSON.stringify(look.options && look.options.map((o) => o.h + 'px/' + o.size)));
-    ok(look.kb, 'the keyboard button’s copy is in the dialog', String(look.kb));
+    // The keyboard button is the terminal's alone: a field of the dialog
+    // takes a tap and raises the keyboard itself (keyboard.js), so no copy of
+    // the button lies over it.
+    const copies = await car.page.$$eval('.so-kb-copy', (n) => n.length);
+    ok(!look.kb && copies === 0, 'no copy of the keyboard button lies over the dialog', copies + ' copies');
     await shot(car.page, 'home-question-tesla');
     await car.page.tap('dialog.so-askdlg .so-q-option[data-option="postgres"]');
     await car.page.tap('dialog.so-askdlg [data-action="send"]');
@@ -8514,13 +8518,28 @@ async function homefocus() {
     await wait(1500);
     const kept = await toastOnTop(s.page);
     ok(/no voice key/.test(kept) && !!(await askLook(s.page)), 'and it is still said after the next live frame, the dialog still up', kept);
-    // Dictation on a machine with no microphone.
+    // Dictation on a server with no OpenRouter key: nothing is recorded that
+    // could not be transcribed, and the press is answered before it, in a
+    // dialog over the question's (dictate.js explainNoKey).
     await s.page.click('dialog.so-askdlg [data-action="other"]');
     await s.page.waitForSelector('dialog.so-askdlg .so-q-own .so-mic', { timeout: 5000 });
     await s.page.click('dialog.so-askdlg .so-q-own .so-mic');
+    const onTop = () => s.page.evaluate(() => {
+      const dialog = [...document.querySelectorAll('dialog.ds-dialog[open]')].find((d) => !d.classList.contains('so-askdlg'));
+      const box = dialog && dialog.querySelector('.ds-dialog__box');
+      if (!box || !box.checkVisibility()) return '';
+      const r = box.getBoundingClientRect();
+      const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+      return hit && box.contains(hit) ? (box.querySelector('.ds-dialog__title') || {}).textContent || '?' : '';
+    });
     let deaf = '';
-    for (let i = 0; i < 40 && (!deaf || deaf === kept); i += 1) { deaf = await toastOnTop(s.page); await wait(200); }
-    ok(!!deaf && deaf !== kept, 'a dictation that cannot start is said on top of the dialog too', deaf);
+    for (let i = 0; i < 40 && !deaf; i += 1) { deaf = await onTop(); await wait(200); }
+    ok(/Dictation needs an OpenRouter key/.test(deaf), 'a dictation that cannot start is said on top of the dialog too', deaf);
+    await s.page.keyboard.press('Escape');
+    let under = '';
+    for (let i = 0; i < 25 && (under = await onTop()); i += 1) await wait(200);
+    ok(!under && !!(await askLook(s.page)), 'and once it is put away the question is there as it was',
+      JSON.stringify({ over: under, dialog: !!(await askLook(s.page)) }));
     await s.page.click('dialog.so-askdlg [data-action="close"]');
     ok(unexpected(s.errors, REFUSED_NOISE).length === 0, 'no unexpected console errors', unexpected(s.errors, REFUSED_NOISE).join(' | ') || '0');
   } finally { await s.stop(); }
