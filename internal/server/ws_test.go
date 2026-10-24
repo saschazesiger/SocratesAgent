@@ -359,8 +359,10 @@ func TestTerminalHelloAndReplayAfterDrop(t *testing.T) {
 	rendered := first.settle()
 	first.drop()
 
-	// Output the tab could not have seen, produced while it was away.
-	if _, err := e.tmux("send-keys", "-t", "soc_"+id, "echo mark-two", "Enter"); err != nil {
+	// Output the tab could not have seen, produced while it was away. The
+	// quotes keep the typed line from containing what the command prints (see
+	// TestTerminalOfflineThenOnline).
+	if _, err := e.tmux("send-keys", "-t", "soc_"+id, "echo mark-t''wo", "Enter"); err != nil {
 		t.Fatalf("send-keys: %v", err)
 	}
 	e.waitForPane(id, "mark-two")
@@ -376,10 +378,10 @@ func TestTerminalHelloAndReplayAfterDrop(t *testing.T) {
 	second.waitFor("mark-two")
 
 	screen := second.screen()
-	// Two occurrences: the line tmux echoed and the line the shell printed.
-	// Anything the tab had already rendered would be a third.
-	if strings.Count(screen, "mark-two") != 2 {
-		t.Fatalf("the gap was not delivered exactly once:\n%q", screen)
+	// The line the shell printed, once. A gap delivered twice, or with what
+	// the tab had already rendered, would print it twice.
+	if n := strings.Count(screen, "mark-two"); n != 1 {
+		t.Fatalf("the gap was not delivered exactly once: its output is there %d times:\n%q", n, screen)
 	}
 	if strings.Contains(screen, "mark-one") {
 		t.Fatalf("the reconnect replayed what the tab had already seen:\n%q", screen)
@@ -450,7 +452,11 @@ func TestTerminalInputIsExactlyOnce(t *testing.T) {
 	c := e.dialWS(id, "viewer=tab-a&cols=100&rows=30")
 	c.hello()
 
-	c.send(1, "echo mark-alpha\r")
+	// The quotes keep the typed line from containing what the command prints,
+	// so the count below is of runs, not echoes: a line typed before the
+	// shell is at its prompt is echoed by the terminal and again by a shell
+	// that edits its own line - bash does, and macOS's sh is bash.
+	c.send(1, "echo mark-al''pha\r")
 	c.waitFor("mark-alpha")
 	ack := c.waitCtrl("input_ack")
 	if got := floatOf(t, ack, "seq"); got != 1 {
@@ -458,7 +464,7 @@ func TestTerminalInputIsExactlyOnce(t *testing.T) {
 	}
 
 	// The same frame again, exactly as a reconnecting client would resend it.
-	c.send(1, "echo mark-alpha\r")
+	c.send(1, "echo mark-al''pha\r")
 	// And one with a hole in front of it.
 	c.send(9, "echo mark-never\r")
 	c.await("the rejection of the gap", 10*time.Second, func() bool {
@@ -477,9 +483,9 @@ func TestTerminalInputIsExactlyOnce(t *testing.T) {
 	if err != nil {
 		t.Fatalf("capture-pane: %v", err)
 	}
-	// The command line the user typed, and the line the shell printed: two.
-	if n := strings.Count(screen, "mark-alpha"); n != 2 {
-		t.Fatalf("mark-alpha appears %d times, want 2:\n%s", n, screen)
+	// The line the shell printed, once: the resend was not typed again.
+	if n := strings.Count(screen, "mark-alpha"); n != 1 {
+		t.Fatalf("mark-alpha was printed %d times, want once:\n%s", n, screen)
 	}
 	if strings.Contains(screen, "mark-never") {
 		t.Fatalf("a frame with a gap in front of it was written:\n%s", screen)
