@@ -684,12 +684,23 @@ function drawTables(filtered) {
     name: (g) => accountName(g.key),
     onPick: (g) => toggleFilter('profile', g.key), picked: (g) => f.profileSet && f.profile === g.key,
   });
-  table('tConv', groupBy(filtered, (r) => r.conv.key), {
+  // A chat is one row, whatever accounts it ran on: its ledgers are kept
+  // per account (the account in the key), and a chat that went on with
+  // another one at a limit was two rows of the same name, date and link.
+  // What each account spent is the Account table's.
+  const chatOf = (r) => (r.conv.session_id ? r.conv.harness + '/' + r.conv.session_id : r.conv.key);
+  const lastAt = new Map();
+  for (const r of filtered) {
+    const key = chatOf(r);
+    lastAt.set(key, Math.max(lastAt.get(key) || 0, r.conv.last_at || 0));
+  }
+  table('tConv', groupBy(filtered, chatOf), {
     column: 'Conversation',
     name: (g) => convLabel(g.sample.conv),
     sub: (g) => {
       const c = g.sample.conv;
-      const when = c.last_at ? dayShort.format(new Date(c.last_at)) : '';
+      const at = lastAt.get(g.key);
+      const when = at ? dayShort.format(new Date(at)) : '';
       return [HARNESS[c.harness] || c.harness, projectLabel(c.project), when, c.live ? '' : (c.session_id ? 'session deleted' : 'not started from Socrates')]
         .filter(Boolean).join(' · ');
     },
