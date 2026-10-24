@@ -2,10 +2,9 @@
 // one question per step, as the biggest buttons the screen allows. On a
 // phone and in touch mode it is the whole screen (so-question.css).
 //
-// It is the question dialog of the terminal days (question.js) for a
-// question that arrives structured: no screen to read, no operator to type
-// the answer - the answer goes to the chat as JSON, through the chats'
-// Outbox, once by its client_id. The shape it answers with is REBUILD §5.2:
+// A question arrives structured: there is no screen to read and nobody to
+// type the answer into a terminal - the answer goes to the chat as JSON,
+// through the chats' Outbox, once by its client_id. The shape it answers with is REBUILD §5.2:
 //
 //   { answers: { <question id>: { selected, other, note, delegated, skipped } },
 //     general_note, follow_up }

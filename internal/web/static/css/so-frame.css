@@ -6,11 +6,10 @@
  *
  *   .so-view, .so-main  the page as a column: the stage takes the height the
  *                    bar, the banners and the key bar leave
- *   .so-topbar       the bar's contents after the brand: the name, its marks,
- *                    the usage strip and .so-topbar__actions
+ *   .so-topbar       the bar's contents after the brand: the name, its marks
+ *                    and .so-topbar__actions
  *   .so-title        the session's name, a text button that renames it
  *   .so-outcome      the verdict on the last turn, beside the name
- *   .so-usage        the usage strip (in the bar, or on .so-usage-line)
  *   .so-drawer-toggle  puts the session list away at a desk
  *   .so-drawer-actions, .so-drawer-foot  the drawer's first and last rows
  *   .so-session-list the folders and their rows (session.js)
@@ -20,7 +19,6 @@
  *   .so-menu-heading a group's name inside the row menu
  *   .so-banner       the backup notice (backup.js)
  *   .so-options      the switches of the options dialog
- *   .so-usage-reading, .so-usage-row  the usage dialog
  *   .so-rename, .so-info-dialog, .so-facts  the row menu's dialogs
  */
 
@@ -118,79 +116,6 @@
   align-items: center;
   gap: var(--ds-space-1);
   margin-left: auto;
-}
-
-/* ── Usage strip ──────────────────────────────────────────────────────── */
-
-.so-usage {
-  --ds-btn-font: var(--ds-font-meta);
-  --ds-btn-padding-x: var(--ds-space-3);
-  flex: 0 1 auto;
-  min-width: 0;
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-}
-
-.so-usage__line {
-  min-width: 0;
-}
-
-.so-usage__part + .so-usage__part::before {
-  content: "·";
-  margin-inline: var(--ds-space-1);
-  color: var(--ds-text-2);
-}
-
-.so-usage__used,
-.so-usage__cost {
-  color: var(--ds-text);
-}
-
-.so-usage__label,
-.so-usage__reset {
-  color: var(--ds-text-2);
-}
-
-/* Tighter, in the order fitUsage() asks for it: the spacing, then the cost,
-   then a step of type. The limits and their countdowns stay. */
-.so-usage[data-fit] .so-usage__part + .so-usage__part::before {
-  margin-inline: var(--so-usage-gap-tight);
-}
-
-.so-usage:is([data-fit="2"], [data-fit="3"]) .so-usage__cost {
-  display: none;
-}
-
-.so-usage[data-fit="3"] {
-  --ds-btn-font: var(--so-usage-font-tight);
-}
-
-/* A phone: the strip is the column's first line, under the bar. "(2h 36m)"
-   says enough there; the word is for the desk. What still does not fit is
-   swiped along rather than cut off. */
-.so-usage-line {
-  flex: none;
-  display: flex;
-  justify-content: center;
-  min-width: 0;
-  /* As tall as the strip before the first reading is in, so the stage
-     never shrinks under a terminal that was just fitted to it. */
-  min-height: var(--so-usage-line-height);
-  padding: var(--ds-space-1) var(--ds-space-2) 0;
-}
-
-.so-usage-line[hidden] {
-  display: none;
-}
-
-.so-usage-line > .so-usage {
-  max-width: 100%;
-  overflow-x: auto;
-  scrollbar-width: none;
-}
-
-.so-usage-line .so-usage__left {
-  display: none;
 }
 
 /* ── Drawer ───────────────────────────────────────────────────────────── */
@@ -542,46 +467,6 @@
 .so-options {
   display: grid;
   gap: var(--ds-space-4);
-}
-
-.so-usage-reading {
-  display: grid;
-  gap: var(--ds-space-5);
-  inline-size: min(var(--so-usage-reading-width), 100%);
-}
-
-.so-usage-row {
-  display: grid;
-  gap: var(--ds-space-2);
-}
-
-.so-usage-row__head {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: var(--ds-space-3);
-}
-
-.so-usage-row__name {
-  font: var(--ds-font-label);
-  color: var(--ds-text);
-}
-
-.so-usage-row__used {
-  font: var(--ds-font-body);
-  color: var(--ds-text-2);
-  font-variant-numeric: tabular-nums;
-}
-
-.so-usage-row__reset {
-  font: var(--ds-font-meta);
-  color: var(--ds-text-2);
-  font-variant-numeric: tabular-nums;
-}
-
-.so-usage-row--cost {
-  padding-top: var(--ds-space-4);
-  border-top: 1px solid var(--ds-line);
 }
 
 .so-rename .ds-field {

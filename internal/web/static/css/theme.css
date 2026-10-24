@@ -29,16 +29,12 @@
   --so-brand-opencode-inner: #8a8686;
 
   /* Frame: the session list's rows and folder heads (a step denser than a
-     drawer item), the usage strip at its tightest, and the bar's dialogs. */
+     drawer item), and the bar's dialogs. */
   --so-row-height: 40px;
   --so-folder-head-height: 36px;
   --so-shelf-head-height: 32px;
-  --so-usage-gap-tight: 2px;
-  --so-usage-font-tight: var(--ds-weight-regular) 11px/16px var(--ds-font);
-  --so-usage-reading-width: 340px;
   --so-rename-width: 400px;
   --so-title-min: 96px;
-  --so-usage-line-height: 40px;
 
   /* Stage: the pane's inset, its cover, the key bar, the room the floating
      transfer buttons take on a phone, and the recording and copy dialogs. */
@@ -100,7 +96,6 @@
   --so-option-label-font: var(--ds-weight-label) 20px/28px var(--ds-font);
   --so-question-action-height: 56px;
   --so-question-grow-basis: 140px;
-  --so-question-counter-width: 72px;
   --so-kb-copy-reserve: 120px;
 
   /* Admin */
@@ -135,7 +130,6 @@
   --so-row-height: 48px;
   --so-folder-head-height: 48px;
   --so-shelf-head-height: 48px;
-  --so-usage-line-height: 48px;
   --so-option-min-height: 84px;
   --so-chat-row-height: 48px;
   --so-question-action-height: 64px;

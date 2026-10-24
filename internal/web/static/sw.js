@@ -86,7 +86,6 @@ const SHELL = [
   '/static/js/backup.js',
   '/static/js/events.js',
   '/static/js/home.js',
-  '/static/js/question.js',
   '/static/js/outcome.js',
   '/static/js/chatview.js',
   '/static/js/chatfold.js',

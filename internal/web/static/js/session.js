@@ -35,7 +35,6 @@ import { initKeyboard, guard, watchFrame, dictated, touchScreen, setTouchMode } 
 import { mountPrestart, forgetDraft, whenShort } from './prestart.js';
 import { mountEvents } from './events.js';
 import { mountHome, questionQueue, connectionLine } from './home.js';
-import { openQuestions, updateQuestions, questionsOpen, closeQuestions } from './question.js';
 import {
   OUTCOME_WORDS, CHECKING_WORDS, outcomeCurrent, outcomeMark, outcomeLine, outcomeIconHtml,
 } from './outcome.js';
@@ -675,17 +674,6 @@ const state = {
   // The seq of the start frame of each naming in progress, so the ceiling of
   // one naming does not end the next one of the same session.
   titleStarts: new Map(),
-  // The current session's quota/cost poll. A generation number makes a slow
-  // answer for the previous session harmless after a quick row switch.
-  usageTimer: null,
-  usageGeneration: 0,
-  // The session that poll is for, so a newer row of the same session keeps it.
-  usageFor: '',
-  usageRefresh: null,
-  // The last reading, which the countdowns are redrawn from between polls,
-  // and the timer that does it.
-  usage: null,
-  usageTick: null,
   // Status and the microphone, mounted once in boot().
   assist: null,
   // Copy, paste and upload, mounted once in boot().
@@ -705,12 +693,10 @@ const state = {
   // Both mounted once in boot().
   home: null,
   events: null,
-  // What a model last read off each session's screen (HOME.md §1.3), and the
-  // answer the operator is giving to each (§1.4), keyed by session id. Both
-  // in memory only, like the activity: the server re-derives the one and
-  // keeps the other for two minutes, and a hello carries both again.
+  // Each chat's reading (HOME.md §1.3): what it is doing and what it asks,
+  // keyed by session id. In memory only, like the activity: the server
+  // makes it from the chat's journal, and a hello carries it again.
   digests: new Map(),
-  answers: new Map(),
   // The verdict on each session's last turn (outcome.js), keyed by id: the
   // same kind of thing, re-derived by the server and carried by every hello.
   outcomes: new Map(),
@@ -732,7 +718,7 @@ const state = {
 
 const dom = {};
 const ids = ['sidebar', 'navScrim', 'menuBtn', 'blankIDE', 'homeBtn', 'sideCollapse', 'newSession', 'sessionList',
-  'activityLive', 'sessionTitle', 'titleRegen', 'sessionStatus', 'sessionOutcome', 'sessionUsage',
+  'activityLive', 'sessionTitle', 'titleRegen', 'sessionStatus', 'sessionOutcome',
   'transfer', 'copyBtn', 'pasteBtn', 'uploadBtn',
   'statusBtn', 'kbBtn', 'optionsBtn',
   'stage', 'termWrap', 'term', 'termOverlay', 'termLines', 'termNotice',
@@ -741,10 +727,9 @@ const ids = ['sidebar', 'navScrim', 'menuBtn', 'blankIDE', 'homeBtn', 'sideColla
   'recSheet', 'recMeter', 'recTime', 'recSend', 'recCancel',
   'keybar', 'logout', 'prestart', 'chat', 'home'];
 for (const id of ids) dom[id] = document.getElementById(id);
-// The frame's own parts: the app, the bar's contents, the line the usage
-// strip takes on a phone, the row menu and the two dialogs of the bar.
-for (const id of ['app', 'topbar', 'sessionTitleText', 'usageLine', 'sessionMenu', 'optionsDialog', 'usageDialog',
-  'usageReading']) dom[id] = document.getElementById(id);
+// The frame's own parts: the app, the bar's contents, the row menu and the
+// options dialog of the bar.
+for (const id of ['app', 'topbar', 'sessionTitleText', 'sessionMenu', 'optionsDialog']) dom[id] = document.getElementById(id);
 
 const STATE_WORDS = {
   running: 'Running', starting: 'Starting', resuming: 'Resuming',
@@ -895,7 +880,6 @@ function showOutcome() {
 
 function drawLive() {
   if (state.home) state.home.render();
-  updateQuestions();
   tellAsking();
   questionsWhenKnown();
 }
@@ -1256,12 +1240,11 @@ function rowFacts(session) {
     STATE_WORDS[session.state] || session.state,
     session.workdir,
   ];
-  if (session.options?.profile) facts.push('Profile: ' + harnesses.profileName(session.options.profile));
   if (session.options?.account) facts.push('Account: ' + (accounts.labelOf(session.options.account) || session.options.account));
   if (session.options?.auto_switch) facts.push('Switches accounts at a limit');
   if (session.options?.ultracode) facts.push('Ultracode on');
   if (isPrepared(session)) {
-    if (session.options?.profile_auto) facts.push('Profile: chosen when it starts');
+    if (!session.options?.account) facts.push('Account: chosen when it starts');
     if (Number(session.start_at)) facts.push('Starts by itself ' + new Date(Number(session.start_at)).toLocaleString());
   }
   const act = activityOf(session);
@@ -1571,9 +1554,7 @@ function applyList(rows, { rev, source = 'hello' } = {}) {
     }
   }
   // What is known about a session that is gone goes with it.
-  for (const map of [state.digests, state.answers]) {
-    for (const id of [...map.keys()]) if (!sessionOf(id)) map.delete(id);
-  }
+  for (const id of [...state.digests.keys()]) if (!sessionOf(id)) state.digests.delete(id);
   renderList();
   // The tab was asked for a session the list could not yet prove was there
   // - a notification opened while the network was down - and this is the
@@ -1584,27 +1565,13 @@ function applyList(rows, { rev, source = 'hello' } = {}) {
 
 /* ------------------------------------------------------ the event stream */
 
-// What the stream hands over that the list does not: the digest of each
-// session and the answer run of each. A hello replaces both maps, because a
-// hello is the whole state at that moment; a frame changes one entry.
+// What the stream hands over that the list does not: the digest and the
+// verdict of each session. A hello replaces both maps, because a hello is
+// the whole state at that moment; a frame changes one entry.
 function replaceMap(map, entries) {
   map.clear();
   if (!entries || typeof entries !== 'object') return;
   for (const [id, value] of Object.entries(entries)) if (value) map.set(id, value);
-}
-
-// replaceAnswers is replaceMap for the runs, with one exception: a run that
-// started after the moment the state was read (`now`, the server's clock, as
-// `started` is) is newer than the picture, not ended by it. That is a poll
-// that was in flight while this page's own answer went in.
-function replaceAnswers(entries, now) {
-  const keep = [];
-  const at = Number(now) || 0;
-  if (at > 0) {
-    for (const [id, run] of state.answers) if (Number(run.started) > at) keep.push([id, run]);
-  }
-  replaceMap(state.answers, entries);
-  for (const [id, run] of keep) if (!state.answers.has(id)) state.answers.set(id, run);
 }
 
 // carriedOver is a digest with what the page held for the session kept in
@@ -1688,39 +1655,6 @@ function newsFrame(id, news) {
   if (notifier && news.body) notifier.told(id, { body: news.body, kind: news.kind === 'question' ? 'question' : 'finished' });
 }
 
-function answerFrame(id, run) {
-  if (run) state.answers.set(id, run); else state.answers.delete(id);
-  drawLive();
-}
-
-// adoptDigest is a digest that came back on an HTTP answer - a Read again, a
-// refusal that says the question changed. The stream may already have
-// delivered a newer one (the "ready" after the "pending" this answer
-// carries), and an answer slower than the stream must not put the older one
-// back. Revisions only go up within one server's life; a server that
-// restarted is told apart by its hello, which replaces the map.
-function adoptDigest(id, digest) {
-  if (!digest) return;
-  const held = state.digests.get(id);
-  if (held && Number(held.rev) >= Number(digest.rev)) return;
-  digestFrame(id, digest);
-}
-
-const RUN_ORDER = { waiting: 0, thinking: 1, acting: 1, done: 2, error: 2 };
-
-// adoptRun is a run that came back on an HTTP answer or a poll, under the
-// same rule: only a later picture of the same run, or a run started later.
-function adoptRun(id, run) {
-  if (!run) return;
-  const held = state.answers.get(id);
-  if (held && held.run_id === run.run_id) {
-    const was = RUN_ORDER[held.phase] || 0;
-    const now = RUN_ORDER[run.phase] || 0;
-    if (was > now || (was === now && (Number(held.step) || 0) > (Number(run.step) || 0))) return;
-  } else if (held && Number(held.started) > Number(run.started)) return;
-  answerFrame(id, run);
-}
-
 function mountStream() {
   return mountEvents({
     hello: (data) => {
@@ -1729,7 +1663,6 @@ function mountStream() {
         replaceDigests(data.digests, data.sessions);
         state.digestsHeard = true;
       }
-      if ('answers' in data) replaceAnswers(data.answers, data.now);
       if ('outcomes' in data) replaceMap(state.outcomes, data.outcomes);
       if (Array.isArray(data.sessions)) applyList(data.sessions, { rev: data.rev, source: 'hello' });
       else drawLive();
@@ -1739,15 +1672,11 @@ function mountStream() {
     title: (frame) => titleFrame(frame),
     digest: digestFrame,
     outcome: outcomeFrame,
-    answer: answerFrame,
     news: newsFrame,
     // A pong: the page is as current as the moment its ping was sent, which
     // is what a question asked for by a notification is waiting to know -
     // and a badge a push wrote over (badgeWrittenElsewhere).
-    fresh: () => {
-      updateQuestions();
-      tellAsking();
-    },
+    fresh: () => tellAsking(),
     status: () => drawLive(),
     // A poll that could not be answered while the stream is down. It is said
     // on Home and in the sidebar's empty state rather than in a toast: it
@@ -1757,7 +1686,7 @@ function mountStream() {
       state.reachable = false;
       renderList();
     },
-    fast: () => homeShown() || questionsOpen() || askDialogOpen(),
+    fast: () => homeShown() || askDialogOpen(),
   });
 }
 
@@ -1775,37 +1704,6 @@ function streamConnection() {
   };
 }
 
-// questionsCtx is what the question dialog is drawn from: the same queue
-// the Questions card counts, and the maps the stream keeps current.
-const questionsCtx = {
-  // A chat's questions are its own dialog's (askdialog.js); this one walks
-  // the terminals'.
-  queue: () => questionQueue(homeCtx()).filter((session) => !isChat(session)),
-  sessionOf,
-  activityOf,
-  digestOf: (id) => state.digests.get(id) || null,
-  answerOf: (id) => state.answers.get(id) || null,
-  adoptDigest,
-  adoptRun,
-  folderOf: (session) => folderLabelOf(session),
-  // Delivering: live, and not a stream that is quiet and being checked -
-  // the runs are asked about meanwhile rather than waited for.
-  live: () => !!state.events && state.events.live() && !state.events.quiet(),
-  // How current what the dialog shows is, by Home's rule: the dialog is a
-  // modal over Home, and Home's own line is behind it.
-  connection: () => connectionLine(streamConnection(), state.reachable),
-  // The moment the page's state is known to be the server's as of, and
-  // whether the last attempt to read one got through: a question asked for
-  // by a link is only called gone once a state newer than the link says so.
-  freshAt: () => (state.events ? state.events.stateAt() : 0),
-  // Whether the digests have been handed over at all since the page loaded:
-  // a question in prose is only found by its digest, and a page that has
-  // none yet cannot say there is no question (question.js `beingRead`).
-  digestsHeard: () => state.digestsHeard,
-  reachable: () => state.reachable,
-  select: (id) => selectSession(id),
-};
-
 // The sidebar's own tests, handed to Home so that it counts with them rather
 // than with copies of them.
 function homeCtx() {
@@ -1820,24 +1718,13 @@ function homeCtx() {
 }
 
 /**
- * showQuestions opens the question dialog, at one session or the oldest. A
- * chat's question is a structured ask, answered in the chat's own dialog;
- * a terminal's is read off its screen, in the terminals' one.
+ * showQuestions opens the question dialog, at one chat or the oldest
+ * question. Only a chat asks: its question is a structured ask, answered in
+ * the chats' dialog (askdialog.js).
  */
 function showQuestions(id) {
   const target = id ? sessionOf(id) : questionQueue(homeCtx())[0];
-  if (isChat(target)) {
-    showChatQuestions(target.id);
-    return;
-  }
-  openQuestions(questionsCtx, id || '');
-  if (state.events) {
-    state.events.refresh();
-    // A session asked for - a notification, a link, a row - is only called
-    // not asking against a state newer than the ask, and a stream that says
-    // it is live may be a socket that died quietly: it is asked now.
-    if (id) state.events.confirm();
-  }
+  if (isChat(target)) showChatQuestions(target.id);
 }
 
 /**
@@ -1885,7 +1772,6 @@ function questionOnHome(id, { replace = false } = {}) {
 // session" closes it: a modal left in front would hold the session asked for
 // inert behind it.
 function openOnNews(id) {
-  closeQuestions();
   closeAskDialog();
   state.wanted = id;
   if (!state.current || state.current.id !== id) selectSession(id);
@@ -1909,7 +1795,7 @@ function questionsWhenKnown() {
   if (!state.questionsWanted) return;
   // Gone from Home in the meantime, or opened some other way: the person
   // has moved on, and the dialog is not put in front of what they went to.
-  if (!homeShown() || questionsOpen() || askDialogOpen()) { state.questionsWanted = false; return; }
+  if (!homeShown() || askDialogOpen()) { state.questionsWanted = false; return; }
   if (!knownCurrent() || !state.digestsHeard) return;
   state.questionsWanted = false;
   if (questionQueue(homeCtx()).length) showQuestions('');
@@ -1966,13 +1852,6 @@ function badgeWrittenElsewhere() {
   state.badgeStale = true;
   state.staleSince = Date.now();
   if (state.events) state.events.confirm();
-}
-
-// folderLabelOf is the name the sidebar gives a session's folder.
-function folderLabelOf(session) {
-  const key = folderKeyOf(session);
-  const folder = foldersOf(state.sessions).find((one) => one.key === key);
-  return folder ? folder.label : '';
 }
 
 /**
@@ -2369,7 +2248,7 @@ function homeShown() { return !!state.home && state.home.shown(); }
  *
  * Nothing is attached while it is shown - no terminal, no socket, no panel -
  * so nothing on it can take the focus, and the top bar is reset to the state
- * it has with no session: no status, no usage, no copy and paste.
+ * it has with no session: no status, no copy and paste.
  */
 function showHome({ replace = false } = {}) {
   if (state.pendingAttach) { clearTimeout(state.pendingAttach); state.pendingAttach = null; }
@@ -2380,7 +2259,6 @@ function showHome({ replace = false } = {}) {
   dom.termWrap.hidden = true;
   setTitleText('Home');
   dom.titleRegen.hidden = true;
-  stopUsage();
   if (state.assist) state.assist.attached();
   if (state.transfer) state.transfer.attached();
   dom.sessionStatus.hidden = true;
@@ -2446,215 +2324,17 @@ function applySession(session) {
   drawOutcomeTag();
 
   // What it runs and on which model is in the list's mark and in "Info" in
-  // the row's menu; the bar keeps its width for the name. A prepared
-  // session has no conversation to cost anything yet, and its panel shows
-  // each profile's limits where the profile is chosen.
+  // the row's menu; the bar keeps its width for the name. A chat says what
+  // it used under its own "i" (chatview.js), and a prepared one shows its
+  // account's limits where the account is chosen.
   if (isPrepared(session)) {
-    stopUsage();
     if (state.prestart) state.prestart.update(session);
   } else if (isChat(session)) {
-    // A chat says what it used under its own "i" (chatview.js); the strip's
-    // limits are a profile's, and a chat runs on an account (WP7).
-    stopUsage();
     if (state.chat) state.chat.update(session);
-  } else {
-    startUsage(session);
   }
 
   drawOverlay(session);
   renderList();
-}
-
-const USAGE_REFRESH = 30000;
-// How often the countdowns are redrawn from the reading on screen. A reading
-// is asked for every thirty seconds, but one that cannot be had - no signal,
-// a slow endpoint - must not leave "2h 36m" standing for an hour.
-const USAGE_TICK = 15000;
-
-// What each window is called where there is room to say it.
-const WINDOW_NAMES = { '5h': '5-hour limit', '7d': 'Weekly limit', Fable: 'Fable weekly limit' };
-
-function stopUsage() {
-  state.usageGeneration += 1;
-  if (state.usageTimer) clearInterval(state.usageTimer);
-  if (state.usageTick) clearInterval(state.usageTick);
-  state.usageTimer = null;
-  state.usageTick = null;
-  state.usageFor = '';
-  state.usageRefresh = null;
-  state.usage = null;
-  if (dom.usageDialog && dom.usageDialog.open) hideOverlay(dom.usageDialog);
-  dom.sessionUsage.hidden = true;
-  morph(dom.sessionUsage, '');
-  dom.sessionUsage.removeAttribute('data-tip');
-  placeUsage();
-}
-
-function startUsage(session) {
-  // applySession runs on every newer row of the session on screen - a list
-  // refresh, a rename, a found conversation - and each is a good moment to
-  // read the numbers again. But the reading on screen stays until the new one
-  // is in: starting over emptied the strip first, so the limits blinked away
-  // on every refresh and, on a phone, the bar lost its second line and the
-  // pane was resized twice for nothing.
-  if (session && state.usageTimer && state.usageFor === session.id && state.usageRefresh) {
-    state.usageRefresh();
-    return;
-  }
-  stopUsage();
-  if (!session || session.harness === 'vscode') return;
-  state.usageFor = session.id;
-  placeUsage();
-  const generation = state.usageGeneration;
-  const refresh = async () => {
-    try {
-      const usage = await api('/api/sessions/' + encodeURIComponent(session.id) + '/usage', {
-        attempts: 1, timeout: 10000,
-      });
-      if (generation !== state.usageGeneration || !state.current || state.current.id !== session.id) return;
-      state.usage = usage;
-      drawUsage(usage);
-    } catch { /* quota is useful context, never a reason to disturb the terminal */ }
-  };
-  refresh();
-  state.usageRefresh = refresh;
-  state.usageTimer = setInterval(refresh, USAGE_REFRESH);
-  state.usageTick = setInterval(() => {
-    if (generation === state.usageGeneration && state.usage) drawUsage(state.usage);
-  }, USAGE_TICK);
-}
-
-/**
- * limitWindows is a reading's windows as they stand now: the share used,
- * clamped, and how long until each renews. A window whose renewal has passed
- * since the reading was taken has renewed, and is empty until the next
- * reading says otherwise - the same rule the server applies.
- */
-function limitWindows(usage, now = Date.now()) {
-  const windows = Array.isArray(usage && usage.windows) ? usage.windows : [];
-  return windows.filter((w) => w && w.label).map((w) => {
-    const at = w.resets_at ? new Date(w.resets_at).getTime() : NaN;
-    const renewed = Number.isFinite(at) && at <= now;
-    const used = renewed ? 0 : Math.max(0, Math.min(100, Math.round(Number(w.used_percent) || 0)));
-    const left = renewed ? '' : harnesses.untilReset(w, now);
-    return { label: w.label, used, left, renewed, at: left ? at : NaN };
-  });
-}
-
-function drawUsage(usage) {
-  const parts = [];
-  const details = [];
-  for (const window of limitWindows(usage)) {
-    // How long until the window renews is shown, not only hovered: whether
-    // 80% is a problem depends on whether it is gone in ten minutes.
-    parts.push(html`<span class="so-usage__part" data-window="${window.label}"><span class="so-usage__label">${window.label}</span> <span class="so-usage__used">${window.used + '%'}</span>${
-      window.left ? html` <span class="so-usage__reset">(${window.left}<span class="so-usage__left"> left</span>)</span>` : ''
-    }</span>`);
-    details.push(window.label + ': ' + window.used + '% used'
-      + (window.left ? ' · resets in ' + window.left + ' (' + renewalTime(window.at) + ')' : ''));
-  }
-  if (Number.isFinite(usage && usage.cost_usd)) {
-    const value = Number(usage.cost_usd);
-    const shown = value > 0 && value < .01 ? '<$0.01' : '$' + value.toFixed(2);
-    parts.push(html`<span class="so-usage__part so-usage__cost">${'~' + shown}</span>`);
-    details.push('Estimated session API-equivalent cost: $' + value.toFixed(4));
-  }
-  // One line inside the button: the button lays out its children with a gap
-  // of its own, which is not the spacing of the parts.
-  morph(dom.sessionUsage, parts.length ? html`<span class="so-usage__line">${parts}</span>` : '');
-  dom.sessionUsage.setAttribute('data-tip', details.join('\n'));
-  dom.sessionUsage.setAttribute('aria-label', details.join('. ') || 'Usage');
-  dom.sessionUsage.hidden = parts.length === 0;
-  placeUsage();
-  fitUsage();
-  // The reading that is open says what the strip now says, and goes with it.
-  if (dom.usageDialog && dom.usageDialog.open) {
-    if (parts.length === 0) hideOverlay(dom.usageDialog);
-    else drawUsageReading();
-  }
-}
-
-/**
- * fitUsage keeps the strip on its one line where its width is given to it -
- * a phone's, where it is the line under the bar. Three windows and a cost are
- * more than 360px say in full, so it gives up, in order, its spacing, the
- * cost (which the reading behind a tap still has) and a step of type size
- * before anything about a limit. What is still too wide can be swiped along:
- * nothing is cut off where it cannot be reached.
- */
-function fitUsage() {
-  const strip = dom.sessionUsage;
-  strip.removeAttribute('data-fit');
-  if (strip.hidden) return;
-  for (const level of ['1', '2', '3']) {
-    if (strip.scrollWidth <= strip.clientWidth + 1) return;
-    strip.setAttribute('data-fit', level);
-  }
-}
-
-// The narrow layout, where the bar has no room for the strip: there it is a
-// line of its own at the top of the column, under the bar.
-const usageNarrow = window.matchMedia('(max-width: 700px)');
-
-/**
- * placeUsage puts the strip where the window has room for it: in the bar,
- * before its actions, or on the line under the bar on a phone. It is the same
- * button either way, so its listeners and its open reading come along.
- */
-function placeUsage() {
-  const strip = dom.sessionUsage;
-  const line = dom.usageLine;
-  if (!strip || !line) return;
-  if (usageNarrow.matches) {
-    if (strip.parentElement !== line) line.append(strip);
-  } else if (strip.parentElement !== dom.topbar) {
-    dom.topbar.insertBefore(strip, dom.topbar.querySelector('.so-topbar__actions'));
-  }
-  // The line is there for as long as a session's usage is being read, before
-  // the first reading is in: a line that came with the reading would shrink
-  // the stage under a terminal that has just been fitted to it.
-  line.hidden = !usageNarrow.matches || (strip.hidden && !state.usageFor);
-}
-
-/**
- * renewalTime is when a window renews, the way a clock on a wall says it:
- * "today 14:30", "tomorrow 09:00", or the weekday and date for later.
- */
-function renewalTime(at, now = new Date()) {
-  const when = new Date(at);
-  if (!Number.isFinite(when.getTime())) return '';
-  const clock = when.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-  const day = (d) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
-  const days = Math.round((day(when) - day(now)) / 86400000);
-  if (days === 0) return 'today ' + clock;
-  if (days === 1) return 'tomorrow ' + clock;
-  return when.toLocaleDateString([], { weekday: 'short', day: 'numeric', month: 'short' }) + ', ' + clock;
-}
-
-/**
- * openUsage is the whole reading behind the strip: each window, how full it
- * is, and when exactly it renews. It is what the tooltip says at a desk, for
- * a touch screen that has no tooltips.
- */
-function openUsage(anchor) {
-  if (!state.usage) return;
-  drawUsageReading();
-  anchor.setAttribute('aria-expanded', 'true');
-  showOverlay(dom.usageDialog, anchor);
-}
-
-// drawUsageReading fills the usage dialog from the reading on screen.
-function drawUsageReading() {
-  const usage = state.usage || {};
-  const rows = limitWindows(usage).map((window) => html`<div class="so-usage-row" data-window="${window.label}"><div class="so-usage-row__head"><span class="so-usage-row__name">${WINDOW_NAMES[window.label] || window.label}</span><span class="so-usage-row__used">${window.used + '% used'}</span></div><div class="ds-progress ds-progress--flat so-usage-row__meter" style="${'--ds-progress: ' + window.used / 100}"><div class="ds-progress__track" role="progressbar" aria-label="${(WINDOW_NAMES[window.label] || window.label) + ' used'}" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${window.used}"><div class="ds-progress__bar"></div></div></div><div class="so-usage-row__reset">${
-    window.left ? 'Resets in ' + window.left + ' · ' + renewalTime(window.at)
-      : window.renewed ? 'Renewed · waiting for the next reading'
-        : 'No renewal time reported'
-  }</div></div>`);
-  if (Number.isFinite(usage.cost_usd)) {
-    rows.push(html`<div class="so-usage-row so-usage-row--cost"><div class="so-usage-row__head"><span class="so-usage-row__name">This session</span><span class="so-usage-row__used">${'~$' + Number(usage.cost_usd).toFixed(2)}</span></div><div class="so-usage-row__reset">Estimated API-equivalent cost</div></div>`);
-  }
-  morph(dom.usageReading, html`${rows}`);
 }
 
 // drawOverlay is §E.7's table. Everything it can say is a state the session is
@@ -3323,10 +3003,6 @@ function onControl(sessionId, frame) {
   // so this frame is about whichever session it names and not about the one
   // this socket is attached to.
   if (frame.t === 'title') { titleFrame(frame); return; }
-  // The answer the operator is giving is broadcast on the session's own
-  // sockets as well as on the event stream, so a dialog opened over this
-  // terminal hears it even while the stream is reconnecting.
-  if (frame.t === 'answer') { if (frame.id) answerFrame(frame.id, frame.run || null); return; }
   // A verdict is about whichever session it names, as a title is.
   if (frame.t === 'outcome') { if (frame.id) outcomeFrame(frame.id, frame.outcome || null); return; }
   if (!state.current || state.current.id !== sessionId) return;
@@ -3513,12 +3189,9 @@ function measureForStart() {
   }
 }
 
-// prepareSession stores a session with its settings and nothing else, and
-// opens its panel, where the first prompt is written and Start is pressed.
-// The size is sent along because a scheduled start has no page to measure
-// one: it starts at the size the session was prepared at.
+// prepareSession stores a chat with its settings and nothing else, and opens
+// its panel, where the first prompt is written and Start is pressed.
 async function prepareSession(pick) {
-  const size = measureForStart();
   try {
     const data = await api('/api/sessions', {
       method: 'POST',
@@ -3530,15 +3203,11 @@ async function prepareSession(pick) {
         harness: pick.harness,
         model: pick.model,
         effort: pick.effort,
-        profile: pick.profile || undefined,
-        profile_auto: pick.profile_auto || undefined,
         ultracode: pick.ultracode || undefined,
         account: pick.account || undefined,
         auto_switch: pick.auto_switch || undefined,
         workdir_mode: pick.workdir_mode,
         workdir: pick.workdir,
-        cols: size.cols || undefined,
-        rows: size.rows || undefined,
       },
     });
     replaceSession(data.session);
@@ -3569,6 +3238,7 @@ async function newSession() {
     await startChat(pick);
     return;
   }
+  // A Shell: a folder, and the size of the pane it is about to be drawn in.
   const size = measureForStart();
   try {
     const data = await api('/api/sessions', {
@@ -3578,10 +3248,6 @@ async function newSession() {
       body: {
         client_id: clientKey(),
         harness: pick.harness,
-        model: pick.model,
-        effort: pick.effort,
-        profile: pick.profile || undefined,
-        ultracode: pick.ultracode || undefined,
         workdir_mode: pick.workdir_mode,
         workdir: pick.workdir,
         cols: size.cols || undefined,
@@ -3700,7 +3366,7 @@ function paneAfter(button) {
     const now = document.activeElement;
     if (now && now !== document.body && now !== button) return;
     if (button && now === button) {
-      if (!button.matches('.so-row__more, #sessionTitle, #optionsBtn, #sessionUsage')) return;
+      if (!button.matches('.so-row__more, #sessionTitle, #optionsBtn')) return;
       button.blur();
     }
     keepTypingAlive();
@@ -3807,21 +3473,11 @@ function wire() {
     hideOverlay(dialog).then(() => paneAfter(button));
   });
   backToPane(dom.optionsDialog, dom.optionsBtn);
-  backToPane(dom.usageDialog, dom.sessionUsage);
   dom.optionsDialog.addEventListener('change', (event) => {
     const input = event.target.closest('[data-option]');
     if (input) setOption(input.dataset.option, input.checked);
   });
   wireList();
-  dom.sessionUsage.addEventListener('click', (event) => openUsage(event.currentTarget));
-  // The strip is fitted to the width it has, and that changes with the bar
-  // and with the line it takes on a phone.
-  if (window.ResizeObserver) {
-    const fit = new ResizeObserver(() => fitUsage());
-    fit.observe(dom.topbar);
-    fit.observe(dom.usageLine);
-  } else window.addEventListener('resize', fitUsage);
-  usageNarrow.addEventListener('change', () => { placeUsage(); fitUsage(); });
   // The name is edited where it is read.
   dom.sessionTitle.addEventListener('click', () => {
     if (state.current) renameSession(state.current, dom.sessionTitle);
@@ -3995,9 +3651,9 @@ async function boot() {
     // this page may know a newer one.
     pushed: () => badgeWrittenElsewhere(),
   });
-  // The panel of a prepared session. Its Start ends where a new session's
-  // does: the row it answers with replaces the prepared one, and
-  // applySession turns the panel into that session's terminal.
+  // The panel of a prepared session. Its Start ends where a new chat's does:
+  // the row it answers with replaces the prepared one, and applySession
+  // turns the panel into that chat.
   state.prestart = mountPrestart({
     host: dom.prestart,
     replace: (row) => replaceSession(row),
@@ -4006,7 +3662,6 @@ async function boot() {
       if (error) toast('The session could not start.', 'error');
     },
     refresh: () => refreshList(),
-    measure: () => measureForStart(),
     nameFromPrompt: (session, prompt) => retitleSession(session, { unnamed: true, prompt }),
   });
   // The chat view, for every session that is a chat. What a chat was told
@@ -4044,9 +3699,6 @@ async function boot() {
   // The catalogue decides whether a folder offers VS Code, so the list is
   // drawn again once it is in.
   harnesses.load().then(() => renderList()).catch(() => { /* the sheet says so when it is opened */ });
-  // The sheet starts a session in the profile of the ones already active in
-  // its folder, and this list is where it finds them.
-  harnesses.useSessions(() => state.sessions);
   try {
     const prefs = await api('/api/preferences', { attempts: 1, timeout: 8000 });
     if (prefs && prefs.terminal) state.terminal = { ...state.terminal, ...prefs.terminal };

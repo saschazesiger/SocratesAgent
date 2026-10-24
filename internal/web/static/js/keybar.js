@@ -1,7 +1,7 @@
 // The phone half of the terminal: the key bar.
 //
-// A phone keyboard has no Escape, no Tab, no Ctrl and no arrows, and the four
-// CLIs this app exists to drive need all of them. So the keys they lack are a
+// A phone keyboard has no Escape, no Tab, no Ctrl and no arrows, and a shell
+// and the programs run in it need all of them. So the keys it lacks are a
 // row of buttons that write the same bytes a real key would.
 //
 // It is on by default in touch mode and off everywhere else, and the
