@@ -239,6 +239,14 @@ func (c *chatEnv) stream(t *testing.T, id string, since int64) *chatClient {
 	return cl
 }
 
+// deltaCount is how many live deltas the stream has brought so far; the
+// reader counts them under mu.
+func (cl *chatClient) deltaCount() int {
+	cl.mu.Lock()
+	defer cl.mu.Unlock()
+	return cl.deltas
+}
+
 func (cl *chatClient) wake() {
 	select {
 	case cl.woke <- struct{}{}:
@@ -373,8 +381,11 @@ func TestChatSurvivesAServerRestartMidTurn(t *testing.T) {
 	if !strings.HasSuffix(lastText(journal), "w300 ") {
 		t.Fatalf("the turn did not complete: %q", lastText(journal))
 	}
-	if again.hello == nil || again.hello["last_seq"] == nil {
-		t.Fatalf("hello %v", again.hello)
+	again.mu.Lock()
+	hello := again.hello
+	again.mu.Unlock()
+	if hello == nil || hello["last_seq"] == nil {
+		t.Fatalf("hello %v", hello)
 	}
 }
 
@@ -525,8 +536,8 @@ func TestChatTwoDevicesOnOneStream(t *testing.T) {
 	if len(a) != len(b) {
 		t.Fatalf("the devices saw %d and %d events", len(a), len(b))
 	}
-	if phone.deltas == 0 || laptop.deltas == 0 {
-		t.Fatalf("no live deltas: %d %d", phone.deltas, laptop.deltas)
+	if p, l := phone.deltaCount(), laptop.deltaCount(); p == 0 || l == 0 {
+		t.Fatalf("no live deltas: %d %d", p, l)
 	}
 }
 
