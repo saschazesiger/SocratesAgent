@@ -2,12 +2,11 @@
 // sessions, and Playwright driving the page.
 //
 // One thing has to be arranged before a browser can see a session: the CLIs.
-// A suite that needed three logged-in accounts would not be a suite, so
-// `e2e/fakebin/faketui` is built once and linked onto PATH under all three
-// names. It is a terminal program, not a protocol speaker - which is what the
-// product now runs - and it writes the same state files the real ones write,
-// so the discovery and resume paths are exercised rather than mocked. The
-// Shell harness needs no fake at all: /bin/sh is the thing under test.
+// A suite that needed three logged-in accounts would not be a suite, so the
+// scripted CLIs - e2e/fakebin/fakeclaude, fakecodex and fakeopencode, which
+// speak each agent's own protocol - are built once and put on PATH under the
+// names the chats run. The Shell needs no fake at all: /bin/sh is the thing
+// under test.
 //
 // With SOCRATES_LIVE_AGENTS=1 a scenario can ask for `live: true` instead, and
 // then the fakes stay off PATH and the real, logged-in CLIs are used.
@@ -16,7 +15,7 @@ import { chromium } from '/opt/browser-testing/node_modules/playwright-core/inde
 import { createServer } from 'node:http';
 import { createServer as createSocketServer } from 'node:net';
 import { spawn, execFileSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, realpathSync, rmSync, mkdirSync, symlinkSync, readdirSync, existsSync } from 'node:fs';
+import { mkdtempSync, readFileSync, realpathSync, rmSync, mkdirSync, readdirSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -97,16 +96,15 @@ const CHROME = process.env.SOCRATES_E2E_CHROME || defaultChrome();
 export const PASSWORD = 'socrates-e2e';
 export const LIVE = process.env.SOCRATES_LIVE_AGENTS === '1';
 
-// The three fake CLIs are one program under three names, built once per run.
-// The Go-overlay trick the old suite used is gone with the adapter registry it
-// pointed at: `socrates` is now built plainly.
+// The three scripted CLIs, built once per run under the names the chats
+// run, and `socrates` itself, built plainly.
 function buildFakes() {
   const dir = scratchDir('socrates-e2e-');
   const bin = join(dir, 'bin');
   mkdirSync(bin);
-  const faketui = join(bin, 'faketui');
-  execFileSync('go', ['build', '-o', faketui, './e2e/fakebin/faketui'], { cwd: REPO });
-  for (const name of ['claude', 'codex', 'opencode']) symlinkSync(faketui, join(bin, name));
+  for (const [name, pkg] of [['claude', 'fakeclaude'], ['codex', 'fakecodex'], ['opencode', 'fakeopencode']]) {
+    execFileSync('go', ['build', '-o', join(bin, name), './e2e/fakebin/' + pkg], { cwd: REPO });
+  }
   execFileSync('go', ['build', '-o', join(dir, 'socrates'), '.'], { cwd: REPO });
   return { dir, bin, exe: join(dir, 'socrates') };
 }
@@ -289,11 +287,6 @@ export function spawnServer({ data, port, live = false, env = {} }) {
       // does not exist, an exec failure that reads as "claude: no such file or
       // directory".
       SOCRATES_WORKSPACE_ROOT: join(data, 'workspaces'),
-      // The agents on this suite's PATH are faketui, which speaks no
-      // protocol, so Claude Code, Codex and OpenCode stay the terminals the
-      // scenarios were written for (internal/server AgentTerminalsEnv). The
-      // chat scenarios use the scripted agent, which is a chat regardless.
-      SOCRATES_AGENT_TERMINALS: '1',
       // Every CLI's own state goes under the run's data directory, so that a
       // fake run can neither read nor write the machine's real credentials,
       // transcripts or session databases - and so that a scenario can assert
