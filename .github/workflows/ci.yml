@@ -56,6 +56,28 @@ jobs:
       - name: Vet
         run: go vet ./...
 
+      # TEMPORARY, for the macOS fixes only: measures what the tests assume.
+      - name: Diagnose (temporary)
+        if: matrix.os == 'macos-latest'
+        run: |
+          set +e
+          ls -l /bin/sh /private/var/select/sh
+          /bin/sh -c 'echo "sh is BASH_VERSION=$BASH_VERSION"'
+          command -v timeout gtimeout base64 od yes
+          printf 'abc' | base64 -w 90; echo " (base64 -w exit $?)"
+          ps -o lstart= -p $$
+          ps -eo pid=,ppid= | head -3
+          sysctl net.inet.tcp.recvspace net.inet.tcp.sendspace net.inet.tcp.autorcvbufmax net.inet.tcp.autosndbufmax kern.ipc.maxsockbuf
+          T="tmux -L socdiag -f /dev/null"
+          $T new-session -d -s base -x 100 -y 30 /bin/sh
+          $T set-option -g remain-on-exit on
+          $T new-session -d -s killed "/bin/sh -c 'sleep 0.5; kill -9 \$\$'"
+          sleep 2
+          $T list-panes -a -F '#{session_name} dead=#{pane_dead} status=[#{pane_dead_status}] signal=[#{pane_dead_signal}] cmd=[#{pane_current_command}] pid=#{pane_pid}'
+          ps -o pid=,ppid=,comm= -p "$($T display-message -p -t base '#{pane_pid}')"
+          $T kill-server
+          true
+
       - name: Test
         run: go test -race ./...
 
