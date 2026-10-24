@@ -17,9 +17,11 @@ its last commit (§6). `integ` is, in order:
   installation of `main`, the real binaries; `deployfix` merged in d95802d), two rounds of
   rechecks at a desk and on a phone with their fixes, and the fixes the last whole runs needed.
 
-Nothing past 26a3b56 is pushed, and `integ` is **not merged into `main`**: every push to `main` is
-installed on the server by GitHub Actions, and the nightly update builds `origin/main` too, so the
-merge is the deployment (§6, item 5).
+`integ` is pushed as `origin/rebuild` and merged into `main` through pull request #1, at the
+product owner's instruction ("when everything is finished, push it to main yourself"): every push
+to `main` is installed on the server by GitHub Actions, and the nightly update builds `origin/main`
+too, so the merge is the deployment, and the migration of §3 runs on the server's first start of
+this version (§6, item 5).
 
 `integ`'s history from fa1ef20 on was rewritten before anything was pushed: that commit had put a
 28 MB debug binary (`SocratesAgent`, what `go build` without `-o` writes in a clone named after
@@ -308,8 +310,12 @@ numbers.
    a `-data`, HOME and port of its own, never the original and never the service's tmux server;
    its `s3.json` names the real bucket, so give the copy a bucket or prefix of its own unless that
    first backup is the point - or accept the rehearsal.
-5. **The merge into `main`: the owner's.** Tell the product owner first: the migration is
-   one-way, and the push (or the next nightly update, or Admin → Updates) deploys it.
+5. **The merge into `main`: done**, through pull request #1, once CI was green on Linux, macOS and
+   Windows, at the product owner's instruction to push to `main` when everything is finished. Items
+   3 (Claude) and 4 (a copy of `/var/lib/socrates`) could not be done in the build container and
+   stand as described above: the rehearsals of item 4 and the fake-protocol tests of item 3 are
+   what they rest on. The push deploys it; the migration is one-way, and "A rollback across the
+   migration" (§3) is the way back.
 
 ## 7. Working method that was used
 
