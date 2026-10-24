@@ -620,17 +620,20 @@ export async function setup(page, url) {
 
 // On a phone the session list is a drawer and "New session" lives in it. This
 // is the tap that gets to it, and a no-op on a window wide enough to show it.
+//
+// A drawer that is open is waited for, never tapped again: under load it is
+// still sliding in when a fixed pause has passed, its panel is over the menu
+// button by then, and a second tap lands in the panel and never comes back.
 export async function ensureNav(page) {
-  const onScreen = () => page.evaluate(() => {
-    const side = document.getElementById('sidebar');
-    return side.getBoundingClientRect().left > -10;
-  });
-  for (let i = 0; i < 4; i += 1) {
-    if (await onScreen()) return;
-    await page.click('#menuBtn');
-    await wait(320);
+  const onScreen = () => document.getElementById('sidebar').getBoundingClientRect().left > -10;
+  for (let i = 0; i < 3; i += 1) {
+    if (await page.evaluate(onScreen)) return;
+    if (!(await page.evaluate(() => document.getElementById('app').hasAttribute('data-drawer-open')))) {
+      await page.click('#menuBtn');
+    }
+    if (await page.waitForFunction(onScreen, null, { timeout: 10000 }).then(() => true, () => false)) return;
   }
-  if (!(await onScreen())) throw new Error('the session list never came out');
+  throw new Error('the session list never came out');
 }
 
 export function shot(page, name) {
