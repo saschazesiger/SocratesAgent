@@ -245,11 +245,20 @@ export function defaultModelFor(id) {
 }
 
 // needsModel is false for Shell, which runs a login shell and has nothing to
-// choose. §E.3: the whole step is hidden, not disabled.
+// choose. §E.3: the whole step is hidden, not disabled. A program that could
+// not list its models still has the step: an id typed into it is passed on,
+// and an empty one starts the program on its own default (unlisted).
 export function needsModel(id) {
   const found = harness(id);
   if (!found) return !isTool(id);
-  return (found.models || []).length > 0 || !!found.default_model;
+  return (found.models || []).length > 0 || !!found.default_model || unlisted(found);
+}
+
+// unlisted is an installed program whose model listing failed and that names
+// no default: its model field takes an id, and may be left empty.
+function unlisted(found) {
+  return !!found && !!found.installed && !!found.error
+    && !(found.models || []).length && !found.default_model;
 }
 
 // harnessCard is one program as the form offers it: a radio card with the
@@ -718,6 +727,9 @@ export function settingsForm(options = {}) {
     }
     // Shell has nothing to run on, so the step is not there at all.
     modelField.hidden = !needsModel(harnessId);
+    // With no list to pick from, the field is for an id, or for nothing.
+    picker.input.placeholder = unlisted(harness(harnessId))
+      ? 'Default, or a model’s id' : 'Pick a model, or type its id';
     pick.model = modelField.hidden ? '' : defaultModelFor(harnessId);
     picker.setValue(pick.model, false);
     const model = modelOf(harnessId, pick.model);
@@ -756,7 +768,7 @@ export function settingsForm(options = {}) {
     /** missing is what still has to be chosen, as a sentence; '' when nothing. */
     missing() {
       if (!entries.length) return 'There is no program to start yet.';
-      if (!pick.harness || (!modelField.hidden && !pick.model)) return 'Pick a program and a model first.';
+      if (!pick.harness || (!modelField.hidden && !pick.model && !unlisted(harness(pick.harness)))) return 'Pick a program and a model first.';
       if (pick.mode === CUSTOM && !pick.workdir) return 'Type the directory this session should work in.';
       // A chat started now needs an account it can run on; a prepared one
       // can be signed in to before it starts.
@@ -787,10 +799,10 @@ export function settingsForm(options = {}) {
         // says what it means here.
         if (entry.error) {
           parts.push(entry.installed
-            ? entry.label + ' could not list its models. You can still type a model’s id.'
+            ? entry.label + ' could not list its models. Type a model’s id, or leave it empty for its own default.'
             : entry.label + ' is not installed on this machine.');
         }
-        if (entry.installed && !entry.static && !defaultModelFor(entry.id) && !pick.model && !modelField.hidden) {
+        if (entry.installed && !entry.static && !defaultModelFor(entry.id) && !pick.model && !modelField.hidden && !unlisted(entry)) {
           parts.push('Pick a model - ' + entry.label + ' does not name a default.');
         }
       }
