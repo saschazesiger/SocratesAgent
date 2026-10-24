@@ -985,6 +985,13 @@ export async function openNewSessionSheet() {
       finish({ ...form.value(), prestart: prepared(form.harness()), chat: isChat(form.harness()) });
     }, on);
     sheet.addEventListener('close', () => finish(null), on);
+    // It opens on the program chosen, not on its Close: the first focusable
+    // control, Close took the focus with a ring after a key had been
+    // pressed (the Escape that put the sheet away last time), its tooltip
+    // came with it, and the first Escape only put the tooltip away.
+    for (const one of sheet.querySelectorAll('[autofocus]')) one.removeAttribute('autofocus');
+    const chosen = sheet.querySelector('#nsForm input[type="radio"]:checked');
+    if (chosen) chosen.setAttribute('autofocus', '');
     showOverlay(sheet);
   });
 }
