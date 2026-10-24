@@ -2875,8 +2875,8 @@ the four final audits (a desk, a phone, a deploy rehearsal, the real binaries) f
 - **Touch mode's fields.** A tap on any field but the terminal's types at once; a focus the page
   gives by itself (a dialog opening on its field, the composer of a chat that opens) raises no
   keyboard; a button that brings a field to type in (Rename, Other, Add a note, Anything else,
-  Ask the agent back, Keep planning, Custom path) gives it the keyboard with that tap
-  (`keyboard.js` `typeHere`). The keyboard switch is the terminal's alone.
+  Ask the agent back, Keep planning, Custom path) gives it the keyboard with that tap and
+  brings it into sight (`keyboard.js` `typeHere`). The keyboard switch is the terminal's alone.
 - **A session's menu on a phone is an action sheet** under the session's name, and a menu that is
   cut short at a desk fades at its foot.
 - **Snackbars** stand above the dock, the key bar and a keyboard, and a dialog keeps the strip
