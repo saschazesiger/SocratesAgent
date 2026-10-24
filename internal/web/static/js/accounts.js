@@ -97,22 +97,55 @@ export function stateChip(account) {
   }
 }
 
-/**
- * renewal is when an account that ran into its limit can be used again, as
- * "renews in 2 h 10 min", or '' when it is not at a limit.
- */
-export function renewal(account, now = Date.now()) {
+// limitEnd is the moment an account that ran into its limit can be used
+// again, in milliseconds, or 0.
+function limitEnd(account) {
   let at = Number(account.limited_until) || 0;
   for (const w of account.limits || []) {
     const reset = w.resets_at ? new Date(w.resets_at).getTime() : 0;
     if ((Number(w.used_percent) || 0) >= 100 && reset > at) at = reset;
   }
+  return at;
+}
+
+/**
+ * renewal is when an account that ran into its limit can be used again, as
+ * "renews in 2 h 10 min" (or "in 3 d 4 h" for a week's limit), or '' when it
+ * is not at a limit.
+ */
+export function renewal(account, now = Date.now()) {
+  const at = limitEnd(account);
   if (!(at > now)) return '';
   const minutes = Math.ceil((at - now) / 60000);
   if (minutes < 60) return 'renews in ' + minutes + ' min';
+  if (minutes >= 24 * 60) {
+    const d = Math.floor(minutes / (24 * 60));
+    const h = Math.floor((minutes % (24 * 60)) / 60);
+    return 'renews in ' + d + ' d' + (h ? ' ' + h + ' h' : '');
+  }
   const h = Math.floor(minutes / 60);
   const m = minutes % 60;
   return 'renews in ' + h + ' h' + (m ? ' ' + m + ' min' : '');
+}
+
+/**
+ * renewalAt is the same moment by the clock: "today at 15:42", "tomorrow at
+ * 09:10", "on Thu at 09:10" within the week and the date after it, or '' when
+ * the account is not at a limit. The countdown is what a glance at the button
+ * needs; this is what a tap says (DECISIONS rev 7: "a tap says exactly when"),
+ * for a phone has no tooltip.
+ */
+export function renewalAt(account, now = Date.now()) {
+  const at = limitEnd(account);
+  if (!(at > now)) return '';
+  const when = new Date(at);
+  const clock = when.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  const day = (d) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+  const days = Math.round((day(when) - day(new Date(now))) / 86400000);
+  if (days === 0) return 'today at ' + clock;
+  if (days === 1) return 'tomorrow at ' + clock;
+  if (days < 7) return 'on ' + when.toLocaleDateString([], { weekday: 'short' }) + ' at ' + clock;
+  return 'on ' + when.toLocaleDateString([], { day: 'numeric', month: 'short' }) + ' at ' + clock;
 }
 
 /**
@@ -149,7 +182,7 @@ export function entry(account, { recommended: best = false, current = false } = 
     meta.push(html`<span data-tag="signin">${account.state === 'error' ? 'sign-in failed' : 'not signed in'}</span>`);
   }
   const renew = renewal(account);
-  if (renew) meta.push(html`<span data-tag="limited">${'at its limit, ' + renew}</span>`);
+  if (renew) meta.push(html`<span data-tag="limited">${'at its limit, ' + renew + ', ' + renewalAt(account)}</span>`);
   if (current) meta.push(html`<span data-tag="current">this chat’s</span>`);
   if (best) meta.push(html`<span data-tag="recommended">most left</span>`);
   return html`<span class="ds-combo__name">${account.label}</span><span class="ds-combo__meta">${meta.map((part, i) => (i ? html` · ${part}` : part))}</span>${meters(account)}`;

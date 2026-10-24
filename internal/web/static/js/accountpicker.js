@@ -81,14 +81,15 @@ setInterval(() => {
 }, RENEWAL_TICK);
 
 // metaOf is an account's quiet line in the menu: who it is, its usage, when
-// its limit renews, and why it is the one to take or cannot be taken.
+// its limit renews - in how long, and by the clock - and why it is the one
+// to take or cannot be taken.
 function metaOf(account, best) {
   const parts = [accounts.who(account)];
   if (!accounts.usable(account)) parts.push(account.state === 'error' ? 'sign-in failed' : 'not signed in');
   const usage = accounts.usageWords(account);
   if (usage) parts.push(usage);
   const renew = accounts.renewal(account);
-  if (renew) parts.push(renew);
+  if (renew) parts.push(renew + ', ' + accounts.renewalAt(account));
   if (best) parts.push('most left');
   return parts.join(' · ');
 }

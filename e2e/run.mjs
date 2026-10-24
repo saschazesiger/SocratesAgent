@@ -6946,6 +6946,7 @@ async function optionsmenu() {
     const post = async (path, data) => (await s.context.request.post(s.url + path, { data })).json();
     const work = (await post('/api/accounts', { agent: 'fake', kind: 'api_key', label: 'Work', key: 'sk-work-0123456789' })).account;
     const spare = (await post('/api/accounts', { agent: 'fake', kind: 'api_key', label: 'Spare', key: 'sk-spare-0123456789' })).account;
+    const weekly = (await post('/api/accounts', { agent: 'fake', kind: 'api_key', label: 'Weekly', key: 'sk-weekly-0123456789' })).account;
     const at = Date.now();
     const five = new Date(at + (2 * 60 + 36) * 60000 + 20000).toISOString();
     const week = new Date(at + ((3 * 24 + 4) * 60 + 30) * 60000).toISOString();
@@ -6960,6 +6961,7 @@ async function optionsmenu() {
       for (const one of body.accounts || []) {
         if (one.id === work.id) one.limits = [{ label: '5h', used_percent: 100, resets_at: five }, { label: '7d', used_percent: 30, resets_at: week }];
         if (one.id === spare.id) one.limits = [{ label: '5h', used_percent: 100, resets_at: lapsing }, { label: '7d', used_percent: 12, resets_at: week }];
+        if (one.id === weekly.id) one.limits = [{ label: '5h', used_percent: 20, resets_at: five }, { label: '7d', used_percent: 100, resets_at: week }];
       }
       return route.fulfill({ response: res, json: body });
     });
@@ -6985,6 +6987,17 @@ async function optionsmenu() {
     const listed = await menuOf();
     ok(/Work .*5h 100% · 7d 30% · renews in 2 h 37 min/.test(listed[0] || '') && /Spare .*renews in 1 min/.test(listed[1] || ''),
       'and its menu says it for every account of the agent', JSON.stringify(listed));
+    // A tap says exactly when, by the clock: the five-hour limit today or
+    // tomorrow, the week's with its day.
+    const clocks = await s.page.evaluate((times) => times.map((t) => {
+      const when = new Date(t);
+      return { clock: when.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        day: when.toLocaleDateString([], { weekday: 'short' }) };
+    }), [five, week]);
+    ok(new RegExp('Work .*renews in 2 h 37 min, (today|tomorrow) at ' + clocks[0].clock).test(listed[0] || ''),
+      'the five-hour limit says when exactly it renews', (listed[0] || '').replace(/^.*renews/, 'renews') + ' vs ' + clocks[0].clock);
+    ok(new RegExp('Weekly .*7d 100% · renews in 3 d 4 h, on ' + clocks[1].day + ' at ' + clocks[1].clock).test(listed[2] || ''),
+      'and so does the week, with its day', (listed[2] || '').replace(/^.*renews/, 'renews') + ' vs ' + clocks[1].day + ' ' + clocks[1].clock);
     await wait(300);
     await shot(s.page, 'options-limits-desk');
     failing = true;
@@ -7023,6 +7036,17 @@ async function optionsmenu() {
     });
     ok(popBox.left >= 0 && popBox.right <= popBox.w && popBox.top >= 0 && popBox.bottom <= popBox.h,
       'and its menu opens inside the screen', JSON.stringify(popBox));
+    // With no tooltip on a phone, the menu is where the renewal is read: no
+    // line of it is cut, the clock at its end included.
+    const lines = await s.page.$$eval('.so-account-menu .so-account-menu__meta', (n) => n.map((meta) => {
+      const box = meta.getBoundingClientRect();
+      const item = meta.closest('.ds-menu__item').getBoundingClientRect();
+      return { text: meta.textContent, cut: meta.scrollWidth > meta.clientWidth + 1 || box.bottom > item.bottom + 1 || box.right > item.right + 1 };
+    }));
+    const work360 = lines.find((l) => new RegExp('renews in 2 h 3\\d min, (today|tomorrow) at ' + clocks[0].clock).test(l.text));
+    ok(lines.length === 3 && lines.every((l) => !l.cut) && !!work360,
+      'every account’s line is whole on a 360px phone, with when its limit renews by the clock',
+      lines.map((l) => (l.cut ? 'CUT ' : '') + l.text).join(' | '));
     await shot(s.page, 'options-limits-phone');
     await s.page.keyboard.press('Escape');
     await s.context.unroute('**/api/accounts');
