@@ -385,11 +385,26 @@ export function openAskDialog({ items, start = 0, watch, openChat, closed }) {
 
   // A keyboard that comes up shrinks what can be seen: the field being
   // typed into is brought into the part of the dialog that is left, above
-  // its buttons, once the new height is laid out.
+  // its buttons, once the new height is laid out - with the question it
+  // answers above it when the two fit together (on a phone on its side the
+  // field alone was brought in, and the question was cut in half above
+  // it), else the field alone.
   function keepFieldInView() {
     requestAnimationFrame(() => {
       const field = document.activeElement;
       if (st.closed || !field || !shell.contains(field) || !field.matches('textarea, input')) return;
+      const scroller = shell.querySelector('.so-q-scroll');
+      const question = shell.querySelector('.so-q-text');
+      if (scroller && question && scroller.contains(field) && scroller.contains(question)) {
+        const box = scroller.getBoundingClientRect();
+        const pad = parseFloat(getComputedStyle(scroller).paddingTop) || 0;
+        const top = question.getBoundingClientRect().top - box.top + scroller.scrollTop - pad;
+        const bottom = field.getBoundingClientRect().bottom - box.top + scroller.scrollTop;
+        if (top >= 0 && bottom - top <= scroller.clientHeight) {
+          scroller.scrollTop = top;
+          return;
+        }
+      }
       field.scrollIntoView({ block: 'nearest' });
     });
   }

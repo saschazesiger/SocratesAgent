@@ -490,3 +490,12 @@
 .so-touch[data-so-short] .so-q-scroll {
   padding-top: var(--ds-space-2);
 }
+
+/* The field is two lines there, so that the question, its label and the
+   field fit the strip together (at 844x200 the strip is 133px, and a
+   three-line field left room for half the question). It scrolls inside
+   itself past two lines. */
+.so-touch[data-so-short] textarea.so-q-own-field {
+  min-height: 0;
+  height: calc(2lh + 2 * var(--ds-space-2) + 2px);
+}
