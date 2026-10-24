@@ -1322,6 +1322,14 @@
     flex: 0 1 auto;
   }
 
+  /* The bar is as wide as what is in it, so a share of it is no measure:
+     the bar was sized to the account's whole name and the account then cut
+     to 40% of that ("M…" for "Main" when no model list shares the bar).
+     An account is held to a length of its own. */
+  .so-composer__account {
+    max-width: calc(var(--ds-space-12) * 4);
+  }
+
   .so-composer > .so-composer__hint {
     order: -1;
   }
