@@ -514,10 +514,14 @@ export function watchFrame(frame) {
 
 /**
  * guard mutes one field straight away, for a field that is built and focused
- * in the same tick - before the page's own watcher has seen it.
+ * in the same tick - before the page's own watcher has seen it. Only on a
+ * page whose fields are under the switch (initKeyboard): Admin and Costs have
+ * no pane and no switch, nothing there frees a muted field, and a field a
+ * microphone was put beside (dictated) stayed read-only after every tap in
+ * touch mode - its id could not be typed at all.
  */
 export function guard(input) {
-  if (input && isField(input) && wantsMute(input)) mute(input);
+  if (input && isField(input) && docs.has(input.ownerDocument) && wantsMute(input)) mute(input);
   return input;
 }
 
