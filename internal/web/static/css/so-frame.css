@@ -170,12 +170,16 @@
 }
 
 /* A session list is longer than a list of destinations: its rows are a
-   step denser than a drawer item, and a finger's size in touch mode. */
+   step denser than a drawer item, and a finger's size in touch mode. While
+   the snackbars stand above the foot of the open drawer, the list keeps
+   their height at its end (session.js placeToasts), so its last rows scroll
+   clear of them. */
 .so-session-list {
   --ds-drawer-item-height: var(--so-row-height);
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   margin-top: var(--ds-space-2);
+  padding-bottom: var(--so-drawer-reserve, 0px);
 }
 
 .so-list-empty {

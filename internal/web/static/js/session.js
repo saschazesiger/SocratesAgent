@@ -2975,24 +2975,68 @@ function applyKeyBar() {
   if (state.keybar) showKeyBar(keyBarWanted());
 }
 
-// placeToasts keeps the snackbars above the key bar while it is shown: a
-// message lying over Esc and Ctrl is a key bar a thumb cannot use, and an
-// error stays until it is closed (DS --ds-toast-bottom, "to stay above a
-// bar pinned there"). Only what this set is taken back.
-// The chat view lifts them above its dock the same way (chatview.js), so
-// what this gave is remembered by value: a chat shown after a Shell keeps
-// the lift it set itself.
-let toastsLifted = '';
+// placeToasts keeps the snackbars off what a finger needs (DS
+// --ds-toast-bottom, "to stay above a bar pinned there"; --ds-toast-left),
+// and an error stays until it is closed:
+//   - the modal drawer open: beside it where the window is wide enough for
+//     the messages to stand there (as beside the docked drawer, DS), else
+//     above its foot (Costs, Admin, Sign out), the session list keeping
+//     room at its end to scroll its last rows clear;
+//   - the key bar shown: above it - a message over Esc and Ctrl is a key bar
+//     a thumb cannot use;
+//   - a chat shown: above its dock, and above "Latest" (chatview.js says
+//     how much room it needs);
+//   - none of that while the region is in an open side sheet (DS moves it
+//     there and places it): the sheet covers the page, and its body keeps
+//     room for a message that stays (api.js reserveToasts).
+// The key bar and the dock stand at the bottom of the app, which is as
+// tall as what can be seen (keybar.js --so-app-h): a keyboard that only
+// shrinks the visual viewport adds its height. Heights only, never where
+// something stands, which a keyboard moves before or after this runs.
+// Every edge holds the safe area already, which the region adds as its
+// margin. Only a left this set is taken back.
+let chatToastRoom = 0;
+let toastLeft = '';
+const TOASTS_BESIDE = window.matchMedia('(min-width: 601px)');
 function placeToasts() {
   const region = document.getElementById('toasts');
   if (!region) return;
-  const height = dom.keybar.hidden ? 0 : dom.keybar.offsetHeight;
-  if (height) {
-    toastsLifted = 'calc(' + height + 'px + var(--ds-space-3))';
-    region.style.setProperty('--ds-toast-bottom', toastsLifted);
-  } else if (toastsLifted) {
-    if (region.style.getPropertyValue('--ds-toast-bottom') === toastsLifted) region.style.removeProperty('--ds-toast-bottom');
-    toastsLifted = '';
+  const vv = window.visualViewport;
+  const keyboard = vv ? Math.max(0, Math.round(window.innerHeight - vv.offsetTop - vv.height)) : 0;
+  const inSheet = !!region.closest('.ds-sheet');
+  let room = 0;
+  let list = 0;
+  let left = '';
+  if (inSheet) {
+    room = 0;
+  } else if (dom.app.hasAttribute('data-drawer-open') && drawerModal()) {
+    if (TOASTS_BESIDE.matches) {
+      left = 'calc(var(--ds-drawer-width) + env(safe-area-inset-left) + var(--ds-space-6))';
+    } else {
+      const foot = dom.sidebar.querySelector('.so-drawer-foot');
+      room = foot ? foot.offsetHeight : 0;
+      list = region.querySelector('.ds-toast') ? region.offsetHeight : 0;
+    }
+  } else if (!dom.keybar.hidden && dom.keybar.offsetHeight) {
+    room = dom.keybar.offsetHeight + keyboard;
+  } else if (chatToastRoom) {
+    room = chatToastRoom + keyboard;
+  }
+  const value = room ? 'calc(' + room + 'px + var(--ds-space-3) - env(safe-area-inset-bottom, 0px))' : '';
+  if (region.style.getPropertyValue('--ds-toast-bottom') !== value) {
+    if (value) region.style.setProperty('--ds-toast-bottom', value);
+    else region.style.removeProperty('--ds-toast-bottom');
+  }
+  if (!inSheet) {
+    const now = region.style.getPropertyValue('--ds-toast-left');
+    if (left && now !== left) region.style.setProperty('--ds-toast-left', left);
+    else if (!left && toastLeft && now === toastLeft) region.style.removeProperty('--ds-toast-left');
+    toastLeft = left;
+  }
+  const reserve = list ? list + 'px' : '';
+  if (dom.sidebar.style.getPropertyValue('--so-drawer-reserve') !== reserve) {
+    if (reserve) dom.sidebar.style.setProperty('--so-drawer-reserve', reserve);
+    else dom.sidebar.style.removeProperty('--so-drawer-reserve');
   }
 }
 
@@ -3844,6 +3888,7 @@ async function boot() {
     host: dom.chat,
     status: () => updateStale(),
     openAsk: (chatId, askId) => showChatQuestions(chatId, { askId, only: true }),
+    toastRoom: (room) => { chatToastRoom = room; placeToasts(); },
   });
   chatOutbox().pump();
   // Home, drawn from the sidebar's own state and tests.
@@ -3861,8 +3906,18 @@ async function boot() {
   });
   followViewport();
   // A key bar that changes height - a phone turned on its side - takes the
-  // snackbars with it.
-  if (window.ResizeObserver) new ResizeObserver(() => placeToasts()).observe(dom.keybar);
+  // snackbars with it, and so do a keyboard that comes or goes, the drawer
+  // opened or closed, and a message more or less (the drawer's reserve).
+  if (window.ResizeObserver) {
+    new ResizeObserver(() => placeToasts()).observe(dom.keybar);
+    const toasts = document.getElementById('toasts');
+    if (toasts) new ResizeObserver(() => placeToasts()).observe(toasts);
+  }
+  window.addEventListener('resize', () => placeToasts());
+  if (window.visualViewport) window.visualViewport.addEventListener('resize', () => placeToasts());
+  new MutationObserver(() => placeToasts()).observe(dom.app, { attributes: true, attributeFilter: ['data-drawer-open'] });
+  // DS moves the region into a sheet that opens, and back.
+  new MutationObserver(() => placeToasts()).observe(document.body, { childList: true });
   // Whether the backup has worked in the last day. Silent while it has.
   mountBackupNotice(document.getElementById('backupNotice'));
   // Read before anything is fetched. Home is the landing page whatever the

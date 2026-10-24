@@ -20,7 +20,7 @@
 // "Sent" until the journal has it.
 
 import { api, alertDialog, promptDialog, toast, errorMessage, fmtTokens, CONNECTION_GRACE } from './api.js';
-import { html, morph, raw, icon, region } from './ui.js';
+import { html, morph, raw, icon } from './ui.js';
 import { connectionSaidElsewhere, retryConnection } from './net.js';
 import { agentMarkHtml } from './logos.js';
 import * as harnesses from './harnesses.js';
@@ -59,6 +59,8 @@ const NOTE_MS = 10000;
  * `ctx`:
  *   status()           the stream's state moved (for the page's stale marks)
  *   openAsk(id, askId) open the question dialog at one ask of this chat
+ *   toastRoom(px)      the room the snackbars need at the bottom of the
+ *                      app while the chat shows (0 when it does not)
  */
 export function mountChat(ctx) {
   const host = ctx.host;
@@ -100,8 +102,9 @@ export function mountChat(ctx) {
   // that did not reach the agent: said in the dock, beside the composer,
   // for a while (NOTE_MS), never over Send. { text, timer } or null.
   let note = null;
-  // The --ds-toast-bottom this view gave the snackbars, while it shows.
-  let toastLift = '';
+  // The room the snackbars need at the bottom of the app while this view
+  // shows, in px (ctx.toastRoom).
+  let toastRoom = 0;
 
   // "Latest" is the scroller's last child and sticks to its bottom edge, so
   // it is always just above the dock, however tall the dock is.
@@ -121,27 +124,35 @@ export function mountChat(ctx) {
   const composerSlot = host.querySelector('.so-chat__composer');
   const dock = host.querySelector('.so-chat__dock');
 
-  // The snackbars stand above the dock while a chat is shown: DS places
-  // their region by --ds-toast-bottom, here the dock's height from the
-  // bottom edge, so a "Copied." never covers Send. The region's own margin
-  // is the safe area, which the dock's height holds already.
+  // The snackbars stand above the dock while a chat is shown, and above
+  // "Latest" while it is: the room they need at the bottom of the app is
+  // the dock's height and, with "Latest" shown, the button's height and its
+  // edge with a little air (the page places them, session.js
+  // placeToasts, keyboard included). Heights only, never where the dock
+  // stands: a keyboard that comes or goes moves it before or after this
+  // is asked, as the listeners happen to run.
   function liftToasts() {
-    const node = region();
-    const mine = node.style.getPropertyValue('--ds-toast-bottom');
-    if (!session || host.hidden) {
-      if (toastLift && mine === toastLift) node.style.removeProperty('--ds-toast-bottom');
-      toastLift = '';
-      return;
+    let room = 0;
+    if (session && !host.hidden) {
+      room = dock.offsetHeight;
+      if (!jump.hidden) {
+        const edge = scroller.getBoundingClientRect().bottom - jump.getBoundingClientRect().top;
+        if (edge > 0) room += edge + parseFloat(getComputedStyle(jump).marginTop || '0');
+      }
     }
-    const lift = Math.max(0, Math.round(window.innerHeight - dock.getBoundingClientRect().top));
-    const value = 'calc(' + lift + 'px + var(--ds-space-3) - env(safe-area-inset-bottom, 0px))';
-    if (value === toastLift && mine === value) return;
-    node.style.setProperty('--ds-toast-bottom', value);
-    toastLift = value;
+    room = Math.round(room);
+    if (room === toastRoom) return;
+    toastRoom = room;
+    if (ctx.toastRoom) ctx.toastRoom(room);
   }
   new ResizeObserver(() => liftToasts()).observe(dock);
-  window.addEventListener('resize', () => liftToasts());
-  if (window.visualViewport) window.visualViewport.addEventListener('resize', () => liftToasts());
+
+  // "Latest" comes and goes as the person scrolls; the snackbars move with it.
+  function showJump(shown) {
+    if (jump.hidden === !shown) return;
+    jump.hidden = !shown;
+    liftToasts();
+  }
 
   /** sayError puts what did not happen into the dock for a while. */
   function sayError(text) {
@@ -397,7 +408,7 @@ export function mountChat(ctx) {
       scroller.scrollTop = scroller.scrollHeight;
       stuck = true;
     }
-    jump.hidden = atEnd();
+    showJump(!atEnd());
   }
 
   // drawTodo pins the task list above the composer while a turn runs: the
@@ -643,14 +654,14 @@ export function mountChat(ctx) {
   scroller.addEventListener('scroll', () => {
     if (scroller.clientHeight !== scrollerHeight) return;
     stuck = atEnd();
-    jump.hidden = stuck;
+    showJump(!stuck);
   }, { passive: true });
 
   new ResizeObserver(() => {
     scrollerHeight = scroller.clientHeight;
     if (!session || !stuck) return;
     scroller.scrollTop = scroller.scrollHeight;
-    jump.hidden = true;
+    showJump(false);
   }).observe(scroller);
 
   // Files dropped anywhere on the chat go into the composer.
