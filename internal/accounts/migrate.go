@@ -514,9 +514,61 @@ func (m *migration) dest(src source, id string) string {
 	return Folder(m.layout.Root, src.agent, id)
 }
 
+// movedBefore is the id of the account an earlier run of the migration moved
+// src's folder into when the database no longer has that account: the old
+// path links to an account's folder of this data directory, the folder is
+// there, and no account has its id. That is a migration whose database was
+// rolled back since. The first deploy of this build is run by the updater of
+// the build before, and when the new build migrates and then fails its health
+// check, that updater puts back the previous binary and database and nothing
+// else (scripts/update.sh, rollback): the moves stay done, the build before
+// runs on the folders through the links, and the next start of a new build
+// finds the moves made and no account of them. The account is made again
+// under the id its folder carries, so it is that folder, with the login the
+// link has kept current - not a new, empty one beside it. "" is a source no
+// run has moved, or one whose account the database still has, which
+// CreateAccount finds by its origin.
+func (m *migration) movedBefore(src source) string {
+	if !m.movedHere(src.from) {
+		return ""
+	}
+	target, err := os.Readlink(src.from)
+	if err != nil {
+		return ""
+	}
+	if !filepath.IsAbs(target) {
+		target = filepath.Join(filepath.Dir(src.from), target)
+	}
+	target = filepath.Clean(target)
+	id := filepath.Base(target)
+	if src.agent == OpenCode {
+		id = filepath.Base(filepath.Dir(target))
+	}
+	if !ValidID(id) {
+		return ""
+	}
+	fi, err := os.Stat(target)
+	if err != nil || !fi.IsDir() {
+		return ""
+	}
+	if dst, err := os.Stat(m.dest(src, id)); err != nil || !os.SameFile(fi, dst) {
+		return ""
+	}
+	if _, err := m.opts.Store.GetAccount(id); !errors.Is(err, store.ErrNotFound) {
+		return ""
+	}
+	return id
+}
+
 // move moves one source into its account and links the old path to it.
 func (m *migration) move(src source) error {
-	id := NewID()
+	id := m.movedBefore(src)
+	if id == "" {
+		id = NewID()
+	} else {
+		m.opts.Logf("accounts: %s was moved into %s by a migration whose database was rolled back since; its account is made on that folder again",
+			src.from, m.dest(src, id))
+	}
 	a := &store.Account{ID: id, Agent: src.agent, Label: src.label, Kind: Subscription,
 		State: NeedsSignIn, Origin: src.origin}
 	if err := m.opts.Store.CreateAccount(a); err != nil {
@@ -891,10 +943,11 @@ func (m *migration) openCodeStore(accountData string) error {
 // before it upgraded the file (store.PreUpgradeCopy) - the upgraded one is a
 // schema the build before refuses - and of the rest it leaves out only what
 // the backup engine does and that build does not read either (sockets, caches,
-// downloaded binaries): the mirror's s3.json and the agent terminals' folders
-// with their journals, which the clean cut deletes, stay in. It is written
-// beside itself and renamed into place whole, so a tar that is there is
-// complete; one that is there already is not written again.
+// downloaded binaries), and the working directories (workingDirs), which the
+// migration does not touch: the mirror's s3.json and the agent terminals'
+// folders with their journals, which the clean cut deletes, stay in. It is
+// written beside itself and renamed into place whole, so a tar that is there
+// is complete; one that is there already is not written again.
 func (m *migration) backup(sources []source) error {
 	dest := m.layout.PreRebuildBackup()
 	if _, err := os.Stat(dest); err == nil {
@@ -930,8 +983,14 @@ func (m *migration) backup(sources []source) error {
 			return fail(err)
 		}
 	}
+	working, err := m.workingDirs()
+	if err != nil {
+		return fail(err)
+	}
 	skip := func(rel string) bool {
 		switch {
+		case working[rel]:
+			return true
 		case rel == paths.DB || strings.HasPrefix(rel, paths.DB+"-") || strings.HasPrefix(rel, paths.DB+".pre-"):
 			return true
 		case rel == paths.LegacyS3Config || rel == paths.Sessions || strings.HasPrefix(rel, paths.Sessions+"/"):
@@ -980,6 +1039,54 @@ func (m *migration) backup(sources []source) error {
 	}
 	m.opts.Logf("accounts: everything the migration moves is backed up in %s; it holds the logins unencrypted, so delete it once the accounts work", dest)
 	return nil
+}
+
+// workingDirs are the working directories inside the data directory, by
+// their path relative to it: workspaces/, where a dynamic session's folder is
+// made by default, the workspace root and the presets the settings name, and
+// every session's own folder - those of them that are not one of Socrates'
+// own parts (paths.Own) or the data directory itself. The backup engine
+// leaves out the same (server.BackupExclusions). The tar does too: the
+// migration does not touch them, so neither build needs them back from it,
+// and they are what makes a data directory big - a copy of them would need
+// that much free disk at the first start, and hold its listener, and with it
+// the updater's health check, for as long as writing it takes.
+func (m *migration) workingDirs() (map[string]bool, error) {
+	candidates := []string{m.layout.Path(paths.Workspaces)}
+	var settings struct {
+		Workspace struct {
+			Root    string `json:"root"`
+			Presets []struct {
+				Path string `json:"path"`
+			} `json:"presets"`
+		} `json:"workspace"`
+	}
+	if err := m.opts.Store.GetJSON("settings", &settings); err != nil && !errors.Is(err, store.ErrNotFound) {
+		return nil, err
+	}
+	candidates = append(candidates, settings.Workspace.Root)
+	for _, p := range settings.Workspace.Presets {
+		candidates = append(candidates, p.Path)
+	}
+	rows, err := m.opts.Store.ListSessions()
+	if err != nil {
+		return nil, err
+	}
+	for i := range rows {
+		candidates = append(candidates, rows[i].Workdir)
+	}
+	out := map[string]bool{}
+	for _, dir := range candidates {
+		if strings.TrimSpace(dir) == "" || !filepath.IsAbs(dir) {
+			continue
+		}
+		rel, inside := m.layout.Rel(filepath.Clean(dir))
+		if !inside || rel == "" || rel == "." || paths.Own(rel) {
+			continue
+		}
+		out[rel] = true
+	}
+	return out, nil
 }
 
 // tarName is where a folder outside the data directory goes in the tar:

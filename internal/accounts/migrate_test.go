@@ -582,6 +582,160 @@ func TestAnInterruptedMigrationIsFinishedByTheNextStart(t *testing.T) {
 	}
 }
 
+// rollBack does to a data directory what scripts/update.sh's rollback does
+// to a new build that does not answer its health check: the database the
+// build before had - the copy taken while it was stopped for the swap - goes
+// back in place, and nothing else. What the new build's migration did on the
+// disk stays: the agents' folders in the data directory, the links in HOME
+// and in the profiles to them, the tar.
+func rollBack(t *testing.T, data, saved string) {
+	t.Helper()
+	for _, f := range []string{"socrates.db-wal", "socrates.db-shm"} {
+		if err := os.Remove(filepath.Join(data, f)); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			t.Fatal(err)
+		}
+	}
+	raw, err := os.ReadFile(saved)
+	if err != nil {
+		t.Fatal(err)
+	}
+	write(t, filepath.Join(data, "socrates.db"), string(raw))
+}
+
+// The first deploy of this build is run by the updater of the build before,
+// and when the new build migrates and then fails its health check, that
+// updater puts back the previous binary and database and nothing else. The
+// build before then runs on the agents' folders through the links the
+// migration left - a login it refreshes is written into the moved folder -
+// and the next build's start migrates that database again. That run has to
+// end where one migration would: every account on the folder its old path
+// links to, with the login last written there, once. The deploy rehearsal
+// measured what it did instead: a new, empty folder for every account, which
+// said "Sign in again" while the logins sat in the folders the links named,
+// and a migration that failed at every start on OpenCode's database link.
+func TestAMigrationRolledBackWithItsDatabaseIsFinishedByTheNextBuild(t *testing.T) {
+	clean, cleanHome := fixture(t)
+	if err := migrateOnce(t, clean, cleanHome, ""); err != nil {
+		t.Fatal(err)
+	}
+	want := outcome(t, clean)
+
+	data, home := fixture(t)
+	saved := filepath.Join(t.TempDir(), "socrates.db")
+	raw, err := os.ReadFile(filepath.Join(data, "socrates.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	write(t, saved, string(raw))
+	if err := migrateOnce(t, data, home, ""); err != nil {
+		t.Fatal(err)
+	}
+	moved := map[string]string{}
+	for _, origin := range []string{OriginClaude, OriginCodex, OriginOpenCode, "profile:p-bbbbbbbbbbbb:claude", "profile:p-bbbbbbbbbbbb:codex"} {
+		moved[origin] = accountByOrigin(t, data, origin).ID
+	}
+	rollBack(t, data, saved)
+	if !pending(t, data) {
+		t.Fatal("the database of the build before is not due for the migration")
+	}
+	// The build before, on the links, refreshes the Claude Code login.
+	refreshed := `{"claudeAiOauth":{"accessToken":"at-after-rollback","refreshToken":"rt-after-rollback"}}`
+	write(t, filepath.Join(home, ".claude/.credentials.json"), refreshed)
+
+	if err := migrateOnce(t, data, home, ""); err != nil {
+		t.Fatalf("the next build's migration: %v", err)
+	}
+	if pending(t, data) {
+		t.Fatal("the migration is still due")
+	}
+	if got := outcome(t, data); strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("accounts after the rollback and the next build:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+	for _, c := range []struct{ origin, agent, link string }{
+		{OriginClaude, Claude, filepath.Join(home, ".claude")},
+		{OriginCodex, Codex, filepath.Join(home, ".codex")},
+		{OriginOpenCode, OpenCode, filepath.Join(home, ".local/share/opencode")},
+		{"profile:p-bbbbbbbbbbbb:claude", Claude, filepath.Join(data, "profiles/p-bbbbbbbbbbbb/claude")},
+		{"profile:p-bbbbbbbbbbbb:codex", Codex, filepath.Join(data, "profiles/p-bbbbbbbbbbbb/codex")},
+	} {
+		a := accountByOrigin(t, data, c.origin)
+		if a.ID != moved[c.origin] {
+			t.Fatalf("%s is account %s; its folder, which %s links to, is %s's", c.origin, a.ID, c.link, moved[c.origin])
+		}
+		dir := Folder(data, c.agent, a.ID)
+		if c.agent == OpenCode {
+			dir = filepath.Join(dir, "opencode")
+		}
+		sameFile(t, c.link, dir)
+	}
+	claudeDir := Folder(data, Claude, moved[OriginClaude])
+	if raw, _ := os.ReadFile(filepath.Join(claudeDir, ".credentials.json")); string(raw) != refreshed {
+		t.Fatalf("the Default Claude Code account's login is %s, not the one the build before refreshed", raw)
+	}
+	sameFile(t, filepath.Join(home, ".local/share/opencode/opencode.db"), filepath.Join(data, "agents/opencode/opencode.db"))
+	for _, content := range []string{refreshed, fixtureLogins[".codex/auth.json"], fixtureLogins[".local/share/opencode/auth.json"],
+		profileLogins["profiles/p-bbbbbbbbbbbb/claude/.credentials.json"]} {
+		if n := copies(t, content, home, data); n != 1 {
+			t.Fatalf("a login exists %d times: %s", n, content)
+		}
+	}
+}
+
+// The working directories in the data folder - workspaces/, the folders a
+// workspace root or a preset there names, and any session's own - stay out of
+// the tar. The migration does not touch them, so neither build needs them
+// back from it, and they are what makes a data folder big: a copy of them
+// at the first start needs that much free disk, and holds the listener (and
+// the updater's health check) for as long as writing it takes. The deploy
+// rehearsal measured 1 GB of workspaces as a 1.05 GB tar.
+func TestTheTarLeavesTheWorkingDirectoriesOut(t *testing.T) {
+	data, home := fixture(t)
+	for _, rel := range []string{"workspaces/shell-1/node_modules/x.js", "work/repo/main.go", "roots/one/a.txt", "preset/b.txt"} {
+		write(t, filepath.Join(data, rel), "work")
+	}
+	write(t, filepath.Join(data, "sessions/s3/plan.json"), `{"argv":["/bin/sh"]}`)
+	db, err := sql.Open("sqlite", "file:"+filepath.Join(data, "socrates.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, q := range []string{
+		`INSERT INTO sessions(id, harness, workdir, workdir_mode, options, created_at, updated_at)
+		 VALUES('s3', 'shell', '` + filepath.Join(data, "work/repo") + `', 'custom', '{}', 1, 1)`,
+		`INSERT INTO sessions(id, harness, workdir, workdir_mode, options, created_at, updated_at)
+		 VALUES('s4', 'shell', '` + filepath.Join(data, "sessions/s3") + `', 'custom', '{}', 1, 1)`,
+		`INSERT INTO kv(key, value) VALUES('settings', '{"workspace":{"root":"` + filepath.Join(data, "roots") +
+			`","presets":[{"label":"P","path":"` + filepath.Join(data, "preset") + `"},{"label":"D","path":"` + data + `"}]}}')`,
+	} {
+		if _, err := db.Exec(q); err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+	}
+	db.Close()
+	if err := migrateOnce(t, data, home, ""); err != nil {
+		t.Fatal(err)
+	}
+	entries := tarEntries(t, data+".pre-rebuild.tar")
+	for name := range entries {
+		for _, out := range []string{"data/workspaces/", "data/work/repo", "data/roots/", "data/preset/"} {
+			if strings.HasPrefix(name+"/", out) || strings.HasPrefix(name, out) {
+				t.Fatalf("the tar has the working directory's %s", name)
+			}
+		}
+	}
+	// A working directory that is one of Socrates' own folders, or the data
+	// folder itself, is not one to leave out.
+	for _, name := range []string{"data/sessions/s3/plan.json", "data/socrates.db", "data/profiles/p-bbbbbbbbbbbb/claude/.credentials.json"} {
+		if _, ok := entries[name]; !ok {
+			t.Fatalf("the tar has no %s", name)
+		}
+	}
+	for _, rel := range []string{"workspaces/shell-1/node_modules/x.js", "work/repo/main.go", "roots/one/a.txt", "preset/b.txt"} {
+		if raw, err := os.ReadFile(filepath.Join(data, rel)); err != nil || string(raw) != "work" {
+			t.Fatalf("the migration changed the working directory's %s: %q %v", rel, raw, err)
+		}
+	}
+}
+
 // A data directory this build makes - a new installation, a trial with
 // -data /tmp/x, an e2e run - never takes the agents' folders out of HOME,
 // however many there are: only a database of the build before accounts is

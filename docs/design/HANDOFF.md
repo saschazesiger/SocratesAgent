@@ -75,13 +75,30 @@ Binding documents, in order:
   made; an account whose sign-in was lost says "Sign in again". The tar beside the data folder
   (`<data>.pre-rebuild.tar`) is the way back: its `data/` is the data folder as the build before
   had it (its database at that build's schema, `s3.json`, the agent terminals' journals) and its
-  `home/` the agents' folders as they were. To go back, stop Socrates, install the build before,
-  move the data folder aside, remove the links the migration left in HOME (`~/.claude`,
-  `~/.claude.json`, `~/.codex`, `~/.local/share/opencode`, `~/.config/opencode`), and extract the
-  tar into an empty folder and move its `data/` and `home/` entries into place. A login refreshed
-  since the migration is newer in the moved folder than in the tar. Reload every page that was
-  open across the update (a phone's home-screen app too): a page loaded from the build before keeps
-  its interface - PreStart with a profile, agent terminals - which the new server refuses.
+  `home/` the agents' folders as they were; the working directories (`workspaces/` and any
+  session's folder in the data folder) are not in it, since the migration does not touch them.
+  To go back, stop Socrates, install the build before, move the data folder aside, remove the
+  links the migration left in HOME (`~/.claude`, `~/.claude.json`, `~/.codex`,
+  `~/.local/share/opencode`, `~/.config/opencode`), extract the tar into an empty folder and move
+  its `data/` and `home/` entries into place, and move `workspaces/` (and any other working
+  directory) back from the folder set aside. A login refreshed since the migration is newer in
+  the moved folder than in the tar. Reload every page that was open across the update (a phone's
+  home-screen app too): a page loaded from the build before keeps its interface - PreStart with
+  a profile, agent terminals - which the new server refuses.
+- **A rollback across the migration**: the first deploy of this build is run by the updater the
+  build before installed (`/usr/local/lib/socrates`; the new scripts go in only once the new
+  build is healthy), so if this build migrates and then fails its health check, that updater's
+  rollback puts back the previous binary and database and nothing else. The build before then runs
+  on what the migration left, and works (rehearsed): its database is whole, with its agent
+  terminals' rows, and the agents' folders stay in the data folder, reached through the links in
+  HOME and in the profiles - a login it refreshes is written there. What it does not get back: the
+  agent terminals' tmux sessions, which the clean cut ended (they say "needs resume", and Resume
+  starts each on its conversation again), and their scrollback journals, which are only in the
+  tar. The next build's start migrates that database again and makes every account on the folder
+  its link names (`movedBefore` in `internal/accounts/migrate.go`), so the accounts keep their
+  logins; it neither rewrites the tar nor needs it. The tar is then from the first attempt: the
+  newest database of the build before is `socrates.db.pre-v12.bak`, which every upgrade to schema
+  12 takes anew.
 - **What runs where**: `socrates.service` (the web server), `socrates-agents-<chat>.scope` (one
   chat's host and CLI, which outlive the service), `socrates-tmux*.scope` (the Shell terminals),
   `socrates-update.timer`. Data: `/var/lib/socrates` (README "What is where"; the layout is
