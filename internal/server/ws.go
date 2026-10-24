@@ -1587,7 +1587,7 @@ func (s *Server) onSessionActivity(sessionID string, a termux.Activity) {
 	// A turn's end whose outcome is to be read is said to be before the
 	// change itself, on the same sockets: a page hears that the verdict is
 	// coming before its notifier hears that the turn ended (outcome.go).
-	s.digests.outcomeEdge(sessionID, a)
+	judge := s.digests.outcomeEdge(sessionID, a)
 	frame := map[string]any{
 		"t":        "activity",
 		"sessions": map[string]termux.Activity{sessionID: a},
@@ -1607,6 +1607,11 @@ func (s *Server) onSessionActivity(sessionID string, a termux.Activity) {
 	// that reads them is asked for, so that the read cannot finish first.
 	s.push.observe(sessionID, a)
 	s.digests.observe(sessionID, a)
+	// A chat's verdict is asked for only now that the pusher holds the
+	// turn's end for it (outcomeEdge).
+	if judge != nil {
+		go judge()
+	}
 	// The first prompt being taken up is what gives a session its name.
 	s.titles.observe(sessionID, a)
 }

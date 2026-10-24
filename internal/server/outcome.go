@@ -189,10 +189,14 @@ func (d *digester) dropOutcomeLocked(id string) {
 // outcomeEdge is fed every committed activity change, before the activity
 // frame goes out: a turn that has just ended is put on pending here, so that a
 // page hears that its verdict is coming before it hears that the turn ended.
-// The digest the same change starts (observe) is the read that answers it.
-func (d *digester) outcomeEdge(id string, a termux.Activity) {
+// The digest the same change starts (observe) is the read that answers it;
+// for a chat, the judge it hands back, which the caller starts once the
+// pusher has seen the change too: a judge that answers at once could
+// otherwise come back before the "Finished" it is meant to hold was put on
+// the wait, and the push would go out without the verdict.
+func (d *digester) outcomeEdge(id string, a termux.Activity) (judge func()) {
 	if d == nil {
-		return
+		return nil
 	}
 	starts, chat := false, false
 	if d.srv.answers == nil || !d.srv.answers.live(id) {
@@ -221,7 +225,7 @@ func (d *digester) outcomeEdge(id string, a termux.Activity) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if d.gone[id] {
-		return
+		return nil
 	}
 	prev, had := d.oseen[id]
 	d.oseen[id] = a
@@ -242,7 +246,7 @@ func (d *digester) outcomeEdge(id string, a termux.Activity) {
 		d.publishOutcomeLocked(id, next)
 		d.saveOutcomesLocked()
 		if chat {
-			go d.judgeChat(id, a)
+			judge = func() { d.judgeChat(id, a) }
 		}
 	case o == nil:
 	case a.State == termux.StateUnknown:
@@ -265,6 +269,7 @@ func (d *digester) outcomeEdge(id string, a termux.Activity) {
 		// at.
 		d.dropOutcomeLocked(id)
 	}
+	return judge
 }
 
 // outcomePending is whether the outcome of the idle at since is still being
