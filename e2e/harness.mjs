@@ -212,10 +212,8 @@ export async function backupForm(prefix) {
 // prefixFor is the backup prefix of a data directory.
 export const prefixFor = (data) => 'e2e/' + basename(data) + '/';
 
-// STARTUP is how long a server may take to answer its health check: on a
-// machine busy with other work its start (tmux, the chats' hosts) has taken
-// more than 25 s, and nothing in the product promises a faster one.
-export const STARTUP = 60000;
+// STARTUP is how long a server may take to answer its first health check.
+export const STARTUP = 25000;
 
 /**
  * waitForHealth waits until the server at url answers its health check.
@@ -271,10 +269,15 @@ function canListen(port) {
   });
 }
 
+// The ports of the range that the Fetch standard calls bad (SIP's): Node's
+// fetch and the browser both refuse to talk to them, so a server there is
+// never reached, however healthy it is.
+const BAD_PORTS = new Set([5060, 5061]);
+
 export async function freePort() {
   for (let i = 0; i <= PORT_HIGH - PORT_LOW; i += 1) {
     const port = PORT_LOW + ((PORT_FIRST + i) % (PORT_HIGH - PORT_LOW + 1));
-    if (claimed.has(port)) continue;
+    if (claimed.has(port) || BAD_PORTS.has(port)) continue;
     if (await canListen(port)) {
       claimed.add(port);
       return port;

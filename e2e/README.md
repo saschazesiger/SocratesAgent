@@ -39,9 +39,9 @@ on four CPUs.
   machine (another worktree's, say) do not walk the range in step. A run also
   tells its own server from someone else's: a health check counts only once the
   server it started has said it listens there, and a server that exits on
-  "address already in use" is started again on another port. A server has a
-  minute to answer its first health check (`STARTUP`), each look bounded, for a
-  machine busy with other work.
+  "address already in use" is started again on another port. 5060 and 5061 are
+  skipped: the Fetch standard calls them bad ports, and Node's fetch and the
+  browser refuse to talk to them.
 
 Pages are always waited for with `waitUntil: 'domcontentloaded'`. Never
 `networkidle`: a chat stream and a terminal socket never idle, so `networkidle`
