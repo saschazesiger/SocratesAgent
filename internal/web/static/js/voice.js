@@ -31,10 +31,11 @@ let workletURL = null;
 // before anything is recorded or sent.
 //
 // It is true, false, or null for not known. The server says so in
-// /api/preferences when it can (`openrouter`); otherwise the first refusal
-// teaches it, and a page that comes back into view - from the Admin tab,
-// where a key may just have been added - forgets a lesson it only learnt
-// that way.
+// /api/preferences (`openrouter`) when the page starts; otherwise the first
+// refusal teaches it. A "no" is asked again before it is acted on
+// (keyMissing) and when the page comes back into view - from the Admin tab,
+// where a key may just have been added: a key set after the page started is
+// not an excuse to refuse.
 let voiceKeyState = null;
 let voiceKeyTold = false;
 const voiceKeyWatchers = new Set();
@@ -70,9 +71,42 @@ export function noKeyRefusal(err) {
   return !!err && Number(err.status) === 400 && /openrouter api key/i.test(String(err.message || ''));
 }
 
+// askServer asks /api/preferences again, and answers what it said: true,
+// false, or null when it could not be asked.
+async function askServer() {
+  try {
+    const { request } = await network();
+    const prefs = await request('/api/preferences', { attempts: 1, timeout: 4000 });
+    if (prefs && typeof prefs.openrouter === 'boolean') {
+      setVoiceKey(prefs.openrouter, { told: true });
+      return prefs.openrouter;
+    }
+  } catch { /* not asked: what was known stands */ }
+  return null;
+}
+
+/**
+ * keyMissing answers, for a press about to be refused for want of a key,
+ * whether the key is still missing. It asks the server only when the page
+ * believes there is none, so a press with a key costs nothing; a key set
+ * since then (another tab, another device) is found, and the press goes on.
+ */
+export async function keyMissing() {
+  if (voiceKeyState !== false) return false;
+  const said = await askServer();
+  if (said === null && !voiceKeyTold) {
+    // Learnt from a refusal and the server cannot be asked: let the press
+    // try, as before anything was known.
+    setVoiceKey(null);
+    return false;
+  }
+  return voiceKeyState === false;
+}
+
 if (typeof document !== 'undefined') {
   document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible' && voiceKeyState === false && !voiceKeyTold) setVoiceKey(null);
+    if (document.visibilityState !== 'visible' || voiceKeyState !== false) return;
+    askServer().then((said) => { if (said === null && !voiceKeyTold) setVoiceKey(null); });
   });
 }
 

@@ -22,7 +22,7 @@
 
 import { el, toast, errorMessage, fmtClock, openDialog } from './api.js';
 import { showOverlay, hideOverlay } from './ui.js';
-import { dictateOnce, voiceKey, onVoiceKey } from './voice.js';
+import { dictateOnce, voiceKey, onVoiceKey, keyMissing } from './voice.js';
 
 // How many bars the level meter has, and how far a frame may fall. The decay
 // is what makes a voice look like a voice: the peak of a syllable stays up for
@@ -239,7 +239,7 @@ export function explainNoKey(what = 'dictate', opener = null) {
 export async function record({ onError, opener = null } = {}) {
   if (phase !== 'idle') return '';
   // Nothing is recorded that cannot be transcribed.
-  if (voiceKey() === false) {
+  if (voiceKey() === false && await keyMissing()) {
     await explainNoKey('dictate', opener);
     return '';
   }

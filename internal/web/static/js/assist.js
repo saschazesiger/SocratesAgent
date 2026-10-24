@@ -12,7 +12,7 @@
 import { api, toast, errorMessage, isOffline } from './api.js';
 import { M } from './ui.js';
 import {
-  speak, stopSpeaking, onSpeechError, voiceKey, setVoiceKey, onVoiceKey, noKeyRefusal,
+  speak, stopSpeaking, onSpeechError, voiceKey, setVoiceKey, onVoiceKey, noKeyRefusal, keyMissing,
 } from './voice.js';
 import { mountDictation, explainNoKey } from './dictate.js';
 
@@ -159,8 +159,12 @@ export function mountAssist(ctx) {
     // Nothing is asked that cannot be answered: without a key the press
     // says where one is added, before anything is sent.
     if (voiceKey() === false) {
-      explainNoKey('status', dom.statusBtn);
-      return;
+      busyStatus = true;
+      const missing = await keyMissing().finally(() => { busyStatus = false; });
+      if (missing) {
+        explainNoKey('status', dom.statusBtn);
+        return;
+      }
     }
     busyStatus = true;
     // The first phase locally, before the request has even left: on a bad
