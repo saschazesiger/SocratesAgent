@@ -358,6 +358,25 @@ func TestWhatATurnLeavesRunsInTheJournalsOrder(t *testing.T) {
 	}
 }
 
+// A command's turn that codex took the call for but never starts holds the
+// messages queued behind it only so long (commandWait): giving it up lets
+// them go. A late give-up of an earlier command leaves a newer one alone.
+func TestACommandsTurnThatNeverStartsIsGivenUp(t *testing.T) {
+	a := newAdapter()
+	a.out = newRecorder()
+	a.ending = true // no flush: what is looked at is the expectation
+	first := a.expectTurn(turnOther)
+	second := a.expectTurn(turnShell)
+	a.unexpect(first)
+	if a.expect != turnShell {
+		t.Fatal("the give-up of an earlier command cleared a newer one")
+	}
+	a.unexpect(second)
+	if a.expect != turnNormal || a.expectMsg != "" {
+		t.Fatalf("the command's turn is still expected: %v %q", a.expect, a.expectMsg)
+	}
+}
+
 // A turn's end puts a message steered into it and not taken up at its place
 // in the journal's order among what waits, not ahead of it: the queue is in
 // the order the host handed the messages over, whichever way each came to

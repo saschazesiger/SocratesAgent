@@ -47,6 +47,11 @@ var (
 	// waits for that turn's turn/completed: codex lets a turn go before it
 	// sends its end, and how it ended (a limit) decides what the message does.
 	goneWait = 5 * time.Second
+	// commandWait is how long messages wait for the turn a command's call
+	// asked for (a "!" line, a compaction, a review) to start: codex starts
+	// it right after it answers, and one that does not come does not hold
+	// the queue for good.
+	commandWait = 30 * time.Second
 	// diffEvery is the most often a turn's aggregated diff is journaled while
 	// it changes. Codex re-sends the whole diff each time.
 	diffEvery = time.Second
@@ -90,6 +95,9 @@ type adapter struct {
 	// codex answers the call before it starts the turn.
 	expect    turnKind
 	expectMsg string
+	// expected counts the expectations, so that a late commandWait gives up
+	// only its own.
+	expected int
 	// turns are the root turns by codex turn id, kept for their subagents'
 	// late events; retry is the journal turn a recovery restarts.
 	turns map[string]*turn
@@ -602,9 +610,9 @@ func (a *adapter) startTurn(ctx context.Context, msg agent.Outgoing) error {
 		command := strings.TrimPrefix(strings.TrimSpace(msg.Text), "!")
 		a.mu.Lock()
 		a.starting = nil
-		a.expect, a.expectMsg = turnShell, msg.MessageID
+		n := a.expectLocked(turnShell, msg.MessageID)
 		a.mu.Unlock()
-		return a.commanded(a.rpc.call(ctx, "thread/shellCommand", map[string]any{"threadId": thread, "command": command}, nil))
+		return a.commanded(n, a.rpc.call(ctx, "thread/shellCommand", map[string]any{"threadId": thread, "command": command}, nil))
 	}
 	params := map[string]any{"threadId": thread, "input": input(msg), "clientUserMessageId": msg.MessageID}
 	if model != "" {
@@ -767,11 +775,11 @@ func (a *adapter) Command(ctx context.Context, name, args string) error {
 	args = strings.TrimSpace(args)
 	switch strings.TrimPrefix(name, "/") {
 	case "compact":
-		a.expectTurn(turnOther)
-		return a.commanded(a.rpc.call(ctx, "thread/compact/start", map[string]any{"threadId": thread}, nil))
+		n := a.expectTurn(turnOther)
+		return a.commanded(n, a.rpc.call(ctx, "thread/compact/start", map[string]any{"threadId": thread}, nil))
 	case "review":
-		a.expectTurn(turnOther)
-		return a.commanded(a.rpc.call(ctx, "review/start", map[string]any{"threadId": thread, "target": reviewTarget(args)}, nil))
+		n := a.expectTurn(turnOther)
+		return a.commanded(n, a.rpc.call(ctx, "review/start", map[string]any{"threadId": thread, "target": reviewTarget(args)}, nil))
 	case "plan":
 		on := args != "off"
 		a.mu.Lock()
@@ -787,33 +795,54 @@ func (a *adapter) Command(ctx context.Context, name, args string) error {
 		if args == "" {
 			return errors.New("the shell command is empty")
 		}
-		a.expectTurn(turnShell)
-		return a.commanded(a.rpc.call(ctx, "thread/shellCommand", map[string]any{"threadId": thread, "command": args}, nil))
+		n := a.expectTurn(turnShell)
+		return a.commanded(n, a.rpc.call(ctx, "thread/shellCommand", map[string]any{"threadId": thread, "command": args}, nil))
 	}
 	return agent.ErrUnknownCommand
 }
 
-func (a *adapter) expectTurn(k turnKind) {
+// expectTurn says that the next turn codex starts on its own is a command's,
+// of kind k, and returns the expectation for commanded.
+func (a *adapter) expectTurn(k turnKind) int {
 	a.mu.Lock()
-	a.expect, a.expectMsg = k, ""
-	a.mu.Unlock()
+	defer a.mu.Unlock()
+	return a.expectLocked(k, "")
 }
 
-// commanded is the end of a call that asked codex for a turn of a command's:
-// one codex refused starts no turn, so nothing waits for it any more, and
-// what was queued meanwhile goes. The caller holds sendMu.
-func (a *adapter) commanded(err error) error {
-	if err == nil {
-		return nil
+// expectLocked is expectTurn, for the "!" line msgID. Called with mu held.
+func (a *adapter) expectLocked(k turnKind, msgID string) int {
+	a.expected++
+	a.expect, a.expectMsg = k, msgID
+	return a.expected
+}
+
+// commanded is the end of the call that asked codex for a command's turn
+// (expectation n). One codex refused starts no turn, so nothing waits for it
+// any more; one it took starts the turn at once, and should its turn/started
+// not come within commandWait, it is not waited for either. The caller
+// holds sendMu.
+func (a *adapter) commanded(n int, err error) error {
+	if err != nil {
+		a.unexpect(n)
+		return err
 	}
+	time.AfterFunc(commandWait, func() { a.unexpect(n) })
+	return nil
+}
+
+// unexpect gives expectation n up, when it still stands - its turn has not
+// started, and no command came after it - and lets what waited for it go.
+func (a *adapter) unexpect(n int) {
 	a.mu.Lock()
-	a.expect, a.expectMsg = turnNormal, ""
-	waiting := a.active == nil && len(a.queue) > 0 && a.held == ""
+	stands := a.expected == n && a.expect != turnNormal
+	if stands {
+		a.expect, a.expectMsg = turnNormal, ""
+	}
+	waiting := stands && !a.ending && a.active == nil && len(a.queue) > 0 && a.held == ""
 	a.mu.Unlock()
 	if waiting {
 		go a.flush()
 	}
-	return err
 }
 
 // reviewTarget reads /review's argument: nothing for the uncommitted changes,
