@@ -411,6 +411,13 @@ func pinClaudeGlobalConfig(path, cwd string, mcp map[string]any) error {
 	// under a name the binary never looks up, and the session would open on
 	// the trust question with the entry sitting right there in the file.
 	cwd = resolvedCwd(cwd)
+	// The accounts migration leaves ~/.claude.json a link to the Default
+	// account's copy (internal/accounts). The rename below would put a
+	// second file in the link's place, so it goes over what the link
+	// points at.
+	if real, err := filepath.EvalSymlinks(path); err == nil {
+		path = real
+	}
 	doc := map[string]any{}
 	raw, err := os.ReadFile(path)
 	switch {
