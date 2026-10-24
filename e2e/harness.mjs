@@ -390,11 +390,11 @@ export function killTmux(data) {
   } catch { /* no server is the good case */ }
 }
 
-// hostsOf lists the agent hosts still running for a run's data directory, and
-// the CLIs under them: a chat's host is started in a session of its own and
-// outlives its server by design, so neither killing the server nor deleting
-// the folder ends it.
-export function hostsOf(data) {
+// agentProcessesOf lists the agent hosts still running for a run's data
+// directory, and the CLIs under them: a chat's host is started in a session
+// of its own and outlives its server by design, so neither killing the server
+// nor deleting the folder ends it.
+export function agentProcessesOf(data) {
   let out = '';
   try {
     out = execFileSync('ps', ['-eo', 'pid=,ppid=,args='], { stdio: ['ignore', 'pipe', 'ignore'] }).toString();
@@ -409,7 +409,7 @@ export function hostsOf(data) {
 
 // killHosts is the same backstop for the agent hosts.
 function killHosts(data) {
-  for (const p of hostsOf(data)) {
+  for (const p of agentProcessesOf(data)) {
     try { process.kill(p.pid, 'SIGKILL'); } catch { /* already gone */ }
   }
 }
@@ -622,10 +622,10 @@ export async function start(options = {}) {
       left.tmux.length + ' sessions' + (left.tmux.length ? ' (' + left.tmux.join(',') + ')' : ''));
     // A deleted chat's host is stopped by the server before it answers; one
     // still running is a leak, which the sweep below then ends.
-    let hosts = hostsOf(data);
+    let hosts = agentProcessesOf(data);
     for (let i = 0; i < 20 && hosts.length; i += 1) {
       await wait(250);
-      hosts = hostsOf(data);
+      hosts = agentProcessesOf(data);
     }
     ok(hosts.length === 0, 'the scenario left no agent host behind',
       hosts.length + ' processes' + (hosts.length ? ' (' + hosts.map((p) => p.pid + ' ' + p.args.split(' ').slice(0, 2).join(' ')).join(', ') + ')' : ''));
