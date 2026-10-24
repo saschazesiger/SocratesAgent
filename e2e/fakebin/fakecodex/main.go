@@ -148,10 +148,13 @@ type thread struct {
 }
 
 type fturn struct {
-	id      string
-	status  string
-	items   []json.RawMessage
-	steer   chan userInput
+	id     string
+	status string
+	items  []json.RawMessage
+	steer  chan userInput
+	// ctx ends when the turn is interrupted; both are there from the turn's
+	// opening, so an interrupt right behind turn/start finds them.
+	ctx     context.Context
 	cancel  context.CancelFunc
 	errText string
 	// eager takes steered input up at once, inside turn/steer.
@@ -517,6 +520,7 @@ func (s *server) turnStart(fr frame, threadID, clientID string, input json.RawMe
 func (s *server) openTurnLocked(th *thread, kind string) *fturn {
 	s.counter++
 	t := &fturn{id: newUUID(), status: "inProgress", steer: make(chan userInput, 16)}
+	t.ctx, t.cancel = context.WithCancel(context.Background())
 	if kind != "normal" {
 		t.steer = nil
 	}
@@ -635,9 +639,7 @@ func nilIfEmpty(s string) any {
 }
 
 func (s *server) run(th *thread, t *fturn, in userInput) {
-	ctx, cancel := context.WithCancel(context.Background())
-	t.cancel = cancel
-	c := &tcx{s: s, th: th, t: t, ctx: ctx}
+	c := &tcx{s: s, th: th, t: t, ctx: t.ctx}
 	s.record(th, "event_msg", map[string]any{"type": "task_started", "turn_id": t.id})
 	s.record(th, "turn_context", map[string]any{"turn_id": t.id, "cwd": th.cwd, "model": th.model, "approval_policy": "never"})
 	s.notify("thread/status/changed", map[string]any{"threadId": th.id, "status": map[string]any{"type": "active", "activeFlags": []any{}}})
@@ -1034,9 +1036,7 @@ func (s *server) special(fr frame, threadID, kind, arg string) {
 	s.mu.Unlock()
 	s.respond(fr.ID, map[string]any{})
 	go func() {
-		ctx, cancel := context.WithCancel(context.Background())
-		t.cancel = cancel
-		c := &tcx{s: s, th: th, t: t, ctx: ctx}
+		c := &tcx{s: s, th: th, t: t, ctx: t.ctx}
 		s.record(th, "event_msg", map[string]any{"type": "task_started", "turn_id": t.id})
 		time.Sleep(s.commandLag)
 		s.notify("turn/started", map[string]any{"threadId": th.id, "turn": map[string]any{"id": t.id, "rootTurnId": t.id, "status": "inProgress"}})
