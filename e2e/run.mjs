@@ -13830,7 +13830,11 @@ async function accountsscenario() {
 
     // The card on a phone, in touch mode.
     await page.setViewportSize({ width: 390, height: 844 });
+    // Touch mode is this device's choice, read when the page loads: the
+    // same address with another hash would not load it again.
+    await page.evaluate(() => localStorage.setItem('socrates.touch', 'on'));
     await page.goto(s.url + '/admin#accountsCard', { waitUntil: 'domcontentloaded' });
+    await page.reload({ waitUntil: 'domcontentloaded' });
     await page.waitForSelector(accountRowSel(codex.id), { timeout: 15000 });
     await wait(300);
     const side = await page.evaluate(() => Math.max(document.scrollingElement.scrollWidth - document.scrollingElement.clientWidth, 0));
@@ -13840,6 +13844,7 @@ async function accountsscenario() {
       return { w: Math.round(r.width), h: Math.round(r.height), label: b.getAttribute('aria-label') || b.textContent };
     }));
     ok(actions.length >= 3 && actions.every((a) => a.label), 'its actions are icons with a name each', JSON.stringify(actions));
+    ok(actions.every((a) => a.h >= 48 && a.w >= 48), 'in touch mode each is a finger’s target', JSON.stringify(actions));
     await shot(page, 'accounts-phone');
     // The refused delete is a 409 the browser reports by itself.
     const refusal = /409 \(Conflict\) @ .*\/api\/accounts\/a-/;

@@ -246,6 +246,13 @@
   cursor: grabbing;
 }
 
+/* Touch mode: the account rows' small buttons - sign in, "i", rename,
+   delete, the grip - are a finger's target, as in a chat (so-chat.css). */
+.ds-theme.so-touch .so-account .ds-btn--sm {
+  --ds-btn-height: var(--so-touch-target);
+  --ds-btn-icon-size: var(--so-touch-target);
+}
+
 /* ── Program cards ───────────────────────────────────────────────────── */
 
 .so-program__name {
