@@ -7995,25 +7995,29 @@ async function homeelsewhere() {
   } finally { await s.stop(); }
 }
 
-// home-deeplink: the two addresses a notification opens a tab at.
+// home-deeplink: the two addresses a notification opens a tab at - #q= for a
+// chat's question and #open= for a session - and what each says when there
+// is nothing to open: a chat that asks nothing, a Shell, a chat that is gone,
+// a tab whose connection went before the question was asked, and a tab that
+// was signed out.
 async function homedeeplink() {
-  const { s, stub } = await homeServer();
+  const s = await homeChats();
   try {
-    const id = await makeAgent(s, 'Pick a database');
-    const shell = await makeAgent(s, 'Plain shell', 'shell');
-    const away = await makeAgent(s, 'Asked while away');
-    const asked = await askQuestion(s, id);
-    ok(!!asked.digest, 'the question is read', asked.digest ? asked.digest.phase : 'no digest');
+    const { id } = await askingChat(s, 'Pick a database');
+    const quiet = await makeChat(s, 'claude', { title: 'Asks nothing' });
+    const shellMade = await s.context.request.post(s.url + '/api/sessions', { data: { harness: 'shell', title: 'Plain shell' } });
+    const shell = (await shellMade.json()).session.id;
+    const away = await makeChat(s, 'claude', { title: 'Asked while away' });
 
     const tab = await s.context.newPage();
     tab.on('pageerror', (err) => s.errors.push('pageerror: ' + err.message));
     await tab.goto(s.url + '/#q=' + id, { waitUntil: 'domcontentloaded' });
-    const shown = await awaitSheet(tab, (d) => !!d && d.question === HOME_QUESTION && d.options.length === 2, 15000);
+    const shown = await awaitAsk(tab, (d) => !!d && d.question === HOME_QUESTION && d.options.length === 2, 15000);
     const behind = await homeLook(tab);
     ok(shown.ok && behind.shown, '#q= opens the question dialog on boot, over Home',
       JSON.stringify({ question: shown.seen && shown.seen.question, home: behind.shown }));
-    await tab.click('.so-q-close');
-    ok(await sheetShut(tab, 5000), 'and Close puts it away', 'shut');
+    await tab.click('dialog.so-askdlg [data-action="close"]');
+    ok(await askShut(tab, 5000), 'and Close puts it away', 'shut');
     await tab.close();
 
     const other = await s.context.newPage();
@@ -8035,8 +8039,8 @@ async function homedeeplink() {
     hist.on('pageerror', (err) => s.errors.push('pageerror: ' + err.message));
     await hist.goto('about:blank');
     await hist.goto(s.url + '/#q=' + id, { waitUntil: 'domcontentloaded' });
-    await awaitSheet(hist, (d) => !!d && d.options.length === 2, 15000);
-    await hist.click('.so-q-close');
+    await awaitAsk(hist, (d) => !!d && d.options.length === 2, 15000);
+    await hist.click('dialog.so-askdlg [data-action="close"]');
     await hist.goBack().catch(() => {});
     await wait(800);
     const afterQ = hist.url();
@@ -8049,30 +8053,46 @@ async function homedeeplink() {
     ok(afterQ === 'about:blank' && afterOpen === 'about:blank', 'Back after #q= or #open= leaves the app, and opens nothing again',
       JSON.stringify({ afterQ, afterOpen }));
 
-    // #q= for a session that asks nothing, and for one that does not exist.
-    const watchWords = async (page, address) => {
-      await page.goto(s.url + address, { waitUntil: 'domcontentloaded' });
-      const words = [];
-      for (let i = 0; i < 30; i++) {
-        const d = await sheetLook(page);
-        const line = d ? [d.status ? d.status.text : '', d.finished].filter(Boolean).join(' / ') : 'shut';
-        if (line && words[words.length - 1] !== line) words.push(line);
+    // #q= with nothing to open says why, and never that it was answered
+    // elsewhere: a chat that asks nothing, a Shell, a chat that is gone.
+    // The toast comes while the page is still booting, so it is caught from
+    // the first moment the page has a body.
+    await hist.addInitScript(() => {
+      window.__bootToasts = [];
+      addEventListener('DOMContentLoaded', () => {
+        const host = document.getElementById('toasts');
+        if (!host) return;
+        new MutationObserver((records) => {
+          for (const record of records) {
+            for (const node of record.addedNodes) if (node.textContent) window.__bootToasts.push(node.textContent.trim());
+          }
+        }).observe(host, { childList: true, subtree: true });
+      });
+    });
+    const toldAt = async (address) => {
+      await hist.goto('about:blank');
+      await hist.goto(s.url + address, { waitUntil: 'domcontentloaded' });
+      const toasts = () => hist.evaluate(() => (window.__bootToasts || []).slice());
+      for (let i = 0; i < 60; i += 1) {
+        if ((await toasts()).length) break;
         await wait(150);
       }
-      return words;
+      return { toasts: await toasts(), dialog: !!(await askLook(hist)) };
     };
-    const idleWords = await watchWords(hist, '/#q=' + shell);
-    ok(idleWords.some((w) => /No question is waiting here any more/.test(w)) && !idleWords.some((w) => /elsewhere|All questions answered/.test(w)),
-      '#q= for a session that asks nothing says so, not that it was answered elsewhere', idleWords.join(' > '));
-    await hist.goto('about:blank');
-    const goneWords = await watchWords(hist, '/#q=nosuchsession1');
-    ok(goneWords.some((w) => /no longer exists/.test(w)) && !goneWords.some((w) => /elsewhere|All questions answered/.test(w)),
-      '#q= for a session that does not exist says that', goneWords.join(' > '));
+    const idleSaid = await toldAt('/#q=' + quiet);
+    const shellSaid = await toldAt('/#q=' + shell);
+    const goneSaid = await toldAt('/#q=nosuchchat1');
+    ok(!idleSaid.dialog && idleSaid.toasts.some((t) => /Nothing is waiting for an answer/.test(t)),
+      '#q= for a chat that asks nothing says nothing is waiting', JSON.stringify(idleSaid));
+    ok(!shellSaid.dialog && shellSaid.toasts.some((t) => /Nothing is waiting for an answer there/.test(t)),
+      'for a Shell, the same', JSON.stringify(shellSaid));
+    ok(!goneSaid.dialog && goneSaid.toasts.some((t) => /not here any more/.test(t)),
+      'and for a chat that does not exist, that it is not here', JSON.stringify(goneSaid));
     await hist.close();
 
-    // A notification tapped on a tab that has been offline since before the
-    // question was asked: the tab knows nothing of it yet, and must not take
-    // that for an answer.
+    // A notification tapped on a tab whose connection went before the
+    // question was asked: the tab cannot read it, says so, and shows it once
+    // it can - never that it was answered.
     const stale = await deviceOf(s, { viewport: { width: 1024, height: 700 } });
     let blocked = false;
     const sockets = [];
@@ -8081,28 +8101,29 @@ async function homedeeplink() {
       ws.connectToServer();
       sockets.push(ws);
     });
-    await stale.page.route(/\/api\/(home|sessions)(\?.*)?$/, (route) => (blocked ? route.abort('internetdisconnected') : route.continue()));
+    await stale.page.route(/\/api\/(home|sessions|chats\/[^/]+)(\?.*)?$/, (route) => (blocked ? route.abort('internetdisconnected') : route.continue()));
     await stale.page.goto(s.url + '/', { waitUntil: 'domcontentloaded' });
-    const staleLive = await awaitHome(stale.page, (h) => h.shown && h.conn === 'live' && h.rows.length >= 0, 15000);
+    const staleLive = await awaitHome(stale.page, (h) => h.shown && h.conn === 'live', 15000);
+    const staleToasts = await watchToasts(stale.page);
     blocked = true;
     for (const ws of sockets.splice(0)) await ws.close().catch(() => {});
     await awaitHome(stale.page, (h) => h.conn !== 'live', 10000);
-    const awayAsked = await askQuestion(s, away);
-    ok(staleLive.ok && !!awayAsked.digest, 'a tab goes offline, and a question is asked while it is',
-      JSON.stringify({ live: staleLive.ok, digest: awayAsked.digest && awayAsked.digest.phase }));
-    const staleSaid = await watchSheet(stale.page);
+    await tellChat(s, away, '/askuser ' + JSON.stringify(DB_ASK));
+    const awayAsk = await openAskOf(s, away, 20000);
+    ok(staleLive.ok && !!awayAsk, 'a tab goes offline, and a question is asked while it is', JSON.stringify({ live: staleLive.ok, ask: !!awayAsk }));
     await stale.page.evaluate((target) => {
       navigator.serviceWorker.dispatchEvent(new MessageEvent('message', { data: { t: 'open', id: target, kind: 'question' } }));
     }, away);
     await wait(3500);
-    const offline = await sheetLook(stale.page);
-    const offWords = await staleSaid();
-    ok(!!offline && !offWords.some((w) => /elsewhere|All questions answered/.test(w)) && /No connection|Looking for this question/.test(offline.reading),
-      'the tapped notification opens the dialog, which says it is looking, not that it was answered',
-      JSON.stringify({ reading: offline && offline.reading, said: offWords }));
+    const offline = await askLook(stale.page);
+    const offToasts = await staleToasts();
+    ok(!offline && offToasts.some((t) => /No connection\. The question opens as soon as it is back/.test(t))
+      && !offToasts.some((t) => /elsewhere|could not be loaded/.test(t)),
+      'the tapped notification says there is no connection and the question opens once there is, never that it was answered',
+      JSON.stringify({ dialog: !!offline, toasts: offToasts }));
     blocked = false;
-    const found = await awaitSheet(stale.page, (d) => !!d && d.question === HOME_QUESTION && d.session === 'Asked while away' && d.options.length === 2, 30000);
-    ok(found.ok, 'and the question appears once the network is back', JSON.stringify(found.seen && { q: found.seen.question, s: found.seen.session, reading: found.seen.reading }));
+    const found = await awaitAsk(stale.page, (d) => !!d && d.question === HOME_QUESTION && d.session === 'Asked while away' && d.options.length === 2, 40000);
+    ok(found.ok, 'and the question appears once the network is back', JSON.stringify(found.seen && { q: found.seen.question, s: found.seen.session }));
     await stale.context.close();
 
     // Signed out - the login expired or was revoked - the tap goes through
@@ -8115,15 +8136,12 @@ async function homedeeplink() {
     await outPage.fill('#password', PASSWORD);
     await outPage.click('#submit');
     await outPage.waitForURL((u) => !u.pathname.startsWith('/login'), { timeout: 15000 }).catch(() => {});
-    const afterLogin = await awaitSheet(outPage, (d) => !!d && d.question === HOME_QUESTION && d.session === 'Asked while away', 15000);
+    const afterLogin = await awaitAsk(outPage, (d) => !!d && d.question === HOME_QUESTION && d.session === 'Asked while away', 15000);
     ok(/\/login#q=/.test(atLogin) && afterLogin.ok, 'signed out, #q= goes through the sign-in and opens the question after it',
-      JSON.stringify({ atLogin: atLogin.replace(s.url, ''), now: outPage.url().replace(s.url, ''), sheet: afterLogin.seen && afterLogin.seen.session }));
+      JSON.stringify({ atLogin: atLogin.replace(s.url, ''), now: outPage.url().replace(s.url, ''), dialog: afterLogin.seen && afterLogin.seen.session }));
     await signedOut.close();
     ok(unexpected(s.errors).length === 0, 'no console errors', unexpected(s.errors).join(' | ') || '0');
-  } finally {
-    await s.stop();
-    await stub.close();
-  }
+  } finally { await s.stop(); }
 }
 
 // home-reconnect: the server restarts under an open Home, which says so and
