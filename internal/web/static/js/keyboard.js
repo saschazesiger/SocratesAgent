@@ -380,17 +380,26 @@ function free(node) {
  * for it. With `focus: false` it is only freed, for a field that takes the
  * focus by itself in the same tap (a dialog's autofocus). Anywhere but in
  * touch mode it is a plain focus.
+ *
+ * The focus is handed over with preventScroll, as every focus here is, so
+ * the field is then brought into view of whatever scrolls it, "nearest":
+ * a field already in sight stays where it is, and one a button has just
+ * brought - below that button, often under the end of a dialog's scroller -
+ * comes up into sight.
  */
 export function typeHere(node, { focus = true } = {}) {
   if (!node) return;
+  let handed = false;
   if (touch && isField(node) && !underSwitch(node)) {
     const had = deepActive() === node;
     free(node);
     // A field that had the focus muted took no keyboard with it; handing
     // the focus over again inside the tap raises one.
-    if (had && focus) { refocus(node, true); return; }
+    if (had && focus) { refocus(node, true); handed = true; }
   }
-  if (focus && deepActive() !== node) node.focus({ preventScroll: true });
+  if (!focus) return;
+  if (!handed && deepActive() !== node) node.focus({ preventScroll: true });
+  node.scrollIntoView({ block: 'nearest', inline: 'nearest' });
 }
 
 // A finger coming down on an ordinary field frees it before the browser
