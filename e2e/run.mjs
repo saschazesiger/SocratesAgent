@@ -455,8 +455,8 @@ async function reloadkeepsscreen() {
 /* --------------------------------------------------------------- 4. pages */
 
 // Every page is clean at a phone's width and at a desk's: no console error, no
-// sideways scroll, and the sheet is a bottom sheet on one and a dialog on the
-// other.
+// sideways scroll, and the sheet is a full-width bottom sheet on one and a
+// side sheet docked to the right edge on the other.
 async function pages() {
   for (const viewport of [{ width: 390, height: 844 }, { width: 1280, height: 720 }]) {
     const tag = viewport.width + 'x' + viewport.height;

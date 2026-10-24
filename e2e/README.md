@@ -59,9 +59,12 @@ authenticated HTTP and its event stream with the `socrates mcp-ask` server.
 What a message makes them do is the script in each package's comment (and
 docs/design/AGENT-HOST.md §5 and §8): `/stream`, `/slow`, `/tool`, `/edit`,
 `/todo`, `/bg`, `/plan`, `/askuser`, `/whoami`, `/crash`, `/argv` and the rest;
-anything else is answered "you said: …". They answer `--version` and the model
-listings the catalogue asks for, so the sheet offers all three agents with their
-models. The scenarios assert against what the fakes say back — the command line
+anything else is answered "you said: …". They answer `--version`; fakeclaude's
+models come from the catalogue, while fakecodex and fakeopencode list none
+(`codex debug models` and `opencode models` exit 2), so in the suite the sheet
+offers Codex and OpenCode with an empty model field: an id typed in, or nothing
+for the CLI's own default, with Admin and the sheet saying the listing failed
+(the program's own error behind the "i"). The scenarios assert against what the fakes say back — the command line
 they were started with, the account they found, the answer ask_user returned.
 
 The chat scenarios that need a richer script (Markdown of every kind, a
@@ -183,7 +186,7 @@ touch mode, except `options`, which measures the narrowest phone in use,
 | `createshell` | the sheet makes a Shell session, the shell answers, and the page and the pane are the same white — with the dimmest ANSI colour still legible on it |
 | `typeandsee` | keystrokes reach the pane, output comes back in order, and the journal on disk holds the same bytes |
 | `reloadkeepsscreen` | type, reload: Home, as every start is, and the session opened again is the same viewer with the same screen, and typing still works |
-| `pages` | `/`, `/admin`, `/login`, `/setup` and a chat are clean at 390×844 and 1280×720, and the sheet is a bottom sheet on one and a dialog on the other |
+| `pages` | `/`, `/admin`, `/login`, `/setup` and a chat are clean at 390×844 and 1280×720, and the sheet is a full-width bottom sheet on one and a side sheet docked to the right edge on the other |
 | `harnesses` | a Shell and a chat with each agent start from the sheet and are seen in the browser: the Shell runs a command, each agent answers its first message over its own protocol, every row wears its mark, and the facts are behind **Info** |
 | `browserlayout` | row menus flip upwards near the bottom and stay scrollable in short viewports; delayed local fonts give DOM and WebGL equal-width cells and matching initial pane sizes |
 | `sessionlist` | rename, file, pick up again and delete, for a Shell and a chat — and the working directory survives the delete |
