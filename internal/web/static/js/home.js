@@ -185,7 +185,8 @@ export function staleWords(at, now = Date.now()) {
  * event stream's {status, updatedAt, blocked, pollEvery, resuming, quiet};
  * `reachable` whether the last attempt to read the list got through. The
  * kind is 'live' or 'polling' (current: nothing is dimmed), or 'connecting'
- * or 'offline' (old: dimmed).
+ * or 'offline' (old: dimmed); `first` marks the first look, before anything
+ * has been heard.
  */
 export function connectionLine(conn, reachable, now = Date.now()) {
   const { status, updatedAt, blocked, pollEvery, resuming, quiet } = conn;
@@ -199,7 +200,7 @@ export function connectionLine(conn, reachable, now = Date.now()) {
     // The first look, before anything has been heard at all - and before
     // anything has failed: a page whose every read has failed is offline,
     // not still connecting, whatever it has never heard.
-    return { kind: 'connecting', words: 'Connecting…' };
+    return { kind: 'connecting', words: 'Connecting…', first: true };
   }
   if (resuming) {
     // Shown again after its stream was closed for being hidden, and on its

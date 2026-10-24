@@ -520,10 +520,11 @@ export function openAskDialog({ items, start = 0, watch, openChat, closed, more 
 
   // doubt is the connection line while what the dialog shows may be old -
   // connecting again, checking a quiet stream, offline - and null while it
-  // is live, or polled and current.
+  // is live, or polled and current. The page's first connect is no doubt:
+  // the dialog read its questions from the server as it opened.
   function doubt() {
     const conn = connection ? connection() : null;
-    return conn && (conn.kind === 'connecting' || conn.kind === 'offline') ? conn : null;
+    return conn && !conn.first && (conn.kind === 'connecting' || conn.kind === 'offline') ? conn : null;
   }
 
   // connHtml is Home's connection line as the dialog says it: a DS alert

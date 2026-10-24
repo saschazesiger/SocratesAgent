@@ -8265,7 +8265,9 @@ async function hometouch() {
         const dialog = document.querySelector('dialog.so-askdlg');
         const option = dialog.querySelector('.so-q-option').getBoundingClientRect();
         const bar = dialog.querySelector('.so-q-actions').getBoundingClientRect();
-        return { top: Math.round(option.top), bottom: Math.round(option.bottom), bar: Math.round(bar.top), h: innerHeight };
+        const line = dialog.querySelector('.so-q-conn');
+        return { top: Math.round(option.top), bottom: Math.round(option.bottom), bar: Math.round(bar.top), h: innerHeight,
+          line: line ? line.textContent.trim() : '' };
       });
       ok(fit.top >= 0 && fit.bottom <= fit.bar && fit.bottom <= fit.h,
         width + 'x' + height + ': the first option is whole on screen, above the buttons', JSON.stringify(fit));

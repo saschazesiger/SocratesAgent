@@ -674,8 +674,10 @@ export function skipScenario(name, title, why) {
 /** finish sweeps anything the assertions did not catch and prints the totals. */
 export function finish() {
   // A server still running here belongs to a scenario that is over; left
-  // alone, its pipes would keep the run from ending.
+  // alone, its pipes would keep the run from ending. The fake bucket is the
+  // run's own, and cleanupBuild stops it.
   for (const child of servers) {
+    if (fakeS3 && child === fakeS3.child) continue;
     console.log('NOTE a server was still running at the end of the run (' + child.spawnargs.slice(1).join(' ') + ')');
     try { child.kill('SIGKILL'); } catch { /* already gone */ }
   }

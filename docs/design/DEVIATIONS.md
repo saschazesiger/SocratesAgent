@@ -2814,4 +2814,7 @@ for a reason in the code, not in the test:
   bar: a new question takes no tap for 600 ms (a key is never a stray tap), and below 500 px the
   question is scrolled to the top. What was asked while the dialog was open joins the walk at its
   end. And the dialog had lost the connection line HOME.md gives it ("The dialog says it too"); it
-  has it again, with "This question may already have been answered".
+  has it again, with "This question may already have been answered" - except for the page's first
+  "Connecting…", which HOME.md lists too: the chats' dialog reads its questions from the server as
+  it opens, so on a page that has not connected yet they are as current as they can be, and the
+  line would only push the first option off a phone on its side.

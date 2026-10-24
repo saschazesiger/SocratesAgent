@@ -901,8 +901,9 @@ cannot read yet - no connection, or a chat the page has not heard of - waits for
 asks nothing any more says "Nothing is waiting for an answer any more". For 600 ms after a
 question is drawn its buttons take no tap, so the second tap of a double tap (on Home's card, on
 Next, on Send) chooses nothing; a key is never a stray tap. On a phone on its side (under 500 px)
-the question is scrolled up to the top of the dialog. While the page's connection is not live the
-dialog says Home's connection line under its top bar ("Offline · updated 40 s ago"), that a
+the question is scrolled up to the top of the dialog. While the page's connection is not live (its
+first connect aside: the dialog read its questions as it opened) the dialog says Home's connection
+line under its top bar ("Offline · updated 40 s ago"), that a
 question still to answer may already have been answered, and dims it, said again every 2 s; an
 answer sent offline says "Saved. Your answer goes out when the connection is back." (WP11).
 
