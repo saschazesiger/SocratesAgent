@@ -2302,13 +2302,6 @@ function filesUnder(dir) {
   return out;
 }
 
-// answerState is the state of the newest answer on screen ('' for one that
-// ended the ordinary way).
-const answerState = (page) => page.evaluate(() => {
-  const all = document.querySelectorAll('#chat .so-msg[data-role="assistant"]');
-  return all.length ? all[all.length - 1].dataset.state || '' : 'none';
-});
-
 /* --------------------------------------------------------- 13. createclaude */
 
 // Claude Code start to finish, as a chat: the sheet offers the models the
@@ -2387,10 +2380,13 @@ async function createclaude() {
     const hosts = hostsOf(s.data).length;
     await say(s.page, '/crash');
     const failed = await awaitChat(s, id, (b) => idle(b) && b.chat.last_outcome === 'failed', 20000);
-    await awaitLog(s.page, 'exited during the turn', 10000);
+    await awaitLog(s.page, 'stopped during the turn', 10000);
     const said = (await linesOf(s.page)).filter((l) => l.startsWith('failed:')).join(' | ');
-    ok(failed.chat.last_outcome === 'failed' && /exited during the turn/.test(said),
-      'a CLI that exits mid-turn ends the turn as failed, and the conversation says so', oneLine(said));
+    // In plain words, once; how the CLI ended is behind the line's "i".
+    const how = await s.page.$eval('#chat .so-line-alert[data-kind="failed"] .so-info', (n) => n.getAttribute('data-tip') || '')
+      .catch(() => '');
+    ok(failed.chat.last_outcome === 'failed' && /The agent stopped during the turn/.test(said) && /exit status \d+|signal/.test(how),
+      'a CLI that exits mid-turn ends the turn as failed, and the conversation says so', oneLine(said + ' | i: ' + how));
     const again = await answerTo(s, id, 'are you back');
     ok(again === 'you said: are you back', 'the next message is answered', again);
     const relaunched = await answerTo(s, id, '/argv');
@@ -2647,8 +2643,17 @@ async function rebootresume() {
     const lines = (await linesOf(s.page)).filter((l) => /Resumed after a restart/.test(l));
     ok(said && lines.length === 1 && lines[0].startsWith('notice:'),
       'the conversation says once that it was resumed after a restart', JSON.stringify(lines));
-    const cut = await answerState(s.page);
-    ok(cut === 'interrupted', 'and the answer the reboot cut short says it was interrupted', cut);
+    // The answer the reboot cut short says it was interrupted: on itself when
+    // it had shown words by then, else on its turn's line - an answer that
+    // showed nothing is not drawn, and the line after the last answer says
+    // how its turn ended.
+    const cut = await s.page.evaluate(() => {
+      const nodes = [...document.querySelectorAll('#chat .so-msg[data-role="assistant"], #chat .so-line[data-kind="interrupted"]')];
+      const last = nodes[nodes.length - 1];
+      if (!last) return 'none';
+      return last.matches('.so-line') ? 'line:' + last.innerText.replace(/\s+/g, ' ').trim() : 'answer:' + (last.dataset.state || '');
+    });
+    ok(cut === 'answer:interrupted' || cut === 'line:Interrupted', 'and the answer the reboot cut short says it was interrupted', cut);
     await shot(s.page, 'rebootresume');
 
     const argv = await answerTo(s, id, '/argv');
