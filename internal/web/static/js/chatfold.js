@@ -157,6 +157,15 @@ function line(chat, ev, data) {
   chat.timeline.push({ key: 'l:' + ev.seq, type: 'line', line: { seq: ev.seq, at: ev.at, ...data }, rev: ++chat.rev });
 }
 
+// lastLine is the newest line of a kind, or null.
+function lastLine(chat, kind) {
+  for (let i = chat.timeline.length - 1; i >= 0; i -= 1) {
+    const one = chat.timeline[i];
+    if (one.type === 'line' && one.line.kind === kind) return one;
+  }
+  return null;
+}
+
 function endTurn(chat, ev) {
   let turn = chat.turn;
   if (turn && ev.turn_id && turn.id && ev.turn_id !== turn.id) return;
@@ -338,9 +347,19 @@ export function apply(chat, ev) {
       chat.info = ev.content || null;
       chat.rev += 1;
       break;
-    case 'notice':
+    case 'notice': {
+      // Claude's word that it goes on without the thinking of another
+      // organization belongs to the switch that caused it: a hint behind the
+      // divider's "i", not a line of its own (research/08).
+      const divider = ev.code === 'foreign_thinking' ? lastLine(chat, 'account') : null;
+      if (divider) {
+        divider.line.hint = ev.text || '';
+        divider.rev = ++chat.rev;
+        break;
+      }
       line(chat, ev, { kind: 'notice', code: ev.code || '', text: ev.text || '', askId: ev.ask_id || '' });
       break;
+    }
     case 'command':
       // A slash command the person ran is a line of its own; the other
       // commands (interrupt, model, park) say what they did by their effects.

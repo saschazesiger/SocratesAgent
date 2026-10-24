@@ -35,6 +35,8 @@
 //	/plan            ExitPlanMode through can_use_tool; waits for the answer
 //	/limit           a rate limit that stops the turn
 //	/retry           an API retry, then text
+//	/foreign         the warning a resume on another organization's account gives
+//	                 about the earlier thinking, then text
 //	/image           a Read that returns an image
 //	/crash           exits in the middle of the turn
 //	/env             says the CLAUDE_*, ANTHROPIC_* and IS_SANDBOX variables
@@ -572,6 +574,13 @@ func (t *turnRun) script() {
 		t.f.out(map[string]any{"type": "system", "subtype": "api_retry", "attempt": 1, "max_retries": 10,
 			"retry_delay_ms": 500, "error_status": 529, "error": "overloaded", "uuid": newUUID(), "session_id": t.f.session})
 		t.say("Answered after a retry.")
+	case "/foreign":
+		t.f.out(map[string]any{"type": "system", "subtype": "informational", "level": "warning",
+			"content": "Claude can't use thinking from another organization\nClaude's earlier thinking was written while you were " +
+				"signed in to another organization, so Claude can't use it now. It isn't deleted: resume this session signed in " +
+				"to that organization to use it again. Claude's next responses may be slower and use more tokens.",
+			"uuid": newUUID(), "session_id": t.f.session})
+		t.say("Answered without the earlier thinking.")
 	case "/image":
 		t.image()
 	case "/crash":

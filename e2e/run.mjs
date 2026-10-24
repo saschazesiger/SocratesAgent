@@ -13978,11 +13978,35 @@ async function chataccount() {
       'on a phone the picker is a thumb\u2019s target in the composer, and nothing scrolls sideways', JSON.stringify(phone));
     await page.click('#chat .so-composer__account-btn');
     await page.waitForSelector('.so-account-menu:not([hidden]) [data-account="' + alpha.id + '"]', { timeout: 5000 });
-    const menuBox = await page.$eval('.so-account-menu', (n) => { const r = n.getBoundingClientRect(); return { l: Math.round(r.left), r: Math.round(r.right), vw: innerWidth }; });
-    ok(menuBox.l >= 0 && menuBox.r <= menuBox.vw, 'and its menu is on the screen', JSON.stringify(menuBox));
+    await wait(400);
+    const menuBox = await page.$eval('.so-account-menu', (n) => {
+      const r = n.getBoundingClientRect();
+      const first = n.querySelector('[data-account]').getBoundingClientRect();
+      return { l: Math.round(r.left), r: Math.round(r.right), vw: innerWidth, top: Math.round(r.top), firstTop: Math.round(first.top), scrolled: n.scrollTop };
+    });
+    ok(menuBox.l >= 0 && menuBox.r <= menuBox.vw && menuBox.top >= 0 && menuBox.firstTop >= menuBox.top && menuBox.scrolled === 0,
+      'and its menu is on the screen, its first account in view', JSON.stringify(menuBox));
     await shot(page, 'chat-account-phone');
     await page.click('.so-account-menu [data-account="' + alpha.id + '"]');
     ok(await awaitLog(page, 'Switched from Gamma to Alpha', 15000), 'a tap there switches too', '');
+
+    // Switched while a turn runs: now. The turn stops, the new account
+    // carries it on, and the line does not call it a limit.
+    const before2 = ((await logText(page)).match(/Continue where you left off\./g) || []).length;
+    // Touch mode's composer types through its own keyboard: the message
+    // goes in as the composer would send it.
+    await post('/api/chats/' + encodeURIComponent(id) + '/messages', { client_id: 'e2e-sleep-now', text: '/sleep 30' });
+    await page.waitForSelector('#chat .so-composer__stop:not([hidden])', { timeout: 10000 });
+    await page.click('#chat .so-composer__account-btn');
+    await page.click('.so-account-menu [data-account="' + gamma.id + '"]');
+    await page.waitForSelector('dialog.ds-dialog [data-when="now"]', { timeout: 5000 });
+    await page.click('dialog.ds-dialog [data-when="now"]');
+    ok(await awaitLog(page, 'Switched from Alpha to Gamma', 20000), 'Switch now moves a running turn to the other account', '');
+    const carried = await page.waitForFunction((was) => (document.querySelector('#chat .so-chat__log')?.innerText.match(/Continue where you left off\./g) || []).length >= was + 2,
+      before2, { timeout: 15000 }).then(() => true, () => false);
+    ok(carried, 'and the new account carries the turn on', String(carried));
+    const why = await page.$$eval('#chat [data-kind="account"] .so-info', (n) => n[n.length - 1]?.getAttribute('data-tip') || '');
+    ok(!/limit/i.test(why) && /next reply may take longer/.test(why), 'its line says nothing of a limit, and that the next reply is slower', oneLine(why));
     ok(unexpected(s.errors).length === 0, 'no console errors', unexpected(s.errors).join(' | ') || '0');
   } finally { await s.stop(); }
 }

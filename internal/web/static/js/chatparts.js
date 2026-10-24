@@ -676,7 +676,12 @@ export function lineHtml(entry, view) {
       const from = view.accountLabel ? view.accountLabel(l.from) : '';
       const to = view.accountLabel ? view.accountLabel(l.to) : '';
       const words = from ? 'Switched from ' + from + ' to ' + (to || 'another account') : 'Now on ' + (to || 'another account');
-      return html`<div class="so-line" data-ds-key="${key}" data-kind="account" data-from="${l.from}" data-to="${l.to}">${raw(icon('user', 16))}<span class="so-line__text">${words}</span>${infoButton([l.reason], 'Why the account changed')}</div>`;
+      // Behind the "i": why, who the new account is signed in as, what the
+      // agent set aside for it, and that its first reply builds the cache
+      // again (research/08).
+      const about = [l.reason, ...(view.accountWho ? view.accountWho(l.to) : []), l.hint,
+        l.from ? 'The next reply may take longer: the new account starts without the cached conversation.' : ''];
+      return html`<div class="so-line" data-ds-key="${key}" data-kind="account" data-from="${l.from}" data-to="${l.to}">${raw(icon('user', 16))}<span class="so-line__text">${words}</span>${infoButton(about, 'About the switch')}</div>`;
     }
     case 'model':
       return html`<div class="so-line" data-ds-key="${key}" data-kind="model">${raw(icon('cpu', 16))}<span class="so-line__text">${'Model: ' + view.modelLabel(l.model) + (l.effort ? ' · ' + view.effortLabel(l.effort) : '')}</span></div>`;

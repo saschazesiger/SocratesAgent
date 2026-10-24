@@ -87,6 +87,8 @@ export function mountChat(ctx) {
   // Bumped by every change of the Outbox: what a card shows of this
   // browser's own answers and commands is drawn again then, and only then.
   let outboxRev = 0;
+  // The chat a "Continue with" is being sent for, until the server answers.
+  let continuing = '';
   // The asks whose answer has been seen, whose draft has been let go.
   const settledAsks = new Set();
 
@@ -126,12 +128,22 @@ export function mountChat(ctx) {
     // An id the list does not have (an account deleted since) is said as
     // the journal has it.
     accountLabel: (id) => (id ? accounts.labelOf(id) || id : ''),
+    // accountWho is who an account is signed in as, as the agent last said:
+    // the e-mail and the plan, for the switch's "i".
+    accountWho(id) {
+      const a = id ? accounts.byId(id) : null;
+      if (!a) return [];
+      return [a.email ? 'Signed in as ' + a.email : '', a.plan ? 'Plan: ' + a.plan : ''];
+    },
     // continueWith is the accounts a limit card offers to go on with: only
     // under the newest limit nothing has happened after, while no turn
     // runs; the agent's signed-in accounts not at a limit themselves, the
     // one with the most left first.
     continueWith(entry) {
-      if (!session || chat.turn || !lastLimit(entry)) return [];
+      // One tap is the choice: while it is on its way - here, or a switch
+      // from anywhere the journal already says - the buttons are gone, so a
+      // second tap or a redraw cannot send it again.
+      if (!session || chat.turn || !lastLimit(entry) || chat.pendingSwitch || continuing === session.id) return [];
       const best = accounts.recommended(session.harness);
       return accounts.forAgent(session.harness)
         .filter((a) => a.id !== chat.account && accounts.usable(a) && !accounts.renewal(a))
@@ -558,12 +570,18 @@ export function mountChat(ctx) {
   // and has the stopped turn carried on there.
   async function continueWith(button) {
     const current = session;
+    if (continuing === current.id) return;
+    continuing = current.id;
     button.disabled = true;
+    schedule();
     try {
       await accounts.switchChat(current.id, button.dataset.account, { goOn: true });
     } catch (err) {
       toast(errorMessage(err), 'error');
-      button.disabled = false;
+    } finally {
+      // From here the journal's command says the switch is on its way.
+      continuing = '';
+      schedule();
     }
   }
 

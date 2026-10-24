@@ -833,6 +833,24 @@ func TestStartRebuildsALostJournal(t *testing.T) {
 	r2.turnsEnded(t, 2)
 }
 
+// Resumed on an account of another organization, Claude Code says it goes
+// on without the earlier thinking: a hint for the switch, not a warning.
+func TestTheThinkingOfAnotherOrganizationIsAHint(t *testing.T) {
+	e := newEnv(t)
+	a, r := start(t, e, "")
+	send(t, a, "m1", "/foreign")
+	evs := r.turnsEnded(t, 1)
+	var notices []agent.Event
+	for _, ev := range evs {
+		if ev.Type == agent.TypeNotice {
+			notices = append(notices, ev)
+		}
+	}
+	if len(notices) != 1 || notices[0].Code != agent.NoticeForeignThinking || !strings.Contains(notices[0].Text, "switch back") {
+		t.Fatalf("notices:\n%s", dump(evs))
+	}
+}
+
 func TestLimitsRetriesImagesAndCommands(t *testing.T) {
 	e := newEnv(t)
 	a, r := start(t, e, "")

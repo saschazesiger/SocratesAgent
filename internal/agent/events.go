@@ -153,6 +153,10 @@ const (
 	// NoticeHistoryUnavailable: the journal was missing, and the CLI's own
 	// transcript could not be read back either; the conversation goes on.
 	NoticeHistoryUnavailable = "history_unavailable"
+	// NoticeForeignThinking: resumed on an account of another organization,
+	// Claude Code goes on without the earlier thinking and keeps it for the
+	// way back (research/08). The chat shows it on the account switch.
+	NoticeForeignThinking = "foreign_thinking"
 )
 
 // Delivery routes of an answer (ask.delivered's Via).
