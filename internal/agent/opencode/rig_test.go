@@ -237,16 +237,61 @@ func (r *rig) mustStart(resume string) {
 	}
 }
 
-// send sends text as a journaled message would be, and returns its id.
+// send sends text as the host sends a message it journaled, with its place
+// among the turns (agent.Outgoing.AfterTurn), and returns its id.
 func (r *rig) send(text string) string {
 	r.t.Helper()
+	id := r.journal(text)
+	after := ""
+	r.rec.view(func(p *agent.Projection, _ []agent.Event) { after = p.Message(id).AfterTurn })
+	r.handOver(id, text, after)
+	return id
+}
+
+// sendWrittenAfter sends text as a message the host journaled when turn was
+// the last to have ended, and hands over only now: whatever ended since came
+// between the journal write and the Send.
+func (r *rig) sendWrittenAfter(turn, text string) string {
+	r.t.Helper()
+	id := r.journal(text)
+	r.handOver(id, text, turn)
+	return id
+}
+
+func (r *rig) journal(text string) string {
 	r.n++
 	id := fmt.Sprintf("m_%d_%d", time.Now().UnixNano(), r.n)
 	r.rec.Emit(agent.Event{Type: agent.TypeMessage, MessageID: id, Role: agent.RoleUser, State: agent.MessagePending, Text: text})
-	if err := r.a.Send(context.Background(), agent.Outgoing{MessageID: id, ClientID: "c_" + id, Text: text}); err != nil {
+	return id
+}
+
+func (r *rig) handOver(id, text, after string) {
+	r.t.Helper()
+	if err := r.a.Send(context.Background(), agent.Outgoing{MessageID: id, ClientID: "c_" + id, Text: text, AfterTurn: after}); err != nil {
 		r.t.Fatalf("send %q: %v", text, err)
 	}
+}
+
+// lastTurn is the turn that ended last, "" before any did.
+func (r *rig) lastTurn() string {
+	id := ""
+	r.rec.view(func(p *agent.Projection, _ []agent.Event) {
+		if p.LastTurn != nil {
+			id = p.LastTurn.ID
+		}
+	})
 	return id
+}
+
+// messageState is the state of a message.
+func (r *rig) messageState(id string) string {
+	state := ""
+	r.rec.view(func(p *agent.Projection, _ []agent.Event) {
+		if m := p.Message(id); m != nil {
+			state = m.State
+		}
+	})
+	return state
 }
 
 // waitTurns waits until n turns have ended.
