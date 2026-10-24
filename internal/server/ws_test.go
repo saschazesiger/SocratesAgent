@@ -1001,12 +1001,6 @@ func (c *orderedClient) rendered() uint64 {
 	return uint64(len(c.out))
 }
 
-func (c *orderedClient) screen() string {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return string(c.out)
-}
-
 func (c *orderedClient) close() {
 	_ = c.conn.CloseNow()
 	<-c.done

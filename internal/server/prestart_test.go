@@ -301,17 +301,6 @@ func subscribe(t *testing.T, e *testEnv) <-chan sentPush {
 	return sent
 }
 
-func nextPush(t *testing.T, sent <-chan sentPush) pushNote {
-	t.Helper()
-	select {
-	case p := <-sent:
-		return p.note
-	case <-time.After(10 * time.Second):
-		t.Fatal("no push was sent")
-	}
-	return pushNote{}
-}
-
 // The scheduler, on a clock of the test's choosing: nothing before its time,
 // the due chat at its time - its draft the first message - and the other one
 // not, a failure reported once and never retried.

@@ -91,15 +91,6 @@ func carries(argv []string, flag string) bool {
 	return false
 }
 
-func valueOf(argv []string, flag string) string {
-	for i, a := range argv {
-		if a == flag && i+1 < len(argv) {
-			return argv[i+1]
-		}
-	}
-	return ""
-}
-
 // ------------------------------------------------------------------- shared
 
 // Every terminal says the background is white, whichever program it runs: a

@@ -42,26 +42,16 @@ func (c gatewayCall) last() string {
 	return c.Messages[len(c.Messages)-1].Content
 }
 
-func (c gatewayCall) joined() string {
-	parts := make([]string, 0, len(c.Messages))
-	for _, m := range c.Messages {
-		parts = append(parts, m.Role+": "+m.Content)
-	}
-	return strings.Join(parts, "\n---\n")
-}
-
-// scriptedGateway answers /chat/completions with the next reply in its queue,
-// falling back to a fixed one when the queue runs out.
+// scriptedGateway answers /chat/completions with one fixed reply, or with the
+// refusal it was told to give.
 type scriptedGateway struct {
 	srv *httptest.Server
 
 	mu       sync.Mutex
-	replies  []string
 	fallback string
 	status   int
 	body     string
 	calls    []gatewayCall
-	gate     chan struct{}
 }
 
 func newGateway(t *testing.T) *scriptedGateway {
@@ -74,22 +64,9 @@ func newGateway(t *testing.T) *scriptedGateway {
 
 		g.mu.Lock()
 		g.calls = append(g.calls, call)
-		gate, status, body := g.gate, g.status, g.body
-		reply := g.fallback
-		if len(g.replies) > 0 {
-			reply, g.replies = g.replies[0], g.replies[1:]
-		}
+		status, body, reply := g.status, g.body, g.fallback
 		g.mu.Unlock()
 
-		if gate != nil {
-			// A gateway that has not answered yet is a call still in
-			// flight, which is where a cancel has to be able to reach it.
-			select {
-			case <-gate:
-			case <-r.Context().Done():
-				return
-			}
-		}
 		w.Header().Set("Content-Type", "application/json")
 		if status != 0 {
 			w.WriteHeader(status)
@@ -108,12 +85,6 @@ func newGateway(t *testing.T) *scriptedGateway {
 	return g
 }
 
-func (g *scriptedGateway) script(replies ...string) {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	g.replies = append([]string{}, replies...)
-}
-
 func (g *scriptedGateway) always(reply string) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -124,22 +95,6 @@ func (g *scriptedGateway) refuse(status int, message string) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.status, g.body = status, fmt.Sprintf(`{"error":{"message":%q}}`, message)
-}
-
-func (g *scriptedGateway) block() {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	g.gate = make(chan struct{})
-}
-
-func (g *scriptedGateway) release() {
-	g.mu.Lock()
-	gate := g.gate
-	g.gate = nil
-	g.mu.Unlock()
-	if gate != nil {
-		close(gate)
-	}
 }
 
 func (g *scriptedGateway) seen() []gatewayCall {
