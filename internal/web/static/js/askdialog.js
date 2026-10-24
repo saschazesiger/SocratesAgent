@@ -41,6 +41,20 @@ import { speak, stopSpeaking } from './voice.js';
 // How long "Answered" stays before the next question takes the dialog.
 const MOVE_ON = 1200;
 
+// A question - a new one, or the next step of one - is drawn on the tap that
+// asked for it, and what is drawn under the finger then takes no tap for this
+// long: the second tap of a double tap on Home's Questions card would
+// otherwise choose the option drawn where the card was, and a double tap on
+// Next would skip the step after it. A key (Enter, a digit) is never a stray
+// tap, and is taken at once.
+const TAP_ARM = 600;
+const ARMED = '.so-q-scroll button, .so-q-actions button';
+
+// The height below which a phone is on its side (so-question.css has the
+// same): the chrome above a question then takes the room its first option
+// needs, and the question is scrolled up to the top.
+const SHORT_SCREEN = 500;
+
 /* ------------------------------------------------------------ the drafts */
 
 const draftKey = (askId) => 'socrates.ask.' + askId;
@@ -320,8 +334,25 @@ export function openAskDialog({ items, start = 0, watch, openChat, closed }) {
   const st = {
     items: items.slice(), at: Math.max(0, Math.min(start, items.length - 1)), draft: null, phase: 'ask',
     details: new Set(), speaking: false, unwatch: null, timer: null, closed: false, problem: null,
-    refused: null,
+    refused: null, armTimer: null,
   };
+
+  // arm makes the buttons take no tap for TAP_ARM (the CSS takes the tap
+  // away; the capture below is for a click the CSS did not stop).
+  function arm() {
+    clearTimeout(st.armTimer);
+    shell.setAttribute('data-arming', '');
+    st.armTimer = setTimeout(() => { st.armTimer = null; shell.removeAttribute('data-arming'); }, TAP_ARM);
+  }
+
+  // bringQuestionUp scrolls a question to the top on a phone on its side,
+  // the chat and the batch's title and context a swipe above it.
+  function bringQuestionUp() {
+    if (window.innerHeight > SHORT_SCREEN) return;
+    const scroller = shell.querySelector('.so-q-scroll');
+    const at = shell.querySelector('.so-q-step') || shell.querySelector('.so-q-text');
+    if (scroller && at) scroller.scrollTop += at.getBoundingClientRect().top - scroller.getBoundingClientRect().top;
+  }
 
   function item() { return st.items[st.at] || null; }
 
@@ -379,6 +410,7 @@ export function openAskDialog({ items, start = 0, watch, openChat, closed }) {
     if (st.closed) return;
     st.closed = true;
     clearTimeout(st.timer);
+    clearTimeout(st.armTimer);
     if (st.unwatch) st.unwatch();
     unlisten();
     unrefused();
@@ -445,8 +477,10 @@ export function openAskDialog({ items, start = 0, watch, openChat, closed }) {
     }</div>
 <div class="so-q-actions" data-ds-key="actions">${actionsHtml({ step, last })}</div>`);
     if (focus) {
+      arm();
       const target = shell.querySelector('.so-q-text') || shell;
       target.focus({ preventScroll: true });
+      bringQuestionUp();
     }
   }
 
@@ -741,6 +775,15 @@ export function openAskDialog({ items, start = 0, watch, openChat, closed }) {
     if (redraw) draw();
   });
 
+  // A click with a pointer behind it (detail > 0: a key's click has none)
+  // on a button that is still arming is a stray tap, and goes nowhere.
+  shell.addEventListener('click', (event) => {
+    if (!event.detail || !shell.hasAttribute('data-arming')) return;
+    if (!event.target || !event.target.closest || !event.target.closest(ARMED)) return;
+    event.preventDefault();
+    event.stopPropagation();
+  }, true);
+
   dialog.addEventListener('close', () => close());
   dialog.addEventListener('keydown', (event) => {
     if (event.target.closest('textarea, input') || st.phase !== 'ask') return;
@@ -760,9 +803,11 @@ export function openAskDialog({ items, start = 0, watch, openChat, closed }) {
   };
   load();
   draw();
+  arm();
   showOverlay(dialog).then(() => {
     const target = shell.querySelector('.so-q-text') || shell;
     target.focus({ preventScroll: true });
+    bringQuestionUp();
   });
   return current;
 }

@@ -8,7 +8,9 @@
  *   dialog.so-question   the DS dialog; the whole screen on a phone and in
  *                        touch mode (car, kiosk)
  *   .so-q-shell          its box: the top bar, the scrolling body and the
- *                        action bar in one column
+ *                        action bar in one column; [data-arming] for a
+ *                        moment after a new question is drawn (its buttons
+ *                        take no tap)
  *   .so-q-top            Close, and the step the walk is at
  *   .so-q-scroll         the session, the question, its options, the field
  *                        of one's own, and the progress line
@@ -315,6 +317,12 @@
 /* Read aloud goes first, at the start; the answer's own buttons at the end. */
 .so-q-read {
   margin-inline-end: auto;
+}
+
+/* A new question takes no tap for a moment (TAP_ARM in askdialog.js). */
+.so-q-shell[data-arming] .so-q-scroll button,
+.so-q-shell[data-arming] .so-q-actions button {
+  pointer-events: none;
 }
 
 /* ── The last word ───────────────────────────────────────────────────── */
