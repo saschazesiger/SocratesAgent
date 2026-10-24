@@ -1283,7 +1283,12 @@ neither build needs back (sockets, caches, downloaded binaries). It holds the lo
 torn copy; the moved originals are whole) — delete it once the accounts work. Idempotent and safe to interrupt: each account is made once per
 `origin`, a source is planned from its account row as well as from the disk (a run cut short
 between a rename and its link is finished), and every step looks at the disk before acting. A
-source that fails is logged and tried again at the next start while the others go on. A folder on
+source that fails is logged and tried again at the next start while the others go on. A
+database rolled back to the build before's after a migration (the updater's rollback of a new
+build that fails its health check: binary and database, nothing else) is migrated again onto
+the moves already made: an old path that links to an account folder no account has any more
+gets its account back under that folder's id, with the login the link kept current
+(`movedBefore`), never a new, empty folder beside it. A folder on
 another file system (EXDEV), or one that is a link of the person's own to elsewhere, is left where
 it is, and its account says why. A lost profile's account has the origin `lost:<profile>:<agent>`.
 `~/.codex-multi` and `~/.config/opencode-multi-auth` are left alone, also when `CODEX_HOME` points
