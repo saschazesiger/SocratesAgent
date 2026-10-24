@@ -172,8 +172,10 @@ func TestViewerAnswersTheAttachQueriesItself(t *testing.T) {
 	// quotes keep the typed line from containing what the command prints.
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	if err := l.SendKeys(ctx, row.ID, []Key{{Text: "echo attach-''done"}, {Name: "Enter"}}); err != nil {
-		t.Fatalf("send-keys: %v", err)
+	for _, keys := range [][]string{{"-l", "echo attach-''done"}, {"Enter"}} {
+		if _, err := l.tmux.Run(ctx, append([]string{"send-keys", "-t", row.TmuxName}, keys...)...); err != nil {
+			t.Fatalf("send-keys: %v", err)
+		}
 	}
 	var shown []byte
 	t.Cleanup(func() {
