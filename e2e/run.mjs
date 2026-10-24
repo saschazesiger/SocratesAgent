@@ -6297,18 +6297,19 @@ async function draftOf(s, id) {
 const panelUp = (page, timeout = 15000) =>
   page.waitForSelector('#prestart:not([hidden]) #psPrompt', { timeout });
 
-// panelBecameTerminal waits for the panel to give way to a live terminal,
-// which is what a start - pressed here, elsewhere, or by the clock - looks
-// like from the page.
-const panelBecameTerminal = (page, timeout) => page.waitForFunction(() => {
+// panelBecameChat waits for the panel to give way to the chat, which is what
+// a start - pressed here, elsewhere, or by the clock - looks like from the
+// page.
+const panelBecameChat = (page, timeout) => page.waitForFunction(() => {
   const panel = document.getElementById('prestart');
-  return (!panel || panel.hidden) && !document.getElementById('termWrap').hidden
-    && !!document.querySelector('#term .xterm');
+  return (!panel || panel.hidden) && !document.getElementById('chat').hidden
+    && !!document.querySelector('#chat .so-composer__input');
 }, null, { timeout });
 
-// The prompt a prepared session is written with: several lines, and every
-// character a shell would otherwise take for its own - which is the point,
-// because it reaches the program through a wrapper script, not a terminal.
+// The prompt a prepared chat is written with: several lines, and every
+// character a shell would take for its own, quotes and a line that looks
+// like a flag - it has to reach the agent as the first message exactly as it
+// was written.
 const PREPARED_PROMPT = 'Fix the "flaky" test in $HOME/it\'s\n'
   + 'second line with `ticks`, a backslash \\ and ü\n'
   + '-- and a line that looks like a flag';
@@ -6322,7 +6323,7 @@ async function prestart() {
     const { page } = s;
 
     // The sheet: PreStart is offered for an agent, not for a shell, and turns
-    // the button into Prepare.
+    // the button into Prepare. A prepared session is always a chat.
     await ensureNav(page);
     await page.click('#newSession');
     await page.waitForSelector('#newSessionSheet[open]', { timeout: 15000 });
@@ -6343,19 +6344,20 @@ async function prestart() {
     await panelUp(page);
     const id = await page.evaluate(() => location.hash.slice(1));
 
-    // Nothing ran: no terminal on the page, no tmux session, no launch.
+    // Nothing ran: no terminal and no chat on the page, no agent host.
     let row = await sessionRow(s, id);
-    ok(row && row.state === 'prestart', 'the session is stored as prepared', row && row.state);
+    ok(row && row.state === 'prestart' && row.kind === 'chat', 'the chat is stored as prepared', row && row.kind + ' ' + row.state);
     const quiet = await page.evaluate(() => ({
       term: document.getElementById('termWrap').hidden,
+      chat: document.getElementById('chat').hidden,
       keybar: document.getElementById('keybar').hidden,
       transfer: document.getElementById('transfer').hidden,
     }));
-    ok(quiet.term && quiet.keybar && quiet.transfer, 'the panel stands where the terminal would, with no key bar and no transfer buttons',
-      JSON.stringify(quiet));
-    ok(sessionsOn(s.data).length === 0 && launchesOf(s, 'claude').length === 0,
-      'and nothing was started for it: no tmux session, no launch',
-      sessionsOn(s.data).length + ' tmux sessions, ' + launchesOf(s, 'claude').length + ' launches');
+    ok(quiet.term && quiet.chat && quiet.keybar && quiet.transfer,
+      'the panel stands where the chat will be, with no key bar and no transfer buttons', JSON.stringify(quiet));
+    ok(sessionsOn(s.data).length === 0 && hostsOf(s.data).length === 0,
+      'and nothing was started for it: no agent host, no tmux session',
+      hostsOf(s.data).length + ' hosts, ' + sessionsOn(s.data).length + ' tmux sessions');
     const group = await page.evaluate((sid) => {
       const row = document.querySelector('#sessionList .so-row[data-id="' + sid + '"]');
       const shelf = row && row.closest('.so-folder--shelf');
@@ -6397,33 +6399,31 @@ async function prestart() {
     const shownModel = await page.$eval('#psModel .ds-combo__input', (n) => n.value.trim()).catch(() => '');
     ok(/haiku/i.test(shownModel), 'and the model that was picked', shownModel);
 
-    // Start: the same launch a new session takes, with the prompt as the
-    // program's first one.
+    // Start: the chat comes up, and the prompt is its first message.
     await page.click('#psStart');
-    const live = await panelBecameTerminal(page, 30000).then(() => true, () => false);
-    ok(live, 'Start turns the panel into a live terminal');
+    const live = await panelBecameChat(page, 30000).then(() => true, () => false);
+    ok(live, 'Start turns the panel into the chat');
     row = await waitForState(s, id, ['running'], 20000);
-    ok(row && row.state === 'running', 'and the session is running', row && row.state);
-    const firstLine = PREPARED_PROMPT.split('\n')[0];
-    const onScreen = await awaitScreen(page, 'prompt: ' + firstLine.slice(0, 20), 20000).then(() => true, () => false);
-    ok(onScreen, 'the program shows the prompt it was started with', oneLine(await screen(page)));
-    const launch = lastLaunch(s, 'claude');
-    ok(!!launch && launch.prompt === PREPARED_PROMPT, 'it received the prompt byte for byte',
-      launch ? JSON.stringify(launch.prompt) + ' (' + launch.prompt_bytes + ' bytes)' : 'no launch');
-    ok(!!launch && /(^| )--model haiku( |$)/.test(argvOf(launch)), 'with the model chosen in the panel', argvOf(launch));
-    await typeLine(page, 'after the prompt');
-    const echoed = await awaitScreen(page, 'you said: after the prompt', 15000).then(() => true, () => false);
-    ok(echoed, 'and the terminal takes keystrokes like any other');
+    ok(row && row.state === 'running', 'and the chat is running', row && row.state);
+    const answered = await awaitChat(s, id, (b) => idle(b) && b.chat.last_outcome === 'completed', 20000);
+    const history = await historyOf(s, id);
+    const reply = (history.messages || []).find((m) => m.role === 'assistant');
+    ok(userTexts(history).length === 1 && userTexts(history)[0] === PREPARED_PROMPT && !!answered.chat,
+      'the agent was sent the prompt as its first message, byte for byte, once', JSON.stringify(userTexts(history)));
+    ok(!!reply && textOf(reply) === 'you said: ' + PREPARED_PROMPT, 'and Claude Code got it so', JSON.stringify(reply && textOf(reply)));
+    const argv = await answerTo(s, id, '/argv');
+    ok(/(^| )--model haiku( |$)/.test(argv), 'with the model chosen in the panel', oneLine(argv.slice(argv.indexOf('--model'))));
     const moved = await page.evaluate((sid) => {
       const row = document.querySelector('#sessionList .so-row[data-id="' + sid + '"]');
       return !!row && !row.closest('.so-folder--shelf[data-shelf="prestart"]');
     }, id);
     ok(moved, 'its row left the PreStart shelf for its folder\'s sessions', String(moved));
+    // The draft was the first message, and from here on it is the
+    // composer's: empty, for the next one.
     draft = await draftOf(s, id);
-    const refused = await s.context.request.put(s.url + '/api/sessions/' + id + '/draft',
-      { data: { text: 'too late', base_rev: draft.rev } });
-    ok(refused.status() === 409 && draft.text === PREPARED_PROMPT, 'the prompt is kept, read-only, after the start',
-      refused.status() + ' ' + JSON.stringify(draft.text));
+    const composer = await page.$eval('#chat .so-composer__input', (n) => n.value);
+    ok(draft.text === '' && composer === '', 'the draft became the first message, and the composer is empty',
+      JSON.stringify({ draft: draft.text, composer }));
 
     // A start by the clock. A second prepared session, opened in the panel.
     const made = await (await s.context.request.post(s.url + '/api/sessions', {
@@ -6464,15 +6464,15 @@ async function prestart() {
     await wait(Math.max(0, due - Date.now() - 1500));
     srow = await sessionRow(s, sid);
     ok(srow && srow.state === 'prestart', 'it has not started early', srow && srow.state);
-    const flipped = await panelBecameTerminal(page, 45000).then(() => true, () => false);
+    const flipped = await panelBecameChat(page, 45000).then(() => true, () => false);
     const late = ((Date.now() - due) / 1000).toFixed(1);
-    ok(flipped, 'when it falls due, the open panel becomes its terminal by itself', late + ' s after the time');
+    ok(flipped, 'when it falls due, the open panel becomes its chat by itself', late + ' s after the time');
     srow = await sessionRow(s, sid);
     ok(srow && srow.state === 'running' && !srow.start_at, 'the session is running and no longer scheduled',
       srow && (srow.state + ', start_at ' + srow.start_at));
-    const clocked = lastLaunch(s, 'codex');
-    ok(!!clocked && clocked.prompt === 'started by the clock\nsecond line', 'and the program got its prompt',
-      clocked ? JSON.stringify(clocked.prompt) : 'no launch');
+    const clocked = await awaitLog(page, 'you said: started by the clock', 20000);
+    ok(clocked && userTexts(await historyOf(s, sid)).join('|') === 'started by the clock\nsecond line',
+      'and Codex was sent its prompt as the first message', JSON.stringify(userTexts(await historyOf(s, sid))));
 
     ok(unexpected(s.errors).length === 0, 'no console errors', unexpected(s.errors).join(' | ') || '0');
   } finally { await s.stop(); }
@@ -7870,29 +7870,32 @@ async function homelive() {
   }
 }
 
-// outcome: the verdict on a turn. While it is read the session carries the
-// hourglass and sits under Background tasks, and its notification waits;
-// once it is in the row, Home and the header say it, and the notification
-// says it too. A reload keeps it, and switching the outcomes off takes it
-// away.
+// outcome: with the outcomes on, a Claude Code chat's turn is judged from its
+// journal - the instruction, the answer and the task list its TaskCreate and
+// TaskUpdate calls keep. While the verdict is read the turn's end carries the
+// hourglass and sits under Background tasks, and the chime and the
+// notification wait for it; the verdict lands on the row, on Home with what
+// is still open, in the notification and in the header's tag, survives a
+// reload, goes with the next turn, and goes when the outcomes are switched off.
 async function outcome() {
-  const ctl = { digest: null, operator: null };
   // The verdict reads held back until the scenario lets them go, and every
   // instruction they were given.
   let hold = null;
   const judged = [];
-  ctl.digest = async (last, json) => {
-    const system = String(((json.messages || [])[0] || {}).content || '');
-    if (!system.includes('"outcome":{"kind"')) return undefined;
-    judged.push(last);
-    if (hold) await hold.promise;
-    const open = [...last.matchAll(/^\[ \] (.+)$/gm)].map((m) => m[1]);
-    const verdict = open.length
-      ? { kind: 'partial', reason: open.length + ' of the tasks are still open.', todos: open }
-      : { kind: 'complete', reason: 'Every task on the list is done.', todos: [] };
-    return JSON.stringify({ summary: 'Worked through the task list.', context: '', question: null, outcome: verdict });
-  };
-  const stub = await openRouterStub({ answer: (json) => homeGateway(json, ctl) });
+  const stub = await openRouterStub({
+    answer: async (json) => {
+      const system = String(((json.messages || [])[0] || {}).content || '');
+      if (!system.startsWith('You judge the turn a coding agent has just ended')) return 'Ship the endpoint';
+      const last = String(((json.messages || []).slice(-1)[0] || {}).content || '');
+      judged.push(last);
+      if (hold) await hold.promise;
+      const open = [...last.matchAll(/^\[ \] (.+)$/gm)].map((m) => m[1]);
+      const verdict = open.length
+        ? { kind: 'partial', reason: open.length + ' of the tasks are still open.', todos: open }
+        : { kind: 'complete', reason: 'Every task on the list is done.', todos: [] };
+      return JSON.stringify({ outcome: verdict });
+    },
+  });
   const s = await start({ viewport: { width: 1280, height: 800 } });
   const gate = () => {
     let release;
@@ -7946,51 +7949,44 @@ async function outcome() {
     await s.page.reload({ waitUntil: 'domcontentloaded' });
     await awaitHome(s.page, (h) => h.shown && h.conn === 'live', 10000);
 
-    const id = await makeAgent(s, 'Ship the endpoint');
-    await awaitHome(s.page, (h) => h.counts.ready === 1, 10000);
-
-    // One of three tasks done, asked for from a tab that is then closed: a
-    // turn is only unread, and only news, when somebody asked for it and
-    // nobody is looking when it ends.
-    // Every session in the list, so that a row is drawn wherever it is
-    // counted.
+    // A chat made on another device, which this page is never on.
+    const id = await makeChat(s, 'claude', { title: 'Ship the endpoint' });
+    await awaitHome(s.page, (h) => h.rows.some((r) => r.id === id) || h.counts.ready === 1, 10000);
+    // Every session on Home, so that a card is drawn wherever it is counted;
+    // and a moment for the chat that has just been made to settle, which is
+    // no news (notify.js hush).
     await s.page.click('.so-home__seg[data-filter="all"]');
+    await wait(5500);
     gate();
-    const asker = await secondTab(s, id);
-    await typeLine(asker, '/tasks 1');
-    await asker.close();
-    const checking = await awaitVerdict(id, (v) => v.checking && v.glass && v.homeBadge === 'tasks', 20000);
-    ok(checking.ok, 'while the verdict is read the row and Home carry the hourglass', took(checking));
-    const counted = await homeLook(s.page);
-    ok(counted.counts.tasks === 1 && counted.counts.finished === 0,
-      'and Home counts the session under Background tasks', JSON.stringify(counted.counts));
-    ok(/Checking/.test(checking.seen.said) && /Checking/.test(checking.seen.homeMeta),
-      'and says it is being checked', checking.seen.said + ' | ' + checking.seen.homeMeta);
+    ok((await tellChat(s, id, '/todo')) === 200, 'Claude Code is asked to make its task list', '/todo');
+    const checking = await awaitVerdict(id, (v) => v.checking && v.glass, 20000);
+    ok(checking.ok, 'while the verdict is read the row carries the hourglass', took(checking));
+    const counted = await awaitHome(s.page, (h) => h.counts.tasks === 1 && h.counts.finished === 0, 5000);
+    ok(counted.ok, 'and Home counts the chat under Background tasks', JSON.stringify(counted.seen.counts));
+    ok(/Checking/.test(checking.seen.said), 'and says it is being checked', checking.seen.said + ' | ' + checking.seen.homeMeta);
     await wait(1500);
     const quiet = await rang(s.page);
     ok(quiet.notes.length === 0 && quiet.beeps === 0, 'the notification and the chime wait for it',
       JSON.stringify({ notes: quiet.notes.length, beeps: quiet.beeps }));
     const asked = judged[judged.length - 1] || '';
-    ok(asked.includes('Add the endpoint, test it and document it') && asked.includes('[x] Add the endpoint')
-      && asked.includes('[ ] Write the docs'),
-      'the read is given the instruction and the task list from Claude\'s transcript', oneLine(asked.slice(0, 300)));
+    ok(asked.includes('/todo') && asked.includes('[x] first step') && asked.includes('[ ] second step'),
+      'the read is given the instruction and Claude Code’s task list, from the journal', oneLine(asked.slice(0, 300)));
 
     hold.release();
     hold = null;
     const partly = await awaitVerdict(id, (v) => v.kind === 'partial' && v.homeBadge === 'partial', 20000);
     ok(partly.ok, 'the verdict is on the row and on Home', took(partly));
-    ok(partly.seen.todos.join('|') === 'Test the endpoint|Write the docs' && /still open/.test(partly.seen.reason)
-      && /Finished · Partly done: 2 open/.test(partly.seen.homeMeta),
+    ok(partly.seen.todos.join('|') === 'second step' && /still open/.test(partly.seen.reason)
+      && /Partly done/.test(partly.seen.homeMeta),
       'Home says why, and what is still open', JSON.stringify(partly.seen));
-    const finished = await homeLook(s.page);
-    ok(finished.counts.finished === 1 && finished.counts.tasks === 0, 'and counts it as Finished',
-      JSON.stringify(finished.counts));
+    const finished = await awaitHome(s.page, (h) => h.counts.finished === 1 && h.counts.tasks === 0, 5000);
+    ok(finished.ok, 'and counts it as Finished', JSON.stringify(finished.seen.counts));
     let news = null;
-    for (const until = Date.now() + 5000; Date.now() < until && !news; await wait(200)) {
+    for (const end = Date.now() + 5000; Date.now() < end && !news; await wait(200)) {
       const r = await rang(s.page);
       if (r.notes.length) news = r;
     }
-    ok(!!news && news.notes[0].options.body === 'Partly done · 2 open: Test the endpoint' && news.beeps === 1,
+    ok(!!news && news.notes[0].options.body === 'Partly done · 1 open: second step' && news.beeps === 1,
       'the notification comes with the verdict, and the chime with it, once',
       JSON.stringify(news && { body: news.notes[0].options.body, beeps: news.beeps }));
 
@@ -7999,9 +7995,8 @@ async function outcome() {
     const kept = await awaitVerdict(id, (v) => v.kind === 'partial', 15000);
     ok(kept.ok, 'a reload keeps the verdict', took(kept));
 
-    // The header of the session says it, as a tag that says why.
-    await s.page.click('#sessionList .so-row[data-id="' + id + '"]');
-    await s.page.waitForSelector('#term .xterm', { timeout: 20000 });
+    // The header of the chat says it, as a tag that says why.
+    await openChat(s.page, id);
     const tag = await s.page.evaluate(() => {
       const t = document.getElementById('sessionOutcome');
       return { shown: !t.hidden, text: t.textContent, kind: t.dataset.kind, title: t.getAttribute('data-tip') || '' };
@@ -8009,11 +8004,14 @@ async function outcome() {
     ok(tag.shown && tag.text === 'Partly done' && tag.kind === 'partial' && /still open/.test(tag.title),
       'the header carries the verdict as a tag', JSON.stringify(tag));
 
-    // The next turn finishes the list, typed here: no notification for the
-    // session being looked at, and the verdict goes with the turn it was for.
-    await typeLine(s.page, '/tasks');
+    // The next turn finishes the list, sent from here: the verdict goes with
+    // the turn it was for, and the next one is complete.
+    gate();
+    await say(s.page, '/todo done');
     const working = await awaitVerdict(id, (v) => !v.kind, 10000);
     ok(working.ok, 'a new turn takes the old verdict away', took(working));
+    hold.release();
+    hold = null;
     const complete = await awaitVerdict(id, (v) => v.kind === 'complete', 20000);
     ok(complete.ok, 'and the turn that finishes the list is complete', took(complete));
 
@@ -12270,7 +12268,7 @@ const ALL = [
   ['clipboard', 'copy and paste: the keys, a plain drag, a click, a middle click, and OSC 52', clipboard],
   ['touchcopy', 'a finger held on the pane selects, grows and copies', touchcopy],
   ['transfer', 'copy, paste and upload buttons, a pasted image, and the phone layout', transfer],
-  ['prestart', 'a prepared session: its prompt kept, Start, and a start by the clock', prestart],
+  ['prestart', 'a prepared chat: its prompt kept, Start sending it as the first message, and a start by the clock', prestart],
   ['chat-stream', 'a chat: streaming, Markdown, replay, queued, Stop, the draft, the palette, the model, the lines, PreStart', chatstream],
   ['chat-tools', 'tool rows, the diff viewer, a subagent, a workflow, and the task list pinned while it runs', chattools],
   ['chat-offline', 'what a chat is told offline (two tabs, a model, an answer), or whose answer was lost, or left across a reload: delivered once', chatoffline],

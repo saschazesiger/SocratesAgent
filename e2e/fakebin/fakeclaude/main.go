@@ -26,6 +26,7 @@
 //	/edit            an Edit of fake.txt in the working directory, with a patch
 //	/write           a Write that creates new.txt
 //	/todo            TaskCreate twice, then TaskUpdate the first to completed
+//	/todo done       TaskUpdate the second to completed as well
 //	/subagent        a background Agent call with a Bash call inside it
 //	/subagent bg S   one whose Bash call still runs when the turn ends (S s)
 //	/subagent fail   a foreground one that fails before its call returns
@@ -552,7 +553,11 @@ func (t *turnRun) script() {
 				"content": "hello\nworld\n", "structuredPatch": []any{}, "originalFile": nil}, false, "")
 		t.say("Wrote new.txt.")
 	case "/todo":
-		t.todo()
+		if len(fields) > 0 && fields[0] == "done" {
+			t.todoDone()
+		} else {
+			t.todo()
+		}
 	case "/subagent":
 		switch {
 		case len(fields) > 0 && fields[0] == "bg":
@@ -796,6 +801,18 @@ func (t *turnRun) todo() {
 			"statusChange": map[string]any{"from": "pending", "to": "completed"}}, false, "")
 	save("1", "first step", "completed")
 	t.say("Tracked two tasks.")
+}
+
+// todoDone finishes the list /todo made.
+func (t *turnRun) todoDone() {
+	dir := filepath.Join(t.f.configDir, "tasks", t.f.session)
+	raw, _ := json.MarshalIndent(map[string]any{"id": "2", "subject": "second step", "description": "", "status": "completed",
+		"blocks": []any{}, "blockedBy": []any{}}, "", "  ")
+	_ = os.WriteFile(filepath.Join(dir, "2.json"), raw, 0o644)
+	t.tool("TaskUpdate", map[string]any{"taskId": "2", "status": "completed"}, "Updated task #2 status",
+		map[string]any{"success": true, "taskId": "2", "updatedFields": []string{"status"},
+			"statusChange": map[string]any{"from": "pending", "to": "completed"}}, false, "")
+	t.say("Both tasks are done.")
 }
 
 func (t *turnRun) system(v map[string]any) {
