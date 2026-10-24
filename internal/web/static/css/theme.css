@@ -147,6 +147,12 @@
   --ds-btn-icon-size: var(--so-touch-target);
 }
 
+/* A snackbar's Close, the one way to put an error away, sets its size on
+   itself too (36px); its negative margins keep the message's height. */
+.ds-theme.so-touch .ds-toast__close {
+  --ds-btn-icon-size: var(--so-touch-target);
+}
+
 /* Stage: on a phone every column of the pane counts. */
 @media (max-width: 600px) {
   .ds-theme { --so-pane-pad-x: var(--ds-space-2); }

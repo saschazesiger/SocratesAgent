@@ -22,7 +22,6 @@
  *   .so-transfer       copy, paste and upload in the top bar (on a phone they
  *                      are in the session's menu)
  *   .so-kb-proxy       the field the switch raises the keyboard through
- *   .so-mic            a field's own microphone (keyboard.js micButton)
  *   .so-rec            the recording dialog, .so-meter its level meter,
  *                      .so-rec__action its two big endings
  *   .so-copy           the copy dialog, .so-copy__text the pane's text
@@ -248,11 +247,6 @@
   opacity: 0;
   font: var(--ds-font-input);
   pointer-events: none;
-}
-
-/* A field's microphone keeps its size beside the field it fills. */
-.so-mic {
-  flex: none;
 }
 
 /* ── The recording ───────────────────────────────────────────────────── */

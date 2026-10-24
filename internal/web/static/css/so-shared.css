@@ -10,6 +10,8 @@
  *   .so-mark         the activity ring and outcome badge around an agent mark
  *                    (session list and Home); DS has no ring around an avatar
  *   .so-field-row    a field and its Dictate/Clear button side by side
+ *   .so-mic          a field's own microphone (keyboard.js micButton), on
+ *                    every page that has one: the session page, Admin
  *   .so-break        a path or id that must wrap anywhere
  *   .so-ellipsis     one line, cut with an ellipsis
  *   .so-conn         the connection slot net.js renders its alert into
@@ -21,8 +23,9 @@
  *                    Copy), __wait, __providers
  *   .so-account-form the body of the "Add an account" dialog
  *
- * In touch mode (.so-touch) DS's fields, check rows, switch rows and the
- * combobox's "Show all" are given a finger's height (they have no hook).
+ * In touch mode (.so-touch) DS's fields, check rows, switch rows, the
+ * combobox's "Show all" and its options are given a finger's height (they
+ * have no hook).
  */
 
 /* X1 */
@@ -158,6 +161,11 @@ body[data-stale] .so-mark[data-ring="busy"]::after {
   align-items: flex-start;
 }
 
+/* A field's microphone keeps its size beside the field it fills. */
+.so-mic {
+  flex: none;
+}
+
 .so-break {
   overflow-wrap: anywhere;
   min-width: 0;
@@ -229,6 +237,13 @@ body[data-stale] .so-mark[data-ring="busy"]::after {
 .ds-theme.so-touch .ds-combo__toggle {
   width: var(--so-touch-target);
   height: var(--so-touch-target);
+}
+
+/* An option of one line ("Fable", "Custom path…") is as tall as a finger;
+   one with a description is taller already. */
+.ds-theme.so-touch .ds-combo__option {
+  min-height: var(--so-touch-target);
+  align-content: center;
 }
 
 /* The mark in a top bar is a link home: a finger's target around it. */
