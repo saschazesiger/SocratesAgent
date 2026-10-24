@@ -874,8 +874,11 @@ func (m *Manager) attachJournal(ctx context.Context, id, tmuxName string) error 
 	if err != nil && strings.Contains(strings.ToLower(Stderr(err)), "pane has exited") {
 		// The program ended before the pipe could be attached. There is
 		// nothing left to journal, and a session whose program exited at once
-		// is an exit to report, not a session that failed to start.
+		// is an exit to report, not a session that failed to start. Its hook
+		// reports it, once tmux has the status - and an exit this early is
+		// the one tmux up to 3.5 can fail to collect; see collectExits.
 		m.logf("session %s ended before its journal could be attached", id)
+		m.collectExits(ctx)
 		return nil
 	}
 	return err
