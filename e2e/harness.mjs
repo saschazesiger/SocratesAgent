@@ -313,6 +313,9 @@ export function spawnServer({ data, port, live = false, env = {} }) {
 
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// oneLog is the end of a server's log on one line.
+const oneLog = (log) => log.join('').replace(/\s+/g, ' ').slice(-1500);
+
 // tmuxSock is the socket a run's server puts its tmux server on.
 export function tmuxSock(data) { return join(data, 'tmux.sock'); }
 
@@ -480,7 +483,13 @@ export async function start(options = {}) {
   const port = options.port || await freePort();
   const url = 'http://127.0.0.1:' + port;
   const spawned = spawnServer({ data, port, live, env: options.env });
-  await waitForHealth(url);
+  await waitForHealth(url).catch(async (err) => {
+    // A server that never answered says why in its own log, and the run is
+    // the only place that log is ever seen.
+    const exited = await Promise.race([spawned.exited, wait(500).then(() => null)]);
+    throw new Error(err.message + (exited ? ' (it exited: ' + JSON.stringify(exited) + ')' : '')
+      + '; its log ends: ' + oneLog(spawned.log));
+  });
 
   const browser = await chromium.launch({
     executablePath: CHROME,
@@ -541,6 +550,12 @@ export async function start(options = {}) {
   // littering the machine.
   s.stop = async () => {
     const left = { sessions: 'not checked', tmux: ['not checked'] };
+    // A server that went away by itself took the reason with it into its
+    // log, which nothing else ever shows.
+    if (s.server.exitCode !== null || s.server.signalCode !== null) {
+      console.log('  NOTE the server had exited (' + (s.server.signalCode || s.server.exitCode)
+        + ') before the scenario stopped it; its log ends: ' + oneLog(s.log));
+    }
     try {
       await s.context.setOffline(false).catch(() => {});
       if (s.context.unrouteAll) await s.context.unrouteAll().catch(() => {});

@@ -15,8 +15,8 @@ import {
 } from './harness.mjs';
 import http from 'node:http';
 import net from 'node:net';
-import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { basename, join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 // The one thing the harness cannot hand over: when a session was last used is
 // the store's own record of what happened to it, so `folders` writes it in
@@ -558,10 +558,11 @@ async function pages() {
 
 /* ----------------------------------------------------------- 5. harnesses */
 
-// All four session types, made through the sheet and seen in the browser. The
-// three CLI ones are the fake TUI, which prints a banner naming itself, its
-// working directory and the theme it was told about - so this also proves the
-// white background reaches the program through tmux and the socket.
+// All four kinds of session, made through the sheet and seen in the browser:
+// a Shell, which is a terminal and runs a command, and a chat with each agent
+// - Claude Code, Codex and OpenCode, the scripted protocol fakes on PATH -
+// whose CLI answers its first message over its own protocol. Every row wears
+// the mark of what it runs, and the facts of a session are behind Info.
 async function harnesses() {
   const s = await start({ viewport: { width: 1280, height: 720 } });
   try {
@@ -569,32 +570,24 @@ async function harnesses() {
     await useDomRenderer(s);
     await open(s);
 
-    for (const [id, expect] of [['shell', null], ['claude', 'FAKE claude'],
-      ['codex', 'FAKE codex'], ['opencode', 'FAKE opencode']]) {
-      const session = await startSession(s.page, id);
-      await s.page.waitForSelector('#term .xterm', { timeout: 20000 });
-      // The first line the program printed is still the first line on screen.
-      // A session created at a size nobody measured is resized by its own
-      // first viewer, and a tmux window that shrinks reflows: the head of the
-      // banner used to go into the scrollback before anybody had read it.
-      await awaitScreen(s.page, expect || '$', 20000);
-      const top = await firstRow(s.page);
-      ok(expect ? top.startsWith(expect) : /[$#>]\s*$/.test(top),
-        'what ' + id + ' printed first is what the pane shows first', top);
-      if (expect) {
-        // From the journal, not the screen: the banner is printed before the
-        // first viewer has resized the window, so an attach redraw can reflow
-        // it away while the record of it cannot be lost.
-        ok(await journalSays(s, session, expect), id + ' started and printed its banner',
-          oneLine(await journalOf(s, session)));
-        ok(await journalSays(s, session, 'theme=light'),
-          id + ' was told the terminal is light', oneLine(await journalOf(s, session)));
-      } else {
-        const marker = 'shell-' + Math.random().toString(36).slice(2, 8);
-        await typeLine(s.page, 'echo ' + marker);
-        ok(await awaitScreen(s.page, marker), 'shell started and ran a command',
-          oneLine(await screen(s.page)));
-      }
+    await startSession(s.page, 'shell');
+    await s.page.waitForSelector('#term .xterm', { timeout: 20000 });
+    const marker = 'shell-' + Math.random().toString(36).slice(2, 8);
+    await typeLine(s.page, 'echo ' + marker);
+    ok(await awaitScreen(s.page, marker), 'the Shell is a terminal, and its shell ran a command',
+      oneLine(await screen(s.page)).slice(-80));
+
+    const chats = {};
+    for (const harness of AGENTS) {
+      const id = await startChat(s.page, harness);
+      chats[harness] = id;
+      await say(s.page, 'hello ' + harness);
+      const answered = await awaitLog(s.page, 'you said: hello ' + harness, 20000);
+      const body = await awaitChat(s, id, (b) => !!b.chat.conversation_id && idle(b));
+      ok(body.session.kind === 'chat' && body.session.harness === harness && answered,
+        harness + ' is a chat, and its CLI answers the first message over its own protocol',
+        JSON.stringify({ kind: body.session.kind, answer: oneLine(await lastAnswer(s.page)) }));
+      ok(!!body.chat.conversation_id, 'and the chat knows the conversation the CLI keeps', body.chat.conversation_id);
     }
 
     // Four rows, each with the mark of what it runs: §E.10 rule 2 again, in
@@ -606,34 +599,30 @@ async function harnesses() {
       words: n.querySelector('.so-row__label').textContent,
     })));
     ok(rows.length === 4, 'all four sessions are in the list', rows.length + ' rows');
-    ok(rows.every((r) => r.mark), 'every row carries the mark of what it runs',
-      rows.map((r) => r.mark).join(','));
+    ok(rows.map((r) => r.mark).sort().join(',') === 'claude,codex,opencode,shell',
+      'every row carries the mark of what it runs', rows.map((r) => r.mark).join(','));
     // A row is a mark, a name and its menu. The state dot said nothing that
     // the mark and the words do not, and the "i" moved into the menu.
-    ok(rows.every((r) => r.dots === 0 && r.tips === 0),
-      'no row carries a state dot or an "i"',
+    ok(rows.every((r) => r.dots === 0 && r.tips === 0), 'no row carries a state dot or an "i"',
       rows.map((r) => r.dots + '/' + r.tips).join(','));
     // §E.10 rule 3: the technical detail is behind Info, never in the words.
     ok(rows.every((r) => !r.words.includes('/')), 'no row spells out a path in its words',
       rows.map((r) => r.words).join(' | '));
 
     // Info is where the facts of a session are: one dialog, opened from the
-    // row's own menu.
-    await s.page.click('#sessionList .so-row .so-row__more');
+    // row's own menu - for a chat its folder and the account it runs on.
+    const row = await sessionRow(s, chats.claude);
+    await s.page.click(rowSel(chats.claude) + ' .so-row__more', { force: true });
     await s.page.click('#sessionMenu [data-action="info"]');
     await s.page.waitForSelector('dialog.so-info-dialog .so-facts', { timeout: 5000 });
-    const detail = await s.page.$eval('dialog.so-info-dialog', (n) => ({
-      title: n.querySelector('.ds-dialog__title').textContent,
-      facts: [...n.querySelectorAll('.so-fact')].map((f) => f.textContent),
-    }));
-    ok(detail.facts.some((f) => f.includes('/')),
-      'the working directory is in the Info dialog', JSON.stringify(detail));
+    const facts = await s.page.$$eval('dialog.so-info-dialog .so-fact', (nodes) => nodes.map((f) => f.textContent));
+    ok(facts.includes(row.workdir) && facts.some((f) => /^Account: Default$/.test(f)),
+      'the working directory and the account are in the Info dialog', oneLine(facts.join(' · ')));
     await s.page.click('dialog.so-info-dialog .ds-dialog__actions .ds-btn');
     await s.page.waitForSelector('dialog.so-info-dialog', { state: 'detached', timeout: 5000 });
 
     await shot(s.page, 'harnesses');
-    ok(unexpected(s.errors).length === 0, 'no console errors',
-      unexpected(s.errors).join(' | ') || '0');
+    ok(unexpected(s.errors).length === 0, 'no console errors', unexpected(s.errors).join(' | ') || '0');
   } finally { await s.stop(); }
 }
 
@@ -1124,9 +1113,9 @@ async function livesession() {
 /* ------------------------------------------------------- 10. adminoptions */
 
 // The whole of what a harness card offers: the binary path, the model short
-// list, and the model and effort a session starts on. Set it in the page,
-// save, reload, and find it still there - then start a session and read the
-// command line the launcher actually built out of FAKE_LOG.
+// list, and the model and effort a chat starts on. Set it in the page, save,
+// reload, and find it still there - then start a Claude Code chat in a preset
+// directory and ask the CLI what it was started with.
 //
 // The controls are addressed by the id the dashboard derives from the storage
 // key, `opt-<harness>-<key>`.
@@ -1138,21 +1127,16 @@ const ADMIN_OPTIONS = [
   ['opencode', 'default_model', 'text', 'anthropic/claude-sonnet-4-5'],
 ];
 
-// The flags every session of a program is started with, whatever anybody
-// configured, and the ones no session may ever carry. This is the browser-side
-// half of docs/design/HARNESS-POLICY.md.
+// The flags every chat of Claude Code is started with, whatever anybody
+// configured, and the ones no chat may ever carry. This is the browser-side
+// half of docs/design/HARNESS-POLICY.md, as REBUILD.md §3.1 has it for
+// `claude -p`.
 const FIXED_POLICY = {
   claude: {
-    must: ['--dangerously-skip-permissions', '--settings'],
-    never: ['--remote-control', '--permission-mode', '--allow-dangerously-skip-permissions', '--verbose'],
-  },
-  codex: {
-    must: ['--strict-config', '--no-alt-screen', '--dangerously-bypass-approvals-and-sandbox'],
-    never: ['-s', '-a', '--remote', '--search'],
-  },
-  opencode: {
-    must: ['--port', '--hostname'],
-    never: ['--auto', '--pure', '--print-logs', '--log-level'],
+    must: ['-p', '--input-format stream-json', '--output-format stream-json', '--permission-prompt-tool stdio',
+      '--setting-sources project,local', '--strict-mcp-config', '--dangerously-skip-permissions',
+      '--disallowedTools AskUserQuestion', '--settings'],
+    never: ['--remote-control', '--permission-mode', '--allow-dangerously-skip-permissions', '--mcp-config', '--continue'],
   },
 };
 
@@ -1274,40 +1258,37 @@ async function adminoptions() {
         document.getElementById('nsDirHint').textContent.length > 0, null, { timeout: 5000 });
     }
     await s.page.click('#newSessionSheet .so-settings__program[data-value="claude"]');
+    const model = await s.page.$eval('#nsModel .ds-combo__input', (n) => n.value.trim());
+    ok(/opus/i.test(model), 'the sheet starts Claude Code on the default model', model);
     await s.page.click('#nsStart');
     await s.page.waitForSelector('#newSessionSheet[open]', { state: 'detached', timeout: 30000 });
-    await s.page.waitForFunction(() => location.hash.length > 1 && location.hash !== '#home', null, { timeout: 30000 });
-    await s.page.waitForSelector('#term .xterm', { timeout: 20000 });
+    await chatUp(s.page);
+    const id = await s.page.evaluate(() => location.hash.slice(1));
+    const made = await sessionRow(s, id);
+    ok(made.workdir === preset, 'the chat works in the preset directory', made.workdir);
 
-    const launches = readFakeLog(s.data).filter((entry) => entry.name === 'claude');
-    const launch = launches[launches.length - 1] || { argv: [], env: {}, cwd: '' };
+    // What reached `claude -p` is asked of the CLI itself.
+    const argv = await answerTo(s, id, '/argv');
     const policy = FIXED_POLICY.claude;
-    const missing = policy.must.filter((flag) => !launch.argv.includes(flag));
-    ok(missing.length === 0, 'the fixed policy reached the command line',
-      missing.join(', ') || policy.must.join(' '));
-    const forbidden = policy.never.filter((flag) => launch.argv.includes(flag));
+    const missing = policy.must.filter((flag) => !(' ' + argv + ' ').includes(' ' + flag + ' '));
+    ok(missing.length === 0, 'the fixed policy reached the command line', missing.join(', ') || policy.must.join(' '));
+    const forbidden = policy.never.filter((flag) => (' ' + argv + ' ').includes(' ' + flag + ' '));
     ok(forbidden.length === 0, 'and nothing the dashboard no longer offers reached it either',
       forbidden.join(', ') || 'none of ' + policy.never.join(' '));
-    ok(launch.env.CLAUDE_CODE_NO_FLICKER === '1'
-      && launch.env.CLAUDE_CODE_DISABLE_TERMINAL_TITLE === '1',
-      'the terminal environment is hard-coded, not configured',
-      JSON.stringify({ flicker: launch.env.CLAUDE_CODE_NO_FLICKER,
-        title: launch.env.CLAUDE_CODE_DISABLE_TERMINAL_TITLE }));
-    ok(!('CLAUDE_REMOTE_CONTROL_SESSION_NAME_PREFIX' in (launch.env || {})),
-      'and the remote-control variable is not set at all',
-      String(launch.env.CLAUDE_REMOTE_CONTROL_SESSION_NAME_PREFIX));
-    ok(launch.cwd === preset, 'the session was started in the preset directory', launch.cwd);
-
-    // The generated settings file is the other half of turning Remote Control
-    // off: the flag is never passed, and the key says so where the flag cannot.
-    const settingsPath = launch.argv[launch.argv.indexOf('--settings') + 1];
-    let claudeSettings = {};
-    try { claudeSettings = JSON.parse(readFileSync(settingsPath, 'utf8')); } catch { /* reported below */ }
-    ok(claudeSettings.disableRemoteControl === true
-      && claudeSettings.skipDangerousModePermissionPrompt === true,
-      'the generated settings file disables Remote Control and the bypass dialog',
-      JSON.stringify({ remote: claudeSettings.disableRemoteControl,
-        dialog: claudeSettings.skipDangerousModePermissionPrompt }));
+    ok(/ --model opus /.test(' ' + argv + ' ') && / --effort high /.test(' ' + argv + ' '),
+      'the default model and effort reached it', (/--model \S+ --effort \S+/.exec(argv) || ['none'])[0]);
+    // The settings are on the command line, not in a file: Remote Control is
+    // off where the flag cannot say it, and the bypass dialog never shows.
+    let settings = {};
+    try { settings = JSON.parse((/--settings (\{[^}]*\})/.exec(argv) || [])[1] || '{}'); } catch { /* reported below */ }
+    ok(settings.disableRemoteControl === true && settings.skipDangerousModePermissionPrompt === true,
+      'its settings disable Remote Control and the bypass dialog', JSON.stringify(settings));
+    const env = await answerTo(s, id, '/env');
+    ok(env.includes('CLAUDE_CODE_ENABLE_TODO_TOOLS=1') && !/CLAUDE_CODE_NO_FLICKER|CLAUDE_CODE_DISABLE_TERMINAL_TITLE|CLAUDE_REMOTE_CONTROL|ANTHROPIC_/.test(env),
+      'its environment is the chat’s: the task tools on, nothing of a terminal and no key of a subscription',
+      oneLine(env));
+    const transcript = join(s.data, 'agents', 'claude', 'projects', preset.replace(/[^A-Za-z0-9]/g, '-'));
+    ok(existsSync(transcript), 'and Claude Code ran there: its transcript is the preset’s project', transcript.replace(s.data, '<data>'));
 
     ok(unexpected(s.errors).length === 0, 'no console errors',
       unexpected(s.errors).join(' | ') || '0');
@@ -2199,17 +2180,135 @@ async function endAndRestart(s, name, code) {
   return before;
 }
 
+/* ------------------------------------------------- the agents, as chats */
+
+// The agents run as chats (REBUILD.md §7). The scripted protocol fakes -
+// e2e/fakebin/fakeclaude, fakecodex and fakeopencode, on PATH under the
+// agents' own names - speak each agent's protocol, and what a message says
+// is what its turn does: fakeclaude says its command line for /argv and its
+// environment for /env, fakecodex and fakeopencode who they are signed in
+// as for /whoami, fakeopencode the session a turn is in, and anything else
+// is "you said: ...". What reached a CLI is therefore asked of the CLI, in
+// the chat, rather than read from a log beside it.
+const AGENTS = ['claude', 'codex', 'opencode'];
+
+// work is the message that keeps an agent busy for `sec` seconds, in the
+// words of its fake.
+const work = (harness, sec) => (harness === 'claude' ? '/slow ' : '/sleep ') + sec;
+
+// clickChat opens a chat from the list by its name, the way a person aiming
+// at it does, and waits until it is the one on screen.
+async function clickChat(page, id) {
+  await ensureNav(page);
+  await leaveComposer(page, id);
+  await page.click(rowSel(id) + ' .so-row__label');
+  await page.waitForFunction((want) => location.hash.slice(1) === want, id, { timeout: 15000 });
+  await page.waitForSelector(rowSel(id) + ' .so-row__open[aria-current="page"]', { timeout: 15000 });
+  await chatUp(page);
+}
+
+// makeChat makes a chat the way another device would - over the API, with
+// this page never attached to it - and answers its id.
+async function makeChat(s, harness = 'claude', extra = {}) {
+  const res = await s.context.request.post(s.url + '/api/chats', {
+    data: { client_id: 'e2e-' + Math.random().toString(36).slice(2), harness, workdir_mode: 'dynamic', ...extra },
+  });
+  if (res.status() !== 201) throw new Error('could not make a ' + harness + ' chat: ' + res.status() + ' ' + await res.text());
+  return (await res.json()).session.id;
+}
+
+// answerTo sends a chat a message from its composer and answers what the
+// agent said back, as the server holds it once the turn is over and as the
+// page has drawn it.
+async function answerTo(s, id, text, timeout = 20000) {
+  await say(s.page, text);
+  const until = Date.now() + timeout;
+  let said = null;
+  while (said === null && Date.now() < until) {
+    const body = await chatOf(s, id);
+    const messages = (await historyOf(s, id)).messages || [];
+    const at = messages.map((m) => m.role === 'user' && m.text === text).lastIndexOf(true);
+    const reply = at >= 0 ? messages.slice(at + 1).find((m) => m.role === 'assistant') : null;
+    if (reply && body.chat && idle(body)) said = textOf(reply);
+    else await wait(200);
+  }
+  if (said) await awaitLog(s.page, said.split('\n')[0].slice(0, 60), 10000);
+  return said || '';
+}
+
+// textOf is the words of an assistant message: its text parts, in order.
+const textOf = (message) => (message.parts || []).filter((p) => p.kind === 'text').map((p) => p.text || '').join('\n');
+
+// hostsOf is every agent host process of a run's data directory: the
+// holders of the chats' CLIs, which outlive the server on purpose.
+function hostsOf(data) {
+  try {
+    return execFileSync('pgrep', ['-f', 'agent-host --data ' + data], { stdio: ['ignore', 'pipe', 'ignore'] })
+      .toString().split('\n').filter(Boolean).map(Number);
+  } catch {
+    return [];
+  }
+}
+
+// linesOf is every line between the messages of the chat on screen - a
+// notice, a divider, an error - as "kind:words".
+const linesOf = (page) => page.$$eval('#chat .so-line, #chat .so-line-alert',
+  (nodes) => nodes.map((n) => n.dataset.kind + ':' + n.innerText.replace(/\s+/g, ' ').trim()));
+
+// thinkingOf is the summary line of the newest answer's reasoning, '' when
+// it has none.
+const thinkingOf = (page) => page.evaluate(() => {
+  const all = document.querySelectorAll('#chat .so-msg[data-role="assistant"]');
+  const think = all.length ? all[all.length - 1].querySelector('.so-reasoning') : null;
+  return think && !think.open ? think.querySelector('summary').textContent.trim() : '';
+});
+
+// until polls a test of the machine itself - a process, a file - and says
+// whether it came true in time.
+async function until(test, timeout = 15000) {
+  const end = Date.now() + timeout;
+  while (Date.now() < end) {
+    if (await test()) return true;
+    await wait(200);
+  }
+  return !!(await test());
+}
+
+// filesUnder is every file below a directory, at any depth.
+function filesUnder(dir) {
+  const out = [];
+  const walk = (at) => {
+    let entries = [];
+    try { entries = readdirSync(at, { withFileTypes: true }); } catch { return; }
+    for (const entry of entries) {
+      const path = join(at, entry.name);
+      if (entry.isDirectory()) walk(path);
+      else if (entry.isFile()) out.push(path);
+    }
+  };
+  walk(dir);
+  return out;
+}
+
+// answerState is the state of the newest answer on screen ('' for one that
+// ended the ordinary way).
+const answerState = (page) => page.evaluate(() => {
+  const all = document.querySelectorAll('#chat .so-msg[data-role="assistant"]');
+  return all.length ? all[all.length - 1].dataset.state || '' : 'none';
+});
+
 /* --------------------------------------------------------- 13. createclaude */
 
-// Claude Code start to finish: the sheet offers the models the API named, the
-// launcher is given the one that was picked, the uuid it fixes at creation is
-// the uuid in the store, and the header says what this session runs. Then the
-// program ends and Restart brings it back on the conversation it already had.
+// Claude Code start to finish, as a chat: the sheet offers the models the
+// catalogue reported, the one picked reaches `claude -p`, the conversation
+// fixed at creation is the one the chat knows and the transcript is written
+// for the chat's own folder, and a CLI that went away mid-turn is started
+// again on that conversation by the next message - one message, one relaunch,
+// and the conversation says what happened.
 async function createclaude() {
   const s = await start({ viewport: { width: 1280, height: 720 } });
   try {
     await setup(s.page, s.url);
-    await useDomRenderer(s);
     await open(s);
 
     // §E.3 step 3: the model list is the catalogue's, not a list in the page.
@@ -2221,7 +2320,6 @@ async function createclaude() {
     const claude = (catalogue.harnesses || []).find((h) => h.id === 'claude') || {};
     const offered = (claude.picks && claude.picks.length ? claude.picks : claude.models || [])
       .map((m) => m.label || m.id);
-
     await ensureNav(s.page);
     await s.page.click('#newSession');
     await s.page.waitForSelector('#newSessionSheet[open]', { timeout: 15000 });
@@ -2235,562 +2333,324 @@ async function createclaude() {
     await s.page.click('#nsModel .ds-combo__option:has(.ds-combo__name:text-is("Haiku"))');
     await s.page.click('#nsStart');
     await s.page.waitForSelector('#newSessionSheet[open]', { state: 'detached', timeout: 30000 });
-    await s.page.waitForFunction(() => location.hash.length > 1 && location.hash !== '#home', null, { timeout: 30000 });
+    await chatUp(s.page);
     const id = await s.page.evaluate(() => location.hash.slice(1));
-
-    await s.page.waitForSelector('#term .xterm', { timeout: 20000 });
     const row = await sessionRow(s, id);
-    // A terminal on the page says nothing about whether the program has
-    // printed yet; the journal is waited for, then read.
-    await journalHas(s, id, 'FAKE claude');
-    const banner = await journalOf(s, id);
-    ok(/FAKE claude/.test(banner), 'the session is up', oneLine(banner));
-    ok(/theme=light/.test(banner), 'and it was told the terminal is light',
-      oneLine((/FAKE claude[^\r\n]*/.exec(banner) || [''])[0]));
+    ok(row.kind === 'chat' && row.model === 'haiku', 'the chat is made with the model picked', row.kind + ' ' + row.model);
 
-    const launch = lastLaunch(s, 'claude');
-    ok(!!launch, 'the fake recorded its launch', launch ? 'one record' : 'nothing in fake.log');
-    ok(launch.cwd === row.workdir, 'it was started in the session’s own working directory',
-      launch.cwd + ' vs ' + row.workdir);
-    ok(/(^| )--model haiku( |$)/.test(argvOf(launch)), 'with the model that was picked in the sheet',
-      argvOf(launch));
-    const fixed = launch.argv[launch.argv.indexOf('--session-id') + 1];
-    ok(launch.argv.includes('--session-id') && /^[0-9a-f-]{36}$/.test(fixed || ''),
-      'and with a --session-id fixed at creation', fixed || 'none');
-    const conversation = await conversationOf(s.page);
-    ok(conversation === fixed, 'which is the conversation the program says it is in',
-      conversation + ' vs ' + fixed);
-    ok(row.cli_session_state === 'known' || row.cli_session_state === 'verified',
-      'and the row knows it is holding one', row.cli_session_state);
+    const argv = await answerTo(s, id, '/argv');
+    ok(/(^| )--model haiku( |$)/.test(argv), 'and Claude Code was started with it', oneLine(argv.slice(argv.indexOf('--model'))));
+    const fixed = (/--session-id (\S+)/.exec(argv) || [])[1] || '';
+    const body = await chatOf(s, id);
+    ok(/^[0-9a-f-]{36}$/.test(fixed) && body.chat.conversation_id === fixed,
+      'with a --session-id fixed at creation, which is the conversation the chat knows',
+      fixed + ' vs ' + body.chat.conversation_id);
+    // Every account's projects/ is the shared folder (REBUILD.md §3.1), and
+    // Claude Code names a project's folder after the directory it runs in.
+    const transcript = join(s.data, 'agents', 'claude', 'projects', row.workdir.replace(/[^A-Za-z0-9]/g, '-'), fixed + '.jsonl');
+    ok(existsSync(transcript), 'it ran in the chat’s own folder, and its transcript is in the shared projects folder',
+      transcript.replace(s.data, '<data>'));
 
     // §E.10 rule 2 and 3: the header is the name and nothing else - neither
-    // the mark nor the model; those and the path are in Info.
+    // the mark nor the model, which are the row's and the composer's; the
+    // path is in Info.
     const badge = await s.page.evaluate(() => {
       const bar = document.querySelector('.ds-topbar');
-      return {
-        mark: !!bar.querySelector('.so-agent'),
-        model: /haiku/i.test(bar.textContent),
-      };
+      return { mark: !!bar.querySelector('.so-agent'), model: /haiku/i.test(bar.textContent),
+        composer: (document.querySelector('#chat .so-composer__model-text') || {}).textContent || '' };
     });
-    ok(!badge.mark && !badge.model, 'the header names neither the harness nor the model',
-      JSON.stringify(badge));
+    ok(!badge.mark && !badge.model && /haiku/i.test(badge.composer),
+      'the header names neither the agent nor the model; the composer says the model', JSON.stringify(badge));
     await rowMenu(s.page);
     await s.page.click('#sessionMenu [data-action="info"]');
     await s.page.waitForSelector('dialog.so-info-dialog .so-facts', { timeout: 5000 });
     const facts = await s.page.$$eval('dialog.so-info-dialog .so-fact', (nodes) => nodes.map((n) => n.textContent));
-    ok(facts.some((f) => f === row.workdir),
-      'and the working directory is one line of Info', oneLine(facts.join(' · ')));
+    ok(facts.includes(row.workdir), 'and the working directory is one line of Info', oneLine(facts.join(' · ')));
     await s.page.click('dialog.so-info-dialog .ds-dialog__actions .ds-btn');
     await s.page.waitForSelector('dialog.so-info-dialog', { state: 'detached', timeout: 5000 });
     await shot(s.page, 'createclaude');
 
-    // The program ends and is started again from the browser. A restart is a
-    // resume (§C.8), so the conversation it had is the conversation it gets.
-    //
-    // The relaunch is held for a moment on the wire, because the interesting
-    // part is what the page does while it waits: the list refreshes on a wake
-    // and every fifteen seconds, and the button that was just pressed must not
-    // come back offering to press it again. One press is one relaunch.
-    const before = launchesOf(s, 'claude').length;
-    let posts = 0;
-    await s.page.route('**/api/sessions/*/restart', async (route) => {
-      posts += 1;
-      await new Promise((done) => setTimeout(done, 2500));
-      await route.continue();
-    });
-    await typeLine(s.page, '/exit 3');
-    await s.page.waitForSelector('#termOverlay[data-state="open"] .ds-dialog__title', { timeout: 25000 });
-    const ended = await s.page.$eval('#termOverlay .ds-dialog__title', (n) => n.textContent);
-    ok(/The session ended/.test(ended), 'the overlay says the session ended', oneLine(ended));
-    await s.page.click('#termRestart');
-    await s.page.waitForFunction(() => {
-      const button = document.getElementById('termRestart');
-      return !!button && button.getAttribute('aria-busy') === 'true';
-    }, null, { timeout: 8000 });
-    // A wake is what a phone does when it comes back, and it refreshes the
-    // list - with the row still saying `exited`, because the POST is in flight.
-    await s.page.evaluate(() => window.dispatchEvent(new Event('online')));
-    await wait(1200);
-    const pressed = await s.page.$eval('#termRestart',
-      (n) => ({ disabled: n.getAttribute('aria-busy') === 'true', text: n.textContent.trim() }));
-    ok(pressed.disabled && /Restarting/.test(pressed.text),
-      'a list refresh in the middle does not un-press Restart', JSON.stringify(pressed));
-    await s.page.waitForFunction(() => {
-      const node = document.getElementById('termOverlay');
-      return node && node.hidden;
-    }, null, { timeout: 40000 });
-    await s.page.unroute('**/api/sessions/*/restart');
-    ok(posts === 1, 'and one press was one relaunch', posts + ' POSTs');
+    // The CLI dies in the middle of a turn. The turn says it failed, and the
+    // next message starts Claude Code again on the conversation it had.
+    const hosts = hostsOf(s.data).length;
+    await say(s.page, '/crash');
+    const failed = await awaitChat(s, id, (b) => idle(b) && b.chat.last_outcome === 'failed', 20000);
+    await awaitLog(s.page, 'exited during the turn', 10000);
+    const said = (await linesOf(s.page)).filter((l) => l.startsWith('failed:')).join(' | ');
+    ok(failed.chat.last_outcome === 'failed' && /exited during the turn/.test(said),
+      'a CLI that exits mid-turn ends the turn as failed, and the conversation says so', oneLine(said));
+    const again = await answerTo(s, id, 'are you back');
+    ok(again === 'you said: are you back', 'the next message is answered', again);
+    const relaunched = await answerTo(s, id, '/argv');
+    ok(relaunched.includes('--resume ' + fixed) && !relaunched.includes('--session-id'),
+      'by Claude Code started again on the conversation it already had', oneLine(relaunched.slice(relaunched.indexOf('--resume'))));
+    const hostsNow = hostsOf(s.data).length;
+    ok(hosts === 1 && hostsNow === 1, 'and one host holds it, before and after', hosts + ' then ' + hostsNow);
+    const history = await historyOf(s, id);
+    ok(userTexts(history).join('|') === '/argv|/crash|are you back|/argv',
+      'each message is in the conversation once', userTexts(history).join('|'));
 
-    ok(await awaitScreen(s.page, 'FAKE claude', 25000), 'Restart brought Claude Code back',
-      oneLine(await screen(s.page)));
-    const again = launchesOf(s, 'claude').slice(before);
-    ok(again.length === 1 && argvOf(again[0]).includes('--resume ' + fixed),
-      'and it was resumed on the conversation it already had', argvOf(again[0]));
-    const back = await sessionRow(s, id);
-    ok(back.state === 'running', 'the row is running again', back.state);
-
-    // §E.7 again, and the whole line this time: a notice is one sentence and a
-    // close button, and the conversation it names is behind the "i" - never a
-    // second word in the line.
-    await s.page.waitForSelector('#termNotice:not([hidden])', { timeout: 20000 });
-    const line = await s.page.$eval('#termNotice', (n) => n.innerText.trim());
-    ok(line === 'Resumed after a restart.', 'the banner is that sentence and nothing else',
-      JSON.stringify(line));
-
-    ok(unexpected(s.errors, RESTART_NOISE).length === 0, 'no unexpected console errors',
-      unexpected(s.errors, RESTART_NOISE).join(' | ') || '0');
+    ok(unexpected(s.errors).length === 0, 'no console errors', unexpected(s.errors).join(' | ') || '0');
   } finally { await s.stop(); }
 }
 
-/* -------------------------------------------------------------- profiles */
+/* ------------------------------------------------------- accounts-agents */
 
-// A profile is a second set of sign-ins. It is added in the dashboard, offered
-// by the sheet with the account each choice means, and reaches the launched
-// program as the directory its CLI keeps the account in - and it cannot be
-// deleted while a session still runs in it.
-// The dashboard's Profiles card is gone with the accounts (WP7): a chat runs
-// on an account, and a terminal's profile is made through the API until the
-// terminal-only plumbing goes too (WP10).
-async function profiles() {
+// accounts-agents: an account is a second set of sign-ins for an agent
+// (REBUILD.md §4, which replaced the profiles), and it reaches that agent's
+// CLI as the folder the CLI keeps its sign-in in. A second Claude Code
+// account is offered by the sheet, chosen with Ultracode, and the CLI runs
+// with its CLAUDE_CONFIG_DIR, its key and Ultracode; Info names both, and the
+// account is not deleted while the chat runs on it. A Codex key is signed in
+// by codex itself into the account's own CODEX_HOME, which is the home its
+// chat runs in; an OpenCode key reaches its server in the environment.
+async function accountsagents() {
   const s = await start({ viewport: { width: 1280, height: 900 } });
+  const { page } = s;
+  const post = async (path, data) => (await s.context.request.post(s.url + path, { data })).json();
   try {
-    await setup(s.page, s.url);
-    await useDomRenderer(s);
-    const made0 = await s.context.request.post(s.url + '/api/profiles', { data: { name: 'Business' } });
-    ok(made0.status() === 201, 'the profile is added', String(made0.status()));
-    const listed = await (await s.context.request.get(s.url + '/api/profiles')).json();
-    const business = (listed.profiles || []).find((p) => p.name === 'Business');
-    ok(!!business && /^p-[0-9a-f]{12}$/.test(business.id), 'with an id of the server\'s choosing',
-      JSON.stringify(listed.profiles));
+    await setup(page, s.url);
+    const workKey = 'sk-ant-work-' + 'w'.repeat(16);
+    const homeKey = 'sk-ant-home-' + 'h'.repeat(16);
+    const work = (await post('/api/accounts', { agent: 'claude', kind: 'api_key', label: 'Work', key: workKey })).account;
+    const home = (await post('/api/accounts', { agent: 'claude', kind: 'api_key', label: 'Home', key: homeKey })).account;
+    ok(work && home && work.state === 'signed_in' && home.state === 'signed_in', 'two Claude Code accounts, each a key',
+      JSON.stringify([work, home].map((a) => a && { label: a.label, state: a.state })));
 
-    await open(s);
-    await ensureNav(s.page);
-    await s.page.click('#newSession');
-    await s.page.waitForSelector('#newSessionSheet[open]', { timeout: 15000 });
-    await s.page.click('#newSessionSheet .so-settings__program[data-value="claude"]');
-    await s.page.waitForSelector('#nsProfileField:not([hidden]) #nsProfile .so-drop__field', { timeout: 10000 });
-    await s.page.click('#nsProfile .so-drop__field');
-    const choice = '#nsProfile .ds-combo__option[data-value="' + business.id + '"]';
-    await s.page.waitForSelector(choice, { timeout: 5000 });
-    const offered = await s.page.$$eval('#nsProfile .ds-combo__option .ds-combo__name', (nodes) => nodes.map((n) => n.textContent));
-    ok(offered.join(',') === 'Default,Business', 'the sheet offers the default profile and the new one',
-      offered.join(','));
-    await s.page.click(choice);
-    const face = await s.page.$eval('#nsProfile .so-drop__value', (n) => n.textContent);
-    ok(face === 'Business', 'the dropdown shows the profile chosen', face);
-    const hint = await s.page.$eval('#nsProfileHint', (n) => n.textContent);
-    ok(/not signed in/.test(hint), 'and says that Claude Code still has to sign in there', hint);
-    await s.page.click('#nsModel .ds-combo__input');
-    await s.page.waitForSelector('#nsModel .ds-combo__option', { timeout: 5000 });
-    await s.page.click('#nsModel .ds-combo__option:has(.ds-combo__name:text-is("Haiku"))');
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await ensureNav(page);
+    await page.click('#newSession');
+    await page.waitForSelector('#newSessionSheet[open]', { timeout: 15000 });
+    await page.click('#newSessionSheet .so-settings__program[data-value="claude"]');
+    await page.waitForSelector('#nsAccountField:not([hidden]) .so-drop__field', { timeout: 10000 });
+    await page.click('#nsAccount .so-drop__field');
+    await page.waitForSelector('#nsAccount .ds-combo__option[data-value="' + home.id + '"]', { timeout: 5000 });
+    const offered = await page.$$eval('#nsAccount .ds-combo__option .ds-combo__name', (n) => n.map((x) => x.textContent));
+    ok(offered.join(',') === 'Work,Home', 'the sheet offers the agent’s accounts, in their order', offered.join(','));
+    await page.click('#nsAccount .ds-combo__option[data-value="' + home.id + '"]');
+    const face = await page.$eval('#nsAccount .so-drop__value', (n) => n.textContent);
+    ok(face === 'Home', 'the dropdown shows the account chosen', face);
     // Ultracode is Claude Code's alone, and off until it is switched on.
-    const ultra = await s.page.$eval('#nsUltracodeField', (n) => ({
-      hidden: n.hidden, off: String(!n.querySelector('#nsUltracode').checked),
-    }));
-    ok(!ultra.hidden && ultra.off === 'true', 'the sheet offers Ultracode for Claude Code, off', JSON.stringify(ultra));
-    await s.page.click('#nsUltracode');
-    await shot(s.page, 'profiles-sheet');
-    await s.page.click('#nsStart');
-    await s.page.waitForSelector('#newSessionSheet[open]', { state: 'detached', timeout: 30000 });
-    await s.page.waitForFunction(() => location.hash.length > 1 && location.hash !== '#home', null, { timeout: 30000 });
-    const id = await s.page.evaluate(() => location.hash.slice(1));
-    await s.page.waitForSelector('#term .xterm', { timeout: 20000 });
-    ok(await awaitScreen(s.page, 'FAKE claude', 25000), 'the session is up', oneLine(await screen(s.page)));
-
-    const launch = lastLaunch(s, 'claude') || { env: {} };
-    const dir = (launch.env || {}).CLAUDE_CONFIG_DIR || '';
-    ok(dir.endsWith('/profiles/' + business.id + '/claude'),
-      'Claude Code was started on the profile\'s own directory', dir);
+    const ultra = await page.$eval('#nsUltracodeField', (n) => ({ hidden: n.hidden, off: !n.querySelector('#nsUltracode').checked }));
+    ok(!ultra.hidden && ultra.off, 'the sheet offers Ultracode for Claude Code, off', JSON.stringify(ultra));
+    await page.click('#nsUltracode');
+    await shot(page, 'accounts-agents-sheet');
+    await page.click('#nsStart');
+    await page.waitForSelector('#newSessionSheet[open]', { state: 'detached', timeout: 30000 });
+    await chatUp(page);
+    const id = await page.evaluate(() => location.hash.slice(1));
     const row = await sessionRow(s, id);
-    ok(row.options && row.options.profile === business.id, 'and the session remembers its profile',
-      JSON.stringify(row.options));
-    const settingsFile = (launch.argv || [])[(launch.argv || []).indexOf('--settings') + 1] || '';
-    let ultracode = 'unreadable';
-    try { ultracode = JSON.parse(readFileSync(settingsFile, 'utf8')).ultracode; } catch { /* reported below */ }
-    ok(row.options.ultracode === true && ultracode === true,
-      'and Claude Code was started with Ultracode on', JSON.stringify({ options: row.options, ultracode }));
+    ok(row.options && row.options.account === home.id && row.options.ultracode === true,
+      'the chat remembers its account and Ultracode', JSON.stringify(row.options));
 
-    await rowMenu(s.page);
-    await s.page.click('#sessionMenu [data-action="info"]');
-    await s.page.waitForSelector('dialog.so-info-dialog .so-facts', { timeout: 5000 });
-    const facts = await s.page.$$eval('dialog.so-info-dialog .so-fact', (nodes) => nodes.map((n) => n.textContent));
-    ok(facts.includes('Profile: Business') && facts.includes('Ultracode on'),
-      'Info names the profile and Ultracode', oneLine(facts.join(' · ')));
-    await s.page.click('dialog.so-info-dialog .ds-dialog__actions .ds-btn');
-    await s.page.waitForSelector('dialog.so-info-dialog', { state: 'detached', timeout: 5000 });
+    const env = await answerTo(s, id, '/env');
+    const dir = (/CLAUDE_CONFIG_DIR=(\S+)/.exec(env) || [])[1] || '';
+    ok(dir === join(s.data, 'accounts', home.id), 'Claude Code runs on the account’s own folder', dir.replace(s.data, '<data>'));
+    ok(env.includes('ANTHROPIC_API_KEY=' + homeKey) && !env.includes(workKey) && !env.includes('SOCRATES_CLAUDE_API_KEY'),
+      'with that account’s key as its own variable, and no other', JSON.stringify(env.split('\n').map((l) => l.replace(/=sk-\S+/, '=<key>'))));
+    const argv = await answerTo(s, id, '/argv');
+    ok(/"ultracode":true/.test(argv), 'and with Ultracode on in its settings', (/--settings \{[^}]*\}/.exec(argv) || ['none'])[0]);
 
-    const refused = await s.context.request.delete(s.url + '/api/profiles/' + business.id);
-    ok(refused.status() === 409, 'a profile a session runs in cannot be deleted', String(refused.status()));
+    await rowMenu(page);
+    await page.click('#sessionMenu [data-action="info"]');
+    await page.waitForSelector('dialog.so-info-dialog .so-facts', { timeout: 5000 });
+    const facts = await page.$$eval('dialog.so-info-dialog .so-fact', (nodes) => nodes.map((n) => n.textContent));
+    ok(facts.includes('Account: Home') && facts.includes('Ultracode on'), 'Info names the account and Ultracode',
+      oneLine(facts.join(' · ')));
+    await page.click('dialog.so-info-dialog .ds-dialog__actions .ds-btn');
+    await page.waitForSelector('dialog.so-info-dialog', { state: 'detached', timeout: 5000 });
+    const refused = await s.context.request.delete(s.url + '/api/accounts/' + home.id);
+    ok(refused.status() === 409, 'an account a chat runs on cannot be deleted', String(refused.status()));
 
-    // A session keeps the profile it was started in: its menu offers none.
-    await rowMenu(s.page);
-    const menuItems = await s.page.$$eval('#sessionMenu:not([hidden]) .ds-menu__item', (nodes) => nodes.map((n) => n.textContent));
-    ok(!menuItems.includes('Default') && !menuItems.includes('Business'),
-      'the session menu offers no profile to move to', menuItems.join(','));
-    await s.page.click('#term', { position: { x: 40, y: 40 } });
-    await s.page.waitForSelector('#sessionMenu', { state: 'hidden', timeout: 10000 });
+    // Codex: the key is signed in by codex itself, into the account's home,
+    // and the chat's codex runs in that home.
+    const codexKey = 'sk-codex-' + 'c'.repeat(20);
+    const codex = (await post('/api/accounts', { agent: 'codex', kind: 'api_key', label: 'Codex key', key: codexKey })).account;
+    ok(codex && codex.state === 'signed_in', 'a Codex key is signed in', JSON.stringify(codex && { state: codex.state, problem: codex.problem }));
+    const codexHome = join(s.data, 'accounts', codex.id);
+    let auth = '';
+    try { auth = readFileSync(join(codexHome, 'auth.json'), 'utf8'); } catch { /* reported below */ }
+    ok(auth.includes(codexKey), 'by codex, into the account’s own CODEX_HOME', join(codexHome, 'auth.json').replace(s.data, '<data>'));
+    const codexChat = await makeChat(s, 'codex', { account: codex.id });
+    await openChat(page, codexChat);
+    const whoCodex = await answerTo(s, codexChat, '/whoami');
+    ok(whoCodex === 'account: key:' + codexKey + ' (home ' + codexHome + ')', 'and its chat runs in that home, signed in with it',
+      whoCodex.replace(codexKey, '<key>').replace(s.data, '<data>'));
 
-    // The next sheet starts on the profile the last session was started in.
-    await ensureNav(s.page);
-    await s.page.click('#newSession');
-    await s.page.waitForSelector('#newSessionSheet[open]', { timeout: 15000 });
-    await s.page.click('#newSessionSheet .so-settings__program[data-value="claude"]');
-    await s.page.waitForSelector('#nsProfileField:not([hidden]) #nsProfile .so-drop__value', { timeout: 10000 });
-    const next = await s.page.$eval('#nsProfile .so-drop__value', (n) => n.textContent);
-    ok(next === 'Business', 'the next sheet starts on the same profile', next);
-    const ultraAgain = await s.page.$eval('#nsUltracode', (n) => String(!n.checked));
-    ok(ultraAgain === 'true', 'but with Ultracode off again', ultraAgain);
-    await s.page.click('#newSessionSheet .so-settings__program[data-value="codex"]');
-    const ultraCodex = await s.page.$eval('#nsUltracodeField', (n) => n.hidden);
-    ok(ultraCodex, 'and Codex is not offered it', String(ultraCodex));
-    await s.page.click('#nsCancel');
-
-    // A session started beside an active one of the same program joins its
-    // profile, whatever the last sheet chose: Claude Code sessions in one
-    // profile can reach each other. A done one is no reason to.
-    const allowed = await s.context.request.put(s.url + '/api/settings',
-      { data: { settings: { workspace: { allow_custom: true } } } });
-    ok(allowed.ok(), 'a typed-in working directory is allowed on this Socrates', allowed.status());
-    const project = join(s.data, 'projects', 'shared');
-    mkdirSync(project, { recursive: true });
-    const made = await s.context.request.post(s.url + '/api/sessions', {
-      data: { harness: 'claude', model: 'haiku', title: 'Beside', workdir_mode: 'custom', workdir: project },
-    });
-    ok(made.ok(), 'a Claude Code session runs in the default profile in a project', made.status());
-    const beside = made.ok() ? (await made.json()).session.id : '';
-    const sheetIn = async (workdir) => {
-      await open(s);
-      await ensureNav(s.page);
-      await s.page.click('#newSession');
-      await s.page.waitForSelector('#newSessionSheet[open]', { timeout: 15000 });
-      await s.page.click('#newSessionSheet .so-settings__program[data-value="claude"]');
-      await s.page.click('#nsDir .ds-combo__input');
-      await s.page.waitForSelector('#nsDir .ds-combo__option[data-value="custom"]', { timeout: 5000 });
-      await s.page.click('#nsDir .ds-combo__option[data-value="custom"]');
-      await s.page.fill('#nsDirPath', workdir);
-      await s.page.waitForSelector('#nsProfileField:not([hidden]) #nsProfile .so-drop__value', { timeout: 10000 });
-      await s.page.click('#nsProfile .so-drop__field');
-      await s.page.waitForSelector('#nsProfile .ds-combo__option', { timeout: 5000 });
-      const seen = await s.page.evaluate(() => ({
-        face: document.querySelector('#nsProfile .so-drop__value').textContent,
-        here: [...document.querySelectorAll('#nsProfile .ds-combo__option')]
-          .filter((n) => n.querySelector('[data-tag="here"]'))
-          .map((n) => n.querySelector('.ds-combo__name').textContent + ': ' + n.querySelector('[data-tag="here"]').textContent),
-        hint: document.getElementById('nsProfileHint').textContent,
-      }));
-      await s.page.click('#nsProfile .so-drop__field');
-      return seen;
-    };
-    const joined = await sheetIn(project + '/');
-    ok(joined.face === 'Default' && joined.here.join(',') === 'Default: running here',
-      'the sheet picks the profile a Claude Code session in that folder runs in, and marks it', JSON.stringify(joined));
-    // The fake Claude Code is signed in nowhere, and how to sign in is the
-    // hint that matters more; the reason is the hint everywhere else.
-    ok(/another Claude Code session in this folder|not signed in/.test(joined.hint), 'and the hint says why, or how to sign in',
-      joined.hint);
-    await shot(s.page, 'profiles-joined');
-    await s.page.click('#nsCancel');
-    const filed = await s.context.request.post(s.url + '/api/sessions/' + beside + '/file', { data: { status: 'done' } });
-    ok(filed.ok(), 'that session is done', filed.status());
-    const alone = await sheetIn(project);
-    ok(alone.face === 'Business' && alone.here.length === 0,
-      'a done session is not joined: the sheet starts on the last profile again', JSON.stringify(alone));
-    await s.page.click('#nsCancel');
-
-    ok(unexpected(s.errors).length === 0, 'no unexpected console errors', unexpected(s.errors).join(' | ') || '0');
+    // OpenCode: the key of its provider, handed to the server it runs.
+    const openKey = 'sk-or-' + 'o'.repeat(20);
+    const open = (await post('/api/accounts', { agent: 'opencode', kind: 'api_key', label: 'Router', key: openKey, provider: 'openrouter' })).account;
+    const openChatId = await makeChat(s, 'opencode', { account: open.id });
+    await openChat(page, openChatId);
+    const whoOpen = await answerTo(s, openChatId, '/whoami');
+    ok(whoOpen === 'account: openrouter:' + openKey + ' (env)', 'an OpenCode key reaches its server in the environment, not a file',
+      whoOpen.replace(openKey, '<key>'));
+    ok(unexpected(s.errors).length === 0, 'no console errors', unexpected(s.errors).join(' | ') || '0');
   } finally { await s.stop(); }
 }
 
 /* ---------------------------------------------------------- 14. createcodex */
 
-// Codex is the harness whose launch is mostly configuration: --strict-config
-// makes an unknown key an error rather than a shrug, and the working directory
-// has to be trusted in the same breath or the TUI opens on a prompt nobody can
-// answer from a browser. Its conversation id exists only after a turn, so the
-// scenario types one and waits for the watcher to find it.
+// Codex as a chat: one `codex app-server` per chat, spoken to in JSON-RPC.
+// The thread it starts on the first turn is the chat's conversation and is
+// kept as one rollout in the shared sessions folder; a chat filed as done has
+// its CLI put to rest, and the next message resumes that same thread.
 async function createcodex() {
   const s = await start({ viewport: { width: 1280, height: 720 } });
   try {
     await setup(s.page, s.url);
-    await useDomRenderer(s);
     await open(s);
-    const id = await startWithModel(s.page, 'codex', null);
-    await s.page.waitForSelector('#term .xterm', { timeout: 20000 });
-    await journalHas(s, id, 'FAKE codex');
-    const banner = await journalOf(s, id);
-    ok(/FAKE codex/.test(banner), 'the session is up', oneLine(banner));
-    ok(/theme=light/.test(banner), 'and it was told the terminal is light',
-      oneLine((/FAKE codex[^\r\n]*/.exec(banner) || [''])[0]));
+    const id = await startChat(s.page, 'codex');
+    const first = await answerTo(s, id, 'the first words');
+    ok(first === 'you said: the first words', 'Codex answers over its app server', first);
+    const thought = await thinkingOf(s.page);
+    ok(thought === 'Thought', 'and its reasoning is the line before the answer, shut', thought);
+    const thread = (await chatOf(s, id)).chat.conversation_id;
+    const rollouts = () => filesUnder(join(s.data, 'agents', 'codex', 'sessions')).filter((f) => f.endsWith('.jsonl'));
+    const kept = rollouts();
+    ok(!!thread && kept.length === 1 && basename(kept[0]).includes(thread),
+      'its thread is the chat’s conversation, kept as one rollout in the shared sessions folder',
+      JSON.stringify({ thread, rollouts: kept.map((f) => f.replace(s.data, '<data>')) }));
 
-    const row = await sessionRow(s, id);
-    const launch = lastLaunch(s, 'codex');
-    ok(!!launch && launch.argv.includes('--strict-config'),
-      'it was started with --strict-config', argvOf(launch));
-    const trust = (launch.argv || []).find((arg) => arg.includes('trust_level')) || '';
-    ok(trust.includes('trusted') && trust.includes(row.workdir),
-      'and with this working directory trusted in the same command line', trust);
-    ok(launch.cwd === row.workdir, 'and it is working where the row says it is',
-      launch.cwd + ' vs ' + row.workdir);
+    // Done: the chat is filed away, and its CLI with its host is put to rest.
+    await rowMenu(s.page);
+    await s.page.click('#sessionMenu [data-action="status:done"]');
+    const parked = await until(() => hostsOf(s.data).length === 0, 20000);
+    const body = await awaitChat(s, id, (b) => b.chat.process === 'parked', 10000);
+    ok(parked && body.chat.process === 'parked', 'a chat filed as done has its agent put to rest',
+      JSON.stringify({ hosts: hostsOf(s.data).length, process: body.chat.process }));
 
-    // A turn is what makes Codex write its rollout down; before one there is
-    // nothing to discover and that is not a failure.
-    ok(row.cli_session_state === 'pending', 'before a turn there is nothing to discover yet',
-      row.cli_session_state);
-    await typeLine(s.page, 'hello codex');
-    ok(await awaitScreen(s.page, 'you said: hello codex'), 'the turn was taken',
-      oneLine(await screen(s.page)));
-    const found = await waitForCLISession(s, id, 30000);
-    ok(CLI_FOUND.includes(found.cli_session_state),
-      'and the conversation it wrote down was discovered', found.cli_session_state);
-    const conversation = await conversationOf(s.page);
-    ok(/^[0-9a-f-]{36}$/.test(conversation), 'the program names the conversation it is in',
-      conversation || 'none');
+    // The next message starts it again on the thread it had.
+    const second = await answerTo(s, id, 'the second words');
+    const after = rollouts();
+    const again = (await chatOf(s, id)).chat.conversation_id;
+    let rollout = '';
+    try { rollout = readFileSync(after[0], 'utf8'); } catch { /* reported below */ }
+    ok(second === 'you said: the second words' && again === thread && after.length === 1
+      && rollout.includes('the first words') && rollout.includes('the second words'),
+      'the next message resumes the same thread: one rollout holding both turns',
+      JSON.stringify({ second, again, rollouts: after.length }));
+    ok(userTexts(await historyOf(s, id)).join('|') === 'the first words|the second words',
+      'and the conversation on screen is the one conversation', userTexts(await historyOf(s, id)).join('|'));
     await shot(s.page, 'createcodex');
-
-    const before = await endAndRestart(s, 'codex', 0);
-    ok(await awaitScreen(s.page, 'FAKE codex', 25000), 'Restart brought Codex back',
-      oneLine(await screen(s.page)));
-    const again = launchesOf(s, 'codex').slice(before);
-    ok(again.length === 1 && argvOf(again[0]).startsWith('resume ' + conversation),
-      'and it was resumed on that same conversation', argvOf(again[0]));
-
-    ok(unexpected(s.errors, RESTART_NOISE).length === 0, 'no unexpected console errors',
-      unexpected(s.errors, RESTART_NOISE).join(' | ') || '0');
+    ok(unexpected(s.errors).length === 0, 'no console errors', unexpected(s.errors).join(' | ') || '0');
   } finally { await s.stop(); }
 }
 
 /* ------------------------------------------------------- 15. createopencode */
 
-// OpenCode keeps its session id nowhere a file watcher can reach it: the only
-// way to learn it is to ask the TUI's own HTTP server, on the port Socrates
-// chose, with the password Socrates generated. The fake answers 401 without
-// it, so an id here is proof that the whole authenticated path worked.
+// OpenCode as a chat: one `opencode serve` per chat, on a port and with a
+// password of its own (the fake refuses to serve without one, and anywhere
+// but the loopback), spoken to over its authenticated HTTP API and its event
+// stream. The session it keeps is the chat's conversation, and a chat filed
+// as done goes on in that same session with its next message.
 async function createopencode() {
   const s = await start({ viewport: { width: 1280, height: 720 } });
   try {
     await setup(s.page, s.url);
-    await useDomRenderer(s);
     await open(s);
-    const id = await startWithModel(s.page, 'opencode', null);
-    await s.page.waitForSelector('#term .xterm', { timeout: 20000 });
-    await journalHas(s, id, 'FAKE opencode');
-    const banner = await journalOf(s, id);
-    ok(/FAKE opencode/.test(banner), 'the session is up', oneLine(banner));
-    ok(/theme=light/.test(banner), 'and it was told the terminal is light',
-      oneLine((/FAKE opencode[^\r\n]*/.exec(banner) || [''])[0]));
+    const id = await startChat(s.page, 'opencode');
+    const first = await answerTo(s, id, 'the first words');
+    const session = (/\(turn 1 of (ses_\S+)\)$/.exec(first) || [])[1] || '';
+    const body = await chatOf(s, id);
+    ok(!!session && body.chat.conversation_id === session,
+      'OpenCode answers over its own server, in the session the chat knows', JSON.stringify({ first, conversation: body.chat.conversation_id }));
+    const spec = JSON.parse(readFileSync(join(s.data, 'chats', id, 'host.json'), 'utf8'));
+    ok(!JSON.stringify(spec).includes('OPENCODE_SERVER_PASSWORD'),
+      'its password is made for the process and kept in no file', Object.keys(spec).join(','));
 
-    const row = await sessionRow(s, id);
-    const launch = lastLaunch(s, 'opencode');
-    const port = launch ? launch.argv[launch.argv.indexOf('--port') + 1] : '';
-    ok(!!launch && launch.argv.includes('--port') && /^\d+$/.test(port || ''),
-      'it was given a port of its own', argvOf(launch));
-    const password = (launch.env || {}).OPENCODE_SERVER_PASSWORD || '';
-    ok(password.length >= 16, 'and a password for the server on it',
-      password ? password.length + ' characters' : 'not set');
-    ok(launch.cwd === row.workdir, 'and it is working where the row says it is',
-      launch.cwd + ' vs ' + row.workdir);
-
-    await typeLine(s.page, 'hello opencode');
-    ok(await awaitScreen(s.page, 'you said: hello opencode'), 'the turn was taken',
-      oneLine(await screen(s.page)));
-    const found = await waitForCLISession(s, id, 40000);
-    ok(CLI_FOUND.includes(found.cli_session_state),
-      'and the discoverer read the conversation over the authenticated HTTP server',
-      found.cli_session_state);
-    const conversation = await conversationOf(s.page);
-    ok(/^ses_/.test(conversation), 'which is the session the program itself is in',
-      conversation || 'none');
-    await s.page.waitForFunction(() => document.getElementById('sessionUsage')?.innerText.includes('~$1.25'),
-      null, { timeout: 20000 });
-    const cost = await s.page.$eval('#sessionUsage', (node) => node.innerText.trim());
-    ok(cost.includes('~$1.25'), 'its estimated cost is in the header', cost);
+    await rowMenu(s.page);
+    await s.page.click('#sessionMenu [data-action="status:done"]');
+    const parked = await until(() => hostsOf(s.data).length === 0, 20000);
+    ok(parked, 'filed as done, its server is put to rest', hostsOf(s.data).length + ' hosts');
+    const second = await answerTo(s, id, 'the second words');
+    ok(second === 'you said: the second words (turn 2 of ' + session + ')',
+      'and the next message is the second turn of the same session', second);
     await shot(s.page, 'createopencode');
-
-    await s.page.setViewportSize({ width: 390, height: 844 });
-    await wait(300);
-    const mobileHeader = await s.page.evaluate(() => {
-      const bar = document.querySelector('.ds-topbar');
-      const strip = document.getElementById('sessionUsage');
-      return {
-        under: strip.getBoundingClientRect().top >= bar.getBoundingClientRect().bottom - 1,
-        usage: strip.innerText.trim(),
-        shown: strip.checkVisibility(),
-        overflow: document.documentElement.scrollWidth - innerWidth,
-      };
-    });
-    // A phone's bar has no room for the strip: it is the line under the bar.
-    ok(mobileHeader.shown && mobileHeader.under && mobileHeader.usage.includes('~$1.25'),
-      'the usage line stays visible under the narrow header', JSON.stringify(mobileHeader));
-    ok(mobileHeader.overflow <= 0, 'and the header does not overflow', JSON.stringify(mobileHeader));
-    await shot(s.page, 'createopencode-phone');
-    await s.page.setViewportSize({ width: 1280, height: 720 });
-
-    const before = await endAndRestart(s, 'opencode', 0);
-    ok(await awaitScreen(s.page, 'FAKE opencode', 25000), 'Restart brought OpenCode back',
-      oneLine(await screen(s.page)));
-    const again = launchesOf(s, 'opencode').slice(before);
-    ok(again.length === 1 && argvOf(again[0]).includes('--session ' + conversation),
-      'and it was resumed on the session the server had named', argvOf(again[0]));
-
-    // A limit window says how long it has until it renews, not only how full
-    // it is. The fake programs keep no limits, so the reading is the page's.
-    const renews = new Date(Date.now() + (2 * 60 + 36) * 60000 + 30000).toISOString();
-    await s.page.route('**/api/sessions/*/usage', (route) => route.fulfill({
-      contentType: 'application/json',
-      body: JSON.stringify({ windows: [{ label: '5h', used_percent: 42, resets_at: renews }], cost_usd: 1.25 }),
-    }));
-    await reloadBack(s.page);
-    await s.page.waitForFunction(() => /5h\s*42%/.test(document.getElementById('sessionUsage')?.innerText || ''),
-      null, { timeout: 20000 });
-    const limit = await s.page.$eval('#sessionUsage', (node) => ({ text: node.innerText.trim(), title: node.getAttribute('data-tip') || '' }));
-    ok(/\(2h 3[67]m left\)/.test(limit.text) && /resets in 2h 3[67]m/.test(limit.title),
-      'the header says how long the limit has until it renews', JSON.stringify(limit));
-    await s.page.unroute('**/api/sessions/*/usage');
-
-    ok(unexpected(s.errors, RESTART_NOISE).length === 0, 'no unexpected console errors',
-      unexpected(s.errors, RESTART_NOISE).join(' | ') || '0');
+    ok(unexpected(s.errors).length === 0, 'no console errors', unexpected(s.errors).join(' | ') || '0');
   } finally { await s.stop(); }
 }
 
 /* --------------------------------------------------------- 16. rebootresume */
 
-// A reboot, without rebooting: the tmux server is killed behind Socrates' back
-// and everything it was running goes with it. Nothing is relaunched eagerly -
-// forty stored sessions must not become forty programs - so a session sits in
-// needs_resume until somebody opens one, and opening one is what this scenario
-// does.
-//
-// Claude Code is the harness it is done with, because it is the one that has a
-// conversation on disk: coming back means coming back with **--resume** on the
-// command line and not merely coming back. The banner that says so has to be
-// shown, the conversation it names has to be behind the "i", and putting it
-// away has to be remembered across a reload.
+// A machine that rebooted under a chat in the middle of a turn: the server,
+// every agent host with its CLI and the tmux server are gone at once. The
+// server that starts again finds the chat's host dead with a turn open, and
+// takes it up by itself: the turn is closed as interrupted, the conversation
+// says once that it was resumed after a restart, and the next message goes to
+// Claude Code started again on the conversation it had. The Shell beside it
+// waits to be resumed and is a working shell when it is opened.
 async function rebootresume() {
   const s = await start({ viewport: { width: 1280, height: 720 } });
   try {
     await setup(s.page, s.url);
     await useDomRenderer(s);
     await open(s);
-
-    // Two sessions, because one cannot show what this scenario was extended
-    // for: the first resume starts the tmux server again, and every session
-    // after it used to be refused as "the session is still running".
     const shellId = await startSession(s.page, 'shell');
     await s.page.waitForSelector('#term .xterm', { timeout: 20000 });
-    const claudeId = await startWithModel(s.page, 'claude', 'Sonnet');
-    await s.page.waitForSelector('#term .xterm', { timeout: 20000 });
-    ok(await journalSays(s, claudeId, 'FAKE claude', 1), 'the session is up',
-      oneLine(await journalOf(s, claudeId)));
-    const conversation = await conversationOf(s.page);
-    ok(/^[0-9a-f-]{36}$/.test(conversation), 'which is holding a conversation',
-      conversation || 'none');
+    const id = await startChat(s.page, 'claude');
+    const hello = await answerTo(s, id, 'before the reboot');
+    const conversation = (await chatOf(s, id)).chat.conversation_id;
+    ok(hello === 'you said: before the reboot' && /^[0-9a-f-]{36}$/.test(conversation),
+      'the chat is up and holding a conversation', conversation || 'none');
+    await say(s.page, work('claude', 60));
+    const busy = await awaitChat(s, id, (b) => b.chat.turn_running, 10000);
+    ok(busy.chat.turn_running, 'and it is in the middle of a turn', JSON.stringify(busy.chat.activity));
 
-    // The tab is put away first. With a page attached, the socket's own
-    // reconnect would open the session again the moment the row flipped, and
-    // the scenario would be measuring its own browser rather than the state a
-    // rebooted machine is found in.
+    // The tab is put away first: a page attached to the chat would open its
+    // stream the moment the server is back, and the scenario would measure
+    // its own browser instead of what a rebooted machine is found in.
     await s.page.goto('about:blank', { waitUntil: 'domcontentloaded' });
-    killTmux(s.data);
-
-    const waiting = await waitForState(s, claudeId, ['needs_resume'], 40000);
-    ok(waiting.state === 'needs_resume',
-      'the session is waiting to be resumed, not running and not dead', waiting.state);
-    const waitingShell = await waitForState(s, shellId, ['needs_resume'], 40000);
-    ok(waitingShell.state === 'needs_resume', 'and so is the one behind it', waitingShell.state);
-
-    // The reload. Opening the session is what resumes it, and the resume is
-    // the whole of the handshake - so what the pane says while it waits is
-    // "Resuming after a restart…", never "this session is not running".
-    const beforeClaude = launchesOf(s, 'claude').length;
-    await s.page.goto(s.url + '/#open=' + claudeId, { waitUntil: 'domcontentloaded' });
-    await waitForState(s, claudeId, ['running'], 40000);
-    await s.page.waitForSelector('#term .xterm', { timeout: 20000 });
-    // The journal is one file for the life of the session, so it is the
-    // second banner that proves a program was started into it again.
-    ok(await journalSays(s, claudeId, 'FAKE claude', 2),
-      'opening it brought Claude Code back', oneLine((await journalOf(s, claudeId)).slice(-200)));
-
-    const relaunch = launchesOf(s, 'claude').slice(beforeClaude);
-    ok(relaunch.length === 1 && argvOf(relaunch[0]).includes('--resume ' + conversation),
-      'and it came back with a resume on its command line, not a new conversation',
-      argvOf(relaunch[0]));
-    ok(!argvOf(relaunch[0]).includes('--session-id'),
-      'the uuid it was created with was not handed to it a second time', argvOf(relaunch[0]));
-
-    // §E.7: the banner is a thin line above the pane, it says what happened,
-    // the conversation it names is behind the "i", and it never blocks.
-    await s.page.waitForSelector('#termNotice:not([hidden])', { timeout: 20000 });
-    const banner = await s.page.evaluate(() => {
-      const host = document.getElementById('termNotice');
-      // The "i" carries its lines in data-tip; the tooltip shows them only
-      // for a pointer that rests on it or the keyboard.
-      const info = host.querySelector('.so-info');
-      const tip = document.querySelector('.ds-tooltip');
-      return {
-        kind: host.dataset.kind,
-        words: host.querySelector('.ds-alert__text').textContent,
-        whole: host.innerText.trim(),
-        bubble: info ? info.getAttribute('data-tip') || '' : '',
-        bubbleShown: info ? (tip && !tip.hidden ? 'visible' : 'hidden') : 'none',
-      };
+    const hosts = hostsOf(s.data);
+    await s.restart({}, async () => {
+      for (const pid of hosts) {
+        try { process.kill(pid, 'SIGKILL'); } catch { /* already gone */ }
+      }
+      killTmux(s.data);
+      await until(() => hostsOf(s.data).length === 0, 5000);
     });
-    ok(banner.kind === 'resumed' && /Resumed after a restart/.test(banner.words),
-      'the banner says the session was resumed', JSON.stringify(banner));
-    ok(banner.whole === 'Resumed after a restart.',
-      'and the line holds that sentence and nothing else', JSON.stringify(banner.whole));
-    ok(!/could not be resumed/.test(banner.words),
-      'and it does not claim the conversation was lost, because it was not', oneLine(banner.words));
-    ok(banner.bubble.includes(conversation) && banner.bubbleShown === 'hidden',
-      'the conversation it came back on is behind the "i"',
-      banner.bubbleShown + ' ' + oneLine(banner.bubble));
+    ok(hosts.length === 1, 'the reboot took the chat’s host with it', hosts.length + ' host(s) killed');
+
+    const back = await awaitChat(s, id, (b) => !b.chat.turn_running && b.chat.last_outcome === 'interrupted', 30000);
+    ok(back.chat.last_outcome === 'interrupted', 'the server takes the chat up by itself: the turn it was in ends as interrupted',
+      JSON.stringify({ outcome: back.chat.last_outcome, process: back.chat.process }));
+    const row = await sessionRow(s, id);
+    ok(row.resume_count === 1, 'and the resume is counted once', String(row.resume_count));
+
+    await s.page.goto(s.url + '/#open=' + id, { waitUntil: 'domcontentloaded' });
+    await chatUp(s.page);
+    const said = await awaitLog(s.page, 'Resumed after a restart.', 20000);
+    const lines = (await linesOf(s.page)).filter((l) => /Resumed after a restart/.test(l));
+    ok(said && lines.length === 1 && lines[0].startsWith('notice:'),
+      'the conversation says once that it was resumed after a restart', JSON.stringify(lines));
+    const cut = await answerState(s.page);
+    ok(cut === 'interrupted', 'and the answer the reboot cut short says it was interrupted', cut);
     await shot(s.page, 'rebootresume');
 
-    // A notice is news, and news that has been read is in the way: it goes on
-    // its own once it has been up long enough to read, and going is the same
-    // decision the close button makes - the flag behind it is cleared either
-    // way, and the banner does not come back on the next reload.
-    const went = await s.page.waitForFunction(() => document.getElementById('termNotice').hidden,
-      null, { timeout: 9000 }).then(() => true).catch(() => false);
-    ok(went, 'the banner puts itself away without being dismissed',
-      went ? 'gone' : 'still up after 9 s');
-    const acked = await waitForAck(s, claudeId);
-    ok(acked.resumed === false, 'and the line going cleared the flag behind it',
-      JSON.stringify({ resumed: acked.resumed, resume_count: acked.resume_count }));
-    ok(acked.resume_count === 1, 'and the resume was counted once', String(acked.resume_count));
-    await reloadBack(s.page);
-    await s.page.waitForSelector('#term .xterm', { timeout: 20000 });
-    await wait(1500);
-    // A reload of a tab the server still remembers can raise the *desync*
-    // notice, which is a different sentence about a different thing. What must
-    // not come back is the resumed banner.
-    const still = await s.page.$eval('#termNotice',
-      (n) => (n.hidden ? { kind: 'hidden', whole: '' } : { kind: n.dataset.kind, whole: n.innerText.trim() }));
-    ok(still.kind !== 'resumed', 'and a reload does not show it again', still.kind);
-    // A notice with nothing behind an "i" - the desync line has no facts - is
-    // the line and the close button, and no stray word from a null child.
-    ok(still.kind !== 'desync' || still.whole === 'Reconnected — the screen was redrawn.',
-      'a notice with no detail is still just its sentence', JSON.stringify(still.whole));
+    const argv = await answerTo(s, id, '/argv');
+    ok(argv.includes('--resume ' + conversation) && !argv.includes('--session-id'),
+      'the next message goes to Claude Code started again on the conversation it had',
+      oneLine(argv.slice(argv.indexOf('--resume'))));
+    const after = await answerTo(s, id, 'after the reboot');
+    ok(after === 'you said: after the reboot', 'and the chat that came back is one that works', after);
+    await s.page.reload({ waitUntil: 'domcontentloaded' });
+    await s.page.waitForSelector('#home:not([hidden])', { timeout: 20000 });
+    await openChat(s.page, id);
+    await awaitLog(s.page, 'you said: after the reboot', 15000);
+    const again = (await linesOf(s.page)).filter((l) => /Resumed after a restart/.test(l));
+    ok(again.length === 1, 'a reload shows the line once, as the history has it', String(again.length));
 
-    // And the session is a working session, not a screen that came back: the
-    // pane it was given is a new program, and it answers.
-    await typeLine(s.page, 'hello again');
-    ok(await awaitScreen(s.page, 'you said: hello again', 25000),
-      'and the session that came back is one that works', oneLine(await screen(s.page)));
-
-    // And now the session behind it. Resuming the first one started the tmux
-    // server again, which is what used to make this one answer 409 and sit
-    // under "Resuming after a restart…" for ever.
+    // The Shell lost its tmux with the machine: it waits to be resumed, and
+    // opening it gives back a shell that works.
+    const waiting = await waitForState(s, shellId, ['needs_resume'], 20000);
+    ok(waiting.state === 'needs_resume', 'the Shell beside it waits to be resumed', waiting.state);
     await s.page.goto(s.url + '/#open=' + shellId, { waitUntil: 'domcontentloaded' });
-    const behind = await waitForState(s, shellId, ['running'], 40000);
-    ok(behind.state === 'running', 'the second session resumes as well as the first',
-      behind.state + (behind.fail_reason ? ' - ' + behind.fail_reason : ''));
+    const resumed = await waitForState(s, shellId, ['running'], 40000);
+    ok(resumed.state === 'running', 'and opening it resumes it', resumed.state);
     await s.page.waitForSelector('#term .xterm', { timeout: 20000 });
     const alive = 'again-' + Math.random().toString(36).slice(2, 8);
     await typeLine(s.page, 'echo ' + alive);
-    ok(await awaitScreen(s.page, alive, 25000), 'and it is a session that works',
-      oneLine(await screen(s.page)));
-
+    ok(await awaitScreen(s.page, alive, 25000), 'as a shell that works', oneLine(await screen(s.page)).slice(-80));
     ok(unexpected(s.errors, RESTART_NOISE).length === 0, 'no unexpected console errors',
       unexpected(s.errors, RESTART_NOISE).join(' | ') || '0');
   } finally { await s.stop(); }
@@ -10440,17 +10300,20 @@ async function chatServer(options = {}) {
 
 // chatUp waits for the chat view to be what the stage shows.
 const chatUp = (page, timeout = 20000) =>
-  page.waitForSelector('#chat:not([hidden]) .so-composer__input', { timeout });
+  page.waitForSelector('#chat:not([hidden]) .so-composer__input:not([data-e2e-left])', { timeout });
 
-// startChat drives the sheet to a chat with the scripted agent, the way a
-// person starts one, and waits for its composer.
-async function startChat(page) {
+// startChat drives the sheet to a chat - with the scripted agent unless
+// another agent is named - the way a person starts one, and waits for its
+// composer.
+async function startChat(page, harness = 'fake') {
   const was = await page.evaluate(() => location.hash.slice(1));
   await ensureNav(page);
   await page.click('#newSession');
   await page.waitForSelector('#newSessionSheet[open]', { timeout: 15000 });
-  await page.waitForSelector('#newSessionSheet .so-settings__program[data-value="fake"]', { timeout: 10000 });
-  await page.click('#newSessionSheet .so-settings__program[data-value="fake"]');
+  await page.waitForSelector('#newSessionSheet .so-settings__program[data-value="' + harness + '"]', { timeout: 10000 });
+  await page.click('#newSessionSheet .so-settings__program[data-value="' + harness + '"]');
+  await pickModelIfNeeded(page);
+  await leaveComposer(page, '');
   await page.click('#nsStart');
   await page.waitForSelector('#newSessionSheet[open]', { state: 'detached', timeout: 30000 });
   await page.waitForFunction((before) => location.hash.length > 1 && location.hash.slice(1) !== before,
@@ -10459,12 +10322,22 @@ async function startChat(page) {
   return page.evaluate(() => location.hash.slice(1));
 }
 
-// openChat goes to a chat through its address, as a link to it would.
+// openChat goes to a chat through its address, as a link to it would, and
+// waits for that chat's own composer: the view makes one per chat, so the
+// one of the chat that was on screen is marked first and waited away.
 async function openChat(page, id) {
   await page.waitForSelector(rowSel(id), { state: 'attached', timeout: 20000 });
+  await leaveComposer(page, id);
   await page.evaluate((target) => { location.hash = '#' + target; }, id);
   await chatUp(page);
 }
+
+// leaveComposer marks the composer of the chat on screen, when another chat
+// is about to take its place, so that chatUp waits for the new one.
+const leaveComposer = (page, id) => page.evaluate((next) => {
+  const input = document.querySelector('#chat .so-composer__input');
+  if (input && location.hash.slice(1) !== next) input.dataset.e2eLeft = '1';
+}, id);
 
 // say writes a message and sends it: Enter at a desk, Send on a touch screen.
 async function say(page, text, { button = false } = {}) {
@@ -12359,7 +12232,7 @@ const ALL = [
   ['typeandsee', 'keystrokes reach the pane and the journal agrees with the screen', typeandsee],
   ['reloadkeepsscreen', 'a reload keeps the screen and the input path', reloadkeepsscreen],
   ['pages', 'every page is clean at a phone and at a desk', pages],
-  ['harnesses', 'all four session types start and are seen in the browser', harnesses],
+  ['harnesses', 'a Shell and a chat with each agent start, and are seen in the browser', harnesses],
   ['browserlayout', 'popup placement and bundled terminal font metrics', browserlayout],
   ['sessionlist', 'rename, archive, unarchive and delete', sessionlist],
   ['folders', 'the list is folders per project, shut and reopened, and a row keeps its element', folders],
@@ -12372,17 +12245,17 @@ const ALL = [
   ['takeover', 'a second tab with the same viewer id takes the pane over', takeover],
   ['offlinerestart', 'a restart during an outage, a wake storm, and nothing lost in silence', offlinerestart],
   ['latehello', 'what is typed before a late hello is delivered, exactly once', latehello],
-  ['adminoptions', 'the basics round-trip and the fixed policy reaches the command line', adminoptions],
+  ['adminoptions', 'the basics round-trip, and the defaults and the fixed policy reach the CLI', adminoptions],
   ['tmuxcard', 'the engine card on a machine whose tmux is too old', tmuxcard],
   ['twoviewers', 'two devices on one session, and one notice about the size', twoviewers],
   ['backpressure', 'two hundred lines arrive whole, on screen and in the journal', backpressure],
   ['deletekeepsdir', 'delete kills the tmux session and keeps the work', deletekeepsdir],
   ['recoveredsession', 'a tmux session with no row is taken in, never killed', recoveredsession],
-  ['createclaude', 'Claude Code from the sheet to the command line, and back after an exit', createclaude],
-  ['createcodex', 'Codex is trusted where it works, and its conversation is found', createcodex],
-  ['profiles', 'a second set of sign-ins for a terminal, to the command line', profiles],
-  ['createopencode', 'OpenCode names its session over its own authenticated server', createopencode],
-  ['rebootresume', 'a machine that rebooted, and the session that comes back with its conversation', rebootresume],
+  ['createclaude', 'Claude Code from the sheet to its command line, and back on its conversation after a crash', createclaude],
+  ['createcodex', 'Codex over its app server: one thread, kept, and resumed after a rest', createcodex],
+  ['accounts-agents', 'an account of each agent reaches its CLI: its folder, its key, its home', accountsagents],
+  ['createopencode', 'OpenCode over its own authenticated server: one session, resumed after a rest', createopencode],
+  ['rebootresume', 'a machine that rebooted mid-turn, and the chat that comes back on its conversation', rebootresume],
   ['lighttheme', 'the white terminal, from the painted pane to every drawn colour', lighttheme],
   ['activity-claude', 'Claude Code working, finishing, and a name that goes bold', activityclaude],
   ['activity-codex', 'Codex working, finishing, and a name that goes bold', activitycodex],
