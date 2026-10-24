@@ -12,10 +12,12 @@ every push to `main` is installed on the server by GitHub Actions, and the night
 `origin/main` too, so the merge is the deployment (§6).
 
 At the time of writing `origin/rebuild` carries CI and test fixes made beside this branch (test
-flakes on macOS and under load, a backup upload that no longer cuts the others short); three of
-them, test fixes the final race run needed, are on `wp10` too (cherry-picked: the stream reads
-under the lock, the killed host's child, the ack that reads the turn's end first). Merge the rest
-with `wp10` before the final run of §6.
+flakes on macOS and under load, a backup upload that no longer cuts the others short); seven of
+them are on `wp10` too, cherry-picked: three test fixes the final race run needed (the stream
+reads under the lock, the killed host's child, the ack that reads the turn's end first), and from
+the review pass the lost exit status of a Shell (a pane killed by a signal read by name, tmux
+made to collect a status it lost, the poll that waits for it) and the backup upload. Merge the
+rest with `wp10` before the final run of §6.
 
 Binding documents, in order:
 
@@ -91,11 +93,11 @@ Binding documents, in order:
   opens, Codex with a device code, OpenCode through its provider, any of them with an API key.
 - **Backup and restore**: Admin → Backup; README "Storage" for the restore on a new machine.
 - **Tests**: `make check` (gofmt, vet, `go test -race`, build); `node e2e/run.mjs` (the browser
-  suite, about an hour), `node e2e/chats.mjs` and `node e2e/asks.mjs`. Against real binaries,
-  each gated and cheap: `SOCRATES_CLAUDE_LIVE=1` (Claude's adapter and ask_user),
-  `SOCRATES_REAL_CODEX=1` (the real codex against the scripted model), `SOCRATES_OPENCODE_REAL=1`
-  (a free OpenCode model), `SOCRATES_LIVE_AGENTS=1` (e2e `livesession`, and the Admin pictures of
-  `e2e/shots.mjs`).
+  suite, about twenty minutes on four CPUs), `node e2e/chats.mjs` and `node e2e/asks.mjs`.
+  Against real binaries, each gated and cheap: `SOCRATES_CLAUDE_LIVE=1` (Claude's adapter and
+  ask_user), `SOCRATES_REAL_CODEX=1` (the real codex against the scripted model),
+  `SOCRATES_OPENCODE_REAL=1` (a free OpenCode model), `SOCRATES_LIVE_AGENTS=1` (e2e
+  `livesession`, and the Admin pictures of `e2e/shots.mjs`).
 
 ## 4. Deliberately not done
 
@@ -125,9 +127,12 @@ Binding documents, in order:
 - OpenCode needs about 400 MB of memory per chat that is awake; a chat at rest has no process.
 - The headless Chromium of the e2e suite always denies notifications, so `notify` stubs them; a
   real notification needs the full `chrome`.
-- Under load a few tests are known to time out and pass alone (`offlinerestart`, `options`,
-  `TestTerminalSlowReaderIsGivenUpOn`, `TestGlobalHooksFireForEverySession`); two e2e suites on one
-  machine claim different ports and tell their servers apart (`e2e/README.md`).
+- Under load a few tests have timed out and passed alone: `TestTerminalSlowReaderIsGivenUpOn`,
+  `TestGlobalHooksFireForEverySession`, and in WP11's runs the e2e `options` and `offlinerestart`.
+  `offlinerestart` opens the phone's drawer through `ensureNav`, whose second tap on a drawer still
+  sliding in was the cause found for `pages`' timeout (fixed in the review pass); for `options` no
+  cause was found. Neither failed in the final runs. Two e2e suites on one machine claim different
+  ports and tell their servers apart (`e2e/README.md`).
 - The README pictures are taken with the protocol fakes: the agents' words in them are scripted
   (`e2e/shots.mjs`).
 

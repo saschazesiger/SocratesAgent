@@ -19,8 +19,8 @@ node e2e/asks.mjs              # ask_user for each agent, no browser
 
 `make e2e` is deliberately not part of `make check` and not part of CI: it wants
 node, a Chromium and tmux, and it starts real agent hosts and terminal sessions,
-which is exactly what it is there to test. The whole suite takes about an hour
-on four CPUs.
+which is exactly what it is there to test. The whole suite takes about twenty
+minutes on four CPUs.
 
 ## What it needs
 
