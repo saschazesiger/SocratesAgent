@@ -1,5 +1,6 @@
 // Copy, paste and upload: the three ways something crosses between this
-// device and the pane, as buttons.
+// device and the pane, as buttons - in the top bar, and on a phone, whose
+// bar has no room for them, in the session's menu (session.js).
 //
 // The keys already do the first two at a desk. A phone has no keys, and
 // selecting on a terminal with a finger is the one gesture a phone is worst
@@ -92,7 +93,7 @@ export function mountTransfer(ctx) {
     });
   }
 
-  function copySheet(term) {
+  function copySheet(term, opener) {
     const text = paneText(term, SHEET_LINES);
     if (!text) {
       toast('There is nothing on the screen to copy.');
@@ -101,12 +102,12 @@ export function mountTransfer(ctx) {
     if (!sheet) return;
     area.value = text;
     paintCopy();
-    showOverlay(sheet, dom.copyBtn);
+    showOverlay(sheet, opener || dom.copyBtn);
     // The newest line is the one somebody came to copy.
     area.scrollTop = area.scrollHeight;
   }
 
-  function copy() {
+  function copy(opener) {
     const term = ctx.term();
     if (!term) return;
     // What is selected on the pane is what the button means. Without a
@@ -119,7 +120,7 @@ export function mountTransfer(ctx) {
       ctx.focus();
       return;
     }
-    copySheet(term);
+    copySheet(term, opener);
   }
 
   /* --------------------------------------------------------------- paste */
@@ -238,7 +239,7 @@ export function mountTransfer(ctx) {
   for (const button of [dom.copyBtn, dom.pasteBtn, dom.uploadBtn]) {
     if (button) button.addEventListener('mousedown', (event) => event.preventDefault());
   }
-  if (dom.copyBtn) dom.copyBtn.addEventListener('click', copy);
+  if (dom.copyBtn) dom.copyBtn.addEventListener('click', () => copy());
   if (dom.pasteBtn) dom.pasteBtn.addEventListener('click', () => { paste().catch(() => {}); });
   if (dom.uploadBtn) dom.uploadBtn.addEventListener('click', () => picker.click());
   paint();
@@ -246,5 +247,12 @@ export function mountTransfer(ctx) {
   return {
     /** attached repaints for whatever the pane now holds. */
     attached: paint,
+    // The same three, for the session's menu: a phone's top bar has no room
+    // for them, and floating over the pane they covered its first lines.
+    // Paste and upload are run inside the tap that asked, which reading the
+    // clipboard and opening a file picker both need.
+    copy: (opener) => copy(opener),
+    paste: () => { paste().catch(() => {}); },
+    upload: () => picker.click(),
   };
 }

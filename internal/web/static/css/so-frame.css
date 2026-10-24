@@ -20,6 +20,9 @@
  *   .so-banner       the backup notice (backup.js)
  *   .so-options      the switches of the options dialog
  *   .so-rename, .so-info-dialog, .so-facts  the row menu's dialogs
+ *   .so-actions      a session's menu on a phone: the same items in a dialog
+ *                    at the bottom edge (an action sheet), __head and __list
+ *   .so-menu-state   the On or Off at the end of a switch in the menu
  */
 
 /* ── The page as a column ─────────────────────────────────────────────── */
@@ -58,6 +61,11 @@
   }
 }
 
+/* The menu button keeps its 48px however long the session's name is. */
+.so-app .ds-topbar__menu {
+  flex: none;
+}
+
 .so-topbar {
   flex: 1 1 auto;
   min-width: 0;
@@ -94,6 +102,26 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* On a phone the name gets two lines rather than a few letters and an
+   ellipsis, in the label type and with less padding, so that two lines hold
+   a name and its date; the tip has all of it. */
+@media (max-width: 600px) {
+  .so-title__button {
+    --ds-btn-font: var(--ds-font-label);
+    --ds-btn-padding-x: var(--ds-space-2);
+  }
+
+  .so-title__text {
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    text-align: start;
+  }
 }
 
 .so-outcome[data-kind="complete"] { --so-outcome: var(--ds-success); }
@@ -327,9 +355,14 @@
   min-width: 0;
 }
 
-/* Room at the end for the ⋮, which lies over the item. */
+/* Room at the end for the ⋮, which lies over the item - a finger's 48px of
+   it in touch mode. */
 .so-row__open {
   padding-right: calc(var(--ds-space-8) + var(--ds-space-2));
+}
+
+.so-touch .so-row__open {
+  padding-right: calc(var(--so-touch-target) + var(--ds-space-2));
 }
 
 .so-row__text {
@@ -349,6 +382,19 @@
 
 .so-row__label {
   transition: color var(--ds-dur-medium) var(--ds-ease-in-out);
+}
+
+/* In the modal drawer of a phone a name gets two lines rather than an
+   ellipsis halfway through its date. */
+@media (max-width: 900px) {
+  .so-row__label {
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
 }
 
 /* News nobody has seen: the label weight and the full ink. The open row is
@@ -440,6 +486,13 @@
   opacity: 1;
 }
 
+/* A switch in a menu says where it stands at its end, in words. */
+.so-menu-state {
+  flex: none;
+  font: var(--ds-font-meta);
+  color: var(--ds-text-2);
+}
+
 .so-menu-heading {
   margin: 0;
   padding: var(--ds-space-2) var(--ds-space-4) var(--ds-space-1);
@@ -488,6 +541,39 @@
   color: var(--ds-text-2);
 }
 
+/* ── A session's menu on a phone ──────────────────────────────────────── */
+
+/* The DS dialog, at the bottom edge rather than in the middle: where the
+   thumb is, and where a phone's own action sheets rise from. */
+.so-actions {
+  --ds-dialog-width: var(--so-actions-width);
+  place-items: end center;
+  padding-bottom: max(var(--ds-space-4), env(safe-area-inset-bottom));
+}
+
+.so-actions__head {
+  display: flex;
+  align-items: center;
+  gap: var(--ds-space-2);
+  margin-top: calc(-1 * var(--ds-space-2));
+}
+
+.so-actions__head > .ds-dialog__title {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.so-actions__head > .ds-btn {
+  flex: none;
+  margin-right: calc(-1 * var(--ds-space-3));
+}
+
+/* The items run to the box's edges, their glyphs under the title. */
+.so-actions__list {
+  display: grid;
+  margin-inline: calc(var(--ds-space-3) - var(--ds-space-6));
+}
+
 /* ── Phones ───────────────────────────────────────────────────────────── */
 
 /* The brand keeps its mark on a phone; the bar's width is the session's. */
@@ -522,4 +608,23 @@
   .so-title {
     min-width: 0;
   }
+}
+
+/* A phone on its side: the brand gives its width to the session, and Home
+   is the drawer's first item anyway. */
+@media (max-height: 500px) {
+  .so-app .ds-topbar > .ds-brand {
+    display: none;
+  }
+}
+
+/* A phone on its side with its keyboard up has a strip of screen left
+   (keybar.js followViewport sets data-so-short): the bar gives its height to
+   what is being typed into, and comes back with the keyboard's going. */
+.so-touch[data-so-short] .so-app {
+  --ds-topbar-height: 0px;
+}
+
+.so-touch[data-so-short] .so-app > .ds-topbar {
+  display: none;
 }

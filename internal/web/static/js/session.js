@@ -726,7 +726,7 @@ const ids = ['sidebar', 'navScrim', 'menuBtn', 'blankIDE', 'homeBtn', 'sideColla
   'statusBtn', 'kbBtn', 'optionsBtn',
   'stage', 'termWrap', 'term', 'termOverlay', 'termLines', 'termNotice',
   'termTicker', 'tickerWindow',
-  'micBtn', 'micText',
+  'micBtn',
   'recSheet', 'recMeter', 'recTime', 'recSend', 'recCancel',
   'keybar', 'logout', 'prestart', 'chat', 'home'];
 for (const id of ids) dom[id] = document.getElementById(id);
@@ -2097,17 +2097,84 @@ function replaceSession(next) {
 // opens it; what each of its items does is kept here, by data-action, and run
 // by one listener (wire). DS.overlay closes the menu once that ran.
 const menuActions = new Map();
+// The actions that must run inside the tap that chose them - reading the
+// clipboard, opening a file picker - rather than once the menu has gone.
+const menuInTap = new Set();
 
 // menuItemHtml is one item of the menu: its glyph and its words. A status is
-// one of a set, so it is a radio item whose check shows where it stands.
+// one of a set, so it is a radio item whose check shows where it stands. A
+// switch (a checkbox item) also says On or Off at its end, because a check
+// that is simply not there reads as an action, not as a switch that is off.
 function menuItemHtml(action, label, glyph, checked, role = 'menuitemradio') {
   if (checked !== undefined) {
-    return html`<button class="ds-menu__item" role="${role}" type="button" data-action="${action}" aria-checked="${checked ? 'true' : 'false'}">${raw(icon('check', 20, 'ds-menu__check'))}<span class="ds-menu__label">${label}</span></button>`;
+    const state = role === 'menuitemcheckbox'
+      ? html`<span class="so-menu-state" aria-hidden="true">${checked ? 'On' : 'Off'}</span>` : '';
+    return html`<button class="ds-menu__item" role="${role}" type="button" data-action="${action}" aria-checked="${checked ? 'true' : 'false'}">${raw(icon('check', 20, 'ds-menu__check'))}<span class="ds-menu__label">${label}</span>${state}</button>`;
   }
   return html`<button class="ds-menu__item" role="menuitem" type="button" data-action="${action}">${raw(icon(glyph, 20))}<span class="ds-menu__label">${label}</span></button>`;
 }
 
-async function openRowMenu(anchor, id) {
+// A phone has no room for a menu of eleven rows hanging from a button: from
+// a row low in the list it would scroll inside itself with nothing to say
+// so, and Delete would be below the end. There - a narrow window, or a short
+// one under a finger, a phone on its side - the same items rise from the
+// bottom edge in a dialog of their own (an action sheet), under the
+// session's name.
+const actionSheetWanted = () => window.matchMedia('(max-width: 600px)').matches
+  || (touchScreen() && window.matchMedia('(max-height: 500px)').matches);
+
+// openActionSheet shows the items of a menu in that dialog. An item closes
+// it and then runs, so a dialog it opens (Rename, Delete) is the only one on
+// screen.
+function openActionSheet(anchor, title, items) {
+  const titleId = 'actionsTitle';
+  const list = el('div', { class: 'so-actions__list', role: 'menu', 'aria-labelledby': titleId });
+  morph(list, html`${items}`);
+  const close = el('button', {
+    class: 'ds-btn ds-btn--quiet ds-btn--icon', type: 'button', 'data-close': true,
+    'aria-label': 'Close', 'data-tip': 'Close',
+  }, iconEl('close', 20));
+  const dialog = el('dialog', { class: 'ds-dialog so-actions', 'aria-labelledby': titleId },
+    el('div', { class: 'ds-dialog__backdrop', 'data-close': true }),
+    el('div', { class: 'ds-dialog__box' },
+      el('div', { class: 'so-actions__head' },
+        el('h2', { class: 'ds-dialog__title so-break', id: titleId, text: title }), close),
+      list));
+  let chosen = null;
+  list.addEventListener('click', (event) => {
+    const item = event.target.closest('[data-action]');
+    if (!item || item.getAttribute('aria-disabled') === 'true') return;
+    const run = menuActions.get(item.dataset.action) || null;
+    if (run && menuInTap.has(item.dataset.action)) run();
+    else chosen = run;
+    hideOverlay(dialog);
+  });
+  // The items are a menu: the arrows move between them, as in DS's.
+  list.addEventListener('keydown', (event) => {
+    const all = [...list.querySelectorAll('.ds-menu__item')];
+    const at = all.indexOf(document.activeElement);
+    const to = { ArrowDown: at + 1, ArrowUp: at - 1, Home: 0, End: all.length - 1 }[event.key];
+    if (to === undefined || !all.length) return;
+    event.preventDefault();
+    all[(to + all.length) % all.length].focus();
+  });
+  dialog.addEventListener('close', () => {
+    anchor.setAttribute('aria-expanded', 'false');
+    const run = chosen;
+    chosen = null;
+    hideOverlay(dialog, { remove: true }).then(() => { if (!run) paneAfter(anchor); });
+    if (run) run();
+  }, { once: true });
+  anchor.setAttribute('aria-expanded', 'true');
+  showOverlay(dialog, anchor).then(() => {
+    const first = list.querySelector('.ds-menu__item');
+    if (first && dialog.open) first.focus({ preventScroll: true });
+  });
+}
+
+// openRowMenu is a session's menu, from its row's ⋮ or - with `device`, and
+// then with this device's options as its last item - from the top bar's.
+async function openRowMenu(anchor, id, { device = false } = {}) {
   const session = sessionOf(id);
   const menu = dom.sessionMenu;
   if (!session || !menu) return;
@@ -2126,11 +2193,23 @@ async function openRowMenu(anchor, id) {
   // compacting it is something to ask of its agent.
   const chat = isChat(session);
   menuActions.clear();
+  menuInTap.clear();
   const items = [];
   const add = (action, label, glyph, run, checked, role) => {
     menuActions.set(action, run);
     items.push(menuItemHtml(action, label, glyph, checked, role));
   };
+  // A phone's top bar has no room for copy, paste and upload (so-stage.css):
+  // for the terminal on the stage they are the first items of its menu.
+  if (state.transfer && state.term && state.current && state.current.id === session.id
+    && window.matchMedia('(max-width: 600px)').matches) {
+    add('copy', 'Copy', 'copy', () => state.transfer.copy(anchor));
+    add('paste', 'Paste', 'paste', () => state.transfer.paste());
+    add('upload', 'Upload a file', 'upload', () => state.transfer.upload());
+    menuInTap.add('paste');
+    menuInTap.add('upload');
+    items.push(html`<div class="ds-menu__divider" role="separator"></div>`);
+  }
   add('info', 'Info', 'info', () => infoDialog(session, anchor));
   if (!editor) add('rename', 'Rename', 'pencil', () => renameSession(session, anchor));
   if (!editor && session.workdir_missing) add('folder', 'Point to folder', 'folder', () => pointFolder(session, anchor));
@@ -2161,6 +2240,17 @@ async function openRowMenu(anchor, id) {
     add('journal', editor ? 'Download server log' : 'Download scrollback', 'download', () => downloadJournal(session));
   }
   add('delete', editor ? 'Close VS Code' : 'Delete', editor ? 'close' : 'trash', () => deleteSession(session));
+  if (device) {
+    items.push(html`<div class="ds-menu__divider" role="separator"></div>`);
+    // Once the menu has gone, so that its leaving does not put the focus back
+    // on the ⋮ from under the dialog.
+    add('device', 'This device\u2026', 'settings', () => requestAnimationFrame(() => openOptions(anchor)));
+  }
+  if (actionSheetWanted()) {
+    openActionSheet(anchor, session.title, items);
+    return;
+  }
+  anchor.setAttribute('aria-controls', 'sessionMenu');
   morph(menu, html`${items}`);
   showOverlay(menu, anchor);
 }
@@ -2193,8 +2283,28 @@ function syncOptions() {
 
 function openOptions(anchor) {
   syncOptions();
+  anchor.setAttribute('aria-controls', 'optionsDialog');
   anchor.setAttribute('aria-expanded', 'true');
   showOverlay(dom.optionsDialog, anchor);
+}
+
+// barMenuSession is the session the top bar's ⋮ is the menu of: the one on
+// the stage, when one is.
+function barMenuSession() {
+  return !homeShown() && state.current ? sessionOf(state.current.id) || state.current : null;
+}
+
+// drawBarMenu says on the top bar's ⋮ what a press opens: the menu of the
+// session on the stage, or this device's options.
+function drawBarMenu() {
+  const button = dom.optionsBtn;
+  const session = barMenuSession();
+  const words = !session ? 'Options for this device' : isChat(session) ? 'Chat actions' : 'Session actions';
+  if (button.getAttribute('aria-label') !== words) {
+    button.setAttribute('aria-label', words);
+    button.setAttribute('data-tip', words);
+  }
+  button.setAttribute('aria-haspopup', session && !actionSheetWanted() ? 'menu' : 'dialog');
 }
 
 // setOption is one switch of the options dialog, pressed.
@@ -3388,6 +3498,17 @@ function paneAfter(button) {
 function setTitleText(text) {
   const host = dom.sessionTitleText || dom.sessionTitle;
   if (host.textContent !== text) host.textContent = text;
+  // The name may be cut on a phone; the tip has all of it. A tap renames it
+  // (the session's menu says so too). Home has no name to say again.
+  const button = dom.sessionTitle;
+  if (state.current && text) {
+    button.setAttribute('data-tip', text);
+    button.setAttribute('aria-description', 'Rename');
+  } else {
+    button.removeAttribute('data-tip');
+    button.removeAttribute('aria-description');
+  }
+  drawBarMenu();
 }
 
 // The status chip beside the name: where the person filed the session, as an
@@ -3466,7 +3587,15 @@ function wire() {
   if (dom.sideCollapse) {
     dom.sideCollapse.addEventListener('click', () => showSidebar(!sidebarCollapsed()));
   }
-  dom.optionsBtn.addEventListener('click', (event) => openOptions(event.currentTarget));
+  // The top bar's ⋮: the menu of the session on the stage - in the chat's or
+  // the terminal's own header, where it is looked for - with this device's
+  // options as its last item; on Home, this device's options.
+  dom.optionsBtn.addEventListener('click', (event) => {
+    const button = event.currentTarget;
+    const session = barMenuSession();
+    if (session) openRowMenu(button, session.id, { device: true });
+    else openOptions(button);
+  });
   // The two buttons say whether their dialog is open: DS.overlay keeps
   // aria-expanded for menus, and a dialog's opener says it here.
   // Once one has gone, DS has put the focus back on its button - and a

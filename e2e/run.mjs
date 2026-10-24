@@ -172,12 +172,18 @@ async function focusTerm(page, timeout = 5000) {
 
 const oneLine = (text) => text.replace(/\s+/g, ' ').trim().slice(0, 200);
 
-// The top bar's ⋮ is this device's options: switches in a dialog, which stays
-// open while they are pressed. openOptions opens it when it is not open.
+// This device's options: switches in a dialog, which stays open while they
+// are pressed. On Home the top bar's ⋮ opens it; with a session on the stage
+// the ⋮ is that session's menu - a DS menu, or on a phone an action sheet -
+// and "This device…" is its last item. openOptions opens it when it is not
+// open.
 const OPTIONS = '#optionsDialog[data-state="open"]';
 async function openOptions(page) {
   if (await page.$(OPTIONS + ' [data-option]')) return;
   await page.click('#optionsBtn');
+  const first = await page.waitForSelector('#sessionMenu:not([hidden]) [data-action="device"], '
+    + 'dialog.so-actions[open] [data-action="device"], ' + OPTIONS + ' [data-option]', { timeout: 5000 });
+  if (await first.getAttribute('data-action') === 'device') await first.click();
   await page.waitForSelector(OPTIONS + ' [data-option]', { timeout: 5000 });
 }
 
@@ -3516,9 +3522,9 @@ async function design() {
       Math.round(slow) + ' ms of turn in 400 ms');
     await s.page.emulateMedia({ reducedMotion: null });
 
-    // Rule 2 and rule 3 in the top bar: Status is a mark with its words in
-    // the label a reader gets, and the microphone beside it is the one control
-    // that carries a word, because it is the one a thumb has to find.
+    // Rule 2 and rule 3 in the top bar: Status and the microphone are marks
+    // (activity and the microphone glyph), with what they are in the label a
+    // reader gets and what a press does in the tip.
     const header = await s.page.evaluate(() => {
       const read = (id) => {
         const node = document.getElementById(id);
@@ -3535,14 +3541,11 @@ async function design() {
       return { status: read('statusBtn'), mic: read('micBtn') };
     });
     ok(header.status.text === '' && header.status.svg >= 1
-      && header.status.label === header.status.title,
-      'Status is a mark, with its words in the label', JSON.stringify(header.status));
-    ok(header.status.label === 'Summarize this session' && header.mic.label === 'Speak',
-      'and the words say what pressing them does',
-      header.status.label + ' / ' + header.mic.label);
-    ok(header.mic.text === 'Speak' && header.mic.height >= 40,
-      'the microphone is the one that carries its word, at a size a thumb can hit',
-      JSON.stringify(header.mic));
+      && header.status.label === 'Status of this session' && header.status.title === 'Say what this session is doing',
+      'Status is a mark, with its name in the label and what a press does in the tip', JSON.stringify(header.status));
+    ok(header.mic.text === '' && header.mic.svg >= 1 && header.mic.label === 'Speak'
+      && header.mic.title === 'Dictate into the terminal' && header.mic.height >= 40,
+      'the microphone is a mark too, named Speak, at a size a thumb can hit', JSON.stringify(header.mic));
     const gone = await s.page.evaluate(() => ({
       auto: document.querySelectorAll('.auto-switch').length,
       bar: !!document.getElementById('audioBar'),
@@ -4817,6 +4820,8 @@ const micRow = (page) => page.evaluate(() => {
   return {
     pillInBar: !!pill && !!pill.closest('.ds-topbar'),
     pillText: pill ? pill.textContent.trim() : '',
+    pillMark: !!pill && !!pill.querySelector('.ds-btn__face:not(.ds-btn__face--busy) svg'),
+    pillLabel: pill ? pill.getAttribute('aria-label') : '',
     pillBox: box('micBtn'),
     pillDisabled: !!pill && pill.disabled,
     panel: !!node('chatPanel'),
@@ -4870,17 +4875,17 @@ async function dictate() {
     await s.page.waitForSelector('#term .xterm', { timeout: 20000 });
 
     const idle = await micRow(s.page);
-    ok(idle.pillInBar && /Speak/.test(idle.pillText),
-      'the microphone is a pill in the top bar', idle.pillText);
+    ok(idle.pillInBar && idle.pillMark && idle.pillLabel === 'Speak' && !idle.pillText,
+      'the microphone is its glyph in the top bar, named Speak', JSON.stringify({ mark: idle.pillMark, label: idle.pillLabel, text: idle.pillText }));
     ok(idle.pillBox && idle.pillBox.h >= 44,
       'big enough to be hit by a thumb', JSON.stringify(idle.pillBox));
     ok(!idle.panel, 'and there is no chat panel behind it any more', String(idle.panel));
     ok(!idle.open, 'no recording sheet is open', String(idle.open));
 
     // The bar it moved into was already the tightest row on the page, and this
-    // is the narrowest width the stylesheet has a rule for. The pill gives up
-    // its word there and keeps its 44px - what makes it findable by a thumb is
-    // the ring - and nothing may be pushed past the edge to make room for it.
+    // is the narrowest width the stylesheet has a rule for. The microphone
+    // keeps its glyph and its 44px, and nothing may be pushed past the edge
+    // to make room for it.
     await s.page.setViewportSize({ width: 320, height: 844 });
     await wait(400);
     const tight = await s.page.evaluate(() => {
@@ -4893,16 +4898,13 @@ async function dictate() {
         over: Math.round(Math.max(0, Math.max(...parts.map((b) => b.right)) - bar.right)),
         doc: document.documentElement.scrollWidth - document.documentElement.clientWidth,
         pill: { w: Math.round(pill.width), h: Math.round(pill.height) },
-        word: getComputedStyle(document.getElementById('micText')).display,
+        mark: !!document.querySelector('#micBtn .ds-btn__face:not(.ds-btn__face--busy) svg'),
       };
     });
     ok(tight.over === 0 && tight.doc <= 1,
       'at 320px every control is still inside the bar', JSON.stringify(tight));
-    // DS has no microphone glyph, so the pill keeps its one short word there
-    // and gives up padding instead; what makes it findable by a thumb is its
-    // height.
-    ok(tight.pill.w >= 44 && tight.pill.h >= 44 && tight.word !== 'none',
-      'and the microphone kept its word and its size', JSON.stringify(tight));
+    ok(tight.pill.w >= 44 && tight.pill.h >= 44 && tight.mark,
+      'and the microphone kept its glyph and its size', JSON.stringify(tight));
     await s.page.setViewportSize({ width: 390, height: 844 });
     await wait(400);
 
@@ -6509,21 +6511,37 @@ async function transfer() {
     await phone.addCookies(await s.context.cookies());
     const phonePage = await phone.newPage();
     await phonePage.goto(s.url + '/#open=' + id, { waitUntil: 'domcontentloaded' });
-    await phonePage.waitForSelector('#transfer:not([hidden])', { timeout: 20000 });
+    await phonePage.waitForSelector('#term .xterm', { timeout: 20000 });
     await wait(600);
+    // Floating over the pane they covered its first lines - a fresh shell's
+    // prompt. On a phone they are the first items of the session's menu, the
+    // top bar's ⋮, and nothing lies over the terminal.
     const placed = await phonePage.evaluate(() => {
       const bar = document.querySelector('.ds-topbar');
-      const box = document.getElementById('transfer').getBoundingClientRect();
+      const transfer = document.getElementById('transfer');
+      const term = document.getElementById('term').getBoundingClientRect();
+      const over = [...document.querySelectorAll('body *')].filter((n) => {
+        if (n.closest('#term, #termWrap, .ds-topbar, #keybar, #sidebar, #navScrim, #toasts') || !n.checkVisibility()) return false;
+        const cs = getComputedStyle(n);
+        if (cs.position !== 'absolute' && cs.position !== 'fixed') return false;
+        const r = n.getBoundingClientRect();
+        return r.width > 0 && r.height > 0 && r.bottom > term.top && r.top < term.top + 60 && r.right > term.left && r.left < term.right;
+      }).map((n) => n.id || n.className);
       return {
-        floats: getComputedStyle(document.getElementById('transfer')).position === 'absolute',
-        below: box.top >= bar.getBoundingClientRect().bottom,
-        onScreen: box.right <= innerWidth && box.left >= 0,
+        inBar: !!transfer.checkVisibility && transfer.checkVisibility(),
         fits: bar.scrollWidth <= bar.clientWidth,
-        clear: document.getElementById('termLines').getBoundingClientRect().top >= box.bottom,
+        overPane: over,
       };
     });
-    ok(placed.floats && placed.below && placed.onScreen && placed.fits && placed.clear,
-      'on a phone the three float over the pane, the bar still fits, and a notice starts under them', JSON.stringify(placed));
+    await phonePage.click('#optionsBtn');
+    await phonePage.waitForSelector('dialog.so-actions[open] .ds-menu__item', { timeout: 5000 });
+    const items = await phonePage.$$eval('dialog.so-actions[open] .ds-menu__item', (nodes) => nodes.map((n) => n.dataset.action));
+    ok(!placed.inBar && placed.fits && placed.overPane.length === 0 && items.slice(0, 3).join(',') === 'copy,paste,upload',
+      'on a phone the three lead the session\u2019s menu, the bar fits, and nothing lies over the terminal',
+      JSON.stringify({ ...placed, items: items.slice(0, 4) }));
+    await phonePage.click('dialog.so-actions[open] [data-action="copy"]');
+    const sheetUp = await phonePage.waitForSelector('#copySheet[open]', { timeout: 5000 }).then(() => true, () => false);
+    ok(sheetUp, 'and Copy there opens the pane\u2019s text, as the button does', String(sheetUp));
     await phonePage.close();
     await phone.close();
 

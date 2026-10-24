@@ -243,5 +243,6 @@ export function followViewport() {
     vv.removeEventListener('resize', apply);
     vv.removeEventListener('scroll', apply);
     document.documentElement.style.removeProperty('--so-app-h');
+    document.documentElement.removeAttribute('data-so-short');
   };
 }
