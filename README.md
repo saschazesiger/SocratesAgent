@@ -21,7 +21,7 @@ dialog is the whole screen, with big buttons, Read aloud and dictation, and an a
 goes out once the connection is back. A question answered on another device says so.
 
 <p align="center">
-  <img src="docs/screenshot-home.png" alt="Home: one chat asking which database to use, one running its tests, two that finished, and a Shell" width="640">
+  <img src="docs/screenshot-home.png" alt="Home: one chat asking which database to use, one running its tests, one that finished, and a Codex chat and a Shell" width="640">
   <img src="docs/screenshot-phone.png" alt="The question on a phone, as the whole screen: Postgres recommended, SQLite and MySQL as big buttons" width="200">
 </p>
 

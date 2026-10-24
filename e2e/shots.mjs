@@ -3,190 +3,289 @@
 //
 //   node e2e/shots.mjs
 //
-// It writes docs/screenshot-session.png, docs/screenshot-phone.png and
-// docs/screenshot-admin.png, and nothing else - docs/screenshot-tunnel.png is
-// hand-made and stays where it is. It is not part of `make e2e`: the pictures
-// are committed, so this is only run when they need redoing.
+// It writes docs/screenshot-session.png (a chat at a desk),
+// docs/screenshot-home.png (Home), docs/screenshot-phone.png (a question on
+// a phone), docs/screenshot-admin.png (Admin's accounts) and
+// docs/screenshot-backup.png (Admin's backup), and nothing else -
+// docs/screenshot-tunnel.png is hand-made and stays where it is. It is not
+// part of `make e2e`: the pictures are committed, so this is only run when
+// they need redoing.
 //
-// The sessions are the suite's fake CLI wearing the three names, because a
-// picture of the interface should show the same thing every time it is taken
-// rather than whatever a real model happened to say that afternoon. What is
-// real is everything around it: real tmux panes, a real WebSocket, the real
-// white terminal.
+// The agents are the suite's protocol fakes (e2e/fakebin) under the three
+// names, because a picture of the interface should show the same thing
+// every time it is taken rather than whatever a real model happened to say
+// that afternoon - and because a run against the machine's own HOME must
+// never happen by accident. What is real is everything around them: the
+// server, the agent hosts, the chat stream, the page. The people in the
+// pictures write in words; claude.scripts.json, written beside the fake, has
+// it run a script for each of those messages. With SOCRATES_LIVE_AGENTS=1,
+// and only then, the
+// Admin pictures are taken against the real CLIs instead; they start no chat
+// with them.
 
-import { execFileSync } from 'node:child_process';
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { start, setup, wait, ensureNav, REPO, cleanupBuild } from './harness.mjs';
+import {
+  start, setup, wait, ensureNav, REPO, cleanupBuild, LIVE, backupForm, prefixFor, binaries,
+} from './harness.mjs';
 
 const DOCS = join(REPO, 'docs');
 const DESKTOP = { width: 1280, height: 720 };
+// The chat, Home and the accounts are taller than a laptop's screen: the cards and the
+// chats under them, and every agent's accounts, are one picture each, and so
+// is a turn from the message that asked for it to its last word.
+const CHAT = { width: 1280, height: 900 };
+const TALL = { width: 1280, height: 840 };
 const PHONE = { width: 390, height: 844 };
 
-// The dashboard picture is of what Socrates found on the machine, so it is
-// taken against the real CLIs when they are installed: a screenshot showing
-// three fake binaries in a temporary directory is a picture of the test
-// harness, not of the product. With no CLIs installed it falls back to the
-// fakes. It never starts a session with them - the dashboard is a page about
-// what is installed, and nothing on it runs a model.
-const REAL_CLIS = ['claude', 'codex', 'opencode'].every((name) => {
-  try { execFileSync('which', [name], { stdio: 'ignore' }); return true; } catch { return false; }
-});
+// What the people in the pictures write, and the script each runs.
+const FIX = 'The retention window rounds down. Fix it and run the store tests.';
+const WORKING = 'Make the retention window round up, and run the store tests.';
+const STORAGE = 'Set up storage for the first release.';
+const STORAGE_ASK = {
+  title: 'Storage',
+  context: 'The shop needs a database before its first release, and nothing is set up yet.',
+  questions: [{
+    id: 'db', header: 'Database', question: 'Which database should the shop use?', kind: 'single',
+    options: [
+      { id: 'postgres', label: 'Postgres', description: 'Relational and robust; it needs a server of its own', recommended: true },
+      { id: 'sqlite', label: 'SQLite', description: 'One file beside the binary, nothing to run' },
+      { id: 'mysql', label: 'MySQL', description: 'What the hosting offers by default' },
+    ],
+  }],
+};
+const SCRIPTS = { [FIX]: '/readme', [WORKING]: '/readme 600', [STORAGE]: '/askuser ' + JSON.stringify(STORAGE_ASK) };
 
-// The pictures are taken with the DOM renderer. It draws the same terminal as
-// the shipped WebGL one, and this machine's headless Chromium has only a
-// software WebGL context, which can hand back an empty canvas.
-async function domRenderer(s) {
-  await s.context.request.put(s.url + '/api/settings', {
-    data: { settings: { terminal: { webgl: false } } },
+writeFileSync(join(binaries().bin, 'claude.scripts.json'), JSON.stringify(SCRIPTS));
+
+const boot = (viewport, options = {}) => start({ viewport, ...options });
+
+async function chat(s, harness, title, extra = {}) {
+  const res = await s.context.request.post(s.url + '/api/chats', {
+    data: { client_id: 'shots-' + Math.random().toString(36).slice(2), harness, workdir_mode: 'dynamic', title, ...extra },
+  });
+  if (res.status() !== 201) throw new Error('no ' + harness + ' chat: ' + res.status() + ' ' + await res.text());
+  return (await res.json()).session.id;
+}
+
+async function until(s, id, test, timeout = 30000) {
+  const end = Date.now() + timeout;
+  let body = null;
+  while (Date.now() < end) {
+    body = await (await s.context.request.get(s.url + '/api/chats/' + id)).json();
+    if (body.chat && test(body)) return body;
+    await wait(200);
+  }
+  throw new Error('chat ' + id + ' never got there: ' + JSON.stringify(body && body.chat));
+}
+
+// tell sends a chat a message as another device would, once its agent is up.
+async function tell(s, id, text) {
+  await until(s, id, (b) => b.chat.process === 'ready' && !b.chat.turn_running);
+  await s.context.request.post(s.url + '/api/chats/' + id + '/messages', {
+    data: { client_id: 'shots-' + Math.random().toString(36).slice(2), text },
   });
 }
 
-async function newSession(page, harness) {
+// shell starts a Shell from the sheet, the way a person does, and names it.
+async function shell(s, title) {
+  const page = s.page;
   const was = await page.evaluate(() => location.hash.slice(1));
-  // On a phone the list is a drawer, and the button that starts a session is
-  // inside it.
   await ensureNav(page);
   await page.click('#newSession');
   await page.waitForSelector('#newSessionSheet[open]', { timeout: 15000 });
-  await page.waitForSelector('#newSessionSheet .so-settings__program[data-value="' + harness + '"]', { timeout: 10000 });
-  await page.click('#newSessionSheet .so-settings__program[data-value="' + harness + '"]');
+  await page.click('#newSessionSheet .so-settings__program[data-value="shell"]');
   await page.click('#nsStart');
   await page.waitForSelector('#newSessionSheet[open]', { state: 'detached', timeout: 30000 });
-  await page.waitForFunction((before) => location.hash.length > 1 && location.hash.slice(1) !== before,
-    was, { timeout: 30000 });
-  await page.waitForSelector('#term .xterm', { timeout: 20000 });
-  return page.evaluate(() => location.hash.slice(1));
-}
-
-async function typeLine(page, text) {
-  await page.click('#term .xterm-screen');
-  await page.waitForFunction(() => document.activeElement
-    === document.querySelector('#term .xterm-helper-textarea'), null, { timeout: 5000 }).catch(() => {});
-  await page.keyboard.type(text, { delay: 8 });
-  await page.keyboard.press('Enter');
-}
-
-async function seen(page, text, timeout = 20000) {
-  await page.waitForFunction((want) => {
-    const rows = document.querySelector('#term .xterm-rows');
-    return !!rows && rows.innerText.includes(want);
-  }, text, { timeout }).catch(() => {});
-}
-
-async function rename(s, id, title) {
+  await page.waitForFunction((before) => location.hash.length > 1 && location.hash.slice(1) !== before, was, { timeout: 30000 });
+  const id = await page.evaluate(() => location.hash.slice(1));
   await s.context.request.patch(s.url + '/api/sessions/' + id, { data: { title } });
-  await s.page.evaluate(() => window.dispatchEvent(new Event('online')));
-  await s.page.waitForFunction((want) =>
-    [...document.querySelectorAll('#sessionList .so-row__label')].some((n) => n.textContent === want)
-    || (document.getElementById('sessionTitle') || {}).textContent === want,
-  title, { timeout: 20000 }).catch(() => {});
-  // The header carries the name of the session that is open, and it is redrawn
-  // from the list; on a phone that is the only place the name is visible.
-  await s.page.waitForFunction((want) =>
-    (document.getElementById('sessionTitle') || {}).textContent === want,
-  title, { timeout: 10000 }).catch(() => {});
+  return id;
 }
 
-// The desktop picture: a sidebar with a session per program, a Claude Code
-// pane open, and a turn in it.
+async function openChat(page, id) {
+  await page.waitForSelector('#sessionList [data-id="' + id + '"]', { state: 'attached', timeout: 20000 });
+  await page.evaluate((target) => { location.hash = '#' + target; }, id);
+  await page.waitForFunction((want) => location.hash.slice(1) === want
+    && !!document.querySelector('#chat:not([hidden]) .so-composer__input'), id, { timeout: 20000 });
+}
+
+const logShows = (page, text, timeout = 20000) => page.waitForFunction((want) => {
+  const log = document.querySelector('#chat .so-chat__log');
+  return !!log && log.innerText.includes(want);
+}, text, { timeout });
+
+async function goHome(page) {
+  await ensureNav(page);
+  await page.click('#homeBtn');
+  await page.waitForSelector('#home:not([hidden])', { timeout: 10000 });
+}
+
+// still leaves the picture without a hovered control or a focus ring, and
+// with the animations that end ended: one taken mid-way shows a card half in.
+async function still(page) {
+  await page.evaluate(() => { if (document.activeElement && document.activeElement.blur) document.activeElement.blur(); });
+  await page.mouse.move(4, 4);
+  await page.waitForFunction(() => document.getAnimations().every((a) => a.playState !== 'running'
+    || a.effect.getComputedTiming().iterations === Infinity), null, { timeout: 5000 }).catch(() => {});
+  await wait(400);
+}
+
+async function write(page, name, size, clip) {
+  mkdirSync(DOCS, { recursive: true });
+  await page.screenshot({ path: join(DOCS, name), ...(clip ? { clip } : {}) });
+  const shown = clip || size;
+  console.log('wrote docs/' + name + ' (' + shown.width + 'x' + shown.height + ')');
+}
+
+// The desk: the chats of the three agents and a Shell in the sidebar, and a
+// Claude Code chat open on a turn that fixed something - what it was asked,
+// its words, its edit, the tests it ran. The chat works in a folder of its
+// own with a short path, which its tool rows say in full.
 async function sessionShot() {
-  const s = await start({ viewport: DESKTOP });
+  const s = await boot(CHAT);
+  const scratch = mkdtempSync(join(tmpdir(), 'shots-'));
+  const shop = join(scratch, 'shop');
+  mkdirSync(shop);
   try {
     await setup(s.page, s.url);
-    await domRenderer(s);
-    await s.page.goto(s.url + '/', { waitUntil: 'domcontentloaded' });
-    await s.page.waitForSelector('#newSession', { state: 'attached', timeout: 15000 });
-
-    const shell = await newSession(s.page, 'shell');
-    await rename(s, shell, 'socrates · make check');
-    const codex = await newSession(s.page, 'codex');
-    await rename(s, codex, 'Codex · the flaky store test');
-    const claude = await newSession(s.page, 'claude');
-    await rename(s, claude, 'Claude Code · the retention window');
-
-    await typeLine(s.page, 'the retention window rounds down; fix it and run the store tests');
-    await seen(s.page, 'you said:');
-    await typeLine(s.page, 'now run go test ./internal/store/ and show me the failure');
-    await seen(s.page, 'show me the failure');
-    await wait(600);
-
-    mkdirSync(DOCS, { recursive: true });
-    await s.page.screenshot({ path: join(DOCS, 'screenshot-session.png') });
-    console.log('wrote docs/screenshot-session.png (' + DESKTOP.width + 'x' + DESKTOP.height + ')');
-  } finally { await s.stop(); }
-}
-
-// The phone picture: the same terminal at 390x844, with the key bar that makes
-// a terminal usable with a thumb.
-async function phoneShot() {
-  const s = await start({ viewport: PHONE });
-  try {
-    await setup(s.page, s.url);
-    await domRenderer(s);
-    await s.page.goto(s.url + '/', { waitUntil: 'domcontentloaded' });
-    await s.page.waitForSelector('#newSession', { state: 'attached', timeout: 15000 });
-
-    const id = await newSession(s.page, 'claude');
-    await rename(s, id, 'Claude Code · on the train');
-    await typeLine(s.page, 'what changed in the store package today?');
-    await seen(s.page, 'you said:');
-    // The bar is asked for in the options menu - which is what the picture
-    // is of. It may already be up on a touch screen; the switch is pressed
-    // only when it is not.
-    await s.page.click('#optionsBtn');
-    await s.page.waitForSelector('#optionsDialog[open] [data-option="keybar"]', { state: 'attached', timeout: 10000 });
-    if (!(await s.page.$eval('#optionsDialog [data-option="keybar"]', (n) => n.checked))) {
-      await s.page.click('#optionsDialog .ds-switch:has([data-option="keybar"])');
-    }
-    await s.page.click('#optionsDialog [data-close].ds-btn');
-    await s.page.waitForSelector('#optionsDialog[open]', { state: 'detached', timeout: 10000 }).catch(() => {});
-    await s.page.waitForSelector('#keybar:not([hidden])', { timeout: 10000 }).catch(() => {});
-    await wait(600);
-
-    mkdirSync(DOCS, { recursive: true });
-    await s.page.screenshot({ path: join(DOCS, 'screenshot-phone.png') });
-    console.log('wrote docs/screenshot-phone.png (' + PHONE.width + 'x' + PHONE.height + ')');
-  } finally { await s.stop(); }
-}
-
-// The dashboard picture, of the Programs cards: what Socrates found on the
-// machine, what each one is allowed to do, and the mark that names it.
-async function adminShot() {
-  const s = await start({ viewport: DESKTOP, live: REAL_CLIS });
-  try {
-    await setup(s.page, s.url);
-    await s.page.goto(s.url + '/admin', { waitUntil: 'domcontentloaded' });
-    await s.page.waitForSelector('.so-program', { timeout: 20000 });
-    // Long enough for the cards to have been rendered and re-rendered by the
-    // dashboard's own polls; scrolling before that would be undone by them.
-    await wait(4000);
-
-    // Put the Programs heading at the top of the view: those cards are what
-    // the picture is of, and they are not the first thing on the page. The
-    // view is the page's scroller, and the cards keep a margin to its top.
+    await shell(s, 'make check');
+    const codex = await chat(s, 'codex', 'The flaky store test');
+    const opencode = await chat(s, 'opencode', 'API docs for v2');
+    const claude = await chat(s, 'claude', 'Fix the retention window', { model: 'sonnet', workdir_mode: 'custom', workdir: shop });
+    await openChat(s.page, claude);
+    await s.page.fill('#chat .so-composer__input', FIX);
+    await s.page.press('#chat .so-composer__input', 'Enter');
+    await logShows(s.page, 'The store tests pass.');
+    await until(s, codex, (b) => b.chat.process === 'ready');
+    await until(s, opencode, (b) => b.chat.process === 'ready');
+    await still(s.page);
+    // From the person's message down: the turn is the picture, read from
+    // the top.
     await s.page.evaluate(() => {
-      if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
-      const cards = document.getElementById('harnessCards');
-      if (cards) cards.scrollIntoView({ block: 'start' });
+      let node = document.querySelector('#chat .so-chat__log');
+      while (node && node.scrollHeight <= node.clientHeight) node = node.parentElement;
+      if (node) node.scrollTop = 0;
     });
-    // The pointer is left wherever the last click put it, and a hovered
-    // control in a documentation picture reads as a state rather than a button.
-    await s.page.mouse.move(4, 4);
-    // The scroll moves the drawer's pill to Programs; it glides there on the
-    // spring, and a picture taken mid-glide shows it across two items.
-    await wait(1500);
+    await wait(400);
+    await write(s.page, 'screenshot-session.png', CHAT);
+  } finally {
+    await s.stop();
+    rmSync(scratch, { recursive: true, force: true });
+  }
+}
 
-    mkdirSync(DOCS, { recursive: true });
-    await s.page.screenshot({ path: join(DOCS, 'screenshot-admin.png') });
-    console.log('wrote docs/screenshot-admin.png (' + DESKTOP.width + 'x' + DESKTOP.height + ')');
+// Home: a question waiting, a chat at work, a turn nobody has read yet, and
+// a chat ready for its first message. The agents in the picture say only
+// what a script of theirs says; a message no script names would be echoed.
+async function homeShot() {
+  const s = await boot(TALL);
+  try {
+    await setup(s.page, s.url);
+    await shell(s, 'make check');
+    const done = await chat(s, 'claude', 'Fix the retention window');
+    await tell(s, done, FIX);
+    const codex = await chat(s, 'codex', 'The flaky store test');
+    const working = await chat(s, 'claude', 'Round the window up');
+    await tell(s, working, WORKING);
+    const asking = await chat(s, 'claude', 'Storage for the first release');
+    await tell(s, asking, STORAGE);
+    await until(s, asking, (b) => (b.asks || []).length > 0);
+    await until(s, done, (b) => !b.chat.turn_running);
+    await until(s, codex, (b) => b.chat.process === 'ready');
+    await goHome(s.page);
+    await s.page.waitForFunction(() => {
+      const card = document.querySelector('#home .so-home__questions');
+      return !!card && card.dataset.value === '1';
+    }, null, { timeout: 20000 });
+    await still(s.page);
+    await write(s.page, 'screenshot-home.png', TALL);
+  } finally { await s.stop(); }
+}
+
+// A phone: the question a chat asked, from Home, as the whole screen.
+async function phoneShot() {
+  const s = await boot(PHONE, { touch: true });
+  try {
+    await setup(s.page, s.url);
+    const asking = await chat(s, 'claude', 'Storage for the first release');
+    await tell(s, asking, STORAGE);
+    await until(s, asking, (b) => (b.asks || []).length > 0);
+    await s.page.waitForSelector('#home .so-home__q-action', { timeout: 20000 });
+    await s.page.click('#home .so-home__q-action');
+    await s.page.waitForSelector('dialog.so-askdlg[open] .so-q-option', { timeout: 20000 });
+    await still(s.page);
+    await write(s.page, 'screenshot-phone.png', PHONE);
+  } finally { await s.stop(); }
+}
+
+// scrollTo puts a card of Admin at the top of the view, once the page's own
+// polls have drawn it and the drawer's pill has glided to it.
+async function scrollTo(page, id) {
+  await page.waitForSelector('#' + id, { timeout: 20000 });
+  await wait(3000);
+  await page.evaluate((card) => document.getElementById(card).scrollIntoView({ block: 'start' }), id);
+  await wait(1500);
+}
+
+// Admin's accounts: two Claude Code accounts beside a Codex and an OpenCode
+// one, each on an API key, the one kind that needs no sign-in flow.
+async function adminShot() {
+  const s = await boot(TALL, { live: LIVE });
+  try {
+    await setup(s.page, s.url);
+    for (const [agentName, label, extra] of [['claude', 'Work', {}], ['claude', 'Private', {}], ['codex', 'Team', {}],
+      ['opencode', 'OpenRouter', { provider: 'openrouter' }]]) {
+      await s.context.request.post(s.url + '/api/accounts', {
+        data: { agent: agentName, kind: 'api_key', label, key: 'sk-shots-' + agentName + '-' + label.toLowerCase() + '-0000000000', ...extra },
+      });
+    }
+    await s.page.goto(s.url + '/admin', { waitUntil: 'domcontentloaded' });
+    await scrollTo(s.page, 'accountsCard');
+    await still(s.page);
+    await write(s.page, 'screenshot-admin.png', TALL);
+  } finally { await s.stop(); }
+}
+
+// Admin's backup: a bucket on the suite's fake S3, and a snapshot in it of a
+// machine with a chat on it - the card down to its snapshots, not the form
+// below them, whose fields are the fake's.
+async function backupShot() {
+  const s = await boot(DESKTOP, { live: LIVE });
+  try {
+    await setup(s.page, s.url);
+    if (!LIVE) {
+      const fixed = await chat(s, 'claude', 'Fix the retention window');
+      await tell(s, fixed, FIX);
+      await until(s, fixed, (b) => !!b.chat.last_outcome);
+    }
+    const saved = await s.context.request.put(s.url + '/api/backup/config', { data: await backupForm(prefixFor(s.data)) });
+    if (!saved.ok()) throw new Error('the backup was not configured: ' + saved.status() + ' ' + await saved.text());
+    await s.context.request.post(s.url + '/api/backup/run', { data: {} });
+    const end = Date.now() + 60000;
+    while (Date.now() < end) {
+      const snaps = ((await (await s.context.request.get(s.url + '/api/backup/snapshots')).json()).snapshots) || [];
+      if (snaps.length) break;
+      await wait(500);
+    }
+    await s.page.goto(s.url + '/admin', { waitUntil: 'domcontentloaded' });
+    await scrollTo(s.page, 'backupCard');
+    await still(s.page);
+    const cut = await s.page.evaluate(() => {
+      const bucket = document.querySelector('#backupCard .ds-subsection');
+      return bucket ? Math.round(bucket.getBoundingClientRect().top) : innerHeight;
+    });
+    await write(s.page, 'screenshot-backup.png', DESKTOP, { x: 0, y: 0, width: DESKTOP.width, height: Math.min(DESKTOP.height, cut) });
   } finally { await s.stop(); }
 }
 
 try {
   await sessionShot();
+  await homeShot();
   await phoneShot();
   await adminShot();
+  await backupShot();
 } finally {
   cleanupBuild();
 }

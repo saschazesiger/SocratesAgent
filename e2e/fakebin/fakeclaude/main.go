@@ -55,7 +55,16 @@
 //	                 the call does, then says "ask_user was withdrawn"
 //	/elicit [url]    an MCP elicitation of a form with two fields (or of a
 //	                 URL); says the answer
+//	/readme [S]      the turn of the README's pictures: a fix explained, an
+//	                 Edit of internal/store/retention.go, the store tests run
+//	                 (for S seconds, interruptible) and a summary
 //	anything else    "you said: <text>"
+//
+// <this binary>.scripts.json, a JSON object of message → script, runs a
+// script for a message that names none: the README's pictures
+// (e2e/shots.mjs, which writes the file beside the fake it built) ask in
+// words, as a person does. A file, because a chat's CLI gets no variable of
+// the suite's environment (the accounts' allow-list).
 //
 // After initialize it does the MCP handshake (initialize,
 // notifications/initialized, tools/list) with every server in sdkMcpServers,
@@ -522,7 +531,11 @@ func (f *fake) turn(ctx context.Context, j job) {
 }
 
 func (t *turnRun) script() {
-	word, rest, _ := strings.Cut(strings.TrimSpace(t.job.text), " ")
+	text := strings.TrimSpace(t.job.text)
+	if line, ok := scripted()[text]; ok {
+		text = line
+	}
+	word, rest, _ := strings.Cut(text, " ")
 	fields := strings.Fields(rest)
 	if t.job.origin != "" {
 		t.say("The background task reported back.")
@@ -573,6 +586,8 @@ func (t *turnRun) script() {
 		t.background(floatArg(fields, 0, 1))
 	case "/plan":
 		t.plan()
+	case "/readme":
+		t.readme(time.Duration(floatArg(fields, 0, 0) * float64(time.Second)))
 	case "/limit":
 		t.limit()
 	case "/retry":
@@ -780,6 +795,59 @@ func (t *turnRun) edit() {
 			"newString": "BETA", "originalFile": original, "structuredPatch": []map[string]any{{"oldStart": 1, "oldLines": 3,
 				"newStart": 1, "newLines": 3, "lines": []string{" alpha", "-beta", "+BETA", " gamma"}}}}, false, "")
 	t.say("Edited fake.txt.")
+}
+
+// scripted is the script each message of <this binary>.scripts.json runs.
+func scripted() map[string]string {
+	out := map[string]string{}
+	exe, err := os.Executable()
+	if err != nil {
+		return out
+	}
+	if raw, err := os.ReadFile(exe + ".scripts.json"); err == nil {
+		_ = json.Unmarshal(raw, &out)
+	}
+	return out
+}
+
+// readme is the turn the README's pictures show: what a fix of a retention
+// window that rounds down looks like in a chat. The tests take as long as
+// asked, for a picture of a chat at work.
+func (t *turnRun) readme(tests time.Duration) {
+	t.say("The window is cut to whole days with an integer division, so **36 hours keeps one day**. " +
+		"I'll round up instead, and run the store tests.")
+	dir := filepath.Join(t.f.cwd, "internal", "store")
+	_ = os.MkdirAll(dir, 0o755)
+	path := filepath.Join(dir, "retention.go")
+	original := "func retentionDays(hours int) int {\n\tdays := hours / 24\n\treturn max(days, 1)\n}\n"
+	_ = os.WriteFile(path, []byte(strings.Replace(original, "hours / 24", "(hours + 23) / 24", 1)), 0o644)
+	t.tool("Edit", map[string]any{"file_path": path, "old_string": "days := hours / 24", "new_string": "days := (hours + 23) / 24",
+		"replace_all": false}, "The file "+path+" has been updated successfully.",
+		map[string]any{"filePath": path, "oldString": "days := hours / 24", "newString": "days := (hours + 23) / 24",
+			"originalFile": original, "structuredPatch": []map[string]any{{"oldStart": 1, "oldLines": 4, "newStart": 1, "newLines": 4,
+				"lines": []string{" func retentionDays(hours int) int {", "-\tdays := hours / 24", "+\tdays := (hours + 23) / 24",
+					" \treturn max(days, 1)", " }"}}}}, false, "")
+	out := "ok  \tgithub.com/example/shop/internal/store\t0.412s"
+	input := map[string]any{"command": "go test ./internal/store/", "description": "Run the store tests"}
+	t.closeText()
+	if t.apiMsg == "" {
+		t.msgStart()
+	}
+	id := "toolu_fake_" + randHex(10)
+	t.f.out(t.se(map[string]any{"type": "content_block_start", "index": t.index,
+		"content_block": map[string]any{"type": "tool_use", "id": id, "name": "Bash", "input": map[string]any{}}}))
+	t.assistant(map[string]any{"type": "tool_use", "id": id, "name": "Bash", "input": input}, "")
+	t.f.out(t.se(map[string]any{"type": "content_block_stop", "index": t.index}))
+	t.index++
+	select {
+	case <-t.ctx.Done():
+		t.cut = true
+		t.result(id, "Interrupted", nil, true, "")
+		return
+	case <-time.After(tests):
+	}
+	t.result(id, out, map[string]any{"stdout": out, "stderr": "", "interrupted": false}, false, "")
+	t.say("Fixed: `retentionDays` rounds up now.\n\n- 36 hours keeps **two** days, not one\n- 24 hours still keeps one\n\nThe store tests pass.")
 }
 
 func (t *turnRun) todo() {

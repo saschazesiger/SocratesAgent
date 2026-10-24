@@ -2788,8 +2788,9 @@ real CLIs whenever all three were installed; it now uses the protocol fakes, and
 pictures against the real CLIs only with `SOCRATES_LIVE_AGENTS=1` (it starts no chat with them).
 The pictures are a chat at a desk, Home, a question on a phone, Admin's accounts and Admin's
 backup (`screenshot-home.png` and `screenshot-backup.png` are new). The people in them write in
-words: `fakeclaude` runs a script for a message `FAKECLAUDE_SCRIPTS` names, and its `/readme`
-script is the turn the desk picture shows.
+words: `fakeclaude` runs a script for a message the `claude.scripts.json` beside it names (a file,
+because a chat's CLI gets no variable of the suite's), and its `/readme` script is the turn the
+desk picture shows.
 
 **WP11 — what the ported scenarios found, fixed in the product.** Each was a scenario that failed
 for a reason in the code, not in the test:
