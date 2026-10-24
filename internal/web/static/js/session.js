@@ -2172,6 +2172,19 @@ function openActionSheet(anchor, title, items) {
   });
 }
 
+// afterMenu runs `fn` once the row menu has gone (DS.overlay closes it after
+// an item's own handler has run).
+function afterMenu(fn) {
+  const menu = dom.sessionMenu;
+  if (menu.hidden) { requestAnimationFrame(fn); return; }
+  const watch = new MutationObserver(() => {
+    if (!menu.hidden) return;
+    watch.disconnect();
+    fn();
+  });
+  watch.observe(menu, { attributes: true, attributeFilter: ['hidden'] });
+}
+
 // openRowMenu is a session's menu, from its row's ⋮ or - with `device`, and
 // then with this device's options as its last item - from the top bar's.
 async function openRowMenu(anchor, id, { device = false } = {}) {
@@ -2242,9 +2255,9 @@ async function openRowMenu(anchor, id, { device = false } = {}) {
   add('delete', editor ? 'Close VS Code' : 'Delete', editor ? 'close' : 'trash', () => deleteSession(session));
   if (device) {
     items.push(html`<div class="ds-menu__divider" role="separator"></div>`);
-    // Once the menu has gone, so that its leaving does not put the focus back
-    // on the ⋮ from under the dialog.
-    add('device', 'This device\u2026', 'settings', () => requestAnimationFrame(() => openOptions(anchor)));
+    // Once the menu has gone, so that its leaving - which puts the focus
+    // back on the ⋮ and says it is shut - does not happen under the dialog.
+    add('device', 'This device\u2026', 'settings', () => afterMenu(() => openOptions(anchor)));
   }
   if (actionSheetWanted()) {
     openActionSheet(anchor, session.title, items);
@@ -2702,6 +2715,7 @@ function detach() {
   if (state.assist) state.assist.attached();
   if (state.keybar) { state.keybar.dispose(); state.keybar = null; }
   dom.keybar.hidden = true;
+  placeToasts();
   if (state.socket) { state.socket.stop(); state.socket = null; }
   if (state.term) { state.term.dispose(); state.term = null; }
   dom.term.replaceChildren();
@@ -2955,8 +2969,27 @@ function applyKeyBar() {
   if (state.keybar) showKeyBar(keyBarWanted());
 }
 
+// placeToasts keeps the snackbars above the key bar while it is shown: a
+// message lying over Esc and Ctrl is a key bar a thumb cannot use, and an
+// error stays until it is closed (DS --ds-toast-bottom, "to stay above a
+// bar pinned there"). Only what this set is taken back.
+let toastsLifted = false;
+function placeToasts() {
+  const region = document.getElementById('toasts');
+  if (!region) return;
+  const height = dom.keybar.hidden ? 0 : dom.keybar.offsetHeight;
+  if (height) {
+    region.style.setProperty('--ds-toast-bottom', 'calc(' + height + 'px + var(--ds-space-3))');
+    toastsLifted = true;
+  } else if (toastsLifted) {
+    region.style.removeProperty('--ds-toast-bottom');
+    toastsLifted = false;
+  }
+}
+
 function showKeyBar(on) {
   dom.keybar.hidden = !on;
+  placeToasts();
   // A modifier armed on a bar nobody can see would transform the next key
   // typed with nothing on screen to say why.
   if (!on && state.keybar) state.keybar.clear();
@@ -3818,6 +3851,9 @@ async function boot() {
     openQuestions: (id) => showQuestions(id),
   });
   followViewport();
+  // A key bar that changes height - a phone turned on its side - takes the
+  // snackbars with it.
+  if (window.ResizeObserver) new ResizeObserver(() => placeToasts()).observe(dom.keybar);
   // Whether the backup has worked in the last day. Silent while it has.
   mountBackupNotice(document.getElementById('backupNotice'));
   // Read before anything is fetched. Home is the landing page whatever the
