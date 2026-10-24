@@ -873,13 +873,15 @@ attachment(s): …`).
   stream; two devices answering; answer after the call is gone; park and resume; queued messages;
   hello and 4401. WP9: the line, the question and the reading on Home (and its order before the
   activity), the briefs (300-chat start measured, a stale brief read again, the history let go and
-  read back), the badge and every push wording (a Stop pushed to nobody), the title from the first
+  read back), the badge and every push wording (a Stop pushed to nobody, a killed host's turn pushed
+  as "Stopped" and unread), the title from the first
   message and again from the journal (never over a name the person chose), Status from the journal,
-  the outcome judge (verdict, held push, Read again, a judge that fails), the cost ledger (each
-  agent's pricing, the account split, the transcript of a chat's conversation never counted, also
-  after the chat is deleted, the shared folders scanned), Ultracode reaching a Claude chat's CLI and
-  its change from the ⋮, a prepared chat started by the clock, and a lost chat folder rebuilt when
-  opened - the last three through real hosts with fakeclaude, fakecodex and fakeopencode, whose
+  the outcome judge (verdict, held push, Read again, a judge that fails, a stopped turn not judged),
+  the cost ledger (each agent's pricing with every token once, the account split with no ledger
+  left behind, a rebuilt journal's own ledgers, the transcript of a chat's conversation never
+  counted, also after the chat is deleted, the shared folders scanned), Ultracode reaching a Claude
+  chat's CLI and its change from the ⋮, a prepared chat started by the clock, and a lost chat folder
+  rebuilt when opened with no push for the history it gets back - the last three through real hosts with fakeclaude, fakecodex and fakeopencode, whose
   adapters the server's test binary registers.
 - e2e (`run.mjs`, the scripted agent): `chat-home`, `chat-push`, `chat-title`, `chat-status`,
   `chat-outcome`, `chat-prestart`, `chat-ultracode`.
