@@ -112,7 +112,8 @@ function openMenu(slot, button) {
     const current = currentOf(session, chat);
     const pending = pendingOf(session, chat);
     const best = accounts.recommended(session.harness);
-    morph(menu, html`${accounts.forAgent(session.harness).map((a) => html`<button class="ds-menu__item" role="menuitemradio" type="button" data-account="${a.id}" aria-checked="${a.id === current ? 'true' : 'false'}"${pending && pending.id === a.id ? html` data-state="pending"` : ''}>${raw(icon('check', 20, 'ds-menu__check'))}<span class="ds-menu__label"><span class="so-account-menu__text"><span class="so-account-menu__name">${a.label}</span><span class="so-account-menu__meta">${metaOf(a, a.id === best)}</span></span></span></button>`)}<div class="ds-menu__divider" role="separator"></div><button class="ds-menu__item" role="menuitem" type="button" data-action="manage">${raw(icon('settings', 20))}<span class="ds-menu__label">Manage accounts</span></button>`);
+    // It opens on the account the chat is on (autofocus), not on the first.
+    morph(menu, html`${accounts.forAgent(session.harness).map((a) => html`<button class="ds-menu__item" role="menuitemradio" type="button" data-account="${a.id}" aria-checked="${a.id === current ? 'true' : 'false'}"${a.id === current ? html` autofocus` : ''}${pending && pending.id === a.id ? html` data-state="pending"` : ''}>${raw(icon('check', 20, 'ds-menu__check'))}<span class="ds-menu__label"><span class="so-account-menu__text"><span class="so-account-menu__name">${a.label}</span><span class="so-account-menu__meta">${metaOf(a, a.id === best)}</span></span></span></button>`)}<div class="ds-menu__divider" role="separator"></div><button class="ds-menu__item" role="menuitem" type="button" data-action="manage">${raw(icon('settings', 20))}<span class="ds-menu__label">Manage accounts</span></button>`);
   };
   fill();
   menu.addEventListener('click', (event) => {

@@ -517,7 +517,8 @@ export function mountComposer(host, ctx) {
     // menu's last item there.
     const usage = $('.so-composer__usage');
     const usageHere = !usage.hidden && getComputedStyle(usage).display === 'none';
-    morph(menu, html`${list.map((m) => html`<button class="ds-menu__item" role="menuitemradio" type="button" aria-checked="${m.id === nowId ? 'true' : 'false'}" data-model="${m.id}">${raw(icon('check', 20, 'ds-menu__check'))}<span class="ds-menu__label">${m.label}</span></button>`)}${
+    // It opens on the model the chat is on (autofocus), not on the first.
+    morph(menu, html`${list.map((m) => html`<button class="ds-menu__item" role="menuitemradio" type="button" aria-checked="${m.id === nowId ? 'true' : 'false'}"${m.id === nowId ? html` autofocus` : ''} data-model="${m.id}">${raw(icon('check', 20, 'ds-menu__check'))}<span class="ds-menu__label">${m.label}</span></button>`)}${
       chosen.efforts && chosen.efforts.length ? html`<div class="ds-menu__divider" role="separator"></div>${chosen.efforts.map((e) => html`<button class="ds-menu__item" role="menuitemradio" type="button" aria-checked="${e === now.effort ? 'true' : 'false'}" data-effort="${e}">${raw(icon('check', 20, 'ds-menu__check'))}<span class="ds-menu__label">${'Effort: ' + harnesses.effortLabel(e)}</span></button>`)}` : ''
     }${usageHere ? html`<div class="ds-menu__divider" role="separator"></div><button class="ds-menu__item" role="menuitem" type="button" data-usage>${raw(icon('info', 20))}<span class="ds-menu__label">Usage of this chat</span></button>` : ''}`);
     menu.addEventListener('click', (event) => {
