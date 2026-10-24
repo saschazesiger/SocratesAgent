@@ -44,7 +44,6 @@ func TestExcluded(t *testing.T) {
 		"accounts/a1/state_5.sqlite":                         false,
 		"accounts/a1/.credentials.json":                      false,
 		"secrets.key":                                        false,
-		"accounts.migrated":                                  false,
 		"chats/run":                                          false,
 	} {
 		if got := Excluded(rel); got != want {

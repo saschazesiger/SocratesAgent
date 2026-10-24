@@ -11,7 +11,6 @@
 //	accounts/<id>/            one account's CLAUDE_CONFIG_DIR or CODEX_HOME (an OpenCode
 //	                          account's data home is agents/opencode/accounts/<id>/)
 //	secrets.key               the key that seals the accounts' API keys (0600)
-//	accounts.migrated         the agents' folders have been moved in from HOME, once
 //	terminals/<id>/           a Shell terminal's journal
 //	sessions/<id>/            today's per-session files (plan.json, journal.raw, ...)
 //	profiles/<id>/            today's per-profile CLI state, until accounts replace it
@@ -63,10 +62,6 @@ const (
 	// chat's agent host is handed (internal/accounts). It is backed up with
 	// the database it opens, so that a restore keeps the keys.
 	SecretsKey = "secrets.key"
-	// AccountsMigrated marks a data directory whose agents' folders have been
-	// moved in from HOME and whose profiles have become accounts, so that it
-	// happens once (internal/accounts, REBUILD.md §8.1-8.2).
-	AccountsMigrated = "accounts.migrated"
 	// PreRebuildBackup is the name the migration's backup gets beside the
 	// data directory: <data>.pre-rebuild.tar.
 	PreRebuildBackup = ".pre-rebuild.tar"

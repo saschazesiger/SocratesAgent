@@ -14,7 +14,6 @@ import (
 	"sort"
 	"strings"
 	"syscall"
-	"time"
 
 	"github.com/saschazesiger/SocratesAgent/internal/agent/claude"
 	"github.com/saschazesiger/SocratesAgent/internal/agent/codex"
@@ -30,21 +29,33 @@ import (
 // were lost - and every account's conversations go into the folders they
 // share.
 //
+// It runs only on a data directory of the build before: the store marks a
+// database it brings up to the schema of accounts (store.go), and nothing
+// else. A data directory this build makes - a new installation, a trial
+// with -data /tmp/x, an e2e run - never takes anything from HOME, and
+// neither does one in the temporary directory while HOME is not: a copy of
+// the old data directory rehearsed there would otherwise carry the person's
+// real logins into a folder about to be deleted.
+//
 // A login is never copied. OAuth refresh tokens rotate: of two copies, the
 // first to refresh kills the other, and whatever runs on it is logged out -
 // which is what happened to the person every few minutes. So a folder is
 // moved, never copied (a rename, which keeps every file's inode), and the
-// old path becomes a link to the new place: a Claude Code or Codex still
-// running from it, or started later by hand, keeps using the one file. A
-// move that would cross file systems, where a rename is a copy, is not made:
-// that agent's folder stays where it is and its account has no login.
+// old path becomes a link to the new place, in one step (swap): a Claude
+// Code or Codex still running from it, or started later by hand, keeps
+// using the one file and never finds the old path missing. A move that
+// would cross file systems, where a rename is a copy, is not made, and
+// neither is one of a link the person made to somewhere else: that folder
+// stays where it is and its account has no login.
 //
 // Before anything moves, all of it - the data directory and the folders
 // about to move - is written to <data>.pre-rebuild.tar. Every step is
-// idempotent and decides from what is on the disk, so a migration cut short
-// anywhere (a crash, a power cut) is finished by the next start without
-// losing or doubling anything: the accounts are found again by their origin,
-// a folder already moved is not moved again, and a missing link is made.
+// idempotent and decides from what is on the disk and from the accounts
+// already made, so a migration cut short anywhere (a crash, a power cut) is
+// finished by the next start without losing or doubling anything: the
+// accounts are found again by their origin, a folder already moved is not
+// moved again, and a missing link is made. A source that fails is said in
+// the log and tried again at the next start; the others go on.
 
 // MigrateOptions is one migration.
 type MigrateOptions struct {
@@ -56,19 +67,23 @@ type MigrateOptions struct {
 	Env  []string
 	Logf func(format string, args ...any)
 	// stopAfter ends the migration after the step of that name as a crash
-	// would, for the tests.
+	// would, and tempDir stands in for the temporary directory, for the
+	// tests.
 	stopAfter string
+	tempDir   string
 }
 
 // errStopped is a migration ended by stopAfter.
 var errStopped = errors.New("the migration was stopped")
 
-// Origins of the accounts the migration makes.
-const (
-	OriginClaude   = "~/.claude"
-	OriginCodex    = "~/.codex"
-	OriginOpenCode = "~/.local/share/opencode"
-)
+// errNoExchange is a file system that cannot swap two names in one step
+// (exchange).
+var errNoExchange = errors.New("the file system cannot exchange two names")
+
+// errForeignLink is an agent's folder that is a link of the person's own to
+// somewhere outside the data directory: what it points at is not this
+// migration's to move.
+var errForeignLink = errors.New("a link to somewhere else")
 
 // lostDetail is why an account made from a profile whose folders are gone
 // cannot be used yet.
@@ -97,10 +112,15 @@ type source struct {
 	relative bool
 }
 
-// Migrate runs the migration if this data directory has not had it.
+// Migrate runs the migration if this data directory is one of the build
+// before accounts and has not had it.
 func Migrate(opts MigrateOptions) error {
 	if opts.Logf == nil {
 		opts.Logf = func(string, ...any) {}
+	}
+	pending, err := opts.Store.AccountsMigrationPending()
+	if err != nil || !pending {
+		return err
 	}
 	abs, err := filepath.Abs(opts.DataDir)
 	if err != nil {
@@ -113,10 +133,6 @@ func Migrate(opts MigrateOptions) error {
 		}
 	}
 	m.home = m.env["HOME"]
-	marker := m.layout.Path(paths.AccountsMigrated)
-	if _, err := os.Stat(marker); err == nil {
-		return nil
-	}
 	sources, lost, err := m.plan()
 	if err != nil {
 		return err
@@ -129,26 +145,39 @@ func Migrate(opts MigrateOptions) error {
 			return err
 		}
 	}
+	var failed []error
 	for _, src := range sources {
 		if err := m.move(src); err != nil {
-			return fmt.Errorf("move %s: %w", src.from, err)
+			if errors.Is(err, errStopped) {
+				return err
+			}
+			failed = append(failed, fmt.Errorf("move %s: %w", src.from, err))
 		}
 	}
 	for _, a := range lost {
-		if err := m.opts.Store.CreateAccount(a); err != nil {
+		err := m.opts.Store.CreateAccount(a)
+		if err == nil {
+			err = Prepare(m.layout.Root, a)
+		}
+		if err == nil {
+			err = m.step("lost:" + a.Origin)
+		}
+		if errors.Is(err, errStopped) {
 			return err
 		}
-		if err := Prepare(m.layout.Root, a); err != nil {
-			return err
-		}
-		if err := m.step("lost:" + a.Origin); err != nil {
-			return err
+		if err != nil {
+			failed = append(failed, fmt.Errorf("the account of the lost profile %s: %w", a.Label, err))
 		}
 	}
-	if err := os.WriteFile(marker, []byte(time.Now().UTC().Format(time.RFC3339)+"\n"), 0o600); err != nil {
+	if len(failed) > 0 {
+		return errors.Join(failed...)
+	}
+	if err := m.opts.Store.FinishAccountsMigration(); err != nil {
 		return err
 	}
-	m.opts.Logf("accounts: the agents' folders are in %s now; the old ones are links to them", m.layout.Root)
+	if len(sources) > 0 {
+		m.opts.Logf("accounts: the agents' folders are in %s now; the old ones are links to them", m.layout.Root)
+	}
 	return nil
 }
 
@@ -159,14 +188,31 @@ func (m *migration) step(name string) error {
 	return nil
 }
 
-// plan is what there is to move, and the profiles whose folders are gone.
+// plan is what there is to move, and the profiles whose folders are gone. A
+// source is there while its folder is, and also once its account has been
+// made: a run cut short after the move and before the link has left nothing
+// at the old path, and the account is what says the rest is still to do.
 func (m *migration) plan() ([]source, []*store.Account, error) {
+	list, err := m.opts.Store.ListAccounts()
+	if err != nil {
+		return nil, nil, err
+	}
+	begun := map[string]bool{}
+	for i := range list {
+		if list[i].Origin != "" {
+			begun[list[i].Origin] = true
+		}
+	}
 	var sources []source
 	add := func(src source) {
 		if src.from == "" {
 			return
 		}
-		if fi, err := os.Lstat(src.from); err == nil && (fi.IsDir() || m.movedHere(src.from)) {
+		if why := m.leftAlone(src.from); why != "" {
+			m.opts.Logf("accounts: %s stays where it is: %s", src.from, why)
+			return
+		}
+		if begun[src.origin] || m.present(src.from) {
 			sources = append(sources, src)
 			return
 		}
@@ -210,16 +256,13 @@ func (m *migration) plan() ([]source, []*store.Account, error) {
 		}
 		dir := filepath.Join(m.layout.Path(paths.Profiles), p.ID)
 		found := 0
-		for _, one := range []struct{ agent, sub string }{
-			{Claude, "claude"}, {Codex, "codex"}, {OpenCode, filepath.Join("xdg-data", "opencode")},
-		} {
-			from := filepath.Join(dir, one.sub)
-			if fi, err := os.Lstat(from); err != nil || (!fi.IsDir() && !m.movedHere(from)) {
+		for _, one := range profileFolders {
+			from, origin := filepath.Join(dir, one.sub), "profile:"+p.ID+":"+one.agent
+			if !begun[origin] && !m.present(from) {
 				continue
 			}
 			found++
-			sources = append(sources, source{origin: "profile:" + p.ID + ":" + one.agent, agent: one.agent,
-				label: label, from: from, relative: true})
+			sources = append(sources, source{origin: origin, agent: one.agent, label: label, from: from, relative: true})
 		}
 		if found > 0 {
 			continue
@@ -233,10 +276,94 @@ func (m *migration) plan() ([]source, []*store.Account, error) {
 		}
 		for _, name := range agents {
 			lost = append(lost, &store.Account{ID: NewID(), Agent: name, Label: label, Kind: Subscription,
-				State: NeedsSignIn, StateDetail: lostDetail, Origin: "profile:" + p.ID + ":" + name})
+				State: NeedsSignIn, StateDetail: lostDetail, Origin: "lost:" + p.ID + ":" + name})
 		}
 	}
 	return sources, lost, nil
+}
+
+// present reports whether an agent's folder is there to move, or was moved
+// here already: a folder, or a link to one.
+func (m *migration) present(path string) bool {
+	fi, err := os.Lstat(path)
+	if err != nil {
+		return false
+	}
+	if fi.IsDir() || m.movedHere(path) {
+		return true
+	}
+	// A link of the person's own: its account is made and says why the
+	// folder stayed where it is.
+	target, err := os.Stat(path)
+	return fi.Mode()&fs.ModeSymlink != 0 && err == nil && target.IsDir()
+}
+
+// leftAlone says why a folder outside the data directory is not moved into
+// it, or "" when it may be.
+func (m *migration) leftAlone(path string) string {
+	if _, inside := m.layout.Rel(path); inside {
+		return ""
+	}
+	for _, multi := range m.multiAuth() {
+		if within(multi, path) {
+			return "it is part of " + multi + ", which Socrates leaves alone"
+		}
+	}
+	tmp := m.opts.tempDir
+	if tmp == "" {
+		tmp = os.TempDir()
+	}
+	if within(tmp, m.layout.Root) && !within(tmp, path) {
+		return "the data directory is in the temporary directory, and nothing from outside it moves into one there"
+	}
+	return ""
+}
+
+// multiAuth are the folders of the multi-account tools the person used
+// before accounts, which are left alone (REBUILD.md §8.3).
+func (m *migration) multiAuth() []string {
+	var out []string
+	if m.home != "" {
+		out = append(out, filepath.Join(m.home, ".codex-multi"))
+	}
+	config := m.env["XDG_CONFIG_HOME"]
+	if config == "" && m.home != "" {
+		config = filepath.Join(m.home, ".config")
+	}
+	if config != "" {
+		out = append(out, filepath.Join(config, "opencode-multi-auth"))
+	}
+	return out
+}
+
+// within reports whether path is dir or inside it, as written and with every
+// link resolved.
+func within(dir, path string) bool {
+	inside := func(dir, path string) bool {
+		rel, err := filepath.Rel(dir, path)
+		return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+	}
+	dir, path = filepath.Clean(dir), filepath.Clean(path)
+	if inside(dir, path) {
+		return true
+	}
+	realDir, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		return false
+	}
+	if inside(realDir, path) {
+		return true
+	}
+	// The path itself may not be there (yet); its parent is enough.
+	for p := path; ; p = filepath.Dir(p) {
+		if real, err := filepath.EvalSymlinks(p); err == nil {
+			rel, _ := filepath.Rel(p, path)
+			return inside(realDir, filepath.Join(real, rel))
+		}
+		if p == filepath.Dir(p) {
+			return false
+		}
+	}
 }
 
 // xdg is OpenCode's folder under an XDG base directory.
@@ -286,15 +413,22 @@ func (m *migration) profileAgents() (map[string][]string, error) {
 }
 
 // movedHere reports whether path is a link the migration left: one that
-// points into the data directory.
+// points into the data directory. It reads what the link says rather than
+// following it, so a link whose folder is not there yet counts as well.
 func (m *migration) movedHere(path string) bool {
 	fi, err := os.Lstat(path)
 	if err != nil || fi.Mode()&fs.ModeSymlink == 0 {
 		return false
 	}
-	target, err := filepath.EvalSymlinks(path)
+	target, err := os.Readlink(path)
 	if err != nil {
 		return false
+	}
+	if !filepath.IsAbs(target) {
+		target = filepath.Join(filepath.Dir(path), target)
+	}
+	if _, inside := m.layout.Rel(target); inside {
+		return true
 	}
 	root, err := filepath.EvalSymlinks(m.layout.Root)
 	if err != nil {
@@ -314,7 +448,8 @@ func (m *migration) dest(src source, id string) string {
 
 // move moves one source into its account and links the old path to it.
 func (m *migration) move(src source) error {
-	a := &store.Account{ID: NewID(), Agent: src.agent, Label: src.label, Kind: Subscription,
+	id := NewID()
+	a := &store.Account{ID: id, Agent: src.agent, Label: src.label, Kind: Subscription,
 		State: NeedsSignIn, Origin: src.origin}
 	if err := m.opts.Store.CreateAccount(a); err != nil {
 		return err
@@ -324,15 +459,27 @@ func (m *migration) move(src source) error {
 	}
 	dst := m.dest(src, a.ID)
 	if err := m.relocate(src.from, dst, src.relative); err != nil {
-		if errors.Is(err, syscall.EXDEV) {
+		detail := ""
+		switch {
+		case errors.Is(err, syscall.EXDEV):
 			// A rename across file systems would be a copy of the login.
 			m.opts.Logf("accounts: %s is on another file system than %s; it stays where it is, and %s has to be signed in",
 				src.from, m.layout.Root, src.label)
-			_ = m.opts.Store.SetAccountState(a.ID, NeedsSignIn,
-				"The agent's own folder is on another file system, so it was not moved. Sign in here.")
-			return Prepare(m.layout.Root, a)
+			detail = "The agent's own folder is on another file system, so it was not moved. Sign in here."
+		case errors.Is(err, errForeignLink):
+			m.opts.Logf("accounts: %s is %v; it stays where it is, and %s has to be signed in", src.from, err, src.label)
+			detail = "The agent's own folder is a link of yours to another place, so it was not moved. Sign in here, or move it by hand."
+		default:
+			return err
 		}
-		return err
+		// Said once, by the run that made the account: a sign-in since then
+		// is not undone by a later run.
+		if a.ID == id {
+			if err := m.opts.Store.SetAccountState(a.ID, NeedsSignIn, detail); err != nil {
+				return err
+			}
+		}
+		return Prepare(m.layout.Root, a)
 	}
 	if err := m.step("moved:" + src.origin); err != nil {
 		return err
@@ -363,10 +510,10 @@ func (m *migration) move(src source) error {
 		}
 		if src.origin == OriginOpenCode {
 			if err := m.relocate(m.xdg("XDG_CONFIG_HOME", ".config"), filepath.Join(opencode.NewLayout(m.layout.Root).ConfigHome(), "opencode"), false); err != nil {
-				if !errors.Is(err, syscall.EXDEV) {
+				if !errors.Is(err, syscall.EXDEV) && !errors.Is(err, errForeignLink) {
 					return err
 				}
-				m.opts.Logf("accounts: OpenCode's configuration is on another file system; it stays where it is")
+				m.opts.Logf("accounts: OpenCode's configuration stays where it is (%v)", err)
 			}
 		}
 	}
@@ -380,43 +527,12 @@ func (m *migration) move(src source) error {
 // shares (the layout's).
 var openCodeShared = []string{"snapshot", "storage", "tool-output", "plans", "worktree", "repos"}
 
-// relocate moves the folder from to dst - a rename, never a copy - and
-// leaves a link at from that points at dst. Each part is skipped when it is
-// done: from already a link here, dst already there.
+// relocate moves the folder from to dst and leaves a link at from that
+// points at dst (swap). Each part is skipped when it is done: from already
+// a link here, dst already there.
 func (m *migration) relocate(from, dst string, relative bool) error {
 	if from == "" {
 		return nil
-	}
-	fi, err := os.Lstat(from)
-	switch {
-	case err == nil && fi.Mode()&fs.ModeSymlink != 0:
-		if m.movedHere(from) {
-			return nil
-		}
-		// A link of the person's own to somewhere else: what it points at
-		// is the folder, and it is not this migration's to move.
-		return fmt.Errorf("%s is a link to somewhere else; move it by hand", from)
-	case err == nil:
-		if _, derr := os.Lstat(dst); derr == nil {
-			return fmt.Errorf("both %s and %s exist", from, dst)
-		}
-		if err := os.MkdirAll(filepath.Dir(dst), 0o700); err != nil {
-			return err
-		}
-		if err := os.Rename(from, dst); err != nil {
-			var linkErr *os.LinkError
-			if errors.As(err, &linkErr) && errors.Is(linkErr.Err, syscall.EXDEV) {
-				return syscall.EXDEV
-			}
-			return err
-		}
-	case errors.Is(err, fs.ErrNotExist):
-		if _, derr := os.Lstat(dst); derr != nil {
-			// Nothing to move, and nothing moved.
-			return nil
-		}
-	default:
-		return err
 	}
 	target := dst
 	if relative {
@@ -426,19 +542,91 @@ func (m *migration) relocate(from, dst string, relative bool) error {
 		}
 		target = rel
 	}
+	fi, err := os.Lstat(from)
+	switch {
+	case err == nil && fi.Mode()&fs.ModeSymlink != 0:
+		if m.movedHere(from) {
+			return nil
+		}
+		link, _ := os.Readlink(from)
+		return fmt.Errorf("%w (%s)", errForeignLink, link)
+	case err == nil:
+		if err := clearPlaceholder(from, dst); err != nil {
+			return err
+		}
+		return swap(from, dst, target)
+	case errors.Is(err, fs.ErrNotExist):
+		// Moved by a run cut short before its link, where the file system
+		// could not swap - or nothing to move, and nothing moved.
+		if di, derr := os.Lstat(dst); derr != nil || di.Mode()&fs.ModeSymlink != 0 {
+			return nil
+		}
+		return os.Symlink(target, from)
+	default:
+		return err
+	}
+}
+
+// clearPlaceholder removes the link a swap cut short left at dst before its
+// exchange, and refuses a real dst: then both are there, and neither is the
+// migration's to throw away.
+func clearPlaceholder(from, dst string) error {
+	fi, err := os.Lstat(dst)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return nil
+	case err != nil:
+		return err
+	case fi.Mode()&fs.ModeSymlink == 0:
+		return fmt.Errorf("both %s and %s exist", from, dst)
+	}
+	return os.Remove(dst)
+}
+
+// swap moves the file or folder from to dst - a rename, never a copy - and
+// leaves at from a link whose text is target, in one step: a link is made
+// at dst first (pointing nowhere useful until then) and the two names are
+// exchanged, so at every moment from is either the folder or the link to
+// it. A Claude Code that writes by path meanwhile never finds from missing,
+// and never makes a second folder - with a second login in it - there.
+// Where the file system cannot exchange, it is a rename and then the link.
+func swap(from, dst, target string) error {
+	if err := os.MkdirAll(filepath.Dir(dst), 0o700); err != nil {
+		return err
+	}
+	if err := os.Symlink(target, dst); err != nil {
+		return err
+	}
+	err := exchange(from, dst)
+	if err == nil {
+		return nil
+	}
+	if rerr := os.Remove(dst); rerr != nil {
+		return rerr
+	}
+	if !errors.Is(err, errNoExchange) {
+		return err
+	}
+	if err := os.Rename(from, dst); err != nil {
+		var linkErr *os.LinkError
+		if errors.As(err, &linkErr) && errors.Is(linkErr.Err, syscall.EXDEV) {
+			return syscall.EXDEV
+		}
+		return err
+	}
 	return os.Symlink(target, from)
 }
 
 // relocateClaudeJSON moves ~/.claude.json into the account's folder, where
 // Claude Code reads its global config once CLAUDE_CONFIG_DIR is set, and
-// links it back. A .claude.json the folder already had is one nothing read
-// while CLAUDE_CONFIG_DIR was unset; it is kept beside, under a name nothing
-// reads either.
+// links it back (swap). A .claude.json the folder already had is one
+// nothing read while CLAUDE_CONFIG_DIR was unset; it is kept beside, under a
+// name nothing reads either.
 func (m *migration) relocateClaudeJSON(from, dst string) error {
 	fi, err := os.Lstat(from)
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
-		if _, err := os.Lstat(dst); err == nil {
+		if di, err := os.Lstat(dst); err == nil && di.Mode()&fs.ModeSymlink == 0 {
 			return os.Symlink(dst, from)
 		}
 		return nil
@@ -447,61 +635,105 @@ func (m *migration) relocateClaudeJSON(from, dst string) error {
 	case fi.Mode()&fs.ModeSymlink != 0:
 		return nil
 	}
-	if err := os.MkdirAll(filepath.Dir(dst), 0o700); err != nil {
-		return err
-	}
-	if _, err := os.Lstat(dst); err == nil {
-		aside := dst + ".pre-rebuild"
-		for i := 2; ; i++ {
-			if _, err := os.Lstat(aside); errors.Is(err, fs.ErrNotExist) {
-				break
-			}
-			aside = fmt.Sprintf("%s.pre-rebuild.%d", dst, i)
-		}
-		if err := os.Rename(dst, aside); err != nil {
-			return err
-		}
-	}
-	if err := os.Rename(from, dst); err != nil {
-		return err
-	}
-	return os.Symlink(dst, from)
-}
-
-// share moves what an account has of the folders every account of its agent
-// shares into the shared ones, so that the adapter's own linking finds
-// nothing in its way. A file both have stays the account's, in a folder of
-// the same name with .pre-rebuild added, which nothing reads: nothing is
-// overwritten and nothing is deleted.
-func (m *migration) share(accountDir, shared string, names []string) error {
-	for _, name := range names {
-		own := filepath.Join(accountDir, name)
-		fi, err := os.Lstat(own)
-		if err != nil || !fi.IsDir() {
-			continue
-		}
-		into := filepath.Join(shared, name)
-		if err := os.MkdirAll(into, 0o700); err != nil {
-			return err
-		}
-		if err := mergeTree(own, into); err != nil {
-			return err
-		}
-		if empty, _ := isEmpty(own); empty {
-			if err := os.Remove(own); err != nil {
+	if di, err := os.Lstat(dst); err == nil {
+		if di.Mode()&fs.ModeSymlink != 0 {
+			// The link of a swap cut short.
+			if err := os.Remove(dst); err != nil {
 				return err
 			}
-			continue
-		}
-		aside := own + ".pre-rebuild"
-		if _, err := os.Lstat(aside); err == nil {
-			continue
-		}
-		if err := os.Rename(own, aside); err != nil {
+		} else if err := os.Rename(dst, free(dst+".pre-rebuild")); err != nil {
 			return err
+		}
+	}
+	return swap(from, dst, dst)
+}
+
+// free is name, or name.2, name.3 ... whichever is not taken.
+func free(name string) string {
+	aside := name
+	for i := 2; ; i++ {
+		if _, err := os.Lstat(aside); errors.Is(err, fs.ErrNotExist) {
+			return aside
+		}
+		aside = fmt.Sprintf("%s.%d", name, i)
+	}
+}
+
+// share puts what an account has of the folders every account of its agent
+// shares into the shared ones. The account's own folder becomes the link
+// the adapter makes (swap, so a CLI still writing into it by path writes
+// into the shared one from then on), what was in it is set aside as
+// <name>.pre-rebuild and moved into the shared folder. A file both have
+// stays the account's, in that folder aside, which nothing reads: nothing is
+// overwritten and nothing is deleted. A run cut short is finished by the
+// next, which merges what is still aside.
+func (m *migration) share(accountDir, shared string, names []string) error {
+	for _, name := range names {
+		own, into := filepath.Join(accountDir, name), filepath.Join(shared, name)
+		rel, err := filepath.Rel(accountDir, into)
+		if err != nil {
+			return err
+		}
+		asides, err := asidesOf(accountDir, name)
+		if err != nil {
+			return err
+		}
+		for _, aside := range asides {
+			// The link of a swap cut short before its exchange.
+			if fi, err := os.Lstat(aside); err == nil && fi.Mode()&fs.ModeSymlink != 0 {
+				if err := os.Remove(aside); err != nil {
+					return err
+				}
+			}
+		}
+		if fi, err := os.Lstat(own); err == nil && fi.IsDir() {
+			if err := os.MkdirAll(into, 0o700); err != nil {
+				return err
+			}
+			if err := swap(own, free(own+".pre-rebuild"), rel); err != nil {
+				return err
+			}
+		}
+		if asides, err = asidesOf(accountDir, name); err != nil {
+			return err
+		}
+		for _, aside := range asides {
+			if fi, err := os.Lstat(aside); err != nil || !fi.IsDir() {
+				continue
+			}
+			if err := os.MkdirAll(into, 0o700); err != nil {
+				return err
+			}
+			if err := mergeTree(aside, into); err != nil {
+				return err
+			}
+			if empty, _ := isEmpty(aside); empty {
+				if err := os.Remove(aside); err != nil {
+					return err
+				}
+			}
 		}
 	}
 	return nil
+}
+
+// asidesOf are the folders share set aside of name in dir.
+func asidesOf(dir, name string) ([]string, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var out []string
+	base := name + ".pre-rebuild"
+	for _, e := range entries {
+		if e.Name() == base || strings.HasPrefix(e.Name(), base+".") {
+			out = append(out, filepath.Join(dir, e.Name()))
+		}
+	}
+	return out, nil
 }
 
 // mergeTree moves every entry of src that dst does not have into dst,

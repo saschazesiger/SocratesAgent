@@ -35,6 +35,13 @@ var fixtureLogins = map[string]string{
 	".local/share/opencode/auth.json": `{"openai":{"type":"oauth","refresh":"rt-opencode","access":"at-opencode","expires":1}}`,
 }
 
+// The folders of the multi-account tools, which the migration leaves alone.
+var multiAuth = map[string]string{
+	".codex-multi/one/auth.json":                     `{"tokens":{"refresh_token":"rt-multi"}}`,
+	".config/opencode-multi-auth/accounts.json":      `{"rt":"rt-multi-oc"}`,
+	".config/opencode-multi-auth/one/opencode.jsonc": "{}",
+}
+
 // The profile with its folders still there.
 var profileLogins = map[string]string{
 	"profiles/p-bbbbbbbbbbbb/claude/.credentials.json": `{"claudeAiOauth":{"accessToken":"at-work","refreshToken":"rt-work"}}`,
@@ -72,6 +79,9 @@ func fixture(t *testing.T) (data, home string) {
 	write(t, filepath.Join(home, ".local/share/opencode/storage/session_diff/ses_1.json"), "[]")
 	write(t, filepath.Join(home, ".local/share/opencode/snapshot/proj/abc/HEAD"), "ref")
 	write(t, filepath.Join(home, ".config/opencode/opencode.jsonc"), "{}")
+	for rel, content := range multiAuth {
+		write(t, filepath.Join(home, rel), content)
+	}
 	for rel, content := range profileLogins {
 		write(t, filepath.Join(data, rel), content)
 	}
@@ -108,12 +118,50 @@ func fixture(t *testing.T) (data, home string) {
 // migration, stopped after stop when it is set.
 func migrateOnce(t *testing.T, data, home, stop string) error {
 	t.Helper()
+	return migrateWith(t, MigrateOptions{DataDir: data, Env: []string{"HOME=" + home}, stopAfter: stop})
+}
+
+func migrateWith(t *testing.T, opts MigrateOptions) error {
+	t.Helper()
+	st, err := store.Open(filepath.Join(opts.DataDir, "socrates.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	opts.Store, opts.Logf = st, t.Logf
+	return Migrate(opts)
+}
+
+// pending reports whether the store still marks the migration as due.
+func pending(t *testing.T, data string) bool {
+	t.Helper()
 	st, err := store.Open(filepath.Join(data, "socrates.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer st.Close()
-	return Migrate(MigrateOptions{DataDir: data, Store: st, Env: []string{"HOME=" + home}, Logf: t.Logf, stopAfter: stop})
+	due, err := st.AccountsMigrationPending()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return due
+}
+
+// untouched fails unless every file of the fixture under rels is still a
+// file of its own in home, with its content, and no folder above it is a
+// link.
+func untouched(t *testing.T, home string, files map[string]string) {
+	t.Helper()
+	for rel, content := range files {
+		for p := filepath.Join(home, rel); p != home; p = filepath.Dir(p) {
+			if fi, err := os.Lstat(p); err != nil || fi.Mode()&fs.ModeSymlink != 0 {
+				t.Fatalf("%s was moved: %v %v", p, fi, err)
+			}
+		}
+		if raw, err := os.ReadFile(filepath.Join(home, rel)); err != nil || string(raw) != content {
+			t.Fatalf("%s: %q %v", rel, raw, err)
+		}
+	}
 }
 
 // outcome is what a migration left, in words that two runs can be compared
@@ -217,9 +265,9 @@ func TestTheMigrationMovesEveryLoginOnceAndLinksTheOldPaths(t *testing.T) {
 	got := outcome(t, data)
 	want := []string{
 		"claude|Default|~/.claude|signed in|me@example.com|",
-		"claude|Team Sascha|profile:p-aaaaaaaaaaaa:claude|not signed in||" + lostDetail,
+		"claude|Team Sascha|lost:p-aaaaaaaaaaaa:claude|not signed in||" + lostDetail,
 		"claude|Work|profile:p-bbbbbbbbbbbb:claude|signed in||",
-		"codex|Campus|profile:p-cccccccccccc:codex|not signed in||" + lostDetail,
+		"codex|Campus|lost:p-cccccccccccc:codex|not signed in||" + lostDetail,
 		"codex|Default|~/.codex|signed in|codex@example.com|",
 		"codex|Work|profile:p-bbbbbbbbbbbb:codex|signed in||",
 		"opencode|Default|~/.local/share/opencode|signed in||",
@@ -287,6 +335,7 @@ func TestTheMigrationMovesEveryLoginOnceAndLinksTheOldPaths(t *testing.T) {
 		}
 	}
 	isLink(t, filepath.Join(home, ".config/opencode"))
+	untouched(t, home, multiAuth)
 
 	// Not one login exists twice (the backup tar aside, which nothing can
 	// run on).
@@ -313,14 +362,15 @@ func TestTheMigrationMovesEveryLoginOnceAndLinksTheOldPaths(t *testing.T) {
 		t.Fatalf("the backup is %v", fi.Mode())
 	}
 
-	// Once: a second start does nothing, and one without the marker finds
+	// Once: a second start does nothing, and one that runs it again finds
 	// everything done.
+	if pending(t, data) {
+		t.Fatal("the finished migration is still due")
+	}
 	if err := migrateOnce(t, data, home, ""); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Remove(filepath.Join(data, "accounts.migrated")); err != nil {
-		t.Fatal(err)
-	}
+	markPending(t, data)
 	if err := migrateOnce(t, data, home, ""); err != nil {
 		t.Fatal(err)
 	}
@@ -340,7 +390,7 @@ func TestAnInterruptedMigrationIsFinishedByTheNextStart(t *testing.T) {
 	for _, step := range []string{
 		"backup", "account:" + OriginClaude, "moved:" + OriginClaude, "json:" + OriginClaude, "shared:" + OriginClaude,
 		"account:" + OriginCodex, "moved:" + OriginCodex, "moved:" + OriginOpenCode, "shared:" + OriginOpenCode,
-		"account:profile:p-bbbbbbbbbbbb:claude", "moved:profile:p-bbbbbbbbbbbb:codex", "lost:profile:p-aaaaaaaaaaaa:claude",
+		"account:profile:p-bbbbbbbbbbbb:claude", "moved:profile:p-bbbbbbbbbbbb:codex", "lost:lost:p-aaaaaaaaaaaa:claude",
 	} {
 		t.Run(strings.ReplaceAll(step, "/", "_"), func(t *testing.T) {
 			data, home := fixture(t)
@@ -366,22 +416,254 @@ func TestAnInterruptedMigrationIsFinishedByTheNextStart(t *testing.T) {
 	}
 }
 
-// A HOME with nothing to move and no profiles makes no accounts and no
-// backup: a new installation starts empty.
-func TestANewInstallationHasNothingToMigrate(t *testing.T) {
+// A data directory this build makes - a new installation, a trial with
+// -data /tmp/x, an e2e run - never takes the agents' folders out of HOME,
+// however many there are: only a database of the build before accounts is
+// marked for the migration.
+func TestANewDataDirectoryLeavesHomeAlone(t *testing.T) {
+	_, home := fixture(t)
 	data := filepath.Join(t.TempDir(), "data")
-	home := t.TempDir()
 	if err := migrateOnce(t, data, home, ""); err != nil {
 		t.Fatal(err)
 	}
 	if got := outcome(t, data); len(got) != 0 {
 		t.Fatalf("accounts %v", got)
 	}
+	untouched(t, home, fixtureLogins)
+	untouched(t, home, map[string]string{".config/opencode/opencode.jsonc": "{}"})
 	if _, err := os.Stat(data + ".pre-rebuild.tar"); !errors.Is(err, fs.ErrNotExist) {
 		t.Fatalf("a backup of nothing: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(data, "accounts.migrated")); err != nil {
-		t.Fatalf("no marker: %v", err)
+}
+
+// An old data directory copied into the temporary directory - a rehearsal -
+// has its profiles migrated, but a HOME outside the temporary directory is
+// not moved into it: the copy is about to be deleted, and the logins with
+// it.
+func TestATemporaryDataDirectoryLeavesARealHomeAlone(t *testing.T) {
+	data, home := fixture(t)
+	root := t.TempDir()
+	tmp := filepath.Join(root, "tmp")
+	if err := os.MkdirAll(tmp, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	trial := filepath.Join(tmp, "data")
+	if err := os.Rename(data, trial); err != nil {
+		t.Fatal(err)
+	}
+	if err := migrateWith(t, MigrateOptions{DataDir: trial, Env: []string{"HOME=" + home}, tempDir: tmp}); err != nil {
+		t.Fatal(err)
+	}
+	untouched(t, home, fixtureLogins)
+	got := outcome(t, trial)
+	for _, line := range got {
+		if strings.Contains(line, "|Default|") {
+			t.Fatalf("a Default account was made of the real HOME: %v", got)
+		}
+	}
+	if len(got) != 4 {
+		t.Fatalf("the profiles' accounts: %v", got)
+	}
+	if pending(t, trial) {
+		t.Fatal("the migration is still due")
+	}
+}
+
+// CODEX_HOME pointing into ~/.codex-multi is one of the multi-account
+// tool's accounts, which stays where it is.
+func TestTheMultiAccountFoldersStayWhereTheyAre(t *testing.T) {
+	data, home := fixture(t)
+	env := []string{"HOME=" + home, "CODEX_HOME=" + filepath.Join(home, ".codex-multi", "one")}
+	if err := migrateWith(t, MigrateOptions{DataDir: data, Env: env}); err != nil {
+		t.Fatal(err)
+	}
+	untouched(t, home, multiAuth)
+	for _, line := range outcome(t, data) {
+		if strings.HasPrefix(line, "codex|Default|") {
+			t.Fatalf("the multi-account tool's folder became an account: %s", line)
+		}
+	}
+}
+
+// A crash between the move of a folder and the link back - where the file
+// system cannot swap the two in one step - leaves nothing at the old path.
+// The account made before the move is what tells the next start that the
+// link and the rest are still to do.
+func TestACrashBetweenTheMoveAndTheLinkIsFinished(t *testing.T) {
+	clean, cleanHome := fixture(t)
+	if err := migrateOnce(t, clean, cleanHome, ""); err != nil {
+		t.Fatal(err)
+	}
+	want := outcome(t, clean)
+	for _, c := range []struct{ origin, from string }{
+		{OriginCodex, ".codex"},
+		{OriginOpenCode, ".local/share/opencode"},
+		{"profile:p-bbbbbbbbbbbb:claude", "profiles/p-bbbbbbbbbbbb/claude"},
+	} {
+		t.Run(strings.ReplaceAll(c.origin, "/", "_"), func(t *testing.T) {
+			data, home := fixture(t)
+			if err := migrateOnce(t, data, home, "account:"+c.origin); !errors.Is(err, errStopped) {
+				t.Fatalf("the run stopped with %v", err)
+			}
+			a := accountByOrigin(t, data, c.origin)
+			from := filepath.Join(home, c.from)
+			if strings.HasPrefix(c.origin, "profile:") {
+				from = filepath.Join(data, c.from)
+			}
+			dst := Folder(data, a.Agent, a.ID)
+			if a.Agent == OpenCode {
+				dst = filepath.Join(dst, "opencode")
+			}
+			if err := os.MkdirAll(filepath.Dir(dst), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Rename(from, dst); err != nil {
+				t.Fatal(err)
+			}
+			if err := migrateOnce(t, data, home, ""); err != nil {
+				t.Fatalf("the next start: %v", err)
+			}
+			if got := outcome(t, data); strings.Join(got, "\n") != strings.Join(want, "\n") {
+				t.Fatalf("after the crash:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+			}
+			isLink(t, from)
+			if _, err := os.Stat(filepath.Join(data, "agents/codex/sessions/2026/10/01/rollout-2026-10-01-default.jsonl")); err != nil {
+				t.Fatalf("the Default Codex account's sessions are not shared: %v", err)
+			}
+		})
+	}
+}
+
+// A swap cut short after its link was made at the new place, before the
+// two names were exchanged, is made again by the next start: the link in
+// the way is the migration's own.
+func TestASwapCutShortBeforeItsExchangeIsFinished(t *testing.T) {
+	data, home := fixture(t)
+	if err := migrateOnce(t, data, home, "account:"+OriginClaude); !errors.Is(err, errStopped) {
+		t.Fatalf("the run stopped with %v", err)
+	}
+	a := accountByOrigin(t, data, OriginClaude)
+	dst := Folder(data, Claude, a.ID)
+	if err := os.MkdirAll(filepath.Dir(dst), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(dst, dst); err != nil {
+		t.Fatal(err)
+	}
+	// And one of the shared folders of the profile's account, set aside.
+	work := filepath.Join(data, "profiles/p-bbbbbbbbbbbb/claude")
+	if err := os.Symlink("../../agents/claude/projects", filepath.Join(work, "projects.pre-rebuild")); err != nil {
+		t.Fatal(err)
+	}
+	if err := migrateOnce(t, data, home, ""); err != nil {
+		t.Fatalf("the next start: %v", err)
+	}
+	sameFile(t, filepath.Join(home, ".claude/.credentials.json"), filepath.Join(dst, ".credentials.json"))
+	for _, rel := range []string{"agents/claude/projects/-srv-repo/s-default.jsonl", "agents/claude/projects/-srv-other/s-work.jsonl"} {
+		if _, err := os.Stat(filepath.Join(data, rel)); err != nil {
+			t.Fatalf("a transcript is not in the shared folder: %v", err)
+		}
+	}
+}
+
+// A folder that cannot move holds up nothing else: a ~/.claude that is a
+// link of the person's own stays, with ~/.claude.json beside it, and its
+// account says why; one that fails is tried again by the next start, and
+// the rest moves meanwhile.
+func TestOneFolderThatCannotMoveHoldsUpNothingElse(t *testing.T) {
+	data, home := fixture(t)
+	dotfiles := filepath.Join(t.TempDir(), "dotfiles", "claude")
+	if err := os.MkdirAll(filepath.Dir(dotfiles), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(filepath.Join(home, ".claude"), dotfiles); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(dotfiles, filepath.Join(home, ".claude")); err != nil {
+		t.Fatal(err)
+	}
+	// Codex's account is made, and then its folder is in the way.
+	if err := migrateOnce(t, data, home, "account:"+OriginCodex); !errors.Is(err, errStopped) {
+		t.Fatalf("the run stopped with %v", err)
+	}
+	blocked := Folder(data, Codex, accountByOrigin(t, data, OriginCodex).ID)
+	write(t, filepath.Join(blocked, "in-the-way"), "x")
+	if err := migrateOnce(t, data, home, ""); err == nil || !strings.Contains(err.Error(), "both") {
+		t.Fatalf("the run said %v", err)
+	}
+	if !pending(t, data) {
+		t.Fatal("the migration counts as done with a folder not moved")
+	}
+	if target := isLink(t, filepath.Join(home, ".claude")); target != dotfiles {
+		t.Fatalf("~/.claude -> %s", target)
+	}
+	untouched(t, home, map[string]string{".claude.json": fixtureLogins[".claude.json"]})
+	claudeAcct := accountByOrigin(t, data, OriginClaude)
+	if claudeAcct.State != NeedsSignIn || !strings.Contains(claudeAcct.StateDetail, "link") {
+		t.Fatalf("the Default Claude account: %+v", claudeAcct)
+	}
+	ocAcct := accountByOrigin(t, data, OriginOpenCode)
+	sameFile(t, filepath.Join(home, ".local/share/opencode/auth.json"), filepath.Join(Folder(data, OpenCode, ocAcct.ID), "opencode", "auth.json"))
+	accountByOrigin(t, data, "lost:p-aaaaaaaaaaaa:claude")
+	accountByOrigin(t, data, "profile:p-bbbbbbbbbbbb:claude")
+
+	if err := os.RemoveAll(blocked); err != nil {
+		t.Fatal(err)
+	}
+	if err := migrateOnce(t, data, home, ""); err != nil {
+		t.Fatalf("the next start: %v", err)
+	}
+	isLink(t, filepath.Join(home, ".codex"))
+	if pending(t, data) {
+		t.Fatal("the migration is still due")
+	}
+}
+
+// While a folder moves, its old path is always there - the folder or the
+// link to it - so a CLI that writes by path never makes a second one.
+func TestTheOldPathIsNeverMissingWhileItMoves(t *testing.T) {
+	root := t.TempDir()
+	for i := 0; i < 200; i++ {
+		from, dst := filepath.Join(root, "home", strconv.Itoa(i)), filepath.Join(root, "data", strconv.Itoa(i))
+		write(t, filepath.Join(from, ".credentials.json"), "login")
+		stop, missing := make(chan struct{}), make(chan bool, 1)
+		go func() {
+			gone := false
+			for {
+				select {
+				case <-stop:
+					missing <- gone
+					return
+				default:
+				}
+				if _, err := os.Lstat(from); err != nil {
+					gone = true
+				}
+			}
+		}()
+		err := swap(from, dst, dst)
+		close(stop)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if <-missing {
+			t.Fatalf("%s was missing while it moved", from)
+		}
+		sameFile(t, filepath.Join(from, ".credentials.json"), filepath.Join(dst, ".credentials.json"))
+	}
+}
+
+// markPending marks the migration as due again, as a database of the build
+// before would be.
+func markPending(t *testing.T, data string) {
+	t.Helper()
+	st, err := store.Open(filepath.Join(data, "socrates.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if err := st.SetKV("accounts.migration", "pending"); err != nil {
+		t.Fatal(err)
 	}
 }
 

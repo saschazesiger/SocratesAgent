@@ -64,6 +64,47 @@ const (
 	Failed      = "error"
 )
 
+// Origins of the accounts the migration (migrate.go) makes of the agents'
+// own folders in HOME. An account of a profile's folder has the origin
+// profile:<profile>:<agent>, and one of a profile whose folders were lost
+// lost:<profile>:<agent>.
+const (
+	OriginClaude   = "~/.claude"
+	OriginCodex    = "~/.codex"
+	OriginOpenCode = "~/.local/share/opencode"
+)
+
+// HomeOrigin reports whether an account holds an agent's own sign-in of this
+// machine, which the agent's folder in HOME is a link to.
+func HomeOrigin(origin string) bool {
+	return origin == OriginClaude || origin == OriginCodex || origin == OriginOpenCode
+}
+
+// profileFolders are where an old profile kept each agent's folder, under
+// <data>/profiles/<profile>/.
+var profileFolders = []struct{ agent, sub string }{
+	{Claude, "claude"}, {Codex, "codex"}, {OpenCode, filepath.Join("xdg-data", "opencode")},
+}
+
+// ProfileLink is the old profile's folder that the migration left as a link
+// to the account made of it, or "" for an account made otherwise.
+func ProfileLink(dataDir string, a *store.Account) string {
+	rest, ok := strings.CutPrefix(a.Origin, "profile:")
+	if !ok {
+		return ""
+	}
+	id, agentName, ok := strings.Cut(rest, ":")
+	if !ok || id == "" || id == "." || id == ".." || strings.ContainsAny(id, `/\`) {
+		return ""
+	}
+	for _, one := range profileFolders {
+		if one.agent == agentName {
+			return filepath.Join(paths.New(dataDir).Path(paths.Profiles), id, one.sub)
+		}
+	}
+	return ""
+}
+
 // DefaultLabel is what the account the migration makes of an agent's own
 // sign-in is called, and the account a chat of an agent without any gets.
 const DefaultLabel = "Default"

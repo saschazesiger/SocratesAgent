@@ -44,6 +44,19 @@ var ErrNotFound = errors.New("not found")
 // the sign-in profiles.
 const SchemaVersion = 12
 
+// accountsVersion is the schema that brought accounts. A database brought up
+// to it from an older one is of a build whose agents ran on their own
+// folders in HOME and on the profiles, which the accounts migration
+// (internal/accounts) takes over, once.
+const accountsVersion = 12
+
+// accountsPendingKey marks that migration as still to do. It is written in
+// the same upgrade that brings the accounts table, before the new version
+// is, so no crash can leave an old installation's database at the new
+// version without it - and a new database never has it, so a data
+// directory made by this build never takes anything from HOME.
+const accountsPendingKey = "accounts.migration"
+
 // Store wraps the database handle.
 type Store struct {
 	db  *sql.DB
@@ -345,6 +358,12 @@ func migrate(db *sql.DB, path string) error {
 	// there, so a column added to an existing table has to be added by hand.
 	if err := addSessionColumns(db); err != nil {
 		return err
+	}
+	if legacy || (version > 0 && version < accountsVersion) {
+		if _, err := db.Exec(`INSERT INTO kv(key, value) VALUES(?, 'pending') ON CONFLICT(key) DO NOTHING`,
+			accountsPendingKey); err != nil {
+			return fmt.Errorf("mark the accounts migration: %w", err)
+		}
 	}
 	// PRAGMA takes no bound parameters, and the value is a constant.
 	if _, err := db.Exec(fmt.Sprintf(`PRAGMA user_version = %d`, SchemaVersion)); err != nil {
@@ -678,6 +697,19 @@ func (s *Store) DeleteKV(key string) error {
 	_, err := s.db.Exec(`DELETE FROM kv WHERE key = ?`, key)
 	return err
 }
+
+// AccountsMigrationPending reports whether this database came from a build
+// before accounts and the accounts migration has not finished on it yet.
+func (s *Store) AccountsMigrationPending() (bool, error) {
+	_, err := s.GetKV(accountsPendingKey)
+	if errors.Is(err, ErrNotFound) {
+		return false, nil
+	}
+	return err == nil, err
+}
+
+// FinishAccountsMigration records that the accounts migration is done.
+func (s *Store) FinishAccountsMigration() error { return s.DeleteKV(accountsPendingKey) }
 
 // GetJSON decodes a JSON value stored under key.
 func (s *Store) GetJSON(key string, out any) error {

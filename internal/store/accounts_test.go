@@ -145,4 +145,36 @@ func TestADatabaseOfTodaysMainIsUpgraded(t *testing.T) {
 	if _, err := os.Stat(path + ".pre-v12.bak"); err != nil {
 		t.Fatalf("the upgrade was not backed up: %v", err)
 	}
+	if pending, err := st.AccountsMigrationPending(); err != nil || !pending {
+		t.Fatalf("the accounts migration is not marked as due: %v %v", pending, err)
+	}
+	if err := st.FinishAccountsMigration(); err != nil {
+		t.Fatal(err)
+	}
+	if pending, _ := st.AccountsMigrationPending(); pending {
+		t.Fatal("the finished migration is still due")
+	}
+}
+
+// A database this build makes is never one the accounts migration takes
+// HOME's folders into, and neither is one that is already at the schema of
+// accounts: only the upgrade from a build before them marks it.
+func TestOnlyAnUpgradeMarksTheAccountsMigration(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "socrates.db")
+	st, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pending, err := st.AccountsMigrationPending(); err != nil || pending {
+		t.Fatalf("a new database is marked for the migration: %v %v", pending, err)
+	}
+	st.Close()
+	st, err = Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if pending, _ := st.AccountsMigrationPending(); pending {
+		t.Fatal("a second open marked it")
+	}
 }

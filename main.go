@@ -132,10 +132,12 @@ func main() {
 	if err != nil {
 		log.Fatalf("could not open the database: %v", err)
 	}
-	// Once, on the first start of the build with accounts: the agents' own
-	// folders and the old profiles become accounts (REBUILD.md §8.1-8.2).
-	// One that stops half way is finished by the next start; until then the
-	// chats run on what has been moved.
+	// Once, on the first start of the build with accounts on a data directory
+	// of the build before (the store marks it when it upgrades the
+	// database): the agents' own folders and the old profiles become
+	// accounts (REBUILD.md §8.1-8.2). A new data directory has nothing to
+	// take over and never touches HOME. One that stops half way is finished
+	// by the next start; until then the chats run on what has been moved.
 	if err := accounts.Migrate(accounts.MigrateOptions{DataDir: *dataDir, Store: st, Env: os.Environ(), Logf: log.Printf}); err != nil {
 		log.Printf("accounts: the migration did not finish (%v); the next start tries again", err)
 	}
