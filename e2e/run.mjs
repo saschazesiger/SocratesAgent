@@ -8546,239 +8546,161 @@ async function homefocus() {
   } finally { await s.stop(); }
 }
 
-// home-retry: an answer the operator could not give is offered again, and
-// Try again gives it; an answer whose session is deleted mid-run says so, and
-// is never "answered elsewhere".
+// home-retry: an answer the server refuses for good gives the questions back
+// with its words, and is sent again once - the one Send; one the server
+// cannot take just now is tried again by itself; and an answer to a chat
+// deleted while it was on its way says it was not taken, never that it was
+// answered on another device.
 async function homeretry() {
-  const { s, stub, ctl } = await homeServer();
+  const s = await homeChats();
   try {
-    const first = await makeAgent(s, 'Try again');
-    const second = await makeAgent(s, 'Deleted while answering');
-    const third = await makeAgent(s, 'Deleted while sending');
-    let refuse = true;
-    ctl.operator = async (system) => {
-      if (calledAs(system) === 'Try again' && refuse) return { status: 500, message: 'the gateway fell over' };
-      if (calledAs(system) === 'Deleted while answering') await wait(3000);
-      return undefined;
-    };
     await awaitHome(s.page, (h) => h.shown, 10000);
-    const asked = await askQuestion(s, first);
-    ok(!!asked.digest, 'the question is read', asked.digest ? asked.digest.phase : 'no digest');
+    const first = await askingChat(s, 'Try again');
     await awaitHome(s.page, (h) => h.counts.questions === 1, 10000);
-    const said = await watchSheet(s.page);
-    await s.page.click('.so-home__questions');
-    await awaitSheet(s.page, (d) => !!d && d.options.length === 2, 10000);
-    await s.page.click('.so-q-option[data-label="SQLite"]');
-    await s.page.click('.so-q-send');
-    const failed = await awaitSheet(s.page, (d) => !!d && d.retry, 30000);
-    ok(failed.ok && failed.seen.status && failed.seen.status.kind === 'error',
-      'an operator that fails shows the error and Try again', JSON.stringify(failed.seen && failed.seen.status));
+    let refuse = 400;
+    let posts = 0;
+    await s.page.route('**/api/chats/*/asks/*/answer', (route) => {
+      posts += 1;
+      if (!refuse) return route.continue();
+      const status = refuse;
+      // A server that is down for a moment is answered once with 503, and
+      // takes the next try.
+      if (refuse === 503) refuse = 0;
+      return route.fulfill({ status, contentType: 'application/json',
+        body: JSON.stringify({ error: status === 400 ? 'the agent could not take that answer' : 'the server is restarting' }) });
+    });
+    const said = await watchAsk(s.page);
+    await s.page.click('.so-home__q-action');
+    await awaitAsk(s.page, (d) => !!d && d.options.length === 2, 10000);
+    await s.page.click('dialog.so-askdlg .so-q-option[data-option="sqlite"]');
+    await s.page.click('dialog.so-askdlg [data-action="send"]');
+    const failed = await awaitAsk(s.page, (d) => !!d && /not taken/.test(d.refused), 15000);
+    ok(failed.ok && /could not take that answer/.test(failed.seen.refused) && failed.seen.options.find((o) => o.id === 'sqlite').pressed === 'true'
+      && failed.seen.actions.includes('send'),
+      'an answer refused for good says why, and gives the questions back as they were, to send again',
+      JSON.stringify(failed.seen && { refused: failed.seen.refused, actions: failed.seen.actions }));
+    ok((await chatOf(s, first.id)).asks.length === 1, 'and the question is still open', 'open');
 
-    refuse = false;
+    // The second Send: the server cannot take it just now, and then can.
+    refuse = 503;
     const errorsBefore = s.errors.filter((e) => e.startsWith('pageerror')).length;
-    const posts = answerPosts(s.page);
-    await s.page.click('.so-q-retry');
-    const logged = await awaitAnswerLogged(s, 1);
-    ok(posts.length === 1 && logged.length === 1 && logged[0].answers[0].choices.join(',') === 'SQLite',
-      'Try again sends the answer once, and it goes in', JSON.stringify({ posts: posts.length, answers: logged.map((l) => l.answers) }));
+    const before = posts;
+    await s.page.click('dialog.so-askdlg [data-action="send"]');
+    const got = await returned(s, first.id, 30000);
+    ok(!!got && got.answers.db.selected.join() === 'sqlite' && posts - before === 2,
+      'sent again, an answer the server could not take just now is tried again by itself, and goes in once',
+      JSON.stringify({ got: got && got.answers.db.selected, tries: posts - before }));
     ok(s.errors.filter((e) => e.startsWith('pageerror')).length === errorsBefore, 'and throws nothing',
       s.errors.filter((e) => e.startsWith('pageerror')).join(' | ') || '0');
-    ok(await sheetShut(s.page, 15000), 'the dialog closes when it is done', (await said()).join(' | '));
+    ok(await askShut(s.page, 15000), 'the dialog closes when it is done', (await said()).join(' | '));
+    await s.page.unroute('**/api/chats/*/asks/*/answer');
 
-    // The second session is deleted while its answer is on the way.
-    const again = await askQuestion(s, second);
-    ok(!!again.digest, 'a second session asks', again.digest ? again.digest.phase : 'no digest');
-    await awaitHome(s.page, (h) => h.counts.questions === 1, 10000);
-    const story = await watchSheet(s.page);
-    await s.page.click('.so-home__questions');
-    await awaitSheet(s.page, (d) => !!d && d.session === 'Deleted while answering' && d.options.length === 2, 10000);
-    await s.page.click('.so-q-option[data-label="SQLite"]');
-    await s.page.click('.so-q-send');
-    await awaitSheet(s.page, (d) => !!d && !!d.status && /^Choosing/.test(d.status.text), 8000);
-    await s.context.request.delete(s.url + '/api/sessions/' + second);
-    const ended = await awaitSheet(s.page, (d) => !d || (!!d.status && d.status.kind === 'error'), 15000);
-    await wait(2500);
-    const last = await sheetLook(s.page);
-    const words = await story();
-    ok(ended.ok && !!last && !!last.status && last.status.kind === 'error' && /deleted/.test(last.status.text)
-      && !last.retry && !last.openErr && !last.reading,
-      'a run whose session was deleted stays an error that says so, with no Try again and nothing being read',
-      JSON.stringify(last && { status: last.status, retry: last.retry, open: last.openErr, reading: last.reading }));
-    ok(!words.some((w) => /elsewhere/.test(w)) && !words.includes('All questions answered'),
-      'and is never said to be answered elsewhere', words.join(' | '));
-    await s.page.click('.so-q-close').catch(() => {});
-
-    // The third is deleted while the answer is still on its way to the
-    // server: the refusal is the news, and there is nothing to try again.
-    const sending = await askQuestion(s, third);
-    ok(!!sending.digest, 'a third session asks', sending.digest ? sending.digest.phase : 'no digest');
+    // A chat deleted while the answer is on its way to the server.
+    const gone = await askingChat(s, 'Deleted while sending');
     await awaitHome(s.page, (h) => h.counts.questions === 1, 10000);
     const held = gate();
-    await s.page.route('**/api/sessions/*/answer', async (route) => {
-      if (route.request().method() !== 'POST') return route.continue();
+    await s.page.route('**/api/chats/*/asks/*/answer', async (route) => {
       await held.promise;
       return route.continue();
     });
-    const told = await watchSheet(s.page);
-    await s.page.click('.so-home__questions');
-    await awaitSheet(s.page, (d) => !!d && d.session === 'Deleted while sending' && d.options.length === 2, 10000);
-    await s.page.click('.so-q-option[data-label="Postgres"]');
-    await s.page.click('.so-q-send');
-    await s.context.request.delete(s.url + '/api/sessions/' + third);
-    await awaitHome(s.page, (h) => !h.rows.some((r) => r.id === third), 10000);
+    const told = await watchAsk(s.page);
+    await s.page.click('.so-home__q-action');
+    await awaitAsk(s.page, (d) => !!d && d.session === 'Deleted while sending' && d.options.length === 2, 10000);
+    await s.page.click('dialog.so-askdlg .so-q-option[data-option="postgres"]');
+    await s.page.click('dialog.so-askdlg [data-action="send"]');
+    await awaitAsk(s.page, (d) => !!d && /Sending your answer/.test(d.status), 5000);
+    await s.context.request.delete(s.url + '/api/sessions/' + gone.id);
+    await awaitHome(s.page, (h) => !h.rows.some((r) => r.id === gone.id), 10000);
     held.release();
-    const refused = await awaitSheet(s.page, (d) => !d || (!!d.status && d.status.kind === 'error'), 10000);
-    await wait(2500);
-    const after = await sheetLook(s.page);
+    const refused = await awaitAsk(s.page, (d) => !d || /not taken/.test(d.refused), 15000);
     const toldWords = await told();
-    ok(refused.ok && !!after && !!after.status && after.status.kind === 'error' && !after.retry && !after.openErr
-      && /no longer exists/.test(after.status.text) && !after.reading,
-      'an answer refused because its session was just deleted says so, with no Try again', JSON.stringify(after && { status: after.status, retry: after.retry, open: after.openErr, reading: after.reading }));
-    ok(!toldWords.some((w) => /elsewhere/.test(w)), 'and is not said to be answered elsewhere', toldWords.join(' | '));
-    await s.page.unroute('**/api/sessions/*/answer');
-    await s.page.click('.so-q-close').catch(() => {});
-    ok(unexpected(s.errors, REFUSED_NOISE).length === 0, 'no unexpected console errors', unexpected(s.errors, REFUSED_NOISE).join(' | ') || '0');
-  } finally {
-    await s.stop();
-    await stub.close();
-  }
+    ok(refused.ok && !!refused.seen, 'an answer to a chat deleted on its way says it was not taken', JSON.stringify(refused.seen && refused.seen.refused));
+    ok(!toldWords.some((w) => /another device/.test(w)), 'and is never said to be answered on another device', toldWords.join(' | '));
+    await s.page.unroute('**/api/chats/*/asks/*/answer');
+    await s.page.click('dialog.so-askdlg [data-action="close"]').catch(() => {});
+    // The 503 is the one this scenario answers on purpose; the browser logs
+    // it like any other refused request.
+    const noise = new RegExp(REFUSED_NOISE.source + '|status of 503');
+    ok(unexpected(s.errors, noise).length === 0, 'no unexpected console errors', unexpected(s.errors, noise).join(' | ') || '0');
+  } finally { await s.stop(); }
 }
 
-// home-runlost: the dialog opened again while an answer is on its way shows
-// that answer; and an answer whose run is lost to a server restart does not
-// stay on "Answering…".
+// home-runlost: an answer on its way when the dialog is put away and opened
+// again is shown as on its way, never as a question to answer again; one
+// sent while the server restarts goes in once when it is back; and one whose
+// reply was lost on the way back - the server took it - is followed to
+// "Answered", never "another device".
 async function homerunlost() {
-  const { s, stub, ctl } = await homeServer();
-  const held = gate();
+  const s = await homeChats();
   try {
-    const id = await makeAgent(s, 'Lost and found');
-    let mode = 'slow';
-    ctl.operator = async () => {
-      if (mode === 'slow') { mode = ''; await wait(3500); }
-      if (mode === 'hang') { mode = ''; await held.promise; return { status: 503 }; }
-      return undefined;
-    };
     await awaitHome(s.page, (h) => h.shown, 10000);
-    const asked = await askQuestion(s, id);
-    ok(!!asked.digest, 'the question is read', asked.digest ? asked.digest.phase : 'no digest');
+    const { id } = await askingChat(s, 'Lost and found');
     await awaitHome(s.page, (h) => h.counts.questions === 1, 10000);
-    await s.page.click('.so-home__questions');
-    await awaitSheet(s.page, (d) => !!d && d.options.length === 2, 10000);
-    await s.page.click('.so-q-option[data-label="SQLite"]');
-    await s.page.click('.so-q-send');
-    await awaitSheet(s.page, (d) => !!d && !!d.status && d.status.kind === 'working', 5000);
-    await s.page.click('.so-q-close');
-    await sheetShut(s.page, 5000);
-    const said = await watchSheet(s.page);
-    await s.page.click('.so-home__card[data-id="' + id + '"] .so-home__answer');
-    const reopened = await awaitSheet(s.page, (d) => !!d && d.options.length === 2, 5000);
-    const look = reopened.seen || {};
-    ok(reopened.ok && look.cancel && !!look.status && /^(Choosing SQLite|Answering)/.test(look.status.text)
-      && look.options.every((o) => o.disabled) && look.send && look.send.hidden,
-      'opened again mid-answer, the dialog shows the answer on its way: progress, Cancel, options locked',
-      JSON.stringify({ status: look.status, cancel: look.cancel, send: look.send, locked: look.options && look.options.map((o) => o.disabled) }));
-    const logged = await awaitAnswerLogged(s, 1);
-    ok(logged.length === 1 && logged[0].answers[0].choices.join(',') === 'SQLite', 'the answer goes in', JSON.stringify(logged.map((l) => l.answers)));
-    await sheetShut(s.page, 15000);
-    const words = await said();
-    ok(words.includes('All questions answered') && !words.some((w) => /elsewhere/.test(w)),
-      'and the dialog says it answered it, not that someone else did', words.join(' | '));
+    const held = gate();
+    await s.page.route('**/api/chats/*/asks/*/answer', async (route) => {
+      await held.promise;
+      // The page may have given this request up while the server was away
+      // and sent the answer again; a request it gave up is handled already.
+      return route.continue().catch(() => {});
+    });
+    await s.page.click('.so-home__q-action');
+    await awaitAsk(s.page, (d) => !!d && d.options.length === 2, 10000);
+    await s.page.click('dialog.so-askdlg .so-q-option[data-option="sqlite"]');
+    await s.page.click('dialog.so-askdlg [data-action="send"]');
+    await awaitAsk(s.page, (d) => !!d && /Sending your answer/.test(d.status), 5000);
+    await s.page.click('dialog.so-askdlg [data-action="close"]');
+    await askShut(s.page, 5000);
+    const said = await watchAsk(s.page);
+    await s.page.click('.so-home__card[data-id="' + id + '"] [data-action="answer"]');
+    const reopened = await awaitAsk(s.page, (d) => !!d && /Sending your answer/.test(d.status), 5000);
+    ok(reopened.ok && !reopened.seen.actions.includes('send'),
+      'opened again while its answer is on its way, the dialog shows the answer going, with no Send',
+      JSON.stringify(reopened.seen && { status: reopened.seen.status, actions: reopened.seen.actions }));
 
-    // Again, and this time the server goes away in the middle of the run.
-    await awaitActivity(s, id, (a) => a.state === 'idle', 20000);
-    const twice = await askQuestion(s, id);
-    ok(!!twice.digest, 'the question is asked again', twice.digest ? twice.digest.phase : 'no digest');
-    mode = 'hang';
-    await awaitHome(s.page, (h) => h.counts.questions === 1, 10000);
-    await s.page.click('.so-home__questions');
-    await awaitSheet(s.page, (d) => !!d && d.options.length === 2 && d.options.every((o) => !o.disabled), 10000);
-    await s.page.click('.so-q-option[data-label="Postgres"]');
-    await s.page.click('.so-q-send');
-    // The run has started - the server answered the Send - before the server
-    // goes: "Sending your answer…" is still the request in flight, and a
-    // restart that cuts that is a lost reply, not a lost run.
-    const going = await awaitSheet(s.page, (d) => !!d && !!d.status && d.status.kind === 'working'
-      && /^(Choosing|Answering)/.test(d.status.text), 10000);
-    ok(going.ok, 'the answer is on its way', JSON.stringify(going.seen && going.seen.status));
-    const story = await watchSheet(s.page);
+    // The server goes away with the answer still held, and comes back.
     await s.restart();
-    const lost = await awaitSheet(s.page, (d) => !!d && d.retry, 45000);
-    ok(lost.ok && /interrupted/.test(lost.seen.status.text),
-      'after the restart the dialog says the answer was interrupted, and offers Try again',
-      JSON.stringify(lost.seen && { status: lost.seen.status, retry: lost.seen.retry }) + ' ' + (await story()).join(' | '));
     held.release();
-    await awaitDigest(s, id, (d) => d.phase === 'ready' && !!d.question, 20000);
-    await s.page.click('.so-q-retry');
-    const both = await awaitAnswerLogged(s, 2, 40000);
-    ok(both.length === 2 && both[1].answers[0].choices.join(',') === 'Postgres', 'and Try again answers it',
-      JSON.stringify(both.map((l) => l.answers)));
+    await s.page.unroute('**/api/chats/*/asks/*/answer');
+    const done = await awaitAsk(s.page, (d) => !d || d.finished === 'Answered', 45000);
+    const words = await said();
+    const got = await returned(s, id, 20000);
+    const asks = (await historyOf(s, id)).asks || [];
+    ok(done.ok && !!got && got.answers.db.selected.join() === 'sqlite' && asks.filter((a) => a.answered).length === 1,
+      'an answer sent across a server restart goes in once, and the dialog says it is answered',
+      JSON.stringify({ got: got && got.answers.db.selected, words }));
+    ok(!words.some((w) => /another device|not taken/.test(w)), 'never that another device answered, nor that it was not taken', words.join(' | '));
+    await askShut(s.page, 15000);
 
-    // A third time, and the reply to the answer is lost on its way back: the
-    // server took it, and the dialog never says that nothing was answered.
-    await sheetShut(s.page, 20000);
-    await awaitActivity(s, id, (a) => a.state === 'idle', 20000);
-    const third = await askQuestion(s, id);
-    ok(!!third.digest, 'the question is asked a third time', third.digest ? third.digest.phase : 'no digest');
+    // The reply is lost on the way back - the server took the answer - and
+    // the dialog was shut before it came: opened again, it follows the
+    // answer as its own.
+    const second = await askingChat(s, 'Reply lost');
     await awaitHome(s.page, (h) => h.counts.questions === 1, 10000);
-    await s.page.route('**/api/sessions/*/answer', async (route) => {
-      if (route.request().method() !== 'POST') return route.continue();
-      await route.fetch().catch(() => {});
+    let lose = true;
+    await s.page.route('**/api/chats/*/asks/*/answer', async (route) => {
+      if (!lose) return route.continue();
+      lose = false;
+      await route.fetch();
       return route.abort('connectionreset');
     });
-    const lostSaid = await sheetSaid(s.page);
-    await s.page.click('.so-home__questions');
-    await awaitSheet(s.page, (d) => !!d && d.options.length === 2 && d.options.every((o) => !o.disabled), 10000);
-    await s.page.click('.so-q-option[data-label="SQLite"]');
-    await s.page.click('.so-q-send');
-    const three = await awaitAnswerLogged(s, 3, 40000);
-    await sheetShut(s.page, 20000);
+    const lostSaid = await watchAsk(s.page);
+    await s.page.click('.so-home__q-action');
+    await awaitAsk(s.page, (d) => !!d && d.options.length === 2, 10000);
+    await s.page.click('dialog.so-askdlg .so-q-option[data-option="postgres"]');
+    await s.page.click('dialog.so-askdlg [data-action="send"]');
+    await s.page.click('dialog.so-askdlg [data-action="close"]').catch(() => {});
+    await askShut(s.page, 5000);
+    const secondGot = await returned(s, second.id, 20000);
+    await s.page.click('.so-home__card[data-id="' + second.id + '"] [data-action="answer"]').catch(() => {});
+    await wait(2500);
     const lostWords = await lostSaid();
-    await s.page.unroute('**/api/sessions/*/answer');
-    ok(three.length === 3 && three[2].answers[0].choices.join(',') === 'SQLite', 'an answer whose reply was lost went in all the same',
-      JSON.stringify(three.map((l) => l.answers)));
-    ok(!lostWords.some((w) => /Nothing was answered|elsewhere/.test(w)) && lostWords.includes('All questions answered'),
-      'and the dialog follows it to the end and counts it as its own, never saying nothing was answered', lostWords.join(' | '));
-
-    // A fourth time, and the dialog is shut before the reply to Send is in:
-    // opened again, the answer going in is still this device's own.
-    await awaitActivity(s, id, (a) => a.state === 'idle', 20000);
-    const fourth = await askQuestion(s, id);
-    ok(!!fourth.digest, 'the question is asked a fourth time', fourth.digest ? fourth.digest.phase : 'no digest');
-    await awaitHome(s.page, (h) => h.counts.questions === 1, 10000);
-    await s.page.route('**/api/sessions/*/answer', async (route) => {
-      if (route.request().method() !== 'POST') return route.continue();
-      const res = await route.fetch();
-      const body = await res.text();
-      await wait(800);
-      return route.fulfill({ status: res.status(), headers: res.headers(), body }).catch(() => {});
-    });
-    await s.page.click('.so-home__questions');
-    await awaitSheet(s.page, (d) => !!d && d.options.length === 2 && d.options.every((o) => !o.disabled), 10000);
-    mode = 'slow';
-    await s.page.click('.so-q-option[data-label="Postgres"]');
-    await s.page.click('.so-q-send');
-    await wait(100);
-    await s.page.keyboard.press('Escape');
-    if (!await sheetShut(s.page, 2000)) await s.page.click('.so-q-close').catch(() => {});
-    const shutEarly = await sheetShut(s.page, 3000);
-    await wait(1200);
-    await s.page.unroute('**/api/sessions/*/answer');
-    const ownSaid = await sheetSaid(s.page);
-    await s.page.click('.so-home__card[data-id="' + id + '"] .so-home__answer');
-    const four = await awaitAnswerLogged(s, 4, 40000);
-    await sheetShut(s.page, 20000);
-    const ownWords = await ownSaid();
-    ok(shutEarly && four.length === 4 && four[3].answers[0].choices.join(',') === 'Postgres'
-      && !ownWords.some((w) => /another device/i.test(w)) && ownWords.includes('All questions answered'),
-      'a dialog shut before its Send was answered, opened again, follows the answer as its own - never "another device"',
-      JSON.stringify({ shut: shutEarly, logged: four.length, said: ownWords }));
-    ok(unexpected(s.errors, RESTART_NOISE).length === 0, 'no unexpected console errors',
-      unexpected(s.errors, RESTART_NOISE).join(' | ') || '0');
-  } finally {
-    held.release();
-    await s.stop();
-    await stub.close();
-  }
+    const after = (await historyOf(s, second.id)).asks || [];
+    ok(!!secondGot && secondGot.answers.db.selected.join() === 'postgres' && after.filter((a) => a.answered).length === 1,
+      'an answer whose reply was lost went in once', JSON.stringify({ got: secondGot && secondGot.answers.db.selected }));
+    ok(!lostWords.some((w) => /another device|not taken/.test(w)), 'and is never called another device’s, nor refused', lostWords.join(' | '));
+    await s.page.unroute('**/api/chats/*/asks/*/answer');
+    ok(unexpected(s.errors, RESTART_NOISE).length === 0, 'no unexpected console errors', unexpected(s.errors, RESTART_NOISE).join(' | ') || '0');
+  } finally { await s.stop(); }
 }
 
 // home-opencode: OpenCode's question tool, from its event stream to Home,
@@ -11994,8 +11916,8 @@ const ALL = [
   ['home-reconnect', 'a server restart under an open Home: Reconnecting, then Live and the right numbers', homereconnect],
   ['home-touch', 'a Tesla and a phone: big buttons and a dialog that is the whole screen', hometouch],
   ['home-focus', 'the field of one’s own answer keeps the keyboard through every redraw, and the voice says what failed', homefocus],
-  ['home-retry', 'Try again after an operator error, and a run whose session is deleted', homeretry],
-  ['home-runlost', 'the dialog opened again mid-answer, and a run lost to a server restart', homerunlost],
+  ['home-retry', 'an answer refused for good, one the server could not take just now, and one to a chat deleted on its way', homeretry],
+  ['home-runlost', 'the dialog opened again mid-answer, an answer sent across a server restart, and a reply lost on the way back', homerunlost],
   ['home-opencode', 'OpenCode’s question card and permission card from the dialog: an option, an own answer, Allow always and Reject', homeopencode],
   ['home-stream', 'a late list, a handshake that hangs, a refused upgrade and an offline Home', homestream],
   ['home-quiet', 'a tap on a stream that died quietly, polls across a restart, a long hide, a naming cut off, a server never reached', homequiet],
