@@ -6,7 +6,6 @@ import (
 	"context"
 	"os"
 	"path/filepath"
-	"strconv"
 	"testing"
 	"time"
 
@@ -212,80 +211,6 @@ func TestTransientPollFailureDoesNotResume(t *testing.T) {
 	l.applyPanes(rows, map[string]pane{})
 	if got, _ := l.store.GetSession(row.ID); got.State != store.StateNeedsResume {
 		t.Fatalf("two absences should mean needs_resume, got %q", got.State)
-	}
-}
-
-// TestPollWaitsForAnExitStatus: a pane tmux lists as dead before it has its
-// program's exit status is not marked ended with none on the first look, and
-// an unknown status never replaces the one the pane-died hook recorded.
-func TestPollWaitsForAnExitStatus(t *testing.T) {
-	l := newLab(t)
-	row := l.create(shellSpec(t.TempDir()))
-	rows, err := l.store.ListSessions()
-	if err != nil {
-		t.Fatal(err)
-	}
-	unknown := map[string]pane{row.TmuxName: {session: row.TmuxName, dead: true, deadStatus: -1}}
-	if !l.applyPanes(rows, unknown) {
-		t.Fatal("a running session's pane dead with no status was not reported as one to wake the server for")
-	}
-	if got, _ := l.store.GetSession(row.ID); got.State != store.StateRunning {
-		t.Fatalf("one look at a dead pane with no status moved the session to %q", got.State)
-	}
-	l.applyPanes(rows, unknown)
-	got, _ := l.store.GetSession(row.ID)
-	if got.State != store.StateExited || got.ExitStatus != -1 {
-		t.Fatalf("a status that never came left the session at %q with %d", got.State, got.ExitStatus)
-	}
-
-	// The hook's status, and then a poll that read the pane before it.
-	if err := l.store.SetSessionState(row.ID, store.StateExited, 7, ""); err != nil {
-		t.Fatal(err)
-	}
-	rows, err = l.store.ListSessions()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if l.applyPanes(rows, unknown) {
-		t.Fatal("a session the hook recorded as ended was reported as one to wake the server for")
-	}
-	l.applyPanes(rows, unknown)
-	if got, _ := l.store.GetSession(row.ID); got.State != store.StateExited || got.ExitStatus != 7 {
-		t.Fatalf("an unknown status replaced the hook's: %q with %d", got.State, got.ExitStatus)
-	}
-}
-
-// TestTheServerIsWokenForAMissingStatus: the poll that finds a pane dead with
-// no exit status sends the tmux server a SIGCHLD - tmux 3.4 can miss the
-// program's end and keep it an unreaped zombie with no status and no
-// pane-died hook - and the signal costs a server that missed nothing nothing.
-func TestTheServerIsWokenForAMissingStatus(t *testing.T) {
-	l := newLab(t)
-	row := l.create(shellSpec(t.TempDir()))
-	var sent []int
-	l.signalChildEnded = func(pid int) error {
-		sent = append(sent, pid)
-		return signalChildEnded(pid)
-	}
-
-	l.wakeServer(context.Background())
-	server, err := strconv.Atoi(l.tmuxOut("display-message", "-p", "-t", row.TmuxName, "#{pid}"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(sent) != 1 || sent[0] != server {
-		t.Fatalf("the wake went to %v, want the tmux server %d", sent, server)
-	}
-	// The server, and the program in its pane, are as they were.
-	if dead := l.tmuxOut("list-panes", "-t", row.TmuxName, "-F", "#{pane_dead}"); dead != "0" {
-		t.Fatalf("after the wake the pane is dead: %q", dead)
-	}
-	l.Poll(context.Background())
-	if len(sent) != 1 {
-		t.Fatalf("a poll with every pane alive woke the server: %v", sent)
-	}
-	if got, _ := l.store.GetSession(row.ID); got.State != store.StateRunning {
-		t.Fatalf("after the wake the session is %q", got.State)
 	}
 }
 

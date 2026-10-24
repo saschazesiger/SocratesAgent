@@ -828,12 +828,9 @@ func TestPaneStateTellsTheThreeCasesApart(t *testing.T) {
 
 	live := l.create(shellSpec(t.TempDir()))
 	dead := l.create(shellSpec(t.TempDir(), "/bin/sh", "-c", "exit 4"))
-	// Tmux's own word that the pane is dead, which is what paneStateOf
-	// reads; the row follows with the pane-died hook, which is not this
-	// test's subject (and has no poll here to stand in for a server that
-	// missed the program's end, see wakeServer).
 	waitFor(t, 10*time.Second, "the second program to exit", func() bool {
-		return l.tmuxOut("list-panes", "-t", dead.TmuxName, "-F", "#{pane_dead}") == "1"
+		got, err := l.store.GetSession(dead.ID)
+		return err == nil && got.State == store.StateExited
 	})
 
 	for _, c := range []struct {

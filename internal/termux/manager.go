@@ -97,14 +97,8 @@ type Manager struct {
 	confFallback bool
 	pollFails    int
 	missed       map[string]int
-	// unknownExit counts the polls that found a pane dead before tmux had
-	// its exit status (applyPanes).
-	unknownExit map[string]int
-	// signalChildEnded tells a process that one of its children ended
-	// (wakeServer); a test sees what it is sent to.
-	signalChildEnded func(pid int) error
-	hookLn           net.Listener
-	closed           bool
+	hookLn       net.Listener
+	closed       bool
 
 	// locks serialises everything that relaunches one session.
 	locks map[string]*sync.Mutex
@@ -146,13 +140,10 @@ func New(st *store.Store, cfg Config) (*Manager, error) {
 	}
 	m := &Manager{
 		st: st, cfg: cfg,
-		live:        map[string]*liveSession{},
-		missed:      map[string]int{},
-		unknownExit: map[string]int{},
-		locks:       map[string]*sync.Mutex{},
-		plans:       map[string]harnesses.LaunchPlan{},
-
-		signalChildEnded: signalChildEnded,
+		live:   map[string]*liveSession{},
+		missed: map[string]int{},
+		locks:  map[string]*sync.Mutex{},
+		plans:  map[string]harnesses.LaunchPlan{},
 	}
 	m.act = newActivity(m)
 
@@ -546,7 +537,6 @@ func (m *Manager) launch(ctx context.Context, row *store.Session, plan harnesses
 	m.mu.Lock()
 	m.live[row.ID] = &liveSession{id: row.ID, tmuxName: row.TmuxName, cols: row.Cols, rows: row.Rows}
 	delete(m.missed, row.ID)
-	delete(m.unknownExit, row.ID)
 	m.mu.Unlock()
 	return nil
 }
@@ -951,7 +941,6 @@ func (m *Manager) stop(ctx context.Context, row *store.Session) error {
 	m.mu.Lock()
 	delete(m.live, row.ID)
 	delete(m.missed, row.ID)
-	delete(m.unknownExit, row.ID)
 	m.mu.Unlock()
 	return nil
 }
