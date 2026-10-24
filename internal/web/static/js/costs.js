@@ -110,6 +110,9 @@ function projectLabel(project) {
   return baseName(project);
 }
 
+// A conversation's "profile", as the server names it, is the account it ran
+// on: a chat's account, or a sign-in profile from before there were
+// accounts. The page says account, which is what a person has now.
 function profileLabel(id) {
   const names = state.data ? state.data.profiles : {};
   if (names && names[id] !== undefined) return names[id];
@@ -146,7 +149,7 @@ function decode(data) {
 function matches(r) {
   const f = state.filters;
   if (f.harness && r.conv.harness !== f.harness) return false;
-  // The default profile's id is empty, so "a profile is chosen" is a flag
+  // The default account's id is empty, so "an account is chosen" is a flag
   // of its own.
   if (f.profileSet && r.conv.profile !== f.profile) return false;
   if (f.project && r.conv.project !== f.project) return false;
@@ -282,7 +285,7 @@ function drawFilters() {
   fillSelect($('fHarness'), 'harness',
     seen((r) => r.conv.harness).sort(byCost((r) => r.conv.harness)).map((h) => [h, HARNESS[h] || h]), 'All programs');
   fillSelect($('fProfile'), 'profile',
-    seen((r) => r.conv.profile).sort(byCost((r) => r.conv.profile)).map((p) => [p, profileLabel(p)]), 'All profiles');
+    seen((r) => r.conv.profile).sort(byCost((r) => r.conv.profile)).map((p) => [p, profileLabel(p)]), 'All accounts');
   fillSelect($('fProject'), 'project',
     seen((r) => r.conv.project).sort(byCost((r) => r.conv.project)).map((p) => [p, projectLabel(p)]), 'All projects');
   fillSelect($('fModel'), 'model',
@@ -599,7 +602,7 @@ function drawTables(filtered) {
     onPick: (g) => toggleFilter('harness', g.key), picked: (g) => f.harness !== '' && f.harness === g.key,
   });
   table('tProfile', groupBy(filtered, (r) => r.conv.profile), {
-    column: 'Profile',
+    column: 'Account',
     name: (g) => profileLabel(g.key),
     onPick: (g) => toggleFilter('profile', g.key), picked: (g) => f.profileSet && f.profile === g.key,
   });
@@ -697,7 +700,7 @@ function csvCell(v) {
 function downloadCsv(rows, range) {
   const groups = groupBy(rows, (r) => `${r.day}\u0000${r.conv.key}\u0000${r.model}`)
     .sort((a, b) => (a.sample.day === b.sample.day ? b.cost - a.cost : (a.sample.day < b.sample.day ? -1 : 1)));
-  const lines = [['date', 'project', 'folder', 'program', 'profile', 'model', 'conversation', 'cost_usd',
+  const lines = [['date', 'project', 'folder', 'program', 'account', 'model', 'conversation', 'cost_usd',
     'input_tokens', 'output_tokens', 'cache_read_tokens', 'cache_write_tokens', 'requests'].join(',')];
   for (const g of groups) {
     const c = g.sample.conv;
