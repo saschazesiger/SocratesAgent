@@ -8,7 +8,8 @@
  *                    bar, the banners and the key bar leave
  *   .so-topbar       the bar's contents after the brand: the name, its marks
  *                    and .so-topbar__actions
- *   .so-title        the session's name, a text button that renames it
+ *   .so-title        the session's name, a text button that renames it;
+ *                    .so-title__home the words "Home" in its place on Home
  *   .so-outcome      the verdict on the last turn, beside the name
  *   .so-drawer-toggle  puts the session list away at a desk
  *   .so-drawer-actions, .so-drawer-foot  the drawer's first and last rows
@@ -19,7 +20,12 @@
  *   .so-menu-heading a group's name inside the row menu
  *   .so-banner       the backup notice (backup.js)
  *   .so-options      the switches of the options dialog
- *   .so-rename, .so-info-dialog, .so-facts  the row menu's dialogs
+ *   .so-rename, .so-info-dialog  the row menu's dialogs; Info's facts are a
+ *                    DS facts list (.so-facts, each value .so-fact: hooks for
+ *                    the tests, no rule of their own)
+ *   .so-actions      a session's menu on a phone: the same items in a dialog
+ *                    at the bottom edge (an action sheet), __head and __list
+ *   .so-menu-state   the On or Off at the end of a switch in the menu
  */
 
 /* ── The page as a column ─────────────────────────────────────────────── */
@@ -58,6 +64,11 @@
   }
 }
 
+/* The menu button keeps its 48px however long the session's name is. */
+.so-app .ds-topbar__menu {
+  flex: none;
+}
+
 .so-topbar {
   flex: 1 1 auto;
   min-width: 0;
@@ -84,6 +95,14 @@
   min-width: 0;
 }
 
+/* Home's place in the bar: the same words, not a button. */
+.so-title__home {
+  align-self: center;
+  padding-inline: var(--ds-space-3);
+  color: var(--ds-text);
+  font: var(--ds-font-subtitle);
+}
+
 /* While a name is being thought of, the old one steps back. */
 .so-title__button[data-titling] {
   --ds-btn-color: var(--ds-text-3);
@@ -94,6 +113,31 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* On a phone the name gets two lines rather than a few letters and an
+   ellipsis, in the label type and with less padding, so that two lines hold
+   a name and its date; the tip has all of it. */
+@media (max-width: 600px) {
+  .so-title__button {
+    --ds-btn-font: var(--ds-font-label);
+    --ds-btn-padding-x: var(--ds-space-2);
+  }
+
+  .so-title__home {
+    padding-inline: var(--ds-space-2);
+    font: var(--ds-font-label);
+  }
+
+  .so-title__text {
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    text-align: start;
+  }
 }
 
 .so-outcome[data-kind="complete"] { --so-outcome: var(--ds-success); }
@@ -141,13 +185,44 @@
   padding: var(--ds-space-2) var(--ds-space-3) calc(var(--ds-space-3) + env(safe-area-inset-bottom));
 }
 
+/* A phone on its side has the height of a few rows: the drawer's brand
+   goes (the top bar under the scrim has it) and its foot is one row of its
+   three icons, so that the session list keeps the height. */
+@media (max-height: 500px) {
+  .so-app .ds-drawer__head {
+    display: none;
+  }
+
+  .so-drawer-foot {
+    display: flex;
+    gap: var(--ds-space-2);
+    padding-top: var(--ds-space-1);
+    padding-bottom: calc(var(--ds-space-1) + env(safe-area-inset-bottom));
+  }
+
+  .so-drawer-foot > .ds-drawer__item {
+    flex: none;
+    justify-content: center;
+    width: var(--so-touch-target);
+    padding: 0;
+  }
+
+  .so-drawer-foot .ds-drawer__label {
+    display: none;
+  }
+}
+
 /* A session list is longer than a list of destinations: its rows are a
-   step denser than a drawer item, and a finger's size in touch mode. */
+   step denser than a drawer item, and a finger's size in touch mode. While
+   the snackbars stand above the foot of the open drawer, the list keeps
+   their height at its end (session.js placeToasts), so its last rows scroll
+   clear of them. */
 .so-session-list {
   --ds-drawer-item-height: var(--so-row-height);
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   margin-top: var(--ds-space-2);
+  padding-bottom: var(--so-drawer-reserve, 0px);
 }
 
 .so-list-empty {
@@ -327,9 +402,14 @@
   min-width: 0;
 }
 
-/* Room at the end for the ⋮, which lies over the item. */
+/* Room at the end for the ⋮, which lies over the item - a finger's 48px of
+   it in touch mode. */
 .so-row__open {
   padding-right: calc(var(--ds-space-8) + var(--ds-space-2));
+}
+
+.so-touch .so-row__open {
+  padding-right: calc(var(--so-touch-target) + var(--ds-space-2));
 }
 
 .so-row__text {
@@ -349,6 +429,19 @@
 
 .so-row__label {
   transition: color var(--ds-dur-medium) var(--ds-ease-in-out);
+}
+
+/* In the modal drawer of a phone a name gets two lines rather than an
+   ellipsis halfway through its date. */
+@media (max-width: 900px) {
+  .so-row__label {
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
 }
 
 /* News nobody has seen: the label weight and the full ink. The open row is
@@ -440,6 +533,13 @@
   opacity: 1;
 }
 
+/* A switch in a menu says where it stands at its end, in words. */
+.so-menu-state {
+  flex: none;
+  font: var(--ds-font-meta);
+  color: var(--ds-text-2);
+}
+
 .so-menu-heading {
   margin: 0;
   padding: var(--ds-space-2) var(--ds-space-4) var(--ds-space-1);
@@ -477,25 +577,44 @@
   min-width: 0;
 }
 
-/* The machine's facts about a session: technical detail, in the code face. */
-.so-facts {
-  display: grid;
-  gap: var(--ds-space-2);
+/* ── A session's menu on a phone ──────────────────────────────────────── */
+
+/* The DS dialog, at the bottom edge rather than in the middle: where the
+   thumb is, and where a phone's own action sheets rise from. */
+.so-actions {
+  --ds-dialog-width: var(--so-actions-width);
+  place-items: end center;
+  padding-bottom: max(var(--ds-space-4), env(safe-area-inset-bottom));
 }
 
-.so-fact {
-  font: var(--ds-font-code);
-  color: var(--ds-text-2);
+.so-actions__head {
+  display: flex;
+  align-items: center;
+  gap: var(--ds-space-2);
+  margin-top: calc(-1 * var(--ds-space-2));
+}
+
+.so-actions__head > .ds-dialog__title {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.so-actions__head > .ds-btn {
+  flex: none;
+  margin-right: calc(-1 * var(--ds-space-3));
+}
+
+/* The items run to the box's edges, their glyphs under the title. */
+.so-actions__list {
+  display: grid;
+  margin-inline: calc(var(--ds-space-3) - var(--ds-space-6));
 }
 
 /* ── Phones ───────────────────────────────────────────────────────────── */
 
-/* The brand keeps its mark on a phone; the bar's width is the session's. */
+/* The brand keeps only its mark on a phone (so-shared.css, every page);
+   the bar's width is the session's. */
 @media (max-width: 600px) {
-  .so-app .ds-topbar .ds-brand__name {
-    display: none;
-  }
-
   .so-topbar {
     margin-left: var(--ds-space-1);
   }
@@ -522,4 +641,23 @@
   .so-title {
     min-width: 0;
   }
+}
+
+/* A phone on its side: the brand gives its width to the session, and Home
+   is the drawer's first item anyway. */
+@media (max-height: 500px) {
+  .so-app .ds-topbar > .ds-brand {
+    display: none;
+  }
+}
+
+/* A phone on its side with its keyboard up has a strip of screen left
+   (keybar.js followViewport sets data-so-short): the bar gives its height to
+   what is being typed into, and comes back with the keyboard's going. */
+.so-touch[data-so-short] .so-app {
+  --ds-topbar-height: 0px;
+}
+
+.so-touch[data-so-short] .so-app > .ds-topbar {
+  display: none;
 }

@@ -246,7 +246,9 @@ export function connectionSource({ global = true } = {}) {
       source.status = 'idle';
       liveStreams.delete(source);
       globalStreams.delete(source);
-      if (streamsHealthy() && connection.status !== LIVE) setConnection(LIVE);
+      // The last stream going is no news from the server: a device with no
+      // network stays offline (a chat left for Home while in a tunnel).
+      if (navigator.onLine !== false && streamsHealthy() && connection.status !== LIVE) setConnection(LIVE);
     },
   };
 }
@@ -277,6 +279,27 @@ window.addEventListener('online', () => {
 // The line counts the seconds to the next attempt, so it is redrawn this often
 // while it shows. Data cadence, not motion.
 const CONN_TICK_MS = 1000;
+
+// A view that says the connection where the person is looking - a chat's
+// dock, right over its composer - stands in for the bar while it does, so
+// the same outage is not said twice on one screen.
+let saidElsewhere = false;
+
+/** connectionSaidElsewhere says whether such a view says it right now. */
+export function connectionSaidElsewhere(on) {
+  if (saidElsewhere === !!on) return;
+  saidElsewhere = !!on;
+  emitConnection();
+}
+
+/** retryConnection is the bar's Retry, for a view that stands in for it. */
+export function retryConnection() {
+  if (connection.retryNow) connection.retryNow();
+  wake('manual');
+}
+
+// A phone's line keeps to what is wrong and how old the screen is.
+const narrow = window.matchMedia('(max-width: 600px)');
 
 // mountConnectionBar puts one honest line at the top of the page. It is the
 // answer to "is what I am looking at still true?", and it is never hidden
@@ -311,12 +334,11 @@ export function mountConnectionBar() {
   countdown.className = 'ds-meta';
   const retry = document.createElement('button');
   retry.type = 'button';
-  retry.className = 'ds-btn ds-btn--text ds-btn--sm';
-  retry.textContent = 'Retry';
-  retry.addEventListener('click', () => {
-    if (connection.retryNow) connection.retryNow();
-    wake('manual');
-  });
+  retry.className = 'ds-btn ds-btn--quiet ds-btn--icon';
+  retry.setAttribute('aria-label', 'Try to connect now');
+  retry.dataset.tip = 'Retry';
+  retry.append(iconEl('sync', 18));
+  retry.addEventListener('click', () => retryConnection());
   alert.append(iconEl('wifiOff', 20), label, countdown, retry);
   slot.replaceChildren(alert);
 
@@ -330,7 +352,7 @@ export function mountConnectionBar() {
     // being swapped for another one is not something anyone needs to read.
     const live = !state.degraded;
     document.body.toggleAttribute('data-conn-lost', !live);
-    if (live) {
+    if (live || saidElsewhere) {
       if (ticker) { clearInterval(ticker); ticker = null; }
       if (shown) {
         shown = false;
@@ -350,7 +372,7 @@ export function mountConnectionBar() {
       : headline + ' Nothing on this screen is updating.');
     const wait = state.retryAt ? Math.max(0, Math.round((state.retryAt - Date.now()) / 1000)) : 0;
     setText(countdown, offline
-      ? 'Waiting for signal'
+      ? (narrow.matches ? '' : 'Waiting for signal')
       : (wait > 0 ? 'Retrying in ' + wait + 's' : 'Reconnecting…'));
 
     if (!shown) {

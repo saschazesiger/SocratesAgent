@@ -39,41 +39,41 @@
       <form class="ds-form" id="form" novalidate>
         <div class="ds-field">
           <label class="ds-field__label" for="password">Password</label>
-          <input class="ds-input" type="password" id="password" autocomplete="new-password" minlength="6" required aria-describedby="passwordError passwordHint">
+          <input class="ds-input" type="password" id="password" autocomplete="new-password" enterkeyhint="next" minlength="6" required aria-describedby="passwordError passwordHint">
           <small class="ds-field__hint ds-field__hint--error" id="passwordError" hidden></small>
-          <small class="ds-field__hint" id="passwordHint">At least 6 characters. This is the only account.</small>
+          <small class="ds-field__hint" id="passwordHint">At least 6 characters. There is one password and no user name.</small>
         </div>
         <div class="ds-field">
           <label class="ds-field__label" for="repeat">Repeat password</label>
-          <input class="ds-input" type="password" id="repeat" autocomplete="new-password" minlength="6" required aria-describedby="repeatError">
+          <input class="ds-input" type="password" id="repeat" autocomplete="new-password" enterkeyhint="next" minlength="6" required aria-describedby="repeatError">
           <small class="ds-field__hint ds-field__hint--error" id="repeatError" hidden></small>
         </div>
         <div class="ds-subsection">
           <div class="ds-field">
             <label class="ds-field__label" for="key">OpenRouter API key <span class="so-optional">· optional</span></label>
-            <input class="ds-input" type="password" id="key" placeholder="sk-or-v1-…" autocomplete="off" aria-describedby="keyHint">
-            <small class="ds-field__hint" id="keyHint">It transcribes what you dictate, and it runs the spoken status and the session names, and with the turn outcome switched on the check of each chat's turn — which sends the chat's last instruction, answer, calls and task list to OpenRouter. The coding programs bring their own credentials, and the voice that reads answers out loud has a key of its own in Admin → Voice. Get one at openrouter.ai/keys — you can also add it later.</small>
+            <input class="ds-input" type="password" id="key" placeholder="sk-or-v1-…" autocomplete="off" enterkeyhint="done" aria-describedby="keyHint">
+            <small class="ds-field__hint" id="keyHint">It transcribes what you dictate and writes the spoken status and the chats' names, and with the turn outcome switched on it checks each chat's turn — which sends the chat's last instruction, answer, calls and task list to OpenRouter. The coding agents bring their own accounts, and the voice that reads answers out loud has a key of its own in Admin → Voice. Get one at openrouter.ai/keys — you can also add it later.</small>
           </div>
         </div>
         <div class="ds-subsection">
           <div class="ds-field">
             <label class="ds-field__label" for="tunnelMode">Reach it from outside <span class="so-optional">· optional</span></label>
             <select class="ds-input" id="tunnelMode" aria-describedby="tunnelHint">
-              <option value="off" id="localOnly">Local only — http://localhost:8080</option>
-              <option value="quick">Cloudflare quick tunnel — instant public URL</option>
-              <option value="token">Cloudflare named tunnel — your own hostname</option>
+              <option value="off">Local only</option>
+              <option value="quick">Quick tunnel</option>
+              <option value="token">Named tunnel</option>
             </select>
             <small class="ds-field__hint" id="tunnelHint">Socrates always keeps serving locally, so you can change this later in the admin dashboard.</small>
           </div>
           <div class="ds-field" id="tunnelNamed" hidden>
             <label class="ds-field__label" for="tunnelToken">Tunnel token</label>
-            <input class="ds-input" type="password" id="tunnelToken" autocomplete="off" placeholder="eyJhIjoi…" aria-describedby="tunnelTokenError tunnelTokenHint">
+            <input class="ds-input" type="password" id="tunnelToken" autocomplete="off" enterkeyhint="next" placeholder="eyJhIjoi…" aria-describedby="tunnelTokenError tunnelTokenHint">
             <small class="ds-field__hint ds-field__hint--error" id="tunnelTokenError" hidden></small>
             <small class="ds-field__hint" id="tunnelTokenHint">Cloudflare Zero Trust → Networks → Tunnels → Create a tunnel → Cloudflared. Name it and save; the token is in the install command Cloudflare shows next. Point the tunnel's public hostname at <code data-local-url>http://localhost:8080</code>.</small>
           </div>
           <div class="ds-field" id="tunnelHost" hidden>
             <label class="ds-field__label" for="tunnelHostname">Public hostname</label>
-            <input class="ds-input" type="text" id="tunnelHostname" placeholder="socrates.example.com" spellcheck="false">
+            <input class="ds-input" type="text" id="tunnelHostname" placeholder="socrates.example.com" spellcheck="false" enterkeyhint="done">
           </div>
         </div>
         <div id="notice"></div>
@@ -87,7 +87,7 @@
       <!-- Offered only while this machine holds nothing a restore would
            overwrite. -->
       <div class="ds-subsection so-restore-offer" id="restoreOffer" hidden>
-        <p class="ds-muted">Moving Socrates to this machine? Restore it from its backup instead: the settings, the password, the sessions and the profiles' sign-ins come back with it.</p>
+        <p class="ds-muted">Moving Socrates to this machine? Restore it from its backup instead: the settings, the password, the chats and the accounts' sign-ins come back with it.</p>
         <button class="ds-btn" type="button" id="restoreOpen" data-icon="history" data-icon-size="16">Restore from a backup</button>
       </div>
     </section>
@@ -96,46 +96,46 @@
     <section id="restoreStep" aria-labelledby="restoreTitle" hidden>
       <header class="ds-page-head">
         <h1 class="ds-page-head__title" id="restoreTitle">Restore from a backup</h1>
-        <p class="ds-page-head__lead">Socrates comes back as it was when the backup was taken: settings, password, sessions, and the sign-ins and transcripts of its profiles. The default sign-ins and transcripts of Claude Code, Codex and OpenCode are in the old machine's home folder, not in the backup: sign in to them again here. Working directories are not in a backup either; they live in git.</p>
+        <p class="ds-page-head__lead">Socrates comes back as it was when the backup was taken: settings, password, chats and Shells, and the accounts with their sign-ins and transcripts. Working directories are not in a backup; they live in git.</p>
       </header>
       <form class="ds-form" id="restoreForm" autocomplete="off" novalidate>
         <div class="ds-field">
           <label class="ds-field__label" for="rEndpoint">Endpoint</label>
-          <input class="ds-input" type="text" id="rEndpoint" spellcheck="false" placeholder="https://hel1.your-objectstorage.com" aria-describedby="rEndpointHint">
+          <input class="ds-input" type="text" id="rEndpoint" spellcheck="false" enterkeyhint="next" placeholder="https://hel1.your-objectstorage.com" aria-describedby="rEndpointHint">
           <small class="ds-field__hint" id="rEndpointHint">Any S3-compatible store. Empty is AWS S3.</small>
         </div>
         <div class="ds-form-grid ds-form-grid--2">
           <div class="ds-field">
             <label class="ds-field__label" for="rRegion">Region</label>
-            <input class="ds-input" type="text" id="rRegion" spellcheck="false" placeholder="us-east-1">
+            <input class="ds-input" type="text" id="rRegion" spellcheck="false" enterkeyhint="next" placeholder="us-east-1">
           </div>
           <div class="ds-field">
             <label class="ds-field__label" for="rBucket">Bucket</label>
-            <input class="ds-input" type="text" id="rBucket" spellcheck="false" required aria-describedby="rBucketError">
+            <input class="ds-input" type="text" id="rBucket" spellcheck="false" enterkeyhint="next" required aria-describedby="rBucketError">
             <small class="ds-field__hint ds-field__hint--error" id="rBucketError" hidden></small>
           </div>
         </div>
         <div class="ds-field">
           <label class="ds-field__label" for="rPrefix">Prefix <span class="so-optional">· optional</span></label>
-          <input class="ds-input" type="text" id="rPrefix" spellcheck="false" placeholder="backup/v1" aria-describedby="rPrefixHint">
+          <input class="ds-input" type="text" id="rPrefix" spellcheck="false" enterkeyhint="next" placeholder="backup/v1" aria-describedby="rPrefixHint">
           <small class="ds-field__hint" id="rPrefixHint">The folder in the bucket the backup was written to, as Admin → Backup showed it.</small>
         </div>
         <div class="ds-form-grid ds-form-grid--2">
           <div class="ds-field">
             <label class="ds-field__label" for="rKey">Access key ID</label>
-            <input class="ds-input" type="text" id="rKey" spellcheck="false" required aria-describedby="rKeyError">
+            <input class="ds-input" type="text" id="rKey" spellcheck="false" enterkeyhint="next" required aria-describedby="rKeyError">
             <small class="ds-field__hint ds-field__hint--error" id="rKeyError" hidden></small>
           </div>
           <div class="ds-field">
             <label class="ds-field__label" for="rSecret">Secret access key</label>
-            <input class="ds-input" type="password" id="rSecret" autocomplete="off" required aria-describedby="rSecretError">
+            <input class="ds-input" type="password" id="rSecret" autocomplete="off" enterkeyhint="next" required aria-describedby="rSecretError">
             <small class="ds-field__hint ds-field__hint--error" id="rSecretError" hidden></small>
           </div>
         </div>
         <label class="ds-check"><input type="checkbox" id="rPathStyle" checked><span>Path-style addressing</span></label>
         <div class="ds-field">
           <label class="ds-field__label" for="rPassphrase">Encryption passphrase</label>
-          <input class="ds-input" type="password" id="rPassphrase" autocomplete="off" required aria-describedby="rPassphraseError rPassphraseHint">
+          <input class="ds-input" type="password" id="rPassphrase" autocomplete="off" enterkeyhint="go" required aria-describedby="rPassphraseError rPassphraseHint">
           <small class="ds-field__hint ds-field__hint--error" id="rPassphraseError" hidden></small>
           <small class="ds-field__hint" id="rPassphraseHint">The passphrase the backup was made with. Nothing is written before it is proved right.</small>
         </div>
@@ -294,7 +294,6 @@ const form = $('form');
 const submit = $('submit');
 const mode = $('tunnelMode');
 const hint = $('tunnelHint');
-const localOnly = $('localOnly');
 
 let cloudflared = { installed: false };
 let localURL = 'http://localhost:8080';
@@ -314,34 +313,42 @@ function showPassword(state) {
 // and a setup page that names the wrong port sends the first visit nowhere.
 function showLocalURL() {
   document.querySelectorAll('[data-local-url]').forEach((node) => { node.textContent = localURL; });
-  localOnly.textContent = 'Local only — ' + localURL;
 }
 
 mode.addEventListener('change', renderTunnel);
 
+// The choices are short, so that a phone shows them whole; what each one
+// means is the hint under them.
 function renderTunnel() {
   $('tunnelNamed').hidden = mode.value !== 'token';
   $('tunnelHost').hidden = mode.value !== 'token';
   if (mode.value === 'off') {
-    morph(hint, html`Socrates always keeps serving locally, so you can turn this on later in the admin dashboard.`);
+    morph(hint, html`Only at ${localURL}. Socrates always keeps serving there, so you can turn this on later in the admin dashboard.`);
     return;
   }
+  const about = mode.value === 'quick'
+    ? html`A random trycloudflare.com address, made at startup: handy for a quick test, but anyone with the link reaches your login page.`
+    : html`Your own hostname, through your Cloudflare account. Point the tunnel at ${localURL}.`;
   if (!cloudflared.installed) {
-    morph(hint, cloudflared.can_install === false
-      ? html`This needs the <code>cloudflared</code> binary and there is no published build for this platform. Install it yourself and set the path in the admin dashboard.`
-      : html`Socrates downloads <code>cloudflared</code> for you when you finish setup, about 35 MB. Nothing to install by hand.`);
+    morph(hint, html`${about} ${cloudflared.can_install === false
+      ? html`It needs the <code>cloudflared</code> binary and there is no published build for this platform. Install it yourself and set the path in the admin dashboard.`
+      : html`Socrates downloads <code>cloudflared</code> for you when you finish setup, about 35 MB. Nothing to install by hand.`}`);
     return;
   }
-  morph(hint, mode.value === 'quick'
-    ? html`A random trycloudflare.com address is created at startup. Handy for a quick test, but anyone with the link reaches your login page.`
-    : html`Your own hostname through your Cloudflare account. Point the tunnel at ${localURL}.`);
+  morph(hint, about);
 }
 
 form.addEventListener('submit', async (e) => {
   e.preventDefault();
   notice($('notice'), '');
   const password = $('password').value;
-  if (password.length < 6) { fieldError('password', 'At least 6 characters.'); return; }
+  // The hint under the field says the rule; the error says what is wrong
+  // with what was typed, rather than the rule a second time.
+  if (password.length < 6) {
+    fieldError('password', !password.length ? 'Choose a password.'
+      : 'Too short: ' + password.length + (password.length === 1 ? ' character.' : ' characters.'));
+    return;
+  }
   if (password !== $('repeat').value) { fieldError('repeat', 'The two passwords do not match.'); return; }
   const body = { password, openrouter_key: $('key').value.trim() };
   if (mode.value !== 'off') {

@@ -173,12 +173,18 @@ async function focusTerm(page, timeout = 5000) {
 
 const oneLine = (text) => text.replace(/\s+/g, ' ').trim().slice(0, 200);
 
-// The top bar's ⋮ is this device's options: switches in a dialog, which stays
-// open while they are pressed. openOptions opens it when it is not open.
+// This device's options: switches in a dialog, which stays open while they
+// are pressed. On Home the top bar's ⋮ opens it; with a session on the stage
+// the ⋮ is that session's menu - a DS menu, or on a phone an action sheet -
+// and "This device…" is its last item. openOptions opens it when it is not
+// open.
 const OPTIONS = '#optionsDialog[data-state="open"]';
 async function openOptions(page) {
   if (await page.$(OPTIONS + ' [data-option]')) return;
   await page.click('#optionsBtn');
+  const first = await page.waitForSelector('#sessionMenu:not([hidden]) [data-action="device"], '
+    + 'dialog.so-actions[open] [data-action="device"], ' + OPTIONS + ' [data-option]', { timeout: 5000 });
+  if (await first.getAttribute('data-action') === 'device') await first.click();
   await page.waitForSelector(OPTIONS + ' [data-option]', { timeout: 5000 });
 }
 
@@ -235,6 +241,20 @@ const contrastOf = (a, b) => {
   const [x, y] = [lum(a), lum(b)].sort((p, q) => q - p);
   return (x + 0.05) / (y + 0.05);
 };
+
+// holdKey holds a finger on one key of the key bar for longer than a tap:
+// how a modifier is locked.
+async function holdKey(page, name) {
+  const at = await page.$eval('#keybar .so-key[data-key="' + name + '"]', (n) => {
+    const r = n.getBoundingClientRect();
+    return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+  });
+  await page.mouse.move(at.x, at.y);
+  await page.mouse.down();
+  await wait(700);
+  await page.mouse.up();
+  await wait(100);
+}
 
 /* --------------------------------------------------------- 1. createshell */
 
@@ -937,7 +957,7 @@ async function exitoverlay() {
       };
     });
     ok(/The session ended/.test(overlay.words), 'the overlay says the session ended', oneLine(overlay.words));
-    ok(/Exit status 7/.test(overlay.detail) && overlay.tips === 0,
+    ok(/exit status 7/i.test(overlay.detail) && overlay.tips === 0,
       'the exit status is a plain line under it, and there is no "i" left',
       JSON.stringify(overlay));
     ok(overlay.buttons.join(',') === 'Delete,Restart', 'the overlay offers Restart and Delete',
@@ -1573,19 +1593,30 @@ async function keybar() {
     ok(!(await s.page.$eval('#keybar', (n) => n.hidden)),
       'a keystroke on a real keyboard does not take the bar away', 'still on screen');
 
-    // A second tap locks it, and a locked modifier keeps transforming.
+    // A second tap takes back the first: a tap too many is undone, never a
+    // lock nobody asked for.
+    const ctrlState = () => s.page.$eval('#keybar .so-key[data-key="Control"]', (n) => (n.getAttribute('aria-pressed') === 'true' ? 'on' : 'off') + (n.hasAttribute('data-lock') ? ' lock' : ''));
     await s.page.click('#keybar .so-key[data-key="Control"]');
     await s.page.click('#keybar .so-key[data-key="Control"]');
-    const locked = await s.page.$eval('#keybar .so-key[data-key="Control"]', (n) => (n.getAttribute('aria-pressed') === 'true' ? 'on' : 'off') + (n.hasAttribute('data-lock') ? ' lock' : ''));
-    ok(/\block\b/.test(locked), 'a second tap locks Ctrl', locked);
+    const twice = await ctrlState();
+    ok(twice === 'off', 'a second tap puts an armed Ctrl away', twice);
+
+    // Held, it locks - the lock glyph and the label say so - and a locked
+    // modifier keeps transforming.
+    await holdKey(s.page, 'Control');
+    const locked = await ctrlState();
+    const lockedLooks = await s.page.$eval('#keybar .so-key[data-key="Control"]', (n) => ({
+      glyph: !!n.querySelector('svg'), label: n.getAttribute('aria-label'), tip: n.getAttribute('data-tip'),
+    }));
+    ok(/\block\b/.test(locked) && lockedLooks.glyph && /locked/.test(lockedLooks.label),
+      'a long press locks Ctrl, and it shows', locked + ' ' + JSON.stringify(lockedLooks));
     const beforeLock = (await sentBytes(s.page)).length;
     await s.page.keyboard.type('ab');
     await wait(200);
     const two = (await sentBytes(s.page)).slice(beforeLock).filter((hex) => hex.length === 2);
     ok(two.join(',') === '01,02', 'a locked Ctrl transforms every key after it', two.join(',') || 'nothing');
     await s.page.click('#keybar .so-key[data-key="Control"]');
-    ok(!/\b(on|lock)\b/.test(await s.page.$eval('#keybar .so-key[data-key="Control"]', (n) => (n.getAttribute('aria-pressed') === 'true' ? 'on' : 'off') + (n.hasAttribute('data-lock') ? ' lock' : ''))),
-      'a third tap puts it away', 'off');
+    ok(!/\b(on|lock)\b/.test(await ctrlState()), 'a tap releases it', await ctrlState());
 
     // A modifier is for the next key the person presses, and the terminal's
     // own reports are not keys. Leaving the pane for a control in the bar -
@@ -1612,8 +1643,7 @@ async function keybar() {
     // A locked Alt must not put an ESC in front of what the terminal answers.
     await s.page.click('#term .xterm-screen');
     await focusTerm(s.page);
-    await s.page.click('#keybar .so-key[data-key="Alt"]');
-    await s.page.click('#keybar .so-key[data-key="Alt"]');
+    await holdKey(s.page, 'Alt');
     const beforeBlur = (await sentBytes(s.page)).length;
     // Out of the pane to the options menu and back to it with Escape, which
     // is the menu's and not the pane's.
@@ -3362,9 +3392,9 @@ async function design() {
       Math.round(slow) + ' ms of turn in 400 ms');
     await s.page.emulateMedia({ reducedMotion: null });
 
-    // Rule 2 and rule 3 in the top bar: Status is a mark with its words in
-    // the label a reader gets, and the microphone beside it is the one control
-    // that carries a word, because it is the one a thumb has to find.
+    // Rule 2 and rule 3 in the top bar: Status and the microphone are marks
+    // (activity and the microphone glyph), with what they are in the label a
+    // reader gets and what a press does in the tip.
     const header = await s.page.evaluate(() => {
       const read = (id) => {
         const node = document.getElementById(id);
@@ -3380,15 +3410,17 @@ async function design() {
       };
       return { status: read('statusBtn'), mic: read('micBtn') };
     });
+    // This server has no OpenRouter key, and then the tip says why a press
+    // only explains (assist.js, dictate.js); with one it says what a press
+    // does.
+    const NO_KEY = 'Needs an OpenRouter key (Admin, Voice)';
     ok(header.status.text === '' && header.status.svg >= 1
-      && header.status.label === header.status.title,
-      'Status is a mark, with its words in the label', JSON.stringify(header.status));
-    ok(header.status.label === 'Summarize this session' && header.mic.label === 'Speak',
-      'and the words say what pressing them does',
-      header.status.label + ' / ' + header.mic.label);
-    ok(header.mic.text === 'Speak' && header.mic.height >= 40,
-      'the microphone is the one that carries its word, at a size a thumb can hit',
-      JSON.stringify(header.mic));
+      && header.status.label === 'Status of this session'
+      && [NO_KEY, 'Say what this session is doing'].includes(header.status.title),
+      'Status is a mark, with its name in the label and what a press does (or why it cannot) in the tip', JSON.stringify(header.status));
+    ok(header.mic.text === '' && header.mic.svg >= 1 && header.mic.label === 'Speak'
+      && [NO_KEY, 'Dictate into the terminal'].includes(header.mic.title) && header.mic.height >= 40,
+      'the microphone is a mark too, named Speak, at a size a thumb can hit', JSON.stringify(header.mic));
     const gone = await s.page.evaluate(() => ({
       auto: document.querySelectorAll('.auto-switch').length,
       bar: !!document.getElementById('audioBar'),
@@ -4705,6 +4737,8 @@ const micRow = (page) => page.evaluate(() => {
   return {
     pillInBar: !!pill && !!pill.closest('.ds-topbar'),
     pillText: pill ? pill.textContent.trim() : '',
+    pillMark: !!pill && !!pill.querySelector('.ds-btn__face:not(.ds-btn__face--busy) svg'),
+    pillLabel: pill ? pill.getAttribute('aria-label') : '',
     pillBox: box('micBtn'),
     pillDisabled: !!pill && pill.disabled,
     panel: !!node('chatPanel'),
@@ -4758,17 +4792,17 @@ async function dictate() {
     const composer = () => s.page.$eval('#chat .so-composer__input', (n) => n.value);
 
     const idle = await micRow(s.page);
-    ok(idle.pillInBar && /Speak/.test(idle.pillText),
-      'the microphone is a pill in the top bar', idle.pillText);
+    ok(idle.pillInBar && idle.pillMark && idle.pillLabel === 'Speak' && !idle.pillText,
+      'the microphone is its glyph in the top bar, named Speak', JSON.stringify({ mark: idle.pillMark, label: idle.pillLabel, text: idle.pillText }));
     ok(idle.pillBox && idle.pillBox.h >= 44,
       'big enough to be hit by a thumb', JSON.stringify(idle.pillBox));
     ok(!idle.panel, 'and there is no chat panel behind it any more', String(idle.panel));
     ok(!idle.open, 'no recording sheet is open', String(idle.open));
 
     // The bar it moved into was already the tightest row on the page, and this
-    // is the narrowest width the stylesheet has a rule for. The pill gives up
-    // its word there and keeps its 44px - what makes it findable by a thumb is
-    // the ring - and nothing may be pushed past the edge to make room for it.
+    // is the narrowest width the stylesheet has a rule for. The microphone
+    // keeps its glyph and its 44px, and nothing may be pushed past the edge
+    // to make room for it.
     await s.page.setViewportSize({ width: 320, height: 844 });
     await wait(400);
     const tight = await s.page.evaluate(() => {
@@ -4781,16 +4815,13 @@ async function dictate() {
         over: Math.round(Math.max(0, Math.max(...parts.map((b) => b.right)) - bar.right)),
         doc: document.documentElement.scrollWidth - document.documentElement.clientWidth,
         pill: { w: Math.round(pill.width), h: Math.round(pill.height) },
-        word: getComputedStyle(document.getElementById('micText')).display,
+        mark: !!document.querySelector('#micBtn .ds-btn__face:not(.ds-btn__face--busy) svg'),
       };
     });
     ok(tight.over === 0 && tight.doc <= 1,
       'at 320px every control is still inside the bar', JSON.stringify(tight));
-    // DS has no microphone glyph, so the pill keeps its one short word there
-    // and gives up padding instead; what makes it findable by a thumb is its
-    // height.
-    ok(tight.pill.w >= 44 && tight.pill.h >= 44 && tight.word !== 'none',
-      'and the microphone kept its word and its size', JSON.stringify(tight));
+    ok(tight.pill.w >= 44 && tight.pill.h >= 44 && tight.mark,
+      'and the microphone kept its glyph and its size', JSON.stringify(tight));
     await s.page.setViewportSize({ width: 390, height: 844 });
     await wait(400);
 
@@ -5964,49 +5995,54 @@ async function touchcopy() {
 /* --------------------------------------------------------- 47. keyboard */
 
 // keyboardable is the whole promise, measured: what may raise the on-screen
-// keyboard, what may not, and the one button that does. `inputmode="none"` is
-// the request a browser is asked to honour and `readonly` is the fact it
-// cannot argue with; both are checked, because the promise is "never", and a
-// promise that holds on some phones is not one.
+// keyboard, what may not, and the one button that does it for the terminal.
+// `inputmode="none"` is the request a browser is asked to honour and
+// `readonly` is the fact it cannot argue with; both are checked, because the
+// promise is "never", and a promise that holds on some phones is not one.
 const keyboardable = (page) => page.evaluate(() => {
   const muted = (node) => !!node && node.getAttribute('inputmode') === 'none' && node.readOnly;
   const btn = document.getElementById('kbBtn');
   const pane = document.querySelector('#term textarea');
   const active = document.activeElement;
-  const copies = [...document.querySelectorAll('.so-kb-copy')];
-  const copy = copies[0];
-  const r = btn.getBoundingClientRect();
-  const c = copy ? copy.getBoundingClientRect() : null;
   return {
     shown: !!btn.checkVisibility && btn.checkVisibility(),
     open: btn.getAttribute('aria-pressed'),
     filled: btn.getAttribute('aria-pressed') === 'true',
     label: btn.getAttribute('aria-label'),
+    icon: !!btn.querySelector('svg') && !btn.innerText.trim(),
     pane: muted(pane),
     paneOpen: !!pane && !muted(pane),
-    focus: active ? (active.closest('#term') ? 'pane' : active.closest('dialog') ? 'dialog' : active.localName) : null,
+    focus: active ? (active.closest('#term') ? 'pane' : active.closest('dialog') ? 'dialog'
+      : active.closest('#chat') ? 'chat' : active.closest('#prestart') ? 'prestart' : active.localName) : null,
     focusMuted: !!active && muted(active),
     fields: [...document.querySelectorAll('input.ds-input')]
       .filter((n) => n.checkVisibility && n.checkVisibility())
       .map((n) => ({ id: n.id || n.className, muted: muted(n) })),
     mics: [...document.querySelectorAll('.so-field-row')]
       .filter((n) => n.checkVisibility && n.checkVisibility())
-      .map((row) => ({ field: !!row.querySelector('input'), mic: !!row.querySelector('.so-mic') })),
-    copies: copies.length,
-    copy: copy ? {
-      inDialog: !!copy.closest('dialog[open]'),
-      shown: copy.checkVisibility(),
-      over: Math.abs(c.left - r.left) < 2 && Math.abs(c.top - r.top) < 2,
-      open: copy.getAttribute('aria-pressed'),
-    } : null,
+      .map((row) => ({ field: !!row.querySelector('input, textarea'), mic: !!row.querySelector('.so-mic') })),
+    copies: document.querySelectorAll('.so-kb-copy').length,
     keyboardKey: !!document.querySelector('#keybar [data-key="Keyboard"]'),
   };
 });
 
-// The keyboard switch: on a touch screen nothing raises the on-screen keyboard
-// but the button in the top bar - not the pane, not a field, not a dialog - and
-// a second press puts it away. The button is pressable everywhere, dialogs
-// included, and on a device with a mouse none of it applies.
+// tapTyped taps a field the way a finger does, types into it, and says what
+// the field became: whether it had the focus, unmuted, and what is in it.
+async function tapTyped(page, selector, text) {
+  await page.tap(selector);
+  await wait(200);
+  const tapped = await keyboardable(page);
+  await page.keyboard.type(text);
+  const value = await page.$eval(selector, (n) => n.value);
+  return { focus: tapped.focus, muted: tapped.focusMuted, value, typed: value.endsWith(text) };
+}
+
+// The keyboard: on a touch screen nothing raises the terminal's on-screen
+// keyboard but the button in the top bar, and a second press puts it away;
+// the button is there only while a terminal is. Every other field - the
+// sheet's, a dialog's, a chat's composer, a prepared session's prompt - takes
+// a tap and raises the keyboard itself, but never for a focus the page gave
+// it on its own. On a device with a mouse none of it applies.
 async function keyboard() {
   // What the stub hears is what a person would say to filter that list, so the
   // words land somewhere with a visible consequence rather than in a field
@@ -6018,6 +6054,8 @@ async function keyboard() {
     viewport: { width: 1100, height: 900 },
     touch: true,
     permissions: ['microphone'],
+    // The scripted agent, for the chat whose composer is a field like any other.
+    env: FAKE_AGENT,
     args: [
       '--use-fake-ui-for-media-stream',
       '--use-fake-device-for-media-stream',
@@ -6047,7 +6085,8 @@ async function keyboard() {
     ok(off.shown && off.open === 'false' && !off.filled,
       'the button is in the bar, and the keyboard starts put away',
       JSON.stringify({ shown: off.shown, open: off.open, filled: off.filled }));
-    ok(/show the keyboard/i.test(off.label || ''), 'and it says what a press does', off.label);
+    ok(/show the keyboard/i.test(off.label || '') && off.icon, 'and it is the keyboard glyph, and says what a press does',
+      JSON.stringify({ label: off.label, icon: off.icon }));
     ok(off.pane, 'the pane cannot raise the keyboard: inputmode=none, and read-only for the phones that ignore it',
       off.pane ? 'inputmode=none and readonly' : 'an ordinary text field');
     ok(!off.keyboardKey, 'and the key bar has no keyboard key of its own any more', String(off.keyboardKey));
@@ -6134,26 +6173,28 @@ async function keyboard() {
     await wait(500);
     const sheet = await keyboardable(s.page);
     ok(sheet.fields.length >= 1 && sheet.fields.every((f) => f.muted),
-      'every field on the sheet is muted', JSON.stringify(sheet.fields));
+      'opening the sheet raises no keyboard: its fields are muted while nobody has touched them',
+      JSON.stringify(sheet.fields));
     ok(sheet.mics.length >= 1 && sheet.mics.every((row) => row.field && row.mic),
       'and every one has its microphone', JSON.stringify(sheet.mics));
-    ok(sheet.copies === 1 && sheet.copy && sheet.copy.inDialog && sheet.copy.shown && sheet.copy.over,
-      'the button is pressable over the dialog, in the very spot the bar has it',
-      JSON.stringify(sheet.copy));
+    ok(sheet.copies === 0, 'no copy of the keyboard button lies over the dialog', String(sheet.copies));
     await shot(s.page, 'keyboard-sheet');
 
-    await s.page.click('#newSessionSheet .so-kb-copy');
+    // A finger on a field is what raises its keyboard, and the typing is in
+    // it at once.
+    const onSheet = await tapTyped(s.page, '#nsDir .ds-combo__input', 'dyn');
+    ok(onSheet.focus === 'dialog' && !onSheet.muted && onSheet.typed,
+      'a tap on a field of the sheet gives it the keyboard: an ordinary field with the focus, holding what was typed',
+      JSON.stringify(onSheet));
+    // Away from the field: the list it opened closes, and the focus goes.
+    await s.page.tap('#newSessionSheet .ds-sheet__title');
     await wait(200);
-    const typing = await keyboardable(s.page);
-    ok(typing.open === 'true' && typing.copy && typing.copy.open === 'true'
-      && typing.focus === 'dialog' && !typing.focusMuted,
-      'pressed there, it raises the keyboard for the dialog\'s field',
-      JSON.stringify({ open: typing.open, copy: typing.copy, focus: typing.focus, muted: typing.focusMuted }));
-    await s.page.click('#newSessionSheet .so-kb-copy');
+    await s.page.tap('#newSessionSheet .ds-sheet__title');
     await wait(200);
-    const shut = await keyboardable(s.page);
-    ok(shut.open === 'false' && shut.fields.every((f) => f.muted),
-      'and pressed again, puts it away', JSON.stringify({ open: shut.open, fields: shut.fields }));
+    const leftSheet = await keyboardable(s.page);
+    ok(leftSheet.fields.every((f) => f.muted),
+      'a field the focus left is muted again, so the page cannot raise a keyboard over it by itself',
+      JSON.stringify(leftSheet.fields));
 
     // A field is still filled by speaking to it. What comes back is what would
     // have been typed: it goes in the field and the field is told, so the list
@@ -6184,33 +6225,74 @@ async function keyboard() {
     await s.page.waitForSelector('dialog.so-rename[open]', { timeout: 10000 });
     await wait(400);
     const rename = await keyboardable(s.page);
-    ok(rename.fields.length === 1 && rename.fields[0].muted && rename.mics.length === 1
-      && rename.copy && rename.copy.shown && rename.copy.over,
-      'so is the rename dialog: its field muted, with a microphone, and the button over it',
-      JSON.stringify({ fields: rename.fields, mics: rename.mics, copy: rename.copy }));
-    await s.page.click('dialog.so-rename .so-kb-copy');
-    await wait(200);
-    const renaming = await keyboardable(s.page);
-    ok(renaming.open === 'true' && renaming.focus === 'dialog' && !renaming.focusMuted,
-      'and the button raises the keyboard for it', JSON.stringify({ open: renaming.open, focus: renaming.focus }));
-    await s.page.click('dialog.so-rename .so-kb-copy');
-    await wait(200);
-    // A tablet in its case types on keys of its own, and a muted field is
-    // given back to them rather than swallowing the key.
+    ok(rename.fields.length === 1 && rename.fields[0].muted && rename.mics.length === 1 && rename.copies === 0,
+      'so is the rename dialog: it opens on its field without a keyboard, with a microphone beside it',
+      JSON.stringify({ fields: rename.fields, mics: rename.mics, copies: rename.copies }));
+    const renaming = await tapTyped(s.page, '#renameInput', ' again');
+    ok(renaming.focus === 'dialog' && !renaming.muted && renaming.typed,
+      'and a tap on the field raises the keyboard for it: what is typed is in it', JSON.stringify(renaming));
+    // A tablet in its case types on keys of its own, and a field the page
+    // focused (muted) is given back to them rather than swallowing the key.
+    await s.page.tap('#renameTitle');
+    await wait(150);
+    await s.page.focus('#renameInput');
+    await wait(150);
+    const refocused = await keyboardable(s.page);
     await s.page.keyboard.type('xy');
     const keyed = await s.page.evaluate(() => {
       const node = document.activeElement;
       return { value: node.value, ro: node.readOnly, dialog: !!node.closest('dialog') };
     });
-    ok(keyed.dialog && keyed.value.endsWith('xy') && !keyed.ro,
-      'a key pressed on real keys lands in the muted field', JSON.stringify(keyed));
+    ok(refocused.focusMuted && keyed.dialog && keyed.value.endsWith('xy') && !keyed.ro,
+      'a field the page focused is muted, and a key pressed on real keys still lands in it',
+      JSON.stringify({ mutedBefore: refocused.focusMuted, ...keyed }));
     await s.page.keyboard.press('Escape');
     await s.page.waitForSelector('dialog.so-rename', { state: 'detached', timeout: 10000 }).catch(() => {});
     await wait(300);
     const after = await keyboardable(s.page);
-    ok(after.copies === 0 && after.open === 'false' && after.pane,
-      'a closed dialog takes its copy of the button with it, and the pane is muted again',
-      JSON.stringify({ copies: after.copies, open: after.open, pane: after.pane }));
+    ok(after.open === 'false' && after.pane,
+      'a closed dialog leaves the switch off and the pane muted', JSON.stringify({ open: after.open, pane: after.pane }));
+
+    /* ------------------------------------------- a chat and a prepared prompt */
+
+    // A chat has no pane: the button goes, and its composer takes a tap.
+    const shellId = await s.page.evaluate(() => location.hash.slice(1));
+    await startChat(s.page);
+    await wait(400);
+    const chat = await keyboardable(s.page);
+    const composerShut = await s.page.$eval('#chat .so-composer__input', (n) => n.getAttribute('inputmode') === 'none' && n.readOnly);
+    ok(!chat.shown && composerShut, 'a chat has no keyboard button, and the cursor it puts in its composer raises no keyboard',
+      JSON.stringify({ button: chat.shown, composerMuted: composerShut }));
+    const composing = await tapTyped(s.page, '#chat .so-composer__input', 'typed after one tap');
+    ok(composing.focus === 'chat' && !composing.muted && composing.typed,
+      'a tap on the composer raises the keyboard, and what is typed is in it', JSON.stringify(composing));
+    await s.page.click('#chat .so-composer__send');
+    ok(await awaitLog(s.page, 'you said: typed after one tap', 15000), 'and what is typed there is sent',
+      oneLine(await lastAnswer(s.page)));
+
+    // A prepared session's prompt is the same.
+    await ensureNav(s.page);
+    await s.page.click('#newSession');
+    await s.page.waitForSelector('#newSessionSheet[open]', { timeout: 15000 });
+    await s.page.click('#newSessionSheet .so-settings__program[data-value="fake"]');
+    await s.page.click('#nsPrestart');
+    await s.page.click('#nsStart');
+    await s.page.waitForSelector('#prestart:not([hidden]) #psPrompt', { timeout: 15000 });
+    await s.page.waitForFunction(() => {
+      const n = document.querySelector('#psPrompt');
+      return n && !n.disabled && document.querySelector('#psState') && !/load/i.test(document.querySelector('#psSave').textContent);
+    }, null, { timeout: 15000 }).catch(() => {});
+    await wait(400);
+    const prepared = await keyboardable(s.page);
+    const prompting = await tapTyped(s.page, '#psPrompt', 'Write the docs');
+    ok(!prepared.shown && prompting.focus === 'prestart' && !prompting.muted && prompting.typed,
+      'and so is a prepared session\u2019s prompt: no button, and a tap that types', JSON.stringify({ button: prepared.shown, ...prompting }));
+    await s.page.evaluate((target) => { location.hash = '#' + target; }, shellId);
+    await s.page.waitForSelector('#term .xterm', { timeout: 20000 });
+    await wait(600);
+    const back = await keyboardable(s.page);
+    ok(back.shown && back.pane, 'back on the terminal the button is there again, and the pane muted',
+      JSON.stringify({ shown: back.shown, pane: back.pane }));
 
     /* ------------------------------------------------- not on a desk */
 
@@ -6252,43 +6334,6 @@ async function keyboard() {
       JSON.stringify({ open: carUp.open, paneOpen: carUp.paneOpen, focus: carUp.focus }));
     await carPage.close();
     await car.close();
-
-    /* ------------------------------------------------ a chat's composer */
-
-    // A chat's composer is a field like the pane: a tap on it does not raise
-    // the keyboard, the button does - for the composer, with the focus in it
-    // - and a second press puts it away again.
-    const chat = await startChat(s.page, 'claude');
-    await wait(400);
-    const composer = () => s.page.evaluate(() => {
-      const n = document.querySelector('#chat .so-composer__input');
-      return {
-        muted: n.getAttribute('inputmode') === 'none' && n.readOnly,
-        focus: document.activeElement === n,
-        open: document.getElementById('kbBtn').getAttribute('aria-pressed'),
-      };
-    });
-    const shutComposer = await composer();
-    await s.page.click('#chat .so-composer__input');
-    await wait(200);
-    const tappedComposer = await composer();
-    ok(shutComposer.muted && shutComposer.open === 'false' && tappedComposer.muted && tappedComposer.focus,
-      'a chat’s composer is muted until the button: a tap on it takes the focus with the keyboard shut',
-      JSON.stringify({ shut: shutComposer, tapped: tappedComposer }));
-    await s.page.click('#kbBtn');
-    await wait(200);
-    const upComposer = await composer();
-    ok(upComposer.open === 'true' && !upComposer.muted && upComposer.focus,
-      'the button raises the keyboard for the composer, with the focus in it', JSON.stringify(upComposer));
-    await s.page.keyboard.type('typed on the keyboard');
-    await s.page.click('#chat .so-composer__send');
-    ok(await awaitLog(s.page, 'you said: typed on the keyboard', 15000), 'and what is typed there is sent',
-      oneLine(await lastAnswer(s.page)));
-    await s.page.click('#kbBtn');
-    await wait(200);
-    const downComposer = await composer();
-    ok(downComposer.open === 'false' && downComposer.muted, 'a second press puts it away again', JSON.stringify(downComposer));
-    void chat;
 
     ok(unexpected(s.errors).length === 0, 'no console errors',
       unexpected(s.errors).join(' | ') || '0');
@@ -6384,21 +6429,37 @@ async function transfer() {
     await phone.addCookies(await s.context.cookies());
     const phonePage = await phone.newPage();
     await phonePage.goto(s.url + '/#open=' + id, { waitUntil: 'domcontentloaded' });
-    await phonePage.waitForSelector('#transfer:not([hidden])', { timeout: 20000 });
+    await phonePage.waitForSelector('#term .xterm', { timeout: 20000 });
     await wait(600);
+    // Floating over the pane they covered its first lines - a fresh shell's
+    // prompt. On a phone they are the first items of the session's menu, the
+    // top bar's ⋮, and nothing lies over the terminal.
     const placed = await phonePage.evaluate(() => {
       const bar = document.querySelector('.ds-topbar');
-      const box = document.getElementById('transfer').getBoundingClientRect();
+      const transfer = document.getElementById('transfer');
+      const term = document.getElementById('term').getBoundingClientRect();
+      const over = [...document.querySelectorAll('body *')].filter((n) => {
+        if (n.closest('#term, #termWrap, .ds-topbar, #keybar, #sidebar, #navScrim, #toasts') || !n.checkVisibility()) return false;
+        const cs = getComputedStyle(n);
+        if (cs.position !== 'absolute' && cs.position !== 'fixed') return false;
+        const r = n.getBoundingClientRect();
+        return r.width > 0 && r.height > 0 && r.bottom > term.top && r.top < term.top + 60 && r.right > term.left && r.left < term.right;
+      }).map((n) => n.id || n.className);
       return {
-        floats: getComputedStyle(document.getElementById('transfer')).position === 'absolute',
-        below: box.top >= bar.getBoundingClientRect().bottom,
-        onScreen: box.right <= innerWidth && box.left >= 0,
+        inBar: !!transfer.checkVisibility && transfer.checkVisibility(),
         fits: bar.scrollWidth <= bar.clientWidth,
-        clear: document.getElementById('termLines').getBoundingClientRect().top >= box.bottom,
+        overPane: over,
       };
     });
-    ok(placed.floats && placed.below && placed.onScreen && placed.fits && placed.clear,
-      'on a phone the three float over the pane, the bar still fits, and a notice starts under them', JSON.stringify(placed));
+    await phonePage.click('#optionsBtn');
+    await phonePage.waitForSelector('dialog.so-actions[open] .ds-menu__item', { timeout: 5000 });
+    const items = await phonePage.$$eval('dialog.so-actions[open] .ds-menu__item', (nodes) => nodes.map((n) => n.dataset.action));
+    ok(!placed.inBar && placed.fits && placed.overPane.length === 0 && items.slice(0, 3).join(',') === 'copy,paste,upload',
+      'on a phone the three lead the session\u2019s menu, the bar fits, and nothing lies over the terminal',
+      JSON.stringify({ ...placed, items: items.slice(0, 4) }));
+    await phonePage.click('dialog.so-actions[open] [data-action="copy"]');
+    const sheetUp = await phonePage.waitForSelector('#copySheet[open]', { timeout: 5000 }).then(() => true, () => false);
+    ok(sheetUp, 'and Copy there opens the pane\u2019s text, as the button does', String(sheetUp));
     await phonePage.close();
     await phone.close();
 
@@ -6582,7 +6643,7 @@ async function prestart() {
     ok(srow && Math.abs(srow.start_at - Math.floor(later / 60000) * 60000) < 1000,
       'a time picked in the panel is saved as that minute', srow && new Date(srow.start_at).toISOString());
     const hint = await page.$eval('#psStartAtHint', (n) => n.textContent.trim());
-    ok(/in 2 h/.test(hint), 'the panel says how far away it is', hint);
+    ok(/in 2\sh/.test(hint), 'the panel says how far away it is', hint);
     const clock = await page.waitForSelector('#sessionList .so-row[data-id="' + sid + '"] .so-row__when svg',
       { timeout: 20000 }).then(() => true, () => false);
     ok(clock, 'and its row wears a clock and the time',
@@ -9682,6 +9743,10 @@ const leaveComposer = (page, id) => page.evaluate((next) => {
 
 // say writes a message and sends it: Enter at a desk, Send on a touch screen.
 async function say(page, text, { button = false } = {}) {
+  // On a touch screen a field the page focused by itself (the composer after
+  // a chat starts, or after a menu gave the focus back) waits for a finger:
+  // the tap a person makes on it is what opens it (keyboard.js).
+  if (await page.$eval('#chat .so-composer__input', (n) => n.readOnly)) await page.tap('#chat .so-composer__input');
   await page.fill('#chat .so-composer__input', text);
   if (button) await page.click('#chat .so-composer__send');
   else await page.press('#chat .so-composer__input', 'Enter');
@@ -9836,7 +9901,7 @@ async function chatstream() {
     await page.click('#chat .so-composer__usage');
     const usage = await page.waitForSelector('dialog .ds-dialog__title:text-is("Usage of this chat")', { timeout: 5000 })
       .then(() => page.$eval('dialog[open]', (n) => n.innerText), () => '');
-    ok(/Cost so far: \$/.test(usage) && /Scripted agent 1\.0\.0/.test(usage),
+    ok(/Cost so far\s*\$/.test(usage) && /Scripted agent 1\.0\.0/.test(usage),
       'the chat’s usage and cost are behind its "i"', oneLine(usage));
     await page.keyboard.press('Escape');
 
@@ -9946,7 +10011,7 @@ async function chatstream() {
     ok(lines.some((l) => /^notice:The conversation was compacted/.test(l)) && lines.some((l) => /^account:Switched from Work to Personal/.test(l))
       && lines.some((l) => /^error:A message could not be handed/.test(l)),
       'notices, an account switch and an error are lines of their own', JSON.stringify(lines));
-    ok(/Limit reached — renews in (1 h 5\d min|2 h)/.test(limit), 'a limit says so, with when it renews', oneLine(limit));
+    ok(/Limit reached — renews in (1\sh\s5\d\smin|2\sh)/.test(limit), 'a limit says so, with when it renews', oneLine(limit));
 
     // A prepared chat: its draft is the first message when it starts.
     await ensureNav(page);
@@ -10128,16 +10193,27 @@ async function chattools() {
     ok(finished.phases.join(',') === 'Plan:done,Build:done,Review:done' && finished.agents === 4 && finished.progress === '4 of 4 agents',
       'and when it is through, every phase and every agent is done', JSON.stringify(finished));
 
-    // The task list, pinned while the turn works through it.
-    await say(page, '/todo 900');
+    // The task list, pinned while the turn works through it - once: while
+    // the list in the answer can be read, it is not said again over the
+    // composer; scrolled out of sight, it is.
+    await say(page, '/todo 1500');
+    await page.waitForSelector('#chat .so-msg .so-part[data-kind="todo"] .so-todo__item[data-status="in_progress"]', { timeout: 10000 });
+    await wait(300);
+    const once = await page.evaluate(() => {
+      const inline = [...document.querySelectorAll('#chat .so-msg .so-part[data-kind="todo"]')].pop().getBoundingClientRect();
+      const view = document.querySelector('#chat .so-chat__scroll').getBoundingClientRect();
+      return { inView: inline.top >= view.top && inline.bottom <= view.bottom, pinned: !document.querySelector('#chat .so-chat__todo').hidden };
+    });
+    await page.$eval('#chat .so-chat__scroll', (n) => { n.scrollTop = 0; });
     const pinned = await page.waitForSelector('#chat .so-chat__todo:not([hidden]) .so-todo[data-pinned]', { timeout: 10000 })
       .then(() => page.$eval('#chat .so-chat__todo', (n) => ({
         items: [...n.querySelectorAll('.so-todo__item')].map((i) => i.dataset.status),
         count: n.querySelector('.so-todo__count').textContent,
         above: n.getBoundingClientRect().bottom <= document.querySelector('#chat .so-composer').getBoundingClientRect().top + 1,
       })), () => null);
+    ok(once.inView && !once.pinned, 'a task list the conversation shows is not pinned a second time', JSON.stringify(once));
     ok(!!pinned && pinned.items.length === 3 && pinned.items.includes('in_progress') && pinned.above,
-      'a task list is pinned above the composer while the turn works through it', JSON.stringify(pinned));
+      'scrolled out of sight while the turn works through it, it is pinned above the composer', JSON.stringify(pinned));
     await awaitLog(page, 'All three tasks are done.', 20000);
     const unpinned = await page.waitForSelector('#chat .so-chat__todo', { state: 'hidden', timeout: 5000 }).then(() => true, () => false);
     const inMessage = await page.$$eval('#chat .so-msg .so-part[data-kind="todo"] .so-todo__item[data-status="completed"]', (n) => n.length);
@@ -10673,7 +10749,7 @@ async function chatattach() {
     const ready = await page.waitForFunction(() => {
       const files = [...document.querySelectorAll('#chat .so-composer__file')];
       return files.length === 3 && files.every((f) => f.dataset.state === 'ready')
-        ? files.map((f) => f.querySelector('.so-ellipsis').textContent) : null;
+        ? files.map((f) => f.querySelector('.so-composer__file-name').textContent) : null;
     }, null, { timeout: 20000 }).then((h) => h.jsonValue(), () => null);
     ok(!!ready && ready.join(',') === 'notes.txt,table.csv,pasted.png',
       'a file from the button, one dropped on the chat and a pasted image are uploaded before sending', JSON.stringify(ready));
@@ -10713,11 +10789,12 @@ async function chatphone() {
     const id = await startChat(page);
     const mode = await page.evaluate(() => document.documentElement.classList.contains('so-touch'));
     const shut = await page.$eval('#chat .so-composer__input', (n) => n.readOnly);
-    await page.click('#kbBtn');
+    await page.tap('#chat .so-composer__input');
     const typing = await page.waitForFunction(() => !document.querySelector('#chat .so-composer__input').readOnly, null,
       { timeout: 5000 }).then(() => true, () => false);
-    ok(mode && shut && typing, 'a phone is in touch mode by itself, and its keyboard button opens the composer for typing',
-      JSON.stringify({ mode, shut, typing }));
+    const keys = await page.evaluate(() => !!document.getElementById('kbBtn')?.checkVisibility());
+    ok(mode && shut && typing && !keys, 'a phone is in touch mode by itself, a tap on the composer opens it for typing, and there is no Keys button beside a chat',
+      JSON.stringify({ mode, shut, typing, keys }));
 
     await say(page, '/md 5', { button: true });
     await awaitLog(page, 'The tests in', 20000);
@@ -10738,11 +10815,55 @@ async function chatphone() {
       return {
         send: box('#chat .so-composer__send'), attach: box('#chat .so-composer__attach'),
         model: box('#chat .so-composer__model'), speak: box('#micBtn'),
-        usage: box('#chat .so-composer__usage'), copy: box('#chat .so-code__copy'),
-        tool: box('#chat .so-tool > summary'),
+        field: box('#chat .so-composer__input'), copy: box('#chat .so-code__copy'),
+        answer: box('#chat .so-msg__copy'), tool: box('#chat .so-tool > summary'),
       };
     });
-    ok(Object.values(targets).every((t) => t && t.h >= 48), 'every control of the composer and a tool row is a 48 px target', JSON.stringify(targets));
+    ok(Object.values(targets).every((t) => t && t.h >= 48), 'every control of the composer, its field, Copy and a tool row is a 48 px target', JSON.stringify(targets));
+
+    // The bar is one row on a phone: while a turn runs, Stop has the action
+    // slot, and Send joins it once something is written; nothing wraps. The
+    // chat's usage, for which the row has no room, is the model menu's.
+    await say(page, '/sleep 3', { button: true });
+    await page.waitForSelector('#chat .so-composer__stop:not([hidden])', { timeout: 10000 });
+    const slot = (await page.evaluate(() => ({
+      stop: !document.querySelector('#chat .so-composer__stop').hidden,
+      send: !document.querySelector('#chat .so-composer__send').hidden,
+    })));
+    await page.fill('#chat .so-composer__input', 'written while it works');
+    const bar = await page.evaluate(() => {
+      const shown = [...document.querySelectorAll('#chat .so-composer__bar > *')].filter((n) => n.getClientRects().length && n.getBoundingClientRect().height > 0 && n.localName !== 'input');
+      const r = (sel) => { const n = document.querySelector(sel).getBoundingClientRect(); return [Math.round(n.width), Math.round(n.height)]; };
+      return {
+        rows: new Set(shown.map((n) => Math.round(n.getBoundingClientRect().top))).size,
+        stop: r('#chat .so-composer__stop'), send: r('#chat .so-composer__send'),
+        stopName: document.querySelector('#chat .so-composer__stop').getAttribute('aria-label'),
+        model: document.querySelector('#chat .so-composer__model-text').textContent,
+        hint: document.querySelector('#chat .so-composer__hint').textContent,
+      };
+    });
+    ok(slot.stop && !slot.send && bar.rows === 1 && bar.stop.join() === '48,48' && bar.send.join() === '48,48' && bar.stopName === 'Stop the agent',
+      'a turn running: Stop is an icon in the action slot, Send joins it once something is written, and the bar stays one row',
+      JSON.stringify({ slot, ...bar }));
+    ok(/waits until the agent is done/.test(bar.hint) && /^Fake small/.test(bar.model),
+      'and the phone says that the message waits for the turn, and names the model', JSON.stringify({ hint: bar.hint, model: bar.model }));
+    await page.fill('#chat .so-composer__input', '');
+    await page.click('#chat .so-composer__model');
+    const usageItem = await page.waitForSelector('.so-model-menu:not([hidden]) [data-usage]', { timeout: 5000 })
+      .then((n) => n.innerText(), () => '');
+    ok(/Usage of this chat/.test(usageItem), 'the chat’s usage is the model menu’s last item on a phone', usageItem);
+    // A phone has no Escape: the menu is put away by a tap beside it, on the
+    // conversation. (Escape would hand the focus back to the model button
+    // with its tooltip open over the field, as a keyboard is meant to see.)
+    const beside = await page.$eval('#chat .so-chat__scroll', (n) => { const r = n.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + 24 }; });
+    await page.touchscreen.tap(beside.x, beside.y);
+    const shutMenu = await page.waitForFunction(() => !document.querySelector('.so-model-menu:not([hidden])'), null, { timeout: 5000 })
+      .then(() => true, () => false);
+    ok(shutMenu, 'a tap beside the model menu puts it away', String(shutMenu));
+    await awaitChat(s, id, idle);
+    // The field waits for a finger again: a tap on it brings the keyboard
+    // back, as a person would.
+    if (await page.$eval('#chat .so-composer__input', (n) => n.readOnly)) await page.tap('#chat .so-composer__input');
 
     // The keyboard: the app is as tall as what can be seen (--so-app-h,
     // which keybar.js writes from the visual viewport), and the composer is
@@ -11680,8 +11801,8 @@ const ALL = [
   ['no-overlap', 'the microphone and the voice are never open at the same time', nooverlap],
   ['typeafteroutage', 'a cut socket, a locked phone, and a pane that still takes keystrokes', typeafteroutage],
   ['typekeepsfocus', 'a dialog, the ⋮ menu and two sessions: the keys still land in the pane', typekeepsfocus],
-  ['keyboard', 'on a touch screen only the button raises the keyboard, in every dialog too', keyboard],
-  ['options', 'the ⋮ is this device\u2019s options, and a chat\u2019s account says when its limit renews', optionsmenu],
+  ['keyboard', 'on a touch screen only the button raises the terminal\u2019s keyboard, and every other field takes a tap', keyboard],
+  ['options', 'this device\u2019s options: the ⋮ on Home, \u201cThis device\u2026\u201d in a session\u2019s menu; a chat\u2019s account says when its limit renews', optionsmenu],
   ['design', 'white surfaces, marks, hover-only detail and motion that does not restart', design],
   ['clipboard', 'copy and paste: the keys, a plain drag, a click, a middle click, and OSC 52', clipboard],
   ['touchcopy', 'a finger held on the pane selects, grows and copies', touchcopy],

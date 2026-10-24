@@ -116,16 +116,18 @@ function limitEnd(account) {
 export function renewal(account, now = Date.now()) {
   const at = limitEnd(account);
   if (!(at > now)) return '';
+  // A number and its unit never part at the end of a line (a no-break
+  // space): the account menu at 390 broke "renews in 2" from its "h".
   const minutes = Math.ceil((at - now) / 60000);
-  if (minutes < 60) return 'renews in ' + minutes + ' min';
+  if (minutes < 60) return 'renews in ' + minutes + '\u00a0min';
   if (minutes >= 24 * 60) {
     const d = Math.floor(minutes / (24 * 60));
     const h = Math.floor((minutes % (24 * 60)) / 60);
-    return 'renews in ' + d + ' d' + (h ? ' ' + h + ' h' : '');
+    return 'renews in ' + d + '\u00a0d' + (h ? ' ' + h + '\u00a0h' : '');
   }
   const h = Math.floor(minutes / 60);
   const m = minutes % 60;
-  return 'renews in ' + h + ' h' + (m ? ' ' + m + ' min' : '');
+  return 'renews in ' + h + '\u00a0h' + (m ? ' ' + m + '\u00a0min' : '');
 }
 
 /**
@@ -288,7 +290,7 @@ function flowDialog(account, first, opener) {
       parts.push(html`<p data-ds-key="url"><a class="ds-btn ds-btn--tonal" href="${flow.url}" target="_blank" rel="noopener">${raw(icon('external', 18))}<span>Open the sign-in page</span></a></p>`);
     }
     if (flow.state === 'code') {
-      parts.push(html`<div class="ds-field" data-ds-key="paste"><label class="ds-field__label" for="signinCode">The code the page shows</label><input class="ds-input" id="signinCode" type="text" autocomplete="off" spellcheck="false"></div>`);
+      parts.push(html`<div class="ds-field" data-ds-key="paste"><label class="ds-field__label" for="signinCode">The code the page shows</label><input class="ds-input" id="signinCode" type="text" autocomplete="off" spellcheck="false" enterkeyhint="go"></div>`);
       next.hidden = false;
       next.textContent = 'Sign in';
     }
@@ -325,7 +327,7 @@ function flowDialog(account, first, opener) {
     if (q.type === 'select' && q.options && q.options.length) {
       return html`<div class="ds-field" data-ds-key="${id}"><label class="ds-field__label" for="${id}">${q.message}</label><select class="ds-input" id="${id}" data-prompt="${q.key}">${q.options.map((o) => html`<option value="${o.value}">${o.label}</option>`)}</select></div>`;
     }
-    return html`<div class="ds-field" data-ds-key="${id}"><label class="ds-field__label" for="${id}">${q.message}</label><input class="ds-input" id="${id}" type="text" data-prompt="${q.key}" placeholder="${q.placeholder || ''}" autocomplete="off" spellcheck="false"></div>`;
+    return html`<div class="ds-field" data-ds-key="${id}"><label class="ds-field__label" for="${id}">${q.message}</label><input class="ds-input" id="${id}" type="text" data-prompt="${q.key}" placeholder="${q.placeholder || ''}" autocomplete="off" spellcheck="false" enterkeyhint="next"></div>`;
   }
 
   content.addEventListener('change', (event) => {
@@ -421,10 +423,10 @@ export function addAccountDialog(opener, agent = '') {
 
   function draw() {
     const key = pick.kind === 'api_key';
-    morph(content, html`<fieldset class="ds-field" data-ds-key="agent"><legend class="ds-field__label">Agent</legend><div class="ds-chips">${choices.map((a) => html`<label class="ds-chip" data-ds-key="${'agent-' + a}"><input class="ds-chip__input" type="radio" name="accountAgent" value="${a}"><span class="ds-chip__body">${raw(icon('check', 18, 'ds-chip__check'))}<span>${harnesses.label(a)}</span></span></label>`)}</div></fieldset><fieldset class="ds-field" data-ds-key="kind"><legend class="ds-field__label">Kind</legend><div class="ds-chips">${Object.entries(KIND_WORDS).map(([value, label]) => html`<label class="ds-chip" data-ds-key="${'kind-' + value}"><input class="ds-chip__input" type="radio" name="accountKind" value="${value}"><span class="ds-chip__body">${raw(icon('check', 18, 'ds-chip__check'))}<span>${label}</span></span></label>`)}</div><small class="ds-field__hint">${key ? 'The key is kept encrypted on this machine and is never shown again.' : 'You sign in with the agent’s own page once the account is added.'}</small></fieldset><div class="ds-field" data-ds-key="label"><label class="ds-field__label" for="accountLabel">Name</label><input class="ds-input" id="accountLabel" type="text" maxlength="40" placeholder="Work" autocomplete="off"></div>${
-      key ? html`<div class="ds-field" data-ds-key="key"><label class="ds-field__label" for="accountKey">API key</label><input class="ds-input" id="accountKey" type="password" autocomplete="off" spellcheck="false"></div>` : ''
+    morph(content, html`<fieldset class="ds-field" data-ds-key="agent"><legend class="ds-field__label">Agent</legend><div class="ds-chips">${choices.map((a) => html`<label class="ds-chip" data-ds-key="${'agent-' + a}"><input class="ds-chip__input" type="radio" name="accountAgent" value="${a}"><span class="ds-chip__body">${raw(icon('check', 18, 'ds-chip__check'))}<span>${harnesses.label(a)}</span></span></label>`)}</div></fieldset><fieldset class="ds-field" data-ds-key="kind"><legend class="ds-field__label">Kind</legend><div class="ds-chips">${Object.entries(KIND_WORDS).map(([value, label]) => html`<label class="ds-chip" data-ds-key="${'kind-' + value}"><input class="ds-chip__input" type="radio" name="accountKind" value="${value}"><span class="ds-chip__body">${raw(icon('check', 18, 'ds-chip__check'))}<span>${label}</span></span></label>`)}</div><small class="ds-field__hint">${key ? 'The key is kept encrypted on this machine and is never shown again.' : 'You sign in with the agent’s own page once the account is added.'}</small></fieldset><div class="ds-field" data-ds-key="label"><label class="ds-field__label" for="accountLabel">Name</label><input class="ds-input" id="accountLabel" type="text" maxlength="40" placeholder="Work" autocomplete="off" enterkeyhint="${key ? 'next' : 'done'}"></div>${
+      key ? html`<div class="ds-field" data-ds-key="key"><label class="ds-field__label" for="accountKey">API key</label><input class="ds-input" id="accountKey" type="password" autocomplete="off" spellcheck="false" enterkeyhint="${pick.agent === 'opencode' ? 'next' : 'done'}"></div>` : ''
     }${
-      key && pick.agent === 'opencode' ? html`<div class="ds-field" data-ds-key="provider"><label class="ds-field__label" for="accountProvider">Provider</label><input class="ds-input" id="accountProvider" type="text" placeholder="openrouter" autocomplete="off" spellcheck="false" list="accountProviders"><datalist id="accountProviders">${providerIds().map((p) => html`<option value="${p}"></option>`)}</datalist><small class="ds-field__hint">The OpenCode provider the key is for.</small></div>` : ''
+      key && pick.agent === 'opencode' ? html`<div class="ds-field" data-ds-key="provider"><label class="ds-field__label" for="accountProvider">Provider</label><input class="ds-input" id="accountProvider" type="text" placeholder="openrouter" autocomplete="off" spellcheck="false" list="accountProviders" enterkeyhint="done"><datalist id="accountProviders">${providerIds().map((p) => html`<option value="${p}"></option>`)}</datalist><small class="ds-field__hint">The OpenCode provider the key is for.</small></div>` : ''
     }`);
     for (const input of content.querySelectorAll('input[name="accountAgent"]')) input.checked = input.value === pick.agent;
     for (const input of content.querySelectorAll('input[name="accountKind"]')) input.checked = input.value === pick.kind;

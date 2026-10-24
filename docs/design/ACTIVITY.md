@@ -685,32 +685,35 @@ button is not shown.
   older Chromium) is answered by the dialog's `position: fixed` in the top
   layer.
 
-- **Every field is muted while the switch is off.** `inputmode="none"` *and*
+- **The pane is muted while the switch is off** — the terminal's hidden
+  textarea and the fields of the VS Code frame: `inputmode="none"` *and*
   `readOnly` — one is a request a browser is asked to honour, the other a fact
-  it cannot argue with. What a field had before is kept and given back. Fields
-  are found by a `MutationObserver` on the document, so fields built by scripts
-  and fields in dialogs that come and go are covered without registering; a
-  field focused in the same tick it was built is muted by `guard(input)` (the
-  pane's textarea) or, failing that, on `focusin`. The pane's hidden textarea
-  keeps taking keydowns from a real keyboard and pastes, because xterm reads
-  both from events a read-only textarea still receives.
+  it cannot argue with. What a field had before is kept and given back. The
+  pane's hidden textarea keeps taking keydowns from a real keyboard and pastes,
+  because xterm reads both from events a read-only textarea still receives.
+- **Every other field takes a tap** — the chat's composer, the dialogs', the
+  sheet's, a prepared session's prompt: a finger landing on it frees it before
+  the browser moves the focus, so the tap's own focus raises the keyboard and
+  what is typed lands at once. Only a focus the page gives by itself (a dialog
+  that opens on its field, the composer after a chat starts or a menu closes)
+  leaves such a field muted until it is tapped, and it is muted again once the
+  focus has left it. Fields are found by a `MutationObserver` on the document;
+  one focused in the same tick it was built is muted by `guard(input)` or,
+  failing that, on `focusin`.
 - **The VS Code frame is covered too**: it is served from the same origin, so
   `watchFrame(frame)` puts its document under the same observer on every load.
-- **A press raises it** for the field that should have it — the focused field,
-  else the one last typed into, inside the topmost modal dialog when one is
-  open, else the pane — by unmuting everything and giving that field the focus
+- **A press raises it** for the pane, by unmuting it and giving it the focus
   **synchronously inside the `click` handler** (iOS raises a keyboard for
-  nothing else). A second press mutes everything again and hands the focus
-  back, so the keyboard goes and the focus stays where a real keyboard needs it.
+  nothing else). A second press mutes it again and hands the focus back, so the
+  keyboard goes and the focus stays where a real keyboard needs it.
 - **The switch follows the keyboard.** The focus leaving every field (asked on
   the next tick, because a tap on the pane blurs and refocuses its textarea),
   or the visual viewport growing back after it had shrunk (Android's back key),
   puts it back to off.
-- **It is pressable everywhere.** A modal dialog makes the rest of the page
-  inert, so a copy of the button (`.kb-copy`) is put into whichever dialog is
-  on top, laid over the exact rect of `#kbBtn` once the dialog's opening
-  animation has ended, and taken out again when the dialog closes. It is also
-  shown while VS Code is open.
+- **It is shown only where it raises something**: a keyboard icon in the top
+  bar while a terminal or VS Code is on the stage, and nowhere else (not on
+  Home, not beside a chat). A dialog's fields take a tap of their own, so no
+  copy of the button is laid over a dialog any more.
 - **The key bar has no `⌨` key any more** (`DESIGN.md` §E.6), and is shown on
   this device's own answer alone.
 - **Every field has a microphone beside it** — `dictated(control, input)`,
@@ -718,7 +721,8 @@ button is not shown.
   recording sheet `dictate.js` owns (`record()`). With the keyboard put away it
   is how a field is filled without raising it.
 
-**Which fields.** Everything on the session page and inside its VS Code frame.
+**Which fields.** The switch: the terminal pane and the VS Code frame. The tap
+rule: every other field of the session page.
 `login.html`, `setup.html` and the admin page are separate documents that load
 none of this.
 

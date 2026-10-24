@@ -11,7 +11,8 @@
  *   .so-home__numbers   the Questions card beside the grid of tiles; dimmed
  *                       with .ds-stale while the numbers are not live
  *   .so-home__questions the Questions card (div form of an interactive card):
- *                       its figure, words, the waiting chip and Answer
+ *                       its figure, the first question's words (__q-note) and
+ *                       whose it is (__q-meta), the waiting chip and Answer
  *   .so-home__tiles     the nine tiles, in a grid that keeps its shape: a
  *                       tile with nothing in it says so, it never goes away,
  *                       so a number changing never moves the others
@@ -138,9 +139,26 @@
   white-space: nowrap;
 }
 
+/* The first open question, in its own words: up to three lines, so a
+   question reads as one rather than as its first few words. */
 .so-home__q-note {
-  color: var(--ds-text-2);
+  color: var(--ds-text);
   font: var(--ds-font-body);
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+  overflow-wrap: anywhere;
+}
+
+.so-home__questions[data-state="none"] .so-home__q-note {
+  color: var(--ds-text-2);
+}
+
+/* Whose question it is, and how many more wait behind it. */
+.so-home__q-meta {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

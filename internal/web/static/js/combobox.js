@@ -73,7 +73,7 @@ export function combobox(options = {}) {
     'aria-controls': id + '-list',
   });
   const toggle = el('button', {
-    class: 'ds-combo__toggle', type: 'button', tabindex: '-1', 'aria-label': 'Show all',
+    class: 'ds-combo__toggle', type: 'button', tabindex: '-1', 'aria-label': 'Show all', 'data-tip': 'Show all',
   }, iconEl('chevronDown', 20));
   const list = el('ul', { class: 'ds-combo__list', id: id + '-list', role: 'listbox' });
   const status = el('p', { class: 'ds-combo__status', role: 'status' });
@@ -322,7 +322,7 @@ export function dropdown(options = {}) {
     'aria-label': label || null,
   }, face);
   const toggle = el('button', {
-    class: 'ds-combo__toggle', type: 'button', tabindex: '-1', 'aria-label': 'Show all',
+    class: 'ds-combo__toggle', type: 'button', tabindex: '-1', 'aria-label': 'Show all', 'data-tip': 'Show all',
   }, iconEl('chevronDown', 20));
   const list = el('ul', { class: 'ds-combo__list', id: id + '-list', role: 'listbox', 'aria-label': label || null });
   const popup = el('div', { class: 'ds-combo__popup', hidden: true }, list);

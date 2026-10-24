@@ -31,9 +31,9 @@ function pendingOf(session, chat) {
   return to && to !== currentOf(session, chat) ? accounts.byId(to) : null;
 }
 
-function draw(slot, { session, chat }) {
+function draw(slot, { session, chat, error }) {
   if (!session) return false;
-  drawnFor.set(slot, { session, chat });
+  drawnFor.set(slot, { session, chat, error });
   for (const known of drawnFor.keys()) if (!known.isConnected && known !== slot) drawnFor.delete(known);
   if (accounts.forAgent(session.harness).length < 2) return false;
   const current = accounts.byId(currentOf(session, chat));
@@ -124,7 +124,7 @@ function openMenu(slot, button) {
     if (!item) return;
     const now = drawnFor.get(slot) || ctx;
     hideOverlay(menu);
-    choose(now.session, now.chat, item.dataset.account, button);
+    choose(now, item.dataset.account, button);
   });
   showOverlay(menu, button);
   // The usage moves: the menu opens on the copy this browser has and is
@@ -135,8 +135,10 @@ function openMenu(slot, button) {
 // choose switches the chat to an account: at once when it is idle, and when
 // a turn runs, now (the turn stops and the new account carries it on) or
 // once the turn is done, as the person says. An account that is not signed
-// in is signed in first.
-async function choose(session, chat, id, opener) {
+// in is signed in first. What does not happen is said in the chat's dock
+// (`error`), where the composer is, never over it.
+async function choose({ session, chat, error }, id, opener) {
+  const say = error || ((text) => toast(text, 'error'));
   const target = accounts.byId(id);
   if (!target) return;
   const current = currentOf(session, chat);
@@ -144,7 +146,7 @@ async function choose(session, chat, id, opener) {
   if (id === current && !pending) return;
   if (!accounts.usable(target)) {
     if (target.kind === 'api_key') {
-      toast('The key of ' + target.label + ' was not taken. Replace it on the dashboard.', 'error');
+      say('The key of ' + target.label + ' was not taken. Replace it on the dashboard.');
       return;
     }
     if (!await accounts.signIn(target, opener)) return;
@@ -161,7 +163,7 @@ async function choose(session, chat, id, opener) {
     await accounts.switchChat(session.id, id, { when, goOn });
     if (when === 'after_turn') toast(target.label + ' takes over after this turn.');
   } catch (err) {
-    toast(errorMessage(err), 'error');
+    say('The chat could not switch to ' + target.label + ': ' + errorMessage(err));
   }
 }
 

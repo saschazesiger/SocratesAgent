@@ -4,8 +4,10 @@
  * closed dropdown of combobox.js. Tokens only (--ds-*, and the --so-* of the
  * "Sheet" section of theme.css); unlayered; no .ds-* component is restyled.
  *
- *   .so-ns                     the sheet itself (a hook for tests and callers)
- *   .so-settings               the form's column of fields
+ *   .so-ns                     the sheet itself; on a phone its question wraps rather
+ *                              than losing its last words
+ *   .so-settings               the form's column of fields; a list entry's
+ *                              description under its name wraps
  *     __groups                 the agents' and the tools' groups, one under the other
  *     __programs               a group of program cards (.ds-radios) laid out as a grid
  *     __program                one program card (.ds-radio): its mark above its name
@@ -15,6 +17,20 @@
  *   .so-limits                 an account's limit windows in the dropdown's list, each
  *                              a flat .ds-progress with its figures
  */
+
+/* A model's description and a folder's path, under its name in the list,
+   are read to their end: they take more lines rather than an ellipsis. */
+.so-settings .ds-combo__meta {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+/* "What should this session run?" is a question, and at 360px its last
+   words went under an ellipsis: it takes a second line instead. */
+.so-ns .ds-sheet__title {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
 
 .so-settings {
   display: grid;

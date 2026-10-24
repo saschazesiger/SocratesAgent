@@ -17,7 +17,8 @@
 
 import {
   api, el, toast, infoTip, confirmDialog, alertDialog, promptDialog, errorMessage, isOffline, isBusyConflict,
-  setClass, onWake, clientKey, CONNECTION_GRACE, restoreFocus, setFocusFallback,
+  setClass, onWake, clientKey, CONNECTION_GRACE, restoreFocus, setFocusFallback, toastsStay, onToastsStay,
+  keepDialogRoom,
 } from './api.js';
 import { connectionSource } from './net.js';
 import { agentMark, agentMarkHtml } from './logos.js';
@@ -31,7 +32,9 @@ import { mountAssist } from './assist.js';
 import { mountNotify } from './notify.js';
 import { mountTransfer } from './transfer.js';
 import { mountKeyBar, keyBarWanted, setKeyBarWanted, followViewport } from './keybar.js';
-import { initKeyboard, guard, watchFrame, dictated, touchScreen, setTouchMode } from './keyboard.js';
+import {
+  initKeyboard, guard, watchFrame, dictated, touchScreen, setTouchMode, showKeyboardSwitch,
+} from './keyboard.js';
 import { mountPrestart, forgetDraft, whenShort } from './prestart.js';
 import { mountEvents } from './events.js';
 import { mountHome, questionQueue, connectionLine } from './home.js';
@@ -43,6 +46,8 @@ import {
   faces, iconEl,
 } from './ui.js';
 import { mountBackupNotice } from './backup.js';
+import { setVoiceKey, voiceKey, onVoiceKey, keyMissing } from './voice.js';
+import { explainNoKey } from './dictate.js';
 import { mountChat } from './chatview.js';
 import { chatOutbox, queueCommand, settled } from './chatoutbox.js';
 import { openChatAsks, askDialogOpen, closeAskDialog, refreshAskDialog } from './askdialog.js';
@@ -726,7 +731,7 @@ const ids = ['sidebar', 'navScrim', 'menuBtn', 'blankIDE', 'homeBtn', 'sideColla
   'statusBtn', 'kbBtn', 'optionsBtn',
   'stage', 'termWrap', 'term', 'termOverlay', 'termLines', 'termNotice',
   'termTicker', 'tickerWindow',
-  'micBtn', 'micText',
+  'micBtn',
   'recSheet', 'recMeter', 'recTime', 'recSend', 'recCancel',
   'keybar', 'logout', 'prestart', 'chat', 'home'];
 for (const id of ids) dom[id] = document.getElementById(id);
@@ -1237,7 +1242,7 @@ function rowHtml(session) {
 
   return html`<div class="so-row" data-ds-key="${'row:' + id}" data-id="${id}" data-status="${status}"${prepared ? html` data-prepared` : ''}${unread ? html` data-unread` : ''}><a class="ds-drawer__item so-row__open" href="${'#' + id}"${attached ? html` aria-current="page"` : ''}><span class="so-mark" data-tip="${word}"${ring ? html` data-ring="${ring}"` : ''}>${raw(agentMarkHtml(session.harness, 20))}${
     badge ? html`<span class="so-mark__badge" data-kind="${badge}" aria-hidden="true">${raw(badgeIcon)}</span>` : ''
-  }</span><span class="so-row__text"><span class="so-row__label"${state.titling.has(id) ? html` data-titling` : ''}>${session.title}</span>${
+  }</span><span class="so-row__text"><span class="so-row__label" data-tip="${session.title}"${state.titling.has(id) ? html` data-titling` : ''}>${session.title}</span>${
     // The first line of a prepared session's prompt, which is what tells two
     // of them apart before either has a name of its own.
     preview ? html`<span class="so-row__preview">${preview}</span>` : ''
@@ -1251,42 +1256,65 @@ function rowHtml(session) {
 // The technical detail of a session - what it runs, where it works, what it
 // runs on, which conversation it is holding, how often it has been brought
 // back. It is never in the words of a row: the "Info" item of the row's menu
-// is the one place it is shown, for the list and for the header alike.
-function rowFacts(session) {
+// is the one place it is shown, for the list and for the header alike. Each
+// fact is a label and its value, in plain words.
+//
+// A chat's model is the one its composer shows: the model and effort the
+// chat runs on now, which a change from the model menu makes newer than
+// the row's (`running`, from the chat's journal), else the row's.
+const CONVERSATION_WORDS = {
+  pending: 'Being started',
+  known: 'Can be picked up again',
+  verified: 'Can be picked up again',
+  lost: 'Lost; the next start begins a new one',
+};
+
+function rowFacts(session, running = null) {
   const facts = [
-    harnesses.label(session.harness),
-    STATE_WORDS[session.state] || session.state,
-    session.workdir,
+    ['Program', harnesses.label(session.harness)],
+    ['State', STATE_WORDS[session.state] || session.state],
+    ['Folder', session.workdir],
   ];
-  if (session.options?.account) facts.push('Account: ' + (accounts.labelOf(session.options.account) || session.options.account));
-  if (session.options?.auto_switch) facts.push('Switches accounts at a limit');
-  if (session.options?.ultracode) facts.push('Ultracode on');
-  if (isPrepared(session)) {
-    if (!session.options?.account) facts.push('Account: chosen when it starts');
-    if (Number(session.start_at)) facts.push('Starts by itself ' + new Date(Number(session.start_at)).toLocaleString());
+  const account = session.options?.account
+    ? accounts.labelOf(session.options.account) || session.options.account
+    : isPrepared(session) ? 'Chosen when it starts' : '';
+  if (account || session.options?.auto_switch) {
+    facts.push(['Account', [account, session.options?.auto_switch ? 'switches at a limit' : ''].filter(Boolean).join(' · ')]);
+  }
+  if (session.options?.ultracode) facts.push(['Ultracode', 'On']);
+  if (isPrepared(session) && Number(session.start_at)) {
+    facts.push(['Starts by itself', new Date(Number(session.start_at)).toLocaleString()]);
+  }
+  // The model and effort by the names the sheet and the composer give them
+  // ("Sonnet · High"), not the ids the CLI was started with.
+  const model = (running && running.model) || session.model;
+  const effort = running && running.model ? running.effort : session.effort;
+  if (model) {
+    const known = harnesses.modelOf(session.harness, model);
+    facts.push(['Model', (known ? known.label || known.id : model) + (effort ? ' · ' + harnesses.effortLabel(effort) : '')]);
   }
   const act = activityOf(session);
   if (act && ACTIVITY_WORDS[act.state]) {
-    // What it is doing, why the detector thinks so, and since when. All three
-    // are facts about the machine, so all three live behind the "i".
-    facts.push(ACTIVITY_WORDS[act.state]
+    // What it is doing and since when. How the detector came to think so
+    // is no fact a person can use.
+    facts.push(['Doing', ACTIVITY_WORDS[act.state]
       + (act.note ? ' · ' + act.note : '')
-      + (act.source ? ' · ' + act.source : '')
-      + (act.since ? ' · since ' + clockOf(act.since) : ''));
+      + (act.since ? ' · since ' + clockOf(act.since) : '')]);
   }
   const outcome = outcomeOf(session);
   if (outcome) {
-    facts.push(outcomeLine(outcome));
+    facts.push(['Last turn', outcomeLine(outcome)]);
     if (outcome.phase === 'ready' && Array.isArray(outcome.todos) && outcome.todos.length) {
-      facts.push('Open: ' + outcome.todos.join(' · '));
+      facts.push(['Still open', outcome.todos.join(' · ')]);
     }
   }
-  if (session.model) facts.push(session.model + (session.effort ? ' · ' + session.effort : ''));
-  if (session.cli_session_state && session.cli_session_state !== 'none') {
-    facts.push('conversation ' + session.cli_session_state);
+  if (CONVERSATION_WORDS[session.cli_session_state]) {
+    facts.push(['Conversation', CONVERSATION_WORDS[session.cli_session_state]]);
   }
-  if (session.resume_count) facts.push('resumed ' + session.resume_count + '×');
-  return facts.filter(Boolean);
+  if (session.resume_count) {
+    facts.push(['Brought back', session.resume_count === 1 ? 'Once' : session.resume_count + ' times']);
+  }
+  return facts.filter(([, value]) => value);
 }
 
 // clockOf is when a state was committed, as a time of day.
@@ -1980,7 +2008,7 @@ function promptTitle(current, opener) {
   return new Promise((resolve) => {
     const input = el('input', {
       class: 'ds-input', type: 'text', id: 'renameInput', value: current, autofocus: true,
-      'aria-labelledby': 'renameTitle',
+      'aria-labelledby': 'renameTitle', enterkeyhint: 'done',
     });
     const cancel = el('button', { class: 'ds-btn ds-btn--text', type: 'button', 'data-close': true, text: 'Cancel' });
     const accept = el('button', { class: 'ds-btn ds-btn--primary', type: 'button', text: 'Rename' });
@@ -2021,13 +2049,23 @@ function promptTitle(current, opener) {
 // facts are drawn - a row is a mark and a name, and nothing else.
 function infoDialog(session, opener) {
   const close = el('button', { class: 'ds-btn ds-btn--text', type: 'button', 'data-close': true, autofocus: true, text: 'Close' });
+  const list = el('dl', { class: 'ds-facts so-facts' });
+  const draw = (running) => list.replaceChildren(...rowFacts(session, running).map(([label, value]) => el('div', {},
+    el('dt', { text: label }), el('dd', { class: 'so-fact', text: value }))));
   const dialog = el('dialog', { class: 'ds-dialog so-info-dialog', 'aria-labelledby': 'infoTitle' },
     el('div', { class: 'ds-dialog__backdrop', 'data-close': true }),
     el('div', { class: 'ds-dialog__box' },
       el('h2', { class: 'ds-dialog__title so-break', id: 'infoTitle', text: session.title }),
-      el('ul', { class: 'ds-plain-list so-facts' },
-        ...rowFacts(session).map((line) => el('li', { class: 'so-fact so-break', text: line }))),
+      list,
       el('div', { class: 'ds-dialog__actions' }, close)));
+  // A chat this page has read says its model at once; another one is asked.
+  const running = isChat(session) && state.chat ? state.chat.modelOf(session.id) : null;
+  draw(running);
+  if (isChat(session) && !running) {
+    api('/api/chats/' + encodeURIComponent(session.id))
+      .then((data) => { if (data && data.chat && data.chat.model && dialog.isConnected) draw({ model: data.chat.model, effort: data.chat.effort || '' }); })
+      .catch(() => {});
+  }
   dialog.addEventListener('close', () => {
     hideOverlay(dialog, { remove: true }).then(() => paneAfter(document.activeElement));
   }, { once: true });
@@ -2155,17 +2193,97 @@ function replaceSession(next) {
 // opens it; what each of its items does is kept here, by data-action, and run
 // by one listener (wire). DS.overlay closes the menu once that ran.
 const menuActions = new Map();
+// The actions that must run inside the tap that chose them - reading the
+// clipboard, opening a file picker - rather than once the menu has gone.
+const menuInTap = new Set();
 
 // menuItemHtml is one item of the menu: its glyph and its words. A status is
-// one of a set, so it is a radio item whose check shows where it stands.
+// one of a set, so it is a radio item whose check shows where it stands. A
+// switch (a checkbox item) also says On or Off at its end, because a check
+// that is simply not there reads as an action, not as a switch that is off.
 function menuItemHtml(action, label, glyph, checked, role = 'menuitemradio') {
   if (checked !== undefined) {
-    return html`<button class="ds-menu__item" role="${role}" type="button" data-action="${action}" aria-checked="${checked ? 'true' : 'false'}">${raw(icon('check', 20, 'ds-menu__check'))}<span class="ds-menu__label">${label}</span></button>`;
+    const state = role === 'menuitemcheckbox'
+      ? html`<span class="so-menu-state" aria-hidden="true">${checked ? 'On' : 'Off'}</span>` : '';
+    return html`<button class="ds-menu__item" role="${role}" type="button" data-action="${action}" aria-checked="${checked ? 'true' : 'false'}">${raw(icon('check', 20, 'ds-menu__check'))}<span class="ds-menu__label">${label}</span>${state}</button>`;
   }
   return html`<button class="ds-menu__item" role="menuitem" type="button" data-action="${action}">${raw(icon(glyph, 20))}<span class="ds-menu__label">${label}</span></button>`;
 }
 
-async function openRowMenu(anchor, id) {
+// A phone has no room for a menu of eleven rows hanging from a button: from
+// a row low in the list it would scroll inside itself with nothing to say
+// so, and Delete would be below the end. There - a narrow window, or a short
+// one under a finger, a phone on its side - the same items rise from the
+// bottom edge in a dialog of their own (an action sheet), under the
+// session's name.
+const actionSheetWanted = () => window.matchMedia('(max-width: 600px)').matches
+  || (touchScreen() && window.matchMedia('(max-height: 500px)').matches);
+
+// openActionSheet shows the items of a menu in that dialog. An item closes
+// it and then runs, so a dialog it opens (Rename, Delete) is the only one on
+// screen.
+function openActionSheet(anchor, title, items) {
+  const titleId = 'actionsTitle';
+  const list = el('div', { class: 'so-actions__list', role: 'menu', 'aria-labelledby': titleId });
+  morph(list, html`${items}`);
+  const close = el('button', {
+    class: 'ds-btn ds-btn--quiet ds-btn--icon', type: 'button', 'data-close': true,
+    'aria-label': 'Close', 'data-tip': 'Close',
+  }, iconEl('close', 20));
+  const dialog = el('dialog', { class: 'ds-dialog so-actions', 'aria-labelledby': titleId },
+    el('div', { class: 'ds-dialog__backdrop', 'data-close': true }),
+    el('div', { class: 'ds-dialog__box' },
+      el('div', { class: 'so-actions__head' },
+        el('h2', { class: 'ds-dialog__title so-break', id: titleId, text: title }), close),
+      list));
+  let chosen = null;
+  list.addEventListener('click', (event) => {
+    const item = event.target.closest('[data-action]');
+    if (!item || item.getAttribute('aria-disabled') === 'true') return;
+    const run = menuActions.get(item.dataset.action) || null;
+    if (run && menuInTap.has(item.dataset.action)) run();
+    else chosen = run;
+    hideOverlay(dialog);
+  });
+  // The items are a menu: the arrows move between them, as in DS's.
+  list.addEventListener('keydown', (event) => {
+    const all = [...list.querySelectorAll('.ds-menu__item')];
+    const at = all.indexOf(document.activeElement);
+    const to = { ArrowDown: at + 1, ArrowUp: at - 1, Home: 0, End: all.length - 1 }[event.key];
+    if (to === undefined || !all.length) return;
+    event.preventDefault();
+    all[(to + all.length) % all.length].focus();
+  });
+  dialog.addEventListener('close', () => {
+    anchor.setAttribute('aria-expanded', 'false');
+    const run = chosen;
+    chosen = null;
+    hideOverlay(dialog, { remove: true }).then(() => { if (!run) paneAfter(anchor); });
+    if (run) run();
+  }, { once: true });
+  anchor.setAttribute('aria-expanded', 'true');
+  showOverlay(dialog, anchor).then(() => {
+    const first = list.querySelector('.ds-menu__item');
+    if (first && dialog.open) first.focus({ preventScroll: true });
+  });
+}
+
+// afterMenu runs `fn` once the row menu has gone (DS.overlay closes it after
+// an item's own handler has run).
+function afterMenu(fn) {
+  const menu = dom.sessionMenu;
+  if (menu.hidden) { requestAnimationFrame(fn); return; }
+  const watch = new MutationObserver(() => {
+    if (!menu.hidden) return;
+    watch.disconnect();
+    fn();
+  });
+  watch.observe(menu, { attributes: true, attributeFilter: ['hidden'] });
+}
+
+// openRowMenu is a session's menu, from its row's ⋮ or - with `device`, and
+// then with this device's options as its last item - from the top bar's.
+async function openRowMenu(anchor, id, { device = false } = {}) {
   const session = sessionOf(id);
   const menu = dom.sessionMenu;
   if (!session || !menu) return;
@@ -2184,11 +2302,23 @@ async function openRowMenu(anchor, id) {
   // compacting it is something to ask of its agent.
   const chat = isChat(session);
   menuActions.clear();
+  menuInTap.clear();
   const items = [];
   const add = (action, label, glyph, run, checked, role) => {
     menuActions.set(action, run);
     items.push(menuItemHtml(action, label, glyph, checked, role));
   };
+  // A phone's top bar has no room for copy, paste and upload (so-stage.css):
+  // for the terminal on the stage they are the first items of its menu.
+  if (state.transfer && state.term && state.current && state.current.id === session.id
+    && window.matchMedia('(max-width: 600px)').matches) {
+    add('copy', 'Copy', 'copy', () => state.transfer.copy(anchor));
+    add('paste', 'Paste', 'paste', () => state.transfer.paste());
+    add('upload', 'Upload a file', 'upload', () => state.transfer.upload());
+    menuInTap.add('paste');
+    menuInTap.add('upload');
+    items.push(html`<div class="ds-menu__divider" role="separator"></div>`);
+  }
   add('info', 'Info', 'info', () => infoDialog(session, anchor));
   if (!editor) add('rename', 'Rename', 'pencil', () => renameSession(session, anchor));
   if (!editor && session.workdir_missing) add('folder', 'Point to folder', 'folder', () => pointFolder(session, anchor));
@@ -2219,6 +2349,17 @@ async function openRowMenu(anchor, id) {
     add('journal', editor ? 'Download server log' : 'Download scrollback', 'download', () => downloadJournal(session));
   }
   add('delete', editor ? 'Close VS Code' : 'Delete', editor ? 'close' : 'trash', () => deleteSession(session));
+  if (device) {
+    items.push(html`<div class="ds-menu__divider" role="separator"></div>`);
+    // Once the menu has gone, so that its leaving - which puts the focus
+    // back on the ⋮ and says it is shut - does not happen under the dialog.
+    add('device', 'This device\u2026', 'settings', () => afterMenu(() => openOptions(anchor)));
+  }
+  if (actionSheetWanted()) {
+    openActionSheet(anchor, session.title, items);
+    return;
+  }
+  anchor.setAttribute('aria-controls', 'sessionMenu');
   morph(menu, html`${items}`);
   showOverlay(menu, anchor);
 }
@@ -2251,8 +2392,28 @@ function syncOptions() {
 
 function openOptions(anchor) {
   syncOptions();
+  anchor.setAttribute('aria-controls', 'optionsDialog');
   anchor.setAttribute('aria-expanded', 'true');
   showOverlay(dom.optionsDialog, anchor);
+}
+
+// barMenuSession is the session the top bar's ⋮ is the menu of: the one on
+// the stage, when one is.
+function barMenuSession() {
+  return !homeShown() && state.current ? sessionOf(state.current.id) || state.current : null;
+}
+
+// drawBarMenu says on the top bar's ⋮ what a press opens: the menu of the
+// session on the stage, or this device's options.
+function drawBarMenu() {
+  const button = dom.optionsBtn;
+  const session = barMenuSession();
+  const words = !session ? 'Options for this device' : isChat(session) ? 'Chat actions' : 'Session actions';
+  if (button.getAttribute('aria-label') !== words) {
+    button.setAttribute('aria-label', words);
+    button.setAttribute('data-tip', words);
+  }
+  button.setAttribute('aria-haspopup', session && !actionSheetWanted() ? 'menu' : 'dialog');
 }
 
 // setOption is one switch of the options dialog, pressed.
@@ -2480,12 +2641,19 @@ function coverMarkup(session) {
     else state.resuming = false;
   }
   switch (drawn) {
-    case 'exited':
+    case 'exited': {
       // Why a pane ended is the one fact the cover is raised for, so it is a
-      // plain line under the sentence rather than behind an "i".
+      // plain line under the sentence rather than behind an "i" - when it is
+      // known: -1 is the store's "tmux did not say" (a shell left with
+      // `exit` sometimes ends before tmux has its status), not a status, and
+      // "Exit status -1" read as a failure that never happened.
+      const status = Number(session.exit_status);
+      const why = !Number.isInteger(status) || status < 0 ? ''
+        : status === 0 ? 'It ended normally.' : 'It ended with exit status ' + status + '.';
       return html`${title('The session ended.')}
-        <p class="so-pane__detail" id="termOverlayText">${'Exit status ' + session.exit_status}</p>
+        ${why ? html`<p class="so-pane__detail" id="termOverlayText">${why}</p>` : ''}
         ${actions(button('delete', 'Delete'), actionButton(session, 'Restart', 'Restarting'))}`;
+    }
     case 'failed':
       return html`${title('The session could not start.')}
         ${session.fail_reason ? html`<p class="so-pane__detail" id="termOverlayText">${session.fail_reason}</p>` : ''}
@@ -2646,9 +2814,11 @@ let ideGeneration = 0;
 function detach() {
   ideGeneration += 1;
   dom.stage.removeAttribute('data-ide');
+  showKeyboardSwitch(false);
   if (state.assist) state.assist.attached();
   if (state.keybar) { state.keybar.dispose(); state.keybar = null; }
   dom.keybar.hidden = true;
+  placeToasts();
   if (state.socket) { state.socket.stop(); state.socket = null; }
   if (state.term) { state.term.dispose(); state.term = null; }
   dom.term.replaceChildren();
@@ -2705,8 +2875,10 @@ function attach(session) {
   // A session that was just opened is still settling: see notify.hush.
   if (notifier) notifier.hush(session.id);
   if (session.harness === 'vscode') {
-    // The stage holds an editor: no lines over it, no inset around it.
+    // The stage holds an editor: no lines over it, no inset around it. Its
+    // fields wait for the keyboard switch, as the terminal's does.
     dom.stage.setAttribute('data-ide', '');
+    showKeyboardSwitch(true);
     openIDE(session, ideGeneration);
     return;
   }
@@ -2764,6 +2936,7 @@ function attach(session) {
   // it is focused below in this same tick - before the keyboard switch would
   // otherwise have seen it.
   guard(state.term.term.textarea);
+  showKeyboardSwitch(true);
   // The two controls in the header. A recording that belonged to the session
   // before this one is cancelled here, so its words can never be typed into
   // the terminal that has just taken the screen.
@@ -2899,8 +3072,98 @@ function applyKeyBar() {
   if (state.keybar) showKeyBar(keyBarWanted());
 }
 
+// placeToasts keeps the snackbars off what a finger needs (DS
+// --ds-toast-bottom, "to stay above a bar pinned there"; --ds-toast-left),
+// and an error stays until it is closed:
+//   - the region in an open side sheet (DS moves it there and places it):
+//     the sheet covers the page, and its body keeps room for a message that
+//     stays (api.js reserveToasts);
+//   - the region in an open dialog (DS moves it there and leaves it where
+//     it stood): at the bottom edge, past a keyboard, and the dialog keeps
+//     that strip (api.js keepDialogRoom) - what stands at the page's bottom
+//     is under the dialog's scrim;
+//   - the modal drawer open: beside it where the window is wide enough for
+//     the messages to stand there (as beside the docked drawer, DS), else
+//     above its foot (Costs, Admin, Sign out), the session list keeping
+//     room at its end to scroll its last rows clear;
+//   - the key bar shown: above it - a message over Esc and Ctrl is a key bar
+//     a thumb cannot use;
+//   - a chat shown: above its dock, and above "Latest" (chatview.js says
+//     how much room it needs), and while a message that stays shows, the
+//     conversation keeps its height at its end, so that the last answer and
+//     its Copy can scroll clear of it.
+// The key bar and the dock stand at the bottom of the app, which is as
+// tall as what can be seen (keybar.js --so-app-h): a keyboard that only
+// shrinks the visual viewport adds its height. Heights only, never where
+// something stands, which a keyboard moves before or after this runs.
+// Every edge holds the safe area already, which the region adds as its
+// margin. Only a left this set is taken back.
+let chatToastRoom = 0;
+let toastLeft = '';
+const TOASTS_BESIDE = window.matchMedia('(min-width: 601px)');
+function placeToasts() {
+  const region = document.getElementById('toasts');
+  if (!region) return;
+  const vv = window.visualViewport;
+  const keyboard = vv ? Math.max(0, Math.round(window.innerHeight - vv.offsetTop - vv.height)) : 0;
+  const inSheet = !!region.closest('.ds-sheet');
+  const inDialog = !inSheet && !!region.closest('dialog.ds-dialog[open]');
+  const drawer = dom.app.hasAttribute('data-drawer-open') && drawerModal();
+  // The messages' height: nothing while there are none.
+  const stack = region.querySelector('.ds-toast') ? region.offsetHeight : 0;
+  let room = 0;
+  let list = 0;
+  let left = '';
+  if (inSheet) {
+    room = 0;
+  } else if (inDialog) {
+    room = keyboard;
+  } else if (drawer) {
+    if (TOASTS_BESIDE.matches) {
+      left = 'calc(var(--ds-drawer-width) + env(safe-area-inset-left) + var(--ds-space-6))';
+    } else {
+      const foot = dom.sidebar.querySelector('.so-drawer-foot');
+      room = foot ? foot.offsetHeight : 0;
+    }
+  } else if (!dom.keybar.hidden && dom.keybar.offsetHeight) {
+    room = dom.keybar.offsetHeight + keyboard;
+  } else if (chatToastRoom) {
+    room = chatToastRoom + keyboard;
+  }
+  // The drawer's list keeps its room under a dialog opened from it (a
+  // row's ⋮), rather than jumping under the scrim.
+  if (drawer && !inSheet && !TOASTS_BESIDE.matches) list = stack;
+  const value = room ? 'calc(' + room + 'px + var(--ds-space-3) - env(safe-area-inset-bottom, 0px))' : '';
+  if (region.style.getPropertyValue('--ds-toast-bottom') !== value) {
+    if (value) region.style.setProperty('--ds-toast-bottom', value);
+    else region.style.removeProperty('--ds-toast-bottom');
+  }
+  if (!inSheet && !inDialog) {
+    const now = region.style.getPropertyValue('--ds-toast-left');
+    if (left && now !== left) region.style.setProperty('--ds-toast-left', left);
+    else if (!left && toastLeft && now === toastLeft) region.style.removeProperty('--ds-toast-left');
+    toastLeft = left;
+  }
+  const reserve = list ? list + 'px' : '';
+  if (dom.sidebar.style.getPropertyValue('--so-drawer-reserve') !== reserve) {
+    if (reserve) dom.sidebar.style.setProperty('--so-drawer-reserve', reserve);
+    else dom.sidebar.style.removeProperty('--so-drawer-reserve');
+  }
+  // A chat on screen with a message that stays over its end: the
+  // conversation is that much longer (so-chat.css --so-chat-reserve), and
+  // one read at its end stays there (chatview.js).
+  const chatReserve = chatToastRoom && stack && toastsStay() ? 'calc(' + stack + 'px + var(--ds-space-3))' : '';
+  if (dom.chat.style.getPropertyValue('--so-chat-reserve') !== chatReserve) {
+    if (chatReserve) dom.chat.style.setProperty('--so-chat-reserve', chatReserve);
+    else dom.chat.style.removeProperty('--so-chat-reserve');
+  }
+  // The lift a dialog's room is measured from may just have changed.
+  keepDialogRoom();
+}
+
 function showKeyBar(on) {
   dom.keybar.hidden = !on;
+  placeToasts();
   // A modifier armed on a bar nobody can see would transform the next key
   // typed with nothing on screen to say why.
   if (!on && state.keybar) state.keybar.clear();
@@ -2926,6 +3189,9 @@ function renameRow(id, title) {
   renderList();
 }
 
+// Whether the server is being asked if there is a key to name with.
+let regenAsking = false;
+
 // drawTitling shows in the header whether the session on screen is being
 // named: the name pulses and the arrow beside it turns. An editor is named
 // after its folder, so it has no arrow.
@@ -2933,10 +3199,39 @@ function drawTitling(id) {
   const titling = state.titling.has(id);
   dom.sessionTitle.toggleAttribute('data-titling', titling);
   dom.titleRegen.hidden = !state.current || state.current.harness === IDE;
-  // While a name is being thought of, the sparkles turn into a spinner and a
+  // While a name is being thought of - or the server is asked whether there
+  // is a key to think of one with - the sparkles turn into a spinner and a
   // second press does nothing (wire).
-  if (titling) dom.titleRegen.setAttribute('aria-busy', 'true');
+  if (titling || regenAsking) dom.titleRegen.setAttribute('aria-busy', 'true');
   else dom.titleRegen.removeAttribute('aria-busy');
+  // A name is thought of by a model on OpenRouter: without a key the tip
+  // says why a press only explains, as Status's and Speak's do.
+  const tip = voiceKey() === false ? 'Needs an OpenRouter key (Admin, Voice)' : 'Name this session again from what it is about';
+  if (dom.titleRegen.getAttribute('data-tip') !== tip) dom.titleRegen.setAttribute('data-tip', tip);
+}
+
+// renameAgain is the sparkles' press: a new name for the session on screen,
+// or - with no OpenRouter key, asked again first - the dialog that says
+// where one is added, before anything is sent.
+async function renameAgain() {
+  const session = state.current;
+  if (!session || regenAsking || dom.titleRegen.getAttribute('aria-busy') === 'true') return;
+  if (voiceKey() === false) {
+    regenAsking = true;
+    drawTitling(session.id);
+    let missing = false;
+    try {
+      missing = await keyMissing();
+    } finally {
+      regenAsking = false;
+      if (state.current) drawTitling(state.current.id);
+    }
+    if (missing) {
+      explainNoKey('title', dom.titleRegen);
+      return;
+    }
+  }
+  retitleSession(session);
 }
 
 // retitleSession asks for a new name for the session on screen, from what it
@@ -2965,7 +3260,12 @@ async function retitleSession(session, { unnamed = false, prompt } = {}) {
     if (data && data.session) replaceSession(data.session);
   } catch (err) {
     if (unnamed) toast('Could not name the session: ' + errorMessage(err), 'error');
-    else alertDialog({ title: 'Could not name the session', body: errorMessage(err) });
+    else if (err && Number(err.status) === 409 && /openrouter api key/i.test(String(err.message || ''))) {
+      // The server has no key to name it with (a key taken away since the
+      // page knew of one): said the way the press says it, with Admin.
+      setVoiceKey(false);
+      explainNoKey('title', dom.titleRegen);
+    } else alertDialog({ title: 'Could not name the session', body: errorMessage(err) });
   } finally {
     state.titling.delete(session.id);
     state.namingHere.delete(session.id);
@@ -3276,7 +3576,7 @@ async function prepareSession(pick) {
     location.hash = '#' + data.session.id;
     attach(data.session);
     // The prompt is the next thing to do, so the cursor is put there. On a
-    // touch screen the field stays muted until the keyboard is asked for.
+    // touch screen it raises no keyboard until a finger lands on it.
     const field = state.prestart && state.prestart.field();
     if (field) field.focus({ preventScroll: true });
   } catch (err) {
@@ -3442,6 +3742,25 @@ function paneAfter(button) {
 function setTitleText(text) {
   const host = dom.sessionTitleText || dom.sessionTitle;
   if (host.textContent !== text) host.textContent = text;
+  // The name may be cut on a phone; the tip has all of it. A tap renames it
+  // (the session's menu says so too). Home has no name to say again.
+  const button = dom.sessionTitle;
+  if (state.current && text) {
+    button.setAttribute('data-tip', text);
+    button.setAttribute('aria-description', 'Rename');
+  } else {
+    button.removeAttribute('data-tip');
+    button.removeAttribute('aria-description');
+  }
+  // Home has nothing to rename: its words stand in the bar as words, not as
+  // a button that a tap does nothing with.
+  const home = document.getElementById('homeTitle');
+  if (home) {
+    if (home.textContent !== text) home.textContent = text;
+    home.hidden = !!state.current;
+    button.hidden = !state.current;
+  }
+  drawBarMenu();
 }
 
 // The status chip beside the name: where the person filed the session, as an
@@ -3520,7 +3839,15 @@ function wire() {
   if (dom.sideCollapse) {
     dom.sideCollapse.addEventListener('click', () => showSidebar(!sidebarCollapsed()));
   }
-  dom.optionsBtn.addEventListener('click', (event) => openOptions(event.currentTarget));
+  // The top bar's ⋮: the menu of the session on the stage - in the chat's or
+  // the terminal's own header, where it is looked for - with this device's
+  // options as its last item; on Home, this device's options.
+  dom.optionsBtn.addEventListener('click', (event) => {
+    const button = event.currentTarget;
+    const session = barMenuSession();
+    if (session) openRowMenu(button, session.id, { device: true });
+    else openOptions(button);
+  });
   // The two buttons say whether their dialog is open: DS.overlay keeps
   // aria-expanded for menus, and a dialog's opener says it here.
   // Once one has gone, DS has put the focus back on its button - and a
@@ -3543,19 +3870,13 @@ function wire() {
   dom.sessionTitle.addEventListener('click', () => {
     if (state.current) renameSession(state.current, dom.sessionTitle);
   });
-  dom.titleRegen.addEventListener('click', () => {
-    if (dom.titleRegen.getAttribute('aria-busy') !== 'true') retitleSession(state.current);
-  });
+  dom.titleRegen.addEventListener('click', () => renameAgain());
+  onVoiceKey(() => { if (state.current) drawTitling(state.current.id); });
   dom.sessionOutcome.addEventListener('click', () => showOutcome());
-  // The on-screen keyboard, which on a touch screen this button raises and
-  // puts away and nothing else does. With no field focused, it is raised for
-  // the pane.
-  // A prepared session has no pane; its prompt is the field there is.
-  initKeyboard(dom.kbBtn, () => {
-    if (state.term) return state.term.term.textarea;
-    if (chatShown()) return state.chat.field();
-    return state.prestart ? state.prestart.field() : null;
-  });
+  // The terminal's on-screen keyboard, which on a touch screen this button
+  // raises and puts away and nothing else does. Every other field - a chat's
+  // composer, a prepared session's prompt, a dialog's - raises it by a tap.
+  initKeyboard(dom.kbBtn, () => (state.term ? state.term.term.textarea : null));
   dom.logout.addEventListener('click', async () => {
     if (notifier) await notifier.signOut();
     try { await api('/api/logout', { method: 'POST' }); } catch { /* going anyway */ }
@@ -3726,6 +4047,7 @@ async function boot() {
     host: dom.chat,
     status: () => updateStale(),
     openAsk: (chatId, askId) => showChatQuestions(chatId, { askId, only: true }),
+    toastRoom: (room) => { chatToastRoom = room; placeToasts(); },
   });
   chatOutbox().pump();
   // Home, drawn from the sidebar's own state and tests.
@@ -3742,6 +4064,35 @@ async function boot() {
     openQuestions: (id) => showQuestions(id),
   });
   followViewport();
+  // On a short screen the drawer's foot is its icons alone (so-frame.css):
+  // their names, which are their labels anyway, are their tips as well.
+  const shortDrawer = window.matchMedia('(max-height: 500px)');
+  const footTips = () => {
+    for (const item of dom.sidebar.querySelectorAll('.so-drawer-foot > .ds-drawer__item')) {
+      if (shortDrawer.matches) item.setAttribute('data-tip', item.getAttribute('aria-label') || item.textContent.trim());
+      else item.removeAttribute('data-tip');
+    }
+  };
+  shortDrawer.addEventListener('change', footTips);
+  footTips();
+  // A key bar that changes height - a phone turned on its side - takes the
+  // snackbars with it, and so do a keyboard that comes or goes, the drawer
+  // opened or closed, and a message more or less (the drawer's reserve).
+  if (window.ResizeObserver) {
+    new ResizeObserver(() => placeToasts()).observe(dom.keybar);
+    const toasts = document.getElementById('toasts');
+    if (toasts) new ResizeObserver(() => placeToasts()).observe(toasts);
+  }
+  window.addEventListener('resize', () => placeToasts());
+  if (window.visualViewport) window.visualViewport.addEventListener('resize', () => placeToasts());
+  new MutationObserver(() => placeToasts()).observe(dom.app, { attributes: true, attributeFilter: ['data-drawer-open'] });
+  // DS moves the region into a sheet that opens, and back; into a dialog
+  // as it opens, and back once it has gone.
+  new MutationObserver(() => placeToasts()).observe(document.body, { childList: true });
+  new MutationObserver((records) => { if (records.some((r) => r.target.localName === 'dialog')) placeToasts(); })
+    .observe(document.body, { attributes: true, attributeFilter: ['open'], subtree: true });
+  // A message that stays comes or goes: the conversation's room with it.
+  onToastsStay(() => placeToasts());
   // Whether the backup has worked in the last day. Silent while it has.
   mountBackupNotice(document.getElementById('backupNotice'));
   // Read before anything is fetched. Home is the landing page whatever the
@@ -3757,6 +4108,9 @@ async function boot() {
   try {
     const prefs = await api('/api/preferences', { attempts: 1, timeout: 8000 });
     if (prefs && prefs.terminal) state.terminal = { ...state.terminal, ...prefs.terminal };
+    // Whether there is an OpenRouter key, for the microphones and Status to
+    // say so before anything is recorded (voice.js), when the server tells.
+    if (prefs && typeof prefs.openrouter === 'boolean') setVoiceKey(prefs.openrouter, { told: true });
   } catch { /* the defaults above are the shipped ones */ }
   // A session a notification asked for is wanted before the list is read, so
   // that an offline start opens it the moment the list can prove it exists.

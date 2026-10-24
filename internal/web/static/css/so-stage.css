@@ -19,10 +19,9 @@
  *   .so-keybar         the keys a phone keyboard does not have
  *   .so-key            one of them; aria-pressed while a modifier is armed,
  *                      data-lock (and a lock glyph) while it is locked
- *   .so-transfer       copy, paste and upload in the top bar
- *   .so-kb-copy        the keyboard switch's copy over the dialog on top
+ *   .so-transfer       copy, paste and upload in the top bar (on a phone they
+ *                      are in the session's menu)
  *   .so-kb-proxy       the field the switch raises the keyboard through
- *   .so-mic            a field's own microphone (keyboard.js micButton)
  *   .so-rec            the recording dialog, .so-meter its level meter,
  *                      .so-rec__action its two big endings
  *   .so-copy           the copy dialog, .so-copy__text the pane's text
@@ -200,45 +199,19 @@
   min-inline-size: var(--so-key-min-width);
 }
 
+/* A key drawn as its glyph (an arrow, Enter, Paste) is as tall as the
+   others, and round. */
+.so-key.ds-btn--icon {
+  --ds-btn-icon-size: var(--so-key-height);
+}
+
 /* Touch mode: a key a thumb finds without looking. */
 .ds-theme.so-touch .so-key {
   --ds-btn-height: var(--so-key-height-touch);
 }
 
-/* ── Speak and Keyboard ──────────────────────────────────────────────── */
-
-/* The two text buttons of the bar: as tall as a thumb wants (48px in touch
-   mode), and on a phone in their short form - "Keys", and a Transcribing face
-   that is only its spinner - so the session's name keeps its room. */
-.so-talk {
-  --ds-btn-height: var(--so-talk-height);
-}
-
-.ds-theme.so-touch .so-talk {
-  --ds-btn-height: var(--so-talk-height-touch);
-}
-
-.so-talk__short {
-  display: none;
-}
-
-@media (max-width: 600px) {
-  .so-talk {
-    --ds-btn-padding-x: var(--ds-space-2);
-    min-inline-size: var(--so-talk-height);
-  }
-
-  .ds-theme.so-touch .so-talk {
-    min-inline-size: var(--so-talk-height-touch);
-  }
-
-  .so-talk .so-talk__long {
-    display: none;
-  }
-
-  .so-talk .so-talk__short {
-    display: inline;
-  }
+.ds-theme.so-touch .so-key.ds-btn--icon {
+  --ds-btn-icon-size: var(--so-key-height-touch);
 }
 
 /* ── Copy, paste and upload ──────────────────────────────────────────── */
@@ -249,44 +222,16 @@
   align-items: center;
 }
 
-/* A phone's bar is full, so the three float over the top corner of the pane:
-   one tap away, and over the oldest lines rather than the prompt. The notice
-   and the ticker start under them, so a close button is never beneath them. */
+/* A phone's bar has no room for the three, and floating over the pane they
+   covered its first lines - the prompt of a fresh shell. There they are in
+   the session's menu (the top bar's ⋮) instead, and the key bar has Paste. */
 @media (max-width: 600px) {
   .so-transfer {
-    position: absolute;
-    top: calc(100% + var(--ds-space-2));
-    inset-inline-end: max(var(--ds-space-4), env(safe-area-inset-right));
-    z-index: var(--ds-z-raised);
-    padding: var(--ds-space-1);
-    border: 1px solid var(--ds-line);
-    border-radius: var(--ds-radius-action);
-    background: var(--ds-surface);
-    box-shadow: var(--ds-elev-2);
-  }
-
-  .ds-app:has(.so-transfer:not([hidden])) .so-pane__lines {
-    top: var(--so-transfer-float-room);
-  }
-
-  .ds-theme.so-touch .ds-app:has(.so-transfer:not([hidden])) .so-pane__lines {
-    top: var(--so-transfer-float-room-touch);
+    display: none;
   }
 }
 
 /* ── The keyboard switch ─────────────────────────────────────────────── */
-
-/* Its copy in whichever dialog is on top: laid over the bar's own button by
-   keyboard.js, and in the corner when the bar has none on screen. It stands
-   on the scrim, so it carries a ground of its own. */
-.so-kb-copy {
-  --ds-btn-bg: var(--ds-surface);
-  position: fixed;
-  top: max(var(--ds-space-3), env(safe-area-inset-top));
-  right: max(var(--ds-space-3), env(safe-area-inset-right));
-  z-index: var(--ds-z-raised);
-  margin: 0;
-}
 
 /* The field the switch raises the keyboard through on its way to the real one.
    Focusable, so neither hidden nor display: none; out of sight, and at the
@@ -302,11 +247,6 @@
   opacity: 0;
   font: var(--ds-font-input);
   pointer-events: none;
-}
-
-/* A field's microphone keeps its size beside the field it fills. */
-.so-mic {
-  flex: none;
 }
 
 /* ── The recording ───────────────────────────────────────────────────── */

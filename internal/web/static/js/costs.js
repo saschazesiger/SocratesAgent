@@ -110,9 +110,11 @@ function projectLabel(project) {
   return baseName(project);
 }
 
-// profileLabel names what a ledger is filed under: a chat's account, or for a
-// conversation from before accounts the profile it ran in, which the
-// migration made an account - so the page calls both an account.
+// profileLabel names what a ledger is filed under. A conversation's
+// "profile", as the server names it, is the account it ran on: a chat's
+// account, or for a conversation from before accounts the sign-in profile it
+// ran in, which the migration made an account. The page says account, which
+// is what a person has now.
 function profileLabel(id) {
   const names = state.data ? state.data.profiles : {};
   if (names && names[id] !== undefined) return names[id];
@@ -149,7 +151,7 @@ function decode(data) {
 function matches(r) {
   const f = state.filters;
   if (f.harness && r.conv.harness !== f.harness) return false;
-  // The default profile's id is empty, so "a profile is chosen" is a flag
+  // The default account's id is empty, so "an account is chosen" is a flag
   // of its own.
   if (f.profileSet && r.conv.profile !== f.profile) return false;
   if (f.project && r.conv.project !== f.project) return false;
@@ -329,7 +331,7 @@ function drawTiles(filtered, days) {
   const rangeName = RANGES.find((r) => r.id === state.range).label;
   $('tRangeLabel').textContent = rangeName === 'All' ? 'All time' : rangeName;
   figure('tRange', total);
-  $('tRangeNote').textContent = `${requests.toLocaleString()} requests · ${tokens(used)} tokens`;
+  $('tRangeNote').textContent = `${requests.toLocaleString()} ${requests === 1 ? 'request' : 'requests'} · ${tokens(used)} ${used === 1 ? 'token' : 'tokens'}`;
   figure('tPerDay', days ? total / days : 0);
   $('tPerDayNote').textContent = `average over ${days} ${days === 1 ? 'day' : 'days'}`;
   figure('tToday', todayCost);
@@ -583,7 +585,7 @@ function drawTables(filtered) {
   table('tModel', groupBy(filtered, (r) => r.model), {
     column: 'Model',
     name: (g) => g.key,
-    sub: (g) => (g.unpriced && g.cost === 0 ? `${g.unpriced.toLocaleString()} requests without a known price` : ''),
+    sub: (g) => (g.unpriced && g.cost === 0 ? `${g.unpriced.toLocaleString()} ${g.unpriced === 1 ? 'request' : 'requests'} without a known price` : ''),
     onPick: (g) => toggleFilter('model', g.key), picked: (g) => f.model !== '' && f.model === g.key,
   });
   table('tMonthly', groupBy(filtered, (r) => r.month), {
@@ -700,7 +702,7 @@ function csvCell(v) {
 function downloadCsv(rows, range) {
   const groups = groupBy(rows, (r) => `${r.day}\u0000${r.conv.key}\u0000${r.model}`)
     .sort((a, b) => (a.sample.day === b.sample.day ? b.cost - a.cost : (a.sample.day < b.sample.day ? -1 : 1)));
-  const lines = [['date', 'project', 'folder', 'program', 'profile', 'model', 'conversation', 'cost_usd',
+  const lines = [['date', 'project', 'folder', 'program', 'account', 'model', 'conversation', 'cost_usd',
     'input_tokens', 'output_tokens', 'cache_read_tokens', 'cache_write_tokens', 'requests'].join(',')];
   for (const g of groups) {
     const c = g.sample.conv;

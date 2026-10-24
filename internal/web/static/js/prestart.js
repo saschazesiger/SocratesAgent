@@ -115,14 +115,15 @@ async function call(method, path, body, timeout = 15000) {
 // inWords is a distance in time the way a person says it: "in 2 h 15 min",
 // "in 3 d 4 h", "in 40 s".
 export function inWords(ms) {
-  if (ms < 60000) return 'in ' + Math.max(1, Math.ceil(ms / 1000)) + ' s';
+  // Each number held to its unit by a no-break space.
+  if (ms < 60000) return 'in ' + Math.max(1, Math.ceil(ms / 1000)) + '\u00a0s';
   const minutes = Math.round(ms / 60000);
   const days = Math.floor(minutes / 1440);
   const hours = Math.floor((minutes % 1440) / 60);
   const rest = minutes % 60;
-  if (days > 0) return 'in ' + days + ' d' + (hours ? ' ' + hours + ' h' : '');
-  if (hours > 0) return 'in ' + hours + ' h' + (rest ? ' ' + rest + ' min' : '');
-  return 'in ' + rest + ' min';
+  if (days > 0) return 'in ' + days + '\u00a0d' + (hours ? ' ' + hours + '\u00a0h' : '');
+  if (hours > 0) return 'in ' + hours + '\u00a0h' + (rest ? ' ' + rest + '\u00a0min' : '');
+  return 'in ' + rest + '\u00a0min';
 }
 
 const two = (n) => String(n).padStart(2, '0');
@@ -237,6 +238,8 @@ function openPanel(ctx, first) {
     // the server holds at it - null while that is not known.
     loaded: false,
     loadError: '',
+    // The server's own words about a failed load, behind the line's "i".
+    loadDetail: '',
     rev: 0,
     saved: null,
     saving: null,
@@ -272,7 +275,7 @@ function openPanel(ctx, first) {
   // main one, the time and the settings at the side (under the prompt on a
   // phone, where the prompt is what the screen is for).
   const textarea = el('textarea', {
-    class: 'ds-input so-prestart__text', id: 'psPrompt', rows: '14', spellcheck: 'true',
+    class: 'ds-input so-prestart__text', id: 'psPrompt', rows: '4', spellcheck: 'true',
     placeholder: 'What should it do? This is sent as the first prompt the moment the session starts.',
     'aria-describedby': 'psSave',
   });
@@ -341,11 +344,13 @@ function openPanel(ctx, first) {
 
   // setAtHint is the line under the time: what is set, or why it is not.
   // An error wears the icon DS gives a field's error, and marks the field.
-  function setAtHint(text, error = false) {
+  // The server's own sentence, when there is one, is behind its "i".
+  function setAtHint(text, error = false, detail = '') {
     atHint.classList.toggle('ds-field__hint--error', error);
     if (error) startAt.setAttribute('aria-invalid', 'true');
     else startAt.removeAttribute('aria-invalid');
-    atHint.replaceChildren(...(error ? [iconEl('alertCircle', 16)] : []), text);
+    atHint.replaceChildren(...(error ? [iconEl('alertCircle', 16)] : []), text,
+      ...(detail ? [infoTip([detail], { label: 'Why it was not saved' })] : []));
   }
 
   // drawLine writes one of the two status lines (the prompt's, the
@@ -440,7 +445,10 @@ function openPanel(ctx, first) {
   function insertText(text) {
     // Dictation into a field that has not loaded would be overwritten by
     // what loads; the microphone waits like the keyboard does.
-    if (!st.loaded || textarea.readOnly) { toast('The prompt is still loading.', 'error'); return; }
+    // Asked of the draft, not of the field: on a touch screen a field nobody
+    // has tapped is read-only for the keyboard's sake (keyboard.js), and
+    // speaking into it is exactly what it is there for.
+    if (!st.loaded || textarea.disabled) { toast('The prompt is still loading.', 'error'); return; }
     const value = textarea.value;
     const from = Number.isInteger(textarea.selectionStart) ? textarea.selectionStart : value.length;
     const to = Number.isInteger(textarea.selectionEnd) ? textarea.selectionEnd : from;
@@ -468,6 +476,7 @@ function openPanel(ctx, first) {
     st.loading = true;
     const local = readBuffer(id);
     st.loadError = '';
+    st.loadDetail = '';
     drawStatus();
     const res = await call('GET', path + '/draft');
     st.loading = false;
@@ -515,7 +524,8 @@ function openPanel(ctx, first) {
     textarea.disabled = true;
     st.loadError = res.status === 0
       ? 'Offline – the prompt loads when the connection is back.'
-      : 'The prompt could not be loaded: ' + (res.data.error || 'HTTP ' + res.status);
+      : 'The prompt could not be loaded.';
+    st.loadDetail = res.status === 0 ? '' : (res.data.error || 'HTTP ' + res.status);
     drawStatus();
     retryLater();
   }
@@ -706,8 +716,10 @@ function openPanel(ctx, first) {
     }
     // The server's own sentence is a fact about the machine, and it goes
     // behind an "i" like every other.
-    drawLine(saveLine, text, kind, st.loaded && dirty() && st.error && !st.offline
-      ? infoTip([st.error], { label: 'Why it was not saved' }) : null);
+    let detail = null;
+    if (!st.loaded && st.loadError && st.loadDetail) detail = infoTip([st.loadDetail], { label: 'Why it could not be loaded' });
+    else if (st.loaded && dirty() && st.error && !st.offline) detail = infoTip([st.error], { label: 'Why it was not saved' });
+    drawLine(saveLine, text, kind, detail);
     drawStart();
   }
 
@@ -772,7 +784,7 @@ function openPanel(ctx, first) {
         // saying what is really set.
         if (!st.closed) {
           drawSchedule(true);
-          setAtHint('Not saved: ' + (res.data.error || 'HTTP ' + res.status), true);
+          setAtHint('That time was not saved.', true, res.data.error || 'HTTP ' + res.status);
         }
       } else {
         st.patchError = res.data.error || 'HTTP ' + res.status;
@@ -788,10 +800,12 @@ function openPanel(ctx, first) {
   function drawSettingsLine() {
     let text = '';
     let kind = '';
-    if (st.patchError) { text = 'Not saved: ' + st.patchError; kind = 'error'; }
+    if (st.patchError) { text = 'The settings were not saved.'; kind = 'error'; }
     else if (st.patchOffline) { text = 'Offline – the settings are saved when the connection is back.'; kind = 'offline'; }
     else if (Object.keys(st.patch).length || st.patching) text = 'Saving…';
-    drawLine(settingsLine, text, kind);
+    // The server's own sentence goes behind the line's "i".
+    drawLine(settingsLine, text, kind,
+      st.patchError ? infoTip([st.patchError], { label: 'Why they were not saved' }) : null);
   }
 
   /* ---------------------------------------------------------- schedule */
@@ -939,9 +953,24 @@ function openPanel(ctx, first) {
     for (const timer of st.dueTimers) clearTimeout(timer);
     unwake();
     host.removeEventListener('keydown', onKey);
+    if (window.visualViewport) window.visualViewport.removeEventListener('resize', regrow);
     host.hidden = true;
     host.replaceChildren();
   }
+
+  // The field's least height is a share of what can be seen
+  // (--so-prompt-min-height), which a phone's keyboard changes: its height
+  // is taken again then - in the next frame, once the app's new height is
+  // written - and a field being typed into is brought into what is left,
+  // so that it ends where the person can see it end.
+  function regrow() {
+    requestAnimationFrame(() => {
+      if (st.closed) return;
+      grow();
+      if (document.activeElement === textarea) textarea.scrollIntoView({ block: 'nearest' });
+    });
+  }
+  if (window.visualViewport) window.visualViewport.addEventListener('resize', regrow);
 
   drawSchedule();
   drawFailure();

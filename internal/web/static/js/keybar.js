@@ -13,28 +13,36 @@
 
 import { el } from './api.js';
 import { iconEl } from './ui.js';
-import { pasteClipboard } from './term.js';
+import { pasteClipboard, HOLD_MS } from './term.js';
 import { touchScreen } from './keyboard.js';
 
 /* ---------------------------------------------------------- the key bar */
 
 // The keys a phone keyboard does not have, in the order a thumb wants them.
-// `send` is the bytes; a key with `mod` is a sticky modifier instead.
+// `send` is the bytes; a key with `mod` is a sticky modifier instead. A key
+// with a glyph is drawn as it (the arrows, Enter, Paste); the others are the
+// names printed on a keyboard's own keys, which no glyph says better.
 const KEYS = [
   { label: 'Esc', send: '\x1b', name: 'Escape' },
   { label: 'Tab', send: '\t', name: 'Tab' },
   { label: 'Ctrl', mod: 'ctrl', name: 'Control' },
   { label: 'Alt', mod: 'alt', name: 'Alt' },
-  { label: '←', send: '\x1b[D', name: 'Left' },
-  { label: '↓', send: '\x1b[B', name: 'Down' },
-  { label: '↑', send: '\x1b[A', name: 'Up' },
-  { label: '→', send: '\x1b[C', name: 'Right' },
-  { label: '⏎', send: '\r', name: 'Enter' },
+  { glyph: 'arrowLeft', send: '\x1b[D', name: 'Left', tip: 'Left arrow' },
+  { glyph: 'arrowDown', send: '\x1b[B', name: 'Down', tip: 'Down arrow' },
+  { glyph: 'arrowUp', send: '\x1b[A', name: 'Up', tip: 'Up arrow' },
+  { glyph: 'arrowRight', send: '\x1b[C', name: 'Right', tip: 'Right arrow' },
+  { glyph: 'enter', send: '\r', name: 'Enter', tip: 'Enter' },
   { label: '^C', send: '\x03', name: 'Ctrl-C' },
   { label: '^D', send: '\x04', name: 'Ctrl-D' },
   { label: '^Z', send: '\x1a', name: 'Ctrl-Z' },
-  { label: 'Paste', paste: true, name: 'Paste' },
+  { glyph: 'paste', paste: true, name: 'Paste', tip: 'Paste' },
 ];
+
+// What a modifier key says it does, armed, locked or neither.
+const MOD_TIPS = {
+  ctrl: { off: 'Ctrl for the next key; hold to lock', on: 'Ctrl for the next key; tap again to cancel', lock: 'Ctrl is locked; tap to release' },
+  alt: { off: 'Alt for the next key; hold to lock', on: 'Alt for the next key; tap again to cancel', lock: 'Alt is locked; tap to release' },
+};
 
 const KEYBAR_PREF = 'socrates.term.keybar';
 
@@ -79,26 +87,35 @@ export function mountKeyBar(host, term, socket) {
   const buttons = new Map();
 
   // An armed modifier is pressed (the tint), and a locked one also wears the
-  // lock glyph, because "held for the next key" and "held until I say
-  // otherwise" are different promises and colour alone cannot tell them apart.
+  // lock glyph and says so in its label, because "held for the next key" and
+  // "held until I say otherwise" are different promises and colour alone
+  // cannot tell them apart.
   const paint = () => {
     for (const [mod, button] of buttons) {
       const state = armed.get(mod) || '';
       button.setAttribute('aria-pressed', state ? 'true' : 'false');
       button.toggleAttribute('data-lock', state === 'lock');
+      const name = button.dataset.key;
+      button.setAttribute('aria-label', state === 'lock' ? name + ', locked' : name);
+      button.setAttribute('data-tip', MOD_TIPS[mod][state || 'off']);
       const glyph = button.querySelector('svg');
       if (state === 'lock' && !glyph) button.prepend(iconEl('lock', 16));
       else if (state !== 'lock' && glyph) glyph.remove();
     }
   };
 
-  // A tap arms, a second tap locks, a third puts it away. Locking is what
-  // makes a sequence like Ctrl-x Ctrl-s possible with one hand.
+  // A tap arms it for the next key, and a second tap puts it away again - a
+  // tap too many is then simply undone. Held, it locks until it is tapped:
+  // that is what makes a sequence like Ctrl-x Ctrl-s possible with one hand,
+  // and it never happens by accident, which a third tap that unlocked did
+  // (two taps had locked Ctrl, and "exit" went out as ^E^X^I^T).
   const toggle = (mod) => {
-    const state = armed.get(mod);
-    if (!state) armed.set(mod, 'on');
-    else if (state === 'on') armed.set(mod, 'lock');
-    else armed.delete(mod);
+    if (armed.get(mod)) armed.delete(mod);
+    else armed.set(mod, 'on');
+    paint();
+  };
+  const lock = (mod) => {
+    armed.set(mod, 'lock');
     paint();
   };
 
@@ -145,14 +162,32 @@ export function mountKeyBar(host, term, socket) {
 
   for (const key of KEYS) {
     const button = el('button', {
-      class: 'ds-btn so-key', type: 'button', 'data-key': key.name,
-      'aria-label': key.name, text: key.label,
+      class: key.glyph ? 'ds-btn ds-btn--icon so-key' : 'ds-btn so-key', type: 'button', 'data-key': key.name,
+      'aria-label': key.name, 'data-tip': key.tip || null, text: key.label || null,
     });
+    if (key.glyph) button.append(iconEl(key.glyph, 20));
     if (key.send) button.dataset.send = key.send;
     if (key.mod) {
       button.dataset.mod = key.mod;
       buttons.set(key.mod, button);
-      button.addEventListener('click', () => toggle(key.mod));
+      // Held for HOLD_MS - the pane's own long press - it locks, and the
+      // click that ends the press is not also a tap.
+      let timer = null;
+      let held = false;
+      const stop = () => { if (timer) { clearTimeout(timer); timer = null; } };
+      button.addEventListener('pointerdown', (event) => {
+        if (event.button !== 0) return;
+        stop();
+        held = false;
+        timer = setTimeout(() => { timer = null; held = true; lock(key.mod); }, HOLD_MS);
+      });
+      for (const end of ['pointerup', 'pointercancel', 'pointerleave']) button.addEventListener(end, stop);
+      // A long press is not the browser's menu either.
+      button.addEventListener('contextmenu', (event) => event.preventDefault());
+      button.addEventListener('click', () => {
+        if (held) { held = false; return; }
+        toggle(key.mod);
+      });
     } else if (key.paste) {
       button.addEventListener('click', () => { consume(); pasteClipboard(term, send); });
     } else {
@@ -188,11 +223,17 @@ export function mountKeyBar(host, term, socket) {
  * scrolled back to the top, because iOS scrolls the page instead of resizing
  * it and a scrolled shell hides the top bar.
  */
+// Below this many pixels of visible height - a phone on its side with its
+// keyboard up - the top bar steps aside (so-frame.css, data-so-short).
+const SHORT_VIEW = 300;
+
 export function followViewport() {
   const vv = window.visualViewport;
   if (!vv) return () => {};
   const apply = () => {
-    document.documentElement.style.setProperty('--so-app-h', Math.round(vv.height) + 'px');
+    const root = document.documentElement;
+    root.style.setProperty('--so-app-h', Math.round(vv.height) + 'px');
+    root.toggleAttribute('data-so-short', vv.height < SHORT_VIEW);
     if (vv.offsetTop > 0) window.scrollTo(0, 0);
   };
   vv.addEventListener('resize', apply);
@@ -202,5 +243,6 @@ export function followViewport() {
     vv.removeEventListener('resize', apply);
     vv.removeEventListener('scroll', apply);
     document.documentElement.style.removeProperty('--so-app-h');
+    document.documentElement.removeAttribute('data-so-short');
   };
 }

@@ -36,7 +36,13 @@ import { queueAnswer, answeredHere, onOutbox, pendingAnswer, chatOutbox } from '
 import { newChat, apply, openAsks } from './chatfold.js';
 import { ChatStream } from './chatstream.js';
 import { record, recPhase } from './dictate.js';
+import { touchScreen } from './keyboard.js';
 import { speak, stopSpeaking } from './voice.js';
+
+// A phone on its side (so-question.css "Phones and short screens"): the
+// chrome above a question then takes the room its first option needs, and
+// the question is scrolled up to the top.
+const SHORT_SCREEN = window.matchMedia('(max-height: 500px)');
 
 // How long "Answered" stays before the next question takes the dialog.
 const MOVE_ON = 1200;
@@ -48,12 +54,7 @@ const MOVE_ON = 1200;
 // Next would skip the step after it. A key (Enter, a digit) is never a stray
 // tap, and is taken at once.
 const TAP_ARM = 600;
-const ARMED = '.so-q-scroll button, .so-q-actions button';
-
-// The height below which a phone is on its side (so-question.css has the
-// same): the chrome above a question then takes the room its first option
-// needs, and the question is scrolled up to the top.
-const SHORT_SCREEN = 500;
+const ARMED = '.so-q-scroll button, .so-q-actions button, .so-q-open';
 
 // How often the dialog says its connection again while it is not live: the
 // age in "Offline · updated 40 s ago" moves on (HOME.md, "The dialog says it
@@ -384,7 +385,7 @@ export function openAskDialog({ items, start = 0, watch, openChat, closed, more 
   // bringQuestionUp scrolls a question to the top on a phone on its side,
   // the chat and the batch's title and context a swipe above it.
   function bringQuestionUp() {
-    if (window.innerHeight > SHORT_SCREEN) return;
+    if (!SHORT_SCREEN.matches) return;
     const scroller = shell.querySelector('.so-q-scroll');
     const at = shell.querySelector('.so-q-step') || shell.querySelector('.so-q-text');
     if (scroller && at) scroller.scrollTop += at.getBoundingClientRect().top - scroller.getBoundingClientRect().top;
@@ -480,12 +481,40 @@ export function openAskDialog({ items, start = 0, watch, openChat, closed, more 
     if (st.unwatch) st.unwatch();
     unlisten();
     unrefused();
+    if (window.visualViewport) window.visualViewport.removeEventListener('resize', keepFieldInView);
     if (st.speaking) stopSpeaking();
     save();
     current = null;
     if (closed) closed();
     hideOverlay(dialog, { remove: true }).then(() => restoreFocus(opener));
   }
+
+  // A keyboard that comes up shrinks what can be seen: the field being
+  // typed into is brought into the part of the dialog that is left, above
+  // its buttons, once the new height is laid out - with the question it
+  // answers above it when the two fit together (on a phone on its side the
+  // field alone was brought in, and the question was cut in half above
+  // it), else the field alone.
+  function keepFieldInView() {
+    requestAnimationFrame(() => {
+      const field = document.activeElement;
+      if (st.closed || !field || !shell.contains(field) || !field.matches('textarea, input')) return;
+      const scroller = shell.querySelector('.so-q-scroll');
+      const question = shell.querySelector('.so-q-text');
+      if (scroller && question && scroller.contains(field) && scroller.contains(question)) {
+        const box = scroller.getBoundingClientRect();
+        const pad = parseFloat(getComputedStyle(scroller).paddingTop) || 0;
+        const top = question.getBoundingClientRect().top - box.top + scroller.scrollTop - pad;
+        const bottom = field.getBoundingClientRect().bottom - box.top + scroller.scrollTop;
+        if (top >= 0 && bottom - top <= scroller.clientHeight) {
+          scroller.scrollTop = top;
+          return;
+        }
+      }
+      field.scrollIntoView({ block: 'nearest' });
+    });
+  }
+  if (window.visualViewport) window.visualViewport.addEventListener('resize', keepFieldInView);
 
   // An answer of this browser that the server refused because another
   // device had answered first: the question is settled, and says by whom
@@ -552,14 +581,21 @@ export function openAskDialog({ items, start = 0, watch, openChat, closed, more 
     const conn = settled ? null : doubt();
     st.connSaid = conn ? conn.kind + ':' + conn.words + ':' + st.phase : '';
     shell.toggleAttribute('data-stale', !!conn);
-    morph(shell, html`<div class="so-q-top" data-ds-key="top"><button class="ds-btn ds-btn--quiet ds-btn--icon so-q-close" type="button" data-action="close" aria-label="Close" data-tip="Close">${raw(icon('close', 20))}</button><span class="so-q-top-title">${counter ? 'Questions · ' + counter : 'Question'}</span></div>${
+    // The top bar: Close, where the walk is, and Open chat at its end; on a
+    // short screen the chat's name too, on one line, in place of the session
+    // row (so-question.css). The connection line comes under it while the
+    // connection is not live. The batch's title, when it has context, is the
+    // context's own row rather than a row of its own.
+    const title = session.title || 'Chat';
+    morph(shell, html`<div class="so-q-top" data-ds-key="top"><button class="ds-btn ds-btn--quiet ds-btn--icon so-q-close" type="button" data-action="close" aria-label="Close" data-tip="Close">${raw(icon('close', 20))}</button><span class="so-q-top-title">${counter ? 'Questions · ' + counter : 'Question'}</span><span class="so-q-top-session so-ellipsis" data-tip="${title}">${title}</span>${
+      openChat ? html`<button class="ds-btn ds-btn--quiet ds-btn--icon so-q-open" type="button" data-action="open-chat" aria-label="Open the chat" data-tip="Open the chat">${raw(icon('external', 20))}</button>` : ''
+    }</div>${
       conn ? connHtml(conn) : ''
     }
-<div class="so-q-scroll" data-ds-key="${'scroll:' + ask.id}"><div class="so-q-session"><span class="so-mark">${raw(agentMarkHtml(session.harness || '', 24))}</span><span class="so-q-session-text"><span class="so-q-session-title so-ellipsis">${session.title || 'Chat'}</span></span>${
-      openChat ? html`<button class="ds-btn so-q-open" type="button" data-action="open-chat">Open chat</button>` : ''
-    }</div>${settled ? doneHtml(ask) : html`<div class="so-q-body so-ask-body" data-ds-key="${'q:' + ask.id + ':' + step}"${st.phase === 'sent' ? html` data-state="pending"` : ''}>${
-      step === 0 && (payload.title || payload.context) ? html`${payload.title ? html`<p class="so-ask-title">${payload.title}</p>` : ''}${payload.context ? contextHtml('ctx', payload.context, 'About these questions') : ''}` : ''
-    }${st.refused ? html`<div class="ds-alert ds-alert--error so-refused" role="alert">${raw(icon('alertCircle', 20))}<span class="ds-alert__text">${'Your answer was not taken: ' + (st.refused.error || 'the server refused it.') + ' Send it again, or change it first.'}</span></div>` : ''}${q ? questionHtml(q, questions.length, step) : ''}${
+<div class="so-q-scroll" data-ds-key="${'scroll:' + ask.id}"><div class="so-q-session"><span class="so-mark">${raw(agentMarkHtml(session.harness || '', 24))}</span><span class="so-q-session-text"><span class="so-q-session-title so-break">${title}</span></span></div>${settled ? doneHtml(ask) : html`<div class="so-q-body so-ask-body" data-ds-key="${'q:' + ask.id + ':' + step}"${st.phase === 'sent' ? html` data-state="pending"` : ''}>${
+      step === 0 && payload.context ? contextHtml('ctx', payload.context, payload.title || 'About these questions', !!payload.title)
+        : step === 0 && payload.title ? html`<p class="so-ask-title">${payload.title}</p>` : ''
+    }${st.refused ? html`<div class="ds-alert ds-alert--error so-refused" role="alert">${raw(icon('alertCircle', 20))}<span class="ds-alert__text">${'Your answer was not taken: ' + (st.refused.error || 'the server refused it.') + ' Send it again, or change it first.'}</span></div>` : ''}${q ? questionHtml(q, questions.length, step, last) : ''}${
       st.draft.asking ? followUpHtml() : ''
     }${last && !st.draft.asking ? generalHtml() : ''}</div>`}${
       st.phase === 'sent' ? html`<div class="ds-alert so-q-status" role="status">${raw(icon('clock', 20))}<span class="ds-alert__text">${navigator.onLine === false ? 'Saved. Your answer goes out when the connection is back.' : 'Sending your answer…'}</span></div>` : ''
@@ -573,12 +609,17 @@ export function openAskDialog({ items, start = 0, watch, openChat, closed, more 
     }
   }
 
-  function contextHtml(key, text, label) {
+  // A context behind its row: "Why this matters", or the batch's title
+  // (`titled`), which opens onto what the agent said about the questions.
+  // On a short screen "Why this matters" is its icon beside the question
+  // (so-question.css), and its words are then its tip.
+  function contextHtml(key, text, label, titled = false) {
     const open = st.details.has(key);
-    return html`<details class="ds-collapsible so-ask-context" data-open-key="${key}"${open ? html` open` : ''}><summary class="so-ask-context__head">${raw(icon('info', 16))}<span>${label}</span>${raw(icon('chevronDown', 20, 'ds-chevron'))}</summary><div class="so-ask-context__body so-md">${markdown(text)}</div></details>`;
+    const tip = !titled && SHORT_SCREEN.matches ? label : '';
+    return html`<details class="ds-collapsible so-ask-context" data-open-key="${key}"${open ? html` open` : ''}><summary class="so-ask-context__head"${tip ? html` data-tip="${tip}"` : ''}>${raw(icon('info', 16))}<span${titled ? html` class="so-ask-title"` : ''}>${label}</span>${raw(icon('chevronDown', 20, 'ds-chevron'))}</summary><div class="so-ask-context__body so-md">${markdown(text)}</div></details>`;
   }
 
-  function questionHtml(q, total, step) {
+  function questionHtml(q, total, step, last) {
     const a = st.draft.answers[q.id];
     const kind = kindOf(q);
     const options = kind === 'confirm'
@@ -593,9 +634,9 @@ export function openAskDialog({ items, start = 0, watch, openChat, closed, more 
 <h2 class="so-q-text" tabindex="-1">${q.question || q.header || ''}</h2>${q.context ? contextHtml('qctx:' + q.id, q.context, 'Why this matters') : ''}${
       hintWords ? html`<p class="so-q-detail">${hintWords}</p>` : ''
     }${options.length ? html`<div class="so-q-options" role="group" aria-label="${q.question || 'Options'}">${options.map((option, i) => optionHtml(q, option, i, multi, a))}</div>` : ''}${
-      kind === 'text' ? fieldHtml(q.id, 'other', 'Your answer', a.other, 3) : ''
-    }${kind === 'number' ? numberHtml(q, a, !!problem) : ''}${
-      other && (a.othering || a.other) ? fieldHtml(q.id, 'other', 'In your own words', a.other, 2) : ''
+      kind === 'text' ? fieldHtml(q.id, 'other', 'Your answer', a.other, 3, last ? 'done' : 'next') : ''
+    }${kind === 'number' ? numberHtml(q, a, !!problem, last ? 'done' : 'next') : ''}${
+      other && (a.othering || a.other) ? fieldHtml(q.id, 'other', 'In your own words', a.other, 2, last ? 'done' : 'next') : ''
     }${a.noting || a.note ? fieldHtml(q.id, 'note', 'A note to the agent', a.note, 2) : ''}${
       problem ? html`<div class="ds-alert ds-alert--error so-ask-problem" role="alert">${raw(icon('alertCircle', 20))}<span class="ds-alert__text">${problem}</span></div>` : ''
     }<div class="so-ask-extras">${
@@ -626,15 +667,19 @@ export function openAskDialog({ items, start = 0, watch, openChat, closed, more 
     }</div>`;
   }
 
-  function fieldHtml(qid, field, label, value, rows) {
+  // A field of one's own words, with its microphone. An answer's field
+  // moves on with the keyboard's own key (`key`: "next", or "done" on the
+  // last question, which puts the keyboard away); a note keeps Enter for
+  // its lines.
+  function fieldHtml(qid, field, label, value, rows, key = 'enter') {
     const fid = 'ask-' + qid + '-' + field;
-    return html`<div class="ds-field so-q-own" data-ds-key="${fid}"><label class="ds-field__label" for="${fid}">${label}</label><div class="so-field-row so-field-row--top"><textarea class="ds-input so-q-own-field" id="${fid}" rows="${rows}" data-q="${qid}" data-field="${field}">${value || ''}</textarea><button class="ds-btn so-mic" type="button" data-action="dictate" data-target="${fid}">${faces('Dictate', 'Listening')}</button></div></div>`;
+    return html`<div class="ds-field so-q-own" data-ds-key="${fid}"><label class="ds-field__label" for="${fid}">${label}</label><div class="so-field-row so-field-row--top"><textarea class="ds-input so-q-own-field" id="${fid}" rows="${rows}" enterkeyhint="${key}" data-q="${qid}" data-field="${field}"${key !== 'enter' ? html` data-moves-on` : ''}>${value || ''}</textarea><button class="ds-btn ds-btn--quiet ds-btn--icon so-mic" type="button" data-action="dictate" data-target="${fid}" aria-label="${'Dictate ' + label.charAt(0).toLowerCase() + label.slice(1)}" data-tip="Dictate">${faces(raw(icon('mic', 20)), '')}</button></div></div>`;
   }
 
-  function numberHtml(q, a, invalid) {
+  function numberHtml(q, a, invalid, key) {
     const fid = 'ask-' + q.id + '-other';
     const range = [q.min !== undefined ? 'at least ' + q.min : '', q.max !== undefined ? 'at most ' + q.max : ''].filter(Boolean).join(', ');
-    return html`<div class="ds-field so-q-own" data-ds-key="${fid}"><label class="ds-field__label" for="${fid}">A number${range ? html` <span class="so-ask-range">${'(' + range + ')'}</span>` : ''}</label><input class="ds-input so-ask-number" id="${fid}" type="text" inputmode="decimal" autocomplete="off" data-q="${q.id}" data-field="other" value="${a.other || ''}"${invalid ? html` aria-invalid="true"` : ''}></div>`;
+    return html`<div class="ds-field so-q-own" data-ds-key="${fid}"><label class="ds-field__label" for="${fid}">A number${range ? html` <span class="so-ask-range">${'(' + range + ')'}</span>` : ''}</label><input class="ds-input so-ask-number" id="${fid}" type="text" inputmode="decimal" enterkeyhint="${key}" autocomplete="off" data-q="${q.id}" data-field="other" data-moves-on value="${a.other || ''}"${invalid ? html` aria-invalid="true"` : ''}></div>`;
   }
 
   function generalHtml() {
@@ -655,7 +700,8 @@ export function openAskDialog({ items, start = 0, watch, openChat, closed, more 
   }
 
   function actionsHtml({ step, last }) {
-    const read = html`<button class="ds-btn so-q-big so-q-read" type="button" data-action="read" aria-pressed="${st.speaking ? 'true' : 'false'}">${st.speaking ? 'Stop reading' : 'Read aloud'}</button>`;
+    const reading = st.speaking ? 'Stop reading' : 'Read aloud';
+    const read = html`<button class="ds-btn ds-btn--icon so-q-big so-q-read" type="button" data-action="read" aria-pressed="${st.speaking ? 'true' : 'false'}" aria-label="${reading}" data-tip="${reading}">${raw(icon(st.speaking ? 'stop' : 'speak', 20))}</button>`;
     if (st.phase === 'answered' || st.phase === 'elsewhere') {
       return html`<button class="ds-btn ds-btn--primary so-q-big so-q-send" type="button" data-action="next">${st.at < st.items.length - 1 ? 'Next question' : 'Close'}</button>`;
     }
@@ -664,10 +710,10 @@ export function openAskDialog({ items, start = 0, watch, openChat, closed, more 
       return html`${read}<button class="ds-btn so-q-big" type="button" data-action="${more ? 'next' : 'close'}">${more ? 'Next question' : 'Close'}</button>`;
     }
     if (st.draft.asking) {
-      return html`${read}<button class="ds-btn so-q-big so-q-back" type="button" data-action="ask-cancel">Back to the questions</button><button class="ds-btn ds-btn--primary so-q-big so-q-send" type="button" data-action="send">Send question</button>`;
+      return html`${read}<button class="ds-btn ds-btn--icon so-q-big so-q-back" type="button" data-action="ask-cancel" aria-label="Back to the questions" data-tip="Back to the questions">${raw(icon('arrowLeft', 20))}</button><button class="ds-btn ds-btn--primary so-q-big so-q-send" type="button" data-action="send">Send question</button>`;
     }
-    return html`${read}<button class="ds-btn ds-btn--text so-q-big so-ask-back" type="button" data-action="ask-back">Ask back</button>${
-      step > 0 ? html`<button class="ds-btn so-q-big so-q-back" type="button" data-action="back">Back</button>` : ''
+    return html`${read}<button class="ds-btn ds-btn--icon so-q-big so-ask-back" type="button" data-action="ask-back" aria-label="Ask the agent back" data-tip="Ask back: a question to the agent first">${raw(icon('chat', 20))}</button>${
+      step > 0 ? html`<button class="ds-btn ds-btn--icon so-q-big so-q-back" type="button" data-action="back" aria-label="Previous question" data-tip="Previous question">${raw(icon('arrowLeft', 20))}</button>` : ''
     }<button class="ds-btn ds-btn--primary so-q-big so-q-send" type="button" data-action="${last ? 'send' : 'forward'}">${last ? 'Send answers' : 'Next'}</button>`;
   }
 
@@ -819,7 +865,7 @@ export function openAskDialog({ items, start = 0, watch, openChat, closed, more 
       case 'dictate': {
         if (recPhase() !== 'idle') return;
         const field = shell.querySelector('#' + CSS.escape(target.dataset.target));
-        const text = await M.busy(target, () => record(), { done: false });
+        const text = await M.busy(target, () => record({ opener: target }), { done: false });
         if (text && field && field.isConnected) {
           field.value = field.value ? field.value.replace(/\s*$/, ' ') + text : text;
           field.dispatchEvent(new Event('input', { bubbles: true }));
@@ -875,6 +921,20 @@ export function openAskDialog({ items, start = 0, watch, openChat, closed, more 
 
   dialog.addEventListener('close', () => close());
   dialog.addEventListener('keydown', (event) => {
+    // The keyboard's own key on an answer's field: "next" goes on to the
+    // next question, as Next does, and "done" on the last one takes the
+    // focus to Send answers, which puts a phone's keyboard away (Shift+Enter
+    // is still a new line). That key is a touch screen's: at a desk Enter in
+    // a field of several lines is a new line, and Ctrl or Cmd+Enter moves
+    // on; a one-line field (a number) moves on with Enter.
+    const moving = event.target.closest('[data-moves-on]');
+    if (moving && event.key === 'Enter' && !event.shiftKey && !event.isComposing && st.phase === 'ask') {
+      if (moving.localName === 'textarea' && !touchScreen() && !event.ctrlKey && !event.metaKey) return;
+      event.preventDefault();
+      if (moving.getAttribute('enterkeyhint') === 'next') shell.querySelector('[data-action="forward"]')?.click();
+      else (shell.querySelector('[data-action="send"]') || shell).focus();
+      return;
+    }
     if (event.target.closest('textarea, input') || st.phase !== 'ask') return;
     if (!/^[1-9]$/.test(event.key)) return;
     const option = shell.querySelectorAll('.so-q-option')[Number(event.key) - 1];

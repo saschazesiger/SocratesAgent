@@ -25,7 +25,7 @@ import {
 } from './api.js';
 import { DS, M, html, raw, icon, iconEl, morph, flipMorph, watchScrolled, ms, setFaceLabel, faces } from './ui.js';
 import { agentMark } from './logos.js';
-import { speak, speechKind } from './voice.js';
+import { speak, speechKind, setVoiceKey } from './voice.js';
 import { combobox } from './combobox.js';
 import { dictated } from './keyboard.js';
 import * as harnesses from './harnesses.js';
@@ -52,10 +52,12 @@ function facedButton(label, busyLabel, doneLabel, attrs = {}) {
 let settings = null;
 let defaults = null;
 
-// The transcription model is a searchable field rather than a plain text one,
-// so it is not in FIELDS. There is no model catalogue endpoint any more - it
-// went with the chat API - so the combobox is what it is with no items: a text
-// field that takes any id, with the id already in use offered back.
+// The OpenRouter models are ids typed by hand: there is no model catalogue
+// endpoint any more - it went with the chat API. They are plain text fields
+// with a microphone, built here (not in FIELDS) because they are built
+// before the settings arrive; a combobox with nothing to list only cost the
+// id 48px for a "Show all" that showed nothing, and at 360 the Status and
+// Title models were cut to the same "google/gemini-2.5-fla…".
 const MODEL_PICKERS = [
   ['orTranscribe', 'openrouter.transcribe_model'],
   ['orStatus', 'openrouter.status_model'],
@@ -266,6 +268,9 @@ function fillForm() {
     else node.value = value ?? '';
   }
   renderWindowSizeHint();
+  // The microphones on this page ask whether there is a key to transcribe
+  // with before they record (voice.js); this page knows.
+  setVoiceKey(!!String(getPath(settings, 'openrouter.api_key') || '').trim(), { told: true });
 }
 
 function collect() {
@@ -447,23 +452,24 @@ function buildModelPickers() {
   for (const [id, path] of MODEL_PICKERS) {
     const host = $(id);
     if (!host) continue;
-    const picker = combobox({
-      value: getPath(settings, path) || '',
-      items: () => [],
-      placeholder: 'google/gemini-2.5-flash',
-      onChange: (value) => setPath(settings, path, value),
+    const input = el('input', {
+      class: 'ds-input', type: 'text', id: id + 'Input', value: getPath(settings, path) || '',
+      placeholder: 'google/gemini-2.5-flash', spellcheck: 'false', autocomplete: 'off', autocapitalize: 'off',
+      enterkeyhint: 'done',
     });
-    picker.input.id = id + 'Input';
-    pickers[id] = picker;
+    // Read on every change, as the combobox was: dictation fills the field
+    // and says so with an input event.
+    input.addEventListener('input', () => setPath(settings, path, input.value.trim()));
+    pickers[id] = input;
     host.replaceChildren();
-    host.append(dictated(picker.node, picker.input));
+    host.append(dictated(input, input));
   }
 }
 
-// syncModelPickers pushes values back into the dropdowns after a save.
+// syncModelPickers pushes values back into the fields after a save.
 function syncModelPickers() {
   for (const [id, path] of MODEL_PICKERS) {
-    if (pickers[id]) pickers[id].setValue(getPath(settings, path) || '', false);
+    if (pickers[id]) pickers[id].value = getPath(settings, path) || '';
   }
 }
 
@@ -706,7 +712,7 @@ async function signInAccount(account, opener) {
 
 // promptSecret asks for a key in a field that does not show it.
 async function promptSecret(title, opener) {
-  const input = el('input', { class: 'ds-input', type: 'password', id: 'accountKeyAgain', autocomplete: 'off', spellcheck: 'false', autofocus: true });
+  const input = el('input', { class: 'ds-input', type: 'password', id: 'accountKeyAgain', autocomplete: 'off', spellcheck: 'false', autofocus: true, enterkeyhint: 'done' });
   const field = el('div', { class: 'ds-field' }, el('label', { class: 'ds-field__label', for: 'accountKeyAgain', text: 'API key' }), input);
   const cancel = el('button', { class: 'ds-btn ds-btn--text', type: 'button', 'data-close': true, text: 'Cancel' });
   const accept = el('button', { class: 'ds-btn ds-btn--primary', type: 'button', text: 'Save the key' });
@@ -842,8 +848,8 @@ function updatesWhen(iso) {
   const s = Math.abs(diff);
   if (s < 60) return diff > 0 ? 'in a moment' : 'just now';
   let text;
-  if (s < 3600) text = Math.round(s / 60) + ' min';
-  else if (s < 86400) text = Math.round(s / 3600) + ' h';
+  if (s < 3600) text = Math.round(s / 60) + '\u00a0min';
+  else if (s < 86400) text = Math.round(s / 3600) + '\u00a0h';
   else if (s < 7 * 86400) text = Math.round(s / 86400) + (Math.round(s / 86400) === 1 ? ' day' : ' days');
   else return new Date(at).toLocaleString();
   return diff > 0 ? 'in ' + text : text + ' ago';
@@ -1461,9 +1467,11 @@ function renderTunnelMode() {
   $('tunnelToken').closest('.ds-field').hidden = !named;
   $('tunnelHostname').closest('.ds-field').hidden = !named;
   const local = localURL || 'the local address shown above';
+  // The choices are short, so that a phone shows them whole; what each one
+  // means is said here.
   $('tunnelModeHint').textContent = named
-    ? 'Runs your own named tunnel. In the Cloudflare dashboard, point its public hostname at ' + local + '.'
-    : 'Free and instant, but the address changes every restart and anyone with the link can reach the login page.';
+    ? 'Your own hostname, with a token from your Cloudflare account. In the Cloudflare dashboard, point its public hostname at ' + local + '.'
+    : 'A random trycloudflare.com address, free and instant, but it changes every restart and anyone with the link can reach the login page.';
 }
 
 const TUNNEL_CHIP = {
@@ -1611,15 +1619,15 @@ function ago(ms) {
   if (!ms) return 'never';
   const s = Math.max(0, Math.round((Date.now() - ms) / 1000));
   if (s < 60) return 'just now';
-  if (s < 3600) return Math.round(s / 60) + ' min ago';
-  if (s < 86400) return Math.round(s / 3600) + ' h ago';
+  if (s < 3600) return Math.round(s / 60) + '\u00a0min ago';
+  if (s < 86400) return Math.round(s / 3600) + '\u00a0h ago';
   return new Date(ms).toLocaleString();
 }
 
 function inTime(ms) {
   const s = Math.max(0, Math.round((ms - Date.now()) / 1000));
   if (s < 60) return 'in under a minute';
-  if (s < 3600) return 'in ' + Math.round(s / 60) + ' min';
+  if (s < 3600) return 'in ' + Math.round(s / 60) + '\u00a0min';
   return 'at ' + new Date(ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 }
 

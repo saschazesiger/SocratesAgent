@@ -22,6 +22,94 @@ registerProcessor('pcm-capture', PCMCapture);
 const TARGET_RATE = 16000;
 let workletURL = null;
 
+/* ---------------------------------------------------- the OpenRouter key */
+
+// Transcribing what was said and Status both go through OpenRouter, with the
+// key set in Admin under Voice. Without one, a recording made only to be
+// refused is a minute of somebody's time thrown away - so the page keeps
+// what it knows about the key, and every microphone and Status asks it
+// before anything is recorded or sent.
+//
+// It is true, false, or null for not known. The server says so in
+// /api/preferences (`openrouter`) when the page starts; otherwise the first
+// refusal teaches it. A "no" is asked again before it is acted on
+// (keyMissing) and when the page comes back into view - from the Admin tab,
+// where a key may just have been added: a key set after the page started is
+// not an excuse to refuse.
+let voiceKeyState = null;
+let voiceKeyTold = false;
+const voiceKeyWatchers = new Set();
+
+/** voiceKey is whether this server has an OpenRouter key: true, false or null. */
+export function voiceKey() { return voiceKeyState; }
+
+/**
+ * setVoiceKey records what is known about the key. `told` is the server's
+ * own word (preferences) rather than something a refusal taught.
+ */
+export function setVoiceKey(on, { told = false } = {}) {
+  const next = on === null || on === undefined ? null : !!on;
+  voiceKeyTold = told && next !== null;
+  if (voiceKeyState === next) return;
+  voiceKeyState = next;
+  for (const fn of [...voiceKeyWatchers]) {
+    try { fn(next); } catch { /* one bad listener must not stop the others */ }
+  }
+}
+
+/** onVoiceKey is told whenever that changes, and hands back its own undo. */
+export function onVoiceKey(fn) {
+  voiceKeyWatchers.add(fn);
+  return () => voiceKeyWatchers.delete(fn);
+}
+
+/**
+ * noKeyRefusal says whether a failed request was the server saying it has
+ * no OpenRouter key: Status's 400 and the transcriber's both say so.
+ */
+export function noKeyRefusal(err) {
+  return !!err && Number(err.status) === 400 && /openrouter api key/i.test(String(err.message || ''));
+}
+
+// askServer asks /api/preferences again, and answers what it said: true,
+// false, or null when it could not be asked.
+async function askServer() {
+  try {
+    const { request } = await network();
+    const prefs = await request('/api/preferences', { attempts: 1, timeout: 4000 });
+    if (prefs && typeof prefs.openrouter === 'boolean') {
+      setVoiceKey(prefs.openrouter, { told: true });
+      return prefs.openrouter;
+    }
+  } catch { /* not asked: what was known stands */ }
+  return null;
+}
+
+/**
+ * keyMissing answers, for a press about to be refused for want of a key,
+ * whether the key is still missing. It asks the server only when the page
+ * believes there is none, so a press with a key costs nothing; a key set
+ * since then (another tab, another device) is found, and the press goes on.
+ */
+export async function keyMissing() {
+  if (voiceKeyState !== false) return false;
+  const said = await askServer();
+  if (said === null && !voiceKeyTold) {
+    // Learnt from a refusal and the server cannot be asked: let the press
+    // try, as before anything was known.
+    setVoiceKey(null);
+    return false;
+  }
+  return voiceKeyState === false;
+}
+
+if (typeof document !== 'undefined') {
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState !== 'visible' || voiceKeyState !== false) return;
+    askServer().then((said) => { if (said === null && !voiceKeyTold) setVoiceKey(null); });
+  });
+}
+
 /* ---------------------------------------------------------- microphone */
 
 // The microphone is the one piece of hardware this app cannot do without, and
@@ -332,10 +420,19 @@ export async function dictateOnce({ onTime, onReady } = {}) {
       body: { audio: result.base64, format: result.format },
     });
   } catch (err) {
+    // No key is not a failure to try again: nothing will be transcribed
+    // until one is added, and the caller says where.
+    if (noKeyRefusal(err)) {
+      setVoiceKey(false);
+      const refused = micError('Dictation needs an OpenRouter key: add one in Admin, under Voice.');
+      refused.noKey = true;
+      throw refused;
+    }
     throw micError(err instanceof NetworkError
       ? 'No connection \u2014 that recording could not be transcribed.'
       : 'The recording could not be transcribed. Try again.');
   }
+  setVoiceKey(true);
   const text = String((data && data.text) || '').trim();
   if (!text) throw micError('I did not catch that.');
   return text;

@@ -11,7 +11,7 @@
 // server, which is the real boundary: a stale copy degrades to "the server
 // refuses that directory", never to a session in the wrong place.
 
-import { api, el, toast } from './api.js';
+import { api, el, infoTip, toast } from './api.js';
 import * as accounts from './accounts.js';
 import { combobox, dropdown } from './combobox.js';
 import { dictated } from './keyboard.js';
@@ -207,8 +207,29 @@ export function modelItems(id) {
   }));
 }
 
+// modelOf is a model's entry in what the sheet offers. Claude Code names
+// the model an alias resolved to ("claude-sonnet-5-5" for "sonnet") in what
+// it reports, which is what a chat's journal holds: that is the alias's
+// entry, so a chat says "Sonnet" rather than the id.
 export function modelOf(id, modelId) {
-  return offered(id).find((m) => m.id === modelId) || null;
+  const list = offered(id);
+  const exact = list.find((m) => m.id === modelId);
+  if (exact || !/^claude-/i.test(String(modelId || ''))) return exact || null;
+  const wide = /\[1m\]$/i.test(modelId) ? '[1m]' : '';
+  const words = String(modelId).toLowerCase().replace(/\[1m\]$/, '').split(/[-_.]/).slice(1);
+  for (const word of words) {
+    const alias = list.find((m) => m.id === word + wide);
+    if (alias) return alias;
+  }
+  return null;
+}
+
+// modelByWords is the entry a typed model names by its label ("Sonnet 1M"),
+// for a field that shows labels and takes ids.
+function modelByWords(id, typed) {
+  const words = String(typed || '').trim().toLowerCase();
+  if (!words) return null;
+  return offered(id).find((m) => m.id === typed || String(m.label || '').toLowerCase() === words) || null;
 }
 
 // defaultModelFor is what the picker starts on: the first of the dashboard's
@@ -377,7 +398,7 @@ export function settingsForm(options = {}) {
   const dirPath = el('input', {
     class: 'ds-input', type: 'text', id: id('DirPath'), spellcheck: 'false', 'aria-label': 'Directory path',
     autocorrect: 'off', autocapitalize: 'none', placeholder: '/srv/projects/socrates',
-    'aria-describedby': id('DirHint'),
+    'aria-describedby': id('DirHint'), enterkeyhint: 'go',
   });
   const dirHint = el('small', { class: 'ds-field__hint so-break', id: id('DirHint') });
   const dirField = el('div', { class: 'ds-field', id: id('DirField') },
@@ -510,12 +531,19 @@ export function settingsForm(options = {}) {
     onChange('dir');
   });
 
+  // The field says a model's name, as its list does; what is typed is a
+  // name from the list or an id the CLI takes.
   const picker = combobox({
     value: '',
     items: () => modelItems(pick.harness),
     placeholder: 'Pick a model, or type its id',
+    display: (value) => {
+      const model = modelOf(pick.harness, value);
+      return model ? (model.label || model.id) : value;
+    },
     onChange: (value) => {
-      pick.model = value.trim();
+      const named = modelByWords(pick.harness, value);
+      pick.model = named ? named.id : value.trim();
       // A model brings its own starting effort - the one set for it in the
       // dashboard, or the CLI's.
       const model = modelOf(pick.harness, pick.model);
@@ -586,8 +614,12 @@ export function settingsForm(options = {}) {
   function renderDir() {
     // `false`: the field is being told what was chosen, not told to choose.
     dirPicker.setValue(dirValue(pick.mode, pick.workdir), false);
-    if (pick.mode === DYNAMIC) dirHint.textContent = dynamicPreview(pick.harness);
-    else if (pick.mode === PRESET) dirHint.textContent = pick.workdir;
+    // Where a dynamic session's folder will be is a path nobody reads on the
+    // way to a chat: the line says what it is, its "i" the path.
+    if (pick.mode === DYNAMIC) {
+      dirHint.replaceChildren('A new folder of its own, made when it starts.',
+        infoTip([dynamicPreview(pick.harness)], { label: 'The folder it will get' }));
+    } else if (pick.mode === PRESET) dirHint.textContent = pick.workdir;
     // The path is in the field right above: the hint says what it has to be.
     else dirHint.textContent = 'An absolute path on this machine.';
   }
@@ -749,13 +781,25 @@ export function settingsForm(options = {}) {
       }
       const entry = harness(pick.harness);
       if (entry) {
-        if (entry.error) parts.push(entry.error);
+        // The program's own error is detail (details() below); the line
+        // says what it means here.
+        if (entry.error) {
+          parts.push(entry.installed
+            ? entry.label + ' could not list its models. You can still type a model’s id.'
+            : entry.label + ' is not installed on this machine.');
+        }
         if (entry.installed && !entry.static && !defaultModelFor(entry.id) && !pick.model && !modelField.hidden) {
           parts.push('Pick a model - ' + entry.label + ' does not name a default.');
         }
       }
       if (stale()) parts.push('Showing the programs from your last visit.');
       return parts;
+    },
+
+    /** details is the technical side of notes(): what goes behind its "i". */
+    details() {
+      const entry = harness(pick.harness);
+      return entry && entry.error ? [entry.error] : [];
     },
 
     /**
@@ -883,7 +927,8 @@ export async function openNewSessionSheet() {
     if (blocked && snap.sessions_error) parts.push(snap.sessions_error);
     parts.push(...form.notes());
     const words = parts.join(' ');
-    if (hintText) hintText.textContent = words;
+    const detail = form.details();
+    if (hintText) hintText.replaceChildren(words, ...(words && detail.length ? [infoTip(detail, { label: 'Details' })] : []));
     hint.hidden = !words;
     start.disabled = !!form.missing() || blocked;
   }

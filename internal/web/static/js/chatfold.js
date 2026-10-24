@@ -202,14 +202,17 @@ function endTurn(chat, ev) {
       }
     }
     // A limit says itself twice - the error that hit it and the turn it
-    // ended - and the person is told once, with when it renews.
+    // ended - and the person is told once, with when it renews. So does a
+    // turn that failed on an error: "The turn failed" says its words.
     const before = chat.timeline[chat.timeline.length - 1];
-    if (turn.outcome === 'limited' && before && before.type === 'line' && before.line.kind === 'error'
-      && before.line.code === 'rate_limit') {
+    const error = before && before.type === 'line' && before.line.kind === 'error' ? before.line : null;
+    if (error && ((turn.outcome === 'limited' && error.code === 'rate_limit')
+      || (turn.outcome === 'failed' && (!turn.error || turn.error.trim() === String(error.text || '').trim())))) {
       chat.timeline.pop();
-      if (!turn.error) turn.error = before.line.text;
+      if (!turn.error) turn.error = error.text;
+      turn.errorCode = error.code || '';
     }
-    line(chat, ev, { kind: 'turn', outcome: turn.outcome, text: turn.error, turn });
+    line(chat, ev, { kind: 'turn', outcome: turn.outcome, text: turn.error, code: turn.errorCode || '', turn });
   }
 }
 
