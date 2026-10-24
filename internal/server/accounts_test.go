@@ -381,6 +381,100 @@ func TestALimitStopsTheChatOrSwitchesIt(t *testing.T) {
 	}
 }
 
+// newsFrames is every "news" frame on the event stream, as a page hears it.
+func (c *chatEnv) newsFrames(t *testing.T) <-chan map[string]any {
+	t.Helper()
+	sub, _, err := c.srv.events.subscribe("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { c.srv.events.unsubscribe(sub) })
+	out := make(chan map[string]any, 16)
+	go func() {
+		for {
+			select {
+			case raw := <-sub.frames:
+				var frame map[string]any
+				if json.Unmarshal(raw, &frame) == nil && frame["t"] == "news" {
+					out <- frame
+				}
+			case <-sub.gone:
+				return
+			}
+		}
+	}()
+	return out
+}
+
+// A limit is told where the end of the turn would have been, once: to the
+// phone by its push, and to the page - for a device without Web Push - by a
+// "news" frame in the same words. A chat filed background is told nothing,
+// as at the end of any turn of it, and one the automatic switch moves on to
+// another account is not told either.
+func TestALimitIsToldToThePhoneAndThePage(t *testing.T) {
+	c := newChatEnv(t, time.Hour)
+	sent := catch(c.srv.push)
+	if err := c.srv.push.add(pushSub{Subscription: testSubscription("https://push.example.net/a")}); err != nil {
+		t.Fatal(err)
+	}
+	news := c.newsFrames(t)
+	told := func(within time.Duration) (limits []pushNote, frames []map[string]any) {
+		deadline := time.After(within)
+		for {
+			select {
+			case one := <-sent:
+				if strings.HasPrefix(one.note.Body, "Limit reached") {
+					limits = append(limits, one.note)
+				}
+			case frame := <-news:
+				frames = append(frames, frame)
+			case <-deadline:
+				return limits, frames
+			}
+		}
+	}
+	file := func(id, status string) {
+		t.Helper()
+		if res, body := c.do(t, c.client, "POST", "/api/sessions/"+id+"/file", `{"status":"`+status+`"}`); res.StatusCode != http.StatusOK {
+			t.Fatalf("file %s: %d %v", status, res.StatusCode, body)
+		}
+	}
+	a := c.newAccount(t, "A", accounts.Subscription, "")
+	id := c.chatOn(t, a, false)
+	file(id, store.StatusBackground)
+	c.reply(t, id, "m1", "/limit")
+	if limits, frames := told(time.Second); len(limits) != 0 || len(frames) != 0 {
+		t.Fatalf("a background chat's limit was told: %+v %v", limits, frames)
+	}
+
+	file(id, store.StatusInProgress)
+	c.reply(t, id, "m2", "/limit")
+	limits, frames := told(time.Second)
+	if len(limits) != 1 || limits[0].ID != id || !strings.HasPrefix(limits[0].Body, "Limit reached — renews in ") ||
+		!strings.HasSuffix(limits[0].Body, "(A)") {
+		t.Fatalf("the limit's push: %+v", limits)
+	}
+	if len(frames) != 1 || frames[0]["id"] != id || frames[0]["body"] != limits[0].Body || frames[0]["kind"] != pushFinished {
+		t.Fatalf("the page was told %v, the phone %q", frames, limits[0].Body)
+	}
+
+	// A turn that gets through ends the limit; at the next one the chat goes
+	// on with B by itself, and nobody is told.
+	c.reply(t, id, "m3", "hello")
+	c.newAccount(t, "B", accounts.Subscription, "")
+	if res, _ := c.do(t, c.client, "PUT", "/api/chats/"+id+"/auto-switch", `{"on":true}`); res.StatusCode != http.StatusOK {
+		t.Fatalf("auto-switch on: %d", res.StatusCode)
+	}
+	c.send(t, id, "m4", "/limit")
+	c.waitJournal(t, id, 20*time.Second, "the switch and the continue", func(events []agent.Event) bool {
+		return count(events, isEv(agent.TypeAccountSwitched)) == 1 &&
+			strings.HasPrefix(lastText(events), "you said: "+agenthost.ContinueText)
+	})
+	if limits, frames := told(time.Second); len(limits) != 0 || len(frames) != 0 {
+		t.Fatalf("a limit the automatic switch dealt with was told: %+v %v", limits, frames)
+	}
+}
+
 // A switch after the turn waits in the outbox, not only in the host: a host
 // killed before the turn ends is followed by one on the new account, with
 // the divider, and the switch is not lost.

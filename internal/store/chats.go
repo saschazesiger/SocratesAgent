@@ -1,6 +1,7 @@
 package store
 
 import (
+	"database/sql"
 	"encoding/json"
 	"errors"
 )
@@ -66,18 +67,45 @@ func (s *Store) ClearOutbox(chatID string) error {
 	return err
 }
 
-// SetChatOptions replaces a chat's options - Ultracode, its account and its
-// automatic switch: what its next host is started with. It is not a status
-// change and does not move the row.
-func (s *Store) SetChatOptions(id string, options json.RawMessage) error {
-	value := "{}"
-	if len(options) > 0 {
-		if !json.Valid(options) {
-			return errors.New("session options are not valid JSON")
-		}
-		value = string(options)
+// UpdateChatOptions changes a chat's options - Ultracode, its account and its
+// automatic switch: what its next host is started with. change is handed the
+// options as the row holds them now and answers them changed; they are read
+// and written under the write lock, so that two changes of different options
+// made at once - a toggle of Ultracode and the account an automatic switch
+// moved the chat to - never write one back over the other. It is not a status
+// change and does not move the row; options that come back unchanged are not
+// written, and changed says which happened.
+func (s *Store) UpdateChatOptions(id string, change func(json.RawMessage) json.RawMessage) (changed bool, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var current string
+	err = s.db.QueryRow(`SELECT options FROM sessions WHERE id = ?`, id).Scan(&current)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, ErrNotFound
 	}
-	return s.update(id, `options = ?`, value)
+	if err != nil {
+		return false, err
+	}
+	next := change(json.RawMessage(current))
+	value := "{}"
+	if len(next) > 0 {
+		if !json.Valid(next) {
+			return false, errors.New("session options are not valid JSON")
+		}
+		value = string(next)
+	}
+	if value == current {
+		return false, nil
+	}
+	res, err := s.db.Exec(`UPDATE sessions SET options = ?, updated_at = ? WHERE id = ?`, value, now(), id)
+	if err != nil {
+		return false, err
+	}
+	if n, err := res.RowsAffected(); err == nil && n == 0 {
+		return false, ErrNotFound
+	}
+	s.bump()
+	return true, nil
 }
 
 // SetChatConversation records the agent's own conversation id of a chat, as

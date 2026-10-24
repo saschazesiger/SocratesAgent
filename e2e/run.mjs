@@ -13795,8 +13795,9 @@ async function chathome() {
 // chat-push: the page's own notification and the app's badge say what a
 // chat's journal says - the question's words when it asks, with the badge
 // counting it; how its turn ended with a line of its answer; the badge back
-// to nothing once it is answered - and nothing for a turn the person
-// stopped. The browser is stubbed as in the notify scenario.
+// to nothing once it is answered - nothing for a turn the person stopped,
+// and a limit in the accounts' words, once. The browser is stubbed as in the
+// notify scenario.
 async function chatpush() {
   const s = await chatServer();
   const { page } = s;
@@ -13858,14 +13859,30 @@ async function chatpush() {
       .then(() => true, () => false);
     ok(cleared, 'and the badge says nothing is asked', JSON.stringify(await badges()));
 
-    // Stopped by the person: no news.
+    // Stopped by the person: no news, heard or shown.
+    const beeps = () => page.evaluate(() => (window.__beeps || []).length);
     await tellChat(s, id, '/sleep 20');
     await awaitChat(s, id, (b) => b.chat.turn_running, 10000);
     before = (await notes()).length;
+    let rang = await beeps();
     await s.context.request.post(s.url + '/api/chats/' + id + '/interrupt', { data: { client_id: 'e2e-stop' } });
     await awaitChat(s, id, idle, 15000);
     await wait(1500);
-    ok((await notes()).length === before, 'a turn the person stopped is no notification', String((await notes()).length - before));
+    ok((await notes()).length === before && (await beeps()) === rang, 'a turn the person stopped is no notification and no chime',
+      JSON.stringify({ notes: (await notes()).length - before, chimes: (await beeps()) - rang }));
+
+    // A limit is the accounts' news: when it renews and on which account, as
+    // its push says it - once, and not the turn's end as well.
+    before = (await notes()).length;
+    rang = await beeps();
+    await tellChat(s, id, '/limit');
+    const limited = await noteAfter(before);
+    ok(!!limited && /^Limit reached — renews in .+ \(.+\)$/.test(limited.options.body)
+      && limited.options.data && limited.options.data.kind === 'finished',
+      'a limit says when it renews and on which account', JSON.stringify(limited && limited.options.body));
+    await wait(1500);
+    ok((await notes()).length === before + 1 && (await beeps()) === rang + 1, 'and is said once, with one chime',
+      JSON.stringify({ notes: (await notes()).length - before, chimes: (await beeps()) - rang }));
     ok(unexpected(s.errors).length === 0, 'no console errors', unexpected(s.errors).join(' | ') || '0');
   } finally { await s.stop(); }
 }
@@ -13991,7 +14008,9 @@ async function chatstatus() {
 
 // chat-outcome: with outcomes on, a chat's ended turn is judged from its
 // journal: the hourglass while it is read, then the verdict on the row and
-// on Home, and the notification that waited for it says it.
+// on Home, and the notification that waited for it says it. A turn the
+// person stopped is not judged; one a limit stopped is, and is said as the
+// limit.
 async function chatoutcome() {
   const judged = [];
   const stub = await openRouterStub({
@@ -14051,6 +14070,21 @@ async function chatoutcome() {
     ok(judged.length === judgedBefore && notesAfter === notesBefore,
       'a turn the person stopped is not judged and is no notification',
       JSON.stringify({ judged: judged.length - judgedBefore, notes: notesAfter - notesBefore }));
+
+    // A turn a limit stopped is judged - how far it got is worth knowing -
+    // and its notification is the accounts' words, not the verdict's.
+    await tellChat(s, id, '/limit');
+    const limitVerdict = await awaitHomeCard(page, id, (c) => c.badge === 'partial', 20000);
+    ok(limitVerdict.ok && judged.length === judgedBefore + 1, 'a turn a limit stopped is judged',
+      JSON.stringify({ seen: limitVerdict.seen, judged: judged.length - judgedBefore }));
+    const limitNote = await page.waitForFunction((count) => {
+      const all = window.__notes || [];
+      return all.length > count ? all[all.length - 1].options.body : null;
+    }, notesAfter, { timeout: 15000 }).then((h) => h.jsonValue(), () => '');
+    await wait(1500);
+    const notesLimit = await page.evaluate(() => (window.__notes || []).length);
+    ok(/^Limit reached — renews in /.test(limitNote) && notesLimit === notesAfter + 1,
+      'and its one notification says the limit', JSON.stringify({ note: limitNote, notes: notesLimit - notesAfter }));
     ok(unexpected(s.errors).length === 0, 'no console errors', unexpected(s.errors).join(' | ') || '0');
   } finally {
     await s.stop();
@@ -14550,7 +14584,7 @@ const ALL = [
   ['chat-attach', 'files from the button, dropped and pasted, at paths the server chose', chatattach],
   ['chat-phone', 'a chat on a phone: touch targets, no sideways scroll, the keyboard, the dialog as the screen', chatphone],
   ['chat-home', 'Home reads a chat from its journal: what it does, Running and Finished, its question on the card, at a desk and on a phone', chathome],
-  ['chat-push', 'a chat\u2019s notification and badge: the question\u2019s words, how a turn ended, nothing for a Stop', chatpush],
+  ['chat-push', 'a chat\u2019s notification and badge: the question\u2019s words, how a turn ended, nothing for a Stop, a limit once', chatpush],
   ['chat-title', 'a chat names itself from its first message', chattitle],
   ['chat-status', 'Status says a chat from its journal, on its line and out loud', chatstatus],
   ['chat-outcome', 'a chat\u2019s turn judged from its journal: the hourglass, the verdict, the notification', chatoutcome],

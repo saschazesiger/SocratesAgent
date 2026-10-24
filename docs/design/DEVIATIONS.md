@@ -2684,13 +2684,19 @@ is still there, until a sign-in, a new key or a completed turn on it.
 sheet, the picker and the Admin list said the e-mail; it says the kind now, and the e-mail and the
 plan are in the account's "i" and the divider's.
 
-**WP7 + WP9 / §4.3 — a chat's limit is one push, the accounts'.** WP9 pushes every chat turn's end
-in its journal's words, a limited one as "Limit reached · <why>"; WP7 pushes a limit itself, with
-when it renews and on which account, once per account it is stopped on, and not at all when the
-chat's automatic switch moved it on. Together a limit was pushed twice, and once more as news after
-the automatic switch had already dealt with it. The turn-end push now leaves a limited turn of a
-chat whose journal names its account to the accounts (`chatHub.turnWords`); the page's own
-notification, on a device without Web Push, still says the journal's words.
+**WP7 + WP9 / §4.3 — a chat's limit is one notification, the accounts'.** WP9 pushes every chat
+turn's end in its journal's words, a limited one as "Limit reached · <why>"; WP7 pushes a limit
+itself, with when it renews and on which account, once per account it is stopped on, and not at all
+when the chat's automatic switch moved it on. Together a limit was pushed twice, and once more as
+news after the automatic switch had already dealt with it. A limited turn of a chat whose journal
+names its account is now no news of the turn's end (the brief's `news` is empty, `newsOf`), so
+neither the turn-end push nor the page says it; the accounts push it, skipping a chat filed
+Background as every turn's end does, and tell the pages in the same words by a `news` frame on the
+event stream (HOME.md §1.2), which the page's own notification and chime say on a device without
+Web Push. It is still judged with outcomes on (`chatHub.judgeable`): how far the turn got is worth
+knowing, and the verdict pushes nothing more. A chat's turn end whose `news` is empty - a turn the
+person stopped, too - is not heard on the page either: the chime and the notification are one piece
+of news.
 
 **WP7 + WP9 / §4.4 — a chat's turns are on the account they ran on from the first turn.** WP9's
 ledger learnt a chat's first account from its first switch's `from`, so a chat that never switched
@@ -2703,5 +2709,7 @@ interrupted turn unless somebody asked it to stop (an `interrupt` or `stop` comm
 it ran); WP7's "Switch now" interrupts the running turn too, at the person's word, and the new
 account carries it on. Such a turn was pushed as "Stopped · …" and judged, a moment before the
 turn that carries it on. A `switch_account` journaled while a turn runs now marks it stopped, unless
-it waits for the turn: the journaled command says its `when` in `args` (`after_turn`), an additive
-field of the command event.
+it waits for the turn - the journaled command says its `when` in `args` (`after_turn`), an additive
+field of the command event - or goes to the account the turn already runs on: the host is there and
+interrupts nothing (a host launched on the account of a switch still in the outbox, which reaches it
+while the first turn runs).

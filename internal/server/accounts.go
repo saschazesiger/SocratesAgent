@@ -357,7 +357,7 @@ func (h *accountHub) forChat(row *store.Session) (*store.Account, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := h.srv.store.SetChatOptions(row.ID, withOption(row.Options, "account", a.ID)); err != nil && !errors.Is(err, store.ErrNotFound) {
+	if _, err := h.srv.setChatOption(row.ID, "account", a.ID); err != nil && !errors.Is(err, store.ErrNotFound) {
 		return nil, err
 	}
 	return a, nil
@@ -602,6 +602,11 @@ func (h *accountHub) onLimit(p *chatPeer, from, turnID string, until int64) {
 			}
 		}
 	}
+	// A chat filed background is there so as not to interrupt anyone: its
+	// limit is no notification, as no turn's end of it is (pusher.observe).
+	if row.Status == store.StatusBackground {
+		return
+	}
 	h.toldMu.Lock()
 	again := h.told[p.id] == from
 	h.told[p.id] = from
@@ -613,7 +618,11 @@ func (h *accountHub) onLimit(p *chatPeer, from, turnID string, until int64) {
 	if left := time.Until(time.UnixMilli(until)); left > 0 {
 		body += " — renews in " + renewsIn(left)
 	}
-	h.srv.push.notify(p.id, row.Title, body+" ("+fromLabel+")", pushFinished)
+	body += " (" + fromLabel + ")"
+	h.srv.push.notify(p.id, row.Title, body, pushFinished)
+	// The page's own notification, on a device without Web Push, says the
+	// same at the same moment: the turn's end was no news (newsOf).
+	h.srv.events.publish(map[string]any{"t": "news", "id": p.id, "body": body, "kind": pushFinished})
 }
 
 // renewsIn is a wait as "2 h 10 min".

@@ -110,7 +110,7 @@ func (s *Server) handleChatAutoSwitch(w http.ResponseWriter, r *http.Request) {
 	if !readJSON(w, r, &body) {
 		return
 	}
-	if err := s.store.SetChatOptions(row.ID, withOption(row.Options, "auto_switch", body.On)); err != nil {
+	if _, err := s.setChatOption(row.ID, "auto_switch", body.On); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -136,6 +136,17 @@ func (s *Server) checkChatAccount(harness, id string) *launchError {
 	return nil
 }
 
+// setChatOption sets or removes one of a chat's options (withOption) in the
+// options its row holds as it is written, not in a copy read before: the
+// account, the automatic switch and Ultracode each have writers of their own,
+// and one must not put back what another has just changed. changed is false
+// for an option that already was so.
+func (s *Server) setChatOption(id, key string, value any) (changed bool, err error) {
+	return s.store.UpdateChatOptions(id, func(raw json.RawMessage) json.RawMessage {
+		return withOption(raw, key, value)
+	})
+}
+
 // withChatAccount is options with a chat's account and its automatic
 // switch.
 func withChatAccount(options json.RawMessage, account string, autoSwitch bool) json.RawMessage {
@@ -155,9 +166,10 @@ func (p *chatPeer) noteAccount(ev agent.Event, account string, limits map[string
 	}
 	switch ev.Type {
 	case agent.TypeAccountSwitched:
-		row, err := p.hub.srv.store.GetSession(p.id)
-		if err == nil && ev.To != "" && readChatOptions(row.Options).Account != ev.To {
-			_ = p.hub.srv.store.SetChatOptions(p.id, withOption(row.Options, "account", ev.To))
+		if ev.To == "" {
+			break
+		}
+		if changed, err := p.hub.srv.setChatOption(p.id, "account", ev.To); err == nil && changed {
 			p.hub.srv.events.poke()
 		}
 	case agent.TypeRateLimit:

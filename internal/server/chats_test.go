@@ -768,6 +768,7 @@ func TestPointingAChatElsewhereLetsATurnThatJustStartedFinish(t *testing.T) {
 	// turn starts between the handler's look and what it sends the host.
 	p.mu.Lock()
 	p.proj.Turn = nil
+	p.brief = briefOf(p.proj)
 	p.mu.Unlock()
 
 	here := t.TempDir()

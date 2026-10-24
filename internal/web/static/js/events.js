@@ -101,6 +101,8 @@ const POLL_SLOW = 15000;
  *   outcome(id, outcome) the verdict on a session's last turn changed, or
  *                        went (null)
  *   answer(id, run)      an answer run changed, or went (null)
+ *   news(id, {body, kind}) news about a session the server found outside its
+ *                        activity, in a notification's words: a chat's limit
  *   fresh()              a pong came back: the state on the page is the
  *                        server's as of the ping (stateAt)
  *   status(status)       'live' | 'connecting' | 'offline', whenever it moves,
@@ -429,6 +431,9 @@ export function mountEvents(ctx) {
         break;
       case 'answer':
         if (frame.id) hand('answer', frame.id, frame.run || null);
+        break;
+      case 'news':
+        if (frame.id) hand('news', frame.id, { body: String(frame.body || ''), kind: String(frame.kind || '') });
         break;
       case 'pong': {
         const sent = pings.get(frame.id);

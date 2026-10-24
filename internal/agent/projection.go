@@ -233,13 +233,26 @@ func (p *Projection) Apply(ev Event) {
 	case TypeAgentInfo:
 		p.Agent = ev.Content
 	case TypeCommand:
-		// A switch to another account made now stops the running turn as
-		// much as a Stop does; one that waits for the turn does not.
-		stops := ev.Op == OpInterrupt || ev.Op == OpStop || (ev.Op == OpSwitchAccount && ev.Args != SwitchAfterTurn)
-		if stops && p.Turn != nil {
+		if p.Turn != nil && stopsTurn(ev, p.Turn) {
 			p.Turn.Stopped = true
 		}
 	}
+}
+
+// stopsTurn is whether a journaled command stops the running turn t at
+// somebody's word: an interrupt, a stop, and a switch to another account made
+// now. A switch that waits for the turn stops nothing, and nor does one to the
+// account the turn already runs on - the host is on it, and has nothing to
+// interrupt (a launch that started on the account of a switch still in the
+// server's outbox, which reaches the host while the first turn runs).
+func stopsTurn(ev Event, t *Turn) bool {
+	switch ev.Op {
+	case OpInterrupt, OpStop:
+		return true
+	case OpSwitchAccount:
+		return ev.Args != SwitchAfterTurn && (t.Account == "" || ev.To != t.Account)
+	}
+	return false
 }
 
 func (p *Projection) endTurn(ev Event) {

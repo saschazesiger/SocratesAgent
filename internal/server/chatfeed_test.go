@@ -168,6 +168,25 @@ func TestTheNewsOfAnEndedTurn(t *testing.T) {
 	if got, ok := turnNews(waited); !ok || got != "Stopped" {
 		t.Fatalf("a switch after the turn: %q %v", got, ok)
 	}
+	// A switch to the account the turn already runs on stops nothing either.
+	opened := turnOpen("1", "x")
+	opened[1].Account = "acct-b"
+	same := fold(append(opened, agent.Event{Type: agent.TypeCommand, Op: agent.OpSwitchAccount,
+		ClientID: "w", To: "acct-b", Args: "now"}, turnEnd("1", agent.OutcomeInterrupted, ""))...)
+	if got, ok := turnNews(same); !ok || got != "Stopped" {
+		t.Fatalf("a switch to the account the turn runs on: %q %v", got, ok)
+	}
+	// A limit on an account the journal names is the accounts' to tell
+	// (accountHub.onLimit), not news of the turn's end; with no account named
+	// it is the turn's.
+	onAccount := turnOpen("1", "x")
+	onAccount[1].Account = "acct-a"
+	if got := newsOf(fold(append(onAccount, turnEnd("1", agent.OutcomeLimited, "5-hour limit"))...), nil); got != "" {
+		t.Fatalf("a limit on an account: %q", got)
+	}
+	if got := newsOf(fold(append(turnOpen("1", "x"), turnEnd("1", agent.OutcomeLimited, "5-hour limit"))...), nil); got != "Limit reached · 5-hour limit" {
+		t.Fatalf("a limit on no account: %q", got)
+	}
 }
 
 func TestATurnAsAModelIsToldIt(t *testing.T) {

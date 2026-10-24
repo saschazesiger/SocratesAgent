@@ -3,6 +3,7 @@
 package server
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
@@ -187,6 +188,29 @@ func TestManyChatsStartFromTheirBriefs(t *testing.T) {
 	readings := second.chats.readings()
 	if r := readings[id]; r.Summary != "Step u39 is done." || r.State != agent.ActivityIdle || len(readings) != chats {
 		t.Fatalf("reading %+v of %d", r, len(readings))
+	}
+}
+
+// A chat whose history is not in memory - any chat after a restart, or one
+// nobody has used for a while - is pointed to another folder by its brief,
+// and stays usable: the look at whether a turn runs reads no history the
+// server does not hold.
+func TestAChatWithoutItsHistoryIsPointedElsewhere(t *testing.T) {
+	c := newChatEnv(t, time.Hour)
+	id := fmt.Sprintf("%032x", 98)
+	writeChatJournal(t, c.store, c.data, id, 2)
+	c.restart(t, 0, nil)
+	if n := c.srv.chats.loaded(); n != 0 {
+		t.Fatalf("%d chats in memory after the start", n)
+	}
+	here := t.TempDir()
+	raw, _ := json.Marshal(map[string]string{"workdir": here})
+	res, body := c.do(t, c.client, "PUT", "/api/sessions/"+id+"/workdir", string(raw))
+	if session, _ := body["session"].(map[string]any); res.StatusCode != http.StatusOK || session["workdir"] != here {
+		t.Fatalf("pointed to %s: %d %v", here, res.StatusCode, body)
+	}
+	if res, body := c.do(t, c.client, "GET", "/api/chats/"+id, ""); res.StatusCode != http.StatusOK || body["chat"] == nil {
+		t.Fatalf("the chat after it was pointed elsewhere: %d %v", res.StatusCode, body)
 	}
 }
 

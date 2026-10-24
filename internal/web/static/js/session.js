@@ -1678,6 +1678,16 @@ function outcomeFrame(id, outcome) {
   renderList();
 }
 
+// newsFrame is news about a session in a notification's words, which the
+// server found outside its activity: a chat stopped at its account's limit
+// (notify.told). Not for a session the page cannot name, nor for one filed
+// in the background, as at a turn's end (mergeActivity).
+function newsFrame(id, news) {
+  const session = sessionOf(id);
+  if (!session || harnesses.isTool(session.harness) || statusOf(session) === 'background') return;
+  if (notifier && news.body) notifier.told(id, { body: news.body, kind: news.kind === 'question' ? 'question' : 'finished' });
+}
+
 function answerFrame(id, run) {
   if (run) state.answers.set(id, run); else state.answers.delete(id);
   drawLive();
@@ -1730,6 +1740,7 @@ function mountStream() {
     digest: digestFrame,
     outcome: outcomeFrame,
     answer: answerFrame,
+    news: newsFrame,
     // A pong: the page is as current as the moment its ping was sent, which
     // is what a question asked for by a notification is waiting to know -
     // and a badge a push wrote over (badgeWrittenElsewhere).

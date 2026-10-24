@@ -151,3 +151,41 @@ func TestAChatsStoppedTurnIsNotJudged(t *testing.T) {
 		}
 	}
 }
+
+// A turn its account's limit stopped is judged as any other: the verdict says
+// how far it got. Its push is the accounts' (accountHub.onLimit) - when the
+// limit renews and on which account - and the verdict pushes nothing more.
+func TestAChatsLimitedTurnIsJudged(t *testing.T) {
+	c := newChatEnv(t, time.Hour)
+	gw := c.withGateway(t)
+	c.configureOpenRouter(t, map[string]any{"outcomes": true})
+	gw.always(`{"outcome":{"kind":"partial","reason":"The limit stopped it half way."}}`)
+	sent := catch(c.srv.push)
+	if err := c.srv.push.add(pushSub{Subscription: testSubscription("https://push.example.net/a")}); err != nil {
+		t.Fatal(err)
+	}
+	id := c.create(t)
+	c.send(t, id, "m1", "/limit")
+	o := c.waitOutcome(t, id, digestReady)
+	if o.Kind != outcomePartial || o.Since != c.srv.manager.ActivityOf(id).Since {
+		t.Fatalf("verdict %+v, activity %+v", o, c.srv.manager.ActivityOf(id))
+	}
+	judged := 0
+	for _, call := range gw.seen() {
+		if strings.HasPrefix(call.Messages[0].Content, chatJudgeMarker) {
+			judged++
+		}
+	}
+	if judged != 1 {
+		t.Fatalf("the judge was asked %d times", judged)
+	}
+	push := pushOfKind(t, sent, pushFinished, 10*time.Second)
+	if !strings.HasPrefix(push.Body, "Limit reached — renews in ") || !strings.HasSuffix(push.Body, "(Default)") {
+		t.Fatalf("the push %+v", push)
+	}
+	select {
+	case s := <-sent:
+		t.Fatalf("a limit was pushed twice: %+v", s.note)
+	case <-time.After(time.Second):
+	}
+}

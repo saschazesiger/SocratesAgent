@@ -262,8 +262,7 @@ export function mountNotify(ctx) {
     if (!body) return;
     if (!news && next.state === 'waiting' && next.note === 'permission prompt') body = PERMISSION_BODY;
     // A chat says what its journal says, as its push does: its question, or
-    // how its turn ended with a line of the answer - and nothing for a turn
-    // the person stopped themselves.
+    // how its turn ended with a line of the answer.
     if (!news && ctx.chatNews) {
       const said = ctx.chatNews(id);
       if (said === '') return;
@@ -488,6 +487,11 @@ export function mountNotify(ctx) {
     // A commit inside the settling window is counted as rung, so the poll
     // that repeats it a moment later does not ring for it either.
     if (Date.now() < (quiet.get(id) || 0)) return;
+    // A chat's turn whose end is no news, as its push has it, is neither
+    // heard nor shown, and waits for no verdict: one the person stopped
+    // themselves, and one a limit stopped, which the server tells once it
+    // knows the chat stays stopped (told).
+    if (ctx.chatNews && ctx.chatNews(id) === '') return;
     // A turn whose verdict is being read waits for it, as its push does: the
     // chime and the notification are one piece of news, and the news is how
     // the turn left the work (judged).
@@ -497,6 +501,18 @@ export function mountNotify(ctx) {
       return;
     }
     ring(id, next, null);
+  }
+
+  /**
+   * told is news the server found outside the activity, with its words: a
+   * chat stopped at its account's limit, said once it is known that the chat
+   * does not go on with another account by itself - with when the limit
+   * renews and on which account, as its push says it. Heard and shown as a
+   * turn's end is.
+   */
+  function told(id, news) {
+    if (!news || !news.body) return;
+    ring(id, null, news);
   }
 
   // ring is the chime and the notification of one turn's end, saying news
@@ -647,6 +663,7 @@ export function mountNotify(ctx) {
   return {
     completed,
     judged,
+    told,
     hush,
     soundOn: () => sound,
     notifyOn: () => notify && available,

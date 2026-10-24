@@ -67,15 +67,28 @@ func briefOf(p *agent.Projection) chatBrief {
 
 // newsOf is what a notification about a chat says: what it asks while it
 // waits, and between turns how its last one ended (turnNews) - nothing for a
-// turn the person stopped themselves, or while it works.
+// turn the person stopped themselves, or while it works. Nor for a turn its
+// account's limit stopped, when the journal names the account: the accounts
+// tell that one (accountHub.onLimit), with when the limit renews and on which
+// account, once per account, and not at all when the chat goes on with
+// another account by itself.
 func newsOf(p *agent.Projection, q *digestQuestion) string {
 	if q != nil {
 		return oneLine(firstQuestion(q), pushBodyRunes)
+	}
+	if limitTold(p) {
+		return ""
 	}
 	if words, news := turnNews(p); news {
 		return words
 	}
 	return ""
+}
+
+// limitTold is whether the chat's last turn ended at its account's limit on
+// an account the journal names: news the accounts tell (newsOf).
+func limitTold(p *agent.Projection) bool {
+	return p.Turn == nil && p.LastTurn != nil && p.LastTurn.Outcome == agent.OutcomeLimited && p.Account != ""
 }
 
 func briefPath(dataDir, id string) string {
@@ -357,19 +370,23 @@ func (h *chatHub) askWords(id string) string {
 }
 
 // turnWords is what a push about a chat's ended turn says, and false for a
-// turn that is no news (turnNews), by its brief. A turn its account's limit
-// stopped is pushed by the accounts instead (accountHub.onLimit): with when
-// the limit renews and on which account, once per account, and not at all
-// when the chat switches to another account by itself.
+// turn that is no news (newsOf), by its brief.
 func (h *chatHub) turnWords(id string) (string, bool) {
 	b, ok := h.briefOfChat(id)
 	if !ok {
 		return "Finished", true
 	}
-	if b.Question == nil && b.Summary.LastOutcome == agent.OutcomeLimited && b.Summary.Account != "" {
-		return "", false
-	}
 	return b.News, b.News != ""
+}
+
+// judgeable is whether a chat's ended turn gets a verdict, by its brief: not
+// one the person stopped themselves - they know how it ended, and the
+// verdict would be a notification nobody sends - but one its account's limit
+// stopped is, although the accounts tell that one (newsOf): how far the turn
+// got is still worth knowing.
+func (h *chatHub) judgeable(id string) bool {
+	b, ok := h.briefOfChat(id)
+	return !ok || b.News != "" || b.Summary.LastOutcome == agent.OutcomeLimited
 }
 
 // waiting is whether a chat waits for the person: an open ask it is stopped

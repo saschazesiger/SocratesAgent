@@ -201,6 +201,33 @@ func indexOf(events []agent.Event, typ string) int {
 	return len(events)
 }
 
+// A switch made now to the account the host already runs on - a launch that
+// started on the account of a switch still in the server's outbox, which then
+// reaches the host while the first turn runs - interrupts nothing, and the
+// turn is not marked as stopped by somebody: should it die with its host, that
+// is news.
+func TestASwitchToTheAccountATurnRunsOnStopsNothing(t *testing.T) {
+	r := newSwitchRig(t)
+	r.launchOn("acct-b", "", "")
+	cl := r.dial(0)
+	cl.send("m1", "/sleep 2")
+	cl.until(10*time.Second, isType(agent.TypeTurnStarted))
+	cl.switchTo("s1", "acct-b", "", r, WhenNow, false)
+	cl.ack("s1", 10*time.Second)
+	cl.until(10*time.Second, isType(agent.TypeTurnEnded))
+	events := r.journal()
+	if c, e := indexOf(events, agent.TypeCommand), indexOf(events, agent.TypeTurnEnded); c >= e {
+		t.Fatalf("the switch was journaled after the turn (%d, %d)", c, e)
+	}
+	p := agent.Fold(events)
+	if p.LastTurn == nil || p.LastTurn.Outcome != agent.OutcomeCompleted || p.LastTurn.Stopped || p.Account != "acct-b" {
+		t.Fatalf("last turn %+v, account %s", p.LastTurn, p.Account)
+	}
+	if got := dividers(events); len(got) != 0 {
+		t.Fatalf("dividers %+v", got)
+	}
+}
+
 // A switch after the turn waits for the agent to be done: the turn is not
 // interrupted.
 func TestASwitchAfterTheTurnWaitsForIt(t *testing.T) {

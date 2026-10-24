@@ -69,7 +69,7 @@ is one `agent.Event`: a flat JSON object, all fields optional except `seq`, `at`
 | `conversation` | `conversation_id` | the CLI's own id, needed to resume |
 | `tasks` | `count` | background tasks still running |
 | `agent.info` | `content`: an `agent.AgentInfo` `{agent, version?, commands: [{name, args?, description?}]}` plus the adapter's own fields (Claude's in §5.1) | what the CLI says about itself; `commands` is **the** composer palette (`Projection.Palette()`), each name what `Adapter.Command` takes. The newest wins (`Projection.Agent`) |
-| `command` | `op` (`interrupt`\|`set_model`\|`command`\|`park`\|`stop`\|`switch_account`), `client_id`, `model`/`effort`, `text` (command name), `args` (a slash command's arguments; a switch's `when`), `to`/`reason` (a switch's account and why) | a command the host accepted; recorded so its `client_id` is acted on once. An `interrupt`, a `stop` or a `switch_account` that does not wait for the turn (`args` other than `after_turn`) marks the running turn as stopped by somebody (`Turn.Stopped`: not pushed, not judged) |
+| `command` | `op` (`interrupt`\|`set_model`\|`command`\|`park`\|`stop`\|`switch_account`), `client_id`, `model`/`effort`, `text` (command name), `args` (a slash command's arguments; a switch's `when`), `to`/`reason` (a switch's account and why) | a command the host accepted; recorded so its `client_id` is acted on once. An `interrupt`, a `stop` or a `switch_account` that does not wait for the turn (`args` other than `after_turn`) to another account than the running turn's (`turn.started`'s `account`) marks the running turn as stopped by somebody (`Turn.Stopped`: not pushed, not judged); a switch to the account the turn runs on interrupts nothing |
 | `notice` | `code`, `text`, `ask_id`? | a line of its own. Host codes: `resumed`, `answer_as_message`, `conversation_lost`; every adapter's rebuild: `rebuilt`, `history_unavailable` |
 | `error` | `code`, `text`, `message_id`? | a failure that is not a turn's end (e.g. `send_failed`, `rate_limit`, `switch_failed`: the other account's agent did not start, and the chat is back on its account) |
 
@@ -200,7 +200,12 @@ asks a model to read a screen; it is the projection.
   …", "Failed · …", "Limit reached · …", "Stopped · …" for a turn a dead host left), and not at all
   for a turn the person stopped (`Turn.Stopped`, an `interrupt`/`stop` command journaled while it
   ran). That sentence is the brief's `news` and the reading's `news` field, which the page's own
-  notification shows too.
+  notification shows too; where it is empty the page neither chimes nor notifies. A turn its
+  account's limit stopped, when the journal names the account, is not the turn's news but the
+  accounts' (§11 "At a limit"): its `news` is empty, and the server tells the phone by push and every
+  page by a `{"t":"news","id","body","kind":"finished"}` frame on the event stream, in the same
+  words, once it knows the chat does not go on with another account by itself. A chat filed
+  Background is told nothing, as at any turn's end.
 - **Titles**: at the first turn somebody asked for, the title runner names the chat from its first
   message and what its first answer has said so far; "name again" uses the first message and the
   latest exchange (never the composer's draft).
@@ -208,8 +213,9 @@ asks a model to read a screen; it is the projection.
   journal (`chatNow`): the last turn - message, answer, calls and how they went, task list - what
   runs now, the question it waits on with its choices, and its background tasks.
 - **Outcome judge** (`chatjudge.go`): with outcomes on, a chat's turn end puts the outcome on
-  pending exactly as a terminal's does - except a turn that is no news (stopped by the person),
-  which gets no verdict - and `judgeChat` asks the home model in a call of its own
+  pending exactly as a terminal's does - except a turn the person stopped, which gets no verdict; a
+  turn a limit stopped is judged, though the limit's notification is the accounts' and the verdict
+  pushes nothing more (`chatHub.judgeable`) - and `judgeChat` asks the home model in a call of its own
   (its system prompt opens with `You judge the turn a coding agent has just ended`) with the turn as
   `chatTurnPrompt` writes it; Read again judges it again.
 - **Costs** (`chatcosts.go`): the journal is the one source of a chat's cost - Claude's `cost_usd`,
@@ -1004,9 +1010,13 @@ attachment(s): …`).
   `accounts` (touch mode on a phone) and `chat-account` ("Switch now" on a phone) in the browser.
 - Accounts and the rest together (WP7 + WP9): Ultracode kept across a switch through a real host;
   a chat that never switched on its account's ledger from its first turn, and the costs page naming
-  the account; a chat's limit pushed once, in the accounts' words; a turn a switch made now stopped
-  neither pushed nor judged, one a switch after the turn waited for still news; a lost folder's
-  rebuilt history leaving its account's limit as it was.
+  the account; a chat's limit pushed once, in the accounts' words, to the page as well, judged, and
+  told to nobody for a chat filed Background or one the automatic switch moved on; a turn a switch
+  made now stopped neither pushed nor judged, one a switch after the turn waited for, or a switch to
+  the account it already runs on, still news; a lost folder's rebuilt history leaving its account's
+  limit as it was; the options' writers (Ultracode, the account, the automatic switch) each
+  changing only their own key in the row as it is written; a chat whose history is not in memory
+  pointed to another folder.
 
 ## 10. Known limits, for the packages that follow
 
@@ -1134,11 +1144,12 @@ with one is at its limit.
 turn's windows (an hour when none was said). A chat with `auto_switch` (off unless set, from the
 sheet or the chat's ⋮) is switched by the server to the recommended other account, `when: now`,
 `continue: true`, `client_id` `auto-<turn>`, reason "The limit of <label> was reached."; without
-it, or with no account to go to, the person is told by push ("Limit reached — renews in …") and the
-limit card offers "Continue with <account>" for each account with room (the same switch, sent by
-the browser). Codex and OpenCode hold their queue meanwhile (§5.2, §5.3), so the messages queued
-behind the limit do not each run into it. A chat is pushed once per account it is stopped on,
-until a turn gets through again.
+it, or with no account to go to, the person is told by push and on the page ("Limit reached — renews
+in … (<label>)", §3 "Badge and push"; not for a chat filed Background) and the limit card offers
+"Continue with <account>" for each account with room (the same switch, sent by the browser). Codex
+and OpenCode hold their queue meanwhile (§5.2, §5.3), so the messages queued behind the limit do not
+each run into it. A chat is pushed once per account it is stopped on, until a turn gets through
+again.
 
 **A refused sign-in** (`error{code: auth}`, `agent.ErrorAuth`: OpenCode's `ProviderAuthError` or a
 401, among them a refresh token two chats of one OAuth account renewed at the same moment,

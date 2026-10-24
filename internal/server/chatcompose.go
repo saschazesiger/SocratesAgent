@@ -390,11 +390,12 @@ func (s *Server) handleChatOptions(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "Ultracode is an option of Claude Code chats")
 		return
 	}
-	if readPrestartOptions(row.Options).Ultracode != *body.Ultracode {
-		if err := s.store.SetChatOptions(row.ID, withOption(row.Options, "ultracode", *body.Ultracode)); err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
-			return
-		}
+	changed, err := s.setChatOption(row.ID, "ultracode", *body.Ultracode)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if changed {
 		s.events.poke()
 		s.chats.park(p.id)
 	}

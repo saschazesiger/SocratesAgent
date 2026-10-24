@@ -575,10 +575,9 @@ func (s *Server) handleSetWorkdir(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
-		p.mu.Lock()
-		working := p.proj.Turn != nil
-		p.mu.Unlock()
-		if working {
+		// By the brief, which is there whether or not the history is in
+		// memory: a chat whose history went has no turn running.
+		if p.summary().TurnRunning {
 			writeError(w, http.StatusConflict, "the chat is in the middle of a turn; stop it first")
 			return
 		}
