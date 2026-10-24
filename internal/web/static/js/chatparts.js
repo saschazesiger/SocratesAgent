@@ -11,7 +11,7 @@
 // and Codex's (AGENT-HOST.md §5.1, §5.2) and the scripted agent's, which uses
 // Claude's: whatever a shape lacks is simply not drawn.
 
-import { html, raw, icon } from './ui.js';
+import { html, raw, icon, faces } from './ui.js';
 import { markdown, codeBlock } from './md.js';
 import { fmtTokens } from './api.js';
 
@@ -494,7 +494,7 @@ function planHtml(part, view) {
     answer = html`<div class="so-plan__answer"><div class="ds-card__row">${onItsWayChip(sending)}<span class="ds-meta">${asked.decision === 'approve' ? 'Approve' : 'Keep planning' + (asked.note ? ': ' + asked.note : '')}</span></div></div>`;
   } else if (waiting) {
     answer = html`<div class="so-plan__answer">${sending === 'failed' ? refusedHtml(pending, '') : ''}${
-      noting ? html`<div class="ds-field so-plan__field"><label class="ds-field__label" for="${'note-' + part.id}">What should change?</label><textarea class="ds-input so-plan__input" id="${'note-' + part.id}" rows="3" data-plan-note="${ask.id}"></textarea></div>` : ''
+      noting ? html`<div class="ds-field so-plan__field"><label class="ds-field__label" for="${'note-' + part.id}">What should change?</label><div class="so-field-row so-field-row--top"><textarea class="ds-input so-plan__input" id="${'note-' + part.id}" rows="3" enterkeyhint="enter" data-plan-note="${ask.id}"></textarea><button class="ds-btn ds-btn--quiet ds-btn--icon so-mic" type="button" data-action="plan-dictate" data-target="${'note-' + part.id}" aria-label="Dictate what should change" data-tip="Dictate">${faces(raw(icon('mic', 20)), '')}</button></div></div>` : ''
     }<div class="ds-form-actions"><button class="ds-btn ds-btn--primary" type="button" data-action="plan-approve" data-ask="${ask.id}">Approve</button><button class="ds-btn ds-btn--tonal" type="button" data-action="${noting ? 'plan-send' : 'plan-note'}" data-ask="${ask.id}" data-part="${part.id}">${noting ? 'Send back' : 'Keep planning'}</button></div></div>`;
   }
   return html`<section class="ds-card so-part so-plan" data-ds-key="${'p:' + part.id}" data-kind="plan" data-decision="${decision || (waiting ? 'pending' : '')}"${sending ? html` data-sending="${sending}"` : ''}><div class="ds-card__row"><h3 class="ds-card__title so-plan__title">${raw(icon('flag', 18))}<span>Plan</span></h3>${

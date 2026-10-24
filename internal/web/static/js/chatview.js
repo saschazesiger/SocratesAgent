@@ -20,7 +20,7 @@
 // "Sent" until the journal has it.
 
 import { api, alertDialog, promptDialog, toast, errorMessage, fmtTokens, CONNECTION_GRACE } from './api.js';
-import { html, morph, raw, icon } from './ui.js';
+import { M, html, morph, raw, icon } from './ui.js';
 import { connectionSaidElsewhere, retryConnection } from './net.js';
 import { agentMarkHtml } from './logos.js';
 import * as harnesses from './harnesses.js';
@@ -34,6 +34,7 @@ import {
 import { mountComposer } from './composer.js';
 import { chatOutbox, pendingFor, pendingAnswer, pendingModel, failedItem, queueAnswer, answeredHere } from './chatoutbox.js';
 import { askProgress, askDraftsRev, forgetAskDraft } from './askdialog.js';
+import { record, recPhase } from './dictate.js';
 
 // How many chats keep their fold in memory, so that going back to one does
 // not replay its whole journal.
@@ -615,6 +616,18 @@ export function mountChat(ctx) {
         render();
         host.querySelector('[data-plan-note="' + CSS.escape(target.dataset.ask) + '"]')?.focus();
         break;
+      case 'plan-dictate': {
+        // The note's own microphone, as every other field of the chat has:
+        // the words go after what is written.
+        if (recPhase() !== 'idle') break;
+        M.busy(target, () => record({ opener: target }), { done: false }).then((words) => {
+          const field = host.querySelector('#' + CSS.escape(target.dataset.target));
+          if (!words || !field) return;
+          field.value = field.value ? field.value.replace(/\s*$/, ' ') + words : words;
+          field.dispatchEvent(new Event('input', { bubbles: true }));
+        });
+        break;
+      }
       case 'plan-send': {
         const field = host.querySelector('[data-plan-note="' + CSS.escape(target.dataset.ask) + '"]');
         queueAnswer(session.id, target.dataset.ask, { decision: 'keep_planning', note: field ? field.value.trim() : '' });
