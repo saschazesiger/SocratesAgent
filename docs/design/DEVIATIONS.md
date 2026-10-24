@@ -2764,3 +2764,54 @@ prefix of the person's own has no known mirror beside it.
 a start expected "started"; a prepared session is a chat now, whose draft is its composer once it
 runs, and its start takes the first message out of it, so the late save is answered as the
 conflict it is with what the composer now holds.
+
+**WP11 / §9 — three scenarios did not come over to the chats.** "Port every ADAPT scenario" with
+the same intent; three have none left. `tasks-opencode`: OpenCode's subagents run inside the turn
+that started them, so an OpenCode turn never ends with work still running and its adapter reports
+no background tasks (`tasks-claude` and `tasks-codex` cover the hourglass). `home-unread` and
+`home-language`: both were about a question read off an agent's screen in prose, by the model, in
+the person's language; a chat's question is its agent's own ask_user call, in the agent's words,
+and nothing reads a screen. Inside ported scenarios the same reason took OpenCode's permission card
+(a chat allows every permission and says so in a notice, which `home-opencode` asserts instead),
+the old dialog's "Another device is answering" step (a chat's answer is taken by the server at
+once, so the second device goes straight to "Answered on another device"), and the questions asked
+in prose in `home-quiet`, `home-kinds` and `home-restart` (replaced there by a second chat's
+ask_user question, the plan's card, and a third question).
+
+**WP11 / §9 — `livesession` types nothing.** The terminal version typed `/status`, which cost
+nothing in the TUI; in `claude -p` a slash command is a message, and whether it reaches the model
+is the CLI's to decide. The chat version asserts what the CLI says without a turn - its answer to
+initialize, with its version and its commands - and that no turn ran.
+
+**WP11 / brief — the README pictures are five, and the fakes take them.** `shots.mjs` used the
+real CLIs whenever all three were installed; it now uses the protocol fakes, and takes the Admin
+pictures against the real CLIs only with `SOCRATES_LIVE_AGENTS=1` (it starts no chat with them).
+The pictures are a chat at a desk, Home, a question on a phone, Admin's accounts and Admin's
+backup (`screenshot-home.png` and `screenshot-backup.png` are new). The people in them write in
+words: `fakeclaude` runs a script for a message `FAKECLAUDE_SCRIPTS` names, and its `/readme`
+script is the turn the desk picture shows.
+
+**WP11 — what the ported scenarios found, fixed in the product.** Each was a scenario that failed
+for a reason in the code, not in the test:
+- A chat started without a model ran on the CLI's own default, not Admin's default model and
+  effort (DECISIONS "Admin (the basics only)"): `POST /api/chats` and a prepared chat's start fill
+  them in, and the catalogue hands them to the sheet.
+- Codex's background terminals were not reported, so a turn that left one running was "finished":
+  the adapter polls `thread/backgroundTerminals/list` every 2 s after a turn and reports the count
+  as tasks.
+- Status's phases reached only a terminal's viewers; a chat's page has no terminal socket, so its
+  ticker heard nothing. They go on the event stream too.
+- A chat filed Done that was sent a message stayed done, and the sweep would have put its agent to
+  rest mid-turn; a message picks it up again, as "Pick it up again" does a terminal.
+- A chat's unread mark was lost across a server restart: its host reported before the detector had
+  read the marks back. `ReportActivity` reads them first.
+- The account picker's renewal time was drawn once; it follows the clock (every 15 s), and a
+  window whose reset has passed counts as empty.
+- The question dialog: a question asked for (a tapped notification, `#q=`) while the page could
+  not read it opened another chat's question or said there was none; it now waits for the
+  connection (three tries in two minutes) and opens the one asked for. A double tap chose the
+  option drawn under the second tap, and a phone on its side showed the first option under the
+  bar: a new question takes no tap for 600 ms (a key is never a stray tap), and below 500 px the
+  question is scrolled to the top. What was asked while the dialog was open joins the walk at its
+  end. And the dialog had lost the connection line HOME.md gives it ("The dialog says it too"); it
+  has it again, with "This question may already have been answered".

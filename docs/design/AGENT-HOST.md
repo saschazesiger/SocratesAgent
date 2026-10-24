@@ -178,7 +178,11 @@ The server reports it to the terminal detector with `termux.ReportActivity` (com
 debounce; note `question` for waiting; `asked` = the chat has a user message). The unread mark, row
 ordering (`MovesRow`), refiling into in-progress, the `activity` frames and push are the terminals'.
 Answering a chat's question and stopping its turn mark it read, as a message does (typing at a
-terminal does the same), so the turn an answer lets go on ends unread again.
+terminal does the same), so the turn an answer lets go on ends unread again. A chat's host is
+reattached, and reports, before the detector starts (`StartSessions`), so `ReportActivity` reads
+back the unread marks the last run left before its first report: a track made without them would
+call a turn nobody saw read across a restart, and the first mark saved would write over the rest
+(WP11).
 
 **What the rest of Socrates reads** (WP9, `internal/server/chatfeed.go`, `chatbrief.go`): none of it
 asks a model to read a screen; it is the projection.
@@ -212,7 +216,9 @@ asks a model to read a screen; it is the projection.
   latest exchange (never the composer's draft).
 - **Spoken Status**: `POST /api/sessions/{id}/status` tells the status model the chat from its
   journal (`chatNow`): the last turn - message, answer, calls and how they went, task list - what
-  runs now, the question it waits on with its choices, and its background tasks.
+  runs now, the question it waits on with its choices, and its background tasks. Its phases
+  (`{"t":"status","id","phase","text"}`: asking, speaking, done, or error) go to the session's
+  terminal viewers and on the event stream, which is the only socket a chat's page has (WP11).
 - **Outcome judge** (`chatjudge.go`): with outcomes on, a chat's turn end puts the outcome on
   pending exactly as a terminal's does - except a turn the person stopped, which gets no verdict; a
   turn a limit stopped is judged, though the limit's notification is the accounts' and the verdict
@@ -828,7 +834,7 @@ key (the existing `Outbox` in `net.js`).
 
 | Route | Body | Answers |
 |---|---|---|
-| `POST /api/chats` | `client_id`, `harness`, `model`, `effort`, `workdir_mode`, `workdir`, `title`, `ultracode` (Claude Code only; dropped for any other agent), `account`?, `auto_switch`?, `message`?{`client_id`,`text`,`attachments`} | 201 `{session, chat: <summary>, message?}`; 200 the same for a repeated `client_id`; 400 for a harness without an adapter, or an account of another agent. No `account`: the recommended one when the host launches (§11). The host is launched at once |
+| `POST /api/chats` | `client_id`, `harness`, `model`, `effort`, `workdir_mode`, `workdir`, `title`, `ultracode` (Claude Code only; dropped for any other agent), `account`?, `auto_switch`?, `message`?{`client_id`,`text`,`attachments`} | 201 `{session, chat: <summary>, message?}`; 200 the same for a repeated `client_id`; 400 for a harness without an adapter, or an account of another agent. No `account`: the recommended one when the host launches (§11). No `model`: the agent's default model and effort from Admin (`harnesses.<id>.default_model`/`default_effort`), which a prepared chat started without one gets too, and which the catalogue's agents carry as `default_model`/`default_effort` for the sheet (WP11). The host is launched at once |
 | `GET /api/chats/{id}` | – | `{session, chat: <summary>, asks: [open asks], host_error?}`; `?history=1` adds `messages` (the whole projection) |
 | `POST /api/chats/{id}/messages` | `client_id`, `text`, `attachments` | 200 `{client_id, seq, dup}`; 202 `{client_id, queued: true}` when the host has not acked within 10 s (it will receive it once) |
 | `POST /api/chats/{id}/interrupt` | `client_id` | as messages; 200 `{idle: true}` when nothing runs and no host is up |
@@ -845,7 +851,10 @@ key (the existing `Outbox` in `net.js`).
 | `GET /api/chats/{id}/stream` | WebSocket | below |
 | `PUT /api/sessions/{id}/workdir` | `workdir` (a folder that exists) | 200 `{session}`; 400 for a folder that is not there or not allowed; 409 while a turn runs. A host that is up is sent `park`, not `stop`: a turn that started a moment ago, which the server has not heard of yet, finishes in the old folder, and the next message starts the agent in the new one (REBUILD §6.2: a restored chat whose folder is missing) |
 
-Sending a message clears the chat's unread mark (as typing at a terminal does). Chats appear in
+Sending a message clears the chat's unread mark (as typing at a terminal does), and picks a chat
+filed Done up again (filed in progress, as "Pick it up again" does a terminal): left done, the
+sweep would put its agent to rest while it works and delete the chat once its day was up (WP11).
+Chats appear in
 `GET /api/sessions` and the event stream like every session, with `kind: "chat"` and their
 `activity`, and `workdir_missing` when their folder is not on this machine.
 
@@ -881,6 +890,21 @@ the account the chat runs on (the journal's, else the row's), a switch on its wa
 a menu of the agent's accounts with their usage; during a turn it asks "Switch now" (interrupt and
 continue) or "After this turn". The fold keeps `account` from `turn.started` and
 `account.switched`, and the switch asked for (`command{switch_account}`) until it happens.
+
+**The question dialog** (`askdialog.js`, from Home's Questions card, a card's Answer, `#q=` and a
+tapped notification) walks the open questions of every asking chat, oldest first, and is live:
+an answer from another device settles the one it shows ("Answered on another device"), and at the
+end of the walk it takes up what was asked while it went, so a follow-up asked right after an
+answer is the next step rather than a dialog that closed. A question it is asked for that the page
+cannot read yet - no connection, or a chat the page has not heard of - waits for the connection
+(at most three tries in two minutes) and opens that question, never another chat's; a chat that
+asks nothing any more says "Nothing is waiting for an answer any more". For 600 ms after a
+question is drawn its buttons take no tap, so the second tap of a double tap (on Home's card, on
+Next, on Send) chooses nothing; a key is never a stray tap. On a phone on its side (under 500 px)
+the question is scrolled up to the top of the dialog. While the page's connection is not live the
+dialog says Home's connection line under its top bar ("Offline · updated 40 s ago"), that a
+question still to answer may already have been answered, and dims it, said again every 2 s; an
+answer sent offline says "Saved. Your answer goes out when the connection is back." (WP11).
 
 A new session of an agent is a chat, from the sheet and from PreStart; the server lists the
 agents as the catalogue's `chats`. An agent's terminal does not exist any more (WP10):
