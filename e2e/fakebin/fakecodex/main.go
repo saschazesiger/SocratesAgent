@@ -38,6 +38,8 @@
 //	                 arguments given (for ask_user, a call of two questions
 //	                 when none are); says its answer
 //	/bg S            leaves a background terminal for S seconds
+//	/whoami          "account: <login> (home <CODEX_HOME>)": the login
+//	                 auth.json holds now, "none" before there is one
 //	anything else    reasoning, then "you said: <text>"
 //
 // A message steered into a running turn is taken up at its next step: its
@@ -106,6 +108,11 @@ func main() {
 	if ms, err := strconv.Atoi(os.Getenv("FAKECODEX_COMMAND_START_LAG_MS")); err == nil {
 		s.commandLag = time.Duration(ms) * time.Millisecond
 	}
+	for i := 1; i+1 < len(args); i++ {
+		if args[i] == "-c" && strings.HasPrefix(args[i+1], "projects=") {
+			s.trust = args[i+1]
+		}
+	}
 	s.serve()
 }
 
@@ -118,6 +125,8 @@ type server struct {
 	// after its call was answered.
 	completedLag time.Duration
 	commandLag   time.Duration
+	// trust is the -c override that trusted a project, as it was given.
+	trust string
 
 	outMu sync.Mutex
 	out   *bufio.Writer
@@ -936,6 +945,17 @@ func (c *tcx) script(text string) (string, map[string]any) {
 		item["status"], item["success"], item["contentItems"] = "completed", res.Success, res.ContentItems
 		c.completed(item)
 		ok = c.say([]string{"tool said: " + strings.Join(said, " ")}, 0)
+	case "/whoami":
+		who := accountOf(c.s.home)
+		if who == "" {
+			who = "none"
+		}
+		ok = c.say([]string{"account: " + who + " (home " + c.s.home + ")"}, 0)
+	case "/where":
+		// Where this process runs, the thread's folder and the folder the
+		// command line trusted, for a scenario to compare with the chat's.
+		cwd, _ := os.Getwd()
+		ok = c.say([]string{"cwd: " + cwd + " | thread: " + c.th.cwd + " | trust: " + c.s.trust}, 0)
 	case "/bg":
 		c.s.mu.Lock()
 		c.th.bgUntil = time.Now().Add(time.Duration(atof(fields, 0, 1) * float64(time.Second)))

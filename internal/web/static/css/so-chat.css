@@ -983,15 +983,22 @@
   display: block;
 }
 
-/* An account item of the chat's account menu: its name over its usage. */
+/* The account menu takes the menu's full width, so that an account's usage
+   line wraps as little as it can. */
+.so-account-menu {
+  min-width: min(280px, calc(100vw - 2 * var(--ds-space-2)));
+}
+
+/* An account item of the chat's account menu: its name over its usage. The
+   usage line wraps rather than being cut: when a limit renews is the end of
+   it, and on a phone nothing else says it. */
 .so-account-menu__text {
   display: grid;
   min-width: 0;
   padding-block: var(--ds-space-1);
 }
 
-.so-account-menu__name,
-.so-account-menu__meta {
+.so-account-menu__name {
   overflow: hidden;
   text-overflow: ellipsis;
 }
@@ -999,6 +1006,8 @@
 .so-account-menu__meta {
   font: var(--ds-font-meta);
   color: var(--ds-text-2);
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 /* The accounts a limit card offers to go on with, under its words. */

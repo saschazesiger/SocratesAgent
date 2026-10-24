@@ -47,13 +47,9 @@ func TestAChatsPushesSayWhatItsJournalSays(t *testing.T) {
 	}
 
 	c.send(t, id, "m1", "/ask")
-	asked := time.Now()
 	q := pushOfKind(t, sent, pushQuestion, 10*time.Second)
 	if q.Body != "Pick one" || q.Badge == nil || *q.Badge != 1 || len(q.Asking) != 1 || q.Asking[0] != id {
 		t.Fatalf("the question's push: %+v", q)
-	}
-	if took := time.Since(asked); took > p.wait {
-		t.Fatalf("the question waited %s for words it had", took)
 	}
 	if got := c.srv.askingSet(); len(got) != 1 || got[0] != id {
 		t.Fatalf("asking %v", got)

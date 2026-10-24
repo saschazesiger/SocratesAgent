@@ -1,10 +1,13 @@
 package server
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -205,5 +208,58 @@ func TestEveryWorkingDirectoryIsLeftOutOfTheBackup(t *testing.T) {
 	}
 	if got[rows["odd"]] {
 		t.Errorf("a row's directory took the chats out of the backup: %v", got)
+	}
+}
+
+// The objects the bucket mirror of the build before left are offered for
+// deletion on the Backup card once the backup has a snapshot of this
+// machine, and only then; deleting them takes nothing of the backup's.
+func TestTheOldMirrorGoesOnceTheBackupHasASnapshot(t *testing.T) {
+	fake := s3fake.Start(s3fake.Options{})
+	t.Cleanup(fake.Close)
+	for _, key := range []string{"meta.json", "lease.json", "kv/settings", "sessions/s1.json", "costs/claude/c1.json", "notes.txt"} {
+		fake.PutObject("backups", key, []byte("old"))
+	}
+	a := newEnvWith(t, true)
+	withBackup(t, a)
+	signIn(t, a)
+	if res, payload := a.do(t, a.client, "GET", "/api/backup/legacy", ""); res.StatusCode != http.StatusConflict {
+		t.Fatalf("before a backup is set up: %d %#v", res.StatusCode, payload)
+	}
+	if res, payload := a.do(t, a.client, "PUT", "/api/backup/config", fakeBackupForm(fake.URL, "pp-one")); res.StatusCode != http.StatusOK {
+		t.Fatalf("config: %d %#v", res.StatusCode, payload)
+	}
+	legacy := func() map[string]any {
+		t.Helper()
+		res, payload := a.do(t, a.client, "GET", "/api/backup/legacy", "")
+		if res.StatusCode != http.StatusOK {
+			t.Fatalf("legacy: %d %#v", res.StatusCode, payload)
+		}
+		return payload["legacy"].(map[string]any)
+	}
+	if got := legacy(); got["objects"] != float64(5) || got["snapshot"] != false || got["prefix"] != "" {
+		t.Fatalf("before the first snapshot: %#v", got)
+	}
+	if res, _ := a.do(t, a.client, "DELETE", "/api/backup/legacy", ""); res.StatusCode != http.StatusConflict {
+		t.Fatalf("a delete before the first snapshot: %d", res.StatusCode)
+	}
+
+	if _, err := a.srv.backup.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := legacy(); got["objects"] != float64(5) || got["snapshot"] != true {
+		t.Fatalf("after the first snapshot: %#v", got)
+	}
+	res, payload := a.do(t, a.client, "DELETE", "/api/backup/legacy", "")
+	if res.StatusCode != http.StatusOK || payload["deleted"] != float64(5) {
+		t.Fatalf("delete: %d %#v", res.StatusCode, payload)
+	}
+	if keys := fake.Keys("backups", ""); len(keys) == 0 || slices.ContainsFunc(keys, func(key string) bool {
+		return key != "notes.txt" && !strings.HasPrefix(key, backup.DefaultPrefix)
+	}) {
+		t.Fatalf("the bucket after the delete: %v", keys)
+	}
+	if got := legacy(); got["objects"] != float64(0) {
+		t.Fatalf("after the delete: %#v", got)
 	}
 }

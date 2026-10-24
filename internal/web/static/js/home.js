@@ -86,28 +86,6 @@ function waitsOnYou(ctx, session) {
 }
 
 /**
- * textQuestion says whether a session that is idle ended its last answer by
- * asking something in prose. That is a question too, as far as the person is
- * concerned - it is only not a menu - and the digest is the one thing that
- * can tell.
- */
-function textQuestion(digest) {
-  return !!(digest && digest.question && digest.question.source === 'text');
-}
-
-/**
- * unconfirmed says whether a session counted as asking only by a question in
- * prose that a restarted server has not read yet (session.js `carriedOver`):
- * it may have been answered at the machine while there was no server. It
- * stays counted - a question still open must not leave the card for the
- * moment of the read - but is said to be checked, with no Answer, until the
- * read says whether it still asks.
- */
-function unconfirmed(act, digest) {
-  return !!act && act.state !== 'waiting' && textQuestion(digest) && !!digest.carried;
-}
-
-/**
  * cardsOf is every card one session counts in. A session is in several at
  * once - working and waiting for a review - except a done one, which is in
  * Done and nowhere else: what is finished is not also running or ready.
@@ -142,8 +120,7 @@ export function cardsOf(ctx, session) {
   }
   if (!LIVE_STATES.has(session.state)) return cards;
   if (!act) return cards;
-  const asksInProse = textQuestion(ctx.digestOf(session.id));
-  if (act.state === 'waiting' || (act.state === 'idle' && asksInProse)) cards.push('questions');
+  if (act.state === 'waiting') cards.push('questions');
   else if (act.state === 'busy') cards.push('running');
   else if (act.state === 'tasks') cards.push('tasks');
   // A turn whose verdict is still being read is over, with something about
@@ -208,7 +185,8 @@ export function staleWords(at, now = Date.now()) {
  * event stream's {status, updatedAt, blocked, pollEvery, resuming, quiet};
  * `reachable` whether the last attempt to read the list got through. The
  * kind is 'live' or 'polling' (current: nothing is dimmed), or 'connecting'
- * or 'offline' (old: dimmed).
+ * or 'offline' (old: dimmed); `first` marks the first look, before anything
+ * has been heard.
  */
 export function connectionLine(conn, reachable, now = Date.now()) {
   const { status, updatedAt, blocked, pollEvery, resuming, quiet } = conn;
@@ -222,7 +200,7 @@ export function connectionLine(conn, reachable, now = Date.now()) {
     // The first look, before anything has been heard at all - and before
     // anything has failed: a page whose every read has failed is offline,
     // not still connecting, whatever it has never heard.
-    return { kind: 'connecting', words: 'Connecting…' };
+    return { kind: 'connecting', words: 'Connecting…', first: true };
   }
   if (resuming) {
     // Shown again after its stream was closed for being hidden, and on its
@@ -566,7 +544,7 @@ export function mountHome(ctx) {
     if (digest && digest.summary) line = digest.summary;
     else if (digest && digest.phase === 'pending') line = '…';
     else if (isPrepared(session) && session.draft_preview) line = String(session.draft_preview);
-    const offer = asking && !unconfirmed(act, digest);
+    const offer = asking;
     const state = asking ? 'asking' : unread ? 'unread' : done ? 'done' : '';
 
     return html`<div class="ds-card ds-card--interactive so-home__card" data-ds-key="${session.id}" data-id="${session.id}" data-state="${state}">
@@ -607,7 +585,7 @@ export function mountHome(ctx) {
     let glyph = 'info';
     if (cards.includes('done')) glyph = 'archive';
     else if (cards.includes('questions')) {
-      tone = unconfirmed(act, ctx.digestOf(session.id)) ? 'running' : 'warning';
+      tone = 'warning';
       glyph = 'waiting';
     } else if (cards.includes('running') || cards.includes('tasks') || judging) tone = 'running';
     else if (outcome && outcome.phase === 'ready' && OUTCOME_ICON[outcome.kind]
@@ -636,10 +614,8 @@ export function mountHome(ctx) {
       // Not running, and what it finished before it stopped is unread.
       said = words.state[session.state] || '';
       if (cards.includes('finished')) said = said ? said + ' · Finished' : 'Finished';
-    } else if (cards.includes('questions')) {
-      if (act && act.state === 'waiting') said = words.activity.waiting;
-      else said = unconfirmed(act, ctx.digestOf(session.id)) ? 'Checking whether it still asks…' : 'Asks in its last answer';
-    } else if (cards.includes('running')) said = words.activity.busy;
+    } else if (cards.includes('questions')) said = words.activity.waiting;
+    else if (cards.includes('running')) said = words.activity.busy;
     else if (cards.includes('tasks')) {
       said = act && act.state === 'idle' ? (act.unread ? 'Finished · ' : '') + 'Checking how it went…'
         : 'A background task is running';

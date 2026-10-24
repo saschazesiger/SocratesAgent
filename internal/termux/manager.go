@@ -100,10 +100,8 @@ type Manager struct {
 	hookLn       net.Listener
 	closed       bool
 
-	// locks serialises everything that relaunches one session, and watchers
-	// holds the cancel of its detached session-id watcher.
-	locks    map[string]*sync.Mutex
-	watchers map[string]context.CancelFunc
+	// locks serialises everything that relaunches one session.
+	locks map[string]*sync.Mutex
 	// plans is the launch plan of each live session, remembered because the
 	// activity tick reads one per session per second and a plan never changes
 	// between two relaunches.
@@ -112,12 +110,6 @@ type Manager struct {
 	// act is the busy/idle detector. It lives entirely in memory and has a
 	// lock of its own; see activity.go.
 	act *activity
-
-	// discoverCtx ends every detached session-id watcher when the manager is
-	// closed. The watchers are patient by design - a quarter of an hour each -
-	// and none of them may outlive the store it would write to.
-	discoverCtx  context.Context
-	discoverStop context.CancelFunc
 }
 
 // New builds a Manager. It does not start anything, and it does not fail when
@@ -148,14 +140,12 @@ func New(st *store.Store, cfg Config) (*Manager, error) {
 	}
 	m := &Manager{
 		st: st, cfg: cfg,
-		live:     map[string]*liveSession{},
-		missed:   map[string]int{},
-		locks:    map[string]*sync.Mutex{},
-		watchers: map[string]context.CancelFunc{},
-		plans:    map[string]harnesses.LaunchPlan{},
+		live:   map[string]*liveSession{},
+		missed: map[string]int{},
+		locks:  map[string]*sync.Mutex{},
+		plans:  map[string]harnesses.LaunchPlan{},
 	}
 	m.act = newActivity(m)
-	m.discoverCtx, m.discoverStop = context.WithCancel(context.Background())
 
 	// The path check comes first, because it is the one failure that would
 	// otherwise be diagnosed as something else: with a data directory a
@@ -197,13 +187,6 @@ func New(st *store.Store, cfg Config) (*Manager, error) {
 	}
 	m.tmux.Env = m.serverEnv()
 	return m, nil
-}
-
-// TmuxPath is the binary the manager runs.
-func (m *Manager) TmuxPath() string {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return m.tmuxPath
 }
 
 // TmuxVersion is what that binary reported.
@@ -283,7 +266,6 @@ func (m *Manager) Close() error {
 		return nil
 	}
 	m.closed = true
-	stop := m.discoverStop
 	ln := m.hookLn
 	var viewers []*Viewer
 	for _, live := range m.live {
@@ -291,12 +273,6 @@ func (m *Manager) Close() error {
 	}
 	m.mu.Unlock()
 
-	if stop != nil {
-		stop()
-	}
-	// The detector holds one event stream per running OpenCode session, and
-	// they are ours rather than tmux's: they go with us.
-	m.act.stop()
 	for _, v := range viewers {
 		_ = v.Close()
 	}
@@ -383,8 +359,7 @@ func (m *Manager) Create(ctx context.Context, spec Spec) (*store.Session, error)
 		WorkdirMode:     spec.WorkdirMode,
 		Options:         spec.Options,
 		TmuxName:        TmuxName(spec.ID),
-		CLISessionID:    spec.Plan.CLISession,
-		CLISessionState: cliStateFor(spec.Plan),
+		CLISessionState: store.CLINone,
 		State:           store.StateStarting,
 		Cols:            spec.Cols,
 		Rows:            spec.Rows,
@@ -437,112 +412,6 @@ func (m *Manager) markLaunched(id, from string) error {
 // only way to get one is Start.
 var ErrNotStarted = errors.New("the session has not been started")
 
-// StartPrestart starts a prepared session: the same launch Create does, on a
-// row that already exists. spec carries what the start resolved - the
-// directory, the options, the plan - and the row takes all of it on in one
-// transition before any tmux command runs, for the same reason Create writes
-// its row first.
-//
-// It is serialised with everything else that launches this session, and it
-// answers store.ErrNotPrestart, with the current row, when the session was
-// started by somebody else first: two devices pressing Start and the
-// scheduler firing at the same moment start one program.
-//
-// A launch that fails before the program ever ran - tmux refused the session,
-// a file could not be written - puts the row back to prepared with the reason,
-// so the person can fix what was wrong and press Start again with the draft
-// intact. One that fails after the program was running is a failed session
-// like any other, with its restart button.
-func (m *Manager) StartPrestart(ctx context.Context, spec Spec) (*store.Session, error) {
-	if err := m.Available(); err != nil {
-		return nil, err
-	}
-	if len(spec.Plan.Argv) == 0 {
-		return nil, errors.New("a session needs a program to run")
-	}
-	if !filepath.IsAbs(spec.Plan.Cwd) {
-		return nil, fmt.Errorf("the working directory %q is not absolute", spec.Plan.Cwd)
-	}
-	unlock := m.lockSession(spec.ID)
-	defer unlock()
-	// A start that lost to another one made its dynamic directory for
-	// nothing; os.Remove only takes it while it is still empty.
-	discard := func() {
-		if spec.WorkdirMode == store.WorkdirDynamic {
-			_ = os.Remove(spec.Plan.Cwd)
-		}
-	}
-	prepared, err := m.st.GetSession(spec.ID)
-	if err != nil {
-		discard()
-		return nil, err
-	}
-	if prepared.State != store.StatePrestart {
-		discard()
-		return prepared, store.ErrNotPrestart
-	}
-	row := *prepared
-	if prepared.TitleSource != store.TitleUser && spec.Title != "" {
-		// A nameless row is listed under what it runs, like a session made
-		// from the sheet with these settings: the placeholder it was
-		// prepared under may name another harness or folder by now.
-		row.Title = spec.Title
-	}
-	row.Harness, row.Model, row.Effort = spec.Harness, spec.Model, spec.Effort
-	row.Workdir, row.WorkdirMode, row.Options = spec.Plan.Cwd, spec.WorkdirMode, spec.Options
-	row.TmuxName = TmuxName(spec.ID)
-	row.CLISessionID, row.CLISessionState = spec.Plan.CLISession, cliStateFor(spec.Plan)
-	if spec.Cols > 0 {
-		row.Cols = spec.Cols
-	}
-	if spec.Rows > 0 {
-		row.Rows = spec.Rows
-	}
-	if err := m.st.BeginStart(&row); err != nil {
-		discard()
-		return prepared, err
-	}
-
-	if err := m.launch(ctx, &row, spec.Plan); err != nil {
-		reason := Stderr(err)
-		if state, stateErr := m.paneStateOf(ctx, row.TmuxName); stateErr == nil && state == paneMissing {
-			// Nothing ran. What this attempt left on disk goes with it: the
-			// prompt file it wrote and the directory it made, which is empty
-			// because no program ever worked in it.
-			_ = os.RemoveAll(SessionDir(m.cfg.DataDir, row.ID))
-			discard()
-			m.mu.Lock()
-			delete(m.live, row.ID)
-			m.mu.Unlock()
-			if revertErr := m.st.RevertStart(prepared, reason); revertErr != nil {
-				m.logf("could not put session %s back to prepared: %v", row.ID, revertErr)
-			}
-		} else {
-			_ = m.st.SetSessionState(row.ID, store.StateFailed, -1, reason)
-		}
-		current, getErr := m.st.GetSession(row.ID)
-		if getErr != nil {
-			return nil, err
-		}
-		return current, err
-	}
-	if err := m.markLaunched(row.ID, store.StateStarting); err != nil {
-		return &row, err
-	}
-	return m.st.GetSession(row.ID)
-}
-
-func cliStateFor(plan harnesses.LaunchPlan) string {
-	switch {
-	case plan.CLISession != "":
-		return store.CLIKnown
-	case plan.Discover != "" && plan.Discover != harnesses.DiscoverNone:
-		return store.CLIPending
-	default:
-		return store.CLINone
-	}
-}
-
 // ErrStillRunning is the refusal to replace a session whose pane is alive. It
 // is a refusal and not a failure: the row is left exactly as it was, and the
 // caller answers 409 rather than putting a working terminal behind an error
@@ -581,9 +450,9 @@ func (m *Manager) Relaunch(ctx context.Context, row *store.Session, plan harness
 		_ = m.st.SetSessionState(row.ID, store.StateFailed, -1, Stderr(err))
 		return err
 	}
-	// A new process, a new pid, a new event stream: everything the detector
-	// had derived about this session is about to be wrong. The unread mark is
-	// kept, because work that finished before the restart is still unread.
+	// A new process, a new pid: everything the detector had derived about
+	// this session is about to be wrong. The unread mark is kept, because
+	// work that finished before the restart is still unread.
 	m.ResetActivity(row.ID)
 	return m.markLaunched(row.ID, row.State)
 }
@@ -673,7 +542,6 @@ func (m *Manager) launch(ctx context.Context, row *store.Session, plan harnesses
 	if err := m.writeSessionFiles(row, plan); err != nil {
 		return err
 	}
-	started := time.Now()
 	if err := m.newSession(ctx, row, plan); err != nil {
 		return err
 	}
@@ -687,7 +555,6 @@ func (m *Manager) launch(ctx context.Context, row *store.Session, plan harnesses
 	m.live[row.ID] = &liveSession{id: row.ID, tmuxName: row.TmuxName, cols: row.Cols, rows: row.Rows}
 	delete(m.missed, row.ID)
 	m.mu.Unlock()
-	m.watchCLISession(row.ID, plan, started)
 	return nil
 }
 
@@ -696,19 +563,10 @@ func (m *Manager) writeSessionFiles(row *store.Session, plan harnesses.LaunchPla
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
-	// plan.json is diagnostic - the row is what Socrates acts on - but it can
-	// carry a generated password, so it is not world readable. A transient
-	// file - the initial prompt, which the program deletes as it starts - is
-	// recorded by name only.
-	recorded := plan
-	recorded.Files = make([]harnesses.GenFile, len(plan.Files))
-	for i, f := range plan.Files {
-		if f.Transient {
-			f.Data = nil
-		}
-		recorded.Files[i] = f
-	}
-	planJSON, err := json.MarshalIndent(recorded, "", "  ")
+	// plan.json is diagnostic - the row is what Socrates acts on - and the
+	// activity detector's way to the shell's own name. It is not world
+	// readable: a plan's environment is the session's.
+	planJSON, err := json.MarshalIndent(plan, "", "  ")
 	if err != nil {
 		return err
 	}
@@ -1068,10 +926,10 @@ func (m *Manager) Viewers(sessionID string) []*Viewer {
 // ---------------------------------------------------------------- deleting
 
 // Park closes the terminal of a session that is done and keeps everything
-// else: the row, the journal, the working directory and the program's own
-// conversation id. What is left is exactly what a reboot leaves behind, so
-// the row says needs_resume and a later resume picks the conversation up
-// again - but only once the session is no longer done, which Ensure checks.
+// else: the row, the journal and the working directory. What is left is
+// exactly what a reboot leaves behind, so the row says needs_resume and a
+// later resume starts the program again in the same folder - but only once
+// the session is no longer done, which Ensure checks.
 //
 // It takes the session's lock, so a resume that is under way finishes before
 // the terminal it made is closed rather than racing it.
@@ -1129,11 +987,14 @@ func (m *Manager) Delete(ctx context.Context, sessionID string) error {
 	if err := m.stop(ctx, row); err != nil {
 		return err
 	}
+	// The folder before the row: a delete cut short in between leaves a row
+	// to delete again, never a folder that no row leads back to.
+	if err := os.RemoveAll(SessionDir(m.cfg.DataDir, sessionID)); err != nil {
+		return err
+	}
 	if err := m.st.DeleteSession(sessionID); err != nil {
 		return err
 	}
-	// The watcher would otherwise keep looking for a conversation id for
-	// another quarter of an hour and then write it to a row that is gone.
 	m.forgetSession(sessionID)
-	return os.RemoveAll(SessionDir(m.cfg.DataDir, sessionID))
+	return nil
 }

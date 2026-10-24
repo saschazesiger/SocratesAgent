@@ -1,5 +1,6 @@
-// Command socrates is a web terminal for Shell, Claude Code, Codex and
-// OpenCode, with voice input and an admin dashboard.
+// Command socrates is a web dashboard for Claude Code, Codex and OpenCode,
+// driven as chats through their own protocols, with a terminal for the
+// shell, voice input and an admin dashboard.
 package main
 
 import (
@@ -12,13 +13,13 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"sync/atomic"
 	"syscall"
 	"time"
 
-	"github.com/saschazesiger/SocratesAgent/internal/accounts"
 	// The chat adapters register themselves for the server and the hosts.
 	_ "github.com/saschazesiger/SocratesAgent/internal/agent/claude"
 	_ "github.com/saschazesiger/SocratesAgent/internal/agent/codex"
@@ -116,6 +117,9 @@ func main() {
 	if err := os.MkdirAll(*dataDir, 0o700); err != nil {
 		log.Fatalf("could not create the data directory %s: %v", *dataDir, err)
 	}
+	if abs, err := filepath.Abs(*dataDir); err == nil {
+		config.UseDataDir(abs)
+	}
 	unlock, err := lockDataDir(*dataDir)
 	if err != nil {
 		log.Fatalf("%v", err)
@@ -134,13 +138,12 @@ func main() {
 	}
 	// Once, on the first start of the build with accounts on a data directory
 	// of the build before (the store marks it when it upgrades the
-	// database): the agents' own folders and the old profiles become
-	// accounts (REBUILD.md §8.1-8.2). A new data directory has nothing to
-	// take over and never touches HOME. One that stops half way is finished
-	// by the next start; until then the chats run on what has been moved.
-	if err := accounts.Migrate(accounts.MigrateOptions{DataDir: *dataDir, Store: st, Env: os.Environ(), Logf: log.Printf}); err != nil {
-		log.Printf("accounts: the migration did not finish (%v); the next start tries again", err)
-	}
+	// database): the agents' terminals go, and the agents' own folders and
+	// the old profiles become accounts (REBUILD.md §8.1-8.3). A new data
+	// directory has nothing to take over and never touches HOME. One that
+	// stops half way is finished by the next start; until then the chats run
+	// on what has been moved.
+	migrateLogged(*dataDir, st, os.Environ())
 
 	// life ends with SIGTERM, and with a finished restore, which is a stop
 	// followed by a start of the same binary.

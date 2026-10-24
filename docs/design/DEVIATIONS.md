@@ -2717,3 +2717,142 @@ it waits for the turn - the journaled command says its `when` in `args` (`after_
 field of the command event - or goes to the account the turn already runs on: the host is there and
 interrupts nothing (a host launched on the account of a switch still in the outbox, which reaches it
 while the first turn runs).
+
+**WP10 / §8.3 — the lost profiles' accounts are made before the clean cut, and the cut before
+the moves.** The brief puts the clean cut first; the lost profiles' accounts (a database write,
+nothing moves) come before it, because which agents a lost profile ran is read off its sessions -
+the very rows the cut removes - and a start killed after the cut would otherwise make every lost
+profile a Claude Code account. A rerun also keeps the agents an earlier run made a lost profile's
+accounts for. The backup tar is written when there is anything to cut, as it is when there is
+anything to move.
+
+**WP10 / §8.3 — "simple and lossless", spelled out.** A prepared agent terminal becomes a prepared
+chat in place (`Store.MakePreparedChat`): its agent, folder, model, effort, schedule, Ultracode and
+draft stay. Its profile becomes its account once the moves have made the accounts: the default
+profile the agent's Default account (none: the chat makes one when it starts, as any chat does), a
+named profile its `profile:` or `lost:` account, one that left the profile to its start an account
+left to its start. Only a named profile with no account of that agent loses something - the
+sign-in it was prepared for - and that prepared session is removed and logged.
+
+**WP10 / §F.7 — the agents' state rows left the diagnostics.** "Claude Code state", "Codex state",
+"OpenCode state" and "Claude Code sign-in" checked the folders an agent's terminal needed (a
+writable `CLAUDE_CONFIG_DIR` for the theme pin, the Codex and OpenCode databases for discovery,
+Claude Code's first run). A chat runs on an account's folder, and the Accounts card says each
+account's state, so the rows went with the terminals; the program rows stay.
+
+**WP10 / DESIGN rev 11 — the usage strip is gone.** Its limits were a sign-in profile's, read for
+the session on screen; a Shell has no limits of its own, and a chat says its usage under its "i"
+and in its account picker. The strip, its dialog and `GET /api/sessions/{id}/usage` went with the
+profiles.
+
+**WP10 / brief — the Shell's process tree is its busy, not "tasks".** The brief keeps "busy/idle
+of a shell, its process tree for 'tasks', exit status". The Shell's layer reads its foreground
+command and whether the shell has a child, which is busy - a script run by `bash` - as it always
+was; no Shell ever reported `tasks`, which only an agent's turn has. VS Code keeps quiescence, a
+dead pane is unknown with its exit status, and a terminal's resume note is never "fresh": it has
+no conversation to lose.
+
+**WP10 / e2e — three Shell scenarios no longer start an agent.** `exitoverlay` ends a Shell with
+`exit 7`, `backpressure` prints its two hundred lines from a shell loop, and `lighttheme` keeps the
+palette part only (the white pane and the sixteen colours drawn at 4.5:1): the Codex theme flag it
+also checked is gone with the agents' terminals, and the white answer to a program's colour query
+is termux's `TestOSCRespondsWhite`.
+
+**WP10 / §8.4 — "once the first snapshot exists" is this machine's snapshot.** The Backup card
+offers the mirror's objects for deletion once the backup holds a snapshot whose host is this
+machine's (read off the snapshot listing, which opens and starts nothing), and only for a backup
+whose prefix ends in `backup/v1/` - the one a mirror's configuration was carried over into; a
+prefix of the person's own has no known mirror beside it.
+
+**WP10 — a draft saved during a prepared chat's start is a conflict.** The test of a save racing
+a start expected "started"; a prepared session is a chat now, whose draft is its composer once it
+runs, and its start takes the first message out of it, so the late save is answered as the
+conflict it is with what the composer now holds.
+
+**WP11 / §9 — three scenarios did not come over to the chats.** "Port every ADAPT scenario" with
+the same intent; three have none left. `tasks-opencode`: OpenCode's subagents run inside the turn
+that started them, so an OpenCode turn never ends with work still running and its adapter reports
+no background tasks (`tasks-claude` and `tasks-codex` cover the hourglass). `home-unread` and
+`home-language`: both were about a question read off an agent's screen in prose, by the model, in
+the person's language; a chat's question is its agent's own ask_user call, in the agent's words,
+and nothing reads a screen. Inside ported scenarios the same reason took OpenCode's permission card
+(a chat allows every permission and says so in a notice, which `home-opencode` asserts instead),
+the old dialog's "Another device is answering" step (a chat's answer is taken by the server at
+once, so the second device goes straight to "Answered on another device"), and the questions asked
+in prose in `home-quiet`, `home-kinds` and `home-restart` (replaced there by a second chat's
+ask_user question, the plan's card, and a third question).
+
+**WP11 / §9 — `livesession` types nothing.** The terminal version typed `/status`, which cost
+nothing in the TUI; in `claude -p` a slash command is a message, and whether it reaches the model
+is the CLI's to decide. The chat version asserts what the CLI says without a turn - its answer to
+initialize, with its version and its commands - and that no turn ran.
+
+**WP11 / brief — the README pictures are five, and the fakes take them.** `shots.mjs` used the
+real CLIs whenever all three were installed; it now uses the protocol fakes, and takes the Admin
+pictures against the real CLIs only with `SOCRATES_LIVE_AGENTS=1` (it starts no chat with them).
+The pictures are a chat at a desk, Home, a question on a phone, Admin's accounts and Admin's
+backup (`screenshot-home.png` and `screenshot-backup.png` are new). The people in them write in
+words: `fakeclaude` runs a script for a message the `claude.scripts.json` beside it names (a file,
+because a chat's CLI gets no variable of the suite's), and its `/readme` script is the turn the
+desk picture shows.
+
+**WP11 — what the ported scenarios found, fixed in the product.** Each was a scenario that failed
+for a reason in the code, not in the test:
+- A chat started without a model ran on the CLI's own default, not Admin's default model and
+  effort (DECISIONS "Admin (the basics only)"): `POST /api/chats` and a prepared chat's start fill
+  them in, and the catalogue hands them to the sheet.
+- Codex's background terminals were not reported, so a turn that left one running was "finished":
+  the adapter polls `thread/backgroundTerminals/list` every 2 s after a turn and reports the count
+  as tasks.
+- Status's phases reached only a terminal's viewers; a chat's page has no terminal socket, so its
+  ticker heard nothing. They go on the event stream too.
+- A chat filed Done that was sent a message stayed done, and the sweep would have put its agent to
+  rest mid-turn; a message picks it up again, as "Pick it up again" does a terminal.
+- A chat's unread mark was lost across a server restart: its host reported before the detector had
+  read the marks back. `ReportActivity` reads them first.
+- A Shell's pane that tmux listed as dead before it had the exit status was marked "Exit status
+  -1" by the poll on a busy machine. The cause is tmux up to 3.5 built with libutempter, which can
+  lose the program's SIGCHLD; origin/rebuild's fix is cherry-picked (the review pass below): the
+  poll leaves such a pane to the pane-died hook and sends the server the SIGCHLD that makes it
+  collect the status.
+- The account picker's renewal time was drawn once; it follows the clock (every 15 s), and a
+  window whose reset has passed counts as empty.
+- The question dialog: a question asked for (a tapped notification, `#q=`) while the page could
+  not read it opened another chat's question or said there was none; it now waits for the
+  connection (three tries in two minutes) and opens the one asked for. A double tap chose the
+  option drawn under the second tap, and a phone on its side showed the first option under the
+  bar: a new question takes no tap for 600 ms (a key is never a stray tap), and below 500 px the
+  question is scrolled to the top. What was asked while the dialog was open joins the walk at its
+  end. And the dialog had lost the connection line HOME.md gives it ("The dialog says it too"); it
+  has it again, with "This question may already have been answered" - except for the page's first
+  "Connecting…", which HOME.md lists too: the chats' dialog reads its questions from the server as
+  it opens, so on a page that has not connected yet they are as current as they can be, and the
+  line would only push the first option off a phone on its side.
+
+**WP10 + WP11 review — what the fix pass changed against the plan and the briefs.**
+- §8 "a backup of the old data folder first": the tar is that now. Its database is the copy the
+  store made before it upgraded the file (`store.PreUpgradeCopy`, `socrates.db.pre-v12.bak`),
+  because the build before refuses the upgraded one; and it keeps what that build reads and the
+  backup engine leaves out - the mirror's `s3.json` and the agent terminals' `sessions/<id>/`
+  folders with their journals, which the clean cut then deletes. HANDOFF §3 says how to go back.
+- §8.1, OpenCode: `opencode.db` moves to the shared `agents/opencode/opencode.db` as before, and a
+  relative link to it is left where it was, so an `opencode` run by hand in a Shell opens the same
+  database (AGENT-HOST.md §11).
+- §8.2: the lost profiles' accounts are made first (see above) and then put below every other
+  account, so no agent's list offers a "Sign in again" account above its Default one.
+- §8.3, the brief's "log what was removed, once": each agent terminal is said as it is removed,
+  and a delete removes the session's folder before its row, so a start killed in the middle
+  leaves a row the next start removes (and says), never a folder no row leads to.
+- The sheet refused every agent on a machine whose tmux was too old; only the Shell needs tmux.
+- `POST /api/sessions/{id}/digest` ("Read again" of the dialog WP11 removed) is gone with its
+  helpers; the resume note's `fresh`/`resumed_from` of a terminal went with the agent terminals.
+- origin/rebuild's fixes for a lost exit status (e1d0745, 83e82da, 1a388e4) and for a cut-short
+  backup upload (29f7bd3) are cherry-picked; wp10's own exit-status change (785b0f6) is reverted
+  in their favour, so the merge meets one version of those lines.
+- DECISIONS rev 7, "a tap says exactly when": the account menu and the sheet's account list say a
+  limit's renewal by the clock as well ("today at 15:42", "on Tue at 09:10"), the menu's lines
+  wrap instead of being cut, and a week's countdown reads in days.
+- The chat names a file a call worked on relative to the chat's folder when it is inside it (the
+  whole path stays behind the call's "i"), and a diff of an absolute path keeps its leading slash.
+- The default workspace root follows `-data` (DESIGN.md said `<data>/workspaces`; it was the
+  environment's data directory whatever `-data` said).

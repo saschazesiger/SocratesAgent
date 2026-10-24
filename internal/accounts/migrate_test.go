@@ -8,6 +8,7 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"io"
 	"io/fs"
 	"os"
@@ -128,7 +129,16 @@ func migrateWith(t *testing.T, opts MigrateOptions) error {
 		t.Fatal(err)
 	}
 	defer st.Close()
-	opts.Store, opts.Logf = st, t.Logf
+	opts.Store = st
+	if opts.Logf == nil {
+		opts.Logf = t.Logf
+	}
+	if opts.StopTerminal == nil {
+		// The fixture's agent terminals have no tmux session behind them:
+		// stopping one is removing its row. The rehearsal in package main
+		// stops live ones through the terminal substrate.
+		opts.StopTerminal = st.DeleteSession
+	}
 	return Migrate(opts)
 }
 
@@ -275,6 +285,25 @@ func TestTheMigrationMovesEveryLoginOnceAndLinksTheOldPaths(t *testing.T) {
 	if strings.Join(got, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("accounts:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
 	}
+	// The lists offer accounts in their order, and the lost profiles' are
+	// last, below every account that works.
+	st, err := store.Open(filepath.Join(data, "socrates.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ordered, err := st.ListAccounts()
+	st.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var origins []string
+	for _, a := range ordered {
+		origins = append(origins, a.Origin)
+	}
+	if !strings.HasPrefix(origins[len(origins)-1], "lost:") || !strings.HasPrefix(origins[len(origins)-2], "lost:") ||
+		strings.HasPrefix(origins[len(origins)-3], "lost:") {
+		t.Fatalf("the accounts in their order: %v", origins)
+	}
 
 	// Claude Code: the folder and its global config moved, the old paths are
 	// links, and the login is one file seen through both.
@@ -335,6 +364,9 @@ func TestTheMigrationMovesEveryLoginOnceAndLinksTheOldPaths(t *testing.T) {
 		}
 	}
 	isLink(t, filepath.Join(home, ".config/opencode"))
+	// The database left the account's folder for the shared one, and an
+	// opencode started by hand with HOME's folders still opens it.
+	sameFile(t, filepath.Join(home, ".local/share/opencode/opencode.db"), filepath.Join(data, "agents/opencode/opencode.db"))
 	untouched(t, home, multiAuth)
 
 	// Not one login exists twice (the backup tar aside, which nothing can
@@ -379,6 +411,140 @@ func TestTheMigrationMovesEveryLoginOnceAndLinksTheOldPaths(t *testing.T) {
 	}
 }
 
+// The tar is the way back to the build before: its database is the one that
+// build wrote (schema 9, with the agent terminals the cut removed), and it
+// keeps what that build reads that a backup leaves out - the mirror's
+// s3.json - and the agent terminals' folders with their journals, which the
+// cut deletes.
+func TestThePreRebuildTarIsTheWayBack(t *testing.T) {
+	data, home := fixture(t)
+	write(t, filepath.Join(data, "s3.json"), `{"bucket":"b1"}`)
+	write(t, filepath.Join(data, "sessions/s1/journal.raw"), "the terminal's bytes")
+	write(t, filepath.Join(data, "sessions/s1/journal.1.raw"), "older bytes")
+	if err := migrateOnce(t, data, home, ""); err != nil {
+		t.Fatal(err)
+	}
+	entries := tarEntries(t, data+".pre-rebuild.tar")
+	for name, want := range map[string]string{
+		"data/s3.json":                   `{"bucket":"b1"}`,
+		"data/sessions/s1/journal.raw":   "the terminal's bytes",
+		"data/sessions/s1/journal.1.raw": "older bytes",
+	} {
+		if got, ok := entries[name]; !ok || got != want {
+			t.Fatalf("the tar's %s: %q (%v), want %q", name, got, ok, want)
+		}
+	}
+	for name := range entries {
+		if strings.HasPrefix(name, "data/socrates.db") && name != "data/socrates.db" {
+			t.Fatalf("the tar has %s beside the database", name)
+		}
+	}
+	old := filepath.Join(t.TempDir(), "socrates.db")
+	if err := os.WriteFile(old, []byte(entries["data/socrates.db"]), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("sqlite", "file:"+old)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var version, terminals int
+	if err := db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM sessions WHERE id IN ('s1', 's2')`).Scan(&terminals); err != nil {
+		t.Fatal(err)
+	}
+	if version != 9 || terminals != 2 {
+		t.Fatalf("the tar's database is at schema %d with %d of the 2 agent terminals, want 9 with both", version, terminals)
+	}
+}
+
+// OpenCode's database is one database through both its paths: a write made
+// through HOME's old one, as an opencode started by hand makes it, is read
+// through the shared one every chat is given, and SQLite keeps its
+// write-ahead log beside the file the link names, not beside the link.
+func TestOpenCodesDatabaseIsOneThroughTheOldPath(t *testing.T) {
+	data, home := fixture(t)
+	oldPath := filepath.Join(home, ".local/share/opencode/opencode.db")
+	for _, suffix := range []string{"", "-wal"} {
+		if err := os.Remove(oldPath + suffix); err != nil {
+			t.Fatal(err)
+		}
+	}
+	run := func(path string, queries ...string) {
+		t.Helper()
+		db, err := sql.Open("sqlite", "file:"+path+"?_pragma=journal_mode(WAL)")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer db.Close()
+		for _, q := range queries {
+			if _, err := db.Exec(q); err != nil {
+				t.Fatalf("%s: %v", q, err)
+			}
+		}
+	}
+	run(oldPath, `CREATE TABLE session(id TEXT)`, `INSERT INTO session VALUES('before')`)
+	if err := migrateOnce(t, data, home, ""); err != nil {
+		t.Fatal(err)
+	}
+	shared := filepath.Join(data, "agents/opencode/opencode.db")
+	run(oldPath, `INSERT INTO session VALUES('by hand')`)
+	db, err := sql.Open("sqlite", "file:"+shared)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var ids []string
+	rows, err := db.Query(`SELECT id FROM session ORDER BY rowid`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, id)
+	}
+	rows.Close()
+	if strings.Join(ids, ",") != "before,by hand" {
+		t.Fatalf("the shared database has %v", ids)
+	}
+	for _, suffix := range []string{"-wal", "-shm"} {
+		if _, err := os.Lstat(oldPath + suffix); !errors.Is(err, fs.ErrNotExist) {
+			t.Fatalf("SQLite made %s beside the link: %v", filepath.Base(oldPath+suffix), err)
+		}
+	}
+}
+
+// The clean cut says each terminal it removed once, also when the start that
+// removed it was cut short before the others.
+func TestEachTerminalTheCutRemovesIsSaidOnce(t *testing.T) {
+	data, home := fixture(t)
+	var said []string
+	logf := func(format string, args ...any) { said = append(said, fmt.Sprintf(format, args...)) }
+	env := []string{"HOME=" + home}
+	if err := migrateWith(t, MigrateOptions{DataDir: data, Env: env, Logf: logf, stopAfter: "cut:s1"}); !errors.Is(err, errStopped) {
+		t.Fatalf("the run stopped after the first terminal with %v", err)
+	}
+	if err := migrateWith(t, MigrateOptions{DataDir: data, Env: env, Logf: logf}); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"s1", "s2"} {
+		n := 0
+		for _, line := range said {
+			if strings.Contains(line, "removed") && strings.Contains(line, "("+id+")") {
+				n++
+			}
+		}
+		if n != 1 {
+			t.Fatalf("the removal of %s was said %d times:\n%s", id, n, strings.Join(said, "\n"))
+		}
+	}
+}
+
 // A migration cut short after any step is finished by the next start, with
 // the same result as one that ran through.
 func TestAnInterruptedMigrationIsFinishedByTheNextStart(t *testing.T) {
@@ -388,7 +554,7 @@ func TestAnInterruptedMigrationIsFinishedByTheNextStart(t *testing.T) {
 	}
 	want := outcome(t, clean)
 	for _, step := range []string{
-		"backup", "account:" + OriginClaude, "moved:" + OriginClaude, "json:" + OriginClaude, "shared:" + OriginClaude,
+		"backup", "cut:s1", "cut:s2", "account:" + OriginClaude, "moved:" + OriginClaude, "json:" + OriginClaude, "shared:" + OriginClaude,
 		"account:" + OriginCodex, "moved:" + OriginCodex, "moved:" + OriginOpenCode, "shared:" + OriginOpenCode,
 		"account:profile:p-bbbbbbbbbbbb:claude", "moved:profile:p-bbbbbbbbbbbb:codex", "lost:lost:p-aaaaaaaaaaaa:claude",
 	} {

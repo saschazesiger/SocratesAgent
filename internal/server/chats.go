@@ -507,7 +507,7 @@ func (p *chatPeer) launch(ctx context.Context) error {
 	spec := agenthost.Spec{
 		ChatID: p.id, Harness: row.Harness, Workdir: row.Workdir, Model: model, Effort: effort,
 		Conversation: row.CLISessionID, ParkAfterMS: p.hub.parkAfterFor().Milliseconds(),
-		Ultracode: chatUltracode(row.Harness, readPrestartOptions(row.Options).Ultracode),
+		Ultracode: chatUltracode(row.Harness, readUltracode(row.Options)),
 	}
 	if err := p.accountSpec(row, &spec); err != nil {
 		return err
@@ -889,10 +889,11 @@ func (s *Server) handleCreateChat(w http.ResponseWriter, r *http.Request) {
 		mode = harnesses.WorkdirDynamic
 	}
 	label := chatLabel(harness)
+	model, effort := chatModel(settings, harness, body.Model, body.Effort)
 	row := &store.Session{
 		ID: id, ClientID: clientID, Title: sessionTitle(body.Title, label, workdir, mode),
-		TitleSource: titleSource(body.Title), Harness: harness, Model: strings.TrimSpace(body.Model),
-		Effort: strings.TrimSpace(body.Effort), Workdir: workdir, WorkdirMode: mode,
+		TitleSource: titleSource(body.Title), Harness: harness, Model: model,
+		Effort: effort, Workdir: workdir, WorkdirMode: mode,
 		Kind: store.KindChat, State: store.StateRunning,
 		Options: withChatAccount(withOption(nil, "ultracode", chatUltracode(harness, body.Ultracode)), body.Account, body.AutoSwitch),
 	}
@@ -1037,9 +1038,18 @@ func (s *Server) handleChatMessage(w http.ResponseWriter, r *http.Request) {
 
 // sendMessage submits one message and turns the host's answer into a
 // response. Sending a message is having seen the chat, as typing at a
-// terminal is.
+// terminal is, and it picks a done chat up again, as "Pick it up again" does
+// a terminal: left done, the sweep would put its agent to rest while it
+// works, and delete the chat once its day was up.
 func (s *Server) sendMessage(ctx context.Context, p *chatPeer, m *chatMessageBody) (int, map[string]any) {
 	s.manager.MarkRead(p.id)
+	if row, err := s.store.GetSession(p.id); err == nil && row.Status == store.StatusDone {
+		if err := s.store.SetSessionStatus(p.id, store.StatusInProgress); err != nil {
+			log.Printf("chat %s: could not pick it up again: %v", p.id, err)
+		} else {
+			s.events.poke()
+		}
+	}
 	return p.command(ctx, agenthost.Command{Op: agenthost.OpSend, ClientID: m.ClientID, Text: m.Text, Attachments: m.Attachments})
 }
 

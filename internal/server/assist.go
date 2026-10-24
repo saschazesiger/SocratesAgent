@@ -1,11 +1,12 @@
 package server
 
-// The two things that talk *about* a terminal rather than to it: the Status
-// button, which has a model read the screen and say what it means, and the
-// namer, which has a model read the first screen and call the session
-// something. Both are server side on purpose - a phone that locks in a pocket
-// comes back to a finished answer - and both read the pane through
-// termux.CapturePane, which returns text with no escape sequences in it at all.
+// The two things that talk *about* a session rather than to it: the Status
+// button, which has a model read what the session is doing and say what it
+// means, and the namer, which has a model call the session something. Both
+// are server side on purpose - a phone that locks in a pocket comes back to a
+// finished answer. A chat is told from its journal; a Shell's screen is read
+// through termux.CapturePane, which returns text with no escape sequences in
+// it at all.
 
 import (
 	"context"
@@ -236,9 +237,8 @@ func modelProblem(err error, model, kind string) (int, string) {
 
 // What naming a session costs and how far it may go.
 const (
-	// titleScreenLines is what the namer is shown. The prompt that has just
-	// been sent is at the bottom of it, and the harness's banner above it is
-	// context rather than subject.
+	// titleScreenLines is what the namer is shown of a Shell named by hand:
+	// its latest screen, with what was typed last at the bottom.
 	titleScreenLines = 200
 	// titleTimeout bounds the whole run. It is a sidebar row renaming itself,
 	// so a gateway that does not answer in time is reported, not waited out.
@@ -263,13 +263,12 @@ const (
 	titlePhaseError = "error"
 )
 
-// titleDriver names a session once: the moment its first prompt is sent.
+// titleDriver names a chat once: the moment its first message is taken up.
 //
-// The moment is the first committed edge into `busy` after somebody has typed
-// at the session (termux.Activity.Asked). Every harness is busy while it
-// starts, and that edge comes before anybody has typed a word, so it is
-// ignored; the first edge after typing is the harness taking up the first
-// prompt, and the prompt is on the screen.
+// The moment is the first committed edge into `busy` after somebody has sent
+// the chat something (termux.Activity.Asked). An agent can be busy while it
+// starts, and that edge comes before anybody has said a word, so it is
+// ignored; the first edge after a message is the agent taking it up.
 //
 // It is once per session and the once is persisted (store.TitleAuto) whatever
 // the outcome, so a later prompt never renames a session and a server restart
@@ -354,17 +353,18 @@ func (d *titleDriver) forget(sessionID string) {
 	}
 }
 
-// run is the whole of it: read the screen, ask for a name, store it, and tell
-// every open browser. Once it has started, every way out of it is reported:
-// the row pulses from the first frame to the last.
+// run is the whole of it: read the first message, ask for a name, store it,
+// and tell every open browser. Once it has started, every way out of it is
+// reported: the row pulses from the first frame to the last.
 func (d *titleDriver) run(ctx context.Context, sessionID string) {
 	row, err := d.srv.store.GetSession(sessionID)
 	if err != nil || row.TitleSource != "" {
 		return
 	}
-	// A shell session is a directory and a prompt. There is nothing on its
-	// screen that a name could be about, and `cd` is not a subject.
-	if row.Harness == config.HarnessShell {
+	// Only a chat is named on its own. A Shell is a directory and a prompt:
+	// there is nothing on its screen that a name could be about, and `cd` is
+	// not a subject.
+	if !row.IsChat() {
 		return
 	}
 	namer, ok := d.srv.titleNamer()
@@ -375,26 +375,14 @@ func (d *titleDriver) run(ctx context.Context, sessionID string) {
 	}
 
 	d.srv.emitTitle(sessionID, titlePhaseStart, "", "")
+	// A chat is named after its first message, and what its first answer
+	// has said so far.
 	title, problem := "", ""
-	if row.IsChat() {
-		// A chat has no screen: it is named after its first message, and
-		// what its first answer has said so far.
-		first, answer := d.srv.chats.firstExchange(sessionID)
-		if first == "" {
-			problem = "the chat's first message could not be read, so there was nothing to name it after"
-		} else {
-			title, problem = namer.ask(ctx, chatTitlePrompt(row.Harness, first, answer, false))
-		}
+	first, answer := d.srv.chats.firstExchange(sessionID)
+	if first == "" {
+		problem = "the chat's first message could not be read, so there was nothing to name it after"
 	} else {
-		screen, err := d.srv.manager.CapturePane(ctx, sessionID, titleScreenLines)
-		switch {
-		case err != nil:
-			problem = "the screen could not be read: " + err.Error()
-		case strings.TrimSpace(screen) == "":
-			problem = "the screen was empty, so there was nothing to name the session after"
-		default:
-			title, problem = namer.ask(ctx, titlePrompt(row.Harness, screen))
-		}
+		title, problem = namer.ask(ctx, chatTitlePrompt(row.Harness, first, answer, false))
 	}
 	if deleted := ctx.Err() == context.Canceled; deleted {
 		// forget: the session is gone, and so is anybody to tell.
@@ -668,20 +656,6 @@ func chatTitlePrompt(harness, first, more string, again bool) string {
 		}
 	}
 	return b.String()
-}
-
-// titlePrompt is the naming instruction, screen included.
-//
-// The title is always English, whatever the conversation is in: the sidebar
-// is one list, and it reads as one list.
-func titlePrompt(harness, screen string) string {
-	return "Below is the screen of a terminal running " + harnessLabel(harness) +
-		". The user has just sent their first prompt; it is the last thing they typed. " +
-		"Give this session a title that says what the user wants, as short and plain as " +
-		"possible: 2 to 5 words, in English even if the prompt is in another language. " +
-		"Name the task, not the program - never mention " + harnessLabel(harness) + ". " +
-		"Answer with the title and nothing else: no quotation marks, no full stop at the end, " +
-		"no markdown, no explanation.\nScreen:\n" + screen
 }
 
 // cleanTitle takes a name out of whatever the model answered with. Empty is a

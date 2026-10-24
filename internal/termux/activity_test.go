@@ -5,17 +5,11 @@ package termux
 import (
 	"context"
 	"encoding/json"
-	"fmt"
-	"io"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -25,10 +19,11 @@ import (
 
 // The ladder is tested without tmux and without a clock.
 //
-// Every layer sits behind the `source` interface and the `paneLine` struct, so
-// a table test can hand the detector any sequence of ticks it likes and assert
-// both the committed state and the exact OnActivity calls. What the real tmux
-// answers is a different question, and is asked in screen_test.go.
+// The Shell's layer sits behind a field and every pane behind the `paneLine`
+// struct, so a table test can hand the detector any sequence of ticks it
+// likes and assert both the committed state and the exact OnActivity calls.
+// What the real tmux answers is a different question, and is asked in
+// screen_test.go.
 
 // fakeSource is a scripted exact layer: one answer per tick, and the last one
 // repeats once the script runs out.
@@ -38,7 +33,7 @@ type fakeSource struct {
 	at      int
 }
 
-func (f *fakeSource) Read(context.Context, snapshot) observation {
+func (f *fakeSource) read() observation {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if len(f.answers) == 0 {
@@ -52,8 +47,8 @@ func (f *fakeSource) Read(context.Context, snapshot) observation {
 	return obs
 }
 
-// bench is a Manager with no tmux behind it, a real store, and whatever exact
-// layer and screen the test wants.
+// bench is a Manager with no tmux behind it, a real store, and whatever
+// Shell layer the test wants.
 type bench struct {
 	t       *testing.T
 	m       *Manager
@@ -63,8 +58,10 @@ type bench struct {
 
 	mu      sync.Mutex
 	changes []ActivityChange
-	screen  string
-	screenE error
+	// sources is the scripted layer of each session that has one, and src
+	// the one every other session gets; nil leaves the real one in place.
+	sources map[string]*fakeSource
+	src     *fakeSource
 }
 
 func newBench(t *testing.T) *bench {
@@ -75,7 +72,7 @@ func newBench(t *testing.T) *bench {
 		t.Fatalf("could not open the store: %v", err)
 	}
 	t.Cleanup(func() { st.Close() })
-	b := &bench{t: t, st: st, dataDir: dir, now: time.Unix(1788362216, 0)}
+	b := &bench{t: t, st: st, dataDir: dir, now: time.Unix(1788362216, 0), sources: map[string]*fakeSource{}}
 	m, err := New(st, Config{
 		DataDir:    dir,
 		WindowSize: "manual",
@@ -90,16 +87,17 @@ func newBench(t *testing.T) *bench {
 		t.Fatalf("could not build a manager: %v", err)
 	}
 	b.m = m
-	m.act.capture = func(context.Context, string, int) (string, error) {
+	m.act.shell = func(snap snapshot) observation {
 		b.mu.Lock()
-		defer b.mu.Unlock()
-		return b.screen, b.screenE
-	}
-	// The bench's screen has no history, so what is on it is what is visible.
-	m.act.visible = func(context.Context, string) (string, error) {
-		b.mu.Lock()
-		defer b.mu.Unlock()
-		return b.screen, b.screenE
+		f := b.sources[snap.row.ID]
+		if f == nil {
+			f = b.src
+		}
+		b.mu.Unlock()
+		if f == nil {
+			return readShell(snap)
+		}
+		return f.read()
 	}
 	// NoteInput and MarkRead read the clock themselves, and the ladder's
 	// answers are decided by comparing that reading with the tick's.
@@ -181,12 +179,6 @@ func (b *bench) ticks(n int, rows []store.Session, panes func() map[string]paneL
 	}
 }
 
-func (b *bench) setScreen(text string) {
-	b.mu.Lock()
-	b.screen, b.screenE = text, nil
-	b.mu.Unlock()
-}
-
 func (b *bench) want(id string, state State) {
 	b.t.Helper()
 	if got := b.m.ActivityOf(id).State; got != state {
@@ -204,21 +196,34 @@ func (b *bench) states() []State {
 	return out
 }
 
-func (b *bench) source(kind harnesses.Kind, answers ...observation) *fakeSource {
+// source scripts the Shell layer of every session the test has not given a
+// script of its own.
+func (b *bench) source(answers ...observation) *fakeSource {
 	f := &fakeSource{answers: answers}
-	b.m.setSource(kind, f)
+	b.mu.Lock()
+	b.src = f
+	b.mu.Unlock()
+	return f
+}
+
+// sourceFor scripts one session's.
+func (b *bench) sourceFor(id string, answers ...observation) *fakeSource {
+	f := &fakeSource{answers: answers}
+	b.mu.Lock()
+	b.sources[id] = f
+	b.mu.Unlock()
 	return f
 }
 
 // TestActivityBusyIsImmediateAndIdleSettles: the spinner has to appear on the
-// tick the turn starts, and one stray idle answer between two tool calls must
-// not stop it.
+// tick the command starts, and one stray idle answer between two commands of
+// a script must not stop it.
 func TestActivityBusyIsImmediateAndIdleSettles(t *testing.T) {
 	b := newBench(t)
-	row := b.row("s1", "claude")
-	b.source(harnesses.KindClaude,
+	row := b.row("s1", "shell")
+	b.source(
 		seen(StateBusy, ""),
-		seen(StateIdle, ""), // one stray tick between two tool calls
+		seen(StateIdle, ""), // one stray tick between two commands
 		seen(StateBusy, ""),
 		seen(StateBusy, ""),
 		seen(StateIdle, ""),
@@ -289,16 +294,14 @@ func TestMovesRow(t *testing.T) {
 	}
 }
 
-// TestActivityLongSilentToolRunStaysBusy: a five minute test suite that prints
-// nothing is busy, because the exact layer says so and quiescence never
-// overrides an exact answer.
-func TestActivityLongSilentToolRunStaysBusy(t *testing.T) {
+// TestActivityLongSilentRunStaysBusy: a five minute test suite that prints
+// nothing is busy, because the Shell's layer says a program runs and
+// quiescence never overrides an exact answer.
+func TestActivityLongSilentRunStaysBusy(t *testing.T) {
 	b := newBench(t)
-	row := b.row("s1", "claude")
-	b.source(harnesses.KindClaude, seen(StateBusy, ""))
+	row := b.row("s1", "shell")
+	b.source(seen(StateBusy, "go"))
 	rows := []store.Session{row}
-	// The screen would say idle, and there has been no output at all.
-	b.setScreen("❯ ")
 
 	start := b.at()
 	for b.at().Sub(start) < 5*time.Minute {
@@ -312,226 +315,22 @@ func TestActivityLongSilentToolRunStaysBusy(t *testing.T) {
 	}
 }
 
-// TestActivityLadderFallsThroughToTheScreenAndThenToQuiescence: the exact
-// layer vanishing must not strand a session, and the layers below have to be
-// reached in order.
-func TestActivityLadderFallsThroughToTheScreenAndThenToQuiescence(t *testing.T) {
-	b := newBench(t)
-	row := b.row("s1", "claude")
-	rows := []store.Session{row}
-	b.source(harnesses.KindClaude, seen(StateBusy, ""), missing)
-
-	b.tick(rows, b.pane(row, 0))
-	b.want("s1", StateBusy)
-
-	// The file is gone. For three ticks the last exact answer stands.
-	b.setScreen("Do you want to proceed?\n 1. Yes\n 2. No")
-	for i := 0; i < ExactMissTicks; i++ {
-		b.tick(rows, b.pane(row, 0))
-		b.want("s1", StateBusy)
-	}
-	// Then the screen decides, and it says a permission prompt.
-	b.tick(rows, b.pane(row, 0))
-	b.want("s1", StateWaiting)
-	if note := b.m.ActivityOf("s1").Note; note != "permission prompt" {
-		t.Fatalf("the note is %q, want the screen's own words", note)
-	}
-	if src := b.m.ActivityOf("s1").Source; src != sourceScreen {
-		t.Fatalf("the answer came from %q, want the screen", src)
-	}
-
-	// The screen goes blank - nothing recognised - and only quiescence is
-	// left. Waiting is answered first, so a keystroke has to be recorded
-	// before silence may release it.
-	b.setScreen("")
-	b.m.NoteInput("s1")
-	b.until("s1", StateIdle, 6, rows, func() map[string]paneLine { return b.pane(row, HardQuiet) })
-	if src := b.m.ActivityOf("s1").Source; src != sourceQuiet {
-		t.Fatalf("the answer came from %q, want quiescence", src)
-	}
-}
-
-// TestActivityFallbackMenuIsReleasedOnceAnswered: with no status file, a menu
-// answered at the machine is waiting no longer. Its hint stays above the
-// answer (the fake leaves it there, a real one's comes back from the history
-// after a clear), and the turn that follows is busy and then idle - not
-// waiting for as long as the hint is in the forty rows the capture reads. And
-// the plan approval's sentence in an answer is no plan approval.
-func TestActivityFallbackMenuIsReleasedOnceAnswered(t *testing.T) {
-	b := newBench(t)
-	row := b.row("s1", "claude")
-	rows := []store.Session{row}
-	b.source(harnesses.KindClaude, missing)
-	panes := func() map[string]paneLine { return b.pane(row, 0) }
-
-	menu := " ☐ DB\n\nWhich database should we use?\n\n❯ 1. Postgres\n     Relational, robust\n  2. SQLite\n" +
-		"  3. Type something.\n──────\n  4. Chat about this\n\nEnter to select · ↑/↓ to navigate · Esc to cancel\n"
-	b.setScreen(menu)
-	b.until("s1", StateWaiting, 6, rows, panes)
-	if note := b.m.ActivityOf("s1").Note; note != "question" {
-		t.Fatalf("the note is %q", note)
-	}
-
-	b.m.NoteInput("s1")
-	answered := menu + "● User answered Claude's questions:\n  ⎿ · Which database should we use? → Postgres\n\n"
-	b.setScreen(answered + "⠋ Cooking… (2s · esc to interrupt)\n")
-	b.until("s1", StateBusy, 6, rows, panes)
-	b.setScreen(answered + "✻ Worked for 3s\n\n──────\n❯ \n──────\n  ⏵⏵ bypass permissions on · ← for agents\n")
-	b.until("s1", StateIdle, 6, rows, panes)
-
-	b.setScreen("● I can refactor the mirror next. Would you like to proceed?\n\n> do it\n\n" +
-		"⠋ Cooking… (6s · esc to interrupt)\n  ⏵⏵ bypass permissions on · ← for agents\n")
-	b.until("s1", StateBusy, 6, rows, panes)
-	for i := 0; i < 8; i++ {
-		b.tick(rows, panes())
-		b.want("s1", StateBusy)
-	}
-}
-
-// TestActivityStuckBusyIsReleasedByQuiescence: the /hang case - busy furniture
-// frozen on the screen, no exact signal and no output at all. Thirty seconds
-// of silence is idle whatever the screen still shows.
-func TestActivityStuckBusyIsReleasedByQuiescence(t *testing.T) {
-	b := newBench(t)
-	row := b.row("s1", "claude")
-	rows := []store.Session{row}
-	b.source(harnesses.KindClaude, seen(StateBusy, ""), missing)
-	b.setScreen("✻ Cooking… (11s · esc to interrupt)")
-
-	b.tick(rows, b.pane(row, 0))
-	b.want("s1", StateBusy)
-
-	// The pane's last output recedes into the past while the screen keeps
-	// saying "esc to interrupt".
-	quiet := time.Duration(0)
-	deadline := b.at().Add(HardQuiet + 5*time.Second)
-	for b.at().Before(deadline) {
-		quiet += ActivityInterval
-		b.tick(rows, b.pane(row, quiet))
-	}
-	b.want("s1", StateIdle)
-	if src := b.m.ActivityOf("s1").Source; src != sourceQuiet {
-		t.Fatalf("the release came from %q, want quiescence", src)
-	}
-}
-
-// TestActivityBusyCeilingDropsAStaleExactAnswer: after two minutes with no
-// exact answer at all, the remembered one is not evidence any more.
-func TestActivityBusyCeilingDropsAStaleExactAnswer(t *testing.T) {
-	b := newBench(t)
-	row := b.row("s1", "codex")
-	rows := []store.Session{row}
-	src := b.source(harnesses.KindCodex, seen(StateBusy, ""))
-
-	b.tick(rows, b.pane(row, 0))
-	b.want("s1", StateBusy)
-
-	// The title goes unreadable and stays that way, with the pane still
-	// producing output every tick so quiescence has nothing to say.
-	src.mu.Lock()
-	src.answers, src.at = []observation{missing}, 0
-	src.mu.Unlock()
-	b.setScreen("Working (3s • esc to interrupt)")
-
-	deadline := b.at().Add(BusyCeiling + 5*time.Second)
-	for b.at().Before(deadline) {
-		b.tick(rows, b.pane(row, 0))
-	}
-	// The screen still says busy, so busy it is - but on the screen's
-	// authority now, not on a two-minute-old exact answer.
-	b.want("s1", StateBusy)
-	if src := b.m.ActivityOf("s1").Source; src != sourceScreen {
-		t.Fatalf("the answer came from %q, want the screen", src)
-	}
-	tr := b.m.act.tracks["s1"]
-	if !tr.dropped {
-		t.Fatal("the exact layer was not dropped after the busy ceiling")
-	}
-}
-
-// TestActivityWaitingIsStickyAgainstSilence: a permission prompt may sit for
-// an hour while the user drives, and silence alone must not blank it.
-func TestActivityWaitingIsStickyAgainstSilence(t *testing.T) {
-	b := newBench(t)
-	row := b.row("s1", "claude")
-	rows := []store.Session{row}
-	b.source(harnesses.KindClaude, seen(StateWaiting, "permission prompt"), missing)
-	b.setScreen("")
-
-	b.tick(rows, b.pane(row, 0))
-	b.want("s1", StateWaiting)
-
-	// Forty minutes of nothing at all: no signal, no screen, no output.
-	quiet := time.Duration(0)
-	deadline := b.at().Add(40 * time.Minute)
-	for b.at().Before(deadline) {
-		quiet += ActivityInterval
-		b.tick(rows, b.pane(row, quiet))
-	}
-	b.want("s1", StateWaiting)
-
-	// The user answers it. Now thirty seconds of silence means the prompt is
-	// gone rather than unanswered.
-	b.m.NoteInput("s1")
-	b.until("s1", StateIdle, 6, rows, func() map[string]paneLine { return b.pane(row, HardQuiet) })
-}
-
-// TestActivityWaitingIsReleasedByAScreen: a recognised non-waiting screen is
-// evidence the prompt is gone, with or without a keystroke.
-func TestActivityWaitingIsReleasedByAScreen(t *testing.T) {
-	b := newBench(t)
-	row := b.row("s1", "codex")
-	rows := []store.Session{row}
-	b.source(harnesses.KindCodex, seen(StateWaiting, "approval required"), missing)
-
-	b.tick(rows, b.pane(row, 0))
-	b.want("s1", StateWaiting)
-
-	b.setScreen("Working (3s • esc to interrupt)")
-	b.until("s1", StateBusy, ExactMissTicks+2, rows, func() map[string]paneLine { return b.pane(row, 0) })
-}
-
-// TestActivityWaitingIsReleasedByAnExactAnswer: the harness's own signal is
-// the best evidence there is, so a fresh non-waiting answer ends the prompt at
-// once - no keystroke, and with the pane still producing output.
-func TestActivityWaitingIsReleasedByAnExactAnswer(t *testing.T) {
-	b := newBench(t)
-	row := b.row("s1", "claude")
-	rows := []store.Session{row}
-	b.source(harnesses.KindClaude,
-		seen(StateWaiting, "permission prompt"),
-		seen(StateIdle, ""),
-	)
-	b.setScreen("")
-
-	b.tick(rows, b.pane(row, 0))
-	b.want("s1", StateWaiting)
-
-	// Nobody typed here as far as the detector knows, and the pane is noisy:
-	// only the exact layer can release this.
-	b.until("s1", StateIdle, IdleSettle+1, rows, func() map[string]paneLine { return b.pane(row, 0) })
-	if src := b.m.ActivityOf("s1").Source; src != sourceExact {
-		t.Fatalf("the release came from %q, want the exact layer", src)
-	}
-}
-
-// TestActivityRememberedExactAnswerSurvivesSilence: the runaway guard is for a
-// signal that has really dropped out, not for one that blinked while the file
-// was being rewritten. A busy answer being reused must not be overwritten by
-// thirty seconds of quiet.
+// TestActivityRememberedExactAnswerSurvivesSilence: a foreground command that
+// blinks out for a tick or two is tmux between two reads, not the program
+// ending. A busy answer being reused must not be overwritten by thirty
+// seconds of quiet - and once it has really gone, quiescence decides.
 func TestActivityRememberedExactAnswerSurvivesSilence(t *testing.T) {
 	b := newBench(t)
-	row := b.row("s1", "claude")
+	row := b.row("s1", "shell")
 	rows := []store.Session{row}
-	src := b.source(harnesses.KindClaude, seen(StateBusy, ""))
-	b.setScreen("")
+	src := b.source(seen(StateBusy, "make"))
 
-	// A long silent tool run: busy on file, and the pane has said nothing for
-	// well over HardQuiet.
+	// A long silent build: busy by its foreground command, and the pane has
+	// said nothing for well over HardQuiet.
 	b.tick(rows, b.pane(row, HardQuiet))
 	b.want("s1", StateBusy)
 
-	// The file is unreadable for the whole reuse window.
+	// The command cannot be read for the whole reuse window.
 	src.mu.Lock()
 	src.answers, src.at = []observation{missing}, 0
 	src.mu.Unlock()
@@ -549,38 +348,33 @@ func TestActivityRememberedExactAnswerSurvivesSilence(t *testing.T) {
 	}
 }
 
-// TestActivityWaitingIsReleasedByAScreenTheGuardOverwrote: with no exact layer
-// and a silent pane, the runaway guard rewrites the answer to a quiet idle -
-// but the screen was still read this tick, and a recognised non-waiting screen
-// is what ends a prompt.
-func TestActivityWaitingIsReleasedByAScreenTheGuardOverwrote(t *testing.T) {
+// TestActivityATerminalWithNoLayerIsReadFromItsOutput: VS Code has no exact
+// layer, so a pane that prints is busy and one that has been quiet for
+// HardQuiet is idle.
+func TestActivityATerminalWithNoLayerIsReadFromItsOutput(t *testing.T) {
 	b := newBench(t)
-	row := b.row("s1", "codex")
+	row := b.row("s1", "vscode")
 	rows := []store.Session{row}
-	b.source(harnesses.KindCodex, seen(StateWaiting, "approval required"), missing)
-
 	b.tick(rows, b.pane(row, 0))
-	b.want("s1", StateWaiting)
-
-	// The prompt is answered and the pane goes quiet, but the screen is back
-	// to Codex's ordinary furniture. Nobody typed at Socrates.
-	b.setScreen("Working (3s • esc to interrupt)")
-	b.until("s1", StateIdle, ExactMissTicks+IdleSettle+2, rows,
-		func() map[string]paneLine { return b.pane(row, HardQuiet) })
+	b.want("s1", StateBusy)
+	b.until("s1", StateIdle, IdleSettle+1, rows, func() map[string]paneLine { return b.pane(row, HardQuiet) })
+	if src := b.m.ActivityOf("s1").Source; src != sourceQuiet {
+		t.Fatalf("the answer came from %q, want quiescence", src)
+	}
 }
 
-// TestActivityChangesSayWhetherTheyWereAskedFor: the busy of a harness
-// starting up is published as not asked for, and the busy after somebody has
-// typed as asked for - which is how the server finds the first prompt.
+// TestActivityChangesSayWhetherTheyWereAskedFor: the busy of a shell starting
+// up is published as not asked for, and the busy after somebody has typed as
+// asked for.
 func TestActivityChangesSayWhetherTheyWereAskedFor(t *testing.T) {
 	b := newBench(t)
-	row := b.row("s1", "claude")
+	row := b.row("s1", "shell")
 	rows := []store.Session{row}
-	b.source(harnesses.KindClaude, seen(StateBusy, ""), seen(StateIdle, ""), seen(StateIdle, ""), seen(StateBusy, ""))
+	b.source(seen(StateBusy, ""), seen(StateIdle, ""), seen(StateIdle, ""), seen(StateBusy, ""))
 
 	b.ticks(3, rows, func() map[string]paneLine { return b.pane(row, 0) })
 	b.want("s1", StateIdle)
-	b.m.NoteTyped("s1")
+	b.m.NoteInput("s1")
 	b.tick(rows, b.pane(row, 0))
 	b.want("s1", StateBusy)
 
@@ -598,12 +392,12 @@ func TestActivityChangesSayWhetherTheyWereAskedFor(t *testing.T) {
 // TestActivityPaneDeathMarksUnreadAndInputClearsIt.
 func TestActivityPaneDeathMarksUnreadAndInputClearsIt(t *testing.T) {
 	b := newBench(t)
-	row := b.row("s1", "claude")
+	row := b.row("s1", "shell")
 	rows := []store.Session{row}
-	b.source(harnesses.KindClaude, seen(StateBusy, ""))
+	b.source(seen(StateBusy, ""))
 	// Somebody typed at it, so what it does from here is work that was asked
 	// for rather than a program starting up.
-	b.m.NoteTyped("s1")
+	b.m.NoteInput("s1")
 
 	b.tick(rows, b.pane(row, 0))
 	b.want("s1", StateBusy)
@@ -627,24 +421,6 @@ func TestActivityPaneDeathMarksUnreadAndInputClearsIt(t *testing.T) {
 	}
 }
 
-// TestActivityWaitingMarksUnreadAndMarkReadClearsIt.
-func TestActivityWaitingMarksUnreadAndMarkReadClearsIt(t *testing.T) {
-	b := newBench(t)
-	row := b.row("s1", "claude")
-	rows := []store.Session{row}
-	b.source(harnesses.KindClaude, seen(StateWaiting, "permission prompt"))
-	b.m.NoteTyped("s1")
-
-	b.tick(rows, b.pane(row, 0))
-	if a := b.m.ActivityOf("s1"); a.State != StateWaiting || !a.Unread {
-		t.Fatalf("a prompt has to be unread at once, got %#v", a)
-	}
-	b.m.MarkRead("s1")
-	if b.m.ActivityOf("s1").Unread {
-		t.Fatal("an explicit read did not clear the mark")
-	}
-}
-
 // TestActivitySeqOrdersEveryPicture: a browser hears one session from the
 // event stream, a terminal socket and a list read over HTTP, and since only
 // moves with the state. The seq moves with every published picture - a new
@@ -652,23 +428,24 @@ func TestActivityWaitingMarksUnreadAndMarkReadClearsIt(t *testing.T) {
 // last frame, and a manager built later (a restart) starts above it.
 func TestActivitySeqOrdersEveryPicture(t *testing.T) {
 	b := newBench(t)
-	row := b.row("s1", "claude")
+	row := b.row("s1", "shell")
 	rows := []store.Session{row}
 	if a := b.m.ActivityOf("s1"); a.Seq != 0 {
 		t.Fatalf("a session nothing was published about has seq %d", a.Seq)
 	}
-	b.source(harnesses.KindClaude, seen(StateWaiting, "permission prompt"))
-	b.m.NoteTyped("s1")
+	b.source(seen(StateBusy, ""), seen(StateIdle, ""))
+	b.m.NoteInput("s1")
 	b.tick(rows, b.pane(row, 0))
-	asked := b.m.ActivityOf("s1")
-	if asked.State != StateWaiting || asked.Seq < time.Now().Add(-time.Hour).UnixMicro() {
-		t.Fatalf("a committed change is %#v, want a seq from the clock", asked)
+	b.until("s1", StateIdle, IdleSettle+1, rows, func() map[string]paneLine { return b.pane(row, 0) })
+	finished := b.m.ActivityOf("s1")
+	if !finished.Unread || finished.Seq < time.Now().Add(-time.Hour).UnixMicro() {
+		t.Fatalf("a committed change is %#v, want it unread with a seq from the clock", finished)
 	}
 	b.m.MarkRead("s1")
 	read := b.m.ActivityOf("s1")
-	if read.Since != asked.Since || read.Seq <= asked.Seq {
+	if read.Since != finished.Since || read.Seq <= finished.Seq {
 		t.Fatalf("an unread mark cleared on the same commit: since %d->%d, seq %d->%d",
-			asked.Since, read.Since, asked.Seq, read.Seq)
+			finished.Since, read.Since, finished.Seq, read.Seq)
 	}
 	b.mu.Lock()
 	var frames []int64
@@ -678,7 +455,7 @@ func TestActivitySeqOrdersEveryPicture(t *testing.T) {
 		}
 	}
 	b.mu.Unlock()
-	if len(frames) < 2 || frames[len(frames)-1] != read.Seq {
+	if len(frames) < 3 || frames[len(frames)-1] != read.Seq {
 		t.Fatalf("the frames carry %v, the snapshot %d", frames, read.Seq)
 	}
 	for i := 1; i < len(frames); i++ {
@@ -696,16 +473,16 @@ func TestActivitySeqOrdersEveryPicture(t *testing.T) {
 	}
 }
 
-// TestActivityStartUpIsNotWorkThatFinished: every harness is busy while it
-// starts and idle the moment it is ready, and that first edge is not a turn
+// TestActivityStartUpIsNotWorkThatFinished: a shell is busy while its profile
+// runs and idle the moment it is at its prompt, and that first edge is not a turn
 // ending. It must leave no unread mark - the browser chimes and notifies on
 // exactly that mark, and a session that has just been created would otherwise
 // announce itself as work somebody missed.
 func TestActivityStartUpIsNotWorkThatFinished(t *testing.T) {
 	b := newBench(t)
-	row := b.row("s1", "claude")
+	row := b.row("s1", "shell")
 	rows := []store.Session{row}
-	b.source(harnesses.KindClaude, seen(StateBusy, ""), seen(StateIdle, ""))
+	b.source(seen(StateBusy, ""), seen(StateIdle, ""))
 
 	b.tick(rows, b.pane(row, 0))
 	b.until("s1", StateIdle, IdleSettle+1, rows, func() map[string]paneLine { return b.pane(row, 0) })
@@ -714,10 +491,10 @@ func TestActivityStartUpIsNotWorkThatFinished(t *testing.T) {
 	}
 
 	// And the very next turn, the one that was asked for, does mark it.
-	b.m.NoteTyped("s1")
-	b.source(harnesses.KindClaude, seen(StateBusy, ""))
+	b.m.NoteInput("s1")
+	b.source(seen(StateBusy, ""))
 	b.until("s1", StateBusy, 2, rows, func() map[string]paneLine { return b.pane(row, 0) })
-	b.source(harnesses.KindClaude, seen(StateIdle, ""))
+	b.source(seen(StateIdle, ""))
 	b.until("s1", StateIdle, IdleSettle+1, rows, func() map[string]paneLine { return b.pane(row, 0) })
 	if a := b.m.ActivityOf("s1"); !a.Unread {
 		t.Fatalf("a turn that was asked for and ended is unread, got %#v", a)
@@ -728,10 +505,10 @@ func TestActivityStartUpIsNotWorkThatFinished(t *testing.T) {
 // lose "this finished while you were away".
 func TestActivityUnreadSurvivesAManagerRebuild(t *testing.T) {
 	b := newBench(t)
-	row := b.row("s1", "claude")
+	row := b.row("s1", "shell")
 	rows := []store.Session{row}
-	b.source(harnesses.KindClaude, seen(StateBusy, ""), seen(StateIdle, ""))
-	b.m.NoteTyped("s1")
+	b.source(seen(StateBusy, ""), seen(StateIdle, ""))
+	b.m.NoteInput("s1")
 
 	b.tick(rows, b.pane(row, 0))
 	b.until("s1", StateIdle, IdleSettle+1, rows, func() map[string]paneLine { return b.pane(row, 0) })
@@ -764,52 +541,54 @@ func TestActivityUnreadSurvivesAManagerRebuild(t *testing.T) {
 
 // TestActivitySinceSurvivesAManagerRebuild: a restart of Socrates does not
 // restart every session's clock. A session found in the state it was in
-// keeps the moment it entered it - a question that has waited ten minutes is
+// keeps the moment it entered it - a build that has run for ten minutes is
 // not "just now", and the oldest is still the oldest - and one found in
 // another state, or relaunched, starts from now.
 func TestActivitySinceSurvivesAManagerRebuild(t *testing.T) {
 	b := newBench(t)
-	asking := b.row("s1", "claude")
-	rows := []store.Session{asking}
-	b.source(harnesses.KindClaude, seen(StateWaiting, "permission prompt"))
-	b.tick(rows, b.pane(asking, 0))
-	asked := b.m.ActivityOf("s1")
-	if asked.State != StateWaiting || asked.Since == 0 {
-		t.Fatalf("the prompt was not committed: %#v", asked)
+	working := b.row("s1", "shell")
+	rows := []store.Session{working}
+	b.source(seen(StateBusy, "make"))
+	b.tick(rows, b.pane(working, 0))
+	busy := b.m.ActivityOf("s1")
+	if busy.State != StateBusy || busy.Since == 0 {
+		t.Fatalf("the build was not committed: %#v", busy)
 	}
 
+	// rebuild is a restart at a moment of the test's choosing, whose first
+	// ticks find the session in the state answer says.
 	rebuild := func(at time.Time, answer observation) *Manager {
 		t.Helper()
 		next, err := New(b.st, Config{DataDir: b.dataDir, WindowSize: "manual", Logf: func(string, ...any) {}})
 		if err != nil {
 			t.Fatal(err)
 		}
-		next.act.capture = func(context.Context, string, int) (string, error) { return "", nil }
-		next.act.visible = func(context.Context, string) (string, error) { return "", nil }
 		next.act.now = func() time.Time { return at }
-		next.setSource(harnesses.KindClaude, &fakeSource{answers: []observation{answer}})
+		next.act.shell = func(snapshot) observation { return answer }
 		next.act.load()
-		next.act.apply(context.Background(), rows, map[string]paneLine{asking.TmuxName: {
-			session: asking.TmuxName, pid: os.Getpid(), activity: at.Unix(),
-		}}, at)
+		for range IdleSettle {
+			next.act.apply(context.Background(), rows, map[string]paneLine{working.TmuxName: {
+				session: working.TmuxName, pid: os.Getpid(), activity: at.Unix(),
+			}}, at)
+		}
 		return next
 	}
 	later := b.at().Add(10 * time.Minute)
-	if a := rebuild(later, seen(StateWaiting, "permission prompt")).ActivityOf("s1"); a.State != StateWaiting || a.Since != asked.Since {
-		t.Fatalf("after a restart the question is %#v, want it waiting since %d", a, asked.Since)
+	if a := rebuild(later, seen(StateBusy, "make")).ActivityOf("s1"); a.State != StateBusy || a.Since != busy.Since {
+		t.Fatalf("after a restart the build is %#v, want it busy since %d", a, busy.Since)
 	}
-	// Found working instead, it started working now.
-	busy := rebuild(later, seen(StateBusy, ""))
-	if a := busy.ActivityOf("s1"); a.State != StateBusy || a.Since != later.UnixMilli() {
+	// Found at its prompt instead, it came to rest now.
+	idle := rebuild(later, seen(StateIdle, ""))
+	if a := idle.ActivityOf("s1"); a.State != StateIdle || a.Since != later.UnixMilli() {
 		t.Fatalf("a session found in another state is %#v, want it since %d", a, later.UnixMilli())
 	}
 	// And that is what the next restart finds.
-	if a := rebuild(later.Add(time.Minute), seen(StateBusy, "")).ActivityOf("s1"); a.Since != later.UnixMilli() {
-		t.Fatalf("a second restart says busy since %d, want %d", a.Since, later.UnixMilli())
+	if a := rebuild(later.Add(time.Minute), seen(StateIdle, "")).ActivityOf("s1"); a.Since != later.UnixMilli() {
+		t.Fatalf("a second restart says idle since %d, want %d", a.Since, later.UnixMilli())
 	}
 	// A relaunch is a new program, in no state yet.
-	busy.ResetActivity("s1")
-	if a := rebuild(later.Add(2*time.Minute), seen(StateBusy, "")).ActivityOf("s1"); a.Since != later.Add(2*time.Minute).UnixMilli() {
+	idle.ResetActivity("s1")
+	if a := rebuild(later.Add(2*time.Minute), seen(StateIdle, "")).ActivityOf("s1"); a.Since != later.Add(2*time.Minute).UnixMilli() {
 		t.Fatalf("a relaunched session kept the old clock: %#v", a)
 	}
 	// The moment of a deleted session is dropped rather than kept for ever.
@@ -835,10 +614,10 @@ func TestActivitySinceSurvivesAManagerRebuild(t *testing.T) {
 // before it.
 func TestActivityResetKeepsUnreadAndDropsTheState(t *testing.T) {
 	b := newBench(t)
-	row := b.row("s1", "claude")
+	row := b.row("s1", "shell")
 	rows := []store.Session{row}
-	b.source(harnesses.KindClaude, seen(StateBusy, ""), seen(StateIdle, ""))
-	b.m.NoteTyped("s1")
+	b.source(seen(StateBusy, ""), seen(StateIdle, ""))
+	b.m.NoteInput("s1")
 
 	b.tick(rows, b.pane(row, 0))
 	b.until("s1", StateIdle, IdleSettle+1, rows, func() map[string]paneLine { return b.pane(row, 0) })
@@ -906,281 +685,13 @@ func TestActivityShellAtItsPromptIsIdle(t *testing.T) {
 	b.until("s1", StateIdle, IdleSettle+1, rows, func() map[string]paneLine { return panes })
 }
 
-// TestActivityCodexHostnameTitleIsUnavailable: tmux reports the hostname
-// before the first OSC title, and "non-empty means idle" would assert idle
-// from it.
-func TestActivityCodexHostnameTitleIsUnavailable(t *testing.T) {
-	plan := harnesses.LaunchPlan{Cwd: "/home/me/SocratesAgent"}
-	cases := []struct {
-		title string
-		want  observation
-	}{
-		{"", missing},
-		{"buildbox", missing},
-		{"SocratesAgent", seen(StateIdle, "")},
-		{"⠧ SocratesAgent", seen(StateBusy, "")},
-		{"[ . ] Action Required | SocratesAgent", seen(StateWaiting, "approval required")},
-		// Codex 0.158.0 puts the thread's name before the directory's.
-		{"Start background sleep command | SocratesAgent", seen(StateIdle, "")},
-		{"⠦ Start background sleep command | SocratesAgent", seen(StateBusy, "")},
-		{"⠦ ⠦ | SocratesAgent", seen(StateBusy, "")},
-		{"Start background sleep command | OtherProject", missing},
-		// A long directory name is cut short.
-		{"Start background sleep command | SocratesAg...", seen(StateIdle, "")},
-		{"SocratesAg…", seen(StateIdle, "")},
-		{"Start background sleep command | OtherProj...", missing},
-		{"Start | So...", missing},
-	}
-	for _, c := range cases {
-		got := (codexSource{}).Read(context.Background(), snapshot{
-			pane: paneLine{title: c.title}, plan: plan,
-		})
-		if got.ok != c.want.ok || got.state != c.want.state {
-			t.Fatalf("title %q read as %#v, want %#v", c.title, got, c.want)
-		}
-	}
-}
-
-// TestActivityClaudeFileOlderThanItsProcessIsIgnored: ~/.claude/sessions is
-// never cleaned, so a recycled pid can point at a dead session's file that
-// still says busy.
-func TestActivityClaudeFileOlderThanItsProcessIsIgnored(t *testing.T) {
-	// The status files are looked for under the plan's HOME; a
-	// CLAUDE_CONFIG_DIR inherited from whatever runs the tests - a Claude Code
-	// session, for one - would win over it.
-	t.Setenv("CLAUDE_CONFIG_DIR", "")
-	home := t.TempDir()
-	dir := filepath.Join(home, ".claude", "sessions")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	self := os.Getpid()
-	path := filepath.Join(dir, strconv.Itoa(self)+".json")
-	write := func(status string, pid int) {
-		raw, _ := json.Marshal(map[string]any{"pid": pid, "status": status})
-		if err := os.WriteFile(path, raw, 0o600); err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	src := newClaudeSource()
-	snap := snapshot{
-		row:  store.Session{ID: "s1"},
-		pane: paneLine{pid: self},
-		plan: harnesses.LaunchPlan{Env: map[string]string{"HOME": home}},
-		now:  time.Now(),
-	}
-
-	write("busy", self)
-	if got := src.Read(context.Background(), snap); !got.ok || got.state != StateBusy {
-		t.Fatalf("a live file read as %#v, want busy", got)
-	}
-
-	// The same file, but written before this process started: a leftover from
-	// whoever held this pid last.
-	started, ok := processStart(self)
-	if !ok {
-		t.Skip("this platform will not say when a process started")
-	}
-	if err := os.Chtimes(path, started.Add(-time.Hour), started.Add(-time.Hour)); err != nil {
-		t.Fatal(err)
-	}
-	src = newClaudeSource()
-	if got := src.Read(context.Background(), snap); got.ok {
-		t.Fatalf("a file older than its process was believed: %#v", got)
-	}
-
-	// A file whose own pid disagrees is not this process's either.
-	write("busy", self+1)
-	src = newClaudeSource()
-	if got := src.Read(context.Background(), snap); got.ok {
-		t.Fatalf("a file naming another pid was believed: %#v", got)
-	}
-
-	write("waiting", self)
-	src = newClaudeSource()
-	got := src.Read(context.Background(), snap)
-	if !got.ok || got.state != StateWaiting {
-		t.Fatalf("a waiting file read as %#v", got)
-	}
-}
-
-// TestActivityClaudeStatusIsFoundOnADescendant: a launcher wrapper means the
-// pane's own pid never writes a file, and the answer has to come from the
-// process tree below it.
-func TestActivityClaudeStatusIsFoundOnADescendant(t *testing.T) {
-	// The status files are looked for under the plan's HOME; a
-	// CLAUDE_CONFIG_DIR inherited from whatever runs the tests - a Claude Code
-	// session, for one - would win over it.
-	t.Setenv("CLAUDE_CONFIG_DIR", "")
-	home := t.TempDir()
-	dir := filepath.Join(home, ".claude", "sessions")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	child := sleeper(t).Process.Pid
-	var seenChild bool
-	for _, pid := range descendants(os.Getpid(), 3, 64) {
-		if pid == child {
-			seenChild = true
-		}
-	}
-	if !seenChild {
-		t.Skip("this platform will not list a process's children")
-	}
-
-	path := filepath.Join(dir, strconv.Itoa(child)+".json")
-	write := func(status string) {
-		raw, _ := json.Marshal(map[string]any{"pid": child, "status": status})
-		if err := os.WriteFile(path, raw, 0o600); err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	// The pane pid is the wrapper's, and it has written nothing of its own.
-	src := newClaudeSource()
-	snap := snapshot{
-		row:  store.Session{ID: "s1"},
-		pane: paneLine{pid: os.Getpid()},
-		plan: harnesses.LaunchPlan{Env: map[string]string{"HOME": home}},
-		now:  time.Now(),
-	}
-
-	write("busy")
-	if got := src.Read(context.Background(), snap); !got.ok || got.state != StateBusy {
-		t.Fatalf("the descendant's file read as %#v, want busy", got)
-	}
-	// The pid is cached now, so the second read must follow the same process
-	// without walking the tree again.
-	write("waiting")
-	got := src.Read(context.Background(), snap)
-	if !got.ok || got.state != StateWaiting {
-		t.Fatalf("the remembered descendant read as %#v, want waiting", got)
-	}
-	// A different pane is a different process: the cache is keyed by it.
-	src.mu.Lock()
-	cached := src.cache["s1"]
-	src.mu.Unlock()
-	if cached.pid != child || cached.panePID != os.Getpid() {
-		t.Fatalf("the cache holds %+v, want pid %d under pane %d", cached, child, os.Getpid())
-	}
-}
-
-// TestActivityOpenCodeBusySetKeepsBusy: a parent session and its sub-agents
-// all emit session.status, and an idle for one of them must not clear
-// another's busy.
-func TestActivityOpenCodeBusySetKeepsBusy(t *testing.T) {
-	w := &openCodeWatcher{busy: map[string]bool{}, waiting: map[string]openCodePrompt{}}
-	event := func(id, kind string) {
-		w.event(fmt.Sprintf(`{"type":"session.status","properties":{"sessionID":%q,"status":{"type":%q}}}`, id, kind))
-	}
-	if got := w.answer(); got.ok {
-		t.Fatalf("a stream that has said nothing answered %#v", got)
-	}
-	event("ses_a", "busy")
-	event("ses_b", "busy")
-	event("ses_a", "idle")
-	if got := w.answer(); !got.ok || got.state != StateBusy {
-		t.Fatalf("two busy sessions and one idle read as %#v, want busy", got)
-	}
-	event("ses_b", "idle")
-	if got := w.answer(); !got.ok || got.state != StateIdle {
-		t.Fatalf("an empty busy set read as %#v, want idle", got)
-	}
-
-	// A retry is a busy, and a permission outranks both.
-	event("ses_a", "retry")
-	if got := w.answer(); got.state != StateBusy {
-		t.Fatalf("a retry read as %#v, want busy", got)
-	}
-	w.event(`{"type":"permission.asked","properties":{"id":"per_1","sessionID":"ses_a"}}`)
-	if got := w.answer(); got.state != StateWaiting {
-		t.Fatalf("an asked permission read as %#v, want waiting", got)
-	}
-	w.event(`{"type":"permission.replied","properties":{"requestID":"per_2","sessionID":"ses_a"}}`)
-	if got := w.answer(); got.state != StateWaiting {
-		t.Fatalf("another request's reply cleared this one: %#v", got)
-	}
-	w.event(`{"type":"permission.replied","properties":{"requestID":"per_1","sessionID":"ses_a"}}`)
-	if got := w.answer(); got.state != StateBusy {
-		t.Fatalf("the matching reply left %#v, want the busy underneath", got)
-	}
-}
-
-// TestActivityOpenCodePermissionEvents pins the event names OpenCode 1.17.13
-// really emits - `permission.asked` and `permission.replied`, not the
-// `permission.v2.*` an earlier pass recorded, which is why waiting was never
-// reported at all - and the arithmetic of the waiting set around them.
-func TestActivityOpenCodePermissionEvents(t *testing.T) {
-	fresh := func() *openCodeWatcher {
-		return &openCodeWatcher{busy: map[string]bool{}, waiting: map[string]openCodePrompt{}, ok: true}
-	}
-	asked := func(name, id string) string {
-		return fmt.Sprintf(`{"type":%q,"properties":{"id":%q,"sessionID":"ses_a","permission":"bash","patterns":["echo hello"]}}`, name, id)
-	}
-	replied := func(name, id string) string {
-		return fmt.Sprintf(`{"type":%q,"properties":{"sessionID":"ses_a","requestID":%q,"reply":"once"}}`, name, id)
-	}
-
-	// The real name, on an otherwise idle session.
-	w := fresh()
-	w.event(asked("permission.asked", "per_1"))
-	if got := w.answer(); got.state != StateWaiting || got.note != "permission prompt" {
-		t.Fatalf("permission.asked read as %#v, want waiting", got)
-	}
-
-	// A prompt sits on a session the status map calls busy - which is exactly
-	// what the real server reports while a prompt is open - and waiting has to
-	// beat it.
-	w = fresh()
-	w.event(`{"type":"session.status","properties":{"sessionID":"ses_a","status":{"type":"busy"}}}`)
-	w.event(asked("permission.asked", "per_1"))
-	if got := w.answer(); got.state != StateWaiting {
-		t.Fatalf("a prompt on a busy session read as %#v, want waiting", got)
-	}
-	// The reply hands the session back to the busy underneath it, not to idle.
-	w.event(replied("permission.replied", "per_1"))
-	if got := w.answer(); got.state != StateBusy {
-		t.Fatalf("the answered prompt left %#v, want busy", got)
-	}
-
-	// A reply nobody can match is still a reply: the prompts are gone.
-	w = fresh()
-	w.event(asked("permission.asked", "per_1"))
-	w.event(asked("permission.asked", "per_2"))
-	w.event(replied("permission.replied", ""))
-	if got := w.answer(); got.state != StateIdle {
-		t.Fatalf("an unmatched reply left %#v, want every prompt cleared", got)
-	}
-
-	// Two prompts, one answered: the other one still holds the session.
-	w = fresh()
-	w.event(asked("permission.asked", "per_1"))
-	w.event(asked("permission.asked", "per_2"))
-	w.event(replied("permission.replied", "per_1"))
-	if got := w.answer(); got.state != StateWaiting {
-		t.Fatalf("one of two prompts answered read as %#v, want waiting", got)
-	}
-
-	// The legacy spelling is still understood, both halves of it.
-	w = fresh()
-	w.event(asked("permission.v2.asked", "per_1"))
-	if got := w.answer(); got.state != StateWaiting {
-		t.Fatalf("the legacy permission.v2.asked read as %#v, want waiting", got)
-	}
-	w.event(replied("permission.v2.replied", "per_1"))
-	if got := w.answer(); got.state != StateIdle {
-		t.Fatalf("the legacy permission.v2.replied left %#v, want idle", got)
-	}
-}
-
 // TestActivityTmuxUnreachableTouchesNothing: unknown settles only when the
 // command succeeded and the session was absent, never on an error.
 func TestActivityTmuxUnreachableTouchesNothing(t *testing.T) {
 	b := newBench(t)
-	row := b.row("s1", "claude")
+	row := b.row("s1", "shell")
 	rows := []store.Session{row}
-	b.source(harnesses.KindClaude, seen(StateBusy, ""))
+	b.source(seen(StateBusy, ""))
 	b.tick(rows, b.pane(row, 0))
 	b.want("s1", StateBusy)
 
@@ -1217,9 +728,9 @@ func TestActivityEchoedKeystrokesDoNotFlipAnIdleSession(t *testing.T) {
 // TestActivityListSkipsSessionsThatAreNotRunning.
 func TestActivityListSkipsSessionsThatAreNotRunning(t *testing.T) {
 	b := newBench(t)
-	row := b.row("s1", "claude")
-	b.source(harnesses.KindClaude, seen(StateBusy, ""))
-	b.m.NoteTyped("s1")
+	row := b.row("s1", "shell")
+	b.source(seen(StateBusy, ""))
+	b.m.NoteInput("s1")
 	b.tick([]store.Session{row}, b.pane(row, 0))
 	if len(b.m.Activities()) != 1 {
 		t.Fatalf("a running session is not in the map: %#v", b.m.Activities())
@@ -1236,300 +747,28 @@ func TestActivityListSkipsSessionsThatAreNotRunning(t *testing.T) {
 	}
 }
 
-// TestActivityWaitIdleAnswersOnTheChange is what the operator loop waits on.
-func TestActivityWaitIdleAnswersOnTheChange(t *testing.T) {
-	b := newBench(t)
-	row := b.row("s1", "claude")
-	rows := []store.Session{row}
-	src := b.source(harnesses.KindClaude, seen(StateBusy, ""))
-	b.tick(rows, b.pane(row, 0))
-	b.want("s1", StateBusy)
-
-	done := make(chan Activity, 1)
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		a, err := b.m.WaitIdle(ctx, "s1")
-		if err != nil {
-			t.Errorf("WaitIdle: %v", err)
-		}
-		done <- a
-	}()
-
-	// Give the waiter a moment to subscribe, then finish the turn.
-	time.Sleep(50 * time.Millisecond)
-	src.mu.Lock()
-	src.answers, src.at = []observation{seen(StateIdle, "")}, 0
-	src.mu.Unlock()
-	b.until("s1", StateIdle, IdleSettle+1, rows, func() map[string]paneLine { return b.pane(row, 0) })
-
-	select {
-	case a := <-done:
-		if a.State != StateIdle {
-			t.Fatalf("WaitIdle answered %q", a.State)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("WaitIdle never returned")
-	}
-}
-
-// TestActivitySubscriberStopRacesTheTick: WaitIdle unsubscribes on every
-// return, and the return it makes most often is the one a tick has just caused
-// - so the stop and the publish run at the same instant routinely. Closing a
-// channel the tick is sending on would panic the tick goroutine and take the
-// server with it.
-func TestActivitySubscriberStopRacesTheTick(t *testing.T) {
-	a := newBench(t).m.act
-	changes := []ActivityChange{{SessionID: "s1", Activity: Activity{State: StateIdle}}}
-	for i := 0; i < 20000; i++ {
-		ch, stop := a.m.SubscribeActivity()
-		var wg sync.WaitGroup
-		wg.Add(2)
-		go func() { defer wg.Done(); a.fire(changes) }()
-		go func() { defer wg.Done(); stop() }()
-		wg.Wait()
-		for range ch {
-		}
-	}
-}
-
-// TestParseActivityPanesKeepsACodexTitleWhole: the approval title contains a
-// pipe, which is why the title is the last field.
-func TestParseActivityPanesKeepsACodexTitleWhole(t *testing.T) {
+// TestParseActivityPanesKeepsTheCommandWhole: the foreground command is the
+// last field, so a program whose name has a pipe in it is read whole.
+func TestParseActivityPanesKeepsTheCommandWhole(t *testing.T) {
 	out := strings.Join([]string{
-		"soc_a|0|3412|1788362216|node|[ . ] Action Required | SocratesAgent",
-		"soc_b|1|0|1788362100|bash|buildbox",
-		"soc_c|0|77|1788362200|codex|⠧ SocratesAgent",
+		"soc_a|0|3412|1788362216|odd|name",
+		"soc_b|1|0|1788362100|bash",
+		"soc_c|0|77|1788362200|make",
 	}, "\n")
 	panes := parseActivityPanes(out)
 	if len(panes) != 3 {
 		t.Fatalf("parsed %d panes, want 3", len(panes))
 	}
 	a := panes["soc_a"]
-	if a.title != "[ . ] Action Required | SocratesAgent" {
-		t.Fatalf("the title was cut: %q", a.title)
-	}
-	if a.pid != 3412 || a.activity != 1788362216 || a.command != "node" || a.dead {
+	if a.pid != 3412 || a.activity != 1788362216 || a.command != "odd|name" || a.dead {
 		t.Fatalf("soc_a parsed as %#v", a)
 	}
 	if !panes["soc_b"].dead {
 		t.Fatal("a dead pane parsed as alive")
 	}
-	got := (codexSource{}).Read(context.Background(), snapshot{
-		pane: a, plan: harnesses.LaunchPlan{Cwd: "/x/SocratesAgent"},
-	})
-	if got.state != StateWaiting {
-		t.Fatalf("the approval title read as %#v", got)
-	}
 }
 
-// TestScrapeScreens runs each harness's patterns against the verbatim screens
-// from the research file.
-func TestScrapeScreens(t *testing.T) {
-	cases := []struct {
-		name   string
-		kind   harnesses.Kind
-		screen string
-		want   State
-		ok     bool
-	}{
-		{"claude busy", harnesses.KindClaude,
-			"✻ Cooking… (11s · thinking with high effort)\n  ⏵⏵ auto mode on (shift+tab to cycle) · esc to interrupt · ← for agents",
-			StateBusy, true},
-		{"claude waiting", harnesses.KindClaude,
-			" Do you want to proceed?\n ❯ 1. Yes\n   2. Yes, allow reading from /tmp from this project\n   4. No\n Esc to cancel · Tab to amend",
-			StateWaiting, true},
-		// Its other two prompts, for a session with no status file to say
-		// so: an open menu read as nothing is called idle by quiescence.
-		{"claude asking", harnesses.KindClaude,
-			" ☐ DB\n\nWhich database should we use?\n\n❯ 1. Postgres\n     Relational, robust\n  2. SQLite\n" +
-				"  3. Type something.\n──────\n  4. Chat about this\n\nEnter to select · ↑/↓ to navigate · Esc to cancel",
-			StateWaiting, true},
-		{"claude asking on tabs", harnesses.KindClaude,
-			"←  ☐ Color  ☐ Features  ✔ Submit  →\n\nWhich color should the button be?\n\n❯ 1. Red\n  2. Green\n" +
-				"\nEnter to select · Tab/Arrow keys to navigate · Esc to cancel",
-			StateWaiting, true},
-		{"claude plan approval", harnesses.KindClaude,
-			"   Ready to code?\n\n   Here is Claude's plan:\n\n   Claude has written up a plan and is ready to execute. " +
-				"Would you like to proceed?\n\n   ❯ 1. Yes, and use auto mode\n     2. Yes, manually approve edits\n" +
-				"     3. Tell Claude what to change",
-			StateWaiting, true},
-		{"claude plan approval with feedback typed", harnesses.KindClaude,
-			"   Would you like to proceed?\n\n     1. Yes, and use auto mode\n     2. Yes, manually approve edits\n" +
-				"   ❯ 3. not yet, add tests first\n        shift+tab to approve with this feedback",
-			StateWaiting, true},
-		{"claude asking on its review", harnesses.KindClaude,
-			"←  ☒ Color  ☒ Features  ✔ Submit  →\n\nReview your answers\n\n ● Which color?\n   → Red\n\n" +
-				"Ready to submit your answers?\n\n❯ 1. Submit answers\n  2. Cancel",
-			StateWaiting, true},
-		{"claude asking on a multi-select's Submit", harnesses.KindClaude,
-			"Which features?\n\n  1. [✔] Dark mode\n  2. [ ] Search\n  3. [ ] Type something.\n❯    Submit\n──────\n" +
-				"  4. Chat about this\n\nEnter to select · ↑/↓ to navigate · Esc to cancel",
-			StateWaiting, true},
-		// The same words that are not a prompt Claude has open. The sentence
-		// in an answer, above a turn that goes on:
-		{"claude prose that asks to proceed, busy", harnesses.KindClaude,
-			"● I can refactor the mirror next. Would you like to proceed?\n\n> do it\n\n" +
-				"⠋ Cooking… (6s · esc to interrupt)\n  ⏵⏵ bypass permissions on · ← for agents",
-			StateBusy, true},
-		{"claude prose that asks to proceed, idle", harnesses.KindClaude,
-			"● I can refactor the mirror next. Would you like to proceed?\n\n──────\n❯ \n──────\n" +
-				"  ⏵⏵ bypass permissions on · ← for agents",
-			StateIdle, true},
-		{"claude a numbered list after the sentence, busy", harnesses.KindClaude,
-			"● Would you like to proceed?\n  1. Yes, the mirror\n  2. No\n\n" +
-				"⠋ Cooking… (6s · esc to interrupt)",
-			StateBusy, true},
-		// An answered menu's hint left above its answer: the fake leaves it
-		// on the screen, and a real one's comes back from the history after
-		// a clear.
-		{"claude answered menu, busy", harnesses.KindClaude,
-			"❯ 1. Postgres\n  2. SQLite\n\nEnter to select · ↑/↓ to navigate · Esc to cancel\n" +
-				"● User answered Claude's questions:\n  ⎿ · Which database? → Postgres\n✻ Worked for 3s\n\n" +
-				"⠋ Cooking… (6s · esc to interrupt)",
-			StateBusy, true},
-		{"claude answered menu, idle", harnesses.KindClaude,
-			"❯ 1. Postgres\n  2. SQLite\n\nEnter to select · ↑/↓ to navigate · Esc to cancel\n" +
-				"● User answered Claude's questions:\n  ⎿ · Which database? → Postgres\n✻ Worked for 3s\n" +
-				"❯ \n⏵⏵ bypass permissions on",
-			StateIdle, true},
-		// The hint with no menu row over it is no menu.
-		{"claude a hint with no menu", harnesses.KindClaude,
-			"  Enter to select · ↑/↓ to navigate · Esc to cancel", StateUnknown, false},
-		// A permission prompt answered further up than any prompt is drawn.
-		{"claude permission prompt in the history", harnesses.KindClaude,
-			" Do you want to proceed?\n ❯ 1. Yes\n   2. No\n" + strings.Repeat("● output line\n", 14) +
-				"──────\n❯ \n──────\n  ⏵⏵ bypass permissions on",
-			StateIdle, true},
-		{"claude idle", harnesses.KindClaude,
-			"──────────────\n❯ \n──────────────\n  ⏵⏵ auto mode on (shift+tab to cycle) · ← for agents",
-			StateIdle, true},
-		// The screen a real `claude` paints with no auto mode and nothing
-		// typed: a placeholder in the prompt line and no `⏵⏵` anywhere.
-		{"claude idle in manual mode", harnesses.KindClaude,
-			"────────────\n❯ Try \"fix typecheck errors\"\n────────────\n  ⏸ manual mode on · ? for shortcuts · ← for agents",
-			StateIdle, true},
-		{"claude nothing", harnesses.KindClaude, "just some output\n", StateUnknown, false},
-
-		{"codex busy", harnesses.KindCodex, "Working (3s • esc to interrupt)", StateBusy, true},
-		{"codex waiting edits", harnesses.KindCodex,
-			"  Would you like to make the following edits?\n\n  › 1. Yes, proceed (y)\n\n  Press enter to confirm or esc to cancel",
-			StateWaiting, true},
-		{"codex waiting update", harnesses.KindCodex,
-			"✨ Update available! 0.1 -> 0.2\nPress enter to continue", StateWaiting, true},
-		{"codex idle", harnesses.KindCodex, "› Ask Codex to do anything", StateIdle, true},
-
-		{"opencode busy", harnesses.KindOpenCode,
-			"⠏ Thinking\n  ⬝⬝⬝⬝⬝⬝■■  esc interrupt                          tab agents  ctrl+p commands",
-			StateBusy, true},
-		{"opencode idle", harnesses.KindOpenCode,
-			"▣  Build · Glm 5.3 · 39.8s\n  ⬝⬝⬝⬝⬝⬝  10.5K (1%) · $0.02   ctrl+p commands",
-			StateIdle, true},
-		{"opencode nothing", harnesses.KindOpenCode, "Ask anything...", StateUnknown, false},
-		// The permission card can keep the bottom bar around it, `ctrl+p
-		// commands` and all, so waiting has to be read before idle.
-		{"opencode waiting", harnesses.KindOpenCode,
-			"  ┃  △ Permission required\n  ┃    # Shell command\n  ┃  $ echo hello-from-bash\n" +
-				"  ┃   Allow once   Allow always   Reject          ctrl+f fullscreen  ⇆ select  enter confirm\n" +
-				"  ⬝⬝⬝⬝⬝⬝  10.5K (1%) · $0.02   ctrl+p commands",
-			StateWaiting, true},
-		// The verbatim card at the two narrowest widths that were captured
-		// from a real OpenCode 1.17.13 (`card_45x20`, `card_60x20`). These are
-		// the rows that prove the heading alternative is the one carrying
-		// narrow terminals: below about 80 columns the hint row wraps onto its
-		// own `┃`-prefixed line, so `Reject … ctrl+f` is no longer one line and
-		// only `△ Permission required` still matches.
-		{"opencode waiting at 60 columns", harnesses.KindOpenCode,
-			"  ┃                                                         \n" +
-				"  ┃  run `echo hello-from-bash` using the bash tool         \n" +
-				"  ┃                                                         \n" +
-				"                                                            \n" +
-				"     $ echo hello-from-bash                                 \n" +
-				"                                                            \n" +
-				"     ▣  Build · Anthropic Claude Haiku Latest               \n" +
-				"                                                            \n" +
-				"  ┃                                                         \n" +
-				"  ┃  △ Permission required                                  \n" +
-				"  ┃    # Shell command                                      \n" +
-				"  ┃                                                         \n" +
-				"  ┃  $ echo hello-from-bash                                 \n" +
-				"  ┃                                                         \n" +
-				"  ┃                                                         \n" +
-				"  ┃   Allow once   Allow always   Reject                    \n" +
-				"  ┃                                                         \n" +
-				"  ┃  ctrl+f fullscreen  ⇆ select  enter confirm             \n" +
-				"  ┃                                                         \n" +
-				"                                                            ",
-			StateWaiting, true},
-		{"opencode waiting at 45 columns", harnesses.KindOpenCode,
-			"                                             \n" +
-				"     I'll run that bash command for you.     \n" +
-				"                                             \n" +
-				"     $ echo hello-from-bash                  \n" +
-				"                                             \n" +
-				"     ▣  Build · Anthropic Claude Haiku       \n" +
-				"     Latest                                  \n" +
-				"                                             \n" +
-				"  ┃                                          \n" +
-				"  ┃  △ Permission required                   \n" +
-				"  ┃    # Shell command                       \n" +
-				"  ┃                                          \n" +
-				"  ┃  $ echo hello-from-bash                  \n" +
-				"  ┃                                          \n" +
-				"  ┃                                          \n" +
-				"  ┃   Allow once   Allow always   Reject     \n" +
-				"  ┃                                          \n" +
-				"  ┃  ctrl+f fullscreen  ⇆ select  enter confi\n" +
-				"  ┃                                          \n" +
-				"                                             ",
-			StateWaiting, true},
-		{"opencode waiting on a busy screen", harnesses.KindOpenCode,
-			"⠏ Thinking   esc interrupt  ctrl+p commands\n" +
-				"  ┃   Allow once   Allow always   Reject          ctrl+f fullscreen  ⇆ select  enter confirm",
-			StateWaiting, true},
-
-		{"shell never scrapes", harnesses.KindShell, "esc to interrupt", StateUnknown, false},
-	}
-	for _, c := range cases {
-		got := scrapeScreen(c.kind, c.screen)
-		if got.ok != c.ok || (c.ok && got.state != c.want) {
-			t.Fatalf("%s: read as %#v, want state %q ok %t", c.name, got, c.want, c.ok)
-		}
-	}
-	// OpenCode's busy literal is not Claude's: a shared regex would answer
-	// busy for an idle OpenCode bottom bar and vice versa.
-	if scrapeScreen(harnesses.KindOpenCode, "esc to interrupt").ok {
-		t.Fatal("OpenCode answered Claude's busy literal")
-	}
-	// And a plain busy bar is not a prompt: the waiting pattern is the card's
-	// own two rows, not anything the bottom bar carries.
-	busyBar := "⠏ Thinking   ⬝⬝⬝⬝⬝⬝■■  esc interrupt      tab agents  ctrl+p commands"
-	if got := scrapeScreen(harnesses.KindOpenCode, busyBar); got.state == StateWaiting {
-		t.Fatalf("a busy OpenCode bar read as %#v, want busy", got)
-	}
-	// The words alone are not the card. `capture-pane -S -40` reads the
-	// scrollback as well as the pane, and the composer paints the same `┃`
-	// gutter the card does, so the only thing that separates a real prompt
-	// from somebody typing about one is the card's own furniture: the `△`
-	// heading it and the `ctrl+f` hint closing its button row. Both of these
-	// were captured from a real OpenCode 1.17.13.
-	notCards := map[string]string{
-		"a transcript quoting the words": "  ⏺ The tool call failed because Permission required was\n" +
-			"    returned by the sandbox; retrying without it.\n" +
-			"  ⬝⬝⬝⬝⬝⬝  10.5K (1%) · $0.02   ctrl+p commands",
-		"the words typed into the composer": "  ┃\n  ┃  Permission required\n  ┃\n" +
-			"  ┃  Build · Anthropic Claude Haiku Latest OpenRouter\n" +
-			"  ╹━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n" +
-			"                     tab agents  ctrl+p commands",
-	}
-	for name, screen := range notCards {
-		if got := scrapeScreen(harnesses.KindOpenCode, screen); got.state == StateWaiting {
-			t.Errorf("%s scraped as %#v, want anything but waiting", name, got)
-		}
-	}
-}
-
-// TestQuiescence is the one layer every harness has.
+// TestQuiescence is the layer every terminal has.
 func TestQuiescence(t *testing.T) {
 	now := time.Unix(1788362216, 0)
 	cases := []struct {
@@ -1572,687 +811,6 @@ func writePlan(t *testing.T, dataDir, id string, plan harnesses.LaunchPlan) {
 	}
 }
 
-// TestOpenCodeWatcherSeedsThenStreams runs the watcher against a server that
-// speaks what OpenCode speaks: the status map it seeds from, and the stream of
-// deltas after it. The seed matters because the stream carries deltas only, so
-// a change during the gap would otherwise be missed for ever.
-func TestOpenCodeWatcherSeedsThenStreams(t *testing.T) {
-	events := make(chan string, 8)
-	var asked atomic.Bool
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		user, pass, ok := r.BasicAuth()
-		if !ok || user != "opencode" || pass != "shh" {
-			w.WriteHeader(http.StatusUnauthorized)
-			return
-		}
-		switch r.URL.Path {
-		case "/session/status":
-			if r.URL.Query().Get("directory") == "" {
-				t.Error("the status poll carried no directory")
-			}
-			if asked.Load() {
-				_, _ = io.WriteString(w, `{}`)
-				return
-			}
-			_, _ = io.WriteString(w, `{"ses_seed":{"type":"busy"}}`)
-		case "/event":
-			flusher := w.(http.Flusher)
-			w.Header().Set("Content-Type", "text/event-stream")
-			w.WriteHeader(http.StatusOK)
-			_, _ = io.WriteString(w, "data: {\"type\":\"server.connected\",\"properties\":{}}\n\n")
-			flusher.Flush()
-			for {
-				select {
-				case <-r.Context().Done():
-					return
-				case event := <-events:
-					_, _ = io.WriteString(w, "data: "+event+"\n\n")
-					flusher.Flush()
-				}
-			}
-		default:
-			w.WriteHeader(http.StatusNotFound)
-		}
-	}))
-	defer srv.Close()
-
-	port, err := strconv.Atoi(strings.TrimPrefix(srv.URL, "http://127.0.0.1:"))
-	if err != nil {
-		t.Skipf("the test server is not on a loopback port: %s", srv.URL)
-	}
-	w := startOpenCodeWatcher(
-		harnesses.ServerAccess{Port: port, Username: "opencode", Password: "shh"}, "/tmp/work")
-	defer w.stop()
-
-	// The seed alone is enough to answer, before a single event has arrived.
-	waitFor(t, 10*time.Second, "the seeded busy session", func() bool {
-		got := w.answer()
-		return got.ok && got.state == StateBusy
-	})
-
-	asked.Store(true)
-	events <- `{"type":"session.status","properties":{"sessionID":"ses_seed","status":{"type":"idle"}}}`
-	waitFor(t, 10*time.Second, "the stream to clear the busy set", func() bool {
-		got := w.answer()
-		return got.ok && got.state == StateIdle
-	})
-
-	events <- `{"type":"permission.asked","properties":{"id":"per_9","sessionID":"ses_seed"}}`
-	waitFor(t, 10*time.Second, "a permission prompt", func() bool {
-		return w.answer().state == StateWaiting
-	})
-	events <- `{"type":"permission.replied","properties":{"requestID":"per_9","sessionID":"ses_seed"}}`
-	waitFor(t, 10*time.Second, "the prompt to be answered", func() bool {
-		return w.answer().state == StateIdle
-	})
-}
-
-// TestOpenCodeWatcherSeedsPendingPermissions: a prompt raised while nothing
-// was listening is on GET /permission, and the session it belongs to is `busy`
-// in the status map for as long as it stands. Without the second seed that
-// session reads as work in progress for ever, which is the bug this pins.
-func TestOpenCodeWatcherSeedsPendingPermissions(t *testing.T) {
-	events := make(chan string, 8)
-	var answered atomic.Bool
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/session/status":
-			// What the real server says while a prompt is open.
-			_, _ = io.WriteString(w, `{"ses_p":{"type":"busy"}}`)
-		case "/permission":
-			if r.URL.Query().Get("directory") == "" {
-				t.Error("the permission poll carried no directory")
-			}
-			if answered.Load() {
-				_, _ = io.WriteString(w, `[]`)
-				return
-			}
-			_, _ = io.WriteString(w, `[{"id":"per_seed","sessionID":"ses_p","permission":"bash"}]`)
-		case "/event":
-			flusher := w.(http.Flusher)
-			w.Header().Set("Content-Type", "text/event-stream")
-			w.WriteHeader(http.StatusOK)
-			for {
-				select {
-				case <-r.Context().Done():
-					return
-				case event := <-events:
-					_, _ = io.WriteString(w, "data: "+event+"\n\n")
-					flusher.Flush()
-				}
-			}
-		default:
-			w.WriteHeader(http.StatusNotFound)
-		}
-	}))
-	defer srv.Close()
-
-	port, err := strconv.Atoi(strings.TrimPrefix(srv.URL, "http://127.0.0.1:"))
-	if err != nil {
-		t.Skipf("the test server is not on a loopback port: %s", srv.URL)
-	}
-	w := startOpenCodeWatcher(harnesses.ServerAccess{Port: port}, "/tmp/work")
-	defer w.stop()
-
-	// The seed alone, before one event has arrived: waiting, not the busy the
-	// status map is reporting.
-	waitFor(t, 10*time.Second, "the seeded permission prompt", func() bool {
-		got := w.answer()
-		return got.ok && got.state == StateWaiting
-	})
-
-	answered.Store(true)
-	events <- `{"type":"permission.replied","properties":{"requestID":"per_seed","sessionID":"ses_p"}}`
-	waitFor(t, 10*time.Second, "the stream to clear the prompt", func() bool {
-		got := w.answer()
-		return got.ok && got.state == StateBusy
-	})
-}
-
-// TestOpenCodeWatcherClearsAPromptAnsweredWhileTheStreamWasDown: the reply
-// event is the only thing that retires a prompt on a live stream, and a
-// stream that is down carries no events at all. The prompt answered in the gap
-// has to come back off the row on the reconnect poll, or the session sits on
-// `waiting` until it is killed.
-func TestOpenCodeWatcherClearsAPromptAnsweredWhileTheStreamWasDown(t *testing.T) {
-	var answered, streamTries atomic.Int32
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/session/status":
-			// The session holding the prompt is busy the whole way through,
-			// so busy is exactly what must be left once the prompt is gone.
-			_, _ = io.WriteString(w, `{"ses_gap":{"type":"busy"}}`)
-		case "/permission":
-			if answered.Load() > 0 {
-				_, _ = io.WriteString(w, `[]`)
-				return
-			}
-			_, _ = io.WriteString(w, `[{"id":"per_gap","sessionID":"ses_gap"}]`)
-		case "/event":
-			// The first connection is refused: nothing can be streamed, and
-			// the poll is the only witness there is.
-			if streamTries.Add(1) == 1 {
-				w.WriteHeader(http.StatusInternalServerError)
-				return
-			}
-			flusher := w.(http.Flusher)
-			w.Header().Set("Content-Type", "text/event-stream")
-			w.WriteHeader(http.StatusOK)
-			flusher.Flush()
-			<-r.Context().Done()
-		default:
-			w.WriteHeader(http.StatusNotFound)
-		}
-	}))
-	defer srv.Close()
-
-	// A short reconcile period as well as the poll: the prompt has to come
-	// off the row whichever of the two re-reads /permission first, and
-	// relying on the poll inside the backoff window alone is a race.
-	w := startOpenCodeWatcherEvery(harnesses.ServerAccess{Port: portOf(t, srv)}, "/tmp/work", 50*time.Millisecond)
-	defer w.stop()
-	waitFor(t, 10*time.Second, "the prompt raised while nothing was listening", func() bool {
-		got := w.answer()
-		return got.ok && got.state == StateWaiting
-	})
-
-	// Answered on the server, with no event anybody could have seen.
-	answered.Store(1)
-	waitFor(t, 10*time.Second, "the poll to retire the answered prompt", func() bool {
-		got := w.answer()
-		return got.ok && got.state == StateBusy
-	})
-}
-
-// TestOpenCodeWatcherReconcilesWhileTheStreamIsUp: a prompt can go without a
-// reply event anybody can match — the session aborted or deleted, a frame
-// lost, a `requestID` that is not the id the prompt was keyed by. The periodic
-// re-read of GET /permission is what catches all of those, so this answers the
-// prompt behind the stream's back and expects the row to come back anyway.
-func TestOpenCodeWatcherReconcilesWhileTheStreamIsUp(t *testing.T) {
-	var answered atomic.Int32
-	var opened atomic.Int32
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/session/status":
-			_, _ = io.WriteString(w, `{"ses_r":{"type":"busy"}}`)
-		case "/permission":
-			if answered.Load() > 0 {
-				_, _ = io.WriteString(w, `[]`)
-				return
-			}
-			_, _ = io.WriteString(w, `[{"id":"per_r","sessionID":"ses_r"}]`)
-		case "/event":
-			flusher := w.(http.Flusher)
-			w.Header().Set("Content-Type", "text/event-stream")
-			w.WriteHeader(http.StatusOK)
-			flusher.Flush()
-			opened.Add(1)
-			// A stream that stays open for the whole test: the poll never
-			// runs again, and only the reconcile can clear anything.
-			<-r.Context().Done()
-		default:
-			w.WriteHeader(http.StatusNotFound)
-		}
-	}))
-	defer srv.Close()
-
-	w := startOpenCodeWatcherEvery(harnesses.ServerAccess{Port: portOf(t, srv)}, "/tmp/work", 50*time.Millisecond)
-	defer w.stop()
-	waitFor(t, 10*time.Second, "the stream to be up over a standing prompt", func() bool {
-		return opened.Load() > 0 && w.answer().state == StateWaiting
-	})
-
-	answered.Store(1)
-	waitFor(t, 10*time.Second, "the reconcile to retire the prompt", func() bool {
-		got := w.answer()
-		return got.ok && got.state == StateBusy
-	})
-	if opened.Load() != 1 {
-		t.Fatalf("the stream reconnected %d times; the reconcile is meant to run underneath one", opened.Load())
-	}
-}
-
-// TestOpenCodeWatcherPromptRulesWithoutTheEndpoint covers what retires a
-// prompt when GET /permission is not answering: the session going quiet, and
-// the endpoint failing often enough that no prompt can be confirmed at all.
-func TestOpenCodeWatcherPromptRulesWithoutTheEndpoint(t *testing.T) {
-	fresh := func() *openCodeWatcher {
-		return &openCodeWatcher{busy: map[string]bool{}, waiting: map[string]openCodePrompt{}, ok: true}
-	}
-
-	// A session holding a prompt reports busy for as long as it holds it, so
-	// a status of anything else is proof the prompt is gone — even though the
-	// reply that would have said so never arrived.
-	w := fresh()
-	w.event(`{"type":"session.status","properties":{"sessionID":"ses_a","status":{"type":"busy"}}}`)
-	w.event(`{"type":"permission.asked","properties":{"id":"per_1","sessionID":"ses_a"}}`)
-	w.event(`{"type":"permission.asked","properties":{"id":"per_2","sessionID":"ses_b"}}`)
-	if got := w.answer(); got.state != StateWaiting {
-		t.Fatalf("two open prompts read as %#v, want waiting", got)
-	}
-	w.event(`{"type":"session.status","properties":{"sessionID":"ses_a","status":{"type":"idle"}}}`)
-	w.mu.Lock()
-	_, stillA := w.waiting["per_1"]
-	_, stillB := w.waiting["per_2"]
-	w.mu.Unlock()
-	if stillA {
-		t.Error("the idle session kept its prompt")
-	}
-	if !stillB {
-		t.Error("one session going idle took another session's prompt with it")
-	}
-
-	// Only the idle OpenCode spells out is that proof. A status type this
-	// build does not know leaves the busy set — it is not busy — but says
-	// nothing about the prompt, which stands until something does.
-	w = fresh()
-	w.event(`{"type":"session.status","properties":{"sessionID":"ses_a","status":{"type":"busy"}}}`)
-	w.event(`{"type":"permission.asked","properties":{"id":"per_1","sessionID":"ses_a"}}`)
-	w.event(`{"type":"session.status","properties":{"sessionID":"ses_a","status":{"type":"queued"}}}`)
-	w.mu.Lock()
-	_, keptUnknown := w.waiting["per_1"]
-	stillBusy := w.busy["ses_a"]
-	w.mu.Unlock()
-	if !keptUnknown {
-		t.Error("an unrecognised session.status type retired a prompt as if it were idle")
-	}
-	if stillBusy {
-		t.Error("an unrecognised session.status type left the session in the busy set")
-	}
-
-	// A failing endpoint is not an answer: one failure must not clear a real
-	// prompt, and enough of them must not leave one standing for ever.
-	w = fresh()
-	w.event(`{"type":"permission.asked","properties":{"id":"per_1","sessionID":"ses_a"}}`)
-	w.mu.Lock()
-	for i := 0; i < openCodePermissionFails-1; i++ {
-		w.applyPermissionsLocked(nil, openCodePermissionFailed, time.Now())
-	}
-	kept := len(w.waiting)
-	w.applyPermissionsLocked(nil, openCodePermissionFailed, time.Now())
-	gone := len(w.waiting)
-	w.mu.Unlock()
-	if kept != 1 {
-		t.Fatalf("%d failures dropped the prompt already", openCodePermissionFails-1)
-	}
-	if gone != 0 {
-		t.Fatalf("%d failures left %d unconfirmable prompts", openCodePermissionFails, gone)
-	}
-
-	// And one good answer both replaces the set and forgives the failures.
-	w = fresh()
-	w.mu.Lock()
-	w.applyPermissionsLocked(nil, openCodePermissionFailed, time.Now())
-	w.applyPermissionsLocked(map[string]openCodePrompt{
-		"per_9": {session: "ses_z", seen: time.Now(), confirmed: true}}, openCodePermissionOK, time.Now())
-	fails := w.permFails
-	w.mu.Unlock()
-	if fails != 0 {
-		t.Fatalf("a good answer left %d failures counted", fails)
-	}
-	if got := w.answer(); got.state != StateWaiting {
-		t.Fatalf("the endpoint's own prompt read as %#v, want waiting", got)
-	}
-}
-
-// portOf is the loopback port of a test server, which is what the watcher
-// takes instead of a URL.
-func portOf(t *testing.T, srv *httptest.Server) int {
-	t.Helper()
-	port, err := strconv.Atoi(strings.TrimPrefix(srv.URL, "http://127.0.0.1:"))
-	if err != nil {
-		t.Skipf("the test server is not on a loopback port: %s", srv.URL)
-	}
-	return port
-}
-
-// TestOpenCodeWatcherSaysNothingWhenTheServerIsGone: a port that refuses is
-// not an idle session, it is no answer at all, and the ladder falls through.
-func TestOpenCodeWatcherSaysNothingWhenTheServerIsGone(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
-	port, err := strconv.Atoi(strings.TrimPrefix(srv.URL, "http://127.0.0.1:"))
-	if err != nil {
-		t.Skipf("the test server is not on a loopback port: %s", srv.URL)
-	}
-	srv.Close()
-
-	w := startOpenCodeWatcher(harnesses.ServerAccess{Port: port}, "/tmp/work")
-	defer w.stop()
-	time.Sleep(200 * time.Millisecond)
-	if got := w.answer(); got.ok {
-		t.Fatalf("a refused port answered %#v", got)
-	}
-}
-
-// TestOpenCodeWatcherKeepsAPromptAskedDuringAnInFlightReconcile: the answer to
-// GET /permission describes the moment the request was computed, not the
-// moment it lands. A prompt whose event arrived while it was in flight is
-// newer than the answer, so the authoritative replace must carry it over —
-// without that, every prompt raised during a reconcile is lost for a whole
-// interval, which is exactly the window a prompt is most likely to appear in.
-func TestOpenCodeWatcherKeepsAPromptAskedDuringAnInFlightReconcile(t *testing.T) {
-	var calls atomic.Int32
-	inFlight := make(chan struct{}, 1)
-	release := make(chan struct{})
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/session/status":
-			_, _ = io.WriteString(w, `{"ses_f":{"type":"busy"}}`)
-		case "/permission":
-			switch calls.Add(1) {
-			case 1:
-				// The seed poll: nothing open yet.
-				_, _ = io.WriteString(w, `[]`)
-			case 2:
-				// The reconcile the test drives: held open until the event
-				// has been fed, then answering with a set that does not
-				// contain it — because the server computed it before.
-				inFlight <- struct{}{}
-				select {
-				case <-release:
-				case <-r.Context().Done():
-					return
-				}
-				_, _ = io.WriteString(w, `[{"id":"per_other","sessionID":"ses_f"}]`)
-			default:
-				// Every later read hangs, so nothing but the one answer
-				// under test can touch the set.
-				<-r.Context().Done()
-			}
-		case "/event":
-			flusher := w.(http.Flusher)
-			w.Header().Set("Content-Type", "text/event-stream")
-			w.WriteHeader(http.StatusOK)
-			flusher.Flush()
-			<-r.Context().Done()
-		default:
-			w.WriteHeader(http.StatusNotFound)
-		}
-	}))
-	defer srv.Close()
-
-	w := startOpenCodeWatcherEvery(harnesses.ServerAccess{Port: portOf(t, srv)}, "/tmp/work", 50*time.Millisecond)
-	defer w.stop()
-	select {
-	case <-inFlight:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the reconcile never reached the permission endpoint")
-	}
-	// Asked while that request is on the wire.
-	w.event(`{"type":"permission.asked","properties":{"id":"per_race","sessionID":"ses_f"}}`)
-	close(release)
-
-	// The answer lands and replaces the set: `per_other` is proof it did.
-	waitFor(t, 10*time.Second, "the reconcile's own prompt", func() bool {
-		w.mu.Lock()
-		defer w.mu.Unlock()
-		_, ok := w.waiting["per_other"]
-		return ok
-	})
-	w.mu.Lock()
-	_, kept := w.waiting["per_race"]
-	w.mu.Unlock()
-	if !kept {
-		t.Fatal("a prompt asked during the in-flight reconcile was replaced away")
-	}
-	if got := w.answer(); got.state != StateWaiting {
-		t.Fatalf("the watcher reads as %#v, want waiting", got)
-	}
-}
-
-// TestOpenCodeWatcherStopDoesNotCountAsAPermissionFailure: stopping a watcher
-// cancels whatever request it has open. That cancellation is the watcher's own
-// doing, not the endpoint failing, and counting it would spend a third of the
-// budget that drops the waiting set on every stop.
-func TestOpenCodeWatcherStopDoesNotCountAsAPermissionFailure(t *testing.T) {
-	inFlight := make(chan struct{}, 1)
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/session/status":
-			_, _ = io.WriteString(w, `{"ses_s":{"type":"busy"}}`)
-		case "/permission":
-			select {
-			case inFlight <- struct{}{}:
-			default:
-			}
-			<-r.Context().Done()
-		case "/event":
-			<-r.Context().Done()
-		default:
-			w.WriteHeader(http.StatusNotFound)
-		}
-	}))
-	defer srv.Close()
-
-	w := startOpenCodeWatcherEvery(harnesses.ServerAccess{Port: portOf(t, srv)}, "/tmp/work", time.Hour)
-	select {
-	case <-inFlight:
-	case <-time.After(10 * time.Second):
-		w.stop()
-		t.Fatal("the poll never reached the permission endpoint")
-	}
-	w.stop()
-	// Long enough for the cancelled request to return and for whatever the
-	// poll would have done with it to have happened.
-	time.Sleep(300 * time.Millisecond)
-	w.mu.Lock()
-	fails := w.permFails
-	w.mu.Unlock()
-	if fails != 0 {
-		t.Fatalf("stopping the watcher counted %d permission failures", fails)
-	}
-}
-
-// TestOpenCodeWatcherWithoutThePermissionEndpoint: a server that answers 404
-// does not have the endpoint, which is not the same as an endpoint that is
-// failing. It says nothing about the prompts the event stream reported, so it
-// must never clear them, must not count towards the failure budget, and must
-// not be asked again.
-func TestOpenCodeWatcherWithoutThePermissionEndpoint(t *testing.T) {
-	var asks atomic.Int32
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/session/status":
-			_, _ = io.WriteString(w, `{"ses_n":{"type":"busy"}}`)
-		case "/permission":
-			asks.Add(1)
-			w.WriteHeader(http.StatusNotFound)
-		case "/event":
-			flusher := w.(http.Flusher)
-			w.Header().Set("Content-Type", "text/event-stream")
-			w.WriteHeader(http.StatusOK)
-			flusher.Flush()
-			<-r.Context().Done()
-		default:
-			w.WriteHeader(http.StatusNotFound)
-		}
-	}))
-	defer srv.Close()
-
-	w := startOpenCodeWatcherEvery(harnesses.ServerAccess{Port: portOf(t, srv)}, "/tmp/work", 20*time.Millisecond)
-	defer w.stop()
-	waitFor(t, 10*time.Second, "the endpoint to be found absent", func() bool {
-		w.mu.Lock()
-		defer w.mu.Unlock()
-		return w.noPermissions
-	})
-	w.event(`{"type":"permission.asked","properties":{"id":"per_ev","sessionID":"ses_n"}}`)
-	// Many reconcile intervals: an events-only watcher keeps its prompt.
-	for i := 0; i < 10; i++ {
-		time.Sleep(20 * time.Millisecond)
-		if got := w.answer(); got.state != StateWaiting {
-			t.Fatalf("the events-only watcher read as %#v, want waiting", got)
-		}
-	}
-	w.mu.Lock()
-	fails, asked := w.permFails, asks.Load()
-	w.mu.Unlock()
-	if fails != 0 {
-		t.Errorf("an absent endpoint counted %d failures", fails)
-	}
-	if asked > 2 {
-		t.Errorf("the absent endpoint was asked %d times; it is meant to be asked once", asked)
-	}
-	// And the reply event still retires it: events-only is a full mode, not a
-	// mode where nothing can change.
-	w.event(`{"type":"permission.replied","properties":{"requestID":"per_ev","sessionID":"ses_n"}}`)
-	if got := w.answer(); got.state != StateBusy {
-		t.Fatalf("the replied prompt left %#v, want busy", got)
-	}
-}
-
-// TestOpenCodeWatcherEmptyPermissionsAgainstAnEventOnlyPrompt: `[]` is an
-// authoritative answer, except about a prompt the endpoint has never confirmed
-// and the stream has only just reported — `/permission?directory=` filters by
-// directory, and a workdir that does not match the server's answers `[]` to a
-// prompt that is genuinely open. A young event-only prompt therefore outranks
-// `[]`; an old one does not, or a real directory mismatch would pin the row to
-// waiting for the life of the session.
-func TestOpenCodeWatcherEmptyPermissionsAgainstAnEventOnlyPrompt(t *testing.T) {
-	fresh := func() *openCodeWatcher {
-		return &openCodeWatcher{busy: map[string]bool{}, waiting: map[string]openCodePrompt{},
-			reconcileEvery: time.Minute, ok: true}
-	}
-	empty := map[string]openCodePrompt{}
-
-	// Young, event-only: survives.
-	w := fresh()
-	w.event(`{"type":"permission.asked","properties":{"id":"per_1","sessionID":"ses_a"}}`)
-	w.mu.Lock()
-	w.applyPermissionsLocked(empty, openCodePermissionOK, time.Now())
-	kept := len(w.waiting)
-	w.mu.Unlock()
-	if kept != 1 {
-		t.Error("an empty answer dropped a prompt the stream had just reported")
-	}
-
-	// Older than one reconcile interval, still event-only: dropped.
-	w = fresh()
-	w.mu.Lock()
-	w.waiting["per_old"] = openCodePrompt{session: "ses_a", seen: time.Now().Add(-2 * time.Minute)}
-	w.applyPermissionsLocked(map[string]openCodePrompt{}, openCodePermissionOK, time.Now())
-	old := len(w.waiting)
-	w.mu.Unlock()
-	if old != 0 {
-		t.Error("an empty answer left an unconfirmed prompt older than the reconcile interval standing")
-	}
-
-	// Young but already confirmed by a non-empty answer: dropped, because the
-	// endpoint has been shown to see this directory's prompts.
-	w = fresh()
-	w.mu.Lock()
-	w.waiting["per_c"] = openCodePrompt{session: "ses_a", seen: time.Now(), confirmed: true}
-	w.applyPermissionsLocked(map[string]openCodePrompt{}, openCodePermissionOK, time.Now())
-	confirmed := len(w.waiting)
-	w.mu.Unlock()
-	if confirmed != 0 {
-		t.Error("an empty answer left a prompt the endpoint had confirmed and now omits")
-	}
-
-	// An absent endpoint takes nothing at all, however old the prompt is.
-	w = fresh()
-	w.mu.Lock()
-	w.waiting["per_old"] = openCodePrompt{session: "ses_a", seen: time.Now().Add(-2 * time.Minute)}
-	w.applyPermissionsLocked(nil, openCodePermissionAbsent, time.Now())
-	absent, gone := len(w.waiting), w.noPermissions
-	w.mu.Unlock()
-	if absent != 1 || !gone {
-		t.Errorf("an absent endpoint left %d prompts (want 1) and noPermissions %t (want true)", absent, gone)
-	}
-}
-
-// TestOpenCodeWatcherRetiresAnEventOnlyPromptAnsweredWhileTheStreamWasDown:
-// a server without GET /permission has only two things that can retire a
-// prompt — the reply event, and the status map. If the reply happened while
-// the stream was down there is no event to come, so the poll that reconnects
-// has to read the prompt's session being absent from /session/status as the
-// answer it is. Without that the row would say waiting for the life of the
-// session.
-func TestOpenCodeWatcherRetiresAnEventOnlyPromptAnsweredWhileTheStreamWasDown(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/session/status":
-			// Nobody is working: the session that held the prompt answered it
-			// while the stream was down, and an idle session is simply absent.
-			_, _ = io.WriteString(w, `{}`)
-		default:
-			// No /permission, and no stream either.
-			w.WriteHeader(http.StatusNotFound)
-		}
-	}))
-	defer srv.Close()
-
-	ctx := context.Background()
-	w := newOpenCodeWatcher(harnesses.ServerAccess{Port: portOf(t, srv)}, "/tmp/work", time.Minute, nil)
-	w.poll(ctx)
-	if w.permissionsSupported() {
-		t.Fatal("a 404 from /permission did not switch the watcher to events-only")
-	}
-	w.event(`{"type":"permission.asked","properties":{"id":"per_1","sessionID":"ses_a"}}`)
-	if got := w.answer(); got.state != StateWaiting {
-		t.Fatalf("the prompt read as %#v, want waiting", got)
-	}
-	if err := w.stream(ctx); err == nil {
-		t.Fatal("the stream that answered 404 reported no error")
-	}
-	w.poll(ctx)
-	if got := w.answer(); !got.ok || got.state != StateIdle {
-		t.Fatalf("the reconnect poll read as %#v, want idle: the prompt was answered while the stream was down", got)
-	}
-}
-
-// TestOpenCodeWatcherEmptyPermissionsKeepEveryYoungPrompt: the carve-out is
-// about the answer being empty, not about the set being empty as it is
-// rebuilt. Two young event-only prompts against one `[]` both survive, and
-// which of them is looked at first must not decide it.
-func TestOpenCodeWatcherEmptyPermissionsKeepEveryYoungPrompt(t *testing.T) {
-	w := &openCodeWatcher{busy: map[string]bool{}, waiting: map[string]openCodePrompt{},
-		reconcileEvery: time.Minute, ok: true}
-	w.event(`{"type":"permission.asked","properties":{"id":"per_1","sessionID":"ses_a"}}`)
-	w.event(`{"type":"permission.asked","properties":{"id":"per_2","sessionID":"ses_b"}}`)
-	w.mu.Lock()
-	w.applyPermissionsLocked(map[string]openCodePrompt{}, openCodePermissionOK, time.Now())
-	kept := len(w.waiting)
-	w.mu.Unlock()
-	if kept != 2 {
-		t.Fatalf("an empty answer left %d of two young event-only prompts, want 2", kept)
-	}
-}
-
-// TestOpenCodePollRejectsAnUndecodableStatus: a status body that will not
-// decode is no answer, the same as a 500. Reading it as an empty busy map
-// would report idle for a session that is working.
-func TestOpenCodePollRejectsAnUndecodableStatus(t *testing.T) {
-	var broken atomic.Bool
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/session/status":
-			if broken.Load() {
-				_, _ = io.WriteString(w, `<html>not json</html>`)
-				return
-			}
-			_, _ = io.WriteString(w, `{"ses_b":{"type":"busy"}}`)
-		case "/permission":
-			_, _ = io.WriteString(w, `[]`)
-		default:
-			w.WriteHeader(http.StatusNotFound)
-		}
-	}))
-	defer srv.Close()
-
-	w := newOpenCodeWatcher(harnesses.ServerAccess{Port: portOf(t, srv)}, "/tmp/work", time.Minute, nil)
-	w.poll(context.Background())
-	if got := w.answer(); !got.ok || got.state != StateBusy {
-		t.Fatalf("the first poll read as %#v, want busy", got)
-	}
-	broken.Store(true)
-	w.poll(context.Background())
-	if got := w.answer(); got.ok {
-		t.Fatalf("a status body that will not decode answered %#v, want nothing at all", got)
-	}
-}
-
 // statusOf is where the store has a session filed.
 func (b *bench) statusOf(id string) string {
 	b.t.Helper()
@@ -2280,34 +838,34 @@ func (b *bench) fresh(ids ...string) []store.Session {
 
 // TestActivityWorkFilesASessionAsInProgress: a session that was put aside -
 // pending, or waiting for a review - and is given work again is in progress
-// again. The start-up of a harness is not work, and neither is anything a
-// done session could do.
+// again. The start-up of a shell is not work, and neither is anything a done
+// session could do.
 func TestActivityWorkFilesASessionAsInProgress(t *testing.T) {
 	for _, status := range []string{store.StatusPending, store.StatusReview} {
 		t.Run(status, func(t *testing.T) {
 			b := newBench(t)
-			row := b.row("s1", "claude")
+			row := b.row("s1", "shell")
 			if err := b.st.SetSessionStatus("s1", status); err != nil {
 				t.Fatal(err)
 			}
 			panes := func() map[string]paneLine { return b.pane(row, 0) }
 
 			// Starting up: busy, then idle, and nobody has asked anything.
-			b.source(harnesses.KindClaude, seen(StateBusy, ""))
+			b.source(seen(StateBusy, ""))
 			b.tick(b.fresh("s1"), panes())
 			b.want("s1", StateBusy)
 			if got := b.statusOf("s1"); got != status {
-				t.Fatalf("a harness starting up refiled the session as %q", got)
+				t.Fatalf("a shell starting up refiled the session as %q", got)
 			}
-			b.source(harnesses.KindClaude, seen(StateIdle, ""))
+			b.source(seen(StateIdle, ""))
 			for i := 0; i < IdleSettle; i++ {
 				b.tick(b.fresh("s1"), panes())
 			}
 			b.want("s1", StateIdle)
 
 			// A turn somebody asked for is work.
-			b.m.NoteTyped("s1")
-			b.source(harnesses.KindClaude, seen(StateBusy, ""))
+			b.m.NoteInput("s1")
+			b.source(seen(StateBusy, ""))
 			b.tick(b.fresh("s1"), panes())
 			b.want("s1", StateBusy)
 			if got := b.statusOf("s1"); got != store.StatusInProgress {
@@ -2322,12 +880,12 @@ func TestActivityWorkFilesASessionAsInProgress(t *testing.T) {
 // the work in progress.
 func TestActivityLeavesABackgroundSessionWhereItIs(t *testing.T) {
 	b := newBench(t)
-	row := b.row("s1", "claude")
+	row := b.row("s1", "shell")
 	if err := b.st.SetSessionStatus("s1", store.StatusBackground); err != nil {
 		t.Fatal(err)
 	}
-	b.m.NoteTyped("s1")
-	b.source(harnesses.KindClaude, seen(StateBusy, ""))
+	b.m.NoteInput("s1")
+	b.source(seen(StateBusy, ""))
 	b.tick(b.fresh("s1"), b.pane(row, 0))
 	b.want("s1", StateBusy)
 	if got := b.statusOf("s1"); got != store.StatusBackground {
@@ -2341,12 +899,12 @@ func TestActivityLeavesABackgroundSessionWhereItIs(t *testing.T) {
 // not, and pending if it cannot tell within SortWithin.
 func TestActivitySortsTheSessionsAnUpgradeLeftUnsorted(t *testing.T) {
 	b := newBench(t)
-	busy, idle, silent, stopped := b.row("busy", "claude"), b.row("idle", "codex"), b.row("silent", "opencode"),
-		b.row("stopped", "claude")
+	busy, idle, silent, stopped := b.row("busy", "shell"), b.row("idle", "shell"), b.row("silent", "shell"),
+		b.row("stopped", "shell")
 	stopped.State = store.StateNeedsResume
-	b.source(harnesses.KindClaude, seen(StateBusy, ""))
-	b.source(harnesses.KindCodex, seen(StateIdle, ""))
-	b.source(harnesses.KindOpenCode)
+	b.sourceFor("busy", seen(StateBusy, ""))
+	b.sourceFor("idle", seen(StateIdle, ""))
+	b.sourceFor("silent")
 	// The rows as the upgrade left them. The store has no way to write an
 	// unsorted status, so every row is filed for review - a status the
 	// detector never writes - and the tick is handed that as unsorted.
@@ -2398,88 +956,5 @@ func TestActivitySortsTheSessionsAnUpgradeLeftUnsorted(t *testing.T) {
 	b.tick(unsorted(), panes())
 	if got := b.statusOf("silent"); got != store.StatusPending {
 		t.Fatalf("a session nobody could read was filed as %q after %v", got, SortWithin)
-	}
-}
-
-// TestOpenCodeWatcherHearsTheQuestionTool: OpenCode's question tool waits for
-// the person exactly as a permission prompt does - the session reports busy
-// while its card is up - and it is announced and settled with events of its
-// own: `question.asked`, then `question.replied` or `question.rejected`. It is
-// seeded from GET /question like a prompt from GET /permission, and a
-// reconcile of the permission prompts, which GET /permission answers without
-// it, must not take it away.
-func TestOpenCodeWatcherHearsTheQuestionTool(t *testing.T) {
-	events := make(chan string, 8)
-	var answered atomic.Bool
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/session/status":
-			_, _ = io.WriteString(w, `{"ses_q":{"type":"busy"}}`)
-		case "/permission":
-			_, _ = io.WriteString(w, `[]`)
-		case "/question":
-			if answered.Load() {
-				_, _ = io.WriteString(w, `[]`)
-				return
-			}
-			_, _ = io.WriteString(w, `[{"id":"que_seed","sessionID":"ses_q","questions":[{"question":"Which db?"}]}]`)
-		case "/event":
-			flusher := w.(http.Flusher)
-			w.Header().Set("Content-Type", "text/event-stream")
-			w.WriteHeader(http.StatusOK)
-			for {
-				select {
-				case <-r.Context().Done():
-					return
-				case event := <-events:
-					_, _ = io.WriteString(w, "data: "+event+"\n\n")
-					flusher.Flush()
-				}
-			}
-		default:
-			w.WriteHeader(http.StatusNotFound)
-		}
-	}))
-	defer srv.Close()
-
-	port, err := strconv.Atoi(strings.TrimPrefix(srv.URL, "http://127.0.0.1:"))
-	if err != nil {
-		t.Skipf("the test server is not on a loopback port: %s", srv.URL)
-	}
-	w := startOpenCodeWatcherEvery(harnesses.ServerAccess{Port: port}, "/tmp/work", 50*time.Millisecond)
-	defer w.stop()
-
-	waitFor(t, 10*time.Second, "the seeded question", func() bool {
-		got := w.answer()
-		return got.ok && got.state == StateWaiting && got.note == "input needed"
-	})
-	answered.Store(true)
-	events <- `{"type":"question.replied","properties":{"sessionID":"ses_q","requestID":"que_seed","answers":[["SQLite"]]}}`
-	waitFor(t, 10*time.Second, "the reply to clear the question", func() bool {
-		got := w.answer()
-		return got.ok && got.state == StateBusy
-	})
-
-	// Asked on the stream, it outlives reconciles of the permission prompts.
-	events <- `{"type":"question.asked","properties":{"id":"que_2","sessionID":"ses_q","questions":[]}}`
-	waitFor(t, 10*time.Second, "the asked question", func() bool { return w.answer().state == StateWaiting })
-	time.Sleep(300 * time.Millisecond)
-	if got := w.answer(); got.state != StateWaiting {
-		t.Fatalf("a reconcile of /permission took the question away: %#v", got)
-	}
-	events <- `{"type":"question.rejected","properties":{"sessionID":"ses_q","requestID":"que_2"}}`
-	waitFor(t, 10*time.Second, "the rejection to clear it", func() bool { return w.answer().state == StateBusy })
-
-	// And a session that says it is idle holds no question, whatever the
-	// reply that never came.
-	plain := &openCodeWatcher{busy: map[string]bool{}, waiting: map[string]openCodePrompt{}, ok: true}
-	plain.event(`{"type":"session.status","properties":{"sessionID":"ses_a","status":{"type":"busy"}}}`)
-	plain.event(`{"type":"question.asked","properties":{"id":"que_1","sessionID":"ses_a"}}`)
-	if got := plain.answer(); got.state != StateWaiting {
-		t.Fatalf("question.asked read as %#v, want waiting", got)
-	}
-	plain.event(`{"type":"session.status","properties":{"sessionID":"ses_a","status":{"type":"idle"}}}`)
-	if got := plain.answer(); got.state != StateIdle {
-		t.Fatalf("an idle session kept its question: %#v", got)
 	}
 }

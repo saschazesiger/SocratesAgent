@@ -2,7 +2,7 @@
   "id": "/",
   "name": "Socrates",
   "short_name": "Socrates",
-  "description": "A web terminal for Claude Code, Codex, OpenCode and your shell.",
+  "description": "Chats with Claude Code, Codex and OpenCode, and a terminal for your shell.",
   "lang": "en",
   "dir": "ltr",
   "start_url": "/",

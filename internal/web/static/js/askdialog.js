@@ -2,10 +2,9 @@
 // one question per step, as the biggest buttons the screen allows. On a
 // phone and in touch mode it is the whole screen (so-question.css).
 //
-// It is the question dialog of the terminal days (question.js) for a
-// question that arrives structured: no screen to read, no operator to type
-// the answer - the answer goes to the chat as JSON, through the chats'
-// Outbox, once by its client_id. The shape it answers with is REBUILD §5.2:
+// A question arrives structured: there is no screen to read and nobody to
+// type the answer into a terminal - the answer goes to the chat as JSON,
+// through the chats' Outbox, once by its client_id. The shape it answers with is REBUILD §5.2:
 //
 //   { answers: { <question id>: { selected, other, note, delegated, skipped } },
 //     general_note, follow_up }
@@ -28,7 +27,7 @@
 // A plan (payload.kind "plan") is not a question: the plan card in the chat
 // answers it, and this dialog leaves it out.
 
-import { api, restoreFocus, toast, errorMessage } from './api.js';
+import { api, restoreFocus, toast, errorMessage, isOffline } from './api.js';
 import { html, raw, icon, morph, showOverlay, hideOverlay, M, faces } from './ui.js';
 import { markdown } from './md.js';
 import { agentMarkHtml } from './logos.js';
@@ -41,6 +40,25 @@ import { speak, stopSpeaking } from './voice.js';
 
 // How long "Answered" stays before the next question takes the dialog.
 const MOVE_ON = 1200;
+
+// A question - a new one, or the next step of one - is drawn on the tap that
+// asked for it, and what is drawn under the finger then takes no tap for this
+// long: the second tap of a double tap on Home's Questions card would
+// otherwise choose the option drawn where the card was, and a double tap on
+// Next would skip the step after it. A key (Enter, a digit) is never a stray
+// tap, and is taken at once.
+const TAP_ARM = 600;
+const ARMED = '.so-q-scroll button, .so-q-actions button';
+
+// The height below which a phone is on its side (so-question.css has the
+// same): the chrome above a question then takes the room its first option
+// needs, and the question is scrolled up to the top.
+const SHORT_SCREEN = 500;
+
+// How often the dialog says its connection again while it is not live: the
+// age in "Offline · updated 40 s ago" moves on (HOME.md, "The dialog says it
+// too").
+const CONN_EVERY = 2000;
 
 /* ------------------------------------------------------------ the drafts */
 
@@ -215,21 +233,12 @@ function watchStream(chatId, ask, listener) {
   return () => stream.stop();
 }
 
-/**
- * openChatAsks opens the dialog over the open questions of chats, the
- * oldest chat first and each chat's questions in the order they were asked.
- *
- *   sessions   the chats to walk, in that order (the one asked for among them)
- *   chatId     the chat to open at
- *   askId      the ask to open at, else that chat's oldest; a closed one
- *              (the chat moved on, ask.closed) is walked too when it is the
- *              one asked for: "Answer anyway" on its card
- *   view       the chat view (chatview.js): the chat on screen is read
- *              from its fold and followed by its stream
- *   openChat(id)  the dialog's "Open chat"; also where a chat whose only
- *              open question is a plan goes, because its card answers it
- */
-export async function openChatAsks({ sessions, chatId, askId = '', view, openChat }) {
+// collect reads the open questions of chats, the oldest chat first and each
+// chat's questions in the order they were asked: from the view's fold for
+// the chat on screen, from the server for the others. `all` has the plans,
+// which the dialog leaves to their cards; `failed` is the last read that did
+// not work.
+async function collect({ sessions, chatId = '', askId = '', view }) {
   let failed = null;
   const lists = await Promise.all(sessions.map(async (session) => {
     const live = view ? view.liveChat(session.id) : null;
@@ -250,15 +259,48 @@ export async function openChatAsks({ sessions, chatId, askId = '', view, openCha
     }
   }));
   const all = lists.flat();
-  const items = all.filter((item) => !isPlan(item.ask));
+  return { all, items: all.filter((item) => !isPlan(item.ask)), failed };
+}
+
+/**
+ * openChatAsks opens the dialog over the open questions of chats, the
+ * oldest chat first and each chat's questions in the order they were asked.
+ *
+ *   sessions   the chats to walk, in that order (the one asked for among them)
+ *   chatId     the chat to open at
+ *   askId      the ask to open at, else that chat's oldest; a closed one
+ *              (the chat moved on, ask.closed) is walked too when it is the
+ *              one asked for: "Answer anyway" on its card
+ *   view       the chat view (chatview.js): the chat on screen is read
+ *              from its fold and followed by its stream
+ *   openChat(id)  the dialog's "Open chat"; also where a chat whose only
+ *              open question is a plan goes, because its card answers it
+ *   unreachable()  the questions could not be read for want of a
+ *              connection: the caller asks again once there is one, rather
+ *              than the dialog saying that it failed
+ *   asking()   the chats asking now, for the walk to take up what was asked
+ *              while it went, once it is at its end
+ *   connection()  the page's connection line (home.js connectionLine), which
+ *              the dialog says too: it is a modal over Home's
+ */
+export async function openChatAsks({ sessions, chatId, askId = '', view, openChat, unreachable, asking, connection }) {
+  const { all, items, failed } = await collect({ sessions, chatId, askId, view });
   if (!items.length) {
     if (all.some((item) => item.chatId === chatId) && openChat) openChat(chatId);
+    else if (failed && isOffline(failed) && unreachable) unreachable();
     else if (failed) toast('The questions could not be loaded: ' + errorMessage(failed), 'error');
     else toast('Nothing is waiting for an answer any more.');
     return;
   }
   let start = items.findIndex((item) => item.chatId === chatId && (!askId || item.ask.id === askId));
   if (start < 0) start = items.findIndex((item) => item.chatId === chatId);
+  // The chat asked for asks nothing any more - its question was answered on
+  // another device, or it moved on: another chat's question is not what was
+  // asked for.
+  if (start < 0 && chatId) {
+    toast('Nothing is waiting for an answer any more.');
+    return;
+  }
   openAskDialog({
     items,
     start: Math.max(0, start),
@@ -268,7 +310,20 @@ export async function openChatAsks({ sessions, chatId, askId = '', view, openCha
     // The card in the chat says how far this browser got: it is drawn again
     // once the dialog is put away.
     closed: () => { if (view) view.redraw(); },
+    more: asking ? async () => (await collect({ sessions: asking(), view })).items : null,
+    connection,
   });
+}
+
+/**
+ * refreshAskDialog takes into the open dialog what the chats asking now ask
+ * that it does not walk yet - a question asked while it was open, the one
+ * that follows an answer - and the new name of a chat renamed meanwhile.
+ */
+export async function refreshAskDialog({ sessions, view }) {
+  if (!current) return;
+  const { items } = await collect({ sessions, view });
+  if (current) current.extend(items, sessions);
 }
 
 /* ------------------------------------------------------------ the dialog */
@@ -293,8 +348,13 @@ export function closeAskDialog() { if (current) current.close(); }
  *               state; answers a function that stops following
  *   openChat(id)        the "Open chat" of the dialog
  *   closed()            the dialog has been put away
+ *   more()              the questions open now, for the walk to take up at
+ *               its end what was asked while it went
+ *   connection()        the page's connection line, {kind, words}: while it
+ *               is not live the dialog says so under its top bar, that the
+ *               question may already have been answered, and dims it
  */
-export function openAskDialog({ items, start = 0, watch, openChat, closed }) {
+export function openAskDialog({ items, start = 0, watch, openChat, closed, more = null, connection = null }) {
   if (current) { current.jump(items, start); return current; }
   const opener = document.activeElement;
   const dialog = document.createElement('dialog');
@@ -310,8 +370,25 @@ export function openAskDialog({ items, start = 0, watch, openChat, closed }) {
   const st = {
     items: items.slice(), at: Math.max(0, Math.min(start, items.length - 1)), draft: null, phase: 'ask',
     details: new Set(), speaking: false, unwatch: null, timer: null, closed: false, problem: null,
-    refused: null,
+    refused: null, armTimer: null, connTimer: null, connSaid: '',
   };
+
+  // arm makes the buttons take no tap for TAP_ARM (the CSS takes the tap
+  // away; the capture below is for a click the CSS did not stop).
+  function arm() {
+    clearTimeout(st.armTimer);
+    shell.setAttribute('data-arming', '');
+    st.armTimer = setTimeout(() => { st.armTimer = null; shell.removeAttribute('data-arming'); }, TAP_ARM);
+  }
+
+  // bringQuestionUp scrolls a question to the top on a phone on its side,
+  // the chat and the batch's title and context a swipe above it.
+  function bringQuestionUp() {
+    if (window.innerHeight > SHORT_SCREEN) return;
+    const scroller = shell.querySelector('.so-q-scroll');
+    const at = shell.querySelector('.so-q-step') || shell.querySelector('.so-q-text');
+    if (scroller && at) scroller.scrollTop += at.getBoundingClientRect().top - scroller.getBoundingClientRect().top;
+  }
 
   function item() { return st.items[st.at] || null; }
 
@@ -356,8 +433,14 @@ export function openAskDialog({ items, start = 0, watch, openChat, closed }) {
     st.timer = setTimeout(() => next(), MOVE_ON);
   }
 
-  function next() {
+  async function next() {
     clearTimeout(st.timer);
+    // At its end the walk takes up what was asked while it went: the
+    // question that follows the one just answered, another chat's.
+    if (st.at >= st.items.length - 1 && more && !st.closed) {
+      try { extend(await more()); } catch { /* the walk ends here */ }
+      if (st.closed) return;
+    }
     if (st.at < st.items.length - 1) {
       st.at += 1;
       load();
@@ -365,10 +448,35 @@ export function openAskDialog({ items, start = 0, watch, openChat, closed }) {
     } else close();
   }
 
+  // extend adds the questions the walk does not have yet, and the new names
+  // of its chats, without taking the step it is at away from the person.
+  function extend(list, sessions = []) {
+    if (st.closed) return;
+    const known = new Set(st.items.map((one) => one.ask.id));
+    let changed = false;
+    for (const one of list || []) {
+      if (known.has(one.ask.id) || one.ask.answered) continue;
+      known.add(one.ask.id);
+      st.items.push(one);
+      changed = true;
+    }
+    for (const session of sessions) {
+      for (const one of st.items) {
+        if (one.chatId === session.id && one.session && session.title && one.session.title !== session.title) {
+          one.session = { ...one.session, title: session.title };
+          changed = true;
+        }
+      }
+    }
+    if (changed) draw();
+  }
+
   function close() {
     if (st.closed) return;
     st.closed = true;
     clearTimeout(st.timer);
+    clearTimeout(st.armTimer);
+    clearInterval(st.connTimer);
     if (st.unwatch) st.unwatch();
     unlisten();
     unrefused();
@@ -410,6 +518,24 @@ export function openAskDialog({ items, start = 0, watch, openChat, closed }) {
 
   function questionsOf() { return askQuestions(item().ask); }
 
+  // doubt is the connection line while what the dialog shows may be old -
+  // connecting again, checking a quiet stream, offline - and null while it
+  // is live, or polled and current. The page's first connect is no doubt:
+  // the dialog read its questions from the server as it opened.
+  function doubt() {
+    const conn = connection ? connection() : null;
+    return conn && !conn.first && (conn.kind === 'connecting' || conn.kind === 'offline') ? conn : null;
+  }
+
+  // connHtml is Home's connection line as the dialog says it: a DS alert
+  // under the top bar. A question still to be answered may have been
+  // answered on another device meanwhile, and nothing would have said so.
+  function connHtml(conn) {
+    return html`<div class="${'ds-alert ' + (conn.kind === 'offline' ? 'ds-alert--error' : 'ds-alert--warning') + ' so-q-conn'}" role="status" data-ds-key="conn" data-status="${conn.kind}">${raw(icon('wifiOff', 20))}<span class="ds-alert__text"><span class="so-q-conn-words">${conn.words}</span>${
+      st.phase === 'ask' ? html`<span class="so-q-conn-detail">This question may already have been answered.</span>` : ''
+    }</span></div>`;
+  }
+
   function draw(focus = false) {
     const one = item();
     if (!one) { close(); return; }
@@ -423,7 +549,12 @@ export function openAskDialog({ items, start = 0, watch, openChat, closed }) {
     const session = one.session || {};
     const counter = st.items.length > 1 ? (st.at + 1) + ' of ' + st.items.length : '';
     const settled = st.phase === 'answered' || st.phase === 'elsewhere';
-    morph(shell, html`<div class="so-q-top" data-ds-key="top"><button class="ds-btn ds-btn--quiet ds-btn--icon so-q-close" type="button" data-action="close" aria-label="Close" data-tip="Close">${raw(icon('close', 20))}</button><span class="so-q-top-title">${counter ? 'Questions · ' + counter : 'Question'}</span></div>
+    const conn = settled ? null : doubt();
+    st.connSaid = conn ? conn.kind + ':' + conn.words + ':' + st.phase : '';
+    shell.toggleAttribute('data-stale', !!conn);
+    morph(shell, html`<div class="so-q-top" data-ds-key="top"><button class="ds-btn ds-btn--quiet ds-btn--icon so-q-close" type="button" data-action="close" aria-label="Close" data-tip="Close">${raw(icon('close', 20))}</button><span class="so-q-top-title">${counter ? 'Questions · ' + counter : 'Question'}</span></div>${
+      conn ? connHtml(conn) : ''
+    }
 <div class="so-q-scroll" data-ds-key="${'scroll:' + ask.id}"><div class="so-q-session"><span class="so-mark">${raw(agentMarkHtml(session.harness || '', 24))}</span><span class="so-q-session-text"><span class="so-q-session-title so-ellipsis">${session.title || 'Chat'}</span></span>${
       openChat ? html`<button class="ds-btn so-q-open" type="button" data-action="open-chat">Open chat</button>` : ''
     }</div>${settled ? doneHtml(ask) : html`<div class="so-q-body so-ask-body" data-ds-key="${'q:' + ask.id + ':' + step}"${st.phase === 'sent' ? html` data-state="pending"` : ''}>${
@@ -435,8 +566,10 @@ export function openAskDialog({ items, start = 0, watch, openChat, closed }) {
     }</div>
 <div class="so-q-actions" data-ds-key="actions">${actionsHtml({ step, last })}</div>`);
     if (focus) {
+      arm();
       const target = shell.querySelector('.so-q-text') || shell;
       target.focus({ preventScroll: true });
+      bringQuestionUp();
     }
   }
 
@@ -731,6 +864,15 @@ export function openAskDialog({ items, start = 0, watch, openChat, closed }) {
     if (redraw) draw();
   });
 
+  // A click with a pointer behind it (detail > 0: a key's click has none)
+  // on a button that is still arming is a stray tap, and goes nowhere.
+  shell.addEventListener('click', (event) => {
+    if (!event.detail || !shell.hasAttribute('data-arming')) return;
+    if (!event.target || !event.target.closest || !event.target.closest(ARMED)) return;
+    event.preventDefault();
+    event.stopPropagation();
+  }, true);
+
   dialog.addEventListener('close', () => close());
   dialog.addEventListener('keydown', (event) => {
     if (event.target.closest('textarea, input') || st.phase !== 'ask') return;
@@ -746,13 +888,25 @@ export function openAskDialog({ items, start = 0, watch, openChat, closed }) {
       load();
       draw(true);
     },
+    extend,
     close,
   };
   load();
   draw();
+  arm();
+  // The line follows the connection, and is said again while it is down;
+  // a dialog whose line has not changed is not drawn again.
+  if (connection) {
+    st.connTimer = setInterval(() => {
+      if (st.closed || !item()) return;
+      const conn = st.phase === 'answered' || st.phase === 'elsewhere' ? null : doubt();
+      if ((conn ? conn.kind + ':' + conn.words + ':' + st.phase : '') !== st.connSaid) draw();
+    }, CONN_EVERY);
+  }
   showOverlay(dialog).then(() => {
     const target = shell.querySelector('.so-q-text') || shell;
     target.focus({ preventScroll: true });
+    bringQuestionUp();
   });
   return current;
 }

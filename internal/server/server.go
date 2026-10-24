@@ -68,11 +68,9 @@ type Server struct {
 	// not running.
 	push *pusher
 	// events is the event stream every page without a terminal listens on,
-	// digests are Home's reading of every coding session, and answers is the
-	// operator that types a person's answer to a question into one (HOME.md).
+	// and digests the verdicts on the chats' turns that Home shows (HOME.md).
 	events  *eventHub
 	digests *digester
-	answers *operatorDriver
 
 	mux *http.ServeMux
 
@@ -85,10 +83,6 @@ type Server struct {
 	// ideMu makes finding or creating the editor of a folder one step, so
 	// two taps on the same folder cannot start two editors on it.
 	ideMu sync.Mutex
-
-	// profilesMu makes each change to the profile list one read and one
-	// write, so two of them cannot each save a list without the other.
-	profilesMu sync.Mutex
 
 	// starts serialises everything that changes or starts one prepared
 	// session, and sched is the loop that starts them at their time. See
@@ -104,8 +98,6 @@ type Server struct {
 	restoreJob restoreJob
 
 	// usage holds the short-lived account limit reading shared by every tab.
-	// Session costs are read from each CLI's own transcript and are not cached
-	// here: the files are already local and change after every answer.
 	usageMu     sync.Mutex
 	claudeUsage map[string]cachedLimits
 	usageHTTP   *http.Client
@@ -178,7 +170,6 @@ func New(st *store.Store, dataDir string) (*Server, error) {
 	s.digests = newDigester(s)
 	// A turn's end waits for its outcome before it is pushed.
 	s.push.checking = s.digests.outcomePending
-	s.answers = newOperatorDriver(s)
 	s.sched = newScheduler(s)
 	s.costs = newCostLedger(s)
 	s.chats = newChatHub(s)
@@ -243,8 +234,6 @@ func (s *Server) StartSessions(ctx context.Context) error {
 	// sessions that survived the last run rather than an empty server.
 	s.manager.StartActivity(ctx)
 	s.startSweep(ctx)
-	// The look at waiting screens Home's questions are kept current by.
-	s.digests.start(ctx)
 	// Last, once every session that survived is adopted: a scheduled start
 	// that fell due while the server was down is started by its first pass.
 	s.sched.start(ctx)
@@ -283,26 +272,12 @@ func (s *Server) saveSettings(next config.Settings) error {
 	s.settings = next
 	s.mu.Unlock()
 	s.reconcileTunnel(previous, next.Tunnel)
-	// A key saved while Home is open - from this page or another device -
-	// is a key the digests that could only say "no key" have been waiting
-	// for; nothing else would read an idle session again before its next
-	// turn.
-	if s.digests != nil && !sameHomeReader(before.OpenRouter, next.OpenRouter) {
-		go s.digests.settingsChanged()
-	}
 	// The outcomes switched off: the verdicts there are go with them, and a
 	// notification waiting for one goes out without it.
 	if s.digests != nil && before.OpenRouter.Outcomes && !next.OpenRouter.Outcomes {
 		s.digests.clearOutcomes()
 	}
 	return nil
-}
-
-// sameHomeReader is whether two settings read Home's digests the same way:
-// the same key, gateway and model.
-func sameHomeReader(a, b config.OpenRouterSettings) bool {
-	return strings.TrimSpace(a.APIKey) == strings.TrimSpace(b.APIKey) && a.BaseURL == b.BaseURL &&
-		strings.TrimSpace(a.HomeModel) == strings.TrimSpace(b.HomeModel)
 }
 
 // reconcileTunnel applies a settings change to the running tunnel.
@@ -410,19 +385,13 @@ func (s *Server) routes() {
 	mux.HandleFunc("POST /api/sessions/{id}/start", s.auth(s.handleStartSession))
 	mux.HandleFunc("POST /api/sessions/{id}/ack-resume", s.auth(s.handleAckResume))
 	mux.HandleFunc("POST /api/sessions/{id}/read", s.auth(s.handleMarkRead))
-	mux.HandleFunc("GET /api/sessions/{id}/usage", s.auth(s.handleSessionUsage))
 	// What every conversation on this machine cost, for the costs page.
 	mux.HandleFunc("GET /api/costs", s.auth(s.handleCosts))
 	// What a terminal is doing, said out loud.
 	mux.HandleFunc("POST /api/sessions/{id}/status", s.auth(s.handleSessionStatus))
-	// Home: the event stream, its hello as a poll, the reading of a session's
-	// screen, and the operator that answers the question it found there.
+	// Home: the event stream, and its hello as a poll.
 	mux.HandleFunc("GET /api/events", s.auth(s.handleEvents))
 	mux.HandleFunc("GET /api/home", s.auth(s.handleHome))
-	mux.HandleFunc("POST /api/sessions/{id}/digest", s.auth(s.handleDigestNow))
-	mux.HandleFunc("POST /api/sessions/{id}/answer", s.auth(s.handleAnswer))
-	mux.HandleFunc("GET /api/sessions/{id}/answer", s.auth(s.handleAnswerRun))
-	mux.HandleFunc("POST /api/sessions/{id}/answer/cancel", s.auth(s.handleAnswerCancel))
 	mux.HandleFunc("GET /api/sessions/{id}/journal", s.auth(s.terminal(s.started(s.handleJournal))))
 	mux.HandleFunc("POST /api/sessions/{id}/upload", s.auth(s.started(s.handleUpload)))
 	mux.HandleFunc("GET /api/sessions/{id}/ws", s.auth(s.terminal(s.started(s.handleSessionWS))))
@@ -453,11 +422,6 @@ func (s *Server) routes() {
 	mux.HandleFunc("GET /api/accounts/{id}/signin", s.auth(s.handleGetAccountSignIn))
 	mux.HandleFunc("POST /api/accounts/{id}/signin/code", s.auth(s.handleAccountSignInCode))
 	mux.HandleFunc("DELETE /api/accounts/{id}/signin", s.auth(s.handleCancelAccountSignIn))
-	mux.HandleFunc("GET /api/profiles", s.auth(s.handleListProfiles))
-	mux.HandleFunc("POST /api/profiles", s.auth(s.handleCreateProfile))
-	mux.HandleFunc("PUT /api/profiles/order", s.auth(s.handleReorderProfiles))
-	mux.HandleFunc("PATCH /api/profiles/{id}", s.auth(s.handleRenameProfile))
-	mux.HandleFunc("DELETE /api/profiles/{id}", s.auth(s.handleDeleteProfile))
 
 	// Admin
 	mux.HandleFunc("GET /api/settings", s.auth(s.handleGetSettings))
@@ -494,6 +458,8 @@ func (s *Server) routes() {
 	mux.HandleFunc("GET /api/backup", s.auth(s.handleBackupStatus))
 	mux.HandleFunc("POST /api/backup/run", s.auth(s.handleBackupRun))
 	mux.HandleFunc("GET /api/backup/snapshots", s.auth(s.handleBackupSnapshots))
+	mux.HandleFunc("GET /api/backup/legacy", s.auth(s.handleBackupLegacy))
+	mux.HandleFunc("DELETE /api/backup/legacy", s.auth(s.handleBackupLegacyDelete))
 	mux.HandleFunc("POST /api/backup/test", s.auth(s.handleBackupTest))
 	mux.HandleFunc("PUT /api/backup/config", s.auth(s.handleBackupConfig))
 	mux.HandleFunc("DELETE /api/backup/config", s.auth(s.handleBackupOff))
@@ -612,6 +578,18 @@ func acceptsGzip(r *http.Request) bool {
 
 func writeError(w http.ResponseWriter, code int, msg string) {
 	writeJSON(w, code, map[string]any{"error": msg})
+}
+
+// sleepFor waits d, or less when ctx ends first, which it then answers with.
+func sleepFor(ctx context.Context, d time.Duration) error {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 func readJSON(w http.ResponseWriter, r *http.Request, dst any) bool {

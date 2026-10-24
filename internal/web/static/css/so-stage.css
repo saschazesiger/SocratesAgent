@@ -265,12 +265,6 @@
     box-shadow: var(--ds-elev-2);
   }
 
-  /* Under the usage line when it is there, so neither covers the other; the
-     pane starts below that line too, so the notice's room is the same. */
-  .ds-app:has(.so-usage-line:not([hidden])) .so-transfer {
-    top: calc(100% + var(--so-usage-line-height) + var(--ds-space-2));
-  }
-
   .ds-app:has(.so-transfer:not([hidden])) .so-pane__lines {
     top: var(--so-transfer-float-room);
   }

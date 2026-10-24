@@ -11,8 +11,22 @@ import (
 
 // These run against the real tmux, on a socket under t.TempDir(), because
 // every one of them is a fact about tmux rather than about our code: what
-// `#{window_activity}` counts in, whether `#{pane_current_command}` follows the
-// foreground job, and whether send-keys needs a viewer.
+// `#{window_activity}` counts in, and whether `#{pane_current_command}`
+// follows the foreground job.
+
+// typeIn types a line into a session's pane with nobody attached, and tells
+// the detector that somebody typed, as a viewer's keystrokes do.
+func (l *lab) typeIn(ctx context.Context, id, line string) {
+	l.t.Helper()
+	name := l.tmuxNameOf(id)
+	if _, err := l.tmux.Run(ctx, "send-keys", "-t", name, "-l", line); err != nil {
+		l.t.Fatalf("could not type into the pane: %v", err)
+	}
+	if _, err := l.tmux.Run(ctx, "send-keys", "-t", name, "Enter"); err != nil {
+		l.t.Fatalf("could not press Enter in the pane: %v", err)
+	}
+	l.NoteInput(id)
+}
 
 // TestCapturePaneReadsWhatThePanePrinted, with nobody attached.
 func TestCapturePaneReadsWhatThePanePrinted(t *testing.T) {
@@ -23,11 +37,7 @@ func TestCapturePaneReadsWhatThePanePrinted(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 
-	if err := l.SendKeys(ctx, row.ID, []Key{
-		{Text: "echo capture-me-please"}, {Name: "Enter", Wait: 200 * time.Millisecond},
-	}); err != nil {
-		t.Fatalf("could not type into the pane: %v", err)
-	}
+	l.typeIn(ctx, row.ID, "echo capture-me-please")
 
 	var screen string
 	waitFor(t, 10*time.Second, "the echo to appear on the screen", func() bool {
@@ -56,91 +66,9 @@ func TestCapturePaneReadsWhatThePanePrinted(t *testing.T) {
 	}
 }
 
-// TestVisiblePaneLeavesTheHistoryOut: a program that clears its screen
-// leaves the old one in the history (scroll-on-clear), so a line it took away
-// is still in a capture that reaches back and must not be in the visible one.
-func TestVisiblePaneLeavesTheHistoryOut(t *testing.T) {
-	l := newLab(t)
-	dir := realDir(t, l.dataDir)
-	row := l.create(shellSpec(dir, "/bin/sh"))
-
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
-	if err := l.SendKeys(ctx, row.ID, []Key{
-		{Text: `printf '1 background terminal running\n'; printf '\033[2J\033[H'; echo after-the-clear`},
-		{Name: "Enter", Wait: 200 * time.Millisecond},
-	}); err != nil {
-		t.Fatalf("could not type into the pane: %v", err)
-	}
-	var visible string
-	waitFor(t, 10*time.Second, "the screen after the clear", func() bool {
-		var err error
-		visible, err = l.visiblePane(ctx, row.ID)
-		return err == nil && strings.Contains(visible, "after-the-clear")
-	})
-	if hasLine(visible, "1 background terminal running") {
-		t.Fatalf("the visible screen kept a line the program cleared away:\n%s", visible)
-	}
-	history, err := l.CapturePane(ctx, row.ID, 40)
-	if err != nil {
-		t.Fatalf("capture: %v", err)
-	}
-	if !hasLine(history, "1 background terminal running") {
-		t.Logf("this tmux did not keep the cleared screen in its history:\n%s", history)
-	}
-}
-
-// hasLine is whether a screen has a line that is exactly want.
-func hasLine(screen, want string) bool {
-	for _, line := range strings.Split(screen, "\n") {
-		if strings.TrimSpace(line) == want {
-			return true
-		}
-	}
-	return false
-}
-
-// TestSendKeysNeedsNoViewer is the whole reason the operator loop runs on the
-// server: a run has to keep working with every browser closed.
-func TestSendKeysNeedsNoViewer(t *testing.T) {
-	l := newLab(t)
-	dir := realDir(t, l.dataDir)
-	row := l.create(shellSpec(dir, "/bin/sh"))
-	if got := l.hub(); got != 0 {
-		t.Fatalf("%d viewers are attached; this test wants none", got)
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
-	marker := "no-viewer-here"
-	// A named key and hex text in one call, with a pause between them.
-	if err := l.SendKeys(ctx, row.ID, []Key{
-		{Text: "echo " + marker},
-		{Wait: 100 * time.Millisecond},
-		{Name: "Enter"},
-	}); err != nil {
-		t.Fatalf("send-keys: %v", err)
-	}
-	waitFor(t, 10*time.Second, "the pane to run what was typed", func() bool {
-		screen, err := l.CapturePane(ctx, row.ID, 40)
-		return err == nil && strings.Count(screen, marker) >= 2
-	})
-
-	// Text is sent as hex, so a backslash is a backslash on every tmux.
-	if err := l.SendKeys(ctx, row.ID, []Key{
-		{Text: `echo back\\slash`}, {Name: "Enter"},
-	}); err != nil {
-		t.Fatalf("send-keys: %v", err)
-	}
-	waitFor(t, 10*time.Second, "the backslash to survive", func() bool {
-		screen, err := l.CapturePane(ctx, row.ID, 40)
-		return err == nil && strings.Contains(screen, `back\slash`)
-	})
-}
-
-// TestSendKeysAndCaptureRefuseAMissingSession: a session that is not there is
-// an error and never a silent success.
-func TestSendKeysAndCaptureRefuseAMissingSession(t *testing.T) {
+// TestCaptureRefusesAMissingSession: a session that is not there is an error
+// and never a silent success.
+func TestCaptureRefusesAMissingSession(t *testing.T) {
 	l := newLab(t)
 	_ = l.create(shellSpec(realDir(t, l.dataDir), "/bin/sh"))
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -149,13 +77,10 @@ func TestSendKeysAndCaptureRefuseAMissingSession(t *testing.T) {
 	if _, err := l.CapturePane(ctx, "nosuchsession", 10); err == nil {
 		t.Fatal("capturing a session that is not there succeeded")
 	}
-	if err := l.SendKeys(ctx, "nosuchsession", []Key{{Name: "Enter"}}); err == nil {
-		t.Fatal("typing into a session that is not there succeeded")
-	}
 }
 
-// TestActivityPaneFormatParsesOnThisTmux checks the six fields the detector
-// asks for against the tmux on this machine: all six have to populate, and
+// TestActivityPaneFormatParsesOnThisTmux checks the five fields the detector
+// asks for against the tmux on this machine: all five have to populate, and
 // #{window_activity} has to be the epoch second of the pane's last output.
 func TestActivityPaneFormatParsesOnThisTmux(t *testing.T) {
 	l := newLab(t)
@@ -183,9 +108,6 @@ func TestActivityPaneFormatParsesOnThisTmux(t *testing.T) {
 	if line.command == "" {
 		t.Fatal("#{pane_current_command} was empty")
 	}
-	if line.title == "" {
-		t.Fatal("#{pane_title} was empty; the detector's Codex layer lives on it")
-	}
 	// window_activity is seconds since the epoch, not milliseconds and not a
 	// count: a value a minute either side of now is the only shape that makes
 	// the quiescence layer's arithmetic mean anything.
@@ -196,9 +118,7 @@ func TestActivityPaneFormatParsesOnThisTmux(t *testing.T) {
 
 	// The foreground command follows the job, which is the whole of the Shell
 	// layer's first half.
-	if err := l.SendKeys(ctx, row.ID, []Key{{Text: "sleep 4"}, {Name: "Enter"}}); err != nil {
-		t.Fatalf("send-keys: %v", err)
-	}
+	l.typeIn(ctx, row.ID, "sleep 4")
 	waitFor(t, 10*time.Second, "the foreground command to become sleep", func() bool {
 		panes, err := l.listActivityPanes(ctx)
 		return err == nil && panes[row.TmuxName].command == "sleep"
@@ -250,9 +170,7 @@ func TestActivityTickAnswersForARealPane(t *testing.T) {
 	}
 
 	// A command running in the foreground is busy, whatever it prints.
-	if err := l.SendKeys(ctx, row.ID, []Key{{Text: "sleep 5"}, {Name: "Enter"}}); err != nil {
-		t.Fatalf("send-keys: %v", err)
-	}
+	l.typeIn(ctx, row.ID, "sleep 5")
 	waitFor(t, 10*time.Second, "the session to become busy", func() bool {
 		l.act.tick(ctx, time.Now())
 		return l.ActivityOf(row.ID).State == StateBusy
@@ -262,7 +180,7 @@ func TestActivityTickAnswersForARealPane(t *testing.T) {
 		return l.ActivityOf(row.ID).State == StateIdle
 	})
 	if !l.ActivityOf(row.ID).Unread {
-		t.Fatal("a command that finished while nobody typed leaves the row unread")
+		t.Fatal("a command that finished while nobody looked leaves the row unread")
 	}
 	l.NoteInput(row.ID)
 	if l.ActivityOf(row.ID).Unread {
@@ -277,16 +195,4 @@ func TestActivityTickAnswersForARealPane(t *testing.T) {
 	if got := l.ActivityOf(row.ID).State; got != StateUnknown {
 		t.Fatalf("a deleted session is %q, want unknown", got)
 	}
-}
-
-// hub is how many viewers this lab has attached, which the send-keys test
-// needs to be none.
-func (l *lab) hub() int {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	n := 0
-	for _, live := range l.live {
-		n += len(live.viewers)
-	}
-	return n
 }

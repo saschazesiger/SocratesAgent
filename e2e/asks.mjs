@@ -42,9 +42,9 @@ function fakes() {
 }
 
 async function boot(data, port, bin) {
-  const run = spawnServer({ data, port, env: { PATH: bin + ':' + process.env.PATH } });
+  const run = spawnServer({ data, port, pathFirst: bin });
   const url = `http://127.0.0.1:${port}`;
-  await waitForHealth(url);
+  await waitForHealth(url, 25000, run);
   const res = await fetch(url + '/api/setup', {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password: PASSWORD }),
   });

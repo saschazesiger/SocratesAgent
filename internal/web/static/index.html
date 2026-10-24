@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Socrates</title>
-<meta name="description" content="A web terminal for Claude Code, Codex, OpenCode and your shell.">
+<meta name="description" content="Chats with Claude Code, Codex and OpenCode, and a terminal for your shell.">
 <meta name="theme-color" content="#f0f4f9">
 <meta name="format-detection" content="telephone=no">
 <!-- Added to the Home Screen, Socrates opens as an app of its own: no browser
@@ -65,10 +65,6 @@
       <!-- How the last turn left the work, when the dashboard checks it. A tap
            says why. -->
       <button class="ds-btn ds-btn--quiet ds-btn--sm so-outcome" id="sessionOutcome" type="button" hidden></button>
-      <!-- Account limits and this conversation's estimated cost. A tap opens
-           the whole reading, because a touch screen has no tooltip. -->
-      <button class="ds-btn ds-btn--quiet ds-btn--sm so-usage" id="sessionUsage" type="button" hidden
-              aria-haspopup="dialog" aria-expanded="false" aria-controls="usageDialog"></button>
       <div class="so-topbar__actions">
         <!-- Copy, paste and upload (transfer.js), hidden until a terminal is
              attached. -->
@@ -146,9 +142,6 @@
     <main class="ds-view so-view" id="main" tabindex="-1">
       <div class="so-main" id="mainColumn">
         <div class="so-conn" id="connSlot" hidden></div>
-        <!-- On a phone the bar has no room for the usage strip: session.js
-             moves it onto this line under the bar. -->
-        <div class="so-usage-line" id="usageLine" hidden></div>
         <!-- No backup for a day. Hidden while backups work; backup.js
              fills it. -->
         <div class="so-banner" id="backupNotice" role="status" aria-live="polite" hidden></div>
@@ -173,8 +166,8 @@
               </div>
             </div>
           </div>
-          <!-- A prepared session (PreStart) has no terminal yet; its panel takes
-               the pane's place. prestart.js draws it. -->
+          <!-- A prepared chat (PreStart) has not started yet; its panel takes
+               the chat's place. prestart.js draws it. -->
           <section class="so-prestart" id="prestart" aria-label="Prepared session" hidden></section>
           <!-- A chat: an agent session the page draws itself, its conversation
                above and its composer below. chatview.js draws it. -->
@@ -227,15 +220,6 @@
       </div>
     </div>
     <div class="ds-dialog__actions"><button class="ds-btn ds-btn--text" type="button" data-close autofocus>Done</button></div>
-  </div>
-</dialog>
-
-<dialog class="ds-dialog" id="usageDialog" aria-labelledby="usageTitle">
-  <div class="ds-dialog__backdrop" data-close></div>
-  <div class="ds-dialog__box">
-    <h2 class="ds-dialog__title" id="usageTitle">Usage limits</h2>
-    <div class="so-usage-reading" id="usageReading"></div>
-    <div class="ds-dialog__actions"><button class="ds-btn ds-btn--text" type="button" data-close autofocus>Close</button></div>
   </div>
 </dialog>
 

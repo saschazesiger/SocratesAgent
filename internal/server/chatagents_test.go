@@ -23,9 +23,6 @@ import (
 
 // The three agents' adapters are in this test binary - which is also every
 // host it launches - with their scripted CLIs (e2e/fakebin) on the PATH.
-// Like the browser suite, the binary keeps the agent terminals for the sheet
-// and PreStart (AgentTerminalsEnv, set in TestMain), so that the tests
-// written for Claude Code, Codex and OpenCode terminals still make terminals.
 
 var (
 	fakeAgentsOnce sync.Once
@@ -161,6 +158,17 @@ func TestALostChatFolderIsRebuiltFromTheTranscript(t *testing.T) {
 				}
 				time.Sleep(20 * time.Millisecond)
 			}
+			// The first turn is read, so that an unread mark after the
+			// rebuild is one the rebuild made: a mark from before a restart
+			// is kept, as work nobody has seen. The detector has the turn's
+			// end, unread, first: it follows the journal a moment behind.
+			for deadline := time.Now().Add(5 * time.Second); !c.srv.manager.ActivityOf(id).Unread; {
+				if time.Now().After(deadline) {
+					t.Fatalf("the first turn never ended unread: %+v", c.srv.manager.ActivityOf(id))
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+			c.srv.manager.MarkRead(id)
 			c.restart(t, 0, func() {
 				c.stopHosts(t)
 				if err := os.RemoveAll(agenthost.ChatDir(c.data, id)); err != nil {
@@ -242,7 +250,6 @@ func TestALostChatFolderIsRebuiltFromTheTranscript(t *testing.T) {
 // chat keeps the Ultracode it was prepared with, and another agent does not.
 func TestAPreparedChatStartsByTheClockWithItsDraft(t *testing.T) {
 	withFakeAgents(t)
-	t.Setenv(AgentTerminalsEnv, "")
 	c := newChatEnv(t, time.Hour)
 	sent := catch(c.srv.push)
 	if err := c.srv.push.add(pushSub{Subscription: testSubscription("https://push.example.net/a")}); err != nil {

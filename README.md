@@ -1,11 +1,28 @@
 # Socrates
 
-**A web terminal for Claude Code, Codex, OpenCode and your shell.**
-Every session is a real terminal in a real tmux pane and the browser is a window
-onto it, so a session outlives the tab, the phone, the network and an update.
+**Chats with Claude Code, Codex and OpenCode, and a terminal for your shell.**
+An agent's session is a chat: the agent runs on the server under a host of its
+own, driven through its own protocol, and the page draws what it says. A Shell
+is a real terminal in a real tmux pane and the browser is a window onto it.
+Either way a session outlives the tab, the phone, the network and an update.
 
 <p align="center">
-  <img src="docs/screenshot-session.png" alt="A Claude Code session in the browser, with a session per program in the sidebar" width="860">
+  <img src="docs/screenshot-session.png" alt="A Claude Code chat in the browser: the fix it explains, the edit it made and the tests it ran, with a chat per agent and a Shell in the sidebar" width="860">
+</p>
+
+## Home, and the questions the agents ask
+
+Every start of the page is **Home**: how many chats need an answer, are working, have background
+tasks or finished while nobody looked, and a line per chat saying what it is doing, all moving by
+themselves. An agent that needs you asks through one tool, `ask_user`, the same for all three, and
+waits for the answer however long it takes: a question with options, several at once, a plan to
+approve. **Questions** opens them one after the other, oldest first; on a phone or in a car the
+dialog is the whole screen, with big buttons, Read aloud and dictation, and an answer given offline
+goes out once the connection is back. A question answered on another device says so.
+
+<p align="center">
+  <img src="docs/screenshot-home.png" alt="Home: one chat asking which database to use, one running its tests, one that finished, and a Codex chat and a Shell" width="640">
+  <img src="docs/screenshot-phone.png" alt="The question on a phone, as the whole screen: Postgres recommended, SQLite and MySQL as big buttons" width="200">
 </p>
 
 ## Install
@@ -42,9 +59,10 @@ script again is safe: it repairs what is missing and updates the rest. Then:
 1. **Open it.** Socrates listens on `127.0.0.1:8080`. From your computer:
    `ssh -L 8080:localhost:8080 root@your-server`, then <http://localhost:8080>.
    Choose a password - or restore a backup of another machine (below).
-2. **Sign the agents in**, once, in a terminal on the machine or in a Shell
-   session: `claude`, `codex login --device-auth`, `opencode auth login`.
-   Answer Claude Code's first-run questions too, or a new session opens on them.
+2. **Sign the agents in** under Admin → Accounts: Claude Code signs in from a
+   Shell session the card opens for it, Codex with a device code, and any of
+   them with an API key. A machine that ran an earlier Socrates keeps the
+   sign-ins it had: the first start takes them over as accounts.
 3. **Reach it from anywhere**: Admin → Cloudflare tunnel, with Cloudflare Access
    in front of the hostname.
 
@@ -102,19 +120,20 @@ only while Socrates answers its own health check, so a process that hangs is
 restarted like one that crashed, and a crash loop never parks the unit in
 `failed`.
 
-A reboot does end the sessions; each comes back on its own conversation when
-you open it.
+A reboot does end the terminals; a Shell starts again in its folder when you
+open it, and a chat goes on with its conversation.
 
 ## What is where
 
 | | |
 | --- | --- |
 | `socrates.service` | the web server: `systemctl status socrates`, `journalctl -u socrates -f` |
-| `socrates-tmux.scope` | the sessions. `systemctl stop "socrates-tmux*.scope"` ends every one of them |
+| `socrates-agents-<chat>.scope` | one chat's agent host and its CLI, which outlive the service |
+| `socrates-tmux.scope` | the Shell terminals. `systemctl stop "socrates-tmux*.scope"` ends every one of them |
 | `socrates-update.timer` | the nightly update: `systemctl list-timers socrates-update.timer`, `journalctl -u socrates-update` |
 | `/etc/socrates.env` | the listen address and what is updated |
-| `/var/lib/socrates` | the data directory: the database, profiles, journals, `backup.json`, `updates.json` and `updates.log` of the last update |
-| `/root` | `HOME`: the agents' own logins, settings and transcripts, Claude Code and Codex |
+| `/var/lib/socrates` | the data directory: the database, the chats, the accounts and the agents' transcripts, the terminals' journals, `backup.json`, `updates.json` and `updates.log` of the last update |
+| `/root` | `HOME`: where the agents' own folders were, links into the accounts now |
 | `/usr/local/bin/socrates` | the binary |
 | `/usr/local/lib/socrates` | the updater the timer runs |
 | `/opt/socrates` | the source Socrates is built from, and Go, Node, OpenCode and code-server |
@@ -138,11 +157,9 @@ find /usr/local/bin -lname '/opt/socrates/*' -delete && apt-mark unhold tmux
 
 Everything Socrates keeps is in its data directory, `/var/lib/socrates`
 (`SOCRATES_DATA_DIR`): the database with the settings, the password, sign-ins,
-sessions and prepared prompts, and beside it the sessions' files, profiles and
-VS Code's state. It needs nothing else to run, and it never waits on a network.
-Not in it yet are the default sign-ins and transcripts of Claude Code, Codex
-and OpenCode (`~/.claude`, `~/.codex`, `~/.local/share/opencode`): a restored
-machine has its profiles' sign-ins, and is signed in to the default ones again.
+sessions and prepared prompts, and beside it the chats, the accounts with their
+sign-ins, the agents' transcripts, the terminals' files and VS Code's state. It
+needs nothing else to run, and it never waits on a network.
 
 **Admin → Backup** backs that folder up to an S3 bucket - Hetzner Object
 Storage, AWS S3, Cloudflare R2, MinIO, anything S3-compatible. Every 10
@@ -157,9 +174,13 @@ a week for 26 weeks; chunks no snapshot needs any more are deleted a day later.
 The card says when the last backup ran, how large it was and what failed; a
 day without a successful one is said on the session page too.
 
+<p align="center">
+  <img src="docs/screenshot-backup.png" alt="Admin's Backup card: what is backed up, when the last backup ran and when the next one runs, and its snapshot" width="760">
+</p>
+
 | backed up | left out |
 | --- | --- |
-| the database, `sessions/`, `profiles/`, `vscode/`, `vscode-extensions/`, and whatever later versions keep there (chats, agents, accounts) | working directories (the workspace root and the presets, which live in git), `run/`, `cache/`, `bin/`, sockets, the terminals' byte journals, a chat host's lock and log and the account environment in its launch spec, the updater's files, and `backup.json` itself |
+| the database and its key (`secrets.key`), `chats/` (every chat's journal and attachments), `agents/` (the agents' shared transcripts), `accounts/` (their sign-ins), `terminals/`, `sessions/`, `vscode/`, `vscode-extensions/` | working directories (the workspace root and the presets, which live in git), `run/`, `cache/`, `bin/`, sockets, the terminals' byte journals, a chat host's lock and log and the brief it makes again from the journal, OpenCode's shared cache, Codex's own logs, the updater's files, and `backup.json` itself |
 
 **Everything in the bucket is encrypted on this machine** (AES-256-GCM, with
 keys derived from your passphrase by PBKDF2-SHA256, 600 000 rounds) before it
@@ -189,30 +210,29 @@ machine wrote one in the last day.
 An installation that had the bucket mirror of earlier versions (`SOCRATES_S3_*`
 in `/etc/socrates.env`, or else `s3.json`) is carried over by itself, once, at
 its first start: the backup goes into the same bucket under `backup/v1/` inside
-the old prefix, and the mirror's objects are left as they were. From then on
+the old prefix, and the mirror's objects are left as they were. Once the
+backup has a snapshot of this machine, the Backup card offers to delete them. From then on
 the card owns the configuration; **Turn off backups** there removes
 `backup.json`, and the variables do not bring it back.
 
 ## More than one account
 
-A profile is a second set of sign-ins - a business Claude account beside a
-private one. Add it under **Profiles** in the dashboard, then pick it in the
-new-session sheet. Each profile gets its own `CLAUDE_CONFIG_DIR`, `CODEX_HOME`
-and OpenCode data directory under `<data>/profiles/<id>`; settings,
-instructions, skills, plugins and MCP servers are linked from the default ones,
-while credentials and conversations stay apart. To sign in, start a Claude Code
-session in the profile (it asks by itself), or a Shell session in it and run
-`codex login --device-auth` or `opencode auth login`.
+An account is one agent's sign-in: a subscription or an API key. Add as many
+as you like under **Admin → Accounts** - a business Claude account beside a
+private one - and pick one in the new-session sheet; unless you pick another,
+a chat starts on the account with the most usage left for the time until it
+renews, and the sheet shows each account's five-hour and weekly usage. A chat
+can be moved to another account from its composer, and can be told to switch
+by itself when it reaches a limit. Every account of an agent shares its
+conversations, so a chat goes on with its history on any of them.
 
-The sheet lists the profiles in the order of the dashboard's list (drag a row
-by its handle to change it), shows each account's five-hour and weekly usage
-with how long until each renews and, unless you pick another, chooses the one
-with the most usage left for the time until it renews. A session keeps the
-profile it was started in for its whole life.
+<p align="center">
+  <img src="docs/screenshot-admin.png" alt="Admin's Accounts card: two Claude Code accounts, a Codex and an OpenCode account" width="760">
+</p>
 
-A Claude Code session can also be started with **Ultracode** (dynamic
-workflows on every task) from the new-session sheet. It is off unless switched
-on there, and a session keeps the choice for its whole life.
+A Claude Code chat can also be started with **Ultracode** (dynamic workflows
+on every task) from the new-session sheet, and switched on or off from the
+chat's menu.
 
 ## Keys
 
@@ -222,9 +242,9 @@ reading answers out loud.
 With an OpenRouter key, **Check each turn's outcome** (Admin → Status & naming,
 off by default) has every finished turn judged as complete, partly done (with
 what is still open), waiting on you, or blocked. The session shows an hourglass
-while that is read, and its notification waits up to 45 seconds to say it. For
-Claude Code the read is also given the last instruction, the last answer and
-the task list from its transcript.
+while that is read, and its notification waits up to 45 seconds to say it. The
+read is given the turn's instruction, its answer and its task list from the
+chat's journal.
 
 ## Notifications
 
@@ -236,23 +256,22 @@ the phone locked. On an iPhone, add Socrates to the Home Screen and turn
 them on from there; Safari allows push only for an installed web app. Over
 plain http they appear only while the page is open.
 
-A question notification shows the question itself when it can be read in
-time, and tapping it opens Home with that question ready to answer. The app
-icon's badge is the number of sessions waiting for an answer (questions and
-permission prompts), and a notification for a question that has been answered
+A question notification shows the question itself, and tapping it opens Home
+with that question ready to answer. The app icon's badge is the number of chats
+waiting for an answer, and a notification for a question that has been answered
 elsewhere is removed. On Android, a long press on the installed app's icon
 offers **Questions** and **Home**.
 
 ## Prepared sessions (PreStart)
 
 Switch **PreStart** on in the new-session sheet (Claude Code, Codex and
-OpenCode) and **Prepare** stores the session without starting anything. It
-opens as a panel instead of a terminal: the same settings as the sheet, all
+OpenCode) and **Prepare** stores the chat without starting anything. It
+opens as a panel instead of a chat: the same settings as the sheet, all
 still changeable, and a large field for the first prompt, which is saved as you
 type (on this device at once, on the server after a pause - the line under
-the field says which). **Start** (or Ctrl/⌘+Enter) launches it
-exactly as a new session with those settings, and the prompt goes in as the
-program's first message. **Start automatically** takes a date and time instead:
+the field says which). **Start** (or Ctrl/⌘+Enter) starts it
+exactly as a new chat with those settings, and the prompt is its first
+message. **Start automatically** takes a date and time instead:
 the server starts it then by itself, even with no browser open, and sends a
 notification either way. A server that was down at that moment starts it as
 soon as it is back; a start that failed is not retried, and the panel says
@@ -262,10 +281,11 @@ after writing in it, the session is named after the prompt.
 
 ## Files
 
-The paperclip in the top bar uploads files into the session's working
-directory, under `.socrates/uploads/` (ignored by git), and puts their paths on
-the prompt. Claude Code attaches a pasted image path as an image. Pasting or
-dropping an image onto the terminal does the same. The two buttons beside it
+The paperclip in the top bar uploads files into a Shell's working directory,
+under `.socrates/uploads/` (ignored by git), and puts their paths on the
+prompt; pasting or dropping an image onto the terminal does the same. A chat
+takes files from its composer - the button, a drop or a paste - and sends them
+with the message. The two buttons beside it
 copy (the selection, or the terminal's text in a sheet you can select in) and
 paste.
 

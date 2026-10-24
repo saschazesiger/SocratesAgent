@@ -61,7 +61,6 @@ const MODEL_PICKERS = [
   ['orStatus', 'openrouter.status_model'],
   ['orTitle', 'openrouter.title_model'],
   ['orHome', 'openrouter.home_model'],
-  ['orOperator', 'openrouter.operator_model'],
 ];
 
 // FIELDS is every control that is one element and one path. Everything with a
@@ -1315,6 +1314,10 @@ function bind() {
   $('backupSave').addEventListener('click', saveBackup);
   $('backupOff').addEventListener('click', turnBackupOff);
   $('backupDetail').addEventListener('click', openBackupTip);
+  $('backupLegacy').addEventListener('click', (event) => {
+    const button = event.target.closest('[data-action="delete-legacy"]');
+    if (button) deleteLegacy(button);
+  });
   $('testVoice').addEventListener('click', testVoice);
   for (const summary of document.querySelectorAll('.so-disclosure > summary')) {
     if (!summary.querySelector('.ds-chevron')) summary.append(iconEl('chevronDown', 20, 'ds-chevron'));
@@ -1664,7 +1667,7 @@ function renderBackup(status, fillForm) {
   if (status.running) {
     kind = 'running';
     label = status.phase ? status.phase.charAt(0).toUpperCase() + status.phase.slice(1) : 'Backing up';
-    if (status.files) facts.push(status.files + ' files read', bytes(status.uploaded) + ' sent');
+    if (status.files) facts.push(status.files + ' file' + (status.files === 1 ? '' : 's') + ' read', bytes(status.uploaded) + ' sent');
   } else if (status.broken) {
     kind = 'error';
     label = 'Backups off';
@@ -1676,7 +1679,7 @@ function renderBackup(status, fillForm) {
     kind = status.overdue ? 'error' : 'ok';
     label = status.overdue ? 'Backup overdue' : 'Backed up';
     facts.push(ago(Math.max(last ? last.at : 0, status.checked_at || 0)));
-    if (last) facts.push(bytes(last.size), last.files + ' files');
+    if (last) facts.push(bytes(last.size), last.files + ' file' + (last.files === 1 ? '' : 's'));
   } else if (cfg) {
     kind = 'waiting';
     label = 'No backup yet';
@@ -1788,6 +1791,63 @@ async function loadSnapshots() {
     if (err && err.status === 409) { $('backupSnapshotsHint').textContent = ''; return; }
     $('backupSnapshotsHint').textContent = 'The snapshots could not be listed: ' + firstSentence(errorMessage(err));
   }
+  loadLegacy();
+}
+
+// legacyWhere is where in the bucket the mirror wrote, in words.
+function legacyWhere(legacy) {
+  return legacy.prefix ? 'under ' + legacy.prefix : 'at the top of the bucket';
+}
+
+// loadLegacy says what the bucket mirror of the build before left beside the
+// backup (REBUILD.md §8.4): kept as it was until this machine has a snapshot
+// in the backup, and offered for deletion from then on. It reads the bucket,
+// so it goes with the snapshot list.
+async function loadLegacy() {
+  const host = $('backupLegacy');
+  let legacy = null;
+  try {
+    legacy = (await api('/api/backup/legacy', { attempts: 1, timeout: 120000 })).legacy || null;
+  } catch {
+    // A bucket that cannot be listed says so in the snapshot list's line.
+    legacy = null;
+  }
+  if (!legacy || !legacy.objects) {
+    morph(host, '');
+    return;
+  }
+  const what = legacy.objects + (legacy.objects === 1 ? ' object' : ' objects') + ' (' + bytes(legacy.bytes) + ')';
+  const text = legacy.snapshot
+    ? 'The bucket still holds the ' + what + ' the mirror of the build before wrote ' + legacyWhere(legacy)
+      + '. This machine has a snapshot in the backup now, so they are not needed any more.'
+    : 'The bucket still holds the ' + what + ' the mirror of the build before wrote ' + legacyWhere(legacy)
+      + '. They stay until this machine has its first snapshot in the backup.';
+  morph(host, html`<div class="ds-alert" role="status">${raw(icon('info', 20))}<span class="ds-alert__text">${text}</span>${
+    legacy.snapshot ? html`<button class="ds-btn ds-btn--text ds-btn--sm" type="button" data-action="delete-legacy" data-objects="${legacy.objects}" data-where="${legacyWhere(legacy)}">${faces('Delete them', 'Deleting')}</button>` : ''
+  }</div>`);
+}
+
+// deleteLegacy deletes the mirror's objects, after asking: they are the old
+// build's copy of this machine, and nothing brings them back.
+async function deleteLegacy(button) {
+  const objects = Number(button.dataset.objects) || 0;
+  const yes = await confirmDialog({
+    title: 'Delete the old mirror objects?',
+    body: 'The ' + objects + (objects === 1 ? ' object' : ' objects') + ' the bucket mirror of the build before wrote '
+      + button.dataset.where + ' are deleted: its meta.json, lease.json and logins.json, and its kv, sessions, '
+      + 'drafts and costs objects. Nothing of the backup is touched, and its snapshots stay.',
+    confirmLabel: 'Delete ' + objects + (objects === 1 ? ' object' : ' objects'),
+    danger: true,
+    opener: button,
+  });
+  if (!yes) return;
+  try {
+    const data = await busy(button, api('/api/backup/legacy', { method: 'DELETE', attempts: 1, timeout: 600000 }));
+    toast('Deleted ' + data.deleted + (data.deleted === 1 ? ' old object.' : ' old objects.'), 'success');
+  } catch (err) {
+    toast(firstSentence(errorMessage(err)), 'error');
+  }
+  loadLegacy();
 }
 
 function backupBody() {
@@ -1848,6 +1908,7 @@ async function turnBackupOff() {
     toast('Backups are off.');
     $('backupSnapshots').hidden = true;
     $('backupSnapshotsHint').textContent = '';
+    morph($('backupLegacy'), '');
     snapshotsLoaded = false;
     if (data.status) renderBackup(data.status, true);
   } catch (err) {

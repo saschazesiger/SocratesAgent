@@ -1,10 +1,9 @@
-//go:build !windows
+//go:build linux
 
 package server
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -14,42 +13,19 @@ import (
 	"testing"
 	"time"
 
-	"github.com/saschazesiger/SocratesAgent/internal/harnesses"
+	"github.com/saschazesiger/SocratesAgent/internal/agent"
 	"github.com/saschazesiger/SocratesAgent/internal/store"
 	"github.com/saschazesiger/SocratesAgent/internal/termux"
 )
 
-// preparedEnv is a signed-in server whose terminal substrate has NOT been
-// started: preparing a session must work without tmux.
-func preparedEnv(t *testing.T) *sessionEnv {
-	t.Helper()
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	e := &sessionEnv{testEnv: newEnv(t), t: t, home: home, work: filepath.Join(home, "work")}
-	e.signIn()
-	e.configureWorkspace(filepath.Join(home, "workspaces"), true, filepath.Join(home, "preset"))
-	return e
-}
-
-func (e *sessionEnv) prepare(body string) map[string]any {
-	e.t.Helper()
-	res, payload := e.do(e.t, e.client, "POST", "/api/sessions", body)
-	if res.StatusCode != http.StatusCreated {
-		e.t.Fatalf("prepare: %d %#v", res.StatusCode, payload)
-	}
-	session, _ := payload["session"].(map[string]any)
-	return session
-}
-
-// putDraft saves a draft with a JSON-encoded text.
-func (e *sessionEnv) putDraft(id, text string, base int64) (*http.Response, map[string]any) {
-	e.t.Helper()
-	body, _ := json.Marshal(map[string]any{"text": text, "base_rev": base})
-	return e.do(e.t, e.client, "PUT", "/api/sessions/"+id+"/draft", string(body))
-}
+// Prepared chats ("PreStart"): a chat's settings and first message written
+// before anything runs. A start that has to run something runs the scripted
+// agent in a real host (chats_test.go); everything else is the API alone.
 
 // Preparing stores the settings and the draft, makes no directory and runs
-// nothing - and is held to the same rules as a create.
+// nothing - and is held to the same rules as a chat that starts at once. A
+// profile, which the agents' terminals ran in before accounts, is no setting
+// of a chat any more.
 func TestPrepareStoresARowAndNothingElse(t *testing.T) {
 	e := preparedEnv(t)
 	root := filepath.Join(e.home, "workspaces")
@@ -58,16 +34,21 @@ func TestPrepareStoresARowAndNothingElse(t *testing.T) {
 		"profile_auto":true,"prompt":"first line\nsecond","title":"Planned work"}`)
 	id := sessionID(t, session)
 	if session["state"] != store.StatePrestart || session["workdir"] != "" || session["draft_rev"] != float64(1) ||
-		session["draft_preview"] != "first line" || session["title"] != "Planned work" {
+		session["draft_preview"] != "first line" || session["title"] != "Planned work" || session["kind"] != store.KindChat {
 		t.Fatalf("prepared session = %#v", session)
 	}
 	if entries, _ := os.ReadDir(root); len(entries) != 0 {
 		t.Fatalf("preparing made %d directories in the workspace", len(entries))
 	}
 	row, _ := e.store.GetSession(id)
-	if row.TmuxName != "" || !strings.Contains(string(row.Options), `"profile_auto":true`) ||
+	if row.TmuxName != "" || strings.Contains(string(row.Options), "profile") ||
 		!strings.Contains(string(row.Options), `"ultracode":true`) {
 		t.Fatalf("stored row = %#v (options %s)", row, row.Options)
+	}
+	// Ultracode is Claude Code's alone, and another agent is prepared without.
+	codex := e.prepare(`{"prestart":true,"harness":"codex","ultracode":true}`)
+	if options, _ := codex["options"].(map[string]any); options["ultracode"] != nil {
+		t.Fatalf("a prepared Codex chat keeps %#v", options)
 	}
 	if _, err := os.Stat(termux.SessionDir(e.srv.dataDir, id)); !os.IsNotExist(err) {
 		t.Fatalf("preparing made a session directory: %v", err)
@@ -79,8 +60,7 @@ func TestPrepareStoresARowAndNothingElse(t *testing.T) {
 	}{
 		{`{"prestart":true,"harness":"shell"}`, http.StatusBadRequest},
 		{`{"prestart":true,"harness":"vscode"}`, http.StatusBadRequest},
-		{`{"prestart":true,"harness":"codex","ultracode":true}`, http.StatusBadRequest},
-		{`{"prestart":true,"harness":"claude","profile":"p-nothere"}`, http.StatusBadRequest},
+		{`{"prestart":true,"harness":"claude","account":"a-nothere"}`, http.StatusBadRequest},
 		{`{"prestart":true,"harness":"claude","workdir_mode":"preset","workdir":"/not/a/preset"}`, http.StatusBadRequest},
 		{`{"prestart":true,"harness":"claude","workdir_mode":"custom","workdir":"/etc"}`, http.StatusBadRequest},
 		{fmt.Sprintf(`{"prestart":true,"harness":"claude","start_at":%d}`, time.Now().Add(-time.Minute).UnixMilli()), http.StatusBadRequest},
@@ -120,7 +100,7 @@ func TestPreparedSettingsAndDraft(t *testing.T) {
 	}
 	for _, body := range []string{
 		`{"harness":"shell"}`,
-		`{"ultracode":true}`,
+		`{"account":"a-nothere"}`,
 		`{"start_at":5}`,
 		`{"workdir_mode":"custom","workdir":"/proc/x"}`,
 	} {
@@ -157,7 +137,8 @@ func TestPreparedSettingsAndDraft(t *testing.T) {
 		t.Fatalf("list = %#v", list)
 	}
 
-	// Nothing that needs a terminal works on it, and renaming does.
+	// Nothing that needs a terminal works on it - a chat has none, and a
+	// prepared one is not started - and renaming does.
 	for _, route := range [][2]string{
 		{"POST", "/resume"}, {"POST", "/restart"}, {"GET", "/journal"}, {"POST", "/upload"}, {"GET", "/ws"},
 	} {
@@ -174,124 +155,6 @@ func TestPreparedSettingsAndDraft(t *testing.T) {
 	}
 	if _, err := e.store.GetDraft(id); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("the draft outlived the session: %v", err)
-	}
-}
-
-// bigPrompt is about fifty kilobytes of what a shell would mangle.
-func bigPrompt() string {
-	var b strings.Builder
-	b.WriteString("Plan: 'single' \"double\" $HOME `id` ünïcödé 日本語 🙂\n")
-	for i := 0; b.Len() < 50<<10; i++ {
-		fmt.Fprintf(&b, "%d: $(echo nope) `uname` \\ ' \" ; | & > %% * ? [x] {y} ~ # ß\n", i)
-	}
-	return b.String() + "--\nend\n"
-}
-
-// fakeLaunchPrompt is the prompt the fake recorded for a session's launch.
-func fakeLaunchPrompt(t *testing.T, path, sessionID string) (string, bool) {
-	t.Helper()
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		return "", false
-	}
-	prompt, found := "", false
-	for _, line := range strings.Split(string(raw), "\n") {
-		var rec struct {
-			Env    map[string]string `json:"env"`
-			Prompt *string           `json:"prompt"`
-		}
-		if json.Unmarshal([]byte(line), &rec) != nil || rec.Env["SOCRATES_SESSION"] != sessionID {
-			continue
-		}
-		found = true
-		prompt = ""
-		if rec.Prompt != nil {
-			prompt = *rec.Prompt
-		}
-	}
-	return prompt, found
-}
-
-// Start is a create: the prepared session runs the program it would have
-// run from the sheet, at the size the page measured, with the draft - fifty
-// kilobytes of quotes, dollars and backticks - as its first prompt, through
-// the real tmux launch. Afterwards the draft is kept and read-only, a second
-// Start answers with the running session, and a restart does not send the
-// prompt again.
-func TestStartRunsThePreparedSessionWithItsPrompt(t *testing.T) {
-	fakeLog := filepath.Join(t.TempDir(), "fake.log")
-	t.Setenv("FAKE_LOG", fakeLog)
-	e := newSessionEnv(t)
-
-	id := sessionID(t, e.prepare(`{"prestart":true,"harness":"claude","title":"Big one","profile_auto":true}`))
-	prompt := bigPrompt()
-	if res, payload := e.putDraft(id, prompt, 0); res.StatusCode != http.StatusOK {
-		t.Fatalf("draft: %d %#v", res.StatusCode, payload)
-	}
-
-	res, payload := e.do(t, e.client, "POST", "/api/sessions/"+id+"/start", `{"cols":100,"rows":30}`)
-	session, _ := payload["session"].(map[string]any)
-	if res.StatusCode != http.StatusOK || session["state"] != store.StateRunning {
-		t.Fatalf("start: %d %#v", res.StatusCode, payload)
-	}
-	if session["cols"] != float64(100) || session["rows"] != float64(30) || session["start_at"] != float64(0) {
-		t.Fatalf("the started session = %#v", session)
-	}
-	e.waitForPane(id, "prompt: Plan: 'single'")
-	var got string
-	waitForCond(t, 10*time.Second, "the fake to log its launch", func() bool {
-		var ok bool
-		got, ok = fakeLaunchPrompt(t, fakeLog, id)
-		return ok
-	})
-	if want := strings.TrimRight(prompt, "\n"); got != want {
-		t.Fatalf("the program got %d bytes of prompt, want %d", len(got), len(want))
-	}
-
-	row, _ := e.store.GetSession(id)
-	if strings.Contains(string(row.Options), "profile_auto") {
-		t.Fatalf("the running session still asks for a profile to be chosen: %s", row.Options)
-	}
-	if !strings.HasPrefix(row.Workdir, filepath.Join(e.home, "workspaces")) {
-		t.Fatalf("the dynamic directory is %q", row.Workdir)
-	}
-	argv := e.planArgv(id)
-	if argv[0] != "/bin/sh" || !strings.Contains(strings.Join(argv, " "), "--name Big one") {
-		t.Fatalf("plan argv = %q", argv)
-	}
-	if raw, _ := os.ReadFile(filepath.Join(e.srv.dataDir, "sessions", id, "plan.json")); strings.Contains(string(raw), "$(echo nope)") {
-		t.Fatal("plan.json carries the prompt")
-	}
-	if _, err := os.Stat(filepath.Join(e.srv.dataDir, "sessions", id, harnesses.InitialPromptFile)); !os.IsNotExist(err) {
-		t.Fatalf("the prompt file outlived the start: %v", err)
-	}
-
-	// The draft is kept, and is read-only now.
-	res, payload = e.do(t, e.client, "GET", "/api/sessions/"+id+"/draft", "")
-	if res.StatusCode != http.StatusOK || payload["text"] != prompt {
-		t.Fatalf("the draft after the start: %d", res.StatusCode)
-	}
-	if res, payload = e.putDraft(id, "edit", 1); res.StatusCode != http.StatusConflict || payload["started"] != true {
-		t.Fatalf("editing a started draft: %d %#v", res.StatusCode, payload)
-	}
-	if res, _ = e.do(t, e.client, "PATCH", "/api/sessions/"+id+"/prestart", `{"model":"x"}`); res.StatusCode != http.StatusConflict {
-		t.Fatalf("changing a started session's settings: %d", res.StatusCode)
-	}
-	// Start again: idempotent.
-	res, payload = e.do(t, e.client, "POST", "/api/sessions/"+id+"/start", `{}`)
-	if again, _ := payload["session"].(map[string]any); res.StatusCode != http.StatusOK || again["state"] != store.StateRunning {
-		t.Fatalf("a second start: %d %#v", res.StatusCode, payload)
-	}
-
-	// A restart plans from the row, and the row has no prompt.
-	e.typeLine(id, "/exit 0")
-	e.waitForState(id, 15*time.Second, store.StateExited)
-	if res, payload = e.do(t, e.client, "POST", "/api/sessions/"+id+"/restart", ""); res.StatusCode != http.StatusOK {
-		t.Fatalf("restart: %d %#v", res.StatusCode, payload)
-	}
-	argv = e.planArgv(id)
-	if argv[0] == "/bin/sh" || strings.Contains(strings.Join(argv, " "), "@socrates-initial-prompt@") {
-		t.Fatalf("the restart sent the prompt again: %q", argv)
 	}
 }
 
@@ -321,40 +184,98 @@ func TestAPreparedSessionMissesOnlyAFolderNothingWillMake(t *testing.T) {
 	}
 }
 
-// A start whose settings no longer work leaves the session prepared, with the
-// reason and the draft, and creates nothing.
+// prepareChat prepares a chat of the scripted agent, which a start runs in a
+// real host.
+func (c *chatEnv) prepareChat(t *testing.T, body map[string]any) string {
+	t.Helper()
+	body["prestart"], body["harness"] = true, agent.FakeHarness
+	code, made := c.post(t, "/api/sessions", body)
+	if code != http.StatusCreated {
+		t.Fatalf("prepare: %d %v", code, made)
+	}
+	return made["session"].(map[string]any)["id"].(string)
+}
+
+// workspace points the chat server's workspace at a root and one preset.
+func (c *chatEnv) workspace(t *testing.T, root, preset string) {
+	t.Helper()
+	for _, dir := range []string{root, preset} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	body := fmt.Sprintf(`{"settings":{"workspace":{"root":%q,"allow_custom":true,"presets":[{"label":"Preset","path":%q}]}}}`,
+		root, preset)
+	if res, payload := c.do(t, c.client, "PUT", "/api/settings", body); res.StatusCode != http.StatusOK {
+		t.Fatalf("settings: %d %#v", res.StatusCode, payload)
+	}
+}
+
+// A start whose settings no longer work leaves the chat prepared, with the
+// reason and the draft, and starts nothing; fixed, it starts with the draft
+// as its first message, exactly once.
 func TestAFailedStartKeepsTheSessionPrepared(t *testing.T) {
-	e := newSessionEnv(t)
-	preset := filepath.Join(e.home, "preset")
-	id := sessionID(t, e.prepare(fmt.Sprintf(`{"prestart":true,"harness":"codex","workdir_mode":"preset","workdir":%q,"prompt":"keep me"}`, preset)))
+	c := newChatEnv(t, time.Hour)
+	preset := filepath.Join(c.data, "preset")
+	c.workspace(t, filepath.Join(c.data, "workspaces"), preset)
+	id := c.prepareChat(t, map[string]any{"workdir_mode": "preset", "workdir": preset, "prompt": "keep me"})
 	if err := os.RemoveAll(preset); err != nil {
 		t.Fatal(err)
 	}
-	res, payload := e.do(t, e.client, "POST", "/api/sessions/"+id+"/start", `{}`)
+	res, payload := c.do(t, c.client, "POST", "/api/sessions/"+id+"/start", `{}`)
 	session, _ := payload["session"].(map[string]any)
 	if res.StatusCode != http.StatusBadRequest || payload["error"] == nil || session["state"] != store.StatePrestart ||
 		session["fail_reason"] == "" || session["fail_reason"] == nil {
 		t.Fatalf("a start into a missing preset: %d %#v", res.StatusCode, payload)
 	}
-	if e.hasTmuxSession(id) {
-		t.Fatal("a failed start left a tmux session")
+	if alive, _ := c.srv.chats.launcher.Alive(id); alive {
+		t.Fatal("a failed start started a host")
 	}
-	if d, _ := e.store.GetDraft(id); d.Text != "keep me" {
+	if d, _ := c.store.GetDraft(id); d.Text != "keep me" {
 		t.Fatalf("the draft after a failed start = %q", d.Text)
 	}
 	// Fixing the setting clears the reason, and the start works.
 	if err := os.MkdirAll(preset, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	res, payload = e.do(t, e.client, "PATCH", "/api/sessions/"+id+"/prestart", `{"model":""}`)
+	res, payload = c.do(t, c.client, "PATCH", "/api/sessions/"+id+"/prestart", `{"model":""}`)
 	if session, _ := payload["session"].(map[string]any); res.StatusCode != http.StatusOK || session["fail_reason"] != nil {
 		t.Fatalf("patch after a failure: %d %#v", res.StatusCode, payload)
 	}
-	res, payload = e.do(t, e.client, "POST", "/api/sessions/"+id+"/start", `{}`)
+	res, payload = c.do(t, c.client, "POST", "/api/sessions/"+id+"/start", `{}`)
 	if session, _ := payload["session"].(map[string]any); res.StatusCode != http.StatusOK || session["state"] != store.StateRunning {
 		t.Fatalf("the second start: %d %#v", res.StatusCode, payload)
 	}
-	e.waitForPane(id, "prompt: keep me (7 bytes)")
+	events := c.waitJournal(t, id, 20*time.Second, "the first turn", turnsEnded(1))
+	if users := count(events, func(ev agent.Event) bool { return ev.Type == agent.TypeMessage && ev.Role == agent.RoleUser }); users != 1 ||
+		!strings.Contains(lastSaid(events), "keep me") {
+		t.Fatalf("%d user messages, the agent said %q", users, lastSaid(events))
+	}
+	// Start again: idempotent, and nothing is sent twice.
+	res, payload = c.do(t, c.client, "POST", "/api/sessions/"+id+"/start", `{}`)
+	if again, _ := payload["session"].(map[string]any); res.StatusCode != http.StatusOK || again["state"] != store.StateRunning {
+		t.Fatalf("a second start: %d %#v", res.StatusCode, payload)
+	}
+}
+
+// A prepared terminal of an agent is from before the agents were chats; the
+// migration made it a chat or took it away (REBUILD.md §8.3). One that is
+// still there is neither changed nor started.
+func TestAPreparedAgentTerminalIsNotStarted(t *testing.T) {
+	e := preparedEnv(t)
+	if err := e.store.CreateSession(&store.Session{ID: "old", Harness: "claude", Workdir: e.home,
+		WorkdirMode: store.WorkdirCustom, State: store.StatePrestart, Kind: store.KindTerminal}); err != nil {
+		t.Fatal(err)
+	}
+	if res, _ := e.do(t, e.client, "PATCH", "/api/sessions/old/prestart", `{"model":"x"}`); res.StatusCode != http.StatusConflict {
+		t.Fatalf("a change: %d", res.StatusCode)
+	}
+	if res, _ := e.do(t, e.client, "POST", "/api/sessions/old/start", `{}`); res.StatusCode != http.StatusConflict {
+		t.Fatalf("a start: %d", res.StatusCode)
+	}
+	if row, _ := e.store.GetSession("old"); row.State != store.StatePrestart {
+		t.Fatalf("the row is %s", row.State)
+	}
 }
 
 func waitForCond(t *testing.T, within time.Duration, what string, cond func() bool) {
@@ -371,7 +292,7 @@ func waitForCond(t *testing.T, within time.Duration, what string, cond func() bo
 
 // subscribe gives the server one push subscription and returns what is sent
 // to it.
-func subscribe(t *testing.T, e *sessionEnv) <-chan sentPush {
+func subscribe(t *testing.T, e *testEnv) <-chan sentPush {
 	t.Helper()
 	sent := catch(e.srv.push)
 	if err := e.srv.push.add(pushSub{Subscription: testSubscription("https://push.example.net/a")}); err != nil {
@@ -380,55 +301,49 @@ func subscribe(t *testing.T, e *sessionEnv) <-chan sentPush {
 	return sent
 }
 
-func nextPush(t *testing.T, sent <-chan sentPush) pushNote {
-	t.Helper()
-	select {
-	case p := <-sent:
-		return p.note
-	case <-time.After(10 * time.Second):
-		t.Fatal("no push was sent")
-	}
-	return pushNote{}
-}
-
 // The scheduler, on a clock of the test's choosing: nothing before its time,
-// the due session at its time and the other one not, a failure reported once
-// and never retried.
+// the due chat at its time - its draft the first message - and the other one
+// not, a failure reported once and never retried.
 func TestSchedulerStartsWhatIsDue(t *testing.T) {
-	e := newSessionEnv(t)
-	sent := subscribe(t, e)
+	c := newChatEnv(t, time.Hour)
+	preset := filepath.Join(c.data, "preset")
+	c.workspace(t, filepath.Join(c.data, "workspaces"), preset)
+	sent := subscribe(t, c.testEnv)
 	ctx := context.Background()
 	now := time.Now()
 	hour := time.Hour.Milliseconds()
 
-	soon := sessionID(t, e.prepare(fmt.Sprintf(`{"prestart":true,"harness":"claude","title":"Soon","prompt":"go now","start_at":%d}`, now.UnixMilli()+hour)))
-	later := sessionID(t, e.prepare(fmt.Sprintf(`{"prestart":true,"harness":"codex","title":"Later","start_at":%d}`, now.UnixMilli()+3*hour)))
+	soon := c.prepareChat(t, map[string]any{"title": "Soon", "prompt": "go now", "start_at": now.UnixMilli() + hour,
+		"workdir_mode": "custom", "workdir": c.data})
+	later := c.prepareChat(t, map[string]any{"title": "Later", "start_at": now.UnixMilli() + 3*hour})
 
-	if n := e.srv.sched.runDue(ctx, now.Add(30*time.Minute)); n != 0 {
+	if n := c.srv.sched.runDue(ctx, now.Add(30*time.Minute)); n != 0 {
 		t.Fatalf("%d sessions started before their time", n)
 	}
-	if next := e.srv.sched.nextDue(); next != now.UnixMilli()+hour {
+	if next := c.srv.sched.nextDue(); next != now.UnixMilli()+hour {
 		t.Fatalf("next due = %d", next)
 	}
-	if n := e.srv.sched.runDue(ctx, now.Add(2*time.Hour)); n != 1 {
+	if n := c.srv.sched.runDue(ctx, now.Add(2*time.Hour)); n != 1 {
 		t.Fatalf("%d sessions started at the first one's time", n)
 	}
-	row, _ := e.store.GetSession(soon)
+	row, _ := c.store.GetSession(soon)
 	if row.State != store.StateRunning || row.StartAt != 0 {
 		t.Fatalf("the due session = %#v", row)
 	}
-	e.waitForPane(soon, "prompt: go now (6 bytes)")
-	if note := nextPush(t, sent); note.Title != "Started: Soon" || note.ID != soon {
+	if note := pushOfKind(t, sent, pushStarted, 10*time.Second); note.Title != "Started: Soon" || note.ID != soon {
 		t.Fatalf("push = %#v", note)
 	}
-	if row, _ := e.store.GetSession(later); row.State != store.StatePrestart || row.StartAt == 0 {
+	events := c.waitJournal(t, soon, 20*time.Second, "the first turn", turnsEnded(1))
+	if !strings.Contains(lastSaid(events), "go now") {
+		t.Fatalf("the agent said %q", lastSaid(events))
+	}
+	if row, _ := c.store.GetSession(later); row.State != store.StatePrestart || row.StartAt == 0 {
 		t.Fatalf("the later session = %#v", row)
 	}
 
-	// A start that fails is reported, keeps the session prepared with the
+	// A start that fails is reported, keeps the chat prepared with the
 	// reason, clears the schedule and is not tried again.
-	preset := filepath.Join(e.home, "preset")
-	res, _ := e.do(t, e.client, "PATCH", "/api/sessions/"+later+"/prestart",
+	res, _ := c.do(t, c.client, "PATCH", "/api/sessions/"+later+"/prestart",
 		fmt.Sprintf(`{"workdir_mode":"preset","workdir":%q}`, preset))
 	if res.StatusCode != http.StatusOK {
 		t.Fatalf("patch: %d", res.StatusCode)
@@ -436,45 +351,42 @@ func TestSchedulerStartsWhatIsDue(t *testing.T) {
 	if err := os.RemoveAll(preset); err != nil {
 		t.Fatal(err)
 	}
-	if n := e.srv.sched.runDue(ctx, now.Add(4*time.Hour)); n != 1 {
+	if n := c.srv.sched.runDue(ctx, now.Add(4*time.Hour)); n != 1 {
 		t.Fatalf("%d starts claimed", n)
 	}
-	row, _ = e.store.GetSession(later)
+	row, _ = c.store.GetSession(later)
 	if row.State != store.StatePrestart || row.StartAt != 0 || row.FailReason == "" {
 		t.Fatalf("after a failed scheduled start = %#v", row)
 	}
-	if note := nextPush(t, sent); note.Title != "Scheduled start failed: Later" || note.Body == "" {
+	if note := pushOfKind(t, sent, pushStarted, 10*time.Second); note.Title != "Scheduled start failed: Later" || note.Body == "" {
 		t.Fatalf("push = %#v", note)
 	}
-	if n := e.srv.sched.runDue(ctx, now.Add(5*time.Hour)); n != 0 {
+	if n := c.srv.sched.runDue(ctx, now.Add(5*time.Hour)); n != 0 {
 		t.Fatalf("a failed start was tried again: %d", n)
 	}
 }
 
 // A schedule that fell due while the server was down starts as soon as the
-// substrate is up, by the scheduler's first pass and on the real clock.
+// scheduler is up, by its first pass and on the real clock.
 func TestOverdueScheduleStartsAtStartup(t *testing.T) {
-	bin := requireTmux(t)
-	fakes := fakeBinDir(t)
-	e := preparedEnv(t)
-	e.tmuxBin = bin
-	t.Setenv("PATH", fakes+string(os.PathListSeparator)+os.Getenv("PATH"))
-	t.Setenv("CLAUDE_CONFIG_DIR", filepath.Join(e.home, ".claude"))
-	t.Setenv("CODEX_HOME", filepath.Join(e.home, ".codex"))
-
-	id := sessionID(t, e.prepare(fmt.Sprintf(`{"prestart":true,"harness":"claude","prompt":"overdue start","start_at":%d}`,
-		time.Now().Add(time.Hour).UnixMilli())))
+	c := newChatEnv(t, time.Hour)
+	id := c.prepareChat(t, map[string]any{"prompt": "overdue start", "start_at": time.Now().Add(time.Hour).UnixMilli(),
+		"workdir_mode": "custom", "workdir": c.data})
 	// The server was down when it fell due.
-	row, _ := e.store.GetSession(id)
-	if err := e.store.UpdatePrestart(id, store.PrestartSettings{
+	row, _ := c.store.GetSession(id)
+	if err := c.store.UpdatePrestart(id, store.PrestartSettings{
 		Harness: row.Harness, Model: row.Model, Effort: row.Effort, WorkdirMode: row.WorkdirMode,
 		Workdir: row.Workdir, Options: row.Options, StartAt: time.Now().Add(-time.Hour).UnixMilli(),
 	}); err != nil {
 		t.Fatal(err)
 	}
-	e.start(e.srv)
-	e.waitForState(id, 20*time.Second, store.StateRunning)
-	e.waitForPane(id, "prompt: overdue start (13 bytes)")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	c.srv.sched.start(ctx)
+	events := c.waitJournal(t, id, 20*time.Second, "the first turn", turnsEnded(1))
+	if !strings.Contains(lastSaid(events), "overdue start") {
+		t.Fatalf("the agent said %q", lastSaid(events))
+	}
 }
 
 // The scheduler owns only the starts it claims: a session somebody started
@@ -487,19 +399,20 @@ func TestTheSchedulerDoesNotClaimAStartItDidNotMake(t *testing.T) {
 	if err := e.store.SetSessionState(id, store.StateRunning, -1, ""); err != nil { // the Start button won
 		t.Fatal(err)
 	}
-	row, status, err := e.srv.startPrepared(context.Background(), id, 0, 0, true)
+	row, status, err := e.srv.startPrepared(context.Background(), id, true)
 	if !errors.Is(err, errNotDue) || status != http.StatusConflict || row == nil {
 		t.Fatalf("scheduled start of a started session = %v %d %v", row, status, err)
 	}
 	// The button's own repeat is still idempotent.
-	if _, status, err := e.srv.startPrepared(context.Background(), id, 0, 0, false); err != nil || status != http.StatusOK {
+	if _, status, err := e.srv.startPrepared(context.Background(), id, false); err != nil || status != http.StatusOK {
 		t.Fatalf("a repeated Start = %d %v", status, err)
 	}
 }
 
 // A draft saved while a start is under way waits for it, and is then told
-// the truth: a start that went through has sent the older text, so the save
-// is refused as "started" rather than acknowledged for nothing.
+// the truth: a start that went through has sent the older text and emptied
+// the chat's composer, so the save is a conflict with what is there now
+// rather than acknowledged for nothing.
 func TestADraftSaveDuringAStartWaitsForIt(t *testing.T) {
 	e := preparedEnv(t)
 	id := sessionID(t, e.prepare(`{"prestart":true,"harness":"claude","prompt":"the text that was sent"}`))
@@ -515,7 +428,12 @@ func TestADraftSaveDuringAStartWaitsForIt(t *testing.T) {
 		t.Fatalf("the save did not wait for the start: %d", code)
 	case <-time.After(300 * time.Millisecond):
 	}
+	// What a start that went through does: the row is running, and the
+	// draft it sent is taken out of the composer.
 	if err := e.store.SetSessionState(id, store.StateRunning, -1, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.store.SaveDraft(id, "", 1); err != nil {
 		t.Fatal(err)
 	}
 	unlock()
@@ -527,7 +445,7 @@ func TestADraftSaveDuringAStartWaitsForIt(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("the save never finished")
 	}
-	if draft, _ := e.store.GetDraft(id); draft.Text != "the text that was sent" {
+	if draft, _ := e.store.GetDraft(id); draft.Text != "" {
 		t.Fatalf("draft = %q", draft.Text)
 	}
 }
@@ -553,40 +471,5 @@ func TestAPreparedSessionsPlaceholderFollowsItsHarness(t *testing.T) {
 	}
 	if row, _ := e.store.GetSession(named); row.Title != "Mine" {
 		t.Fatalf("a given name became %q", row.Title)
-	}
-}
-
-func TestCompanionProfilesAreTheActiveSessionsInTheFolder(t *testing.T) {
-	session := func(id, harness, workdir, state, status, options string, activeAt int64) store.Session {
-		return store.Session{ID: id, Harness: harness, Workdir: workdir, State: state, Status: status,
-			Options: json.RawMessage(options), ActiveAt: activeAt}
-	}
-	rows := []store.Session{
-		session("a", "claude", "/srv/app", store.StateRunning, store.StatusInProgress, `{"profile":"p-a"}`, 10),
-		session("b", "claude", "/srv/app/", store.StateRunning, store.StatusReview, `{"profile":"p-b"}`, 30),
-		session("c", "claude", "/srv/app", store.StateRunning, store.StatusDone, `{"profile":"p-c"}`, 50),
-		session("d", "claude", "/srv/app", store.StateExited, store.StatusInProgress, `{"profile":"p-d"}`, 50),
-		session("e", "codex", "/srv/app", store.StateRunning, store.StatusInProgress, `{"profile":"p-e"}`, 50),
-		session("f", "claude", "/srv/other", store.StateRunning, store.StatusInProgress, `{"profile":"p-f"}`, 50),
-		session("g", "claude", "/srv/app", store.StateStarting, store.StatusInProgress, `{}`, 20),
-		session("self", "claude", "/srv/app", store.StateRunning, store.StatusInProgress, `{"profile":"p-self"}`, 90),
-	}
-	got := companionProfiles(rows, "claude", "/srv/app", "self")
-	want := map[string]int64{"p-a": 10, "p-b": 30, "": 20}
-	if fmt.Sprint(got) != fmt.Sprint(want) {
-		t.Fatalf("companionProfiles = %v, want %v", got, want)
-	}
-	views := []profileView{{ID: ""}, {ID: "p-a"}, {ID: "p-b"}}
-	// The recommended profile wins when a companion runs in it...
-	if id, ok := companionProfile(views, got, "p-a"); !ok || id != "p-a" {
-		t.Fatalf("companionProfile with p-a recommended = %q, %v", id, ok)
-	}
-	// ...and otherwise the one active last.
-	if id, ok := companionProfile(views, got, "p-x"); !ok || id != "p-b" {
-		t.Fatalf("companionProfile = %q, %v; want p-b", id, ok)
-	}
-	// A deleted profile is not joined.
-	if _, ok := companionProfile(views[:1], map[string]int64{"p-gone": 5}, ""); ok {
-		t.Fatal("companionProfile chose a profile that no longer exists")
 	}
 }

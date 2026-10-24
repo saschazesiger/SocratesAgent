@@ -2,6 +2,7 @@ package config
 
 import (
 	"encoding/json"
+	"path/filepath"
 	"testing"
 )
 
@@ -34,6 +35,25 @@ func TestNormalizeFillsDefaults(t *testing.T) {
 	// voice section is a language and a pace and nothing else.
 	if s.Voice.Language != DefaultLanguage || s.Voice.TTSRate != 1 {
 		t.Errorf("voice defaults = %#v", s.Voice)
+	}
+}
+
+// The default workspace root is under the data directory the process was
+// started on, -data included, unless SOCRATES_WORKSPACE_ROOT names one.
+func TestTheWorkspaceRootFollowsTheDataDirectory(t *testing.T) {
+	t.Setenv("SOCRATES_WORKSPACE_ROOT", "")
+	t.Setenv("SOCRATES_DATA_DIR", "/srv/from-the-environment")
+	t.Cleanup(func() { UseDataDir("") })
+	if got := Default().Workspace.Root; got != filepath.Join("/srv/from-the-environment", "workspaces") {
+		t.Fatalf("without -data the root is %q", got)
+	}
+	UseDataDir("/tmp/trial")
+	if got := Default().Workspace.Root; got != filepath.Join("/tmp/trial", "workspaces") {
+		t.Fatalf("with -data /tmp/trial the root is %q", got)
+	}
+	t.Setenv("SOCRATES_WORKSPACE_ROOT", "/srv/work")
+	if got := Default().Workspace.Root; got != "/srv/work" {
+		t.Fatalf("with SOCRATES_WORKSPACE_ROOT the root is %q", got)
 	}
 }
 
@@ -267,10 +287,10 @@ func TestHarnessSettingsAlwaysValidate(t *testing.T) {
 	}
 }
 
-// The Status button, the namer, Home's digests and the answer operator each
-// pick their own model, and none may be left without one: an empty field is a
-// form nobody filled in, and a button that answers "pick a model first" is a
-// setup step nobody asked for.
+// The Status button, the namer and the judge of a chat's turn each pick their
+// own model, and none may be left without one: an empty field is a form
+// nobody filled in, and a button that answers "pick a model first" is a setup
+// step nobody asked for.
 func TestAssistModelsAreDefaulted(t *testing.T) {
 	s := Settings{}
 	s.Normalize()
@@ -283,35 +303,37 @@ func TestAssistModelsAreDefaulted(t *testing.T) {
 	if s.OpenRouter.HomeModel != "google/gemini-3.5-flash" {
 		t.Errorf("home model = %q", s.OpenRouter.HomeModel)
 	}
-	if s.OpenRouter.OperatorModel != "anthropic/claude-sonnet-5.5" {
-		t.Errorf("operator model = %q", s.OpenRouter.OperatorModel)
-	}
-	if d := Default(); d.OpenRouter.HomeModel != DefaultHomeModel || d.OpenRouter.OperatorModel != DefaultOperatorModel {
+	if d := Default(); d.OpenRouter.HomeModel != DefaultHomeModel {
 		t.Errorf("a fresh document is not seeded with them: %#v", d.OpenRouter)
 	}
 
 	// A chosen model is kept.
 	s = Settings{}
 	s.OpenRouter.StatusModel, s.OpenRouter.TitleModel = "someone/cheap", "someone/quick"
-	s.OpenRouter.HomeModel, s.OpenRouter.OperatorModel = "someone/glance", "someone/careful"
+	s.OpenRouter.HomeModel = "someone/glance"
 	s.Normalize()
 	if s.OpenRouter.StatusModel != "someone/cheap" || s.OpenRouter.TitleModel != "someone/quick" ||
-		s.OpenRouter.HomeModel != "someone/glance" || s.OpenRouter.OperatorModel != "someone/careful" {
+		s.OpenRouter.HomeModel != "someone/glance" {
 		t.Errorf("a chosen model was replaced: %#v", s.OpenRouter)
 	}
 }
 
-// The operator that was removed had a model of its own, and an old settings
-// document may still carry it. The answer operator is a new name on purpose:
-// that old value must not come back as the model that now types into a
-// session, so it is ignored and the new field takes its default.
-func TestTheOldAgentModelIsNotTheOperatorModel(t *testing.T) {
-	var s Settings
-	if err := json.Unmarshal([]byte(`{"openrouter":{"agent_model":"someone/old"}}`), &s); err != nil {
-		t.Fatal(err)
-	}
-	s.Normalize()
-	if s.OpenRouter.OperatorModel != DefaultOperatorModel {
-		t.Errorf("operator model = %q, want the default", s.OpenRouter.OperatorModel)
+// The dashboard's Default model and Default effort are each agent's own, and
+// a program that has none of them says so with nothing.
+func TestHarnessDefaultsAreEachAgentsOwn(t *testing.T) {
+	h := DefaultHarnesses()
+	h.Claude.DefaultModel, h.Claude.DefaultEffort = "opus", "high"
+	h.Codex.DefaultModel, h.Codex.DefaultEffort = "gpt-5.6-terra", "xhigh"
+	h.OpenCode.DefaultModel = "anthropic/claude-sonnet-4-5"
+	for _, tc := range []struct{ id, model, effort string }{
+		{HarnessClaude, "opus", "high"},
+		{HarnessCodex, "gpt-5.6-terra", "xhigh"},
+		{HarnessOpenCode, "anthropic/claude-sonnet-4-5", ""},
+		{HarnessShell, "", ""},
+		{"fake", "", ""},
+	} {
+		if model, effort := h.Defaults(tc.id); model != tc.model || effort != tc.effort {
+			t.Errorf("%s: %q %q, want %q %q", tc.id, model, effort, tc.model, tc.effort)
+		}
 	}
 }

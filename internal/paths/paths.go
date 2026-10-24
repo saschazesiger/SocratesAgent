@@ -142,6 +142,8 @@ var NotBackedUp = []string{
 	RestoreStagingPrefix + "*",
 	DB + ".pre-*.bak",
 	Sessions + "/*/journal.raw*",
+	// The older journal files a sink rotates to (termux.rotatedPath).
+	Sessions + "/*/journal.*.raw",
 	VSCode + "/*/logs",
 	VSCode + "/*/CachedData",
 	VSCode + "/*/CachedProfilesData",

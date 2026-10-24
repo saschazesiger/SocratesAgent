@@ -1002,7 +1002,7 @@ func (s *Server) claudeSignIn(w http.ResponseWriter, r *http.Request, a *store.A
 			Env:     map[string]string{"CLAUDE_CONFIG_DIR": dir},
 			Command: []string{binary, "auth", "login", "--claudeai"},
 		},
-	}, nil)
+	})
 	var refused *launchError
 	switch {
 	case errors.As(err, &refused):

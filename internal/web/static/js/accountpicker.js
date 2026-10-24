@@ -66,15 +66,30 @@ accounts.onChange(() => {
   }
 });
 
+// A limit renews on the clock, not on a new reading: a slot that says when
+// is drawn again as the minutes go by, and is an ordinary one once the limit
+// has renewed - with the network gone as much as with it.
+const RENEWAL_TICK = 15000;
+setInterval(() => {
+  for (const [slot, ctx] of drawnFor) {
+    if (!slot.isConnected) {
+      drawnFor.delete(slot);
+      continue;
+    }
+    if (slot.querySelector('[data-state="limited"]')) slot.hidden = !draw(slot, ctx);
+  }
+}, RENEWAL_TICK);
+
 // metaOf is an account's quiet line in the menu: who it is, its usage, when
-// its limit renews, and why it is the one to take or cannot be taken.
+// its limit renews - in how long, and by the clock - and why it is the one
+// to take or cannot be taken.
 function metaOf(account, best) {
   const parts = [accounts.who(account)];
   if (!accounts.usable(account)) parts.push(account.state === 'error' ? 'sign-in failed' : 'not signed in');
   const usage = accounts.usageWords(account);
   if (usage) parts.push(usage);
   const renew = accounts.renewal(account);
-  if (renew) parts.push(renew);
+  if (renew) parts.push(renew + ', ' + accounts.renewalAt(account));
   if (best) parts.push('most left');
   return parts.join(' · ');
 }

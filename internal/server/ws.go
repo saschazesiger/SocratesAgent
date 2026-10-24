@@ -652,20 +652,15 @@ func helloFrame(s *Server, row *store.Session, viewer *termux.Viewer, tv *termVi
 }
 
 // resumeNotice is the banner a session that came back from a reboot carries.
-// fresh says whether the conversation itself survived: what the resume
-// actually did is recorded by the Manager, so the frame and the session list
-// cannot disagree about it.
+// fresh is the protocol's word for a conversation that could not be carried
+// on, and a terminal has none to lose (a chat says its resume in its own
+// view), so it is always false.
 func (s *Server) resumeNotice(row *store.Session) map[string]any {
-	frame := map[string]any{
+	return map[string]any{
 		"t": "notice", "kind": "resumed",
-		"fresh": true,
+		"fresh": false,
 		"cli":   row.Harness,
 	}
-	if note, ok := s.manager.ResumeNoteOf(row.ID); ok {
-		frame["fresh"] = note.Fresh
-		frame["resumed_from"] = note.From
-	}
-	return frame
 }
 
 func truncateReason(msg string) string {
@@ -1596,15 +1591,9 @@ func (s *Server) onSessionActivity(sessionID string, a termux.Activity) {
 	// And to every page with no terminal open: Home and the sidebar of a
 	// page that is not attached to anything.
 	s.events.publish(frame)
-	// A turn that ended is what reaches a phone nobody is looking at; a
-	// question asked or a turn ended is what Home reads the screen for, and
-	// a question the session is no longer asking is cleared before anyone
-	// can answer it.
-	//
-	// The push goes first: the digest a turn's end starts can find a question
-	// in prose, and replaces the "Finished" this change sends with it - and a
-	// prompt's question is put on the wait for its words before the digest
-	// that reads them is asked for, so that the read cannot finish first.
+	// A chat's turn that ended, or its question, is what reaches a phone
+	// nobody is looking at; the verdict on the turn reads the activity the
+	// change left (digester.seen).
 	s.push.observe(sessionID, a)
 	s.digests.observe(sessionID, a)
 	// A chat's verdict is asked for only now that the pusher holds the
@@ -1656,10 +1645,12 @@ func (s *Server) nextTitleSeq() int64 {
 //
 // Pressing Status asks a model a question over a network, and until this frame
 // existed the only evidence of that was a button that had gone quiet. It goes
-// to the session's viewers rather than to every socket because it is about the
-// screen somebody is looking at, and because two phones on one session should
-// both see it.
+// to the session's viewers because it is about the screen somebody is looking
+// at, and because two phones on one session should both see it - and to the
+// event stream, because a chat has no terminal socket: the page showing the
+// chat takes the frame up from there.
 func (s *Server) emitStatus(sessionID, phase, text string) {
 	frame := map[string]any{"t": "status", "id": sessionID, "phase": phase, "text": text}
 	s.broadcast(sessionID, func(*termViewer) any { return frame })
+	s.events.publish(frame)
 }

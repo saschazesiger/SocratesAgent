@@ -1,5 +1,12 @@
 # Home, questions and the answer operator — binding specification
 
+> **Since the rebuild (REBUILD.md §5.4 and §7; WP6, WP9, WP10)** Home's questions are the chats':
+> each is an agent's `ask_user` call (or a question of its own converted to one), read from the
+> chat's journal, and the dialog is the chats' (`askdialog.js`, AGENT-HOST.md §7). The answer
+> operator, the screen digest and the questions read in prose went with the agents' terminals.
+> Home itself - the cards, the counts, the connection line (in the dialog too), the stream and the
+> poll, the badge and the push - holds, read from the journal for a chat (AGENT-HOST.md §3).
+
 Revision 3 (2026-10-20: the outcome of a turn, §5). Revision 2 (2026-10-19; revision 1 the same day, revision 2 after its review: the answer
 policy and the key vocabulary, the run ending when the answer is taken, revs and activity seqs
 from the clock, the signed-out close code, the per-login handshake ceiling). Extends DESIGN.md

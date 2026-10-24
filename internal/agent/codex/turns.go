@@ -225,6 +225,12 @@ func (a *adapter) closeTurnLocked(t *turn, outcome, why string) {
 	if len(a.queue) > 0 && a.held == "" {
 		go a.flush()
 	}
+	// What the turn left running in the background is the chat's tasks
+	// until it ends.
+	if a.thread != "" && !a.watching && !a.ending {
+		a.watching = true
+		go a.watchTerminals(a.thread)
+	}
 }
 
 // addInput records a message the turn was given, once.
@@ -589,7 +595,7 @@ func (a *adapter) agentBusy(ag *subagent, busy bool) {
 	}
 	a.emitAgent(ag)
 	if changed {
-		a.out.Emit(agent.Event{Type: agent.TypeTasks, Count: a.running})
+		a.out.Emit(agent.Event{Type: agent.TypeTasks, Count: a.running + a.terminals})
 	}
 }
 

@@ -173,11 +173,6 @@ func (m *Manager) adopt(ctx context.Context, row *store.Session, p pane) {
 	if row.State != store.StateRunning {
 		_ = m.st.SetSessionStateFrom(row.ID, row.State, store.StateRunning, row.ExitStatus, "")
 	}
-	// A session that outlived the Socrates which launched it still has no
-	// conversation id of its own, and the watcher that was looking for one
-	// died with that process. Started again here, a Codex or OpenCode session
-	// can still be resumed after the next reboot.
-	m.RearmCLIWatch(row)
 }
 
 // RecoveredTitle is the name a session taken in without a row is given. It is

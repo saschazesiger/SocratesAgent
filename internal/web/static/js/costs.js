@@ -110,6 +110,9 @@ function projectLabel(project) {
   return baseName(project);
 }
 
+// profileLabel names what a ledger is filed under: a chat's account, or for a
+// conversation from before accounts the profile it ran in, which the
+// migration made an account - so the page calls both an account.
 function profileLabel(id) {
   const names = state.data ? state.data.profiles : {};
   if (names && names[id] !== undefined) return names[id];
@@ -282,7 +285,7 @@ function drawFilters() {
   fillSelect($('fHarness'), 'harness',
     seen((r) => r.conv.harness).sort(byCost((r) => r.conv.harness)).map((h) => [h, HARNESS[h] || h]), 'All programs');
   fillSelect($('fProfile'), 'profile',
-    seen((r) => r.conv.profile).sort(byCost((r) => r.conv.profile)).map((p) => [p, profileLabel(p)]), 'All profiles');
+    seen((r) => r.conv.profile).sort(byCost((r) => r.conv.profile)).map((p) => [p, profileLabel(p)]), 'All accounts');
   fillSelect($('fProject'), 'project',
     seen((r) => r.conv.project).sort(byCost((r) => r.conv.project)).map((p) => [p, projectLabel(p)]), 'All projects');
   fillSelect($('fModel'), 'model',
@@ -599,7 +602,7 @@ function drawTables(filtered) {
     onPick: (g) => toggleFilter('harness', g.key), picked: (g) => f.harness !== '' && f.harness === g.key,
   });
   table('tProfile', groupBy(filtered, (r) => r.conv.profile), {
-    column: 'Profile',
+    column: 'Account',
     name: (g) => profileLabel(g.key),
     onPick: (g) => toggleFilter('profile', g.key), picked: (g) => f.profileSet && f.profile === g.key,
   });

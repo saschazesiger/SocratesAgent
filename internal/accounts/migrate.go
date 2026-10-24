@@ -11,6 +11,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"syscall"
@@ -22,12 +23,12 @@ import (
 	"github.com/saschazesiger/SocratesAgent/internal/store"
 )
 
-// The migration of the build before accounts (REBUILD.md §8.1-8.2), once, on
-// the first start of this one: the agents' own folders in HOME become the
-// Default account of each agent, the profiles become accounts - with their
-// logins where their folders still exist, marked "sign in again" where they
-// were lost - and every account's conversations go into the folders they
-// share.
+// The migration of the build before accounts (REBUILD.md §8.1-8.3), once, on
+// the first start of this one: the agents' terminals go (the clean cut,
+// cleancut.go), the agents' own folders in HOME become the Default account
+// of each agent, the profiles become accounts - with their logins where
+// their folders still exist, marked "sign in again" where they were lost -
+// and every account's conversations go into the folders they share.
 //
 // It runs only on a data directory of the build before: the store marks a
 // database it brings up to the schema of accounts (store.go), and nothing
@@ -48,8 +49,8 @@ import (
 // neither is one of a link the person made to somewhere else: that folder
 // stays where it is and its account has no login.
 //
-// Before anything moves, all of it - the data directory and the folders
-// about to move - is written to <data>.pre-rebuild.tar. Every step is
+// Before anything moves or goes, all of it - the data directory and the
+// folders about to move - is written to <data>.pre-rebuild.tar. Every step is
 // idempotent and decides from what is on the disk and from the accounts
 // already made, so a migration cut short anywhere (a crash, a power cut) is
 // finished by the next start without losing or doubling anything: the
@@ -66,6 +67,11 @@ type MigrateOptions struct {
 	// XDG_CONFIG_HOME.
 	Env  []string
 	Logf func(format string, args ...any)
+	// StopTerminal stops one session the way a delete does - its tmux
+	// session killed, its row and its folder removed - which is what the
+	// clean cut does to an agent's terminal. main hands the terminal
+	// substrate's own delete.
+	StopTerminal func(id string) error
 	// stopAfter ends the migration after the step of that name as a crash
 	// would, and tempDir stands in for the temporary directory, for the
 	// tests.
@@ -137,7 +143,11 @@ func Migrate(opts MigrateOptions) error {
 	if err != nil {
 		return err
 	}
-	if len(sources) > 0 || len(lost) > 0 {
+	cut, err := m.agentTerminals()
+	if err != nil {
+		return err
+	}
+	if len(sources) > 0 || len(lost) > 0 || len(cut) > 0 {
 		if err := m.backup(sources); err != nil {
 			return fmt.Errorf("the backup before the migration: %w", err)
 		}
@@ -145,15 +155,11 @@ func Migrate(opts MigrateOptions) error {
 			return err
 		}
 	}
+	// The lost profiles' accounts come first: which agents a lost profile
+	// ran is read off its sessions (plan), and the clean cut removes the
+	// agents' terminals among them, so a run cut short after it would read
+	// nothing there.
 	var failed []error
-	for _, src := range sources {
-		if err := m.move(src); err != nil {
-			if errors.Is(err, errStopped) {
-				return err
-			}
-			failed = append(failed, fmt.Errorf("move %s: %w", src.from, err))
-		}
-	}
 	for _, a := range lost {
 		err := m.opts.Store.CreateAccount(a)
 		if err == nil {
@@ -169,8 +175,33 @@ func Migrate(opts MigrateOptions) error {
 			failed = append(failed, fmt.Errorf("the account of the lost profile %s: %w", a.Label, err))
 		}
 	}
+	// Then the clean cut, before anything moves: a terminal still running
+	// an agent would write into a folder in the middle of its move.
+	if err := m.cleanCut(cut); err != nil {
+		if errors.Is(err, errStopped) {
+			return err
+		}
+		failed = append(failed, fmt.Errorf("the clean cut: %w", err))
+	}
+	for _, src := range sources {
+		if err := m.move(src); err != nil {
+			if errors.Is(err, errStopped) {
+				return err
+			}
+			failed = append(failed, fmt.Errorf("move %s: %w", src.from, err))
+		}
+	}
 	if len(failed) > 0 {
 		return errors.Join(failed...)
+	}
+	if err := m.lostLast(); err != nil {
+		return err
+	}
+	// Last, once every account is made: a prepared chat whose profile's
+	// account is missing is removed, and a move that failed this time may
+	// make it at the next start.
+	if err := m.bindPrepared(); err != nil {
+		return err
 	}
 	if err := m.opts.Store.FinishAccountsMigration(); err != nil {
 		return err
@@ -179,6 +210,29 @@ func Migrate(opts MigrateOptions) error {
 		m.opts.Logf("accounts: the agents' folders are in %s now; the old ones are links to them", m.layout.Root)
 	}
 	return nil
+}
+
+// lostLast puts the lost profiles' accounts below the others. They were made
+// first (see Migrate) and say "Sign in again", and the lists offer accounts in
+// their order: above every Default account, they would be the first thing
+// each agent's list offered.
+func (m *migration) lostLast() error {
+	list, err := m.opts.Store.ListAccounts()
+	if err != nil {
+		return err
+	}
+	var working, lost []string
+	for _, a := range list {
+		if strings.HasPrefix(a.Origin, "lost:") {
+			lost = append(lost, a.ID)
+		} else {
+			working = append(working, a.ID)
+		}
+	}
+	if len(lost) == 0 || len(working) == 0 {
+		return nil
+	}
+	return m.opts.Store.ReorderAccounts(append(working, lost...))
 }
 
 func (m *migration) step(name string) error {
@@ -269,8 +323,10 @@ func (m *migration) plan() ([]source, []*store.Account, error) {
 		}
 		// The folders went with the move from Docker (HANDOFF.md §5): the
 		// profile becomes an account of each agent its sessions ran, or of
-		// Claude Code, to be signed in again.
-		agents := used[p.ID]
+		// Claude Code, to be signed in again. A run cut short after it made
+		// them has said which: the clean cut may have removed the sessions
+		// since.
+		agents := lostAgents(begun, p.ID, used[p.ID])
 		if len(agents) == 0 {
 			agents = []string{Claude}
 		}
@@ -280,6 +336,18 @@ func (m *migration) plan() ([]source, []*store.Account, error) {
 		}
 	}
 	return sources, lost, nil
+}
+
+// lostAgents is the agents a lost profile becomes accounts of: those its
+// sessions ran, and those an earlier run made its accounts for.
+func lostAgents(begun map[string]bool, profile string, ran []string) []string {
+	var out []string
+	for _, name := range []string{Claude, Codex, OpenCode} {
+		if begun["lost:"+profile+":"+name] || slices.Contains(ran, name) {
+			out = append(out, name)
+		}
+	}
+	return out
 }
 
 // present reports whether an agent's folder is there to move, or was moved
@@ -774,38 +842,59 @@ func isEmpty(dir string) (bool, error) {
 // account shares (OPENCODE_DB), when there is none yet; a second account's
 // stays in its folder, read by nothing. The three files are renamed
 // together: a process that still has them open keeps the same inodes.
+//
+// Where the database was, a link to it is left: HOME's ~/.local/share/opencode
+// is this folder now, and an opencode started by hand - in a Shell, with no
+// OPENCODE_DB - opens the database there, which would otherwise be a new,
+// empty one beside the conversations. SQLite follows the link and keeps its
+// -wal and -shm beside the file it names, so both are one database.
 func (m *migration) openCodeStore(accountData string) error {
 	layout := opencode.NewLayout(m.layout.Root)
-	if _, err := os.Lstat(layout.DB()); err == nil {
-		return nil
-	}
-	if _, err := os.Lstat(filepath.Join(accountData, "opencode.db")); err != nil {
-		return nil
-	}
-	if err := os.MkdirAll(layout.Root, 0o700); err != nil {
-		return err
-	}
-	// The companions first: a crash in between leaves the main file where
-	// the next run looks for it.
-	for _, suffix := range []string{"-wal", "-shm", ""} {
-		from := filepath.Join(accountData, "opencode.db"+suffix)
-		if _, err := os.Lstat(from); err != nil {
-			continue
+	old := filepath.Join(accountData, "opencode.db")
+	if _, err := os.Lstat(layout.DB()); errors.Is(err, fs.ErrNotExist) {
+		if _, err := os.Lstat(old); err != nil {
+			return nil
 		}
-		if err := os.Rename(from, layout.DB()+suffix); err != nil {
+		if err := os.MkdirAll(layout.Root, 0o700); err != nil {
 			return err
 		}
+		// The companions first: a crash in between leaves the main file
+		// where the next run looks for it.
+		for _, suffix := range []string{"-wal", "-shm", ""} {
+			from := old + suffix
+			if _, err := os.Lstat(from); err != nil {
+				continue
+			}
+			if err := os.Rename(from, layout.DB()+suffix); err != nil {
+				return err
+			}
+		}
+	} else if err != nil {
+		return err
 	}
-	return nil
+	// A run cut short after the rename makes the link here too.
+	if _, err := os.Lstat(old); !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	target, err := filepath.Rel(accountData, layout.DB())
+	if err != nil {
+		return err
+	}
+	return os.Symlink(target, old)
 }
 
 // --------------------------------------------------------------- the backup
 
-// backup writes <data>.pre-rebuild.tar: the data directory (the database as a
-// consistent copy, without what the backup engine leaves out and without
-// sockets) and every folder about to move, under the names it has now. It
-// is written beside itself and renamed into place whole, so a tar that is
-// there is complete; one that is there already is not written again.
+// backup writes <data>.pre-rebuild.tar, the way back to the build before: the
+// data directory as that build had it and every folder about to move, under
+// the names they have now. The database in it is the copy the store made
+// before it upgraded the file (store.PreUpgradeCopy) - the upgraded one is a
+// schema the build before refuses - and of the rest it leaves out only what
+// the backup engine does and that build does not read either (sockets, caches,
+// downloaded binaries): the mirror's s3.json and the agent terminals' folders
+// with their journals, which the clean cut deletes, stay in. It is written
+// beside itself and renamed into place whole, so a tar that is there is
+// complete; one that is there already is not written again.
 func (m *migration) backup(sources []source) error {
 	dest := m.layout.PreRebuildBackup()
 	if _, err := os.Stat(dest); err == nil {
@@ -823,18 +912,30 @@ func (m *migration) backup(sources []source) error {
 		os.Remove(tmp)
 		return err
 	}
-	dbCopy := filepath.Join(filepath.Dir(dest), filepath.Base(dest)+".db.tmp")
-	_ = os.Remove(dbCopy)
-	if err := m.opts.Store.CopyTo(dbCopy); err != nil {
-		return fail(fmt.Errorf("copy the database: %w", err))
-	}
-	defer os.Remove(dbCopy)
-	if err := addFile(tw, dbCopy, "data/"+paths.DB); err != nil {
-		return fail(err)
+	old := store.PreUpgradeCopy(m.layout.DB())
+	if _, err := os.Stat(old); err == nil {
+		if err := addFile(tw, old, "data/"+paths.DB); err != nil {
+			return fail(err)
+		}
+	} else {
+		// Upgraded without one - from before the terminal rewrite, which
+		// left a copy of its own - the database goes in as it is.
+		dbCopy := filepath.Join(filepath.Dir(dest), filepath.Base(dest)+".db.tmp")
+		_ = os.Remove(dbCopy)
+		if err := m.opts.Store.CopyTo(dbCopy); err != nil {
+			return fail(fmt.Errorf("copy the database: %w", err))
+		}
+		defer os.Remove(dbCopy)
+		if err := addFile(tw, dbCopy, "data/"+paths.DB); err != nil {
+			return fail(err)
+		}
 	}
 	skip := func(rel string) bool {
-		if rel == paths.DB || strings.HasPrefix(rel, paths.DB+"-") {
+		switch {
+		case rel == paths.DB || strings.HasPrefix(rel, paths.DB+"-") || strings.HasPrefix(rel, paths.DB+".pre-"):
 			return true
+		case rel == paths.LegacyS3Config || rel == paths.Sessions || strings.HasPrefix(rel, paths.Sessions+"/"):
+			return false
 		}
 		return paths.Excluded(rel)
 	}

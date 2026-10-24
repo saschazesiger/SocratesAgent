@@ -62,22 +62,9 @@ func TestAChatsTurnIsJudgedFromItsJournal(t *testing.T) {
 		t.Fatalf("the push %+v", push)
 	}
 
-	// Read again: the verdict is judged once more.
-	gw.always(`{"outcome":{"kind":"complete","reason":"All done."}}`)
-	res, _ := c.do(t, c.client, "POST", "/api/sessions/"+id+"/digest", "")
-	if res.StatusCode != http.StatusAccepted {
-		t.Fatalf("read again: %d", res.StatusCode)
-	}
-	deadline := time.Now().Add(10 * time.Second)
-	for o, _ := c.srv.digests.outcomeOf(id); o.Kind != outcomeComplete; o, _ = c.srv.digests.outcomeOf(id) {
-		if time.Now().After(deadline) {
-			t.Fatalf("judged again: %+v", o)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
 	// A new turn takes the verdict away.
 	c.send(t, id, "m2", "/sleep 1")
-	deadline = time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(10 * time.Second)
 	for _, ok := c.srv.digests.outcomeOf(id); ok && time.Now().Before(deadline); _, ok = c.srv.digests.outcomeOf(id) {
 		time.Sleep(10 * time.Millisecond)
 	}

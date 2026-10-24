@@ -130,7 +130,6 @@ function remember(key, on) {
  *   select       open a session, for a notification that is clicked
  *   question     open the question a session is asking, for a "Needs an
  *                answer" that is clicked - Home, and the dialog over it
- *   asksInProse  whether a session's turn ended on a question in prose
  *   pushed       told when a push has just written the app's icon and the
  *                tray, so that a page whose state is newer writes them again
  *   outcome      the verdict a session's last turn has, or is waiting for
@@ -302,8 +301,7 @@ export function mountNotify(ctx) {
   /* ------------------------------------------------------- the app's badge */
 
   // The number on the app's icon is the number of questions waiting - every
-  // session the Questions card counts, a menu or a permission prompt or a
-  // question in prose - and the worker sets it from every push. The page
+  // chat the Questions card counts - and the worker sets it from every push. The page
   // sets it too, whenever what it holds changes, so that answering a
   // question here takes it off the icon now rather than at the next push.
   // What it last set, and for which sessions: -1 and null are "nothing yet".
@@ -425,12 +423,9 @@ export function mountNotify(ctx) {
 
   // follow is a notification that was tapped. A question opens the dialog that
   // answers it, which is what the notification was about; anything else
-  // opens the session. A "Finished" whose turn ended on a question in prose
-  // is a question by the time it is tapped - the digest that read it came
-  // after the news - and opens the dialog as well.
+  // opens the session.
   function follow(id, kind) {
-    const asks = kind === 'question' || (!!ctx.asksInProse && ctx.asksInProse(id));
-    if (asks && ctx.question) ctx.question(id);
+    if (kind === 'question' && ctx.question) ctx.question(id);
     else ctx.select(id);
   }
 

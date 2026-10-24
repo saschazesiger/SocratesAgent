@@ -283,34 +283,33 @@ func (s *Store) BeginStart(row *Session) error {
 	return nil
 }
 
-// RevertStart puts a row that BeginStart moved back where it was, for a start
-// that failed before the program ever ran: the settings it was prepared with,
-// no tmux name, and the reason. The schedule stays cleared - a start that did
-// not work is not retried by itself - and the draft was never touched.
-//
-// It also takes the row back from needs_resume: the poll may have seen it
-// "starting" with no tmux server yet (after a reboot, the launch is what
-// starts one) and declared it lost in the middle of the launch. Only the
-// launch knows that nothing ran, and a prepared session must not become one
-// to resume - that path never sends the prompt.
-func (s *Store) RevertStart(prepared *Session, reason string) error {
-	options := "{}"
-	if len(prepared.Options) > 0 {
-		options = string(prepared.Options)
+// MakePreparedChat turns a prepared terminal into a prepared chat with these
+// options: the clean cut of REBUILD.md §8.3, for the agents' terminals that
+// were prepared and never started. Everything else the person set - the
+// agent, the folder, the model, the schedule and the first prompt in the
+// draft - stays. It answers ErrNotPrestart for a row that is not a prepared
+// terminal any more, which a run cut short after the change finds.
+func (s *Store) MakePreparedChat(id string, options json.RawMessage) error {
+	value := "{}"
+	if len(options) > 0 {
+		if !json.Valid(options) {
+			return errors.New("session options are not valid JSON")
+		}
+		value = string(options)
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	res, err := s.db.Exec(`UPDATE sessions SET title = CASE WHEN title_source = '' THEN ? ELSE title END, harness = ?, model = ?, effort = ?, workdir = ?, workdir_mode = ?,
-		options = ?, tmux_name = '', cli_session_id = '', cli_session_state = ?, state = ?, exit_status = -1,
-		fail_reason = ?, start_at = 0, cols = ?, rows = ?, updated_at = ?
-		WHERE id = ? AND state IN (?, ?)`,
-		prepared.Title, prepared.Harness, prepared.Model, prepared.Effort, prepared.Workdir, prepared.WorkdirMode, options,
-		CLINone, StatePrestart, reason, prepared.Cols, prepared.Rows, now(), prepared.ID, StateStarting, StateNeedsResume)
+	res, err := s.db.Exec(`UPDATE sessions SET kind = ?, options = ?, updated_at = ? WHERE id = ? AND state = ? AND kind = ?`,
+		KindChat, value, now(), id, StatePrestart, KindTerminal)
 	if err != nil {
 		return err
 	}
 	if n, err := res.RowsAffected(); err == nil && n == 0 {
-		return ErrNotFound
+		var state string
+		if err := s.db.QueryRow(`SELECT state FROM sessions WHERE id = ?`, id).Scan(&state); err != nil {
+			return ErrNotFound
+		}
+		return ErrNotPrestart
 	}
 	s.bump()
 	return nil

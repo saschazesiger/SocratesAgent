@@ -1,12 +1,12 @@
 // The panel of a prepared session ("PreStart").
 //
-// A prepared session is a session whose settings and first prompt are written
-// before anything runs. It has no terminal, so its panel stands where the
-// pane would: the same settings the new-session sheet asks for (drawn by the
-// same code, harnesses.settingsForm), a large field for the prompt, a time at
-// which it may start by itself, and Start. Start is the same launch a new
-// session takes on the server, and the prompt goes in as the program's first
-// one - after which the session is an ordinary one and this panel is gone.
+// A prepared session is a chat whose settings and first message are written
+// before anything runs. Nothing runs yet, so its panel stands where the chat
+// will: the same settings the new-session sheet asks for (drawn by the same
+// code, harnesses.settingsForm), a large field for the prompt, a time at
+// which it may start by itself, and Start. Start is the same start a new chat
+// takes on the server, and the prompt goes in as its first message - after
+// which the session is an ordinary chat and this panel is gone.
 //
 // The prompt is the one thing here that can be long and that somebody may
 // spend a quarter of an hour on, on a phone, in a tunnel. So it is never only
@@ -49,8 +49,8 @@ const MAX_DRAFT_BYTES = 100 << 10;
 // How close a scheduled start has to be before the panel keeps an eye on the
 // clock for it. The list arrives on the event stream as it changes (and is
 // polled every five to fifteen seconds only while the stream is down); this
-// is what makes the switch to the terminal follow the start within a second
-// or two even then.
+// is what makes the switch to the chat follow the start within a second or
+// two even then.
 const SCHEDULE_WATCH = 10 * 60 * 1000;
 
 const encoder = new TextEncoder();
@@ -159,8 +159,6 @@ function settingsOf(session) {
     model: session.model || '',
     effort: session.effort || '',
     ultracode: !!options.ultracode,
-    profile: options.profile || '',
-    profile_auto: !!options.profile_auto,
     account: options.account || '',
     auto_switch: !!options.auto_switch,
     workdir_mode: session.workdir_mode || harnesses.DYNAMIC,
@@ -170,13 +168,12 @@ function settingsOf(session) {
 
 // Which fields a change of one kind sends. A program brings its own model
 // and effort and takes Ultracode away from anything but Claude Code; the
-// profile is not sent with it, because a form whose profiles have not been
-// read yet would send "the default" for a profile nobody touched.
+// account is not sent with it, because a form whose accounts have not been
+// read yet would send "automatic" for an account nobody touched.
 const PATCH_FIELDS = {
   harness: ['harness', 'model', 'effort', 'ultracode'],
   model: ['model', 'effort'],
   effort: ['effort'],
-  profile: ['profile', 'profile_auto'],
   ultracode: ['ultracode'],
   account: ['account'],
   auto_switch: ['auto_switch'],
@@ -190,9 +187,8 @@ const PATCH_FIELDS = {
  *
  *   host             the element the panel is drawn in (#prestart)
  *   replace(row)     a newer row of the session from the server
- *   started(row, e)  the session started: attach it the way a new one is
+ *   started(row, e)  the session started: open it the way a new one is
  *   refresh()        read the session list again now
- *   measure()        the {cols, rows} the terminal it becomes will have
  *   nameFromPrompt(session, text)
  *                    name the session after the prompt written so far
  *
@@ -369,19 +365,16 @@ function openPanel(ctx, first) {
     if (st.closed) return;
     form = harnesses.settingsForm({
       prefix: 'ps',
-      // A prepared chat stays a chat (the server holds it to that), so it
-      // offers the agents that have one; a terminal prepared before chats
-      // existed keeps the three it could always be.
-      include: (entry) => (first.kind === 'chat' ? harnesses.isChat(entry.id)
-        : harnesses.PRESTART_HARNESSES.includes(entry.id)),
-      deferredProfile: () => true,
+      // A prepared session is a chat (the server holds it to that), so it
+      // offers the agents.
+      include: (entry) => harnesses.isChat(entry.id),
+      deferredAccount: () => true,
       onChange: (kind) => settingsChanged(kind),
     });
     form.selectDefault();
     applySettings(true);
     settingsHost.replaceChildren(form.node);
     drawSettingsLine();
-    form.refreshProfiles().then(() => { if (!st.closed) applySettings(true); });
     form.refreshAccounts().then(() => { if (!st.closed) applySettings(true); });
   });
 
@@ -822,7 +815,7 @@ function openPanel(ctx, first) {
   }
 
   // watchDue reads the list right after a scheduled start falls due, so the
-  // panel turns into the terminal the moment the server has started it.
+  // panel turns into the chat the moment the server has started it.
   //
   // The time is only remembered once the timers are armed: a schedule set
   // hours ahead is armed by the 30 s tick that finds it within reach.
@@ -870,7 +863,7 @@ function openPanel(ctx, first) {
     setFaceLabel(startButton, Number(session.start_at) ? 'Start now' : 'Start');
     // Busy shows the spinner face (after DS's loader delay, so a quick start
     // shows nothing) and blocks the button; the outcome is said by a toast
-    // or by the terminal that takes the panel's place.
+    // or by the chat that takes the panel's place.
     if (st.starting) startButton.setAttribute('aria-busy', 'true');
     else startButton.removeAttribute('aria-busy');
   }
@@ -897,10 +890,7 @@ function openPanel(ctx, first) {
           : 'The prompt could not be saved, so the session was not started.', 'error');
         return;
       }
-      const size = ctx.measure() || {};
-      const res = await call('POST', path + '/start', {
-        cols: size.cols || undefined, rows: size.rows || undefined,
-      }, 60000);
+      const res = await call('POST', path + '/start', {}, 60000);
       if (st.closed) return;
       if (res.status === 200 && res.data.session) {
         forgetDraft(id);

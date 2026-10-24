@@ -27,7 +27,7 @@ const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 async function boot(data, port, cookie) {
   const run = spawnServer({ data, port, env: { SOCRATES_FAKE_AGENT: '1' } });
   const url = `http://127.0.0.1:${port}`;
-  await waitForHealth(url);
+  await waitForHealth(url, 25000, run);
   if (!cookie) {
     const res = await fetch(url + '/api/setup', {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password: PASSWORD }),

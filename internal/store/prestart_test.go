@@ -6,7 +6,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 )
 
 func newPrestart(id string) *Session {
@@ -149,30 +148,19 @@ func TestAStartedSessionRefusesDraftAndSettings(t *testing.T) {
 	}
 }
 
-// A start that failed before the program ran puts the row back exactly as it
-// was prepared, with the reason and without the schedule.
-func TestRevertStartRestoresThePreparedRow(t *testing.T) {
+// A start that failed keeps the row prepared with its reason, and changing a
+// setting clears the reason, which described the old one.
+func TestAFailedStartsReasonGoesWithAChange(t *testing.T) {
 	st := openTest(t)
-	row := newPrestart("p1")
-	row.StartAt = time.Now().Add(time.Hour).UnixMilli()
-	if err := st.CreateSession(row); err != nil {
+	if err := st.CreateSession(newPrestart("p1")); err != nil {
 		t.Fatal(err)
 	}
-	prepared, _ := st.GetSession("p1")
-	started := *prepared
-	started.Workdir, started.TmuxName = "/srv/made", "soc_p1"
-	if err := st.BeginStart(&started); err != nil {
+	if err := st.SetPrestartFailure("p1", "the folder is gone"); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.RevertStart(prepared, "tmux said no"); err != nil {
-		t.Fatal(err)
+	if got, _ := st.GetSession("p1"); got.State != StatePrestart || got.FailReason != "the folder is gone" {
+		t.Fatalf("after a failed start = %#v", got)
 	}
-	got, _ := st.GetSession("p1")
-	if got.State != StatePrestart || got.TmuxName != "" || got.Workdir != "" || got.FailReason != "tmux said no" ||
-		got.StartAt != 0 || string(got.Options) != `{"profile_auto":true}` {
-		t.Fatalf("reverted row = %#v", got)
-	}
-	// Changing a setting clears the reason, which described the old one.
 	if err := st.UpdatePrestart("p1", PrestartSettings{Harness: "codex", WorkdirMode: WorkdirDynamic}); err != nil {
 		t.Fatal(err)
 	}
@@ -261,8 +249,8 @@ func TestMigrationToSchema8(t *testing.T) {
 }
 
 // A nameless prepared row is listed under what it will run: the start (and a
-// change of settings) writes the new placeholder, a failed start puts the
-// prepared one back, and a name somebody gave is never touched.
+// change of settings) writes the new placeholder, and a name somebody gave is
+// never touched.
 func TestAPreparedRowsPlaceholderTitleFollowsItsSettings(t *testing.T) {
 	st := openTest(t)
 	row := newPrestart("p1")
@@ -292,33 +280,30 @@ func TestAPreparedRowsPlaceholderTitleFollowsItsSettings(t *testing.T) {
 	if got, _ := st.GetSession("p1"); got.Title != "Codex · started" {
 		t.Fatalf("title after the start = %q", got.Title)
 	}
-	if err := st.RevertStart(prepared, "no"); err != nil {
-		t.Fatal(err)
-	}
-	if got, _ := st.GetSession("p1"); got.Title != "Codex · repoB" {
-		t.Fatalf("title after a failed start = %q", got.Title)
-	}
 
-	if err := st.UpdateSessionTitle("p1", "Mine"); err != nil {
+	named := newPrestart("p2")
+	if err := st.CreateSession(named); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.UpdatePrestart("p1", PrestartSettings{Title: "Claude Code · x", Harness: "claude", WorkdirMode: WorkdirDynamic}); err != nil {
+	if err := st.UpdateSessionTitle("p2", "Mine"); err != nil {
 		t.Fatal(err)
 	}
-	prepared, _ = st.GetSession("p1")
+	if err := st.UpdatePrestart("p2", PrestartSettings{Title: "Claude Code · x", Harness: "claude", WorkdirMode: WorkdirDynamic}); err != nil {
+		t.Fatal(err)
+	}
+	prepared, _ = st.GetSession("p2")
 	started = *prepared
 	started.Title = "Claude Code · y"
 	if err := st.BeginStart(&started); err != nil {
 		t.Fatal(err)
 	}
-	if got, _ := st.GetSession("p1"); got.Title != "Mine" {
+	if got, _ := st.GetSession("p2"); got.Title != "Mine" {
 		t.Fatalf("a name somebody gave was replaced by %q", got.Title)
 	}
 }
 
 // The reconciliation writes are conditional on the state they were decided
-// from, and news about a started program never touches a prepared row: a
-// start that failed and put its row back is not turned into one to resume.
+// from, and news about a started program never touches a prepared row.
 func TestStateWritesLeaveAPreparedRowAlone(t *testing.T) {
 	st := openTest(t)
 	if err := st.CreateSession(newPrestart("p1")); err != nil {
@@ -333,22 +318,33 @@ func TestStateWritesLeaveAPreparedRowAlone(t *testing.T) {
 	if got, _ := st.GetSession("p1"); got.State != StatePrestart {
 		t.Fatalf("state = %q", got.State)
 	}
+}
 
-	// The poll may have declared a starting row lost in the middle of its
-	// launch; a launch that then finds nothing ran still gets it back.
-	prepared, _ := st.GetSession("p1")
-	started := *prepared
-	started.TmuxName = "soc_p1"
-	if err := st.BeginStart(&started); err != nil {
+// The clean cut makes a prepared terminal a prepared chat in place: the row,
+// its settings and its draft stay, only what it is and its options change -
+// and only for a prepared terminal.
+func TestAPreparedTerminalBecomesAPreparedChat(t *testing.T) {
+	st := openTest(t)
+	if err := st.CreateSession(newPrestart("p1")); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.SetSessionStateFrom("p1", StateStarting, StateNeedsResume, -1, ""); err != nil {
+	if _, err := st.SaveDraft("p1", "the first prompt", 0); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.RevertStart(prepared, "no tmux"); err != nil {
+	if err := st.MakePreparedChat("p1", json.RawMessage(`{"ultracode":true}`)); err != nil {
 		t.Fatal(err)
 	}
-	if got, _ := st.GetSession("p1"); got.State != StatePrestart || got.FailReason != "no tmux" {
-		t.Fatalf("after the revert: %+v", got)
+	got, _ := st.GetSession("p1")
+	if !got.IsChat() || got.State != StatePrestart || got.Model != "a-model" || string(got.Options) != `{"ultracode":true}` {
+		t.Fatalf("the prepared chat = %#v", got)
+	}
+	if draft, _ := st.GetDraft("p1"); draft.Text != "the first prompt" {
+		t.Fatalf("draft = %q", draft.Text)
+	}
+	if err := st.MakePreparedChat("p1", nil); !errors.Is(err, ErrNotPrestart) {
+		t.Fatalf("a chat made a chat again: %v", err)
+	}
+	if err := st.MakePreparedChat("nobody", nil); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("a row that is not there: %v", err)
 	}
 }

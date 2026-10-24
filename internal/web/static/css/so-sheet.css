@@ -12,7 +12,7 @@
  *     __note                   a field's hint with a button at its end (the account's
  *                              Sign in)
  *   .so-drop                   the dropdown: a .ds-combo whose field is a button
- *   .so-limits                 a profile's limit windows in the dropdown's list, each
+ *   .so-limits                 an account's limit windows in the dropdown's list, each
  *                              a flat .ds-progress with its figures
  */
 

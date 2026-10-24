@@ -3,12 +3,14 @@
 package server
 
 import (
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/saschazesiger/SocratesAgent/internal/store"
+	"github.com/saschazesiger/SocratesAgent/internal/termux"
 )
 
 // withGateway points the chat server's OpenRouter client at a stand-in.
@@ -114,5 +116,90 @@ func TestAChatIsNamedAgainFromItsJournal(t *testing.T) {
 	if !strings.Contains(last, "First message:\nSet up the database") || !strings.Contains(last, "Now write the migrations") ||
 		strings.Contains(last, "half typed") {
 		t.Fatalf("the namer was asked:\n%s", last)
+	}
+}
+
+// With no key there is nothing to ask, and the placeholder name stays. It is
+// silent on purpose: nobody pressed anything, and nothing is spent, so the
+// chat may still be named once a key is set.
+func TestAChatsTitleRunIsSilentWithoutAKey(t *testing.T) {
+	c := newChatEnv(t, time.Hour)
+	gw := c.withGateway(t)
+	c.configureOpenRouter(t, map[string]any{"api_key": ""})
+	id := c.create(t)
+	before, _ := c.store.GetSession(id)
+	c.send(t, id, "m1", "hello")
+	c.waitJournal(t, id, 10*time.Second, "the turn", turnsEnded(1))
+	time.Sleep(300 * time.Millisecond)
+	row, _ := c.store.GetSession(id)
+	if gw.count() != 0 || row.Title != before.Title || row.TitleSource != "" {
+		t.Fatalf("%d calls, the chat is %q (%q)", gw.count(), row.Title, row.TitleSource)
+	}
+}
+
+// An agent busy before anybody has sent it anything is not taking up a first
+// message: nothing is asked and nothing is spent, and the first message
+// afterwards still names the chat.
+func TestAChatsStartUpIsNoFirstMessage(t *testing.T) {
+	c := newChatEnv(t, time.Hour)
+	gw := c.withGateway(t)
+	gw.always("Too early")
+	id := c.create(t)
+	c.srv.titles.observe(id, termux.Activity{State: termux.StateBusy})
+	c.srv.titles.observe(id, termux.Activity{State: termux.StateIdle})
+	time.Sleep(300 * time.Millisecond)
+	if row, _ := c.store.GetSession(id); gw.count() != 0 || row.TitleSource != "" {
+		t.Fatalf("%d calls before a message, title source %q", gw.count(), row.TitleSource)
+	}
+	gw.always("Fix failing parser test")
+	c.send(t, id, "m1", "The parser test fails")
+	c.waitTitle(t, id, "Fix failing parser test")
+}
+
+// A gateway that refuses is not a silence: every browser hears why, the row
+// stops pulsing, and the one go is spent; so is it on an answer with nothing
+// usable in it.
+func TestAChatsTitleRunReportsAFailureAndSpendsItsTurn(t *testing.T) {
+	c := newChatEnv(t, time.Hour)
+	gw := c.withGateway(t)
+	gw.refuse(http.StatusUnauthorized, "User not found.")
+	client := c.dialEvents(t)
+	client.hello()
+	id := c.create(t)
+	before, _ := c.store.GetSession(id)
+	c.send(t, id, "m1", "hello")
+	client.await("a failed title frame", 10*time.Second, func() bool {
+		frames := titleFrames(client, id)
+		return len(frames) == 2 && frames[0]["phase"] == titlePhaseStart &&
+			frames[1]["phase"] == titlePhaseError && strings.Contains(fmt.Sprint(frames[1]["text"]), "API key")
+	})
+	if row, _ := c.store.GetSession(id); row.TitleSource != store.TitleAuto || row.Title != before.Title {
+		t.Fatalf("after a refusal the chat is %q (%q)", row.Title, row.TitleSource)
+	}
+
+	gw.refuse(0, "")
+	gw.always("   \n  ")
+	code, body := c.post(t, "/api/chats", map[string]any{"client_id": "create-other", "harness": "fake",
+		"workdir_mode": "custom", "workdir": c.data})
+	if code != http.StatusCreated {
+		t.Fatalf("create: %d %v", code, body)
+	}
+	other := body["session"].(map[string]any)["id"].(string)
+	before, _ = c.store.GetSession(other)
+	c.send(t, other, "m1", "hello")
+	deadline := time.Now().Add(10 * time.Second)
+	for row, _ := c.store.GetSession(other); row.TitleSource != store.TitleAuto; row, _ = c.store.GetSession(other) {
+		if time.Now().After(deadline) {
+			t.Fatalf("the empty answer did not spend the turn: %q", row.TitleSource)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	calls := gw.count()
+	c.waitJournal(t, other, 10*time.Second, "the first turn", turnsEnded(1))
+	c.send(t, other, "m2", "again")
+	c.waitJournal(t, other, 10*time.Second, "the second turn", turnsEnded(2))
+	time.Sleep(300 * time.Millisecond)
+	if row, _ := c.store.GetSession(other); row.Title != before.Title || gw.count() != calls {
+		t.Fatalf("the chat is %q after %d calls, %d before the second message", row.Title, gw.count(), calls)
 	}
 }

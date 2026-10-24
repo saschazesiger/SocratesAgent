@@ -11,7 +11,7 @@ import (
 	"path/filepath"
 )
 
-// VSCode runs code-server in the same persistent tmux lifecycle as the CLIs.
+// VSCode runs code-server in the same persistent tmux lifecycle as a Shell.
 //
 // There is one editor per project folder rather than one per session, so what
 // VS Code remembers - open editors, layout, unsaved changes, terminals - is
@@ -106,8 +106,7 @@ func (v VSCode) Plan(_ context.Context, req PlanRequest) (LaunchPlan, error) {
 			"--disable-telemetry", "--disable-update-check",
 			"--abs-proxy-base-path", "/ide/" + req.SessionID, req.Cwd,
 		},
-		Env: env, Cwd: req.Cwd, Discover: DiscoverNone,
-		Files: files,
+		Env: env, Cwd: req.Cwd, Files: files,
 	}, nil
 }
 

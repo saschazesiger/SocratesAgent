@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Admin · Socrates</title>
-<meta name="description" content="A web terminal for Claude Code, Codex, OpenCode and your shell.">
+<meta name="description" content="Chats with Claude Code, Codex and OpenCode, and a terminal for your shell.">
 <meta name="theme-color" content="#f0f4f9">
 <meta name="format-detection" content="telephone=no">
 <!-- The same install tags as index.html (see there): a page can be added to
@@ -155,7 +155,7 @@
                 </span>
               </button>
             </div>
-            <p class="ds-muted">Everything Socrates keeps is in its data directory on this machine, except for now the default sign-ins and transcripts of Claude Code, Codex and OpenCode, which are in the home folder. While anything changes, it is backed up to an S3 bucket every few minutes — encrypted here with your passphrase, and only what changed goes up. Working directories are not in the backup; they live in git. A new machine is restored from its setup page.</p>
+            <p class="ds-muted">Everything Socrates keeps is in its data directory on this machine: the chats, the accounts' sign-ins and the agents' transcripts with the rest. While anything changes, it is backed up to an S3 bucket every few minutes — encrypted here with your passphrase, and only what changed goes up. Working directories are not in the backup; they live in git. A new machine is restored from its setup page.</p>
             <div class="so-state" id="backupStatus" aria-live="polite">
               <span class="so-state__line"><span class="ds-status"><span class="ds-spinner ds-status__spinner" aria-hidden="true"></span><span>Loading</span></span></span>
               <span class="so-state__tip"></span>
@@ -174,6 +174,10 @@
               </table>
             </div>
             <p class="ds-meta" id="backupSnapshotsHint"></p>
+            <!-- What the bucket mirror of the build before left beside the
+                 backup, and once there is a snapshot of this machine the
+                 button that deletes it (admin.js, loadLegacy). -->
+            <div class="so-admin-notice" id="backupLegacy"></div>
             <div class="ds-subsection">
               <h3 class="ds-card__subtitle">Bucket</h3>
               <div class="ds-form">
@@ -245,7 +249,7 @@
                 </span>
               </button>
             </div>
-            <p class="ds-muted">Asks this machine everything Socrates depends on: tmux and its socket, the workspace, each program and the state it keeps, the OpenRouter key, and the disk underneath all of it.</p>
+            <p class="ds-muted">Asks this machine everything Socrates depends on: tmux and its socket, the workspace, each program, the OpenRouter key, and the disk underneath all of it.</p>
             <div class="ds-table-wrap" id="checksTable" hidden>
               <table class="ds-table ds-table--dense">
                 <caption class="ds-sr">Setup check</caption>
@@ -352,7 +356,7 @@
               <div class="ds-field">
                 <label class="ds-field__label" for="orKey">OpenRouter API key</label>
                 <input class="ds-input" type="password" id="orKey" placeholder="sk-or-v1-…" autocomplete="off" aria-describedby="orKeyHint">
-                <small class="ds-field__hint" id="orKeyHint">Create one at <a href="https://openrouter.ai/keys" target="_blank" rel="noopener">openrouter.ai/keys</a>. It transcribes what you dictate, and it runs the models under <a href="#assistCard">Status &amp; naming</a>: the spoken status and the session names, Home's summaries and questions — which send the screen of every coding session to OpenRouter, and with the turn outcome switched on also Claude's last instruction, answer and task list — and the operator that types your answers into a session. The coding programs bring their own credentials.</small>
+                <small class="ds-field__hint" id="orKeyHint">Create one at <a href="https://openrouter.ai/keys" target="_blank" rel="noopener">openrouter.ai/keys</a>. It transcribes what you dictate, and it runs the models under <a href="#assistCard">Status &amp; naming</a>: the spoken status and the session names, and with the turn outcome switched on the check of each chat's turn — which sends the chat's last instruction, answer, calls and task list to OpenRouter. The coding programs bring their own credentials.</small>
               </div>
               <div class="ds-field">
                 <label class="ds-field__label" for="orTranscribeInput">Transcription model</label>
@@ -435,38 +439,33 @@
             </details>
           </section>
 
-          <!-- The models that read a screen: one says what the session is doing,
-               one calls it something, one writes Home's line and question for
-               it, and the last types the answer a person chose to that question. -->
+          <!-- The models that talk about a session: one says what it is doing,
+               one calls it something, and one judges how a chat's turn left
+               the work. -->
           <section class="ds-card" id="assistCard" aria-labelledby="assistTitle">
             <h2 class="ds-card__title" id="assistTitle">Status &amp; naming</h2>
-            <p class="ds-muted">Status has a model read the screen of a session and say what it is doing, in one or two sentences, which the voice above reads out loud. The namer reads the first screen a session answers on and calls the session after it, once.</p>
+            <p class="ds-muted">Status has a model read what a chat is doing, or the screen of a Shell, and say it in one or two sentences, which the voice above reads out loud. The namer calls a chat after its first message, once.</p>
             <div class="ds-form">
               <div class="ds-form-grid ds-form-grid--2">
                 <div class="ds-field">
                   <label class="ds-field__label" for="orStatusInput">Status model</label>
                   <div id="orStatus"></div>
-                  <small class="ds-field__hint">Asked for a sentence about a screen, so a fast, cheap model is the right one — google/gemini-2.5-flash is the default.</small>
+                  <small class="ds-field__hint">Asked for a sentence about a session, so a fast, cheap model is the right one — google/gemini-2.5-flash is the default.</small>
                 </div>
                 <div class="ds-field">
                   <label class="ds-field__label" for="orTitleInput">Title model</label>
                   <div id="orTitle"></div>
-                  <small class="ds-field__hint">Asked for a handful of words once per session, so the cheapest thing that can read a screen will do — google/gemini-2.5-flash-lite is the default.</small>
+                  <small class="ds-field__hint">Asked for a handful of words once per session, so the cheapest model will do — google/gemini-2.5-flash-lite is the default.</small>
                 </div>
                 <div class="ds-field">
-                  <label class="ds-field__label" for="orHomeInput">Home summaries and questions</label>
+                  <label class="ds-field__label" for="orHomeInput">Turn outcomes</label>
                   <div id="orHome"></div>
-                  <small class="ds-field__hint">Reads the screen of every coding session for Home: a line about what it is doing, and the question it is asking with its choices. It runs on every turn, so a fast, cheap model is the right one — google/gemini-3.5-flash is the default.</small>
-                </div>
-                <div class="ds-field">
-                  <label class="ds-field__label" for="orOperatorInput">Answering questions</label>
-                  <div id="orOperator"></div>
-                  <small class="ds-field__hint">Types the answer you chose on Home into the session, key by key, and only ever because you tapped it. Reading a terminal menu is where a cheap model goes wrong, so this one is capable on purpose — anthropic/claude-sonnet-5.5 is the default.</small>
+                  <small class="ds-field__hint">Judges how each chat's turn left the work when the switch below is on. It runs on every turn, so a fast, cheap model is the right one — google/gemini-3.5-flash is the default.</small>
                 </div>
               </div>
               <div class="ds-field">
                 <label class="ds-check"><input type="checkbox" id="orOutcomes" aria-describedby="orOutcomesHint"><span>Check each turn's outcome</span></label>
-                <small class="ds-field__hint" id="orOutcomesHint">When a turn ends, the same read also judges whether the task is complete, partly done with open todos, waiting on you, or blocked, and the session shows it. For Claude it is also sent the last instruction, the last answer and the task list. Notifications wait up to 45 seconds for the verdict.</small>
+                <small class="ds-field__hint" id="orOutcomesHint">When a chat's turn ends, the outcome model judges whether the task is complete, partly done with open todos, waiting on you, or blocked, and the chat shows it. It is sent the chat's last instruction, its answer, the calls it made and its task list. Notifications wait up to 45 seconds for the verdict.</small>
               </div>
             </div>
           </section>

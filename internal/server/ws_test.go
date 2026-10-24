@@ -685,17 +685,13 @@ func TestTerminalForeignOriginIsRefused(t *testing.T) {
 // frame with its status, which is what the overlay is drawn from.
 func TestTerminalExitNotice(t *testing.T) {
 	e := newSessionEnv(t)
-	res, session := e.create(fmt.Sprintf(
-		`{"harness":"claude","workdir_mode":"custom","workdir":%q,"cols":100,"rows":30}`, e.work))
-	if res.StatusCode != http.StatusCreated {
-		t.Fatalf("create: %d %#v", res.StatusCode, session)
-	}
-	id := sessionID(t, session)
+	id := e.shellSession(100, 30)
 	c := e.dialWS(id, "viewer=tab-a&cols=100&rows=30")
 	c.hello()
-	c.waitFor("FAKE claude")
+	c.send(1, "echo exit-probe-4\r")
+	c.waitFor("exit-probe-4")
 
-	c.send(1, "/exit 7\r")
+	c.send(2, "exit 7\r")
 	exit := c.waitCtrl("exit")
 	if got := floatOf(t, exit, "status"); got != 7 {
 		t.Fatalf("the exit frame carried status %v, want 7", got)
@@ -708,13 +704,7 @@ func TestTerminalExitNotice(t *testing.T) {
 // no transport to say it on.
 func TestTerminalResumeNotice(t *testing.T) {
 	e := newSessionEnv(t)
-	res, session := e.create(fmt.Sprintf(
-		`{"harness":"claude","workdir_mode":"custom","workdir":%q,"cols":100,"rows":30}`, e.work))
-	if res.StatusCode != http.StatusCreated {
-		t.Fatalf("create: %d %#v", res.StatusCode, session)
-	}
-	id := sessionID(t, session)
-	e.waitForPane(id, "FAKE claude")
+	id := e.shellSession(100, 30)
 
 	// The reboot, as far as Socrates can tell it apart from one.
 	if _, err := e.tmux("kill-server"); err != nil {
@@ -732,10 +722,11 @@ func TestTerminalResumeNotice(t *testing.T) {
 		t.Fatalf("the socket opened on a session that was not resumed: %#v", got)
 	}
 	notice := c.waitCtrl("notice")
-	if notice["kind"] != "resumed" {
+	if notice["kind"] != "resumed" || notice["cli"] != "shell" {
 		t.Fatalf("the notice was %#v", notice)
 	}
-	c.waitFor("FAKE claude")
+	c.send(1, "echo resumed-probe-5\r")
+	c.waitFor("resumed-probe-5")
 }
 
 // blackHole is a connection that stops carrying anything the moment the test
@@ -1070,12 +1061,6 @@ func (c *orderedClient) rendered() uint64 {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return uint64(len(c.out))
-}
-
-func (c *orderedClient) screen() string {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return string(c.out)
 }
 
 func (c *orderedClient) close() {
@@ -1727,14 +1712,10 @@ func TestActivityReachesEveryOpenSocket(t *testing.T) {
 	}
 
 	// A session nobody is watching starts working. Its state has to reach the
-	// socket that is attached to a different session altogether.
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
-	if err := e.srv.Sessions().SendKeys(ctx, other, []termux.Key{
-		{Text: "sleep 4"}, {Name: "Enter"},
-	}); err != nil {
-		t.Fatalf("send-keys: %v", err)
-	}
+	// socket that is attached to a different session altogether. Somebody
+	// typed the command, as a viewer's keystrokes tell the detector.
+	e.srv.Sessions().NoteInput(other)
+	e.typeLine(other, "sleep 4")
 	c.activityOf(other, func(a map[string]any) bool { return a["state"] == "busy" })
 
 	// And when it finishes, the row is unread: work ended and nobody saw it.

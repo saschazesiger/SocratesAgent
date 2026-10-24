@@ -4,6 +4,7 @@ package termux
 
 import (
 	"context"
+	"database/sql"
 	"os"
 	"path/filepath"
 	"testing"
@@ -296,6 +297,43 @@ func TestDeleteKillsTheSessionAndKeepsTheDirectory(t *testing.T) {
 	// The working directory is not ours to throw away.
 	if _, err := statPath(dir); err != nil {
 		t.Fatalf("the working directory was deleted: %v", err)
+	}
+}
+
+// TestADeleteCutShortCanBeDoneAgain: a delete removes the session's folder
+// before its row, so one that stops in between - a start killed in the
+// migration's clean cut - leaves a row that leads to the rest, never a folder
+// nothing leads back to. A database that refuses the row stands in for the
+// kill.
+func TestADeleteCutShortCanBeDoneAgain(t *testing.T) {
+	l := newLab(t)
+	row := l.create(shellSpec(t.TempDir()))
+	db, err := sql.Open("sqlite", "file:"+filepath.Join(l.dataDir, "socrates.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(`CREATE TRIGGER refuse BEFORE DELETE ON sessions BEGIN SELECT RAISE(ABORT, 'cut short'); END`); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if err := l.Delete(ctx, row.ID); err == nil {
+		t.Fatal("a delete whose row could not go succeeded")
+	}
+	if _, err := statPath(SessionDir(l.dataDir, row.ID)); err == nil {
+		t.Fatal("the folder outlived a delete cut short before the row")
+	}
+	if _, err := l.store.GetSession(row.ID); err != nil {
+		t.Fatalf("the row of a delete cut short is gone: %v", err)
+	}
+	if _, err := db.Exec(`DROP TRIGGER refuse`); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.Delete(ctx, row.ID); err != nil {
+		t.Fatalf("the delete done again: %v", err)
+	}
+	if _, err := l.store.GetSession(row.ID); err == nil {
+		t.Fatal("the row is still there")
 	}
 }
 

@@ -93,7 +93,8 @@ export function toolOf(part) {
   // A workflow's agent is one of its agents, under its label.
   else if (c.tool === 'WorkflowAgent') name = 'Agent';
   const agent = c.agent && typeof c.agent === 'object' ? c.agent : null;
-  const summary = c.summary || c.command || field('command') || c.path || field('file_path') || field('pattern')
+  const path = c.path || field('file_path');
+  const summary = c.summary || c.command || field('command') || path || field('pattern')
     || field('description') || field('url') || field('query') || (agent && (agent.label || agent.description))
     || (c.workflow && (c.workflow.description || c.workflow.name)) || c.name || '';
   let duration = Number(c.duration_ms) || 0;
@@ -102,8 +103,8 @@ export function toolOf(part) {
   }
   const exit = c.exit_code;
   const failed = part.state === 'error' || c.is_error === true || (typeof exit === 'number' && exit !== 0);
-  return { name, summary: String(summary).split('\n')[0], input, duration, failed, agent, workflow: c.workflow || null,
-    command: c.command || field('command'), content: c };
+  return { name, summary: String(summary).split('\n')[0], path: summary === path ? path : '', input, duration, failed, agent,
+    workflow: c.workflow || null, command: c.command || field('command'), content: c };
 }
 
 // The glyph a tool is drawn with, by what it does.
@@ -189,12 +190,21 @@ export function parseDiff(text, path = '') {
   return files.filter((one) => one.hunks.length);
 }
 
+// withPath gives the files of a diff the path the tool named back where the
+// diff's own header lost it: a diff of an absolute path names it git's way,
+// "a/srv/x.go", which reads as "srv/x.go" once the a/ is taken off.
+function withPath(files, path) {
+  const bare = String(path || '').replace(/^\/+/, '');
+  for (const one of files) if (bare && bare !== path && one.path === bare) one.path = path;
+  return files;
+}
+
 /** diffFiles is every file a diff part changes, from whichever shape it has. */
 export function diffFiles(part) {
   const c = (part.content && typeof part.content === 'object') ? part.content : {};
   if (Array.isArray(c.changes)) {
     return c.changes.flatMap((change) => {
-      const files = parseDiff(change.diff || '', change.move_path || change.path || '');
+      const files = withPath(parseDiff(change.diff || '', change.move_path || change.path || ''), change.move_path || change.path);
       for (const one of files) {
         if (!one.path) one.path = change.path || '';
         if (change.kind === 'add') one.status = 'added';
@@ -203,17 +213,17 @@ export function diffFiles(part) {
       return files;
     });
   }
-  if (Array.isArray(c.files)) return c.files.flatMap((one) => parseDiff(one.diff || '', one.path || ''));
-  if (typeof c.diff === 'string' && c.diff) return parseDiff(c.diff, c.path || '');
-  if (/^(---|diff --git|@@ )/m.test(part.text || '')) return parseDiff(part.text, c.path || '');
+  if (Array.isArray(c.files)) return c.files.flatMap((one) => withPath(parseDiff(one.diff || '', one.path || ''), one.path));
+  if (typeof c.diff === 'string' && c.diff) return withPath(parseDiff(c.diff, c.path || ''), c.path);
+  if (/^(---|diff --git|@@ )/m.test(part.text || '')) return withPath(parseDiff(part.text, c.path || ''), c.path);
   return [];
 }
 
 const SIGN = { add: '+', del: '−', ctx: ' ', meta: '' };
 const LINE_WORDS = { add: 'Added', del: 'Removed' };
 
-function diffFileHtml(file, key, open) {
-  const name = file.path || 'the file';
+function diffFileHtml(file, key, open, view) {
+  const name = view.where(file.path) || 'the file';
   const status = file.status === 'added' ? 'New file' : file.status === 'deleted' ? 'Deleted' : '';
   return html`<details class="so-diff__file" data-ds-key="${key}" data-open-key="${key}"${open ? html` open` : ''}><summary class="so-diff__head"><span class="so-diff__path so-break">${name}</span>${status ? html`<span class="so-diff__status">${status}</span>` : ''}<span class="so-diff__count"><span class="so-diff__added" aria-label="${file.added + ' added'}">+${file.added}</span><span class="so-diff__removed" aria-label="${file.removed + ' removed'}">−${file.removed}</span></span>${chevron()}</summary>${
     open ? html`<div class="so-diff__body" role="table" aria-label="${'Changes to ' + name}">${file.hunks.map((hunk) => html`<div class="so-diff__hunk" role="row"><span class="so-diff__hunk-head" role="cell">${hunk.header}</span></div>${
@@ -228,7 +238,7 @@ export function diffViewer(part, view) {
   if (!files.length) return part.text ? html`<pre class="so-mono">${part.text}</pre>` : '';
   return html`<div class="so-diff">${files.map((file, i) => {
     const key = 'f:' + part.id + ':' + i;
-    return diffFileHtml(file, key, view.isOpen(key, files.length <= 3));
+    return diffFileHtml(file, key, view.isOpen(key, files.length <= 3), view);
   })}</div>`;
 }
 
@@ -330,8 +340,11 @@ function toolHtml(part, view, { diff = false } = {}) {
     tool.agent && tool.agent.tokens ? fmtTokens(tool.agent.tokens) + ' tokens' : '',
     typeof tool.content.exit_code === 'number' ? 'exit status ' + tool.content.exit_code : '',
     tool.content.cwd ? tool.content.cwd : '',
+    tool.path && view.where(tool.path) !== tool.path ? tool.path : '',
   ];
-  return html`<details class="so-part so-tool" data-ds-key="${key}" data-open-key="${key}" data-kind="${part.kind}" data-state="${state}"${group ? html` data-group` : ''}${open ? html` open` : ''}><summary class="so-tool__head"><span class="so-tool__icon" aria-hidden="true">${raw(icon(toolGlyph(tool.name), 18))}</span><span class="so-tool__name">${tool.name}</span><span class="so-tool__summary so-ellipsis">${tool.summary}</span>${
+  // A file the call worked on is named as the chat's folder sees it.
+  const summary = tool.path ? view.where(tool.path) : tool.summary;
+  return html`<details class="so-part so-tool" data-ds-key="${key}" data-open-key="${key}" data-kind="${part.kind}" data-state="${state}"${group ? html` data-group` : ''}${open ? html` open` : ''}><summary class="so-tool__head"><span class="so-tool__icon" aria-hidden="true">${raw(icon(toolGlyph(tool.name), 18))}</span><span class="so-tool__name">${tool.name}</span><span class="so-tool__summary so-ellipsis">${summary}</span>${
     progress ? html`<span class="so-tool__progress so-ellipsis">${progress}</span>` : ''
   }${diff && files.length ? html`<span class="so-diff__count"><span class="so-diff__added">+${added}</span><span class="so-diff__removed">−${removed}</span></span>` : ''}${
     statusMark(state)

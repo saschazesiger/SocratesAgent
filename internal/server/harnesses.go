@@ -10,8 +10,9 @@ import (
 )
 
 // handleHarnesses is the whole of what the new-session sheet needs: which of
-// the five programs are on this machine, what each can be run on, where a
-// session is allowed to work, and whether sessions can be created at all.
+// the five programs are on this machine, what each can be run on, which of
+// them are chats, where a session is allowed to work, and whether terminals
+// can be created at all.
 //
 // It replaces both of the endpoints the chat app had - the agent list and the
 // model list - because a model list that is not a field of the harness it
@@ -33,11 +34,23 @@ func (s *Server) answerCatalog(w http.ResponseWriter, snap catalog.Snapshot) {
 	if presets == nil {
 		presets = []config.PresetDir{}
 	}
-	agents := snap.Agents
+	agents := append([]catalog.Agent{}, snap.Agents...)
+	// The dashboard's Default model and Default effort are what the sheet
+	// starts an agent's chat on, as a chat made without a choice of its own
+	// runs on them (chatModel).
+	for i := range agents {
+		model, effort := settings.Harnesses.Defaults(agents[i].ID)
+		if model != "" {
+			agents[i].DefaultModel = model
+		}
+		if effort != "" {
+			agents[i].DefaultEffort = effort
+		}
+	}
 	// The scripted agent of the tests has no CLI to probe; it is offered
 	// like one when it is switched on, with two models to choose from.
 	if _, ok := agent.Lookup(agent.FakeHarness); ok {
-		agents = append(append([]catalog.Agent{}, agents...), fakeCatalogEntry())
+		agents = append(agents, fakeCatalogEntry())
 	}
 	payload := map[string]any{
 		"harnesses": agents,
@@ -52,13 +65,6 @@ func (s *Server) answerCatalog(w http.ResponseWriter, snap catalog.Snapshot) {
 			"presets":         presets,
 			"modes":           harnesses.WorkdirModes,
 		},
-	}
-	// The profiles a session can run in, with the account each agent is signed
-	// in with there, so that the sheet can say which account a choice means.
-	// A list that cannot be read leaves the sheet with the default profile,
-	// which is what it was before profiles existed.
-	if profiles, err := s.profileViews(); err == nil {
-		payload["profiles"] = profiles
 	}
 	// Whether a session can be started at all is a property of the machine,
 	// not of the catalogue, and the sheet has to be able to say so before

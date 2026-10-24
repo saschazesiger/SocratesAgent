@@ -86,18 +86,19 @@ func (c *costLedger) refresh() {
 	}
 }
 
-// roots are the directories of every account on this machine: the default
-// one, every profile directory on the disk - a profile that was deleted
-// still has the conversations it had - and the agents' shared folders, where
-// every account's transcripts are kept once accounts share them
-// (REBUILD.md §6.1). A conversation found under two of them is one.
+// roots are the directories of every account on this machine: the agents'
+// own folders in HOME, every profile directory on the disk - the profiles
+// before accounts left theirs under <data>/profiles, and a profile that was
+// deleted still has the conversations it had - and the agents' shared
+// folders, where every account's transcripts are kept once accounts share
+// them (REBUILD.md §6.1). A conversation found under two of them is one.
 func (c *costLedger) roots() []costs.Root {
 	dataDir := c.s.dataDir
 	layout := paths.New(dataDir)
 	roots := []costs.Root{{
-		ClaudeDir:   harnesses.ClaudeConfigDirFor(dataDir, ""),
-		CodexHome:   harnesses.CodexHomeFor(dataDir, ""),
-		OpenCodeDir: harnesses.OpenCodeDataDirFor(dataDir, ""),
+		ClaudeDir:   harnesses.ClaudeConfigDir(),
+		CodexHome:   harnesses.CodexHome(),
+		OpenCodeDir: harnesses.OpenCodeDataDir(),
 	}, {
 		ClaudeDir:   layout.Agent("claude"),
 		CodexHome:   layout.Agent("codex"),
@@ -106,12 +107,13 @@ func (c *costLedger) roots() []costs.Root {
 	dirs, _ := filepath.Glob(filepath.Join(dataDir, "profiles", "*"))
 	sort.Strings(dirs)
 	for _, dir := range dirs {
-		id := filepath.Base(dir)
+		// A profile's folders, as the build before accounts laid them out:
+		// OpenCode's under the XDG data home it was started with.
 		roots = append(roots, costs.Root{
-			Profile:     id,
-			ClaudeDir:   harnesses.ClaudeConfigDirFor(dataDir, id),
-			CodexHome:   harnesses.CodexHomeFor(dataDir, id),
-			OpenCodeDir: harnesses.OpenCodeDataDirFor(dataDir, id),
+			Profile:     filepath.Base(dir),
+			ClaudeDir:   filepath.Join(dir, "claude"),
+			CodexHome:   filepath.Join(dir, "codex"),
+			OpenCodeDir: filepath.Join(dir, "xdg-data", "opencode"),
 		})
 	}
 	return roots
@@ -232,6 +234,14 @@ type costConvView struct {
 	LastAt  int64 `json:"last_at"`
 }
 
+// legacyProfilesKey is where the build before accounts kept its sign-in
+// profiles, and defaultProfileName what it called the one with no id: the
+// agents' own folders in HOME.
+const (
+	legacyProfilesKey  = "profiles"
+	defaultProfileName = "Default"
+)
+
 // moreProject is the project of every conversation in a directory Socrates
 // made for one session, the sidebar's "More Chats" (folders.js).
 const moreProject = "#more"
@@ -263,8 +273,15 @@ func (s *Server) handleCosts(w http.ResponseWriter, r *http.Request) {
 		Models:    []string{},
 		Rows:      [][10]float64{},
 	}
-	if list, err := s.loadProfiles(); err == nil {
-		for _, p := range list {
+	// A conversation from before accounts names the profile it ran in, and
+	// the profiles' names are still in the store, where the accounts
+	// migration read them from.
+	var profiles []struct {
+		ID   string `json:"id"`
+		Name string `json:"name"`
+	}
+	if err := s.store.GetJSON(legacyProfilesKey, &profiles); err == nil {
+		for _, p := range profiles {
 			view.Profiles[p.ID] = p.Name
 		}
 	}

@@ -23,10 +23,11 @@ socrates mcp-ask --socket <the host's socket>
 ```
 
 A chat is a **session row** with `kind = 'chat'` (schema 10). It shares the sessions table with
-terminals, so the list, shelves, unread mark, ordering, push and Done sweep apply unchanged. The
-CLI's conversation id is stored in `cli_session_id` (`cli_session_state = known`). Terminal loops
-(adoption, lifecycle poll, the detector tick, digests, titles, the operator's routes) skip chat
-rows; the terminal-only routes (`…/ws`, `…/journal`, `…/resume`, `…/restart`) answer 409.
+terminals - a Shell, and a folder's VS Code, the only programs that still run in one (WP10) - so
+the list, shelves, unread mark, ordering, push and Done sweep apply unchanged. The CLI's
+conversation id is stored in `cli_session_id` (`cli_session_state = known`). Terminal loops
+(adoption, lifecycle poll, the detector tick, titles) skip chat rows; the terminal-only routes
+(`…/ws`, `…/journal`, `…/resume`, `…/restart`) answer 409.
 
 | Path | Written by | What |
 |---|---|---|
@@ -179,7 +180,11 @@ The server reports it to the terminal detector with `termux.ReportActivity` (com
 debounce; note `question` for waiting; `asked` = the chat has a user message). The unread mark, row
 ordering (`MovesRow`), refiling into in-progress, the `activity` frames and push are the terminals'.
 Answering a chat's question and stopping its turn mark it read, as a message does (typing at a
-terminal does the same), so the turn an answer lets go on ends unread again.
+terminal does the same), so the turn an answer lets go on ends unread again. A chat's host is
+reattached, and reports, before the detector starts (`StartSessions`), so `ReportActivity` reads
+back the unread marks the last run left before its first report: a track made without them would
+call a turn nobody saw read across a restart, and the first mark saved would write over the rest
+(WP11).
 
 **What the rest of Socrates reads** (WP9, `internal/server/chatfeed.go`, `chatbrief.go`): none of it
 asks a model to read a screen; it is the projection.
@@ -190,8 +195,8 @@ asks a model to read a screen; it is the projection.
   `command`/`changes`, OpenCode's `title`/`input`), else the first line of the newest text part,
   else the person's message; between turns the first line of the last turn's answer, "Failed: …",
   "Limit reached: …" or "Stopped". Markdown is taken off; a subagent's own words never are the line.
-- **The reading**: every chat is a `digest` on the event stream, the hello and `GET /api/home`,
-  beside the terminals': `phase: ready`, `state` = the activity, `summary` = the line, `question` =
+- **The reading**: every chat is a `digest` on the event stream, the hello and `GET /api/home` -
+  the only digests there are since the terminals' screen reading went (WP10): `phase: ready`, `state` = the activity, `summary` = the line, `question` =
   the open ask the chat waits on as a digest question (`source: "ask"`, `kind` single→`choice`,
   multi, confirm, text/number→`text`, plan; one item per question with its options), and `news`
   (below). It is published when it changes - before the activity report, so a page told that a
@@ -213,7 +218,9 @@ asks a model to read a screen; it is the projection.
   latest exchange (never the composer's draft).
 - **Spoken Status**: `POST /api/sessions/{id}/status` tells the status model the chat from its
   journal (`chatNow`): the last turn - message, answer, calls and how they went, task list - what
-  runs now, the question it waits on with its choices, and its background tasks.
+  runs now, the question it waits on with its choices, and its background tasks. Its phases
+  (`{"t":"status","id","phase","text"}`: asking, speaking, done, or error) go to the session's
+  terminal viewers and on the event stream, which is the only socket a chat's page has (WP11).
 - **Outcome judge** (`chatjudge.go`): with outcomes on, a chat's turn end puts the outcome on
   pending exactly as a terminal's does - except a turn the person stopped, which gets no verdict; a
   turn a limit stopped is judged, though the limit's notification is the accounts' and the verdict
@@ -587,8 +594,11 @@ Cost is not reported by codex (0).
 | `contextCompaction` | `notice` | streaming → done | `{notice: "compacted"}` |
 | `webSearch`, anything else | `tool` | … | `{tool: <item type>, item: <the raw item>}` |
 
-A subagent's parts outlive the turn that spawned it; `tasks{count}` counts subagents at work, and
-`Background()` adds codex's background terminals (`thread/backgroundTerminals/list`).
+A subagent's parts outlive the turn that spawned it; `tasks{count}` counts subagents at work and
+the background terminals a turn left running, which codex announces neither starting nor ending:
+after every turn the adapter counts them (`thread/backgroundTerminals/list`) every 2 s while there
+are any, and journals the count each time it changes (WP11; the row's hourglass and the unread mark
+wait for them, as for Claude Code's background tasks). `Background()` counts both too.
 
 **Server requests** are answered on goroutines of their own, so a question never holds up the
 stream: command, file-change and legacy approvals → accept; `item/permissions/requestApproval` →
@@ -860,7 +870,7 @@ key (the existing `Outbox` in `net.js`).
 
 | Route | Body | Answers |
 |---|---|---|
-| `POST /api/chats` | `client_id`, `harness`, `model`, `effort`, `workdir_mode`, `workdir`, `title`, `ultracode` (Claude Code only; dropped for any other agent), `account`?, `auto_switch`?, `message`?{`client_id`,`text`,`attachments`} | 201 `{session, chat: <summary>, message?}`; 200 the same for a repeated `client_id`; 400 for a harness without an adapter, or an account of another agent. No `account`: the recommended one when the host launches (§11). The host is launched at once |
+| `POST /api/chats` | `client_id`, `harness`, `model`, `effort`, `workdir_mode`, `workdir`, `title`, `ultracode` (Claude Code only; dropped for any other agent), `account`?, `auto_switch`?, `message`?{`client_id`,`text`,`attachments`} | 201 `{session, chat: <summary>, message?}`; 200 the same for a repeated `client_id`; 400 for a harness without an adapter, or an account of another agent. No `account`: the recommended one when the host launches (§11). No `model`: the agent's default model and effort from Admin (`harnesses.<id>.default_model`/`default_effort`), which a prepared chat started without one gets too, and which the catalogue's agents carry as `default_model`/`default_effort` for the sheet (WP11). The host is launched at once |
 | `GET /api/chats/{id}` | – | `{session, chat: <summary>, asks: [open asks], host_error?}`; `?history=1` adds `messages` (the whole projection) |
 | `POST /api/chats/{id}/messages` | `client_id`, `text`, `attachments` | 200 `{client_id, seq, dup}`; 202 `{client_id, queued: true}` when the host has not acked within 10 s (a host still starting holds commands until its agent is up; it will receive it once) |
 | `POST /api/chats/{id}/interrupt` | `client_id` | as messages; 200 `{idle: true}` when nothing runs and no host is up |
@@ -872,12 +882,15 @@ key (the existing `Outbox` in `net.js`).
 | `/api/accounts…` | §11 | the accounts |
 | `POST /api/chats/{id}/attachments` | multipart, one or more `file` parts | `{files: [attachment]}`: stored under `chats/<id>/attachments/` (a copy in the working directory's uploads); a message may only name paths this route handed out, else 400 |
 | `POST /api/chats/{id}/options` | `ultracode` | the row's options changed (400 for Ultracode on another agent), and the agent parked as soon as it is idle so the next message resumes with them; `{session}` |
-| `POST /api/sessions/{id}/status`, `…/title`, `…/digest` | – | the spoken Status, naming again and Read again of every session; for a chat read from its journal (§3), Read again judging its last turn again |
+| `POST /api/sessions/{id}/status`, `…/title` | – | the spoken Status and naming again; for a chat read from its journal (§3) |
 | `GET`/`PUT /api/sessions/{id}/draft` | `text`, `base_rev` | the composer's draft, with PreStart's revision rule (409 `{conflict, text, rev}` when another device saved first); a prepared chat's draft is its first message |
 | `GET /api/chats/{id}/stream` | WebSocket | below |
 | `PUT /api/sessions/{id}/workdir` | `workdir` (a folder that exists) | 200 `{session}`; 400 for a folder that is not there or not allowed; 409 while a turn runs. A host that is up is sent `park`, not `stop`: a turn that started a moment ago, which the server has not heard of yet, finishes in the old folder, and the next message starts the agent in the new one (REBUILD §6.2: a restored chat whose folder is missing) |
 
-Sending a message clears the chat's unread mark (as typing at a terminal does). Chats appear in
+Sending a message clears the chat's unread mark (as typing at a terminal does), and picks a chat
+filed Done up again (filed in progress, as "Pick it up again" does a terminal): left done, the
+sweep would put its agent to rest while it works and delete the chat once its day was up (WP11).
+Chats appear in
 `GET /api/sessions` and the event stream like every session, with `kind: "chat"` and their
 `activity`, and `workdir_missing` when their folder is not on this machine.
 
@@ -914,10 +927,27 @@ a menu of the agent's accounts with their usage; during a turn it asks "Switch n
 continue) or "After this turn". The fold keeps `account` from `turn.started` and
 `account.switched`, and the switch asked for (`command{switch_account}`) until it happens.
 
-A new session is a chat for every agent with an adapter, from the sheet and from PreStart; the
-server lists them as the catalogue's `chats`. `SOCRATES_AGENT_TERMINALS=1` keeps Claude Code,
-Codex and OpenCode terminals there instead (the browser suite sets it while its agents are the
-faketui stand-in; DEVIATIONS, WP8).
+**The question dialog** (`askdialog.js`, from Home's Questions card, a card's Answer, `#q=` and a
+tapped notification) walks the open questions of every asking chat, oldest first, and is live:
+an answer from another device settles the one it shows ("Answered on another device"), and at the
+end of the walk it takes up what was asked while it went, so a follow-up asked right after an
+answer is the next step rather than a dialog that closed. A question it is asked for that the page
+cannot read yet - no connection, or a chat the page has not heard of - waits for the connection
+(at most three tries in two minutes) and opens that question, never another chat's; a chat that
+asks nothing any more says "Nothing is waiting for an answer any more". For 600 ms after a
+question is drawn its buttons take no tap, so the second tap of a double tap (on Home's card, on
+Next, on Send) chooses nothing; a key is never a stray tap. On a phone on its side (under 500 px)
+the question is scrolled up to the top of the dialog. While the page's connection is not live (its
+first connect aside: the dialog read its questions as it opened) the dialog says Home's connection
+line under its top bar ("Offline · updated 40 s ago"), that a
+question still to answer may already have been answered, and dims it, said again every 2 s; an
+answer sent offline says "Saved. Your answer goes out when the connection is back." (WP11).
+
+A new session of an agent is a chat, from the sheet and from PreStart; the server lists the
+agents as the catalogue's `chats`. An agent's terminal does not exist any more (WP10):
+`POST /api/sessions` refuses one with 400 ("… runs as a chat, not in a terminal …"), a prepared
+session is always a chat, and the sheet offers the agents as chats and the Shell as a terminal
+with a folder and nothing else.
 
 ## 8. The fake adapter
 
@@ -992,6 +1022,13 @@ attachment(s): …`).
   adapters the server's test binary registers.
 - e2e (`run.mjs`, the scripted agent): `chat-home`, `chat-push`, `chat-title`, `chat-status`,
   `chat-outcome`, `chat-prestart`, `chat-ultracode`.
+- WP11: every scenario of the agents' terminals moved onto the chats, against the protocol fakes
+  or the scripted agent (`e2e/README.md` says what each proves, and what did not come over), and
+  `chat-restart`, a server restart mid-turn as a desk and a phone on the chat see it.
+  `internal/server`: a finished turn still unread after a restart, a done chat picked up by a
+  message, a chat made without a model on Admin's defaults, Status's phases on the event stream;
+  `internal/agent/codex`: a background terminal reported as a task until it ends;
+  `internal/config`: each agent's own defaults.
 - `e2e/chats.mjs`: the real binary, SIGKILL of the server mid-turn, replay, duplicates, two-device
   answers, the session list.
 - ask_user (WP6): `internal/agent/askuser` (schema limits, the checks and their messages, the
@@ -1096,9 +1133,10 @@ attachment(s): …`).
   journal from before WP7 names none: its turns are on the account its first switch's `from` says,
   and until there is one on `chat-<id>`, with no account. The server keeps a chat's account in its
   row's options (`account`, `auto_switch`).
-- For WP10: the terminal-only profiles (`/api/profiles`, `harnesses/profiles.go`, the sheet's
-  profile field for terminals) stay as they were; the dashboard's Profiles card is gone, and the
-  migration took every profile's logins into accounts (§11).
+- The profiles are gone (WP10): `/api/profiles`, `harnesses/profiles.go` and the sheet's profile
+  field went with the agents' terminals, and the migration took every profile's logins into
+  accounts (§11). What is left of them is the old `profiles` record the migration reads, and the
+  profile folders the cost ledger still scans.
 
 ## 11. Accounts (WP7)
 
@@ -1232,15 +1270,41 @@ link are **one step** on Linux: a link is made at the new place and exchanged wi
 meanwhile never makes a second folder there; a file system that cannot exchange gets a rename and
 then the link. The shared folders inside (`projects/`, `sessions/`, …) are swapped for their links
 the same way before their content is merged into `<data>/agents/<agent>/` (what both have stays
-aside as `<name>.pre-rebuild`). First a tar of the data folder and the moved folders,
-`<data>.pre-rebuild.tar` (0600): it holds the logins **unencrypted**, and the agents' live SQLite
-files as they were read (a running agent may leave a torn copy; the moved originals are whole) —
-delete it once the accounts work. Idempotent and safe to interrupt: each account is made once per
+aside as `<name>.pre-rebuild`). OpenCode's `opencode.db` (with `-wal`, `-shm`) is renamed to the
+shared `agents/opencode/opencode.db` and a relative link to it is left in its place, so an
+`opencode` started by hand (no `OPENCODE_DB`) opens the same database; SQLite keeps the
+write-ahead log beside the file the link names. First a tar of the data folder and the moved folders,
+`<data>.pre-rebuild.tar` (0600), the way back to the build before: its `data/socrates.db` is the
+copy the upgrade left (`store.PreUpgradeCopy`, `socrates.db.pre-v12.bak`), which that build opens
+where it refuses the upgraded file, and it keeps the mirror's `s3.json` and the agent terminals'
+`sessions/<id>/` folders with their journals (which the clean cut deletes), leaving out only what
+neither build needs back (sockets, caches, downloaded binaries). It holds the logins
+**unencrypted**, and the agents' live SQLite files as they were read (a running agent may leave a
+torn copy; the moved originals are whole) — delete it once the accounts work. Idempotent and safe to interrupt: each account is made once per
 `origin`, a source is planned from its account row as well as from the disk (a run cut short
 between a rename and its link is finished), and every step looks at the disk before acting. A
 source that fails is logged and tried again at the next start while the others go on. A folder on
 another file system (EXDEV), or one that is a link of the person's own to elsewhere, is left where
 it is, and its account says why. A lost profile's account has the origin `lost:<profile>:<agent>`.
 `~/.codex-multi` and `~/.config/opencode-multi-auth` are left alone, also when `CODEX_HOME` points
-into one. WP10 runs the clean cut (§8.3, stopping the old agent terminals) before it.
+into one.
+
+**The clean cut** (REBUILD.md §8.3, WP10; `internal/accounts/cleancut.go`), in the same migration,
+under the same mark and the same backup: after the backup and the lost profiles' accounts (whose
+agents are read off the sessions) and before anything moves, every agent terminal (harness
+`claude`, `codex` or `opencode`, `kind = 'terminal'`) is stopped as a delete stops it - `main`
+hands `MigrateOptions.StopTerminal` the terminal substrate's `Manager.Delete`, so its tmux session
+is killed on the data folder's own socket and its row and session folder go - and the list of
+what was removed is logged once. What the agents wrote stays in their folders, which the moves
+then share. A prepared agent terminal becomes a prepared chat (`Store.MakePreparedChat`) with its
+draft, schedule and Ultracode, carrying its profile in the migration's own option
+`pre_rebuild_profile`; once every account exists (`bindPrepared`, the last step) that becomes
+`account`: the agent's Default account for the default profile (none yet: the chat makes one when
+it starts), the profile's `profile:`/`lost:` account otherwise. A profile with no account of that
+agent removes the prepared session, logged; one that left its profile to the start leaves its
+account to the start. A Shell is not touched. Every step is idempotent (a row already gone or
+already a chat is skipped; `cut:<id>`, `bind:<id>` are steps a test can stop after), and a rerun
+keeps the agents an earlier run made a lost profile's accounts for. `rehearsal_test.go` runs the
+whole migration on a synthetic copy of today's installation, live tmux included, and kills a start
+in the middle of its cut.
 
