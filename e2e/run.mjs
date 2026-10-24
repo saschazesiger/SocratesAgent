@@ -923,7 +923,7 @@ async function exitoverlay() {
       };
     });
     ok(/The session ended/.test(overlay.words), 'the overlay says the session ended', oneLine(overlay.words));
-    ok(/Exit status 7/.test(overlay.detail) && overlay.tips === 0,
+    ok(/exit status 7/i.test(overlay.detail) && overlay.tips === 0,
       'the exit status is a plain line under it, and there is no "i" left',
       JSON.stringify(overlay));
     ok(overlay.buttons.join(',') === 'Delete,Restart', 'the overlay offers Restart and Delete',

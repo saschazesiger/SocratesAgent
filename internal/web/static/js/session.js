@@ -2580,12 +2580,19 @@ function coverMarkup(session) {
     else state.resuming = false;
   }
   switch (drawn) {
-    case 'exited':
+    case 'exited': {
       // Why a pane ended is the one fact the cover is raised for, so it is a
-      // plain line under the sentence rather than behind an "i".
+      // plain line under the sentence rather than behind an "i" - when it is
+      // known: -1 is the store's "tmux did not say" (a shell left with
+      // `exit` sometimes ends before tmux has its status), not a status, and
+      // "Exit status -1" read as a failure that never happened.
+      const status = Number(session.exit_status);
+      const why = !Number.isInteger(status) || status < 0 ? ''
+        : status === 0 ? 'It ended normally.' : 'It ended with exit status ' + status + '.';
       return html`${title('The session ended.')}
-        <p class="so-pane__detail" id="termOverlayText">${'Exit status ' + session.exit_status}</p>
+        ${why ? html`<p class="so-pane__detail" id="termOverlayText">${why}</p>` : ''}
         ${actions(button('delete', 'Delete'), actionButton(session, 'Restart', 'Restarting'))}`;
+    }
     case 'failed':
       return html`${title('The session could not start.')}
         ${session.fail_reason ? html`<p class="so-pane__detail" id="termOverlayText">${session.fail_reason}</p>` : ''}
