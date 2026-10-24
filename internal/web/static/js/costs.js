@@ -12,6 +12,7 @@
 
 import { api, el, errorMessage, onWake } from './api.js';
 import { M, html, raw, icon, morph } from './ui.js';
+import * as harnesses from './harnesses.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -43,6 +44,7 @@ const state = {
   range: '30d',
   filters: { harness: '', profile: '', profileSet: false, project: '', model: '' },
   slot: new Map(), // model -> series slot, by all-time cost
+  names: new Map(), // model id -> how the page names it (modelNames)
   timer: null,
   loading: false,
   expanded: new Set(),
@@ -119,6 +121,30 @@ function profileLabel(id) {
   const names = state.data ? state.data.profiles : {};
   if (names && names[id] !== undefined) return names[id];
   return id ? id + ' (deleted)' : 'Default';
+}
+
+// modelNames is how the page names each model: as the rest of the app does,
+// by the harness catalogue's label ("Sonnet" for the claude-sonnet-… a
+// transcript records), else by its id. Two ids that would read the same keep
+// their ids beside the name. The id itself stays in the CSV and under the
+// name in the By model table.
+function modelNames(rows) {
+  const harnessOf = new Map();
+  for (const r of rows) if (!harnessOf.has(r.model)) harnessOf.set(r.model, r.conv.harness);
+  const named = new Map();
+  for (const [model, harness] of harnessOf) {
+    let found = null;
+    try { found = harnesses.modelOf(harness, model); } catch { /* no catalogue yet */ }
+    named.set(model, found ? (found.label || found.id) : model);
+  }
+  const uses = new Map();
+  for (const name of named.values()) uses.set(name, (uses.get(name) || 0) + 1);
+  for (const [model, name] of named) if (uses.get(name) > 1 && name !== model) named.set(model, name + ' (' + model + ')');
+  return named;
+}
+
+function modelName(model) {
+  return state.names.get(model) || model;
 }
 
 function convLabel(conv) {
@@ -291,7 +317,7 @@ function drawFilters() {
   fillSelect($('fProject'), 'project',
     seen((r) => r.conv.project).sort(byCost((r) => r.conv.project)).map((p) => [p, projectLabel(p)]), 'All projects');
   fillSelect($('fModel'), 'model',
-    seen((r) => r.model).sort(byCost((r) => r.model)).map((m) => [m, m]), 'All models');
+    seen((r) => r.model).sort(byCost((r) => r.model)).map((m) => [m, modelName(m)]), 'All models');
   const f = state.filters;
   $('fClear').hidden = !(f.harness || f.profileSet || f.project || f.model);
 }
@@ -405,7 +431,7 @@ function drawChart(filtered, range) {
   const slots = [...present.keys()].sort((a, b) => a - b);
   const slotName = (slot) => {
     const models = [...present.get(slot)];
-    return slot < SERIES || models.length === 1 ? models[0] : 'Other models';
+    return slot < SERIES || models.length === 1 ? modelName(models[0]) : 'Other models';
   };
 
   const peak = list.reduce((m, b) => Math.max(m, b.total), 0);
@@ -487,7 +513,7 @@ function drawChart(filtered, range) {
     const title = monthly ? monthLong.format(dayFromKey(b.key)) : dayLong.format(dayFromKey(b.key));
     const lines = [...b.models.entries()].sort((a, c) => c[1] - a[1]);
     morph(tip, html`<p class="so-chart-tip__title">${title}</p><p class="so-chart-tip__total">${money(b.total)}</p>${
-      lines.slice(0, 6).map(([model, cost]) => html`<p class="so-chart-tip__row"><span class="so-swatch" data-series="${seriesKey(seriesOf(model))}"></span><span class="so-chart-tip__name">${model}</span><span class="so-chart-tip__value">${money(cost)}</span></p>`)}${
+      lines.slice(0, 6).map(([model, cost]) => html`<p class="so-chart-tip__row"><span class="so-swatch" data-series="${seriesKey(seriesOf(model))}"></span><span class="so-chart-tip__name">${modelName(model)}</span><span class="so-chart-tip__value">${money(cost)}</span></p>`)}${
       lines.length > 6 ? html`<p class="so-chart-tip__more">and ${lines.length - 6} more</p>` : ''}`);
     tip.hidden = false;
     const rect = box.getBoundingClientRect();
@@ -591,8 +617,10 @@ function drawTables(filtered) {
   });
   table('tModel', groupBy(filtered, (r) => r.model), {
     column: 'Model',
-    name: (g) => g.key,
-    sub: (g) => (g.unpriced && g.cost === 0 ? `${g.unpriced.toLocaleString()} ${g.unpriced === 1 ? 'request' : 'requests'} without a known price` : ''),
+    name: (g) => modelName(g.key),
+    sub: (g) => [modelName(g.key) !== g.key ? g.key : '',
+      g.unpriced && g.cost === 0 ? `${g.unpriced.toLocaleString()} ${g.unpriced === 1 ? 'request' : 'requests'} without a known price` : '']
+      .filter(Boolean).join(' · '),
     onPick: (g) => toggleFilter('model', g.key), picked: (g) => f.model !== '' && f.model === g.key,
   });
   table('tMonthly', groupBy(filtered, (r) => r.month), {
@@ -633,6 +661,7 @@ function drawTables(filtered) {
 
 function render() {
   if (!state.data) return;
+  state.names = modelNames(state.rows);
   $('costsLoading').hidden = true;
   const none = state.rows.length === 0;
   $('costsNone').hidden = !none;
@@ -742,5 +771,8 @@ document.addEventListener('pointerdown', (ev) => {
   if (!ev.target.closest('#chart') && !ev.target.closest('#chartTip')) $('chartTip').hidden = true;
 });
 onWake(() => load());
+// The catalogue names the models; the page is drawn again once it is in (it
+// is usually there at once, from this browser's copy).
+harnesses.load().then(() => render()).catch(() => { /* the ids stay */ });
 document.addEventListener('visibilitychange', () => { if (!document.hidden) load(); });
 load();
