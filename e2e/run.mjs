@@ -215,6 +215,14 @@ async function closeOptions(page) {
   await page.waitForSelector('#optionsDialog[open]', { state: 'detached', timeout: 5000 });
 }
 
+// infoFacts is the Info dialog's facts as it draws them, a DS facts list:
+// each label with its value.
+const infoFacts = (page) => page.$$eval('dialog.so-info-dialog .so-facts > div', (rows) => rows.map((row) => [
+  ((row.querySelector('dt') || {}).textContent || '').trim(), ((row.querySelector('dd') || {}).textContent || '').trim(),
+]));
+const factOf = (facts, label) => (facts.find(([name]) => name === label) || [])[1];
+const factsLine = (facts) => oneLine(facts.map(([name, value]) => name + ': ' + value).join(' · '));
+
 // The row menu: one DS menu, drawn for the row that opened it.
 const MENU = '#sessionMenu:not([hidden])';
 
@@ -636,9 +644,9 @@ async function harnesses() {
     await s.page.click(rowSel(chats.claude) + ' .so-row__more', { force: true });
     await s.page.click('#sessionMenu [data-action="info"]');
     await s.page.waitForSelector('dialog.so-info-dialog .so-facts', { timeout: 5000 });
-    const facts = await s.page.$$eval('dialog.so-info-dialog .so-fact', (nodes) => nodes.map((f) => f.textContent));
-    ok(facts.includes(row.workdir) && facts.some((f) => /^Account: Default$/.test(f)),
-      'the working directory and the account are in the Info dialog', oneLine(facts.join(' · ')));
+    const facts = await infoFacts(s.page);
+    ok(factOf(facts, 'Folder') === row.workdir && factOf(facts, 'Account') === 'Default',
+      'the working directory and the account are in the Info dialog', factsLine(facts));
     await s.page.click('dialog.so-info-dialog .ds-dialog__actions .ds-btn');
     await s.page.waitForSelector('dialog.so-info-dialog', { state: 'detached', timeout: 5000 });
 
@@ -2458,9 +2466,9 @@ async function accountsagents() {
     await rowMenu(page);
     await page.click('#sessionMenu [data-action="info"]');
     await page.waitForSelector('dialog.so-info-dialog .so-facts', { timeout: 5000 });
-    const facts = await page.$$eval('dialog.so-info-dialog .so-fact', (nodes) => nodes.map((n) => n.textContent));
-    ok(facts.includes('Account: Home') && facts.includes('Ultracode on'), 'Info names the account and Ultracode',
-      oneLine(facts.join(' · ')));
+    const facts = await infoFacts(page);
+    ok(factOf(facts, 'Account') === 'Home' && factOf(facts, 'Ultracode') === 'On', 'Info names the account and Ultracode',
+      factsLine(facts));
     await page.click('dialog.so-info-dialog .ds-dialog__actions .ds-btn');
     await page.waitForSelector('dialog.so-info-dialog', { state: 'detached', timeout: 5000 });
     const refused = await s.context.request.delete(s.url + '/api/accounts/' + home.id);
