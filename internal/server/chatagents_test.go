@@ -127,6 +127,7 @@ func TestUltracodeReachesAClaudeChat(t *testing.T) {
 	c.waitJournal(t, off, 20*time.Second, "the park", func(evs []agent.Event) bool {
 		return count(evs, func(ev agent.Event) bool { return ev.Type == agent.TypeProcess && ev.State == agent.ProcessParked }) > 0
 	})
+	c.waitHostGone(t, off)
 	if got := argv(off, "b2", 2); !strings.Contains(got, `"ultracode":true`) {
 		t.Fatalf("after the change: %s", got)
 	}

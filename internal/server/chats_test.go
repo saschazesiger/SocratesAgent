@@ -140,6 +140,20 @@ func (c *chatEnv) journal(t *testing.T, id string) []agent.Event {
 	return events
 }
 
+// waitHostGone waits for a host that journaled its park to exit. Between the
+// two it answers every command with "stopping", which a send reports as
+// queued (202) for the next host rather than delivered.
+func (c *chatEnv) waitHostGone(t *testing.T, id string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for alive, _ := c.srv.chats.launcher.Alive(id); alive; alive, _ = c.srv.chats.launcher.Alive(id) {
+		if time.Now().After(deadline) {
+			t.Fatal("the parked host did not exit")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
 // waitJournal waits for the chat's journal to satisfy cond.
 func (c *chatEnv) waitJournal(t *testing.T, id string, within time.Duration, what string, cond func([]agent.Event) bool) []agent.Event {
 	t.Helper()
@@ -611,13 +625,7 @@ func TestChatParksWhenIdleAndResumes(t *testing.T) {
 	c.waitJournal(t, id, 10*time.Second, "the park", func(evs []agent.Event) bool {
 		return agent.Fold(evs).Process == agent.ProcessParked
 	})
-	deadline := time.Now().Add(5 * time.Second)
-	for alive, _ := c.srv.chats.launcher.Alive(id); alive; alive, _ = c.srv.chats.launcher.Alive(id) {
-		if time.Now().After(deadline) {
-			t.Fatal("the parked host did not exit")
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+	c.waitHostGone(t, id)
 	c.send(t, id, "m2", "two")
 	events := c.waitJournal(t, id, 10*time.Second, "the resumed turn", turnsEnded(2))
 	if got := lastText(events); !strings.Contains(got, "(turn 2 of") {
