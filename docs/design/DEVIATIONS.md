@@ -1139,12 +1139,16 @@ the bytes xterm.js would have sent, the window reports from the size Socrates ow
 8x18 for the pixel form, which nothing on this side can know), and XTVERSION and DSR are taken
 out of the stream and left unanswered - nothing answers them today either, and an invented
 answer would be worse than tmux's own timeout.
+tmux 3.8 adds a seventh, DECRQM for synchronized output (`CSI ? 2026 $ p`): it is answered
+`CSI ? 2026 ; 2 $ y`, what xterm.js 6 says before anything sets the mode, so tmux wraps its
+redraws in synchronized updates as it would for the browser; any other mode is answered 0.
 
 **WP5 / §D.2 — reply-shaped client input is dropped.** Belt and braces for a page loaded
 against an older Socrates or a reply held across a reload: a device attributes reply, a three
-number window report, a cursor position report and an XTVERSION answer are dropped on the input
-path, everything else is passed through byte for byte, and bracketed paste is respected so that
-pasted text is delivered as it was pasted. The one keystroke this cannot tell from a report is
+number window report, a cursor position report, a mode report (`CSI ? Pd ; Ps $ y` and
+`CSI Pd ; Ps $ y`) and an XTVERSION answer are dropped on the input path, everything else is
+passed through byte for byte, and bracketed paste is respected so that pasted text is
+delivered as it was pasted. The one keystroke this cannot tell from a report is
 shift with F3 under xterm's modified function key encoding, which is the same `CSI 1 ; 2 R` as
 a cursor at the top left; a corrupted command line is the worse of the two to keep.
 

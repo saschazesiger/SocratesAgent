@@ -50,7 +50,8 @@ func TestResponderPassesEverythingElseThrough(t *testing.T) {
 	r, answers := newResponder()
 	// Answers, drawing, and the title commands that share the letter t with a
 	// window report: none of them is a question.
-	stream := "\x1b]11;rgb:0000/0000/0000\x1b\\\x1b[22;0;0t\x1b[23;0;0t\x1b[1;30r\x1b[?1049h"
+	stream := "\x1b]11;rgb:0000/0000/0000\x1b\\\x1b[22;0;0t\x1b[23;0;0t\x1b[1;30r\x1b[?1049h" +
+		"\x1b[?2026h\x1b[?2026l\x1b[?2026;2$y" // a synchronized redraw, and a report
 	if got := r.Filter([]byte(stream)); string(got) != stream {
 		t.Fatalf("filtered = %q, want it untouched", got)
 	}
@@ -94,6 +95,52 @@ func TestResponderAnswersEveryAttachQuery(t *testing.T) {
 	}
 }
 
+// TestResponderAnswersTheModeQuery is the question tmux 3.8 added to an
+// attach: can this terminal synchronize its output (DECRQM, CSI ? 2026 $ p)?
+// The stream is the questions of a tmux 3.8 attach, in the order tmux sends
+// them, as they were taken off a pseudo terminal. Asked of the browser,
+// xterm.js answers CSI ? 2026 ; 2 $ y, and a late answer is typed into the pane
+// like any other; so it is answered here, with what xterm.js itself would say
+// before anything has set the mode - supported, and reset - which is what tmux
+// reads as "wrap redraws in synchronized updates".
+func TestResponderAnswersTheModeQuery(t *testing.T) {
+	r, answers := newResponder()
+	attach := "\x1b[1;24r\x1b[c\x1b[>c\x1b[>q\x1b[?2026$p\x1b]10;?\x1b\\\x1b]11;?\x1b\\\x1b[1;3H"
+	if got := string(r.Filter([]byte(attach))); got != "\x1b[1;24r\x1b[1;3H" {
+		t.Fatalf("the stream came out as %q; every question should be gone", got)
+	}
+	want := "\x1b[?1;2c" + "\x1b[>0;276;0c" +
+		"\x1b[?2026;2$y" + // synchronized output: recognised, not set
+		"\x1b]10;rgb:1717/1818/1b1b\x1b\\" + "\x1b]11;rgb:ffff/ffff/ffff\x1b\\"
+	if answers.String() != want {
+		t.Fatalf("answers = %q, want %q", answers.String(), want)
+	}
+
+	// A mode nothing here knows is answered the way tmux answers one for a
+	// pane: not recognised. It is still a question, and still not the
+	// browser's to answer.
+	r, answers = newResponder()
+	if got := r.Filter([]byte("a\x1b[?7727$pb")); string(got) != "ab" {
+		t.Fatalf("the stream came out as %q", got)
+	}
+	if answers.String() != "\x1b[?7727;0$y" {
+		t.Fatalf("answers = %q, want the mode reported as not recognised", answers.String())
+	}
+
+	full := []byte("x\x1b[?2026$py")
+	for split := 1; split < len(full); split++ {
+		r, answers := newResponder()
+		out := append([]byte(nil), r.Filter(full[:split])...)
+		out = append(out, r.Filter(full[split:])...)
+		if string(out) != "xy" {
+			t.Fatalf("split at %d: stream = %q, want \"xy\"", split, out)
+		}
+		if answers.String() != "\x1b[?2026;2$y" {
+			t.Fatalf("split at %d: answers = %q, want one mode report", split, answers.String())
+		}
+	}
+}
+
 // TestStripRepliesDropsReportsAndNothingElse is the other half: what the
 // browser sends. A report is stale by construction - nothing here asks it
 // anything any more - and a keystroke is not.
@@ -107,6 +154,9 @@ func TestStripRepliesDropsReportsAndNothingElse(t *testing.T) {
 		"\x1b[4;594;344t",              // and in pixels
 		"\x1b[24;80R",                  // where the cursor is
 		"\x1bP>|xterm.js(5.5.0)\x1b\\", // XTVERSION
+		"\x1b[?2026;2$y",               // a private mode report, xterm.js
+		"\x1b[?2026;1$y",               // the same mode, set
+		"\x1b[4;2$y",                   // an ANSI mode report
 	}
 	for _, reply := range dropped {
 		if got, _ := StripReplies([]byte("a"+reply+"b"), false); string(got) != "ab" {
@@ -119,7 +169,9 @@ func TestStripRepliesDropsReportsAndNothingElse(t *testing.T) {
 		"\x1b[A", "\x1b[B", "\x1b[1;5C", // arrows, plain and modified
 		"\x1bOP", "\x1b[15~", "\x1b[3~", // function keys, home and delete
 		"\x1b[200~pasted \x1b[?1;2c not a reply\x1b[201~", // a paste keeps its shape
-		"\x1b[2t", "\x1b[c", "\x1b[6n", // commands and questions, not answers
+		"\x1b[200~pasted \x1b[?2026;2$y too\x1b[201~",
+		"\x1b[2t", "\x1b[c", "\x1b[6n", "\x1b[?2026$p", // commands and questions, not answers
+		"\x1b[2$", "\x1b[2$y", // rxvt's shift-Insert, and then a y
 		"\x1b[H", "\x1b[1;1H", "\x1bP", "\x1bP>|unfinished",
 	}
 	for _, keys := range kept {
@@ -192,10 +244,38 @@ func TestViewerAnswersTheAttachQueriesItself(t *testing.T) {
 
 	for _, query := range []string{
 		"\x1b[c", "\x1b[>c", "\x1b[>q", "\x1b[18t", "\x1b[14t", "\x1b[6n",
-		"\x1b[?996n", "\x1b]10;?", "\x1b]11;?",
+		"\x1b[?996n", "\x1b]10;?", "\x1b]11;?", "\x1b[?2026$p",
 	} {
 		if bytes.Contains(seen, []byte(query)) {
 			t.Fatalf("the browser was asked %q; it would answer into the pane", query)
 		}
 	}
+}
+
+// TestViewerTellsTmuxItCanSynchronize is the mode query seen from tmux's side:
+// the answer given on the browser's behalf is one tmux understands, and with
+// it tmux does what it would have done for xterm.js - takes the client as one
+// that synchronizes its output.
+func TestViewerTellsTmuxItCanSynchronize(t *testing.T) {
+	l := newLab(t)
+	if l.TmuxVersion().Less(3, 8) {
+		// tmux 3.8 asks its client about synchronized output; 3.4 and 3.6
+		// do not, and a tmux that never asks has no answer to check.
+		t.Skipf("tmux %s does not ask its client about synchronized output", l.TmuxVersion())
+	}
+	row := l.create(shellSpec(t.TempDir()))
+	l.attach(row.ID, 100, 30)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	features := ""
+	t.Cleanup(func() {
+		if t.Failed() {
+			t.Logf("the client's features: %q", features)
+		}
+	})
+	waitFor(t, 10*time.Second, "tmux to take the client as one that synchronizes", func() bool {
+		out, err := l.tmux.Run(ctx, "list-clients", "-t", row.TmuxName, "-F", "#{client_termfeatures}")
+		features = strings.TrimSpace(out)
+		return err == nil && strings.Contains(","+features+",", ",sync,")
+	})
 }
