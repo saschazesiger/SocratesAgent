@@ -120,8 +120,10 @@ type Server struct {
 	// costs keeps the cost ledger current (costs.go).
 	costs *costLedger
 
-	// chats is every agent chat and the host it runs in (chats.go).
-	chats *chatHub
+	// chats is every agent chat and the host it runs in (chats.go), and
+	// accounts what they run on (accounts.go).
+	chats    *chatHub
+	accounts *accountHub
 }
 
 type attempt struct {
@@ -180,6 +182,7 @@ func New(st *store.Store, dataDir string) (*Server, error) {
 	s.sched = newScheduler(s)
 	s.costs = newCostLedger(s)
 	s.chats = newChatHub(s)
+	s.accounts = newAccountHub(s)
 	manager, err := termux.New(st, cfg)
 	if err != nil {
 		return nil, err
@@ -432,10 +435,21 @@ func (s *Server) routes() {
 	mux.HandleFunc("POST /api/chats/{id}/model", s.auth(s.handleChatModel))
 	mux.HandleFunc("POST /api/chats/{id}/command", s.auth(s.handleChatCommand))
 	mux.HandleFunc("POST /api/chats/{id}/attachments", s.auth(s.handleChatAttachments))
+	mux.HandleFunc("POST /api/chats/{id}/account", s.auth(s.handleChatAccount))
+	mux.HandleFunc("PUT /api/chats/{id}/auto-switch", s.auth(s.handleChatAutoSwitch))
 
 	// The harness catalogue: what can be started, and where.
 	mux.HandleFunc("GET /api/harnesses", s.auth(s.handleHarnesses))
 	mux.HandleFunc("POST /api/harnesses/refresh", s.auth(s.handleRefreshHarnesses))
+	mux.HandleFunc("GET /api/accounts", s.auth(s.handleListAccounts))
+	mux.HandleFunc("POST /api/accounts", s.auth(s.handleCreateAccount))
+	mux.HandleFunc("PUT /api/accounts/order", s.auth(s.handleReorderAccounts))
+	mux.HandleFunc("PATCH /api/accounts/{id}", s.auth(s.handlePatchAccount))
+	mux.HandleFunc("DELETE /api/accounts/{id}", s.auth(s.handleDeleteAccount))
+	mux.HandleFunc("POST /api/accounts/{id}/signin", s.auth(s.handleAccountSignIn))
+	mux.HandleFunc("GET /api/accounts/{id}/signin", s.auth(s.handleGetAccountSignIn))
+	mux.HandleFunc("POST /api/accounts/{id}/signin/code", s.auth(s.handleAccountSignInCode))
+	mux.HandleFunc("DELETE /api/accounts/{id}/signin", s.auth(s.handleCancelAccountSignIn))
 	mux.HandleFunc("GET /api/profiles", s.auth(s.handleListProfiles))
 	mux.HandleFunc("POST /api/profiles", s.auth(s.handleCreateProfile))
 	mux.HandleFunc("PUT /api/profiles/order", s.auth(s.handleReorderProfiles))

@@ -15,6 +15,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -414,14 +415,51 @@ func (p *chatPeer) launch(ctx context.Context) error {
 		log.Printf("chats: %s: the agent host died during a turn; starting a new one", p.id)
 		_ = p.hub.srv.store.NoteResume(p.id)
 	}
+	spec := agenthost.Spec{
+		ChatID: p.id, Harness: row.Harness, Workdir: row.Workdir, Model: model, Effort: effort,
+		Conversation: row.CLISessionID, ParkAfterMS: p.hub.parkAfterFor().Milliseconds(),
+	}
+	if err := p.accountSpec(row, &spec); err != nil {
+		return err
+	}
 	lctx, cancel := context.WithTimeout(ctx, chatLaunchWait)
 	defer cancel()
 	entry, _ := p.hub.srv.Settings().Harnesses.Entry(row.Harness)
-	return p.hub.launcher.Launch(lctx, agenthost.Spec{
-		ChatID: p.id, Harness: row.Harness, Workdir: row.Workdir, Model: model, Effort: effort,
-		Binary:       strings.TrimSpace(entry.Binary),
-		Conversation: row.CLISessionID, ParkAfterMS: p.hub.parkAfterFor().Milliseconds(),
-	})
+	spec.Binary = strings.TrimSpace(entry.Binary)
+	return p.hub.launcher.Launch(lctx, spec)
+}
+
+// accountSpec puts the chat's account into its launch spec: the account and
+// the environment built for it, the key sealed for this chat. A switch still
+// in the outbox is where the chat is going, so the host starts on its
+// account at once (and journals the divider with its reason) rather than on
+// the old one only to be switched a moment later.
+func (p *chatPeer) accountSpec(row *store.Session, spec *agenthost.Spec) error {
+	h := p.hub.srv.accounts
+	acct, err := h.forChat(row)
+	if err != nil {
+		return fmt.Errorf("the chat's account: %w", err)
+	}
+	pending, err := p.hub.srv.store.Outbox(p.id)
+	if err != nil {
+		return err
+	}
+	for i := len(pending) - 1; i >= 0; i-- {
+		var cmd agenthost.Command
+		if json.Unmarshal(pending[i].Command, &cmd) != nil || cmd.Op != agenthost.OpSwitchAccount {
+			continue
+		}
+		if target, err := p.hub.srv.store.GetAccount(cmd.Account); err == nil && target.Agent == row.Harness {
+			acct, spec.SwitchReason = target, cmd.Reason
+		}
+		break
+	}
+	env, sealed, err := h.chatEnv(acct, p.id)
+	if err != nil {
+		return err
+	}
+	spec.Account, spec.Env, spec.SecretEnv = acct.ID, env, sealed
+	return nil
 }
 
 // serve runs one connection: every unacknowledged command goes again, then
@@ -473,7 +511,7 @@ func keepForNextHost(f *agenthost.Fail) bool {
 	if f.Code != agenthost.CodeNotRunning && f.Code != agenthost.CodeStopping {
 		return false
 	}
-	return f.Op == agenthost.OpSend || f.Op == agenthost.OpAnswer
+	return f.Op == agenthost.OpSend || f.Op == agenthost.OpAnswer || f.Op == agenthost.OpSwitchAccount
 }
 
 // drop closes the connection to the host, which keeps running.
@@ -499,9 +537,18 @@ func (p *chatPeer) apply(ev agent.Event) {
 	if ev.Seq != last+1 {
 		log.Printf("chats: %s: events %d to %d are missing", p.id, last+1, ev.Seq-1)
 	}
+	turnAccount := accountOfTurn(p.proj, nil)
 	p.feed.Append(ev)
 	p.proj.Apply(ev)
+	var limits map[string]agent.RateLimit
+	if ev.Type == agent.TypeTurnEnded && ev.Outcome == agent.OutcomeLimited {
+		limits = make(map[string]agent.RateLimit, len(p.proj.RateLimits))
+		for k, v := range p.proj.RateLimits {
+			limits[k] = v
+		}
+	}
 	p.mu.Unlock()
+	p.noteAccount(ev, turnAccount, limits)
 	if ev.Type == agent.TypeConversation && ev.ConversationID != "" {
 		if err := p.hub.srv.store.SetChatConversation(p.id, ev.ConversationID); err != nil && !errors.Is(err, store.ErrNotFound) {
 			log.Printf("chats: %s: could not record the conversation id: %v", p.id, err)
@@ -651,6 +698,11 @@ type createChatBody struct {
 	WorkdirMode string `json:"workdir_mode"`
 	Workdir     string `json:"workdir"`
 	Title       string `json:"title"`
+	// Account is the account the chat runs on, empty for the recommended
+	// one of its agent; AutoSwitch moves it to another when a limit is
+	// reached (REBUILD.md §4.3, off unless asked for).
+	Account    string `json:"account"`
+	AutoSwitch bool   `json:"auto_switch"`
 	// Message is the first message, sent once the chat exists.
 	Message *chatMessageBody `json:"message"`
 }
@@ -684,6 +736,10 @@ func (s *Server) handleCreateChat(w http.ResponseWriter, r *http.Request) {
 		writeError(w, refused.status, refused.msg)
 		return
 	}
+	if refused := s.checkChatAccount(harness, body.Account); refused != nil {
+		writeError(w, refused.status, refused.msg)
+		return
+	}
 	if body.Message != nil {
 		if status, msg := checkMessage(body.Message); status != 0 {
 			writeError(w, status, msg)
@@ -711,6 +767,7 @@ func (s *Server) handleCreateChat(w http.ResponseWriter, r *http.Request) {
 		TitleSource: titleSource(body.Title), Harness: harness, Model: strings.TrimSpace(body.Model),
 		Effort: strings.TrimSpace(body.Effort), Workdir: workdir, WorkdirMode: mode,
 		Kind: store.KindChat, State: store.StateRunning,
+		Options: withChatAccount(nil, body.Account, body.AutoSwitch),
 	}
 	if err := s.store.CreateSession(row); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())

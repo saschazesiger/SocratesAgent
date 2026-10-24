@@ -203,6 +203,10 @@ type createSessionBody struct {
 	Prompt      string `json:"prompt"`
 	ProfileAuto bool   `json:"profile_auto"`
 	StartAt     int64  `json:"start_at"`
+	// Account and AutoSwitch are a prepared chat's (chataccount.go): empty
+	// is the account recommended when it starts.
+	Account    string `json:"account"`
+	AutoSwitch bool   `json:"auto_switch"`
 }
 
 // launchSpec is one session to be started, wherever its settings came from:
@@ -228,6 +232,8 @@ type launchSpec struct {
 	Rows    int
 	// Prompt is sent as the program's first prompt; see harnesses/prompt.go.
 	Prompt string
+	// SignIn makes a Shell the place an account signs in (accounts.go).
+	SignIn *harnesses.SignIn
 }
 
 // launchError is a refusal of a launch's settings, with the status it is
@@ -411,6 +417,7 @@ func (s *Server) launch(ctx context.Context, spec launchSpec, prepared *store.Se
 		Profile:       spec.Profile,
 		Ultracode:     spec.Ultracode,
 		InitialPrompt: spec.Prompt,
+		SignIn:        spec.SignIn,
 		Settings:      settings,
 		DataDir:       s.dataDir,
 		Logf:          log.Printf,
