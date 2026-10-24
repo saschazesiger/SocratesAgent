@@ -1242,6 +1242,14 @@ async function adminoptions() {
       'the terminal card round-trips too', JSON.stringify(terminal));
     ok(terminal.preset === preset, 'the preset directory was stored', terminal.preset);
 
+    // Each agent's version, as its --version says it (the fakes answer as
+    // the real CLIs do).
+    const catalogue = await (await s.context.request.get(s.url + '/api/harnesses')).json();
+    const versions = Object.fromEntries((catalogue.harnesses || [])
+      .filter((h) => ['claude', 'codex', 'opencode'].includes(h.id)).map((h) => [h.id, h.version || '']));
+    ok(Object.keys(versions).length === 3 && Object.values(versions).every((v) => /\d+\.\d+\.\d+/.test(v)),
+      'the catalogue has every agent’s version', JSON.stringify(versions));
+
     // §E.10 rule 3, in the setup check: the row says a verdict, the path and
     // the version are behind its "i".
     await s.page.click('#runChecks');

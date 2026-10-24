@@ -92,6 +92,11 @@ import (
 const version = "2.1.309"
 
 func main() {
+	// The catalogue's probe, answered as the real CLI answers it.
+	if len(os.Args) > 1 && (os.Args[1] == "--version" || os.Args[1] == "-v") {
+		fmt.Printf("%s (Claude Code)\n", version)
+		return
+	}
 	f := newFake(os.Args[1:])
 	os.Exit(f.run())
 }
