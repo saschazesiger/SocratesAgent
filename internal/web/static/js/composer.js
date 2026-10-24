@@ -749,6 +749,11 @@ export function mountComposer(host, ctx) {
       unwakeFiles();
       draft.close();
       if (menu) { menu.remove(); menu = null; }
+      // The slot is the same for every chat, and morph() would adopt this
+      // composer's buttons - with their listeners: a microphone's record()
+      // under the next composer's Stop - and its field, with the keyboard's
+      // record of it. The next composer starts from nothing.
+      host.replaceChildren();
     },
   };
 }
