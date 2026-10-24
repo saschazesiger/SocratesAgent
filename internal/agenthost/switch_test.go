@@ -70,8 +70,9 @@ func (cl *client) switchTo(clientID, account, apiKey string, r *switchRig, when 
 func (cl *client) reply(clientID, text string) string {
 	cl.t.Helper()
 	cl.send(clientID, text)
-	cl.ack(clientID, 10*time.Second)
-	cl.until(10*time.Second, isType(agent.TypeTurnEnded))
+	sent := cl.ack(clientID, 10*time.Second).Seq
+	// The turn this message started, not one a replay from 0 brings back.
+	cl.until(10*time.Second, func(ev agent.Event) bool { return ev.Type == agent.TypeTurnEnded && ev.Seq > sent })
 	return lastReply(cl.events)
 }
 

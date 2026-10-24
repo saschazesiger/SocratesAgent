@@ -95,7 +95,11 @@ type client struct {
 	c      *Conn
 	frames chan Frame
 	events []agent.Event
-	acks   map[string]Ack
+	// examined is how many of events until has looked at. An ack can take
+	// events off the socket before the until that waits for one of them:
+	// a fast turn ends before its ack is read.
+	examined int
+	acks     map[string]Ack
 }
 
 func (r *rig) dial(since int64) *client {
@@ -120,8 +124,16 @@ func (r *rig) dial(since int64) *client {
 }
 
 // until reads frames until ok says so about an event, and fails at timeout.
+// The events ack took off the socket meanwhile are looked at first, in order.
 func (cl *client) until(timeout time.Duration, ok func(agent.Event) bool) agent.Event {
 	cl.t.Helper()
+	for cl.examined < len(cl.events) {
+		ev := cl.events[cl.examined]
+		cl.examined++
+		if ok(ev) {
+			return ev
+		}
+	}
 	deadline := time.After(timeout)
 	for {
 		select {
@@ -134,6 +146,7 @@ func (cl *client) until(timeout time.Duration, ok func(agent.Event) bool) agent.
 			}
 			if f.Event != nil {
 				cl.events = append(cl.events, *f.Event)
+				cl.examined = len(cl.events)
 				if ok(*f.Event) {
 					return *f.Event
 				}
