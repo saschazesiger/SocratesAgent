@@ -46,6 +46,9 @@ export function newChat() {
     // Bumped by every change, so a caller can tell whether a batch of events
     // changed anything at all.
     rev: 0,
+    // The revision of the last change to any question: a plan part is drawn
+    // from the ask it waits on, so its message has to look again.
+    askRev: 0,
   };
 }
 
@@ -65,6 +68,12 @@ function touchPart(chat, part) {
     at = at.parentId ? chat.parts.get(at.parentId) : null;
   }
   touchMessage(chat, part.messageId);
+}
+
+function touchAsk(chat, id) {
+  const ask = chat.asks.get(id);
+  chat.askRev = ++chat.rev;
+  if (ask) ask.rev = chat.askRev;
 }
 
 function messageFor(chat, ev) {
@@ -180,6 +189,14 @@ function endTurn(chat, ev) {
         touchPart(chat, part);
       }
     }
+    // A limit says itself twice - the error that hit it and the turn it
+    // ended - and the person is told once, with when it renews.
+    const before = chat.timeline[chat.timeline.length - 1];
+    if (turn.outcome === 'limited' && before && before.type === 'line' && before.line.kind === 'error'
+      && before.line.code === 'rate_limit') {
+      chat.timeline.pop();
+      if (!turn.error) turn.error = before.line.text;
+    }
     line(chat, ev, { kind: 'turn', outcome: turn.outcome, text: turn.error, turn });
   }
 }
@@ -243,9 +260,10 @@ export function apply(chat, ev) {
         chat.asks.set(ev.ask_id, {
           id: ev.ask_id, turnId: ev.turn_id || '', payload: ev.payload || {}, at: ev.at, seq,
           answered: false, answer: null, byDevice: '', clientId: '', delivered: '', deliver: ev.via || '', closed: false,
+          rev: 0,
         });
         chat.timeline.push({ key: 'a:' + ev.ask_id, type: 'ask', id: ev.ask_id });
-        chat.rev += 1;
+        touchAsk(chat, ev.ask_id);
       }
       break;
     case 'ask.answered': {
@@ -255,7 +273,7 @@ export function apply(chat, ev) {
           answered: true, answer: ev.answer === undefined ? null : ev.answer, clientId: ev.client_id || '',
           byDevice: ev.by_device || '', answeredAt: ev.at,
         });
-        chat.rev += 1;
+        touchAsk(chat, ev.ask_id);
       }
       break;
     }
@@ -263,7 +281,7 @@ export function apply(chat, ev) {
       const ask = chat.asks.get(ev.ask_id);
       if (ask) {
         ask.delivered = ev.via || '';
-        chat.rev += 1;
+        touchAsk(chat, ev.ask_id);
       }
       break;
     }
@@ -273,7 +291,7 @@ export function apply(chat, ev) {
       const ask = chat.asks.get(ev.ask_id);
       if (ask && !ask.answered && !ask.closed) {
         ask.closed = true;
-        chat.rev += 1;
+        touchAsk(chat, ev.ask_id);
       }
       break;
     }
@@ -359,6 +377,17 @@ export function currentTodo(chat) {
     if (part.kind === 'todo' && (!found || part.updatedAt >= found.updatedAt)) found = part;
   }
   return found;
+}
+
+/**
+ * seenClient says whether the journal has what a client_id sent: a user
+ * message, or the line of a slash command.
+ */
+export function seenClient(chat, clientId) {
+  if (!clientId) return false;
+  if (userMessageByClient(chat, clientId)) return true;
+  return chat.timeline.some((entry) => entry.type === 'line' && entry.line.kind === 'command'
+    && entry.line.clientId === clientId);
 }
 
 /** userMessageByClient finds the user message a client_id produced. */

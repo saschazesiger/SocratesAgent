@@ -54,10 +54,6 @@ function backoffDelay(attempt, { base = 600, max = 20000 } = {}) {
   return Math.round(raw * (0.75 + Math.random() * 0.5));
 }
 
-function storageGet(key) {
-  try { return localStorage.getItem(key); } catch { return null; }
-}
-
 function storageSet(key, value) {
   try { localStorage.setItem(key, value); } catch { /* private mode, quota */ }
 }
@@ -729,28 +725,54 @@ export class LiveStream {
 // need be - until it lands. The server side of every queued action carries an
 // idempotency key, so a retry that turns out to be a duplicate is a no-op
 // rather than a second message.
+//
+// Every tab of the browser shares the one queue in storage. A change is made
+// to the queue as storage holds it at that moment, never by writing a tab's
+// own copy over it, which would drop what another tab had just added; and
+// what another tab writes is taken in when the browser says so (`storage`).
+// Two tabs may then both send the same item, which its idempotency key makes
+// one.
 export class Outbox {
   constructor(name, send) {
     this.key = 'socrates.outbox.' + name;
     this.send = send;
-    this.items = this.load();
+    this.items = this.load() || [];
     this.listeners = new Set();
     this.timer = null;
     this.running = false;
     onWake(() => this.pump());
+    window.addEventListener('storage', (event) => {
+      if (event.key !== null && event.key !== this.key) return;
+      const stored = this.load();
+      if (!stored) return;
+      this.items = stored;
+      this.tell();
+      this.pump();
+    });
   }
 
+  // load is the queue as storage holds it, or null when storage cannot be
+  // read at all (a private window): this tab's own copy is all there is then.
   load() {
+    let raw;
+    try { raw = localStorage.getItem(this.key); } catch { return null; }
     try {
-      const raw = storageGet(this.key);
       const parsed = raw ? JSON.parse(raw) : [];
       return Array.isArray(parsed) ? parsed : [];
     } catch { return []; }
   }
 
-  persist() {
+  // change applies one edit to the queue as storage holds it now, writes it
+  // back and tells the listeners.
+  change(edit) {
+    const stored = this.load();
+    this.items = edit(stored || this.items);
     if (!this.items.length) storageRemove(this.key);
     else storageSet(this.key, JSON.stringify(this.items));
+    this.tell();
+  }
+
+  tell() {
     const snapshot = this.items.slice();
     for (const listener of this.listeners) {
       try { listener(snapshot); } catch { /* ignore */ }
@@ -772,29 +794,21 @@ export class Outbox {
       error: '',
       createdAt: Date.now(),
     };
-    this.items.push(item);
-    this.persist();
+    this.change((items) => [...items, item]);
     this.pump();
     return item;
   }
 
   drop(id) {
-    this.items = this.items.filter((item) => item.id !== id);
-    this.persist();
+    this.change((items) => items.filter((item) => item.id !== id));
   }
 
   // retry puts a failed item back in the queue, either one of them or all.
   retry(id) {
-    let touched = false;
-    for (const item of this.items) {
-      if (id && item.id !== id) continue;
-      if (item.state !== 'failed') continue;
-      item.state = 'pending';
-      item.attempts = 0;
-      item.error = '';
-      touched = true;
-    }
-    if (touched) this.persist();
+    this.change((items) => items.map((item) => {
+      if ((id && item.id !== id) || item.state !== 'failed') return item;
+      return { ...item, state: 'pending', attempts: 0, error: '' };
+    }));
     this.pump();
   }
 
@@ -803,35 +817,39 @@ export class Outbox {
   async pump() {
     if (this.running) return;
     if (this.timer) { clearTimeout(this.timer); this.timer = null; }
+    const stored = this.load();
+    if (stored) this.items = stored;
     const next = this.items.find((item) => item.state === 'pending');
     if (!next) return;
     this.running = true;
+    const attempts = (next.attempts || 0) + 1;
+    let failure = null;
     try {
-      next.attempts += 1;
       await this.send(next.payload, next);
-      this.items = this.items.filter((item) => item.id !== next.id);
-      this.persist();
-      this.running = false;
-      this.pump();
     } catch (err) {
-      this.running = false;
-      const permanent = err instanceof HttpError && !shouldRetry(err);
-      next.error = (err && err.message) || 'Could not send.';
-      if (permanent) {
-        next.state = 'failed';
-        this.persist();
-        this.pump();
-        return;
-      }
-      this.persist();
-      // In a dead zone there is nothing to gain from trying every few seconds,
-      // and a phone in a car pays for it in battery. Waiting long is safe
-      // because coming back online, or simply looking at the screen, wakes the
-      // queue immediately.
-      const delay = navigator.onLine === false
-        ? 30000
-        : backoffDelay(next.attempts, { base: 900, max: 20000 });
-      this.timer = setTimeout(() => this.pump(), delay);
+      failure = err || new Error('Could not send.');
     }
+    this.running = false;
+    if (!failure) {
+      this.change((items) => items.filter((item) => item.id !== next.id));
+      this.pump();
+      return;
+    }
+    const permanent = failure instanceof HttpError && !shouldRetry(failure);
+    const error = failure.message || 'Could not send.';
+    this.change((items) => items.map((item) => (item.id === next.id
+      ? { ...item, attempts, error, state: permanent ? 'failed' : item.state } : item)));
+    if (permanent) {
+      this.pump();
+      return;
+    }
+    // In a dead zone there is nothing to gain from trying every few seconds,
+    // and a phone in a car pays for it in battery. Waiting long is safe
+    // because coming back online, or simply looking at the screen, wakes the
+    // queue immediately.
+    const delay = navigator.onLine === false
+      ? 30000
+      : backoffDelay(attempts, { base: 900, max: 20000 });
+    this.timer = setTimeout(() => this.pump(), delay);
   }
 }

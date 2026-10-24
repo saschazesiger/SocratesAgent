@@ -706,6 +706,10 @@ key (the existing `Outbox` in `net.js`).
 | `POST /api/chats/{id}/messages` | `client_id`, `text`, `attachments` | 200 `{client_id, seq, dup}`; 202 `{client_id, queued: true}` when the host has not acked within 10 s (it will receive it once) |
 | `POST /api/chats/{id}/interrupt` | `client_id` | as messages; 200 `{idle: true}` when nothing runs and no host is up |
 | `POST /api/chats/{id}/asks/{ask}/answer` | `client_id`, `answer` (any JSON), `device` | 200 / 202 as messages; **409 `{answered_elsewhere: true, by_device}`** when another device answered; 404 for an unknown ask |
+| `POST /api/chats/{id}/model` | `client_id`, `model`, `effort` | as messages (a `set_model` command) |
+| `POST /api/chats/{id}/command` | `client_id`, `name`, `args` | as messages; 409 `{code: "unsupported"}` for a command the agent does not have |
+| `POST /api/chats/{id}/attachments` | multipart, one or more `file` parts | `{files: [attachment]}`: stored under `chats/<id>/attachments/` (a copy in the working directory's uploads); a message may only name paths this route handed out, else 400 |
+| `GET`/`PUT /api/sessions/{id}/draft` | `text`, `base_rev` | the composer's draft, with PreStart's revision rule (409 `{conflict, text, rev}` when another device saved first); a prepared chat's draft is its first message |
 | `GET /api/chats/{id}/stream` | WebSocket | below |
 
 Sending a message clears the chat's unread mark (as typing at a terminal does). Chats appear in
@@ -721,13 +725,42 @@ before it; `{"t":"tick","now"}` every 15 s; server pings, two misses close. Clos
 login is gone (checked every tick and on sign-out/password change), 1001 when the server stops.
 Opening the stream of a chat whose host died with a turn running starts the recovery.
 
+**The chat view** (WP8, `internal/web/static/js/chat*.js`, `composer.js`, `askdialog.js`) folds
+the stream with the projection's rules (`chatfold.js`) and sends everything through one `Outbox`
+(`chatoutbox.js`, localStorage `socrates.outbox.chats`) with a fresh `client_id` per message,
+command, model change and answer, strictly in order (a model chosen offline is the model of the
+message written after it). Every tab of a browser shares that queue: each change is made to the
+queue as storage holds it at that moment and other tabs take it in on `storage`, so two tabs may
+both send an item, which its `client_id` makes one. Stop is the one action sent directly
+(DEVIATIONS, WP8). What the Outbox holds is on screen until the journal has it: a message as "Not
+sent yet" / "Sending", an answer on its question's card (and in the dialog) instead of a new
+"Answer", a plan answer on the plan card with its buttons held; an item the server refused for
+good says so with Try again (a command the journal has but the agent refused shows as "Not run"
+on its line, to the browser that sent it, until dismissed). An answer to `ask_user` is REBUILD §5.2's object, every question
+present: `selected` holds option ids (`"yes"`/`"no"` for a confirm question), `other` the person's
+own words (a text question's answer, a number question's number as typed, or "Other"), `note`,
+`delegated` ("You decide") and `skipped` (neither answered nor delegated); `general_note` and
+`follow_up` (a counter-question instead of answers) are `null` when empty. A plan
+(`payload.kind: "plan"`) is answered from its card, `{decision: "approve"}` or `{decision:
+"keep_planning", note}`, never from the question dialog. The account picker (WP7) plugs into the
+composer through `useAccountPicker(draw)` in `composer.js`.
+
+A new session is a chat for every agent with an adapter, from the sheet and from PreStart; the
+server lists them as the catalogue's `chats`. `SOCRATES_AGENT_TERMINALS=1` keeps Claude Code,
+Codex and OpenCode terminals there instead (the browser suite sets it while its agents are the
+faketui stand-in; DEVIATIONS, WP8).
+
 ## 8. The fake adapter
 
 `harness: "fake"`, registered only when `SOCRATES_FAKE_AGENT=1` is in the environment of the
 server (and therefore its hosts). Its "CLI" is a real `sleep` child started through Spawn. It keeps
 its conversations in `agent/fake/<id>.json` (with each turn's text, its "transcript") and resumes
 them; an unknown id fails like a real CLI, and `Rebuild` writes the turns back. Its `agent.info`
-palette is `compact`. Script, by message text:
+is `{agent: "fake", version, commands: [compact, context], models: [fake-small, fake-large, each
+with low/medium/high]}`, and the catalogue offers it in the new-session sheet with the same two
+models. Its parts use Claude's content shapes (§5.1) and, for a change to several files, Codex's
+(§5.2), so the chat view and its browser scenarios are measured on the real shapes. Script, by
+message text:
 
 | text | turn |
 |---|---|
@@ -735,6 +768,13 @@ palette is `compact`. Script, by message text:
 | `/tool` | a `tool` part, three streamed output lines, then text |
 | `/ask` | an `ask`; blocks until answered (`you answered: <json>`) or interrupted |
 | `/asknext` | an `ask{via:"message"}`, and the turn ends; the answer starts the next turn |
+| `/askmany` | an `ask` with the full `ask_user` payload: a title, a context, and one question of every kind (single with details and a recommended option, multi 1–3, text, confirm, number 1–10 with defaults) |
+| `/plan` | a `plan` part and an `ask{payload.kind: "plan"}`; `{"decision":"approve"}` approves it, `keep_planning` with a `note` sends it back (`plan.decision`, `plan.note` on the part) |
+| `/md [ms]` | a streamed `reasoning` part, then a long Markdown answer (a heading, a list, Go code, a table, a quote, a link, a very long line) |
+| `/tools` | Read, a Bash call with streamed output, an Edit `diff` part, a two-file `diff` in Codex's `changes` shape, and a Grep that fails |
+| `/todo [ms]` | a `todo` part replaced as each of three tasks is done |
+| `/workflow [ms]` | a `Workflow` part with three phases and four `WorkflowAgent` parts nested in it, each with a text part of its own |
+| `/dividers` | `notice{compacted}`, `account.switched`, `model.changed`, `error{send_failed}` |
 | `/subagent` | a `Task` tool part with a text and a tool part nested inside it |
 | `/sleep S` | works for S seconds |
 | `/bg S` | ends at once, leaving a background task for S seconds (`tasks`) |
@@ -743,7 +783,9 @@ palette is `compact`. Script, by message text:
 | `/orphan` | starts a `setsid sleep 600` outside the process group (pid in `agent/fake/orphan.pid`) |
 | anything else | `you said: <text> (turn N of <conversation>)` |
 
-`Command("compact")` emits `notice{compacted}`; other commands are `unsupported`.
+`Command("compact")` emits `notice{compacted}`, `Command("context")` a `usage` and
+`notice{context}`; other commands are `unsupported`. Attachments are named in the reply (`with N
+attachment(s): …`).
 
 ## 9. Tests
 

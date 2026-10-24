@@ -112,8 +112,9 @@ export function mountAssist(ctx) {
       const label = speaking ? 'Stop reading' : 'Summarize this session';
       btn.setAttribute('aria-label', label);
       btn.setAttribute('data-tip', label);
-      // An editor has no screen to summarise.
-      btn.hidden = !session || session.harness === 'vscode';
+      // An editor has no screen to summarise, and neither has a chat: its
+      // summary is to be read from its journal, which Status does not do yet.
+      btn.hidden = !session || session.harness === 'vscode' || session.kind === 'chat';
       // Stopping is always available, even with the socket down: the sound is
       // already on this device and turning it off asks the server nothing.
       btn.disabled = speaking ? false : (!usable && !busyStatus);

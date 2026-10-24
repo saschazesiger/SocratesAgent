@@ -365,7 +365,11 @@ function openPanel(ctx, first) {
     if (st.closed) return;
     form = harnesses.settingsForm({
       prefix: 'ps',
-      include: (entry) => harnesses.canPrestart(entry.id),
+      // A prepared chat stays a chat (the server holds it to that), so it
+      // offers the agents that have one; a terminal prepared before chats
+      // existed keeps the three it could always be.
+      include: (entry) => (first.kind === 'chat' ? harnesses.isChat(entry.id)
+        : harnesses.PRESTART_HARNESSES.includes(entry.id)),
       deferredProfile: () => true,
       onChange: (kind) => settingsChanged(kind),
     });

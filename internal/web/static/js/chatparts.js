@@ -35,7 +35,8 @@ export function statusMark(state) {
 /** seconds is a duration the way the rows say it: 0.4 s, 12 s, 3 min 5 s. */
 export function seconds(ms) {
   const value = Number(ms) || 0;
-  if (value <= 0) return '';
+  // Less than a tenth of a second is not worth a number.
+  if (value < 100) return '';
   if (value < 10000) return (value / 1000).toFixed(1).replace(/\.0$/, '') + ' s';
   const s = Math.round(value / 1000);
   if (s < 60) return s + ' s';
@@ -59,6 +60,17 @@ function pretty(value) {
   try { return JSON.stringify(value, null, 2); } catch { return String(value); }
 }
 
+/**
+ * outboxState is where an item of the Outbox is, in the words the page uses
+ * for it: refused for good ("failed"), written but not out of this device
+ * yet ("local": offline, or tried and not through), or on its way.
+ */
+export function outboxState(item) {
+  if (item.state === 'failed') return 'failed';
+  if (navigator.onLine === false || (item.attempts > 0 && item.error)) return 'local';
+  return 'sending';
+}
+
 /* ----------------------------------------------------------- tool content */
 
 /**
@@ -78,6 +90,8 @@ export function toolOf(part) {
   else if (c.tool === 'collab') name = 'Agents';
   else if (c.tool === 'file_change') name = 'Edit';
   else if (c.tool === 'turn_diff') name = 'Changes';
+  // A workflow's agent is one of its agents, under its label.
+  else if (c.tool === 'WorkflowAgent') name = 'Agent';
   const agent = c.agent && typeof c.agent === 'object' ? c.agent : null;
   const summary = c.summary || c.command || field('command') || c.path || field('file_path') || field('pattern')
     || field('description') || field('url') || field('query') || (agent && (agent.label || agent.description))
@@ -201,7 +215,7 @@ const LINE_WORDS = { add: 'Added', del: 'Removed' };
 function diffFileHtml(file, key, open) {
   const name = file.path || 'the file';
   const status = file.status === 'added' ? 'New file' : file.status === 'deleted' ? 'Deleted' : '';
-  return html`<details class="ds-collapsible so-diff__file" data-ds-key="${key}" data-open-key="${key}"${open ? html` open` : ''}><summary class="so-diff__head"><span class="so-diff__path so-break">${name}</span>${status ? html`<span class="so-diff__status">${status}</span>` : ''}<span class="so-diff__count"><span class="so-diff__added" aria-label="${file.added + ' added'}">+${file.added}</span><span class="so-diff__removed" aria-label="${file.removed + ' removed'}">−${file.removed}</span></span>${chevron()}</summary>${
+  return html`<details class="so-diff__file" data-ds-key="${key}" data-open-key="${key}"${open ? html` open` : ''}><summary class="so-diff__head"><span class="so-diff__path so-break">${name}</span>${status ? html`<span class="so-diff__status">${status}</span>` : ''}<span class="so-diff__count"><span class="so-diff__added" aria-label="${file.added + ' added'}">+${file.added}</span><span class="so-diff__removed" aria-label="${file.removed + ' removed'}">−${file.removed}</span></span>${chevron()}</summary>${
     open ? html`<div class="so-diff__body" role="table" aria-label="${'Changes to ' + name}">${file.hunks.map((hunk) => html`<div class="so-diff__hunk" role="row"><span class="so-diff__hunk-head" role="cell">${hunk.header}</span></div>${
       hunk.lines.map((line) => html`<div class="so-diff__line" data-type="${line.type}" role="row"><span class="so-diff__no" role="cell" aria-hidden="true">${line.oldNo ?? ''}</span><span class="so-diff__no" role="cell" aria-hidden="true">${line.newNo ?? ''}</span><span class="so-diff__sign" role="cell"${LINE_WORDS[line.type] ? html` aria-label="${LINE_WORDS[line.type]}"` : ''}>${SIGN[line.type]}</span><span class="so-diff__code" role="cell">${line.text}</span></div>`)
     }`)}</div>` : ''
@@ -254,7 +268,7 @@ export function todoList(part, { pinned = false } = {}) {
 export function partHtml(part, view) {
   switch (part.kind) {
     case 'text':
-      return html`<div class="so-part so-md" data-ds-key="${'p:' + part.id}" data-kind="text" data-state="${part.state}">${markdown(part.text)}</div>`;
+      return html`<div class="so-part so-md" data-ds-key="${'p:' + part.id}" data-kind="text" data-state="${part.state}">${markdown(part.text, { keep: part.state !== 'streaming' })}</div>`;
     case 'reasoning':
       return reasoningHtml(part, view);
     case 'tool':
@@ -282,7 +296,7 @@ function reasoningHtml(part, view) {
   const took = seconds(c.duration_ms || (part.state === 'done' ? part.updatedAt - part.at : 0));
   const word = part.state === 'streaming' ? 'Thinking…' : 'Thought' + (took ? ' for ' + took : '');
   return html`<details class="ds-collapsible so-part so-reasoning" data-ds-key="${key}" data-open-key="${key}" data-kind="reasoning" data-state="${part.state}"${open ? html` open` : ''}><summary class="so-reasoning__head">${raw(icon('sparkles', 16))}<span>${word}</span>${chevron()}</summary>${
-    open ? html`<div class="so-reasoning__body so-md">${markdown(part.text || (c.redacted ? 'The reasoning is not shown.' : ''))}</div>` : ''
+    open ? html`<div class="so-reasoning__body so-md">${markdown(part.text || (c.redacted ? 'The reasoning is not shown.' : ''), { keep: part.state !== 'streaming' })}</div>` : ''
   }</details>`;
 }
 
@@ -317,12 +331,15 @@ function toolHtml(part, view, { diff = false } = {}) {
     typeof tool.content.exit_code === 'number' ? 'exit status ' + tool.content.exit_code : '',
     tool.content.cwd ? tool.content.cwd : '',
   ];
-  return html`<details class="ds-collapsible so-part so-tool" data-ds-key="${key}" data-open-key="${key}" data-kind="${part.kind}" data-state="${state}"${group ? html` data-group` : ''}${open ? html` open` : ''}><summary class="so-tool__head"><span class="so-tool__icon" aria-hidden="true">${raw(icon(toolGlyph(tool.name), 18))}</span><span class="so-tool__name">${tool.name}</span><span class="so-tool__summary so-ellipsis">${tool.summary}</span>${
+  return html`<details class="so-part so-tool" data-ds-key="${key}" data-open-key="${key}" data-kind="${part.kind}" data-state="${state}"${group ? html` data-group` : ''}${open ? html` open` : ''}><summary class="so-tool__head"><span class="so-tool__icon" aria-hidden="true">${raw(icon(toolGlyph(tool.name), 18))}</span><span class="so-tool__name">${tool.name}</span><span class="so-tool__summary so-ellipsis">${tool.summary}</span>${
     progress ? html`<span class="so-tool__progress so-ellipsis">${progress}</span>` : ''
   }${diff && files.length ? html`<span class="so-diff__count"><span class="so-diff__added">+${added}</span><span class="so-diff__removed">−${removed}</span></span>` : ''}${
     statusMark(state)
   }<span class="so-tool__time">${seconds(tool.duration)}</span>${chevron()}</summary>${
-    open ? html`<div class="so-tool__body">${toolBody(part, tool, view, { diff, group })}${infoButton(facts, 'Call details')}</div>` : ''
+    open ? html`<div class="so-tool__body">${
+      diff || group ? html`${toolBody(part, tool, view, { diff, group })}${infoButton(facts, 'Call details')}`
+        : html`${infoButton(facts, 'Call details')}${toolBody(part, tool, view, { diff, group })}`
+    }</div>` : ''
   }</details>`;
 }
 
@@ -338,7 +355,7 @@ function toolBody(part, tool, view, { diff, group }) {
     return html`${blocks}`;
   }
   if (tool.command) blocks.push(codeBlock(tool.command, 'shell'));
-  else if (tool.input && Object.keys(tool.input).length) blocks.push(html`<pre class="so-mono so-tool__input">${pretty(tool.input)}</pre>`);
+  else if (tool.input && Object.keys(tool.input).length) blocks.push(html`<pre class="so-mono">${pretty(tool.input)}</pre>`);
   if (part.text) blocks.push(html`<pre class="so-mono so-tool__out" data-state="${part.state}">${part.text}</pre>`);
   else if (part.state === 'running') blocks.push(html`<p class="so-tool__wait ds-meta">No output yet.</p>`);
   if (part.children.length) blocks.push(html`<div class="so-group">${part.children.map((child) => partHtml(child, view))}</div>`);
@@ -376,13 +393,41 @@ function workflowBody(part, tool, view) {
 
 /* -------------------------------------------------------------- the plan */
 
+// planAskOf is the ask a plan part waits on: the one its content names
+// (Claude's and the scripted agent's plan.ask_id), else the plan ask that
+// names the part.
 function planAskOf(part, chat) {
   const c = part.content || {};
-  const id = (c.plan && c.plan.ask_id) || c.ask_id || '';
-  return id ? chat.asks.get(id) || null : null;
+  const id = (c.plan && typeof c.plan === 'object' && c.plan.ask_id) || c.ask_id || '';
+  if (id) return chat.asks.get(id) || null;
+  for (const ask of chat.asks.values()) {
+    if (ask.payload && ask.payload.kind === 'plan' && ask.payload.part_id === part.id) return ask;
+  }
+  return null;
 }
 
 const DECISION_WORDS = { approved: 'Approved', keep_planning: 'Sent back to planning', pending: 'Waiting for you' };
+const DECISION_TONE = { approved: 'ds-status ds-status--ok', keep_planning: 'ds-status', pending: 'ds-status ds-status--warning' };
+const DECISION_GLYPH = { approved: 'check', keep_planning: 'pencil', pending: 'clock' };
+
+// What an answer of this browser that the server does not have yet says on
+// its card, by outboxState().
+const ANSWER_ON_ITS_WAY = {
+  local: { word: 'Not sent yet', glyph: 'wifiOff', tone: 'ds-status' },
+  sending: { word: 'Sending', glyph: 'clock', tone: 'ds-status' },
+  failed: { word: 'Not sent', glyph: 'alertCircle', tone: 'ds-status ds-status--error' },
+};
+
+function onItsWayChip(state) {
+  const chip = ANSWER_ON_ITS_WAY[state];
+  return html`<span class="${chip.tone}" data-chip="${state}">${raw(icon(chip.glyph, 16))}<span>${chip.word}</span></span>`;
+}
+
+// refusedHtml is why the server would not take an answer, and what can be
+// done about it: send it again as it is, or answer afresh.
+function refusedHtml(item, again) {
+  return html`<div class="ds-alert ds-alert--error so-refused" role="alert">${raw(icon('alertCircle', 20))}<span class="ds-alert__text">${'Your answer was not taken: ' + (item.error || 'the server refused it.')}</span></div><div class="ds-form-actions"><button class="ds-btn ds-btn--tonal" type="button" data-action="outbox-retry" data-id="${item.id}">Try again</button>${again}</div>`;
+}
 
 function planHtml(part, view) {
   const c = part.content || {};
@@ -395,14 +440,26 @@ function planHtml(part, view) {
     decision = answer.decision === 'approve' || answer.approved === true ? 'approved' : 'keep_planning';
   }
   const waiting = !!ask && !ask.answered;
-  const noting = view.isOpen('note:' + part.id, false);
-  return html`<section class="ds-card so-part so-plan" data-ds-key="${'p:' + part.id}" data-kind="plan" data-decision="${decision || (waiting ? 'pending' : '')}"><div class="ds-card__row"><h3 class="ds-card__title so-plan__title">${raw(icon('flag', 18))}<span>Plan</span></h3>${
-    decision && DECISION_WORDS[decision] ? html`<span class="${decision === 'approved' ? 'ds-status ds-status--ok' : 'ds-status'}">${raw(icon(decision === 'approved' ? 'check' : 'pencil', 16))}<span>${DECISION_WORDS[decision]}</span></span>` : ''
-  }</div><div class="so-plan__text so-md">${markdown(text)}</div>${
+  // An answer this browser gave that the server does not have yet holds
+  // the buttons - a second tap would be a second answer - until it lands,
+  // and gives them back if it was refused.
+  const pending = waiting ? view.pendingAnswer(ask) : null;
+  const sending = pending ? outboxState(pending) : '';
+  const asked = pending && pending.payload.answer ? pending.payload.answer : {};
+  const noting = view.isOpen('note:' + part.id, false) && !sending;
+  let answer = '';
+  if (waiting && sending && sending !== 'failed') {
+    answer = html`<div class="so-plan__answer"><div class="ds-card__row">${onItsWayChip(sending)}<span class="ds-meta">${asked.decision === 'approve' ? 'Approve' : 'Keep planning' + (asked.note ? ': ' + asked.note : '')}</span></div></div>`;
+  } else if (waiting) {
+    answer = html`<div class="so-plan__answer">${sending === 'failed' ? refusedHtml(pending, '') : ''}${
+      noting ? html`<div class="ds-field so-plan__field"><label class="ds-field__label" for="${'note-' + part.id}">What should change?</label><textarea class="ds-input so-plan__input" id="${'note-' + part.id}" rows="3" data-plan-note="${ask.id}"></textarea></div>` : ''
+    }<div class="ds-form-actions"><button class="ds-btn ds-btn--primary" type="button" data-action="plan-approve" data-ask="${ask.id}">Approve</button><button class="ds-btn ds-btn--tonal" type="button" data-action="${noting ? 'plan-send' : 'plan-note'}" data-ask="${ask.id}" data-part="${part.id}">${noting ? 'Send back' : 'Keep planning'}</button></div></div>`;
+  }
+  return html`<section class="ds-card so-part so-plan" data-ds-key="${'p:' + part.id}" data-kind="plan" data-decision="${decision || (waiting ? 'pending' : '')}"${sending ? html` data-sending="${sending}"` : ''}><div class="ds-card__row"><h3 class="ds-card__title so-plan__title">${raw(icon('flag', 18))}<span>Plan</span></h3>${
+    decision && DECISION_WORDS[decision] ? html`<span class="${DECISION_TONE[decision]}">${raw(icon(DECISION_GLYPH[decision], 16))}<span>${DECISION_WORDS[decision]}</span></span>` : ''
+  }</div><div class="so-md">${markdown(text)}</div>${
     meta.note ? html`<p class="ds-meta so-plan__note">${'Note: ' + meta.note}</p>` : ''
-  }${waiting ? html`<div class="so-plan__answer">${
-    noting ? html`<div class="ds-field so-plan__field"><label class="ds-field__label" for="${'note-' + part.id}">What should change?</label><textarea class="ds-input so-plan__input" id="${'note-' + part.id}" rows="3" data-plan-note="${ask.id}"></textarea></div>` : ''
-  }<div class="ds-form-actions"><button class="ds-btn ds-btn--primary" type="button" data-action="plan-approve" data-ask="${ask.id}">Approve</button><button class="ds-btn ds-btn--tonal" type="button" data-action="${noting ? 'plan-send' : 'plan-note'}" data-ask="${ask.id}" data-part="${part.id}">${noting ? 'Send back' : 'Keep planning'}</button></div></div>` : ''}</section>`;
+  }${answer}</section>`;
 }
 
 /* -------------------------------------------------------------- the asks */
@@ -425,25 +482,40 @@ export function askCard(ask, view) {
     return planHtml({ id: 'ask-' + ask.id, kind: 'plan', text: payload.plan || '', content: { plan: { ask_id: ask.id } } }, view);
   }
   const questions = askQuestions(ask);
-  const progress = view.askProgress(ask);
-  const first = questions.find((q) => !progress.answered.has(q.id)) || questions[0];
   const title = payload.title || (questions.length === 1 ? 'A question' : 'Questions');
+  // An answer this browser gave that the server does not have yet: the
+  // card says where it is, and what it says, rather than asking again.
+  const pending = ask.answered ? null : view.pendingAnswer(ask);
   let state = 'open';
   if (ask.answered) state = view.mine(ask) ? 'answered' : 'elsewhere';
+  else if (pending) state = outboxState(pending);
   else if (ask.closed) state = 'closed';
-  let status = html`<span class="ds-status ds-status--warning">${raw(icon('clock', 16))}<span>Waiting for you</span></span>`;
-  if (state === 'closed') status = html`<span class="ds-status">${raw(icon('chat', 16))}<span>Not answered</span></span>`;
-  else if (state !== 'open') status = html`<span class="ds-status ds-status--ok">${raw(icon('check', 16))}<span>${state === 'elsewhere' ? 'Answered on another device' : 'Answered'}</span></span>`;
-  let body = html`<p class="so-ask__done ds-meta">${answerSummary(ask)}</p>`;
+  const head = html`<div class="ds-card__row"><h3 class="ds-card__title so-ask__title">${raw(icon('chat', 18))}<span>${title}</span></h3>${
+    state === 'open' ? html`<span class="ds-status ds-status--warning">${raw(icon('clock', 16))}<span>Waiting for you</span></span>`
+      : state === 'closed' ? html`<span class="ds-status">${raw(icon('chat', 16))}<span>Not answered</span></span>`
+      : ANSWER_ON_ITS_WAY[state] ? onItsWayChip(state)
+        : html`<span class="ds-status ds-status--ok">${raw(icon('check', 16))}<span>${state === 'elsewhere' ? 'Answered on another device' : 'Answered'}</span></span>`
+  }</div>`;
+  let body;
   if (state === 'open') {
+    const progress = view.askProgress(ask);
+    const first = questions.find((q) => !progress.answered.has(q.id)) || questions[0];
     body = html`<p class="so-ask__progress ds-meta">${questions.length > 1 ? progress.count + ' of ' + questions.length + ' answered' : 'One question'}</p>${
       first ? html`<p class="so-ask__question">${first.question || first.header || ''}</p>` : ''
     }<div class="ds-form-actions"><button class="ds-btn ds-btn--primary so-ask__open" type="button" data-action="ask-open" data-ask="${ask.id}">Answer</button></div>`;
+  } else if (pending) {
+    const summary = answerSummary({ ...ask, answer: pending.payload.answer });
+    body = html`${summary ? html`<p class="so-ask__done ds-meta">${summary}</p>` : ''}${
+      state === 'failed' ? refusedHtml(pending, html`<button class="ds-btn" type="button" data-action="ask-again" data-ask="${ask.id}" data-id="${pending.id}">Answer again</button>`)
+        : state === 'local' ? html`<p class="so-ask__progress ds-meta">It goes out when the connection is back.</p>` : ''
+    }`;
   } else if (state === 'closed') {
     // A message moved the chat on; an answer can still be sent, as a message.
     body = html`<p class="so-ask__done ds-meta">You wrote something else instead. The agent no longer waits for this.</p><div class="ds-form-actions"><button class="ds-btn ds-btn--tonal so-ask__open" type="button" data-action="ask-open" data-ask="${ask.id}">Answer anyway</button></div>`;
+  } else {
+    body = html`<p class="so-ask__done ds-meta">${answerSummary(ask)}</p>`;
   }
-  return html`<section class="ds-card so-ask" data-ds-key="${'a:' + ask.id}" data-ask="${ask.id}" data-state="${state}"><div class="ds-card__row"><h3 class="ds-card__title so-ask__title">${raw(icon('chat', 18))}<span>${title}</span></h3>${status}</div>${body}</section>`;
+  return html`<section class="ds-card so-ask" data-ds-key="${'a:' + ask.id}" data-ask="${ask.id}" data-state="${state}">${head}${body}</section>`;
 }
 
 // answerSummary is an answered ask in one line: what was chosen or said.
@@ -464,7 +536,6 @@ function answerSummary(ask) {
       return option ? option.label : String(id);
     });
     if (a.other) labels.push(a.other);
-    if (a.value !== undefined && a.value !== null && a.value !== '') labels.push(String(a.value));
     return labels.length ? (q.header || q.id) + ': ' + labels.join(', ') : '';
   }).filter(Boolean);
   return words.join(' · ');
@@ -478,6 +549,8 @@ const USER_STATE = {
   pending: { word: 'Sent', glyph: 'clock' },
   queued: { word: 'Queued', glyph: 'clock' },
   failed: { word: 'Not sent', glyph: 'alertCircle' },
+  // The agent dropped it unread (a turn that ended before taking it up).
+  cancelled: { word: 'Not taken up', glyph: 'ban' },
 };
 
 function attachmentsHtml(list) {
@@ -518,9 +591,13 @@ export function turnFacts(message) {
 /** assistantMessage is an answer: its parts in order, and what it cost. */
 export function assistantMessage(message, view) {
   const facts = turnFacts(message);
+  // An answer that has said nothing yet is working - unless it waits for the
+  // person, which its question card says.
+  const asking = [...view.chat.asks.values()].some((ask) => !ask.answered && ask.turnId && ask.turnId === message.turnId);
+  const working = message.state === 'streaming' && !message.parts.length && !asking;
   return html`<article class="so-msg" data-ds-key="${'m:' + message.id}" data-role="assistant" data-state="${message.state}">${
     message.parts.map((part) => partHtml(part, view))
-  }${message.state === 'streaming' && !message.parts.length ? html`<p class="so-msg__wait ds-meta"><span class="ds-spinner" aria-hidden="true"></span><span>Working…</span></p>` : ''}${
+  }${working ? html`<p class="so-msg__wait ds-meta"><span class="ds-spinner" aria-hidden="true"></span><span>Working…</span></p>` : ''}${
     message.state === 'interrupted' || facts.length ? html`<div class="so-msg__foot">${
       message.state === 'interrupted' ? html`<span class="ds-status">${raw(icon('ban', 16))}<span>Interrupted</span></span>` : ''
     }${infoButton(facts, 'Usage of this answer')}</div>` : ''
@@ -529,12 +606,38 @@ export function assistantMessage(message, view) {
 
 /* --------------------------------------------------------------- the lines */
 
+// What a notice says when the event brings no words of its own, by its code
+// (AGENT-HOST.md §2 and §5: the host's, every adapter's rebuild, the
+// adapters' own). A code nobody wrote words for is said in general terms,
+// the code itself behind the "i".
 const NOTICE_WORDS = {
   resumed: 'Resumed after a restart.',
   compacted: 'The conversation was compacted.',
   conversation_lost: 'The agent could not resume the conversation. It starts fresh; the history here is kept.',
   answer_as_message: 'The answer went to the agent as a message.',
-  history_rebuilt: 'The history was rebuilt from the agent’s own record.',
+  rebuilt: 'The history was rebuilt from the agent’s own record.',
+  history_unavailable: 'The agent’s own record of this conversation could not be read.',
+  api_retry: 'The agent’s service did not answer; it tries again.',
+  retrying: 'The agent’s service did not answer; it tries again.',
+  retry: 'The agent’s service did not answer; it tries again.',
+  plan_mode: 'Plan mode changed.',
+  review_started: 'A review started.',
+  codex_reasoning_dropped: 'The agent’s earlier reasoning was left behind to go on with another account.',
+  codex_handoff: 'The conversation went on in a new thread, with the transcript handed over.',
+  elicitation_declined: 'A request of a tool was declined.',
+  question_declined: 'A question the agent asked its own way was declined.',
+  question_rejected: 'A question the agent asked its own way was declined.',
+  permission_allowed: 'A permission the agent asked for was allowed.',
+  reverted: 'The conversation was rewound.',
+  unreverted: 'The rewind was undone.',
+  forked: 'The conversation was forked.',
+  agent: 'The agent’s mode changed.',
+};
+
+// The glyph a line between messages leads with, by its notice code.
+const NOTICE_GLYPH = {
+  compacted: 'archive', resumed: 'history', rebuilt: 'history', conversation_lost: 'alert', history_unavailable: 'alert',
+  api_retry: 'sync', retrying: 'sync', retry: 'sync',
 };
 
 /** renewsIn is a reset moment as "2 h 10 min", from now. */
@@ -554,11 +657,19 @@ export function lineHtml(entry, view) {
   const key = entry.key;
   switch (l.kind) {
     case 'notice': {
-      const words = l.text || NOTICE_WORDS[l.code] || l.code;
-      return html`<div class="so-line" data-ds-key="${key}" data-kind="notice" data-code="${l.code}">${raw(icon(l.code === 'compacted' ? 'archive' : l.code === 'resumed' ? 'history' : 'info', 16))}<span class="so-line__text">${words}</span></div>`;
+      const words = l.text || NOTICE_WORDS[l.code] || 'A notice from the agent.';
+      return html`<div class="so-line" data-ds-key="${key}" data-kind="notice" data-code="${l.code}">${raw(icon(NOTICE_GLYPH[l.code] || 'info', 16))}<span class="so-line__text">${words}</span>${
+        !l.text && !NOTICE_WORDS[l.code] && l.code ? infoButton(['code ' + l.code], 'Notice details') : ''
+      }</div>`;
     }
-    case 'command':
-      return html`<div class="so-line" data-ds-key="${key}" data-kind="command">${raw(icon('chevronRight', 16))}<span class="so-line__text so-line__command">${l.text}</span></div>`;
+    case 'command': {
+      // The journal has the command, and the agent refused it after: the
+      // line says it did not run, to the browser that sent it.
+      const refused = view.failedItem(l.clientId);
+      return html`<div class="so-line" data-ds-key="${key}" data-kind="command"${refused ? html` data-state="failed"` : ''}>${raw(icon('chevronRight', 16))}<span class="so-line__text so-line__command">${l.text}</span>${
+        refused ? html`<span class="ds-status ds-status--error" data-chip="failed">${raw(icon('alertCircle', 16))}<span>Not run</span></span>${infoButton([refused.error], 'Why it did not run')}<button class="ds-btn ds-btn--text ds-btn--sm" type="button" data-action="outbox-drop" data-id="${refused.id}">Dismiss</button>` : ''
+      }</div>`;
+    }
     case 'account':
       return html`<div class="so-line" data-ds-key="${key}" data-kind="account">${raw(icon('user', 16))}<span class="so-line__text">${'Switched from ' + (l.from || 'one account') + ' to ' + (l.to || 'another')}</span>${infoButton([l.reason], 'Why the account changed')}</div>`;
     case 'model':
@@ -568,7 +679,7 @@ export function lineHtml(entry, view) {
     case 'turn': {
       if (l.outcome === 'limited') {
         const renew = view.renewal();
-        return html`<div class="ds-alert ds-alert--warning so-line-alert" data-ds-key="${key}" data-kind="limit" role="status">${raw(icon('clock', 20))}<span class="ds-alert__text">${'Limit reached' + (renew ? ' — renews in ' + renew : '')}</span></div>`;
+        return html`<div class="ds-alert ds-alert--warning so-line-alert" data-ds-key="${key}" data-kind="limit" role="status">${raw(icon('clock', 20))}<span class="ds-alert__text">${'Limit reached' + (renew ? ' — renews in ' + renew : '')}</span>${infoButton([l.text], 'About the limit')}</div>`;
       }
       if (l.outcome === 'failed') {
         return html`<div class="ds-alert ds-alert--error so-line-alert" data-ds-key="${key}" data-kind="failed" role="alert">${raw(icon('alertCircle', 20))}<span class="ds-alert__text">${'The turn failed.' + (l.text ? ' ' + l.text : '')}</span></div>`;
