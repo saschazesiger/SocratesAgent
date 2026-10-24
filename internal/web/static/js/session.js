@@ -1593,27 +1593,19 @@ function replaceMap(map, entries) {
 }
 
 // carriedOver is a digest with what the page held for the session kept in
-// it while the new one is still being read. The server keeps the previous
-// summary, context and question while a digest is pending, so Home does not
-// blink; a server that has just restarted has nothing to keep - its digests
-// lived in memory - and its first word about every session is a pending
-// digest with nothing in it. The page keeps what it had instead, until the
-// new server has read the screen and says what is there now. A question
-// kept that way is `carried`: this server has not seen it yet, and it may
-// have been answered at the machine while there was no server to see it.
-// Home keeps a question in prose counted, but says it is checking whether it
-// still asks, and offers no Answer, until the read says (home.js).
+// it while the new one is still being read: a pending digest with nothing
+// in it - a server that has just restarted and has not read the chat's
+// journal yet - would otherwise blank Home's line until the read is in.
 function carriedOver(held, digest) {
   if (!held || !digest || digest.phase !== 'pending' || digest.question || digest.summary || digest.context) return digest;
-  const question = held.question || null;
-  return { ...digest, summary: held.summary || '', context: held.context || '', question, carried: !!question };
+  return { ...digest, summary: held.summary || '', context: held.context || '', question: held.question || null };
 }
 
 // replaceDigests is the hello's digests. A running session the hello has no
 // digest for is one a restarted server has not read yet - a server only
 // forgets the digest of a session that was deleted - so what the page held
-// stays, as pending, until it has: a question asked in prose would
-// otherwise leave the Questions card for the moment of the read.
+// stays, as pending, until it has: Home's line and its question would
+// otherwise go for the moment of the read.
 //
 // Whether a session is running is what the hello's own rows say (`rows`),
 // not the list the page held before it: across a reboot that list still
@@ -1635,7 +1627,7 @@ function replaceDigests(entries, rows) {
     }
     const session = listed ? listed.get(id) : sessionOf(id);
     if (!session) continue;
-    if (session.state === 'running') state.digests.set(id, { ...digest, phase: 'pending', carried: !!digest.question });
+    if (session.state === 'running') state.digests.set(id, { ...digest, phase: 'pending' });
     else state.digests.set(id, { ...digest, question: null, phase: digest.phase === 'pending' ? 'ready' : digest.phase });
   }
 }
@@ -1850,8 +1842,8 @@ function openOnNews(id) {
  * questionsOnHome is `#questions`, the address of the app's "Questions"
  * shortcut: Home, and the dialog over it at the oldest question - or Home
  * alone when nothing is asking. Whether anything is is only known once the
- * page holds a current state (a question in prose is in the digests a hello
- * brings), so a cold start waits for one (questionsWhenKnown).
+ * page holds a current state (the activity a hello brings), so a cold start
+ * waits for one (questionsWhenKnown).
  */
 function questionsOnHome({ replace = false } = {}) {
   if (!homeShown()) showHome({ replace });
@@ -3696,12 +3688,6 @@ async function boot() {
     // "Needs an answer" opens the question itself, on Home, the way the
     // address `#q=` does: the dialog has its own way into the session.
     question: (id) => questionOnHome(id),
-    // A turn that ended on a question in prose is a question too, though its
-    // news was "Finished": the digest that found the question says so.
-    asksInProse: (id) => {
-      const digest = state.digests.get(id);
-      return !!(digest && digest.question && digest.question.source === 'text');
-    },
     // A turn's end whose verdict is being read waits for it (outcome.js).
     outcome: (id) => state.outcomes.get(id) || null,
     questionOf: (id) => {

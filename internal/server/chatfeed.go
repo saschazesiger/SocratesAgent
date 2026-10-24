@@ -19,9 +19,8 @@ import (
 )
 
 // questionAsk is the source of a chat's question: an ask in its journal,
-// answered in the chat's own dialog. It is neither a prompt on a screen
-// (questionMenu) nor a question in prose (questionText), and nothing that
-// reads a terminal's digest takes it for one.
+// answered in the chat's own dialog. The terminals' sources (a menu on a
+// screen, a question in prose) went with the screen digest (WP10).
 const questionAsk = "ask"
 
 // What a chat's turn is cut to when it is handed to a model.
