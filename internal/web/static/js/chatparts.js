@@ -106,6 +106,15 @@ export function toolOf(part) {
     command: c.command || field('command'), content: c };
 }
 
+// isAskTool says whether a tool part is a call of Socrates' own question
+// tool, ask_user, as each agent names it (mcp__socrates__ask_user,
+// socrates_ask_user, ask_user): the question card in the chat is that call,
+// so its row is not drawn beside it.
+export function isAskTool(part) {
+  const c = (part.content && typeof part.content === 'object') ? part.content : {};
+  return [c.tool, c.name].some((name) => /(^|[_.:/])ask_user$/.test(String(name || '')));
+}
+
 // The glyph a tool is drawn with, by what it does.
 function toolGlyph(name) {
   const n = String(name).toLowerCase();
@@ -215,17 +224,33 @@ const LINE_WORDS = { add: 'Added', del: 'Removed' };
 function diffFileHtml(file, key, open) {
   const name = file.path || 'the file';
   const status = file.status === 'added' ? 'New file' : file.status === 'deleted' ? 'Deleted' : '';
-  return html`<details class="so-diff__file" data-ds-key="${key}" data-open-key="${key}"${open ? html` open` : ''}><summary class="so-diff__head"><span class="so-diff__path so-break">${name}</span>${status ? html`<span class="so-diff__status">${status}</span>` : ''}<span class="so-diff__count"><span class="so-diff__added" aria-label="${file.added + ' added'}">+${file.added}</span><span class="so-diff__removed" aria-label="${file.removed + ' removed'}">−${file.removed}</span></span>${chevron()}</summary>${
-    open ? html`<div class="so-diff__body" role="table" aria-label="${'Changes to ' + name}">${file.hunks.map((hunk) => html`<div class="so-diff__hunk" role="row"><span class="so-diff__hunk-head" role="cell">${hunk.header}</span></div>${
-      hunk.lines.map((line) => html`<div class="so-diff__line" data-type="${line.type}" role="row"><span class="so-diff__no" role="cell" aria-hidden="true">${line.oldNo ?? ''}</span><span class="so-diff__no" role="cell" aria-hidden="true">${line.newNo ?? ''}</span><span class="so-diff__sign" role="cell"${LINE_WORDS[line.type] ? html` aria-label="${LINE_WORDS[line.type]}"` : ''}>${SIGN[line.type]}</span><span class="so-diff__code" role="cell">${line.text}</span></div>`)
-    }`)}</div>` : ''
-  }</details>`;
+  return html`<details class="so-diff__file" data-ds-key="${key}" data-open-key="${key}"${open ? html` open` : ''}><summary class="so-diff__head"><span class="so-diff__path so-break">${name}</span>${status ? html`<span class="so-diff__status">${status}</span>` : ''}<span class="so-diff__count"><span class="so-diff__added" aria-label="${file.added + ' added'}">+${file.added}</span><span class="so-diff__removed" aria-label="${file.removed + ' removed'}">−${file.removed}</span></span>${chevron()}</summary>${open ? diffBodyHtml(file, name) : ''}</details>`;
 }
 
-/** diffViewer is every file of a diff, each one collapsible. */
-export function diffViewer(part, view) {
+function diffBodyHtml(file, name) {
+  return html`<div class="so-diff__body" role="table" aria-label="${'Changes to ' + name}">${file.hunks.map((hunk) => html`<div class="so-diff__hunk" role="row"><span class="so-diff__hunk-head" role="cell">${hunk.header}</span></div>${
+    hunk.lines.map((line) => html`<div class="so-diff__line" data-type="${line.type}" role="row"><span class="so-diff__no" role="cell" aria-hidden="true">${line.oldNo ?? ''}</span><span class="so-diff__no" role="cell" aria-hidden="true">${line.newNo ?? ''}</span><span class="so-diff__sign" role="cell"${LINE_WORDS[line.type] ? html` aria-label="${LINE_WORDS[line.type]}"` : ''}>${SIGN[line.type]}</span><span class="so-diff__code" role="cell">${line.text}</span></div>`)
+  }`)}</div>`;
+}
+
+// singleFileHtml is the one file of a diff: its lines under its name, open
+// with the card - a second collapsible inside it would be a second tap.
+// The head holds the call's "i" (`info`), which would cost the lines a
+// column of their own beside them.
+function singleFileHtml(file, key, info) {
+  const name = file.path || 'the file';
+  const status = file.status === 'added' ? 'New file' : file.status === 'deleted' ? 'Deleted' : '';
+  return html`<div class="so-diff__file" data-ds-key="${key}" data-single><div class="so-diff__head"><span class="so-diff__path so-break">${name}</span>${status ? html`<span class="so-diff__status">${status}</span>` : ''}${info || ''}</div>${diffBodyHtml(file, name)}</div>`;
+}
+
+/**
+ * diffViewer is every file of a diff: one is shown as it is (with `info`,
+ * the call's "i", in its head), several each collapsible.
+ */
+export function diffViewer(part, view, info = '') {
   const files = diffFiles(part);
   if (!files.length) return part.text ? html`<pre class="so-mono">${part.text}</pre>` : '';
+  if (files.length === 1) return html`<div class="so-diff">${singleFileHtml(files[0], 'f:' + part.id + ':0', info)}</div>`;
   return html`<div class="so-diff">${files.map((file, i) => {
     const key = 'f:' + part.id + ':' + i;
     return diffFileHtml(file, key, view.isOpen(key, files.length <= 3));
@@ -272,7 +297,7 @@ export function partHtml(part, view) {
     case 'reasoning':
       return reasoningHtml(part, view);
     case 'tool':
-      return toolHtml(part, view);
+      return isAskTool(part) ? '' : toolHtml(part, view);
     case 'diff':
       return toolHtml(part, view, { diff: true });
     case 'todo':
@@ -336,11 +361,19 @@ function toolHtml(part, view, { diff = false } = {}) {
   }${diff && files.length ? html`<span class="so-diff__count"><span class="so-diff__added">+${added}</span><span class="so-diff__removed">−${removed}</span></span>` : ''}${
     statusMark(state)
   }<span class="so-tool__time">${seconds(tool.duration)}</span>${chevron()}</summary>${
-    open ? html`<div class="so-tool__body">${
-      diff || group ? html`${toolBody(part, tool, view, { diff, group })}${infoButton(facts, 'Call details')}`
-        : html`${infoButton(facts, 'Call details')}${toolBody(part, tool, view, { diff, group })}`
-    }</div>` : ''
+    open ? html`<div class="so-tool__body">${bodyWithInfo(part, tool, view, { diff, group, files, info: infoButton(facts, 'Call details') })}</div>` : ''
   }</details>`;
+}
+
+// bodyWithInfo places the call's "i" where it costs no row of its own: in a
+// single file's head, beside what a call was given or what an agent was
+// told; under a workflow's phases or several files, which want the whole
+// width, it closes the body in a line no taller than a line of meta.
+function bodyWithInfo(part, tool, view, { diff, group, files, info }) {
+  if (diff && files.length === 1) return diffViewer(part, view, info);
+  const body = toolBody(part, tool, view, { diff, group });
+  if (diff || tool.workflow) return html`${body}${info}`;
+  return html`${info}${body}`;
 }
 
 function toolBody(part, tool, view, { diff, group }) {
@@ -349,7 +382,7 @@ function toolBody(part, tool, view, { diff, group }) {
   const blocks = [];
   if (group) {
     if (tool.agent && tool.agent.prompt) blocks.push(html`<div class="so-tool__prompt so-md">${markdown(tool.agent.prompt)}</div>`);
-    blocks.push(html`<div class="so-group">${part.children.map((child) => partHtml(child, view))}</div>`);
+    if (part.children.length) blocks.push(html`<div class="so-group">${part.children.map((child) => partHtml(child, view))}</div>`);
     const summary = (tool.agent && tool.agent.summary) || (part.state !== 'running' ? part.text : '');
     if (summary) blocks.push(html`<div class="so-tool__result so-md">${markdown(summary)}</div>`);
     return html`${blocks}`;
@@ -426,7 +459,7 @@ function onItsWayChip(state) {
 // refusedHtml is why the server would not take an answer, and what can be
 // done about it: send it again as it is, or answer afresh.
 function refusedHtml(item, again) {
-  return html`<div class="ds-alert ds-alert--error so-refused" role="alert">${raw(icon('alertCircle', 20))}<span class="ds-alert__text">${'Your answer was not taken: ' + (item.error || 'the server refused it.')}</span></div><div class="ds-form-actions"><button class="ds-btn ds-btn--tonal" type="button" data-action="outbox-retry" data-id="${item.id}">Try again</button>${again}</div>`;
+  return html`<div class="ds-alert ds-alert--error so-refused" role="alert">${raw(icon('alertCircle', 20))}<span class="ds-alert__text">${'Your answer was not taken: ' + (item.error || 'the server refused it.')}</span></div><div class="ds-form-actions"><button class="ds-btn ds-btn--tonal ds-btn--icon" type="button" data-action="outbox-retry" data-id="${item.id}" aria-label="Send the answer again" data-tip="Send again">${raw(icon('sync', 20))}</button>${again}</div>`;
 }
 
 function planHtml(part, view) {
@@ -555,7 +588,7 @@ const USER_STATE = {
 
 function attachmentsHtml(list) {
   if (!list || !list.length) return '';
-  return html`<ul class="so-msg__files">${list.map((file, i) => html`<li class="so-attachment" data-ds-key="${'f' + i}">${raw(icon(String(file.mime || '').startsWith('image/') ? 'image' : 'file', 16))}<span class="so-ellipsis">${file.name}</span></li>`)}</ul>`;
+  return html`<ul class="so-msg__files">${list.map((file, i) => html`<li class="so-attachment" data-ds-key="${'f' + i}">${raw(icon(String(file.mime || '').startsWith('image/') ? 'image' : 'file', 16))}<span class="so-break">${file.name}</span></li>`)}</ul>`;
 }
 
 /**
@@ -588,18 +621,27 @@ export function turnFacts(message) {
   return facts;
 }
 
-/** assistantMessage is an answer: its parts in order, and what it cost. */
+/**
+ * assistantMessage is an answer: its parts in order, Copy for its text, and
+ * what it cost behind the "i". How a turn ended other than done is the line
+ * after it (lineHtml), said once: not again on the answer, and not by the
+ * agent's own notice of the same words (Claude's "usage limit reached").
+ */
 export function assistantMessage(message, view) {
   const facts = turnFacts(message);
   // An answer that has said nothing yet is working - unless it waits for the
   // person, which its question card says.
   const asking = [...view.chat.asks.values()].some((ask) => !ask.answered && ask.turnId && ask.turnId === message.turnId);
   const working = message.state === 'streaming' && !message.parts.length && !asking;
+  const ended = message.turn && (message.turn.outcome === 'limited' || message.turn.outcome === 'failed')
+    ? String(message.turn.error || '').trim() : '';
+  const parts = ended ? message.parts.filter((part) => !(part.kind === 'notice' && String(part.text || '').trim() === ended)) : message.parts;
+  const copyable = message.state !== 'streaming' && parts.some((part) => part.kind === 'text' && String(part.text || '').trim());
   return html`<article class="so-msg" data-ds-key="${'m:' + message.id}" data-role="assistant" data-state="${message.state}">${
-    message.parts.map((part) => partHtml(part, view))
+    parts.map((part) => partHtml(part, view))
   }${working ? html`<p class="so-msg__wait ds-meta"><span class="ds-spinner" aria-hidden="true"></span><span>Working…</span></p>` : ''}${
-    message.state === 'interrupted' || facts.length ? html`<div class="so-msg__foot">${
-      message.state === 'interrupted' ? html`<span class="ds-status">${raw(icon('ban', 16))}<span>Interrupted</span></span>` : ''
+    copyable || facts.length ? html`<div class="so-msg__foot">${
+      copyable ? html`<button class="ds-btn ds-btn--quiet ds-btn--icon ds-btn--sm so-msg__copy" type="button" data-action="copy-answer" data-message="${message.id}" aria-label="Copy the answer" data-tip="Copy">${raw(icon('copy', 18))}</button>` : ''
     }${infoButton(facts, 'Usage of this answer')}</div>` : ''
   }</article>`;
 }
@@ -667,7 +709,7 @@ export function lineHtml(entry, view) {
       // line says it did not run, to the browser that sent it.
       const refused = view.failedItem(l.clientId);
       return html`<div class="so-line" data-ds-key="${key}" data-kind="command"${refused ? html` data-state="failed"` : ''}>${raw(icon('chevronRight', 16))}<span class="so-line__text so-line__command">${l.text}</span>${
-        refused ? html`<span class="ds-status ds-status--error" data-chip="failed">${raw(icon('alertCircle', 16))}<span>Not run</span></span>${infoButton([refused.error], 'Why it did not run')}<button class="ds-btn ds-btn--text ds-btn--sm" type="button" data-action="outbox-drop" data-id="${refused.id}">Dismiss</button>` : ''
+        refused ? html`<span class="ds-status ds-status--error" data-chip="failed">${raw(icon('alertCircle', 16))}<span>Not run</span></span>${infoButton([refused.error], 'Why it did not run')}<button class="ds-btn ds-btn--quiet ds-btn--icon ds-btn--sm" type="button" data-action="outbox-drop" data-id="${refused.id}" aria-label="Dismiss" data-tip="Dismiss">${raw(icon('close', 18))}</button>` : ''
       }</div>`;
     }
     case 'account': {
@@ -693,12 +735,14 @@ export function lineHtml(entry, view) {
         // Under the newest limit, the accounts the chat could go on with:
         // one tap switches and has the turn carried on there.
         const offers = view.continueWith ? view.continueWith(entry) : [];
-        return html`<div class="ds-alert ds-alert--warning so-line-alert" data-ds-key="${key}" data-kind="limit" role="status">${raw(icon('clock', 20))}<span class="ds-alert__text">${'Limit reached' + (renew ? ' — renews in ' + renew : '')}${
+        // The words and the buttons stack in the alert's text column, each
+        // on a line of its own.
+        return html`<div class="ds-alert ds-alert--warning so-line-alert" data-ds-key="${key}" data-kind="limit" role="status">${raw(icon('clock', 20))}<span class="ds-alert__text so-line-alert__stack"><span>${'Limit reached' + (renew ? ' — renews in ' + renew : '')}</span>${
           offers.length ? html`<span class="so-line-alert__actions">${offers.map((a) => html`<button class="ds-btn ds-btn--sm" type="button" data-action="continue-with" data-account="${a.id}">${'Continue with ' + a.label}</button>`)}</span>` : ''
         }</span>${infoButton([l.text], 'About the limit')}</div>`;
       }
       if (l.outcome === 'failed') {
-        return html`<div class="ds-alert ds-alert--error so-line-alert" data-ds-key="${key}" data-kind="failed" role="alert">${raw(icon('alertCircle', 20))}<span class="ds-alert__text">${'The turn failed.' + (l.text ? ' ' + l.text : '')}</span></div>`;
+        return html`<div class="ds-alert ds-alert--error so-line-alert" data-ds-key="${key}" data-kind="failed" role="alert">${raw(icon('alertCircle', 20))}<span class="ds-alert__text">${'The turn failed.' + (l.text ? ' ' + l.text : '')}</span>${infoButton([l.code ? 'code ' + l.code : ''], 'Error details')}</div>`;
       }
       return html`<div class="so-line" data-ds-key="${key}" data-kind="interrupted">${raw(icon('ban', 16))}<span class="so-line__text">Interrupted</span></div>`;
     }

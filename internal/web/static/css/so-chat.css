@@ -30,6 +30,7 @@
  *                          subagent or a workflow, whose parts are nested in
  *                          .so-group, a workflow's by phase (.so-phases)
  *   .so-diff               the unified diff viewer, one file per .so-diff__file
+ *                          ([data-single]: the only one, not collapsible)
  *   .so-todo               a task list; [data-pinned] above the composer
  *   .so-plan, .so-ask      the plan card and the question card (DS cards)
  *   .so-line               a line between messages: a notice, a command, a
@@ -246,11 +247,23 @@
   margin: 0;
 }
 
+/* Copy and the "i" under an answer: a quiet row as tall as a line of
+   meta, whose buttons keep a finger's target by reaching into the space
+   around it (and the first one lines its glyph up with the text). */
 .so-msg__foot {
   display: flex;
   align-items: center;
-  gap: var(--ds-space-2);
+  gap: var(--ds-space-1);
   min-height: var(--ds-space-8);
+  margin-top: calc(-1 * var(--ds-space-1));
+}
+
+.so-msg__foot > .ds-btn {
+  margin-block: calc((var(--ds-space-8) - var(--ds-btn-icon-size, var(--ds-space-8))) / 2);
+}
+
+.so-msg__foot > .ds-btn:first-child {
+  margin-inline-start: calc((var(--ds-space-5) - var(--ds-btn-icon-size, var(--ds-space-8))) / 2);
 }
 
 /* A file a message carries, or one a part shows. */
@@ -534,7 +547,8 @@
 }
 
 /* The call's "i" stands at the end of the body's first line, beside what
-   the call was given; everything else takes the whole width. */
+   the call was given, its prompt or its phases; everything else takes the
+   whole width. A single file's diff has it in its head. */
 .so-tool__body {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
@@ -558,9 +572,11 @@
   grid-row: 1;
 }
 
-/* After a diff or a group, which want the whole width, it closes the body. */
-.so-tool__body > .so-info:last-child {
+/* Under a workflow or several files it closes the body, at the end of a
+   line as tall as a line of meta, its target reaching into the padding. */
+.so-tool__body > .so-info:last-child:not(:first-child) {
   justify-self: end;
+  margin-block: calc((var(--ds-space-8) - var(--ds-btn-icon-size, var(--ds-space-8))) / 2);
 }
 
 .so-tool__out {
@@ -670,6 +686,14 @@
   padding: 0 var(--ds-space-2) 0 var(--ds-space-3);
   background: var(--ds-surface-low);
   font: var(--ds-font-body);
+}
+
+/* The only file of a diff: its name over its lines, nothing to open. */
+.so-diff__file[data-single] > .so-diff__head {
+  display: flex;
+  align-items: center;
+  gap: var(--ds-space-2);
+  min-height: var(--so-chat-row-height);
 }
 
 .so-diff__path {
