@@ -7150,448 +7150,184 @@ async function optionsmenu() {
 
 /* ------------------------------------------------------------- 53. Home */
 
-// Home and the question dialog (HOME.md): the landing page, the numbers that
-// move by themselves, and an answer that goes from a tap through the operator
-// into the pane. The fake CLI asks the question the real one would (`/question`
-// paints Claude Code's menu, keys and all), and the gateway is a stub that
-// answers the two calls the server makes about it the way a model reading the
-// screen would: the digest finds the menu on the screen, and the operator
-// presses the digit the screen shows for the answer it was given. Nothing is
-// scripted by order, because a digest can be asked for at any moment - the
-// stub reads each request and answers what it asks.
+// Home and its questions (HOME.md, REBUILD.md §5.4): the landing page, the
+// numbers that move by themselves, and an answer that goes from a tap to the
+// agent. A question is a chat's: Claude Code calling ask_user, which
+// fakeclaude's /askuser hands to the in-process MCP server with the call's
+// JSON, blocking until the answer comes back and saying it in the
+// conversation ("ask_user returned: ..."). The chats are made the way another
+// device would make them, so that the page under test is only ever on Home
+// unless a scenario puts it somewhere else; the dialog is the chats' own
+// (askdialog.js).
 
-// The fake's single question, as the digest is expected to read it.
 const HOME_QUESTION = 'Which database should we use?';
-// PLAN_DETAIL is the plan in a sentence, which the digest gives a plan
-// approval as its detail.
-const PLAN_DETAIL = 'Plan: create hello.txt holding the single line hi.';
-// CACHE_QUESTION is `/question cache`: the same rows under other words.
-const CACHE_QUESTION = 'Which database should the cache use?';
-const HOME_OPTIONS = [
-  { label: 'Postgres', description: 'Relational, robust', recommended: false },
-  { label: 'SQLite', description: 'Embedded file', recommended: false },
-];
 
-// The two tabs of `/question multiq`, and the permission prompt of `/ask`.
-const COLOR_QUESTION = 'Which color should the button be?';
-const COLOR_OPTIONS = ['Red', 'Green', 'Blue'].map((label) => ({ label, description: label + ' button', recommended: false }));
-const FEATURES_QUESTION = 'Which features do you want?';
-const FEATURES_OPTIONS = [
-  { label: 'Dark mode', description: 'Add a dark color theme', recommended: false },
-  { label: 'Search', description: 'Add search functionality', recommended: false },
-  { label: 'Export', description: 'Add export functionality', recommended: false },
-];
-const PERMISSION_QUESTION = 'Do you want to proceed?';
-const PERMISSION_OPTIONS = ['Yes', "Yes, and don't ask again", 'No']
-  .map((label) => ({ label, description: '', recommended: false }));
-// `/question permit`: Claude Code's network permission prompt, whose last row
-// - "No, and tell Claude what to do differently (esc)" - closes the prompt and
-// takes the words typed at the program's own prompt after it.
-const PERMIT_QUESTION = 'Do you want to allow this connection?';
-const PERMIT_OPTIONS = ['Yes', "Yes, and don't ask again for example.com"]
-  .map((label) => ({ label, description: '', recommended: false }));
-// `/question plan`: Claude Code's plan approval, whose third row takes the
-// feedback; and `/textq`: a turn that ends on a question in prose.
-const PLAN_QUESTION = 'Claude has written up a plan and is ready to execute. Would you like to proceed?';
-const PLAN_OPTIONS = ['Yes, and use auto mode', 'Yes, manually approve edits']
-  .map((label) => ({ label, description: '', recommended: false }));
-const TEXT_QUESTION = 'Which color should the button be? Red, green or blue?';
-// `/question yesno`: two tabs with the same two options, told apart only by
-// the question above each menu.
-const TESTS_QUESTION = 'Run the tests?';
-const PUSH_QUESTION = 'Push to main?';
-// `/question permit` under OpenCode: its permission card, whose options stand
-// side by side with the highlight on one of them in colour only.
-const OC_PERMIT_QUESTION = 'Allow the shell command echo hello-from-bash?';
-const OC_PERMIT_OPTIONS = ['Allow once', 'Allow always', 'Reject']
-  .map((label) => ({ label, description: '', recommended: false }));
+// askFor is an ask_user call of one question with these options, in REBUILD
+// §5.1's shape.
+const askFor = (question, labels, extra = {}) => ({
+  title: 'Storage',
+  context: 'The service is setting up storage for its first release.',
+  questions: [{
+    id: 'db', header: 'Database', question, kind: 'single',
+    options: labels.map((label, i) => ({ id: label.toLowerCase(), label, description: ['Relational, robust', 'One file, no server', 'The one the team knows'][i] || '', recommended: i === 0 })),
+    ...extra,
+  }],
+});
+const DB_ASK = askFor(HOME_QUESTION, ['Postgres', 'SQLite']);
 
-// The sentence every operator instruction opens with (operator.go).
-const OPERATOR_MARKER = 'You drive a terminal';
-
-// A Tesla's browser: a Chromium that says it has a mouse, at the car's size.
-const TESLA_AGENT = 'Mozilla/5.0 (X11; Linux) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0 Safari/537.36 Tesla/2025.20';
-
-// menuOnScreen is one of the fake's prompts, open: a question menu (Claude
-// Code's, or OpenCode's question card) with its hint under the options,
-// painted after the last answer written back, or the permission prompt of
-// /ask with nothing after it. The screen a model is given reaches into the
-// scrollback, so a menu that was answered is still in it - above the line
-// that settled it. What it returns is which prompt is open: 'db' (the single
-// question, in any of the three harnesses), 'multi' (`/question multi`), the
-// two tabs of `/question multiq` and their review ('multiq0', 'multiq1',
-// 'review'), the two of `/question yesno` ('yesno0', 'yesno1'), 'plan',
-// 'permission', 'permit' (the network prompt of `/question permit`),
-// 'ocpermit' (OpenCode's permission card), or 'textq' (a question in prose,
-// with the prompt open under it).
-function promptOnScreen(screen) {
-  const card = screen.lastIndexOf('△ Permission required');
-  if (card >= 0 && screen.indexOf('Allow always', card) > card && card > Math.max(screen.lastIndexOf('Permission allowed'),
-    screen.lastIndexOf('Permission rejected'), screen.lastIndexOf('you said'))) return 'ocpermit';
-  const settled = Math.max(...['● User ', '• Answered', '→ Asked', 'Question dismissed', 'you said:']
-    .map((mark) => screen.lastIndexOf(mark)));
-  let tail = settled < 0 ? screen : screen.slice(settled);
-  // A menu of several tabs is drawn again under its strip at every key.
-  const strip = tail.lastIndexOf('←  ');
-  if (strip >= 0) tail = tail.slice(strip);
-  const plan = tail.lastIndexOf('Ready to code?');
-  if (plan > 0) tail = tail.slice(plan);
-  if (tail.includes(PLAN_QUESTION)) return 'plan';
-  if (tail.includes('Ready to submit your answers?')) return 'review';
-  if (tail.includes('Tab/Arrow keys to navigate')) {
-    if (tail.includes(COLOR_QUESTION)) return 'multiq0';
-    if (tail.includes(FEATURES_QUESTION)) return 'multiq1';
-    if (tail.includes(TESTS_QUESTION)) return 'yesno0';
-    if (tail.includes(PUSH_QUESTION)) return 'yesno1';
-  }
-  if (tail.includes(FEATURES_QUESTION) && tail.includes('Enter to select')) return 'multi';
-  if ((tail.includes(HOME_QUESTION) || tail.includes(CACHE_QUESTION)) && /Enter to select|esc to cancel|esc dismiss|enter submit/.test(tail)) return 'db';
-  const permit = screen.lastIndexOf(PERMIT_QUESTION);
-  if (permit >= 0 && permit > Math.max(screen.lastIndexOf('Network request to example.com'),
-    screen.lastIndexOf('you said'))) return 'permit';
-  const asked = screen.lastIndexOf(PERMISSION_QUESTION);
-  if (asked >= 0 && asked > Math.max(screen.lastIndexOf('esc to interrupt'), screen.lastIndexOf('Worked for'),
-    screen.lastIndexOf('you said'))) return 'permission';
-  if (screen.lastIndexOf(TEXT_QUESTION) > settled) return 'textq';
-  return '';
-}
-const menuOnScreen = (screen) => promptOnScreen(screen) !== '';
-
-// screenOf is the screen a digest or operator request carries.
-function screenOf(text) {
-  const at = text.lastIndexOf('Screen:\n');
-  return at < 0 ? '' : text.slice(at + 'Screen:\n'.length);
+// homeChats is a signed-in server with nothing in it yet.
+async function homeChats(options = {}) {
+  const s = await start({ viewport: { width: 1280, height: 800 }, ...options });
+  await setup(s.page, s.url);
+  return s;
 }
 
-// homeGateway answers what the server asks the model about a session. A
-// scenario can take either kind of call over with `ctl.digest(prompt)` or
-// `ctl.operator(system, prompt)`: whatever they return - a reply, a promise of
-// one, or `{ status }` to refuse it - is the answer, and undefined leaves the
-// call to the model below.
-async function homeGateway(json, ctl = {}) {
-  const messages = json.messages || [];
-  const system = String((messages[0] || {}).content || '');
-  const last = String((messages[messages.length - 1] || {}).content || '');
-  if (system.startsWith(DIGEST_MARKER)) {
-    const taken = ctl.digest ? await ctl.digest(last, json) : undefined;
-    return taken !== undefined ? taken : homeDigest(last);
-  }
-  if (system.startsWith(OPERATOR_MARKER)) {
-    const taken = ctl.operator ? await ctl.operator(system, last, json) : undefined;
-    return taken !== undefined ? taken : homeOperator(system, last);
-  }
-  // Anything else - a session being named - is the scenario's, or the stub's.
-  return ctl.other ? ctl.other(system, last, json) : undefined;
+// askingChat makes a Claude Code chat elsewhere and has its agent ask; it
+// answers the chat's id and the question's.
+async function askingChat(s, title, ask = DB_ASK) {
+  const id = await makeChat(s, 'claude', { title });
+  const said = await tellChat(s, id, '/askuser ' + JSON.stringify(ask));
+  const askId = said === 200 ? await openAskOf(s, id, 20000) : '';
+  if (!askId) throw new Error(title + ' never asked (' + said + ')');
+  return { id, askId };
 }
 
-// homeDigest is a model reading one screen: the prompt, when one is open, is
-// the question; anything else is a session with nothing to ask.
-function homeDigest(prompt) {
-  const named = prompt.match(/The session is called "((?:[^"\\]|\\.)*)"/);
-  const title = named ? JSON.parse('"' + named[1] + '"') : 'The session';
-  const open = promptOnScreen(screenOf(prompt));
-  if (!open) {
-    return JSON.stringify({ summary: title + ' is at its prompt.', context: '', question: null });
+// answerFrom answers a chat's question over the API, as another device does:
+// option ids per question, everything else empty.
+function answerFrom(s, id, askId, picks, device = 'phone') {
+  const answers = {};
+  for (const [q, selected] of Object.entries(picks)) {
+    answers[q] = { selected, other: null, note: null, delegated: false, skipped: false };
   }
-  if (open === 'permit') {
-    return JSON.stringify({
-      summary: 'Asks to reach example.com',
-      context: title + ' wants to reach example.com outside its sandbox.',
-      question: {
-        kind: 'confirm',
-        detail: '',
-        items: [{ header: '', text: PERMIT_QUESTION, multi: false, free_text: true, options: PERMIT_OPTIONS }],
-      },
-    });
-  }
-  if (open === 'ocpermit') {
-    return JSON.stringify({
-      summary: 'Asks to run a shell command',
-      context: title + ' wants to run echo hello-from-bash.',
-      question: {
-        kind: 'confirm',
-        detail: '',
-        items: [{ header: '', text: OC_PERMIT_QUESTION, multi: false, free_text: false, options: OC_PERMIT_OPTIONS }],
-      },
-    });
-  }
-  if (open === 'permission') {
-    return JSON.stringify({
-      summary: 'Asks to run a command',
-      context: title + ' wants to run a command before it goes on.',
-      question: {
-        kind: 'confirm',
-        detail: '',
-        items: [{ header: '', text: PERMISSION_QUESTION, multi: false, free_text: false, options: PERMISSION_OPTIONS }],
-      },
-    });
-  }
-  if (open === 'multiq0' || open === 'multiq1' || open === 'review') {
-    return JSON.stringify({
-      summary: 'Asks about the button and the features',
-      context: title + ' is building the settings page.',
-      question: {
-        kind: 'choice',
-        detail: '',
-        items: [
-          { header: 'Color', text: COLOR_QUESTION, multi: false, free_text: true, options: COLOR_OPTIONS },
-          { header: 'Features', text: FEATURES_QUESTION, multi: true, free_text: true, options: FEATURES_OPTIONS },
-        ],
-      },
-    });
-  }
-  if (open === 'multi') {
-    return JSON.stringify({
-      summary: 'Asks which features to build',
-      context: title + ' is planning the next release.',
-      question: {
-        kind: 'multi',
-        detail: '',
-        items: [{ header: 'Features', text: FEATURES_QUESTION, multi: true, free_text: true, options: FEATURES_OPTIONS }],
-      },
-    });
-  }
-  if (open === 'plan') {
-    return JSON.stringify({
-      summary: 'Asks to approve its plan',
-      context: title + ' has a plan to create hello.txt.',
-      question: {
-        kind: 'plan',
-        detail: PLAN_DETAIL,
-        items: [{ header: '', text: PLAN_QUESTION, multi: false, free_text: true, options: PLAN_OPTIONS }],
-      },
-    });
-  }
-  if (open === 'textq') {
-    return JSON.stringify({
-      summary: 'Asks which color the button should be',
-      context: title + ' is styling the button and ended its answer on a question.',
-      question: {
-        kind: 'text',
-        detail: '',
-        items: [{ header: '', text: TEXT_QUESTION, multi: false, free_text: true, options: [] }],
-      },
-    });
-  }
-  return JSON.stringify({
-    summary: 'Asks which database to use',
-    context: title + ' is setting up storage and needs to know which database to build on.',
-    question: {
-      kind: 'choice',
-      detail: '',
-      items: [{ header: 'DB', text: openTail(screenOf(prompt)).includes(CACHE_QUESTION) ? CACHE_QUESTION : HOME_QUESTION,
-        multi: false, free_text: true, options: HOME_OPTIONS }],
-    },
+  return s.context.request.post(s.url + '/api/chats/' + encodeURIComponent(id) + '/asks/' + encodeURIComponent(askId) + '/answer', {
+    data: { client_id: 'e2e-' + Math.random().toString(36).slice(2), device, answer: { answers, general_note: null, follow_up: null } },
   });
 }
 
-// homeReply is an operator decision.
-const homeReply = (actions, done, summary) => JSON.stringify({ actions, done, summary, note: '' });
-
-// goalOf is the person's answer as the operator's goal states it: per item,
-// the options chosen and the words of their own; and for a question asked in
-// prose, the one line to type.
-function goalOf(system) {
-  const unquote = (raw) => JSON.parse('"' + raw + '"');
-  const answers = {};
-  for (const line of system.split('\n')) {
-    const item = line.match(/^Question (\d+): (.*)$/);
-    if (!item) continue;
-    const choices = [...item[2].matchAll(/choose ((?:"(?:[^"\\]|\\.)*"(?: and )?)+)/g)]
-      .flatMap((said) => [...said[1].matchAll(/"((?:[^"\\]|\\.)*)"/g)].map((one) => unquote(one[1])));
-    const own = item[2].match(/typed exactly: "((?:[^"\\]|\\.)*)"/);
-    answers[Number(item[1]) - 1] = { choices, text: own ? unquote(own[1]) : '' };
-  }
-  const prose = system.match(/type exactly this and then press Enter: "((?:[^"\\]|\\.)*)"/);
-  return { answers, prose: prose ? unquote(prose[1]) : null };
-}
-
-// rowOf is the number the open prompt shows for a label, ticked or not.
-function rowOf(screen, label) {
-  const settled = Math.max(...['● User ', '• Answered', '→ Asked', 'Question dismissed', 'you said:']
-    .map((mark) => screen.lastIndexOf(mark)));
-  let tail = settled < 0 ? screen : screen.slice(settled);
-  const strip = tail.lastIndexOf('←  ');
-  if (strip >= 0) tail = tail.slice(strip);
-  const found = tail.match(new RegExp('(\\d+)\\. (?:\\[[ ✔]\\] )?' + label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
-  return found ? found[1] : '';
-}
-
-// openTail is the part of the screen the open prompt is drawn in: after the
-// last line that settled one, and under the strip of a menu of several tabs.
-function openTail(screen) {
-  const settled = Math.max(...['● User ', '• Answered', '→ Asked', 'Question dismissed', 'you said:']
-    .map((mark) => screen.lastIndexOf(mark)));
-  let tail = settled < 0 ? screen : screen.slice(settled);
-  const strip = tail.lastIndexOf('←  ');
-  if (strip >= 0) tail = tail.slice(strip);
-  return tail;
-}
-
-// lastMenu is the open prompt's rows as last drawn: a menu is drawn again at
-// every key, and the scrollback a screen reaches into holds the drawings
-// before it, ticks and cursor as they were then.
-function lastMenu(screen) {
-  const tail = openTail(screen);
-  const starts = [...tail.matchAll(/^(?:❯ | {2})1\. /gm)];
-  return starts.length ? tail.slice(starts[starts.length - 1].index) : tail;
-}
-
-// tickedOn is whether the open multi-select shows a label's box ticked - by
-// somebody at the machine, say, before the answer came from the dialog.
-function tickedOn(screen, label) {
-  const found = lastMenu(screen).match(new RegExp('\\d+\\. \\[([ ✔])\\] ' + label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
-  return !!found && found[1] === '✔';
-}
-
-// walkTo is the arrows that take the open multi-select's cursor from the row
-// the screen shows it on to row `to` (0 is the first option). The rows a
-// cursor walks are the options, the own-answer row, Submit and Chat.
-function walkTo(screen, to) {
-  const rows = lastMenu(screen).split('\n').filter((line) => /^(?:❯ | {2})(?:\d+\. | {3}Submit)/.test(line));
-  const n = to - Math.max(0, rows.findIndex((line) => line.startsWith('❯ ')));
-  return Array.from({ length: Math.abs(n) }, () => ({ key: n > 0 ? 'Down' : 'Up' }));
-}
-
-// draftOn is what already stands on the fake's line prompt, not yet sent:
-// words somebody typed at the machine and left there.
-function draftOn(screen) {
-  const lines = screen.replace(/\s+$/, '').split('\n');
-  for (let i = lines.length - 1; i >= 0; i -= 1) {
-    const found = lines[i].match(/^>(?: (.*))?$/);
-    if (found) return (found[1] || '').trimEnd();
-  }
-  return '';
-}
-
-// litIn is the option a step says a colour-only highlight is on, or ''.
-function litIn(prompt) {
-  const found = prompt.match(/The highlight, which the screen shows in colour only, is on the option "((?:[^"\\]|\\.)*)"/);
-  return found ? JSON.parse('"' + found[1] + '"') : '';
-}
-
-// homeOperator is a model driving the prompt to the answer in its goal: the
-// digit the screen shows for the option, or the own-answer row's digit, the
-// words and Enter. A multi-select item ticks its rows and goes down to its
-// Submit; a menu of several tabs answers the one on screen and submits its
-// review. A permission prompt takes its digit as a line, with Enter, and a
-// question asked in prose is answered on the prompt. Once keys have gone in,
-// a screen without the prompt is a question that was answered, and one that
-// still shows the same step is waited on.
-function homeOperator(system, prompt) {
-  const screen = screenOf(prompt);
-  const sent = prompt.includes('Keys have been sent in this run.');
-  const reply = homeReply;
-  const open = promptOnScreen(screen);
-  const { answers, prose } = goalOf(system);
-  if (prose !== null) {
-    if (open !== 'textq') return reply([], true, sent ? 'The answer was typed.' : 'The question was no longer on the screen.');
-    // Words left on the prompt at the machine are cleared first, with one
-    // BSpace action pressed as often as the draft is long: the person's
-    // answer is sent as it is, not joined to them. A prompt that already
-    // holds exactly the person's words - a run cut off before its Enter -
-    // only needs the Enter, which the step says.
-    const draft = draftOn(screen);
-    if (draft === prose && (sent || prompt.includes("already holds the person's words"))) return reply([{ key: 'Enter' }], false, '');
-    if (draft) return reply([{ key: 'BSpace', times: [...draft].length }], false, '');
-    return reply([{ text: prose }, { key: 'Enter' }], false, '');
-  }
-  if (!open || open === 'textq') {
-    return reply([], true, sent ? 'The answer was taken.' : 'The question was no longer on the screen.');
-  }
-  // The steps of a menu of several tabs come one after the other; any other
-  // prompt is answered in one step, and is waited on until it goes.
-  if (sent && open !== 'multiq1' && open !== 'yesno1' && open !== 'review') return reply([{ wait_ms: 400 }], false, '');
-  const item = (n, multi) => {
-    const a = answers[n] || { choices: [], text: '' };
-    if (!multi) {
-      if (a.text) return [{ text: rowOf(screen, 'Type something.') }, { text: a.text }, { key: 'Enter' }];
-      return [{ text: rowOf(screen, a.choices[0] || '') }];
+// returned is what the agent said it got back from ask_user, once it has.
+async function returned(s, id, timeout = 15000) {
+  const end = Date.now() + timeout;
+  while (Date.now() < end) {
+    const messages = (await historyOf(s, id)).messages || [];
+    const said = messages.filter((m) => m.role === 'assistant').map(textOf).find((t) => t.startsWith('ask_user returned: '));
+    if (said) {
+      // The answer as JSON, then a line for the model on what it holds
+      // besides answers (askuser.ToolResult).
+      try { return JSON.parse(said.slice('ask_user returned: '.length).split('\n')[0]); } catch { return said; }
     }
-    // A digit toggles its box, so only a box that is not as the answer has
-    // it is pressed: a chosen one still empty, and one ticked at the machine
-    // that the person did not choose.
-    const acts = [...a.choices.filter((label) => !tickedOn(screen, label)),
-      ...FEATURES_OPTIONS.map((o) => o.label).filter((label) => !a.choices.includes(label) && tickedOn(screen, label))]
-      .map((label) => ({ text: rowOf(screen, label) }));
-    const free = FEATURES_OPTIONS.length;
-    if (a.text) return [...acts, ...walkTo(screen, free), { text: a.text }, { key: 'Enter' }, { key: 'Down' }, { key: 'Enter' }];
-    return [...acts, ...walkTo(screen, free + 1), { key: 'Enter' }];
+    await wait(200);
+  }
+  return null;
+}
+
+// askLook is the question dialog as it is drawn, or null when it is shut.
+const askLook = (page) => page.evaluate(() => {
+  const dialog = document.querySelector('dialog.so-askdlg');
+  if (!dialog || !dialog.open) return null;
+  const text = (sel) => ((dialog.querySelector(sel) || {}).textContent || '').replace(/\s+/g, ' ').trim();
+  // The DS dialog is a full-window layer; what is seen is its box.
+  const frame = dialog.querySelector('.ds-dialog__box') || dialog;
+  const box = frame.getBoundingClientRect();
+  const kb = dialog.querySelector('.so-kb-copy');
+  const at = document.activeElement;
+  return {
+    top: text('.so-q-top-title'),
+    session: text('.so-q-session-title'),
+    title: text('.so-ask-title'),
+    context: text('.so-ask-context__body'),
+    question: text('.so-q-text'),
+    step: text('.so-q-step'),
+    options: [...dialog.querySelectorAll('.so-q-option')].map((option) => {
+      const r = option.getBoundingClientRect();
+      return {
+        id: option.dataset.option,
+        label: ((option.querySelector('.so-q-option-label') || {}).textContent || '').trim(),
+        desc: ((option.querySelector('.so-q-option-desc') || {}).textContent || '').trim(),
+        pressed: option.getAttribute('aria-pressed'),
+        h: Math.round(r.height), w: Math.round(r.width),
+        size: getComputedStyle(option.querySelector('.so-q-option-label')).fontSize,
+      };
+    }),
+    finished: text('.so-q-finished .ds-empty__title'),
+    finishedText: text('.so-q-finished .ds-empty__text'),
+    status: text('.so-q-status'),
+    refused: text('.so-refused'),
+    actions: [...dialog.querySelectorAll('.so-q-actions [data-action]')].map((b) => b.dataset.action),
+    other: !!dialog.querySelector('[data-action="other"]'),
+    open: !!dialog.querySelector('[data-action="open-chat"]'),
+    read: !!dialog.querySelector('[data-action="read"]'),
+    kb: kb ? kb.checkVisibility() : false,
+    focus: at && dialog.contains(at) ? (at.classList.contains('so-q-own-field') ? 'own:' + at.id : at.className || at.tagName) : '',
+    box: { x: Math.round(box.x), y: Math.round(box.y), w: Math.round(box.width), h: Math.round(box.height) },
+    viewport: { w: innerWidth, h: innerHeight },
+    overflow: frame.scrollWidth - frame.clientWidth,
   };
-  switch (open) {
-    case 'db': return reply(item(0, false), false, '');
-    case 'multi': return reply(item(0, true), false, '');
-    case 'multiq0': return reply(item(0, false), false, '');
-    case 'multiq1': return reply(item(1, true), false, '');
-    case 'yesno0': return reply(item(0, false), false, '');
-    case 'yesno1': return reply(item(1, false), false, '');
-    case 'review': return reply([{ text: rowOf(screen, 'Submit answers') }], false, '');
-    case 'plan': {
-      const a = answers[0] || { choices: [], text: '' };
-      if (a.text) return reply([{ text: rowOf(screen, 'Tell Claude what to change') }, { text: a.text }, { key: 'Enter' }], false, '');
-      return reply([{ text: rowOf(screen, a.choices[0] || '') }], false, '');
-    }
-    case 'permission': {
-      const a = answers[0] || { choices: [] };
-      return reply([{ text: rowOf(screen, a.choices[0] || '') }, { key: 'Enter' }], false, '');
-    }
-    case 'ocpermit': {
-      // The highlight is in colour only, and the step says where it is: on
-      // the first option, unless somebody at the machine moved it. Right
-      // moves it on and Left back.
-      const want = OC_PERMIT_OPTIONS.findIndex((o) => o.label === ((answers[0] || { choices: [] }).choices[0]));
-      if (want < 0) return reply([], true, 'The goal names no answer.');
-      const n = want - Math.max(0, OC_PERMIT_OPTIONS.findIndex((o) => o.label === litIn(prompt)));
-      return reply([...Array.from({ length: Math.abs(n) }, () => ({ key: n > 0 ? 'Right' : 'Left' })), { key: 'Enter' }], false, '');
-    }
-  }
-  return reply([], true, 'The goal names no answer.');
-}
-
-// operatorCalls is every step the operator asked the stub about.
-const operatorCalls = (stub) => stub.calls.filter((c) => {
-  const first = c.json && Array.isArray(c.json.messages) && c.json.messages[0];
-  return !!first && String(first.content).startsWith(OPERATOR_MARKER);
 });
 
-// homeServer is a signed-in server whose gateway is the stub above, and the
-// `ctl` a scenario takes calls of it over with.
-async function homeServer(options = {}) {
-  const ctl = { digest: null, operator: null };
-  const stub = await openRouterStub({ answer: (json) => homeGateway(json, ctl) });
-  const s = await start({ viewport: { width: 1280, height: 800 }, ...options });
-  await setup(s.page, s.url);
-  await pointGateway(s, stub);
-  return { s, stub, ctl };
+async function awaitAsk(page, test, timeout = 15000) {
+  const started = Date.now();
+  let seen = null;
+  while (Date.now() - started < timeout) {
+    seen = await askLook(page);
+    if (test(seen)) return { ok: true, ms: Date.now() - started, seen };
+    await wait(120);
+  }
+  return { ok: false, ms: Date.now() - started, seen };
 }
+
+const askShut = (page, timeout = 15000) => page.waitForFunction(() => {
+  const dialog = document.querySelector('dialog.so-askdlg');
+  return !dialog || !dialog.open;
+}, null, { timeout }).then(() => true, () => false);
+
+// askSettled waits for the dialog's opening animation to end: it pops in
+// from a little smaller, and a box measured on the way is not its size.
+const askSettled = (page) => page.waitForFunction(() => {
+  const dialog = document.querySelector('dialog.so-askdlg');
+  return !!dialog && dialog.open && dialog.getAnimations({ subtree: true }).every((a) => a.playState !== 'running');
+}, null, { timeout: 5000 }).catch(() => {});
+
+// watchAsk keeps every line the dialog says - its status, what it says when
+// a question is settled, and a refusal - in order: "Sending your answer…"
+// can come and go between two looks.
+async function watchAsk(page) {
+  await page.evaluate(() => {
+    window.__asksaid = [];
+    new MutationObserver(() => {
+      const dialog = document.querySelector('dialog.so-askdlg');
+      if (!dialog) return;
+      for (const sel of ['.so-q-status', '.so-q-finished .ds-empty__title', '.so-refused']) {
+        const node = dialog.querySelector(sel);
+        const one = node ? node.textContent.replace(/\s+/g, ' ').trim() : '';
+        if (one && window.__asksaid[window.__asksaid.length - 1] !== one) window.__asksaid.push(one);
+      }
+    }).observe(document.body, { childList: true, subtree: true, characterData: true, attributes: true });
+  });
+  return () => page.evaluate(() => window.__asksaid.slice());
+}
+
+// toastsOf is every toast the page has shown since watchToasts.
+async function watchToasts(page) {
+  await page.evaluate(() => {
+    window.__toastsSeen = [];
+    const host = document.getElementById('toasts');
+    new MutationObserver((records) => {
+      for (const record of records) {
+        for (const node of record.addedNodes) if (node.textContent) window.__toastsSeen.push(node.textContent.trim());
+      }
+    }).observe(host, { childList: true, subtree: true });
+  });
+  return () => page.evaluate(() => window.__toastsSeen.slice());
+}
+
+// A Tesla's browser: a Chromium that says it has a mouse, at the car's size.
+const TESLA_AGENT = 'Mozilla/5.0 (X11; Linux) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0 Safari/537.36 Tesla/2025.20';
 
 // gate is a call held back until a scenario lets it go.
 function gate() {
   let release = () => {};
   const promise = new Promise((resolve) => { release = resolve; });
   return { promise, release };
-}
-
-// answerRunOf is the server's answer run of a session, or null.
-async function answerRunOf(s, id) {
-  const res = await s.context.request.get(s.url + '/api/sessions/' + encodeURIComponent(id) + '/answer');
-  return res.ok() ? ((await res.json()).run || null) : null;
-}
-
-// makeAgent starts a Claude Code session the way another device would - over
-// the API, with this page never attached to it - and waits until the fake is
-// at its prompt.
-async function makeAgent(s, title, harness = 'claude') {
-  const made = await s.context.request.post(s.url + '/api/sessions', { data: { harness, title } });
-  if (!made.ok()) throw new Error('could not create ' + title + ': ' + made.status());
-  const id = (await made.json()).session.id;
-  const row = await waitForState(s, id, ['running']);
-  if (!row || row.state !== 'running') throw new Error(title + ' never ran: ' + JSON.stringify(row));
-  if (harness !== 'shell') {
-    const idle = await awaitActivity(s, id, (a) => a.state === 'idle', 30000);
-    if (!idle) throw new Error(title + ' never settled at its prompt');
-  }
-  return id;
 }
 
 // awaitActivity waits for the server to say something about what a session
@@ -7612,50 +7348,6 @@ function tmuxType(s, id, text, enter = true) {
   const target = ['-S', tmuxSock(s.data), 'send-keys', '-t', 'soc_' + id];
   execFileSync('tmux', [...target, '-l', text]);
   if (enter) execFileSync('tmux', [...target, 'Enter']);
-}
-
-// paneOf is what the pane shows, read through tmux.
-function paneOf(s, id) {
-  try {
-    return execFileSync('tmux', ['-S', tmuxSock(s.data), 'capture-pane', '-p', '-t', 'soc_' + id],
-      { stdio: ['ignore', 'pipe', 'ignore'] }).toString();
-  } catch {
-    return '';
-  }
-}
-
-// askQuestion opens the fake's menu in a session and waits until the server
-// has read it as a question with the options on screen.
-async function askQuestion(s, id) {
-  tmuxType(s, id, '/question');
-  const waiting = await awaitActivity(s, id, (a) => a.state === 'waiting', 15000);
-  const digest = waiting && await awaitDigest(s, id, (d) => d.phase === 'ready' && !!d.question, 20000);
-  return { waiting, digest };
-}
-
-// awaitDigest waits for the server's digest of a session to pass a test.
-async function awaitDigest(s, id, test, timeout = 20000) {
-  const until = Date.now() + timeout;
-  while (Date.now() < until) {
-    const res = await s.context.request.get(s.url + '/api/home');
-    const digest = res.ok() ? ((await res.json()).digests || {})[id] : null;
-    if (digest && test(digest)) return digest;
-    await wait(300);
-  }
-  return null;
-}
-
-// answersLogged is every question the fake has had settled, oldest first.
-const answersLogged = (s) => readFakeLog(s.data).filter((entry) => entry.event === 'answer');
-
-async function awaitAnswerLogged(s, count, timeout = 30000) {
-  const until = Date.now() + timeout;
-  while (Date.now() < until) {
-    const all = answersLogged(s);
-    if (all.length >= count) return all;
-    await wait(250);
-  }
-  return answersLogged(s);
 }
 
 // homeLook is Home as it is drawn: the numbers, the line about the
@@ -7706,105 +7398,6 @@ async function awaitHome(page, test, timeout = 15000) {
   }
   return { ok: false, ms: Date.now() - started, seen };
 }
-
-// sheetLook is the question dialog as it is drawn, or null when it is shut.
-const sheetLook = (page) => page.evaluate(() => {
-  const dialog = document.querySelector('dialog.so-question');
-  if (!dialog || !dialog.open) return null;
-  const text = (sel) => ((dialog.querySelector(sel) || {}).textContent || '').trim();
-  const shown = (sel) => { const node = dialog.querySelector(sel); return !!node && !node.hidden; };
-  // The DS dialog is a full-window layer; what is seen is its box.
-  const frame = dialog.querySelector('.ds-dialog__box') || dialog;
-  const box = frame.getBoundingClientRect();
-  const status = dialog.querySelector('.so-q-status');
-  const send = dialog.querySelector('.so-q-send');
-  const kb = dialog.querySelector('.so-kb-copy');
-  return {
-    session: text('.so-q-session-title'),
-    step: text('.so-q-step'),
-    context: text('.so-q-context'),
-    question: text('.so-q-text'),
-    counter: text('.so-q-counter'),
-    finished: text('.so-q-finished-title'),
-    options: [...dialog.querySelectorAll('.so-q-option')].map((option) => {
-      const r = option.getBoundingClientRect();
-      return {
-        label: option.dataset.label,
-        pressed: option.getAttribute('aria-pressed'),
-        desc: ((option.querySelector('.so-q-option-desc') || {}).textContent || ''),
-        h: Math.round(r.height),
-        w: Math.round(r.width),
-        size: getComputedStyle(option.querySelector('.so-q-option-label')).fontSize,
-        disabled: option.disabled,
-      };
-    }),
-    retry: shown('.so-q-retry'),
-    cancel: shown('.so-q-cancel'),
-    openErr: shown('.so-q-open-error'),
-    note: text('.so-q-note'),
-    past: !!dialog.querySelector('.so-q-body[data-state="past"]'),
-    reading: ((dialog.querySelector('.so-q-reading') || {}).textContent || '').trim(),
-    problem: ((dialog.querySelector('.so-q-problem p') || {}).textContent || '').trim(),
-    focus: (() => {
-      const at = document.activeElement;
-      if (!at || !dialog.contains(at)) return '';
-      return at.classList.contains('so-q-own-field') ? 'own'
-        : at.classList.contains('so-q-option') ? 'option:' + at.dataset.label : at.className || at.tagName;
-    })(),
-    own: !!dialog.querySelector('.so-q-own-field'),
-    ownValue: (dialog.querySelector('.so-q-own-field') || {}).value || '',
-    ownDisabled: !!(dialog.querySelector('.so-q-own-field') || {}).disabled,
-    mic: !!dialog.querySelector('.so-q-own .so-mic, .so-q-own button'),
-    read: !!dialog.querySelector('.so-q-read'),
-    open: !!dialog.querySelector('.so-q-open'),
-    send: send ? { hidden: send.hidden, disabled: send.disabled } : null,
-    status: status && !status.hidden ? { kind: status.dataset.kind, text: status.textContent.trim() } : null,
-    kb: kb ? kb.checkVisibility() : false,
-    box: { x: Math.round(box.x), y: Math.round(box.y), w: Math.round(box.width), h: Math.round(box.height) },
-    viewport: { w: innerWidth, h: innerHeight },
-    overflow: frame.scrollWidth - frame.clientWidth,
-  };
-});
-
-async function awaitSheet(page, test, timeout = 15000) {
-  const started = Date.now();
-  let seen = null;
-  while (Date.now() - started < timeout) {
-    seen = await sheetLook(page);
-    if (test(seen)) return { ok: true, ms: Date.now() - started, seen };
-    await wait(120);
-  }
-  return { ok: false, ms: Date.now() - started, seen };
-}
-
-// watchSheet keeps every line the dialog's progress line ever says, in order:
-// "Choosing SQLite…" can come and go between two looks.
-async function watchSheet(page) {
-  await page.evaluate(() => {
-    window.__qsaid = [];
-    new MutationObserver(() => {
-      const line = document.querySelector('dialog.so-question .so-q-status:not([hidden])');
-      const said = line ? line.textContent.trim() : '';
-      const finished = document.querySelector('dialog.so-question .so-q-finished-title');
-      for (const one of [said, finished ? finished.textContent.trim() : '']) {
-        if (one && window.__qsaid[window.__qsaid.length - 1] !== one) window.__qsaid.push(one);
-      }
-    }).observe(document.body, { childList: true, subtree: true, characterData: true, attributes: true });
-  });
-  return () => page.evaluate(() => window.__qsaid.slice());
-}
-
-// sheetSettled waits for the dialog's opening animation to end: it pops in
-// from a little smaller, and a box measured on the way is not its size.
-const sheetSettled = (page) => page.waitForFunction(() => {
-  const dialog = document.querySelector('dialog.so-question');
-  return !!dialog && dialog.open && dialog.getAnimations({ subtree: true }).every((a) => a.playState !== 'running');
-}, null, { timeout: 5000 }).catch(() => {});
-
-const sheetShut = (page, timeout = 15000) => page.waitForFunction(() => {
-  const dialog = document.querySelector('dialog.so-question');
-  return !dialog || !dialog.open;
-}, null, { timeout }).then(() => true, () => false);
 
 // A page in its own context: a phone or a car, signed in with the same cookie.
 async function deviceOf(s, options) {
@@ -7905,13 +7498,16 @@ async function homelanding() {
   } finally { await s.stop(); }
 }
 
-// home-live: the numbers move by themselves, on a page with no terminal
-// attached to anything.
+// home-live: chats made on another device are counted, and one that starts
+// working, one that asks, a Shell that ends and a chat that finishes unseen
+// move Home's numbers within seconds - with no reload, and with no socket
+// but the event stream. A card filters the list, a second tap shows
+// everything.
 async function homelive() {
-  const { s, stub } = await homeServer();
+  const s = await homeChats();
   try {
-    // Every socket this page opens from here on, so that "no terminal
-    // attached" is a measurement and not a claim.
+    // Every socket this page opens from here on, so that "nothing attached"
+    // is a measurement and not a claim.
     const sockets = [];
     s.page.on('websocket', (ws) => sockets.push(ws.url()));
     await s.page.reload({ waitUntil: 'domcontentloaded' });
@@ -7919,52 +7515,48 @@ async function homelive() {
     await s.page.evaluate(() => { window.__sameHome = true; });
 
     // Made elsewhere, and on Home by themselves.
-    const busy = await makeAgent(s, 'Refactor the mirror');
-    const asking = await makeAgent(s, 'Pick a database');
-    const stopping = await makeAgent(s, 'Write the docs');
+    const busy = await makeChat(s, 'claude', { title: 'Refactor the mirror' });
+    const asking = await makeChat(s, 'claude', { title: 'Pick a database' });
+    const shellMade = await s.context.request.post(s.url + '/api/sessions', { data: { harness: 'shell', title: 'Write the docs' } });
+    const shell = (await shellMade.json()).session.id;
     const prepared = await s.context.request.post(s.url + '/api/sessions',
       { data: { prestart: true, harness: 'claude', prompt: 'Later, please' } });
-    ok(prepared.ok(), 'a prepared session is made too', prepared.status());
-    const arrived = await awaitHome(s.page, (h) => h.counts.ready === 3 && h.counts.prepared === 1, 10000);
-    ok(arrived.ok, 'sessions made on another device are counted without a reload: three ready, one prepared',
+    ok(prepared.ok(), 'a prepared chat is made too', prepared.status());
+    const arrived = await awaitHome(s.page, (h) => h.counts.ready === 2 && h.counts.prepared === 1
+      && h.rows.length >= 0, 15000);
+    ok(arrived.ok, 'chats made on another device are counted without a reload: two ready, one prepared',
       took(arrived) + ' ' + JSON.stringify(arrived.seen.counts));
 
-    // The turn is asked for from a tab of its own, which is then closed: a
-    // turn only goes unread when somebody asked for it (the detector's
-    // rule), and only when nobody is looking when it ends.
-    const asker = await secondTab(s, busy);
     let sent = Date.now();
-    await typeLine(asker, '/busy 7000');
-    await asker.close();
+    await tellChat(s, busy, work('claude', 7));
     const running = await awaitHome(s.page, (h) => h.counts.running === 1, 8000);
-    ok(running.ok && Date.now() - sent < 4000, 'a session that starts working is counted as running within seconds',
-      ((Date.now() - sent) / 1000).toFixed(1) + ' s after the keys, ' + JSON.stringify(running.seen.counts));
+    ok(running.ok && Date.now() - sent < 4000, 'a chat that starts working is counted as running within seconds',
+      ((Date.now() - sent) / 1000).toFixed(1) + ' s after the message, ' + JSON.stringify(running.seen.counts));
 
     sent = Date.now();
-    tmuxType(s, asking, '/question');
+    await tellChat(s, asking, '/askuser ' + JSON.stringify(DB_ASK));
     const question = await awaitHome(s.page, (h) => h.counts.questions === 1 && h.asking, 8000);
     ok(question.ok && Date.now() - sent < 4000, 'a question is counted, and the card turns amber',
-      ((Date.now() - sent) / 1000).toFixed(1) + ' s after the keys, ' + JSON.stringify(question.seen.counts));
+      ((Date.now() - sent) / 1000).toFixed(1) + ' s after the message, ' + JSON.stringify(question.seen.counts));
     const summary = await awaitHome(s.page, (h) => {
       const row = h.rows.find((r) => r.id === asking);
-      return !!row && row.answer && row.summary === 'Asks which database to use';
+      return !!row && row.answer && row.summary === HOME_QUESTION;
     }, 15000);
-    ok(summary.ok, 'its row has an Answer button and the line the model wrote about it',
+    ok(summary.ok, 'its card has an Answer button and the question’s own words',
       JSON.stringify(summary.seen.rows.find((r) => r.id === asking)));
-    ok(stub.digests.length > 0, 'the line came from a digest of the screen', stub.digests.length + ' digests');
 
-    tmuxType(s, stopping, '/exit 3');
+    // A Shell takes no turns: it is counted as not running once it ends.
+    tmuxType(s, shell, 'exit 3');
     const stopped = await awaitHome(s.page, (h) => h.counts.stopped === 1, 15000);
-    ok(stopped.ok, 'a session whose program ended is counted as not running', took(stopped));
+    ok(stopped.ok, 'a Shell that ended is counted as not running', took(stopped));
     const finished = await awaitHome(s.page, (h) => h.counts.running === 0 && h.counts.finished === 1, 20000);
-    ok(finished.ok, 'the working one finishes while nobody looks, and is counted as finished',
+    ok(finished.ok, 'the working chat finishes while nobody looks, and is counted as finished',
       took(finished) + ' ' + JSON.stringify(finished.seen.counts));
     await shot(s.page, 'home-desktop');
 
     // The list under the numbers: "Needs you" by default, a card filters it,
-    // a second tap shows everything.
-    // The list is live data: a reorder waits while the list is pointed at
-    // (DS.motion.flip), so it is awaited rather than read at once.
+    // a second tap shows everything. A reorder waits while the list is
+    // pointed at (DS.motion.flip), so it is awaited rather than read at once.
     const needs = (await awaitHome(s.page, (h) => h.rows.length === 2, 4000)).seen;
     ok(needs.listTitle === 'Needs you' && needs.rows[0] && needs.rows[0].id === asking
       && needs.rows.some((r) => r.id === busy) && needs.rows.length === 2,
@@ -7986,33 +7578,28 @@ async function homelive() {
     ok(!!sidebar && sidebar.waiting, 'the sidebar says the same as Home', JSON.stringify(sidebar && { waiting: sidebar.waiting }));
     const same = await s.page.evaluate(() => window.__sameHome === true);
     ok(same, 'all of it without a reload', String(same));
-    // The rule behind the cards, for the states a fake cannot be put in on
-    // demand: unread work counts as Finished whatever the session's state, and
-    // a session filed in the background is never news, only Ready - though
-    // its questions still count.
+    // The rule behind the cards, for the states that cannot be put on demand:
+    // unread work counts as Finished whatever the session's state, and a
+    // session filed in the background is never news, only Ready - though its
+    // questions still count.
     const cards = await s.page.evaluate(async () => {
       const { cardsOf } = await import('/static/js/home.js');
       const ctx = (activity, status = 'in_progress') => ({ statusOf: () => status, activityOf: () => activity, digestOf: () => null });
-      const row = (state) => ({ id: 'x', state, harness: 'claude' });
+      const row = (state) => ({ id: 'x', state, harness: 'claude', kind: 'chat' });
       return {
         stoppedUnread: cardsOf(ctx({ state: 'idle', unread: true }), row('needs_resume')).join(),
-        exitedUnknownUnread: cardsOf(ctx({ state: 'unknown', unread: true }), row('exited')).join(),
         runningUnknownUnread: cardsOf(ctx({ state: 'unknown', unread: true }), row('running')).join(),
         backgroundUnread: cardsOf(ctx({ state: 'idle', unread: true }, 'background'), row('running')).join(),
         backgroundAsks: cardsOf(ctx({ state: 'waiting' }, 'background'), row('running')).join(),
       };
     });
-    ok(cards.stoppedUnread === 'stopped,finished' && cards.exitedUnknownUnread === 'stopped,finished'
-      && cards.runningUnknownUnread === 'finished' && cards.backgroundUnread === 'ready'
-      && cards.backgroundAsks === 'questions',
-      'unread work is Finished even when stopped; a background session is Ready, and still asks', JSON.stringify(cards));
+    ok(cards.stoppedUnread === 'stopped,finished' && cards.runningUnknownUnread === 'finished'
+      && cards.backgroundUnread === 'ready' && cards.backgroundAsks === 'questions',
+      'unread work is Finished even when stopped; a background chat is Ready, and still asks', JSON.stringify(cards));
     ok(sockets.length > 0 && sockets.every((url) => url.includes('/api/events')),
-      'and with no terminal attached: the only socket is the event stream', sockets.join(' '));
+      'and with nothing attached: the only socket is the event stream', sockets.join(' '));
     ok(unexpected(s.errors).length === 0, 'no console errors', unexpected(s.errors).join(' | ') || '0');
-  } finally {
-    await s.stop();
-    await stub.close();
-  }
+  } finally { await s.stop(); }
 }
 
 // outcome: with the outcomes on, a Claude Code chat's turn is judged from its
@@ -8175,158 +7762,132 @@ async function outcome() {
   }
 }
 
-// home-question: the Questions card, the dialog, a tap, and the answer in the
-// pane - typed by the operator, not by the page.
+// home-question: the Questions card, the dialog, a tap, and the answer at the
+// agent - Claude Code's ask_user returning the person's choice.
 async function homequestion() {
-  const { s, stub } = await homeServer();
+  const s = await homeChats();
   try {
-    const id = await makeAgent(s, 'Pick a database');
     await awaitHome(s.page, (h) => h.shown, 10000);
-    const asked = await askQuestion(s, id);
-    ok(!!asked.waiting && !!asked.digest, 'the fake asks, and the server reads the question off its screen',
-      JSON.stringify(asked.digest && asked.digest.question && asked.digest.question.items.map((i) => i.text)));
+    const { id, askId } = await askingChat(s, 'Pick a database');
     const card = await awaitHome(s.page, (h) => h.counts.questions === 1 && h.asking, 10000);
     ok(card.ok, 'the Questions card says one', JSON.stringify(card.seen.counts));
-    const said = await watchSheet(s.page);
+    const said = await watchAsk(s.page);
 
-    await s.page.click('.so-home__questions');
-    const shown = await awaitSheet(s.page, (d) => !!d && d.question === HOME_QUESTION && d.options.length === 2, 10000);
+    await s.page.click('.so-home__q-action');
+    const shown = await awaitAsk(s.page, (d) => !!d && d.question === HOME_QUESTION && d.options.length === 2, 10000);
     const look = shown.seen || {};
     ok(shown.ok, 'the card opens the dialog at the question', look.question);
-    ok(look.session === 'Pick a database' && look.open && /setting up storage/.test(look.context),
-      'it names the session, offers to open it, and says what it is doing',
-      JSON.stringify({ session: look.session, open: look.open, context: look.context }));
+    ok(look.session === 'Pick a database' && look.open && look.title === 'Storage' && /setting up storage/.test(look.context),
+      'it names the chat, offers to open it, and says what the questions are about',
+      JSON.stringify({ session: look.session, open: look.open, title: look.title, context: look.context }));
     ok(shown.ok && look.options.map((o) => o.label).join(',') === 'Postgres,SQLite'
       && look.options[0].desc === 'Relational, robust',
-      'the options are the screen’s, with their descriptions', JSON.stringify(look.options && look.options.map((o) => o.label + ': ' + o.desc)));
+      'the options are the agent’s, with their descriptions', JSON.stringify(look.options && look.options.map((o) => o.label + ': ' + o.desc)));
     ok(shown.ok && look.options.every((o) => o.h >= 64 && o.size === '20px'),
       'each option is a big button: at least 64 px high, 20 px type', JSON.stringify(look.options && look.options.map((o) => o.h + 'px/' + o.size)));
-    ok(look.own && look.read && look.send && look.send.disabled,
-      'there is a field for an answer of one’s own, Read aloud, and a Send that waits for a choice',
-      JSON.stringify({ own: look.own, read: look.read, send: look.send }));
-    await sheetSettled(s.page);
+    ok(look.other && look.read && look.actions.includes('send'),
+      'there is Other for an answer of one’s own, Read aloud, and Send', JSON.stringify({ other: look.other, read: look.read, actions: look.actions }));
+    await askSettled(s.page);
     await shot(s.page, 'home-question-desktop');
 
-    await s.page.click('.so-q-option[data-label="SQLite"]');
-    const chosen = await sheetLook(s.page);
-    ok(chosen.options.find((o) => o.label === 'SQLite').pressed === 'true' && !chosen.send.disabled,
-      'a tap chooses SQLite and Send can be pressed', JSON.stringify(chosen.options.map((o) => o.label + '=' + o.pressed)));
-    await s.page.click('.so-q-send');
+    await s.page.click('dialog.so-askdlg .so-q-option[data-option="sqlite"]');
+    const chosen = await askLook(s.page);
+    ok(chosen.options.find((o) => o.id === 'sqlite').pressed === 'true' && chosen.options.find((o) => o.id === 'postgres').pressed === 'false',
+      'a tap chooses SQLite', JSON.stringify(chosen.options.map((o) => o.id + '=' + o.pressed)));
+    await s.page.click('dialog.so-askdlg [data-action="send"]');
 
-    const logged = await awaitAnswerLogged(s, 1);
-    const answer = logged[0] || {};
-    ok(answer.via === 'keys' && !answer.declined && answer.answers && answer.answers[0]
-      && answer.answers[0].choices.join(',') === 'SQLite',
-      'the fake got SQLite, from keys pressed in its pane', JSON.stringify(answer.answers));
-    const left = await awaitActivity(s, id, (a) => a.state !== 'waiting', 10000);
-    ok(!!left, 'and the session is no longer waiting', JSON.stringify(left));
-    ok(/→ SQLite/.test(paneOf(s, id)), 'the pane says what was answered', oneLine(paneOf(s, id)).slice(-120));
-    const steps = operatorCalls(stub);
-    ok(steps.length >= 1 && /choose "SQLite"/.test(steps[0].json.messages[0].content),
-      'the operator was told the answer exactly, and drove the pane', steps.length + ' steps');
+    const got = await returned(s, id);
+    ok(!!got && got.answers && got.answers.db && got.answers.db.selected.join(',') === 'sqlite' && got.answers.db.skipped === false,
+      'Claude Code’s ask_user returned SQLite, as REBUILD §5.2 has it', JSON.stringify(got));
+    const left = await awaitChat(s, id, (b) => (b.asks || []).length === 0 && idle(b), 10000);
+    ok((left.asks || []).length === 0 && left.chat.activity !== 'waiting', 'and the chat is no longer waiting', left.chat.activity);
+    const ask = await askOf(s, id, askId);
+    ok(!!ask && ask.answered && ask.by_device !== undefined, 'the question is answered, and says from where', JSON.stringify(ask && { answered: ask.answered, by: ask.by_device }));
 
-    const closed = await sheetShut(s.page, 15000);
+    const closed = await askShut(s.page, 15000);
     const story = await said();
-    ok(closed, 'the dialog closes when no question is left', closed ? 'shut' : JSON.stringify(await sheetLook(s.page)));
-    ok(story.some((line) => /^(Choosing SQLite|Sending your answer|Answering)/.test(line))
-      && story.some((line) => /^Answered/.test(line)) && story.includes('All questions answered'),
-      'it said how the answer was going, that it was answered, and that none is left', story.join(' | '));
+    ok(closed, 'the dialog closes when no question is left', closed ? 'shut' : JSON.stringify(await askLook(s.page)));
+    ok(story.some((line) => /^Sending your answer|^Answered$/.test(line)) && story.includes('Answered'),
+      'it said the answer was on its way, and that it was answered', story.join(' | '));
     const after = await awaitHome(s.page, (h) => h.counts.questions === 0 && !h.asking, 10000);
     ok(after.ok, 'and the Questions card is back to zero', JSON.stringify(after.seen.counts));
     ok(unexpected(s.errors).length === 0, 'no console errors', unexpected(s.errors).join(' | ') || '0');
-  } finally {
-    await s.stop();
-    await stub.close();
-  }
+  } finally { await s.stop(); }
 }
 
-// home-own-answer: an answer the options do not have, typed into the field.
+// home-own-answer: an answer the options do not have, written under Other.
 async function homeownanswer() {
-  const { s, stub } = await homeServer();
+  const s = await homeChats();
   try {
-    const id = await makeAgent(s, 'Pick a database');
     await awaitHome(s.page, (h) => h.shown, 10000);
-    const asked = await askQuestion(s, id);
-    ok(!!asked.digest, 'the question is read', asked.digest ? asked.digest.phase : 'no digest');
+    const { id } = await askingChat(s, 'Pick a database');
     const row = await awaitHome(s.page, (h) => h.rows.some((r) => r.id === id && r.answer), 10000);
-    ok(row.ok, 'the row has its own Answer button', took(row));
+    ok(row.ok, 'the card has its own Answer button', took(row));
     await s.page.click('.so-home__card[data-id="' + id + '"] .so-home__answer');
-    await awaitSheet(s.page, (d) => !!d && d.options.length === 2, 10000);
+    await awaitAsk(s.page, (d) => !!d && d.options.length === 2, 10000);
 
-    await s.page.click('.so-q-option[data-label="Postgres"]');
-    await s.page.fill('.so-q-own-field', 'MariaDB, please');
-    const typed = await sheetLook(s.page);
-    ok(typed.options.every((o) => o.pressed === 'false') && !typed.send.disabled,
-      'typing an answer of one’s own takes the place of the chosen option',
-      JSON.stringify(typed.options.map((o) => o.label + '=' + o.pressed)));
-    await s.page.click('.so-q-send');
+    await s.page.click('dialog.so-askdlg .so-q-option[data-option="postgres"]');
+    await s.page.click('dialog.so-askdlg [data-action="other"]');
+    await s.page.fill('#ask-db-other', 'MariaDB, please');
+    const typed = await askLook(s.page);
+    ok(typed.options.every((o) => o.pressed === 'false'),
+      'writing an answer of one’s own takes the place of the chosen option',
+      JSON.stringify(typed.options.map((o) => o.id + '=' + o.pressed)));
+    await s.page.click('dialog.so-askdlg [data-action="send"]');
 
-    const logged = await awaitAnswerLogged(s, 1);
-    const answer = (logged[0] && logged[0].answers && logged[0].answers[0]) || {};
-    ok(answer.text === 'MariaDB, please' && answer.choices.length === 0,
-      'the fake got the words, typed on its "Type something." row', JSON.stringify(answer));
-    const steps = operatorCalls(stub);
-    ok(steps.length >= 1 && /typed exactly: "MariaDB, please"/.test(steps[0].json.messages[0].content),
-      'and the operator was given them exactly', steps.length + ' steps');
-    ok(await sheetShut(s.page, 15000), 'the dialog closes when it is done', 'shut');
+    const got = await returned(s, id);
+    const db = (got && got.answers && got.answers.db) || {};
+    ok(db.other === 'MariaDB, please' && (db.selected || []).length === 0,
+      'the agent got the words, and no option', JSON.stringify(db));
+    ok(await askShut(s.page, 15000), 'the dialog closes when it is done', 'shut');
     ok(unexpected(s.errors).length === 0, 'no console errors', unexpected(s.errors).join(' | ') || '0');
-  } finally {
-    await s.stop();
-    await stub.close();
-  }
+  } finally { await s.stop(); }
 }
 
 // home-queue: two questions, one after the other, oldest first.
 async function homequeue() {
-  const { s, stub } = await homeServer();
+  const s = await homeChats();
   try {
-    const first = await makeAgent(s, 'First question');
-    const second = await makeAgent(s, 'Second question');
     await awaitHome(s.page, (h) => h.shown, 10000);
-    const one = await askQuestion(s, first);
+    const first = await askingChat(s, 'First question');
     await wait(1200);
-    const two = await askQuestion(s, second);
-    ok(!!one.digest && !!two.digest, 'both sessions ask', [one, two].map((q) => q.digest ? q.digest.phase : 'none').join(','));
+    const second = await askingChat(s, 'Second question');
     const card = await awaitHome(s.page, (h) => h.counts.questions === 2, 10000);
     ok(card.ok, 'the card counts two', JSON.stringify(card.seen.counts));
 
-    await s.page.click('.so-home__questions');
-    const opened = await awaitSheet(s.page, (d) => !!d && d.options.length === 2 && !!d.counter, 10000);
-    ok(opened.ok && opened.seen.counter === '1 of 2' && opened.seen.session === 'First question',
-      'the dialog walks them oldest first: "1 of 2"', JSON.stringify(opened.seen && { counter: opened.seen.counter, session: opened.seen.session }));
-    const named = await s.page.locator('dialog.so-question').ariaSnapshot();
-    const buttons = named.split('\n').filter((line) => /button/.test(line));
-    const toggles = await s.page.$$eval('dialog.so-question .so-q-option', (options) => options.map((o) => ({
+    await s.page.click('.so-home__q-action');
+    const opened = await awaitAsk(s.page, (d) => !!d && d.options.length === 2 && /of 2/.test(d.top), 10000);
+    ok(opened.ok && opened.seen.top === 'Questions · 1 of 2' && opened.seen.session === 'First question',
+      'the dialog walks them oldest first: "1 of 2"', JSON.stringify(opened.seen && { top: opened.seen.top, session: opened.seen.session }));
+    const named = await s.page.locator('dialog.so-askdlg').ariaSnapshot();
+    const toggles = await s.page.$$eval('dialog.so-askdlg .so-q-option', (options) => options.map((o) => ({
       tag: o.tagName, role: o.getAttribute('role'), pressed: o.getAttribute('aria-pressed'), checked: o.getAttribute('aria-checked'),
     })));
-    ok(buttons.filter((line) => /"Next question"/.test(line)).length === 1 && !/\b(radio|checkbox)\b/.test(named)
-      && toggles.length === 2 && toggles.every((o) => o.tag === 'BUTTON' && !o.role && o.pressed === 'false' && o.checked === null),
-      'one button is called Next question, and the options are toggle buttons', buttons.map((l) => l.trim()).join(' | ') + ' ' + JSON.stringify(toggles));
-    await s.page.click('.so-q-nav-btn[aria-label="Next question"]');
-    const next = await awaitSheet(s.page, (d) => !!d && d.counter === '2 of 2', 3000);
-    ok(next.ok && next.seen.session === 'Second question', 'Next shows the second one', next.seen && next.seen.session);
-    await s.page.click('.so-q-nav-btn[aria-label="Previous question"]');
-    await awaitSheet(s.page, (d) => !!d && d.counter === '1 of 2', 3000);
+    ok(!/\b(radio|checkbox)\b/.test(named) && toggles.length === 2
+      && toggles.every((o) => o.tag === 'BUTTON' && !o.role && o.pressed === 'false' && o.checked === null),
+      'the options are toggle buttons, never radios', JSON.stringify(toggles));
 
-    // A second tap on the chosen option is Send.
-    await s.page.click('.so-q-option[data-label="Postgres"]');
-    await s.page.click('.so-q-option[data-label="Postgres"]');
-    const moved = await awaitSheet(s.page, (d) => !!d && d.session === 'Second question' && d.options.length === 2
-      && d.options.every((o) => o.pressed === 'false'), 20000);
-    ok(moved.ok, 'once the first is answered the second takes the dialog', JSON.stringify(moved.seen && { session: moved.seen.session, counter: moved.seen.counter }));
-    await s.page.click('.so-q-option[data-label="SQLite"]');
-    await s.page.click('.so-q-send');
+    await s.page.click('dialog.so-askdlg .so-q-option[data-option="postgres"]');
+    await s.page.click('dialog.so-askdlg [data-action="send"]');
+    const moved = await awaitAsk(s.page, (d) => !!d && d.session === 'Second question' && d.top === 'Questions · 2 of 2'
+      && d.options.length === 2 && d.options.every((o) => o.pressed === 'false'), 20000);
+    ok(moved.ok, 'once the first is answered the second takes the dialog', JSON.stringify(moved.seen && { session: moved.seen.session, top: moved.seen.top }));
+    const toasts = await watchToasts(s.page);
+    await s.page.click('dialog.so-askdlg .so-q-option[data-option="sqlite"]');
+    await s.page.click('dialog.so-askdlg [data-action="send"]');
     // A link followed in the moment the last word is on screen - a
-    // notification tapped just then - is shown, not dropped with the dialog.
+    // notification tapped just then - is answered, not dropped with the
+    // dialog: there is nothing left to ask, and the page says so.
     const lastWord = await s.page.waitForFunction(() => {
-      const title = document.querySelector('dialog.so-question .so-q-finished-title');
-      return !!title && title.textContent === 'All questions answered';
+      const title = document.querySelector('dialog.so-askdlg .so-q-finished .ds-empty__title');
+      return !!title && title.textContent === 'Answered';
     }, null, { timeout: 30000, polling: 50 }).then(() => true, () => false);
-    await s.page.evaluate((target) => { location.hash = '#q=' + target; }, first);
-    const linked = await awaitSheet(s.page, (d) => !!d && d.session === 'First question' && !d.finished, 3000);
-    ok(lastWord && linked.ok, 'a link followed while "All questions answered" is shown opens its session, rather than being dropped',
-      JSON.stringify({ lastWord, seen: linked.seen && { session: linked.seen.session, finished: linked.seen.finished, status: linked.seen.status } }));
-    ok(await sheetShut(s.page, 20000), 'and after the last one the dialog closes', 'shut');
+    ok(lastWord && await askShut(s.page, 20000), 'after the last one says it is answered, the dialog closes', 'shut');
+    await s.page.evaluate((target) => { location.hash = '#q=' + target; }, first.id);
+    const told = await s.page.waitForFunction(() => (window.__toastsSeen || []).some((t) => /Nothing is waiting for an answer/.test(t)),
+      null, { timeout: 10000 }).then(() => true, () => false);
+    ok(told && !(await askLook(s.page)), 'a link to a question already answered says nothing is waiting any more',
+      JSON.stringify(await toasts()));
     await s.page.click('.so-home__seg[data-filter="all"]');
     await awaitHome(s.page, (h) => h.rows.length === 2, 5000);
     const row = await s.page.evaluate(() => {
@@ -8338,112 +7899,100 @@ async function homequeue() {
       };
     });
     ok(!!row && row.role === null && row.title === 'BUTTON' && !row.nested,
-      'a Home row is a title button beside its Answer button, never a button in a button', JSON.stringify(row));
-
-    const logged = await awaitAnswerLogged(s, 2);
-    ok(logged.length === 2, 'two answers reached the fakes', String(logged.length));
-    ok(/→ Postgres/.test(paneOf(s, first)) && /→ SQLite/.test(paneOf(s, second)),
-      'each session got its own answer', [first, second].map((id) => (paneOf(s, id).match(/→ \w+/) || ['none'])[0]).join(', '));
+      'a Home card is a title button beside its Answer button, never a button in a button', JSON.stringify(row));
+    const firstGot = await returned(s, first.id);
+    const secondGot = await returned(s, second.id);
+    ok(firstGot && secondGot && firstGot.answers.db.selected.join() === 'postgres' && secondGot.answers.db.selected.join() === 'sqlite',
+      'each chat got its own answer', JSON.stringify([firstGot && firstGot.answers.db.selected, secondGot && secondGot.answers.db.selected]));
     ok(unexpected(s.errors).length === 0, 'no console errors', unexpected(s.errors).join(' | ') || '0');
-  } finally {
-    await s.stop();
-    await stub.close();
-  }
+  } finally { await s.stop(); }
 }
 
-// home-elsewhere: the question is answered in the terminal while the dialog
-// shows it.
+// home-elsewhere: a question answered on another device while the dialog
+// shows it; an answer to a question already answered, or to none; an answer
+// on its way when another device's lands first; and a question whose agent
+// died under it, which is still there to be answered.
 async function homeelsewhere() {
-  const { s, stub } = await homeServer();
+  const s = await homeChats();
   try {
-    const id = await makeAgent(s, 'Pick a database');
     await awaitHome(s.page, (h) => h.shown, 10000);
-    const asked = await askQuestion(s, id);
-    ok(!!asked.digest, 'the question is read', asked.digest ? asked.digest.phase : 'no digest');
+    const { id, askId } = await askingChat(s, 'Pick a database');
     await awaitHome(s.page, (h) => h.counts.questions === 1, 10000);
-    const said = await watchSheet(s.page);
-    await s.page.click('.so-home__questions');
-    const shown = await awaitSheet(s.page, (d) => !!d && d.question === HOME_QUESTION, 10000);
+    const said = await watchAsk(s.page);
+    await s.page.click('.so-home__q-action');
+    const shown = await awaitAsk(s.page, (d) => !!d && d.question === HOME_QUESTION, 10000);
     ok(shown.ok, 'the dialog shows the question', shown.seen && shown.seen.question);
 
-    tmuxType(s, id, '2', false);
-    const gone = await awaitSheet(s.page, (d) => !d || (!!d.status && /answered elsewhere/.test(d.status.text)), 10000);
-    ok(gone.ok && !!gone.seen, 'the dialog says the question was answered elsewhere',
-      gone.seen && gone.seen.status ? gone.seen.status.text : 'shut before it said anything');
-    ok(await sheetShut(s.page, 10000), 'and moves on - here, closes', (await said()).join(' | '));
-    const logged = await awaitAnswerLogged(s, 1);
-    ok(logged[0] && logged[0].answers[0].choices.join(',') === 'SQLite', 'the terminal took SQLite',
-      JSON.stringify(logged[0] && logged[0].answers));
-    ok(operatorCalls(stub).length === 0, 'and the operator never ran', operatorCalls(stub).length + ' steps');
+    const there = await answerFrom(s, id, askId, { db: ['sqlite'] }, 'the phone');
+    const gone = await awaitAsk(s.page, (d) => !!d && /Answered on another device/.test(d.finished), 10000);
+    ok(there.status() === 200 && gone.ok && /On the phone/.test(gone.seen.finishedText),
+      'the dialog says the question was answered on another device, and which', JSON.stringify(gone.seen && { finished: gone.seen.finished, text: gone.seen.finishedText }));
+    await s.page.click('dialog.so-askdlg [data-action="next"]');
+    ok(await askShut(s.page, 10000), 'and Close puts it away', (await said()).join(' | '));
+    const got = await returned(s, id);
+    ok(!!got && got.answers.db.selected.join() === 'sqlite', 'the agent took the other device’s SQLite', JSON.stringify(got));
 
-    // A session at its prompt with nothing asked takes no answer: the words
-    // would be a new task.
-    const idle = await awaitDigest(s, id, (d) => d.phase === 'ready' && !d.question && d.rev > asked.digest.rev, 20000);
-    const stray = await answerVia(s, id, idle && idle.rev, [], 'please delete the build directory');
-    await wait(1500);
-    ok(!!idle && stray.status === 409 && !/please delete/.test(paneOf(s, id)),
-      'an answer to a session that asks nothing is refused, and nothing is typed',
-      JSON.stringify({ status: stray.status, error: stray.data && stray.data.error }));
+    // A question already answered takes no second answer, and one that does
+    // not exist takes none at all.
+    const again = await answerFrom(s, id, askId, { db: ['postgres'] }, 'the desk');
+    const unknown = await answerFrom(s, id, 'ask-that-never-was', { db: ['postgres'] }, 'the desk');
+    const body = await again.json().catch(() => ({}));
+    ok(again.status() === 409 && body.answered_elsewhere === true && body.by_device === 'the phone' && unknown.status() === 404,
+      'an answer to a question already answered is refused, saying by whom, and one to no question is not found',
+      JSON.stringify({ again: again.status(), by: body.by_device, unknown: unknown.status() }));
 
-    // The question answered at the machine while the dialog's answer is on
-    // its way: the refusal is the news that it went, never a field that
-    // would type into the idle prompt.
-    const again = await askQuestion(s, id);
-    ok(!!again.digest, 'the question is asked again', again.digest ? again.digest.phase : 'no digest');
+    // The question answered on another device while this one's answer is on
+    // its way: the refusal is the news that it went, never a second answer.
+    const second = await askingChat(s, 'Pick a database again');
     await awaitHome(s.page, (h) => h.counts.questions === 1, 10000);
     const held = gate();
-    await s.page.route('**/api/sessions/*/answer', async (route) => {
-      if (route.request().method() !== 'POST') return route.continue();
+    await s.page.route('**/api/chats/*/asks/*/answer', async (route) => {
       await held.promise;
       return route.continue();
     });
-    const raced = await sheetSaid(s.page);
-    await s.page.click('.so-home__questions');
-    await awaitSheet(s.page, (d) => !!d && d.options.length === 2 && d.options.every((o) => !o.disabled), 10000);
-    await s.page.click('.so-q-option[data-label="Postgres"]');
-    await s.page.click('.so-q-send');
-    tmuxType(s, id, '2', false);
-    const moved = await awaitDigest(s, id, (d) => d.phase === 'ready' && !d.question && d.rev > again.digest.rev, 20000);
-    await wait(800);
+    const raced = await watchAsk(s.page);
+    await s.page.click('.so-home__q-action');
+    await awaitAsk(s.page, (d) => !!d && d.options.length === 2, 10000);
+    await s.page.click('dialog.so-askdlg .so-q-option[data-option="postgres"]');
+    await s.page.click('dialog.so-askdlg [data-action="send"]');
+    await awaitAsk(s.page, (d) => !!d && /Sending your answer/.test(d.status), 5000);
+    const first = await answerFrom(s, second.id, second.askId, { db: ['sqlite'] }, 'the phone');
     held.release();
-    let field = null;
-    for (let i = 0; i < 25 && !field; i++) {
-      const d = await sheetLook(s.page);
-      if (d && d.own && !d.options.length) field = d;
-      await wait(150);
-    }
-    const closedAfter = await sheetShut(s.page, 10000);
+    const lost = await awaitAsk(s.page, (d) => !d || /Answered on another device/.test(d.finished), 15000);
     const racedWords = await raced();
-    await s.page.unroute('**/api/sessions/*/answer');
-    const both = await awaitAnswerLogged(s, 2);
-    ok(!!moved && !field && closedAfter && racedWords.some((w) => /answered elsewhere/.test(w)),
-      'the refused answer says the question was answered elsewhere, offers no field for the idle prompt, and moves on',
-      JSON.stringify({ field: field && { q: field.question, note: field.note }, said: racedWords }));
-    ok(both.length === 2 && both[1].answers[0].choices.join(',') === 'SQLite' && !/Postgres/.test(paneOf(s, id).split('→ SQLite').pop()),
-      'only the machine’s SQLite went in', JSON.stringify(both.map((l) => l.answers)));
+    await s.page.unroute('**/api/chats/*/asks/*/answer');
+    const kept = await returned(s, second.id);
+    ok(first.status() === 200 && lost.ok && racedWords.some((w) => /Answered on another device/.test(w)),
+      'an answer that lost the race says the question was answered on another device', racedWords.join(' | '));
+    ok(!!kept && kept.answers.db.selected.join() === 'sqlite', 'and only the other device’s SQLite went in', JSON.stringify(kept));
+    await s.page.click('dialog.so-askdlg [data-action="next"]').catch(() => {});
+    await askShut(s.page, 10000);
 
-    // A program that dies with its question open was answered nowhere.
-    const dies = await makeAgent(s, 'Dies with a question');
-    await askQuestion(s, dies);
-    await awaitHome(s.page, (h) => h.rows.some((r) => r.id === dies && r.answer), 10000);
-    const deathWords = await sheetSaid(s.page);
-    await s.page.click('.so-home__card[data-id="' + dies + '"] .so-home__answer');
-    await awaitSheet(s.page, (d) => !!d && d.options.length === 2, 10000);
-    execFileSync('kill', ['-9', panePid(s, dies)]);
-    const stopped = await awaitSheet(s.page, (d) => !!d && !!d.status && /stopped before the question was answered/.test(d.status.text), 20000);
-    await wait(3000);
-    const stays = await sheetLook(s.page);
-    const deathSaid = await deathWords();
-    ok(stopped.ok && stopped.seen.openErr && !!stays,
-      'a program that dies under its open question says it stopped before it was answered, offers Open session, and stays',
-      JSON.stringify(stopped.seen && { status: stopped.seen.status, open: stopped.seen.openErr, stays: !!stays }));
-    ok(!deathSaid.some((w) => /answered elsewhere|No question is waiting/.test(w)), 'and is never said to be answered elsewhere', deathSaid.join(' | '));
-    await s.page.click('.so-q-close').catch(() => {});
+    // An agent that dies with its question open: the question survives it
+    // (REBUILD §5.3), stays on Home, and its answer reaches the agent the
+    // next host starts - as a message, the call being gone.
+    const dies = await askingChat(s, 'Dies with a question');
+    await awaitHome(s.page, (h) => h.rows.some((r) => r.id === dies.id && r.answer), 10000);
+    for (const pid of hostsOf(s.data)) {
+      try { process.kill(pid, 'SIGKILL'); } catch { /* gone already */ }
+    }
+    await until(() => hostsOf(s.data).length === 0, 10000);
+    await wait(1500);
+    const stays = await awaitHome(s.page, (h) => h.counts.questions === 1 && h.rows.some((r) => r.id === dies.id && r.answer), 10000);
+    ok(stays.ok, 'a question whose agent died under it is still on Home, to be answered', JSON.stringify(stays.seen.counts));
+    await s.page.click('.so-home__card[data-id="' + dies.id + '"] .so-home__answer');
+    await awaitAsk(s.page, (d) => !!d && d.options.length === 2, 10000);
+    await s.page.click('dialog.so-askdlg .so-q-option[data-option="postgres"]');
+    await s.page.click('dialog.so-askdlg [data-action="send"]');
+    const settled = await awaitAsk(s.page, (d) => !d || d.finished === 'Answered', 15000);
+    const delivered = await awaitChat(s, dies.id, (b) => (b.asks || []).length === 0 && idle(b) && b.chat.last_seq > 0, 30000);
+    const history = await historyOf(s, dies.id);
+    const asMessage = (history.messages || []).some((m) => m.role === 'user' && m.answer_to);
+    ok(settled.ok && (delivered.asks || []).length === 0 && asMessage,
+      'it is answered from the dialog, and the answer goes to the agent as a message',
+      JSON.stringify({ settled: settled.seen && settled.seen.finished, asks: (delivered.asks || []).length, asMessage }));
     ok(unexpected(s.errors, REFUSED_NOISE).length === 0, 'no unexpected console errors', unexpected(s.errors, REFUSED_NOISE).join(' | ') || '0');
-  } finally {
-    await s.stop();
-    await stub.close();
-  }
+  } finally { await s.stop(); }
 }
 
 // home-deeplink: the two addresses a notification opens a tab at.
