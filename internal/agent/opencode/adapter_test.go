@@ -360,11 +360,11 @@ func TestALimitHoldsAMessageWrittenBeforeItsEnd(t *testing.T) {
 // queueBehindAQuestion sends texts while a turn waits on a question of
 // OpenCode's own, checks that each one is queued, and answers the question:
 // the first of them runs then, with the others queued behind it. Sent right
-// after it instead, a message can reach the adapter after the turn of the
-// first is over: the fake's limit ends that turn within milliseconds of its
-// post (the limit is seen, the adapter aborts, OpenCode goes idle), and a
-// message sent after a limited turn ended is the person going on, which lets
-// the hold go (AGENT-HOST.md §5.3).
+// after it instead, a message can be written after the turn of the first is
+// over: the fake's limit ends that turn within milliseconds of its post (the
+// limit is seen, the adapter aborts, OpenCode goes idle), and a message
+// written after a limited turn ended is the person going on, which lets the
+// hold go (AGENT-HOST.md §5.3).
 func (r *rig) queueBehindAQuestion(texts ...string) {
 	r.t.Helper()
 	asked := r.rec.count(agent.TypeAsk, nil)
