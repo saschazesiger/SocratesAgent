@@ -959,9 +959,14 @@ func (m *Manager) Delete(ctx context.Context, sessionID string) error {
 	if err := m.stop(ctx, row); err != nil {
 		return err
 	}
+	// The folder before the row: a delete cut short in between leaves a row
+	// to delete again, never a folder that no row leads back to.
+	if err := os.RemoveAll(SessionDir(m.cfg.DataDir, sessionID)); err != nil {
+		return err
+	}
 	if err := m.st.DeleteSession(sessionID); err != nil {
 		return err
 	}
 	m.forgetSession(sessionID)
-	return os.RemoveAll(SessionDir(m.cfg.DataDir, sessionID))
+	return nil
 }

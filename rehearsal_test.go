@@ -183,7 +183,8 @@ func (o *oldInstall) store() *store.Store {
 
 // picture is what a migration left, in words two runs can be compared by:
 // every row with its options (an account named by its origin, whose id is
-// new in every run) and draft, every account, and the live tmux sessions.
+// new in every run) and draft, every account, the live tmux sessions and the
+// sessions' folders.
 func (o *oldInstall) picture() []string {
 	o.t.Helper()
 	st := o.store()
@@ -214,6 +215,10 @@ func (o *oldInstall) picture() []string {
 	}
 	for _, name := range o.live() {
 		out = append(out, "tmux "+name)
+	}
+	folders, _ := os.ReadDir(filepath.Join(o.data, "sessions"))
+	for _, f := range folders {
+		out = append(out, "folder sessions/"+f.Name())
 	}
 	if pending, _ := st.AccountsMigrationPending(); pending {
 		out = append(out, "pending")
@@ -251,6 +256,7 @@ func TestTheWholeMigrationIsRehearsed(t *testing.T) {
 		`session pc3|chat|opencode|prestart|{}|Fix the flaky test`,
 		`session sh1|terminal|shell|running|{}|`,
 		"tmux " + termux.TmuxName("sh1"),
+		"folder sessions/sh1",
 	}
 	sort.Strings(want)
 	if strings.Join(got, "\n") != strings.Join(want, "\n") {

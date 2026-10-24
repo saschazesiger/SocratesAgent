@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strings"
 
 	"github.com/saschazesiger/SocratesAgent/internal/store"
 )
@@ -44,10 +43,11 @@ func (m *migration) agentTerminals() ([]store.Session, error) {
 }
 
 // cleanCut stops every agent terminal in rows and makes every prepared one a
-// prepared chat. What it removed is said once, in one line: a run cut short
-// leaves the rest to the next, which says those.
+// prepared chat. Each is said once, as it is done: a run cut short has said
+// what it did, and leaves the rest to the next, which says those. A terminal
+// whose stop was cut short is still there to be stopped again, because a
+// delete removes its row last (termux.Manager.Delete).
 func (m *migration) cleanCut(rows []store.Session) error {
-	var removed, prepared []string
 	for i := range rows {
 		row := &rows[i]
 		if row.State == store.StatePrestart {
@@ -55,7 +55,8 @@ func (m *migration) cleanCut(rows []store.Session) error {
 			if err != nil && !errors.Is(err, store.ErrNotFound) && !errors.Is(err, store.ErrNotPrestart) {
 				return fmt.Errorf("the prepared %s terminal %q: %w", agentLabel(row.Harness), row.Title, err)
 			}
-			prepared = append(prepared, sessionWords(row))
+			m.opts.Logf("rebuild: the prepared agent terminal %s is a prepared chat now, with its first prompt",
+				sessionWords(row))
 		} else {
 			if m.opts.StopTerminal == nil {
 				return errors.New("there is nothing to stop the agents' terminals with")
@@ -63,19 +64,12 @@ func (m *migration) cleanCut(rows []store.Session) error {
 			if err := m.opts.StopTerminal(row.ID); err != nil && !errors.Is(err, store.ErrNotFound) {
 				return fmt.Errorf("the %s terminal %q: %w", agentLabel(row.Harness), row.Title, err)
 			}
-			removed = append(removed, sessionWords(row))
+			m.opts.Logf("rebuild: the agents run as chats now, so their terminals go: removed %s; "+
+				"what it said is still in the agent's folders", sessionWords(row))
 		}
 		if err := m.step("cut:" + row.ID); err != nil {
 			return err
 		}
-	}
-	if len(removed) > 0 {
-		m.opts.Logf("rebuild: the agents run as chats now, so their terminals are gone: removed %s; "+
-			"what they said is still in the agents' folders", strings.Join(removed, ", "))
-	}
-	if len(prepared) > 0 {
-		m.opts.Logf("rebuild: the prepared agent terminals are prepared chats now, with their first prompts: %s",
-			strings.Join(prepared, ", "))
 	}
 	return nil
 }

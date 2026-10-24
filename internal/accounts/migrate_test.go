@@ -8,6 +8,7 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"io"
 	"io/fs"
 	"os"
@@ -128,7 +129,10 @@ func migrateWith(t *testing.T, opts MigrateOptions) error {
 		t.Fatal(err)
 	}
 	defer st.Close()
-	opts.Store, opts.Logf = st, t.Logf
+	opts.Store = st
+	if opts.Logf == nil {
+		opts.Logf = t.Logf
+	}
 	if opts.StopTerminal == nil {
 		// The fixture's agent terminals have no tmux session behind them:
 		// stopping one is removing its row. The rehearsal in package main
@@ -492,6 +496,32 @@ func TestOpenCodesDatabaseIsOneThroughTheOldPath(t *testing.T) {
 	for _, suffix := range []string{"-wal", "-shm"} {
 		if _, err := os.Lstat(oldPath + suffix); !errors.Is(err, fs.ErrNotExist) {
 			t.Fatalf("SQLite made %s beside the link: %v", filepath.Base(oldPath+suffix), err)
+		}
+	}
+}
+
+// The clean cut says each terminal it removed once, also when the start that
+// removed it was cut short before the others.
+func TestEachTerminalTheCutRemovesIsSaidOnce(t *testing.T) {
+	data, home := fixture(t)
+	var said []string
+	logf := func(format string, args ...any) { said = append(said, fmt.Sprintf(format, args...)) }
+	env := []string{"HOME=" + home}
+	if err := migrateWith(t, MigrateOptions{DataDir: data, Env: env, Logf: logf, stopAfter: "cut:s1"}); !errors.Is(err, errStopped) {
+		t.Fatalf("the run stopped after the first terminal with %v", err)
+	}
+	if err := migrateWith(t, MigrateOptions{DataDir: data, Env: env, Logf: logf}); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"s1", "s2"} {
+		n := 0
+		for _, line := range said {
+			if strings.Contains(line, "removed") && strings.Contains(line, "("+id+")") {
+				n++
+			}
+		}
+		if n != 1 {
+			t.Fatalf("the removal of %s was said %d times:\n%s", id, n, strings.Join(said, "\n"))
 		}
 	}
 }
