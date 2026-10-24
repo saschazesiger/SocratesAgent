@@ -876,9 +876,10 @@ export async function openNewSessionSheet() {
     start.textContent = later ? 'Prepare' : 'Start session';
     const snap = snapshot();
     const parts = [];
-    // A prepared session runs nothing, so a machine that cannot run sessions
-    // right now is no reason to refuse one.
-    const blocked = !later && snap.sessions_available === false;
+    // What the machine can lack is a usable tmux, and only a terminal runs in
+    // one: a chat - started now or prepared - runs in an agent host of its
+    // own, so the reason is the Shell's alone.
+    const blocked = !isChat(harnessId) && snap.sessions_available === false;
     if (blocked && snap.sessions_error) parts.push(snap.sessions_error);
     parts.push(...form.notes());
     const words = parts.join(' ');

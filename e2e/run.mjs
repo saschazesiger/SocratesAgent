@@ -1357,6 +1357,32 @@ async function tmuxcard() {
 
     await shot(s.page, 'tmux-card');
 
+    // Only a terminal runs in tmux. The sheet refuses a Shell and says why,
+    // and still starts a chat, which runs in an agent host of its own.
+    await s.page.goto(s.url + '/', { waitUntil: 'domcontentloaded' });
+    await ensureNav(s.page);
+    await s.page.click('#newSession');
+    await s.page.waitForSelector('#newSessionSheet[open]', { timeout: 15000 });
+    const sheetWith = async (harness) => {
+      await s.page.click('#newSessionSheet .so-settings__program[data-value="' + harness + '"]');
+      return s.page.evaluate(() => ({
+        disabled: document.getElementById('nsStart').disabled,
+        hint: document.getElementById('nsHint').hidden ? '' : document.getElementById('nsHintText').textContent,
+      }));
+    };
+    const shell = await sheetWith('shell');
+    ok(shell.disabled && /too old/.test(shell.hint), 'the sheet refuses a Shell, in words',
+      (shell.disabled ? 'disabled' : 'enabled') + ' \u00b7 ' + oneLine(shell.hint));
+    const claude = await sheetWith('claude');
+    ok(!claude.disabled && !/too old/.test(claude.hint), 'and offers Claude Code a start, without that sentence',
+      (claude.disabled ? 'disabled' : 'enabled') + ' \u00b7 ' + (oneLine(claude.hint) || 'no hint'));
+    await s.page.click('#nsStart');
+    await s.page.waitForSelector('#newSessionSheet[open]', { state: 'detached', timeout: 30000 });
+    await chatUp(s.page);
+    const made = await sessionRow(s, await s.page.evaluate(() => location.hash.slice(1)));
+    ok(made && made.kind === 'chat' && made.harness === 'claude', 'and the chat runs',
+      made ? made.kind + ' ' + made.harness + ' ' + made.state : 'no row');
+
     ok(unexpected(s.errors).length === 0, 'no console errors',
       unexpected(s.errors).join(' | ') || '0');
   } finally { await s.stop(); }
