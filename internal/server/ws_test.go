@@ -1519,18 +1519,29 @@ func TestTerminalEveryKeystrokeAfterHelloReachesThePane(t *testing.T) {
 		c.send(uint64(i+1), line[i:i+1])
 	}
 
-	// The pane ran it: the echo's own output line is the marker and nothing
-	// else, which no partial delivery can produce.
+	// The pane ran it: the echo's own output line ends in the whole marker,
+	// which no partial delivery can produce. It need not start the line:
+	// typed this early, the line is echoed by the terminal before the shell
+	// has printed its first prompt, and the prompt then lands in front of
+	// the output ("# abc…0123"). The typed line is the one with "echo ".
+	ran := func(pane string) bool {
+		for _, row := range strings.Split(pane, "\n") {
+			if strings.HasSuffix(row, marker) && !strings.Contains(row, "echo ") {
+				return true
+			}
+		}
+		return false
+	}
 	deadline := time.Now().Add(20 * time.Second)
 	pane := ""
 	for time.Now().Before(deadline) {
 		pane, _ = e.tmux("capture-pane", "-p", "-J", "-t", termux.TmuxName(id))
-		if strings.Contains(pane, "\n"+marker) {
+		if ran(pane) {
 			break
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	if !strings.Contains(pane, "\n"+marker) {
+	if !ran(pane) {
 		t.Fatalf("the pane never ran the whole line; it shows:\n%s", pane)
 	}
 
