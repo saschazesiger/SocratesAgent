@@ -448,6 +448,12 @@ export function mountHome(ctx) {
       tile.node.setAttribute('aria-pressed', filter === card.key ? 'true' : 'false');
       figure(tile.value, count);
       setText(tile.note, count ? cardSub(card.key, members, now) : card.none);
+      // A line of names may be cut (so-home.css): the tip has all of it.
+      const tip = count ? tile.note.textContent : '';
+      if ((tile.note.dataset.tip || '') !== tip) {
+        if (tip) tile.note.dataset.tip = tip;
+        else delete tile.note.dataset.tip;
+      }
     }
     for (const button of built.segs) {
       button.setAttribute('aria-pressed', button.dataset.filter === filter ? 'true' : 'false');

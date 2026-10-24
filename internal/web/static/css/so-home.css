@@ -80,6 +80,17 @@
   align-items: flex-start;
 }
 
+/* A tile's sub-line is one line, its end an ellipsis and the whole in its
+   tip: "Latest: OpenCode · 24 Oct 16:08" on two lines made its row taller
+   than the others at a desk. */
+.so-home__tile .ds-tile__note {
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* The tile whose sessions the list shows: a ring of the primary colour, and
    the list's title says which it is. */
 .so-home__tile[aria-pressed="true"] {
