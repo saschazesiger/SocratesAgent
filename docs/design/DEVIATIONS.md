@@ -2412,3 +2412,81 @@ starts at a terminal's goes through the terminals' in theirs (`question.js`). Jo
 walks would be work for a dialog WP10 removes with the agent terminals; until then the other
 kind's questions are reached from their sessions, or from the card once the oldest kind's are
 answered.
+
+**WP9 / §7 — a chat's line on Home is its journal's words, not a model's summary.** "Read the
+journal instead of the screen" could mean handing the journal to the home model. It does not: the
+line is what the journal already says (`chatLine`, AGENT-HOST.md §3): the question while the chat
+waits, the call that runs or the text being written while a turn runs, the first line of the last
+answer between turns. It costs nothing, is current with the event that changed it, and needs no
+key. The model is still asked where a judgement is wanted: the title, the spoken Status and the
+outcome.
+
+**WP9 / §7 — a chat is a digest on the event stream, with `source: "ask"` and a `news` field.**
+Home, the sidebar, the page's notifier and the badge already read digests, so a chat's reading is
+one (`phase: ready`, its line as `summary`, its open ask as `question`) rather than a frame of its
+own: the browser contract is unchanged. Its question's `source` is `ask`, which no terminal path
+reads as a prompt or as a question in prose. The optional `news` (what a notification about the
+chat says now) is new; a terminal's digest has none.
+
+**WP9 / §5.4 — a turn the person stopped is not pushed.** A terminal's turn that ends after Esc is
+"Finished" like any other. A chat knows that somebody pressed Stop (an interrupt or stop command
+journaled during the turn, `Turn.Stopped`), and that person has seen it end; neither the push nor
+the page's own notification says so. A turn interrupted by anything else (a host that died) is
+pushed as "Stopped · …".
+
+**WP9 — answering a chat's question and Stop mark it read.** Typing an answer into a terminal
+cleared its unread mark; a chat's answer went through a route that did not, so the mark set when
+the question was asked stayed, and the turn the answer let go on was never news (no chime, no
+notification, no push). Both routes now mark the chat read, as sending a message does.
+
+**WP9 / §7 — a chat's verdict is a call of its own.** A terminal's outcome is asked in the same
+read as its digest; a chat has no digest read. Its turn end puts the same outcome on pending and
+`judgeChat` asks the home model alone, with the outcome rules the terminal's read uses
+(`outcomeRules`, factored out of `outcomeSystemPrompt` without changing that text) and a system
+prompt of its own that opens with `You judge the turn a coding agent has just ended`, so a stand-in
+gateway can tell it apart.
+
+**WP9 / §4.4 — one source per chat for its cost: the journal.** REBUILD.md §4.4 says the ledger
+keeps scanning the shared transcript folders and the journal's account makes the split. A shared
+`projects/` folder cannot say which account wrote a request, and counting a chat from both would
+count it twice, so a chat is counted from its journal alone, in a ledger named by the chat and one
+per account; the conversations its journal names are the chat's for good (the scanner skips them,
+and a ledger it made of one before is removed), and everything else in the shared folders - which
+are now scanned as a root - is counted from its transcript as before. Codex's journal has tokens
+and no price, so its tokens are priced with the ledger's Codex rates; a Claude chat's cost is the
+CLI's own `cost_usd`, per turn rather than per request.
+
+**WP9 / AGENT-HOST.md §10 — a brief per chat, and its history only while it is used.** The server
+no longer keeps every journal in memory: `chats/<id>/summary.json` (written by the server, left
+out of the backup) holds what Home, the badge, the push and the pump need, and is believed only
+while the journal still ends at its seq; the history is read on demand and let go after ten minutes
+unused. A chat's brief is part of its folder, which the host otherwise owns: it is the one file
+there the server writes besides `host.json`.
+
+**WP9 / §2.2 — a lost chat folder is rebuilt when the chat is opened.** The rebuild path was in
+place (the row's conversation in `host.json`); what was missing was a host. One is started when
+the chat's stream is opened and its journal is empty while its row knows a conversation, rather
+than for every such chat at start, which after a restore could be hundreds of agents at once.
+
+**WP9 / §3.1 — Ultracode is a field of `host.json`, and changing it parks the agent.** The server
+does not build a chat's environment (WP7 does), so it does not put `SOCRATES_CLAUDE_ULTRACODE` into
+`env`: `host.json` says `ultracode`, and the host adds the variable to whatever environment the CLI
+gets - and takes away one the environment brought, so an ambient value never decides. The option
+is a launch setting of the CLI; switching it in a running Claude chat's ⋮ saves it and parks the
+agent as soon as it is idle, so the next message resumes the conversation with it.
+
+**WP9 / §7 — a chat is named at its first turn, from its first message.** The terminal rule (name
+at the first turn somebody asked for) holds for a chat: the namer is given the first message and
+whatever the first answer has said by then, which is usually nothing. Waiting for the first answer
+would leave a long first turn under its placeholder name for its whole length.
+
+**WP9 / §7 — Status for a chat has two phases on screen.** A terminal's Status reports its phases
+on the terminal socket, which a chat does not have; the chat's dock shows the page's own first
+phase ("Reading the chat") and then the answer, which is read out as before.
+
+**WP9 — the server's test binary registers the three agents' adapters.** To test Ultracode, the
+prepared chat's start and the lost-folder rebuild through real hosts for Claude, Codex and
+OpenCode, `internal/server`'s test binary imports their adapters (with fakeclaude, fakecodex and
+fakeopencode on the PATH) and, like the browser suite, sets `SOCRATES_AGENT_TERMINALS=1`, so that
+its many tests of agent terminals still make terminals; a test that wants a prepared Claude chat
+unsets it for itself.
