@@ -19,7 +19,9 @@
  *   .so-menu-heading a group's name inside the row menu
  *   .so-banner       the backup notice (backup.js)
  *   .so-options      the switches of the options dialog
- *   .so-rename, .so-info-dialog, .so-facts  the row menu's dialogs
+ *   .so-rename, .so-info-dialog  the row menu's dialogs; Info's facts are a
+ *                    DS facts list (.so-facts, each value .so-fact: hooks for
+ *                    the tests, no rule of their own)
  *   .so-actions      a session's menu on a phone: the same items in a dialog
  *                    at the bottom edge (an action sheet), __head and __list
  *   .so-menu-state   the On or Off at the end of a switch in the menu
@@ -532,17 +534,6 @@
 
 .so-info-dialog .ds-dialog__title {
   min-width: 0;
-}
-
-/* The machine's facts about a session: technical detail, in the code face. */
-.so-facts {
-  display: grid;
-  gap: var(--ds-space-2);
-}
-
-.so-fact {
-  font: var(--ds-font-code);
-  color: var(--ds-text-2);
 }
 
 /* ── A session's menu on a phone ──────────────────────────────────────── */

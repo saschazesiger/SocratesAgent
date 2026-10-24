@@ -1236,48 +1236,65 @@ function rowHtml(session) {
 // The technical detail of a session - what it runs, where it works, what it
 // runs on, which conversation it is holding, how often it has been brought
 // back. It is never in the words of a row: the "Info" item of the row's menu
-// is the one place it is shown, for the list and for the header alike.
-function rowFacts(session) {
+// is the one place it is shown, for the list and for the header alike. Each
+// fact is a label and its value, in plain words.
+//
+// A chat's model is the one its composer shows: the model and effort the
+// chat runs on now, which a change from the model menu makes newer than
+// the row's (`running`, from the chat's journal), else the row's.
+const CONVERSATION_WORDS = {
+  pending: 'Being started',
+  known: 'Can be picked up again',
+  verified: 'Can be picked up again',
+  lost: 'Lost; the next start begins a new one',
+};
+
+function rowFacts(session, running = null) {
   const facts = [
-    harnesses.label(session.harness),
-    STATE_WORDS[session.state] || session.state,
-    session.workdir,
+    ['Program', harnesses.label(session.harness)],
+    ['State', STATE_WORDS[session.state] || session.state],
+    ['Folder', session.workdir],
   ];
-  if (session.options?.account) facts.push('Account: ' + (accounts.labelOf(session.options.account) || session.options.account));
-  if (session.options?.auto_switch) facts.push('Switches accounts at a limit');
-  if (session.options?.ultracode) facts.push('Ultracode on');
-  if (isPrepared(session)) {
-    if (!session.options?.account) facts.push('Account: chosen when it starts');
-    if (Number(session.start_at)) facts.push('Starts by itself ' + new Date(Number(session.start_at)).toLocaleString());
+  const account = session.options?.account
+    ? accounts.labelOf(session.options.account) || session.options.account
+    : isPrepared(session) ? 'Chosen when it starts' : '';
+  if (account || session.options?.auto_switch) {
+    facts.push(['Account', [account, session.options?.auto_switch ? 'switches at a limit' : ''].filter(Boolean).join(' · ')]);
   }
-  const act = activityOf(session);
-  if (act && ACTIVITY_WORDS[act.state]) {
-    // What it is doing, why the detector thinks so, and since when. All three
-    // are facts about the machine, so all three live behind the "i".
-    facts.push(ACTIVITY_WORDS[act.state]
-      + (act.note ? ' · ' + act.note : '')
-      + (act.source ? ' · ' + act.source : '')
-      + (act.since ? ' · since ' + clockOf(act.since) : ''));
-  }
-  const outcome = outcomeOf(session);
-  if (outcome) {
-    facts.push(outcomeLine(outcome));
-    if (outcome.phase === 'ready' && Array.isArray(outcome.todos) && outcome.todos.length) {
-      facts.push('Open: ' + outcome.todos.join(' · '));
-    }
+  if (session.options?.ultracode) facts.push(['Ultracode', 'On']);
+  if (isPrepared(session) && Number(session.start_at)) {
+    facts.push(['Starts by itself', new Date(Number(session.start_at)).toLocaleString()]);
   }
   // The model and effort by the names the sheet and the composer give them
   // ("Sonnet · High"), not the ids the CLI was started with.
-  if (session.model) {
-    const model = harnesses.modelOf(session.harness, session.model);
-    facts.push((model ? model.label || model.id : session.model)
-      + (session.effort ? ' · ' + harnesses.effortLabel(session.effort) : ''));
+  const model = (running && running.model) || session.model;
+  const effort = running && running.model ? running.effort : session.effort;
+  if (model) {
+    const known = harnesses.modelOf(session.harness, model);
+    facts.push(['Model', (known ? known.label || known.id : model) + (effort ? ' · ' + harnesses.effortLabel(effort) : '')]);
   }
-  if (session.cli_session_state && session.cli_session_state !== 'none') {
-    facts.push('conversation ' + session.cli_session_state);
+  const act = activityOf(session);
+  if (act && ACTIVITY_WORDS[act.state]) {
+    // What it is doing and since when. How the detector came to think so
+    // is no fact a person can use.
+    facts.push(['Doing', ACTIVITY_WORDS[act.state]
+      + (act.note ? ' · ' + act.note : '')
+      + (act.since ? ' · since ' + clockOf(act.since) : '')]);
   }
-  if (session.resume_count) facts.push('resumed ' + session.resume_count + '×');
-  return facts.filter(Boolean);
+  const outcome = outcomeOf(session);
+  if (outcome) {
+    facts.push(['Last turn', outcomeLine(outcome)]);
+    if (outcome.phase === 'ready' && Array.isArray(outcome.todos) && outcome.todos.length) {
+      facts.push(['Still open', outcome.todos.join(' · ')]);
+    }
+  }
+  if (CONVERSATION_WORDS[session.cli_session_state]) {
+    facts.push(['Conversation', CONVERSATION_WORDS[session.cli_session_state]]);
+  }
+  if (session.resume_count) {
+    facts.push(['Brought back', session.resume_count === 1 ? 'Once' : session.resume_count + ' times']);
+  }
+  return facts.filter(([, value]) => value);
 }
 
 // clockOf is when a state was committed, as a time of day.
@@ -1969,13 +1986,23 @@ function promptTitle(current, opener) {
 // facts are drawn - a row is a mark and a name, and nothing else.
 function infoDialog(session, opener) {
   const close = el('button', { class: 'ds-btn ds-btn--text', type: 'button', 'data-close': true, autofocus: true, text: 'Close' });
+  const list = el('dl', { class: 'ds-facts so-facts' });
+  const draw = (running) => list.replaceChildren(...rowFacts(session, running).map(([label, value]) => el('div', {},
+    el('dt', { text: label }), el('dd', { class: 'so-fact', text: value }))));
   const dialog = el('dialog', { class: 'ds-dialog so-info-dialog', 'aria-labelledby': 'infoTitle' },
     el('div', { class: 'ds-dialog__backdrop', 'data-close': true }),
     el('div', { class: 'ds-dialog__box' },
       el('h2', { class: 'ds-dialog__title so-break', id: 'infoTitle', text: session.title }),
-      el('ul', { class: 'ds-plain-list so-facts' },
-        ...rowFacts(session).map((line) => el('li', { class: 'so-fact so-break', text: line }))),
+      list,
       el('div', { class: 'ds-dialog__actions' }, close)));
+  // A chat this page has read says its model at once; another one is asked.
+  const running = isChat(session) && state.chat ? state.chat.modelOf(session.id) : null;
+  draw(running);
+  if (isChat(session) && !running) {
+    api('/api/chats/' + encodeURIComponent(session.id))
+      .then((data) => { if (data && data.chat && data.chat.model && dialog.isConnected) draw({ model: data.chat.model, effort: data.chat.effort || '' }); })
+      .catch(() => {});
+  }
   dialog.addEventListener('close', () => {
     hideOverlay(dialog, { remove: true }).then(() => paneAfter(document.activeElement));
   }, { once: true });

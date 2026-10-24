@@ -32,7 +32,7 @@ import {
   assistantMessage, userMessage, lineHtml, askCard, todoList, todoItems, renewsIn, seconds, outboxState,
 } from './chatparts.js';
 import { mountComposer } from './composer.js';
-import { chatOutbox, pendingFor, pendingAnswer, failedItem, queueAnswer, answeredHere } from './chatoutbox.js';
+import { chatOutbox, pendingFor, pendingAnswer, pendingModel, failedItem, queueAnswer, answeredHere } from './chatoutbox.js';
 import { askProgress, askDraftsRev, forgetAskDraft } from './askdialog.js';
 
 // How many chats keep their fold in memory, so that going back to one does
@@ -818,6 +818,19 @@ export function mountChat(ctx) {
     insert(text) { if (composer) composer.insert(text); },
     focus() { if (composer) composer.focus(); },
     field: () => (composer ? composer.field() : null),
+
+    /**
+     * modelOf is the model and effort a chat's next message goes to, as its
+     * composer says: a change still on its way, else what its journal said
+     * last. Null for a chat this page has not read (its row knows only the
+     * model it started with).
+     */
+    modelOf(id) {
+      const asked = pendingModel(id);
+      if (asked) return { model: asked.model, effort: asked.effort || '' };
+      const fold = session && session.id === id ? chat : chats.get(id);
+      return fold && fold.model ? { model: fold.model, effort: fold.effort || '' } : null;
+    },
 
     /**
      * liveChat is the fold of the chat on screen, kept current by its
