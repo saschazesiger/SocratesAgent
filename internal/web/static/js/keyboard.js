@@ -46,36 +46,15 @@
 // the answer is remembered and wins over every sign from then on.
 
 import { el } from './api.js';
-import { M, morph, html, raw, icon } from './ui.js';
+import {
+  M, morph, html, raw, icon, TOUCH_PREF, TOUCH_QUERIES, touchPref, looksTouch, touchWanted,
+} from './ui.js';
 import { record, recPhase } from './dictate.js';
 
-// A touch screen is a device that shows any sign of one: a pointer that is a
-// finger, main or not, touch points, touch events, a browser known to run on
-// one, or a finger actually seen on the page. Tesla's browser is a Chromium
-// that reports a fine pointer that can hover - the media queries alone said
-// "mouse" there. Once a device has been taken for one it stays one for the
-// page. The class on <html> is what the stylesheet asks.
-const TOUCH_QUERIES = ['(hover: none)', '(pointer: coarse)', '(any-pointer: coarse)', '(any-hover: none)']
-  .map((query) => window.matchMedia(query));
-const TOUCH_BROWSER = /\bTesla\/|QtCarBrowser/;
+// A touch screen is a device that shows any sign of one (ui.js looksTouch),
+// or a finger actually seen on the page. Once a device has been taken for one
+// it stays one for the page. The class on <html> is what the stylesheet asks.
 let touch = false;
-
-// What the options menu last answered on this device: 'on', 'off', or '' for
-// "decide by the signs".
-const TOUCH_PREF = 'socrates.touch';
-function touchPref() {
-  try {
-    const saved = localStorage.getItem(TOUCH_PREF);
-    return saved === 'on' || saved === 'off' ? saved : '';
-  } catch { return ''; /* a private window: the signs decide */ }
-}
-
-function looksTouch() {
-  return TOUCH_QUERIES.some((query) => query.matches)
-    || navigator.maxTouchPoints > 0
-    || 'ontouchstart' in window
-    || TOUCH_BROWSER.test(navigator.userAgent);
-}
 
 // becomeTouch puts the page under the switch the first time it learns it is
 // on a touch screen, with the button and every field following - unless this
@@ -123,7 +102,7 @@ export function setTouchMode(on) {
   else leaveTouch();
 }
 
-if (touchPref() === 'on' || (touchPref() !== 'off' && looksTouch())) {
+if (touchWanted()) {
   touch = true;
   document.documentElement.classList.add('so-touch');
 }

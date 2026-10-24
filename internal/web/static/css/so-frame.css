@@ -576,12 +576,9 @@
 
 /* ── Phones ───────────────────────────────────────────────────────────── */
 
-/* The brand keeps its mark on a phone; the bar's width is the session's. */
+/* The brand keeps only its mark on a phone (so-shared.css, every page);
+   the bar's width is the session's. */
 @media (max-width: 600px) {
-  .so-app .ds-topbar .ds-brand__name {
-    display: none;
-  }
-
   .so-topbar {
     margin-left: var(--ds-space-1);
   }

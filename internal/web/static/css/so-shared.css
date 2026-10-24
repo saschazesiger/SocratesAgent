@@ -197,6 +197,16 @@ body[data-stale] .so-mark[data-ring="busy"]::after {
   flex: 1 1 var(--so-page-head-basis);
 }
 
+/* ── The top bar of every page ───────────────────────────────────────── */
+
+/* On a phone every page's bar is the same: its way back or its drawer, the
+   Socrates mark without its name, and the page's own controls. */
+@media (max-width: 600px) {
+  .ds-topbar .ds-brand__name {
+    display: none;
+  }
+}
+
 /* ── Touch mode: a finger's target ───────────────────────────────────── */
 
 /* DS sizes its buttons through hooks (theme.css), but a field, a check row,
@@ -219,6 +229,13 @@ body[data-stale] .so-mark[data-ring="busy"]::after {
 .ds-theme.so-touch .ds-combo__toggle {
   width: var(--so-touch-target);
   height: var(--so-touch-target);
+}
+
+/* The mark in a top bar is a link home: a finger's target around it. */
+.ds-theme.so-touch .ds-topbar .ds-brand {
+  min-width: var(--so-touch-target);
+  min-height: var(--so-touch-target);
+  justify-content: center;
 }
 
 /* ── Accounts ────────────────────────────────────────────────────────── */

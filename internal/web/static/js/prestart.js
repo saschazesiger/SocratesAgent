@@ -237,6 +237,8 @@ function openPanel(ctx, first) {
     // the server holds at it - null while that is not known.
     loaded: false,
     loadError: '',
+    // The server's own words about a failed load, behind the line's "i".
+    loadDetail: '',
     rev: 0,
     saved: null,
     saving: null,
@@ -341,11 +343,13 @@ function openPanel(ctx, first) {
 
   // setAtHint is the line under the time: what is set, or why it is not.
   // An error wears the icon DS gives a field's error, and marks the field.
-  function setAtHint(text, error = false) {
+  // The server's own sentence, when there is one, is behind its "i".
+  function setAtHint(text, error = false, detail = '') {
     atHint.classList.toggle('ds-field__hint--error', error);
     if (error) startAt.setAttribute('aria-invalid', 'true');
     else startAt.removeAttribute('aria-invalid');
-    atHint.replaceChildren(...(error ? [iconEl('alertCircle', 16)] : []), text);
+    atHint.replaceChildren(...(error ? [iconEl('alertCircle', 16)] : []), text,
+      ...(detail ? [infoTip([detail], { label: 'Why it was not saved' })] : []));
   }
 
   // drawLine writes one of the two status lines (the prompt's, the
@@ -471,6 +475,7 @@ function openPanel(ctx, first) {
     st.loading = true;
     const local = readBuffer(id);
     st.loadError = '';
+    st.loadDetail = '';
     drawStatus();
     const res = await call('GET', path + '/draft');
     st.loading = false;
@@ -518,7 +523,8 @@ function openPanel(ctx, first) {
     textarea.disabled = true;
     st.loadError = res.status === 0
       ? 'Offline – the prompt loads when the connection is back.'
-      : 'The prompt could not be loaded: ' + (res.data.error || 'HTTP ' + res.status);
+      : 'The prompt could not be loaded.';
+    st.loadDetail = res.status === 0 ? '' : (res.data.error || 'HTTP ' + res.status);
     drawStatus();
     retryLater();
   }
@@ -709,8 +715,10 @@ function openPanel(ctx, first) {
     }
     // The server's own sentence is a fact about the machine, and it goes
     // behind an "i" like every other.
-    drawLine(saveLine, text, kind, st.loaded && dirty() && st.error && !st.offline
-      ? infoTip([st.error], { label: 'Why it was not saved' }) : null);
+    let detail = null;
+    if (!st.loaded && st.loadError && st.loadDetail) detail = infoTip([st.loadDetail], { label: 'Why it could not be loaded' });
+    else if (st.loaded && dirty() && st.error && !st.offline) detail = infoTip([st.error], { label: 'Why it was not saved' });
+    drawLine(saveLine, text, kind, detail);
     drawStart();
   }
 
@@ -775,7 +783,7 @@ function openPanel(ctx, first) {
         // saying what is really set.
         if (!st.closed) {
           drawSchedule(true);
-          setAtHint('Not saved: ' + (res.data.error || 'HTTP ' + res.status), true);
+          setAtHint('That time was not saved.', true, res.data.error || 'HTTP ' + res.status);
         }
       } else {
         st.patchError = res.data.error || 'HTTP ' + res.status;
@@ -791,10 +799,12 @@ function openPanel(ctx, first) {
   function drawSettingsLine() {
     let text = '';
     let kind = '';
-    if (st.patchError) { text = 'Not saved: ' + st.patchError; kind = 'error'; }
+    if (st.patchError) { text = 'The settings were not saved.'; kind = 'error'; }
     else if (st.patchOffline) { text = 'Offline – the settings are saved when the connection is back.'; kind = 'offline'; }
     else if (Object.keys(st.patch).length || st.patching) text = 'Saving…';
-    drawLine(settingsLine, text, kind);
+    // The server's own sentence goes behind the line's "i".
+    drawLine(settingsLine, text, kind,
+      st.patchError ? infoTip([st.patchError], { label: 'Why they were not saved' }) : null);
   }
 
   /* ---------------------------------------------------------- schedule */

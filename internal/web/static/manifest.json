@@ -23,7 +23,7 @@
     {
       "name": "Questions",
       "short_name": "Questions",
-      "description": "The questions and permission prompts your agents are waiting on",
+      "description": "The questions your agents are waiting on",
       "url": "/#questions",
       "icons": [{ "src": "/static/img/icon-192.png", "sizes": "192x192", "type": "image/png" }]
     },

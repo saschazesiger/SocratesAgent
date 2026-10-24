@@ -1922,7 +1922,7 @@ function promptTitle(current, opener) {
   return new Promise((resolve) => {
     const input = el('input', {
       class: 'ds-input', type: 'text', id: 'renameInput', value: current, autofocus: true,
-      'aria-labelledby': 'renameTitle',
+      'aria-labelledby': 'renameTitle', enterkeyhint: 'done',
     });
     const cancel = el('button', { class: 'ds-btn ds-btn--text', type: 'button', 'data-close': true, text: 'Cancel' });
     const accept = el('button', { class: 'ds-btn ds-btn--primary', type: 'button', text: 'Rename' });

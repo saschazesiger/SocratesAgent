@@ -709,7 +709,7 @@ async function signInAccount(account, opener) {
 
 // promptSecret asks for a key in a field that does not show it.
 async function promptSecret(title, opener) {
-  const input = el('input', { class: 'ds-input', type: 'password', id: 'accountKeyAgain', autocomplete: 'off', spellcheck: 'false', autofocus: true });
+  const input = el('input', { class: 'ds-input', type: 'password', id: 'accountKeyAgain', autocomplete: 'off', spellcheck: 'false', autofocus: true, enterkeyhint: 'done' });
   const field = el('div', { class: 'ds-field' }, el('label', { class: 'ds-field__label', for: 'accountKeyAgain', text: 'API key' }), input);
   const cancel = el('button', { class: 'ds-btn ds-btn--text', type: 'button', 'data-close': true, text: 'Cancel' });
   const accept = el('button', { class: 'ds-btn ds-btn--primary', type: 'button', text: 'Save the key' });
