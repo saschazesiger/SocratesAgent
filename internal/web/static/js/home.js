@@ -623,7 +623,9 @@ export function mountHome(ctx) {
   function stateChip(session, cards, act, outcome, judging, now) {
     const said = stateWords(session, cards, act, now);
     let tone = '';
-    let glyph = 'info';
+    // A session counted in none of the cards below is one that is there,
+    // running and quiet - a Shell, mostly: its own mark, not "info".
+    let glyph = session.harness === 'shell' ? 'shell' : 'activity';
     if (cards.includes('done')) glyph = 'archive';
     else if (cards.includes('questions')) {
       tone = 'warning';
