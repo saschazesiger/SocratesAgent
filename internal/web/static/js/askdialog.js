@@ -391,6 +391,25 @@ export function openAskDialog({ items, start = 0, watch, openChat, closed, more 
     if (scroller && at) scroller.scrollTop += at.getBoundingClientRect().top - scroller.getBoundingClientRect().top;
   }
 
+  // bringUp shows where a question opens: the question itself, or, for one
+  // left asking the agent back (the draft keeps that), the field of that
+  // question to the agent - below the options, and what Send question sends.
+  function bringUp() {
+    if (st.phase === 'ask' && st.draft.asking) showField(shell.querySelector('#ask-all-followUp'));
+    else bringQuestionUp();
+  }
+
+  // showField brings a field into sight in the scroller, with its label and,
+  // under the question to the agent, the line that says what happens to it.
+  // A field a button brings comes below that button, and the button is often
+  // near the end of what is in sight.
+  function showField(field) {
+    if (!field) return;
+    const box = field.closest('.so-ask-followup') || field.closest('.ds-field');
+    if (box) box.scrollIntoView({ block: 'nearest' });
+    field.scrollIntoView({ block: 'nearest' });
+  }
+
   function item() { return st.items[st.at] || null; }
 
   function settledPhase(ask) {
@@ -614,7 +633,7 @@ export function openAskDialog({ items, start = 0, watch, openChat, closed, more 
     if (focus) {
       arm();
       firstFocus().focus({ preventScroll: true });
-      bringQuestionUp();
+      bringUp();
     }
   }
 
@@ -622,10 +641,13 @@ export function openAskDialog({ items, start = 0, watch, openChat, closed, more 
   // screen reader starts on and where no key chooses anything - or, at a
   // desk, a question whose answer is typed (text, a number): its field, so
   // that what is typed lands in it without a click first. A phone keeps
-  // the heading: a field the page focuses raises no keyboard there.
+  // the heading: a field the page focuses raises no keyboard there. A
+  // question left asking the agent back opens on that question to the agent
+  // (at a desk, its field): it is what is left to type.
   function firstFocus() {
     const heading = shell.querySelector('.so-q-text') || shell;
-    if (touchScreen() || st.phase !== 'ask' || st.draft.asking) return heading;
+    if (touchScreen() || st.phase !== 'ask') return heading;
+    if (st.draft.asking) return shell.querySelector('#ask-all-followUp') || heading;
     const q = questionsOf()[st.draft.step || 0];
     const kind = q ? kindOf(q) : '';
     if (kind !== 'text' && kind !== 'number') return heading;
@@ -912,9 +934,11 @@ export function openAskDialog({ items, start = 0, watch, openChat, closed, more 
 
   // focusField is a field a button just brought (Other, Add a note,
   // Anything else?, Ask the agent back): asked for by a tap, so it takes the
-  // keyboard at once, not at a second tap.
+  // keyboard at once, not at a second tap, and comes into sight with it.
   function focusField(fid) {
-    typeHere(shell.querySelector('#' + CSS.escape(fid)));
+    const field = shell.querySelector('#' + CSS.escape(fid));
+    typeHere(field);
+    showField(field);
   }
 
   shell.addEventListener('input', (event) => {
@@ -1001,7 +1025,7 @@ export function openAskDialog({ items, start = 0, watch, openChat, closed, more 
   }
   showOverlay(dialog).then(() => {
     firstFocus().focus({ preventScroll: true });
-    bringQuestionUp();
+    bringUp();
   });
   return current;
 }
