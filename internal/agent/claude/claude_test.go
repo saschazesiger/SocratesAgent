@@ -17,12 +17,17 @@ import (
 	"time"
 
 	"github.com/saschazesiger/SocratesAgent/internal/agent"
+	"github.com/saschazesiger/SocratesAgent/internal/agenthost"
 	"github.com/saschazesiger/SocratesAgent/internal/testhome"
 )
 
 var fakeBin string
 
 func TestMain(m *testing.M) {
+	// The test binary is also `socrates agent-host` (host_test.go).
+	if len(os.Args) > 1 && os.Args[1] == "agent-host" {
+		os.Exit(agenthost.Main(os.Args[2:], "test"))
+	}
 	dir, err := os.MkdirTemp("", "fakeclaude-")
 	if err != nil {
 		panic(err)

@@ -14,6 +14,8 @@ import (
 	"github.com/saschazesiger/SocratesAgent/internal/agent"
 	"github.com/saschazesiger/SocratesAgent/internal/agent/askuser"
 	"github.com/saschazesiger/SocratesAgent/internal/agenthost"
+	"github.com/saschazesiger/SocratesAgent/internal/paths"
+	"github.com/saschazesiger/SocratesAgent/internal/vault"
 )
 
 // hostRig is a chat run by a real agent host process (this test binary as
@@ -277,5 +279,73 @@ func TestAnAbortedAskUserCallIsAnsweredAsAMessage(t *testing.T) {
 	})
 	if !strings.Contains(reply.Text, "PostgreSQL [pg]") {
 		t.Fatalf("the agent got %q", reply.Text)
+	}
+}
+
+// A chat moves A -> B -> A through a real host: the adapter switches the
+// server itself (agent.AccountSwitcher), the session stays, the divider comes
+// before anything runs on the new account, and the key of an API-key account
+// arrives sealed and is opened by the host.
+func TestASwitchThroughTheHostKeepsTheSession(t *testing.T) {
+	h := newHostRig(t)
+	key, err := vault.LoadOrCreateKeyFile(paths.New(h.r.data).SecretsKey())
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.launch("")
+	cn := h.dial()
+	sid := cn.until("the conversation", func(ev agent.Event) bool { return ev.Type == agent.TypeConversation }).ConversationID
+	cn.send("m1", "/whoami")
+	cn.until("the first turn", turnEnded)
+	sealed, err := agenthost.SealEnv(key, h.chat, []string{`OPENCODE_AUTH_CONTENT={"fake":{"type":"api","key":"KEY-B"}}`})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var events []agent.Event
+	collect := func(what string, ok func(agent.Event) bool) agent.Event {
+		ev := cn.until(what, func(ev agent.Event) bool {
+			events = append(events, ev)
+			return ok(ev)
+		})
+		return ev
+	}
+	if err := cn.c.Send(agenthost.Command{Op: agenthost.OpSwitchAccount, ClientID: "s1", Account: "b", Env: h.r.env, SecretEnv: sealed}); err != nil {
+		t.Fatal(err)
+	}
+	collect("the divider to b", func(ev agent.Event) bool { return ev.Type == agent.TypeAccountSwitched && ev.To == "b" })
+	cn.send("m2", "/whoami")
+	collect("the turn on b", turnEnded)
+	if err := cn.c.Send(agenthost.Command{Op: agenthost.OpSwitchAccount, ClientID: "s2", Account: "a", Env: h.r.env}); err != nil {
+		t.Fatal(err)
+	}
+	collect("the divider to a", func(ev agent.Event) bool { return ev.Type == agent.TypeAccountSwitched && ev.To == "a" })
+	cn.send("m3", "/whoami")
+	collect("the turn on a", turnEnded)
+	journal, err := agent.ReadJournal(agenthost.JournalPath(h.r.data, h.chat))
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := agent.Fold(journal)
+	if p.ConversationID != sid {
+		t.Fatalf("the session changed: %s -> %s", sid, p.ConversationID)
+	}
+	var replies, accounts []string
+	for _, ev := range journal {
+		if ev.Type == agent.TypePart && ev.Kind == agent.PartText && ev.State == agent.PartDone && strings.HasPrefix(ev.Text, "account: ") {
+			replies = append(replies, ev.Text)
+		}
+		if ev.Type == agent.TypeTurnStarted {
+			accounts = append(accounts, ev.Account)
+		}
+	}
+	if len(replies) != 3 || replies[1] != "account: fake:KEY-B (env)" || replies[2] != "account: none" {
+		t.Fatalf("the CLI ran as %q", replies)
+	}
+	if strings.Join(accounts, ",") != ",b,a" {
+		t.Fatalf("the turns ran on %v", accounts)
+	}
+	raw, _ := os.ReadFile(agenthost.ChatDir(h.r.data, h.chat) + "/host.json")
+	if strings.Contains(string(raw), "KEY-B") {
+		t.Fatal("host.json holds the key")
 	}
 }

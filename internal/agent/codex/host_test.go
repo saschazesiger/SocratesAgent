@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -140,5 +141,69 @@ func TestThroughTheAgentHost(t *testing.T) {
 	p := agent.Fold(journal)
 	if p.ConversationID != conv || p.Turn != nil || len(p.Undelivered()) != 0 {
 		t.Fatalf("journal after park: conv %s turn %+v undelivered %d", p.ConversationID, p.Turn, len(p.Undelivered()))
+	}
+}
+
+// A chat moves A -> B -> A through a real host on one thread: each switch is
+// a divider, every turn says its account, and the reasoning another account
+// encrypted is dropped by the chain (REBUILD.md §4.3), so the turns go on.
+func TestASwitchThroughTheHostRunsTheChain(t *testing.T) {
+	lab := newFakeLab(t)
+	data := filepath.Join(lab.root, "data")
+	chat := "codexswitch"
+	l := &agenthost.Launcher{DataDir: data, Binary: os.Args[0], Logf: t.Logf}
+	t.Cleanup(func() { l.Stop(context.Background(), chat) })
+	envA, envB := lab.spec("a", "").Env, lab.spec("b", "").Env
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	if err := l.Launch(ctx, agenthost.Spec{ChatID: chat, Harness: Harness, Workdir: lab.work, Account: "a", Env: envA,
+		ParkAfterMS: 60000}); err != nil {
+		t.Fatalf("launch: %v", err)
+	}
+	h := dialHost(t, data, chat, 0)
+	h.send("m1", "one")
+	if end := h.until("the first turn", isType(agent.TypeTurnEnded)); end.Outcome != agent.OutcomeCompleted {
+		t.Fatalf("on A: %+v", end)
+	}
+	switchTo := func(clientID, account string, env []string) {
+		t.Helper()
+		if err := h.c.Send(agenthost.Command{Op: agenthost.OpSwitchAccount, ClientID: clientID, Account: account, Env: env}); err != nil {
+			t.Fatal(err)
+		}
+		h.until("the divider to "+account, func(ev agent.Event) bool {
+			return ev.Type == agent.TypeAccountSwitched && ev.To == account
+		})
+	}
+	switchTo("s1", "b", envB)
+	h.send("m2", "two")
+	if end := h.until("the turn on B", isType(agent.TypeTurnEnded)); end.Outcome != agent.OutcomeCompleted {
+		t.Fatalf("on B: %+v\n%s", end, dump(h.events))
+	}
+	stripped := false
+	for _, ev := range h.events {
+		stripped = stripped || (ev.Type == agent.TypeNotice && ev.Code == NoticeHistoryStripped)
+	}
+	if !stripped {
+		t.Fatalf("A's reasoning was not dropped on B:\n%s", dump(h.events))
+	}
+	if got := lastTurnText(agent.Fold(h.events)); got != "you said: two" {
+		t.Fatalf("on B: %q", got)
+	}
+	switchTo("s2", "a", envA)
+	h.send("m3", "three")
+	if end := h.until("the turn back on A", isType(agent.TypeTurnEnded)); end.Outcome != agent.OutcomeCompleted {
+		t.Fatalf("back on A: %+v\n%s", end, dump(h.events))
+	}
+	var accounts []string
+	for _, ev := range h.events {
+		if ev.Type == agent.TypeTurnStarted {
+			accounts = append(accounts, ev.Account)
+		}
+	}
+	if strings.Join(accounts, ",") != "a,b,a" {
+		t.Fatalf("the turns ran on %v", accounts)
+	}
+	if got := lastTurnText(agent.Fold(h.events)); got != "you said: three" {
+		t.Fatalf("back on A: %q", got)
 	}
 }
