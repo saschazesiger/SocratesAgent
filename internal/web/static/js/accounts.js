@@ -244,7 +244,9 @@ export async function signIn(account, opener) {
   }
   if (data.session) {
     toast('A Shell opened where ' + harnesses.label('claude') + ' signs ' + account.label + ' in.');
-    location.href = '/#' + encodeURIComponent(data.session.id);
+    // #open=: from Admin this is a new load of the session page, which starts
+    // on Home for a bare #<id> (session.js routeOf).
+    location.href = '/#open=' + encodeURIComponent(data.session.id);
     return true;
   }
   const flow = data.signin || {};
