@@ -347,7 +347,7 @@ func (d *digester) judgedLocked(id string, in termux.Activity, answer *outcomeAn
 	if o == nil || o.Phase == digestReady || in.State != termux.StateIdle || (o.Since != in.Since && o.prior != in.Since) {
 		return
 	}
-	if now, ok := d.seen[id]; ok && (now.State != termux.StateIdle || now.Since != o.Since) {
+	if now, ok := d.lastSeenLocked(id); ok && (now.State != termux.StateIdle || now.Since != o.Since) {
 		// The session left the idle while the model was thinking; the
 		// change that took it away dropped the outcome already.
 		return
@@ -365,6 +365,19 @@ func (d *digester) judgedLocked(id string, in termux.Activity, answer *outcomeAn
 	d.publishOutcomeLocked(id, o)
 	d.saveOutcomesLocked()
 	d.srv.push.judged(id, o.clone(), question)
+}
+
+// lastSeenLocked is a session's newest committed activity the digester has
+// been told of: outcomeEdge hears every commit before observe does, and a
+// verdict that is ready in between (a chat's judge, which outcomeEdge
+// starts, can be) is checked against the commit it was started for rather
+// than the one before it. Called with the lock held.
+func (d *digester) lastSeenLocked(id string) (termux.Activity, bool) {
+	now, ok := d.seen[id]
+	if edge, had := d.oseen[id]; had && (!ok || edge.Since > now.Since) {
+		return edge, true
+	}
+	return now, ok
 }
 
 // sanitizeOutcome is the model's verdict as Socrates shows it, or why there is

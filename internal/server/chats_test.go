@@ -320,7 +320,9 @@ func TestChatCreateIsIdempotentAndHasNoTerminal(t *testing.T) {
 	if !row.IsChat() || row.Harness != "fake" {
 		t.Fatalf("row %+v", row)
 	}
-	if code, _ := c.post(t, "/api/chats", map[string]any{"client_id": "x", "harness": "claude"}); code != http.StatusBadRequest {
+	// The test binary has the adapters of the three agents (chatagents_test.go);
+	// a Shell has none.
+	if code, _ := c.post(t, "/api/chats", map[string]any{"client_id": "x", "harness": "shell"}); code != http.StatusBadRequest {
 		t.Fatalf("a harness with no adapter: %d", code)
 	}
 	if res, _ := c.do(t, c.client, "POST", "/api/sessions/"+id+"/restart", ""); res.StatusCode != http.StatusConflict {
