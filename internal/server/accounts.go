@@ -780,7 +780,8 @@ func (s *Server) handlePatchAccount(w http.ResponseWriter, r *http.Request) {
 // runs on is refused rather than pulled out from under it, and so is one the
 // migration moved an agent's own sign-in into: ~/.claude, ~/.codex and the
 // OpenCode folders are links to it, and every agent started by hand on this
-// machine signs in with it.
+// machine signs in with it. One made of an old profile goes like any other,
+// with the link the migration left in the profile's place.
 func (s *Server) handleDeleteAccount(w http.ResponseWriter, r *http.Request) {
 	a, ok := s.accountOf(w, r)
 	if !ok {
@@ -797,7 +798,7 @@ func (s *Server) handleDeleteAccount(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, fmt.Sprintf("%d chat(s) run on %s; move them to another account or delete them first", n, a.Label))
 		return
 	}
-	if a.Origin != "" {
+	if accounts.HomeOrigin(a.Origin) {
 		writeError(w, http.StatusConflict, fmt.Sprintf("%s holds the sign-in the agent itself uses on this machine (%s), so it stays", a.Label, a.Origin))
 		return
 	}
@@ -809,6 +810,11 @@ func (s *Server) handleDeleteAccount(w http.ResponseWriter, r *http.Request) {
 	if err := os.RemoveAll(accounts.Folder(s.dataDir, a.Agent, a.ID)); err != nil {
 		writeError(w, http.StatusInternalServerError, "the account is gone from the list, but its folder could not be removed: "+err.Error())
 		return
+	}
+	if link := accounts.ProfileLink(s.dataDir, a); link != "" {
+		if fi, err := os.Lstat(link); err == nil && fi.Mode()&os.ModeSymlink != 0 {
+			_ = os.Remove(link)
+		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }

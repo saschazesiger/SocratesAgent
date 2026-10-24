@@ -177,6 +177,35 @@ func TestAccountsAreManagedAndTheirKeysNeverShown(t *testing.T) {
 	if code, raw := c.rawCall(t, "DELETE", "/api/accounts/"+moved.ID, nil); code != http.StatusConflict {
 		t.Fatalf("deleting the agent's own sign-in: %d %s", code, raw)
 	}
+	// The accounts of the old profiles go like any other: a lost one holds
+	// nothing, and the link left in a moved one's place goes with it.
+	lost := &store.Account{ID: accounts.NewID(), Agent: accounts.Claude, Label: "Team Sascha",
+		Kind: accounts.Subscription, State: accounts.NeedsSignIn, Origin: "lost:p-aaaaaaaaaaaa:claude"}
+	work := &store.Account{ID: accounts.NewID(), Agent: accounts.Claude, Label: "Work",
+		Kind: accounts.Subscription, State: accounts.SignedIn, Origin: "profile:p-bbbbbbbbbbbb:claude"}
+	for _, a := range []*store.Account{lost, work} {
+		if err := c.store.CreateAccount(a); err != nil {
+			t.Fatal(err)
+		}
+	}
+	link := filepath.Join(c.data, "profiles", "p-bbbbbbbbbbbb", "claude")
+	if err := os.MkdirAll(filepath.Dir(link), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(accounts.Folder(c.data, accounts.Claude, work.ID), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join("..", "..", "accounts", work.ID), link); err != nil {
+		t.Fatal(err)
+	}
+	for _, a := range []*store.Account{lost, work} {
+		if code, raw := c.rawCall(t, "DELETE", "/api/accounts/"+a.ID, nil); code != http.StatusOK {
+			t.Fatalf("deleting %s: %d %s", a.Label, code, raw)
+		}
+	}
+	if _, err := os.Lstat(link); !os.IsNotExist(err) {
+		t.Fatalf("the profile's link is still there: %v", err)
+	}
 }
 
 // A chat runs on its account, switches to another on the same conversation

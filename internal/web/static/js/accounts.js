@@ -124,8 +124,11 @@ export function usageWords(account) {
 /** meters is an account's windows as the sheet's flat bars. */
 export function meters(account) { return harnesses.limitMeters(account.limits || []); }
 
-/** who is the quiet line beside an account's name: its e-mail, or its kind. */
-export function who(account) { return account.email || KIND_WORDS[account.kind] || account.kind; }
+/**
+ * who is the quiet line beside an account's name: its kind. The e-mail and
+ * the plan stay behind the account's "i" (facts).
+ */
+export function who(account) { return KIND_WORDS[account.kind] || account.kind; }
 
 /**
  * entry is an account as a list to choose from shows it - the sheet's
@@ -165,11 +168,22 @@ export function facts(account) {
   if (account.plan) out.push((account.agent === 'opencode' ? 'Providers: ' : 'Plan: ') + account.plan);
   if (account.provider) out.push('Provider: ' + account.provider);
   if (account.state_detail) out.push(account.state_detail);
-  if (account.origin) out.push('Moved in from ' + account.origin);
+  const origin = originWords(account.origin);
+  if (origin) out.push(origin);
   const renew = renewal(account);
   if (renew) out.push('At its limit, ' + renew);
   out.push('Chats on it: ' + (account.chats || 0));
   return out;
+}
+
+// originWords is where the migration found an account: an agent's own
+// folder in HOME, or an old profile's. One made of a profile whose folders
+// were lost says so in its state instead.
+function originWords(origin) {
+  if (!origin) return '';
+  if (origin.startsWith('~/')) return 'Moved in from ' + origin;
+  if (origin.startsWith('profile:')) return 'Moved in from the old profile of this name';
+  return '';
 }
 
 /* ----------------------------------------------------------------- signing in */
