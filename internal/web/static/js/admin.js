@@ -454,7 +454,7 @@ function buildModelPickers() {
     if (!host) continue;
     const input = el('input', {
       class: 'ds-input', type: 'text', id: id + 'Input', value: getPath(settings, path) || '',
-      placeholder: 'google/gemini-2.5-flash', spellcheck: 'false', autocomplete: 'off', autocapitalize: 'off',
+      placeholder: path === 'openrouter.transcribe_model' ? 'google/gemini-2.5-flash' : 'anthropic/claude-haiku-5.5', spellcheck: 'false', autocomplete: 'off', autocapitalize: 'off',
       enterkeyhint: 'done',
     });
     // Read on every change, as the combobox was: dictation fills the field

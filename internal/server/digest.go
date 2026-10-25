@@ -61,7 +61,7 @@ const (
 const digestNoKey = "no OpenRouter API key is configured - open /admin and add your key"
 
 // errDigestJSON is a model that would not answer with an object twice.
-var errDigestJSON = errors.New("the home model did not answer with usable JSON")
+var errDigestJSON = errors.New("the model did not answer with usable JSON")
 
 // digest is one session's reading, exactly as the browser receives it.
 type digest struct {
@@ -220,7 +220,14 @@ type digestAnswer struct {
 // prose usually gets it right when it is told what was wrong.
 func askDigest(ctx context.Context, client *openrouter.Client, model string,
 	messages []openrouter.Message, maxTokens int) (digestAnswer, error) {
-	temperature := 0.0
+	var answer digestAnswer
+	err := askJSON(ctx, client, model, messages, maxTokens, 0, &answer)
+	return answer, err
+}
+
+// askJSON is askDigest for any object: the answer is decoded into into.
+func askJSON(ctx context.Context, client *openrouter.Client, model string,
+	messages []openrouter.Message, maxTokens int, temperature float64, into any) error {
 	attempt := messages
 	for try := 1; try <= 2; try++ {
 		res, err := client.Chat(ctx, openrouter.ChatRequest{
@@ -230,30 +237,26 @@ func askDigest(ctx context.Context, client *openrouter.Client, model string,
 			MaxTokens:   maxTokens,
 		}, nil)
 		if err != nil {
-			return digestAnswer{}, err
+			return err
 		}
-		answer, perr := parseDigestAnswer(res.Content)
+		perr := parseJSONAnswer(res.Content, into)
 		if perr == nil {
-			return answer, nil
+			return nil
 		}
 		attempt = append(append([]openrouter.Message{}, attempt...),
 			openrouter.Message{Role: "assistant", Content: res.Content},
 			openrouter.Message{Role: "user", Content: "That was not usable JSON: " + perr.Error() +
 				". Answer with one JSON object and nothing else."})
 	}
-	return digestAnswer{}, errDigestJSON
+	return errDigestJSON
 }
 
-func parseDigestAnswer(raw string) (digestAnswer, error) {
+func parseJSONAnswer(raw string, into any) error {
 	text := stripFence(strings.TrimSpace(raw))
-	var answer digestAnswer
 	if text == "" {
-		return answer, errors.New("the answer was empty")
+		return errors.New("the answer was empty")
 	}
-	if err := json.Unmarshal([]byte(text), &answer); err != nil {
-		return answer, err
-	}
-	return answer, nil
+	return json.Unmarshal([]byte(text), into)
 }
 
 // stripFence takes the code fence off an answer that was told to be one JSON

@@ -19,17 +19,21 @@ const (
 	// are two things to keep in step.
 	DefaultOpenRouterBaseURL = openrouter.DefaultBaseURL
 	DefaultTranscribeModel   = "google/gemini-2.5-flash"
-	DefaultTitleModel        = "google/gemini-2.5-flash-lite"
 
-	// DefaultStatusModel describes a screen out loud: a short answer, several
-	// times a session, on a phone that is waiting for it. Fast and cheap wins,
-	// and it is the family that already transcribes here.
-	DefaultStatusModel = "google/gemini-2.5-flash"
+	// DefaultAssistModel is the model of every call that reads text and
+	// writes text: a session's name, its Status and the verdict on a chat's
+	// turn. One model for all of them is one price and one behaviour to know;
+	// transcribing is not among them, because it hears audio.
+	DefaultAssistModel = "anthropic/claude-haiku-5.5"
+	DefaultTitleModel  = DefaultAssistModel
+	DefaultStatusModel = DefaultAssistModel
+	DefaultHomeModel   = DefaultAssistModel
 
-	// DefaultHomeModel judges how a chat's turn left the work, for Home
-	// (Outcomes). It runs on every turn of every chat, so fast and cheap
-	// comes first.
-	DefaultHomeModel = "google/gemini-3.5-flash"
+	// AssistModelsRev is the revision of the shipped text models. A settings
+	// document saved under an older one has them replaced, once, with the
+	// defaults above (Normalize): the owner moved every text call to
+	// DefaultAssistModel, models picked by hand before that included.
+	AssistModelsRev = 1
 )
 
 // Settings is the full configuration document.
@@ -84,6 +88,11 @@ type OpenRouterSettings struct {
 	// answer, calls and task list to OpenRouter, and notifications wait for
 	// its answer.
 	Outcomes bool `json:"outcomes"`
+	// ModelsRev is the AssistModelsRev the three text models were last
+	// brought up to. Default leaves it at zero: a stored document is decoded
+	// over the defaults, and one from before the field must not take the
+	// default's revision for its own.
+	ModelsRev int `json:"models_rev"`
 }
 
 // The languages Socrates speaks. There are two of them and there is no third
@@ -329,6 +338,12 @@ func (s *Settings) Normalize() {
 	s.OpenRouter.BaseURL = strings.TrimRight(strings.TrimSpace(s.OpenRouter.BaseURL), "/")
 	if strings.TrimSpace(s.OpenRouter.TranscribeModel) == "" {
 		s.OpenRouter.TranscribeModel = d.OpenRouter.TranscribeModel
+	}
+	if s.OpenRouter.ModelsRev < AssistModelsRev {
+		s.OpenRouter.TitleModel = d.OpenRouter.TitleModel
+		s.OpenRouter.StatusModel = d.OpenRouter.StatusModel
+		s.OpenRouter.HomeModel = d.OpenRouter.HomeModel
+		s.OpenRouter.ModelsRev = AssistModelsRev
 	}
 	// There is no chat model left to fall back to: OpenRouter writes titles and
 	// nothing else, so an empty field takes the shipped title model.

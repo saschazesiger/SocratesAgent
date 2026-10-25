@@ -2939,3 +2939,20 @@ Asked for by the product owner on 2026-10-25, on branch `ui-simplify`.
   field. Only a cancel after the finger moved past 10 px mutes again.
 - **A plan's "Keep planning" note** is kept in this browser while it is written, like every other
   field's text.
+
+### The model calls (2026-10-25)
+
+- **Every text call is Claude Haiku 5.5** (`anthropic/claude-haiku-5.5`, `config.DefaultAssistModel`):
+  titles, Status and turn outcomes. Transcription keeps its own model (it hears audio) and the voice
+  stays Google Cloud TTS. A settings document saved before `openrouter.models_rev` 1 has the three
+  text models replaced once, models picked by hand included (the owner: "use Haiku for
+  everything"); a model picked after that is kept.
+- **A chat's Status is an analysis of the whole session.** The model reads the chat's record - every
+  message, call (with how long it took or has run), question and turn boundary, each with its time,
+  cut from the old end past 160k runes - and the measured facts (`chatreport.go`). It answers a
+  summary, what runs now, and an estimate of the time left (`chatstatus.go`); how long the session
+  and its turn have run is measured by the server and shown by the page, never asked. The page shows
+  it in a dialog that counts the times on, and the spoken version is read out loud. A Shell's Status
+  still reads its screen.
+- **The rename dialog suggests a name** (its sparkles): `POST /api/sessions/{id}/title
+  {"suggest":true}` answers a name from the journal and saves nothing; Rename does.

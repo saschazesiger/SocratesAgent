@@ -444,23 +444,23 @@
                the work. -->
           <section class="ds-card" id="assistCard" aria-labelledby="assistTitle">
             <h2 class="ds-card__title" id="assistTitle">Status &amp; naming</h2>
-            <p class="ds-muted">Status has a model read what a chat is doing, or the screen of a Shell, and say it in one or two sentences, which the voice above reads out loud. The namer calls a chat after its first message, once.</p>
+            <p class="ds-muted">Status has a model read a chat's whole record — every message and call with its time — and say what it is about, what runs now, how long it has been at it and how long the rest will probably take; the voice above reads it out loud. For a Shell it reads the screen. The namer calls a chat after its first message, once, and again whenever you ask.</p>
             <div class="ds-form">
               <div class="ds-form-grid ds-form-grid--2">
                 <div class="ds-field">
                   <label class="ds-field__label" for="orStatusInput">Status model</label>
                   <div id="orStatus"></div>
-                  <small class="ds-field__hint">Asked for a sentence about a session, so a fast, cheap model is the right one — google/gemini-2.5-flash is the default.</small>
+                  <small class="ds-field__hint">Reads a whole chat on every press, so a fast model with a long context is the right one — anthropic/claude-haiku-5.5 is the default.</small>
                 </div>
                 <div class="ds-field">
                   <label class="ds-field__label" for="orTitleInput">Title model</label>
                   <div id="orTitle"></div>
-                  <small class="ds-field__hint">Asked for a handful of words once per session, so the cheapest model will do — google/gemini-2.5-flash-lite is the default.</small>
+                  <small class="ds-field__hint">Asked for a handful of words once per session, and whenever you ask — anthropic/claude-haiku-5.5 is the default.</small>
                 </div>
                 <div class="ds-field">
                   <label class="ds-field__label" for="orHomeInput">Turn outcomes</label>
                   <div id="orHome"></div>
-                  <small class="ds-field__hint">Judges how each chat's turn left the work when the switch below is on. It runs on every turn, so a fast, cheap model is the right one — google/gemini-3.5-flash is the default.</small>
+                  <small class="ds-field__hint">Judges how each chat's turn left the work when the switch below is on. It runs on every turn, so a fast, cheap model is the right one — anthropic/claude-haiku-5.5 is the default.</small>
                 </div>
               </div>
               <div class="ds-field">

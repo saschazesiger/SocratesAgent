@@ -1976,7 +1976,7 @@ async function pointFolder(session, opener) {
 }
 
 async function renameSession(session, opener) {
-  const title = await promptTitle(session.title, opener);
+  const title = await promptTitle(session.title, opener, session);
   if (title === null || title === session.title) return;
   try {
     const data = await api('/api/sessions/' + encodeURIComponent(session.id), {
@@ -1989,8 +1989,10 @@ async function renameSession(session, opener) {
 // promptTitle is a one field dialog, built the way confirmDialog is: the app's
 // own shape rather than window.prompt, which a phone renders as a system alert
 // and which blocks the page while it is open. It resolves with the new name,
-// or null when it was put away.
-function promptTitle(current, opener) {
+// or null when it was put away. With a session, the sparkles beside the field
+// ask for a name from what the session is about and put it in the field,
+// saving nothing: the person still decides with Rename.
+function promptTitle(current, opener, session) {
   return new Promise((resolve) => {
     const input = el('input', {
       class: 'ds-input', type: 'text', id: 'renameInput', value: current, autofocus: true,
@@ -2005,7 +2007,8 @@ function promptTitle(current, opener) {
         // A name is a sentence somebody says about a session, so it is one of
         // the fields that can be spoken instead of typed - and with the
         // keyboard put away it is the only way this dialog can be answered.
-        el('div', { class: 'ds-field' }, dictated(input, input)),
+        el('div', { class: 'ds-field' }, session ? el('div', { class: 'so-field-row' }, dictated(input, input), suggestButton(session, input))
+          : dictated(input, input)),
         el('div', { class: 'ds-dialog__actions' }, cancel, accept)));
     let answer = null;
     const was = opener && opener.isConnected ? opener : document.activeElement;
@@ -2031,6 +2034,46 @@ function promptTitle(current, opener) {
     typeHere(input, { focus: false });
     showOverlay(dialog, was).then(() => input.select());
   });
+}
+
+// suggestButton is the rename dialog's sparkles: a name from what the
+// session is about - its first message and where it has got to - written into
+// the field, as the sparkles beside the name would choose it.
+function suggestButton(session, input) {
+  const button = el('button', {
+    class: 'ds-btn ds-btn--quiet ds-btn--icon so-rename__suggest', type: 'button',
+    'aria-label': 'Suggest a name', 'data-tip': 'Suggest a name from what it is about',
+  }, el('span', { class: 'ds-btn__faces' },
+    el('span', { class: 'ds-btn__face' }, iconEl('sparkles', 18)),
+    el('span', { class: 'ds-btn__face ds-btn__face--busy', 'aria-hidden': 'true' }, el('span', { class: 'ds-spinner ds-spinner--sm' }))));
+  button.addEventListener('click', async () => {
+    if (button.getAttribute('aria-busy') === 'true') return;
+    button.setAttribute('aria-busy', 'true');
+    try {
+      if (voiceKey() === false && await keyMissing()) {
+        explainNoKey('title', button);
+        return;
+      }
+      const data = await api('/api/sessions/' + encodeURIComponent(session.id) + '/title', {
+        method: 'POST', attempts: 1, timeout: TITLE_CEILING, body: { suggest: true },
+      });
+      const title = String((data && data.title) || '').trim();
+      if (title && input.isConnected) {
+        setVoiceKey(true);
+        input.value = title;
+        input.focus();
+        input.select();
+      }
+    } catch (err) {
+      if (err && Number(err.status) === 409 && /openrouter api key/i.test(String(err.message || ''))) {
+        setVoiceKey(false);
+        explainNoKey('title', button);
+      } else toast(errorMessage(err), 'error');
+    } finally {
+      button.removeAttribute('aria-busy');
+    }
+  });
+  return button;
 }
 
 // infoDialog is the "Info" item of the row menu: everything the machine knows

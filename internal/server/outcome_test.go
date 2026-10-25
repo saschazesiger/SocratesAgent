@@ -199,15 +199,15 @@ func TestOutcomesSwitchedOffAndKeptAcrossARestart(t *testing.T) {
 	}
 }
 
-// The Status button is told the verdict on the turn the chat rests after.
+// The Status button is told the verdict on the turn the session rests after.
 func TestStatusPromptSaysTheVerdict(t *testing.T) {
 	words := outcomeWords(outcome{Phase: digestReady, Kind: outcomePartial, Reason: "Docs missing.", Todos: []string{"Write docs"}})
-	prompt := chatStatusPrompt(config.HarnessClaude, termux.StateIdle, config.LanguageEN, words, "the chat")
+	prompt := statusPrompt(config.HarnessShell, termux.StateIdle, config.LanguageEN, words, "the screen")
 	if !strings.Contains(prompt, "this round is done but the task is not (Docs missing.); still open: Write docs") {
 		t.Fatalf("prompt:\n%s", prompt)
 	}
-	if strings.Contains(chatStatusPrompt(config.HarnessClaude, termux.StateIdle, config.LanguageEN, "", "the chat"), "check of the turn") {
-		t.Fatal("a chat with no verdict is said to have one")
+	if strings.Contains(statusPrompt(config.HarnessShell, termux.StateIdle, config.LanguageEN, "", "the screen"), "check of the turn") {
+		t.Fatal("a session with no verdict is said to have one")
 	}
 }
 

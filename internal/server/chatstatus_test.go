@@ -3,6 +3,7 @@
 package server
 
 import (
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
@@ -11,13 +12,15 @@ import (
 	"github.com/saschazesiger/SocratesAgent/internal/termux"
 )
 
-// The spoken Status of a chat is told from its journal: the last turn with
-// its calls, and the question it waits on, through the same model and voice
-// path as a terminal's.
+// The Status of a chat is an analysis of its whole journal: the record with
+// every message and call and its time, and the measured facts about its
+// time, through the same model and voice path as a terminal's. The page gets
+// the parts of the answer and the server's own clock.
 func TestAChatsStatusIsToldFromItsJournal(t *testing.T) {
 	c := newChatEnv(t, time.Hour)
 	gw := c.withGateway(t)
-	gw.always("It ran echo and said hello.")
+	gw.always(`{"summary":"It said hello.","now":"It is done.","eta":"Nothing is running.",` +
+		`"eta_minutes":null,"spoken":"It ran **echo** and said hello."}`)
 	id := c.create(t)
 	res, body := c.do(t, c.client, "POST", "/api/sessions/"+id+"/status", "")
 	if res.StatusCode != http.StatusBadRequest || len(statusCalls(gw)) != 0 {
@@ -30,6 +33,16 @@ func TestAChatsStatusIsToldFromItsJournal(t *testing.T) {
 	res, body = c.do(t, c.client, "POST", "/api/sessions/"+id+"/status", "")
 	if res.StatusCode != http.StatusOK || body["text"] != "It ran echo and said hello." || body["state"] != "idle" {
 		t.Fatalf("status: %d %v", res.StatusCode, body)
+	}
+	analysis, _ := body["analysis"].(map[string]any)
+	if analysis["summary"] != "It said hello." || analysis["now"] != "It is done." ||
+		analysis["eta"] != "Nothing is running." || analysis["eta_minutes"] != nil {
+		t.Fatalf("the analysis: %v", body["analysis"])
+	}
+	clock, _ := body["clock"].(map[string]any)
+	if clock["turns"] != float64(1) || clock["first_message"].(float64) <= 0 || clock["last_ended"].(float64) <= 0 ||
+		clock["turn_started"] != float64(0) {
+		t.Fatalf("the clock: %v", body["clock"])
 	}
 	// A chat has no terminal socket: its phases reach the page on the event
 	// stream, in order, the answer last.
@@ -46,8 +59,14 @@ func TestAChatsStatusIsToldFromItsJournal(t *testing.T) {
 	if strings.Join(phases, ",") != "asking,speaking,done" {
 		t.Fatalf("the phases on the event stream: %v", phases)
 	}
-	prompt := statusCalls(gw)[0].last()
-	for _, want := range []string{"a chat with Scripted agent", "It is idle", "The chat:", "/tool", "- Running echo hello"} {
+	call := statusCalls(gw)[0]
+	if len(call.Messages) != 2 || !strings.HasPrefix(call.Messages[0].Content, statusMarker) {
+		t.Fatalf("the analysis is not asked with its instruction: %#v", call.Messages)
+	}
+	prompt := call.last()
+	for _, want := range []string{"A chat with Scripted agent", "Facts:", "Turns so far: 1", "State: idle",
+		"The last turn ended:", "Record:", "] Person: /tool", "] Call: Running echo hello", "--- Turn 1 started",
+		"--- Turn 1 ended after"} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("the status prompt has no %q:\n%s", want, prompt)
 		}
@@ -59,8 +78,20 @@ func TestAChatsStatusIsToldFromItsJournal(t *testing.T) {
 	if res.StatusCode != http.StatusOK || body["state"] != "waiting" {
 		t.Fatalf("status while it asks: %d %v", res.StatusCode, body)
 	}
-	if prompt := statusCalls(gw)[1].last(); !strings.Contains(prompt, "It waits for the person to answer:\n- Pick one (A, B)") {
-		t.Fatalf("the status prompt while it asks:\n%s", prompt)
+	prompt = statusCalls(gw)[1].last()
+	for _, want := range []string{"It has waited for the person's answer since:", "Agent asked the person: Pick one (A, B)",
+		"The current turn started:", "Turns so far: 2"} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("the status prompt while it asks has no %q:\n%s", want, prompt)
+		}
+	}
+
+	// An answer that is not the object is asked for once more, and then
+	// said to be what it is.
+	gw.always("Just prose.")
+	res, body = c.do(t, c.client, "POST", "/api/sessions/"+id+"/status", "")
+	if res.StatusCode != http.StatusBadGateway || !strings.Contains(fmt.Sprint(body["error"]), "usable JSON") {
+		t.Fatalf("a model that will not answer with JSON: %d %v", res.StatusCode, body)
 	}
 }
 

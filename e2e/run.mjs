@@ -4617,6 +4617,21 @@ async function watchTicker(page, sel = '#tickerWindow') {
   return () => page.evaluate(() => window.__ticker.slice());
 }
 
+// statusDialog waits for a chat's Status analysis and reads its facts, label
+// to value.
+async function statusDialog(page, timeout) {
+  await page.waitForSelector('dialog.so-status-dialog[open]', { timeout });
+  return page.$eval('dialog.so-status-dialog', (d) => Object.fromEntries(
+    [...d.querySelectorAll('.ds-facts > div')].map((row) => [row.querySelector('dt').textContent, row.querySelector('dd').textContent])));
+}
+
+// closeStatusDialog presses the analysis' Close, and says whether it went.
+async function closeStatusDialog(page) {
+  await page.$eval('dialog.so-status-dialog [data-close].ds-btn', (b) => b.click()).catch(() => {});
+  return page.waitForFunction(() => !document.querySelector('dialog.so-status-dialog'), null, { timeout: 9000 })
+    .then(() => true).catch(() => false);
+}
+
 /* ------------------------------------------------------- 34. status-speak */
 
 // The Status button: one request, a spinner while it is being made, the answer
@@ -4686,26 +4701,25 @@ async function statusspeak() {
       'with reduced motion it still turns, rather than standing still', JSON.stringify(calm));
     await s.page.emulateMedia({ reducedMotion: null });
 
-    await s.page.waitForFunction((sel) => {
-      const host = document.querySelector(sel);
-      return !!host && !host.hidden && host.dataset.kind === 'status';
-    }, DOCK_NOTICE, { timeout: 40000 });
-    const shown = await noticeText(s.page);
-    ok(shown.includes('finished') && shown === stub.text,
-      'what the model said is on screen, in words', oneLine(shown));
-    // The line is on a timer, so everything about it is read while it is up.
-    const tip = await s.page.$eval(DOCK_NOTICE + ' .so-info', (n) => n.getAttribute('data-tip')).catch(() => '');
+    // A chat's Status is an analysis: a dialog with what it is about, what
+    // runs now, the server's clock and the estimate.
+    const facts = await statusDialog(s.page, 40000);
+    const shown = facts['Summary'] || '';
+    ok(shown.includes('finished') && shown === stub.text && facts['Right now'] === stub.text,
+      'what the model said is on screen, in words', oneLine(JSON.stringify(facts)));
+    ok(/^\d+\u00a0(s|min)$/.test(facts['Idle for'] || '') && /since the first message · 1 turn · /.test(facts['Session'] || '') &&
+      facts['Expected'] === 'Nothing is running.',
+      'and the measured times and the estimate beside it', oneLine(JSON.stringify(facts)));
     await shot(s.page, 'status-speak');
 
     for (let i = 0; i < 60 && said.length === 0; i += 1) await wait(200);
     ok(said.length === 1, 'and it was read out loud exactly once', said.length + ' render(s)');
     ok(said[0] === stub.text, 'with the words that are on the screen', oneLine(said[0] || ''));
 
-    // The model id and the state are facts about the machine, so they are
-    // behind the "i" and never in the sentence.
-    ok(!shown.includes('stub/model') && !shown.includes('idle'),
-      'no identifier leaked into the line that is read out loud', oneLine(shown));
-    ok(tip.length > 0, 'and the details are under the "i" beside it', oneLine(tip));
+    // The model id and the state are facts about the machine, never in the
+    // words that are read out loud.
+    ok(!Object.values(facts).join(' ').includes('stub/model'),
+      'no identifier leaked into what is shown', oneLine(JSON.stringify(facts)));
 
     const cleared = await s.page.waitForFunction(
       () => document.getElementById('statusBtn').getAttribute('aria-busy') !== 'true',
@@ -4713,12 +4727,9 @@ async function statusspeak() {
     ok(cleared, 'and the spinner stops when there is nothing left to wait for',
       cleared ? 'stopped' : 'still turning');
 
-    // And the line does not sit there for ever: it is one sentence, it has
-    // been read, and the dock is the composer's again.
-    const gone = await s.page.waitForFunction((sel) => document.querySelector(sel).hidden,
-      DOCK_NOTICE, { timeout: 9000 }).then(() => true).catch(() => false);
-    ok(gone, 'and the answer puts itself away once it has been read',
-      gone ? 'gone' : 'still up after 9 s');
+    // Close puts it away, and the chat is the person's again.
+    const gone = await closeStatusDialog(s.page);
+    ok(gone, 'and Close puts the analysis away', gone ? 'gone' : 'still up');
     ok(unexpected(s.errors).length === 0, 'no console errors',
       unexpected(s.errors).join(' | ') || '0');
   } finally {
@@ -5025,13 +5036,11 @@ async function nooverlap() {
     // rather than through the pointer the backdrop is holding.
     await s.page.waitForSelector('#statusBtn:not([hidden]):not([disabled])', { timeout: 15000 });
     await s.page.$eval('#statusBtn', (n) => n.click());
-    const shown = await s.page.waitForFunction((sel) => {
-      const host = document.querySelector(sel);
-      return !!host && !host.hidden && host.dataset.kind === 'status';
-    }, DOCK_NOTICE, { timeout: 45000 }).then(() => true).catch(() => false);
-    ok(shown, 'the summary arrived while the microphone was open', oneLine(await noticeText(s.page)));
+    const facts = await statusDialog(s.page, 45000).catch(() => null);
+    ok(!!facts, 'the summary arrived while the microphone was open', oneLine(JSON.stringify(facts)));
     await wait(2000);
     ok(said.length === 0, 'and nothing at all was read out loud', said.length + ' render(s)');
+    await closeStatusDialog(s.page);
 
     // The recording is thrown away, and the same button says the same thing
     // out loud - so what stopped the voice was the microphone and nothing else.
@@ -11592,6 +11601,24 @@ async function chattitle() {
     await wait(800);
     ok(stub.calls.filter((c) => String(c.path).includes('chat/completions')).length === 1,
       'a later message does not rename it', String(stub.calls.length));
+
+    // The rename dialog's sparkles put a suggestion in the field and save
+    // nothing; Rename does.
+    const suggestion = 'Config loader and tests';
+    stub.replies.push(suggestion);
+    await page.click('#sessionTitle');
+    await page.waitForSelector('#renameInput', { timeout: 10000 });
+    await page.fill('#renameInput', 'Something else');
+    await page.click('.so-rename__suggest');
+    const suggested = await page.waitForFunction((want) => document.getElementById('renameInput').value === want,
+      suggestion, { timeout: 15000 }).then(() => true, () => false);
+    const kept = await page.$eval(rowSel(id) + ' .so-row__label', (n) => n.textContent.trim());
+    ok(suggested && kept === want, 'the dialog suggests a name in its field and saves nothing yet',
+      JSON.stringify({ suggested, kept }));
+    await page.click('.so-rename .ds-btn--primary');
+    const renamed = await page.waitForFunction((arg) => document.querySelector(arg.sel)?.textContent.trim() === arg.want,
+      { sel: rowSel(id) + ' .so-row__label', want: suggestion }, { timeout: 10000 }).then(() => true, () => false);
+    ok(renamed, 'and Rename takes it', suggestion);
     ok(unexpected(s.errors).length === 0, 'no console errors', unexpected(s.errors).join(' | ') || '0');
   } finally {
     await s.stop();
@@ -11621,17 +11648,12 @@ async function chatstatus() {
       return !!box && !box.hidden && box.textContent.includes(want);
     }, words, { timeout: 30000 }).then(() => true, () => false);
     ok(line, 'what the model said is the line in the chat’s dock', words);
-    // The whole answer is the notice, in the dock too: the terminal's is over
-    // its pane, which a chat hides.
-    const told = await page.waitForFunction((want) => {
-      const box = document.querySelector('#chat .so-chat__dock .so-notice');
-      if (!box || box.hidden || !box.textContent.includes(want)) return null;
-      const info = box.querySelector('.so-info');
-      return { height: box.getBoundingClientRect().height, tip: info ? info.getAttribute('data-tip') : '' };
-    }, words, { timeout: 10000 }).then((h) => h.jsonValue(), () => null);
-    ok(!!told && told.height > 0 && /state idle/.test(told.tip),
-      'and the whole answer is the notice in the dock, its details behind the “i”', JSON.stringify(told));
-    // The picture once the notice and the line have come in.
+    // The whole answer is the analysis dialog: its parts, and the server's
+    // clock beside them.
+    const facts = await statusDialog(page, 10000).catch(() => null);
+    ok(!!facts && facts['Summary'] === words && facts['Right now'] === words && !!facts['Idle for'] &&
+      /1 turn/.test(facts['Session'] || ''),
+      'and the whole answer is the analysis, with the measured times', JSON.stringify(facts));
     await wait(800);
     await shot(page, 'chat-status');
     const read = await (async () => {
@@ -11640,14 +11662,17 @@ async function chatstatus() {
       return spoken.includes(words);
     })();
     ok(read, 'and it is read out loud', JSON.stringify(spoken));
+    await closeStatusDialog(page);
     const calls = stub.calls.filter((c) => String(c.path).includes('chat/completions'));
-    const prompt = calls.map((c) => String(((c.json || {}).messages || []).slice(-1)[0].content || ''))
-      .find((p) => p.startsWith('You are told what a chat with')) || '';
-    ok(prompt.includes('a chat with Scripted agent') && prompt.includes('/tool') && prompt.includes('Running echo hello'),
-      'the model was told the chat from its journal: the message and the call', oneLine(prompt).slice(0, 200));
+    const prompt = calls.map((c) => ((c.json || {}).messages || []))
+      .filter((m) => m.length === 2 && String(m[0].content || '').startsWith('You analyse a coding session'))
+      .map((m) => String(m[1].content || ''))[0] || '';
+    ok(prompt.includes('A chat with Scripted agent') && prompt.includes('Person: /tool') && prompt.includes('Call: Running echo hello') &&
+      prompt.includes('Turns so far: 1'),
+      'the model was told the chat from its journal: the message, the call and the clock', oneLine(prompt).slice(0, 200));
 
-    // A phone: the button in the bar, the line in the dock, nothing to
-    // scroll sideways.
+    // A phone: the button in the bar, the line in the dock and the analysis
+    // inside the screen, nothing to scroll sideways.
     const signedIn = await s.context.storageState();
     const phone = await s.browser.newContext({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true,
       storageState: { cookies: signedIn.cookies, origins: [] } });
@@ -11657,22 +11682,16 @@ async function chatstatus() {
     await chatUp(small);
     await small.waitForSelector('#statusBtn:not([hidden]):not([disabled])', { timeout: 10000 });
     await small.tap('#statusBtn');
-    const onPhone = await small.waitForFunction((want) => {
-      const box = document.querySelector('#chat .so-chat__dock .so-ticker');
-      const note = document.querySelector('#chat .so-chat__dock .so-notice');
-      if (!box || box.hidden || !box.textContent.includes(want)) return null;
-      if (!note || note.hidden || !note.textContent.includes(want)) return null;
+    const onPhone = await small.waitForFunction(() => {
+      const box = document.querySelector('dialog.so-status-dialog[open] .ds-dialog__box');
+      if (!box) return null;
       const r = box.getBoundingClientRect();
-      const n = note.getBoundingClientRect();
-      const text = note.querySelector('.ds-alert__text');
       const root = document.scrollingElement;
-      return { left: r.left, right: r.right, noteLeft: n.left, noteRight: n.right,
-        cut: text ? text.scrollWidth - text.clientWidth : -1, overflow: Math.max(root.scrollWidth - root.clientWidth, 0) };
-    }, words, { timeout: 30000 }).then((h) => h.jsonValue(), () => null);
-    ok(!!onPhone && onPhone.left >= 0 && onPhone.right <= 390 && onPhone.overflow <= 1,
-      'on a phone the line is in the dock, inside the screen', JSON.stringify(onPhone));
-    ok(!!onPhone && onPhone.noteLeft >= 0 && onPhone.noteRight <= 390 && onPhone.cut <= 1,
-      'and so is the whole answer, not cut', JSON.stringify(onPhone));
+      return { left: r.left, right: r.right, overflow: Math.max(root.scrollWidth - root.clientWidth, 0),
+        cut: Math.max(box.scrollWidth - box.clientWidth, 0) };
+    }, null, { timeout: 30000 }).then((h) => h.jsonValue(), () => null);
+    ok(!!onPhone && onPhone.left >= 0 && onPhone.right <= 390 && onPhone.overflow <= 1 && onPhone.cut <= 1,
+      'on a phone the analysis is inside the screen, not cut', JSON.stringify(onPhone));
     await wait(800);
     await shot(small, 'chat-status-phone');
     await phone.close();

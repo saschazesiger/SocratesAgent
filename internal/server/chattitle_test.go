@@ -119,6 +119,29 @@ func TestAChatIsNamedAgainFromItsJournal(t *testing.T) {
 	}
 }
 
+// The rename dialog's suggestion is a name from the journal that is saved
+// nowhere: the person decides in the field whether it is the name.
+func TestARenameSuggestionSavesNothing(t *testing.T) {
+	c := newChatEnv(t, time.Hour)
+	gw := c.withGateway(t)
+	gw.always("First name")
+	id := c.create(t)
+	c.send(t, id, "m1", "Set up the database")
+	c.waitTitle(t, id, "First name")
+	c.waitJournal(t, id, 10*time.Second, "the first turn", turnsEnded(1))
+	gw.always("Database setup")
+	res, body := c.do(t, c.client, "POST", "/api/sessions/"+id+"/title", `{"suggest":true}`)
+	if res.StatusCode != http.StatusOK || body["title"] != "Database setup" {
+		t.Fatalf("suggest: %d %v", res.StatusCode, body)
+	}
+	if row, _ := c.store.GetSession(id); row.Title != "First name" {
+		t.Fatalf("a suggestion renamed the chat to %q", row.Title)
+	}
+	if last := gw.seen()[len(gw.seen())-1].last(); !strings.Contains(last, "First message:\nSet up the database") {
+		t.Fatalf("the namer was asked:\n%s", last)
+	}
+}
+
 // With no key there is nothing to ask, and the placeholder name stays. It is
 // silent on purpose: nobody pressed anything, and nothing is spent, so the
 // chat may still be named once a key is set.

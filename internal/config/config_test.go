@@ -300,21 +300,48 @@ func TestAssistModelsAreDefaulted(t *testing.T) {
 	if s.OpenRouter.TitleModel != DefaultTitleModel {
 		t.Errorf("title model = %q", s.OpenRouter.TitleModel)
 	}
-	if s.OpenRouter.HomeModel != "google/gemini-3.5-flash" {
+	if s.OpenRouter.HomeModel != "anthropic/claude-haiku-5.5" {
 		t.Errorf("home model = %q", s.OpenRouter.HomeModel)
 	}
 	if d := Default(); d.OpenRouter.HomeModel != DefaultHomeModel {
 		t.Errorf("a fresh document is not seeded with them: %#v", d.OpenRouter)
 	}
 
-	// A chosen model is kept.
+	// A model chosen under the current revision is kept.
 	s = Settings{}
 	s.OpenRouter.StatusModel, s.OpenRouter.TitleModel = "someone/cheap", "someone/quick"
 	s.OpenRouter.HomeModel = "someone/glance"
+	s.OpenRouter.ModelsRev = AssistModelsRev
 	s.Normalize()
 	if s.OpenRouter.StatusModel != "someone/cheap" || s.OpenRouter.TitleModel != "someone/quick" ||
 		s.OpenRouter.HomeModel != "someone/glance" {
 		t.Errorf("a chosen model was replaced: %#v", s.OpenRouter)
+	}
+}
+
+// A document saved before the text models moved to Haiku has them replaced
+// once, whatever was picked: the stored document is decoded over the
+// defaults, as the server does it, and carries no revision of its own.
+func TestOlderTextModelsMoveToTheAssistModelOnce(t *testing.T) {
+	s := Default()
+	if err := json.Unmarshal([]byte(`{"openrouter":{"title_model":"z-ai/glm-5.3-flash",`+
+		`"status_model":"z-ai/glm-5.3-flash","home_model":"google/gemini-3.5-flash",`+
+		`"transcribe_model":"openai/gpt-transcribe"}}`), &s); err != nil {
+		t.Fatal(err)
+	}
+	s.Normalize()
+	o := s.OpenRouter
+	if o.TitleModel != DefaultAssistModel || o.StatusModel != DefaultAssistModel || o.HomeModel != DefaultAssistModel {
+		t.Fatalf("the text models were not moved: %#v", o)
+	}
+	if o.TranscribeModel != "openai/gpt-transcribe" || o.ModelsRev != AssistModelsRev {
+		t.Fatalf("transcription is not a text model, and the revision is kept: %#v", o)
+	}
+	o.TitleModel = "someone/quick"
+	s.OpenRouter = o
+	s.Normalize()
+	if s.OpenRouter.TitleModel != "someone/quick" {
+		t.Fatalf("a model picked after the move was replaced: %#v", s.OpenRouter)
 	}
 }
 

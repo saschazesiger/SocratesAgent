@@ -28,7 +28,6 @@ import (
 	"github.com/saschazesiger/SocratesAgent/internal/agent"
 	"github.com/saschazesiger/SocratesAgent/internal/agenthost"
 	"github.com/saschazesiger/SocratesAgent/internal/paths"
-	"github.com/saschazesiger/SocratesAgent/internal/termux"
 )
 
 const (
@@ -487,16 +486,16 @@ func (h *chatHub) latestExchange(id string) string {
 	return strings.TrimSpace(text)
 }
 
-// statusOf is a chat as the spoken Status is told it (chatNow), and the
-// activity it is in.
-func (h *chatHub) statusOf(id string) (string, termux.State) {
+// reportOf is a chat's record as the Status analysis reads it
+// (readChatReport), at now.
+func (h *chatHub) reportOf(id string, now time.Time) (chatReport, bool) {
 	p, err := h.peer(id)
 	if err != nil {
-		return "", termux.StateUnknown
+		return chatReport{}, false
 	}
-	text, state := "", termux.StateUnknown
-	_ = p.view(func(proj *agent.Projection) {
-		text, state = chatNow(proj), termux.State(proj.Summary().Activity)
-	})
-	return text, state
+	var report chatReport
+	if p.view(func(proj *agent.Projection) { report = readChatReport(proj, now) }) != nil {
+		return chatReport{}, false
+	}
+	return report, true
 }

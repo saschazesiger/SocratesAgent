@@ -82,25 +82,19 @@ func (s *Server) handleSessionStatus(w http.ResponseWriter, r *http.Request) {
 	if o, ok := s.digests.outcomeOf(row.ID); ok && activity.State == termux.StateIdle && o.Since == activity.Since {
 		verdict = outcomeWords(o)
 	}
-	var prompt string
 	if row.IsChat() {
-		// A chat is told from its journal: its last turn, and what runs now.
-		text, state := s.chats.statusOf(row.ID)
-		if text == "" {
-			writeError(w, http.StatusBadRequest, "this chat has nothing to say yet: send it a message first")
-			return
-		}
-		prompt = chatStatusPrompt(row.Harness, state, language, verdict, text)
-	} else {
-		s.emitStatus(row.ID, statusPhaseCapturing, "Reading the screen")
-		screen, err := s.manager.CapturePane(ctx, row.ID, statusScreenLines)
-		if err != nil {
-			s.emitStatus(row.ID, statusPhaseError, "That screen could not be read.")
-			writeError(w, http.StatusBadRequest, "this session has no terminal to read: "+err.Error())
-			return
-		}
-		prompt = statusPrompt(row.Harness, activity.State, language, verdict, screen)
+		// A chat is analysed from its whole journal (statusOfChat).
+		s.statusOfChat(ctx, w, row, model, language, verdict)
+		return
 	}
+	s.emitStatus(row.ID, statusPhaseCapturing, "Reading the screen")
+	screen, err := s.manager.CapturePane(ctx, row.ID, statusScreenLines)
+	if err != nil {
+		s.emitStatus(row.ID, statusPhaseError, "That screen could not be read.")
+		writeError(w, http.StatusBadRequest, "this session has no terminal to read: "+err.Error())
+		return
+	}
+	prompt := statusPrompt(row.Harness, activity.State, language, verdict, screen)
 
 	temperature := 0.2
 	client := openrouter.New(settings.OpenRouter.BaseURL, settings.OpenRouter.APIKey)
@@ -157,20 +151,6 @@ func statusPrompt(harness string, state termux.State, language, verdict, screen 
 		prompt += "\nA check of the turn that just ended says: " + verdict + ". Mention it."
 	}
 	return prompt + "\nScreen:\n" + screen
-}
-
-// chatStatusPrompt is statusPrompt for a chat, which is told from its
-// journal (chatNow) rather than shown as a screen.
-func chatStatusPrompt(harness string, state termux.State, language, verdict, chat string) string {
-	prompt := "You are told what a chat with " + chatLabel(harness) + ", a coding agent, is doing. It is " +
-		stateWords(state) + ". In one to three short sentences, say what a person needs to know: if it is " +
-		"working, what it is working on; if it has finished, what the answer is; if it is waiting, what it " +
-		"is asking and what the choices are. Speak plainly - this is read out loud, so no markdown, no code, " +
-		"no file paths unless they are the point. Answer in " + config.LanguageName(language) + "."
-	if verdict != "" {
-		prompt += "\nA check of the turn that just ended says: " + verdict + ". Mention it."
-	}
-	return prompt + "\nThe chat:\n" + chat
 }
 
 // stateWords is the committed state as a sentence fragment.
@@ -486,6 +466,9 @@ func (s *Server) handleRetitleSession(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Prompt  string `json:"prompt"`
 		Unnamed bool   `json:"unnamed"`
+		// Suggest asks for a name and saves nothing: the rename dialog puts
+		// it in its field, and the person decides.
+		Suggest bool `json:"suggest"`
 	}
 	if !readJSON(w, r, &body) {
 		return
@@ -528,35 +511,24 @@ func (s *Server) handleRetitleSession(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if body.Suggest {
+		ctx, cancel := context.WithTimeout(r.Context(), titleTimeout)
+		defer cancel()
+		title, problem := s.nameOf(ctx, row, namer, prompt)
+		if problem != "" {
+			writeError(w, http.StatusBadGateway, problem)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"title": title})
+		return
+	}
 	was := row.Title
 	// The problem the run ended with, or "" once it saved or lost to a
 	// rename by hand.
 	result := make(chan string, 1)
 	launched := s.titles.launch(row.ID, func(ctx context.Context, id string) {
 		s.emitTitle(id, titlePhaseStart, "", "")
-		title, problem := "", ""
-		if row.IsChat() {
-			// A chat is named again from its journal: its first message, and
-			// where the conversation has got to.
-			if first, _ := s.chats.firstExchange(id); first != "" {
-				prompt = first
-			}
-			latest := s.chats.latestExchange(id)
-			if prompt == "" && latest == "" {
-				problem = "there was nothing to name the chat after: it has no message yet"
-			} else {
-				title, problem = namer.ask(ctx, chatTitlePrompt(row.Harness, prompt, latest, true))
-			}
-		} else {
-			// A session whose program has ended has no pane, and then the
-			// first prompt is all there is.
-			screen, _ := s.manager.CapturePane(ctx, id, titleScreenLines)
-			if prompt == "" && strings.TrimSpace(screen) == "" {
-				problem = "there was nothing to name the session after: no first prompt, and no screen"
-			} else {
-				title, problem = namer.ask(ctx, retitlePrompt(row.Harness, prompt, screen))
-			}
-		}
+		title, problem := s.nameOf(ctx, row, namer, prompt)
 		if ctx.Err() == context.Canceled {
 			result <- "the session was deleted"
 			return
@@ -592,6 +564,30 @@ func (s *Server) handleRetitleSession(w http.ResponseWriter, r *http.Request) {
 		s.answerWithSession(w, row.ID)
 	case <-r.Context().Done():
 	}
+}
+
+// nameOf is a name for a session from what there is to go by: a chat's first
+// message (or prompt, the draft of one nobody has written to yet) and where
+// its conversation has got to; a terminal's first prompt and its screen. It
+// answers the name, or why there is none.
+func (s *Server) nameOf(ctx context.Context, row *store.Session, namer titleNamer, prompt string) (string, string) {
+	if row.IsChat() {
+		if first, _ := s.chats.firstExchange(row.ID); first != "" {
+			prompt = first
+		}
+		latest := s.chats.latestExchange(row.ID)
+		if prompt == "" && latest == "" {
+			return "", "there was nothing to name the chat after: it has no message yet"
+		}
+		return namer.ask(ctx, chatTitlePrompt(row.Harness, prompt, latest, true))
+	}
+	// A session whose program has ended has no pane, and then the first
+	// prompt is all there is.
+	screen, _ := s.manager.CapturePane(ctx, row.ID, titleScreenLines)
+	if prompt == "" && strings.TrimSpace(screen) == "" {
+		return "", "there was nothing to name the session after: no first prompt, and no screen"
+	}
+	return namer.ask(ctx, retitlePrompt(row.Harness, prompt, screen))
 }
 
 // retitlePrompt is the instruction for a naming somebody asked for: the first
