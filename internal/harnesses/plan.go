@@ -41,17 +41,6 @@ type LaunchPlan struct {
 type PlanRequest struct {
 	SessionID string
 	Cwd       string
-	// SignIn makes a Shell the place an account signs in: see SignIn.
-	SignIn   *SignIn
-	Settings config.Settings
-	DataDir  string
-}
-
-// SignIn is a Shell that signs an account in (internal/accounts): the
-// variables that point the agents at the account's folder, and the agent's
-// own sign-in, which runs in the shell before the shell is the person's. It
-// is the first plan's only: a shell started again is a plain one.
-type SignIn struct {
-	Env     map[string]string
-	Command []string
+	Settings  config.Settings
+	DataDir   string
 }

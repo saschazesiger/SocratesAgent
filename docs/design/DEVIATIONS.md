@@ -2583,10 +2583,12 @@ the login out of; what makes the migration idempotent and what keeps such an acc
 deleted while HOME links to it) and `limited_until` (when a limit it ran into renews, so the
 recommendation passes over it). A limit that does not say when it renews is held for an hour.
 
-**WP7 / §4.2 — Claude Code signs in with `claude auth login --claudeai`, in a Shell that stays.**
+**WP7 / §4.2 — Claude Code signs in with `claude auth login --claudeai`, from the card.**
 The flag is the subscription sign-in, which is what an account of that kind is; without it Claude
-Code first asks which kind. The Shell runs in a fresh directory (Dynamic) and stays a shell when
-the sign-in ends, so its outcome can be read there; the account's state follows its folder.
+Code first asks which kind. It first ran in a Shell terminal; it now runs on a pseudo terminal of
+the server's, and the card shows its page and types the code pasted there into it, like the other
+agents' sign-ins. Its outcome is its exit status and last line; the account's state follows its
+folder.
 
 **WP7 / §4.2 — OpenCode's sign-in offers the providers' OAuth methods only.** `GET /provider/auth`
 also lists API-key methods; a key is an account of its own kind, passed per process as

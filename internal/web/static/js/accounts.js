@@ -231,10 +231,10 @@ function originWords(origin) {
 
 /* ----------------------------------------------------------------- signing in */
 
-// signIn runs an account's sign-in to its end: Claude Code's own in a Shell
-// terminal (the page goes there), Codex's device code, an OpenCode
+// signIn runs an account's sign-in to its end: the page Claude Code's own
+// sign-in shows and the code it gives, Codex's device code, an OpenCode
 // provider's OAuth, or nothing for the scripted agent. It answers true when
-// the account is signed in (or the terminal was opened), false otherwise.
+// the account is signed in, false otherwise.
 export async function signIn(account, opener) {
   let data;
   try {
@@ -242,13 +242,6 @@ export async function signIn(account, opener) {
   } catch (err) {
     toast(errorMessage(err), 'error');
     return false;
-  }
-  if (data.session) {
-    toast('A Shell opened where ' + harnesses.label('claude') + ' signs ' + account.label + ' in.');
-    // #open=: from Admin this is a new load of the session page, which starts
-    // on Home for a bare #<id> (session.js routeOf).
-    location.href = '/#open=' + encodeURIComponent(data.session.id);
-    return true;
   }
   const flow = data.signin || {};
   if (flow.state === 'done') {
@@ -375,6 +368,8 @@ function flowDialog(account, first, opener) {
   }
 
   next.addEventListener('click', async () => {
+    if (next.disabled) return;
+    next.disabled = true;
     try {
       if (flow.state === 'choose' && choice) {
         const inputs = {};
@@ -391,9 +386,12 @@ function flowDialog(account, first, opener) {
         const data = await api(path + '/code', { method: 'POST', body: { code: code ? code.value : '' }, attempts: 1, timeout: 60000 });
         flow = data.signin || flow;
         if (flow.state === 'done') finish(true);
+        else draw();
       }
     } catch (err) {
       toast(errorMessage(err), 'error');
+    } finally {
+      next.disabled = false;
     }
   });
 

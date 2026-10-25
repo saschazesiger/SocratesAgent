@@ -1109,7 +1109,7 @@ attachment(s): …`).
   foreign-thinking notice; `internal/server` (the routes and that no answer, `host.json`, journal,
   log or outbox holds a key, a switch while running and while parked, an "after this turn" switch
   surviving a killed host, a limit stopping the chat or switching it and pushed once, Codex's device
-  code, Claude's sign-in in a Shell, OpenCode's provider sign-in, a refused sign-in until the next
+  code, Claude's sign-in with the pasted code, OpenCode's provider sign-in, a refused sign-in until the next
   one); `internal/web` (the foreign-thinking hint folded into the divider); `e2e/run.mjs`
   `accounts` (touch mode on a phone) and `chat-account` ("Switch now" on a phone) in the browser.
 - Accounts and the rest together (WP7 + WP9): Ultracode kept across a switch through a real host;
@@ -1206,9 +1206,12 @@ out `host.json`'s `env` and `secret_env` (`paths.Redacted`), takes `secrets.key`
 
 **Sign-in** (`POST /api/accounts/{id}/signin`; a flow lives 15 minutes, one per account):
 
-- Claude Code: a Shell terminal session (dynamic folder) that runs `claude auth login --claudeai`
-  with the account's `CLAUDE_CONFIG_DIR`, then stays a shell; the answer is `{session}` and the
-  page goes there. The account is signed in once its folder has the login. (Detection reads
+- Claude Code: `claude auth login --claudeai` with the account's `CLAUDE_CONFIG_DIR` on a pseudo
+  terminal of the server's (`internal/accounts/claude.go`). The page is read off its output (an
+  OSC 8 hyperlink's target, or the address in the text without its control sequences, joined
+  across wrapped lines) and the flow waits for a code (`code`); `POST …/signin/code` types the code
+  and Enter. "Invalid code…" leaves it waiting for another (400); exit status 0 is a login, any
+  other end fails with Claude Code's last line. Cancel and the flow's time kill the process. (Detection reads
   `.credentials.json`; on macOS Claude Code keeps the login in the Keychain, which is not read, so
   such an account shows as not signed in there.)
 - Codex: a short-lived `codex app-server` with the account's environment:

@@ -566,16 +566,27 @@ func TestARefusedSignInIsMarkedUntilItSignsInAgain(t *testing.T) {
 	}
 }
 
-// A Claude Code subscription signs in in a Shell terminal: the route opens one
-// running Claude Code's own `auth login` with the account's folder as
-// CLAUDE_CONFIG_DIR, the login is written there by Claude Code (a stand-in
-// here), and the account is found signed in, as the plan it says.
-func TestAClaudeAccountSignsInInAShell(t *testing.T) {
+// A Claude Code subscription signs in from the dashboard: Claude Code's own
+// `auth login` runs on a terminal of the server's with the account's folder
+// as CLAUDE_CONFIG_DIR, its page is shown, the code pasted is typed into it,
+// the login is written there by Claude Code (a stand-in here), and the
+// account is found signed in, as the plan it says.
+func TestAClaudeAccountSignsInWithThePastedCode(t *testing.T) {
 	e := newSessionEnv(t)
 	bin := filepath.Join(t.TempDir(), "claude")
-	script := "#!/bin/sh\n" +
-		`printf '%s' '{"claudeAiOauth":{"accessToken":"at","refreshToken":"rt","subscriptionType":"max"}}' > "$CLAUDE_CONFIG_DIR/.credentials.json"` + "\n" +
-		`echo "signed in with $*"` + "\n"
+	script := `#!/bin/sh
+[ "$*" = "auth login --claudeai" ] || { echo "unexpected arguments: $*"; exit 2; }
+printf 'If the browser did not open, visit: \033[94mhttps://claude.example/oauth/authorize?state=xyz\033[39m\n'
+while :; do
+  printf 'Paste code here if prompted > '
+  IFS= read -r code || exit 0
+  case "$code" in
+    good*) printf '%s' '{"claudeAiOauth":{"accessToken":"at","refreshToken":"rt","subscriptionType":"max"}}' > "$CLAUDE_CONFIG_DIR/.credentials.json"
+      echo 'Login successful.'; exit 0 ;;
+    *) echo 'Invalid code. Please make sure the full code was copied.' ;;
+  esac
+done
+`
 	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -587,23 +598,23 @@ func TestAClaudeAccountSignsInInAShell(t *testing.T) {
 		t.Fatalf("create: %d %v", res.StatusCode, payload)
 	}
 	id := payload["account"].(map[string]any)["id"].(string)
+	t.Cleanup(func() { e.do(t, e.client, "DELETE", "/api/accounts/"+id+"/signin", "") })
 	res, payload = e.do(t, e.client, "POST", "/api/accounts/"+id+"/signin", `{}`)
-	if res.StatusCode != http.StatusOK || payload["session"] == nil {
+	flow, _ := payload["signin"].(map[string]any)
+	if res.StatusCode != http.StatusOK || payload["session"] != nil || flow == nil || flow["state"] != accounts.FlowCode ||
+		flow["url"] != "https://claude.example/oauth/authorize?state=xyz" {
 		t.Fatalf("sign in: %d %v", res.StatusCode, payload)
 	}
-	shell := payload["session"].(map[string]any)
-	if shell["harness"] != "shell" {
-		t.Fatalf("the sign-in runs in %v", shell)
+	if res, payload := e.do(t, e.client, "POST", "/api/accounts/"+id+"/signin/code", `{"code":"nope"}`); res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("a code that is not one: %d %v", res.StatusCode, payload)
+	}
+	res, payload = e.do(t, e.client, "POST", "/api/accounts/"+id+"/signin/code", `{"code":"good#xyz"}`)
+	if flow, _ := payload["signin"].(map[string]any); res.StatusCode != http.StatusOK || flow == nil || flow["state"] != accounts.FlowDone {
+		t.Fatalf("the code: %d %v", res.StatusCode, payload)
 	}
 	dir := accounts.Folder(e.srv.dataDir, accounts.Claude, id)
-	for deadline := time.Now().Add(15 * time.Second); ; {
-		if _, err := os.Stat(filepath.Join(dir, ".credentials.json")); err == nil {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("Claude Code was not run with the account's folder")
-		}
-		time.Sleep(50 * time.Millisecond)
+	if _, err := os.Stat(filepath.Join(dir, ".credentials.json")); err != nil {
+		t.Fatalf("Claude Code was not run with the account's folder: %v", err)
 	}
 	res, payload = e.do(t, e.client, "GET", "/api/accounts", "")
 	if res.StatusCode != http.StatusOK {
