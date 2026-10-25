@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // newPrestart is a prepared terminal of the build before the agents were
@@ -209,12 +210,13 @@ func TestAPreparedTerminalBecomesAPreparedChat(t *testing.T) {
 }
 
 // A prepared chat of a build that had PreStart becomes an ordinary chat
-// nobody has written to yet: running, in its folder, its schedule gone, a
+// nobody has written to yet: running, in its folder, a past schedule gone
+// and one still ahead kept, a
 // placeholder name renewed and a given one kept, and its first prompt still
 // its draft.
 func TestAPreparedChatBecomesReady(t *testing.T) {
 	st := openTest(t)
-	for _, id := range []string{"p1", "p2"} {
+	for _, id := range []string{"p1", "p2", "p3"} {
 		row := newPrestart(id)
 		row.Kind = KindChat
 		if err := st.CreateSession(row); err != nil {
@@ -222,6 +224,10 @@ func TestAPreparedChatBecomesReady(t *testing.T) {
 		}
 	}
 	if _, err := st.db.Exec(`UPDATE sessions SET start_at = 12345 WHERE id = 'p1'`); err != nil {
+		t.Fatal(err)
+	}
+	ahead := time.Now().Add(time.Hour).UnixMilli()
+	if _, err := st.db.Exec(`UPDATE sessions SET start_at = ? WHERE id = 'p3'`, ahead); err != nil {
 		t.Fatal(err)
 	}
 	putDraft(t, st, "p1", "the first prompt")
@@ -234,10 +240,10 @@ func TestAPreparedChatBecomesReady(t *testing.T) {
 	}
 
 	list, err := st.PreparedChats()
-	if err != nil || len(list) != 2 {
+	if err != nil || len(list) != 3 {
 		t.Fatalf("prepared chats = %d %v", len(list), err)
 	}
-	for _, id := range []string{"p1", "p2"} {
+	for _, id := range []string{"p1", "p2", "p3"} {
 		if err := st.ReadyPreparedChat(id, "/srv/"+id, "m", "high", "Claude Code · "+id); err != nil {
 			t.Fatal(err)
 		}
@@ -247,9 +253,11 @@ func TestAPreparedChatBecomesReady(t *testing.T) {
 		got.Effort != "high" || got.Title != "Claude Code · p1" {
 		t.Fatalf("the ready chat = %#v", got)
 	}
-	var startAt int64
-	if err := st.db.QueryRow(`SELECT start_at FROM sessions WHERE id = 'p1'`).Scan(&startAt); err != nil || startAt != 0 {
-		t.Fatalf("start_at = %d %v", startAt, err)
+	if got.StartAt != 0 {
+		t.Fatalf("a past schedule was kept: %d", got.StartAt)
+	}
+	if p3, _ := st.GetSession("p3"); p3.StartAt != ahead {
+		t.Fatalf("the schedule ahead became %d", p3.StartAt)
 	}
 	if draft, err := st.GetDraft("p1"); err != nil || draft.Text != "the first prompt" {
 		t.Fatalf("draft = %#v %v", draft, err)
@@ -265,5 +273,57 @@ func TestAPreparedChatBecomesReady(t *testing.T) {
 	}
 	if list, _ := st.PreparedChats(); len(list) != 0 {
 		t.Fatalf("still prepared: %d", len(list))
+	}
+}
+
+// A chat's schedule is set, moved and cleared, and claimed only at exactly
+// the time it holds, once; a terminal has none.
+func TestAChatsScheduledStart(t *testing.T) {
+	st := openTest(t)
+	chat := newChat("c1")
+	chat.StartAt = 500
+	if err := st.CreateSession(chat); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := st.GetSession("c1"); got.StartAt != 500 {
+		t.Fatalf("created with %d", got.StartAt)
+	}
+	shell := newSession("a1")
+	shell.StartAt = 999
+	if err := st.CreateSession(shell); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := st.GetSession("a1"); got.StartAt != 0 {
+		t.Fatalf("a terminal kept a schedule: %d", got.StartAt)
+	}
+	if err := st.SetStartAt("a1", 5); !errors.Is(err, ErrNotChat) {
+		t.Fatalf("a terminal was scheduled: %v", err)
+	}
+	if err := st.SetStartAt("nobody", 5); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("no row: %v", err)
+	}
+	if err := st.SetStartAt("c1", 700); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := st.ClaimScheduledStart("c1", 500); ok || err != nil {
+		t.Fatalf("a moved schedule was claimed at its old time: %v %v", ok, err)
+	}
+	if ok, err := st.ClaimScheduledStart("c1", 700); !ok || err != nil {
+		t.Fatalf("the claim: %v %v", ok, err)
+	}
+	if ok, _ := st.ClaimScheduledStart("c1", 700); ok {
+		t.Fatal("claimed twice")
+	}
+	if got, _ := st.GetSession("c1"); got.StartAt != 0 {
+		t.Fatalf("after the claim: %d", got.StartAt)
+	}
+	if err := st.SetStartAt("c1", 800); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetStartAt("c1", 0); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := st.GetSession("c1"); got.StartAt != 0 {
+		t.Fatalf("after clearing: %d", got.StartAt)
 	}
 }

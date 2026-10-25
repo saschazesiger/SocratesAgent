@@ -665,6 +665,11 @@ func (h *host) send(ctx context.Context, cmd Command) any {
 	// instead of answering a question meant for the next message). It stops
 	// counting as waiting; an answer that still comes goes as a message.
 	batch := []agent.Event{msg}
+	at := 0
+	if cmd.Notice != "" {
+		batch = []agent.Event{{Type: agent.TypeNotice, Code: cmd.Notice, Text: cmd.Reason}, msg}
+		at = 1
+	}
 	h.rec.View(func(p *agent.Projection) {
 		for _, a := range p.Unwaited() {
 			batch = append(batch, agent.Event{Type: agent.TypeAskClosed, AskID: a.ID})
@@ -684,7 +689,7 @@ func (h *host) send(ctx context.Context, cmd Command) any {
 		// next host hands it to the agent.
 		h.record(agent.Event{Type: agent.TypeError, Code: "send_failed", MessageID: msg.MessageID, Text: err.Error()})
 	}
-	return Ack{T: FrameAck, ClientID: cmd.ClientID, Op: cmd.Op, Seq: events[0].Seq}
+	return Ack{T: FrameAck, ClientID: cmd.ClientID, Op: cmd.Op, Seq: events[at].Seq}
 }
 
 func (h *host) answer(ctx context.Context, cmd Command) any {

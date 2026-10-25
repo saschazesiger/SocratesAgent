@@ -132,6 +132,13 @@ type Command struct {
 	Reason    string   `json:"reason,omitempty"`
 	When      string   `json:"when,omitempty"`
 	Continue  bool     `json:"continue,omitempty"`
+
+	// Notice is a send's note: the code of a notice the host journals just
+	// before the message, with Reason as its words - why a message the
+	// person did not write was sent (agent.NoticeAutoContinued,
+	// agent.NoticeScheduledStart). A host of an older build ignores it and
+	// sends the message all the same.
+	Notice string `json:"notice,omitempty"`
 }
 
 // Hello is the host's first frame.

@@ -84,6 +84,10 @@ type Server struct {
 	// two taps on the same folder cannot start two editors on it.
 	ideMu sync.Mutex
 
+	// sched is the chats' clock: scheduled starts and the automatic
+	// continue after a limit (schedule.go).
+	sched *scheduler
+
 	// backup is the engine that backs the data directory up (backup.go),
 	// set once after New by main; restart starts Socrates again after a
 	// restore, and restoreJob is that restore.
@@ -164,6 +168,7 @@ func New(st *store.Store, dataDir string) (*Server, error) {
 	s.digests = newDigester(s)
 	// A turn's end waits for its outcome before it is pushed.
 	s.push.checking = s.digests.outcomePending
+	s.sched = newScheduler(s)
 	s.costs = newCostLedger(s)
 	s.chats = newChatHub(s)
 	// A chat's push says what its journal says.
@@ -214,8 +219,9 @@ func (s *Server) StartSessions(ctx context.Context) error {
 	// reads the chats.
 	s.readyPreparedChats()
 	// Chats need no tmux: their hosts are reattached whatever the terminal
-	// engine says below.
+	// engine says below, and so is their clock, once every chat is known.
 	s.chats.start()
+	s.sched.start(ctx)
 	// What every conversation cost is read from the CLIs' files, not from
 	// tmux, so a machine whose terminals cannot start still keeps its ledger.
 	s.costs.start(ctx)
@@ -400,6 +406,9 @@ func (s *Server) routes() {
 	mux.HandleFunc("POST /api/chats/{id}/options", s.auth(s.handleChatOptions))
 	mux.HandleFunc("POST /api/chats/{id}/account", s.auth(s.handleChatAccount))
 	mux.HandleFunc("PUT /api/chats/{id}/auto-switch", s.auth(s.handleChatAutoSwitch))
+	// The chats' clock (schedule.go).
+	mux.HandleFunc("PUT /api/chats/{id}/start_at", s.auth(s.handleChatStartAt))
+	mux.HandleFunc("PUT /api/chats/{id}/auto-continue", s.auth(s.handleChatAutoContinue))
 
 	// The harness catalogue: what can be started, and where.
 	mux.HandleFunc("GET /api/harnesses", s.auth(s.handleHarnesses))

@@ -13,6 +13,9 @@ import (
 // session, so that it survives a closed tab, a lost phone and a restart, and
 // is the same text on every device.
 //
+// A chat nobody has written to yet may be given a time to send its draft by
+// itself (SetStartAt, ClaimScheduledStart; the server's scheduler).
+//
 // The rest of this file is what is left of prepared sessions (PreStart),
 // which are gone: the clean cut of an old data folder still meets prepared
 // terminals (MakePreparedChat), and a data folder from before PreStart was
@@ -227,10 +230,12 @@ func (s *Store) PreparedChats() ([]Session, error) {
 func (s *Store) ReadyPreparedChat(id, workdir, model, effort, title string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	res, err := s.db.Exec(`UPDATE sessions SET state = ?, workdir = ?, model = ?, effort = ?, start_at = 0,
+	at := now()
+	res, err := s.db.Exec(`UPDATE sessions SET state = ?, workdir = ?, model = ?, effort = ?,
+		start_at = CASE WHEN start_at > ? THEN start_at ELSE 0 END,
 		fail_reason = '', exit_status = -1, title = CASE WHEN ? <> '' AND title_source = '' THEN ? ELSE title END,
 		updated_at = ? WHERE id = ? AND state = ? AND kind = ?`,
-		StateRunning, workdir, model, effort, title, title, now(), id, StatePrestart, KindChat)
+		StateRunning, workdir, model, effort, at, title, title, at, id, StatePrestart, KindChat)
 	if err != nil {
 		return err
 	}
@@ -243,4 +248,58 @@ func (s *Store) ReadyPreparedChat(id, workdir, model, effort, title string) erro
 	}
 	s.bump()
 	return nil
+}
+
+// SetStartAt sets when a chat sends its draft as its first message by itself;
+// zero clears it. Only a chat has a schedule: another row answers
+// ErrNotChat. Whether the chat still has nothing in it is the caller's
+// to check, against the journal.
+func (s *Store) SetStartAt(id string, at int64) error {
+	if at < 0 {
+		at = 0
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var kind string
+	var current int64
+	err := s.db.QueryRow(`SELECT kind, start_at FROM sessions WHERE id = ?`, id).Scan(&kind, &current)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrNotFound
+	}
+	if err != nil {
+		return err
+	}
+	if kind != KindChat {
+		return ErrNotChat
+	}
+	if current == at {
+		return nil
+	}
+	if _, err := s.db.Exec(`UPDATE sessions SET start_at = ?, updated_at = ? WHERE id = ?`, at, now(), id); err != nil {
+		return err
+	}
+	s.bump()
+	return nil
+}
+
+// ClaimScheduledStart takes a due schedule for the scheduler: it clears
+// start_at if, and only if, the chat is still scheduled for exactly `at`.
+// True means this caller owns the start. Clearing it before the start is
+// attempted is what keeps a start that fails from being tried again every
+// few seconds for ever, and the exact match is what keeps a schedule somebody
+// moved in the meantime from being taken for the old one.
+func (s *Store) ClaimScheduledStart(id string, at int64) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	res, err := s.db.Exec(`UPDATE sessions SET start_at = 0, updated_at = ?
+		WHERE id = ? AND kind = ? AND start_at = ? AND start_at > 0`, now(), id, KindChat, at)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil || n == 0 {
+		return false, err
+	}
+	s.bump()
+	return true, nil
 }

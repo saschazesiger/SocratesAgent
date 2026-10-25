@@ -157,6 +157,13 @@ const (
 	// Claude Code goes on without the earlier thinking and keeps it for the
 	// way back (research/08). The chat shows it on the account switch.
 	NoticeForeignThinking = "foreign_thinking"
+	// NoticeAutoContinued: the last turn ended at a usage limit, and once
+	// the limit renewed the server told the agent to go on (the message
+	// after the notice). It is the server's, through the send it comes with.
+	NoticeAutoContinued = "auto_continued"
+	// NoticeScheduledStart: the message after it is the chat's first,
+	// sent by itself at the time it was given.
+	NoticeScheduledStart = "scheduled_start"
 )
 
 // ErrorAuth is an error event's code for a sign-in or key the provider

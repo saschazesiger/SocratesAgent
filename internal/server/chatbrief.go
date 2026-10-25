@@ -45,8 +45,14 @@ const (
 	chatLineGap = time.Second
 )
 
+// briefVersion is the shape of a brief this build writes. A brief of
+// another one is not believed, and the journal is read again: a brief from
+// before a fact was added does not have it.
+const briefVersion = 1
+
 // chatBrief is a chat in a few facts, true as of Seq.
 type chatBrief struct {
+	V       int           `json:"v"`
 	Seq     int64         `json:"seq"`
 	Summary agent.Summary `json:"summary"`
 	// Line is what Home says the chat is doing (chatLine), and Question
@@ -56,13 +62,57 @@ type chatBrief struct {
 	// News is what a notification about the chat says now: the push's words
 	// and the page's (newsOf).
 	News string `json:"news,omitempty"`
+	// Limit is a chat whose last turn a usage limit stopped, and that
+	// nobody has done anything with since: what the automatic continue waits
+	// on (schedule.go).
+	Limit *chatLimit `json:"limit,omitempty"`
+}
+
+// chatLimit is the turn a limit stopped and when the limit renews, in
+// milliseconds (0 when no usage window said).
+type chatLimit struct {
+	Turn     string `json:"turn"`
+	EndedAt  int64  `json:"ended_at"`
+	RenewsAt int64  `json:"renews_at,omitempty"`
 }
 
 // briefOf is the brief of a projection.
 func briefOf(p *agent.Projection) chatBrief {
-	b := chatBrief{Seq: p.LastSeq, Summary: p.Summary(), Line: chatLine(p), Question: chatQuestion(waitingAsk(p))}
+	b := chatBrief{V: briefVersion, Seq: p.LastSeq, Summary: p.Summary(), Line: chatLine(p), Question: chatQuestion(waitingAsk(p))}
 	b.News = newsOf(p, b.Question)
+	b.Limit = limitOf(p)
 	return b
+}
+
+// limitOf is the limit a chat stands at: its last turn ended at a usage
+// limit, nothing runs, nobody has written to it since, and it is still on
+// the account the limit stopped it on (an automatic switch goes on with
+// another account by itself). It renews when the latest usage window that
+// was used up renews - the time the limit card says - if that is after the
+// turn ended.
+func limitOf(p *agent.Projection) *chatLimit {
+	t := p.LastTurn
+	if p.Turn != nil || t == nil || t.Outcome != agent.OutcomeLimited {
+		return nil
+	}
+	if t.Account != "" && p.Account != "" && p.Account != t.Account {
+		return nil
+	}
+	for _, m := range p.Messages {
+		if m.Role == agent.RoleUser && m.ID != t.MessageID && m.At >= t.EndedAt {
+			return nil
+		}
+	}
+	var renews int64
+	for _, l := range p.RateLimits {
+		if l.Used >= 1 && l.ResetsAt*1000 > renews {
+			renews = l.ResetsAt * 1000
+		}
+	}
+	if renews <= t.EndedAt {
+		renews = 0
+	}
+	return &chatLimit{Turn: t.ID, EndedAt: t.EndedAt, RenewsAt: renews}
 }
 
 // newsOf is what a notification about a chat says: what it asks while it
@@ -103,7 +153,7 @@ func readBrief(dataDir, id string) (chatBrief, bool) {
 		return chatBrief{}, false
 	}
 	var b chatBrief
-	if json.Unmarshal(raw, &b) != nil || b.Seq <= 0 {
+	if json.Unmarshal(raw, &b) != nil || b.Seq <= 0 || b.V != briefVersion {
 		return chatBrief{}, false
 	}
 	last, err := agent.LastSeq(agenthost.JournalPath(dataDir, id))

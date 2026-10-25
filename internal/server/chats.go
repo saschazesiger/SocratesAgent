@@ -830,6 +830,9 @@ type createChatBody struct {
 	// reached (REBUILD.md §4.3, off unless asked for).
 	Account    string `json:"account"`
 	AutoSwitch bool   `json:"auto_switch"`
+	// AutoContinue false keeps the chat from going on by itself once a
+	// limit that stopped it renews (schedule.go); absent is on.
+	AutoContinue *bool `json:"auto_continue"`
 	// Message is the first message, sent once the chat exists.
 	Message *chatMessageBody `json:"message"`
 }
@@ -839,6 +842,11 @@ type chatMessageBody struct {
 	ClientID    string             `json:"client_id"`
 	Text        string             `json:"text"`
 	Attachments []agent.Attachment `json:"attachments"`
+	// Notice and Reason are the notice the journal gets before a message
+	// the server sends by itself (agenthost.Command.Notice); never a
+	// browser's.
+	Notice string `json:"-"`
+	Reason string `json:"-"`
 }
 
 func (s *Server) handleCreateChat(w http.ResponseWriter, r *http.Request) {
@@ -895,7 +903,8 @@ func (s *Server) handleCreateChat(w http.ResponseWriter, r *http.Request) {
 		TitleSource: titleSource(body.Title), Harness: harness, Model: model,
 		Effort: effort, Workdir: workdir, WorkdirMode: mode,
 		Kind: store.KindChat, State: store.StateRunning,
-		Options: withChatAccount(withOption(nil, "ultracode", chatUltracode(harness, body.Ultracode)), body.Account, body.AutoSwitch),
+		Options: withAutoContinue(withChatAccount(withOption(nil, "ultracode", chatUltracode(harness, body.Ultracode)),
+			body.Account, body.AutoSwitch), body.AutoContinue == nil || *body.AutoContinue),
 	}
 	if err := s.store.CreateSession(row); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -1043,14 +1052,24 @@ func (s *Server) handleChatMessage(w http.ResponseWriter, r *http.Request) {
 // works, and delete the chat once its day was up.
 func (s *Server) sendMessage(ctx context.Context, p *chatPeer, m *chatMessageBody) (int, map[string]any) {
 	s.manager.MarkRead(p.id)
-	if row, err := s.store.GetSession(p.id); err == nil && row.Status == store.StatusDone {
-		if err := s.store.SetSessionStatus(p.id, store.StatusInProgress); err != nil {
-			log.Printf("chat %s: could not pick it up again: %v", p.id, err)
-		} else {
+	if row, err := s.store.GetSession(p.id); err == nil {
+		if row.Status == store.StatusDone {
+			if err := s.store.SetSessionStatus(p.id, store.StatusInProgress); err != nil {
+				log.Printf("chat %s: could not pick it up again: %v", p.id, err)
+			} else {
+				s.events.poke()
+			}
+		}
+		// A chat somebody started is not started again by its clock.
+		if row.StartAt != 0 {
+			if err := s.store.SetStartAt(p.id, 0); err != nil {
+				log.Printf("chat %s: could not clear its scheduled start: %v", p.id, err)
+			}
 			s.events.poke()
 		}
 	}
-	return p.command(ctx, agenthost.Command{Op: agenthost.OpSend, ClientID: m.ClientID, Text: m.Text, Attachments: m.Attachments})
+	return p.command(ctx, agenthost.Command{Op: agenthost.OpSend, ClientID: m.ClientID, Text: m.Text, Attachments: m.Attachments,
+		Notice: m.Notice, Reason: m.Reason})
 }
 
 // command submits a command and words the outcome. A client_id this chat's
