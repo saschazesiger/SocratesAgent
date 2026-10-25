@@ -77,6 +77,7 @@ const SHELL = [
   '/static/js/combobox.js',
   '/static/js/voice.js',
   '/static/js/assist.js',
+  '/static/js/statusmodal.js',
   '/static/js/notify.js',
   '/static/js/dictate.js',
   '/static/js/keyboard.js',

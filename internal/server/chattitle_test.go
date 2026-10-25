@@ -20,6 +20,8 @@ func (c *chatEnv) withGateway(t *testing.T) *scriptedGateway {
 	c.configureOpenRouter(t, map[string]any{
 		"base_url": gw.srv.URL, "api_key": "k", "status_model": "test/status-model",
 		"title_model": "test/title-model", "home_model": "test/home-model",
+		// The outcomes are on by default; a test of them turns them on.
+		"outcomes": false,
 	})
 	return gw
 }

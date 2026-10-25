@@ -123,10 +123,22 @@ func (s *Server) statusOfChat(ctx context.Context, w http.ResponseWriter, row *s
 			"last_ended":    c.LastEnded,
 			"turns":         c.Turns,
 			"worked_ms":     c.Worked,
+			"call":          c.CallLine,
+			"call_started":  c.CallStarted,
 		},
+		"tasks": statusTasks(c.Tasks),
 	}
 	if m := got.ETAMinutes; m != nil && !math.IsNaN(*m) && *m >= 0 && *m < 100000 {
 		out["analysis"].(map[string]any)["eta_minutes"] = math.Round(*m)
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// statusTasks is the task list as the page draws it.
+func statusTasks(tasks []chatTask) []map[string]string {
+	out := make([]map[string]string, 0, len(tasks))
+	for _, t := range tasks {
+		out = append(out, map[string]string{"subject": t.Subject, "status": t.Status})
+	}
+	return out
 }

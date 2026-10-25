@@ -65,9 +65,8 @@ type Server struct {
 	settings config.Settings
 	// titles names a session once, the first time it has answered anything.
 	titles *titleDriver
-	// suggests makes the chips of a chat's ended turn and its answers said
-	// for the ear (chatsuggest.go).
-	suggests *suggester
+	// spoken keeps a chat's answers said for the ear (chatspoken.go).
+	spoken *spokenCache
 	// push is Web Push: the notification that reaches a phone whose page is
 	// not running.
 	push *pusher
@@ -167,7 +166,7 @@ func New(st *store.Store, dataDir string) (*Server, error) {
 	// The namer is built before the manager, because the manager is what
 	// calls into it.
 	s.titles = newTitleDriver(s)
-	s.suggests = newSuggester(s)
+	s.spoken = newSpokenCache()
 	s.push = newPusher(st)
 	// Every push says how many sessions are asking (the app icon's badge),
 	// counted the way Home counts them.
@@ -413,7 +412,6 @@ func (s *Server) routes() {
 	mux.HandleFunc("POST /api/chats/{id}/attachments", s.auth(s.handleChatAttachments))
 	mux.HandleFunc("POST /api/chats/{id}/options", s.auth(s.handleChatOptions))
 	mux.HandleFunc("POST /api/chats/{id}/account", s.auth(s.handleChatAccount))
-	mux.HandleFunc("GET /api/chats/{id}/suggestions", s.auth(s.handleChatSuggestions))
 	mux.HandleFunc("POST /api/chats/{id}/spoken", s.auth(s.handleChatSpoken))
 	mux.HandleFunc("PUT /api/chats/{id}/auto-switch", s.auth(s.handleChatAutoSwitch))
 	// The chats' clock (schedule.go).

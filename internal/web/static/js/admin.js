@@ -71,7 +71,6 @@ const MODEL_PICKERS = [
 const FIELDS = [
   ['orKey', 'openrouter.api_key'],
   ['orOutcomes', 'openrouter.outcomes', 'bool'],
-  ['orSuggestions', 'openrouter.suggestions', 'bool'],
   ['workspaceRoot', 'workspace.root'],
   ['allowCustomDir', 'workspace.allow_custom', 'bool'],
   ['windowSize', 'terminal.window_size'],

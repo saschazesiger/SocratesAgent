@@ -9,7 +9,8 @@
 // There is exactly one ticker line, and this is the only thing that writes it.
 // A second indicator would be a second thing to read at a traffic light.
 
-import { api, toast, errorMessage, isOffline, openDialog, el } from './api.js';
+import { api, toast, errorMessage, isOffline } from './api.js';
+import { openStatusModal } from './statusmodal.js';
 import { M } from './ui.js';
 import {
   speak, stopSpeaking, onSpeechError, voiceKey, setVoiceKey, onVoiceKey, noKeyRefusal, keyMissing,
@@ -53,6 +54,8 @@ export function mountAssist(ctx) {
   // takes it away again once it has been read.
   let statusLine = '';
   let statusTimer = null;
+  // The Status modal of a chat, while it is open.
+  let modal = null;
 
   /* ------------------------------------------------------------ the ticker */
 
@@ -137,6 +140,7 @@ export function mountAssist(ctx) {
       btn.disabled = speaking ? false : (!usable && !busyStatus);
     }
     dictation.live();
+    if (modal && modal.isOpen()) modal.paint();
     paintTicker();
   }
 
@@ -166,6 +170,10 @@ export function mountAssist(ctx) {
         return;
       }
     }
+    if (session.kind === 'chat') {
+      await runChatStatus(session);
+      return;
+    }
     busyStatus = true;
     // The first phase locally, before the request has even left: on a bad
     // connection the server's own first frame is a second away, and a tap with
@@ -186,10 +194,7 @@ export function mountAssist(ctx) {
         return;
       }
       setVoiceKey(true);
-      // A chat's answer is an analysis with parts of its own, shown as one;
-      // a terminal's is the sentence, in the notice.
-      if (data.analysis) showAnalysis(session, data);
-      else ctx.notice('status', text, null, statusFacts(data || {}));
+      ctx.notice('status', text, null, statusFacts(data || {}));
       setStatusPhase('done', text);
       busyStatus = false;
       paint();
@@ -212,58 +217,49 @@ export function mountAssist(ctx) {
     }
   }
 
-  // showAnalysis is a chat's Status as a dialog: what it is about, what runs
-  // now, how long it has been at it - the server's clock, counted on here
-  // while the dialog is open - and how long the rest will probably take. The
-  // spoken version of the same is read out loud beside it.
-  function showAnalysis(session, data) {
-    const a = data.analysis || {};
-    const clock = data.clock || {};
-    // The server's clock against this one: the times count on from the
-    // answer, not from a phone's clock that may be off by minutes.
-    const skew = Date.now() - (Number(clock.now) || Date.now());
-    const since = (at) => spanWords(Date.now() - skew - at);
-    const running = () => {
-      if (clock.asked_at) return ['Waiting for you', since(clock.asked_at)];
-      if (clock.turn_started) return ['Running for', since(clock.turn_started)];
-      if (clock.last_ended) return ['Idle for', since(clock.last_ended)];
-      return null;
-    };
-    const sessionLine = () => {
-      if (!clock.first_message) return '';
-      const turns = Number(clock.turns) || 0;
-      return since(clock.first_message) + ' since the first message · ' + turns + (turns === 1 ? ' turn' : ' turns') +
-        ' · ' + spanWords(Number(clock.worked_ms) || 0) + ' of work';
-    };
-    const facts = [
-      ['Summary', a.summary || ''],
-      ['Right now', a.now || ''],
-      running(),
-      ['Session', sessionLine()],
-      ['Expected', a.eta || ''],
-    ].filter((f) => f && f[1]);
-    const stop = el('button', {
-      class: 'ds-btn ds-btn--text', type: 'button', text: 'Stop reading', onclick: () => stopReading(),
+  // runChatStatus is a chat's Status: a modal of its own opens at once and
+  // says what is being done until the analysis is in, then shows it, and the
+  // spoken version is read out loud. Nothing of it stays in the chat.
+  async function runChatStatus(session) {
+    busyStatus = true;
+    modal = openStatusModal({
+      session,
+      opener: dom.statusBtn,
+      speaking: () => speaking,
+      toggle: () => {
+        if (speaking) stopReading();
+        else if (modal && modal.spoken) say(modal.spoken);
+      },
     });
-    const close = el('button', { class: 'ds-btn ds-btn--primary', type: 'button', 'data-close': true, autofocus: true, text: 'Close' });
-    const { dialog, shown } = openDialog({
-      title: session.title || 'Status', facts, actions: [stop, close], opener: dom.statusBtn,
-    });
-    dialog.classList.add('so-status-dialog');
-    dialog.dataset.model = data.model || '';
-    // The live values: the running clock and the session's age.
-    const values = dialog.querySelectorAll('dd');
-    const runIndex = facts.findIndex((f) => f[0] === 'Running for' || f[0] === 'Waiting for you' || f[0] === 'Idle for');
-    const sessionIndex = facts.findIndex((f) => f[0] === 'Session');
-    const tick = setInterval(() => {
-      if (!dialog.isConnected) return;
-      const r = running();
-      if (runIndex >= 0 && r && values[runIndex]) values[runIndex].textContent = r[1];
-      if (sessionIndex >= 0 && values[sessionIndex]) values[sessionIndex].textContent = sessionLine();
-      stop.hidden = !speaking;
-    }, 1000);
-    stop.hidden = false;
-    shown.finally(() => clearInterval(tick));
+    const mine = modal;
+    paint();
+    try {
+      const data = await api(path(session.id, '/status'), {
+        method: 'POST', attempts: 1, timeout: 120000,
+      });
+      const text = String((data && data.text) || '').trim();
+      if (!text) {
+        mine.fail('There was nothing to say about that chat.');
+        return;
+      }
+      setVoiceKey(true);
+      mine.spoken = text;
+      mine.show(data);
+      busyStatus = false;
+      paint();
+      if (mine.isOpen()) await say(text);
+    } catch (err) {
+      if (noKeyRefusal(err)) {
+        setVoiceKey(false);
+        if (mine.isOpen()) mine.dialog.close();
+        explainNoKey('status', dom.statusBtn);
+        return;
+      }
+      mine.fail(assistFailed(err, 'That chat could not be summarised.'));
+    } finally {
+      busyStatus = false;
+      paint();
+    }
   }
 
   // setStatusPhase puts one phase of a status into the ticker. It is called
@@ -339,21 +335,16 @@ export function mountAssist(ctx) {
 
     /** statusFrame is one phase of a status being made, from the server. */
     statusFrame(frame) {
+      // A chat's Status says its phases in its modal, and nothing in the
+      // chat: the answer is the modal's.
+      const session = ctx.current();
+      if (session && session.kind === 'chat') {
+        if (modal && modal.isOpen() && frame.phase === 'asking') modal.phase('Analysing the chat…');
+        return;
+      }
       setStatusPhase(frame.phase || '', String(frame.text || '').trim());
     },
   };
-}
-
-// spanWords is a duration as a person reads it: "40 s", "12 min", "3 h 20 min",
-// "2 d 4 h".
-function spanWords(ms) {
-  const s = Math.max(0, Math.floor(ms / 1000));
-  if (s < 60) return s + '\u00a0s';
-  const m = Math.floor(s / 60);
-  if (m < 60) return m + '\u00a0min';
-  const h = Math.floor(m / 60);
-  if (h < 24) return h + '\u00a0h' + (m % 60 ? ' ' + (m % 60) + '\u00a0min' : '');
-  return Math.floor(h / 24) + '\u00a0d' + (h % 24 ? ' ' + (h % 24) + '\u00a0h' : '');
 }
 
 // assistFailed is what a refused request says out loud. A lost connection says

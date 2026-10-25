@@ -2947,22 +2947,19 @@ Asked for by the product owner on 2026-10-25, on branch `ui-simplify`.
   stays Google Cloud TTS. A settings document saved before `openrouter.models_rev` 1 has the three
   text models replaced once, models picked by hand included (the owner: "use Haiku for
   everything"); a model picked after that is kept.
-- **A chat's Status is an analysis of the whole session.** The model reads the chat's record - every
-  message, call (with how long it took or has run), question and turn boundary, each with its time,
-  cut from the old end past 160k runes - and the measured facts (`chatreport.go`). It answers a
-  summary, what runs now, and an estimate of the time left (`chatstatus.go`); how long the session
-  and its turn have run is measured by the server and shown by the page, never asked. The page shows
-  it in a dialog that counts the times on, and the spoken version is read out loud. A Shell's Status
-  still reads its screen.
+- **A chat's Status is an analysis of the whole session, in a modal of its own.** The model reads
+  the chat's record - every message, call (with how long it took or has run), question and turn
+  boundary, each with its time, cut from the old end past 160k runes - and the measured facts
+  (`chatreport.go`), and answers a summary, what runs now and an estimate of the time left
+  (`chatstatus.go`). The modal (`statusmodal.js`) opens on the press and says what is being done
+  until the answer is in; then a state chip, "Right now" with the running call, three tiles (running
+  for / expected / session, the times measured by the server and counted on), the task list with its
+  progress and the summary, with Read aloud. Nothing of it stands in the chat's dock. A Shell's
+  Status still reads its screen and says it in the notice.
 - **The rename dialog suggests a name** (its sparkles): `POST /api/sessions/{id}/title
   {"suggest":true}` answers a name from the journal and saves nothing; Rename does.
-- **Turn outcomes and next-message suggestions are on for existing installations**
-  (`openrouter.models_rev` 2 turns `outcomes` and `suggestions` on once); a fresh installation starts
-  with both off, as nothing more leaves the machine until somebody turns them on.
-- **Next messages as chips.** When a chat's turn completes and nothing waits, the status model reads
-  the chat's record and suggests two or three next messages (`chatsuggest.go`, made at the turn's end,
-  `GET /api/chats/{id}/suggestions` waits for them). They stand over the composer while its field is
-  empty; a tap puts one in the field, nothing is sent by itself.
+- **Turn outcomes are on by default** (the owner: "always on"), and `openrouter.models_rev` 2 turns
+  them on once for an installation saved before.
 - **Read aloud on an answer.** Beside Copy, an answer has Read aloud: `POST /api/chats/{id}/spoken`
   says it for the ear in the voice's language (what was done, what came of it, what it asks; code,
   paths and tables told rather than read), or hands back a short plain answer as it is.

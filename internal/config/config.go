@@ -33,9 +33,8 @@ const (
 	// settings document saved under an older one is brought up to it once
 	// (Normalize): revision 1 moved every text call to DefaultAssistModel,
 	// models picked by hand before that included; revision 2 turned the
-	// turn outcomes and the next-message suggestions on. A fresh
-	// installation starts at the current revision and keeps both off until
-	// somebody turns them on.
+	// turn outcomes on. A fresh installation starts at the current
+	// revision, with them on by default.
 	AssistModelsRev = 2
 )
 
@@ -86,16 +85,10 @@ type OpenRouterSettings struct {
 	// nothing and is dropped on the next save.
 	HomeModel string `json:"home_model"`
 	// Outcomes has the end of every chat's turn judged - complete, partly
-	// done, waiting on the person or blocked - with HomeModel. It is off
-	// until somebody turns it on: it sends the chat's last instruction,
-	// answer, calls and task list to OpenRouter, and notifications wait for
-	// its answer.
+	// done, waiting on the person or blocked - with HomeModel. On by
+	// default: it sends the chat's last instruction, answer, calls and task
+	// list to OpenRouter, and notifications wait for its answer.
 	Outcomes bool `json:"outcomes"`
-	// Suggestions has the end of every chat's turn offer the two or three
-	// messages the person most likely sends next, as chips over the
-	// composer, read by StatusModel from the chat's record. Off on a fresh
-	// installation for the same reason as Outcomes.
-	Suggestions bool `json:"suggestions"`
 	// ModelsRev is the AssistModelsRev the three text models were last
 	// brought up to. Default leaves it at zero: a stored document is decoded
 	// over the defaults, and one from before the field must not take the
@@ -305,6 +298,7 @@ func Default() Settings {
 			TitleModel:      DefaultTitleModel,
 			StatusModel:     DefaultStatusModel,
 			HomeModel:       DefaultHomeModel,
+			Outcomes:        true,
 		},
 		Voice: VoiceSettings{
 			Language:      DefaultLanguage,
@@ -355,7 +349,6 @@ func (s *Settings) Normalize() {
 	}
 	if s.OpenRouter.ModelsRev < 2 {
 		s.OpenRouter.Outcomes = true
-		s.OpenRouter.Suggestions = true
 	}
 	s.OpenRouter.ModelsRev = AssistModelsRev
 	// There is no chat model left to fall back to: OpenRouter writes titles and

@@ -4594,7 +4594,7 @@ async function sessiontitle() {
 // would, which is the only supported way to make this app talk to a mock.
 async function pointGateway(s, stub) {
   const saved = await s.context.request.put(s.url + '/api/settings', {
-    data: { settings: { openrouter: { api_key: 'e2e-key', base_url: stub.url } } },
+    data: { settings: { openrouter: { api_key: 'e2e-key', base_url: stub.url, outcomes: false } } },
   });
   ok(saved.ok(), 'the gateway is pointed at the stub', saved.status() + ' ' + stub.url);
 }
@@ -4618,18 +4618,28 @@ async function watchTicker(page, sel = '#tickerWindow') {
   return () => page.evaluate(() => window.__ticker.slice());
 }
 
-// statusDialog waits for a chat's Status analysis and reads its facts, label
-// to value.
+// statusDialog waits for a chat's Status modal to have its analysis and
+// reads it: the chip (state), the two texts by their labels, and every tile
+// as label -> value with its note under "<label> note".
 async function statusDialog(page, timeout) {
-  await page.waitForSelector('dialog.so-status-dialog[open]', { timeout });
-  return page.$eval('dialog.so-status-dialog', (d) => Object.fromEntries(
-    [...d.querySelectorAll('.ds-facts > div')].map((row) => [row.querySelector('dt').textContent, row.querySelector('dd').textContent])));
+  await page.waitForSelector('dialog.so-status[open] .so-status__tiles', { timeout });
+  return page.$eval('dialog.so-status', (d) => {
+    const out = { state: (d.querySelector('.so-status__state .ds-status') || {}).textContent || '' };
+    out['Right now'] = (d.querySelector('.so-status__now-text') || {}).textContent || '';
+    out['Summary'] = (d.querySelector('.so-status__summary .so-status__text') || {}).textContent || '';
+    for (const tile of d.querySelectorAll('.ds-tile')) {
+      const label = tile.querySelector('.ds-tile__label').textContent.trim();
+      out[label] = tile.querySelector('.ds-tile__value').textContent.trim();
+      out[label + ' note'] = (tile.querySelector('.ds-tile__note') || {}).textContent || '';
+    }
+    return out;
+  });
 }
 
-// closeStatusDialog presses the analysis' Close, and says whether it went.
+// closeStatusDialog presses the modal's Close, and says whether it went.
 async function closeStatusDialog(page) {
-  await page.$eval('dialog.so-status-dialog [data-close].ds-btn', (b) => b.click()).catch(() => {});
-  return page.waitForFunction(() => !document.querySelector('dialog.so-status-dialog'), null, { timeout: 9000 })
+  await page.$eval('dialog.so-status .so-status__actions [data-close]', (b) => b.click()).catch(() => {});
+  return page.waitForFunction(() => !document.querySelector('dialog.so-status'), null, { timeout: 9000 })
     .then(() => true).catch(() => false);
 }
 
@@ -4708,8 +4718,8 @@ async function statusspeak() {
     const shown = facts['Summary'] || '';
     ok(shown.includes('finished') && shown === stub.text && facts['Right now'] === stub.text,
       'what the model said is on screen, in words', oneLine(JSON.stringify(facts)));
-    ok(/^\d+\u00a0(s|min)$/.test(facts['Idle for'] || '') && /since the first message · 1 turn · /.test(facts['Session'] || '') &&
-      facts['Expected'] === 'Nothing is running.',
+    ok(/^\d+\u00a0(s|min)$/.test(facts['Idle for'] || '') && /^1 turn · /.test(facts['Session note'] || '') &&
+      facts['Expected'] === 'Done' && facts['Expected note'] === 'Nothing is running.' && facts.state === 'Idle',
       'and the measured times and the estimate beside it', oneLine(JSON.stringify(facts)));
     await shot(s.page, 'status-speak');
 
@@ -4761,46 +4771,27 @@ async function statusticker() {
     const tool = await answerTo(s, id, '/tool');
     ok(tool === 'The command printed two lines.', 'the chat has done something', tool || 'no answer');
     const lines = await watchTicker(s.page, '#chat .so-chat__dock .so-ticker__line');
+    // The answer is held back a moment, so that what the modal says while it
+    // waits is seen.
+    await s.page.route('**/api/sessions/*/status', async (route) => {
+      await new Promise((done) => setTimeout(done, 1500));
+      await route.fallback();
+    });
 
     await s.page.waitForSelector('#statusBtn:not([hidden]):not([disabled])', { timeout: 15000 });
     await s.page.click('#statusBtn');
-    const arrived = await s.page.waitForFunction(
-      (want) => (window.__ticker || []).some((l) => l === want),
-      stub.text, { timeout: 45000 }).then(() => true).catch(() => false);
+    // The modal opens at once and says what is being done.
+    const loading = await s.page.waitForFunction(() => {
+      const d = document.querySelector('dialog.so-status[open] .so-status__loading');
+      return d ? d.textContent.trim() : null;
+    }, null, { timeout: 1000 }).then((h) => h.jsonValue(), () => null);
+    ok(loading === 'Reading the chat…' || loading === 'Analysing the chat…', 'the modal opens at once and says what is being done', String(loading));
+    const facts = await statusDialog(s.page, 45000).catch(() => null);
+    ok(!!facts && facts['Right now'] === stub.text && facts.state === 'Idle', 'then it shows the analysis', JSON.stringify(facts));
+    await wait(1500);
     const said = await lines();
-    ok(arrived, 'the answer itself is the last thing the ticker says', oneLine(said.join(' → ')));
-
-    const order = said.map((l) => (
-      /^Reading the chat$/.test(l) ? 'capturing'
-        : /^Asking /.test(l) ? 'asking'
-          : /^Speaking$/.test(l) ? 'speaking'
-            : l === stub.text ? 'done' : 'other'));
-    const wanted = ['capturing', 'asking', 'speaking', 'done'];
-    // Every phase, in this order, with nothing of another kind between them.
-    const kept = order.filter((o) => o !== 'other');
-    ok(kept.join(',') === wanted.join(','), 'the phases appear in order and none is missing',
-      kept.join(',') + '  [' + oneLine(said.join(' → ')) + ']');
-
-    // One window, one line: the ticker never grows into a log.
-    const window = await s.page.evaluate(() => {
-      const host = document.querySelector('#chat .so-chat__dock .so-ticker');
-      return {
-        hidden: host.hidden,
-        height: Math.round(host.querySelector('.so-ticker__line').getBoundingClientRect().height),
-        fill: getComputedStyle(host).backgroundColor,
-      };
-    });
-    ok(!window.hidden && window.height <= 24, 'it is one line high and no more',
-      JSON.stringify(window));
-    ok(window.fill !== 'rgba(0, 0, 0, 0)' && window.fill !== 'transparent',
-      'on a ground of its own, so it reads apart from the conversation', window.fill);
-
-    // And it gives the window back: outside auto mode, with nothing happening,
-    // there is nothing to say.
-    const gone = await s.page.waitForFunction(() => document.querySelector('#chat .so-chat__dock .so-ticker').hidden,
-      null, { timeout: 20000 }).then(() => true).catch(() => false);
-    ok(gone, 'and when there is nothing happening it is not there at all',
-      gone ? 'hidden again' : 'still on screen');
+    const ticker = await s.page.$eval('#chat .so-chat__dock .so-ticker', (n) => n.hidden);
+    ok(said.length === 0 && ticker, 'and nothing of it is in the chat: the dock\'s line stays away', JSON.stringify(said));
 
     await shot(s.page, 'status-ticker');
     ok(unexpected(s.errors).length === 0, 'no console errors',
@@ -4869,7 +4860,7 @@ async function dictate() {
     const saved = await s.context.request.put(s.url + '/api/settings', {
       data: {
         settings: {
-          openrouter: { api_key: 'e2e-key', base_url: stub.url, transcribe_model: 'openai/whisper-1' },
+          openrouter: { api_key: 'e2e-key', base_url: stub.url, transcribe_model: 'openai/whisper-1', outcomes: false },
         },
       },
     });
@@ -6159,7 +6150,7 @@ async function keyboard() {
     const saved = await s.context.request.put(s.url + '/api/settings', {
       data: {
         settings: {
-          openrouter: { api_key: 'e2e-key', base_url: stub.url, transcribe_model: 'openai/whisper-1' },
+          openrouter: { api_key: 'e2e-key', base_url: stub.url, transcribe_model: 'openai/whisper-1', outcomes: false },
         },
       },
     });
@@ -11757,17 +11748,14 @@ async function chatstatus() {
     const button = await page.waitForSelector('#statusBtn:not([hidden]):not([disabled])', { timeout: 10000 }).then(() => true, () => false);
     ok(button, 'a chat has the Status button', String(button));
     await page.click('#statusBtn');
-    const line = await page.waitForFunction((want) => {
-      const box = document.querySelector('#chat .so-chat__dock .so-ticker');
-      return !!box && !box.hidden && box.textContent.includes(want);
-    }, words, { timeout: 30000 }).then(() => true, () => false);
-    ok(line, 'what the model said is the line in the chat’s dock', words);
     // The whole answer is the analysis dialog: its parts, and the server's
     // clock beside them.
     const facts = await statusDialog(page, 10000).catch(() => null);
     ok(!!facts && facts['Summary'] === words && facts['Right now'] === words && !!facts['Idle for'] &&
-      /1 turn/.test(facts['Session'] || ''),
+      /1 turn/.test(facts['Session note'] || ''),
       'and the whole answer is the analysis, with the measured times', JSON.stringify(facts));
+    const dock = await page.$eval('#chat .so-chat__dock', (d) => ({ ticker: d.querySelector('.so-ticker').hidden, notice: d.querySelector('.so-notice').hidden }));
+    ok(dock.ticker && dock.notice, 'and nothing of it stands in the chat', JSON.stringify(dock));
     await wait(800);
     await shot(page, 'chat-status');
     const read = await (async () => {
@@ -11797,7 +11785,7 @@ async function chatstatus() {
     await small.waitForSelector('#statusBtn:not([hidden]):not([disabled])', { timeout: 10000 });
     await small.tap('#statusBtn');
     const onPhone = await small.waitForFunction(() => {
-      const box = document.querySelector('dialog.so-status-dialog[open] .ds-dialog__box');
+      const box = document.querySelector('dialog.so-status[open] .ds-dialog__box');
       if (!box) return null;
       const r = box.getBoundingClientRect();
       const root = document.scrollingElement;
@@ -11816,14 +11804,11 @@ async function chatstatus() {
   }
 }
 
-// chat-next: a turn that ended well offers the next messages as chips over
-// the composer, a tap puts one in the field and the chips give way to it;
-// an answer is read out loud as the server says it for the ear.
-async function chatnext() {
+// chat-speak: an answer is read out loud as the server says it for the ear.
+async function chatspeak() {
   const stub = await openRouterStub({
     answer: (json) => {
       const system = String(((json.messages || [])[0] || {}).content || '');
-      if (system.startsWith('You suggest the next message')) return JSON.stringify({ suggestions: ['Run the tests', 'Commit and push'] });
       if (system.startsWith('You rewrite a coding agent')) return 'It printed a heading, a list and some code.';
       return 'A chat';
     },
@@ -11832,26 +11817,10 @@ async function chatnext() {
   const { page } = s;
   try {
     await pointGateway(s, stub);
-    const on = await s.context.request.put(s.url + '/api/settings', { data: { settings: { openrouter: { suggestions: true } } } });
-    ok(on.ok(), 'the suggestions are switched on', String(on.status()));
     const spoken = await stubSpeech(s.context);
     const id = await startChat(page);
     await say(page, '/md');
     await awaitChat(s, id, idle);
-    const chips = await page.waitForFunction(() => {
-      const box = document.querySelector('#chat .so-chat__next');
-      return box && !box.hidden ? [...box.querySelectorAll('.so-next')].map((b) => b.dataset.text) : null;
-    }, null, { timeout: 30000 }).then((h) => h.jsonValue(), () => null);
-    ok(JSON.stringify(chips) === JSON.stringify(['Run the tests', 'Commit and push']),
-      'the ended turn offers the next messages over the composer', JSON.stringify(chips));
-    await shot(page, 'chat-next');
-    await page.click('#chat .so-next[data-text="Commit and push"]');
-    const taken = await page.evaluate(() => ({
-      field: document.querySelector('#chat .so-chat__composer textarea').value,
-      hidden: document.querySelector('#chat .so-chat__next').hidden,
-    }));
-    ok(taken.field === 'Commit and push' && taken.hidden, 'a tap puts it in the field, and the chips give way', JSON.stringify(taken));
-
     await page.click('#chat .so-msg[data-role="assistant"] .so-msg__speak');
     const read = await (async () => {
       const until = Date.now() + 20000;
@@ -12389,7 +12358,7 @@ const ALL = [
   ['notify', 'a chime and a notification when a chat stops working, and two switches in the options menu', notify],
   ['session-title', 'a chat that names itself on its first message, again by the arrow, and not while that is being written', sessiontitle],
   ['status-speak', 'Status says what a chat did, on the page and out loud', statusspeak],
-  ['status-ticker', 'the phases of a status, in order, in one line', statusticker],
+  ['status-ticker', 'a chat\'s Status opens its modal at once, and says nothing in the chat', statusticker],
   ['dictate', 'a recording with two endings, and the words it kept in the composer', dictate],
   ['no-overlap', 'the microphone and the voice are never open at the same time', nooverlap],
   ['typeafteroutage', 'a cut socket, a locked phone, and a pane that still takes keystrokes', typeafteroutage],
@@ -12417,7 +12386,7 @@ const ALL = [
   ['chat-push', 'a chat\u2019s notification and badge: the question\u2019s words, how a turn ended, nothing for a Stop, a limit once', chatpush],
   ['chat-title', 'a chat names itself from its first message', chattitle],
   ['chat-status', 'Status says a chat from its journal, on its line and out loud', chatstatus],
-  ['chat-next', 'the next messages as chips after a turn, and an answer read out loud for the ear', chatnext],
+  ['chat-speak', 'an answer read out loud, said for the ear', chatspeak],
   ['chat-outcome', 'a chat\u2019s turn judged from its journal: the hourglass, the verdict, the notification', chatoutcome],
   ['chat-schedule', 'a chat started by its clock: its draft the first message, once, and no start time once it has one', chatschedule],
   ['chat-ultracode', 'Ultracode for Claude Code alone: in the sheet, and in a Claude chat\u2019s menu', chatultracode],

@@ -687,3 +687,207 @@
   background: linear-gradient(to bottom, transparent, var(--ds-surface));
   pointer-events: none;
 }
+
+/* ── The Status modal of a chat (statusmodal.js) ─────────────────────────
+   A head with the agent's mark and the chat's name, then in the order a
+   glance wants them: where it is (a chip), what runs right now, three
+   figures, the task list with its progress, the summary. */
+
+.so-status .so-status__box {
+  inline-size: min(var(--so-status-width), 100%);
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-space-5);
+}
+
+.so-status__head {
+  display: flex;
+  align-items: center;
+  gap: var(--ds-space-3);
+}
+
+.so-status__mark {
+  display: grid;
+  flex: none;
+  place-items: center;
+  inline-size: var(--ds-space-10);
+  block-size: var(--ds-space-10);
+  border-radius: 50%;
+  background: var(--ds-surface-high);
+}
+
+.so-status__titles {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.so-status__overline {
+  margin: 0;
+  color: var(--ds-text-3);
+  font: var(--ds-font-caption);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.so-status .so-status__title {
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.so-status__x {
+  flex: none;
+  align-self: flex-start;
+}
+
+.so-status__body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-space-5);
+  min-width: 0;
+}
+
+.so-status__loading {
+  padding: var(--ds-space-6) 0;
+}
+
+.so-status__state {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--ds-space-3);
+}
+
+.so-status__by {
+  color: var(--ds-text-3);
+  font: var(--ds-font-meta);
+}
+
+.so-status__label {
+  display: flex;
+  align-items: center;
+  gap: var(--ds-space-2);
+  margin: 0 0 var(--ds-space-2);
+  color: var(--ds-text-2);
+  font: var(--ds-font-label);
+}
+
+.so-status__now {
+  padding: var(--ds-space-4) var(--ds-space-5);
+  border-radius: var(--ds-radius-lg);
+  background: var(--ds-accent);
+}
+
+.so-status__now-text {
+  margin: 0;
+  color: var(--ds-text);
+  font: var(--ds-font-subtitle);
+}
+
+.so-status__call {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--ds-space-1);
+  margin: var(--ds-space-2) 0 0;
+  color: var(--ds-text-2);
+  font: var(--ds-font-meta);
+}
+
+.so-status__call code {
+  min-width: 0;
+  font: var(--ds-font-code);
+  font-size: inherit;
+}
+
+.so-status .so-status__tiles {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.so-status__clamp {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 4;
+  overflow: hidden;
+}
+
+.so-status .so-status__title:focus {
+  outline: none;
+}
+
+.so-status__tasks-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--ds-space-3);
+}
+
+.so-status__count {
+  color: var(--ds-text-2);
+  font: var(--ds-font-meta);
+}
+
+.so-status__list {
+  display: grid;
+  gap: var(--ds-space-2);
+  margin: var(--ds-space-3) 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.so-status__task {
+  display: flex;
+  align-items: center;
+  gap: var(--ds-space-3);
+  font: var(--ds-font-body);
+  color: var(--ds-text);
+}
+
+.so-status__task > :first-child {
+  flex: none;
+}
+
+.so-status__task[data-status="completed"] {
+  color: var(--ds-text-3);
+}
+
+.so-status__task[data-status="completed"] > svg {
+  color: var(--ds-success);
+}
+
+.so-status__task[data-status="in_progress"] {
+  font: var(--ds-font-label);
+}
+
+.so-status__dot {
+  inline-size: 16px;
+  block-size: 16px;
+  border: 2px solid var(--ds-line);
+  border-radius: 50%;
+  box-sizing: border-box;
+}
+
+.so-status__text {
+  margin: 0;
+  color: var(--ds-text);
+  font: var(--ds-font-reading);
+}
+
+.so-status__actions {
+  justify-content: space-between;
+}
+
+@media (max-width: 600px) {
+  .so-status .so-status__tiles {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .so-status .so-status__eta {
+    grid-column: 1 / -1;
+    order: 3;
+  }
+
+  .so-status__now {
+    padding: var(--ds-space-3) var(--ds-space-4);
+  }
+}
