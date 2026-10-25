@@ -223,9 +223,11 @@ plan/email (read from the agent, shown behind the info tip), limits snapshot.
 
 ### 4.2 Signing in from the web
 
-- **Claude subscription:** "Sign in" opens a Shell terminal with `CLAUDE_CONFIG_DIR` set to the new
-  account and runs `claude auth login`. The login completes through Anthropic's own flow and the
-  credentials are written by Claude Code itself; Socrates never sees or stores them. This keeps
+- **Claude subscription:** "Sign in" runs `claude auth login --claudeai` on a pseudo terminal of the
+  server's, with `CLAUDE_CONFIG_DIR` set to the account; the card shows the page it prints and
+  types the code that page shows (pasted in the card) into its prompt. The login completes through
+  Anthropic's own flow and the credentials are written by Claude Code itself; Socrates never sees
+  or stores them. This keeps
   Socrates inside Anthropic's rules for third-party tools (no collecting or intermediating claude.ai
   tokens; an end user signing in to the unmodified binary is allowed).
 - **Codex subscription:** device code shown natively in the web UI (`account/login/start

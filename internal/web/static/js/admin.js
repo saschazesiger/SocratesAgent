@@ -1542,7 +1542,7 @@ function renderTunnelStatus(status) {
 
 onWake(() => {
   if (document.visibilityState === 'hidden' || !settings) return;
-  // Back from a sign-in in a terminal, or on another device.
+  // Back from a sign-in page, or from another device.
   loadAccounts();
   refreshTunnel();
   refreshTmux();

@@ -192,8 +192,6 @@ type launchSpec struct {
 	Options json.RawMessage
 	Cols    int
 	Rows    int
-	// SignIn makes a Shell the place an account signs in (accounts.go).
-	SignIn *harnesses.SignIn
 }
 
 // launchError is a refusal of a launch's settings, with the status it is
@@ -350,7 +348,6 @@ func (s *Server) launch(ctx context.Context, spec launchSpec) (*store.Session, e
 	plan, err := h.Plan(ctx, harnesses.PlanRequest{
 		SessionID: spec.ID,
 		Cwd:       workdir,
-		SignIn:    spec.SignIn,
 		Settings:  settings,
 		DataDir:   s.dataDir,
 	})

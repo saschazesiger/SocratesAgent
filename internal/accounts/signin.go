@@ -10,11 +10,12 @@ import (
 	"time"
 )
 
-// Signing an account in from the web (REBUILD.md §4.2), for the two agents
-// whose sign-in Socrates can show natively. Claude Code's is its own
-// `claude auth login` in a Shell terminal, which the server opens; an API key
-// is a form. What is left:
+// Signing an account in from the web (REBUILD.md §4.2); an API key is a
+// form instead.
 //
+//   - Claude Code: its own `claude auth login`, on a pseudo terminal of the
+//     server's (claude.go). It prints the page to open; the person pastes
+//     the code that page shows, which is typed into it.
 //   - Codex: a ChatGPT device code. A short-lived app-server on the
 //     account's home asks for one; the person opens the page and types the
 //     code; codex writes the login when it is done.
@@ -116,6 +117,7 @@ type flow struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 	oc     openCodeSignIn
+	claude *claudeSignIn
 	// methods are OpenCode's, by provider, as Choose finds them.
 	methods map[string][]AuthMethod
 	index   int
@@ -191,11 +193,14 @@ func (f *flow) end(err error) {
 	} else {
 		f.view.State, f.view.Error = FlowFailed, err.Error()
 	}
-	oc, onDone := f.oc, f.onDone
+	oc, claude, onDone := f.oc, f.claude, f.onDone
 	f.mu.Unlock()
 	f.cancel()
 	if oc != nil {
 		oc.Close()
+	}
+	if claude != nil {
+		claude.Close()
 	}
 	if onDone != nil {
 		onDone(err)
@@ -223,6 +228,38 @@ func (s *SignIns) StartCodex(ctx context.Context, account, bin string, env []str
 		case <-f.ctx.Done():
 			d.Cancel()
 			<-d.Done
+		}
+	}()
+	return f.snapshot(), nil
+}
+
+// StartClaude starts Claude Code's sign-in for an account: claude at bin, in
+// the account's environment (its CLAUDE_CONFIG_DIR the account's folder),
+// until it shows the page to open. onDone is called once, when the flow
+// ends, with nil for a login.
+func (s *SignIns) StartClaude(ctx context.Context, account, bin string, env []string, onDone func(error)) (Flow, error) {
+	f := newFlow(account, Claude, onDone)
+	c, err := startClaudeLogin(bin, env)
+	if err != nil {
+		f.cancel()
+		return Flow{}, err
+	}
+	url, err := c.waitURL(ctx)
+	if err != nil {
+		c.Close()
+		f.cancel()
+		return Flow{}, err
+	}
+	f.mu.Lock()
+	f.claude, f.view.State, f.view.URL = c, FlowCode, url
+	f.mu.Unlock()
+	s.put(account, f)
+	go func() {
+		select {
+		case <-c.done:
+			f.end(c.result())
+		case <-f.ctx.Done():
+			c.Close()
 		}
 	}()
 	return f.snapshot(), nil
@@ -315,26 +352,52 @@ func (s *SignIns) Choose(ctx context.Context, account, provider string, index in
 	return f.snapshot(), nil
 }
 
-// Code finishes an OpenCode sign-in whose page shows a code to paste.
+// Code finishes a sign-in whose page shows a code to paste: Claude Code's,
+// or an OpenCode one.
 func (s *SignIns) Code(ctx context.Context, account, code string) (Flow, error) {
 	f := s.get(account)
 	if f == nil {
 		return Flow{}, errors.New("there is no sign-in under way for this account")
 	}
 	f.mu.Lock()
-	oc, state, provider, index := f.oc, f.view.State, f.view.Provider, f.index
+	oc, claude, state, provider, index := f.oc, f.claude, f.view.State, f.view.Provider, f.index
 	f.mu.Unlock()
-	if state != FlowCode || oc == nil {
+	if state != FlowCode || (oc == nil && claude == nil) {
 		return Flow{}, errors.New("this sign-in is not waiting for a code")
 	}
 	code = strings.TrimSpace(code)
 	if code == "" {
 		return Flow{}, errors.New("paste the code the page shows")
 	}
+	if claude != nil {
+		return f.claudeCode(ctx, claude, code)
+	}
 	if err := oc.Callback(ctx, provider, index, code); err != nil {
 		// A wrong code can be pasted again.
 		return Flow{}, fmt.Errorf("the code was not taken: %w", err)
 	}
 	f.end(nil)
+	return f.snapshot(), nil
+}
+
+// claudeCode types code into Claude Code's sign-in and waits for what it
+// makes of it. A code it does not take can be pasted again; a sign-in that
+// takes longer than ctx ends by itself, and the card finds out by asking.
+func (f *flow) claudeCode(ctx context.Context, c *claudeSignIn, code string) (Flow, error) {
+	// A pasted line break would be a second Enter.
+	code = strings.Join(strings.Fields(code), "")
+	if err := c.typeCode(code); err != nil {
+		return Flow{}, fmt.Errorf("the code could not be typed: %w", err)
+	}
+	// Claude Code answers in a second or two; the card asks again after.
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	done, err := c.waitCode(ctx, code)
+	switch {
+	case done:
+		f.end(c.result())
+	case errors.Is(err, errCodeRefused):
+		return Flow{}, fmt.Errorf("Claude Code did not take the code%s", strings.TrimPrefix(err.Error(), errCodeRefused.Error()))
+	}
 	return f.snapshot(), nil
 }

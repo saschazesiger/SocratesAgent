@@ -34,7 +34,6 @@ import (
 	"github.com/saschazesiger/SocratesAgent/internal/accounts"
 	"github.com/saschazesiger/SocratesAgent/internal/agent"
 	"github.com/saschazesiger/SocratesAgent/internal/agenthost"
-	"github.com/saschazesiger/SocratesAgent/internal/harnesses"
 	"github.com/saschazesiger/SocratesAgent/internal/store"
 )
 
@@ -898,9 +897,11 @@ func (s *Server) handleReorderAccounts(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// handleAccountSignIn starts an account's sign-in: Claude Code's own in a
-// Shell terminal, a device code for Codex, a provider's OAuth for OpenCode
-// (first the list of providers, then, with provider and method, the page).
+// handleAccountSignIn starts an account's sign-in: Claude Code's own
+// `claude auth login` on a terminal of the server's (the page it shows, and
+// the code that page gives typed into it), a device code for Codex, a
+// provider's OAuth for OpenCode (first the list of providers, then, with
+// provider and method, the page).
 // The scripted agent has nothing to sign in to.
 func (s *Server) handleAccountSignIn(w http.ResponseWriter, r *http.Request) {
 	a, ok := s.accountOf(w, r)
@@ -930,8 +931,21 @@ func (s *Server) handleAccountSignIn(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	switch a.Agent {
 	case accounts.Claude:
-		s.claudeSignIn(w, r, a)
-		return
+		if err := accounts.Prepare(s.dataDir, a); err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		binary := "claude"
+		if entry, ok := s.Settings().Harnesses.Entry(accounts.Claude); ok && strings.TrimSpace(entry.Binary) != "" {
+			binary = strings.TrimSpace(entry.Binary)
+		}
+		env := accounts.Env(s.dataDir, a, os.Environ())
+		flow, err := s.accounts.signins.StartClaude(ctx, a.ID, binary, env, onDone)
+		if err != nil {
+			writeError(w, http.StatusBadGateway, "Claude Code did not start a sign-in: "+err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"signin": flow})
 	case accounts.Codex:
 		bin, env, err := s.accounts.codexCLI(a)
 		if err != nil {
@@ -973,47 +987,6 @@ func (s *Server) handleAccountSignIn(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeError(w, http.StatusBadRequest, "this account has nothing to sign in to")
 	}
-}
-
-// claudeSignIn opens a Shell terminal in which Claude Code signs the account
-// in with its own `claude auth login`, its CLAUDE_CONFIG_DIR the account's
-// folder (REBUILD.md §4.2): the login is written by Claude Code and never
-// seen by Socrates, which only finds the account signed in afterwards.
-func (s *Server) claudeSignIn(w http.ResponseWriter, r *http.Request, a *store.Account) {
-	if err := accounts.Prepare(s.dataDir, a); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	if err := s.manager.Available(); err != nil {
-		writeError(w, http.StatusServiceUnavailable, err.Error())
-		return
-	}
-	binary := "claude"
-	if entry, ok := s.Settings().Harnesses.Entry(accounts.Claude); ok && strings.TrimSpace(entry.Binary) != "" {
-		binary = strings.TrimSpace(entry.Binary)
-	}
-	dir := accounts.Folder(s.dataDir, accounts.Claude, a.ID)
-	ctx, cancel := context.WithTimeout(r.Context(), createTimeout)
-	defer cancel()
-	row, err := s.launch(ctx, launchSpec{
-		Harness: string(harnesses.KindShell), WorkdirMode: harnesses.WorkdirDynamic,
-		Title: "Sign in · " + a.Label,
-		SignIn: &harnesses.SignIn{
-			Env:     map[string]string{"CLAUDE_CONFIG_DIR": dir},
-			Command: []string{binary, "auth", "login", "--claudeai"},
-		},
-	})
-	var refused *launchError
-	switch {
-	case errors.As(err, &refused):
-		writeError(w, refused.status, refused.msg)
-		return
-	case err != nil && row == nil:
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	s.events.poke()
-	writeJSON(w, http.StatusOK, map[string]any{"session": s.view(row)})
 }
 
 func (s *Server) handleGetAccountSignIn(w http.ResponseWriter, r *http.Request) {
