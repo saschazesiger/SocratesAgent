@@ -2899,3 +2899,43 @@ the four final audits (a desk, a phone, a deploy rehearsal, the real binaries) f
 - **Costs lists a chat once**, whatever accounts it ran on; the Account table splits its spend.
 - **Read aloud needs a Text-to-Speech key** and says so before anything is sent
   (`/api/preferences` `tts`), as dictation, Status and naming do for OpenRouter's.
+
+## UI pass (2026-10-25)
+
+Asked for by the product owner on 2026-10-25, on branch `ui-simplify`.
+
+- **PreStart is gone** (REBUILD §7, DESIGN §L superseded). A chat that has nothing said yet is
+  its first message: the composer becomes a big field that fills the chat (`.so-chat[data-fresh]`),
+  its text the chat's draft as before (this browser at every keystroke, the server after a pause).
+  Creating a chat creates it as before (`POST /api/chats`); there is no prepared state, panel,
+  shelf, Home card or sheet switch. The server turns every prepared row into such a chat at start
+  (`readyPreparedChats`): its folder resolved as a new chat's is, its draft kept, a schedule still
+  in the future kept; nothing is sent and no host started.
+- **The scheduled start stays, on the first-message page** (the owner: "keep that function on the
+  start page with the big input field"). `PUT /api/chats/{id}/start_at`; at that time the server
+  sends the draft as it stands then through the ordinary message path (client_id
+  `scheduled-<id>-<start_at>`), empties the draft, journals `notice{scheduled_start}` and pushes
+  "Started"/"Scheduled start failed". A failure is not retried. A message sent by hand clears it.
+- **A turn's work is folded.** Thinking, calls, agents, diffs, task lists and what the agent said
+  on the way are one line per answer (`.so-work`): what it did, how long, steps, tokens and cost;
+  a tap opens it. The answer's last words, plans, notices and question cards stand. The pinned
+  task list above the composer still shows while a turn works through one.
+- **A line under the top bar** (`.so-chat__sub`): the chat's account, each limit window's use and
+  reset, and the background jobs - always shown, "No background jobs" when there are none; a tap
+  lists them.
+- **Send now** on a message queued behind a turn stops the turn (the owner's choice over steering
+  it into the running turn), so the queued message goes next. Cancelling a queued message was
+  dropped: the CLI holds a message once it is handed over, and holding messages in the host
+  instead would have taken away Claude Code's and Codex's own mid-turn pick-up.
+- **A chat goes on after a limit renews**, on by default (`options.auto_continue`, the chat's ⋮):
+  one minute after the used-up window's reset, if nothing happened in the chat since the limited
+  turn, the server sends `agenthost.ContinueText` (client_id `auto-continue-<id>-<turn>`) and
+  journals `notice{auto_continued}`. The limit is kept in the chat's brief, so a restart keeps it.
+- **Claude Code signs in on the web** (Admin → Accounts), not in a Shell: `claude auth login
+  --claudeai` runs on a server pty; the dialog shows its page and takes the code that page shows.
+  The code passes through Socrates on its way to the CLI (REBUILD §4.2 updated).
+- **Touch mode: a long press keeps a field writable.** iOS cancels the pointer of a long press;
+  that cancel used to mute the field again (read-only), and iOS offers no Paste on a read-only
+  field. Only a cancel after the finger moved past 10 px mutes again.
+- **A plan's "Keep planning" note** is kept in this browser while it is written, like every other
+  field's text.

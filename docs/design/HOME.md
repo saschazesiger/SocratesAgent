@@ -522,7 +522,6 @@ only in the session list and in "Not running". Done sessions count only in Done.
 | **Ready** | `idle`, read (or filed `background`), without a text question |
 | **Review pending** | `status == review` (any state) |
 | **Pending** | `status == pending` (any state) |
-| **Prepared** | `state == prestart` (sub-line: how many are scheduled, and the next start) |
 | **Not running** | `needs_resume`, `exited`, `failed` (not done) |
 | **Done** | `status == done` |
 
