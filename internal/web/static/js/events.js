@@ -2,8 +2,8 @@
 // attached (HOME.md §1.2, §2.2).
 //
 // A terminal socket already carries every session's activity and every
-// automatic name, but only while a terminal is open - and Home, a prepared
-// session's panel and the moment before the first attach have none. Without
+// automatic name, but only while a terminal is open - and Home, a chat
+// and the moment before the first attach have none. Without
 // this, those pages are as current as the last poll, which is the sidebar
 // lying for fifteen seconds at a time. So the page keeps one more socket open
 // while it is visible (and for half a minute after it is hidden), whatever is

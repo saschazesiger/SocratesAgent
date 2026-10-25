@@ -6,8 +6,8 @@
 //
 //   * the draft is in this browser's storage at every keystroke
 //     (`socrates.draft.<id>`, the text and the revision it was written on)
-//     and on the server after a pause, with the revision rule of a prepared
-//     session's prompt: when another device saved in between, both texts
+//     and on the server after a pause, with a revision rule: when another
+//     device saved in between, both texts
 //     exist and the person chooses;
 //   * Send puts the message into the chats' Outbox (chatoutbox.js) with a
 //     client_id, so a message written in a tunnel goes out once the
@@ -45,6 +45,9 @@ function writeBuffer(id, text, baseRev) {
 function forgetBuffer(id) {
   try { localStorage.removeItem(bufferKey(id)); } catch { /* private window */ }
 }
+
+/** forgetDraft drops this browser's copy of a chat's draft: it was deleted. */
+export function forgetDraft(id) { forgetBuffer(id); }
 
 // call reads the body of a refusal too: a draft's 409 carries the other
 // device's text. status 0 is "it never got there".
@@ -144,7 +147,13 @@ function draftSync(id, { read, write, onConflict, onStatus }) {
         else writeBuffer(id, read(), st.rev);
       } else if (res.status === 409 && res.data.conflict) {
         const theirs = { text: String(res.data.text || ''), rev: Number(res.data.rev) || 0 };
-        if (theirs.text === text) { st.rev = theirs.rev; st.saved = text; } else conflict(theirs);
+        if (theirs.text === text) { st.rev = theirs.rev; st.saved = text; } else if (!theirs.text) {
+          // Emptied elsewhere - sent, by hand or by its schedule: nothing of
+          // anybody else's is lost by writing over it.
+          st.rev = theirs.rev;
+          st.saved = '';
+          st.again = true;
+        } else conflict(theirs);
       } else if (res.status === 0 || res.status >= 500) {
         st.offline = res.status === 0;
         retryLater();
@@ -191,9 +200,20 @@ function draftSync(id, { read, write, onConflict, onStatus }) {
     onStatus();
   }
 
+  // newer is the list saying the server's draft moved on (`draft_rev`):
+  // another device wrote, or the chat's scheduled start sent it and emptied
+  // it. With nothing written here since the last save, the server's text is
+  // read again; with something, the next save meets it as a conflict.
+  function newer(rev) {
+    if (!st.loaded || st.closed || st.saving || st.conflict || !(rev > st.rev)) return;
+    if (read() !== st.saved) return;
+    load();
+  }
+
   const unwake = onWake(() => retryNow());
   load();
   return {
+    newer,
     changed,
     save,
     resolve,
@@ -323,7 +343,13 @@ export function mountComposer(host, ctx) {
 
   /* ---------------------------------------------------------- the field */
 
+  // As tall as its text - except as a chat's first message, where the field
+  // fills the view by itself (so-chat.css [data-fresh]).
   function grow() {
+    if (input.closest('[data-fresh]')) {
+      input.style.height = '';
+      return;
+    }
     input.style.height = 'auto';
     input.style.height = input.scrollHeight + 'px';
   }
@@ -681,6 +707,7 @@ export function mountComposer(host, ctx) {
   /* -------------------------------------------------------------- paint */
 
   function paint() {
+    if (mounted) draft.newer(Number(ctx.session().draft_rev) || 0);
     const busy = ctx.busy();
     const empty = !input.value.trim() && !files.some((entry) => entry.state === 'ready');
     // One slot: Stop while the turn runs and nothing is written, Send
@@ -743,6 +770,7 @@ export function mountComposer(host, ctx) {
 
   return {
     paint,
+    grow,
     focus() { input.focus({ preventScroll: true }); },
     field: () => input,
     insert,

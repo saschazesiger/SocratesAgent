@@ -53,8 +53,7 @@ Socrates:
 | `css/so-stage.css` | the stage: terminal pane, its cover, notice and ticker, key bar, transfer buttons, recording and copy dialogs, the IDE pane |
 | `css/so-home.css` | Home |
 | `css/so-question.css` | the question dialog |
-| `css/so-prestart.css` | the PreStart panel |
-| `css/so-sheet.css` | the new-session sheet and the settings form it shares with PreStart |
+| `css/so-sheet.css` | the new-session sheet and its settings form |
 | `css/so-chat.css` | the chat view: the conversation and its parts, the composer, the chat's question dialog (over `so-question.css`) |
 | `css/so-admin.css` | the admin page |
 | `css/so-pages.css` | login, setup and costs |
@@ -72,7 +71,7 @@ shows it. `embed_test.go` fails on a page that asks for it again.
 | 2 | Stage: pane, cover, notice, ticker, key bar, transfer, recording, copy, IDE pane | `term.js`, `keybar.js`, `keyboard.js`, `transfer.js`, `dictate.js`, `assist.js`, `session.js` (stage parts), `so-stage.css` |
 | 3 | Home | `home.js`, `so-home.css` |
 | 4 | Question dialog | `askdialog.js`, `so-question.css` |
-| 5 | PreStart | `prestart.js`, `so-prestart.css` |
+| 5 | PreStart (removed 2026-10-25) | - |
 | 6 | New-session sheet and settings form | `harnesses.js`, `combobox.js`, `so-sheet.css` |
 | 7 | Admin | `admin.html`, `admin.js`, `so-admin.css` |
 | 8 | Login, setup, costs | `login.html`, `setup.html`, `costs.html`, `costs.js`, `so-pages.css` |

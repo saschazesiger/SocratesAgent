@@ -528,6 +528,11 @@ export async function setAutoSwitch(chatId, on) {
   return api('/api/chats/' + encodeURIComponent(chatId) + '/auto-switch', { method: 'PUT', body: { on }, attempts: 2 });
 }
 
+/** setAutoContinue turns a chat's going on by itself after a limit renews on or off. */
+export async function setAutoContinue(chatId, on) {
+  return api('/api/chats/' + encodeURIComponent(chatId) + '/auto-continue', { method: 'PUT', body: { on }, attempts: 2 });
+}
+
 /** glyph is the icon an account is marked with in a list. */
 export function glyph(account) { return account && account.kind === 'api_key' ? 'key' : 'user'; }
 

@@ -22,8 +22,8 @@
 //   * The button is in the bar only while a terminal (or an editor) is on the
 //     stage: anywhere else it would raise nothing.
 //
-// Every other field - the chat's composer, a dialog's, the sheet's, a
-// prepared session's prompt - is an ordinary field: a tap on it raises the
+// Every other field - the chat's composer, a dialog's, the sheet's - is an
+// ordinary field: a tap on it raises the
 // keyboard and takes what is typed at once. What it does not do is raise one
 // for a focus the page gave it by itself - a dialog that opens on its field, a
 // chat that puts its cursor in the composer - because that is a keyboard over
@@ -169,8 +169,7 @@ function mute(node) {
 }
 
 // unmute gives a field back what it had. A page that made the field
-// writable itself while it was muted - PreStart's prompt once its draft has
-// loaded - has said what it wants, and keeps it.
+// writable itself while it was muted has said what it wants, and keeps it.
 function unmute(node) {
   const was = saved.get(node);
   if (!was) return;
@@ -273,8 +272,8 @@ function proxyField(near) {
 
 // paint says on the button whether the switch is on. The button is there
 // only in touch mode, and only while a pane is on the stage: a device with
-// keys of its own has nothing for it to raise, and neither has a chat, Home
-// or a prepared session, whose fields raise the keyboard themselves.
+// keys of its own has nothing for it to raise, and neither has a chat or
+// Home, whose fields raise the keyboard themselves.
 function paint() {
   if (!button) return;
   const words = open ? 'Hide the keyboard' : 'Show the keyboard';
@@ -409,9 +408,39 @@ function onFieldDown(event) {
   if (!touch) return;
   const node = fieldOf(event.target);
   if (!node || underSwitch(node)) return;
-  tap = { node, focused: deepActive() === node && saved.has(node) };
+  const at = pointOf(event);
+  tap = { node, focused: deepActive() === node && saved.has(node), x: at.x, y: at.y, moved: 0 };
   free(node);
 }
+
+// pointOf is where a pointer or the first finger of a touch is.
+function pointOf(event) {
+  const one = event.touches && event.touches[0] ? event.touches[0] : event;
+  return { x: Number(one.clientX) || 0, y: Number(one.clientY) || 0 };
+}
+
+// How far a finger may wander and still be holding still: the system's own
+// slop before it takes a touch for a scroll.
+const STILL_PX = 10;
+
+// onFieldMove follows the finger of a tap on a field, to tell a scroll from
+// a long press when the system cancels the pointer (onFieldCancel).
+function onFieldMove(event) {
+  const now = tap || held;
+  if (!now) return;
+  const at = pointOf(event);
+  now.moved = Math.max(now.moved, Math.hypot(at.x - now.x, at.y - now.y));
+  // A press taken for a long one turned out to be a scroll after all: the
+  // touch's own moves can come after the pointer was cancelled.
+  if (now === held && now.moved >= STILL_PX) {
+    held = null;
+    settle(now);
+  }
+}
+
+// The press the system cancelled while the finger still held still: a long
+// press, until its finger moves after all or lifts.
+let held = null;
 
 // A field that already had the focus - muted, because the page put it there
 // - took no keyboard with that focus, and keeps none by being tapped; the tap
@@ -424,11 +453,24 @@ function onFieldClick(event) {
 }
 
 // A finger that came down on a field and went on to scroll the page is no
-// tap: the field goes back to how it was.
+// tap: the field goes back to how it was. A finger that held still is a long
+// press - iOS cancels the pointer for its own menu - and keeps the field
+// writable: muted, a field is read-only, and iOS offers Copy on it but never
+// Paste.
 function onFieldCancel() {
   const now = tap;
   tap = null;
   if (!now || freed !== now.node) return;
+  if (now.moved < STILL_PX) {
+    held = now;
+    return;
+  }
+  settle(now);
+}
+
+// settle puts back a field a finger freed and then scrolled with.
+function settle(now) {
+  if (freed !== now.node) return;
   if (now.focused || deepActive() !== now.node) {
     freed = null;
     if (wantsMute(now.node)) mute(now.node);
@@ -522,6 +564,11 @@ function watch(doc) {
   if (doc === document) {
     doc.addEventListener(DOWN, onFieldDown, { capture: true, passive: true });
     doc.addEventListener(CANCEL, onFieldCancel, true);
+    // Touch events go on while the system scrolls, after the pointer is
+    // cancelled; the pointer's own moves are what a device without them has.
+    doc.addEventListener('touchmove', onFieldMove, { capture: true, passive: true });
+    doc.addEventListener('pointermove', onFieldMove, { capture: true, passive: true });
+    doc.addEventListener('touchend', () => { held = null; }, { capture: true, passive: true });
     doc.addEventListener('click', onFieldClick, true);
   }
   new MutationObserver((records) => {

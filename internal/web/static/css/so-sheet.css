@@ -1,6 +1,6 @@
 /*
- * so-sheet.css: the new-session sheet (#newSessionSheet) and the settings form
- * it shares with the PreStart panel (harnesses.js settingsForm), plus the
+ * so-sheet.css: the new-session sheet (#newSessionSheet) and its settings form
+ * (harnesses.js settingsForm), plus the
  * closed dropdown of combobox.js. Tokens only (--ds-*, and the --so-* of the
  * "Sheet" section of theme.css); unlayered; no .ds-* component is restyled.
  *

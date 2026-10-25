@@ -29,7 +29,6 @@
 <link rel="stylesheet" href="/static/css/so-stage.css">
 <link rel="stylesheet" href="/static/css/so-home.css">
 <link rel="stylesheet" href="/static/css/so-question.css">
-<link rel="stylesheet" href="/static/css/so-prestart.css">
 <link rel="stylesheet" href="/static/css/so-sheet.css">
 <link rel="stylesheet" href="/static/css/so-chat.css">
 <script src="/static/vendor/dashboard-style/ds.js" defer></script>
@@ -172,9 +171,6 @@
               </div>
             </div>
           </div>
-          <!-- A prepared chat (PreStart) has not started yet; its panel takes
-               the chat's place. prestart.js draws it. -->
-          <section class="so-prestart" id="prestart" aria-label="Prepared session" hidden></section>
           <!-- A chat: an agent session the page draws itself, its conversation
                above and its composer below. chatview.js draws it. -->
           <section class="so-chat" id="chat" aria-label="Chat" hidden></section>
@@ -241,16 +237,8 @@
     </div>
     <div class="ds-sheet__body" tabindex="0">
       <!-- harnesses.js draws the settings (settingsForm) every time the sheet
-           opens, with the ids they have always had; a prepared session's panel
-           draws the same controls with the same code. -->
+           opens, with the ids they have always had. -->
       <div id="nsForm"></div>
-      <!-- PreStart: stored with these settings and a field for its first
-           prompt; nothing runs until it is started. Only for the programs a
-           prompt can be handed to, and off every time the sheet opens. -->
-      <div class="ds-field" id="nsPrestartField" hidden>
-        <label class="ds-check"><input type="checkbox" id="nsPrestart" aria-describedby="nsPrestartHint"><span>Prepare it first (PreStart)</span></label>
-        <small class="ds-field__hint" id="nsPrestartHint">Prepare the session now and write its first prompt; it starts when you press Start, or by itself at a time you set.</small>
-      </div>
       <div class="ds-alert ds-alert--warning" id="nsHint" role="status" hidden><i data-icon="alert" data-icon-slot></i><span class="ds-alert__text" id="nsHintText"></span></div>
       <div class="ds-form-actions">
         <button class="ds-btn ds-btn--primary" type="button" id="nsStart">Start session</button>

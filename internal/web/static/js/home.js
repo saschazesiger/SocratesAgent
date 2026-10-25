@@ -21,8 +21,7 @@ import { setClass } from './api.js';
 import { M, html, raw, icon, morph, flipMorph } from './ui.js';
 import { agentMarkHtml } from './logos.js';
 import { isTool } from './harnesses.js';
-import { foldersOf, folderKeyOf, isPrepared, momentOf } from './folders.js';
-import { whenShort } from './prestart.js';
+import { foldersOf, folderKeyOf, momentOf } from './folders.js';
 import {
   OUTCOME_WORDS, OUTCOME_ICON, CHECKING_WORDS, outcomeMark, outcomeLine, outcomeIconHtml,
 } from './outcome.js';
@@ -55,7 +54,6 @@ const CARDS = [
   { key: 'ready', label: 'Ready', glyph: 'compose', none: 'Nothing is idle' },
   { key: 'review', label: 'Review pending', glyph: 'review', none: 'Nothing to review' },
   { key: 'pending', label: 'Pending', glyph: 'waiting', none: 'Nothing pending' },
-  { key: 'prepared', label: 'Prepared', glyph: 'prestart', none: 'Nothing prepared' },
   { key: 'stopped', label: 'Not running', glyph: 'ban', none: 'Everything is running' },
   { key: 'done', label: 'Done', glyph: 'archive', none: 'Nothing done yet' },
 ];
@@ -100,10 +98,6 @@ export function cardsOf(ctx, session) {
   const cards = [];
   if (status === 'review') cards.push('review');
   if (status === 'pending') cards.push('pending');
-  if (isPrepared(session)) {
-    cards.push('prepared');
-    return cards;
-  }
   const act = ctx.activityOf(session);
   // Work nobody has read is Finished whatever the session is doing now, as
   // the sidebar's bold name says it is: a pane that died mid-turn, a reboot
@@ -512,16 +506,8 @@ export function mountHome(ctx) {
   }
 
   // What a card says under its number: the one fact about its sessions that
-  // is worth a second glance. Prepared says when the next one starts by
-  // itself, because that is the thing about a prepared session that happens
-  // without anybody pressing anything.
+  // is worth a second glance.
   function cardSub(key, members, now) {
-    if (key === 'prepared') {
-      const starts = members.map((s) => Number(s.start_at) || 0).filter((at) => at > 0).sort((a, b) => a - b);
-      if (!starts.length) return 'Started by hand';
-      const next = starts.find((at) => at >= now) || starts[0];
-      return starts.length + ' scheduled · next ' + whenShort(next, now);
-    }
     if (key === 'tasks') {
       const judging = members.filter((s) => ctx.checking && ctx.checking(s)).length;
       if (judging) return judging === members.length ? CHECKING_WORDS : judging + ' checking how the turn went';
@@ -598,7 +584,6 @@ export function mountHome(ctx) {
     let line = '';
     if (digest && digest.summary) line = digest.summary;
     else if (digest && digest.phase === 'pending') line = '…';
-    else if (isPrepared(session) && session.draft_preview) line = String(session.draft_preview);
     const offer = asking;
     const state = asking ? 'asking' : unread ? 'unread' : done ? 'done' : '';
 
@@ -652,7 +637,6 @@ export function mountHome(ctx) {
     } else if (cards.includes('finished')) { tone = 'ok'; glyph = 'checkCircle'; }
     else if (cards.includes('stopped')) { tone = session.state === 'failed' ? 'error' : ''; glyph = session.state === 'failed' ? 'alertCircle' : 'ban'; }
     else if (cards.includes('ready')) glyph = 'compose';
-    else if (isPrepared(session)) glyph = 'prestart';
     if (!said) return '';
     const lead = tone === 'running'
       ? html`<span class="ds-spinner ds-status__spinner" aria-hidden="true"></span>`
@@ -678,10 +662,7 @@ export function mountHome(ctx) {
         : 'A background task is running';
     } else if (cards.includes('finished')) said = 'Finished';
     else if (cards.includes('ready')) said = words.activity.idle;
-    else if (isPrepared(session)) {
-      const at = Number(session.start_at) || 0;
-      said = at ? 'Starts ' + whenShort(at, now) : words.state.prestart;
-    } else said = words.state[session.state] || '';
+    else said = words.state[session.state] || '';
     // How the turn left the work, once that is known.
     const outcome = ctx.outcomeOf ? ctx.outcomeOf(session) : null;
     if (outcome && outcome.phase === 'ready' && OUTCOME_WORDS[outcome.kind]

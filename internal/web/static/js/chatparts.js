@@ -517,7 +517,8 @@ function planHtml(part, view) {
   const pending = waiting ? view.pendingAnswer(ask) : null;
   const sending = pending ? outboxState(pending) : '';
   const asked = pending && pending.payload.answer ? pending.payload.answer : {};
-  const noting = view.isOpen('note:' + part.id, false) && !sending;
+  // A note written before is open again with its text (view.planNote).
+  const noting = view.isOpen('note:' + part.id, !!ask && !!view.planNote(ask.id)) && !sending;
   let answer = '';
   if (waiting && sending && sending !== 'failed') {
     answer = html`<div class="so-plan__answer"><div class="ds-card__row">${onItsWayChip(sending)}<span class="ds-meta">${asked.decision === 'approve' ? 'Approve' : 'Keep planning' + (asked.note ? ': ' + asked.note : '')}</span></div></div>`;
@@ -634,14 +635,20 @@ function attachmentsHtml(list) {
 
 /**
  * userMessage is what the person sent: the text as written, the files, and -
- * while it is not the agent's yet - where it is.
+ * while it is not the agent's yet - where it is. `sendNow` offers, for a
+ * message that waits behind a running turn, to stop that turn so this one
+ * goes at once.
  */
-export function userMessage({ key, text, attachments, state, answerTo, error }) {
+export function userMessage({ key, text, attachments, state, answerTo, error, sendNow = false }) {
   const chip = USER_STATE[state];
   return html`<article class="so-msg" data-ds-key="${key}" data-role="user" data-state="${state || 'delivered'}"><div class="so-msg__bubble">${
     answerTo ? html`<p class="so-msg__label ds-meta">Answer to a question</p>` : ''
   }${text ? html`<p class="so-msg__text">${text}</p>` : ''}${attachmentsHtml(attachments)}</div>${
-    chip ? html`<span class="${state === 'failed' ? 'ds-status ds-status--error so-msg__chip' : 'ds-status so-msg__chip'}" data-chip="${state}">${raw(icon(chip.glyph, 16))}<span>${chip.word}</span></span>` : ''
+    chip || sendNow ? html`<div class="so-msg__queue">${
+      chip ? html`<span class="${state === 'failed' ? 'ds-status ds-status--error so-msg__chip' : 'ds-status so-msg__chip'}" data-chip="${state}">${raw(icon(chip.glyph, 16))}<span>${chip.word}</span></span>` : ''
+    }${
+      sendNow ? html`<button class="ds-btn ds-btn--tonal ds-btn--sm so-msg__now" type="button" data-action="send-now" data-tip="Stop what the agent is doing and send this message now">${raw(icon('arrowUp', 16))}<span>Send now</span></button>` : ''
+    }</div>` : ''
   }${error ? html`<p class="so-msg__error ds-meta">${error}</p>` : ''}</article>`;
 }
 
@@ -781,6 +788,153 @@ function pieces(message, chat) {
   return out;
 }
 
+/* ------------------------------------------------------ background jobs */
+
+/**
+ * backgroundJobs is what the chat has running beside its turn: the agents
+ * and workflows still at work, and the calls left running in the
+ * background - each as { id, name, summary, since } - plus how many more
+ * the agent counts that have no part to show (`others`: Codex's background
+ * terminals, say).
+ */
+export function backgroundJobs(chat) {
+  const jobs = [];
+  const turnMessage = chat.turn && chat.turn.messageId ? chat.turn.messageId : '';
+  const inTurn = (part) => !!chat.turn && !!part.messageId && (part.messageId === turnMessage
+    || [...chat.messages.values()].some((m) => m.id === part.messageId && m.turnId && m.turnId === chat.turn.id));
+  for (const part of chat.parts.values()) {
+    if (part.kind !== 'tool' || part.state !== 'running' || isAskTool(part)) continue;
+    const tool = toolOf(part);
+    const input = tool.input && typeof tool.input === 'object' ? tool.input : {};
+    const background = input.run_in_background === true || tool.content.background === true
+      || (tool.agent && tool.agent.background === true);
+    // Inside a turn, only what was sent to the background is a job of its
+    // own; the rest is the turn's work, which its fold shows.
+    if (inTurn(part) && !background) continue;
+    // An agent's own calls are its agent's job.
+    if (part.parentId && chat.parts.get(part.parentId)?.state === 'running') continue;
+    jobs.push({ id: part.id, name: tool.name, summary: tool.summary, since: part.at });
+  }
+  return { jobs, others: Math.max(0, (Number(chat.tasks) || 0) - jobs.length) };
+}
+
+/* ---------------------------------------------------------- the work fold */
+
+// The parts that are never work: a plan to approve, the agent's notice, a
+// file it made. They stand where they are, folded or not.
+const STANDS = new Set(['plan', 'notice', 'image', 'file']);
+
+/**
+ * workOf is what of a piece is the work - the thinking, the calls, the
+ * agents, and what the agent said on the way - as a set of its shown parts.
+ * What comes after the last of it is the answer, and stands: the final
+ * words, and the parts that are never work (STANDS).
+ */
+function workOf(piece) {
+  const shown = piece.list.filter((part) => piece.shown.has(part));
+  let end = 0;
+  shown.forEach((part, i) => {
+    if (part.kind !== 'text' && !STANDS.has(part.kind)) end = i + 1;
+  });
+  return new Set(shown.slice(0, end).filter((part) => !STANDS.has(part.kind)));
+}
+
+// What a call did, in the words of the fold's line: [singular, plural]
+// sentences around the count.
+const DID = [
+  ['read', (n) => 'read ' + n + (n === 1 ? ' file' : ' files')],
+  ['edit', (n) => 'edited ' + n + (n === 1 ? ' file' : ' files')],
+  ['command', (n) => 'ran ' + n + (n === 1 ? ' command' : ' commands')],
+  ['search', (n) => 'searched ' + (n === 1 ? 'once' : n + ' times')],
+  ['web', (n) => 'opened ' + n + (n === 1 ? ' web page' : ' web pages')],
+  ['agent', (n) => 'ran ' + n + (n === 1 ? ' agent' : ' agents')],
+  ['todo', () => 'kept a task list'],
+  ['other', (n) => 'used ' + n + (n === 1 ? ' tool' : ' tools')],
+];
+
+// didOf sorts a call into what it did.
+function didOf(part) {
+  if (part.kind === 'diff') return 'edit';
+  if (part.kind === 'todo') return 'todo';
+  const tool = toolOf(part);
+  if (isGroup(part, tool)) return 'agent';
+  const n = String(tool.name).toLowerCase();
+  if (tool.command || /bash|command|shell|monitor/.test(n)) return 'command';
+  if (/^read|notebookread|^view/.test(n)) return 'read';
+  if (/edit|write|change|patch/.test(n)) return 'edit';
+  if (/web|fetch|url|browse/.test(n)) return 'web';
+  if (/grep|glob|search|find|^ls$|list/.test(n)) return 'search';
+  if (/todo/.test(n)) return 'todo';
+  return 'other';
+}
+
+/**
+ * workSummary is the fold's line: how long the work took, how many steps
+ * it was, what they did, and - under the turn's last piece - its tokens
+ * and cost. `running` is the step being taken right now, for the line while
+ * the work goes on.
+ */
+export function workSummary(parts, message, { whole = false, usage = false } = {}) {
+  const counts = new Map();
+  let steps = 0;
+  let thought = false;
+  let from = 0;
+  let to = 0;
+  let running = null;
+  for (const part of parts) {
+    if (part.at && (!from || part.at < from)) from = part.at;
+    to = Math.max(to, part.updatedAt || part.at || 0);
+    if (part.state === 'running' || part.state === 'streaming') running = part;
+    if (part.kind === 'reasoning') { thought = true; continue; }
+    if (part.kind === 'text') continue;
+    steps += 1;
+    const did = didOf(part);
+    counts.set(did, (counts.get(did) || 0) + 1);
+  }
+  const did = DID.filter(([key]) => counts.has(key)).map(([key, words]) => words(counts.get(key)));
+  if (!did.length && thought) did.push('thought it through');
+  const turn = message.turn;
+  let took = 0;
+  if (whole && turn && turn.endedAt && turn.startedAt) took = turn.endedAt - turn.startedAt;
+  else if (from && to > from) took = to - from;
+  const u = (usage && turn && turn.usage) || {};
+  const tokens = (Number(u.input) || 0) + (Number(u.output) || 0);
+  const meta = [
+    steps ? steps + (steps === 1 ? ' step' : ' steps') : '',
+    tokens ? fmtTokens(tokens) + ' tokens' : '',
+    usage && turn && turn.cost ? (turn.cost < 0.01 ? 'under $0.01' : '$' + turn.cost.toFixed(2)) : '',
+  ].filter(Boolean);
+  let now = '';
+  if (running) {
+    if (running.kind === 'reasoning') now = 'Thinking';
+    else if (running.kind === 'text') now = 'Writing';
+    else {
+      const tool = toolOf(running);
+      now = [tool.name, tool.summary].filter(Boolean).join(' ');
+    }
+  }
+  return { did: did.join(', '), took: seconds(took), meta, now, live: !!running, steps };
+}
+
+// workHtml is the fold: one line that says what the work was, and the work
+// itself, part by part, once it is opened.
+function workHtml(key, parts, message, view, { live = false, ...options } = {}) {
+  const open = view.isOpen(key, false);
+  const sum = workSummary(parts, message, options);
+  const failed = parts.some((part) => part.state === 'error');
+  let title;
+  if (live) title = 'Working' + (sum.now ? ': ' + sum.now : '…');
+  else title = (sum.took ? 'Worked for ' + sum.took : 'Worked') + (sum.did ? ' · ' + sum.did.charAt(0).toUpperCase() + sum.did.slice(1) : '');
+  const label = [title, ...sum.meta].join(' · ');
+  return html`<details class="ds-collapsible so-part so-work" data-ds-key="${key}" data-open-key="${key}" data-kind="work" data-state="${live ? 'running' : failed ? 'error' : 'done'}"${open ? html` open` : ''}><summary class="so-work__head" aria-label="${label}"><span class="so-work__icon" aria-hidden="true">${
+    live ? html`<span class="ds-spinner"></span>` : raw(icon(failed ? 'alertCircle' : 'checkCircle', 16))
+  }</span><span class="so-work__title so-ellipsis">${title}</span>${
+    sum.meta.length ? html`<span class="so-work__meta">${sum.meta.join(' · ')}</span>` : ''
+  }${chevron()}</summary>${
+    open ? html`<div class="so-work__body">${parts.map((part) => partHtml(part, view))}</div>` : ''
+  }</details>`;
+}
+
 /**
  * assistantMessage is an answer - or the piece of it after a question, the
  * segment-th (chatfold.js cutAtAsk): its parts in order, the question cards
@@ -822,8 +976,26 @@ export function assistantMessage(message, view, segment = 0) {
   const copyable = segment === foot && message.state !== 'streaming'
     && message.parts.some((part) => part.kind === 'text' && String(part.text || '').trim());
   const key = 'm:' + message.id + (segment ? '#' + (segment + 1) : '');
+  // The work is folded behind one line where it began (workHtml); the
+  // questions asked in it, and the answer after it, stand.
+  const work = workOf(piece);
+  // The work goes on while the answer runs and nothing has been said after
+  // it yet - unless the agent waits for the person, which its card says.
+  const after = [...piece.shown].some((part) => !work.has(part) && part.kind === 'text'
+    && piece.list.indexOf(part) > Math.max(...[...work].map((one) => piece.list.indexOf(one))));
+  const live = segment === last && message.state === 'streaming' && !asking && !after;
+  const workKey = 'w:' + message.id + (segment ? '#' + (segment + 1) : '');
+  let folded = false;
+  const partAt = (part) => {
+    if (!work.has(part)) return piece.shown.has(part) ? partHtml(part, view) : '';
+    if (folded) return '';
+    folded = true;
+    return workHtml(workKey, [...work], message, view, {
+      live, whole: all.length === 1, usage: segment === foot && !laterInTurn(message, view),
+    });
+  };
   return html`<article class="so-msg" data-ds-key="${key}" data-role="assistant" data-state="${message.state}">${
-    piece.list.map((part) => html`${piece.shown.has(part) ? partHtml(part, view) : ''}${
+    piece.list.map((part) => html`${partAt(part)}${
       (places.byPart.get(part.id) || []).map((ask) => askCard(ask, view))
     }`)
   }${working ? html`<p class="so-msg__wait ds-meta"><span class="ds-spinner" aria-hidden="true"></span><span>Working…</span></p>` : ''}${
@@ -853,6 +1025,8 @@ const NOTICE_WORDS = {
   review_started: 'A review started.',
   codex_reasoning_dropped: 'The agent’s earlier reasoning was left behind to go on with another account.',
   codex_handoff: 'The conversation went on in a new thread, with the transcript handed over.',
+  auto_continued: 'Continued after the limit renewed.',
+  scheduled_start: 'Sent at the time it was scheduled for.',
   elicitation_declined: 'A request of a tool was declined.',
   question_declined: 'A question the agent asked its own way was declined.',
   question_rejected: 'A question the agent asked its own way was declined.',
@@ -937,7 +1111,9 @@ export function lineHtml(entry, view) {
         const offers = view.continueWith ? view.continueWith(entry) : [];
         // The words and the buttons stack in the alert's text column, each
         // on a line of its own.
-        return html`<div class="ds-alert ds-alert--warning so-line-alert" data-ds-key="${key}" data-kind="limit" role="status">${raw(icon('clock', 20))}<span class="ds-alert__text so-line-alert__stack"><span>${'Limit reached' + (renew ? ' — renews in ' + renew : '')}</span>${
+        // Under the newest limit, whether the chat goes on by itself then.
+        const goesOn = !!renew && !!view.autoContinue && view.autoContinue() && (!view.lastLimit || view.lastLimit(entry));
+        return html`<div class="ds-alert ds-alert--warning so-line-alert" data-ds-key="${key}" data-kind="limit" role="status">${raw(icon('clock', 20))}<span class="ds-alert__text so-line-alert__stack"><span>${'Limit reached' + (renew ? ' — renews in ' + renew : '') + (goesOn ? '. The chat goes on by itself then.' : '')}</span>${
           offers.length ? html`<span class="so-line-alert__actions">${offers.map((a) => html`<button class="ds-btn ds-btn--sm" type="button" data-action="continue-with" data-account="${a.id}">${'Continue with ' + a.label}</button>`)}</span>` : ''
         }</span>${infoButton([l.text, ...silentTurnFacts(l.turn, view)], 'About the limit')}</div>`;
       }

@@ -23,7 +23,7 @@ import {
 import { connectionSource } from './net.js';
 import { agentMark, agentMarkHtml } from './logos.js';
 import {
-  MORE_KEY, SHELVES, PREPARED, IDE, foldersOf, folderKeyOf, ideOf, isPrepared, momentOf, movesRow,
+  MORE_KEY, SHELVES, IDE, foldersOf, folderKeyOf, ideOf, momentOf, movesRow,
 } from './folders.js';
 import * as harnesses from './harnesses.js';
 import * as accounts from './accounts.js';
@@ -35,8 +35,8 @@ import { mountKeyBar, keyBarWanted, setKeyBarWanted, followViewport } from './ke
 import {
   initKeyboard, guard, watchFrame, dictated, touchScreen, setTouchMode, showKeyboardSwitch, typeHere,
 } from './keyboard.js';
-import { mountPrestart, forgetDraft, whenShort } from './prestart.js';
 import { mountEvents } from './events.js';
+import { forgetDraft } from './composer.js';
 import { mountHome, questionQueue, connectionLine } from './home.js';
 import {
   OUTCOME_WORDS, CHECKING_WORDS, outcomeCurrent, outcomeMark, outcomeLine, outcomeIconHtml,
@@ -687,9 +687,6 @@ const state = {
   // a page that could not ask uses, and they are the same numbers the settings
   // document ships with.
   terminal: { scrollback: 2000, font_size: 14, webgl: true },
-  // The panel a prepared session is shown in instead of a terminal,
-  // mounted once in boot().
-  prestart: null,
   // The chat view, which stands where the pane does for a session that is a
   // chat (chatview.js), mounted once in boot().
   chat: null,
@@ -733,7 +730,7 @@ const ids = ['sidebar', 'navScrim', 'menuBtn', 'blankIDE', 'homeBtn', 'sideColla
   'termTicker', 'tickerWindow',
   'micBtn',
   'recSheet', 'recMeter', 'recTime', 'recSend', 'recCancel',
-  'keybar', 'logout', 'prestart', 'chat', 'home'];
+  'keybar', 'logout', 'chat', 'home'];
 for (const id of ids) dom[id] = document.getElementById(id);
 // The frame's own parts: the app, the bar's contents, the row menu and the
 // options dialog of the bar.
@@ -742,7 +739,6 @@ for (const id of ['app', 'topbar', 'sessionTitleText', 'sessionMenu', 'optionsDi
 const STATE_WORDS = {
   running: 'Running', starting: 'Starting', resuming: 'Resuming',
   needs_resume: 'Not running', exited: 'Ended', failed: 'Failed',
-  prestart: 'Prepared',
 };
 
 
@@ -830,11 +826,10 @@ function deleteWords(session) {
 function sessionOf(id) { return state.sessions.find((s) => s.id === id) || null; }
 
 /**
- * isChat says whether a session is a chat that has started: an agent driven
- * through its protocol and drawn by the chat view, not a terminal. A
- * prepared chat is still its PreStart panel.
+ * isChat says whether a session is a chat: an agent driven through its
+ * protocol and drawn by the chat view, not a terminal.
  */
-function isChat(session) { return !!session && session.kind === 'chat' && !isPrepared(session); }
+function isChat(session) { return !!session && session.kind === 'chat'; }
 
 // chatShown says whether the chat view is what the stage shows.
 function chatShown() { return !!state.chat && !!state.chat.shownId(); }
@@ -926,9 +921,7 @@ function drawList() {
   // so the order inside a folder - and of the folders - is worked out there.
   // Background and done sessions are still their project's: each folder keeps
   // them on a shelf of its own at its bottom, shut until it is opened.
-  // Prepared sessions are on a shelf above its sessions, open: what is waiting
-  // to be started comes before what is running. A folder's VS Code is not a
-  // row at all: it is drawn on the folder's head.
+  // A folder's VS Code is not a row at all: it is drawn on the folder's head.
   //
   // The list is morphed, never rebuilt: a kept row keeps its element, so its
   // turning ring does not restart every time the list is drawn, and a row that
@@ -939,7 +932,7 @@ function drawList() {
   flipMorph(host, html`${markup}`, { items: '.so-row, .so-folder__bar', live: true });
 }
 
-// folderHtml is one project: its prepared shelf, its rows, then the shelves
+// folderHtml is one project: its rows, then the shelves
 // of background and done sessions, inside the same folder so that shutting it
 // puts them away with everything else.
 function folderHtml(folder) {
@@ -947,7 +940,6 @@ function folderHtml(folder) {
     ? groupHtml({ key: shelfKey(folder.key, status), status, label, path: '', sessions: filed }, filed.map(rowHtml))
     : '');
   return groupHtml(folder, [
-    shelf(PREPARED, 'PreStart', folder.prepared),
     folder.sessions.map(rowHtml),
     SHELVES.map((status) => shelf(status, STATUS_WORDS[status], folder.shelves[status])),
   ]);
@@ -974,11 +966,10 @@ function cssId(id) { return String(id).replace(/\\/g, '\\\\').replace(/"/g, '\\"
 const FOLDERS_KEY = 'socrates.folders';
 const closedFolders = new Set();
 
-// The shelves inside each folder: prepared sessions above its rows, and
-// background and done sessions below them. The last two start shut - a
-// service is meant to run unseen, and what is done is finished - so for them
-// the set records the opposite: being in it means the person opened it. The
-// prepared shelf is open like a folder: it is what comes next. A shelf's key
+// The shelves inside each folder: background and done sessions below its
+// rows. They start shut - a service is meant to run unseen, and what is done
+// is finished - so for them the set records the opposite: being in it means
+// the person opened it. A shelf's key
 // is its folder's and its status, joined by a character no path and no
 // status can hold.
 function shelfKey(folderKey, status) { return folderKey + '\u0000' + status; }
@@ -987,7 +978,6 @@ function shelfOf(key) {
   return at < 0 ? '' : key.slice(at + 1);
 }
 const SHELF_TITLES = {
-  [PREPARED]: 'PreStart: settings and a first prompt, started by hand or at a time',
   background: 'Background sessions: services left running on purpose, never deleted',
   done: 'Done sessions: their terminals are closed, and each is deleted a day after it was marked done',
 };
@@ -1039,8 +1029,8 @@ function toggleFolder(key) {
  * It is called when one is attached rather than when one is clicked: a row
  * inside a shut folder cannot be clicked at all, and the session this tab is
  * meant to be on - the one in the address, or the one just started - has to
- * be on screen whatever the folder it landed in was left as. A shelved or
- * prepared session needs its shelf opened as well as its folder; an editor
+ * be on screen whatever the folder it landed in was left as. A shelved
+ * session needs its shelf opened as well as its folder; an editor
  * is on the folder's head, which is on screen whenever the folder is.
  */
 function openFolder(session) {
@@ -1048,9 +1038,7 @@ function openFolder(session) {
   const key = folderKeyOf(session);
   let changed = closedFolders.delete(key);
   const status = statusOf(session);
-  if (isPrepared(session)) {
-    if (closedFolders.delete(shelfKey(key, PREPARED))) changed = true;
-  } else if (SHELVES.includes(status)
+  if (SHELVES.includes(status)
     && !(session.harness === IDE && ideOf(state.sessions, key) === session)) {
     const shelf = shelfKey(key, status);
     if (!closedFolders.has(shelf)) { closedFolders.add(shelf); changed = true; }
@@ -1092,7 +1080,7 @@ function groupHtml(folder, children) {
     // in there, and the closed folder says so the same quiet way.
     if (act.state === 'busy' || act.state === 'tasks' || checking(session)) busy = true;
   }
-  let count = folder.sessions.length + (folder.prepared ? folder.prepared.length : 0);
+  let count = folder.sessions.length;
   if (folder.shelves) for (const status of SHELVES) count += folder.shelves[status].length;
   const attention = waiting ? 'waiting' : busy ? 'busy' : '';
   // The whole path is technical detail, so it is where every technical string
@@ -1101,9 +1089,7 @@ function groupHtml(folder, children) {
   const tip = SHELF_TITLES[folder.status] || folder.path || 'Sessions in a directory of their own';
   const ide = shelf || folder.key === MORE_KEY ? '' : ideButtonHtml(folder);
   const kind = shelf ? html`data-shelf="${folder.status}"` : html`data-folder="${folder.key}"`;
-  return html`<section class="${shelf ? 'so-folder so-folder--shelf' : 'so-folder'}" data-ds-key="${(shelf ? 'shelf:' : 'folder:') + folder.key}" ${kind}${open ? html` data-open` : ''}><div class="so-folder__bar"><button class="so-folder__head" type="button" aria-expanded="${open ? 'true' : 'false'}" aria-controls="${id}" data-toggle="${id}" data-tip="${tip}"${attention ? html` data-attention="${attention}"` : ''}${unread ? html` data-unread` : ''}>${raw(icon('chevronDown', 16, 'ds-chevron'))}${
-    folder.status === PREPARED ? raw(icon('prestart', 16)) : ''
-  }<span class="so-folder__name">${folder.label}</span><span class="so-folder__dot" aria-hidden="true"></span><span class="so-folder__count">${count}</span></button>${ide}</div><div class="so-folder__rows" id="${id}"${open ? '' : html` hidden`}>${children}</div></section>`;
+  return html`<section class="${shelf ? 'so-folder so-folder--shelf' : 'so-folder'}" data-ds-key="${(shelf ? 'shelf:' : 'folder:') + folder.key}" ${kind}${open ? html` data-open` : ''}><div class="so-folder__bar"><button class="so-folder__head" type="button" aria-expanded="${open ? 'true' : 'false'}" aria-controls="${id}" data-toggle="${id}" data-tip="${tip}"${attention ? html` data-attention="${attention}"` : ''}${unread ? html` data-unread` : ''}>${raw(icon('chevronDown', 16, 'ds-chevron'))}<span class="so-folder__name">${folder.label}</span><span class="so-folder__dot" aria-hidden="true"></span><span class="so-folder__count">${count}</span></button>${ide}</div><div class="so-folder__rows" id="${id}"${open ? '' : html` hidden`}>${children}</div></section>`;
 }
 
 // ideButtonHtml is the VS Code mark of a folder: in its colours while the
@@ -1207,13 +1193,9 @@ const STATUS_GLYPH = { review: 'review', pending: 'clock', background: 'backgrou
 function rowHtml(session) {
   const id = session.id;
   const attached = !!(state.current && state.current.id === id);
-  // A row is the same element before and after its session starts, so what
-  // only a prepared session shows is taken away again by the next drawing.
-  const prepared = isPrepared(session);
-  const preview = prepared ? String(session.draft_preview || '') : '';
-  const startAt = prepared ? Number(session.start_at) || 0 : 0;
-  // The same time can read differently tomorrow ("Tue 09:00" becomes
-  // "09:00"), so the words are drawn from the time every time.
+  // A chat that starts by itself at a time says when, on its row: the time
+  // of day today, else the weekday or the date with it.
+  const startAt = Number(session.start_at) || 0;
   const startWords = startAt ? 'Starts by itself ' + new Date(startAt).toLocaleString() : '';
   const status = statusOf(session);
   const said = status === 'done'
@@ -1241,17 +1223,25 @@ function rowHtml(session) {
   const badgeIcon = kind ? outcomeIconHtml(kind, 16) : badge ? TASKS_SVG : '';
   const unread = !!act && !!act.unread && !attached;
 
-  return html`<div class="so-row" data-ds-key="${'row:' + id}" data-id="${id}" data-status="${status}"${prepared ? html` data-prepared` : ''}${unread ? html` data-unread` : ''}><a class="ds-drawer__item so-row__open" href="${'#' + id}"${attached ? html` aria-current="page"` : ''}><span class="so-mark" data-tip="${word}"${ring ? html` data-ring="${ring}"` : ''}>${raw(agentMarkHtml(session.harness, 20))}${
+  return html`<div class="so-row" data-ds-key="${'row:' + id}" data-id="${id}" data-status="${status}"${unread ? html` data-unread` : ''}><a class="ds-drawer__item so-row__open" href="${'#' + id}"${attached ? html` aria-current="page"` : ''}><span class="so-mark" data-tip="${word}"${ring ? html` data-ring="${ring}"` : ''}>${raw(agentMarkHtml(session.harness, 20))}${
     badge ? html`<span class="so-mark__badge" data-kind="${badge}" aria-hidden="true">${raw(badgeIcon)}</span>` : ''
-  }</span><span class="so-row__text"><span class="so-row__label" data-tip="${session.title}"${state.titling.has(id) ? html` data-titling` : ''}>${session.title}</span>${
-    // The first line of a prepared session's prompt, which is what tells two
-    // of them apart before either has a name of its own.
-    preview ? html`<span class="so-row__preview">${preview}</span>` : ''
-  }</span>${
+  }</span><span class="so-row__text"><span class="so-row__label" data-tip="${session.title}"${state.titling.has(id) ? html` data-titling` : ''}>${session.title}</span></span>${
     startAt ? html`<span class="so-row__when" aria-label="${startWords}" data-tip="${startWords}">${raw(icon('clock', 16))}<span class="so-row__time">${whenShort(startAt)}</span></span>` : ''
   }${
     STATUS_GLYPH[status] ? html`<span class="so-row__status" data-status="${status}" role="img" aria-label="${said}" data-tip="${said}">${raw(icon(STATUS_GLYPH[status], 16))}</span>` : ''
   }</a><button class="ds-btn ds-btn--quiet ds-btn--icon ds-btn--sm so-row__more" type="button" aria-label="Session actions" data-tip="Session actions" aria-haspopup="menu" aria-expanded="false" aria-controls="sessionMenu">${raw(icon('moreVertical', 20))}</button></div>`;
+}
+
+// whenShort is a start time for a row: the time of day when it is today,
+// the weekday and the time within the week, the date beyond that.
+function whenShort(at, now = Date.now()) {
+  const when = new Date(at);
+  if (Number.isNaN(when.getTime())) return '';
+  const clock = when.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  if (when.toDateString() === new Date(now).toDateString()) return clock;
+  const days = (at - now) / 86400000;
+  if (days > -1 && days < 6) return when.toLocaleDateString([], { weekday: 'short' }) + ' ' + clock;
+  return when.toLocaleDateString([], { day: 'numeric', month: 'short' }) + ' ' + clock;
 }
 
 // The technical detail of a session - what it runs, where it works, what it
@@ -1278,14 +1268,12 @@ function rowFacts(session, running = null) {
   ];
   const account = session.options?.account
     ? accounts.labelOf(session.options.account) || session.options.account
-    : isPrepared(session) ? 'Chosen when it starts' : '';
+    : '';
   if (account || session.options?.auto_switch) {
     facts.push(['Account', [account, session.options?.auto_switch ? 'switches at a limit' : ''].filter(Boolean).join(' · ')]);
   }
   if (session.options?.ultracode) facts.push(['Ultracode', 'On']);
-  if (isPrepared(session) && Number(session.start_at)) {
-    facts.push(['Starts by itself', new Date(Number(session.start_at)).toLocaleString()]);
-  }
+  if (Number(session.start_at)) facts.push(['Starts by itself', new Date(Number(session.start_at)).toLocaleString()]);
   // The model and effort by the names the sheet and the composer give them
   // ("Sonnet · High"), not the ids the CLI was started with.
   const model = (running && running.model) || session.model;
@@ -1590,12 +1578,9 @@ function applyList(rows, { rev, source = 'hello' } = {}) {
   if (state.current) {
     const fresh = sessionOf(state.current.id);
     if (fresh) applySession(fresh);
-    else if ((state.prestart && state.prestart.shownId() === state.current.id)
-      || (state.chat && state.chat.shownId() === state.current.id)) {
-      // A prepared session or a chat deleted on another device. A terminal
-      // finds out through its socket; a panel has none, and would otherwise
-      // go on saving into a session that is not there - nor does a chat,
-      // whose stream would go on asking for one.
+    else if (state.chat && state.chat.shownId() === state.current.id) {
+      // A chat deleted on another device. A terminal finds out through its
+      // socket; a chat has none, and its stream would go on asking for one.
       detach();
       showHome({ replace: true });
     }
@@ -2102,9 +2087,7 @@ async function deleteSession(session) {
     title: editor ? 'Close VS Code?' : 'Delete “' + session.title + '”?',
     body: editor
       ? 'The editor is stopped. What it remembers - open files, unsaved changes, layout - is kept for this folder and comes back the next time it is opened.'
-      : isPrepared(session)
-        ? 'The prepared session and its prompt are removed. Nothing was started.'
-        : isChat(session)
+      : isChat(session)
           ? 'The agent is stopped and the conversation is removed. The working directory and everything in it are kept.'
           : 'The terminal is closed and the session is removed. The working directory and everything in it are kept.',
     confirmLabel: editor ? 'Close' : 'Delete',
@@ -2124,7 +2107,7 @@ async function deleteSession(session) {
     }
     renderList();
     toast(editor ? 'VS Code was closed. Its state was kept.'
-      : isPrepared(session) ? 'Deleted.' : 'Deleted. The working directory was kept.');
+      : 'Deleted. The working directory was kept.');
   } catch (err) {
     toast(actionFailed(err, 'That session could not be deleted.'), 'error');
   }
@@ -2141,6 +2124,18 @@ async function setAutoSwitch(session, on) {
     if (data.session) replaceSession(data.session);
     toast(on ? 'At a limit, this chat goes on with the account that has the most left.'
       : 'At a limit, this chat stops and asks.');
+  } catch (err) {
+    toast(errorMessage(err), 'error');
+  }
+}
+
+// setAutoContinue turns a chat's going on after a limit renews on or off.
+async function setAutoContinue(session, on) {
+  try {
+    const data = await accounts.setAutoContinue(session.id, on);
+    if (data.session) replaceSession(data.session);
+    toast(on ? 'After a limit, this chat goes on by itself once the limit has renewed.'
+      : 'After a limit, this chat waits for you.');
   } catch (err) {
     toast(errorMessage(err), 'error');
   }
@@ -2299,9 +2294,6 @@ async function openRowMenu(anchor, id, { device = false } = {}) {
   // A folder's editor is not work that is filed: it is open or it is not, and
   // closing it keeps everything it remembers, which is kept per folder.
   const editor = session.harness === IDE;
-  // A prepared session has no terminal, so no keys, no scrollback and no
-  // status to file it under yet: it can be looked at, named and deleted.
-  const prepared = isPrepared(session);
   // A chat has no scrollback either: its conversation is its history, and
   // compacting it is something to ask of its agent.
   const chat = isChat(session);
@@ -2326,7 +2318,7 @@ async function openRowMenu(anchor, id, { device = false } = {}) {
   add('info', 'Info', 'info', () => infoDialog(session, anchor));
   if (!editor) add('rename', 'Rename', 'pencil', () => renameSession(session, anchor));
   if (!editor && session.workdir_missing) add('folder', 'Point to folder', 'folder', () => pointFolder(session, anchor));
-  if (!editor && !prepared) {
+  if (!editor) {
     items.push(html`<div class="ds-menu__divider" role="separator"></div><p class="so-menu-heading" aria-hidden="true">Status</p>`);
     for (const one of STATUSES) {
       add('status:' + one.id, one.label, '', () => setStatus(session, one.id), statusOf(session) === one.id);
@@ -2345,11 +2337,13 @@ async function openRowMenu(anchor, id, { device = false } = {}) {
     add('export', 'Download the conversation', 'download', () => exportChat(session));
     // Off unless asked for, per chat: at a limit the chat goes on with the
     // account that has the most left instead of stopping (REBUILD.md §4.3).
-    if (!prepared) {
-      const on = !!session.options?.auto_switch;
-      add('auto-switch', 'Switch accounts at a limit', '', () => setAutoSwitch(session, !on), on, 'menuitemcheckbox');
-    }
-  } else if (!prepared) {
+    const on = !!session.options?.auto_switch;
+    add('auto-switch', 'Switch accounts at a limit', '', () => setAutoSwitch(session, !on), on, 'menuitemcheckbox');
+    // On unless switched off, per chat: a turn stopped by a limit goes on
+    // by itself once the limit has renewed.
+    const goOn = session.options?.auto_continue !== false;
+    add('auto-continue', 'Go on when a limit renews', '', () => setAutoContinue(session, !goOn), goOn, 'menuitemcheckbox');
+  } else {
     add('journal', editor ? 'Download server log' : 'Download scrollback', 'download', () => downloadJournal(session));
   }
   add('delete', editor ? 'Close VS Code' : 'Delete', editor ? 'close' : 'trash', () => deleteSession(session));
@@ -2527,32 +2521,6 @@ function hideHome() {
 
 // applySession draws everything about a session that is not the pane itself.
 function applySession(session) {
-  // A prepared session that has been started - by its own schedule, or on
-  // another device - becomes the terminal it now has, exactly as it does
-  // after this page's own Start. attach takes the panel down first, so this
-  // is not reached again from there.
-  if (state.prestart && state.prestart.shownId() === session.id && !isPrepared(session)) {
-    attach(session);
-    return;
-  }
-  // A row that changed what it is under the view showing it - a chat that is
-  // prepared again after a start that failed - is drawn as what it is now.
-  if (state.chat && state.chat.shownId() === session.id && !isChat(session)) {
-    attach(session);
-    return;
-  }
-  // And the other way: a start this page saw as "starting" - and so opened
-  // a terminal for - that failed before anything ran, and was put back to
-  // prepared with the reason. The terminal has nothing to show (the server
-  // refuses a socket for a prepared row); the panel, the reason and Start
-  // come back. attach takes the terminal down first, so this is not reached
-  // again from there either.
-  if (isPrepared(session) && !(state.prestart && state.prestart.shownId() === session.id)
-    && state.current && state.current.id === session.id
-    && (state.socket || state.term || dom.stage.hasAttribute('data-ide'))) {
-    attach(session);
-    return;
-  }
   state.current = session;
   setTitleText(session.title);
   drawTitling(session.id);
@@ -2561,13 +2529,8 @@ function applySession(session) {
 
   // What it runs and on which model is in the list's mark and in "Info" in
   // the row's menu; the bar keeps its width for the name. A chat says what
-  // it used under its own "i" (chatview.js), and a prepared one shows its
-  // account's limits where the account is chosen.
-  if (isPrepared(session)) {
-    if (state.prestart) state.prestart.update(session);
-  } else if (isChat(session)) {
-    if (state.chat) state.chat.update(session);
-  }
+  // it used under its own "i" (chatview.js).
+  if (isChat(session) && state.chat) state.chat.update(session);
 
   drawOverlay(session);
   renderList();
@@ -2840,10 +2803,8 @@ function detach() {
   state.live = false;
   state.resuming = false;
   if (state.transfer) state.transfer.attached();
-  // A prepared session's panel stands where the pane does; whatever comes
-  // next - a terminal, another panel, nothing - starts from the pane. So
-  // does a chat.
-  if (state.prestart) state.prestart.hide();
+  // A chat stands where the pane does; whatever comes next - a terminal,
+  // another chat, nothing - starts from the pane.
   if (state.chat) state.chat.hide();
   dom.termWrap.hidden = false;
 }
@@ -2863,15 +2824,6 @@ function attach(session) {
   // shut it.
   openFolder(session);
   applySession(session);
-  // A prepared session has no terminal yet: its panel is drawn instead, with
-  // no socket, no key bar and nothing to copy, paste or upload into.
-  if (isPrepared(session)) {
-    dom.termWrap.hidden = true;
-    state.prestart.show(session);
-    if (state.assist) state.assist.attached();
-    if (state.transfer) state.transfer.attached();
-    return;
-  }
   // A chat is drawn by the page: its conversation and its composer stand
   // where the pane would, whatever it is filed as - a done chat's agent is
   // put to rest, and its conversation is still there to read.
@@ -3081,7 +3033,7 @@ function revealIDE(frame, loading, current) {
 
 // applyKeyBar shows the bar or puts it away as this device now wants it, on
 // the session on screen - when that session has a bar at all: an editor and
-// a prepared session do not, and get it when a terminal is next opened.
+// a chat do not, and get it when a terminal is next opened.
 function applyKeyBar() {
   if (state.keybar) showKeyBar(keyBarWanted());
 }
@@ -3249,19 +3201,11 @@ async function renameAgain() {
 }
 
 // retitleSession asks for a new name for the session on screen, from what it
-// is about: its first prompt - as the PreStart field holds it right now, for
-// a prepared one - and its screen. The answer is the renamed session; other
-// browsers hear of it in title frames.
-//
-// `unnamed` is the PreStart panel naming a session after its prompt the
-// first time the field is left: only a session nobody has named yet, and a
-// failure is a toast rather than a dialog, because nobody pressed anything.
-async function retitleSession(session, { unnamed = false, prompt } = {}) {
+// is about: its first prompt and its screen. The answer is the renamed
+// session; other browsers hear of it in title frames.
+async function retitleSession(session) {
   if (!session || state.titling.has(session.id)) return;
-  const field = isPrepared(session) && state.prestart && state.prestart.shownId() === session.id
-    ? state.prestart.field() : null;
-  // The arrow turns from the press, not from the first frame back - and a
-  // prepared session has no socket for a frame to come back on.
+  // The arrow turns from the press, not from the first frame back.
   state.titling.add(session.id);
   state.namingHere.add(session.id);
   if (state.current && state.current.id === session.id) drawTitling(session.id);
@@ -3269,12 +3213,11 @@ async function retitleSession(session, { unnamed = false, prompt } = {}) {
   try {
     const data = await api('/api/sessions/' + encodeURIComponent(session.id) + '/title', {
       method: 'POST', attempts: 1, timeout: 45000,
-      body: { prompt: prompt ?? (field ? field.value : ''), unnamed },
+      body: {},
     });
     if (data && data.session) replaceSession(data.session);
   } catch (err) {
-    if (unnamed) toast('Could not name the session: ' + errorMessage(err), 'error');
-    else if (err && Number(err.status) === 409 && /openrouter api key/i.test(String(err.message || ''))) {
+    if (err && Number(err.status) === 409 && /openrouter api key/i.test(String(err.message || ''))) {
       // The server has no key to name it with (a key taken away since the
       // page knew of one): said the way the press says it, with Admin.
       setVoiceKey(false);
@@ -3485,12 +3428,10 @@ function updateStale() {
 function selectSession(id) {
   const session = sessionOf(id);
   if (!session) return;
-  // Already open - unless it is a prepared session showing something other
-  // than its panel, which a click is the way back from.
-  const panelShown = state.prestart && state.prestart.shownId() === id;
+  // Already open.
   const chatOpen = !!state.chat && state.chat.shownId() === id;
-  if (state.current && state.current.id === id && (panelShown || chatOpen
-    || (!isPrepared(session) && (state.socket || dom.stage.hasAttribute('data-ide'))))) return;
+  if (state.current && state.current.id === id && (chatOpen
+    || state.socket || dom.stage.hasAttribute('data-ide'))) return;
   markRead(id);
   state.wanted = id;
   location.hash = '#' + id;
@@ -3543,58 +3484,24 @@ function measureNewPane() {
   return size;
 }
 
-// measureForStart is measureNewPane from wherever the page is: a prepared
-// session's panel or Home stands where the pane would be, so the pane is put
+// measureForStart is measureNewPane from wherever the page is: a chat or
+// Home stands where the pane would be, so the pane is put
 // back for the length of the measurement - one synchronous step, never
 // painted.
 function measureForStart() {
   if (state.term) return state.term.size();
-  const panelWas = dom.prestart.hidden;
+  const chatWas = dom.chat.hidden;
   const homeWas = dom.home.hidden;
   const wrapWas = dom.termWrap.hidden;
-  dom.prestart.hidden = true;
+  dom.chat.hidden = true;
   dom.home.hidden = true;
   dom.termWrap.hidden = false;
   try {
     return measureNewPane();
   } finally {
-    dom.prestart.hidden = panelWas;
+    dom.chat.hidden = chatWas;
     dom.home.hidden = homeWas;
     dom.termWrap.hidden = wrapWas;
-  }
-}
-
-// prepareSession stores a chat with its settings and nothing else, and opens
-// its panel, where the first prompt is written and Start is pressed.
-async function prepareSession(pick) {
-  try {
-    const data = await api('/api/sessions', {
-      method: 'POST',
-      attempts: 2,
-      timeout: 30000,
-      body: {
-        client_id: clientKey(),
-        prestart: true,
-        harness: pick.harness,
-        model: pick.model,
-        effort: pick.effort,
-        ultracode: pick.ultracode || undefined,
-        account: pick.account || undefined,
-        auto_switch: pick.auto_switch || undefined,
-        workdir_mode: pick.workdir_mode,
-        workdir: pick.workdir,
-      },
-    });
-    replaceSession(data.session);
-    state.wanted = data.session.id;
-    location.hash = '#' + data.session.id;
-    attach(data.session);
-    // The prompt is the next thing to do, so the cursor is put there. On a
-    // touch screen it raises no keyboard until a finger lands on it.
-    const field = state.prestart && state.prestart.field();
-    if (field) field.focus({ preventScroll: true });
-  } catch (err) {
-    toast(errorMessage(err), 'error');
   }
 }
 
@@ -3605,10 +3512,6 @@ async function newSession() {
   // being started is behind it. Leaving it open puts a list over the terminal
   // that was just asked for.
   closeNav();
-  if (pick.prestart) {
-    await prepareSession(pick);
-    return;
-  }
   if (pick.chat) {
     await startChat(pick);
     return;
@@ -3894,7 +3797,7 @@ function wire() {
   dom.sessionOutcome.addEventListener('click', () => showOutcome());
   // The terminal's on-screen keyboard, which on a touch screen this button
   // raises and puts away and nothing else does. Every other field - a chat's
-  // composer, a prepared session's prompt, a dialog's - raises it by a tap.
+  // composer, a dialog's - raises it by a tap.
   initKeyboard(dom.kbBtn, () => (state.term ? state.term.term.textarea : null));
   dom.logout.addEventListener('click', async () => {
     if (notifier) await notifier.signOut();
@@ -3999,10 +3902,8 @@ async function boot() {
   state.assist = mountAssist({
     dom,
     notice,
-    // A prepared session has nothing to summarize and no terminal to speak
-    // into; its prompt field carries a microphone of its own. A chat is
-    // spoken into through its composer.
-    current: () => (isPrepared(state.current) ? null : state.current),
+    // A chat is spoken into through its composer.
+    current: () => state.current,
     live: () => (chatShown() ? state.chat.live() : state.live),
     insert: (text) => (chatShown() ? state.chat.insert(text) : insertIntoTerm(text)),
     // The ticker is over the pane of a terminal and in the dock of a chat.
@@ -4045,19 +3946,6 @@ async function boot() {
     // A push wrote the icon and the tray from the set it was counted with;
     // this page may know a newer one.
     pushed: () => badgeWrittenElsewhere(),
-  });
-  // The panel of a prepared session. Its Start ends where a new chat's does:
-  // the row it answers with replaces the prepared one, and applySession
-  // turns the panel into that chat.
-  state.prestart = mountPrestart({
-    host: dom.prestart,
-    replace: (row) => replaceSession(row),
-    started: (row, error) => {
-      replaceSession(row);
-      if (error) toast('The session could not start.', 'error');
-    },
-    refresh: () => refreshList(),
-    nameFromPrompt: (session, prompt) => retitleSession(session, { unnamed: true, prompt }),
   });
   // The chat view, for every session that is a chat. What a chat was told
   // while it was not on screen - or before a reload - is on its way from the

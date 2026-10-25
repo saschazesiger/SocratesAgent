@@ -1,7 +1,6 @@
 // Which programs this machine can run a session on, where a session is
 // allowed to work, and the sheet that binds a new one to all three - drawn
-// by settingsForm, which the panel of a prepared session (prestart.js) draws
-// its settings with too.
+// by settingsForm.
 //
 // A session is bound to a harness, a working directory and a model before it
 // exists, and only the model can be changed afterwards. So the sheet is the
@@ -343,38 +342,21 @@ function dynamicPreview(id) {
   return root.replace(/\/$/, '') + '/' + (id || 'session') + '-' + stamp + '-…';
 }
 
-// The programs a session can be prepared for: the agents, whose first message
-// a prepared chat holds. A shell has nothing to send one to and VS Code is
-// opened from a folder. The server's createPrestart (internal/server/
-// prestart.go) is the real boundary.
-export function canPrestart(id) { return isChat(id); }
-
-// The account dropdown's value for "choose when it starts"; an account id is
-// a-<hex>.
-const AUTO_ACCOUNT = '@auto';
-
 /**
  * settingsForm builds the controls a session is bound by: the program, the
  * working directory, the model, the effort, Ultracode and the account. A chat
  * (isChat) is asked for its folder, model, effort and account - agent,
  * folder, model, account - whether it may switch accounts by itself at a
  * limit, and Claude Code for Ultracode too; a Shell for its folder and
- * nothing else. The new-session sheet and the panel of a prepared session
- * both draw theirs with it, so the two can never offer different choices or
- * say different things about them - a prepared session has to start exactly
- * as the sheet would have started it.
+ * nothing else.
  *
  * Every element id is `prefix` and the field's name, which is how the sheet
- * keeps the ids it has always had (nsHarness, nsDir, nsModelField, ...) and
- * the panel gets ids of its own (psHarness, ...).
+ * keeps the ids it has always had (nsHarness, nsDir, nsModelField, ...).
  *
  *   include(entry)            which programs are offered at all
- *   deferredAccount(harness)  whether "Automatic" may leave the account to
- *                             the moment the chat starts - true for a
- *                             prepared chat, whose start can be hours away
  *   onChange(kind)            called after a change the person made; kind is
  *                             harness, dir, model, effort, ultracode, account
- *                             or auto_switch. Nothing calls it for set().
+ *                             or auto_switch.
  *
  * It hands back the node to put on the page and the calls that read and
  * write it.
@@ -383,7 +365,6 @@ export function settingsForm(options = {}) {
   const {
     prefix = 'ns',
     include = (entry) => entry.id !== 'vscode',
-    deferredAccount = () => false,
     onChange = () => {},
   } = options;
   const id = (name) => prefix + name;
@@ -437,8 +418,7 @@ export function settingsForm(options = {}) {
 
   // A chat runs on an account (REBUILD.md §4), the last thing it is asked
   // for: a dropdown of every account of the agent with how full it is and
-  // when it renews, the one with the most left marked. A prepared chat may
-  // leave it to its start.
+  // when it renews, the one with the most left marked.
   const accountRow = el('div', { id: id('Account') });
   const accountHint = el('small', { class: 'ds-field__hint', id: id('AccountHint') });
   const accountSignIn = el('button', {
@@ -568,14 +548,11 @@ export function settingsForm(options = {}) {
     value: '',
     id: id('AccountInput'),
     label: 'Account',
-    items: () => [
-      ...(deferredAccount(pick.harness) ? [{ value: AUTO_ACCOUNT, auto: true }] : []),
-      ...accounts.forAgent(pick.harness).map((a) => ({ value: a.id, account: a })),
-    ],
-    renderItem: (item) => (item.auto ? autoAccountEntry() : accounts.entry(item.account, {
+    items: () => accounts.forAgent(pick.harness).map((a) => ({ value: a.id, account: a })),
+    renderItem: (item) => accounts.entry(item.account, {
       recommended: item.value === accounts.recommended(pick.harness) && accounts.forAgent(pick.harness).length > 1,
-    })),
-    renderValue: (item) => (item.auto ? accountFace('Automatic', '') : accountFace(item.account.label, accounts.who(item.account))),
+    }),
+    renderValue: (item) => accountFace(item.account.label, accounts.who(item.account)),
     onChange: (value) => {
       pick.account = value;
       pick.accountChosen = true;
@@ -653,8 +630,8 @@ export function settingsForm(options = {}) {
   }
 
   // renderAccount offers a chat its agent's accounts. Until somebody picks
-  // one, the chat starts on the one with the most usage left; a prepared chat
-  // leaves that to its start. With no account at all the chat would start on
+  // one, the chat starts on the one with the most usage left. With no account
+  // at all the chat would start on
   // a Default account the server makes for it, not signed in yet: the field
   // says so, and adds one.
   function renderAccount() {
@@ -676,11 +653,11 @@ export function settingsForm(options = {}) {
       accountSignIn.textContent = 'Add an account';
       return;
     }
-    const known = pick.account === AUTO_ACCOUNT ? deferredAccount(pick.harness) : list.some((a) => a.id === pick.account);
+    const known = list.some((a) => a.id === pick.account);
     if (!pick.accountChosen || !known) {
       pick.accountChosen = false;
       const best = accounts.best(pick.harness);
-      pick.account = deferredAccount(pick.harness) ? AUTO_ACCOUNT : (best ? best.id : '');
+      pick.account = best ? best.id : '';
     }
     accountPicker.setValue(pick.account, false);
     renderAccountHint();
@@ -690,9 +667,7 @@ export function settingsForm(options = {}) {
     const chosen = accounts.byId(pick.account);
     let words = '';
     accountSignIn.hidden = true;
-    if (pick.account === AUTO_ACCOUNT) {
-      words = 'Chosen when the chat starts: the account with the most usage left at that moment.';
-    } else if (chosen && !accounts.usable(chosen)) {
+    if (chosen && !accounts.usable(chosen)) {
       // A subscription signs in from here; a key that was refused is
       // replaced on the dashboard's Accounts card.
       const key = chosen.kind === 'api_key';
@@ -751,7 +726,7 @@ export function settingsForm(options = {}) {
     /** harness is the program chosen right now. */
     harness: () => pick.harness,
 
-    /** value is what a session is created or prepared with. */
+    /** value is what a session is created with. */
     value() {
       return {
         harness: pick.harness,
@@ -760,7 +735,7 @@ export function settingsForm(options = {}) {
         ultracode: !ultracodeField.hidden && pick.ultracode,
         workdir_mode: pick.mode,
         workdir: pick.workdir,
-        account: accountField.hidden || pick.account === AUTO_ACCOUNT ? '' : pick.account,
+        account: accountField.hidden ? '' : pick.account,
         auto_switch: !autoSwitchField.hidden && pick.autoSwitch,
       };
     },
@@ -770,10 +745,9 @@ export function settingsForm(options = {}) {
       if (!entries.length) return 'There is no program to start yet.';
       if (!pick.harness || (!modelField.hidden && !pick.model && !unlisted(harness(pick.harness)))) return 'Pick a program and a model first.';
       if (pick.mode === CUSTOM && !pick.workdir) return 'Type the directory this session should work in.';
-      // A chat started now needs an account it can run on; a prepared one
-      // can be signed in to before it starts.
+      // A chat needs an account it can run on.
       const chosen = accountField.hidden ? null : accounts.byId(pick.account);
-      if (chosen && !accounts.usable(chosen) && !deferredAccount(pick.harness)) {
+      if (chosen && !accounts.usable(chosen)) {
         return 'Sign in to ' + chosen.label + ' first, or pick another account.';
       }
       return '';
@@ -828,45 +802,6 @@ export function settingsForm(options = {}) {
       if (first) selectHarness(first.id);
     },
 
-    /**
-     * set draws stored settings - a prepared session's row - without calling
-     * onChange: it is the form being told, not the person choosing. Only the
-     * keys that are present are applied.
-     */
-    set(values = {}) {
-      if (values.harness !== undefined && values.harness !== pick.harness) selectHarness(values.harness);
-      if (values.model !== undefined && !modelField.hidden) {
-        pick.model = values.model || '';
-        picker.setValue(pick.model, false);
-      }
-      if (values.effort !== undefined) pick.effort = values.effort || '';
-      renderEffort();
-      if (values.ultracode !== undefined) {
-        pick.ultracode = !!values.ultracode && !ultracodeField.hidden;
-        ultracodeInput.checked = pick.ultracode;
-      }
-      if (values.account !== undefined) {
-        pick.accountChosen = !!values.account;
-        pick.account = values.account || '';
-      }
-      if (values.auto_switch !== undefined) {
-        pick.autoSwitch = !!values.auto_switch;
-        autoSwitchInput.checked = pick.autoSwitch;
-      }
-      renderAccount();
-      if (values.workdir_mode !== undefined) {
-        const mode = values.workdir_mode || DYNAMIC;
-        if (mode === CUSTOM) dirPath.value = values.workdir || '';
-        selectDir(mode, values.workdir || '', false);
-      }
-    },
-
-    /** refresh draws again what depends on the catalogue or on the caller. */
-    refresh() {
-      if (!pick.harness) return;
-      renderAccount();
-    },
-
     /** refreshAccounts reads the accounts and their usage again, then draws them. */
     async refreshAccounts() {
       await accounts.load().catch(() => { /* the copy this browser kept */ });
@@ -875,16 +810,10 @@ export function settingsForm(options = {}) {
   };
 }
 
-// autoAccountEntry is the "Automatic" entry of a prepared chat's accounts,
-// drawn the way an account is so the list reads as one list.
-function autoAccountEntry() {
-  return html`<span class="ds-combo__name">Automatic</span><span class="ds-combo__meta">the account with the most usage left when it starts</span>`;
-}
-
 /**
  * openNewSessionSheet asks the questions a session is bound by. It resolves
  * with {harness, model, effort, ultracode, workdir_mode, workdir, account,
- * auto_switch, prestart, chat} or null if the person backed out. `chat` says the agent is a chat: agent,
+ * auto_switch, chat} or null if the person backed out. `chat` says the agent is a chat: agent,
  * folder, model and account are all it asks; a Shell is a folder and nothing
  * else.
  *
@@ -899,8 +828,6 @@ export async function openNewSessionSheet() {
   const sheet = document.getElementById('newSessionSheet');
   if (!sheet) return null;
   const host = document.getElementById('nsForm');
-  const prestartField = document.getElementById('nsPrestartField');
-  const prestartInput = document.getElementById('nsPrestart');
   const hint = document.getElementById('nsHint');
   const hintText = document.getElementById('nsHintText');
   const start = document.getElementById('nsStart');
@@ -911,32 +838,22 @@ export async function openNewSessionSheet() {
       { gap: 'var(--ds-space-3)' });
   }
 
-  // PreStart is off on every opening: what the sheet is for, most of the
-  // time, is a chat now.
-  let prestartOn = false;
-  const prepared = (harnessId) => prestartOn && canPrestart(harnessId);
   const form = settingsForm({
     prefix: 'ns',
-    deferredAccount: prepared,
     onChange: () => render(),
   });
   // The form is built again on every opening, from the catalogue as it is
   // now; what the last opening drew goes with it.
   host.replaceChildren(form.node);
-  if (prestartInput) prestartInput.checked = false;
 
-  // render is the part of the sheet around the form: whether PreStart is on
-  // offer, what the button says it does, and what stands in the way.
+  // render is the part of the sheet around the form: what stands in the way.
   function render() {
     const harnessId = form.harness();
-    const later = prepared(harnessId);
-    if (prestartField) prestartField.hidden = !canPrestart(harnessId);
-    start.textContent = later ? 'Prepare' : 'Start session';
     const snap = snapshot();
     const parts = [];
     // What the machine can lack is a usable tmux, and only a terminal runs in
-    // one: a chat - started now or prepared - runs in an agent host of its
-    // own, so the reason is the Shell's alone.
+    // one: a chat runs in an agent host of its own, so the reason is the
+    // Shell's alone.
     const blocked = !isChat(harnessId) && snap.sessions_available === false;
     if (blocked && snap.sessions_error) parts.push(snap.sessions_error);
     parts.push(...form.notes());
@@ -968,21 +885,13 @@ export async function openNewSessionSheet() {
       resolve(value);
       if (sheet.open) hideOverlay(sheet);
     };
-    if (prestartInput) {
-      prestartInput.addEventListener('change', () => {
-        prestartOn = prestartInput.checked;
-        // The account list gains or loses "Automatic" with it.
-        form.refresh();
-        render();
-      }, on);
-    }
     start.addEventListener('click', () => {
       const missing = form.missing();
       if (missing) {
         toast(missing);
         return;
       }
-      finish({ ...form.value(), prestart: prepared(form.harness()), chat: isChat(form.harness()) });
+      finish({ ...form.value(), chat: isChat(form.harness()) });
     }, on);
     sheet.addEventListener('close', () => finish(null), on);
     // It opens on the program chosen, not on its Close: the first focusable

@@ -3,7 +3,7 @@
  * only (--ds-* and the --so-* of theme.css), unlayered, and no .ds-* component
  * is restyled: where one needs to differ, its hooks are set.
  *
- *   .so-stage          the area under the top bar: the pane, or PreStart, or
+ *   .so-stage          the area under the top bar: the pane, or a chat, or
  *                      Home; [data-ide] while it holds an editor
  *   .so-pane           the terminal pane; [data-stale] while the screen is old,
  *                      [data-dropping] while a file is held over it

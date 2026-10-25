@@ -31,7 +31,7 @@
 /* ── The page as a column ─────────────────────────────────────────────── */
 
 /* The view does not scroll on this page: the terminal is as tall as the
-   panel, and Home and PreStart scroll inside the stage themselves. No
+   panel, and Home and a chat scroll inside the stage themselves. No
    gutter is reserved for a scrollbar that never comes. */
 .so-view {
   --ds-view-scrollbar-gutter: auto;
@@ -421,8 +421,7 @@
   flex-direction: column;
 }
 
-.so-row__label,
-.so-row__preview {
+.so-row__label {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -458,15 +457,7 @@
   color: var(--ds-text-3);
 }
 
-.so-row__preview {
-  font: var(--ds-font-meta);
-  color: var(--ds-text-2);
-}
-
-.so-row__open[aria-current="page"] .so-row__preview {
-  color: var(--ds-on-accent);
-}
-
+/* When a chat that has not started starts by itself. */
 .so-row__when {
   flex: none;
   display: inline-flex;

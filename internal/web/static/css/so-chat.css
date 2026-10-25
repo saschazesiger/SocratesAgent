@@ -9,7 +9,14 @@
  *   .so-chat               the view: fills the stage, the conversation above
  *                          the dock. [data-stale] while its stream is not
  *                          live (the conversation is dimmed), [data-dropping]
- *                          while a file is held over it
+ *                          while a file is held over it, [data-fresh] while
+ *                          nothing has been said: the composer is the first
+ *                          message, a big field that fills the view
+ *   .so-chat__sub          the line under the top bar: the chat's account,
+ *                          each limit window (.so-chat__limit: used, a flat
+ *                          bar, when it resets; [data-high] from 80 %,
+ *                          [data-full] at its end) and the background jobs
+ *                          (.so-chat__jobs, [data-running] while any run)
  *   .so-chat__scroll       the conversation's scroller; "Latest" (an icon)
  *                          sticks to its bottom edge (.so-chat__jump)
  *   .so-chat__log          the timeline, one .so-chat__entry per message,
@@ -24,6 +31,9 @@
  *   .so-part               one part of an answer, data-kind and data-state
  *   .so-md                 Markdown as the agent wrote it; .so-code is a
  *                          fenced block with its language and Copy
+ *   .so-work               a turn's work - thinking, calls, agents, what was
+ *                          said on the way - folded behind one line that
+ *                          says what it did, how long it took and its tokens
  *   .so-reasoning          the agent's thinking, shut until opened
  *   .so-tool               a tool call: one row (.so-tool__head) that opens
  *                          to its input and output; [data-group] for a
@@ -74,6 +84,74 @@
 .so-chat[data-dropping] {
   outline: var(--ds-focus-width) dashed var(--ds-primary);
   outline-offset: calc(-1 * var(--ds-space-2));
+}
+
+/* ── The line under the top bar ──────────────────────────────────────── */
+
+.so-chat__sub {
+  flex: none;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  column-gap: var(--ds-space-4);
+  row-gap: var(--ds-space-1);
+  min-height: var(--ds-space-8);
+  padding: var(--ds-space-1) var(--ds-space-6);
+  padding-left: calc(var(--ds-space-6) + env(safe-area-inset-left, 0px));
+  padding-right: calc(var(--ds-space-6) + env(safe-area-inset-right, 0px));
+  border-bottom: 1px solid var(--ds-line);
+  font: var(--ds-font-meta);
+  color: var(--ds-text-2);
+}
+
+.so-chat__account {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--ds-space-1);
+  min-width: 0;
+  max-width: calc(var(--ds-space-12) * 4);
+  color: var(--ds-text);
+}
+
+.so-chat__limits {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  column-gap: var(--ds-space-4);
+  row-gap: var(--ds-space-1);
+  min-width: 0;
+}
+
+.so-chat__limit {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--ds-space-2);
+  font-variant-numeric: tabular-nums;
+}
+
+.so-chat__limit-name {
+  color: var(--ds-text);
+}
+
+.so-chat__limit-bar {
+  inline-size: var(--so-limits-bar-min);
+}
+
+.so-chat__limit[data-high] .so-chat__limit-value {
+  color: var(--ds-warning);
+}
+
+.so-chat__limit[data-full] .so-chat__limit-value {
+  color: var(--ds-error);
+}
+
+/* The jobs stand at the end of the line. */
+.so-chat__jobs {
+  margin-left: auto;
+}
+
+.so-chat__jobs:not([data-running]) {
+  color: var(--ds-text-3);
 }
 
 .so-chat__scroll {
@@ -221,6 +299,15 @@
   flex: none;
 }
 
+/* Under a waiting message: where it is, and Send now. */
+.so-msg__queue {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--ds-space-2);
+}
+
 .so-msg__error {
   margin: 0;
   max-width: var(--so-chat-bubble-max);
@@ -315,6 +402,7 @@
 
 /* A details row: no marker of the browser's (the chevron says it), the row
    is the target. */
+.so-work > summary,
 .so-reasoning > summary,
 .so-tool > summary,
 .so-diff__file > summary,
@@ -328,6 +416,7 @@
   border-radius: var(--ds-radius-md);
 }
 
+.so-work > summary::-webkit-details-marker,
 .so-reasoning > summary::-webkit-details-marker,
 .so-tool > summary::-webkit-details-marker,
 .so-diff__file > summary::-webkit-details-marker,
@@ -335,6 +424,7 @@
   display: none;
 }
 
+.so-work > summary:focus-visible,
 .so-reasoning > summary:focus-visible,
 .so-tool > summary:focus-visible,
 .so-diff__file > summary:focus-visible,
@@ -343,11 +433,52 @@
   outline-offset: var(--ds-focus-offset);
 }
 
+.so-work > summary .ds-chevron,
 .so-reasoning > summary .ds-chevron,
 .so-tool > summary .ds-chevron,
 .so-diff__file > summary .ds-chevron,
 .so-ask-context > summary .ds-chevron {
   flex: none;
+}
+
+/* The work of a turn - thinking, calls, agents, what was said on the way -
+   is one quiet line until it is opened: what it did, how long it took and
+   what it used. Opened, its parts as they always are, under a rule. */
+.so-work__head {
+  color: var(--ds-text-2);
+  font: var(--ds-font-label);
+}
+
+.so-work__icon {
+  display: grid;
+  flex: none;
+  place-items: center;
+  inline-size: var(--ds-space-5);
+  block-size: var(--ds-space-5);
+}
+
+.so-work[data-state="error"] .so-work__icon {
+  color: var(--ds-error);
+}
+
+.so-work__title {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
+.so-work__meta {
+  flex: none;
+  font: var(--ds-font-meta);
+  font-variant-numeric: tabular-nums;
+  color: var(--ds-text-3);
+}
+
+.so-work__body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-space-3);
+  padding: var(--ds-space-2) 0 var(--ds-space-2) var(--ds-space-4);
+  border-left: 2px solid var(--ds-line);
 }
 
 /* The thinking: one quiet line until it is opened. */
@@ -972,6 +1103,57 @@
   min-height: var(--so-touch-target);
 }
 
+/* A chat that has not started is its first message: the heading at the top,
+   and the field as tall as what is left, never shorter than a good part of
+   the screen (--so-prompt-min-height); a longer text scrolls inside it. */
+.so-chat[data-fresh] .so-chat__scroll {
+  flex: 0 1 auto;
+}
+
+.so-chat[data-fresh] .so-chat__log {
+  flex: none;
+  padding-bottom: var(--ds-space-2);
+}
+
+.so-chat[data-fresh] .so-chat__empty {
+  margin: 0 auto;
+}
+
+.so-chat[data-fresh] .so-chat__dock {
+  flex: 1 0 auto;
+}
+
+.so-chat[data-fresh] .so-chat__composer,
+.so-chat[data-fresh] .so-composer,
+.so-chat[data-fresh] .so-composer__field {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.so-chat[data-fresh] .so-composer__input {
+  flex: 1 1 auto;
+  min-height: var(--so-prompt-min-height);
+  max-height: none;
+}
+
+/* The scheduled start of a chat that has not started, above its field. */
+.so-chat__schedule[hidden] {
+  display: none;
+}
+
+.so-schedule .ds-field__label {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--ds-space-1);
+}
+
+.so-schedule__at {
+  flex: 0 1 auto;
+  max-width: calc(var(--ds-space-12) * 5);
+}
+
 /* What the buttons do not say: that a message written during a turn waits
    for it, that another device changed the draft. */
 .so-composer__hint {
@@ -1236,6 +1418,38 @@
 /* ── Phones ──────────────────────────────────────────────────────────── */
 
 @media (max-width: 600px) {
+  .so-chat__sub {
+    column-gap: var(--ds-space-3);
+    padding: var(--ds-space-1) var(--ds-space-3);
+    padding-left: calc(var(--ds-space-3) + env(safe-area-inset-left, 0px));
+    padding-right: calc(var(--ds-space-3) + env(safe-area-inset-right, 0px));
+  }
+
+  /* The fold's line wraps rather than cutting what the work did: the
+     steps, tokens and cost go under it. */
+  .so-work__head {
+    flex-wrap: wrap;
+    row-gap: 0;
+  }
+
+  .so-work__title {
+    flex: 1 1 0;
+    white-space: normal;
+    overflow: visible;
+  }
+
+  .so-work__meta {
+    order: 1;
+    flex-basis: 100%;
+    padding-left: calc(var(--ds-space-5) + var(--ds-space-2));
+  }
+
+  /* A phone says how far each limit is and when it resets; the bar is the
+     desk's. */
+  .so-chat__limit-bar {
+    display: none;
+  }
+
   .so-chat__log {
     gap: var(--ds-space-4);
     padding: var(--ds-space-4) var(--ds-space-4) var(--ds-space-3);
@@ -1336,6 +1550,25 @@
 
   .so-composer__input {
     max-height: calc(var(--so-app-h, 100dvh) * 0.3);
+  }
+
+  /* The first message keeps its column: the field over its bar. */
+  .so-chat[data-fresh] .so-composer {
+    flex-wrap: nowrap;
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .so-chat[data-fresh] .so-composer > * {
+    flex: none;
+  }
+
+  .so-chat[data-fresh] .so-composer > .so-composer__field {
+    flex: 1 1 auto;
+  }
+
+  .so-chat[data-fresh] .so-composer__input {
+    min-height: calc(var(--so-app-h, 100dvh) * 0.3);
   }
 
   .so-composer__dictate,

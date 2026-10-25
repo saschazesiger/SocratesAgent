@@ -3458,6 +3458,14 @@ all while the bucket is fine.
 
 # L. Prepared sessions (PreStart) and the scheduled start
 
+> **Superseded 2026-10-25.** PreStart is gone. A chat that has not started is
+> its first message: a big field that fills the chat (`.so-chat[data-fresh]`),
+> its text the chat's draft. The scheduled start stays, on that page: `PUT
+> /api/chats/{id}/start_at`, and the server sends the draft as the first
+> message at that time. Existing prepared rows became such chats on the first
+> start of that version. See DEVIATIONS.md, "UI pass (2026-10-25)". What
+> follows is history.
+
 ## L.1 The row
 
 > Since accounts (REBUILD.md §4, WP7) a prepared chat carries the account it was given, or none,

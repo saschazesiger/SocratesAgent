@@ -71,7 +71,7 @@ export function touchWanted() {
 // the missing glyphs ship upstream, only this map changes.
 export const GLYPH = {
   home: 'overview', sidebar: 'columns', paste: 'clipboard', upload: 'upload', summarize: 'activity', stop: 'circleStop',
-  review: 'flag', background: 'server', waiting: 'clock', grip: 'menu', prestart: 'fileText',
+  review: 'flag', background: 'server', waiting: 'clock', grip: 'menu',
   mic: 'mic', keyboard: 'keyboard', enter: 'cornerDownLeft', attach: 'paperclip', speak: 'volume', shell: 'terminal',
 };
 

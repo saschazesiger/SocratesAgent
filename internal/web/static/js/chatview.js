@@ -19,7 +19,7 @@
 // person sends meanwhile is on screen as "Not sent yet" until it is, then as
 // "Sent" until the journal has it.
 
-import { api, alertDialog, promptDialog, toast, errorMessage, fmtTokens, CONNECTION_GRACE } from './api.js';
+import { api, alertDialog, promptDialog, toast, errorMessage, fmtTokens, clientKey, CONNECTION_GRACE } from './api.js';
 import { M, html, morph, raw, icon } from './ui.js';
 import { connectionSaidElsewhere, retryConnection } from './net.js';
 import { agentMarkHtml } from './logos.js';
@@ -30,6 +30,7 @@ import { newChat, apply, applyLive, busy, currentTodo, seenClient } from './chat
 import { ChatStream } from './chatstream.js';
 import {
   assistantMessage, userMessage, lineHtml, askCard, askPlaces, todoList, todoItems, renewsIn, seconds, outboxState,
+  backgroundJobs,
 } from './chatparts.js';
 import { mountComposer } from './composer.js';
 import { chatOutbox, pendingFor, pendingAnswer, pendingModel, failedItem, queueAnswer, answeredHere } from './chatoutbox.js';
@@ -54,6 +55,41 @@ const WINDOW_WORDS = { five_hour: '5-hour limit', weekly: 'Weekly limit' };
 // How long the dock says that something asked for did not happen, unless it
 // is closed first. Data cadence, not motion.
 const NOTE_MS = 10000;
+
+const two = (n) => String(n).padStart(2, '0');
+
+// localInput is a moment as a datetime-local field spells it: this browser's
+// local time, to the minute.
+function localInput(at) {
+  const d = new Date(at);
+  return d.getFullYear() + '-' + two(d.getMonth() + 1) + '-' + two(d.getDate())
+    + 'T' + two(d.getHours()) + ':' + two(d.getMinutes());
+}
+
+// inWords is a distance in time the way a person says it: "in 2 h 15 min".
+function inWords(ms) {
+  if (ms < 60000) return 'in ' + Math.max(1, Math.ceil(ms / 1000)) + '\u00a0s';
+  const minutes = Math.round(ms / 60000);
+  const days = Math.floor(minutes / 1440);
+  const hours = Math.floor((minutes % 1440) / 60);
+  const rest = minutes % 60;
+  if (days > 0) return 'in ' + days + '\u00a0d' + (hours ? ' ' + hours + '\u00a0h' : '');
+  if (hours > 0) return 'in ' + hours + '\u00a0h' + (rest ? ' ' + rest + '\u00a0min' : '');
+  return 'in ' + rest + '\u00a0min';
+}
+
+// The note of "Keep planning" is kept in this browser while it is written,
+// so a reload, another chat or a closed tab loses none of it; it goes once
+// it is sent.
+function planNoteKey(askId) { return 'socrates.plannote.' + askId; }
+function readPlanNote(askId) {
+  try { return localStorage.getItem(planNoteKey(askId)) || ''; } catch { return ''; }
+}
+function writePlanNote(askId, text) {
+  try {
+    if (text) localStorage.setItem(planNoteKey(askId), text); else localStorage.removeItem(planNoteKey(askId));
+  } catch { /* full or private */ }
+}
 
 /**
  * mountChat makes the chat view in `ctx.host` (#chat).
@@ -105,6 +141,8 @@ export function mountChat(ctx) {
   // Bumped by every change of the Outbox: what a card shows of this
   // browser's own answers and commands is drawn again then, and only then.
   let outboxRev = 0;
+  // A Send now on its way: the turn is being stopped.
+  let interrupting = false;
   // The chat a "Continue with" is being sent for, until the server answers.
   let continuing = '';
   // The asks whose answer has been seen, whose draft has been let go.
@@ -119,12 +157,13 @@ export function mountChat(ctx) {
 
   // "Latest" is the scroller's last child and sticks to its bottom edge, so
   // it is always just above the dock, however tall the dock is.
-  morph(host, html`<div class="so-chat__scroll" data-ds-key="scroll"><div class="so-chat__log" role="log" aria-label="Conversation" aria-live="polite" aria-relevant="additions"></div><button class="ds-btn ds-btn--tonal ds-btn--icon so-chat__jump" type="button" data-action="jump" aria-label="Jump to the latest message" data-tip="Latest" hidden>${raw(icon('arrowDown', 20))}</button></div>
-<div class="so-chat__dock" data-ds-key="dock"><div class="so-chat__state" role="status" aria-live="polite"></div><div class="ds-alert so-notice" role="status" hidden></div><div class="ds-alert so-ticker" hidden>${raw(icon('activity', 20))}<span class="ds-alert__text so-ticker__line" role="status" aria-live="polite"></span></div><div class="so-chat__todo" hidden></div><div class="so-chat__composer"></div></div>`);
+  morph(host, html`<div class="so-chat__sub" data-ds-key="sub" role="status" aria-label="Account and background jobs"></div><div class="so-chat__scroll" data-ds-key="scroll"><div class="so-chat__log" role="log" aria-label="Conversation" aria-live="polite" aria-relevant="additions"></div><button class="ds-btn ds-btn--tonal ds-btn--icon so-chat__jump" type="button" data-action="jump" aria-label="Jump to the latest message" data-tip="Latest" hidden>${raw(icon('arrowDown', 20))}</button></div>
+<div class="so-chat__dock" data-ds-key="dock"><div class="so-chat__state" role="status" aria-live="polite"></div><div class="ds-alert so-notice" role="status" hidden></div><div class="ds-alert so-ticker" hidden>${raw(icon('activity', 20))}<span class="ds-alert__text so-ticker__line" role="status" aria-live="polite"></span></div><div class="so-chat__todo" hidden></div><div class="so-chat__schedule" hidden></div><div class="so-chat__composer"></div></div>`);
   const scroller = host.querySelector('.so-chat__scroll');
   const log = host.querySelector('.so-chat__log');
   const jump = host.querySelector('.so-chat__jump');
   const stateLine = host.querySelector('.so-chat__state');
+  const subLine = host.querySelector('.so-chat__sub');
   // The spoken Status's one line (assist.js) and the notice with its whole
   // answer (session.js), in the dock where a terminal has them over its
   // pane.
@@ -132,6 +171,7 @@ export function mountChat(ctx) {
   const tickerBox = host.querySelector('.so-ticker');
   const tickerLine = host.querySelector('.so-ticker__line');
   const todoSlot = host.querySelector('.so-chat__todo');
+  const scheduleSlot = host.querySelector('.so-chat__schedule');
   const composerSlot = host.querySelector('.so-chat__composer');
   const dock = host.querySelector('.so-chat__dock');
 
@@ -157,6 +197,9 @@ export function mountChat(ctx) {
     if (ctx.toastRoom) ctx.toastRoom(room);
   }
   new ResizeObserver(() => liftToasts()).observe(dock);
+  // The limits renew with the clock, and the line under the top bar says
+  // when: it is drawn again every half minute while a chat shows.
+  setInterval(() => { if (session && chat && !host.hidden) drawSub(); }, 30000);
 
   // "Latest" comes and goes as the person scrolls; the snackbars move with it.
   function showJump(shown) {
@@ -195,6 +238,7 @@ export function mountChat(ctx) {
   const view = {
     get chat() { return chat; },
     isOpen(key, fallback) { return open.has(key) ? open.get(key) : fallback; },
+    planNote: (askId) => readPlanNote(askId),
     askProgress,
     mine: (ask) => answeredHere(ask.clientId),
     pendingAnswer: (ask) => pendingAnswer(session.id, ask.id) || sentAnswers.get(ask.id) || null,
@@ -218,6 +262,10 @@ export function mountChat(ctx) {
       const dir = session && session.workdir ? String(session.workdir).replace(/\/+$/, '') : '';
       return dir && p.startsWith(dir + '/') ? p.slice(dir.length + 1) : p;
     },
+    // Whether the chat goes on by itself once a limit renews (on unless
+    // switched off), and whether a limit card is the chat's newest word.
+    autoContinue: () => !!session && session.options?.auto_continue !== false,
+    lastLimit: (entry) => lastLimit(entry),
     renewal() {
       let latest = 0;
       for (const limit of Object.values(chat.rateLimits)) if (limit.used >= 1 && limit.resetsAt > latest) latest = limit.resetsAt;
@@ -296,10 +344,14 @@ export function mountChat(ctx) {
       if (!message) return '';
       if (message.role === 'user') {
         if (entry.type === 'more') return '';
-        rev = message.rev;
+        // A message that waits behind a running turn can go now: Stop, and
+        // the agent takes it up next.
+        const waits = (message.state === 'queued' || message.state === 'pending') && !!chat.turn;
+        rev = message.rev + ':' + waits + ':' + interrupting;
         make = () => userMessage({
           key: entry.key, text: message.text, attachments: message.attachments,
           state: message.state === 'delivered' ? '' : message.state, answerTo: message.answerTo,
+          sendNow: waits && !interrupting,
         });
       } else {
         // A plan part is drawn from the question it waits on, and from the
@@ -407,6 +459,9 @@ export function mountChat(ctx) {
       if (one.markup !== entry.markup) {
         morph(one.node, entry.markup);
         one.markup = entry.markup;
+        for (const field of one.node.querySelectorAll('textarea[data-plan-note]')) {
+          if (!field.value) field.value = readPlanNote(field.dataset.planNote);
+        }
       }
       if (one.node === at) at = at.nextElementSibling;
       else log.insertBefore(one.node, at);
@@ -429,13 +484,24 @@ export function mountChat(ctx) {
     // no entry at all.
     const entries = chat.timeline.map((entry) => ({ key: entry.key, markup: entryMarkup(entry) })).filter((one) => one.markup);
     const local = localEntries();
-    if (synced && !chat.timeline.length && !local.length) {
-      entries.push({ key: 'empty', markup: String(html`<div class="ds-empty so-chat__empty"><span class="ds-empty__disc" aria-hidden="true">${raw(agentMarkHtml(session.harness, 24))}</span><p class="ds-empty__title">${'Ask ' + harnesses.label(session.harness)}</p><p class="ds-empty__text">Write the first message below.</p></div>`) });
+    // A chat that has not started - nothing said, nothing on its way - is
+    // its first message: the composer is a big field that fills the view
+    // (so-chat.css [data-fresh]), and what is written in it is kept as the
+    // draft until it is sent.
+    const fresh = synced && !chat.timeline.length && !local.length;
+    if (fresh !== host.hasAttribute('data-fresh')) {
+      host.toggleAttribute('data-fresh', fresh);
+      if (composer) composer.grow();
+    }
+    drawSchedule(fresh);
+    if (fresh) {
+      entries.push({ key: 'empty', markup: String(html`<div class="ds-empty so-chat__empty"><span class="ds-empty__disc" aria-hidden="true">${raw(agentMarkHtml(session.harness, 24))}</span><p class="ds-empty__title">${'What should ' + harnesses.label(session.harness) + ' do?'}</p><p class="ds-empty__text">Write the first message. It is kept as you type, and starts the chat when you send it.</p></div>`) });
     }
     if (!synced && !chat.timeline.length) {
       entries.push({ key: 'loading', markup: String(html`<div class="ds-loading so-chat__loading" role="status"><span class="ds-loader ds-loader--sm" aria-hidden="true"></span>Loading the conversation…</div>`) });
     }
     place(entries.concat(local));
+    drawSub();
     drawTodo();
     drawState();
     if (composer) composer.paint();
@@ -513,6 +579,132 @@ export function mountChat(ctx) {
       line = html`<div class="ds-alert" data-ds-key="starting"><span class="so-chat__spin" aria-hidden="true"><span class="ds-spinner"></span></span><span class="ds-alert__text">Starting the agent…</span></div>`;
     }
     morph(stateLine, html`${said}${line}`);
+  }
+
+  // limitWindows is the chat's account's usage windows - 5-hour and weekly
+  // - as { label, used (0-100), resetsAt (ms) }: what the dashboard last read
+  // of the account, else what the agent itself reported in this chat.
+  function limitWindows(account) {
+    const out = [];
+    for (const w of (account && account.limits) || []) {
+      if (w.label !== '5h' && w.label !== '7d') continue;
+      out.push({ label: w.label, used: Number(w.used_percent) || 0, resetsAt: w.resets_at ? new Date(w.resets_at).getTime() || 0 : 0 });
+    }
+    if (out.length) return out;
+    const names = { five_hour: '5h', weekly: '7d' };
+    for (const [name, limit] of Object.entries(chat.rateLimits)) {
+      out.push({ label: names[name] || name, used: (Number(limit.used) || 0) * 100, resetsAt: (Number(limit.resetsAt) || 0) * 1000 });
+    }
+    return out;
+  }
+
+  // drawSub is the line under the top bar: the account the chat runs on,
+  // how much of each of its limits is used and when each renews, and what
+  // runs in the background - always there, so nothing runs unseen.
+  function drawSub() {
+    const now = Date.now();
+    const accountId = chat.account || session.options?.account || '';
+    const account = accountId ? accounts.byId(accountId) : null;
+    const windows = limitWindows(account);
+    const limits = windows.map((w) => {
+      const used = Math.max(0, Math.min(100, Math.round(w.resetsAt && w.resetsAt <= now ? 0 : w.used)));
+      const left = w.resetsAt > now ? harnesses.untilReset({ resets_at: w.resetsAt }, now) : '';
+      const when = w.resetsAt > now ? new Date(w.resetsAt).toLocaleString([], { weekday: 'short', hour: '2-digit', minute: '2-digit' }) : '';
+      const tip = w.label + ': ' + used + '% used' + (when ? ' · resets ' + when + ' (in ' + left + ')' : '');
+      return html`<div class="so-chat__limit" data-tip="${tip}" aria-label="${tip}"${used >= 100 ? html` data-full` : used >= 80 ? html` data-high` : ''}><span class="so-chat__limit-name">${w.label}</span><div class="ds-progress ds-progress--flat so-chat__limit-bar" style="${'--ds-progress: ' + used / 100}"><div class="ds-progress__track" role="progressbar" aria-label="${w.label + ' used'}" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${used}"><div class="ds-progress__bar"></div></div></div><span class="so-chat__limit-value">${used + '%'}</span>${
+        left ? html`<span class="so-chat__limit-reset">${'resets in ' + left}</span>` : ''
+      }</div>`;
+    });
+    const { jobs, others } = backgroundJobs(chat);
+    const count = jobs.length + others;
+    const jobsWords = count ? count + (count === 1 ? ' background job' : ' background jobs') : 'No background jobs';
+    const label = accountId ? accounts.labelOf(accountId) || accountId : '';
+    morph(subLine, html`${label ? html`<span class="so-chat__account" data-tip="${'Account: ' + label}">${raw(icon(account && account.kind === 'api_key' ? 'key' : 'user', 16))}<span class="so-ellipsis">${label}</span></span>` : ''}${
+      limits.length ? html`<div class="so-chat__limits">${limits}</div>` : ''
+    }<button class="ds-btn ds-btn--quiet ds-btn--sm so-chat__jobs" type="button" data-action="jobs"${count ? html` data-running` : ''} aria-label="${jobsWords}">${
+      count ? html`<span class="ds-spinner" aria-hidden="true"></span>` : raw(icon('background', 16))
+    }<span>${jobsWords}</span></button>`);
+  }
+
+  // drawSchedule is the scheduled start of a chat that has not started: a
+  // time at which the server sends the first message as it stands then, by
+  // itself. Drawn again only when the time itself changed, so a field being
+  // edited is never written over.
+  let scheduleDrawn = null;
+  function drawSchedule(fresh) {
+    scheduleSlot.hidden = !fresh;
+    if (!fresh) { scheduleDrawn = null; return; }
+    const at = Number(session.start_at) || 0;
+    const key = session.id + ':' + at;
+    if (scheduleDrawn === key) return;
+    scheduleDrawn = key;
+    const fid = 'start-at-' + session.id;
+    const now = Date.now();
+    const said = at > now
+      ? 'Sends the message above by itself ' + inWords(at - now) + ' (' + new Date(at).toLocaleString([], { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) + ').'
+      : 'Optional: pick a time, and the message above is sent then by itself.';
+    morph(scheduleSlot, html`<div class="ds-field so-schedule"><label class="ds-field__label" for="${fid}">${raw(icon('clock', 16))}<span>Start automatically</span></label><div class="so-field-row"><input class="ds-input so-schedule__at" type="datetime-local" id="${fid}" value="${at ? localInput(at) : ''}" min="${localInput(now)}" aria-describedby="${fid + '-hint'}" data-schedule><button class="ds-btn ds-btn--text ds-btn--sm" type="button" data-action="schedule-clear"${at ? '' : html` hidden`}>Clear</button></div><small class="ds-field__hint" id="${fid + '-hint'}">${said}</small></div>`);
+  }
+
+  // setStartAt saves the scheduled start (0: none).
+  async function setStartAt(at) {
+    if (!session) return;
+    const id = session.id;
+    try {
+      const data = await api('/api/chats/' + encodeURIComponent(id) + '/start_at', { method: 'PUT', body: { start_at: at } });
+      if (data && data.session && session && session.id === id) session = data.session;
+      scheduleDrawn = null;
+      schedule();
+    } catch (err) {
+      scheduleDrawn = null;
+      schedule();
+      sayError('The start time could not be saved: ' + errorMessage(err));
+    }
+  }
+
+  scheduleSlot.addEventListener('change', (event) => {
+    const field = event.target.closest('[data-schedule]');
+    if (!field) return;
+    const at = field.value ? new Date(field.value).getTime() : 0;
+    if (field.value && !(at > Date.now())) {
+      sayError('The start time has to be in the future.');
+      scheduleDrawn = null;
+      schedule();
+      return;
+    }
+    setStartAt(at || 0);
+  });
+
+  // sendNow stops the running turn, so the messages waiting behind it go to
+  // the agent at once (the owner's choice: the same for every agent).
+  async function sendNow() {
+    if (!session || interrupting) return;
+    const id = session.id;
+    interrupting = true;
+    schedule();
+    try {
+      await api('/api/chats/' + encodeURIComponent(id) + '/interrupt', { method: 'POST', body: { client_id: clientKey() } });
+    } catch (err) {
+      sayError('The message could not be sent now: ' + errorMessage(err));
+    } finally {
+      interrupting = false;
+      schedule();
+    }
+  }
+
+  // jobsDialog says what runs in the background, one line a job.
+  function jobsDialog(opener) {
+    const { jobs, others } = backgroundJobs(chat);
+    const now = Date.now();
+    const lines = jobs.map((job) => [job.name, job.summary, job.since ? 'for ' + seconds(now - job.since) : '']
+      .filter(Boolean).join(' · '));
+    if (others) lines.push(others + (others === 1 ? ' more task the agent reports' : ' more tasks the agent reports'));
+    alertDialog({
+      title: 'Background jobs',
+      lines: lines.length ? lines : ['Nothing runs in the background of this chat.'],
+      confirmLabel: 'Close',
+      opener,
+    });
   }
 
   // usageFacts is the chat's usage for its "i", as named facts ([label,
@@ -597,6 +789,13 @@ export function mountChat(ctx) {
     render();
   }
 
+  // A plan's note is kept at every keystroke, and written back into its
+  // field whenever the field is drawn anew.
+  host.addEventListener('input', (event) => {
+    const field = event.target.closest('[data-plan-note]');
+    if (field) writePlanNote(field.dataset.planNote, field.value);
+  });
+
   host.addEventListener('click', (event) => {
     if (!session) return;
     const summary = event.target.closest('summary');
@@ -621,6 +820,15 @@ export function mountChat(ctx) {
         copy(answerText(message), 'The answer could not be copied.');
         break;
       }
+      case 'jobs':
+        jobsDialog(target);
+        break;
+      case 'send-now':
+        sendNow();
+        break;
+      case 'schedule-clear':
+        setStartAt(0);
+        break;
       case 'note-close':
         dropNote();
         drawState();
@@ -666,6 +874,7 @@ export function mountChat(ctx) {
       case 'plan-send': {
         const field = host.querySelector('[data-plan-note="' + CSS.escape(target.dataset.ask) + '"]');
         queueAnswer(session.id, target.dataset.ask, { decision: 'keep_planning', note: field ? field.value.trim() : '' });
+        writePlanNote(target.dataset.ask, '');
         break;
       }
       case 'outbox-retry':

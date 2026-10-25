@@ -157,7 +157,7 @@ find /usr/local/bin -lname '/opt/socrates/*' -delete && apt-mark unhold tmux
 
 Everything Socrates keeps is in its data directory, `/var/lib/socrates`
 (`SOCRATES_DATA_DIR`): the database with the settings, the password, sign-ins,
-sessions and prepared prompts, and beside it the chats, the accounts with their
+sessions and the chats' unsent drafts, and beside it the chats, the accounts with their
 sign-ins, the agents' transcripts, the terminals' files and VS Code's state. It
 needs nothing else to run, and it never waits on a network.
 
@@ -263,22 +263,25 @@ waiting for an answer, and a notification for a question that has been answered
 elsewhere is removed. On Android, a long press on the installed app's icon
 offers **Questions** and **Home**.
 
-## Prepared sessions (PreStart)
+## A chat before it starts, and how a chat reads
 
-Switch **PreStart** on in the new-session sheet (Claude Code, Codex and
-OpenCode) and **Prepare** stores the chat without starting anything. It
-opens as a panel instead of a chat: the same settings as the sheet, all
-still changeable, and a large field for the first prompt, which is saved as you
-type (on this device at once, on the server after a pause - the line under
-the field says which). **Start** (or Ctrl/⌘+Enter) starts it
-exactly as a new chat with those settings, and the prompt is its first
-message. **Start automatically** takes a date and time instead:
-the server starts it then by itself, even with no browser open, and sends a
-notification either way. A server that was down at that moment starts it as
-soon as it is back; a start that failed is not retried, and the panel says
-why. A prepared session is listed in its folder, under **PreStart** above the
-sessions that are running there. The first time you leave the prompt field
-after writing in it, the session is named after the prompt.
+A new chat opens on its first message: a large field that fills the page,
+saved as you type (on this device at once, on the server after a pause), so
+closing the tab or switching devices loses nothing. **Send** starts the chat.
+**Start automatically** under the field takes a date and time instead: the
+server sends the message as it stands then, by itself, even with no browser
+open, and sends a notification either way.
+
+In a running chat each answer shows the agent's words. Its work - the
+thinking, the tool calls, the agents it started and what it said on the
+way - is folded into one line that says what it did ("Edited 2 files, ran 3
+commands"), how long it took, how many steps and tokens it used and what it
+cost; a tap opens it. A line under the top bar shows the account the chat
+runs on, how much of each of its limits is used and when each resets, and
+what runs in the background (a tap lists it). A message written while the
+agent works waits as **Queued**; **Send now** stops the turn so it goes at
+once. A turn that ended at a usage limit goes on by itself once the limit has
+reset (the chat's `⋮` turns that off).
 
 ## Files
 
