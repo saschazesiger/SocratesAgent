@@ -707,7 +707,11 @@ export function mountComposer(host, ctx) {
   /* -------------------------------------------------------------- paint */
 
   function paint() {
-    if (mounted) draft.newer(Number(ctx.session().draft_rev) || 0);
+    // A save that ends after the chat has left the stage - another chat, a
+    // terminal, Home - finds no chat of this composer's to paint.
+    const row = ctx.session();
+    if (!row || row.id !== id) return;
+    if (mounted) draft.newer(Number(row.draft_rev) || 0);
     const busy = ctx.busy();
     const empty = !input.value.trim() && !files.some((entry) => entry.state === 'ready');
     // One slot: Stop while the turn runs and nothing is written, Send
