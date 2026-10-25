@@ -253,6 +253,33 @@
   display: none;
 }
 
+/* The suggested next messages: one row of chips over the composer, swiped
+   sideways when they do not fit, each cut to its line. */
+.so-chat__next {
+  display: flex;
+  gap: var(--ds-space-2);
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  scrollbar-width: none;
+}
+
+.so-chat__next::-webkit-scrollbar {
+  display: none;
+}
+
+.so-chat__next[hidden] {
+  display: none;
+}
+
+.so-next {
+  flex: none;
+  max-inline-size: min(var(--so-next-max), 85%);
+}
+
+.so-next > .so-ellipsis {
+  min-inline-size: 0;
+}
+
 /* ── Messages ────────────────────────────────────────────────────────── */
 
 .so-msg {

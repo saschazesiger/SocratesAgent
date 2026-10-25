@@ -26,7 +26,7 @@ import { agentMarkHtml } from './logos.js';
 import * as harnesses from './harnesses.js';
 import * as accounts from './accounts.js';
 import './accountpicker.js';
-import { newChat, apply, applyLive, busy, currentTodo, seenClient } from './chatfold.js';
+import { newChat, apply, applyLive, busy, currentTodo, seenClient, openAsks } from './chatfold.js';
 import { ChatStream } from './chatstream.js';
 import {
   assistantMessage, userMessage, lineHtml, askCard, askPlaces, todoList, todoItems, renewsIn, seconds, outboxState,
@@ -37,6 +37,7 @@ import { chatOutbox, pendingFor, pendingAnswer, pendingModel, failedItem, queueA
 import { askProgress, askDraftsRev, forgetAskDraft } from './askdialog.js';
 import { record, recPhase } from './dictate.js';
 import { typeHere } from './keyboard.js';
+import { speak, stopSpeaking } from './voice.js';
 
 // How many chats keep their fold in memory, so that going back to one does
 // not replay its whole journal.
@@ -138,6 +139,13 @@ export function mountChat(ctx) {
   // says the question is answered, rather than asking again in between.
   const sentAnswers = new Map();
   let outboxIds = new Map();
+  // The suggested next messages of each chat's last turn, by chat:
+  // { turnId, items }, asked for once per turn.
+  const nextByChat = new Map();
+  // The answer being read out loud, by message id, and which reading is the
+  // current one.
+  let speakingId = '';
+  let speakGen = 0;
   // Bumped by every change of the Outbox: what a card shows of this
   // browser's own answers and commands is drawn again then, and only then.
   let outboxRev = 0;
@@ -158,7 +166,7 @@ export function mountChat(ctx) {
   // "Latest" is the scroller's last child and sticks to its bottom edge, so
   // it is always just above the dock, however tall the dock is.
   morph(host, html`<div class="so-chat__sub" data-ds-key="sub" role="status" aria-label="Account and background jobs"></div><div class="so-chat__scroll" data-ds-key="scroll"><div class="so-chat__log" role="log" aria-label="Conversation" aria-live="polite" aria-relevant="additions"></div><button class="ds-btn ds-btn--tonal ds-btn--icon so-chat__jump" type="button" data-action="jump" aria-label="Jump to the latest message" data-tip="Latest" hidden>${raw(icon('arrowDown', 20))}</button></div>
-<div class="so-chat__dock" data-ds-key="dock"><div class="so-chat__state" role="status" aria-live="polite"></div><div class="ds-alert so-notice" role="status" hidden></div><div class="ds-alert so-ticker" hidden>${raw(icon('activity', 20))}<span class="ds-alert__text so-ticker__line" role="status" aria-live="polite"></span></div><div class="so-chat__todo" hidden></div><div class="so-chat__schedule" hidden></div><div class="so-chat__composer"></div></div>`);
+<div class="so-chat__dock" data-ds-key="dock"><div class="so-chat__state" role="status" aria-live="polite"></div><div class="ds-alert so-notice" role="status" hidden></div><div class="ds-alert so-ticker" hidden>${raw(icon('activity', 20))}<span class="ds-alert__text so-ticker__line" role="status" aria-live="polite"></span></div><div class="so-chat__todo" hidden></div><div class="so-chat__schedule" hidden></div><div class="so-chat__next" role="group" aria-label="Suggested next messages" hidden></div><div class="so-chat__composer"></div></div>`);
   const scroller = host.querySelector('.so-chat__scroll');
   const log = host.querySelector('.so-chat__log');
   const jump = host.querySelector('.so-chat__jump');
@@ -172,6 +180,7 @@ export function mountChat(ctx) {
   const tickerLine = host.querySelector('.so-ticker__line');
   const todoSlot = host.querySelector('.so-chat__todo');
   const scheduleSlot = host.querySelector('.so-chat__schedule');
+  const nextSlot = host.querySelector('.so-chat__next');
   const composerSlot = host.querySelector('.so-chat__composer');
   const dock = host.querySelector('.so-chat__dock');
 
@@ -503,6 +512,7 @@ export function mountChat(ctx) {
     place(entries.concat(local));
     drawSub();
     drawTodo();
+    drawNext();
     drawState();
     if (composer) composer.paint();
     if (follow) {
@@ -510,6 +520,33 @@ export function mountChat(ctx) {
       lastTop = scroller.scrollTop;
     }
     showJump(!atEnd());
+  }
+
+  // drawNext offers the messages the person most likely sends next, over the
+  // composer, once a turn has ended well and nothing waits: chips a tap puts
+  // in the field. They are asked for once per turn (the server has made them
+  // when the turn ended), and they go while the field holds anything.
+  function drawNext() {
+    const turn = chat ? chat.lastTurn : null;
+    const ok = !!session && synced && !busy(chat) && !!turn && !!turn.id && turn.outcome === 'completed'
+      && !openAsks(chat).length && !stale();
+    let entry = ok ? nextByChat.get(session.id) : null;
+    if (ok && (!entry || entry.turnId !== turn.id)) {
+      const mine = { turnId: turn.id, items: [] };
+      entry = mine;
+      nextByChat.set(session.id, mine);
+      const id = session.id;
+      api('/api/chats/' + encodeURIComponent(id) + '/suggestions', { attempts: 1, timeout: 45000 }).then((data) => {
+        if (data && data.turn_id === mine.turnId && Array.isArray(data.items)) mine.items = data.items.slice(0, 3);
+        if (session && session.id === id) drawNext();
+      }).catch(() => {});
+    }
+    const field = composer ? composer.field() : null;
+    const items = ok && entry && !(field && field.value.trim()) ? entry.items : [];
+    const was = nextSlot.hidden;
+    nextSlot.hidden = !items.length;
+    morph(nextSlot, items.length ? html`${items.map((text, i) => html`<button class="ds-btn ds-btn--tonal ds-btn--sm so-next" type="button" data-action="use-next" data-ds-key="${'n' + i + ':' + text}" data-text="${text}" data-tip="${text}">${raw(icon('sparkles', 16))}<span class="so-ellipsis">${text}</span></button>`)}` : '');
+    if (was !== nextSlot.hidden) liftToasts();
   }
 
   // drawTodo pins the task list above the composer while a turn runs: the
@@ -814,6 +851,13 @@ export function mountChat(ctx) {
         copy(code.textContent, 'The code could not be copied.');
         break;
       }
+      case 'use-next':
+        if (composer) composer.insert(target.dataset.text || '');
+        drawNext();
+        break;
+      case 'speak-answer':
+        speakAnswer(target);
+        break;
       case 'copy-answer': {
         const message = chat.messages.get(target.dataset.message);
         if (!message) return;
@@ -987,6 +1031,33 @@ export function mountChat(ctx) {
   window.addEventListener('online', () => schedule());
   window.addEventListener('offline', () => schedule());
 
+  // speakAnswer reads one answer out loud, said for the ear by the server
+  // (code, paths and tables told rather than read); a press while it reads
+  // stops it.
+  async function speakAnswer(button) {
+    const id = button.dataset.message;
+    if (speakingId === id) {
+      speakGen += 1;
+      speakingId = '';
+      stopSpeaking();
+      return;
+    }
+    const mine = ++speakGen;
+    speakingId = id;
+    try {
+      const data = await M.busy(button, () => api('/api/chats/' + encodeURIComponent(session.id) + '/spoken', {
+        method: 'POST', attempts: 1, timeout: 70000, body: { message_id: id },
+      }), { done: false });
+      const text = String((data && data.text) || '').trim();
+      if (mine !== speakGen || !text) return;
+      await speak(text);
+    } catch (err) {
+      if (mine === speakGen) sayError(errorMessage(err));
+    } finally {
+      if (mine === speakGen) speakingId = '';
+    }
+  }
+
   // copy puts text on the clipboard and says so above the dock.
   function copy(text, failed) {
     navigator.clipboard.writeText(text).then(
@@ -1087,6 +1158,7 @@ export function mountChat(ctx) {
         changed: () => schedule(),
         error: (text) => sayError(text),
       });
+      composer.field().addEventListener('input', () => drawNext());
       stream = new ChatStream({ chatId: next.id, since: () => chat.lastSeq, onFrame, onStatus });
       stream.start();
       // Their usage moves, so the accounts are read again for every chat

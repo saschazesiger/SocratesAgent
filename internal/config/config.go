@@ -29,11 +29,14 @@ const (
 	DefaultStatusModel = DefaultAssistModel
 	DefaultHomeModel   = DefaultAssistModel
 
-	// AssistModelsRev is the revision of the shipped text models. A settings
-	// document saved under an older one has them replaced, once, with the
-	// defaults above (Normalize): the owner moved every text call to
-	// DefaultAssistModel, models picked by hand before that included.
-	AssistModelsRev = 1
+	// AssistModelsRev is the revision of the shipped model settings. A
+	// settings document saved under an older one is brought up to it once
+	// (Normalize): revision 1 moved every text call to DefaultAssistModel,
+	// models picked by hand before that included; revision 2 turned the
+	// turn outcomes and the next-message suggestions on. A fresh
+	// installation starts at the current revision and keeps both off until
+	// somebody turns them on.
+	AssistModelsRev = 2
 )
 
 // Settings is the full configuration document.
@@ -88,10 +91,16 @@ type OpenRouterSettings struct {
 	// answer, calls and task list to OpenRouter, and notifications wait for
 	// its answer.
 	Outcomes bool `json:"outcomes"`
+	// Suggestions has the end of every chat's turn offer the two or three
+	// messages the person most likely sends next, as chips over the
+	// composer, read by StatusModel from the chat's record. Off on a fresh
+	// installation for the same reason as Outcomes.
+	Suggestions bool `json:"suggestions"`
 	// ModelsRev is the AssistModelsRev the three text models were last
 	// brought up to. Default leaves it at zero: a stored document is decoded
 	// over the defaults, and one from before the field must not take the
-	// default's revision for its own.
+	// default's revision for its own. A server with no stored document sets
+	// it before its first Normalize.
 	ModelsRev int `json:"models_rev"`
 }
 
@@ -339,12 +348,16 @@ func (s *Settings) Normalize() {
 	if strings.TrimSpace(s.OpenRouter.TranscribeModel) == "" {
 		s.OpenRouter.TranscribeModel = d.OpenRouter.TranscribeModel
 	}
-	if s.OpenRouter.ModelsRev < AssistModelsRev {
+	if s.OpenRouter.ModelsRev < 1 {
 		s.OpenRouter.TitleModel = d.OpenRouter.TitleModel
 		s.OpenRouter.StatusModel = d.OpenRouter.StatusModel
 		s.OpenRouter.HomeModel = d.OpenRouter.HomeModel
-		s.OpenRouter.ModelsRev = AssistModelsRev
 	}
+	if s.OpenRouter.ModelsRev < 2 {
+		s.OpenRouter.Outcomes = true
+		s.OpenRouter.Suggestions = true
+	}
+	s.OpenRouter.ModelsRev = AssistModelsRev
 	// There is no chat model left to fall back to: OpenRouter writes titles and
 	// nothing else, so an empty field takes the shipped title model.
 	if strings.TrimSpace(s.OpenRouter.TitleModel) == "" {

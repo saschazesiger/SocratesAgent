@@ -1018,7 +1018,7 @@ export function assistantMessage(message, view, segment = 0) {
     }`)
   }${working ? html`<p class="so-msg__wait ds-meta"><span class="ds-spinner" aria-hidden="true"></span><span>Working…</span></p>` : ''}${
     copyable || facts.length ? html`<div class="so-msg__foot">${
-      copyable ? html`<button class="ds-btn ds-btn--quiet ds-btn--icon ds-btn--sm so-msg__copy" type="button" data-action="copy-answer" data-message="${message.id}" aria-label="Copy the answer" data-tip="Copy">${raw(icon('copy', 18))}</button>` : ''
+      copyable ? html`<button class="ds-btn ds-btn--quiet ds-btn--icon ds-btn--sm so-msg__copy" type="button" data-action="copy-answer" data-message="${message.id}" aria-label="Copy the answer" data-tip="Copy">${raw(icon('copy', 18))}</button><button class="ds-btn ds-btn--quiet ds-btn--icon ds-btn--sm so-msg__speak" type="button" data-action="speak-answer" data-message="${message.id}" aria-label="Read the answer out loud" data-tip="Read aloud (again to stop)">${faces(raw(icon('volume', 18)), '')}</button>` : ''
     }${infoButton(facts, 'Usage of this answer')}</div>` : ''
   }</article>`;
 }

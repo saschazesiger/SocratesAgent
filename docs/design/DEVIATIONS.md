@@ -2956,3 +2956,13 @@ Asked for by the product owner on 2026-10-25, on branch `ui-simplify`.
   still reads its screen.
 - **The rename dialog suggests a name** (its sparkles): `POST /api/sessions/{id}/title
   {"suggest":true}` answers a name from the journal and saves nothing; Rename does.
+- **Turn outcomes and next-message suggestions are on for existing installations**
+  (`openrouter.models_rev` 2 turns `outcomes` and `suggestions` on once); a fresh installation starts
+  with both off, as nothing more leaves the machine until somebody turns them on.
+- **Next messages as chips.** When a chat's turn completes and nothing waits, the status model reads
+  the chat's record and suggests two or three next messages (`chatsuggest.go`, made at the turn's end,
+  `GET /api/chats/{id}/suggestions` waits for them). They stand over the composer while its field is
+  empty; a tap puts one in the field, nothing is sent by itself.
+- **Read aloud on an answer.** Beside Copy, an answer has Read aloud: `POST /api/chats/{id}/spoken`
+  says it for the ear in the voice's language (what was done, what came of it, what it asks; code,
+  paths and tables told rather than read), or hands back a short plain answer as it is.

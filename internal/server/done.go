@@ -41,6 +41,7 @@ func (s *Server) park(ctx context.Context, id string) error {
 func (s *Server) deleteSession(ctx context.Context, id string) error {
 	// A title run writing into a row that is being removed is nothing good.
 	s.titles.forget(id)
+	s.suggests.forget(id)
 	s.push.forget(id)
 	if row, err := s.store.GetSession(id); err == nil && row.IsChat() {
 		s.chats.remove(ctx, id)

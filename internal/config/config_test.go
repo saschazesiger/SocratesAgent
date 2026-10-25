@@ -337,11 +337,15 @@ func TestOlderTextModelsMoveToTheAssistModelOnce(t *testing.T) {
 	if o.TranscribeModel != "openai/gpt-transcribe" || o.ModelsRev != AssistModelsRev {
 		t.Fatalf("transcription is not a text model, and the revision is kept: %#v", o)
 	}
+	if !o.Outcomes {
+		t.Fatalf("an older document does not have the outcomes turned on: %#v", o)
+	}
+	o.Outcomes = false
 	o.TitleModel = "someone/quick"
 	s.OpenRouter = o
 	s.Normalize()
-	if s.OpenRouter.TitleModel != "someone/quick" {
-		t.Fatalf("a model picked after the move was replaced: %#v", s.OpenRouter)
+	if s.OpenRouter.TitleModel != "someone/quick" || s.OpenRouter.Outcomes {
+		t.Fatalf("a choice made after the move was replaced: %#v", s.OpenRouter)
 	}
 }
 

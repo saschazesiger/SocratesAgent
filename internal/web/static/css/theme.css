@@ -34,6 +34,7 @@
   --so-folder-head-height: 36px;
   --so-shelf-head-height: 32px;
   --so-rename-width: 400px;
+  --so-next-max: 320px;
   --so-title-min: 96px;
   /* The session's menu as an action sheet on a phone (so-frame.css). */
   --so-actions-width: 480px;

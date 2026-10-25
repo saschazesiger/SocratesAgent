@@ -11702,6 +11702,56 @@ async function chatstatus() {
   }
 }
 
+// chat-next: a turn that ended well offers the next messages as chips over
+// the composer, a tap puts one in the field and the chips give way to it;
+// an answer is read out loud as the server says it for the ear.
+async function chatnext() {
+  const stub = await openRouterStub({
+    answer: (json) => {
+      const system = String(((json.messages || [])[0] || {}).content || '');
+      if (system.startsWith('You suggest the next message')) return JSON.stringify({ suggestions: ['Run the tests', 'Commit and push'] });
+      if (system.startsWith('You rewrite a coding agent')) return 'It printed a heading, a list and some code.';
+      return 'A chat';
+    },
+  });
+  const s = await chatServer({ args: ['--autoplay-policy=no-user-gesture-required'] });
+  const { page } = s;
+  try {
+    await pointGateway(s, stub);
+    const on = await s.context.request.put(s.url + '/api/settings', { data: { settings: { openrouter: { suggestions: true } } } });
+    ok(on.ok(), 'the suggestions are switched on', String(on.status()));
+    const spoken = await stubSpeech(s.context);
+    const id = await startChat(page);
+    await say(page, '/md');
+    await awaitChat(s, id, idle);
+    const chips = await page.waitForFunction(() => {
+      const box = document.querySelector('#chat .so-chat__next');
+      return box && !box.hidden ? [...box.querySelectorAll('.so-next')].map((b) => b.dataset.text) : null;
+    }, null, { timeout: 30000 }).then((h) => h.jsonValue(), () => null);
+    ok(JSON.stringify(chips) === JSON.stringify(['Run the tests', 'Commit and push']),
+      'the ended turn offers the next messages over the composer', JSON.stringify(chips));
+    await shot(page, 'chat-next');
+    await page.click('#chat .so-next[data-text="Commit and push"]');
+    const taken = await page.evaluate(() => ({
+      field: document.querySelector('#chat .so-chat__composer textarea').value,
+      hidden: document.querySelector('#chat .so-chat__next').hidden,
+    }));
+    ok(taken.field === 'Commit and push' && taken.hidden, 'a tap puts it in the field, and the chips give way', JSON.stringify(taken));
+
+    await page.click('#chat .so-msg[data-role="assistant"] .so-msg__speak');
+    const read = await (async () => {
+      const until = Date.now() + 20000;
+      while (Date.now() < until && !spoken.length) await wait(150);
+      return spoken.slice();
+    })();
+    ok(read[0] === 'It printed a heading, a list and some code.', 'the answer is read out loud, said for the ear', JSON.stringify(read));
+    ok(unexpected(s.errors).length === 0, 'no console errors', unexpected(s.errors).join(' | ') || '0');
+  } finally {
+    await s.stop();
+    await stub.close();
+  }
+}
+
 // chat-outcome: with outcomes on, a chat's ended turn is judged from its
 // journal: the hourglass while it is read, then the verdict on the row and
 // on Home, and the notification that waited for it says it. A turn the
@@ -12252,6 +12302,7 @@ const ALL = [
   ['chat-push', 'a chat\u2019s notification and badge: the question\u2019s words, how a turn ended, nothing for a Stop, a limit once', chatpush],
   ['chat-title', 'a chat names itself from its first message', chattitle],
   ['chat-status', 'Status says a chat from its journal, on its line and out loud', chatstatus],
+  ['chat-next', 'the next messages as chips after a turn, and an answer read out loud for the ear', chatnext],
   ['chat-outcome', 'a chat\u2019s turn judged from its journal: the hourglass, the verdict, the notification', chatoutcome],
   ['chat-schedule', 'a chat started by its clock: its draft the first message, once, and no start time once it has one', chatschedule],
   ['chat-ultracode', 'Ultracode for Claude Code alone: in the sheet, and in a Claude chat\u2019s menu', chatultracode],

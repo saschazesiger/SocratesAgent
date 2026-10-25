@@ -1603,6 +1603,8 @@ func (s *Server) onSessionActivity(sessionID string, a termux.Activity) {
 	}
 	// The first prompt being taken up is what gives a session its name.
 	s.titles.observe(sessionID, a)
+	// And a turn's end is what the next messages are suggested for.
+	s.suggests.observe(sessionID, a)
 }
 
 // emitTitle tells every open socket where the automatic naming of a session
