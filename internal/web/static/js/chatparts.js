@@ -131,7 +131,7 @@ export function isAskTool(part) {
 }
 
 // The glyph a tool is drawn with, by what it does.
-function toolGlyph(name) {
+export function toolGlyph(name) {
   const n = String(name).toLowerCase();
   if (/bash|command|shell|monitor/.test(n)) return 'monitor';
   if (/^read|notebookread/.test(n)) return 'fileText';
@@ -834,6 +834,25 @@ export function backgroundJobs(chat) {
     others -= started.length;
   }
   return { jobs, others };
+}
+
+/**
+ * jobsList is the background jobs dialog's body: a row a job - its tool's
+ * mark, its name, what it runs, and how long it has run - and a quiet row
+ * for what the agent counts without a part to show.
+ */
+export function jobsList({ jobs, others }, now = Date.now()) {
+  if (!jobs.length && !others) {
+    return html`<div class="ds-empty so-jobs__empty"><span class="ds-empty__disc" aria-hidden="true">${raw(icon('background', 24))}</span><p class="ds-empty__title">Nothing in the background</p><p class="ds-empty__text">What the agent sends to the background shows here while it runs.</p></div>`;
+  }
+  return html`<ul class="so-jobs">${jobs.map((job) => {
+    const ran = job.since ? seconds(Math.max(0, now - job.since)) : '';
+    return html`<li class="so-job" data-ds-key="${job.id}"><span class="so-job__icon" aria-hidden="true">${raw(icon(toolGlyph(job.name), 18))}</span><span class="so-job__main"><span class="so-job__name">${job.name}</span>${
+      job.summary ? html`<code class="so-job__summary">${job.summary}</code>` : ''
+    }</span><span class="ds-status ds-status--running so-job__state"><span class="ds-spinner ds-status__spinner" aria-hidden="true"></span><span>${ran || 'Running'}</span></span></li>`;
+  })}${
+    others ? html`<li class="so-job so-job--others" data-ds-key="others"><span class="so-job__icon" aria-hidden="true">${raw(icon('background', 18))}</span><span class="so-job__main"><span class="so-job__name">${others + (others === 1 ? ' more task' : ' more tasks')}</span><span class="so-job__note">${'The agent counts ' + (others === 1 ? 'it' : 'them') + ' without saying what ' + (others === 1 ? 'it runs.' : 'they run.')}</span></span></li>` : ''
+  }</ul>`;
 }
 
 /* ---------------------------------------------------------- the work fold */

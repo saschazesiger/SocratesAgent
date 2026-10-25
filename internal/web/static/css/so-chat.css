@@ -12,11 +12,11 @@
  *                          while a file is held over it, [data-fresh] while
  *                          nothing has been said: the composer is the first
  *                          message, a big field that fills the view
- *   .so-chat__sub          the line under the top bar: the chat's account,
- *                          each limit window (.so-chat__limit: used, a flat
- *                          bar, when it resets; [data-high] from 80 %,
- *                          [data-full] at its end) and the background jobs
- *                          (.so-chat__jobs, [data-running] while any run)
+ *   .so-chat__sub          the line under the top bar: the chat's account
+ *                          and each limit window (.so-chat__limit: used, a
+ *                          flat bar, when it resets; [data-high] from 80 %,
+ *                          [data-full] at its end); it steps aside while a
+ *                          phone's keyboard is up (data-so-keyboard)
  *   .so-chat__scroll       the conversation's scroller; "Latest" (an icon)
  *                          sticks to its bottom edge (.so-chat__jump)
  *   .so-chat__log          the timeline, one .so-chat__entry per message,
@@ -24,6 +24,8 @@
  *   .so-chat__dock         under it: the state line (what did not happen,
  *                          the connection, the agent), the task list pinned
  *                          while the conversation's own is out of sight,
+ *                          the background jobs while any run (.so-chat__bg,
+ *                          its button .so-chat__jobs opens .so-jobs-dialog)
  *                          and the composer
  *   .so-msg                a message, data-role user | assistant; a user's
  *                          is a bubble with its state chip (.so-msg__chip);
@@ -145,13 +147,11 @@
   color: var(--ds-error);
 }
 
-/* The jobs stand at the end of the line. */
-.so-chat__jobs {
-  margin-left: auto;
-}
-
-.so-chat__jobs:not([data-running]) {
-  color: var(--ds-text-3);
+/* No account and no limits: no line. While a phone's keyboard is up the
+   top bar steps aside (so-frame.css), and this line with it. */
+.so-chat__sub[hidden],
+.so-touch[data-so-keyboard] .so-chat__sub {
+  display: none;
 }
 
 .so-chat__scroll {
@@ -195,6 +195,12 @@
 .so-chat__empty,
 .so-chat__loading {
   margin: auto;
+}
+
+/* How far a first replay is, beside "Loading the conversation…". */
+.so-chat__loading-share {
+  color: var(--ds-text-2);
+  font-variant-numeric: tabular-nums;
 }
 
 /* "Latest": in the scroller's flow after the log, held at its bottom edge
@@ -278,6 +284,136 @@
 
 .so-next > .so-ellipsis {
   min-inline-size: 0;
+}
+
+/* ── Background jobs ─────────────────────────────────────────────────── */
+
+/* At the foot of the chat, over the composer: how many run and what the
+   newest runs, one tap from the dialog that lists them. */
+.so-chat__bg {
+  display: flex;
+  min-width: 0;
+}
+
+.so-chat__bg[hidden] {
+  display: none;
+}
+
+.so-chat__jobs {
+  min-width: 0;
+  max-width: 100%;
+  gap: var(--ds-space-2);
+}
+
+.so-chat__jobs-count {
+  flex: none;
+  font-variant-numeric: tabular-nums;
+}
+
+.so-chat__jobs-what {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ds-text-2);
+  font: var(--ds-font-meta);
+  font-family: var(--ds-font-mono);
+}
+
+.so-chat__jobs-what::before {
+  content: '·';
+  margin-right: var(--ds-space-2);
+  font-family: var(--ds-font);
+}
+
+/* The dialog: a row a job, its tool's mark in a disc, its name over what it
+   runs, and how long it has run at the end. */
+.so-jobs-dialog .ds-dialog__box {
+  width: min(100%, 36rem);
+}
+
+.so-jobs {
+  display: flex;
+  flex-direction: column;
+  max-height: min(60vh, calc(var(--so-app-h, 100dvh) * 0.6));
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  list-style: none;
+  border: 1px solid var(--ds-line);
+  border-radius: var(--ds-radius-card);
+}
+
+.so-job {
+  display: flex;
+  align-items: center;
+  gap: var(--ds-space-3);
+  min-width: 0;
+  padding: var(--ds-space-3) var(--ds-space-4);
+}
+
+.so-job + .so-job {
+  border-top: 1px solid var(--ds-line);
+}
+
+.so-job__icon {
+  display: grid;
+  flex: none;
+  place-items: center;
+  inline-size: var(--ds-space-8);
+  block-size: var(--ds-space-8);
+  border-radius: 50%;
+  background: var(--ds-surface-high);
+  color: var(--ds-text-2);
+}
+
+.so-job__main {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: var(--ds-space-1);
+  min-width: 0;
+}
+
+.so-job__name {
+  color: var(--ds-text);
+  font: var(--ds-font-body);
+  font-weight: var(--ds-weight-label);
+}
+
+.so-job__summary {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow-wrap: anywhere;
+  color: var(--ds-text-2);
+  font: var(--ds-font-code);
+  background: none;
+  border: 0;
+  border-radius: 0;
+  padding: 0;
+}
+
+.so-job__note {
+  color: var(--ds-text-3);
+  font: var(--ds-font-meta);
+}
+
+.so-job__state {
+  flex: none;
+  font-variant-numeric: tabular-nums;
+}
+
+.so-job--others .so-job__icon {
+  background: none;
+  color: var(--ds-text-3);
+}
+
+.so-jobs__empty {
+  padding-block: var(--ds-space-4);
 }
 
 /* ── Messages ────────────────────────────────────────────────────────── */

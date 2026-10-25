@@ -661,13 +661,15 @@
 }
 
 /* A phone on its side with its keyboard up has a strip of screen left
-   (keybar.js followViewport sets data-so-short): the bar gives its height to
-   what is being typed into, and comes back with the keyboard's going. */
-.so-touch[data-so-short] .so-app {
+   (keybar.js followViewport sets data-so-short), and a phone upright with
+   its keyboard up for the composer or another field of the page has not
+   much more (data-so-keyboard): the bar gives its height to what is being
+   typed into, and comes back with the keyboard's going. */
+.so-touch:is([data-so-short], [data-so-keyboard]) .so-app {
   --ds-topbar-height: 0px;
 }
 
-.so-touch[data-so-short] .so-app > .ds-topbar {
+.so-touch:is([data-so-short], [data-so-keyboard]) .so-app > .ds-topbar {
   display: none;
 }
 

@@ -14,7 +14,7 @@
 import { el } from './api.js';
 import { iconEl } from './ui.js';
 import { pasteClipboard, HOLD_MS } from './term.js';
-import { touchScreen } from './keyboard.js';
+import { touchScreen, typingInPage } from './keyboard.js';
 
 /* ---------------------------------------------------------- the key bar */
 
@@ -226,23 +226,49 @@ export function mountKeyBar(host, term, socket) {
 // Below this many pixels of visible height - a phone on its side with its
 // keyboard up - the top bar steps aside (so-frame.css, data-so-short).
 const SHORT_VIEW = 300;
+// How much shorter than the tallest it has been at this width what can be
+// seen has to be for a keyboard to be up: more than an address bar that
+// slides away, less than any keyboard.
+const KEYBOARD_GAP = 150;
 
 export function followViewport() {
   const vv = window.visualViewport;
   if (!vv) return () => {};
+  // The tallest the visible part has been at this width, in the page's own
+  // pixels so a pinch is not a keyboard. A browser that shrinks the layout
+  // viewport for its keyboard as well (Firefox) shrinks innerHeight with it,
+  // so innerHeight is no measure; turning the phone starts again.
+  let tallest = 0;
+  let width = 0;
   const apply = () => {
     const root = document.documentElement;
     root.style.setProperty('--so-app-h', Math.round(vv.height) + 'px');
     root.toggleAttribute('data-so-short', vv.height < SHORT_VIEW);
+    const seen = vv.height * vv.scale;
+    if (window.innerWidth !== width) { width = window.innerWidth; tallest = 0; }
+    tallest = Math.max(tallest, seen);
+    // A keyboard up for a field of the page: the top bar and the line under
+    // it step aside so what is being written, and what it answers, have the
+    // screen (so-frame.css, data-so-keyboard). Not for the terminal's or the
+    // editor's keyboard - the bar holds the switch that puts that one away.
+    root.toggleAttribute('data-so-keyboard', tallest - seen > KEYBOARD_GAP && typingInPage());
     if (vv.offsetTop > 0) window.scrollTo(0, 0);
   };
+  // The focus can go elsewhere while the keyboard stays - from the composer
+  // to the terminal's field - and is only where it went after the event.
+  const refocus = () => setTimeout(apply, 0);
   vv.addEventListener('resize', apply);
   vv.addEventListener('scroll', apply);
+  document.addEventListener('focusin', refocus);
+  document.addEventListener('focusout', refocus);
   apply();
   return () => {
     vv.removeEventListener('resize', apply);
     vv.removeEventListener('scroll', apply);
+    document.removeEventListener('focusin', refocus);
+    document.removeEventListener('focusout', refocus);
     document.documentElement.style.removeProperty('--so-app-h');
     document.documentElement.removeAttribute('data-so-short');
+    document.documentElement.removeAttribute('data-so-keyboard');
   };
 }

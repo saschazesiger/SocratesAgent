@@ -19,7 +19,7 @@
 // person sends meanwhile is on screen as "Not sent yet" until it is, then as
 // "Sent" until the journal has it.
 
-import { api, alertDialog, promptDialog, toast, errorMessage, fmtTokens, clientKey, CONNECTION_GRACE } from './api.js';
+import { api, alertDialog, openDialog, promptDialog, toast, errorMessage, fmtTokens, clientKey, CONNECTION_GRACE } from './api.js';
 import { M, html, morph, raw, icon } from './ui.js';
 import { connectionSaidElsewhere, retryConnection } from './net.js';
 import { agentMarkHtml } from './logos.js';
@@ -28,9 +28,10 @@ import * as accounts from './accounts.js';
 import './accountpicker.js';
 import { newChat, apply, applyLive, busy, currentTodo, seenClient, openAsks } from './chatfold.js';
 import { ChatStream } from './chatstream.js';
+import { loadChat, saveChat } from './chatcache.js';
 import {
   assistantMessage, userMessage, lineHtml, askCard, askPlaces, todoList, todoItems, renewsIn, seconds, outboxState,
-  backgroundJobs,
+  backgroundJobs, jobsList,
 } from './chatparts.js';
 import { mountComposer } from './composer.js';
 import { chatOutbox, pendingFor, pendingAnswer, pendingModel, failedItem, queueAnswer, answeredHere } from './chatoutbox.js';
@@ -42,6 +43,13 @@ import { speak, stopSpeaking } from './voice.js';
 // How many chats keep their fold in memory, so that going back to one does
 // not replay its whole journal.
 const KEEP = 8;
+// How long a chat drawn from what was kept may wait for its stream before
+// the view says it is showing what was kept: a stream that catches up in a
+// blink is not worth a line that flashes.
+const CATCHUP_QUIET = 400;
+// How long after the last event the events of a chat are written to the
+// device (chatcache.js); leaving the chat or the page writes them at once.
+const SAVE_AFTER = 1500;
 // How close to the bottom counts as "at the end", where new content follows.
 const STICK = 64;
 
@@ -120,6 +128,26 @@ export function mountChat(ctx) {
   // this view itself.
   let lastTop = 0;
   let synced = false;
+  // The chat on screen was drawn from what was kept - in memory, or on the
+  // device (chatcache.js) - and its stream has not caught up yet: what it
+  // shows may be old, and the view says so. shownAt is when it was put on
+  // the stage.
+  let catchingUp = false;
+  let shownAt = 0;
+  let catchupTimer = null;
+  // The last seq the server has (its hello), which a first replay counts
+  // up to.
+  let target = 0;
+  // A chat's events as its stream brought them, kept with its fold, which
+  // is what the device keeps of it; and whether they changed since.
+  const frames = new WeakMap();
+  const framesOf = (one) => {
+    if (!frames.has(one)) frames.set(one, { list: [], dirty: false });
+    return frames.get(one);
+  };
+  let saveTimer = null;
+  // A chat being read from the device, before its stream may start.
+  let loadingId = '';
   let lostAt = 0;
   let staleTimer = null;
   // The parts opened or closed by hand, by key; everything else is drawn in
@@ -165,8 +193,8 @@ export function mountChat(ctx) {
 
   // "Latest" is the scroller's last child and sticks to its bottom edge, so
   // it is always just above the dock, however tall the dock is.
-  morph(host, html`<div class="so-chat__sub" data-ds-key="sub" role="status" aria-label="Account and background jobs"></div><div class="so-chat__scroll" data-ds-key="scroll"><div class="so-chat__log" role="log" aria-label="Conversation" aria-live="polite" aria-relevant="additions"></div><button class="ds-btn ds-btn--tonal ds-btn--icon so-chat__jump" type="button" data-action="jump" aria-label="Jump to the latest message" data-tip="Latest" hidden>${raw(icon('arrowDown', 20))}</button></div>
-<div class="so-chat__dock" data-ds-key="dock"><div class="so-chat__state" role="status" aria-live="polite"></div><div class="ds-alert so-notice" role="status" hidden></div><div class="ds-alert so-ticker" hidden>${raw(icon('activity', 20))}<span class="ds-alert__text so-ticker__line" role="status" aria-live="polite"></span></div><div class="so-chat__todo" hidden></div><div class="so-chat__schedule" hidden></div><div class="so-chat__next" role="group" aria-label="Suggested next messages" hidden></div><div class="so-chat__composer"></div></div>`);
+  morph(host, html`<div class="so-chat__sub" data-ds-key="sub" role="status" aria-label="Account and limits"></div><div class="so-chat__scroll" data-ds-key="scroll"><div class="so-chat__log" role="log" aria-label="Conversation" aria-live="polite" aria-relevant="additions"></div><button class="ds-btn ds-btn--tonal ds-btn--icon so-chat__jump" type="button" data-action="jump" aria-label="Jump to the latest message" data-tip="Latest" hidden>${raw(icon('arrowDown', 20))}</button></div>
+<div class="so-chat__dock" data-ds-key="dock"><div class="so-chat__state" role="status" aria-live="polite"></div><div class="ds-alert so-notice" role="status" hidden></div><div class="ds-alert so-ticker" hidden>${raw(icon('activity', 20))}<span class="ds-alert__text so-ticker__line" role="status" aria-live="polite"></span></div><div class="so-chat__todo" hidden></div><div class="so-chat__bg" hidden></div><div class="so-chat__schedule" hidden></div><div class="so-chat__next" role="group" aria-label="Suggested next messages" hidden></div><div class="so-chat__composer"></div></div>`);
   const scroller = host.querySelector('.so-chat__scroll');
   const log = host.querySelector('.so-chat__log');
   const jump = host.querySelector('.so-chat__jump');
@@ -181,6 +209,7 @@ export function mountChat(ctx) {
   const todoSlot = host.querySelector('.so-chat__todo');
   const scheduleSlot = host.querySelector('.so-chat__schedule');
   const nextSlot = host.querySelector('.so-chat__next');
+  const jobsSlot = host.querySelector('.so-chat__bg');
   const composerSlot = host.querySelector('.so-chat__composer');
   const dock = host.querySelector('.so-chat__dock');
 
@@ -491,7 +520,9 @@ export function mountChat(ctx) {
     const follow = stuck && !held;
     // A line with nothing to say (a model "change" to the same model) is
     // no entry at all.
-    const entries = chat.timeline.map((entry) => ({ key: entry.key, markup: entryMarkup(entry) })).filter((one) => one.markup);
+    // A chat read for the first time is drawn once its replay is through,
+    // not built up before the eyes event by event.
+    const entries = synced ? chat.timeline.map((entry) => ({ key: entry.key, markup: entryMarkup(entry) })).filter((one) => one.markup) : [];
     const local = localEntries();
     // A chat that has not started - nothing said, nothing on its way - is
     // its first message: the composer is a big field that fills the view
@@ -506,11 +537,15 @@ export function mountChat(ctx) {
     if (fresh) {
       entries.push({ key: 'empty', markup: String(html`<div class="ds-empty so-chat__empty"><span class="ds-empty__disc" aria-hidden="true">${raw(agentMarkHtml(session.harness, 24))}</span><p class="ds-empty__title">${'What should ' + harnesses.label(session.harness) + ' do?'}</p><p class="ds-empty__text">Write the first message. It is kept as you type, and starts the chat when you send it.</p></div>`) });
     }
-    if (!synced && !chat.timeline.length) {
-      entries.push({ key: 'loading', markup: String(html`<div class="ds-loading so-chat__loading" role="status"><span class="ds-loader ds-loader--sm" aria-hidden="true"></span>Loading the conversation…</div>`) });
+    if (!synced) {
+      const share = target > 0 ? Math.min(100, Math.floor((chat.lastSeq / target) * 100)) : 0;
+      entries.push({ key: 'loading', markup: String(html`<div class="ds-loading so-chat__loading" role="status"><span class="ds-loader ds-loader--sm" aria-hidden="true"></span><span>Loading the conversation…</span>${
+        share ? html`<span class="so-chat__loading-share">${share + '\u00a0%'}</span>` : ''
+      }</div>`) });
     }
     place(entries.concat(local));
     drawSub();
+    drawJobs();
     drawTodo();
     drawNext();
     drawState();
@@ -595,7 +630,11 @@ export function mountChat(ctx) {
   // the agent when it is not well.
   function drawState() {
     const old = stale();
-    host.toggleAttribute('data-stale', old);
+    // Drawn from what was kept, and the stream not through yet a moment on:
+    // what is on screen is what the chat said last time, dimmed as a stale
+    // one is, and the line says so.
+    const kept = !old && catchingUp && Date.now() - shownAt >= CATCHUP_QUIET;
+    host.toggleAttribute('data-stale', old || kept);
     // While this line says the connection, the page's bar does not say it
     // again (net.js).
     connectionSaidElsewhere(old);
@@ -605,6 +644,9 @@ export function mountChat(ctx) {
       line = navigator.onLine === false
         ? html`<div class="ds-alert ds-alert--warning" data-ds-key="offline">${raw(icon('wifiOff', 20))}<span class="ds-alert__text">Offline. The chat may be behind; what you send goes out when the connection is back.</span></div>`
         : html`<div class="ds-alert ds-alert--warning" data-ds-key="reconnecting"><span class="so-chat__spin" aria-hidden="true"><span class="ds-spinner"></span></span><span class="ds-alert__text">Reconnecting… The chat may be behind.</span><button class="ds-btn ds-btn--quiet ds-btn--icon ds-btn--sm" type="button" data-action="reconnect" aria-label="Try to connect now" data-tip="Retry">${raw(icon('sync', 18))}</button></div>`;
+    } else if (kept) {
+      const when = chat.lastAt ? new Date(chat.lastAt).toLocaleString([], { weekday: 'short', hour: '2-digit', minute: '2-digit' }) : '';
+      line = html`<div class="ds-alert" data-ds-key="catchup"><span class="so-chat__spin" aria-hidden="true"><span class="ds-spinner"></span></span><span class="ds-alert__text">${'Showing the chat as this device last saw it' + (when ? ' (' + when + ')' : '') + '. Loading what is new…'}</span></div>`;
     } else if (session.workdir_missing && !chat.turn) {
       // A restore brings the chats back, not the code they worked on
       // (REBUILD §6.2): the conversation stays readable, and the agent can
@@ -636,8 +678,7 @@ export function mountChat(ctx) {
   }
 
   // drawSub is the line under the top bar: the account the chat runs on,
-  // how much of each of its limits is used and when each renews, and what
-  // runs in the background - always there, so nothing runs unseen.
+  // and how much of each of its limits is used and when each renews.
   function drawSub() {
     const now = Date.now();
     const accountId = chat.account || session.options?.account || '';
@@ -652,15 +693,27 @@ export function mountChat(ctx) {
         left ? html`<span class="so-chat__limit-reset">${'resets in ' + left}</span>` : ''
       }</div>`;
     });
-    const { jobs, others } = backgroundJobs(chat);
-    const count = jobs.length + others;
-    const jobsWords = count ? count + (count === 1 ? ' background job' : ' background jobs') : 'No background jobs';
     const label = accountId ? accounts.labelOf(accountId) || accountId : '';
+    subLine.hidden = !label && !limits.length;
     morph(subLine, html`${label ? html`<span class="so-chat__account" data-tip="${'Account: ' + label}">${raw(icon(account && account.kind === 'api_key' ? 'key' : 'user', 16))}<span class="so-ellipsis">${label}</span></span>` : ''}${
       limits.length ? html`<div class="so-chat__limits">${limits}</div>` : ''
-    }<button class="ds-btn ds-btn--quiet ds-btn--sm so-chat__jobs" type="button" data-action="jobs"${count ? html` data-running` : ''} aria-label="${jobsWords}">${
-      count ? html`<span class="ds-spinner" aria-hidden="true"></span>` : raw(icon('background', 16))
-    }<span>${jobsWords}</span></button>`);
+    }`);
+  }
+
+  // drawJobs is what runs in the background, at the foot of the chat over
+  // the composer, where the eye is while it waits: how many, and what the
+  // newest runs. Nothing while nothing runs.
+  function drawJobs() {
+    const { jobs, others } = backgroundJobs(chat);
+    const count = jobs.length + others;
+    jobsSlot.hidden = !count;
+    if (!count) { morph(jobsSlot, ''); return; }
+    const words = count + (count === 1 ? ' background job' : ' background jobs');
+    const latest = jobs.length ? jobs[jobs.length - 1] : null;
+    const what = latest ? latest.summary || latest.name : '';
+    morph(jobsSlot, html`<button class="ds-btn ds-btn--tonal ds-btn--sm so-chat__jobs" type="button" data-action="jobs" data-running aria-label="${words + ' - show them'}" data-tip="Show what runs in the background"><span class="ds-spinner ds-status__spinner" aria-hidden="true"></span><span class="so-chat__jobs-count">${words}</span>${
+      what ? html`<span class="so-chat__jobs-what">${what}</span>` : ''
+    }${raw(icon('chevronRight', 16))}</button>`);
   }
 
   // drawSchedule is the scheduled start of a chat that has not started: a
@@ -729,19 +782,23 @@ export function mountChat(ctx) {
     }
   }
 
-  // jobsDialog says what runs in the background, one line a job.
+  // jobsDialog says what runs in the background, a row a job, and keeps
+  // saying it while it is open: the times go on, and a job that ends leaves.
   function jobsDialog(opener) {
-    const { jobs, others } = backgroundJobs(chat);
-    const now = Date.now();
-    const lines = jobs.map((job) => [job.name, job.summary, job.since ? 'for ' + seconds(now - job.since) : '']
-      .filter(Boolean).join(' · '));
-    if (others) lines.push(others + (others === 1 ? ' more task the agent reports' : ' more tasks the agent reports'));
-    alertDialog({
-      title: 'Background jobs',
-      lines: lines.length ? lines : ['Nothing runs in the background of this chat.'],
-      confirmLabel: 'Close',
-      opener,
-    });
+    const body = document.createElement('div');
+    body.className = 'so-jobs__body';
+    const draw = () => { if (chat) morph(body, jobsList(backgroundJobs(chat))); };
+    draw();
+    const close = document.createElement('button');
+    close.className = 'ds-btn ds-btn--text';
+    close.type = 'button';
+    close.dataset.close = '';
+    close.autofocus = true;
+    close.textContent = 'Close';
+    const { dialog, shown } = openDialog({ title: 'Background jobs', field: body, actions: [close], opener });
+    dialog.classList.add('so-jobs-dialog');
+    const timer = setInterval(draw, 1000);
+    shown.then(() => clearInterval(timer));
   }
 
   // usageFacts is the chat's usage for its "i", as named facts ([label,
@@ -772,10 +829,60 @@ export function mountChat(ctx) {
 
   /* ------------------------------------------------------------ the stream */
 
+  // persist writes the chat on screen's events to the device, now or a
+  // little later.
+  function persist(now) {
+    clearTimeout(saveTimer);
+    saveTimer = null;
+    if (!session || !chat) return;
+    const kept = framesOf(chat);
+    if (!kept.dirty) return;
+    if (!now) { saveTimer = setTimeout(() => persist(true), SAVE_AFTER); return; }
+    kept.dirty = false;
+    saveChat(session.id, kept.list.slice());
+  }
+
+  // take folds one event into a chat, and keeps it with it when it was new.
+  function take(one, f) {
+    const before = one.lastSeq;
+    const changed = apply(one, f);
+    if (one.lastSeq > before) {
+      const kept = framesOf(one);
+      kept.list.push(f);
+      kept.dirty = true;
+    }
+    return changed;
+  }
+
+  // forgetFold starts the chat on screen again from nothing, for a server
+  // whose journal is shorter than what this browser holds - a restore - so
+  // that it is read again from its beginning.
+  function forgetFold() {
+    chat = newChat();
+    chats.set(session.id, chat);
+    renders.clear();
+    for (const one of drawn.values()) one.node.remove();
+    drawn.clear();
+    synced = false;
+    catchingUp = false;
+    stuck = true;
+  }
+
   function onFrame(f) {
     switch (f.t) {
+      case 'hello':
+        target = Number(f.last_seq) || 0;
+        if (target < chat.lastSeq) {
+          forgetFold();
+          framesOf(chat).dirty = true;
+          persist(true);
+          if (stream) stream.reconnect(0);
+        }
+        schedule();
+        break;
       case 'ev':
-        if (apply(chat, f)) schedule();
+        if (take(chat, f)) schedule();
+        persist(false);
         if (f.type === 'ask' || f.type === 'ask.answered' || f.type === 'ask.delivered' || f.type === 'ask.closed') tellAsk(f.ask_id);
         // A switch, or a limit, changes what the accounts' list says: the
         // account now in use (perhaps one made since the list was read),
@@ -790,7 +897,9 @@ export function mountChat(ctx) {
       case 'synced': {
         const first = !synced;
         synced = true;
+        catchingUp = false;
         if (first) stuck = true;
+        persist(true);
         schedule();
         break;
       }
@@ -1028,6 +1137,10 @@ export function mountChat(ctx) {
     outboxRev += 1;
     if (session) schedule();
   });
+  // A page put away may not come back: what the chat brought is on the
+  // device before it goes.
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') persist(true); });
+  window.addEventListener('pagehide', () => persist(true));
   window.addEventListener('online', () => schedule());
   window.addEventListener('offline', () => schedule());
 
@@ -1120,6 +1233,9 @@ export function mountChat(ctx) {
   /* --------------------------------------------------------------- api */
 
   function stop() {
+    persist(true);
+    loadingId = '';
+    clearTimeout(catchupTimer);
     if (stream) { stream.stop(); stream = null; }
     if (composer) { composer.destroy(); composer = null; }
     if (frame) { cancelAnimationFrame(frame); frame = 0; }
@@ -1132,10 +1248,11 @@ export function mountChat(ctx) {
   return {
     /** show puts a chat on the stage. */
     show(next) {
-      if (session && session.id === next.id && stream) { session = next; schedule(); return; }
+      if (session && session.id === next.id && (stream || loadingId === next.id)) { session = next; schedule(); return; }
       stop();
       session = next;
-      chat = chats.get(next.id) || newChat();
+      const inMemory = chats.get(next.id);
+      chat = inMemory || newChat();
       chats.delete(next.id);
       chats.set(next.id, chat);
       while (chats.size > KEEP) chats.delete(chats.keys().next().value);
@@ -1147,6 +1264,16 @@ export function mountChat(ctx) {
       synced = chat.lastSeq > 0;
       stuck = true;
       lostAt = 0;
+      target = 0;
+      // Whatever it shows before its stream is through may be old.
+      const keptView = () => {
+        catchingUp = true;
+        shownAt = Date.now();
+        clearTimeout(catchupTimer);
+        catchupTimer = setTimeout(() => schedule(), CATCHUP_QUIET + 20);
+      };
+      catchingUp = false;
+      if (synced) keptView();
       host.hidden = false;
       composer = mountComposer(composerSlot, {
         session: () => session,
@@ -1159,8 +1286,29 @@ export function mountChat(ctx) {
         error: (text) => sayError(text),
       });
       composer.field().addEventListener('input', () => drawNext());
-      stream = new ChatStream({ chatId: next.id, since: () => chat.lastSeq, onFrame, onStatus });
-      stream.start();
+      const start = () => {
+        stream = new ChatStream({ chatId: next.id, since: () => chat.lastSeq, onFrame, onStatus });
+        stream.start();
+      };
+      if (inMemory) start();
+      else {
+        // What the device kept of the chat is drawn first, and the stream
+        // asks for what came after it.
+        loadingId = next.id;
+        loadChat(next.id).then((list) => {
+          if (loadingId !== next.id || !session || session.id !== next.id) return;
+          loadingId = '';
+          for (const f of list) take(chat, f);
+          framesOf(chat).dirty = false;
+          if (chat.lastSeq > 0) {
+            synced = true;
+            stuck = true;
+            keptView();
+          }
+          start();
+          schedule();
+        });
+      }
       // Their usage moves, so the accounts are read again for every chat
       // opened; the copy this browser kept is drawn meanwhile.
       accounts.load().catch(() => {});

@@ -324,12 +324,6 @@ function dirItems() {
   return items;
 }
 
-// dirLabel is how a chosen directory reads in the closed field.
-function dirLabel(value) {
-  const found = dirItems().find((item) => item.value === value);
-  return found ? found.label : '';
-}
-
 // dynamicPreview is the directory a dynamic session will get, spelled the way
 // internal/harnesses/workdir.go spells it. It is shown greyed under the row so
 // that "Dynamic" is a place and not a promise.
@@ -486,15 +480,16 @@ export function settingsForm(options = {}) {
 
   // Where a session works is a dropdown rather than a row of cells: a machine
   // with a dozen preset directories on it would otherwise be a dozen cells
-  // three characters wide. It is the same control the model is picked with,
-  // strict because the list is the whole of what the server allows - Dynamic,
+  // three characters wide. It is a closed one - nothing is typed into it and
+  // nothing spoken: the list is the whole of what the server allows - Dynamic,
   // every preset, and a path typed by hand where the dashboard permits one.
-  const dirPicker = combobox({
+  const dirPicker = dropdown({
     value: DYNAMIC,
-    strict: true,
+    id: id('DirInput'),
+    label: 'Working directory',
     items: dirItems,
-    display: dirLabel,
-    emptyText: 'No directory matches',
+    renderItem: (item) => html`<span class="ds-combo__name">${item.label}</span>${item.hint ? html`<span class="ds-combo__meta">${item.hint}</span>` : ''}`,
+    renderValue: (item) => html`<span class="so-drop__value">${item.label}</span>`,
     onChange: (value) => {
       if (value === DYNAMIC || value === CUSTOM) {
         selectDir(value, value === CUSTOM ? dirPath.value.trim() : '');
@@ -504,9 +499,8 @@ export function settingsForm(options = {}) {
       onChange('dir');
     },
   });
-  dirPicker.input.id = id('DirInput');
-  dirPicker.input.setAttribute('aria-describedby', id('DirHint'));
-  dirRow.append(dictated(dirPicker.node, dirPicker.input));
+  dirPicker.button.setAttribute('aria-describedby', id('DirHint'));
+  dirRow.append(dirPicker.node);
   // The free-form path is a field like any other: it can be spoken, which with
   // the keyboard put away is the only way it can be filled. The row is what is
   // hidden and shown from here on, because hiding the field alone would leave

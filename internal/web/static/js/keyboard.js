@@ -305,6 +305,17 @@ function showing() {
   return window.innerHeight - vv.height > 150;
 }
 
+/**
+ * typingInPage is whether the focus is in a field of the page itself - the
+ * composer, a sheet's or a dialog's field - rather than the pane's: the
+ * terminal's or the editor's, whose keyboard is the switch's and whose bar
+ * holds that switch.
+ */
+export function typingInPage() {
+  const node = deepActive();
+  return isField(node) && !underSwitch(node);
+}
+
 /** keyboardOpen is whether the switch is on. */
 export function keyboardOpen() { return open; }
 

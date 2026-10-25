@@ -88,6 +88,7 @@ const SHELL = [
   '/static/js/chatview.js',
   '/static/js/chatfold.js',
   '/static/js/chatstream.js',
+  '/static/js/chatcache.js',
   '/static/js/chatparts.js',
   '/static/js/chatoutbox.js',
   '/static/js/composer.js',

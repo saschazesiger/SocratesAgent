@@ -547,13 +547,14 @@ async function pages() {
         return {
           combo: !!host.querySelector('.ds-combo'),
           segs: host.querySelectorAll('.so-settings__program, .ds-chip').length,
-          value: input ? input.value : '',
+          value: input ? input.textContent.trim() : '',
+          closed: !!input && input.localName === 'button' && !host.querySelector('input, .so-mic'),
           width: Math.round(box.width),
           sheet: Math.round(document.getElementById('newSessionSheet').getBoundingClientRect().width),
         };
       });
-      ok(dir.combo && dir.segs === 0 && dir.value === 'Dynamic',
-        `the working directory is a dropdown, starting on Dynamic at ${tag}`, JSON.stringify(dir));
+      ok(dir.combo && dir.segs === 0 && dir.value === 'Dynamic' && dir.closed,
+        `the working directory is a closed dropdown - nothing typed, nothing spoken - starting on Dynamic at ${tag}`, JSON.stringify(dir));
       await shot(s.page, 'pages-sheet-' + tag);
       await s.page.click('#nsCancel');
 
@@ -3298,7 +3299,7 @@ async function design() {
         combo: !!host.querySelector('.ds-combo'),
         segs: host.querySelectorAll('.so-settings__program, .ds-chip').length,
         options: [...host.querySelectorAll('.ds-combo__option')].map((n) => n.dataset.value),
-        value: host.querySelector('.ds-combo__input').value,
+        value: host.querySelector('.ds-combo__input').textContent.trim(),
       };
     });
     ok(dir.combo && dir.segs === 0 && dir.options.includes('dynamic') && dir.value === 'Dynamic',
@@ -6229,6 +6230,14 @@ async function keyboard() {
     await s.page.click('#kbBtn');
     await wait(200);
     const raised = await keyboardable(s.page);
+    await viewport(320);
+    await wait(100);
+    const paneBar = await s.page.evaluate(() => ({
+      keyboard: document.documentElement.hasAttribute('data-so-keyboard'),
+      bar: getComputedStyle(document.querySelector('.so-app > .ds-topbar')).display !== 'none',
+    }));
+    ok(!paneBar.keyboard && paneBar.bar, 'the terminal’s keyboard leaves the top bar standing: it holds the switch that puts it away',
+      JSON.stringify(paneBar));
     ok(stale.open === 'true' && raised.open === 'true' && raised.paneOpen && raised.focus === 'pane',
       'a press over a keyboard the system took away raises it again',
       JSON.stringify({ before: stale.open, after: raised.open, paneOpen: raised.paneOpen, focus: raised.focus }));
@@ -6272,7 +6281,7 @@ async function keyboard() {
 
     // A finger on a field is what raises its keyboard, and the typing is in
     // it at once.
-    const onSheet = await tapTyped(s.page, '#nsDir .ds-combo__input', 'dyn');
+    const onSheet = await tapTyped(s.page, '#nsModel .ds-combo__input', 'dyn');
     ok(onSheet.focus === 'dialog' && !onSheet.muted && onSheet.typed,
       'a tap on a field of the sheet gives it the keyboard: an ordinary field with the focus, holding what was typed',
       JSON.stringify(onSheet));
@@ -6289,15 +6298,15 @@ async function keyboard() {
     // A field is still filled by speaking to it. What comes back is what would
     // have been typed: it goes in the field and the field is told, so the list
     // filters exactly as it does under a finger.
-    await s.page.click('#nsDir .so-mic');
+    await s.page.click('#nsModel .so-mic');
     await s.page.waitForSelector('#recSheet[open]', { timeout: 15000 });
     await wait(1200);
     await s.page.click('#recSend');
     const heard = await s.page.waitForFunction(
-      (want) => document.querySelector('#nsDir .ds-combo__input').value === want,
+      (want) => document.querySelector('#nsModel .ds-combo__input').value === want,
       stub.text, { timeout: 60000 }).then(() => true).catch(() => false);
     ok(heard, 'a muted field is filled by speaking into it',
-      await s.page.$eval('#nsDir .ds-combo__input', (n) => n.value));
+      await s.page.$eval('#nsModel .ds-combo__input', (n) => n.value));
     await s.page.click('#newSessionSheet .ds-sheet__title');
     await s.page.click('#nsCancel');
     await s.page.waitForSelector('#newSessionSheet[open]', { state: 'detached', timeout: 10000 })
@@ -6358,6 +6367,29 @@ async function keyboard() {
     const composing = await tapTyped(s.page, '#chat .so-composer__input', 'typed after one tap');
     ok(composing.focus === 'chat' && !composing.muted && composing.typed,
       'a tap on the composer raises the keyboard, and what is typed is in it', JSON.stringify(composing));
+    // With the keyboard up for the composer the top bar and the line under
+    // it step aside for the conversation, and come back with its going.
+    const bars = () => s.page.evaluate(() => ({
+      keyboard: document.documentElement.hasAttribute('data-so-keyboard'),
+      bar: getComputedStyle(document.querySelector('.so-app > .ds-topbar')).display !== 'none',
+      sub: getComputedStyle(document.querySelector('#chat .so-chat__sub')).display !== 'none',
+    }));
+    await s.page.evaluate(() => {
+      Object.defineProperty(window.visualViewport, 'height', { configurable: true, get: () => window.innerHeight - 320 });
+      window.visualViewport.dispatchEvent(new Event('resize'));
+    });
+    await wait(150);
+    const typing = await bars();
+    await shot(s.page, 'keyboard-chat-typing');
+    await s.page.evaluate(() => {
+      delete window.visualViewport.height;
+      window.visualViewport.dispatchEvent(new Event('resize'));
+    });
+    await wait(150);
+    const typed = await bars();
+    ok(typing.keyboard && !typing.bar && !typing.sub && !typed.keyboard && typed.bar,
+      'the keyboard up for the composer puts the top bar and the chat’s line away, and its going brings them back',
+      JSON.stringify({ typing, typed }));
     await s.page.click('#chat .so-composer__send');
     ok(await awaitLog(s.page, 'you said: typed after one tap', 15000), 'and what is typed there is sent',
       oneLine(await lastAnswer(s.page)));
@@ -10514,11 +10546,13 @@ async function chatfold() {
   } finally { await s.stop(); }
 }
 
-// subLine is what the line under the chat's bar shows.
+// subLine is what the line under the chat's bar shows, and the background
+// jobs at the foot of the chat.
 const subLine = (page) => page.evaluate(() => {
   const sub = document.querySelector('#chat .so-chat__sub');
   if (!sub) return null;
-  const jobs = sub.querySelector('.so-chat__jobs');
+  const jobs = document.querySelector('#chat .so-chat__bg:not([hidden]) .so-chat__jobs');
+  const dock = document.querySelector('#chat .so-chat__dock');
   const r = sub.getBoundingClientRect();
   const scroll = document.querySelector('#chat .so-chat__scroll').getBoundingClientRect();
   return {
@@ -10529,36 +10563,57 @@ const subLine = (page) => page.evaluate(() => {
       reset: (l.querySelector('.so-chat__limit-reset') || {}).textContent || '',
       full: l.hasAttribute('data-full'),
     })),
-    jobs: jobs ? jobs.innerText.trim() : '', running: !!jobs && jobs.hasAttribute('data-running'),
+    jobs: jobs ? jobs.querySelector('.so-chat__jobs-count').textContent.trim() : '', running: !!jobs && jobs.hasAttribute('data-running'),
+    jobsInSub: !!sub.querySelector('.so-chat__jobs'), jobsInDock: !!jobs && dock.contains(jobs),
     above: r.height > 0 && r.bottom <= scroll.top + 1,
   };
 });
 
 // chat-sub: the line under a chat's bar - the account the chat runs on, how
-// full each of its limit windows is and when it renews, and what runs in
-// the background, which opens to a dialog that lists it.
+// full each of its limit windows is and when it renews - and, at the foot of
+// the chat, what runs in the background, which opens to a dialog that lists
+// it.
 async function chatsub() {
   const { s, id } = await claudeChat();
   const { page } = s;
   try {
     let sub = await subLine(page);
     ok(!!sub && /Work/.test(sub.account) && sub.above, 'over the conversation the chat says the account it runs on', JSON.stringify(sub));
-    ok(!!sub && sub.jobs === 'No background jobs' && !sub.running, 'and that nothing runs in the background', JSON.stringify(sub && sub.jobs));
+    ok(!!sub && sub.jobs === '' && !sub.jobsInSub, 'nothing runs in the background, and nothing at the foot says so', JSON.stringify(sub));
 
     await say(page, '/bg 30');
     await awaitLog(page, 'Started a background task.', 20000);
     const counted = await page.waitForFunction(() => {
-      const jobs = document.querySelector('#chat .so-chat__jobs');
-      return !!jobs && jobs.hasAttribute('data-running') && /^1 background job$/.test(jobs.innerText.trim());
+      const jobs = document.querySelector('#chat .so-chat__bg:not([hidden]) .so-chat__jobs');
+      return !!jobs && jobs.hasAttribute('data-running') && /^1 background job$/.test(jobs.querySelector('.so-chat__jobs-count').textContent.trim());
     }, null, { timeout: 15000 }).then(() => true, () => false);
     sub = await subLine(page);
-    ok(counted, 'a background task the turn left running is counted there, turning', JSON.stringify(sub && { jobs: sub.jobs, running: sub.running }));
+    ok(counted && sub.jobsInDock && !sub.jobsInSub, 'a background task the turn left running is counted at the foot of the chat, turning, and not under the bar',
+      JSON.stringify(sub && { jobs: sub.jobs, running: sub.running, dock: sub.jobsInDock, sub: sub.jobsInSub }));
     await page.click('#chat .so-chat__jobs');
     const dialog = await page.waitForSelector('dialog[open] .ds-dialog__title:text-is("Background jobs")', { timeout: 5000 })
-      .then(() => page.$eval('dialog[open]', (n) => n.innerText), () => '');
-    ok(/Background jobs/.test(dialog) && /Bash/.test(dialog) && !/more task/.test(dialog),
-      'and it opens to a dialog that names it: the call that started it', oneLine(dialog));
+      .then(() => page.$eval('dialog[open]', (n) => ({
+        text: n.innerText,
+        rows: [...n.querySelectorAll('.so-job')].map((row) => ({
+          name: (row.querySelector('.so-job__name') || {}).textContent || '',
+          summary: (row.querySelector('.so-job__summary') || {}).textContent || '',
+          time: (row.querySelector('.so-job__state') || {}).textContent || '',
+        })),
+      })), () => ({ text: '', rows: [] }));
+    ok(dialog.rows.length === 1 && dialog.rows[0].name === 'Bash' && !!dialog.rows[0].summary && /\d|Running/.test(dialog.rows[0].time) && !/more task/.test(dialog.text),
+      'and it opens to a dialog with a row for it: the call that started it, what it runs, how long it has run', JSON.stringify(dialog.rows));
     await shot(page, 'chat-sub-jobs');
+    // At a phone's width the dialog and the line at the foot keep their rows.
+    await page.setViewportSize({ width: 390, height: 844 });
+    await wait(300);
+    await shot(page, 'chat-sub-jobs-phone');
+    await page.keyboard.press('Escape');
+    await page.waitForSelector('dialog[open]', { state: 'detached', timeout: 5000 }).catch(() => {});
+    await shot(page, 'chat-sub-foot-phone');
+    await page.setViewportSize({ width: 1280, height: 860 });
+    await wait(300);
+    await page.click('#chat .so-chat__jobs');
+    await page.waitForSelector('dialog[open]', { timeout: 5000 }).catch(() => {});
     await page.keyboard.press('Escape');
     await page.waitForSelector('dialog[open]', { state: 'detached', timeout: 5000 }).catch(() => {});
 
@@ -10577,6 +10632,65 @@ async function chatsub() {
     await shot(page, 'chat-sub');
     ok(unexpected(s.errors).length === 0, 'no console errors', unexpected(s.errors).join(' | ') || '0');
     void id;
+  } finally { await s.stop(); }
+}
+
+// chat-kept: a chat this browser has read is kept on the device, so opened
+// again - here after a reload, its stream held back - it is drawn at once
+// from what it said, dimmed, with a line that says it is what the device
+// last saw; once the stream is through, the line and the dimming go.
+async function chatkept() {
+  const { s, id } = await claudeChat();
+  const { page } = s;
+  try {
+    await say(page, 'remember this line');
+    ok(await awaitLog(page, 'remember this line', 20000), 'the chat has a conversation', oneLine(await logText(page)));
+    // What the device holds of the chat, read the way the page reads it.
+    const keptLine = () => page.evaluate((chatId) => new Promise((resolve) => {
+      const req = indexedDB.open('socrates-chats');
+      req.onerror = () => resolve(false);
+      req.onsuccess = () => {
+        const db = req.result;
+        if (!db.objectStoreNames.contains('chats')) { db.close(); resolve(false); return; }
+        const get = db.transaction('chats').objectStore('chats').get(chatId);
+        get.onsuccess = () => { db.close(); resolve(!!get.result && get.result.frames.some((f) => f.type === 'message' && f.role === 'user' && /remember this line/.test(f.text || ''))); };
+        get.onerror = () => { db.close(); resolve(false); };
+      };
+    }), id);
+    let kept = false;
+    for (let waited = 0; !kept && waited < 15000; waited += 500) {
+      kept = await keptLine();
+      if (!kept) await wait(500);
+    }
+    ok(kept, 'what the chat said is kept on the device', String(kept));
+    // The stream is held: the socket opens and nothing answers its hello.
+    let hold = true;
+    await page.routeWebSocket(/\/api\/chats\/[^/]+\/stream/, (ws) => { if (!hold) ws.connectToServer(); });
+    // A reload lands on Home; the chat is opened again from the address.
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await page.waitForSelector('#sessionList .so-row[data-id="' + id + '"]', { state: 'attached', timeout: 20000 });
+    await page.evaluate((target) => { location.hash = '#' + target; }, id);
+    const drawn = await awaitLog(page, 'remember this line', 10000);
+    await page.waitForSelector('#chat [data-ds-key="catchup"]', { timeout: 5000 }).catch(() => {});
+    const held = await page.evaluate(() => ({
+      line: (document.querySelector('#chat [data-ds-key="catchup"]') || {}).textContent || '',
+      dimmed: document.querySelector('#chat').hasAttribute('data-stale'),
+      loading: !!document.querySelector('#chat .so-chat__loading'),
+    }));
+    ok(drawn && !held.loading, 'opened again with no stream, the chat is drawn at once from what the device kept', oneLine(await logText(page)));
+    ok(/as this device last saw it/.test(held.line) && held.dimmed,
+      'dimmed, and the dock says it is what the device last saw', JSON.stringify(held));
+    await shot(page, 'chat-kept');
+
+    // The stream let through: its next try catches up, and the chat is current.
+    hold = false;
+    const caught = await page.waitForFunction(() => !document.querySelector('#chat [data-ds-key="catchup"]')
+      && !document.querySelector('#chat').hasAttribute('data-stale'), null, { timeout: 30000 }).then(() => true, () => false);
+    ok(caught, 'once the stream is through the line and the dimming go', String(caught));
+    await say(page, 'and this one');
+    ok(await awaitLog(page, 'you said: and this one', 20000) || await awaitLog(page, 'and this one', 1000),
+      'and the chat goes on', oneLine(await lastAnswer(page)));
+    ok(unexpected(s.errors).length === 0, 'no console errors', unexpected(s.errors).join(' | ') || '0');
   } finally { await s.stop(); }
 }
 
@@ -12291,7 +12405,8 @@ const ALL = [
   ['chat-restart', 'the server restarted mid-turn under a desk and a phone: the stream replays, the turn completes, nothing twice', chatrestart],
   ['chat-tools', 'tool rows, the diff viewer, a subagent, a workflow, and the task list pinned while it runs', chattools],
   ['chat-fold', 'an answer\u2019s work folded in one line: what it does, then what it did, its steps and tokens; the answer and a question stand', chatfold],
-  ['chat-sub', 'the line under a chat\u2019s bar: its account, its limit windows, and its background jobs with their dialog', chatsub],
+  ['chat-sub', 'the line under a chat\u2019s bar: its account and its limit windows; its background jobs at its foot, with their dialog', chatsub],
+  ['chat-kept', 'a chat opened again is drawn at once from what the device kept, marked as such until its stream is through', chatkept],
   ['chat-send-now', 'a message waiting behind a turn, sent now: the turn interrupted, the message answered next', chatsendnow],
   ['chat-auto-continue', 'a limit\u2019s card says the chat goes on by itself, and the ⋮ switches that off and on', chatautocontinue],
   ['chat-offline', 'what a chat is told offline (two tabs, a model, an answer), or whose answer was lost, or left across a reload: delivered once', chatoffline],

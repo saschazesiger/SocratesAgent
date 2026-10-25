@@ -32,6 +32,7 @@ import { mountAssist } from './assist.js';
 import { mountNotify } from './notify.js';
 import { mountTransfer } from './transfer.js';
 import { mountKeyBar, keyBarWanted, setKeyBarWanted, followViewport } from './keybar.js';
+import { forgetChat, forgetAll } from './chatcache.js';
 import {
   initKeyboard, guard, watchFrame, dictated, touchScreen, setTouchMode, showKeyboardSwitch, typeHere,
 } from './keyboard.js';
@@ -2148,6 +2149,8 @@ async function deleteSession(session) {
       detach();
       showHome({ replace: true });
     }
+    // After the view let it go, which writes it one last time.
+    forgetChat(session.id);
     renderList();
     toast(editor ? 'VS Code was closed. Its state was kept.'
       : 'Deleted. The working directory was kept.');
@@ -3844,6 +3847,9 @@ function wire() {
   initKeyboard(dom.kbBtn, () => (state.term ? state.term.term.textarea : null));
   dom.logout.addEventListener('click', async () => {
     if (notifier) await notifier.signOut();
+    // What this browser kept of the chats is not left for whoever signs in
+    // next.
+    await forgetAll();
     try { await api('/api/logout', { method: 'POST' }); } catch { /* going anyway */ }
     location.href = '/login';
   });
