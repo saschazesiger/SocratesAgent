@@ -10547,8 +10547,8 @@ async function chatsub() {
     await page.click('#chat .so-chat__jobs');
     const dialog = await page.waitForSelector('dialog[open] .ds-dialog__title:text-is("Background jobs")', { timeout: 5000 })
       .then(() => page.$eval('dialog[open]', (n) => n.innerText), () => '');
-    ok(/Background jobs/.test(dialog) && !/Nothing runs in the background/.test(dialog) && /task|Bash|sleep/.test(dialog),
-      'and it opens to a dialog that lists it', oneLine(dialog));
+    ok(/Background jobs/.test(dialog) && /Bash/.test(dialog) && !/more task/.test(dialog),
+      'and it opens to a dialog that names it: the call that started it', oneLine(dialog));
     await shot(page, 'chat-sub-jobs');
     await page.keyboard.press('Escape');
     await page.waitForSelector('dialog[open]', { state: 'detached', timeout: 5000 }).catch(() => {});

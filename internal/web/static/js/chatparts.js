@@ -815,7 +815,25 @@ export function backgroundJobs(chat) {
     if (part.parentId && chat.parts.get(part.parentId)?.state === 'running') continue;
     jobs.push({ id: part.id, name: tool.name, summary: tool.summary, since: part.at });
   }
-  return { jobs, others: Math.max(0, (Number(chat.tasks) || 0) - jobs.length) };
+  // A call sent to the background answers at once (Claude Code's Bash with
+  // run_in_background): its part is done while the task it started runs on.
+  // The agent counts those (`tasks`); the newest such calls are named for
+  // them.
+  let others = Math.max(0, (Number(chat.tasks) || 0) - jobs.length);
+  if (others) {
+    const started = [...chat.parts.values()].filter((part) => {
+      if (part.kind !== 'tool' || part.state === 'running' || jobs.some((job) => job.id === part.id)) return false;
+      const c = (part.content && typeof part.content === 'object') ? part.content : {};
+      const input = c.input && typeof c.input === 'object' ? c.input : {};
+      return input.run_in_background === true;
+    }).sort((a, b) => b.at - a.at).slice(0, others);
+    for (const part of started) {
+      const tool = toolOf(part);
+      jobs.push({ id: part.id, name: tool.name, summary: tool.summary, since: part.at });
+    }
+    others -= started.length;
+  }
+  return { jobs, others };
 }
 
 /* ---------------------------------------------------------- the work fold */
