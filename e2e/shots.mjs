@@ -160,6 +160,12 @@ async function sessionShot() {
     await logShows(s.page, 'The store tests pass.');
     await until(s, codex, (b) => b.chat.process === 'ready');
     await until(s, opencode, (b) => b.chat.process === 'ready');
+    // The turn's work is folded behind one line; the picture opens it, so
+    // that its edit and its tests are in it.
+    for (const key of await s.page.$$eval('#chat .so-work:not([open])', (n) => n.map((one) => one.dataset.openKey))) {
+      await s.page.click('#chat .so-work[data-open-key="' + key + '"] > summary');
+      await s.page.waitForSelector('#chat .so-work[data-open-key="' + key + '"][open] > .so-work__body', { timeout: 5000 });
+    }
     await still(s.page);
     // From the person's message down: the turn is the picture, read from
     // the top.

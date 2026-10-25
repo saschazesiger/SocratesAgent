@@ -50,6 +50,7 @@
 //	                 questions, or the JSON given) through mcp_message, waits
 //	                 for the result and says it; an interrupt withdraws the
 //	                 call (notifications/cancelled, then control_cancel_request)
+//	/toolask [JSON]  a Bash call, then /askuser: a question asked after work
 //	/askdrop         calls ask_user and withdraws the call at once with
 //	                 notifications/cancelled alone, as an abort right after
 //	                 the call does, then says "ask_user was withdrawn"
@@ -630,6 +631,10 @@ func (t *turnRun) script() {
 		t.f.mu.Unlock()
 		t.say(text)
 	case "/askuser":
+		t.askUser(rest)
+	case "/toolask":
+		t.tool("Bash", map[string]any{"command": "printf 'one\\ntwo\\n'", "description": "Print two lines"},
+			"one\ntwo", map[string]any{"stdout": "one\ntwo", "stderr": "", "interrupted": false}, false, "")
 		t.askUser(rest)
 	case "/askdrop":
 		t.askDrop()
