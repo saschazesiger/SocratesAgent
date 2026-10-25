@@ -13,7 +13,7 @@
  *   .so-home__questions the Questions card (div form of an interactive card):
  *                       its figure, the first question's words (__q-note) and
  *                       whose it is (__q-meta), the waiting chip and Answer
- *   .so-home__tiles     the nine tiles, in a grid that keeps its shape: a
+ *   .so-home__tiles     the tiles, in a grid that keeps its shape: a
  *                       tile with nothing in it says so, it never goes away,
  *                       so a number changing never moves the others
  *   .so-home__tile      a tile that filters the list; aria-pressed while it does
@@ -332,6 +332,11 @@
   .so-home__tiles {
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: var(--ds-space-2);
+  }
+
+  /* Nine tiles two a row: the last one has the row to itself. */
+  .so-home__tile:last-child:nth-child(odd) {
+    grid-column: 1 / -1;
   }
 
   .so-home__tile .ds-tile__note {

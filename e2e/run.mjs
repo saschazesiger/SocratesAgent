@@ -7689,19 +7689,19 @@ async function homelive() {
     const asking = await makeChat(s, 'claude', { title: 'Pick a database' });
     const shellMade = await s.context.request.post(s.url + '/api/sessions', { data: { harness: 'shell', title: 'Write the docs' } });
     const shell = (await shellMade.json()).session.id;
-    // A chat not started yet, set to start by itself later, is a chat like
-    // the others: Ready, and no card of its own.
+    // A chat nobody has written to yet - one set to start by itself later
+    // too - is Not started, and not Ready.
     const later = await makeChat(s, 'claude', { title: 'Later, please' });
     const timed = await startAtOf(s, later, Date.now() + 3 * 3600 * 1000);
     ok(timed.ok(), 'a chat set to start by itself later is made too', timed.status());
-    const arrived = await awaitHome(s.page, (h) => h.counts.ready === 3 && !('prepared' in h.counts), 15000);
-    ok(arrived.ok, 'chats made on another device are counted without a reload: three ready, and no Prepared card',
+    const arrived = await awaitHome(s.page, (h) => h.counts.unstarted === 3 && h.counts.ready === 0, 15000);
+    ok(arrived.ok, 'chats made on another device are counted without a reload: three not started, none ready',
       took(arrived) + ' ' + JSON.stringify(arrived.seen.counts));
 
     let sent = Date.now();
     await tellChat(s, busy, work('claude', 7));
-    const running = await awaitHome(s.page, (h) => h.counts.running === 1, 8000);
-    ok(running.ok && Date.now() - sent < 4000, 'a chat that starts working is counted as running within seconds',
+    const running = await awaitHome(s.page, (h) => h.counts.running === 1 && h.counts.unstarted === 2, 8000);
+    ok(running.ok && Date.now() - sent < 4000, 'a chat that starts working is counted as running, and started, within seconds',
       ((Date.now() - sent) / 1000).toFixed(1) + ' s after the message, ' + JSON.stringify(running.seen.counts));
 
     sent = Date.now();
@@ -7742,6 +7742,12 @@ async function homelive() {
     const everything = await awaitHome(s.page, (h) => h.listTitle === 'All sessions', 3000);
     ok(everything.ok && everything.seen.rows.length === 4 && !everything.seen.pressed,
       'and a second tap shows every session', everything.seen.rows.length + ' rows');
+    // Every session, the most pressing first: the question, what finished
+    // unread, what has not started, what is not running.
+    const ordered = await awaitHome(s.page, (h) => h.rows.map((r) => r.id).join() === [asking, busy, later, shell].join(), 4000);
+    ok(ordered.ok, 'All is ordered by what needs the person first, then what has not started, then what is not running',
+      ordered.seen.rows.map((r) => r.title).join(', '));
+    await shot(s.page, 'home-all');
     await s.page.click('.so-home__seg[data-filter="needs"]');
     ok((await homeLook(s.page)).listTitle === 'Needs you', 'Needs you is a tap away again', (await homeLook(s.page)).listTitle);
 
@@ -7762,11 +7768,15 @@ async function homelive() {
         runningUnknownUnread: cardsOf(ctx({ state: 'unknown', unread: true }), row('running')).join(),
         backgroundUnread: cardsOf(ctx({ state: 'idle', unread: true }, 'background'), row('running')).join(),
         backgroundAsks: cardsOf(ctx({ state: 'waiting' }, 'background'), row('running')).join(),
+        fresh: cardsOf(ctx({ state: 'idle' }), { ...row('running'), fresh: true }).join(),
+        freshBusy: cardsOf(ctx({ state: 'busy' }), { ...row('running'), fresh: true }).join(),
       };
     });
     ok(cards.stoppedUnread === 'stopped,finished' && cards.runningUnknownUnread === 'finished'
-      && cards.backgroundUnread === 'ready' && cards.backgroundAsks === 'questions',
-      'unread work is Finished even when stopped; a background chat is Ready, and still asks', JSON.stringify(cards));
+      && cards.backgroundUnread === 'ready' && cards.backgroundAsks === 'questions'
+      && cards.fresh === 'unstarted' && cards.freshBusy === 'running',
+      'unread work is Finished even when stopped; a background chat is Ready, and still asks; a chat not started is that until it works',
+      JSON.stringify(cards));
     ok(sockets.length > 0 && sockets.every((url) => url.includes('/api/events')),
       'and with nothing attached: the only socket is the event stream', sockets.join(' '));
     ok(unexpected(s.errors).length === 0, 'no console errors', unexpected(s.errors).join(' | ') || '0');

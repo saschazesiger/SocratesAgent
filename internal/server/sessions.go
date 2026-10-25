@@ -104,6 +104,9 @@ type sessionView struct {
 	// sessions and not their code. The page offers to point it to a folder
 	// (PUT …/workdir) rather than let it fail to start.
 	WorkdirMissing bool `json:"workdir_missing,omitempty"`
+	// Fresh is a chat nobody has sent anything yet: a draft, perhaps with a
+	// time to start at, and no conversation. Home files it as not started.
+	Fresh bool `json:"fresh,omitempty"`
 }
 
 func (s *Server) view(row *store.Session) sessionView {
@@ -125,6 +128,11 @@ func (s *Server) viewWith(row *store.Session, drafts map[string]store.DraftMeta)
 	}
 	v.Activity = s.manager.ActivityOf(row.ID)
 	v.WorkdirMissing = workdirMissing(row)
+	if row.IsChat() && s.chats != nil {
+		if brief, ok := s.chats.briefOfChat(row.ID); ok {
+			v.Fresh = !brief.Summary.Asked
+		}
+	}
 	if row.Status == store.StatusDone {
 		v.DeleteAt = row.StatusAt + DoneRetention.Milliseconds()
 	}

@@ -409,6 +409,28 @@ func TestChatCreateIsIdempotentAndHasNoTerminal(t *testing.T) {
 	}
 }
 
+// A chat nobody has written to is fresh in the list, which is what Home
+// files as not started, and stops being so with its first message.
+func TestAChatIsFreshUntilItsFirstMessage(t *testing.T) {
+	c := newChatEnv(t, time.Hour)
+	id := c.create(t)
+	fresh := func() bool {
+		row, err := c.store.GetSession(id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return c.srv.view(row).Fresh
+	}
+	if !fresh() {
+		t.Fatal("a chat nobody has written to is not fresh")
+	}
+	c.send(t, id, "m1", "hello")
+	c.waitJournal(t, id, 10*time.Second, "the reply", turnsEnded(1))
+	if fresh() {
+		t.Fatal("a chat that has had a turn is still fresh")
+	}
+}
+
 // The server restarts in the middle of a turn: the turn completes, and a
 // browser that comes back with the last seq it had gets exactly the rest.
 func TestChatSurvivesAServerRestartMidTurn(t *testing.T) {

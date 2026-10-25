@@ -54,6 +54,7 @@ const CARDS = [
   { key: 'ready', label: 'Ready', glyph: 'compose', none: 'Nothing is idle' },
   { key: 'review', label: 'Review pending', glyph: 'review', none: 'Nothing to review' },
   { key: 'pending', label: 'Pending', glyph: 'waiting', none: 'Nothing pending' },
+  { key: 'unstarted', label: 'Not started', glyph: 'pencil', none: 'Nothing waits to start' },
   { key: 'stopped', label: 'Not running', glyph: 'ban', none: 'Everything is running' },
   { key: 'done', label: 'Done', glyph: 'archive', none: 'Nothing done yet' },
 ];
@@ -83,6 +84,24 @@ function waitsOnYou(ctx, session) {
   return !!outcome && outcome.phase === 'ready' && NEEDS_YOU_OUTCOMES.has(outcome.kind);
 }
 
+// The order of "All": what needs the person first, then what is working,
+// then what is finished, then what has not started, is not running or is
+// done. The number is a session's rank (urgencyOf); within a rank a question
+// is the oldest first and everything else the most recent first.
+const URGENCY = { questions: 0, needs: 1, running: 2, ready: 3, unstarted: 4, stopped: 5, done: 6 };
+
+/**
+ * notStarted says whether a session is a chat nobody has sent anything yet:
+ * a draft, and perhaps a time it starts at by itself. The server says so
+ * (fresh); a turn that is already under way says otherwise sooner than the
+ * list does.
+ */
+function notStarted(ctx, session) {
+  if (!session.fresh) return false;
+  const act = ctx.activityOf(session);
+  return !act || !(act.state === 'busy' || act.state === 'waiting' || act.state === 'tasks' || act.unread);
+}
+
 /**
  * cardsOf is every card one session counts in. A session is in several at
  * once - working and waiting for a review - except a done one, which is in
@@ -98,6 +117,12 @@ export function cardsOf(ctx, session) {
   const cards = [];
   if (status === 'review') cards.push('review');
   if (status === 'pending') cards.push('pending');
+  // A chat that has not started has nothing to be ready for, nor anything
+  // to have finished: it is Not started and nothing else it does.
+  if (notStarted(ctx, session)) {
+    cards.push('unstarted');
+    return cards;
+  }
   const act = ctx.activityOf(session);
   // Work nobody has read is Finished whatever the session is doing now, as
   // the sidebar's bold name says it is: a pane that died mid-turn, a reboot
@@ -131,6 +156,21 @@ export function cardsOf(ctx, session) {
 function askedAt(ctx, session) {
   const act = ctx.activityOf(session);
   return Number(act && act.since) || momentOf(session);
+}
+
+/**
+ * urgencyOf is a session's rank in "All" (URGENCY): a question, then what
+ * else waits on the person - work nobody has read, a review, a turn that
+ * needs input or is stuck - then work going on, then work at rest.
+ */
+function urgencyOf(ctx, session, cards) {
+  if (cards.includes('done')) return URGENCY.done;
+  if (cards.includes('questions')) return URGENCY.questions;
+  if (cards.includes('finished') || cards.includes('review') || waitsOnYou(ctx, session)) return URGENCY.needs;
+  if (cards.includes('running') || cards.includes('tasks')) return URGENCY.running;
+  if (cards.includes('unstarted')) return URGENCY.unstarted;
+  if (cards.includes('stopped')) return URGENCY.stopped;
+  return URGENCY.ready;
 }
 
 /**
@@ -454,8 +494,10 @@ export function mountHome(ctx) {
     }
 
     // The list of the filter. "Needs you" puts the questions first, oldest
-    // first, because that is the order they are answered in; everything else
-    // is the most recent first, the way the sidebar orders a folder.
+    // first, because that is the order they are answered in; "All" is by
+    // what is most pressing (urgencyOf), and moves as that changes; every
+    // tile's list is the most recent first, the way the sidebar orders a
+    // folder.
     let shown;
     if (filter === 'needs') {
       const seen = new Set();
@@ -471,7 +513,9 @@ export function mountHome(ctx) {
         }
       }
     } else if (filter === 'all') {
-      shown = [...sessions].sort((a, b) => momentOf(b) - momentOf(a));
+      const rank = new Map(sessions.map((session) => [session.id, urgencyOf(ctx, session, cardsBy.get(session.id))]));
+      shown = [...sessions].sort((a, b) => rank.get(a.id) - rank.get(b.id)
+        || (rank.get(a.id) === URGENCY.questions ? askedAt(ctx, a) - askedAt(ctx, b) : momentOf(b) - momentOf(a)));
     } else if (filter === 'questions') {
       shown = asking;
     } else {
@@ -582,7 +626,8 @@ export function mountHome(ctx) {
     const meta = [folder, agoWords(at, now)].filter(Boolean).join(' · ');
 
     let line = '';
-    if (digest && digest.summary) line = digest.summary;
+    if (cards.includes('unstarted')) line = session.draft_preview || '';
+    else if (digest && digest.summary) line = digest.summary;
     else if (digest && digest.phase === 'pending') line = '…';
     const offer = asking;
     const state = asking ? 'asking' : unread ? 'unread' : done ? 'done' : '';
@@ -637,6 +682,7 @@ export function mountHome(ctx) {
     } else if (cards.includes('finished')) { tone = 'ok'; glyph = 'checkCircle'; }
     else if (cards.includes('stopped')) { tone = session.state === 'failed' ? 'error' : ''; glyph = session.state === 'failed' ? 'alertCircle' : 'ban'; }
     else if (cards.includes('ready')) glyph = 'compose';
+    else if (cards.includes('unstarted')) glyph = Number(session.start_at) ? 'clock' : 'pencil';
     if (!said) return '';
     const lead = tone === 'running'
       ? html`<span class="ds-spinner ds-status__spinner" aria-hidden="true"></span>`
@@ -662,6 +708,10 @@ export function mountHome(ctx) {
         : 'A background task is running';
     } else if (cards.includes('finished')) said = 'Finished';
     else if (cards.includes('ready')) said = words.activity.idle;
+    else if (cards.includes('unstarted')) {
+      const at = Number(session.start_at) || 0;
+      said = at ? 'Starts ' + new Date(at).toLocaleString([], { weekday: 'short', hour: '2-digit', minute: '2-digit' }) : 'Not started';
+    }
     else said = words.state[session.state] || '';
     // How the turn left the work, once that is known.
     const outcome = ctx.outcomeOf ? ctx.outcomeOf(session) : null;
