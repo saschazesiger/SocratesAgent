@@ -261,7 +261,9 @@ function flowDialog(account, first, opener) {
   const next = el('button', { class: 'ds-btn ds-btn--primary', type: 'button', hidden: true, text: 'Continue' });
   const { dialog, shown } = openDialog({
     title: 'Sign in to ' + account.label,
-    body: harnesses.label(account.agent) + ' signs in with its own page. Nothing you type there reaches Socrates.',
+    body: account.agent === 'claude'
+      ? 'Claude Code signs in with its own page. Your password stays there; the code it shows is handed to Claude Code on this machine.'
+      : harnesses.label(account.agent) + ' signs in with its own page. Nothing you type there reaches Socrates.',
     field: content, actions: [cancel, next], opener,
   });
   const path = '/api/accounts/' + encodeURIComponent(account.id) + '/signin';
@@ -393,6 +395,13 @@ function flowDialog(account, first, opener) {
     } finally {
       next.disabled = false;
     }
+  });
+
+  // Enter in the code's field is Sign in.
+  content.addEventListener('keydown', (event) => {
+    if (event.key !== 'Enter' || event.isComposing || event.target.id !== 'signinCode') return;
+    event.preventDefault();
+    if (!next.hidden && !next.disabled) next.click();
   });
 
   draw();
