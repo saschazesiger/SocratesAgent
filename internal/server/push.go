@@ -217,7 +217,7 @@ func (p *pusher) remove(endpoint string) error {
 //
 // Kind is what a tap on it opens: "question" opens the question dialog of
 // that session, which is the whole point of being told a session needs an
-// answer; "finished" and the scheduler's "started" open the session itself;
+// answer; "finished" opens the session itself;
 // the "test" a person asks for opens Home.
 //
 // Badge and Asking are the asking set when the message went out: the number
@@ -250,7 +250,6 @@ type pushNote struct {
 const (
 	pushQuestion = "question"
 	pushFinished = "finished"
-	pushStarted  = "started"
 	pushTest     = "test"
 )
 

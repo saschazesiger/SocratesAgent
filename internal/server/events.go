@@ -1,7 +1,7 @@
 package server
 
 // The event stream: the one live channel of a page that has no terminal
-// attached. Home, a prepared session's panel and the empty stage have no
+// attached. Home, a chat and the empty stage have no
 // session socket to hear anything on, and before this existed they were a
 // poll every fifteen seconds - which is a Home page that says "two sessions
 // are running" a quarter of a minute after one of them asked a question. Every

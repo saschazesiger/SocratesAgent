@@ -117,7 +117,7 @@ func (s *Server) handleChatAutoSwitch(w http.ResponseWriter, r *http.Request) {
 	s.answerWithSession(w, row.ID)
 }
 
-// checkChatAccount is the account a new or prepared chat asked for: one of
+// checkChatAccount is the account a new chat asked for: one of
 // its agent's, or none (then the one recommended when it starts).
 func (s *Server) checkChatAccount(harness, id string) *launchError {
 	id = strings.TrimSpace(id)

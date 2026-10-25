@@ -31,7 +31,8 @@ var ErrNotFound = errors.New("not found")
 // conversations of the chat that sat beside a terminal, which no longer exists.
 // Version 7 replaces the archive and the flag with a status per session.
 // Version 8 is one migration for two features that landed together: prepared
-// sessions (the drafts table and sessions.start_at) and the bucket mirror
+// sessions (the drafts table and sessions.start_at, unread since PreStart went;
+// the drafts are the chats' composers now) and the bucket mirror
 // (mirror_pending, the local list of what still had to be uploaded).
 // Version 9 adds the cost ledger (cost_convs, cost_hours) and the local record
 // of which transcripts it was last read from (cost_seen); see costs.go.

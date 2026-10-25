@@ -55,12 +55,11 @@ func (s *Server) askingSet() []string {
 	return out
 }
 
-// askable is whether a session can be asking at all: not done, not prepared,
-// and live. A session filed background is counted, as Home counts it: it is
+// askable is whether a session can be asking at all: not done, and live. A session filed background is counted, as Home counts it: it is
 // only kept from chiming and from notifying (DEVIATIONS.md).
 func askable(row *store.Session) bool {
 	if row.Status == store.StatusDone {
 		return false
 	}
-	return row.State != store.StatePrestart && askingStates[row.State]
+	return askingStates[row.State]
 }

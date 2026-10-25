@@ -12,13 +12,15 @@ import (
 	"github.com/saschazesiger/SocratesAgent/internal/store"
 )
 
-// prepare stores a prepared row the way the server does: a chat, with no
-// tmux name, no directory, nothing started.
+// prepare stores a prepared row (PreStart) as a build that had it did: a
+// chat, with no tmux name, no directory, nothing started. Nothing makes one
+// now; a data folder of such a build has them until the server has made
+// them chats.
 func (l *lab) prepare(id string) *store.Session {
 	l.t.Helper()
 	row := &store.Session{
 		ID: id, Title: "Prepared", Harness: "claude", Kind: store.KindChat, WorkdirMode: store.WorkdirDynamic,
-		State: store.StatePrestart, StartAt: time.Now().Add(time.Hour).UnixMilli(),
+		State: store.StatePrestart,
 	}
 	if err := l.store.CreateSession(row); err != nil {
 		l.t.Fatal(err)

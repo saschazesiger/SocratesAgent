@@ -84,12 +84,6 @@ type Server struct {
 	// two taps on the same folder cannot start two editors on it.
 	ideMu sync.Mutex
 
-	// starts serialises everything that changes or starts one prepared
-	// session, and sched is the loop that starts them at their time. See
-	// prestart.go and schedule.go.
-	starts keyedLocks
-	sched  *scheduler
-
 	// backup is the engine that backs the data directory up (backup.go),
 	// set once after New by main; restart starts Socrates again after a
 	// restore, and restoreJob is that restore.
@@ -170,7 +164,6 @@ func New(st *store.Store, dataDir string) (*Server, error) {
 	s.digests = newDigester(s)
 	// A turn's end waits for its outcome before it is pushed.
 	s.push.checking = s.digests.outcomePending
-	s.sched = newScheduler(s)
 	s.costs = newCostLedger(s)
 	s.chats = newChatHub(s)
 	// A chat's push says what its journal says.
@@ -217,6 +210,9 @@ func managerConfig(dataDir string, settings config.Settings) termux.Config {
 // gone. A failure here is reported and not fatal: a Socrates that cannot start
 // sessions still has to serve the dashboard that says why.
 func (s *Server) StartSessions(ctx context.Context) error {
+	// The prepared chats of an older build are ordinary chats before anything
+	// reads the chats.
+	s.readyPreparedChats()
 	// Chats need no tmux: their hosts are reattached whatever the terminal
 	// engine says below.
 	s.chats.start()
@@ -234,9 +230,6 @@ func (s *Server) StartSessions(ctx context.Context) error {
 	// sessions that survived the last run rather than an empty server.
 	s.manager.StartActivity(ctx)
 	s.startSweep(ctx)
-	// Last, once every session that survived is adopted: a scheduled start
-	// that fell due while the server was down is started by its first pass.
-	s.sched.start(ctx)
 	return nil
 }
 
@@ -376,13 +369,11 @@ func (s *Server) routes() {
 	mux.HandleFunc("POST /api/sessions/{id}/title", s.auth(s.handleRetitleSession))
 	mux.HandleFunc("DELETE /api/sessions/{id}", s.auth(s.endingViewers(s.handleDeleteSession)))
 	mux.HandleFunc("POST /api/sessions/{id}/file", s.auth(s.handleSetStatus))
-	mux.HandleFunc("POST /api/sessions/{id}/resume", s.auth(s.terminal(s.started(s.handleResumeSession))))
-	mux.HandleFunc("POST /api/sessions/{id}/restart", s.auth(s.terminal(s.started(s.handleRestartSession))))
-	// Prepared sessions: their settings, their draft, and the start.
-	mux.HandleFunc("PATCH /api/sessions/{id}/prestart", s.auth(s.handlePatchPrestart))
+	mux.HandleFunc("POST /api/sessions/{id}/resume", s.auth(s.terminal(s.handleResumeSession)))
+	mux.HandleFunc("POST /api/sessions/{id}/restart", s.auth(s.terminal(s.handleRestartSession)))
+	// A chat's draft: what its composer holds (drafts.go).
 	mux.HandleFunc("GET /api/sessions/{id}/draft", s.auth(s.handleGetDraft))
 	mux.HandleFunc("PUT /api/sessions/{id}/draft", s.auth(s.handlePutDraft))
-	mux.HandleFunc("POST /api/sessions/{id}/start", s.auth(s.handleStartSession))
 	mux.HandleFunc("POST /api/sessions/{id}/ack-resume", s.auth(s.handleAckResume))
 	mux.HandleFunc("POST /api/sessions/{id}/read", s.auth(s.handleMarkRead))
 	// What every conversation on this machine cost, for the costs page.
@@ -392,9 +383,9 @@ func (s *Server) routes() {
 	// Home: the event stream, and its hello as a poll.
 	mux.HandleFunc("GET /api/events", s.auth(s.handleEvents))
 	mux.HandleFunc("GET /api/home", s.auth(s.handleHome))
-	mux.HandleFunc("GET /api/sessions/{id}/journal", s.auth(s.terminal(s.started(s.handleJournal))))
-	mux.HandleFunc("POST /api/sessions/{id}/upload", s.auth(s.started(s.handleUpload)))
-	mux.HandleFunc("GET /api/sessions/{id}/ws", s.auth(s.terminal(s.started(s.handleSessionWS))))
+	mux.HandleFunc("GET /api/sessions/{id}/journal", s.auth(s.terminal(s.handleJournal)))
+	mux.HandleFunc("POST /api/sessions/{id}/upload", s.auth(s.handleUpload))
+	mux.HandleFunc("GET /api/sessions/{id}/ws", s.auth(s.terminal(s.handleSessionWS)))
 
 	// Chats: agents driven through their protocols, by a host per chat.
 	mux.HandleFunc("POST /api/chats", s.auth(s.handleCreateChat))

@@ -22,11 +22,11 @@ const (
 	StateExited      = "exited"
 	StateNeedsResume = "needs_resume"
 	StateFailed      = "failed"
-	// StatePrestart is a session that has been prepared and not started: its
-	// settings and a prompt draft exist, and nothing else does - no tmux
-	// session, no directory, no program. Every loop that watches terminals
-	// leaves it alone, and the one way out of it is Start, which turns it into
-	// StateStarting exactly like a new session.
+	// StatePrestart is a prepared session (PreStart) of an older build:
+	// settings and a prompt draft, and nothing else - no tmux session, no
+	// directory, no program. Nothing makes one any more. The migrations turn
+	// them into chats (drafts.go); until they have, the loops that watch
+	// terminals leave them alone.
 	StatePrestart = "prestart"
 )
 
@@ -135,11 +135,6 @@ type Session struct {
 	// the start of the time it is kept for.
 	Status   string `json:"status"`
 	StatusAt int64  `json:"status_at"`
-	// StartAt is when a prepared session starts by itself, in milliseconds
-	// since the epoch, and zero for never. It only means something while the
-	// row is StatePrestart; the transition that starts it clears it, so a
-	// start that fails is never tried again on its own.
-	StartAt int64 `json:"start_at"`
 	// Kind is KindTerminal or KindChat. For a chat, CLISessionID is the
 	// agent's own conversation id, as the host reported it.
 	Kind string `json:"kind"`
@@ -186,7 +181,7 @@ const (
 const sessionCols = `id, client_id, title, title_source, harness, model, effort, workdir, workdir_mode,
                      options, tmux_name, cli_session_id, cli_session_state, state, exit_status,
                      fail_reason, resumed, resume_count, cols, rows,
-                     created_at, updated_at, last_attached, active_at, status, status_at, start_at, kind`
+                     created_at, updated_at, last_attached, active_at, status, status_at, kind`
 
 func scanSession(row interface{ Scan(...any) error }) (*Session, error) {
 	s := &Session{}
@@ -195,7 +190,7 @@ func scanSession(row interface{ Scan(...any) error }) (*Session, error) {
 	err := row.Scan(&s.ID, &s.ClientID, &s.Title, &s.TitleSource, &s.Harness, &s.Model, &s.Effort,
 		&s.Workdir, &s.WorkdirMode, &options, &s.TmuxName, &s.CLISessionID, &s.CLISessionState,
 		&s.State, &s.ExitStatus, &s.FailReason, &resumed, &s.ResumeCount, &s.Cols, &s.Rows,
-		&s.CreatedAt, &s.UpdatedAt, &s.LastAttached, &s.ActiveAt, &s.Status, &s.StatusAt, &s.StartAt, &s.Kind)
+		&s.CreatedAt, &s.UpdatedAt, &s.LastAttached, &s.ActiveAt, &s.Status, &s.StatusAt, &s.Kind)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -253,18 +248,13 @@ func (s *Store) CreateSession(sess *Session) error {
 		options = string(sess.Options)
 	}
 	sess.Options = json.RawMessage(options)
-	// A schedule belongs to a prepared session and to nothing else: a row
-	// that is started from the outset has nothing left to start.
-	if sess.State != StatePrestart || sess.StartAt < 0 {
-		sess.StartAt = 0
-	}
 	_, err := s.db.Exec(`INSERT INTO sessions(`+sessionCols+`)
-		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		sess.ID, sess.ClientID, sess.Title, sess.TitleSource, sess.Harness, sess.Model, sess.Effort,
 		sess.Workdir, sess.WorkdirMode, options, sess.TmuxName, sess.CLISessionID,
 		sess.CLISessionState, sess.State, sess.ExitStatus, sess.FailReason, 0,
 		sess.ResumeCount, sess.Cols, sess.Rows, sess.CreatedAt, sess.UpdatedAt, 0, sess.ActiveAt,
-		sess.Status, sess.StatusAt, sess.StartAt, sess.Kind)
+		sess.Status, sess.StatusAt, sess.Kind)
 	if err != nil && sess.ClientID != "" && isUniqueViolation(err) {
 		existing, lookupErr := s.sessionByClientID(sess.ClientID)
 		if lookupErr != nil {

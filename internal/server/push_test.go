@@ -268,11 +268,6 @@ func TestPushSaysWhatATapOpens(t *testing.T) {
 	if one := next(); one.note.Body != "Finished" || one.note.Kind != pushFinished {
 		t.Fatalf("a finished turn = %+v", one.note)
 	}
-
-	env.srv.sched.announce("s-ask", "Started: Asks", "The scheduled start ran.", "normal")
-	if one := next(); one.note.Kind != pushStarted || one.note.ID != "s-ask" || one.msg.Topic != pushTopic("s-ask") {
-		t.Fatalf("a scheduled start = %+v %+v", one.note, one.msg)
-	}
 }
 
 // A service filed background finishes turns so as not to interrupt anyone

@@ -12,10 +12,8 @@ package server
 //	POST /api/chats/{id}/attachments   multipart, one or more "file" parts  {"files":[attachment]}
 
 import (
-	"context"
 	"errors"
 	"io"
-	"log"
 	"mime"
 	"net/http"
 	"os"
@@ -27,7 +25,6 @@ import (
 	"github.com/saschazesiger/SocratesAgent/internal/agenthost"
 	"github.com/saschazesiger/SocratesAgent/internal/config"
 	"github.com/saschazesiger/SocratesAgent/internal/harnesses"
-	"github.com/saschazesiger/SocratesAgent/internal/store"
 )
 
 // attachmentsDir is where a chat's files are kept, inside its own directory:
@@ -285,78 +282,6 @@ func checkChatHarness(harness string, settings config.Settings) *launchError {
 		return refuse(http.StatusBadRequest, "%s is switched off in the dashboard", harness)
 	}
 	return nil
-}
-
-// startPreparedChat starts a prepared chat: its folder is made, the row
-// becomes a running chat, and its draft is sent as the first message - the
-// same message the composer would send, exactly once by its client_id - and
-// then cleared, because from here on the draft is the composer's. The caller
-// holds the start lock.
-func (s *Server) startPreparedChat(ctx context.Context, row *store.Session) (*store.Session, int, error) {
-	settings := s.Settings()
-	failed := func(status int, err error) (*store.Session, int, error) {
-		if recordErr := s.store.SetPrestartFailure(row.ID, err.Error()); recordErr != nil &&
-			!errors.Is(recordErr, store.ErrNotPrestart) {
-			log.Printf("chat %s: could not record why it did not start: %v", row.ID, recordErr)
-		}
-		current, getErr := s.store.GetSession(row.ID)
-		if getErr != nil {
-			return nil, status, err
-		}
-		return current, status, err
-	}
-	if refused := checkChatHarness(row.Harness, settings); refused != nil {
-		return failed(refused.status, refused)
-	}
-	workdir, err := harnesses.ResolveWorkdir(settings, row.WorkdirMode, row.Workdir, row.Harness, row.ID)
-	if err != nil {
-		return failed(http.StatusBadRequest, err)
-	}
-	draft, err := s.store.GetDraft(row.ID)
-	if err != nil && !errors.Is(err, store.ErrNotFound) {
-		return failed(http.StatusInternalServerError, err)
-	}
-	next := *row
-	next.Workdir = workdir
-	next.Model, next.Effort = chatModel(settings, row.Harness, row.Model, row.Effort)
-	next.Title = sessionTitle("", chatLabel(row.Harness), workdir, row.WorkdirMode)
-	if err := s.store.BeginStart(&next); err != nil {
-		if errors.Is(err, store.ErrNotPrestart) {
-			current, _ := s.store.GetSession(row.ID)
-			return current, http.StatusOK, nil
-		}
-		return failed(http.StatusInternalServerError, err)
-	}
-	if err := s.store.SetSessionStateFrom(row.ID, store.StateStarting, store.StateRunning, -1, ""); err != nil {
-		log.Printf("chat %s: could not mark it running: %v", row.ID, err)
-	}
-	first := strings.TrimSpace(draft.Text) != ""
-	if first {
-		if _, err := s.store.SaveDraft(row.ID, "", draft.Rev); err != nil {
-			log.Printf("chat %s: could not clear the draft it started with: %v", row.ID, err)
-		}
-	}
-	p, err := s.chats.peer(row.ID)
-	if err != nil {
-		current, _ := s.store.GetSession(row.ID)
-		return current, http.StatusInternalServerError, err
-	}
-	p.report()
-	if first {
-		// The first message's client_id is the chat's own, so a start that
-		// runs twice (the button and the clock) sends it once.
-		s.sendMessage(ctx, p, &chatMessageBody{ClientID: "prestart-" + row.ID, Text: draft.Text})
-	} else {
-		p.mu.Lock()
-		p.warm = true
-		p.kickLocked()
-		p.mu.Unlock()
-	}
-	current, err := s.store.GetSession(row.ID)
-	if err != nil {
-		return nil, http.StatusInternalServerError, err
-	}
-	return current, http.StatusOK, nil
 }
 
 // chatUltracode is whether a chat runs with Ultracode: asked for, and Claude

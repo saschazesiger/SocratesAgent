@@ -15,7 +15,6 @@ import (
 
 	"github.com/saschazesiger/SocratesAgent/internal/agent"
 	"github.com/saschazesiger/SocratesAgent/internal/config"
-	"github.com/saschazesiger/SocratesAgent/internal/store"
 )
 
 // upload posts files to a chat's attachments route the way the composer does.
@@ -174,44 +173,6 @@ func TestChatDraftIsKeptWithRevisions(t *testing.T) {
 	}
 }
 
-// A prepared chat starts as a chat: its draft is the first message, sent once
-// however often Start is pressed, and the draft is empty afterwards.
-func TestPreparedChatStartsWithItsDraft(t *testing.T) {
-	c := newChatEnv(t, time.Hour)
-	code, body := c.post(t, "/api/sessions", map[string]any{"client_id": "prep", "prestart": true, "harness": "fake",
-		"model": "fake-small", "workdir_mode": "custom", "workdir": c.data, "prompt": "the first words"})
-	if code != http.StatusCreated {
-		t.Fatalf("prepare: %d %v", code, body)
-	}
-	row := body["session"].(map[string]any)
-	id := row["id"].(string)
-	if row["kind"] != store.KindChat || row["state"] != store.StatePrestart {
-		t.Fatalf("prepared as %v / %v", row["kind"], row["state"])
-	}
-	if code, body := c.do(t, c.client, "PATCH", "/api/sessions/"+id+"/prestart", `{"harness":"shell"}`); code.StatusCode != http.StatusBadRequest {
-		t.Fatalf("a prepared chat turned into a shell: %d %v", code.StatusCode, body)
-	}
-	for i := 0; i < 2; i++ {
-		code, body = c.post(t, "/api/sessions/"+id+"/start", map[string]any{})
-		if code != http.StatusOK {
-			t.Fatalf("start %d: %d %v", i, code, body)
-		}
-	}
-	started := body["session"].(map[string]any)
-	if started["state"] != store.StateRunning || started["kind"] != store.KindChat {
-		t.Fatalf("started as %v / %v", started["state"], started["kind"])
-	}
-	events := c.waitJournal(t, id, 10*time.Second, "the first turn", turnsEnded(1))
-	users := count(events, func(ev agent.Event) bool { return ev.Type == agent.TypeMessage && ev.Role == agent.RoleUser })
-	if users != 1 || !strings.Contains(lastText(events), "you said: the first words") {
-		t.Fatalf("%d user messages, the agent said %q", users, lastText(events))
-	}
-	_, draft := c.do(t, c.client, "GET", "/api/sessions/"+id+"/draft", "")
-	if draft["text"] != "" {
-		t.Fatalf("the draft after the start: %v", draft)
-	}
-}
-
 // The sheet learns which agents are chats, and the scripted one is offered
 // with its models.
 func TestCatalogNamesTheChats(t *testing.T) {
@@ -234,8 +195,7 @@ func TestCatalogNamesTheChats(t *testing.T) {
 }
 
 // Every agent with an adapter is a chat: Claude Code, Codex and OpenCode as
-// much as the scripted agent, from the sheet and prepared alike. A Shell is
-// a terminal.
+// much as the scripted agent. A Shell is a terminal.
 func TestEveryAgentIsAChat(t *testing.T) {
 	for _, harness := range []string{"claude", "codex", "opencode", agent.FakeHarness} {
 		if !chatAgent(harness) {
@@ -256,16 +216,6 @@ func TestEveryAgentIsAChat(t *testing.T) {
 		if !got[harness] {
 			t.Fatalf("the catalogue's chats: %v", body["chats"])
 		}
-	}
-	code, made := c.post(t, "/api/sessions", map[string]any{"prestart": true, "harness": "codex",
-		"workdir_mode": "custom", "workdir": c.data, "prompt": "hello"})
-	if code != http.StatusCreated || made["session"].(map[string]any)["kind"] != store.KindChat {
-		t.Fatalf("a prepared Codex: %d %v", code, made)
-	}
-	code, made = c.post(t, "/api/sessions", map[string]any{"prestart": true, "harness": "shell",
-		"workdir_mode": "custom", "workdir": c.data})
-	if code != http.StatusBadRequest {
-		t.Fatalf("a prepared Shell: %d %v", code, made)
 	}
 }
 

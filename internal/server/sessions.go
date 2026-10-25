@@ -93,10 +93,10 @@ type sessionView struct {
 	// DeleteAt is when a done session is deleted, so the page can say so
 	// without knowing how long done sessions are kept.
 	DeleteAt int64 `json:"delete_at,omitempty"`
-	// DraftRev and DraftPreview are a prepared session's draft as the list
-	// shows it: the revision, so a device whose panel is open notices that
-	// another one saved, and the first line, for the sidebar. The text itself
-	// is fetched on its own; it can be a hundred kilobytes per session.
+	// DraftRev and DraftPreview are a chat's draft as the list shows it: the
+	// revision, so a device whose composer is open notices that another one
+	// saved, and the first line, for the sidebar. The text itself is fetched
+	// on its own; it can be a hundred kilobytes per chat.
 	DraftRev     int64  `json:"draft_rev,omitempty"`
 	DraftPreview string `json:"draft_preview,omitempty"`
 	// WorkdirMissing is a session whose working directory is not on this
@@ -108,7 +108,7 @@ type sessionView struct {
 
 func (s *Server) view(row *store.Session) sessionView {
 	var metas map[string]store.DraftMeta
-	if row.State == store.StatePrestart {
+	if row.IsChat() {
 		if meta, ok := s.store.DraftMetaOf(row.ID); ok {
 			metas = map[string]store.DraftMeta{row.ID: meta}
 		}
@@ -120,7 +120,7 @@ func (s *Server) view(row *store.Session) sessionView {
 // them: once, for every row.
 func (s *Server) viewWith(row *store.Session, drafts map[string]store.DraftMeta) sessionView {
 	v := sessionView{Session: row, CLISessionState: row.CLISessionState}
-	if meta, ok := drafts[row.ID]; ok && row.State == store.StatePrestart {
+	if meta, ok := drafts[row.ID]; ok && row.IsChat() {
 		v.DraftRev, v.DraftPreview = meta.Rev, meta.Preview
 	}
 	v.Activity = s.manager.ActivityOf(row.ID)
@@ -131,12 +131,9 @@ func (s *Server) viewWith(row *store.Session, drafts map[string]store.DraftMeta)
 	return v
 }
 
-// workdirMissing is whether a session's folder is not on this machine. A
-// prepared session's typed-in folder is only made when it starts, so it is not
-// missing before then; a preset one is never made, and a prepared session
-// whose preset is gone would fail to start.
+// workdirMissing is whether a session's folder is not on this machine.
 func workdirMissing(row *store.Session) bool {
-	if row.Workdir == "" || (row.State == store.StatePrestart && row.WorkdirMode != harnesses.WorkdirPreset) {
+	if row.Workdir == "" {
 		return false
 	}
 	info, err := os.Stat(row.Workdir)
@@ -156,8 +153,8 @@ func (s *Server) views(rows []store.Session) []sessionView {
 	return out
 }
 
-// createSessionBody is what the new-session sheet posts: a Shell, or a
-// prepared chat.
+// createSessionBody is what the new-session sheet posts for a Shell. An
+// agent's chat is made by POST /api/chats (chats.go).
 type createSessionBody struct {
 	// ClientID is the browser's idempotency key. A create retried over a link
 	// that dropped finds the session it already made instead of making a
@@ -176,19 +173,6 @@ type createSessionBody struct {
 	// corrects it a moment later.
 	Cols int `json:"cols"`
 	Rows int `json:"rows"`
-
-	// Prestart prepares a chat instead of starting anything: the row is
-	// stored with these settings, and nothing else happens until Start. See
-	// prestart.go. Prompt is its first draft and StartAt when it starts by
-	// itself; Ultracode starts a Claude Code chat with dynamic workflows on
-	// every task, and Account and AutoSwitch are its account (chataccount.go)
-	// - empty is the account recommended when it starts.
-	Prestart   bool   `json:"prestart"`
-	Prompt     string `json:"prompt"`
-	StartAt    int64  `json:"start_at"`
-	Ultracode  bool   `json:"ultracode"`
-	Account    string `json:"account"`
-	AutoSwitch bool   `json:"auto_switch"`
 }
 
 // launchSpec is one terminal to be started: a Shell from the sheet, or the
@@ -213,8 +197,7 @@ type launchSpec struct {
 }
 
 // launchError is a refusal of a launch's settings, with the status it is
-// answered with. It is a type of its own because a start of a prepared
-// session records it on the row rather than only answering it.
+// answered with.
 type launchError struct {
 	status int
 	msg    string
@@ -245,13 +228,6 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
-	}
-	if body.Prestart {
-		// Preparing a chat starts nothing, so it does not need tmux to be
-		// there: a draft can be written on a machine whose terminal engine is
-		// still being installed.
-		s.createPrestart(w, body)
-		return
 	}
 	// An agent runs as a chat, and the terminal it ran in before is gone
 	// (REBUILD.md §1): asked for one, the server says where the agent is.

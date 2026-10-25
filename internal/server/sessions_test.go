@@ -4,7 +4,6 @@ package server
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -914,9 +913,9 @@ func TestSweepParksAndDeletesDoneSessions(t *testing.T) {
 	}
 }
 
-// preparedEnv is a signed-in server whose terminal substrate has NOT been
-// started: preparing a chat must work without tmux.
-func preparedEnv(t *testing.T) *sessionEnv {
+// workspaceEnv is a signed-in server with a workspace whose terminal
+// substrate has NOT been started.
+func workspaceEnv(t *testing.T) *sessionEnv {
 	t.Helper()
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -924,21 +923,4 @@ func preparedEnv(t *testing.T) *sessionEnv {
 	e.signIn()
 	e.configureWorkspace(filepath.Join(home, "workspaces"), true, filepath.Join(home, "preset"))
 	return e
-}
-
-func (e *sessionEnv) prepare(body string) map[string]any {
-	e.t.Helper()
-	res, payload := e.do(e.t, e.client, "POST", "/api/sessions", body)
-	if res.StatusCode != http.StatusCreated {
-		e.t.Fatalf("prepare: %d %#v", res.StatusCode, payload)
-	}
-	session, _ := payload["session"].(map[string]any)
-	return session
-}
-
-// putDraft saves a draft with a JSON-encoded text.
-func (e *sessionEnv) putDraft(id, text string, base int64) (*http.Response, map[string]any) {
-	e.t.Helper()
-	body, _ := json.Marshal(map[string]any{"text": text, "base_rev": base})
-	return e.do(e.t, e.client, "PUT", "/api/sessions/"+id+"/draft", string(body))
 }

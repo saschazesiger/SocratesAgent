@@ -14,10 +14,10 @@ import (
 	"github.com/saschazesiger/SocratesAgent/internal/termux"
 )
 
-// The title of a terminal and of a prepared chat, against the same stand in
-// gateway the Status button is tested with: a Shell is never named on its
-// own, and one is named from its screen when somebody asks. A chat naming
-// itself from its first message is chattitle_test.go's.
+// The title of a terminal and of a chat nobody has written to yet, against
+// the same stand in gateway the Status button is tested with: a Shell is
+// never named on its own, and one is named from its screen when somebody
+// asks. A chat naming itself from its first message is chattitle_test.go's.
 
 // prompted drives the one edge the title run listens for: a session that
 // somebody has typed at going busy. A real pane produces it through the
@@ -85,13 +85,38 @@ func (e *assistEnv) retitle(id string, body map[string]any) (*http.Response, map
 	return e.do(e.t, e.client, "POST", "/api/sessions/"+id+"/title", string(raw))
 }
 
-// A prepared session is named after its prompt the first time its field is
-// left - from the field's text, which can be ahead of the saved draft - and
-// only that once; the arrow names it again whenever it is pressed.
-func TestRetitleNamesAPreparedSessionAfterItsPrompt(t *testing.T) {
+// unsentChat stores a chat nobody has written to yet, with a name somebody
+// gave it (or none) and a draft of its first message (or none). Nothing runs
+// for it: there is nothing to send.
+func (e *assistEnv) unsentChat(title, draft string) string {
+	e.t.Helper()
+	id := termux.NewID()
+	row := &store.Session{ID: id, Title: "Claude Code · work", Harness: "claude", Kind: store.KindChat,
+		State: store.StateRunning, Workdir: e.t.TempDir(), WorkdirMode: "custom"}
+	if err := e.srv.store.CreateSession(row); err != nil {
+		e.t.Fatal(err)
+	}
+	if title != "" {
+		if err := e.srv.store.UpdateSessionTitle(id, title); err != nil {
+			e.t.Fatal(err)
+		}
+	}
+	if draft != "" {
+		if _, err := e.srv.store.SaveDraft(id, draft, 0); err != nil {
+			e.t.Fatal(err)
+		}
+	}
+	return id
+}
+
+// A chat nobody has written to yet is named after the draft of its first
+// message the first time its field is left - from the field's text, which can
+// be ahead of the saved draft - and only that once; the arrow names it again
+// whenever it is pressed.
+func TestRetitleNamesAnUnsentChatAfterItsDraft(t *testing.T) {
 	e := newAssistEnv(t)
 	e.gw.always("Flaky login test")
-	id := sessionID(t, e.prepare(`{"prestart":true,"harness":"claude","prompt":"an older draft"}`))
+	id := e.unsentChat("", "an older draft")
 
 	res, payload := e.retitle(id, map[string]any{"unnamed": true, "prompt": "Fix the flaky login test in auth"})
 	if res.StatusCode != http.StatusOK {
@@ -105,8 +130,8 @@ func TestRetitleNamesAPreparedSessionAfterItsPrompt(t *testing.T) {
 	if len(calls) != 1 {
 		t.Fatalf("the gateway saw %d calls", len(calls))
 	}
-	if prompt := calls[0].last(); !strings.Contains(prompt, "First prompt:\nFix the flaky login test in auth") ||
-		strings.Contains(prompt, "older draft") || strings.Contains(prompt, "Screen:") {
+	if prompt := calls[0].last(); !strings.Contains(prompt, "First message:\nFix the flaky login test in auth") ||
+		strings.Contains(prompt, "older draft") {
 		t.Fatalf("the namer was not shown the field's text alone:\n%s", prompt)
 	}
 
@@ -132,16 +157,16 @@ func TestRetitleNamesAPreparedSessionAfterItsPrompt(t *testing.T) {
 	}
 }
 
-// A name somebody gave a prepared session is not replaced by leaving its
-// field; and with nothing written there is nothing to name it after.
+// A name somebody gave a chat is not replaced by leaving its field; and with
+// nothing written there is nothing to name it after.
 func TestRetitleLeavesAGivenNameWhenTheFieldIsLeft(t *testing.T) {
 	e := newAssistEnv(t)
 	e.gw.always("Made up")
-	named := sessionID(t, e.prepare(`{"prestart":true,"harness":"claude","title":"Mine","prompt":"do it"}`))
+	named := e.unsentChat("Mine", "do it")
 	if res, _ := e.retitle(named, map[string]any{"unnamed": true, "prompt": "do it"}); res.StatusCode != http.StatusNoContent {
 		t.Fatalf("leaving the field of a named session: %d, want 204", res.StatusCode)
 	}
-	empty := sessionID(t, e.prepare(`{"prestart":true,"harness":"claude"}`))
+	empty := e.unsentChat("", "")
 	if res, payload := e.retitle(empty, map[string]any{}); res.StatusCode != http.StatusConflict {
 		t.Fatalf("naming a session with no prompt: %d %#v, want 409", res.StatusCode, payload)
 	}
@@ -181,7 +206,7 @@ func TestRetitleNamesARunningSessionFromItsScreen(t *testing.T) {
 func TestRetitleWithoutAKey(t *testing.T) {
 	e := newAssistEnv(t)
 	e.configureOpenRouter(t, map[string]any{"api_key": ""})
-	id := sessionID(t, e.prepare(`{"prestart":true,"harness":"claude","prompt":"do it"}`))
+	id := e.unsentChat("", "do it")
 	if res, _ := e.retitle(id, map[string]any{"unnamed": true}); res.StatusCode != http.StatusNoContent {
 		t.Fatalf("leaving the field: %d, want 204", res.StatusCode)
 	}

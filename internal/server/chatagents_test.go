@@ -3,7 +3,6 @@
 package server
 
 import (
-	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -242,58 +241,5 @@ func TestALostChatFolderIsRebuiltFromTheTranscript(t *testing.T) {
 				t.Fatalf("the push of the new turn: %+v", done)
 			}
 		})
-	}
-}
-
-// A prepared chat's scheduled start ("Start automatically") sends its draft
-// as the first message, once, and says so on the phone; a prepared Claude
-// chat keeps the Ultracode it was prepared with, and another agent does not.
-func TestAPreparedChatStartsByTheClockWithItsDraft(t *testing.T) {
-	withFakeAgents(t)
-	c := newChatEnv(t, time.Hour)
-	sent := catch(c.srv.push)
-	if err := c.srv.push.add(pushSub{Subscription: testSubscription("https://push.example.net/a")}); err != nil {
-		t.Fatal(err)
-	}
-	work := filepath.Join(c.data, "work-prepared")
-	if err := os.MkdirAll(work, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	at := time.Now().Add(time.Hour).UnixMilli()
-	code, body := c.post(t, "/api/sessions", map[string]any{"client_id": "prep-claude", "prestart": true, "harness": "claude",
-		"workdir_mode": "custom", "workdir": work, "prompt": "/argv", "start_at": at, "ultracode": true})
-	if code != 201 {
-		t.Fatalf("prepare: %d %v", code, body)
-	}
-	row := body["session"].(map[string]any)
-	id := row["id"].(string)
-	if row["kind"] != "chat" || row["options"].(map[string]any)["ultracode"] != true {
-		t.Fatalf("prepared %v", row)
-	}
-	// Switched to Codex, it would lose Ultracode; back to Claude Code with it
-	// asked for again, it has it.
-	if res, made := c.do(t, c.client, "PATCH", "/api/sessions/"+id+"/prestart", `{"harness":"codex"}`); res.StatusCode != 200 ||
-		made["session"].(map[string]any)["options"].(map[string]any)["ultracode"] != nil {
-		t.Fatalf("to codex: %d %v", res.StatusCode, made)
-	}
-	if res, made := c.do(t, c.client, "PATCH", "/api/sessions/"+id+"/prestart", `{"harness":"claude","ultracode":true}`); res.StatusCode != 200 ||
-		made["session"].(map[string]any)["options"].(map[string]any)["ultracode"] != true {
-		t.Fatalf("back to claude: %d %v", res.StatusCode, made)
-	}
-	if n := c.srv.sched.runDue(context.Background(), time.UnixMilli(at+1)); n != 1 {
-		t.Fatalf("the scheduler started %d sessions", n)
-	}
-	started := pushOfKind(t, sent, pushStarted, 10*time.Second)
-	if !strings.HasPrefix(started.Title, "Started: ") || started.ID != id {
-		t.Fatalf("the announcement %+v", started)
-	}
-	events := c.waitJournal(t, id, 20*time.Second, "the first turn", turnsEnded(1))
-	users := count(events, func(ev agent.Event) bool { return ev.Type == agent.TypeMessage && ev.Role == agent.RoleUser })
-	if users != 1 || !strings.Contains(lastSaid(events), `"ultracode":true`) {
-		t.Fatalf("%d user messages, the agent said %q", users, lastSaid(events))
-	}
-	// A second run of the clock starts nothing again.
-	if n := c.srv.sched.runDue(context.Background(), time.UnixMilli(at+2)); n != 0 {
-		t.Fatalf("started again: %d", n)
 	}
 }

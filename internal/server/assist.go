@@ -463,19 +463,21 @@ func (n titleNamer) ask(ctx context.Context, instruction string) (string, string
 const retitlePromptRunes = 4000
 
 // handleRetitleSession names a session again, now, from what there is to go
-// by: the first prompt - the prepared session's field as it is on screen, or
-// the draft it was started with - and the screen of a session that has one.
+// by: a chat's first message - or, for a chat nobody has written to yet, the
+// draft of it, as the field holds it on screen (prompt) or as it was saved -
+// and where its conversation has got to; a terminal's screen.
 //
 // It is the button beside the name, which replaces whatever the session was
-// called, and the first time somebody leaves a prepared session's prompt
-// field ("unnamed"), which names only a session nobody has named yet - and
-// says nothing when there is nothing to do, because nobody pressed anything.
+// called, and the first time somebody leaves the field of a chat nobody has
+// written to yet ("unnamed"), which names only a session nobody has named
+// yet - and says nothing when there is nothing to do, because nobody pressed
+// anything.
 //
-// It answers when the name is there, with the session: a prepared session
-// has no socket for the "title" frames to arrive on. The frames still go to
-// every other browser, so their rows pulse and take the new name too; a
-// failure is said to the one who asked, and only stops the pulse elsewhere.
-// A run outlives a request that gave up waiting for it, and still saves.
+// It answers when the name is there, with the session. The "title" frames
+// go to every other browser, so their rows pulse and take the new name too;
+// a failure is said to the one who asked, and only stops the pulse
+// elsewhere. A run outlives a request that gave up waiting for it, and still
+// saves.
 func (s *Server) handleRetitleSession(w http.ResponseWriter, r *http.Request) {
 	row, ok := s.session(w, r)
 	if !ok {
@@ -508,14 +510,11 @@ func (s *Server) handleRetitleSession(w http.ResponseWriter, r *http.Request) {
 		quiet(http.StatusConflict, "automatic titles are off: open /admin and set an OpenRouter API key")
 		return
 	}
-	prompt := ""
-	if row.State == store.StatePrestart {
-		// The field can be ahead of the saved draft by a pause in the typing.
-		prompt = strings.TrimSpace(body.Prompt)
-	}
-	// A started chat's draft is what its composer holds, not a first prompt:
-	// its first message is in its journal.
-	if prompt == "" && (!row.IsChat() || row.State == store.StatePrestart) {
+	// The field can be ahead of the saved draft by a pause in the typing. A
+	// chat that has a first message is named after that instead (below):
+	// its draft is the next message, not the first.
+	prompt := strings.TrimSpace(body.Prompt)
+	if prompt == "" {
 		if draft, err := s.store.GetDraft(row.ID); err == nil {
 			prompt = strings.TrimSpace(draft.Text)
 		}
@@ -523,9 +522,11 @@ func (s *Server) handleRetitleSession(w http.ResponseWriter, r *http.Request) {
 	if runes := []rune(prompt); len(runes) > retitlePromptRunes {
 		prompt = string(runes[:retitlePromptRunes])
 	}
-	if prompt == "" && row.State == store.StatePrestart {
-		quiet(http.StatusConflict, "there is nothing to name it after yet: write the first prompt")
-		return
+	if row.IsChat() && prompt == "" {
+		if first, _ := s.chats.firstExchange(row.ID); first == "" {
+			quiet(http.StatusConflict, "there is nothing to name it after yet: write the first message")
+			return
+		}
 	}
 	was := row.Title
 	// The problem the run ended with, or "" once it saved or lost to a
@@ -534,11 +535,10 @@ func (s *Server) handleRetitleSession(w http.ResponseWriter, r *http.Request) {
 	launched := s.titles.launch(row.ID, func(ctx context.Context, id string) {
 		s.emitTitle(id, titlePhaseStart, "", "")
 		title, problem := "", ""
-		if chat := row.IsChat() && row.State != store.StatePrestart; chat {
+		if row.IsChat() {
 			// A chat is named again from its journal: its first message, and
 			// where the conversation has got to.
-			first, _ := s.chats.firstExchange(id)
-			if prompt == "" {
+			if first, _ := s.chats.firstExchange(id); first != "" {
 				prompt = first
 			}
 			latest := s.chats.latestExchange(id)
@@ -548,12 +548,9 @@ func (s *Server) handleRetitleSession(w http.ResponseWriter, r *http.Request) {
 				title, problem = namer.ask(ctx, chatTitlePrompt(row.Harness, prompt, latest, true))
 			}
 		} else {
-			screen := ""
-			if row.State != store.StatePrestart {
-				// A session whose program has ended has no pane, and then the
-				// first prompt is all there is.
-				screen, _ = s.manager.CapturePane(ctx, id, titleScreenLines)
-			}
+			// A session whose program has ended has no pane, and then the
+			// first prompt is all there is.
+			screen, _ := s.manager.CapturePane(ctx, id, titleScreenLines)
 			if prompt == "" && strings.TrimSpace(screen) == "" {
 				problem = "there was nothing to name the session after: no first prompt, and no screen"
 			} else {
