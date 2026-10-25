@@ -488,7 +488,7 @@ export function mountChat(ctx) {
     // its first message: the composer is a big field that fills the view
     // (so-chat.css [data-fresh]), and what is written in it is kept as the
     // draft until it is sent.
-    const fresh = synced && !chat.timeline.length && !local.length;
+    const fresh = synced && !local.length && !chat.timeline.some((one) => one.type !== 'line');
     if (fresh !== host.hasAttribute('data-fresh')) {
       host.toggleAttribute('data-fresh', fresh);
       if (composer) composer.grow();
