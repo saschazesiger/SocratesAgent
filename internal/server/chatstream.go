@@ -20,6 +20,7 @@ import (
 
 	"github.com/coder/websocket"
 
+	"github.com/saschazesiger/SocratesAgent/internal/agent"
 	"github.com/saschazesiger/SocratesAgent/internal/agenthost"
 )
 
@@ -153,12 +154,17 @@ func (s *Server) serveChatStream(conn *websocket.Conn, token string, p *chatPeer
 	var pongs [][]byte
 	for {
 		events, deltas := sub.Pull(next)
-		for _, ev := range events {
+		// What the browser folds is sent without what later events of the
+		// same batch make moot (agent.Compact): a replay of a workflow that
+		// journaled its state for hours is its last state, not every copy.
+		for _, ev := range agent.Compact(events) {
 			if err := write(agenthost.EncodeEvent(ev)); err != nil {
 				_ = conn.CloseNow()
 				return nil
 			}
-			next = ev.Seq
+		}
+		if len(events) > 0 {
+			next = events[len(events)-1].Seq
 		}
 		for _, d := range deltas {
 			if err := write(agenthost.EncodeDelta(d)); err != nil {

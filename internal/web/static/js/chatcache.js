@@ -10,6 +10,10 @@
 // always did.
 
 const DB = 'socrates-chats';
+// Version 2 keeps the events compacted (chatfold.js compact); what version 1
+// kept - every copy a long workflow journaled, hundreds of megabytes for a
+// chat - is let go unread.
+const VERSION = 2;
 const STORE = 'chats';
 // The most chats kept; the ones read longest ago go first.
 const KEEP = 40;
@@ -20,8 +24,9 @@ function db() {
   if (opening) return opening;
   opening = new Promise((resolve, reject) => {
     if (!window.indexedDB) { reject(new Error('no IndexedDB')); return; }
-    const req = indexedDB.open(DB, 1);
+    const req = indexedDB.open(DB, VERSION);
     req.onupgradeneeded = () => {
+      if (req.result.objectStoreNames.contains(STORE)) req.result.deleteObjectStore(STORE);
       const store = req.result.createObjectStore(STORE, { keyPath: 'id' });
       store.createIndex('at', 'at');
     };

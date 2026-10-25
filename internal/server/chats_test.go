@@ -343,16 +343,34 @@ func isEv(typ string) func(agent.Event) bool {
 // first, without a gap or a repeat.
 func sameAsJournal(t *testing.T, got, journal []agent.Event, first int64) {
 	t.Helper()
+	// The stream is the journal compacted (agent.Compact): seqs in order,
+	// with gaps where events were moot; every event the journal's own line,
+	// but a part's events merged into one where it first appeared; and the
+	// whole folds into what the journal folds into.
+	last := first - 1
 	for i, ev := range got {
-		if ev.Seq != first+int64(i) {
-			t.Fatalf("event %d has seq %d, want %d: a gap or a duplicate", i, ev.Seq, first+int64(i))
+		if ev.Seq <= last || ev.Seq > int64(len(journal)) {
+			t.Fatalf("event %d has seq %d after %d: a duplicate, or not in the journal", i, ev.Seq, last)
 		}
+		last = ev.Seq
 		j := journal[ev.Seq-1]
+		if ev.UpdatedAt != 0 && ev.Type == agent.TypePart && ev.PartID == j.PartID {
+			continue
+		}
 		a, _ := json.Marshal(ev)
 		b, _ := json.Marshal(j)
 		if string(a) != string(b) {
 			t.Fatalf("seq %d differs from the journal:\n%s\n%s", ev.Seq, a, b)
 		}
+	}
+	folded := func(events []agent.Event) string {
+		p := agent.Fold(events)
+		p.LastSeq = 0
+		raw, _ := json.Marshal(p)
+		return string(raw)
+	}
+	if a, b := folded(append(append([]agent.Event{}, journal[:first-1]...), got...)), folded(journal); a != b {
+		t.Fatalf("what was streamed folds differently from the journal:\n%s\n%s", a, b)
 	}
 }
 

@@ -200,6 +200,10 @@ type Event struct {
 	Seq  int64  `json:"seq"`
 	At   int64  `json:"at"`
 	Type string `json:"type"`
+	// UpdatedAt is never journaled: it is when the part event that Compact
+	// made of several was last replaced, where At stays when its part first
+	// appeared.
+	UpdatedAt int64 `json:"updated_at,omitempty"`
 
 	TurnID    string `json:"turn_id,omitempty"`
 	MessageID string `json:"message_id,omitempty"`

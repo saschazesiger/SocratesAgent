@@ -2,6 +2,7 @@ package web
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -23,6 +24,23 @@ import (
 // an event that does not move the seq forward, and a turn that ends
 // interrupted with things still streaming.
 func TestTheBrowserFoldsAChatAsTheServerDoes(t *testing.T) {
+	events := parityJournal()
+	// A repeat of an event already applied - a replay that overlaps the live
+	// tail - changes nothing.
+	again := events[6]
+	again.Text = "SHOULD NOT APPEAR"
+	events = append(events, again)
+
+	want := foldedView(agent.Fold(events))
+	got := foldInBrowser(t, events)
+	if got != want {
+		t.Fatalf("the browser's fold differs from the server's:\nbrowser %s\nserver  %s", got, want)
+	}
+}
+
+// parityJournal is the journal the two folds are held to: the rules that
+// are easy to get subtly different, all in one chat.
+func parityJournal() []agent.Event {
 	raw := func(s string) json.RawMessage { return json.RawMessage(s) }
 	events := []agent.Event{
 		{Type: agent.TypeMessage, MessageID: "m1", Role: agent.RoleUser, State: agent.MessagePending, ClientID: "c1", Text: "hi"},
@@ -51,17 +69,7 @@ func TestTheBrowserFoldsAChatAsTheServerDoes(t *testing.T) {
 		events[i].Seq = int64(i + 1)
 		events[i].At = int64(1000 + i)
 	}
-	// A repeat of an event already applied - a replay that overlaps the live
-	// tail - changes nothing.
-	again := events[6]
-	again.Text = "SHOULD NOT APPEAR"
-	events = append(events, again)
-
-	want := foldedView(agent.Fold(events))
-	got := foldInBrowser(t, events)
-	if got != want {
-		t.Fatalf("the browser's fold differs from the server's:\nbrowser %s\nserver  %s", got, want)
-	}
+	return events
 }
 
 // Claude's word that it goes on without another organization's thinking is
@@ -279,7 +287,8 @@ func runFold(t *testing.T, events []agent.Event, expr string) string {
 import { readFileSync } from 'node:fs';
 const fold = await import(` + strconv.Quote("file://"+module) + `);
 const chat = fold.newChat();
-for (const ev of JSON.parse(readFileSync(` + strconv.Quote(journal) + `, 'utf8'))) fold.apply(chat, ev);
+const events = JSON.parse(readFileSync(` + strconv.Quote(journal) + `, 'utf8'));
+for (const ev of events) fold.apply(chat, ev);
 console.log(JSON.stringify(` + expr + `));
 `
 	cmd := exec.Command(node, "--input-type=module", "-e", script)
@@ -290,4 +299,119 @@ console.log(JSON.stringify(` + expr + `));
 		t.Fatalf("node: %v\n%s", err, complaints.String())
 	}
 	return strings.TrimSpace(string(out))
+}
+
+// compactJournal is parityJournal and a second chat's worth of what a
+// replay compacts: a workflow and its agents replaced whole over and over,
+// across a turn that ends interrupted; a part that a delta makes and a part
+// event replaces; and the values reported again and again.
+func compactJournal() []agent.Event {
+	raw := func(s string) json.RawMessage { return json.RawMessage(s) }
+	events := parityJournal()
+	more := []agent.Event{
+		{Type: agent.TypeMessage, MessageID: "m2", Role: agent.RoleUser, State: agent.MessageDelivered, ClientID: "c2", Text: "again"},
+		{Type: agent.TypeTurnStarted, TurnID: "t2", MessageID: "m2"},
+		{Type: agent.TypeMessage, MessageID: "a2", Role: agent.RoleAssistant, State: agent.MessageStreaming, TurnID: "t2"},
+		{Type: agent.TypeAgentInfo, Content: raw(`{"v":1}`)},
+		{Type: agent.TypePartDelta, MessageID: "a2", PartID: "d", Offset: 0, Text: "made by a delta"},
+		{Type: agent.TypeRateLimit, Window: "five_hour", Used: 10},
+	}
+	for i := 0; i < 4; i++ {
+		more = append(more,
+			agent.Event{Type: agent.TypePart, MessageID: "a2", PartID: "wf", Kind: agent.PartTool, State: agent.PartRunning,
+				Content: raw(fmt.Sprintf(`{"tool":"Workflow","workflow":{"status":"running","agents_done":%d}}`, i))},
+			agent.Event{Type: agent.TypePart, PartID: fmt.Sprintf("ag%d", i%2), ParentPartID: "wf", Kind: agent.PartTool, State: agent.PartRunning,
+				Content: raw(fmt.Sprintf(`{"tool":"WorkflowAgent","n":%d}`, i))},
+			agent.Event{Type: agent.TypeRateLimit, Window: "weekly", Used: float64(i)},
+			agent.Event{Type: agent.TypeTasks, Count: i},
+			agent.Event{Type: agent.TypeUsage, Usage: &agent.Usage{Context: int64(i), Window: 9}},
+		)
+	}
+	more = append(more,
+		agent.Event{Type: agent.TypePart, MessageID: "a2", PartID: "d", Kind: agent.PartText, State: agent.PartDone, Text: "replaced"},
+		agent.Event{Type: agent.TypePartDelta, MessageID: "a2", PartID: "d", Offset: 8, Text: " and added to"},
+		agent.Event{Type: agent.TypePart, MessageID: "a2", PartID: "todo", Kind: agent.PartTodo, State: agent.PartDone, Content: raw(`{"items":[]}`)},
+		agent.Event{Type: agent.TypeUsage},
+		agent.Event{Type: agent.TypeTurnEnded, TurnID: "t2", Outcome: agent.OutcomeInterrupted},
+		agent.Event{Type: agent.TypeRateLimit, Window: "five_hour", Used: 20},
+		agent.Event{Type: agent.TypePart, MessageID: "a2", PartID: "wf", Kind: agent.PartTool, State: agent.PartRunning,
+			Content: raw(`{"tool":"Workflow","workflow":{"status":"running","agents_done":9}}`)},
+		agent.Event{Type: agent.TypePart, PartID: "ag1", ParentPartID: "wf", Kind: agent.PartTool, State: agent.PartDone, Text: "done"},
+		agent.Event{Type: agent.TypePart, MessageID: "a2", PartID: "todo", Kind: agent.PartTodo, State: agent.PartDone, Content: raw(`{"items":[1]}`)},
+		agent.Event{Type: agent.TypeAgentInfo, Content: raw(`{"v":2}`)},
+		agent.Event{Type: agent.TypeMessage, MessageID: "m3", Role: agent.RoleUser, State: agent.MessageDelivered, ClientID: "c3", Text: "last"},
+		agent.Event{Type: agent.TypeTurnStarted, TurnID: "t3", MessageID: "m3"},
+		agent.Event{Type: agent.TypeTurnEnded, TurnID: "t3", Outcome: agent.OutcomeCompleted, Usage: &agent.Usage{Input: 3}},
+		agent.Event{Type: agent.TypePart, MessageID: "a2", PartID: "wf", Kind: agent.PartTool, State: agent.PartDone,
+			Content: raw(`{"tool":"Workflow","workflow":{"status":"completed","agents_done":10}}`)},
+	)
+	events = append(events, more...)
+	for i := range events {
+		events[i].Seq = int64(i + 1)
+		events[i].At = int64(1000 + 3*i)
+	}
+	return events
+}
+
+// The browser keeps what it was sent compacted on the device, by the
+// server's rules: from any seq, its compaction is the server's.
+func TestTheBrowserCompactsAsTheServerDoes(t *testing.T) {
+	events := compactJournal()
+	normal := func(v any) string {
+		data, err := json.Marshal(v)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var generic any
+		if err := json.Unmarshal(data, &generic); err != nil {
+			t.Fatal(err)
+		}
+		data, _ = json.Marshal(generic)
+		return string(data)
+	}
+	var want [][]agent.Event
+	for k := range events {
+		want = append(want, agent.Compact(events[k:]))
+	}
+	got := runFold(t, events, `events.map((_, k) => fold.compact(events.slice(k)))`)
+	var gotList any
+	if err := json.Unmarshal([]byte(got), &gotList); err != nil {
+		t.Fatal(err)
+	}
+	if normal(gotList) != normal(want) {
+		t.Fatalf("the browser compacts differently:\nbrowser %s\nserver  %s", normal(gotList), normal(want))
+	}
+}
+
+// A browser that folds a compacted run ends up where the whole run takes
+// it, wherever the run starts: everything it draws from included - the
+// timeline and its cuts, when each part was made and last changed, the
+// values reported again and again.
+func TestTheBrowserFoldsACompactedRunAsTheWholeRun(t *testing.T) {
+	got := runFold(t, compactJournal(), `(() => {
+  const describe = (one) => {
+    const parts = (list) => list.map((p) => [p.id, p.kind, p.state, p.text, p.content, p.at, p.updatedAt, p.messageId, parts(p.children)]);
+    return JSON.stringify({
+      timeline: one.timeline.map((e) => [e.key, e.type, e.line ? e.line : null]),
+      messages: [...one.messages.values()].map((m) => [m.id, m.role, m.state, m.text, m.cuts, parts(m.parts), m.turn ? m.turn.outcome : '']),
+      parts: [...one.parts.keys()].sort(),
+      asks: [...one.asks.values()].map((a) => [a.id, a.answered, a.closed, a.delivered]),
+      turn: one.turn, lastTurn: one.lastTurn, lastAt: one.lastAt, usage: one.usage, cost: one.cost,
+      rateLimits: Object.entries(one.rateLimits).sort(), tasks: one.tasks, info: one.info, model: one.model, account: one.account,
+      todo: fold.currentTodo(one) ? fold.currentTodo(one).id : '',
+    });
+  };
+  const want = describe(chat);
+  const bad = [];
+  for (let k = 0; k <= events.length; k += 1) {
+    const one = fold.newChat();
+    for (const ev of events.slice(0, k)) fold.apply(one, ev);
+    for (const ev of fold.compact(events.slice(k))) fold.apply(one, ev);
+    if (describe(one) !== want) bad.push(k);
+  }
+  return bad;
+})()`)
+	if got != "[]" {
+		t.Fatalf("compacted from these events on, the fold differs: %s", got)
+	}
 }

@@ -26,7 +26,7 @@ import { agentMarkHtml } from './logos.js';
 import * as harnesses from './harnesses.js';
 import * as accounts from './accounts.js';
 import './accountpicker.js';
-import { newChat, apply, applyLive, busy, currentTodo, seenClient } from './chatfold.js';
+import { newChat, apply, applyLive, busy, currentTodo, seenClient, compact } from './chatfold.js';
 import { ChatStream } from './chatstream.js';
 import { loadChat, saveChat } from './chatcache.js';
 import {
@@ -60,6 +60,13 @@ const SAID = new Set(['message', 'command']);
 
 // The names a usage window goes by, for the chat's "i".
 const WINDOW_WORDS = { five_hour: '5-hour limit', weekly: 'Weekly limit' };
+
+// limitsOf is a chat's usage windows, the shorter first, whichever the agent
+// happened to report first.
+function limitsOf(chat) {
+  const rank = (name) => { const i = Object.keys(WINDOW_WORDS).indexOf(name); return i < 0 ? 99 : i; };
+  return Object.entries(chat.rateLimits).sort(([a], [b]) => rank(a) - rank(b) || (a < b ? -1 : a > b ? 1 : 0));
+}
 
 // How long the dock says that something asked for did not happen, unless it
 // is closed first. Data cadence, not motion.
@@ -639,7 +646,7 @@ export function mountChat(ctx) {
     }
     if (out.length) return out;
     const names = { five_hour: '5h', weekly: '7d' };
-    for (const [name, limit] of Object.entries(chat.rateLimits)) {
+    for (const [name, limit] of limitsOf(chat)) {
       out.push({ label: names[name] || name, used: (Number(limit.used) || 0) * 100, resetsAt: (Number(limit.resetsAt) || 0) * 1000 });
     }
     return out;
@@ -782,7 +789,7 @@ export function mountChat(ctx) {
         + ' (' + Math.round((u.context / u.window) * 100) + '%)']);
     }
     if (chat.cost) facts.push(['Cost so far', '$' + chat.cost.toFixed(4)]);
-    for (const [name, limit] of Object.entries(chat.rateLimits)) {
+    for (const [name, limit] of limitsOf(chat)) {
       const renew = renewsIn(limit.resetsAt);
       facts.push([WINDOW_WORDS[name] || name, Math.round(limit.used * 100) + '% used'
         + (renew ? ' · renews in ' + renew : '')]);
@@ -807,6 +814,10 @@ export function mountChat(ctx) {
     if (!kept.dirty) return;
     if (!now) { saveTimer = setTimeout(() => persist(true), SAVE_AFTER); return; }
     kept.dirty = false;
+    // What the device keeps is what the chat needs, not every copy a part
+    // was journaled in: the list is compacted as it is written, by the
+    // server's rules, and kept compacted in memory too.
+    kept.list = compact(kept.list);
     saveChat(session.id, kept.list.slice());
   }
 
@@ -863,6 +874,9 @@ export function mountChat(ctx) {
         if (applyLive(chat, f)) schedule();
         break;
       case 'synced': {
+        // The replay is compacted (agent.Compact): the events it left out
+        // at its end are moot, and the chat holds everything up to its seq.
+        if (Number(f.seq) > chat.lastSeq) chat.lastSeq = Number(f.seq);
         const first = !synced;
         synced = true;
         catchingUp = false;

@@ -101,7 +101,13 @@ type Part struct {
 	// textLen is UTF16Len(Text), kept so that a long stream of deltas is not
 	// a quadratic count.
 	textLen int
+	// seq is the seq of the event that made the part.
+	seq int64
 }
+
+// Seq is the seq of the event that made the part: a reader that holds the
+// events up to a seq below it has never seen the part.
+func (p *Part) Seq() int64 { return p.seq }
 
 // Ask is one question the agent asked, open or answered.
 type Ask struct {
@@ -164,8 +170,8 @@ func (p *Projection) Apply(ev Event) {
 	if ev.Seq != 0 {
 		p.LastSeq = ev.Seq
 	}
-	if ev.At > p.LastAt {
-		p.LastAt = ev.At
+	if at := max(ev.At, ev.UpdatedAt); at > p.LastAt {
+		p.LastAt = at
 	}
 	if ev.ClientID != "" {
 		if _, seen := p.clients[ev.ClientID]; !seen {
@@ -323,14 +329,18 @@ func (p *Projection) messageFor(ev Event) *Message {
 }
 
 func (p *Projection) part(ev Event) {
+	updated := ev.At
+	if ev.UpdatedAt != 0 {
+		updated = ev.UpdatedAt
+	}
 	if part := p.parts[ev.PartID]; part != nil {
 		part.Kind, part.State, part.Text, part.Content = ev.Kind, ev.State, ev.Text, ev.Content
-		part.textLen, part.UpdatedAt = UTF16Len(ev.Text), ev.At
+		part.textLen, part.UpdatedAt = UTF16Len(ev.Text), updated
 		return
 	}
 	part := &Part{
 		ID: ev.PartID, MessageID: ev.MessageID, ParentID: ev.ParentPartID, Kind: ev.Kind, State: ev.State,
-		Text: ev.Text, Content: ev.Content, At: ev.At, UpdatedAt: ev.At, textLen: UTF16Len(ev.Text),
+		Text: ev.Text, Content: ev.Content, At: ev.At, UpdatedAt: updated, textLen: UTF16Len(ev.Text), seq: ev.Seq,
 	}
 	p.parts[part.ID] = part
 	// A part nested in one the projection has goes inside it; its message is
@@ -365,7 +375,7 @@ func (p *Part) within(q *Part) bool {
 func (p *Projection) delta(ev Event) {
 	part := p.parts[ev.PartID]
 	if part == nil {
-		p.part(Event{At: ev.At, MessageID: ev.MessageID, PartID: ev.PartID, Kind: PartText, State: PartStreaming})
+		p.part(Event{Seq: ev.Seq, At: ev.At, MessageID: ev.MessageID, PartID: ev.PartID, Kind: PartText, State: PartStreaming})
 		part = p.parts[ev.PartID]
 	}
 	ApplyDelta(&part.Text, &part.textLen, ev.Offset, ev.Text)

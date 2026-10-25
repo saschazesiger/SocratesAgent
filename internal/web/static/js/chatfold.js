@@ -107,14 +107,14 @@ function applyPart(chat, ev) {
     part.state = ev.state || '';
     part.text = ev.text || '';
     part.content = ev.content === undefined ? null : ev.content;
-    part.updatedAt = ev.at || part.updatedAt;
+    part.updatedAt = ev.updated_at || ev.at || part.updatedAt;
     touchPart(chat, part);
     return;
   }
   part = {
     id: ev.part_id, messageId: ev.message_id || '', parentId: ev.parent_part_id || '', kind: ev.kind || 'text',
     state: ev.state || '', text: ev.text || '', content: ev.content === undefined ? null : ev.content,
-    at: ev.at || 0, updatedAt: ev.at || 0, children: [], rev: ++chat.rev,
+    at: ev.at || 0, updatedAt: ev.updated_at || ev.at || 0, children: [], rev: ++chat.rev,
   };
   chat.parts.set(part.id, part);
   const parent = part.parentId ? chat.parts.get(part.parentId) : null;
@@ -272,7 +272,8 @@ export function apply(chat, ev) {
   const seq = Number(ev.seq) || 0;
   if (seq && seq <= chat.lastSeq) return false;
   if (seq) chat.lastSeq = seq;
-  if (ev.at > chat.lastAt) chat.lastAt = ev.at;
+  const at = Math.max(Number(ev.at) || 0, Number(ev.updated_at) || 0);
+  if (at > chat.lastAt) chat.lastAt = at;
   const before = chat.rev;
   switch (ev.type) {
     case 'turn.started':
@@ -438,6 +439,71 @@ export function apply(chat, ev) {
       break;
   }
   return chat.rev !== before;
+}
+
+// stateKey names what an event sets that a later event of the same key sets
+// again and nothing reads in between, or '' (agent.stateKey).
+function stateKey(ev) {
+  if (ev.client_id) return '';
+  switch (ev.type) {
+    case 'rate_limit': return 'rate_limit\u0000' + (ev.window || '');
+    case 'tasks':
+    case 'agent.info': return ev.type;
+    case 'usage': return ev.usage ? ev.type : '';
+    default: return '';
+  }
+}
+
+/**
+ * compact is a run of events with what later events of the same run make
+ * moot left out, by the server's rules (internal/agent/compact.go): folded
+ * on top of what came before the run, it gives what the whole run gives.
+ * The events of a part become one part event where it first appears, with
+ * what its last part event said (and, in updated_at, when) and the deltas
+ * after that; a turn that ends other than completed splits the run; a value
+ * set again later (a rate_limit window, tasks, usage, agent.info) goes.
+ */
+export function compact(events) {
+  if (events.length < 2) return events;
+  const runs = new Map();
+  const keys = new Array(events.length);
+  const lastOf = new Map();
+  let span = 0;
+  events.forEach((ev, i) => {
+    if ((ev.type === 'part' || ev.type === 'part.delta') && ev.part_id) {
+      const key = ev.part_id + '\u0000' + span;
+      keys[i] = key;
+      let run = runs.get(key);
+      if (!run) { run = { first: i, last: -1 }; runs.set(key, run); }
+      if (ev.type === 'part') run.last = i;
+    } else if (ev.type === 'turn.ended' && ev.outcome !== 'completed') {
+      span += 1;
+    }
+    const state = stateKey(ev);
+    if (state) lastOf.set(state, i);
+  });
+  const out = [];
+  events.forEach((ev, i) => {
+    const state = stateKey(ev);
+    if (state && lastOf.get(state) !== i) return;
+    if (!keys[i]) { out.push(ev); return; }
+    const run = runs.get(keys[i]);
+    if (run.last < 0 || (i > run.last && i !== run.first)) { out.push(ev); return; }
+    if (i !== run.first) return;
+    if (i === run.last) { out.push(ev); return; }
+    const last = events[run.last];
+    const merged = ev.type === 'part.delta'
+      ? { t: ev.t, seq: ev.seq, at: ev.at, type: 'part', message_id: ev.message_id, part_id: ev.part_id }
+      : { ...ev };
+    merged.type = 'part';
+    for (const field of ['kind', 'state', 'text', 'content']) {
+      if (last[field] === undefined) delete merged[field];
+      else merged[field] = last[field];
+    }
+    merged.updated_at = last.at;
+    out.push(merged);
+  });
+  return out;
 }
 
 /**
