@@ -10417,6 +10417,10 @@ async function chattools() {
     await say(page, '/subagent');
     await awaitLog(page, 'The subagent finished.', 20000);
     await openWork(page);
+    const shut = await page.$eval('#chat .so-tool[data-group]', (n) => n.open).catch(() => null);
+    ok(shut === false, 'a subagent starts folded, one line until it is asked for', String(shut));
+    await page.click('#chat .so-tool[data-group] > summary');
+    await page.waitForSelector('#chat .so-tool[data-group][open]', { timeout: 5000 }).catch(() => null);
     const group = await page.$eval('#chat .so-tool[data-group]', (n) => ({
       open: n.open, name: n.querySelector('.so-tool__name').textContent,
       nested: [...n.querySelectorAll('.so-group > .so-part')].map((p) => p.dataset.kind),

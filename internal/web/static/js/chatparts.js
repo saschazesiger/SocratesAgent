@@ -381,9 +381,10 @@ function toolHtml(part, view, { diff = false } = {}) {
   const group = !diff && isGroup(part, tool);
   const key = 'p:' + part.id;
   const files = diff ? diffFiles(part) : [];
-  // A group shows what its agents are doing, and an edit what it changed, so
-  // both start open; a plain call is one line until it is asked for.
-  const open = view.isOpen(key, group || (diff && files.length > 0));
+  // A workflow shows its phases, and an edit what it changed, so both start
+  // open; an agent, wherever it stands (the chat, a workflow's phase, a
+  // background job), is one line until it is asked for, as a plain call is.
+  const open = view.isOpen(key, !!tool.workflow || (diff && files.length > 0));
   const state = tool.failed && part.state !== 'running' ? 'error' : part.state;
   const added = files.reduce((n, f) => n + f.added, 0);
   const removed = files.reduce((n, f) => n + f.removed, 0);
