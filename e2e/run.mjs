@@ -7874,12 +7874,21 @@ async function outcome() {
     const corner = row && row.querySelector('.so-mark__badge');
     const kind = corner ? corner.dataset.kind : '';
     const glass = kind === 'checking' || kind === 'tasks';
+    // The colour the corner's glyph is drawn in, and the one its kind asks
+    // for: a drawer item greys its icons, which must not reach the badge.
+    const glyph = corner && corner.querySelector('svg');
+    const probe = corner && document.createElement('span');
+    if (probe) { probe.style.color = 'var(--so-outcome)'; corner.append(probe); }
+    const tint = glyph ? getComputedStyle(glyph).color : '';
+    const want = probe ? getComputedStyle(probe).color : '';
+    if (probe) probe.remove();
     const home = document.querySelector('#home .so-home__card[data-id="' + one + '"]');
     const todos = home ? [...home.querySelectorAll('.so-home__todos li')].map((li) => li.textContent) : [];
     return {
       checking: kind === 'checking',
       glass,
       kind: glass ? '' : kind,
+      tint, want,
       said: mark ? mark.getAttribute('data-tip') || '' : '',
       homeBadge: home ? (home.querySelector('.so-mark__badge:not([hidden])') || {}).dataset?.kind || '' : '',
       homeMeta: home ? home.querySelector('.so-home__card-status').textContent : '',
@@ -7940,6 +7949,8 @@ async function outcome() {
     hold = null;
     const partly = await awaitVerdict(id, (v) => v.kind === 'partial' && v.homeBadge === 'partial', 20000);
     ok(partly.ok, 'the verdict is on the row and on Home', took(partly));
+    ok(!!partly.seen.tint && partly.seen.tint === partly.seen.want,
+      'and the row\u2019s corner draws it in its kind\u2019s colour, not the drawer\u2019s grey', JSON.stringify({ tint: partly.seen.tint, want: partly.seen.want }));
     ok(partly.seen.todos.join('|') === 'second step' && /still open/.test(partly.seen.reason)
       && /Partly done/.test(partly.seen.homeMeta),
       'Home says why, and what is still open', JSON.stringify(partly.seen));
@@ -7978,6 +7989,8 @@ async function outcome() {
     hold = null;
     const complete = await awaitVerdict(id, (v) => v.kind === 'complete', 20000);
     ok(complete.ok, 'and the turn that finishes the list is complete', took(complete));
+    ok(!!complete.seen.tint && complete.seen.tint === complete.seen.want && complete.seen.tint !== partly.seen.tint,
+      'its corner green, not the colour of partly done', JSON.stringify({ tint: complete.seen.tint, want: complete.seen.want }));
 
     // Switched off, the verdicts go.
     const off = await s.context.request.put(s.url + '/api/settings', {

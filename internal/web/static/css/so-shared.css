@@ -131,18 +131,24 @@ body[data-stale] .so-mark[data-ring="busy"]::after {
 }
 
 /* The glyph is drawn at 16px and fills the badge, whatever size it was
-   asked for. */
+   asked for, in the badge's colour: a drawer item colours its icons grey
+   (and the open row's in the accent's ink), which would cover it. */
 .so-mark__badge svg {
   display: block;
   inline-size: 100%;
   block-size: 100%;
+  color: inherit;
 }
 
+/* Each kind in a colour of its own, to be told at a glance: done green,
+   stuck or failed red, waiting on the person amber, work still going on
+   blue. */
 .so-mark__badge[data-kind="complete"] { --so-outcome: var(--ds-success); }
 .so-mark__badge[data-kind="partial"] { --so-outcome: var(--ds-primary); }
 .so-mark__badge[data-kind="needs_input"] { --so-outcome: var(--ds-warning); }
 .so-mark__badge[data-kind="blocked"] { --so-outcome: var(--ds-error); }
-.so-mark__badge[data-kind="error"] { --so-outcome: var(--ds-text-3); }
+.so-mark__badge[data-kind="error"] { --so-outcome: var(--ds-error); }
+.so-mark__badge:is([data-kind="tasks"], [data-kind="checking"]) { --so-outcome: var(--ds-primary); }
 
 /* ── Layout helpers ──────────────────────────────────────────────────── */
 
