@@ -50,29 +50,46 @@
   display: none;
 }
 
+/* A hint is read to its end, a preset's bare path too: it wraps, anywhere
+   if it must. The "i" at the end of one is a 32px button (a finger's 48px
+   in touch mode) in a line of meta text: centred on the text, and its
+   negative margins keep the line at a hint's height, so the hint's last
+   word does not drop a tall line below the rest. */
+.so-settings .ds-field__hint {
+  overflow-wrap: anywhere;
+}
+
+.so-settings .ds-field__hint > .so-info {
+  vertical-align: middle;
+  margin-block: calc(var(--ds-btn-icon-size, var(--ds-space-10)) / -4);
+}
+
 /* ── Program cards ───────────────────────────────────────────────────── */
 
-/* The agents share a row, and the shell sits under them at the same width,
-   so the two groups read as one question in two kinds. */
+/* The agents and the shell share one grid, the shell after the agents at
+   the same width, so the two groups read as one question in two kinds and
+   fill their rows: four agents and the shell are 3 + 2 in the sheet at a
+   desk, where each group in a grid of its own was 3 + 1 + 1. */
 .so-settings__programs {
   grid-template-columns: repeat(auto-fill, minmax(var(--so-settings-card-min), 1fr));
 }
 
 .so-settings__groups {
   display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(var(--so-settings-card-min), 100%), 1fr));
   gap: var(--ds-space-2);
   min-width: 0;
 }
 
-/* A phone has room for two cards a row: there the groups share one grid, so
-   four programs are two rows rather than three. */
+.so-settings__groups > .so-settings__programs {
+  display: contents;
+}
+
+/* A phone has room for two cards a row, so four programs are two rows
+   rather than three. */
 @media (max-width: 600px) {
   .so-settings__groups {
     grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .so-settings__groups > .so-settings__programs {
-    display: contents;
   }
 }
 
@@ -124,11 +141,18 @@
   white-space: nowrap;
 }
 
+/* A long value (an account named by its e-mail, a preset's folder) ends in
+   an ellipsis rather than being cut raw at the field's edge; the meta
+   beside it gives way first. The whole of either is in the open list. */
 .so-drop__value {
-  flex: none;
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .so-drop__meta {
+  flex: 0 1000 auto;
   min-width: 0;
   overflow: hidden;
   color: var(--ds-text-2);

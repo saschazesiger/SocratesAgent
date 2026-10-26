@@ -327,6 +327,8 @@ function fillSelect(select, field, options, allLabel) {
   const set = field === 'profile' ? state.filters.profileSet : current !== '';
   select.value = set ? '=' + current : '';
   if (select.value !== (set ? '=' + current : '')) select.value = '';
+  // A long account or project is cut in the closed field: its tip says it.
+  select.title = select.selectedOptions[0] ? select.selectedOptions[0].textContent : '';
   select.onchange = () => {
     const v = select.value;
     if (field === 'profile') state.filters.profileSet = v !== '';
@@ -369,9 +371,24 @@ function toggleFilter(field, value) {
 
 // ------------------------------------------------------------------ tiles
 
+// tileMoney is a tile's value: six glyphs at most, which is what a 320px
+// phone's two tiles a row hold at DS's 26cqi without running out of the
+// tile ("$1,234.56" did, and "$999.99" by a hair). Cents below $100, whole
+// dollars to $10,000, then thousands and millions; the exact amount is the
+// value's tip.
+function tileMoney(v) {
+  const a = Math.abs(v);
+  if (a >= 999500) return '$' + (v / 1e6).toFixed(a >= 9.95e6 ? 0 : 1).replace(/\.0$/, '') + 'M';
+  if (a >= 9999.5) return '$' + Math.round(v / 1000) + 'K';
+  if (a >= 99.995) return usdWhole.format(v);
+  return money(v);
+}
+
 // figure counts a tile's value on from the one it shows (DS countUp).
 function figure(id, value) {
-  M.countUp($(id), value, { format: money });
+  const node = $(id);
+  M.countUp(node, value, { format: tileMoney });
+  node.title = money(value);
 }
 
 function drawTiles(filtered, days) {
@@ -482,7 +499,9 @@ function drawChart(filtered, range) {
     ? html`${slots.map((slot) => html`<span class="so-costs-key"><span class="so-swatch" data-series="${seriesKey(slot)}"></span><span>${slotName(slot)}</span></span>`)}`
     : '');
 
-  const width = Math.max(280, box.clientWidth || 600);
+  // As wide as its card's content and no wider: a floor of 280 ran 24px past
+  // the card at 320.
+  const width = Math.max(160, box.clientWidth || 600);
   const height = px(box, '--so-chart-height', 240);
   const gapPx = px(box, '--so-chart-gap', 2);
   const radius = px(box, '--ds-radius-xs', 4);
@@ -629,7 +648,7 @@ function table(id, groups, { column, name, sub, onPick, picked, href, limit = LI
       <td class="ds-num ds-col--secondary">${g.requests.toLocaleString()}</td>
     </tr>`;
   });
-  morph(box, html`<div class="ds-table-wrap"><table class="ds-table ds-table--dense${rowsOpen ? ' ds-table--interactive' : (linked ? ' so-costs-links' : '')}">
+  morph(box, html`<div class="ds-table-wrap"><table class="ds-table ds-table--dense so-costs-table${rowsOpen ? ' ds-table--interactive' : (linked ? ' so-costs-links' : '')}">
     <thead><tr>
       <th scope="col">${column}</th><th scope="col" class="ds-num">Cost</th><th scope="col" class="ds-num ds-col--secondary">Share</th>
       <th scope="col" class="ds-num ds-col--secondary">Tokens</th><th scope="col" class="ds-num ds-col--secondary">Requests</th>

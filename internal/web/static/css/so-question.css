@@ -40,8 +40,13 @@
 }
 
 /* The box is the column: what it holds scrolls in the middle, the top bar
-   and the actions stay. On a desktop it is as tall as its question. */
+   and the actions stay. On a desktop it is as tall as its question.
+   --so-q-inset is the body's and the actions' side margin; on a screen
+   wider than the question's column (a tablet, a car's screen) they keep
+   to a centred column of --so-question-measure instead, so an option's
+   label stays near its description and Next is not a 600px pill. */
 .so-q-shell {
+  --so-q-inset: var(--ds-space-6);
   display: flex;
   flex-direction: column;
   gap: 0;
@@ -118,7 +123,9 @@
    them that the question may already have been answered. */
 .so-q-conn {
   flex: none;
-  margin: 0 var(--ds-space-6) var(--ds-space-2);
+  margin: 0 0 var(--ds-space-2);
+  margin-left: max(calc(var(--so-q-inset) + env(safe-area-inset-left, 0px)), calc((100% - var(--so-question-measure)) / 2));
+  margin-right: max(calc(var(--so-q-inset) + env(safe-area-inset-right, 0px)), calc((100% - var(--so-question-measure)) / 2));
 }
 
 .so-q-conn-words,
@@ -141,8 +148,8 @@
   flex-direction: column;
   gap: var(--ds-space-4);
   padding: var(--ds-space-2) var(--ds-space-6) var(--ds-space-5);
-  padding-left: calc(var(--ds-space-6) + env(safe-area-inset-left, 0px));
-  padding-right: calc(var(--ds-space-6) + env(safe-area-inset-right, 0px));
+  padding-left: max(calc(var(--so-q-inset) + env(safe-area-inset-left, 0px)), calc((100% - var(--so-question-measure)) / 2));
+  padding-right: max(calc(var(--so-q-inset) + env(safe-area-inset-right, 0px)), calc((100% - var(--so-question-measure)) / 2));
 }
 
 .so-q-session {
@@ -189,8 +196,11 @@
   font: var(--ds-font-label);
 }
 
-/* The header the program gives an item ("Database"): a label, not a status. */
+/* The header the program gives an item ("Database"): a label, not a status.
+   It is the agent's word, and one too long for the row breaks. */
 .so-q-chip {
+  min-width: 0;
+  overflow-wrap: anywhere;
   padding: 0 var(--ds-space-2);
   border-radius: var(--ds-radius-md);
   background: var(--ds-surface-high);
@@ -337,8 +347,8 @@
   justify-content: flex-end;
   gap: var(--ds-space-2);
   padding: var(--ds-space-3) var(--ds-space-6) var(--ds-space-5);
-  padding-left: calc(var(--ds-space-6) + env(safe-area-inset-left, 0px));
-  padding-right: calc(var(--ds-space-6) + env(safe-area-inset-right, 0px));
+  padding-left: max(calc(var(--so-q-inset) + env(safe-area-inset-left, 0px)), calc((100% - var(--so-question-measure)) / 2));
+  padding-right: max(calc(var(--so-q-inset) + env(safe-area-inset-right, 0px)), calc((100% - var(--so-question-measure)) / 2));
   padding-bottom: calc(var(--ds-space-5) + env(safe-area-inset-bottom, 0px));
   border-top: 1px solid var(--ds-line);
 }
@@ -381,14 +391,13 @@
     padding-inline: var(--ds-space-2);
   }
 
-  .so-q-scroll {
-    padding-left: calc(var(--ds-space-4) + env(safe-area-inset-left, 0px));
-    padding-right: calc(var(--ds-space-4) + env(safe-area-inset-right, 0px));
+  /* The body, the actions and the connection line above them move in
+     together (the line kept 24px and stood narrower than the options). */
+  .so-q-shell {
+    --so-q-inset: var(--ds-space-4);
   }
 
   .so-q-actions {
-    padding-left: calc(var(--ds-space-4) + env(safe-area-inset-left, 0px));
-    padding-right: calc(var(--ds-space-4) + env(safe-area-inset-right, 0px));
     padding-top: var(--ds-space-3);
     padding-bottom: calc(var(--ds-space-3) + env(safe-area-inset-bottom, 0px));
   }

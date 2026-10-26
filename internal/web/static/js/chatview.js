@@ -20,7 +20,7 @@
 // "Sent" until the journal has it.
 
 import { api, alertDialog, openDialog, promptDialog, toast, errorMessage, fmtTokens, clientKey, CONNECTION_GRACE } from './api.js';
-import { M, html, morph, raw, icon } from './ui.js';
+import { DS, M, html, morph, raw, icon, ms } from './ui.js';
 import { connectionSaidElsewhere, retryConnection } from './net.js';
 import { agentMarkHtml } from './logos.js';
 import * as harnesses from './harnesses.js';
@@ -31,7 +31,7 @@ import { ChatStream } from './chatstream.js';
 import { loadChat, saveChat } from './chatcache.js';
 import {
   assistantMessage, userMessage, lineHtml, askCard, askPlaces, todoList, todoItems, renewsIn, seconds, outboxState,
-  backgroundJobs, jobsList,
+  backgroundJobs, jobsList, jobDetail,
 } from './chatparts.js';
 import { mountComposer } from './composer.js';
 import { chatOutbox, pendingFor, pendingAnswer, pendingModel, failedItem, queueAnswer, answeredHere } from './chatoutbox.js';
@@ -161,6 +161,9 @@ export function mountChat(ctx) {
   // its own default (a reasoning part shut, a group open).
   const open = new Map();
   let openRev = 0;
+  // The chat whose background jobs dialog is to open once it is read
+  // (openJobs).
+  let jobsWanted = '';
   // The markup of every timeline entry at its revision, and the element it
   // is drawn into, by the entry's key.
   const renders = new Map();
@@ -549,6 +552,10 @@ export function mountChat(ctx) {
     place(entries.concat(local));
     drawSub();
     drawJobs();
+    if (jobsWanted && session.id === jobsWanted && synced) {
+      jobsWanted = '';
+      jobsDialog(jobsSlot.querySelector('.so-chat__jobs') || host);
+    }
     drawTodo();
     drawState();
     if (composer) composer.paint();
@@ -759,10 +766,58 @@ export function mountChat(ctx) {
 
   // jobsDialog says what runs in the background, a row a job, and keeps
   // saying it while it is open: the times go on, and a job that ends leaves.
+  // A row opens its job: what it is and what it has said so far, live, with
+  // the way back to the list and to its place in the chat. A job that ends
+  // while it is open stays open, saying how it ended.
   function jobsDialog(opener) {
     const body = document.createElement('div');
     body.className = 'so-jobs__body';
-    const draw = () => { if (chat) morph(body, jobsList(backgroundJobs(chat))); };
+    let picked = '';
+    const draw = () => {
+      if (!chat) return;
+      const listed = backgroundJobs(chat);
+      const part = picked ? chat.parts.get(picked) : null;
+      if (picked && !part) picked = '';
+      morph(body, part
+        ? jobDetail(part, view, { running: listed.jobs.some((job) => job.id === picked) })
+        : jobsList(listed));
+    };
+    const pick = (id) => {
+      const was = picked;
+      picked = id;
+      draw();
+      const focus = picked ? body.querySelector('.so-jobd__name') : body.querySelector('[data-job="' + CSS.escape(was) + '"]');
+      if (focus) focus.focus({ preventScroll: true });
+      body.scrollTop = 0;
+    };
+    body.addEventListener('click', (event) => {
+      const row = event.target.closest('[data-job]');
+      if (row) { pick(row.dataset.job); return; }
+      if (event.target.closest('[data-job-back]')) { pick(''); return; }
+      const reveal = event.target.closest('[data-job-reveal]');
+      if (reveal) {
+        const id = reveal.dataset.jobReveal;
+        dialog.answer(true);
+        DS.overlay.close(dialog);
+        shown.then(() => revealPart(id));
+        return;
+      }
+      // A fold inside the job opens and shuts as it does in the chat: the
+      // open state is the view's, which the next draw keeps.
+      const summary = event.target.closest('summary');
+      const details = summary && summary.parentElement;
+      if (details && details.dataset.openKey) {
+        event.preventDefault();
+        toggle(details.dataset.openKey, details.open);
+        draw();
+        return;
+      }
+      const copyBtn = event.target.closest('[data-action="copy-code"]');
+      if (copyBtn) {
+        const code = copyBtn.closest('.so-code')?.querySelector('code');
+        if (code) copy(code.textContent, 'The code could not be copied.');
+      }
+    });
     draw();
     const close = document.createElement('button');
     close.className = 'ds-btn ds-btn--text';
@@ -774,6 +829,50 @@ export function mountChat(ctx) {
     dialog.classList.add('so-jobs-dialog');
     const timer = setInterval(draw, 1000);
     shown.then(() => clearInterval(timer));
+  }
+
+  // revealPart scrolls the chat to one part, opening the folds it is in -
+  // its turn's work and the calls around it - and marks it for a moment.
+  function revealPart(id) {
+    if (!chat || !chat.parts.has(id)) return;
+    const keys = [];
+    for (let part = chat.parts.get(id); part; part = part.parentId ? chat.parts.get(part.parentId) : null) {
+      if (part.id !== id) keys.push('p:' + part.id);
+      if (!part.parentId && part.messageId) {
+        keys.push('w:' + part.messageId);
+        for (let n = 2; n <= 12; n += 1) keys.push('w:' + part.messageId + '#' + n);
+      }
+    }
+    const tried = keys.filter((key) => !view.isOpen(key, false));
+    for (const key of tried) open.set(key, true);
+    openRev += 1;
+    render();
+    const target = log.querySelector('[data-ds-key="p:' + CSS.escape(id) + '"]');
+    // A fold opened in vain - another piece of the same answer - is shut
+    // again.
+    const needed = new Set();
+    for (let n = target ? target.parentElement : null; n && n !== log; n = n.parentElement) {
+      if (n.dataset && n.dataset.openKey) needed.add(n.dataset.openKey);
+    }
+    const spare = tried.filter((key) => !needed.has(key));
+    if (spare.length) {
+      for (const key of spare) open.delete(key);
+      openRev += 1;
+      render();
+    }
+    const found = log.querySelector('[data-ds-key="p:' + CSS.escape(id) + '"]');
+    if (!found) return;
+    stuck = false;
+    found.scrollIntoView({ block: 'center', behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' });
+    // An animation, not a class: the next draw would take a class away. Its
+    // ring is the focus ring's colour, its time and curve DS's.
+    if (!matchMedia('(prefers-reduced-motion: reduce)').matches && found.animate) {
+      const ease = getComputedStyle(found).getPropertyValue('--ds-ease-out').trim() || 'ease-out';
+      found.animate([
+        { outline: '2px solid var(--ds-primary)', outlineOffset: '2px' },
+        { outline: '2px solid transparent', outlineOffset: '2px' },
+      ], { duration: ms('--ds-dur-glide') * 3, easing: ease });
+    }
   }
 
   // usageFacts is the chat's usage for its "i", as named facts ([label,
@@ -1229,6 +1328,7 @@ export function mountChat(ctx) {
   return {
     /** show puts a chat on the stage. */
     show(next) {
+      if (jobsWanted && jobsWanted !== next.id) jobsWanted = '';
       if (session && session.id === next.id && (stream || loadingId === next.id)) { session = next; schedule(); return; }
       stop();
       session = next;
@@ -1311,6 +1411,16 @@ export function mountChat(ctx) {
     },
 
     shownId: () => (session ? session.id : ''),
+
+    /**
+     * openJobs opens the background jobs dialog of chat `id` once that chat
+     * is on screen and read: at once when it already is, else as soon as
+     * its stream has caught up. Another chat shown first forgets it.
+     */
+    openJobs(id) {
+      jobsWanted = id;
+      schedule();
+    },
     live: () => !!stream && stream.live(),
     stale,
     insert(text) { if (composer) composer.insert(text); },

@@ -330,6 +330,53 @@
   border-top: 1px solid var(--ds-line);
 }
 
+/* A job's row is a button that opens it: the whole row, a finger's height
+   at least, with the chevron at its end saying so. */
+.so-job:has(> .so-job__open) {
+  padding: 0;
+}
+
+.so-job__open {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: var(--ds-space-3);
+  min-width: 0;
+  min-height: 3.5rem;
+  margin: 0;
+  padding: var(--ds-space-3) var(--ds-space-3) var(--ds-space-3) var(--ds-space-4);
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: start;
+  cursor: pointer;
+}
+
+.so-job:first-child .so-job__open {
+  border-start-start-radius: var(--ds-radius-card);
+  border-start-end-radius: var(--ds-radius-card);
+}
+
+.so-job:last-child .so-job__open {
+  border-end-start-radius: var(--ds-radius-card);
+  border-end-end-radius: var(--ds-radius-card);
+}
+
+.so-job__open:hover {
+  background: var(--ds-surface-high);
+}
+
+.so-job__open:focus-visible {
+  outline: 2px solid var(--ds-primary);
+  outline-offset: -2px;
+}
+
+.so-job__go {
+  flex: none;
+  color: var(--ds-text-3);
+}
+
 .so-job__icon {
   display: grid;
   flex: none;
@@ -349,7 +396,11 @@
   min-width: 0;
 }
 
+/* A name the agent gave (an MCP tool's, a subagent's type) may be one long
+   word: it wraps rather than running into the time beside it. */
 .so-job__name {
+  min-width: 0;
+  overflow-wrap: anywhere;
   color: var(--ds-text);
   font: var(--ds-font-body);
   font-weight: var(--ds-weight-label);
@@ -387,6 +438,133 @@
 
 .so-jobs__empty {
   padding-block: var(--ds-space-4);
+}
+
+/* On a phone the time goes under what the job runs, so that the words have
+   the row's width and not the few letters left beside the disc, the time
+   and the chevron. The same in an opened job's head. */
+@media (max-width: 480px) {
+  .so-job__open,
+  .so-jobd__head {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    align-items: center;
+    column-gap: var(--ds-space-3);
+    row-gap: var(--ds-space-2);
+  }
+
+  .so-job__open > .so-job__icon,
+  .so-jobd__head > .so-job__icon {
+    grid-column: 1;
+    grid-row: 1 / span 2;
+  }
+
+  .so-job__main,
+  .so-jobd__title {
+    grid-column: 2;
+    grid-row: 1;
+  }
+
+  .so-job__state,
+  .so-jobd__state {
+    grid-column: 2;
+    grid-row: 2;
+    justify-self: start;
+  }
+
+  .so-job__go {
+    grid-column: 3;
+    grid-row: 1 / span 2;
+  }
+}
+
+/* One job, opened from its row: the way back and to the chat, its name over
+   what it runs with how long it has run, its facts, and the call's own
+   body as the chat draws it. Everything wraps; nothing is wider than the
+   dialog, and the long lines of output scroll inside their own block. */
+.so-jobd {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-space-3);
+  min-width: 0;
+  max-height: min(65vh, calc(var(--so-app-h, 100dvh) * 0.65));
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.so-jobd__nav {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--ds-space-2);
+  margin-inline: calc(var(--ds-space-2) * -1);
+}
+
+.so-jobd__head {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--ds-space-3);
+  min-width: 0;
+}
+
+.so-jobd__title {
+  display: flex;
+  flex: 1 1 0;
+  flex-direction: column;
+  gap: var(--ds-space-1);
+  min-width: 0;
+}
+
+.so-jobd__name {
+  margin: 0;
+  color: var(--ds-text);
+  font: var(--ds-font-subtitle);
+  font-weight: var(--ds-weight-label);
+  overflow-wrap: anywhere;
+}
+
+.so-jobd__name:focus {
+  outline: none;
+}
+
+.so-jobd__summary {
+  overflow-wrap: anywhere;
+  color: var(--ds-text-2);
+  font: var(--ds-font-code);
+  background: none;
+  border: 0;
+  border-radius: 0;
+  padding: 0;
+}
+
+.so-jobd__state {
+  flex: none;
+  font-variant-numeric: tabular-nums;
+}
+
+.so-jobd__facts {
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 6.5rem), 1fr));
+  gap: var(--ds-space-3) var(--ds-space-4);
+  min-width: 0;
+  margin: 0;
+}
+
+.so-jobd__facts dd {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/* The call's body without the padding it has inside its row in the chat,
+   and its output wrapped: in a dialog the eye reads it, not scans it. */
+.so-tool__body.so-jobd__body {
+  min-width: 0;
+  padding: 0;
+}
+
+.so-jobd__body .so-tool__out {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 /* ── Messages ────────────────────────────────────────────────────────── */
@@ -447,6 +625,7 @@
 .so-msg__error {
   margin: 0;
   max-width: var(--so-chat-bubble-max);
+  overflow-wrap: anywhere;
   color: var(--ds-on-error-container);
   text-align: end;
 }
@@ -597,9 +776,13 @@
   color: var(--ds-error);
 }
 
+/* What the work did is said whole: it wraps beside the steps and the cost
+   rather than ending in an ellipsis, which nothing else would spell out. */
 .so-work__title {
   flex: 0 1 auto;
   min-width: 0;
+  white-space: normal;
+  overflow: visible;
 }
 
 .so-work__meta {
@@ -698,9 +881,13 @@
   font: var(--ds-font-body);
 }
 
+/* A cell keeps its words whole (break-word, unlike the anywhere of .so-md,
+   does not shrink a column to a letter), so a wide table is wider than the
+   column and scrolls; only a word longer than the line still breaks. */
 .so-md :is(th, td) {
   padding: var(--ds-space-2) var(--ds-space-3);
   border: 1px solid var(--ds-line);
+  overflow-wrap: break-word;
   text-align: start;
   vertical-align: top;
 }
@@ -710,7 +897,31 @@
   background: var(--ds-surface-low);
 }
 
-/* A fenced block: its language, Copy, and a scroll of its own. */
+/* A fence inside a list item or a quote is marked's plain pre (md.js draws
+   only the top-level ones): a block with a scroll of its own all the same,
+   its code the block's text and not a chip on every line. */
+.so-md pre:not(.so-code__pre) {
+  max-width: 100%;
+  overflow-x: auto;
+  padding: var(--ds-space-3);
+  border: 1px solid var(--ds-line);
+  border-radius: var(--ds-radius-md);
+  background: var(--ds-code-bg);
+  font: var(--so-font-code);
+  white-space: pre;
+  tab-size: 4;
+}
+
+.so-md pre > code {
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  line-height: inherit;
+}
+
+/* A fenced block: its language, Copy (and a command's "i"), and a scroll of
+   its own. A long language line ends in an ellipsis before a button moves. */
 .so-code {
   min-width: 0;
   border: 1px solid var(--ds-line);
@@ -729,11 +940,16 @@
 }
 
 .so-code__lang {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   color: var(--ds-text-2);
   font: var(--ds-font-meta);
 }
 
-.so-code__copy {
+.so-code__bar > .ds-btn {
   flex: none;
 }
 
@@ -787,8 +1003,17 @@
   color: var(--ds-text-2);
 }
 
+/* An MCP tool goes by its raw name (mcp__github__create_pull_request):
+   past a share of the row it ends in an ellipsis, so that the state and the
+   chevron stay in the card; a short name keeps its width and the summary
+   gives way. The whole name is the first line of its "i". */
 .so-tool__name {
   flex: none;
+  min-width: 0;
+  max-width: 60%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   color: var(--ds-text);
   font-weight: var(--ds-weight-label);
 }
@@ -817,9 +1042,10 @@
   display: none;
 }
 
-/* The call's "i" stands at the end of the body's first line, beside what
-   the call was given, its prompt or its phases; everything else takes the
-   whole width. A single file's diff has it in its head. */
+/* The call's "i" stands at the end of the body's first line when that is
+   words (an agent's prompt); everything else takes the whole width. A
+   single file's diff has it in its head, a command in its block's bar
+   (chatparts.js bodyWithInfo). */
 .so-tool__body {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
@@ -843,8 +1069,9 @@
   grid-row: 1;
 }
 
-/* Under a workflow or several files it closes the body, at the end of a
-   line as tall as a line of meta, its target reaching into the padding. */
+/* Under a workflow, several files, an input or nested work it closes the
+   body, at the end of a line as tall as a line of meta, its target reaching
+   into the padding. */
 .so-tool__body > .so-info:last-child:not(:first-child) {
   justify-self: end;
   margin-block: calc((var(--ds-space-8) - var(--ds-btn-icon-size, var(--ds-space-8))) / 2);
@@ -925,6 +1152,7 @@
 .so-phase__title {
   flex: 1 1 auto;
   min-width: 0;
+  overflow-wrap: anywhere;
   font: var(--ds-font-label);
 }
 
@@ -1119,17 +1347,52 @@
   gap: var(--ds-space-3);
 }
 
+/* A title, a note and an answer are the agent's or the person's words, a
+   path or a German compound among them: they wrap, anywhere if they must. */
 .so-plan__title,
 .so-ask__title {
   display: inline-flex;
   align-items: center;
   gap: var(--ds-space-2);
+  min-width: 0;
+}
+
+.so-plan__title > span,
+.so-ask__title > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .so-plan__note,
 .so-ask__progress,
 .so-ask__done {
   margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.so-plan__answer .ds-meta {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/* A card's head holds a chip (24px, no taller than the title's line), not a
+   button: it does not hang out of the line the way DS hangs a button, which
+   pulled a wrapped chip onto the words under it. */
+.so-plan > .ds-card__row,
+.so-ask > .ds-card__row,
+.so-plan__answer > .ds-card__row {
+  row-gap: var(--ds-space-2);
+}
+
+/* The answer's chip and its words read as one line, not as two ends. */
+.so-plan__answer > .ds-card__row {
+  justify-content: flex-start;
+}
+
+.so-plan > .ds-card__row > :not(.ds-card__title),
+.so-ask > .ds-card__row > :not(.ds-card__title),
+.so-plan__answer > .ds-card__row > * {
+  margin-block: 0;
 }
 
 .so-plan__answer {
@@ -1240,8 +1503,10 @@
 }
 
 /* A chat that has not started is its first message: the heading at the top,
-   and the field as tall as what is left, never shorter than a good part of
-   the screen (--so-prompt-min-height); a longer text scrolls inside it. */
+   and the field as tall as what is left; a longer text scrolls inside it.
+   The field gives way before the heading does: its floor is three rows of
+   a finger's height, or a good part of the screen (--so-prompt-min-height)
+   if that is less, so on a phone the heading is not cut under the dock. */
 .so-chat[data-fresh] .so-chat__scroll {
   flex: 0 1 auto;
 }
@@ -1270,8 +1535,13 @@
 
 .so-chat[data-fresh] .so-composer__input {
   flex: 1 1 auto;
-  min-height: var(--so-prompt-min-height);
+  min-height: min(var(--so-prompt-min-height), calc(var(--ds-space-12) * 3));
   max-height: none;
+}
+
+/* Nothing is further down to jump to. */
+.so-chat[data-fresh] .so-chat__jump {
+  display: none;
 }
 
 /* The scheduled start of a chat that has not started, above its field. */
@@ -1412,6 +1682,15 @@
   display: flex;
   flex-wrap: wrap;
   gap: var(--ds-space-2);
+  min-width: 0;
+  max-width: 100%;
+}
+
+/* An account's label may be an e-mail address: a button is never wider than
+   the card, its words end in an ellipsis (the whole of them its tip). */
+.so-line-alert__actions > .ds-btn {
+  min-width: 0;
+  max-width: 100%;
 }
 
 /* In its own line a button does not hang into the words above it, as an
@@ -1463,11 +1742,13 @@
 }
 
 .so-palette__name {
+  overflow-wrap: anywhere;
   font: var(--so-font-code);
 }
 
 .so-palette__args,
 .so-palette__desc {
+  overflow-wrap: anywhere;
   color: var(--ds-text-2);
 }
 
@@ -1483,6 +1764,7 @@
 
 .so-ask-title {
   margin: 0;
+  overflow-wrap: anywhere;
   color: var(--ds-text-2);
   font: var(--ds-font-label);
 }
@@ -1494,6 +1776,13 @@
 .so-ask-context__head {
   color: var(--ds-text-2);
   font: var(--ds-font-label);
+}
+
+/* The ask's title, from the agent: it wraps, and never widens the dialog's
+   scroll into a sideways one. */
+.so-ask-context__head > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .so-ask-context__body {
@@ -1637,6 +1926,47 @@
   .so-tool__progress,
   .so-tool__time {
     display: none;
+  }
+
+  /* A command that did not run carries its chip, its "i" and Dismiss,
+     which beside it would leave the command a few letters a line: no
+     hairlines, the command on a line of its own after its chevron, and the
+     chip and the buttons under its words. */
+  .so-line[data-state="failed"] {
+    flex-wrap: wrap;
+  }
+
+  .so-line[data-state="failed"]::before,
+  .so-line[data-state="failed"]::after {
+    content: none;
+  }
+
+  .so-line[data-state="failed"] > .so-line__text {
+    flex: 1 1 calc(100% - var(--ds-space-6));
+    text-align: start;
+  }
+
+  .so-line[data-state="failed"] > .ds-status {
+    margin-inline-start: var(--ds-space-6);
+  }
+
+  /* Each level of nesting (a workflow's agent, a subagent's call) costs a
+     phone less of its width: a narrower rule-side indent and card padding,
+     the head's icon still over the body's left edge. */
+  .so-work__body {
+    padding-left: var(--ds-space-3);
+  }
+
+  .so-group {
+    padding-left: var(--ds-space-2);
+  }
+
+  .so-tool__head {
+    padding-left: var(--ds-space-2);
+  }
+
+  .so-tool__body {
+    padding: 0 var(--ds-space-2) var(--ds-space-2);
   }
 }
 

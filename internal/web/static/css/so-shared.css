@@ -17,7 +17,7 @@
  *   .so-conn         the connection slot net.js renders its alert into
  *   .so-page-head    the page header with actions at its end
  *   .so-info         the "i" button of infoTip() (api.js): a hook for tests and
- *                    callers, no rule of its own
+ *                    callers; in a field's hint it keeps the hint's line
  *   .so-signin       an account's sign-in dialog body (accounts.js): __code
  *                    (__value, the code to type on the agent's page, and its
  *                    Copy), __wait, __providers
@@ -179,6 +179,16 @@ body[data-stale] .so-mark[data-ring="busy"]::after {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* An "i" at the end of a field's hint (a 32px button, 48px in touch mode)
+   in a line of 16px meta text: centred on the text, and its negative
+   margins keep the line at about a hint's height, so the hint's last word
+   does not stand on a 48px line of its own under the field. The target
+   keeps its size. */
+.ds-field__hint > .so-info {
+  vertical-align: middle;
+  margin-block: calc(var(--ds-btn-icon-size, var(--ds-space-8)) / -4);
 }
 
 /* The connection alert stays in view while the page scrolls under it. */

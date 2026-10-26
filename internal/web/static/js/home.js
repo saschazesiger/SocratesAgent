@@ -392,6 +392,7 @@ export function mountHome(ctx) {
       case 'seg': choose(target.dataset.filter); break;
       case 'open': if (card) ctx.select(card.dataset.id); break;
       case 'answer': if (card) ctx.openQuestions(card.dataset.id); break;
+      case 'jobs': if (card && ctx.openJobs) ctx.openJobs(card.dataset.id); break;
       default: break;
     }
   }
@@ -602,8 +603,9 @@ export function mountHome(ctx) {
   //
   // The card is two buttons side by side - its title, which opens the
   // session and whose hit area DS stretches over the whole card, and Answer
-  // - and never one button with another inside it, which a screen reader
-  // flattens into one.
+  // (or Jobs, for a chat with work in the background, which opens the chat
+  // on its background jobs) - and never one button with another inside it,
+  // which a screen reader flattens into one.
   function cardHtml(session, cards, labels, now) {
     const asking = cards.includes('questions');
     const live = LIVE_STATES.has(session.state);
@@ -641,6 +643,7 @@ export function mountHome(ctx) {
           <span class="so-home__card-status">${stateChip(session, cards, act, outcome, judging, now)}<span class="ds-meta so-home__card-meta">${meta}</span></span>
         </span>
         <button class="ds-btn ds-btn--tonal so-home__answer" type="button" data-action="answer"${offer ? '' : ' hidden'}>Answer</button>
+        <button class="ds-btn ds-btn--tonal so-home__jobs" type="button" data-action="jobs" aria-label="Show the background jobs" data-tip="What runs in the background"${tasks && !offer ? '' : ' hidden'}>Jobs</button>
       </div>
       <p class="so-home__card-summary"${digest && digest.phase === 'pending' ? ' data-state="pending"' : ''}${line ? '' : ' hidden'}>${line}</p>
       ${verdictHtml(judging ? null : outcome)}

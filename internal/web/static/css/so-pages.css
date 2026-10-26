@@ -34,9 +34,12 @@
   margin: calc(-1 * var(--ds-space-6)) calc(-1 * var(--ds-space-4)) var(--ds-space-4);
 }
 
+/* Prose and values in the card (a key's hint, a bucket's address, a
+   snapshot's machine) break anywhere rather than run past it at 320. */
 .so-auth__card {
   display: grid;
   gap: var(--ds-space-5);
+  overflow-wrap: anywhere;
   inline-size: 100%;
   max-inline-size: var(--so-auth-width);
   margin: auto;
@@ -102,6 +105,19 @@
   margin: 0;
 }
 
+/* A closed filter cuts a long account or project with an ellipsis, its tip
+   (costs.js) saying it whole; on the narrowest phones each filter has a row
+   of its own, as half of one cut "All programs" under the arrow. */
+.so-costs .ds-filters select {
+  text-overflow: ellipsis;
+}
+
+@media (max-width: 359px) {
+  .so-costs .ds-filters > .ds-field {
+    inline-size: 100%;
+  }
+}
+
 .so-costs-note {
   max-width: var(--ds-measure);
   margin: 0;
@@ -151,6 +167,7 @@
 
 .so-chart svg {
   display: block;
+  max-inline-size: 100%;
   overflow: visible;
 }
 
@@ -253,9 +270,20 @@
 }
 
 /* The name cell of a breakdown row: the name, what it is, and its share of
-   the biggest row as a bar under it. */
+   the biggest row as a bar under it. A model id, a folder or a chat's title
+   is one long word as often as not: it breaks rather than widen the table. */
 .so-costs-name {
   min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/* On a phone DS drops Share, Tokens and Requests, so Cost is the last column
+   shown but not the last cell: it keeps the card's gutter as a last cell
+   does, clear of the edge fade, level with the name's on the left. */
+@media (max-width: 600px) {
+  .ds-card .so-costs-table :is(th, td):nth-child(2) {
+    padding-inline-end: var(--ds-card-pad);
+  }
 }
 
 .so-costs-name svg {

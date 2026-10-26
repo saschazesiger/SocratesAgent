@@ -142,6 +142,21 @@
   }
 }
 
+/* A small phone: the name had about 68px of text between the menu and
+   three icons at 320, so its pill gives up a little of its padding, and
+   its two lines are in the caption type - "Background" broke as
+   "Backgroun|d" in the label type. */
+@media (max-width: 360px) {
+  .so-title__button {
+    --ds-btn-font: var(--ds-font-caption);
+    --ds-btn-padding-x: var(--ds-space-1);
+  }
+
+  .so-title__home {
+    padding-inline: var(--ds-space-1);
+  }
+}
+
 .so-outcome[data-kind="complete"] { --so-outcome: var(--ds-success); }
 .so-outcome[data-kind="partial"] { --so-outcome: var(--ds-primary); }
 .so-outcome[data-kind="needs_input"] { --so-outcome: var(--ds-warning); }
@@ -433,8 +448,13 @@
 }
 
 /* In the modal drawer of a phone a name gets two lines rather than an
-   ellipsis halfway through its date. */
+   ellipsis halfway through its date. A row of two lines keeps a little air
+   above and below it, so two such rows do not read as one block. */
 @media (max-width: 900px) {
+  .so-row__open {
+    padding-block: var(--ds-space-2);
+  }
+
   .so-row__label {
     display: -webkit-box;
     -webkit-box-orient: vertical;
@@ -580,9 +600,12 @@
   padding-bottom: max(var(--ds-space-4), env(safe-area-inset-bottom));
 }
 
+/* The title is the chat's name, which can be a whole first prompt: two
+   lines of it (the rest is in Info and Rename), so the actions stay on
+   screen, and the close X at the top beside its first line. */
 .so-actions__head {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: var(--ds-space-2);
   margin-top: calc(-1 * var(--ds-space-2));
 }
@@ -590,6 +613,12 @@
 .so-actions__head > .ds-dialog__title {
   flex: 1 1 auto;
   min-width: 0;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+  align-self: center;
 }
 
 .so-actions__head > .ds-btn {
@@ -610,6 +639,24 @@
 @media (max-width: 600px) {
   .so-topbar {
     margin-left: var(--ds-space-1);
+  }
+
+  /* The session's status says itself by its glyph alone (its words are its
+     label and its tip): in words it took the name's width, down to 18px of
+     a Shell's at 360, and between 481 and 600px "Review pending" and the
+     outcome's words still pushed the ⋮ off the bar. The outcome beside it
+     does the same. */
+  .so-topbar > #sessionStatus,
+  .so-topbar > #sessionOutcome {
+    flex: none;
+  }
+
+  .so-topbar > #sessionStatus {
+    padding: var(--ds-space-1);
+  }
+
+  .so-topbar > :is(#sessionStatus, #sessionOutcome) > span:last-child {
+    display: none;
   }
 }
 
@@ -633,22 +680,6 @@
 
   .so-title {
     min-width: 0;
-  }
-
-  /* The session's status says itself by its glyph alone (its words are its
-     label and its tip): in words it took the name's width, down to 18px of
-     a Shell's at 360. The outcome beside it does the same. */
-  .so-topbar > #sessionStatus,
-  .so-topbar > #sessionOutcome {
-    flex: none;
-  }
-
-  .so-topbar > #sessionStatus {
-    padding: var(--ds-space-1);
-  }
-
-  .so-topbar > :is(#sessionStatus, #sessionOutcome) > span:last-child {
-    display: none;
   }
 }
 
@@ -676,7 +707,8 @@
 /* A menu that is cut short says so: its last visible rows fade out at its
    foot until it is scrolled to its end (ui.js edgeCue). The fade stands at
    the scrollport's bottom (sticky) and takes no room (its negative margin). */
-.ds-menu[data-more-below]::after {
+.ds-menu[data-more-below]::after,
+.so-app .ds-drawer__list[data-more-below]::after {
   content: '';
   position: sticky;
   bottom: 0;
@@ -686,6 +718,16 @@
   margin-top: calc(-1 * var(--ds-space-8));
   background: linear-gradient(to bottom, transparent, var(--ds-surface));
   pointer-events: none;
+}
+
+/* The drawer's list is cut the same way above Costs, Admin and Sign out:
+   its last row fades out on the drawer's own colour instead of being
+   sliced through its second line (session.js drawerCue). A sticky box
+   stops at the list's padding (DS's 24px at its foot), so the fade goes
+   that far past it to stand where the list is cut. */
+.so-app .ds-drawer__list[data-more-below]::after {
+  bottom: calc(-1 * var(--ds-space-6));
+  background: linear-gradient(to bottom, transparent, var(--ds-backdrop));
 }
 
 /* ── The Status modal of a chat (statusmodal.js) ─────────────────────────
@@ -760,8 +802,10 @@
 }
 
 .so-status__by {
+  min-width: 0;
   color: var(--ds-text-3);
   font: var(--ds-font-meta);
+  overflow-wrap: anywhere;
 }
 
 .so-status__label {
@@ -779,10 +823,14 @@
   background: var(--ds-accent);
 }
 
+/* What runs now, the summary and a task are the model's and the agent's
+   words, and quote paths and URLs: such a token breaks anywhere rather than
+   running out of the box. */
 .so-status__now-text {
   margin: 0;
   color: var(--ds-text);
   font: var(--ds-font-subtitle);
+  overflow-wrap: anywhere;
 }
 
 .so-status__call {
@@ -802,6 +850,14 @@
 
 .so-status .so-status__tiles {
   grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+/* A figure here is a span in words ("~1 h 30 min", "Your turn"), not the
+   two or three digits a tile is made for: it takes a second line, between
+   words, rather than running into the next tile. */
+.so-status__tiles .ds-tile__value {
+  white-space: normal;
+  overflow-wrap: break-word;
 }
 
 .so-status__clamp {
@@ -847,6 +903,11 @@
   flex: none;
 }
 
+.so-status__task > :last-child:not(:first-child) {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
 .so-status__task[data-status="completed"] {
   color: var(--ds-text-3);
 }
@@ -871,6 +932,7 @@
   margin: 0;
   color: var(--ds-text);
   font: var(--ds-font-reading);
+  overflow-wrap: anywhere;
 }
 
 .so-status__actions {

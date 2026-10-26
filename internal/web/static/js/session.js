@@ -3631,10 +3631,32 @@ function closeNav() {
   if (dom.app.hasAttribute('data-drawer-open')) hideOverlay(dom.sidebar);
 }
 
+// drawerCue fades the drawer's list out at its foot while more rows lie
+// below it (data-more-below, as ui.js edgeCue marks a menu; so-frame.css): on
+// a phone the list was cut through the second line of a name above Costs,
+// with nothing to say it scrolls. DS's padding at the list's foot is not a
+// row, so a list whose rows all show is not cut. The list's own size hardly
+// changes; the rows in it do, so they are watched too.
+function drawerCue() {
+  const list = document.getElementById('drawerList');
+  if (!list) return;
+  const check = () => {
+    const pad = parseFloat(getComputedStyle(list).paddingBottom) || 0;
+    list.toggleAttribute('data-more-below',
+      list.scrollHeight - list.scrollTop - list.clientHeight > pad + 1);
+  };
+  list.addEventListener('scroll', check, { passive: true });
+  const watch = new ResizeObserver(check);
+  watch.observe(list);
+  watch.observe(dom.sessionList);
+  check();
+}
+
 // wireList is the session list's and the row menu's listeners, bound once:
 // the rows are drawn again all the time, and a kept node keeps nothing a
 // listener of its own would need.
 function wireList() {
+  drawerCue();
   dom.sessionList.addEventListener('click', (event) => {
     const more = event.target.closest('.so-row__more');
     if (more) {
@@ -4018,6 +4040,12 @@ async function boot() {
     select: (id) => selectSession(id),
     newSession: () => newSession(),
     openQuestions: (id) => showQuestions(id),
+    // A chat opened on its background jobs: the dialog opens once the chat
+    // has been read (chatview.js openJobs).
+    openJobs: (id) => {
+      selectSession(id);
+      if (state.chat) state.chat.openJobs(id);
+    },
   });
   followViewport();
   // On a short screen the drawer's foot is its icons alone (so-frame.css):

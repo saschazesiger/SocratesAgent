@@ -10604,6 +10604,37 @@ async function chatsub() {
     ok(dialog.rows.length === 1 && dialog.rows[0].name === 'Bash' && !!dialog.rows[0].summary && /\d|Running/.test(dialog.rows[0].time) && !/more task/.test(dialog.text),
       'and it opens to a dialog with a row for it: the call that started it, what it runs, how long it has run', JSON.stringify(dialog.rows));
     await shot(page, 'chat-sub-jobs');
+    // A row opens its job: what it is, since when it runs, the command it
+    // runs and what has come back; back to the list, and to its place in
+    // the chat.
+    await page.click('dialog[open] .so-job [data-job]');
+    const detail = await page.waitForSelector('dialog[open] .so-jobd', { timeout: 5000 })
+      .then(() => page.$eval('dialog[open] .so-jobd', (n) => ({
+        name: (n.querySelector('.so-jobd__name') || {}).textContent || '',
+        facts: [...n.querySelectorAll('.so-jobd__facts dt')].map((dt) => dt.textContent),
+        code: (n.querySelector('.so-code code, .so-code__pre') || {}).textContent || '',
+        running: !!n.querySelector('.so-jobd__state.ds-status--running'),
+        focused: document.activeElement === n.querySelector('.so-jobd__name'),
+      })), () => null);
+    ok(!!detail && detail.name === 'Bash' && detail.running && /echo bg-done/.test(detail.code)
+      && ['Kind', 'Started', 'Running for', 'Task'].every((f) => detail.facts.includes(f)) && detail.focused,
+    'a row opens its job: the call, that it still runs, since when, its task and the command it runs', JSON.stringify(detail));
+    await shot(page, 'chat-sub-job');
+    await page.click('dialog[open] [data-job-back]');
+    const back = await page.waitForSelector('dialog[open] .so-job [data-job]', { timeout: 5000 }).then(() => true, () => false);
+    ok(back, 'All jobs goes back to the list', String(back));
+    await page.click('dialog[open] .so-job [data-job]');
+    await page.click('dialog[open] [data-job-reveal]');
+    const revealed = await page.waitForSelector('dialog[open]', { state: 'detached', timeout: 5000 })
+      .then(() => page.waitForFunction(() => {
+        const row = [...document.querySelectorAll('#chat .so-tool')].find((n) => /echo bg-done/.test(n.textContent));
+        if (!row) return false;
+        const box = row.getBoundingClientRect();
+        return box.top >= 0 && box.bottom <= innerHeight;
+      }, null, { timeout: 5000 })).then(() => true, () => false);
+    ok(revealed, 'and Show in chat closes the dialog on the call in the conversation, opened and in view', String(revealed));
+    await page.click('#chat .so-chat__jobs');
+    await page.waitForSelector('dialog[open] .so-job [data-job]', { timeout: 5000 }).catch(() => {});
     // At a phone's width the dialog and the line at the foot keep their rows.
     await page.setViewportSize({ width: 390, height: 844 });
     await wait(300);

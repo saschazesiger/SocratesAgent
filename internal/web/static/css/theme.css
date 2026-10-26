@@ -92,8 +92,10 @@
   --so-diff-no-width: 4ch;
   --so-touch-target: 48px;
 
-  /* Question sheet */
+  /* Question sheet. Where it is the whole screen (a tablet, touch mode),
+     its column (the measure) is as wide as in a desktop's 720px dialog. */
   --so-question-width: 720px;
+  --so-question-measure: 672px;
   --so-option-min-height: 72px;
   --so-option-key-size: 40px;
   --so-option-label-font: var(--ds-weight-label) 20px/28px var(--ds-font);
@@ -146,6 +148,15 @@
 .ds-theme.so-touch .ds-btn--sm {
   --ds-btn-height: var(--so-touch-target);
   --ds-btn-icon-size: var(--so-touch-target);
+}
+
+/* A button in a card's head hangs out of the title's line by half of what
+   it is taller (DS --ds-card-title-line): 12px at a finger's 48px, which
+   left 4px between it and the card's top edge on a phone (16px padding).
+   The line is taken as tall as a desktop's button, so it hangs the 6px it
+   does there, and the head grows by the rest. */
+.ds-theme.so-touch {
+  --ds-card-title-line: calc(var(--so-touch-target) - var(--ds-space-3));
 }
 
 /* A snackbar's Close, the one way to put an error away, sets its size on

@@ -80,6 +80,14 @@
   align-items: flex-start;
 }
 
+/* A label's words may break inside a word rather than run past the tile:
+   "Background tasks" ended 0-2px inside a tile at 320px, and a longer word
+   or a larger text size would have gone over its edge. */
+.so-home__tile .ds-tile__label > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
 /* A tile's sub-line is one line, its end an ellipsis and the whole in its
    tip: "Latest: OpenCode · 24 Oct 16:08" on two lines made its row taller
    than the others at a desk. */
@@ -251,15 +259,22 @@
   min-width: 0;
 }
 
+/* A folder's name with no space in it ("socrates-agent-backend") breaks
+   where it has to rather than running past the card. */
 .so-home__card-meta {
   color: var(--ds-text-2);
   min-width: 0;
+  overflow-wrap: anywhere;
 }
 
-.so-home__answer {
+.so-home__answer,
+.so-home__jobs {
   flex: none;
 }
 
+/* Two lines and the clamp's ellipsis. A URL or a path has no break of its
+   own: it breaks anywhere, or it was cut at the card's edge mid-word and the
+   ellipsis never came. */
 .so-home__card-summary {
   color: var(--ds-text);
   font: var(--ds-font-body);
@@ -267,16 +282,21 @@
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
+  overflow-wrap: anywhere;
 }
 
 .so-home__card-summary[data-state="pending"] {
   color: var(--ds-text-3);
 }
 
-/* Why the turn was judged so, and what it left open. */
+/* Why the turn was judged so, and what it left open. The reason is the
+   model's prose and often quotes a path: it wraps, anywhere if it must. */
 .so-home__verdict {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: var(--ds-space-1);
+  min-width: 0;
+  overflow-wrap: anywhere;
   color: var(--ds-text-2);
   font: var(--ds-font-meta);
 }
@@ -349,6 +369,34 @@
 
   .so-home__card-head {
     gap: var(--ds-space-3);
+  }
+
+  /* A session's name is what the card is about: two lines rather than its
+     first three words and an ellipsis beside Answer, as in the drawer and
+     the top bar. */
+  .so-home__card-title {
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+}
+
+/* A small phone: beside Answer or Jobs the text had about 110px at 320,
+   less than the "Needs an answer" chip, so the button goes under the
+   status line, at the start of the text. */
+@container ds-content (max-width: 400px) {
+  .so-home__card-head {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    row-gap: var(--ds-space-2);
+  }
+
+  .so-home__card-head > :is(.so-home__answer, .so-home__jobs) {
+    grid-column: 2;
+    justify-self: start;
   }
 }
 

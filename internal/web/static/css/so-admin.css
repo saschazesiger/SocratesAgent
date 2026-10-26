@@ -100,12 +100,17 @@
 
 /* ── Status line ─────────────────────────────────────────────────────── */
 
+/* The line gives way, never the "i": the chip and the facts wrap inside
+   .so-state__line, and the tip stays at the end of its first row instead of
+   dropping alone onto a row of its own on a phone. A fact without spaces (a
+   tunnel's address, a path) breaks anywhere rather than running out. */
 .so-state {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   align-items: center;
   gap: var(--ds-space-2);
   min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .so-state__line {
@@ -120,6 +125,7 @@
 
 .so-state__tip {
   display: inline-flex;
+  flex: none;
 }
 
 .so-state__tip:empty {
@@ -169,9 +175,12 @@
   padding-block: var(--ds-space-2);
 }
 
+/* One track no wider than the column: the meters' or a label's min-content
+   cannot lay the name, state and meters out wider than the row. */
 .so-account__main,
 .so-model__name {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: var(--ds-space-1);
   min-width: 0;
 }
@@ -184,6 +193,21 @@
   margin: 0;
   font: var(--ds-font-label);
   color: var(--ds-text);
+}
+
+/* A label is often an e-mail address, one word of up to 40 characters: it
+   and the state's facts break anywhere rather than run past the card. The
+   label is never wider than what the 16px icon (accounts.iconFor) leaves of
+   the line, so a long one stays beside its icon and wraps there instead of
+   leaving the icon alone on a line above it. */
+.so-account__name > span,
+.so-account__state {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.so-account__name > span:not(.ds-meta) {
+  max-inline-size: calc(100% - var(--ds-space-4) - var(--ds-space-2));
 }
 
 .so-account__name > svg {
@@ -267,6 +291,14 @@
 .ds-theme.so-touch .so-account .ds-btn--sm {
   --ds-btn-height: var(--so-touch-target);
   --ds-btn-icon-size: var(--so-touch-target);
+}
+
+/* Touch mode: a head button (Update now, Run checks) is 48px, and DS hangs
+   it out of the title's line by half the difference, which left it 4px from
+   the card's top border on a phone. A taller title line (the DS hook) keeps
+   the overhang to what a 36px button has. */
+.ds-theme.so-touch .so-admin .ds-card__row {
+  --ds-card-title-line: calc(var(--ds-space-6) + var(--ds-space-3));
 }
 
 /* ── Program cards ───────────────────────────────────────────────────── */
@@ -391,9 +423,38 @@
     grid-template-columns: auto minmax(0, 1fr);
   }
 
+  /* The actions start under the account's name. */
   .so-account__actions {
     grid-column: 2;
     justify-content: flex-start;
+  }
+
+  /* The meters give their bar and the reset's reserve back on a phone, so
+     the figures stay inside the card at 320. */
+  .so-account__meters .so-limits {
+    grid-template-columns: auto minmax(var(--ds-space-8), 1fr) auto auto;
+    column-gap: var(--ds-space-2);
+  }
+
+  .so-account__meters .so-limits__reset {
+    min-width: 0;
+  }
+
+  /* The Result column is as wide as its chip and the tip as its button:
+     the stable 136px left the check's name a word per line and pushed the
+     table past its card. */
+  .so-col-status {
+    min-width: 0;
+  }
+
+  .so-col-tip {
+    width: auto;
+  }
+
+  /* The last column still shown (DS drops the secondary ones here) keeps
+     the card's gutter, as a last cell does, clear of the edge fade. */
+  .ds-card .ds-table-wrap :is(th, td):not(.ds-col--secondary):not(:has(~ :not(.ds-col--secondary))) {
+    padding-inline-end: var(--ds-card-pad);
   }
 
   .so-model {
@@ -402,5 +463,14 @@
 
   .so-model > select {
     grid-column: 2;
+  }
+}
+
+/* A small phone: Sign in and three 48px touch icons do not fit beside the
+   grip at 320, so the actions take the whole row under the account, from
+   its start. */
+@media (max-width: 359px) {
+  .so-account__actions {
+    grid-column: 1 / -1;
   }
 }

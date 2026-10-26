@@ -245,10 +245,18 @@ export function diffFiles(part) {
 const SIGN = { add: '+', del: '−', ctx: ' ', meta: '' };
 const LINE_WORDS = { add: 'Added', del: 'Removed' };
 
+// pathBreaks is a path that wraps after a slash before it wraps inside a
+// name: "server/" over "handler_test.go", not "server/handler_tes" over
+// "t.go". A single name too long for the line still breaks (.so-break).
+function pathBreaks(path) {
+  const bits = String(path).split('/');
+  return bits.map((bit, i) => (i < bits.length - 1 ? html`${bit}/<wbr>` : bit));
+}
+
 function diffFileHtml(file, key, open, view) {
   const name = view.where(file.path) || 'the file';
   const status = file.status === 'added' ? 'New file' : file.status === 'deleted' ? 'Deleted' : '';
-  return html`<details class="so-diff__file" data-ds-key="${key}" data-open-key="${key}"${open ? html` open` : ''}><summary class="so-diff__head"><span class="so-diff__path so-break">${name}</span>${status ? html`<span class="so-diff__status">${status}</span>` : ''}<span class="so-diff__count"><span class="so-diff__added" aria-label="${file.added + ' added'}">+${file.added}</span><span class="so-diff__removed" aria-label="${file.removed + ' removed'}">−${file.removed}</span></span>${chevron()}</summary>${open ? diffBodyHtml(file, name) : ''}</details>`;
+  return html`<details class="so-diff__file" data-ds-key="${key}" data-open-key="${key}"${open ? html` open` : ''}><summary class="so-diff__head"><span class="so-diff__path so-break">${pathBreaks(name)}</span>${status ? html`<span class="so-diff__status">${status}</span>` : ''}<span class="so-diff__count"><span class="so-diff__added" aria-label="${file.added + ' added'}">+${file.added}</span><span class="so-diff__removed" aria-label="${file.removed + ' removed'}">−${file.removed}</span></span>${chevron()}</summary>${open ? diffBodyHtml(file, name) : ''}</details>`;
 }
 
 function diffBodyHtml(file, name) {
@@ -264,7 +272,7 @@ function diffBodyHtml(file, name) {
 function singleFileHtml(file, key, info, view) {
   const name = view.where(file.path) || 'the file';
   const status = file.status === 'added' ? 'New file' : file.status === 'deleted' ? 'Deleted' : '';
-  return html`<div class="so-diff__file" data-ds-key="${key}" data-single><div class="so-diff__head"><span class="so-diff__path so-break">${name}</span>${status ? html`<span class="so-diff__status">${status}</span>` : ''}${info || ''}</div>${diffBodyHtml(file, name)}</div>`;
+  return html`<div class="so-diff__file" data-ds-key="${key}" data-single><div class="so-diff__head"><span class="so-diff__path so-break">${pathBreaks(name)}</span>${status ? html`<span class="so-diff__status">${status}</span>` : ''}${info || ''}</div>${diffBodyHtml(file, name)}</div>`;
 }
 
 /**
@@ -404,17 +412,33 @@ function toolHtml(part, view, { diff = false } = {}) {
 }
 
 // bodyWithInfo places the call's "i" where it costs no row of its own: in a
-// single file's head, beside what a call was given or what an agent was
-// told; under a workflow's phases or several files, which want the whole
-// width, it closes the body in a line no taller than a line of meta.
+// single file's head, in the bar of the command's block, beside the words an
+// agent was told (prose, which wraps in what is left). Under a workflow's
+// phases, several files, a call's input or an agent's nested work - blocks
+// that want the whole width, and on a phone would lose a finger's width at
+// every level - it closes the body in a line no taller than a line of meta.
 function bodyWithInfo(part, tool, view, { diff, group, files, info }) {
   if (diff && files.length === 1) return diffViewer(part, view, info);
+  if (!diff && !group && !tool.workflow && tool.command) return toolBody(part, tool, view, { diff, group, info });
   const body = toolBody(part, tool, view, { diff, group });
-  if (diff || tool.workflow) return html`${body}${info}`;
+  if (diff || tool.workflow || !proseFirst(part, tool, group)) return html`${body}${info}`;
   return html`${info}${body}`;
 }
 
-function toolBody(part, tool, view, { diff, group }) {
+// proseFirst says whether a call's body opens with words - an agent's prompt
+// or its summary, or "No output yet." - beside which its "i" can stand.
+function proseFirst(part, tool, group) {
+  if (group) {
+    if (tool.agent && tool.agent.prompt) return true;
+    // A workflow's agent says its words in a text part of its own.
+    if (part.children.length) return part.children.every((child) => child.kind === 'text');
+    return !!((tool.agent && tool.agent.summary) || (part.state !== 'running' ? part.text : ''));
+  }
+  if (tool.input && Object.keys(tool.input).length) return false;
+  return !part.text && part.state === 'running';
+}
+
+function toolBody(part, tool, view, { diff, group, info = '' }) {
   if (diff) return diffViewer(part, view);
   if (tool.workflow) return workflowBody(part, tool, view);
   const blocks = [];
@@ -425,7 +449,7 @@ function toolBody(part, tool, view, { diff, group }) {
     if (summary) blocks.push(html`<div class="so-tool__result so-md">${markdown(summary)}</div>`);
     return html`${blocks}`;
   }
-  if (tool.command) blocks.push(codeBlock(tool.command, 'shell'));
+  if (tool.command) blocks.push(codeBlock(tool.command, 'shell', info));
   else if (tool.input && Object.keys(tool.input).length) blocks.push(html`<pre class="so-mono">${pretty(tool.input)}</pre>`);
   if (part.text) blocks.push(html`<pre class="so-mono so-tool__out" data-state="${part.state}">${part.text}</pre>`);
   else if (part.state === 'running') blocks.push(html`<p class="so-tool__wait ds-meta">No output yet.</p>`);
@@ -838,8 +862,9 @@ export function backgroundJobs(chat) {
 
 /**
  * jobsList is the background jobs dialog's body: a row a job - its tool's
- * mark, its name, what it runs, and how long it has run - and a quiet row
- * for what the agent counts without a part to show.
+ * mark, its name, what it runs, and how long it has run - each a button
+ * that opens the job (jobDetail), and a quiet row for what the agent counts
+ * without a part to show.
  */
 export function jobsList({ jobs, others }, now = Date.now()) {
   if (!jobs.length && !others) {
@@ -847,12 +872,66 @@ export function jobsList({ jobs, others }, now = Date.now()) {
   }
   return html`<ul class="so-jobs">${jobs.map((job) => {
     const ran = job.since ? seconds(Math.max(0, now - job.since)) : '';
-    return html`<li class="so-job" data-ds-key="${job.id}"><span class="so-job__icon" aria-hidden="true">${raw(icon(toolGlyph(job.name), 18))}</span><span class="so-job__main"><span class="so-job__name">${job.name}</span>${
+    return html`<li class="so-job" data-ds-key="${job.id}"><button class="so-job__open" type="button" data-job="${job.id}" aria-label="${'Show ' + job.name + (job.summary ? ': ' + job.summary : '')}"><span class="so-job__icon" aria-hidden="true">${raw(icon(toolGlyph(job.name), 18))}</span><span class="so-job__main"><span class="so-job__name">${job.name}</span>${
       job.summary ? html`<code class="so-job__summary">${job.summary}</code>` : ''
-    }</span><span class="ds-status ds-status--running so-job__state"><span class="ds-spinner ds-status__spinner" aria-hidden="true"></span><span>${ran || 'Running'}</span></span></li>`;
+    }</span><span class="ds-status ds-status--running so-job__state"><span class="ds-spinner ds-status__spinner" aria-hidden="true"></span><span>${ran || 'Running'}</span></span>${raw(icon('chevronRight', 18, 'so-job__go'))}</button></li>`;
   })}${
     others ? html`<li class="so-job so-job--others" data-ds-key="others"><span class="so-job__icon" aria-hidden="true">${raw(icon('background', 18))}</span><span class="so-job__main"><span class="so-job__name">${others + (others === 1 ? ' more task' : ' more tasks')}</span><span class="so-job__note">${'The agent counts ' + (others === 1 ? 'it' : 'them') + ' without saying what ' + (others === 1 ? 'it runs.' : 'they run.')}</span></span></li>` : ''
   }</ul>`;
+}
+
+// What a job that no longer runs ended as, by the state its task (or its
+// agent, or its workflow) says, else its part's.
+const JOB_END = {
+  completed: ['done', 'Finished'], done: ['done', 'Finished'], failed: ['error', 'Failed'], error: ['error', 'Failed'],
+  killed: ['interrupted', 'Stopped'], stopped: ['interrupted', 'Stopped'], interrupted: ['interrupted', 'Stopped'],
+};
+
+/**
+ * jobDetail is one background job, opened from its row of the dialog: what
+ * kind of work it is and since when it runs, the facts the agent reports
+ * about it (its task, its model, what it is doing now, its tokens), and the
+ * call itself as the chat shows it - the command or what the agent was
+ * told, and what has come back so far - live while the dialog is open.
+ * `running` is whether it still counts as a background job.
+ */
+export function jobDetail(part, view, { running = false, now = Date.now() } = {}) {
+  const tool = toolOf(part);
+  const c = tool.content;
+  const agent = tool.agent;
+  const wf = tool.workflow;
+  const task = c.task && typeof c.task === 'object' ? c.task : null;
+  const input = tool.input && typeof tool.input === 'object' ? tool.input : {};
+  const said = (wf && wf.status) || (agent && agent.status) || (task && task.status) || part.state;
+  const [endState, endWord] = JOB_END[said] || JOB_END[part.state] || ['done', 'Finished'];
+  const ran = Math.max(0, (running ? now : (part.updatedAt || now)) - (part.at || now));
+  const kind = wf ? 'Workflow' : agent ? 'Agent' : tool.command ? 'Command' : 'Call';
+  const time = (at) => new Date(at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  const description = String(input.description || (agent && agent.description) || (wf && wf.description) || '');
+  const tokens = (agent && agent.tokens) || (wf && wf.tokens) || 0;
+  const facts = [
+    ['Kind', kind + (agent && agent.type ? ' · ' + agent.type : wf && wf.name ? ' · ' + wf.name : '')],
+    description && description !== tool.summary ? ['What for', description] : null,
+    part.at ? ['Started', time(part.at)] : null,
+    [running ? 'Running for' : 'Ran for', seconds(ran) || 'a moment'],
+    agent && agent.activity && running ? ['Doing now', agent.activity] : null,
+    agent && agent.last_tool ? ['Last tool', agent.last_tool] : null,
+    agent && agent.tool_uses ? ['Tool calls', String(agent.tool_uses)] : null,
+    wf && Number(wf.agents) ? ['Agents', (Number(wf.agents_done) || 0) + ' of ' + wf.agents + ' done'] : null,
+    tokens ? ['Tokens', fmtTokens(tokens)] : null,
+    agent && agent.model ? ['Model', agent.model] : null,
+    c.cwd ? ['Folder', String(c.cwd)] : null,
+    (task && task.id) || (agent && agent.id) || (wf && wf.task_id) ? ['Task', (task && task.id) || (agent && agent.id) || wf.task_id] : null,
+  ].filter(Boolean);
+  const state = running
+    ? html`<span class="ds-status ds-status--running so-jobd__state"><span class="ds-spinner ds-status__spinner" aria-hidden="true"></span><span>${seconds(ran) || 'Running'}</span></span>`
+    : html`<span class="${'ds-status so-jobd__state' + (endState === 'done' ? ' ds-status--ok' : endState === 'error' ? ' ds-status--error' : '')}">${raw(icon(endState === 'error' ? 'alertCircle' : endState === 'interrupted' ? 'ban' : 'checkCircle', 16))}<span>${endWord}</span></span>`;
+  const body = toolBody(part, tool, view, { diff: false, group: isGroup(part, tool) });
+  return html`<div class="so-jobd" data-ds-key="${'job:' + part.id}" data-state="${running ? 'running' : endState}"><div class="so-jobd__nav"><button class="ds-btn ds-btn--text ds-btn--sm so-jobd__back" type="button" data-job-back>${raw(icon('chevronLeft', 18))}<span>All jobs</span></button><button class="ds-btn ds-btn--text ds-btn--sm so-jobd__reveal" type="button" data-job-reveal="${part.id}"><span>Show in chat</span>${raw(icon('chevronRight', 18))}</button></div><div class="so-jobd__head"><span class="so-job__icon" aria-hidden="true">${raw(icon(toolGlyph(tool.name), 18))}</span><div class="so-jobd__title"><h3 class="so-jobd__name" tabindex="-1">${tool.name}</h3>${
+    tool.summary ? html`<code class="so-jobd__summary">${tool.summary}</code>` : ''
+  }</div>${state}</div><dl class="ds-facts so-facts so-jobd__facts">${facts.map(([label, value]) => html`<div><dt>${label}</dt><dd class="so-fact">${value}</dd></div>`)}</dl>${
+    body ? html`<div class="so-tool__body so-jobd__body">${body}</div>` : ''
+  }</div>`;
 }
 
 /* ---------------------------------------------------------- the work fold */
@@ -1151,7 +1230,7 @@ export function lineHtml(entry, view) {
         // Under the newest limit, whether the chat goes on by itself then.
         const goesOn = !!renew && !!view.autoContinue && view.autoContinue() && (!view.lastLimit || view.lastLimit(entry));
         return html`<div class="ds-alert ds-alert--warning so-line-alert" data-ds-key="${key}" data-kind="limit" role="status">${raw(icon('clock', 20))}<span class="ds-alert__text so-line-alert__stack"><span>${'Limit reached' + (renew ? ' — renews in ' + renew : '') + (goesOn ? '. The chat goes on by itself then.' : '')}</span>${
-          offers.length ? html`<span class="so-line-alert__actions">${offers.map((a) => html`<button class="ds-btn ds-btn--sm" type="button" data-action="continue-with" data-account="${a.id}">${'Continue with ' + a.label}</button>`)}</span>` : ''
+          offers.length ? html`<span class="so-line-alert__actions">${offers.map((a) => html`<button class="ds-btn ds-btn--sm" type="button" data-action="continue-with" data-account="${a.id}" data-tip="${'Continue with ' + a.label}"><span class="so-ellipsis">${'Continue with ' + a.label}</span></button>`)}</span>` : ''
         }</span>${infoButton([l.text, ...silentTurnFacts(l.turn, view)], 'About the limit')}</div>`;
       }
       if (l.outcome === 'failed') {

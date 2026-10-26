@@ -440,7 +440,7 @@ function snapshotRow(s, chosen) {
   const facts = s.empty ? host + ' · holds no installation'
     : s.files ? host + ' · ' + bytes(s.size) + ' · ' + s.files + (s.files === 1 ? ' file' : ' files') : host;
   return html`<label class="ds-radio" data-ds-key="${s.id}"><input type="radio" name="snapshot" value="${s.id}"${raw(s.id === chosen ? ' checked' : '')}${raw(s.empty ? ' disabled' : '')}>
-    <span><strong>${when(s.at)}</strong><small>${facts}</small></span></label>`;
+    <span class="so-break"><strong>${when(s.at)}</strong><small>${facts}</small></span></label>`;
 }
 
 $('restoreForm').addEventListener('submit', async (event) => {

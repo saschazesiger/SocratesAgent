@@ -33,6 +33,19 @@ export function spanWords(ms) {
   return Math.floor(h / 24) + ' d' + (h % 24 ? ' ' + (h % 24) + ' h' : '');
 }
 
+// spanShort is the same span as a tile's figure, which is set large in a
+// third of the modal (about 136px at 1280, 90px on a phone): "40 s",
+// "12 min", "1:23 h", "2 d 4 h", "13 d". "1 h 23 min" took two lines there.
+export function spanShort(ms) {
+  const s = Math.max(0, Math.floor(ms / 1000));
+  const m = Math.floor(s / 60);
+  if (m < 60) return spanWords(ms);
+  const h = Math.floor(m / 60);
+  if (h < 24) return h + (m % 60 ? ':' + String(m % 60).padStart(2, '0') : '') + ' h';
+  const d = Math.floor(h / 24);
+  return d >= 10 || !(h % 24) ? d + ' d' : d + ' d ' + (h % 24) + ' h';
+}
+
 const clockTime = (at) => new Date(at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
 /**
@@ -73,6 +86,8 @@ export function openStatusModal({ session, opener, speaking, toggle }) {
 
   // since is how long ago a moment of the server's clock was, by this one.
   const since = (at) => spanWords(Date.now() - skew - at);
+  // A tile's figure: the same, in the short form.
+  const sinceShort = (at) => spanShort(Date.now() - skew - at);
 
   function draw() {
     const a = data.analysis || {};
@@ -84,21 +99,21 @@ export function openStatusModal({ session, opener, speaking, toggle }) {
 
     // The first figure: how long it has been at what it is doing now.
     let run = null;
-    if (c.asked_at) run = { label: 'Waiting for you', value: since(c.asked_at), note: 'since ' + clockTime(c.asked_at), glyph: 'chat' };
-    else if (c.turn_started) run = { label: 'Running for', value: since(c.turn_started), note: 'since ' + clockTime(c.turn_started), glyph: 'activity' };
-    else if (c.last_ended) run = { label: 'Idle for', value: since(c.last_ended), note: 'finished ' + clockTime(c.last_ended), glyph: 'clock' };
+    if (c.asked_at) run = { label: 'Waiting for you', value: sinceShort(c.asked_at), note: 'since ' + clockTime(c.asked_at), glyph: 'chat' };
+    else if (c.turn_started) run = { label: 'Running for', value: sinceShort(c.turn_started), note: 'since ' + clockTime(c.turn_started), glyph: 'activity' };
+    else if (c.last_ended) run = { label: 'Idle for', value: sinceShort(c.last_ended), note: 'finished ' + clockTime(c.last_ended), glyph: 'clock' };
 
     // The second: the estimate, or what stands instead of one.
     const minutes = a.eta_minutes;
     let left = '';
-    if (typeof minutes === 'number') left = minutes < 1 ? '< 1 min' : '~' + spanWords(minutes * 60000);
+    if (typeof minutes === 'number') left = minutes < 1 ? '< 1 min' : '~' + spanShort(minutes * 60000);
     else if (data.state === 'waiting') left = 'Your turn';
     else if (data.state === 'idle') left = 'Done';
     else left = '—';
 
     // The third: the session as a whole.
     const turns = Number(c.turns) || 0;
-    const age = c.first_message ? since(c.first_message) : '—';
+    const age = c.first_message ? sinceShort(c.first_message) : '—';
 
     const tasks = Array.isArray(data.tasks) ? data.tasks : [];
     const done = tasks.filter((t) => t.status === 'completed').length;
@@ -121,9 +136,9 @@ ${a.summary ? html`<section class="so-status__summary" aria-label="Summary"><p c
     const c = data.clock || {};
     const run = body.querySelector('[data-live="run"]');
     const at = c.asked_at || c.turn_started || c.last_ended;
-    if (run && at) run.textContent = since(at);
+    if (run && at) run.textContent = sinceShort(at);
     const age = body.querySelector('[data-live="age"]');
-    if (age && c.first_message) age.textContent = since(c.first_message);
+    if (age && c.first_message) age.textContent = sinceShort(c.first_message);
   }
 
   function paint() {

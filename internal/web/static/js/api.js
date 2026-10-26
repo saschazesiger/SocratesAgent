@@ -103,12 +103,14 @@ export function openDialog({ title, body, lines, facts, code, field, actions, al
   const id = 'dlg' + (++dialogSeq);
   const listed = !!(lines && lines.length);
   const named = !!(facts && facts.length);
+  // The text and the lines are often a path, a URL or an error that quotes
+  // one: they break anywhere rather than run out of the box (so-break).
   const box = el('div', { class: 'ds-dialog__box' },
     el('h2', { class: 'ds-dialog__title', id: id + '-title', text: title }),
-    body ? el('p', { class: 'ds-dialog__text', id: id + '-text', text: body }) : null,
+    body ? el('p', { class: 'ds-dialog__text so-break', id: id + '-text', text: body }) : null,
     listed
       ? el('ul', { class: 'ds-plain-list', id: body ? null : id + '-text' },
-        lines.map((line) => el('li', {}, code ? el('code', { class: 'so-break', text: line }) : line)))
+        lines.map((line) => el('li', { class: 'so-break' }, code ? el('code', { class: 'so-break', text: line }) : line)))
       : null,
     // Named facts ([label, value]) as the DS facts list, Info's shape.
     named
