@@ -909,6 +909,19 @@ before it; `{"t":"tick","now"}` every 15 s; server pings, two misses close. Clos
 login is gone (checked every tick and on sign-out/password change), 1001 when the server stops.
 Opening the stream of a chat whose host died with a turn running starts the recovery.
 
+Every batch is sent **compacted** (`agent.Compact`): of each part one `part` event where it first
+appears, carrying its last state and, in `updated_at`, when it was last replaced (split at turns
+that end other than completed), and without the values a later event sets again (`rate_limit` per
+window, `tasks`, `usage`, `agent.info`). Seqs keep their order with gaps; folded on top of anything,
+a compacted run gives what the whole run gives, so `synced.seq` is what the browser holds. A hello
+with `"lite":true` also gets its replay **light** (`agent.Lighten`): a tool part of 2 KiB or more
+without its output and with only what its row shows (`lite`), and finished parts nested in another,
+made after `since`, held back - the parent says how many (`held`); never a running part, one a
+question names, or anything above them. What is live after `synced` goes whole. `GET
+/api/chats/{id}/parts/{part}` → `{seq, part, children}` is a part whole and its own light (each with
+`held`), as of `seq`, which the browser folds in (`chatfold.js fill`) when the part is opened,
+hovered or, for the groups of the last answers, idle.
+
 **The chat view** (WP8, `internal/web/static/js/chat*.js`, `composer.js`, `askdialog.js`) folds
 the stream with the projection's rules (`chatfold.js`) and sends everything through one `Outbox`
 (`chatoutbox.js`, localStorage `socrates.outbox.chats.<id>`, one key per item) with a fresh

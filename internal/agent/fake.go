@@ -47,6 +47,7 @@ func EnableFake() {
 //	/plan            a plan, and an ask to approve it; the turn waits
 //	/md [ms]         reasoning, then a long Markdown answer streamed in chunks
 //	/tools           tool calls: a read, a command, an edit with its diff, an error
+//	/bigtool         a command that prints a hundred long lines
 //	/todo [ms]       a task list worked through step by step
 //	/workflow [ms]   a workflow of phases with agents nested in it
 //	/dividers        a notice, an account switch, a model change and an error
@@ -442,6 +443,17 @@ func (f *fakeAdapter) turn(ctx context.Context, msg Outgoing, n int) {
 			return
 		}
 		t.say("Done with the tools.")
+	case "/bigtool":
+		lines := make([]string, 100)
+		for i := range lines {
+			lines[i] = fmt.Sprintf("line %d of what the command printed, long enough to make it a lot", i+1)
+		}
+		if !f.toolPart(ctx, t, t.msgID+"_big", "", PartTool, "Bash", map[string]any{"command": "seq 100", "description": "Print a lot"},
+			lines, PartDone, nil) {
+			t.end(OutcomeInterrupted, "")
+			return
+		}
+		t.say("Printed it all.")
 	case "/todo":
 		if !f.todo(ctx, t, time.Duration(fakeInt(fields, 0, 700))*time.Millisecond) {
 			t.end(OutcomeInterrupted, "")

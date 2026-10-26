@@ -37,11 +37,14 @@ const HIDDEN_GRACE = 30000;
  *   since()          the last seq the page holds, read on every connect
  *   onFrame(frame)   every frame: hello, ev, delta, synced
  *   onStatus(status) 'connecting' | 'live' | 'offline', whenever it moves
+ *   lite             the replay may leave out what is drawn only once it is
+ *                    opened (agent.Lighten): the page asks for it then
  */
 export class ChatStream {
-  constructor({ chatId, since, onFrame, onStatus, global = true }) {
+  constructor({ chatId, since, onFrame, onStatus, global = true, lite = false }) {
     this.chatId = chatId;
     this.since = since;
+    this.lite = lite;
     this.onFrame = onFrame;
     this.onStatus = onStatus || (() => {});
     this.ws = null;
@@ -117,7 +120,7 @@ export class ChatStream {
     this.ws = socket;
     this.timers.hello = setTimeout(() => { if (this.ws === socket) this.reconnect(); }, HELLO_TIMEOUT);
     socket.onopen = () => {
-      socket.send(JSON.stringify({ t: 'hello', since: Number(this.since()) || 0 }));
+      socket.send(JSON.stringify({ t: 'hello', since: Number(this.since()) || 0, ...(this.lite ? { lite: true } : {}) }));
     };
     socket.onmessage = (event) => this.receive(socket, event.data);
     socket.onerror = () => {};

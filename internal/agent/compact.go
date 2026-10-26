@@ -93,6 +93,7 @@ func Compact(events []Event) []Event {
 			}
 			merged.Type = TypePart
 			merged.Kind, merged.State, merged.Text, merged.Content = last.Kind, last.State, last.Text, last.Content
+			merged.Lite, merged.Held = last.Lite, max(merged.Held, last.Held)
 			merged.UpdatedAt = last.At
 			out = append(out, merged)
 		}

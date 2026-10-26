@@ -65,7 +65,7 @@ function touchMessage(chat, id) {
 
 // touchPart moves the revision of a part and of every part and message it is
 // inside, so that whatever draws the outer one knows it has to look again.
-function touchPart(chat, part) {
+export function touchPart(chat, part) {
   let at = part;
   const seen = new Set();
   while (at && !seen.has(at.id)) {
@@ -100,6 +100,10 @@ function within(chat, part, node) {
   return node.children.some((child) => within(chat, part, child));
 }
 
+// A part sent light (agent.Lighten) has neither its output nor more of its
+// content than its row shows (`lite`), or holds back parts nested in it
+// (`held`): opened, it is asked for (fill). `seq` is the last event that
+// changed it, so that what is asked for never takes back what came since.
 function applyPart(chat, ev) {
   let part = chat.parts.get(ev.part_id);
   if (part) {
@@ -108,6 +112,11 @@ function applyPart(chat, ev) {
     part.text = ev.text || '';
     part.content = ev.content === undefined ? null : ev.content;
     part.updatedAt = ev.updated_at || ev.at || part.updatedAt;
+    part.lite = !!ev.lite;
+    // A whole part event says nothing of what was held back: only what
+    // is asked for fills that in.
+    if (ev.held) part.held = Math.max(part.held, Number(ev.held) || 0);
+    if (ev.seq) part.seq = ev.seq;
     touchPart(chat, part);
     return;
   }
@@ -115,6 +124,7 @@ function applyPart(chat, ev) {
     id: ev.part_id, messageId: ev.message_id || '', parentId: ev.parent_part_id || '', kind: ev.kind || 'text',
     state: ev.state || '', text: ev.text || '', content: ev.content === undefined ? null : ev.content,
     at: ev.at || 0, updatedAt: ev.updated_at || ev.at || 0, children: [], rev: ++chat.rev,
+    lite: !!ev.lite, held: Number(ev.held) || 0, seq: Number(ev.seq) || 0,
   };
   chat.parts.set(part.id, part);
   const parent = part.parentId ? chat.parts.get(part.parentId) : null;
@@ -150,8 +160,12 @@ function applyDeltaTo(chat, ev) {
     applyPart(chat, { at: ev.at, message_id: ev.message_id, part_id: ev.part_id, kind: 'text', state: 'streaming' });
     part = chat.parts.get(ev.part_id);
   }
+  // A light part's text is not here to add to: it comes whole with the
+  // part when it is asked for.
+  if (part.lite) return false;
   if (!appendDelta(part, ev.offset, ev.text || '')) return false;
   if (ev.at) part.updatedAt = ev.at;
+  if (ev.seq) part.seq = ev.seq;
   touchPart(chat, part);
   return true;
 }
@@ -496,10 +510,14 @@ export function compact(events) {
       ? { t: ev.t, seq: ev.seq, at: ev.at, type: 'part', message_id: ev.message_id, part_id: ev.part_id }
       : { ...ev };
     merged.type = 'part';
-    for (const field of ['kind', 'state', 'text', 'content']) {
+    for (const field of ['kind', 'state', 'text', 'content', 'lite']) {
       if (last[field] === undefined) delete merged[field];
       else merged[field] = last[field];
     }
+    // What was held back of the part stays held back until it is asked
+    // for, whatever came whole after it.
+    const held = Math.max(Number(ev.held) || 0, Number(last.held) || 0);
+    if (held) merged.held = held; else delete merged.held;
     merged.updated_at = last.at;
     out.push(merged);
   });
@@ -512,8 +530,56 @@ export function compact(events) {
  */
 export function applyLive(chat, frame) {
   const part = chat.parts.get(frame.part_id);
-  if (!part) return false;
+  if (!part || part.lite) return false;
   if (!appendDelta(part, frame.offset, frame.text || '')) return false;
+  touchPart(chat, part);
+  return true;
+}
+
+/**
+ * fill puts in what a light part left out, as GET
+ * /api/chats/{id}/parts/{part} has it: { seq, part, children } - the part
+ * whole and the parts nested directly in it (light, each with how many it
+ * holds back in turn) as of the chat's seq. What changed after that seq is
+ * kept as the stream brought it, and a nested part the stream brought that
+ * the answer does not have yet stays, after the ones it has. It answers
+ * whether the part is there to fill.
+ */
+export function fill(chat, detail) {
+  const ev = detail && detail.part;
+  const part = ev ? chat.parts.get(ev.part_id) : null;
+  if (!part) return false;
+  const seq = Number(detail.seq) || 0;
+  const take = (one, from) => {
+    if ((one.seq || 0) > seq) return;
+    one.kind = from.kind || one.kind;
+    one.state = from.state || '';
+    one.text = from.text || '';
+    one.content = from.content === undefined ? null : from.content;
+    one.updatedAt = from.updated_at || from.at || one.updatedAt;
+    one.lite = !!from.lite;
+  };
+  take(part, ev);
+  const listed = [];
+  for (const from of (detail.children || [])) {
+    let child = chat.parts.get(from.part_id);
+    if (child && child.parentId !== part.id) continue;
+    if (!child) {
+      child = {
+        id: from.part_id, messageId: from.message_id || part.messageId, parentId: part.id, kind: from.kind || 'text',
+        state: '', text: '', content: null, at: from.at || 0, updatedAt: 0, children: [], rev: ++chat.rev,
+        lite: false, held: 0, seq: 0,
+      };
+      chat.parts.set(child.id, child);
+    }
+    take(child, from);
+    child.held = Math.max(child.held, Number(from.held) || 0);
+    child.rev = ++chat.rev;
+    listed.push(child);
+  }
+  const have = new Set(listed);
+  part.children = listed.concat(part.children.filter((one) => !have.has(one)));
+  part.held = 0;
   touchPart(chat, part);
   return true;
 }

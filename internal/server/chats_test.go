@@ -237,6 +237,12 @@ type chatClient struct {
 
 func (c *chatEnv) stream(t *testing.T, id string, since int64) *chatClient {
 	t.Helper()
+	return c.streamHello(t, id, map[string]any{"t": "hello", "since": since})
+}
+
+// streamHello is a chat stream that says hello as given.
+func (c *chatEnv) streamHello(t *testing.T, id string, hi map[string]any) *chatClient {
+	t.Helper()
 	url := "ws" + strings.TrimPrefix(c.server.URL, "http") + "/api/chats/" + id + "/stream"
 	conn, res, err := websocket.Dial(context.Background(), url, &websocket.DialOptions{
 		HTTPHeader: c.eventsHeader(t), Subprotocols: []string{chatSubprotocol},
@@ -250,7 +256,7 @@ func (c *chatEnv) stream(t *testing.T, id string, since int64) *chatClient {
 	}
 	conn.SetReadLimit(64 << 20)
 	t.Cleanup(func() { _ = conn.CloseNow() })
-	hello, _ := json.Marshal(map[string]any{"t": "hello", "since": since})
+	hello, _ := json.Marshal(hi)
 	if err := conn.Write(context.Background(), websocket.MessageText, hello); err != nil {
 		t.Fatal(err)
 	}
@@ -325,6 +331,29 @@ func (cl *chatClient) until(within time.Duration, what string, ok func(agent.Eve
 		case <-cl.woke:
 		case <-deadline:
 			cl.t.Fatalf("timed out waiting for %s", what)
+		}
+	}
+}
+
+// untilSynced waits for the replay to be through, and returns its events.
+func (cl *chatClient) untilSynced(within time.Duration) []agent.Event {
+	cl.t.Helper()
+	deadline := time.After(within)
+	for {
+		cl.mu.Lock()
+		synced, err := cl.synced, cl.err
+		out := append([]agent.Event{}, cl.events...)
+		cl.mu.Unlock()
+		if synced {
+			return out
+		}
+		if err != nil {
+			cl.t.Fatalf("the stream ended before its replay was through: %v", err)
+		}
+		select {
+		case <-cl.woke:
+		case <-deadline:
+			cl.t.Fatal("timed out waiting for the replay")
 		}
 	}
 }

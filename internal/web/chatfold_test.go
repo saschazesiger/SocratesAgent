@@ -415,3 +415,41 @@ func TestTheBrowserFoldsACompactedRunAsTheWholeRun(t *testing.T) {
 		t.Fatalf("compacted from these events on, the fold differs: %s", got)
 	}
 }
+
+// What a light replay held back is put in where it belongs when it is asked
+// for: a workflow sent without its agents gets them, in the server's order
+// and as the server has them, and a part the stream changed after the
+// answer was read keeps what the stream said.
+func TestTheBrowserFillsInWhatALightReplayHeldBack(t *testing.T) {
+	events := compactJournal()
+	p := agent.Fold(events)
+	light := agent.Lighten(agent.Compact(events), 0, p)
+	part, children, ok := p.Detail("wf")
+	if !ok {
+		t.Fatal("no workflow")
+	}
+	last := events[len(events)-1].Seq
+	detail, _ := json.Marshal(map[string]any{"seq": last, "part": part, "children": children})
+	// The answer was read before the last event: a newer ag1 came by the
+	// stream meanwhile, and stays.
+	stale, _ := json.Marshal(map[string]any{"seq": last - 1, "part": part, "children": children})
+	got := runFold(t, light, `(() => {
+  const wf = chat.parts.get('wf');
+  const before = { held: wf.held, children: wf.children.map((c) => c.id) };
+  fold.fill(chat, `+string(detail)+`);
+  const after = { held: wf.held, lite: wf.lite, children: wf.children.map((c) => [c.id, c.state, c.parentId, chat.parts.get(c.id) === c]) };
+  const again = fold.newChat();
+  for (const ev of events) fold.apply(again, ev);
+  fold.apply(again, { seq: 1e6, at: 1, type: 'part', part_id: 'ag1', parent_part_id: 'wf', kind: 'tool', state: 'error' });
+  fold.fill(again, `+string(stale)+`);
+  return { before, after, kept: again.parts.get('ag1').state, unknown: fold.fill(chat, { seq: 1, part: { part_id: 'nothing' } }) };
+})()`)
+	var want []string
+	for _, c := range children {
+		want = append(want, fmt.Sprintf(`[%q,%q,"wf",true]`, c.PartID, c.State))
+	}
+	expect := `{"before":{"held":2,"children":[]},"after":{"held":0,"lite":false,"children":[` + strings.Join(want, ",") + `]},"kept":"error","unknown":false}`
+	if got != expect {
+		t.Fatalf("filled in:\n%s\nwant\n%s", got, expect)
+	}
+}

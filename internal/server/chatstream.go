@@ -102,6 +102,9 @@ func (s *Server) serveChatStream(conn *websocket.Conn, token string, p *chatPeer
 	var hello struct {
 		T     string `json:"t"`
 		Since int64  `json:"since"`
+		// Lite is a browser that asks for what it does not draw when it
+		// draws it (agent.Lighten, GET /api/chats/{id}/parts/{part}).
+		Lite bool `json:"lite"`
 	}
 	if typ != websocket.MessageText || json.Unmarshal(payload, &hello) != nil || hello.T != "hello" {
 		_ = conn.Close(websocket.StatusPolicyViolation, "the first frame must be a hello")
@@ -157,7 +160,16 @@ func (s *Server) serveChatStream(conn *websocket.Conn, token string, p *chatPeer
 		// What the browser folds is sent without what later events of the
 		// same batch make moot (agent.Compact): a replay of a workflow that
 		// journaled its state for hours is its last state, not every copy.
-		for _, ev := range agent.Compact(events) {
+		// A light browser's replay is also without what it does not draw
+		// until it is opened; what is live after it goes whole.
+		send := agent.Compact(events)
+		if hello.Lite && !synced && len(send) > 0 {
+			if err := p.view(func(proj *agent.Projection) { send = agent.Lighten(send, since, proj) }); err != nil {
+				_ = conn.Close(websocket.StatusInternalError, "the chat could not be read")
+				return err
+			}
+		}
+		for _, ev := range send {
 			if err := write(agenthost.EncodeEvent(ev)); err != nil {
 				_ = conn.CloseNow()
 				return nil
@@ -212,4 +224,33 @@ func (s *Server) serveChatStream(conn *websocket.Conn, token string, p *chatPeer
 			}
 		}
 	}
+}
+
+// handleChatPart is one part of a chat whole, and the parts nested directly
+// in it light (agent.Projection.Detail): what a light stream left out of a
+// part, asked for when the part is opened. seq is the chat's last seq when
+// it was read, so that the browser keeps what it has heard since.
+func (s *Server) handleChatPart(w http.ResponseWriter, r *http.Request) {
+	_, p, ok := s.chatOf(w, r)
+	if !ok {
+		return
+	}
+	var (
+		part     agent.Event
+		children []agent.Event
+		found    bool
+		seq      int64
+	)
+	if err := p.view(func(proj *agent.Projection) {
+		part, children, found = proj.Detail(r.PathValue("part"))
+		seq = proj.LastSeq
+	}); err != nil {
+		writeError(w, http.StatusInternalServerError, "the chat could not be read")
+		return
+	}
+	if !found {
+		writeError(w, http.StatusNotFound, "the chat has no such part")
+		return
+	}
+	writeJSONCompressed(w, r, http.StatusOK, map[string]any{"seq": seq, "part": part, "children": children})
 }

@@ -10434,6 +10434,77 @@ async function chattools() {
   } finally { await s.stop(); }
 }
 
+// chat-light: a chat read on a device that has nothing of it is replayed
+// light - a finished workflow without its agents, a long output without the
+// output - and what is opened is asked for and drawn as it was: the
+// workflow's phases with every agent done, the command's every line.
+async function chatlight() {
+  const s = await chatServer();
+  const { page } = s;
+  let other = null;
+  try {
+    const id = await startChat(page);
+    await say(page, '/workflow 30');
+    await awaitLog(page, 'The workflow finished.', 20000);
+    await say(page, '/bigtool');
+    await awaitLog(page, 'Printed it all.', 30000);
+    await awaitChat(s, id, idle);
+
+    other = await deviceOf(s, { viewport: { width: 1280, height: 900 } });
+    const frames = [];
+    other.page.on('websocket', (ws) => {
+      if (/\/stream$/.test(ws.url())) ws.on('framereceived', (f) => frames.push(String(f.payload)));
+    });
+    const asked = [];
+    other.page.on('request', (r) => {
+      const m = /\/api\/chats\/[^/]+\/parts\/([^?]+)/.exec(r.url());
+      if (m) asked.push(decodeURIComponent(m[1]));
+    });
+    await other.page.goto(s.url + '/', { waitUntil: 'domcontentloaded' });
+    await openChat(other.page, id);
+    await awaitLog(other.page, 'Printed it all.', 20000);
+    const sent = frames.map((f) => { try { return JSON.parse(f); } catch { return {}; } }).filter((f) => f.t === 'ev');
+    const wf = sent.find((f) => f.type === 'part' && /_wf$/.test(f.part_id)) || {};
+    const big = sent.find((f) => f.type === 'part' && /_big$/.test(f.part_id)) || {};
+    const nested = sent.filter((f) => f.parent_part_id).length;
+    ok(wf.held === 4 && nested === 0, 'the replay holds back the finished workflow’s agents, and says how many',
+      JSON.stringify({ held: wf.held, nested }));
+    ok(big.lite === true && !big.text && /seq 100/.test(JSON.stringify(big.content || {})),
+      'and sends the long command without what it printed, with what its row shows', JSON.stringify({ lite: big.lite, text: (big.text || '').length, content: big.content }));
+    const bytes = frames.reduce((n, f) => n + f.length, 0);
+    ok(bytes < 20000, 'so the replay is small', bytes + ' bytes');
+
+    // The workflow's work, opened: the workflow is open, so it is asked for
+    // and drawn with its phases and agents.
+    await openWork(other.page);
+    const finished = await other.page.waitForFunction(() => {
+      const wf = [...document.querySelectorAll('#chat .so-tool[data-group]')]
+        .filter((n) => n.querySelector(':scope > summary .so-tool__name').textContent === 'Workflow').pop();
+      if (!wf || !wf.querySelector('.so-phases')) return null;
+      return {
+        phases: [...wf.querySelectorAll('.so-phase')].map((p) => p.querySelector('.so-phase__title').textContent + ':' + p.dataset.state),
+        agents: wf.querySelectorAll('.so-phase .so-tool[data-state="done"]').length,
+        loading: !!wf.querySelector('.so-details'),
+      };
+    }, null, { timeout: 10000 }).then((h) => h.jsonValue(), () => null);
+    ok(!!finished && finished.phases.join(',') === 'Plan:done,Build:done,Review:done' && finished.agents === 4 && !finished.loading,
+      'opened, the workflow is asked for and shows every phase and agent done', JSON.stringify({ finished, asked }));
+
+    // The long command, opened: its every line.
+    await other.page.click('#chat .so-tool[data-kind="tool"]:has(.so-tool__name:text-is("Bash")) > summary');
+    const output = await other.page.waitForSelector('#chat .so-tool[open] .so-tool__out', { timeout: 10000 })
+      .then((n) => n.innerText(), () => '');
+    const lines = output.trim().split('\n');
+    ok(lines.length === 100 && /^line 100 of/.test(lines[99]) && asked.some((p) => /_big$/.test(p)),
+      'and the command, opened, is asked for and prints its every line', JSON.stringify({ lines: lines.length, last: lines[lines.length - 1], asked }));
+    await shot(other.page, 'chat-light');
+    ok(unexpected(s.errors).length === 0, 'no console errors', unexpected(s.errors).join(' | ') || '0');
+  } finally {
+    if (other) await other.context.close();
+    await s.stop();
+  }
+}
+
 // claudeChat is a signed-in server with a Claude Code chat open from the
 // sheet, against the protocol fake: the scripts the fold, the line under
 // the bar and Send now are measured on are fakeclaude's.
@@ -12414,6 +12485,7 @@ const ALL = [
   ['chat-stream', 'a chat: streaming, Markdown, replay, queued, Stop, the draft, the palette, the model, the lines', chatstream],
   ['chat-restart', 'the server restarted mid-turn under a desk and a phone: the stream replays, the turn completes, nothing twice', chatrestart],
   ['chat-tools', 'tool rows, the diff viewer, a subagent, a workflow, and the task list pinned while it runs', chattools],
+  ['chat-light', 'a chat read on a new device comes light, and what is opened is asked for: a workflow’s agents, a long output', chatlight],
   ['chat-fold', 'an answer\u2019s work folded in one line: what it does, then what it did, its steps and tokens; the answer and a question stand', chatfold],
   ['chat-sub', 'the line under a chat\u2019s bar: its account and its limit windows; its background jobs at its foot, with their dialog', chatsub],
   ['chat-kept', 'a chat opened again is drawn at once from what the device kept, marked as such until its stream is through', chatkept],

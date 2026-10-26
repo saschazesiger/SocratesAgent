@@ -146,7 +146,7 @@ export function toolGlyph(name) {
 }
 
 function isGroup(part, tool) {
-  if (part.children.length) return true;
+  if (part.children.length || part.held) return true;
   if (tool.workflow) return true;
   return ['Task', 'Agent', 'Subagent', 'Workflow'].includes(tool.name) || !!tool.agent;
 }
@@ -407,8 +407,20 @@ function toolHtml(part, view, { diff = false } = {}) {
   }${diff && files.length ? html`<span class="so-diff__count"><span class="so-diff__added">+${added}</span><span class="so-diff__removed">−${removed}</span></span>` : ''}${
     statusMark(state)
   }<span class="so-tool__time">${seconds(tool.duration)}</span>${chevron()}</summary>${
-    open ? html`<div class="so-tool__body">${bodyWithInfo(part, tool, view, { diff, group, files, info: infoButton(facts, 'Call details') })}</div>` : ''
+    open ? html`<div class="so-tool__body">${
+      part.lite || part.held ? detailsHtml(part, view) : bodyWithInfo(part, tool, view, { diff, group, files, info: infoButton(facts, 'Call details') })
+    }</div>` : ''
   }</details>`;
+}
+
+// detailsHtml stands for the body of a part sent light while it is asked
+// for (chatfold.js fill): a quiet line, or, when the asking failed, what
+// happened and a way to ask again.
+function detailsHtml(part, view) {
+  if (view.details && view.details(part) === 'failed') {
+    return html`<div class="so-tool__wait so-details" data-ds-key="details"><span class="ds-meta">The details could not be loaded.</span><button class="ds-btn ds-btn--text ds-btn--sm" type="button" data-action="details-retry" data-part="${part.id}">Try again</button></div>`;
+  }
+  return html`<div class="ds-loading so-tool__wait so-details" data-ds-key="details" role="status"><span class="ds-loader ds-loader--sm" aria-hidden="true"></span><span>Loading the details…</span></div>`;
 }
 
 // bodyWithInfo places the call's "i" where it costs no row of its own: in a
@@ -926,7 +938,8 @@ export function jobDetail(part, view, { running = false, now = Date.now() } = {}
   const state = running
     ? html`<span class="ds-status ds-status--running so-jobd__state"><span class="ds-spinner ds-status__spinner" aria-hidden="true"></span><span>${seconds(ran) || 'Running'}</span></span>`
     : html`<span class="${'ds-status so-jobd__state' + (endState === 'done' ? ' ds-status--ok' : endState === 'error' ? ' ds-status--error' : '')}">${raw(icon(endState === 'error' ? 'alertCircle' : endState === 'interrupted' ? 'ban' : 'checkCircle', 16))}<span>${endWord}</span></span>`;
-  const body = toolBody(part, tool, view, { diff: false, group: isGroup(part, tool) });
+  // A job sent light is asked for, as an opened call is (detailsHtml).
+  const body = part.lite || part.held ? detailsHtml(part, view) : toolBody(part, tool, view, { diff: false, group: isGroup(part, tool) });
   return html`<div class="so-jobd" data-ds-key="${'job:' + part.id}" data-state="${running ? 'running' : endState}"><div class="so-jobd__nav"><button class="ds-btn ds-btn--text ds-btn--sm so-jobd__back" type="button" data-job-back>${raw(icon('chevronLeft', 18))}<span>All jobs</span></button><button class="ds-btn ds-btn--text ds-btn--sm so-jobd__reveal" type="button" data-job-reveal="${part.id}"><span>Show in chat</span>${raw(icon('chevronRight', 18))}</button></div><div class="so-jobd__head"><span class="so-job__icon" aria-hidden="true">${raw(icon(toolGlyph(tool.name), 18))}</span><div class="so-jobd__title"><h3 class="so-jobd__name" tabindex="-1">${tool.name}</h3>${
     tool.summary ? html`<code class="so-jobd__summary">${tool.summary}</code>` : ''
   }</div>${state}</div><dl class="ds-facts so-facts so-jobd__facts">${facts.map(([label, value]) => html`<div><dt>${label}</dt><dd class="so-fact">${value}</dd></div>`)}</dl>${

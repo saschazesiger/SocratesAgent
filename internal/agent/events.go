@@ -204,6 +204,12 @@ type Event struct {
 	// made of several was last replaced, where At stays when its part first
 	// appeared.
 	UpdatedAt int64 `json:"updated_at,omitempty"`
+	// Lite and Held are never journaled either: Lite is a tool part sent
+	// without its output and with only the content its row shows, and Held
+	// how many parts nested in a part were held back (Lighten). A browser
+	// asks for them when it draws them.
+	Lite bool `json:"lite,omitempty"`
+	Held int  `json:"held,omitempty"`
 
 	TurnID    string `json:"turn_id,omitempty"`
 	MessageID string `json:"message_id,omitempty"`

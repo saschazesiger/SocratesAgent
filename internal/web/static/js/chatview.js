@@ -26,7 +26,7 @@ import { agentMarkHtml } from './logos.js';
 import * as harnesses from './harnesses.js';
 import * as accounts from './accounts.js';
 import './accountpicker.js';
-import { newChat, apply, applyLive, busy, currentTodo, seenClient, compact } from './chatfold.js';
+import { newChat, apply, applyLive, busy, currentTodo, seenClient, compact, fill, touchPart } from './chatfold.js';
 import { ChatStream } from './chatstream.js';
 import { loadChat, saveChat } from './chatcache.js';
 import {
@@ -57,6 +57,11 @@ const STICK = 64;
 // has it: a message, and a slash command. A change of model shows in the
 // composer, an answer on its question's card.
 const SAID = new Set(['message', 'command']);
+
+// How many answers from the end of a chat have the groups they hold back
+// (a workflow's agents, a subagent's calls) asked for once the chat is
+// read: a group is drawn open, so it is what is opened next.
+const PREFETCH_ANSWERS = 3;
 
 // The names a usage window goes by, for the chat's "i".
 const WINDOW_WORDS = { five_hour: '5-hour limit', weekly: 'Weekly limit' };
@@ -169,6 +174,10 @@ export function mountChat(ctx) {
   const renders = new Map();
   const drawn = new Map();
   const askWatchers = new Map();
+  // What a part sent light left out (chatfold.js fill), asked for when it
+  // is drawn opened, hovered or about to be opened: 'loading' or 'failed',
+  // by chat and part.
+  const asked = new Map();
   // What this browser sent that the server took and the journal does not
   // show yet: kept on screen as "Sent" so a message never blinks out between
   // its answer and its event. Keyed by client_id.
@@ -282,6 +291,14 @@ export function mountChat(ctx) {
   const view = {
     get chat() { return chat; },
     isOpen(key, fallback) { return open.has(key) ? open.get(key) : fallback; },
+    // details is how the asking for what a light part left out goes, and
+    // asks when nothing has (chatparts.js detailsHtml).
+    details(part) {
+      if (!session) return 'loading';
+      const state = asked.get(session.id + '\u0000' + part.id);
+      if (!state) wantDetails(part);
+      return state || 'loading';
+    },
     planNote: (askId) => readPlanNote(askId),
     askProgress,
     mine: (ask) => answeredHere(ask.clientId),
@@ -812,6 +829,8 @@ export function mountChat(ctx) {
         draw();
         return;
       }
+      const again = event.target.closest('[data-action="details-retry"]');
+      if (again) { retryDetails(again.dataset.part || ''); draw(); return; }
       const copyBtn = event.target.closest('[data-action="copy-code"]');
       if (copyBtn) {
         const code = copyBtn.closest('.so-code')?.querySelector('code');
@@ -833,8 +852,20 @@ export function mountChat(ctx) {
 
   // revealPart scrolls the chat to one part, opening the folds it is in -
   // its turn's work and the calls around it - and marks it for a moment.
-  function revealPart(id) {
+  function revealPart(id, tries = 0) {
     if (!chat || !chat.parts.has(id)) return;
+    // A part inside one sent light is drawn once that one is filled in: it
+    // is asked for, and the part revealed when it is there (for a few
+    // seconds at most).
+    let waits = false;
+    for (let part = chat.parts.get(chat.parts.get(id).parentId); part; part = part.parentId ? chat.parts.get(part.parentId) : null) {
+      if (part.lite || part.held) { wantDetails(part); waits = true; }
+    }
+    if (waits && tries < 25) {
+      const chatId = session ? session.id : '';
+      setTimeout(() => { if (session && session.id === chatId) revealPart(id, tries + 1); }, 200);
+      return;
+    }
     const keys = [];
     for (let part = chat.parts.get(id); part; part = part.parentId ? chat.parts.get(part.parentId) : null) {
       if (part.id !== id) keys.push('p:' + part.id);
@@ -900,6 +931,69 @@ export function mountChat(ctx) {
     if (chat.conversation) facts.push(['Conversation', chat.conversation]);
     return facts;
   }
+
+  /* ----------------------------------------------------------- the details */
+
+  // wantDetails asks for what a light part left out (GET
+  // /api/chats/{id}/parts/{part}) unless it is on its way, and folds it in
+  // when it comes; a failure is said in the part, with a way to ask again.
+  function wantDetails(part) {
+    if (!session || !(part.lite || part.held)) return;
+    const chatId = session.id;
+    const key = chatId + '\u0000' + part.id;
+    if (asked.has(key)) return;
+    asked.set(key, 'loading');
+    api('/api/chats/' + encodeURIComponent(chatId) + '/parts/' + encodeURIComponent(part.id), { attempts: 2, timeout: 20000 })
+      .then((data) => {
+        asked.delete(key);
+        const one = chats.get(chatId);
+        if (one) fill(one, data);
+      })
+      .catch(() => {
+        asked.set(key, 'failed');
+        const one = chats.get(chatId);
+        const now = one && one.parts.get(part.id);
+        if (now) touchPart(one, now);
+      })
+      .finally(() => { if (session && session.id === chatId) schedule(); });
+  }
+
+  // retryDetails asks again for a part whose asking failed.
+  function retryDetails(id) {
+    const part = chat ? chat.parts.get(id) : null;
+    if (!session || !part) return;
+    asked.delete(session.id + '\u0000' + id);
+    touchPart(chat, part);
+    wantDetails(part);
+  }
+
+  // prefetch asks, while nothing else happens, for the groups the last
+  // answers hold back: they are drawn open when their answer's work is.
+  function prefetch() {
+    const chatId = session ? session.id : '';
+    const idle = window.requestIdleCallback || ((fn) => setTimeout(fn, 200));
+    idle(() => {
+      if (!session || session.id !== chatId || !chat) return;
+      let answers = 0;
+      for (let i = chat.timeline.length - 1; i >= 0 && answers < PREFETCH_ANSWERS; i -= 1) {
+        const entry = chat.timeline[i];
+        const message = entry.type === 'message' ? chat.messages.get(entry.id) : null;
+        if (!message || message.role !== 'assistant') continue;
+        answers += 1;
+        for (const part of message.parts) if (part.held) wantDetails(part);
+      }
+    });
+  }
+
+  // A part about to be opened - hovered, or touched - is asked for before
+  // the tap is through.
+  const warm = (event) => {
+    const summary = event.target.closest && event.target.closest('summary');
+    const key = summary && summary.parentElement ? summary.parentElement.dataset.openKey || '' : '';
+    if (!chat || !key.startsWith('p:')) return;
+    const part = chat.parts.get(key.slice(2));
+    if (part) wantDetails(part);
+  };
 
   /* ------------------------------------------------------------ the stream */
 
@@ -976,6 +1070,7 @@ export function mountChat(ctx) {
         // The replay is compacted (agent.Compact): the events it left out
         // at its end are moot, and the chat holds everything up to its seq.
         if (Number(f.seq) > chat.lastSeq) chat.lastSeq = Number(f.seq);
+        prefetch();
         const first = !synced;
         synced = true;
         catchingUp = false;
@@ -1022,6 +1117,10 @@ export function mountChat(ctx) {
     const field = event.target.closest('[data-plan-note]');
     if (field) writePlanNote(field.dataset.planNote, field.value);
   });
+
+  log.addEventListener('pointerover', warm);
+  log.addEventListener('pointerdown', warm);
+  log.addEventListener('focusin', warm);
 
   host.addEventListener('click', (event) => {
     if (!session) return;
@@ -1134,6 +1233,10 @@ export function mountChat(ctx) {
         break;
       case 'continue-with':
         continueWith(target);
+        break;
+      case 'details-retry':
+        retryDetails(target.dataset.part || '');
+        render();
         break;
       case 'jump':
         stuck = true;
@@ -1367,7 +1470,7 @@ export function mountChat(ctx) {
         error: (text) => sayError(text),
       });
       const start = () => {
-        stream = new ChatStream({ chatId: next.id, since: () => chat.lastSeq, onFrame, onStatus });
+        stream = new ChatStream({ chatId: next.id, since: () => chat.lastSeq, onFrame, onStatus, lite: true });
         stream.start();
       };
       if (inMemory) start();
