@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -328,5 +329,48 @@ func TestLastSeqReadsTheEndOfAJournal(t *testing.T) {
 	os.WriteFile(path, []byte(`{"seq":1,"at":1,"type":"notice"}`+"\n"+`{"seq":2,"at":1,"type":"notice"}`), 0o600)
 	if seq, _ := LastSeq(path); seq != 2 {
 		t.Fatalf("no final newline: %d", seq)
+	}
+}
+
+// A reader that kept where it read up to reads on from there, and can tell
+// that the journal is still the one it read: an event ends where it left off.
+func TestAJournalIsReadOnFromWhereAReaderLeftOff(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "events.jsonl")
+	j, _, err := OpenJournal(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, text := range []string{"one", strings.Repeat("long ", 30000), "three"} {
+		if _, err := j.Append(Event{Type: TypeNotice, Text: text}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	j.Close()
+	all, good, err := ReadJournalFrom(path, 0, 0)
+	if err != nil || len(all) != 3 {
+		t.Fatalf("%d events, %v", len(all), err)
+	}
+	info, _ := os.Stat(path)
+	if good != info.Size() {
+		t.Fatalf("good %d, size %d", good, info.Size())
+	}
+	raw, _ := os.ReadFile(path)
+	second := int64(bytes.IndexByte(raw, '\n') + 1)
+	third := second + int64(bytes.IndexByte(raw[second:], '\n')+1)
+	if seq, _ := SeqAt(path, third); seq != 2 {
+		t.Fatalf("the event ending at %d is %d, want 2 (a line longer than a block)", third, seq)
+	}
+	if seq, _ := SeqAt(path, good); seq != 3 {
+		t.Fatalf("the last event is %d", seq)
+	}
+	if seq, _ := SeqAt(path, third-5); seq != 0 {
+		t.Fatalf("no event ends in the middle of a line, got %d", seq)
+	}
+	rest, end, _ := ReadJournalFrom(path, second, 1)
+	if len(rest) != 2 || rest[0].Seq != 2 || end != good {
+		t.Fatalf("read on: %d events from %d, end %d", len(rest), rest[0].Seq, end)
+	}
+	if again, _, _ := ReadJournalFrom(path, second, 2); len(again) != 1 {
+		t.Fatalf("an event not past the one before is not read again: %d", len(again))
 	}
 }

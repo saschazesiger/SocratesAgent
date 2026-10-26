@@ -58,6 +58,12 @@ const STICK = 64;
 // composer, an answer on its question's card.
 const SAID = new Set(['message', 'command']);
 
+// A chat opened is drawn from its end: its last FIRST_ENTRIES entries at
+// once, the ones before them EARLIER_ENTRIES at a time while nothing else
+// happens, so a long chat is there to read before all of it is.
+const FIRST_ENTRIES = 20;
+const EARLIER_ENTRIES = 40;
+
 // How many answers from the end of a chat have the groups they hold back
 // (a workflow's agents, a subagent's calls) asked for once the chat is
 // read: a group is drawn open, so it is what is opened next.
@@ -174,6 +180,10 @@ export function mountChat(ctx) {
   const renders = new Map();
   const drawn = new Map();
   const askWatchers = new Map();
+  // Where the timeline on screen starts (FIRST_ENTRIES): -1 until the chat
+  // shown is first drawn, 0 once all of it is.
+  let drawFrom = -1;
+  let earlier = 0;
   // What a part sent light left out (chatfold.js fill), asked for when it
   // is drawn opened, hovered or about to be opened: 'loading' or 'failed',
   // by chat and part.
@@ -545,7 +555,15 @@ export function mountChat(ctx) {
     // no entry at all.
     // A chat read for the first time is drawn once its replay is through,
     // not built up before the eyes event by event.
-    const entries = synced ? chat.timeline.map((entry) => ({ key: entry.key, markup: entryMarkup(entry) })).filter((one) => one.markup) : [];
+    let timeline = synced ? chat.timeline : [];
+    if (synced) {
+      if (drawFrom < 0) drawFrom = Math.max(0, timeline.length - FIRST_ENTRIES);
+      if (drawFrom > 0) {
+        timeline = timeline.slice(drawFrom);
+        drawEarlier();
+      }
+    }
+    const entries = timeline.map((entry) => ({ key: entry.key, markup: entryMarkup(entry) })).filter((one) => one.markup);
     const local = localEntries();
     // A chat that has not started - nothing said, nothing on its way - is
     // its first message: the composer is a big field that fills the view
@@ -581,6 +599,33 @@ export function mountChat(ctx) {
       lastTop = scroller.scrollTop;
     }
     showJump(!atEnd());
+  }
+
+  // drawEarlier draws the entries before the ones on screen, a few at a time
+  // while nothing else happens, keeping what is read where it is: at the
+  // end, or as far from it as it was.
+  function drawEarlier() {
+    if (earlier) return;
+    const idle = window.requestIdleCallback || ((fn) => setTimeout(fn, 50));
+    const showing = session ? session.id : '';
+    earlier = idle(() => {
+      earlier = 0;
+      if (!session || session.id !== showing || drawFrom <= 0) return;
+      const fromEnd = scroller.scrollHeight - scroller.scrollTop;
+      drawFrom = Math.max(0, drawFrom - EARLIER_ENTRIES);
+      render();
+      if (!stuck || held) {
+        scroller.scrollTop = scroller.scrollHeight - fromEnd;
+        lastTop = scroller.scrollTop;
+      }
+    }, { timeout: 500 });
+  }
+
+  // drawAll draws the whole timeline now, for what has to find an entry.
+  function drawAll() {
+    if (drawFrom <= 0) return;
+    drawFrom = 0;
+    render();
   }
 
   // drawTodo pins the task list above the composer while a turn runs: the
@@ -866,6 +911,7 @@ export function mountChat(ctx) {
       setTimeout(() => { if (session && session.id === chatId) revealPart(id, tries + 1); }, 200);
       return;
     }
+    drawAll();
     const keys = [];
     for (let part = chat.parts.get(id); part; part = part.parentId ? chat.parts.get(part.parentId) : null) {
       if (part.id !== id) keys.push('p:' + part.id);
@@ -1038,13 +1084,18 @@ export function mountChat(ctx) {
     synced = false;
     catchingUp = false;
     stuck = true;
+    drawFrom = -1;
   }
 
   function onFrame(f) {
     switch (f.t) {
       case 'hello':
         target = Number(f.last_seq) || 0;
-        if (target < chat.lastSeq) {
+        // A journal shorter than what this browser holds (a restore), or a
+        // history the server holds compacted past it (a snapshot,
+        // chatsnapshot.go): what it holds may be what the server no longer
+        // has, so it is read again from the beginning.
+        if (target < chat.lastSeq || (chat.lastSeq > 0 && chat.lastSeq < (Number(f.base) || 0))) {
           forgetFold();
           framesOf(chat).dirty = true;
           persist(true);
@@ -1447,6 +1498,7 @@ export function mountChat(ctx) {
       openRev += 1;
       synced = chat.lastSeq > 0;
       stuck = true;
+      drawFrom = -1;
       lostAt = 0;
       target = 0;
       // Whatever it shows before its stream is through may be old.

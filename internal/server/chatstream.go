@@ -105,6 +105,8 @@ func (s *Server) serveChatStream(conn *websocket.Conn, token string, p *chatPeer
 		// Lite is a browser that asks for what it does not draw when it
 		// draws it (agent.Lighten, GET /api/chats/{id}/parts/{part}).
 		Lite bool `json:"lite"`
+		// Batch is a browser that takes many events in one frame (evs).
+		Batch bool `json:"batch"`
 	}
 	if typ != websocket.MessageText || json.Unmarshal(payload, &hello) != nil || hello.T != "hello" {
 		_ = conn.Close(websocket.StatusPolicyViolation, "the first frame must be a hello")
@@ -122,7 +124,7 @@ func (s *Server) serveChatStream(conn *websocket.Conn, token string, p *chatPeer
 		delete(h.streams, st)
 		h.mu.Unlock()
 	}()
-	feed, sub, err := p.subscribe()
+	feed, sub, base, err := p.subscribe()
 	if err != nil {
 		_ = conn.Close(websocket.StatusInternalError, "the chat could not be read")
 		return err
@@ -135,7 +137,7 @@ func (s *Server) serveChatStream(conn *websocket.Conn, token string, p *chatPeer
 		return conn.Write(wctx, websocket.MessageText, payload)
 	}
 	frame, _ := json.Marshal(map[string]any{
-		"t": "hello", "chat": p.summary(), "last_seq": feed.Last(), "now": time.Now().UnixMilli(),
+		"t": "hello", "chat": p.summary(), "last_seq": feed.Last(), "base": base, "now": time.Now().UnixMilli(),
 	})
 	if err := write(frame); err != nil {
 		_ = conn.CloseNow()
@@ -169,10 +171,21 @@ func (s *Server) serveChatStream(conn *websocket.Conn, token string, p *chatPeer
 				return err
 			}
 		}
-		for _, ev := range send {
-			if err := write(agenthost.EncodeEvent(ev)); err != nil {
-				_ = conn.CloseNow()
-				return nil
+		if hello.Batch && len(send) > 1 {
+			// A browser handles a frame at a time, each a task of its own:
+			// a replay of a thousand events is a few frames, not a thousand.
+			for _, frame := range batchFrames(send) {
+				if err := write(frame); err != nil {
+					_ = conn.CloseNow()
+					return nil
+				}
+			}
+		} else {
+			for _, ev := range send {
+				if err := write(agenthost.EncodeEvent(ev)); err != nil {
+					_ = conn.CloseNow()
+					return nil
+				}
 			}
 		}
 		if len(events) > 0 {
@@ -253,4 +266,34 @@ func (s *Server) handleChatPart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSONCompressed(w, r, http.StatusOK, map[string]any{"seq": seq, "part": part, "children": children})
+}
+
+// batchSize is about how much one evs frame carries.
+const batchSize = 256 << 10
+
+// batchFrames is events as evs frames - {"t":"evs","evs":[event, ...]} - of
+// about batchSize each, in order.
+func batchFrames(events []agent.Event) [][]byte {
+	var frames [][]byte
+	var buf []byte
+	for _, ev := range events {
+		raw, err := json.Marshal(ev)
+		if err != nil {
+			continue
+		}
+		if buf == nil {
+			buf = append(buf, `{"t":"evs","evs":[`...)
+		} else {
+			buf = append(buf, ',')
+		}
+		buf = append(buf, raw...)
+		if len(buf) >= batchSize {
+			frames = append(frames, append(buf, "]}"...))
+			buf = nil
+		}
+	}
+	if buf != nil {
+		frames = append(frames, append(buf, "]}"...))
+	}
+	return frames
 }

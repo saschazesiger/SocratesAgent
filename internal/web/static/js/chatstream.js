@@ -120,7 +120,7 @@ export class ChatStream {
     this.ws = socket;
     this.timers.hello = setTimeout(() => { if (this.ws === socket) this.reconnect(); }, HELLO_TIMEOUT);
     socket.onopen = () => {
-      socket.send(JSON.stringify({ t: 'hello', since: Number(this.since()) || 0, ...(this.lite ? { lite: true } : {}) }));
+      socket.send(JSON.stringify({ t: 'hello', since: Number(this.since()) || 0, batch: true, ...(this.lite ? { lite: true } : {}) }));
     };
     socket.onmessage = (event) => this.receive(socket, event.data);
     socket.onerror = () => {};
@@ -192,6 +192,13 @@ export class ChatStream {
         break;
       case 'pong':
       case 'tick':
+        return;
+      case 'evs':
+        // Many events in one frame (hello{batch}): each is an ev frame.
+        for (const ev of Array.isArray(frame.evs) ? frame.evs : []) {
+          ev.t = 'ev';
+          try { this.onFrame(ev); } catch (err) { setTimeout(() => { throw err; }, 0); }
+        }
         return;
       default:
         break;

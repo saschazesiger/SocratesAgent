@@ -195,6 +195,69 @@ func ReadJournal(path string) ([]Event, error) {
 	return events, err
 }
 
+// ReadJournalFrom reads the whole events of a journal from byte offset from
+// on - where a reader that keeps what it read up to there left off - whose
+// seqs come after `after`, the seq of the event that ended there. good is
+// the offset just past the last whole event, where the next read starts.
+func ReadJournalFrom(path string, from, after int64) ([]Event, int64, error) {
+	f, err := os.Open(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, from, nil
+	}
+	if err != nil {
+		return nil, 0, err
+	}
+	defer f.Close()
+	var events []Event
+	good, _, err := scanJournalFrom(f, from, after, func(ev Event) { events = append(events, ev) })
+	if err != nil {
+		return nil, 0, err
+	}
+	return events, good, nil
+}
+
+// SeqAt is the seq of the whole event whose line ends at byte offset end of
+// a journal, or 0 when no event ends there: how a reader that kept where it
+// read up to tells that the journal is still the one it read.
+func SeqAt(path string, end int64) (int64, error) {
+	if end <= 0 {
+		return 0, nil
+	}
+	f, err := os.Open(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	defer f.Close()
+	// The line ending at end: back from it to the newline before, a block at
+	// a time, as far as a line may go.
+	var line []byte
+	at := end
+	for at > 0 && int64(len(line)) <= maxLine {
+		n := min(at, 64<<10)
+		block := make([]byte, n)
+		if _, err := f.ReadAt(block, at-n); err != nil {
+			return 0, err
+		}
+		line = append(block, line...)
+		at -= n
+		if i := bytes.LastIndexByte(line[:len(line)-1], '\n'); i >= 0 {
+			line = line[i+1:]
+			break
+		}
+	}
+	if len(line) == 0 || line[len(line)-1] != '\n' {
+		return 0, nil
+	}
+	ev, ok := parseLine(line, 0)
+	if !ok {
+		return 0, nil
+	}
+	return ev.Seq, nil
+}
+
 // LastSeq is the seq of the last whole event of a journal, read from its end
 // rather than its start: what a reader that holds a summary of the journal
 // as of some seq checks it against, without reading the history. A journal
@@ -276,9 +339,17 @@ func readJournal(f *os.File) ([]Event, int64, int64, error) {
 // anything but damage, and refusing the whole history over one torn line
 // would be worse than the line.
 func scanJournal(f *os.File, fn func(Event)) (int64, int64, error) {
+	return scanJournalFrom(f, 0, 0, fn)
+}
+
+// scanJournalFrom is scanJournal from byte offset from on, where the event
+// before it had seq last. The offsets it answers are the file's.
+func scanJournalFrom(f *os.File, from, last int64, fn func(Event)) (int64, int64, error) {
+	if _, err := f.Seek(from, io.SeekStart); err != nil {
+		return 0, 0, err
+	}
 	r := bufio.NewReaderSize(f, 64<<10)
-	var offset, good int64
-	var last int64
+	offset, good := from, from
 	for {
 		line, err := r.ReadBytes('\n')
 		offset += int64(len(line))

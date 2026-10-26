@@ -190,13 +190,31 @@ func (p *chatPeer) loadLocked() error {
 	if p.proj != nil {
 		return nil
 	}
-	events, err := agent.ReadJournal(agenthost.JournalPath(p.hub.srv.dataDir, p.id))
+	dataDir := p.hub.srv.dataDir
+	h, err := readHistory(dataDir, p.id)
 	if err != nil {
 		return err
 	}
 	p.hub.folds.Add(1)
-	p.feed, p.proj = agent.NewFeed(events), agent.Fold(events)
+	p.feed, p.proj, p.base = agent.NewFeed(h.events), agent.Fold(h.events), h.base
 	p.brief = briefOf(p.proj)
+	// A long read is made short for the next time, beside this one: a new
+	// snapshot, of what is in memory now, takes effect when the history is
+	// read again (the base moves then, not under a stream).
+	if h.tail >= snapshotFrom {
+		events := h.events
+		go func() {
+			if err := writeSnapshot(dataDir, p.id, events, h.good); err != nil {
+				log.Printf("chats: %s: %v", p.id, err)
+			}
+			p.mu.Lock()
+			gone := p.gone
+			p.mu.Unlock()
+			if gone {
+				_ = os.Remove(snapshotPath(dataDir, p.id))
+			}
+		}()
+	}
 	return nil
 }
 
@@ -213,14 +231,14 @@ func (p *chatPeer) view(fn func(*agent.Projection)) error {
 }
 
 // subscribe is a reader of the chat's events, with the history in memory for
-// as long as it reads.
-func (p *chatPeer) subscribe() (*agent.Feed, *agent.Sub, error) {
+// as long as it reads, and the seq up to which they are compacted.
+func (p *chatPeer) subscribe() (*agent.Feed, *agent.Sub, int64, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if err := p.loadLocked(); err != nil {
-		return nil, nil, err
+		return nil, nil, 0, err
 	}
-	return p.feed, p.feed.Subscribe(), nil
+	return p.feed, p.feed.Subscribe(), p.base, nil
 }
 
 // idleLocked is whether the chat's history can go: nothing uses it - no

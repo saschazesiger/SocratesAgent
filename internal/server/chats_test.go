@@ -223,8 +223,9 @@ func turnsEnded(n int) func([]agent.Event) bool {
 
 // chatClient is one browser on a chat stream.
 type chatClient struct {
-	t    *testing.T
-	conn *websocket.Conn
+	t       *testing.T
+	batches int
+	conn    *websocket.Conn
 
 	mu     sync.Mutex
 	events []agent.Event
@@ -286,6 +287,13 @@ func (c *chatEnv) streamHello(t *testing.T, id string, hi map[string]any) *chatC
 				var ev agent.Event
 				_ = json.Unmarshal(payload, &ev)
 				cl.events = append(cl.events, ev)
+			case "evs":
+				var batch struct {
+					Evs []agent.Event `json:"evs"`
+				}
+				_ = json.Unmarshal(payload, &batch)
+				cl.events = append(cl.events, batch.Evs...)
+				cl.batches++
 			}
 			cl.mu.Unlock()
 			cl.wake()

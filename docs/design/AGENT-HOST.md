@@ -902,7 +902,7 @@ Chats appear in
 
 **Stream** (`socrates.chat.v1`): the same per-login handshake ceiling as `/api/events`, origin
 check, compression. Client's first frame within 10 s: `{"t":"hello","since":<seq>}` (else closed
-1008). Server: `{"t":"hello","chat":<summary>,"last_seq","now"}`, then `ev` frames for every event
+1008). Server: `{"t":"hello","chat":<summary>,"last_seq","base","now"}`, then `ev` frames for every event
 after `since`, then `{"t":"synced","seq"}` once the replay is through, then live `ev` and `delta`
 frames (same shapes as §4.2). `{"t":"ping","id"}` → `{"t":"pong","id"}` after every event published
 before it; `{"t":"tick","now"}` every 15 s; server pings, two misses close. Close **4401** when the
@@ -920,7 +920,17 @@ made after `since`, held back - the parent says how many (`held`); never a runni
 question names, or anything above them. What is live after `synced` goes whole. `GET
 /api/chats/{id}/parts/{part}` → `{seq, part, children}` is a part whole and its own light (each with
 `held`), as of `seq`, which the browser folds in (`chatfold.js fill`) when the part is opened,
-hovered or, for the groups of the last answers, idle.
+hovered or, for the groups of the last answers, idle. A hello with `"batch":true` gets a replay
+of more than one event as `{"t":"evs","evs":[…]}` frames of about 256 KiB: a browser handles a
+frame per task, and a thousand of them cost it more than the events did.
+
+The server reads a chat's history from a **snapshot** when it has one that is still the
+journal's (`cache/chats/<id>.jsonl`, `chatsnapshot.go`): the journal compacted up to an event,
+with where that event ends in the journal, then the journal from there. It writes one beside a
+read of 8 MiB of journal or more; the journal itself is never changed. A history so read is
+compacted up to the snapshot's seq, which the hello says (`base`): a browser holding less than
+that may hold what was moved back to where a part first appeared, and reads the chat again from
+nothing (as after a restore).
 
 **The chat view** (WP8, `internal/web/static/js/chat*.js`, `composer.js`, `askdialog.js`) folds
 the stream with the projection's rules (`chatfold.js`) and sends everything through one `Outbox`

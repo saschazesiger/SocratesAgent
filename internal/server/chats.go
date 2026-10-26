@@ -209,6 +209,7 @@ func (h *chatHub) remove(ctx context.Context, id string) {
 	h.launcher.Stop(ctx, id)
 	_ = h.srv.store.ClearOutbox(id)
 	_ = os.Remove(agenthost.SocketPath(h.srv.dataDir, id))
+	_ = os.Remove(snapshotPath(h.srv.dataDir, id))
 	if err := os.RemoveAll(agenthost.ChatDir(h.srv.dataDir, id)); err != nil {
 		log.Printf("chats: could not remove the directory of %s: %v", id, err)
 	}
@@ -262,9 +263,12 @@ type chatPeer struct {
 	// brief is always the chat as of its last event; feed and proj are its
 	// history, nil while it is not in memory, and used is when it was last
 	// wanted.
-	brief   chatBrief
-	feed    *agent.Feed
-	proj    *agent.Projection
+	brief chatBrief
+	feed  *agent.Feed
+	proj  *agent.Projection
+	// base is the seq up to which feed is compacted, read from a snapshot
+	// (chatsnapshot.go): a browser that holds less starts again.
+	base    int64
 	used    time.Time
 	conn    *agenthost.Conn
 	pumping bool

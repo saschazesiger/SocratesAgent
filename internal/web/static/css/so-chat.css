@@ -190,6 +190,11 @@
 
 .so-chat__entry {
   min-width: 0;
+  /* An entry out of sight is not laid out or painted until it comes near:
+     a long chat opens at its end without the cost of all of it, and the
+     size it last had keeps the scrollbar honest. */
+  content-visibility: auto;
+  contain-intrinsic-size: auto 240px;
 }
 
 .so-chat__empty,

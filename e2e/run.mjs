@@ -10463,7 +10463,9 @@ async function chatlight() {
     await other.page.goto(s.url + '/', { waitUntil: 'domcontentloaded' });
     await openChat(other.page, id);
     await awaitLog(other.page, 'Printed it all.', 20000);
-    const sent = frames.map((f) => { try { return JSON.parse(f); } catch { return {}; } }).filter((f) => f.t === 'ev');
+    const sent = frames.map((f) => { try { return JSON.parse(f); } catch { return {}; } })
+      .flatMap((f) => (f.t === 'evs' ? f.evs : f.t === 'ev' ? [f] : []));
+    const batches = frames.filter((f) => f.startsWith('{"t":"evs"')).length;
     const wf = sent.find((f) => f.type === 'part' && /_wf$/.test(f.part_id)) || {};
     const big = sent.find((f) => f.type === 'part' && /_big$/.test(f.part_id)) || {};
     const nested = sent.filter((f) => f.parent_part_id).length;
@@ -10472,7 +10474,7 @@ async function chatlight() {
     ok(big.lite === true && !big.text && /seq 100/.test(JSON.stringify(big.content || {})),
       'and sends the long command without what it printed, with what its row shows', JSON.stringify({ lite: big.lite, text: (big.text || '').length, content: big.content }));
     const bytes = frames.reduce((n, f) => n + f.length, 0);
-    ok(bytes < 20000, 'so the replay is small', bytes + ' bytes');
+    ok(bytes < 20000 && batches === 1, 'so the replay is small, and comes in one frame', JSON.stringify({ bytes, batches }));
 
     // The workflow's work, opened: the workflow is open, so it is asked for
     // and drawn with its phases and agents.

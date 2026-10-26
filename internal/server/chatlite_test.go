@@ -81,3 +81,24 @@ func TestALightReplayHoldsBackAWorkflowsAgentsUntilItIsOpened(t *testing.T) {
 		t.Fatalf("a part the chat does not have: %d", res.StatusCode)
 	}
 }
+
+// A browser that takes events in batches gets a replay in a frame or few,
+// and the same events as one that takes them a frame each.
+func TestAReplayComesInBatchesToABrowserThatTakesThem(t *testing.T) {
+	c := newChatEnv(t, time.Hour)
+	id := c.create(t)
+	c.send(t, id, "m1", "/tools")
+	c.waitJournal(t, id, 15*time.Second, "the tools", turnsEnded(1))
+	one := c.stream(t, id, 0)
+	single := one.untilSynced(10 * time.Second)
+	many := c.streamHello(t, id, map[string]any{"t": "hello", "since": 0, "batch": true})
+	batched := many.untilSynced(10 * time.Second)
+	a, _ := json.Marshal(single)
+	b, _ := json.Marshal(batched)
+	many.mu.Lock()
+	frames := many.batches
+	many.mu.Unlock()
+	if string(a) != string(b) || frames != 1 || len(batched) < 5 {
+		t.Fatalf("%d events in %d batches, the same as one at a time: %v", len(batched), frames, string(a) == string(b))
+	}
+}
