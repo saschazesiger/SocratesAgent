@@ -659,8 +659,14 @@ func TestChatTwoDevicesOnOneStream(t *testing.T) {
 	journal := c.journal(t, id)
 	sameAsJournal(t, a, journal, 1)
 	sameAsJournal(t, b, journal, 1)
-	if len(a) != len(b) {
-		t.Fatalf("the devices saw %d and %d events", len(a), len(b))
+	// Each device's batches are compacted as they came, so the two may get
+	// the turn in a different number of events; what they hold is the same.
+	pa, pb := agent.Fold(a), agent.Fold(b)
+	pa.LastSeq, pb.LastSeq = 0, 0
+	ja, _ := json.Marshal(pa)
+	jb, _ := json.Marshal(pb)
+	if string(ja) != string(jb) {
+		t.Fatalf("the devices hold different chats:\n%s\n%s", ja, jb)
 	}
 	if p, l := phone.deltaCount(), laptop.deltaCount(); p == 0 || l == 0 {
 		t.Fatalf("no live deltas: %d %d", p, l)
