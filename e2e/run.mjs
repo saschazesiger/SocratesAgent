@@ -12183,6 +12183,21 @@ function fakeCodexBin() {
   return fakeCodexPath;
 }
 
+// fakeOpenCodeTUIBin is a stand-in for OpenCode's TUI as an account's
+// sign-in runs it: what a /connect there would leave, a provider in the
+// account's own auth.json, and nothing else (the database migration before
+// it is a no-op).
+let fakeOpenCodeTUIPath = '';
+function fakeOpenCodeTUIBin() {
+  if (fakeOpenCodeTUIPath) return fakeOpenCodeTUIPath;
+  const dir = scratchDir('socrates-e2e-fakeopencodetui-');
+  fakeOpenCodeTUIPath = join(dir, 'opencode');
+  writeFileSync(fakeOpenCodeTUIPath, '#!/bin/sh\n[ "$1" = db ] && exit 0\n' +
+    `printf '%s' '{"anthropic":{"type":"oauth","refresh":"r","access":"a","expires":0}}' > "$XDG_DATA_HOME/opencode/auth.json"\n` +
+    'echo "Signed in to anthropic."\n', { mode: 0o755 });
+  return fakeOpenCodeTUIPath;
+}
+
 async function accountsOf(s) {
   const res = await s.context.request.get(s.url + '/api/accounts');
   return (await res.json()).accounts || [];
@@ -12210,17 +12225,19 @@ function filesHolding(dir, needle) {
 
 // accounts: the dashboard's Accounts card - an API-key account added, a
 // Codex subscription signed in by its device code against the scripted
-// app-server, a rename, the order, a delete refused while a chat runs on the
+// app-server, an OpenCode one in a Shell running its own TUI, a rename, the order, a delete refused while a chat runs on the
 // account and taken after, and the card on a phone.
 async function accountsscenario() {
   const key = 'sk-e2e-' + 'k'.repeat(24);
   const s = await start({
     viewport: { width: 1280, height: 900 },
-    env: { ...FAKE_AGENT, SOCRATES_CODEX_BIN: fakeCodexBin(), FAKECODEX_LOGIN_MS: '1500' },
+    env: { ...FAKE_AGENT, SOCRATES_CODEX_BIN: fakeCodexBin(), FAKECODEX_LOGIN_MS: '1500', SOCRATES_OPENCODE_BIN: fakeOpenCodeTUIBin() },
   });
   const { page } = s;
   try {
     await setup(page, s.url);
+    // The OpenCode sign-in's Shell is read off the page.
+    await useDomRenderer(s);
     await page.goto(s.url + '/admin', { waitUntil: 'domcontentloaded' });
     await page.waitForSelector('#accountList .so-account-group[data-agent="codex"]', { timeout: 20000 });
     const groups = await page.$$eval('#accountList .so-account-group', (n) => n.map((g) => g.dataset.agent));
@@ -12270,6 +12287,31 @@ async function accountsscenario() {
     await page.waitForSelector(accountRowSel(codex.id) + ' [data-state="signed_in"]', { timeout: 10000 });
     const meters = await page.$$eval(accountRowSel(codex.id) + ' .so-limits__row', (n) => n.map((r) => r.textContent));
     ok(meters.length === 2, 'and its five hours and its week are shown', meters.join(' | '));
+
+    // An OpenCode subscription signs in in OpenCode's own TUI, in a Shell
+    // the page goes to; the account is signed in once OpenCode wrote it.
+    await page.click('.so-account-group[data-agent="opencode"] .ds-add-row');
+    await page.waitForSelector('dialog.ds-dialog .so-account-form', { timeout: 5000 });
+    await page.fill('#accountLabel', 'OpenCode work');
+    const signinRes = page.waitForResponse((r) => /\/api\/accounts\/[^/]+\/signin$/.test(r.url()) && r.request().method() === 'POST', { timeout: 20000 });
+    await page.click('dialog.ds-dialog .ds-btn--primary');
+    const shell = ((await (await signinRes).json()).session) || {};
+    const onShell = shell.id ? await page.waitForFunction((id) => location.hash.includes(id) && !!document.querySelector('#term .xterm'),
+      shell.id, { timeout: 20000 }).then(() => true, () => false) : false;
+    ok(onShell && shell.harness === 'shell' && shell.title === 'Sign in · OpenCode work',
+      'Sign in on an OpenCode account opens a Shell for it, and the page goes there', JSON.stringify({ url: page.url(), harness: shell.harness, title: shell.title }));
+    ok(await awaitScreen(page, 'Signed in to anthropic', 15000), 'OpenCode runs in it',
+      oneLine(await screen(page)).slice(-120));
+    let opencode;
+    for (let i = 0; i < 50; i++) {
+      opencode = (await accountsOf(s)).find((a) => a.label === 'OpenCode work');
+      if (opencode && opencode.state === 'signed_in') break;
+      await wait(200);
+    }
+    ok(opencode && opencode.state === 'signed_in' && opencode.plan === 'anthropic',
+      'what OpenCode signs in to there is the account’s, and it is signed in', JSON.stringify(opencode));
+    await page.goto(s.url + '/admin', { waitUntil: 'domcontentloaded' });
+    await page.waitForSelector(accountRowSel(opencode.id) + ' [data-state="signed_in"]', { timeout: 15000 });
 
     // Rename.
     await page.click(accountRowSel(keyed.id) + ' [data-action="rename"]');
@@ -12577,7 +12619,7 @@ const ALL = [
   ['chat-outcome', 'a chat\u2019s turn judged from its journal: the hourglass, the verdict, the notification', chatoutcome],
   ['chat-schedule', 'a chat started by its clock: its draft the first message, once, and no start time once it has one', chatschedule],
   ['chat-ultracode', 'Ultracode for Claude Code alone: in the sheet, and in a Claude chat\u2019s menu', chatultracode],
-  ['accounts', 'the Accounts card: an API key, a Codex device code, rename, order, a delete refused then taken, a phone', accountsscenario],
+  ['accounts', 'the Accounts card: an API key, a Codex device code, OpenCode signing in in a Shell, rename, order, a delete refused then taken, a phone', accountsscenario],
   ['chat-account', 'a chat\u2019s account: from the sheet, switched idle and after a turn, a limit\u2019s Continue with, the automatic switch, a phone', chataccount],
   ['backup', 'the Backup card: a bucket configured, a backup on demand, a failure and the warning, and the next good run', backup],
   ['restore', 'a machine that is gone, and a new one restored from its backup on the setup page', restore],

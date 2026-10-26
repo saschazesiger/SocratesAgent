@@ -83,7 +83,7 @@ You can run it again at any time to repair or update the installation.
 | | Step | How |
 | :---: | --- | --- |
 | 1️⃣ | **Open it** | `ssh -L 8080:localhost:8080 root@your-server`, then go to <http://localhost:8080> and choose a password. |
-| 2️⃣ | **Sign in the agents** | **Admin → Accounts**: Claude Code and Codex with their own sign-in, or any agent with an API key. |
+| 2️⃣ | **Sign in the agents** | **Admin → Accounts**: Claude Code and Codex with their own sign-in, OpenCode in its own terminal (`/connect`), or any agent with an API key. |
 | 3️⃣ | **Reach it from anywhere** | **Admin → Remote access**: a Cloudflare tunnel, with Cloudflare Access in front. |
 
 > 💡 Moving from another server? In step 1, choose **Restore from a backup** instead.

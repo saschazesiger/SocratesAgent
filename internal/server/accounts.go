@@ -10,8 +10,8 @@ package server
 //	DELETE /api/accounts/{id}              {"ok":true}; 409 while a chat runs on it, or for
 //	                                       the agent's own sign-in the migration moved in
 //	PUT    /api/accounts/order             {"order":[<id>…]} → {"ok":true}; 409 when the list changed
-//	POST   /api/accounts/{id}/signin       {"provider"?,"method"?,"inputs"?} → {"signin":<flow>},
-//	                                       or {"session":<terminal>} for Claude Code
+//	POST   /api/accounts/{id}/signin       {} → {"signin":<flow>},
+//	                                       or {"session":<terminal>} for OpenCode
 //	GET    /api/accounts/{id}/signin       {"signin":<flow>}
 //	POST   /api/accounts/{id}/signin/code  {"code"} → {"signin":<flow>}
 //	DELETE /api/accounts/{id}/signin       {"ok":true}
@@ -34,6 +34,7 @@ import (
 	"github.com/saschazesiger/SocratesAgent/internal/accounts"
 	"github.com/saschazesiger/SocratesAgent/internal/agent"
 	"github.com/saschazesiger/SocratesAgent/internal/agenthost"
+	"github.com/saschazesiger/SocratesAgent/internal/harnesses"
 	"github.com/saschazesiger/SocratesAgent/internal/store"
 )
 
@@ -899,20 +900,15 @@ func (s *Server) handleReorderAccounts(w http.ResponseWriter, r *http.Request) {
 
 // handleAccountSignIn starts an account's sign-in: Claude Code's own
 // `claude auth login` on a terminal of the server's (the page it shows, and
-// the code that page gives typed into it), a device code for Codex, a
-// provider's OAuth for OpenCode (first the list of providers, then, with
-// provider and method, the page).
+// the code that page gives typed into it), a device code for Codex, and
+// OpenCode's own TUI in a Shell terminal (openCodeSignIn).
 // The scripted agent has nothing to sign in to.
 func (s *Server) handleAccountSignIn(w http.ResponseWriter, r *http.Request) {
 	a, ok := s.accountOf(w, r)
 	if !ok {
 		return
 	}
-	var body struct {
-		Provider string            `json:"provider"`
-		Method   *int              `json:"method"`
-		Inputs   map[string]string `json:"inputs"`
-	}
+	var body struct{}
 	if !readJSON(w, r, &body) {
 		return
 	}
@@ -959,27 +955,7 @@ func (s *Server) handleAccountSignIn(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"signin": flow})
 	case accounts.OpenCode:
-		if body.Provider != "" && body.Method != nil {
-			flow, err := s.accounts.signins.Choose(ctx, a.ID, body.Provider, *body.Method, body.Inputs)
-			if err != nil {
-				writeError(w, http.StatusBadGateway, err.Error())
-				return
-			}
-			writeJSON(w, http.StatusOK, map[string]any{"signin": flow})
-			return
-		}
-		if err := accounts.Prepare(s.dataDir, a); err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
-			return
-		}
-		env := accounts.Env(s.dataDir, a, os.Environ())
-		entry, _ := s.Settings().Harnesses.Entry(accounts.OpenCode)
-		flow, err := s.accounts.signins.StartOpenCode(ctx, s.dataDir, a.ID, env, strings.TrimSpace(entry.Binary), onDone)
-		if err != nil {
-			writeError(w, http.StatusBadGateway, "OpenCode did not start a sign-in: "+err.Error())
-			return
-		}
-		writeJSON(w, http.StatusOK, map[string]any{"signin": flow})
+		s.openCodeSignIn(w, r, a)
 	case accounts.Fake:
 		_ = s.store.SetAccountState(a.ID, accounts.SignedIn, "")
 		writeJSON(w, http.StatusOK, map[string]any{"signin": accounts.Flow{Account: a.ID, Agent: a.Agent,
@@ -987,6 +963,43 @@ func (s *Server) handleAccountSignIn(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeError(w, http.StatusBadRequest, "this account has nothing to sign in to")
 	}
+}
+
+// openCodeSignIn opens a Shell terminal in which OpenCode's own TUI runs on
+// the account's folder (REBUILD.md §4.2): every provider OpenCode offers is
+// signed in to there (/connect), in OpenCode's own words, and the login is
+// written to the account's auth.json by OpenCode, never seen by Socrates,
+// which only finds the account signed in afterwards. The shell stays when
+// OpenCode is quit, in the account's environment.
+func (s *Server) openCodeSignIn(w http.ResponseWriter, r *http.Request, a *store.Account) {
+	if err := s.manager.Available(); err != nil {
+		writeError(w, http.StatusServiceUnavailable, err.Error())
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), createTimeout)
+	defer cancel()
+	entry, _ := s.Settings().Harnesses.Entry(accounts.OpenCode)
+	bin, vars, err := accounts.OpenCodeTerminal(ctx, s.dataDir, a.ID, accounts.Env(s.dataDir, a, os.Environ()), strings.TrimSpace(entry.Binary))
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "OpenCode could not be started: "+err.Error())
+		return
+	}
+	row, err := s.launch(ctx, launchSpec{
+		Harness: string(harnesses.KindShell), WorkdirMode: harnesses.WorkdirDynamic,
+		Title:  "Sign in · " + a.Label,
+		SignIn: &harnesses.SignIn{Env: vars, Command: []string{bin}},
+	})
+	var refused *launchError
+	switch {
+	case errors.As(err, &refused):
+		writeError(w, refused.status, refused.msg)
+		return
+	case err != nil && row == nil:
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	s.events.poke()
+	writeJSON(w, http.StatusOK, map[string]any{"session": s.view(row)})
 }
 
 func (s *Server) handleGetAccountSignIn(w http.ResponseWriter, r *http.Request) {

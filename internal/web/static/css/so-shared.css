@@ -312,11 +312,6 @@ body[data-stale] .so-mark[data-ring="busy"]::after {
   justify-content: flex-start;
 }
 
-.so-signin__providers {
-  max-height: var(--so-signin-list-max);
-  overflow-y: auto;
-}
-
 /* ── Messages over a dialog ───────────────────────────────────────────── */
 
 /* A message shown while a dialog is open stands in it, at the bottom edge

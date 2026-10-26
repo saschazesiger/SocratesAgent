@@ -2590,9 +2590,13 @@ the server's, and the card shows its page and types the code pasted there into i
 agents' sign-ins. Its outcome is its exit status and last line; the account's state follows its
 folder.
 
-**WP7 / §4.2 — OpenCode's sign-in offers the providers' OAuth methods only.** `GET /provider/auth`
-also lists API-key methods; a key is an account of its own kind, passed per process as
-`OPENCODE_AUTH_CONTENT` (§4.1), never written with `PUT /auth`, so the sign-in leaves it out.
+**WP7 / §4.2 — OpenCode signs in in its own TUI, in a Shell.** It first relayed the providers'
+OAuth methods from `GET /provider/auth` of a serve of the account's own into the card; that
+wrapper offered less than OpenCode itself (only some providers and methods, none of their
+follow-ups), so "Sign in" now opens a Shell terminal running `opencode` on the account's data
+home instead, where `/connect` signs in to any provider, and stays a shell when OpenCode is quit.
+The account's state follows its `auth.json`. A key is still an account of its own kind, passed per
+process as `OPENCODE_AUTH_CONTENT` (§4.1).
 
 **WP7 / §4.1 — a Codex key is kept sealed as well.** Codex logs a key in itself (`account/login/
 start {type: apiKey}` into the account's `CODEX_HOME`), and that file is what codex reads. The key

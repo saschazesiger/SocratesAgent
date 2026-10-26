@@ -232,7 +232,9 @@ plan/email (read from the agent, shown behind the info tip), limits snapshot.
   tokens; an end user signing in to the unmodified binary is allowed).
 - **Codex subscription:** device code shown natively in the web UI (`account/login/start
   {type: chatgptDeviceCode}` → URL + code → `account/login/completed`).
-- **OpenCode:** the provider auth methods from `GET /provider/auth`, rendered natively.
+- **OpenCode:** "Sign in" opens a Shell terminal running OpenCode's own TUI on the account's data
+  home, where every provider OpenCode offers is signed in to (`/connect`); the shell stays when
+  OpenCode is quit. OpenCode writes the account's `auth.json` itself.
 - **API keys:** a form; stored with the existing vault (AES-GCM) in the store.
 
 ### 4.3 Switching account in a running chat

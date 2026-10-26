@@ -26,3 +26,10 @@ The only exceptions are deliberate:
 - `docs/design/` holds the design notes and specifications.
 - `e2e/README.md` describes the browser suite. `node e2e/shots.mjs`
   retakes the README screenshots.
+
+## Finishing a change
+
+Unless the task says otherwise, a change that is done and tested is
+committed straight to `main` and pushed: no branch and no pull request.
+Test it first (`make check`, and the browser suite or the running app
+where the change is visible there).

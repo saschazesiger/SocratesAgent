@@ -1136,7 +1136,7 @@ attachment(s): …`).
   foreign-thinking notice; `internal/server` (the routes and that no answer, `host.json`, journal,
   log or outbox holds a key, a switch while running and while parked, an "after this turn" switch
   surviving a killed host, a limit stopping the chat or switching it and pushed once, Codex's device
-  code, Claude's sign-in with the pasted code, OpenCode's provider sign-in, a refused sign-in until the next
+  code, Claude's sign-in with the pasted code, OpenCode's sign-in in a Shell, a refused sign-in until the next
   one); `internal/web` (the foreign-thinking hint folded into the divider); `e2e/run.mjs`
   `accounts` (touch mode on a phone) and `chat-account` ("Switch now" on a phone) in the browser.
 - Accounts and the rest together (WP7 + WP9): Ultracode kept across a switch through a real host;
@@ -1245,10 +1245,11 @@ out `host.json`'s `env` and `secret_env` (`paths.Redacted`), takes `secrets.key`
   `account/login/start {type: chatgptDeviceCode}` → `{verificationUrl, userCode}` shown with a Copy,
   `account/login/completed` ends it; Cancel sends `account/login/cancel`. The identity is
   `account/read`.
-- OpenCode: `opencode serve` on the account's data home; `GET /provider/auth` lists the providers
-  and their OAuth methods (a key is an account of its own), `POST /provider/{p}/oauth/authorize
-  {method, inputs}` → the page and either `auto` (the provider calls back; the flow waits) or `code`
-  (the person pastes it: `POST …/signin/code`), then `/provider/{p}/oauth/callback`.
+- OpenCode: a Shell terminal session (dynamic folder) that runs OpenCode's own TUI on the account's
+  data home (`opencode.SignInTerminal`: the layout's `XDG_*` and `OPENCODE_DB`, the database
+  migrated first), then stays a shell in that environment; the answer is `{session}` and the page
+  goes there. Every provider OpenCode offers is signed in to there (`/connect`), and the account is
+  signed in once its `auth.json` names a provider. (A key is an account of its own.)
 - An API key: the form; `PATCH /api/accounts/{id} {key}` replaces it.
 
 **Routes.**

@@ -5,7 +5,7 @@ import (
 	"errors"
 )
 
-// startOpenCodeSignIn: the OpenCode adapter is not built for Windows.
-func startOpenCodeSignIn(context.Context, string, string, []string, string) (openCodeSignIn, error) {
-	return nil, errors.New("OpenCode does not run on Windows")
+// OpenCodeTerminal: the OpenCode adapter is not built for Windows.
+func OpenCodeTerminal(context.Context, string, string, []string, string) (string, map[string]string, error) {
+	return "", nil, errors.New("OpenCode does not run on Windows")
 }

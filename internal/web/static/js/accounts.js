@@ -232,9 +232,10 @@ function originWords(origin) {
 /* ----------------------------------------------------------------- signing in */
 
 // signIn runs an account's sign-in to its end: the page Claude Code's own
-// sign-in shows and the code it gives, Codex's device code, an OpenCode
-// provider's OAuth, or nothing for the scripted agent. It answers true when
-// the account is signed in, false otherwise.
+// sign-in shows and the code it gives, Codex's device code, OpenCode's own
+// TUI in a Shell terminal (the page goes there), or nothing for the
+// scripted agent. It answers true when the account is signed in (or the
+// terminal was opened), false otherwise.
 export async function signIn(account, opener) {
   let data;
   try {
@@ -242,6 +243,13 @@ export async function signIn(account, opener) {
   } catch (err) {
     toast(errorMessage(err), 'error');
     return false;
+  }
+  if (data.session) {
+    toast('A Shell opened where ' + harnesses.label('opencode') + ' signs ' + account.label + ' in: /connect, for each provider.');
+    // #open=: from Admin this is a new load of the session page, which starts
+    // on Home for a bare #<id> (session.js routeOf).
+    location.href = '/#open=' + encodeURIComponent(data.session.id);
+    return true;
   }
   const flow = data.signin || {};
   if (flow.state === 'done') {
@@ -252,9 +260,9 @@ export async function signIn(account, opener) {
   return flowDialog(account, flow, opener);
 }
 
-// flowDialog shows a sign-in under way and follows it to its end: the
-// providers to choose from (OpenCode), the page to open and the code to type
-// there, or the code the page shows to paste here.
+// flowDialog shows a sign-in under way and follows it to its end: the page
+// to open and the code to type there, or the code the page shows to paste
+// here.
 function flowDialog(account, first, opener) {
   const content = el('div', { class: 'so-signin' });
   const cancel = el('button', { class: 'ds-btn ds-btn--text', type: 'button', 'data-close': true, text: 'Cancel' });
@@ -269,20 +277,13 @@ function flowDialog(account, first, opener) {
   const path = '/api/accounts/' + encodeURIComponent(account.id) + '/signin';
   let flow = first;
   let timer = 0;
-  let choice = null;
   let ended = false;
 
   function draw() {
     next.hidden = true;
-    if (flow.state === 'choose') {
-      drawProviders();
-      return;
-    }
     const parts = [];
     if (flow.code) {
       parts.push(html`<p class="ds-meta">Open the page, and type this code there:</p><p class="so-signin__code" data-ds-key="code"><span class="so-signin__value" aria-label="${'The code ' + flow.code}">${flow.code}</span><button class="ds-btn ds-btn--quiet ds-btn--icon ds-btn--sm" type="button" data-action="copy-code" aria-label="Copy the code" data-tip="Copy the code">${raw(icon('copy', 18))}</button></p>`);
-    } else if (flow.instructions) {
-      parts.push(html`<p class="ds-meta" data-ds-key="instructions">${flow.instructions}</p>`);
     }
     if (flow.url) {
       parts.push(html`<p data-ds-key="url"><a class="ds-btn ds-btn--tonal" href="${flow.url}" target="_blank" rel="noopener">${raw(icon('external', 18))}<span>Open the sign-in page</span></a></p>`);
@@ -301,43 +302,6 @@ function flowDialog(account, first, opener) {
     morph(content, html`${parts}`);
   }
 
-  // drawProviders is OpenCode's providers, each with the ways a subscription
-  // signs in to it, and the questions the chosen one asks first.
-  function drawProviders() {
-    const options = [];
-    for (const p of flow.providers || []) {
-      for (const m of p.methods || []) options.push({ key: p.id + ':' + m.index, provider: p.id, method: m });
-    }
-    if (!options.length) {
-      morph(content, html`<div class="ds-alert" role="status">${raw(icon('info', 20))}<span class="ds-alert__text">OpenCode offers no provider to sign in to here. An API key is added as an account of its own.</span></div>`);
-      return;
-    }
-    if (!choice) choice = options[0];
-    const prompts = (choice.method.prompts || []);
-    morph(content, html`<fieldset class="ds-field"><legend class="ds-field__label">Provider</legend><div class="ds-radios so-signin__providers">${options.map((o) => html`<label class="ds-radio" data-ds-key="${o.key}"><input type="radio" name="signinProvider" value="${o.key}"><span><strong>${o.provider}</strong><small>${o.method.label}</small></span></label>`)}</div></fieldset>${prompts.map((q) => promptField(q))}`);
-    for (const input of content.querySelectorAll('input[name="signinProvider"]')) input.checked = input.value === choice.key;
-    next.hidden = false;
-    next.textContent = 'Continue';
-  }
-
-  function promptField(q) {
-    const id = 'signinPrompt-' + q.key;
-    if (q.type === 'select' && q.options && q.options.length) {
-      return html`<div class="ds-field" data-ds-key="${id}"><label class="ds-field__label" for="${id}">${q.message}</label><select class="ds-input" id="${id}" data-prompt="${q.key}">${q.options.map((o) => html`<option value="${o.value}">${o.label}</option>`)}</select></div>`;
-    }
-    return html`<div class="ds-field" data-ds-key="${id}"><label class="ds-field__label" for="${id}">${q.message}</label><input class="ds-input" id="${id}" type="text" data-prompt="${q.key}" placeholder="${q.placeholder || ''}" autocomplete="off" spellcheck="false" enterkeyhint="next"></div>`;
-  }
-
-  content.addEventListener('change', (event) => {
-    if (event.target.name !== 'signinProvider') return;
-    const [provider, index] = event.target.value.split(':');
-    for (const p of flow.providers || []) {
-      if (p.id !== provider) continue;
-      const method = (p.methods || []).find((m) => String(m.index) === index);
-      if (method) choice = { key: event.target.value, provider, method };
-    }
-    drawProviders();
-  });
   content.addEventListener('click', (event) => {
     const target = event.target.closest('[data-action="copy-code"]');
     if (!target) return;
@@ -373,16 +337,6 @@ function flowDialog(account, first, opener) {
     if (next.disabled) return;
     next.disabled = true;
     try {
-      if (flow.state === 'choose' && choice) {
-        const inputs = {};
-        for (const field of content.querySelectorAll('[data-prompt]')) inputs[field.dataset.prompt] = field.value;
-        const data = await api(path, { method: 'POST', body: { provider: choice.provider, method: choice.method.index, inputs }, attempts: 1, timeout: 60000 });
-        flow = data.signin || flow;
-        draw();
-        clearTimeout(timer);
-        timer = setTimeout(poll, POLL_MS);
-        return;
-      }
       if (flow.state === 'code') {
         const code = content.querySelector('#signinCode');
         const data = await api(path + '/code', { method: 'POST', body: { code: code ? code.value : '' }, attempts: 1, timeout: 60000 });

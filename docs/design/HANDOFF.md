@@ -202,7 +202,7 @@ numbers.
   (the journal, one event a line), `chats/<id>/host.json` (how it was launched; keys are sealed).
   `GET /api/chats/<id>?history=1` is the projection the page draws.
 - **Accounts**: Admin → Accounts. Claude Code signs in with `claude auth login` run by the server
-  (the card shows its page and takes the code), Codex with a device code, OpenCode through its provider, any of them with an API key.
+  (the card shows its page and takes the code), Codex with a device code, OpenCode in its own TUI in a Shell the card opens, any of them with an API key.
 - **Backup and restore**: Admin → Backup; README "Storage" for the restore on a new machine.
 - **Tests**: `make check` (gofmt, vet, `go mod tidy -diff`, `go test -race`, build);
   `node e2e/run.mjs` (the browser suite, about twenty minutes on four CPUs), `node e2e/chats.mjs`

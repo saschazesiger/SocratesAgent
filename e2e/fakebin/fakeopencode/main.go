@@ -332,7 +332,6 @@ func (s *srv) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		s.mu.Unlock()
 		writeJSON(w, 200, list)
-	case len(parts) >= 2 && parts[0] == "provider" && s.providerAuth(w, r, parts):
 	case r.Method == http.MethodPost && path == "session":
 		s.create(w, r)
 	case len(parts) >= 2 && parts[0] == "session":

@@ -47,7 +47,26 @@ func (s Shell) Plan(ctx context.Context, req PlanRequest) (LaunchPlan, error) {
 
 	env := baseEnv(req)
 
+	// A shell that signs an account in runs the agent's own program first,
+	// and is the person's shell after it, in the account's environment:
+	// what went wrong can be read, and the sign-in typed again.
+	if req.SignIn != nil && len(req.SignIn.Command) > 0 {
+		for k, v := range req.SignIn.Env {
+			env[k] = v
+		}
+		quoted := make([]string, len(req.SignIn.Command))
+		for i, word := range req.SignIn.Command {
+			quoted[i] = shellQuote(word)
+		}
+		argv = []string{bin, "-l", "-c", strings.Join(quoted, " ") + "; exec " + shellQuote(bin) + " -l"}
+	}
+
 	return LaunchPlan{Argv: argv, Env: env, Cwd: req.Cwd}, nil
+}
+
+// shellQuote is word as one single-quoted word of a POSIX shell.
+func shellQuote(word string) string {
+	return "'" + strings.ReplaceAll(word, "'", `'\''`) + "'"
 }
 
 // DiscoverModels answers that there is no model step for a shell.
