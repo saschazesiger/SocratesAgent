@@ -7733,14 +7733,26 @@ async function homelive() {
     ok(running.ok && Date.now() - sent < 4000, 'a chat that starts working is counted as running, and started, within seconds',
       ((Date.now() - sent) / 1000).toFixed(1) + ' s after the message, ' + JSON.stringify(running.seen.counts));
     // In the sidebar a chat not started yet is on its folder's Not started
-    // shelf, which is open; one that has started has left it.
-    const shelves = await s.page.evaluate((ids) => Object.fromEntries(ids.map((id) => {
-      const row = document.querySelector('#sessionList .so-row[data-id="' + id + '"]');
-      const shelf = row && row.closest('.so-folder--shelf');
-      return [id, !row ? 'none' : shelf ? shelf.dataset.shelf + (shelf.hasAttribute('data-open') ? ' open' : ' shut') : 'rows'];
-    })), [later, asking, busy]);
-    ok(shelves[later] === 'unstarted open' && shelves[asking] === 'unstarted open' && shelves[busy] === 'rows',
-      'chats not started are on an open Not started shelf in the sidebar, and one that started is a row',
+    // shelf, which is open and above the rows; one that has started has left
+    // it.
+    // The list is live data: a reorder under the pointer or the focus waits
+    // up to two seconds (DS flip, live), so this is waited for.
+    const readShelves = () => s.page.evaluate((ids) => {
+      const out = Object.fromEntries(ids.map((id) => {
+        const row = document.querySelector('#sessionList .so-row[data-id="' + id + '"]');
+        const shelf = row && row.closest('.so-folder--shelf');
+        return [id, !row ? 'none' : shelf ? shelf.dataset.shelf + (shelf.hasAttribute('data-open') ? ' open' : ' shut') : 'rows'];
+      }));
+      const shelf = document.querySelector('#sessionList .so-folder--shelf[data-shelf="unstarted"]');
+      const first = shelf && shelf.parentElement.firstElementChild;
+      out.first = first === shelf ? 'shelf' : first ? first.className : 'none';
+      return out;
+    }, [later, asking, busy]);
+    let shelves = await readShelves();
+    for (let i = 0; i < 25 && shelves[busy] !== 'rows'; i++) { await wait(200); shelves = await readShelves(); }
+    ok(shelves[later] === 'unstarted open' && shelves[asking] === 'unstarted open' && shelves[busy] === 'rows'
+      && shelves.first === 'shelf',
+      'chats not started are on an open Not started shelf at the top of their folder, and one that started is a row below it',
       JSON.stringify(shelves));
 
     sent = Date.now();
@@ -10678,6 +10690,8 @@ const subLine = (page) => page.evaluate(() => {
     })),
     jobs: jobs ? jobs.querySelector('.so-chat__jobs-count').textContent.trim() : '', running: !!jobs && jobs.hasAttribute('data-running'),
     jobsInSub: !!sub.querySelector('.so-chat__jobs'), jobsInDock: !!jobs && dock.contains(jobs),
+    jobsWidth: jobs ? Math.round(jobs.getBoundingClientRect().width) : 0,
+    composerWidth: Math.round((document.querySelector('#chat .so-composer__input') || dock).getBoundingClientRect().width),
     above: r.height > 0 && r.bottom <= scroll.top + 1,
   };
 });
@@ -10703,6 +10717,8 @@ async function chatsub() {
     sub = await subLine(page);
     ok(counted && sub.jobsInDock && !sub.jobsInSub, 'a background task the turn left running is counted at the foot of the chat, turning, and not under the bar',
       JSON.stringify(sub && { jobs: sub.jobs, running: sub.running, dock: sub.jobsInDock, sub: sub.jobsInSub }));
+    ok(sub && sub.jobsWidth > 0 && Math.abs(sub.jobsWidth - sub.composerWidth) <= 2,
+      'and the line of the jobs is as wide as the field under it', JSON.stringify(sub && { jobs: sub.jobsWidth, field: sub.composerWidth }));
     await page.click('#chat .so-chat__jobs');
     const dialog = await page.waitForSelector('dialog[open] .ds-dialog__title:text-is("Background jobs")', { timeout: 5000 })
       .then(() => page.$eval('dialog[open]', (n) => ({
@@ -11556,8 +11572,8 @@ async function chatphone() {
     ok(slot.stop && !slot.send && bar.rows === 1 && bar.stop.join() === '48,48' && bar.send.join() === '48,48' && bar.stopName === 'Stop the agent',
       'a turn running: Stop is an icon in the action slot, Send joins it once something is written, and the bar stays one row',
       JSON.stringify({ slot, ...bar }));
-    ok(/waits until the agent is done/.test(bar.hint) && /^Fake small/.test(bar.model),
-      'and the phone says that the message waits for the turn, and names the model', JSON.stringify({ hint: bar.hint, model: bar.model }));
+    ok(bar.hint === '' && /^Fake small/.test(bar.model),
+      'and the phone adds no line over the buttons, and names the model', JSON.stringify({ hint: bar.hint, model: bar.model }));
     await page.fill('#chat .so-composer__input', '');
     await page.click('#chat .so-composer__model');
     const usageItem = await page.waitForSelector('.so-model-menu:not([hidden]) [data-usage]', { timeout: 5000 })

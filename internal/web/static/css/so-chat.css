@@ -268,8 +268,8 @@
 
 /* ── Background jobs ─────────────────────────────────────────────────── */
 
-/* At the foot of the chat, over the composer: how many run and what the
-   newest runs, one tap from the dialog that lists them. */
+/* At the foot of the chat, over the composer and as wide as it: how many
+   run and what the newest runs, one tap from the dialog that lists them. */
 .so-chat__bg {
   display: flex;
   min-width: 0;
@@ -280,9 +280,16 @@
 }
 
 .so-chat__jobs {
+  flex: 1 1 auto;
   min-width: 0;
   max-width: 100%;
+  justify-content: flex-start;
   gap: var(--ds-space-2);
+}
+
+/* The chevron at the far end, wherever the words stop. */
+.so-chat__jobs > svg:last-child {
+  margin-inline-start: auto;
 }
 
 .so-chat__jobs-count {
@@ -291,6 +298,7 @@
 }
 
 .so-chat__jobs-what {
+  flex: 0 1 auto;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;

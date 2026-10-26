@@ -75,3 +75,24 @@ func TestABackgroundSubagentKeepsTheAgentBusy(t *testing.T) {
 		t.Fatalf("with nothing: %s", s.Activity)
 	}
 }
+
+// A host that journals the count of its tasks without how many are agents
+// (one started before the count was journaled) is read from the parts: a
+// workflow still running is the agent at work.
+func TestARunningWorkflowPartKeepsTheAgentBusy(t *testing.T) {
+	p := Fold([]Event{
+		{Seq: 1, Type: TypeTurnStarted, TurnID: "t1", MessageID: "a1"},
+		{Seq: 2, Type: TypePart, PartID: "w1", MessageID: "a1", Kind: PartTool, State: PartRunning,
+			Content: []byte(`{"tool":"Workflow","workflow":{"status":"running"}}`)},
+		{Seq: 3, Type: TypeTasks, Count: 1},
+		{Seq: 4, Type: TypeTurnEnded, TurnID: "t1", Outcome: OutcomeCompleted},
+	})
+	if s := p.Summary(); s.Activity != ActivityBusy {
+		t.Fatalf("with a workflow part running: %s", s.Activity)
+	}
+	p.Apply(Event{Seq: 5, Type: TypePart, PartID: "w1", MessageID: "a1", Kind: PartTool, State: PartDone,
+		Content: []byte(`{"tool":"Workflow","workflow":{"status":"completed"}}`)})
+	if s := p.Summary(); s.Activity != ActivityTasks {
+		t.Fatalf("with the workflow done and a task left: %s", s.Activity)
+	}
+}

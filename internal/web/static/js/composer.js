@@ -738,11 +738,10 @@ export function mountComposer(host, ctx) {
     if (modelBtn.dataset.tip !== 'Model: ' + words) modelBtn.dataset.tip = 'Model: ' + words;
     modelBtn.hidden = !models().length;
     // What is not plain from the buttons, in a line of its own over them:
-    // that a message written during a turn waits for it. The connection is
-    // the dock's to say (chatview.js).
+    // that the draft was changed on another device. The connection is the
+    // dock's to say (chatview.js).
     let said = '';
     if (draft.conflict()) said = 'Changed on another device';
-    else if (busy && !empty) said = 'Sent now, it waits until the agent is done';
     if (hint.textContent !== said) {
       hint.textContent = said;
       ctx.changed();

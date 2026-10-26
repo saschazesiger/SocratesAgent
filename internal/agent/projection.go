@@ -531,7 +531,7 @@ func (p *Projection) Summary() Summary {
 	switch {
 	case waiting:
 		s.Activity = ActivityWaiting
-	case s.TurnRunning, s.Agents > 0:
+	case s.TurnRunning, s.Agents > 0, s.Tasks > 0 && p.agentsAtWork(s.Tasks) > 0:
 		// A subagent or workflow left running is the agent still at work,
 		// turn or no turn; a shell or a monitor it left is not (tasks).
 		s.Activity = ActivityBusy
@@ -541,4 +541,42 @@ func (p *Projection) Summary() Summary {
 		s.Activity = ActivityIdle
 	}
 	return s
+}
+
+// agentsLookBack is how many messages from the end agentsAtWork reads: a
+// subagent or workflow left running belongs to one of the last turns.
+const agentsLookBack = 40
+
+// agentsAtWork is how many subagents and workflows still run, as the parts
+// say, up to max: the count of a host that journals tasks without it (one
+// from before the count was journaled, still running after an update).
+func (p *Projection) agentsAtWork(max int) int {
+	n := 0
+	for i := len(p.Messages) - 1; i >= 0 && i >= len(p.Messages)-agentsLookBack && n < max; i-- {
+		for _, part := range p.Messages[i].Parts {
+			if part.Kind == PartTool && part.State == PartRunning && groupRuns(part.Content) {
+				n++
+			}
+		}
+	}
+	return min(n, max)
+}
+
+// groupRuns is whether a tool part's content is a subagent or workflow that
+// says it still runs: Claude Code's agent or workflow, Codex's subagent.
+func groupRuns(content json.RawMessage) bool {
+	if len(content) == 0 {
+		return false
+	}
+	var c struct {
+		Tool     string                   `json:"tool"`
+		Status   string                   `json:"status"`
+		Agent    *struct{ Status string } `json:"agent"`
+		Workflow *struct{ Status string } `json:"workflow"`
+	}
+	if json.Unmarshal(content, &c) != nil {
+		return false
+	}
+	return (c.Agent != nil && c.Agent.Status == "running") || (c.Workflow != nil && c.Workflow.Status == "running") ||
+		(c.Tool == "subagent" && c.Status == "running")
 }

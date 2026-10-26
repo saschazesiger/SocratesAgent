@@ -143,7 +143,8 @@ function nameFolders(folders) {
  * at the bottom of the same folder: a chat nobody has started yet, a service
  * left running on purpose, and work that is finished. They are still that
  * project's, so they stay in its folder - out of the way, not somewhere else.
- * The order here is the order they are drawn in.
+ * Not started is drawn above the folder's rows, the other two below them, in
+ * this order.
  */
 export const SHELVES = ['unstarted', 'background', 'done'];
 

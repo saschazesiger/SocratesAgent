@@ -942,16 +942,21 @@ function placeOf(session) {
   return notStarted(session, activityOf(session)) ? 'unstarted' : '';
 }
 
-// folderHtml is one project: its rows, then the shelves of chats not started
-// yet, background and done sessions, inside the same folder so that shutting
-// it puts them away with everything else.
+// folderHtml is one project: the shelf of chats not started yet at its top,
+// where what is about to be begun is found first, then its rows, then the
+// shelves of background and done sessions - all inside the same folder, so
+// that shutting it puts them away with everything else.
 function folderHtml(folder) {
-  const shelf = (status, label, filed) => (filed.length
-    ? groupHtml({ key: shelfKey(folder.key, status), status, label, path: '', sessions: filed }, filed.map(rowHtml))
-    : '');
+  const shelf = (status) => {
+    const filed = folder.shelves[status];
+    return filed.length
+      ? groupHtml({ key: shelfKey(folder.key, status), status, label: SHELF_WORDS[status], path: '', sessions: filed }, filed.map(rowHtml))
+      : '';
+  };
   return groupHtml(folder, [
+    shelf('unstarted'),
     folder.sessions.map(rowHtml),
-    SHELVES.map((status) => shelf(status, SHELF_WORDS[status], folder.shelves[status])),
+    SHELVES.filter((status) => status !== 'unstarted').map(shelf),
   ]);
 }
 
