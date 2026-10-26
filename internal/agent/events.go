@@ -274,6 +274,10 @@ type Event struct {
 	PID            int    `json:"pid,omitempty"`
 	Version        string `json:"version,omitempty"`
 	Count          int    `json:"count,omitempty"`
+	// Agents is how many of a tasks event's Count are subagents or
+	// workflows: work of the agent's own, rather than a shell or a monitor
+	// it left running.
+	Agents int `json:"agents,omitempty"`
 
 	Op   string `json:"op,omitempty"`
 	Args string `json:"args,omitempty"`

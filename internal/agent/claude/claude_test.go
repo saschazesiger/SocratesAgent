@@ -447,6 +447,12 @@ func TestAWorkflowShowsPhasesAgentsAndTheirCalls(t *testing.T) {
 	if a.Background() != 1 {
 		t.Fatalf("background = %d while the workflow runs", a.Background())
 	}
+	// A workflow is the agent still at work, though its turn is over.
+	r.view(func(p *agent.Projection) {
+		if s := p.Summary(); p.Agents != 1 || s.Activity != agent.ActivityBusy {
+			t.Fatalf("while the workflow runs: agents %d, activity %s", p.Agents, s.Activity)
+		}
+	})
 	// The workflow's end starts a turn of the CLI's own.
 	evs := r.turnsEnded(t, 2)
 	var second agent.Event
@@ -513,6 +519,12 @@ func TestTheBackgroundTaskReportsBackWithATurnOfItsOwn(t *testing.T) {
 	if a.Background() != 1 {
 		t.Fatalf("background = %d", a.Background())
 	}
+	// A shell is background work, not the agent at work.
+	r.view(func(p *agent.Projection) {
+		if s := p.Summary(); p.Agents != 0 || s.Activity != agent.ActivityTasks {
+			t.Fatalf("while the shell runs: agents %d, activity %s", p.Agents, s.Activity)
+		}
+	})
 	r.turnsEnded(t, 2)
 	r.waitFor(t, "no task left", func(evs []agent.Event) bool { return a.Background() == 0 })
 	r.view(func(p *agent.Projection) {

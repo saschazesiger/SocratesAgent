@@ -29,6 +29,8 @@ type Projection struct {
 	LastTurn *Turn `json:"last_turn,omitempty"`
 	// Tasks is how many background tasks the agent reported running.
 	Tasks int `json:"tasks,omitempty"`
+	// Agents is how many of those are subagents or workflows.
+	Agents int `json:"agents,omitempty"`
 	// Agent is the content of the newest agent.info event.
 	Agent json.RawMessage `json:"agent,omitempty"`
 
@@ -239,7 +241,7 @@ func (p *Projection) Apply(ev Event) {
 	case TypeConversation:
 		p.ConversationID = ev.ConversationID
 	case TypeTasks:
-		p.Tasks = ev.Count
+		p.Tasks, p.Agents = ev.Count, ev.Agents
 	case TypeAgentInfo:
 		p.Agent = ev.Content
 	case TypeCommand:
@@ -485,6 +487,7 @@ type Summary struct {
 	TurnRunning    bool   `json:"turn_running"`
 	OpenAsks       int    `json:"open_asks"`
 	Tasks          int    `json:"tasks,omitempty"`
+	Agents         int    `json:"agents,omitempty"`
 	Process        string `json:"process,omitempty"`
 	ConversationID string `json:"conversation_id,omitempty"`
 	LastOutcome    string `json:"last_outcome,omitempty"`
@@ -503,7 +506,7 @@ type Summary struct {
 func (p *Projection) Summary() Summary {
 	s := Summary{
 		LastSeq: p.LastSeq, LastAt: p.LastAt, TurnRunning: p.Turn != nil, OpenAsks: len(p.OpenAsks()),
-		Tasks: p.Tasks, Process: p.Process, ConversationID: p.ConversationID, Model: p.Model, Effort: p.Effort,
+		Tasks: p.Tasks, Agents: p.Agents, Process: p.Process, ConversationID: p.ConversationID, Model: p.Model, Effort: p.Effort,
 		Account: p.Account,
 	}
 	if p.LastTurn != nil {
@@ -528,7 +531,9 @@ func (p *Projection) Summary() Summary {
 	switch {
 	case waiting:
 		s.Activity = ActivityWaiting
-	case s.TurnRunning:
+	case s.TurnRunning, s.Agents > 0:
+		// A subagent or workflow left running is the agent still at work,
+		// turn or no turn; a shell or a monitor it left is not (tasks).
 		s.Activity = ActivityBusy
 	case s.Tasks > 0:
 		s.Activity = ActivityTasks

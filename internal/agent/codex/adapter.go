@@ -952,7 +952,7 @@ func (a *adapter) watchTerminals(thread string) {
 		}
 		if n != a.terminals {
 			a.terminals = n
-			a.out.Emit(agent.Event{Type: agent.TypeTasks, Count: a.running + n})
+			a.out.Emit(agent.Event{Type: agent.TypeTasks, Count: a.running + n, Agents: a.running})
 		}
 		if n == 0 {
 			a.watching = false

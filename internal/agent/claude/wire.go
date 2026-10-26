@@ -86,7 +86,8 @@ type frame struct {
 	TaskUsage        *taskUsage        `json:"usage"`
 	WorkflowProgress []json.RawMessage `json:"workflow_progress"`
 	Tasks            []struct {
-		TaskID string `json:"task_id"`
+		TaskID   string `json:"task_id"`
+		TaskType string `json:"task_type"`
 	} `json:"tasks"`
 
 	// rate_limit_event

@@ -54,3 +54,24 @@ func TestUnwaitedIsWhatNoCallWaitsOn(t *testing.T) {
 		t.Fatalf("unwaited %v", ids)
 	}
 }
+
+// A subagent or workflow left running after the turn keeps the agent at
+// work; a shell or a monitor left running is background work, not work.
+func TestABackgroundSubagentKeepsTheAgentBusy(t *testing.T) {
+	p := Fold([]Event{
+		{Seq: 1, Type: TypeTurnStarted, TurnID: "t1"},
+		{Seq: 2, Type: TypeTasks, Count: 2, Agents: 1},
+		{Seq: 3, Type: TypeTurnEnded, TurnID: "t1", Outcome: OutcomeCompleted},
+	})
+	if s := p.Summary(); s.Activity != ActivityBusy || s.TurnRunning {
+		t.Fatalf("with a subagent: %s, turn running %v", s.Activity, s.TurnRunning)
+	}
+	p.Apply(Event{Seq: 4, Type: TypeTasks, Count: 1})
+	if s := p.Summary(); s.Activity != ActivityTasks {
+		t.Fatalf("with a shell: %s", s.Activity)
+	}
+	p.Apply(Event{Seq: 5, Type: TypeTasks})
+	if s := p.Summary(); s.Activity != ActivityIdle {
+		t.Fatalf("with nothing: %s", s.Activity)
+	}
+}

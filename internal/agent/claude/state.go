@@ -44,6 +44,9 @@ type state struct {
 	// tasks maps a background task to the part of the tool that started it.
 	tasks      map[string]string
 	background int
+	// agents is how many of the background tasks are subagents or
+	// workflows.
+	agents int
 
 	todos      []todoItem
 	taskInputs map[string]json.RawMessage
@@ -408,9 +411,15 @@ func (s *state) system(f *frame) {
 		}
 		s.taskStatus(f.TaskID, status, f.Summary, f.TaskUsage)
 	case "background_tasks_changed":
-		if n := len(f.Tasks); n != s.background {
-			s.background = n
-			s.emit(agent.Event{Type: agent.TypeTasks, Count: n})
+		agents := 0
+		for _, t := range f.Tasks {
+			if strings.Contains(t.TaskType, "agent") || strings.Contains(t.TaskType, "workflow") {
+				agents++
+			}
+		}
+		if n := len(f.Tasks); n != s.background || agents != s.agents {
+			s.background, s.agents = n, agents
+			s.emit(agent.Event{Type: agent.TypeTasks, Count: n, Agents: agents})
 		}
 	}
 }

@@ -601,6 +601,10 @@ the background terminals a turn left running, which codex announces neither star
 after every turn the adapter counts them (`thread/backgroundTerminals/list`) every 2 s while there
 are any, and journals the count each time it changes (WP11; the row's hourglass and the unread mark
 wait for them, as for Claude Code's background tasks). `Background()` counts both too.
+`tasks{agents}` says how many of the count are subagents (Claude Code: the `local_agent`,
+`remote_agent` and `local_workflow` entries of `background_tasks_changed`): while there are any the
+chat is `busy` - the agent still at work, its ring turning - and only a shell or a monitor left
+alone makes it `tasks`, the hourglass.
 
 **Server requests** are answered on goroutines of their own, so a question never holds up the
 stream: command, file-change and legacy approvals → accept; `item/permissions/requestApproval` →

@@ -3982,6 +3982,29 @@ async function tasksFor(harness) {
     const done = await awaitRow(s.page, id, (r) => !r.tasks && !r.busy && r.unread, 30000);
     ok(done.ok, 'when the work ends the hourglass goes and the name goes bold', took(done));
     ok(!done.seen || !done.seen.glass, 'no hourglass is left behind', JSON.stringify(done.seen && done.seen.glass));
+
+    // A workflow (or a subagent) left running is the agent still at work,
+    // not a shell it left behind: the row keeps turning, with no hourglass,
+    // all the while it runs after the turn that started it has ended.
+    if (harness === 'claude') {
+      await clickChat(s.page, id);
+      await say(s.page, '/workflow 8');
+      await clickRow(s.page, other);
+      const samples = [];
+      for (let i = 0; i < 15; i++) {
+        await wait(300);
+        samples.push(await rowActivity(s.page, id));
+      }
+      const later = samples.slice(5);
+      ok(later.every((r) => r && r.busy && !r.tasks && !r.glass),
+        'while a workflow runs after its turn, the row spins and shows no hourglass',
+        later.map((r) => (r ? (r.busy ? 'busy' : r.tasks ? 'tasks' : 'idle') : 'none')).join(','));
+      const server = await sessionRow(s, id);
+      ok(server.activity && server.activity.state === 'busy',
+        'the server says it is working', JSON.stringify(server.activity));
+      const end = await awaitRow(s.page, id, (r) => !r.busy && !r.tasks && r.unread, 40000);
+      ok(end.ok, 'when the workflow has reported back the ring stops and the name goes bold', took(end));
+    }
     ok(unexpected(s.errors).length === 0, 'no console errors', unexpected(s.errors).join(' | ') || '0');
   } finally { await s.stop(); }
 }
@@ -5524,6 +5547,12 @@ async function folders() {
       && reloaded[0].rows.length === 2,
       'a reload finds the folder shut, with its sessions still in it',
       reloaded[0].name + ': ' + reloaded[0].open + ', ' + reloaded[0].rows.length + ' rows');
+    // The Done shelf opened above is not: done is shut at every start.
+    const doneAgain = await shelfState();
+    ok(doneAgain.open === 'false' && !doneAgain.shown, 'a reload finds the Done shelf shut again', JSON.stringify(doneAgain));
+    await wait(1000);
+    const dimmed = await s.page.$eval(doneShelf, (head) => getComputedStyle(head.closest('.so-folder__bar')).opacity);
+    ok(Number(dimmed) >= 0.3 && Number(dimmed) <= 0.7, 'and the Done shelf steps back, half seen', dimmed);
 
     // Opening the session that is inside it is what opens the folder: a row
     // nobody can see is a session nobody can get back to.
@@ -7703,6 +7732,16 @@ async function homelive() {
     const running = await awaitHome(s.page, (h) => h.counts.running === 1 && h.counts.unstarted === 2, 8000);
     ok(running.ok && Date.now() - sent < 4000, 'a chat that starts working is counted as running, and started, within seconds',
       ((Date.now() - sent) / 1000).toFixed(1) + ' s after the message, ' + JSON.stringify(running.seen.counts));
+    // In the sidebar a chat not started yet is on its folder's Not started
+    // shelf, which is open; one that has started has left it.
+    const shelves = await s.page.evaluate((ids) => Object.fromEntries(ids.map((id) => {
+      const row = document.querySelector('#sessionList .so-row[data-id="' + id + '"]');
+      const shelf = row && row.closest('.so-folder--shelf');
+      return [id, !row ? 'none' : shelf ? shelf.dataset.shelf + (shelf.hasAttribute('data-open') ? ' open' : ' shut') : 'rows'];
+    })), [later, asking, busy]);
+    ok(shelves[later] === 'unstarted open' && shelves[asking] === 'unstarted open' && shelves[busy] === 'rows',
+      'chats not started are on an open Not started shelf in the sidebar, and one that started is a row',
+      JSON.stringify(shelves));
 
     sent = Date.now();
     await tellChat(s, asking, '/askuser ' + JSON.stringify(DB_ASK));

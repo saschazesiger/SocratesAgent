@@ -139,13 +139,29 @@ function nameFolders(folders) {
 }
 
 /**
- * SHELVES are the statuses that take a session out of its folder's list and
- * onto a shelf at the bottom of the same folder: a service left running on
- * purpose, and work that is finished. They are still that project's, so they
- * stay in its folder - out of the way, not somewhere else. The order here is
- * the order they are drawn in.
+ * SHELVES are what takes a session out of its folder's list and onto a shelf
+ * at the bottom of the same folder: a chat nobody has started yet, a service
+ * left running on purpose, and work that is finished. They are still that
+ * project's, so they stay in its folder - out of the way, not somewhere else.
+ * The order here is the order they are drawn in.
  */
-export const SHELVES = ['background', 'done'];
+export const SHELVES = ['unstarted', 'background', 'done'];
+
+/**
+ * notStarted says whether a session is a chat nobody has sent anything yet:
+ * a draft, and perhaps a time it starts at by itself. The server says so
+ * (fresh); a turn that is already under way (act, its activity) says
+ * otherwise sooner than the list does.
+ */
+export function notStarted(session, act) {
+  if (!session || !session.fresh) return false;
+  return !act || !(act.state === 'busy' || act.state === 'waiting' || act.state === 'tasks' || act.unread);
+}
+
+// shelfByStatus is where a session goes by its status alone.
+function shelfByStatus(session) {
+  return session.status === 'background' || session.status === 'done' ? session.status : '';
+}
 
 /**
  * IDE is the harness a folder has one of. VS Code is not started from the
@@ -186,8 +202,12 @@ export function ideOf(sessions, key) {
  *
  * Ties keep the order the server gave, because Array.sort is stable and the
  * server lists the sessions newest first.
+ *
+ * shelfOf names the shelf a session is on, or '' for its folder's list; by
+ * default that is its status. A chat not started yet is work about to be
+ * done, so it orders its folder as a row does.
  */
-export function foldersOf(sessions) {
+export function foldersOf(sessions, shelfOf = shelfByStatus) {
   const byKey = new Map();
   for (const session of sessions || []) {
     if (!session) continue;
@@ -203,21 +223,22 @@ export function foldersOf(sessions) {
     folder.shelves = Object.fromEntries(SHELVES.map((status) => [status, []]));
     for (const session of folder.all) {
       if (session === folder.ide) continue;
-      if (SHELVES.includes(session.status)) folder.shelves[session.status].push(session);
+      const shelf = shelfOf(session);
+      if (SHELVES.includes(shelf)) folder.shelves[shelf].push(session);
       else folder.sessions.push(session);
     }
     delete folder.all;
     folder.sessions.sort((a, b) => momentOf(b) - momentOf(a));
-    for (const status of SHELVES) {
+    folder.shelves.unstarted.sort((a, b) => momentOf(b) - momentOf(a));
+    for (const status of ['background', 'done']) {
       folder.shelves[status].sort((a, b) => (Number(b.status_at) || 0) - (Number(a.status_at) || 0));
     }
-    const rest = [folder.ide, ...SHELVES.flatMap((status) => folder.shelves[status])];
-    folder.at = folder.sessions.length
-      ? Math.max(...folder.sessions.map(momentOf))
-      : Math.max(0, ...rest.map(momentOf));
+    const work = [...folder.sessions, ...folder.shelves.unstarted];
+    const rest = [folder.ide, folder.shelves.background, folder.shelves.done].flat();
+    folder.at = work.length ? Math.max(...work.map(momentOf)) : Math.max(0, ...rest.map(momentOf));
   }
   nameFolders(folders);
-  const working = (folder) => folder.sessions.length > 0;
+  const working = (folder) => folder.sessions.length > 0 || folder.shelves.unstarted.length > 0;
   folders.sort((a, b) => {
     if ((a.key === MORE_KEY) !== (b.key === MORE_KEY)) return a.key === MORE_KEY ? 1 : -1;
     if (working(a) !== working(b)) return working(a) ? -1 : 1;

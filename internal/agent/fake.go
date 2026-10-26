@@ -54,6 +54,7 @@ func EnableFake() {
 //	/subagent        a subagent tool part with parts nested inside it
 //	/sleep S         a turn that works for S seconds
 //	/bg S            a turn that leaves a background task running for S seconds
+//	/bgagent S       the same with a background subagent
 //	/limit           the account's limit stops the turn
 //	/refused         the provider refuses the account's sign-in (an error of code auth)
 //	/account         which account the CLI runs on, and whether it has a key
@@ -75,6 +76,7 @@ type fakeAdapter struct {
 	cancel  context.CancelFunc
 	waits   Waits
 	bg      int
+	bgAgent int
 	child   *exec.Cmd
 	ending  bool
 	wake    chan struct{}
@@ -480,8 +482,12 @@ func (f *fakeAdapter) turn(ctx context.Context, msg Outgoing, n int) {
 		t.say("slept")
 	case "/bg":
 		seconds := fakeFloat(fields, 0, 1)
-		f.background(time.Duration(seconds * float64(time.Second)))
+		f.background(time.Duration(seconds*float64(time.Second)), false)
 		t.say("started a background task")
+	case "/bgagent":
+		seconds := fakeFloat(fields, 0, 1)
+		f.background(time.Duration(seconds*float64(time.Second)), true)
+		t.say("started a background subagent")
 	case "/limit":
 		f.out.Emit(
 			Event{Type: TypeRateLimit, Window: "five_hour", Used: 1, ResetsAt: time.Now().Add(2 * time.Hour).Unix()},
@@ -577,12 +583,17 @@ func (f *fakeAdapter) askID(ctx context.Context, t *fakeTurn, id string, payload
 	return answer, err == nil
 }
 
-func (f *fakeAdapter) background(d time.Duration) {
+func (f *fakeAdapter) background(d time.Duration, subagent bool) {
+	one := 0
+	if subagent {
+		one = 1
+	}
 	f.mu.Lock()
 	f.bg++
-	count := f.bg
+	f.bgAgent += one
+	count, agents := f.bg, f.bgAgent
 	f.mu.Unlock()
-	f.out.Emit(Event{Type: TypeTasks, Count: count})
+	f.out.Emit(Event{Type: TypeTasks, Count: count, Agents: agents})
 	go func() {
 		select {
 		case <-time.After(d):
@@ -591,9 +602,10 @@ func (f *fakeAdapter) background(d time.Duration) {
 		}
 		f.mu.Lock()
 		f.bg--
-		count := f.bg
+		f.bgAgent -= one
+		count, agents := f.bg, f.bgAgent
 		f.mu.Unlock()
-		f.out.Emit(Event{Type: TypeTasks, Count: count})
+		f.out.Emit(Event{Type: TypeTasks, Count: count, Agents: agents})
 	}()
 }
 

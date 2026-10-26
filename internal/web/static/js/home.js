@@ -21,7 +21,7 @@ import { setClass } from './api.js';
 import { M, html, raw, icon, morph, flipMorph } from './ui.js';
 import { agentMarkHtml } from './logos.js';
 import { isTool } from './harnesses.js';
-import { foldersOf, folderKeyOf, momentOf } from './folders.js';
+import { foldersOf, folderKeyOf, momentOf, notStarted as unstarted } from './folders.js';
 import {
   OUTCOME_WORDS, OUTCOME_ICON, CHECKING_WORDS, outcomeMark, outcomeLine, outcomeIconHtml,
 } from './outcome.js';
@@ -90,16 +90,10 @@ function waitsOnYou(ctx, session) {
 // is the oldest first and everything else the most recent first.
 const URGENCY = { questions: 0, needs: 1, running: 2, ready: 3, unstarted: 4, stopped: 5, done: 6 };
 
-/**
- * notStarted says whether a session is a chat nobody has sent anything yet:
- * a draft, and perhaps a time it starts at by itself. The server says so
- * (fresh); a turn that is already under way says otherwise sooner than the
- * list does.
- */
+// notStarted says whether a session is a chat nobody has sent anything yet
+// (folders.js).
 function notStarted(ctx, session) {
-  if (!session.fresh) return false;
-  const act = ctx.activityOf(session);
-  return !act || !(act.state === 'busy' || act.state === 'waiting' || act.state === 'tasks' || act.unread);
+  return unstarted(session, ctx.activityOf(session));
 }
 
 /**

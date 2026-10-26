@@ -229,8 +229,8 @@
   }
 }
 
-/* A session list is longer than a list of destinations: its rows are a
-   step denser than a drawer item, and a finger's size in touch mode. While
+/* A session list is longer than a list of destinations: its rows are
+   denser than a drawer item, and a finger's size in touch mode. While
    the snackbars stand above the foot of the open drawer, the list keeps
    their height at its end (session.js placeToasts), so its last rows scroll
    clear of them. */
@@ -238,7 +238,7 @@
   --ds-drawer-item-height: var(--so-row-height);
   display: grid;
   grid-template-columns: minmax(0, 1fr);
-  margin-top: var(--ds-space-2);
+  margin-top: var(--ds-space-1);
   padding-bottom: var(--so-drawer-reserve, 0px);
 }
 
@@ -258,7 +258,7 @@
 }
 
 .so-folder + .so-folder {
-  margin-top: var(--ds-space-2);
+  margin-top: var(--ds-space-1);
 }
 
 .so-folder__bar {
@@ -383,9 +383,6 @@
 }
 
 /* A shelf is a folder one level down: a quieter, shorter head, set in. */
-.so-folder--shelf {
-  margin-top: var(--ds-space-1);
-}
 
 .so-folder--shelf .so-folder__head {
   min-height: var(--so-shelf-head-height);
@@ -452,7 +449,7 @@
    above and below it, so two such rows do not read as one block. */
 @media (max-width: 900px) {
   .so-row__open {
-    padding-block: var(--ds-space-2);
+    padding-block: var(--ds-space-1);
   }
 
   .so-row__label {
@@ -497,7 +494,22 @@
 .so-row__status[data-status="background"] svg { color: var(--ds-text-2); }
 .so-row__status[data-status="done"] svg { color: var(--ds-success); }
 
-/* Done is finished: the mark and the name step back. */
+/* Done is finished: the shelf, a folder with nothing but done in it and
+   every done row but the open one step back, and come forward under the
+   pointer or the focus. The mark and the name step back further. */
+.so-folder--shelf[data-shelf="done"] > .so-folder__bar,
+.so-folder[data-done] > .so-folder__bar,
+.so-row[data-status="done"]:not(:has(> [aria-current])) {
+  opacity: var(--so-done-opacity);
+  transition: opacity var(--ds-dur-fast) var(--ds-ease-in-out);
+}
+
+.so-folder--shelf[data-shelf="done"] > .so-folder__bar:is(:hover, :focus-within),
+.so-folder[data-done] > .so-folder__bar:is(:hover, :focus-within),
+.so-row[data-status="done"]:is(:hover, :focus-within) {
+  opacity: 1;
+}
+
 .so-row[data-status="done"] .so-agent {
   opacity: var(--ds-state-disabled);
   filter: grayscale(1);

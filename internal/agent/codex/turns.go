@@ -595,7 +595,7 @@ func (a *adapter) agentBusy(ag *subagent, busy bool) {
 	}
 	a.emitAgent(ag)
 	if changed {
-		a.out.Emit(agent.Event{Type: agent.TypeTasks, Count: a.running + a.terminals})
+		a.out.Emit(agent.Event{Type: agent.TypeTasks, Count: a.running + a.terminals, Agents: a.running})
 	}
 }
 

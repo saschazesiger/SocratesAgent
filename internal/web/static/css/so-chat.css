@@ -95,6 +95,7 @@
   display: flex;
   flex-wrap: wrap;
   align-items: center;
+  justify-content: center;
   column-gap: var(--ds-space-4);
   row-gap: var(--ds-space-1);
   min-height: var(--ds-space-8);
@@ -119,6 +120,7 @@
   display: inline-flex;
   flex-wrap: wrap;
   align-items: center;
+  justify-content: center;
   column-gap: var(--ds-space-4);
   row-gap: var(--ds-space-1);
   min-width: 0;

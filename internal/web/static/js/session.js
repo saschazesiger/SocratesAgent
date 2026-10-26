@@ -23,7 +23,7 @@ import {
 import { connectionSource } from './net.js';
 import { agentMark, agentMarkHtml } from './logos.js';
 import {
-  MORE_KEY, SHELVES, IDE, foldersOf, folderKeyOf, ideOf, momentOf, movesRow,
+  MORE_KEY, SHELVES, IDE, foldersOf, folderKeyOf, ideOf, momentOf, movesRow, notStarted,
 } from './folders.js';
 import * as harnesses from './harnesses.js';
 import * as accounts from './accounts.js';
@@ -920,8 +920,8 @@ function drawList() {
   // folders.js's answer: the server hands the list over newest first, and a
   // frame that changes a status between two fetches bumps the moment locally,
   // so the order inside a folder - and of the folders - is worked out there.
-  // Background and done sessions are still their project's: each folder keeps
-  // them on a shelf of its own at its bottom, shut until it is opened.
+  // Chats not started yet, background and done sessions are still their
+  // project's: each folder keeps them on a shelf of its own at its bottom.
   // A folder's VS Code is not a row at all: it is drawn on the folder's head.
   //
   // The list is morphed, never rebuilt: a kept row keeps its element, so its
@@ -929,20 +929,29 @@ function drawList() {
   // moves to the top of its folder glides there. It is live data, so while
   // the pointer is over the list a reorder waits for it to leave: a row never
   // jumps out from under a finger that is about to tap it.
-  const markup = foldersOf(wanted).map((folder) => folderHtml(folder));
+  const markup = foldersOf(wanted, placeOf).map((folder) => folderHtml(folder));
   flipMorph(host, html`${markup}`, { items: '.so-row, .so-folder__bar', live: true });
 }
 
-// folderHtml is one project: its rows, then the shelves
-// of background and done sessions, inside the same folder so that shutting it
-// puts them away with everything else.
+// placeOf is the shelf a session is on, or '' for its folder's rows: what
+// is filed in the background or done by its status, else a chat nobody has
+// sent anything yet.
+function placeOf(session) {
+  const status = statusOf(session);
+  if (status === 'background' || status === 'done') return status;
+  return notStarted(session, activityOf(session)) ? 'unstarted' : '';
+}
+
+// folderHtml is one project: its rows, then the shelves of chats not started
+// yet, background and done sessions, inside the same folder so that shutting
+// it puts them away with everything else.
 function folderHtml(folder) {
   const shelf = (status, label, filed) => (filed.length
     ? groupHtml({ key: shelfKey(folder.key, status), status, label, path: '', sessions: filed }, filed.map(rowHtml))
     : '');
   return groupHtml(folder, [
     folder.sessions.map(rowHtml),
-    SHELVES.map((status) => shelf(status, STATUS_WORDS[status], folder.shelves[status])),
+    SHELVES.map((status) => shelf(status, SHELF_WORDS[status], folder.shelves[status])),
   ]);
 }
 
@@ -967,10 +976,12 @@ function cssId(id) { return String(id).replace(/\\/g, '\\\\').replace(/"/g, '\\"
 const FOLDERS_KEY = 'socrates.folders';
 const closedFolders = new Set();
 
-// The shelves inside each folder: background and done sessions below its
-// rows. They start shut - a service is meant to run unseen, and what is done
-// is finished - so for them the set records the opposite: being in it means
-// the person opened it. A shelf's key
+// The shelves inside each folder: chats not started yet, background and done
+// sessions below its rows. Not started is open, like a folder: a draft is
+// about to be work. The other two start shut - a service is meant to run
+// unseen, and what is done is finished - so for them the set records the
+// opposite: being in it means the person opened it. Done is shut again at
+// every start of the page: an opened one is not written down. A shelf's key
 // is its folder's and its status, joined by a character no path and no
 // status can hold.
 function shelfKey(folderKey, status) { return folderKey + '\u0000' + status; }
@@ -978,12 +989,17 @@ function shelfOf(key) {
   const at = key.lastIndexOf('\u0000');
   return at < 0 ? '' : key.slice(at + 1);
 }
+const SHELF_WORDS = { unstarted: 'Not started', background: 'Background', done: 'Done' };
 const SHELF_TITLES = {
+  unstarted: 'Not started: chats nobody has sent anything yet',
   background: 'Background sessions: services left running on purpose, never deleted',
   done: 'Done sessions: their terminals are closed, and each is deleted a day after it was marked done',
 };
 
-function shutByDefault(key) { return SHELVES.includes(shelfOf(key)); }
+function shutByDefault(key) {
+  const shelf = shelfOf(key);
+  return shelf === 'background' || shelf === 'done';
+}
 
 function folderOpen(key) {
   return shutByDefault(key) ? closedFolders.has(key) : !closedFolders.has(key);
@@ -1010,12 +1026,14 @@ function restoreFolders() {
   if (!raw) return;
   try {
     const shut = JSON.parse(raw);
-    if (Array.isArray(shut)) for (const key of shut) if (typeof key === 'string') closedFolders.add(key);
+    if (!Array.isArray(shut)) return;
+    for (const key of shut) if (typeof key === 'string' && shelfOf(key) !== 'done') closedFolders.add(key);
   } catch { /* a value from a version that wrote something else */ }
 }
 
 function saveFolders() {
-  try { localStorage.setItem(FOLDERS_KEY, JSON.stringify([...closedFolders])); } catch { /* private window */ }
+  const kept = [...closedFolders].filter((key) => shelfOf(key) !== 'done');
+  try { localStorage.setItem(FOLDERS_KEY, JSON.stringify(kept)); } catch { /* private window */ }
 }
 
 function toggleFolder(key) {
@@ -1038,11 +1056,11 @@ function openFolder(session) {
   if (!session) return;
   const key = folderKeyOf(session);
   let changed = closedFolders.delete(key);
-  const status = statusOf(session);
-  if (SHELVES.includes(status)
-    && !(session.harness === IDE && ideOf(state.sessions, key) === session)) {
-    const shelf = shelfKey(key, status);
-    if (!closedFolders.has(shelf)) { closedFolders.add(shelf); changed = true; }
+  const place = placeOf(session);
+  if (place && !(session.harness === IDE && ideOf(state.sessions, key) === session)) {
+    const shelf = shelfKey(key, place);
+    if (!shutByDefault(shelf)) changed = closedFolders.delete(shelf) || changed;
+    else if (!closedFolders.has(shelf)) { closedFolders.add(shelf); changed = true; }
   }
   if (!changed) return;
   saveFolders();
@@ -1090,7 +1108,9 @@ function groupHtml(folder, children) {
   const tip = SHELF_TITLES[folder.status] || folder.path || 'Sessions in a directory of their own';
   const ide = shelf || folder.key === MORE_KEY ? '' : ideButtonHtml(folder);
   const kind = shelf ? html`data-shelf="${folder.status}"` : html`data-folder="${folder.key}"`;
-  return html`<section class="${shelf ? 'so-folder so-folder--shelf' : 'so-folder'}" data-ds-key="${(shelf ? 'shelf:' : 'folder:') + folder.key}" ${kind}${open ? html` data-open` : ''}><div class="so-folder__bar"><button class="so-folder__head" type="button" aria-expanded="${open ? 'true' : 'false'}" aria-controls="${id}" data-toggle="${id}" data-tip="${tip}"${attention ? html` data-attention="${attention}"` : ''}${unread ? html` data-unread` : ''}>${raw(icon('chevronDown', 16, 'ds-chevron'))}<span class="so-folder__name">${folder.label}</span><span class="so-folder__dot" aria-hidden="true"></span><span class="so-folder__count">${count}</span></button>${ide}</div><div class="so-folder__rows" id="${id}"${open ? '' : html` hidden`}>${children}</div></section>`;
+  // A project with nothing in it but done sessions steps back as they do.
+  const done = !shelf && !!folder.shelves && count === folder.shelves.done.length;
+  return html`<section class="${shelf ? 'so-folder so-folder--shelf' : 'so-folder'}" data-ds-key="${(shelf ? 'shelf:' : 'folder:') + folder.key}" ${kind}${open ? html` data-open` : ''}${done ? html` data-done` : ''}><div class="so-folder__bar"><button class="so-folder__head" type="button" aria-expanded="${open ? 'true' : 'false'}" aria-controls="${id}" data-toggle="${id}" data-tip="${tip}"${attention ? html` data-attention="${attention}"` : ''}${unread ? html` data-unread` : ''}>${raw(icon('chevronDown', 16, 'ds-chevron'))}<span class="so-folder__name">${folder.label}</span><span class="so-folder__dot" aria-hidden="true"></span><span class="so-folder__count">${count}</span></button>${ide}</div><div class="so-folder__rows" id="${id}"${open ? '' : html` hidden`}>${children}</div></section>`;
 }
 
 // ideButtonHtml is the VS Code mark of a folder: in its colours while the

@@ -28,11 +28,13 @@
   --so-brand-tile-ink: #ffffff;
   --so-brand-opencode-inner: #8a8686;
 
-  /* Frame: the session list's rows and folder heads (a step denser than a
-     drawer item), and the bar's dialogs. */
-  --so-row-height: 40px;
-  --so-folder-head-height: 36px;
-  --so-shelf-head-height: 32px;
+  /* Frame: the session list's rows and folder heads (denser than a drawer
+     item), and the bar's dialogs. What is done steps back to --so-done-opacity
+     and comes forward under the pointer. */
+  --so-row-height: 34px;
+  --so-folder-head-height: 30px;
+  --so-shelf-head-height: 26px;
+  --so-done-opacity: 0.5;
   --so-rename-width: 400px;
   --so-status-width: 600px;
   --so-title-min: 96px;
@@ -174,10 +176,10 @@
   .ds-theme { --so-question-width: 100%; }
 }
 
-/* Frame: in the modal drawer a folder head is tapped, so it is a thumb's
-   target, as tall as a drawer item. */
+/* Frame: in the modal drawer a row and a folder head are tapped, so each is
+   a thumb's target. Touch mode keeps its 48px (above). */
 @media (max-width: 900px) {
-  .ds-theme { --so-folder-head-height: 48px; --so-row-height: 48px; }
+  .ds-theme:not(.so-touch) { --so-folder-head-height: 44px; --so-row-height: 44px; --so-shelf-head-height: 40px; }
 }
 
 /* A short screen (a phone on its side in a car mount) keeps the question and
