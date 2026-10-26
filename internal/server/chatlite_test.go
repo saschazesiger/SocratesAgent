@@ -1,13 +1,17 @@
+//go:build linux
+
 package server
 
 import (
 	"encoding/json"
 	"net/http"
+	"os"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/saschazesiger/SocratesAgent/internal/agent"
+	"github.com/saschazesiger/SocratesAgent/internal/agenthost"
 )
 
 // A light browser's replay holds back what a collapsed chat does not draw -
@@ -100,5 +104,42 @@ func TestAReplayComesInBatchesToABrowserThatTakesThem(t *testing.T) {
 	many.mu.Unlock()
 	if string(a) != string(b) || frames != 1 || len(batched) < 5 {
 		t.Fatalf("%d events in %d batches, the same as one at a time: %v", len(batched), frames, string(a) == string(b))
+	}
+}
+
+// A chat read from a snapshot tells its streams how far it is compacted,
+// and a chat deleted takes its snapshot along.
+func TestAStreamSaysHowFarItsHistoryIsCompacted(t *testing.T) {
+	c := newChatEnv(t, time.Hour)
+	id := c.create(t)
+	c.send(t, id, "m1", "hello")
+	journal := c.waitJournal(t, id, 10*time.Second, "the reply", turnsEnded(1))
+	info, err := os.Stat(agenthost.JournalPath(c.data, id))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writeSnapshot(c.data, id, journal, info.Size()); err != nil {
+		t.Fatal(err)
+	}
+	p, err := c.srv.chats.peer(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.mu.Lock()
+	p.unloadLocked()
+	p.mu.Unlock()
+	st := c.stream(t, id, 0)
+	st.untilSynced(10 * time.Second)
+	st.mu.Lock()
+	base := st.hello["base"]
+	st.mu.Unlock()
+	if base != float64(journal[len(journal)-1].Seq) {
+		t.Fatalf("hello base %v, want %d", base, journal[len(journal)-1].Seq)
+	}
+	if code, body := c.do(t, c.client, "DELETE", "/api/sessions/"+id, ""); code.StatusCode >= 300 {
+		t.Fatalf("delete: %d %v", code.StatusCode, body)
+	}
+	if _, err := os.Stat(snapshotPath(c.data, id)); !os.IsNotExist(err) {
+		t.Fatalf("the snapshot of a deleted chat is still there: %v", err)
 	}
 }
