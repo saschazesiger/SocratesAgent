@@ -1,33 +1,71 @@
-# Socrates
-
-**Chats with Claude Code, Codex and OpenCode, and a terminal for your shell.**
-An agent's session is a chat: the agent runs on the server under a host of its
-own, driven through its own protocol, and the page draws what it says. A Shell
-is a real terminal in a real tmux pane and the browser is a window onto it.
-Either way a session outlives the tab, the phone, the network and an update.
-
 <p align="center">
-  <img src="docs/screenshot-session.png" alt="A Claude Code chat in the browser: the fix it explains, the edit it made and the tests it ran, with a chat per agent and a Shell in the sidebar" width="860">
+  <img src="internal/web/static/img/logo.png" alt="Socrates" width="96">
 </p>
 
-## Home, and the questions the agents ask
-
-Every start of the page is **Home**: how many chats need an answer, are working, have background
-tasks or finished while nobody looked, and a line per chat saying what it is doing, all moving by
-themselves. An agent that needs you asks through one tool, `ask_user`, the same for all three, and
-waits for the answer however long it takes: a question with options, several at once, a plan to
-approve. **Questions** opens them one after the other, oldest first; on a phone or in a car the
-dialog is the whole screen, with big buttons, Read aloud and dictation, and an answer given offline
-goes out once the connection is back. A question answered on another device says so.
+<h1 align="center">Socrates</h1>
 
 <p align="center">
-  <img src="docs/screenshot-home.png" alt="Home: one chat asking which database to use, one running its tests, one that finished, and a Codex chat and a Shell" width="640">
-  <img src="docs/screenshot-phone.png" alt="The question on a phone, as the whole screen: Postgres recommended, SQLite and MySQL as big buttons" width="200">
+  <b>Claude Code, Codex and OpenCode in your browser — on your own server.</b><br>
+  Chat with your coding agents from any device. They keep working when you close the tab.
 </p>
 
-## Install
+<p align="center">
+  <a href="#-install">Install</a> ·
+  <a href="#-features">Features</a> ·
+  <a href="docs/OPERATIONS.md">Operations</a> ·
+  <a href="#-development">Development</a>
+</p>
 
-On Debian or Ubuntu with systemd (x86_64 or arm64), as root:
+<p align="center">
+  <img src="docs/screenshot-session.png" alt="A Claude Code chat in the browser: the fix it explains, the edit it made and the tests it ran" width="860">
+</p>
+
+---
+
+## ✨ Features
+
+| | |
+| --- | --- |
+| 🤖 **Three agents, one place** | Claude Code, Codex and OpenCode as chats, plus a real **Shell** (tmux) and **VS Code** in the browser. |
+| 🔁 **Never lose a session** | Closed tab, dead phone, lost network, update: the agent keeps working on the server. |
+| 🏠 **Home dashboard** | See at a glance what's running, what's finished and what needs you. |
+| 🙋 **Questions, not guesswork** | Agents ask you with buttons (`ask_user`). Answer on any device, even offline. |
+| 📱 **Made for the phone** | Full-screen questions, big buttons, dictation, read-aloud and push notifications. |
+| 👥 **Several accounts** | Work and private side by side. Chats pick the account with the most usage left. |
+| 💾 **Encrypted backups** | Your whole setup is backed up to any S3 bucket, encrypted. Moving to a new server is a single restore. |
+| 🔄 **Updates itself** | Every night, with a self-test and automatic rollback. |
+
+---
+
+## 🏠 Home & questions
+
+<table>
+  <tr>
+    <td width="75%"><img src="docs/screenshot-home.png" alt="Home: one chat asking a question, one running, one finished"></td>
+    <td width="25%"><img src="docs/screenshot-phone.png" alt="A question on the phone with big answer buttons"></td>
+  </tr>
+  <tr>
+    <td>👀 <b>Home</b> shows every chat live: running, finished, waiting for you.</td>
+    <td>📱 <b>On the phone</b> a question fills the screen. Tap, done.</td>
+  </tr>
+</table>
+
+- 🔔 **Notifications** arrive even with the browser closed (over HTTPS, see [Notifications](#-notifications)).
+- 🗣️ **Voice**: dictate answers, have them read aloud.
+- ✅ An answer given on one device disappears from the others.
+
+---
+
+## 🚀 Install
+
+> **You need:** Debian or Ubuntu with systemd (x86_64 or arm64) and root.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/saschazesiger/SocratesAgent/main/scripts/install.sh | sudo bash
+```
+
+<details>
+<summary>…or from a checkout</summary>
 
 ```bash
 git clone https://github.com/saschazesiger/SocratesAgent.git
@@ -35,290 +73,115 @@ cd SocratesAgent
 sudo scripts/install.sh
 ```
 
-or, without a checkout,
-`curl -fsSL https://raw.githubusercontent.com/saschazesiger/SocratesAgent/main/scripts/install.sh | sudo bash`.
+</details>
 
-The script installs everything Socrates runs on and builds Socrates from the
-repository's newest commit:
+This installs everything (Go, Node, tmux, Claude Code, Codex, OpenCode, code-server) and starts Socrates as a service.
+You can run it again at any time to repair or update the installation.
 
-| | from | where |
-| --- | --- | --- |
-| git, ripgrep, jq, curl, ncurses-term... | the distribution | apt |
-| tmux (3.3 or newer) | the distribution, held | apt |
-| Go, to build Socrates | go.dev, checksum verified | `/opt/socrates/go/<version>` |
-| Node, for the sessions | nodejs.org, checksum verified | `/opt/socrates/node/<version>`, linked into `/usr/local/bin` |
-| Claude Code | its native installer | `~/.local/bin/claude` |
-| Codex | its standalone installer | `~/.local/bin/codex` |
-| OpenCode | its release binary | `/opt/socrates/opencode/<version>`, linked as `~/.local/bin/opencode` |
-| code-server | its release tarball | `/opt/socrates/code-server/<version>`, linked into `/usr/local/bin` |
+### Then, in 3 steps
 
-Then it starts Socrates as a systemd service and switches on
-`socrates-update.timer`, which keeps all of it up to date (below). Running the
-script again is safe: it repairs what is missing and updates the rest. Then:
+| | Step | How |
+| :---: | --- | --- |
+| 1️⃣ | **Open it** | `ssh -L 8080:localhost:8080 root@your-server`, then go to <http://localhost:8080> and choose a password. |
+| 2️⃣ | **Sign in the agents** | **Admin → Accounts**: Claude Code and Codex with their own sign-in, or any agent with an API key. |
+| 3️⃣ | **Reach it from anywhere** | **Admin → Remote access**: a Cloudflare tunnel, with Cloudflare Access in front. |
 
-1. **Open it.** Socrates listens on `127.0.0.1:8080`. From your computer:
-   `ssh -L 8080:localhost:8080 root@your-server`, then <http://localhost:8080>.
-   Choose a password - or restore a backup of another machine (below).
-2. **Sign the agents in** under Admin → Accounts: Claude Code signs in from a
-   Shell session the card opens for it, Codex with a device code, and any of
-   them with an API key. A machine that ran an earlier Socrates keeps the
-   sign-ins it had: the first start takes them over as accounts.
-3. **Reach it from anywhere**: Admin → Cloudflare tunnel, with Cloudflare Access
-   in front of the hostname.
+> 💡 Moving from another server? In step 1, choose **Restore from a backup** instead.
 
-## Updates
+---
 
-**Everything updates itself.** `socrates-update.timer` runs the updater every
-night between 3 and 5 and ten minutes after every boot: Socrates from the
-newest commit, Go, Node, Claude Code, Codex, OpenCode, code-server,
-cloudflared and the packages above. The boot run is also what puts back a tool
-that went missing. Admin → Updates shows the last run, every tool's version,
-the log, and has **Update now**; the setup check warns when the last run
-failed or is more than two days old.
-
-By hand:
-
-```bash
-sudo /usr/local/lib/socrates/update.sh              # everything, now
-sudo /usr/local/lib/socrates/update.sh --deps       # only the tools
-sudo /usr/local/lib/socrates/update.sh --socrates   # only Socrates
-sudo /usr/local/lib/socrates/update.sh --repair     # put back what is missing, update nothing
-```
-
-**A push can be installed at once.** `sudo scripts/deploy-runner.sh`
-registers a GitHub Actions runner on the machine (it only connects out, so NAT
-is fine). From then on every push to `main` runs `.github/workflows/deploy.yml`:
-GitHub builds the binary and attests where it came from, and the runner hands
-it to `scripts/deploy.sh`, which checks that attestation and installs it the
-way the nightly update would - smoke test, health check, rollback. The runner's
-user may run `deploy.sh` as root and nothing else.
-
-`SOCRATES_AUTO_UPDATE` in `/etc/socrates.env` says what the timer does: `all`
-(the default), `deps` (the tools but not Socrates) or `off` (only repairs).
-`SOCRATES_NODE_MAJOR`, `SOCRATES_CODE_SERVER_VERSION` and
-`SOCRATES_CLAUDE_CHANNEL` pin those; `SOCRATES_REPO` and `SOCRATES_BRANCH` are
-where Socrates is built from.
-
-**Sessions keep running through an update.** They live in their own systemd
-scope, not in the service, so a new Socrates takes only the web server down for
-a moment and the page reconnects by itself. A tool is never changed under a
-running session: every version is unpacked into a directory of its own and a
-link is switched, and an old version is only deleted once nothing runs from it.
-The update itself runs as a systemd unit of its own, so it finishes even when
-it was started from inside a Socrates session that loses its terminal.
-
-**An update that does not work is undone.** A new Socrates is built from the
-source in `/opt/socrates/src`, started once on a scratch directory, and only
-then swapped in. If it does not answer `/api/health` with its own version - or
-keeps restarting - the previous binary and database are put back, and that
-commit is not tried again until a newer one arrives. A commit that does not
-build never touches the service. One tool that cannot be downloaded is
-reported and the others go on; nothing is changed without network.
-
-**A hung Socrates is restarted.** The service has a systemd watchdog: it is fed
-only while Socrates answers its own health check, so a process that hangs is
-restarted like one that crashed, and a crash loop never parks the unit in
-`failed`.
-
-A reboot does end the terminals; a Shell starts again in its folder when you
-open it, and a chat goes on with its conversation.
-
-## What is where
+## 💬 Working with chats
 
 | | |
 | --- | --- |
-| `socrates.service` | the web server: `systemctl status socrates`, `journalctl -u socrates -f` |
-| `socrates-agents-<chat>.scope` | one chat's agent host and its CLI, which outlive the service |
-| `socrates-tmux.scope` | the Shell terminals. `systemctl stop "socrates-tmux*.scope"` ends every one of them |
-| `socrates-update.timer` | the nightly update: `systemctl list-timers socrates-update.timer`, `journalctl -u socrates-update` |
-| `/etc/socrates.env` | the listen address and what is updated |
-| `/var/lib/socrates` | the data directory: the database, the chats, the accounts and the agents' transcripts, the terminals' journals, `backup.json`, `updates.json` and `updates.log` of the last update |
-| `/root` | `HOME`: where the agents' own folders were, links into the accounts now |
-| `/usr/local/bin/socrates` | the binary |
-| `/usr/local/lib/socrates` | the updater the timer runs |
-| `/opt/socrates` | the source Socrates is built from, and Go, Node, OpenCode and code-server |
+| ✍️ **Start** | A new chat opens on a large text field. Drafts are saved as you type. |
+| ⏰ **Schedule** | **Start automatically** sends the first message at a set time, even with no browser open. |
+| 📦 **Compact** | All of a turn's work (thinking, edits, commands) fits in one line: *"Edited 2 files, ran 3 commands"*. Tap to open it. |
+| 📊 **Limits** | Below the top bar: the account in use, its usage and when it resets. |
+| 📨 **Queue** | Messages written while the agent works wait as *Queued*. **Send now** interrupts the turn. |
+| ⏯️ **Resume** | A turn stopped by a usage limit continues on its own once the limit resets. |
+| 📎 **Files** | Attach, drop or paste them into the chat or the Shell. |
+| ⚡ **Ultracode** | Claude Code with dynamic workflows on every task, switched on per chat. |
 
-tmux is held at its installed version (`apt-mark hold tmux`), because a tmux
-upgraded under a running server can no longer talk to it. The updater installs
-a newer tmux by itself at a moment no tmux server runs; the admin page says
-when one is waiting. To have it now: `systemctl stop "socrates-tmux*.scope"`
-and run the updater - the sessions resume when opened.
+---
 
-To remove Socrates:
+## 👥 Accounts
 
-```bash
-systemctl disable --now socrates socrates-update.timer && systemctl stop "socrates-tmux*.scope"
-rm -rf /etc/systemd/system/socrates.service /etc/systemd/system/socrates-update.* /usr/local/bin/socrates* \
-  /usr/local/lib/socrates /opt/socrates /var/cache/socrates /etc/socrates.env /var/lib/socrates
-find /usr/local/bin -lname '/opt/socrates/*' -delete && apt-mark unhold tmux
-```
+<img src="docs/screenshot-admin.png" alt="Admin → Accounts: two Claude Code accounts, one Codex and one OpenCode account" width="760">
 
-## Storage: one folder, backed up to S3
+- ➕ Add as many accounts as you like: subscriptions or API keys.
+- 🎯 New chats start on the account with the **most usage left**.
+- 🔀 Move a chat to another account at any time, or let it switch on its own when it hits a limit.
+- 📜 All accounts of an agent share the same chat history.
 
-Everything Socrates keeps is in its data directory, `/var/lib/socrates`
-(`SOCRATES_DATA_DIR`): the database with the settings, the password, sign-ins,
-sessions and the chats' unsent drafts, and beside it the chats, the accounts with their
-sign-ins, the agents' transcripts, the terminals' files and VS Code's state. It
-needs nothing else to run, and it never waits on a network.
+---
 
-**Admin → Backup** backs that folder up to an S3 bucket - Hetzner Object
-Storage, AWS S3, Cloudflare R2, MinIO, anything S3-compatible. Every 10
-minutes (5 at the least) while anything changed, once more when Socrates
-stops, and on **Back up now**. Each backup is a snapshot of the whole folder,
-but only what changed is uploaded: files are cut into 8 MiB chunks, and a
-chunk the bucket already holds is never sent again, so a journal that grew
-costs its last chunk. Every SQLite database in the folder - Socrates' own and
-the agents' - is copied consistently while it is in use, never read half
-written. Snapshots are kept for 48 hours, then one a day for 30 days and one
-a week for 26 weeks; chunks no snapshot needs any more are deleted a day later.
-The card says when the last backup ran, how large it was and what failed; a
-day without a successful one is said on the session page too.
+## 💾 Backup
 
-<p align="center">
-  <img src="docs/screenshot-backup.png" alt="Admin's Backup card: what is backed up, when the last backup ran and when the next one runs, and its snapshot" width="760">
-</p>
+<img src="docs/screenshot-backup.png" alt="Admin → Backup: last backup, size and snapshots" width="760">
 
-| backed up | left out |
+| | |
 | --- | --- |
-| the database and its key (`secrets.key`), `chats/` (every chat's journal and attachments), `agents/` (the agents' shared transcripts), `accounts/` (their sign-ins), `terminals/`, `sessions/`, `vscode/`, `vscode-extensions/` | working directories (the workspace root and the presets, which live in git), `run/`, `cache/`, `bin/`, sockets, the terminals' byte journals, a chat host's lock and log and the brief it makes again from the journal, OpenCode's shared cache, Codex's own logs, the updater's files, and `backup.json` itself |
+| 🪣 **Where** | Any S3-compatible bucket: AWS, Hetzner, Cloudflare R2, MinIO… |
+| ⏱️ **When** | Every 10 minutes when something changed, and on **Back up now**. |
+| 🔐 **How** | Encrypted on your server (AES-256). Only changed parts are uploaded. |
+| 🗂️ **Kept** | 48 h of everything, then 1 per day for 30 days, then 1 per week for 26 weeks. |
+| 🚚 **Restore** | New server → setup page → **Restore from a backup**. |
 
-**Everything in the bucket is encrypted on this machine** (AES-256-GCM, with
-keys derived from your passphrase by PBKDF2-SHA256, 600 000 rounds) before it
-is sent; even the chunks' names say nothing about their content. Only
-`meta.json` (the salt and a check value) is plain. The passphrase never goes
-to the bucket. **If you lose it, nobody can read the backup, you included** -
-write it down somewhere other than the server. It is in `<data>/backup.json`
-(mode 0600) with the bucket's keys, which is why that file is not backed up.
+> ⚠️ **Write down your passphrase somewhere other than the server.** Without it, nobody can read the backup, not even you.
 
-**Moving to a new machine:** install Socrates there and open its setup page,
-choose **Restore from a backup**, enter the bucket and the passphrase, pick a
-snapshot, and sign in with the old password once it is back. Over SSH instead:
-put the old `backup.json` into the new data directory, then
+---
 
-```bash
-systemctl stop socrates
-socrates restore -list
-socrates restore -snapshot latest
-systemctl start socrates
-```
+## 🔔 Notifications
 
-A restore only goes into a data directory that holds no installation yet.
-The restored machine keeps backing up into the same bucket, as a machine of
-its own: snapshots are kept apart by machine, and the card says when another
-machine wrote one in the last day.
+Turn them on under **⋮ → Notifications** (on Home), or **⋮ → This device…** in a chat.
 
-An installation that had the bucket mirror of earlier versions (`SOCRATES_S3_*`
-in `/etc/socrates.env`, or else `s3.json`) is carried over by itself, once, at
-its first start: the backup goes into the same bucket under `backup/v1/` inside
-the old prefix, and the mirror's objects are left as they were. Once the
-backup has a snapshot of this machine, the Backup card offers to delete them. From then on
-the card owns the configuration; **Turn off backups** there removes
-`backup.json`, and the variables do not bring it back.
+- ✅ A chat is **finished** or 🙋 **needs an answer** → push notification
+- 🔢 The app badge shows how many chats are waiting for you
+- 🍏 **iPhone:** add Socrates to the Home Screen first (Safari only allows push for installed web apps)
+- 🔒 Needs HTTPS (Cloudflare tunnel or `localhost`)
 
-## More than one account
+---
 
-An account is one agent's sign-in: a subscription or an API key. Add as many
-as you like under **Admin → Accounts** - a business Claude account beside a
-private one - and pick one in the new-session sheet; unless you pick another,
-a chat starts on the account with the most usage left for the time until it
-renews, and the sheet shows each account's five-hour and weekly usage. A chat
-can be moved to another account from its composer, and can be told to switch
-by itself when it reaches a limit. Every account of an agent shares its
-conversations, so a chat goes on with its history on any of them.
+## 🔑 Optional extras
 
-<p align="center">
-  <img src="docs/screenshot-admin.png" alt="Admin's Accounts card: two Claude Code accounts, a Codex and an OpenCode account" width="760">
-</p>
+| Key (in Admin) | Unlocks |
+| --- | --- |
+| **OpenRouter** | 🎙️ Dictation, and ✔️ *Check each turn's outcome* (complete / partial / waiting / blocked) |
+| **Google Cloud** | 🔊 Read answers aloud |
 
-A Claude Code chat can also be started with **Ultracode** (dynamic workflows
-on every task) from the new-session sheet, and switched on or off from the
-chat's menu.
+---
 
-## Keys
+## 🔒 Security
 
-Both optional, both in Admin: **OpenRouter** for dictation, **Google Cloud** for
-reading answers out loud.
+> [!WARNING]
+> The agents run **as root, without approval prompts**. Whoever gets into Socrates controls the server.
 
-With an OpenRouter key, **Check each turn's outcome** (Admin → Status & naming,
-off by default) has every finished turn judged as complete, partly done (with
-what is still open), waiting on you, or blocked. The session shows an hourglass
-while that is read, and its notification waits up to 45 seconds to say it. The
-read is given the turn's instruction, its answer and its task list from the
-chat's journal.
+- 🏠 Socrates listens on `127.0.0.1` only.
+- 🌐 Expose it **only** through the Cloudflare tunnel with **Cloudflare Access**, never with `SOCRATES_ADDR=:8080` on an untrusted network.
 
-## Notifications
+---
 
-**Notifications** in this device's options (the `⋮` at the right of the top
-bar on Home, or **This device…** at the end of a session's `⋮` menu) turns
-them on for this device. Over HTTPS (the Cloudflare tunnel, or `localhost`)
-they are Web Push: Socrates sends one when a session finishes or needs an
-answer, and it arrives with the page closed and the phone locked. On an
-iPhone, add Socrates to the Home Screen and turn them on from there; Safari
-allows push only for an installed web app. Over plain http they appear only
-while the page is open.
+## 🛠️ Operations
 
-A question notification shows the question itself, and tapping it opens Home
-with that question ready to answer. The app icon's badge is the number of chats
-waiting for an answer, and a notification for a question that has been answered
-elsewhere is removed. On Android, a long press on the installed app's icon
-offers **Questions** and **Home**.
+Updates, file locations, configuration, restoring over SSH and uninstalling:
+**📘 [docs/OPERATIONS.md](docs/OPERATIONS.md)**
 
-## A chat before it starts, and how a chat reads
+---
 
-A new chat opens on its first message: a large field that fills the page,
-saved as you type (on this device at once, on the server after a pause), so
-closing the tab or switching devices loses nothing. **Send** starts the chat.
-**Start automatically** under the field takes a date and time instead: the
-server sends the message as it stands then, by itself, even with no browser
-open, and sends a notification either way.
-
-In a running chat each answer shows the agent's words. Its work - the
-thinking, the tool calls, the agents it started and what it said on the
-way - is folded into one line that says what it did ("Edited 2 files, ran 3
-commands"), how long it took, how many steps and tokens it used and what it
-cost; a tap opens it. A line under the top bar shows the account the chat
-runs on, how much of each of its limits is used and when each resets, and
-what runs in the background (a tap lists it). A message written while the
-agent works waits as **Queued**; **Send now** stops the turn so it goes at
-once. A turn that ended at a usage limit goes on by itself once the limit has
-reset (the chat's `⋮` turns that off).
-
-## Files
-
-The upload button (an arrow out of a tray) in a Shell's top bar uploads files
-into its working directory, under `.socrates/uploads/` (ignored by git), and
-puts their paths on the prompt; pasting or dropping an image onto the terminal
-does the same. The two buttons beside it copy (the selection, or the
-terminal's text in a sheet you can select in) and paste; on a phone all three
-are in the Shell's `⋮` menu. A chat takes files from its composer - the
-button, a drop or a paste - and sends them with the message.
-
-## Security
-
-One password in front of coding CLIs that run **unattended**, as root on this
-machine, with their approvals and sandboxes bypassed and no way to turn that
-off. Access to the web interface is root on the machine. It therefore listens
-on `127.0.0.1` only; publish it through the Cloudflare tunnel with Cloudflare
-Access in front of the hostname, never by setting `SOCRATES_ADDR=:8080` on a
-network you do not trust.
-
-## Development
+## 👩‍💻 Development
 
 ```bash
-make check   # gofmt, go vet, go mod tidy, go test -race, go build
-make e2e     # the browser suite: node, a Chromium and tmux >= 3.3
+make check   # gofmt, vet, tidy, tests (race), build
+make e2e     # browser suite: needs node, Chromium, tmux ≥ 3.3
 ```
 
-The front end has no build step — edit `internal/web/static`, then
-`sudo scripts/update.sh --from=.` to run the working tree as it is (with the
-same smoke test and rollback as an update; set `SOCRATES_AUTO_UPDATE=deps` to
-keep the nightly update from replacing it with the repository's newest commit). Design notes are
-in [docs/design](docs/design). The environment is `SOCRATES_ADDR` (default
-`127.0.0.1:8080`), `SOCRATES_DATA_DIR` (default `/var/lib/socrates`) and
-`HOME`.
+- 🎨 The frontend has no build step. Edit `internal/web/static`, then run `sudo scripts/update.sh --from=.`
+- 🧪 About the test suite and the screenshots: [e2e/README.md](e2e/README.md)
+- 📐 Design notes: [docs/design](docs/design)
 
-## License
+---
 
-MIT. See [LICENSE](LICENSE). tmux and the coding CLIs are separate programs
-Socrates starts, each under its own terms, named in
-[THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md).
+## 📄 License
+
+MIT, see [LICENSE](LICENSE). tmux and the agent CLIs are separate programs with their own licenses, listed in [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md).
