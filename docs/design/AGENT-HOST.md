@@ -965,7 +965,12 @@ question's card stands where the agent asked it: an ask whose `part_id` names a 
 has is drawn at that call, inside the answer (`chatparts.js`), and one that names none (the
 scripted agent's, OpenCode's ask_user) cuts its turn's answers where they were when it came, so
 what they say afterwards is drawn under the card as their continuation (`chatfold.js`
-`cutAtAsk`).
+`cutAtAsk`). A message the person sent that the agent has not taken up yet (`pending`,
+`queued`) stays the timeline's newest word: what the agent says and does meanwhile goes above
+it. Taken up (`delivered`), it goes under everything said before, and one taken up into a
+running turn that is not its prompt (Claude reads it at its next step, Codex a steered one, an
+answer sent as a message) cuts the turn's answers there in the same way, so what the agent says
+after reading it is drawn under it (`chatfold.js` `takenUp`).
 
 **The question dialog** (`askdialog.js`, from Home's Questions card, a card's Answer, `#q=` and a
 tapped notification) walks the open questions of every asking chat, oldest first, and is live:

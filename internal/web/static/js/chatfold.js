@@ -90,8 +90,51 @@ function messageFor(chat, ev) {
     answerTo: '', turnId: ev.turn_id || '', model: '', at: ev.at || 0, parts: [], cuts: [], rev: ++chat.rev,
   };
   chat.messages.set(message.id, message);
-  chat.timeline.push({ key: 'm:' + message.id, type: 'message', id: message.id });
+  add(chat, { key: 'm:' + message.id, type: 'message', id: message.id });
   return message;
+}
+
+// waiting says whether a message is the person's and the agent has not
+// taken it up yet: it is on its way to the agent, or held behind the turn.
+function waiting(message) {
+  return !!message && message.role === 'user' && (message.state === 'pending' || message.state === 'queued');
+}
+
+// waitingFrom is where the person's messages the agent has not taken up yet
+// begin, at the end of the timeline.
+function waitingFrom(chat) {
+  let at = chat.timeline.length;
+  while (at > 0) {
+    const one = chat.timeline[at - 1];
+    if (one.type !== 'message' || !waiting(chat.messages.get(one.id))) break;
+    at -= 1;
+  }
+  return at;
+}
+
+// add puts what the agent did - an answer, a question, a line - into the
+// timeline above what the person sent that the agent has not seen yet: such
+// a message stays the conversation's newest word until it is taken up.
+function add(chat, entry) {
+  chat.timeline.splice(waitingFrom(chat), 0, entry);
+}
+
+// takenUp puts a message the agent has just taken up (or dropped unread)
+// under everything the agent did before it, above what still waits. One
+// taken up into a running turn that is not its prompt - Claude reads a
+// message sent during a turn at its next step, Codex a steered one - is the
+// turn's from then on: the turn's answers are cut there, and what the agent
+// says after it is drawn under it (cutTurn), not above it in the answer it
+// goes on with.
+function takenUp(chat, message) {
+  const from = chat.timeline.findIndex((one) => one.type === 'message' && one.id === message.id);
+  if (from < 0) return;
+  const [entry] = chat.timeline.splice(from, 1);
+  add(chat, entry);
+  const turn = chat.turn;
+  if (message.state !== 'delivered' || !turn || !turn.id || turn.messageId === message.id) return;
+  message.turnId = turn.id;
+  cutTurn(chat, turn.id);
 }
 
 // within says whether part is node or nested anywhere inside node.
@@ -171,7 +214,7 @@ function applyDeltaTo(chat, ev) {
 }
 
 function line(chat, ev, data) {
-  chat.timeline.push({ key: 'l:' + ev.seq, type: 'line', line: { seq: ev.seq, at: ev.at, ...data }, rev: ++chat.rev });
+  add(chat, { key: 'l:' + ev.seq, type: 'line', line: { seq: ev.seq, at: ev.at, ...data }, rev: ++chat.rev });
 }
 
 // lastLine is the newest line of a kind, or null.
@@ -221,37 +264,27 @@ function endTurn(chat, ev) {
     // A limit says itself twice - the error that hit it and the turn it
     // ended - and the person is told once, with when it renews. So does a
     // turn that failed on an error: "The turn failed" says its words.
-    const before = chat.timeline[chat.timeline.length - 1];
+    const at = waitingFrom(chat) - 1;
+    const before = chat.timeline[at];
     const error = before && before.type === 'line' && before.line.kind === 'error' ? before.line : null;
     if (error && ((turn.outcome === 'limited' && error.code === 'rate_limit')
       || (turn.outcome === 'failed' && (!turn.error || turn.error.trim() === String(error.text || '').trim())))) {
-      chat.timeline.pop();
+      chat.timeline.splice(at, 1);
       if (!turn.error) turn.error = error.text;
       turn.errorCode = error.code || '';
     }
     line(chat, ev, { kind: 'turn', outcome: turn.outcome, text: turn.error, code: turn.errorCode || '', turn });
-    if (turn.outcome !== 'limited') underTurn(chat, turn);
+    // How a turn ended is said right under it, above the messages the
+    // person sent while it ran (add): "Interrupted" under a message that was
+    // only queued read as if that message had been cut short. A limit goes
+    // under them: its card is the chat's newest word while nothing came
+    // after it, which is when it offers to go on with another account
+    // (chatview.js lastLimit).
+    if (turn.outcome === 'limited') {
+      const at = chat.timeline.findIndex((one) => one.key === 'l:' + ev.seq);
+      chat.timeline.push(...chat.timeline.splice(at, 1));
+    }
   }
-}
-
-// underTurn moves the line just pushed, how a turn ended, up past the
-// messages the person sent while it ran: the journal has them before the
-// turn's end (they were written then), but they are the next turn's, and
-// "Interrupted" under a message that was only queued read as if that
-// message had been cut short. It stops at anything else - the turn's own
-// answer, its own prompt, a question, another line. A limit stays where it
-// is: its card is the chat's newest word while nothing came after it, which
-// is when it offers to go on with another account (chatview.js lastLimit).
-function underTurn(chat, turn) {
-  const list = chat.timeline;
-  let at = list.length - 1;
-  while (at > 0) {
-    const before = list[at - 1];
-    const message = before.type === 'message' ? chat.messages.get(before.id) : null;
-    if (!message || message.role !== 'user' || message.id === turn.messageId || (turn.id && message.turnId === turn.id)) break;
-    at -= 1;
-  }
-  if (at < list.length - 1) list.splice(at, 0, list.pop());
 }
 
 // cutAtAsk keeps what an answer says after a question under the question's
@@ -267,11 +300,16 @@ function cutAtAsk(chat, ask) {
   const at = ask.payload && typeof ask.payload === 'object' ? ask.payload.part_id : '';
   if (at && chat.parts.has(at)) return;
   const turnId = ask.turnId || (chat.turn && chat.turn.id) || '';
-  if (!turnId) return;
+  if (turnId) cutTurn(chat, turnId);
+}
+
+// cutTurn cuts each answer of a turn where it is, and puts what it says from
+// then on in the timeline as an entry of its own, a 'more'.
+function cutTurn(chat, turnId) {
   for (const message of chat.messages.values()) {
     if (message.role !== 'assistant' || message.turnId !== turnId) continue;
     message.cuts.push(message.parts.length);
-    chat.timeline.push({ key: 'm:' + message.id + '#' + (message.cuts.length + 1), type: 'more', id: message.id, segment: message.cuts.length });
+    add(chat, { key: 'm:' + message.id + '#' + (message.cuts.length + 1), type: 'more', id: message.id, segment: message.cuts.length });
     touchMessage(chat, message.id);
   }
 }
@@ -304,10 +342,12 @@ export function apply(chat, ev) {
     case 'message': {
       const known = chat.messages.get(ev.message_id);
       if (known) {
+        const was = waiting(known);
         Object.assign(known, {
           role: ev.role, state: ev.state || '', text: ev.text || '', attachments: ev.attachments || [],
           answerTo: ev.answer_to || '', model: ev.model || '',
         });
+        if (was && !waiting(known)) takenUp(chat, known);
         touchMessage(chat, known.id);
         break;
       }
@@ -317,13 +357,19 @@ export function apply(chat, ev) {
         turnId: ev.turn_id || '', model: ev.model || '', at: ev.at || 0, parts: [], cuts: [], rev: ++chat.rev,
       };
       chat.messages.set(message.id, message);
-      chat.timeline.push({ key: 'm:' + message.id, type: 'message', id: message.id });
+      // What the person says is the newest word; an answer goes above what
+      // the person sent that the agent has not taken up yet.
+      const entry = { key: 'm:' + message.id, type: 'message', id: message.id };
+      if (message.role === 'user') chat.timeline.push(entry);
+      else add(chat, entry);
       break;
     }
     case 'message.state': {
       const message = chat.messages.get(ev.message_id);
       if (message) {
+        const was = waiting(message);
         message.state = ev.state || '';
+        if (was && !waiting(message)) takenUp(chat, message);
         touchMessage(chat, message.id);
       }
       break;
@@ -341,7 +387,7 @@ export function apply(chat, ev) {
           answered: false, answer: null, byDevice: '', clientId: '', delivered: '', deliver: ev.via || '', closed: false,
           rev: 0,
         });
-        chat.timeline.push({ key: 'a:' + ev.ask_id, type: 'ask', id: ev.ask_id });
+        add(chat, { key: 'a:' + ev.ask_id, type: 'ask', id: ev.ask_id });
         cutAtAsk(chat, chat.asks.get(ev.ask_id));
         touchAsk(chat, ev.ask_id);
       }

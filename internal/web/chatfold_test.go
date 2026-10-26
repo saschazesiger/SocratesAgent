@@ -97,7 +97,7 @@ func TestTheForeignThinkingNoticeGoesOnTheSwitch(t *testing.T) {
 // turn's end, and "Interrupted" drawn under it read as if that message had
 // been cut short. It does not climb past the turn's own prompt (a turn
 // stopped before a word), and a limit stays the newest word, which is when
-// its card offers another account.
+// its card offers another account, until the message is taken up.
 func TestAnEndedTurnsLineStandsAboveWhatWasQueuedDuringIt(t *testing.T) {
 	order := `chat.timeline.map((e) => e.type === 'line' ? e.line.kind + ':' + (e.line.outcome || '') : e.id)`
 	for _, c := range []struct {
@@ -109,7 +109,7 @@ func TestAnEndedTurnsLineStandsAboveWhatWasQueuedDuringIt(t *testing.T) {
 		{"interrupted with an answer", true, agent.OutcomeInterrupted, `["m1","a1","turn:interrupted","m2","a2"]`},
 		{"interrupted before a word", false, agent.OutcomeInterrupted, `["m1","turn:interrupted","m2","a2"]`},
 		{"failed", true, agent.OutcomeFailed, `["m1","a1","turn:failed","m2","a2"]`},
-		{"limited", true, agent.OutcomeLimited, `["m1","a1","m2","turn:limited","a2"]`},
+		{"limited", true, agent.OutcomeLimited, `["m1","a1","turn:limited","m2","a2"]`},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			events := []agent.Event{
@@ -136,6 +136,56 @@ func TestAnEndedTurnsLineStandsAboveWhatWasQueuedDuringIt(t *testing.T) {
 				t.Fatalf("timeline %s, want %s", got, c.want)
 			}
 		})
+	}
+}
+
+// What the person sends while a turn runs stays the newest word until the
+// agent takes it up: what the agent says and does meanwhile goes above it.
+// Taken up into the running turn - Claude reads it at its next step, Codex
+// a steered one, an answer sent as a message as well - it is the turn's
+// from then on, and what the agent says after it is drawn under it: the
+// answer it goes on with is cut there. What still waits stays under all of
+// it, and a message taken up out of order goes up to where it was read.
+func TestAMessageTakenUpDuringATurnHasWhatFollowsUnderIt(t *testing.T) {
+	order := `chat.timeline.map((e) => e.type === 'line' ? e.line.kind : e.type === 'more' ? e.id + '#' + (e.segment + 1) : e.id)
+  .concat(['a1 cut at ' + JSON.stringify(chat.messages.get('a1').cuts)])`
+	part := func(id string) agent.Event {
+		return agent.Event{Type: agent.TypePart, MessageID: "a1", PartID: id, Kind: agent.PartText, State: agent.PartDone, Text: id}
+	}
+	events := []agent.Event{
+		{Type: agent.TypeMessage, MessageID: "u1", Role: agent.RoleUser, State: agent.MessageDelivered, Text: "go"},
+		{Type: agent.TypeTurnStarted, TurnID: "t1", MessageID: "u1"},
+		{Type: agent.TypeMessage, MessageID: "a1", Role: agent.RoleAssistant, State: agent.MessageStreaming, TurnID: "t1"},
+		part("p1"),
+		{Type: agent.TypeMessage, MessageID: "m2", Role: agent.RoleUser, State: agent.MessagePending, Text: "also this"},
+		{Type: agent.TypeMessageState, MessageID: "m2", State: agent.MessageQueued},
+		part("p2"),
+		{Type: agent.TypeNotice, Code: "x", Text: "a word on the way"},
+		{Type: agent.TypeMessageState, MessageID: "m2", State: agent.MessageDelivered},
+		part("p3"),
+		{Type: agent.TypeMessage, MessageID: "m3", Role: agent.RoleUser, State: agent.MessagePending, AnswerTo: "k1", Text: "an answer"},
+		{Type: agent.TypeMessage, MessageID: "m4", Role: agent.RoleUser, State: agent.MessagePending, Text: "later"},
+		{Type: agent.TypeMessageState, MessageID: "m4", State: agent.MessageQueued},
+		{Type: agent.TypeMessage, MessageID: "m5", Role: agent.RoleUser, State: agent.MessagePending, Text: "last"},
+		{Type: agent.TypeMessageState, MessageID: "m5", State: agent.MessageQueued},
+		part("p4"),
+		{Type: agent.TypeMessageState, MessageID: "m3", State: agent.MessageDelivered},
+		part("p5"),
+		{Type: agent.TypeMessageState, MessageID: "m5", State: agent.MessageDelivered},
+		part("p6"),
+		{Type: agent.TypeMessage, MessageID: "a1", Role: agent.RoleAssistant, State: agent.MessageDone, TurnID: "t1"},
+		{Type: agent.TypeTurnEnded, TurnID: "t1", Outcome: agent.OutcomeCompleted},
+		{Type: agent.TypeMessageState, MessageID: "m4", State: agent.MessageDelivered},
+		{Type: agent.TypeTurnStarted, TurnID: "t2", MessageID: "m4"},
+		{Type: agent.TypeMessage, MessageID: "a2", Role: agent.RoleAssistant, State: agent.MessageDone, TurnID: "t2"},
+		{Type: agent.TypeTurnEnded, TurnID: "t2", Outcome: agent.OutcomeCompleted},
+	}
+	for i := range events {
+		events[i].Seq, events[i].At = int64(i+1), int64(1000+i)
+	}
+	want := `["u1","a1","notice","m2","a1#2","m3","a1#3","m5","a1#4","m4","a2","a1 cut at [2,4,5]"]`
+	if got := runFold(t, events, order); got != want {
+		t.Fatalf("timeline %s, want %s", got, want)
 	}
 }
 
