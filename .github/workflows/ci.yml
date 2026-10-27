@@ -56,6 +56,20 @@ jobs:
       - name: Vet
         run: go vet ./...
 
+      # The project rules of Dashboard-Style (its AGENTS.md project block):
+      # the copy verifies, every ds- class exists, no removed name, no
+      # literal, no own keyframes, no restyle of a ds component outside the
+      # exceptions in ds-check.json, each with its reason. Node is on the
+      # runner; the tool has no dependencies.
+      - uses: actions/setup-node@v4
+        if: matrix.os == 'ubuntu-latest'
+        with:
+          node-version: 22
+
+      - name: Dashboard-Style project check
+        if: matrix.os == 'ubuntu-latest'
+        run: node internal/web/static/vendor/dashboard-style/tools/check-project.mjs --config ds-check.json
+
       # The default ten minutes per package is not enough room: internal/server
       # alone took 547s on macos-latest and 575s on ubuntu-latest in run
       # 40070833079, every test passing, so one slow runner away from a

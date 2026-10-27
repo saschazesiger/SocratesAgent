@@ -4,13 +4,17 @@
 # github.com/saschazesiger/Dashboard-Style (docs/install.md, "Automatic
 # updates"). Once a day it compares the commit in <DEST>/VERSION with main of
 # Dashboard-Style: unchanged, the run ends after that one request; changed, it
-# vendors main, runs the web tests (the checksum of the copy, the stamping of
-# its addresses, the pages that load it), commits the new copy and starts CI.
+# vendors main, verifies the copy against its SHA256SUMS (tools/verify.sh),
+# runs the project check (tools/check-project.mjs with ds-check.json: a name
+# the new copy removed fails here, before anything is committed) and the web
+# tests (the checksum of the copy, the stamping of its addresses, the pages
+# that load it), commits the new copy and starts CI.
 #
 # Why CI has to be started explicitly: a push made with GITHUB_TOKEN does not
 # trigger other workflows (GitHub prevents loops), but workflow_dispatch does.
-# The one change against the template: Socrates is Go, so the Verify step gets
-# Go rather than Node.
+# The one change against the template (2.0): Socrates is Go, so the Verify
+# step gets Go (SETUP: go), and the Check step gets Node of its own, which
+# the template sets up only with SETUP: node.
 
 name: Update Dashboard-Style
 
@@ -32,6 +36,11 @@ concurrency:
 env:
   # Where the copy lives, relative to the repository root.
   DEST: internal/web/static/vendor/dashboard-style
+  # The toolchain of VERIFY (the template's SETUP).
+  SETUP: go
+  # The project check of the new copy (Dashboard-Style docs/install.md,
+  # "Check a project"); Node is set up for it below.
+  CHECK: 'node "$DEST/tools/check-project.mjs" --config ds-check.json'
   # Shell command that must pass before the update is committed. Runs after
   # the copy was replaced.
   VERIFY: 'go vet ./internal/web/... && go test ./internal/web/... ./internal/server/...'
@@ -64,12 +73,23 @@ jobs:
         run: |
           curl -fsSL "https://raw.githubusercontent.com/$REPO/${{ steps.compare.outputs.latest }}/scripts/vendor.sh" -o "$RUNNER_TEMP/vendor.sh"
           sh "$RUNNER_TEMP/vendor.sh" "${{ steps.compare.outputs.latest }}" "$DEST"
+          # The copy verifies itself: every file against SHA256SUMS, nothing added or linked.
+          sh "$DEST/tools/verify.sh" "$DEST"
+
+      - uses: actions/setup-node@v5
+        if: steps.compare.outputs.changed == 'true' && env.CHECK != ''
+        with:
+          node-version: 22
 
       - uses: actions/setup-go@v5
-        if: steps.compare.outputs.changed == 'true' && env.VERIFY != ''
+        if: steps.compare.outputs.changed == 'true' && env.SETUP == 'go' && env.VERIFY != ''
         with:
           go-version-file: go.mod
           cache: true
+
+      - name: Check
+        if: steps.compare.outputs.changed == 'true' && env.CHECK != ''
+        run: ${{ env.CHECK }}
 
       - name: Verify
         if: steps.compare.outputs.changed == 'true' && env.VERIFY != ''

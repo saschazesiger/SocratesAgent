@@ -84,9 +84,16 @@ vendor-ds: ## update the vendored Dashboard-Style to its latest main (or DS_REF)
 	sh "$$tmp/vendor.sh" "$(DS_REF)" "$(DS_DEST)"
 
 ## ds-check verifies the vendored copy against its SHA256SUMS (the same check
-## internal/web's tests make, so `make check` covers it).
+## internal/web's tests make, so `make check` covers it) and, where node is
+## installed, runs Dashboard-Style's project check with ds-check.json (CI and
+## the nightly update run it too).
 ds-check:
 	go test ./internal/web/ -run 'TestVendoredDashboardStyleIsUntouched' -count=1
+	@if command -v node >/dev/null 2>&1; then \
+	  node $(DS_DEST)/tools/check-project.mjs --config ds-check.json; \
+	else \
+	  echo "node is not installed: the project check is left to CI"; \
+	fi
 
 clean:
 	rm -f $(BINARY)
