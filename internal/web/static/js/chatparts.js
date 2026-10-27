@@ -1203,9 +1203,11 @@ export function lineHtml(entry, view) {
     }
     case 'command': {
       // The journal has the command, and the agent refused it after: the
-      // line says it did not run, to the browser that sent it.
+      // line says it did not run, to the browser that sent it. Refused, it
+      // carries a chip and two buttons and is a row of its own rather than
+      // a divider (.so-line--row: no hairlines, and on a phone it wraps).
       const refused = view.failedItem(l.clientId);
-      return html`<div class="ds-divider ds-divider--label so-line" data-ds-key="${key}" data-kind="command"${refused ? html` data-state="failed"` : ''}>${raw(icon('chevronRight', 16))}<span class="so-line__text so-line__command">${l.text}</span>${
+      return html`<div class="${refused ? 'so-line so-line--row' : 'ds-divider ds-divider--label so-line'}" data-ds-key="${key}" data-kind="command"${refused ? html` data-state="failed"` : ''}>${raw(icon('chevronRight', 16))}<span class="so-line__text so-line__command">${l.text}</span>${
         refused ? html`<span class="ds-status ds-status--error" data-chip="failed">${raw(icon('alertCircle', 16))}<span>Not run</span></span>${infoButton([refused.error], 'Why it did not run')}<button class="ds-btn ds-btn--quiet ds-btn--icon ds-btn--sm" type="button" data-action="outbox-drop" data-id="${refused.id}" aria-label="Dismiss" data-tip="Dismiss">${raw(icon('close', 18))}</button>` : ''
       }</div>`;
     }

@@ -48,7 +48,9 @@
  *                          [data-pinned] above the composer
  *   .so-plan, .so-ask      the plan card and the question card (DS cards)
  *   .so-line               a line between messages: a notice, a command, a
- *                          model or an account change, an interrupted turn;
+ *                          model or an account change, an interrupted turn
+ *                          (DS's labelled divider); .so-line--row a refused
+ *                          command, a row with its chip and buttons;
  *                          .so-line-alert for the ones that are alerts
  *   .so-status-mark        a part's state as an icon or the spinner
  *   .so-composer           the field (.so-composer__field), its files, the
@@ -1366,19 +1368,26 @@
 /* ── Lines between messages ──────────────────────────────────────────── */
 
 /* A line is DS's labelled divider (.ds-divider--label: the hairline on
-   both sides, the meta type), as tall as a small button, its glyph and an
-   "i" beside the words. A notice inside an answer is the agent's, not a
-   divider: it has the line's shape without the hairlines. */
+   both sides, the meta type, its gap), as tall as a small button, so a
+   line with an "i" beside its words is as tall as one without. A notice
+   inside an answer is the agent's, and a command the agent refused
+   carries its chip and two buttons (.so-line--row): neither is a divider,
+   they have the line's shape without the hairlines. */
 .so-line {
   min-height: var(--ds-space-8);
-  gap: var(--ds-space-2);
 }
 
-.so-part.so-line {
+.so-part.so-line,
+.so-line--row {
   display: flex;
   align-items: center;
+  gap: var(--ds-space-2);
   color: var(--ds-text-2);
   font: var(--ds-font-meta);
+}
+
+.so-line--row {
+  justify-content: center;
 }
 
 .so-line > svg {
@@ -1854,24 +1863,20 @@
   }
 
   /* A command that did not run carries its chip, its "i" and Dismiss,
-     which beside it would leave the command a few letters a line: no
-     hairlines, the command on a line of its own after its chevron, and the
-     chip and the buttons under its words. */
-  .so-line[data-state="failed"] {
+     which beside it would leave the command a few letters a line: the
+     command on a line of its own after its chevron, and the chip and the
+     buttons under its words. */
+  .so-line--row {
     flex-wrap: wrap;
+    justify-content: flex-start;
   }
 
-  .so-line[data-state="failed"]::before,
-  .so-line[data-state="failed"]::after {
-    content: none;
-  }
-
-  .so-line[data-state="failed"] > .so-line__text {
+  .so-line--row > .so-line__text {
     flex: 1 1 calc(100% - var(--ds-space-6));
     text-align: start;
   }
 
-  .so-line[data-state="failed"] > .ds-status {
+  .so-line--row > .ds-status {
     margin-inline-start: var(--ds-space-6);
   }
 
