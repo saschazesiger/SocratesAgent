@@ -4,8 +4,7 @@
  * closed dropdown of combobox.js. Tokens only (--ds-*, and the --so-* of the
  * "Sheet" section of theme.css); unlayered; no .ds-* component is restyled.
  *
- *   .so-ns                     the sheet itself; on a phone its question wraps rather
- *                              than losing its last words
+ *   .so-ns                     the sheet itself (its question wraps: DS's sheet title)
  *   .so-settings               the form's column of fields; a list entry's
  *                              description under its name wraps
  *     __groups                 the agents' and the tools' groups, one under the other
@@ -13,21 +12,15 @@
  *     __program                one program card (.ds-radio): its mark above its name
  *     __note                   a field's hint with a button at its end (the account's
  *                              Sign in)
- *   .so-drop                   the dropdown: a .ds-combo whose field is a button
+ *   .so-drop                   the dropdown: DS's select-only combobox
+ *                              (.ds-combo--select); __field and __value are hooks
  *   .so-limits                 an account's limit windows in the dropdown's list, each
  *                              a flat .ds-progress with its figures
  */
 
 /* A model's description and a folder's path, under its name in the list,
    are read to their end: they take more lines rather than an ellipsis. */
-.so-settings .ds-combo__meta {
-  white-space: normal;
-  overflow-wrap: anywhere;
-}
-
-/* "What should this session run?" is a question, and at 360px its last
-   words went under an ellipsis: it takes a second line instead. */
-.so-ns .ds-sheet__title {
+.so-settings .ds-combo__option .ds-combo__meta {
   white-space: normal;
   overflow-wrap: anywhere;
 }
@@ -44,10 +37,6 @@
   align-items: center;
   gap: var(--ds-space-1) var(--ds-space-2);
   min-width: 0;
-}
-
-.so-settings__note > .ds-field__hint:empty {
-  display: none;
 }
 
 /* A hint is read to its end, a preset's bare path too: it wraps, anywhere
@@ -115,48 +104,6 @@
 .so-settings__program:has(input:disabled) .so-agent {
   opacity: var(--ds-state-disabled);
   filter: grayscale(1);
-}
-
-/* ── Dropdown ────────────────────────────────────────────────────────── */
-
-/* The field and its chevron: as narrow as the row it stands in allows. */
-.so-drop {
-  min-width: 0;
-}
-
-/* The field is a button: it reads as a field, its text at the start. */
-.so-drop__field {
-  display: flex;
-  align-items: center;
-  text-align: start;
-  cursor: pointer;
-}
-
-.so-drop__face {
-  display: flex;
-  align-items: baseline;
-  gap: var(--ds-space-2);
-  min-width: 0;
-  overflow: hidden;
-  white-space: nowrap;
-}
-
-/* A long value (an account named by its e-mail, a preset's folder) ends in
-   an ellipsis rather than being cut raw at the field's edge; the meta
-   beside it gives way first. The whole of either is in the open list. */
-.so-drop__value {
-  flex: 0 1 auto;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.so-drop__meta {
-  flex: 0 1000 auto;
-  min-width: 0;
-  overflow: hidden;
-  color: var(--ds-text-2);
-  text-overflow: ellipsis;
 }
 
 /* ── Usage meters ────────────────────────────────────────────────────── */

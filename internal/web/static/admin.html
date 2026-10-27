@@ -142,7 +142,7 @@
             <div class="so-admin-actions">
               <button class="ds-btn ds-btn--text ds-btn--sm" id="updatesLogToggle" type="button" aria-expanded="false" aria-controls="updatesLog">Show log</button>
             </div>
-            <pre class="so-log" id="updatesLog" tabindex="0" hidden></pre>
+            <pre class="ds-code-block ds-code-block--wrap so-log" id="updatesLog" tabindex="0" aria-label="Update log" hidden></pre>
           </section>
 
           <section class="ds-card" id="backupCard" aria-labelledby="backupTitle">
@@ -424,9 +424,9 @@
               </div>
             </div>
 
-            <details class="ds-collapsible so-disclosure">
+            <details class="ds-collapsible ds-disclosure so-disclosure">
               <summary>Getting a Google Cloud key</summary>
-              <div class="so-disclosure__body">
+              <div class="ds-disclosure__body so-disclosure__body">
                 <ol class="so-guide-steps">
                   <li>Open the <a href="https://console.cloud.google.com/" target="_blank" rel="noopener">Google Cloud console</a> and sign in. Create a project or pick one. Billing has to be enabled on that project for the API to answer at all — Standard voices still include four million characters a month free, and only what goes beyond that is charged.</li>
                   <li>Enable the API: <code>APIs &amp; Services → Library</code>, search for “Cloud Text-to-Speech API”, press Enable — or go <a href="https://console.cloud.google.com/apis/library/texttospeech.googleapis.com" target="_blank" rel="noopener">straight to it</a>.</li>
@@ -532,7 +532,7 @@
                 <button class="ds-btn ds-btn--text" id="tunnelLogToggle" type="button" aria-expanded="false" aria-controls="tunnelLog">Show log</button>
               </div>
             </div>
-            <pre class="so-log" id="tunnelLog" tabindex="0" hidden></pre>
+            <pre class="ds-code-block ds-code-block--wrap so-log" id="tunnelLog" tabindex="0" aria-label="Tunnel log" hidden></pre>
           </section>
 
           <section class="ds-card" id="passwordCard" aria-labelledby="passwordTitle">

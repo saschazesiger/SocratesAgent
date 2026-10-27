@@ -23,7 +23,7 @@
 import {
   api, el, toast, isOffline, errorMessage, onWake, infoTip, confirmDialog, alertDialog, promptDialog, openDialog,
 } from './api.js';
-import { DS, M, html, raw, icon, iconEl, morph, flipMorph, watchScrolled, ms, setFaceLabel, faces } from './ui.js';
+import { DS, M, html, raw, icon, iconEl, morph, flipMorph, ms, faces } from './ui.js';
 import { agentMark } from './logos.js';
 import { speak, speechKind, setVoiceKey } from './voice.js';
 import { combobox } from './combobox.js';
@@ -32,14 +32,6 @@ import * as harnesses from './harnesses.js';
 import * as accounts from './accounts.js';
 
 const $ = (id) => document.getElementById(id);
-
-// busy is DS.motion.busy for one button: it says it is working while the
-// work runs, shows its done face when it has one, and hands the result - or
-// the failure - back to the caller.
-function busy(button, work) {
-  const done = !!button.querySelector('.ds-btn__face--done');
-  return M.busy(button, work, { done });
-}
 
 // facedButton is a button built in script with the busy face (and the done
 // face, when `doneLabel` is given) of the ones in admin.html.
@@ -308,7 +300,8 @@ function wireFrame() {
   const drawer = $('adminNav');
   const menu = $('menuBtn');
   const view = $('main');
-  watchScrolled(view, app);
+  // The top bar's hairline while the view is scrolled (DS App frame).
+  DS.dom.watchScrolled(view);
   fitDrawer();
   DS.indicator.createIndicator($('adminNavList'), { active: '[aria-current="page"]', className: 'ds-drawer__indicator' });
   menu.addEventListener('click', () => {
@@ -531,69 +524,14 @@ function readPresets() {
 
 /* ------------------------------------------------------------ reordering */
 
-// gripButton moves its row through the list it is in: dragged with a mouse
-// or a finger, or with the arrow keys once it has the focus. `done(host,
-// before)` runs the moment it is let go, with the order it started from;
-// the order is the rows' data-id.
-function gripButton(label, rowSelector, done) {
-  const grip = el('button', {
-    class: 'ds-btn ds-btn--quiet ds-btn--icon ds-btn--sm so-grip', type: 'button',
+// gripButton is a row's drag handle (DS .ds-grip): DS.motion.sortable on
+// the list moves the row by pointer, finger or arrow keys, says where it
+// went, and tells the list's onChange once it is let go.
+function gripButton(label) {
+  return el('button', {
+    class: 'ds-btn ds-btn--quiet ds-btn--icon ds-btn--sm ds-grip so-grip', type: 'button',
     'aria-label': label + ' (arrow keys)', 'data-tip': 'Drag to reorder',
   }, iconEl('grip', 18));
-  const order = (host) => [...host.querySelectorAll(rowSelector)].map((row) => row.dataset.id);
-  grip.addEventListener('keydown', (event) => {
-    if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return;
-    event.preventDefault();
-    const row = grip.closest(rowSelector);
-    const host = row.parentElement;
-    const before = order(host);
-    const prev = row.previousElementSibling;
-    const next = row.nextElementSibling;
-    M.flip(host, () => {
-      if (event.key === 'ArrowUp' && prev && prev.matches(rowSelector)) prev.before(row);
-      else if (event.key === 'ArrowDown' && next && next.matches(rowSelector)) next.after(row);
-    });
-    grip.focus();
-    done(host, before);
-  });
-  grip.addEventListener('pointerdown', (event) => {
-    if (event.button !== 0) return;
-    event.preventDefault();
-    const row = grip.closest(rowSelector);
-    const host = row.parentElement;
-    const before = order(host);
-    row.dataset.state = 'dragging';
-    // The row follows the pointer through the list: it goes before the first
-    // other row whose middle is below the pointer, or to the end. Moving the
-    // row takes it out of the document for a moment, which ends any pointer
-    // capture, so the pointer is followed on the window instead.
-    const move = (e) => {
-      if (e.pointerId !== event.pointerId) return;
-      const rows = [...host.querySelectorAll(rowSelector)];
-      const target = rows.find((other) => {
-        if (other === row) return false;
-        const box = other.getBoundingClientRect();
-        return e.clientY < box.top + box.height / 2;
-      });
-      if (target) {
-        if (row.nextElementSibling !== target) M.flip(host, () => target.before(row));
-      } else if (rows[rows.length - 1] !== row) {
-        M.flip(host, () => rows[rows.length - 1].after(row));
-      }
-    };
-    const end = (e) => {
-      if (e.pointerId !== event.pointerId) return;
-      window.removeEventListener('pointermove', move);
-      window.removeEventListener('pointerup', end);
-      window.removeEventListener('pointercancel', end);
-      delete row.dataset.state;
-      done(host, before);
-    };
-    window.addEventListener('pointermove', move);
-    window.addEventListener('pointerup', end);
-    window.addEventListener('pointercancel', end);
-  });
-  return grip;
 }
 
 /* -------------------------------------------------------------- accounts */
@@ -623,6 +561,7 @@ function renderAccounts() {
     const rows = el('div', { class: 'so-rows', 'data-agent': agentId },
       list.length ? list.map(accountRow)
         : el('p', { class: 'ds-meta', text: 'No ' + harnesses.label(agentId) + ' account yet.' }));
+    M.sortable(rows, { items: '.so-account', onChange: () => saveAccountOrder() });
     const add = el('button', {
       class: 'ds-btn ds-btn--text ds-add-row', type: 'button', 'data-agent': agentId,
       onclick: async (event) => {
@@ -685,7 +624,7 @@ function accountRow(account) {
     'aria-label': 'Delete ' + account.label, 'data-tip': 'Delete',
     onclick: (event) => deleteAccount(account, event.currentTarget),
   }, iconEl('trash', 18)));
-  const grip = gripButton('Move ' + account.label, '.so-account', saveAccountOrder);
+  const grip = gripButton('Move ' + account.label);
   return el('div', { class: 'so-account', 'data-id': account.id, 'data-account-state': account.state },
     grip, el('div', { class: 'so-account__main' }, name, state, meters),
     el('div', { class: 'so-account__actions' }, actions));
@@ -951,7 +890,7 @@ function renderUpdates(data) {
   updatesRunning = running;
   const button = $('updatesRun');
   button.disabled = running;
-  setFaceLabel(button, running ? 'Updating…' : 'Update now');
+  M.setLabel(button, running ? 'Updating…' : 'Update now');
 
   clearTimeout(updatesTimer);
   updatesTimer = setTimeout(pollUpdates, running ? 3000 : 60000);
@@ -1001,7 +940,7 @@ function watchUpdatesCard() {
 async function runUpdates() {
   const button = $('updatesRun');
   try {
-    await busy(button, api('/api/updates/run', { method: 'POST', body: {} }));
+    await M.busy(button, api('/api/updates/run', { method: 'POST', body: {} }));
     const last = updatesLast && updatesLast.status;
     updatesAwaiting = { before: (last && last.started_at) || '', until: Date.now() + 30000 };
     toast('Update started');
@@ -1221,12 +1160,13 @@ function modelList(harness) {
   const known = (id) => (harness.models || []).find((m) => m.id === id) || null;
 
   const rows = el('div', { class: 'so-rows' });
-  const reorder = (host, before) => {
-    const order = [...host.querySelectorAll('.so-model')].map((row) => row.dataset.id);
-    if (order.join('\n') === before.join('\n')) return;
-    const list = picks();
-    setPath(settings, path, order.map((id) => list.find((p) => p.id === id)).filter(Boolean));
-  };
+  M.sortable(rows, {
+    items: '.so-model',
+    onChange: (order) => {
+      const list = picks();
+      setPath(settings, path, order.map((row) => list.find((p) => p.id === row.dataset.id)).filter(Boolean));
+    },
+  });
   function render() {
     const list = picks();
     if (!list.length) {
@@ -1253,7 +1193,7 @@ function modelList(harness) {
         onclick: () => { setPath(settings, path, picks().filter((p) => p.id !== pick.id)); render(); },
       }, iconEl('trash', 18));
       return el('div', { class: 'so-model', 'data-id': pick.id },
-        gripButton('Move ' + pick.id, '.so-model', reorder),
+        gripButton('Move ' + pick.id),
         el('div', { class: 'so-model__name' },
           el('span', { class: 'so-ellipsis', text: model ? (model.label || pick.id) : pick.id }),
           el('span', { class: 'ds-meta so-ellipsis', text: model ? (model.hint || pick.id)
@@ -1298,7 +1238,7 @@ function modelList(harness) {
   return el('div', { class: 'ds-field' },
     el('label', { class: 'ds-field__label', for: input.id, text: 'Models offered in the sheet' }),
     rows,
-    el('div', { class: 'so-field-row' }, dictated(picker.node, input),
+    el('div', { class: 'ds-field__row' }, dictated(picker.node, input),
       el('button', { class: 'ds-btn', type: 'button', text: 'Add', id: 'add-model-' + harness.id, onclick: add })),
     el('small', { class: 'ds-field__hint', text: (harness.models || []).length
       ? 'Pick from what ' + harness.label + ' reports or type an id, and set the effort a new session starts on. '
@@ -1361,7 +1301,7 @@ async function save() {
   const work = api('/api/settings', { method: 'PUT', attempts: 4, body: { settings: next } });
   try {
     // Both Save buttons are one action, and they say so together.
-    const [data] = await Promise.all([busy($('saveTop'), work), busy($('saveBottom'), work)]);
+    const [data] = await Promise.all([M.busy($('saveTop'), work), M.busy($('saveBottom'), work)]);
     settings = data.settings;
     fillForm();
     syncModelPickers();
@@ -1440,7 +1380,7 @@ async function testVoice() {
     ? 'So klingt Socrates, wenn dir eine Antwort im Freisprechmodus vorgelesen wird.'
     : 'This is how Socrates will read answers to you in audio mode.';
   try {
-    await busy($('testVoice'), () => speak(sample));
+    await M.busy($('testVoice'), () => speak(sample));
     showVoiceStatus(true, 'The sample was rendered by Google and played here.');
   } catch (err) {
     // Every press answers, whether or not this reason has been seen before:
@@ -1456,7 +1396,7 @@ async function testVoice() {
 // the same key restriction as speaking does, and it renders nothing.
 async function checkVoiceKey() {
   try {
-    const data = await busy($('checkVoiceKey'), api('/api/voice/check', { method: 'POST' }));
+    const data = await M.busy($('checkVoiceKey'), api('/api/voice/check', { method: 'POST' }));
     showVoiceStatus(!!data.ok, data.detail || '');
   } catch (err) {
     showVoiceStatus(false, errorMessage(err));
@@ -1517,7 +1457,7 @@ function renderTunnelStatus(status) {
     log.textContent = (status.logs || []).join('\n') || 'no output yet';
     log.scrollTop = log.scrollHeight;
   }
-  setFaceLabel($('tunnelStart'), status.state === 'stopped' ? 'Start tunnel' : 'Restart tunnel');
+  M.setLabel($('tunnelStart'), status.state === 'stopped' ? 'Start tunnel' : 'Restart tunnel');
   $('tunnelStop').disabled = status.state === 'stopped';
 
   const installButton = $('tunnelInstall');
@@ -1580,7 +1520,7 @@ async function refreshTunnel() {
 
 async function startTunnel() {
   try {
-    const data = await busy($('tunnelStart'), api('/api/tunnel/start', { method: 'POST', body: { tunnel: tunnelForm() } }));
+    const data = await M.busy($('tunnelStart'), api('/api/tunnel/start', { method: 'POST', body: { tunnel: tunnelForm() } }));
     settings.tunnel = data.tunnel;
     renderTunnelStatus(data.status || {});
     toast('Tunnel starting');
@@ -1594,7 +1534,7 @@ async function installCloudflared() {
   if ($('tunnelLog').hidden) toggleLog('tunnelLogToggle', 'tunnelLog', refreshTunnel);
   else refreshTunnel();
   try {
-    const data = await busy($('tunnelInstall'), api('/api/tunnel/install', { method: 'POST', body: {} }));
+    const data = await M.busy($('tunnelInstall'), api('/api/tunnel/install', { method: 'POST', body: {} }));
     renderTunnelStatus(data.status || {});
     toast('cloudflared installed', 'success');
   } catch (err) {
@@ -1606,7 +1546,7 @@ async function installCloudflared() {
 
 async function stopTunnel() {
   try {
-    const data = await busy($('tunnelStop'), api('/api/tunnel/stop', { method: 'POST', body: {} }));
+    const data = await M.busy($('tunnelStop'), api('/api/tunnel/stop', { method: 'POST', body: {} }));
     settings.tunnel = data.tunnel;
     renderTunnelStatus(data.status || {});
     toast('Tunnel stopped');
@@ -1871,7 +1811,7 @@ async function deleteLegacy(button) {
   });
   if (!yes) return;
   try {
-    const data = await busy(button, api('/api/backup/legacy', { method: 'DELETE', attempts: 1, timeout: 600000 }));
+    const data = await M.busy(button, api('/api/backup/legacy', { method: 'DELETE', attempts: 1, timeout: 600000 }));
     toast('Deleted ' + data.deleted + (data.deleted === 1 ? ' old object.' : ' old objects.'), 'success');
   } catch (err) {
     toast(firstSentence(errorMessage(err)), 'error');
@@ -1895,7 +1835,7 @@ function backupBody() {
 
 async function testBackup() {
   try {
-    const data = await busy($('backupTest'), api('/api/backup/test', { method: 'POST', body: backupBody() }));
+    const data = await M.busy($('backupTest'), api('/api/backup/test', { method: 'POST', body: backupBody() }));
     const result = data.result || {};
     if (!result.ok) toast(firstSentence(result.error || 'The bucket did not answer.'), 'error');
     else toast(result.found ? 'The bucket answers and the passphrase opens its backup (' + result.latency_ms + ' ms)'
@@ -1912,7 +1852,7 @@ async function saveBackup() {
     return;
   }
   try {
-    const data = await busy($('backupSave'), api('/api/backup/config', { method: 'PUT', body }));
+    const data = await M.busy($('backupSave'), api('/api/backup/config', { method: 'PUT', body }));
     toast('Backup settings saved', 'success');
     if (data.status) renderBackup(data.status, true);
     loadSnapshots();
@@ -1947,7 +1887,7 @@ async function turnBackupOff() {
 
 async function runBackup() {
   try {
-    const data = await busy($('backupRun'), api('/api/backup/run', { method: 'POST', body: {} }));
+    const data = await M.busy($('backupRun'), api('/api/backup/run', { method: 'POST', body: {} }));
     if (data.status) renderBackup(data.status);
   } catch (err) {
     toast(errorMessage(err), 'error');
@@ -1988,7 +1928,7 @@ function checkRow(check) {
 
 async function runChecks() {
   try {
-    const data = await busy($('runChecks'), api('/api/diagnostics', { method: 'POST', body: {} }));
+    const data = await M.busy($('runChecks'), api('/api/diagnostics', { method: 'POST', body: {} }));
     const checks = data.checks || [];
     $('checks').replaceChildren(...checks.map(checkRow));
     $('checksTable').hidden = !checks.length;
@@ -2005,7 +1945,7 @@ async function changePassword() {
     return;
   }
   try {
-    await busy($('changePw'), api('/api/settings/password', { method: 'POST', body: { current, next } }));
+    await M.busy($('changePw'), api('/api/settings/password', { method: 'POST', body: { current, next } }));
     $('pwCurrent').value = '';
     $('pwNext').value = '';
     toast('Password changed', 'success');

@@ -98,12 +98,13 @@ export function combobox(options = {}) {
 
   const isOpen = () => input.getAttribute('aria-expanded') === 'true';
 
-  // refresh hides the arrow while there is nothing to list (and closes a
-  // list that has emptied), and answers whether there is anything.
+  // refresh takes the arrow out while there is nothing to list - DS keeps
+  // no room for a toggle that is not there - (and closes a list that has
+  // emptied), and answers whether there is anything.
   function refresh() {
     const none = !(items() || []).length;
-    toggle.hidden = none;
-    node.toggleAttribute('data-unlisted', none);
+    if (none) toggle.remove();
+    else if (!toggle.isConnected) input.after(toggle);
     if (none && isOpen()) close();
     return !none;
   }
@@ -312,8 +313,9 @@ export function combobox(options = {}) {
  * options.renderItem   (item, chosen) => html`` markup, the inside of an
  *                      entry in the open list (.ds-combo__name and
  *                      .ds-combo__meta, and whatever else it needs)
- * options.renderValue  (item) => html`` markup, what the closed field shows;
- *                      the entry's label when left out
+ * options.renderValue  (item) => html`` markup, what the closed field shows:
+ *                      a .ds-combo__value and, when it has one, a
+ *                      .ds-combo__meta; the entry's label when left out
  * options.label        the field's accessible name
  * options.id           the field's id, for a <label for>
  *
@@ -325,7 +327,7 @@ export function dropdown(options = {}) {
     onChange = () => {},
     items = () => [],
     renderItem = (item) => html`<span class="ds-combo__name">${item.label || item.value}</span>`,
-    renderValue = (item) => html`${item.label || item.value}`,
+    renderValue = (item) => html`<span class="ds-combo__value">${item.label || item.value}</span>`,
     label = '',
     id: fieldId = '',
   } = options;
@@ -335,18 +337,19 @@ export function dropdown(options = {}) {
   let all = [];
   let active = -1;
 
-  const face = el('span', { class: 'so-drop__face' });
+  // DS's select-only combobox: the field is a button that holds the value
+  // and its meta (.ds-combo__value, .ds-combo__meta) in one row.
   const button = el('button', {
     class: 'ds-input ds-combo__input so-drop__field', type: 'button', id: fieldId || null,
     role: 'combobox', 'aria-haspopup': 'listbox', 'aria-expanded': 'false', 'aria-controls': id + '-list',
     'aria-label': label || null,
-  }, face);
+  });
   const toggle = el('button', {
     class: 'ds-combo__toggle', type: 'button', tabindex: '-1', 'aria-label': 'Show all', 'data-tip': 'Show all',
   }, iconEl('chevronDown', 20));
   const list = el('ul', { class: 'ds-combo__list', id: id + '-list', role: 'listbox', 'aria-label': label || null });
   const popup = el('div', { class: 'ds-combo__popup', hidden: true }, list);
-  const node = el('div', { class: 'ds-combo so-drop' }, button, toggle, popup);
+  const node = el('div', { class: 'ds-combo ds-combo--select so-drop' }, button, toggle, popup);
 
   const isOpen = () => button.getAttribute('aria-expanded') === 'true';
   const chosenItem = () => (items() || []).find((item) => item.value === current) || null;
@@ -356,7 +359,7 @@ export function dropdown(options = {}) {
 
   function drawFace() {
     const item = chosenItem();
-    morph(face, item ? renderValue(item) : '');
+    morph(button, item ? renderValue(item) : '');
   }
 
   function setValue(next, notify = true) {

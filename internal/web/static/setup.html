@@ -26,8 +26,9 @@
 <script src="/static/vendor/dashboard-style/ds.js" defer></script>
 </head>
 <body>
-<main class="so-auth">
-  <div class="ds-card so-auth__card">
+<main class="ds-auth">
+  <div class="ds-auth__alert so-conn" id="connSlot" hidden></div>
+  <div class="ds-card ds-card--elevated ds-auth__card so-auth__card">
     <img class="so-logo" src="/static/img/logo.png" alt="" width="32" height="32">
 
     <!-- A new installation: the password. -->
@@ -50,14 +51,14 @@
         </div>
         <div class="ds-subsection">
           <div class="ds-field">
-            <label class="ds-field__label" for="key">OpenRouter API key <span class="so-optional">· optional</span></label>
+            <label class="ds-field__label" for="key">OpenRouter API key <span class="ds-field__optional">· optional</span></label>
             <input class="ds-input" type="password" id="key" placeholder="sk-or-v1-…" autocomplete="off" enterkeyhint="done" aria-describedby="keyHint">
             <small class="ds-field__hint" id="keyHint">It transcribes what you dictate and writes the spoken status and the chats' names, and with the turn outcome switched on it checks each chat's turn — which sends the chat's last instruction, answer, calls and task list to OpenRouter. The coding agents bring their own accounts, and the voice that reads answers out loud has a key of its own in Admin → Voice. Get one at openrouter.ai/keys — you can also add it later.</small>
           </div>
         </div>
         <div class="ds-subsection">
           <div class="ds-field">
-            <label class="ds-field__label" for="tunnelMode">Reach it from outside <span class="so-optional">· optional</span></label>
+            <label class="ds-field__label" for="tunnelMode">Reach it from outside <span class="ds-field__optional">· optional</span></label>
             <select class="ds-input" id="tunnelMode" aria-describedby="tunnelHint">
               <option value="off">Local only</option>
               <option value="quick">Quick tunnel</option>
@@ -116,7 +117,7 @@
           </div>
         </div>
         <div class="ds-field">
-          <label class="ds-field__label" for="rPrefix">Prefix <span class="so-optional">· optional</span></label>
+          <label class="ds-field__label" for="rPrefix">Prefix <span class="ds-field__optional">· optional</span></label>
           <input class="ds-input" type="text" id="rPrefix" spellcheck="false" enterkeyhint="next" placeholder="backup/v1" aria-describedby="rPrefixHint">
           <small class="ds-field__hint" id="rPrefixHint">The folder in the bucket the backup was written to, as Admin → Backup showed it.</small>
         </div>
@@ -180,7 +181,7 @@
 <div class="ds-toasts" id="toasts"></div>
 <script type="module">
 import { api, errorMessage, infoTip } from '/static/js/api.js';
-import { M, icon, html, raw, morph } from '/static/js/ui.js';
+import { DS, M, icon, html, raw, morph } from '/static/js/ui.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -522,16 +523,13 @@ async function following(restore) {
 function drawProgress(state) {
   const p = state.progress || {};
   const box = $('restoreProgress');
-  const track = box.querySelector('.ds-progress__track');
   if (!p.bytes && !p.files) {
     $('restoreLabel').textContent = 'Preparing';
     return;
   }
-  const share = p.bytes ? p.bytes_done / p.bytes : p.files_done / Math.max(1, p.files);
-  box.classList.remove('ds-progress--indeterminate');
-  box.style.setProperty('--ds-progress', String(Math.min(1, share)));
-  track.setAttribute('aria-valuenow', String(Math.round(share * 100)));
-  track.removeAttribute('aria-valuetext');
+  const share = Math.min(1, p.bytes ? p.bytes_done / p.bytes : p.files_done / Math.max(1, p.files));
+  // The share and its ARIA in one call: the bar stops waiting.
+  DS.dom.progress(box, share);
   $('restoreLabel').textContent = Math.round(share * 100) + '%';
   $('restoreDetail').textContent = p.files_done + ' of ' + p.files + ' files · ' + bytes(p.bytes_done) + ' of ' + bytes(p.bytes);
 }

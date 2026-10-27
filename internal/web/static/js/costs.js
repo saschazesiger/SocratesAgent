@@ -16,9 +16,10 @@ import * as harnesses from './harnesses.js';
 
 const $ = (id) => document.getElementById(id);
 
-// The categorical slots, in their validated order (the --so-series-* of
-// theme.css): a model keeps its slot by its all-time rank, so a filter never
-// repaints it. Everything past the fourth is one quiet "Other".
+// The categorical slots, in their order (DS's chart roles --ds-chart-1 to
+// --ds-chart-4): a model keeps its slot by its all-time rank, so a filter
+// never repaints it. Everything past the fourth is one quiet "Other"
+// (--ds-chart-neutral).
 const SERIES = 4;
 
 const HARNESS = { claude: 'Claude Code', codex: 'Codex', opencode: 'OpenCode' };
@@ -430,6 +431,12 @@ function seriesKey(slot) {
   return slot < SERIES ? String(slot + 1) : 'other';
 }
 
+// keyHtml is a series' key, DS's legend key in its chart role.
+const KEY_TONE = ['', ' ds-legend__key--s2', ' ds-legend__key--s3', ' ds-legend__key--s4'];
+function keyHtml(slot) {
+  return html`<span class="${'ds-legend__key' + (slot < SERIES ? KEY_TONE[slot] : ' ds-legend__key--neutral')}"></span>`;
+}
+
 // px is a length token of the chart's box in pixels.
 function px(box, token, fallback) {
   const value = parseFloat(getComputedStyle(box).getPropertyValue(token));
@@ -496,7 +503,7 @@ function drawChart(filtered, range) {
 
   // A legend for two series or more; one series is named by the title.
   morph($('chartLegend'), slots.length > 1
-    ? html`${slots.map((slot) => html`<span class="so-costs-key"><span class="so-swatch" data-series="${seriesKey(slot)}"></span><span>${slotName(slot)}</span></span>`)}`
+    ? html`${slots.map((slot) => html`<li>${keyHtml(slot)}<span>${slotName(slot)}</span></li>`)}`
     : '');
 
   // As wide as its card's content and no wider: a floor of 280 ran 24px past
@@ -573,7 +580,7 @@ function drawChart(filtered, range) {
     const title = monthly ? monthLong.format(dayFromKey(b.key)) : dayLong.format(dayFromKey(b.key));
     const lines = [...b.models.entries()].sort((a, c) => c[1] - a[1]);
     morph(tip, html`<p class="so-chart-tip__title">${title}</p><p class="so-chart-tip__total">${money(b.total)}</p>${
-      lines.slice(0, 6).map(([model, cost]) => html`<p class="so-chart-tip__row"><span class="so-swatch" data-series="${seriesKey(seriesOf(model))}"></span><span class="so-chart-tip__name">${modelName(model)}</span><span class="so-chart-tip__value">${money(cost)}</span></p>`)}${
+      lines.slice(0, 6).map(([model, cost]) => html`<p class="so-chart-tip__row">${keyHtml(seriesOf(model))}<span class="so-chart-tip__name">${modelName(model)}</span><span class="so-chart-tip__value">${money(cost)}</span></p>`)}${
       lines.length > 6 ? html`<p class="so-chart-tip__more">and ${lines.length - 6} more</p>` : ''}`);
     tip.hidden = false;
     const rect = box.getBoundingClientRect();
@@ -622,10 +629,9 @@ function table(id, groups, { column, name, sub, onPick, picked, href, limit = LI
   const shown = open ? groups : groups.slice(0, limit);
   const peak = groups.reduce((m, g) => Math.max(m, g.cost), 0);
   // A row that opens its chat is pressed whole, not by its 18px of text: the
-  // link stretches over its row (ds-table__row-link). When every row opens
-  // something the table is DS's interactive one; when some have nothing to
-  // open (a session deleted, a conversation from outside Socrates) only the
-  // rows that do are (so-costs-links).
+  // link stretches over its row (ds-table__row-link) in DS's interactive
+  // table, whose rows without a link - a session deleted, a conversation
+  // from outside Socrates - stay plain.
   const linked = href ? shown.filter((g) => href(g)).length : 0;
   const rowsOpen = onPick || (linked > 0 && linked === shown.length);
   const rows = shown.map((g, i) => {
@@ -641,14 +647,14 @@ function table(id, groups, { column, name, sub, onPick, picked, href, limit = LI
         ? html`<a class="ds-link-btn ds-table__row-link" href="${target}">${label}</a>`
         : html`<span>${label}</span>`;
     return html`<tr data-ds-key="${'k:' + g.key}"${on ? raw(' class="ds-table__row--selected"') : ''}>
-      <td class="ds-col--text so-costs-name">${lead}${detail ? html`<small class="so-costs-sub">${detail}</small>` : ''}<span class="so-costs-bar" aria-hidden="true"><span style="--so-share: ${peak ? (g.cost / peak).toFixed(4) : 0}"></span></span></td>
+      <td class="ds-col--text so-costs-name">${lead}${detail ? html`<small class="so-costs-sub">${detail}</small>` : ''}<span class="ds-meter so-costs-bar" aria-hidden="true" style="${'--ds-share: ' + (peak ? (g.cost / peak).toFixed(4) : 0)}"></span></td>
       <td class="ds-num"><strong>${money(g.cost)}</strong></td>
       <td class="ds-num ds-col--secondary">${pct(g.cost / total)}</td>
       <td class="ds-num ds-col--secondary" title="${`${g.input.toLocaleString()} in · ${g.output.toLocaleString()} out · ${g.cacheRead.toLocaleString()} cache read · ${g.cacheWrite.toLocaleString()} cache write`}">${tokens(used)}</td>
       <td class="ds-num ds-col--secondary">${g.requests.toLocaleString()}</td>
     </tr>`;
   });
-  morph(box, html`<div class="ds-table-wrap"><table class="ds-table ds-table--dense so-costs-table${rowsOpen ? ' ds-table--interactive' : (linked ? ' so-costs-links' : '')}">
+  morph(box, html`<div class="ds-table-wrap"><table class="ds-table ds-table--dense so-costs-table${rowsOpen || linked ? ' ds-table--interactive' : ''}">
     <thead><tr>
       <th scope="col">${column}</th><th scope="col" class="ds-num">Cost</th><th scope="col" class="ds-num ds-col--secondary">Share</th>
       <th scope="col" class="ds-num ds-col--secondary">Tokens</th><th scope="col" class="ds-num ds-col--secondary">Requests</th>

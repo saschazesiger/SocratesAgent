@@ -19,16 +19,17 @@
  *   .so-account        one account: grip, __main (__name, __state, __meters),
  *                      __actions; data-account-state is its state
  *   .so-model          one model of a short list: grip, __name, effort, remove
- *   .so-grip           the drag handle of a row; the row being dragged
- *                      carries data-state="dragging"
+ *   .so-grip           the drag handle of a row (DS .ds-grip, a hook for the
+ *                      tests); DS.motion.sortable raises the dragged row
  *   .so-program        a program's card: __name (mark and label), __state
  *   .so-cell-name      a table cell's name with its mark; .so-cell-more the
  *                      quiet line under it
  *   .so-check          a setup check row: __label, __summary, __tip
  *   .so-col-status, .so-col-tip  stable widths for columns with live values
- *   .so-log            a log tail
- *   .so-disclosure     <details class="ds-collapsible so-disclosure">: the
- *                      summary row and __body; .so-guide-steps its numbered steps
+ *   .so-log            a log tail (a wrapped DS code block)
+ *   .so-disclosure     <details class="ds-collapsible ds-disclosure
+ *                      so-disclosure">: DS's disclosure, __body a column;
+ *                      .so-guide-steps its numbered steps
  */
 
 /* ── Frame ───────────────────────────────────────────────────────────── */
@@ -268,31 +269,6 @@
   color: var(--ds-text);
 }
 
-.so-grip {
-  cursor: grab;
-  touch-action: none;
-}
-
-.so-account[data-state="dragging"],
-.so-model[data-state="dragging"] {
-  position: relative;
-  z-index: var(--ds-z-raised);
-  border-color: transparent;
-  border-radius: var(--ds-radius-sm);
-  box-shadow: var(--ds-elev-2);
-}
-
-:is(.so-account, .so-model)[data-state="dragging"] .so-grip {
-  cursor: grabbing;
-}
-
-/* Touch mode: the account rows' small buttons - sign in, "i", rename,
-   delete, the grip - are a finger's target, as in a chat (so-chat.css). */
-.ds-theme.so-touch .so-account .ds-btn--sm {
-  --ds-btn-height: var(--so-touch-target);
-  --ds-btn-icon-size: var(--so-touch-target);
-}
-
 /* Touch mode: a head button (Update now, Run checks) is 48px, and DS hangs
    it out of the title's line by half the difference, which left it 4px from
    the card's top border on a phone. A taller title line (the DS hook) keeps
@@ -353,50 +329,21 @@
 
 /* ── Logs ────────────────────────────────────────────────────────────── */
 
+/* A log is DS's code block, its long lines wrapped; it tails, so it keeps
+   to a height and scrolls (the block's own ring for the keyboard). */
 .so-log {
   max-height: var(--so-log-max-height);
-  margin: 0;
-  padding: var(--ds-space-3) var(--ds-space-4);
-  overflow: auto;
-  border-radius: var(--ds-radius-sm);
-  background: var(--ds-code-bg);
-  color: var(--ds-text);
-  font: var(--ds-font-code);
-  white-space: pre-wrap;
+  overflow-y: auto;
   overflow-wrap: anywhere;
-}
-
-.so-log:focus-visible {
-  outline: var(--ds-focus-outline);
-  outline-offset: var(--ds-focus-offset);
 }
 
 /* ── Disclosure ──────────────────────────────────────────────────────── */
 
-.so-disclosure > summary {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--ds-space-2);
-  font: var(--ds-font-label);
-  color: var(--ds-text);
-  cursor: pointer;
-  border-radius: var(--ds-radius-xs);
-}
-
-/* A finger's target in touch mode, like every other control. */
-.ds-theme.so-touch .so-disclosure > summary {
-  min-height: var(--so-touch-target);
-}
-
-.so-disclosure > summary:focus-visible {
-  outline: var(--ds-focus-outline);
-  outline-offset: var(--ds-focus-offset);
-}
-
+/* DS's disclosure (.ds-disclosure: the summary pill, a finger's height in
+   touch mode, the chevron admin.js adds); its body a column of steps. */
 .so-disclosure__body {
   display: grid;
   gap: var(--ds-space-3);
-  margin-top: var(--ds-space-3);
 }
 
 .so-guide-steps {

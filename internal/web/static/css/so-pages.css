@@ -3,51 +3,30 @@
  * read tokens only (--ds-* and the --so-* of theme.css), are unlayered, and
  * never restyle a .ds-* component.
  *
- *   .so-auth           the sign-in and setup page: one card centred on the
- *                      backdrop, the connection alert above it
- *   .so-auth__card     that card, --so-auth-width wide
+ *   .so-auth__card     the card of DS's sign-in page (.ds-auth): its rhythm
  *   .so-auth__submit   the card's one main action, the width of the card
- *   .so-optional       the quiet "optional" after a field's label
  *   .so-restore-offer  setup's offer to restore from a backup instead: a
  *                      line and its button
  *   .so-restore-pick   the snapshots of a backup and the button that
  *                      restores the one chosen
  *   .so-costs-*        the costs page: its head actions, the filters, the
- *                      chart and its tip, the share bar of a table row
+ *                      chart (its series in DS's chart roles, its legend
+ *                      DS's) and its tip, a table row's share (a DS meter)
  */
 
 /* ── Sign-in and setup ───────────────────────────────────────────────── */
 
-.so-auth {
-  display: flex;
-  flex-direction: column;
-  min-height: 100vh;
-  min-height: 100dvh;
-  padding: var(--ds-space-6) var(--ds-space-4);
-  padding-top: max(var(--ds-space-6), env(safe-area-inset-top));
-  padding-bottom: max(var(--ds-space-6), env(safe-area-inset-bottom));
-  box-sizing: border-box;
-}
-
-/* The connection alert reaches across the page above the card. */
-.so-auth > .so-conn {
-  margin: calc(-1 * var(--ds-space-6)) calc(-1 * var(--ds-space-4)) var(--ds-space-4);
-}
-
-/* Prose and values in the card (a key's hint, a bucket's address, a
-   snapshot's machine) break anywhere rather than run past it at 320. */
+/* DS's sign-in page (.ds-auth: one elevated card centred on the backdrop,
+   the connection alert in its slot above). Prose and values in the card (a
+   key's hint, a bucket's address, a snapshot's machine) break anywhere
+   rather than run past it at 320; the card spaces its children itself,
+   through the grid's gap. */
 .so-auth__card {
   display: grid;
   gap: var(--ds-space-5);
   overflow-wrap: anywhere;
-  inline-size: 100%;
-  max-inline-size: var(--so-auth-width);
-  margin: auto;
-  box-sizing: border-box;
-  box-shadow: var(--ds-elev-1);
 }
 
-/* The card spaces its children itself, through the grid's gap. */
 .so-auth__card > * + * {
   margin-top: 0;
 }
@@ -61,13 +40,10 @@
   gap: var(--ds-space-5);
 }
 
+/* The card's one main action takes its width, as DS's does in a form's
+   actions; here it is the form's last child. */
 .so-auth__submit {
   inline-size: 100%;
-}
-
-.so-optional {
-  color: var(--ds-text-3);
-  font-weight: var(--ds-weight-regular);
 }
 
 .so-restore-offer,
@@ -92,6 +68,12 @@
   display: grid;
   gap: var(--ds-space-5);
   min-width: 0;
+}
+
+/* The four figures stay two a row on a phone, as they were before DS's
+   tiles took one a row there: a figure here is short ("$12.40"). */
+.so-costs-tiles {
+  --ds-tile-min-width: var(--so-costs-tile-min);
 }
 
 .so-costs-actions {
@@ -123,40 +105,19 @@
   margin: 0;
 }
 
-/* The legend of the chart: a swatch and a model per series. */
-.so-costs-legend {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--ds-space-1) var(--ds-space-4);
-  color: var(--ds-text-2);
-  font: var(--ds-font-meta);
-}
-
+/* The legend of the chart: DS's legend, a key and a model per series; no
+   room while there is one series (the title names it). */
 .so-costs-legend:empty {
   display: none;
 }
 
-.so-costs-key {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--ds-space-2);
-  min-width: 0;
-}
-
-.so-swatch {
-  display: inline-block;
-  flex: none;
-  inline-size: var(--so-swatch-size);
-  block-size: var(--so-swatch-size);
-  border-radius: var(--ds-radius-xs);
-  background: var(--so-series, var(--so-series-other));
-}
-
-[data-series="1"] { --so-series: var(--so-series-1); }
-[data-series="2"] { --so-series: var(--so-series-2); }
-[data-series="3"] { --so-series: var(--so-series-3); }
-[data-series="4"] { --so-series: var(--so-series-4); }
-[data-series="other"] { --so-series: var(--so-series-other); }
+/* The series in DS's chart roles, in their fixed order; past the fourth,
+   one neutral "Other". */
+[data-series="1"] { --so-series: var(--ds-chart-1); }
+[data-series="2"] { --so-series: var(--ds-chart-2); }
+[data-series="3"] { --so-series: var(--ds-chart-3); }
+[data-series="4"] { --so-series: var(--ds-chart-4); }
+[data-series="other"] { --so-series: var(--ds-chart-neutral); }
 
 /* The stacked bar chart (costs.js draws it as SVG). */
 .so-chart {
@@ -188,7 +149,7 @@
 }
 
 .so-chart__bar {
-  fill: var(--so-series, var(--so-series-other));
+  fill: var(--so-series, var(--ds-chart-neutral));
 }
 
 .so-chart__hover {
@@ -255,20 +216,6 @@
   color: var(--ds-text-3);
 }
 
-/* A breakdown where only some rows open a chat (costs.js table): those rows
-   are pressed whole, their link stretched over them (ds-table__row-link), as
-   in DS's interactive table; the others stay still. Separate borders, which
-   a positioned row needs, as DS's interactive table has them. */
-.so-costs-links {
-  border-collapse: separate;
-  border-spacing: 0;
-}
-
-.so-costs-links tbody tr:has(.ds-table__row-link) {
-  position: relative;
-  cursor: pointer;
-}
-
 /* The name cell of a breakdown row: the name, what it is, and its share of
    the biggest row as a bar under it. A model id, a folder or a chat's title
    is one long word as often as not: it breaks rather than widen the table. */
@@ -299,33 +246,13 @@
   overflow-wrap: anywhere;
 }
 
+/* The row's share of the biggest row: DS's meter under the name. */
 .so-costs-bar {
-  display: block;
-  block-size: var(--ds-space-1);
   margin-block-start: var(--ds-space-1);
-  border-radius: var(--ds-radius-action);
-  background: var(--ds-surface-high);
-  overflow: hidden;
-}
-
-.so-costs-bar > span {
-  display: block;
-  block-size: 100%;
-  background: var(--so-series-1);
-  transform: scaleX(var(--so-share, 0));
-  transform-origin: left;
-  transition: transform var(--ds-dur-glide) var(--ds-ease-value);
-}
-
-[dir="rtl"] .so-costs-bar > span {
-  transform-origin: right;
 }
 
 @media (forced-colors: active) {
-  .so-chart__bar,
-  .so-swatch,
-  .so-costs-bar > span {
+  .so-chart__bar {
     fill: CanvasText;
-    background: CanvasText;
   }
 }

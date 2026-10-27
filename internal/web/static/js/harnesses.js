@@ -15,7 +15,7 @@ import * as accounts from './accounts.js';
 import { combobox, dropdown } from './combobox.js';
 import { dictated, typeHere } from './keyboard.js';
 import { agentMark } from './logos.js';
-import { hideOverlay, html, icon, iconEl, morph, raw, showOverlay, watchScrolled } from './ui.js';
+import { hideOverlay, html, icon, iconEl, morph, raw, showOverlay } from './ui.js';
 
 const CACHE_KEY = 'socrates.harnesses';
 
@@ -294,7 +294,7 @@ export function limitMeters(all) {
 // accountFace is what the closed account field shows: the name, and quieter
 // beside it who is signed in there.
 function accountFace(name, who) {
-  return html`<span class="so-drop__value">${name}</span>${who ? html`<span class="so-drop__meta">${who}</span>` : ''}`;
+  return html`<span class="ds-combo__value so-drop__value">${name}</span>${who ? html`<span class="ds-combo__meta">${who}</span>` : ''}`;
 }
 
 // The value a directory option carries. A preset is a mode and a path, and one
@@ -489,7 +489,7 @@ export function settingsForm(options = {}) {
     label: 'Working directory',
     items: dirItems,
     renderItem: (item) => html`<span class="ds-combo__name">${item.label}</span>${item.hint ? html`<span class="ds-combo__meta">${item.hint}</span>` : ''}`,
-    renderValue: (item) => html`<span class="so-drop__value">${item.label}</span>`,
+    renderValue: (item) => html`<span class="ds-combo__value so-drop__value">${item.label}</span>`,
     onChange: (value) => {
       if (value === DYNAMIC || value === CUSTOM) {
         selectDir(value, value === CUSTOM ? dirPath.value.trim() : '');
@@ -825,12 +825,6 @@ export async function openNewSessionSheet() {
   const hint = document.getElementById('nsHint');
   const hintText = document.getElementById('nsHintText');
   const start = document.getElementById('nsStart');
-  if (!watched) {
-    // The head's hairline while the body is scrolled (DS Side sheet).
-    watched = true;
-    watchScrolled(sheet.querySelector('.ds-sheet__body'), sheet.querySelector('.ds-sheet__panel'),
-      { gap: 'var(--ds-space-3)' });
-  }
 
   const form = settingsForm({
     prefix: 'ns',
@@ -906,6 +900,3 @@ export async function openNewSessionSheet() {
   });
 }
 
-// watched says the sheet's scroll hairline is wired; it is one element for
-// the page's life.
-let watched = false;
