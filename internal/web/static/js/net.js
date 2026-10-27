@@ -318,7 +318,7 @@ export function mountConnectionBar() {
     slot.id = 'connSlot';
     slot.hidden = true;
     const host = document.querySelector('.so-main') || document.getElementById('main')
-      || document.querySelector('.so-auth') || document.body;
+      || document.querySelector('.ds-auth') || document.body;
     host.prepend(slot);
   }
 

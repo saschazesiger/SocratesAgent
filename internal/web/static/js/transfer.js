@@ -15,7 +15,7 @@
 // take the same road.
 
 import { el, toast, errorMessage } from './api.js';
-import { M, showOverlay, hideOverlay } from './ui.js';
+import { DS, M, showOverlay, hideOverlay } from './ui.js';
 import { copyText, pasteClipboard } from './term.js';
 
 // The server's own ceiling on one upload (internal/server/upload.go), checked
@@ -193,24 +193,12 @@ export function mountTransfer(ctx) {
   });
   document.body.append(picker);
 
-  // A file dragged onto the pane. Only files: a dragged selection of text is
-  // the browser's to handle.
-  const carriesFiles = (event) => !!event.dataTransfer
-    && [...event.dataTransfer.types].includes('Files');
-  dom.termWrap.addEventListener('dragover', (event) => {
-    if (!carriesFiles(event) || !ctx.term()) return;
-    event.preventDefault();
-    event.dataTransfer.dropEffect = 'copy';
-    dom.termWrap.toggleAttribute('data-dropping', true);
-  });
-  dom.termWrap.addEventListener('dragleave', (event) => {
-    if (!dom.termWrap.contains(event.relatedTarget)) dom.termWrap.removeAttribute('data-dropping');
-  });
-  dom.termWrap.addEventListener('drop', (event) => {
-    dom.termWrap.removeAttribute('data-dropping');
-    if (!carriesFiles(event) || !ctx.term()) return;
-    event.preventDefault();
-    upload(event.dataTransfer.files);
+  // A file dragged onto the pane (DS.dom.dropzone: only files - a dragged
+  // selection of text is the browser's to handle - and the pane's dashed
+  // edge while they are over it, data-ds-dragover).
+  DS.dom.dropzone(dom.termWrap, {
+    multiple: true,
+    onFiles: (files) => { if (ctx.term()) upload(files); },
   });
 
   // An image pasted into the pane - a screenshot on the clipboard has no text

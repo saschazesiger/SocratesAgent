@@ -18,7 +18,6 @@
 import {
   api, el, toast, infoTip, confirmDialog, alertDialog, promptDialog, errorMessage, isOffline, isBusyConflict,
   setClass, onWake, clientKey, CONNECTION_GRACE, restoreFocus, setFocusFallback, toastsStay, onToastsStay,
-  keepDialogRoom,
 } from './api.js';
 import { connectionSource } from './net.js';
 import { agentMark, agentMarkHtml } from './logos.js';
@@ -43,8 +42,8 @@ import {
   OUTCOME_WORDS, CHECKING_WORDS, outcomeCurrent, outcomeMark, outcomeLine, outcomeIconHtml,
 } from './outcome.js';
 import {
-  icon, html, raw, morph, flipMorph, showOverlay, hideOverlay, overlayOpen, M,
-  faces, iconEl, edgeCue,
+  DS, icon, html, raw, morph, flipMorph, showOverlay, hideOverlay, overlayOpen, M,
+  faces, iconEl,
 } from './ui.js';
 import { mountBackupNotice } from './backup.js';
 import { setVoiceKey, voiceKey, onVoiceKey, keyMissing, setTtsKey } from './voice.js';
@@ -1115,7 +1114,7 @@ function groupHtml(folder, children) {
   const kind = shelf ? html`data-shelf="${folder.status}"` : html`data-folder="${folder.key}"`;
   // A project with nothing in it but done sessions steps back as they do.
   const done = !shelf && !!folder.shelves && count === folder.shelves.done.length;
-  return html`<section class="${shelf ? 'so-folder so-folder--shelf' : 'so-folder'}" data-ds-key="${(shelf ? 'shelf:' : 'folder:') + folder.key}" ${kind}${open ? html` data-open` : ''}${done ? html` data-done` : ''}><div class="so-folder__bar"><button class="so-folder__head" type="button" aria-expanded="${open ? 'true' : 'false'}" aria-controls="${id}" data-toggle="${id}" data-tip="${tip}"${attention ? html` data-attention="${attention}"` : ''}${unread ? html` data-unread` : ''}>${raw(icon('chevronDown', 16, 'ds-chevron'))}<span class="so-folder__name">${folder.label}</span><span class="so-folder__dot" aria-hidden="true"></span><span class="so-folder__count">${count}</span></button>${ide}</div><div class="so-folder__rows" id="${id}"${open ? '' : html` hidden`}>${children}</div></section>`;
+  return html`<section class="${shelf ? 'so-folder so-folder--shelf' : 'so-folder'}" data-ds-key="${(shelf ? 'shelf:' : 'folder:') + folder.key}" ${kind}${open ? html` data-open` : ''}${done ? html` data-done` : ''}><div class="so-folder__bar"><button class="so-folder__head ds-pressable ds-pressable--lg ds-pressable--inset" type="button" aria-expanded="${open ? 'true' : 'false'}" aria-controls="${id}" data-toggle="${id}" data-tip="${tip}"${attention ? html` data-attention="${attention}"` : ''}${unread ? html` data-unread` : ''}>${raw(icon('chevronDown', 16, 'ds-chevron'))}<span class="so-folder__name">${folder.label}</span><span class="so-folder__dot" aria-hidden="true"></span><span class="so-folder__count">${count}</span></button>${ide}</div><div class="so-folder__rows" id="${id}"${open ? '' : html` hidden`}>${children}</div></section>`;
 }
 
 // ideButtonHtml is the VS Code mark of a folder: in its colours while the
@@ -1249,13 +1248,13 @@ function rowHtml(session) {
   const badgeIcon = kind ? outcomeIconHtml(kind, 16) : badge ? TASKS_SVG : '';
   const unread = !!act && !!act.unread && !attached;
 
-  return html`<div class="so-row" data-ds-key="${'row:' + id}" data-id="${id}" data-status="${status}"${unread ? html` data-unread` : ''}><a class="ds-drawer__item so-row__open" href="${'#' + id}"${attached ? html` aria-current="page"` : ''}><span class="so-mark" data-tip="${word}"${ring ? html` data-ring="${ring}"` : ''}>${raw(agentMarkHtml(session.harness, 20))}${
+  return html`<div class="so-row ds-drawer__row" data-ds-key="${'row:' + id}" data-id="${id}" data-status="${status}"${unread ? html` data-unread` : ''}><a class="ds-drawer__item so-row__open" href="${'#' + id}"${attached ? html` aria-current="page"` : ''}><span class="so-mark" data-tip="${word}"${ring ? html` data-ring="${ring}"` : ''}>${raw(agentMarkHtml(session.harness, 20))}${
     badge ? html`<span class="so-mark__badge" data-kind="${badge}" aria-hidden="true">${raw(badgeIcon)}</span>` : ''
   }</span><span class="so-row__text"><span class="so-row__label" data-tip="${session.title}"${state.titling.has(id) ? html` data-titling` : ''}>${session.title}</span></span>${
     startAt ? html`<span class="so-row__when" aria-label="${startWords}" data-tip="${startWords}">${raw(icon('clock', 16))}<span class="so-row__time">${whenShort(startAt)}</span></span>` : ''
   }${
     STATUS_GLYPH[status] ? html`<span class="so-row__status" data-status="${status}" role="img" aria-label="${said}" data-tip="${said}">${raw(icon(STATUS_GLYPH[status], 16))}</span>` : ''
-  }</a><button class="ds-btn ds-btn--quiet ds-btn--icon ds-btn--sm so-row__more" type="button" aria-label="Session actions" data-tip="Session actions" aria-haspopup="menu" aria-expanded="false" aria-controls="sessionMenu">${raw(icon('moreVertical', 20))}</button></div>`;
+  }</a><button class="ds-btn ds-btn--quiet ds-btn--icon ds-btn--sm ds-drawer__action ds-hover-actions so-row__more" type="button" aria-label="Session actions" data-tip="Session actions" aria-haspopup="menu" aria-expanded="false" aria-controls="sessionMenu">${raw(icon('moreVertical', 20))}</button></div>`;
 }
 
 // whenShort is a start time for a row: the time of day when it is today,
@@ -1607,7 +1606,7 @@ function applyList(rows, { rev, source = 'hello' } = {}) {
     else if (state.chat && state.chat.shownId() === state.current.id) {
       // A chat deleted on another device. A terminal finds out through its
       // socket; a chat has none, and its stream would go on asking for one.
-      detach();
+      detachStage();
       showHome({ replace: true });
     }
   }
@@ -2033,7 +2032,7 @@ function promptTitle(current, opener, session) {
         // A name is a sentence somebody says about a session, so it is one of
         // the fields that can be spoken instead of typed - and with the
         // keyboard put away it is the only way this dialog can be answered.
-        el('div', { class: 'ds-field' }, session ? el('div', { class: 'so-field-row' }, dictated(input, input), suggestButton(session, input))
+        el('div', { class: 'ds-field' }, session ? el('div', { class: 'ds-field__row' }, dictated(input, input), suggestButton(session, input))
           : dictated(input, input)),
         el('div', { class: 'ds-dialog__actions' }, cancel, accept)));
     let answer = null;
@@ -2072,8 +2071,8 @@ function suggestButton(session, input) {
   }, el('span', { class: 'ds-btn__faces' },
     el('span', { class: 'ds-btn__face' }, iconEl('sparkles', 18)),
     el('span', { class: 'ds-btn__face ds-btn__face--busy', 'aria-hidden': 'true' }, el('span', { class: 'ds-spinner ds-spinner--sm' }))));
+  // A press while it asks never gets here: DS blocks a busy button (its guard).
   button.addEventListener('click', async () => {
-    if (button.getAttribute('aria-busy') === 'true') return;
     button.setAttribute('aria-busy', 'true');
     try {
       if (voiceKey() === false && await keyMissing()) {
@@ -2140,7 +2139,7 @@ async function setStatus(session, status) {
       method: 'POST', body: { status },
     });
     const open = state.current && state.current.id === session.id;
-    if (status === 'done' && open && !isChat(session)) detach();
+    if (status === 'done' && open && !isChat(session)) detachStage();
     replaceSession(data.session);
     if (status === 'done') {
       toast(isChat(session) ? 'Done. Its agent was put to rest; the chat is deleted in 24 hours.'
@@ -2171,7 +2170,7 @@ async function deleteSession(session) {
     // not whichever session happens to be next in the list, which is a
     // terminal nobody asked for.
     if (state.current && state.current.id === session.id) {
-      detach();
+      detachStage();
       showHome({ replace: true });
     }
     // After the view let it go, which writes it one last time.
@@ -2266,6 +2265,9 @@ const menuActions = new Map();
 // The actions that must run inside the tap that chose them - reading the
 // clipboard, opening a file picker - rather than once the menu has gone.
 const menuInTap = new Set();
+// Each drawing of the menu names its status group's heading afresh: the
+// menu and an action sheet may both hold one.
+let menuSeq = 0;
 
 // menuItemHtml is one item of the menu: its glyph and its words. A status is
 // one of a set, so it is a radio item whose check shows where it stands. A
@@ -2274,7 +2276,7 @@ const menuInTap = new Set();
 function menuItemHtml(action, label, glyph, checked, role = 'menuitemradio') {
   if (checked !== undefined) {
     const state = role === 'menuitemcheckbox'
-      ? html`<span class="so-menu-state" aria-hidden="true">${checked ? 'On' : 'Off'}</span>` : '';
+      ? html`<span class="ds-menu__meta" aria-hidden="true">${checked ? 'On' : 'Off'}</span>` : '';
     return html`<button class="ds-menu__item" role="${role}" type="button" data-action="${action}" aria-checked="${checked ? 'true' : 'false'}">${raw(icon('check', 20, 'ds-menu__check'))}<span class="ds-menu__label">${label}</span>${state}</button>`;
   }
   return html`<button class="ds-menu__item" role="menuitem" type="button" data-action="${action}">${raw(icon(glyph, 20))}<span class="ds-menu__label">${label}</span></button>`;
@@ -2289,40 +2291,36 @@ function menuItemHtml(action, label, glyph, checked, role = 'menuitemradio') {
 const actionSheetWanted = () => window.matchMedia('(max-width: 600px)').matches
   || (touchScreen() && window.matchMedia('(max-height: 500px)').matches);
 
-// openActionSheet shows the items of a menu in that dialog. An item closes
-// it and then runs, so a dialog it opens (Rename, Delete) is the only one on
-// screen.
+// openActionSheet shows the items of a menu in that dialog (DS
+// .ds-dialog--bottom, its items a .ds-dialog__list whose arrow keys DS
+// gives as in a menu). An item closes it and then runs, so a dialog it
+// opens (Rename, Delete) is the only one on screen.
 function openActionSheet(anchor, title, items) {
   const titleId = 'actionsTitle';
-  const list = el('div', { class: 'so-actions__list', role: 'menu', 'aria-labelledby': titleId });
+  const list = el('div', { class: 'ds-dialog__list', role: 'menu', 'aria-labelledby': titleId });
   morph(list, html`${items}`);
   const close = el('button', {
     class: 'ds-btn ds-btn--quiet ds-btn--icon', type: 'button', 'data-close': true,
     'aria-label': 'Close', 'data-tip': 'Close',
   }, iconEl('close', 20));
-  const dialog = el('dialog', { class: 'ds-dialog so-actions', 'aria-labelledby': titleId },
+  // The title is the chat's name, which can be a whole first prompt: two
+  // lines of it (so-frame.css), the rest is in Info and Rename.
+  const dialog = el('dialog', { class: 'ds-dialog ds-dialog--bottom so-actions', 'aria-labelledby': titleId },
     el('div', { class: 'ds-dialog__backdrop', 'data-close': true }),
     el('div', { class: 'ds-dialog__box' },
-      el('div', { class: 'so-actions__head' },
-        el('h2', { class: 'ds-dialog__title so-break', id: titleId, text: title }), close),
+      el('div', { class: 'ds-dialog__head' },
+        close, el('h2', { class: 'ds-dialog__title so-break', id: titleId },
+          el('span', { class: 'so-actions__title', text: title }))),
       list));
   let chosen = null;
   list.addEventListener('click', (event) => {
     const item = event.target.closest('[data-action]');
-    if (!item || item.getAttribute('aria-disabled') === 'true') return;
+    // A blocked item's press never gets here (DS's guard).
+    if (!item) return;
     const run = menuActions.get(item.dataset.action) || null;
     if (run && menuInTap.has(item.dataset.action)) run();
     else chosen = run;
     hideOverlay(dialog);
-  });
-  // The items are a menu: the arrows move between them, as in DS's.
-  list.addEventListener('keydown', (event) => {
-    const all = [...list.querySelectorAll('.ds-menu__item')];
-    const at = all.indexOf(document.activeElement);
-    const to = { ArrowDown: at + 1, ArrowUp: at - 1, Home: 0, End: all.length - 1 }[event.key];
-    if (to === undefined || !all.length) return;
-    event.preventDefault();
-    all[(to + all.length) % all.length].focus();
   });
   dialog.addEventListener('close', () => {
     anchor.setAttribute('aria-expanded', 'false');
@@ -2390,10 +2388,15 @@ async function openRowMenu(anchor, id, { device = false } = {}) {
   if (!editor) add('rename', 'Rename', 'pencil', () => renameSession(session, anchor));
   if (!editor && session.workdir_missing) add('folder', 'Point to folder', 'folder', () => pointFolder(session, anchor));
   if (!editor) {
-    items.push(html`<div class="ds-menu__divider" role="separator"></div><p class="so-menu-heading" aria-hidden="true">Status</p>`);
+    // The statuses are one set: a group named by its heading (DS menu
+    // groups), whose radio items the arrow keys walk past the heading to.
+    const heading = 'menuStatus' + (++menuSeq);
+    const group = [];
     for (const one of STATUSES) {
-      add('status:' + one.id, one.label, '', () => setStatus(session, one.id), statusOf(session) === one.id);
+      menuActions.set('status:' + one.id, () => setStatus(session, one.id));
+      group.push(menuItemHtml('status:' + one.id, one.label, '', statusOf(session) === one.id));
     }
+    items.push(html`<div class="ds-menu__divider" role="separator"></div><div role="group" aria-labelledby="${heading}"><p class="ds-menu__heading" id="${heading}">Status</p>${group}</div>`);
   }
   items.push(html`<div class="ds-menu__divider" role="separator"></div>`);
   if (editor && state.current?.id === session.id) add('reload', 'Reload editor', 'sync', () => attach(session));
@@ -2429,18 +2432,10 @@ async function openRowMenu(anchor, id, { device = false } = {}) {
     return;
   }
   anchor.setAttribute('aria-controls', 'sessionMenu');
+  // A menu cut short (at 1280x800 a chat's twelve items stopped at
+  // Ultracode) fades at its cut edge: DS.overlay watches its scroll.
   morph(menu, html`${items}`);
-  showOverlay(menu, anchor).then(() => menuCue());
-  menuCue();
-}
-
-// menuCue says, by a fade at its foot, that the row menu goes on below what
-// fits: at 1280x800 a chat's twelve items were cut exactly at Ultracode, with
-// Compact, Download, the limit switch and Delete out of sight.
-let menuCueCheck = null;
-function menuCue() {
-  if (!menuCueCheck) menuCueCheck = edgeCue(dom.sessionMenu);
-  else menuCueCheck();
+  showOverlay(menu, anchor);
 }
 
 /* ------------------------------------------------------ the options dialog */
@@ -2553,7 +2548,7 @@ function homeShown() { return !!state.home && state.home.shown(); }
  */
 function showHome({ replace = false } = {}) {
   if (state.pendingAttach) { clearTimeout(state.pendingAttach); state.pendingAttach = null; }
-  detach();
+  detachStage();
   state.current = null;
   state.wanted = '';
   dom.keybar.hidden = true;
@@ -2648,7 +2643,8 @@ function wireCover() {
   host.querySelector('.ds-dialog__box').addEventListener('click', (event) => {
     const button = event.target.closest('[data-cover]');
     const session = coverSession;
-    if (!button || !session || button.getAttribute('aria-busy') === 'true') return;
+    // A busy button takes no press (DS's guard).
+    if (!button || !session) return;
     const action = button.getAttribute('data-cover');
     if (action === 'restart') restart(session);
     else if (action === 'delete') deleteSession(session);
@@ -2859,7 +2855,7 @@ function actionFailed(err, sentence) {
 
 let ideGeneration = 0;
 
-function detach() {
+function detachStage() {
   ideGeneration += 1;
   dom.stage.removeAttribute('data-ide');
   showKeyboardSwitch(false);
@@ -2888,7 +2884,7 @@ function detach() {
  * terminal what it is, and those replies travel browser -> socket -> pane.
  */
 function attach(session) {
-  detach();
+  detachStage();
   hideHome();
   // A session nobody can see is a session nobody can leave: the row is the
   // only way back to it, so the folder it is in is opened if the person had
@@ -3109,78 +3105,45 @@ function applyKeyBar() {
   if (state.keybar) showKeyBar(keyBarWanted());
 }
 
-// placeToasts keeps the snackbars off what a finger needs (DS
-// --ds-toast-bottom, "to stay above a bar pinned there"; --ds-toast-left),
-// and an error stays until it is closed:
-//   - the region in an open side sheet (DS moves it there and places it):
-//     the sheet covers the page, and its body keeps room for a message that
-//     stays (api.js reserveToasts);
-//   - the region in an open dialog (DS moves it there and leaves it where
-//     it stood): at the bottom edge, past a keyboard, and the dialog keeps
-//     that strip (api.js keepDialogRoom) - what stands at the page's bottom
-//     is under the dialog's scrim;
-//   - the modal drawer open: beside it where the window is wide enough for
-//     the messages to stand there (as beside the docked drawer, DS), else
-//     above its foot (Costs, Admin, Sign out), the session list keeping
-//     room at its end to scroll its last rows clear;
+// placeToasts keeps the snackbars off what a finger needs, and an error
+// stays until it is closed. DS places them in an open side sheet or dialog
+// (and keeps room there for a message that stays), beside the open modal
+// drawer or above its foot (.ds-drawer__foot), and above the on-screen
+// keyboard (--ds-keyboard-inset, keybar.js followViewport). What stands at
+// the bottom of this page is Socrates' own (DS --ds-toast-bottom):
 //   - the key bar shown: above it - a message over Esc and Ctrl is a key bar
 //     a thumb cannot use;
 //   - a chat shown: above its dock, and above "Latest" (chatview.js says
 //     how much room it needs), and while a message that stays shows, the
 //     conversation keeps its height at its end, so that the last answer and
 //     its Copy can scroll clear of it.
-// The key bar and the dock stand at the bottom of the app, which is as
-// tall as what can be seen (keybar.js --so-app-h): a keyboard that only
-// shrinks the visual viewport adds its height. Heights only, never where
-// something stands, which a keyboard moves before or after this runs.
-// Every edge holds the safe area already, which the region adds as its
-// margin. Only a left this set is taken back.
+// The view of this page does not scroll, so DS keeps no room in it
+// (api.js toast). Above the drawer's foot on a phone the session list
+// keeps the messages' height at its end, so its last rows scroll clear of
+// them. Heights only, never where something stands, which a keyboard moves
+// before or after this runs. Every edge holds the safe area already, which
+// the region adds as its margin.
 let chatToastRoom = 0;
-let toastLeft = '';
 const TOASTS_BESIDE = window.matchMedia('(min-width: 601px)');
 function placeToasts() {
   const region = document.getElementById('toasts');
   if (!region) return;
-  const vv = window.visualViewport;
-  const keyboard = vv ? Math.max(0, Math.round(window.innerHeight - vv.offsetTop - vv.height)) : 0;
-  const inSheet = !!region.closest('.ds-sheet');
-  const inDialog = !inSheet && !!region.closest('dialog.ds-dialog[open]');
+  const hosted = !!region.closest('.ds-sheet, dialog.ds-dialog[open]');
   const drawer = dom.app.hasAttribute('data-drawer-open') && drawerModal();
   // The messages' height: nothing while there are none.
   const stack = region.querySelector('.ds-toast') ? region.offsetHeight : 0;
   let room = 0;
-  let list = 0;
-  let left = '';
-  if (inSheet) {
-    room = 0;
-  } else if (inDialog) {
-    room = keyboard;
-  } else if (drawer) {
-    if (TOASTS_BESIDE.matches) {
-      left = 'calc(var(--ds-drawer-width) + env(safe-area-inset-left) + var(--ds-space-6))';
-    } else {
-      const foot = dom.sidebar.querySelector('.so-drawer-foot');
-      room = foot ? foot.offsetHeight : 0;
-    }
-  } else if (!dom.keybar.hidden && dom.keybar.offsetHeight) {
-    room = dom.keybar.offsetHeight + keyboard;
-  } else if (chatToastRoom) {
-    room = chatToastRoom + keyboard;
-  }
-  // The drawer's list keeps its room under a dialog opened from it (a
-  // row's ⋮), rather than jumping under the scrim.
-  if (drawer && !inSheet && !TOASTS_BESIDE.matches) list = stack;
+  if (hosted || drawer) room = 0;
+  else if (!dom.keybar.hidden && dom.keybar.offsetHeight) room = dom.keybar.offsetHeight;
+  else if (chatToastRoom) room = chatToastRoom;
   const value = room ? 'calc(' + room + 'px + var(--ds-space-3) - env(safe-area-inset-bottom, 0px))' : '';
   if (region.style.getPropertyValue('--ds-toast-bottom') !== value) {
     if (value) region.style.setProperty('--ds-toast-bottom', value);
     else region.style.removeProperty('--ds-toast-bottom');
   }
-  if (!inSheet && !inDialog) {
-    const now = region.style.getPropertyValue('--ds-toast-left');
-    if (left && now !== left) region.style.setProperty('--ds-toast-left', left);
-    else if (!left && toastLeft && now === toastLeft) region.style.removeProperty('--ds-toast-left');
-    toastLeft = left;
-  }
+  // The drawer's list keeps its room under a dialog opened from it (a
+  // row's ⋮), rather than jumping under the scrim.
+  const list = drawer && !hosted && !TOASTS_BESIDE.matches ? stack : 0;
   const reserve = list ? list + 'px' : '';
   if (dom.sidebar.style.getPropertyValue('--so-drawer-reserve') !== reserve) {
     if (reserve) dom.sidebar.style.setProperty('--so-drawer-reserve', reserve);
@@ -3194,8 +3157,6 @@ function placeToasts() {
     if (chatReserve) dom.chat.style.setProperty('--so-chat-reserve', chatReserve);
     else dom.chat.style.removeProperty('--so-chat-reserve');
   }
-  // The lift a dialog's room is measured from may just have changed.
-  keepDialogRoom();
 }
 
 function showKeyBar(on) {
@@ -3252,7 +3213,9 @@ function drawTitling(id) {
 // where one is added, before anything is sent.
 async function renameAgain() {
   const session = state.current;
-  if (!session || regenAsking || dom.titleRegen.getAttribute('aria-busy') === 'true') return;
+  // While a name is being thought of the button is busy, and DS's guard
+  // keeps its presses from here.
+  if (!session || regenAsking) return;
   if (voiceKey() === false) {
     regenAsking = true;
     drawTitling(session.id);
@@ -3657,24 +3620,13 @@ function closeNav() {
 }
 
 // drawerCue fades the drawer's list out at its foot while more rows lie
-// below it (data-more-below, as ui.js edgeCue marks a menu; so-frame.css): on
-// a phone the list was cut through the second line of a name above Costs,
-// with nothing to say it scrolls. DS's padding at the list's foot is not a
-// row, so a list whose rows all show is not cut. The list's own size hardly
-// changes; the rows in it do, so they are watched too.
+// below it (so-frame.css): on a phone the list was cut through the second
+// line of a name above Costs, with nothing to say it scrolls. DS has no
+// fade for the drawer's list, but it reports which end has more to scroll
+// (DS.dom.scrollEdges, data-ds-overflow-end); the fade reads that.
 function drawerCue() {
   const list = document.getElementById('drawerList');
-  if (!list) return;
-  const check = () => {
-    const pad = parseFloat(getComputedStyle(list).paddingBottom) || 0;
-    list.toggleAttribute('data-more-below',
-      list.scrollHeight - list.scrollTop - list.clientHeight > pad + 1);
-  };
-  list.addEventListener('scroll', check, { passive: true });
-  const watch = new ResizeObserver(check);
-  watch.observe(list);
-  watch.observe(dom.sessionList);
-  check();
+  if (list) DS.dom.scrollEdges(list, { axis: 'block' });
 }
 
 // wireList is the session list's and the row menu's listeners, bound once:
@@ -3719,7 +3671,8 @@ function wireList() {
   }).observe(dom.sessionMenu, { attributes: true, attributeFilter: ['hidden'] });
   dom.sessionMenu.addEventListener('click', (event) => {
     const item = event.target.closest('[data-action]');
-    if (!item || item.getAttribute('aria-disabled') === 'true') return;
+    // A blocked item's press never gets here (DS's guard).
+    if (!item) return;
     const run = menuActions.get(item.dataset.action);
     if (run) run();
   });
@@ -4073,11 +4026,14 @@ async function boot() {
     },
   });
   followViewport();
-  // On a short screen the drawer's foot is its icons alone (so-frame.css):
+  // On a short screen the drawer's foot is one row of its icons alone (DS
+  // .ds-drawer__foot--rail), so that the session list keeps the height:
   // their names, which are their labels anyway, are their tips as well.
   const shortDrawer = window.matchMedia('(max-height: 500px)');
   const footTips = () => {
-    for (const item of dom.sidebar.querySelectorAll('.so-drawer-foot > .ds-drawer__item')) {
+    const foot = dom.sidebar.querySelector('.ds-drawer__foot');
+    if (foot) foot.classList.toggle('ds-drawer__foot--rail', shortDrawer.matches);
+    for (const item of dom.sidebar.querySelectorAll('.ds-drawer__foot > .ds-drawer__item')) {
       if (shortDrawer.matches) item.setAttribute('data-tip', item.getAttribute('aria-label') || item.textContent.trim());
       else item.removeAttribute('data-tip');
     }

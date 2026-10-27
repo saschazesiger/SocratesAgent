@@ -12,29 +12,34 @@
  *                    .so-title__home the words "Home" in its place on Home
  *   .so-outcome      the verdict on the last turn, beside the name
  *   .so-drawer-toggle  puts the session list away at a desk
- *   .so-drawer-actions, .so-drawer-foot  the drawer's first and last rows
+ *   .so-drawer-actions DS's drawer actions (.ds-drawer__actions): New session
+ *                    and the empty VS Code; the foot is DS's .ds-drawer__foot
+ *                    (a rail of icons on a short screen, session.js)
  *   .so-session-list the folders and their rows (session.js)
- *   .so-folder       a project, or a shelf of one (.so-folder--shelf)
- *   .so-row          one session: a drawer item and its ⋮
+ *   .so-folder       a project, or a shelf of one (.so-folder--shelf); its
+ *                    head a .ds-pressable
+ *   .so-row          one session: DS's drawer row (.ds-drawer__row), its item
+ *                    and its ⋮ (.ds-drawer__action, .ds-hover-actions)
  *   .so-list-empty   what the list says when it has no rows
- *   .so-menu-heading a group's name inside the row menu
  *   .so-banner       the backup notice (backup.js)
  *   .so-options      the switches of the options dialog
  *   .so-rename, .so-info-dialog  the row menu's dialogs; Info's facts are a
  *                    DS facts list (.so-facts, each value .so-fact: hooks for
  *                    the tests, no rule of their own)
- *   .so-actions      a session's menu on a phone: the same items in a dialog
- *                    at the bottom edge (an action sheet), __head and __list
- *   .so-menu-state   the On or Off at the end of a switch in the menu
+ *   .so-actions      a session's menu on a phone: DS's action sheet
+ *                    (.ds-dialog--bottom) with the same items; __title its
+ *                    two-line title
+ *
+ * The row menu's status group, its heading and the On or Off at the end of
+ * a switch are DS's (.ds-menu__heading, .ds-menu__meta).
  */
 
 /* ── The page as a column ─────────────────────────────────────────────── */
 
-/* The view does not scroll on this page: the terminal is as tall as the
-   panel, and Home and a chat scroll inside the stage themselves. No
-   gutter is reserved for a scrollbar that never comes. */
+/* The view does not scroll on this page (DS .ds-view--fixed: no scroll, no
+   gutter): the terminal is as tall as the panel, and Home and a chat scroll
+   inside the stage themselves. */
 .so-view {
-  --ds-view-scrollbar-gutter: auto;
   overflow: hidden;
 }
 
@@ -181,12 +186,11 @@
 
 /* ── Drawer ───────────────────────────────────────────────────────────── */
 
+/* DS's drawer actions (.ds-drawer__actions): New session and the empty
+   VS Code side by side. */
 .so-drawer-actions {
-  flex: none;
-  display: flex;
-  align-items: center;
   gap: var(--ds-space-2);
-  padding: var(--ds-space-2) var(--ds-space-3) var(--ds-space-3);
+  align-items: center;
 }
 
 .so-btn-label {
@@ -196,35 +200,11 @@
   white-space: nowrap;
 }
 
-.so-drawer-foot {
-  flex: none;
-  display: grid;
-  padding: var(--ds-space-2) var(--ds-space-3) calc(var(--ds-space-3) + env(safe-area-inset-bottom));
-}
-
 /* A phone on its side has the height of a few rows: the drawer's brand
-   goes (the top bar under the scrim has it) and its foot is one row of its
-   three icons, so that the session list keeps the height. */
+   goes (the top bar under the scrim has it), so that the session list
+   keeps the height; its foot is a rail of icons then (session.js). */
 @media (max-height: 500px) {
   .so-app .ds-drawer__head {
-    display: none;
-  }
-
-  .so-drawer-foot {
-    display: flex;
-    gap: var(--ds-space-2);
-    padding-top: var(--ds-space-1);
-    padding-bottom: calc(var(--ds-space-1) + env(safe-area-inset-bottom));
-  }
-
-  .so-drawer-foot > .ds-drawer__item {
-    flex: none;
-    justify-content: center;
-    width: var(--so-touch-target);
-    padding: 0;
-  }
-
-  .so-drawer-foot .ds-drawer__label {
     display: none;
   }
 }
@@ -269,9 +249,11 @@
 }
 
 /* The project's name, which shuts and opens it: the drawer heading's type,
-   pressable like a drawer item. */
+   pressable like a drawer item - DS's press model (.ds-pressable --lg
+   --inset: the large surface's hover, the ring inside the list's clip, the
+   ripple) in the item's pill shape. */
 .so-folder__head {
-  position: relative;
+  --ds-pressable-radius: var(--ds-radius-action);
   flex: 1 1 auto;
   min-width: 0;
   display: flex;
@@ -281,46 +263,10 @@
   margin: 0;
   padding: 0 var(--ds-space-3) 0 var(--ds-space-4);
   border: 0;
-  border-radius: var(--ds-radius-action);
   background: transparent;
   color: var(--ds-text-2);
   font: var(--ds-font-label);
   text-align: start;
-  cursor: pointer;
-  -webkit-tap-highlight-color: transparent;
-  outline-offset: 0;
-  transition: outline-offset var(--ds-dur-fast) var(--ds-ease-out);
-}
-
-.so-folder__head::before {
-  content: "";
-  position: absolute;
-  inset: 0;
-  border-radius: inherit;
-  background: currentColor;
-  opacity: 0;
-  pointer-events: none;
-  transition: opacity var(--ds-dur-fast) var(--ds-ease-in-out);
-}
-
-@media (hover: hover) {
-  .so-folder__head:hover::before {
-    opacity: var(--ds-state-hover-lg);
-  }
-}
-
-.so-folder__head:active::before {
-  opacity: var(--ds-state-pressed);
-  transition-duration: var(--ds-dur-micro);
-}
-
-.so-folder__head:focus-visible {
-  outline: var(--ds-focus-outline);
-  outline-offset: calc(-1 * var(--ds-focus-width));
-}
-
-.so-folder__head:focus-visible::before {
-  opacity: var(--ds-state-focus);
 }
 
 .so-folder__head > svg {
@@ -378,9 +324,6 @@
   min-width: 0;
 }
 
-.so-folder__rows[hidden] {
-  display: none;
-}
 
 /* A shelf is a folder one level down: a quieter, shorter head, set in. */
 
@@ -410,20 +353,16 @@
 /* ── Rows ─────────────────────────────────────────────────────────────── */
 
 .so-row {
-  position: relative;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
   min-width: 0;
 }
 
-/* Room at the end for the ⋮, which lies over the item - a finger's 48px of
-   it in touch mode. */
-.so-row__open {
-  padding-right: calc(var(--ds-space-8) + var(--ds-space-2));
-}
-
+/* The ⋮ is DS's row action (.ds-drawer__row, .ds-drawer__action
+   .ds-hover-actions: shown on hover, focus, the open row and an open menu,
+   always on touch), and the item keeps room for it. In touch mode the
+   action is a finger's 48px, wider than the room DS keeps, so the item
+   keeps that much. */
 .so-touch .so-row__open {
-  padding-right: calc(var(--so-touch-target) + var(--ds-space-2));
+  padding-right: calc(var(--ds-touch-target) + var(--ds-space-2));
 }
 
 .so-row__text {
@@ -529,49 +468,6 @@
   background: var(--ds-accent);
 }
 
-/* The ⋮ lies over the end of the item. With a pointer it shows on hover, on
-   focus and on the open row; a finger has no hover, so there it is always
-   there. */
-.so-row__more {
-  position: absolute;
-  top: 50%;
-  right: var(--ds-space-1);
-  translate: 0 -50%;
-  opacity: 0;
-  transition: opacity var(--ds-dur-fast) var(--ds-ease-in-out);
-}
-
-.so-row:hover .so-row__more,
-.so-row:focus-within .so-row__more,
-.so-row__more[aria-expanded="true"],
-.so-row__open[aria-current="page"] + .so-row__more {
-  opacity: 1;
-}
-
-@media (hover: none) {
-  .so-row__more {
-    opacity: 1;
-  }
-}
-
-.so-touch .so-row__more {
-  opacity: 1;
-}
-
-/* A switch in a menu says where it stands at its end, in words. */
-.so-menu-state {
-  flex: none;
-  font: var(--ds-font-meta);
-  color: var(--ds-text-2);
-}
-
-.so-menu-heading {
-  margin: 0;
-  padding: var(--ds-space-2) var(--ds-space-4) var(--ds-space-1);
-  font: var(--ds-font-caption);
-  color: var(--ds-text-2);
-}
-
 /* ── Banners ──────────────────────────────────────────────────────────── */
 
 .so-banner {
@@ -579,9 +475,6 @@
   padding: var(--ds-space-3) var(--ds-space-3) 0;
 }
 
-.so-banner[hidden] {
-  display: none;
-}
 
 .so-banner__text {
   min-width: 0;
@@ -604,44 +497,19 @@
 
 /* ── A session's menu on a phone ──────────────────────────────────────── */
 
-/* The DS dialog, at the bottom edge rather than in the middle: where the
-   thumb is, and where a phone's own action sheets rise from. */
+/* DS's action sheet (.ds-dialog--bottom), as wide as a phone's own. The
+   title is the chat's name, which can be a whole first prompt: two lines
+   of it (the rest is in Info and Rename), so the actions stay on screen. */
 .so-actions {
   --ds-dialog-width: var(--so-actions-width);
-  place-items: end center;
-  padding-bottom: max(var(--ds-space-4), env(safe-area-inset-bottom));
 }
 
-/* The title is the chat's name, which can be a whole first prompt: two
-   lines of it (the rest is in Info and Rename), so the actions stay on
-   screen, and the close X at the top beside its first line. */
-.so-actions__head {
-  display: flex;
-  align-items: flex-start;
-  gap: var(--ds-space-2);
-  margin-top: calc(-1 * var(--ds-space-2));
-}
-
-.so-actions__head > .ds-dialog__title {
-  flex: 1 1 auto;
-  min-width: 0;
+.so-actions__title {
   display: -webkit-box;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
   line-clamp: 2;
   overflow: hidden;
-  align-self: center;
-}
-
-.so-actions__head > .ds-btn {
-  flex: none;
-  margin-right: calc(-1 * var(--ds-space-3));
-}
-
-/* The items run to the box's edges, their glyphs under the title. */
-.so-actions__list {
-  display: grid;
-  margin-inline: calc(var(--ds-space-3) - var(--ds-space-6));
 }
 
 /* ── Phones ───────────────────────────────────────────────────────────── */
@@ -703,43 +571,29 @@
   }
 }
 
-/* A phone on its side with its keyboard up has a strip of screen left
-   (keybar.js followViewport sets data-so-short), and a phone upright with
-   its keyboard up for the composer or another field of the page has not
-   much more (data-so-keyboard): the bar gives its height to what is being
-   typed into, and comes back with the keyboard's going. */
-.so-touch:is([data-so-short], [data-so-keyboard]) .so-app {
-  --ds-topbar-height: 0px;
-}
+/* A phone with its keyboard up: the bar gives its row to what is being
+   typed into (DS .ds-app--keyboard-hides-bar, toggled by keybar.js
+   followViewport for the page's own fields, and for any field when only a
+   strip of screen is left). */
 
-.so-touch:is([data-so-short], [data-so-keyboard]) .so-app > .ds-topbar {
-  display: none;
-}
-
-/* A menu that is cut short says so: its last visible rows fade out at its
-   foot until it is scrolled to its end (ui.js edgeCue). The fade stands at
-   the scrollport's bottom (sticky) and takes no room (its negative margin). */
-.ds-menu[data-more-below]::after,
-.so-app .ds-drawer__list[data-more-below]::after {
+/* The drawer's list is cut above Costs, Admin and Sign out: while more
+   rows lie below (DS.dom.scrollEdges, session.js drawerCue), its last row
+   fades out on the drawer's own colour instead of being sliced through its
+   second line. DS fades the cut edges of menus and lists, not of the
+   drawer's list. The fade stands at the scrollport's bottom (sticky) and
+   takes no room (its negative margin); a sticky box stops at the list's
+   padding (DS's 24px at its foot), so it goes that far past it to stand
+   where the list is cut. */
+.so-app .ds-drawer__list[data-ds-overflow-end]::after {
   content: '';
   position: sticky;
-  bottom: 0;
+  bottom: calc(-1 * var(--ds-space-6));
   flex: none;
   display: block;
   height: var(--ds-space-8);
   margin-top: calc(-1 * var(--ds-space-8));
-  background: linear-gradient(to bottom, transparent, var(--ds-surface));
-  pointer-events: none;
-}
-
-/* The drawer's list is cut the same way above Costs, Admin and Sign out:
-   its last row fades out on the drawer's own colour instead of being
-   sliced through its second line (session.js drawerCue). A sticky box
-   stops at the list's padding (DS's 24px at its foot), so the fade goes
-   that far past it to stand where the list is cut. */
-.so-app .ds-drawer__list[data-more-below]::after {
-  bottom: calc(-1 * var(--ds-space-6));
   background: linear-gradient(to bottom, transparent, var(--ds-backdrop));
+  pointer-events: none;
 }
 
 /* ── The Status modal of a chat (statusmodal.js) ─────────────────────────
@@ -766,7 +620,7 @@
   place-items: center;
   inline-size: var(--ds-space-10);
   block-size: var(--ds-space-10);
-  border-radius: 50%;
+  border-radius: var(--ds-radius-action);
   background: var(--ds-surface-high);
 }
 
@@ -860,16 +714,12 @@
   font-size: inherit;
 }
 
-.so-status .so-status__tiles {
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-}
-
-/* A figure here is a span in words ("~1 h 30 min", "Your turn"), not the
-   two or three digits a tile is made for: it takes a second line, between
-   words, rather than running into the next tile. */
-.so-status__tiles .ds-tile__value {
-  white-space: normal;
-  overflow-wrap: break-word;
+/* Three figures side by side in the 600px modal (DS .ds-tiles--3): a
+   tile is a third of it there, narrower than DS's least tile width. A
+   figure is a short span ("~1:30 h", "Your turn"), which DS shrinks to fit
+   the tile. */
+.so-status__tiles {
+  --ds-tile-min-width: var(--so-status-tile-min);
 }
 
 .so-status__clamp {
@@ -890,54 +740,8 @@
   gap: var(--ds-space-3);
 }
 
-.so-status__count {
-  color: var(--ds-text-2);
-  font: var(--ds-font-meta);
-}
-
 .so-status__list {
-  display: grid;
-  gap: var(--ds-space-2);
-  margin: var(--ds-space-3) 0 0;
-  padding: 0;
-  list-style: none;
-}
-
-.so-status__task {
-  display: flex;
-  align-items: center;
-  gap: var(--ds-space-3);
-  font: var(--ds-font-body);
-  color: var(--ds-text);
-}
-
-.so-status__task > :first-child {
-  flex: none;
-}
-
-.so-status__task > :last-child:not(:first-child) {
-  min-width: 0;
-  overflow-wrap: anywhere;
-}
-
-.so-status__task[data-status="completed"] {
-  color: var(--ds-text-3);
-}
-
-.so-status__task[data-status="completed"] > svg {
-  color: var(--ds-success);
-}
-
-.so-status__task[data-status="in_progress"] {
-  font: var(--ds-font-label);
-}
-
-.so-status__dot {
-  inline-size: 16px;
-  block-size: 16px;
-  border: 2px solid var(--ds-line);
-  border-radius: 50%;
-  box-sizing: border-box;
+  margin-top: var(--ds-space-3);
 }
 
 .so-status__text {
@@ -952,10 +756,6 @@
 }
 
 @media (max-width: 600px) {
-  .so-status .so-status__tiles {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
   .so-status .so-status__eta {
     grid-column: 1 / -1;
     order: 3;

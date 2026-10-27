@@ -6,7 +6,7 @@
  *   .so-stage          the area under the top bar: the pane, or a chat, or
  *                      Home; [data-ide] while it holds an editor
  *   .so-pane           the terminal pane; [data-stale] while the screen is old,
- *                      [data-dropping] while a file is held over it
+ *                      (DS's [data-ds-dragover] while a file is held over it)
  *   .so-pane__host     where xterm (or the IDE frame) is mounted
  *   .so-pane__cover    the ds-dialog--contained that blocks a pane that ended,
  *                      failed or is coming back
@@ -63,12 +63,6 @@
 
 .so-pane[data-stale] .xterm {
   cursor: not-allowed;
-}
-
-/* A file held over the pane, about to be uploaded into the session. */
-.so-pane[data-dropping] {
-  outline: var(--ds-focus-width) dashed var(--ds-primary);
-  outline-offset: calc(-1 * var(--ds-space-2));
 }
 
 /* A finger dragged over the pane is a scroll of the terminal, so the browser is
@@ -163,13 +157,9 @@
 
 /* ── The key bar ─────────────────────────────────────────────────────── */
 
-/* A phone that raises its keyboard shrinks only the visual viewport, so the
-   bottom of a frame sized to the window - the key bar - would sit under the
-   keyboard. keybar.js followViewport() writes what can be seen into
-   --so-app-h; without it the frame keeps DS's own height. */
-.ds-app.so-app {
-  height: var(--so-app-h, 100dvh);
-}
+/* A phone that raises its keyboard shrinks only the visual viewport; the
+   frame follows what can be seen (DS --ds-viewport-height, keybar.js
+   followViewport), so the key bar stays above the keyboard. */
 
 /* One row, scrolled sideways with a thumb. The bar is the bottom of the page,
    so it is what keeps its keys clear of the home bar and a rounded corner. */

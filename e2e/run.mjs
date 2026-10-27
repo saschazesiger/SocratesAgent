@@ -6129,7 +6129,7 @@ const keyboardable = (page) => page.evaluate(() => {
     fields: [...document.querySelectorAll('input.ds-input')]
       .filter((n) => n.checkVisibility && n.checkVisibility())
       .map((n) => ({ id: n.id || n.className, muted: muted(n) })),
-    mics: [...document.querySelectorAll('.so-field-row')]
+    mics: [...document.querySelectorAll('.ds-field__row')]
       .filter((n) => n.checkVisibility && n.checkVisibility())
       .map((row) => ({ field: !!row.querySelector('input, textarea'), mic: !!row.querySelector('.so-mic') })),
     copies: document.querySelectorAll('.so-kb-copy').length,

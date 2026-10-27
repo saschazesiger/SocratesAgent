@@ -120,7 +120,7 @@
   <div class="ds-scrim" id="navScrim"></div>
   <nav class="ds-drawer" id="sidebar" aria-label="Sessions" tabindex="-1">
     <div class="ds-drawer__head" aria-hidden="true"><img class="so-logo" src="/static/img/logo.png" alt="" width="32" height="32"><span class="ds-brand__name">Socrates</span></div>
-    <div class="so-drawer-actions">
+    <div class="ds-drawer__actions so-drawer-actions">
       <button class="ds-btn ds-btn--primary" id="newSession" type="button" data-icon="plus" data-icon-size="16"><span class="so-btn-label">New session</span></button>
       <!-- An editor with no folder open, in a tab of its own. Its mark is put
            in by session.js, which draws every agent's mark. -->
@@ -134,9 +134,10 @@
     <!-- What a session just did, for a reader that cannot see the list:
          throttled, so a busy machine does not talk over itself. -->
     <div class="ds-sr" id="activityLive" role="status" aria-live="polite"></div>
-    <div class="so-drawer-foot">
-      <!-- On a short screen these are their icons alone (so-frame.css): the
-           names are the labels, and then the tips too (session.js). -->
+    <div class="ds-drawer__foot">
+      <!-- On a short screen these are their icons alone (DS
+           .ds-drawer__foot--rail, session.js): the names are the labels,
+           and then the tips too. -->
       <a class="ds-drawer__item" href="/costs" aria-label="Costs" data-icon="barChart"><span class="ds-drawer__label">Costs</span></a>
       <a class="ds-drawer__item" href="/admin" aria-label="Admin" data-icon="settings"><span class="ds-drawer__label">Admin</span></a>
       <button class="ds-drawer__item" id="logout" type="button" aria-label="Sign out" data-icon="logout"><span class="ds-drawer__label">Sign out</span></button>
@@ -144,7 +145,7 @@
   </nav>
 
   <div class="ds-panel">
-    <main class="ds-view so-view" id="main" tabindex="-1">
+    <main class="ds-view ds-view--fixed so-view" id="main" tabindex="-1">
       <div class="so-main" id="mainColumn">
         <div class="so-conn" id="connSlot" hidden></div>
         <!-- No backup for a day. Hidden while backups work; backup.js

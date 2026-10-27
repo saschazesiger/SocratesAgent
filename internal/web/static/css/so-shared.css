@@ -3,13 +3,13 @@
  * prefix so-. They read tokens only (--ds-* and the --so-* of theme.css),
  * are unlayered, and never restyle a .ds-* component.
  *
- *   html.ds-theme    X1: no pull-to-reload in the installed app, no iOS font
- *                    inflation (it would desync the DOM from the terminal canvas)
+ *   html.ds-theme    X1: no pull-to-reload in the installed app (DS's page
+ *                    base already stops iOS font inflation, which would
+ *                    desync the DOM from the terminal canvas)
  *   .so-logo         the Socrates mark (img/logo.png): a brand image, not a glyph
  *   .so-agent        an agent's brand mark (logos.js); brand colours live only here
  *   .so-mark         the activity ring and outcome badge around an agent mark
  *                    (session list and Home); DS has no ring around an avatar
- *   .so-field-row    a field and its Dictate/Clear button side by side
  *   .so-mic          a field's own microphone (keyboard.js micButton), on
  *                    every page that has one: the session page, Admin
  *   .so-break        a path or id that must wrap anywhere
@@ -22,20 +22,15 @@
  *                    (__value, the code to type on the agent's page, and its
  *                    Copy), __wait, __providers
  *   .so-account-form the body of the "Add an account" dialog
- *   [data-so-toast-room]  a dialog keeping the strip at its bottom for the
- *                    messages shown in it (api.js keepDialogRoom)
  *
- * In touch mode (.so-touch) DS's fields, check rows, switch rows, the
- * combobox's "Show all" and its options are given a finger's height (they
- * have no hook).
+ * Touch mode is DS's .ds-touch (theme.css, ui.js): every target a finger's
+ * 48px through DS's own hooks.
  */
 
 /* X1 */
 html.ds-theme,
 html.ds-theme body {
   overscroll-behavior: none;
-  -webkit-text-size-adjust: 100%;
-  text-size-adjust: 100%;
 }
 
 .so-logo {
@@ -152,23 +147,6 @@ body[data-stale] .so-mark[data-ring="busy"]::after {
 
 /* ── Layout helpers ──────────────────────────────────────────────────── */
 
-/* A field and the button after it (the reference app's ex-field-row). */
-.so-field-row {
-  display: flex;
-  align-items: center;
-  gap: var(--ds-space-2);
-}
-
-.so-field-row > :first-child {
-  flex: 1 1 auto;
-  min-width: 0;
-}
-
-/* Beside a textarea the button stays at the top of it. */
-.so-field-row--top {
-  align-items: flex-start;
-}
-
 /* A field's microphone keeps its size beside the field it fills. */
 .so-mic {
   flex: none;
@@ -197,9 +175,9 @@ body[data-stale] .so-mark[data-ring="busy"]::after {
   margin-block: calc(var(--ds-btn-icon-size, var(--ds-space-8)) / -4);
 }
 
-/* The connection alert stays in view while the page scrolls under it. */
-#main > .so-conn,
-.so-auth > .so-conn {
+/* The connection alert stays in view while the page scrolls under it (on
+   the sign-in page it is the alert slot above the card, DS .ds-auth__alert). */
+#main > .so-conn {
   position: sticky;
   top: 0;
   z-index: var(--ds-z-sticky);
@@ -226,56 +204,12 @@ body[data-stale] .so-mark[data-ring="busy"]::after {
 /* ── The top bar of every page ───────────────────────────────────────── */
 
 /* On a phone every page's bar is the same: its way back or its drawer, the
-   Socrates mark without its name, and the page's own controls. */
+   Socrates mark without its name, and the page's own controls. DS lets the
+   name give way only for a .ds-topbar__title; these bars have none. */
 @media (max-width: 600px) {
   .ds-topbar .ds-brand__name {
     display: none;
   }
-}
-
-/* ── Touch mode: a finger's target ───────────────────────────────────── */
-
-/* DS sizes its buttons through hooks (theme.css), but a field, a check row,
-   a switch row and a combobox's "Show all" are 40px with no hook to say
-   otherwise. In touch mode - a phone, a car - they are as tall as a button,
-   so every target a finger is asked to find is at least 48px. Only the size:
-   colour, radius, type and motion stay DS's. */
-.ds-theme.so-touch :is(.ds-check, .ds-switch) {
-  min-height: var(--so-touch-target);
-}
-
-.ds-theme.so-touch .ds-input:not(textarea) {
-  min-height: var(--so-touch-target);
-}
-
-.ds-theme.so-touch .ds-combo__input {
-  padding-right: calc(var(--so-touch-target) + var(--ds-space-1));
-}
-
-.ds-theme.so-touch .ds-combo__toggle {
-  width: var(--so-touch-target);
-  height: var(--so-touch-target);
-}
-
-/* A combobox with nothing to list is a plain field (combobox.js): it has no
-   arrow, so its text runs to the field's own padding. After the rule above,
-   which it overrides on a touch screen too. */
-.ds-theme .ds-combo[data-unlisted] > .ds-combo__input {
-  padding-right: var(--ds-space-3);
-}
-
-/* An option of one line ("Fable", "Custom path…") is as tall as a finger;
-   one with a description is taller already. */
-.ds-theme.so-touch .ds-combo__option {
-  min-height: var(--so-touch-target);
-  align-content: center;
-}
-
-/* The mark in a top bar is a link home: a finger's target around it. */
-.ds-theme.so-touch .ds-topbar .ds-brand {
-  min-width: var(--so-touch-target);
-  min-height: var(--so-touch-target);
-  justify-content: center;
 }
 
 /* ── Accounts ────────────────────────────────────────────────────────── */
@@ -310,24 +244,4 @@ body[data-stale] .so-mark[data-ring="busy"]::after {
 
 .so-signin__wait {
   justify-content: flex-start;
-}
-
-/* ── Messages over a dialog ───────────────────────────────────────────── */
-
-/* A message shown while a dialog is open stands in it, at the bottom edge
-   (DS). The dialog keeps that strip while it shows (api.js
-   keepDialogRoom): its box - an action sheet at the bottom, the question
-   on the whole screen, a form over the keyboard - ends above the messages
-   rather than under them, and scrolls inside what is left. */
-.ds-theme dialog.ds-dialog[data-so-toast-room] {
-  padding-bottom: var(--so-toast-room);
-}
-
-/* A phone on its side with its keyboard up (keybar.js data-so-short) has a
-   strip of screen for the dialog being typed into, and a message standing
-   in it - or the room kept for one - left no room for the question (at
-   844x200, 41px for the field). The messages wait out of sight until the
-   keyboard goes: one that stays is still there then. */
-.ds-theme.so-touch[data-so-short] dialog.ds-dialog[open] > .ds-toasts {
-  visibility: hidden;
 }

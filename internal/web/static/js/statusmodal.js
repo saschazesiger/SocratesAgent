@@ -46,6 +46,18 @@ export function spanShort(ms) {
   return d >= 10 || !(h % 24) ? d + ' d' : d + ' d ' + (h % 24) + ' h';
 }
 
+// A task of the agent's list as a DS task (.ds-tasks): its mark's shape and
+// its text's weight say where it stands, and a word does for a reader.
+const TASK = {
+  completed: { status: 'done', word: 'done', mark: () => raw(icon('checkCircle', 20)) },
+  in_progress: { status: 'running', word: 'running', mark: () => html`<span class="ds-spinner ds-spinner--sm"></span>` },
+};
+
+function taskHtml(t) {
+  const kind = TASK[t.status] || { status: 'pending', word: 'waiting', mark: () => '' };
+  return html`<li class="ds-tasks__item" data-status="${kind.status}"><span class="ds-tasks__mark" aria-hidden="true">${kind.mark()}</span><span class="ds-tasks__text">${t.subject}<span class="ds-sr">${': ' + kind.word}</span></span></li>`;
+}
+
 const clockTime = (at) => new Date(at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
 /**
@@ -123,10 +135,8 @@ export function openStatusModal({ session, opener, speaking, toggle }) {
 <section class="so-status__now" aria-label="Right now"><p class="so-status__label">${raw(icon('activity', 16))}<span>Right now</span></p><p class="so-status__now-text">${a.now || '—'}</p>${
   c.call && c.call_started ? html`<p class="so-status__call"><code class="so-break">${c.call}</code><span>${' · ' + since(c.call_started)}</span></p>` : ''
 }</section>
-<div class="ds-tiles so-status__tiles">${run ? html`<div class="ds-tile"><p class="ds-tile__label">${raw(icon(run.glyph, 16))}<span>${run.label}</span></p><p class="ds-tile__value" data-live="run">${run.value}</p><p class="ds-tile__note">${run.note}</p></div>` : ''}<div class="ds-tile so-status__eta"><p class="ds-tile__label">${raw(icon('sparkles', 16))}<span>Expected</span></p><p class="ds-tile__value">${left}</p><p class="ds-tile__note so-status__clamp" data-tip="${a.eta || ''}">${a.eta || ''}</p></div><div class="ds-tile"><p class="ds-tile__label">${raw(icon('history', 16))}<span>Session</span></p><p class="ds-tile__value" data-live="age">${age}</p><p class="ds-tile__note">${turns + (turns === 1 ? ' turn' : ' turns') + ' · ' + spanWords(Number(c.worked_ms) || 0) + ' of work'}</p></div></div>
-${tasks.length ? html`<section class="so-status__tasks" aria-label="Tasks"><div class="so-status__tasks-head"><p class="so-status__label">${raw(icon('list', 16))}<span>Tasks</span></p><span class="so-status__count">${done + ' of ' + tasks.length + ' done'}</span></div><div class="ds-progress ds-progress--flat" style="${'--ds-progress: ' + share}"><div class="ds-progress__track" role="progressbar" aria-label="Tasks done" aria-valuemin="0" aria-valuemax="${tasks.length}" aria-valuenow="${done}"><div class="ds-progress__bar"></div></div></div><ul class="so-status__list">${tasks.map((t) => html`<li class="so-status__task" data-status="${t.status}">${
-  t.status === 'completed' ? raw(icon('checkCircle', 16)) : t.status === 'in_progress' ? html`<span class="ds-spinner ds-spinner--sm" aria-hidden="true"></span>` : html`<span class="so-status__dot" aria-hidden="true"></span>`
-}<span>${t.subject}</span></li>`)}</ul></section>` : ''}
+<div class="ds-tiles ds-tiles--3 so-status__tiles">${run ? html`<div class="ds-tile"><p class="ds-tile__label">${raw(icon(run.glyph, 16))}<span>${run.label}</span></p><p class="ds-tile__value" data-live="run">${run.value}</p><p class="ds-tile__note">${run.note}</p></div>` : ''}<div class="ds-tile so-status__eta"><p class="ds-tile__label">${raw(icon('sparkles', 16))}<span>Expected</span></p><p class="ds-tile__value">${left}</p><p class="ds-tile__note so-status__clamp" data-tip="${a.eta || ''}">${a.eta || ''}</p></div><div class="ds-tile"><p class="ds-tile__label">${raw(icon('history', 16))}<span>Session</span></p><p class="ds-tile__value" data-live="age">${age}</p><p class="ds-tile__note">${turns + (turns === 1 ? ' turn' : ' turns') + ' · ' + spanWords(Number(c.worked_ms) || 0) + ' of work'}</p></div></div>
+${tasks.length ? html`<section class="so-status__tasks" aria-label="Tasks"><div class="ds-tasks__head so-status__tasks-head"><p class="so-status__label">${raw(icon('list', 16))}<span>Tasks</span></p><p class="ds-meta">${done + ' of ' + tasks.length + ' done'}</p></div><div class="ds-progress ds-progress--flat" style="${'--ds-progress: ' + share}"><div class="ds-progress__track" role="progressbar" aria-label="Tasks done" aria-valuemin="0" aria-valuemax="${tasks.length}" aria-valuenow="${done}"><div class="ds-progress__bar"></div></div></div><ol class="ds-tasks so-status__list" aria-label="Tasks">${tasks.map((t) => taskHtml(t))}</ol></section>` : ''}
 ${a.summary ? html`<section class="so-status__summary" aria-label="Summary"><p class="so-status__label">${raw(icon('fileText', 16))}<span>Summary</span></p><p class="so-status__text">${a.summary}</p></section>` : ''}`);
   }
 
@@ -146,7 +156,7 @@ ${a.summary ? html`<section class="so-status__summary" aria-label="Summary"><p c
     const on = speaking();
     speakBtn.hidden = !data;
     speakBtn.setAttribute('aria-pressed', on ? 'true' : 'false');
-    morph(speakBtn, html`${raw(icon(on ? 'circleStop' : 'volume', 18))}<span>${on ? 'Stop reading' : 'Read aloud'}</span>`);
+    morph(speakBtn, html`${raw(icon(on ? 'stop' : 'speak', 18))}<span>${on ? 'Stop reading' : 'Read aloud'}</span>`);
   }
 
   function show(next) {

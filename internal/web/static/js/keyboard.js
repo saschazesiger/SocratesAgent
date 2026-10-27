@@ -69,7 +69,7 @@ function becomeTouch() {
 function enterTouch() {
   if (touch) return;
   touch = true;
-  document.documentElement.classList.add('so-touch');
+  document.documentElement.classList.add('so-touch', 'ds-touch');
   applyAll();
   paint();
   // A field that already had the focus may have raised a keyboard before the
@@ -86,7 +86,7 @@ function leaveTouch() {
   open = false;
   touch = false;
   freed = null;
-  document.documentElement.classList.remove('so-touch');
+  document.documentElement.classList.remove('so-touch', 'ds-touch');
   applyAll();
   paint();
 }
@@ -106,7 +106,7 @@ export function setTouchMode(on) {
 
 if (touchWanted()) {
   touch = true;
-  document.documentElement.classList.add('so-touch');
+  document.documentElement.classList.add('so-touch', 'ds-touch');
 }
 
 const FIELD = 'input, textarea, [contenteditable]:not([contenteditable="false"])';
@@ -666,7 +666,7 @@ export function micButton(onText, field = '', { onError } = {}) {
     // The one microphone is already open somewhere else: `record` would answer
     // with nothing, and a button that spun for that would be lying.
     if (recPhase() !== 'idle') return;
-    const text = await M.busy(button, () => record({ onError, opener: button }), { done: false });
+    const text = await M.busy(button, () => record({ onError, opener: button }));
     if (text) onText(text);
   });
   return button;
@@ -705,14 +705,14 @@ function fieldName(input) {
 export function dictated(control, input, onText, { onError, top = false, name = '' } = {}) {
   guard(input);
   const already = control.parentElement;
-  if (already && already.classList.contains('so-field-row')) return already;
+  if (already && already.classList.contains('ds-field__row')) return already;
   const mic = micButton((text) => {
     if (onText) { onText(text); return; }
     input.value = text;
     input.dispatchEvent(new Event('input', { bubbles: true }));
   }, name, { onError });
   const tall = top || input.tagName === 'TEXTAREA';
-  const row = el('div', { class: tall ? 'so-field-row so-field-row--top' : 'so-field-row' });
+  const row = el('div', { class: tall ? 'ds-field__row ds-field__row--top' : 'ds-field__row' });
   if (control.parentNode) control.replaceWith(row);
   row.append(control, mic);
   // The field's label is found once the row is in the page: a sheet builds

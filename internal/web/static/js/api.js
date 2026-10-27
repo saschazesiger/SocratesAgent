@@ -142,40 +142,32 @@ export function openDialog({ title, body, lines, facts, code, field, actions, al
     }).then(async (answer) => {
       await DS.overlay.close(dialog);
       dialog.remove();
-      const now = document.activeElement;
-      if (!now || now === document.body || now.id === 'main' || now.id === 'sidebar') restoreFocus(was);
+      afterDialog(was);
       return answer;
     }),
   };
 }
 
-// confirmDialog is the app's own version of window.confirm: same promise in,
-// same yes or no out, but it looks like the rest of Socrates, can say what the
-// button actually does, and does not freeze the page while it is open.
-//
-// There are no red buttons: a destructive question is an alertdialog that
-// opens on Cancel, and its accept button names the consequence.
-export function confirmDialog(options = {}) {
-  const {
-    title,
-    body = '',
-    confirmLabel = 'Confirm',
-    cancelLabel = 'Cancel',
-    danger = false,
-    opener = null,
-  } = options;
-  const cancel = el('button', {
-    class: 'ds-btn ds-btn--text', type: 'button', 'data-close': true, autofocus: danger, text: cancelLabel,
-  });
-  const accept = el('button', {
-    class: 'ds-btn ds-btn--primary', type: 'button', autofocus: !danger, text: confirmLabel,
-  });
-  const { dialog, shown } = openDialog({ title, body, actions: [cancel, accept], alert: danger, opener });
-  accept.addEventListener('click', () => {
-    dialog.answer(true);
-    DS.overlay.close(dialog);
-  });
-  return shown;
+// afterDialog asks the page where the focus goes when a dialog could not
+// give it back: DS returns it to the opener, else to the page's landmark,
+// and on the session page that swallows the keys meant for the terminal.
+function afterDialog(was) {
+  const now = document.activeElement;
+  if (!now || now === document.body || now.id === 'main' || now.id === 'sidebar') restoreFocus(was);
+}
+
+// confirmDialog is window.confirm in the app's own clothes: DS's question
+// with yes or no (DS.overlay.confirm), same promise in, same yes or no
+// out, and a button that says what it actually does. There are no red
+// buttons: a destructive question (`danger`) is an alertdialog that opens
+// on Cancel, and its accept button names the consequence.
+export async function confirmDialog({
+  title, body = '', confirmLabel = 'Confirm', cancelLabel = 'Cancel', danger = false, opener = null,
+} = {}) {
+  const was = opener || document.activeElement;
+  const yes = await DS.overlay.confirm({ title, text: body, confirmLabel, cancelLabel, destructive: danger, opener: was });
+  afterDialog(was);
+  return yes;
 }
 
 // alertDialog is window.alert in the app's own clothes: it resolves once the
@@ -191,85 +183,58 @@ export function alertDialog({ title, body = '', lines = [], facts = [], code = f
   return shown;
 }
 
-// promptDialog is window.prompt in the app's own clothes: one field with its
-// label, and a button that says what is done with what was typed. It
-// resolves with the trimmed text, or null when the person cancelled.
-export function promptDialog({
-  title, body = '', label, value = '', placeholder = '', confirmLabel = 'OK', cancelLabel = 'Cancel', opener = null,
+// promptDialog is window.prompt in the app's own clothes: DS's one-field
+// dialog (DS.overlay.prompt), its label, and a button that says what is
+// done with what was typed. It resolves with the trimmed text, or null when
+// the person cancelled.
+export async function promptDialog({
+  title, body = '', label, value = '', confirmLabel = 'OK', cancelLabel = 'Cancel', opener = null,
 } = {}) {
-  const fieldId = 'dlg-field' + (dialogSeq + 1);
-  const input = el('input', {
-    class: 'ds-input', type: 'text', id: fieldId, value, placeholder, spellcheck: 'false', autocomplete: 'off', autofocus: true,
-    enterkeyhint: 'done',
+  const was = opener || document.activeElement;
+  const answer = await DS.overlay.prompt({
+    title, text: body, label, value, confirmLabel, cancelLabel, opener: was, input: { autocomplete: 'off' },
   });
-  const field = el('div', { class: 'ds-field' }, el('label', { class: 'ds-field__label', for: fieldId, text: label }), input);
-  const cancel = el('button', { class: 'ds-btn ds-btn--text', type: 'button', 'data-close': true, text: cancelLabel });
-  const accept = el('button', { class: 'ds-btn ds-btn--primary', type: 'button', text: confirmLabel });
-  const { dialog, shown } = openDialog({ title, body, field, actions: [cancel, accept], opener });
-  const done = () => {
-    dialog.answer(input.value.trim());
-    DS.overlay.close(dialog);
-  };
-  accept.addEventListener('click', done);
-  input.addEventListener('keydown', (event) => {
-    if (event.key === 'Enter' && !event.isComposing) {
-      event.preventDefault();
-      done();
-    }
-  });
-  return shown.then((answer) => (answer === false ? null : answer));
+  afterDialog(was);
+  return answer === null ? null : answer.trim();
 }
-
-// A message that is on screen already is not shown again: an offline burst
-// would otherwise stack the same error three times and queue the rest. The
-// key is the kind and the words.
-const showing = new Map();
 
 /**
  * toast shows a snackbar (DS.overlay.toast). `kind` is 'error' (stays until
  * closed), 'success', or anything else for a neutral 'info'. `action` is
- * { label, run }: a button in the message, which then stays until it is used
- * or closed. Returns DS's handle, { el, close, closed }.
+ * { label, run }: a text button in the message, which then stays until it is
+ * used or closed. Returns DS's handle, { el, close, closed }.
+ *
+ * DS does what this once did by hand: the same words while they show
+ * restart the message rather than stack it (an offline burst says it once),
+ * a message with a button replaces its twin (by key), the close button says
+ * what it does on hover, and a message that stays keeps room at the end of
+ * what scrolls under it - an open sheet's body, an open dialog, the page's
+ * view (Admin, Costs). The session page's view does not scroll
+ * (.ds-view--fixed): its stage fills it, so a message there keeps no room
+ * in it (reserve: false; DS would pad the view and shrink the stage); what
+ * stands at its bottom moves the messages instead, and a chat's
+ * conversation keeps the room at its own end (session.js placeToasts).
  */
 export function toast(message, kind = 'info', { persistent = false, timeout, action } = {}) {
   const text = String(message ?? '');
   const sort = kind === 'error' ? 'error' : kind === 'success' ? 'success' : 'info';
-  const key = sort + '\n' + text;
-  const open = showing.get(key);
-  if (open) return open;
-  let content = text;
+  const node = region();
+  const hosted = !!node.closest('dialog.ds-dialog[open], .ds-sheet');
+  const options = {
+    kind: sort, persistent, timeout,
+    reserve: hosted || !document.querySelector('.ds-view--fixed'),
+  };
   if (action) {
-    // The documented message, built by hand because it holds a button of its
-    // own: DS takes a .ds-toast element as it is.
-    const run = el('button', { class: 'ds-btn ds-btn--text', type: 'button', text: action.label });
-    content = el('div', { class: sort === 'success' ? 'ds-toast' : 'ds-toast ds-toast--' + sort },
-      iconEl(sort === 'error' ? 'alertCircle' : sort === 'info' ? 'info' : 'checkCircle', 20),
-      el('span', { class: 'ds-toast__text', text }),
-      run,
-      el('button', { class: 'ds-btn ds-btn--quiet ds-btn--icon ds-toast__close', type: 'button', 'aria-label': 'Close', 'data-tip': 'Close' },
-        iconEl('close', 20)));
-    run.addEventListener('click', () => {
-      handle.close();
-      action.run();
-    });
+    options.action = { label: action.label, onClick: () => action.run() };
+    options.key = sort + '\n' + text;
   }
-  const handle = DS.overlay.toast(region(), content, { kind: sort, persistent, timeout });
-  watchDialogRoom();
-  // DS draws the close button of a message it builds itself; it says what
-  // it does on hover like every other icon button.
-  const close = handle.el && handle.el.querySelector('.ds-toast__close');
-  if (close && !close.hasAttribute('data-tip')) close.setAttribute('data-tip', close.getAttribute('aria-label') || 'Close');
-  showing.set(key, handle);
+  const handle = DS.overlay.toast(node, text, options);
   const stays = persistent || sort === 'error' || !!action;
-  if (stays) {
+  if (stays && !staying.has(handle)) {
     staying.add(handle);
-    watchReserve();
-    requestAnimationFrame(reserveToasts);
+    tellStayWatchers();
+    handle.closed.then(() => { if (staying.delete(handle)) tellStayWatchers(); });
   }
-  handle.closed.then(() => {
-    if (showing.get(key) === handle) showing.delete(key);
-    if (staying.delete(handle)) requestAnimationFrame(reserveToasts);
-  });
   return handle;
 }
 
@@ -286,119 +251,16 @@ export function onToastsStay(fn) {
   return () => stayWatchers.delete(fn);
 }
 
-// A message that stays until it is closed keeps room at the end of what
-// scrolls under it - the open sheet's body, or the page's view (Admin,
-// Costs) - so that the last actions there can scroll clear of it (DS
-// data-toast-reserve and --ds-toast-reserve): its height and its distance
-// from the bottom edge. The session page's view does not scroll; what
-// stands at its bottom moves the messages instead, and a chat's
-// conversation keeps the room at its own end (session.js placeToasts).
-// The region moves into a sheet that opens and back out when it closes
-// (DS), and the room moves with it; in a dialog, the dialog keeps it
-// (keepDialogRoom).
 const staying = new Set();
 const stayWatchers = new Set();
-let reserveWatched = false;
 
-function watchReserve() {
-  if (reserveWatched) return;
-  reserveWatched = true;
-  new MutationObserver(() => { if (staying.size || document.querySelector('[data-toast-reserve]')) reserveToasts(); })
-    .observe(document.body, { childList: true });
-}
-
-function reserveToasts() {
-  for (const fn of [...stayWatchers]) {
-    try { fn(); } catch { /* one bad listener must not stop the others */ }
-  }
-  const node = document.getElementById('toasts');
-  const sheet = node && staying.size ? node.closest('.ds-sheet') : null;
-  const target = !node || !staying.size ? null
-    : sheet ? sheet.querySelector('.ds-sheet__body') : document.querySelector('.ds-view:not(.so-view)');
-  for (const one of document.querySelectorAll('[data-toast-reserve]')) {
-    if (one === target) continue;
-    one.removeAttribute('data-toast-reserve');
-    one.style.removeProperty('--ds-toast-reserve');
-  }
-  if (!target) return;
-  const room = Math.max(0, Math.round(window.innerHeight - node.getBoundingClientRect().top));
-  target.setAttribute('data-toast-reserve', '');
-  target.style.setProperty('--ds-toast-reserve', room + 'px');
-}
-
-// A message shown while a dialog is open stands in the dialog, above its
-// scrim, where it stood: DS moves the region in and leaves it at the
-// bottom edge - across the width, on a phone. There it lay over the
-// dialog's own last controls: an action sheet's Delete, the question's
-// options at the end of its body, Rename over a keyboard. So while a
-// message shows over its box, the dialog keeps that strip, and the box ends
-// above the messages rather than under them (so-shared.css
-// [data-so-toast-room]): the region's height and its distance from the
-// bottom edge as the page placed it (session.js lifts it past a keyboard,
-// and asks again when it does), and a little air. A box that stands clear
-// of the messages - a short form in the middle of a tall screen, beside a
-// short message at a desk - does not move. Where things stand is read from
-// the layout (offsets and the region's own bottom), without the room and
-// without the transforms of an entrance. A dialog on its way out keeps the
-// room until it has gone: its box would drop under the messages as it fades.
-// Messages a page has put out of sight (a phone on its side with its
-// keyboard up, so-shared.css) need no room.
-export function keepDialogRoom() {
-  const node = document.getElementById('toasts');
-  const host = node && !node.closest('.ds-sheet') ? node.closest('dialog.ds-dialog[open]') : null;
-  const box = host ? host.querySelector('.ds-dialog__box') : null;
-  let room = '';
-  if (box && node.querySelector('.ds-toast') && node.offsetHeight && getComputedStyle(node).visibility !== 'hidden') {
-    host.removeAttribute('data-so-toast-room');
-    const look = getComputedStyle(node);
-    const edge = (parseFloat(look.bottom) || 0) + (parseFloat(look.marginBottom) || 0);
-    const top = host.clientHeight - edge - node.offsetHeight;
-    const left = parseFloat(look.left) || 0;
-    const air = parseFloat(getComputedStyle(host).getPropertyValue('--ds-space-3')) || 0;
-    const over = box.offsetTop + box.offsetHeight > top - air
-      && box.offsetLeft < left + node.offsetWidth && box.offsetLeft + box.offsetWidth > left;
-    if (over) room = 'calc(' + Math.round(edge + node.offsetHeight) + 'px + var(--ds-space-3))';
-  }
-  for (const one of document.querySelectorAll('[data-so-toast-room]')) {
-    if (one === host || one.classList.contains('ds-dialog--closing')) continue;
-    one.removeAttribute('data-so-toast-room');
-    one.style.removeProperty('--so-toast-room');
-  }
-  // A box that grows (a question's next step, a longer form) can grow into
-  // the messages: it is watched while it holds them.
-  if (dialogRoomWatcher && roomBox !== box) {
-    if (roomBox) dialogRoomWatcher.unobserve(roomBox);
-    if (box) dialogRoomWatcher.observe(box);
-    roomBox = box;
-  }
-  if (!host) return;
-  if (!room) {
-    host.removeAttribute('data-so-toast-room');
-    host.style.removeProperty('--so-toast-room');
-    return;
-  }
-  if (host.style.getPropertyValue('--so-toast-room') !== room) host.style.setProperty('--so-toast-room', room);
-  host.setAttribute('data-so-toast-room', '');
-}
-
-// The room follows the messages (the region's height), a dialog opening
-// or closing over them, and the region going back to the page. Watched
-// from the first message on: before it there is nothing to keep room for.
-let dialogRoomWatched = false;
-let dialogRoomWatcher = null;
-let roomBox = null;
-function watchDialogRoom() {
-  const node = document.getElementById('toasts');
-  if (dialogRoomWatched || !node) return;
-  dialogRoomWatched = true;
-  if (window.ResizeObserver) {
-    dialogRoomWatcher = new ResizeObserver(() => keepDialogRoom());
-    dialogRoomWatcher.observe(node);
-  }
-  new MutationObserver(() => keepDialogRoom()).observe(document.body, { childList: true });
-  new MutationObserver((records) => {
-    if (records.some((r) => r.target.localName === 'dialog')) keepDialogRoom();
-  }).observe(document.body, { attributes: true, attributeFilter: ['open'], subtree: true });
+// Once the message is laid out: the watchers measure the stack.
+function tellStayWatchers() {
+  requestAnimationFrame(() => {
+    for (const fn of [...stayWatchers]) {
+      try { fn(); } catch { /* one bad listener must not stop the others */ }
+    }
+  });
 }
 
 // isBusyConflict is the one refusal that passes on its own: the session is still

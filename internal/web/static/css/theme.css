@@ -1,7 +1,7 @@
 /*
  * The Socrates theme for Dashboard-Style: loaded after ds.css, unlayered, on
  * .ds-theme. No DS role is overridden: Socrates wears Dashboard-Style's own
- * look. Only the project's --so-* tokens, two documented hooks for touch
+ * look. Only the project's --so-* tokens, a documented hook for touch
  * mode, and the bundled terminal font live here.
  */
 @font-face { font-family: 'Source Code Pro'; src: url('/static/fonts/SourceCodePro-Regular.woff2') format('woff2'); font-weight: 400; font-style: normal; font-display: swap; }
@@ -37,6 +37,7 @@
   --so-done-opacity: 0.5;
   --so-rename-width: 400px;
   --so-status-width: 600px;
+  --so-status-tile-min: 140px;
   --so-title-min: 96px;
   /* The session's menu as an action sheet on a phone (so-frame.css). */
   --so-actions-width: 480px;
@@ -75,8 +76,8 @@
   /* The first message of a chat that has not started: its field's least
      height is a good part of the screen, and never more than a share of what
      can be seen - the app's height, which follows a phone's keyboard
-     (keybar.js writes --so-app-h). */
-  --so-prompt-min-height: min(max(300px, 48vh), calc(var(--so-app-h, 100dvh) * 0.45));
+     (DS --ds-viewport-height, keybar.js followViewport). */
+  --so-prompt-min-height: min(max(300px, 48vh), calc(var(--ds-viewport-height, 100dvh) * 0.45));
   --so-conflict-preview-max: 160px;
 
   /* Chat: the conversation's reading width, how wide a person's message
@@ -87,12 +88,14 @@
   --so-chat-row-height: 36px;
   --so-chat-output-max: 320px;
   --so-chat-todo-max: 28vh;
+  /* The background jobs dialog, and a job's row in it. */
+  --so-jobs-width: 36rem;
+  --so-job-row-min: 3.5rem;
   /* The composer's share of what can be seen: the app's height, which
-     follows a phone's keyboard (keybar.js writes --so-app-h). */
-  --so-composer-max: calc(var(--so-app-h, 100dvh) * 0.35);
+     follows a phone's keyboard (DS --ds-viewport-height, keybar.js followViewport). */
+  --so-composer-max: calc(var(--ds-viewport-height, 100dvh) * 0.35);
   --so-palette-max: 260px;
   --so-diff-no-width: 4ch;
-  --so-touch-target: 48px;
 
   /* Question sheet. Where it is the whole screen (a tablet, touch mode),
      its column (the measure) is as wide as in a desktop's 720px dialog. */
@@ -111,27 +114,19 @@
   --so-account-meters-width: 360px;
 
   /* Login, setup, costs */
-  --so-auth-width: 400px;
   --so-chart-height: 240px;
+  --so-costs-tile-min: 140px;
   --so-chart-gap: 2px;
   --so-chart-tip-min: 180px;
   --so-chart-tip-max: 280px;
-  --so-swatch-size: 10px;
-  --so-series-1: #2a78d6;
-  --so-series-2: #eb6834;
-  --so-series-3: #1baf7a;
-  --so-series-4: #eda100;
-  --so-series-other: #c4c6cc;
 }
 
-/* Touch mode (car, kiosk): bigger targets through DS hooks (X16). */
+/* Touch mode (car, kiosk): <html class="so-touch ds-touch"> (ui.js). DS's
+   .ds-touch makes every DS target a finger's --ds-touch-target (48px)
+   through its own hooks, small buttons, fields, check and switch rows,
+   the combobox, menus and the snackbar's Close included; the project's own
+   targets follow here (X16). */
 .ds-theme.so-touch {
-  --ds-btn-height: var(--so-touch-target);
-  --ds-btn-icon-size: var(--so-touch-target);
-  --ds-check-target: var(--so-touch-target);
-  --ds-switch-halo: var(--so-touch-target);
-  --ds-chip-height: 48px;
-  --ds-input-font: var(--ds-font-input);   /* 16px field text at any width: no iOS focus zoom on an iPad/car screen */
   --so-row-height: 48px;
   --so-folder-head-height: 48px;
   --so-shelf-head-height: 48px;
@@ -141,27 +136,13 @@
   --so-question-width: 100%;
 }
 
-/* The compact buttons set their own size on themselves (DS .ds-btn--sm):
-   in touch mode they are a finger's target too - a row's ⋮, an "i", the
-   admin page's Update now. */
-.ds-theme.so-touch .ds-btn--sm {
-  --ds-btn-height: var(--so-touch-target);
-  --ds-btn-icon-size: var(--so-touch-target);
-}
-
 /* A button in a card's head hangs out of the title's line by half of what
    it is taller (DS --ds-card-title-line): 12px at a finger's 48px, which
    left 4px between it and the card's top edge on a phone (16px padding).
    The line is taken as tall as a desktop's button, so it hangs the 6px it
    does there, and the head grows by the rest. */
 .ds-theme.so-touch {
-  --ds-card-title-line: calc(var(--so-touch-target) - var(--ds-space-3));
-}
-
-/* A snackbar's Close, the one way to put an error away, sets its size on
-   itself too (36px); its negative margins keep the message's height. */
-.ds-theme.so-touch .ds-toast__close {
-  --ds-btn-icon-size: var(--so-touch-target);
+  --ds-card-title-line: calc(var(--ds-touch-target) - var(--ds-space-3));
 }
 
 /* Stage: on a phone every column of the pane counts. */
