@@ -1042,9 +1042,10 @@ func TestAChatSwitchesTheDashboardsMCPServers(t *testing.T) {
 	if code, got := c.post(t, "/api/chats/"+id+"/mcp", map[string]any{"name": "nope", "on": on}); code != http.StatusBadRequest {
 		t.Fatalf("a server the chat does not have: %d %v", code, got)
 	}
-	// The host is parked, and the next message starts one with the choices.
+	// The host is parked, and the next message starts one with the choices
+	// (queued, when that one is not up within the ack's wait).
 	c.waitHostGone(t, id)
-	c.send(t, id, "m1", "hello")
+	c.sendTaken(t, id, "m1", "hello")
 	c.waitJournal(t, id, 10*time.Second, "the reply", turnsEnded(1))
 	spec, err := agenthost.ReadSpec(c.data, id)
 	if err != nil {

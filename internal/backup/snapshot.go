@@ -444,8 +444,61 @@ func redact(src, dst string, fields []string) error {
 	return os.WriteFile(dst, append(out, '\n'), 0o600)
 }
 
-// isSQLite reports whether the file at p is an SQLite database.
+// isSQLite reports whether the file at p is an SQLite database, by its
+// header (sqliteMagic). SQLite is asked first: closing any file descriptor
+// drops every POSIX lock this process holds on the file, so a plain open and
+// close of a database the process has open - the server's own - would leave
+// it unlocked behind SQLite's back, and another program's connection would
+// then take itself for the last one and delete the write-ahead log the
+// server still writes into. SQLite's own close keeps the descriptor while
+// another of its connections holds locks. Only a file SQLite cannot read as
+// a database, which no connection here can hold, has its header read here:
+// a damaged database with a good header is still one, to be kept as its
+// last good copy.
 func isSQLite(p string) bool {
+	info, err := os.Stat(p)
+	if err != nil || !info.Mode().IsRegular() || info.Size() < int64(len(sqliteMagic)) {
+		return false
+	}
+	switch sqliteReads(p) {
+	case sqlite3.SQLITE_OK:
+		return true
+	case sqlite3.SQLITE_NOTADB:
+		return hasSQLiteMagic(p)
+	}
+	return false
+}
+
+// sqliteReads is what SQLite answers when asked for p's schema version:
+// SQLITE_OK for a database, SQLITE_NOTADB for a file that is none or a
+// damaged one, SQLITE_CANTOPEN for one it cannot open. A database another
+// program holds (busy, locked) counts as read.
+func sqliteReads(p string) int {
+	dsn := (&url.URL{Scheme: "file", Path: p, RawQuery: "mode=ro&_pragma=busy_timeout(1000)"}).String()
+	db, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		return sqlite3.SQLITE_CANTOPEN
+	}
+	defer db.Close()
+	var version int
+	err = db.QueryRow(`PRAGMA schema_version`).Scan(&version)
+	var se *sqlite.Error
+	switch {
+	case err == nil:
+		return sqlite3.SQLITE_OK
+	case !errors.As(err, &se):
+		return sqlite3.SQLITE_CANTOPEN
+	}
+	switch code := se.Code() & 0xff; code {
+	case sqlite3.SQLITE_NOTADB, sqlite3.SQLITE_CANTOPEN:
+		return code
+	}
+	return sqlite3.SQLITE_OK
+}
+
+// hasSQLiteMagic reads p's first bytes. Never call it on a file a SQLite
+// connection of this process may have open (isSQLite).
+func hasSQLiteMagic(p string) bool {
 	f, err := os.Open(p)
 	if err != nil {
 		return false
