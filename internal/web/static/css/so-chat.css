@@ -51,7 +51,9 @@
  *                          ([data-single]: the only one, not collapsible)
  *   .so-todo               a task list (DS .ds-tasks under a head with its
  *                          count; .so-todo__item a hook for the tests);
- *                          [data-pinned] above the composer
+ *                          [data-pinned] above the composer, folded
+ *                          (.so-foldbox: shut until opened, as the agents
+ *                          at work are, .so-agentfold)
  *   .so-plan, .so-ask      the plan card and the question card (DS cards)
  *   .so-line               a line between messages: a notice, a command, a
  *                          model or an account change, an interrupted turn
@@ -263,13 +265,64 @@
   block-size: var(--ds-space-5);
 }
 
-.so-chat__todo {
-  max-height: var(--so-chat-todo-max);
-  overflow-y: auto;
-  overscroll-behavior: contain;
+/* A fold over the composer (the pinned task list, the agents at work):
+   shut by default, one quiet line in a hairline box - its mark, what is at
+   work now on a wheel under the wave, a figure at the end and the chevron;
+   opened, what it holds under that line, scrolling on its own past its
+   height so the line stays in sight. */
+.so-foldbox {
+  min-width: 0;
   border: 1px solid var(--ds-line);
   border-radius: var(--ds-radius-card);
-  padding: var(--ds-space-3) var(--ds-space-4);
+}
+
+.so-foldbox > summary {
+  --ds-pressable-radius: var(--ds-radius-card);
+  display: flex;
+  align-items: center;
+  gap: var(--ds-space-2);
+  min-height: var(--so-chat-row-height);
+  padding-inline: var(--ds-space-4) var(--ds-space-2);
+  list-style: none;
+  color: var(--ds-text-2);
+  font: var(--ds-font-label);
+}
+
+.so-foldbox > summary::-webkit-details-marker {
+  display: none;
+}
+
+.so-foldbox__icon {
+  display: grid;
+  flex: none;
+  place-items: center;
+  color: var(--ds-text-3);
+}
+
+.so-foldbox__now {
+  flex: 1 1 0;
+}
+
+.so-foldbox__words {
+  display: block;
+}
+
+.so-foldbox__meta {
+  flex: none;
+  color: var(--ds-text-3);
+  font: var(--ds-font-meta);
+  font-variant-numeric: tabular-nums;
+}
+
+.so-foldbox > summary .ds-chevron {
+  flex: none;
+}
+
+.so-foldbox__body {
+  max-height: var(--so-foldbox-max);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 0 var(--ds-space-4) var(--ds-space-3);
 }
 
 
@@ -286,27 +339,19 @@
   min-width: 0;
 }
 
-/* The agents' cards: one is as wide as the foot; several stand side by side
-   and scroll sideways, a card a stop, the next one peeking in. */
+/* The agents' cards, opened: one under the other, each as wide as the
+   fold (whose body scrolls past --so-foldbox-max). */
 .so-agentcards--foot {
   display: flex;
-  flex: none;
-  align-items: flex-start;
+  flex-direction: column;
   gap: var(--ds-space-2);
   min-width: 0;
-  overflow-x: auto;
-  overscroll-behavior-x: contain;
-  scroll-snap-type: x mandatory;
-  scrollbar-width: thin;
+  padding-inline: var(--ds-space-2);
+  padding-bottom: var(--ds-space-2);
 }
 
 .so-agentcards--foot > .so-agentcard {
-  flex: 1 0 100%;
-  scroll-snap-align: start;
-}
-
-.so-agentcards--foot[data-many] > .so-agentcard {
-  flex-basis: var(--so-agentcard-min);
+  flex: none;
 }
 
 .so-agentcards--list {
@@ -1546,8 +1591,9 @@
 
 /* ── Task lists ──────────────────────────────────────────────────────── */
 
-/* DS's task list (.ds-tasks), under a head with its count. */
-.so-todo {
+/* DS's task list (.ds-tasks), under a head with its count; pinned, it is
+   a fold of its own (.so-foldbox). */
+.so-todo:not([data-pinned]) {
   display: flex;
   flex-direction: column;
   gap: var(--ds-space-2);

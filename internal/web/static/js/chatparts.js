@@ -392,15 +392,28 @@ const TODO_STATUS = { completed: 'done', in_progress: 'running', pending: 'pendi
 const TODO_WORDS = { completed: 'done', in_progress: 'in progress', pending: 'to do' };
 
 /** todoList is a task list, each task with its state as a mark and a word. */
-export function todoList(part, { pinned = false } = {}) {
+export function todoList(part, { pinned = false, open = false } = {}) {
   const items = todoItems(part);
   const done = items.filter((item) => item.status === 'completed').length;
-  return html`<div class="so-todo"${pinned ? html` data-pinned` : ''}><div class="ds-tasks__head so-todo__head">${raw(icon('list', 18))}<span>Tasks</span><span class="ds-meta so-todo__count">${done} of ${items.length} done</span></div><ol class="ds-tasks" aria-label="Tasks">${
+  const list = html`<ol class="ds-tasks so-todo__list" aria-label="Tasks">${
     items.map((item, i) => html`<li class="ds-tasks__item so-todo__item" data-ds-key="${'t' + i}" data-status="${TODO_STATUS[item.status]}"><span class="ds-tasks__mark" aria-hidden="true">${
       item.status === 'in_progress' ? html`<span class="ds-spinner ds-spinner--sm"></span>`
         : item.status === 'completed' ? raw(icon('checkCircle', 20)) : ''
     }</span><span class="ds-tasks__text">${item.status === 'in_progress' && item.active ? item.active : item.text}<span class="ds-sr">${': ' + TODO_WORDS[item.status]}</span></span></li>`)
-  }</ol></div>`;
+  }</ol>`;
+  const count = done + ' of ' + items.length + ' done';
+  if (!pinned) {
+    return html`<div class="so-todo"><div class="ds-tasks__head so-todo__head">${raw(icon('list', 18))}<span>Tasks</span><span class="ds-meta so-todo__count">${count}</span></div>${list}</div>`;
+  }
+  // Pinned over the composer the list is folded into one line by default:
+  // the task at work under the wave, rolling to the next one, and how many
+  // are done; opened, the whole list under it.
+  const current = items.find((item) => item.status === 'in_progress');
+  const next = items.find((item) => item.status !== 'completed');
+  const words = current ? current.active || current.text : next ? next.text : 'All tasks done';
+  return html`<details class="ds-collapsible so-foldbox so-todo" data-pinned data-open-key="foot:todo"${open ? html` open` : ''}><summary class="ds-pressable so-foldbox__head" aria-label="${'Tasks, ' + count + ': ' + words}"><span class="so-foldbox__icon" aria-hidden="true">${raw(icon('list', 16))}</span><span class="so-wheel so-foldbox__now">${liveWords(words, 'so-foldbox__words', !!current)}</span><span class="so-foldbox__meta so-todo__count">${count}</span>${chevron()}</summary>${
+    open ? html`<div class="so-foldbox__body">${list}</div>` : ''
+  }</details>`;
 }
 
 /* ------------------------------------------------------------- the parts */
@@ -1067,10 +1080,13 @@ function agentProgress(facts) {
   }</p></div>`;
 }
 
-// liveWords is a line at work: its words under the white wave, on a wheel
-// line keyed by them, so that the next thing it does rolls in (wheel.js).
-function liveWords(words, className) {
-  return html`<span class="so-wheel__line" data-ds-key="${words}"><span class="so-shimmer ${className}" data-shimmer="${words}">${words}</span></span>`;
+// liveWords is a line at work: its words under the white wave (unless
+// nothing is at work), on a wheel line keyed by them, so that the next
+// thing it does rolls in (wheel.js).
+function liveWords(words, className, shimmer = true) {
+  return html`<span class="so-wheel__line" data-ds-key="${words}">${shimmer
+    ? html`<span class="so-shimmer ${className}" data-shimmer="${words}">${words}</span>`
+    : html`<span class="${className}">${words}</span>`}</span>`;
 }
 
 /**
@@ -1111,6 +1127,27 @@ export function agentCard(part, { full = false, foot = false, stopping = null, n
   }</p>${
     full && taskId ? html`<button class="ds-btn ds-btn--text ds-btn--sm so-agentcard__stop" type="button" data-job-stop="${taskId}"${stopping && stopping.has(taskId) ? html` aria-busy="true"` : ''}>${raw(icon('stop', 16))}<span>Stop</span></button>` : ''
   }</div></div>`;
+}
+
+/**
+ * agentsFold is the subagents and workflows at work at the chat's foot,
+ * folded by default into one quiet line: what the one at work is doing (or
+ * how many run, and what they were sent to do), under the wave and rolling
+ * on, and how long the first of them has run. Opened, their cards one under
+ * the other (agentCard).
+ */
+export function agentsFold(parts, { open = false, now = Date.now() } = {}) {
+  const all = parts.map((part) => ({ part, facts: agentFacts(part) }));
+  const doing = (facts) => facts.doing || (facts.running.length === 1 ? facts.running[0].label : '') || 'Working';
+  const one = all.length === 1 ? all[0].facts : null;
+  const words = one ? one.title + ' · ' + doing(one) : all.length + ' agents at work · ' + all.map((a) => a.facts.title).join(', ');
+  const since = Math.min(...all.map((a) => a.part.at || now));
+  const glyph = one ? one.glyph : 'users';
+  return html`<details class="ds-collapsible so-foldbox so-agentfold" data-ds-key="agents" data-open-key="foot:agents"${open ? html` open` : ''}><summary class="ds-pressable so-foldbox__head" aria-label="${words}"><span class="so-foldbox__icon" aria-hidden="true">${raw(icon(glyph, 16))}</span><span class="so-wheel so-foldbox__now">${liveWords(words, 'so-foldbox__words')}</span><span class="so-foldbox__meta" data-since="${since}" data-format="watch">${stopwatch(Math.max(0, now - since))}</span>${chevron()}</summary>${
+    open ? html`<div class="so-foldbox__body so-agentcards so-agentcards--foot" role="group" aria-label="${all.length === 1 ? 'An agent at work' : all.length + ' agents at work'}"${all.length > 1 ? html` data-many` : ''}>${
+      all.map((a) => agentCard(a.part, { foot: true, now }))
+    }</div>` : ''
+  }</details>`;
 }
 
 // What a job that no longer runs ended as, by the state its task (or its
@@ -1379,7 +1416,7 @@ function ticking(ms, format) {
  */
 export function tickLive(root) {
   const now = Date.now();
-  for (const node of root.querySelectorAll('.so-live [data-since], .so-agentcard [data-since]')) {
+  for (const node of root.querySelectorAll('.so-live [data-since], .so-agentcard [data-since], .so-agentfold [data-since]')) {
     const text = ticking(now - Number(node.dataset.since), node.dataset.format);
     if (node.textContent !== text) node.textContent = text;
   }

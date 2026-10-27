@@ -10757,15 +10757,23 @@ async function chattools() {
       return { inView: inline.top >= view.top && inline.bottom <= view.bottom, pinned: !document.querySelector('#chat .so-chat__todo').hidden };
     });
     await page.$eval('#chat .so-chat__scroll', (n) => { n.scrollTop = 0; });
-    const pinned = await page.waitForSelector('#chat .so-chat__todo:not([hidden]) .so-todo[data-pinned]', { timeout: 10000 })
-      .then(() => page.$eval('#chat .so-chat__todo', (n) => ({
-        items: [...n.querySelectorAll('.so-todo__item')].map((i) => i.dataset.status),
-        count: n.querySelector('.so-todo__count').textContent,
-        above: n.getBoundingClientRect().bottom <= document.querySelector('#chat .so-composer').getBoundingClientRect().top + 1,
-      })), () => null);
+    const pinnedNow = () => page.$eval('#chat .so-chat__todo', (n) => ({
+      open: !!n.querySelector('.so-todo[data-pinned][open]'),
+      items: [...n.querySelectorAll('.so-todo__item')].map((i) => i.dataset.status),
+      count: n.querySelector('.so-todo__count').textContent,
+      now: (n.querySelector('summary .so-foldbox__words') || {}).textContent || '',
+      above: n.getBoundingClientRect().bottom <= document.querySelector('#chat .so-composer').getBoundingClientRect().top + 1,
+    }));
+    const shutList = await page.waitForSelector('#chat .so-chat__todo:not([hidden]) .so-todo[data-pinned]', { timeout: 10000 })
+      .then(pinnedNow, () => null);
     ok(once.inView && !once.pinned, 'a task list the conversation shows is not pinned a second time', JSON.stringify(once));
-    ok(!!pinned && pinned.items.length === 3 && pinned.items.includes('running') && pinned.above,
-      'scrolled out of sight while the turn works through it, it is pinned above the composer', JSON.stringify(pinned));
+    ok(!!shutList && !shutList.open && shutList.items.length === 0 && /of 3 done/.test(shutList.count) && shutList.now && shutList.above,
+      'scrolled out of sight while the turn works through it, it is pinned above the composer, folded into one line: the task at work and how many are done',
+      JSON.stringify(shutList));
+    await page.click('#chat .so-todo[data-pinned] > summary');
+    const pinned = await page.waitForSelector('#chat .so-todo[data-pinned][open] .so-todo__item', { timeout: 5000 }).then(pinnedNow, () => null);
+    ok(!!pinned && pinned.open && pinned.items.length === 3 && pinned.items.includes('running') && pinned.above,
+      'opened, it lists every task', JSON.stringify(pinned));
     await awaitLog(page, 'All three tasks are done.', 20000);
     const unpinned = await page.waitForSelector('#chat .so-chat__todo', { state: 'hidden', timeout: 5000 }).then(() => true, () => false);
     const inMessage = await page.$$eval('#chat .so-msg .so-part[data-kind="todo"] .so-todo__item[data-status="done"]', (n) => n.length);
@@ -11169,6 +11177,14 @@ async function chatagents() {
   try {
     await say(page, '/subagent bg 8');
     await awaitLog(page, 'The subagent works on.', 20000);
+    const shut = await page.waitForSelector('#chat .so-chat__bg:not([hidden]) .so-agentfold', { timeout: 15000 })
+      .then(() => page.$eval('#chat .so-agentfold', (n) => ({
+        open: n.open, cards: n.querySelectorAll('.so-agentcard').length,
+        words: (n.querySelector('summary .so-foldbox__words') || {}).textContent || '', watch: (n.querySelector('summary .so-foldbox__meta') || {}).textContent || '',
+      })), () => null);
+    ok(!!shut && !shut.open && shut.cards === 0 && /^A subagent · /.test(shut.words) && /\d:\d\d/.test(shut.watch),
+      'the agents at work are one folded line at the foot until it is opened: what the agent does, and its watch', JSON.stringify(shut));
+    await page.click('#chat .so-agentfold > summary');
     await page.waitForSelector('#chat .so-chat__bg:not([hidden]) .so-agentcard[data-kind="agent"]', { timeout: 15000 }).catch(() => {});
     let cards = await agentCards(page);
     const sub = cards.find((c) => c.kind === 'agent');
@@ -11189,8 +11205,10 @@ async function chatagents() {
       'the card is quiet: no spinner and no chip, what it does under the white wave in the text font; code is set in the bundled font, never the device\u2019s monospace',
       JSON.stringify(look));
     const composer = await page.$eval('#chat .so-composer__input', (n) => Math.round(n.getBoundingClientRect().width));
-    ok(!!sub && sub.height >= 56 && Math.abs(sub.width - composer) <= 2, 'the card is taller than a line, and as wide as the field under it',
-      JSON.stringify({ height: sub && sub.height, width: sub && sub.width, composer }));
+    const fold = await page.$eval('#chat .so-agentfold', (n) => Math.round(n.getBoundingClientRect().width));
+    ok(!!sub && sub.height >= 56 && Math.abs(fold - composer) <= 2 && sub.width <= fold && sub.width >= fold - 24,
+      'opened, the card is taller than a line, and fills the fold, as wide as the field under it',
+      JSON.stringify({ height: sub && sub.height, width: sub && sub.width, fold, composer }));
     const ticks = sub ? sub.watch : '';
     await wait(2100);
     const later = ((await agentCards(page)).find((c) => c.kind === 'agent') || {}).watch || '';
@@ -11262,16 +11280,21 @@ async function chatagents() {
     ok(done, 'and once the workflow is through, its card leaves too', String(done));
     await awaitChat(s, id, idle, 20000);
 
-    // Two at once stand side by side, and the strip scrolls sideways.
+    // Two at once stand one under the other, each as wide as the foot.
     await say(page, '/subagent bg 10');
     await awaitLog(page, 'The subagent works on.', 20000);
     await awaitChat(s, id, idle, 20000);
     await say(page, '/workflow 8');
     const two = await page.waitForFunction(() => document.querySelectorAll('#chat .so-chat__bg:not([hidden]) .so-agentcards[data-many] > .so-agentcard').length === 2,
       null, { timeout: 15000 }).then(() => agentCards(page), () => agentCards(page));
-    const strip = await page.$eval('#chat .so-agentcards--foot', (n) => ({ width: Math.round(n.clientWidth), scroll: n.scrollWidth })).catch(() => null);
-    ok(two.length === 2 && two.map((c) => c.kind).sort().join() === 'agent,workflow' && !!strip && two.every((c) => c.width < strip.width),
-      'a subagent and a workflow at once are two cards side by side', JSON.stringify({ two: two.map((c) => [c.kind, c.width]), strip }));
+    const strip = await page.$eval('#chat .so-agentcards--foot', (n) => ({
+      width: Math.round(n.clientWidth - parseFloat(getComputedStyle(n).paddingLeft) - parseFloat(getComputedStyle(n).paddingRight)),
+      side: n.scrollWidth - n.clientWidth,
+      tops: [...n.children].map((card) => Math.round(card.getBoundingClientRect().top)),
+    })).catch(() => null);
+    ok(two.length === 2 && two.map((c) => c.kind).sort().join() === 'agent,workflow' && !!strip && strip.side === 0
+      && two.every((c) => Math.abs(c.width - strip.width) <= 2) && strip.tops[1] > strip.tops[0],
+      'a subagent and a workflow at once are two cards one under the other, each as wide as the foot', JSON.stringify({ two: two.map((c) => [c.kind, c.width]), strip }));
     await shot(page, 'chat-agents-two');
     ok(unexpected(s.errors).length === 0, 'no console errors', unexpected(s.errors).join(' | ') || '0');
   } finally { await s.stop(); }

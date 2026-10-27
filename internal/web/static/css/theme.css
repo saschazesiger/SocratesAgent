@@ -87,13 +87,12 @@
   --so-conflict-preview-max: 160px;
 
   /* Chat: the conversation's reading width, how wide a person's message
-     grows, a part's one-line row, how much of a tool's output, a task list
-     and the composer show before they scroll, and a diff's line numbers. */
+     grows, a part's one-line row, how much of a tool's output and the
+     composer show before they scroll, and a diff's line numbers. */
   --so-chat-measure: 860px;
   --so-chat-bubble-max: 85%;
   --so-chat-row-height: 36px;
   --so-chat-output-max: 320px;
-  --so-chat-todo-max: 28vh;
   /* The shimmer of a line at work (so-motion.css): a white wave, and how
      much of it shows at its crest - a faint sheen passing over the words,
      in the background, never wiping them out. */
@@ -102,9 +101,9 @@
   /* The background jobs dialog, and a job's row in it. */
   --so-jobs-width: 36rem;
   --so-job-row-min: 3.5rem;
-  /* A subagent's or a workflow's card at the foot of the chat, when several
-     stand side by side. */
-  --so-agentcard-min: min(85%, 20rem);
+  /* A fold over the composer, opened (the pinned task list, the agents'
+     cards): how high it grows before it scrolls. */
+  --so-foldbox-max: 32vh;
   /* The composer's share of what can be seen: the app's height, which
      follows a phone's keyboard (DS --ds-viewport-height, keybar.js followViewport). */
   --so-composer-max: calc(var(--ds-viewport-height, 100dvh) * 0.35);

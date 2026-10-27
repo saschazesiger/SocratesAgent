@@ -31,7 +31,7 @@ import { ChatStream } from './chatstream.js';
 import { loadChat, saveChat } from './chatcache.js';
 import {
   assistantMessage, userMessage, lineHtml, askCard, askPlaces, todoList, todoItems, renewsIn, seconds, outboxState,
-  backgroundJobs, jobsList, jobDetail, agentCard, clock, infoButton, tickLive,
+  backgroundJobs, jobsList, jobDetail, agentsFold, clock, infoButton, tickLive,
 } from './chatparts.js';
 import { mountComposer } from './composer.js';
 import { wheelHooks } from './wheel.js';
@@ -695,7 +695,7 @@ export function mountChat(ctx) {
     }
     if (todo && inline && todoInView) todo = null;
     todoSlot.hidden = !todo;
-    morph(todoSlot, todo ? todoList(todo, { pinned: true }) : '');
+    morph(todoSlot, todo ? todoList(todo, { pinned: true, open: view.isOpen('foot:todo', false) }) : '', wheelHooks);
   }
 
   // stale says whether what is on screen may be behind: the stream is not
@@ -808,10 +808,10 @@ export function mountChat(ctx) {
 
   // drawJobs is what runs in the background, at the foot of the chat over
   // the composer, where the eye is while it waits. A subagent or a workflow
-  // is a card of its own - what it does, how far it has come - side by side
-  // and scrolled sideways when there are several; the rest (a shell, a
-  // monitor) is one line: how many, and what the newest runs. Nothing while
-  // nothing runs.
+  // is a card of its own - what it does, how far it has come - one under the
+  // other when there are several, all folded into one line until opened
+  // (agentsFold); the rest (a shell, a monitor) is one line: how many, and
+  // what the newest runs. Nothing while nothing runs.
   function drawJobs() {
     const { jobs, others } = backgroundJobs(chat);
     const agents = jobs.filter((job) => job.kind && chat.parts.get(job.id));
@@ -821,9 +821,7 @@ export function mountChat(ctx) {
     if (jobsSlot.hidden) { morph(jobsSlot, ''); return; }
     const now = Date.now();
     const cards = agents.length
-      ? html`<div class="so-agentcards so-agentcards--foot" data-ds-key="agents" role="group" aria-label="${agents.length === 1 ? 'An agent at work' : agents.length + ' agents at work'}"${agents.length > 1 ? html` data-many` : ''}>${
-        agents.map((job) => agentCard(chat.parts.get(job.id), { foot: true, now }))
-      }</div>`
+      ? agentsFold(agents.map((job) => chat.parts.get(job.id)), { open: view.isOpen('foot:agents', false), now })
       : '';
     let line = '';
     if (count) {
@@ -1287,7 +1285,9 @@ export function mountChat(ctx) {
     if (!session) return;
     const summary = event.target.closest('summary');
     const details = summary && summary.parentElement;
-    if (details && details.dataset.openKey && log.contains(details)) {
+    // The folds of the conversation, and those over the composer (the
+    // agents at work, the pinned task list), shut until opened.
+    if (details && details.dataset.openKey && (log.contains(details) || dock.contains(details))) {
       event.preventDefault();
       toggle(details.dataset.openKey, details.open);
       return;
