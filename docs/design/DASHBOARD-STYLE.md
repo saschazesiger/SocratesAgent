@@ -68,7 +68,7 @@ in for Socrates:
 | File | What |
 |---|---|
 | `css/theme.css` | the theme: `--so-*` tokens by area, the project's touch-mode sizes, the terminal font |
-| `css/so-shared.css` | components every page may show: `.so-logo`, `.so-agent`, `.so-mark`, `.so-break`, `.so-ellipsis`, `.so-conn`, `.so-page-head` |
+| `css/so-shared.css` | components every page may show: `.so-logo`, `.so-agent`, `.so-mark`, `.so-break`, `.so-ellipsis`, `.so-conn` |
 | `css/so-frame.css` | the session page's frame: top bar contents, drawer actions, session list and folders, banners, the options dialog, the action sheet's title, the Status modal |
 | `css/so-stage.css` | the stage: terminal pane, its cover, notice and ticker, key bar, transfer buttons, recording and copy dialogs, the IDE pane |
 | `css/so-home.css` | Home |
@@ -108,6 +108,7 @@ looks, and the parts Socrates had built by hand that 2.0 ships. Moved onto DS's 
 | the sign-in card, "optional", the restore's share | `.ds-auth`, `.ds-card--elevated`, `.ds-field__optional`, `DS.dom.progress()` |
 | Costs' series colours, swatches, share bars, `.so-costs-links` | the chart roles, `.ds-legend`, `.ds-meter`, the interactive table (rows without a link stay plain) |
 | `.so-field-row`, the pane's drop outline, `[hidden]` rules | `.ds-field__row`, `DS.dom.dropzone()`, DS's `[hidden]` |
+| `.so-page-head` (Home's and Costs' title with its actions), the top bar's menu button kept from shrinking, `{ done: false }` on sign-in and setup | the page head's `.ds-page-head__row`, `__text`, `__status`, `__actions`; DS's own rule; `busy()`'s new default |
 
 Still Socrates' own, on purpose: the composer's growth (DS's `autosize()` hides the overflow of a field without a
 `max-height`, which the first message's field that fills the view has), the chat's stick-to-the-end and its

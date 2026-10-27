@@ -19,8 +19,6 @@
   /* The verdict or hourglass on a mark's corner: small enough to leave the mark readable. */
   --so-badge-size: 14px;
   --so-badge-pad: 1px;
-  /* Below this width a page head and its actions stack (the reference app's ex-page-head). */
-  --so-page-head-basis: 320px;
   --so-brand-claude: #D97757;
   --so-brand-vscode: #007ACC;
   --so-brand-codex: #000000;

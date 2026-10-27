@@ -76,17 +76,6 @@
   --ds-tile-min-width: var(--so-costs-tile-min);
 }
 
-.so-costs-actions {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--ds-space-2) var(--ds-space-3);
-}
-
-.so-costs-actions > p {
-  margin: 0;
-}
-
 /* A closed filter cuts a long account or project with an ellipsis, its tip
    (costs.js) saying it whole; on the narrowest phones each filter has a row
    of its own, as half of one cut "All programs" under the arrow. */

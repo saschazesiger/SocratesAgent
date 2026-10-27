@@ -69,11 +69,6 @@
   }
 }
 
-/* The menu button keeps its 48px however long the session's name is. */
-.so-app .ds-topbar__menu {
-  flex: none;
-}
-
 .so-topbar {
   flex: 1 1 auto;
   min-width: 0;

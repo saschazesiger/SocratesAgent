@@ -7,7 +7,8 @@
  *
  *   .so-home            the section on the stage; its own scroller, because
  *                       the stage around it does not scroll
- *   .so-home__conn      the slot of the connection chip under the title
+ *   .so-home__conn      the slot of the connection chip under the title (DS's
+ *                       page head status)
  *   .so-home__numbers   the Questions card beside the grid of tiles; dimmed
  *                       with .ds-stale while the numbers are not live
  *   .so-home__questions the Questions card (div form of an interactive card):
@@ -46,7 +47,6 @@
 }
 
 .so-home__conn {
-  display: flex;
   min-width: 0;
 }
 

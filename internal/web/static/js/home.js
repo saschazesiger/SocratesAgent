@@ -300,13 +300,17 @@ export function mountHome(ctx) {
   function build() {
     morph(host, html`<div class="ds-content">
       <div class="ds-page so-home__page">
-        <div class="so-page-head">
-          <header class="ds-page-head">
-            <h1 class="ds-page-head__title" tabindex="-1">Home</h1>
-            <div class="so-home__conn" role="status"></div>
-          </header>
-          <button class="ds-btn so-home__new" type="button" data-action="new">${raw(icon('plus', 16))}New session</button>
-        </div>
+        <header class="ds-page-head">
+          <div class="ds-page-head__row">
+            <div class="ds-page-head__text">
+              <h1 class="ds-page-head__title" tabindex="-1">Home</h1>
+              <div class="ds-page-head__status so-home__conn" role="status"></div>
+            </div>
+            <div class="ds-page-head__actions">
+              <button class="ds-btn so-home__new" type="button" data-action="new">${raw(icon('plus', 16))}New session</button>
+            </div>
+          </div>
+        </header>
         <section class="so-home__numbers" aria-label="At a glance">
           <div class="ds-card ds-card--interactive so-home__questions" data-card="questions" data-value="0" data-state="none">
             <div class="so-home__q">

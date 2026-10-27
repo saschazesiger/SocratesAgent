@@ -367,7 +367,7 @@ form.addEventListener('submit', async (e) => {
   }
   let result;
   try {
-    result = await M.busy(submit, () => api('/api/setup', { method: 'POST', body }), { done: false });
+    result = await M.busy(submit, () => api('/api/setup', { method: 'POST', body }));
   } catch (err) {
     notice($('notice'), errorMessage(err));
     return;
@@ -453,7 +453,7 @@ $('restoreForm').addEventListener('submit', async (event) => {
     if (!body[field]) { fieldError(id, text); return; }
   }
   notice($('restoreNotice'), '');
-  const r = await M.busy($('findBtn'), () => post('/api/restore/snapshots', body), { done: false });
+  const r = await M.busy($('findBtn'), () => post('/api/restore/snapshots', body));
   if (!r.ok) {
     if (r.status === 401) fieldError('rPassphrase', r.data.error || 'The passphrase does not open this backup.');
     else notice($('restoreNotice'), r.data.error || 'Looking for backups failed (HTTP ' + r.status + ').');
@@ -476,7 +476,7 @@ $('restoreBtn').addEventListener('click', async () => {
   const chosen = document.querySelector('input[name="snapshot"]:checked');
   if (!chosen) return;
   notice($('pickNotice'), '');
-  const r = await M.busy($('restoreBtn'), () => post('/api/restore', { ...bucketBody(), snapshot: chosen.value }), { done: false });
+  const r = await M.busy($('restoreBtn'), () => post('/api/restore', { ...bucketBody(), snapshot: chosen.value }));
   if (!r.ok) {
     notice($('pickNotice'), r.data.error || 'The restore did not start (HTTP ' + r.status + ').');
     return;

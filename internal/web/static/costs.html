@@ -38,16 +38,18 @@
     <main class="ds-view" id="main" tabindex="-1">
       <div class="ds-content">
         <div class="ds-page">
-          <div class="so-page-head">
-            <header class="ds-page-head">
-              <h1 class="ds-page-head__title" tabindex="-1">Costs</h1>
-              <p class="ds-page-head__lead">What every conversation on this machine would cost at the published API prices.</p>
-            </header>
-            <div class="so-costs-actions">
-              <p class="ds-meta" id="costsState" aria-live="polite"></p>
-              <button class="ds-btn" id="costsCsv" type="button" disabled data-icon="download" data-icon-size="16">CSV</button>
+          <header class="ds-page-head">
+            <div class="ds-page-head__row">
+              <div class="ds-page-head__text">
+                <h1 class="ds-page-head__title" tabindex="-1">Costs</h1>
+                <p class="ds-page-head__lead">What every conversation on this machine would cost at the published API prices.</p>
+              </div>
+              <div class="ds-page-head__actions">
+                <p class="ds-meta" id="costsState" aria-live="polite"></p>
+                <button class="ds-btn" id="costsCsv" type="button" disabled data-icon="download" data-icon-size="16">CSV</button>
+              </div>
             </div>
-          </div>
+          </header>
 
           <div id="notice"></div>
 

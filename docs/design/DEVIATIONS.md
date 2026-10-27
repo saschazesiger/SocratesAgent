@@ -2981,6 +2981,8 @@ pass and the work packages that were DS gaps:
   and the question rises as DS's full-screen dialog.
 - **Costs' series** take DS's chart roles instead of the project's four colours, so the chart and its legend
   change colour (blue, orange, teal, purple; "Other" in the outline grey).
+- **Home's and Costs' page heads** are DS's page head: New session, CSV and the "Updated" line stand on the title's
+  line at a desk instead of at the foot of the head.
 
 What still departs is listed with its reason in `ds-check.json` (the placement and wrapping rules on DS parts)
 and in DASHBOARD-STYLE.md ("Still Socrates' own").

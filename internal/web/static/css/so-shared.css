@@ -15,7 +15,6 @@
  *   .so-break        a path or id that must wrap anywhere
  *   .so-ellipsis     one line, cut with an ellipsis
  *   .so-conn         the connection slot net.js renders its alert into
- *   .so-page-head    the page header with actions at its end
  *   .so-info         the "i" button of infoTip() (api.js): a hook for tests and
  *                    callers; in a field's hint it keeps the hint's line
  *   .so-signin       an account's sign-in dialog body (accounts.js): __code
@@ -187,18 +186,6 @@ body[data-stale] .so-mark[data-ring="busy"]::after {
 /* In the session page's column it is one more row above the stage. */
 .so-main > .so-conn {
   flex: none;
-}
-
-.so-page-head {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: flex-end;
-  justify-content: space-between;
-  gap: var(--ds-space-3) var(--ds-space-6);
-}
-
-.so-page-head > .ds-page-head {
-  flex: 1 1 var(--so-page-head-basis);
 }
 
 /* ── The top bar of every page ───────────────────────────────────────── */

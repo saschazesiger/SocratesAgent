@@ -83,7 +83,7 @@ form.addEventListener('submit', async (e) => {
   clear();
   if (!input.value) { fail('Enter your password.'); return; }
   try {
-    await M.busy(submit, () => api('/api/login', { method: 'POST', body: { password: input.value } }), { done: false });
+    await M.busy(submit, () => api('/api/login', { method: 'POST', body: { password: input.value } }));
   } catch (err) {
     fail(errorMessage(err));
     return;
