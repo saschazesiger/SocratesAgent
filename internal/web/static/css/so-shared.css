@@ -174,13 +174,22 @@ body[data-stale] .so-mark[data-ring="busy"]::after {
   margin-block: calc(var(--ds-btn-icon-size, var(--ds-space-8)) / -4);
 }
 
-/* The connection alert stays in view while the page scrolls under it (on
-   the sign-in page it is the alert slot above the card, DS .ds-auth__alert). */
+/* The connection alert stays in view while the page scrolls under it. */
 #main > .so-conn {
   position: sticky;
   top: 0;
   z-index: var(--ds-z-sticky);
   padding: var(--ds-space-2) var(--ds-space-4) 0;
+}
+
+/* On sign-in and setup it is the alert slot above the card (DS
+   .ds-auth__alert), which scrolls with the page: setup's form is longer
+   than a phone, and "No network" has to stay in sight while it is filled
+   in. */
+.ds-auth > .so-conn {
+  position: sticky;
+  top: max(0px, env(safe-area-inset-top));
+  z-index: var(--ds-z-sticky);
 }
 
 /* In the session page's column it is one more row above the stage. */
