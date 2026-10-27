@@ -213,15 +213,6 @@
   overflow-wrap: anywhere;
 }
 
-/* On a phone DS drops Share, Tokens and Requests, so Cost is the last column
-   shown but not the last cell: it keeps the card's gutter as a last cell
-   does, clear of the edge fade, level with the name's on the left. */
-@media (max-width: 600px) {
-  .ds-card .so-costs-table :is(th, td):nth-child(2) {
-    padding-inline-end: var(--ds-card-pad);
-  }
-}
-
 .so-costs-name svg {
   vertical-align: -3px;
   margin-inline-end: var(--ds-space-1);

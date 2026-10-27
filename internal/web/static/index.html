@@ -145,7 +145,12 @@
   </nav>
 
   <div class="ds-panel">
-    <main class="ds-view ds-view--fixed so-view" id="main" tabindex="-1">
+    <!-- The view does not scroll: room for a snackbar that stays would only
+         shrink the stage, refit the terminal and lift the key bar. It keeps
+         none (DS data-ds-toast-room="off"); session.js placeToasts keeps the
+         messages clear of the key bar, the chat's dock and the
+         conversation's end, and a dialog or sheet over it keeps DS's room. -->
+    <main class="ds-view ds-view--fixed so-view" id="main" tabindex="-1" data-ds-toast-room="off">
       <div class="so-main" id="mainColumn">
         <div class="so-conn" id="connSlot" hidden></div>
         <!-- No backup for a day. Hidden while backups work; backup.js

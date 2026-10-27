@@ -39,21 +39,10 @@
 
 /* The view does not scroll on this page (DS .ds-view--fixed: no scroll, no
    gutter): the terminal is as tall as the panel, and Home and a chat scroll
-   inside the stage themselves. */
+   inside the stage themselves. It keeps no room for a snackbar that stays
+   (data-ds-toast-room="off" in index.html; session.js placeToasts). */
 .so-view {
   overflow: hidden;
-}
-
-/* A snackbar that stays keeps room at the end of what scrolls under it
-   (DS data-toast-reserve on the .ds-view when the page hosts it). This
-   view does not scroll, so that room would only shrink the stage: the
-   terminal refits and the key bar jumps up. The page keeps its own room
-   instead (session.js placeToasts: the messages stand above the key bar
-   or the chat's dock, and the conversation keeps the room at its end);
-   the view keeps DS's own padding, the safe area. */
-.so-view[data-toast-reserve] {
-  padding-bottom: env(safe-area-inset-bottom);
-  scroll-padding-bottom: 0;
 }
 
 .so-main {
@@ -381,15 +370,6 @@
   min-width: 0;
 }
 
-/* The ⋮ is DS's row action (.ds-drawer__row, .ds-drawer__action
-   .ds-hover-actions: shown on hover, focus, the open row and an open menu,
-   always on touch), and the item keeps room for it. In touch mode the
-   action is a finger's 48px, wider than the room DS keeps, so the item
-   keeps that much. */
-.so-touch .so-row__open {
-  padding-right: calc(var(--ds-touch-target) + var(--ds-space-2));
-}
-
 .so-row__text {
   flex: 1 1 auto;
   min-width: 0;
@@ -600,36 +580,17 @@
    typed into (DS .ds-app--keyboard-hides-bar, toggled by keybar.js
    followViewport for the page's own fields, and for any field when only a
    strip of screen is left). DS hides the bar only while it counts the
-   focus as a field that types (html[data-ds-keyboard]); in VS Code's frame
-   the focus is the iframe, which it does not count. So when only a strip
-   is left (data-so-short: a phone on its side with its keyboard up) the
-   bar steps aside whatever has the focus. */
+   focus as a field that types (html[data-ds-keyboard]). Since 2.1 it looks
+   into VS Code's frame, but the editor's text in Chromium is an EditContext
+   element, neither a textarea nor contenteditable, which it does not
+   count. So when only a strip is left (data-so-short: a phone on its side
+   with its keyboard up) the bar steps aside whatever has the focus. */
 .so-touch[data-so-short] .so-app {
   grid-template-rows: 0 minmax(0, 1fr);
 }
 
 .so-touch[data-so-short] .so-app > .ds-topbar {
   display: none;
-}
-
-/* The drawer's list is cut above Costs, Admin and Sign out: while more
-   rows lie below (DS.dom.scrollEdges, session.js drawerCue), its last row
-   fades out on the drawer's own colour instead of being sliced through its
-   second line. DS fades the cut edges of menus and lists, not of the
-   drawer's list. The fade stands at the scrollport's bottom (sticky) and
-   takes no room (its negative margin); a sticky box stops at the list's
-   padding (DS's 24px at its foot), so it goes that far past it to stand
-   where the list is cut. */
-.so-app .ds-drawer__list[data-ds-overflow-end]::after {
-  content: '';
-  position: sticky;
-  bottom: calc(-1 * var(--ds-space-6));
-  flex: none;
-  display: block;
-  height: var(--ds-space-8);
-  margin-top: calc(-1 * var(--ds-space-8));
-  background: linear-gradient(to bottom, transparent, var(--ds-backdrop));
-  pointer-events: none;
 }
 
 /* ── The Status modal of a chat (statusmodal.js) ─────────────────────────

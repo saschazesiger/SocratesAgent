@@ -442,12 +442,6 @@
     width: auto;
   }
 
-  /* The last column still shown (DS drops the secondary ones here) keeps
-     the card's gutter, as a last cell does, clear of the edge fade. */
-  .ds-card .ds-table-wrap :is(th, td):not(.ds-col--secondary):not(:has(~ :not(.ds-col--secondary))) {
-    padding-inline-end: var(--ds-card-pad);
-  }
-
   .so-model {
     grid-template-columns: auto minmax(0, 1fr) auto;
   }

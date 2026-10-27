@@ -249,8 +249,8 @@ export function followViewport() {
     // In touch mode the top bar gives its row to what is being typed while
     // a keyboard is up (DS .ds-app--keyboard-hides-bar): for a field of the
     // page. When only a strip of screen is left it goes for any focus,
-    // VS Code's frame too, which DS does not count as a field
-    // (so-frame.css, data-so-short).
+    // VS Code's editor too, whose EditContext text DS does not count as a
+    // field (so-frame.css, data-so-short).
     if (app) app.classList.toggle('ds-app--keyboard-hides-bar', root.classList.contains('so-touch') && page);
   };
   // DS decides about the keyboard a frame after the viewport changed; its

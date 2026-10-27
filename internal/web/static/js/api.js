@@ -230,9 +230,10 @@ export async function promptDialog({
  * message raised before a dialog or the action sheet opens keeps room in
  * it too, and one raised in a dialog gives that room back when it closes.
  * The session page's view does not scroll (.ds-view--fixed): its stage
- * fills it, and DS's room there is taken back (so-frame.css, .so-view);
- * what stands at its bottom moves the messages instead, and a chat's
- * conversation keeps the room at its own end (session.js placeToasts).
+ * fills it, and it keeps no room (DS data-ds-toast-room="off" on it in
+ * index.html); what stands at its bottom moves the messages instead, and a
+ * chat's conversation keeps the room at its own end (session.js
+ * placeToasts).
  */
 export function toast(message, kind = 'info', { persistent = false, timeout, action } = {}) {
   const text = String(message ?? '');

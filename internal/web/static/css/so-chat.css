@@ -1420,22 +1420,23 @@
   overflow-wrap: anywhere;
 }
 
-/* A card's head holds a chip (24px, no taller than the title's line), not a
-   button: it does not hang out of the line the way DS hangs a button, which
-   pulled a wrapped chip onto the words under it. */
+/* A card's head holds a status chip (24px, no taller than the title's
+   line), not a button: DS sits it on the line, and a chip that wraps under
+   a long title stands a chip's gap under it rather than the larger gap DS
+   keeps for a button that hangs out of the line. */
 .so-plan > .ds-card__row,
 .so-ask > .ds-card__row,
 .so-plan__answer > .ds-card__row {
   row-gap: var(--ds-space-2);
 }
 
-/* The answer's chip and its words read as one line, not as two ends. */
+/* The answer's chip and its words read as one line, not as two ends. Its
+   words are a meta line, which DS would hang out of the line like a
+   button, onto the chip above them when a long answer wraps. */
 .so-plan__answer > .ds-card__row {
   justify-content: flex-start;
 }
 
-.so-plan > .ds-card__row > :not(.ds-card__title),
-.so-ask > .ds-card__row > :not(.ds-card__title),
 .so-plan__answer > .ds-card__row > * {
   margin-block: 0;
 }
