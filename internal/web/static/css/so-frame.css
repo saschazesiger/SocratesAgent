@@ -652,7 +652,7 @@
   color: var(--ds-text-3);
   font: var(--ds-font-caption);
   text-transform: uppercase;
-  letter-spacing: 0.06em;
+  letter-spacing: var(--so-overline-tracking);
 }
 
 .so-status .so-status__title {
@@ -733,11 +733,18 @@
 }
 
 /* Three figures side by side in the 600px modal (DS .ds-tiles--3): a
-   tile is a third of it there, narrower than DS's least tile width. A
-   figure is a short span ("~1:30 h", "Your turn"), which DS shrinks to fit
-   the tile. */
+   tile is a third of it there, narrower than DS's least tile width. */
 .so-status__tiles {
   --ds-tile-min-width: var(--so-status-tile-min);
+}
+
+/* A figure here is a span in words ("~1:30 h", "Your turn"), not the two or
+   three digits a tile is made for, and a third of the modal is narrower
+   than "Your turn" at the figure's size: it takes a second line, between
+   words, rather than DS's ellipsis ("Your t…"). */
+.so-status__tiles .ds-tile__value {
+  white-space: normal;
+  overflow-wrap: break-word;
 }
 
 .so-status__clamp {

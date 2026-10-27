@@ -14,6 +14,8 @@
       "reason": "Placement: on a phone every page's bar shows the mark without its name; DS lets the name give way only beside a .ds-topbar__title, which these bars do not have (the session's name is a rename button)." },
     { "rule": "restyle", "file": "internal/web/static/css/so-frame.css", "selector": ".so-touch[data-so-short] .so-app > .ds-topbar",
       "reason": "Placement: a phone on its side with its keyboard up leaves a strip, and the bar steps aside whatever has the focus; DS's .ds-app--keyboard-hides-bar waits for html[data-ds-keyboard], which DS.dom.followViewport does not set while the focus is in VS Code's frame." },
+    { "rule": "restyle", "file": "internal/web/static/css/so-frame.css", "selector": ".so-status__tiles .ds-tile__value",
+      "reason": "Wrapping: the Status modal's figures are spans in words (\"Your turn\"), wider than a third of the 600px modal at the figure's size; they take a second line between words instead of DS's ellipsis." },
     { "rule": "restyle", "file": "internal/web/static/css/so-frame.css", "selector": ".so-app .ds-drawer__list[data-ds-overflow-end]::after",
       "reason": "DS fades the cut edges of menus and lists but not of the drawer's list; a phone's overlay scrollbar shows no thumb, so the session list cut above its foot fades out (DS.dom.scrollEdges reports the edge)." },
     { "rule": "restyle", "file": "internal/web/static/css/so-home.css", "selector": ".so-home__tile .ds-tile__label",

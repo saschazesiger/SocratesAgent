@@ -36,6 +36,9 @@
   --so-rename-width: 400px;
   --so-status-width: 600px;
   --so-status-tile-min: 140px;
+  /* The Status modal's overline ("Status" over the chat's name): caption
+     type in capitals, spaced as capitals want; DS has no overline role. */
+  --so-overline-tracking: 0.06em;
   --so-title-min: 96px;
   /* The session's menu as an action sheet on a phone (so-frame.css). */
   --so-actions-width: 480px;
