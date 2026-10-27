@@ -54,7 +54,8 @@
  * nothing until it is back. An active item inside a closed <details> (a
  * collapsed drawer group) has no pill: it contracts and comes back when the
  * group opens. With reveal: true the track scrolls itself (never its
- * ancestors) so the active item stays --ds-space-2 clear of its edges, and
+ * ancestors) so the active item stays --ds-space-2 clear of its edges (or
+ * its scroll-padding, where larger: a drawer list's edge shades), and
  * a .ds-drawer__list gets .ds-drawer__list--overflow while it is taller
  * than its view.
  *
@@ -480,23 +481,32 @@ export function createIndicator(track, options) {
     release(gen, still);
   }
 
-  /** The --ds-space-2 of the track in px (the room reveal keeps). */
+  /**
+   * The room reveal keeps at each edge of the track, in px: --ds-space-2,
+   * or the track's scroll-padding where that is larger (a drawer list's
+   * edge shades), so the item lands where keyboard focus would.
+   */
   function room() {
-    const value = typeof view.getComputedStyle === 'function' ? parseFloat(view.getComputedStyle(track).getPropertyValue('--ds-space-2')) : NaN;
-    return Number.isFinite(value) ? value : 8;
+    const style = typeof view.getComputedStyle === 'function' ? view.getComputedStyle(track) : null;
+    // 'auto' (no scroll-padding) and a missing value read as NaN.
+    const px = (name) => (style ? parseFloat(style.getPropertyValue(name)) : NaN);
+    const space = px('--ds-space-2');
+    const base = Number.isFinite(space) ? space : 8;
+    const side = (name) => Math.max(base, px(name) || 0);
+    return { top: side('scroll-padding-top'), bottom: side('scroll-padding-bottom'), left: side('scroll-padding-left'), right: side('scroll-padding-right') };
   }
 
   /** reveal: scrolls only the track, so `rect` (track scroll coordinates) is clear of its edges. */
   function revealRect(rect, instant) {
     const margin = room();
-    const axis = (start, end, scroll, size, range) => {
+    const axis = (start, end, scroll, size, range, before, after) => {
       if (range <= size + 1) return scroll;
-      if (start - margin < scroll || end - start + 2 * margin > size) return Math.max(0, start - margin);
-      if (end + margin > scroll + size) return end + margin - size;
+      if (start - before < scroll || end - start + before + after > size) return Math.max(0, start - before);
+      if (end + after > scroll + size) return end + after - size;
       return scroll;
     };
-    const top = axis(rect.top, rect.bottom, track.scrollTop, track.clientHeight, track.scrollHeight);
-    const left = axis(rect.left, rect.right, track.scrollLeft, track.clientWidth, track.scrollWidth);
+    const top = axis(rect.top, rect.bottom, track.scrollTop, track.clientHeight, track.scrollHeight, margin.top, margin.bottom);
+    const left = axis(rect.left, rect.right, track.scrollLeft, track.clientWidth, track.scrollWidth, margin.left, margin.right);
     if (Math.abs(top - track.scrollTop) < 0.5 && Math.abs(left - track.scrollLeft) < 0.5) return;
     if (typeof track.scrollTo === 'function') track.scrollTo({ top, left, behavior: instant ? 'auto' : 'smooth' });
   }

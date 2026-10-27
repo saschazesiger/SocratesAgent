@@ -27,7 +27,9 @@
  *
  * Hooks: --ds-check-size (18px box), --ds-check-target (40px halo),
  * --ds-check-height (40px row; --sm: --ds-check-sm-height, 32px),
- * --ds-check-list-max-height (264px).
+ * --ds-check-list-max-height (264px), --ds-form-actions-bleed (the inline
+ * padding of the container a sticky action bar runs through; default
+ * --ds-content-pad-x, in a .ds-card --ds-card-pad).
  *
  *   <form class="ds-form">         (--rows: editing in rows, hairlines between the fields)
  *     <div class="ds-form-grid">  (3 columns, the first wider; --2: two; --3: three equal)
@@ -160,22 +162,24 @@
 
   /* On a phone the actions of a long form stay at the bottom of its
      scroller: a surface bar with a static hairline that bleeds to the edges
-     of its page (or card) and keeps clear of the home indicator. */
+     of its page (or card) and keeps clear of the home indicator. In a
+     padded container of the page's own (a project card, a sheet section)
+     the page names that padding in --ds-form-actions-bleed. */
   @media (max-width: 600px) {
     .ds-form-actions--sticky {
       position: sticky;
       inset-block-end: 0;
       z-index: var(--ds-z-sticky);
-      margin-inline: calc(-1 * var(--ds-content-pad-x, 0px));
+      margin-inline: calc(-1 * var(--ds-form-actions-bleed, var(--ds-content-pad-x, 0px)));
       padding-block: var(--ds-space-3) calc(var(--ds-space-3) + env(safe-area-inset-bottom));
-      padding-inline: var(--ds-content-pad-x, 0px);
+      padding-inline: var(--ds-form-actions-bleed, var(--ds-content-pad-x, 0px));
       border-block-start: 1px solid var(--ds-line);
       background: var(--ds-surface);
     }
 
     .ds-card .ds-form-actions--sticky {
-      margin-inline: calc(-1 * var(--ds-card-pad));
-      padding-inline: var(--ds-card-pad);
+      margin-inline: calc(-1 * var(--ds-form-actions-bleed, var(--ds-card-pad)));
+      padding-inline: var(--ds-form-actions-bleed, var(--ds-card-pad));
     }
   }
 

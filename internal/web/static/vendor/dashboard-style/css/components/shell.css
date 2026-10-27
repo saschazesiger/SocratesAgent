@@ -115,7 +115,8 @@
  * groups (<details class="ds-drawer__group ds-collapsible"> with a
  * pressable .ds-drawer__toggle summary: state layer, ring snap, ripple),
  * .ds-drawer__row with a .ds-drawer__action (a quiet icon button at the
- * end of an item, shown on demand through .ds-hover-actions). The pill
+ * end of an item, shown on demand through .ds-hover-actions; the item
+ * keeps room for it at its size, --ds-btn-sm-icon-size). The pill
  * follows the current item across groups; an item inside a closed group
  * has no pill. The rail (data-drawer-collapsed) switches its column at
  * once; the labels fade back in on --ds-dur-fast when it widens again
@@ -130,8 +131,10 @@
  * .ds-account--capsule: an outlined pill with the avatar first at every
  * width (the only carrier of the name: role="img", aria-label, data-tip),
  * the text aria-hidden (at most --ds-account-text-max, hidden below
- * 720px), .ds-account__divider and a text button. .ds-avatar (32px,
- * --sm 24px, --lg 40px, --ds-avatar-size) is the same disc anywhere.
+ * 720px), .ds-account__divider and a text button; without the button
+ * (none, or hidden) the capsule ends with its start's room. .ds-avatar
+ * (32px, --sm 24px, --lg 40px, --ds-avatar-size) is the same disc
+ * anywhere.
  *
  * .ds-banner: a message for the whole app, the first child of .ds-panel
  * above the view, holding one .ds-alert (role="status", or role="alert"
@@ -179,6 +182,12 @@
  *   frame widens to the bar, both with ds-scroll-fade; a view without
  *   overflow shows neither): without them data-scrolled shows both over
  *   --ds-dur-fast.
+ * - scroll-driven animations (animation-timeline: scroll(), animation-range;
+ *   the edge shades of a long .ds-drawer__list follow its scroll position):
+ *   without them the data-ds-overflow-* attributes of
+ *   DS.dom.scrollEdges(list, { axis: 'block' }) (attached by the page) set
+ *   the shades (at once at its first measure, then over --ds-dur-fast), or
+ *   none show.
  */
 
 @layer ds.tokens, ds.base, ds.components, ds.motion, ds.utilities;
@@ -714,7 +723,7 @@
    * Account capsule: one outlined pill, the avatar first at every width and
    * the only carrier of the name (role="img", aria-label, data-tip); the
    * text beside it is aria-hidden and gives way below 720px. A divider
-   * goes with a hidden sign-out button.
+   * goes with a hidden sign-out button, and so does the end padding.
    */
   .ds-account--capsule {
     gap: var(--ds-space-2);
@@ -744,6 +753,13 @@
 
   .ds-account__divider:has(+ [hidden]) {
     display: none;
+  }
+
+  /* Without a shown sign-out button (none, or a hidden one) the capsule
+     ends with the room it starts with: the start padding counts on the
+     text button's own padding at the end. */
+  .ds-account--capsule:not(:has(> .ds-btn:not([hidden]))) {
+    padding-inline-end: var(--ds-space-4);
   }
 
   /* ── Navigation drawer ────────────────────────── */
@@ -835,7 +851,12 @@
     flex: 1;
     min-height: 0;
     overflow-y: auto;
-    padding: var(--ds-space-1) var(--ds-space-3) var(--ds-space-6);
+    /* The block padding (--ds-space-1 above, --ds-space-6 below) lives in
+       the edge shades (below), so the end shade reaches the cut edge. */
+    padding: 0 var(--ds-space-3);
+    /* An item focused by the keys or scrolled into view lands clear of the
+       edge shades, focus ring and all. */
+    scroll-padding-block: var(--ds-scroll-fade, var(--ds-space-8));
     /* Classic scrollbars (Chrome on Windows) would draw a grey rail between
        drawer and panel, a divider the drawer must not have: the thumb only
        shows while the pointer or focus is in the list. */
@@ -852,6 +873,77 @@
      that more destinations lie below the fold. */
   .ds-drawer__list--overflow {
     scrollbar-color: var(--ds-line-2) transparent;
+  }
+
+  /* The cut edges of a long list, as a menu's (menu.css): a mask would
+     fade the pill and the focus rings, so a shade of the drawer's surface
+     lies over each edge that has more to show, --ds-scroll-fade long,
+     above the items, across the item inset: sticky at the edge, taking no
+     room. Each holds the list's padding at its end (the negative margin
+     gives back only the rest), so the list keeps --ds-space-1 above and
+     --ds-space-6 below its items, and the end shade sticks flush to the
+     scroller's edge down to the last pixel of scroll. Its number
+     (--ds-scroll-edge-start or -end, registered in scroller.css) is 0 at
+     rest; the list's scroll timeline drives it where it exists, else the
+     data-ds-overflow-* attributes of DS.dom.scrollEdges(list, { axis:
+     'block' }), which the page attaches. */
+  .ds-drawer__list::before,
+  .ds-drawer__list::after {
+    content: '';
+    position: sticky;
+    z-index: var(--ds-z-raised);
+    display: block;
+    height: var(--ds-scroll-fade, var(--ds-space-8));
+    margin-inline: calc(-1 * var(--ds-space-3));
+    pointer-events: none;
+  }
+
+  /* The shades glide only once it has measured (data-ds-edges comes after
+     the first edges), so a drawer that loads with a long list shows its end
+     shade at once instead of fading it in on load. */
+  .ds-drawer__list[data-ds-edges]::before,
+  .ds-drawer__list[data-ds-edges]::after {
+    transition:
+      --ds-scroll-edge-start var(--ds-dur-fast) var(--ds-ease-in-out),
+      --ds-scroll-edge-end var(--ds-dur-fast) var(--ds-ease-in-out);
+  }
+
+  .ds-drawer__list::before {
+    inset-block-start: 0;
+    margin-block-end: calc(var(--ds-space-1) - var(--ds-scroll-fade, var(--ds-space-8)));
+    background: linear-gradient(var(--ds-backdrop), transparent);
+    opacity: var(--ds-scroll-edge-start);
+  }
+
+  .ds-drawer__list::after {
+    inset-block-end: 0;
+    margin-block-start: calc(var(--ds-space-6) - var(--ds-scroll-fade, var(--ds-space-8)));
+    background: linear-gradient(transparent, var(--ds-backdrop));
+    opacity: var(--ds-scroll-edge-end);
+  }
+
+  .ds-drawer__list[data-ds-overflow-start]::before {
+    --ds-scroll-edge-start: 1;
+  }
+
+  .ds-drawer__list[data-ds-overflow-end]::after {
+    --ds-scroll-edge-end: 1;
+  }
+
+  /* Scroll-linked, on the list's own scroll: the shorthand first (it
+     resets animation-timeline). */
+  @supports (animation-timeline: scroll()) {
+    .ds-drawer__list::before {
+      animation: ds-scroll-edge-start linear both;
+      animation-timeline: scroll(nearest block);
+      animation-range: 0 var(--ds-space-8);
+    }
+
+    .ds-drawer__list::after {
+      animation: ds-scroll-edge-end linear both;
+      animation-timeline: scroll(nearest block);
+      animation-range: calc(100% - var(--ds-space-8)) 100%;
+    }
   }
 
   .ds-drawer__group {
@@ -952,7 +1044,9 @@
 
   /* An item with an action of its own at its end (a quiet icon button,
      .ds-hover-actions: shown on hover, focus, the current item and an open
-     menu, always on touch). The item keeps room for it. */
+     menu, always on touch). The item keeps room for it at the action's
+     own size (the hook the small icon button reads: 48px under
+     .ds-touch) plus --ds-space-2 (its margin and as much air). */
   .ds-drawer__row {
     display: grid;
     grid-template-columns: minmax(0, 1fr) auto;
@@ -961,7 +1055,7 @@
 
   .ds-drawer__row > .ds-drawer__item {
     grid-area: 1 / 1 / 2 / 3;
-    padding-inline-end: calc(var(--ds-space-8) + var(--ds-space-2));
+    padding-inline-end: calc(var(--ds-btn-sm-icon-size, var(--ds-space-8)) + var(--ds-space-2));
   }
 
   .ds-drawer__action {
@@ -1427,8 +1521,10 @@
     }
 
     /* A brand of only a name: its text starts on the icons' edge (the
-       axis less half a 20px icon) instead of a 32px mark centring there. */
-    .ds-app--drawer:not([data-drawer-hidden]) .ds-topbar:has(> .ds-brand:not(:has(> :not(.ds-brand__name))):first-child, > .ds-topbar__menu:not([aria-pressed]):first-child + .ds-brand:not(:has(> :not(.ds-brand__name)))) {
+       axis less half a 20px icon) instead of a 32px mark centring there.
+       The name as the brand's only child, not a :has() inside the :has()
+       (no engine allows that nesting; it would drop the rule). */
+    .ds-app--drawer:not([data-drawer-hidden]) .ds-topbar:has(> .ds-brand:first-child > .ds-brand__name:only-child, > .ds-topbar__menu:not([aria-pressed]):first-child + .ds-brand > .ds-brand__name:only-child) {
       padding-left: max(calc(var(--ds-drawer-icon-axis) - 10px), env(safe-area-inset-left));
     }
   }
@@ -1650,6 +1746,11 @@
       display: grid;
     }
 
+    /* Only the avatar shows: without a button the capsule is round. */
+    .ds-account--capsule:not(:has(> .ds-btn:not([hidden]))) {
+      padding-inline-end: var(--ds-space-2);
+    }
+
     /* The page offers its search in the view instead. */
     .ds-topbar__search {
       display: none;
@@ -1743,6 +1844,13 @@
        flat (the hairline still marks the scrolled view). */
     .ds-topbar::before {
       display: none;
+    }
+
+    /* The shades would keep their gradient in the theme's surface colour:
+       their opacity goes, the room they hold stays. */
+    .ds-drawer__list::before,
+    .ds-drawer__list::after {
+      visibility: hidden;
     }
 
     .ds-drawer__indicator,

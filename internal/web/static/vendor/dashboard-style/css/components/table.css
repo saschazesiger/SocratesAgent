@@ -15,8 +15,10 @@
  *
  *   .ds-col--text       a text column that keeps a readable width
  *   .ds-col--secondary  dropped on phones (and in .ds-table--wide when the
- *                       content area is narrow)
- *   .ds-link-btn        a button that reads like a link (opens a detail)
+ *                       content area is narrow); in a card the last
+ *                       column still shown keeps the card's gutter
+ *   .ds-link-btn        a button that reads like a link (opens a detail;
+ *                       button.css)
  *   .ds-table--dense    40px rows (long lists)
  *   <th aria-sort="ascending"><button class="ds-table__sort">Name (arrowUp .ds-table__sort-arrow)</button></th>
  *                       a sortable column; the arrow at the sorted column
@@ -112,11 +114,10 @@
  *
  * The sort button presses in --ds-dur-micro (also while js/ripple.js holds
  * .ds-pressed) and ripples; it is not a pill and does not morph. Keyboard
- * focus on the sort button and .ds-link-btn: a ring that is solid from the
- * first frame and snaps from offset + width to the offset (outline-offset,
- * --ds-dur-fast), plus the focus layer on the sort button. The link button
- * is an inline link: no ripple, no morph; a press darkens its underline
- * (the press feedback on touch screens).
+ * focus on the sort button: a ring that is solid from the first frame and
+ * snaps from offset + width to the offset (outline-offset, --ds-dur-fast),
+ * plus the focus layer. The link button (.ds-link-btn, button.css) is an
+ * inline link: no ripple, no morph.
  *
  * Rows:
  *   hover                  a state layer on the cells (currentColor at
@@ -894,6 +895,14 @@
       display: none;
     }
 
+    /* In a card the last column still shown takes the card's gutter, as the
+       last cell does while every column shows. The sibling :has() stays in
+       the cell's own compound; the :where() keeps the rule at the weight of
+       a plain card cell, so detail rows and stacked rows keep theirs. */
+    .ds-card .ds-table-wrap :where(.ds-table--wide) :is(th, td):where(:not(.ds-col--secondary):not(:has(~ :not(.ds-col--secondary)))) {
+      padding-inline-end: var(--ds-card-pad);
+    }
+
     /* The static fade (no scroll timeline, no DS.dom.scrollEdges()); the
        scrollbar strip stays opaque. */
     .ds-card .ds-table-wrap:has(> .ds-table--wide) {
@@ -934,6 +943,10 @@
 
     .ds-table .ds-col--secondary {
       display: none;
+    }
+
+    .ds-card .ds-table-wrap :is(th, td):where(:not(.ds-col--secondary):not(:has(~ :not(.ds-col--secondary)))) {
+      padding-inline-end: var(--ds-card-pad);
     }
 
     /* A 360px phone has no room for a 168px text column next to three
@@ -1249,46 +1262,6 @@
   .ds-table small {
     font: var(--ds-font-meta);
     white-space: nowrap;
-  }
-
-  /* A button that reads like a link (the subject that opens the detail). */
-  .ds-link-btn {
-    padding: 0;
-    border: 0;
-    border-radius: var(--ds-radius-xs);
-    background: none;
-    color: var(--ds-link);
-    font: inherit;
-    font-weight: var(--ds-weight-label);
-    text-align: start;
-    text-decoration: underline;
-    text-decoration-thickness: var(--ds-link-underline-thickness);
-    text-decoration-color: var(--ds-link-underline);
-    text-underline-offset: var(--ds-link-underline-offset);
-    cursor: pointer;
-    /* The ring rests (invisible) one width further out and snaps in. */
-    outline-offset: calc(var(--ds-focus-offset) + var(--ds-focus-width));
-    transition:
-      text-decoration-color var(--ds-dur-fast) var(--ds-ease-in-out),
-      outline-offset var(--ds-dur-fast) var(--ds-ease-out);
-  }
-
-  @media (hover: hover) {
-    .ds-link-btn:hover {
-      text-decoration-color: var(--ds-link-underline-hover);
-    }
-  }
-
-  /* The press on touch screens, which show no hover: the underline darkens
-     like on hover. An inline link has no ripple and no morph. */
-  .ds-link-btn:active {
-    text-decoration-color: var(--ds-link-underline-hover);
-  }
-
-  /* Its own ring, also without .ds-base; it follows the small radius. */
-  .ds-link-btn:focus-visible {
-    outline: var(--ds-focus-outline);
-    outline-offset: var(--ds-focus-offset);
   }
 
   /* Forced colours: sticky and pinned cells are opaque in the system

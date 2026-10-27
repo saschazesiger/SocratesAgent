@@ -1,4 +1,4 @@
-/*! Dashboard-Style 2.0.0 | MIT License | https://github.com/saschazesiger/Dashboard-Style */
+/*! Dashboard-Style 2.1.0 | MIT License | https://github.com/saschazesiger/Dashboard-Style */
 /*
  * Dashboard-Style: every stylesheet in cascade order. scripts/build.mjs
  * inlines these imports into dist/ds.css; a bundler can import this file
@@ -2267,7 +2267,8 @@
  *
  *   .ds-sr       visually hidden, still read by screen readers
  *   .ds-muted    quieter body text (tabular figures, no margin)
- *   .ds-meta     a meta line: hints, "last saved ..." (tabular figures)
+ *   .ds-meta     a meta line: hints, "last saved ..." (tabular figures);
+ *                a leading 16px icon (> svg:first-child) sits on its line
  *   .ds-stale    content on its way out, dimmed until it is replaced (set
  *                aria-busy="true" on the container while it is stale)
  *   .ds-num      right-aligned tabular figures (table cells)
@@ -2382,6 +2383,16 @@
     color: var(--ds-text-2);
     font: var(--ds-font-meta);
     font-variant-numeric: tabular-nums;
+  }
+
+  /* A 16px glyph leading the line fills the meta role's 16px line from
+     its top, so it centres on the text without growing the line (on the
+     baseline it stood 4px high and the line grew), and keeps the gap of
+     .ds-kv-list__icon to the text. */
+  .ds-meta > svg:first-child {
+    display: inline-block;
+    margin-inline-end: var(--ds-space-1);
+    vertical-align: top;
   }
 
   /* Content on its way out (a filter applied, a test running again): it
@@ -2853,9 +2864,20 @@
  *                            pressed toggle (so does a button with
  *                            aria-haspopup="dialog"; menu triggers do not)
  *   .ds-btn--adaptive        a labelled button whose label folds away in a
- *                            narrow content panel (600px), leaving a round
- *                            quiet icon button that keeps its name:
+ *                            narrow content panel (600px); anywhere else,
+ *                            sheets and dialogs included, in a window of
+ *                            600px or less; it leaves a round quiet icon
+ *                            button that keeps its name:
  *     <button class="ds-btn ds-btn--adaptive" type="button" data-tip="Export">(download 16)<span class="ds-btn__label">Export</span></button>
+ *
+ * Link button: .ds-link-btn, a button that reads like a link (an action
+ * inside text or a table cell, the subject that opens a detail): the link
+ * colour and underline, no padding, border or fill. An inline link: no
+ * ripple, no morph; a press darkens its underline (the press feedback on
+ * touch screens); keyboard focus a ring solid from the first frame that
+ * snaps from offset + width to the offset (outline-offset, --ds-dur-fast).
+ *
+ *   <button class="ds-link-btn" type="button">LAPTOP-0042</button>
  *
  * Quiet links: .ds-link--quiet (a link) and .ds-link-btn--quiet (with
  * .ds-link-btn): the quieter ink and a hairline underline in --ds-line-2,
@@ -3275,9 +3297,12 @@
   }
 
   /*
-   * Adaptive label: in a narrow content panel (600px; sheets and dialogs,
-   * which lie outside that container, follow the window) the label goes
+   * Adaptive label: in a narrow content panel (600px) the label goes
    * visually hidden and the button turns into a round quiet icon button.
+   * Everything outside a content panel (the top bar, a page outside the
+   * frame) and sheets and dialogs (which may sit inside one but are not
+   * its width) follow the window instead; no container on new elements
+   * (layout containment would re-anchor popups).
    * Its accessible name stays the label; a data-tip names it to the eye
    * while it is folded. The 1px floor: Firefox can style the button
    * before its container's first layout and read that container as 0px
@@ -3322,7 +3347,7 @@
   }
 
   @media (max-width: 600px) {
-    :is(.ds-sheet, .ds-dialog) .ds-btn--adaptive {
+    .ds-btn--adaptive:is(:not(.ds-content *), :is(.ds-sheet, .ds-dialog) *) {
       --ds-btn-half: calc(var(--ds-btn-icon-size, 40px) / 2);
       --ds-btn-border: transparent;
       --ds-btn-bg: transparent;
@@ -3334,16 +3359,16 @@
       padding: 0;
     }
 
-    :is(.ds-sheet, .ds-dialog) .ds-btn--adaptive.ds-btn--sm {
+    .ds-btn--adaptive.ds-btn--sm:is(:not(.ds-content *), :is(.ds-sheet, .ds-dialog) *) {
       --ds-btn-icon-size: var(--ds-btn-sm-icon-size, 32px);
     }
 
-    :is(.ds-sheet, .ds-dialog) .ds-btn--adaptive > svg {
+    .ds-btn--adaptive:is(:not(.ds-content *), :is(.ds-sheet, .ds-dialog) *) > svg {
       width: 20px;
       height: 20px;
     }
 
-    :is(.ds-sheet, .ds-dialog) .ds-btn--adaptive .ds-btn__label {
+    .ds-btn--adaptive:is(:not(.ds-content *), :is(.ds-sheet, .ds-dialog) *) .ds-btn__label {
       position: absolute;
       top: 0;
       inset-inline-start: 0;
@@ -3356,6 +3381,47 @@
       white-space: nowrap;
       border: 0;
     }
+  }
+
+  /* A button that reads like a link: an action inside text or a table cell
+     (the subject that opens the detail). */
+  .ds-link-btn {
+    padding: 0;
+    border: 0;
+    border-radius: var(--ds-radius-xs);
+    background: none;
+    color: var(--ds-link);
+    font: inherit;
+    font-weight: var(--ds-weight-label);
+    text-align: start;
+    text-decoration: underline;
+    text-decoration-thickness: var(--ds-link-underline-thickness);
+    text-decoration-color: var(--ds-link-underline);
+    text-underline-offset: var(--ds-link-underline-offset);
+    cursor: pointer;
+    /* The ring rests (invisible) one width further out and snaps in. */
+    outline-offset: calc(var(--ds-focus-offset) + var(--ds-focus-width));
+    transition:
+      text-decoration-color var(--ds-dur-fast) var(--ds-ease-in-out),
+      outline-offset var(--ds-dur-fast) var(--ds-ease-out);
+  }
+
+  @media (hover: hover) {
+    .ds-link-btn:hover {
+      text-decoration-color: var(--ds-link-underline-hover);
+    }
+  }
+
+  /* The press on touch screens, which show no hover: the underline darkens
+     like on hover. An inline link has no ripple and no morph. */
+  .ds-link-btn:active {
+    text-decoration-color: var(--ds-link-underline-hover);
+  }
+
+  /* Its own ring, also without .ds-base; it follows the small radius. */
+  .ds-link-btn:focus-visible {
+    outline: var(--ds-focus-outline);
+    outline-offset: var(--ds-focus-offset);
   }
 
   /* Quiet links: the quieter ink with a hairline underline, the link colour
@@ -4184,7 +4250,7 @@
  * Hierarchy comes from type, hairlines and tonal tiles, never shadows.
  *
  *   <section class="ds-card">
- *     <div class="ds-card__row"> <h2 class="ds-card__title"> [button | switch]
+ *     <div class="ds-card__row"> <h2 class="ds-card__title"> [button | switch | status chip | badge | tag | chip]
  *     <p class="ds-muted"> ...
  *     <h3 class="ds-card__subtitle"> ...
  *     <div class="ds-subsection"> ...
@@ -4231,8 +4297,9 @@
  * Hooks (on .ds-theme or an element): --ds-card-padding (--ds-space-6),
  * --ds-card-padding-sm (600px and below, --ds-space-4),
  * --ds-card-padding-filled (--ds-space-5), --ds-card-title-line (the
- * title's line height, 24px, which a button or switch in the header row
- * overhangs), --ds-card-hover-shadow (an interactive card's shadow on
+ * title's line height, 24px, which a button, switch or chip in the header
+ * row overhangs; a status chip, badge or tag sits on it),
+ * --ds-card-hover-shadow (an interactive card's shadow on
  * hover, default none), --ds-card-shadow (--elevated, --ds-elev-1),
  * --ds-card-selected-bg, --ds-selected-ring. --ds-card-pad is the resulting padding of each
  * card, which tables read to bleed to its edges: read it, never set it.
@@ -4522,7 +4589,9 @@
   }
 
   /* Cards side by side share one height; their link rows line up at the
-     bottom edge. */
+     bottom edge. The auto margin replaces the rhythm's 16px, so the block
+     before the links keeps it as a floor: the tallest card has no free
+     space, and flex margins add up instead of collapsing. */
   .ds-grid-2 > .ds-card:has(> .ds-card__links) {
     display: flex;
     flex-direction: column;
@@ -4530,6 +4599,10 @@
 
   .ds-grid-2 > .ds-card > .ds-card__links {
     margin-top: auto;
+  }
+
+  .ds-grid-2 > .ds-card > :has(+ .ds-card__links) {
+    margin-bottom: var(--ds-space-4);
   }
 
   .ds-card__title {
@@ -4560,7 +4633,10 @@
   /* A button (36px) or a switch (40px) next to the title hangs out of the
      title's line (--ds-card-title-line) on both sides instead of making the row taller: every
      card title starts at the same height, whatever its head holds. When the
-     row wraps (phones), the row gap makes up for the overhang. */
+     row wraps (phones), the row gap makes up for the overhang. A status
+     chip, badge or tag fits the title line and sits on it (an overhang
+     would hang into the block below a wrapped row); a chip hangs by its
+     own height. */
   .ds-card__row {
     row-gap: calc(var(--ds-space-3) + (var(--ds-btn-height, 36px) - var(--ds-card-title-line, 24px)) / 2);
   }
@@ -4572,6 +4648,14 @@
   .ds-card__row > .ds-switch,
   .ds-card__row > :has(> .ds-switch) {
     margin-block: calc((var(--ds-card-title-line, 24px) - var(--ds-switch-height, 40px)) / 2);
+  }
+
+  .ds-card__row > :is(.ds-status, .ds-badge, .ds-tag) {
+    margin-block: 0;
+  }
+
+  .ds-card__row > .ds-chip {
+    margin-block: calc((var(--ds-card-title-line, 24px) - var(--ds-chip-height, 32px)) / 2);
   }
 
   .ds-card__subtitle {
@@ -5833,7 +5917,8 @@
  * around each dot; it passes through day headings (.ds-timeline__group,
  * no dot). --muted: a ring instead of a dot, for an entry that did not
  * take effect (say why in words). --icon with .ds-timeline__marker: a
- * disc with a 16px icon instead of the dot. __text keeps its line breaks
+ * disc with a 16px icon instead of the dot. A 16px icon leading __meta
+ * (> svg:first-child) sits on its text line. __text keeps its line breaks
  * and the reading measure; __body holds a form in place; __actions hangs
  * the padding of its text buttons.
  *
@@ -5991,6 +6076,14 @@
     color: var(--ds-text-2);
     font: var(--ds-font-meta);
     font-variant-numeric: tabular-nums;
+  }
+
+  /* As in .ds-meta: a leading 16px glyph fills the 16px line from its top,
+     centred on the text, the line kept. */
+  .ds-timeline__meta > svg:first-child {
+    display: inline-block;
+    margin-inline-end: var(--ds-space-1);
+    vertical-align: top;
   }
 
   .ds-timeline__text {
@@ -6441,6 +6534,10 @@
  * shown (hidden removed), never again while a re-render keeps the node.
  * Forced colours: the disc keeps an outline (its fill is dropped).
  *
+ * Hooks: --ds-empty-disc-size (48px): the disc's width and height (a
+ * confirmation page may want a larger one); the ring follows, the glyph
+ * keeps the size of its markup.
+ *
  * Progressive:
  * - text-wrap (the text avoids a lone last word): without it the line
  *   wraps as usual.
@@ -6460,8 +6557,8 @@
   .ds-empty__disc {
     display: grid;
     place-items: center;
-    width: 48px;
-    height: 48px;
+    width: var(--ds-empty-disc-size, 48px);
+    height: var(--ds-empty-disc-size, 48px);
     margin-bottom: var(--ds-space-2);
     border-radius: var(--ds-radius-action);
     background: var(--ds-accent);
@@ -6997,8 +7094,10 @@
  *
  *   .ds-col--text       a text column that keeps a readable width
  *   .ds-col--secondary  dropped on phones (and in .ds-table--wide when the
- *                       content area is narrow)
- *   .ds-link-btn        a button that reads like a link (opens a detail)
+ *                       content area is narrow); in a card the last
+ *                       column still shown keeps the card's gutter
+ *   .ds-link-btn        a button that reads like a link (opens a detail;
+ *                       button.css)
  *   .ds-table--dense    40px rows (long lists)
  *   <th aria-sort="ascending"><button class="ds-table__sort">Name (arrowUp .ds-table__sort-arrow)</button></th>
  *                       a sortable column; the arrow at the sorted column
@@ -7094,11 +7193,10 @@
  *
  * The sort button presses in --ds-dur-micro (also while js/ripple.js holds
  * .ds-pressed) and ripples; it is not a pill and does not morph. Keyboard
- * focus on the sort button and .ds-link-btn: a ring that is solid from the
- * first frame and snaps from offset + width to the offset (outline-offset,
- * --ds-dur-fast), plus the focus layer on the sort button. The link button
- * is an inline link: no ripple, no morph; a press darkens its underline
- * (the press feedback on touch screens).
+ * focus on the sort button: a ring that is solid from the first frame and
+ * snaps from offset + width to the offset (outline-offset, --ds-dur-fast),
+ * plus the focus layer. The link button (.ds-link-btn, button.css) is an
+ * inline link: no ripple, no morph.
  *
  * Rows:
  *   hover                  a state layer on the cells (currentColor at
@@ -7874,6 +7972,14 @@
       display: none;
     }
 
+    /* In a card the last column still shown takes the card's gutter, as the
+       last cell does while every column shows. The sibling :has() stays in
+       the cell's own compound; the :where() keeps the rule at the weight of
+       a plain card cell, so detail rows and stacked rows keep theirs. */
+    .ds-card .ds-table-wrap :where(.ds-table--wide) :is(th, td):where(:not(.ds-col--secondary):not(:has(~ :not(.ds-col--secondary)))) {
+      padding-inline-end: var(--ds-card-pad);
+    }
+
     /* The static fade (no scroll timeline, no DS.dom.scrollEdges()); the
        scrollbar strip stays opaque. */
     .ds-card .ds-table-wrap:has(> .ds-table--wide) {
@@ -7914,6 +8020,10 @@
 
     .ds-table .ds-col--secondary {
       display: none;
+    }
+
+    .ds-card .ds-table-wrap :is(th, td):where(:not(.ds-col--secondary):not(:has(~ :not(.ds-col--secondary)))) {
+      padding-inline-end: var(--ds-card-pad);
     }
 
     /* A 360px phone has no room for a 168px text column next to three
@@ -8231,46 +8341,6 @@
     white-space: nowrap;
   }
 
-  /* A button that reads like a link (the subject that opens the detail). */
-  .ds-link-btn {
-    padding: 0;
-    border: 0;
-    border-radius: var(--ds-radius-xs);
-    background: none;
-    color: var(--ds-link);
-    font: inherit;
-    font-weight: var(--ds-weight-label);
-    text-align: start;
-    text-decoration: underline;
-    text-decoration-thickness: var(--ds-link-underline-thickness);
-    text-decoration-color: var(--ds-link-underline);
-    text-underline-offset: var(--ds-link-underline-offset);
-    cursor: pointer;
-    /* The ring rests (invisible) one width further out and snaps in. */
-    outline-offset: calc(var(--ds-focus-offset) + var(--ds-focus-width));
-    transition:
-      text-decoration-color var(--ds-dur-fast) var(--ds-ease-in-out),
-      outline-offset var(--ds-dur-fast) var(--ds-ease-out);
-  }
-
-  @media (hover: hover) {
-    .ds-link-btn:hover {
-      text-decoration-color: var(--ds-link-underline-hover);
-    }
-  }
-
-  /* The press on touch screens, which show no hover: the underline darkens
-     like on hover. An inline link has no ripple and no morph. */
-  .ds-link-btn:active {
-    text-decoration-color: var(--ds-link-underline-hover);
-  }
-
-  /* Its own ring, also without .ds-base; it follows the small radius. */
-  .ds-link-btn:focus-visible {
-    outline: var(--ds-focus-outline);
-    outline-offset: var(--ds-focus-offset);
-  }
-
   /* Forced colours: sticky and pinned cells are opaque in the system
      colours, so nothing shows through them; the fill wrapper keeps its
      edge and the selection bar an outline (its tint is gone). */
@@ -8469,7 +8539,9 @@
  *
  * Hooks: --ds-check-size (18px box), --ds-check-target (40px halo),
  * --ds-check-height (40px row; --sm: --ds-check-sm-height, 32px),
- * --ds-check-list-max-height (264px).
+ * --ds-check-list-max-height (264px), --ds-form-actions-bleed (the inline
+ * padding of the container a sticky action bar runs through; default
+ * --ds-content-pad-x, in a .ds-card --ds-card-pad).
  *
  *   <form class="ds-form">         (--rows: editing in rows, hairlines between the fields)
  *     <div class="ds-form-grid">  (3 columns, the first wider; --2: two; --3: three equal)
@@ -8600,22 +8672,24 @@
 
   /* On a phone the actions of a long form stay at the bottom of its
      scroller: a surface bar with a static hairline that bleeds to the edges
-     of its page (or card) and keeps clear of the home indicator. */
+     of its page (or card) and keeps clear of the home indicator. In a
+     padded container of the page's own (a project card, a sheet section)
+     the page names that padding in --ds-form-actions-bleed. */
   @media (max-width: 600px) {
     .ds-form-actions--sticky {
       position: sticky;
       inset-block-end: 0;
       z-index: var(--ds-z-sticky);
-      margin-inline: calc(-1 * var(--ds-content-pad-x, 0px));
+      margin-inline: calc(-1 * var(--ds-form-actions-bleed, var(--ds-content-pad-x, 0px)));
       padding-block: var(--ds-space-3) calc(var(--ds-space-3) + env(safe-area-inset-bottom));
-      padding-inline: var(--ds-content-pad-x, 0px);
+      padding-inline: var(--ds-form-actions-bleed, var(--ds-content-pad-x, 0px));
       border-block-start: 1px solid var(--ds-line);
       background: var(--ds-surface);
     }
 
     .ds-card .ds-form-actions--sticky {
-      margin-inline: calc(-1 * var(--ds-card-pad));
-      padding-inline: var(--ds-card-pad);
+      margin-inline: calc(-1 * var(--ds-form-actions-bleed, var(--ds-card-pad)));
+      padding-inline: var(--ds-form-actions-bleed, var(--ds-card-pad));
     }
   }
 
@@ -11279,12 +11353,14 @@
  * Hint and extras: small.ds-switch__hint (a line under the name, the meta
  * type), span.ds-switch__meta (non-interactive extras before the state
  * word: a count, a tag); the label wraps long words. A switch with a hint
- * lays its parts on a small grid, the hint under the name.
+ * lays its parts on a small grid, the hint under the name; the name and
+ * its hint stand together and the text centres on the track.
  *
  * Many settings, each a switch: .ds-switch-list holds .ds-switch rows on a
  * grid (track, name over hint, meta, state), at least
- * --ds-switch-list-row-height (56px), hairlines between; at 560px and
- * below the meta wraps under the name. Name each input with
+ * --ds-switch-list-row-height (56px), hairlines between; the text centres
+ * on the track with or without a hint; at 560px and below the meta wraps
+ * under the name. Name each input with
  * aria-labelledby (its .ds-switch__label) and describe it with
  * aria-describedby (its hint), so the extras stay out of its name.
  *
@@ -11717,25 +11793,37 @@
     padding: 0;
   }
 
-  /* A switch with a hint stacks the hint under its name (the same areas). */
+  /* A switch with a hint stacks the hint under its name (the same areas).
+     The name and the hint stand together, no gap between the text rows;
+     the two flexible rows around them take the free height, so the text
+     centres on the track whichever rows are empty (no hint, no meta, a
+     wrapped name). */
   .ds-switch:has(> .ds-switch__hint) {
     display: inline-grid;
     grid-template-columns: auto minmax(0, 1fr) auto auto;
+    grid-template-rows: 1fr auto auto 1fr;
     grid-template-areas:
+      "track . meta state"
       "track label meta state"
-      "track hint meta state";
+      "track hint meta state"
+      "track . meta state";
     align-items: center;
     column-gap: var(--ds-space-3);
+    row-gap: 0;
   }
 
   .ds-switch-list > .ds-switch {
     display: grid;
     grid-template-columns: auto minmax(0, 1fr) auto auto;
+    grid-template-rows: 1fr auto auto 1fr;
     grid-template-areas:
+      "track . meta state"
       "track label meta state"
-      "track hint meta state";
+      "track hint meta state"
+      "track . meta state";
     align-items: center;
     column-gap: var(--ds-space-3);
+    row-gap: 0;
     min-height: var(--ds-switch-list-row-height, 56px);
     padding-block: var(--ds-space-2);
     border-bottom: 1px solid var(--ds-line);
@@ -11768,14 +11856,20 @@
   @container ds-switch-list (max-width: 560px) {
     .ds-switch-list > .ds-switch {
       grid-template-columns: auto minmax(0, 1fr) auto;
+      grid-template-rows: 1fr auto auto auto 1fr;
       grid-template-areas:
+        "track . state"
         "track label state"
         "track hint state"
-        "track meta state";
+        "track meta state"
+        "track . state";
     }
 
+    /* Under the hint (or the name) the meta keeps a little air; a tag
+       directly on the text line reads as part of it. */
     .ds-switch > .ds-switch__meta {
       justify-self: start;
+      margin-top: var(--ds-space-1);
     }
   }
 
@@ -15040,7 +15134,8 @@
  * only: the glide from where the region stood), and --ds-toast-reserve with
  * data-toast-reserve (the room kept for messages that stay: toast() sets
  * them on .ds-view, a hosting .ds-sheet__body or .ds-dialog; the page only
- * with `reserve: false`).
+ * with `reserve: false`). data-ds-toast-room="off" (page-set, 2.1) on one
+ * of those layers: it keeps no room, the others still do.
  *
  * Progressive:
  * - View Transitions (while DS.motion.transition() runs, data-ds-vt on
@@ -15661,7 +15756,8 @@
  * groups (<details class="ds-drawer__group ds-collapsible"> with a
  * pressable .ds-drawer__toggle summary: state layer, ring snap, ripple),
  * .ds-drawer__row with a .ds-drawer__action (a quiet icon button at the
- * end of an item, shown on demand through .ds-hover-actions). The pill
+ * end of an item, shown on demand through .ds-hover-actions; the item
+ * keeps room for it at its size, --ds-btn-sm-icon-size). The pill
  * follows the current item across groups; an item inside a closed group
  * has no pill. The rail (data-drawer-collapsed) switches its column at
  * once; the labels fade back in on --ds-dur-fast when it widens again
@@ -15676,8 +15772,10 @@
  * .ds-account--capsule: an outlined pill with the avatar first at every
  * width (the only carrier of the name: role="img", aria-label, data-tip),
  * the text aria-hidden (at most --ds-account-text-max, hidden below
- * 720px), .ds-account__divider and a text button. .ds-avatar (32px,
- * --sm 24px, --lg 40px, --ds-avatar-size) is the same disc anywhere.
+ * 720px), .ds-account__divider and a text button; without the button
+ * (none, or hidden) the capsule ends with its start's room. .ds-avatar
+ * (32px, --sm 24px, --lg 40px, --ds-avatar-size) is the same disc
+ * anywhere.
  *
  * .ds-banner: a message for the whole app, the first child of .ds-panel
  * above the view, holding one .ds-alert (role="status", or role="alert"
@@ -15725,6 +15823,12 @@
  *   frame widens to the bar, both with ds-scroll-fade; a view without
  *   overflow shows neither): without them data-scrolled shows both over
  *   --ds-dur-fast.
+ * - scroll-driven animations (animation-timeline: scroll(), animation-range;
+ *   the edge shades of a long .ds-drawer__list follow its scroll position):
+ *   without them the data-ds-overflow-* attributes of
+ *   DS.dom.scrollEdges(list, { axis: 'block' }) (attached by the page) set
+ *   the shades (at once at its first measure, then over --ds-dur-fast), or
+ *   none show.
  */
 
 @layer ds.components {
@@ -16258,7 +16362,7 @@
    * Account capsule: one outlined pill, the avatar first at every width and
    * the only carrier of the name (role="img", aria-label, data-tip); the
    * text beside it is aria-hidden and gives way below 720px. A divider
-   * goes with a hidden sign-out button.
+   * goes with a hidden sign-out button, and so does the end padding.
    */
   .ds-account--capsule {
     gap: var(--ds-space-2);
@@ -16288,6 +16392,13 @@
 
   .ds-account__divider:has(+ [hidden]) {
     display: none;
+  }
+
+  /* Without a shown sign-out button (none, or a hidden one) the capsule
+     ends with the room it starts with: the start padding counts on the
+     text button's own padding at the end. */
+  .ds-account--capsule:not(:has(> .ds-btn:not([hidden]))) {
+    padding-inline-end: var(--ds-space-4);
   }
 
   /* ── Navigation drawer ────────────────────────── */
@@ -16379,7 +16490,12 @@
     flex: 1;
     min-height: 0;
     overflow-y: auto;
-    padding: var(--ds-space-1) var(--ds-space-3) var(--ds-space-6);
+    /* The block padding (--ds-space-1 above, --ds-space-6 below) lives in
+       the edge shades (below), so the end shade reaches the cut edge. */
+    padding: 0 var(--ds-space-3);
+    /* An item focused by the keys or scrolled into view lands clear of the
+       edge shades, focus ring and all. */
+    scroll-padding-block: var(--ds-scroll-fade, var(--ds-space-8));
     /* Classic scrollbars (Chrome on Windows) would draw a grey rail between
        drawer and panel, a divider the drawer must not have: the thumb only
        shows while the pointer or focus is in the list. */
@@ -16396,6 +16512,77 @@
      that more destinations lie below the fold. */
   .ds-drawer__list--overflow {
     scrollbar-color: var(--ds-line-2) transparent;
+  }
+
+  /* The cut edges of a long list, as a menu's (menu.css): a mask would
+     fade the pill and the focus rings, so a shade of the drawer's surface
+     lies over each edge that has more to show, --ds-scroll-fade long,
+     above the items, across the item inset: sticky at the edge, taking no
+     room. Each holds the list's padding at its end (the negative margin
+     gives back only the rest), so the list keeps --ds-space-1 above and
+     --ds-space-6 below its items, and the end shade sticks flush to the
+     scroller's edge down to the last pixel of scroll. Its number
+     (--ds-scroll-edge-start or -end, registered in scroller.css) is 0 at
+     rest; the list's scroll timeline drives it where it exists, else the
+     data-ds-overflow-* attributes of DS.dom.scrollEdges(list, { axis:
+     'block' }), which the page attaches. */
+  .ds-drawer__list::before,
+  .ds-drawer__list::after {
+    content: '';
+    position: sticky;
+    z-index: var(--ds-z-raised);
+    display: block;
+    height: var(--ds-scroll-fade, var(--ds-space-8));
+    margin-inline: calc(-1 * var(--ds-space-3));
+    pointer-events: none;
+  }
+
+  /* The shades glide only once it has measured (data-ds-edges comes after
+     the first edges), so a drawer that loads with a long list shows its end
+     shade at once instead of fading it in on load. */
+  .ds-drawer__list[data-ds-edges]::before,
+  .ds-drawer__list[data-ds-edges]::after {
+    transition:
+      --ds-scroll-edge-start var(--ds-dur-fast) var(--ds-ease-in-out),
+      --ds-scroll-edge-end var(--ds-dur-fast) var(--ds-ease-in-out);
+  }
+
+  .ds-drawer__list::before {
+    inset-block-start: 0;
+    margin-block-end: calc(var(--ds-space-1) - var(--ds-scroll-fade, var(--ds-space-8)));
+    background: linear-gradient(var(--ds-backdrop), transparent);
+    opacity: var(--ds-scroll-edge-start);
+  }
+
+  .ds-drawer__list::after {
+    inset-block-end: 0;
+    margin-block-start: calc(var(--ds-space-6) - var(--ds-scroll-fade, var(--ds-space-8)));
+    background: linear-gradient(transparent, var(--ds-backdrop));
+    opacity: var(--ds-scroll-edge-end);
+  }
+
+  .ds-drawer__list[data-ds-overflow-start]::before {
+    --ds-scroll-edge-start: 1;
+  }
+
+  .ds-drawer__list[data-ds-overflow-end]::after {
+    --ds-scroll-edge-end: 1;
+  }
+
+  /* Scroll-linked, on the list's own scroll: the shorthand first (it
+     resets animation-timeline). */
+  @supports (animation-timeline: scroll()) {
+    .ds-drawer__list::before {
+      animation: ds-scroll-edge-start linear both;
+      animation-timeline: scroll(nearest block);
+      animation-range: 0 var(--ds-space-8);
+    }
+
+    .ds-drawer__list::after {
+      animation: ds-scroll-edge-end linear both;
+      animation-timeline: scroll(nearest block);
+      animation-range: calc(100% - var(--ds-space-8)) 100%;
+    }
   }
 
   .ds-drawer__group {
@@ -16496,7 +16683,9 @@
 
   /* An item with an action of its own at its end (a quiet icon button,
      .ds-hover-actions: shown on hover, focus, the current item and an open
-     menu, always on touch). The item keeps room for it. */
+     menu, always on touch). The item keeps room for it at the action's
+     own size (the hook the small icon button reads: 48px under
+     .ds-touch) plus --ds-space-2 (its margin and as much air). */
   .ds-drawer__row {
     display: grid;
     grid-template-columns: minmax(0, 1fr) auto;
@@ -16505,7 +16694,7 @@
 
   .ds-drawer__row > .ds-drawer__item {
     grid-area: 1 / 1 / 2 / 3;
-    padding-inline-end: calc(var(--ds-space-8) + var(--ds-space-2));
+    padding-inline-end: calc(var(--ds-btn-sm-icon-size, var(--ds-space-8)) + var(--ds-space-2));
   }
 
   .ds-drawer__action {
@@ -16971,8 +17160,10 @@
     }
 
     /* A brand of only a name: its text starts on the icons' edge (the
-       axis less half a 20px icon) instead of a 32px mark centring there. */
-    .ds-app--drawer:not([data-drawer-hidden]) .ds-topbar:has(> .ds-brand:not(:has(> :not(.ds-brand__name))):first-child, > .ds-topbar__menu:not([aria-pressed]):first-child + .ds-brand:not(:has(> :not(.ds-brand__name)))) {
+       axis less half a 20px icon) instead of a 32px mark centring there.
+       The name as the brand's only child, not a :has() inside the :has()
+       (no engine allows that nesting; it would drop the rule). */
+    .ds-app--drawer:not([data-drawer-hidden]) .ds-topbar:has(> .ds-brand:first-child > .ds-brand__name:only-child, > .ds-topbar__menu:not([aria-pressed]):first-child + .ds-brand > .ds-brand__name:only-child) {
       padding-left: max(calc(var(--ds-drawer-icon-axis) - 10px), env(safe-area-inset-left));
     }
   }
@@ -17194,6 +17385,11 @@
       display: grid;
     }
 
+    /* Only the avatar shows: without a button the capsule is round. */
+    .ds-account--capsule:not(:has(> .ds-btn:not([hidden]))) {
+      padding-inline-end: var(--ds-space-2);
+    }
+
     /* The page offers its search in the view instead. */
     .ds-topbar__search {
       display: none;
@@ -17287,6 +17483,13 @@
        flat (the hairline still marks the scrolled view). */
     .ds-topbar::before {
       display: none;
+    }
+
+    /* The shades would keep their gradient in the theme's surface colour:
+       their opacity goes, the room they hold stays. */
+    .ds-drawer__list::before,
+    .ds-drawer__list::after {
+      visibility: hidden;
     }
 
     .ds-drawer__indicator,
@@ -18230,11 +18433,16 @@
  * the first row (one or the other); the title row wraps: the text takes
  * --ds-page-head-text-basis, the actions sit at its end on the title's
  * centre line (--ds-page-head-title-line, the headline's line height) and
- * start under the title at 600px of the content. Empty parts (and an empty
- * head) take no room. Breadcrumbs are inline links (underlined, no ripple,
- * the link ring) with a chevron between them; at 600px of the content only
- * the parent shows. A docked drawer with a back item (.ds-drawer__back)
- * hides the page head's back link (shell.css).
+ * start under the title at 600px of the content. A text button hangs its
+ * padding into the gutter, as in a card's link row: the last one ends on
+ * the content edge, and under the title the first one starts on the
+ * title's edge (outlined and filled buttons, the buttons after the first
+ * under the title and a folded .ds-btn--adaptive keep their place and the
+ * 8px gap). Empty parts (and an empty head) take no room. Breadcrumbs
+ * are inline links (underlined, no ripple, the link ring) with a chevron
+ * between them; at 600px of the content only the parent shows. A docked
+ * drawer with a back item (.ds-drawer__back) hides the page head's back
+ * link (shell.css).
  *
  * A lone .ds-btn directly in .ds-page or .ds-stack keeps its own width.
  *
@@ -18383,17 +18591,45 @@
     margin-inline-start: auto;
   }
 
+  /* A trailing text button hangs its padding into the gutter, so its text
+     ends on the edge the title, the cards and the banners share (as in a
+     card's link row). Outlined and filled buttons keep their place. */
+  .ds-page-head__actions > .ds-btn--text:last-child {
+    margin-inline-end: calc(-1 * var(--ds-space-3));
+  }
+
   .ds-page-head__lead:empty,
   .ds-page-head__status:empty,
   .ds-page-head__actions:empty {
     display: none;
   }
 
+  /* A folded .ds-btn--adaptive (button.css: outside a content panel, by
+     the window) is a round icon button: it keeps its place. */
+  @media (max-width: 600px) {
+    .ds-page-head__actions > .ds-btn--adaptive:is(:not(.ds-content *), :is(.ds-sheet, .ds-dialog) *) {
+      margin-inline: 0;
+    }
+  }
+
+  /* Under the title the actions start on its edge: a text button that
+     comes first hangs its start padding out instead, so its text lines up
+     with the title; the buttons after it keep the 8px gap and their place.
+     A folded .ds-btn--adaptive (a round icon button at this width) keeps
+     its place too. */
   @container ds-content (max-width: 600px) {
     .ds-page-head__actions {
       flex-basis: 100%;
       justify-content: flex-start;
       margin: 0;
+    }
+
+    .ds-page-head__actions > .ds-btn--text:first-child:not(.ds-btn--adaptive) {
+      margin-inline-start: calc(-1 * var(--ds-space-3));
+    }
+
+    .ds-page-head__actions > .ds-btn--text:last-child {
+      margin-inline-end: 0;
     }
   }
 

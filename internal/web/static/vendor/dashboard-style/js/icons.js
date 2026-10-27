@@ -257,10 +257,14 @@ const filled = new WeakMap();
 /**
  * Fills every `[data-icon]` element inside `root` (and `root` itself)
  * with its glyph, `data-icon-size` px wide (default 20), built through DOM
- * APIs like iconElement(). Idempotent: an element that already shows the
- * same glyph at the same size keeps its <svg>; a changed name or size
- * replaces it. Unknown names throw "Unknown icon" once every known one is
- * drawn.
+ * APIs like iconElement(). The glyph replaces the element's content;
+ * with `data-icon-place="start"` or `"end"` (2.1) it goes in as the first
+ * or last child and the content stays (a labelled button written as
+ * markup: the button rules read `> svg:first-child`). Idempotent: an
+ * element that already shows the same glyph at the same size keeps its
+ * <svg>; a changed name or size replaces it (in place, beside the
+ * content); a placed glyph that went missing is put back. Unknown names
+ * throw "Unknown icon" once every known one is drawn.
  * @param {Document|Element|DocumentFragment} [root]  default: document
  * @returns {number} how many elements got a new glyph
  */
@@ -281,6 +285,19 @@ export function fill(root) {
     const size = Number(target.getAttribute('data-icon-size')) || ICON_SIZE;
     const key = name + ' ' + size;
     const last = filled.get(target);
+    const place = target.getAttribute('data-icon-place');
+    if (place === 'start' || place === 'end') {
+      // Beside the content: only the glyph this function drew is touched.
+      const kept = last && last.svg.parentNode === target ? last.svg : null;
+      if (kept && last.key === key) continue;
+      const svg = iconElement(body, size, undefined, doc);
+      if (kept) kept.replaceWith(svg);
+      else if (place === 'start') target.prepend(svg);
+      else target.append(svg);
+      filled.set(target, { key, svg });
+      drawn += 1;
+      continue;
+    }
     if (last && last.key === key && target.childNodes.length === 1 && target.firstChild === last.svg) continue;
     const svg = iconElement(body, size, undefined, doc);
     target.replaceChildren(svg);

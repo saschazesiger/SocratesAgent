@@ -5,7 +5,8 @@
  *
  *   .ds-sr       visually hidden, still read by screen readers
  *   .ds-muted    quieter body text (tabular figures, no margin)
- *   .ds-meta     a meta line: hints, "last saved ..." (tabular figures)
+ *   .ds-meta     a meta line: hints, "last saved ..." (tabular figures);
+ *                a leading 16px icon (> svg:first-child) sits on its line
  *   .ds-stale    content on its way out, dimmed until it is replaced (set
  *                aria-busy="true" on the container while it is stale)
  *   .ds-num      right-aligned tabular figures (table cells)
@@ -122,6 +123,16 @@
     color: var(--ds-text-2);
     font: var(--ds-font-meta);
     font-variant-numeric: tabular-nums;
+  }
+
+  /* A 16px glyph leading the line fills the meta role's 16px line from
+     its top, so it centres on the text without growing the line (on the
+     baseline it stood 4px high and the line grew), and keeps the gap of
+     .ds-kv-list__icon to the text. */
+  .ds-meta > svg:first-child {
+    display: inline-block;
+    margin-inline-end: var(--ds-space-1);
+    vertical-align: top;
   }
 
   /* Content on its way out (a filter applied, a test running again): it

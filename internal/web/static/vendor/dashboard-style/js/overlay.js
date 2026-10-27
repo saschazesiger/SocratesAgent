@@ -2005,8 +2005,9 @@ export function alert(options = {}) {
 
 /**
  * Asks for one value with a built dialog: a field (`label`, `value`;
- * `input` sets its type, autocomplete, inputmode and required), Cancel and
- * a confirm button; Enter in the field confirms. A required field left
+ * `input` sets its type, autocomplete, inputmode, required, spellcheck,
+ * autocapitalize, autocorrect and enterkeyhint), Cancel and a confirm
+ * button; Enter in the field confirms. A required field left
  * empty stays open with the field error `requiredText` (default "Enter a
  * value."; aria-invalid, a .ds-field__hint--error linked by
  * aria-describedby, announced assertively) until the next input.
@@ -2015,7 +2016,8 @@ export function alert(options = {}) {
  * @param {{ title?: string, text?: string, label?: string, value?: string, confirmLabel?: string,
  *   cancelLabel?: string, opener?: Element|null, onConfirm?: (value: string) => unknown, errorText?: string,
  *   requiredText?: string,
- *   input?: { type?: string, autocomplete?: string, inputmode?: string, required?: boolean } }} [options]
+ *   input?: { type?: string, autocomplete?: string, inputmode?: string, required?: boolean,
+ *     spellcheck?: boolean, autocapitalize?: string, autocorrect?: string, enterkeyhint?: string } }} [options]
  * @returns {Promise<string|null>}
  */
 export function prompt(options = {}) {
@@ -2082,6 +2084,11 @@ function ask(kind, options) {
     if (input.autocomplete) field.setAttribute('autocomplete', input.autocomplete);
     if (input.inputmode) field.setAttribute('inputmode', input.inputmode);
     if (input.required) field.required = true;
+    // Typing hints for a path or a code: written only when given, so the browser's defaults stay otherwise.
+    if (typeof input.spellcheck === 'boolean') field.setAttribute('spellcheck', String(input.spellcheck));
+    for (const name of ['autocapitalize', 'autocorrect', 'enterkeyhint']) {
+      if (input[name]) field.setAttribute(name, input[name]);
+    }
     field.value = options.value ?? '';
     field.setAttribute('autofocus', '');
     wrap.append(label, field);
@@ -2747,8 +2754,9 @@ function toastTimeout(region, text, options) {
  * The page's snackbar region: the .ds-toasts in the theme of the first
  * .ds-app (else the first in the document). Without one it creates
  * <div class="ds-toasts"></div> right after the .ds-app (else as the last
- * child of the .ds-theme, else of <body>). toast(null, ...), announce()
- * and savebar() use it.
+ * child of the .ds-theme, else of <body>; a theme on <html> puts it at the
+ * end of <body>, never after it). toast(null, ...), announce() and
+ * savebar() use it.
  * @param {Document} [doc]
  * @returns {HTMLElement|null}
  */
@@ -2766,12 +2774,16 @@ function ownOf(theme, selector) {
   return [...theme.querySelectorAll(selector)].find((node) => node.closest('.ds-theme') === theme) ?? null;
 }
 
-/** A new empty .ds-toasts right after `app` (else the last child of `parent`); null when it is not in the document. */
+/**
+ * A new empty .ds-toasts right after `app` (else the last child of
+ * `parent`, <body> for a theme on <html>, as ask() places its dialog);
+ * null when it is not in the document.
+ */
 function newRegion(doc, app, parent) {
   const region = doc.createElement('div');
   region.className = 'ds-toasts';
   if (app) app.after(region);
-  else parent?.append(region);
+  else (parent === doc.documentElement && doc.body ? doc.body : parent)?.append(region);
   return region.isConnected ? region : null;
 }
 
@@ -3067,11 +3079,19 @@ function hostOf(region) {
   return last && !last.leaving ? last.host : null;
 }
 
-/** Where a region keeps room for messages that stay: a hosting dialog, a hosting sheet's body, else the .ds-view of its app. */
+/**
+ * Where a region keeps room for messages that stay: a hosting dialog, a
+ * hosting sheet's body, else the .ds-view of its app. A layer the page
+ * marked data-ds-toast-room="off" keeps none (a fixed view that must not
+ * shrink); the others still do. Read at every measure, so a toggle
+ * applies on the next change of the stack.
+ */
 function reserveTarget(region) {
   const host = hostOf(region);
-  if (host) return /** @type {HTMLElement|null} */ (host.matches('.ds-dialog') ? host : host.querySelector('.ds-sheet__body'));
-  return /** @type {HTMLElement|null} */ (appOf(region)?.querySelector('.ds-view') ?? null);
+  const node = /** @type {HTMLElement|null} */ (host
+    ? (host.matches('.ds-dialog') ? host : host.querySelector('.ds-sheet__body'))
+    : appOf(region)?.querySelector('.ds-view') ?? null);
+  return node?.getAttribute('data-ds-toast-room') === 'off' ? null : node;
 }
 
 /** Gives the room back: the attribute and the property toast() wrote go. */

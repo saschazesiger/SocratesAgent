@@ -70,7 +70,18 @@ export interface PromptOptions {
   errorText?: string;
   /** The field error of a required field left empty (default "Enter a value."). */
   requiredText?: string;
-  input?: { type?: string; autocomplete?: string; inputmode?: string; required?: boolean };
+  input?: {
+    type?: string;
+    autocomplete?: string;
+    inputmode?: string;
+    required?: boolean;
+    /** Sets the attribute "true" or "false"; absent, the browser's default. */
+    spellcheck?: boolean;
+    /** The attributes of the same name (e.g. "off", "none", "done"); absent, not written. */
+    autocapitalize?: string;
+    autocorrect?: string;
+    enterkeyhint?: string;
+  };
 }
 /** A built prompt dialog; resolves with the value, or null when cancelled. */
 export declare function prompt(options?: PromptOptions): Promise<string | null>;

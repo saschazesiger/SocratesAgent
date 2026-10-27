@@ -34,6 +34,10 @@
  * shown (hidden removed), never again while a re-render keeps the node.
  * Forced colours: the disc keeps an outline (its fill is dropped).
  *
+ * Hooks: --ds-empty-disc-size (48px): the disc's width and height (a
+ * confirmation page may want a larger one); the ring follows, the glyph
+ * keeps the size of its markup.
+ *
  * Progressive:
  * - text-wrap (the text avoids a lone last word): without it the line
  *   wraps as usual.
@@ -55,8 +59,8 @@
   .ds-empty__disc {
     display: grid;
     place-items: center;
-    width: 48px;
-    height: 48px;
+    width: var(--ds-empty-disc-size, 48px);
+    height: var(--ds-empty-disc-size, 48px);
     margin-bottom: var(--ds-space-2);
     border-radius: var(--ds-radius-action);
     background: var(--ds-accent);

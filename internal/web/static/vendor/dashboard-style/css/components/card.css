@@ -3,7 +3,7 @@
  * Hierarchy comes from type, hairlines and tonal tiles, never shadows.
  *
  *   <section class="ds-card">
- *     <div class="ds-card__row"> <h2 class="ds-card__title"> [button | switch]
+ *     <div class="ds-card__row"> <h2 class="ds-card__title"> [button | switch | status chip | badge | tag | chip]
  *     <p class="ds-muted"> ...
  *     <h3 class="ds-card__subtitle"> ...
  *     <div class="ds-subsection"> ...
@@ -50,8 +50,9 @@
  * Hooks (on .ds-theme or an element): --ds-card-padding (--ds-space-6),
  * --ds-card-padding-sm (600px and below, --ds-space-4),
  * --ds-card-padding-filled (--ds-space-5), --ds-card-title-line (the
- * title's line height, 24px, which a button or switch in the header row
- * overhangs), --ds-card-hover-shadow (an interactive card's shadow on
+ * title's line height, 24px, which a button, switch or chip in the header
+ * row overhangs; a status chip, badge or tag sits on it),
+ * --ds-card-hover-shadow (an interactive card's shadow on
  * hover, default none), --ds-card-shadow (--elevated, --ds-elev-1),
  * --ds-card-selected-bg, --ds-selected-ring. --ds-card-pad is the resulting padding of each
  * card, which tables read to bleed to its edges: read it, never set it.
@@ -343,7 +344,9 @@
   }
 
   /* Cards side by side share one height; their link rows line up at the
-     bottom edge. */
+     bottom edge. The auto margin replaces the rhythm's 16px, so the block
+     before the links keeps it as a floor: the tallest card has no free
+     space, and flex margins add up instead of collapsing. */
   .ds-grid-2 > .ds-card:has(> .ds-card__links) {
     display: flex;
     flex-direction: column;
@@ -351,6 +354,10 @@
 
   .ds-grid-2 > .ds-card > .ds-card__links {
     margin-top: auto;
+  }
+
+  .ds-grid-2 > .ds-card > :has(+ .ds-card__links) {
+    margin-bottom: var(--ds-space-4);
   }
 
   .ds-card__title {
@@ -381,7 +388,10 @@
   /* A button (36px) or a switch (40px) next to the title hangs out of the
      title's line (--ds-card-title-line) on both sides instead of making the row taller: every
      card title starts at the same height, whatever its head holds. When the
-     row wraps (phones), the row gap makes up for the overhang. */
+     row wraps (phones), the row gap makes up for the overhang. A status
+     chip, badge or tag fits the title line and sits on it (an overhang
+     would hang into the block below a wrapped row); a chip hangs by its
+     own height. */
   .ds-card__row {
     row-gap: calc(var(--ds-space-3) + (var(--ds-btn-height, 36px) - var(--ds-card-title-line, 24px)) / 2);
   }
@@ -393,6 +403,14 @@
   .ds-card__row > .ds-switch,
   .ds-card__row > :has(> .ds-switch) {
     margin-block: calc((var(--ds-card-title-line, 24px) - var(--ds-switch-height, 40px)) / 2);
+  }
+
+  .ds-card__row > :is(.ds-status, .ds-badge, .ds-tag) {
+    margin-block: 0;
+  }
+
+  .ds-card__row > .ds-chip {
+    margin-block: calc((var(--ds-card-title-line, 24px) - var(--ds-chip-height, 32px)) / 2);
   }
 
   .ds-card__subtitle {

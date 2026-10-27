@@ -1,4 +1,4 @@
-/*! Dashboard-Style 2.0.0 | MIT License | https://github.com/saschazesiger/Dashboard-Style */
+/*! Dashboard-Style 2.1.0 | MIT License | https://github.com/saschazesiger/Dashboard-Style */
 /*
  * Classic-script build of src/js (no modules needed): window.DS.motion,
  * DS.indicator, DS.dom, DS.ripple, DS.icons and DS.overlay hold the same
@@ -15,7 +15,7 @@
  */
 (function (root) {
   'use strict';
-  var version = '2.0.0';
+  var version = '2.1.0';
   var registry = root.DashboardStyle || (root.DashboardStyle = {});
   var versions = registry.versions || (registry.versions = {});
   if (versions[version]) return;
@@ -2492,28 +2492,48 @@
     }
 
     /**
-     * The element of `item` that takes over the focus of `old`: one with the
-     * same classes (the next row's "Remove"), else the item when it is
-     * focusable, else its first focusable element.
+     * Classes the system puts on an element for a moment: the press of
+     * DS.ripple (ds-pressed), the done state of busy() (ds-btn--done) and the
+     * classes of enter() / leave(). A twin is matched without them: the pressed
+     * "Remove" still carries ds-pressed when its click removes the row.
      */
-    function focusIn(item, old) {
-      const list = (selector) => Array.from(item.querySelectorAll?.(selector) ?? []).filter(focusable);
-      const className = typeof old?.getAttribute === 'function' ? (old.getAttribute('class') ?? '').trim() : '';
-      if (className) {
-        const twin = list(FOCUSABLE).find((element) => element.getAttribute('class')?.trim().split(/\s+/).sort().join(' ') === className.split(/\s+/).sort().join(' '));
-        if (twin) return twin;
-      }
-      if (item.matches?.(FOCUSABLE) && focusable(item)) return item;
-      return list(FOCUSABLE)[0] ?? null;
+    const TRANSIENT_CLASS = /^ds-(pressed|btn--done|enter|leave)(--|$)/;
+
+    /** The classes of `element` that say what it is, sorted ('' for none). */
+    function lastingClasses(element) {
+      const value = typeof element?.getAttribute === 'function' ? element.getAttribute('class') ?? '' : '';
+      return value.split(/\s+/).filter((name) => name && !TRANSIENT_CLASS.test(name)).sort().join(' ');
+    }
+
+    /** The focusable elements of `item`, the item itself first. */
+    function focusablesIn(item) {
+      const own = item.matches?.(FOCUSABLE) ? [item] : [];
+      return [...own, ...Array.from(item.querySelectorAll?.(FOCUSABLE) ?? [])].filter(focusable);
+    }
+
+    /** The element of `item` with the same classes as `old` (the next row's "Remove"), or null. */
+    function twinIn(item, old) {
+      const classes = lastingClasses(old);
+      if (!classes) return null;
+      return focusablesIn(item).find((element) => lastingClasses(element) === classes) ?? null;
+    }
+
+    /** The item when it is focusable, else its first focusable element, or null. */
+    function firstIn(item) {
+      return focusablesIn(item)[0] ?? null;
     }
 
     /**
      * refocus (flip()): when the item that held the focus went and focus is
-     * lost (on <body>, nowhere, or still inside the item), it moves to the next
-     * item that stays in the old order and has something to focus, else the
-     * nearest such item before it, else the
-     * fallback (`refocus` as an element or a function); with none, leave()
-     * moves it out as usual. A page that moved focus itself is left alone.
+     * lost (on <body>, nowhere, or still inside the item), it moves to the
+     * element with the same classes as the old focus (state classes aside) in
+     * the nearest item that stays and holds one, by distance in the old order
+     * counted over the items with something to focus, the next item before the
+     * previous one at the same distance; with no such twin, to the next item
+     * that has something to focus, else the nearest such item before it, else
+     * the fallback (`refocus` as an element or a
+     * function); with none, leave() moves it out as usual. A page that moved
+     * focus itself is left alone.
      */
     function refocusAfter(container, focus, order, removed, refocus) {
       if (!focus || refocus === false) return;
@@ -2525,13 +2545,21 @@
       if (!lost) return;
       const index = order.indexOf(owner);
       const alive = (item) => !itemGone(item, removed) && !item.hasAttribute?.('data-ds-keep');
-      // An item with nothing to focus (a timeline's day heading) is passed over.
+      // Only items with something to focus count (a timeline's day heading is
+      // passed over). The twin of the old focus by distance, the next item
+      // before the previous one at each step: a chip row's previous chip wins
+      // over the "Clear filters" after it, and a twin next door over one far
+      // down the list (locked rows between without one). With no twin, the
+      // next item, else the previous one.
+      const bearing = (items) => items.filter((item) => alive(item) && firstIn(item));
+      const later = bearing(order.slice(index + 1));
+      const earlier = bearing(order.slice(0, index).reverse());
       let target = null;
-      for (const item of [...order.slice(index + 1), ...order.slice(0, index).reverse()]) {
-        if (!alive(item)) continue;
-        target = focusIn(item, active);
-        if (target) break;
+      for (let step = 0; !target && step < Math.max(later.length, earlier.length); step += 1) {
+        target = (later[step] && twinIn(later[step], active)) || (earlier[step] && twinIn(earlier[step], active)) || null;
       }
+      const nearest = later[0] ?? earlier[0];
+      if (!target && nearest) target = firstIn(nearest);
       if (!target && refocus !== true && refocus !== undefined) {
         const fallback = typeof refocus === 'function' ? refocus() : refocus;
         if (focusable(fallback)) target = fallback;
@@ -3612,7 +3640,8 @@
      * nothing until it is back. An active item inside a closed <details> (a
      * collapsed drawer group) has no pill: it contracts and comes back when the
      * group opens. With reveal: true the track scrolls itself (never its
-     * ancestors) so the active item stays --ds-space-2 clear of its edges, and
+     * ancestors) so the active item stays --ds-space-2 clear of its edges (or
+     * its scroll-padding, where larger: a drawer list's edge shades), and
      * a .ds-drawer__list gets .ds-drawer__list--overflow while it is taller
      * than its view.
      *
@@ -4038,23 +4067,32 @@
         release(gen, still);
       }
 
-      /** The --ds-space-2 of the track in px (the room reveal keeps). */
+      /**
+       * The room reveal keeps at each edge of the track, in px: --ds-space-2,
+       * or the track's scroll-padding where that is larger (a drawer list's
+       * edge shades), so the item lands where keyboard focus would.
+       */
       function room() {
-        const value = typeof view.getComputedStyle === 'function' ? parseFloat(view.getComputedStyle(track).getPropertyValue('--ds-space-2')) : NaN;
-        return Number.isFinite(value) ? value : 8;
+        const style = typeof view.getComputedStyle === 'function' ? view.getComputedStyle(track) : null;
+        // 'auto' (no scroll-padding) and a missing value read as NaN.
+        const px = (name) => (style ? parseFloat(style.getPropertyValue(name)) : NaN);
+        const space = px('--ds-space-2');
+        const base = Number.isFinite(space) ? space : 8;
+        const side = (name) => Math.max(base, px(name) || 0);
+        return { top: side('scroll-padding-top'), bottom: side('scroll-padding-bottom'), left: side('scroll-padding-left'), right: side('scroll-padding-right') };
       }
 
       /** reveal: scrolls only the track, so `rect` (track scroll coordinates) is clear of its edges. */
       function revealRect(rect, instant) {
         const margin = room();
-        const axis = (start, end, scroll, size, range) => {
+        const axis = (start, end, scroll, size, range, before, after) => {
           if (range <= size + 1) return scroll;
-          if (start - margin < scroll || end - start + 2 * margin > size) return Math.max(0, start - margin);
-          if (end + margin > scroll + size) return end + margin - size;
+          if (start - before < scroll || end - start + before + after > size) return Math.max(0, start - before);
+          if (end + after > scroll + size) return end + after - size;
           return scroll;
         };
-        const top = axis(rect.top, rect.bottom, track.scrollTop, track.clientHeight, track.scrollHeight);
-        const left = axis(rect.left, rect.right, track.scrollLeft, track.clientWidth, track.scrollWidth);
+        const top = axis(rect.top, rect.bottom, track.scrollTop, track.clientHeight, track.scrollHeight, margin.top, margin.bottom);
+        const left = axis(rect.left, rect.right, track.scrollLeft, track.clientWidth, track.scrollWidth, margin.left, margin.right);
         if (Math.abs(top - track.scrollTop) < 0.5 && Math.abs(left - track.scrollLeft) < 0.5) return;
         if (typeof track.scrollTo === 'function') track.scrollTo({ top, left, behavior: instant ? 'auto' : 'smooth' });
       }
@@ -5231,8 +5269,10 @@
      * --ds-scrollbar-width ('block') in px (the room of the scrollbar), and
      * --ds-table-pin-width (the width of the first cell) when it holds a
      * .ds-table--pin-first. A passive scroll listener updates once per frame,
-     * one ResizeObserver per window watches the scroller and its first child;
-     * when the overflow goes away it calls resyncScroll(scroller). Once per
+     * one ResizeObserver per window watches the scroller and its children (a
+     * MutationObserver adds the children that come and drops the ones that
+     * go), so rows added or opened update the edges; when the overflow goes
+     * away it calls resyncScroll(scroller). Once per
      * scroller and axis: a second call returns the same handle.
      * watchScrolled() stays the reporter of the block start (a sentinel, for
      * another target).
@@ -5254,7 +5294,28 @@
       for (const name of [bar, '--ds-table-pin-width']) own(scroller, 'props', name);
       let frame = 0;
       let overflowed = false;
-      let child = scroller.firstElementChild ?? null;
+      // Every element child is watched, not only the first: a list grows by new
+      // siblings, and its first child may be an absolute .ds-indicator.
+      const watched = new Set();
+      const syncChildren = () => {
+        const now = new Set(Array.from(scroller.children ?? []));
+        for (const node of watched) {
+          if (now.has(node)) continue;
+          unwatchSize(view, node, schedule);
+          watched.delete(node);
+        }
+        for (const node of now) {
+          if (watched.has(node)) continue;
+          watchSize(view, node, schedule);
+          watched.add(node);
+        }
+      };
+      const children = typeof view.MutationObserver === 'function'
+        ? new view.MutationObserver(() => {
+          syncChildren();
+          schedule();
+        })
+        : null;
       const measure = () => {
         frame = 0;
         const size = inline ? scroller.scrollWidth - scroller.clientWidth : scroller.scrollHeight - scroller.clientHeight;
@@ -5277,13 +5338,8 @@
         else scroller.style.removeProperty('--ds-table-pin-width');
         if (overflowed && !overflow) resyncScroll(scroller);
         overflowed = overflow;
-        // A new first child (a re-render) is watched instead of the old one.
-        const now = scroller.firstElementChild ?? null;
-        if (now !== child) {
-          unwatchSize(view, child, schedule);
-          child = now;
-          watchSize(view, child, schedule);
-        }
+        // Without a MutationObserver, the children are synced per measure.
+        if (!children) syncChildren();
       };
       const schedule = () => {
         if (frame) return;
@@ -5295,7 +5351,8 @@
       };
       scroller.addEventListener('scroll', schedule, { passive: true });
       watchSize(view, scroller, schedule);
-      watchSize(view, child, schedule);
+      syncChildren();
+      children?.observe(scroller, { childList: true });
       measure();
       const handle = {
         update() {
@@ -5307,7 +5364,9 @@
           if (frame) view.cancelAnimationFrame?.(frame);
           scroller.removeEventListener('scroll', schedule);
           unwatchSize(view, scroller, schedule);
-          unwatchSize(view, child, schedule);
+          children?.disconnect();
+          for (const node of watched) unwatchSize(view, node, schedule);
+          watched.clear();
           for (const name of ['data-ds-edges', 'data-ds-overflow-start', 'data-ds-overflow-end']) {
             disown(scroller, 'attrs', name);
             if (!watches.size) scroller.removeAttribute(name);
@@ -5536,10 +5595,32 @@
     /** The live viewport follower of each document. @type {WeakMap<Document, { handle: { destroy: () => void } }>} */
     const viewportFollowers = new WeakMap();
 
-    /** Whether focus sits in a field that brings up a keyboard. */
+    /**
+     * The document of a same-origin frame, or null: a cross-origin frame throws
+     * or hides it, and its focus stays unknown (not editing).
+     */
+    function frameDocument(frame) {
+      try {
+        return frame.contentDocument || null;
+      } catch {
+        return null;
+      }
+    }
+
+    /**
+     * Whether focus sits in a field that brings up a keyboard, through open
+     * shadow roots and same-origin frames (an embedded editor).
+     */
     function editing(doc) {
       let active = doc.activeElement;
-      while (active?.shadowRoot?.activeElement) active = active.shadowRoot.activeElement;
+      for (;;) {
+        while (active?.shadowRoot?.activeElement) active = active.shadowRoot.activeElement;
+        if (!/^i?frame$/i.test(active?.tagName || '')) break;
+        const inner = frameDocument(active);
+        if (!inner) return false;
+        active = inner.activeElement;
+        doc = inner;
+      }
       if (!active || active === doc.body) return false;
       if (active.isContentEditable) return true;
       if (active.tagName === 'TEXTAREA') return !active.readOnly;
@@ -5552,7 +5633,7 @@
      * --ds-viewport-height (the visual viewport's height, px) on <html>, sets
      * data-ds-keyboard on <html> while the visual viewport is shorter than its
      * tallest height at this width by more than 150px and focus is in a field
-     * that types, writes --ds-keyboard-inset (px of the layout viewport the
+     * that types (also inside a same-origin iframe), writes --ds-keyboard-inset (px of the layout viewport the
      * keyboard covers, for the snackbars) and scrolls the window back to the
      * top when the browser panned it up for the keyboard (an unzoomed page).
      * shell.css and toast.css read them. Once per document (a second call
@@ -5725,10 +5806,13 @@
      * Grows a textarea with its text up to its computed max-height (then it
      * scrolls), through the CSSOM; never animated. Where the textarea sizes
      * itself (field-sizing: content, which .ds-input--grow sets where it
-     * exists) it does nothing. The height and overflow-y it writes are owned
-     * state, so a re-render keeps a grown textarea's size. Once per textarea;
-     * update() measures again (a value set by script), destroy() removes the
-     * listener and the height.
+     * exists) it does nothing (and drops a height it wrote before). It measures
+     * once the textarea is rendered (and again when its width changes), so it
+     * is safe to call before the field is in the page or while it is hidden:
+     * a ResizeObserver measures when it gets a width. The height and overflow-y
+     * it writes are owned state, so a re-render keeps a grown textarea's size.
+     * Once per textarea; update() measures again (a value set by script),
+     * destroy() removes the listener, the observer and the height.
      * @param {HTMLTextAreaElement|null|undefined} textarea
      * @returns {{ update: () => void, destroy: () => void }}
      */
@@ -5740,8 +5824,26 @@
       const style = () => (typeof view.getComputedStyle === 'function' ? view.getComputedStyle(textarea) : null);
       const native = () => style()?.getPropertyValue?.('field-sizing') === 'content';
       let owned = false;
+      /** Drops the height and overflow-y this handle wrote (and disowns them). */
+      const release = () => {
+        if (owned) {
+          owned = false;
+          disown(textarea, 'props', 'height');
+          disown(textarea, 'props', 'overflow-y');
+        }
+        textarea.style.removeProperty('height');
+        textarea.style.removeProperty('overflow-y');
+        if (textarea.getAttribute('style')?.trim() === '') textarea.removeAttribute('style');
+      };
       const update = () => {
-        if (native()) return;
+        // A detached or hidden field has no computed style and a scrollHeight of
+        // 0: a height measured now would stick (the ResizeObserver measures
+        // again once it is rendered).
+        if (textarea.isConnected === false || typeof textarea.getClientRects === 'function' && !textarea.getClientRects().length) return;
+        if (native()) {
+          if (owned) release();
+          return;
+        }
         if (!owned) {
           // Owned state: a re-render around a focused, grown textarea keeps its height.
           owned = true;
@@ -5757,6 +5859,20 @@
         textarea.style.height = `${Math.ceil(capped)}px`;
         textarea.style.overflowY = Number.isFinite(max) && wanted > max ? 'auto' : 'hidden';
       };
+      // Measures again when the inline size changes: 0 to a width when the field
+      // is inserted or shown, a narrower window that wraps more lines. The block
+      // size update() writes does not change it, so it never loops; it writes in
+      // the next frame, outside the observer's delivery (a size written there
+      // would be an undelivered notification, an error event in every engine).
+      let width = -1;
+      let frame = 0;
+      const sizes = typeof view.ResizeObserver === 'function' ? new view.ResizeObserver((entries) => {
+        const inline = entries[entries.length - 1]?.contentRect?.width ?? 0;
+        if (inline === width) return;
+        width = inline;
+        if (inline > 0 && !frame) frame = view.requestAnimationFrame(() => { frame = 0; update(); });
+      }) : null;
+      sizes?.observe(textarea);
       textarea.addEventListener('input', update);
       update();
       const handle = {
@@ -5764,14 +5880,10 @@
         destroy() {
           if (autosized.get(textarea)?.handle !== handle) return;
           autosized.delete(textarea);
+          sizes?.disconnect();
+          if (frame) view.cancelAnimationFrame(frame);
           textarea.removeEventListener('input', update);
-          if (owned) {
-            disown(textarea, 'props', 'height');
-            disown(textarea, 'props', 'overflow-y');
-          }
-          textarea.style.removeProperty('height');
-          textarea.style.removeProperty('overflow-y');
-          if (textarea.getAttribute('style')?.trim() === '') textarea.removeAttribute('style');
+          release();
         },
       };
       autosized.set(textarea, { handle });
@@ -5813,12 +5925,15 @@
      * (default the input's accept: extensions, MIME types, image/*), keeps
      * one unless `multiple` (default the input's multiple) and calls
      * onFiles(files, event) with what is left. The zone's file input
-     * (.ds-dropzone__input, or its first input[type="file"]) goes the same way
-     * and is reset afterwards, so the same file can be chosen again. With
-     * `paste: true` files pasted while focus is inside `target` count too. A
-     * disabled input takes nothing. Once per zone.
+     * (`input`; absent: .ds-dropzone__input, or the zone's first
+     * input[type="file"]) goes the same way and is reset afterwards, so the
+     * same file can be chosen again; `input: null` takes no input (drops and
+     * paste only), for a pane whose own file input (a composer's attach
+     * button) the page already handles. With `paste: true` files pasted while
+     * focus is inside `target` count too. A disabled input takes nothing. Once
+     * per zone.
      * @param {Element|null|undefined} zone
-     * @param {{ onFiles: (files: File[], event: Event) => void, accept?: string, multiple?: boolean, paste?: boolean, target?: Element }} options
+     * @param {{ onFiles: (files: File[], event: Event) => void, accept?: string, multiple?: boolean, paste?: boolean, target?: Element, input?: HTMLInputElement|null }} options
      * @returns {{ destroy: () => void }}
      */
     function dropzone(zone, options) {
@@ -5827,7 +5942,9 @@
       if (existing) return existing.handle;
       const doc = zone.ownerDocument;
       const target = options?.target ?? zone;
-      const input = zone.querySelector?.('.ds-dropzone__input') ?? zone.querySelector?.('input[type="file"]') ?? null;
+      const input = options?.input !== undefined
+        ? options.input
+        : zone.querySelector?.('.ds-dropzone__input') ?? zone.querySelector?.('input[type="file"]') ?? null;
       const accept = () => options?.accept ?? input?.accept ?? '';
       const multiple = () => options?.multiple ?? Boolean(input?.multiple);
       const blocked = () => Boolean(input?.disabled);
@@ -7031,10 +7148,14 @@
     /**
      * Fills every `[data-icon]` element inside `root` (and `root` itself)
      * with its glyph, `data-icon-size` px wide (default 20), built through DOM
-     * APIs like iconElement(). Idempotent: an element that already shows the
-     * same glyph at the same size keeps its <svg>; a changed name or size
-     * replaces it. Unknown names throw "Unknown icon" once every known one is
-     * drawn.
+     * APIs like iconElement(). The glyph replaces the element's content;
+     * with `data-icon-place="start"` or `"end"` (2.1) it goes in as the first
+     * or last child and the content stays (a labelled button written as
+     * markup: the button rules read `> svg:first-child`). Idempotent: an
+     * element that already shows the same glyph at the same size keeps its
+     * <svg>; a changed name or size replaces it (in place, beside the
+     * content); a placed glyph that went missing is put back. Unknown names
+     * throw "Unknown icon" once every known one is drawn.
      * @param {Document|Element|DocumentFragment} [root]  default: document
      * @returns {number} how many elements got a new glyph
      */
@@ -7055,6 +7176,19 @@
         const size = Number(target.getAttribute('data-icon-size')) || ICON_SIZE;
         const key = name + ' ' + size;
         const last = filled.get(target);
+        const place = target.getAttribute('data-icon-place');
+        if (place === 'start' || place === 'end') {
+          // Beside the content: only the glyph this function drew is touched.
+          const kept = last && last.svg.parentNode === target ? last.svg : null;
+          if (kept && last.key === key) continue;
+          const svg = iconElement(body, size, undefined, doc);
+          if (kept) kept.replaceWith(svg);
+          else if (place === 'start') target.prepend(svg);
+          else target.append(svg);
+          filled.set(target, { key, svg });
+          drawn += 1;
+          continue;
+        }
         if (last && last.key === key && target.childNodes.length === 1 && target.firstChild === last.svg) continue;
         const svg = iconElement(body, size, undefined, doc);
         target.replaceChildren(svg);
@@ -9190,8 +9324,9 @@
 
     /**
      * Asks for one value with a built dialog: a field (`label`, `value`;
-     * `input` sets its type, autocomplete, inputmode and required), Cancel and
-     * a confirm button; Enter in the field confirms. A required field left
+     * `input` sets its type, autocomplete, inputmode, required, spellcheck,
+     * autocapitalize, autocorrect and enterkeyhint), Cancel and a confirm
+     * button; Enter in the field confirms. A required field left
      * empty stays open with the field error `requiredText` (default "Enter a
      * value."; aria-invalid, a .ds-field__hint--error linked by
      * aria-describedby, announced assertively) until the next input.
@@ -9200,7 +9335,8 @@
      * @param {{ title?: string, text?: string, label?: string, value?: string, confirmLabel?: string,
      *   cancelLabel?: string, opener?: Element|null, onConfirm?: (value: string) => unknown, errorText?: string,
      *   requiredText?: string,
-     *   input?: { type?: string, autocomplete?: string, inputmode?: string, required?: boolean } }} [options]
+     *   input?: { type?: string, autocomplete?: string, inputmode?: string, required?: boolean,
+     *     spellcheck?: boolean, autocapitalize?: string, autocorrect?: string, enterkeyhint?: string } }} [options]
      * @returns {Promise<string|null>}
      */
     function prompt(options = {}) {
@@ -9267,6 +9403,11 @@
         if (input.autocomplete) field.setAttribute('autocomplete', input.autocomplete);
         if (input.inputmode) field.setAttribute('inputmode', input.inputmode);
         if (input.required) field.required = true;
+        // Typing hints for a path or a code: written only when given, so the browser's defaults stay otherwise.
+        if (typeof input.spellcheck === 'boolean') field.setAttribute('spellcheck', String(input.spellcheck));
+        for (const name of ['autocapitalize', 'autocorrect', 'enterkeyhint']) {
+          if (input[name]) field.setAttribute(name, input[name]);
+        }
         field.value = options.value ?? '';
         field.setAttribute('autofocus', '');
         wrap.append(label, field);
@@ -9932,8 +10073,9 @@
      * The page's snackbar region: the .ds-toasts in the theme of the first
      * .ds-app (else the first in the document). Without one it creates
      * <div class="ds-toasts"></div> right after the .ds-app (else as the last
-     * child of the .ds-theme, else of <body>). toast(null, ...), announce()
-     * and savebar() use it.
+     * child of the .ds-theme, else of <body>; a theme on <html> puts it at the
+     * end of <body>, never after it). toast(null, ...), announce() and
+     * savebar() use it.
      * @param {Document} [doc]
      * @returns {HTMLElement|null}
      */
@@ -9951,12 +10093,16 @@
       return [...theme.querySelectorAll(selector)].find((node) => node.closest('.ds-theme') === theme) ?? null;
     }
 
-    /** A new empty .ds-toasts right after `app` (else the last child of `parent`); null when it is not in the document. */
+    /**
+     * A new empty .ds-toasts right after `app` (else the last child of
+     * `parent`, <body> for a theme on <html>, as ask() places its dialog);
+     * null when it is not in the document.
+     */
     function newRegion(doc, app, parent) {
       const region = doc.createElement('div');
       region.className = 'ds-toasts';
       if (app) app.after(region);
-      else parent?.append(region);
+      else (parent === doc.documentElement && doc.body ? doc.body : parent)?.append(region);
       return region.isConnected ? region : null;
     }
 
@@ -10252,11 +10398,19 @@
       return last && !last.leaving ? last.host : null;
     }
 
-    /** Where a region keeps room for messages that stay: a hosting dialog, a hosting sheet's body, else the .ds-view of its app. */
+    /**
+     * Where a region keeps room for messages that stay: a hosting dialog, a
+     * hosting sheet's body, else the .ds-view of its app. A layer the page
+     * marked data-ds-toast-room="off" keeps none (a fixed view that must not
+     * shrink); the others still do. Read at every measure, so a toggle
+     * applies on the next change of the stack.
+     */
     function reserveTarget(region) {
       const host = hostOf(region);
-      if (host) return /** @type {HTMLElement|null} */ (host.matches('.ds-dialog') ? host : host.querySelector('.ds-sheet__body'));
-      return /** @type {HTMLElement|null} */ (appOf(region)?.querySelector('.ds-view') ?? null);
+      const node = /** @type {HTMLElement|null} */ (host
+        ? (host.matches('.ds-dialog') ? host : host.querySelector('.ds-sheet__body'))
+        : appOf(region)?.querySelector('.ds-view') ?? null);
+      return node?.getAttribute('data-ds-toast-room') === 'off' ? null : node;
     }
 
     /** Gives the room back: the attribute and the property toast() wrote go. */

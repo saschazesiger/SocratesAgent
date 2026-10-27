@@ -48,7 +48,8 @@
  * only: the glide from where the region stood), and --ds-toast-reserve with
  * data-toast-reserve (the room kept for messages that stay: toast() sets
  * them on .ds-view, a hosting .ds-sheet__body or .ds-dialog; the page only
- * with `reserve: false`).
+ * with `reserve: false`). data-ds-toast-room="off" (page-set, 2.1) on one
+ * of those layers: it keeps no room, the others still do.
  *
  * Progressive:
  * - View Transitions (while DS.motion.transition() runs, data-ds-vt on

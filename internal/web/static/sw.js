@@ -35,8 +35,8 @@ const PUSH_STATE = 'socrates-push';
 // The vendored terminal alone is 801 KB uncompressed and 210 KB gzipped -
 // xterm.js is 489 KB of that and the WebGL renderer 248 KB - and both earn it,
 // because a terminal that has to be fetched is a terminal that is not there in
-// a tunnel. Dashboard-Style 2.0 adds about 1.4 MB for the same reason - ds.css
-// and ds.js are 720 KB and 567 KB, 162 KB and 156 KB gzipped, and the two
+// a tunnel. Dashboard-Style 2.1 adds about 1.4 MB for the same reason - ds.css
+// and ds.js are 731 KB and 575 KB, 165 KB and 158 KB gzipped, and the two
 // Google Sans files 86 KB - because a page without its look is not one anybody
 // can use. Socrates itself serves the files as they are: the compression is
 // whatever is in front of it, the Cloudflare edge or a reverse proxy. The

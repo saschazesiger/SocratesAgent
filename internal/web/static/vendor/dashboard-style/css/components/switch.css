@@ -53,12 +53,14 @@
  * Hint and extras: small.ds-switch__hint (a line under the name, the meta
  * type), span.ds-switch__meta (non-interactive extras before the state
  * word: a count, a tag); the label wraps long words. A switch with a hint
- * lays its parts on a small grid, the hint under the name.
+ * lays its parts on a small grid, the hint under the name; the name and
+ * its hint stand together and the text centres on the track.
  *
  * Many settings, each a switch: .ds-switch-list holds .ds-switch rows on a
  * grid (track, name over hint, meta, state), at least
- * --ds-switch-list-row-height (56px), hairlines between; at 560px and
- * below the meta wraps under the name. Name each input with
+ * --ds-switch-list-row-height (56px), hairlines between; the text centres
+ * on the track with or without a hint; at 560px and below the meta wraps
+ * under the name. Name each input with
  * aria-labelledby (its .ds-switch__label) and describe it with
  * aria-describedby (its hint), so the extras stay out of its name.
  *
@@ -493,25 +495,37 @@
     padding: 0;
   }
 
-  /* A switch with a hint stacks the hint under its name (the same areas). */
+  /* A switch with a hint stacks the hint under its name (the same areas).
+     The name and the hint stand together, no gap between the text rows;
+     the two flexible rows around them take the free height, so the text
+     centres on the track whichever rows are empty (no hint, no meta, a
+     wrapped name). */
   .ds-switch:has(> .ds-switch__hint) {
     display: inline-grid;
     grid-template-columns: auto minmax(0, 1fr) auto auto;
+    grid-template-rows: 1fr auto auto 1fr;
     grid-template-areas:
+      "track . meta state"
       "track label meta state"
-      "track hint meta state";
+      "track hint meta state"
+      "track . meta state";
     align-items: center;
     column-gap: var(--ds-space-3);
+    row-gap: 0;
   }
 
   .ds-switch-list > .ds-switch {
     display: grid;
     grid-template-columns: auto minmax(0, 1fr) auto auto;
+    grid-template-rows: 1fr auto auto 1fr;
     grid-template-areas:
+      "track . meta state"
       "track label meta state"
-      "track hint meta state";
+      "track hint meta state"
+      "track . meta state";
     align-items: center;
     column-gap: var(--ds-space-3);
+    row-gap: 0;
     min-height: var(--ds-switch-list-row-height, 56px);
     padding-block: var(--ds-space-2);
     border-bottom: 1px solid var(--ds-line);
@@ -544,14 +558,20 @@
   @container ds-switch-list (max-width: 560px) {
     .ds-switch-list > .ds-switch {
       grid-template-columns: auto minmax(0, 1fr) auto;
+      grid-template-rows: 1fr auto auto auto 1fr;
       grid-template-areas:
+        "track . state"
         "track label state"
         "track hint state"
-        "track meta state";
+        "track meta state"
+        "track . state";
     }
 
+    /* Under the hint (or the name) the meta keeps a little air; a tag
+       directly on the text line reads as part of it. */
     .ds-switch > .ds-switch__meta {
       justify-self: start;
+      margin-top: var(--ds-space-1);
     }
   }
 

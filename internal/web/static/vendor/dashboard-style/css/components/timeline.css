@@ -23,7 +23,8 @@
  * around each dot; it passes through day headings (.ds-timeline__group,
  * no dot). --muted: a ring instead of a dot, for an entry that did not
  * take effect (say why in words). --icon with .ds-timeline__marker: a
- * disc with a 16px icon instead of the dot. __text keeps its line breaks
+ * disc with a 16px icon instead of the dot. A 16px icon leading __meta
+ * (> svg:first-child) sits on its text line. __text keeps its line breaks
  * and the reading measure; __body holds a form in place; __actions hangs
  * the padding of its text buttons.
  *
@@ -183,6 +184,14 @@
     color: var(--ds-text-2);
     font: var(--ds-font-meta);
     font-variant-numeric: tabular-nums;
+  }
+
+  /* As in .ds-meta: a leading 16px glyph fills the 16px line from its top,
+     centred on the text, the line kept. */
+  .ds-timeline__meta > svg:first-child {
+    display: inline-block;
+    margin-inline-end: var(--ds-space-1);
+    vertical-align: top;
   }
 
   .ds-timeline__text {

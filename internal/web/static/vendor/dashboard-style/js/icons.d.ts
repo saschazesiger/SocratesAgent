@@ -11,7 +11,11 @@ export declare const ICON_SIZE: number;
 export declare function icon(body: string, size?: number, className?: string): string;
 /** The same as an element, created in `doc` (default: document). */
 export declare function iconElement(body: string, size?: number, className?: string, doc?: Document): SVGSVGElement;
-/** Fills every [data-icon] under `root` with its glyph; returns how many got a new one. */
+/**
+ * Fills every [data-icon] under `root` with its glyph (data-icon-size px, default 20); returns how many got a new
+ * one. The glyph replaces the content; with data-icon-place="start" or "end" it goes first or last and the content
+ * stays.
+ */
 export declare function fill(root?: Document | Element | DocumentFragment): number;
 
 /* ── Glyphs ── */
