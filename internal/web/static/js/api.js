@@ -187,13 +187,30 @@ export function alertDialog({ title, body = '', lines = [], facts = [], code = f
 // dialog (DS.overlay.prompt), its label, and a button that says what is
 // done with what was typed. It resolves with the trimmed text, or null when
 // the person cancelled.
+//
+// What is typed here is a name or a path (Point to folder): a phone must
+// neither correct nor capitalise it, and the spell checker has nothing to
+// underline. DS's prompt() takes only the field's type, autocomplete,
+// inputmode and required, so the rest is set on its field, which is in the
+// page as soon as prompt() returns (DS.overlay.prompt builds the dialog and
+// opens it synchronously; its autofocus lands a frame later).
 export async function promptDialog({
   title, body = '', label, value = '', confirmLabel = 'OK', cancelLabel = 'Cancel', opener = null,
 } = {}) {
   const was = opener || document.activeElement;
-  const answer = await DS.overlay.prompt({
+  const before = new Set(document.querySelectorAll('.ds-dialog'));
+  const asked = DS.overlay.prompt({
     title, text: body, label, value, confirmLabel, cancelLabel, opener: was, input: { autocomplete: 'off' },
   });
+  const dialog = [...document.querySelectorAll('.ds-dialog')].find((node) => !before.has(node));
+  const field = dialog && dialog.querySelector('.ds-input');
+  if (field) {
+    field.spellcheck = false;
+    field.setAttribute('autocapitalize', 'off');
+    field.setAttribute('autocorrect', 'off');
+    field.setAttribute('enterkeyhint', 'done');
+  }
+  const answer = await asked;
   afterDialog(was);
   return answer === null ? null : answer.trim();
 }
