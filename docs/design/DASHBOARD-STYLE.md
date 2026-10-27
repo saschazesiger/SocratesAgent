@@ -94,7 +94,7 @@ looks, and the parts Socrates had built by hand that 2.0 ships. Moved onto DS's 
 | touch sizes on DS fields, rows, the combobox, `.ds-btn--sm`, `.ds-toast__close` | `.ds-touch` on `<html>` |
 | Lucide glyphs in `ui.js` `LUCIDE`; `menu` as the grip | DS's glyphs (`mic`, `stopCircle`, `keyboard`, `upload`, `clipboard`, `cornerDownLeft`, `paperclip`, `volume`, `terminal`, `home`, `panelLeft`, `grip`) |
 | `keepDialogRoom`, `reserveToasts`, de-duplication, the action button and the close tip of snackbars, the drawer and keyboard offsets | `toast()` options (`restart`, `key`, `action`, `reserve`), DS's placement beside the modal drawer, above its foot and above the keyboard |
-| `followViewport()` writing `--so-app-h`; the top bar hidden by project CSS | `DS.dom.followViewport()`, `--ds-viewport-height`, `.ds-app--keyboard-hides-bar` |
+| `followViewport()` writing `--so-app-h`; the top bar hidden by project CSS | `DS.dom.followViewport()`, `--ds-viewport-height`, `.ds-app--keyboard-hides-bar` (the strip of a phone on its side stays Socrates' own: `ds-check.json`) |
 | `watchScrolled`, `edgeCue`, `setFaceLabel`, `overlayOpen`, the `busy()` done wrapper, own busy and `aria-disabled` guards | `DS.dom.watchScrolled`, DS's cut-edge fades (`DS.dom.scrollEdges` for the drawer list), `DS.motion.setLabel`, `DS.overlay.topmost`, `busy()`'s new default, DS's guard |
 | the confirm and prompt dialogs built by hand | `DS.overlay.confirm()`, `prompt()` |
 | the drawer's actions and foot, the row's ⋮ over its item, the folder head's own state layer | `.ds-drawer__actions`, `.ds-drawer__foot` (`--rail` on a short screen), `.ds-drawer__row` + `.ds-drawer__action.ds-hover-actions`, `.ds-pressable` |
@@ -102,7 +102,7 @@ looks, and the parts Socrates had built by hand that 2.0 ships. Moved onto DS's 
 | the question dialog restyled to the window, the option's ring | `.ds-dialog--full`, the selected interactive card |
 | Home's tile ring and the card title's button reset | the selected tile, the button form of `.ds-card__action` |
 | the chat's summaries and job rows, its dividers and task lists | `.ds-pressable`, `.ds-divider--label`, `.ds-tasks` |
-| the Status modal's task marks and three-column tiles | `.ds-tasks`, `.ds-tiles--3` |
+| the Status modal's task marks and three-column tiles | `.ds-tasks`, `.ds-tiles--3` (its figures still wrap: `ds-check.json`) |
 | the admin grip and its drag code, the voice guide's summary, the logs | `DS.motion.sortable()` with `.ds-grip`, `.ds-disclosure`, `.ds-code-block--wrap` |
 | the dropdown's button field, the combobox without a list | `.ds-combo--select`, DS's rule for a combobox without a toggle |
 | the sign-in card, "optional", the restore's share | `.ds-auth`, `.ds-card--elevated`, `.ds-field__optional`, `DS.dom.progress()` |
@@ -118,8 +118,29 @@ blocks with their bar (`.so-code`), the session's name in the top bar (a rename 
 `.ds-topbar__title`), Home's tile grid (two a row on a phone, each row filled), the focus fallback to the terminal
 (`setFocusFallback`), `alertDialog` (lines and facts, which DS's `alert()` has not), the `data-icon` filler (it puts
 the glyph in front of a label; DS's `icons.fill()` replaces the content), the drawer list's cut-edge fade (DS fades
-menus and lists, not the drawer's list), and the snackbar room in the session page's own view (DS keeps it on the
-`.ds-view`, which here does not scroll).
+menus and lists, not the drawer's list), the snackbar room in the session page's own view (DS keeps it on the
+`.ds-view`, which here does not scroll: `.so-view[data-toast-reserve]` takes DS's padding back, and `placeToasts`
+keeps the room above the key bar, the chat's dock and at the conversation's end), and the folders of the session
+list (`.so-folder`: their head has the VS Code button beside its toggle, which a `<summary>` cannot hold, shelves
+nest a level inside a folder, and which folders are open is the person's, saved across reloads; DS's
+`.ds-drawer__group` is a `<details>` with a summary for a toggle). A shut folder's head says what is behind it by
+more than colour: a dot while one is working, the `chat` glyph while one waits for an answer, both in words for a
+screen reader.
+
+### Rules on DS parts that the check does not see
+
+`check-project` judges a rule by the classes it names; these name only `so-` classes (or DS's in the context) and
+still place or size a DS part. Each is deliberate:
+
+| Rule | File | Why |
+|---|---|---|
+| `.so-view[data-toast-reserve]` | `so-frame.css` | The session page's view does not scroll: DS's room for a snackbar that stays would shrink the stage, refit the terminal and lift the key bar. The view keeps its safe area; the page keeps the room itself (`placeToasts`). |
+| `.so-touch .so-row__open` (end padding) | `so-frame.css` | In touch mode a row's ⋮ (`.ds-drawer__action`, `--ds-btn-sm-icon-size` 48px) is wider than the 40px DS keeps at the end of a drawer item, so the name ran under it. A wish for DS: the item's end padding read the action's size. |
+| `.so-row__open` (block padding, up to 900px) | `so-frame.css` | In the modal drawer a session's name takes two lines; two such rows keep a little air between them. |
+| `.so-line` (min-height) | `so-chat.css` | A line between messages is DS's labelled divider as tall as a small button, so a line with an "i" is as tall as one without. A refused command is not a divider: `.so-line--row`, a project row with its chip and buttons. |
+| `.so-auth__card` (grid, gap, children's margins) | `so-pages.css` | Setup's card holds sections of fields, a restore offer and a snapshot list: the card spaces them through one gap instead of each child's margin. |
+| `.ds-auth > .so-conn` (sticky) | `so-shared.css` | The connection alert in the sign-in page's slot stays in sight while setup's long form scrolls on a phone. |
+
 
 ## Work packages
 

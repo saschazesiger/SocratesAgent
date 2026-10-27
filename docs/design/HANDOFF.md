@@ -5,6 +5,10 @@ run and look after it, what was left out on purpose, what is known not to work, 
 product owner can still do before the merge into `main`. The plan the rebuild followed is
 `REBUILD.md`; this file is where it ended.
 
+It describes the state of 2026-10-24. The front end has since moved to Dashboard-Style 2.0
+(2026-10-27); where this file names a part of the 1.6 front end, DASHBOARD-STYLE.md ("Dashboard-Style
+1.6 to 2.0") says what replaced it, and that file is current.
+
 ## 1. Where it stands
 
 The rebuild is done on branch **`integ`**, and everything the build container can run passes on
@@ -147,7 +151,7 @@ numbers.
 - **The phone pass** (branch `mobile`, on `wp10`): an audit at 390, 360, 430 and on its side,
   touch mode only, found 48 things, and two more audits after the fixes found fewer each time. Icons
   rather than text buttons, with the glyphs Dashboard-Style 1.6.2 lacks taken from Lucide (`ui.js`
-  `LUCIDE`, DASHBOARD-STYLE.md); a tap on a field types at once and the keyboard switch is the
+  `LUCIDE`, DASHBOARD-STYLE.md; since Dashboard-Style 2.0 every glyph is DS's own); a tap on a field types at once and the keyboard switch is the
   terminal's alone (`keyboard.js`); a session's menu as an action sheet on a phone; the question
   dialog as the whole screen with one footer row; Stop and Send one 48px slot; snackbars placed
   above the dock, the key bar and a keyboard; "needs an OpenRouter key" (or a Text-to-Speech key)
@@ -230,7 +234,9 @@ numbers.
   status chip, so the floor would push a control off the edge; at 480 px and below the chip draws
   its glyph alone instead, and the name keeps the rest.
 - **A toast over a dialog still keeps its strip** at the dialog's foot (`keepDialogRoom`), on
-  purpose; what raised one over the question dialog without need is gone.
+  purpose; what raised one over the question dialog without need is gone. Since Dashboard-Style
+  2.0 that room is DS's own (`DS.overlay.toast`, a message that stays keeps room in the dialog or
+  sheet that hosts it; DASHBOARD-STYLE.md, "1.6 to 2.0").
 - **`docs/screenshot-tunnel.png`** is hand-made and kept as it is (DESIGN.md §G.2), although it
   shows the look from before Dashboard-Style; the README does not show it.
 - **Not run in the build container**, by its rules: the real `claude` binary beyond `--version`
