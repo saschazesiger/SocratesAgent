@@ -621,8 +621,10 @@ async function harnesses() {
     }
 
     // Four rows, each with the mark of what it runs: §E.10 rule 2 again, in
-    // the list this time.
-    const rows = await s.page.$$eval('#sessionList .so-row', (nodes) => nodes.map((n) => ({
+    // the list this time. A row that moved (out of "Not started" once its
+    // chat began) fades out where it was, marked data-ds-leaving meanwhile:
+    // it is no longer in the list.
+    const rows = await s.page.$$eval('#sessionList .so-row:not([data-ds-leaving])', (nodes) => nodes.map((n) => ({
       mark: (n.querySelector('.so-agent') || { dataset: {} }).dataset.agent,
       dots: n.querySelectorAll('.dot').length,
       tips: n.querySelectorAll('.so-info').length,
@@ -7123,6 +7125,10 @@ async function optionsmenu() {
     await s.page.keyboard.press('Escape');
     const byEscape = await gone();
     await openOptions(s.page);
+    // A press on the backdrop closes only after --ds-delay-dismiss (300ms)
+    // from the open (DS 2.0): the second click of a double click on the
+    // button that opened it must not put it away again.
+    await wait(400);
     await s.page.mouse.click(5, 400);
     const byPress = await gone();
     ok(byButton && byEscape && byPress, 'Done, Escape and a press beside it each close it',
