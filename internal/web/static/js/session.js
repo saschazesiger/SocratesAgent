@@ -3117,8 +3117,8 @@ function applyKeyBar() {
 //     how much room it needs), and while a message that stays shows, the
 //     conversation keeps its height at its end, so that the last answer and
 //     its Copy can scroll clear of it.
-// The view of this page does not scroll, so DS keeps no room in it
-// (api.js toast). Above the drawer's foot on a phone the session list
+// The view of this page does not scroll, so the room DS keeps in it is
+// taken back (so-frame.css .so-view). Above the drawer's foot on a phone the session list
 // keeps the messages' height at its end, so its last rows scroll clear of
 // them. Heights only, never where something stands, which a keyboard moves
 // before or after this runs. Every edge holds the safe area already, which

@@ -6621,6 +6621,54 @@ async function transfer() {
     await phonePage.click('dialog.so-actions[open] [data-action="copy"]');
     const sheetUp = await phonePage.waitForSelector('#copySheet[open]', { timeout: 5000 }).then(() => true, () => false);
     ok(sheetUp, 'and Copy there opens the pane\u2019s text, as the button does', String(sheetUp));
+    await phonePage.evaluate(() => DS.overlay.close(document.getElementById('copySheet')));
+    await phonePage.waitForSelector('#copySheet[open]', { state: 'detached', timeout: 5000 }).catch(() => {});
+    await wait(600);
+
+    // A message that stays, raised before the action sheet opens: DS moves
+    // it into the sheet and keeps room there, so the sheet's last item is
+    // clear of it and takes the tap.
+    const stageBefore = await phonePage.$eval('#main', (n) => Math.round(n.getBoundingClientRect().height - parseFloat(getComputedStyle(n).paddingBottom)));
+    await phonePage.evaluate(async () => {
+      const { toast } = await import('/static/js/api.js');
+      window.__stays = toast('No connection to the server.', 'error');
+    });
+    await wait(800);
+    await phonePage.click('#optionsBtn');
+    await phonePage.waitForSelector('dialog.so-actions[open] .ds-menu__item', { timeout: 5000 });
+    await wait(900);
+    const clear = await phonePage.evaluate(() => {
+      const items = [...document.querySelectorAll('dialog.so-actions[open] .ds-menu__item')];
+      // The box keeps clear of the message, so its list may scroll: the
+      // last item is scrolled to, as a finger would.
+      items[items.length - 1].scrollIntoView({ block: 'nearest' });
+      const last = items[items.length - 1].getBoundingClientRect();
+      const message = document.querySelector('#toasts .ds-toast').getBoundingClientRect();
+      const hit = document.elementFromPoint(last.left + last.width / 2, last.top + last.height / 2);
+      return {
+        last: [Math.round(last.top), Math.round(last.bottom)], toastTop: Math.round(message.top),
+        takes: !!hit && hit.closest('.ds-menu__item') === items[items.length - 1],
+      };
+    });
+    ok(clear.takes && clear.last[1] <= clear.toastTop,
+      'a message that stays, raised before the action sheet opened, leaves the sheet\u2019s last item clear and tappable', JSON.stringify(clear));
+    // The reverse: a message that stays, raised in the sheet, outlives it.
+    // The session page's view does not scroll, so the stage keeps its height.
+    await phonePage.evaluate(async () => {
+      const { toast } = await import('/static/js/api.js');
+      window.__stays.close();
+      toast('Renaming failed.', 'error');
+    });
+    await wait(800);
+    await phonePage.evaluate(() => DS.overlay.close(document.querySelector('dialog.so-actions[open]')));
+    await wait(1200);
+    const stageAfter = await phonePage.$eval('#main', (n) => ({
+      reserved: n.hasAttribute('data-toast-reserve'),
+      pad: getComputedStyle(n).paddingBottom,
+      stage: Math.round(n.getBoundingClientRect().height - parseFloat(getComputedStyle(n).paddingBottom)),
+    }));
+    ok(stageAfter.stage === stageBefore,
+      'and one raised in the sheet that outlives it leaves the session page\u2019s stage its height', JSON.stringify({ before: stageBefore, ...stageAfter }));
     await phonePage.close();
     await phone.close();
 

@@ -43,6 +43,18 @@
   overflow: hidden;
 }
 
+/* A snackbar that stays keeps room at the end of what scrolls under it
+   (DS data-toast-reserve on the .ds-view when the page hosts it). This
+   view does not scroll, so that room would only shrink the stage: the
+   terminal refits and the key bar jumps up. The page keeps its own room
+   instead (session.js placeToasts: the messages stand above the key bar
+   or the chat's dock, and the conversation keeps the room at its end);
+   the view keeps DS's own padding, the safe area. */
+.so-view[data-toast-reserve] {
+  padding-bottom: env(safe-area-inset-bottom);
+  scroll-padding-bottom: 0;
+}
+
 .so-main {
   flex: 1 1 auto;
   min-height: 0;

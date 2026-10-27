@@ -209,21 +209,19 @@ export async function promptDialog({
  * a message with a button replaces its twin (by key), the close button says
  * what it does on hover, and a message that stays keeps room at the end of
  * what scrolls under it - an open sheet's body, an open dialog, the page's
- * view (Admin, Costs). The session page's view does not scroll
- * (.ds-view--fixed): its stage fills it, so a message there keeps no room
- * in it (reserve: false; DS would pad the view and shrink the stage); what
- * stands at its bottom moves the messages instead, and a chat's
+ * view (Admin, Costs). DS decides where whenever the region moves, so a
+ * message raised before a dialog or the action sheet opens keeps room in
+ * it too, and one raised in a dialog gives that room back when it closes.
+ * The session page's view does not scroll (.ds-view--fixed): its stage
+ * fills it, and DS's room there is taken back (so-frame.css, .so-view);
+ * what stands at its bottom moves the messages instead, and a chat's
  * conversation keeps the room at its own end (session.js placeToasts).
  */
 export function toast(message, kind = 'info', { persistent = false, timeout, action } = {}) {
   const text = String(message ?? '');
   const sort = kind === 'error' ? 'error' : kind === 'success' ? 'success' : 'info';
   const node = region();
-  const hosted = !!node.closest('dialog.ds-dialog[open], .ds-sheet');
-  const options = {
-    kind: sort, persistent, timeout,
-    reserve: hosted || !document.querySelector('.ds-view--fixed'),
-  };
+  const options = { kind: sort, persistent, timeout };
   if (action) {
     options.action = { label: action.label, onClick: () => action.run() };
     options.key = sort + '\n' + text;
