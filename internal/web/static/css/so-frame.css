@@ -313,8 +313,15 @@
   background: var(--ds-text-3);
 }
 
+/* Waiting for an answer: the question's glyph, not a dot of another colour,
+   in the ring colour of a session waiting. */
 .so-folder:not([data-open]) > .so-folder__bar .so-folder__head[data-attention="waiting"] .so-folder__dot {
-  background: var(--ds-warning);
+  display: inline-flex;
+  inline-size: auto;
+  block-size: auto;
+  border-radius: 0;
+  background: none;
+  color: var(--ds-warning);
 }
 
 .so-folder:not([data-open]) > .so-folder__bar .so-folder__head[data-unread] {

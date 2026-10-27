@@ -744,6 +744,10 @@ const STATE_WORDS = {
 
 // What a session is doing, in the words the "i" uses. `unknown` has no word:
 // a row with no evidence yet says nothing rather than guessing.
+// A session waiting for an answer, where a glyph says it (a shut folder's
+// head): the Status modal's "Waiting for you" glyph.
+const WAITING_GLYPH = 'chat';
+
 const ACTIVITY_WORDS = {
   busy: 'Working',
   idle: 'Waiting for an instruction',
@@ -1085,9 +1089,11 @@ function groupHtml(folder, children) {
   // Shut, a folder has to say what is behind it: the two things this page
   // exists to make noticeable - an agent that needs an answer, and one that
   // finished something nobody has seen - would otherwise be hidden by the
-  // person's own tidying. So it carries a count, the ring colour of a session
-  // waiting, and the weight of one nobody has read. Open, the rows say all
-  // three themselves and the head says none of them.
+  // person's own tidying. So it carries a count, a quiet dot while one is
+  // working or the question's glyph in the ring colour of a session waiting
+  // (never the colour alone, and said in words to a screen reader), and the
+  // weight of one nobody has read. Open, the rows say all three themselves
+  // and the head says none of them.
   let waiting = false;
   let busy = false;
   let unread = false;
@@ -1114,7 +1120,9 @@ function groupHtml(folder, children) {
   const kind = shelf ? html`data-shelf="${folder.status}"` : html`data-folder="${folder.key}"`;
   // A project with nothing in it but done sessions steps back as they do.
   const done = !shelf && !!folder.shelves && count === folder.shelves.done.length;
-  return html`<section class="${shelf ? 'so-folder so-folder--shelf' : 'so-folder'}" data-ds-key="${(shelf ? 'shelf:' : 'folder:') + folder.key}" ${kind}${open ? html` data-open` : ''}${done ? html` data-done` : ''}><div class="so-folder__bar"><button class="so-folder__head ds-pressable ds-pressable--lg ds-pressable--inset" type="button" aria-expanded="${open ? 'true' : 'false'}" aria-controls="${id}" data-toggle="${id}" data-tip="${tip}"${attention ? html` data-attention="${attention}"` : ''}${unread ? html` data-unread` : ''}>${raw(icon('chevronDown', 16, 'ds-chevron'))}<span class="so-folder__name">${folder.label}</span><span class="so-folder__dot" aria-hidden="true"></span><span class="so-folder__count">${count}</span></button>${ide}</div><div class="so-folder__rows" id="${id}"${open ? '' : html` hidden`}>${children}</div></section>`;
+  return html`<section class="${shelf ? 'so-folder so-folder--shelf' : 'so-folder'}" data-ds-key="${(shelf ? 'shelf:' : 'folder:') + folder.key}" ${kind}${open ? html` data-open` : ''}${done ? html` data-done` : ''}><div class="so-folder__bar"><button class="so-folder__head ds-pressable ds-pressable--lg ds-pressable--inset" type="button" aria-expanded="${open ? 'true' : 'false'}" aria-controls="${id}" data-toggle="${id}" data-tip="${tip}"${attention ? html` data-attention="${attention}"` : ''}${unread ? html` data-unread` : ''}>${raw(icon('chevronDown', 16, 'ds-chevron'))}<span class="so-folder__name">${folder.label}</span><span class="so-folder__dot" aria-hidden="true">${attention === 'waiting' ? raw(icon(WAITING_GLYPH, 16)) : ''}</span><span class="so-folder__count">${count}</span>${
+    !open && attention ? html`<span class="ds-sr">${', ' + (attention === 'waiting' ? ACTIVITY_WORDS.waiting : ACTIVITY_WORDS.busy).toLowerCase()}</span>` : ''
+  }</button>${ide}</div><div class="so-folder__rows" id="${id}"${open ? '' : html` hidden`}>${children}</div></section>`;
 }
 
 // ideButtonHtml is the VS Code mark of a folder: in its colours while the
