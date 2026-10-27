@@ -8,8 +8,9 @@
  *
  *   .so-chat               the view: fills the stage, the conversation above
  *                          the dock. [data-stale] while its stream is not
- *                          live (the conversation is dimmed), [data-dropping]
- *                          while a file is held over it, [data-fresh] while
+ *                          live (the conversation is dimmed), DS's
+ *                          [data-ds-dragover] while a file is held over it
+ *                          (DS.dom.dropzone, chatview.js), [data-fresh] while
  *                          nothing has been said: the composer is the first
  *                          message, a big field that fills the view
  *   .so-chat__sub          the line under the top bar: the chat's account
@@ -87,11 +88,6 @@
   background: var(--ds-surface);
 }
 
-
-.so-chat[data-dropping] {
-  outline: var(--ds-focus-width) dashed var(--ds-primary);
-  outline-offset: calc(-1 * var(--ds-space-2));
-}
 
 /* ── The line under the top bar ──────────────────────────────────────── */
 

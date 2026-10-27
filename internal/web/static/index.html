@@ -45,7 +45,7 @@
          on a narrow window the drawer is modal and this is not there. -->
     <button class="ds-btn ds-btn--quiet ds-btn--icon so-drawer-toggle" id="sideCollapse" type="button"
             aria-label="Hide the session list" data-tip="Hide the session list"
-            aria-expanded="true" aria-controls="sidebar" data-icon="sidebar"></button>
+            aria-expanded="true" aria-controls="sidebar" data-icon="panelLeft"></button>
     <div class="so-topbar" id="topbar">
       <!-- The name is edited where it is read; the mark beside it has a model
            name the session again, from its first prompt and its screen. -->
@@ -71,7 +71,7 @@
              attached. -->
         <div class="so-transfer" id="transfer" hidden>
           <button class="ds-btn ds-btn--quiet ds-btn--icon" id="copyBtn" type="button" aria-label="Copy" data-tip="Copy" data-icon="copy"></button>
-          <button class="ds-btn ds-btn--quiet ds-btn--icon" id="pasteBtn" type="button" aria-label="Paste" data-tip="Paste" data-icon="paste"></button>
+          <button class="ds-btn ds-btn--quiet ds-btn--icon" id="pasteBtn" type="button" aria-label="Paste" data-tip="Paste" data-icon="clipboard"></button>
           <button class="ds-btn ds-btn--quiet ds-btn--icon" id="uploadBtn" type="button" aria-label="Upload a file" data-tip="Upload a file">
             <span class="ds-btn__faces">
               <span class="ds-btn__face" data-icon="upload"></span>
@@ -86,7 +86,7 @@
         <button class="ds-btn ds-btn--quiet ds-btn--icon" id="statusBtn" type="button" hidden aria-pressed="false"
                 aria-label="Status of this session" data-tip="Say what this session is doing">
           <span class="ds-btn__faces">
-            <span class="ds-btn__face"><span class="ds-icon-swap"><span class="ds-icon-swap__a" data-icon="summarize"></span><span class="ds-icon-swap__b" data-icon="stop"></span></span></span>
+            <span class="ds-btn__face"><span class="ds-icon-swap"><span class="ds-icon-swap__a" data-icon="activity"></span><span class="ds-icon-swap__b" data-icon="stopCircle"></span></span></span>
             <span class="ds-btn__face ds-btn__face--busy" aria-hidden="true"><span class="ds-spinner"></span></span>
           </span>
         </button>
@@ -121,14 +121,14 @@
   <nav class="ds-drawer" id="sidebar" aria-label="Sessions" tabindex="-1">
     <div class="ds-drawer__head" aria-hidden="true"><img class="so-logo" src="/static/img/logo.png" alt="" width="32" height="32"><span class="ds-brand__name">Socrates</span></div>
     <div class="ds-drawer__actions so-drawer-actions">
-      <button class="ds-btn ds-btn--primary" id="newSession" type="button" data-icon="plus" data-icon-size="16"><span class="so-btn-label">New session</span></button>
+      <button class="ds-btn ds-btn--primary" id="newSession" type="button" data-icon="plus" data-icon-size="16" data-icon-place="start"><span class="so-btn-label">New session</span></button>
       <!-- An editor with no folder open, in a tab of its own. Its mark is put
            in by session.js, which draws every agent's mark. -->
       <button class="ds-btn ds-btn--quiet ds-btn--icon" id="blankIDE" type="button" hidden
               aria-label="Open an empty VS Code in a new tab" data-tip="Open an empty VS Code in a new tab"></button>
     </div>
     <div class="ds-drawer__list" id="drawerList">
-      <a class="ds-drawer__item" id="homeBtn" href="#home" data-icon="home"><span class="ds-drawer__label">Home</span></a>
+      <a class="ds-drawer__item" id="homeBtn" href="#home" data-icon="home" data-icon-place="start"><span class="ds-drawer__label">Home</span></a>
       <div class="so-session-list" id="sessionList"></div>
     </div>
     <!-- What a session just did, for a reader that cannot see the list:
@@ -138,9 +138,9 @@
       <!-- On a short screen these are their icons alone (DS
            .ds-drawer__foot--rail, session.js): the names are the labels,
            and then the tips too. -->
-      <a class="ds-drawer__item" href="/costs" aria-label="Costs" data-icon="barChart"><span class="ds-drawer__label">Costs</span></a>
-      <a class="ds-drawer__item" href="/admin" aria-label="Admin" data-icon="settings"><span class="ds-drawer__label">Admin</span></a>
-      <button class="ds-drawer__item" id="logout" type="button" aria-label="Sign out" data-icon="logout"><span class="ds-drawer__label">Sign out</span></button>
+      <a class="ds-drawer__item" href="/costs" aria-label="Costs" data-icon="barChart" data-icon-place="start"><span class="ds-drawer__label">Costs</span></a>
+      <a class="ds-drawer__item" href="/admin" aria-label="Admin" data-icon="settings" data-icon-place="start"><span class="ds-drawer__label">Admin</span></a>
+      <button class="ds-drawer__item" id="logout" type="button" aria-label="Sign out" data-icon="logout" data-icon-place="start"><span class="ds-drawer__label">Sign out</span></button>
     </div>
   </nav>
 
@@ -171,8 +171,7 @@
                  the ticker: one line at a time of what is happening now. -->
             <div class="so-pane__lines" id="termLines">
               <div class="ds-alert so-notice" id="termNotice" role="status" hidden></div>
-              <div class="ds-alert so-ticker" id="termTicker" hidden>
-                <i data-icon="activity" data-icon-slot></i>
+              <div class="ds-alert so-ticker" id="termTicker" hidden data-icon="activity" data-icon-place="start">
                 <span class="ds-alert__text so-ticker__line" id="tickerWindow" role="status" aria-live="polite"></span>
               </div>
             </div>
@@ -245,7 +244,7 @@
       <!-- harnesses.js draws the settings (settingsForm) every time the sheet
            opens, with the ids they have always had. -->
       <div id="nsForm"></div>
-      <div class="ds-alert ds-alert--warning" id="nsHint" role="status" hidden><i data-icon="alert" data-icon-slot></i><span class="ds-alert__text" id="nsHintText"></span></div>
+      <div class="ds-alert ds-alert--warning" id="nsHint" role="status" hidden data-icon="alert" data-icon-place="start"><span class="ds-alert__text" id="nsHintText"></span></div>
       <div class="ds-form-actions">
         <button class="ds-btn ds-btn--primary" type="button" id="nsStart">Start session</button>
         <button class="ds-btn ds-btn--text" type="button" id="nsCancel" data-close>Cancel</button>

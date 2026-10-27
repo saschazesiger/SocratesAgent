@@ -110,32 +110,20 @@ export function hasIcon(name) {
 }
 
 /**
- * fillIcons gives every [data-icon] in `root` its icon, at data-icon-size
- * (default 20), in front of what it holds. A [data-icon-slot] element is
- * replaced by the icon itself, for the places DS wants the <svg> as a direct
- * child (the leading mark of an alert). The attributes go afterwards, so a
- * second call never draws a second icon.
+ * fillIcons gives every [data-icon] in `root` its DS glyph (DS.icons.fill), at
+ * data-icon-size (default 20). Markup names DS's glyphs, not GLYPH's
+ * meanings. An element with data-icon-place="start" keeps what it holds and
+ * gets the glyph in front of it, as a direct child where DS's rules read it
+ * (a labelled button, a drawer item, the leading mark of an alert); an empty
+ * one, an icon button, gets the glyph as its content. A second call draws
+ * nothing new. A name DS does not have is an error in the console, once the
+ * known ones are drawn.
  */
 export function fillIcons(root = document) {
-  const found = [...root.querySelectorAll('[data-icon]')];
-  if (root.nodeType === 1 && root.hasAttribute('data-icon')) found.unshift(root);
-  for (const node of found) {
-    const name = node.getAttribute('data-icon');
-    const size = Number(node.getAttribute('data-icon-size')) || 20;
-    let svg;
-    try {
-      svg = iconEl(name, size);
-    } catch (err) {
-      console.error(err);
-      continue;
-    }
-    if (node.hasAttribute('data-icon-slot')) {
-      node.replaceWith(svg);
-      continue;
-    }
-    node.removeAttribute('data-icon');
-    node.removeAttribute('data-icon-size');
-    node.prepend(svg);
+  try {
+    DS.icons.fill(root);
+  } catch (err) {
+    console.error(err);
   }
 }
 

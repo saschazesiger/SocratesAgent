@@ -1427,21 +1427,14 @@ export function mountChat(ctx) {
   keepEnd.observe(scroller);
   keepEnd.observe(log, { box: 'border-box' });
 
-  // Files dropped anywhere on the chat go into the composer.
-  host.addEventListener('dragover', (event) => {
-    if (![...(event.dataTransfer?.types || [])].includes('Files')) return;
-    event.preventDefault();
-    host.setAttribute('data-dropping', '');
-  });
-  host.addEventListener('dragleave', (event) => {
-    if (!host.contains(event.relatedTarget)) host.removeAttribute('data-dropping');
-  });
-  host.addEventListener('drop', (event) => {
-    host.removeAttribute('data-dropping');
-    const dropped = [...(event.dataTransfer?.files || [])];
-    if (!dropped.length || !composer) return;
-    event.preventDefault();
-    composer.addFiles(dropped);
+  // Files dropped anywhere on the chat go into the composer (DS.dom.dropzone:
+  // only files, and DS's drop edge while they are over it). The composer's
+  // own file input sits inside the chat and is its own: the zone takes no
+  // input (input: null), or its picks would be added twice.
+  DS.dom.dropzone(host, {
+    input: null,
+    multiple: true,
+    onFiles: (files) => { if (composer) composer.addFiles(files); },
   });
 
   chatOutbox().onChange((items) => {
