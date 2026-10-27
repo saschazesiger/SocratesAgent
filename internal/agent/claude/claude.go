@@ -146,6 +146,12 @@ type Adapter struct {
 	exited  chan struct{}
 	stderr  *tailBuffer
 	st      *state
+	// model is the model the chat was last set to (spec.Model, then
+	// SetModel), as the person picked it rather than as the CLI resolves
+	// it, and notes is whose instructions the agent has: the next message
+	// after a switch carries the new model's (agent.ModelNotes).
+	model string
+	notes *agent.ModelNotes
 }
 
 // New is an adapter with options.
@@ -225,6 +231,7 @@ func (a *Adapter) Start(ctx context.Context, spec agent.StartSpec, out agent.Emi
 	}
 	a.mu.Lock()
 	a.out, a.spec, a.cmd, a.stderr, a.st = out, spec, cmd, stderr, st
+	a.model, a.notes = strings.TrimSpace(spec.Model), agent.NewModelNotes(spec)
 	a.exited = make(chan struct{})
 	a.stdin = stdin
 	a.mu.Unlock()
@@ -310,6 +317,9 @@ func cliArgs(spec agent.StartSpec, opts Options, ultracode bool) []string {
 	}
 	prompt := askGuidance
 	if p := strings.TrimSpace(opts.AppendSystemPrompt); p != "" {
+		prompt += "\n\n" + p
+	}
+	if p := agent.ModelPrompt(strings.TrimSpace(spec.Model), spec.InstructionsFor(spec.Model)); p != "" {
 		prompt += "\n\n" + p
 	}
 	args = append(args, "--append-system-prompt", prompt)
@@ -720,6 +730,9 @@ func (a *Adapter) Send(_ context.Context, msg agent.Outgoing) error {
 		a.mu.Unlock()
 		return nil
 	}
+	if note := a.notes.Switch(a.model); note != "" {
+		content[0]["text"] = agent.WithNote(note, content[0]["text"].(string))
+	}
 	a.st.pending[id] = msg.MessageID
 	if a.st.turn != nil {
 		a.out.Emit(agent.Event{Type: agent.TypeMessageState, MessageID: msg.MessageID, State: agent.MessageQueued})
@@ -858,6 +871,9 @@ func (a *Adapter) SetModel(ctx context.Context, model, effort string) error {
 		}
 	}
 	a.mu.Lock()
+	if m := strings.TrimSpace(model); m != "" {
+		a.model = m
+	}
 	a.st.modelChanged(model, effortLevel(effort))
 	a.mu.Unlock()
 	return nil

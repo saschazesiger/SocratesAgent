@@ -2,6 +2,7 @@ package config
 
 import (
 	"strings"
+	"unicode/utf8"
 )
 
 // This file is the option catalogue: one struct per harness, every field a
@@ -78,7 +79,17 @@ type Common struct {
 type ModelPick struct {
 	ID     string `json:"id"`
 	Effort string `json:"effort,omitempty"` // an effort level, "" = the model's own
+	// Instructions is what the person wants a chat on this model to be told,
+	// in this harness: it goes into the agent's instructions while the chat
+	// runs on this model, and only then (agent.ModelInstructions).
+	Instructions string `json:"instructions,omitempty"`
 }
+
+// MaxModelInstructions is the most a model's instructions may hold, in
+// bytes. They travel as one command-line argument (Claude Code's
+// --append-system-prompt), which Linux caps at 128 KiB, and a prompt this
+// long is already more than a model's instructions should be.
+const MaxModelInstructions = 32 << 10
 
 // ShellOptions configures a plain login shell. There is no model, no effort
 // and no permission story: it is the user's own shell, with their own rights,
@@ -154,6 +165,23 @@ func (h HarnessSettings) Entry(id string) (Common, bool) {
 	return Common{}, false
 }
 
+// ModelInstructions is the instructions of the harness id's favourites that
+// have any, by model id, nil when none has.
+func (h HarnessSettings) ModelInstructions(id string) map[string]string {
+	entry, _ := h.Entry(id)
+	var out map[string]string
+	for _, p := range entry.Models {
+		if p.Instructions == "" {
+			continue
+		}
+		if out == nil {
+			out = map[string]string{}
+		}
+		out[p.ID] = p.Instructions
+	}
+	return out
+}
+
 // Defaults is the model and effort a chat of the agent id starts on when it
 // is started without a choice of its own: the dashboard's Default model and
 // Default effort, empty for a program that has neither.
@@ -211,7 +239,8 @@ func oneOf(value string, allowed []string, fallback string) string {
 
 // normalizePicks trims every id, drops the empty ones and the repeats (the
 // first occurrence wins, so the order a person arranged survives), and maps
-// every effort onto a level the harnesses understand.
+// every effort onto a level the harnesses understand. Instructions lose the
+// blank lines around them and whatever is over MaxModelInstructions.
 func normalizePicks(in []ModelPick) []ModelPick {
 	var out []ModelPick
 	seen := map[string]bool{}
@@ -221,9 +250,21 @@ func normalizePicks(in []ModelPick) []ModelPick {
 			continue
 		}
 		seen[id] = true
-		out = append(out, ModelPick{ID: id, Effort: NormalizeEffort(p.Effort)})
+		out = append(out, ModelPick{ID: id, Effort: NormalizeEffort(p.Effort),
+			Instructions: cutUTF8(strings.TrimSpace(p.Instructions), MaxModelInstructions)})
 	}
 	return out
+}
+
+// cutUTF8 is s cut to at most max bytes, on a character's edge.
+func cutUTF8(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	for max > 0 && !utf8.RuneStart(s[max]) {
+		max--
+	}
+	return strings.TrimSpace(s[:max])
 }
 
 // validate has nothing left to refuse. Every field above is either a switch, a

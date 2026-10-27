@@ -91,6 +91,9 @@ type adapter struct {
 	effort      string
 	plan        bool
 	ending      bool
+	// notes is whose instructions the agent has (agent.ModelNotes): the
+	// next message after a switch of model carries the new model's.
+	notes *agent.ModelNotes
 	// active is the running root turn. starting is the message whose
 	// turn/start is in flight, so the turn/started that answers it is known
 	// as its turn.
@@ -165,6 +168,7 @@ func newAdapter() *adapter {
 func (a *adapter) Start(ctx context.Context, spec agent.StartSpec, out agent.Emitter) error {
 	a.spec, a.out = spec, out
 	a.model, a.effort = spec.Model, spec.Effort
+	a.notes = agent.LoadModelNotes(spec)
 	// Set before anything is sent, First included: what the host hands over
 	// goes through the same hold as on the adapter before this one.
 	a.held = spec.Held
@@ -365,11 +369,13 @@ func threadConfig(params map[string]any) map[string]any {
 
 // startThread starts a new thread. instructions, when set, are developer
 // instructions for it (a handoff summary), after the ask_user guidance that
-// every thread's developer instructions begin with.
+// every thread's developer instructions begin with and the instructions of
+// the model it starts on.
 func (a *adapter) startThread(ctx context.Context, instructions string) error {
 	params := a.policy(map[string]any{})
 	a.mu.Lock()
 	model, effort := a.model, a.effort
+	prompt := a.notes.Fresh(model)
 	a.mu.Unlock()
 	if model != "" {
 		params["model"] = model
@@ -381,6 +387,9 @@ func (a *adapter) startThread(ctx context.Context, instructions string) error {
 		params["dynamicTools"] = tools
 	}
 	developer := askGuidance
+	if prompt != "" {
+		developer += "\n\n" + prompt
+	}
 	if instructions != "" {
 		developer += "\n\n" + instructions
 	}
@@ -396,6 +405,9 @@ func (a *adapter) startThread(ctx context.Context, instructions string) error {
 }
 
 // resume loads an existing thread, without its turns: the journal has them.
+// The thread keeps the developer instructions it was started with (a resume
+// cannot change them), so the instructions of the model it runs on now
+// reach it with the next message (agent.LoadModelNotes).
 func (a *adapter) resume(ctx context.Context, id string) error {
 	var res threadResult
 	if err := a.rpc.call(ctx, "thread/resume", a.policy(map[string]any{"threadId": id, "excludeTurns": true}), &res); err != nil {
@@ -600,8 +612,8 @@ func notSteerable(e *rpcError) bool {
 
 // input is a message as codex input items: the text, images as local images
 // and any other file named by its path.
-func input(msg agent.Outgoing) []any {
-	text := msg.Text
+func input(msg agent.Outgoing, note string) []any {
+	text := agent.WithNote(note, msg.Text)
 	var items []any
 	for _, at := range msg.Attachments {
 		if at.Path == "" {
@@ -623,6 +635,7 @@ func (a *adapter) startTurn(ctx context.Context, msg agent.Outgoing) error {
 	a.mu.Lock()
 	thread, model, effort, plan := a.thread, a.model, a.effort, a.plan
 	threadModel := a.threadModel
+	note := a.notes.Switch(model)
 	a.starting = &msg
 	a.mu.Unlock()
 	defer func() {
@@ -640,7 +653,7 @@ func (a *adapter) startTurn(ctx context.Context, msg agent.Outgoing) error {
 		a.mu.Unlock()
 		return a.commanded(n, a.rpc.call(ctx, "thread/shellCommand", map[string]any{"threadId": thread, "command": command}, nil))
 	}
-	params := map[string]any{"threadId": thread, "input": input(msg), "clientUserMessageId": msg.MessageID}
+	params := map[string]any{"threadId": thread, "input": input(msg, note), "clientUserMessageId": msg.MessageID}
 	if model != "" {
 		params["model"] = model
 	}
@@ -682,9 +695,10 @@ func (a *adapter) steer(ctx context.Context, t *turn, msg agent.Outgoing) error 
 	thread := a.thread
 	a.steered[msg.MessageID] = msg
 	t.addInput(msg)
+	note := a.notes.Switch(a.model)
 	a.mu.Unlock()
 	err := a.rpc.call(ctx, "turn/steer", map[string]any{"threadId": thread, "expectedTurnId": t.codexID,
-		"input": input(msg), "clientUserMessageId": msg.MessageID}, nil)
+		"input": input(msg, note), "clientUserMessageId": msg.MessageID}, nil)
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	_, waiting := a.steered[msg.MessageID]

@@ -294,7 +294,7 @@ func (r *rebuild) user(l transcriptLine) {
 		case strings.HasPrefix(text, "[Request interrupted by user"):
 			r.cut = true
 		default:
-			r.userMessage(l, text)
+			r.userMessage(l, agent.StripModelNote(text))
 		}
 		return
 	}

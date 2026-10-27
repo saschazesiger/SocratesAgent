@@ -173,7 +173,7 @@ func userEvent(it item, fallbackID string) agent.Event {
 		}
 	}
 	return agent.Event{Type: agent.TypeMessage, MessageID: id, Role: agent.RoleUser, State: agent.MessageDelivered,
-		Text: strings.Join(texts, "\n"), Attachments: atts}
+		Text: agent.StripModelNote(strings.Join(texts, "\n")), Attachments: atts}
 }
 
 func baseName(path string) string {

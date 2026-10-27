@@ -76,6 +76,10 @@ type Spec struct {
 	Workdir string `json:"workdir"`
 	Model   string `json:"model,omitempty"`
 	Effort  string `json:"effort,omitempty"`
+	// Instructions is the person's instructions per model of the harness
+	// (agent.StartSpec.Instructions), as they were when the server launched
+	// the host: a change in the dashboard counts from the next launch.
+	Instructions map[string]string `json:"instructions,omitempty"`
 	// Account and Env are the chat's account and the CLI environment built
 	// for it (internal/accounts). Env empty is the host's own environment,
 	// scrubbed. An API-key account's key is never in Env: SecretEnv carries

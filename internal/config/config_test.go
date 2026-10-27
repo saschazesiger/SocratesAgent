@@ -3,7 +3,9 @@ package config
 import (
 	"encoding/json"
 	"path/filepath"
+	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 func TestNormalizeFillsDefaults(t *testing.T) {
@@ -264,6 +266,33 @@ func TestModelPicksAreNormalized(t *testing.T) {
 	}
 	if s.Harnesses.Claude.Models != nil {
 		t.Errorf("an empty list became %#v", s.Harnesses.Claude.Models)
+	}
+}
+
+// A favourite's instructions are kept trimmed and cut to the most a
+// command line takes, on a character's edge, and only the favourites with
+// some are handed to a chat.
+func TestModelInstructionsAreNormalized(t *testing.T) {
+	var s Settings
+	s.Harnesses.Claude.Models = []ModelPick{
+		{ID: "opus", Instructions: "  Plan before you edit.\n\n "},
+		{ID: "haiku"},
+		{ID: "sonnet", Instructions: strings.Repeat("ä", MaxModelInstructions)},
+	}
+	s.Normalize()
+	got := s.Harnesses.Claude.Models
+	if got[0].Instructions != "Plan before you edit." {
+		t.Errorf("instructions = %q", got[0].Instructions)
+	}
+	if long := got[2].Instructions; len(long) != MaxModelInstructions || !utf8.ValidString(long) {
+		t.Errorf("long instructions are %d bytes, valid UTF-8 %v", len(long), utf8.ValidString(long))
+	}
+	notes := s.Harnesses.ModelInstructions(HarnessClaude)
+	if len(notes) != 2 || notes["opus"] != "Plan before you edit." || notes["haiku"] != "" {
+		t.Errorf("handed to a chat: %q", notes)
+	}
+	if s.Harnesses.ModelInstructions(HarnessCodex) != nil {
+		t.Error("a harness without instructions has some")
 	}
 }
 

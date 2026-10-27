@@ -1207,6 +1207,64 @@ async function readOption(page, [harness, key]) {
   return page.$eval('#opt-' + harness + '-' + key, (n) => n.value);
 }
 
+// model-instructions: a favourite's instructions are written in Admin's
+// dialog, saved, read back into it after a reload, and reach a chat on that
+// model with its system prompt - and only one on that model.
+async function modelinstructions() {
+  const s = await start({ viewport: { width: 1280, height: 900 } });
+  try {
+    await setup(s.page, s.url);
+    await s.page.goto(s.url + '/admin', { waitUntil: 'domcontentloaded' });
+    await s.page.waitForSelector('#harness-claude', { timeout: 20000 });
+    for (const model of ['haiku', 'sonnet']) {
+      await s.page.fill('#models-claude', model);
+      await s.page.click('#add-model-claude');
+    }
+    const row = '#harness-claude .so-model[data-id="haiku"]';
+    await s.page.click(row + ' button[aria-label="Instructions for haiku"]');
+    await s.page.waitForSelector('dialog.ds-dialog #modelInstructionsText', { timeout: 5000 });
+    await s.page.fill('#modelInstructionsText', '  Answer as NOTE-E2E.\nKeep it short.  ');
+    await wait(400);
+    await shot(s.page, 'admin-model-instructions-dialog');
+    await s.page.click('dialog.ds-dialog button:text-is("Keep the instructions")');
+    await s.page.waitForSelector('dialog.ds-dialog', { state: 'detached', timeout: 5000 });
+    const about = await s.page.$eval(row + ' .so-model__name .ds-meta', (n) => n.textContent);
+    ok(/with instructions/.test(about), 'the row says in words that the model has instructions', about);
+    await s.page.$eval(row, (n) => n.scrollIntoView({ block: 'center' }));
+    await wait(300);
+    await shot(s.page, 'admin-model-instructions');
+    await s.page.click('#saveTop');
+    await s.page.waitForSelector('.ds-toast', { timeout: 15000 });
+    const saved = await (await s.context.request.get(s.url + '/api/settings')).json();
+    const picks = saved.settings.harnesses.claude.models || [];
+    ok(picks.length === 2 && picks[0].instructions === 'Answer as NOTE-E2E.\nKeep it short.' && !picks[1].instructions,
+      'Save keeps them with the favourite, trimmed, and the other favourite has none', JSON.stringify(picks));
+
+    await s.page.reload({ waitUntil: 'domcontentloaded' });
+    await s.page.waitForSelector(row, { timeout: 20000 });
+    await s.page.click(row + ' button[aria-label="Instructions for haiku"]');
+    await s.page.waitForSelector('dialog.ds-dialog #modelInstructionsText', { timeout: 5000 });
+    const back = await s.page.$eval('#modelInstructionsText', (n) => n.value);
+    ok(back === 'Answer as NOTE-E2E.\nKeep it short.', 'the dialog shows them again after a reload', JSON.stringify(back));
+    await s.page.click('dialog.ds-dialog button:text-is("Cancel")');
+    await s.page.waitForSelector('dialog.ds-dialog', { state: 'detached', timeout: 5000 });
+
+    await open(s);
+    const haiku = await makeChat(s, 'claude', { model: 'haiku' });
+    await openChat(s.page, haiku);
+    let argv = await answerTo(s, haiku, '/argv');
+    ok(argv.includes("The person's instructions for haiku, the model this chat runs on:") && argv.includes('NOTE-E2E'),
+      'a chat on that model has them in its system prompt', oneLine(argv.slice(Math.max(0, argv.indexOf('NOTE-E2E') - 80), argv.indexOf('NOTE-E2E') + 30)));
+    const sonnet = await makeChat(s, 'claude', { model: 'sonnet' });
+    await openChat(s.page, sonnet);
+    argv = await answerTo(s, sonnet, '/argv');
+    ok(argv.length > 0 && !argv.includes('NOTE-E2E'), 'a chat on another model does not', argv.includes('NOTE-E2E') ? 'it does' : 'none');
+
+    ok(unexpected(s.errors).length === 0, 'no console errors',
+      unexpected(s.errors).join(' | ') || '0');
+  } finally { await s.stop(); }
+}
+
 async function adminoptions() {
   const s = await start({ viewport: { width: 1280, height: 900 } });
   try {
@@ -13075,6 +13133,7 @@ const ALL = [
   ['takeover', 'a second tab with the same viewer id takes the pane over', takeover],
   ['offlinerestart', 'a restart during an outage, a wake storm, and nothing lost in silence', offlinerestart],
   ['latehello', 'what is typed before a late hello is delivered, exactly once', latehello],
+  ['modelinstructions', 'a favourite’s instructions: written in Admin’s dialog, kept, and given to a chat on that model only', modelinstructions],
   ['adminoptions', 'the basics round-trip, and the defaults and the fixed policy reach the CLI', adminoptions],
   ['tmuxcard', 'the engine card on a machine whose tmux is too old', tmuxcard],
   ['twoviewers', 'two devices on one session, and one notice about the size', twoviewers],

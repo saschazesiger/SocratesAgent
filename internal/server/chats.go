@@ -525,6 +525,7 @@ func (p *chatPeer) launch(ctx context.Context) error {
 	defer cancel()
 	entry, _ := p.hub.srv.Settings().Harnesses.Entry(row.Harness)
 	spec.Binary = strings.TrimSpace(entry.Binary)
+	spec.Instructions = p.hub.srv.Settings().Harnesses.ModelInstructions(row.Harness)
 	return p.hub.launcher.Launch(lctx, spec)
 }
 

@@ -18,7 +18,8 @@
  *                      agent, its __title, rows and Add button
  *   .so-account        one account: grip, __main (__name, __state, __meters),
  *                      __actions; data-account-state is its state
- *   .so-model          one model of a short list: grip, __name, effort, remove
+ *   .so-model          one model of a short list: grip, __name, effort,
+ *                      __actions (instructions, remove)
  *   .so-mcp            one MCP server: __main (__name, __what), its "in every
  *                      chat" switch, __actions
  *   .so-grip           the drag handle of a row (DS .ds-grip, a hook for the
@@ -269,7 +270,8 @@
   overflow-wrap: anywhere;
 }
 
-.so-mcp__actions {
+.so-mcp__actions,
+.so-model__actions {
   display: flex;
   align-items: center;
   gap: var(--ds-space-1);

@@ -133,6 +133,10 @@ type StartSpec struct {
 	Account string
 	Model   string
 	Effort  string
+	// Instructions is the person's instructions per model id, for the
+	// harness's favourites that have any (instructions.go): the adapter
+	// gives the agent the ones of the model the chat runs on.
+	Instructions map[string]string
 	// ResumeID is the CLI conversation to continue, empty for a new one.
 	ResumeID string
 	// Binary is the CLI program the dashboard configured for the harness:

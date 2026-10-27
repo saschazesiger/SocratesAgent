@@ -1391,7 +1391,8 @@ function optionField(harness, option) {
 // row moves by its grip, like an account.
 function modelList(harness) {
   const path = optionPath(harness.id, 'models');
-  const picks = () => (optionValue(harness.id, 'models') || []).map((p) => ({ id: p.id, effort: p.effort || '' }));
+  const picks = () => (optionValue(harness.id, 'models') || [])
+    .map((p) => ({ id: p.id, effort: p.effort || '', instructions: p.instructions || '' }));
   const known = (id) => (harness.models || []).find((m) => m.id === id) || null;
 
   const rows = el('div', { class: 'so-rows' });
@@ -1422,18 +1423,31 @@ function modelList(harness) {
       effort.addEventListener('change', () => {
         setPath(settings, path, picks().map((p) => (p.id === pick.id ? { ...p, effort: effort.value } : p)));
       });
+      const name = model ? (model.label || pick.id) : pick.id;
+      const instructions = el('button', {
+        class: 'ds-btn ds-btn--quiet ds-btn--icon ds-btn--sm', type: 'button',
+        'aria-label': 'Instructions for ' + pick.id, 'data-tip': 'Instructions',
+        onclick: async (event) => {
+          const text = await modelInstructions(harness, name, pick.instructions, event.currentTarget);
+          if (text === null) return;
+          setPath(settings, path, picks().map((p) => (p.id === pick.id ? { ...p, instructions: text } : p)));
+          render();
+        },
+      }, iconEl('fileText', 18));
       const remove = el('button', {
         class: 'ds-btn ds-btn--quiet ds-btn--icon ds-btn--sm', type: 'button',
         'aria-label': 'Remove ' + pick.id, 'data-tip': 'Remove',
         onclick: () => { setPath(settings, path, picks().filter((p) => p.id !== pick.id)); render(); },
       }, iconEl('trash', 18));
+      // Whether it has instructions is said in words, beside what it is.
+      const about = (model ? (model.hint || pick.id) : pick.id + ' · typed in, not on the list ' + harness.label + ' reports')
+        + (pick.instructions ? ' · with instructions' : '');
       return el('div', { class: 'so-model', 'data-id': pick.id },
         gripButton('Move ' + pick.id),
         el('div', { class: 'so-model__name' },
-          el('span', { class: 'so-ellipsis', text: model ? (model.label || pick.id) : pick.id }),
-          el('span', { class: 'ds-meta so-ellipsis', text: model ? (model.hint || pick.id)
-            : pick.id + ' · typed in, not on the list ' + harness.label + ' reports' })),
-        effort, remove);
+          el('span', { class: 'so-ellipsis', text: name }),
+          el('span', { class: 'ds-meta so-ellipsis', text: about })),
+        effort, el('span', { class: 'so-model__actions' }, instructions, remove));
     }));
   }
 
@@ -1480,6 +1494,38 @@ function modelList(harness) {
         + 'Leave the list empty to offer all of them.'
       : 'Type a model’s id, and set the effort a new session starts on. Leave the list empty to type one in the sheet.' }),
   );
+}
+
+// modelInstructions asks for the person's instructions for one favourite:
+// what a chat of the harness is told while it runs on that model, and only
+// then. It resolves with the trimmed text ("" for none), or null when the
+// person cancelled; Save keeps it.
+async function modelInstructions(harness, name, value, opener) {
+  const id = 'modelInstructionsText';
+  const text = el('textarea', {
+    class: 'ds-input', id, rows: 10, autofocus: true,
+    placeholder: 'For example: answer briefly, and ask before a change that touches more than one file.',
+  });
+  text.value = value || '';
+  const cancel = el('button', { class: 'ds-btn ds-btn--text', type: 'button', 'data-close': true, text: 'Cancel' });
+  const accept = el('button', { class: 'ds-btn ds-btn--primary', type: 'button', text: 'Keep the instructions' });
+  const { dialog, shown } = openDialog({
+    title: 'Instructions for ' + name,
+    body: 'A ' + harness.label + ' chat on this model is told these with its own instructions, and only while it runs on '
+      + 'this model: a chat switched to it gets them with its next message.',
+    field: el('div', { class: 'ds-form' }, field('Instructions', dictated(text, text), 'Empty means none. '
+      + 'Once saved, they count from a chat’s next start.', id)),
+    actions: [cancel, accept],
+    opener,
+  });
+  // Instructions run to paragraphs: DS's wide dialog gives them the room.
+  dialog.classList.add('ds-dialog--wide');
+  accept.addEventListener('click', () => {
+    dialog.answer({ text: text.value.trim() });
+    DS.overlay.close(dialog);
+  });
+  const answer = await shown;
+  return answer ? answer.text : null;
 }
 
 /* ---------------------------------------------------------------- saving */

@@ -308,6 +308,26 @@ once switched on there.
   servers of one name, stdio without a command or http/sse without a URL is
   refused when Admin saves.
 
+## Instructions per model
+
+Each favourite model of a harness in Admin has an **Instructions** button: a
+dialog with one text field (`models[].instructions` in the harness's
+settings, trimmed, at most 32 KiB because Claude Code takes it as one
+argument). A chat is given the instructions of the model it runs on, and
+only those (`agent.StartSpec.Instructions`, `internal/agent/instructions.go`).
+The server hands them to the host when it launches it, so a change counts from
+a chat's next start.
+
+| | At the start | After a switch of model |
+|---|---|---|
+| Claude Code | `--append-system-prompt`, after the ask_user guidance, at every start (and so after every park) | the next message carries them, in `<model-instructions>` |
+| Codex | the developer instructions of a **new** thread | the next message, as for Claude Code. A thread keeps the developer instructions it was started with for good: `developerInstructions` on `thread/resume` is ignored (verified with codex 0.164, `TestRealModelInstructionsFollowTheModel`). So the adapter keeps which instructions the thread has in its state directory (`model-instructions.json`), and a resume on another model, or after the instructions changed, says so in the next message, once |
+| OpenCode | `system` on every `prompt_async`, which OpenCode adds after its own system prompt for that prompt's turn (1.19.4) | nothing more: every prompt carries its model's |
+
+The note before a message says which model the chat now runs on, that the
+earlier model's instructions no longer apply, and the new ones. A transcript
+read back (a rebuilt journal) shows the person's message without it.
+
 ## Shell
 
 `<binary> -l`, in the working directory, with the shared terminal environment.
@@ -327,7 +347,7 @@ has to be told how to reach them.
 ## What is left in the dashboard
 
 Per harness: **enabled**, **binary path** (with discovery), the **model short
-list**, **default model** and — for Claude Code and Codex — **default
+list** (each with its effort and its instructions), **default model** and — for Claude Code and Codex — **default
 effort**. OpenCode has no default effort because it has no reasoning-effort
 flag: the level is part of the model id.
 

@@ -961,6 +961,12 @@ func (a *Adapter) bodyLocked(j job, oc string) (any, error) {
 		if a.effort != "" {
 			body["variant"] = a.effort
 		}
+		// OpenCode adds a prompt's system to its own for that prompt's
+		// turn, so every prompt carries the instructions of the model it
+		// runs on, and a switch needs nothing more.
+		if p := agent.ModelPrompt(a.model, a.spec.InstructionsFor(a.model)); p != "" {
+			body["system"] = p
+		}
 		return body, nil
 	case jobShell:
 		body := map[string]any{"messageID": oc, "command": j.args, "agent": firstNonEmpty(agentID, AgentBuild)}

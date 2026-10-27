@@ -940,7 +940,7 @@ func TestTheConfiguredBinaryIsRun(t *testing.T) {
 
 func TestAttachmentsBecomeInput(t *testing.T) {
 	got := input(agent.Outgoing{Text: "look", Attachments: []agent.Attachment{
-		{Name: "a.png", Path: "/x/a.png", Mime: "image/png"}, {Name: "b.pdf", Path: "/x/b.pdf", Mime: "application/pdf"}}})
+		{Name: "a.png", Path: "/x/a.png", Mime: "image/png"}, {Name: "b.pdf", Path: "/x/b.pdf", Mime: "application/pdf"}}}, "")
 	raw, _ := json.Marshal(got)
 	want := `[{"text":"look\n\nAttached file b.pdf: /x/b.pdf","text_elements":[],"type":"text"},{"path":"/x/a.png","type":"localImage"}]`
 	if string(raw) != want {

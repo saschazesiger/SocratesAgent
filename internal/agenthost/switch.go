@@ -473,7 +473,7 @@ func (h *host) startAdapter(ctx context.Context, account string, env []string) e
 	spec := agent.StartSpec{
 		ChatID: h.opts.ChatID, Workdir: h.spec.Workdir, StateDir: filepath.Join(h.dir, stateDir), DataDir: h.opts.DataDir,
 		Env: env, Account: account, Model: model, Effort: effort, ResumeID: resume, Held: held, Spawn: h.spawn,
-		Binary: h.spec.Binary, AskCommand: h.askCommand(), MCPServers: h.chatMCP(env),
+		Binary: h.spec.Binary, AskCommand: h.askCommand(), Instructions: h.spec.Instructions, MCPServers: h.chatMCP(env),
 	}
 	sctx, cancel := context.WithTimeout(ctx, startWait)
 	defer cancel()
