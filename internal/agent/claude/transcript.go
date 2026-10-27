@@ -75,18 +75,37 @@ func readTranscript(path string) ([]transcriptLine, error) {
 // send again), and the conversation's cost so far (the last cost-state),
 // which the resumed CLI's total_cost_usd continues from.
 func transcriptState(path string) (map[string]bool, float64) {
-	lines, _ := readTranscript(path)
 	out := map[string]bool{}
 	cost := 0.0
-	for _, l := range lines {
-		switch {
-		case l.Type == "user" && l.UUID != "":
-			out[l.UUID] = true
-		case l.Type == "cost-state":
-			cost = l.TotalCostUSD
+	f, err := os.Open(path)
+	if err != nil {
+		return out, cost
+	}
+	defer f.Close()
+	// Only the few fields it needs are read: a long chat's transcript is
+	// tens of megabytes, and this runs at every start and switch.
+	r := bufio.NewReaderSize(f, 1<<20)
+	for {
+		line, err := r.ReadBytes('\n')
+		if len(line) > 1 {
+			var l struct {
+				Type         string  `json:"type"`
+				UUID         string  `json:"uuid"`
+				TotalCostUSD float64 `json:"totalCostUSD"`
+			}
+			if json.Unmarshal(line, &l) == nil {
+				switch {
+				case l.Type == "user" && l.UUID != "":
+					out[l.UUID] = true
+				case l.Type == "cost-state":
+					cost = l.TotalCostUSD
+				}
+			}
+		}
+		if err != nil {
+			return out, cost
 		}
 	}
-	return out, cost
 }
 
 // loadTasks is the task list of a conversation, <config>/tasks/<id>/<n>.json,

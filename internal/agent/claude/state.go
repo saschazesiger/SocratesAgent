@@ -45,7 +45,20 @@ type state struct {
 	seen  map[string]bool
 	parts map[string]*part
 	// tasks maps a background task to the part of the tool that started it.
-	tasks      map[string]string
+	tasks map[string]string
+	// ended is how tasks ended whose call did not hold them yet (a
+	// background command quicker than its own tool_result) or no longer
+	// does, for the call that names them later; late is the parts closed
+	// without their task's notification, which a notification that still
+	// comes completes. Both are bounded (remember).
+	ended map[string]taskEnd
+	late  map[string]*part
+	// wasListed is the tasks a background_tasks_changed has listed.
+	wasListed map[string]bool
+	// gone is the parts closed before their result came (their group
+	// ended, or the CLI did), which a result that still comes completes
+	// rather than making a part of its own.
+	gone       map[string]*part
 	background int
 	// agents is how many of the background tasks are subagents or
 	// workflows.
@@ -78,6 +91,7 @@ func newState(spec agent.StartSpec, configDir string) *state {
 		spec: spec, configDir: configDir, effort: effortLevel(spec.Effort),
 		pending: map[string]string{}, delivered: map[string]bool{}, deliveredMsgs: map[string]bool{},
 		seen: map[string]bool{}, parts: map[string]*part{}, tasks: map[string]string{},
+		ended: map[string]taskEnd{}, late: map[string]*part{}, gone: map[string]*part{}, wasListed: map[string]bool{},
 		taskInputs: map[string]json.RawMessage{}, plans: map[string]*planAsk{}, planByReq: map[string]string{},
 		wfAgents: map[string]string{}, tails: map[string]*tail{}, homes: map[string]home{}, wfDone: map[string]bool{},
 		terminalOnly: map[string]bool{"doctor": true, "color": true, "focus": true, "heapdump": true},
@@ -147,27 +161,89 @@ func (s *state) inLiveGroup(p *part) bool {
 	return false
 }
 
-// closeLive ends every group still running when the CLI is gone: what it was
-// doing died with it.
-func (s *state) closeLive() {
-	for id, p := range s.parts {
-		if !p.live() {
-			continue
+// closeAll ends everything still open when the CLI is gone, whether it was
+// parked, stopped, switched away from or died: the background work dies with
+// it (its shells, subagents and workflows are the process's own), so every
+// group, every call in one and every part of the turn gets its final state,
+// and the task count goes to nothing. The next process knows none of it.
+func (s *state) closeAll() {
+	ids := make([]string, 0, len(s.parts))
+	for id := range s.parts {
+		ids = append(ids, id)
+	}
+	sort.Slice(ids, func(i, j int) bool { return s.parts[ids[i]].started.Before(s.parts[ids[j]].started) })
+	for _, id := range ids {
+		p := s.parts[id]
+		if p.state == agent.PartStreaming || p.state == agent.PartRunning || p.live() {
+			p.state = agent.PartInterrupted
+			stopContent(p.tool)
+			s.emitPart(p)
 		}
-		p.state = agent.PartInterrupted
-		if c := p.tool; c != nil {
-			switch {
-			case c.Agent != nil:
-				c.Agent.Status = "killed"
-			case c.Workflow != nil:
-				c.Workflow.Status = "killed"
-			case c.Task != nil:
-				c.Task.Status = "killed"
-			}
-		}
-		s.emitPart(p)
 		delete(s.parts, id)
 	}
+	clear(s.tasks)
+	if s.background != 0 || s.agents != 0 {
+		s.background, s.agents = 0, 0
+		s.emit(agent.Event{Type: agent.TypeTasks})
+	}
+}
+
+// stopContent marks what a tool's content says still runs as killed.
+func stopContent(c *toolContent) {
+	if c == nil {
+		return
+	}
+	if c.Agent != nil && !finalStatus(c.Agent.Status) {
+		c.Agent.Status = "killed"
+	}
+	if c.Workflow != nil && !finalStatus(c.Workflow.Status) {
+		c.Workflow.Status = "killed"
+	}
+	if c.Task != nil && !finalStatus(c.Task.Status) {
+		c.Task.Status = "killed"
+	}
+}
+
+// finalStatus is whether a task status is an end.
+func finalStatus(status string) bool {
+	switch status {
+	case "completed", "failed", "killed", "stopped":
+		return true
+	}
+	return false
+}
+
+// closeOrphans ends every part nested in a group that no longer runs: a
+// call of a subagent or workflow agent whose result never came. Its part is
+// kept in gone, so a result that still comes completes it.
+func (s *state) closeOrphans() {
+	ids := make([]string, 0)
+	for id, p := range s.parts {
+		if p.parent != "" && !p.live() && !s.inLiveGroup(p) && s.parts[p.parent] == nil &&
+			(p.state == agent.PartRunning || p.state == agent.PartStreaming) {
+			ids = append(ids, id)
+		}
+	}
+	sort.Slice(ids, func(i, j int) bool { return s.parts[ids[i]].started.Before(s.parts[ids[j]].started) })
+	for _, id := range ids {
+		p := s.parts[id]
+		p.state = agent.PartInterrupted
+		stopContent(p.tool)
+		s.emitPart(p)
+		delete(s.parts, id)
+		remember(s.gone, id, p)
+	}
+}
+
+// rememberMax bounds the maps that keep what ended out of order: they are
+// for frames a moment late, not for the life of the chat.
+const rememberMax = 512
+
+func remember[V any](m map[string]V, key string, v V) {
+	if len(m) >= rememberMax {
+		clear(m)
+	}
+	m[key] = v
 }
 
 type planAsk struct {
@@ -335,12 +411,14 @@ func resultUsage(f *frame) *agent.Usage {
 }
 
 // endTurn closes the turn: every part it left open gets its final state,
-// except a subagent or workflow still running in the background.
+// except a subagent or workflow still running in the background and what is
+// nested in one. A part an earlier turn left open that is in no running
+// group any more is closed with it: nothing else would.
 func (s *state) endTurn(outcome string, usage *agent.Usage, cost float64, why string) {
 	t := s.turn
 	ids := make([]string, 0, len(s.parts))
 	for id, p := range s.parts {
-		if p.turnID == t.id {
+		if p.turnID == t.id || !s.inLiveGroup(p) {
 			ids = append(ids, id)
 		}
 	}
@@ -352,10 +430,13 @@ func (s *state) endTurn(outcome string, usage *agent.Usage, cost float64, why st
 		}
 		if p.state == agent.PartStreaming || p.state == agent.PartRunning {
 			p.state = agent.PartInterrupted
-			if outcome == agent.OutcomeCompleted && p.kind != agent.PartTool && p.kind != agent.PartDiff {
+			if outcome == agent.OutcomeCompleted && p.kind != agent.PartTool && p.kind != agent.PartDiff && p.turnID == t.id {
 				p.state = agent.PartDone
 			}
 			s.emitPart(p)
+			if p.tool != nil {
+				remember(s.gone, id, p)
+			}
 		}
 		delete(s.parts, id)
 	}
@@ -427,7 +508,9 @@ func (s *state) system(f *frame) {
 		s.taskStatus(f.TaskID, status, f.Summary, f.TaskUsage)
 	case "background_tasks_changed":
 		agents := 0
+		listed := make(map[string]bool, len(f.Tasks))
 		for _, t := range f.Tasks {
+			listed[t.TaskID] = true
 			if strings.Contains(t.TaskType, "agent") || strings.Contains(t.TaskType, "workflow") {
 				agents++
 			}
@@ -436,6 +519,7 @@ func (s *state) system(f *frame) {
 			s.background, s.agents = n, agents
 			s.emit(agent.Event{Type: agent.TypeTasks, Count: n, Agents: agents})
 		}
+		s.reconcile(listed)
 	}
 }
 

@@ -839,6 +839,10 @@ function pieces(message, chat) {
  */
 export function backgroundJobs(chat) {
   const jobs = [];
+  // Background work is the agent process's own: with the process parked,
+  // stopped or dead nothing runs, whatever a journal written before the host
+  // closed what it left says (the next host closes it, agenthost recover).
+  if (chat.process === 'parked' || chat.process === 'exited' || chat.process === 'failed') return { jobs, others: 0 };
   const turnMessage = chat.turn && chat.turn.messageId ? chat.turn.messageId : '';
   const inTurn = (part) => !!chat.turn && !!part.messageId && (part.messageId === turnMessage
     || [...chat.messages.values()].some((m) => m.id === part.messageId && m.turnId && m.turnId === chat.turn.id));

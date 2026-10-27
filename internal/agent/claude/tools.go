@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -221,10 +222,19 @@ func (s *state) toolResult(b block, structured json.RawMessage, parent string) {
 	}
 	p := s.parts[b.ToolUseID]
 	if p == nil {
-		p = s.toolUse(block{Type: "tool_use", ID: b.ToolUseID, Name: "tool"}, parent)
+		// A call closed before its result came (its group or its turn
+		// ended first) is completed in place.
+		if g := s.gone[b.ToolUseID]; g != nil {
+			delete(s.gone, b.ToolUseID)
+			p = g
+			s.parts[p.id] = p
+		} else {
+			p = s.toolUse(block{Type: "tool_use", ID: b.ToolUseID, Name: "tool"}, parent)
+		}
 	}
 	c := p.tool
 	p.resulted = true
+	started := ""
 	text, images := resultText(b.Content)
 	p.text = text
 	c.IsError = b.IsError
@@ -249,7 +259,7 @@ func (s *state) toolResult(b block, structured json.RawMessage, parent string) {
 			if r.Background != "" {
 				c.Task = &taskInfo{ID: r.Background, Status: "running"}
 				s.tasks[r.Background] = p.id
-				p.group = true
+				p.group, started = true, r.Background
 			}
 			if r.Stderr != "" && !strings.Contains(text, r.Stderr) {
 				p.text = strings.TrimRight(text+"\n"+r.Stderr, "\n")
@@ -271,9 +281,11 @@ func (s *state) toolResult(b block, structured json.RawMessage, parent string) {
 		if r.Model != "" {
 			c.Agent.Model = r.Model
 		}
-		if r.Status == "async_launched" && p.state == agent.PartDone {
+		if r.Status == "async_launched" && p.state == agent.PartDone && !finalStatus(c.Agent.Status) {
 			// The call returned at once; the agent works on in the
-			// background, and its group stays open until it reports back.
+			// background, and its group stays open until it reports back
+			// (unless it already has: a quick agent's notification may come
+			// before its launch's result).
 			c.Agent.Background, c.Agent.Status, p.state = true, "running", agent.PartRunning
 		} else {
 			// A foreground agent reports its end before its call returns;
@@ -305,14 +317,20 @@ func (s *state) toolResult(b block, structured json.RawMessage, parent string) {
 		w := c.Workflow
 		w.RunID, w.TaskID = pick(r.RunID, w.RunID), pick(r.TaskID, w.TaskID)
 		w.Name, w.Description = pick(r.Name, w.Name), pick(r.Summary, w.Description)
-		if r.Status == "async_launched" && p.state == agent.PartDone {
+		switch {
+		case r.Status == "async_launched" && p.state == agent.PartDone && !finalStatus(w.Status):
 			w.Status, p.state = "running", agent.PartRunning
 			if r.TaskID != "" {
 				s.tasks[r.TaskID] = p.id
+				started = r.TaskID
 			}
 			if r.TranscriptDir != "" {
 				s.startTail(p.id, r.TranscriptDir)
 			}
+		case w.Status == "failed":
+			p.state = agent.PartError
+		case w.Status == "killed" || w.Status == "stopped":
+			p.state = agent.PartInterrupted
 		}
 	case c.Tool == "ExitPlanMode":
 		if c.Plan == nil {
@@ -336,6 +354,11 @@ func (s *state) toolResult(b block, structured json.RawMessage, parent string) {
 	}
 	if !p.live() {
 		delete(s.parts, p.id)
+	}
+	if e, ok := s.ended[started]; ok && started != "" {
+		// The task ended before its call said it started it.
+		delete(s.ended, started)
+		s.taskStatus(started, e.status, e.summary, nil)
 	}
 }
 
@@ -590,14 +613,31 @@ func (s *state) taskUpdated(taskID, status string) {
 	s.emitPart(p)
 }
 
+// taskEnd is how a task ended, kept for a call that names it later.
+type taskEnd struct{ status, summary string }
+
 // taskStatus is a background task reporting a new status; a final one closes
-// its group.
+// its group, and the calls in it that never got their result.
 func (s *state) taskStatus(taskID, status, summary string, usage *taskUsage) {
+	final := finalStatus(status)
 	p := s.parts[s.tasks[taskID]]
+	late := false
+	if p == nil && final {
+		// A group closed without its notification (reconcile) gets what
+		// the notification says after all.
+		if lp := s.late[taskID]; lp != nil {
+			delete(s.late, taskID)
+			p, late = lp, true
+		}
+	}
+	if final && (p == nil || p.tool == nil || (!p.resulted && p.tool.Task == nil && p.tool.Workflow == nil && p.tool.Agent == nil)) {
+		// Not (yet) the task of a call that holds it: a background command
+		// that ended before its call's result names it.
+		remember(s.ended, taskID, taskEnd{status, summary})
+	}
 	if p == nil || p.tool == nil {
 		return
 	}
-	final := status == "completed" || status == "failed" || status == "killed" || status == "stopped"
 	state := agent.PartDone
 	switch status {
 	case "failed":
@@ -606,6 +646,7 @@ func (s *state) taskStatus(taskID, status, summary string, usage *taskUsage) {
 		state = agent.PartInterrupted
 	}
 	c := p.tool
+	waitTail := false
 	switch {
 	case c.Agent != nil:
 		c.Agent.Status, c.Agent.Summary = status, pick(summary, c.Agent.Summary)
@@ -618,9 +659,10 @@ func (s *state) taskStatus(taskID, status, summary string, usage *taskUsage) {
 			c.Workflow.Tokens, c.Workflow.DurationMS = usage.TotalTokens, usage.DurationMS
 		}
 		if final {
-			s.stopTail(p.id)
 			// An agent the last progress still showed running ends with its
-			// workflow.
+			// workflow; the calls in it once the tail has read the last of
+			// its transcript.
+			waitTail = s.stopTail(p.id)
 			for id, ap := range s.parts {
 				if ap.parent == p.id && ap.state == agent.PartRunning {
 					ap.state = state
@@ -640,7 +682,7 @@ func (s *state) taskStatus(taskID, status, summary string, usage *taskUsage) {
 		s.emitPart(p)
 		return
 	}
-	if p.state == agent.PartRunning {
+	if p.state == agent.PartRunning || late {
 		p.state = state
 	}
 	s.emitPart(p)
@@ -648,6 +690,60 @@ func (s *state) taskStatus(taskID, status, summary string, usage *taskUsage) {
 		delete(s.parts, p.id)
 	}
 	delete(s.tasks, taskID)
+	if !waitTail {
+		s.closeOrphans()
+	}
+}
+
+// reconcile holds the tasks against the CLI's list of what runs: a group
+// whose task left the list without a notification (one the CLI never wrote,
+// or lost) would otherwise run for ever. The notification comes before the
+// list that drops its task, so a task missing from the list has ended; its
+// group closes with the status it last had, and a notification that comes
+// after all still completes it (late). A call whose result has not come yet
+// is the result's to close (a foreground agent), or learns of the end when
+// it does (ended).
+//
+// Only a task the list once held is held to it: one that has not been
+// listed yet may simply not be there yet.
+func (s *state) reconcile(listed map[string]bool) {
+	ids := make([]string, 0, len(s.tasks))
+	for id := range listed {
+		if !s.wasListed[id] {
+			remember(s.wasListed, id, true)
+		}
+	}
+	for id := range s.tasks {
+		if !listed[id] && s.wasListed[id] {
+			ids = append(ids, id)
+		}
+	}
+	sort.Strings(ids)
+	for _, id := range ids {
+		delete(s.wasListed, id)
+		p := s.parts[s.tasks[id]]
+		if p == nil || p.tool == nil {
+			delete(s.tasks, id)
+			continue
+		}
+		if !p.resulted {
+			if _, ok := s.ended[id]; !ok && p.tool.Task == nil {
+				remember(s.ended, id, taskEnd{status: "completed"})
+			}
+			continue
+		}
+		status := "completed"
+		switch c := p.tool; {
+		case c.Agent != nil && finalStatus(c.Agent.Status):
+			status = c.Agent.Status
+		case c.Workflow != nil && finalStatus(c.Workflow.Status):
+			status = c.Workflow.Status
+		case c.Task != nil && finalStatus(c.Task.Status):
+			status = c.Task.Status
+		}
+		s.taskStatus(id, status, "", nil)
+		remember(s.late, id, p)
+	}
 }
 
 // wfEntry is one entry of a task_progress's workflow_progress.

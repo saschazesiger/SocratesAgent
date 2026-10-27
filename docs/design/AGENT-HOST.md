@@ -467,6 +467,23 @@ cumulative per process). `usage.context` = the last request's prompt + answer, `
 | image from a tool | `<call>_img<n>`, nested in the call | `image` | `{mime, path, size}`; the file is under `chats/<id>/agent/images/` |
 | local command output, API error text | `n_<uuid>` | `notice` | `{code: command_output\|<error>\|claude}` |
 
+**Background work ends.** A group closes with its `task_notification`; the adapter does not rely on
+it alone. `background_tasks_changed` lists what runs, and a task that this list held once and then
+drops, without a notification, has ended: its group closes with the status it last had. A
+notification that still comes completes it (status, summary, and the part's state). A task that ends
+before its call's `tool_result` names it (a quick background command) is remembered, and the result
+closes the call at once instead of opening it. When a group ends, the calls in it that never got a
+result are closed with it (for a workflow, once the tail has read the last of its agents'
+transcripts). A result that comes for a call closed early completes the call where it is. At every
+turn's end, a part an earlier turn left open that is in no running group any more is closed. When the
+CLI goes for any reason (park, stop, account switch, crash), everything still open is closed
+(`interrupted`, a running `agent`/`workflow`/`task` status becomes `killed`) and `tasks{count: 0}` is
+written: the background work was the process's own, and the next process knows none of it. The
+CLI's stdout is an `os.Pipe` of the adapter's own, so its end is seen even when something the CLI
+started still holds the pipe (closed `drainWait` = 3 s after the exit). A line to the CLI that is
+not taken within `writeWait` = 1 min ends the CLI: it reads its input all the time, so it is stuck,
+and the next host resumes.
+
 **Plan card.** In plan mode (`Command("plan")`, `Command("plan", "off")`), `ExitPlanMode` arrives
 as `can_use_tool`. The adapter emits the plan part and `ask{ask_id: "plan_<tool_use_id>", payload:
 {kind: "plan", title, plan, plan_file, part_id, options: ["approve", "keep_planning"]}}` and holds
@@ -830,13 +847,23 @@ interrupted, or the host before this one died) or never waited (`via: "message"`
 goes to the agent as a message whenever it comes, through whichever host is up then (WP6; the WP2
 review found that such an ask kept its host alive for ever). After
 `park_after_ms` (setting `chats.park_after_minutes`, default 20) of idle with no event or command,
-or as soon as idle after a `park` command: `Adapter.Park` (graceful), `process{parked}`, then the
+or as soon as idle after a `park` command: `Adapter.Park` (graceful), the leftovers closed (below),
+`process{parked}`, then the
 host closes its socket, lets connected clients read to the end (≤ 2 s) and exits. The next command
 launches a new host, which resumes the conversation: resume after idle, after an update and after a
 reboot are one code path.
 
-**CLI exits on its own** (`Emitter.Exited`): `turn.ended{failed}` if a turn ran,
-`process{failed}`, host exits. The next command resumes.
+**CLI exits on its own** (`Emitter.Exited`): `turn.ended{failed}` if a turn ran, the leftovers
+closed, `process{failed}`, host exits. The next command resumes.
+
+**Leftovers.** Background work is the CLI process's own. Whenever the host sees that process go
+(park, `stop`, an exit of its own, the old process of an account switch) and at recover, it closes
+what the journal still shows open: every part still `running`/`streaming` gets `part{interrupted}`
+(a running status in its content becomes `killed`), and `tasks{count: 0}` when the journal still
+counts tasks. A switch that ended background work this way says so (`notice{background_stopped}`).
+The adapters close what they know of themselves first; this is for what they could not close (a dead
+host, an adapter that missed an end). The projection, and the browser's fold, count no task after
+`process{starting|parked|exited|failed}` either, so no task count outlives its process.
 
 **Dead host** (server): dial fails **and** `host.lock` is free (the kernel releases it however the
 host died — no PID guessing) → `Launcher.Reap`: stop the chat's scope(s), which ends tool processes

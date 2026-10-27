@@ -53,11 +53,20 @@ const UltracodeEnv = "SOCRATES_CLAUDE_ULTRACODE"
 const transcriptDays = 90
 
 // stopWait is how long Park waits for the CLI to leave after its stdin
-// closed, and termWait how long it then gets after SIGTERM.
+// closed, and termWait how long it then gets after SIGTERM (and Stop for it
+// to be reaped after SIGKILL). drainWait is how long the CLI's stdout may
+// stay open once the CLI has exited: a process it left behind that holds
+// the pipe must not keep its end from being seen.
 const (
-	stopWait = 20 * time.Second
-	termWait = 3 * time.Second
+	stopWait  = 20 * time.Second
+	termWait  = 3 * time.Second
+	drainWait = 3 * time.Second
 )
+
+// writeWait is how long a line to the CLI may take to be taken: the CLI reads
+// its input all the time, during a turn too, so one that has not taken a line
+// for this long is stuck, and is ended rather than left to hold up the host.
+var writeWait = time.Minute
 
 func init() {
 	agent.Register(Harness, func() agent.Adapter { return New(Options{}) })
@@ -103,7 +112,7 @@ type Adapter struct {
 
 	// writeMu orders lines on the CLI's stdin.
 	writeMu sync.Mutex
-	stdin   io.WriteCloser
+	stdin   *os.File
 
 	ctlMu   sync.Mutex
 	waiting map[string]chan controlResult
@@ -177,14 +186,20 @@ func (a *Adapter) Start(ctx context.Context, spec agent.StartSpec, out agent.Emi
 	}
 	cmd := exec.Command(bin, args...)
 	cmd.Dir, cmd.Env = spec.Workdir, env
-	stdin, err := cmd.StdinPipe()
+	// Reaping is not tied to the pipes: a child of the CLI that inherited
+	// them must not keep the CLI's end from being seen.
+	cmd.WaitDelay = drainWait
+	stdinR, stdin, err := os.Pipe()
 	if err != nil {
 		return err
 	}
-	stdout, err := cmd.StdoutPipe()
+	cmd.Stdin = stdinR
+	stdout, stdoutW, err := os.Pipe()
 	if err != nil {
+		_, _ = stdinR.Close(), stdin.Close()
 		return err
 	}
+	cmd.Stdout = stdoutW
 	stderr := &tailBuffer{max: 8 << 10}
 	cmd.Stderr = stderr
 	spawn := spec.Spawn
@@ -210,10 +225,16 @@ func (a *Adapter) Start(ctx context.Context, spec agent.StartSpec, out agent.Emi
 	a.servers, a.ask = servers, ask
 	st.a = a
 	a.mu.Unlock()
-	if err := spawn(cmd); err != nil {
+	err = spawn(cmd)
+	_, _ = stdinR.Close(), stdoutW.Close()
+	if err != nil {
+		_, _ = stdout.Close(), stdin.Close()
+		close(a.exited)
 		return fmt.Errorf("start claude: %w", err)
 	}
-	go a.read(stdout)
+	read := make(chan struct{})
+	go a.read(stdout, read)
+	go a.reap(cmd, stdout, read)
 	init := map[string]any{"subtype": "initialize"}
 	if len(servers) > 0 {
 		names := make([]string, 0, len(servers))
@@ -403,7 +424,14 @@ func (a *Adapter) write(v any) error {
 	if a.stdin == nil {
 		return errors.New("claude is not running")
 	}
+	_ = a.stdin.SetWriteDeadline(time.Now().Add(writeWait))
 	_, err = a.stdin.Write(append(raw, '\n'))
+	if errors.Is(err, os.ErrDeadlineExceeded) {
+		// Stuck, and its input now ends in half a line: the CLI is ended,
+		// and the next one resumes the conversation.
+		go a.kill()
+		return errors.New("claude stopped reading its input, so it was ended")
+	}
 	return err
 }
 
@@ -449,8 +477,10 @@ func (a *Adapter) refuse(id, msg string) {
 		"response": map[string]any{"subtype": "error", "request_id": id, "error": msg}})
 }
 
-// read is the one reader of the CLI's stdout, and then its reaper.
-func (a *Adapter) read(stdout io.Reader) {
+// read is the one reader of the CLI's stdout. It closes done once the pipe
+// has ended, or was closed under it (reap).
+func (a *Adapter) read(stdout io.Reader, done chan<- struct{}) {
+	defer close(done)
 	r := bufio.NewReaderSize(stdout, 1<<20)
 	for {
 		line, err := r.ReadBytes('\n')
@@ -460,18 +490,31 @@ func (a *Adapter) read(stdout io.Reader) {
 			}
 		}
 		if err != nil {
-			break
+			return
 		}
 	}
-	a.mu.Lock()
-	cmd := a.cmd
-	a.mu.Unlock()
+}
+
+// reap waits for the CLI to exit and for its last frames to be read, then
+// closes what it left open and reports the exit. The pipe normally ends with
+// the CLI; when something the CLI started still holds it, it is closed after
+// drainWait so that the end is seen all the same.
+func (a *Adapter) reap(cmd *exec.Cmd, stdout *os.File, read <-chan struct{}) {
 	werr := cmd.Wait()
+	select {
+	case <-read:
+	case <-time.After(drainWait):
+		_ = stdout.Close()
+		<-read
+	}
+	_ = stdout.Close()
 	a.mu.Lock()
 	ending := a.ending || !a.started
-	a.st.stopTails()
-	if !ending {
-		a.st.closeLive()
+	if a.started {
+		// Whatever the reason the CLI went (parked, stopped, switched
+		// away from, died), its background work went with it.
+		a.st.killTails()
+		a.st.closeAll()
 	}
 	close(a.exited)
 	out := a.out
@@ -499,7 +542,12 @@ func (a *Adapter) frame(f *frame) {
 		ch := a.waiting[f.Response.RequestID]
 		a.ctlMu.Unlock()
 		if ch != nil {
-			ch <- *f.Response
+			// A second answer to one request is dropped: the reader never
+			// waits on a requester.
+			select {
+			case ch <- *f.Response:
+			default:
+			}
 		}
 		return
 	case "control_request":
@@ -869,12 +917,20 @@ func (a *Adapter) Park(ctx context.Context) error {
 	return errors.New("claude did not leave after its input closed")
 }
 
-// Stop ends the CLI now.
+// Stop ends the CLI now, and returns once it is reaped (or after termWait):
+// what it left open is closed by then, before the host writes the end.
 func (a *Adapter) Stop() error {
 	a.mu.Lock()
 	a.ending = true
+	exited := a.exited
 	a.mu.Unlock()
 	a.kill()
+	if exited != nil {
+		select {
+		case <-exited:
+		case <-time.After(termWait):
+		}
+	}
 	return nil
 }
 

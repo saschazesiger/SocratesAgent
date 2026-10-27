@@ -403,3 +403,35 @@ func TestUltracodeStaysOnAcrossASwitch(t *testing.T) {
 		t.Fatalf("on B: %q", got)
 	}
 }
+
+// A switch while background work runs ends that work with the old process:
+// the new one does not count it, so the chat must not count it either
+// ("Continue Migration Phase 1" showed a background job for ever).
+func TestASwitchEndsTheBackgroundWorkOfTheOldProcess(t *testing.T) {
+	r := newSwitchRig(t)
+	r.launchOn("acct-a", "", "")
+	cl := r.dial(0)
+	if got := cl.reply("m1", "/bgagent 60"); got != "started a background subagent" {
+		t.Fatalf("reply %q", got)
+	}
+	if p := agent.Fold(r.journal()); p.Tasks != 1 || p.Agents != 1 || p.Summary().Activity != agent.ActivityBusy {
+		t.Fatalf("before the switch: tasks %d agents %d", p.Tasks, p.Agents)
+	}
+	cl.switchTo("s1", "acct-b", "", r, WhenNow, false)
+	cl.ack("s1", 20*time.Second)
+	events := r.journal()
+	p := agent.Fold(events)
+	if p.Tasks != 0 || p.Agents != 0 || p.Summary().Activity != agent.ActivityIdle {
+		t.Fatalf("after the switch: tasks %d agents %d activity %s", p.Tasks, p.Agents, p.Summary().Activity)
+	}
+	said := false
+	for _, ev := range events {
+		said = said || (ev.Type == agent.TypeNotice && ev.Code == agent.NoticeBackgroundStopped)
+	}
+	if !said {
+		t.Fatal("the chat does not say the background work stopped")
+	}
+	if got := cl.reply("m2", "hello"); !strings.HasPrefix(got, "you said: hello") {
+		t.Fatalf("after the switch: %q", got)
+	}
+}

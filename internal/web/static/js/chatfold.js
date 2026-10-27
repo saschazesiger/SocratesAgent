@@ -464,6 +464,9 @@ export function apply(chat, ev) {
     case 'process':
       chat.process = ev.state || '';
       chat.processDetail = ev.detail || '';
+      // Background tasks are the process's own: none runs once it is gone
+      // or a new host starts (agent.Projection does the same).
+      if (ev.state !== 'ready') chat.tasks = 0;
       chat.rev += 1;
       break;
     case 'conversation':

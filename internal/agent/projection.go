@@ -244,6 +244,14 @@ func (p *Projection) Apply(ev Event) {
 		if ev.State == ProcessStarting && ev.PID != 0 {
 			p.HostPID = ev.PID
 		}
+		if ev.State != ProcessReady {
+			// Background tasks are the process's own: once it is gone (or a
+			// new host starts), none of them runs, whatever the last count
+			// said. A ready process counts its own from nothing, and an
+			// account switch's new one is ready only after the old one
+			// went, whose end the host journals.
+			p.Tasks, p.Agents = 0, 0
+		}
 	case TypeConversation:
 		p.ConversationID = ev.ConversationID
 	case TypeTasks:

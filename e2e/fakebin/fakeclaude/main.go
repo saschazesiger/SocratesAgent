@@ -255,6 +255,10 @@ func (f *fake) input(line []byte) {
 			id = newUUID()
 		}
 		text := contentText(msg.Message.Content)
+		if text == "/deaf" {
+			// A CLI that is stuck: it reads no more input, ever.
+			select {}
+		}
 		f.out(map[string]any{"type": "command_lifecycle", "command_uuid": id, "state": "queued", "uuid": newUUID(), "session_id": f.session})
 		f.mu.Lock()
 		f.queue = append(f.queue, job{uuid: id, text: text})
@@ -589,7 +593,16 @@ func (t *turnRun) script() {
 	case "/workflow":
 		t.workflow(floatArg(fields, 0, 1))
 	case "/bg":
-		t.background(floatArg(fields, 0, 1))
+		switch {
+		case len(fields) > 0 && fields[0] == "lost":
+			t.backgroundLost(floatArg(fields, 1, 0.5), false)
+		case len(fields) > 0 && fields[0] == "late":
+			t.backgroundLost(floatArg(fields, 1, 0.5), true)
+		case len(fields) > 0 && fields[0] == "fast":
+			t.backgroundFast()
+		default:
+			t.background(floatArg(fields, 0, 1))
+		}
 	case "/plan":
 		t.plan()
 	case "/readme":
@@ -1140,6 +1153,60 @@ func (t *turnRun) background(seconds float64) {
 		bt.tasksChanged()
 		f.poke()
 	}()
+}
+
+// backgroundLost is a background shell whose end only the task list says:
+// no task_updated, no notification, no turn reporting back - or, late, a
+// notification that it was killed after the list.
+func (t *turnRun) backgroundLost(seconds float64, late bool) {
+	t.closeText()
+	f := t.f
+	taskID := "b" + randHex(6)
+	id := t.tool("Bash", map[string]any{"command": "sleep 1", "run_in_background": true},
+		"Command running in background with ID: "+taskID, map[string]any{"stdout": "", "stderr": "", "backgroundTaskId": taskID}, false, "")
+	t.setBG(taskID, "local_bash")
+	t.system(map[string]any{"subtype": "task_started", "task_id": taskID, "tool_use_id": id, "description": "sleep", "task_type": "local_bash"})
+	t.say("Started a background task.")
+	go func() {
+		time.Sleep(time.Duration(seconds * float64(time.Second)))
+		bt := &turnRun{f: f, ctx: context.Background()}
+		f.mu.Lock()
+		delete(f.bg, taskID)
+		f.mu.Unlock()
+		bt.tasksChanged()
+		if late {
+			time.Sleep(100 * time.Millisecond)
+			bt.system(map[string]any{"subtype": "task_notification", "task_id": taskID, "tool_use_id": id, "status": "killed",
+				"summary": "Background command killed"})
+		}
+	}()
+}
+
+// backgroundFast is a background shell that ends before its call's result
+// names it: started, updated, notified and gone from the list, and only then
+// the tool_result with its backgroundTaskId.
+func (t *turnRun) backgroundFast() {
+	t.closeText()
+	if t.apiMsg == "" {
+		t.msgStart()
+	}
+	f := t.f
+	taskID := "b" + randHex(6)
+	id := "toolu_fake_" + randHex(10)
+	f.out(t.se(map[string]any{"type": "content_block_start", "index": t.index,
+		"content_block": map[string]any{"type": "tool_use", "id": id, "name": "Bash", "input": map[string]any{}}}))
+	t.assistant(map[string]any{"type": "tool_use", "id": id, "name": "Bash",
+		"input": map[string]any{"command": "true", "run_in_background": true}}, "")
+	f.out(t.se(map[string]any{"type": "content_block_stop", "index": t.index}))
+	t.index++
+	t.setBG(taskID, "local_bash")
+	t.system(map[string]any{"subtype": "task_started", "task_id": taskID, "tool_use_id": id, "description": "true", "task_type": "local_bash"})
+	t.system(map[string]any{"subtype": "task_updated", "task_id": taskID, "patch": map[string]any{"status": "completed"}})
+	t.system(map[string]any{"subtype": "task_notification", "task_id": taskID, "tool_use_id": id, "status": "completed",
+		"summary": "Background command completed (exit code 0)"})
+	t.setBG(taskID, "")
+	t.result(id, "Command running in background with ID: "+taskID, map[string]any{"stdout": "", "stderr": "", "backgroundTaskId": taskID}, false, "")
+	t.say("Started a quick background task.")
 }
 
 // plan asks to leave plan mode through can_use_tool, as ExitPlanMode does,

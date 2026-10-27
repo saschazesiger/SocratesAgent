@@ -26,6 +26,9 @@ type tail struct {
 	offsets map[string]int64
 	stop    chan struct{}
 	stopped bool
+	// dead is set when the CLI is gone: what is left to read belongs to
+	// work that died with it, and everything open was closed already.
+	dead bool
 }
 
 // startTail follows a workflow's transcript directory until it ends.
@@ -38,17 +41,24 @@ func (s *state) startTail(partID, dir string) {
 	go t.run(s.a)
 }
 
-// stopTail ends a workflow's tail after one last read.
-func (s *state) stopTail(partID string) {
-	if t := s.tails[partID]; t != nil && !t.stopped {
-		t.stopped = true
-		close(t.stop)
-	}
+// stopTail ends a workflow's tail after one last read, which closes the
+// calls the workflow's agents left without a result. It reports whether
+// there was a tail to do that.
+func (s *state) stopTail(partID string) bool {
+	t := s.tails[partID]
 	delete(s.tails, partID)
+	if t == nil || t.stopped {
+		return false
+	}
+	t.stopped = true
+	close(t.stop)
+	return true
 }
 
-func (s *state) stopTails() {
-	for id := range s.tails {
+// killTails ends every tail without a last read: the CLI is gone.
+func (s *state) killTails() {
+	for id, t := range s.tails {
+		t.dead = true
 		s.stopTail(id)
 	}
 }
@@ -60,6 +70,11 @@ func (t *tail) run(a *Adapter) {
 		select {
 		case <-t.stop:
 			t.scan(a)
+			a.mu.Lock()
+			if !t.dead {
+				a.st.closeOrphans()
+			}
+			a.mu.Unlock()
 			return
 		case <-tick.C:
 			t.scan(a)
@@ -74,8 +89,11 @@ func (t *tail) scan(a *Adapter) {
 	for _, path := range files {
 		agentID := strings.TrimSuffix(strings.TrimPrefix(filepath.Base(path), "agent-"), ".jsonl")
 		a.mu.Lock()
-		parent := a.st.wfAgents[agentID]
+		parent, dead := a.st.wfAgents[agentID], t.dead
 		a.mu.Unlock()
+		if dead {
+			return
+		}
 		if parent == "" {
 			// The workflow has not reported this agent yet; its lines wait
 			// for the part they belong in.
@@ -86,8 +104,10 @@ func (t *tail) scan(a *Adapter) {
 			continue
 		}
 		a.mu.Lock()
-		for _, l := range lines {
-			a.st.agentLine(l, parent)
+		if !t.dead {
+			for _, l := range lines {
+				a.st.agentLine(l, parent)
+			}
 		}
 		a.mu.Unlock()
 	}

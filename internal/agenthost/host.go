@@ -264,22 +264,12 @@ func (h *host) recover() error {
 	h.rec.View(func(p *agent.Projection) {
 		// A part still running belongs to work that died with the host's
 		// CLI: the turn below, or a subagent or workflow that outlived its
-		// turn (WP3), whose group would otherwise run for ever.
-		var walk func(parts []*agent.Part)
-		walk = func(parts []*agent.Part) {
-			for _, part := range parts {
-				if part.State == agent.PartRunning || part.State == agent.PartStreaming {
-					events = append(events, agent.Event{Type: agent.TypePart, MessageID: part.MessageID, PartID: part.ID,
-						ParentPartID: part.ParentID, Kind: part.Kind, State: agent.PartInterrupted, Text: part.Text, Content: stoppedContent(part.Content)})
-				}
-				walk(part.Children)
-			}
-		}
-		for _, m := range p.Messages {
-			walk(m.Parts)
-		}
+		// turn (WP3), whose group would otherwise run for ever. So do the
+		// background tasks it counted.
+		var closed int
+		events, closed = leftovers(p)
 		if p.Turn == nil {
-			if len(events) > 0 {
+			if closed > 0 {
 				events = append(events, agent.Event{Type: agent.TypeNotice, Code: agent.NoticeResumed,
 					Text: "Resumed after a restart. Background work that was running was stopped."})
 			}
@@ -296,6 +286,42 @@ func (h *host) recover() error {
 	}
 	_, err := h.rec.EmitDurable(events...)
 	return err
+}
+
+// leftovers is what the journal must say once the CLI it describes is gone:
+// every part still running or streaming is interrupted (and what its content
+// says still runs, killed), and no background task runs any more - they were
+// the process's own. closed is how many parts that ends. The adapters close
+// what they know of themselves; this is for what they could not (a host
+// that died, an adapter that missed an end).
+func leftovers(p *agent.Projection) (events []agent.Event, closed int) {
+	var walk func(parts []*agent.Part)
+	walk = func(parts []*agent.Part) {
+		for _, part := range parts {
+			if part.State == agent.PartRunning || part.State == agent.PartStreaming {
+				events = append(events, agent.Event{Type: agent.TypePart, MessageID: part.MessageID, PartID: part.ID,
+					ParentPartID: part.ParentID, Kind: part.Kind, State: agent.PartInterrupted, Text: part.Text, Content: stoppedContent(part.Content)})
+			}
+			walk(part.Children)
+		}
+	}
+	for _, m := range p.Messages {
+		walk(m.Parts)
+	}
+	closed = len(events)
+	if p.Tasks != 0 || p.Agents != 0 {
+		events = append(events, agent.Event{Type: agent.TypeTasks})
+	}
+	return events, closed
+}
+
+// closeLeftovers journals the leftovers of a CLI that is gone.
+func (h *host) closeLeftovers() {
+	var events []agent.Event
+	h.rec.View(func(p *agent.Projection) { events, _ = leftovers(p) })
+	if len(events) > 0 {
+		h.record(events...)
+	}
 }
 
 func (h *host) listen() error {
@@ -584,6 +610,9 @@ func (h *host) cliExited(err error) {
 			events = append(events, agent.Event{Type: agent.TypeTurnEnded, TurnID: p.Turn.ID,
 				Outcome: agent.OutcomeFailed, Text: "The agent exited during the turn: " + detail})
 		}
+		// What outlived the turn died with the CLI too.
+		left, _ := leftovers(p)
+		events = append(events, left...)
 	})
 	events = append(events, agent.Event{Type: agent.TypeProcess, State: agent.ProcessFailed, Detail: detail})
 	_, _ = h.rec.EmitDurable(events...)
@@ -951,6 +980,7 @@ func (h *host) park(force bool) {
 		}
 		cancel()
 	}
+	h.closeLeftovers()
 	_, _ = h.rec.EmitDurable(agent.Event{Type: agent.TypeProcess, State: agent.ProcessParked})
 	h.finish()
 }
@@ -978,6 +1008,9 @@ func (h *host) stop(clientID string) {
 			events = append(events, agent.Event{Type: agent.TypeTurnEnded, TurnID: p.Turn.ID,
 				Outcome: agent.OutcomeInterrupted, Text: "The chat was stopped."})
 		}
+		// Stop ends the background work too.
+		left, _ := leftovers(p)
+		events = append(events, left...)
 	})
 	events = append(events, agent.Event{Type: agent.TypeProcess, State: agent.ProcessExited, Detail: "stopped"})
 	_, _ = h.rec.EmitDurable(events...)

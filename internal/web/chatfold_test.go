@@ -132,6 +132,32 @@ func TestTheBrowserKeepsTheLimitsOfTheAccountItIsOn(t *testing.T) {
 	check(8, "", 5000, "five_hour")
 }
 
+// Background tasks are the process's own: once it is parked, stopped or
+// dead, or a new host starts, the browser counts none, as the server does,
+// whatever the last count said.
+func TestNoBackgroundTaskOutlivesItsProcess(t *testing.T) {
+	events := []agent.Event{
+		{Type: agent.TypeProcess, State: agent.ProcessReady},
+		{Type: agent.TypeTasks, Count: 3, Agents: 1},
+		{Type: agent.TypeProcess, State: agent.ProcessParked},
+		{Type: agent.TypeProcess, State: agent.ProcessStarting},
+		{Type: agent.TypeProcess, State: agent.ProcessReady},
+		{Type: agent.TypeTasks, Count: 2},
+		{Type: agent.TypeProcess, State: agent.ProcessFailed},
+	}
+	for i := range events {
+		events[i].Seq, events[i].At = int64(i+1), int64(1000+i)
+	}
+	for n, want := range map[int]int{2: 3, 3: 0, 5: 0, 6: 2, 7: 0} {
+		if p := agent.Fold(events[:n]); p.Tasks != want || (want == 0 && p.Agents != 0) {
+			t.Fatalf("after %d events the server counts %d tasks, %d agents; want %d", n, p.Tasks, p.Agents, want)
+		}
+		if got := runFold(t, events[:n], `chat.tasks`); got != strconv.Itoa(want) {
+			t.Fatalf("after %d events the browser counts %s tasks; want %d", n, got, want)
+		}
+	}
+}
+
 // How a turn ended is said right under that turn, above what the person sent
 // while it ran: the journal has a message queued during the turn before the
 // turn's end, and "Interrupted" drawn under it read as if that message had

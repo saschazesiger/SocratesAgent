@@ -317,14 +317,24 @@ func (h *host) parkAdapter(ctx context.Context) {
 	old := h.adapter
 	h.adapter = nil
 	h.cliPID.Store(0)
+	background := 0
+	h.rec.View(func(p *agent.Projection) { background = p.Tasks })
 	pctx, cancel := context.WithTimeout(ctx, parkWait)
 	if err := old.Park(pctx); err != nil {
 		log.Printf("the agent did not park cleanly for a switch: %v", err)
 		_ = old.Stop()
 	}
 	cancel()
+	// The background work of the old process ended with it, and the new
+	// one will not count it: nothing of it may run on in the chat.
 	var events []agent.Event
 	h.rec.View(func(p *agent.Projection) {
+		left, closed := leftovers(p)
+		events = append(events, left...)
+		if background > 0 || closed > 0 {
+			events = append(events, agent.Event{Type: agent.TypeNotice, Code: agent.NoticeBackgroundStopped,
+				Text: "The switch restarted the agent on the other account, so the background work that was running stopped."})
+		}
 		if p.Turn != nil {
 			events = append(events, agent.Event{Type: agent.TypeTurnEnded, TurnID: p.Turn.ID,
 				Outcome: agent.OutcomeInterrupted, Text: "The turn was stopped to switch the account."})

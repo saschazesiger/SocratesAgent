@@ -140,6 +140,9 @@ const (
 	// NoticeResumed: the previous host died, and this one resumed the
 	// conversation. The turn that was running is recorded as interrupted.
 	NoticeResumed = "resumed"
+	// NoticeBackgroundStopped: the agent's process was replaced (an account
+	// switch) while background work of it ran, which ended with it.
+	NoticeBackgroundStopped = "background_stopped"
 	// NoticeAnswerAsMessage: an answer arrived when the blocking call was
 	// gone, and went to the agent as a user message instead.
 	NoticeAnswerAsMessage = "answer_as_message"
