@@ -56,19 +56,15 @@
     <div class="ds-drawer__list" id="adminNavList">
       <a class="ds-drawer__item" href="/" data-icon="arrowLeft" data-icon-place="start"><span class="ds-drawer__label">Sessions</span></a>
       <div class="ds-drawer__group">
-        <p class="ds-drawer__heading">This machine</p>
-        <a class="ds-drawer__item" href="#tmuxCard" data-section="tmuxCard" data-icon="cpu" data-icon-place="start"><span class="ds-drawer__label">Terminal engine</span></a>
-        <a class="ds-drawer__item" href="#updatesCard" data-section="updatesCard" data-icon="download" data-icon-place="start"><span class="ds-drawer__label">Updates</span></a>
-        <a class="ds-drawer__item" href="#backupCard" data-section="backupCard" data-icon="history" data-icon-place="start"><span class="ds-drawer__label">Backup</span></a>
-        <a class="ds-drawer__item" href="#checksCard" data-section="checksCard" data-icon="activity" data-icon-place="start"><span class="ds-drawer__label">Setup check</span></a>
+        <p class="ds-drawer__heading">Agents</p>
+        <a class="ds-drawer__item" href="#accountsCard" data-section="accountsCard" data-icon="users" data-icon-place="start"><span class="ds-drawer__label">Accounts</span></a>
+        <a class="ds-drawer__item" href="#harnessCards" data-section="harnessCards" data-icon="apps" data-icon-place="start"><span class="ds-drawer__label">Programs</span></a>
+        <a class="ds-drawer__item" href="#mcpCard" data-section="mcpCard" data-icon="server" data-icon-place="start"><span class="ds-drawer__label">MCP servers</span></a>
       </div>
       <div class="ds-drawer__group">
         <p class="ds-drawer__heading">New sessions</p>
         <a class="ds-drawer__item" href="#workspaceCard" data-section="workspaceCard" data-icon="folder" data-icon-place="start"><span class="ds-drawer__label">Workspace</span></a>
-        <a class="ds-drawer__item" href="#accountsCard" data-section="accountsCard" data-icon="users" data-icon-place="start"><span class="ds-drawer__label">Accounts</span></a>
         <a class="ds-drawer__item" href="#terminalCard" data-section="terminalCard" data-icon="monitor" data-icon-place="start"><span class="ds-drawer__label">Terminal</span></a>
-        <a class="ds-drawer__item" href="#harnessCards" data-section="harnessCards" data-icon="apps" data-icon-place="start"><span class="ds-drawer__label">Programs</span></a>
-        <a class="ds-drawer__item" href="#mcpCard" data-section="mcpCard" data-icon="server" data-icon-place="start"><span class="ds-drawer__label">MCP servers</span></a>
       </div>
       <div class="ds-drawer__group">
         <p class="ds-drawer__heading">Voice and models</p>
@@ -79,6 +75,13 @@
         <p class="ds-drawer__heading">Access</p>
         <a class="ds-drawer__item" href="#tunnelCard" data-section="tunnelCard" data-icon="globe" data-icon-place="start"><span class="ds-drawer__label">Remote access</span></a>
         <a class="ds-drawer__item" href="#passwordCard" data-section="passwordCard" data-icon="lock" data-icon-place="start"><span class="ds-drawer__label">Password</span></a>
+      </div>
+      <div class="ds-drawer__group">
+        <p class="ds-drawer__heading">This machine</p>
+        <a class="ds-drawer__item" href="#updatesCard" data-section="updatesCard" data-icon="download" data-icon-place="start"><span class="ds-drawer__label">Updates</span></a>
+        <a class="ds-drawer__item" href="#backupCard" data-section="backupCard" data-icon="history" data-icon-place="start"><span class="ds-drawer__label">Backup</span></a>
+        <a class="ds-drawer__item" href="#checksCard" data-section="checksCard" data-icon="activity" data-icon-place="start"><span class="ds-drawer__label">Setup check</span></a>
+        <a class="ds-drawer__item" href="#tmuxCard" data-section="tmuxCard" data-icon="cpu" data-icon-place="start"><span class="ds-drawer__label">Terminal engine</span></a>
       </div>
     </div>
   </nav>
@@ -96,172 +99,33 @@
                tunnel that could not be started on the way in. -->
           <div class="so-admin-notice" id="notice" hidden></div>
 
-          <!-- ── This machine ─────────────────────────────────────────── -->
+          <!-- ── Agents ───────────────────────────────────────────────── -->
 
-          <section class="ds-card" id="tmuxCard" aria-labelledby="tmuxTitle">
-            <h2 class="ds-card__title" id="tmuxTitle">Terminal engine</h2>
-            <p class="ds-muted">Socrates keeps every Shell inside tmux, which is what lets a terminal outlive the browser, the phone and Socrates itself. It is not optional and there is no fallback.</p>
-            <div class="so-state" id="tmuxStatus" aria-live="polite">
-              <span class="so-state__line"><span class="ds-status"><span class="ds-spinner ds-status__spinner" aria-hidden="true"></span><span>Loading</span></span></span>
-              <span class="so-state__tip"></span>
-            </div>
-            <div class="ds-alert ds-alert--warning" id="tmuxReasonBox" hidden data-icon="alert" data-icon-place="start"><span class="ds-alert__text" id="tmuxReason"></span></div>
+          <section class="ds-card" id="accountsCard" aria-labelledby="accountsTitle">
+            <h2 class="ds-card__title" id="accountsTitle">Accounts</h2>
+            <p class="ds-muted">The accounts the chats run on: subscriptions and API keys, for each agent. A chat can move to another account of its agent while it is open, and the lists offer them in this order — drag a row by its handle to change it. Every account of an agent shares that agent's conversations; a sign-in stays with its account.</p>
+            <div class="so-account-groups" id="accountList"></div>
+            <p class="ds-meta">Changes here take effect at once. A subscription signs in with the agent's own page; an API key is kept encrypted on this machine and is never shown again.</p>
           </section>
 
-          <section class="ds-card" id="updatesCard" aria-labelledby="updatesTitle">
-            <div class="ds-card__row">
-              <h2 class="ds-card__title" id="updatesTitle">Updates</h2>
-              <button class="ds-btn ds-btn--sm" id="updatesRun" type="button">
-                <span class="ds-btn__faces">
-                  <span class="ds-btn__face">Update now</span>
-                  <span class="ds-btn__face ds-btn__face--busy" aria-hidden="true"><span class="ds-spinner ds-spinner--sm"></span>Starting</span>
-                </span>
-              </button>
-            </div>
-            <p class="ds-muted">Once a day, and after every boot, the updater brings Socrates, the three programs, Go, Node, code-server and cloudflared up to date. It runs beside Socrates rather than inside it, so a run that updates Socrates restarts it and the sessions stay up.</p>
-            <div class="so-state" id="updatesStatus" aria-live="polite">
-              <span class="so-state__line"><span class="ds-status"><span class="ds-spinner ds-status__spinner" aria-hidden="true"></span><span>Loading</span></span></span>
-              <span class="so-state__tip"></span>
-            </div>
-            <div class="ds-progress ds-progress--indeterminate" id="updatesProgress" hidden>
-              <div class="ds-progress__track" role="progressbar" aria-label="Update" aria-valuemin="0" aria-valuemax="100" aria-valuetext="Updating">
-                <div class="ds-progress__bar"></div>
-              </div>
-            </div>
-            <div class="ds-table-wrap" id="updatesTable" hidden>
-              <table class="ds-table ds-table--dense">
-                <caption class="ds-sr">What the last run did</caption>
-                <thead><tr>
-                  <th scope="col">Component</th>
-                  <th scope="col">Version</th>
-                  <th scope="col" class="so-col-status">Result</th>
-                </tr></thead>
-                <tbody id="updatesList"></tbody>
-              </table>
-            </div>
-            <p class="ds-muted" id="updatesHint"></p>
+          <!-- The program cards are drawn by admin.js from what this machine
+               reports; until then this card says it is asking. -->
+          <div class="so-admin-group" id="harnessCards">
+            <section class="ds-card">
+              <h2 class="ds-card__title">Programs</h2>
+              <div class="ds-loading" role="status"><span class="ds-loader ds-loader--sm" aria-hidden="true"></span>Asking this machine which programs are installed</div>
+            </section>
+          </div>
+
+          <section class="ds-card" id="mcpCard" aria-labelledby="mcpTitle">
+            <h2 class="ds-card__title" id="mcpTitle">MCP servers</h2>
+            <p class="ds-muted">Tools for every chat's agent, whatever its program. A server that is on here is on in every chat; one that is off is there for a chat to switch on. Each chat switches them for itself in its ⋮ → MCP servers. A folder's <code>.mcp.json</code> adds its own servers, and its server wins a name both have.</p>
+            <div class="so-rows" id="mcpServers"></div>
             <div class="so-admin-actions">
-              <button class="ds-btn ds-btn--text ds-btn--sm" id="updatesLogToggle" type="button" aria-expanded="false" aria-controls="updatesLog">Show log</button>
+              <button class="ds-btn ds-btn--text ds-add-row" id="mcpAdd" type="button" data-icon="plus" data-icon-size="16" data-icon-place="start">Add an MCP server</button>
+              <button class="ds-btn ds-btn--text" id="mcpImport" type="button" data-icon="clipboard" data-icon-size="16" data-icon-place="start">Paste JSON</button>
             </div>
-            <pre class="ds-code-block ds-code-block--wrap so-log" id="updatesLog" tabindex="0" aria-label="Update log" hidden></pre>
-          </section>
-
-          <section class="ds-card" id="backupCard" aria-labelledby="backupTitle">
-            <div class="ds-card__row">
-              <h2 class="ds-card__title" id="backupTitle">Backup</h2>
-              <button class="ds-btn ds-btn--sm" id="backupRun" type="button">
-                <span class="ds-btn__faces">
-                  <span class="ds-btn__face">Back up now</span>
-                  <span class="ds-btn__face ds-btn__face--busy" aria-hidden="true"><span class="ds-spinner ds-spinner--sm"></span>Starting</span>
-                </span>
-              </button>
-            </div>
-            <p class="ds-muted">Everything Socrates keeps is in its data directory on this machine: the chats, the accounts with their sign-ins and transcripts, the settings. While anything changes, it is backed up to an S3 bucket every few minutes — encrypted here with your passphrase, and only what changed goes up. Working directories are not in the backup; they live in git. A new machine is restored from its setup page.</p>
-            <div class="so-state" id="backupStatus" aria-live="polite">
-              <span class="so-state__line"><span class="ds-status"><span class="ds-spinner ds-status__spinner" aria-hidden="true"></span><span>Loading</span></span></span>
-              <span class="so-state__tip"></span>
-            </div>
-            <div class="so-admin-notice" id="backupDetail"></div>
-            <div class="ds-table-wrap" id="backupSnapshots" hidden>
-              <table class="ds-table ds-table--dense">
-                <caption class="ds-sr">Snapshots in the bucket</caption>
-                <thead><tr>
-                  <th scope="col">Taken</th>
-                  <th scope="col">Machine</th>
-                  <th scope="col" class="ds-num">Size</th>
-                  <th scope="col" class="ds-num ds-col--secondary">Files</th>
-                </tr></thead>
-                <tbody id="backupSnapshotList"></tbody>
-              </table>
-            </div>
-            <p class="ds-meta" id="backupSnapshotsHint"></p>
-            <!-- What the bucket mirror of the build before left beside the
-                 backup, and once there is a snapshot of this machine the
-                 button that deletes it (admin.js, loadLegacy). -->
-            <div class="so-admin-notice" id="backupLegacy"></div>
-            <div class="ds-subsection">
-              <h3 class="ds-card__subtitle">Bucket</h3>
-              <div class="ds-form">
-                <div class="ds-form-grid ds-form-grid--2">
-                  <div class="ds-field">
-                    <label class="ds-field__label" for="backupEndpoint">Endpoint</label>
-                    <input class="ds-input" type="text" id="backupEndpoint" spellcheck="false" placeholder="AWS S3">
-                  </div>
-                  <div class="ds-field">
-                    <label class="ds-field__label" for="backupRegion">Region</label>
-                    <input class="ds-input" type="text" id="backupRegion" spellcheck="false" placeholder="us-east-1">
-                  </div>
-                  <div class="ds-field">
-                    <label class="ds-field__label" for="backupBucket">Bucket</label>
-                    <input class="ds-input" type="text" id="backupBucket" spellcheck="false">
-                  </div>
-                  <div class="ds-field">
-                    <label class="ds-field__label" for="backupPrefix">Prefix</label>
-                    <input class="ds-input" type="text" id="backupPrefix" spellcheck="false" placeholder="backup/v1">
-                  </div>
-                  <div class="ds-field">
-                    <label class="ds-field__label" for="backupKey">Access key ID</label>
-                    <input class="ds-input" type="text" id="backupKey" spellcheck="false" autocomplete="off">
-                  </div>
-                  <div class="ds-field">
-                    <label class="ds-field__label" for="backupSecret">Secret access key</label>
-                    <input class="ds-input" type="password" id="backupSecret" autocomplete="off">
-                  </div>
-                  <div class="ds-field">
-                    <label class="ds-field__label" for="backupPassphrase">Encryption passphrase</label>
-                    <input class="ds-input" type="password" id="backupPassphrase" autocomplete="new-password" aria-describedby="backupPassphraseHint">
-                    <small class="ds-field__hint" id="backupPassphraseHint">Everything in the bucket is encrypted with it. Lose it and nobody can read the backup, you included: keep it somewhere other than this machine.</small>
-                  </div>
-                  <div class="ds-field">
-                    <label class="ds-field__label" for="backupInterval">Every (minutes)</label>
-                    <input class="ds-input" type="number" id="backupInterval" min="5" step="1" inputmode="numeric" aria-describedby="backupIntervalHint">
-                    <small class="ds-field__hint" id="backupIntervalHint">At least 5. A backup runs only when something changed, and once more when Socrates stops.</small>
-                  </div>
-                </div>
-                <label class="ds-check"><input type="checkbox" id="backupPathStyle" checked><span>Path-style addressing</span></label>
-                <div class="ds-form-actions">
-                  <button class="ds-btn" id="backupSave" type="button">
-                    <span class="ds-btn__faces">
-                      <span class="ds-btn__face">Save backup settings</span>
-                      <span class="ds-btn__face ds-btn__face--busy" aria-hidden="true"><span class="ds-spinner ds-spinner--sm"></span>Checking</span>
-                      <span class="ds-btn__face ds-btn__face--done" aria-hidden="true" data-icon="check" data-icon-size="16" data-icon-place="start">Saved</span>
-                    </span>
-                  </button>
-                  <button class="ds-btn ds-btn--text" id="backupTest" type="button">
-                    <span class="ds-btn__faces">
-                      <span class="ds-btn__face">Test connection</span>
-                      <span class="ds-btn__face ds-btn__face--busy" aria-hidden="true"><span class="ds-spinner ds-spinner--sm"></span>Testing</span>
-                    </span>
-                  </button>
-                  <button class="ds-btn ds-btn--text" id="backupOff" type="button" hidden>Turn off backups</button>
-                  <p class="ds-meta" id="backupFormHint">The settings are tried against the bucket before they are saved. The secret key and the passphrase are never shown again; leave them empty to keep the saved ones.</p>
-                </div>
-              </div>
-            </div>
-          </section>
-
-          <section class="ds-card" id="checksCard" aria-labelledby="checksTitle">
-            <div class="ds-card__row">
-              <h2 class="ds-card__title" id="checksTitle">Setup check</h2>
-              <button class="ds-btn ds-btn--sm" id="runChecks" type="button">
-                <span class="ds-btn__faces">
-                  <span class="ds-btn__face">Run checks</span>
-                  <span class="ds-btn__face ds-btn__face--busy" aria-hidden="true"><span class="ds-spinner ds-spinner--sm"></span>Checking</span>
-                </span>
-              </button>
-            </div>
-            <p class="ds-muted">Asks this machine everything Socrates depends on: tmux and its socket, the workspace, each program, the OpenRouter key, and the disk underneath all of it.</p>
-            <div class="ds-table-wrap" id="checksTable" hidden>
-              <table class="ds-table ds-table--dense">
-                <caption class="ds-sr">Setup check</caption>
-                <thead><tr>
-                  <th scope="col">Check</th>
-                  <th scope="col" class="so-col-status">Result</th>
-                  <th scope="col" class="so-col-tip"><span class="ds-sr">Details</span></th>
-                </tr></thead>
-                <tbody id="checks"></tbody>
-              </table>
-            </div>
+            <small class="ds-field__hint">Saved with the page. A chat takes a change up when its agent next starts; a running one is not cut short. <code>${VAR}</code> and <code>${VAR:-default}</code> are filled in from the chat's environment, so a token can stay out of this page.</small>
           </section>
 
           <!-- ── New sessions ─────────────────────────────────────────── -->
@@ -291,13 +155,6 @@
                 <small class="ds-field__hint">Each one becomes a choice in the new-session sheet. A path that is not there yet is saved with a warning, because a mount may simply be down.</small>
               </fieldset>
             </div>
-          </section>
-
-          <section class="ds-card" id="accountsCard" aria-labelledby="accountsTitle">
-            <h2 class="ds-card__title" id="accountsTitle">Accounts</h2>
-            <p class="ds-muted">The accounts the chats run on: subscriptions and API keys, for each agent. A chat can move to another account of its agent while it is open, and the lists offer them in this order — drag a row by its handle to change it. Every account of an agent shares that agent's conversations; a sign-in stays with its account.</p>
-            <div class="so-account-groups" id="accountList"></div>
-            <p class="ds-meta">Changes here take effect at once. A subscription signs in with the agent's own page; an API key is kept encrypted on this machine and is never shown again.</p>
           </section>
 
           <section class="ds-card" id="terminalCard" aria-labelledby="terminalTitle">
@@ -337,26 +194,6 @@
               </div>
               <small class="ds-field__hint">Extended keys let Shift+Enter reach programs in a Shell; they may confuse older terminals. The terminal type, the pane that stays after its program exits and the white window style only take effect for <em>new</em> sessions.</small>
             </div>
-          </section>
-
-          <!-- The program cards are drawn by admin.js from what this machine
-               reports; until then this card says it is asking. -->
-          <div class="so-admin-group" id="harnessCards">
-            <section class="ds-card">
-              <h2 class="ds-card__title">Programs</h2>
-              <div class="ds-loading" role="status"><span class="ds-loader ds-loader--sm" aria-hidden="true"></span>Asking this machine which programs are installed</div>
-            </section>
-          </div>
-
-          <section class="ds-card" id="mcpCard" aria-labelledby="mcpTitle">
-            <h2 class="ds-card__title" id="mcpTitle">MCP servers</h2>
-            <p class="ds-muted">Tools for every chat's agent, whatever its program. A server that is on here is on in every chat; one that is off is there for a chat to switch on. Each chat switches them for itself in its ⋮ → MCP servers. A folder's <code>.mcp.json</code> adds its own servers, and its server wins a name both have.</p>
-            <div class="so-rows" id="mcpServers"></div>
-            <div class="so-admin-actions">
-              <button class="ds-btn ds-btn--text ds-add-row" id="mcpAdd" type="button" data-icon="plus" data-icon-size="16" data-icon-place="start">Add an MCP server</button>
-              <button class="ds-btn ds-btn--text" id="mcpImport" type="button" data-icon="clipboard" data-icon-size="16" data-icon-place="start">Paste JSON</button>
-            </div>
-            <small class="ds-field__hint">Saved with the page. A chat takes a change up when its agent next starts; a running one is not cut short. <code>${VAR}</code> and <code>${VAR:-default}</code> are filled in from the chat's environment, so a token can stay out of this page.</small>
           </section>
 
           <!-- ── Voice and models ─────────────────────────────────────── -->
@@ -571,6 +408,174 @@
                 </button>
               </div>
             </div>
+          </section>
+
+          <!-- ── This machine ─────────────────────────────────────────── -->
+
+          <section class="ds-card" id="updatesCard" aria-labelledby="updatesTitle">
+            <div class="ds-card__row">
+              <h2 class="ds-card__title" id="updatesTitle">Updates</h2>
+              <button class="ds-btn ds-btn--sm" id="updatesRun" type="button">
+                <span class="ds-btn__faces">
+                  <span class="ds-btn__face">Update now</span>
+                  <span class="ds-btn__face ds-btn__face--busy" aria-hidden="true"><span class="ds-spinner ds-spinner--sm"></span>Starting</span>
+                </span>
+              </button>
+            </div>
+            <p class="ds-muted">Once a day, and after every boot, the updater brings Socrates, the three programs, Go, Node, code-server and cloudflared up to date. It runs beside Socrates rather than inside it, so a run that updates Socrates restarts it and the sessions stay up.</p>
+            <div class="so-state" id="updatesStatus" aria-live="polite">
+              <span class="so-state__line"><span class="ds-status"><span class="ds-spinner ds-status__spinner" aria-hidden="true"></span><span>Loading</span></span></span>
+              <span class="so-state__tip"></span>
+            </div>
+            <div class="ds-progress ds-progress--indeterminate" id="updatesProgress" hidden>
+              <div class="ds-progress__track" role="progressbar" aria-label="Update" aria-valuemin="0" aria-valuemax="100" aria-valuetext="Updating">
+                <div class="ds-progress__bar"></div>
+              </div>
+            </div>
+            <div class="ds-table-wrap" id="updatesTable" hidden>
+              <table class="ds-table ds-table--dense">
+                <caption class="ds-sr">What the last run did</caption>
+                <thead><tr>
+                  <th scope="col">Component</th>
+                  <th scope="col">Version</th>
+                  <th scope="col" class="so-col-status">Result</th>
+                </tr></thead>
+                <tbody id="updatesList"></tbody>
+              </table>
+            </div>
+            <p class="ds-muted" id="updatesHint"></p>
+            <div class="so-admin-actions">
+              <button class="ds-btn ds-btn--text ds-btn--sm" id="updatesLogToggle" type="button" aria-expanded="false" aria-controls="updatesLog">Show log</button>
+            </div>
+            <pre class="ds-code-block ds-code-block--wrap so-log" id="updatesLog" tabindex="0" aria-label="Update log" hidden></pre>
+          </section>
+
+          <section class="ds-card" id="backupCard" aria-labelledby="backupTitle">
+            <div class="ds-card__row">
+              <h2 class="ds-card__title" id="backupTitle">Backup</h2>
+              <button class="ds-btn ds-btn--sm" id="backupRun" type="button">
+                <span class="ds-btn__faces">
+                  <span class="ds-btn__face">Back up now</span>
+                  <span class="ds-btn__face ds-btn__face--busy" aria-hidden="true"><span class="ds-spinner ds-spinner--sm"></span>Starting</span>
+                </span>
+              </button>
+            </div>
+            <p class="ds-muted">Everything Socrates keeps is in its data directory on this machine: the chats, the accounts with their sign-ins and transcripts, the settings. While anything changes, it is backed up to an S3 bucket every few minutes — encrypted here with your passphrase, and only what changed goes up. Working directories are not in the backup; they live in git. A new machine is restored from its setup page.</p>
+            <div class="so-state" id="backupStatus" aria-live="polite">
+              <span class="so-state__line"><span class="ds-status"><span class="ds-spinner ds-status__spinner" aria-hidden="true"></span><span>Loading</span></span></span>
+              <span class="so-state__tip"></span>
+            </div>
+            <div class="so-admin-notice" id="backupDetail"></div>
+            <div class="ds-table-wrap" id="backupSnapshots" hidden>
+              <table class="ds-table ds-table--dense">
+                <caption class="ds-sr">Snapshots in the bucket</caption>
+                <thead><tr>
+                  <th scope="col">Taken</th>
+                  <th scope="col">Machine</th>
+                  <th scope="col" class="ds-num">Size</th>
+                  <th scope="col" class="ds-num ds-col--secondary">Files</th>
+                </tr></thead>
+                <tbody id="backupSnapshotList"></tbody>
+              </table>
+            </div>
+            <p class="ds-meta" id="backupSnapshotsHint"></p>
+            <!-- What the bucket mirror of the build before left beside the
+                 backup, and once there is a snapshot of this machine the
+                 button that deletes it (admin.js, loadLegacy). -->
+            <div class="so-admin-notice" id="backupLegacy"></div>
+            <div class="ds-subsection">
+              <h3 class="ds-card__subtitle">Bucket</h3>
+              <div class="ds-form">
+                <div class="ds-form-grid ds-form-grid--2">
+                  <div class="ds-field">
+                    <label class="ds-field__label" for="backupEndpoint">Endpoint</label>
+                    <input class="ds-input" type="text" id="backupEndpoint" spellcheck="false" placeholder="AWS S3">
+                  </div>
+                  <div class="ds-field">
+                    <label class="ds-field__label" for="backupRegion">Region</label>
+                    <input class="ds-input" type="text" id="backupRegion" spellcheck="false" placeholder="us-east-1">
+                  </div>
+                  <div class="ds-field">
+                    <label class="ds-field__label" for="backupBucket">Bucket</label>
+                    <input class="ds-input" type="text" id="backupBucket" spellcheck="false">
+                  </div>
+                  <div class="ds-field">
+                    <label class="ds-field__label" for="backupPrefix">Prefix</label>
+                    <input class="ds-input" type="text" id="backupPrefix" spellcheck="false" placeholder="backup/v1">
+                  </div>
+                  <div class="ds-field">
+                    <label class="ds-field__label" for="backupKey">Access key ID</label>
+                    <input class="ds-input" type="text" id="backupKey" spellcheck="false" autocomplete="off">
+                  </div>
+                  <div class="ds-field">
+                    <label class="ds-field__label" for="backupSecret">Secret access key</label>
+                    <input class="ds-input" type="password" id="backupSecret" autocomplete="off">
+                  </div>
+                  <div class="ds-field">
+                    <label class="ds-field__label" for="backupPassphrase">Encryption passphrase</label>
+                    <input class="ds-input" type="password" id="backupPassphrase" autocomplete="new-password" aria-describedby="backupPassphraseHint">
+                    <small class="ds-field__hint" id="backupPassphraseHint">Everything in the bucket is encrypted with it. Lose it and nobody can read the backup, you included: keep it somewhere other than this machine.</small>
+                  </div>
+                  <div class="ds-field">
+                    <label class="ds-field__label" for="backupInterval">Every (minutes)</label>
+                    <input class="ds-input" type="number" id="backupInterval" min="5" step="1" inputmode="numeric" aria-describedby="backupIntervalHint">
+                    <small class="ds-field__hint" id="backupIntervalHint">At least 5. A backup runs only when something changed, and once more when Socrates stops.</small>
+                  </div>
+                </div>
+                <label class="ds-check"><input type="checkbox" id="backupPathStyle" checked><span>Path-style addressing</span></label>
+                <div class="ds-form-actions">
+                  <button class="ds-btn" id="backupSave" type="button">
+                    <span class="ds-btn__faces">
+                      <span class="ds-btn__face">Save backup settings</span>
+                      <span class="ds-btn__face ds-btn__face--busy" aria-hidden="true"><span class="ds-spinner ds-spinner--sm"></span>Checking</span>
+                      <span class="ds-btn__face ds-btn__face--done" aria-hidden="true" data-icon="check" data-icon-size="16" data-icon-place="start">Saved</span>
+                    </span>
+                  </button>
+                  <button class="ds-btn ds-btn--text" id="backupTest" type="button">
+                    <span class="ds-btn__faces">
+                      <span class="ds-btn__face">Test connection</span>
+                      <span class="ds-btn__face ds-btn__face--busy" aria-hidden="true"><span class="ds-spinner ds-spinner--sm"></span>Testing</span>
+                    </span>
+                  </button>
+                  <button class="ds-btn ds-btn--text" id="backupOff" type="button" hidden>Turn off backups</button>
+                  <p class="ds-meta" id="backupFormHint">The settings are tried against the bucket before they are saved. The secret key and the passphrase are never shown again; leave them empty to keep the saved ones.</p>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <section class="ds-card" id="checksCard" aria-labelledby="checksTitle">
+            <div class="ds-card__row">
+              <h2 class="ds-card__title" id="checksTitle">Setup check</h2>
+              <button class="ds-btn ds-btn--sm" id="runChecks" type="button">
+                <span class="ds-btn__faces">
+                  <span class="ds-btn__face">Run checks</span>
+                  <span class="ds-btn__face ds-btn__face--busy" aria-hidden="true"><span class="ds-spinner ds-spinner--sm"></span>Checking</span>
+                </span>
+              </button>
+            </div>
+            <p class="ds-muted">Asks this machine everything Socrates depends on: tmux and its socket, the workspace, each program, the OpenRouter key, and the disk underneath all of it.</p>
+            <div class="ds-table-wrap" id="checksTable" hidden>
+              <table class="ds-table ds-table--dense">
+                <caption class="ds-sr">Setup check</caption>
+                <thead><tr>
+                  <th scope="col">Check</th>
+                  <th scope="col" class="so-col-status">Result</th>
+                  <th scope="col" class="so-col-tip"><span class="ds-sr">Details</span></th>
+                </tr></thead>
+                <tbody id="checks"></tbody>
+              </table>
+            </div>
+          </section>
+
+          <section class="ds-card" id="tmuxCard" aria-labelledby="tmuxTitle">
+            <h2 class="ds-card__title" id="tmuxTitle">Terminal engine</h2>
+            <p class="ds-muted">Socrates keeps every Shell inside tmux, which is what lets a terminal outlive the browser, the phone and Socrates itself. It is not optional and there is no fallback.</p>
+            <div class="so-state" id="tmuxStatus" aria-live="polite">
+              <span class="so-state__line"><span class="ds-status"><span class="ds-spinner ds-status__spinner" aria-hidden="true"></span><span>Loading</span></span></span>
+              <span class="so-state__tip"></span>
+            </div>
+            <div class="ds-alert ds-alert--warning" id="tmuxReasonBox" hidden data-icon="alert" data-icon-place="start"><span class="ds-alert__text" id="tmuxReason"></span></div>
           </section>
 
           <div class="ds-form-actions so-admin-foot">

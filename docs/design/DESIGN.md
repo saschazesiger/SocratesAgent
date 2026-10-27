@@ -2563,9 +2563,10 @@ Every UI package is reviewed against these; a package that breaks one is rejecte
 
 # F. Admin
 
-`admin.html` + `admin.js`. Sections, in order, each a `<section class="card">` with an `<h2>` and
-a `<p class="card-sub">`, using the existing `.field > label + .input|.select + .hint` and
-`label.switch` controls. All white, hairline-separated, no boxes.
+`admin.html` + `admin.js`. Sections (admin.html has their order: the agents first, the machine's
+upkeep last), each a `<section class="card">` with an `<h2>` and a `<p class="card-sub">`, using the
+existing `.field > label + .input|.select + .hint` and `label.switch` controls. All white,
+hairline-separated, no boxes.
 
 ## F.1 Terminal engine (tmux) — `#tmuxCard`
 

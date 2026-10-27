@@ -241,8 +241,8 @@ async function load() {
   if (data.local_url) localURL = data.local_url;
   refreshTunnel();
   if (new URLSearchParams(location.search).get('welcome')) {
-    showNotice('Welcome. Check the terminal engine below, add your OpenRouter key if you want to '
-      + 'dictate, sign the agents in under Accounts, then head back to the sessions.', 'ok');
+    showNotice('Welcome. Sign the agents in under Accounts below, add your OpenRouter key if you want to '
+      + 'dictate, then head back to the sessions. The terminal engine and the setup check are at the bottom.', 'ok');
   }
   const tunnelError = sessionStorage.getItem('socrates.tunnel_error');
   if (tunnelError) {
