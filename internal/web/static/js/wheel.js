@@ -1,25 +1,26 @@
-// The motion of a .so-wheel slot (so-motion.css): its lines roll like the
-// face of a wheel. Written the way a Dashboard-Style module is - it reads
-// the motion tokens through DS.motion and names nothing of Socrates - so it
-// can move there as it is (Dashboard-Style plans/wheel-and-shimmer.md).
+// The motion of a .so-wheel slot (so-motion.css): its lines roll. Written
+// the way a Dashboard-Style module is - it reads the motion tokens through
+// DS.motion and names nothing of Socrates - so it can move there as it is
+// (Dashboard-Style plans/wheel-and-shimmer.md).
 //
 // A slot drawn with DS.dom.morphHtml rolls by itself when the morph is
 // given wheelHooks: its lines are keyed by what they say, so a new text is
-// a new line, which the hooks turn in, while the old one is turned out and
+// a new line, which the hooks bring in, while the old one is taken out and
 // stays (morph keeps a node whose onRemove returns a promise) until it is
 // gone. wheelRoll(slot, text) does the same for a slot of plain text
 // without a morph.
 //
-// The turn: both lines go round one drum behind the text (the slot's
-// --so-wheel-depth, set as each line's transform-origin), the old one up
-// and away by --so-wheel-angle, the new one up from below by as much, on
-// --ds-ease-spatial over --ds-dur-slow. The old line fades out
-// (--ds-dur-base, --ds-ease-in) and blurs by --so-wheel-blur as it turns
-// away; the new one fades in (--ds-dur-medium, --ds-ease-in-out) and
-// sharpens. Every line is shown for at least --ds-hold-status: a change
-// during the hold waits, and a later one takes the place of the waiting one
-// (which then never shows), so a quick run of changes rolls once, to the
-// last. A change during a turn turns each line on from where it is.
+// The roll is quiet on purpose, a line in the background that changes
+// rather than a thing that moves: the old line glides up by the slot's
+// --so-wheel-travel (--ds-dur-medium, --ds-ease-in) and is faded out within
+// --ds-dur-fast (--ds-ease-out); the new one glides up into place from as
+// far below and fades in (--ds-dur-slow, --ds-ease-out, no overshoot) once
+// the old one has faded, so the two never stand on each other. Only
+// translate and opacity: the text stays sharp all the way. Every line is
+// shown for at least --ds-hold-status: a change during the hold waits, and a
+// later one takes the place of the waiting one (which then never shows), so
+// a quick run of changes rolls once, to the last. A change during a roll
+// carries each line on from where it is.
 
 import { M } from './ui.js';
 
@@ -38,23 +39,26 @@ function slotOf(line) {
 function stateOf(slot) {
   let state = slots.get(slot);
   if (!state) {
-    state = { restAt: -Infinity, turn: null };
+    state = { restAt: -Infinity, turn: null, last: null };
     slots.set(slot, state);
   }
   return state;
 }
 
 /**
- * turnDelay is how long the turn the slot makes now waits: none once its
- * line has been shown for the hold, else the rest of the hold. The line
- * that goes and the line that comes in one change (one morph, one task)
- * share it.
+ * turnDelay is how long the roll the slot makes now waits: none once its
+ * line has been shown for the hold, else the rest of the hold. A line that
+ * has not shown yet (it waits, or has not started to come in) holds
+ * nothing: the line that takes its place takes its time, so the slot is
+ * never left empty. The line that goes and the line that comes in one
+ * change (one morph, one task) share it.
  */
 function turnDelay(slot) {
   const state = stateOf(slot);
   if (!state.turn) {
     const now = performance.now();
-    const at = Math.max(now, state.restAt + M.motionDuration(slot, '--ds-hold-status'));
+    const at = unseen(state.last) ? Math.max(now, state.restAt)
+      : Math.max(now, state.restAt + M.motionDuration(slot, '--ds-hold-status'));
     state.restAt = at;
     state.turn = { at };
     queueMicrotask(() => { state.turn = null; });
@@ -62,80 +66,60 @@ function turnDelay(slot) {
   return Math.max(0, state.turn.at - performance.now());
 }
 
-// easing is a DS curve as el.animate() takes it: the spring's linear() is
-// rejected by engines below the floor of linear(), which get the plain
-// deceleration instead.
-const easings = new Map();
-function easing(el, token) {
-  const value = M.motionEasing(el, token);
-  if (!easings.has(value)) {
-    let ok = true;
-    try {
-      new KeyframeEffect(null, null, { easing: value });
-    } catch {
-      ok = false;
-    }
-    easings.set(value, ok);
-  }
-  return easings.get(value) ? value : M.motionEasing(el, '--ds-ease-out');
+// unseen says a line is still in the delay of its entrance: it has not
+// shown.
+function unseen(line) {
+  return !!line && line.isConnected && line.getAnimations()
+    .some((one) => one.playState !== 'finished' && Number(one.currentTime) <= Number(one.effect.getTiming().delay));
 }
 
-function geometry(slot) {
-  const style = getComputedStyle(slot);
-  // Each line is seen from its own middle (a perspective() in its own
-  // transform, not the slot's): a short line in a wide slot turns straight
-  // instead of leaning towards the slot's middle.
-  const depth = style.getPropertyValue('--so-wheel-depth').trim() || '0.9em';
-  return {
-    angle: style.getPropertyValue('--so-wheel-angle').trim() || '70deg',
-    blur: style.getPropertyValue('--so-wheel-blur').trim() || '0px',
-    lens: `perspective(calc(${depth} * 12))`,
-  };
+function travelOf(slot) {
+  return getComputedStyle(slot).getPropertyValue('--so-wheel-travel').trim() || '0.5em';
 }
 
-/** turnIn plays the coming line in, after `delay` ms (hidden until then). */
+/** turnIn brings the coming line in, after `delay` ms (hidden until then). */
 function turnIn(line, slot, delay) {
-  const { angle, blur, lens } = geometry(slot);
-  const turn = M.motionDuration(slot, '--ds-dur-slow');
-  line.animate([
-    { transform: `${lens} rotateX(calc(-1 * ${angle}))`, filter: `blur(${blur})` },
-    { transform: `${lens} rotateX(0deg)`, filter: 'blur(0px)' },
-  ], { duration: turn, delay, easing: easing(slot, '--ds-ease-spatial'), fill: 'backwards' });
+  stateOf(slot).last = line;
+  const travel = travelOf(slot);
+  const late = delay + M.motionDuration(slot, '--ds-dur-fast');
+  const slow = M.motionDuration(slot, '--ds-dur-slow');
+  line.animate([{ transform: `translateY(${travel})` }, { transform: 'translateY(0)' }], {
+    duration: slow, delay: late, easing: M.motionEasing(slot, '--ds-ease-out'), fill: 'backwards',
+  });
   line.animate([{ opacity: 0 }, { opacity: 1 }], {
-    duration: M.motionDuration(slot, '--ds-dur-medium'), delay, easing: easing(slot, '--ds-ease-in-out'), fill: 'backwards',
+    duration: slow, delay: late, easing: M.motionEasing(slot, '--ds-ease-in-out'), fill: 'backwards',
   });
 }
 
 /**
- * turnOut plays the going line out from where it is, after `delay` ms: a
+ * turnOut takes the going line out from where it is, after `delay` ms: a
  * promise that resolves once it is gone, or null when it goes at once - a
  * line that never showed (it waited out a hold, or came in the same change,
  * and a later one took its place).
  */
 function turnOut(line, slot, delay) {
   const running = line.getAnimations();
-  if (running.some((one) => one.playState !== 'finished' && Number(one.currentTime) <= Number(one.effect.getTiming().delay))) {
+  if (unseen(line)) {
     running.forEach((one) => one.cancel());
     return null;
   }
-  const { angle, blur, lens } = geometry(slot);
   const style = getComputedStyle(line);
-  const from = { transform: style.transform === 'none' ? `${lens} rotateX(0deg)` : style.transform, filter: style.filter === 'none' ? 'blur(0px)' : style.filter };
+  const from = style.transform === 'none' ? 'translateY(0)' : style.transform;
   const opacity = Number(style.opacity);
   running.forEach((one) => one.cancel());
-  const turn = line.animate([from, { transform: `${lens} rotateX(${angle})`, filter: `blur(${blur})` }], {
-    duration: M.motionDuration(slot, '--ds-dur-slow'), delay, easing: easing(slot, '--ds-ease-spatial'), fill: 'forwards',
+  const glide = line.animate([{ transform: from }, { transform: `translateY(calc(-1 * ${travelOf(slot)}))` }], {
+    duration: M.motionDuration(slot, '--ds-dur-medium'), delay, easing: M.motionEasing(slot, '--ds-ease-in'), fill: 'forwards',
   });
   const fade = line.animate([{ opacity }, { opacity: 0 }], {
-    duration: M.motionDuration(slot, '--ds-dur-base'), delay, easing: easing(slot, '--ds-ease-in'), fill: 'forwards',
+    duration: M.motionDuration(slot, '--ds-dur-fast'), delay, easing: M.motionEasing(slot, '--ds-ease-out'), fill: 'forwards',
   });
-  return Promise.all([turn.finished, fade.finished]).then(() => {}, () => {});
+  return Promise.all([glide.finished, fade.finished]).then(() => {}, () => {});
 }
 
 /**
  * wheelHooks are the onInsert and onRemove of DS.dom.morphHtml (ui.js
  * morph) for markup with wheels in it: a line inserted into a slot that was
- * already there turns in, a line removed from one turns out first. Any
+ * already there rolls in, a line removed from one rolls out first. Any
  * other node is left to the morph (a whole new slot shows its line at
  * once).
  */

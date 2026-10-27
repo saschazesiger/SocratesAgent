@@ -10928,20 +10928,30 @@ async function chatfold() {
       const waits = Math.max(...box.querySelector('.so-wheel__line:not([data-ds-leaving])').getAnimations().map((a) => a.effect.getTiming().delay));
       await new Promise((r) => setTimeout(r, 2500));
       const last = lines();
+      const delayOf = () => Math.max(...box.querySelector('.so-wheel__line:not([data-ds-leaving])').getAnimations().map((a) => a.effect.getTiming().delay));
+      const late = window.DS.motion.motionDuration(box, '--ds-dur-fast');
       draw('Searching');
       await new Promise((r) => setTimeout(r, 200));
       draw('Editing b.go');
       const hold = window.DS.motion.motionDuration(box, '--ds-hold-status');
-      const wait = Math.max(...box.querySelector('.so-wheel__line:not([data-ds-leaving])').getAnimations().map((a) => a.effect.getTiming().delay));
+      const wait = delayOf() - late;
+      await new Promise((r) => setTimeout(r, 2500));
+      draw('Thinking');
+      await new Promise((r) => setTimeout(r, 20));
+      draw('Writing');
+      const stand = delayOf() - late;
+      const showing = lines();
       box.remove();
-      return { turning, moving, rolled, held, waits, last, hold, wait: Math.round(wait) };
+      return { turning, moving, rolled, held, waits, last, hold, wait: Math.round(wait), stand: Math.round(stand), showing };
     });
     ok(wheel.turning.join('|') === 'Running npm test|Thinking (going)' && wheel.moving >= 2 && wheel.rolled.join('|') === 'Running npm test',
       'a wheel turns a new line in and the old one out, which stays until it is gone', JSON.stringify(wheel));
-    ok(wheel.held.join('|') === 'Reading a.go|Running npm test (going)' && wheel.waits === 0 && wheel.last.join('|') === 'Reading a.go',
+    ok(wheel.held.join('|') === 'Reading a.go|Running npm test (going)' && wheel.waits <= 200 && wheel.last.join('|') === 'Reading a.go',
       'two changes at once roll once, to the last: the one between never shows', JSON.stringify(wheel));
     ok(wheel.wait > wheel.hold - 400 && wheel.wait <= wheel.hold - 150,
       'a change right after a roll waits until the line before it was shown for the hold', JSON.stringify(wheel));
+    ok(wheel.stand <= 100 && wheel.showing.join('|') === 'Editing b.go (going)|Writing',
+      'a change that replaces a line before it showed takes its time, so the slot is never empty for a hold', JSON.stringify(wheel));
     // A time that is not today says its day.
     const times = await page.evaluate(async () => {
       const { clock, span, about } = await import('/static/js/chatparts.js');

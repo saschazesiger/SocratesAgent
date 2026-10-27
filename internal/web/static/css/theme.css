@@ -90,10 +90,10 @@
   --so-chat-output-max: 320px;
   --so-chat-todo-max: 28vh;
   /* The shimmer of a line at work (so-motion.css): a white wave, and how
-     much of it shows at its crest - enough to read as light passing over
-     the words, never enough to wipe them out. */
+     much of it shows at its crest - a faint sheen passing over the words,
+     in the background, never wiping them out. */
   --so-shimmer-glint: #fff;
-  --so-shimmer-peak: color-mix(in srgb, var(--ds-text) 80%, transparent);
+  --so-shimmer-peak: color-mix(in srgb, var(--ds-text) 55%, transparent);
   /* The background jobs dialog, and a job's row in it. */
   --so-jobs-width: 36rem;
   --so-job-row-min: 3.5rem;

@@ -2926,8 +2926,8 @@ Asked for by the product owner on 2026-10-25, on branch `ui-simplify`.
   a tap opens it. The answer's last words, plans, notices and question cards stand. The pinned
   task list above the composer still shows while a turn works through one. While a turn runs, its
   answer ends in a live line the column's whole width (`.so-live`, the owner's wish for more than
-  a spinner, "like Claude's"): what the agent does now under a soft white wave, rolling like the
-  face of a wheel to the next thing it does (`.so-shimmer`, `.so-wheel`, proposed to DS), how long
+  a spinner, "like Claude's"): what the agent does now under a faint white wave, rolling quietly,
+  one line at a time, to the next thing it does (`.so-shimmer`, `.so-wheel`, proposed to DS), how long
   the call runs, its steps, the tokens in the context, and when the turn began with about how long
   ago ("16:11 ~3 minutes"). No bar and no spinner. A time that is not today's says its day
   ("yesterday 23:50", "Fri 23:50", "12 Oct 23:50"), in the live line and everywhere else a chat

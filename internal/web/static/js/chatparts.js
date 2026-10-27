@@ -1302,7 +1302,7 @@ const DOING = {
 /**
  * liveHtml is the running answer's live line, the whole width of the
  * column: what the agent is doing right now under a travelling white wave
- * (.so-shimmer), rolling like a wheel to the next thing it does (.so-wheel,
+ * (.so-shimmer), rolling quietly to the next thing it does (.so-wheel,
  * wheel.js), with how long the current call runs; its steps so far and the
  * tokens in the context; and when the turn began with about how long ago,
  * whose minutes roll on too. The call's seconds move with the clock
