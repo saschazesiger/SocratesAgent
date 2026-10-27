@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"testing"
@@ -90,6 +91,45 @@ func TestTheForeignThinkingNoticeGoesOnTheSwitch(t *testing.T) {
 	if got != `["account:set aside","notice:compacted"]` {
 		t.Fatalf("lines %s", got)
 	}
+}
+
+// The usage windows are the account's the chat is on: a switch, or a turn on
+// another account, lets go of the readings of the one before - its used-up
+// week is no limit of the next one - and a limited turn keeps when the
+// agent said its limit renews. The browser folds it as the server does.
+func TestTheBrowserKeepsTheLimitsOfTheAccountItIsOn(t *testing.T) {
+	events := []agent.Event{
+		{Type: agent.TypeTurnStarted, TurnID: "t1", Account: "a-1"},
+		{Type: agent.TypeRateLimit, Window: "seven_day", Used: 1, ResetsAt: 9000},
+		{Type: agent.TypeTurnEnded, TurnID: "t1", Outcome: agent.OutcomeLimited, Window: "seven_day", ResetsAt: 9000},
+		{Type: agent.TypeAccountSwitched, From: "a-1", To: "a-2"},
+		{Type: agent.TypeTurnStarted, TurnID: "t2", Account: "a-2"},
+		{Type: agent.TypeRateLimit, Window: "five_hour", Used: 1, ResetsAt: 5000},
+		{Type: agent.TypeTurnEnded, TurnID: "t2", Outcome: agent.OutcomeLimited, Window: "five_hour", ResetsAt: 5000},
+		{Type: agent.TypeTurnStarted, TurnID: "t3", Account: "a-3"},
+	}
+	for i := range events {
+		events[i].Seq, events[i].At = int64(i+1), int64(1000+i)
+	}
+	check := func(n int, windows string, renews int64, window string) {
+		t.Helper()
+		p := agent.Fold(events[:n])
+		keys := make([]string, 0, len(p.RateLimits))
+		for k := range p.RateLimits {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		if server := strings.Join(keys, ","); server != windows || p.LastTurn.RenewsAt != renews || p.LastTurn.Window != window {
+			t.Fatalf("after %d events the server has %q, %d, %q", n, server, p.LastTurn.RenewsAt, p.LastTurn.Window)
+		}
+		got := runFold(t, events[:n], `[Object.keys(chat.rateLimits).sort().join(','), chat.lastTurn.renewsAt, chat.lastTurn.window]`)
+		if want := fmt.Sprintf("[%q,%d,%q]", windows, renews, window); got != want {
+			t.Fatalf("after %d events the browser has %s, the server %s", n, got, want)
+		}
+	}
+	check(3, "seven_day", 9000, "seven_day")
+	check(7, "five_hour", 5000, "five_hour")
+	check(8, "", 5000, "five_hour")
 }
 
 // How a turn ended is said right under that turn, above what the person sent

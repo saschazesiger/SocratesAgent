@@ -53,7 +53,7 @@ is one `agent.Event`: a flat JSON object, all fields optional except `seq`, `at`
 | type | fields | meaning |
 |---|---|---|
 | `turn.started` | `turn_id`, `message_id`?, `account`? | the agent took up a user message (or started on its own). `account` is the account the turn runs on (WP7): the host stamps it on every turn, so a turn's cost belongs to the account that paid for it (the cost ledger, WP9). A journal written before accounts has none |
-| `turn.ended` | `turn_id`, `outcome` (`completed`\|`interrupted`\|`failed`\|`limited`), `usage`, `cost_usd`, `text` (why) | end of the turn |
+| `turn.ended` | `turn_id`, `outcome` (`completed`\|`interrupted`\|`failed`\|`limited`), `usage`, `cost_usd`, `text` (why), `window`? and `resets_at`? (Unix s) on a `limited` one | end of the turn. A `limited` turn says which window refused and when it renews where the agent said (Claude's rejected `rate_limit_event`) |
 | `message` | `message_id`, `role` (`user`\|`assistant`), `state`, `client_id`?, `text`?, `attachments`?, `answer_to`?, `turn_id`?, `model`? | creates a message. **User messages carry text and attachments inline**; assistant messages are containers for parts |
 | `message.state` | `message_id`, `state` | user: `pending` (journaled by the host) → `queued` (the agent holds it behind a running turn) → `delivered` (taken up), or `cancelled` (the agent dropped it unread; not handed to it again). Assistant: `streaming` → `done`\|`interrupted` |
 | `part` | `message_id`, `part_id`, `parent_part_id`?, `kind`, `state`, `text`, `content` | creates **or replaces whole** the part with that id (kind, state, text, content); `parent_part_id` nests it (below) |
@@ -164,6 +164,9 @@ host's dedupe set). Rules:
   browser does the same.
 - `turn.ended` with an outcome other than `completed` sets every `streaming`/`running` part to
   `interrupted` and every streaming assistant message to `interrupted`.
+- `rate_limits` are the windows of the account the chat is on: an `account.switched`, or a
+  `turn.started` on another `account`, lets go of the readings taken before it (a week the account
+  before used up is no limit of this one). A browser folds them the same way.
 - `Undelivered()`: user messages not `delivered`. `UnsentAnswers()`: answered asks with no
   `ask.delivered`. A new host hands both to the agent (§6).
 
@@ -443,7 +446,9 @@ the last delivery window (§6).
 last said it started, or to none (a background task reporting back starts a turn of the CLI's
 own: `turn.started` without `message_id`). One assistant message per turn. `result` ends it:
 `completed`; `interrupted` for `terminal_reason aborted_*`; `limited` after a rejected
-`rate_limit_event`, an assistant `error: rate_limit` or `api_error_status 429`; else `failed`.
+`rate_limit_event`, an assistant `error: rate_limit` or `api_error_status 429`; else `failed`. A
+`limited` end carries the rejection's `rateLimitType` and `resetsAt` as `window` and `resets_at`
+(the rejection may come before the turn has started, so the adapter keeps it until a turn ends).
 `cost_usd` = this result's `total_cost_usd` minus the previous one of the process (it is
 cumulative per process). `usage.context` = the last request's prompt + answer, `window` =
 `modelUsage[*].contextWindow`.
@@ -1281,8 +1286,10 @@ the one with the most headroom: what is left of the week per hour until it renew
 left of the five hours (`headroom`); one with no reading is recommended only when every account
 with one is at its limit.
 
-**At a limit** (`turn.ended{limited}`): the account's `limited_until` is the latest renewal of the
-turn's windows (an hour when none was said). A chat with `auto_switch` (off unless set, from the
+**At a limit** (`turn.ended{limited}`): the limit renews when the turn's end says (`resets_at`),
+else when the latest of the account's windows read as used up renews (`limitRenews`, the same time
+the chat's brief keeps for the automatic continue and the limit card says); that is the account's
+`limited_until` (an hour when nothing says). A chat with `auto_switch` (off unless set, from the
 sheet or the chat's ⋮) is switched by the server to the recommended other account, `when: now`,
 `continue: true`, `client_id` `auto-<turn>`, reason "The limit of <label> was reached."; without
 it, or with no account to go to, the person is told by push and on the page ("Limit reached — renews

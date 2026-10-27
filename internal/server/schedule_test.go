@@ -248,3 +248,67 @@ func TestLimitOf(t *testing.T) {
 		t.Fatalf("with no window used up the renewal is unknown: %+v", l)
 	}
 }
+
+// The week another account used up is not the limit of the account the
+// chat went on with: a chat that switched, and then ran into its new
+// account's five hours, goes on when those renew - not days later, when the
+// first account's week does. The readings of the account before go with the
+// switch, whether the journal says it with account.switched or with the
+// account a turn starts on.
+func TestLimitOfIsTheAccountsItRunsOn(t *testing.T) {
+	ended := time.Now().UnixMilli()
+	five := time.Now().Add(2 * time.Hour).Unix()
+	week := time.Now().Add(4 * 24 * time.Hour).Unix()
+	before := []agent.Event{
+		{Type: agent.TypeMessage, MessageID: "u1", Role: agent.RoleUser, Text: "go", At: ended - 9000},
+		{Type: agent.TypeTurnStarted, TurnID: "t1", MessageID: "u1", Account: "a", At: ended - 8900},
+		{Type: agent.TypeRateLimit, Window: "seven_day", Used: 1, ResetsAt: week, At: ended - 8800},
+		{Type: agent.TypeTurnEnded, TurnID: "t1", Outcome: agent.OutcomeLimited, ResetsAt: week, Window: "seven_day", At: ended - 8700},
+	}
+	after := []agent.Event{
+		{Type: agent.TypeTurnStarted, TurnID: "t2", Account: "b", At: ended - 900},
+		{Type: agent.TypeRateLimit, Window: "five_hour", Used: 1, ResetsAt: five, At: ended - 10},
+		{Type: agent.TypeTurnEnded, TurnID: "t2", Outcome: agent.OutcomeLimited, At: ended},
+	}
+	fold := func(events ...[]agent.Event) *chatLimit {
+		p := agent.NewProjection()
+		seq := int64(0)
+		for _, list := range events {
+			for _, ev := range list {
+				seq++
+				ev.Seq = seq
+				p.Apply(ev)
+			}
+		}
+		return limitOf(p)
+	}
+	if l := fold(before); l == nil || l.RenewsAt != week*1000 {
+		t.Fatalf("on the account whose week is used up: %+v", l)
+	}
+	switched := []agent.Event{{Type: agent.TypeAccountSwitched, From: "a", To: "b", At: ended - 8000}}
+	if l := fold(before, switched, after); l == nil || l.Turn != "t2" || l.RenewsAt != five*1000 {
+		t.Fatalf("after a switch, the limit renews %v, not with the five hours (%v): %+v", l.RenewsAt, five*1000, l)
+	}
+	if l := fold(before, after); l == nil || l.RenewsAt != five*1000 {
+		t.Fatalf("after a turn on another account: %+v", l)
+	}
+
+	// What the agent said when it refused is the limit's renewal, over the
+	// readings: here the five hours refused while the week also reads used
+	// up.
+	said := []agent.Event{
+		{Type: agent.TypeMessage, MessageID: "u1", Role: agent.RoleUser, Text: "go", At: ended - 1000},
+		{Type: agent.TypeTurnStarted, TurnID: "t1", MessageID: "u1", Account: "a", At: ended - 900},
+		{Type: agent.TypeRateLimit, Window: "seven_day", Used: 1, ResetsAt: week, At: ended - 20},
+		{Type: agent.TypeRateLimit, Window: "five_hour", Used: 1, ResetsAt: five, At: ended - 10},
+		{Type: agent.TypeTurnEnded, TurnID: "t1", Outcome: agent.OutcomeLimited, ResetsAt: five, Window: "five_hour", At: ended},
+	}
+	if l := fold(said); l == nil || l.RenewsAt != five*1000 {
+		t.Fatalf("the refusal's renewal: %+v", l)
+	}
+	// A refusal that says a time already past is no answer; the readings are.
+	said[len(said)-1].ResetsAt = ended/1000 - 60
+	if l := fold(said); l == nil || l.RenewsAt != week*1000 {
+		t.Fatalf("a renewal in the past: %+v", l)
+	}
+}

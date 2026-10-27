@@ -226,6 +226,15 @@ function lastLine(chat, kind) {
   return null;
 }
 
+// onAccount is the chat on another account from now on: the usage windows
+// read so far are the account's before, and none of this one's (a week the
+// first one used up is no limit here). As agent.Projection.onAccount.
+function onAccount(chat, id) {
+  if (!id || id === chat.account) return;
+  if (chat.account) chat.rateLimits = {};
+  chat.account = id;
+}
+
 function endTurn(chat, ev) {
   let turn = chat.turn;
   if (turn && ev.turn_id && turn.id && ev.turn_id !== turn.id) return;
@@ -234,6 +243,8 @@ function endTurn(chat, ev) {
     endedAt: ev.at, outcome: ev.outcome || '', usage: ev.usage || null, cost: Number(ev.cost_usd) || 0,
     error: ev.text || '',
   });
+  // A limit's turn keeps when the agent said the limit renews.
+  if (turn.outcome === 'limited') Object.assign(turn, { renewsAt: Number(ev.resets_at) || 0, window: ev.window || '' });
   if (ev.usage) {
     if (ev.usage.context) chat.usage.context = ev.usage.context;
     if (ev.usage.window) chat.usage.window = ev.usage.window;
@@ -331,7 +342,7 @@ export function apply(chat, ev) {
     case 'turn.started':
       // The account a turn ran on is the one its start names (AGENT-HOST.md
       // §2); a journal from before accounts names none.
-      if (ev.account) chat.account = ev.account;
+      onAccount(chat, ev.account);
       chat.turn = { id: ev.turn_id || '', messageId: ev.message_id || '', startedAt: ev.at, account: ev.account || chat.account };
       chat.rev += 1;
       break;
@@ -422,7 +433,7 @@ export function apply(chat, ev) {
       break;
     }
     case 'account.switched':
-      chat.account = ev.to || '';
+      onAccount(chat, ev.to);
       chat.pendingSwitch = null;
       line(chat, ev, { kind: 'account', from: ev.from || '', to: ev.to || '', reason: ev.reason || '' });
       break;

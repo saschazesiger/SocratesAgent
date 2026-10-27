@@ -1240,7 +1240,7 @@ export function lineHtml(entry, view) {
       return html`<div class="ds-alert ds-alert--error so-line-alert" data-ds-key="${key}" data-kind="error" role="alert">${raw(icon('alertCircle', 20))}<span class="ds-alert__text">${l.text || 'Something went wrong.'}</span>${infoButton([l.code ? 'code ' + l.code : ''], 'Error details')}</div>`;
     case 'turn': {
       if (l.outcome === 'limited') {
-        const renew = view.renewal();
+        const renew = view.renewal(l.turn);
         // Under the newest limit, the accounts the chat could go on with:
         // one tap switches and has the turn carried on there.
         const offers = view.continueWith ? view.continueWith(entry) : [];

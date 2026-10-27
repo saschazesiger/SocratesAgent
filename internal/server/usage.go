@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 )
@@ -110,12 +111,24 @@ func (s *Server) claudeLimits(ctx context.Context, dir string) usageLimits {
 	if payload.SevenDay.Utilization != nil {
 		limits.Windows = append(limits.Windows, usageWindow{Label: "7d", UsedPercent: *payload.SevenDay.Utilization, ResetsAt: payload.SevenDay.ResetsAt})
 	}
+	// The list of limits says the same windows again, and is the one to go
+	// by when the named fields are empty. A Team seat has no week of its own
+	// - seven_day is null - and only a week for Fable.
+	has := func(label string) bool {
+		return slices.ContainsFunc(limits.Windows, func(w usageWindow) bool { return w.Label == label })
+	}
 	for _, limit := range payload.Limits {
-		if limit.Kind == "weekly_scoped" && strings.Contains(strings.ToLower(limit.Scope.Model.DisplayName), "fable") {
-			limits.Windows = append(limits.Windows, usageWindow{
-				Label: "Fable", UsedPercent: limit.Percent, ResetsAt: limit.ResetsAt,
-			})
-			break
+		label := ""
+		switch {
+		case limit.Kind == "session":
+			label = "5h"
+		case limit.Kind == "weekly_all":
+			label = "7d"
+		case limit.Kind == "weekly_scoped" && strings.Contains(strings.ToLower(limit.Scope.Model.DisplayName), "fable"):
+			label = "Fable"
+		}
+		if label != "" && !has(label) {
+			limits.Windows = append(limits.Windows, usageWindow{Label: label, UsedPercent: limit.Percent, ResetsAt: limit.ResetsAt})
 		}
 	}
 	remember(limits)

@@ -532,12 +532,7 @@ func (h *accountHub) noteTurnEnd(p *chatPeer, id string, ev agent.Event, limits 
 			}
 		}
 	case agent.OutcomeLimited:
-		var until int64
-		for _, l := range limits {
-			if l.Used >= 1 && l.ResetsAt*1000 > until {
-				until = l.ResetsAt * 1000
-			}
-		}
+		until := limitRenews(ev.At, ev.ResetsAt, limits)
 		if now := time.Now().UnixMilli(); until <= now {
 			// No window says when it renews: the time guessed when the
 			// account ran into it stands while it lasts.

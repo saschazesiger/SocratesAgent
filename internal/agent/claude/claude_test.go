@@ -868,18 +868,27 @@ func TestLimitsRetriesImagesAndCommands(t *testing.T) {
 	a, r := start(t, e, "")
 	send(t, a, "m1", "/limit")
 	evs := r.turnsEnded(t, 1)
-	var outcome string
+	var end agent.Event
 	for _, ev := range evs {
 		if ev.Type == agent.TypeTurnEnded {
-			outcome = ev.Outcome
+			end = ev
 		}
 	}
-	if outcome != agent.OutcomeLimited || count(evs, agent.TypeRateLimit) != 1 {
+	if end.Outcome != agent.OutcomeLimited || count(evs, agent.TypeRateLimit) != 1 {
 		t.Fatalf("limit:\n%s", dump(evs))
+	}
+	// The end says which window refused and when it renews, as the CLI
+	// said when it refused.
+	if end.Window != "five_hour" || end.ResetsAt < time.Now().Add(time.Hour).Unix() {
+		t.Fatalf("the limited turn's end: %+v", end)
 	}
 	send(t, a, "m2", "/retry")
 	send(t, a, "m3", "/image")
-	r.turnsEnded(t, 3)
+	for _, ev := range r.turnsEnded(t, 3) {
+		if ev.Type == agent.TypeTurnEnded && ev.TurnID != end.TurnID && (ev.ResetsAt != 0 || ev.Window != "") {
+			t.Fatalf("a later turn kept the refusal: %+v", ev)
+		}
+	}
 	if err := a.Command(context.Background(), "compact", ""); err != nil {
 		t.Fatal(err)
 	}

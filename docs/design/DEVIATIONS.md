@@ -2933,8 +2933,10 @@ Asked for by the product owner on 2026-10-25, on branch `ui-simplify`.
   dropped: the CLI holds a message once it is handed over, and holding messages in the host
   instead would have taken away Claude Code's and Codex's own mid-turn pick-up.
 - **A chat goes on after a limit renews**, on by default (`options.auto_continue`, the chat's ⋮):
-  one minute after the used-up window's reset, if nothing happened in the chat since the limited
-  turn, the server sends `agenthost.ContinueText` (client_id `auto-continue-<id>-<turn>`) and
+  one minute after the limit renews (the refusal's renewal, else the used-up window's reset, of
+  the account the chat is on: until 2026-10-27 a week another account had used up was taken
+  for this one's, and the chat waited days instead of five hours), if nothing happened in the chat
+  since the limited turn, the server sends `agenthost.ContinueText` (client_id `auto-continue-<id>-<turn>`) and
   journals `notice{auto_continued}`. The limit is kept in the chat's brief, so a restart keeps it.
 - **Claude Code signs in on the web** (Admin → Accounts), not in a Shell: `claude auth login
   --claudeai` runs on a server pty; the dialog shows its page and takes the code that page shows.

@@ -38,8 +38,11 @@ type Projection struct {
 	Asks     []*Ask     `json:"asks,omitempty"`
 
 	// Usage and CostUSD add up every turn that reported them.
-	Usage      Usage                `json:"usage"`
-	CostUSD    float64              `json:"cost_usd,omitempty"`
+	Usage   Usage   `json:"usage"`
+	CostUSD float64 `json:"cost_usd,omitempty"`
+	// RateLimits is the account's usage windows, as the agent last read
+	// them on the account the chat is on: a move to another account lets go
+	// of the readings of the one before (onAccount).
 	RateLimits map[string]RateLimit `json:"rate_limits,omitempty"`
 
 	messages map[string]*Message
@@ -59,6 +62,11 @@ type Turn struct {
 	Usage     *Usage  `json:"usage,omitempty"`
 	CostUSD   float64 `json:"cost_usd,omitempty"`
 	Error     string  `json:"error,omitempty"`
+	// RenewsAt is, for a turn a limit stopped, when the agent said that
+	// limit renews (Unix seconds), and Window which window it is; zero when
+	// it did not say.
+	RenewsAt int64  `json:"renews_at,omitempty"`
+	Window   string `json:"window,omitempty"`
 	// Stopped is set when somebody asked the turn to stop while it ran (an
 	// interrupt, a stop or a switch to another account made now, as the
 	// host took them): an interrupted turn that is not Stopped was ended by
@@ -183,9 +191,7 @@ func (p *Projection) Apply(ev Event) {
 	switch ev.Type {
 	case TypeTurnStarted:
 		p.Turn = &Turn{ID: ev.TurnID, MessageID: ev.MessageID, Account: ev.Account, StartedAt: ev.At}
-		if ev.Account != "" {
-			p.Account = ev.Account
-		}
+		p.onAccount(ev.Account)
 	case TypeTurnEnded:
 		p.endTurn(ev)
 	case TypeMessage:
@@ -218,7 +224,7 @@ func (p *Projection) Apply(ev Event) {
 			a.Closed, a.ClosedAt = true, ev.At
 		}
 	case TypeAccountSwitched:
-		p.Account = ev.To
+		p.onAccount(ev.To)
 	case TypeModelChanged:
 		if ev.Model != "" {
 			p.Model = ev.Model
@@ -251,6 +257,19 @@ func (p *Projection) Apply(ev Event) {
 	}
 }
 
+// onAccount is the chat on account id from now on. The usage windows read
+// so far are another account's when it changes, and say nothing of this
+// one: a week used up on the account before is no limit here.
+func (p *Projection) onAccount(id string) {
+	if id == "" || id == p.Account {
+		return
+	}
+	if p.Account != "" {
+		p.RateLimits = nil
+	}
+	p.Account = id
+}
+
 // stopsTurn is whether a journaled command stops the running turn t at
 // somebody's word: an interrupt, a stop, and a switch to another account made
 // now. A switch that waits for the turn stops nothing, and nor does one to the
@@ -278,6 +297,9 @@ func (p *Projection) endTurn(ev Event) {
 		t = &Turn{ID: ev.TurnID, StartedAt: ev.At}
 	}
 	t.EndedAt, t.Outcome, t.Usage, t.CostUSD, t.Error = ev.At, ev.Outcome, ev.Usage, ev.CostUSD, ev.Text
+	if ev.Outcome == OutcomeLimited {
+		t.RenewsAt, t.Window = ev.ResetsAt, ev.Window
+	}
 	p.Usage.add(ev.Usage)
 	p.CostUSD += ev.CostUSD
 	p.LastTurn, p.Turn = t, nil

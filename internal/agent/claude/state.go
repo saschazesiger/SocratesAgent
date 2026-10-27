@@ -37,6 +37,9 @@ type state struct {
 	hasNext bool
 
 	turn *turn
+	// refused is the limit the CLI last refused a request at, for the turn
+	// it stops.
+	refused refusal
 	// seen is the uuids of assistant and user frames already mapped: after
 	// a compaction the CLI repeats the preserved ones.
 	seen  map[string]bool
@@ -95,6 +98,14 @@ type turn struct {
 	limited     bool
 	interrupted bool
 	limitText   string
+}
+
+// refusal is the limit the CLI said it refused a request at: the window and
+// when it renews (Unix seconds). It may come before the turn it stops has
+// started, so it is the state's until that turn ends.
+type refusal struct {
+	window string
+	resets int64
 }
 
 // part is one part as the adapter last emitted it.
@@ -352,10 +363,14 @@ func (s *state) endTurn(outcome string, usage *agent.Usage, cost float64, why st
 	if outcome != agent.OutcomeCompleted {
 		state = agent.MessageInterrupted
 	}
-	s.emit(
-		agent.Event{Type: agent.TypeMessageState, MessageID: t.msgID, State: state},
-		agent.Event{Type: agent.TypeTurnEnded, TurnID: t.id, Outcome: outcome, Usage: usage, CostUSD: cost, Text: why},
-	)
+	end := agent.Event{Type: agent.TypeTurnEnded, TurnID: t.id, Outcome: outcome, Usage: usage, CostUSD: cost, Text: why}
+	if outcome == agent.OutcomeLimited {
+		// The refusal's renewal is the one the limit has: the readings of
+		// the windows say what is used, not which of them refused.
+		end.Window, end.ResetsAt = s.refused.window, s.refused.resets
+	}
+	s.refused = refusal{}
+	s.emit(agent.Event{Type: agent.TypeMessageState, MessageID: t.msgID, State: state}, end)
 	s.turn = nil
 }
 
@@ -500,6 +515,9 @@ func (s *state) rateLimit(f *frame) {
 		s.emit(agent.Event{Type: agent.TypeRateLimit, Window: info.RateLimitType, Used: info.Utilization, ResetsAt: info.ResetsAt})
 	}
 	if info.Status == "rejected" {
+		if info.ResetsAt > s.refused.resets {
+			s.refused = refusal{window: info.RateLimitType, resets: info.ResetsAt}
+		}
 		text := "The usage limit of this account is reached."
 		if info.ResetsAt > 0 {
 			text = fmt.Sprintf("The usage limit of this account is reached; it renews %s.",

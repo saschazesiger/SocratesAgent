@@ -47,7 +47,7 @@ const (
 // briefVersion is the shape of a brief this build writes. A brief of
 // another one is not believed, and the journal is read again: a brief from
 // before a fact was added does not have it.
-const briefVersion = 1
+const briefVersion = 2
 
 // chatBrief is a chat in a few facts, true as of Seq.
 type chatBrief struct {
@@ -86,9 +86,8 @@ func briefOf(p *agent.Projection) chatBrief {
 // limitOf is the limit a chat stands at: its last turn ended at a usage
 // limit, nothing runs, nobody has written to it since, and it is still on
 // the account the limit stopped it on (an automatic switch goes on with
-// another account by itself). It renews when the latest usage window that
-// was used up renews - the time the limit card says - if that is after the
-// turn ended.
+// another account by itself). It renews when limitRenews says - the time the
+// limit card says.
 func limitOf(p *agent.Projection) *chatLimit {
 	t := p.LastTurn
 	if p.Turn != nil || t == nil || t.Outcome != agent.OutcomeLimited {
@@ -102,16 +101,30 @@ func limitOf(p *agent.Projection) *chatLimit {
 			return nil
 		}
 	}
+	return &chatLimit{Turn: t.ID, EndedAt: t.EndedAt, RenewsAt: limitRenews(t.EndedAt, t.RenewsAt, p.RateLimits)}
+}
+
+// limitRenews is when a limit that stopped a turn at ended (ms) renews, in
+// milliseconds: when the agent said, refusing - Claude names the window that
+// refused, which is the five hours far more often than the week - else when
+// the latest of the windows read as used up renews. The readings are the
+// account's the chat is on (agent.Projection.RateLimits): a week another
+// account used up is not this one's. Zero when neither says a time after
+// the turn's end.
+func limitRenews(ended, said int64, limits map[string]agent.RateLimit) int64 {
+	if said*1000 > ended {
+		return said * 1000
+	}
 	var renews int64
-	for _, l := range p.RateLimits {
+	for _, l := range limits {
 		if l.Used >= 1 && l.ResetsAt*1000 > renews {
 			renews = l.ResetsAt * 1000
 		}
 	}
-	if renews <= t.EndedAt {
-		renews = 0
+	if renews <= ended {
+		return 0
 	}
-	return &chatLimit{Turn: t.ID, EndedAt: t.EndedAt, RenewsAt: renews}
+	return renews
 }
 
 // newsOf is what a notification about a chat says: what it asks while it
