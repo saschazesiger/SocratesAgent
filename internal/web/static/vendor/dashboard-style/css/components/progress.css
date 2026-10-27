@@ -67,6 +67,9 @@
  * Hooks: --ds-progress-gap (4px between the bar and the remaining track),
  * --ds-progress-stop (the stop dot, --ds-primary), --ds-progress-track (the
  * remaining track, --ds-accent).
+ *
+ * Print: the bar keeps its colours (print-color-adjust), so the share
+ * shows on paper.
  */
 
 @layer ds.tokens, ds.base, ds.components, ds.motion, ds.utilities;
@@ -84,6 +87,7 @@
    * segments are declared here, paused, so dropping --indeterminate stops
    * them where they are while they fade out.
    */
+  /* The gradients run left to right, like the bar's clip (LTR only, D9). */
   .ds-progress__track {
     position: relative;
     height: 4px;
@@ -113,8 +117,7 @@
   .ds-progress__bar::after {
     content: '';
     position: absolute;
-    right: 0;
-    left: 0;
+    inset-inline: 0;
     background: var(--ds-primary);
     transition: opacity var(--ds-dur-medium) var(--ds-ease-in-out);
   }
@@ -284,6 +287,15 @@
     .ds-progress__track::before,
     .ds-progress__track::after {
       background: Highlight;
+    }
+  }
+
+  /* Print: the bar and the track are backgrounds, which printing drops by
+     default; the share stays visible. */
+  @media print {
+    .ds-progress {
+      -webkit-print-color-adjust: exact;
+      print-color-adjust: exact;
     }
   }
 }

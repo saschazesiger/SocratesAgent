@@ -38,12 +38,14 @@
  * frame; it has no transition of its own there.
  *
  * Hooks: --ds-spinner-color (the arc), --ds-spinner-track (none, or
- * --ds-accent on the determinate ring), --ds-spinner-width (2px; 4px on
- * the determinate ring). A project that set border-width on a spinner sets
+ * --ds-accent on the determinate ring), --ds-spinner-width (2px; the
+ * determinate ring reads --ds-spinner-determinate-width, 4px). A project that set border-width on a spinner sets
  * --ds-spinner-width instead.
  *
- * The small spinner's faint ring mixes the text colour (color-mix());
- * --ds-spinner-sm-track is a deprecated fallback line (removed in 2.0).
+ * The small spinner's faint ring mixes the text colour (color-mix()).
+ *
+ * Print: the arc and the ring keep their colours (print-color-adjust), so
+ * a status chip keeps its glyph and a determinate ring its share.
  */
 
 @layer ds.tokens, ds.base, ds.components, ds.motion, ds.utilities;
@@ -68,10 +70,8 @@
   .ds-spinner--sm {
     width: 12px;
     height: 12px;
-    /* The arc and a faint ring in the text colour. The first track line is
-       the deprecated fallback; the colour mix always replaces it. */
+    /* The arc and a faint ring in the text colour. */
     --ds-spinner-color: currentColor;
-    --ds-spinner-track: var(--ds-spinner-sm-track);
     --ds-spinner-track: color-mix(in srgb, currentColor 22%, transparent);
   }
 
@@ -85,7 +85,7 @@
    * past 360deg).
    */
   .ds-spinner--determinate {
-    --ds-spinner-width: 4px;
+    --ds-spinner-width: var(--ds-spinner-determinate-width, 4px);
     position: relative;
     width: 40px;
     height: 40px;
@@ -158,6 +158,15 @@
       forced-color-adjust: none;
       --ds-spinner-color: Highlight;
       --ds-spinner-track: GrayText;
+    }
+  }
+
+  /* Print: the arc and the ring are backgrounds, which printing drops by
+     default; a running status keeps its glyph, a ring its share. */
+  @media print {
+    .ds-spinner {
+      -webkit-print-color-adjust: exact;
+      print-color-adjust: exact;
     }
   }
 }

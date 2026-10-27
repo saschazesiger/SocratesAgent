@@ -71,14 +71,17 @@ vendor-markdown: ## re-download the pinned marked and DOMPurify
 
 ## vendor-ds replaces the vendored Dashboard-Style with the latest main of
 ## github.com/saschazesiger/Dashboard-Style, through that commit's own
-## vendor.sh. The copy is committed and checksummed; the nightly
-## update-dashboard-style workflow does the same on its own.
+## vendor.sh. DS_REF picks a branch, tag or commit instead
+## (make vendor-ds DS_REF=<sha>): vendoring by commit is how a release that
+## is not on main yet comes in. The copy is committed and checksummed; the
+## nightly update-dashboard-style workflow does the same on its own.
 DS_DEST := internal/web/static/vendor/dashboard-style
 DS_REPO := saschazesiger/Dashboard-Style
-vendor-ds: ## update the vendored Dashboard-Style to its latest main
+DS_REF  ?= main
+vendor-ds: ## update the vendored Dashboard-Style to its latest main (or DS_REF)
 	@tmp=$$(mktemp -d) && trap 'rm -rf "$$tmp"' EXIT && \
-	curl -fsSL "https://raw.githubusercontent.com/$(DS_REPO)/main/scripts/vendor.sh" -o "$$tmp/vendor.sh" && \
-	sh "$$tmp/vendor.sh" "$(DS_DEST)"
+	curl -fsSL "https://raw.githubusercontent.com/$(DS_REPO)/$(DS_REF)/scripts/vendor.sh" -o "$$tmp/vendor.sh" && \
+	sh "$$tmp/vendor.sh" "$(DS_REF)" "$(DS_DEST)"
 
 ## ds-check verifies the vendored copy against its SHA256SUMS (the same check
 ## internal/web's tests make, so `make check` covers it).

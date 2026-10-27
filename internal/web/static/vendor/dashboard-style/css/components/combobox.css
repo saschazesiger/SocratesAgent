@@ -8,13 +8,29 @@
  * (aria-selected) the tint and the label weight, never colour alone.
  *
  *   <div class="ds-combo">
- *     <input class="ds-input ds-combo__input" role="combobox" aria-expanded="false" aria-controls="list" aria-activedescendant="opt-2">
+ *     <input class="ds-input ds-combo__input" role="combobox" aria-expanded="false" aria-controls="list" aria-autocomplete="list" aria-activedescendant="opt-2">
  *     <button class="ds-combo__toggle" type="button" tabindex="-1" aria-label="Show list">(chevronDown)</button>
  *     <div class="ds-combo__popup" hidden data-state="open | closed" [data-placement="top"] [data-anchored]>
  *       <ul class="ds-combo__list" id="list" role="listbox">
  *         <li class="ds-combo__option" id="opt-2" role="option" aria-selected="true" data-active>
  *           <span class="ds-combo__name">Name</span><span class="ds-combo__meta">Meta</span>
- *       <p class="ds-combo__status">12 of 240</p>
+ *       <p class="ds-combo__status" role="status">12 of 240</p>
+ *
+ * Select-only (.ds-combo--select: pick one of a few rich options, no
+ * typing): the field is a button that shows the choice, its value and an
+ * optional meta in one row (start-aligned, ellipsis); options may hold any
+ * content. The keys (Enter, Space and the arrows open; type-ahead) are the
+ * page's script, as for every combobox.
+ *
+ *   <div class="ds-combo ds-combo--select">
+ *     <button class="ds-input ds-combo__input" type="button" role="combobox" aria-haspopup="listbox" aria-expanded="false" aria-controls="plan-list" aria-labelledby="plan-label plan-value">
+ *       <span class="ds-combo__value" id="plan-value">Standard</span><span class="ds-combo__meta">4 devices</span>
+ *     </button>
+ *     <button class="ds-combo__toggle" type="button" tabindex="-1" aria-label="Show list">(chevronDown)</button>
+ *     <div class="ds-combo__popup" hidden> ... the same list ... </div>
+ *
+ * aria-disabled="true" on an option: the disabled ink, no active layer.
+ * Without a toggle the field keeps only its own end padding.
  *
  *   DS.overlay.open(popup, { opener: input });   DS.overlay.close(popup);
  *
@@ -32,7 +48,7 @@
  *
  * The chevron follows aria-expanded on the field (DS.overlay sets it) and
  * turns 180deg on the spring with the list (the disclosure rotation of
- * the motion rules). data-open on .ds-combo still turns it (deprecated).
+ * the motion rules).
  * The active entry's layer fades in over --ds-dur-micro and goes at once,
  * so a held arrow key leaves no trail; pointer and keyboard share
  * data-active, there is no separate hover layer.
@@ -47,6 +63,22 @@
  * where the progressive path below is missing: there the room is that
  * box's, so keep a combobox off the very end of a dialog.
  *
+ * Cut edges: a list that scrolls fades at each edge with more to show, a
+ * mask --ds-scroll-fade long (default --ds-space-8; 0px turns it off) on
+ * the registered numbers --ds-scroll-edge-start and --ds-scroll-edge-end
+ * of scroller.css (the .ds-scroll-x model on the block axis; the
+ * scrollbar strip, --ds-scrollbar-width, stays opaque). Where scroll
+ * timelines exist ds-scroll-edge-start and ds-scroll-edge-end drive them
+ * on the list's own scroll; elsewhere DS.overlay attaches
+ * DS.dom.scrollEdges(list, { axis: 'block' }) while the list is open, and
+ * data-ds-overflow-start / -end set them over --ds-dur-fast. The active
+ * option, scrolled into view, lands clear of them (scroll-padding).
+ *
+ * Sizes: the field reads --ds-input-height (40px); the toggle is that size
+ * and the field keeps room for it at its end; options are at least
+ * --ds-combo-option-height (48px) tall. A .ds-progress on the chosen option
+ * takes --ds-surface as its track (the tint behind it).
+ *
  * The toggle is a round 40px target: a state layer in its colour (hover,
  * press in --ds-dur-micro), the ripple (js/ripple.js) and the press morph
  * of every pill (squarer to --ds-radius-action-pressed in --ds-dur-micro,
@@ -55,7 +87,9 @@
  *
  * Forced colours: the list keeps an edge (its transparent outline), the
  * chosen option is SelectedItem / SelectedItemText, the active one has a
- * Highlight outline.
+ * Highlight outline (CanvasText on the chosen one), a blocked one GrayText.
+ *
+ * Print: an open list is not printed.
  *
  * Progressive:
  * - scrollbar-color and scrollbar-width (a thin, quiet scrollbar in the
@@ -66,6 +100,10 @@
  *   popover="manual" in the top layer with data-anchored, as wide as the
  *   field, below it or flipped above, so a scrolling dialog never clips
  *   it): without them the list is absolute, and the script flips it up.
+ * - scroll-driven animations (animation-timeline: scroll(), animation-range;
+ *   the edge fades follow the scroll position): without them the
+ *   data-ds-overflow-* attributes of DS.dom.scrollEdges() (attached by
+ *   DS.overlay) set the fades, or none show.
  */
 
 @layer ds.tokens, ds.base, ds.components, ds.motion, ds.utilities;
@@ -76,8 +114,45 @@
   }
 
   .ds-combo__input {
-    padding-right: calc(var(--ds-space-2) + 20px + var(--ds-space-3));
+    padding-inline-end: calc(var(--ds-space-1) + var(--ds-input-height, 40px));
     text-overflow: ellipsis;
+  }
+
+  /* Without a toggle there is nothing to keep room for. */
+  .ds-combo:not(:has(.ds-combo__toggle)) > .ds-combo__input {
+    padding-inline-end: var(--ds-space-3);
+  }
+
+  /* Select-only: a button that reads like the field, value and meta in one
+     row. A field, not an action: no ripple, no press morph (like a select). */
+  /* Its row never widens the field: what does not fit ends in an ellipsis. */
+  .ds-combo--select {
+    min-width: 0;
+  }
+
+  .ds-combo--select .ds-combo__input {
+    display: flex;
+    align-items: center;
+    gap: var(--ds-space-2);
+    min-width: 0;
+    overflow: hidden;
+    text-align: start;
+    cursor: default;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  .ds-combo__value {
+    flex: 0 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    color: var(--ds-text);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .ds-combo__input > .ds-combo__meta {
+    flex: 0 1 auto;
+    min-width: 0;
   }
 
   /* A round 40px target in the field's end. Pressed it turns squarer and
@@ -86,16 +161,16 @@
   .ds-combo__toggle {
     position: absolute;
     top: 0;
-    right: var(--ds-space-1);
+    inset-inline-end: var(--ds-space-1);
     isolation: isolate;
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    width: var(--ds-space-10);
-    height: 40px;
+    width: var(--ds-input-height, 40px);
+    height: var(--ds-input-height, 40px);
     padding: 0;
     border: 0;
-    border-radius: min(var(--ds-radius-action), calc(var(--ds-space-10) / 2));
+    border-radius: min(var(--ds-radius-action), calc(var(--ds-input-height, 40px) / 2));
     background: transparent;
     color: var(--ds-text-2);
     cursor: pointer;
@@ -107,10 +182,7 @@
   .ds-combo__toggle::before {
     content: '';
     position: absolute;
-    top: 0;
-    right: 0;
-    bottom: 0;
-    left: 0;
+    inset: 0;
     z-index: -1;
     border-radius: inherit;
     background: currentColor;
@@ -134,7 +206,7 @@
 
   .ds-combo__toggle:active:not(:disabled, [aria-disabled="true"], [aria-busy="true"]),
   .ds-combo__toggle.ds-pressed:not(:disabled, [aria-disabled="true"], [aria-busy="true"]) {
-    border-radius: min(var(--ds-radius-action-pressed), var(--ds-radius-action), calc(var(--ds-space-10) / 2));
+    border-radius: min(var(--ds-radius-action-pressed), var(--ds-radius-action), calc(var(--ds-input-height, 40px) / 2));
     transition: border-radius var(--ds-dur-micro) var(--ds-ease-out);
   }
 
@@ -144,17 +216,14 @@
     transition: rotate var(--ds-dur-medium) var(--ds-ease-spatial);
   }
 
-  /* data-open on .ds-combo: deprecated (removed in 2.0). */
-  .ds-combo__input[aria-expanded="true"] ~ .ds-combo__toggle svg,
-  .ds-combo[data-open] .ds-combo__toggle svg {
+  .ds-combo__input[aria-expanded="true"] ~ .ds-combo__toggle svg {
     rotate: 180deg;
   }
 
   .ds-combo__popup {
     position: absolute;
     top: calc(100% + var(--ds-space-1));
-    left: 0;
-    right: 0;
+    inset-inline: 0;
     z-index: var(--ds-z-popover);
     /* A column: under a cap (the room on its side) the list scrolls inside
        it and the status line stays. */
@@ -162,7 +231,7 @@
     flex-direction: column;
     overflow: hidden;
     border-radius: var(--ds-radius-xs);
-    background: var(--ds-surface);
+    background: var(--ds-surface-popover);
     box-shadow: var(--ds-elev-popover);
     /* Invisible; forced colors paint it, so the list keeps an edge. */
     outline: 1px solid transparent;
@@ -251,14 +320,77 @@
     list-style: none;
     scrollbar-width: thin;
     scrollbar-color: var(--ds-line-2) transparent;
+    /* The active option, scrolled into view, lands clear of the fades. */
+    scroll-padding-block: var(--ds-scroll-fade, var(--ds-space-8));
+    /* The cut edges fade (scroller.css, on the block axis): a gradient
+       whose ends are the registered numbers times --ds-scroll-fade, over
+       the content; the scrollbar strip at the end (--ds-scrollbar-width)
+       stays opaque. */
+    -webkit-mask-image:
+      linear-gradient(to bottom, transparent, #000 calc(var(--ds-scroll-edge-start) * var(--ds-scroll-fade, var(--ds-space-8))), #000 calc(100% - var(--ds-scroll-edge-end) * var(--ds-scroll-fade, var(--ds-space-8))), transparent),
+      linear-gradient(#000, #000);
+    mask-image:
+      linear-gradient(to bottom, transparent, #000 calc(var(--ds-scroll-edge-start) * var(--ds-scroll-fade, var(--ds-space-8))), #000 calc(100% - var(--ds-scroll-edge-end) * var(--ds-scroll-fade, var(--ds-space-8))), transparent),
+      linear-gradient(#000, #000);
+    -webkit-mask-size: calc(100% - var(--ds-scrollbar-width, 0px)) 100%, var(--ds-scrollbar-width, 0px) 100%;
+    mask-size: calc(100% - var(--ds-scrollbar-width, 0px)) 100%, var(--ds-scrollbar-width, 0px) 100%;
+    -webkit-mask-position: 0 0, 100% 0;
+    mask-position: 0 0, 100% 0;
+    -webkit-mask-repeat: no-repeat;
+    mask-repeat: no-repeat;
+    transition:
+      --ds-scroll-edge-start var(--ds-dur-fast) var(--ds-ease-in-out),
+      --ds-scroll-edge-end var(--ds-dur-fast) var(--ds-ease-in-out);
+  }
+
+  /* The fallback: DS.dom.scrollEdges() (attached by DS.overlay while the
+     list is open) says which end has more. Where a scroll timeline drives
+     the numbers, the animation wins over these. */
+  .ds-combo__list[data-ds-overflow-start] {
+    --ds-scroll-edge-start: 1;
+  }
+
+  .ds-combo__list[data-ds-overflow-end] {
+    --ds-scroll-edge-end: 1;
+  }
+
+  /* Scroll-linked: the shorthand first (it resets animation-timeline);
+     one timeline for both animations. */
+  @supports (animation-timeline: scroll()) {
+    .ds-combo__list {
+      animation: ds-scroll-edge-start linear both, ds-scroll-edge-end linear both;
+      animation-timeline: scroll(self block);
+      animation-range: 0 var(--ds-space-8), calc(100% - var(--ds-space-8)) 100%;
+    }
   }
 
   .ds-combo__option {
     position: relative;
     display: grid;
+    align-content: center;
     gap: 2px;
+    min-height: var(--ds-combo-option-height, 48px);
     padding: var(--ds-space-2) var(--ds-space-4);
     cursor: pointer;
+  }
+
+  /* Cannot be chosen: the disabled ink, and no active layer. */
+  .ds-combo__option[aria-disabled="true"] {
+    color: var(--ds-disabled-ink, var(--ds-text));
+    cursor: default;
+  }
+
+  .ds-combo__option[aria-disabled="true"] :is(.ds-combo__name, .ds-combo__meta) {
+    color: inherit;
+  }
+
+  .ds-combo__option[aria-disabled="true"][data-active]::before {
+    opacity: 0;
+  }
+
+  /* A share on the chosen option keeps a track that shows on the tint. */
+  .ds-combo__option[aria-selected="true"] .ds-progress {
+    --ds-progress-track: var(--ds-surface);
   }
 
   /* State layer of the active entry, as in the drawer: it fades in over
@@ -267,10 +399,7 @@
   .ds-combo__option::before {
     content: '';
     position: absolute;
-    top: 0;
-    right: 0;
-    bottom: 0;
-    left: 0;
+    inset: 0;
     background: var(--ds-text);
     opacity: 0;
     pointer-events: none;
@@ -346,6 +475,23 @@
     .ds-combo__option[aria-selected="true"] .ds-combo__name,
     .ds-combo__option[aria-selected="true"] .ds-combo__meta {
       color: inherit;
+    }
+
+    /* The active option on the chosen one: a ring of the text colour
+       inside the fill (Highlight would vanish on SelectedItem). */
+    .ds-combo__option[aria-selected="true"][data-active] {
+      outline-color: CanvasText;
+    }
+
+    /* Blocked is one system colour (D8). */
+    .ds-combo__option[aria-disabled="true"] {
+      color: GrayText;
+    }
+  }
+
+  @media print {
+    .ds-combo__popup {
+      display: none;
     }
   }
 }

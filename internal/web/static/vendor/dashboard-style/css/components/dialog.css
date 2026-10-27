@@ -18,6 +18,40 @@
  *         <button class="ds-btn ds-btn--text" type="button" data-close autofocus>Cancel</button>
  *         <button class="ds-btn ds-btn--primary" type="button">Delete devices</button>
  *
+ * Content taller than the window (a form, a long list): the body scrolls,
+ * title and actions stay. A body with nothing focusable that scrolls is a
+ * tab stop with a name.
+ *
+ *   <dialog class="ds-dialog ds-dialog--wide" aria-labelledby="p-title">
+ *     <div class="ds-dialog__backdrop" data-close></div>
+ *     <div class="ds-dialog__box">
+ *       <h2 class="ds-dialog__title" id="p-title">Choose an owner</h2>
+ *       <div class="ds-dialog__body" [tabindex="0" role="region" aria-label="Owners"]> ... </div>
+ *       <div class="ds-dialog__actions"> ... </div>
+ *
+ * Full screen (a task that needs the whole phone screen): a head with a
+ * close icon button, the title and an optional text button at the end.
+ *
+ *   <dialog class="ds-dialog ds-dialog--full-narrow" aria-labelledby="f-title">
+ *     <div class="ds-dialog__backdrop" data-close></div>
+ *     <div class="ds-dialog__box">
+ *       <div class="ds-dialog__head">
+ *         <button class="ds-btn ds-btn--quiet ds-btn--icon" type="button" aria-label="Close" data-close>(close)</button>
+ *         <h2 class="ds-dialog__title" id="f-title">New ticket</h2>
+ *         <button class="ds-btn ds-btn--text" type="button">Save</button>
+ *       </div>
+ *       <div class="ds-dialog__body"> ... </div>
+ *
+ * Action sheet (the actions of a row on a phone): the menu's items, full
+ * bleed, in a box at the bottom edge.
+ *
+ *   <dialog class="ds-dialog ds-dialog--bottom" aria-labelledby="a-title">
+ *     <div class="ds-dialog__backdrop" data-close></div>
+ *     <div class="ds-dialog__box">
+ *       <h2 class="ds-dialog__title" id="a-title">LAPTOP-0042</h2>
+ *       <div class="ds-dialog__list">
+ *         <button class="ds-menu__item" type="button">(pencil) <span class="ds-menu__label">Edit</span></button>
+ *
  * Div markup (fallback): the same tree in a div; the box takes the role.
  *
  *   <div class="ds-dialog" hidden>
@@ -51,16 +85,49 @@
  *                          embedded panel); in a container taller than
  *                          the window the box stays in the visible part
  *                          (position: sticky)
+ *   .ds-dialog--wide       a wider box (--ds-dialog-width-wide, 560px): a
+ *                          list, a form, a confirmation with a field
+ *   .ds-dialog--full       the box fills the window (no padding around it,
+ *                          radius --ds-dialog-full-radius, safe areas on
+ *                          head and actions); it rises by
+ *                          --ds-distance-lg on the spring over
+ *                          --ds-dur-long with the fade, no scale, and
+ *                          leaves dropping back in --ds-dur-base
+ *   .ds-dialog--full-narrow  the same at 600px and below, a normal dialog
+ *                          above
+ *   .ds-dialog--bottom     the action sheet: the box sits at the bottom edge
+ *                          and rises its full height (--ds-distance-sheet)
+ *                          on the spring over --ds-dur-long with the fade;
+ *                          it drops back in --ds-dur-base
+ *
+ * Parts: .ds-dialog__body (with a title above and actions below, it is the
+ * one part that scrolls: the box turns into a flex column; it shows a top
+ * hairline while scrolled, data-scrolled on the box, which DS.overlay.open()
+ * keeps through DS.dom.watchScrolled(); at a window 320px high or less the
+ * box scrolls instead, WCAG 1.4.10; empty, its sentinel aside, it takes no
+ * room, nor do empty actions), .ds-dialog__head (the full-screen top bar:
+ * a close icon button with data-close, the title, an optional text button)
+ * and .ds-dialog__list (.ds-menu__item rows full bleed in the box;
+ * DS.overlay moves focus through them with the arrow keys). A lone .ds-btn
+ * directly in the body keeps its own width.
+ *
+ * Fallback focus: a box that took focus because nothing inside could
+ * (tabindex="-1", set by DS.overlay) shows no ring.
  *
  * At 600px and below the box moves on --ds-ease-out: a box nearly as wide
  * as the window never overshoots past it.
  *
  * There are no red buttons: the main action names the consequence.
  *
- * Hooks: --ds-dialog-width (400px), --ds-dialog-border (an invisible
- * hairline that forced colors paint, so the dialog keeps its edge once
- * shadow and scrim are gone), --ds-dialog-shadow, --ds-dialog-scrim
+ * Hooks: --ds-dialog-width (400px), --ds-dialog-width-wide (560px),
+ * --ds-dialog-height (auto; set it so a filtered list does not make the
+ * box jump; capped by the window), --ds-dialog-full-radius (0),
+ * --ds-dialog-border (an invisible hairline that forced colors paint, so
+ * the dialog keeps its edge once shadow and scrim are gone; the full
+ * screen dialog needs none), --ds-dialog-shadow, --ds-dialog-scrim
  * (--ds-scrim).
+ *
+ * Print: an open dialog is not printed (it is not the page).
  *
  * Progressive:
  * - @starting-style, allow-discrete transitions and the overlay property
@@ -69,6 +136,8 @@
  *   Chromium keeps a dialog in the top layer through every exit, DS.overlay's
  *   included): without them it enters with the keyframes and closes at
  *   once.
+ * - scrollbar-color and scrollbar-width (a thin, quiet scrollbar on the
+ *   body): without them the platform scrollbar shows.
  */
 
 @layer ds.tokens, ds.base, ds.components, ds.motion, ds.utilities;
@@ -76,10 +145,7 @@
 @layer ds.components {
   .ds-dialog {
     position: fixed;
-    top: 0;
-    right: 0;
-    bottom: 0;
-    left: 0;
+    inset: 0;
     z-index: var(--ds-z-dialog);
     display: grid;
     place-items: center;
@@ -143,10 +209,7 @@
 
   .ds-dialog__backdrop {
     position: absolute;
-    top: 0;
-    right: 0;
-    bottom: 0;
-    left: 0;
+    inset: 0;
     background: var(--ds-dialog-scrim, var(--ds-scrim));
   }
 
@@ -160,11 +223,11 @@
     gap: var(--ds-space-4);
     border: var(--ds-dialog-border, 1px solid transparent);
     border-radius: var(--ds-radius-dialog);
-    background: var(--ds-surface);
+    background: var(--ds-surface-overlay);
     box-shadow: var(--ds-dialog-shadow, var(--ds-elev-overlay));
     /* Its own ink on its own surface (a widget without .ds-base). */
     color: var(--ds-text);
-    text-align: left;
+    text-align: start;
   }
 
   /* Only the box lets clicks through while it leaves; the backdrop swallows
@@ -320,6 +383,175 @@
     margin-top: var(--ds-space-2);
   }
 
+  /* Fallback focus (DS.overlay focuses the box when nothing inside can
+     take it): focus is in the trap, but there is nothing to point at. */
+  .ds-dialog__box[tabindex="-1"]:focus {
+    outline: none;
+  }
+
+  /* As tall as the hook asks (a list that filters keeps its height),
+     never taller than the window. */
+  .ds-dialog__box {
+    height: var(--ds-dialog-height, auto);
+  }
+
+  .ds-dialog--wide .ds-dialog__box {
+    width: min(var(--ds-dialog-width-wide, 560px), 100%);
+  }
+
+  /* With a body, the box is a column whose only scrolling part is the
+     body: title, head and actions stay in view. */
+  .ds-dialog__box:has(> .ds-dialog__body) {
+    display: flex;
+    flex-direction: column;
+  }
+
+  /* Only the column's items read it (without a body the box is a grid). A
+     :has() before a combinator would make Chromium restyle the whole page
+     on any text change, so this rule has none. */
+  .ds-dialog__box > * {
+    flex-shrink: 0;
+  }
+
+  /* The 12px around its content give room to focus rings and the halos of
+     checks, which the scroller would clip. The hairline at its top shows
+     while it is scrolled (data-scrolled on the box); a border, so forced
+     colours keep it. */
+  .ds-dialog__box > .ds-dialog__body {
+    flex: 1 1 auto;
+  }
+
+  .ds-dialog__body {
+    position: relative;
+    min-height: 0;
+    display: grid;
+    align-content: start;
+    gap: var(--ds-space-4);
+    margin: calc(-1 * var(--ds-space-3));
+    padding: var(--ds-space-3);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    scroll-padding-block: var(--ds-space-3);
+    scrollbar-width: thin;
+    scrollbar-color: var(--ds-line-2) transparent;
+    border-top: 1px solid transparent;
+    outline-offset: 0;
+    transition:
+      outline-offset var(--ds-dur-fast) var(--ds-ease-out),
+      border-color var(--ds-dur-fast) var(--ds-ease-in-out);
+  }
+
+  .ds-dialog__box[data-scrolled] > .ds-dialog__body {
+    border-top-color: var(--ds-line);
+  }
+
+  /* A scrolling body with nothing focusable is a tab stop (tabindex="0",
+     role="region" and a name): an inset ring that rests on the edge and
+     snaps inward, never clipped by the scroller. */
+  .ds-dialog__body:focus {
+    outline: none;
+  }
+
+  .ds-dialog__body:focus-visible {
+    outline: var(--ds-focus-outline);
+    outline-offset: calc(-1 * var(--ds-focus-width));
+  }
+
+  /* The sentinel of DS.dom.watchScrolled() (DS.overlay.open() adds it) comes first. */
+  .ds-dialog__title + .ds-dialog__body > .ds-dialog__text:first-child,
+  .ds-dialog__title + .ds-dialog__body > [data-ds-sentinel]:first-child + .ds-dialog__text {
+    margin-top: calc(-1 * var(--ds-space-2));
+  }
+
+  /* A lone button keeps its own width (a grid item would stretch). */
+  .ds-dialog__body > .ds-btn {
+    justify-self: start;
+  }
+
+  /* An empty body, its sentinel aside, takes no room. "No child but the
+     sentinel" rather than :only-child inside :has(): Firefox does not
+     restyle that when rows are added after the sentinel. Text nodes are
+     no children to a selector, so a body of bare text carries
+     data-ds-text (DS.dom.watchScrolled()) and stays. */
+  .ds-dialog__body:empty,
+  .ds-dialog__body:not([data-ds-text]):has(> [data-ds-sentinel]):not(:has(> :not([data-ds-sentinel]))),
+  .ds-dialog__actions:empty {
+    display: none;
+  }
+
+  /* The full-screen top bar (M3): close, title, an optional text action.
+     It reaches into the box's padding, so the icon button lines up with
+     the content edge. */
+  .ds-dialog__head {
+    display: flex;
+    align-items: center;
+    gap: var(--ds-space-2);
+    min-height: 56px;
+    margin: calc(-1 * var(--ds-space-3)) calc(-1 * var(--ds-space-3)) 0;
+  }
+
+  .ds-dialog__head > .ds-dialog__title {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .ds-dialog__head > .ds-btn {
+    flex-shrink: 0;
+  }
+
+  /* An action sheet's rows: menu items, full bleed in the box. */
+  .ds-dialog__list {
+    display: flex;
+    flex-direction: column;
+    margin: 0 calc(-1 * var(--ds-space-6));
+    padding: 0;
+  }
+
+  .ds-dialog__list + .ds-dialog__actions {
+    margin-top: 0;
+  }
+
+  /* The whole window: no padding around the box, safe areas inside it. */
+  .ds-dialog--full {
+    padding: 0;
+  }
+
+  .ds-dialog--full .ds-dialog__box {
+    width: 100%;
+    height: 100%;
+    max-height: none;
+    border-radius: var(--ds-dialog-full-radius, 0);
+    padding:
+      0
+      max(var(--ds-space-6), env(safe-area-inset-right))
+      max(var(--ds-space-6), env(safe-area-inset-bottom))
+      max(var(--ds-space-6), env(safe-area-inset-left));
+  }
+
+  .ds-dialog--full .ds-dialog__head {
+    margin: 0 calc(var(--ds-space-2) - var(--ds-space-6));
+    padding-top: env(safe-area-inset-top);
+  }
+
+  /* The action sheet: at the bottom edge, above the home indicator. */
+  .ds-dialog--bottom {
+    place-items: end center;
+    padding-bottom: max(var(--ds-space-4), env(safe-area-inset-bottom));
+  }
+
+  /* A window 320px high or less (a phone on its side with the keyboard):
+     the box scrolls as one, so every part stays reachable (WCAG 1.4.10). */
+  @media (max-height: 320px) {
+    .ds-dialog__box:has(> .ds-dialog__body) {
+      display: grid;
+    }
+
+    .ds-dialog__body {
+      min-height: auto;
+      overflow: visible;
+    }
+  }
+
   /* Phones: a box nearly as wide as the window never overshoots past it;
      the movement decelerates instead of springing (every path). */
   @media (max-width: 600px) {
@@ -343,6 +575,28 @@
         ds-fade-out var(--ds-dur-base) var(--ds-ease-in-out) forwards,
         ds-shrink-out var(--ds-dur-base) var(--ds-ease-exit) forwards;
     }
+
+    /* Full screen on phones only. */
+    .ds-dialog--full-narrow {
+      padding: 0;
+    }
+
+    .ds-dialog--full-narrow .ds-dialog__box {
+      width: 100%;
+      height: 100%;
+      max-height: none;
+      border-radius: var(--ds-dialog-full-radius, 0);
+      padding:
+        0
+        max(var(--ds-space-6), env(safe-area-inset-right))
+        max(var(--ds-space-6), env(safe-area-inset-bottom))
+        max(var(--ds-space-6), env(safe-area-inset-left));
+    }
+
+    .ds-dialog--full-narrow .ds-dialog__head {
+      margin: 0 calc(var(--ds-space-2) - var(--ds-space-6));
+      padding-top: env(safe-area-inset-top);
+    }
   }
 
   @supports (transition-behavior: allow-discrete) {
@@ -353,6 +607,163 @@
           scale var(--ds-dur-slow) var(--ds-ease-out),
           translate var(--ds-dur-slow) var(--ds-ease-out);
       }
+    }
+  }
+
+  /* ── Full screen and action sheet: they rise, no scale ──
+     After the phone rules, which they override: the full-screen box
+     always rises on the spring (a 12px rise has nothing to overshoot past),
+     the action sheet rises its full height from the bottom edge. Both
+     fade in over --ds-dur-fast and leave in --ds-dur-base, dropping back,
+     accelerating. */
+  .ds-dialog--full[data-state] .ds-dialog__box,
+  .ds-dialog--bottom[data-state] .ds-dialog__box {
+    transition:
+      opacity var(--ds-dur-fast) var(--ds-ease-in-out),
+      translate var(--ds-dur-long) var(--ds-ease-spatial);
+  }
+
+  .ds-dialog--full[data-state="closed"] .ds-dialog__box,
+  .ds-dialog--bottom[data-state="closed"] .ds-dialog__box {
+    scale: none;
+    transition:
+      opacity var(--ds-dur-base) var(--ds-ease-in-out),
+      translate var(--ds-dur-base) var(--ds-ease-exit);
+  }
+
+  .ds-dialog--full[data-state="closed"] .ds-dialog__box {
+    translate: 0 var(--ds-distance-lg);
+  }
+
+  .ds-dialog--bottom[data-state="closed"] .ds-dialog__box {
+    translate: 0 var(--ds-distance-sheet);
+  }
+
+  /* By hand (no data-state): the same rise as keyframes. */
+  .ds-dialog--full:not([data-state]) .ds-dialog__box,
+  .ds-dialog--bottom:not([data-state]) .ds-dialog__box {
+    --ds-motion-distance: var(--ds-distance-lg);
+    animation:
+      ds-fade-in var(--ds-dur-fast) var(--ds-ease-in-out) backwards,
+      ds-lift-in var(--ds-dur-long) var(--ds-ease-spatial) backwards;
+  }
+
+  .ds-dialog--bottom:not([data-state]) .ds-dialog__box {
+    --ds-motion-distance: var(--ds-distance-sheet);
+  }
+
+  .ds-dialog--full.ds-dialog--closing:not([data-state]) .ds-dialog__box,
+  .ds-dialog--bottom.ds-dialog--closing:not([data-state]) .ds-dialog__box {
+    animation:
+      ds-fade-out var(--ds-dur-base) var(--ds-ease-in-out) forwards,
+      ds-drop-out var(--ds-dur-base) var(--ds-ease-exit) forwards;
+  }
+
+  @media (max-width: 600px) {
+    .ds-dialog--full-narrow[data-state] .ds-dialog__box {
+      transition:
+        opacity var(--ds-dur-fast) var(--ds-ease-in-out),
+        translate var(--ds-dur-long) var(--ds-ease-spatial);
+    }
+
+    .ds-dialog--full-narrow[data-state="closed"] .ds-dialog__box {
+      scale: none;
+      translate: 0 var(--ds-distance-lg);
+      transition:
+        opacity var(--ds-dur-base) var(--ds-ease-in-out),
+        translate var(--ds-dur-base) var(--ds-ease-exit);
+    }
+
+    .ds-dialog--full-narrow:not([data-state]) .ds-dialog__box {
+      --ds-motion-distance: var(--ds-distance-lg);
+      animation:
+        ds-fade-in var(--ds-dur-fast) var(--ds-ease-in-out) backwards,
+        ds-lift-in var(--ds-dur-long) var(--ds-ease-spatial) backwards;
+    }
+
+    .ds-dialog--full-narrow.ds-dialog--closing:not([data-state]) .ds-dialog__box {
+      animation:
+        ds-fade-out var(--ds-dur-base) var(--ds-ease-in-out) forwards,
+        ds-drop-out var(--ds-dur-base) var(--ds-ease-exit) forwards;
+    }
+  }
+
+  /* A native full-screen dialog or action sheet driven by hand: the same
+     rise on transitions, keyed on [open]. The open state names [open], so
+     it outweighs the phone dialog's ease-out (dialog.ds-dialog[open]
+     above). */
+  @supports (transition-behavior: allow-discrete) {
+    dialog.ds-dialog--full:not([data-state]) .ds-dialog__box,
+    dialog.ds-dialog--full[open]:not([data-state]) .ds-dialog__box,
+    dialog.ds-dialog--bottom:not([data-state]) .ds-dialog__box,
+    dialog.ds-dialog--bottom[open]:not([data-state]) .ds-dialog__box {
+      animation: none;
+      transition:
+        opacity var(--ds-dur-fast) var(--ds-ease-in-out),
+        translate var(--ds-dur-long) var(--ds-ease-spatial);
+    }
+
+    dialog.ds-dialog--full:not([data-state]):not([open]) .ds-dialog__box,
+    dialog.ds-dialog--bottom:not([data-state]):not([open]) .ds-dialog__box {
+      scale: none;
+      transition:
+        opacity var(--ds-dur-base) var(--ds-ease-in-out),
+        translate var(--ds-dur-base) var(--ds-ease-exit);
+    }
+
+    dialog.ds-dialog--full:not([data-state]):not([open]) .ds-dialog__box {
+      translate: 0 var(--ds-distance-lg);
+    }
+
+    dialog.ds-dialog--bottom:not([data-state]):not([open]) .ds-dialog__box {
+      translate: 0 var(--ds-distance-sheet);
+    }
+
+    /* --full-narrow is a full-screen dialog at 600px and below: the same
+       rise. */
+    @media (max-width: 600px) {
+      dialog.ds-dialog--full-narrow:not([data-state]) .ds-dialog__box,
+      dialog.ds-dialog--full-narrow[open]:not([data-state]) .ds-dialog__box {
+        animation: none;
+        transition:
+          opacity var(--ds-dur-fast) var(--ds-ease-in-out),
+          translate var(--ds-dur-long) var(--ds-ease-spatial);
+      }
+
+      dialog.ds-dialog--full-narrow:not([data-state]):not([open]) .ds-dialog__box {
+        scale: none;
+        translate: 0 var(--ds-distance-lg);
+        transition:
+          opacity var(--ds-dur-base) var(--ds-ease-in-out),
+          translate var(--ds-dur-base) var(--ds-ease-exit);
+      }
+    }
+  }
+
+  @starting-style {
+    dialog.ds-dialog--full[open]:not([data-state]) .ds-dialog__box {
+      scale: none;
+      translate: 0 var(--ds-distance-lg);
+    }
+
+    dialog.ds-dialog--bottom[open]:not([data-state]) .ds-dialog__box {
+      scale: none;
+      translate: 0 var(--ds-distance-sheet);
+    }
+  }
+
+  @media (max-width: 600px) {
+    @starting-style {
+      dialog.ds-dialog--full-narrow[open]:not([data-state]) .ds-dialog__box {
+        scale: none;
+        translate: 0 var(--ds-distance-lg);
+      }
+    }
+  }
+
+  @media print {
+    .ds-dialog {
+      display: none;
     }
   }
 }

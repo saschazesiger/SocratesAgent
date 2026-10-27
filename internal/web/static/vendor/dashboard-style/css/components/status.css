@@ -10,7 +10,8 @@
  *
  * Fully round at one line (radius = half the height); a long label that
  * wraps keeps soft corners instead of turning into a stadium.
- * Hook: --ds-status-radius.
+ * Hooks: --ds-status-radius, --ds-status-spinner-width (2px, the ring of
+ * the running spinner).
  *
  * Status changes glide, for a user action and a poll alike: colour and
  * icon change smoothly for every status change, the text at once. The
@@ -22,6 +23,19 @@
  * swaps the icon itself can use DS.motion.crossfade(chip, icon, { kind:
  * 'icon' }). What glides and what changes at once: docs/motion.md, "Data
  * motion".
+ *
+ * Tag: a label of words ("Preview", "Beta", "External"), not a state and
+ * not a count; not interactive.
+ *
+ *   <span class="ds-tag">Preview</span>
+ *   <span class="ds-tag ds-tag--neutral">(tag 16)External</span>
+ *
+ * The caption type on the tint (--ds-tag-bg / --ds-tag-color, from
+ * --ds-accent / --ds-on-accent; --neutral: --ds-surface-high / --ds-text),
+ * an optional leading 16px icon in --ds-on-accent-icon, the pill radius
+ * min(--ds-radius-action, half its height). Forced colours: a CanvasText
+ * outline. Tag = words, badge (.ds-badge) = counts, status chip = a state
+ * with an icon. Hooks: --ds-tag-bg, --ds-tag-color, --ds-tag-height (24px).
  *
  * Progressive:
  * - @starting-style (the incoming icon's fade and scale; it also plays on
@@ -40,7 +54,8 @@
     gap: var(--ds-space-1);
     min-height: 24px;
     max-width: 100%;
-    padding: var(--ds-space-1) var(--ds-space-2) var(--ds-space-1) 6px;
+    padding-block: var(--ds-space-1);
+    padding-inline: 6px var(--ds-space-2);
     border-radius: var(--ds-status-radius, var(--ds-radius-md));
     background: var(--ds-surface-high);
     color: var(--ds-text-2);
@@ -97,10 +112,53 @@
 
   /* The arc at its own pace, the turn a little faster than on a surface. */
   .ds-status__spinner {
-    --ds-spinner-width: 2px;
+    --ds-spinner-width: var(--ds-status-spinner-width, 2px);
     width: 14px;
     height: 14px;
     margin: 1px;
     animation-duration: var(--ds-loop-arc), var(--ds-loop-spin-fast);
+  }
+
+  /* Tag: words on the tint, a pill at one line. */
+  .ds-tag {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--ds-space-1);
+    min-height: var(--ds-tag-height, 24px);
+    max-width: 100%;
+    padding: 0 var(--ds-space-2);
+    border-radius: min(var(--ds-radius-action), calc(var(--ds-tag-height, 24px) / 2));
+    background: var(--ds-tag-bg, var(--ds-accent));
+    color: var(--ds-tag-color, var(--ds-on-accent));
+    font: var(--ds-font-caption);
+    white-space: nowrap;
+    vertical-align: middle;
+  }
+
+  .ds-tag > svg {
+    flex-shrink: 0;
+    width: 16px;
+    height: 16px;
+    color: var(--ds-on-accent-icon);
+  }
+
+  .ds-tag:has(> svg:first-child) {
+    padding-inline-start: 6px;
+  }
+
+  .ds-tag--neutral {
+    --ds-tag-bg: var(--ds-surface-high);
+    --ds-tag-color: var(--ds-text);
+  }
+
+  .ds-tag--neutral > svg {
+    color: var(--ds-text-2);
+  }
+
+  @media (forced-colors: active) {
+    .ds-tag {
+      outline: 1px solid CanvasText;
+      outline-offset: -1px;
+    }
   }
 }

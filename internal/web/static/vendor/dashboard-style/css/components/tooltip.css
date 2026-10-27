@@ -9,11 +9,15 @@
  * DS.overlay.tooltips(root) (js/overlay.js) does everything for
  * [data-tip] triggers: it creates the one tooltip of the theme, shows it
  * after --ds-delay-tooltip on hover (mouse and pen) and at once on keyboard
- * focus, warms up along a toolbar (--ds-delay-tooltip-skip), hides after
- * the --ds-delay-tooltip-hide grace, on Escape and on any pointerdown, and
- * places it:
+ * focus, on touch after a tap on an image or a blocked control and a long
+ * press on the other triggers (no timeout), warms up along a toolbar
+ * (--ds-delay-tooltip-skip), hides after the --ds-delay-tooltip-hide
+ * grace, on Escape, on any pointerdown and when its trigger leaves the
+ * document, shows a tip that repeats the visible text only while that text
+ * is cut off (a name in a narrow column), and places it:
  *
  *   <button class="ds-btn ds-btn--quiet ds-btn--icon" type="button" aria-label="Copy link" data-tip="Copy link">(link)</button>
+ *   <td><a href="#device-42" data-tip="LAPTOP-0042-FINANCE-BACKUP">LAPTOP-0042-FINANCE-BACKUP</a></td>   only while cut off
  *   DS.overlay.tooltips(document);
  *
  *   <div class="ds-tooltip" role="tooltip" id="..." hidden data-state="open | closed" [data-warm] [data-placement="top"] [data-anchored]>Copy link</div>
@@ -40,11 +44,15 @@
  *   tooltip, behind @supports (position-area: block-end); data-anchored
  *   marks that path): without them the script writes --ds-tooltip-x/-y and
  *   flips the tooltip above the trigger (data-placement="top").
+ *
+ * Print: a tooltip is not printed.
  */
 
 @layer ds.tokens, ds.base, ds.components, ds.motion, ds.utilities;
 
 @layer ds.components {
+  /* Physical on purpose (D9): --ds-tooltip-x is a script coordinate from
+     the left, and the anchored placement (below) clears it. */
   .ds-tooltip {
     position: fixed;
     left: var(--ds-tooltip-x, 0px);
@@ -137,6 +145,12 @@
       margin: var(--ds-space-2) var(--ds-space-2) 0;
       left: auto;
       top: auto;
+    }
+  }
+
+  @media print {
+    .ds-tooltip {
+      display: none;
     }
   }
 }

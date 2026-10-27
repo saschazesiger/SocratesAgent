@@ -1,7 +1,13 @@
 /*
  * Page base for full apps (opt-in): the backdrop, body type, selection,
- * links, inline code and the focus ring. (Border-box sizing applies to
- * all of .ds-theme, see utilities.css.)
+ * headings on the type roles (h1 headline, h2 subtitle, h3 to h6 the
+ * label role, no margins), links (an icon at either end of a plain link
+ * keeps its distance), inline code (just text inside a pre or a link), a
+ * rule (hr, a hairline like .ds-divider), marked text (mark, on the tint)
+ * and the focus ring. Rendered rich text keeps a hierarchy of its own in
+ * .ds-prose. Under .ds-base `hidden` always hides; never add a [hidden]
+ * rule of your own. (Border-box sizing applies to all of .ds-theme, see
+ * utilities.css.)
  *
  *   <html class="ds-theme ds-base">
  *
@@ -31,6 +37,7 @@
   /* The tinted backdrop of the whole app: white panels sit on it. */
   html:where(.ds-base) {
     -webkit-text-size-adjust: 100%;
+    text-size-adjust: 100%;
     background: var(--ds-backdrop);
   }
 
@@ -71,6 +78,54 @@
     }
   }
 
+  /* An icon at the end of a plain link (an external link, "Open") or at its
+     start keeps a gap to the text and sits on its centre line. */
+  :where(.ds-base) :where(a:not([class])) > svg:last-child {
+    margin-inline-start: var(--ds-space-1);
+    vertical-align: -0.125em;
+  }
+
+  :where(.ds-base) :where(a:not([class])) > svg:first-child {
+    margin-inline-end: var(--ds-space-1);
+    vertical-align: -0.125em;
+  }
+
+  /* Bare headings take the type roles, without the browser's margins:
+     element weight only, in ds.base, so every component class and every
+     unlayered project rule wins. Two weights, as everywhere. */
+  :where(.ds-base) :is(h1, h2, h3, h4, h5, h6) {
+    margin: 0;
+    color: var(--ds-text);
+    letter-spacing: 0;
+  }
+
+  :where(.ds-base) h1 {
+    font: var(--ds-font-headline);
+  }
+
+  :where(.ds-base) h2 {
+    font: var(--ds-font-subtitle);
+  }
+
+  :where(.ds-base) :is(h3, h4, h5, h6) {
+    font: var(--ds-font-label);
+  }
+
+  /* A rule: a hairline, as .ds-divider. */
+  :where(.ds-base) hr {
+    margin: 0;
+    border: 0;
+    border-top: 1px solid var(--ds-line);
+  }
+
+  /* Marked text (a search hit): on the tint. Forced colours map it to Mark
+     by themselves. */
+  :where(.ds-base) mark {
+    border-radius: var(--ds-radius-xs);
+    background: var(--ds-accent);
+    color: var(--ds-on-accent);
+  }
+
   /* Inline code takes the size and colour of the text around it, only the
      typeface changes (a layered reset's code colour does not reach it).
      Its own box is just its glyphs: the monospace font sits higher on the
@@ -84,6 +139,14 @@
     border: 1px solid var(--ds-line);
     border-radius: var(--ds-radius-xs);
     padding: 0 var(--ds-space-1);
+  }
+
+  /* Code in a block or a link is part of it: no chip per line. */
+  :where(.ds-base) :where(pre, a) code {
+    padding: 0;
+    border: 0;
+    background: none;
+    line-height: inherit;
   }
 
   :where(.ds-base) button,

@@ -1,5 +1,7 @@
 /*
- * Key figures: tonal tiles in a row of four (two below 1100px).
+ * Key figures: tonal tiles that fill their row, up to four (.ds-tiles--3:
+ * three), at least --ds-tile-min-width (176px) each, in any container (a
+ * page, a dialog, a sheet, beside the drawer).
  *
  *   <div class="ds-tiles">
  *     <div class="ds-tile">
@@ -27,7 +29,21 @@
  * meter or progress bar set in the same task lands on the same frame. The
  * note changes at once.
  *
- * Hooks: --ds-tile-radius, --ds-tile-radius-pressed.
+ * A tile that filters by its figure is a toggle: aria-pressed (or
+ * aria-checked, aria-selected) on the <button class="ds-tile">. Selected it
+ * takes --ds-tile-selected-bg (--ds-accent) with --ds-on-accent ink and a
+ * static inset ring (a border of --ds-focus-width in --ds-selected-ring,
+ * --ds-primary, on its ::after), so the focus ring stays free and both
+ * read at once. The colours change on --ds-dur-fast, the ring shows at
+ * once. Add a check or the label weight: never the tint alone. Forced
+ * colours: Highlight / HighlightText.
+ *
+ * A value that does not fit ends in an ellipsis (the last resort: shorten
+ * figures, the full value in data-tip). .ds-tile__value--empty: a value
+ * that is missing ("No data"), in --ds-text-2 with the display font.
+ *
+ * Hooks: --ds-tile-radius, --ds-tile-radius-pressed, --ds-tile-min-width
+ * (176px), --ds-tiles-columns (4), --ds-tile-selected-bg, --ds-selected-ring.
  *
  * On narrow tiles the value shrinks with the tile (container units).
  */
@@ -35,16 +51,16 @@
 @layer ds.tokens, ds.base, ds.components, ds.motion, ds.utilities;
 
 @layer ds.components {
+  /* Intrinsic columns: as many tiles per row as fit at their smallest width,
+     never more than --ds-tiles-columns, each row filled. */
   .ds-tiles {
     display: grid;
-    grid-template-columns: repeat(4, minmax(0, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, max(var(--ds-tile-min-width, 176px), (100% - (var(--ds-tiles-columns, 4) - 1) * var(--ds-space-3)) / var(--ds-tiles-columns, 4))), 1fr));
     gap: var(--ds-space-3);
   }
 
-  @media (max-width: 1100px) {
-    .ds-tiles {
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-    }
+  .ds-tiles--3 {
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, max(var(--ds-tile-min-width, 176px), (100% - 2 * var(--ds-space-3)) / 3)), 1fr));
   }
 
   .ds-tile {
@@ -90,6 +106,15 @@
     letter-spacing: 0;
     font-variant-numeric: tabular-nums;
     white-space: nowrap;
+    /* The last resort of a value too wide for its tile. */
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  /* A value that is missing: quieter, still in the display font (.ds-muted would replace the font). */
+  .ds-tile__value--empty {
+    color: var(--ds-text-2);
   }
 
   /* Clickable tile: the element's own button or link look is reset. */
@@ -101,13 +126,15 @@
     border: 0;
     color: inherit;
     font: inherit;
-    text-align: left;
+    text-align: start;
     text-decoration: none;
     cursor: pointer;
     -webkit-tap-highlight-color: transparent;
     /* The ring rests (invisible) one width further out and snaps in. */
     outline-offset: calc(var(--ds-focus-offset) + var(--ds-focus-width));
     transition:
+      background-color var(--ds-dur-fast) var(--ds-ease-in-out),
+      color var(--ds-dur-fast) var(--ds-ease-in-out),
       border-radius var(--ds-dur-medium) var(--ds-ease-spatial),
       outline-offset var(--ds-dur-fast) var(--ds-ease-out);
   }
@@ -118,6 +145,8 @@
   :is(button, a).ds-tile.ds-pressed:not(:disabled, [aria-disabled="true"]) {
     border-radius: min(var(--ds-tile-radius-pressed, var(--ds-radius-md)), var(--ds-tile-radius, var(--ds-radius-lg)));
     transition:
+      background-color var(--ds-dur-fast) var(--ds-ease-in-out),
+      color var(--ds-dur-fast) var(--ds-ease-in-out),
       border-radius var(--ds-dur-micro) var(--ds-ease-out),
       outline-offset var(--ds-dur-fast) var(--ds-ease-out);
   }
@@ -125,10 +154,7 @@
   :is(button, a).ds-tile::before {
     content: '';
     position: absolute;
-    top: 0;
-    right: 0;
-    bottom: 0;
-    left: 0;
+    inset: 0;
     z-index: -1;
     border-radius: inherit;
     background: currentColor;
@@ -181,5 +207,68 @@
     color: var(--ds-text-2);
     font: var(--ds-font-meta);
     font-variant-numeric: tabular-nums;
+  }
+
+  /* Selected (a filter by this figure): the tint and a static inset ring on
+     the free ::after (the state layer is ::before), so the focus ring stays
+     free; the ring shows at once, the colours glide. */
+  :is(button, a).ds-tile:is([aria-pressed="true"], [aria-checked="true"], [aria-selected="true"]) {
+    background: var(--ds-tile-selected-bg, var(--ds-accent));
+    color: var(--ds-on-accent);
+  }
+
+  :is(button, a).ds-tile:is([aria-pressed="true"], [aria-checked="true"], [aria-selected="true"]) :is(.ds-tile__label, .ds-tile__value, .ds-tile__note) {
+    color: var(--ds-on-accent);
+  }
+
+  :is(button, a).ds-tile:is([aria-pressed="true"], [aria-checked="true"], [aria-selected="true"])::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    border: var(--ds-focus-width) solid var(--ds-selected-ring, var(--ds-primary));
+    border-radius: inherit;
+    pointer-events: none;
+  }
+
+  @media (forced-colors: active) {
+    :is(button, a).ds-tile:is([aria-pressed="true"], [aria-checked="true"], [aria-selected="true"]) {
+      forced-color-adjust: none;
+      background: Highlight;
+      color: HighlightText;
+    }
+
+    :is(button, a).ds-tile:is([aria-pressed="true"], [aria-checked="true"], [aria-selected="true"]) :is(.ds-tile__label, .ds-tile__value, .ds-tile__note) {
+      color: HighlightText;
+    }
+
+    :is(button, a).ds-tile:is([aria-pressed="true"], [aria-checked="true"], [aria-selected="true"])::after {
+      border-color: Highlight;
+    }
+
+    :is(button, a).ds-tile:is([aria-pressed="true"], [aria-checked="true"], [aria-selected="true"]):focus-visible {
+      outline-color: CanvasText;
+    }
+
+    :is(button, a).ds-tile[aria-disabled="true"] {
+      forced-color-adjust: none;
+      background: Canvas;
+      color: GrayText;
+    }
+
+    :is(button, a).ds-tile[aria-disabled="true"] :is(.ds-tile__label, .ds-tile__value, .ds-tile__note) {
+      color: GrayText;
+    }
+
+    /* It stays focusable; unforced, its ring would keep the brand colour. */
+    :is(button, a).ds-tile[aria-disabled="true"]:focus-visible {
+      outline-color: CanvasText;
+    }
+  }
+
+  /* Print: a short tile is never split across pages. */
+  @media print {
+    .ds-tile {
+      break-inside: avoid;
+    }
   }
 }

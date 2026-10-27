@@ -37,6 +37,12 @@
  * .ds-btn--done; the faces themselves are CSS. originFrom() writes where a
  * popup grows from.
  *
+ * Blocked actions (2.0): guard() cancels, in the capture phase on the
+ * window, every activation (click, middle click, Enter and Space, a label
+ * click, a form submission by its submitter) of a busy or done .ds-btn and
+ * of an aria-disabled action inside .ds-theme, before any page listener
+ * sees it; [data-ds-guard="off"] opts a control out. busy() installs it.
+ *
  * Views: transition() moves from one view to the next (navigation only,
  * never data): fade-through, shared axis X (forward, back) or a container
  * transform, as a View Transition keyed on data-ds-vt on <html> (the
@@ -55,6 +61,9 @@
  * - document.startViewTransition (same-document View Transitions, for
  *   transition(), only with .ds-theme on <html>): without it, or for an
  *   embedded widget, the new view fades through with .ds-enter--swap.
+ * - moveBefore (sortable() moves a row with it, so the row keeps its
+ *   focus and animations): without it insertBefore, and the handle gets
+ *   the focus back.
  * - ScrollTimeline (scroll-driven animations; settled(), the handoffs and
  *   flip() tell those animations apart and leave them be, and
  *   resyncScroll() restarts those whose scroller stopped overflowing):
@@ -82,9 +91,11 @@ export const MOTION_FALLBACKS = Object.freeze({
   '--ds-delay-boot': 400,
   '--ds-hold-loader': 450,
   '--ds-hold-success': 600,
+  '--ds-hold-status': 900,
   '--ds-delay-tooltip': 500,
   '--ds-delay-tooltip-skip': 300,
   '--ds-delay-tooltip-hide': 100,
+  '--ds-delay-dismiss': 300,
   '--ds-ease-in-out': 'cubic-bezier(.2, 0, 0, 1)',
   '--ds-ease-out': 'cubic-bezier(.05, .7, .1, 1)',
   '--ds-ease-in': 'cubic-bezier(.3, 0, 1, 1)',
@@ -92,7 +103,6 @@ export const MOTION_FALLBACKS = Object.freeze({
   '--ds-ease-emphasized': 'cubic-bezier(.2, 0, 0, 1)',
   '--ds-ease-spatial': 'cubic-bezier(.05, .7, .1, 1)',
   '--ds-ease-value': 'cubic-bezier(.2, 0, 0, 1)',
-  '--ds-ease': 'cubic-bezier(.2, 0, 0, 1)',
 });
 
 /** --ds-delay-loader outside a theme (MOTION_FALLBACKS). */
@@ -497,11 +507,21 @@ const MOTION_CLASS = /^ds-(enter|leave)(--[\w-]+)?$/;
  */
 const stepOwners = new WeakMap();
 
+/**
+ * Removes a style attribute that a helper emptied (style="" left behind),
+ * so the element's shell equals its template again (DS.dom.morphHtml keeps
+ * identical nodes as they are).
+ */
+function tidyStyle(element) {
+  if (element?.getAttribute?.('style')?.trim() === '') element.removeAttribute('style');
+}
+
 /** Removes the `--ds-i` an enterAll() batch wrote: a single entrance never staggers. */
 function dropStep(element) {
   if (!stepOwners.has(element)) return;
   stepOwners.delete(element);
   /** @type {HTMLElement} */ (element).style.removeProperty('--ds-i');
+  tidyStyle(element);
 }
 
 /** Removes every .ds-enter / .ds-leave class and variant; true if there was one. */
@@ -631,8 +651,8 @@ function animationNames(element) {
 
 /* ── Interruption ───────────────────────────────────── */
 
-/** What a handoff reads and animates (transform: the deprecated combined exits). */
-const TRACKED = ['opacity', 'translate', 'scale', 'clip-path', 'transform', 'stroke-dashoffset'];
+/** What a handoff reads and animates (no keyframe animates transform). */
+const TRACKED = ['opacity', 'translate', 'scale', 'clip-path', 'stroke-dashoffset'];
 
 const camel = (property) => property.replace(/-([a-z])/g, (match, char) => char.toUpperCase());
 const kebab = (property) => property.replace(/[A-Z]/g, (char) => `-${char.toLowerCase()}`);
@@ -666,7 +686,6 @@ function remainingShare(tracks, now) {
   const ordered = [...tracks].sort((a, b) => Number(b.properties.includes('opacity')) - Number(a.properties.includes('opacity')));
   for (const track of ordered) {
     for (const property of track.properties) {
-      if (property === 'transform') continue;
       const start = numbersOf(property, track.start[property]);
       const end = numbersOf(property, track.end[property]);
       const current = numbersOf(property, now[property]);
@@ -1004,7 +1023,7 @@ export function settled(element, options = {}) {
  * as the opener (leave() returns focus there) and, when the element is
  * still moving (a running exit), continues from where it is.
  * @param {Element|null|undefined} element
- * @param {''|'fade'|'scale'|'slide'|'swap'|'delayed'|'pop'|'fill-x'|'fill-y'} [variant]
+ * @param {''|'fade'|'scale'|'slide'|'swap'|'delayed'|'pop'|'fill'|'fill-x'|'fill-y'} [variant]
  * @returns {Promise<void>} resolves without acting once a later call took over
  */
 export function enter(element, variant = '') {
@@ -1181,17 +1200,22 @@ export function staggerOnce(container, options = {}) {
 /**
  * How much longer a loading indicator inserted at `startedAt` must stay
  * before its content may replace it: none when it never became visible (it
- * fades in after `delay`, default LOADER_DELAY_MS), else until it was
- * visible for `minVisible` (default LOADER_MIN_VISIBLE_MS), so it never
- * flashes up and away half-faded.
+ * fades in after `delay`), else until it was visible for `minVisible`, so
+ * it never flashes up and away half-faded. With `element` (the indicator)
+ * the times come from its computed tokens, so they follow --ds-time-scale:
+ * the delay from --ds-delay-boot when it is or sits in a .ds-boot, else
+ * --ds-delay-loader, the minimum from --ds-hold-loader. Without it they are
+ * LOADER_DELAY_MS and LOADER_MIN_VISIBLE_MS. Explicit numbers win.
  * @param {number} startedAt  Date.now() when the indicator was inserted
  * @param {number} [now]
- * @param {{ delay?: number, minVisible?: number }} [options]  ms
+ * @param {{ element?: Element|null, delay?: number, minVisible?: number }} [options]  ms
  * @returns {number} ms
  */
 export function loaderHoldMs(startedAt, now = Date.now(), options = {}) {
-  const delay = options.delay ?? LOADER_DELAY_MS;
-  const minVisible = options.minVisible ?? LOADER_MIN_VISIBLE_MS;
+  const element = options.element ?? null;
+  const delayToken = element?.closest?.('.ds-boot') ? '--ds-delay-boot' : '--ds-delay-loader';
+  const delay = options.delay ?? (element ? motionDuration(element, delayToken) : LOADER_DELAY_MS);
+  const minVisible = options.minVisible ?? (element ? motionDuration(element, '--ds-hold-loader') : LOADER_MIN_VISIBLE_MS);
   const visible = now - startedAt - delay;
   if (visible <= 0 || visible >= minVisible) return 0;
   return minVisible - visible;
@@ -1199,26 +1223,262 @@ export function loaderHoldMs(startedAt, now = Date.now(), options = {}) {
 
 /**
  * Waits until a loading indicator inserted at `startedAt` may disappear
- * (see loaderHoldMs). With `element` (the indicator) the times come from
- * its computed tokens, so they follow --ds-time-scale: the delay from
- * --ds-delay-boot when it is or sits in a .ds-boot, else --ds-delay-loader,
- * the minimum from --ds-hold-loader. Explicit `delay` / `minVisible` win.
- * The second argument may be `now` (a number) or the options.
+ * (see loaderHoldMs, which takes the same `element`, `delay` and
+ * `minVisible`; `now` defaults to Date.now()).
+ *
+ * Deprecated (removed in 3.0 at the earliest): a number as the second
+ * argument (`now`, then the options third); it still works. Pass
+ * `{ now }` instead.
  * @param {number} startedAt  Date.now() when the indicator was inserted
- * @param {number|{ element?: Element, delay?: number, minVisible?: number }} [nowOrOptions]
- * @param {{ element?: Element, delay?: number, minVisible?: number }} [options]
+ * @param {{ now?: number, element?: Element|null, delay?: number, minVisible?: number }|number} [options]
+ * @param {{ element?: Element|null, delay?: number, minVisible?: number }} [legacy]  the options after a numeric `now`
  * @returns {Promise<void>}
  */
-export function settleLoader(startedAt, nowOrOptions, options = {}) {
-  const now = typeof nowOrOptions === 'number' ? nowOrOptions : Date.now();
-  const settings = nowOrOptions !== null && typeof nowOrOptions === 'object' ? nowOrOptions : options;
-  const element = settings.element;
-  const delayToken = element?.closest?.('.ds-boot') ? '--ds-delay-boot' : '--ds-delay-loader';
-  const ms = loaderHoldMs(startedAt, now, {
-    delay: settings.delay ?? (element ? motionDuration(element, delayToken) : undefined),
-    minVisible: settings.minVisible ?? (element ? motionDuration(element, '--ds-hold-loader') : undefined),
-  });
+export function settleLoader(startedAt, options, legacy = {}) {
+  const numeric = typeof options === 'number';
+  const settings = numeric ? legacy : (options !== null && typeof options === 'object' ? options : {});
+  const now = numeric ? options : settings.now ?? Date.now();
+  const ms = loaderHoldMs(startedAt, now, { element: settings.element, delay: settings.delay, minVisible: settings.minVisible });
   return ms ? new Promise((resolve) => setTimeout(resolve, ms)) : Promise.resolve();
+}
+
+/* ── Refresh ─────────────────────────────────────────── */
+
+/**
+ * The refreshes running on each container: how many, the loading bar they
+ * share and the container's aria-busy before the first.
+ * @type {WeakMap<Element, { count: number, bar: Element|null, busy: string|null, startedAt: number }>}
+ */
+const refreshes = new WeakMap();
+
+/** The error a refresh rethrows when its signal aborts. */
+function abortError(signal) {
+  const reason = signal?.reason;
+  if (reason instanceof Error) return reason;
+  return typeof DOMException === 'function' ? new DOMException('The refresh was aborted', 'AbortError') : Object.assign(new Error('The refresh was aborted'), { name: 'AbortError' });
+}
+
+/**
+ * The documented refresh as one call: `container` (the content about to be
+ * replaced) gets .ds-stale and aria-busy="true" at once (it dims only after
+ * --ds-delay-loader, so a fast answer changes nothing); when it sits
+ * directly in .ds-content or .ds-page (and `loadbar` is not false) a
+ * .ds-loadbar goes in at the top of that parent, where the bar reaches the
+ * panel edges; then `load()` runs. Once it settled, a bar that
+ * showed stays for --ds-hold-loader (settleLoader()), leaves (leave()), the
+ * stale state goes and the promise resolves with the data: render it in
+ * the continuation (the same task as the stale removal, so the old content
+ * never shows undimmed). On a rejection or an abort of `signal` it cleans
+ * up the same way and rethrows (an AbortError when aborted). Two
+ * refreshes of one container share the bar and the stale state until the
+ * last one settled. Times are the computed tokens.
+ * @template T
+ * @param {Element|null|undefined} container
+ * @param {() => T|PromiseLike<T>} load
+ * @param {{ signal?: AbortSignal, loadbar?: boolean }} [options]
+ * @returns {Promise<T>}
+ */
+export function refresh(container, load, options = {}) {
+  const signal = options.signal;
+  if (signal?.aborted) return Promise.reject(abortError(signal));
+  if (!container) return Promise.resolve().then(() => load());
+  let run = refreshes.get(container);
+  if (!run) {
+    const doc = container.ownerDocument;
+    run = { count: 0, bar: null, busy: container.getAttribute('aria-busy'), startedAt: Date.now() };
+    refreshes.set(container, run);
+    own(container, 'classes', 'ds-stale');
+    own(container, 'attrs', 'aria-busy');
+    container.classList.add('ds-stale');
+    container.setAttribute('aria-busy', 'true');
+    const parent = container.parentElement;
+    if (options.loadbar !== false && parent?.matches?.('.ds-content, .ds-page') && doc) {
+      const bar = doc.createElement('span');
+      bar.className = 'ds-loadbar';
+      bar.setAttribute('aria-hidden', 'true');
+      const fill = doc.createElement('span');
+      fill.className = 'ds-loadbar__bar';
+      bar.append(fill);
+      // At the top of the panel, where its margins take back the padding (loading.css).
+      parent.insertBefore(bar, parent.firstChild);
+      run.bar = bar;
+    }
+  }
+  run.count += 1;
+  const current = run;
+  const done = () => {
+    current.count -= 1;
+    if (current.count > 0) return Promise.resolve();
+    return settleLoader(current.startedAt, { element: current.bar ?? container }).then(() => {
+      if (current.count > 0 || refreshes.get(container) !== current) return;
+      refreshes.delete(container);
+      if (current.bar) leave(current.bar);
+      container.classList.remove('ds-stale');
+      disown(container, 'classes', 'ds-stale');
+      disown(container, 'attrs', 'aria-busy');
+      if (current.busy === null) container.removeAttribute('aria-busy');
+      else container.setAttribute('aria-busy', current.busy);
+    });
+  };
+  const loading = new Promise((resolve, reject) => {
+    const onAbort = () => reject(abortError(signal));
+    signal?.addEventListener('abort', onAbort, { once: true });
+    Promise.resolve().then(() => load()).then(resolve, reject)
+      .finally(() => signal?.removeEventListener('abort', onAbort));
+  });
+  return loading.then(
+    (data) => done().then(() => {
+      if (signal?.aborted) throw abortError(signal);
+      return data;
+    }),
+    (error) => done().then(() => {
+      throw error;
+    }),
+  );
+}
+
+/* ── Blocked actions ────────────────────────────────── */
+
+/** A busy button or one that shows its success face: blocked like a disabled one. */
+const BUSY_ACTION = '.ds-btn:is([aria-busy="true"], .ds-btn--done)';
+
+/** An action that says it is blocked (aria-disabled): it stays focusable, so its tooltip can say why. */
+const DISABLED_ACTION = `:is(${[
+  'a',
+  'button',
+  'input',
+  'summary',
+  '[role="button"]',
+  '[role="switch"]',
+  '[role="checkbox"]',
+  '[role="radio"]',
+  '[role="tab"]',
+  '[role="option"]',
+  '[role="menuitem"]',
+  '[role="menuitemcheckbox"]',
+  '[role="menuitemradio"]',
+].join(', ')})[aria-disabled="true"]`;
+
+/** The events of an activation: a click (Enter and Space on buttons and links too), a middle click, a submission. */
+const GUARDED_EVENTS = ['click', 'auxclick', 'submit'];
+
+/** The key events a page's own handler activates an ARIA-role action on (they never arrive as clicks there). */
+const GUARDED_KEY_EVENTS = ['keydown', 'keyup'];
+
+/** Elements whose Enter and Space arrive as a click (the click guard takes them). */
+const NATIVE_ACTION = new Set(['A', 'BUTTON', 'INPUT', 'SUMMARY']);
+
+/**
+ * The installed guard of each document or shadow root: the target it
+ * listens on and how many holders keep it.
+ * @type {WeakMap<object, { target: EventTarget, holders: number }>}
+ */
+const guards = new WeakMap();
+
+/** The blocked action that `node` (an event's target) sits in, or null. */
+function blockedAction(node) {
+  const element = node?.nodeType === 1 ? node : node?.parentElement ?? null;
+  if (typeof element?.closest !== 'function' || !element.closest('.ds-theme')) return null;
+  const action = element.closest(`${BUSY_ACTION}, ${DISABLED_ACTION}`);
+  return action && !action.closest('[data-ds-guard="off"]') ? action : null;
+}
+
+/** Cancels the activation of a blocked action before any page listener sees it. */
+function blockActivation(event) {
+  // The page's own script (el.click(), requestSubmit()) is never blocked.
+  if (event.isTrusted === false) return;
+  const source = event.type === 'submit' ? event.submitter : event.target;
+  if (!blockedAction(source)) return;
+  event.preventDefault();
+  event.stopImmediatePropagation();
+}
+
+/**
+ * Cancels Enter and Space on a blocked action that is no native control
+ * (a div with role="button", an option, a menu item): the page's key
+ * handler would activate it. Only with the focus on the action itself,
+ * so a field inside it still types.
+ */
+function blockKeys(event) {
+  if (event.isTrusted === false || (event.key !== 'Enter' && event.key !== ' ')) return;
+  const action = blockedAction(event.target);
+  if (!action || action !== event.target || NATIVE_ACTION.has(action.tagName)) return;
+  event.preventDefault();
+  event.stopImmediatePropagation();
+}
+
+/** Installs the guard on `root` (a document or a shadow root) once, or adds a holder. */
+function holdGuard(root) {
+  const installed = guards.get(root);
+  if (installed) {
+    installed.holders += 1;
+    return true;
+  }
+  const target = root.nodeType === 9 ? root.defaultView ?? root : root;
+  if (typeof target?.addEventListener !== 'function') return false;
+  for (const type of GUARDED_EVENTS) target.addEventListener(type, blockActivation, true);
+  for (const type of GUARDED_KEY_EVENTS) target.addEventListener(type, blockKeys, true);
+  guards.set(root, { target, holders: 1 });
+  return true;
+}
+
+/** Lets go of one holder; the last one removes the listeners. */
+function releaseGuard(root) {
+  const installed = guards.get(root);
+  if (!installed) return;
+  installed.holders -= 1;
+  if (installed.holders > 0) return;
+  for (const type of GUARDED_EVENTS) installed.target.removeEventListener(type, blockActivation, true);
+  for (const type of GUARDED_KEY_EVENTS) installed.target.removeEventListener(type, blockKeys, true);
+  guards.delete(root);
+}
+
+/**
+ * Blocks what says it is blocked, for every input: a click, a middle
+ * click (auxclick), Enter or Space (on a native control they arrive as
+ * clicks; on an ARIA-role action that has the focus, a div with
+ * role="button" or an option, their keydown and keyup are cancelled
+ * before the page's key handler), a label click
+ * (it arrives as a click on its input) and a form submission (by its
+ * submitter, also the default button of Enter in a field) never reach the
+ * page's listeners or their default action when their target is inside
+ * .ds-theme and inside
+ *   - a busy or done button (.ds-btn[aria-busy="true"], .ds-btn--done), or
+ *   - an aria-disabled action (a, button, input, summary and the roles
+ *     button, switch, checkbox, radio, tab, option, menuitem,
+ *     menuitemcheckbox, menuitemradio with aria-disabled="true"),
+ * and not inside [data-ds-guard="off"] (a control that explains itself on
+ * click). Focus, hover and tooltips stay, so the reason still shows; a
+ * region with aria-busy (a container under a loading bar) is no action and
+ * stays usable. Capture-phase listeners on the root's window (a shadow
+ * root: on the root), installed once per document or shadow root and
+ * shared by every holder: busy() installs it on its first call (for good),
+ * DS.ripple.attach() while it is attached; a page that blocks actions with
+ * neither calls it once at start-up.
+ * Only user input is blocked, never the page's own script.
+ * @param {Document|ShadowRoot} [root]
+ * @returns {{ destroy: () => void }} destroy() lets go of this call's hold (the last holder removes the listeners)
+ */
+export function guard(root = globalThis.document) {
+  let held = Boolean(root) && holdGuard(root);
+  return {
+    destroy() {
+      if (!held) return;
+      held = false;
+      releaseGuard(root);
+    },
+  };
+}
+
+/** The documents and shadow roots busy() guarded (for good). @type {WeakSet<object>} */
+const busyGuarded = new WeakSet();
+
+/** Guards the document or shadow root of `element` once for busy(). */
+function guardFor(element) {
+  const root = element?.getRootNode?.();
+  const usable = root && (root.nodeType === 9 || root.nodeType === 11) ? root : element?.ownerDocument;
+  if (!usable || busyGuarded.has(usable)) return;
+  if (holdGuard(usable)) busyGuarded.add(usable);
 }
 
 /* ── Busy buttons ───────────────────────────────────── */
@@ -1229,6 +1489,9 @@ const busyRuns = new WeakMap();
 /** The timer that ends each button's success face. @type {WeakMap<Element, any>} */
 const doneTimers = new WeakMap();
 
+/** A label setLabel() keeps until its button is back at rest. @type {WeakMap<Element, string>} */
+const pendingLabels = new WeakMap();
+
 /** Takes the success face off at once (a new busy() starts). */
 function clearDone(button) {
   if (doneTimers.has(button)) {
@@ -1237,24 +1500,74 @@ function clearDone(button) {
     disown(button, 'classes', 'ds-btn--done');
   }
   button.classList?.remove('ds-btn--done');
+  applyLabel(button);
+}
+
+/** The rest face of a faces button (the .ds-btn__face that is neither --busy nor --done), or null. */
+function restFace(button) {
+  const faces = Array.from(button.children ?? []).find((child) => child.classList?.contains('ds-btn__faces'));
+  if (!faces) return null;
+  return Array.from(faces.children ?? []).find((face) => face.classList?.contains('ds-btn__face')
+    && !face.classList.contains('ds-btn__face--busy') && !face.classList.contains('ds-btn__face--done')) ?? null;
+}
+
+/** Writes `text` into the text of `slot`, keeping its elements (an icon, the faces, the ripple layer). */
+function writeLabel(slot, text) {
+  const texts = Array.from(slot.childNodes ?? []).filter((node) => node.nodeType === 3 && node.nodeValue.trim());
+  if (!texts.length) {
+    slot.append(slot.ownerDocument.createTextNode(text));
+    return;
+  }
+  texts[0].nodeValue = text;
+  for (const node of texts.slice(1)) node.remove();
+}
+
+/** Writes the label setLabel() kept, once its button is at rest. */
+function applyLabel(button) {
+  if (!pendingLabels.has(button) || busyRuns.has(button) || doneTimers.has(button)) return;
+  const text = /** @type {string} */ (pendingLabels.get(button));
+  pendingLabels.delete(button);
+  const slot = restFace(button) ?? button;
+  // An adaptive button (or a face) keeps its text in .ds-btn__label, which folds away on phones.
+  const label = Array.from(slot.children ?? []).find((child) => child.classList?.contains('ds-btn__label'));
+  writeLabel(label ?? slot, text);
+}
+
+/**
+ * Sets the label of a button without dropping what it holds: the text of
+ * its rest face (the .ds-btn__face that is neither --busy nor --done) on a
+ * faces button, else its own text; in either, the text of a
+ * .ds-btn__label child (an adaptive button); icons and the ripple layer
+ * stay. While busy() runs or the success face shows, the new label
+ * waits and shows once the button is back at rest, so the faces keep one
+ * width while they roll.
+ * @param {Element|null|undefined} button
+ * @param {string} text
+ */
+export function setLabel(button, text) {
+  if (!button) return;
+  pendingLabels.set(button, String(text ?? ''));
+  applyLabel(button);
 }
 
 /**
  * Runs `work` while `button` shows that it works, through the faces of
- * button.css: aria-busy="true" at once (blocked, the busy face shows after
- * --ds-delay-loader, so fast work changes nothing); once a busy face showed
- * it stays for the loader minimum (settleLoader(), --ds-hold-loader); on
- * success aria-busy goes and, unless `done` is false, .ds-btn--done shows
- * the success face for --ds-hold-success. On failure aria-busy goes at once
- * and the error is rethrown. A second call while the button is busy
- * returns the running promise and does not start `work` again; a call
- * during the success face takes it off first. Times are the computed
- * tokens (--ds-time-scale applies). Announcing the result stays the page's
- * job (aria-live).
+ * button.css: aria-busy="true" at once (blocked for every input: the first
+ * call installs guard(); the busy face shows after --ds-delay-loader, so
+ * fast work changes nothing); once a busy face showed it stays for the
+ * loader minimum (settleLoader(), --ds-hold-loader); on success aria-busy
+ * goes and, when the button has a success face (.ds-btn__face--done in its
+ * .ds-btn__faces) and `done` is not false, .ds-btn--done shows it for
+ * --ds-hold-success (`done: true` on a button without one changes
+ * nothing). On failure aria-busy goes at once and the error is rethrown. A
+ * second call while the button is busy returns the running promise and
+ * does not start `work` again; a call during the success face takes it off
+ * first. Times are the computed tokens (--ds-time-scale applies).
+ * Announcing the result stays the page's job (aria-live).
  * @template T
  * @param {Element|null|undefined} button  a .ds-btn, best with .ds-btn__faces
  * @param {(() => T|PromiseLike<T>)|PromiseLike<T>|T} work  a function (called at once) or a promise
- * @param {{ done?: boolean }} [options]  done: false skips the success face
+ * @param {{ done?: boolean }} [options]  done: false skips the success face (default: whether the button has one)
  * @returns {Promise<T>} the work's result, once the button is no longer busy
  */
 export function busy(button, work, options = {}) {
@@ -1268,7 +1581,9 @@ export function busy(button, work, options = {}) {
   if (!button) return Promise.resolve(start());
   const running = busyRuns.get(button);
   if (running) return running;
-  const done = options.done ?? true;
+  guardFor(button);
+  const face = Boolean(button.querySelector?.(':scope > .ds-btn__faces > .ds-btn__face--done'));
+  const done = face && (options.done ?? true);
   clearDone(button);
   // A re-render of the list around it (DS.dom.morphHtml) keeps both faces.
   own(button, 'attrs', 'aria-busy');
@@ -1289,11 +1604,12 @@ export function busy(button, work, options = {}) {
         own(button, 'classes', 'ds-btn--done');
         button.classList.add('ds-btn--done');
         doneTimers.set(button, setTimeout(() => clearDone(button), motionDuration(button, '--ds-hold-success')));
-      }
+      } else applyLabel(button);
       return value;
     }),
     (error) => {
       finish();
+      applyLabel(button);
       throw error;
     },
   );
@@ -1305,12 +1621,6 @@ export function busy(button, work, options = {}) {
 
 /** --ds-dur-glide outside a theme (MOTION_FALLBACKS): how long countUp() counts. */
 export const COUNT_UP_MS = /** @type {number} */ (MOTION_FALLBACKS['--ds-dur-glide']);
-
-/**
- * Deprecated (removed in 2.0), no longer used: countUp() runs on
- * --ds-ease-value, the curve of progress bars.
- */
-export const easeOutCubic = (t) => 1 - (1 - t) ** 3;
 
 /**
  * @typedef {object} CountRun
@@ -1374,6 +1684,7 @@ function steady(element, fromText, toText) {
   }
   return () => {
     if (minWidth !== null) inline.minWidth = minWidth;
+    tidyStyle(element);
     if (busy === null) element.removeAttribute?.('aria-busy');
     else element.setAttribute?.('aria-busy', busy);
     for (const name of ['min-width', 'font-variant-numeric']) disown(element, 'props', name);
@@ -1609,6 +1920,25 @@ function swap(element, outgoing, incoming, enterHooks, leaveHooks) {
 }
 
 /**
+ * The roll state of each slot with `hold`: when the current line went in
+ * (Date.now()), the text waiting for its turn, the timer and the promise of
+ * the roll that waits.
+ * @type {WeakMap<Element, { shownAt: number, text: string|null, timer: any, waiting: Promise<void>|null, resolve: (() => void)|null }>}
+ */
+const rollHolds = new WeakMap();
+
+/** The roll itself (see roll()). */
+function rollNow(element, value) {
+  const current = swapSlot(element);
+  if (current.length === 1 && current[0].textContent === value) return Promise.resolve();
+  const line = element.ownerDocument.createElement('span');
+  line.textContent = value;
+  return swap(element, current, line,
+    { '--ds-enter-keyframes': 'ds-fade-in, ds-roll-in', '--ds-enter-delay': 'calc(var(--ds-dur-fast) / 2)' },
+    { '--ds-leave-keyframes': 'ds-fade-out, ds-roll-out' });
+}
+
+/**
  * Rolls a status line inside `element` (which becomes a .ds-swap slot) to
  * `text`: the old line leaves upwards (ds-fade-out, ds-roll-out,
  * accelerating, --ds-dur-fast) and the new one comes up from below
@@ -1618,20 +1948,52 @@ function swap(element, outgoing, incoming, enterHooks, leaveHooks) {
  * lines would cover each other half a line apart. A roll during a roll
  * continues from where each line is; only the last text stays. The same
  * text again changes nothing.
+ *
+ * `hold: true` (2.0): every line stays readable. A new line waits until
+ * the current one has shown for --ds-hold-status; a later text during the
+ * wait replaces the waiting one, so only the latest rolls (a fast job's
+ * "Syncing 3 of 40", "4 of 40" ... never flicker). The promise is the one
+ * of the roll that ran.
  * @param {Element|null|undefined} element
  * @param {string} text
+ * @param {{ hold?: boolean }} [options]
  * @returns {Promise<void>} resolves when the lines settled
  */
-export function roll(element, text) {
+export function roll(element, text, options = {}) {
   if (!element) return Promise.resolve();
-  const current = swapSlot(element);
   const value = String(text ?? '');
-  if (current.length === 1 && current[0].textContent === value) return Promise.resolve();
-  const line = element.ownerDocument.createElement('span');
-  line.textContent = value;
-  return swap(element, current, line,
-    { '--ds-enter-keyframes': 'ds-fade-in, ds-roll-in', '--ds-enter-delay': 'calc(var(--ds-dur-fast) / 2)' },
-    { '--ds-leave-keyframes': 'ds-fade-out, ds-roll-out' });
+  if (!options.hold) {
+    const held = rollHolds.get(element);
+    if (held) {
+      clearTimeout(held.timer);
+      held.resolve?.();
+      rollHolds.delete(element);
+    }
+    return rollNow(element, value);
+  }
+  const state = rollHolds.get(element) ?? { shownAt: -Infinity, text: null, timer: 0, waiting: null, resolve: null };
+  rollHolds.set(element, state);
+  const hold = motionDuration(element, '--ds-hold-status');
+  const run = () => {
+    const next = /** @type {string} */ (state.text);
+    const resolve = state.resolve;
+    state.text = null;
+    state.timer = 0;
+    state.waiting = null;
+    state.resolve = null;
+    const shown = swapSlot(element);
+    if (!(shown.length === 1 && shown[0].textContent === next)) state.shownAt = Date.now();
+    const done = rollNow(element, next);
+    done.then(() => resolve?.(), () => resolve?.());
+    return done;
+  };
+  state.text = value;
+  if (state.waiting) return state.waiting;
+  const left = state.shownAt + hold - Date.now();
+  if (left <= 0) return run();
+  state.waiting = new Promise((resolve) => { state.resolve = resolve; });
+  state.timer = setTimeout(run, left);
+  return state.waiting;
 }
 
 /** Whether an icon swap shows b: its data-swap, else an aria-pressed="true" ancestor. */
@@ -1894,6 +2256,7 @@ function unbackContainer(container, state) {
   state.backed = false;
   container.removeAttribute('data-ds-glide');
   container.style.removeProperty('--ds-flip-backdrop');
+  tidyStyle(container);
   disown(container, 'attrs', 'data-ds-glide');
   disown(container, 'props', '--ds-flip-backdrop');
 }
@@ -1911,7 +2274,7 @@ function unbackContainer(container, state) {
  * nothing else. Items without a background of their own get one from the
  * container's data-ds-glide (backContainer()).
  */
-function raise(container, state, item, rank) {
+function raise(container, state, item, rank, layers) {
   if (!raisedItems.has(item)) {
     raisedItems.set(item, { position: item.style.position, zIndex: item.style.zIndex, container });
     for (const name of ['position', 'z-index']) own(item, 'props', name);
@@ -1924,8 +2287,26 @@ function raise(container, state, item, rank) {
     }
     state.raised += 1;
   }
-  const base = parseInt(computed(container)?.getPropertyValue('--ds-z-raised') ?? '', 10);
-  item.style.zIndex = Number.isFinite(base) ? String(base + 1 + rank) : 'calc(var(--ds-z-raised) + 1)';
+  item.style.zIndex = layers ? String(Math.max(layers.base + 1, Math.min(layers.base + 1 + rank, layers.sticky - 1))) : 'calc(var(--ds-z-raised) + 1)';
+}
+
+/**
+ * The z range of gliding items, read once per flush: from one above
+ * max(--ds-z-raised, --ds-z-pinned) (a pinned table column; fallback
+ * raised + 1) up to one below --ds-z-sticky, so a mover never paints over
+ * a sticky header or a pinned cell however many glide. Null without the
+ * tokens (outside a theme).
+ * @returns {{ base: number, sticky: number }|null}
+ */
+function glideLayers(container) {
+  const style = computed(container);
+  const read = (name) => parseInt(style?.getPropertyValue(name) ?? '', 10);
+  const raised = read('--ds-z-raised');
+  if (!Number.isFinite(raised)) return null;
+  const pinned = read('--ds-z-pinned');
+  const sticky = read('--ds-z-sticky');
+  const base = Math.max(raised, Number.isFinite(pinned) ? pinned : raised + 1);
+  return { base, sticky: Number.isFinite(sticky) ? sticky : Infinity };
 }
 
 /** Gives a raised item (and, after the last one, its container) its inline styles back. */
@@ -1935,11 +2316,13 @@ function lower(item) {
   raisedItems.delete(item);
   item.style.position = saved.position;
   item.style.zIndex = saved.zIndex;
+  tidyStyle(item);
   for (const name of ['position', 'z-index']) disown(item, 'props', name);
   const state = flipState(saved.container);
   state.raised = Math.max(0, state.raised - 1);
   if (!state.raised && state.isolation !== null) {
     saved.container.style.isolation = state.isolation;
+    tidyStyle(saved.container);
     state.isolation = null;
     disown(saved.container, 'props', 'isolation');
   }
@@ -1986,6 +2369,7 @@ function holdSize(container, state, height) {
 function releaseAlign(container, state) {
   if (state.align === null || state.minHeight !== null || state.sizeGlide) return;
   container.style.alignContent = state.align;
+  tidyStyle(container);
   state.align = null;
   disown(container, 'props', 'align-content');
 }
@@ -2029,12 +2413,14 @@ function landed(container, state, glide = true) {
   if (state.lifted) return Promise.resolve();
   if (state.position !== null) {
     container.style.position = state.position;
+    tidyStyle(container);
     state.position = null;
     disown(container, 'props', 'position');
   }
   if (state.minHeight === null) return Promise.resolve();
   const from = heightOf(container);
   container.style.minHeight = state.minHeight;
+  tidyStyle(container);
   state.minHeight = null;
   // The glide below runs above the inline value, which a morph may now set.
   disown(container, 'props', 'min-height');
@@ -2056,7 +2442,77 @@ function measure(container, selector) {
   for (const item of flipItems(container, selector)) before.set(item, item.getBoundingClientRect());
   const childrenOf = new Set(Array.from(before.keys()).filter((item) => item.parentElement === container));
   const nextOf = new Map(Array.from(container.childNodes, (node) => [node, node.nextSibling]));
-  return { before, childrenOf, nextOf, frame: edges(container.getBoundingClientRect()) };
+  // Where focus is (refocus): the focused element and the item that holds it.
+  const active = activeIn(container);
+  const owner = active && container.contains?.(active) ? Array.from(before.keys()).find((item) => item.contains(active)) ?? null : null;
+  return { before, childrenOf, nextOf, frame: edges(container.getBoundingClientRect()), focus: owner ? { active, owner } : null };
+}
+
+/**
+ * What takes focus and can hold it, as overlay.js counts it (test/js.test.js
+ * keeps the two lists equal).
+ */
+const FOCUSABLE = 'a[href], area[href], button, input:not([type="hidden"]), select, textarea, summary, iframe, audio[controls], video[controls], [contenteditable]:not([contenteditable="false"]), [tabindex]';
+
+/** Whether `element` can take focus now: enabled, rendered, not inert and not leaving. */
+function focusable(element) {
+  if (!element || typeof element.focus !== 'function' || element.isConnected === false) return false;
+  if (element.disabled || element.closest?.('[inert], [data-ds-leaving], [hidden]')) return false;
+  if (typeof element.getClientRects === 'function' && !element.getClientRects().length) return false;
+  return true;
+}
+
+/** Whether an item of a FLIP is gone (removed, a pending removal, or leaving). */
+function itemGone(item, removed) {
+  return item.isConnected === false || removed.some((entry) => entry.node === item) || Boolean(item.hasAttribute?.('data-ds-leaving'));
+}
+
+/**
+ * The element of `item` that takes over the focus of `old`: one with the
+ * same classes (the next row's "Remove"), else the item when it is
+ * focusable, else its first focusable element.
+ */
+function focusIn(item, old) {
+  const list = (selector) => Array.from(item.querySelectorAll?.(selector) ?? []).filter(focusable);
+  const className = typeof old?.getAttribute === 'function' ? (old.getAttribute('class') ?? '').trim() : '';
+  if (className) {
+    const twin = list(FOCUSABLE).find((element) => element.getAttribute('class')?.trim().split(/\s+/).sort().join(' ') === className.split(/\s+/).sort().join(' '));
+    if (twin) return twin;
+  }
+  if (item.matches?.(FOCUSABLE) && focusable(item)) return item;
+  return list(FOCUSABLE)[0] ?? null;
+}
+
+/**
+ * refocus (flip()): when the item that held the focus went and focus is
+ * lost (on <body>, nowhere, or still inside the item), it moves to the next
+ * item that stays in the old order and has something to focus, else the
+ * nearest such item before it, else the
+ * fallback (`refocus` as an element or a function); with none, leave()
+ * moves it out as usual. A page that moved focus itself is left alone.
+ */
+function refocusAfter(container, focus, order, removed, refocus) {
+  if (!focus || refocus === false) return;
+  const { active, owner } = focus;
+  if (!itemGone(owner, removed)) return;
+  const now = activeIn(container);
+  const doc = container.ownerDocument;
+  const lost = !now || now === doc?.body || now === doc?.documentElement || owner.contains(now) || now === active && active.isConnected === false;
+  if (!lost) return;
+  const index = order.indexOf(owner);
+  const alive = (item) => !itemGone(item, removed) && !item.hasAttribute?.('data-ds-keep');
+  // An item with nothing to focus (a timeline's day heading) is passed over.
+  let target = null;
+  for (const item of [...order.slice(index + 1), ...order.slice(0, index).reverse()]) {
+    if (!alive(item)) continue;
+    target = focusIn(item, active);
+    if (target) break;
+  }
+  if (!target && refocus !== true && refocus !== undefined) {
+    const fallback = typeof refocus === 'function' ? refocus() : refocus;
+    if (focusable(fallback)) target = fallback;
+  }
+  target?.focus({ preventScroll: true });
 }
 
 /**
@@ -2072,7 +2528,7 @@ function runFlip(container, mutate, options, state, first) {
   const max = options.max ?? 50;
   const view = windowOf(container);
   // First.
-  const { before, childrenOf, nextOf, frame } = first ?? measure(container, selector);
+  const { before, childrenOf, nextOf, frame, focus } = first ?? measure(container, selector);
   const firstHeight = frame.bottom - frame.top;
   for (const item of before.keys()) {
     glides.get(item)?.cancel();
@@ -2088,6 +2544,7 @@ function runFlip(container, mutate, options, state, first) {
   const removed = [];
   mutate({
     holdOrder: false,
+    ...(typeof options.onKeep === 'function' ? { onKeep: options.onKeep } : {}),
     onInsert(node) {
       if (isFlipItem(container, node, selector)) inserted.push(node);
     },
@@ -2127,6 +2584,8 @@ function runFlip(container, mutate, options, state, first) {
     lift(container, item, rect, frame, state);
     removed.push({ node: item, resolve() {} });
   }
+  // The focused item went: its neighbour takes the focus (before leave() would drop it).
+  refocusAfter(container, focus, Array.from(before.keys()), [...removed, ...back.filter((item) => !item.parentNode).map((node) => ({ node }))], options.refocus);
   for (const item of flipItems(container, selector)) {
     if (before.has(item) || inserted.includes(item) || removed.some((entry) => entry.node === item)) continue;
     // An item that brings its own entrance (a snackbar's keyframes) keeps it.
@@ -2160,9 +2619,10 @@ function runFlip(container, mutate, options, state, first) {
   const resizing = sizing && state.minHeight === null ? glideSize(container, state, firstHeight) : Promise.resolve();
   const easing = motionEasing(container, '--ds-ease-spatial');
   // The farthest travel paints on top; at equal distance, the rising item.
+  const layers = moves.length ? glideLayers(container) : null;
   moves.map((move) => ({ move, distance: Math.hypot(move.dx, move.dy) }))
     .sort((a, b) => (a.distance - b.distance) || (a.move.dy - b.move.dy))
-    .forEach(({ move }, rank) => raise(container, state, move.item, rank));
+    .forEach(({ move }, rank) => raise(container, state, move.item, rank, layers));
   const running = moves.map(({ item, dx, dy }) => {
     const animation = animateSafe(item, [{ translate: `${round(dx)}px ${round(dy)}px` }, { translate: '0px 0px' }], {
       id: 'ds-flip',
@@ -2231,7 +2691,7 @@ function sameItems(a, b) {
  * from pointerover, because :hover sticks after a tap on touch screens and
  * touch never holds.
  */
-function guard(container, state) {
+function watchLive(container, state) {
   if (state.guarded) return;
   state.guarded = true;
   try {
@@ -2266,8 +2726,10 @@ function guard(container, state) {
  * from its old place to the new one on `translate` (composite: 'add', so
  * an item's own translate stays) on the spring, for travelDuration().
  * Meanwhile the moving items paint above the others, the farthest travel
- * on top (inline z-index from one above --ds-z-raised, so the controls
- * that interactive table rows lift to --ds-z-raised stay under them;
+ * on top (inline z-index from one above the higher of --ds-z-raised and
+ * --ds-z-pinned, so the controls that interactive table rows lift to
+ * --ds-z-raised and a pinned column stay under them, and below
+ * --ds-z-sticky, so a sticky header stays above them all;
  * position: relative where
  * static, the container isolated and marked data-ds-glide with
  * --ds-flip-backdrop, the colour behind it, so table rows get an opaque
@@ -2297,9 +2759,16 @@ function guard(container, state) {
  * `() => stack.prepend(alert)`) cannot honour holdOrder: it waits whole
  * (every such call, in order) and glides on release. A call without
  * `live` (a user's sort) runs the held reorder with its own, at once.
+ *
+ * `refocus` (default true): when the item that held the focus goes and
+ * focus is lost, it moves to the next item that stays (the old order),
+ * else the previous one: its element with the classes of the old focus,
+ * else the item itself, else its first focusable element. An element or a
+ * function returning one is the fallback without a neighbour; a page that
+ * moved focus itself is left alone; false leaves it to leave().
  * @param {Element|null|undefined} container
- * @param {(options: { holdOrder: boolean, onInsert: (node: Node) => void, onRemove: (node: Node) => Promise<void>|undefined }) => void} mutate
- * @param {{ items?: string, live?: boolean, max?: number, hold?: number }} [options]
+ * @param {(options: { holdOrder: boolean, onInsert: (node: Node) => void, onRemove: (node: Node) => Promise<void>|undefined, onKeep?: (kept: Element, template: Element) => void }) => void} mutate
+ * @param {{ items?: string, live?: boolean, max?: number, hold?: number, refocus?: boolean|Element|(() => Element|null), onKeep?: (kept: Element, template: Element) => void }} [options]
  *   items: a selector (default: the element children)
  * @returns {Promise<void>} resolves when the motion of this call (or its held reorder) finished
  */
@@ -2308,7 +2777,7 @@ export function flip(container, mutate, options = {}) {
   const state = flipState(container);
   if (options.live) {
     state.items = options.items;
-    guard(container, state);
+    watchLive(container, state);
     if (held(container, state)) {
       const queued = state.queued ?? (state.queued = { steps: [], options });
       queued.options = options;
@@ -2319,7 +2788,7 @@ export function flip(container, mutate, options = {}) {
         queued.steps.push({ mutate, aware: false });
       } else {
         const first = measure(container, state.items);
-        mutate({ holdOrder: true, onInsert() {}, onRemove() { return undefined; } });
+        mutate({ holdOrder: true, ...(typeof options.onKeep === 'function' ? { onKeep: options.onKeep } : {}), onInsert() {}, onRemove() { return undefined; } });
         // The latest mutate that honours holdOrder wins (it renders all the data).
         queued.steps = queued.steps.filter((step) => !step.aware);
         if (!sameItems(Array.from(first.before.keys()), flipItems(container, state.items))) {
@@ -2336,6 +2805,211 @@ export function flip(container, mutate, options = {}) {
   return flush(container, mutate, options, state);
 }
 
+
+/* ── Sortable lists ─────────────────────────────────── */
+
+/** The live sortable of each list. @type {WeakMap<Element, { handle: { destroy: () => void } }>} */
+const sortables = new WeakMap();
+
+/** The polite region each theme (or modal) speaks the positions through. @type {WeakMap<Element, HTMLElement>} */
+const sortRegions = new WeakMap();
+
+/** Speaks `text` through a private polite region in the list's modal, else its .ds-theme (never inert). */
+function speakPosition(list, text) {
+  const host = list.closest?.('dialog, .ds-dialog, .ds-sheet') ?? list.closest?.('.ds-theme') ?? list.ownerDocument?.body;
+  if (!host || !text) return;
+  let region = sortRegions.get(host);
+  if (!region || !region.isConnected) {
+    region = list.ownerDocument.createElement('div');
+    region.className = 'ds-sr';
+    region.setAttribute('aria-live', 'polite');
+    region.setAttribute('data-ds-keep', '');
+    host.append(region);
+    sortRegions.set(host, region);
+  }
+  // The same position twice is still news: the region empties first.
+  region.textContent = '';
+  const target = region;
+  setTimeout(() => { target.textContent = text; }, 0);
+}
+
+/**
+ * Reorders a list by drag and keyboard. A pointer drag starts on an item's
+ * `handle` (default '.ds-grip', a quiet icon button; pointer capture on
+ * it), the item follows the pointer (its inline translate) and carries
+ * data-ds-dragging (drag.css: a raised shadow and the dragged state
+ * layer; nothing scales), and every time it crosses the middle of a
+ * neighbour the others move through flip() (a move during a glide
+ * continues from where each item is). On release it glides into its place
+ * on the spring. On the handle ArrowUp, ArrowDown, Home and End move the
+ * item one place, or to the start or the end, through flip(); the handle
+ * keeps the focus. After each move `onChange(order, before)` gets the
+ * items in their new and their old order, and the position is spoken
+ * through a polite region in the list's modal, else its .ds-theme:
+ * `announce(index, count)` (1-based) returns the text, default "Moved to
+ * position 2 of 5". Pass `announce: () => ''` and speak it yourself (with
+ * DS.overlay.announce()) where the page wants one announcer. `items`: a
+ * selector (default: the list's element children). Once per list; destroy()
+ * removes the listeners.
+ * @param {Element|null|undefined} list
+ * @param {{ items?: string, handle?: string, onChange?: (order: Element[], before: Element[]) => void, announce?: (index: number, count: number) => string }} [options]
+ * @returns {{ destroy: () => void }}
+ */
+export function sortable(list, options = {}) {
+  if (!list?.ownerDocument) return { destroy() {} };
+  const existing = sortables.get(list);
+  if (existing) return existing.handle;
+  const handleSelector = options.handle ?? '.ds-grip';
+  const selector = options.items;
+  const items = () => flipItems(list, selector);
+  // :is() keeps a selector list whole (`li, .row:not(...)` would leave the dragged li in).
+  const others = selector ? `:is(${selector}):not([data-ds-dragging])` : ':scope > :not([data-ds-dragging])';
+  const itemOf = (node) => items().find((item) => item.contains(node)) ?? null;
+  const say = (item) => {
+    const order = items();
+    const text = (options.announce ?? ((index, count) => `Moved to position ${index} of ${count}`))(order.indexOf(item) + 1, order.length);
+    speakPosition(list, text);
+  };
+  const changed = (before) => {
+    const after = items();
+    if (!sameItems(before, after)) options.onChange?.(after, before);
+  };
+  /** Puts `item` before `reference` (null: at the end of its parent), keeping the handle's focus. */
+  const place = (item, reference) => {
+    const parent = reference?.parentNode ?? item.parentNode;
+    const focused = activeIn(item);
+    const keep = focused && item.contains(focused) ? focused : null;
+    if (typeof parent.moveBefore === 'function') {
+      try {
+        parent.moveBefore(item, reference);
+      } catch {
+        parent.insertBefore(item, reference);
+      }
+    } else parent.insertBefore(item, reference);
+    if (keep && activeIn(item) !== keep) keep.focus({ preventScroll: true });
+  };
+
+  /* Keyboard: one place, or to an end. */
+  const onKey = (/** @type {KeyboardEvent} */ event) => {
+    const handle = event.target?.closest?.(handleSelector);
+    if (!handle || !list.contains(handle) || event.altKey || event.ctrlKey || event.metaKey) return;
+    const item = itemOf(handle);
+    if (!item) return;
+    const order = items();
+    const index = order.indexOf(item);
+    const to = { ArrowUp: index - 1, ArrowDown: index + 1, Home: 0, End: order.length - 1 }[event.key];
+    if (to === undefined) return;
+    event.preventDefault();
+    if (to < 0 || to >= order.length || to === index) return;
+    const before = order.slice();
+    flip(list, () => place(item, to > index ? order[to].nextSibling : order[to]), { items: selector });
+    changed(before);
+    say(item);
+  };
+
+  /* Pointer: the item follows, the others make room. */
+  let drag = null;
+  /** Items whose raised look is still leaving after a drop: item → { timer, z }. */
+  const ending = new Map();
+  /** Ends a drop's leave at once: the z-index it had before the drag, nothing owned. */
+  const finish = (item) => {
+    const end = ending.get(item);
+    if (!end) return;
+    ending.delete(item);
+    clearTimeout(end.timer);
+    item.removeAttribute('data-ds-dragging');
+    item.style.zIndex = end.z;
+    tidyStyle(item);
+    disown(item, 'attrs', 'data-ds-dragging');
+    for (const name of ['translate', 'z-index']) disown(item, 'props', name);
+  };
+  // Layout places (offsetTop ignores translate): the rows that glide aside
+  // are compared where they go, not where their glide shows them.
+  const layoutTop = (item) => item.offsetTop ?? 0;
+  const middle = (item) => layoutTop(item) + (item.offsetHeight ?? 0) / 2;
+  const onDown = (/** @type {PointerEvent} */ event) => {
+    if (drag || event.button !== 0) return;
+    const handle = event.target?.closest?.(handleSelector);
+    if (!handle || !list.contains(handle)) return;
+    const item = itemOf(handle);
+    if (!item) return;
+    event.preventDefault();
+    handle.setPointerCapture?.(event.pointerId);
+    for (const animation of item.getAnimations?.() ?? []) if (animation.id === 'ds-sort') animation.cancel();
+    // Grabbed again while the last drop leaves: that drop ends first, so the
+    // z-index kept is the one before any drag and nothing is owned twice.
+    finish(item);
+    drag = { item, handle, pointer: event.pointerId, startY: event.clientY, dy: 0, before: items(), z: item.style.zIndex };
+    own(item, 'attrs', 'data-ds-dragging');
+    for (const name of ['translate', 'z-index']) own(item, 'props', name);
+    item.setAttribute('data-ds-dragging', '');
+    const sticky = parseInt(computed(list)?.getPropertyValue('--ds-z-sticky') ?? '', 10);
+    item.style.zIndex = Number.isFinite(sticky) ? String(sticky - 1) : 'calc(var(--ds-z-sticky) - 1)';
+  };
+  const onMove = (/** @type {PointerEvent} */ event) => {
+    if (!drag || event.pointerId !== drag.pointer) return;
+    const { item } = drag;
+    drag.dy = event.clientY - drag.startY;
+    item.style.translate = `0px ${round(drag.dy)}px`;
+    const order = items();
+    const index = order.indexOf(item);
+    // A neighbour gives way once the dragged row's leading edge passes its middle.
+    const top = layoutTop(item) + drag.dy;
+    const bottom = top + (item.offsetHeight ?? 0);
+    let target = index;
+    while (target > 0 && top < middle(order[target - 1])) target -= 1;
+    while (target < order.length - 1 && bottom > middle(order[target + 1])) target += 1;
+    if (target === index) return;
+    const from = layoutTop(item);
+    flip(list, () => place(item, target > index ? order[target].nextSibling : order[target]), { items: others });
+    // The item moved in the layout: its translate takes the step back, so it stays under the pointer.
+    const shift = layoutTop(item) - from;
+    drag.startY += shift;
+    drag.dy -= shift;
+    item.style.translate = `0px ${round(drag.dy)}px`;
+    say(item);
+  };
+  const onUp = (/** @type {PointerEvent} */ event) => {
+    if (!drag || event.pointerId !== drag.pointer) return;
+    const { item, handle, dy, before, z } = drag;
+    drag = null;
+    handle.releasePointerCapture?.(event.pointerId);
+    item.style.removeProperty('translate');
+    // Into its place on the spring, from where the pointer let go.
+    if (Math.abs(dy) >= 0.5 && typeof item.animate === 'function') {
+      const glide = animateSafe(item, [{ translate: `0px ${round(dy)}px` }, { translate: '0px 0px' }], {
+        id: 'ds-sort',
+        duration: travelDuration(list, dy),
+        easing: motionEasing(list, '--ds-ease-spatial'),
+      }, '--ds-ease-spatial');
+      glide.id = 'ds-sort';
+    }
+    // The raised look leaves in --ds-dur-instant (drag.css: data-ds-dragging="end").
+    item.setAttribute('data-ds-dragging', 'end');
+    const timer = setTimeout(() => finish(item), Math.max(motionDuration(item, '--ds-dur-instant'), motionDuration(list, '--ds-dur-medium')));
+    ending.set(item, { timer, z });
+    changed(before);
+  };
+  list.addEventListener('keydown', onKey);
+  list.addEventListener('pointerdown', onDown);
+  list.addEventListener('pointermove', onMove);
+  list.addEventListener('pointerup', onUp);
+  list.addEventListener('pointercancel', onUp);
+  const handle = {
+    destroy() {
+      if (sortables.get(list)?.handle !== handle) return;
+      sortables.delete(list);
+      for (const item of Array.from(ending.keys())) finish(item);
+      list.removeEventListener('keydown', onKey);
+      list.removeEventListener('pointerdown', onDown);
+      list.removeEventListener('pointermove', onMove);
+      list.removeEventListener('pointerup', onUp);
+      list.removeEventListener('pointercancel', onUp);
+    },
+  };
+  sortables.set(list, { handle });
+  return handle;
+}
 /* ── Views ──────────────────────────────────────────── */
 
 /** The types of transition(), written as data-ds-vt on <html> while one runs. */
@@ -2585,7 +3259,8 @@ function unnameAll(call) {
  */
 function swapTarget(doc, result) {
   if (isElement(result)) return result;
-  const view = doc?.querySelector?.('.ds-theme .ds-view');
+  // A view outside the app frame (a wizard, a sign-in page): its content.
+  const view = doc?.querySelector?.('.ds-theme .ds-vt-view') ?? doc?.querySelector?.('.ds-theme .ds-view');
   for (const child of Array.from(view?.children ?? [])) {
     if (child.hasAttribute?.('data-ds-keep') || child.getAttribute?.('aria-hidden') === 'true') continue;
     return child;
@@ -2594,12 +3269,41 @@ function swapTarget(doc, result) {
 }
 
 /**
+ * transition({ focus }): where focus goes once the update ran, if it was
+ * lost: on <body>, in the content that left (no longer connected), or in a
+ * modal drawer that the update closed. `option` true: the returned
+ * element's first h1[tabindex="-1"], else the view (tabindex="-1"), else the
+ * element itself; a function chooses from the incoming element.
+ */
+function moveViewFocus(doc, before, result, option) {
+  if (!option || !doc) return;
+  const now = doc.activeElement;
+  const app = before?.closest?.('.ds-app');
+  const fromDrawer = Boolean(before?.closest?.('.ds-drawer')) && Boolean(app) && !app.hasAttribute('data-drawer-open')
+    && doc.defaultView?.matchMedia?.(MODAL_DRAWER)?.matches === true;
+  const lost = !now || now === doc.body || now === doc.documentElement || (before && before.isConnected === false) || fromDrawer
+    || Boolean(now.closest?.('[inert], [data-ds-leaving]'));
+  if (!lost) return;
+  const incoming = isElement(result) ? result : null;
+  let target = null;
+  if (typeof option === 'function') target = option(incoming);
+  else {
+    // Without a returned element: the view outside the frame, else the frame's view.
+    const root = incoming ?? doc.querySelector?.('.ds-theme .ds-vt-view') ?? doc.querySelector?.('.ds-theme .ds-view');
+    target = (root?.matches?.('h1[tabindex="-1"]') ? root : root?.querySelector?.('h1[tabindex="-1"]'))
+      ?? root?.closest?.('.ds-view, .ds-vt-view') ?? root;
+  }
+  if (target && typeof target.focus === 'function' && target.isConnected !== false && !target.closest?.('[inert]')) target.focus({ preventScroll: true });
+}
+
+/**
  * D30: no View Transitions (or no html.ds-theme). The update runs at
  * once, nothing waits before it, and the new view fades through with
  * .ds-enter--swap; rapid calls land on the latest view through enter()'s
  * generation.
  */
-function swapView(doc, update) {
+function swapView(doc, update, focus) {
+  const before = doc?.activeElement ?? null;
   let result;
   try {
     result = update();
@@ -2611,14 +3315,16 @@ function swapView(doc, update) {
   return Promise.resolve(result).then((value) => {
     // A view that scrolled and now fits keeps no tint or hairline.
     resyncScroll(doc);
+    moveViewFocus(doc, before, value, focus);
     const target = swapTarget(doc, value);
     return target ? enter(target, 'swap') : undefined;
   });
 }
 
 /** The View Transition path of transition() (see there). */
-function viewTransition(doc, update, type, from) {
+function viewTransition(doc, update, type, from, focus) {
   const root = doc.documentElement;
+  const before = doc.activeElement;
   const previous = viewCalls.get(doc);
   if (previous) {
     // A skipped transition still runs its update (in call order, below);
@@ -2662,6 +3368,7 @@ function viewTransition(doc, update, type, from) {
       }
       // An indicator the update created has its name lifted too.
       if (latest()) liftIndicatorNames(doc);
+      if (latest()) moveViewFocus(doc, before, result, focus);
       // Only a panel that changes its width (the drawer shown or hidden)
       // morphs over --ds-dur-long; a plain swap keeps the short groups, so
       // the frozen page never holds input longer than it must.
@@ -2689,7 +3396,7 @@ function viewTransition(doc, update, type, from) {
       viewCalls.delete(doc);
       restoreLiftedNames(doc);
     }
-    return swapView(doc, update);
+    return swapView(doc, update, focus);
   }
   call.transition = started;
   // The new view may not overflow where the old one was scrolled: its
@@ -2760,14 +3467,19 @@ function viewTransition(doc, update, type, from) {
  *
  * Elsewhere (no View Transitions, or .ds-theme on a wrapper: an embedded
  * widget never snapshots its host page) the update runs at once and the
- * element it returns, else the first child of the themed .ds-view that is
- * not data-ds-keep or aria-hidden (a sentinel), enters with
- * .ds-enter--swap.
+ * element it returns, else the first child of the themed .ds-vt-view (a
+ * view outside the app frame) or .ds-view that is not data-ds-keep or
+ * aria-hidden (a sentinel), enters with .ds-enter--swap.
  *
  * @param {() => (Element|null|undefined|void|Promise<Element|null|undefined|void>)} update
  *   swaps the content; may be async; may return the element that holds
  *   the new content (the container target, the fallback's entrance)
- * @param {{ type?: 'fade-through'|'forward'|'back'|'container', from?: Element|null }} [options]
+ * `focus` (2.0): true moves focus once the update ran, when it was lost
+ * (on <body>, in the content that left, or in the modal drawer the update
+ * closed): to the returned element's first h1[tabindex="-1"], else the
+ * view, else the element (preventScroll); a function (incoming) =>
+ * Element|null chooses. Default false: focus stays where the page put it.
+ * @param {{ type?: 'fade-through'|'forward'|'back'|'container', from?: Element|null, focus?: boolean|((incoming: Element|null) => Element|null) }} [options]
  * @returns {Promise<void>} resolves once the update has run and the motion
  *   finished (also when it was skipped); rejects with the update's error,
  *   after cleaning up
@@ -2780,6 +3492,7 @@ export function transition(update, options = {}) {
   if (typeof update !== 'function') throw new TypeError('DS.motion.transition: update must be a function');
   const doc = from?.ownerDocument ?? globalThis.document;
   const root = doc?.documentElement;
-  if (doc && typeof doc.startViewTransition === 'function' && root?.classList?.contains('ds-theme')) return viewTransition(doc, update, type, from);
-  return swapView(doc, update);
+  const focus = options?.focus ?? false;
+  if (doc && typeof doc.startViewTransition === 'function' && root?.classList?.contains('ds-theme')) return viewTransition(doc, update, type, from, focus);
+  return swapView(doc, update, focus);
 }

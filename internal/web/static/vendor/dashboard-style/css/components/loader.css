@@ -15,7 +15,8 @@
  *   .ds-loader--sm          24px, for the loading line
  *   .ds-loader--contained   the shape on a --ds-accent disc
  *
- * Hooks: --ds-loader-size (48px), --ds-loader-color (--ds-primary).
+ * Hooks: --ds-loader-size (48px), --ds-loader-sm-size (24px, read by --sm),
+ * --ds-loader-color (--ds-primary).
  *
  * The loader is decoration: aria-hidden, and the surrounding role="status"
  * carries the text. Inside .ds-boot, .ds-loading and .ds-skeleton the
@@ -26,6 +27,8 @@
  * At most a few per view: the polygon morph repaints every frame. Inline
  * spots (buttons, chips, status chips, table cells) keep the arc spinner
  * (spinner.css).
+ *
+ * Print: the shape is not printed (its label is).
  */
 
 @layer ds.tokens, ds.base, ds.components, ds.motion, ds.utilities;
@@ -53,7 +56,7 @@
   }
 
   .ds-loader--sm {
-    --ds-loader-size: 24px;
+    --ds-loader-size: var(--ds-loader-sm-size, 24px);
   }
 
   .ds-loader--contained {
@@ -81,6 +84,13 @@
     .ds-loader--contained {
       background: Canvas;
       outline: 1px solid CanvasText;
+    }
+  }
+
+  /* Print: a frozen shape says nothing on paper; the label stays. */
+  @media print {
+    .ds-loader {
+      display: none;
     }
   }
 }

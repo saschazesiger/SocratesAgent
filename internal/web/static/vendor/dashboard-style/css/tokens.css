@@ -4,8 +4,9 @@
  * Every token lives on `.ds-theme`, never on :root: the system can run
  * inside a foreign page (an embedded widget) without touching that page's
  * variables. A full app puts class="ds-theme" on <html>. The exceptions
- * are the @property registrations at the top level: --ds-time-scale and the
- * runtime properties the loading indicators animate (below it).
+ * are the @property registrations at the top level: --ds-time-scale, the
+ * runtime properties the loading indicators animate (below it) and the
+ * share of a chart mark (--ds-share).
  *
  * Three layers:
  *   1. Scales: motion, spacing, state layers, layers (z), radius scale.
@@ -20,9 +21,15 @@
  *
  * Custom properties resolve var() where they are declared. Roles that are
  * built from other tokens (type roles from --ds-font, --ds-link from
- * --ds-primary, --ds-focus-ring from --ds-surface) follow a theme only when
- * the theme sets its values on the .ds-theme element itself, as this file
- * does. Set on a descendant, those derived roles keep the old value.
+ * --ds-primary, --ds-focus-ring from --ds-surface, and the color-mix()
+ * roles: --ds-primary-hover and --ds-primary-pressed from --ds-primary,
+ * --ds-link-underline from --ds-link, --ds-fill-round, --ds-disabled-fill
+ * and --ds-disabled-ink from --ds-text) follow a theme only when the theme
+ * sets its values on the .ds-theme element itself, as this file does. Set
+ * on a descendant, those derived roles keep the old value.
+ *
+ * Besides custom properties, one rule sets color-scheme from
+ * --ds-color-scheme on :where(.ds-theme), at the end of the layer.
  *
  * Baseline: Safari 16.4, Chrome/Edge 111, Firefox 128; no CSS nesting.
  * Every stylesheet declares the layer order and puts its rules in one of
@@ -109,6 +116,20 @@
   initial-value: 0px;
 }
 
+/*
+ * The share of a chart mark (a meter, a column; 0 ... 1), set by the page
+ * on the mark (style.setProperty). Registered so it glides: the mark's
+ * fill is clipped at it (never scaled, so its round end keeps its shape)
+ * and a column's value rides on it. Inherits, so the mark's parts follow
+ * the value of the mark. Not --ds-progress, which drives the whole
+ * progress choreography.
+ */
+@property --ds-share {
+  syntax: '<number>';
+  inherits: true;
+  initial-value: 0;
+}
+
 @layer ds.tokens {
   .ds-theme {
     /* ── 1. Motion: durations ───────────────────────────
@@ -145,7 +166,6 @@
      *               path below where supported
      *   value       progress bars and countUp(), so figures and bars land
      *               together
-     *   ease        deprecated alias of emphasized, removed in 2.0
      * Spatial: the spring for movement that floats (translate, scale,
      * clip-path). Its linear() below peaks at most at 1.05 and settles; it is
      * normalised to its settle time, so one curve serves every duration.
@@ -158,8 +178,6 @@
     --ds-ease-emphasized: cubic-bezier(.2, 0, 0, 1);
     --ds-ease-spatial: var(--ds-ease-out);
     --ds-ease-value: var(--ds-ease-in-out);
-    /* Deprecated, removed in 2.0: use --ds-ease-emphasized. */
-    --ds-ease: var(--ds-ease-emphasized);
 
     /* ── Motion: choreography ───────────────────────────
      * Distances of entering elements (4-12 px, 24 px for side sheets, a full
@@ -190,9 +208,13 @@
     --ds-delay-boot: calc(400ms * var(--ds-time-scale, 1));
     --ds-hold-loader: calc(450ms * var(--ds-time-scale, 1));
     --ds-hold-success: calc(600ms * var(--ds-time-scale, 1));
+    --ds-hold-status: calc(900ms * var(--ds-time-scale, 1));
     --ds-delay-tooltip: calc(500ms * var(--ds-time-scale, 1));
     --ds-delay-tooltip-skip: calc(300ms * var(--ds-time-scale, 1));
     --ds-delay-tooltip-hide: calc(100ms * var(--ds-time-scale, 1));
+    /* A backdrop or scrim click this soon after the open does not close
+       (shorter than the dialog's --ds-dur-slow entrance; DISMISS_DELAY_MS). */
+    --ds-delay-dismiss: calc(300ms * var(--ds-time-scale, 1));
 
     /* Loops of loading indicators: they always run at their token speed.
      * spin           one turn of the spinner (the M3 rotation period)
@@ -203,7 +225,6 @@
      * loader         one round of the shape loader: 7 shapes x 650ms
      * skeleton       one pass of the skeleton wave (sweep, then rest)
      * wave           one wavelength of the travelling progress wave
-     * pulse          deprecated with ds-pulse (removed in 2.0)
      */
     --ds-loop-spin: calc(1568ms * var(--ds-time-scale, 1));
     --ds-loop-spin-fast: calc(.8s * var(--ds-time-scale, 1));
@@ -212,7 +233,6 @@
     --ds-loop-loader: calc(4550ms * var(--ds-time-scale, 1));
     --ds-loop-skeleton: calc(2s * var(--ds-time-scale, 1));
     --ds-loop-wave: calc(1.2s * var(--ds-time-scale, 1));
-    --ds-loop-pulse: calc(2s * var(--ds-time-scale, 1));
 
     /* ── Progress waves ─────────────────────────────────
      * The masks that make progress wavy (scripts/motion-curves.mjs writes
@@ -236,8 +256,7 @@
      * targets (rows, navigation items) take the lighter hover. Keyboard
      * focus lays its own layer under the ring (focus); a press stays on top
      * of it. Disabled content dims to 38%; stale content (about to be
-     * replaced) to 55%. pulse is deprecated with ds-pulse (removed in
-     * 2.0): its dimmest point.
+     * replaced) to 55%.
      */
     --ds-state-hover: .08;
     --ds-state-hover-lg: .06;
@@ -246,7 +265,6 @@
     --ds-state-dragged: .16;
     --ds-state-disabled: .38;
     --ds-state-stale: .55;
-    --ds-state-pulse: .45;
 
     /* ── Spacing (4 px grid) ──────────────────────────── */
     --ds-space-1: 4px;
@@ -261,13 +279,18 @@
     --ds-space-12: 48px;
 
     /* ── Layers (inside one stacking context) ───────────
+     * pinned   a pinned first table column, above the raised controls of
+     *          the cells that scroll under it
+     * sticky-pinned  the corner cell of a sticky header over a pinned column
      * popover  menus and listboxes
      * drawer   side sheets and the modal navigation drawer
      * dialog   dialogs, above an open side sheet (they may ask from inside one)
      * toast    snackbars, tooltips, the skip link
      */
     --ds-z-raised: 1;
+    --ds-z-pinned: calc(var(--ds-z-raised) + 1);
     --ds-z-sticky: 20;
+    --ds-z-sticky-pinned: calc(var(--ds-z-sticky) + 1);
     --ds-z-popover: 40;
     --ds-z-drawer: 50;
     --ds-z-dialog: calc(var(--ds-z-drawer) + 1);
@@ -288,6 +311,18 @@
     --ds-surface-high: #e9eef6;
     --ds-surface-highest: #dde3ea;
 
+    /* Floating surfaces: overlay for the dialog box and the side sheet
+       panel, popover for menus, the combobox list and the skip link. The
+       same white by default; a dark theme lifts them a tone above the page,
+       where a shadow no longer shows. */
+    --ds-surface-overlay: var(--ds-surface);
+    --ds-surface-popover: var(--ds-surface);
+
+    /* The colour scheme of the theme (light or dark): the browser draws
+       scrollbars, native pickers and form controls to match. Set it with
+       the palette; :where(.ds-theme) applies it below. */
+    --ds-color-scheme: light;
+
     /* The band of the skeleton wave that passes over the bones. */
     --ds-skeleton-highlight: var(--ds-surface-high);
 
@@ -305,11 +340,13 @@
 
     /* Primary: the strongest action, focus, switches, progress, links. The
        hover and pressed values are references for components that cannot
-       lay a state layer (a solid button drawn by a project). */
+       lay a state layer (a solid button drawn by a project). Derived: they
+       follow --ds-primary (hover mixes in 8% of --ds-on-primary, pressed 15%
+       black); a theme sets them only to differ. */
     --ds-primary: #0b57d0;
     --ds-on-primary: #ffffff;
-    --ds-primary-hover: #1f64d4;
-    --ds-primary-pressed: #094ab1;
+    --ds-primary-hover: color-mix(in srgb, var(--ds-primary), var(--ds-on-primary) 8%);
+    --ds-primary-pressed: color-mix(in srgb, var(--ds-primary), #000 15%);
 
     /* The one tint: active navigation, selected chips, the tonal button,
        tracks of progress, text selection. It is too light against white to
@@ -346,33 +383,46 @@
     --ds-scrim: rgba(0, 0, 0, .32);
     --ds-scrim-nested: rgba(0, 0, 0, .16);
 
-    /* The disc behind round icon buttons (.ds-btn--disc). */
-    --ds-fill-round: rgba(31, 31, 31, .08);
+    /* The disc behind round icon buttons (.ds-btn--disc): 8% of the text
+       colour (derived; set it only to differ). */
+    --ds-fill-round: color-mix(in srgb, var(--ds-text) 8%, transparent);
 
     /* Inline code. */
     --ds-code-bg: var(--ds-surface-low);
+
+    /* Charts (meters, columns, legends): four series in a fixed order,
+       never cycled (more fold into "Other"), each at 3:1 on the surfaces
+       and on the track; the neutral series for the rest of a highlighted
+       one; the tones only on single-series marks, always with words.
+       Text never takes a series colour. */
+    --ds-chart-1: var(--ds-primary);
+    --ds-chart-2: #c76a00;
+    --ds-chart-3: #00897b;
+    --ds-chart-4: #9334e6;
+    --ds-chart-track: var(--ds-surface-high);
+    --ds-chart-neutral: var(--ds-outline);
+    --ds-chart-warning: var(--ds-warning);
+    --ds-chart-error: var(--ds-error);
 
     /* Disabled controls: the neutral Material look (a 12% container and
        38% content) instead of dimming the whole control, so a filled button
        does not fade into a pale brand colour. A theme that prefers dimming
        sets --ds-disabled-opacity: var(--ds-state-disabled) and
        --ds-disabled-fill / --ds-disabled-ink to `initial` (each control then
-       keeps its own fill and ink). */
+       keeps its own fill and ink). Fill and ink are derived from --ds-text
+       (12% and 38%), so a theme that sets the text colour gets them too. */
     --ds-disabled-opacity: 1;
-    --ds-disabled-fill: rgba(31, 31, 31, .12);
-    --ds-disabled-ink: rgba(31, 31, 31, .38);
-
-    /* Deprecated (removed in 2.0): the small spinner's track where
-       color-mix() is missing; every engine of the baseline has color-mix(). */
-    --ds-spinner-sm-track: rgba(0, 0, 0, .18);
+    --ds-disabled-fill: color-mix(in srgb, var(--ds-text) 12%, transparent);
+    --ds-disabled-ink: color-mix(in srgb, var(--ds-text) 38%, transparent);
 
     /* ── Links ──────────────────────────────────────────
      * Always underlined: colour alone does not tell a link from text. The
      * thickness and offset are the same everywhere (themes recolour only),
-     * so links in text, text buttons and tables stay alike.
+     * so links in text, text buttons and tables stay alike. The resting
+     * underline is the link colour at 40% (derived; set it only to differ).
      */
     --ds-link: var(--ds-primary);
-    --ds-link-underline: rgba(11, 87, 208, .4);
+    --ds-link-underline: color-mix(in srgb, var(--ds-link) 40%, transparent);
     --ds-link-underline-hover: var(--ds-link);
     --ds-link-underline-thickness: 1px;
     --ds-link-underline-offset: 3px;
@@ -481,15 +531,29 @@
      * Sizes of the app frame (components/shell.css, components/page.css).
      *   topbar-height  the top app bar
      *   drawer-width   the navigation drawer
+     *   drawer-rail-width  the drawer as a rail (icons only, data-drawer-collapsed)
      *   content-max    widest page content
      *   measure        reading measure of running text (leads, notes)
      *   toast-room     room kept free at a page's end for a two-line snackbar
+     *   touch-target   the smallest target under .ds-touch (utilities.css)
      */
     --ds-topbar-height: 64px;
     --ds-drawer-width: 256px;
+    --ds-drawer-rail-width: 72px;
     --ds-content-max: 1280px;
     --ds-measure: 76ch;
     --ds-toast-room: 64px;
+    --ds-touch-target: 48px;
+  }
+
+  /*
+   * The one property in this file that is not a custom property: the
+   * theme's colour scheme, so scrollbars, native pickers and form controls
+   * of the browser match the palette. Zero specificity, so a page or a
+   * component that sets color-scheme itself still wins.
+   */
+  :where(.ds-theme) {
+    color-scheme: var(--ds-color-scheme);
   }
 
   /*

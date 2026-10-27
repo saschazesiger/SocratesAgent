@@ -5,7 +5,8 @@
  * press feedback.
  *
  *   const ripples = DS.ripple.attach(document);   // once, for every action on the page
- *   ripples.detach();
+ *   ripples.release(host);                        // end a running press (no argument: every press)
+ *   ripples.destroy();                            // detach() is its deprecated alias (removed in 3.0)
  *
  * attach(root) adds .ds-ripples to the root element (<html> for document),
  * which positions and clips the hosts (ripple.css), and listens once on
@@ -14,12 +15,13 @@
  * .ds-chip__body), .ds-segmented__option, .ds-drawer__item,
  * :is(button, a).ds-tile, .ds-card--interactive (also the <div> form,
  * whose .ds-card__action stretches over it), .ds-table__sort, the body rows
- * of .ds-table--interactive (the ripple goes into the row's first cell and
- * covers the row; Enter on .ds-table__row-link or .ds-card__action ripples
+ * of .ds-table--interactive that hold a .ds-table__row-link (the ripple
+ * goes into the row's first cell and covers the row; Enter on
+ * .ds-table__row-link or .ds-card__action ripples
  * the row or card; a press on another link or control inside a row or
  * a <div> card is that control's own, so the host gets none), .ds-radio (a radio card, also
  * when its own input is pressed), .ds-combo__toggle, .ds-menu__item,
- * .ds-errors summary and [data-ds-ripple]; data-ds-ripple="off" on a host
+ * .ds-errors summary, .ds-pressable and [data-ds-ripple]; data-ds-ripple="off" on a host
  * or an ancestor opts out. Disabled, busy, done and aria-disabled hosts (a chip or radio
  * card whose input is disabled, .ds-radio--disabled), switch, checkbox and
  * radio inputs (their halo is the press), and presses other than the
@@ -36,8 +38,31 @@
  * to the release, also at least --ds-dur-instant, so a quick click still
  * shows the whole press.
  *
+ * A press ends when another element takes the pointer: an ancestor that
+ * captures it (a row that drags to scroll, a sortable list) fires
+ * gotpointercapture, and the ripple fades as on release. Capture by the
+ * host or something inside it (touch captures the pressed element
+ * implicitly) keeps the press. release(host) ends a press by hand (a drag
+ * library that moves the pointer elsewhere); :active, and with it the
+ * flat press layer and the morph, lasts until the button is released.
+ *
  * iOS Safari applies :active only on pages with a touchstart listener:
  * attach() adds a passive one.
+ *
+ * attach() also installs DS.motion.guard() on the root's document or
+ * shadow root: a busy or done .ds-btn and an aria-disabled action inside
+ * .ds-theme get no click, middle click, Enter, Space, label click or form
+ * submission (data-ds-guard="off" opts a control out).
+ *
+ * Pinned columns (.ds-table--pin-first): the sticky first cell holds the
+ * row link's stretched area and covers the row's ripple, so in an
+ * interactive table attach() forwards a click on a row (outside its
+ * controls, with no text selected) to the row's .ds-table__row-link
+ * (link.click(); Ctrl, Meta or Shift and the middle button open an
+ * a[href] in a new tab), unless the page called preventDefault() on it;
+ * a middle press there starts no autoscroll. The row ripples in two
+ * parts with one centre: a span in the second cell covers the row under
+ * the pinned cell, a second span in the pinned cell covers that cell.
  *
  * Chips (D22): attach() also listens for change on .ds-chip__input in a
  * .ds-chips row, the one call that wires control motion. A toggle that
@@ -56,28 +81,64 @@
  * glides its label. It measures the end layout with the row's
  * data-ds-snap (the slots without their transition) for one forced style
  * pass. A programmatic
- * `checked` change has no event: there CSS alone runs and a wrap jumps.
+ * `checked` change has no event: there CSS alone runs and a wrap jumps,
+ * unless the script dispatches one in the same task
+ * (`input.checked = next; input.dispatchEvent(new Event('change',
+ * { bubbles: true }))`), which glides like a click.
  *
  * ES2022 (Safari 16.4); a module may import from an earlier module (the
  * build bundles it into dist/ds.js as DS.ripple); newer APIs only behind
  * feature detection, named under Progressive:.
  */
-import { MOTION_FALLBACKS, flip, motionDuration, motionEasing, settled, travelDuration } from './motion.js';
+import { MOTION_FALLBACKS, flip, guard, motionDuration, motionEasing, settled, travelDuration } from './motion.js';
 
 /** The actions that get a ripple. */
-export const RIPPLE_HOSTS = '.ds-btn, .ds-chip, .ds-segmented__option, .ds-drawer__item, :is(button, a).ds-tile, .ds-card--interactive, .ds-table__sort, .ds-table--interactive tbody tr:not(.ds-table__detail), .ds-radio, .ds-combo__toggle, .ds-menu__item, .ds-errors summary, [data-ds-ripple]';
+export const RIPPLE_HOSTS = [
+  '.ds-btn',
+  '.ds-chip',
+  '.ds-segmented__option',
+  '.ds-drawer__item',
+  ':is(button, a).ds-tile',
+  '.ds-card--interactive',
+  '.ds-table__sort',
+  '.ds-table--interactive tbody tr:not(.ds-table__detail):has(.ds-table__row-link)',
+  '.ds-radio',
+  '.ds-combo__toggle',
+  '.ds-menu__item',
+  '.ds-errors summary',
+  '.ds-dropzone',
+  '.ds-pressable',
+  '.ds-drawer__toggle',
+  '.ds-tabs__tab',
+  '[data-ds-ripple]',
+  '.ds-list--interactive > .ds-list__item',
+  ':is(a, button).ds-kv-list__row',
+  '.ds-disclosure > summary',
+  ':is(button, a).ds-columns__col',
+].join(', ');
 
 /** The link that stands for its host (stretched over a row or a <div> card): Enter on it ripples the host. */
-const HOST_LINK = '.ds-table__row-link, .ds-card__action';
+const HOST_LINK = [
+  '.ds-table__row-link',
+  '.ds-card__action',
+  '.ds-list__action',
+].join(', ');
 
 /** Hosts whose own input is part of the host: pressing the input ripples the host. */
-const OWNS_INPUT = '.ds-chip, .ds-radio';
+const OWNS_INPUT = [
+  '.ds-chip',
+  '.ds-radio',
+].join(', ');
 
 /** Controls whose press is their own halo, not a ripple. */
 const OWN_PRESS = 'input[type="checkbox"], input[type="radio"], .ds-switch';
 
 /** Hosts a link stretches over (HOST_LINK): their other controls keep their own press. */
-const STRETCHED = '.ds-card--interactive, .ds-table--interactive tbody tr';
+const STRETCHED = [
+  '.ds-card--interactive',
+  '.ds-table--interactive tbody tr:has(.ds-table__row-link)',
+  '.ds-list--interactive > .ds-list__item',
+].join(', ');
 
 /** What a press inside a stretched host may land on besides its link (the CSS's press exclusion, plus [tabindex]). */
 const CONTROLS = 'a[href], button, input, select, textarea, label, summary, [tabindex]';
@@ -85,14 +146,26 @@ const CONTROLS = 'a[href], button, input, select, textarea, label, summary, [tab
 /**
  * @typedef {object} Press
  * @property {HTMLElement} span  the ripple
+ * @property {HTMLElement} [twin]  its part in a pinned first cell (two-part ripple of a pinned row)
  * @property {number} at  when it started (performance.now())
  * @property {boolean} released
+ * @property {(() => void)|undefined} [stop]  takes the pointer listeners of the press away
  */
 
 /** The growing ripple of each host. @type {WeakMap<Element, Press>} */
 const presses = new WeakMap();
 
-/** The handle of each attached root. @type {WeakMap<Node, { detach: () => void }>} */
+/** The hosts whose press still grows (release() without a host ends them). @type {Set<Element>} */
+const pressing = new Set();
+
+/**
+ * @typedef {object} RippleHandle
+ * @property {() => void} destroy  removes the listeners and .ds-ripples; ripples already shown finish
+ * @property {(host?: Element) => void} release  ends the running press of `host`, or every press under the root
+ * @property {() => void} detach  deprecated alias of destroy() (removed in 3.0 at the earliest)
+ */
+
+/** The handle of each attached root. @type {WeakMap<Node, RippleHandle>} */
 const attached = new WeakMap();
 
 const now = () => (typeof performance !== 'undefined' ? performance.now() : Date.now());
@@ -118,20 +191,102 @@ function surfaceOf(host) {
  * itself, ripple.css).
  */
 function holderOf(surface) {
-  return surface.tagName === 'TR' ? surface.cells[0] ?? null : surface;
+  if (surface.tagName !== 'TR') return surface;
+  return (pinnedCell(surface) ? surface.cells[1] : null) ?? surface.cells[0] ?? null;
+}
+
+/* ── Pinned columns ────────────────────────────────── */
+
+/** A row of a pinned interactive table (.ds-table--pin-first): what a click on it may forward to. */
+const PINNED_ROW = '.ds-table--pin-first.ds-table--interactive tbody tr:not(.ds-table__detail)';
+
+/**
+ * The pinned first cell of a table row, when it is pinned now (sticky:
+ * stacked rows and print unpin it), else null.
+ */
+function pinnedCell(row) {
+  const cell = row.cells?.[0];
+  if (!cell || row.cells.length < 2 || !row.closest('.ds-table--pin-first')) return null;
+  return row.ownerDocument.defaultView?.getComputedStyle(cell).position === 'sticky' ? cell : null;
 }
 
 /**
+ * The part of a row's ripple in its pinned first cell: the same circle
+ * (centre and radius), placed against the cell, which paints over the
+ * row's own part.
+ */
+function pinnedTwin(row, rect, left, top, radius) {
+  const cell = pinnedCell(row);
+  if (!cell) return null;
+  const box = cell.getBoundingClientRect();
+  const twin = row.ownerDocument.createElement('span');
+  twin.className = 'ds-press-ripple';
+  twin.setAttribute('aria-hidden', 'true');
+  twin.setAttribute('data-ds-keep', '');
+  twin.style.setProperty('--ds-ripple-x', `${Math.round((left + rect.left - box.left) * 100) / 100}px`);
+  twin.style.setProperty('--ds-ripple-y', `${Math.round((top + rect.top - box.top) * 100) / 100}px`);
+  twin.style.setProperty('--ds-ripple-r', `${Math.round(radius * 100) / 100}px`);
+  cell.append(twin);
+  return twin;
+}
+
+/**
+ * A click on a row of a pinned interactive table, outside its controls and
+ * with no text selected, opens the row's link: the sticky first cell
+ * confines the link's stretched area, so the click would open nothing.
+ * A plain click clicks the link; Ctrl, Meta or Shift and the middle
+ * button open an a[href] in a new tab. A page that called
+ * preventDefault() keeps the click. `ownPrevent`: the middle press that
+ * led to this auxclick was cancelled by attach() itself (no autoscroll),
+ * which some engines carry over to the auxclick. Returns whether it
+ * forwarded.
+ */
+function forwardRowClick(event, root, ownPrevent = false) {
+  if ((event.defaultPrevented && !ownPrevent) || (event.button !== 0 && event.button !== 1)) return false;
+  const element = event.target?.nodeType === 1 ? event.target : event.target?.parentElement;
+  const row = element?.closest?.(PINNED_ROW);
+  if (!row || !root.contains(row)) return false;
+  const control = element.closest(CONTROLS);
+  if (control && row.contains(control)) return false;
+  const link = row.querySelector('.ds-table__row-link');
+  if (!link || link.matches(':disabled') || link.getAttribute('aria-disabled') === 'true') return false;
+  const view = row.ownerDocument.defaultView;
+  // Text selected by a drag ends in a click that opens nothing. Ctrl, Meta and the middle button skip
+  // the check: Firefox selects the table cell on Ctrl + click, and nothing selects text with them.
+  const selection = view?.getSelection?.();
+  if (selection && !selection.isCollapsed && !(event.ctrlKey || event.metaKey || event.button === 1)) return false;
+  const away = event.button === 1 || event.ctrlKey || event.metaKey || event.shiftKey;
+  if (away) {
+    if (!link.matches('a[href]')) {
+      if (event.button !== 0) return false;
+      link.click();
+      return true;
+    }
+    event.preventDefault();
+    view?.open(/** @type {HTMLAnchorElement} */ (link).href, '_blank', 'noopener');
+    return true;
+  }
+  link.click();
+  return true;
+}
+
+/** Whether an element is blocked: disabled (also by its <fieldset>) or aria-disabled. */
+const blocked = (element) => Boolean(element && (element.matches(':disabled') || element.getAttribute('aria-disabled') === 'true'));
+
+/**
  * Hosts that take no press: disabled, aria-disabled, busy, done, a chip or
- * radio card whose input is disabled. `:disabled`, not the property: it also
- * holds for an input in a disabled <fieldset> (`.ds-chips` is one).
+ * radio card whose input is disabled or aria-disabled, a host that a link
+ * stretches over (a table, list or kv row, a <div> card) whose link is
+ * blocked. `:disabled`, not the property: it also holds for an input in a
+ * disabled <fieldset> (`.ds-chips` is one).
  */
 function inactive(host) {
-  if (host.matches(':disabled') || host.getAttribute('aria-disabled') === 'true' || host.getAttribute('aria-busy') === 'true') return true;
+  if (blocked(host) || host.getAttribute('aria-busy') === 'true') return true;
   if (host.classList.contains('ds-btn--done') || host.classList.contains('ds-radio--disabled')) return true;
-  if (host.matches(OWNS_INPUT)) {
-    const input = host.querySelector('input');
-    if (input?.matches(':disabled')) return true;
+  if (host.matches(OWNS_INPUT) && blocked(host.querySelector('input'))) return true;
+  if (host.matches(STRETCHED)) {
+    const link = host.querySelector(HOST_LINK);
+    if (link && blocked(link)) return true;
   }
   return false;
 }
@@ -162,6 +317,8 @@ function fade(span) {
 function release(host, press) {
   if (press.released) return;
   press.released = true;
+  press.stop?.();
+  pressing.delete(host);
   const wait = Math.max(0, motionDuration(host, '--ds-dur-instant') - (now() - press.at));
   setTimeout(() => {
     if (presses.get(host) === press) {
@@ -169,6 +326,7 @@ function release(host, press) {
       host.classList.remove('ds-pressed');
     }
     fade(press.span);
+    if (press.twin) fade(press.twin);
   }, wait);
 }
 
@@ -186,7 +344,9 @@ function start(host, x, y) {
   const previous = presses.get(host);
   if (previous && !previous.released) {
     previous.released = true;
+    previous.stop?.();
     fade(previous.span);
+    if (previous.twin) fade(previous.twin);
   }
   const holder = holderOf(surface);
   if (!holder) return null;
@@ -210,10 +370,13 @@ function start(host, x, y) {
   span.style.setProperty('--ds-ripple-y', `${Math.round(top * 100) / 100}px`);
   span.style.setProperty('--ds-ripple-r', `${Math.round(radius * 100) / 100}px`);
   holder.append(span);
+  const twin = row ? pinnedTwin(surface, rect, left, top, radius) : null;
   host.classList.add('ds-pressed');
   /** @type {Press} */
   const press = { span, at: now(), released: false };
+  if (twin) press.twin = twin;
   presses.set(host, press);
+  pressing.add(host);
   return press;
 }
 
@@ -515,12 +678,19 @@ function activates(target, key) {
 
 /**
  * Adds the pointer ripple to every action inside `root` (delegated, so
- * actions rendered later have it too). Idempotent per root. An open shadow
- * root works as a root too: the listeners go on it (events keep their real
- * targets there) and .ds-ripples on the .ds-theme inside it, where ds.css
- * applies.
+ * actions rendered later have it too), and installs the action guard
+ * (DS.motion.guard()) on its document or shadow root, so busy, done and
+ * aria-disabled actions are blocked for every input. Idempotent per root.
+ * An open shadow root works as a root too: the listeners go on it (events
+ * keep their real targets there) and .ds-ripples on the .ds-theme inside
+ * it, where ds.css applies.
+ * Returns a handle: destroy() takes it all back (its hold on the guard
+ * too; busy() keeps its own), release(host?) ends a running press (the
+ * ripple fades as on release; without a host every press under the root;
+ * nothing when there is none). detach() is the deprecated alias of
+ * destroy().
  * @param {Document|Element|ShadowRoot} [root]
- * @returns {{ detach: () => void }}
+ * @returns {RippleHandle}
  */
 export function attach(root = document) {
   const existing = attached.get(root);
@@ -538,16 +708,31 @@ export function attach(root = document) {
     const target = /** @type {Element} */ (event.target);
     if (target.closest?.(OWN_PRESS) && !host.matches(OWNS_INPUT)) return;
     if (pressesOther(host, target)) return;
-    if (!start(host, event.clientX, event.clientY)) return;
-    const up = () => {
+    const press = start(host, event.clientX, event.clientY);
+    if (!press) return;
+    const pointer = event.pointerId;
+    const stop = () => {
       host.removeEventListener('pointerleave', up);
       doc.removeEventListener('pointerup', up, true);
       doc.removeEventListener('pointercancel', up, true);
+      doc.removeEventListener('gotpointercapture', captured, true);
+    };
+    const up = () => {
+      stop();
       end(host);
     };
+    // Another element took the pointer (an ancestor that drags to scroll): the press is over.
+    const captured = (/** @type {PointerEvent} */ capture) => {
+      if (capture.pointerId !== pointer) return;
+      const owner = /** @type {Node} */ (capture.target);
+      if (owner && owner.nodeType === 1 && host.contains(owner)) return;
+      up();
+    };
+    press.stop = stop;
     host.addEventListener('pointerleave', up);
     doc.addEventListener('pointerup', up, true);
     doc.addEventListener('pointercancel', up, true);
+    doc.addEventListener('gotpointercapture', captured, true);
   };
 
   const onKeyDown = (/** @type {KeyboardEvent} */ event) => {
@@ -587,6 +772,29 @@ export function attach(root = document) {
   // A passive no-op: iOS Safari applies :active only with a touchstart listener.
   const onTouchStart = () => {};
 
+  // The row whose middle press attach() cancelled (Chromium marks the auxclick that follows as prevented too).
+  /** @type {Element|null} */
+  let middleRow = null;
+
+  // Pinned rows: a click on the row opens its link (bubble phase, after the page's own handlers).
+  const onRowClick = (/** @type {MouseEvent} */ event) => {
+    const own = event.type === 'auxclick' && middleRow !== null && middleRow.contains(/** @type {Node} */ (event.target));
+    if (event.type === 'auxclick') middleRow = null;
+    forwardRowClick(event, element, own);
+  };
+
+  // A middle press on a pinned row opens its link in a new tab, never the platform autoscroll.
+  const onRowMouseDown = (/** @type {MouseEvent} */ event) => {
+    middleRow = null;
+    if (event.button !== 1 || event.defaultPrevented) return;
+    const target = /** @type {Element} */ (event.target);
+    const node = target?.nodeType === 1 ? target : target?.parentElement;
+    const row = node?.closest?.(PINNED_ROW);
+    if (!row || !element.contains(row) || !row.querySelector('a[href].ds-table__row-link') || node.closest(CONTROLS)) return;
+    event.preventDefault();
+    middleRow = row;
+  };
+
   const onChange = (/** @type {Event} */ event) => {
     const input = /** @type {Element} */ (event.target);
     if (!input?.matches?.('.ds-chip__input')) return;
@@ -600,10 +808,18 @@ export function attach(root = document) {
   element.addEventListener('keyup', onKeyUp);
   element.addEventListener('touchstart', onTouchStart, { passive: true });
   element.addEventListener('change', onChange);
+  element.addEventListener('click', onRowClick);
+  element.addEventListener('auxclick', onRowClick);
+  element.addEventListener('mousedown', onRowMouseDown);
+  // The action guard (DS.motion.guard()) of the document or shadow root:
+  // a busy, done or aria-disabled action is blocked for every input.
+  const rootNode = root.nodeType === 9 || root.nodeType === 11 ? root : element.getRootNode?.() ?? doc;
+  const guarded = guard(/** @type {Document|ShadowRoot} */ (rootNode));
 
+  /** @type {RippleHandle} */
   const handle = {
     /** Removes the listeners and .ds-ripples; ripples already shown finish. */
-    detach() {
+    destroy() {
       if (attached.get(root) !== handle) return;
       attached.delete(root);
       element.removeEventListener('pointerdown', onPointerDown);
@@ -611,7 +827,20 @@ export function attach(root = document) {
       element.removeEventListener('keyup', onKeyUp);
       element.removeEventListener('touchstart', onTouchStart);
       element.removeEventListener('change', onChange);
+      element.removeEventListener('click', onRowClick);
+      element.removeEventListener('auxclick', onRowClick);
+      element.removeEventListener('mousedown', onRowMouseDown);
+      guarded.destroy();
       marked.classList.remove('ds-ripples');
+    },
+    /** Ends the press of `host` (or of every host under the root) as a release would. */
+    release(host) {
+      const hosts = host ? [host] : [...pressing].filter((item) => element.contains(item));
+      for (const item of hosts) end(item);
+    },
+    /** Deprecated (removed in 3.0 at the earliest): destroy(). */
+    detach() {
+      handle.destroy();
     },
   };
   attached.set(root, handle);

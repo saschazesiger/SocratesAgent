@@ -6,34 +6,58 @@
  * and below the drawer becomes modal (a sheet from the left over a scrim).
  *
  *   <body>
- *   <div class="ds-app ds-app--drawer" [data-drawer-open] [data-drawer-hidden] [data-scrolled]>
+ *   <div class="ds-app ds-app--drawer" [data-drawer-open] [data-drawer-hidden] [data-drawer-collapsed] [data-scrolled]>
  *     <a class="ds-skip" href="#main">Skip to content</a>
  *     <div class="ds-topbar">
- *       <button class="ds-btn ds-btn--quiet ds-btn--icon ds-topbar__menu" aria-label="Menu">(menu)</button>
+ *       <button class="ds-btn ds-btn--quiet ds-btn--icon ds-topbar__menu" type="button" aria-label="Menu" aria-expanded="false">(menu)</button>
  *       <a class="ds-brand" href="/">[mark] <span class="ds-brand__name">Product</span></a>
+ *       [<h1 class="ds-topbar__title">Page</h1>]   (instead of a page head on small screens)
+ *       [<div class="ds-topbar__search"> <div class="ds-search"> ... </div> </div>]   (hidden below 720px)
+ *       [<div class="ds-topbar__actions"> icon buttons, each with data-tip </div>]
  *       <div class="ds-account"> <div class="ds-account__text"> <div class="ds-account__name"> <div class="ds-account__email"> </div>
- *         <span class="ds-account__avatar" role="img" aria-label="...">A</span> <button class="ds-btn ds-btn--text">Sign out</button>
+ *         <span class="ds-account__avatar" role="img" aria-label="..." tabindex="0" data-tip="...">A</span> <button class="ds-btn ds-btn--text" type="button">Sign out</button>
+ *       (.ds-account--capsule: avatar, text aria-hidden, <span class="ds-account__divider"></span>, the sign-out button)
  *     </div>
  *     <div class="ds-scrim"></div>     (before the drawer, so it covers the page only)
- *     <nav class="ds-drawer" aria-label="Main">
- *       <div class="ds-drawer__head"> (brand again, shown in the modal drawer) </div>
+ *     <nav class="ds-drawer" aria-label="Main" tabindex="-1">
+ *       <div class="ds-drawer__head" aria-hidden="true"> (brand again, shown in the modal drawer) </div>
+ *       [<div class="ds-drawer__back"> <a class="ds-drawer__item" href="/">(arrowLeft 20) <span class="ds-drawer__label">All devices</span></a> </div>]
+ *       [<div class="ds-drawer__actions"> a primary action </div>]
  *       <div class="ds-drawer__list">
  *         <div class="ds-drawer__group"> <p class="ds-drawer__heading">Group</p>
- *           <a class="ds-drawer__item" href="/a" aria-current="page">(icon 20) <span class="ds-drawer__label">Overview</span></a>
+ *           <a class="ds-drawer__item" href="/a" aria-current="page">(icon 20) <span class="ds-drawer__label">Overview</span> [<span class="ds-drawer__count"><span class="ds-sr">, </span>3</span>]</a>
  *           (or <button class="ds-drawer__item"> that shows a section in place; also aria-current="page" when active)
+ *         <details class="ds-drawer__group ds-collapsible" open>   (a group that closes)
+ *           <summary class="ds-drawer__heading ds-drawer__toggle">(chevronDown .ds-chevron) <span>Group</span> <span class="ds-drawer__count">3</span></summary> items ...
+ *         <div class="ds-drawer__row"> <a class="ds-drawer__item" ...> <button class="ds-btn ds-btn--quiet ds-btn--icon ds-btn--sm ds-drawer__action ds-hover-actions" type="button" aria-label="..." data-tip="...">(moreVertical)</button> </div>
+ *       </div>
+ *       [<div class="ds-drawer__foot [ds-drawer__foot--rail]"> drawer items (settings, help) </div>]
  *     </nav>
- *     <div class="ds-panel"> <main class="ds-view" id="main" tabindex="-1"> <div class="ds-content"> <div class="ds-page"> ...
+ *     <div class="ds-panel">
+ *       [<div class="ds-banner"> <div class="ds-alert ds-alert--warning" role="status"> ... </div> </div>]
+ *       <main class="ds-view [ds-view--fill | ds-view--fixed]" id="main" tabindex="-1"> <div class="ds-content"> <div class="ds-page"> ...
+ *
+ *   An avatar elsewhere: <span class="ds-avatar [ds-avatar--sm | ds-avatar--lg]" role="img" aria-label="Ada Lovelace">A</span>
+ *   or <img class="ds-avatar" src="..." alt=""> next to the name.
  *
  * State attributes on .ds-app, set by the page's script:
  *   data-drawer-open    the modal drawer is open (at 900px and below)
  *   data-drawer-hidden  this view has no drawer (the panel takes the width)
+ *   data-drawer-collapsed  above 900px the drawer is a rail (--ds-drawer-rail-width):
+ *                       icons only, labels and headings visually hidden but read,
+ *                       each item's data-tip names it; the page sets it (and
+ *                       aria-pressed on the menu button, which then shows above
+ *                       900px) and keeps it across loads
  *   data-scrolled       the view is scrolled: the panel's top hairline shows
  *                       and the top bar tints (--ds-topbar-scrolled-bg);
  *                       filled fields in it step up to --ds-surface-highest.
  *                       Where scroll timelines exist, hairline and tint
  *                       follow the scroll position themselves (below); set
- *                       the attribute anyway, from an IntersectionObserver
- *                       on a 1px sentinel (docs/components.md, App frame)
+ *                       the attribute anyway: DS.dom.watchScrolled(view)
+ *                       writes it (a 1px sentinel, docs/components.md)
+ *
+ * Under .ds-touch the brand link is at least --ds-touch-target on both
+ * sides (the targets of the drawer and the buttons follow their hooks).
  *
  * .ds-drawer--instant on the drawer: no slide and no scrim fade while the
  * window crosses 900px (the page adds it on the matchMedia change and
@@ -49,7 +73,12 @@
  * panel to its new width while the drawer leaves or slides back (the
  * transition plays it; enter(drawer) stays quiet meanwhile).
  *
- * A segmented switch (.ds-segmented) may follow the brand in the top bar.
+ * A segmented switch (.ds-segmented) may follow the brand in the top bar
+ * (it takes its start margin only there) or sit in a page toolbar, flush.
+ * Its options are links (aria-current="true") or buttons (role="radio"
+ * with aria-checked, or aria-pressed); a button option loses the browser's
+ * button look, and a :disabled or aria-disabled option takes the disabled
+ * model (no hover, press or morph; aria-disabled keeps its focus layer).
  * The active drawer item glides with js/indicator.js
  * (createIndicator(list, { active: '[aria-current="page"]', className: 'ds-drawer__indicator' })),
  * which follows aria-current by itself. While the pill glides, the labels
@@ -72,10 +101,65 @@
  * Hooks: --ds-drawer-item-height (48px; the rest radius is half of it),
  * --ds-topbar-scrolled-bg (the top bar while the view is scrolled;
  * --ds-surface-high, transparent keeps a flat bar),
- * --ds-view-scrollbar-gutter (stable; stable both-edges, or auto).
+ * --ds-view-scrollbar-gutter (stable; stable both-edges, or auto),
+ * --ds-segmented-padding-x (--ds-space-4: the inline padding of an
+ * option), --ds-topbar-search-max (720px), --ds-account-text-max
+ * (240px), --ds-avatar-size (32px). Layout role: --ds-drawer-rail-width.
+ *
+ * Drawer parts: .ds-drawer__back (a way up, between head and list, with a
+ * hairline under it; above 900px the docked drawer's back item hides the
+ * page head's back link), .ds-drawer__actions (above the list),
+ * .ds-drawer__foot (below it; --rail lays its items out icon-only in a
+ * row), .ds-drawer__count (a count at the end of an item or a group
+ * heading; a group heading shows it only while closed), collapsible
+ * groups (<details class="ds-drawer__group ds-collapsible"> with a
+ * pressable .ds-drawer__toggle summary: state layer, ring snap, ripple),
+ * .ds-drawer__row with a .ds-drawer__action (a quiet icon button at the
+ * end of an item, shown on demand through .ds-hover-actions). The pill
+ * follows the current item across groups; an item inside a closed group
+ * has no pill. The rail (data-drawer-collapsed) switches its column at
+ * once; the labels fade back in on --ds-dur-fast when it widens again
+ * (--ds-dur-instant out); nothing else animates.
+ *
+ * Top bar parts: .ds-topbar__title (a page title that takes the room
+ * between brand and account; the label role in two lines at 600px and
+ * below, where the brand name gives way), .ds-topbar__search (centred,
+ * at most --ds-topbar-search-max, hidden below 720px) and
+ * .ds-topbar__actions (icon buttons with data-tip). A brand of only a name
+ * aligns its text with the drawer's icon edge and keeps it on phones.
+ * .ds-account--capsule: an outlined pill with the avatar first at every
+ * width (the only carrier of the name: role="img", aria-label, data-tip),
+ * the text aria-hidden (at most --ds-account-text-max, hidden below
+ * 720px), .ds-account__divider and a text button. .ds-avatar (32px,
+ * --sm 24px, --lg 40px, --ds-avatar-size) is the same disc anywhere.
+ *
+ * .ds-banner: a message for the whole app, the first child of .ds-panel
+ * above the view, holding one .ds-alert (role="status", or role="alert"
+ * when urgent). It comes and goes through DS.motion.flip(panel, ..., {
+ * items: ':scope > *' }): the view glides, the banner fades in place; no
+ * height is animated.
+ *
+ * Views: .ds-view and .ds-drawer__list are positioned (position:
+ * relative, no stacking context), so an absolute element inside stays in
+ * its scroller. The view defines the page pad properties too
+ * (--ds-content-pad-top, --ds-content-pad-x, --ds-content-pad-bottom; read
+ * them, never set them). .ds-view--fill: from 601px wide and 720px tall
+ * the view stops scrolling and the page's last shown child fills the rest
+ * (a full-page table); below, it scrolls as usual. .ds-view--fixed: the
+ * view never scrolls and has no gutter; a child of the page scrolls (a
+ * chat, a terminal). The frame is as tall as --ds-viewport-height
+ * (DS.dom.followViewport() writes it on <html>; else 100dvh), and
+ * .ds-app--keyboard-hides-bar hides the top bar while
+ * html[data-ds-keyboard] says the on-screen keyboard is up.
+ *
+ * Forced colours: a current drawer item and a selected segmented option
+ * are a choice in a set (SelectedItem / SelectedItemText, a CanvasText
+ * ring inside the fill while focused), blocked items GrayText.
  *
  * Print: only the page content, without the frame and its scroller (the
- * page's own padding and width come off at the end of page.css).
+ * page's own padding and width come off at the end of page.css); the
+ * banner stays off paper; short cards, tiles, alerts, key-value rows and
+ * facts do not break across pages.
  *
  * Progressive:
  * - scrollbar-color and scrollbar-width (thin, quiet scrollbars in the
@@ -100,9 +184,11 @@
 @layer ds.tokens, ds.base, ds.components, ds.motion, ds.utilities;
 
 @layer ds.components {
+  /* As tall as the visual viewport where DS.dom.followViewport() writes
+     it (the on-screen keyboard shrinks it), else the dynamic viewport. */
   .ds-app {
     height: 100vh;
-    height: 100dvh;
+    height: var(--ds-viewport-height, 100dvh);
     display: grid;
     grid-template-columns: minmax(0, 1fr);
     grid-template-rows: calc(var(--ds-topbar-height) + env(safe-area-inset-top)) minmax(0, 1fr);
@@ -177,6 +263,54 @@
     padding-left: max(calc(var(--ds-drawer-icon-axis) - 16px), env(safe-area-inset-left));
   }
 
+  /* Opt-in: while the on-screen keyboard is up (DS.dom.followViewport()
+     sets data-ds-keyboard on <html>), the bar gives its row to the view, so
+     a chat or a form keeps the field and its context in sight. */
+  [data-ds-keyboard] .ds-app--keyboard-hides-bar {
+    grid-template-rows: 0 minmax(0, 1fr);
+  }
+
+  [data-ds-keyboard] .ds-app--keyboard-hides-bar > .ds-topbar {
+    display: none;
+  }
+
+  /* Top bar parts: a title that takes the room between the brand and the
+     account, a centred search, and a row of icon actions. The account and
+     the actions sit at the end: the first of them takes the auto margin,
+     none after a search, which centres itself. */
+  .ds-topbar__title {
+    flex: 1 1 auto;
+    min-width: 0;
+    margin: 0;
+    overflow: hidden;
+    color: var(--ds-text);
+    font: var(--ds-font-subtitle);
+    letter-spacing: 0;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .ds-topbar__search {
+    flex: 1 1 auto;
+    min-width: 0;
+    max-width: var(--ds-topbar-search-max, 720px);
+    margin-inline: auto;
+  }
+
+  .ds-topbar__actions {
+    display: inline-flex;
+    flex-shrink: 0;
+    align-items: center;
+    gap: var(--ds-space-1);
+    margin-inline-start: auto;
+  }
+
+  .ds-topbar__search ~ .ds-topbar__actions,
+  .ds-topbar__search ~ .ds-account,
+  .ds-topbar__actions ~ .ds-account {
+    margin-inline-start: 0;
+  }
+
   /*
    * Skip link: the drawer puts up to 13 tab stops before the content. Hidden
    * until focused, then a pill on the backdrop over the top bar.
@@ -191,7 +325,7 @@
     min-height: 40px;
     padding: 0 var(--ds-space-5);
     border-radius: var(--ds-radius-action);
-    background: var(--ds-surface);
+    background: var(--ds-surface-popover);
     box-shadow: var(--ds-elev-popover);
     color: var(--ds-text);
     font: var(--ds-font-label);
@@ -228,6 +362,18 @@
    *   </nav>
    *   createIndicator(nav, { active: '[aria-current="true"]', className: 'ds-segmented__indicator' })
    *
+   *   A mode of the same page (buttons):
+   *   <div class="ds-segmented" role="radiogroup" aria-label="View">
+   *     <button class="ds-segmented__option" type="button" role="radio" aria-checked="true" data-label="List">List</button>
+   *     <button class="ds-segmented__option" type="button" role="radio" aria-checked="false" tabindex="-1" data-label="Map">Map</button>
+   *   </div>
+   *   createIndicator(group, { active: '[aria-checked="true"]', className: 'ds-segmented__indicator' })
+   *   DS.dom.roving(group, { items: '.ds-segmented__option' })   (arrow keys)
+   *
+   * Selected: aria-current="true" (links), aria-checked="true" (radios) or
+   * aria-pressed="true" (toggle buttons). Blocked: :disabled or
+   * aria-disabled="true".
+   *
    * data-label (optional, the option's text again) reserves the width of the
    * heavier current weight, so the switch keeps its width when the current
    * option changes. It is for an option whose content is its text (or one
@@ -240,10 +386,15 @@
     grid-auto-flow: column;
     grid-auto-columns: 1fr;
     flex-shrink: 0;
-    margin-left: var(--ds-space-4);
     overflow: hidden;
     border: 1px solid var(--ds-outline);
     border-radius: var(--ds-radius-action);
+  }
+
+  /* In the top bar the switch keeps its distance from the brand; in a page
+     toolbar it sits flush. */
+  .ds-topbar .ds-segmented {
+    margin-inline-start: var(--ds-space-4);
   }
 
   .ds-segmented__indicator {
@@ -256,16 +407,27 @@
     align-items: center;
     justify-content: center;
     min-height: 30px;
-    padding: 0 var(--ds-space-4);
+    padding: 0 var(--ds-segmented-padding-x, var(--ds-space-4));
     color: var(--ds-text-2);
     font: var(--ds-font-body);
     text-decoration: none;
     white-space: nowrap;
     -webkit-tap-highlight-color: transparent;
     /* An inset ring (the pill clips anything outside): it rests on the edge
-       and snaps inward. */
+       and snaps inward. The opacity fades with the disabled model. */
     outline-offset: 0;
-    transition: outline-offset var(--ds-dur-fast) var(--ds-ease-out);
+    transition:
+      outline-offset var(--ds-dur-fast) var(--ds-ease-out),
+      opacity var(--ds-dur-fast) var(--ds-ease-in-out);
+  }
+
+  /* An option may be a <button> (a mode of the same page): without the
+     browser's button look. The divider rule below puts the divider back. */
+  button.ds-segmented__option {
+    margin: 0;
+    border: 0;
+    background: none;
+    cursor: pointer;
   }
 
   /* With the gliding pill, the label changes colour while the pill arrives
@@ -274,6 +436,7 @@
   .ds-has-indicator > .ds-segmented__option {
     transition:
       outline-offset var(--ds-dur-fast) var(--ds-ease-out),
+      opacity var(--ds-dur-fast) var(--ds-ease-in-out),
       color var(--ds-indicator-dur, var(--ds-dur-medium)) var(--ds-ease-in-out);
   }
 
@@ -297,7 +460,7 @@
   }
 
   .ds-segmented__option + .ds-segmented__option {
-    border-left: 1px solid var(--ds-outline);
+    border-inline-start: 1px solid var(--ds-outline);
   }
 
   /* State layer. The pill clips the options, so a pressed option cannot
@@ -306,10 +469,7 @@
   .ds-segmented__option::before {
     content: '';
     position: absolute;
-    top: 0;
-    right: 0;
-    bottom: 0;
-    left: 0;
+    inset: 0;
     background: currentColor;
     opacity: 0;
     pointer-events: none;
@@ -341,11 +501,15 @@
   }
 
   .ds-segmented__option:first-of-type {
-    border-radius: var(--ds-radius-action) 0 0 var(--ds-radius-action);
+    border-radius: 0;
+    border-start-start-radius: var(--ds-radius-action);
+    border-end-start-radius: var(--ds-radius-action);
   }
 
   .ds-segmented__option:last-of-type {
-    border-radius: 0 var(--ds-radius-action) var(--ds-radius-action) 0;
+    border-radius: 0;
+    border-start-end-radius: var(--ds-radius-action);
+    border-end-end-radius: var(--ds-radius-action);
   }
 
   .ds-segmented__option:focus-visible {
@@ -353,14 +517,42 @@
     outline-offset: calc(-1 * var(--ds-focus-width));
   }
 
-  .ds-segmented__option[aria-current="true"] {
+  .ds-segmented__option:is([aria-current="true"], [aria-checked="true"], [aria-pressed="true"]) {
     background: var(--ds-accent);
     color: var(--ds-on-accent);
     font: var(--ds-font-label);
   }
 
-  .ds-has-indicator > .ds-segmented__option[aria-current="true"] {
+  .ds-has-indicator > .ds-segmented__option:is([aria-current="true"], [aria-checked="true"], [aria-pressed="true"]) {
     background: transparent;
+  }
+
+  /* Blocked: the disabled model (ink and opacity, faded on --ds-dur-fast),
+     no hover, press or clip morph; an aria-disabled option stays focusable
+     and keeps its focus layer. */
+  .ds-segmented__option:is(:disabled, [aria-disabled="true"]) {
+    color: var(--ds-disabled-ink);
+    opacity: var(--ds-disabled-opacity);
+    cursor: default;
+    transition:
+      outline-offset var(--ds-dur-fast) var(--ds-ease-out),
+      opacity var(--ds-dur-fast) var(--ds-ease-in-out),
+      color var(--ds-dur-fast) var(--ds-ease-in-out);
+  }
+
+  @media (hover: hover) {
+    .ds-segmented__option:is(:disabled, [aria-disabled="true"]):hover::before {
+      opacity: 0;
+    }
+  }
+
+  .ds-segmented__option:is(:disabled, [aria-disabled="true"]):is(:active, .ds-pressed)::before {
+    opacity: 0;
+    clip-path: inset(0 round 0);
+  }
+
+  .ds-segmented__option[aria-disabled="true"]:focus-visible::before {
+    opacity: var(--ds-state-focus);
   }
 
   /* A view without the drawer: the panel takes the whole width. Toggled
@@ -412,6 +604,7 @@
   /* The menu button shows with the modal drawer only. */
   .ds-topbar__menu {
     display: none;
+    flex-shrink: 0;
     --ds-btn-quiet-color: var(--ds-text-2);
   }
 
@@ -427,6 +620,13 @@
     text-decoration: none;
   }
 
+  /* Under .ds-touch the home link is a finger's target too, also when it
+     is a small mark only. */
+  .ds-touch .ds-brand {
+    min-width: var(--ds-touch-target);
+    min-height: var(--ds-touch-target);
+  }
+
   .ds-brand__name {
     font: var(--ds-font-title);
     color: var(--ds-text);
@@ -438,12 +638,12 @@
     align-items: center;
     gap: var(--ds-space-3);
     min-width: 0;
-    margin-left: auto;
+    margin-inline-start: auto;
   }
 
   .ds-account__text {
     min-width: 0;
-    text-align: right;
+    text-align: end;
   }
 
   .ds-account__name,
@@ -463,20 +663,87 @@
     color: var(--ds-text-2);
   }
 
-  /* Narrow windows show the initial instead of name and email: the avatar
-     then names them itself (aria-label) and shows them in its
-     tooltip on hover, keyboard focus or a tap. */
-  .ds-account__avatar {
+  /* An account without an email shows only the name. */
+  .ds-account__email:empty {
     display: none;
+  }
+
+  /*
+   * Avatar: the initial (or a picture) on the tint, a disc. The account's
+   * avatar is the same disc (both selectors), shown only where it stands in
+   * for the text. Narrow windows show the initial instead of name and
+   * email: the avatar then names them itself (aria-label) and shows them in
+   * its tooltip on hover, keyboard focus or a tap (data-tip). No status dot.
+   */
+  .ds-avatar,
+  .ds-account__avatar {
     flex-shrink: 0;
-    width: 32px;
-    height: 32px;
+    width: var(--ds-avatar-size, 32px);
+    height: var(--ds-avatar-size, 32px);
     place-items: center;
+    overflow: hidden;
     border-radius: 50%;
     background: var(--ds-accent);
     color: var(--ds-on-accent);
     font: var(--ds-font-label);
+    object-fit: cover;
     user-select: none;
+  }
+
+  .ds-avatar {
+    display: inline-grid;
+    vertical-align: middle;
+  }
+
+  .ds-account__avatar {
+    display: none;
+  }
+
+  /* Sizes from the spacing scale; the initial scales with the disc. */
+  .ds-avatar--sm {
+    --ds-avatar-size: var(--ds-space-6);
+    font: var(--ds-font-caption);
+  }
+
+  .ds-avatar--lg {
+    --ds-avatar-size: var(--ds-space-10);
+    font: var(--ds-font-subtitle);
+  }
+
+  /*
+   * Account capsule: one outlined pill, the avatar first at every width and
+   * the only carrier of the name (role="img", aria-label, data-tip); the
+   * text beside it is aria-hidden and gives way below 720px. A divider
+   * goes with a hidden sign-out button.
+   */
+  .ds-account--capsule {
+    gap: var(--ds-space-2);
+    min-height: var(--ds-space-12);
+    padding-block: 0;
+    padding-inline: var(--ds-space-2) var(--ds-space-1);
+    border: 1px solid var(--ds-line);
+    border-radius: var(--ds-radius-action);
+    background: var(--ds-surface);
+  }
+
+  .ds-account--capsule .ds-account__avatar {
+    display: grid;
+    order: -1;
+  }
+
+  .ds-account--capsule .ds-account__text {
+    max-width: var(--ds-account-text-max, 240px);
+    text-align: start;
+  }
+
+  .ds-account__divider {
+    align-self: stretch;
+    margin-block: var(--ds-space-3);
+    border-inline-start: 1px solid var(--ds-line);
+  }
+
+  .ds-account__divider:has(+ [hidden]) {
+    display: none;
   }
 
   /* ── Navigation drawer ────────────────────────── */
@@ -502,9 +769,69 @@
     display: none;
   }
 
+  /* A way up (back to a list from one of its records), between the head
+     and the list: an item that is never current, outside the pill's track,
+     with a hairline under it inset to the text edge. */
+  .ds-drawer__back {
+    flex-shrink: 0;
+    padding: var(--ds-space-1) var(--ds-space-3) 0;
+  }
+
+  .ds-drawer__back::after {
+    content: '';
+    display: block;
+    margin: var(--ds-space-1) var(--ds-space-4) 0;
+    border-bottom: 1px solid var(--ds-line);
+  }
+
+  .ds-drawer__back:empty {
+    display: none;
+  }
+
+  /* A primary action above the list (compose, new record). */
+  .ds-drawer__actions {
+    flex-shrink: 0;
+    display: flex;
+    padding: var(--ds-space-2) var(--ds-space-3);
+  }
+
+  /* Destinations below the list (settings, help), clear of the home
+     indicator of an installed app. */
+  .ds-drawer__foot {
+    flex-shrink: 0;
+    display: grid;
+    padding: var(--ds-space-2) var(--ds-space-3) max(var(--ds-space-3), env(safe-area-inset-bottom));
+  }
+
+  /* Icon-only items in a row; each names itself (a .ds-sr label and
+     data-tip). */
+  .ds-drawer__foot--rail {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--ds-space-1);
+  }
+
+  .ds-drawer__foot--rail .ds-drawer__item {
+    width: var(--ds-drawer-item-height, 48px);
+    padding: 0;
+    justify-content: center;
+  }
+
+  .ds-drawer__foot--rail .ds-drawer__label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+
   /* Items inset 12px; the list is the indicator's track and scrolls itself
-     when the window is low. */
+     when the window is low. Positioned (no stacking context), so an
+     absolute element inside scrolls with the list. */
   .ds-drawer__list {
+    position: relative;
     flex: 1;
     min-height: 0;
     overflow-y: auto;
@@ -539,19 +866,124 @@
     color: var(--ds-text-2);
   }
 
+  /* A group that closes: its heading is a pressable row of the item's
+     height and shape (state layer, ring snap, press morph, ripple), the
+     chevron on the icons' axis. The count shows only while it is closed. */
+  .ds-drawer__toggle {
+    position: relative;
+    display: flex;
+    align-items: center;
+    gap: var(--ds-space-3);
+    min-height: var(--ds-drawer-item-height, 48px);
+    padding-block: 0;
+    padding-inline: var(--ds-space-4) var(--ds-space-6);
+    border-radius: min(var(--ds-radius-action), calc(var(--ds-drawer-item-height, 48px) / 2));
+    list-style: none;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+    outline-offset: 0;
+    transition:
+      border-radius var(--ds-dur-medium) var(--ds-ease-spatial),
+      outline-offset var(--ds-dur-fast) var(--ds-ease-out);
+  }
+
+  .ds-drawer__toggle::-webkit-details-marker {
+    display: none;
+  }
+
+  .ds-drawer__toggle svg {
+    flex-shrink: 0;
+  }
+
+  .ds-drawer__toggle::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    background: currentColor;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity var(--ds-dur-fast) var(--ds-ease-in-out);
+  }
+
+  @media (hover: hover) {
+    .ds-drawer__toggle:hover::before {
+      opacity: var(--ds-state-hover-lg);
+    }
+  }
+
+  .ds-drawer__toggle:focus-visible {
+    outline: var(--ds-focus-outline);
+    outline-offset: calc(-1 * var(--ds-focus-width));
+  }
+
+  .ds-drawer__toggle:focus-visible::before {
+    opacity: var(--ds-state-focus);
+    transition-duration: 0s;
+  }
+
+  .ds-drawer__toggle:active::before,
+  .ds-drawer__toggle.ds-pressed::before {
+    opacity: var(--ds-state-pressed);
+    transition-duration: var(--ds-dur-micro);
+  }
+
+  .ds-drawer__toggle:active:not(:disabled, [aria-disabled="true"], [aria-busy="true"]),
+  .ds-drawer__toggle.ds-pressed:not(:disabled, [aria-disabled="true"], [aria-busy="true"]) {
+    border-radius: min(var(--ds-radius-action-pressed), var(--ds-radius-action), calc(var(--ds-drawer-item-height, 48px) / 2));
+    transition:
+      border-radius var(--ds-dur-micro) var(--ds-ease-out),
+      outline-offset var(--ds-dur-fast) var(--ds-ease-out);
+  }
+
+  .ds-drawer__group[open] > .ds-drawer__toggle .ds-drawer__count {
+    display: none;
+  }
+
+  /* A count at the end of an item or a closed group (unread, open
+     tickets); a .ds-sr separator inside reads it with the label. */
+  .ds-drawer__count {
+    flex: none;
+    margin-inline-start: auto;
+    color: inherit;
+    font: var(--ds-font-meta);
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* An item with an action of its own at its end (a quiet icon button,
+     .ds-hover-actions: shown on hover, focus, the current item and an open
+     menu, always on touch). The item keeps room for it. */
+  .ds-drawer__row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+  }
+
+  .ds-drawer__row > .ds-drawer__item {
+    grid-area: 1 / 1 / 2 / 3;
+    padding-inline-end: calc(var(--ds-space-8) + var(--ds-space-2));
+  }
+
+  .ds-drawer__action {
+    grid-area: 1 / 2;
+    margin-inline-end: var(--ds-space-1);
+  }
+
   .ds-drawer__item {
     position: relative;
     display: flex;
     align-items: center;
     gap: var(--ds-space-3);
     min-height: var(--ds-drawer-item-height, 48px);
-    padding: 0 var(--ds-space-6) 0 var(--ds-space-4);
+    padding-block: 0;
+    padding-inline: var(--ds-space-4) var(--ds-space-6);
     /* Half the height, never 9999px, so the press morph interpolates over
        its whole run. */
     border-radius: min(var(--ds-radius-action), calc(var(--ds-drawer-item-height, 48px) / 2));
     color: var(--ds-text-2);
     font: var(--ds-font-body);
     text-decoration: none;
+    -webkit-tap-highlight-color: transparent;
     /* An inset ring (the scrolling list clips anything outside): it rests
        on the edge and snaps inward. No colour here: without the gliding
        pill the item paints its own tint, and tint and label change in one
@@ -571,7 +1003,6 @@
     background: transparent;
     text-align: start;
     cursor: pointer;
-    -webkit-tap-highlight-color: transparent;
   }
 
   .ds-drawer__item svg {
@@ -579,21 +1010,21 @@
     color: var(--ds-text-2);
   }
 
+  /* The labels fade back in when the rail widens again (in on
+     --ds-dur-fast, out on --ds-dur-instant, below). */
   .ds-drawer__label {
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+    transition: opacity var(--ds-dur-fast) var(--ds-ease-in-out);
   }
 
   /* State layer (6% on large targets), the colour of the content. */
   .ds-drawer__item::before {
     content: '';
     position: absolute;
-    top: 0;
-    right: 0;
-    bottom: 0;
-    left: 0;
+    inset: 0;
     border-radius: inherit;
     background: currentColor;
     opacity: 0;
@@ -757,10 +1188,32 @@
     background: var(--ds-surface);
   }
 
+  /* A message for the whole app (offline, maintenance), above the view and
+     outside its scroll. The alert runs to the panel's edges; the panel's
+     rounded clip gives it its top corners. It comes and goes through
+     DS.motion.flip() on the panel: the view glides, nothing animates a
+     height. */
+  .ds-banner {
+    flex-shrink: 0;
+  }
+
+  .ds-banner > .ds-alert {
+    border-radius: var(--ds-radius-panel) var(--ds-radius-panel) 0 0;
+  }
+
   /* The only scroller of the app; quiet thumb on a clear track. The gutter
      stays reserved, so a classic scrollbar that appears (content revealed,
-     a skeleton replaced, a list gliding) never shifts the content. */
+     a skeleton replaced, a list gliding) never shifts the content.
+     Positioned (no stacking context: sticky parts and the hairline keep
+     their place), so an absolute element of the page, a .ds-sr label
+     included, stays inside the scroller. The page pad properties are
+     defined here too (as on .ds-content), for the parts of the view outside
+     the content: read them, never set them. */
   .ds-view {
+    --ds-content-pad-top: var(--ds-space-6);
+    --ds-content-pad-x: var(--ds-space-8);
+    --ds-content-pad-bottom: calc(var(--ds-space-6) + var(--ds-toast-room) + var(--ds-space-2));
+    position: relative;
     flex: 1;
     min-height: 0;
     padding-bottom: env(safe-area-inset-bottom);
@@ -845,13 +1298,162 @@
     }
   }
 
-  /* The drawer brings its own inset on the left. */
+  /* The drawer brings its own inset on the left (physical, like the
+     safe-area margin it replaces, D9). */
   .ds-app--drawer .ds-panel {
     margin-left: 0;
   }
 
+  /*
+   * A view that never scrolls (a chat, a terminal, a map): no gutter; the
+   * content and the page are flex columns and the page's last shown child
+   * takes the rest of the height. That child scrolls itself (a scroller, or
+   * a flex column of its own with min-height: 0). Its pages keep a short
+   * bottom padding.
+   */
+  .ds-view--fixed {
+    --ds-content-pad-bottom: var(--ds-space-6);
+    overflow-y: hidden;
+    scrollbar-gutter: auto;
+  }
+
+  .ds-view--fixed > .ds-content,
+  .ds-view--fixed > .ds-content > .ds-page {
+    --ds-content-pad-bottom: var(--ds-space-6);
+    display: flex;
+    flex-direction: column;
+    flex: 1 1 auto;
+    min-height: 0;
+  }
+
+  .ds-view--fixed > .ds-content > .ds-page > :not([hidden]):not(:has(~ :not([hidden]))) {
+    flex: 1 1 auto;
+  }
+
+  /*
+   * A view that fills the window (a full-page table): where there is room
+   * (from 601px wide and 720px tall) it stops scrolling as .ds-view--fixed
+   * does, and the page's last shown child (a .ds-table-wrap--fill) fills
+   * it. Below that the view scrolls as usual and a fill table is capped
+   * a little under the window's height, so its own header stays in sight.
+   */
+  @media (min-width: 601px) and (min-height: 720px) {
+    .ds-view--fill {
+      --ds-content-pad-bottom: var(--ds-space-6);
+      overflow-y: hidden;
+    }
+
+    .ds-view--fill > .ds-content,
+    .ds-view--fill > .ds-content > .ds-page {
+      --ds-content-pad-bottom: var(--ds-space-6);
+      display: flex;
+      flex-direction: column;
+      flex: 1 1 auto;
+      min-height: 0;
+    }
+
+    .ds-view--fill > .ds-content > .ds-page > :not([hidden]):not(:has(~ :not([hidden]))) {
+      flex: 1 1 auto;
+    }
+  }
+
+  @media (max-width: 600px), (max-height: 719px) {
+    .ds-view--fill .ds-table-wrap--fill {
+      max-height: calc(100dvh - var(--ds-topbar-height) - env(safe-area-inset-top) - env(safe-area-inset-bottom) - var(--ds-content-pad-bottom) - var(--ds-space-2));
+    }
+  }
+
+  /*
+   * Docked drawer only (above 900px; the modal drawer below is unaffected).
+   *
+   * The rail (data-drawer-collapsed, set by the page): the column narrows
+   * to --ds-drawer-rail-width at once, the items become squares (circles
+   * by the pill rule), labels, headings and counts are visually hidden but
+   * read (each item's data-tip names it then), row actions go. The labels
+   * fade back in when it widens (in --ds-dur-fast, out --ds-dur-instant).
+   * The menu button toggles it: with aria-pressed it shows above 900px,
+   * on the drawer icons' axis.
+   */
+  @media (min-width: 901px) {
+    .ds-app--drawer[data-drawer-collapsed]:not([data-drawer-hidden]) {
+      --ds-drawer-icon-axis: calc(var(--ds-drawer-rail-width) / 2);
+      grid-template-columns: calc(var(--ds-drawer-rail-width) + env(safe-area-inset-left)) minmax(0, 1fr);
+    }
+
+    .ds-app--drawer[data-drawer-collapsed] .ds-drawer .ds-drawer__item,
+    .ds-app--drawer[data-drawer-collapsed] .ds-drawer .ds-drawer__toggle {
+      width: var(--ds-drawer-item-height, 48px);
+      padding: 0;
+      justify-content: center;
+      gap: 0;
+    }
+
+    /* Hidden in place (1px less a 1px margin takes no room), not taken out
+       of the flow: Firefox drops the fade of an element whose position
+       changes in the same style change. */
+    .ds-app--drawer[data-drawer-collapsed] .ds-drawer :is(.ds-drawer__label, .ds-drawer__heading:not(.ds-drawer__toggle), .ds-drawer__toggle > span, .ds-drawer__count) {
+      flex: none;
+      width: 1px;
+      min-width: 0;
+      height: 1px;
+      margin-block: 0 -1px;
+      margin-inline: 0 -1px;
+      padding: 0;
+      overflow: hidden;
+      clip-path: inset(50%);
+      white-space: nowrap;
+      opacity: 0;
+      transition: opacity var(--ds-dur-instant) var(--ds-ease-in-out);
+    }
+
+    .ds-app--drawer[data-drawer-collapsed] .ds-drawer__action {
+      display: none;
+    }
+
+    .ds-app--drawer[data-drawer-collapsed] .ds-drawer__actions {
+      justify-content: center;
+    }
+
+    .ds-app--drawer[data-drawer-collapsed] .ds-drawer__back::after {
+      margin-inline: var(--ds-space-2);
+    }
+
+    .ds-app--drawer:not([data-drawer-hidden]) .ds-topbar__menu[aria-pressed] {
+      display: inline-flex;
+    }
+
+    .ds-app--drawer:not([data-drawer-hidden]) .ds-topbar:has(> .ds-topbar__menu[aria-pressed]) {
+      padding-left: max(calc(var(--ds-drawer-icon-axis) - 20px), env(safe-area-inset-left));
+    }
+
+    /* A brand of only a name: its text starts on the icons' edge (the
+       axis less half a 20px icon) instead of a 32px mark centring there. */
+    .ds-app--drawer:not([data-drawer-hidden]) .ds-topbar:has(> .ds-brand:not(:has(> :not(.ds-brand__name))):first-child, > .ds-topbar__menu:not([aria-pressed]):first-child + .ds-brand:not(:has(> :not(.ds-brand__name)))) {
+      padding-left: max(calc(var(--ds-drawer-icon-axis) - 10px), env(safe-area-inset-left));
+    }
+  }
+
+  /* The docked drawer's way up stands in for the page head's back link:
+     the page shows one of them (the exact complement of the modal query). */
+  @media (width > 900px) {
+    .ds-app--drawer:not([data-drawer-hidden]):has(> .ds-drawer .ds-drawer__back .ds-drawer__item) .ds-page-head__back {
+      display: none;
+    }
+  }
+
+  /* Between phone and docked drawer, a bar without the drawer starts where
+     the panel does. */
+  @media (min-width: 601px) and (max-width: 900px) {
+    .ds-app:not(.ds-app--drawer) .ds-topbar,
+    .ds-app--drawer[data-drawer-hidden] .ds-topbar {
+      padding-left: max(var(--ds-space-4), env(safe-area-inset-left));
+    }
+  }
+
   /* Fade-through, outgoing half: quick and accelerating. Leaving the state
-     snaps back without a transition, the incoming content enters itself. */
+     snaps back without a transition, the incoming content enters itself.
+     Deprecated in 2.0 (removed in 3.0 at the earliest) with its manual swap
+     recipe: DS.motion.transition() replaces both. */
   .ds-view--leaving > * {
     opacity: 0;
     transition: opacity var(--ds-dur-instant) var(--ds-ease-in);
@@ -906,6 +1508,9 @@
       display: inline-flex;
     }
 
+    /* Physical on purpose (D9): the modal drawer slides in from the left
+       edge (mirrored motion is not part of 2.0), so its corners, its bleed
+       and its safe-area inset stay on that side. */
     .ds-drawer {
       position: fixed;
       top: 0;
@@ -998,16 +1603,14 @@
       gap: var(--ds-space-3);
       flex-shrink: 0;
       height: var(--ds-topbar-height);
-      padding: 0 var(--ds-space-6) 0 calc(var(--ds-space-2) + var(--ds-space-10) + var(--ds-space-2));
+      padding-block: 0;
+      padding-inline: calc(var(--ds-space-2) + var(--ds-space-10) + var(--ds-space-2)) var(--ds-space-6);
     }
 
     .ds-scrim {
       display: block;
       position: fixed;
-      top: 0;
-      right: 0;
-      bottom: 0;
-      left: 0;
+      inset: 0;
       z-index: var(--ds-z-drawer);
       background: var(--ds-scrim);
       visibility: hidden;
@@ -1046,6 +1649,16 @@
     .ds-account__avatar {
       display: grid;
     }
+
+    /* The page offers its search in the view instead. */
+    .ds-topbar__search {
+      display: none;
+    }
+
+    .ds-view {
+      --ds-content-pad-top: var(--ds-space-5);
+      --ds-content-pad-x: var(--ds-space-4);
+    }
   }
 
   /* 320px (400% zoom): no room for brand, avatar and sign-out. Without the
@@ -1075,6 +1688,7 @@
     }
 
     .ds-view {
+      --ds-content-pad-bottom: calc(var(--ds-space-4) + var(--ds-toast-room) + var(--ds-space-2));
       padding-left: env(safe-area-inset-left);
       padding-right: env(safe-area-inset-right);
     }
@@ -1090,17 +1704,39 @@
       display: none;
     }
 
-    .ds-segmented {
-      margin-left: var(--ds-space-2);
+    /* A brand of only a name keeps it: it has nothing else to show. */
+    .ds-app--drawer .ds-brand:not(:has(> :not(.ds-brand__name))) .ds-brand__name {
+      display: inline;
+    }
+
+    .ds-topbar .ds-segmented {
+      margin-inline-start: var(--ds-space-2);
+    }
+
+    /* A title in the bar takes the brand's room: two lines of the label
+       role; the brand keeps its mark (a brand of only a name goes). */
+    .ds-topbar__title {
+      display: -webkit-box;
+      font: var(--ds-font-label);
+      white-space: normal;
+      -webkit-box-orient: vertical;
+      -webkit-line-clamp: 2;
+    }
+
+    .ds-topbar:has(.ds-topbar__title) .ds-brand__name,
+    .ds-topbar:has(.ds-topbar__title) .ds-brand:not(:has(> :not(.ds-brand__name))) {
+      display: none;
     }
   }
 
   /*
-   * Forced colors (Windows contrast themes) drop the pill's fill: the current
-   * destination gets an outline. Icons coloured on the <svg> itself keep their
-   * authored colour there (dark grey on black), so every icon follows the
-   * forced text colour of its control; status stays readable through the
-   * text that always goes with it.
+   * Forced colors (Windows contrast themes) drop the pill's fill: the
+   * current destination and the selected option paint the selection
+   * themselves, a choice in a set (SelectedItem, D8); the outline stays for
+   * focus, a CanvasText ring inside that fill. Icons coloured on the <svg>
+   * itself keep their authored colour there (dark grey on black), so every
+   * icon follows the forced text colour of its control; status stays
+   * readable through the text that always goes with it.
    */
   @media (forced-colors: active) {
     /* The forced canvas would paint the tint over nothing: the bar stays
@@ -1109,9 +1745,34 @@
       display: none;
     }
 
-    .ds-drawer__item[aria-current="page"] {
-      outline: 2px solid Highlight;
-      outline-offset: -2px;
+    .ds-drawer__indicator,
+    .ds-segmented__indicator {
+      display: none;
+    }
+
+    .ds-drawer__item[aria-current="page"],
+    .ds-has-indicator .ds-drawer__item[aria-current="page"],
+    .ds-segmented__option:is([aria-current="true"], [aria-checked="true"], [aria-pressed="true"]),
+    .ds-has-indicator > .ds-segmented__option:is([aria-current="true"], [aria-checked="true"], [aria-pressed="true"]) {
+      forced-color-adjust: none;
+      background: SelectedItem;
+      color: SelectedItemText;
+    }
+
+    .ds-drawer__item[aria-current="page"]:focus-visible,
+    .ds-segmented__option:is([aria-current="true"], [aria-checked="true"], [aria-pressed="true"]):focus-visible {
+      outline-color: CanvasText;
+    }
+
+    .ds-drawer__item[aria-disabled="true"],
+    .ds-segmented__option:is(:disabled, [aria-disabled="true"]) {
+      color: GrayText;
+    }
+
+    /* The disc keeps its edge where its fill is gone. */
+    .ds-avatar,
+    .ds-account__avatar {
+      outline: 1px solid transparent;
     }
 
     .ds-theme svg {
@@ -1130,9 +1791,7 @@
     .ds-drawer,
     .ds-scrim,
     .ds-skip,
-    .ds-loadbar,
-    .ds-toasts,
-    .ds-tooltip {
+    .ds-banner {
       display: none;
     }
 
@@ -1147,6 +1806,23 @@
 
     .ds-view::before {
       display: none;
+    }
+
+    /* Paper has no "on its way out": what is shown prints in full. */
+    .ds-stale {
+      opacity: 1;
+    }
+
+    /* A short card, a tile, an alert, a key-value row or a fact stays on
+       one page. A card that holds a table may break (card.css): pushed
+       whole to the next page inside a grid, it would print over the
+       blocks after it. */
+    .ds-card:not(:has(.ds-table-wrap, .ds-table)),
+    .ds-tile,
+    .ds-alert,
+    .ds-kv-list li,
+    .ds-facts > div {
+      break-inside: avoid;
     }
   }
 }

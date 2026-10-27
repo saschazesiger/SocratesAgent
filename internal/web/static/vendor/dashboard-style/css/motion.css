@@ -6,9 +6,9 @@
  *
  * Keyframes sit in the ds.motion layer, the utility classes (.ds-enter,
  * .ds-leave, .ds-stagger, .ds-reveal, .ds-reveal--scroll,
- * .ds-collapsible, .ds-chevron, .ds-swap, .ds-icon-swap, .ds-presence)
- * and the view-transition rules (.ds-theme::view-transition-*) in
- * ds.utilities. That layer comes after
+ * .ds-collapsible, .ds-chevron, .ds-swap, .ds-swap--fade, .ds-icon-swap,
+ * .ds-presence, .ds-presence--keep, .ds-vt-view) and the view-transition
+ * rules (.ds-theme::view-transition-*) in ds.utilities. That layer comes after
  * ds.components, so a utility wins over a component's own animation by
  * layer order, not by specificity.
  *
@@ -22,9 +22,7 @@
  * the indicator, FLIP) and can be read back mid-flight. Entrances define
  * only `from`: the element animates to whatever its own styles say, so one
  * keyframe works for any final opacity or position. Exits define only `to`
- * and are movement-only; they always pair with ds-fade-out. The combined
- * ds-sink-out, ds-scale-out and ds-slide-out (fade + move) are deprecated
- * aliases, removed in 2.0.
+ * and are movement-only; they always pair with ds-fade-out.
  *
  * [data-ds-moving] (set by DS.dom.morphHtml for one style flush on a node
  * it moves with insertBefore, and by DS.indicator.createIndicator on its
@@ -47,15 +45,17 @@
  *   of its own): without them it shows and hides at once.
  * - View Transitions (the ::view-transition-* rules of the "View
  *   transitions" section: fade-through, shared axis, container transform,
- *   the group default that glides named indicators; only with .ds-theme on
- *   <html>): without them DS.motion.transition() fades the new view
- *   through with .ds-enter--swap.
+ *   the group default that glides named indicators, and .ds-vt-view, a
+ *   view outside the app frame; only with .ds-theme on <html>): without
+ *   them DS.motion.transition() fades the new view (the first child of a
+ *   .ds-vt-view) through with .ds-enter--swap.
  * - scroll-driven animations (animation-timeline: view(), animation-range;
  *   .ds-reveal--scroll ties its fade and rise to the scroll position, and
- *   ds-scroll-fade and ds-edge-fade run on the scroll timelines of
- *   shell.css, sheet.css and table.css): without them .ds-reveal--scroll
- *   stays static, never hidden, and data-scrolled and the static table
- *   fade stay.
+ *   ds-scroll-fade, ds-scroll-edge-start and ds-scroll-edge-end run on the
+ *   scroll timelines of shell.css, sheet.css, table.css and scroller.css):
+ *   without them .ds-reveal--scroll stays static, never hidden, and
+ *   data-scrolled, the data-ds-overflow-* attributes of
+ *   DS.dom.scrollEdges() and the static table fade stay.
  */
 
 @layer ds.tokens, ds.base, ds.components, ds.motion, ds.utilities;
@@ -188,11 +188,21 @@
     from { stroke-dashoffset: var(--ds-draw-length, 1); }
   }
 
-  /* A bar that fills from its start (meters, chart bars and columns on their
-     first render). The element sets its own transform (the scaleX or scaleY
-     of its share) and transform-origin; the scale property multiplies it,
-     so the bar grows from zero to its share. A value that changes later
-     jumps or transitions, it never replays this. */
+  /* A chart mark that fills from zero to its share on its first render
+     (.ds-meter, .ds-columns__col): the registered --ds-share runs from 0
+     to the mark's own value, so its fill, clipped at the share, keeps its
+     round end the whole way. A value that changes later transitions, it
+     never replays this. */
+  @keyframes ds-fill-share {
+    from { --ds-share: 0; }
+  }
+
+  /* Deprecated in 2.0 (removed in 3.0 at the earliest): a scaled bar
+     squashes its round end; use --ds-share with ds-fill-share. A bar that
+     fills from its start: the element sets its own transform (the scaleX
+     or scaleY of its share) and transform-origin; the scale property
+     multiplies it, so the bar grows from zero to its share. A value that
+     changes later jumps or transitions, it never replays this. */
   @keyframes ds-fill-x {
     from { scale: 0 1; }
   }
@@ -241,22 +251,6 @@
     to { translate: 0 var(--ds-motion-distance, -100%); }
   }
 
-  /* Deprecated, removed in 2.0: fade + move in one keyframe, so the fade
-     cannot take its own curve. Use ds-fade-out with ds-drop-out,
-     ds-shrink-out or ds-shift-out. Unchanged, so a page that names one alone
-     keeps its fade. */
-  @keyframes ds-sink-out {
-    to { opacity: 0; transform: translate3d(0, var(--ds-motion-distance, var(--ds-distance-md)), 0); }
-  }
-
-  @keyframes ds-scale-out {
-    to { opacity: 0; transform: translate3d(0, var(--ds-distance-sm), 0) scale(var(--ds-scale-enter)); }
-  }
-
-  @keyframes ds-slide-out {
-    to { opacity: 0; transform: translate3d(var(--ds-motion-distance, var(--ds-distance-lg)), 0, 0); }
-  }
-
   /* ── Keyframes: popup reveal ───────────────────── */
   /* A popup (menu, combobox list) uncovers itself from the edge of its
      trigger: --ds-clip-from is the hidden state (DS.motion.originFrom()
@@ -292,17 +286,18 @@
 
   /* ── Keyframes: loops (loading indicators) ─────── */
   /* Skeletons: one synchronised, calm diagonal wave across the surface
-     (ds-skeleton-wave); ds-pulse is deprecated.
+     (ds-skeleton-wave).
 
      Loops run `linear` on their --ds-loop-* token: the curves of the
      generated loops are baked into their stops by scripts/motion-curves.mjs
      (never edit a generated block by hand). The registered properties they
      animate are in tokens.css. */
 
-  /* One turn: the spinner turns on top of its arc, and so does the old
-     ring. */
+  /* One turn: the spinner turns on top of its arc. The individual rotate
+     property composes with an element's own transform, which stays applied
+     while it spins. */
   @keyframes ds-spin {
-    to { transform: rotate(360deg); }
+    to { rotate: 1turn; }
   }
 
   /* The Material 3 arc of .ds-spinner: the sweep (--ds-spinner-arc) grows
@@ -688,19 +683,6 @@
     /* end generated: skeleton-wave */
   }
 
-  /* Deprecated, removed in 2.0: skeletons run ds-skeleton-wave. */
-  @keyframes ds-pulse {
-    50% { opacity: var(--ds-state-pulse); }
-  }
-
-  /* Deprecated, removed in 2.0: indeterminate progress runs
-     ds-progress-head and ds-progress-tail. The segment (35% of the track)
-     enters left and leaves right. */
-  @keyframes ds-indeterminate {
-    from { transform: translateX(-100%); }
-    to { transform: translateX(286%); }
-  }
-
   /* A scan line over media being processed: a band travels from above the
      frame to below it (percentages of its own height, set by the component). */
   @keyframes ds-scan {
@@ -720,7 +702,27 @@
     to { opacity: 1; }
   }
 
-  /* The edge fades of a table that scrolls sideways (table.css), on the
+  /* The edge fades of a sideways scroller (.ds-scroll-x in scroller.css,
+     the table wrappers of table.css; menus and combobox lists reuse them
+     on the block axis), each on the scroller's scroll timeline over an
+     animation-range at its end: the start fade grows while the first
+     --ds-space-8 scroll away, the end fade goes over the last. The numbers (registered in
+     scroller.css) scale the fade length, so 0 is no fade. Both ends are
+     named (a scroll position, not an entrance); a scroller without
+     overflow has an inactive timeline and keeps 0, no fade. */
+  @keyframes ds-scroll-edge-start {
+    from { --ds-scroll-edge-start: 0; }
+    to { --ds-scroll-edge-start: 1; }
+  }
+
+  @keyframes ds-scroll-edge-end {
+    from { --ds-scroll-edge-end: 1; }
+    to { --ds-scroll-edge-end: 0; }
+  }
+
+  /* Deprecated in 2.0 (removed in 3.0 at the earliest), unused: the table
+     wrappers run ds-scroll-edge-start and ds-scroll-edge-end. The edge
+     fades of a table that scrolls sideways (table.css), on the
      wrapper's own scroll timeline, so progress is the scroll position:
      the start fade grows over the first 5% of the travel, the end fade
      goes over the last 5%. Both ends are named (a scroll position, not an
@@ -875,9 +877,14 @@
      size, about 1%). */
   .ds-enter--pop { --ds-enter-keyframes: ds-fade-in, ds-pop-in; }
 
-  /* A bar or column grows to its share once (first render of a chart): a
+  /* A chart mark grows to its share once (first render of a chart): a
      value travelling, so it glides on the value curve like progress (data
-     never overshoots). */
+     never overshoots). The mark sets --ds-share; the animation runs it
+     from 0. */
+  .ds-enter--fill { --ds-enter-keyframes: ds-fade-in, ds-fill-share; --ds-enter-duration: var(--ds-dur-glide); --ds-enter-easing: var(--ds-ease-in-out), var(--ds-ease-value); }
+
+  /* Deprecated in 2.0 (removed in 3.0 at the earliest; use .ds-enter--fill
+     with --ds-share): a bar or column that scales to its share. */
   .ds-enter--fill-x { --ds-enter-keyframes: ds-fade-in, ds-fill-x; --ds-enter-duration: var(--ds-dur-glide); --ds-enter-easing: var(--ds-ease-in-out), var(--ds-ease-value); }
   .ds-enter--fill-y { --ds-enter-keyframes: ds-fade-in, ds-fill-y; --ds-enter-duration: var(--ds-dur-glide); --ds-enter-easing: var(--ds-ease-in-out), var(--ds-ease-value); }
 
@@ -940,6 +947,22 @@
 
   .ds-swap > * {
     grid-area: 1 / 1;
+  }
+
+  /*
+   * A soft slot edge (2.0): lines appear from and leave behind a soft edge
+   * instead of a hard cut. The slot takes --ds-swap-fade (default
+   * --ds-space-2) of room above and below, given back by a negative margin
+   * so nothing moves, and a static vertical mask fades that room. Nothing
+   * in the mask animates.
+   *
+   *   <span class="ds-swap ds-swap--fade"><span>Syncing 3 of 40</span></span>
+   */
+  .ds-swap--fade {
+    padding-block: var(--ds-swap-fade, var(--ds-space-2));
+    margin-block: calc(-1 * var(--ds-swap-fade, var(--ds-space-2)));
+    -webkit-mask-image: linear-gradient(to bottom, transparent, #000 var(--ds-swap-fade, var(--ds-space-2)), #000 calc(100% - var(--ds-swap-fade, var(--ds-space-2))), transparent);
+    mask-image: linear-gradient(to bottom, transparent, #000 var(--ds-swap-fade, var(--ds-space-2)), #000 calc(100% - var(--ds-swap-fade, var(--ds-space-2))), transparent);
   }
 
   /*
@@ -1084,6 +1107,11 @@
    * themselves: open, close, open continues from where it is. The exit
    * state is three separate rules, so an engine that does not know
    * :popover-open drops only its own rule. Elsewhere: an instant toggle.
+   * The lists also carry the element's own state transitions (background,
+   * colour, border, shadow on --ds-dur-fast, the focus snap of
+   * outline-offset), so a pill inside keeps its hover and focus motion; put
+   * .ds-presence on a wrapper, never on a .ds-btn, .ds-chip or .ds-card
+   * (their own transition lists would be replaced).
    */
   @supports (transition-behavior: allow-discrete) {
     .ds-presence {
@@ -1092,12 +1120,17 @@
         opacity var(--ds-dur-fast) var(--ds-ease-in-out),
         scale var(--ds-dur-medium) var(--ds-ease-spatial),
         clip-path var(--ds-dur-medium) var(--ds-ease-spatial),
+        background-color var(--ds-dur-fast) var(--ds-ease-in-out),
+        color var(--ds-dur-fast) var(--ds-ease-in-out),
+        border-color var(--ds-dur-fast) var(--ds-ease-in-out),
+        box-shadow var(--ds-dur-fast) var(--ds-ease-in-out),
+        outline-offset var(--ds-dur-fast) var(--ds-ease-out),
         display var(--ds-dur-medium) allow-discrete,
         overlay var(--ds-dur-medium) allow-discrete;
     }
 
     @starting-style {
-      .ds-presence {
+      .ds-presence:not(.ds-presence--keep) {
         opacity: 0;
         scale: var(--ds-motion-scale, var(--ds-scale-popup));
         clip-path: var(--ds-clip-from, inset(calc(-1 * var(--ds-space-6))));
@@ -1112,6 +1145,11 @@
         opacity var(--ds-dur-fast) var(--ds-ease-in-out),
         scale var(--ds-dur-fast) var(--ds-ease-in),
         clip-path var(--ds-dur-fast) var(--ds-ease-in),
+        background-color var(--ds-dur-fast) var(--ds-ease-in-out),
+        color var(--ds-dur-fast) var(--ds-ease-in-out),
+        border-color var(--ds-dur-fast) var(--ds-ease-in-out),
+        box-shadow var(--ds-dur-fast) var(--ds-ease-in-out),
+        outline-offset var(--ds-dur-fast) var(--ds-ease-out),
         display var(--ds-dur-fast) allow-discrete,
         overlay var(--ds-dur-fast) allow-discrete;
     }
@@ -1124,6 +1162,11 @@
         opacity var(--ds-dur-fast) var(--ds-ease-in-out),
         scale var(--ds-dur-fast) var(--ds-ease-in),
         clip-path var(--ds-dur-fast) var(--ds-ease-in),
+        background-color var(--ds-dur-fast) var(--ds-ease-in-out),
+        color var(--ds-dur-fast) var(--ds-ease-in-out),
+        border-color var(--ds-dur-fast) var(--ds-ease-in-out),
+        box-shadow var(--ds-dur-fast) var(--ds-ease-in-out),
+        outline-offset var(--ds-dur-fast) var(--ds-ease-out),
         display var(--ds-dur-fast) allow-discrete,
         overlay var(--ds-dur-fast) allow-discrete;
     }
@@ -1136,9 +1179,41 @@
         opacity var(--ds-dur-fast) var(--ds-ease-in-out),
         scale var(--ds-dur-fast) var(--ds-ease-in),
         clip-path var(--ds-dur-fast) var(--ds-ease-in),
+        background-color var(--ds-dur-fast) var(--ds-ease-in-out),
+        color var(--ds-dur-fast) var(--ds-ease-in-out),
+        border-color var(--ds-dur-fast) var(--ds-ease-in-out),
+        box-shadow var(--ds-dur-fast) var(--ds-ease-in-out),
+        outline-offset var(--ds-dur-fast) var(--ds-ease-out),
         display var(--ds-dur-fast) allow-discrete,
         overlay var(--ds-dur-fast) allow-discrete;
     }
+  }
+
+  /*
+   * Presence that keeps its box (2.0): a pill that shows on hover, a "Saved"
+   * note, a jump button whose room stays reserved. The page toggles
+   * data-ds-shown; hidden is opacity 0 and visibility hidden (out of the
+   * tab order and the accessibility tree), so nothing around it moves. It
+   * fades in over --ds-dur-fast and out in --ds-dur-instant (exit 0.67);
+   * visibility steps at the end of the exit. Baseline: no @starting-style
+   * or allow-discrete needed.
+   *
+   *   <span class="ds-presence ds-presence--keep" [data-ds-shown]>...</span>
+   */
+  .ds-presence--keep {
+    opacity: 0;
+    visibility: hidden;
+    transition:
+      opacity var(--ds-dur-instant) var(--ds-ease-in-out),
+      visibility 0s linear var(--ds-dur-instant);
+  }
+
+  .ds-presence--keep[data-ds-shown] {
+    opacity: 1;
+    visibility: visible;
+    transition:
+      opacity var(--ds-dur-fast) var(--ds-ease-in-out),
+      visibility 0s;
   }
 
   /* A node that DS.dom.morphHtml moves with insertBefore (engines without
@@ -1171,6 +1246,17 @@
    * lets the old view go in --ds-dur-instant by design. No keyframes of
    * their own: the ds-fade-*, ds-grow-in and ds-shift-in/-out pairs.
    */
+
+  /* A view outside the app frame (2.0): a wizard, a sign-in page or a page
+     without .ds-app names its .ds-vt-view ds-view while a transition runs,
+     so it plays like .ds-view. One per page, never inside .ds-app (the
+     frame's view has the name then). Without View Transitions
+     DS.motion.transition() enters its first child with .ds-enter--swap.
+
+       <main class="ds-vt-view"><section>(step 1)</section></main> */
+  .ds-theme[data-ds-vt] .ds-vt-view {
+    view-transition-name: ds-view;
+  }
 
   /* The root (the top bar, the backdrop, everything unnamed): the browser's
      crossfade, short; pixels that did not change stay still under its

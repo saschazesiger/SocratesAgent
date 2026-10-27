@@ -26,8 +26,52 @@
  * grow; it fades in on --ds-dur-fast (opacity, the name and the word) with
  * the colours of the track.
  *
- * Hooks: --ds-switch-halo (40px), --ds-switch-disabled-track,
- * --ds-switch-disabled-handle.
+ * The input covers the track (a native hit target, also for a tooltip:
+ * data-tip goes on the input); the track takes no pointer.
+ *
+ * Blocked with a reason: aria-disabled="true" on the input looks and acts
+ * like disabled (no hover, halo, grow; the click is blocked by the action
+ * guard) but stays focusable, so its tooltip can say why; the ring and the
+ * focus halo stay.
+ *
+ * Locked (a value another system sets): .ds-switch--locked, always with
+ * aria-disabled="true" and the reason in words. Its on and off looks keep
+ * full strength; the lock glyph rides the handle (the track's last child):
+ *
+ *   <label class="ds-switch ds-switch--locked">
+ *     <input type="checkbox" role="switch" checked aria-disabled="true" aria-describedby="sync-why">
+ *     <span class="ds-switch__track" aria-hidden="true"><svg class="ds-switch__icon" ...>(lock, 16)</svg></span>
+ *     <span class="ds-switch__label">Nightly sync</span>
+ *     <small class="ds-switch__hint" id="sync-why">Set by the device policy</small>
+ *   </label>
+ *
+ * The off handle grows to 24px (6/7) so the lock fits; the lock travels
+ * with it (translate, --ds-dur-medium on the spring), in
+ * --ds-surface-highest on the off handle and --ds-primary on the on handle,
+ * and fades in on --ds-dur-fast, out on --ds-dur-instant.
+ *
+ * Hint and extras: small.ds-switch__hint (a line under the name, the meta
+ * type), span.ds-switch__meta (non-interactive extras before the state
+ * word: a count, a tag); the label wraps long words. A switch with a hint
+ * lays its parts on a small grid, the hint under the name.
+ *
+ * Many settings, each a switch: .ds-switch-list holds .ds-switch rows on a
+ * grid (track, name over hint, meta, state), at least
+ * --ds-switch-list-row-height (56px), hairlines between; at 560px and
+ * below the meta wraps under the name. Name each input with
+ * aria-labelledby (its .ds-switch__label) and describe it with
+ * aria-describedby (its hint), so the extras stay out of its name.
+ *
+ * Forced colours: system colours for on and off (Highlight, CanvasText),
+ * GrayText when blocked; a locked switch keeps on and off; a focused
+ * checked switch rings in CanvasText.
+ *
+ * Hooks: --ds-switch-height (40px), --ds-switch-halo (40px),
+ * --ds-switch-disabled-track, --ds-switch-disabled-handle,
+ * --ds-switch-list-row-height (56px).
+ *
+ * Print: track and handle keep their colours (print-color-adjust), so on
+ * and off show on paper next to the state word.
  */
 
 @layer ds.tokens, ds.base, ds.components, ds.motion, ds.utilities;
@@ -38,22 +82,31 @@
     display: inline-flex;
     align-items: center;
     gap: var(--ds-space-3);
-    min-height: 40px;
+    min-height: var(--ds-switch-height, 40px);
     color: var(--ds-text);
     font: var(--ds-font-label);
     cursor: pointer;
   }
 
+  /* The input covers the track: the native hit target (and a tooltip's
+     trigger); the track below takes no pointer. */
   .ds-switch input {
     position: absolute;
-    width: 1px;
-    height: 1px;
-    margin: 0;
+    inset-block: 0;
+    inset-inline-start: 0;
+    width: 52px;
+    height: 32px;
+    margin: auto 0;
+    -webkit-appearance: none;
+    appearance: none;
     opacity: 0;
+    cursor: inherit;
   }
 
   .ds-switch__track {
     position: relative;
+    /* The lock (z-index) stays inside the track. */
+    isolation: isolate;
     flex-shrink: 0;
     width: 52px;
     height: 32px;
@@ -62,6 +115,7 @@
     background: var(--ds-surface-highest);
     /* The ring rests (invisible) one width further out and snaps in. */
     outline-offset: calc(var(--ds-focus-offset) + var(--ds-focus-width));
+    pointer-events: none;
     transition:
       background-color var(--ds-dur-base) var(--ds-ease-in-out),
       border-color var(--ds-dur-base) var(--ds-ease-in-out),
@@ -75,6 +129,8 @@
      spatial spring (translate and scale; the spring from 6/7 peaks below
      1), the press grows it fast and decelerating, the colour changes on
      the standard curve. */
+  /* Physical on purpose (D9): the handle and its halo start at the left
+     and travel on translate (mirrored motion is not part of 2.0). */
   .ds-switch__track::after {
     content: '';
     position: absolute;
@@ -115,11 +171,11 @@
   /* Hover darkens the resting handle (Material 3: on-surface-variant) and
      lights the halo; only on a switch that can change. */
   @media (hover: hover) {
-    .ds-switch:hover input:not(:checked):not(:disabled) + .ds-switch__track::after {
+    .ds-switch:hover input:not(:checked):not(:disabled, [aria-disabled="true"]) + .ds-switch__track::after {
       background: var(--ds-text-2);
     }
 
-    .ds-switch:hover input:not(:disabled) + .ds-switch__track::before {
+    .ds-switch:hover input:not(:disabled, [aria-disabled="true"]) + .ds-switch__track::before {
       opacity: var(--ds-state-hover);
     }
   }
@@ -158,8 +214,8 @@
   /* Pressed (also a static .ds-pressed): the handle grows to its full 28px
      (Material 3) and the off handle darkens; the halo takes the press. The
      release springs back with the travel. */
-  .ds-switch:active input:not(:disabled) + .ds-switch__track::after,
-  .ds-switch.ds-pressed input:not(:disabled) + .ds-switch__track::after {
+  .ds-switch:active input:not(:disabled, [aria-disabled="true"]) + .ds-switch__track::after,
+  .ds-switch.ds-pressed input:not(:disabled, [aria-disabled="true"]) + .ds-switch__track::after {
     scale: 1;
     transition:
       translate var(--ds-dur-medium) var(--ds-ease-spatial),
@@ -167,13 +223,13 @@
       background-color var(--ds-dur-base) var(--ds-ease-in-out);
   }
 
-  .ds-switch:active input:not(:checked):not(:disabled) + .ds-switch__track::after,
-  .ds-switch.ds-pressed input:not(:checked):not(:disabled) + .ds-switch__track::after {
+  .ds-switch:active input:not(:checked):not(:disabled, [aria-disabled="true"]) + .ds-switch__track::after,
+  .ds-switch.ds-pressed input:not(:checked):not(:disabled, [aria-disabled="true"]) + .ds-switch__track::after {
     background: var(--ds-text);
   }
 
-  .ds-switch:active input:not(:disabled) + .ds-switch__track::before,
-  .ds-switch.ds-pressed input:not(:disabled) + .ds-switch__track::before {
+  .ds-switch:active input:not(:disabled, [aria-disabled="true"]) + .ds-switch__track::before,
+  .ds-switch.ds-pressed input:not(:disabled, [aria-disabled="true"]) + .ds-switch__track::before {
     opacity: var(--ds-state-pressed);
     transition:
       translate var(--ds-dur-medium) var(--ds-ease-spatial),
@@ -184,7 +240,7 @@
   /* Disabled: the button model. The track takes the neutral fill (a theme
      that dims instead keeps the switch's own colours), the off handle the
      disabled ink, the on handle the surface; no hover, halo or grow. */
-  .ds-switch:has(input:disabled) {
+  .ds-switch:has(input:is(:disabled, [aria-disabled="true"])) {
     cursor: not-allowed;
   }
 
@@ -194,28 +250,108 @@
     transition: color var(--ds-dur-fast) var(--ds-ease-in-out);
   }
 
-  .ds-switch input:disabled ~ .ds-switch__label,
-  .ds-switch input:disabled ~ .ds-switch__state {
+  .ds-switch input:is(:disabled, [aria-disabled="true"]) ~ .ds-switch__label,
+  .ds-switch input:is(:disabled, [aria-disabled="true"]) ~ .ds-switch__state {
     color: var(--ds-text-2);
   }
 
-  .ds-switch input:disabled + .ds-switch__track {
+  .ds-switch input:is(:disabled, [aria-disabled="true"]) + .ds-switch__track {
     border-color: var(--ds-switch-disabled-track, var(--ds-disabled-fill, var(--ds-outline)));
     background: var(--ds-switch-disabled-track, var(--ds-disabled-fill, var(--ds-surface-highest)));
     opacity: var(--ds-disabled-opacity, var(--ds-state-disabled));
   }
 
-  .ds-switch input:checked:disabled + .ds-switch__track {
+  .ds-switch input:checked:is(:disabled, [aria-disabled="true"]) + .ds-switch__track {
     border-color: var(--ds-switch-disabled-track, var(--ds-disabled-fill, var(--ds-primary)));
     background: var(--ds-switch-disabled-track, var(--ds-disabled-fill, var(--ds-primary)));
   }
 
-  .ds-switch input:disabled + .ds-switch__track::after {
+  .ds-switch input:is(:disabled, [aria-disabled="true"]) + .ds-switch__track::after {
     background: var(--ds-switch-disabled-handle, var(--ds-disabled-ink, var(--ds-outline)));
   }
 
-  .ds-switch input:checked:disabled + .ds-switch__track::after {
+  .ds-switch input:checked:is(:disabled, [aria-disabled="true"]) + .ds-switch__track::after {
     background: var(--ds-surface);
+  }
+
+  /*
+   * Locked: a value another system sets. Its on and off looks keep full
+   * strength (after the disabled rules, with their weight); the off handle
+   * grows to 24px to hold the lock.
+   */
+  .ds-switch--locked input:is(:disabled, [aria-disabled="true"]) + .ds-switch__track {
+    border-color: var(--ds-outline);
+    background: var(--ds-surface-highest);
+    opacity: 1;
+  }
+
+  .ds-switch--locked input:checked:is(:disabled, [aria-disabled="true"]) + .ds-switch__track {
+    border-color: var(--ds-primary);
+    background: var(--ds-primary);
+  }
+
+  .ds-switch--locked input:is(:disabled, [aria-disabled="true"]) + .ds-switch__track::after {
+    background: var(--ds-outline);
+    scale: calc(6 / 7);
+  }
+
+  .ds-switch--locked input:checked:is(:disabled, [aria-disabled="true"]) + .ds-switch__track::after {
+    background: var(--ds-on-primary);
+  }
+
+  .ds-switch--locked input:is(:disabled, [aria-disabled="true"]) ~ :is(.ds-switch__label, .ds-switch__state) {
+    color: var(--ds-text);
+  }
+
+  /* The lock rides the handle: its centre is the handle's (14px, 14px of
+     the padding box), above it; it fades out faster than it comes. */
+  .ds-switch__icon {
+    position: absolute;
+    inset-block-start: 6px;
+    inset-inline-start: 6px;
+    z-index: var(--ds-z-raised);
+    width: 16px;
+    height: 16px;
+    color: var(--ds-surface-highest);
+    opacity: 0;
+    transition:
+      opacity var(--ds-dur-instant) var(--ds-ease-in-out),
+      translate var(--ds-dur-medium) var(--ds-ease-spatial),
+      color var(--ds-dur-base) var(--ds-ease-in-out);
+  }
+
+  .ds-switch--locked .ds-switch__icon {
+    opacity: 1;
+    transition:
+      opacity var(--ds-dur-fast) var(--ds-ease-in-out),
+      translate var(--ds-dur-medium) var(--ds-ease-spatial),
+      color var(--ds-dur-base) var(--ds-ease-in-out);
+  }
+
+  .ds-switch input:checked + .ds-switch__track .ds-switch__icon {
+    color: var(--ds-primary);
+    translate: 20px 0;
+  }
+
+  /* Hint and extras: a line under the name, and quiet parts before the word. */
+  .ds-switch__label {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+
+  small.ds-switch__hint {
+    display: block;
+    color: var(--ds-text-2);
+    font: var(--ds-font-meta);
+  }
+
+  span.ds-switch__meta {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--ds-space-2);
+    color: var(--ds-text-2);
+    font: var(--ds-font-body);
+    font-variant-numeric: tabular-nums;
   }
 
   /* The state in words next to the name ("On" / "Off"). It keeps the width
@@ -223,7 +359,7 @@
   .ds-switch__state {
     display: inline-grid;
     min-width: 3.5em;
-    margin-left: calc(-1 * var(--ds-space-1));
+    margin-inline-start: calc(-1 * var(--ds-space-1));
     color: var(--ds-text-2);
     font: var(--ds-font-body);
   }
@@ -254,9 +390,9 @@
      colours, so on and off still differ. The halo is a tint: hidden. */
   @media (forced-colors: active) {
     .ds-switch__track::after,
-    .ds-switch:hover input:not(:checked):not(:disabled) + .ds-switch__track::after,
-    .ds-switch:active input:not(:checked):not(:disabled) + .ds-switch__track::after,
-    .ds-switch.ds-pressed input:not(:checked):not(:disabled) + .ds-switch__track::after {
+    .ds-switch:hover input:not(:checked):not(:disabled, [aria-disabled="true"]) + .ds-switch__track::after,
+    .ds-switch:active input:not(:checked):not(:disabled, [aria-disabled="true"]) + .ds-switch__track::after,
+    .ds-switch.ds-pressed input:not(:checked):not(:disabled, [aria-disabled="true"]) + .ds-switch__track::after {
       forced-color-adjust: none;
       background: CanvasText;
     }
@@ -275,27 +411,156 @@
       display: none;
     }
 
-    .ds-switch input:disabled + .ds-switch__track {
+    .ds-switch input:is(:disabled, [aria-disabled="true"]) + .ds-switch__track {
       forced-color-adjust: none;
       border-color: GrayText;
       background: Canvas;
     }
 
-    .ds-switch input:checked:disabled + .ds-switch__track {
+    .ds-switch input:checked:is(:disabled, [aria-disabled="true"]) + .ds-switch__track {
       background: GrayText;
     }
 
-    .ds-switch input:disabled + .ds-switch__track::after {
+    .ds-switch input:is(:disabled, [aria-disabled="true"]) + .ds-switch__track::after {
       background: GrayText;
     }
 
-    .ds-switch input:checked:disabled + .ds-switch__track::after {
+    .ds-switch input:checked:is(:disabled, [aria-disabled="true"]) + .ds-switch__track::after {
       background: Canvas;
     }
 
-    .ds-switch input:disabled ~ .ds-switch__label,
-    .ds-switch input:disabled ~ .ds-switch__state {
+    .ds-switch input:is(:disabled, [aria-disabled="true"]) ~ .ds-switch__label,
+    .ds-switch input:is(:disabled, [aria-disabled="true"]) ~ .ds-switch__state {
       color: GrayText;
+    }
+
+    /* A checked switch keeps its ring in CanvasText (the track is Highlight),
+       and so does a blocked one (its track is not forced). */
+    .ds-switch input:checked:focus-visible + .ds-switch__track,
+    .ds-switch input[aria-disabled="true"]:focus-visible + .ds-switch__track {
+      outline-color: CanvasText;
+    }
+
+    /* Locked: the normal on and off system colours, the lock in Canvas on
+       the off handle and in Highlight on the on handle. */
+    .ds-switch--locked input:is(:disabled, [aria-disabled="true"]) + .ds-switch__track {
+      border-color: CanvasText;
+      background: Canvas;
+    }
+
+    .ds-switch--locked input:checked:is(:disabled, [aria-disabled="true"]) + .ds-switch__track {
+      border-color: Highlight;
+      background: Highlight;
+    }
+
+    .ds-switch--locked input:is(:disabled, [aria-disabled="true"]) + .ds-switch__track::after {
+      background: CanvasText;
+    }
+
+    .ds-switch--locked input:checked:is(:disabled, [aria-disabled="true"]) + .ds-switch__track::after {
+      background: Canvas;
+    }
+
+    .ds-switch--locked input:is(:disabled, [aria-disabled="true"]) ~ :is(.ds-switch__label, .ds-switch__state) {
+      color: CanvasText;
+    }
+
+    /* The page's forced svg rule (shell.css) makes every icon inherit its
+       colour, so the track carries it: the lock takes the track's colour. */
+    .ds-switch--locked input:is(:disabled, [aria-disabled="true"]) + .ds-switch__track {
+      color: Canvas;
+    }
+
+    .ds-switch--locked input:checked:is(:disabled, [aria-disabled="true"]) + .ds-switch__track {
+      color: Highlight;
+    }
+
+    .ds-switch__icon {
+      forced-color-adjust: none;
+      color: inherit;
+    }
+  }
+
+  /*
+   * Many settings, each a switch: rows on one grid (track, name over hint,
+   * meta, state word), hairlines between. At 560px and below the meta
+   * wraps under the name.
+   */
+  .ds-switch-list {
+    display: grid;
+    container: ds-switch-list / inline-size;
+    margin: 0;
+    padding: 0;
+  }
+
+  /* A switch with a hint stacks the hint under its name (the same areas). */
+  .ds-switch:has(> .ds-switch__hint) {
+    display: inline-grid;
+    grid-template-columns: auto minmax(0, 1fr) auto auto;
+    grid-template-areas:
+      "track label meta state"
+      "track hint meta state";
+    align-items: center;
+    column-gap: var(--ds-space-3);
+  }
+
+  .ds-switch-list > .ds-switch {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto auto;
+    grid-template-areas:
+      "track label meta state"
+      "track hint meta state";
+    align-items: center;
+    column-gap: var(--ds-space-3);
+    min-height: var(--ds-switch-list-row-height, 56px);
+    padding-block: var(--ds-space-2);
+    border-bottom: 1px solid var(--ds-line);
+  }
+
+  .ds-switch-list > .ds-switch:last-child {
+    border-bottom: 0;
+  }
+
+  .ds-switch > .ds-switch__track {
+    grid-area: track;
+  }
+
+  .ds-switch > .ds-switch__label {
+    grid-area: label;
+  }
+
+  .ds-switch > .ds-switch__hint {
+    grid-area: hint;
+  }
+
+  .ds-switch > .ds-switch__meta {
+    grid-area: meta;
+  }
+
+  .ds-switch > .ds-switch__state {
+    grid-area: state;
+  }
+
+  @container ds-switch-list (max-width: 560px) {
+    .ds-switch-list > .ds-switch {
+      grid-template-columns: auto minmax(0, 1fr) auto;
+      grid-template-areas:
+        "track label state"
+        "track hint state"
+        "track meta state";
+    }
+
+    .ds-switch > .ds-switch__meta {
+      justify-self: start;
+    }
+  }
+
+  /* Print: track and handle are backgrounds, which printing drops by
+     default; on and off stay visible. */
+  @media print {
+    .ds-switch {
+      -webkit-print-color-adjust: exact;
+      print-color-adjust: exact;
     }
   }
 }

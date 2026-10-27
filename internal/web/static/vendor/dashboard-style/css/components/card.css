@@ -10,6 +10,8 @@
  *     <nav class="ds-card__links"> <a class="ds-btn ds-btn--text ds-card__link"> ...
  *
  *   .ds-card--filled   a quieter block inside a card or form
+ *   .ds-card--elevated a card that floats a little: --ds-card-shadow
+ *                      (--ds-elev-1) instead of the hairline
  *   .ds-card--interactive  the whole card opens something:
  *     <a class="ds-card ds-card--interactive" href="/devices/42"> ... </a>
  *     <button class="ds-card ds-card--interactive" type="button"> (spans) </button>
@@ -33,14 +35,25 @@
  * no lift, no scale; a theme may give it a shadow through
  * --ds-card-hover-shadow (default none; for example var(--ds-elev-hover)),
  * in over --ds-dur-medium, out over --ds-dur-base. In forced colours every
- * interactive card keeps a visible edge.
+ * interactive card keeps a visible edge, an aria-disabled one GrayText.
+ *
+ * A choice among a few cards is a toggle: aria-pressed, aria-checked or
+ * aria-selected on the card (a <button>), or on the .ds-card__action of
+ * the <div> form (a <button class="ds-card__action"> loses its own look).
+ * Selected it takes --ds-card-selected-bg (--ds-accent) with --ds-on-accent
+ * ink and a static inset ring (a border of --ds-focus-width in
+ * --ds-selected-ring, --ds-primary, on the card's own ::after), so the
+ * focus ring stays free and both read at once. Colours on --ds-dur-fast,
+ * the ring at once. Add a check or the label weight: never the tint
+ * alone. Forced colours: Highlight / HighlightText.
  *
  * Hooks (on .ds-theme or an element): --ds-card-padding (--ds-space-6),
  * --ds-card-padding-sm (600px and below, --ds-space-4),
  * --ds-card-padding-filled (--ds-space-5), --ds-card-title-line (the
  * title's line height, 24px, which a button or switch in the header row
  * overhangs), --ds-card-hover-shadow (an interactive card's shadow on
- * hover, default none). --ds-card-pad is the resulting padding of each
+ * hover, default none), --ds-card-shadow (--elevated, --ds-elev-1),
+ * --ds-card-selected-bg, --ds-selected-ring. --ds-card-pad is the resulting padding of each
  * card, which tables read to bleed to its edges: read it, never set it.
  */
 
@@ -87,6 +100,11 @@
     background: var(--ds-surface-low);
   }
 
+  .ds-card--elevated {
+    border-color: transparent;
+    box-shadow: var(--ds-card-shadow, var(--ds-elev-1));
+  }
+
   /*
    * Interactive card (D26): a whole card that opens something. The
    * element's own link or button look is reset; the state layer sits
@@ -100,6 +118,9 @@
     /* The ring rests (invisible) one width further out and snaps in. */
     outline-offset: calc(var(--ds-focus-offset) + var(--ds-focus-width));
     transition:
+      background-color var(--ds-dur-fast) var(--ds-ease-in-out),
+      border-color var(--ds-dur-fast) var(--ds-ease-in-out),
+      color var(--ds-dur-fast) var(--ds-ease-in-out),
       border-radius var(--ds-dur-medium) var(--ds-ease-spatial),
       box-shadow var(--ds-dur-base) var(--ds-ease-in-out),
       outline-offset var(--ds-dur-fast) var(--ds-ease-out);
@@ -116,17 +137,14 @@
     width: 100%;
     color: var(--ds-text);
     font: inherit;
-    text-align: left;
+    text-align: start;
     text-decoration: none;
   }
 
   .ds-card--interactive::before {
     content: '';
     position: absolute;
-    top: 0;
-    right: 0;
-    bottom: 0;
-    left: 0;
+    inset: 0;
     z-index: -1;
     border-radius: inherit;
     background: currentColor;
@@ -139,6 +157,9 @@
     .ds-card--interactive:hover {
       box-shadow: var(--ds-card-hover-shadow, none);
       transition:
+        background-color var(--ds-dur-fast) var(--ds-ease-in-out),
+        border-color var(--ds-dur-fast) var(--ds-ease-in-out),
+        color var(--ds-dur-fast) var(--ds-ease-in-out),
         border-radius var(--ds-dur-medium) var(--ds-ease-spatial),
         box-shadow var(--ds-dur-medium) var(--ds-ease-in-out),
         outline-offset var(--ds-dur-fast) var(--ds-ease-out);
@@ -186,6 +207,9 @@
   .ds-card--interactive.ds-pressed:not(:disabled, [aria-disabled="true"]) {
     border-radius: min(var(--ds-radius-card-pressed), var(--ds-radius-card));
     transition:
+      background-color var(--ds-dur-fast) var(--ds-ease-in-out),
+      border-color var(--ds-dur-fast) var(--ds-ease-in-out),
+      color var(--ds-dur-fast) var(--ds-ease-in-out),
       border-radius var(--ds-dur-micro) var(--ds-ease-out),
       box-shadow var(--ds-dur-base) var(--ds-ease-in-out),
       outline-offset var(--ds-dur-fast) var(--ds-ease-out);
@@ -209,13 +233,21 @@
     text-decoration: none;
   }
 
+  /* The button form of the action (a choice card): no look of its own. */
+  button.ds-card__action {
+    margin: 0;
+    padding: 0;
+    border: 0;
+    background: none;
+    font: inherit;
+    text-align: start;
+    cursor: inherit;
+  }
+
   .ds-card__action::after {
     content: '';
     position: absolute;
-    top: 0;
-    right: 0;
-    bottom: 0;
-    left: 0;
+    inset: 0;
     border-radius: var(--ds-radius-card);
   }
 
@@ -228,9 +260,85 @@
     z-index: var(--ds-z-raised);
   }
 
+  /* Selected (a choice among a few cards): the tint and a static inset
+     ring on the card's own ::after (the state layer is ::before, the
+     stretched link of the <div> form is the action's ::after), drawn over
+     the hairline, so the focus ring stays free; the ring shows at once. */
+  /* The text roles turn to the ink on the card itself, so its title,
+     .ds-muted and .ds-meta follow by inheritance: a rule that reached them
+     through :has() (card:has(selected action) .ds-muted) put every text
+     change on the page through that check (perf.spec, style recalc). */
+  .ds-card--interactive:is([aria-pressed="true"], [aria-checked="true"], [aria-selected="true"]),
+  .ds-card--interactive:has(.ds-card__action:is([aria-pressed="true"], [aria-checked="true"], [aria-selected="true"])) {
+    --ds-text: var(--ds-on-accent);
+    --ds-text-2: var(--ds-on-accent);
+    border-color: transparent;
+    background: var(--ds-card-selected-bg, var(--ds-accent));
+    color: var(--ds-on-accent);
+  }
+
+  .ds-card--interactive:is([aria-pressed="true"], [aria-checked="true"], [aria-selected="true"]) :is(.ds-card__title, .ds-card__subtitle, .ds-muted, .ds-meta) {
+    color: var(--ds-on-accent);
+  }
+
+  .ds-card--interactive:is([aria-pressed="true"], [aria-checked="true"], [aria-selected="true"])::after,
+  .ds-card--interactive:has(.ds-card__action:is([aria-pressed="true"], [aria-checked="true"], [aria-selected="true"]))::after {
+    content: '';
+    position: absolute;
+    inset: -1px;
+    border: var(--ds-focus-width) solid var(--ds-selected-ring, var(--ds-primary));
+    border-radius: inherit;
+    pointer-events: none;
+  }
+
   @media (forced-colors: active) {
-    .ds-card--interactive.ds-card--filled {
+    .ds-card--interactive.ds-card--filled,
+    .ds-card--elevated {
       border-color: CanvasText;
+    }
+
+    .ds-card--interactive:is([aria-pressed="true"], [aria-checked="true"], [aria-selected="true"]),
+    .ds-card--interactive:has(.ds-card__action:is([aria-pressed="true"], [aria-checked="true"], [aria-selected="true"])) {
+      forced-color-adjust: none;
+      border-color: Highlight;
+      background: Highlight;
+      color: HighlightText;
+    }
+
+    .ds-card--interactive:is([aria-pressed="true"], [aria-checked="true"], [aria-selected="true"]) :is(.ds-card__title, .ds-card__subtitle, .ds-muted, .ds-meta, .ds-card__action),
+    .ds-card--interactive:has(.ds-card__action:is([aria-pressed="true"], [aria-checked="true"], [aria-selected="true"])) :is(.ds-card__title, .ds-card__subtitle, .ds-muted, .ds-meta, .ds-card__action) {
+      color: HighlightText;
+    }
+
+    /* Other controls inside a <div> card keep the forced system colours. */
+    .ds-card--interactive:has(.ds-card__action:is([aria-pressed="true"], [aria-checked="true"], [aria-selected="true"])) :is(a[href], button, input, select, textarea, label):not(.ds-card__action) {
+      forced-color-adjust: auto;
+    }
+
+    .ds-card--interactive:is([aria-pressed="true"], [aria-checked="true"], [aria-selected="true"])::after,
+    .ds-card--interactive:has(.ds-card__action:is([aria-pressed="true"], [aria-checked="true"], [aria-selected="true"]))::after {
+      border-color: Highlight;
+    }
+
+    .ds-card--interactive:is([aria-pressed="true"], [aria-checked="true"], [aria-selected="true"]):is(:focus-visible, :has(.ds-card__action:focus-visible)),
+    .ds-card--interactive:has(.ds-card__action:is([aria-pressed="true"], [aria-checked="true"], [aria-selected="true"])):has(.ds-card__action:focus-visible) {
+      outline-color: CanvasText;
+    }
+
+    .ds-card--interactive[aria-disabled="true"] {
+      forced-color-adjust: none;
+      border-color: GrayText;
+      background: Canvas;
+      color: GrayText;
+    }
+
+    .ds-card--interactive[aria-disabled="true"] :is(.ds-card__title, .ds-card__subtitle, .ds-muted, .ds-meta, .ds-card__action) {
+      color: GrayText;
+    }
+
+    /* It stays focusable; unforced, its ring would keep the brand colour. */
+    .ds-card--interactive[aria-disabled="true"]:is(:focus-visible, :has(.ds-card__action:focus-visible)) {
+      outline-color: CanvasText;
     }
   }
 
@@ -246,11 +354,20 @@
   }
 
   .ds-card__title {
+    min-width: 0;
     margin: 0;
     padding: 0;
     color: var(--ds-text);
     font: var(--ds-font-subtitle);
     letter-spacing: 0;
+    overflow-wrap: anywhere;
+  }
+
+  /* A title with a leading icon: icon and words on one centre line. */
+  .ds-card__title:has(> svg:first-child) {
+    display: flex;
+    align-items: center;
+    gap: var(--ds-space-2);
   }
 
   .ds-card__row {
@@ -275,7 +392,7 @@
 
   .ds-card__row > .ds-switch,
   .ds-card__row > :has(> .ds-switch) {
-    margin-block: calc((var(--ds-card-title-line, 24px) - 40px) / 2);
+    margin-block: calc((var(--ds-card-title-line, 24px) - var(--ds-switch-height, 40px)) / 2);
   }
 
   .ds-card__subtitle {
@@ -294,22 +411,24 @@
   .ds-card__links {
     display: flex;
     flex-wrap: wrap;
+    align-items: center;
     gap: var(--ds-space-1) calc(var(--ds-space-2) + var(--ds-space-3));
     padding-top: var(--ds-space-3);
     border-top: 1px solid var(--ds-line);
   }
 
-  .ds-card__links > * {
-    margin-left: calc(-1 * var(--ds-space-3));
+  /* Only text buttons hang their padding out; an outlined button or a link keeps its place. */
+  .ds-card__links > :is(.ds-btn--text, .ds-card__link) {
+    margin-inline-start: calc(-1 * var(--ds-space-3));
   }
 
   .ds-card__link {
     --ds-btn-padding-x: var(--ds-space-3);
   }
 
-  /* At the end of a card's header row the padding hangs out on the right. */
+  /* At the end of a card's header row the padding hangs out at the end. */
   .ds-card__row > .ds-card__link:last-child {
-    margin-right: calc(-1 * var(--ds-space-3));
+    margin-inline-end: calc(-1 * var(--ds-space-3));
   }
 
   /* A part of a card with its own small title: a hairline and room above,
@@ -331,5 +450,12 @@
   .ds-more {
     display: flex;
     justify-content: center;
+  }
+
+  /* Print: a short card is never split across pages (one that holds a table may). */
+  @media print {
+    .ds-card:not(:has(.ds-table-wrap, .ds-table)) {
+      break-inside: avoid;
+    }
   }
 }

@@ -13,6 +13,16 @@
  *     <button class="ds-menu__item" role="menuitem" type="button" aria-disabled="true">(trash) <span class="ds-menu__label">Delete</span></button>
  *   </div>
  *
+ * Groups of radio items under a heading, and a meta at an item's end (a
+ * shortcut in a .ds-kbd, or "On" / "Off" of a menuitemcheckbox):
+ *
+ *   <div role="group" aria-labelledby="sort-h">
+ *     <p class="ds-menu__heading" id="sort-h">Sort by</p>
+ *     <button class="ds-menu__item" role="menuitemradio" type="button" aria-checked="true">(check, .ds-menu__check) <span class="ds-menu__label">Name</span></button>
+ *     <button class="ds-menu__item" role="menuitemradio" type="button" aria-checked="false">(check, .ds-menu__check) <span class="ds-menu__label">Last seen</span></button>
+ *   </div>
+ *   <button class="ds-menu__item" role="menuitem" type="button">(copy) <span class="ds-menu__label">Copy link</span><span class="ds-menu__meta">Ctrl C</span></button>
+ *
  *   DS.overlay.open(menu, { opener: button });   DS.overlay.close(menu);
  *
  * DS.overlay (js/overlay.js) places it below the trigger, aligned with its
@@ -20,7 +30,9 @@
  * not fit below and there is more room above; never taller than the room
  * on its side, so it never covers its trigger: it scrolls inside),
  * focuses the first enabled item (the last one when opened from ArrowUp),
- * moves focus with ArrowUp, ArrowDown, Home and End (wrapping), closes on
+ * moves focus with ArrowUp, ArrowDown, Home and End (wrapping; a heading is
+ * no item, so they skip it) and to the next item whose label starts with
+ * the typed letters (type-ahead), closes on
  * Escape (focus back on the trigger), on Tab, after an item's click
  * handlers ran, and on a pointerdown outside (focus stays where the pointer
  * put it), and sets aria-expanded on the trigger.
@@ -38,14 +50,33 @@
  * turns back from where it is; without data-state (a page that toggles
  * hidden by hand) it plays ds-fade-in and ds-clip-in once.
  *
- * Items: a 48px row in the body role, a state layer in the content colour
+ * Items: a 48px row (--ds-menu-item-height) in the body role, a state layer in the content colour
  * (hover, press in --ds-dur-micro, the focus layer and an inset ring that
  * snaps in), the ripple (js/ripple.js) and no press morph (a menu row is
  * not a pill). aria-disabled items stay focusable (their name is read) but
  * show the disabled ink and take no press.
  *
+ * menuitemradio and menuitemcheckbox items show .ds-menu__check only when
+ * aria-checked="true" (the page flips it; one radio of a group at a time).
+ * .ds-menu__heading names a group (caption type, not focusable);
+ * .ds-menu__meta sits at an item's end (meta type, tabular).
+ *
+ * Cut edges: a menu capped by the room on its side scrolls, and each edge
+ * with more to show fades into the menu's surface: a sticky shade
+ * (::before, ::after) in --ds-surface-popover, --ds-scroll-fade long
+ * (default --ds-space-8; 0px turns it off), whose opacity is the
+ * registered number --ds-scroll-edge-start or --ds-scroll-edge-end of
+ * scroller.css. Not a mask: the menu is its own surface, and a mask would
+ * cut its shadow. Where scroll timelines exist ds-scroll-edge-start and
+ * ds-scroll-edge-end drive the numbers on the menu's scroll; elsewhere
+ * DS.overlay attaches DS.dom.scrollEdges(menu, { axis: 'block' }) while it
+ * is open, and data-ds-overflow-start / -end set them over --ds-dur-fast.
+ * Focus moved by the keys stays clear of the shades (scroll-padding).
+ *
  * Forced colours: the menu keeps an edge (its transparent outline), the
- * focused item its ring.
+ * focused item its ring, a blocked item GrayText; the edge shades go.
+ *
+ * Print: an open menu is not printed.
  *
  * Progressive:
  * - popover and CSS anchor positioning (anchor-name on the trigger,
@@ -56,13 +87,18 @@
  *   script writes --ds-menu-x/-y and sets data-placement="top" above.
  * - scrollbar-color and scrollbar-width (a thin scrollbar in a long menu):
  *   without them the platform scrollbar shows.
+ * - scroll-driven animations (animation-timeline: scroll(), animation-range;
+ *   the edge shades follow the scroll position): without them the
+ *   data-ds-overflow-* attributes of DS.dom.scrollEdges() (attached by
+ *   DS.overlay) set the shades, or none show.
  */
 
 @layer ds.tokens, ds.base, ds.components, ds.motion, ds.utilities;
 
 @layer ds.components {
   /* Fixed, so no scrolling or clipping box cuts it off. inset, margin and
-     border double as the reset of the UA box of a popover. */
+     border double as the reset of the UA box of a popover. Physical on
+     purpose (D9): --ds-menu-x is a script coordinate from the left. */
   .ds-menu {
     position: fixed;
     inset: var(--ds-menu-y, 0px) auto auto var(--ds-menu-x, 0px);
@@ -78,11 +114,13 @@
     overflow-y: auto;
     border: 0;
     border-radius: var(--ds-radius-xs);
-    background: var(--ds-surface);
+    background: var(--ds-surface-popover);
     color: var(--ds-text);
     box-shadow: var(--ds-elev-popover);
     scrollbar-width: thin;
     scrollbar-color: var(--ds-line-2) transparent;
+    /* Focus moved by the keys lands clear of the edge shades. */
+    scroll-padding-block: var(--ds-scroll-fade, var(--ds-space-8));
     /* Invisible; forced colors paint it, so the menu keeps an edge. */
     outline: 1px solid transparent;
     /* Grows at its trigger (originFrom() writes the origin); its clip rests
@@ -156,7 +194,7 @@
     align-items: center;
     gap: var(--ds-space-3);
     width: 100%;
-    min-height: 48px;
+    min-height: var(--ds-menu-item-height, 48px);
     margin: 0;
     padding: 0 var(--ds-space-3);
     border: 0;
@@ -197,10 +235,7 @@
   .ds-menu__item::before {
     content: '';
     position: absolute;
-    top: 0;
-    right: 0;
-    bottom: 0;
-    left: 0;
+    inset: 0;
     background: currentColor;
     opacity: 0;
     pointer-events: none;
@@ -263,5 +298,118 @@
     height: 1px;
     margin: var(--ds-space-2) 0;
     background: var(--ds-line);
+  }
+
+  /* A group of items (role="group") is a column like the menu itself. */
+  .ds-menu [role="group"] {
+    display: flex;
+    flex-direction: column;
+    flex-shrink: 0;
+  }
+
+  /* The name of a group: not focusable, so the arrow keys pass it by. */
+  .ds-menu__heading {
+    flex-shrink: 0;
+    margin: 0;
+    padding: var(--ds-space-2) var(--ds-space-4) var(--ds-space-1);
+    color: var(--ds-text-2);
+    font: var(--ds-font-caption);
+  }
+
+  /* At an item's end: a shortcut (.ds-kbd) or the state word of a checkbox item. */
+  .ds-menu__meta {
+    flex-shrink: 0;
+    margin-inline-start: auto;
+    color: var(--ds-text-2);
+    font: var(--ds-font-meta);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .ds-menu__label + .ds-menu__meta {
+    margin-inline-start: var(--ds-space-3);
+  }
+
+  .ds-menu__item[aria-disabled="true"] .ds-menu__meta,
+  .ds-menu__item:disabled .ds-menu__meta {
+    color: inherit;
+  }
+
+  /* The cut edges of a long menu. The menu is its own surface (a mask
+     would cut its shadow away), so a shade of that surface lies over each
+     edge that has more to show, --ds-scroll-fade long, above the items:
+     sticky at the edge, taking no room (the negative margin). Its number
+     (--ds-scroll-edge-start or -end, registered in scroller.css) is 0 at
+     rest; the menu's scroll timeline drives it where it exists, else the
+     data-ds-overflow-* attributes of DS.dom.scrollEdges(), which
+     DS.overlay attaches while the menu is open. */
+  .ds-menu::before,
+  .ds-menu::after {
+    content: '';
+    position: sticky;
+    z-index: var(--ds-z-raised);
+    flex: none;
+    height: var(--ds-scroll-fade, var(--ds-space-8));
+    pointer-events: none;
+    transition:
+      --ds-scroll-edge-start var(--ds-dur-fast) var(--ds-ease-in-out),
+      --ds-scroll-edge-end var(--ds-dur-fast) var(--ds-ease-in-out);
+  }
+
+  .ds-menu::before {
+    inset-block-start: 0;
+    margin-block-end: calc(-1 * var(--ds-scroll-fade, var(--ds-space-8)));
+    background: linear-gradient(var(--ds-surface-popover), transparent);
+    opacity: var(--ds-scroll-edge-start);
+  }
+
+  .ds-menu::after {
+    inset-block-end: 0;
+    margin-block-start: calc(-1 * var(--ds-scroll-fade, var(--ds-space-8)));
+    background: linear-gradient(transparent, var(--ds-surface-popover));
+    opacity: var(--ds-scroll-edge-end);
+  }
+
+  .ds-menu[data-ds-overflow-start]::before {
+    --ds-scroll-edge-start: 1;
+  }
+
+  .ds-menu[data-ds-overflow-end]::after {
+    --ds-scroll-edge-end: 1;
+  }
+
+  /* Scroll-linked, on the menu's scroll (the nearest scroller of its own
+     shades): the shorthand first (it resets animation-timeline). */
+  @supports (animation-timeline: scroll()) {
+    .ds-menu::before {
+      animation: ds-scroll-edge-start linear both;
+      animation-timeline: scroll(nearest block);
+      animation-range: 0 var(--ds-space-8);
+    }
+
+    .ds-menu::after {
+      animation: ds-scroll-edge-end linear both;
+      animation-timeline: scroll(nearest block);
+      animation-range: calc(100% - var(--ds-space-8)) 100%;
+    }
+  }
+
+  /* Blocked is one system colour (D8). The shades go: forced colours
+     would keep their gradient in the theme's surface colour. */
+  @media (forced-colors: active) {
+    .ds-menu__item[aria-disabled="true"],
+    .ds-menu__item:disabled {
+      color: GrayText;
+    }
+
+    .ds-menu::before,
+    .ds-menu::after {
+      display: none;
+    }
+  }
+
+  @media print {
+    .ds-menu {
+      display: none;
+    }
   }
 }

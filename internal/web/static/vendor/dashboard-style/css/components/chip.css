@@ -39,8 +39,36 @@
  * offset + width to the offset (outline-offset, --ds-dur-fast), with the
  * focus layer (--ds-state-focus).
  *
+ * aria-disabled="true" on the input looks and acts like disabled (the
+ * click is blocked by the action guard); its focus layer stays.
+ *
+ * Action and input chips are buttons that act at once (a suggestion, an
+ * active filter that removes itself), in a role="group" row:
+ *
+ *   <div class="ds-chips" role="group" aria-label="Active filters">
+ *     <button class="ds-chip ds-chip--input" type="button" data-tip="Building C, second floor">
+ *       <span class="ds-chip__body"><span class="ds-chip__label"><span class="ds-sr">Remove filter </span>Building C, second floor</span>(close 18 .ds-chip__trailing)</span></button>
+ *     <button class="ds-chip" type="button"><span class="ds-chip__body">(user 18 .ds-chip__icon)<span class="ds-chip__label">Only my devices</span></span></button>
+ *   </div>
+ *
+ *   .ds-chip--input   the tint (--ds-chip-input-bg, -color, -border); the
+ *                     whole chip removes its value
+ *   .ds-chips--wrap   on the row: labels wrap inside the chip (long
+ *                     suggestions); a one-line chip keeps its height
+ *
+ * The body keeps every visual; no check slot; 16px padding, 8px next to a
+ * leading icon or a trailing glyph (--ds-chip-check-size); the label ends
+ * in an ellipsis once the body reaches --ds-chip-max-width (240px). Hover,
+ * the focus ring (on the chip, snapping), the press in --ds-dur-micro and
+ * the disabled model like a filter chip; no morph. A chip that stays on or
+ * off is a filter chip, never a button with aria-pressed. A row whose chips
+ * all went (.ds-chips:empty) takes no room.
+ *
  * Hooks: --ds-chip-height (32px), --ds-chip-check-size (18px),
- * --ds-chip-disabled-border, --ds-chip-disabled-bg (selected).
+ * --ds-chip-disabled-border, --ds-chip-disabled-bg (selected),
+ * --ds-chip-input-bg, --ds-chip-input-color, --ds-chip-input-border
+ * (--ds-accent, --ds-on-accent), --ds-chip-max-width (240px). The glide
+ * backing reads --ds-chips-backdrop (the script's), else --ds-flip-backdrop.
  */
 
 @layer ds.tokens, ds.base, ds.components, ds.motion, ds.utilities;
@@ -55,6 +83,11 @@
     padding: 0;
     border: 0;
     min-width: 0;
+  }
+
+  /* A row whose chips all went (the last filter removed) takes no room. */
+  .ds-chips:empty {
+    display: none;
   }
 
   .ds-chips__divider {
@@ -96,7 +129,8 @@
     height: var(--ds-chip-height, 32px);
     /* The same in both states: the gap after the empty slot gives the
        label its 16px; selected the slot adds the check's room. */
-    padding: 0 var(--ds-space-4) 0 var(--ds-space-2);
+    padding-block: 0;
+    padding-inline: var(--ds-space-2) var(--ds-space-4);
     border: 1px solid var(--ds-line-2);
     border-radius: var(--ds-radius-chip);
     color: var(--ds-text-2);
@@ -116,10 +150,7 @@
   .ds-chip__body::before {
     content: '';
     position: absolute;
-    top: -1px;
-    right: -1px;
-    bottom: -1px;
-    left: -1px;
+    inset: -1px;
     z-index: -1;
     border-radius: inherit;
     background: currentColor;
@@ -130,7 +161,7 @@
   /* Hover and press only for an input that can change (a disabled chip
      shows neither; js/ripple.js gives it no ripple). */
   @media (hover: hover) {
-    .ds-chip:hover .ds-chip__input:not(:disabled) + .ds-chip__body::before {
+    .ds-chip:hover .ds-chip__input:not(:disabled, [aria-disabled="true"]) + .ds-chip__body::before {
       opacity: var(--ds-state-hover);
     }
   }
@@ -141,13 +172,13 @@
     transition-duration: 0s;
   }
 
-  .ds-chip:active .ds-chip__input:not(:disabled) + .ds-chip__body::before,
-  .ds-chip.ds-pressed .ds-chip__input:not(:disabled) + .ds-chip__body::before {
+  .ds-chip:active .ds-chip__input:not(:disabled, [aria-disabled="true"]) + .ds-chip__body::before,
+  .ds-chip.ds-pressed .ds-chip__input:not(:disabled, [aria-disabled="true"]) + .ds-chip__body::before {
     opacity: var(--ds-state-pressed);
     transition-duration: var(--ds-dur-micro);
   }
 
-  .ds-chip:has(.ds-chip__input:disabled) {
+  .ds-chip:has(.ds-chip__input:is(:disabled, [aria-disabled="true"])) {
     cursor: not-allowed;
   }
 
@@ -186,7 +217,7 @@
      what is behind the row. */
   .ds-chips[data-ds-glide] .ds-chip {
     border-radius: var(--ds-radius-chip);
-    background-color: var(--ds-chips-backdrop, var(--ds-surface));
+    background-color: var(--ds-chips-backdrop, var(--ds-flip-backdrop, var(--ds-surface)));
   }
 
   /* The check lies over the slot, never a flex item, and fades: in at once
@@ -199,7 +230,7 @@
   .ds-chip__check {
     position: absolute;
     top: calc(50% - var(--ds-chip-check-size, 18px) / 2);
-    left: var(--ds-space-2);
+    inset-inline-start: var(--ds-space-2);
     width: var(--ds-chip-check-size, 18px);
     height: var(--ds-chip-check-size, 18px);
     opacity: 0;
@@ -236,16 +267,131 @@
      takes the neutral fill and the label and check the disabled ink; a
      theme that dims instead (--ds-disabled-opacity, the fill and ink set
      to `initial`) keeps the chip's own colours. */
-  .ds-chip__input:disabled + .ds-chip__body {
+  .ds-chip__input:is(:disabled, [aria-disabled="true"]) + .ds-chip__body {
     border-color: var(--ds-chip-disabled-border, var(--ds-disabled-fill, var(--ds-line-2)));
     color: var(--ds-disabled-ink, var(--ds-text-2));
     opacity: var(--ds-disabled-opacity, var(--ds-state-disabled));
   }
 
-  .ds-chip__input:checked:disabled + .ds-chip__body {
+  .ds-chip__input:checked:is(:disabled, [aria-disabled="true"]) + .ds-chip__body {
     border-color: var(--ds-chip-disabled-bg, var(--ds-disabled-fill, var(--ds-accent)));
     background: var(--ds-chip-disabled-bg, var(--ds-disabled-fill, var(--ds-accent)));
     color: var(--ds-disabled-ink, var(--ds-on-accent));
+  }
+
+  /*
+   * Action and input chips: a <button> (or a link) that acts at once. The
+   * element's own look is reset; the body keeps every visual. No check
+   * slot; the padding follows a leading icon or a trailing glyph. Not a
+   * pill, so no morph; a chip that stays on or off is a filter chip.
+   */
+  :is(button, a).ds-chip {
+    margin: 0;
+    padding: 0;
+    border: 0;
+    border-radius: var(--ds-radius-chip);
+    background: none;
+    color: inherit;
+    font: inherit;
+    text-align: start;
+    text-decoration: none;
+    -webkit-tap-highlight-color: transparent;
+    /* The ring rests (invisible) one width further out and snaps in. */
+    outline-offset: calc(var(--ds-focus-offset) + var(--ds-focus-width));
+    transition: outline-offset var(--ds-dur-fast) var(--ds-ease-out);
+  }
+
+  :is(button, a).ds-chip > .ds-chip__body {
+    max-width: var(--ds-chip-max-width, 240px);
+    padding-inline: var(--ds-space-4);
+  }
+
+  :is(button, a).ds-chip > .ds-chip__body:has(> .ds-chip__icon:first-child) {
+    padding-inline-start: var(--ds-space-2);
+  }
+
+  :is(button, a).ds-chip > .ds-chip__body:has(> .ds-chip__trailing:last-child) {
+    padding-inline-end: var(--ds-space-2);
+  }
+
+  :is(button, a).ds-chip > .ds-chip__body::after {
+    content: none;
+  }
+
+  .ds-chip__icon,
+  .ds-chip__trailing {
+    flex-shrink: 0;
+    width: var(--ds-chip-check-size, 18px);
+    height: var(--ds-chip-check-size, 18px);
+  }
+
+  .ds-chip__label {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  @media (hover: hover) {
+    :is(button, a).ds-chip:not(:disabled, [aria-disabled="true"]):hover > .ds-chip__body::before {
+      opacity: var(--ds-state-hover);
+    }
+  }
+
+  :is(button, a).ds-chip:focus-visible > .ds-chip__body::before {
+    opacity: var(--ds-state-focus);
+    transition-duration: 0s;
+  }
+
+  :is(button, a).ds-chip:not(:disabled, [aria-disabled="true"]):is(:active, .ds-pressed) > .ds-chip__body::before {
+    opacity: var(--ds-state-pressed);
+    transition-duration: var(--ds-dur-micro);
+  }
+
+  :is(button, a).ds-chip:focus-visible {
+    outline: var(--ds-focus-outline);
+    outline-offset: var(--ds-focus-offset);
+  }
+
+  :is(button, a).ds-chip:is(:disabled, [aria-disabled="true"]) {
+    cursor: not-allowed;
+  }
+
+  :is(button, a).ds-chip:is(:disabled, [aria-disabled="true"]) > .ds-chip__body {
+    border-color: var(--ds-chip-disabled-border, var(--ds-disabled-fill, var(--ds-line-2)));
+    color: var(--ds-disabled-ink, var(--ds-text-2));
+    opacity: var(--ds-disabled-opacity, var(--ds-state-disabled));
+  }
+
+  /* An input chip: an active filter or a picked value; the whole chip removes it. */
+  .ds-chip--input > .ds-chip__body {
+    border-color: var(--ds-chip-input-border, var(--ds-accent));
+    background: var(--ds-chip-input-bg, var(--ds-accent));
+    color: var(--ds-chip-input-color, var(--ds-on-accent));
+  }
+
+  .ds-chip--input:is(:disabled, [aria-disabled="true"]) > .ds-chip__body {
+    border-color: var(--ds-chip-disabled-bg, var(--ds-disabled-fill, var(--ds-chip-input-border, var(--ds-accent))));
+    background: var(--ds-chip-disabled-bg, var(--ds-disabled-fill, var(--ds-chip-input-bg, var(--ds-accent))));
+    color: var(--ds-disabled-ink, var(--ds-chip-input-color, var(--ds-on-accent)));
+  }
+
+  /* Wrapping chips (long suggestions): the label wraps inside the chip; a
+     one-line chip keeps its height, and the corners stay soft. */
+  .ds-chips--wrap .ds-chip__body {
+    height: auto;
+    min-height: var(--ds-chip-height, 32px);
+    padding-block: calc((var(--ds-chip-height, 32px) - 1lh) / 2 - 1px);
+    border-radius: min(var(--ds-radius-chip), calc(var(--ds-chip-height, 32px) / 2));
+    white-space: normal;
+  }
+
+  .ds-chips--wrap .ds-chip__label {
+    overflow: visible;
+    overflow-wrap: anywhere;
+  }
+
+  .ds-chips--wrap :is(button, a).ds-chip {
+    border-radius: min(var(--ds-radius-chip), calc(var(--ds-chip-height, 32px) / 2));
   }
 
   /* Forced colors: the selected fill would be dropped, so a selected chip
@@ -259,23 +405,37 @@
       color: HighlightText;
     }
 
-    .ds-chip__input:checked:focus-visible + .ds-chip__body {
+    .ds-chip__input:checked:focus-visible + .ds-chip__body,
+    .ds-chip__input[aria-disabled="true"]:focus-visible + .ds-chip__body {
       outline-color: CanvasText;
     }
 
     /* Disabled in GrayText; selected, a GrayText container with the check
        and label in Canvas (like the disabled switch). */
-    .ds-chip__input:disabled + .ds-chip__body {
+    .ds-chip__input:is(:disabled, [aria-disabled="true"]) + .ds-chip__body {
       forced-color-adjust: none;
       border-color: GrayText;
       background: Canvas;
       color: GrayText;
     }
 
-    .ds-chip__input:checked:disabled + .ds-chip__body {
+    .ds-chip__input:checked:is(:disabled, [aria-disabled="true"]) + .ds-chip__body {
       border-color: GrayText;
       background: GrayText;
       color: Canvas;
+    }
+
+    /* An input chip keeps a real edge (its fill is dropped); a blocked
+       action or input chip turns GrayText. */
+    .ds-chip--input > .ds-chip__body {
+      border-color: CanvasText;
+    }
+
+    :is(button, a).ds-chip:is(:disabled, [aria-disabled="true"]) > .ds-chip__body {
+      forced-color-adjust: none;
+      border-color: GrayText;
+      background: Canvas;
+      color: GrayText;
     }
   }
 }
