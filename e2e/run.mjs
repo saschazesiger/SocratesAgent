@@ -11663,19 +11663,35 @@ async function chatphone() {
     // back, as a person would.
     if (await page.$eval('#chat .so-composer__input', (n) => n.readOnly)) await page.tap('#chat .so-composer__input');
 
-    // The keyboard: the app is as tall as what can be seen (--so-app-h,
-    // which keybar.js writes from the visual viewport), and the composer is
-    // at its bottom, above the keyboard.
+    // The keyboard: the app is as tall as what can be seen (DS's
+    // --ds-viewport-height, which DS.dom.followViewport writes from the
+    // visual viewport), and the composer is at its bottom, above the
+    // keyboard. The visual viewport is made 480px tall and says so, as a
+    // phone's does when its keyboard comes up, so DS measures it itself.
     await page.focus('#chat .so-composer__input');
-    await page.evaluate(() => document.documentElement.style.setProperty('--so-app-h', '480px'));
+    await page.evaluate(() => {
+      Object.defineProperty(window.visualViewport, 'height', { configurable: true, get: () => 480 });
+      window.visualViewport.dispatchEvent(new Event('resize'));
+    });
     await wait(300);
+    const followed = await page.evaluate(() => ({
+      height: document.documentElement.style.getPropertyValue('--ds-viewport-height'),
+      keyboard: document.documentElement.hasAttribute('data-ds-keyboard'),
+      bar: getComputedStyle(document.querySelector('.so-app > .ds-topbar')).display,
+    }));
+    ok(followed.height === '480px' && followed.keyboard && followed.bar === 'none',
+      'DS follows the visual viewport: the frame takes its height, and the top bar gives its row to the composer', JSON.stringify(followed));
     const raised = await page.evaluate(() => {
       const composer = document.querySelector('#chat .so-composer').getBoundingClientRect();
       const field = document.querySelector('#chat .so-composer__input').getBoundingClientRect();
       return { bottom: Math.round(composer.bottom), field: Math.round(field.bottom), top: Math.round(field.top) };
     });
     ok(raised.bottom <= 480 && raised.top > 0, 'with the keyboard up the composer is above it, in view', JSON.stringify(raised));
-    await page.evaluate(() => document.documentElement.style.removeProperty('--so-app-h'));
+    await page.evaluate(() => {
+      delete window.visualViewport.height;
+      window.visualViewport.dispatchEvent(new Event('resize'));
+    });
+    await wait(300);
 
     // The question dialog: the whole screen, one question, big options.
     await say(page, '/askmany', { button: true });

@@ -581,7 +581,18 @@
 /* A phone with its keyboard up: the bar gives its row to what is being
    typed into (DS .ds-app--keyboard-hides-bar, toggled by keybar.js
    followViewport for the page's own fields, and for any field when only a
-   strip of screen is left). */
+   strip of screen is left). DS hides the bar only while it counts the
+   focus as a field that types (html[data-ds-keyboard]); in VS Code's frame
+   the focus is the iframe, which it does not count. So when only a strip
+   is left (data-so-short: a phone on its side with its keyboard up) the
+   bar steps aside whatever has the focus. */
+.so-touch[data-so-short] .so-app {
+  grid-template-rows: 0 minmax(0, 1fr);
+}
+
+.so-touch[data-so-short] .so-app > .ds-topbar {
+  display: none;
+}
 
 /* The drawer's list is cut above Costs, Admin and Sign out: while more
    rows lie below (DS.dom.scrollEdges, session.js drawerCue), its last row
