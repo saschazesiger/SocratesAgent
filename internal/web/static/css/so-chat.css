@@ -555,6 +555,13 @@
   font-variant-numeric: tabular-nums;
 }
 
+/* Stop this job: one action under the job's head, at its start. */
+.so-jobd__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--ds-space-2);
+}
+
 .so-jobd__facts {
   grid-template-columns: repeat(auto-fill, minmax(min(100%, 6.5rem), 1fr));
   gap: var(--ds-space-3) var(--ds-space-4);

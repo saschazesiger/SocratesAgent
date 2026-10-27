@@ -19,6 +19,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -512,6 +513,7 @@ func (p *chatPeer) launch(ctx context.Context) error {
 		ChatID: p.id, Harness: row.Harness, Workdir: row.Workdir, Model: model, Effort: effort,
 		Conversation: row.CLISessionID, ParkAfterMS: p.hub.parkAfterFor().Milliseconds(),
 		Ultracode: chatUltracode(row.Harness, readUltracode(row.Options)),
+		Watch:     chatWatch(),
 	}
 	if err := p.accountSpec(row, &spec); err != nil {
 		return err
@@ -521,6 +523,22 @@ func (p *chatPeer) launch(ctx context.Context) error {
 	entry, _ := p.hub.srv.Settings().Harnesses.Entry(row.Harness)
 	spec.Binary = strings.TrimSpace(entry.Binary)
 	return p.hub.launcher.Launch(lctx, spec)
+}
+
+// chatWatch is the watch's clock for the hosts this server launches, from
+// SOCRATES_CHAT_WATCH_MS ("quiet,stop,limit" in ms, any of them empty or 0
+// for the host's own): the browser suite's, which cannot wait minutes for a
+// turn to go quiet. Unset, the hosts keep theirs (AGENT-HOST.md §6).
+func chatWatch() *agenthost.WatchSpec {
+	value := strings.TrimSpace(os.Getenv("SOCRATES_CHAT_WATCH_MS"))
+	if value == "" {
+		return nil
+	}
+	var ms [3]int64
+	for i, field := range strings.SplitN(value, ",", 3) {
+		ms[i], _ = strconv.ParseInt(strings.TrimSpace(field), 10, 64)
+	}
+	return &agenthost.WatchSpec{QuietAfterMS: ms[0], StopWaitMS: ms[1], QuietLimitMS: ms[2]}
 }
 
 // accountSpec puts the chat's account into its launch spec: the account and
@@ -814,6 +832,7 @@ func (p *chatPeer) endHost(ctx context.Context, op string) {
 //	POST /api/chats/{id}/messages            200 {"client_id","seq","dup"}
 //	                                         202 {"client_id","queued":true}
 //	POST /api/chats/{id}/interrupt           the same
+//	POST /api/chats/{id}/tasks/{task}/stop   the same; 200 {"idle":true} with no host
 //	POST /api/chats/{id}/asks/{ask}/answer   the same, or
 //	                                         409 {"answered_elsewhere":true,"by_device"}
 //	GET  /api/chats/{id}/stream              WebSocket socrates.chat.v1 (chatstream.go)
@@ -1138,6 +1157,37 @@ func (s *Server) handleChatInterrupt(w http.ResponseWriter, r *http.Request) {
 	}
 	s.manager.MarkRead(p.id)
 	code, answer := p.command(r.Context(), agenthost.Command{Op: agenthost.OpInterrupt, ClientID: body.ClientID})
+	writeJSON(w, code, answer)
+}
+
+// handleChatStopTask stops one background task of the chat's agent - a
+// shell, a subagent, a workflow - by the id its part names. The task is the
+// running process's own: without a host there is nothing to stop.
+func (s *Server) handleChatStopTask(w http.ResponseWriter, r *http.Request) {
+	_, p, ok := s.chatOf(w, r)
+	if !ok {
+		return
+	}
+	var body struct {
+		ClientID string `json:"client_id"`
+	}
+	if !readJSON(w, r, &body) {
+		return
+	}
+	body.ClientID = strings.TrimSpace(body.ClientID)
+	task := strings.TrimSpace(r.PathValue("task"))
+	if body.ClientID == "" || task == "" {
+		writeError(w, http.StatusBadRequest, "stopping a task needs a client_id and the task")
+		return
+	}
+	p.mu.Lock()
+	idle := p.conn == nil
+	p.mu.Unlock()
+	if idle {
+		writeJSON(w, http.StatusOK, map[string]any{"client_id": body.ClientID, "idle": true})
+		return
+	}
+	code, answer := p.command(r.Context(), agenthost.Command{Op: agenthost.OpStopTask, ClientID: body.ClientID, Task: task})
 	writeJSON(w, code, answer)
 }
 

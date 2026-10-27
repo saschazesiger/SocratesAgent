@@ -46,6 +46,16 @@ export function seconds(ms) {
   return Math.floor(s / 60) + '\u00a0min' + (s % 60 ? ' ' + (s % 60) + '\u00a0s' : '');
 }
 
+/**
+ * clock is a moment as the time of day, "14:03", or with its seconds,
+ * "14:03:12": when something started is always said in the clock's words.
+ */
+export function clock(at, withSeconds = false) {
+  if (!at) return '';
+  return new Date(at).toLocaleTimeString([], withSeconds
+    ? { hour: '2-digit', minute: '2-digit', second: '2-digit' } : { hour: '2-digit', minute: '2-digit' });
+}
+
 /** infoButton is the "i" of infoTip() as markup; the view opens it on a tap. */
 export function infoButton(lines, label = 'Details') {
   const shown = lines.filter((line) => line !== null && line !== undefined && line !== ''
@@ -405,12 +415,18 @@ function toolHtml(part, view, { diff = false } = {}) {
     typeof tool.content.exit_code === 'number' ? 'exit status ' + tool.content.exit_code : '',
     tool.content.cwd ? tool.content.cwd : '',
     tool.path && view.where(tool.path) !== tool.path ? tool.path : '',
+    part.at ? 'started ' + clock(part.at, true) : '',
+    part.at && part.state !== 'running' && part.updatedAt > part.at ? 'ended ' + clock(part.updatedAt, true) : '',
   ];
+  // A call that runs says for how long, as the clock goes (the view draws a
+  // running answer again every few seconds); a finished one how long it
+  // took.
+  const took = part.state === 'running' && part.at ? seconds(Math.max(0, Date.now() - part.at)) : seconds(tool.duration);
   return html`<details class="so-part so-tool" data-ds-key="${key}" data-open-key="${key}" data-kind="${part.kind}" data-state="${state}"${group ? html` data-group` : ''}${open ? html` open` : ''}><summary class="ds-pressable so-tool__head"><span class="so-tool__icon" aria-hidden="true">${raw(icon(toolGlyph(tool.name), 18))}</span><span class="so-tool__name">${tool.name}</span>${summaryHtml(tool, view)}${
     progress ? html`<span class="so-tool__progress so-ellipsis">${progress}</span>` : ''
   }${diff && files.length ? html`<span class="so-diff__count"><span class="so-diff__added">+${added}</span><span class="so-diff__removed">−${removed}</span></span>` : ''}${
     statusMark(state)
-  }<span class="so-tool__time">${seconds(tool.duration)}</span>${chevron()}</summary>${
+  }<span class="so-tool__time"${part.at ? html` data-tip="${'Started ' + clock(part.at, true)}"` : ''}>${took}</span>${chevron()}</summary>${
     open ? html`<div class="so-tool__body">${
       part.lite || part.held ? detailsHtml(part, view) : bodyWithInfo(part, tool, view, { diff, group, files, info: infoButton(facts, 'Call details') })
     }</div>` : ''
@@ -892,9 +908,10 @@ export function jobsList({ jobs, others }, now = Date.now()) {
   }
   return html`<ul class="so-jobs">${jobs.map((job) => {
     const ran = job.since ? seconds(Math.max(0, now - job.since)) : '';
+    const started = job.since ? 'since ' + clock(job.since) : '';
     return html`<li class="so-job" data-ds-key="${job.id}"><button class="ds-pressable ds-pressable--inset so-job__open" type="button" data-job="${job.id}" aria-label="${'Show ' + job.name + (job.summary ? ': ' + job.summary : '')}"><span class="so-job__icon" aria-hidden="true">${raw(icon(toolGlyph(job.name), 18))}</span><span class="so-job__main"><span class="so-job__name">${job.name}</span>${
       job.summary ? html`<code class="so-job__summary">${job.summary}</code>` : ''
-    }</span><span class="ds-status ds-status--running so-job__state"><span class="ds-spinner ds-status__spinner" aria-hidden="true"></span><span>${ran || 'Running'}</span></span>${raw(icon('chevronRight', 18, 'so-job__go'))}</button></li>`;
+    }${started ? html`<span class="so-job__note">${started}</span>` : ''}</span><span class="ds-status ds-status--running so-job__state"><span class="ds-spinner ds-status__spinner" aria-hidden="true"></span><span>${ran || 'Running'}</span></span>${raw(icon('chevronRight', 18, 'so-job__go'))}</button></li>`;
   })}${
     others ? html`<li class="so-job so-job--others" data-ds-key="others"><span class="so-job__icon" aria-hidden="true">${raw(icon('background', 18))}</span><span class="so-job__main"><span class="so-job__name">${others + (others === 1 ? ' more task' : ' more tasks')}</span><span class="so-job__note">${'The agent counts ' + (others === 1 ? 'it' : 'them') + ' without saying what ' + (others === 1 ? 'it runs.' : 'they run.')}</span></span></li>` : ''
   }</ul>`;
@@ -915,7 +932,7 @@ const JOB_END = {
  * told, and what has come back so far - live while the dialog is open.
  * `running` is whether it still counts as a background job.
  */
-export function jobDetail(part, view, { running = false, now = Date.now() } = {}) {
+export function jobDetail(part, view, { running = false, stopping = null, now = Date.now() } = {}) {
   const tool = toolOf(part);
   const c = tool.content;
   const agent = tool.agent;
@@ -926,7 +943,7 @@ export function jobDetail(part, view, { running = false, now = Date.now() } = {}
   const [endState, endWord] = JOB_END[said] || JOB_END[part.state] || ['done', 'Finished'];
   const ran = Math.max(0, (running ? now : (part.updatedAt || now)) - (part.at || now));
   const kind = wf ? 'Workflow' : agent ? 'Agent' : tool.command ? 'Command' : 'Call';
-  const time = (at) => new Date(at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  const time = (at) => clock(at, true);
   const description = String(input.description || (agent && agent.description) || (wf && wf.description) || '');
   const tokens = (agent && agent.tokens) || (wf && wf.tokens) || 0;
   const facts = [
@@ -941,8 +958,12 @@ export function jobDetail(part, view, { running = false, now = Date.now() } = {}
     tokens ? ['Tokens', fmtTokens(tokens)] : null,
     agent && agent.model ? ['Model', agent.model] : null,
     c.cwd ? ['Folder', String(c.cwd)] : null,
+    !running && part.updatedAt && part.at ? ['Ended', time(part.updatedAt)] : null,
     (task && task.id) || (agent && agent.id) || (wf && wf.task_id) ? ['Task', (task && task.id) || (agent && agent.id) || wf.task_id] : null,
   ].filter(Boolean);
+  // A job that runs can be stopped by itself, by the id the agent gave it
+  // (Claude Code's stop_task); the rest of the chat goes on.
+  const taskId = running ? (task && task.id) || (wf && wf.task_id) || (agent && agent.id) || '' : '';
   const state = running
     ? html`<span class="ds-status ds-status--running so-jobd__state"><span class="ds-spinner ds-status__spinner" aria-hidden="true"></span><span>${seconds(ran) || 'Running'}</span></span>`
     : html`<span class="${'ds-status so-jobd__state' + (endState === 'done' ? ' ds-status--ok' : endState === 'error' ? ' ds-status--error' : '')}">${raw(icon(endState === 'error' ? 'alertCircle' : endState === 'interrupted' ? 'ban' : 'checkCircle', 16))}<span>${endWord}</span></span>`;
@@ -950,7 +971,9 @@ export function jobDetail(part, view, { running = false, now = Date.now() } = {}
   const body = part.lite || part.held ? detailsHtml(part, view) : toolBody(part, tool, view, { diff: false, group: isGroup(part, tool) });
   return html`<div class="so-jobd" data-ds-key="${'job:' + part.id}" data-state="${running ? 'running' : endState}"><div class="so-jobd__nav"><button class="ds-btn ds-btn--text ds-btn--sm so-jobd__back" type="button" data-job-back>${raw(icon('chevronLeft', 18))}<span>All jobs</span></button><button class="ds-btn ds-btn--text ds-btn--sm so-jobd__reveal" type="button" data-job-reveal="${part.id}"><span>Show in chat</span>${raw(icon('chevronRight', 18))}</button></div><div class="so-jobd__head"><span class="so-job__icon" aria-hidden="true">${raw(icon(toolGlyph(tool.name), 18))}</span><div class="so-jobd__title"><h3 class="so-jobd__name" tabindex="-1">${tool.name}</h3>${
     tool.summary ? html`<code class="so-jobd__summary">${tool.summary}</code>` : ''
-  }</div>${state}</div><dl class="ds-facts so-facts so-jobd__facts">${facts.map(([label, value]) => html`<div><dt>${label}</dt><dd class="so-fact">${value}</dd></div>`)}</dl>${
+  }</div>${state}</div>${
+    taskId ? html`<div class="so-jobd__actions"><button class="ds-btn ds-btn--tonal ds-btn--sm" type="button" data-job-stop="${taskId}"${stopping && stopping.has(taskId) ? html` aria-busy="true"` : ''}>${raw(icon('stop', 16))}<span>Stop this job</span></button></div>` : ''
+  }<dl class="ds-facts so-facts so-jobd__facts">${facts.map(([label, value]) => html`<div><dt>${label}</dt><dd class="so-fact">${value}</dd></div>`)}</dl>${
     body ? html`<div class="so-tool__body so-jobd__body">${body}</div>` : ''
   }</div>`;
 }
@@ -960,6 +983,26 @@ export function jobDetail(part, view, { running = false, now = Date.now() } = {}
 // The parts that are never work: a plan to approve, the agent's notice, a
 // file it made. They stand where they are, folded or not.
 const STANDS = new Set(['plan', 'notice', 'image', 'file']);
+
+/**
+ * runsOf cuts a piece's parts after each part a question card is drawn at
+ * (askPlaces) and after each shown part that stands (STANDS: a plan to
+ * approve, a notice): each run is folded on its own, so that the work done
+ * after a question or a plan comes under it, in the order it happened.
+ */
+function runsOf(piece, places) {
+  const runs = [];
+  let run = [];
+  for (const part of piece.list) {
+    run.push(part);
+    if (places.byPart.has(part.id) || (piece.shown.has(part) && STANDS.has(part.kind))) {
+      runs.push(run);
+      run = [];
+    }
+  }
+  if (run.length || !runs.length) runs.push(run);
+  return runs;
+}
 
 /**
  * workOf is what of a piece is the work - the thinking, the calls, the
@@ -1050,7 +1093,12 @@ export function workSummary(parts, message, { whole = false, usage = false } = {
       now = [tool.name, tool.summary].filter(Boolean).join(' ');
     }
   }
-  return { did: did.join(', '), took: seconds(took), meta, now, live: !!running, steps };
+  // When the work began, and - once it is done - when it ended, by the
+  // clock; while it runs, how long its current step has been at it.
+  const span = from ? (running ? 'since ' + clock(from) : clock(from) + (to && clock(to) !== clock(from) ? '–' + clock(to) : '')) : '';
+  if (span) meta.push(span);
+  const step = running && running.at && running.kind === 'tool' ? seconds(Math.max(0, Date.now() - running.at)) : '';
+  return { did: did.join(', '), took: seconds(took), meta, now: now && step ? now + ' · ' + step : now, live: !!running, steps };
 }
 
 // workHtml is the fold: one line that says what the work was, and the work
@@ -1114,27 +1162,40 @@ export function assistantMessage(message, view, segment = 0) {
     && message.parts.some((part) => part.kind === 'text' && String(part.text || '').trim());
   const key = 'm:' + message.id + (segment ? '#' + (segment + 1) : '');
   // The work is folded behind one line where it began (workHtml); the
-  // questions asked in it, and the answer after it, stand.
-  const work = workOf(piece);
-  // The work goes on while the answer runs and nothing has been said after
-  // it yet - unless the agent waits for the person, which its card says.
-  const after = [...piece.shown].some((part) => !work.has(part) && part.kind === 'text'
-    && piece.list.indexOf(part) > Math.max(...[...work].map((one) => piece.list.indexOf(one))));
-  const live = segment === last && message.state === 'streaming' && !asking && !after;
+  // questions asked in it, and the answer after it, stand. A question card,
+  // or a part that stands, ends a run of work: what the agent does after it
+  // goes on under it, in a fold of its own, never in the fold above it - an
+  // answered question is not left at the bottom while the work grows over
+  // it.
+  const runs = runsOf(piece, places);
+  const works = runs.map((run) => workOf({ list: run, shown: piece.shown }));
+  let lastWork = -1;
+  works.forEach((work, i) => { if (work.size) lastWork = i; });
   const workKey = 'w:' + message.id + (segment ? '#' + (segment + 1) : '');
-  let folded = false;
-  const partAt = (part) => {
-    if (!work.has(part)) return piece.shown.has(part) ? partHtml(part, view) : '';
-    if (folded) return '';
-    folded = true;
-    return workHtml(workKey, [...work], message, view, {
-      live, whole: all.length === 1, usage: segment === foot && !laterInTurn(message, view),
-    });
+  const runHtml = (run, i) => {
+    const work = works[i];
+    // The work goes on while the answer runs and nothing has been said
+    // after it yet - unless the agent waits for the person, which its card
+    // says.
+    const end = Math.max(...[...work].map((one) => run.indexOf(one)));
+    const after = run.some((part, at) => at > end && !work.has(part) && piece.shown.has(part) && part.kind === 'text');
+    const live = i === runs.length - 1 && segment === last && message.state === 'streaming' && !asking && !after;
+    let folded = false;
+    const partAt = (part) => {
+      if (!work.has(part)) return piece.shown.has(part) ? partHtml(part, view) : '';
+      if (folded) return '';
+      folded = true;
+      return workHtml(workKey + (i ? '.' + i : ''), [...work], message, view, {
+        live, whole: all.length === 1 && runs.length === 1,
+        usage: i === lastWork && segment === foot && !laterInTurn(message, view),
+      });
+    };
+    return run.map((part) => html`${partAt(part)}${
+      (places.byPart.get(part.id) || []).map((ask) => askCard(ask, view))
+    }`);
   };
   return html`<article class="so-msg" data-ds-key="${key}" data-role="assistant" data-state="${message.state}">${
-    piece.list.map((part) => html`${partAt(part)}${
-      (places.byPart.get(part.id) || []).map((ask) => askCard(ask, view))
-    }`)
+    runs.map(runHtml)
   }${working ? html`<p class="so-msg__wait ds-meta"><span class="ds-spinner" aria-hidden="true"></span><span>Working…</span></p>` : ''}${
     copyable || facts.length ? html`<div class="so-msg__foot">${
       copyable ? html`<button class="ds-btn ds-btn--quiet ds-btn--icon ds-btn--sm so-msg__copy" type="button" data-action="copy-answer" data-message="${message.id}" aria-label="Copy the answer" data-tip="Copy">${raw(icon('copy', 18))}</button><button class="ds-btn ds-btn--quiet ds-btn--icon ds-btn--sm so-msg__speak" type="button" data-action="speak-answer" data-message="${message.id}" aria-label="Read the answer out loud" data-tip="Read aloud (again to stop)">${faces(raw(icon('volume', 18)), '')}</button>` : ''

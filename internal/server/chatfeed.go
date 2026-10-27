@@ -125,16 +125,20 @@ func chatLine(p *agent.Projection) string {
 		return firstQuestion(q)
 	}
 	if t := p.Turn; t != nil {
+		line := ""
 		if tool := runningTool(p, t.ID); tool != nil {
-			return oneLine(toolLine(tool), digestSummaryRunes)
+			line = oneLine(toolLine(tool), digestSummaryRunes)
+		} else if text := latestText(p, t.ID); text != "" {
+			line = firstLine(text)
+		} else if m := p.Message(t.MessageID); m != nil {
+			line = firstLine(m.Text)
 		}
-		if text := latestText(p, t.ID); text != "" {
-			return firstLine(text)
+		// The host found the turn quiet for long (AGENT-HOST.md §6): it may
+		// be stuck, and Home says so before what it was doing.
+		if t.QuietSince != 0 {
+			return oneLine(joinLine("Quiet", line), digestSummaryRunes)
 		}
-		if m := p.Message(t.MessageID); m != nil {
-			return firstLine(m.Text)
-		}
-		return ""
+		return line
 	}
 	return turnLine(p, p.LastTurn)
 }

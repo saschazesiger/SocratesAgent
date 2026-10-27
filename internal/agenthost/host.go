@@ -104,6 +104,9 @@ type host struct {
 	// the order they arrived and the dedupe check honest.
 	cmdMu   sync.Mutex
 	adapter agent.Adapter
+	// live is adapter, under mu, for the watch (watch.go), which must not
+	// wait for the command lock; setAdapter sets both.
+	live agent.Adapter
 	// cliPID is the adapter's child, for the hello, which must not wait for
 	// the command lock.
 	cliPID atomic.Int64
@@ -114,6 +117,8 @@ type host struct {
 	ending     bool
 	conns      map[*hostConn]struct{}
 	parkAfter  time.Duration
+	// watch is what the host knows of the running turn's life (watch.go).
+	watch watch
 	// tools are the asks a local tool's connection waits on (OpAsk), by ask
 	// id: the answer goes back on that connection.
 	tools map[string]*hostConn
@@ -173,6 +178,7 @@ func Run(opts Options) error {
 		conns:      map[*hostConn]struct{}{},
 		tools:      map[string]*hostConn{},
 		lastActive: time.Now(),
+		watch:      newWatch(spec.Watch),
 		parkAfter:  time.Duration(spec.ParkAfterMS) * time.Millisecond,
 		done:       make(chan struct{}),
 	}
@@ -380,6 +386,7 @@ func (h *host) start() {
 	go h.accept()
 	go h.boot()
 	go h.idleLoop()
+	go h.watchLoop()
 }
 
 // bootHook is for tests only: it runs as boot begins.
@@ -479,7 +486,7 @@ func (h *host) boot() {
 		h.failStart(err)
 		return
 	}
-	h.adapter = ad
+	h.setAdapter(ad)
 	h.cliPID.Store(int64(ad.PID()))
 	h.record(agent.Event{Type: agent.TypeProcess, State: agent.ProcessReady, PID: ad.PID()})
 	for _, msg := range pending {
@@ -556,17 +563,24 @@ func (h *host) afterTurn(id string) string {
 type emitter struct{ h *host }
 
 // Emit records the adapter's events. A turn is stamped with the account it
-// runs on, which only the host knows (AGENT-HOST.md §2).
+// runs on, which only the host knows (AGENT-HOST.md §2). Each is a sign of
+// life (watch.go).
 func (e emitter) Emit(events ...agent.Event) {
 	for i := range events {
 		if events[i].Type == agent.TypeTurnStarted && events[i].Account == "" {
 			events[i].Account = e.h.currentAccount()
 		}
 	}
+	if heard := e.h.alive(); heard != nil {
+		events = append(heard, events...)
+	}
 	e.h.record(events...)
 }
 
 func (e emitter) Delta(messageID, partID, text string) {
+	if heard := e.h.alive(); heard != nil {
+		e.h.record(heard...)
+	}
 	e.h.rec.Delta(messageID, partID, text)
 	e.h.touch()
 }
@@ -678,7 +692,7 @@ func (h *host) handle(c *hostConn, cmd Command) any {
 		return h.answer(ctx, cmd)
 	case OpAsk:
 		return h.toolAsk(c, cmd)
-	case OpInterrupt, OpSetModel, OpCommand, OpPark:
+	case OpInterrupt, OpSetModel, OpCommand, OpPark, OpStopTask:
 		return h.control(ctx, cmd)
 	case OpSwitchAccount:
 		return h.switchCmd(cmd)
@@ -885,10 +899,13 @@ func (h *host) deliverAsMessage(ctx context.Context, ask *agent.Ask, answer json
 }
 
 // control is every command that is journaled as a command event: interrupt,
-// set_model, command, park.
+// set_model, command, park, stop_task.
 func (h *host) control(ctx context.Context, cmd Command) any {
 	if h.adapter == nil && cmd.Op != OpPark {
 		return fail(cmd, CodeNotRunning, "the agent is not running")
+	}
+	if cmd.Op == OpStopTask && strings.TrimSpace(cmd.Task) == "" {
+		return fail(cmd, CodeBadRequest, "stop_task needs the task's id")
 	}
 	var seq int64
 	if cmd.ClientID != "" {
@@ -898,6 +915,8 @@ func (h *host) control(ctx context.Context, cmd Command) any {
 			ev.Model, ev.Effort = cmd.Model, cmd.Effort
 		case OpCommand:
 			ev.Text, ev.Args = cmd.Name, cmd.Args
+		case OpStopTask:
+			ev.Args = cmd.Task
 		}
 		events, err := h.rec.EmitDurable(ev)
 		if err != nil {
@@ -908,11 +927,19 @@ func (h *host) control(ctx context.Context, cmd Command) any {
 	var err error
 	switch cmd.Op {
 	case OpInterrupt:
+		// A Stop the agent does not act on is not the end of it: the watch
+		// starts the CLI again (watch.go).
+		h.stopAsked()
 		err = h.adapter.Interrupt(ctx)
 	case OpSetModel:
 		err = h.adapter.SetModel(ctx, cmd.Model, cmd.Effort)
 	case OpCommand:
 		err = h.adapter.Command(ctx, cmd.Name, cmd.Args)
+	case OpStopTask:
+		err = agent.ErrUnknownCommand
+		if ts, ok := h.adapter.(agent.TaskStopper); ok {
+			err = ts.StopTask(ctx, strings.TrimSpace(cmd.Task))
+		}
 	case OpPark:
 		h.mu.Lock()
 		h.parkWanted = true

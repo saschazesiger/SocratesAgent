@@ -70,6 +70,11 @@ const (
 	TypeNotice = "notice"
 	// TypeError is a failure worth showing that is not a turn's end.
 	TypeError = "error"
+	// TypeQuiet is the host's watch on a running turn: Since (Unix ms) is
+	// the agent's last sign of life when the turn has gone quiet for long
+	// (the host's quietAfter) while it waits on nobody, and 0 when it is
+	// heard from again (AGENT-HOST.md §6, "Quiet turns").
+	TypeQuiet = "quiet"
 )
 
 // Message roles.
@@ -167,6 +172,11 @@ const (
 	// NoticeScheduledStart: the message after it is the chat's first,
 	// sent by itself at the time it was given.
 	NoticeScheduledStart = "scheduled_start"
+	// NoticeUnresponsive: the host ended an agent that did not answer: a
+	// turn that stayed quiet beyond the adapter's QuietLimit, or a Stop
+	// the agent did not act on in time. The next message resumes the
+	// conversation on a new process.
+	NoticeUnresponsive = "unresponsive"
 	// NoticeMCP: not every MCP server of the chat's folder went to the agent
 	// (a .mcp.json that is not valid, a server whose variable is not set or
 	// that the harness cannot start); the text says which and why. The host
@@ -194,6 +204,8 @@ const (
 	OpPark          = "park"
 	OpStop          = "stop"
 	OpSwitchAccount = "switch_account"
+	// OpStopTask stops one background task; Args is its id.
+	OpStopTask = "stop_task"
 )
 
 // SwitchAfterTurn is the Args of a journaled switch_account that waits for
@@ -290,6 +302,9 @@ type Event struct {
 	Op   string `json:"op,omitempty"`
 	Args string `json:"args,omitempty"`
 	Code string `json:"code,omitempty"`
+	// Since is a quiet event's last sign of life (Unix ms), 0 when the
+	// agent is heard from again.
+	Since int64 `json:"since,omitempty"`
 }
 
 // Attachment is a file sent with a user message. Path is absolute on the

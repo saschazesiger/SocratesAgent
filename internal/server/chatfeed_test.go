@@ -75,6 +75,10 @@ func TestAChatsLineSaysWhatItIsDoing(t *testing.T) {
 			"Failed: the API refused"},
 		{"a limit says so", append(turnOpen("1", "x"), turnEnd("1", agent.OutcomeLimited, "")), "Limit reached"},
 		{"a stopped turn without words", append(turnOpen("1", "x"), turnEnd("1", agent.OutcomeInterrupted, "")), "Stopped"},
+		{"a quiet turn says so first", append(turnOpen("1", "x"), bash, agent.Event{Type: agent.TypeQuiet, TurnID: "t1", Since: 1000}),
+			"Quiet: Running go test ./..."},
+		{"heard from again, it does not", append(turnOpen("1", "x"), bash, agent.Event{Type: agent.TypeQuiet, TurnID: "t1", Since: 1000},
+			agent.Event{Type: agent.TypeQuiet, TurnID: "t1"}), "Running go test ./..."},
 	}
 	for _, c := range cases {
 		if got := chatLine(fold(c.events...)); got != c.want {

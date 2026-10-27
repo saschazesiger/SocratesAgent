@@ -53,6 +53,8 @@ func EnableFake() {
 //	/dividers        a notice, an account switch, a model change and an error
 //	/subagent        a subagent tool part with parts nested inside it
 //	/sleep S         a turn that works for S seconds
+//	/hang S          a stuck turn: no sign of life for S seconds, and a Stop
+//	                 does nothing (the host's watch, AGENT-HOST.md §6)
 //	/bg S            a turn that leaves a background task running for S seconds
 //	/bgagent S       the same with a background subagent
 //	/limit           the account's limit stops the turn
@@ -480,6 +482,17 @@ func (f *fakeAdapter) turn(ctx context.Context, msg Outgoing, n int) {
 			return
 		}
 		t.say("slept")
+	case "/hang":
+		select {
+		case <-time.After(time.Duration(fakeFloat(fields, 0, 1) * float64(time.Second))):
+		case <-f.quit:
+			return
+		}
+		if ctx.Err() != nil {
+			t.end(OutcomeInterrupted, "")
+			return
+		}
+		t.say("woke up")
 	case "/bg":
 		seconds := fakeFloat(fields, 0, 1)
 		f.background(time.Duration(seconds*float64(time.Second)), false)

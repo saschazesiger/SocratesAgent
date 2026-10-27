@@ -69,9 +69,10 @@ is one `agent.Event`: a flat JSON object, all fields optional except `seq`, `at`
 | `process` | `state` (`starting`\|`ready`\|`parked`\|`exited`\|`failed`), `detail`, `pid`, `version` | host/CLI life. `starting` carries the host pid, `ready` the CLI pid |
 | `conversation` | `conversation_id` | the CLI's own id, needed to resume |
 | `tasks` | `count` | background tasks still running |
+| `quiet` | `turn_id`, `since`? (Unix ms) | the host's watch (§6, "Quiet turns"): the running turn has said nothing since `since` while it waits on nobody; without `since`, the agent is heard from again. The projection keeps it as the running turn's `quiet_since` (and the summary's) |
 | `agent.info` | `content`: an `agent.AgentInfo` `{agent, version?, commands: [{name, args?, description?}]}` plus the adapter's own fields (Claude's in §5.1) | what the CLI says about itself; `commands` is **the** composer palette (`Projection.Palette()`), each name what `Adapter.Command` takes. The newest wins (`Projection.Agent`) |
-| `command` | `op` (`interrupt`\|`set_model`\|`command`\|`park`\|`stop`\|`switch_account`), `client_id`, `model`/`effort`, `text` (command name), `args` (a slash command's arguments; a switch's `when`), `to`/`reason` (a switch's account and why) | a command the host accepted; recorded so its `client_id` is acted on once. An `interrupt`, a `stop` or a `switch_account` that does not wait for the turn (`args` other than `after_turn`) to another account than the running turn's (`turn.started`'s `account`) marks the running turn as stopped by somebody (`Turn.Stopped`: not pushed, not judged); a switch to the account the turn runs on interrupts nothing |
-| `notice` | `code`, `text`, `ask_id`? | a line of its own. Host codes: `resumed`, `answer_as_message`, `conversation_lost`; every adapter's rebuild: `rebuilt`, `history_unavailable` |
+| `command` | `op` (`interrupt`\|`set_model`\|`command`\|`park`\|`stop`\|`switch_account`\|`stop_task`: `args` is the task), `client_id`, `model`/`effort`, `text` (command name), `args` (a slash command's arguments; a switch's `when`), `to`/`reason` (a switch's account and why) | a command the host accepted; recorded so its `client_id` is acted on once. An `interrupt`, a `stop` or a `switch_account` that does not wait for the turn (`args` other than `after_turn`) to another account than the running turn's (`turn.started`'s `account`) marks the running turn as stopped by somebody (`Turn.Stopped`: not pushed, not judged); a switch to the account the turn runs on interrupts nothing |
+| `notice` | `code`, `text`, `ask_id`? | a line of its own. Host codes: `resumed`, `answer_as_message`, `conversation_lost`, `unresponsive` (the watch stopped a quiet turn, or ended and started again an agent that ignored a Stop, §6); every adapter's rebuild: `rebuilt`, `history_unavailable` |
 | `error` | `code`, `text`, `message_id`? | a failure that is not a turn's end (e.g. `send_failed`, `rate_limit`, `switch_failed`: the other account's agent did not start, and the chat is back on its account) |
 
 **Nesting.** A part with `parent_part_id` belongs inside that part: the parts a subagent or a
@@ -196,7 +197,7 @@ asks a model to read a screen; it is the projection.
   runs, the newest running top-level tool part as a person says it (`toolLine`: "Running go test",
   "Editing main.go", "Subagent: …", "Workflow: …", from Claude's `summary`/`command`/`path`, Codex's
   `command`/`changes`, OpenCode's `title`/`input`), else the first line of the newest text part,
-  else the person's message; between turns the first line of the last turn's answer, "Failed: …",
+  else the person's message - after `Quiet: ` while the host finds the turn quiet (§6); between turns the first line of the last turn's answer, "Failed: …",
   "Limit reached: …" or "Stopped". Markdown is taken off; a subagent's own words never are the line.
 - **The reading**: every chat is a `digest` on the event stream, the hello and `GET /api/home` -
   the only digests there are since the terminals' screen reading went (WP10): `phase: ready`, `state` = the activity, `summary` = the line, `question` =
@@ -291,6 +292,7 @@ version understand each other. A connection asks for no events with `since` = `N
 | `command` | `client_id`?, `name`, `args` | journals `command`, `Adapter.Command` (`compact`, or a slash command); unknown → `unsupported` |
 | `park` | `client_id`? | parks as soon as idle (§6) |
 | `stop` | `client_id`? | stops the CLI now, records an interrupted turn, exits |
+| `stop_task` | `client_id`, `task` | journals `command{args: task}`, `agent.TaskStopper.StopTask` (Claude: the control request `stop_task`, §5.1): one background task - a shell, a subagent, a workflow - by the id its part's content names (`task.id`, `agent.id`, `workflow.task_id`); the agent reports its end as any other. An adapter without it: `unsupported` |
 | `ask` (version 2) | `payload` (an `ask_user` payload) | a local tool's question (`socrates mcp-ask`, §5.3): journals `ask{turn_id: the running turn}` and acks with its `ask_id`; the answer comes back on this connection as an `answer` frame (§4.4). Refused (`bad_request`) on a connection that said hello with protocol 1, without a payload, or while no turn runs (the CLI calls tools only inside a turn, so such a question comes from a call already withdrawn), `not_running` without an agent |
 
 | `switch_account` | `client_id`, `account`, `env` (required), `secret_env`, `reason`?, `when` (`now`\|`after_turn`), `continue`? | WP7, §11: journals `command{to, reason}`; `after_turn` while a turn runs (or a message waits that a limit does not hold) keeps it until the turn ends and acks it `pending` at once, then once more without `pending` when it is made or a newer switch replaces it; otherwise interrupts a running turn and waits for its end (30 s), moves the agent to the account, journals `account.switched` and acks. Without `env`: `bad_request` |
@@ -538,6 +540,12 @@ to its own cancel, because a background subagent outlives the turn. An MCP elici
 (`control_request{subtype: elicitation}`) is asked as a form (`source: elicitation`) and answered
 `{action, content}`; one that is not a form, or cannot be read, is declined with
 `notice{elicitation_declined}`.
+
+**Watched** (§6, "Quiet turns"): `QuietLimit` is 30 min - nothing Claude Code runs in the
+foreground takes that long (a command goes to the background after 2 min and is stopped after
+10, subagents and workflows report as they go, an API retry is a notice) - so a turn that quiet is
+stuck, and the host stops it. `StopTask` is the control request `{subtype: "stop_task", task_id}`
+(2.1.311); the CLI ends the task and sends its `task_notification` (`killed`), which closes its part.
 
 **Events of its own.** `notice` codes `compacted` (`compact_boundary`, a divider with the token
 counts), `api_retry`, `informational` (warnings such as "can't use thinking from another
@@ -891,6 +899,29 @@ reboot are one code path.
 **CLI exits on its own** (`Emitter.Exited`): `turn.ended{failed}` if a turn ran, the leftovers
 closed, `process{failed}`, host exits. The next command resumes.
 
+**Quiet turns** (`watch.go`). Every event and delta the adapter emits is a sign of life. Every
+5 s (shorter on a test's clock) the host looks at the running turn; a turn that waits on the
+person (its open ask) is rightly silent, and its clock starts again when it is answered.
+
+- Quiet for 5 min (`quietAfter`): `quiet{turn_id, since: <last sign>}`; the agent's next sign
+  journals `quiet{turn_id}` before it. The chat's dock says "Nothing from the agent since 14:03 (7
+  min). It may be stuck." with Stop, and Home's line starts "Quiet:".
+- Quiet beyond the adapter's `agent.QuietLimiter.QuietLimit()` (Claude Code: 30 min; Codex and
+  OpenCode have none and are only watched): `notice{unresponsive}` and `Adapter.Interrupt`, as a
+  command of the host's own - not journaled as one, so the turn's end is news as any other.
+- A Stop - an `interrupt` command, or the watch's - after which the turn still runs 30 s later
+  (`stopWait`): the CLI is killed (before the command lock is taken: a command stuck on the CLI
+  holds it and lets go once the CLI is gone), the turn closed `interrupted` with why, the leftovers
+  closed, `notice{unresponsive}` and `process{exited, detail: unresponsive}` journaled, and a new
+  adapter started on the same account and conversation (`process{ready}`), handed what the old one
+  had not taken up. A start that fails ends the host with `process{failed}`.
+
+So no turn stays busy for ever: a Stop always ends it within 30 s. The browser says a Stop that has
+not acted after 5 s ("Stopping… If it has not by 14:03:42, it is ended and started again") from the
+`command{interrupt}`'s time. `host.json`'s `watch` (`quiet_after_ms`, `stop_wait_ms`,
+`quiet_limit_ms`) overrides the clock for tests; the server fills it from
+`SOCRATES_CHAT_WATCH_MS` = `quiet,stop,limit` (the browser suite's), and leaves it out otherwise.
+
 **Leftovers.** Background work is the CLI process's own. Whenever the host sees that process go
 (park, `stop`, an exit of its own, the old process of an account switch) and at recover, it closes
 what the journal still shows open: every part still `running`/`streaming` gets `part{interrupted}`
@@ -951,6 +982,7 @@ key (the existing `Outbox` in `net.js`).
 | `GET /api/chats/{id}` | – | `{session, chat: <summary>, asks: [open asks], host_error?}`; `?history=1` adds `messages` (the whole projection) |
 | `POST /api/chats/{id}/messages` | `client_id`, `text`, `attachments` | 200 `{client_id, seq, dup}`; 202 `{client_id, queued: true}` when the host has not acked within 10 s (a host still starting holds commands until its agent is up; it will receive it once) |
 | `POST /api/chats/{id}/interrupt` | `client_id` | as messages; 200 `{idle: true}` when nothing runs and no host is up |
+| `POST /api/chats/{id}/tasks/{task}/stop` | `client_id` | `stop_task` (§4.3), as messages; 200 `{idle: true}` when no host is up (its tasks went with it) |
 | `POST /api/chats/{id}/asks/{ask}/answer` | `client_id`, `answer` (any JSON), `device` | 200 / 202 as messages; **409 `{answered_elsewhere: true, by_device}`** when another device answered; 404 for an unknown ask |
 | `POST /api/chats/{id}/model` | `client_id`, `model`, `effort` | as messages (a `set_model` command) |
 | `POST /api/chats/{id}/command` | `client_id`, `name`, `args` | as messages; 409 `{code: "unsupported"}` for a command the agent does not have |

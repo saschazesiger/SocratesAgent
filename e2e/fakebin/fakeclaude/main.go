@@ -32,7 +32,8 @@
 //	/subagent fail   a foreground one that fails before its call returns
 //	/workflow [S]    a Workflow run of two phases and three agents (S seconds),
 //	                 which reports back with a turn of the CLI's own
-//	/bg S            a background Bash task that reports back after S seconds
+//	/bg S            a background Bash task that reports back after S seconds;
+//	                 stop_task stops it (a killed notification, no report)
 //	/plan            ExitPlanMode through can_use_tool; waits for the answer
 //	/limit           a rate limit that stops the turn
 //	/retry           an API retry, then text
@@ -51,6 +52,10 @@
 //	                 for the result and says it; an interrupt withdraws the
 //	                 call (notifications/cancelled, then control_cancel_request)
 //	/toolask [JSON]  a Bash call, then /askuser: a question asked after work
+//	/asktool [JSON]  /askuser, then a Bash call and a line: work after a
+//	                 question
+//	/hang S          a stuck turn: nothing for S seconds, and an interrupt
+//	                 taken but not acted on (the host's watch)
 //	/askdrop         calls ask_user and withdraws the call at once with
 //	                 notifications/cancelled alone, as an abort right after
 //	                 the call does, then says "ask_user was withdrawn"
@@ -111,15 +116,18 @@ type fake struct {
 
 	outMu sync.Mutex
 
-	mu         sync.Mutex
-	queue      []job
-	busy       bool
-	cancel     context.CancelFunc
-	wake       chan struct{}
-	waiting    map[string]chan json.RawMessage
-	mode       string
-	totalCost  float64
-	bg         map[string]string
+	mu        sync.Mutex
+	queue     []job
+	busy      bool
+	cancel    context.CancelFunc
+	wake      chan struct{}
+	waiting   map[string]chan json.RawMessage
+	mode      string
+	totalCost float64
+	bg        map[string]string
+	// bgCall is the call that started each background shell, for the
+	// notification a stop_task sends.
+	bgCall     map[string]string
 	lastUUID   string
 	results    int
 	interrupts int
@@ -151,7 +159,8 @@ func newFake(args []string) *fake {
 		conf = filepath.Join(home, ".claude")
 	}
 	return &fake{args: args, cwd: cwd, configDir: conf, model: "claude-fake-1", mode: "bypassPermissions",
-		wake: make(chan struct{}, 1), waiting: map[string]chan json.RawMessage{}, bg: map[string]string{}}
+		wake: make(chan struct{}, 1), waiting: map[string]chan json.RawMessage{}, bg: map[string]string{},
+		bgCall: map[string]string{}}
 }
 
 func (f *fake) flag(name string) string {
@@ -350,6 +359,27 @@ func (f *fake) control(id string, raw json.RawMessage) {
 		f.mu.Unlock()
 		ok(map[string]any{"mode": req.Mode})
 		f.out(map[string]any{"type": "system", "subtype": "status", "status": nil, "permissionMode": req.Mode, "uuid": newUUID(), "session_id": f.session})
+	case "stop_task":
+		var body struct {
+			TaskID string `json:"task_id"`
+		}
+		_ = json.Unmarshal(raw, &body)
+		f.mu.Lock()
+		_, running := f.bg[body.TaskID]
+		call := f.bgCall[body.TaskID]
+		delete(f.bg, body.TaskID)
+		delete(f.bgCall, body.TaskID)
+		f.mu.Unlock()
+		if !running {
+			f.out(map[string]any{"type": "control_response", "response": map[string]any{
+				"subtype": "error", "request_id": id, "error": "No task found with ID: " + body.TaskID}})
+			return
+		}
+		ok(map[string]any{})
+		bt := &turnRun{f: f, ctx: context.Background()}
+		bt.system(map[string]any{"subtype": "task_notification", "task_id": body.TaskID, "tool_use_id": call, "status": "killed",
+			"summary": "Background command stopped"})
+		bt.tasksChanged()
 	case "apply_flag_settings", "set_max_thinking_tokens":
 		ok(map[string]any{})
 	case "get_context_usage":
@@ -649,6 +679,22 @@ func (t *turnRun) script() {
 		t.tool("Bash", map[string]any{"command": "printf 'one\\ntwo\\n'", "description": "Print two lines"},
 			"one\ntwo", map[string]any{"stdout": "one\ntwo", "stderr": "", "interrupted": false}, false, "")
 		t.askUser(rest)
+	case "/asktool":
+		t.askUser(rest)
+		if !t.cut {
+			t.tool("Bash", map[string]any{"command": "printf 'after\\n'", "description": "Print a line"},
+				"after", map[string]any{"stdout": "after", "stderr": "", "interrupted": false}, false, "")
+			t.say("Went on after the answer.")
+		}
+	case "/hang":
+		// A stuck CLI: nothing for S seconds, and an interrupt is taken
+		// and not acted on.
+		<-time.After(time.Duration(floatArg(fields, 0, 1) * float64(time.Second)))
+		if t.ctx.Err() != nil {
+			t.cut = true
+			return
+		}
+		t.say("woke up")
 	case "/askdrop":
 		t.askDrop()
 	case "/elicit":
@@ -1138,10 +1184,20 @@ func (t *turnRun) background(seconds float64) {
 	id := t.tool("Bash", map[string]any{"command": "sleep 1; echo bg-done", "run_in_background": true},
 		"Command running in background with ID: "+taskID, map[string]any{"stdout": "", "stderr": "", "backgroundTaskId": taskID}, false, "")
 	t.setBG(taskID, "local_bash")
+	f.mu.Lock()
+	f.bgCall[taskID] = id
+	f.mu.Unlock()
 	t.system(map[string]any{"subtype": "task_started", "task_id": taskID, "tool_use_id": id, "description": "sleep then echo", "task_type": "local_bash"})
 	t.say("Started a background task.")
 	go func() {
 		time.Sleep(time.Duration(seconds * float64(time.Second)))
+		f.mu.Lock()
+		_, running := f.bg[taskID]
+		f.mu.Unlock()
+		if !running {
+			// Stopped (stop_task), which said its end.
+			return
+		}
 		bt := &turnRun{f: f, ctx: context.Background()}
 		bt.system(map[string]any{"subtype": "task_updated", "task_id": taskID, "patch": map[string]any{"status": "completed"}})
 		bt.system(map[string]any{"subtype": "task_notification", "task_id": taskID, "tool_use_id": id, "status": "completed",

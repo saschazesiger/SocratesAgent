@@ -72,6 +72,10 @@ type Turn struct {
 	// host took them): an interrupted turn that is not Stopped was ended by
 	// something else, such as a host that died.
 	Stopped bool `json:"stopped,omitempty"`
+	// QuietSince is, while the turn runs, the agent's last sign of life
+	// when the host found the turn quiet for long (TypeQuiet), and 0 while
+	// it is heard from.
+	QuietSince int64 `json:"quiet_since,omitempty"`
 }
 
 // Message is one message with its parts in the order they were created.
@@ -258,6 +262,10 @@ func (p *Projection) Apply(ev Event) {
 		p.Tasks, p.Agents = ev.Count, ev.Agents
 	case TypeAgentInfo:
 		p.Agent = ev.Content
+	case TypeQuiet:
+		if p.Turn != nil && (ev.TurnID == "" || ev.TurnID == p.Turn.ID) {
+			p.Turn.QuietSince = ev.Since
+		}
 	case TypeCommand:
 		if p.Turn != nil && stopsTurn(ev, p.Turn) {
 			p.Turn.Stopped = true
@@ -530,6 +538,11 @@ type Summary struct {
 	Asked bool `json:"asked"`
 	// Queued is how many user messages wait behind the running turn.
 	Queued int `json:"queued,omitempty"`
+	// TurnStartedAt is when the running turn started (Unix ms), and
+	// QuietSince the agent's last sign of life while the host finds the
+	// turn quiet for long (Turn.QuietSince).
+	TurnStartedAt int64 `json:"turn_started_at,omitempty"`
+	QuietSince    int64 `json:"quiet_since,omitempty"`
 }
 
 // Summary sums the projection up.
@@ -541,6 +554,9 @@ func (p *Projection) Summary() Summary {
 	}
 	if p.LastTurn != nil {
 		s.LastOutcome = p.LastTurn.Outcome
+	}
+	if p.Turn != nil {
+		s.TurnStartedAt, s.QuietSince = p.Turn.StartedAt, p.Turn.QuietSince
 	}
 	for _, m := range p.Messages {
 		if m.Role != RoleUser {

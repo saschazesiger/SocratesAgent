@@ -498,10 +498,24 @@ export function apply(chat, ev) {
       // commands (interrupt, model, park) say what they did by their effects.
       if (ev.op === 'command') {
         line(chat, ev, { kind: 'command', text: '/' + (ev.text || '') + (ev.args ? ' ' + ev.args : ''), clientId: ev.client_id || '' });
+      } else if ((ev.op === 'interrupt' || ev.op === 'stop') && chat.turn) {
+        // The running turn was asked to stop then: the dock says so while
+        // it has not (the host starts an agent again that does not stop,
+        // AGENT-HOST.md §6).
+        chat.turn.stopAskedAt = chat.turn.stopAskedAt || ev.at || 0;
+        chat.rev += 1;
       } else if (ev.op === 'switch_account') {
         // The switch itself is the account.switched that follows; until
         // then the composer says one is on its way.
         chat.pendingSwitch = { to: ev.to || '', clientId: ev.client_id || '' };
+        chat.rev += 1;
+      }
+      break;
+    case 'quiet':
+      // The host's watch: the running turn has said nothing since then, and
+      // 0 once it is heard from again.
+      if (chat.turn && (!ev.turn_id || ev.turn_id === chat.turn.id)) {
+        chat.turn.quietSince = Number(ev.since) || 0;
         chat.rev += 1;
       }
       break;

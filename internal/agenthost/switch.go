@@ -413,7 +413,7 @@ func (h *host) interruptAndWait(ctx context.Context) {
 // asked to start it again.
 func (h *host) parkAdapter(ctx context.Context, restart bool) {
 	old := h.adapter
-	h.adapter = nil
+	h.setAdapter(nil)
 	h.cliPID.Store(0)
 	background := 0
 	h.rec.View(func(p *agent.Projection) { background = p.Tasks })
@@ -492,7 +492,7 @@ func (h *host) startAdapter(ctx context.Context, account string, env []string) e
 	if err != nil {
 		return err
 	}
-	h.adapter = ad
+	h.setAdapter(ad)
 	h.cliPID.Store(int64(ad.PID()))
 	h.record(agent.Event{Type: agent.TypeProcess, State: agent.ProcessReady, PID: ad.PID()})
 	return nil

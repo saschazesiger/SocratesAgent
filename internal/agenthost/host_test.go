@@ -374,7 +374,9 @@ func TestHostParksWhenIdleAndTheNextOneResumes(t *testing.T) {
 		t.Fatalf("the socket is still there: %v", err)
 	}
 	r.launch()
-	next := r.dial(r.journal()[len(r.journal())-1].Seq)
+	// One read: the new host journals its start meanwhile.
+	events := r.journal()
+	next := r.dial(events[len(events)-1].Seq)
 	next.send("m2", "two")
 	next.until(5*time.Second, isType(agent.TypeTurnEnded))
 	if got := lastReply(r.journal()); !strings.Contains(got, "(turn 2 of") {

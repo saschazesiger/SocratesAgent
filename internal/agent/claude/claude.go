@@ -68,6 +68,13 @@ const (
 // for this long is stuck, and is ended rather than left to hold up the host.
 var writeWait = time.Minute
 
+// quietLimit is how long a turn may go without a sign from the CLI while it
+// waits on nobody (agent.QuietLimiter). Nothing Claude Code runs in the
+// foreground takes that long: a command is sent to the background after two
+// minutes and stopped after ten, a subagent and a workflow report as they
+// go, and the API is retried with a notice. A turn this quiet is stuck.
+var quietLimit = 30 * time.Minute
+
 func init() {
 	agent.Register(Harness, func() agent.Adapter { return New(Options{}) })
 }
@@ -971,6 +978,17 @@ func (a *Adapter) signal(sig syscall.Signal) {
 		_ = syscall.Kill(-cmd.Process.Pid, sig)
 		_ = cmd.Process.Signal(sig)
 	}
+}
+
+// QuietLimit is agent.QuietLimiter's.
+func (a *Adapter) QuietLimit() time.Duration { return quietLimit }
+
+// StopTask stops one background task - a shell, a subagent, a workflow -
+// by its task id (agent.TaskStopper). The CLI ends it and reports the end
+// with the task's notification, which closes its part.
+func (a *Adapter) StopTask(ctx context.Context, taskID string) error {
+	_, err := a.request(ctx, map[string]any{"subtype": "stop_task", "task_id": taskID})
+	return err
 }
 
 // Background is how many background tasks (subagents, workflows, shells) the

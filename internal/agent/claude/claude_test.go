@@ -535,6 +535,39 @@ func TestTheBackgroundTaskReportsBackWithATurnOfItsOwn(t *testing.T) {
 	})
 }
 
+// A background task stopped by hand (stop_task) ends as stopped, by the
+// CLI's own notification, and is not reported back as finished; a task the
+// CLI does not have is refused.
+func TestStopTaskStopsABackgroundShell(t *testing.T) {
+	e := newEnv(t)
+	a, r := start(t, e, "")
+	send(t, a, "m1", "/bg 60")
+	r.turnsEnded(t, 1)
+	var id string
+	r.view(func(p *agent.Projection) {
+		bash := content(t, partsOf(p.Messages[len(p.Messages)-1], agent.PartTool)[0])
+		if bash.Task == nil || bash.Task.ID == "" {
+			t.Fatalf("background shell = %+v", bash.Task)
+		}
+		id = bash.Task.ID
+	})
+	if err := a.StopTask(context.Background(), "nope"); err == nil {
+		t.Fatal("a task the CLI does not have was stopped")
+	}
+	if err := a.StopTask(context.Background(), id); err != nil {
+		t.Fatal(err)
+	}
+	r.waitFor(t, "no task left", func(evs []agent.Event) bool { return a.Background() == 0 })
+	r.waitFor(t, "the shell stopped", func(evs []agent.Event) bool {
+		stopped := false
+		r.view(func(p *agent.Projection) {
+			bash := content(t, partsOf(p.Messages[len(p.Messages)-1], agent.PartTool)[0])
+			stopped = bash.Task != nil && bash.Task.Status == "killed"
+		})
+		return stopped
+	})
+}
+
 func TestThePlanCardApprovesOrKeepsPlanning(t *testing.T) {
 	e := newEnv(t)
 	a, r := start(t, e, "")

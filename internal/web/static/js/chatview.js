@@ -31,7 +31,7 @@ import { ChatStream } from './chatstream.js';
 import { loadChat, saveChat } from './chatcache.js';
 import {
   assistantMessage, userMessage, lineHtml, askCard, askPlaces, todoList, todoItems, renewsIn, seconds, outboxState,
-  backgroundJobs, jobsList, jobDetail,
+  backgroundJobs, jobsList, jobDetail, clock, infoButton,
 } from './chatparts.js';
 import { mountComposer } from './composer.js';
 import { chatOutbox, pendingFor, pendingAnswer, pendingModel, failedItem, queueAnswer, answeredHere } from './chatoutbox.js';
@@ -52,6 +52,12 @@ const CATCHUP_QUIET = 400;
 const SAVE_AFTER = 1500;
 // How close to the bottom counts as "at the end", where new content follows.
 const STICK = 64;
+// How often a running turn is drawn again for its times to move on.
+const TICK_MS = 5000;
+// How long a Stop may go unanswered before the dock says the agent has not
+// stopped yet; the host starts it again after 30 s (AGENT-HOST.md §6).
+const STOP_SLOW = 5000;
+const STOP_RESTART = 30000;
 
 // What the person said to the chat that it shows as theirs until the journal
 // has it: a message, and a slash command. A change of model shows in the
@@ -265,6 +271,16 @@ export function mountChat(ctx) {
   // The limits renew with the clock, and the line under the top bar says
   // when: it is drawn again every half minute while a chat shows.
   setInterval(() => { if (session && chat && !host.hidden) drawSub(); }, 30000);
+  // While a turn runs, its running answer says how long its calls have been
+  // at it and the dock whether the agent went quiet: both move with the
+  // clock, so the answer is drawn again every few seconds (its cache keyed
+  // by the tick) even when the agent says nothing.
+  let tick = 0;
+  setInterval(() => {
+    if (!session || !chat || host.hidden || !chat.turn) return;
+    tick += 1;
+    schedule();
+  }, TICK_MS);
 
   // "Latest" comes and goes as the person scrolls; the snackbars move with it.
   function showJump(shown) {
@@ -431,7 +447,7 @@ export function mountChat(ctx) {
         // A plan part is drawn from the question it waits on, and from the
         // answer this browser has on its way to it; so is a question card
         // drawn at its call, and from this browser's draft of it as well.
-        rev = message.rev + ':' + chat.askRev;
+        rev = message.rev + ':' + chat.askRev + (message.state === 'streaming' ? ':' + tick : '');
         if (message.parts.some((part) => part.kind === 'plan') || askPlaces(chat).byMessage.has(message.id)) {
           rev += ':' + local + ':' + askDraftsRev();
         }
@@ -701,6 +717,21 @@ export function mountChat(ctx) {
       line = html`<div class="ds-alert ds-alert--warning" data-ds-key="workdir">${raw(icon('alert', 20))}<span class="ds-alert__text">This chat's folder is not on this machine.</span><button class="ds-btn ds-btn--quiet ds-btn--icon ds-btn--sm so-info" type="button" data-action="info" aria-label="The missing folder" data-tip="${session.workdir}">${raw(icon('info', 18))}</button><button class="ds-btn ds-btn--sm" type="button" data-action="point-folder">Point to folder</button></div>`;
     } else if (chat.process === 'failed' && !chat.turn && !diedInTurn()) {
       line = html`<div class="ds-alert ds-alert--error" data-ds-key="failed">${raw(icon('alertCircle', 20))}<span class="ds-alert__text">The agent could not start. Send a message to try again.</span><button class="ds-btn ds-btn--quiet ds-btn--icon ds-btn--sm so-info" type="button" data-action="info" aria-label="Why it did not start" data-tip="${chat.processDetail || 'No detail was given.'}">${raw(icon('info', 18))}</button></div>`;
+    } else if (chat.turn && stopSlow(chat.turn)) {
+      // A Stop the agent has not acted on yet: the host ends the agent and
+      // starts it again when it has not by then.
+      const by = clock(chat.turn.stopAskedAt + STOP_RESTART, true);
+      line = html`<div class="ds-alert ds-alert--warning" data-ds-key="stopping"><span class="so-chat__spin" aria-hidden="true"><span class="ds-spinner"></span></span><span class="ds-alert__text">${'Stopping… The agent has not stopped yet. If it has not by ' + by + ', it is ended and started again.'}</span></div>`;
+    } else if (chat.turn && chat.turn.quietSince) {
+      // The host's watch: nothing from the agent for minutes while it waits
+      // on nobody. It may be stuck; Stop is the way out, and works even when
+      // the agent does not listen.
+      const since = chat.turn.quietSince;
+      const quiet = seconds(Math.max(0, Date.now() - since)).replace(/ \d+\u00a0s$/, '');
+      const about = ['Started ' + clock(chat.turn.startedAt, true), 'Last sign of life ' + clock(since, true),
+        session.harness === 'claude' ? 'A turn quiet for 30 min is stopped by itself.' : '',
+        'Stop ends the turn; an agent that does not stop within 30 s is ended and started again on the same conversation.'];
+      line = html`<div class="ds-alert ds-alert--warning" data-ds-key="quiet" role="status">${raw(icon('clock', 20))}<span class="ds-alert__text">${'Nothing from the agent since ' + clock(since) + (quiet ? ' (' + quiet + ')' : '') + '. It may be stuck.'}</span>${infoButton(about, 'About the quiet agent')}<button class="ds-btn ds-btn--sm" type="button" data-action="stop-turn"${interrupting ? html` aria-busy="true"` : ''}>${raw(icon('stop', 16))}<span>Stop</span></button></div>`;
     } else if (chat.process === 'starting') {
       line = html`<div class="ds-alert" data-ds-key="starting"><span class="so-chat__spin" aria-hidden="true"><span class="ds-spinner"></span></span><span class="ds-alert__text">Starting the agent…</span></div>`;
     }
@@ -815,7 +846,10 @@ export function mountChat(ctx) {
 
   // sendNow stops the running turn, so the messages waiting behind it go to
   // the agent at once (the owner's choice: the same for every agent).
-  async function sendNow() {
+  function sendNow() { return stopTurn('The message could not be sent now: '); }
+
+  // stopTurn interrupts the running turn; failed says what did not happen.
+  async function stopTurn(failed = 'The agent could not be stopped: ') {
     if (!session || interrupting) return;
     const id = session.id;
     interrupting = true;
@@ -823,10 +857,36 @@ export function mountChat(ctx) {
     try {
       await api('/api/chats/' + encodeURIComponent(id) + '/interrupt', { method: 'POST', body: { client_id: clientKey() } });
     } catch (err) {
-      sayError('The message could not be sent now: ' + errorMessage(err));
+      sayError(failed + errorMessage(err));
     } finally {
       interrupting = false;
       schedule();
+    }
+  }
+
+  // stopSlow is whether the turn was asked to stop a while ago and still
+  // runs.
+  function stopSlow(turn) {
+    return !!turn.stopAskedAt && Date.now() - turn.stopAskedAt >= STOP_SLOW;
+  }
+
+  // stopJob stops one background job by the task id its part names; the
+  // agent says its end as it says any other.
+  // The jobs asked to stop, by task id: their button says so until they
+  // end.
+  const stoppingJobs = new Set();
+  async function stopJob(button, task) {
+    if (!session || !task || stoppingJobs.has(task)) return;
+    stoppingJobs.add(task);
+    button.setAttribute('aria-busy', 'true');
+    try {
+      const answer = await api('/api/chats/' + encodeURIComponent(session.id) + '/tasks/' + encodeURIComponent(task) + '/stop',
+        { method: 'POST', body: { client_id: clientKey() } });
+      toast(answer && answer.idle ? 'Nothing runs any more.' : 'The job is being stopped.');
+    } catch (err) {
+      stoppingJobs.delete(task);
+      button.removeAttribute('aria-busy');
+      toast('The job could not be stopped: ' + errorMessage(err), 'error');
     }
   }
 
@@ -845,7 +905,7 @@ export function mountChat(ctx) {
       const part = picked ? chat.parts.get(picked) : null;
       if (picked && !part) picked = '';
       morph(body, part
-        ? jobDetail(part, view, { running: listed.jobs.some((job) => job.id === picked) })
+        ? jobDetail(part, view, { running: listed.jobs.some((job) => job.id === picked), stopping: stoppingJobs })
         : jobsList(listed));
     };
     const pick = (id) => {
@@ -860,6 +920,8 @@ export function mountChat(ctx) {
       const row = event.target.closest('[data-job]');
       if (row) { pick(row.dataset.job); return; }
       if (event.target.closest('[data-job-back]')) { pick(''); return; }
+      const stop = event.target.closest('[data-job-stop]');
+      if (stop) { stopJob(stop, stop.dataset.jobStop); return; }
       const reveal = event.target.closest('[data-job-reveal]');
       if (reveal) {
         const id = reveal.dataset.jobReveal;
@@ -1212,6 +1274,9 @@ export function mountChat(ctx) {
         break;
       case 'send-now':
         sendNow();
+        break;
+      case 'stop-turn':
+        stopTurn();
         break;
       case 'schedule-clear':
         setStartAt(0);

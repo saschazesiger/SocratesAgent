@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"sort"
 	"sync"
+	"time"
 
 	"github.com/saschazesiger/SocratesAgent/internal/agent/askuser"
 )
@@ -86,6 +87,24 @@ type Adapter interface {
 // other account's environment on the same conversation.
 type AccountSwitcher interface {
 	SwitchAccount(ctx context.Context, account string, env []string) error
+}
+
+// QuietLimiter is an adapter whose turns can rightly go without a sign of
+// life for at most QuietLimit: no call of its CLI may run that long in the
+// foreground (Claude Code's own limit on a command is ten minutes). A turn
+// quiet for longer, while it waits on nobody, is stuck: the host stops it,
+// and ends the CLI when the stop is not acted on (AGENT-HOST.md §6). An
+// adapter without one is only watched, never stopped.
+type QuietLimiter interface {
+	QuietLimit() time.Duration
+}
+
+// TaskStopper is an adapter that can stop one background task of its
+// agent by the id the agent gave it (a task's `task.id`, a subagent's
+// `agent.id`, a workflow's `workflow.task_id` in the part's content). The
+// agent reports the task's end as it reports any other.
+type TaskStopper interface {
+	StopTask(ctx context.Context, taskID string) error
 }
 
 // Releaser is an adapter that can end its CLI at once for another process to

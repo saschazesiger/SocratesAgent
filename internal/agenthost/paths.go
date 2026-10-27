@@ -101,6 +101,21 @@ type Spec struct {
 	Ultracode bool `json:"ultracode,omitempty"`
 	// ParkAfterMS is how long the host may be idle before it parks.
 	ParkAfterMS int64 `json:"park_after_ms"`
+	// Watch overrides the watch on a running turn (watch.go), for tests;
+	// nil is the host's own clock.
+	Watch *WatchSpec `json:"watch,omitempty"`
+}
+
+// WatchSpec is the watch's clock, in ms; 0 keeps the host's own value.
+type WatchSpec struct {
+	// QuietAfterMS is how long a turn may go without a sign of life before
+	// the chat says it is quiet.
+	QuietAfterMS int64 `json:"quiet_after_ms,omitempty"`
+	// StopWaitMS is how long a Stop may take before the CLI is started
+	// again.
+	StopWaitMS int64 `json:"stop_wait_ms,omitempty"`
+	// QuietLimitMS stands for the adapter's QuietLimit.
+	QuietLimitMS int64 `json:"quiet_limit_ms,omitempty"`
 }
 
 // WriteSpec writes a chat's launch spec, atomically.

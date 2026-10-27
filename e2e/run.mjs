@@ -10817,6 +10817,91 @@ async function chatfold() {
   } finally { await s.stop(); }
 }
 
+// chat-watch: nothing in a chat can hang unseen. Work done after a question
+// is drawn under its card, never in the fold above it; a running call and a
+// fold say when they started; a background job can be stopped by itself; a
+// turn that goes quiet is said in the dock with when the agent was last
+// heard from, and a Stop the agent ignores ends it and starts it again on
+// the same conversation (AGENT-HOST.md §6). The watch runs on a short clock
+// here (SOCRATES_CHAT_WATCH_MS).
+async function chatwatch() {
+  const { s, id } = await claudeChat({ env: { SOCRATES_CHAT_WATCH_MS: '1500,2500,0' } });
+  const { page } = s;
+  try {
+    // A question, answered, and the work the agent does after it.
+    await say(page, '/asktool ' + JSON.stringify(DB_ASK));
+    const askId = await openAskOf(s, id, 20000);
+    await page.waitForSelector('#chat .so-ask', { timeout: 10000 }).catch(() => {});
+    const answered = askId ? (await answerFrom(s, id, askId, { db: ['postgres'] })).status() : 0;
+    await awaitLog(page, 'Went on after the answer.', 20000);
+    await awaitChat(s, id, idle);
+    const order = await page.evaluate(() => {
+      const msg = [...document.querySelectorAll('#chat .so-msg[data-role="assistant"]')].pop();
+      const card = msg && msg.querySelector('.so-ask');
+      const folds = msg ? [...msg.querySelectorAll('.so-work')] : [];
+      const after = folds.filter((f) => card && (card.compareDocumentPosition(f) & Node.DOCUMENT_POSITION_FOLLOWING));
+      const words = [...(msg ? msg.querySelectorAll('.so-part[data-kind="text"]') : [])].filter((p) => !p.closest('.so-work'));
+      const last = words.pop();
+      return {
+        card: !!card, folds: folds.length, after: after.length,
+        afterTitle: after.length ? after[0].querySelector('.so-work__title').textContent.trim() : '',
+        afterMeta: after.length ? (after[0].querySelector('.so-work__meta') || {}).textContent || '' : '',
+        lastBelow: !!card && !!last && !!(card.compareDocumentPosition(last) & Node.DOCUMENT_POSITION_FOLLOWING),
+        lastText: last ? last.innerText.trim() : '',
+      };
+    });
+    ok(answered === 200 && order.card && order.after === 1 && /ran 1 command/i.test(order.afterTitle)
+      && order.lastBelow && /Went on after the answer/.test(order.lastText),
+    'the work after an answered question goes on under its card, in a fold of its own, and its words under that', JSON.stringify({ answered, ...order }));
+    ok(/\d{1,2}:\d{2}/.test(order.afterMeta), 'the fold says by the clock when its work was done', JSON.stringify(order.afterMeta));
+
+    // A background job, stopped by itself from its dialog.
+    await say(page, '/bg 120');
+    await awaitLog(page, 'Started a background task.', 20000);
+    await page.waitForSelector('#chat .so-chat__bg:not([hidden]) .so-chat__jobs', { timeout: 15000 });
+    await page.click('#chat .so-chat__jobs');
+    await page.waitForSelector('dialog[open] .so-job [data-job]', { timeout: 5000 });
+    const row = await page.$eval('dialog[open] .so-job', (n) => (n.querySelector('.so-job__note') || {}).textContent || '');
+    ok(/since \d{1,2}:\d{2}/.test(row), 'its row says since when it runs, by the clock', JSON.stringify(row));
+    await page.click('dialog[open] .so-job [data-job]');
+    await page.waitForSelector('dialog[open] [data-job-stop]', { timeout: 5000 });
+    await page.click('dialog[open] [data-job-stop]');
+    const stopped = await page.waitForFunction(() => {
+      const state = document.querySelector('dialog[open] .so-jobd__state');
+      return !!state && !state.classList.contains('ds-status--running') && !document.querySelector('dialog[open] [data-job-stop]');
+    }, null, { timeout: 15000 }).then(() => true, () => false);
+    const counted = await awaitChat(s, id, (b) => !b.chat.tasks, 15000);
+    ok(stopped && !counted.chat.tasks, 'Stop this job stops it: it ends in the dialog and nothing runs in the background any more',
+      JSON.stringify({ stopped, tasks: counted.chat.tasks }));
+    await page.keyboard.press('Escape');
+    await page.waitForSelector('dialog[open]', { state: 'detached', timeout: 5000 }).catch(() => {});
+    const gone = await page.waitForSelector('#chat .so-chat__bg[hidden]', { state: 'attached', timeout: 10000 }).then(() => true, () => false);
+    ok(gone, 'and the foot of the chat no longer counts it', String(gone));
+
+    // A turn that goes quiet, and a Stop it does not act on.
+    await say(page, '/hang 120');
+    const quiet = await page.waitForSelector('#chat .so-chat__state [data-ds-key="quiet"]', { timeout: 15000 })
+      .then((n) => n.innerText(), () => '');
+    ok(/Nothing from the agent since \d{1,2}:\d{2}/.test(quiet) && /stuck/.test(quiet),
+      'a turn that says nothing for long is said in the dock, with when the agent was last heard from', oneLine(quiet));
+    await shot(page, 'chat-watch-quiet');
+    const home = await chatOf(s, id);
+    ok(!!home.chat.quiet_since && !!home.chat.turn_started_at, 'the chat’s summary says it is quiet, and since when its turn runs',
+      JSON.stringify({ quiet: home.chat.quiet_since, started: home.chat.turn_started_at }));
+    await page.click('#chat .so-chat__state [data-action="stop-turn"]');
+    const restarted = await awaitLog(page, 'did not stop within', 20000);
+    const after = await awaitChat(s, id, idle, 20000);
+    ok(restarted && idle(after), 'a Stop the agent does not act on ends it: the chat says so and is idle again', JSON.stringify(after.chat));
+    const cleared = await page.waitForFunction(() => !document.querySelector('#chat .so-chat__state [data-ds-key="quiet"]'), null, { timeout: 10000 })
+      .then(() => true, () => false);
+    ok(cleared, 'and the dock no longer says it is quiet', String(cleared));
+    await say(page, 'hello again');
+    const answeredAgain = await awaitLog(page, 'you said: hello again', 30000);
+    ok(answeredAgain, 'the agent started again takes the next message on the same conversation', String(answeredAgain));
+    ok(unexpected(s.errors).length === 0, 'no console errors', unexpected(s.errors).join(' | ') || '0');
+  } finally { await s.stop(); }
+}
+
 // subLine is what the line under the chat's bar shows, and the background
 // jobs at the foot of the chat.
 const subLine = (page) => page.evaluate(() => {
@@ -12761,6 +12846,7 @@ const ALL = [
   ['chat-tools', 'tool rows, the diff viewer, a subagent, a workflow, and the task list pinned while it runs', chattools],
   ['chat-light', 'a chat read on a new device comes light, and what is opened is asked for: a workflow’s agents, a long output', chatlight],
   ['chat-fold', 'an answer\u2019s work folded in one line: what it does, then what it did, its steps and tokens; the answer and a question stand', chatfold],
+  ['chat-watch', 'nothing hangs unseen: work after a question under its card, times by the clock, a job stopped, a quiet turn said and a Stop it ignores ending it', chatwatch],
   ['chat-sub', 'the line under a chat\u2019s bar: its account and its limit windows; its background jobs at its foot, with their dialog', chatsub],
   ['chat-kept', 'a chat opened again is drawn at once from what the device kept, marked as such until its stream is through', chatkept],
   ['chat-send-now', 'a message waiting behind a turn, sent now: the turn interrupted, the message answered next', chatsendnow],

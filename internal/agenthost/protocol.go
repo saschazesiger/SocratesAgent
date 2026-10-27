@@ -49,6 +49,11 @@ const (
 	// gets an account.switched divider. With When = WhenAfterTurn it waits
 	// for the agent to be done instead (AGENT-HOST.md §4.3).
 	OpSwitchAccount = agent.OpSwitchAccount
+	// OpStopTask stops one background task of the agent, by the id in Task
+	// (agent.TaskStopper): a shell, a subagent or a workflow that runs on
+	// beside the turns. Journaled as a command; an agent that cannot is
+	// unsupported.
+	OpStopTask = agent.OpStopTask
 	// OpAsk is a local tool's question (protocol 2): the host journals it as
 	// an ask of the running turn, acknowledges it with its ask id, and sends
 	// the answer on the same connection, as an answer frame, when it comes.
@@ -121,6 +126,8 @@ type Command struct {
 	Args        string             `json:"args,omitempty"`
 	// Payload is an ask op's question: an ask_user payload.
 	Payload json.RawMessage `json:"payload,omitempty"`
+	// Task is a stop_task's task id.
+	Task string `json:"task,omitempty"`
 
 	// A switch_account's account, the CLI environment built for it (without
 	// its key), the key's variables sealed for this chat (SealEnv), why it

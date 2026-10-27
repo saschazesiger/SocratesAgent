@@ -569,3 +569,26 @@ func TestTheBrowserFillsInWhatALightReplayHeldBack(t *testing.T) {
 		t.Fatalf("filled in:\n%s\nwant\n%s", got, expect)
 	}
 }
+
+// The browser knows what the host's watch said of the running turn, as the
+// server does: when the agent was last heard from while the turn is quiet,
+// nothing once it is heard from again, and when the turn was asked to stop.
+func TestTheBrowserKnowsAQuietTurnAsTheServerDoes(t *testing.T) {
+	events := []agent.Event{
+		{Type: agent.TypeMessage, MessageID: "u1", Role: agent.RoleUser, State: agent.MessageDelivered, Text: "go"},
+		{Type: agent.TypeTurnStarted, TurnID: "t1", MessageID: "u1"},
+		{Type: agent.TypeQuiet, TurnID: "t1", Since: 1234},
+		{Type: agent.TypeCommand, Op: agent.OpInterrupt, ClientID: "i1"},
+	}
+	for i := range events {
+		events[i].Seq, events[i].At = int64(i+1), int64(1000+i)
+	}
+	expr := `[chat.turn.quietSince, chat.turn.stopAskedAt]`
+	if got := runFold(t, events, expr); got != fmt.Sprintf("[%d,1003]", agent.Fold(events).Turn.QuietSince) {
+		t.Fatalf("quiet turn: %s", got)
+	}
+	heard := append(events, agent.Event{Seq: 5, At: 1004, Type: agent.TypeQuiet, TurnID: "t1"})
+	if got := runFold(t, heard, expr); got != "[0,1003]" || agent.Fold(heard).Turn.QuietSince != 0 {
+		t.Fatalf("heard from again: %s", got)
+	}
+}
