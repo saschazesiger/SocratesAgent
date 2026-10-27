@@ -22,7 +22,7 @@ import {
 import { connectionSource } from './net.js';
 import { agentMark, agentMarkHtml } from './logos.js';
 import {
-  MORE_KEY, SHELVES, IDE, foldersOf, folderKeyOf, ideOf, momentOf, movesRow, notStarted,
+  MORE_KEY, FINISHED_KEY, FINISHED_LABEL, SHELVES, IDE, foldersOf, folderKeyOf, ideOf, momentOf, movesRow, notStarted,
 } from './folders.js';
 import * as harnesses from './harnesses.js';
 import * as accounts from './accounts.js';
@@ -932,7 +932,16 @@ function drawList() {
   // moves to the top of its folder glides there. It is live data, so while
   // the pointer is over the list a reorder waits for it to leave: a row never
   // jumps out from under a finger that is about to tap it.
-  const markup = foldersOf(wanted, placeOf).map((folder) => folderHtml(folder));
+  //
+  // A project with nothing left to do in it goes into the Finished fold at
+  // the bottom, shut, so the projects being worked on are all there is.
+  const all = foldersOf(wanted, placeOf);
+  const finished = all.filter((folder) => folder.finished);
+  const markup = all.filter((folder) => !folder.finished).map((folder) => folderHtml(folder));
+  if (finished.length) {
+    markup.push(groupHtml({ key: FINISHED_KEY, label: FINISHED_LABEL, path: '', sessions: [], folders: finished },
+      finished.map((folder) => folderHtml(folder))));
+  }
   flipMorph(host, html`${markup}`, { items: '.so-row, .so-folder__bar', live: true });
 }
 
@@ -989,7 +998,8 @@ const closedFolders = new Set();
 // about to be work. The other two start shut - a service is meant to run
 // unseen, and what is done is finished - so for them the set records the
 // opposite: being in it means the person opened it. Done is shut again at
-// every start of the page: an opened one is not written down. A shelf's key
+// every start of the page: an opened one is not written down, and so is the
+// Finished fold at the bottom of the list. A shelf's key
 // is its folder's and its status, joined by a character no path and no
 // status can hold.
 function shelfKey(folderKey, status) { return folderKey + '\u0000' + status; }
@@ -998,6 +1008,7 @@ function shelfOf(key) {
   return at < 0 ? '' : key.slice(at + 1);
 }
 const SHELF_WORDS = { unstarted: 'Not started', background: 'Background', done: 'Done' };
+const FINISHED_TITLE = 'Finished: projects with nothing left to do, only done sessions';
 const SHELF_TITLES = {
   unstarted: 'Not started: chats nobody has sent anything yet',
   background: 'Background sessions: services left running on purpose, never deleted',
@@ -1005,6 +1016,7 @@ const SHELF_TITLES = {
 };
 
 function shutByDefault(key) {
+  if (key === FINISHED_KEY) return true;
   const shelf = shelfOf(key);
   return shelf === 'background' || shelf === 'done';
 }
@@ -1035,12 +1047,16 @@ function restoreFolders() {
   try {
     const shut = JSON.parse(raw);
     if (!Array.isArray(shut)) return;
-    for (const key of shut) if (typeof key === 'string' && shelfOf(key) !== 'done') closedFolders.add(key);
+    for (const key of shut) if (typeof key === 'string' && remembered(key)) closedFolders.add(key);
   } catch { /* a value from a version that wrote something else */ }
 }
 
+// remembered says whether a folder's state outlives the page: done and the
+// Finished fold are shut again at every start.
+function remembered(key) { return key !== FINISHED_KEY && shelfOf(key) !== 'done'; }
+
 function saveFolders() {
-  const kept = [...closedFolders].filter((key) => shelfOf(key) !== 'done');
+  const kept = [...closedFolders].filter(remembered);
   try { localStorage.setItem(FOLDERS_KEY, JSON.stringify(kept)); } catch { /* private window */ }
 }
 
@@ -1057,13 +1073,16 @@ function toggleFolder(key) {
  * inside a shut folder cannot be clicked at all, and the session this tab is
  * meant to be on - the one in the address, or the one just started - has to
  * be on screen whatever the folder it landed in was left as. A shelved
- * session needs its shelf opened as well as its folder; an editor
- * is on the folder's head, which is on screen whenever the folder is.
+ * session needs its shelf opened as well as its folder, and one in a
+ * finished folder the Finished fold too; an editor is on the folder's head,
+ * which is on screen whenever the folder is.
  */
 function openFolder(session) {
   if (!session) return;
   const key = folderKeyOf(session);
   let changed = closedFolders.delete(key);
+  const folder = foldersOf(state.sessions, placeOf).find((one) => one.key === key);
+  if (folder && folder.finished && !closedFolders.has(FINISHED_KEY)) { closedFolders.add(FINISHED_KEY); changed = true; }
   const place = placeOf(session);
   if (place && !(session.harness === IDE && ideOf(state.sessions, key) === session)) {
     const shelf = shelfKey(key, place);
@@ -1085,6 +1104,7 @@ function openFolder(session) {
 function groupHtml(folder, children) {
   const open = folderOpen(folder.key);
   const shelf = !!folder.status;
+  const fold = folder.key === FINISHED_KEY;
   const id = rowsIdOf(folder.key);
   // Shut, a folder has to say what is behind it: the two things this page
   // exists to make noticeable - an agent that needs an answer, and one that
@@ -1111,16 +1131,21 @@ function groupHtml(folder, children) {
   }
   let count = folder.sessions.length;
   if (folder.shelves) for (const status of SHELVES) count += folder.shelves[status].length;
+  // The Finished fold counts the projects in it, which is what it holds.
+  if (fold) count = folder.folders.length;
   const attention = waiting ? 'waiting' : busy ? 'busy' : '';
   // The whole path is technical detail, so it is where every technical string
   // on this page is: in a tooltip, and nowhere in the words. "More Chats" and
   // the shelves have no path, so their tooltip says what they hold instead.
-  const tip = SHELF_TITLES[folder.status] || folder.path || 'Sessions in a directory of their own';
-  const ide = shelf || folder.key === MORE_KEY ? '' : ideButtonHtml(folder);
-  const kind = shelf ? html`data-shelf="${folder.status}"` : html`data-folder="${folder.key}"`;
-  // A project with nothing in it but done sessions steps back as they do.
-  const done = !shelf && !!folder.shelves && count === folder.shelves.done.length;
-  return html`<section class="${shelf ? 'so-folder so-folder--shelf' : 'so-folder'}" data-ds-key="${(shelf ? 'shelf:' : 'folder:') + folder.key}" ${kind}${open ? html` data-open` : ''}${done ? html` data-done` : ''}><div class="so-folder__bar"><button class="so-folder__head ds-pressable ds-pressable--lg ds-pressable--inset" type="button" aria-expanded="${open ? 'true' : 'false'}" aria-controls="${id}" data-toggle="${id}" data-tip="${tip}"${attention ? html` data-attention="${attention}"` : ''}${unread ? html` data-unread` : ''}>${raw(icon('chevronDown', 16, 'ds-chevron'))}<span class="so-folder__name">${folder.label}</span><span class="so-folder__dot" aria-hidden="true">${attention === 'waiting' ? raw(icon(WAITING_GLYPH, 16)) : ''}</span><span class="so-folder__count">${count}</span>${
+  const tip = fold ? FINISHED_TITLE : SHELF_TITLES[folder.status] || folder.path || 'Sessions in a directory of their own';
+  const ide = shelf || fold || folder.key === MORE_KEY ? '' : ideButtonHtml(folder);
+  const kind = fold ? html`data-finished` : shelf ? html`data-shelf="${folder.status}"` : html`data-folder="${folder.key}"`;
+  // A project with nothing in it but done sessions steps back as they do,
+  // and so does the fold they are put away in.
+  const done = fold || (!shelf && !!folder.shelves && count === folder.shelves.done.length);
+  const className = fold ? 'so-folder so-folder--finished' : shelf ? 'so-folder so-folder--shelf' : 'so-folder';
+  const dsKey = fold ? 'finished' : (shelf ? 'shelf:' : 'folder:') + folder.key;
+  return html`<section class="${className}" data-ds-key="${dsKey}" ${kind}${open ? html` data-open` : ''}${done ? html` data-done` : ''}><div class="so-folder__bar"><button class="so-folder__head ds-pressable ds-pressable--lg ds-pressable--inset" type="button" aria-expanded="${open ? 'true' : 'false'}" aria-controls="${id}" data-toggle="${id}" data-tip="${tip}"${attention ? html` data-attention="${attention}"` : ''}${unread ? html` data-unread` : ''}>${raw(icon('chevronDown', 16, 'ds-chevron'))}<span class="so-folder__name">${folder.label}</span><span class="so-folder__dot" aria-hidden="true">${attention === 'waiting' ? raw(icon(WAITING_GLYPH, 16)) : ''}</span><span class="so-folder__count">${count}</span>${
     !open && attention ? html`<span class="ds-sr">${', ' + (attention === 'waiting' ? ACTIVITY_WORDS.waiting : ACTIVITY_WORDS.busy).toLowerCase()}</span>` : ''
   }</button>${ide}</div><div class="so-folder__rows" id="${id}"${open ? '' : html` hidden`}>${children}</div></section>`;
 }

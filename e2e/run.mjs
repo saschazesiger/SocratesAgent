@@ -5308,9 +5308,13 @@ const listing = (page) => page.evaluate(() => [...document.getElementById('sessi
     count: (node.querySelector('.so-folder__count') || {}).textContent || '',
     shown: !!node.querySelector('.so-folder__rows') && node.querySelector('.so-folder__rows').checkVisibility(),
     stamp: node.wp1Stamp || '',
+    // The Finished fold holds folders rather than rows: what is in it, by name.
+    inside: [...node.querySelectorAll(':scope > .so-folder__rows > .so-folder[data-folder]')]
+      .map((folder) => folder.querySelector('.so-folder__name').textContent),
     rows: [...node.querySelectorAll('.so-row')].map((row) => ({
       id: row.dataset.id,
       row: row.querySelector('.so-row__label').textContent,
+      folder: row.closest('.so-folder[data-folder]').querySelector('.so-folder__name').textContent,
       done: row.dataset.status === 'done',
       stamp: row.wp1Stamp || '',
       seen: row.checkVisibility(),
@@ -5321,7 +5325,7 @@ const listing = (page) => page.evaluate(() => [...document.getElementById('sessi
 // under is which folder each row is in, by the name the row reads.
 function under(shown) {
   const out = new Map();
-  for (const folder of shown) for (const row of folder.rows) out.set(row.row, folder.name);
+  for (const folder of shown) for (const row of folder.rows) out.set(row.row, row.folder);
   return out;
 }
 
@@ -5377,6 +5381,14 @@ async function folders() {
           { active_at: 30, id: 'new', workdir: '/root/browser', workdir_mode: 'preset' },
           { active_at: 20, id: 'mid', workdir: '/root/browser', workdir_mode: 'preset' },
         ])[0].sessions.map((one) => one.id).join(','),
+        finished: mod.foldersOf([
+          { active_at: 50, workdir: '/root/old', workdir_mode: 'preset', status: 'done' },
+          { active_at: 40, workdir: '/root/served', workdir_mode: 'preset', status: 'background' },
+          { active_at: 30, workdir: '/data/w/x', workdir_mode: 'dynamic' },
+          { active_at: 20, workdir: '/root/work', workdir_mode: 'preset' },
+          { active_at: 10, workdir: '/root/edited', workdir_mode: 'preset', harness: 'vscode', state: 'running' },
+          { active_at: 5, workdir: '/root/closed', workdir_mode: 'preset', harness: 'vscode', state: 'stopped' },
+        ]).map((f) => f.label + (f.finished ? ' (finished)' : '')).join(' | '),
         moment: mod.momentOf({ active_at: 9, updated_at: 7, created_at: 3 }) + ','
           + mod.momentOf({ updated_at: 7, created_at: 3 }) + ',' + mod.momentOf({ created_at: 3 }),
         moves: [['idle', 'busy'], ['busy', 'idle'], ['busy', 'waiting'], ['idle', 'waiting'],
@@ -5395,6 +5407,9 @@ async function folders() {
     ok(pure.clash === 'one/web(1) | two/web(1) | api(1)',
       'a folder is named after its directory, and takes a parent when that would not tell it from another',
       pure.clash);
+    ok(pure.finished === 'work | served | edited | More Chats | old (finished) | closed (finished)',
+      'a folder with nothing left to do - only done sessions, or an editor that is shut - is finished and goes last',
+      pure.finished);
     ok(pure.inside === 'new,mid,old', 'inside a folder the sessions are newest first', pure.inside);
     ok(pure.moment === '9,7,3',
       'a session is ordered by its last status change, by its last write from an older server, else by its creation',
@@ -5452,7 +5467,7 @@ async function folders() {
 
     // The oldest project's one session is done. It stays in its project, on
     // the project's Done shelf, and the project - with no work in progress
-    // left - goes under the ones that have some.
+    // left - is put away in the Finished fold at the bottom.
     const away = await s.context.request.post(s.url + '/api/sessions/' + ids.socrates + '/file',
       { data: { status: 'done' } });
     ok(away.ok(), 'the oldest project’s one session is done', away.status());
@@ -5466,14 +5481,18 @@ async function folders() {
     // Two of the three projects are called `browser`, so both of them take a
     // parent: a name that is a name for one of them and a lie for the other
     // would be worse than the path either of them came from.
-    ok(active.map((f) => f.name).join(' | ') === 'projects/browser | elsewhere/browser | socrates | More Chats',
-      'the list is folders: the project worked in most recently first, one with only finished work after them, and "More Chats" last',
+    ok(active.map((f) => f.name).join(' | ') === 'projects/browser | elsewhere/browser | More Chats | Finished',
+      'the list is folders: the project worked in most recently first, "More Chats" after them, and the Finished fold last',
       active.map((f) => f.name).join(' | '));
+    ok(active[3].inside.join(',') === 'socrates' && active[3].open === 'false' && !active[3].shown
+      && active[3].count === '1',
+      'a project with only done sessions left is in the Finished fold, which is shut and counts the projects in it',
+      JSON.stringify({ inside: active[3].inside, open: active[3].open, count: active[3].count }));
     ok(active.every((f) => !f.other), 'and the list holds nothing but folders',
       active.filter((f) => f.other).map((f) => f.other).join(' | ') || 'folders');
-    ok(active[0].title === projects.browser && active[3].title === 'Sessions in a directory of their own',
+    ok(active[0].title === projects.browser && active[2].title === 'Sessions in a directory of their own',
       'the whole path is on the folder rather than in it, and "More Chats" says what it holds instead',
-      active[0].title + ' | ' + active[3].title);
+      active[0].title + ' | ' + active[2].title);
     ok(!active.some((f) => f.name.startsWith('/')),
       'no folder reads as a path', active.map((f) => f.name).join(' | '));
 
@@ -5486,8 +5505,10 @@ async function folders() {
     ok(active[0].rows.map((r) => r.row).join(',') === 'Browser two,Browser one',
       'and inside a folder the newest is first', active[0].rows.map((r) => r.row).join(','));
 
-    // The Done shelf starts shut. Opening it shows the done session, and
-    // everything that was on screen is still the element it was.
+    // The Done shelf starts shut, inside the Finished fold. Opening both shows
+    // the done session, and everything that was on screen is still the
+    // element it was.
+    const finishedHead = '#sessionList .so-folder--finished > .so-folder__bar > .so-folder__head';
     const doneShelf = '#sessionList .so-folder[data-folder="' + projects.socrates + '"] .so-folder--shelf[data-shelf="done"] .so-folder__head';
     const shelfState = () => s.page.$eval(doneShelf, (head) => ({
       open: head.getAttribute('aria-expanded'),
@@ -5499,6 +5520,8 @@ async function folders() {
       'the Done shelf of a folder starts shut, and says how many are on it', JSON.stringify(shutShelf));
     const before = new Set(active.flatMap((f) => [f.folder, ...f.rows.map((r) => r.id)]));
     await stampAll(s.page);
+    await s.page.click(finishedHead);
+    await s.page.waitForFunction((sel) => document.querySelector(sel)?.checkVisibility(), doneShelf, { timeout: 5000 });
     await s.page.click(doneShelf);
     await s.page.waitForFunction((sel) => document.querySelector(sel)
       .getAttribute('aria-expanded') === 'true', doneShelf, { timeout: 5000 });
@@ -5552,6 +5575,8 @@ async function folders() {
     // The Done shelf opened above is not: done is shut at every start.
     const doneAgain = await shelfState();
     ok(doneAgain.open === 'false' && !doneAgain.shown, 'a reload finds the Done shelf shut again', JSON.stringify(doneAgain));
+    const finishedAgain = reloaded.find((f) => f.name === 'Finished') || {};
+    ok(finishedAgain.open === 'false' && !finishedAgain.shown, 'and the Finished fold shut again too', finishedAgain.open);
     await wait(1000);
     const dimmed = await s.page.$eval(doneShelf, (head) => getComputedStyle(head.closest('.so-folder__bar')).opacity);
     ok(Number(dimmed) >= 0.3 && Number(dimmed) <= 0.7, 'and the Done shelf steps back, half seen', dimmed);

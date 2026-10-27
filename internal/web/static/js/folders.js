@@ -188,6 +188,30 @@ export function ideOf(sessions, key) {
 }
 
 /**
+ * FINISHED_KEY is the fold at the very bottom of the list that holds every
+ * folder with nothing left to do in it, and FINISHED_LABEL is what it reads.
+ * Like MORE_KEY it is not a path, so no directory can be called it.
+ */
+export const FINISHED_KEY = '#finished';
+export const FINISHED_LABEL = 'Finished';
+
+/**
+ * isFinished says whether a folder has nothing left to do in it: no rows,
+ * no chat about to be started, no service left running in the background
+ * and no editor open - only done sessions, if anything. Such a project is
+ * history, and a list of ten of them is ten heads between the person and
+ * the work, so the sidebar puts them away together, in one fold that is
+ * shut. A done session is still a click away there, and the folder comes
+ * back up the moment something in it is picked up again.
+ */
+export function isFinished(folder) {
+  if (!folder) return false;
+  if (folder.sessions.length || folder.shelves.unstarted.length || folder.shelves.background.length) return false;
+  const ide = folder.ide;
+  return !(ide && (ide.state === 'running' || ide.state === 'starting'));
+}
+
+/**
  * foldersOf is the sidebar, worked out: one folder per project directory and
  * one for everything Socrates housed itself, each holding its sessions
  * newest first, its
@@ -199,7 +223,8 @@ export function ideOf(sessions, key) {
  * up. A shelved session or the editor only orders a folder that has nothing
  * else in it: neither is the work. "More Chats" is last whatever is in it: it
  * is where a session goes for having no project, so it cannot be allowed to
- * sit above the projects.
+ * sit above the projects. A finished folder (isFinished) is below all of
+ * them, "More Chats" too, and says so in `finished`: those go into the fold.
  *
  * Ties keep the order the server gave, because Array.sort is stable and the
  * server lists the sessions newest first.
@@ -239,8 +264,10 @@ export function foldersOf(sessions, shelfOf = shelfByStatus) {
     folder.at = work.length ? Math.max(...work.map(momentOf)) : Math.max(0, ...rest.map(momentOf));
   }
   nameFolders(folders);
+  for (const folder of folders) folder.finished = isFinished(folder);
   const working = (folder) => folder.sessions.length > 0 || folder.shelves.unstarted.length > 0;
   folders.sort((a, b) => {
+    if (a.finished !== b.finished) return a.finished ? 1 : -1;
     if ((a.key === MORE_KEY) !== (b.key === MORE_KEY)) return a.key === MORE_KEY ? 1 : -1;
     if (working(a) !== working(b)) return working(a) ? -1 : 1;
     return b.at - a.at;

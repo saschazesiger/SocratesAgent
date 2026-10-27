@@ -16,7 +16,8 @@
  *                    and the empty VS Code; the foot is DS's .ds-drawer__foot
  *                    (a rail of icons on a short screen, session.js)
  *   .so-session-list the folders and their rows (session.js)
- *   .so-folder       a project, or a shelf of one (.so-folder--shelf); its
+ *   .so-folder       a project, a shelf of one (.so-folder--shelf), or the
+ *                    Finished fold of projects (.so-folder--finished); its
  *                    head a .ds-pressable
  *   .so-row          one session: DS's drawer row (.ds-drawer__row), its item
  *                    and its ⋮ (.ds-drawer__action, .ds-hover-actions)
@@ -348,6 +349,16 @@
 }
 
 .so-folder--shelf > .so-folder__rows {
+  padding-left: var(--ds-space-2);
+}
+
+/* The Finished fold: the projects with nothing left to do, put away at the
+   bottom of the list, each set in under the fold's head. */
+.so-folder--finished {
+  margin-top: var(--ds-space-3);
+}
+
+.so-folder--finished > .so-folder__rows {
   padding-left: var(--ds-space-2);
 }
 
