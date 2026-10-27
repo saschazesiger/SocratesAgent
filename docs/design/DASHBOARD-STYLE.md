@@ -7,49 +7,69 @@ data directory it was written in.
 
 ## The rules
 
-These are DS's own rules for a project (its `AGENTS.md`, "Using Dashboard-Style in a project"), filled in for
-Socrates:
+These are DS's own rules for a project (its `AGENTS.md`, "Using Dashboard-Style in a project", as of 2.0.0), filled
+in for Socrates:
 
+- **The UI is built on Dashboard-Style 2.x**, vendored in `internal/web/static/vendor/dashboard-style` (tokens
+  `--ds-*`, components `.ds-*`, `DS.motion`, `DS.indicator`, `DS.dom`, `DS.ripple`, `DS.icons`, `DS.overlay`).
+  `ui.js` `startUI()` calls `DS.ripple.attach(document)` (the press ripple, and DS's guard: a busy, done or
+  `aria-disabled` action takes no input, so no page guards its own) and `DS.overlay.tooltips(document)` once per
+  page. Dialogs, side sheets, the modal drawer, menus and the combobox list open and close through
+  `DS.overlay.open(el, { opener })` / `DS.overlay.close(el)`; snackbars are `api.js` `toast()` on
+  `DS.overlay.toast`; questions with yes or no and one field are `DS.overlay.confirm()` / `prompt()` behind
+  `confirmDialog` / `promptDialog`. Every overlay sits inside the `.ds-theme` element (`<html>`).
 - **Socrates wears DS's own look.** No DS role is overridden. The theme (`css/theme.css`, loaded after `ds.css`,
-  unlayered, on `.ds-theme`) holds only the project's `--so-*` tokens, documented component hooks (`--ds-btn-*`,
-  ...) and the terminal font. Never a motion token or hook (`--ds-dur-*`, `--ds-ease-*`, ...).
-- **Never edit the vendored copy.** It is checksummed (`SHA256SUMS`, checked by `internal/web/embed_test.go`) and
-  replaced by `.github/workflows/update-dashboard-style.yml` every night. Something every dashboard could use goes to
-  Dashboard-Style itself.
+  unlayered, on `.ds-theme`) holds only the project's `--so-*` tokens, documented component hooks and the terminal
+  font. Never a motion token or hook (`--ds-dur-*`, `--ds-ease-*`, `--ds-distance-*`, `--ds-scale-*`, `--ds-loop-*`,
+  `--ds-delay-*`, `--ds-hold-*`, `--ds-stagger`, `--ds-time-scale`, `--ds-motion-*`, `--ds-enter-*`, `--ds-leave-*`,
+  `--ds-clip-from`, `--ds-draw-length`, `--ds-scan-*`, `--ds-indicator-lag`, `--ds-indicator-dur`), never in
+  `@layer`. Charts take DS's chart roles (`--ds-chart-1` to `--ds-chart-4`, `--ds-chart-neutral`).
+- **Never edit the vendored copy.** It is checksummed (`SHA256SUMS`, checked by `internal/web/embed_test.go` and
+  `make ds-check`) and replaced by `.github/workflows/update-dashboard-style.yml` every night (by hand:
+  `make vendor-ds`, or `make vendor-ds DS_REF=<commit>` for a release not on main yet). When the nightly update
+  fails at "Check" or "Verify", nothing was committed: run `make vendor-ds` and `make ds-check` locally, read DS's
+  `CHANGELOG.md` for deprecations and removals (`vendor/dashboard-style/deprecations.json` lists them as data),
+  and commit the new copy together with the fix. Something every dashboard could use goes to Dashboard-Style
+  itself.
+- **The project check.** `ds-check.json` configures DS's `tools/check-project.mjs` (prefix `so-`); CI, the nightly
+  update and `make ds-check` run it. Every deliberate placement or wrapping rule on a `.ds-*` part is an exception
+  there, with its reason; a new one needs one too, or a hook.
 - **Reach for a DS component first**, and copy its documented markup exactly: the table "Which component for which
-  need" and the markup of every component are in `docs/components.md` of Dashboard-Style; its reference app
-  (`example/`: `app.css` with the prefix `ex-`, `app.js`) shows how a project wires them. Behaviour is the page's
-  own script; opening and closing dialogs, sheets, menus, the combobox list, the modal drawer and snackbars go
-  through `DS.overlay`.
+  need" and the markup of every component are in `docs/components.md` of Dashboard-Style, the patterns in
+  `docs/patterns.md`, the choreography in `docs/motion.md`; its styleguide and Motion Lab (`styleguide/`) and its
+  reference app (`example/`: `app.css` with the prefix `ex-`, `app.js`) show them live. Behaviour is the page's
+  own script.
 - **Project components use the prefix `so-`** and read tokens only (`--ds-*`, `--so-*`): no colour, radius, font,
-  shadow, duration or curve literals, no `@keyframes` of their own (the `ds-*` keyframes and motion tokens are
-  there). A literal value that is needed becomes a `--so-*` token in `theme.css`. Project CSS is unlayered and must
-  never restyle a `.ds-*` component (colour, radius, type, motion): set its hooks instead. Placing a `.ds-*`
-  element inside a `so-` container is fine.
+  shadow, duration or curve literals, no `@keyframes` of their own. A literal value that is needed becomes a
+  `--so-*` token in `theme.css`. Project CSS is unlayered and must never restyle a `.ds-*` component (colour,
+  radius, type, motion): set its hooks instead. Placing a `.ds-*` element inside a `so-` container is fine. A
+  project element that is pressed takes `.ds-pressable` (the state layer, ring snap and ripple), never a
+  `::before` layer of its own.
+- **Under `.ds-base`, `hidden` always hides:** never add a `[hidden]` rule.
 - **Every class in markup and script is `ds-*` or `so-*`.** State is said with attributes (`aria-pressed`,
   `aria-current`, `aria-expanded`, `aria-selected`, `data-state`, `hidden`), not with bare classes such as `on`,
-  `active` or `open`. The few exceptions are other libraries' own classes (`xterm-*`).
+  `active` or `open`. The few exceptions are other libraries' own classes (`xterm-*`). The page never writes the
+  attributes DS owns (`data-scrolled`, `data-ds-*`, `data-toast-reserve`).
 - **Re-render with `morph()` / `flipMorph()`** (`ui.js`, DS's `morphHtml` and `flip`) and the `html```
-  template, never `innerHTML`; key list rows with `data-ds-key`. Figures through `DS.motion.countUp`, timing from
-  `ms()` / `DS.motion.motionDuration`, never millisecond literals.
+  template, never `innerHTML`; key list rows with `data-ds-key`. Reorders go through `flip()` or
+  `DS.motion.sortable()`, figures through `DS.motion.countUp`, timing from `ms()` / `DS.motion.motionDuration`,
+  never millisecond literals.
 - **Icons only from `DS.icons`**, through `icon()` / `iconEl()` / `data-icon` (`ui.js`); the meaning-to-glyph map is
-  `GLYPH`. The few glyphs a phone needs that DS 1.6.2 lacks (microphone, stop, keyboard, upload, clipboard, Enter,
-  paperclip, speaker, terminal) are Lucide's - the set DS draws its own from, same grid and stroke - in `ui.js`'s
-  `LUCIDE`, until DS ships them; nothing else is drawn by the project. Brand marks of the agents stay in `logos.js`
-  and `.so-agent`.
+  `GLYPH`. Nothing is drawn by the project. Brand marks of the agents stay in `logos.js` and `.so-agent`.
 - **Status never by colour alone; every action is a pill; one filled button per area; no red buttons.**
 - `ui.js` is the only module that reads `window.DS`.
 - Socrates' own design rules still hold (docs/design/DESIGN.md §E.10): technical detail (versions, paths) behind
   the `i` of `infoTip()`, never in visible text; the agents' real marks wherever they are named; the phone in a car
-  and the touch mode (`.so-touch`, 48px targets) are first-class; nothing typed is ever lost.
+  and the touch mode (`<html class="so-touch ds-touch">`: DS's `.ds-touch` makes every DS target a finger's 48px,
+  `.so-touch` the project's) are first-class; nothing typed is ever lost.
 
 ## Files
 
 | File | What |
 |---|---|
-| `css/theme.css` | the theme: `--so-*` tokens by area, the touch-mode hooks, the terminal font |
-| `css/so-shared.css` | components every page may show: `.so-logo`, `.so-agent`, `.so-mark`, `.so-field-row`, `.so-break`, `.so-ellipsis`, `.so-conn`, `.so-page-head` |
-| `css/so-frame.css` | the session page's frame: top bar contents, drawer actions and foot, session list and folders, banners, the options and usage dialogs |
+| `css/theme.css` | the theme: `--so-*` tokens by area, the project's touch-mode sizes, the terminal font |
+| `css/so-shared.css` | components every page may show: `.so-logo`, `.so-agent`, `.so-mark`, `.so-break`, `.so-ellipsis`, `.so-conn`, `.so-page-head` |
+| `css/so-frame.css` | the session page's frame: top bar contents, drawer actions, session list and folders, banners, the options dialog, the action sheet's title, the Status modal |
 | `css/so-stage.css` | the stage: terminal pane, its cover, notice and ticker, key bar, transfer buttons, recording and copy dialogs, the IDE pane |
 | `css/so-home.css` | Home |
 | `css/so-question.css` | the question dialog |
@@ -57,11 +77,48 @@ Socrates:
 | `css/so-chat.css` | the chat view: the conversation and its parts, the composer, the chat's question dialog (over `so-question.css`) |
 | `css/so-admin.css` | the admin page |
 | `css/so-pages.css` | login, setup and costs |
-| `js/ui.js` | the bridge to DS: `startUI`, icons, `html```, `morph`, `flipMorph`, `ms`, `watchScrolled`, `faces`, overlays |
-| `js/api.js` | requests, `el()`, dialogs (`confirmDialog`, `alertDialog`), `toast`, `infoTip` |
+| `js/ui.js` | the bridge to DS: `startUI`, touch mode, icons, `html```, `morph`, `flipMorph`, `ms`, `faces`, overlays |
+| `js/api.js` | requests, `el()`, dialogs (`confirmDialog`, `promptDialog` on DS's, `alertDialog`, `openDialog`), `toast`, `infoTip` |
+| `ds-check.json` (repository root) | the configuration of DS's project check, with its exceptions and their reasons |
 
 The stylesheet from before the move, `css/app.css`, is gone; `git show 17d559d:internal/web/static/css/app.css`
 shows it. `embed_test.go` fails on a page that asks for it again.
+
+## Dashboard-Style 1.6 to 2.0 (October 2026)
+
+2.0.0 removed names Socrates never used, so the update itself changed no markup; what it changed is behaviour and
+looks, and the parts Socrates had built by hand that 2.0 ships. Moved onto DS's part:
+
+| Before (Socrates' own) | Now (DS 2.0) |
+|---|---|
+| touch sizes on DS fields, rows, the combobox, `.ds-btn--sm`, `.ds-toast__close` | `.ds-touch` on `<html>` |
+| Lucide glyphs in `ui.js` `LUCIDE`; `menu` as the grip | DS's glyphs (`mic`, `stopCircle`, `keyboard`, `upload`, `clipboard`, `cornerDownLeft`, `paperclip`, `volume`, `terminal`, `home`, `panelLeft`, `grip`) |
+| `keepDialogRoom`, `reserveToasts`, de-duplication, the action button and the close tip of snackbars, the drawer and keyboard offsets | `toast()` options (`restart`, `key`, `action`, `reserve`), DS's placement beside the modal drawer, above its foot and above the keyboard |
+| `followViewport()` writing `--so-app-h`; the top bar hidden by project CSS | `DS.dom.followViewport()`, `--ds-viewport-height`, `.ds-app--keyboard-hides-bar` |
+| `watchScrolled`, `edgeCue`, `setFaceLabel`, `overlayOpen`, the `busy()` done wrapper, own busy and `aria-disabled` guards | `DS.dom.watchScrolled`, DS's cut-edge fades (`DS.dom.scrollEdges` for the drawer list), `DS.motion.setLabel`, `DS.overlay.topmost`, `busy()`'s new default, DS's guard |
+| the confirm and prompt dialogs built by hand | `DS.overlay.confirm()`, `prompt()` |
+| the drawer's actions and foot, the row's ⋮ over its item, the folder head's own state layer | `.ds-drawer__actions`, `.ds-drawer__foot` (`--rail` on a short screen), `.ds-drawer__row` + `.ds-drawer__action.ds-hover-actions`, `.ds-pressable` |
+| the menu's heading and On/Off, the action sheet's layout | menu groups, `.ds-menu__heading`, `.ds-menu__meta`, `.ds-dialog--bottom` with `.ds-dialog__head` and `.ds-dialog__list` |
+| the question dialog restyled to the window, the option's ring | `.ds-dialog--full`, the selected interactive card |
+| Home's tile ring and the card title's button reset | the selected tile, the button form of `.ds-card__action` |
+| the chat's summaries and job rows, its dividers and task lists | `.ds-pressable`, `.ds-divider--label`, `.ds-tasks` |
+| the Status modal's task marks and three-column tiles | `.ds-tasks`, `.ds-tiles--3` |
+| the admin grip and its drag code, the voice guide's summary, the logs | `DS.motion.sortable()` with `.ds-grip`, `.ds-disclosure`, `.ds-code-block--wrap` |
+| the dropdown's button field, the combobox without a list | `.ds-combo--select`, DS's rule for a combobox without a toggle |
+| the sign-in card, "optional", the restore's share | `.ds-auth`, `.ds-card--elevated`, `.ds-field__optional`, `DS.dom.progress()` |
+| Costs' series colours, swatches, share bars, `.so-costs-links` | the chart roles, `.ds-legend`, `.ds-meter`, the interactive table (rows without a link stay plain) |
+| `.so-field-row`, the pane's drop outline, `[hidden]` rules | `.ds-field__row`, `DS.dom.dropzone()`, DS's `[hidden]` |
+
+Still Socrates' own, on purpose: the composer's growth (DS's `autosize()` hides the overflow of a field without a
+`max-height`, which the first message's field that fills the view has), the chat's stick-to-the-end and its
+"Latest" (it also lifts the snackbars and waits for a replay), the chat's file drop (the composer's own file input
+sits inside the chat, and DS's `dropzone()` would take its picks too), the chat's Markdown (`.so-md`) and fenced
+blocks with their bar (`.so-code`), the session's name in the top bar (a rename button, not a
+`.ds-topbar__title`), Home's tile grid (two a row on a phone, each row filled), the focus fallback to the terminal
+(`setFocusFallback`), `alertDialog` (lines and facts, which DS's `alert()` has not), the `data-icon` filler (it puts
+the glyph in front of a label; DS's `icons.fill()` replaces the content), the drawer list's cut-edge fade (DS fades
+menus and lists, not the drawer's list), and the snackbar room in the session page's own view (DS keeps it on the
+`.ds-view`, which here does not scroll).
 
 ## Work packages
 

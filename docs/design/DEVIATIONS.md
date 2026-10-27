@@ -2967,3 +2967,20 @@ Asked for by the product owner on 2026-10-25, on branch `ui-simplify`.
 - **Read aloud on an answer.** Beside Copy, an answer has Read aloud: `POST /api/chats/{id}/spoken`
   says it for the ear in the voice's language (what was done, what came of it, what it asks; code,
   paths and tables told rather than read), or hands back a short plain answer as it is.
+
+## Dashboard-Style 2.0 (2026-10-27)
+
+The move to Dashboard-Style 2.0.0 (DASHBOARD-STYLE.md, "Dashboard-Style 1.6 to 2.0") ends deviations of the phone
+pass and the work packages that were DS gaps:
+
+- **Glyphs from Lucide** are gone: every glyph is DS's own (`ui.js` `GLYPH` maps meanings to them).
+- **Touch mode's sizes** are DS's `.ds-touch`; the project no longer sizes DS fields, rows and the combobox.
+- **The action sheet, the full-screen question, the selected tile and option, the drawer's row action, the
+  snackbar's room in a dialog, the keyboard's top bar** are DS parts now, and look as DS draws them: the action
+  sheet's Close is at the start of its head, a chosen option and a filtering tile are tinted besides their ring,
+  and the question rises as DS's full-screen dialog.
+- **Costs' series** take DS's chart roles instead of the project's four colours, so the chart and its legend
+  change colour (blue, orange, teal, purple; "Other" in the outline grey).
+
+What still departs is listed with its reason in `ds-check.json` (the placement and wrapping rules on DS parts)
+and in DASHBOARD-STYLE.md ("Still Socrates' own").
