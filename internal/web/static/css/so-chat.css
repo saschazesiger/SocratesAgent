@@ -274,11 +274,202 @@
 
 /* ── Background jobs ─────────────────────────────────────────────────── */
 
-/* At the foot of the chat, over the composer and as wide as it: how many
-   run and what the newest runs, one tap from the dialog that lists them. */
+/* At the foot of the chat, over the composer and as wide as it: the
+   subagents and workflows at work, a card each, over one line for the rest -
+   how many run and what the newest runs, one tap from the dialog that lists
+   them. */
 .so-chat__bg {
   display: flex;
+  flex-direction: column;
+  gap: var(--ds-space-2);
   min-width: 0;
+}
+
+/* The agents' cards: one is as wide as the foot; several stand side by side
+   and scroll sideways, a card a stop, the next one peeking in. */
+.so-agentcards--foot {
+  display: flex;
+  flex: none;
+  gap: var(--ds-space-2);
+  min-width: 0;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  scroll-snap-type: x mandatory;
+  scrollbar-width: thin;
+}
+
+.so-agentcards--foot > .so-agentcard {
+  flex: 1 0 100%;
+  scroll-snap-align: start;
+}
+
+.so-agentcards--foot[data-many] > .so-agentcard {
+  flex-basis: var(--so-agentcard-min);
+}
+
+.so-agentcards--list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-space-2);
+}
+
+/* An agent's card: its mark, what it was sent to do over its kind, and its
+   watch; then what it does now, a workflow's bar, its running agents, and
+   what it has used. Closer than a card's rhythm: it sits over the
+   composer. */
+.so-agentcard {
+  --ds-card-padding: var(--ds-space-3) var(--ds-space-4);
+  --ds-card-padding-sm: var(--ds-space-3);
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.so-agentcard > * + * {
+  margin-top: var(--ds-space-2);
+}
+
+.so-agentcard__head {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--ds-space-3);
+  min-width: 0;
+}
+
+.so-agentcard__icon {
+  display: grid;
+  flex: none;
+  place-items: center;
+  inline-size: var(--ds-space-8);
+  block-size: var(--ds-space-8);
+  border-radius: var(--ds-radius-action);
+  background: var(--ds-accent);
+  color: var(--ds-on-accent);
+}
+
+.so-agentcard__heading {
+  display: flex;
+  flex: 1 1 0;
+  flex-direction: column;
+  gap: var(--ds-space-1);
+  min-width: 0;
+}
+
+.so-agentcard__title {
+  margin: 0;
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow-wrap: anywhere;
+}
+
+.so-agentcard__kind,
+.so-agentcard__stats,
+.so-agentcard__more {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--ds-text-2);
+  font: var(--ds-font-meta);
+}
+
+.so-agentcard__state {
+  flex: none;
+  font-variant-numeric: tabular-nums;
+}
+
+.so-agentcard__now {
+  display: flex;
+  align-items: baseline;
+  gap: var(--ds-space-2);
+  min-width: 0;
+}
+
+.so-agentcard__doing {
+  flex: none;
+  color: var(--ds-primary);
+  font: var(--ds-font-label);
+}
+
+.so-agentcard__what {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ds-text);
+  font: var(--ds-font-code);
+}
+
+.so-agentcard__bar {
+  min-width: 0;
+}
+
+.so-agentcard__phase {
+  color: var(--ds-text-2);
+}
+
+/* A workflow's agents at work, in the dialog: a line each. */
+.so-agentcard__runs {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-space-1);
+  margin-bottom: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.so-agentcard__runs > li {
+  display: flex;
+  align-items: center;
+  gap: var(--ds-space-2);
+  min-width: 0;
+}
+
+.so-agentcard__run {
+  flex: none;
+  max-width: 50%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ds-text);
+  font: var(--ds-font-body);
+}
+
+.so-agentcard__run-doing {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ds-text-2);
+  font: var(--ds-font-code);
+}
+
+.so-agentcard__foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--ds-space-2);
+  min-width: 0;
+}
+
+/* Stop stands above the card's own press (the <div> form of an
+   interactive card), at the far end of the line of what it has used. */
+.so-agentcard__stop {
+  margin-inline-start: auto;
+}
+
+/* On a phone's foot the card keeps to its head, what it does and its bar:
+   the composer under it needs the height. */
+@media (max-width: 600px) {
+  .so-agentcards--foot .so-agentcard__stats {
+    display: none;
+  }
+
+  .so-agentcards--foot .so-agentcard__foot:not(:has(> :not(.so-agentcard__stats))) {
+    display: none;
+  }
 }
 
 
@@ -317,10 +508,37 @@
   font-family: var(--ds-font);
 }
 
-/* The dialog: a row a job, its tool's mark in a disc, its name over what it
-   runs, and how long it has run at the end. */
+/* The dialog: the agents' cards, then a row a job, its tool's mark in a
+   disc, its name over what it runs, and how long it has run at the end. */
 .so-jobs-dialog {
   --ds-dialog-width: var(--so-jobs-width);
+}
+
+.so-jobs__body-in {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-space-4);
+  max-height: min(60vh, calc(var(--ds-viewport-height, 100dvh) * 0.6));
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.so-jobs__body-in .so-jobs {
+  max-height: none;
+  overflow: visible;
+}
+
+.so-jobs__group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-space-2);
+  min-width: 0;
+}
+
+.so-jobs__heading {
+  margin: 0;
+  color: var(--ds-text-2);
+  font: var(--ds-font-label);
 }
 
 .so-jobs {

@@ -11020,6 +11020,129 @@ const subLine = (page) => page.evaluate(() => {
   };
 });
 
+// agentCards is what the foot of the chat shows of the subagents and
+// workflows at work: a card each, with what it says.
+const agentCards = (page) => page.evaluate(() => [...document.querySelectorAll('#chat .so-chat__bg:not([hidden]) .so-agentcard')].map((n) => ({
+  kind: n.dataset.kind,
+  title: (n.querySelector('.so-agentcard__title') || {}).textContent || '',
+  label: (n.querySelector('.so-agentcard__kind') || {}).textContent || '',
+  now: (n.querySelector('.so-agentcard__what') || {}).textContent || '',
+  watch: (n.querySelector('.so-agentcard__state') || {}).textContent || '',
+  bar: (n.querySelector('.so-agentcard__bar .ds-progress__label') || {}).textContent || '',
+  phase: (n.querySelector('.so-agentcard__bar .so-agentcard__phase') || {}).textContent || '',
+  share: Number((n.querySelector('.so-agentcard__bar [role="progressbar"]') || { getAttribute: () => -1 }).getAttribute('aria-valuenow')),
+  stats: (n.querySelector('.so-agentcard__stats') || {}).textContent || '',
+  height: Math.round(n.getBoundingClientRect().height),
+  width: Math.round(n.getBoundingClientRect().width),
+  pill: !!document.querySelector('#chat .so-chat__bg .so-chat__jobs'),
+})));
+
+// chat-agents: a subagent or a workflow at work beside the chat is not one
+// more background job but a card of its own at the foot of the chat - what
+// it was sent to do, its kind and model, its watch, what it does now, a
+// workflow's agents done and its phase - and the card opens its job in the
+// dialog, where the agents stand as cards over the other jobs.
+async function chatagents() {
+  const { s, id } = await claudeChat();
+  const { page } = s;
+  try {
+    await say(page, '/subagent bg 8');
+    await awaitLog(page, 'The subagent works on.', 20000);
+    await page.waitForSelector('#chat .so-chat__bg:not([hidden]) .so-agentcard[data-kind="agent"]', { timeout: 15000 }).catch(() => {});
+    let cards = await agentCards(page);
+    const sub = cards.find((c) => c.kind === 'agent');
+    ok(!!sub && sub.title === 'A subagent' && /^Subagent · general-purpose/.test(sub.label) && /\d:\d\d/.test(sub.watch) && !sub.pill,
+      'a subagent at work in the background is a card at the foot: what it was sent to do, its kind and type, its watch - and no "background job" line',
+      JSON.stringify(cards));
+    const composer = await page.$eval('#chat .so-composer__input', (n) => Math.round(n.getBoundingClientRect().width));
+    ok(!!sub && sub.height >= 56 && Math.abs(sub.width - composer) <= 2, 'the card is taller than a line, and as wide as the field under it',
+      JSON.stringify({ height: sub && sub.height, width: sub && sub.width, composer }));
+    const ticks = sub ? sub.watch : '';
+    await wait(2100);
+    const later = ((await agentCards(page)).find((c) => c.kind === 'agent') || {}).watch || '';
+    ok(!!later && later !== ticks, 'its watch goes on while no turn runs', JSON.stringify({ ticks, later }));
+
+    await page.click('#chat .so-agentcard[data-kind="agent"] .ds-card__action');
+    const detail = await page.waitForSelector('dialog[open] .so-jobd', { timeout: 5000 })
+      .then(() => page.$eval('dialog[open] .so-jobd', (n) => ({
+        name: (n.querySelector('.so-jobd__name') || {}).textContent || '',
+        facts: [...n.querySelectorAll('.so-jobd__facts dt')].map((dt) => dt.textContent),
+        stop: !!n.querySelector('[data-job-stop]'),
+      })), () => null);
+    ok(!!detail && detail.stop && ['Kind', 'Started', 'Running for'].every((f) => detail.facts.includes(f)),
+      'the card opens the dialog on its agent: its facts and Stop', JSON.stringify(detail));
+    await page.click('dialog[open] [data-job-back]');
+    const list = await page.waitForSelector('dialog[open] .so-agentcards--list .so-agentcard', { timeout: 5000 })
+      .then(() => page.$eval('dialog[open]', (n) => ({
+        heading: [...n.querySelectorAll('.so-jobs__heading')].map((h) => h.textContent),
+        cards: n.querySelectorAll('.so-agentcard').length, rows: n.querySelectorAll('.so-job').length,
+        stop: !!n.querySelector('.so-agentcard [data-job-stop]'),
+      })), () => null);
+    ok(!!list && list.cards === 1 && list.rows === 0 && list.heading.join() === 'Agent' && list.stop,
+      'All jobs lists it as a card under "Agent", with its own Stop, not as a row', JSON.stringify(list));
+    await shot(page, 'chat-agents-dialog');
+    await page.keyboard.press('Escape');
+    await page.waitForSelector('dialog[open]', { state: 'detached', timeout: 5000 }).catch(() => {});
+    const ended = await page.waitForSelector('#chat .so-chat__bg[hidden]', { state: 'attached', timeout: 20000 }).then(() => true, () => false);
+    ok(ended, 'when the subagent is done its card leaves the foot', String(ended));
+    await awaitChat(s, id, idle, 20000);
+
+    // A workflow: its agents done of all, the phase it is in, and its agents
+    // at work by name in the dialog.
+    await say(page, '/workflow 9');
+    await awaitLog(page, 'The workflow is running in the background.', 20000);
+    const flow = await page.waitForFunction(() => {
+      const n = document.querySelector('#chat .so-chat__bg:not([hidden]) .so-agentcard[data-kind="workflow"]');
+      const label = n && n.querySelector('.so-agentcard__bar .ds-progress__label');
+      const phase = n && n.querySelector('.so-agentcard__bar .so-agentcard__phase');
+      return !!label && !!phase && /Gather/.test(phase.textContent);
+    }, null, { timeout: 15000 }).then(() => agentCards(page), () => agentCards(page));
+    const wf = flow.find((c) => c.kind === 'workflow');
+    ok(!!wf && wf.title === 'A fake workflow' && /^Workflow · fake-flow/.test(wf.label) && /^\d of \d agents done · Phase 1 of 2 · Gather$/.test(wf.bar)
+      && / · Phase 1 of 2 · Gather$/.test(wf.phase) && wf.share >= 0,
+    'a workflow is a card with its name, its agents done of all on a bar, and the phase it is in', JSON.stringify(flow));
+    await shot(page, 'chat-agents-foot');
+    await page.click('#chat .so-agentcard[data-kind="workflow"] .ds-card__action');
+    await page.waitForSelector('dialog[open] .so-jobd', { timeout: 5000 }).catch(() => {});
+    const wfDetail = await page.$eval('dialog[open] .so-jobd', (n) => ({
+      bar: !!n.querySelector('.so-agentcard__bar'), phases: n.querySelectorAll('.so-phase').length,
+    })).catch(() => null);
+    ok(!!wfDetail && wfDetail.bar && wfDetail.phases === 2, 'opened, the workflow shows its bar over its phases', JSON.stringify(wfDetail));
+    await page.click('dialog[open] [data-job-back]');
+    const runs = await page.waitForSelector('dialog[open] .so-agentcard__runs li', { timeout: 8000 })
+      .then(() => page.$$eval('dialog[open] .so-agentcard__run', (n) => n.map((r) => r.textContent)), () => []);
+    ok(runs.length >= 1 && runs.every((r) => /echo|join/.test(r)), 'the dialog names the workflow\u2019s agents at work', JSON.stringify(runs));
+    await page.setViewportSize({ width: 390, height: 844 });
+    await wait(300);
+    await shot(page, 'chat-agents-dialog-phone');
+    await page.keyboard.press('Escape');
+    await page.waitForSelector('dialog[open]', { state: 'detached', timeout: 5000 }).catch(() => {});
+    await wait(400);
+    const phone = await agentCards(page);
+    const viewport = await page.evaluate(() => document.documentElement.clientWidth);
+    ok(phone.length === 1 && phone[0].width <= viewport && phone[0].height <= 200, 'on a phone the card fits the width and stays low over the composer',
+      JSON.stringify({ phone, viewport }));
+    await shot(page, 'chat-agents-foot-phone');
+    await page.setViewportSize({ width: 1280, height: 860 });
+    const done = await page.waitForSelector('#chat .so-chat__bg[hidden]', { state: 'attached', timeout: 30000 }).then(() => true, () => false);
+    ok(done, 'and once the workflow is through, its card leaves too', String(done));
+    await awaitChat(s, id, idle, 20000);
+
+    // Two at once stand side by side, and the strip scrolls sideways.
+    await say(page, '/subagent bg 10');
+    await awaitLog(page, 'The subagent works on.', 20000);
+    await awaitChat(s, id, idle, 20000);
+    await say(page, '/workflow 8');
+    const two = await page.waitForFunction(() => document.querySelectorAll('#chat .so-chat__bg:not([hidden]) .so-agentcards[data-many] > .so-agentcard').length === 2,
+      null, { timeout: 15000 }).then(() => agentCards(page), () => agentCards(page));
+    const strip = await page.$eval('#chat .so-agentcards--foot', (n) => ({ width: Math.round(n.clientWidth), scroll: n.scrollWidth })).catch(() => null);
+    ok(two.length === 2 && two.map((c) => c.kind).sort().join() === 'agent,workflow' && !!strip && two.every((c) => c.width < strip.width),
+      'a subagent and a workflow at once are two cards side by side', JSON.stringify({ two: two.map((c) => [c.kind, c.width]), strip }));
+    await shot(page, 'chat-agents-two');
+    ok(unexpected(s.errors).length === 0, 'no console errors', unexpected(s.errors).join(' | ') || '0');
+  } finally { await s.stop(); }
+}
+
 // chat-sub: the line under a chat's bar - the account the chat runs on, how
 // full each of its limit windows is and when it renews - and, at the foot of
 // the chat, what runs in the background, which opens to a dialog that lists
@@ -12943,6 +13066,7 @@ const ALL = [
   ['chat-fold', 'an answer\u2019s work folded in one line: what it does, then what it did, its steps and tokens; the answer and a question stand', chatfold],
   ['chat-watch', 'nothing hangs unseen: work after a question under its card, times by the clock, a job stopped, a quiet turn said and a Stop it ignores ending it', chatwatch],
   ['chat-sub', 'the line under a chat\u2019s bar: its account and its limit windows; its background jobs at its foot, with their dialog', chatsub],
+  ['chat-agents', 'a subagent or a workflow at work beside the chat is a card of its own at its foot, not one more background job, and opens its job', chatagents],
   ['chat-kept', 'a chat opened again is drawn at once from what the device kept, marked as such until its stream is through', chatkept],
   ['chat-send-now', 'a message waiting behind a turn, sent now: the turn interrupted, the message answered next', chatsendnow],
   ['chat-auto-continue', 'a limit\u2019s card says the chat goes on by itself, and the ⋮ switches that off and on', chatautocontinue],

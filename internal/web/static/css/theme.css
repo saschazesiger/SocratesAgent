@@ -95,6 +95,9 @@
   /* The background jobs dialog, and a job's row in it. */
   --so-jobs-width: 36rem;
   --so-job-row-min: 3.5rem;
+  /* A subagent's or a workflow's card at the foot of the chat, when several
+     stand side by side. */
+  --so-agentcard-min: min(85%, 20rem);
   /* The composer's share of what can be seen: the app's height, which
      follows a phone's keyboard (DS --ds-viewport-height, keybar.js followViewport). */
   --so-composer-max: calc(var(--ds-viewport-height, 100dvh) * 0.35);

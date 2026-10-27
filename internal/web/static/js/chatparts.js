@@ -167,6 +167,19 @@ export function toolGlyph(name) {
   return 'wrench';
 }
 
+/**
+ * agentKind says whether a tool part is an agent of the agent's own rather
+ * than a plain call: 'workflow' for a workflow (Claude Code's Workflow),
+ * 'agent' for a subagent (Claude's Task/Agent call, Codex's sub-thread,
+ * OpenCode's task), '' for anything else. A workflow's own agents are
+ * 'agent' too.
+ */
+export function agentKind(part, tool = toolOf(part)) {
+  if (tool.workflow) return 'workflow';
+  if (tool.agent || tool.content.tool === 'subagent' || tool.content.session_id) return 'agent';
+  return ['Task', 'Agent', 'WorkflowAgent'].includes(tool.content.tool || tool.name) ? 'agent' : '';
+}
+
 function isGroup(part, tool) {
   if (part.children.length || part.held) return true;
   if (tool.workflow) return true;
@@ -855,7 +868,8 @@ function pieces(message, chat) {
 /**
  * backgroundJobs is what the chat has running beside its turn: the agents
  * and workflows still at work, and the calls left running in the
- * background - each as { id, name, summary, since } - plus how many more
+ * background - each as { id, name, summary, since, kind }, kind being its
+ * agentKind ('' for a plain call) - plus how many more
  * the agent counts that have no part to show (`others`: Codex's background
  * terminals, say).
  */
@@ -872,14 +886,16 @@ export function backgroundJobs(chat) {
     if (part.kind !== 'tool' || part.state !== 'running' || isAskTool(part)) continue;
     const tool = toolOf(part);
     const input = tool.input && typeof tool.input === 'object' ? tool.input : {};
+    // A workflow always runs beside the turn that started it: its call
+    // answers at once.
     const background = input.run_in_background === true || tool.content.background === true
-      || (tool.agent && tool.agent.background === true);
+      || (tool.agent && tool.agent.background === true) || !!tool.workflow;
     // Inside a turn, only what was sent to the background is a job of its
     // own; the rest is the turn's work, which its fold shows.
     if (inTurn(part) && !background) continue;
     // An agent's own calls are its agent's job.
     if (part.parentId && chat.parts.get(part.parentId)?.state === 'running') continue;
-    jobs.push({ id: part.id, name: tool.name, summary: tool.summary, since: part.at });
+    jobs.push({ id: part.id, name: tool.name, summary: tool.summary, since: part.at, kind: agentKind(part, tool) });
   }
   // A call sent to the background answers at once (Claude Code's Bash with
   // run_in_background): its part is done while the task it started runs on.
@@ -895,7 +911,7 @@ export function backgroundJobs(chat) {
     }).sort((a, b) => b.at - a.at).slice(0, others);
     for (const part of started) {
       const tool = toolOf(part);
-      jobs.push({ id: part.id, name: tool.name, summary: tool.summary, since: part.at });
+      jobs.push({ id: part.id, name: tool.name, summary: tool.summary, since: part.at, kind: '' });
     }
     others -= started.length;
   }
@@ -903,15 +919,30 @@ export function backgroundJobs(chat) {
 }
 
 /**
- * jobsList is the background jobs dialog's body: a row a job - its tool's
- * mark, its name, what it runs, and how long it has run - each a button
- * that opens the job (jobDetail), and a quiet row for what the agent counts
- * without a part to show.
+ * jobsList is the background jobs dialog's body: the subagents and
+ * workflows first, each a card of its own (agentCard), then a row a job -
+ * its tool's mark, its name, what it runs, and how long it has run - each a
+ * button that opens the job (jobDetail), and a quiet row for what the agent
+ * counts without a part to show. `chat` has the agents' parts; `stopping`
+ * the task ids asked to stop.
  */
-export function jobsList({ jobs, others }, now = Date.now()) {
+export function jobsList({ jobs, others }, { chat = null, stopping = null, now = Date.now() } = {}) {
   if (!jobs.length && !others) {
     return html`<div class="ds-empty so-jobs__empty"><span class="ds-empty__disc" aria-hidden="true">${raw(icon('background', 24))}</span><p class="ds-empty__title">Nothing in the background</p><p class="ds-empty__text">What the agent sends to the background shows here while it runs.</p></div>`;
   }
+  const agents = chat ? jobs.filter((job) => job.kind && chat.parts.get(job.id)) : [];
+  const rest = jobs.filter((job) => !agents.includes(job));
+  const cards = agents.length
+    ? html`<section class="so-jobs__group" data-ds-key="agents"><h3 class="so-jobs__heading">${agents.length === 1 ? (agents[0].kind === 'workflow' ? 'Workflow' : 'Agent') : 'Agents and workflows'}</h3><div class="so-agentcards so-agentcards--list">${
+      agents.map((job) => agentCard(chat.parts.get(job.id), { full: true, stopping, now }))
+    }</div></section>`
+    : '';
+  if (!rest.length && !others) return html`<div class="so-jobs__body-in">${cards}</div>`;
+  const heading = agents.length ? html`<h3 class="so-jobs__heading">${rest.length + others === 1 ? 'Other job' : 'Other jobs'}</h3>` : '';
+  return html`<div class="so-jobs__body-in">${cards}<section class="so-jobs__group" data-ds-key="jobs">${heading}${jobsRows(rest, others, now)}</section></div>`;
+}
+
+function jobsRows(jobs, others, now) {
   return html`<ul class="so-jobs">${jobs.map((job) => {
     const ran = job.since ? seconds(Math.max(0, now - job.since)) : '';
     const started = job.since ? 'since ' + clock(job.since) : '';
@@ -921,6 +952,104 @@ export function jobsList({ jobs, others }, now = Date.now()) {
   })}${
     others ? html`<li class="so-job so-job--others" data-ds-key="others"><span class="so-job__icon" aria-hidden="true">${raw(icon('background', 18))}</span><span class="so-job__main"><span class="so-job__name">${others + (others === 1 ? ' more task' : ' more tasks')}</span><span class="so-job__note">${'The agent counts ' + (others === 1 ? 'it' : 'them') + ' without saying what ' + (others === 1 ? 'it runs.' : 'they run.')}</span></span></li>` : ''
   }</ul>`;
+}
+
+// agentFacts is what a subagent's or a workflow's card and its opened job
+// say about it beside its call: its title (what it was sent to do), its
+// kind with its type or name, its model, what it is doing now, how far a
+// workflow has come, and what it has used.
+function agentFacts(part, tool = toolOf(part)) {
+  const c = tool.content;
+  const a = tool.agent;
+  const wf = tool.workflow;
+  const kind = agentKind(part, tool);
+  const input = tool.input && typeof tool.input === 'object' ? tool.input : {};
+  const line = (value) => String(value || '').split('\n')[0].trim();
+  const title = line((a && (a.description || a.label)) || (wf && (wf.description || wf.name)) || input.description || c.title
+    || tool.summary || c.name) || tool.name;
+  const type = line(kind === 'workflow' ? wf.name : (a && a.type) || input.subagent_type || (typeof c.agent === 'string' ? c.agent : '') || c.name);
+  const model = line((a && a.model) || c.model);
+  const effort = line(c.effort);
+  const out = {
+    kind, title, glyph: kind === 'workflow' ? 'apps' : 'users',
+    label: [kind === 'workflow' ? 'Workflow' : 'Subagent', type !== title ? type : '', model, effort].filter(Boolean),
+    doing: '', last: line(a && a.last_tool), calls: Number(a && a.tool_uses) || 0,
+    tokens: Number((a && a.tokens) || (wf && wf.tokens)) || 0,
+    share: -1, done: 0, total: 0, phase: '', running: [],
+  };
+  if (a && a.activity) out.doing = line(a.activity);
+  if (wf) {
+    out.total = Number(wf.agents) || 0;
+    out.done = Number(wf.agents_done) || 0;
+    if (out.total) out.share = Math.min(1, out.done / out.total);
+    // The phase it is in: the first one an agent of which runs, else the
+    // last one any agent of which has started.
+    const phases = (Array.isArray(wf.phases) ? wf.phases : []).map((ph) => String(ph.title || ph.name || ph.id || ''));
+    const agents = part.children.filter((child) => child.kind === 'tool');
+    const phaseOf = (child) => String((child.content && child.content.agent && child.content.agent.phase) || '');
+    out.running = agents.filter((child) => child.state === 'running').map((child) => {
+      const ct = toolOf(child);
+      return { id: child.id, label: line((ct.agent && ct.agent.label) || ct.summary) || 'Agent', doing: line(ct.agent && ct.agent.activity) };
+    });
+    let at = phases.findIndex((title) => agents.some((child) => child.state === 'running' && phaseOf(child) === title));
+    if (at < 0) for (let i = phases.length - 1; i >= 0 && at < 0; i--) if (agents.some((child) => phaseOf(child) === phases[i])) at = i;
+    if (at >= 0) out.phase = 'Phase ' + (at + 1) + ' of ' + phases.length + ' · ' + phases[at];
+  }
+  return out;
+}
+
+// agentStats is the line of what an agent has used so far.
+function agentStats(facts, part, { full = false } = {}) {
+  return [
+    facts.calls ? facts.calls + (facts.calls === 1 ? ' tool call' : ' tool calls') : '',
+    facts.tokens ? fmtTokens(facts.tokens) + ' tokens' : '',
+    full && facts.last ? 'last ' + facts.last : '',
+    part.at ? 'since ' + clock(part.at) : '',
+  ].filter(Boolean).join(' · ');
+}
+
+// agentProgress is a workflow's bar: how many of its agents are done, and
+// the phase it is in.
+function agentProgress(facts) {
+  if (facts.share < 0) return '';
+  const now = Math.round(facts.share * 100);
+  const done = facts.done + ' of ' + facts.total + ' agents done';
+  return html`<div class="ds-progress so-agentcard__bar" style="${'--ds-progress: ' + facts.share.toFixed(4)}"><div class="ds-progress__track" role="progressbar" aria-label="Agents done" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${now}" aria-valuetext="${done}"><div class="ds-progress__bar"></div></div><p class="ds-progress__label">${done}${
+    facts.phase ? html`<span class="so-agentcard__phase">${' · ' + facts.phase}</span>` : ''
+  }</p></div>`;
+}
+
+/**
+ * agentCard is a subagent or a workflow that runs beside the chat: not a
+ * line among the background jobs but a card of its own - what it was sent
+ * to do, what kind of agent (its type, its model), how long it has run (a
+ * watch tickLive moves), what it is doing right now, a workflow's agents
+ * done of all with the phase it is in, and what it has used. The whole
+ * card opens its job (data-job; at the chat's foot also data-action "job").
+ * `full` is the dialog's: a workflow's running agents by name, the last
+ * tool, and Stop.
+ */
+export function agentCard(part, { full = false, foot = false, stopping = null, now = Date.now() } = {}) {
+  const tool = toolOf(part);
+  const facts = agentFacts(part, tool);
+  const c = tool.content;
+  const task = c.task && typeof c.task === 'object' ? c.task : null;
+  const taskId = (tool.workflow && tool.workflow.task_id) || (tool.agent && tool.agent.id) || (task && task.id) || '';
+  const since = part.at || 0;
+  // A workflow's one agent at work is what it does now - unless the card
+  // names its agents at work anyway (full).
+  const doing = facts.doing || (!full && facts.running.length === 1 ? facts.running[0].label : '');
+  const stats = agentStats(facts, part, { full });
+  const shown = full ? facts.running.slice(0, 4) : [];
+  return html`<div class="ds-card ds-card--interactive so-agentcard" data-ds-key="${'agent:' + part.id}" data-kind="${facts.kind}"><div class="so-agentcard__head"><span class="so-agentcard__icon" aria-hidden="true">${raw(icon(facts.glyph, 20))}</span><div class="so-agentcard__heading"><h3 class="ds-card__title so-agentcard__title"><button class="ds-card__action" type="button" data-job="${part.id}"${foot ? html` data-action="job"` : ''} aria-label="${'Show ' + (facts.kind === 'workflow' ? 'the workflow ' : 'the agent ') + facts.title}">${facts.title}</button></h3><p class="so-agentcard__kind">${facts.label.join(' · ')}</p></div><span class="ds-status ds-status--running so-agentcard__state"><span class="ds-spinner ds-status__spinner" aria-hidden="true"></span><span${since ? html` data-since="${since}" data-format="watch"` : ''}>${since ? stopwatch(Math.max(0, now - since)) : 'Running'}</span></span></div>${
+    doing ? html`<p class="so-agentcard__now"><span class="so-agentcard__doing">Now</span><span class="so-agentcard__what">${doing}</span></p>` : ''
+  }${agentProgress(facts)}${
+    shown.length ? html`<ul class="so-agentcard__runs">${shown.map((run) => html`<li data-ds-key="${run.id}"><span class="ds-spinner ds-status__spinner" aria-hidden="true"></span><span class="so-agentcard__run">${run.label}</span>${
+      run.doing ? html`<span class="so-agentcard__run-doing">${run.doing}</span>` : ''
+    }</li>`)}${facts.running.length > shown.length ? html`<li class="so-agentcard__more" data-ds-key="more">${'and ' + (facts.running.length - shown.length) + ' more'}</li>` : ''}</ul>` : ''
+  }${stats || (full && taskId) ? html`<div class="so-agentcard__foot">${stats ? html`<p class="so-agentcard__stats">${stats}</p>` : ''}${
+    full && taskId ? html`<button class="ds-btn ds-btn--text ds-btn--sm so-agentcard__stop" type="button" data-job-stop="${taskId}"${stopping && stopping.has(taskId) ? html` aria-busy="true"` : ''}>${raw(icon('stop', 16))}<span>Stop</span></button>` : ''
+  }</div>` : ''}</div>`;
 }
 
 // What a job that no longer runs ended as, by the state its task (or its
@@ -948,7 +1077,7 @@ export function jobDetail(part, view, { running = false, stopping = null, now = 
   const said = (wf && wf.status) || (agent && agent.status) || (task && task.status) || part.state;
   const [endState, endWord] = JOB_END[said] || JOB_END[part.state] || ['done', 'Finished'];
   const ran = Math.max(0, (running ? now : (part.updatedAt || now)) - (part.at || now));
-  const kind = wf ? 'Workflow' : agent ? 'Agent' : tool.command ? 'Command' : 'Call';
+  const kind = wf ? 'Workflow' : agentKind(part, tool) ? 'Agent' : tool.command ? 'Command' : 'Call';
   const time = (at) => clock(at, true);
   const description = String(input.description || (agent && agent.description) || (wf && wf.description) || '');
   const tokens = (agent && agent.tokens) || (wf && wf.tokens) || 0;
@@ -979,7 +1108,7 @@ export function jobDetail(part, view, { running = false, stopping = null, now = 
     tool.summary ? html`<code class="so-jobd__summary">${tool.summary}</code>` : ''
   }</div>${state}</div>${
     taskId ? html`<div class="so-jobd__actions"><button class="ds-btn ds-btn--tonal ds-btn--sm" type="button" data-job-stop="${taskId}"${stopping && stopping.has(taskId) ? html` aria-busy="true"` : ''}>${raw(icon('stop', 16))}<span>Stop this job</span></button></div>` : ''
-  }<dl class="ds-facts so-facts so-jobd__facts">${facts.map(([label, value]) => html`<div><dt>${label}</dt><dd class="so-fact">${value}</dd></div>`)}</dl>${
+  }${wf && running ? agentProgress(agentFacts(part, tool)) : ''}<dl class="ds-facts so-facts so-jobd__facts">${facts.map(([label, value]) => html`<div><dt>${label}</dt><dd class="so-fact">${value}</dd></div>`)}</dl>${
     body ? html`<div class="so-tool__body so-jobd__body">${body}</div>` : ''
   }</div>`;
 }
@@ -1182,13 +1311,13 @@ function ticking(ms, format) {
 }
 
 /**
- * tickLive moves the watches of the live lines under `root` on to now:
- * they are drawn with the answer, and between two drawings only their
- * figures change.
+ * tickLive moves the watches of the live lines and the agent cards under
+ * `root` on to now: they are drawn with the answer, and between two
+ * drawings only their figures change.
  */
 export function tickLive(root) {
   const now = Date.now();
-  for (const node of root.querySelectorAll('.so-live [data-since]')) {
+  for (const node of root.querySelectorAll('.so-live [data-since], .so-agentcard [data-since]')) {
     const text = ticking(now - Number(node.dataset.since), node.dataset.format);
     if (node.textContent !== text) node.textContent = text;
   }

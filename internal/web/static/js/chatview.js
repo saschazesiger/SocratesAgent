@@ -31,7 +31,7 @@ import { ChatStream } from './chatstream.js';
 import { loadChat, saveChat } from './chatcache.js';
 import {
   assistantMessage, userMessage, lineHtml, askCard, askPlaces, todoList, todoItems, renewsIn, seconds, outboxState,
-  backgroundJobs, jobsList, jobDetail, clock, infoButton, tickLive,
+  backgroundJobs, jobsList, jobDetail, agentCard, clock, infoButton, tickLive,
 } from './chatparts.js';
 import { mountComposer } from './composer.js';
 import { chatOutbox, pendingFor, pendingAnswer, pendingModel, failedItem, queueAnswer, answeredHere } from './chatoutbox.js';
@@ -285,8 +285,11 @@ export function mountChat(ctx) {
   }, TICK_MS);
   // The watches of the running answer's live line move every second, in
   // place: only their figures change between two drawings.
+  // So do those of the agents at the foot of the chat, turn or no turn.
   setInterval(() => {
-    if (session && chat && !host.hidden && chat.turn) tickLive(log);
+    if (!session || !chat || host.hidden) return;
+    if (chat.turn) tickLive(log);
+    if (!jobsSlot.hidden) tickLive(jobsSlot);
   }, LIVE_TICK_MS);
 
   // "Latest" comes and goes as the person scrolls; the snackbars move with it.
@@ -617,7 +620,7 @@ export function mountChat(ctx) {
     drawJobs();
     if (jobsWanted && session.id === jobsWanted && synced) {
       jobsWanted = '';
-      jobsDialog(jobsSlot.querySelector('.so-chat__jobs') || host);
+      jobsDialog(jobsSlot.querySelector('.so-chat__jobs, .so-agentcard .ds-card__action') || host);
     }
     drawTodo();
     drawState();
@@ -789,19 +792,34 @@ export function mountChat(ctx) {
   }
 
   // drawJobs is what runs in the background, at the foot of the chat over
-  // the composer, where the eye is while it waits: how many, and what the
-  // newest runs. Nothing while nothing runs.
+  // the composer, where the eye is while it waits. A subagent or a workflow
+  // is a card of its own - what it does, how far it has come - side by side
+  // and scrolled sideways when there are several; the rest (a shell, a
+  // monitor) is one line: how many, and what the newest runs. Nothing while
+  // nothing runs.
   function drawJobs() {
     const { jobs, others } = backgroundJobs(chat);
-    const count = jobs.length + others;
-    jobsSlot.hidden = !count;
-    if (!count) { morph(jobsSlot, ''); return; }
-    const words = count + (count === 1 ? ' background job' : ' background jobs');
-    const latest = jobs.length ? jobs[jobs.length - 1] : null;
-    const what = latest ? latest.summary || latest.name : '';
-    morph(jobsSlot, html`<button class="ds-btn ds-btn--tonal ds-btn--sm so-chat__jobs" type="button" data-action="jobs" data-running aria-label="${words + ' - show them'}" data-tip="Show what runs in the background"><span class="ds-spinner ds-status__spinner" aria-hidden="true"></span><span class="so-chat__jobs-count">${words}</span>${
-      what ? html`<span class="so-chat__jobs-what">${what}</span>` : ''
-    }${raw(icon('chevronRight', 16))}</button>`);
+    const agents = jobs.filter((job) => job.kind && chat.parts.get(job.id));
+    const rest = jobs.filter((job) => !agents.includes(job));
+    const count = rest.length + others;
+    jobsSlot.hidden = !count && !agents.length;
+    if (jobsSlot.hidden) { morph(jobsSlot, ''); return; }
+    const now = Date.now();
+    const cards = agents.length
+      ? html`<div class="so-agentcards so-agentcards--foot" data-ds-key="agents" role="group" aria-label="${agents.length === 1 ? 'An agent at work' : agents.length + ' agents at work'}"${agents.length > 1 ? html` data-many` : ''}>${
+        agents.map((job) => agentCard(chat.parts.get(job.id), { foot: true, now }))
+      }</div>`
+      : '';
+    let line = '';
+    if (count) {
+      const words = count + (count === 1 ? ' background job' : ' background jobs');
+      const latest = rest.length ? rest[rest.length - 1] : null;
+      const what = latest ? latest.summary || latest.name : '';
+      line = html`<button class="ds-btn ds-btn--tonal ds-btn--sm so-chat__jobs" type="button" data-action="jobs" data-ds-key="jobs" data-running aria-label="${words + ' - show them'}" data-tip="Show what runs in the background"><span class="ds-spinner ds-status__spinner" aria-hidden="true"></span><span class="so-chat__jobs-count">${words}</span>${
+        what ? html`<span class="so-chat__jobs-what">${what}</span>` : ''
+      }${raw(icon('chevronRight', 16))}</button>`;
+    }
+    morph(jobsSlot, html`${cards}${line}`);
   }
 
   // drawSchedule is the scheduled start of a chat that has not started: a
@@ -899,15 +917,17 @@ export function mountChat(ctx) {
     }
   }
 
-  // jobsDialog says what runs in the background, a row a job, and keeps
-  // saying it while it is open: the times go on, and a job that ends leaves.
-  // A row opens its job: what it is and what it has said so far, live, with
-  // the way back to the list and to its place in the chat. A job that ends
-  // while it is open stays open, saying how it ended.
-  function jobsDialog(opener) {
+  // jobsDialog says what runs in the background - a card a subagent or
+  // workflow, a row any other job - and keeps saying it while it is open:
+  // the times go on, and a job that ends leaves. A card or a row opens its
+  // job: what it is and what it has said so far, live, with the way back to
+  // the list and to its place in the chat. A job that ends while it is open
+  // stays open, saying how it ended. `first` opens on that job (an agent's
+  // card at the foot of the chat).
+  function jobsDialog(opener, first = '') {
     const body = document.createElement('div');
     body.className = 'so-jobs__body';
-    let picked = '';
+    let picked = first;
     const draw = () => {
       if (!chat) return;
       const listed = backgroundJobs(chat);
@@ -915,7 +935,7 @@ export function mountChat(ctx) {
       if (picked && !part) picked = '';
       morph(body, part
         ? jobDetail(part, view, { running: listed.jobs.some((job) => job.id === picked), stopping: stoppingJobs })
-        : jobsList(listed));
+        : jobsList(listed, { chat, stopping: stoppingJobs }));
     };
     const pick = (id) => {
       const was = picked;
@@ -1280,6 +1300,9 @@ export function mountChat(ctx) {
       }
       case 'jobs':
         jobsDialog(target);
+        break;
+      case 'job':
+        jobsDialog(target, target.dataset.job || '');
         break;
       case 'send-now':
         sendNow();
