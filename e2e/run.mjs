@@ -12530,10 +12530,22 @@ async function chataccount() {
     await say(page, '/limit');
     await page.waitForSelector('#chat [data-kind="limit"] [data-action="continue-with"]', { timeout: 15000 });
     const card = await page.$eval('#chat [data-kind="limit"]', (n) => n.innerText);
-    ok(/Limit reached — renews in/.test(card) && /Continue with Beta/.test(card), 'the limit card says when it renews and offers Beta',
+    ok(/Limit reached — renews in/.test(card) && /Continue with…/.test(card), 'the limit card says when it renews and offers to continue with another account',
       oneLine(card));
     await shot(page, 'chat-account-limit');
-    await page.click('#chat [data-kind="limit"] [data-action="continue-with"][data-account="' + beta.id + '"]');
+    // Its menu lists every account in the order to take them, each with its
+    // limits: Beta first, Alpha - this chat's, at its limit - after it, and
+    // not to be chosen.
+    await page.click('#chat [data-kind="limit"] [data-action="continue-with"]');
+    await page.waitForSelector('.so-account-menu:not([hidden]) [data-account="' + beta.id + '"]', { timeout: 5000 });
+    const choices = await page.$$eval('.so-account-menu:not([hidden]) [data-account]', (n) => n.map((x) => ({
+      id: x.dataset.account, off: x.getAttribute('aria-disabled') === 'true', text: x.innerText.replace(/\s+/g, ' ').trim(),
+    })));
+    ok(choices.length === 2 && choices[0].id === beta.id && !choices[0].off && choices[1].id === alpha.id && choices[1].off
+      && /this chat’s/.test(choices[1].text) && /renews in/.test(choices[1].text),
+    'the menu lists every account, the one to take first, this chat’s at its limit last and not to be chosen', JSON.stringify(choices));
+    await shot(page, 'chat-account-limit-menu');
+    await page.click('.so-account-menu:not([hidden]) [data-account="' + beta.id + '"]');
     ok(await awaitLog(page, 'Switched from Alpha to Beta', 15000), 'Continue with switches', '');
     ok(await awaitLog(page, 'you said: ' + 'Continue where you left off.', 15000), 'and the new account is told to go on', '');
     const gone = await page.$('#chat [data-kind="limit"] [data-action="continue-with"]');

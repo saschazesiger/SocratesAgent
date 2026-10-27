@@ -98,15 +98,63 @@ setInterval(() => {
 // metaOf is an account's quiet line in the menu: who it is, its usage, when
 // its limit renews - in how long, and by the clock - and why it is the one
 // to take or cannot be taken.
-function metaOf(account, best) {
+function metaOf(account, best, { all = false, current = false } = {}) {
   const parts = [accounts.who(account)];
   if (!accounts.usable(account)) parts.push(account.state === 'error' ? 'sign-in failed' : 'not signed in');
-  const usage = accounts.usageWords(account);
+  const usage = accounts.usageWords(account, Date.now(), { all });
   if (usage) parts.push(usage);
   const renew = accounts.renewal(account);
   if (renew) parts.push(renew + ', ' + accounts.renewalAt(account));
+  if (current) parts.push('this chat’s');
   if (best) parts.push('most left');
   return parts.join(' · ');
+}
+
+// The menu a limit card opens (chooseAccount), apart from the picker's.
+let choice = null;
+
+/**
+ * chooseAccount opens, from a limit card's button, every account of an
+ * agent in the order to take them, each with all its windows and when its
+ * limit renews. The account the chat is on is listed too, and cannot be
+ * chosen. pick is called with the id chosen.
+ */
+export function chooseAccount(button, { harness, current, pick }) {
+  if (choice && !choice.hidden && button.getAttribute('aria-expanded') === 'true') {
+    hideOverlay(choice);
+    return;
+  }
+  if (choice) choice.remove();
+  const menu = document.createElement('div');
+  choice = menu;
+  menu.className = 'ds-menu so-account-menu';
+  menu.setAttribute('role', 'menu');
+  menu.setAttribute('aria-label', 'Continue with');
+  menu.hidden = true;
+  const fill = () => {
+    const best = accounts.recommended(harness);
+    const list = accounts.ranked(harness);
+    // It opens on the first account that can be taken (autofocus).
+    const first = list.find((a) => a.id !== current);
+    morph(menu, html`${list.map((a) => html`<button class="ds-menu__item" role="menuitem" type="button" data-account="${a.id}"${a.id === current ? html` aria-disabled="true"` : ''}${first && a.id === first.id ? html` autofocus` : ''}>${raw(icon(accounts.renewal(a) ? 'clock' : accounts.glyph(a), 20))}<span class="ds-menu__label"><span class="so-account-menu__text"><span class="so-account-menu__name">${a.label}</span><span class="so-account-menu__meta">${metaOf(a, a.id === best, { all: true, current: a.id === current })}</span></span></span></button>`)}<div class="ds-menu__divider" role="separator"></div><button class="ds-menu__item" role="menuitem" type="button" data-action="manage">${raw(icon('settings', 20))}<span class="ds-menu__label">Manage accounts</span></button>`);
+  };
+  fill();
+  menu.addEventListener('click', (event) => {
+    if (event.target.closest('[data-action="manage"]')) {
+      location.href = '/admin#accountsCard';
+      return;
+    }
+    const item = event.target.closest('[data-account]');
+    if (!item || item.dataset.account === current) return;
+    // Chosen, the card it hung from goes; so does the menu.
+    hideOverlay(menu, { remove: true });
+    if (choice === menu) choice = null;
+    pick(item.dataset.account);
+  });
+  showOverlay(menu, button);
+  // The usage moves: the menu opens on the copy this browser has and is
+  // drawn again with the server's.
+  accounts.load().then(() => { if (!menu.hidden) fill(); }).catch(() => {});
 }
 
 function openMenu(slot, button) {

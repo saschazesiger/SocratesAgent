@@ -1266,7 +1266,7 @@ out `host.json`'s `env` and `secret_env` (`paths.Redacted`), takes `secrets.key`
 
 | Route | Body | Answers |
 |---|---|---|
-| `GET /api/accounts` | – | `{accounts: [<account>], recommended: {<agent>: <id>}, agents}`; each with `limits` (5h/7d windows), `chats` (how many run on it), `recommended`, `signin` (a flow under way) |
+| `GET /api/accounts` | – | `{accounts: [<account>], recommended: {<agent>: <id>}, agents}`; each with `limits` (5h/7d windows), `chats` (how many run on it), `recommended`, `rank` (its place among its agent's accounts in the order to take them, from 1: room left, the most first; no reading; at a limit, the soonest renewal first; not signed in - `rankAccounts`, whose first that can be taken is the recommendation), `signin` (a flow under way) |
 | `POST /api/accounts` | `agent`, `kind`, `label`, `key`?, `provider`? | 201 `{account}` |
 | `PATCH /api/accounts/{id}` | `label`?, `key`?, `provider`? | `{account}` |
 | `DELETE /api/accounts/{id}` | – | `{ok}`; 409 while a chat runs on it or for one that holds an agent's own sign-in from HOME (`origin` `~/.claude`, `~/.codex`, `~/.local/share/opencode`); one made of a profile goes, with the link left in the profile's place |
@@ -1294,7 +1294,9 @@ sheet or the chat's ⋮) is switched by the server to the recommended other acco
 `continue: true`, `client_id` `auto-<turn>`, reason "The limit of <label> was reached."; without
 it, or with no account to go to, the person is told by push and on the page ("Limit reached — renews
 in … (<label>)", §3 "Badge and push"; not for a chat filed Background) and the limit card offers
-"Continue with <account>" for each account with room (the same switch, sent by the browser). Codex
+"Continue with…", a menu of every account of the agent in `rank` order with all its windows and
+when its limit renews, the chat's own listed and not to be chosen (the same switch, sent by the
+browser; an account not signed in is signed in first). Codex
 and OpenCode hold their queue meanwhile (§5.2, §5.3), so the messages queued behind the limit do not
 each run into it - also on a new adapter on that account (`StartSpec.Held`, §4.3: a host that died
 while holding, or the automatic switch failing to start the other account), while one the switch

@@ -1241,15 +1241,16 @@ export function lineHtml(entry, view) {
     case 'turn': {
       if (l.outcome === 'limited') {
         const renew = view.renewal(l.turn);
-        // Under the newest limit, the accounts the chat could go on with:
-        // one tap switches and has the turn carried on there.
-        const offers = view.continueWith ? view.continueWith(entry) : [];
+        // Under the newest limit, the accounts the chat could go on with, in
+        // a menu (chatview chooseAccount): one choice switches and has the
+        // turn carried on there.
+        const offer = view.continueWith ? view.continueWith(entry) : false;
         // The words and the buttons stack in the alert's text column, each
         // on a line of its own.
         // Under the newest limit, whether the chat goes on by itself then.
         const goesOn = !!renew && !!view.autoContinue && view.autoContinue() && (!view.lastLimit || view.lastLimit(entry));
         return html`<div class="ds-alert ds-alert--warning so-line-alert" data-ds-key="${key}" data-kind="limit" role="status">${raw(icon('clock', 20))}<span class="ds-alert__text so-line-alert__stack"><span>${'Limit reached' + (renew ? ' — renews in ' + renew : '') + (goesOn ? '. The chat goes on by itself then.' : '')}</span>${
-          offers.length ? html`<span class="so-line-alert__actions">${offers.map((a) => html`<button class="ds-btn ds-btn--sm" type="button" data-action="continue-with" data-account="${a.id}" data-tip="${'Continue with ' + a.label}"><span class="so-ellipsis">${'Continue with ' + a.label}</span></button>`)}</span>` : ''
+          offer ? html`<span class="so-line-alert__actions"><button class="ds-btn ds-btn--sm" type="button" data-action="continue-with" aria-haspopup="menu" aria-expanded="false" data-tip="Go on with another account">${raw(icon('user', 16))}<span>Continue with…</span>${raw(icon('chevronDown', 16))}</button></span>` : ''
         }</span>${infoButton([l.text, ...silentTurnFacts(l.turn, view)], 'About the limit')}</div>`;
       }
       if (l.outcome === 'failed') {

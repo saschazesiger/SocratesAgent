@@ -3,6 +3,7 @@
 package server
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -58,5 +59,41 @@ func TestCurrentNormalizesTheRenewal(t *testing.T) {
 	}
 	if got[3].ResetsAt != "" || got[3].UsedPercent != 0 {
 		t.Fatalf("a passed renewal = %#v", got[3])
+	}
+}
+
+// The accounts are listed in the order to take them: room first, the most
+// headroom first; then no reading; then those at a limit, the one that
+// renews first first; then those not signed in. The recommendation is the
+// first that can be taken.
+func TestRankAccounts(t *testing.T) {
+	now := time.Now()
+	week := func(used float64) []usageWindow {
+		return []usageWindow{{Label: "5h", UsedPercent: 0, ResetsAt: at(now, 3*time.Hour)}, {Label: "7d", UsedPercent: used, ResetsAt: at(now, 100*time.Hour)}}
+	}
+	views := []accountView{
+		{ID: "out", Agent: "claude", State: "needs_signin", Order: 1},
+		{ID: "late", Agent: "claude", State: "signed_in", Order: 2, LimitedUntil: now.Add(90 * time.Hour).UnixMilli()},
+		{ID: "key", Agent: "claude", State: "signed_in", Order: 3},
+		{ID: "some", Agent: "claude", State: "signed_in", Order: 4, Limits: week(60)},
+		{ID: "soon", Agent: "claude", State: "signed_in", Order: 5, Limits: []usageWindow{{Label: "5h", UsedPercent: 100, ResetsAt: at(now, time.Hour)}}},
+		{ID: "most", Agent: "claude", State: "signed_in", Order: 6, Limits: week(10)},
+		{ID: "codex", Agent: "codex", State: "signed_in", Order: 7},
+	}
+	var got []string
+	for _, v := range rankAccounts(views, "claude", now) {
+		got = append(got, v.ID)
+	}
+	if want := "most some key soon late out"; strings.Join(got, " ") != want {
+		t.Fatalf("ranked %v, want %s", got, want)
+	}
+	if r := recommendAccount(views, "claude", "", now); r != "most" {
+		t.Fatalf("recommended %q", r)
+	}
+	if r := recommendAccount(views, "claude", "most", now); r != "some" {
+		t.Fatalf("recommended past the excluded one: %q", r)
+	}
+	if r := recommendAccount(views[:2], "claude", "", now); r != "" {
+		t.Fatalf("an account at its limit was recommended: %q", r)
 	}
 }

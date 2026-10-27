@@ -2938,6 +2938,11 @@ Asked for by the product owner on 2026-10-25, on branch `ui-simplify`.
   for this one's, and the chat waited days instead of five hours), if nothing happened in the chat
   since the limited turn, the server sends `agenthost.ContinueText` (client_id `auto-continue-<id>-<turn>`) and
   journals `notice{auto_continued}`. The limit is kept in the chat's brief, so a restart keeps it.
+- **A limit's card offers every account, not the few with room.** REBUILD §4.3 has one-tap
+  "Continue with <account>" buttons for the accounts with room. The card has one "Continue with…"
+  instead, a menu of all the agent's accounts in the order to take them (the server's `rank`),
+  each with every window and when its limit renews (owner, 2026-10-27): the choice is made with
+  the numbers in view, and an account at its limit can still be taken knowingly.
 - **Claude Code signs in on the web** (Admin → Accounts), not in a Shell: `claude auth login
   --claudeai` runs on a server pty; the dialog shows its page and takes the code that page shows.
   The code passes through Socrates on its way to the CLI (REBUILD §4.2 updated).

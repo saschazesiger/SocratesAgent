@@ -25,7 +25,7 @@ import { connectionSaidElsewhere, retryConnection } from './net.js';
 import { agentMarkHtml } from './logos.js';
 import * as harnesses from './harnesses.js';
 import * as accounts from './accounts.js';
-import { drawAccount } from './accountpicker.js';
+import { drawAccount, chooseAccount } from './accountpicker.js';
 import { newChat, apply, applyLive, busy, currentTodo, seenClient, compact, fill, touchPart } from './chatfold.js';
 import { ChatStream } from './chatstream.js';
 import { loadChat, saveChat } from './chatcache.js';
@@ -359,20 +359,16 @@ export function mountChat(ctx) {
       if (!a) return [];
       return [a.email ? 'Signed in as ' + a.email : '', a.plan ? 'Plan: ' + a.plan : ''];
     },
-    // continueWith is the accounts a limit card offers to go on with: only
-    // under the newest limit nothing has happened after, while no turn
-    // runs; the agent's signed-in accounts not at a limit themselves, the
-    // one with the most left first.
+    // continueWith is whether a limit card offers to go on with another
+    // account (chooseAccount lists them all): only under the newest limit
+    // nothing has happened after, while no turn runs, for an agent with an
+    // account to go to.
     continueWith(entry) {
-      // One tap is the choice: while it is on its way - here, or a switch
-      // from anywhere the journal already says - the buttons are gone, so a
+      // One choice is the choice: while it is on its way - here, or a switch
+      // from anywhere the journal already says - the button is gone, so a
       // second tap or a redraw cannot send it again.
-      if (!session || chat.turn || !lastLimit(entry) || chat.pendingSwitch || continuing === session.id) return [];
-      const best = accounts.recommended(session.harness);
-      return accounts.forAgent(session.harness)
-        .filter((a) => a.id !== chat.account && accounts.usable(a) && !accounts.renewal(a))
-        .sort((a, b) => (b.id === best) - (a.id === best))
-        .slice(0, 3);
+      if (!session || chat.turn || !lastLimit(entry) || chat.pendingSwitch || continuing === session.id) return false;
+      return accounts.forAgent(session.harness).some((a) => a.id !== chat.account);
     },
   };
 
@@ -1291,7 +1287,7 @@ export function mountChat(ctx) {
         pointFolder(target);
         break;
       case 'continue-with':
-        continueWith(target);
+        chooseAccount(target, { harness: session.harness, current: chat.account, pick: (id) => continueWith(target, id) });
         break;
       case 'details-retry':
         retryDetails(target.dataset.part || '');
@@ -1430,14 +1426,24 @@ export function mountChat(ctx) {
 
   // continueWith moves the chat to the account a limit card's button names
   // and has the stopped turn carried on there.
-  async function continueWith(button) {
+  // continueWith switches the chat to the account chosen under its limit
+  // and has the turn carried on there; one not signed in is signed in first.
+  async function continueWith(button, id) {
     const current = session;
     if (continuing === current.id) return;
+    const target = accounts.byId(id);
+    if (target && !accounts.usable(target)) {
+      if (target.kind === 'api_key') {
+        sayError('The key of ' + target.label + ' was not taken. Replace it on the dashboard.');
+        return;
+      }
+      if (!await accounts.signIn(target, button) || !accounts.usable(accounts.byId(id))) return;
+    }
     continuing = current.id;
     button.disabled = true;
     schedule();
     try {
-      await accounts.switchChat(current.id, button.dataset.account, { goOn: true });
+      await accounts.switchChat(current.id, id, { goOn: true });
     } catch (err) {
       sayError('The chat could not go on with that account: ' + errorMessage(err));
     } finally {

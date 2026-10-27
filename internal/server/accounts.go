@@ -27,6 +27,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -117,9 +118,12 @@ type accountView struct {
 	LimitedUntil int64 `json:"limited_until,omitempty"`
 	// Chats is how many chats run on it; a chat that does keeps it from
 	// being deleted.
-	Chats       int            `json:"chats"`
-	Recommended bool           `json:"recommended,omitempty"`
-	SignIn      *accounts.Flow `json:"signin,omitempty"`
+	Chats       int  `json:"chats"`
+	Recommended bool `json:"recommended,omitempty"`
+	// Rank is its place among its agent's accounts in the order to take
+	// them, from 1 (rankAccounts).
+	Rank   int            `json:"rank,omitempty"`
+	SignIn *accounts.Flow `json:"signin,omitempty"`
 }
 
 // chatOptions is what a chat keeps of its account in its row's options.
@@ -218,13 +222,18 @@ func (h *accountHub) views(ctx context.Context) ([]accountView, map[string]strin
 	wg.Wait()
 	now := time.Now()
 	recommended := map[string]string{}
+	rank := map[string]int{}
 	for _, name := range accounts.Agents() {
 		if id := recommendAccount(views, name, "", now); id != "" {
 			recommended[name] = id
 		}
+		for i, v := range rankAccounts(views, name, now) {
+			rank[v.ID] = i + 1
+		}
 	}
 	for i := range views {
 		views[i].Recommended = recommended[views[i].Agent] == views[i].ID
+		views[i].Rank = rank[views[i].ID]
 	}
 	return views, recommended, nil
 }
@@ -316,28 +325,100 @@ func (h *accountHub) codexCLI(a *store.Account) (string, []string, error) {
 // (headroom), and one with no reading - an API key has no windows - only when
 // every account with a reading is at its limit. "" when there is none.
 func recommendAccount(views []accountView, agentName, exclude string, now time.Time) string {
-	best, bestRate, unknown := "", 0.0, ""
+	for _, v := range rankAccounts(views, agentName, now) {
+		if v.ID == exclude {
+			continue
+		}
+		if tier, _ := standing(v, now); tier <= standUnknown {
+			return v.ID
+		}
+		return ""
+	}
+	return ""
+}
+
+// How an account stands for a chat to run on, best first.
+const (
+	standRoom    = iota // signed in, with allowance left by its reading
+	standUnknown        // signed in, with no reading (an API key)
+	standLimited        // signed in, at a limit
+	standOut            // not signed in
+)
+
+// standing is how an account stands, and its headroom when it has room.
+func standing(v accountView, now time.Time) (int, float64) {
+	if v.State != accounts.SignedIn {
+		return standOut, 0
+	}
+	if v.LimitedUntil > now.UnixMilli() {
+		return standLimited, 0
+	}
+	rate, known := headroom(v.Limits, now)
+	switch {
+	case !known:
+		return standUnknown, 0
+	case rate <= 0:
+		return standLimited, 0
+	}
+	return standRoom, rate
+}
+
+// rankAccounts is an agent's accounts in the order to take them: those with
+// room, the most headroom first; then those with no reading; then those at a
+// limit, the one that renews first first; then those not signed in. Ties keep
+// the person's order. The page lists them so (accountView.Rank), and
+// recommendAccount takes the first that can be taken.
+func rankAccounts(views []accountView, agentName string, now time.Time) []accountView {
+	type ranked struct {
+		v     accountView
+		tier  int
+		rate  float64
+		renew int64
+	}
+	var list []ranked
 	for _, v := range views {
-		if v.Agent != agentName || v.ID == exclude || v.State != accounts.SignedIn {
+		if v.Agent != agentName {
 			continue
 		}
-		if v.LimitedUntil > now.UnixMilli() {
-			continue
-		}
-		rate, known := headroom(v.Limits, now)
+		tier, rate := standing(v, now)
+		list = append(list, ranked{v: v, tier: tier, rate: rate, renew: limitEnd(v, now)})
+	}
+	sort.SliceStable(list, func(i, j int) bool {
+		a, b := list[i], list[j]
 		switch {
-		case !known:
-			if unknown == "" {
-				unknown = v.ID
-			}
-		case rate > 0 && (best == "" || rate > bestRate):
-			best, bestRate = v.ID, rate
+		case a.tier != b.tier:
+			return a.tier < b.tier
+		case a.tier == standRoom && a.rate != b.rate:
+			return a.rate > b.rate
+		case a.tier == standLimited && a.renew != b.renew:
+			return a.renew > 0 && (b.renew == 0 || a.renew < b.renew)
+		}
+		return a.v.Order < b.v.Order
+	})
+	out := make([]accountView, len(list))
+	for i, r := range list {
+		out[i] = r.v
+	}
+	return out
+}
+
+// limitEnd is when an account at its limit can be used again (Unix ms): the
+// limit it ran into, else the latest renewal of its used-up windows; zero
+// when nothing says.
+func limitEnd(v accountView, now time.Time) int64 {
+	end := v.LimitedUntil
+	if end <= now.UnixMilli() {
+		end = 0
+	}
+	for _, w := range v.Limits {
+		if w.UsedPercent < 100 {
+			continue
+		}
+		if at, err := time.Parse(time.RFC3339, w.ResetsAt); err == nil && at.UnixMilli() > end {
+			end = at.UnixMilli()
 		}
 	}
-	if best != "" {
-		return best
-	}
-	return unknown
+	return end
 }
 
 // forChat is the account a chat runs on: the one its row names, and for a

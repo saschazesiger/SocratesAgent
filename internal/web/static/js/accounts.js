@@ -69,6 +69,16 @@ export function forAgent(agent) { return cached.accounts.filter((a) => a.agent =
 /** byId is one account, or null. */
 export function byId(id) { return cached.accounts.find((a) => a.id === id) || null; }
 
+/**
+ * ranked is an agent's accounts in the order to take them, as the server
+ * ranks them: room left first, the most first; then those without a
+ * reading; then those at a limit, the one that renews first first; then
+ * those not signed in. A list from before ranks keeps the person's order.
+ */
+export function ranked(agent) {
+  return forAgent(agent).map((a, i) => ({ a, i })).sort((x, y) => (x.a.rank || x.i + 1e6) - (y.a.rank || y.i + 1e6)).map((x) => x.a);
+}
+
 /** recommended is the account a new chat of an agent should run on. */
 export function recommended(agent) { return (cached.recommended || {})[agent] || ''; }
 
@@ -152,11 +162,12 @@ export function renewalAt(account, now = Date.now()) {
 }
 
 /**
- * usageWords is an account's windows in a line: "5h 40% · 7d 60%". A window
- * whose reset has passed is empty again, whatever the last reading said.
+ * usageWords is an account's windows in a line: "5h 40% · 7d 60%"; with all
+ * set every window it has ("Fable 0%" too). A window whose reset has passed
+ * is empty again, whatever the last reading said.
  */
-export function usageWords(account, now = Date.now()) {
-  return (account.limits || []).filter((w) => w.label === '5h' || w.label === '7d')
+export function usageWords(account, now = Date.now(), { all = false } = {}) {
+  return (account.limits || []).filter((w) => all || w.label === '5h' || w.label === '7d')
     .map((w) => {
       const reset = w.resets_at ? new Date(w.resets_at).getTime() : 0;
       const used = reset && reset <= now ? 0 : Number(w.used_percent) || 0;
