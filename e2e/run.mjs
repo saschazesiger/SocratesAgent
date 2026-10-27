@@ -12749,8 +12749,8 @@ async function chataccount() {
         side: Math.max(root.scrollWidth - root.clientWidth, 0), face: b ? b.textContent : '',
       };
     });
-    ok(phone.shown && phone.h >= 48 && phone.right <= phone.vw && phone.side === 0,
-      'on a phone the picker is a thumb\u2019s target over the chat, and nothing scrolls sideways', JSON.stringify(phone));
+    ok(phone.shown && phone.h <= 24 && phone.line <= 32 && phone.right <= phone.vw && phone.side === 0,
+      'on a phone the picker is a plain link in a low line over the chat, and nothing scrolls sideways', JSON.stringify(phone));
     await page.click('#chat .so-chat__account-btn');
     await page.waitForSelector('.so-account-menu:not([hidden]) [data-account="' + alpha.id + '"]', { timeout: 5000 });
     await wait(400);
@@ -12840,6 +12840,7 @@ const ALL = [
   ['clipboard', 'copy and paste: the keys, a plain drag, a click, a middle click, and OSC 52', clipboard],
   ['touchcopy', 'a finger held on the pane selects, grows and copies', touchcopy],
   ['transfer', 'copy, paste and upload buttons, a pasted image, and the phone layout', transfer],
+        line: Math.round(document.querySelector('#chat .so-chat__sub').getBoundingClientRect().height),
   ['chat-fresh', 'a chat\u2019s first message: one big field, its draft kept across a reload and on another device, a start time picked and cleared, a phone', chatfresh],
   ['chat-stream', 'a chat: streaming, Markdown, replay, queued, Stop, the draft, the palette, the model, the lines', chatstream],
   ['chat-restart', 'the server restarted mid-turn under a desk and a phone: the stream replays, the turn completes, nothing twice', chatrestart],

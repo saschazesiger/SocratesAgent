@@ -100,7 +100,6 @@
   justify-content: center;
   column-gap: var(--ds-space-4);
   row-gap: var(--ds-space-1);
-  min-height: var(--ds-space-8);
   padding: var(--ds-space-1) var(--ds-space-6);
   padding-left: calc(var(--ds-space-6) + env(safe-area-inset-left, 0px));
   padding-right: calc(var(--ds-space-6) + env(safe-area-inset-right, 0px));
@@ -110,7 +109,8 @@
 }
 
 /* The account the chat runs on: its name, or - with accounts to choose
-   between - the button that opens their menu (accountpicker.js). */
+   between - a link that opens their menu (accountpicker.js). The line is
+   as low as its text: no button height here, also in touch mode. */
 .so-chat__account,
 .so-chat__account-label {
   display: inline-flex;
@@ -121,7 +121,7 @@
   color: var(--ds-text);
 }
 
-.so-chat__account > .ds-btn {
+.so-chat__account > .ds-link-btn {
   min-width: 0;
   max-width: 100%;
 }

@@ -30,8 +30,8 @@ function pendingOf(session, chat) {
 }
 
 /**
- * drawAccount draws a chat's account into slot: a button that opens the
- * menu when the agent has accounts to choose between, else the account's
+ * drawAccount draws a chat's account into slot: its name as a link that
+ * opens the menu when the agent has accounts to choose between, else the
  * name as a label. It answers whether there is anything to show.
  */
 export function drawAccount(slot, ctx) {
@@ -58,7 +58,9 @@ function draw(slot, { session, chat, error }) {
   const usage = current ? accounts.usageWords(current) : '';
   const renew = current ? accounts.renewal(current) : '';
   const tip = [pending ? pending.label + ' takes over after this turn' : '', usage, renew].filter(Boolean).join(' · ') || 'Account';
-  morph(slot, html`<button class="ds-btn ds-btn--quiet ds-btn--sm so-chat__account-btn" type="button" data-action="account" aria-haspopup="menu" aria-expanded="false" aria-label="${'Account: ' + words}" data-tip="${tip}"${renew ? html` data-state="limited"` : ''}>${raw(icon(renew ? 'clock' : accounts.glyph(current), 16))}<span class="so-chat__account-text so-ellipsis">${words}</span>${raw(icon('chevronDown', 16))}</button>`);
+  // The name is a link that opens the menu, not a padded button: the line
+  // stays as low as its text.
+  morph(slot, html`${raw(icon(renew ? 'clock' : accounts.glyph(current), 16))}<button class="ds-link-btn ds-link-btn--quiet so-chat__account-btn" type="button" data-action="account" aria-haspopup="menu" aria-expanded="false" aria-label="${'Account: ' + words}" data-tip="${tip}"${renew ? html` data-state="limited"` : ''}><span class="so-chat__account-text so-ellipsis">${words}</span></button>`);
   if (!slot.dataset.wired) {
     slot.dataset.wired = '1';
     slot.addEventListener('click', (event) => {
