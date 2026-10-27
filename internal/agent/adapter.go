@@ -88,6 +88,14 @@ type AccountSwitcher interface {
 	SwitchAccount(ctx context.Context, account string, env []string) error
 }
 
+// Releaser is an adapter that can end its CLI at once for another process to
+// take the conversation over (an account switch), without waiting for its
+// background work as Park does: that work ends with the CLI, and the host asks
+// the agent on the new process to start it again.
+type Releaser interface {
+	Release(ctx context.Context) error
+}
+
 // StartSpec is everything an adapter needs to bring its CLI up.
 type StartSpec struct {
 	ChatID string

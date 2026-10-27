@@ -187,3 +187,32 @@ workflow: a host with a background task is not idle (`Background()` counts it).
 - A turn may end while its subagent or workflow group is still `running`; the group is closed by
   its `task_notification`, possibly after the turn, and the CLI's report-back turn follows.
 - Everything a subagent or workflow produced carries `parent_part_id`.
+
+## 7. An account switch: the prompt cache and the background work — VERIFIED (2026-10-27)
+
+Real accounts, claude 2.1.311, the live tests in `internal/agent/claude/live_switch_test.go` and
+`live_host_test.go` (`SOCRATES_CLAUDE_LIVE=1`, `SOCRATES_CLAUDE_LIVE_CONFIG`, `..._CONFIG2`,
+`..._MODEL`, `..._PAUSE`). A conversation of ~61k tokens (three source files read), then a park and
+a `--resume` on the second account's config directory, as a switch does:
+
+| switch | model | after the switch: cache read / write |
+|---|---|---|
+| Team seat → Team seat, same organization | haiku | 61 755 / 222 |
+| same, opus | opus | 60 930 / 198 |
+| same, 6 minutes after the last request | opus | 60 927 / 197 |
+| Team seat → an account of another organization (control) | haiku | 11 863 / 50 502 |
+
+- The prompt cache is the organization's, not the seat's: a switch between accounts of one
+  organization reads it whole, although every account has its own `CLAUDE_CONFIG_DIR` (the paths
+  in the prompt do not break the prefix). Into another organization only the global system-prompt
+  part is read.
+- Claude Code asks for the 1-hour TTL on these subscriptions: six minutes later it still reads.
+  The full rewrites after switches in production chats (400k-570k tokens written) came after
+  pauses of 1.5-6 h, after which the cache is gone on the same account too. Nothing for Socrates
+  to change.
+- Background work: a background `Bash` (`sleep 240`) and a two-phase `Workflow` whose first phase
+  had finished, each switched away from mid-run through a real host. The switch took 1.7-1.9 s
+  (`Release`, AGENT-HOST.md §4.3). The agent on the second account, told what stopped, started the
+  command again and resumed the workflow with `Workflow({scriptPath, resumeFromRunId})`; the
+  finished phase was replayed from the run journal, not run again (its Bash wrote its line once).
+

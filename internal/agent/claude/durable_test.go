@@ -69,7 +69,10 @@ func TestATaskGoneFromTheListClosesItsGroup(t *testing.T) {
 	r.turnsEnded(t, 1)
 	r.waitFor(t, "the shell to be closed", func([]agent.Event) bool {
 		closed := false
-		r.view(func(p *agent.Projection) { closed = len(open(p)) == 0 && p.Tasks == 0 })
+		r.view(func(p *agent.Projection) {
+			c := content(t, partsOf(p.Messages[0], agent.PartTool)[0])
+			closed = len(open(p)) == 0 && p.Tasks == 0 && c.Task != nil && c.Task.Status != "running"
+		})
 		return closed
 	})
 	r.view(func(p *agent.Projection) {

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/saschazesiger/SocratesAgent/internal/agent"
@@ -256,7 +257,11 @@ func (h *host) doSwitch(ctx context.Context, cmd Command, env []string) error {
 		}
 		h.cliPID.Store(int64(h.adapter.PID()))
 	} else {
-		h.parkAdapter(ctx)
+		// What runs in the background dies with the old process; the agent
+		// on the new one is asked to start it again.
+		var stopped []string
+		h.rec.View(func(p *agent.Projection) { stopped = runningWork(p) })
+		h.parkAdapter(ctx, len(stopped) > 0)
 		h.record(divider)
 		if err := h.startAdapter(ctx, cmd.Account, env); err != nil {
 			// The other account could not start the agent (signed out, a
@@ -274,15 +279,106 @@ func (h *host) doSwitch(ctx context.Context, cmd Command, env []string) error {
 				return err
 			}
 			h.resendOwed(ctx)
+			h.sendGoOn(ctx, cmd, stopped, false)
 			return err
 		}
 		h.setAccount(cmd.Account, env)
 		h.resendOwed(ctx)
+		h.sendGoOn(ctx, cmd, stopped, cmd.Continue)
+		return nil
 	}
 	if cmd.Continue {
 		h.sendContinue(ctx, cmd)
 	}
 	return nil
+}
+
+// maxRestarts is how many pieces of stopped work a restart message names.
+const maxRestarts = 12
+
+// runningWork is the agent's background work as the journal shows it
+// running, a line each for the agent to start it again: a workflow (with
+// its run, which it resumes from), a subagent sent to the background, a
+// shell left running. A foreground call is the running turn's, which the
+// Continue carries on.
+func runningWork(p *agent.Projection) []string {
+	var out []string
+	for _, m := range p.Messages {
+		for _, part := range m.Parts {
+			if part.Kind != agent.PartTool || len(out) >= maxRestarts {
+				continue
+			}
+			var c struct {
+				Tool    string `json:"tool"`
+				Summary string `json:"summary"`
+				Command string `json:"command"`
+				Agent   *struct {
+					Status      string `json:"status"`
+					Background  bool   `json:"background"`
+					Description string `json:"description"`
+				} `json:"agent"`
+				Workflow *struct {
+					Status string `json:"status"`
+					Name   string `json:"name"`
+					RunID  string `json:"run_id"`
+				} `json:"workflow"`
+				Task *struct {
+					Status string `json:"status"`
+				} `json:"task"`
+			}
+			if json.Unmarshal(part.Content, &c) != nil {
+				continue
+			}
+			switch {
+			case c.Workflow != nil && c.Workflow.Status == "running":
+				line := fmt.Sprintf("- the workflow %q", firstOf(c.Workflow.Name, c.Summary, "without a name"))
+				if c.Workflow.RunID != "" {
+					line += " (run " + c.Workflow.RunID + ")"
+				}
+				out = append(out, line)
+			case c.Agent != nil && c.Agent.Status == "running" && c.Agent.Background:
+				out = append(out, fmt.Sprintf("- the background subagent %q", firstOf(c.Agent.Description, c.Summary, "without a description")))
+			case c.Task != nil && c.Task.Status == "running":
+				out = append(out, fmt.Sprintf("- the background command `%s`", firstOf(c.Command, c.Summary, c.Tool)))
+			}
+		}
+	}
+	return out
+}
+
+func firstOf(values ...string) string {
+	for _, v := range values {
+		if v = strings.TrimSpace(v); v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+// restartText asks the agent on the new process to start again the
+// background work the switch stopped, and to go on where it left off when
+// the switch says so.
+func restartText(stopped []string, goOn bool) string {
+	text := "Switching the account restarted you, which stopped background work that was still running:\n" +
+		strings.Join(stopped, "\n") + "\n\nStart it again so that it finishes as it would have. A workflow resumes " +
+		"from its run (Workflow with its script file and resumeFromRunId), which keeps what its agents had already finished."
+	if goOn {
+		text += " Then continue where you left off."
+	}
+	return text
+}
+
+// sendGoOn is what the new process is told after a switch: the background
+// work to start again, and the Continue; the Continue alone when nothing was
+// stopped. It goes as one message of the person's, under the switch's
+// client_id, so a switch sent twice says it once.
+func (h *host) sendGoOn(ctx context.Context, cmd Command, stopped []string, goOn bool) {
+	switch {
+	case len(stopped) > 0:
+		h.sendText(ctx, cmd, restartText(stopped, goOn))
+	case goOn:
+		h.sendContinue(ctx, cmd)
+	}
 }
 
 func (h *host) setAccount(account string, env []string) {
@@ -311,16 +407,22 @@ func (h *host) interruptAndWait(ctx context.Context) {
 	}
 }
 
-// parkAdapter stops the CLI cleanly for a switch, and closes a turn the park
-// cut short.
-func (h *host) parkAdapter(ctx context.Context) {
+// parkAdapter stops the CLI for a switch, and closes a turn the park cut
+// short. An adapter that can be released is not waited for while background
+// work of it runs: that work ends either way, and restart says the agent is
+// asked to start it again.
+func (h *host) parkAdapter(ctx context.Context, restart bool) {
 	old := h.adapter
 	h.adapter = nil
 	h.cliPID.Store(0)
 	background := 0
 	h.rec.View(func(p *agent.Projection) { background = p.Tasks })
 	pctx, cancel := context.WithTimeout(ctx, parkWait)
-	if err := old.Park(pctx); err != nil {
+	park := old.Park
+	if r, ok := old.(agent.Releaser); ok {
+		park = r.Release
+	}
+	if err := park(pctx); err != nil {
 		log.Printf("the agent did not park cleanly for a switch: %v", err)
 		_ = old.Stop()
 	}
@@ -332,8 +434,11 @@ func (h *host) parkAdapter(ctx context.Context) {
 		left, closed := leftovers(p)
 		events = append(events, left...)
 		if background > 0 || closed > 0 {
-			events = append(events, agent.Event{Type: agent.TypeNotice, Code: agent.NoticeBackgroundStopped,
-				Text: "The switch restarted the agent on the other account, so the background work that was running stopped."})
+			text := "The switch restarted the agent on the other account, so the background work that was running stopped."
+			if restart {
+				text = "The switch restarted the agent on the other account, which stopped the background work that was running; the agent is asked to start it again."
+			}
+			events = append(events, agent.Event{Type: agent.TypeNotice, Code: agent.NoticeBackgroundStopped, Text: text})
 		}
 		if p.Turn != nil {
 			events = append(events, agent.Event{Type: agent.TypeTurnEnded, TurnID: p.Turn.ID,
@@ -421,7 +526,10 @@ func (h *host) resendOwed(ctx context.Context) {
 // sendContinue tells the agent on the new account to go on, as a message of
 // the person's: the turn the limit stopped continues there. Its client_id
 // is the switch's own, marked, so a switch sent twice says it once.
-func (h *host) sendContinue(ctx context.Context, cmd Command) {
+func (h *host) sendContinue(ctx context.Context, cmd Command) { h.sendText(ctx, cmd, ContinueText) }
+
+// sendText sends text as the switch's message of the person's.
+func (h *host) sendText(ctx context.Context, cmd Command, text string) {
 	clientID := ""
 	if cmd.ClientID != "" {
 		clientID = cmd.ClientID + ":continue"
@@ -432,12 +540,12 @@ func (h *host) sendContinue(ctx context.Context, cmd Command) {
 		}
 	}
 	msg := agent.Event{Type: agent.TypeMessage, MessageID: newID("m_"), Role: agent.RoleUser,
-		State: agent.MessagePending, ClientID: clientID, Text: ContinueText}
+		State: agent.MessagePending, ClientID: clientID, Text: text}
 	if _, err := h.rec.EmitDurable(msg); err != nil {
 		log.Printf("journal: %v", err)
 		return
 	}
-	out := agent.Outgoing{MessageID: msg.MessageID, ClientID: clientID, Text: ContinueText, AfterTurn: h.afterTurn(msg.MessageID)}
+	out := agent.Outgoing{MessageID: msg.MessageID, ClientID: clientID, Text: text, AfterTurn: h.afterTurn(msg.MessageID)}
 	if err := h.adapter.Send(ctx, out); err != nil {
 		h.record(agent.Event{Type: agent.TypeError, Code: "send_failed", MessageID: msg.MessageID, Text: err.Error()})
 	}

@@ -515,11 +515,13 @@ func (s *state) system(f *frame) {
 				agents++
 			}
 		}
+		// The groups of tasks that left the list close first, so that no
+		// count of nothing comes while one still runs.
+		s.reconcile(listed)
 		if n := len(f.Tasks); n != s.background || agents != s.agents {
 			s.background, s.agents = n, agents
 			s.emit(agent.Event{Type: agent.TypeTasks, Count: n, Agents: agents})
 		}
-		s.reconcile(listed)
 	}
 }
 

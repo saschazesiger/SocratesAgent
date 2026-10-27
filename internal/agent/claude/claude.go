@@ -891,7 +891,27 @@ func (a *Adapter) Command(ctx context.Context, name, args string) error {
 // Park ends the CLI cleanly: stdin closes, the CLI finishes and leaves, and
 // the conversation is on disk for the next start. A CLI that does not leave
 // in time is stopped with SIGTERM, then SIGKILL.
-func (a *Adapter) Park(ctx context.Context) error {
+func (a *Adapter) Park(ctx context.Context) error { return a.end(ctx, stopWait) }
+
+// releaseWait is how long Release gives a CLI with background work to leave
+// on its own once its input closed, before SIGTERM.
+const releaseWait = time.Second
+
+// Release ends the CLI for another process to take the conversation over
+// (an account switch). Without background work it is Park. With some, the
+// CLI would wait for it to finish before it leaves; it is not waited for but
+// stopped with SIGTERM, which leaves the transcript and a workflow's run
+// journal for the agent on the new process to go on from.
+func (a *Adapter) Release(ctx context.Context) error {
+	if a.Background() == 0 {
+		return a.Park(ctx)
+	}
+	return a.end(ctx, releaseWait)
+}
+
+// end closes the CLI's input and waits up to wait for it to leave, then
+// stops it with SIGTERM and, after termWait, SIGKILL.
+func (a *Adapter) end(ctx context.Context, wait time.Duration) error {
 	a.mu.Lock()
 	if a.ending {
 		a.mu.Unlock()
@@ -905,13 +925,13 @@ func (a *Adapter) Park(ctx context.Context) error {
 		_ = a.stdin.Close()
 	}
 	a.writeMu.Unlock()
-	wait := time.NewTimer(stopWait)
-	defer wait.Stop()
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
 	select {
 	case <-exited:
 		return nil
 	case <-ctx.Done():
-	case <-wait.C:
+	case <-timer.C:
 	}
 	a.signal(syscall.SIGTERM)
 	select {

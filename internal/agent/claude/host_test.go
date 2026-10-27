@@ -29,11 +29,17 @@ type hostRun struct {
 	t      *testing.T
 	c      *agenthost.Conn
 	events []agent.Event
+	// wait is how long until waits, 20 s when zero.
+	wait time.Duration
 }
 
 func (h *hostRun) until(what string, match func(agent.Event) bool) agent.Event {
 	h.t.Helper()
-	deadline := time.Now().Add(20 * time.Second)
+	wait := h.wait
+	if wait == 0 {
+		wait = 20 * time.Second
+	}
+	deadline := time.Now().Add(wait)
 	for time.Now().Before(deadline) {
 		f, err := h.c.Next()
 		if err != nil {
@@ -161,4 +167,86 @@ func TestASwitchThroughTheHostKeepsTheConversation(t *testing.T) {
 			t.Fatalf("%s holds the key", name)
 		}
 	}
+}
+
+// A switch while a workflow runs does not wait for it: the old CLI is
+// released at once, and the agent on the new account is asked to start the
+// workflow again from its run, and to go on.
+func TestASwitchRestartsTheBackgroundWorkAtOnce(t *testing.T) {
+	data := t.TempDir()
+	work := filepath.Join(data, "work")
+	if err := os.MkdirAll(work, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	shared := filepath.Join(data, "agents", "claude")
+	dirA, dirB := filepath.Join(data, "accounts", "a-a"), filepath.Join(data, "accounts", "a-b")
+	for _, dir := range []string{dirA, dirB} {
+		if err := PrepareConfigDir(dir, shared); err != nil {
+			t.Fatal(err)
+		}
+	}
+	base := []string{"PATH=" + filepath.Dir(fakeBin) + ":/usr/bin:/bin", "HOME=" + data}
+	chat := "claudeswitchbg"
+	l := &agenthost.Launcher{DataDir: data, Binary: os.Args[0], Logf: t.Logf}
+	t.Cleanup(func() { l.Stop(context.Background(), chat) })
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	if err := l.Launch(ctx, agenthost.Spec{ChatID: chat, Harness: Harness, Workdir: work, Account: "a-a",
+		Env: append(append([]string{}, base...), "CLAUDE_CONFIG_DIR="+dirA), ParkAfterMS: 60000}); err != nil {
+		t.Fatalf("launch: %v", err)
+	}
+	c, err := agenthost.Dial(context.Background(), agenthost.SocketPath(data, chat), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	h := &hostRun{t: t, c: c}
+	h.reply("m1", "/workflow 60")
+	var runID string
+	p := agent.Fold(h.events)
+	for _, m := range p.Messages {
+		for _, part := range partsOf(m, agent.PartTool) {
+			if c := content(t, part); c.Workflow != nil && c.Workflow.RunID != "" {
+				runID = c.Workflow.RunID
+			}
+		}
+	}
+	if runID == "" || p.Tasks != 1 {
+		t.Fatalf("the workflow is not running: run %q, tasks %d", runID, p.Tasks)
+	}
+	began := time.Now()
+	if err := c.Send(agenthost.Command{Op: agenthost.OpSwitchAccount, ClientID: "s1", Account: "a-b", When: agenthost.WhenNow,
+		Continue: true, Env: append(append([]string{}, base...), "CLAUDE_CONFIG_DIR="+dirB)}); err != nil {
+		t.Fatal(err)
+	}
+	h.until("the divider", func(ev agent.Event) bool { return ev.Type == agent.TypeAccountSwitched && ev.To == "a-b" })
+	if took := time.Since(began); took > 8*time.Second {
+		t.Fatalf("the switch waited for the workflow: %v", took)
+	}
+	h.until("the restart's turn", func(ev agent.Event) bool { return ev.Type == agent.TypeTurnEnded })
+	p = agent.Fold(h.events)
+	var asked string
+	for _, m := range p.Messages {
+		if m.Role == agent.RoleUser && strings.HasPrefix(m.Text, "Switching the account restarted you") {
+			asked = m.Text
+		}
+	}
+	if !strings.Contains(asked, "(run "+runID+")") || !strings.Contains(asked, "resumeFromRunId") ||
+		!strings.HasSuffix(asked, "Then continue where you left off.") {
+		t.Fatalf("the agent was asked:\n%s", asked)
+	}
+	if got := lastAssistant(p); got == nil || !strings.Contains(partsText(got), "you said: Switching the account") {
+		t.Fatal("the new account's agent did not get the restart")
+	}
+	if p.Tasks != 0 || len(open(p)) != 0 {
+		t.Fatalf("after the switch: tasks %d, open parts %d", p.Tasks, len(open(p)))
+	}
+}
+
+func partsText(m *agent.Message) string {
+	var b strings.Builder
+	for _, p := range partsOf(m, agent.PartText) {
+		b.WriteString(p.Text)
+	}
+	return b.String()
 }

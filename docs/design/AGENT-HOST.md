@@ -304,9 +304,20 @@ a host that dies before the turn ends is followed by one launched on that accoun
 newest `switch_account` in the outbox goes into `host.json`), and the repeat the server sends on
 every connect is acked `dup` and `pending` while the host still holds it. Messages a limit holds
 (§5.2, §5.3) do not count as a turn to wait for. The move is `AccountSwitcher.SwitchAccount` where
-the adapter has one (OpenCode, §5.3), else `Park` and `Start` of a new adapter with the
-environment and the same `ResumeID` (`agent.ErrConversationNotFound` → a fresh conversation with
-`notice{conversation_lost}`). The divider is journaled before the new agent starts, so the events
+the adapter has one (OpenCode, §5.3), else `Park` (`agent.Releaser.Release` where the adapter
+has it: Claude Code, which does not wait for its background work but ends the CLI with SIGTERM
+after 1 s) and `Start` of a new adapter with the environment and the same `ResumeID`
+(`agent.ErrConversationNotFound` → a fresh conversation with `notice{conversation_lost}`).
+Background work dies with the old process, so before the park the host reads what the journal
+shows running in the background (a workflow and its run, a subagent sent to the background, a
+shell left running), closes it with the leftovers (§6, `notice{background_stopped}`) and asks the
+agent on the new account to start it again: one user message under `<the switch's
+client_id>:continue` that names each piece, says a workflow resumes from its run (`Workflow` with
+its script file and `resumeFromRunId`, which replays what its agents finished), and ends with
+"Then continue where you left off." when the switch has `continue`; it replaces the
+`ContinueText` below. Verified with the real CLI (research/09 §7): the switch takes about 2 s
+instead of the 20 s Park gave the background work, and the resumed workflow does not run its
+finished phase again. The divider is journaled before the new agent starts, so the events
 of the next turn come after it; a start that fails journals `error{switch_failed}`, a divider back
 and restarts the old account. Messages the agent had not taken up are handed to the new one. A new
 adapter started on the account the journal's last turn was `limited` on, with nothing run since -
