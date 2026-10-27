@@ -529,7 +529,8 @@ Layout: the Questions card is the first and largest; when it is above zero it is
 "Answer" — a tap opens the dialog at the oldest question. The other cards are a grid; a tap
 filters the list below to that card (tap again: all). Cards with zero are drawn quiet, not
 hidden, so the grid does not jump. Below: the sessions of the filter (default "Needs you":
-questions, finished, review pending), each a large row: the harness mark, title, folder, the
+questions, finished, review pending, of running sessions only - a stopped or ended one is under
+"Not running" and "All"), each a large row: the harness mark, title, folder, the
 state in words, the digest summary (or "…" while pending), how long ago; a tap opens the
 session, a question row has its own "Answer" button. A row is two sibling buttons - its title (opens the
 session) and Answer - never a button inside a `role=button`. The empty state offers New session.

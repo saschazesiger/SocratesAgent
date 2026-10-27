@@ -7890,7 +7890,7 @@ async function homelive() {
     // session filed in the background is never news, only Ready - though its
     // questions still count.
     const cards = await s.page.evaluate(async () => {
-      const { cardsOf } = await import('/static/js/home.js');
+      const { cardsOf, needsYou } = await import('/static/js/home.js');
       const ctx = (activity, status = 'in_progress') => ({ statusOf: () => status, activityOf: () => activity, digestOf: () => null });
       const row = (state) => ({ id: 'x', state, harness: 'claude', kind: 'chat' });
       return {
@@ -7900,12 +7900,16 @@ async function homelive() {
         backgroundAsks: cardsOf(ctx({ state: 'waiting' }, 'background'), row('running')).join(),
         fresh: cardsOf(ctx({ state: 'idle' }), { ...row('running'), fresh: true }).join(),
         freshBusy: cardsOf(ctx({ state: 'busy' }), { ...row('running'), fresh: true }).join(),
+        needsRunning: needsYou(ctx({ state: 'idle', unread: true }), row('running')),
+        needsStopped: needsYou(ctx({ state: 'idle', unread: true }), row('needs_resume'))
+          || needsYou(ctx({ state: 'idle' }, 'review'), row('exited')),
       };
     });
     ok(cards.stoppedUnread === 'stopped,finished' && cards.runningUnknownUnread === 'finished'
       && cards.backgroundUnread === 'ready' && cards.backgroundAsks === 'questions'
-      && cards.fresh === 'unstarted' && cards.freshBusy === 'running',
-      'unread work is Finished even when stopped; a background chat is Ready, and still asks; a chat not started is that until it works',
+      && cards.fresh === 'unstarted' && cards.freshBusy === 'running'
+      && cards.needsRunning === true && cards.needsStopped === false,
+      'unread work is Finished even when stopped, but only a running session is in Needs you; a background chat is Ready, and still asks; a chat not started is that until it works',
       JSON.stringify(cards));
     ok(sockets.length > 0 && sockets.every((url) => url.includes('/api/events')),
       'and with nothing attached: the only socket is the event stream', sockets.join(' '));

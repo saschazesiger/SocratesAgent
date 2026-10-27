@@ -62,7 +62,8 @@ const CARD_LABELS = { questions: 'Questions', ...Object.fromEntries(CARDS.map((c
 
 // The list under the cards. "Needs you" is what the page opens on: the
 // sessions that are waiting for the person, in one of the three ways a
-// session can be.
+// session can be - and running: one that has stopped or ended is mostly
+// something nobody will take up again, and is under "Not running" and "All".
 const NEEDS_YOU = ['questions', 'finished', 'review'];
 
 // The verdicts on a turn that are the person's to act on, read or not: a
@@ -82,6 +83,15 @@ const OUTCOME_TONE = { complete: 'ok', needs_input: 'warning', blocked: 'error' 
 function waitsOnYou(ctx, session) {
   const outcome = ctx.outcomeOf ? ctx.outcomeOf(session) : null;
   return !!outcome && outcome.phase === 'ready' && NEEDS_YOU_OUTCOMES.has(outcome.kind);
+}
+
+/**
+ * needsYou says whether a session is in "Needs you": running, and waiting on
+ * the person in one of the ways NEEDS_YOU and NEEDS_YOU_OUTCOMES name.
+ */
+export function needsYou(ctx, session, cards = cardsOf(ctx, session)) {
+  if (!LIVE_STATES.has(session.state)) return false;
+  return NEEDS_YOU.some((key) => cards.includes(key)) || waitsOnYou(ctx, session);
 }
 
 // The order of "All": what needs the person first, then what is working,
@@ -506,7 +516,7 @@ export function mountHome(ctx) {
         const members = key === 'questions' ? asking
           : [...(key === 'outcomes' ? judged : byCard.get(key))].sort((a, b) => momentOf(b) - momentOf(a));
         for (const session of members) {
-          if (seen.has(session.id)) continue;
+          if (seen.has(session.id) || !needsYou(ctx, session, cardsBy.get(session.id))) continue;
           seen.add(session.id);
           shown.push(session);
         }
