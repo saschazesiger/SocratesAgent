@@ -2571,10 +2571,11 @@ with its own `client_id`. The conversation is resumed with the stopped turn in i
 what it was doing; sending the person's message again would put it in the conversation, the
 journal and the chat twice, and would repeat whatever the turn had already done.
 
-**WP7 / §4.3 — the account sits in the composer's bar, not in a chat header.** "The chat header
-shows the account next to the model": in the chat view (WP8) the model is in the composer's bar,
-so the account is beside it there, through `useAccountPicker`. It shows for an agent with two
-accounts or more; with one there is nothing to pick. "Switch now" during a turn interrupts and has
+**WP7 / §4.3 — the account sits over the chat, not next to the model.** "The chat header
+shows the account next to the model": in the chat view (WP8) the model is in the composer's bar;
+the account was beside it there until 2026-10-27, when the owner moved it up, to the start of the
+line under the top bar, before the limits it is read with (`drawAccount` in `accountpicker.js`).
+With two accounts or more it is the picker; with one it is the account's name. "Switch now" during a turn interrupts and has
 the new account carry the turn on (`continue`); "After this turn" waits for it.
 
 **WP7 / §4.1 — more fields than the list.** The accounts table also keeps `state` (signed in, needs

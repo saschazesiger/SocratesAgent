@@ -1,17 +1,15 @@
 // The account picker of a chat (REBUILD.md §4.3): the account the chat runs
-// on, beside its model in the composer's bar, and a menu of the agent's
+// on, at the start of the line under the top bar, and a menu of the agent's
 // accounts with how much of each window is used, when a limit renews and
 // which one has the most left. Picking another while a turn runs asks
 // whether to stop the turn and go on with the new account now, or to let
 // the turn finish first.
 //
-// It plugs into the composer's account slot (composer.js useAccountPicker)
-// when the chat view loads it. The slot shows only for an agent with more
-// than one account: with one there is nothing to pick.
+// The chat view hands it the line's account slot (drawAccount). With one
+// account there is nothing to pick, and the slot says its name only.
 
 import { el, toast, errorMessage, openDialog } from './api.js';
 import * as accounts from './accounts.js';
-import { useAccountPicker } from './composer.js';
 import { DS, html, raw, icon, morph, showOverlay, hideOverlay } from './ui.js';
 
 // The latest chat each slot was drawn for, so a press and a new list read
@@ -31,11 +29,28 @@ function pendingOf(session, chat) {
   return to && to !== currentOf(session, chat) ? accounts.byId(to) : null;
 }
 
+/**
+ * drawAccount draws a chat's account into slot: a button that opens the
+ * menu when the agent has accounts to choose between, else the account's
+ * name as a label. It answers whether there is anything to show.
+ */
+export function drawAccount(slot, ctx) {
+  const shown = draw(slot, ctx);
+  slot.hidden = !shown;
+  return shown;
+}
+
 function draw(slot, { session, chat, error }) {
   if (!session) return false;
   drawnFor.set(slot, { session, chat, error });
   for (const known of drawnFor.keys()) if (!known.isConnected && known !== slot) drawnFor.delete(known);
-  if (accounts.forAgent(session.harness).length < 2) return false;
+  if (accounts.forAgent(session.harness).length < 2) {
+    const id = currentOf(session, chat);
+    const label = id ? accounts.labelOf(id) || id : '';
+    const account = id ? accounts.byId(id) : null;
+    morph(slot, label ? html`<span class="so-chat__account-label" data-tip="${'Account: ' + label}">${raw(icon(accounts.glyph(account), 16))}<span class="so-ellipsis">${label}</span></span>` : '');
+    return !!label;
+  }
   const current = accounts.byId(currentOf(session, chat));
   const pending = pendingOf(session, chat);
   const name = current ? current.label : 'Account';
@@ -43,7 +58,7 @@ function draw(slot, { session, chat, error }) {
   const usage = current ? accounts.usageWords(current) : '';
   const renew = current ? accounts.renewal(current) : '';
   const tip = [pending ? pending.label + ' takes over after this turn' : '', usage, renew].filter(Boolean).join(' · ') || 'Account';
-  morph(slot, html`<button class="ds-btn ds-btn--quiet ds-btn--sm so-composer__account-btn" type="button" data-action="account" aria-haspopup="menu" aria-expanded="false" aria-label="${'Account: ' + words}" data-tip="${tip}"${renew ? html` data-state="limited"` : ''}>${raw(icon(renew ? 'clock' : accounts.glyph(current), 16))}<span class="so-composer__account-text so-ellipsis">${words}</span>${raw(icon('chevronDown', 16))}</button>`);
+  morph(slot, html`<button class="ds-btn ds-btn--quiet ds-btn--sm so-chat__account-btn" type="button" data-action="account" aria-haspopup="menu" aria-expanded="false" aria-label="${'Account: ' + words}" data-tip="${tip}"${renew ? html` data-state="limited"` : ''}>${raw(icon(renew ? 'clock' : accounts.glyph(current), 16))}<span class="so-chat__account-text so-ellipsis">${words}</span>${raw(icon('chevronDown', 16))}</button>`);
   if (!slot.dataset.wired) {
     slot.dataset.wired = '1';
     slot.addEventListener('click', (event) => {
@@ -62,7 +77,7 @@ accounts.onChange(() => {
       drawnFor.delete(slot);
       continue;
     }
-    slot.hidden = !draw(slot, ctx);
+    drawAccount(slot, ctx);
   }
 });
 
@@ -76,7 +91,7 @@ setInterval(() => {
       drawnFor.delete(slot);
       continue;
     }
-    if (slot.querySelector('[data-state="limited"]')) slot.hidden = !draw(slot, ctx);
+    if (slot.querySelector('[data-state="limited"]')) drawAccount(slot, ctx);
   }
 }, RENEWAL_TICK);
 
@@ -191,4 +206,3 @@ async function askWhen(from, to, opener) {
   return answer || null;
 }
 
-useAccountPicker(draw);

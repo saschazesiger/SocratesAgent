@@ -956,8 +956,8 @@ own words (a text question's answer, a number question's number as typed, or "Ot
 `follow_up` (a counter-question instead of answers) are `null` when empty. A plan
 (`payload.kind: "plan"`) is answered from its card, `{decision: "approve"}` or `{decision:
 "keep_planning", note}`, never from the question dialog. The account picker (WP7,
-`accountpicker.js`) plugs into the composer through `useAccountPicker(draw)` in `composer.js`:
-the account the chat runs on (the journal's, else the row's), a switch on its way ("A → B"), and
+`accountpicker.js`) is drawn by the chat view at the start of the line over the chat
+(`drawAccount(slot, ctx)`): the account the chat runs on (the journal's, else the row's), a switch on its way ("A → B"), and
 a menu of the agent's accounts with their usage; during a turn it asks "Switch now" (interrupt and
 continue) or "After this turn". The fold keeps `account` from `turn.started` and
 `account.switched`, and the switch asked for (`command{switch_account}`) until it happens. A

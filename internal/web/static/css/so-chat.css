@@ -13,6 +13,7 @@
  *                          nothing has been said: the composer is the first
  *                          message, a big field that fills the view
  *   .so-chat__sub          the line under the top bar: the chat's account
+ *                          (its picker when there is more than one),
  *                          and each limit window (.so-chat__limit: used, a
  *                          flat bar, when it resets; [data-high] from 80 %,
  *                          [data-full] at its end); it steps aside while a
@@ -66,7 +67,7 @@
  * .so-chat__composer (the composer's slot in the dock), .so-composer__picker
  * (the hidden file input), .so-composer__attach, .so-model-menu (the model
  * and effort menu, a DS menu), .so-account-menu (the account menu of
- * accountpicker.js, a DS menu), .so-composer__account-btn, .so-ask-back, .so-ask-delegate, .so-ask-note,
+ * accountpicker.js, a DS menu), .so-chat__account-btn, .so-ask-back, .so-ask-delegate, .so-ask-note,
  * .so-ask-other, .so-q-back, .so-q-close, .so-q-own-field, .so-ask__open,
  * .so-refused (a DS alert: the server would not take an answer).
  */
@@ -108,13 +109,25 @@
   color: var(--ds-text-2);
 }
 
-.so-chat__account {
+/* The account the chat runs on: its name, or - with accounts to choose
+   between - the button that opens their menu (accountpicker.js). */
+.so-chat__account,
+.so-chat__account-label {
   display: inline-flex;
   align-items: center;
   gap: var(--ds-space-1);
   min-width: 0;
   max-width: calc(var(--ds-space-12) * 4);
   color: var(--ds-text);
+}
+
+.so-chat__account > .ds-btn {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.so-chat__account-text {
+  display: block;
 }
 
 .so-chat__limits {
@@ -1559,21 +1572,6 @@
 }
 
 
-.so-composer__account {
-  display: inline-flex;
-  min-width: 0;
-  max-width: 40%;
-}
-
-.so-composer__account > .ds-btn {
-  min-width: 0;
-  max-width: 100%;
-}
-
-.so-composer__account-text {
-  display: block;
-}
-
 /* The account menu takes the menu's full width, so that an account's usage
    line wraps as little as it can. */
 .so-account-menu {
@@ -1839,22 +1837,10 @@
     display: none;
   }
 
-  /* While Stop and Send share the slot, the account is its mark. */
-  .so-composer__bar[data-crowded] .so-composer__account-text {
-    display: none;
-  }
-
   /* The model keeps enough room for its name to be read. */
   .so-composer__model {
     min-width: calc(var(--ds-space-10) + var(--ds-space-12));
     max-width: none;
-  }
-
-  /* An account's name is short and is what the button is for: it keeps
-     its width, and the model gives way first. */
-  .so-composer__account {
-    flex: 0 1 auto;
-    max-width: 45%;
   }
 
   .so-tool__progress,
@@ -1930,14 +1916,6 @@
 
   .so-composer > .so-composer__bar {
     flex: 0 1 auto;
-  }
-
-  /* The bar is as wide as what is in it, so a share of it is no measure:
-     the bar was sized to the account's whole name and the account then cut
-     to 40% of that ("M…" for "Main" when no model list shares the bar).
-     An account is held to a length of its own. */
-  .so-composer__account {
-    max-width: calc(var(--ds-space-12) * 4);
   }
 
   .so-composer > .so-composer__hint {

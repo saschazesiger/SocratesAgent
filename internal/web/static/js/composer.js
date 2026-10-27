@@ -230,18 +230,6 @@ function draftSync(id, { read, write, onConflict, onStatus }) {
   };
 }
 
-/* ----------------------------------------------------------- the account */
-
-// The account picker is WP7's (REBUILD.md §4.3): the account a chat runs on,
-// next to its model, with each account's usage. Until it exists the slot in
-// the composer's bar stays empty and hidden. WP7 hands its drawing here:
-// draw(slot, { session, chat }) fills the slot and answers whether it shows
-// anything.
-let accountPicker = null;
-
-/** useAccountPicker is the hook the account picker plugs into. */
-export function useAccountPicker(draw) { accountPicker = draw; }
-
 /* -------------------------------------------------------------- composer */
 
 /**
@@ -300,7 +288,6 @@ export function mountComposer(host, ctx) {
       <button class="ds-btn ds-btn--quiet ds-btn--icon so-composer__attach" type="button" data-action="attach" aria-label="Attach files" data-tip="Attach files">${raw(icon('plus', 20))}</button>
       <input class="so-composer__picker" type="file" multiple hidden tabindex="-1" aria-hidden="true">
       <button class="ds-btn ds-btn--quiet ds-btn--sm so-composer__model" type="button" data-action="model" aria-haspopup="menu" aria-expanded="false"><span class="so-composer__model-text so-ellipsis"><span class="so-composer__model-name"></span><span class="so-composer__model-effort"></span></span>${raw(icon('chevronDown', 16))}</button>
-      <span class="so-composer__account" data-slot="account" hidden></span>
       <button class="ds-btn ds-btn--quiet ds-btn--icon ds-btn--sm so-info so-composer__usage" type="button" data-action="usage" aria-label="Usage of this chat" data-tip="Usage of this chat" hidden>${raw(icon('info', 18))}</button>
       <span class="so-composer__gap" aria-hidden="true"></span>
       <span class="so-composer__mic"></span>
@@ -318,7 +305,6 @@ export function mountComposer(host, ctx) {
   const sendBtn = $('.so-composer__send');
   const stopBtn = $('.so-composer__stop');
   const modelBtn = $('.so-composer__model');
-  const bar = $('.so-composer__bar');
   guard(input);
   input.placeholder = 'Message ' + harnesses.label(ctx.session().harness);
   // Dictation lands where the cursor is, like typing would (dictate.js).
@@ -582,15 +568,6 @@ export function mountComposer(host, ctx) {
     });
   }
 
-  /* --------------------------------------------------------- the account */
-
-  // drawAccount hands the slot to the account picker when there is one.
-  function drawAccount() {
-    const slot = $('.so-composer__account');
-    const shown = accountPicker ? !!accountPicker(slot, { session: ctx.session(), chat: ctx.chat(), error: ctx.error }) : false;
-    slot.hidden = !shown;
-  }
-
   /* ----------------------------------------------------------- the usage */
 
   // The usage is named facts ([label, value]): rows in the dialog, as
@@ -718,9 +695,6 @@ export function mountComposer(host, ctx) {
     // beside it once something is.
     stopBtn.hidden = !busy;
     sendBtn.hidden = busy && empty;
-    // With both in the slot a phone's bar is crowded: the account says
-    // itself by its mark alone then (its name is in its label and menu).
-    bar.toggleAttribute('data-crowded', busy && !empty);
     if (interrupting) stopBtn.setAttribute('aria-busy', 'true'); else stopBtn.removeAttribute('aria-busy');
     sendBtn.disabled = empty || !ready();
     const keyHint = touchScreen() ? 'enter' : 'send';
@@ -746,7 +720,6 @@ export function mountComposer(host, ctx) {
       hint.textContent = said;
       ctx.changed();
     }
-    drawAccount();
     drawUsage();
   }
 

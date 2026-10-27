@@ -25,7 +25,7 @@ import { connectionSaidElsewhere, retryConnection } from './net.js';
 import { agentMarkHtml } from './logos.js';
 import * as harnesses from './harnesses.js';
 import * as accounts from './accounts.js';
-import './accountpicker.js';
+import { drawAccount } from './accountpicker.js';
 import { newChat, apply, applyLive, busy, currentTodo, seenClient, compact, fill, touchPart } from './chatfold.js';
 import { ChatStream } from './chatstream.js';
 import { loadChat, saveChat } from './chatcache.js';
@@ -219,13 +219,15 @@ export function mountChat(ctx) {
 
   // "Latest" is the scroller's last child and sticks to its bottom edge, so
   // it is always just above the dock, however tall the dock is.
-  morph(host, html`<div class="so-chat__sub" data-ds-key="sub" role="status" aria-label="Account and limits"></div><div class="so-chat__scroll" data-ds-key="scroll"><div class="so-chat__log" role="log" aria-label="Conversation" aria-live="polite" aria-relevant="additions"></div><button class="ds-btn ds-btn--tonal ds-btn--icon so-chat__jump" type="button" data-action="jump" aria-label="Jump to the latest message" data-tip="Latest" hidden>${raw(icon('arrowDown', 20))}</button></div>
+  morph(host, html`<div class="so-chat__sub" data-ds-key="sub"><span class="so-chat__account" data-slot="account" hidden></span><div class="so-chat__limits" role="status" aria-label="Limits" hidden></div></div><div class="so-chat__scroll" data-ds-key="scroll"><div class="so-chat__log" role="log" aria-label="Conversation" aria-live="polite" aria-relevant="additions"></div><button class="ds-btn ds-btn--tonal ds-btn--icon so-chat__jump" type="button" data-action="jump" aria-label="Jump to the latest message" data-tip="Latest" hidden>${raw(icon('arrowDown', 20))}</button></div>
 <div class="so-chat__dock" data-ds-key="dock"><div class="so-chat__state" role="status" aria-live="polite"></div><div class="ds-alert so-notice" role="status" hidden></div><div class="ds-alert so-ticker" hidden>${raw(icon('activity', 20))}<span class="ds-alert__text so-ticker__line" role="status" aria-live="polite"></span></div><div class="so-chat__todo" hidden></div><div class="so-chat__bg" hidden></div><div class="so-chat__schedule" hidden></div><div class="so-chat__composer"></div></div>`);
   const scroller = host.querySelector('.so-chat__scroll');
   const log = host.querySelector('.so-chat__log');
   const jump = host.querySelector('.so-chat__jump');
   const stateLine = host.querySelector('.so-chat__state');
   const subLine = host.querySelector('.so-chat__sub');
+  const accountSlot = subLine.querySelector('.so-chat__account');
+  const limitsSlot = subLine.querySelector('.so-chat__limits');
   // The spoken Status's one line (assist.js) and the notice with its whole
   // answer (session.js), in the dock where a terminal has them over its
   // pane.
@@ -337,10 +339,15 @@ export function mountChat(ctx) {
     // switched off), and whether a limit card is the chat's newest word.
     autoContinue: () => !!session && session.options?.auto_continue !== false,
     lastLimit: (entry) => lastLimit(entry),
-    renewal() {
+    // renewal is when the limit that stopped a turn renews: when the agent
+    // said, refusing, else the latest of the account's windows read as used
+    // up (server limitRenews).
+    renewal(turn) {
+      const ended = (turn && turn.endedAt) || 0;
+      if (turn && turn.renewsAt * 1000 > ended) return renewsIn(turn.renewsAt);
       let latest = 0;
       for (const limit of Object.values(chat.rateLimits)) if (limit.used >= 1 && limit.resetsAt > latest) latest = limit.resetsAt;
-      return latest ? renewsIn(latest) : '';
+      return latest * 1000 > ended ? renewsIn(latest) : '';
     },
     // An id the list does not have (an account deleted since) is said as
     // the journal has it.
@@ -721,8 +728,10 @@ export function mountChat(ctx) {
     return out;
   }
 
-  // drawSub is the line under the top bar: the account the chat runs on,
-  // and how much of each of its limits is used and when each renews.
+  // drawSub is the line under the top bar: the account the chat runs on -
+  // the picker, when its agent has accounts to choose between
+  // (accountpicker.js) - and how much of each of its limits is used and
+  // when each renews.
   function drawSub() {
     const now = Date.now();
     const accountId = chat.account || session.options?.account || '';
@@ -737,11 +746,10 @@ export function mountChat(ctx) {
         left ? html`<span class="so-chat__limit-reset">${'resets in ' + left}</span>` : ''
       }</div>`;
     });
-    const label = accountId ? accounts.labelOf(accountId) || accountId : '';
-    subLine.hidden = !label && !limits.length;
-    morph(subLine, html`${label ? html`<span class="so-chat__account" data-tip="${'Account: ' + label}">${raw(icon(account && account.kind === 'api_key' ? 'key' : 'user', 16))}<span class="so-ellipsis">${label}</span></span>` : ''}${
-      limits.length ? html`<div class="so-chat__limits">${limits}</div>` : ''
-    }`);
+    const shown = drawAccount(accountSlot, { session, chat, error: sayError });
+    limitsSlot.hidden = !limits.length;
+    morph(limitsSlot, limits.length ? html`${limits}` : '');
+    subLine.hidden = !shown && !limits.length;
   }
 
   // drawJobs is what runs in the background, at the foot of the chat over

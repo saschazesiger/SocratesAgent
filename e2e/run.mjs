@@ -7272,7 +7272,7 @@ async function optionsmenu() {
     /* ------------------------------------------------------- the limits */
 
     // A chat's limits are its account's (REBUILD.md §4.3): the account button
-    // in its composer says how full the account it runs on is and, at a
+    // over the chat says how full the account it runs on is and, at a
     // limit, when that renews, and its menu says it for every account of the
     // agent. A reading until the button has drawn it, and then none: the
     // minutes after that are the page's own clock. The five-hour window
@@ -7305,15 +7305,15 @@ async function optionsmenu() {
     await s.page.reload({ waitUntil: 'domcontentloaded' });
     await s.page.waitForSelector('#home:not([hidden])', { timeout: 20000 });
     await openChat(s.page, chat);
-    const button = () => s.page.$eval('#chat .so-composer__account-btn', (n) => ({
+    const button = () => s.page.$eval('#chat .so-chat__account-btn', (n) => ({
       text: n.textContent.trim(), tip: n.getAttribute('data-tip') || '', state: n.dataset.state || '',
     })).catch(() => null);
-    await s.page.waitForSelector('#chat .so-composer__account:not([hidden]) .so-composer__account-btn', { timeout: 15000 });
+    await s.page.waitForSelector('#chat .so-chat__account:not([hidden]) .so-chat__account-btn', { timeout: 15000 });
     const face = await button();
     ok(face && face.text === 'Work' && face.state === 'limited' && face.tip === '5h 100% · 7d 30% · renews in 2\u00a0h 37\u00a0min',
-      'the composer names the account, says how full each window is and when its limit renews', JSON.stringify(face));
+      'the line over the chat names the account, says how full each window is and when its limit renews', JSON.stringify(face));
     const menuOf = async () => {
-      await s.page.click('#chat .so-composer__account-btn');
+      await s.page.click('#chat .so-chat__account-btn');
       await s.page.waitForSelector('.so-account-menu:not([hidden]) [data-account]', { timeout: 5000 });
       const items = await s.page.$$eval('.so-account-menu [data-account]', (n) => n.map((one) => one.innerText.replace(/\s+/g, ' ').trim()));
       await s.page.keyboard.press('Escape');
@@ -7341,7 +7341,7 @@ async function optionsmenu() {
     // The countdown moves with no new reading at all - every request after
     // the first fails - and the spare account's limit renews on screen.
     const ticked = await s.page.waitForFunction(() => {
-      const n = document.querySelector('#chat .so-composer__account-btn');
+      const n = document.querySelector('#chat .so-chat__account-btn');
       return !!n && /renews in 2\u00a0h 36\u00a0min$/.test(n.getAttribute('data-tip') || '');
     }, null, { timeout: 45000 }).then(() => true, () => false);
     ok(ticked, 'the countdown goes on with the network failing', JSON.stringify(await button()));
@@ -7352,18 +7352,18 @@ async function optionsmenu() {
     for (let i = 0; i < 20 && refused === 0; i += 1) await wait(500);
     ok(refused >= 1, 'it went on asking all the while, and was refused', refused + ' refused request(s)');
 
-    // A phone: the button is in the composer, nothing off the edge, and the
+    // A phone: the button is over the chat, nothing off the edge, and the
     // menu opens on screen.
     await s.page.setViewportSize({ width: 360, height: 740 });
     await wait(500);
     const phone = await s.page.evaluate(() => {
-      const b = document.querySelector('#chat .so-composer__account-btn').getBoundingClientRect();
+      const b = document.querySelector('#chat .so-chat__account-btn').getBoundingClientRect();
       return { left: Math.round(b.left), right: Math.round(b.right), vw: innerWidth,
         overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth };
     });
     ok(phone.left >= 0 && phone.right <= phone.vw && phone.overflow <= 1,
-      'on a phone the account button fits the composer, and nothing scrolls sideways', JSON.stringify(phone));
-    await s.page.click('#chat .so-composer__account-btn');
+      'on a phone the account button fits the line over the chat, and nothing scrolls sideways', JSON.stringify(phone));
+    await s.page.click('#chat .so-chat__account-btn');
     await s.page.waitForSelector('.so-account-menu:not([hidden]) [data-account]', { timeout: 5000 });
     await wait(400);
     const popBox = await s.page.$eval('.so-account-menu', (n) => {
@@ -12456,7 +12456,7 @@ async function accountsscenario() {
 }
 
 // chat-account: a chat started on an account from the sheet, switched from
-// the composer's account picker while idle and while a turn runs, the line
+// the account picker over the chat while idle and while a turn runs, the line
 // each switch leaves, a limit's card and its Continue with, the automatic
 // switch from the chat's menu, and the picker on a phone.
 async function chataccount() {
@@ -12493,14 +12493,14 @@ async function chataccount() {
     const id = await page.evaluate(() => location.hash.slice(1));
     const row = await sessionRow(s, id);
     ok(row.options && row.options.account === alpha.id, 'the chat is made on the account chosen', JSON.stringify(row.options));
-    await page.waitForSelector('#chat .so-composer__account:not([hidden]) .so-composer__account-btn', { timeout: 10000 });
-    const face = await page.$eval('#chat .so-composer__account-text', (n) => n.textContent);
-    ok(face === 'Alpha', 'the composer names the account', face);
+    await page.waitForSelector('#chat .so-chat__account:not([hidden]) .so-chat__account-btn', { timeout: 10000 });
+    const face = await page.$eval('#chat .so-chat__account-text', (n) => n.textContent);
+    ok(face === 'Alpha', 'the line over the chat names the account', face);
     await say(page, '/account');
     ok(await awaitLog(page, 'account ' + alpha.id + ', no key'), 'and the agent runs on it', alpha.id);
 
     // Switched while idle.
-    await page.click('#chat .so-composer__account-btn');
+    await page.click('#chat .so-chat__account-btn');
     await page.waitForSelector('.so-account-menu:not([hidden]) [data-account="' + beta.id + '"]', { timeout: 5000 });
     const items = await page.$$eval('.so-account-menu [data-account]', (n) => n.map((x) => x.textContent));
     ok(items.length === 2 && items.some((t) => /Alpha/.test(t)) && items.some((t) => /Beta/.test(t)),
@@ -12509,18 +12509,18 @@ async function chataccount() {
     ok(await awaitLog(page, 'Switched from Alpha to Beta'), 'a switch leaves a line in the conversation', '');
     await say(page, '/account');
     ok(await awaitLog(page, 'account ' + beta.id + ', a key of 18 characters'), 'and the agent runs on the new account, with its key', beta.id);
-    const faceB = await page.$eval('#chat .so-composer__account-text', (n) => n.textContent);
+    const faceB = await page.$eval('#chat .so-chat__account-text', (n) => n.textContent);
     ok(faceB === 'Beta', 'the composer follows', faceB);
 
     // Switched while a turn runs: after this turn.
     await say(page, '/sleep 3');
     await page.waitForSelector('#chat .so-composer__stop:not([hidden])', { timeout: 10000 });
-    await page.click('#chat .so-composer__account-btn');
+    await page.click('#chat .so-chat__account-btn');
     await page.click('.so-account-menu [data-account="' + alpha.id + '"]');
     await page.waitForSelector('dialog.ds-dialog [data-when="after_turn"]', { timeout: 5000 });
     await shot(page, 'chat-account-when');
     await page.click('dialog.ds-dialog [data-when="after_turn"]');
-    const pending = await page.waitForFunction(() => /Beta → Alpha/.test(document.querySelector('#chat .so-composer__account-text')?.textContent || ''),
+    const pending = await page.waitForFunction(() => /Beta → Alpha/.test(document.querySelector('#chat .so-chat__account-text')?.textContent || ''),
       null, { timeout: 8000 }).then(() => true, () => false);
     ok(pending, 'the composer says the switch waits for the turn', String(pending));
     ok(await awaitLog(page, 'slept', 15000), 'the turn finishes on Beta', '');
@@ -12569,7 +12569,7 @@ async function chataccount() {
     await page.waitForSelector('.ds-toast--shown', { state: 'detached', timeout: 15000 }).catch(() => {});
     await wait(400);
     const phone = await page.evaluate(() => {
-      const b = document.querySelector('#chat .so-composer__account-btn');
+      const b = document.querySelector('#chat .so-chat__account-btn');
       const r = b ? b.getBoundingClientRect() : null;
       const root = document.scrollingElement;
       return {
@@ -12578,8 +12578,8 @@ async function chataccount() {
       };
     });
     ok(phone.shown && phone.h >= 48 && phone.right <= phone.vw && phone.side === 0,
-      'on a phone the picker is a thumb\u2019s target in the composer, and nothing scrolls sideways', JSON.stringify(phone));
-    await page.click('#chat .so-composer__account-btn');
+      'on a phone the picker is a thumb\u2019s target over the chat, and nothing scrolls sideways', JSON.stringify(phone));
+    await page.click('#chat .so-chat__account-btn');
     await page.waitForSelector('.so-account-menu:not([hidden]) [data-account="' + alpha.id + '"]', { timeout: 5000 });
     await wait(400);
     const menuBox = await page.$eval('.so-account-menu', (n) => {
@@ -12600,7 +12600,7 @@ async function chataccount() {
     // goes in as the composer would send it.
     await post('/api/chats/' + encodeURIComponent(id) + '/messages', { client_id: 'e2e-sleep-now', text: '/sleep 30' });
     await page.waitForSelector('#chat .so-composer__stop:not([hidden])', { timeout: 10000 });
-    await page.click('#chat .so-composer__account-btn');
+    await page.click('#chat .so-chat__account-btn');
     await page.click('.so-account-menu [data-account="' + gamma.id + '"]');
     await page.waitForSelector('dialog.ds-dialog [data-when="now"]', { timeout: 5000 });
     await page.click('dialog.ds-dialog [data-when="now"]');
