@@ -455,9 +455,11 @@ export function apply(chat, ev) {
       chat.rev += 1;
       break;
     case 'usage':
+      // A reading without the window (Claude's during a turn) keeps the
+      // one known (agent.Projection does the same).
       if (ev.usage) {
         chat.usage.context = ev.usage.context || 0;
-        chat.usage.window = ev.usage.window || 0;
+        if (ev.usage.window) chat.usage.window = ev.usage.window;
       }
       chat.rev += 1;
       break;

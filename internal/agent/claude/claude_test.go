@@ -257,6 +257,20 @@ func TestATextTurnStreamsAndEnds(t *testing.T) {
 	if !delivered {
 		t.Fatalf("m1 never delivered:\n%s", dump(evs))
 	}
+	// The context in use is said while the turn runs, from the request's
+	// answer, before the result says it again with the window.
+	live := -1
+	for i, ev := range evs {
+		if ev.Type == agent.TypeUsage && ev.Usage != nil && ev.Usage.Context == 127 && live < 0 {
+			live = i
+		}
+		if ev.Type == agent.TypeTurnEnded && (live < 0 || live > i) {
+			t.Fatalf("no usage before the turn ended:\n%s", dump(evs))
+		}
+	}
+	if count(evs, agent.TypeUsage) != 1 {
+		t.Fatalf("the same reading is said once, not per block:\n%s", dump(evs))
+	}
 	r.mu.Lock()
 	n := len(r.deltas)
 	r.mu.Unlock()

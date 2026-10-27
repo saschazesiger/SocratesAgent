@@ -31,6 +31,9 @@
  *   .so-msg                a message, data-role user | assistant; a user's
  *                          is a bubble with its state chip (.so-msg__chip);
  *                          an answer ends in Copy and its "i" (.so-msg__foot)
+ *   .so-live               a running answer's live line, the column's whole
+ *                          width: what it does now (a shimmer), its watches,
+ *                          steps and tokens, over the wavy indeterminate bar
  *   .so-part               one part of an answer, data-kind and data-state
  *   .so-md                 Markdown as the agent wrote it; .so-code is a
  *                          fenced block with its language and Copy
@@ -665,11 +668,83 @@
   list-style: none;
 }
 
-.so-msg__wait {
-  display: inline-flex;
-  align-items: center;
+/* The live line of a running answer takes the column's whole width: one
+   row of what the agent is doing and how far it is, over the wavy
+   indeterminate bar of Dashboard-Style. The verb carries a shimmer: a
+   brighter band travels over it through a mask, on the progress wave's own
+   keyframes (one tile of --ds-progress-wave-length a loop, so it never
+   jumps), a pass and a pause per --ds-loop-skeleton. */
+.so-live {
+  display: flex;
+  flex-direction: column;
   gap: var(--ds-space-2);
-  margin: 0;
+  align-self: stretch;
+  min-width: 0;
+  padding-block: var(--ds-space-1);
+}
+
+.so-live__row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  column-gap: var(--ds-space-3);
+  row-gap: 0;
+  min-width: 0;
+  color: var(--ds-text-2);
+  font: var(--ds-font-label);
+}
+
+.so-live__now {
+  display: flex;
+  flex: 0 1 auto;
+  align-items: baseline;
+  gap: var(--ds-space-2);
+  min-width: 0;
+  --ds-progress-wave-length: calc(var(--ds-space-12) * 4);
+  -webkit-mask-image: linear-gradient(90deg, var(--so-live-dim) 0 30%, var(--ds-text-1) 50%, var(--so-live-dim) 70% 100%);
+  mask-image: linear-gradient(90deg, var(--so-live-dim) 0 30%, var(--ds-text-1) 50%, var(--so-live-dim) 70% 100%);
+  -webkit-mask-size: var(--ds-progress-wave-length) 100%;
+  mask-size: var(--ds-progress-wave-length) 100%;
+  -webkit-mask-repeat: repeat-x;
+  mask-repeat: repeat-x;
+  animation: ds-progress-wave var(--ds-loop-skeleton) linear infinite;
+}
+
+.so-live__doing {
+  flex: none;
+  color: var(--ds-text-1);
+}
+
+.so-live__what {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
+.so-live__step,
+.so-live__meta,
+.so-live__time {
+  flex: none;
+  font-variant-numeric: tabular-nums;
+}
+
+.so-live__step,
+.so-live__meta {
+  color: var(--ds-text-3);
+  font: var(--ds-font-meta);
+}
+
+/* What it is doing reads from the left, how far the turn is from the
+   right. */
+.so-live__meta {
+  margin-inline-start: auto;
+}
+
+.so-live__time {
+  color: var(--ds-text-1);
+}
+
+.so-live__bar {
+  --ds-progress-track: var(--ds-surface-highest);
 }
 
 /* Copy and the "i" under an answer: a quiet row as tall as a line of
@@ -1806,6 +1881,17 @@
     order: 1;
     flex-basis: 100%;
     padding-left: calc(var(--ds-space-5) + var(--ds-space-2));
+  }
+
+  /* The live line keeps what is done and its watch on the first row; the
+     time it began, the steps and the tokens go under it. */
+  .so-live__meta {
+    order: 1;
+    flex-basis: 100%;
+  }
+
+  .so-live__time {
+    margin-inline-start: auto;
   }
 
   /* A phone says how far each limit is and when it resets; the bar is the

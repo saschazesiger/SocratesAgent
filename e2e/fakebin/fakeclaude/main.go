@@ -717,12 +717,14 @@ func (t *turnRun) se(ev map[string]any) map[string]any {
 }
 
 // assistant writes one completed block of the current API message, on the
-// stream and in the transcript.
+// stream and in the transcript, with the request's usage as the CLI gives
+// it (the main thread's context, as the result's last iteration says).
 func (t *turnRun) assistant(b map[string]any, parent string) {
 	id := newUUID()
 	frame := map[string]any{"type": "assistant", "message": map[string]any{"model": t.f.model, "id": t.apiMsg,
-		"type": "message", "role": "assistant", "content": []any{b}}, "parent_tool_use_id": nilIfEmpty(parent),
-		"session_id": t.f.session, "uuid": id}
+		"type": "message", "role": "assistant", "content": []any{b},
+		"usage": map[string]any{"input_tokens": 2, "output_tokens": 20, "cache_read_input_tokens": 100, "cache_creation_input_tokens": 5}},
+		"parent_tool_use_id": nilIfEmpty(parent), "session_id": t.f.session, "uuid": id}
 	t.f.out(frame)
 	if parent == "" {
 		t.f.writeRaw(map[string]any{"type": "assistant", "uuid": id, "message": frame["message"]})

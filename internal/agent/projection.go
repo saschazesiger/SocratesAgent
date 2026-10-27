@@ -240,8 +240,13 @@ func (p *Projection) Apply(ev Event) {
 		}
 		p.RateLimits[ev.Window] = RateLimit{Used: ev.Used, ResetsAt: ev.ResetsAt, At: ev.At}
 	case TypeUsage:
+		// A reading without the window (Claude's during a turn) keeps the
+		// one known.
 		if ev.Usage != nil {
-			p.Usage.Context, p.Usage.Window = ev.Usage.Context, ev.Usage.Window
+			p.Usage.Context = ev.Usage.Context
+			if ev.Usage.Window > 0 {
+				p.Usage.Window = ev.Usage.Window
+			}
 		}
 	case TypeProcess:
 		p.Process, p.ProcessDetail = ev.State, ev.Detail

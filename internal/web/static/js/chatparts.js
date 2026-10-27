@@ -47,6 +47,18 @@ export function seconds(ms) {
 }
 
 /**
+ * stopwatch is how long something has run so far, as a watch shows it:
+ * "0:42", "12:05", "1:02:03".
+ */
+export function stopwatch(ms) {
+  const s = Math.max(0, Math.floor((Number(ms) || 0) / 1000));
+  const two = (n) => String(n).padStart(2, '0');
+  const h = Math.floor(s / 3600);
+  const m = Math.floor(s / 60) % 60;
+  return h ? h + ':' + two(m) + ':' + two(s % 60) : m + ':' + two(s % 60);
+}
+
+/**
  * clock is a moment as the time of day, "14:03", or with its seconds,
  * "14:03:12": when something started is always said in the clock's words.
  */
@@ -828,17 +840,11 @@ function pieces(message, chat) {
     const list = message.parts.slice(from, to);
     const shown = new Set(shownParts(message, list));
     let cards = 0;
-    // Whether nothing was said after the last question of the piece.
-    let quiet = !shown.size;
     for (const part of list) {
-      if (shown.has(part)) quiet = false;
       const asks = places.byPart.get(part.id);
-      if (asks) {
-        cards += asks.length;
-        quiet = true;
-      }
+      if (asks) cards += asks.length;
     }
-    out.push({ list, shown, cards, said: shown.size + cards, quiet });
+    out.push({ list, shown, cards, said: shown.size + cards });
     from = to;
   }
   return out;
@@ -1051,8 +1057,8 @@ function didOf(part) {
 /**
  * workSummary is the fold's line: how long the work took, how many steps
  * it was, what they did, and - under the turn's last piece - its tokens
- * and cost. `running` is the step being taken right now, for the line while
- * the work goes on.
+ * and cost. What the work is doing right now is the running answer's live
+ * line (liveHtml).
  */
 export function workSummary(parts, message, { whole = false, usage = false } = {}) {
   const counts = new Map();
@@ -1084,40 +1090,108 @@ export function workSummary(parts, message, { whole = false, usage = false } = {
     tokens ? fmtTokens(tokens) + ' tokens' : '',
     usage && turn && turn.cost ? (turn.cost < 0.01 ? 'under $0.01' : '$' + turn.cost.toFixed(2)) : '',
   ].filter(Boolean);
-  let now = '';
-  if (running) {
-    if (running.kind === 'reasoning') now = 'Thinking';
-    else if (running.kind === 'text') now = 'Writing';
-    else {
-      const tool = toolOf(running);
-      now = [tool.name, tool.summary].filter(Boolean).join(' ');
-    }
-  }
-  // When the work began, and - once it is done - when it ended, by the
-  // clock; while it runs, how long its current step has been at it.
-  const span = from ? (running ? 'since ' + clock(from) : clock(from) + (to && clock(to) !== clock(from) ? '–' + clock(to) : '')) : '';
+  // When the work began and when it ended, by the clock.
+  const span = from && !running ? clock(from) + (to && clock(to) !== clock(from) ? '–' + clock(to) : '') : '';
   if (span) meta.push(span);
-  const step = running && running.at && running.kind === 'tool' ? seconds(Math.max(0, Date.now() - running.at)) : '';
-  return { did: did.join(', '), took: seconds(took), meta, now: now && step ? now + ' · ' + step : now, live: !!running, steps };
+  return { did: did.join(', '), took: seconds(took), meta, live: !!running, steps };
 }
 
 // workHtml is the fold: one line that says what the work was, and the work
-// itself, part by part, once it is opened.
+// itself, part by part, once it is opened. While it goes on, the line says
+// what it did so far; what it is doing now, for how long and with how many
+// tokens is the live line under the answer (liveHtml), said once.
 function workHtml(key, parts, message, view, { live = false, ...options } = {}) {
   const open = view.isOpen(key, false);
   const sum = workSummary(parts, message, options);
   const failed = parts.some((part) => part.state === 'error');
+  const did = sum.did ? sum.did.charAt(0).toUpperCase() + sum.did.slice(1) : '';
   let title;
-  if (live) title = 'Working' + (sum.now ? ': ' + sum.now : '…');
-  else title = (sum.took ? 'Worked for ' + sum.took : 'Worked') + (sum.did ? ' · ' + sum.did.charAt(0).toUpperCase() + sum.did.slice(1) : '');
-  const label = [title, ...sum.meta].join(' · ');
+  if (live) title = 'Working' + (did ? ' · ' + did : '');
+  else title = (sum.took ? 'Worked for ' + sum.took : 'Worked') + (did ? ' · ' + did : '');
+  const meta = live ? [] : sum.meta;
+  const label = [title, ...meta].join(' · ');
   return html`<details class="ds-collapsible so-part so-work" data-ds-key="${key}" data-open-key="${key}" data-kind="work" data-state="${live ? 'running' : failed ? 'error' : 'done'}"${open ? html` open` : ''}><summary class="ds-pressable so-work__head" aria-label="${label}"><span class="so-work__icon" aria-hidden="true">${
-    live ? html`<span class="ds-spinner"></span>` : raw(icon(failed ? 'alertCircle' : 'checkCircle', 16))
+    raw(icon(live ? 'activity' : failed ? 'alertCircle' : 'checkCircle', 16))
   }</span><span class="so-work__title so-ellipsis">${title}</span>${
-    sum.meta.length ? html`<span class="so-work__meta">${sum.meta.join(' · ')}</span>` : ''
+    meta.length ? html`<span class="so-work__meta">${meta.join(' · ')}</span>` : ''
   }${chevron()}</summary>${
     open ? html`<div class="so-work__body">${parts.map((part) => partHtml(part, view))}</div>` : ''
   }</details>`;
+}
+
+// What a running call is doing, in the live line's words (by didOf).
+const DOING = {
+  read: 'Reading', edit: 'Editing', command: 'Running', search: 'Searching', web: 'Browsing',
+  agent: 'Delegating', todo: 'Planning', other: 'Using',
+};
+
+/**
+ * liveHtml is the running answer's live line, the whole width of the
+ * column: what the agent is doing right now (its verb in a travelling
+ * shimmer), for how long its current call runs, when the turn began, its
+ * steps so far, the tokens in the context, and the turn's own watch -
+ * over the wavy indeterminate bar. The watches move with the clock
+ * (tickLive), the rest with the answer.
+ */
+function liveHtml(message, chat) {
+  const turn = chat.turn && (!message.turnId || !chat.turn.id || chat.turn.id === message.turnId) ? chat.turn : null;
+  let running = null;
+  let first = 0;
+  let steps = 0;
+  for (const part of message.parts) {
+    if (part.at && (!first || part.at < first)) first = part.at;
+    if (part.state === 'running' || part.state === 'streaming') running = part;
+    if (part.kind !== 'text' && part.kind !== 'reasoning' && !STANDS.has(part.kind)) steps += 1;
+  }
+  let doing = 'Working';
+  let what = '';
+  let since = 0;
+  if (running && running.kind === 'reasoning') doing = 'Thinking';
+  else if (running && running.kind === 'text') doing = 'Writing';
+  else if (running) {
+    const tool = toolOf(running);
+    const did = didOf(running);
+    doing = DOING[did];
+    what = did === 'other' ? [tool.name, tool.summary].filter(Boolean).join(' ') : tool.summary || tool.name;
+    since = running.at || 0;
+  }
+  const started = (turn && turn.startedAt) || first;
+  const now = Date.now();
+  const u = chat.usage || {};
+  const meta = [
+    started ? 'since ' + clock(started) : '',
+    steps ? steps + (steps === 1 ? ' step' : ' steps') : '',
+    u.context ? fmtTokens(u.context) + (u.window ? ' / ' + fmtTokens(u.window) : '') + ' tokens' : '',
+  ].filter(Boolean);
+  const words = doing + (what ? ' ' + what : '');
+  return html`<div class="so-live" data-ds-key="live"><div class="so-live__row"><span class="so-live__now"><span class="so-live__doing">${doing}</span>${
+    what ? html`<span class="so-live__what so-ellipsis">${what}</span>` : ''
+  }</span>${
+    since ? html`<span class="so-live__step" data-since="${since}" data-format="seconds">${ticking(now - since, 'seconds')}</span>` : ''
+  }${meta.length ? html`<span class="so-live__meta">${meta.join(' · ')}</span>` : ''}${
+    started ? html`<span class="so-live__time" data-since="${started}" data-format="watch" data-tip="How long this turn has been running">${ticking(now - started, 'watch')}</span>` : ''
+  }</div><div class="ds-progress ds-progress--indeterminate so-live__bar"><div class="ds-progress__track" role="progressbar" aria-label="The agent is working" aria-valuetext="${words}"><div class="ds-progress__bar"></div></div></div></div>`;
+}
+
+// ticking is a live line's watch at `ms`: the turn's as a stopwatch, a
+// call's in whole seconds until it has run a minute.
+function ticking(ms, format) {
+  if (format === 'watch') return stopwatch(ms);
+  const s = Math.max(0, Math.floor(ms / 1000));
+  return s < 60 ? s + '\u00a0s' : stopwatch(ms);
+}
+
+/**
+ * tickLive moves the watches of the live lines under `root` on to now:
+ * they are drawn with the answer, and between two drawings only their
+ * figures change.
+ */
+export function tickLive(root) {
+  const now = Date.now();
+  for (const node of root.querySelectorAll('.so-live [data-since]')) {
+    const text = ticking(now - Number(node.dataset.since), node.dataset.format);
+    if (node.textContent !== text) node.textContent = text;
+  }
 }
 
 /**
@@ -1151,11 +1225,10 @@ export function assistantMessage(message, view, segment = 0) {
   // answer: OpenCode answers a step at a time, and a tool-only step drew a
   // row of its own with an "i" that said the next one's usage again.
   const facts = segment === foot && !silent && !laterInTurn(message, view) ? turnFacts(message, view) : [];
-  // An answer that has said nothing yet, or nothing since its last
-  // question, is working - unless it waits for the person, which its
-  // question card says.
+  // A running answer ends in its live line - unless it waits for the
+  // person, which its question card says.
   const asking = [...view.chat.asks.values()].some((ask) => !ask.answered && ask.turnId && ask.turnId === message.turnId);
-  const working = segment === last && message.state === 'streaming' && piece.quiet && !asking;
+  const working = segment === last && message.state === 'streaming' && !asking;
   if (!piece.said && !working && !facts.length) return '';
   const places = askPlaces(view.chat);
   const copyable = segment === foot && message.state !== 'streaming'
@@ -1196,7 +1269,7 @@ export function assistantMessage(message, view, segment = 0) {
   };
   return html`<article class="so-msg" data-ds-key="${key}" data-role="assistant" data-state="${message.state}">${
     runs.map(runHtml)
-  }${working ? html`<p class="so-msg__wait ds-meta"><span class="ds-spinner" aria-hidden="true"></span><span>Working…</span></p>` : ''}${
+  }${working ? liveHtml(message, view.chat) : ''}${
     copyable || facts.length ? html`<div class="so-msg__foot">${
       copyable ? html`<button class="ds-btn ds-btn--quiet ds-btn--icon ds-btn--sm so-msg__copy" type="button" data-action="copy-answer" data-message="${message.id}" aria-label="Copy the answer" data-tip="Copy">${raw(icon('copy', 18))}</button><button class="ds-btn ds-btn--quiet ds-btn--icon ds-btn--sm so-msg__speak" type="button" data-action="speak-answer" data-message="${message.id}" aria-label="Read the answer out loud" data-tip="Read aloud (again to stop)">${faces(raw(icon('volume', 18)), '')}</button>` : ''
     }${infoButton(facts, 'Usage of this answer')}</div>` : ''

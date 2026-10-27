@@ -40,6 +40,10 @@ type state struct {
 	// refused is the limit the CLI last refused a request at, for the turn
 	// it stops.
 	refused refusal
+	// context is the context in use the last request of the main thread
+	// said (contextOf), and window the model's context window as the last
+	// result said it.
+	context, window int64
 	// seen is the uuids of assistant and user frames already mapped: after
 	// a compaction the CLI repeats the preserved ones.
 	seen  map[string]bool
@@ -357,7 +361,27 @@ func (s *state) result(f *frame) {
 	case f.IsError:
 		outcome, why = agent.OutcomeFailed, resultError(f)
 	}
-	s.endTurn(outcome, resultUsage(f), s.turnCost(f), why)
+	usage := resultUsage(f)
+	if usage != nil && usage.Window > 0 {
+		s.window = usage.Window
+	}
+	s.endTurn(outcome, usage, s.turnCost(f), why)
+}
+
+// contextOf says the context in use while a turn runs, from each answer of
+// the main thread: the prompt of its request and what it answered so far.
+// The result says it again at the turn's end, with the window.
+func (s *state) contextOf(msg *message) {
+	u := msg.Usage
+	if u == nil {
+		return
+	}
+	n := u.Input + u.CacheRead + u.CacheCreate + u.Output
+	if n <= 0 || n == s.context {
+		return
+	}
+	s.context = n
+	s.emit(agent.Event{Type: agent.TypeUsage, Usage: &agent.Usage{Context: n, Window: s.window}})
 }
 
 // turnCost is what this turn cost: the result's per-turn model usage when it
@@ -715,6 +739,9 @@ func (s *state) assistant(f *frame) {
 		}
 	}
 	parent := f.ParentToolUseID
+	if parent == "" {
+		s.contextOf(&msg)
+	}
 	for i, b := range msg.blocks() {
 		switch b.Type {
 		case "text", "thinking":

@@ -2924,7 +2924,11 @@ Asked for by the product owner on 2026-10-25, on branch `ui-simplify`.
 - **A turn's work is folded.** Thinking, calls, agents, diffs, task lists and what the agent said
   on the way are one line per answer (`.so-work`): what it did, how long, steps, tokens and cost;
   a tap opens it. The answer's last words, plans, notices and question cards stand. The pinned
-  task list above the composer still shows while a turn works through one.
+  task list above the composer still shows while a turn works through one. While a turn runs, its
+  answer ends in a live line the column's whole width (`.so-live`, the owner's wish for more than
+  a spinner): what the agent does now with a travelling shimmer, how long the call runs, when the
+  turn began, its steps, the tokens in the context and the turn's stopwatch, over DS's wavy
+  indeterminate bar.
 - **A line under the top bar** (`.so-chat__sub`): the chat's account, each limit window's use and
   reset, and the background jobs - always shown, "No background jobs" when there are none; a tap
   lists them.

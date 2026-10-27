@@ -10561,7 +10561,7 @@ async function chatrestart() {
 
     for (const [name, page] of pages) {
       await awaitLog(page, 'w300', 20000);
-      await page.waitForFunction(() => !document.querySelector('#chat .so-chat__log .so-msg__wait'), null, { timeout: 10000 }).catch(() => {});
+      await page.waitForFunction(() => !document.querySelector('#chat .so-chat__log .so-live'), null, { timeout: 10000 }).catch(() => {});
       const look = await page.evaluate((sent) => {
         const log = document.querySelector('#chat .so-chat__log');
         const messages = [...log.querySelectorAll('.so-msg')];
@@ -10571,7 +10571,7 @@ async function chatrestart() {
           sent: messages.filter((m) => m.dataset.role === 'user' && m.innerText.includes(sent)).length,
           answers: assistant.length,
           words: said.match(/\bw\d+\b/g) || [],
-          working: !!log.querySelector('.so-msg__wait'),
+          working: !!log.querySelector('.so-live'),
           interrupted: assistant.some((m) => m.dataset.state === 'interrupted'),
           same: window.__sameLoad === true,
         };
@@ -10834,13 +10834,19 @@ async function chatfold() {
     const live = await page.waitForFunction((n) => {
       const msgs = document.querySelectorAll('#chat .so-msg[data-role="assistant"]');
       const fold = msgs.length > n ? msgs[msgs.length - 1].querySelector('.so-work[data-state="running"]') : null;
-      return fold ? {
-        title: fold.querySelector('.so-work__title').textContent.trim(), turning: !!fold.querySelector('summary .ds-spinner'),
-        open: fold.open, body: !!fold.querySelector('.so-work__body'),
+      const line = fold ? msgs[msgs.length - 1].querySelector(':scope > .so-live') : null;
+      return fold && line ? {
+        title: fold.querySelector('.so-work__title').textContent.trim(), open: fold.open, body: !!fold.querySelector('.so-work__body'),
+        doing: line.querySelector('.so-live__doing').textContent.trim(), watch: line.querySelector('.so-live__time')?.textContent.trim() || '',
+        bar: !!line.querySelector('.ds-progress--indeterminate [role="progressbar"]'),
+        wide: Math.abs(line.getBoundingClientRect().width - msgs[msgs.length - 1].getBoundingClientRect().width) <= 1,
+        shimmer: getComputedStyle(line.querySelector('.so-live__now')).animationName,
       } : null;
     }, before, { timeout: 15000 }).then((h) => h.jsonValue(), () => null);
-    ok(!!live && /^Working/.test(live.title) && live.turning && !live.open && !live.body,
-      'while the agent works, its work is one line that says what it is doing, turning, shut', JSON.stringify(live));
+    ok(!!live && /^Working/.test(live.title) && !live.open && !live.body,
+      'while the agent works, its work is one line that says what it did so far, shut', JSON.stringify(live));
+    ok(!!live && live.doing && /^\d+:\d\d$/.test(live.watch) && live.bar && live.wide && live.shimmer === 'ds-progress-wave',
+      'and the answer ends in its live line, the whole width: what it does now in a shimmer, the turn\'s watch, the wavy bar', JSON.stringify(live));
     await awaitChat(s, id, idle, 30000);
     await page.waitForFunction(() => {
       const fold = [...document.querySelectorAll('#chat .so-work')].pop();
@@ -12833,6 +12839,7 @@ async function chataccount() {
       const root = document.scrollingElement;
       return {
         shown: !!r && r.width > 0, h: r ? Math.round(r.height) : 0, right: r ? Math.round(r.right) : 0, vw: innerWidth,
+        line: Math.round(document.querySelector('#chat .so-chat__sub').getBoundingClientRect().height),
         side: Math.max(root.scrollWidth - root.clientWidth, 0), face: b ? b.textContent : '',
       };
     });
@@ -12928,7 +12935,6 @@ const ALL = [
   ['clipboard', 'copy and paste: the keys, a plain drag, a click, a middle click, and OSC 52', clipboard],
   ['touchcopy', 'a finger held on the pane selects, grows and copies', touchcopy],
   ['transfer', 'copy, paste and upload buttons, a pasted image, and the phone layout', transfer],
-        line: Math.round(document.querySelector('#chat .so-chat__sub').getBoundingClientRect().height),
   ['chat-fresh', 'a chat\u2019s first message: one big field, its draft kept across a reload and on another device, a start time picked and cleared, a phone', chatfresh],
   ['chat-stream', 'a chat: streaming, Markdown, replay, queued, Stop, the draft, the palette, the model, the lines', chatstream],
   ['chat-restart', 'the server restarted mid-turn under a desk and a phone: the stream replays, the turn completes, nothing twice', chatrestart],

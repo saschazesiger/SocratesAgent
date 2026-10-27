@@ -31,7 +31,7 @@ import { ChatStream } from './chatstream.js';
 import { loadChat, saveChat } from './chatcache.js';
 import {
   assistantMessage, userMessage, lineHtml, askCard, askPlaces, todoList, todoItems, renewsIn, seconds, outboxState,
-  backgroundJobs, jobsList, jobDetail, clock, infoButton,
+  backgroundJobs, jobsList, jobDetail, clock, infoButton, tickLive,
 } from './chatparts.js';
 import { mountComposer } from './composer.js';
 import { chatOutbox, pendingFor, pendingAnswer, pendingModel, failedItem, queueAnswer, answeredHere } from './chatoutbox.js';
@@ -54,6 +54,8 @@ const SAVE_AFTER = 1500;
 const STICK = 64;
 // How often a running turn is drawn again for its times to move on.
 const TICK_MS = 5000;
+// How often the live line's watches move.
+const LIVE_TICK_MS = 1000;
 // How long a Stop may go unanswered before the dock says the agent has not
 // stopped yet; the host starts it again after 30 s (AGENT-HOST.md §6).
 const STOP_SLOW = 5000;
@@ -281,6 +283,11 @@ export function mountChat(ctx) {
     tick += 1;
     schedule();
   }, TICK_MS);
+  // The watches of the running answer's live line move every second, in
+  // place: only their figures change between two drawings.
+  setInterval(() => {
+    if (session && chat && !host.hidden && chat.turn) tickLive(log);
+  }, LIVE_TICK_MS);
 
   // "Latest" comes and goes as the person scrolls; the snackbars move with it.
   function showJump(shown) {
@@ -604,6 +611,8 @@ export function mountChat(ctx) {
       }</div>`) });
     }
     place(entries.concat(local));
+    // A drawing from the cache brings the watches back to when it was made.
+    tickLive(log);
     drawSub();
     drawJobs();
     if (jobsWanted && session.id === jobsWanted && synced) {

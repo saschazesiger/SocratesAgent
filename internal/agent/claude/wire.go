@@ -192,6 +192,7 @@ type message struct {
 	Model   string          `json:"model"`
 	Role    string          `json:"role"`
 	Content json.RawMessage `json:"content"`
+	Usage   *apiUsage       `json:"usage"`
 }
 
 // block is one content block of a message.
