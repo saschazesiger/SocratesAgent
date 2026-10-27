@@ -1,0 +1,117 @@
+/*
+ * so-motion.css: two pieces of motion for a line that says what is going on
+ * right now, written the way a Dashboard-Style component is (markup, hooks,
+ * choreography, progressive features) and naming nothing of Socrates, so
+ * that they can move into Dashboard-Style as they are: proposed there in
+ * plans/wheel-and-shimmer.md (docs/design/DASHBOARD-STYLE.md, "Proposed to
+ * Dashboard-Style"). Tokens only, unlayered like every so-*.css.
+ *
+ * Wheel: a slot whose lines roll like the face of a wheel. When its line
+ * changes, the old one turns up and away over the top of a drum behind the
+ * text and fades, and the new one turns up into place from below, both on
+ * the one rotation, the new one on the spring. Every line stays at least
+ * --ds-hold-status, so a fast run of changes never flickers: a line that
+ * comes during the hold waits, and only the latest one waits. The motion is
+ * js/wheel.js (wheelHooks for DS.dom.morphHtml, or wheelRoll() on its own).
+ *
+ *   <span class="so-wheel">
+ *     <span class="so-wheel__line" data-ds-key="Thinking">Thinking</span>
+ *   </span>
+ *
+ *   key every line by what it says: a new key is a new line, and it rolls;
+ *   the same key with other children (a figure that ticks) patches in place
+ *
+ * Shimmer: a soft white wave that travels over a text, left to right, a
+ * pass and a pause per loop, while something is at work. The text keeps its
+ * own colours; the wave is a copy of it on top (::after, from
+ * data-shimmer, left out of the accessible name) in --so-shimmer-glint,
+ * shown through a band of a mask that moves one tile per loop.
+ *
+ *   <span class="so-shimmer" data-shimmer="Running npm test"><b>Running</b> npm test</span>
+ *
+ *   data-shimmer must be the text as it reads (the same words and spaces),
+ *   so the wave lies on the letters; it is cut with the same ellipsis.
+ *
+ * Hooks (on the element): --so-wheel-angle (how far a line turns as it goes
+ * or comes, 70deg), --so-wheel-depth (how far behind the text the drum turns,
+ * 0.9em), --so-wheel-blur (how soft a turned-away line is, 2px; read by the
+ * script), --so-wheel-fade (the soft edge above and below, --ds-space-2),
+ * --so-shimmer-length (one tile of the wave: the band and the pause after
+ * it, 400px), --so-shimmer-loop (one tile's travel, --ds-loop-skeleton).
+ * Colours (theme.css): --so-shimmer-glint (the wave, white),
+ * --so-shimmer-peak (how much of it shows at its crest).
+ *
+ * Choreography (js/wheel.js): the turn runs --ds-dur-slow on
+ * --ds-ease-spatial for both lines; the old line fades over --ds-dur-base
+ * (--ds-ease-in) and blurs as it turns away, the new one fades in over
+ * --ds-dur-medium (--ds-ease-in-out) and sharpens. A change during a turn
+ * turns each line on from where it is. The shimmer's wave reuses
+ * ds-progress-wave (the mask tile travels one --ds-progress-wave-length per
+ * loop, linear), so it needs no keyframes of its own.
+ *
+ * Progressive: the 3D turn needs nothing new (perspective, rotateX); the
+ * spring falls back to --ds-ease-out where el.animate() rejects linear().
+ * `content: attr() / ""` keeps the wave's copy out of the accessible name;
+ * an engine without the alternative text syntax drops the declaration and
+ * shows the text without the wave.
+ */
+
+.so-wheel {
+  --so-wheel-angle: 70deg;
+  --so-wheel-depth: 0.9em;
+  --so-wheel-blur: 2px;
+  display: inline-grid;
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0;
+  /* Room above and below for the turn, given back so nothing moves, and a
+     static mask that fades it: lines come from and go into soft edges. */
+  padding-block: var(--so-wheel-fade, var(--ds-space-2));
+  margin-block: calc(-1 * var(--so-wheel-fade, var(--ds-space-2)));
+  -webkit-mask-image: linear-gradient(to bottom, transparent, var(--ds-text) var(--so-wheel-fade, var(--ds-space-2)), var(--ds-text) calc(100% - var(--so-wheel-fade, var(--ds-space-2))), transparent);
+  mask-image: linear-gradient(to bottom, transparent, var(--ds-text) var(--so-wheel-fade, var(--ds-space-2)), var(--ds-text) calc(100% - var(--so-wheel-fade, var(--ds-space-2))), transparent);
+}
+
+.so-wheel > * {
+  grid-area: 1 / 1;
+  justify-self: start;
+  min-width: 0;
+  max-width: 100%;
+  transform-origin: 50% 50% calc(-1 * var(--so-wheel-depth));
+  backface-visibility: hidden;
+}
+
+.so-shimmer {
+  --so-shimmer-length: 400px;
+  position: relative;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.so-shimmer::after {
+  content: attr(data-shimmer) / "";
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--so-shimmer-glint);
+  pointer-events: none;
+  --ds-progress-wave-length: var(--so-shimmer-length);
+  -webkit-mask-image: linear-gradient(90deg, transparent 0 38%, var(--so-shimmer-peak) 50%, transparent 62% 100%);
+  mask-image: linear-gradient(90deg, transparent 0 38%, var(--so-shimmer-peak) 50%, transparent 62% 100%);
+  -webkit-mask-size: var(--so-shimmer-length) 100%;
+  mask-size: var(--so-shimmer-length) 100%;
+  -webkit-mask-repeat: repeat-x;
+  mask-repeat: repeat-x;
+  animation: ds-progress-wave var(--so-shimmer-loop, var(--ds-loop-skeleton)) linear infinite;
+}
+
+/* Forced colours paint every text in one colour: the wave would only cover
+   the text it copies. */
+@media (forced-colors: active) {
+  .so-shimmer::after {
+    content: none;
+  }
+}

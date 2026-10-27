@@ -34,6 +34,7 @@ import {
   backgroundJobs, jobsList, jobDetail, agentCard, clock, infoButton, tickLive,
 } from './chatparts.js';
 import { mountComposer } from './composer.js';
+import { wheelHooks } from './wheel.js';
 import { chatOutbox, pendingFor, pendingAnswer, pendingModel, failedItem, queueAnswer, answeredHere } from './chatoutbox.js';
 import { askProgress, askDraftsRev, forgetAskDraft } from './askdialog.js';
 import { record, recPhase } from './dictate.js';
@@ -56,6 +57,20 @@ const STICK = 64;
 const TICK_MS = 5000;
 // How often the live line's watches move.
 const LIVE_TICK_MS = 1000;
+// What moves as an entry is drawn again: the wheels of a running answer's
+// live line roll (wheel.js), and the live line fades in when the answer
+// starts to run and out when it stops.
+const ENTRY_MOTION = {
+  onInsert(node) {
+    if (node.classList.contains('so-live')) M.enter(node, 'fade');
+    else wheelHooks.onInsert(node);
+  },
+  onRemove(node) {
+    if (node.classList.contains('so-live')) return M.leave(node, '', { then: 'keep' });
+    return wheelHooks.onRemove(node);
+  },
+};
+
 // How long a Stop may go unanswered before the dock says the agent has not
 // stopped yet; the host starts it again after 30 s (AGENT-HOST.md §6).
 const STOP_SLOW = 5000;
@@ -557,7 +572,7 @@ export function mountChat(ctx) {
         drawn.set(entry.key, one);
       }
       if (one.markup !== entry.markup) {
-        morph(one.node, entry.markup);
+        morph(one.node, entry.markup, ENTRY_MOTION);
         one.markup = entry.markup;
         for (const field of one.node.querySelectorAll('textarea[data-plan-note]')) {
           if (!field.value) field.value = readPlanNote(field.dataset.planNote);

@@ -76,9 +76,11 @@ unchanged in 2.1.0), filled in for Socrates:
 | `css/so-question.css` | the question dialog |
 | `css/so-sheet.css` | the new-session sheet and its settings form |
 | `css/so-chat.css` | the chat view: the conversation and its parts, the composer, the chat's question dialog (over `so-question.css`) |
+| `css/so-motion.css` | `.so-wheel` (lines that roll like the face of a wheel) and `.so-shimmer` (a white wave over text at work), proposed to DS (below) |
 | `css/so-admin.css` | the admin page |
 | `css/so-pages.css` | login, setup and costs |
 | `js/ui.js` | the bridge to DS: `startUI`, touch mode, icons, `html```, `morph`, `flipMorph`, `ms`, `faces`, overlays |
+| `js/wheel.js` | the wheel's motion: `wheelHooks` for `morph()`, `wheelRoll()` without one |
 | `js/api.js` | requests, `el()`, dialogs (`confirmDialog`, `promptDialog` on DS's, `alertDialog`, `openDialog`), `toast`, `infoTip` |
 | `ds-check.json` (repository root) | the configuration of DS's project check, with its exceptions and their reasons |
 
@@ -167,6 +169,19 @@ Still Socrates' own after 2.1, with the reason that still holds:
   modal's figures in words**, **the brand's name on a phone** and **`alertDialog`**: 2.1 changes none of these; they
   are the project's layout or content, as listed above.
 
+
+## Proposed to Dashboard-Style
+
+Parts Socrates built itself because DS has nothing like them yet, written the way a DS component is (header
+comment with markup, hooks, choreography and progressive features; tokens only; nothing named after Socrates) so
+that they can move into DS as they are. DS keeps the proposal; DS's repository names no project, so the link goes
+from here to there.
+
+| Part | Here | Proposal |
+|---|---|---|
+| The wheel and the shimmer: a running answer's live line (`.so-live`) rolls what the agent does like the face of a wheel, under a soft white wave | `css/so-motion.css`, `js/wheel.js`; the wave runs on DS's `ds-progress-wave` (no keyframes of our own) | [plans/wheel-and-shimmer.md](https://github.com/saschazesiger/Dashboard-Style/blob/main/plans/wheel-and-shimmer.md) |
+
+When DS ships one of them, the project's copy goes and the page takes DS's names.
 
 ## Work packages
 

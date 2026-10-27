@@ -10837,16 +10837,68 @@ async function chatfold() {
       const line = fold ? msgs[msgs.length - 1].querySelector(':scope > .so-live') : null;
       return fold && line ? {
         title: fold.querySelector('.so-work__title').textContent.trim(), open: fold.open, body: !!fold.querySelector('.so-work__body'),
-        doing: line.querySelector('.so-live__doing').textContent.trim(), watch: line.querySelector('.so-live__time')?.textContent.trim() || '',
-        bar: !!line.querySelector('.ds-progress--indeterminate [role="progressbar"]'),
+        doing: line.querySelector('.so-live__doing').textContent.trim(), time: line.querySelector('.so-live__time')?.textContent.trim() || '',
+        bar: !!line.querySelector('.ds-progress'), wheel: !!line.querySelector('.so-wheel > .so-wheel__line .so-live__doing'),
         wide: Math.abs(line.getBoundingClientRect().width - msgs[msgs.length - 1].getBoundingClientRect().width) <= 1,
-        shimmer: getComputedStyle(line.querySelector('.so-live__now')).animationName,
+        copy: (() => { const w = line.querySelector('.so-shimmer'); return !!w && w.dataset.shimmer === w.textContent; })(),
+        shimmer: (() => { const after = getComputedStyle(line.querySelector('.so-shimmer'), '::after'); return after.maskImage !== 'none' ? after.animationName : 'no mask'; })(),
       } : null;
     }, before, { timeout: 15000 }).then((h) => h.jsonValue(), () => null);
     ok(!!live && /^Working/.test(live.title) && !live.open && !live.body,
       'while the agent works, its work is one line that says what it did so far, shut', JSON.stringify(live));
-    ok(!!live && live.doing && /^\d+:\d\d$/.test(live.watch) && live.bar && live.wide && live.shimmer === 'ds-progress-wave',
-      'and the answer ends in its live line, the whole width: what it does now in a shimmer, the turn\'s watch, the wavy bar', JSON.stringify(live));
+    ok(!!live && live.doing && live.wheel && live.copy && live.shimmer === 'ds-progress-wave' && !live.bar && live.wide
+      && /\d:\d\d.*(<1 minute|~\d+ minutes?)$/.test(live.time),
+      'and the answer ends in its live line, the whole width and no bar: what it does now on a wheel under a white wave, when the turn began and about how long ago', JSON.stringify(live));
+    // The wheel on its own: a new line turns in while the old one turns
+    // out and stays until it is gone; changes during the hold roll once,
+    // to the last of them.
+    const wheel = await page.evaluate(async () => {
+      const { wheelHooks } = await import('/static/js/wheel.js');
+      const box = document.createElement('div');
+      document.body.append(box);
+      const draw = (text) => window.DS.dom.morphHtml(box, '<span class="so-wheel"><span class="so-wheel__line" data-ds-key="' + text + '">' + text + '</span></span>', wheelHooks);
+      const lines = () => [...box.querySelectorAll('.so-wheel__line')].map((n) => n.textContent + (n.hasAttribute('data-ds-leaving') ? ' (going)' : '')).sort();
+      draw('Thinking');
+      draw('Running npm test');
+      const turning = lines();
+      const moving = box.querySelector('.so-wheel__line:not([data-ds-leaving])').getAnimations().length;
+      await new Promise((r) => setTimeout(r, 1500));
+      const rolled = lines();
+      draw('Writing');
+      draw('Reading a.go');
+      const held = lines();
+      const waits = Math.max(...box.querySelector('.so-wheel__line:not([data-ds-leaving])').getAnimations().map((a) => a.effect.getTiming().delay));
+      await new Promise((r) => setTimeout(r, 2500));
+      const last = lines();
+      draw('Searching');
+      await new Promise((r) => setTimeout(r, 200));
+      draw('Editing b.go');
+      const hold = window.DS.motion.motionDuration(box, '--ds-hold-status');
+      const wait = Math.max(...box.querySelector('.so-wheel__line:not([data-ds-leaving])').getAnimations().map((a) => a.effect.getTiming().delay));
+      box.remove();
+      return { turning, moving, rolled, held, waits, last, hold, wait: Math.round(wait) };
+    });
+    ok(wheel.turning.join('|') === 'Running npm test|Thinking (going)' && wheel.moving >= 2 && wheel.rolled.join('|') === 'Running npm test',
+      'a wheel turns a new line in and the old one out, which stays until it is gone', JSON.stringify(wheel));
+    ok(wheel.held.join('|') === 'Reading a.go|Running npm test (going)' && wheel.waits === 0 && wheel.last.join('|') === 'Reading a.go',
+      'two changes at once roll once, to the last: the one between never shows', JSON.stringify(wheel));
+    ok(wheel.wait > wheel.hold - 400 && wheel.wait <= wheel.hold - 150,
+      'a change right after a roll waits until the line before it was shown for the hold', JSON.stringify(wheel));
+    // A time that is not today says its day.
+    const times = await page.evaluate(async () => {
+      const { clock, span, about } = await import('/static/js/chatparts.js');
+      const day = new Date();
+      day.setDate(day.getDate() - 1);
+      day.setHours(23, 50, 0, 0);
+      const week = new Date(day.getTime() - 3 * 86400000);
+      return {
+        today: clock(Date.now()), yesterday: clock(day.getTime()), span: span(day.getTime(), day.getTime() + 5 * 60000),
+        week: clock(week.getTime()), about: [about(20000), about(3 * 60000), about(80 * 60000)],
+      };
+    });
+    ok(/^\d/.test(times.today) && /^yesterday \d/.test(times.yesterday) && (times.span.match(/yesterday/g) || []).length === 1
+      && /^[A-Z][a-z]+ \d/.test(times.week) && times.about.join('|') === '<1 minute|~3 minutes|~1 hour 20 minutes',
+      'a time of today is the time; one of yesterday or this week says its day, once in a span; how long reads in round words', JSON.stringify(times));
     await awaitChat(s, id, idle, 30000);
     await page.waitForFunction(() => {
       const fold = [...document.querySelectorAll('#chat .so-work')].pop();

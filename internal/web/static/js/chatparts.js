@@ -64,8 +64,54 @@ export function stopwatch(ms) {
  */
 export function clock(at, withSeconds = false) {
   if (!at) return '';
-  return new Date(at).toLocaleTimeString([], withSeconds
+  const date = new Date(at);
+  const time = date.toLocaleTimeString([], withSeconds
     ? { hour: '2-digit', minute: '2-digit', second: '2-digit' } : { hour: '2-digit', minute: '2-digit' });
+  const day = dayOf(date);
+  return day ? day + ' ' + time : time;
+}
+
+/**
+ * dayOf is the day of a moment in words, when it is not today: "yesterday",
+ * "tomorrow", the weekday within the week ("Mon"), else the date ("12 Oct",
+ * with the year when it is another one). A time of day alone is today's.
+ */
+export function dayOf(date, now = new Date()) {
+  const start = (d) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+  const days = Math.round((start(now) - start(date)) / 86400000);
+  if (days === 0) return '';
+  if (days === 1) return 'yesterday';
+  if (days === -1) return 'tomorrow';
+  if (days > 1 && days < 7) return date.toLocaleDateString([], { weekday: 'short' });
+  return date.toLocaleDateString([], {
+    day: 'numeric', month: 'short', ...(date.getFullYear() !== now.getFullYear() ? { year: 'numeric' } : {}),
+  });
+}
+
+/**
+ * span is a stretch of time by the clock, "14:03–14:20": the day is said
+ * once when both ends are on it, at the start.
+ */
+export function span(from, to) {
+  if (!from) return '';
+  const start = clock(from);
+  if (!to || clock(to) === start) return start;
+  const end = clock(to);
+  const day = dayOf(new Date(to));
+  return start + '–' + (day && day === dayOf(new Date(from)) ? end.slice(day.length + 1) : end);
+}
+
+/**
+ * about is how long something has run, in round words: "<1 minute",
+ * "~3 minutes", "~1 hour 20 minutes".
+ */
+export function about(ms) {
+  const minutes = Math.round((Number(ms) || 0) / 60000);
+  if (minutes < 1) return '<1 minute';
+  const words = (n, one) => n + ' ' + one + (n === 1 ? '' : 's');
+  if (minutes < 60) return '~' + words(minutes, 'minute');
+  const h = Math.floor(minutes / 60);
+  return '~' + words(h, 'hour') + (minutes % 60 ? ' ' + words(minutes % 60, 'minute') : '');
 }
 
 /** infoButton is the "i" of infoTip() as markup; the view opens it on a tap. */
@@ -1220,8 +1266,7 @@ export function workSummary(parts, message, { whole = false, usage = false } = {
     usage && turn && turn.cost ? (turn.cost < 0.01 ? 'under $0.01' : '$' + turn.cost.toFixed(2)) : '',
   ].filter(Boolean);
   // When the work began and when it ended, by the clock.
-  const span = from && !running ? clock(from) + (to && clock(to) !== clock(from) ? '–' + clock(to) : '') : '';
-  if (span) meta.push(span);
+  if (from && !running) meta.push(span(from, to));
   return { did: did.join(', '), took: seconds(took), meta, live: !!running, steps };
 }
 
@@ -1256,10 +1301,11 @@ const DOING = {
 
 /**
  * liveHtml is the running answer's live line, the whole width of the
- * column: what the agent is doing right now (its verb in a travelling
- * shimmer), for how long its current call runs, when the turn began, its
- * steps so far, the tokens in the context, and the turn's own watch -
- * over the wavy indeterminate bar. The watches move with the clock
+ * column: what the agent is doing right now under a travelling white wave
+ * (.so-shimmer), rolling like a wheel to the next thing it does (.so-wheel,
+ * wheel.js), with how long the current call runs; its steps so far and the
+ * tokens in the context; and when the turn began with about how long ago,
+ * whose minutes roll on too. The call's seconds move with the clock
  * (tickLive), the rest with the answer.
  */
 function liveHtml(message, chat) {
@@ -1288,18 +1334,19 @@ function liveHtml(message, chat) {
   const now = Date.now();
   const u = chat.usage || {};
   const meta = [
-    started ? 'since ' + clock(started) : '',
     steps ? steps + (steps === 1 ? ' step' : ' steps') : '',
     u.context ? fmtTokens(u.context) + (u.window ? ' / ' + fmtTokens(u.window) : '') + ' tokens' : '',
   ].filter(Boolean);
   const words = doing + (what ? ' ' + what : '');
-  return html`<div class="so-live" data-ds-key="live"><div class="so-live__row"><span class="so-live__now"><span class="so-live__doing">${doing}</span>${
-    what ? html`<span class="so-live__what so-ellipsis">${what}</span>` : ''
-  }</span>${
+  const ago = started ? about(now - started) : '';
+  // A line of a wheel is keyed by what it says: another text is another
+  // line, and it rolls in.
+  const line = (key, body) => html`<span class="so-wheel__line" data-ds-key="${key}">${body}</span>`;
+  return html`<div class="so-live" data-ds-key="live"><span class="so-wheel so-live__now">${line(words, html`<span class="so-shimmer so-live__words" data-shimmer="${words}"><span class="so-live__doing">${doing}</span>${what ? ' ' + what : ''}</span>${
     since ? html`<span class="so-live__step" data-since="${since}" data-format="seconds">${ticking(now - since, 'seconds')}</span>` : ''
-  }${meta.length ? html`<span class="so-live__meta">${meta.join(' · ')}</span>` : ''}${
-    started ? html`<span class="so-live__time" data-since="${started}" data-format="watch" data-tip="How long this turn has been running">${ticking(now - started, 'watch')}</span>` : ''
-  }</div><div class="ds-progress ds-progress--indeterminate so-live__bar"><div class="ds-progress__track" role="progressbar" aria-label="The agent is working" aria-valuetext="${words}"><div class="ds-progress__bar"></div></div></div></div>`;
+  }`)}</span>${meta.length ? html`<span class="so-live__meta">${meta.join(' · ')}</span>` : ''}${
+    started ? html`<span class="so-live__time" data-tip="${'Started ' + clock(started, true)}"><span>${clock(started)}</span><span class="so-wheel">${line(ago, ago)}</span></span>` : ''
+  }</div>`;
 }
 
 // ticking is a live line's watch at `ms`: the turn's as a stopwatch, a

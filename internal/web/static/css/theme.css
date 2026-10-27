@@ -89,9 +89,11 @@
   --so-chat-row-height: 36px;
   --so-chat-output-max: 320px;
   --so-chat-todo-max: 28vh;
-  /* A running answer's live line: how much of its verb shows between two
-     passes of the shimmer. */
-  --so-live-dim: color-mix(in srgb, var(--ds-text-1) 40%, transparent);
+  /* The shimmer of a line at work (so-motion.css): a white wave, and how
+     much of it shows at its crest - enough to read as light passing over
+     the words, never enough to wipe them out. */
+  --so-shimmer-glint: #fff;
+  --so-shimmer-peak: color-mix(in srgb, var(--ds-text) 80%, transparent);
   /* The background jobs dialog, and a job's row in it. */
   --so-jobs-width: 36rem;
   --so-job-row-min: 3.5rem;

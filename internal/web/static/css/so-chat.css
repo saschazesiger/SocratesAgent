@@ -33,8 +33,9 @@
  *                          is a bubble with its state chip (.so-msg__chip);
  *                          an answer ends in Copy and its "i" (.so-msg__foot)
  *   .so-live               a running answer's live line, the column's whole
- *                          width: what it does now (a shimmer), its watches,
- *                          steps and tokens, over the wavy indeterminate bar
+ *                          width: what it does now (a wheel of shimmering
+ *                          lines, so-motion.css), its steps and tokens, and
+ *                          when the turn began and about how long ago
  *   .so-part               one part of an answer, data-kind and data-state
  *   .so-md                 Markdown as the agent wrote it; .so-code is a
  *                          fenced block with its language and Copy
@@ -882,83 +883,60 @@
   list-style: none;
 }
 
-/* The live line of a running answer takes the column's whole width: one
-   row of what the agent is doing and how far it is, over the wavy
-   indeterminate bar of Dashboard-Style. The verb carries a shimmer: a
-   brighter band travels over it through a mask, on the progress wave's own
-   keyframes (one tile of --ds-progress-wave-length a loop, so it never
-   jumps), a pass and a pause per --ds-loop-skeleton. */
+/* The live line of a running answer takes the column's whole width, in one
+   quiet row: what the agent is doing now reads from the left - a wheel
+   (so-motion.css) whose line rolls to the next thing it does, its words
+   under the white wave of .so-shimmer - and how far the turn is from the
+   right: its steps and tokens, then when it began and about how long ago.
+   Nothing else moves. */
 .so-live {
   display: flex;
-  flex-direction: column;
-  gap: var(--ds-space-2);
-  align-self: stretch;
-  min-width: 0;
-  padding-block: var(--ds-space-1);
-}
-
-.so-live__row {
-  display: flex;
-  flex-wrap: wrap;
   align-items: baseline;
-  column-gap: var(--ds-space-3);
+  align-self: stretch;
+  column-gap: var(--ds-space-4);
   row-gap: 0;
   min-width: 0;
+  padding-block: var(--ds-space-1);
   color: var(--ds-text-2);
   font: var(--ds-font-label);
 }
 
 .so-live__now {
-  display: flex;
   flex: 0 1 auto;
+}
+
+.so-live__now > .so-wheel__line {
+  display: flex;
   align-items: baseline;
   gap: var(--ds-space-2);
   min-width: 0;
-  --ds-progress-wave-length: calc(var(--ds-space-12) * 4);
-  -webkit-mask-image: linear-gradient(90deg, var(--so-live-dim) 0 30%, var(--ds-text-1) 50%, var(--so-live-dim) 70% 100%);
-  mask-image: linear-gradient(90deg, var(--so-live-dim) 0 30%, var(--ds-text-1) 50%, var(--so-live-dim) 70% 100%);
-  -webkit-mask-size: var(--ds-progress-wave-length) 100%;
-  mask-size: var(--ds-progress-wave-length) 100%;
-  -webkit-mask-repeat: repeat-x;
-  mask-repeat: repeat-x;
-  animation: ds-progress-wave var(--ds-loop-skeleton) linear infinite;
+}
+
+.so-live__words {
+  flex: 0 1 auto;
 }
 
 .so-live__doing {
-  flex: none;
-  color: var(--ds-text-1);
-}
-
-.so-live__what {
-  flex: 0 1 auto;
-  min-width: 0;
+  color: var(--ds-text);
 }
 
 .so-live__step,
 .so-live__meta,
 .so-live__time {
   flex: none;
+  color: var(--ds-text-3);
+  font: var(--ds-font-meta);
   font-variant-numeric: tabular-nums;
 }
 
-.so-live__step,
-.so-live__meta {
-  color: var(--ds-text-3);
-  font: var(--ds-font-meta);
-}
-
-/* What it is doing reads from the left, how far the turn is from the
-   right. */
 .so-live__meta {
   margin-inline-start: auto;
 }
 
 .so-live__time {
-  color: var(--ds-text-1);
-}
-
-.so-live__bar {
-  --ds-progress-track: var(--ds-surface-highest);
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--ds-space-1);
 }
 
 /* Copy and the "i" under an answer: a quiet row as tall as a line of
@@ -2098,11 +2076,18 @@
     padding-left: calc(var(--ds-space-5) + var(--ds-space-2));
   }
 
-  /* The live line keeps what is done and its watch on the first row; the
-     time it began, the steps and the tokens go under it. */
-  .so-live__meta {
-    order: 1;
+  /* A phone gives what the agent does its own row; the steps and tokens
+     and when the turn began share the one under it. */
+  .so-live {
+    flex-wrap: wrap;
+  }
+
+  .so-live__now {
     flex-basis: 100%;
+  }
+
+  .so-live__meta {
+    margin-inline-start: 0;
   }
 
   .so-live__time {
