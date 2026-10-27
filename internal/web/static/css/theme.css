@@ -1,15 +1,20 @@
 /*
  * The Socrates theme for Dashboard-Style: loaded after ds.css, unlayered, on
- * .ds-theme. No DS role is overridden: Socrates wears Dashboard-Style's own
- * look. Only the project's --so-* tokens, a documented hook for touch
- * mode, and the bundled terminal font live here.
+ * .ds-theme. Socrates wears Dashboard-Style's own look; the one DS role it
+ * sets is the code font (--ds-font-mono), to the bundled Source Code Pro
+ * instead of whatever monospace the device has. Besides it only the
+ * project's --so-* tokens, a documented hook for touch mode, and that font
+ * live here.
  */
 @font-face { font-family: 'Source Code Pro'; src: url('/static/fonts/SourceCodePro-Regular.woff2') format('woff2'); font-weight: 400; font-style: normal; font-display: swap; }
 @font-face { font-family: 'Source Code Pro'; src: url('/static/fonts/SourceCodePro-Bold.woff2') format('woff2'); font-weight: 700; font-style: normal; font-display: swap; }
 
 .ds-theme {
-  /* Terminal: the bundled cell font (xterm reads the family from term.js) and the pane's pure white (tmux OSC 11). */
-  --so-font-mono: 'Source Code Pro', var(--ds-font-mono);
+  /* Code: the bundled Source Code Pro everywhere code is set, DS's parts too
+     (code blocks, logs), never the device's own monospace. */
+  --ds-font-mono: 'Source Code Pro', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  /* Terminal: the same cell font (xterm reads the family from term.js) and the pane's pure white (tmux OSC 11). */
+  --so-font-mono: var(--ds-font-mono);
   --so-term-bg: var(--ds-surface);
   --so-pane-veil: color-mix(in srgb, var(--ds-surface) 86%, transparent);
 

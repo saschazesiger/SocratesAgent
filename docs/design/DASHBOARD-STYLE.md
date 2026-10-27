@@ -18,9 +18,11 @@ unchanged in 2.1.0), filled in for Socrates:
   `DS.overlay.open(el, { opener })` / `DS.overlay.close(el)`; snackbars are `api.js` `toast()` on
   `DS.overlay.toast`; questions with yes or no and one field are `DS.overlay.confirm()` / `prompt()` behind
   `confirmDialog` / `promptDialog`. Every overlay sits inside the `.ds-theme` element (`<html>`).
-- **Socrates wears DS's own look.** No DS role is overridden. The theme (`css/theme.css`, loaded after `ds.css`,
-  unlayered, on `.ds-theme`) holds only the project's `--so-*` tokens, documented component hooks and the terminal
-  font. Never a motion token or hook (`--ds-dur-*`, `--ds-ease-*`, `--ds-distance-*`, `--ds-scale-*`, `--ds-loop-*`,
+- **Socrates wears DS's own look.** The one DS role it sets is the code font: `--ds-font-mono` is the bundled
+  Source Code Pro, so code looks the same on every device and nowhere falls back to the device's own monospace (the
+  owner did not like it). What an agent is doing is not code: it reads in DS's text font. The theme
+  (`css/theme.css`, loaded after `ds.css`, unlayered, on `.ds-theme`) holds otherwise only the project's `--so-*`
+  tokens, documented component hooks and that font. Never a motion token or hook (`--ds-dur-*`, `--ds-ease-*`, `--ds-distance-*`, `--ds-scale-*`, `--ds-loop-*`,
   `--ds-delay-*`, `--ds-hold-*`, `--ds-stagger`, `--ds-time-scale`, `--ds-motion-*`, `--ds-enter-*`, `--ds-leave-*`,
   `--ds-clip-from`, `--ds-draw-length`, `--ds-scan-*`, `--ds-indicator-lag`, `--ds-indicator-dur`), never in
   `@layer`. Charts take DS's chart roles (`--ds-chart-1` to `--ds-chart-4`, `--ds-chart-neutral`).

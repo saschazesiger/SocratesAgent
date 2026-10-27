@@ -67,7 +67,8 @@ the UI.
   documented markup and attributes exactly; behaviour (wiring the triggers, filtering, choosing) is the project's
   own script, and opening and closing go through `DS.overlay`.
 - Theme only through tokens in `internal/web/static/css/theme.css`, on `.ds-theme`, loaded after `ds.css`: roles
-  (`--ds-primary`, `--ds-accent`, `--ds-font` ...; Socrates overrides none), component hooks (`--ds-btn-*`,
+  (`--ds-primary`, `--ds-accent`, `--ds-font` ...; Socrates sets only `--ds-font-mono`, to its bundled Source Code
+  Pro), component hooks (`--ds-btn-*`,
   `--ds-card-*` ...), the project's own `--so-*` tokens and `@font-face`. Never set motion tokens or hooks
   (`--ds-dur-*`, `--ds-ease-*`, `--ds-distance-*`, `--ds-scale-*`, `--ds-loop-*`, `--ds-delay-*`, `--ds-hold-*`,
   `--ds-stagger`, `--ds-time-scale`, `--ds-motion-*`, `--ds-enter-*`, `--ds-leave-*`, `--ds-clip-from`,

@@ -993,7 +993,7 @@ function jobsRows(jobs, others, now) {
     const ran = job.since ? seconds(Math.max(0, now - job.since)) : '';
     const started = job.since ? 'since ' + clock(job.since) : '';
     return html`<li class="so-job" data-ds-key="${job.id}"><button class="ds-pressable ds-pressable--inset so-job__open" type="button" data-job="${job.id}" aria-label="${'Show ' + job.name + (job.summary ? ': ' + job.summary : '')}"><span class="so-job__icon" aria-hidden="true">${raw(icon(toolGlyph(job.name), 18))}</span><span class="so-job__main"><span class="so-job__name">${job.name}</span>${
-      job.summary ? html`<code class="so-job__summary">${job.summary}</code>` : ''
+      job.summary ? html`<span class="so-job__summary">${job.summary}</span>` : ''
     }${started ? html`<span class="so-job__note">${started}</span>` : ''}</span><span class="ds-status ds-status--running so-job__state"><span class="ds-spinner ds-status__spinner" aria-hidden="true"></span><span>${ran || 'Running'}</span></span>${raw(icon('chevronRight', 18, 'so-job__go'))}</button></li>`;
   })}${
     others ? html`<li class="so-job so-job--others" data-ds-key="others"><span class="so-job__icon" aria-hidden="true">${raw(icon('background', 18))}</span><span class="so-job__main"><span class="so-job__name">${others + (others === 1 ? ' more task' : ' more tasks')}</span><span class="so-job__note">${'The agent counts ' + (others === 1 ? 'it' : 'them') + ' without saying what ' + (others === 1 ? 'it runs.' : 'they run.')}</span></span></li>` : ''
@@ -1044,36 +1044,46 @@ function agentFacts(part, tool = toolOf(part)) {
   return out;
 }
 
-// agentStats is the line of what an agent has used so far.
+// agentStats is what an agent has used so far, for its card's quiet line:
+// its calls and tokens, and - in the dialog - its last tool and when it
+// started.
 function agentStats(facts, part, { full = false } = {}) {
   return [
     facts.calls ? facts.calls + (facts.calls === 1 ? ' tool call' : ' tool calls') : '',
     facts.tokens ? fmtTokens(facts.tokens) + ' tokens' : '',
     full && facts.last ? 'last ' + facts.last : '',
-    part.at ? 'since ' + clock(part.at) : '',
+    full && part.at ? 'since ' + clock(part.at) : '',
   ].filter(Boolean).join(' · ');
 }
 
-// agentProgress is a workflow's bar: how many of its agents are done, and
-// the phase it is in.
+// agentProgress is a workflow's bar: a thin flat line of how many of its
+// agents are done, over the words for it and the phase it is in.
 function agentProgress(facts) {
   if (facts.share < 0) return '';
   const now = Math.round(facts.share * 100);
   const done = facts.done + ' of ' + facts.total + ' agents done';
-  return html`<div class="ds-progress so-agentcard__bar" style="${'--ds-progress: ' + facts.share.toFixed(4)}"><div class="ds-progress__track" role="progressbar" aria-label="Agents done" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${now}" aria-valuetext="${done}"><div class="ds-progress__bar"></div></div><p class="ds-progress__label">${done}${
+  return html`<div class="ds-progress ds-progress--flat so-agentcard__bar" style="${'--ds-progress: ' + facts.share.toFixed(4)}"><div class="ds-progress__track" role="progressbar" aria-label="Agents done" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${now}" aria-valuetext="${done}"><div class="ds-progress__bar"></div></div><p class="ds-progress__label">${done}${
     facts.phase ? html`<span class="so-agentcard__phase">${' · ' + facts.phase}</span>` : ''
   }</p></div>`;
 }
 
+// liveWords is a line at work: its words under the white wave, on a wheel
+// line keyed by them, so that the next thing it does rolls in (wheel.js).
+function liveWords(words, className) {
+  return html`<span class="so-wheel__line" data-ds-key="${words}"><span class="so-shimmer ${className}" data-shimmer="${words}">${words}</span></span>`;
+}
+
 /**
- * agentCard is a subagent or a workflow that runs beside the chat: not a
- * line among the background jobs but a card of its own - what it was sent
- * to do, what kind of agent (its type, its model), how long it has run (a
- * watch tickLive moves), what it is doing right now, a workflow's agents
- * done of all with the phase it is in, and what it has used. The whole
- * card opens its job (data-job; at the chat's foot also data-action "job").
- * `full` is the dialog's: a workflow's running agents by name, the last
- * tool, and Stop.
+ * agentCard is a subagent or a workflow that runs beside the chat: a quiet
+ * card of its own. Its head says what it was sent to do, with a small mark
+ * of its kind and how long it has run (a watch tickLive moves); under it,
+ * what it is doing right now, rolling to the next thing it does under the
+ * white wave (as the answer's live line does); a workflow's agents done of
+ * all, on a thin bar with the phase it is in; and one quiet line of what it
+ * is (kind, type, model) and what it has used. The whole card opens its job
+ * (data-job; at the chat's foot also data-action "job"). `full` is the
+ * dialog's: a workflow's running agents by name with what each does, the
+ * last tool, when it started, and Stop.
  */
 export function agentCard(part, { full = false, foot = false, stopping = null, now = Date.now() } = {}) {
   const tool = toolOf(part);
@@ -1083,19 +1093,24 @@ export function agentCard(part, { full = false, foot = false, stopping = null, n
   const taskId = (tool.workflow && tool.workflow.task_id) || (tool.agent && tool.agent.id) || (task && task.id) || '';
   const since = part.at || 0;
   // A workflow's one agent at work is what it does now - unless the card
-  // names its agents at work anyway (full).
-  const doing = facts.doing || (!full && facts.running.length === 1 ? facts.running[0].label : '');
+  // names its agents at work anyway (full): then it says how many.
+  const many = facts.running.length;
+  const doing = facts.doing || (full && many ? many + (many === 1 ? ' agent at work' : ' agents at work') : '')
+    || (many === 1 ? facts.running[0].label : '') || 'Working';
   const stats = agentStats(facts, part, { full });
   const shown = full ? facts.running.slice(0, 4) : [];
-  return html`<div class="ds-card ds-card--interactive so-agentcard" data-ds-key="${'agent:' + part.id}" data-kind="${facts.kind}"><div class="so-agentcard__head"><span class="so-agentcard__icon" aria-hidden="true">${raw(icon(facts.glyph, 20))}</span><div class="so-agentcard__heading"><h3 class="ds-card__title so-agentcard__title"><button class="ds-card__action" type="button" data-job="${part.id}"${foot ? html` data-action="job"` : ''} aria-label="${'Show ' + (facts.kind === 'workflow' ? 'the workflow ' : 'the agent ') + facts.title}">${facts.title}</button></h3><p class="so-agentcard__kind">${facts.label.join(' · ')}</p></div><span class="ds-status ds-status--running so-agentcard__state"><span class="ds-spinner ds-status__spinner" aria-hidden="true"></span><span${since ? html` data-since="${since}" data-format="watch"` : ''}>${since ? stopwatch(Math.max(0, now - since)) : 'Running'}</span></span></div>${
-    doing ? html`<p class="so-agentcard__now"><span class="so-agentcard__doing">Now</span><span class="so-agentcard__what">${doing}</span></p>` : ''
-  }${agentProgress(facts)}${
-    shown.length ? html`<ul class="so-agentcard__runs">${shown.map((run) => html`<li data-ds-key="${run.id}"><span class="ds-spinner ds-status__spinner" aria-hidden="true"></span><span class="so-agentcard__run">${run.label}</span>${
+  const what = facts.kind === 'workflow' ? 'the workflow ' : 'the agent ';
+  return html`<div class="ds-card ds-card--interactive so-agentcard" data-ds-key="${'agent:' + part.id}" data-kind="${facts.kind}"><div class="so-agentcard__head"><span class="so-agentcard__icon" aria-hidden="true">${raw(icon(facts.glyph, 16))}</span><h3 class="ds-card__title so-agentcard__title"><button class="ds-card__action" type="button" data-job="${part.id}"${foot ? html` data-action="job"` : ''} aria-label="${'Show ' + what + facts.title}" data-tip="${facts.title}">${facts.title}</button></h3><span class="so-agentcard__state" role="timer" aria-label="Running for"${since ? html` data-since="${since}" data-format="watch"` : ''}>${since ? stopwatch(Math.max(0, now - since)) : ''}</span></div><span class="so-wheel so-agentcard__now">${liveWords(doing, 'so-agentcard__what')}</span>${
+    agentProgress(facts)
+  }${
+    shown.length ? html`<ul class="so-agentcard__runs">${shown.map((run) => html`<li data-ds-key="${run.id}"><span class="so-agentcard__run">${run.label}</span>${
       run.doing ? html`<span class="so-agentcard__run-doing">${run.doing}</span>` : ''
     }</li>`)}${facts.running.length > shown.length ? html`<li class="so-agentcard__more" data-ds-key="more">${'and ' + (facts.running.length - shown.length) + ' more'}</li>` : ''}</ul>` : ''
-  }${stats || (full && taskId) ? html`<div class="so-agentcard__foot">${stats ? html`<p class="so-agentcard__stats">${stats}</p>` : ''}${
+  }<div class="so-agentcard__foot"><p class="so-agentcard__meta"><span class="so-agentcard__kind">${facts.label.join(' · ')}</span>${
+    stats ? html`<span class="so-agentcard__stats">${stats}</span>` : ''
+  }</p>${
     full && taskId ? html`<button class="ds-btn ds-btn--text ds-btn--sm so-agentcard__stop" type="button" data-job-stop="${taskId}"${stopping && stopping.has(taskId) ? html` aria-busy="true"` : ''}>${raw(icon('stop', 16))}<span>Stop</span></button>` : ''
-  }</div>` : ''}</div>`;
+  }</div></div>`;
 }
 
 // What a job that no longer runs ended as, by the state its task (or its
@@ -1151,7 +1166,7 @@ export function jobDetail(part, view, { running = false, stopping = null, now = 
   // A job sent light is asked for, as an opened call is (detailsHtml).
   const body = part.lite || part.held ? detailsHtml(part, view) : toolBody(part, tool, view, { diff: false, group: isGroup(part, tool) });
   return html`<div class="so-jobd" data-ds-key="${'job:' + part.id}" data-state="${running ? 'running' : endState}"><div class="so-jobd__nav"><button class="ds-btn ds-btn--text ds-btn--sm so-jobd__back" type="button" data-job-back>${raw(icon('chevronLeft', 18))}<span>All jobs</span></button><button class="ds-btn ds-btn--text ds-btn--sm so-jobd__reveal" type="button" data-job-reveal="${part.id}"><span>Show in chat</span>${raw(icon('chevronRight', 18))}</button></div><div class="so-jobd__head"><span class="so-job__icon" aria-hidden="true">${raw(icon(toolGlyph(tool.name), 18))}</span><div class="so-jobd__title"><h3 class="so-jobd__name" tabindex="-1">${tool.name}</h3>${
-    tool.summary ? html`<code class="so-jobd__summary">${tool.summary}</code>` : ''
+    tool.summary ? html`<p class="so-jobd__summary">${tool.summary}</p>` : ''
   }</div>${state}</div>${
     taskId ? html`<div class="so-jobd__actions"><button class="ds-btn ds-btn--tonal ds-btn--sm" type="button" data-job-stop="${taskId}"${stopping && stopping.has(taskId) ? html` aria-busy="true"` : ''}>${raw(icon('stop', 16))}<span>Stop this job</span></button></div>` : ''
   }${wf && running ? agentProgress(agentFacts(part, tool)) : ''}<dl class="ds-facts so-facts so-jobd__facts">${facts.map(([label, value]) => html`<div><dt>${label}</dt><dd class="so-fact">${value}</dd></div>`)}</dl>${

@@ -11175,6 +11175,19 @@ async function chatagents() {
     ok(!!sub && sub.title === 'A subagent' && /^Subagent · general-purpose/.test(sub.label) && /\d:\d\d/.test(sub.watch) && !sub.pill,
       'a subagent at work in the background is a card at the foot: what it was sent to do, its kind and type, its watch - and no "background job" line',
       JSON.stringify(cards));
+    const look = await page.evaluate(() => {
+      const card = document.querySelector('#chat .so-chat__bg .so-agentcard[data-kind="agent"]');
+      const what = card && card.querySelector('.so-agentcard__now .so-shimmer');
+      const after = what && getComputedStyle(what, '::after');
+      return card ? {
+        spinner: !!card.querySelector('.ds-spinner'), chip: !!card.querySelector('.ds-status'), now: what ? what.textContent : '',
+        wave: after ? after.animationName : '', font: what ? getComputedStyle(what).fontFamily : '',
+        body: getComputedStyle(document.body).fontFamily, mono: getComputedStyle(document.documentElement).getPropertyValue('--ds-font-mono').trim(),
+      } : null;
+    });
+    ok(!!look && !look.spinner && !look.chip && look.now && look.wave === 'ds-progress-wave' && look.font === look.body && /^'Source Code Pro'/.test(look.mono),
+      'the card is quiet: no spinner and no chip, what it does under the white wave in the text font; code is set in the bundled font, never the device\u2019s monospace',
+      JSON.stringify(look));
     const composer = await page.$eval('#chat .so-composer__input', (n) => Math.round(n.getBoundingClientRect().width));
     ok(!!sub && sub.height >= 56 && Math.abs(sub.width - composer) <= 2, 'the card is taller than a line, and as wide as the field under it',
       JSON.stringify({ height: sub && sub.height, width: sub && sub.width, composer }));

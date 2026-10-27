@@ -834,7 +834,7 @@ export function mountChat(ctx) {
         what ? html`<span class="so-chat__jobs-what">${what}</span>` : ''
       }${raw(icon('chevronRight', 16))}</button>`;
     }
-    morph(jobsSlot, html`${cards}${line}`);
+    morph(jobsSlot, html`${cards}${line}`, wheelHooks);
   }
 
   // drawSchedule is the scheduled start of a chat that has not started: a
@@ -950,7 +950,7 @@ export function mountChat(ctx) {
       if (picked && !part) picked = '';
       morph(body, part
         ? jobDetail(part, view, { running: listed.jobs.some((job) => job.id === picked), stopping: stoppingJobs })
-        : jobsList(listed, { chat, stopping: stoppingJobs }));
+        : jobsList(listed, { chat, stopping: stoppingJobs }), wheelHooks);
     };
     const pick = (id) => {
       const was = picked;
