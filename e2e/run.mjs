@@ -11080,12 +11080,12 @@ async function chatwatch() {
     // A background job, stopped by itself from its dialog.
     await say(page, '/bg 120');
     await awaitLog(page, 'Started a background task.', 20000);
-    await page.waitForSelector('#chat .so-chat__bg:not([hidden]) .so-chat__jobs', { timeout: 15000 });
-    await page.click('#chat .so-chat__jobs');
-    await page.waitForSelector('dialog[open] .so-job [data-job]', { timeout: 5000 });
-    const row = await page.$eval('dialog[open] .so-job', (n) => (n.querySelector('.so-job__note') || {}).textContent || '');
+    await page.waitForSelector('#chat .so-chat__bg:not([hidden]) .so-footfold[data-kind="jobs"]', { timeout: 15000 });
+    await page.click('#chat .so-footfold[data-kind="jobs"] > summary');
+    await page.waitForSelector('#chat .so-footfold[data-kind="jobs"] .so-job [data-job]', { timeout: 5000 });
+    const row = await page.$eval('#chat .so-footfold[data-kind="jobs"] .so-job', (n) => (n.querySelector('.so-job__note') || {}).textContent || '');
     ok(/since \d{1,2}:\d{2}/.test(row), 'its row says since when it runs, by the clock', JSON.stringify(row));
-    await page.click('dialog[open] .so-job [data-job]');
+    await page.click('#chat .so-footfold[data-kind="jobs"] .so-job [data-job]');
     await page.waitForSelector('dialog[open] [data-job-stop]', { timeout: 5000 });
     await page.click('dialog[open] [data-job-stop]');
     const stopped = await page.waitForFunction(() => {
@@ -11129,7 +11129,7 @@ async function chatwatch() {
 const subLine = (page) => page.evaluate(() => {
   const sub = document.querySelector('#chat .so-chat__sub');
   if (!sub) return null;
-  const jobs = document.querySelector('#chat .so-chat__bg:not([hidden]) .so-chat__jobs');
+  const jobs = document.querySelector('#chat .so-chat__bg:not([hidden]) .so-footfold[data-kind="jobs"]');
   const dock = document.querySelector('#chat .so-chat__dock');
   const r = sub.getBoundingClientRect();
   const scroll = document.querySelector('#chat .so-chat__scroll').getBoundingClientRect();
@@ -11141,8 +11141,8 @@ const subLine = (page) => page.evaluate(() => {
       reset: (l.querySelector('.so-chat__limit-reset') || {}).textContent || '',
       full: l.hasAttribute('data-full'),
     })),
-    jobs: jobs ? jobs.querySelector('.so-chat__jobs-count').textContent.trim() : '', running: !!jobs && jobs.hasAttribute('data-running'),
-    jobsInSub: !!sub.querySelector('.so-chat__jobs'), jobsInDock: !!jobs && dock.contains(jobs),
+    jobs: jobs ? jobs.querySelector('summary .so-foldbox__words').textContent.trim() : '', open: !!jobs && jobs.open,
+    jobsInSub: !!sub.querySelector('.so-footfold'), jobsInDock: !!jobs && dock.contains(jobs),
     jobsWidth: jobs ? Math.round(jobs.getBoundingClientRect().width) : 0,
     composerWidth: Math.round((document.querySelector('#chat .so-composer__input') || dock).getBoundingClientRect().width),
     above: r.height > 0 && r.bottom <= scroll.top + 1,
@@ -11163,7 +11163,7 @@ const agentCards = (page) => page.evaluate(() => [...document.querySelectorAll('
   stats: (n.querySelector('.so-agentcard__stats') || {}).textContent || '',
   height: Math.round(n.getBoundingClientRect().height),
   width: Math.round(n.getBoundingClientRect().width),
-  pill: !!document.querySelector('#chat .so-chat__bg .so-chat__jobs'),
+  pill: !!document.querySelector('#chat .so-chat__bg .so-footfold[data-kind="jobs"]'),
 })));
 
 // chat-agents: a subagent or a workflow at work beside the chat is not one
@@ -11177,15 +11177,17 @@ async function chatagents() {
   try {
     await say(page, '/subagent bg 8');
     await awaitLog(page, 'The subagent works on.', 20000);
-    const shut = await page.waitForSelector('#chat .so-chat__bg:not([hidden]) .so-agentfold', { timeout: 15000 })
-      .then(() => page.$eval('#chat .so-agentfold', (n) => ({
+    const shut = await page.waitForSelector('#chat .so-chat__bg:not([hidden]) .so-footfold[data-kind="agents"]', { timeout: 15000 })
+      .then(() => page.$eval('#chat .so-footfold[data-kind="agents"]', (n) => ({
         open: n.open, cards: n.querySelectorAll('.so-agentcard').length,
         words: (n.querySelector('summary .so-foldbox__words') || {}).textContent || '', watch: (n.querySelector('summary .so-foldbox__meta') || {}).textContent || '',
       })), () => null);
     ok(!!shut && !shut.open && shut.cards === 0 && /^A subagent · /.test(shut.words) && /\d:\d\d/.test(shut.watch),
       'the agents at work are one folded line at the foot until it is opened: what the agent does, and its watch', JSON.stringify(shut));
-    await page.click('#chat .so-agentfold > summary');
+    await page.click('#chat .so-footfold[data-kind="agents"] > summary');
     await page.waitForSelector('#chat .so-chat__bg:not([hidden]) .so-agentcard[data-kind="agent"]', { timeout: 15000 }).catch(() => {});
+    const opened = await page.$eval('#chat .so-footfold[data-kind="agents"] summary .so-foldbox__words', (n) => n.textContent).catch(() => '');
+    ok(opened === '1 agent at work', 'opened, its line only counts them', JSON.stringify(opened));
     let cards = await agentCards(page);
     const sub = cards.find((c) => c.kind === 'agent');
     ok(!!sub && sub.title === 'A subagent' && /^Subagent · general-purpose/.test(sub.label) && /\d:\d\d/.test(sub.watch) && !sub.pill,
@@ -11205,7 +11207,7 @@ async function chatagents() {
       'the card is quiet: no spinner and no chip, what it does under the white wave in the text font; code is set in the bundled font, never the device\u2019s monospace',
       JSON.stringify(look));
     const composer = await page.$eval('#chat .so-composer__input', (n) => Math.round(n.getBoundingClientRect().width));
-    const fold = await page.$eval('#chat .so-agentfold', (n) => Math.round(n.getBoundingClientRect().width));
+    const fold = await page.$eval('#chat .so-footfold[data-kind="agents"]', (n) => Math.round(n.getBoundingClientRect().width));
     ok(!!sub && sub.height >= 56 && Math.abs(fold - composer) <= 2 && sub.width <= fold && sub.width >= fold - 24,
       'opened, the card is taller than a line, and fills the fold, as wide as the field under it',
       JSON.stringify({ height: sub && sub.height, width: sub && sub.width, fold, composer }));
@@ -11243,6 +11245,8 @@ async function chatagents() {
     // at work by name in the dialog.
     await say(page, '/workflow 9');
     await awaitLog(page, 'The workflow is running in the background.', 20000);
+    await page.waitForSelector('#chat .so-chat__bg:not([hidden]) .so-footfold[data-kind="workflows"]:not([open])', { timeout: 15000 }).catch(() => {});
+    await page.click('#chat .so-footfold[data-kind="workflows"] > summary');
     const flow = await page.waitForFunction(() => {
       const n = document.querySelector('#chat .so-chat__bg:not([hidden]) .so-agentcard[data-kind="workflow"]');
       const label = n && n.querySelector('.so-agentcard__bar .ds-progress__label');
@@ -11280,21 +11284,22 @@ async function chatagents() {
     ok(done, 'and once the workflow is through, its card leaves too', String(done));
     await awaitChat(s, id, idle, 20000);
 
-    // Two at once stand one under the other, each as wide as the foot.
+    // Two at once: a fold for the workflows and one for the agents, one
+    // under the other, as wide as the foot, each counting its own.
     await say(page, '/subagent bg 10');
     await awaitLog(page, 'The subagent works on.', 20000);
     await awaitChat(s, id, idle, 20000);
     await say(page, '/workflow 8');
-    const two = await page.waitForFunction(() => document.querySelectorAll('#chat .so-chat__bg:not([hidden]) .so-agentcards[data-many] > .so-agentcard').length === 2,
+    const two = await page.waitForFunction(() => document.querySelectorAll('#chat .so-chat__bg:not([hidden]) .so-footfold .so-agentcard').length === 2,
       null, { timeout: 15000 }).then(() => agentCards(page), () => agentCards(page));
-    const strip = await page.$eval('#chat .so-agentcards--foot', (n) => ({
-      width: Math.round(n.clientWidth - parseFloat(getComputedStyle(n).paddingLeft) - parseFloat(getComputedStyle(n).paddingRight)),
-      side: n.scrollWidth - n.clientWidth,
-      tops: [...n.children].map((card) => Math.round(card.getBoundingClientRect().top)),
-    })).catch(() => null);
-    ok(two.length === 2 && two.map((c) => c.kind).sort().join() === 'agent,workflow' && !!strip && strip.side === 0
-      && two.every((c) => Math.abs(c.width - strip.width) <= 2) && strip.tops[1] > strip.tops[0],
-      'a subagent and a workflow at once are two cards one under the other, each as wide as the foot', JSON.stringify({ two: two.map((c) => [c.kind, c.width]), strip }));
+    const folds = await page.$$eval('#chat .so-chat__bg .so-footfold', (n) => n.map((f) => ({
+      kind: f.dataset.kind, open: f.open, line: (f.querySelector('summary .so-foldbox__words') || {}).textContent || '',
+      top: Math.round(f.getBoundingClientRect().top), width: Math.round(f.getBoundingClientRect().width),
+    })));
+    ok(two.length === 2 && two.map((c) => c.kind).join() === 'workflow,agent' && folds.map((f) => f.kind).join() === 'workflows,agents'
+      && folds.every((f) => f.open) && folds[1].top > folds[0].top && folds[0].width === folds[1].width
+      && folds[0].line === '1 workflow at work' && folds[1].line === '1 agent at work',
+      'a subagent and a workflow at once are two folds alike, the workflows over the agents, each counting its own', JSON.stringify({ two: two.map((c) => [c.kind, c.width]), folds }));
     await shot(page, 'chat-agents-two');
     ok(unexpected(s.errors).length === 0, 'no console errors', unexpected(s.errors).join(' | ') || '0');
   } finally { await s.stop(); }
@@ -11315,31 +11320,31 @@ async function chatsub() {
     await say(page, '/bg 30');
     await awaitLog(page, 'Started a background task.', 20000);
     const counted = await page.waitForFunction(() => {
-      const jobs = document.querySelector('#chat .so-chat__bg:not([hidden]) .so-chat__jobs');
-      return !!jobs && jobs.hasAttribute('data-running') && /^1 background job$/.test(jobs.querySelector('.so-chat__jobs-count').textContent.trim());
+      const jobs = document.querySelector('#chat .so-chat__bg:not([hidden]) .so-footfold[data-kind="jobs"]');
+      return !!jobs && !jobs.open && /^Bash · /.test(jobs.querySelector('summary .so-foldbox__words').textContent.trim());
     }, null, { timeout: 15000 }).then(() => true, () => false);
     sub = await subLine(page);
-    ok(counted && sub.jobsInDock && !sub.jobsInSub, 'a background task the turn left running is counted at the foot of the chat, turning, and not under the bar',
-      JSON.stringify(sub && { jobs: sub.jobs, running: sub.running, dock: sub.jobsInDock, sub: sub.jobsInSub }));
+    ok(counted && sub.jobsInDock && !sub.jobsInSub, 'a background task the turn left running is a folded line at the foot of the chat - what it runs - and not under the bar',
+      JSON.stringify(sub && { jobs: sub.jobs, open: sub.open, dock: sub.jobsInDock, sub: sub.jobsInSub }));
     ok(sub && sub.jobsWidth > 0 && Math.abs(sub.jobsWidth - sub.composerWidth) <= 2,
       'and the line of the jobs is as wide as the field under it', JSON.stringify(sub && { jobs: sub.jobsWidth, field: sub.composerWidth }));
-    await page.click('#chat .so-chat__jobs');
-    const dialog = await page.waitForSelector('dialog[open] .ds-dialog__title:text-is("Background jobs")', { timeout: 5000 })
-      .then(() => page.$eval('dialog[open]', (n) => ({
-        text: n.innerText,
+    await page.click('#chat .so-footfold[data-kind="jobs"] > summary');
+    const foot = await page.waitForSelector('#chat .so-footfold[data-kind="jobs"][open] .so-job', { timeout: 5000 })
+      .then(() => page.$eval('#chat .so-footfold[data-kind="jobs"]', (n) => ({
+        line: n.querySelector('summary .so-foldbox__words').textContent.trim(),
         rows: [...n.querySelectorAll('.so-job')].map((row) => ({
           name: (row.querySelector('.so-job__name') || {}).textContent || '',
           summary: (row.querySelector('.so-job__summary') || {}).textContent || '',
           time: (row.querySelector('.so-job__state') || {}).textContent || '',
         })),
-      })), () => ({ text: '', rows: [] }));
-    ok(dialog.rows.length === 1 && dialog.rows[0].name === 'Bash' && !!dialog.rows[0].summary && /\d|Running/.test(dialog.rows[0].time) && !/more task/.test(dialog.text),
-      'and it opens to a dialog with a row for it: the call that started it, what it runs, how long it has run', JSON.stringify(dialog.rows));
+      })), () => ({ line: '', rows: [] }));
+    ok(foot.line === '1 background job' && foot.rows.length === 1 && foot.rows[0].name === 'Bash' && !!foot.rows[0].summary && /\d/.test(foot.rows[0].time),
+      'opened, its line counts the jobs over a row for it: the call that started it, what it runs, how long it has run', JSON.stringify(foot));
     await shot(page, 'chat-sub-jobs');
-    // A row opens its job: what it is, since when it runs, the command it
-    // runs and what has come back; back to the list, and to its place in
-    // the chat.
-    await page.click('dialog[open] .so-job [data-job]');
+    // A row opens its job in the dialog: what it is, since when it runs,
+    // the command it runs and what has come back; back to the list, and to
+    // its place in the chat.
+    await page.click('#chat .so-footfold[data-kind="jobs"] .so-job [data-job]');
     const detail = await page.waitForSelector('dialog[open] .so-jobd', { timeout: 5000 })
       .then(() => page.$eval('dialog[open] .so-jobd', (n) => ({
         name: (n.querySelector('.so-jobd__name') || {}).textContent || '',
@@ -11354,7 +11359,8 @@ async function chatsub() {
     await shot(page, 'chat-sub-job');
     await page.click('dialog[open] [data-job-back]');
     const back = await page.waitForSelector('dialog[open] .so-job [data-job]', { timeout: 5000 }).then(() => true, () => false);
-    ok(back, 'All jobs goes back to the list', String(back));
+    const listed = back ? await page.$eval('dialog[open]', (n) => ({ rows: n.querySelectorAll('.so-job').length, more: /more task/.test(n.innerText) })) : null;
+    ok(back && listed.rows === 1 && !listed.more, 'All jobs goes back to the list, a row for it', JSON.stringify({ back, listed }));
     await page.click('dialog[open] .so-job [data-job]');
     await page.click('dialog[open] [data-job-reveal]');
     const revealed = await page.waitForSelector('dialog[open]', { state: 'detached', timeout: 5000 })
@@ -11365,8 +11371,8 @@ async function chatsub() {
         return box.top >= 0 && box.bottom <= innerHeight;
       }, null, { timeout: 5000 })).then(() => true, () => false);
     ok(revealed, 'and Show in chat closes the dialog on the call in the conversation, opened and in view', String(revealed));
-    await page.click('#chat .so-chat__jobs');
-    await page.waitForSelector('dialog[open] .so-job [data-job]', { timeout: 5000 }).catch(() => {});
+    await page.click('#chat .so-footfold[data-kind="jobs"] .so-job [data-job]');
+    await page.waitForSelector('dialog[open] .so-jobd', { timeout: 5000 }).catch(() => {});
     // At a phone's width the dialog and the line at the foot keep their rows.
     await page.setViewportSize({ width: 390, height: 844 });
     await wait(300);
@@ -11376,7 +11382,7 @@ async function chatsub() {
     await shot(page, 'chat-sub-foot-phone');
     await page.setViewportSize({ width: 1280, height: 860 });
     await wait(300);
-    await page.click('#chat .so-chat__jobs');
+    await page.click('#chat .so-footfold[data-kind="jobs"] .so-job [data-job]');
     await page.waitForSelector('dialog[open]', { timeout: 5000 }).catch(() => {});
     await page.keyboard.press('Escape');
     await page.waitForSelector('dialog[open]', { state: 'detached', timeout: 5000 }).catch(() => {});

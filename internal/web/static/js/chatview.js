@@ -31,7 +31,7 @@ import { ChatStream } from './chatstream.js';
 import { loadChat, saveChat } from './chatcache.js';
 import {
   assistantMessage, userMessage, lineHtml, askCard, askPlaces, todoList, todoItems, renewsIn, seconds, outboxState,
-  backgroundJobs, jobsList, jobDetail, agentsFold, clock, infoButton, tickLive,
+  backgroundJobs, jobsList, jobDetail, agentsFold, jobsFold, clock, infoButton, tickLive,
 } from './chatparts.js';
 import { mountComposer } from './composer.js';
 import { wheelHooks } from './wheel.js';
@@ -635,7 +635,7 @@ export function mountChat(ctx) {
     drawJobs();
     if (jobsWanted && session.id === jobsWanted && synced) {
       jobsWanted = '';
-      jobsDialog(jobsSlot.querySelector('.so-chat__jobs, .so-agentcard .ds-card__action') || host);
+      jobsDialog(jobsSlot.querySelector('.so-foldbox > summary') || host);
     }
     drawTodo();
     drawState();
@@ -807,32 +807,26 @@ export function mountChat(ctx) {
   }
 
   // drawJobs is what runs in the background, at the foot of the chat over
-  // the composer, where the eye is while it waits. A subagent or a workflow
-  // is a card of its own - what it does, how far it has come - one under the
-  // other when there are several, all folded into one line until opened
-  // (agentsFold); the rest (a shell, a monitor) is one line: how many, and
-  // what the newest runs. Nothing while nothing runs.
+  // the composer, where the eye is while it waits: three folds built alike
+  // (chatparts.js footFold) - the workflows, the subagents, and the other
+  // background jobs (a shell, a monitor, what the agent only counts) - each
+  // one quiet line of what it is doing until it is opened, then its cards
+  // or its rows. Nothing while nothing runs.
   function drawJobs() {
     const { jobs, others } = backgroundJobs(chat);
     const agents = jobs.filter((job) => job.kind && chat.parts.get(job.id));
     const rest = jobs.filter((job) => !agents.includes(job));
-    const count = rest.length + others;
-    jobsSlot.hidden = !count && !agents.length;
+    jobsSlot.hidden = !rest.length && !others && !agents.length;
     if (jobsSlot.hidden) { morph(jobsSlot, ''); return; }
     const now = Date.now();
-    const cards = agents.length
-      ? agentsFold(agents.map((job) => chat.parts.get(job.id)), { open: view.isOpen('foot:agents', false), now })
-      : '';
-    let line = '';
-    if (count) {
-      const words = count + (count === 1 ? ' background job' : ' background jobs');
-      const latest = rest.length ? rest[rest.length - 1] : null;
-      const what = latest ? latest.summary || latest.name : '';
-      line = html`<button class="ds-btn ds-btn--tonal ds-btn--sm so-chat__jobs" type="button" data-action="jobs" data-ds-key="jobs" data-running aria-label="${words + ' - show them'}" data-tip="Show what runs in the background"><span class="ds-spinner ds-status__spinner" aria-hidden="true"></span><span class="so-chat__jobs-count">${words}</span>${
-        what ? html`<span class="so-chat__jobs-what">${what}</span>` : ''
-      }${raw(icon('chevronRight', 16))}</button>`;
-    }
-    morph(jobsSlot, html`${cards}${line}`, wheelHooks);
+    const parts = (kind) => agents.filter((job) => job.kind === kind).map((job) => chat.parts.get(job.id));
+    const fold = (kind) => {
+      const list = parts(kind);
+      const key = kind === 'workflow' ? 'workflows' : 'agents';
+      return list.length ? agentsFold(list, kind, { open: view.isOpen('foot:' + key, false), now }) : '';
+    };
+    const background = rest.length || others ? jobsFold(rest, others, { open: view.isOpen('foot:jobs', false), now }) : '';
+    morph(jobsSlot, html`${fold('workflow')}${fold('agent')}${background}`, wheelHooks);
   }
 
   // drawSchedule is the scheduled start of a chat that has not started: a
@@ -995,7 +989,11 @@ export function mountChat(ctx) {
     close.className = 'ds-btn ds-btn--text';
     close.type = 'button';
     close.dataset.close = '';
-    close.autofocus = true;
+    // Opened on a job (a row or a card at the foot), the focus starts on
+    // its name, as when it is picked from the list; else on Close.
+    const named = picked ? body.querySelector('.so-jobd__name') : null;
+    if (named) named.autofocus = true;
+    else close.autofocus = true;
     close.textContent = 'Close';
     const { dialog, shown } = openDialog({ title: 'Background jobs', field: body, actions: [close], opener });
     dialog.classList.add('so-jobs-dialog');

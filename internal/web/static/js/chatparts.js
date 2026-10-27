@@ -1001,13 +1001,17 @@ export function jobsList({ jobs, others }, { chat = null, stopping = null, now =
   return html`<div class="so-jobs__body-in">${cards}<section class="so-jobs__group" data-ds-key="jobs">${heading}${jobsRows(rest, others, now)}</section></div>`;
 }
 
-function jobsRows(jobs, others, now) {
+// jobsRows is a row a job - its tool's mark, its name, what it runs, since
+// when, and how long it has run (a watch tickLive moves) - each a button
+// that opens the job (at the chat's foot also data-action "job", which
+// opens the dialog on it), and a quiet row for what the agent counts
+// without a part to show.
+function jobsRows(jobs, others, now, { foot = false } = {}) {
   return html`<ul class="so-jobs">${jobs.map((job) => {
-    const ran = job.since ? seconds(Math.max(0, now - job.since)) : '';
     const started = job.since ? 'since ' + clock(job.since) : '';
-    return html`<li class="so-job" data-ds-key="${job.id}"><button class="ds-pressable ds-pressable--inset so-job__open" type="button" data-job="${job.id}" aria-label="${'Show ' + job.name + (job.summary ? ': ' + job.summary : '')}"><span class="so-job__icon" aria-hidden="true">${raw(icon(toolGlyph(job.name), 18))}</span><span class="so-job__main"><span class="so-job__name">${job.name}</span>${
+    return html`<li class="so-job" data-ds-key="${job.id}"><button class="ds-pressable ds-pressable--inset so-job__open" type="button" data-job="${job.id}"${foot ? html` data-action="job"` : ''} aria-label="${'Show ' + job.name + (job.summary ? ': ' + job.summary : '')}"><span class="so-job__icon" aria-hidden="true">${raw(icon(toolGlyph(job.name), 18))}</span><span class="so-job__main"><span class="so-job__name">${job.name}</span>${
       job.summary ? html`<span class="so-job__summary">${job.summary}</span>` : ''
-    }${started ? html`<span class="so-job__note">${started}</span>` : ''}</span><span class="ds-status ds-status--running so-job__state"><span class="ds-spinner ds-status__spinner" aria-hidden="true"></span><span>${ran || 'Running'}</span></span>${raw(icon('chevronRight', 18, 'so-job__go'))}</button></li>`;
+    }${started ? html`<span class="so-job__note">${started}</span>` : ''}</span><span class="so-job__state"${job.since ? html` data-since="${job.since}" data-format="seconds"` : ''}>${job.since ? ticking(Math.max(0, now - job.since), 'seconds') : ''}</span>${raw(icon('chevronRight', 18, 'so-job__go'))}</button></li>`;
   })}${
     others ? html`<li class="so-job so-job--others" data-ds-key="others"><span class="so-job__icon" aria-hidden="true">${raw(icon('background', 18))}</span><span class="so-job__main"><span class="so-job__name">${others + (others === 1 ? ' more task' : ' more tasks')}</span><span class="so-job__note">${'The agent counts ' + (others === 1 ? 'it' : 'them') + ' without saying what ' + (others === 1 ? 'it runs.' : 'they run.')}</span></span></li>` : ''
   }</ul>`;
@@ -1129,25 +1133,62 @@ export function agentCard(part, { full = false, foot = false, stopping = null, n
   }</div></div>`;
 }
 
+// count is "1 agent at work", "3 background jobs": a number and its noun.
+function count(n, one, many, tail = '') {
+  return n + ' ' + (n === 1 ? one : many) + tail;
+}
+
 /**
- * agentsFold is the subagents and workflows at work at the chat's foot,
- * folded by default into one quiet line: what the one at work is doing (or
- * how many run, and what they were sent to do), under the wave and rolling
- * on, and how long the first of them has run. Opened, their cards one under
- * the other (agentCard).
+ * footFold is one of the folds over the composer for what runs beside the
+ * chat (the workflows, the agents, the background jobs), all built alike:
+ * shut by default, one quiet line - the kind's mark, what is at work on a
+ * wheel under the wave, the watch of the first of them, the chevron.
+ * Opened, the line only counts them ("5 agents at work") and what it holds
+ * stands under it. `words` is the shut line, `counted` the open one.
  */
-export function agentsFold(parts, { open = false, now = Date.now() } = {}) {
+function footFold({ kind, glyph, words, counted, since, open, now, body }) {
+  const said = open ? counted : words;
+  return html`<details class="ds-collapsible so-foldbox so-footfold" data-ds-key="${kind}" data-kind="${kind}" data-open-key="${'foot:' + kind}"${open ? html` open` : ''}><summary class="ds-pressable so-foldbox__head" aria-label="${said}"><span class="so-foldbox__icon" aria-hidden="true">${raw(icon(glyph, 16))}</span><span class="so-wheel so-foldbox__now">${liveWords(said, 'so-foldbox__words')}</span>${
+    since ? html`<span class="so-foldbox__meta" data-since="${since}" data-format="watch">${stopwatch(Math.max(0, now - since))}</span>` : ''
+  }${chevron()}</summary>${open ? body() : ''}</details>`;
+}
+
+/**
+ * agentsFold is the subagents (kind "agent") or the workflows ("workflow")
+ * at work, folded: shut, what the one does - or how many run and what they
+ * were sent to do; opened, how many, over their cards one under the other
+ * (agentCard).
+ */
+export function agentsFold(parts, kind, { open = false, now = Date.now() } = {}) {
   const all = parts.map((part) => ({ part, facts: agentFacts(part) }));
   const doing = (facts) => facts.doing || (facts.running.length === 1 ? facts.running[0].label : '') || 'Working';
-  const one = all.length === 1 ? all[0].facts : null;
-  const words = one ? one.title + ' · ' + doing(one) : all.length + ' agents at work · ' + all.map((a) => a.facts.title).join(', ');
-  const since = Math.min(...all.map((a) => a.part.at || now));
-  const glyph = one ? one.glyph : 'users';
-  return html`<details class="ds-collapsible so-foldbox so-agentfold" data-ds-key="agents" data-open-key="foot:agents"${open ? html` open` : ''}><summary class="ds-pressable so-foldbox__head" aria-label="${words}"><span class="so-foldbox__icon" aria-hidden="true">${raw(icon(glyph, 16))}</span><span class="so-wheel so-foldbox__now">${liveWords(words, 'so-foldbox__words')}</span><span class="so-foldbox__meta" data-since="${since}" data-format="watch">${stopwatch(Math.max(0, now - since))}</span>${chevron()}</summary>${
-    open ? html`<div class="so-foldbox__body so-agentcards so-agentcards--foot" role="group" aria-label="${all.length === 1 ? 'An agent at work' : all.length + ' agents at work'}"${all.length > 1 ? html` data-many` : ''}>${
+  const counted = kind === 'workflow' ? count(all.length, 'workflow', 'workflows', ' at work') : count(all.length, 'agent', 'agents', ' at work');
+  const words = all.length === 1 ? all[0].facts.title + ' · ' + doing(all[0].facts) : counted + ' · ' + all.map((a) => a.facts.title).join(', ');
+  return footFold({
+    kind: kind === 'workflow' ? 'workflows' : 'agents', glyph: kind === 'workflow' ? 'apps' : 'users', words, counted, open, now,
+    since: Math.min(...all.map((a) => a.part.at || now)),
+    body: () => html`<div class="so-foldbox__body so-agentcards so-agentcards--foot" role="group" aria-label="${counted}"${all.length > 1 ? html` data-many` : ''}>${
       all.map((a) => agentCard(a.part, { foot: true, now }))
-    }</div>` : ''
-  }</details>`;
+    }</div>`,
+  });
+}
+
+/**
+ * jobsFold is the background jobs that are no agent (a shell, a monitor)
+ * and those the agent only counts, folded: shut, what the newest runs;
+ * opened, how many, over a row a job that opens it (jobsRows).
+ */
+export function jobsFold(jobs, others, { open = false, now = Date.now() } = {}) {
+  const n = jobs.length + others;
+  const counted = count(n, 'background job', 'background jobs');
+  const latest = jobs.length ? jobs[jobs.length - 1] : null;
+  const what = latest ? [latest.name, latest.summary].filter(Boolean).join(' · ') : '';
+  const words = n === 1 && what ? what : counted + (what ? ' · ' + (latest.summary || latest.name) : '');
+  const times = jobs.map((job) => job.since).filter(Boolean);
+  return footFold({
+    kind: 'jobs', glyph: 'background', words, counted, open, now, since: times.length ? Math.min(...times) : 0,
+    body: () => html`<div class="so-foldbox__body so-jobs-foot">${jobsRows(jobs, others, now, { foot: true })}</div>`,
+  });
 }
 
 // What a job that no longer runs ended as, by the state its task (or its
@@ -1416,7 +1457,7 @@ function ticking(ms, format) {
  */
 export function tickLive(root) {
   const now = Date.now();
-  for (const node of root.querySelectorAll('.so-live [data-since], .so-agentcard [data-since], .so-agentfold [data-since]')) {
+  for (const node of root.querySelectorAll('.so-live [data-since], .so-agentcard [data-since], .so-foldbox [data-since], .so-jobs [data-since]')) {
     const text = ticking(now - Number(node.dataset.since), node.dataset.format);
     if (node.textContent !== text) node.textContent = text;
   }

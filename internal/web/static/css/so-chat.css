@@ -26,9 +26,10 @@
  *   .so-chat__dock         under it: the state line (what did not happen,
  *                          the connection, the agent), the task list pinned
  *                          while the conversation's own is out of sight,
- *                          the background jobs while any run (.so-chat__bg,
- *                          its button .so-chat__jobs opens .so-jobs-dialog)
- *                          and the composer
+ *                          the background jobs while any run (.so-chat__bg:
+ *                          three folds alike, .so-footfold, for the
+ *                          workflows, the agents and the other jobs; a card
+ *                          or a row opens .so-jobs-dialog) and the composer
  *   .so-msg                a message, data-role user | assistant; a user's
  *                          is a bubble with its state chip (.so-msg__chip);
  *                          an answer ends in Copy and its "i" (.so-msg__foot)
@@ -53,7 +54,7 @@
  *                          count; .so-todo__item a hook for the tests);
  *                          [data-pinned] above the composer, folded
  *                          (.so-foldbox: shut until opened, as the agents
- *                          at work are, .so-agentfold)
+ *                          at work are, .so-footfold)
  *   .so-plan, .so-ask      the plan card and the question card (DS cards)
  *   .so-line               a line between messages: a notice, a command, a
  *                          model or an account change, an interrupted turn
@@ -518,37 +519,17 @@
   overflow-wrap: anywhere;
 }
 
-.so-chat__jobs {
-  flex: 1 1 auto;
-  min-width: 0;
-  max-width: 100%;
-  justify-content: flex-start;
-  gap: var(--ds-space-2);
+/* The background jobs, opened at the foot: their rows in the fold's own
+   box and scroll, not in a second frame of their own. */
+.so-jobs-foot {
+  padding-inline: var(--ds-space-2);
 }
 
-/* The chevron at the far end, wherever the words stop. */
-.so-chat__jobs > svg:last-child {
-  margin-inline-start: auto;
-}
-
-.so-chat__jobs-count {
-  flex: none;
-  font-variant-numeric: tabular-nums;
-}
-
-.so-chat__jobs-what {
-  flex: 0 1 auto;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--ds-text-2);
-  font: var(--ds-font-meta);
-}
-
-.so-chat__jobs-what::before {
-  content: '·';
-  margin-right: var(--ds-space-2);
+.so-jobs-foot > .so-jobs {
+  max-height: none;
+  overflow: visible;
+  border: 0;
+  border-radius: 0;
 }
 
 /* The dialog: the agents' cards, then a row a job, its tool's mark in a
@@ -696,6 +677,8 @@
 
 .so-job__state {
   flex: none;
+  color: var(--ds-text-3);
+  font: var(--ds-font-meta);
   font-variant-numeric: tabular-nums;
 }
 
