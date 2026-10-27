@@ -128,8 +128,8 @@ type host struct {
 	account string
 	env     []string
 	pending *pendingSwitch
-	// mcpSaid is what the chat was last told about its folder's MCP
-	// servers (folderMCP), so that a switch does not say it again.
+	// mcpSaid is what the chat was last told about its MCP servers
+	// (chatMCP), so that a switch does not say it again.
 	mcpSaid string
 
 	done     chan struct{}
@@ -457,7 +457,7 @@ func (h *host) boot() {
 		ChatID: h.opts.ChatID, Workdir: h.spec.Workdir, StateDir: filepath.Join(h.dir, stateDir),
 		DataDir: h.opts.DataDir, Env: env, Account: h.spec.Account, Model: h.spec.Model, Effort: h.spec.Effort,
 		ResumeID: resume, Rebuild: rebuild, Held: held, Spawn: h.spawn, Binary: h.spec.Binary, AskCommand: h.askCommand(),
-		MCPServers: h.folderMCP(env),
+		MCPServers: h.chatMCP(env),
 	}
 	if resume == "" && len(pending) > 0 {
 		spec.First, pending = &pending[0], pending[1:]
@@ -512,12 +512,17 @@ func (h *host) askCommand() []string {
 	return []string{exe, "mcp-ask", "--socket", h.sock}
 }
 
-// folderMCP is the MCP servers of the chat's folder for a CLI started on env
-// (StartSpec.MCPServers), read again at every start so that a changed
-// .mcp.json counts from the next one. What was left out is said in the chat,
-// once for as long as it stays the same.
-func (h *host) folderMCP(env []string) []agent.MCPServer {
-	servers, problems := agent.FolderMCP(h.spec.Workdir, env)
+// chatMCP is the MCP servers the chat's CLI starts with on env
+// (StartSpec.MCPServers): the dashboard's (Spec.SharedMCP) and its folder's,
+// those the chat has on (agent.StartMCP). The folder is read again at every
+// start so that a changed .mcp.json counts from the next one. What was left
+// out is said in the chat, once for as long as it stays the same.
+func (h *host) chatMCP(env []string) []agent.MCPServer {
+	shared, err := h.openSharedMCP(h.spec.SharedMCP)
+	servers, problems := agent.StartMCP(h.spec.Workdir, shared, h.spec.MCPChoices, env)
+	if err != nil {
+		problems = append(problems, "The MCP servers of Admin were left out: "+err.Error())
+	}
 	text := strings.Join(problems, "\n")
 	h.mu.Lock()
 	say := text != "" && text != h.mcpSaid

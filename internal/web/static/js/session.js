@@ -1324,10 +1324,11 @@ function rowFacts(session, running = null, mcp = null) {
     ['State', STATE_WORDS[session.state] || session.state],
     ['Folder', session.workdir],
   ];
-  // The MCP servers the folder's .mcp.json gives a chat's agent, and what of
-  // it could not be used (GET …/mcp).
-  if (mcp && Array.isArray(mcp.servers) && mcp.servers.length) {
-    facts.push(['MCP servers', mcp.servers.map((s) => s.name + (s.transport === 'stdio' ? '' : ' (' + s.transport + ')')).join(' · ')]);
+  // The MCP servers a chat's agent has on - Admin's and its folder's
+  // .mcp.json's - and what of them could not be used (GET …/mcp).
+  const mcpOn = mcp && Array.isArray(mcp.servers) ? mcp.servers.filter((s) => s.on !== false) : [];
+  if (mcpOn.length) {
+    facts.push(['MCP servers', mcpOn.map((s) => s.name + (s.transport === 'stdio' ? '' : ' (' + s.transport + ')')).join(' · ')]);
   }
   if (mcp && Array.isArray(mcp.problems) && mcp.problems.length) facts.push(['MCP left out', mcp.problems.join(' ')]);
   const account = session.options?.account
@@ -2291,6 +2292,78 @@ async function setUltracode(session, on) {
   }
 }
 
+// mcpDialog is a chat's MCP servers, each a switch: Admin's, on or off by
+// their default until switched here, and the folder's .mcp.json's. A switch
+// applies at once; the agent is put to rest as soon as it is idle and takes
+// the change up with the next message, as with Ultracode. A switch put back
+// to the server's default gives the choice back to Admin.
+async function mcpDialog(session, opener) {
+  const url = '/api/sessions/' + encodeURIComponent(session.id) + '/mcp';
+  const list = el('div', { class: 'ds-switch-list' });
+  const note = el('p', { class: 'ds-dialog__text', id: 'mcpDialogText' });
+  const close = el('button', { class: 'ds-btn ds-btn--text', type: 'button', 'data-close': true, autofocus: true, text: 'Close' });
+  const dialog = el('dialog', { class: 'ds-dialog', 'aria-labelledby': 'mcpDialogTitle', 'aria-describedby': 'mcpDialogText' },
+    el('div', { class: 'ds-dialog__backdrop', 'data-close': true }),
+    el('div', { class: 'ds-dialog__box' },
+      el('h2', { class: 'ds-dialog__title', id: 'mcpDialogTitle', text: 'MCP servers' }),
+      note, list,
+      el('div', { class: 'ds-dialog__actions' }, close)));
+  const draw = (data) => {
+    const servers = (data && data.servers) || [];
+    note.textContent = servers.length
+      ? 'What this chat\u2019s agent may use. A change counts from the next message.'
+      : 'There is no MCP server yet. Add one in Admin for every chat, or in a .mcp.json in the chat\u2019s folder.';
+    if (data && data.problems && data.problems.length) note.textContent += ' ' + data.problems.join(' ');
+    list.hidden = !servers.length;
+    list.replaceChildren(...servers.map((server, i) => {
+      const labelId = 'mcpSwitch' + i;
+      const hintId = 'mcpSwitchHint' + i;
+      const from = server.from === 'admin'
+        ? 'From Admin \u00b7 ' + (server.default ? 'on' : 'off') + ' in every chat'
+        : 'From the folder\u2019s .mcp.json';
+      const input = el('input', {
+        type: 'checkbox', role: 'switch', checked: !!server.on, 'aria-labelledby': labelId, 'aria-describedby': hintId,
+        'data-name': server.name,
+        onchange: (event) => choose(server, event.currentTarget),
+      });
+      return el('label', { class: 'ds-switch' }, input,
+        el('span', { class: 'ds-switch__track', 'aria-hidden': 'true' }),
+        el('span', { class: 'ds-switch__label', id: labelId, text: server.name }),
+        el('small', { class: 'ds-switch__hint', id: hintId, text: from + (server.transport === 'stdio' ? '' : ' \u00b7 ' + server.transport.toUpperCase()) }),
+        el('span', { class: 'ds-switch__state', 'aria-hidden': 'true' },
+          el('span', { class: 'ds-switch__on', text: 'On' }), el('span', { class: 'ds-switch__off', text: 'Off' })));
+    }));
+  };
+  const choose = async (server, input) => {
+    const on = input.checked;
+    input.setAttribute('aria-busy', 'true');
+    try {
+      const data = await api('/api/chats/' + encodeURIComponent(session.id) + '/mcp', {
+        method: 'POST', attempts: 2, body: { name: server.name, on: on === server.default ? null : on },
+      });
+      if (dialog.isConnected) draw(data);
+      list.querySelector('input[data-name="' + CSS.escape(server.name) + '"]')?.focus();
+      toast(server.name + (on ? ' is on' : ' is off') + ' from the next message.');
+    } catch (err) {
+      input.checked = !on;
+      toast(errorMessage(err), 'error');
+    } finally {
+      input.removeAttribute('aria-busy');
+    }
+  };
+  note.textContent = 'Asking which servers this chat has\u2026';
+  list.hidden = true;
+  dialog.addEventListener('close', () => {
+    hideOverlay(dialog, { remove: true }).then(() => paneAfter(document.activeElement));
+  }, { once: true });
+  showOverlay(dialog, opener && opener.isConnected ? opener : document.activeElement);
+  try {
+    draw(await api(url));
+  } catch (err) {
+    note.textContent = errorMessage(err);
+  }
+}
+
 // exportChat opens the whole conversation as the server holds it: every
 // message, part and question, as JSON.
 function exportChat(session) {
@@ -2458,6 +2531,7 @@ async function openRowMenu(anchor, id, { device = false } = {}) {
       const on = !!(session.options && session.options.ultracode);
       add('ultracode', 'Ultracode', '', () => setUltracode(session, !on), on, 'menuitemcheckbox');
     }
+    add('mcp', 'MCP servers\u2026', 'server', () => mcpDialog(session, anchor));
     add('compact', 'Compact the conversation', 'archive', () => compactChat(session));
     add('export', 'Download the conversation', 'download', () => exportChat(session));
     // Off unless asked for, per chat: at a limit the chat goes on with the

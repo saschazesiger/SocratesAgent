@@ -228,6 +228,8 @@ async function load() {
   buildModelPickers();
   renderDefaultHarness();
   renderPresets();
+  mcpList = (getPath(settings, 'mcp.servers') || []).map((server) => ({ ...server }));
+  renderMCP();
   bind();
   loadAccounts();
   // The groups are headed with the agents' names, which the catalogue has.
@@ -277,6 +279,7 @@ function collect() {
     else setPath(next, path, node.value);
   }
   next.workspace.presets = readPresets();
+  next.mcp = { servers: mcpList.map((server) => ({ ...server })) };
   return next;
 }
 
@@ -520,6 +523,238 @@ function readPresets() {
     const [label, path] = row.querySelectorAll('input');
     return { label: label.value.trim(), path: path.value.trim() };
   }).filter((preset) => preset.path !== '');
+}
+
+/* ----------------------------------------------------------- MCP servers */
+
+// The MCP servers every chat may have are part of the settings document: the
+// card edits a copy (mcpList) that Save writes with the rest, as the presets
+// are. A server is more fields than a row has room for, so it is edited in a
+// dialog; the row says what it is and whether it is on in every chat.
+let mcpList = [];
+
+const MCP_TYPES = [['stdio', 'Local command'], ['http', 'HTTP'], ['sse', 'SSE']];
+const MCP_NAME = /^[A-Za-z0-9_-]+$/;
+
+function mcpSummary(server) {
+  if (server.type === 'stdio') return [server.command, ...(server.args || [])].join(' ');
+  return (server.type === 'sse' ? 'SSE · ' : 'HTTP · ') + server.url;
+}
+
+// renderMCP draws the rows from mcpList, keyed by name, so a row that stays
+// is patched in place and the others come and go in their places. What a row
+// does is bound once, on the list (bindMCP).
+function renderMCP() {
+  const host = $('mcpServers');
+  if (!host) return;
+  const rows = mcpList.map((server) => html`<div class="so-mcp" data-ds-key="${server.name}" data-name="${server.name}">
+    <div class="so-mcp__main"><p class="so-mcp__name">${server.name}</p><p class="ds-meta so-mcp__what">${mcpSummary(server)}</p></div>
+    <label class="ds-switch"><input type="checkbox" role="switch" data-action="default"${server.default ? html` checked` : ''} aria-label="${server.name + ' in every chat'}"><span class="ds-switch__track" aria-hidden="true"></span><span class="ds-switch__label">In every chat</span><span class="ds-switch__state" aria-hidden="true"><span class="ds-switch__on">On</span><span class="ds-switch__off">Off</span></span></label>
+    <div class="so-mcp__actions">
+      <button class="ds-btn ds-btn--quiet ds-btn--icon ds-btn--sm" type="button" data-action="edit" aria-label="${'Edit ' + server.name}" data-tip="Edit">${raw(icon('pencil', 18))}</button>
+      <button class="ds-btn ds-btn--quiet ds-btn--icon ds-btn--sm" type="button" data-action="delete" aria-label="${'Remove ' + server.name}" data-tip="Remove">${raw(icon('trash', 18))}</button>
+    </div></div>`);
+  flipMorph(host, mcpList.length ? html`${rows}` : html`<p class="ds-meta" data-ds-key="none">No MCP server yet.</p>`);
+  // morph keeps an input's checked as the page left it; the list says.
+  for (const input of host.querySelectorAll('input[data-action="default"]')) {
+    const server = mcpOf(input);
+    if (server) input.checked = !!server.default;
+  }
+}
+
+function mcpOf(node) {
+  const row = node.closest('.so-mcp');
+  return row ? mcpList.find((one) => one.name === row.dataset.name) : null;
+}
+
+function bindMCP() {
+  const host = $('mcpServers');
+  host.addEventListener('change', (event) => {
+    const server = event.target.matches('input[data-action="default"]') ? mcpOf(event.target) : null;
+    if (server) server.default = event.target.checked;
+  });
+  host.addEventListener('click', (event) => {
+    const button = event.target.closest('button[data-action]');
+    const server = button && mcpOf(button);
+    if (!server) return;
+    if (button.dataset.action === 'edit') editMCP(server, button);
+    if (button.dataset.action === 'delete') {
+      mcpList = mcpList.filter((one) => one !== server);
+      renderMCP();
+    }
+  });
+  $('mcpAdd').addEventListener('click', (event) => editMCP(null, event.currentTarget));
+  $('mcpImport').addEventListener('click', (event) => importMCP(event.currentTarget));
+}
+
+// The environment and the headers are one entry per line: KEY=value and
+// Name: value, as they are written in a shell and in a request.
+function linesOf(map, sep) {
+  return Object.entries(map || {}).map(([key, value]) => key + sep + value).join('\n');
+}
+
+function mapOf(text, sep) {
+  const out = {};
+  for (const line of String(text || '').split('\n')) {
+    const at = line.indexOf(sep);
+    if (at <= 0) continue;
+    out[line.slice(0, at).trim()] = line.slice(at + sep.length).trim();
+  }
+  return out;
+}
+
+// quoteArgs is splitArgs undone: an argument with a space keeps its quotes.
+function quoteArgs(args) {
+  return (args || []).map((a) => (/\s/.test(a) || a === '' ? (a.includes('"') ? "'" + a + "'" : '"' + a + '"') : a)).join(' ');
+}
+
+// mcpProblem is what keeps a server from being saved, in words; the server
+// checks the same on Save.
+function mcpProblem(server, previous) {
+  if (!server.name) return ['name', 'The server needs a name.'];
+  if (!MCP_NAME.test(server.name)) return ['name', 'A name may only have letters, digits, - and _.'];
+  if (server.name === 'socrates') return ['name', 'The name socrates is Socrates’ own.'];
+  if (mcpList.some((one) => one !== previous && one.name === server.name)) return ['name', 'There is a server named ' + server.name + ' already.'];
+  if (server.type === 'stdio' && !server.command) return ['command', 'A local server needs its command.'];
+  if (server.type !== 'stdio' && !server.url) return ['url', 'A remote server needs its URL.'];
+  return null;
+}
+
+// editMCP adds a server (previous null) or changes one, in a dialog.
+async function editMCP(previous, opener) {
+  const server = previous || { name: '', type: 'stdio', default: true };
+  const input = (id, label, value, { hint = '', ...attrs } = {}) => {
+    const node = el(attrs.rows ? 'textarea' : 'input', {
+      class: 'ds-input', id, value: value || '', spellcheck: 'false', autocomplete: 'off', autocapitalize: 'off', ...attrs,
+      type: attrs.rows ? null : 'text',
+    });
+    return [node, field(label, node, hint, id)];
+  };
+  const [name, nameField] = input('mcpEditName', 'Name', server.name, { autofocus: true, placeholder: 'github', hint: 'Letters, digits, - and _. The agent sees it in the names of the tools.' });
+  const type = el('select', { class: 'ds-input', id: 'mcpEditType' },
+    MCP_TYPES.map(([id, label]) => el('option', { value: id, text: label })));
+  type.value = server.type || 'stdio';
+  const typeField = field('Type', type, '', 'mcpEditType');
+  const [command, commandField] = input('mcpEditCommand', 'Command', server.command, { placeholder: 'npx' });
+  const [args, argsField] = input('mcpEditArgs', 'Arguments', quoteArgs(server.args), { placeholder: '-y @modelcontextprotocol/server-github' });
+  const [env, envField] = input('mcpEditEnv', 'Environment', linesOf(server.env, '='), { rows: 3, placeholder: 'GITHUB_TOKEN=${GITHUB_TOKEN}', hint: 'One KEY=value per line.' });
+  const [url, urlField] = input('mcpEditURL', 'URL', server.url, { placeholder: 'https://example.com/mcp', inputmode: 'url' });
+  const [headers, headersField] = input('mcpEditHeaders', 'Headers', linesOf(server.headers, ': '), { rows: 3, placeholder: 'Authorization: Bearer ${API_TOKEN}', hint: 'One Name: value per line.' });
+  const on = el('input', { type: 'checkbox', role: 'switch', id: 'mcpEditDefault', checked: server.default !== false });
+  const onField = el('div', { class: 'ds-field' }, el('label', { class: 'ds-switch' }, on,
+    el('span', { class: 'ds-switch__track', 'aria-hidden': 'true' }),
+    el('span', { class: 'ds-switch__label', text: 'In every chat' }),
+    el('span', { class: 'ds-switch__state', 'aria-hidden': 'true' },
+      el('span', { class: 'ds-switch__on', text: 'On' }), el('span', { class: 'ds-switch__off', text: 'Off' }))),
+  el('small', { class: 'ds-field__hint', text: 'Off, a chat has it only once it is switched on there.' }));
+  const problem = el('div', { class: 'so-admin-notice' });
+  problem.hidden = true;
+  const local = [commandField, argsField, envField];
+  const remote = [urlField, headersField];
+  const showType = () => {
+    for (const node of local) node.hidden = type.value !== 'stdio';
+    for (const node of remote) node.hidden = type.value === 'stdio';
+  };
+  type.addEventListener('change', showType);
+  showType();
+  const form = el('div', { class: 'ds-form' }, problem, nameField, typeField, ...local, ...remote, onField);
+  const cancel = el('button', { class: 'ds-btn ds-btn--text', type: 'button', 'data-close': true, text: 'Cancel' });
+  const accept = el('button', { class: 'ds-btn ds-btn--primary', type: 'button', text: previous ? 'Keep the changes' : 'Add the server' });
+  const { dialog, shown } = openDialog({ title: previous ? 'MCP server ' + server.name : 'A new MCP server', field: form, actions: [cancel, accept], opener });
+  accept.addEventListener('click', () => {
+    const next = { name: name.value.trim(), type: type.value, default: on.checked };
+    if (next.type === 'stdio') {
+      Object.assign(next, { command: command.value.trim(), args: splitArgs(args.value), env: mapOf(env.value, '=') });
+    } else {
+      Object.assign(next, { url: url.value.trim(), headers: mapOf(headers.value, ':') });
+    }
+    const bad = mcpProblem(next, previous);
+    for (const node of [name, command, url]) node.removeAttribute('aria-invalid');
+    if (bad) {
+      const [which, text] = bad;
+      const node = { name, command, url }[which];
+      node.setAttribute('aria-invalid', 'true');
+      morph(problem, html`<div class="ds-alert ds-alert--error" role="alert">${raw(icon('alertCircle', 20))}<span class="ds-alert__text">${text}</span></div>`);
+      problem.hidden = false;
+      node.focus();
+      return;
+    }
+    dialog.answer(next);
+    DS.overlay.close(dialog);
+  });
+  const answer = await shown;
+  if (!answer) return;
+  if (previous) mcpList[mcpList.indexOf(previous)] = answer;
+  else mcpList.push(answer);
+  mcpList.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+  renderMCP();
+}
+
+// importMCP takes servers as a .mcp.json or a program's docs write them -
+// {"mcpServers": {name: {...}}}, or the inner object alone - and adds them,
+// replacing one of the same name; Save keeps them.
+async function importMCP(opener) {
+  const [text, textField] = (() => {
+    const node = el('textarea', { class: 'ds-input', id: 'mcpImportText', rows: 8, spellcheck: 'false', autocomplete: 'off', autofocus: true,
+      placeholder: '{"mcpServers": {"github": {"command": "npx", "args": ["-y", "@modelcontextprotocol/server-github"]}}}' });
+    return [node, field('JSON', node, 'As a .mcp.json has it. Each server comes in on in every chat.', 'mcpImportText')];
+  })();
+  const problem = el('div', { class: 'so-admin-notice' });
+  problem.hidden = true;
+  const cancel = el('button', { class: 'ds-btn ds-btn--text', type: 'button', 'data-close': true, text: 'Cancel' });
+  const accept = el('button', { class: 'ds-btn ds-btn--primary', type: 'button', text: 'Add the servers' });
+  const { dialog, shown } = openDialog({ title: 'Paste MCP servers', field: el('div', { class: 'ds-form' }, problem, textField), actions: [cancel, accept], opener });
+  accept.addEventListener('click', () => {
+    let servers;
+    try {
+      servers = mcpFromJSON(text.value);
+    } catch (err) {
+      text.setAttribute('aria-invalid', 'true');
+      morph(problem, html`<div class="ds-alert ds-alert--error" role="alert">${raw(icon('alertCircle', 20))}<span class="ds-alert__text">${err.message}</span></div>`);
+      problem.hidden = false;
+      text.focus();
+      return;
+    }
+    dialog.answer(servers);
+    DS.overlay.close(dialog);
+  });
+  const servers = await shown;
+  if (!servers) return;
+  const names = new Set(servers.map((s) => s.name));
+  mcpList = [...mcpList.filter((one) => !names.has(one.name)), ...servers]
+    .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+  renderMCP();
+  toast(servers.length === 1 ? 'One server added. Save to keep it.' : servers.length + ' servers added. Save to keep them.');
+}
+
+function mcpFromJSON(text) {
+  let data;
+  try {
+    data = JSON.parse(text);
+  } catch (err) {
+    throw new Error('That is not JSON: ' + err.message);
+  }
+  if (data && typeof data === 'object' && data.mcpServers) data = data.mcpServers;
+  if (!data || typeof data !== 'object' || Array.isArray(data) || !Object.keys(data).length) {
+    throw new Error('There is no server in it: write {"mcpServers": {"name": {...}}}.');
+  }
+  const out = [];
+  for (const [name, entry] of Object.entries(data)) {
+    if (!entry || typeof entry !== 'object') throw new Error('The server ' + name + ' is not an object.');
+    const command = String(entry.command || '').trim();
+    const url = String(entry.url || '').trim();
+    let type = String(entry.type || '').trim().toLowerCase();
+    if (!type) type = !command && url ? 'http' : 'stdio';
+    if (type === 'streamable-http' || type === 'streamablehttp') type = 'http';
+    if (!['stdio', 'http', 'sse'].includes(type)) throw new Error('The server ' + name + ' has the type ' + type + '; stdio, http and sse are known.');
+    const server = type === 'stdio'
+      ? { name, type, command, args: (entry.args || []).map(String), env: entry.env || {}, default: true }
+      : { name, type, url, headers: entry.headers || {}, default: true };
+    const bad = mcpProblem(server, mcpList.find((one) => one.name === name));
+    if (bad) throw new Error(name + ': ' + bad[1]);
+    out.push(server);
+  }
+  return out;
 }
 
 /* ------------------------------------------------------------ reordering */
@@ -1260,6 +1495,7 @@ function bind() {
     M.flip(host, () => host.append(row));
     row.querySelector('input').focus();
   });
+  bindMCP();
   $('windowSize').addEventListener('change', renderWindowSizeHint);
   $('tunnelStart').addEventListener('click', startTunnel);
   $('tunnelStop').addEventListener('click', stopTunnel);
@@ -1306,6 +1542,8 @@ async function save() {
     fillForm();
     syncModelPickers();
     renderPresets();
+    mcpList = (getPath(settings, 'mcp.servers') || []).map((server) => ({ ...server }));
+    renderMCP();
     // The cards are drawn from the settings they just wrote, so they have to
     // follow whatever the server normalised them into.
     renderHarnesses('');

@@ -518,6 +518,9 @@ func (p *chatPeer) launch(ctx context.Context) error {
 	if err := p.accountSpec(row, &spec); err != nil {
 		return err
 	}
+	if err := p.mcpSpec(row, &spec); err != nil {
+		return fmt.Errorf("the chat's MCP servers: %w", err)
+	}
 	lctx, cancel := context.WithTimeout(ctx, chatLaunchWait)
 	defer cancel()
 	entry, _ := p.hub.srv.Settings().Harnesses.Entry(row.Harness)

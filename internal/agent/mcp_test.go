@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -103,5 +104,30 @@ func TestExpandMCPTakesTheChatsEnvironment(t *testing.T) {
 	}
 	if in[0].Command != "${BIN:-run}" {
 		t.Fatal("the servers read were changed")
+	}
+}
+
+// A chat's MCP servers are the dashboard's and its folder's, the folder's
+// winning a name; each on as the chat chose, else by its default.
+func TestChatMCPMergesTheDashboardsAndTheFoldersServers(t *testing.T) {
+	shared := []SharedMCP{
+		{MCPServer: MCPServer{Name: "github", Transport: MCPHTTP, URL: "https://x/mcp"}, Default: true},
+		{MCPServer: MCPServer{Name: "db", Transport: MCPStdio, Command: "shared-db"}},
+		{MCPServer: MCPServer{Name: "off", Transport: MCPStdio, Command: "o"}},
+		{MCPServer: MCPServer{Name: "socrates", Transport: MCPStdio, Command: "s"}, Default: true},
+		{MCPServer: MCPServer{Name: "broken", Transport: MCPStdio}, Default: true},
+	}
+	folder := []MCPServer{{Name: "db", Transport: MCPStdio, Command: "folder-db"}, {Name: "notes", Transport: MCPStdio, Command: "n"}}
+	list, problems := ChatMCP(shared, folder, map[string]bool{"github": false, "off": true})
+	var got []string
+	for _, c := range list {
+		got = append(got, fmt.Sprintf("%s:%s:%s:%v:%v", c.Name, c.Command+c.URL, c.From, c.Default, c.On))
+	}
+	want := "db:folder-db:folder:true:true github:https://x/mcp:admin:true:false notes:n:folder:true:true off:o:admin:false:true"
+	if strings.Join(got, " ") != want {
+		t.Fatalf("got  %s\nwant %s", strings.Join(got, " "), want)
+	}
+	if len(problems) != 2 || !strings.Contains(problems[0], `"socrates"`) && !strings.Contains(problems[1], `"socrates"`) {
+		t.Fatalf("problems %q", problems)
 	}
 }

@@ -414,6 +414,7 @@ func (s *Server) routes() {
 	mux.HandleFunc("POST /api/chats/{id}/command", s.auth(s.handleChatCommand))
 	mux.HandleFunc("POST /api/chats/{id}/attachments", s.auth(s.handleChatAttachments))
 	mux.HandleFunc("POST /api/chats/{id}/options", s.auth(s.handleChatOptions))
+	mux.HandleFunc("POST /api/chats/{id}/mcp", s.auth(s.handleChatMCP))
 	mux.HandleFunc("POST /api/chats/{id}/account", s.auth(s.handleChatAccount))
 	mux.HandleFunc("POST /api/chats/{id}/spoken", s.auth(s.handleChatSpoken))
 	mux.HandleFunc("PUT /api/chats/{id}/auto-switch", s.auth(s.handleChatAutoSwitch))

@@ -19,6 +19,8 @@
  *   .so-account        one account: grip, __main (__name, __state, __meters),
  *                      __actions; data-account-state is its state
  *   .so-model          one model of a short list: grip, __name, effort, remove
+ *   .so-mcp            one MCP server: __main (__name, __what), its "in every
+ *                      chat" switch, __actions
  *   .so-grip           the drag handle of a row (DS .ds-grip, a hook for the
  *                      tests); DS.motion.sortable raises the dragged row
  *   .so-program        a program's card: __name (mark and label), __state
@@ -153,7 +155,8 @@
 }
 
 .so-account,
-.so-model {
+.so-model,
+.so-mcp {
   display: grid;
   align-items: center;
   gap: var(--ds-space-2) var(--ds-space-3);
@@ -163,7 +166,8 @@
 }
 
 .so-account:first-child,
-.so-model:first-child {
+.so-model:first-child,
+.so-mcp:first-child {
   border-top: 1px solid var(--ds-line);
 }
 
@@ -237,6 +241,37 @@
   flex-wrap: wrap;
   align-items: center;
   justify-content: flex-end;
+  gap: var(--ds-space-1);
+}
+
+.so-mcp {
+  grid-template-columns: minmax(0, 1fr) auto auto;
+}
+
+.so-mcp__main {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--ds-space-1);
+  min-width: 0;
+}
+
+.so-mcp__name {
+  margin: 0;
+  font: var(--ds-font-label);
+  color: var(--ds-text);
+  overflow-wrap: anywhere;
+}
+
+/* A command or a URL is one long word: it breaks anywhere. */
+.so-mcp__what {
+  margin: 0;
+  font-family: var(--ds-font-mono);
+  overflow-wrap: anywhere;
+}
+
+.so-mcp__actions {
+  display: flex;
+  align-items: center;
   gap: var(--ds-space-1);
 }
 
@@ -368,6 +403,15 @@
 
   .so-account {
     grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  /* The switch and the actions go under the server's name. */
+  .so-mcp {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .so-mcp__main {
+    grid-column: 1 / -1;
   }
 
   /* The actions start under the account's name. */

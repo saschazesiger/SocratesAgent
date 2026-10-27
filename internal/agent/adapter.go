@@ -165,7 +165,7 @@ type StartSpec struct {
 	// for a CLI that starts its MCP servers as processes of its own
 	// (OpenCode). Empty outside a host.
 	AskCommand []string
-	// MCPServers are the MCP servers of the chat's folder (FolderMCP),
+	// MCPServers are the MCP servers the chat has on (StartMCP),
 	// expanded and ready to start, besides ask_user. The adapter gives them
 	// to its CLI and keeps the CLI from loading the folder's MCP servers on
 	// its own.

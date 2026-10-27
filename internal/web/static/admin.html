@@ -68,6 +68,7 @@
         <a class="ds-drawer__item" href="#accountsCard" data-section="accountsCard" data-icon="users"><span class="ds-drawer__label">Accounts</span></a>
         <a class="ds-drawer__item" href="#terminalCard" data-section="terminalCard" data-icon="monitor"><span class="ds-drawer__label">Terminal</span></a>
         <a class="ds-drawer__item" href="#harnessCards" data-section="harnessCards" data-icon="apps"><span class="ds-drawer__label">Programs</span></a>
+        <a class="ds-drawer__item" href="#mcpCard" data-section="mcpCard" data-icon="server"><span class="ds-drawer__label">MCP servers</span></a>
       </div>
       <div class="ds-drawer__group">
         <p class="ds-drawer__heading">Voice and models</p>
@@ -346,6 +347,17 @@
               <div class="ds-loading" role="status"><span class="ds-loader ds-loader--sm" aria-hidden="true"></span>Asking this machine which programs are installed</div>
             </section>
           </div>
+
+          <section class="ds-card" id="mcpCard" aria-labelledby="mcpTitle">
+            <h2 class="ds-card__title" id="mcpTitle">MCP servers</h2>
+            <p class="ds-muted">Tools for every chat's agent, whatever its program. A server that is on here is on in every chat; one that is off is there for a chat to switch on. Each chat switches them for itself in its ⋮ → MCP servers. A folder's <code>.mcp.json</code> adds its own servers, and its server wins a name both have.</p>
+            <div class="so-rows" id="mcpServers"></div>
+            <div class="so-admin-actions">
+              <button class="ds-btn ds-btn--text ds-add-row" id="mcpAdd" type="button" data-icon="plus" data-icon-size="16">Add an MCP server</button>
+              <button class="ds-btn ds-btn--text" id="mcpImport" type="button" data-icon="clipboard" data-icon-size="16">Paste JSON</button>
+            </div>
+            <small class="ds-field__hint">Saved with the page. A chat takes a change up when its agent next starts; a running one is not cut short. <code>${VAR}</code> and <code>${VAR:-default}</code> are filled in from the chat's environment, so a token can stay out of this page.</small>
+          </section>
 
           <!-- ── Voice and models ─────────────────────────────────────── -->
 

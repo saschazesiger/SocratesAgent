@@ -102,7 +102,7 @@ You can run it again at any time to repair or update the installation.
 | ⏯️ **Resume** | A turn stopped by a usage limit continues on its own once the limit resets. |
 | 📎 **Files** | Attach, drop or paste them into the chat or the Shell. |
 | ⚡ **Ultracode** | Claude Code with dynamic workflows on every task, switched on per chat. |
-| 🔌 **MCP** | A folder's `.mcp.json` gives every chat in it its MCP servers, with any agent. **Info** lists them. |
+| 🔌 **MCP** | Set up MCP servers in **Admin** for every chat, on or off by default, and switch them per chat in its ⋮ → **MCP servers**. A folder's `.mcp.json` adds its own, with any agent. |
 
 ---
 

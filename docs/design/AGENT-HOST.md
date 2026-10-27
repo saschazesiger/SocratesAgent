@@ -424,14 +424,20 @@ conversation is `ErrConversationNotFound` as for any resume.
 
 **MCP servers of a folder** (HARNESS-POLICY.md, "MCP servers of a folder"). At every start of a
 CLI (boot and every account switch) the host reads the chat folder's `.mcp.json`, and those of the
-folders above it up to the repository's root (`agent.FolderMCP`: the nearer file wins a name, a
-folder in no repository has only its own), expands `${VAR}`/`${VAR:-default}` on the CLI's
-environment and passes the servers as `StartSpec.MCPServers`. A file that is not valid, a server
+folders above it up to the repository's root (`agent.ReadFolderMCP`: the nearer file wins a name,
+a folder in no repository has only its own), adds Admin's servers (`Spec.SharedMCP`, sealed for the
+chat, opened with the data directory's key; the folder's win a name), keeps those the chat has on
+(`Spec.MCPChoices` by name, else each one's default: Admin's "In every chat", on for a folder's;
+`agent.StartMCP`), expands `${VAR}`/`${VAR:-default}` on the CLI's environment and passes the
+servers as `StartSpec.MCPServers`. A file that is not valid, a server
 that cannot start (no command or URL, a type other than stdio/http/sse, a name other than
 `[A-Za-z0-9_-]+` or `socrates`) and one whose variable is not set are left out and said in the
 chat as `notice{mcp_servers}`, once for as long as the reasons stay the same. Each adapter gives
 the servers to its CLI in its own form and keeps the CLI from starting the folder's MCP servers by
-itself (below). `GET /api/sessions/{id}/mcp` lists the names and transports for the chat's Info.
+itself (below). `GET /api/sessions/{id}/mcp` lists every server the chat may have (name,
+transport, `from` admin or folder, `default`, `on`) for its Info and its *MCP servers* dialog;
+`POST /api/chats/{id}/mcp {"name","on":bool|null}` switches one for the chat (null: back to its
+default) and parks the idle agent, as an Ultracode change does.
 
 ### 5.1 Claude Code (`internal/agent/claude`)
 

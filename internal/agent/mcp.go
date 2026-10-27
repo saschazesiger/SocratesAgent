@@ -59,12 +59,71 @@ type mcpEntry struct {
 	Headers map[string]string `json:"headers"`
 }
 
-// FolderMCP is the MCP servers a chat in workdir gets, ready to start: read
-// with ReadFolderMCP and expanded with ExpandMCP on the chat's environment.
-// Problems are what was left out and why, in words for the chat.
-func FolderMCP(workdir string, env []string) (servers []MCPServer, problems []string) {
-	servers, problems = ReadFolderMCP(workdir)
-	servers, more := ExpandMCP(servers, env)
+// The places an MCP server of a chat comes from.
+const (
+	MCPFromAdmin  = "admin"  // set up in the dashboard for every chat
+	MCPFromFolder = "folder" // the chat folder's .mcp.json
+)
+
+// SharedMCP is an MCP server set up in the dashboard for every chat, with
+// whether a chat has it when nobody switched it on or off there.
+type SharedMCP struct {
+	MCPServer
+	Default bool `json:"default"`
+}
+
+// MCPChoice is one MCP server a chat may have: where it comes from, whether
+// it is on unless the chat says otherwise, and whether it is on in the chat.
+type MCPChoice struct {
+	MCPServer
+	From    string `json:"from"`
+	Default bool   `json:"default"`
+	On      bool   `json:"on"`
+}
+
+// ChatMCP is every MCP server a chat may have, sorted by name: the shared
+// ones and its folder's (ReadFolderMCP), the folder's winning a name as the
+// nearer file does among .mcp.json files. Each is on as the chat chose
+// (choices, by name), else as its default; a folder's server is on unless
+// the chat switched it off. A shared server that cannot be started (a bad
+// or reserved name, no command or URL) is left out with a problem.
+func ChatMCP(shared []SharedMCP, folder []MCPServer, choices map[string]bool) (list []MCPChoice, problems []string) {
+	byName := map[string]MCPChoice{}
+	for _, s := range shared {
+		if err := checkMCP(s.MCPServer); err != nil {
+			problems = append(problems, fmt.Sprintf("The MCP server %q of Admin was left out: %v", s.Name, err))
+			continue
+		}
+		byName[s.Name] = MCPChoice{MCPServer: s.MCPServer, From: MCPFromAdmin, Default: s.Default}
+	}
+	for _, s := range folder {
+		byName[s.Name] = MCPChoice{MCPServer: s, From: MCPFromFolder, Default: true}
+	}
+	for name, c := range byName {
+		c.On = c.Default
+		if on, chosen := choices[name]; chosen {
+			c.On = on
+		}
+		list = append(list, c)
+	}
+	sort.Slice(list, func(i, j int) bool { return list[i].Name < list[j].Name })
+	return list, problems
+}
+
+// StartMCP is the MCP servers a chat's agent starts with: the ones of
+// ChatMCP the chat has on, expanded with ExpandMCP on the chat's
+// environment. Problems are what was left out and why, in words for the
+// chat; a server that is off is not looked at.
+func StartMCP(workdir string, shared []SharedMCP, choices map[string]bool, env []string) (servers []MCPServer, problems []string) {
+	folder, problems := ReadFolderMCP(workdir)
+	list, more := ChatMCP(shared, folder, choices)
+	problems = append(problems, more...)
+	for _, c := range list {
+		if c.On {
+			servers = append(servers, c.MCPServer)
+		}
+	}
+	servers, more = ExpandMCP(servers, env)
 	return servers, append(problems, more...)
 }
 
@@ -138,12 +197,6 @@ func mcpDirs(workdir string) []string {
 // mcpServer is one entry of a .mcp.json. A missing type is stdio for an
 // entry with a command and streamable HTTP for one with only a URL.
 func mcpServer(name string, raw json.RawMessage) (MCPServer, error) {
-	if !mcpName.MatchString(name) {
-		return MCPServer{}, fmt.Errorf("a name may only have letters, digits, - and _")
-	}
-	if name == askuser.ServerName {
-		return MCPServer{}, fmt.Errorf("the name %q is Socrates' own", name)
-	}
 	var e mcpEntry
 	if err := json.Unmarshal(raw, &e); err != nil {
 		return MCPServer{}, err
@@ -162,11 +215,8 @@ func mcpServer(name string, raw json.RawMessage) (MCPServer, error) {
 	default:
 		return MCPServer{}, fmt.Errorf("its type %q is not one Socrates can start", e.Type)
 	}
-	switch {
-	case s.Transport == MCPStdio && s.Command == "":
-		return MCPServer{}, fmt.Errorf("it has no command")
-	case s.Transport != MCPStdio && s.URL == "":
-		return MCPServer{}, fmt.Errorf("it has no url")
+	if err := checkMCP(s); err != nil {
+		return MCPServer{}, err
 	}
 	if s.Transport == MCPStdio {
 		s.URL, s.Headers = "", nil
@@ -174,6 +224,25 @@ func mcpServer(name string, raw json.RawMessage) (MCPServer, error) {
 		s.Command, s.Args, s.Env = "", nil, nil
 	}
 	return s, nil
+}
+
+// checkMCP refuses a server no harness can start: a bad or reserved name,
+// a transport it does not know, no command for stdio, no URL for the
+// others.
+func checkMCP(s MCPServer) error {
+	switch {
+	case !mcpName.MatchString(s.Name):
+		return fmt.Errorf("a name may only have letters, digits, - and _")
+	case s.Name == askuser.ServerName:
+		return fmt.Errorf("the name %q is Socrates' own", s.Name)
+	case s.Transport != MCPStdio && s.Transport != MCPHTTP && s.Transport != MCPSSE:
+		return fmt.Errorf("its type %q is not one Socrates can start", s.Transport)
+	case s.Transport == MCPStdio && s.Command == "":
+		return fmt.Errorf("it has no command")
+	case s.Transport != MCPStdio && s.URL == "":
+		return fmt.Errorf("it has no url")
+	}
+	return nil
 }
 
 // mcpVar is ${VAR} and ${VAR:-default}, as Claude Code expands them in a

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/saschazesiger/SocratesAgent/internal/agent"
 	"github.com/saschazesiger/SocratesAgent/internal/paths"
 	"github.com/saschazesiger/SocratesAgent/internal/vault"
 )
@@ -61,6 +62,60 @@ func OpenEnv(key *vault.Key, chatID, sealed string) ([]string, error) {
 		return nil, fmt.Errorf("the sealed environment is damaged: %w", err)
 	}
 	return env, nil
+}
+
+// sharedMCPObject is the name a chat's sealed shared MCP servers are bound
+// to.
+func sharedMCPObject(chatID string) string { return "chat-mcp:" + chatID }
+
+// SealMCP seals the MCP servers set up in the dashboard (Spec.SharedMCP)
+// for chatID, as SealEnv does an account's key.
+func SealMCP(key *vault.Key, chatID string, servers []agent.SharedMCP) (string, error) {
+	if len(servers) == 0 {
+		return "", nil
+	}
+	plain, err := json.Marshal(servers)
+	if err != nil {
+		return "", err
+	}
+	sealed, err := vault.Seal(key, sharedMCPObject(chatID), plain)
+	if err != nil {
+		return "", err
+	}
+	return base64.StdEncoding.EncodeToString(sealed), nil
+}
+
+// OpenMCP is SealMCP undone.
+func OpenMCP(key *vault.Key, chatID, sealed string) ([]agent.SharedMCP, error) {
+	if sealed == "" {
+		return nil, nil
+	}
+	raw, err := base64.StdEncoding.DecodeString(sealed)
+	if err != nil {
+		return nil, fmt.Errorf("the sealed MCP servers are not base64: %w", err)
+	}
+	plain, err := vault.Open(key, sharedMCPObject(chatID), raw)
+	if err != nil {
+		return nil, err
+	}
+	var servers []agent.SharedMCP
+	if err := json.Unmarshal(plain, &servers); err != nil {
+		return nil, fmt.Errorf("the sealed MCP servers are damaged: %w", err)
+	}
+	return servers, nil
+}
+
+// openSharedMCP opens the chat's sealed shared MCP servers with the data
+// directory's key.
+func (h *host) openSharedMCP(sealed string) ([]agent.SharedMCP, error) {
+	if sealed == "" {
+		return nil, nil
+	}
+	key, err := vault.LoadKeyFile(paths.New(h.opts.DataDir).SecretsKey())
+	if err != nil {
+		return nil, fmt.Errorf("the key that opens them: %w", err)
+	}
+	return OpenMCP(key, h.opts.ChatID, sealed)
 }
 
 // openSecretEnv opens a sealed environment for this host's chat with the data

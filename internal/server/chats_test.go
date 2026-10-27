@@ -21,6 +21,7 @@ import (
 
 	"github.com/saschazesiger/SocratesAgent/internal/agent"
 	"github.com/saschazesiger/SocratesAgent/internal/agenthost"
+	"github.com/saschazesiger/SocratesAgent/internal/config"
 	"github.com/saschazesiger/SocratesAgent/internal/store"
 	"github.com/saschazesiger/SocratesAgent/internal/termux"
 )
@@ -987,7 +988,81 @@ func TestAChatsFolderMCPServersAreListed(t *testing.T) {
 	}
 	raw, _ := json.Marshal(got)
 	if want := `{"problems":["The MCP server \"bad\" in ` + filepath.Join(dir, ".mcp.json") + ` was left out: it has no command"],` +
-		`"servers":[{"name":"db","transport":"stdio"},{"name":"docs","transport":"http"}]}`; string(raw) != want {
+		`"servers":[{"default":true,"from":"folder","name":"db","on":true,"transport":"stdio"},` +
+		`{"default":true,"from":"folder","name":"docs","on":true,"transport":"http"}]}`; string(raw) != want {
 		t.Fatalf("got  %s\nwant %s", raw, want)
+	}
+}
+
+// The dashboard's MCP servers are every chat's, on or off by their default;
+// a chat switches one on or off for itself (or back to its default), and its
+// next host is started with them sealed and with its choices.
+func TestAChatSwitchesTheDashboardsMCPServers(t *testing.T) {
+	c := newChatEnv(t, time.Hour)
+	next := c.srv.Settings()
+	next.MCP.Servers = []config.MCPServerSetting{
+		{Name: "github", Type: "http", URL: "https://api.example/mcp", Headers: map[string]string{"Authorization": "Bearer tok"}, Default: true},
+		{Name: "search", Command: "search-mcp"},
+	}
+	if err := c.srv.saveSettings(next); err != nil {
+		t.Fatal(err)
+	}
+	id := c.create(t)
+	// The chat's host is up before the choices, so they park it.
+	c.waitJournal(t, id, 10*time.Second, "the agent up", func(evs []agent.Event) bool {
+		return count(evs, func(ev agent.Event) bool { return ev.Type == agent.TypeProcess && ev.State == agent.ProcessReady }) > 0
+	})
+	list := func(body map[string]any) string {
+		var out []string
+		for _, s := range body["servers"].([]any) {
+			m := s.(map[string]any)
+			out = append(out, fmt.Sprintf("%s:%s:%v:%v", m["name"], m["from"], m["default"], m["on"]))
+		}
+		return strings.Join(out, " ")
+	}
+	res, got := c.do(t, c.client, "GET", "/api/sessions/"+id+"/mcp", "")
+	if res.StatusCode != http.StatusOK || list(got) != "github:admin:true:true search:admin:false:false" {
+		t.Fatalf("%d %v", res.StatusCode, got)
+	}
+	if strings.Contains(fmt.Sprint(got), "tok") {
+		t.Fatal("the list shows a header")
+	}
+	off, on := false, true
+	if code, got := c.post(t, "/api/chats/"+id+"/mcp", map[string]any{"name": "github", "on": off}); code != http.StatusOK ||
+		list(got) != "github:admin:true:false search:admin:false:false" {
+		t.Fatalf("github off: %d %v", code, got)
+	}
+	if code, got := c.post(t, "/api/chats/"+id+"/mcp", map[string]any{"name": "search", "on": on}); code != http.StatusOK ||
+		list(got) != "github:admin:true:false search:admin:false:true" {
+		t.Fatalf("search on: %d %v", code, got)
+	}
+	if code, got := c.post(t, "/api/chats/"+id+"/mcp", map[string]any{"name": ""}); code != http.StatusBadRequest {
+		t.Fatalf("no name: %d %v", code, got)
+	}
+	if code, got := c.post(t, "/api/chats/"+id+"/mcp", map[string]any{"name": "nope", "on": on}); code != http.StatusBadRequest {
+		t.Fatalf("a server the chat does not have: %d %v", code, got)
+	}
+	// The host is parked, and the next message starts one with the choices.
+	c.waitHostGone(t, id)
+	c.send(t, id, "m1", "hello")
+	c.waitJournal(t, id, 10*time.Second, "the reply", turnsEnded(1))
+	spec, err := agenthost.ReadSpec(c.data, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if spec.SharedMCP == "" || strings.Contains(spec.SharedMCP, "tok") {
+		t.Fatalf("the spec's shared servers: %q", spec.SharedMCP)
+	}
+	if fmt.Sprint(spec.MCPChoices) != "map[github:false search:true]" {
+		t.Fatalf("the spec's choices: %v", spec.MCPChoices)
+	}
+	// Back to its default, the choice goes from the chat's options.
+	if code, got := c.post(t, "/api/chats/"+id+"/mcp", map[string]any{"name": "github", "on": nil}); code != http.StatusOK ||
+		list(got) != "github:admin:true:true search:admin:false:true" {
+		t.Fatalf("github back: %d %v", code, got)
+	}
+	row, err := c.store.GetSession(id)
+	if err != nil || readMCPChoices(row.Options)["github"] || len(readMCPChoices(row.Options)) != 1 {
+		t.Fatalf("the row's options: %s %v", row.Options, err)
 	}
 }

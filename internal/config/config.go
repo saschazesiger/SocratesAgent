@@ -47,6 +47,7 @@ type Settings struct {
 	Terminal   TerminalSettings   `json:"terminal"`
 	Harnesses  HarnessSettings    `json:"harnesses"`
 	Chats      ChatSettings       `json:"chats"`
+	MCP        MCPSettings        `json:"mcp"`
 }
 
 // DefaultParkAfterMinutes is how long a chat may sit idle before its agent
@@ -390,6 +391,7 @@ func (s *Settings) Normalize() {
 	s.normalizeWorkspace(d)
 	s.normalizeTerminal(d)
 	s.Harnesses.normalize()
+	s.MCP.normalize()
 	if s.Tunnel.Mode != TunnelToken {
 		s.Tunnel.Mode = TunnelQuick
 	}
@@ -458,7 +460,10 @@ func (s *Settings) normalizeTerminal(d Settings) {
 //
 // Call it after Normalize: the two together are what saving a document means.
 func (s *Settings) Validate() error {
-	return s.Harnesses.validate()
+	if err := s.Harnesses.validate(); err != nil {
+		return err
+	}
+	return s.MCP.validate()
 }
 
 // PublicURL is the address the tunnel publishes, when it is known upfront.

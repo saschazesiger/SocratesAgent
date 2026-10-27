@@ -261,8 +261,8 @@ those of the folders above it up to the repository's root.
 }}
 ```
 
-- **One source.** Socrates reads the file (`agent.FolderMCP`) and hands the
-  servers to the CLI in its own form: Claude Code `--mcp-config`, Codex
+- **One source.** Socrates reads the file (`agent.ReadFolderMCP`) and hands
+  the servers to the CLI in its own form: Claude Code `--mcp-config`, Codex
   `mcp_servers` in the thread's config, OpenCode `mcp` in
   `OPENCODE_CONFIG_CONTENT`. MCP servers the CLIs would load from the folder
   by themselves are kept off: Claude Code keeps `--strict-mcp-config`, and
@@ -281,6 +281,32 @@ those of the folders above it up to the repository's root.
 - **When.** The file is read at every start of the CLI, so a change counts
   from the chat's next start (after it was parked, or an account switch).
   The chat's Info lists the servers.
+
+### MCP servers of Admin, and a chat's own choice
+
+Admin → **MCP servers** sets up servers for every chat (`settings.mcp.servers`:
+name, type, command, arguments and environment, or URL and headers, the same
+fields as a `.mcp.json` entry; a JSON paste takes `{"mcpServers": {...}}`).
+Each has **In every chat**: on, every chat has it; off, a chat has it only
+once switched on there.
+
+- **Merged with the folder's.** A chat may have Admin's servers and its
+  folder's (`agent.ChatMCP`); a folder's server wins a name both have, as the
+  nearer `.mcp.json` does.
+- **Per chat.** A chat's ⋮ → *MCP servers…* has a switch for each, Admin's
+  and the folder's alike. A switch put where the default is gives the choice
+  back to Admin; any other is kept in the chat's options
+  (`"mcp": {name: on}`), so a chat nobody switched follows Admin's default.
+  Like Ultracode, a change parks the idle agent and counts from the next
+  message.
+- **Secrets.** Admin's servers are kept in the settings document, as the
+  other keys of the dashboard are, and reach a chat's host sealed for that
+  chat (`Spec.SharedMCP`, `agenthost.SealMCP`). `${VAR}` and
+  `${VAR:-default}` are filled in from the chat's environment as for a
+  folder's, so a token can stay in the account's environment instead.
+- **Checked on save.** A name other than `[A-Za-z0-9_-]+`, `socrates`, two
+  servers of one name, stdio without a command or http/sse without a URL is
+  refused when Admin saves.
 
 ## Shell
 

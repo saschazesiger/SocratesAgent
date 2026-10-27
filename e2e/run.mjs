@@ -2507,6 +2507,93 @@ async function foldermcp() {
   } finally { await s.stop(); }
 }
 
+/* ------------------------------------------------------------- sharedmcp */
+
+// MCP servers set up in Admin reach every chat's agent next to its folder's:
+// one pasted as JSON and one typed in, on or off in every chat. A chat's
+// "MCP servers" dialog switches each for itself, and the next start of its
+// agent has the change; Info names the servers that are on.
+async function sharedmcp() {
+  const s = await start({ viewport: { width: 1280, height: 900 } });
+  try {
+    await setup(s.page, s.url);
+    await s.page.goto(s.url + '/admin#mcpCard', { waitUntil: 'domcontentloaded' });
+    await s.page.waitForSelector('#mcpAdd', { timeout: 20000 });
+    await s.page.click('#mcpImport');
+    await s.page.fill('#mcpImportText', JSON.stringify({ mcpServers: {
+      github: { type: 'http', url: 'https://gh.example/mcp', headers: { Authorization: 'Bearer ${SOCRATES_E2E_GH:-t0k}' } },
+    } }));
+    await s.page.click('dialog .ds-btn--primary');
+    await s.page.waitForSelector('#mcpServers .so-mcp[data-name="github"]', { timeout: 5000 });
+    // A server typed in, off in every chat; a bad name is refused in the dialog.
+    await s.page.click('#mcpAdd');
+    await s.page.fill('#mcpEditName', 'no good');
+    await s.page.fill('#mcpEditCommand', 'search-mcp');
+    await s.page.click('dialog .ds-btn--primary');
+    const refused = await s.page.waitForSelector('dialog [role="alert"]', { timeout: 5000 }).then(() => true, () => false);
+    ok(refused, 'a name no agent takes is refused in the dialog', '');
+    await s.page.fill('#mcpEditName', 'search');
+    await s.page.fill('#mcpEditArgs', '--index "my notes"');
+    await s.page.click('dialog label.ds-switch:has(#mcpEditDefault)');
+    await s.page.click('dialog .ds-btn--primary');
+    await s.page.waitForSelector('#mcpServers .so-mcp[data-name="search"]', { timeout: 5000 });
+    await s.page.waitForSelector('dialog.ds-dialog', { state: 'detached', timeout: 5000 });
+    const rows = await s.page.$$eval('#mcpServers .so-mcp', (list) => list.map((row) =>
+      row.dataset.name + ':' + row.querySelector('input[role="switch"]').checked + ':' + row.querySelector('.so-mcp__what').textContent));
+    ok(rows.join(' | ') === 'github:true:HTTP · https://gh.example/mcp | search:false:search-mcp --index my notes',
+      'the card lists both, each with its switch for every chat', rows.join(' | '));
+    await s.page.click('#saveTop');
+    await s.page.waitForSelector('.ds-toast', { timeout: 15000 });
+    const saved = await (await s.context.request.get(s.url + '/api/settings')).json();
+    const kept = (saved.settings.mcp && saved.settings.mcp.servers) || [];
+    ok(kept.length === 2 && kept[1].args[1] === 'my notes' && kept[0].headers.Authorization.startsWith('Bearer'),
+      'Save keeps them in the settings', JSON.stringify(kept));
+
+    await open(s);
+    const dir = join(s.data, 'projects', 'shared-mcp');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, '.mcp.json'), JSON.stringify({ mcpServers: { db: { command: 'db-mcp' } } }));
+    const id = await makeChat(s, 'claude', { title: 'Shared MCP chat', workdir_mode: 'custom', workdir: dir });
+    await openChat(s.page, id);
+    // Each ask is its own text: answerTo finds the answer by it.
+    const configOf = async (text) => {
+      const argv = await answerTo(s, id, text);
+      const file = (/--mcp-config (\S+)/.exec(argv) || [])[1] || '';
+      try { return JSON.parse(readFileSync(file, 'utf8')).mcpServers || {}; } catch { return {}; }
+    };
+    let servers = await configOf('/argv first');
+    ok(Object.keys(servers).sort().join(',') === 'db,github' && servers.github.headers.Authorization === 'Bearer t0k',
+      'the agent gets Admin’s server that is on, with its variable put in, next to the folder’s', JSON.stringify(servers));
+
+    await rowMenu(s.page);
+    await s.page.click('#sessionMenu [data-action="mcp"]');
+    await s.page.waitForSelector('dialog .ds-switch-list input[data-name="search"]', { timeout: 10000 });
+    const listed = await s.page.$$eval('dialog .ds-switch-list .ds-switch', (list) => list.map((row) =>
+      row.querySelector('.ds-switch__label').textContent + ':' + row.querySelector('input').checked));
+    ok(listed.join(' ') === 'db:true github:true search:false', 'the chat’s dialog lists every server with its state', listed.join(' '));
+    await s.page.click('dialog label.ds-switch:has(input[data-name="search"])');
+    await s.page.waitForFunction(() => /search is on/.test(document.body.textContent), null, { timeout: 10000 });
+    await s.page.click('dialog label.ds-switch:has(input[data-name="github"])');
+    await s.page.waitForFunction(() => /github is off/.test(document.body.textContent), null, { timeout: 10000 });
+    await s.page.keyboard.press('Escape');
+    await s.page.waitForSelector('dialog .ds-switch-list', { state: 'detached', timeout: 5000 });
+    const parked = await until(() => hostsOf(s.data).length === 0, 20000);
+    ok(parked, 'the change puts the idle agent to rest', hostsOf(s.data).length + ' hosts');
+    servers = await configOf('/argv after the switches');
+    ok(Object.keys(servers).sort().join(',') === 'db,search' && servers.search.args[1] === 'my notes',
+      'the next start has the chat’s choice', JSON.stringify(servers));
+
+    await rowMenu(s.page);
+    await s.page.click('#sessionMenu [data-action="info"]');
+    await s.page.waitForSelector('dialog.so-info-dialog .so-facts', { timeout: 5000 });
+    await s.page.waitForFunction(() => /MCP servers/.test(document.querySelector('dialog.so-info-dialog').textContent),
+      null, { timeout: 5000 }).catch(() => {});
+    const facts = await infoFacts(s.page);
+    ok(factOf(facts, 'MCP servers') === 'db · search', 'Info names the servers that are on', factsLine(facts));
+    await s.page.click('dialog.so-info-dialog .ds-dialog__actions .ds-btn');
+  } finally { await s.stop(); }
+}
+
 /* ------------------------------------------------------- accounts-agents */
 
 // accounts-agents: an account is a second set of sign-ins for an agent
@@ -12814,6 +12901,7 @@ const ALL = [
   ['recoveredsession', 'a tmux session with no row is taken in, never killed', recoveredsession],
   ['createclaude', 'Claude Code from the sheet to its command line, and back on its conversation after a crash', createclaude],
   ['foldermcp', 'a folder\u2019s .mcp.json reaches the agent, and Info names its servers', foldermcp],
+  ['sharedmcp', 'Admin\u2019s MCP servers reach every chat, and a chat switches them for itself', sharedmcp],
   ['createcodex', 'Codex over its app server: one thread, kept, and resumed after a rest', createcodex],
   ['accounts-agents', 'an account of each agent reaches its CLI: its folder, its key, its home', accountsagents],
   ['createopencode', 'OpenCode over its own authenticated server: one session, resumed after a rest', createopencode],
