@@ -965,3 +965,29 @@ func TestPointingAChatElsewhereLetsATurnThatJustStartedFinish(t *testing.T) {
 		t.Fatalf("the next host's folder: %q %v", spec.Workdir, err)
 	}
 }
+
+// A chat's Info lists the MCP servers its folder's .mcp.json names, by name
+// and transport only, and what was wrong with the file.
+func TestAChatsFolderMCPServersAreListed(t *testing.T) {
+	c := newChatEnv(t, time.Hour)
+	dir := t.TempDir()
+	mcp := `{"mcpServers":{"db":{"command":"db-mcp","env":{"TOKEN":"secret"}},"docs":{"type":"http","url":"https://d.example"},"bad":{}}}`
+	if err := os.WriteFile(filepath.Join(dir, ".mcp.json"), []byte(mcp), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	code, body := c.post(t, "/api/chats", map[string]any{"client_id": "create-" + t.Name(), "harness": "fake",
+		"workdir_mode": "custom", "workdir": dir})
+	if code != http.StatusCreated {
+		t.Fatalf("create: %d %v", code, body)
+	}
+	id := body["session"].(map[string]any)["id"].(string)
+	res, got := c.do(t, c.client, "GET", "/api/sessions/"+id+"/mcp", "")
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("%d %v", res.StatusCode, got)
+	}
+	raw, _ := json.Marshal(got)
+	if want := `{"problems":["The MCP server \"bad\" in ` + filepath.Join(dir, ".mcp.json") + ` was left out: it has no command"],` +
+		`"servers":[{"name":"db","transport":"stdio"},{"name":"docs","transport":"http"}]}`; string(raw) != want {
+		t.Fatalf("got  %s\nwant %s", raw, want)
+	}
+}

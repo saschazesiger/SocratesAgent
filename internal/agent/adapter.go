@@ -138,6 +138,11 @@ type StartSpec struct {
 	// for a CLI that starts its MCP servers as processes of its own
 	// (OpenCode). Empty outside a host.
 	AskCommand []string
+	// MCPServers are the MCP servers of the chat's folder (FolderMCP),
+	// expanded and ready to start, besides ask_user. The adapter gives them
+	// to its CLI and keeps the CLI from loading the folder's MCP servers on
+	// its own.
+	MCPServers []MCPServer
 	// Spawn starts a CLI child: on the host's locked main thread, in a
 	// process group of its own, with SIGKILL as its parent-death signal, so
 	// that a host that dies takes its CLI with it (REBUILD.md §2.1). An

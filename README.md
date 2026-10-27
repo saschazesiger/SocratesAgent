@@ -102,6 +102,7 @@ You can run it again at any time to repair or update the installation.
 | ⏯️ **Resume** | A turn stopped by a usage limit continues on its own once the limit resets. |
 | 📎 **Files** | Attach, drop or paste them into the chat or the Shell. |
 | ⚡ **Ultracode** | Claude Code with dynamic workflows on every task, switched on per chat. |
+| 🔌 **MCP** | A folder's `.mcp.json` gives every chat in it its MCP servers, with any agent. **Info** lists them. |
 
 ---
 
@@ -158,6 +159,7 @@ Turn them on under **⋮ → Notifications** (on Home), or **⋮ → This device
 > The agents run **as root, without approval prompts**. Whoever gets into Socrates controls the server.
 
 - 🏠 Socrates listens on `127.0.0.1` only.
+- 🔌 A folder's `.mcp.json` starts its MCP servers without asking: open only repositories you trust in a chat.
 - 🌐 Expose it **only** through the Cloudflare tunnel with **Cloudflare Access**, never with `SOCRATES_ADDR=:8080` on an untrusted network.
 
 ---

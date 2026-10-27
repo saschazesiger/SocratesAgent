@@ -90,6 +90,46 @@ func TestRealOpenCodeStartsTheAskUserServer(t *testing.T) {
 	}
 }
 
+// A real opencode serve connects the folder's MCP servers it is given
+// (StartSpec.MCPServers) and leaves off the one the folder's own opencode.json
+// defines: that one is turned off by name and never started.
+func TestRealOpenCodeFolderMCPServers(t *testing.T) {
+	r := newRig(t)
+	r.env = realAskEnv(t, r.data)
+	marker := filepath.Join(r.data, "project-server-started")
+	project := map[string]any{"mcp": map[string]any{"proj": map[string]any{"type": "local",
+		"command": []string{"/bin/sh", "-c", "touch " + marker + "; exec " + os.Args[0] + " mcp-ask --socket /nowhere"}}}}
+	raw, _ := json.Marshal(project)
+	if err := os.WriteFile(filepath.Join(r.work, "opencode.json"), raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	spec := r.spec("")
+	spec.Model = firstNonEmpty(os.Getenv("SOCRATES_OPENCODE_REAL_ASK_MODEL"), askModel)
+	spec.MCPServers = []agent.MCPServer{{Name: "lab", Transport: agent.MCPStdio, Command: os.Args[0],
+		Args: []string{"mcp-ask", "--socket", filepath.Join(r.data, "no-host.sock")}}}
+	if err := r.start(spec); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	var status map[string]struct {
+		Status string `json:"status"`
+	}
+	eventually(t, 30*time.Second, "the folder's MCP server to connect", func() bool {
+		if err := r.a.cl.call(ctx, http.MethodGet, "/mcp", nil, &status); err != nil {
+			t.Logf("GET /mcp: %v", err)
+			return false
+		}
+		return status["lab"].Status == "connected"
+	})
+	if s, ok := status["proj"]; ok && s.Status != "disabled" {
+		t.Errorf("the project's own server is %q, want it off: %v", s.Status, status)
+	}
+	if _, err := os.Stat(marker); err == nil {
+		t.Error("opencode started the MCP server of the folder's opencode.json")
+	}
+}
+
 // A free model on a real opencode, inside a real host, asks with ask_user and
 // goes on from the answer. Free models do not always follow the prompt, so
 // this one says what happened when it fails.

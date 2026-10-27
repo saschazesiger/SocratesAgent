@@ -409,6 +409,17 @@ conversation is `ErrConversationNotFound` as for any resume.
 **Command palette.** Every adapter emits `agent.info` at start with `commands`: what its CLI reported
 (custom commands and skills included) and the commands the adapter itself implements.
 
+**MCP servers of a folder** (HARNESS-POLICY.md, "MCP servers of a folder"). At every start of a
+CLI (boot and every account switch) the host reads the chat folder's `.mcp.json`, and those of the
+folders above it up to the repository's root (`agent.FolderMCP`: the nearer file wins a name, a
+folder in no repository has only its own), expands `${VAR}`/`${VAR:-default}` on the CLI's
+environment and passes the servers as `StartSpec.MCPServers`. A file that is not valid, a server
+that cannot start (no command or URL, a type other than stdio/http/sse, a name other than
+`[A-Za-z0-9_-]+` or `socrates`) and one whose variable is not set are left out and said in the
+chat as `notice{mcp_servers}`, once for as long as the reasons stay the same. Each adapter gives
+the servers to its CLI in its own form and keeps the CLI from starting the folder's MCP servers by
+itself (below). `GET /api/sessions/{id}/mcp` lists the names and transports for the chat's Info.
+
 ### 5.1 Claude Code (`internal/agent/claude`)
 
 One `claude -p` per chat, protocol facts in research/03 and research/09 (subagents and workflows,
@@ -418,7 +429,10 @@ verified against 2.1.309). Fixed argv: `--input-format stream-json --output-form
 --dangerously-skip-permissions --disallowedTools AskUserQuestion --settings
 {skipDangerousModePermissionPrompt, disableRemoteControl, cleanupPeriodDays: 90, ultracode}`,
 `--append-system-prompt <the ask_user guidance, then Options.AppendSystemPrompt>`, `--model`,
-`--effort`, and `--session-id <new uuid>` or `--resume <id>`.
+`--effort`, `--mcp-config <state>/mcp.json` when the folder has MCP servers (written 0600 in
+Claude Code's shape, removed when it has none; `--strict-mcp-config` keeps the CLI's own
+`.mcp.json` and the account's claude.ai connectors out, verified against 2.1.311), and
+`--session-id <new uuid>` or `--resume <id>`.
 
 **Environment.** `StartSpec.Env` minus every `CLAUDE*`/`ANTHROPIC*`/`IS_SANDBOX` variable except
 `CLAUDE_CONFIG_DIR`; plus `IS_SANDBOX=1` as root and `CLAUDE_CODE_ENABLE_TODO_TOOLS=1`. Two
@@ -555,7 +569,14 @@ request_permissions: false, mcp_elicitations: true}}` (every permission category
 `"never"` does, but MCP elicitations let through to be asked: `"never"` declines them inside codex,
 verified), `sandbox: "danger-full-access"`, `cwd`; `thread/start` also carries `model`,
 `config.model_reasoning_effort`, the registered dynamic tools (ask_user) and
-`developerInstructions` (the ask_user guidance, then a handoff's transcript). Park closes
+`developerInstructions` (the ask_user guidance, then a handoff's transcript). Both carry
+`config.mcp_servers` when there is something in it: the folder's MCP servers (stdio `{command,
+args, env}`, http `{url, http_headers}`; SSE, which codex cannot reach, is left out with
+`notice{mcp_servers}`) and `{enabled: false}` for every server a project layer defines, as
+`config/read {cwd, includeLayers: true}` right after `initialize` names them (the trusted folder's
+`.codex/config.toml`). Codex merges a thread's config into its layers table by table, so a project
+server is only gone when it is turned off by name (verified against 0.164.0); the account's own
+`config.toml` servers stay. Park closes
 stdin (the app-server exits at once; the thread is on disk); Stop kills the process group.
 
 **Messages.** No turn running: `turn/start` with `clientUserMessageId = message_id`, `model` and
@@ -694,8 +715,11 @@ environment is `StartSpec.Env` without `OPENCODE_*`/`XDG_*` (except `OPENCODE_AU
 the layout, `OPENCODE_SERVER_USERNAME/PASSWORD` (32 random bytes per process),
 `OPENCODE_CONFIG_CONTENT` (share disabled, autoupdate off, `permission`: `external_directory`,
 `doom_loop`, `read` allow and `question` deny over OpenCode's own `"*": allow` — no `"*"` of ours,
-which would also lift plan mode's edit deny — plus `mcp`: ask_user's server, below, and whatever
-the `MCPServers` hook adds),
+which would also lift plan mode's edit deny — plus `mcp`: ask_user's server, below, the folder's
+MCP servers (`local` with the command and its arguments, `remote` for http and SSE) and
+`{enabled: false}` for every server an `opencode.json[c]` or `.opencode/opencode.json[c]` of the
+workdir or a folder above it defines, since OpenCode merges this config into those key by key
+(verified against 1.19.4)),
 `OPENCODE_DISABLE_AUTOUPDATE`, `OPENCODE_DISABLE_MODELS_FETCH`, `OPENCODE_DISABLE_EXTERNAL_SKILLS`.
 Park and Stop: abort if a turn runs, SIGTERM to the process group, SIGKILL after 5 s.
 

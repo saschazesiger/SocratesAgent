@@ -2461,6 +2461,52 @@ async function createclaude() {
   } finally { await s.stop(); }
 }
 
+/* ------------------------------------------------------------- foldermcp */
+
+// A folder's .mcp.json reaches the agent of every chat in it: Claude Code is
+// started with the servers as its --mcp-config (with the chat's variables put
+// in, and --strict-mcp-config still there), Info names them, and a server
+// whose variable the chat lacks is left out with a line that says so.
+async function foldermcp() {
+  const s = await start({ viewport: { width: 1280, height: 720 } });
+  try {
+    await setup(s.page, s.url);
+    await open(s);
+    const dir = join(s.data, 'projects', 'mcp');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, '.mcp.json'), JSON.stringify({ mcpServers: {
+      db: { command: 'db-mcp', args: ['--home', '${HOME}'] },
+      docs: { type: 'http', url: 'https://docs.example/mcp' },
+      vault: { command: 'vault-mcp', env: { TOKEN: '${SOCRATES_E2E_NO_SUCH_VAR}' } },
+    } }));
+    const id = await makeChat(s, 'claude', { title: 'MCP chat', workdir_mode: 'custom', workdir: dir });
+    await openChat(s.page, id);
+
+    const argv = await answerTo(s, id, '/argv');
+    const file = (/--mcp-config (\S+)/.exec(argv) || [])[1] || '';
+    ok(file !== '' && / --strict-mcp-config( |$)/.test(argv), 'Claude Code gets the folder’s servers as its --mcp-config, strictly',
+      oneLine(argv.slice(Math.max(0, argv.indexOf('--strict')))));
+    let config = {};
+    try { config = JSON.parse(readFileSync(file, 'utf8')); } catch { /* reported below */ }
+    const servers = config.mcpServers || {};
+    ok(Object.keys(servers).sort().join(',') === 'db,docs' && servers.db.args[1] !== '${HOME}' && servers.docs.type === 'http',
+      'with the chat’s variables put in, and without the server whose variable is missing', JSON.stringify(config));
+    const notice = await s.page.waitForFunction(() => /vault/.test(document.querySelector('#chat').textContent || ''),
+      null, { timeout: 10000 }).then(() => true, () => false);
+    ok(notice, 'the chat says which server was left out', 'vault');
+
+    await rowMenu(s.page);
+    await s.page.click('#sessionMenu [data-action="info"]');
+    await s.page.waitForSelector('dialog.so-info-dialog .so-facts', { timeout: 5000 });
+    await s.page.waitForFunction(() => /MCP servers/.test(document.querySelector('dialog.so-info-dialog').textContent),
+      null, { timeout: 5000 }).catch(() => {});
+    const facts = await infoFacts(s.page);
+    ok(factOf(facts, 'MCP servers') === 'db · docs (http) · vault', 'Info names the folder’s MCP servers', factsLine(facts));
+    await s.page.click('dialog.so-info-dialog .ds-dialog__actions .ds-btn');
+    await s.page.waitForSelector('dialog.so-info-dialog', { state: 'detached', timeout: 5000 });
+  } finally { await s.stop(); }
+}
+
 /* ------------------------------------------------------- accounts-agents */
 
 // accounts-agents: an account is a second set of sign-ins for an agent
@@ -12682,6 +12728,7 @@ const ALL = [
   ['deletekeepsdir', 'delete ends a Shell\u2019s tmux session and a chat\u2019s agent, and keeps the work', deletekeepsdir],
   ['recoveredsession', 'a tmux session with no row is taken in, never killed', recoveredsession],
   ['createclaude', 'Claude Code from the sheet to its command line, and back on its conversation after a crash', createclaude],
+  ['foldermcp', 'a folder\u2019s .mcp.json reaches the agent, and Info names its servers', foldermcp],
   ['createcodex', 'Codex over its app server: one thread, kept, and resumed after a rest', createcodex],
   ['accounts-agents', 'an account of each agent reaches its CLI: its folder, its key, its home', accountsagents],
   ['createopencode', 'OpenCode over its own authenticated server: one session, resumed after a rest', createopencode],

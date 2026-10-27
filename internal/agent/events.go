@@ -167,6 +167,11 @@ const (
 	// NoticeScheduledStart: the message after it is the chat's first,
 	// sent by itself at the time it was given.
 	NoticeScheduledStart = "scheduled_start"
+	// NoticeMCP: not every MCP server of the chat's folder went to the agent
+	// (a .mcp.json that is not valid, a server whose variable is not set or
+	// that the harness cannot start); the text says which and why. The host
+	// writes it for the folder, an adapter for what its CLI cannot run.
+	NoticeMCP = "mcp_servers"
 )
 
 // ErrorAuth is an error event's code for a sign-in or key the provider

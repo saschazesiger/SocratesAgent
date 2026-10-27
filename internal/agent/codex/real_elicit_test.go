@@ -105,3 +105,42 @@ func TestRealElicitationIsAsked(t *testing.T) {
 	}
 	t.Fatalf("timed out\n%s", dump(r.since(n)))
 }
+
+// A folder's MCP servers come from StartSpec.MCPServers alone: codex starts
+// them on a new thread and on a resumed one, and leaves a server the folder's
+// own .codex/config.toml defines off (codex merges a thread's config into
+// the project's table by table, so it is turned off by name).
+func TestRealFolderMCPServers(t *testing.T) {
+	lab := newRealLab(t)
+	home := lab.home("a", "", "gpt-6-astra")
+	marker := filepath.Join(lab.root, "project-server-started")
+	if err := os.MkdirAll(filepath.Join(lab.work, ".codex"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	project := fmt.Sprintf("[mcp_servers.proj]\ncommand = \"sh\"\nargs = [\"-c\", %q]\n",
+		"touch "+marker+"; exec "+os.Args[0]+" mcp-elicit")
+	if err := os.WriteFile(filepath.Join(lab.work, ".codex", "config.toml"), []byte(project), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	state := filepath.Join(lab.root, "state")
+	deploy := func(spec agent.StartSpec) string {
+		spec.MCPServers = []agent.MCPServer{{Name: "lab", Transport: agent.MCPStdio, Command: os.Args[0], Args: []string{"mcp-elicit"}}}
+		r := newRecorder()
+		a := lab.start(spec, r)
+		thread := r.waitFor(t, 0, "conversation", isType(agent.TypeConversation), 10*time.Second).ConversationID
+		_, n := send(t, a, r, "CALL: mcp__lab__deploy {}")
+		ask := r.waitFor(t, n, "the folder server's elicitation", isType(agent.TypeAsk), 60*time.Second)
+		_ = a.Answer(t.Context(), ask.AskID, json.RawMessage(`{"answers":{"target":{"selected":["staging"]}}}`))
+		r.turnEnd(t, n, 30*time.Second)
+		if !strings.Contains(lastTurnText(r.projection()), "staging") {
+			t.Fatalf("the folder server got %q\n%s", lastTurnText(r.projection()), dump(r.since(n)))
+		}
+		park(t, a)
+		return thread
+	}
+	thread := deploy(lab.spec(home, state, ""))
+	deploy(lab.spec(home, state, thread))
+	if _, err := os.Stat(marker); err == nil {
+		t.Fatal("codex started the MCP server of the folder's .codex/config.toml")
+	}
+}

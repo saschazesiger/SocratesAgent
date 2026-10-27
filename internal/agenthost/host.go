@@ -123,6 +123,9 @@ type host struct {
 	account string
 	env     []string
 	pending *pendingSwitch
+	// mcpSaid is what the chat was last told about its folder's MCP
+	// servers (folderMCP), so that a switch does not say it again.
+	mcpSaid string
 
 	done     chan struct{}
 	doneOnce sync.Once
@@ -447,6 +450,7 @@ func (h *host) boot() {
 		ChatID: h.opts.ChatID, Workdir: h.spec.Workdir, StateDir: filepath.Join(h.dir, stateDir),
 		DataDir: h.opts.DataDir, Env: env, Account: h.spec.Account, Model: h.spec.Model, Effort: h.spec.Effort,
 		ResumeID: resume, Rebuild: rebuild, Held: held, Spawn: h.spawn, Binary: h.spec.Binary, AskCommand: h.askCommand(),
+		MCPServers: h.folderMCP(env),
 	}
 	if resume == "" && len(pending) > 0 {
 		spec.First, pending = &pending[0], pending[1:]
@@ -499,6 +503,23 @@ func (h *host) askCommand() []string {
 		return nil
 	}
 	return []string{exe, "mcp-ask", "--socket", h.sock}
+}
+
+// folderMCP is the MCP servers of the chat's folder for a CLI started on env
+// (StartSpec.MCPServers), read again at every start so that a changed
+// .mcp.json counts from the next one. What was left out is said in the chat,
+// once for as long as it stays the same.
+func (h *host) folderMCP(env []string) []agent.MCPServer {
+	servers, problems := agent.FolderMCP(h.spec.Workdir, env)
+	text := strings.Join(problems, "\n")
+	h.mu.Lock()
+	say := text != "" && text != h.mcpSaid
+	h.mcpSaid = text
+	h.mu.Unlock()
+	if say {
+		h.record(agent.Event{Type: agent.TypeNotice, Code: agent.NoticeMCP, Text: text})
+	}
+	return servers
 }
 
 // failStart records why the CLI did not come up and ends the host after the

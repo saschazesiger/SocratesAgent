@@ -73,6 +73,9 @@ type adapter struct {
 	rpc    *conn
 	// exited is closed once the process is reaped.
 	exited chan struct{}
+	// mcp is the mcp_servers config every thread is started and resumed
+	// with (mcpOverrides), nil for none.
+	mcp map[string]any
 
 	// sendMu makes turn starts, steers and the recovery chain one at a time,
 	// whichever goroutine they come from.
@@ -278,6 +281,7 @@ func (a *adapter) handshake(ctx context.Context) error {
 	if err := a.rpc.notify("initialized", map[string]any{}); err != nil {
 		return err
 	}
+	a.mcp = a.mcpOverrides(ctx)
 	if err := a.resumeOrStart(ctx, a.spec.ResumeID); err != nil {
 		return err
 	}
@@ -342,7 +346,21 @@ func (a *adapter) policy(params map[string]any) map[string]any {
 	if a.spec.Workdir != "" {
 		params["cwd"] = a.spec.Workdir
 	}
+	if a.mcp != nil {
+		threadConfig(params)["mcp_servers"] = a.mcp
+	}
 	return params
+}
+
+// threadConfig is the config overrides of a thread's params, made on first
+// use.
+func threadConfig(params map[string]any) map[string]any {
+	if c, ok := params["config"].(map[string]any); ok {
+		return c
+	}
+	c := map[string]any{}
+	params["config"] = c
+	return c
 }
 
 // startThread starts a new thread. instructions, when set, are developer
@@ -357,7 +375,7 @@ func (a *adapter) startThread(ctx context.Context, instructions string) error {
 		params["model"] = model
 	}
 	if effort != "" {
-		params["config"] = map[string]any{"model_reasoning_effort": effort}
+		threadConfig(params)["model_reasoning_effort"] = effort
 	}
 	if tools := dynamicToolSpecs(); len(tools) > 0 {
 		params["dynamicTools"] = tools

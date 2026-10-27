@@ -1318,12 +1318,18 @@ const CONVERSATION_WORDS = {
   lost: 'Lost; the next start begins a new one',
 };
 
-function rowFacts(session, running = null) {
+function rowFacts(session, running = null, mcp = null) {
   const facts = [
     ['Program', harnesses.label(session.harness)],
     ['State', STATE_WORDS[session.state] || session.state],
     ['Folder', session.workdir],
   ];
+  // The MCP servers the folder's .mcp.json gives a chat's agent, and what of
+  // it could not be used (GET …/mcp).
+  if (mcp && Array.isArray(mcp.servers) && mcp.servers.length) {
+    facts.push(['MCP servers', mcp.servers.map((s) => s.name + (s.transport === 'stdio' ? '' : ' (' + s.transport + ')')).join(' · ')]);
+  }
+  if (mcp && Array.isArray(mcp.problems) && mcp.problems.length) facts.push(['MCP left out', mcp.problems.join(' ')]);
   const account = session.options?.account
     ? accounts.labelOf(session.options.account) || session.options.account
     : '';
@@ -2140,7 +2146,9 @@ function suggestButton(session, input) {
 function infoDialog(session, opener) {
   const close = el('button', { class: 'ds-btn ds-btn--text', type: 'button', 'data-close': true, autofocus: true, text: 'Close' });
   const list = el('dl', { class: 'ds-facts so-facts' });
-  const draw = (running) => list.replaceChildren(...rowFacts(session, running).map(([label, value]) => el('div', {},
+  let running = null;
+  let mcp = null;
+  const draw = () => list.replaceChildren(...rowFacts(session, running, mcp).map(([label, value]) => el('div', {},
     el('dt', { text: label }), el('dd', { class: 'so-fact', text: value }))));
   const dialog = el('dialog', { class: 'ds-dialog so-info-dialog', 'aria-labelledby': 'infoTitle' },
     el('div', { class: 'ds-dialog__backdrop', 'data-close': true }),
@@ -2149,11 +2157,21 @@ function infoDialog(session, opener) {
       list,
       el('div', { class: 'ds-dialog__actions' }, close)));
   // A chat this page has read says its model at once; another one is asked.
-  const running = isChat(session) && state.chat ? state.chat.modelOf(session.id) : null;
-  draw(running);
+  running = isChat(session) && state.chat ? state.chat.modelOf(session.id) : null;
+  draw();
   if (isChat(session) && !running) {
     api('/api/chats/' + encodeURIComponent(session.id))
-      .then((data) => { if (data && data.chat && data.chat.model && dialog.isConnected) draw({ model: data.chat.model, effort: data.chat.effort || '' }); })
+      .then((data) => {
+        if (data && data.chat && data.chat.model && dialog.isConnected) {
+          running = { model: data.chat.model, effort: data.chat.effort || '' };
+          draw();
+        }
+      })
+      .catch(() => {});
+  }
+  if (isChat(session)) {
+    api('/api/sessions/' + encodeURIComponent(session.id) + '/mcp')
+      .then((data) => { if (data && dialog.isConnected) { mcp = data; draw(); } })
       .catch(() => {});
   }
   dialog.addEventListener('close', () => {

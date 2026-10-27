@@ -35,7 +35,7 @@ var adapterNeeds = struct {
 }{
 	clientMethods: []string{"initialize", "thread/start", "thread/resume", "thread/turns/list", "thread/items/list",
 		"turn/start", "turn/steer", "turn/interrupt", "thread/compact/start", "review/start", "thread/shellCommand",
-		"thread/backgroundTerminals/list"},
+		"thread/backgroundTerminals/list", "config/read"},
 	notifications: []string{"turn/started", "turn/completed", "item/started", "item/completed", "item/agentMessage/delta",
 		"item/plan/delta", "item/reasoning/summaryTextDelta", "item/reasoning/textDelta", "item/reasoning/summaryPartAdded",
 		"item/commandExecution/outputDelta", "item/fileChange/outputDelta", "turn/diff/updated", "turn/plan/updated",
@@ -48,7 +48,8 @@ var adapterNeeds = struct {
 		"InitializeParams":                  {"clientInfo", "capabilities"},
 		"AskForApproval":                    {"granular"},
 		"ThreadStartParams":                 {"cwd", "approvalPolicy", "sandbox", "model", "config", "dynamicTools", "developerInstructions"},
-		"ThreadResumeParams":                {"threadId", "excludeTurns", "cwd", "approvalPolicy", "sandbox"},
+		"ThreadResumeParams":                {"threadId", "excludeTurns", "cwd", "approvalPolicy", "sandbox", "config"},
+		"ConfigReadParams":                  {"cwd", "includeLayers"},
 		"TurnStartParams":                   {"threadId", "input", "clientUserMessageId", "model", "effort", "collaborationMode"},
 		"TurnSteerParams":                   {"threadId", "input", "clientUserMessageId", "expectedTurnId"},
 		"TurnInterruptParams":               {"threadId", "turnId"},

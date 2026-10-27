@@ -1172,11 +1172,13 @@ const NOTICE_WORDS = {
   unreverted: 'The rewind was undone.',
   forked: 'The conversation was forked.',
   agent: 'The agent’s mode changed.',
+  mcp_servers: 'Not every MCP server of this folder could be given to the agent.',
 };
 
 // The glyph a line between messages leads with, by its notice code.
 const NOTICE_GLYPH = {
   compacted: 'archive', resumed: 'history', rebuilt: 'history', conversation_lost: 'alert', history_unavailable: 'alert',
+  mcp_servers: 'alert',
   api_retry: 'sync', retrying: 'sync', retry: 'sync',
 };
 

@@ -14,7 +14,7 @@ import (
 // stdio, or a remote streamable-HTTP endpoint. Timeout is per call in
 // milliseconds; a progress notification resets it (research/05 §4.3).
 type MCPServer struct {
-	Type        string            `json:"type"`
+	Type        string            `json:"type,omitempty"`
 	Command     []string          `json:"command,omitempty"`
 	Environment map[string]string `json:"environment,omitempty"`
 	URL         string            `json:"url,omitempty"`
@@ -23,29 +23,21 @@ type MCPServer struct {
 	Timeout     int64             `json:"timeout,omitempty"`
 }
 
-// MCPServers is the hook for MCP servers a chat's OpenCode gets besides
-// ask_user, by name. Nil, or a nil map, is none.
-var MCPServers func(spec agent.StartSpec) map[string]MCPServer
-
 // askTimeout is the per-call timeout of the ask_user server, in
 // milliseconds: a day. The server reports progress every
 // askuser.ProgressEvery, which resets it, so a question waits for as long as
 // the person takes; the timeout only bounds a server that stopped talking.
 const askTimeout = 24 * 60 * 60 * 1000
 
-// mcpServers is the chat's `mcp` config: ask_user as the local server
-// "socrates" (`socrates mcp-ask --socket <host socket>`, StartSpec.AskCommand),
-// whose tool the model knows as socrates_ask_user and whose instructions
-// OpenCode puts into the system prompt, and whatever the hook adds.
+// mcpServers is the chat's `mcp` config: the folder's servers (folderMCP),
+// and ask_user as the local server "socrates" (`socrates mcp-ask --socket
+// <host socket>`, StartSpec.AskCommand), whose tool the model knows as
+// socrates_ask_user and whose instructions OpenCode puts into the system
+// prompt.
 func mcpServers(spec agent.StartSpec) map[string]MCPServer {
-	servers := map[string]MCPServer{}
+	servers := folderMCP(spec)
 	if len(spec.AskCommand) > 0 {
 		servers[askuser.ServerName] = MCPServer{Type: "local", Command: spec.AskCommand, Timeout: askTimeout}
-	}
-	if MCPServers != nil {
-		for name, s := range MCPServers(spec) {
-			servers[name] = s
-		}
 	}
 	return servers
 }

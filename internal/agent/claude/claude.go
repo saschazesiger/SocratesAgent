@@ -156,6 +156,13 @@ func (a *Adapter) Start(ctx context.Context, spec agent.StartSpec, out agent.Emi
 	configDir := configDirOf(env)
 	st := newState(spec, configDir)
 	args := cliArgs(spec, a.opts, hasValue(spec.Env, UltracodeEnv, "1"))
+	mcp, err := writeMCPConfig(spec)
+	if err != nil {
+		return err
+	}
+	if mcp != "" {
+		args = append(args, "--mcp-config", mcp)
+	}
 	if spec.ResumeID != "" {
 		path := findTranscript(configDir, spec.ResumeID)
 		if path == "" {

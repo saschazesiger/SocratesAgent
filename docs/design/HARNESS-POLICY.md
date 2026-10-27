@@ -248,6 +248,40 @@ it every path on that port is open to any process on the machine.
 pane the user is reading, and the second alone only fills a file nobody asked
 for. `--fork` is not offered: a resume continues the session it names.
 
+## MCP servers of a folder
+
+A chat gets the MCP servers its folder names, whatever the harness: the
+folder's `.mcp.json`, in the shape Claude Code and most other tools read, and
+those of the folders above it up to the repository's root.
+
+```json
+{"mcpServers": {
+  "db":   {"command": "db-mcp", "args": ["--ro"], "env": {"TOKEN": "${DB_TOKEN}"}},
+  "docs": {"type": "http", "url": "https://docs.example/mcp", "headers": {"Authorization": "Bearer ${DOCS_KEY}"}}
+}}
+```
+
+- **One source.** Socrates reads the file (`agent.FolderMCP`) and hands the
+  servers to the CLI in its own form: Claude Code `--mcp-config`, Codex
+  `mcp_servers` in the thread's config, OpenCode `mcp` in
+  `OPENCODE_CONFIG_CONTENT`. MCP servers the CLIs would load from the folder
+  by themselves are kept off: Claude Code keeps `--strict-mcp-config`, and
+  Codex (`.codex/config.toml`) and OpenCode (`opencode.json[c]`,
+  `.opencode/`) get every such server turned off by name. Servers of an
+  account's own Codex `config.toml` stay.
+- **Started without asking.** Like every tool of a chat, the servers run with
+  no approval: a folder's `.mcp.json` is trusted as its code is. A repository
+  checked out into a chat's folder starts the commands its `.mcp.json` names.
+- **Variables.** `${VAR}` and `${VAR:-default}` take the chat's environment
+  (the account's); a server that needs a variable the chat does not have is
+  left out, and the chat says so.
+- **Types.** `stdio` (the default with a `command`), `http` (the default with
+  only a `url`) and `sse`. Codex has no SSE: such a server is left out there.
+  A name is letters, digits, `-` and `_`; `socrates` is ask_user's.
+- **When.** The file is read at every start of the CLI, so a change counts
+  from the chat's next start (after it was parked, or an account switch).
+  The chat's Info lists the servers.
+
 ## Shell
 
 `<binary> -l`, in the working directory, with the shared terminal environment.
