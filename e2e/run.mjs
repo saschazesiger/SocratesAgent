@@ -10475,7 +10475,7 @@ async function chattools() {
     before = await answersOn(page);
     await say(page, '/todo 1500');
     await openNextWork(page, before);
-    await page.waitForSelector('#chat .so-msg .so-part[data-kind="todo"] .so-todo__item[data-status="in_progress"]', { timeout: 10000 });
+    await page.waitForSelector('#chat .so-msg .so-part[data-kind="todo"] .so-todo__item[data-status="running"]', { timeout: 10000 });
     await wait(300);
     const once = await page.evaluate(() => {
       const inline = [...document.querySelectorAll('#chat .so-msg .so-part[data-kind="todo"]')].pop().getBoundingClientRect();
@@ -10490,11 +10490,11 @@ async function chattools() {
         above: n.getBoundingClientRect().bottom <= document.querySelector('#chat .so-composer').getBoundingClientRect().top + 1,
       })), () => null);
     ok(once.inView && !once.pinned, 'a task list the conversation shows is not pinned a second time', JSON.stringify(once));
-    ok(!!pinned && pinned.items.length === 3 && pinned.items.includes('in_progress') && pinned.above,
+    ok(!!pinned && pinned.items.length === 3 && pinned.items.includes('running') && pinned.above,
       'scrolled out of sight while the turn works through it, it is pinned above the composer', JSON.stringify(pinned));
     await awaitLog(page, 'All three tasks are done.', 20000);
     const unpinned = await page.waitForSelector('#chat .so-chat__todo', { state: 'hidden', timeout: 5000 }).then(() => true, () => false);
-    const inMessage = await page.$$eval('#chat .so-msg .so-part[data-kind="todo"] .so-todo__item[data-status="completed"]', (n) => n.length);
+    const inMessage = await page.$$eval('#chat .so-msg .so-part[data-kind="todo"] .so-todo__item[data-status="done"]', (n) => n.length);
     ok(unpinned && inMessage >= 3, 'and once the turn is over it is in the answer, not pinned', JSON.stringify({ unpinned, inMessage }));
     await shot(page, 'chat-tools');
     ok(unexpected(s.errors).length === 0, 'no console errors', unexpected(s.errors).join(' | ') || '0');

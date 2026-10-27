@@ -256,7 +256,7 @@ function pathBreaks(path) {
 function diffFileHtml(file, key, open, view) {
   const name = view.where(file.path) || 'the file';
   const status = file.status === 'added' ? 'New file' : file.status === 'deleted' ? 'Deleted' : '';
-  return html`<details class="so-diff__file" data-ds-key="${key}" data-open-key="${key}"${open ? html` open` : ''}><summary class="so-diff__head"><span class="so-diff__path so-break">${pathBreaks(name)}</span>${status ? html`<span class="so-diff__status">${status}</span>` : ''}<span class="so-diff__count"><span class="so-diff__added" aria-label="${file.added + ' added'}">+${file.added}</span><span class="so-diff__removed" aria-label="${file.removed + ' removed'}">−${file.removed}</span></span>${chevron()}</summary>${open ? diffBodyHtml(file, name) : ''}</details>`;
+  return html`<details class="so-diff__file" data-ds-key="${key}" data-open-key="${key}"${open ? html` open` : ''}><summary class="ds-pressable so-diff__head"><span class="so-diff__path so-break">${pathBreaks(name)}</span>${status ? html`<span class="so-diff__status">${status}</span>` : ''}<span class="so-diff__count"><span class="so-diff__added" aria-label="${file.added + ' added'}">+${file.added}</span><span class="so-diff__removed" aria-label="${file.removed + ' removed'}">−${file.removed}</span></span>${chevron()}</summary>${open ? diffBodyHtml(file, name) : ''}</details>`;
 }
 
 function diffBodyHtml(file, name) {
@@ -305,18 +305,21 @@ export function todoItems(part) {
   });
 }
 
-const TODO_WORDS = { completed: 'Done', in_progress: 'In progress', pending: 'To do' };
+// A task's state as DS's task list says it (.ds-tasks: the mark's shape
+// and the text's weight, and a word for a reader).
+const TODO_STATUS = { completed: 'done', in_progress: 'running', pending: 'pending' };
+const TODO_WORDS = { completed: 'done', in_progress: 'in progress', pending: 'to do' };
 
 /** todoList is a task list, each task with its state as a mark and a word. */
 export function todoList(part, { pinned = false } = {}) {
   const items = todoItems(part);
   const done = items.filter((item) => item.status === 'completed').length;
-  return html`<div class="so-todo"${pinned ? html` data-pinned` : ''}><div class="so-todo__head">${raw(icon('list', 18))}<span>Tasks</span><span class="so-todo__count">${done} of ${items.length} done</span></div><ul class="so-todo__list">${
-    items.map((item, i) => html`<li class="so-todo__item" data-ds-key="${'t' + i}" data-status="${item.status}"><span class="so-todo__mark" role="img" aria-label="${TODO_WORDS[item.status]}">${
-      item.status === 'in_progress' ? html`<span class="ds-spinner" aria-hidden="true"></span>`
-        : raw(icon(item.status === 'completed' ? 'checkCircle' : 'clock', 16))
-    }</span><span class="so-todo__text">${item.status === 'in_progress' && item.active ? item.active : item.text}</span></li>`)
-  }</ul></div>`;
+  return html`<div class="so-todo"${pinned ? html` data-pinned` : ''}><div class="ds-tasks__head so-todo__head">${raw(icon('list', 18))}<span>Tasks</span><span class="ds-meta so-todo__count">${done} of ${items.length} done</span></div><ol class="ds-tasks" aria-label="Tasks">${
+    items.map((item, i) => html`<li class="ds-tasks__item so-todo__item" data-ds-key="${'t' + i}" data-status="${TODO_STATUS[item.status]}"><span class="ds-tasks__mark" aria-hidden="true">${
+      item.status === 'in_progress' ? html`<span class="ds-spinner ds-spinner--sm"></span>`
+        : item.status === 'completed' ? raw(icon('checkCircle', 20)) : ''
+    }</span><span class="ds-tasks__text">${item.status === 'in_progress' && item.active ? item.active : item.text}<span class="ds-sr">${': ' + TODO_WORDS[item.status]}</span></span></li>`)
+  }</ol></div>`;
 }
 
 /* ------------------------------------------------------------- the parts */
@@ -352,7 +355,7 @@ function reasoningHtml(part, view) {
   const c = part.content || {};
   const took = seconds(c.duration_ms || (part.state === 'done' ? part.updatedAt - part.at : 0));
   const word = part.state === 'streaming' ? 'Thinking…' : 'Thought' + (took ? ' for ' + took : '');
-  return html`<details class="ds-collapsible so-part so-reasoning" data-ds-key="${key}" data-open-key="${key}" data-kind="reasoning" data-state="${part.state}"${open ? html` open` : ''}><summary class="so-reasoning__head">${raw(icon('sparkles', 16))}<span>${word}</span>${chevron()}</summary>${
+  return html`<details class="ds-collapsible so-part so-reasoning" data-ds-key="${key}" data-open-key="${key}" data-kind="reasoning" data-state="${part.state}"${open ? html` open` : ''}><summary class="ds-pressable so-reasoning__head">${raw(icon('sparkles', 16))}<span>${word}</span>${chevron()}</summary>${
     open ? html`<div class="so-reasoning__body so-md">${markdown(part.text || (c.redacted ? 'The reasoning is not shown.' : ''), { keep: part.state !== 'streaming' })}</div>` : ''
   }</details>`;
 }
@@ -403,7 +406,7 @@ function toolHtml(part, view, { diff = false } = {}) {
     tool.content.cwd ? tool.content.cwd : '',
     tool.path && view.where(tool.path) !== tool.path ? tool.path : '',
   ];
-  return html`<details class="so-part so-tool" data-ds-key="${key}" data-open-key="${key}" data-kind="${part.kind}" data-state="${state}"${group ? html` data-group` : ''}${open ? html` open` : ''}><summary class="so-tool__head"><span class="so-tool__icon" aria-hidden="true">${raw(icon(toolGlyph(tool.name), 18))}</span><span class="so-tool__name">${tool.name}</span>${summaryHtml(tool, view)}${
+  return html`<details class="so-part so-tool" data-ds-key="${key}" data-open-key="${key}" data-kind="${part.kind}" data-state="${state}"${group ? html` data-group` : ''}${open ? html` open` : ''}><summary class="ds-pressable so-tool__head"><span class="so-tool__icon" aria-hidden="true">${raw(icon(toolGlyph(tool.name), 18))}</span><span class="so-tool__name">${tool.name}</span>${summaryHtml(tool, view)}${
     progress ? html`<span class="so-tool__progress so-ellipsis">${progress}</span>` : ''
   }${diff && files.length ? html`<span class="so-diff__count"><span class="so-diff__added">+${added}</span><span class="so-diff__removed">−${removed}</span></span>` : ''}${
     statusMark(state)
@@ -561,7 +564,7 @@ function planHtml(part, view) {
     answer = html`<div class="so-plan__answer"><div class="ds-card__row">${onItsWayChip(sending)}<span class="ds-meta">${asked.decision === 'approve' ? 'Approve' : 'Keep planning' + (asked.note ? ': ' + asked.note : '')}</span></div></div>`;
   } else if (waiting) {
     answer = html`<div class="so-plan__answer">${sending === 'failed' ? refusedHtml(pending, '') : ''}${
-      noting ? html`<div class="ds-field so-plan__field"><label class="ds-field__label" for="${'note-' + part.id}">What should change?</label><div class="so-field-row so-field-row--top"><textarea class="ds-input so-plan__input" id="${'note-' + part.id}" rows="3" enterkeyhint="enter" data-plan-note="${ask.id}"></textarea><button class="ds-btn ds-btn--quiet ds-btn--icon so-mic" type="button" data-action="plan-dictate" data-target="${'note-' + part.id}" aria-label="Dictate what should change" data-tip="Dictate">${faces(raw(icon('mic', 20)), '')}</button></div></div>` : ''
+      noting ? html`<div class="ds-field so-plan__field"><label class="ds-field__label" for="${'note-' + part.id}">What should change?</label><div class="ds-field__row ds-field__row--top"><textarea class="ds-input so-plan__input" id="${'note-' + part.id}" rows="3" enterkeyhint="enter" data-plan-note="${ask.id}"></textarea><button class="ds-btn ds-btn--quiet ds-btn--icon so-mic" type="button" data-action="plan-dictate" data-target="${'note-' + part.id}" aria-label="Dictate what should change" data-tip="Dictate">${faces(raw(icon('mic', 20)), '')}</button></div></div>` : ''
     }<div class="ds-form-actions"><button class="ds-btn ds-btn--primary" type="button" data-action="plan-approve" data-ask="${ask.id}">Approve</button><button class="ds-btn ds-btn--tonal" type="button" data-action="${noting ? 'plan-send' : 'plan-note'}" data-ask="${ask.id}" data-part="${part.id}">${noting ? 'Send back' : 'Keep planning'}</button></div></div>`;
   }
   return html`<section class="ds-card so-part so-plan" data-ds-key="${'p:' + part.id}" data-kind="plan" data-decision="${decision || (waiting ? 'pending' : '')}"${sending ? html` data-sending="${sending}"` : ''}><div class="ds-card__row"><h3 class="ds-card__title so-plan__title">${raw(icon('flag', 18))}<span>Plan</span></h3>${
@@ -885,7 +888,7 @@ export function jobsList({ jobs, others }, now = Date.now()) {
   }
   return html`<ul class="so-jobs">${jobs.map((job) => {
     const ran = job.since ? seconds(Math.max(0, now - job.since)) : '';
-    return html`<li class="so-job" data-ds-key="${job.id}"><button class="so-job__open" type="button" data-job="${job.id}" aria-label="${'Show ' + job.name + (job.summary ? ': ' + job.summary : '')}"><span class="so-job__icon" aria-hidden="true">${raw(icon(toolGlyph(job.name), 18))}</span><span class="so-job__main"><span class="so-job__name">${job.name}</span>${
+    return html`<li class="so-job" data-ds-key="${job.id}"><button class="ds-pressable ds-pressable--inset so-job__open" type="button" data-job="${job.id}" aria-label="${'Show ' + job.name + (job.summary ? ': ' + job.summary : '')}"><span class="so-job__icon" aria-hidden="true">${raw(icon(toolGlyph(job.name), 18))}</span><span class="so-job__main"><span class="so-job__name">${job.name}</span>${
       job.summary ? html`<code class="so-job__summary">${job.summary}</code>` : ''
     }</span><span class="ds-status ds-status--running so-job__state"><span class="ds-spinner ds-status__spinner" aria-hidden="true"></span><span>${ran || 'Running'}</span></span>${raw(icon('chevronRight', 18, 'so-job__go'))}</button></li>`;
   })}${
@@ -1056,7 +1059,7 @@ function workHtml(key, parts, message, view, { live = false, ...options } = {}) 
   if (live) title = 'Working' + (sum.now ? ': ' + sum.now : '…');
   else title = (sum.took ? 'Worked for ' + sum.took : 'Worked') + (sum.did ? ' · ' + sum.did.charAt(0).toUpperCase() + sum.did.slice(1) : '');
   const label = [title, ...sum.meta].join(' · ');
-  return html`<details class="ds-collapsible so-part so-work" data-ds-key="${key}" data-open-key="${key}" data-kind="work" data-state="${live ? 'running' : failed ? 'error' : 'done'}"${open ? html` open` : ''}><summary class="so-work__head" aria-label="${label}"><span class="so-work__icon" aria-hidden="true">${
+  return html`<details class="ds-collapsible so-part so-work" data-ds-key="${key}" data-open-key="${key}" data-kind="work" data-state="${live ? 'running' : failed ? 'error' : 'done'}"${open ? html` open` : ''}><summary class="ds-pressable so-work__head" aria-label="${label}"><span class="so-work__icon" aria-hidden="true">${
     live ? html`<span class="ds-spinner"></span>` : raw(icon(failed ? 'alertCircle' : 'checkCircle', 16))
   }</span><span class="so-work__title so-ellipsis">${title}</span>${
     sum.meta.length ? html`<span class="so-work__meta">${sum.meta.join(' · ')}</span>` : ''
@@ -1194,7 +1197,7 @@ export function lineHtml(entry, view) {
   switch (l.kind) {
     case 'notice': {
       const words = l.text || NOTICE_WORDS[l.code] || 'A notice from the agent.';
-      return html`<div class="so-line" data-ds-key="${key}" data-kind="notice" data-code="${l.code}">${raw(icon(NOTICE_GLYPH[l.code] || 'info', 16))}<span class="so-line__text">${words}</span>${
+      return html`<div class="ds-divider ds-divider--label so-line" data-ds-key="${key}" data-kind="notice" data-code="${l.code}">${raw(icon(NOTICE_GLYPH[l.code] || 'info', 16))}<span class="so-line__text">${words}</span>${
         !l.text && !NOTICE_WORDS[l.code] && l.code ? infoButton(['code ' + l.code], 'Notice details') : ''
       }</div>`;
     }
@@ -1202,7 +1205,7 @@ export function lineHtml(entry, view) {
       // The journal has the command, and the agent refused it after: the
       // line says it did not run, to the browser that sent it.
       const refused = view.failedItem(l.clientId);
-      return html`<div class="so-line" data-ds-key="${key}" data-kind="command"${refused ? html` data-state="failed"` : ''}>${raw(icon('chevronRight', 16))}<span class="so-line__text so-line__command">${l.text}</span>${
+      return html`<div class="ds-divider ds-divider--label so-line" data-ds-key="${key}" data-kind="command"${refused ? html` data-state="failed"` : ''}>${raw(icon('chevronRight', 16))}<span class="so-line__text so-line__command">${l.text}</span>${
         refused ? html`<span class="ds-status ds-status--error" data-chip="failed">${raw(icon('alertCircle', 16))}<span>Not run</span></span>${infoButton([refused.error], 'Why it did not run')}<button class="ds-btn ds-btn--quiet ds-btn--icon ds-btn--sm" type="button" data-action="outbox-drop" data-id="${refused.id}" aria-label="Dismiss" data-tip="Dismiss">${raw(icon('close', 18))}</button>` : ''
       }</div>`;
     }
@@ -1217,7 +1220,7 @@ export function lineHtml(entry, view) {
       // again (research/08).
       const about = [l.reason, ...(view.accountWho ? view.accountWho(l.to) : []), l.hint,
         l.from ? 'The next reply may take longer: the new account starts without the cached conversation.' : ''];
-      return html`<div class="so-line" data-ds-key="${key}" data-kind="account" data-from="${l.from}" data-to="${l.to}">${raw(icon('user', 16))}<span class="so-line__text">${words}</span>${infoButton(about, 'About the switch')}</div>`;
+      return html`<div class="ds-divider ds-divider--label so-line" data-ds-key="${key}" data-kind="account" data-from="${l.from}" data-to="${l.to}">${raw(icon('user', 16))}<span class="so-line__text">${words}</span>${infoButton(about, 'About the switch')}</div>`;
     }
     case 'model': {
       // Only a change is a line: the same model by its name (an alias and
@@ -1229,7 +1232,7 @@ export function lineHtml(entry, view) {
       // CLI naming it.
       const sameEffort = l.was ? (l.wasEffort || '') === (l.effort || '') : (!before || !before.effort || before.effort === l.effort);
       if (sameModel && sameEffort) return '';
-      return html`<div class="so-line" data-ds-key="${key}" data-kind="model">${raw(icon('cpu', 16))}<span class="so-line__text">${'Model: ' + view.modelLabel(l.model) + (l.effort ? ' · ' + view.effortLabel(l.effort) : '')}</span></div>`;
+      return html`<div class="ds-divider ds-divider--label so-line" data-ds-key="${key}" data-kind="model">${raw(icon('cpu', 16))}<span class="so-line__text">${'Model: ' + view.modelLabel(l.model) + (l.effort ? ' · ' + view.effortLabel(l.effort) : '')}</span></div>`;
     }
     case 'error':
       return html`<div class="ds-alert ds-alert--error so-line-alert" data-ds-key="${key}" data-kind="error" role="alert">${raw(icon('alertCircle', 20))}<span class="ds-alert__text">${l.text || 'Something went wrong.'}</span>${infoButton([l.code ? 'code ' + l.code : ''], 'Error details')}</div>`;
@@ -1254,7 +1257,7 @@ export function lineHtml(entry, view) {
         const words = died ? 'The agent stopped during the turn. The next message starts it again.' : 'The turn failed.' + (l.text ? ' ' + l.text : '');
         return html`<div class="ds-alert ds-alert--error so-line-alert" data-ds-key="${key}" data-kind="failed" role="alert">${raw(icon('alertCircle', 20))}<span class="ds-alert__text">${words}</span>${infoButton([died ? died[1] : '', l.code ? 'code ' + l.code : '', ...silentTurnFacts(l.turn, view)], 'Error details')}</div>`;
       }
-      return html`<div class="so-line" data-ds-key="${key}" data-kind="interrupted">${raw(icon('ban', 16))}<span class="so-line__text">Interrupted</span>${infoButton(silentTurnFacts(l.turn, view), 'Usage of this answer')}</div>`;
+      return html`<div class="ds-divider ds-divider--label so-line" data-ds-key="${key}" data-kind="interrupted">${raw(icon('ban', 16))}<span class="so-line__text">Interrupted</span>${infoButton(silentTurnFacts(l.turn, view), 'Usage of this answer')}</div>`;
     }
     default:
       return '';

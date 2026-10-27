@@ -777,7 +777,7 @@ export function mountChat(ctx) {
     const said = at > now
       ? 'Sends the message above by itself ' + inWords(at - now) + ' (' + new Date(at).toLocaleString([], { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) + ').'
       : 'Optional: pick a time, and the message above is sent then by itself.';
-    morph(scheduleSlot, html`<div class="ds-field so-schedule"><label class="ds-field__label" for="${fid}">${raw(icon('clock', 16))}<span>Start automatically</span></label><div class="so-field-row"><input class="ds-input so-schedule__at" type="datetime-local" id="${fid}" value="${at ? localInput(at) : ''}" min="${localInput(now)}" aria-describedby="${fid + '-hint'}" data-schedule><button class="ds-btn ds-btn--text ds-btn--sm" type="button" data-action="schedule-clear"${at ? '' : html` hidden`}>Clear</button></div><small class="ds-field__hint" id="${fid + '-hint'}">${said}</small></div>`);
+    morph(scheduleSlot, html`<div class="ds-field so-schedule"><label class="ds-field__label" for="${fid}">${raw(icon('clock', 16))}<span>Start automatically</span></label><div class="ds-field__row"><input class="ds-input so-schedule__at" type="datetime-local" id="${fid}" value="${at ? localInput(at) : ''}" min="${localInput(now)}" aria-describedby="${fid + '-hint'}" data-schedule><button class="ds-btn ds-btn--text ds-btn--sm" type="button" data-action="schedule-clear"${at ? '' : html` hidden`}>Clear</button></div><small class="ds-field__hint" id="${fid + '-hint'}">${said}</small></div>`);
   }
 
   // setStartAt saves the scheduled start (0: none).
@@ -1246,7 +1246,7 @@ export function mountChat(ctx) {
         // The note's own microphone, as every other field of the chat has:
         // the words go after what is written.
         if (recPhase() !== 'idle') break;
-        M.busy(target, () => record({ opener: target }), { done: false }).then((words) => {
+        M.busy(target, () => record({ opener: target })).then((words) => {
           const field = host.querySelector('#' + CSS.escape(target.dataset.target));
           if (!words || !field) return;
           field.value = field.value ? field.value.replace(/\s*$/, ' ') + words : words;
@@ -1394,7 +1394,7 @@ export function mountChat(ctx) {
     try {
       const data = await M.busy(button, () => api('/api/chats/' + encodeURIComponent(session.id) + '/spoken', {
         method: 'POST', attempts: 1, timeout: 70000, body: { message_id: id },
-      }), { done: false });
+      }));
       const text = String((data && data.text) || '').trim();
       if (mine !== speakGen || !text) return;
       await speak(text);

@@ -43,6 +43,8 @@ import { speak, stopSpeaking, ttsKey, ttsMissing } from './voice.js';
 // chrome above a question then takes the room its first option needs, and
 // the question is scrolled up to the top.
 const SHORT_SCREEN = window.matchMedia('(max-height: 500px)');
+// Up to this width the question is the whole screen (so-question.css).
+const FULL_SCREEN = window.matchMedia('(max-width: 900px)');
 
 // How long "Answered" stays before the next question takes the dialog.
 const MOVE_ON = 1200;
@@ -361,6 +363,11 @@ export function openAskDialog({ items, start = 0, watch, openChat, closed, more 
   const dialog = document.createElement('dialog');
   dialog.className = 'ds-dialog so-question so-askdlg';
   dialog.setAttribute('aria-label', 'Questions');
+  // A phone, a tablet and touch mode (a car, a kiosk): the dialog is the
+  // whole screen (DS .ds-dialog--full).
+  const fitScreen = () => dialog.classList.toggle('ds-dialog--full', touchScreen() || FULL_SCREEN.matches);
+  fitScreen();
+  FULL_SCREEN.addEventListener('change', fitScreen);
   const backdrop = document.createElement('div');
   backdrop.className = 'ds-dialog__backdrop';
   const shell = document.createElement('div');
@@ -501,6 +508,7 @@ export function openAskDialog({ items, start = 0, watch, openChat, closed, more 
     unlisten();
     unrefused();
     if (window.visualViewport) window.visualViewport.removeEventListener('resize', keepFieldInView);
+    FULL_SCREEN.removeEventListener('change', fitScreen);
     if (st.speaking) stopSpeaking();
     save();
     current = null;
@@ -661,7 +669,7 @@ export function openAskDialog({ items, start = 0, watch, openChat, closed, more 
   function contextHtml(key, text, label, titled = false) {
     const open = st.details.has(key);
     const tip = !titled && SHORT_SCREEN.matches ? label : '';
-    return html`<details class="ds-collapsible so-ask-context" data-open-key="${key}"${open ? html` open` : ''}><summary class="so-ask-context__head"${tip ? html` data-tip="${tip}"` : ''}>${raw(icon('info', 16))}<span${titled ? html` class="so-ask-title"` : ''}>${label}</span>${raw(icon('chevronDown', 20, 'ds-chevron'))}</summary><div class="so-ask-context__body so-md">${markdown(text)}</div></details>`;
+    return html`<details class="ds-collapsible so-ask-context" data-open-key="${key}"${open ? html` open` : ''}><summary class="ds-pressable so-ask-context__head"${tip ? html` data-tip="${tip}"` : ''}>${raw(icon('info', 16))}<span${titled ? html` class="so-ask-title"` : ''}>${label}</span>${raw(icon('chevronDown', 20, 'ds-chevron'))}</summary><div class="so-ask-context__body so-md">${markdown(text)}</div></details>`;
   }
 
   function questionHtml(q, total, step, last) {
@@ -705,7 +713,7 @@ export function openAskDialog({ items, start = 0, watch, openChat, closed, more 
     const chosen = !a.delegated && a.selected.includes(id);
     const detailKey = 'opt:' + q.id + ':' + id;
     const open = st.details.has(detailKey);
-    return html`<div class="so-ask-option" data-ds-key="${'o:' + id}"><button class="ds-card ds-card--interactive so-q-option" type="button" data-action="choose" data-q="${q.id}" data-option="${id}" aria-pressed="${chosen ? 'true' : 'false'}"${multi ? html` data-multi` : ''}><span class="so-q-option-row"><span class="so-q-option-ring" aria-hidden="true"></span><span class="so-q-option-key" aria-hidden="true">${chosen ? raw(icon('check', 20)) : String(i + 1)}</span><span class="so-q-option-text"><span class="so-q-option-label">${option.label || id}</span>${
+    return html`<div class="so-ask-option" data-ds-key="${'o:' + id}"><button class="ds-card ds-card--interactive so-q-option" type="button" data-action="choose" data-q="${q.id}" data-option="${id}" aria-pressed="${chosen ? 'true' : 'false'}"${multi ? html` data-multi` : ''}><span class="so-q-option-row"><span class="so-q-option-key" aria-hidden="true">${chosen ? raw(icon('check', 20)) : String(i + 1)}</span><span class="so-q-option-text"><span class="so-q-option-label">${option.label || id}</span>${
       option.description ? html`<span class="so-q-option-desc">${option.description}</span>` : ''
     }${option.recommended ? html`<span class="ds-status ds-status--ok so-q-recommended">${raw(icon('thumbUp', 16))}<span>Recommended</span></span>` : ''}</span></span></button>${
       option.details ? html`<button class="ds-btn ds-btn--text ds-btn--sm so-ask-more" type="button" data-action="details" data-key="${detailKey}" aria-expanded="${open ? 'true' : 'false'}">${open ? 'Fewer details' : 'Details'}${raw(icon('chevronDown', 16, 'ds-chevron'))}</button>${open ? html`<div class="so-ask-details so-md">${markdown(option.details)}</div>` : ''}` : ''
@@ -718,7 +726,7 @@ export function openAskDialog({ items, start = 0, watch, openChat, closed, more 
   // its lines.
   function fieldHtml(qid, field, label, value, rows, key = 'enter') {
     const fid = 'ask-' + qid + '-' + field;
-    return html`<div class="ds-field so-q-own" data-ds-key="${fid}"><label class="ds-field__label" for="${fid}">${label}</label><div class="so-field-row so-field-row--top"><textarea class="ds-input so-q-own-field" id="${fid}" rows="${rows}" enterkeyhint="${key}" data-q="${qid}" data-field="${field}"${key !== 'enter' ? html` data-moves-on` : ''}>${value || ''}</textarea><button class="ds-btn ds-btn--quiet ds-btn--icon so-mic" type="button" data-action="dictate" data-target="${fid}" aria-label="${'Dictate ' + label.charAt(0).toLowerCase() + label.slice(1)}" data-tip="Dictate">${faces(raw(icon('mic', 20)), '')}</button></div></div>`;
+    return html`<div class="ds-field so-q-own" data-ds-key="${fid}"><label class="ds-field__label" for="${fid}">${label}</label><div class="ds-field__row ds-field__row--top"><textarea class="ds-input so-q-own-field" id="${fid}" rows="${rows}" enterkeyhint="${key}" data-q="${qid}" data-field="${field}"${key !== 'enter' ? html` data-moves-on` : ''}>${value || ''}</textarea><button class="ds-btn ds-btn--quiet ds-btn--icon so-mic" type="button" data-action="dictate" data-target="${fid}" aria-label="${'Dictate ' + label.charAt(0).toLowerCase() + label.slice(1)}" data-tip="Dictate">${faces(raw(icon('mic', 20)), '')}</button></div></div>`;
   }
 
   function numberHtml(q, a, invalid, key) {
@@ -921,7 +929,7 @@ export function openAskDialog({ items, start = 0, watch, openChat, closed, more 
       case 'dictate': {
         if (recPhase() !== 'idle') return;
         const field = shell.querySelector('#' + CSS.escape(target.dataset.target));
-        const text = await M.busy(target, () => record({ opener: target }), { done: false });
+        const text = await M.busy(target, () => record({ opener: target }));
         if (text && field && field.isConnected) {
           field.value = field.value ? field.value.replace(/\s*$/, ' ') + text : text;
           field.dispatchEvent(new Event('input', { bubbles: true }));

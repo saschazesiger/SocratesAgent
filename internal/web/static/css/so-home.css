@@ -16,7 +16,8 @@
  *   .so-home__tiles     the tiles, in a grid that keeps its shape: a
  *                       tile with nothing in it says so, it never goes away,
  *                       so a number changing never moves the others
- *   .so-home__tile      a tile that filters the list; aria-pressed while it does
+ *   .so-home__tile      a tile that filters the list; aria-pressed while it
+ *                       does, which DS draws as a selected tile
  *   .so-home__sessions  the list under the numbers: its head, the cards, the
  *                       empty state
  *   .so-home__card      one session (div form of an interactive card)
@@ -42,12 +43,6 @@
   padding-inline: env(safe-area-inset-left, 0px) env(safe-area-inset-right, 0px);
   padding-bottom: env(safe-area-inset-bottom, 0px);
   background: var(--ds-surface);
-}
-
-/* `hidden` wins over the display of Home's own parts (DS's own rule for it
-   is layered, and project CSS beats it). */
-.so-home [hidden] {
-  display: none;
 }
 
 .so-home__conn {
@@ -99,12 +94,6 @@
   white-space: nowrap;
 }
 
-/* The tile whose sessions the list shows: a ring of the primary colour, and
-   the list's title says which it is. */
-.so-home__tile[aria-pressed="true"] {
-  box-shadow: inset 0 0 0 var(--ds-focus-width) var(--ds-primary);
-}
-
 .so-home__questions {
   display: flex;
   flex-direction: column;
@@ -140,19 +129,13 @@
   max-width: 100%;
 }
 
-/* The card's action is a button that reads as the card's title. */
+/* The card's action is a button (DS's button form of .ds-card__action)
+   that reads as the card's title: one line, its end an ellipsis. */
 .so-home__q-action,
 .so-home__card-title {
-  appearance: none;
   display: block;
   max-width: 100%;
-  margin: 0;
-  padding: 0;
-  border: 0;
-  background: none;
   font: var(--ds-font-subtitle);
-  text-align: left;
-  cursor: pointer;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

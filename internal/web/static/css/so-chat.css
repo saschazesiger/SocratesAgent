@@ -43,7 +43,9 @@
  *                          .so-group, a workflow's by phase (.so-phases)
  *   .so-diff               the unified diff viewer, one file per .so-diff__file
  *                          ([data-single]: the only one, not collapsible)
- *   .so-todo               a task list; [data-pinned] above the composer
+ *   .so-todo               a task list (DS .ds-tasks under a head with its
+ *                          count; .so-todo__item a hook for the tests);
+ *                          [data-pinned] above the composer
  *   .so-plan, .so-ask      the plan card and the question card (DS cards)
  *   .so-line               a line between messages: a notice, a command, a
  *                          model or an account change, an interrupted turn;
@@ -79,9 +81,6 @@
   background: var(--ds-surface);
 }
 
-.so-chat[hidden] {
-  display: none;
-}
 
 .so-chat[data-dropping] {
   outline: var(--ds-focus-width) dashed var(--ds-primary);
@@ -149,9 +148,8 @@
   color: var(--ds-error);
 }
 
-/* No account and no limits: no line. While a phone's keyboard is up the
-   top bar steps aside (so-frame.css), and this line with it. */
-.so-chat__sub[hidden],
+/* While a phone's keyboard is up the top bar steps aside (keybar.js), and
+   this line with it. */
 .so-touch[data-so-keyboard] .so-chat__sub {
   display: none;
 }
@@ -220,9 +218,6 @@
   margin-block: var(--ds-space-2);
 }
 
-.so-chat__jump[hidden] {
-  display: none;
-}
 
 /* ── The dock ────────────────────────────────────────────────────────── */
 
@@ -262,9 +257,6 @@
   padding: var(--ds-space-3) var(--ds-space-4);
 }
 
-.so-chat__todo[hidden] {
-  display: none;
-}
 
 /* ── Background jobs ─────────────────────────────────────────────────── */
 
@@ -275,9 +267,6 @@
   min-width: 0;
 }
 
-.so-chat__bg[hidden] {
-  display: none;
-}
 
 .so-chat__jobs {
   flex: 1 1 auto;
@@ -316,14 +305,14 @@
 
 /* The dialog: a row a job, its tool's mark in a disc, its name over what it
    runs, and how long it has run at the end. */
-.so-jobs-dialog .ds-dialog__box {
-  width: min(100%, 36rem);
+.so-jobs-dialog {
+  --ds-dialog-width: var(--so-jobs-width);
 }
 
 .so-jobs {
   display: flex;
   flex-direction: column;
-  max-height: min(60vh, calc(var(--so-app-h, 100dvh) * 0.6));
+  max-height: min(60vh, calc(var(--ds-viewport-height, 100dvh) * 0.6));
   margin: 0;
   padding: 0;
   overflow-y: auto;
@@ -346,18 +335,21 @@
 }
 
 /* A job's row is a button that opens it: the whole row, a finger's height
-   at least, with the chevron at its end saying so. */
+   at least, with the chevron at its end saying so. It presses as DS's own
+   (.ds-pressable: the large surface's hover, the press, the ripple, the
+   ring inside the list's clip), in the list's corners at its ends. */
 .so-job:has(> .so-job__open) {
   padding: 0;
 }
 
 .so-job__open {
+  --ds-pressable-radius: 0;
   display: flex;
   flex: 1 1 auto;
   align-items: center;
   gap: var(--ds-space-3);
   min-width: 0;
-  min-height: 3.5rem;
+  min-height: var(--so-job-row-min);
   margin: 0;
   padding: var(--ds-space-3) var(--ds-space-3) var(--ds-space-3) var(--ds-space-4);
   border: 0;
@@ -365,7 +357,6 @@
   color: inherit;
   font: inherit;
   text-align: start;
-  cursor: pointer;
 }
 
 .so-job:first-child .so-job__open {
@@ -376,15 +367,6 @@
 .so-job:last-child .so-job__open {
   border-end-start-radius: var(--ds-radius-card);
   border-end-end-radius: var(--ds-radius-card);
-}
-
-.so-job__open:hover {
-  background: var(--ds-surface-high);
-}
-
-.so-job__open:focus-visible {
-  outline: 2px solid var(--ds-primary);
-  outline-offset: -2px;
 }
 
 .so-job__go {
@@ -398,7 +380,7 @@
   place-items: center;
   inline-size: var(--ds-space-8);
   block-size: var(--ds-space-8);
-  border-radius: 50%;
+  border-radius: var(--ds-radius-action);
   background: var(--ds-surface-high);
   color: var(--ds-text-2);
 }
@@ -502,7 +484,7 @@
   flex-direction: column;
   gap: var(--ds-space-3);
   min-width: 0;
-  max-height: min(65vh, calc(var(--so-app-h, 100dvh) * 0.65));
+  max-height: min(65vh, calc(var(--ds-viewport-height, 100dvh) * 0.65));
   overflow-y: auto;
   overscroll-behavior: contain;
 }
@@ -731,19 +713,19 @@
 }
 
 /* A details row: no marker of the browser's (the chevron says it), the row
-   is the target. */
+   is the target, pressable as DS's own (.ds-pressable: the state layer,
+   the ring that snaps in, the ripple) in the card's corner radius. */
 .so-work > summary,
 .so-reasoning > summary,
 .so-tool > summary,
 .so-diff__file > summary,
 .so-ask-context > summary {
+  --ds-pressable-radius: var(--ds-radius-md);
   display: flex;
   align-items: center;
   gap: var(--ds-space-2);
   min-height: var(--so-chat-row-height);
   list-style: none;
-  cursor: pointer;
-  border-radius: var(--ds-radius-md);
 }
 
 .so-work > summary::-webkit-details-marker,
@@ -752,15 +734,6 @@
 .so-diff__file > summary::-webkit-details-marker,
 .so-ask-context > summary::-webkit-details-marker {
   display: none;
-}
-
-.so-work > summary:focus-visible,
-.so-reasoning > summary:focus-visible,
-.so-tool > summary:focus-visible,
-.so-diff__file > summary:focus-visible,
-.so-ask-context > summary:focus-visible {
-  outline: var(--ds-focus-width) solid var(--ds-focus);
-  outline-offset: var(--ds-focus-offset);
 }
 
 .so-work > summary .ds-chevron,
@@ -1294,6 +1267,7 @@
 
 /* ── Task lists ──────────────────────────────────────────────────────── */
 
+/* DS's task list (.ds-tasks), under a head with its count. */
 .so-todo {
   display: flex;
   flex-direction: column;
@@ -1309,48 +1283,7 @@
 
 .so-todo__count {
   margin-inline-start: auto;
-  color: var(--ds-text-2);
-  font: var(--ds-font-meta);
   font-variant-numeric: tabular-nums;
-}
-
-.so-todo__list {
-  display: flex;
-  flex-direction: column;
-  gap: var(--ds-space-1);
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-.so-todo__item {
-  display: flex;
-  align-items: flex-start;
-  gap: var(--ds-space-2);
-  font: var(--ds-font-body);
-}
-
-.so-todo__mark {
-  display: grid;
-  flex: none;
-  place-items: center;
-  inline-size: var(--ds-space-5);
-  block-size: var(--ds-space-5);
-  color: var(--ds-text-2);
-}
-
-.so-todo__item[data-status="completed"] .so-todo__mark {
-  color: var(--ds-success);
-}
-
-.so-todo__item[data-status="completed"] .so-todo__text {
-  color: var(--ds-text-2);
-  text-decoration: line-through;
-}
-
-.so-todo__text {
-  min-width: 0;
-  overflow-wrap: anywhere;
 }
 
 /* ── The plan and the question cards ─────────────────────────────────── */
@@ -1432,25 +1365,24 @@
 
 /* ── Lines between messages ──────────────────────────────────────────── */
 
+/* A line is DS's labelled divider (.ds-divider--label: the hairline on
+   both sides, the meta type), as tall as a small button, its glyph and an
+   "i" beside the words. A notice inside an answer is the agent's, not a
+   divider: it has the line's shape without the hairlines. */
 .so-line {
+  min-height: var(--ds-space-8);
+  gap: var(--ds-space-2);
+}
+
+.so-part.so-line {
   display: flex;
   align-items: center;
-  gap: var(--ds-space-2);
-  min-height: var(--ds-space-8);
   color: var(--ds-text-2);
   font: var(--ds-font-meta);
 }
 
 .so-line > svg {
   flex: none;
-}
-
-/* A divider: the hairline on both sides of what it says. */
-.so-line::before,
-.so-line::after {
-  content: "";
-  flex: 1 1 var(--ds-space-6);
-  border-top: 1px solid var(--ds-line);
 }
 
 .so-line__text {
@@ -1462,12 +1394,6 @@
 
 .so-line__command {
   font: var(--so-font-code);
-}
-
-/* A notice inside an answer is the agent's, not a divider. */
-.so-part.so-line::before,
-.so-part.so-line::after {
-  content: none;
 }
 
 .so-line-alert {
@@ -1489,11 +1415,6 @@
   gap: var(--ds-space-2);
 }
 
-.so-composer__conflict[hidden],
-.so-composer__palette[hidden],
-.so-composer__files[hidden] {
-  display: none;
-}
 
 .so-composer__theirs {
   max-height: var(--so-conflict-preview-max);
@@ -1514,7 +1435,7 @@
 }
 
 .ds-theme.so-touch .so-composer__input {
-  min-height: var(--so-touch-target);
+  min-height: var(--ds-touch-target);
 }
 
 /* A chat that has not started is its first message: the heading at the top,
@@ -1556,11 +1477,6 @@
 
 /* Nothing is further down to jump to. */
 .so-chat[data-fresh] .so-chat__jump {
-  display: none;
-}
-
-/* The scheduled start of a chat that has not started, above its field. */
-.so-chat__schedule[hidden] {
   display: none;
 }
 
@@ -1633,12 +1549,6 @@
   display: block;
 }
 
-.so-composer__account[hidden],
-.so-composer__usage[hidden],
-.so-composer__stop[hidden],
-.so-composer__send[hidden] {
-  display: none;
-}
 
 .so-composer__account {
   display: inline-flex;
@@ -2030,7 +1940,7 @@
   }
 
   .so-composer__input {
-    max-height: calc(var(--so-app-h, 100dvh) * 0.3);
+    max-height: calc(var(--ds-viewport-height, 100dvh) * 0.3);
   }
 
   /* The first message keeps its column: the field over its bar. */
@@ -2049,7 +1959,7 @@
   }
 
   .so-chat[data-fresh] .so-composer__input {
-    min-height: calc(var(--so-app-h, 100dvh) * 0.3);
+    min-height: calc(var(--ds-viewport-height, 100dvh) * 0.3);
   }
 
   .so-composer__dictate,

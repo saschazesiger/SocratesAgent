@@ -5,8 +5,8 @@
  * the alerts, the buttons and the field are Dashboard-Style's own, set
  * through their hooks and laid out from here.
  *
- *   dialog.so-question   the DS dialog; the whole screen on a phone and in
- *                        touch mode (car, kiosk)
+ *   dialog.so-question   the DS dialog; the whole screen (.ds-dialog--full)
+ *                        up to 900px wide and in touch mode (car, kiosk)
  *   .so-q-shell          its box: the top bar, the scrolling body and the
  *                        action bar in one column; [data-arming] for a
  *                        moment after a new question is drawn (its buttons
@@ -24,7 +24,8 @@
  *                        answer is on its way
  *   .so-q-option         an option: a DS interactive card as a toggle
  *                        (aria-pressed), its key (the digit, or a box for a
- *                        multi-select: [data-multi]) and its ring
+ *                        multi-select: [data-multi]); chosen, DS draws it
+ *                        as a selected card
  *   .so-q-own            the field of one's own answer (a DS field)
  *   .so-q-status         the progress line (a DS alert, data-kind)
  *   .so-q-actions        Read aloud, Ask back and Back (icons), and Send;
@@ -60,26 +61,8 @@
   outline: none;
 }
 
-/* A phone, and touch mode: the dialog is all there is, edge to edge. */
-@media (max-width: 900px) {
-  .so-question {
-    padding: 0;
-  }
-
-  .so-q-shell {
-    --ds-radius-dialog: 0;
-    height: 100%;
-  }
-}
-
-.ds-theme.so-touch .so-question {
-  padding: 0;
-}
-
-.ds-theme.so-touch .so-q-shell {
-  --ds-radius-dialog: 0;
-  height: 100%;
-}
+/* A phone, a tablet, and touch mode: the dialog is all there is, edge to
+   edge (DS .ds-dialog--full, which askdialog.js sets there). */
 
 /* ── Top bar ─────────────────────────────────────────────────────────── */
 
@@ -245,21 +228,9 @@
   border-radius: inherit;
 }
 
-/* The chosen option: a 2px primary ring inside its edge, besides the filled
-   key (never the tint alone). It follows the card's press morph. */
-.so-q-option-ring {
-  position: absolute;
-  inset: -1px;
-  border-radius: inherit;
-  box-shadow: inset 0 0 0 2px var(--ds-primary);
-  opacity: 0;
-  pointer-events: none;
-  transition: opacity var(--ds-dur-fast) var(--ds-ease-in-out);
-}
-
-.so-q-option[aria-pressed="true"] .so-q-option-ring {
-  opacity: 1;
-}
+/* The chosen option is DS's selected interactive card (aria-pressed: the
+   tint and a ring inside its edge), besides the filled key (never the tint
+   alone). */
 
 .so-q-option-key {
   display: grid;
@@ -422,7 +393,7 @@
   }
 
   .so-q-big.ds-btn--icon {
-    --ds-btn-icon-size: var(--so-touch-target);
+    --ds-btn-icon-size: var(--ds-touch-target);
   }
 
   .so-q-send {
@@ -484,7 +455,7 @@
   }
 
   .so-q-text + .so-ask-context:not([open]) > summary {
-    min-width: var(--so-touch-target);
+    min-width: var(--ds-touch-target);
     justify-content: center;
   }
 
