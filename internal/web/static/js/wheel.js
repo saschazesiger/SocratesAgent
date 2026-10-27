@@ -11,16 +11,18 @@
 // without a morph.
 //
 // The roll is quiet on purpose, a line in the background that changes
-// rather than a thing that moves: the old line glides up by the slot's
-// --so-wheel-travel (--ds-dur-medium, --ds-ease-in) and is faded out within
-// --ds-dur-fast (--ds-ease-out); the new one glides up into place from as
-// far below and fades in (--ds-dur-slow, --ds-ease-out, no overshoot) once
-// the old one has faded, so the two never stand on each other. Only
-// translate and opacity: the text stays sharp all the way. Every line is
-// shown for at least --ds-hold-status: a change during the hold waits, and a
-// later one takes the place of the waiting one (which then never shows), so
-// a quick run of changes rolls once, to the last. A change during a roll
-// carries each line on from where it is.
+// rather than a thing that moves: the new line pushes the old one out. The
+// two glide up together by one line (the slot's --so-wheel-travel, 100% of
+// a line's own height) on --ds-ease-in-out over --ds-dur-slow, like one
+// strip: the old line leaves through the slot's soft top edge and fades
+// out on the way (--ds-ease-in: it stays until it is at the edge), the new
+// one comes up through the soft bottom edge and fades in (--ds-ease-out).
+// Only translate and opacity: the text stays sharp all the way. Every line
+// is shown for at least --ds-hold-status: a change during the hold waits,
+// and a later one takes the place of the waiting one (which then never
+// shows), so a quick run of changes rolls once, to the last; a line that
+// has not shown yet holds nothing. A change during a roll carries each
+// line on from where it is.
 
 import { M } from './ui.js';
 
@@ -74,28 +76,36 @@ function unseen(line) {
 }
 
 function travelOf(slot) {
-  return getComputedStyle(slot).getPropertyValue('--so-wheel-travel').trim() || '0.5em';
-}
-
-/** turnIn brings the coming line in, after `delay` ms (hidden until then). */
-function turnIn(line, slot, delay) {
-  stateOf(slot).last = line;
-  const travel = travelOf(slot);
-  const late = delay + M.motionDuration(slot, '--ds-dur-fast');
-  const slow = M.motionDuration(slot, '--ds-dur-slow');
-  line.animate([{ transform: `translateY(${travel})` }, { transform: 'translateY(0)' }], {
-    duration: slow, delay: late, easing: M.motionEasing(slot, '--ds-ease-out'), fill: 'backwards',
-  });
-  line.animate([{ opacity: 0 }, { opacity: 1 }], {
-    duration: slow, delay: late, easing: M.motionEasing(slot, '--ds-ease-in-out'), fill: 'backwards',
-  });
+  return getComputedStyle(slot).getPropertyValue('--so-wheel-travel').trim() || '100%';
 }
 
 /**
- * turnOut takes the going line out from where it is, after `delay` ms: a
- * promise that resolves once it is gone, or null when it goes at once - a
- * line that never showed (it waited out a hold, or came in the same change,
- * and a later one took its place).
+ * roll is one line's part of the turn: the glide on --ds-ease-in-out over
+ * --ds-dur-slow - the same for the line that goes and the one that comes,
+ * so the two move as one strip - and the opacity along with it.
+ */
+function roll(line, slot, from, to, opacity, delay, fill) {
+  const duration = M.motionDuration(slot, '--ds-dur-slow');
+  const glide = line.animate([{ transform: from }, { transform: to }], {
+    duration, delay, easing: M.motionEasing(slot, '--ds-ease-in-out'), fill,
+  });
+  const fade = line.animate([{ opacity: opacity[0] }, { opacity: opacity[1] }], {
+    duration, delay, easing: M.motionEasing(slot, opacity[1] ? '--ds-ease-out' : '--ds-ease-in'), fill,
+  });
+  return Promise.all([glide.finished, fade.finished]).then(() => {}, () => {});
+}
+
+/** turnIn brings the coming line up from below, after `delay` ms (hidden until then). */
+function turnIn(line, slot, delay) {
+  stateOf(slot).last = line;
+  roll(line, slot, `translateY(${travelOf(slot)})`, 'translateY(0)', [0, 1], delay, 'backwards');
+}
+
+/**
+ * turnOut pushes the going line up and out from where it is, after `delay`
+ * ms: a promise that resolves once it is gone, or null when it goes at once
+ * - a line that never showed (it waited out a hold, or came in the same
+ * change, and a later one took its place).
  */
 function turnOut(line, slot, delay) {
   const running = line.getAnimations();
@@ -107,13 +117,7 @@ function turnOut(line, slot, delay) {
   const from = style.transform === 'none' ? 'translateY(0)' : style.transform;
   const opacity = Number(style.opacity);
   running.forEach((one) => one.cancel());
-  const glide = line.animate([{ transform: from }, { transform: `translateY(calc(-1 * ${travelOf(slot)}))` }], {
-    duration: M.motionDuration(slot, '--ds-dur-medium'), delay, easing: M.motionEasing(slot, '--ds-ease-in'), fill: 'forwards',
-  });
-  const fade = line.animate([{ opacity }, { opacity: 0 }], {
-    duration: M.motionDuration(slot, '--ds-dur-fast'), delay, easing: M.motionEasing(slot, '--ds-ease-out'), fill: 'forwards',
-  });
-  return Promise.all([glide.finished, fade.finished]).then(() => {}, () => {});
+  return roll(line, slot, from, `translateY(calc(-1 * ${travelOf(slot)}))`, [opacity, 0], delay, 'forwards');
 }
 
 /**

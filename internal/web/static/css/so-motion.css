@@ -7,9 +7,9 @@
  * Dashboard-Style"). Tokens only, unlayered like every so-*.css.
  *
  * Wheel: a slot whose lines roll, quietly, in the background. When its
- * line changes, the old one glides up out of the slot and fades, and the
- * new one glides up into place from below and fades in, once it is gone -
- * the slot's soft edges make it read as one turn of a drum. Every line
+ * line changes, the new one pushes the old one out: both glide up by one
+ * line together, the old one out through the slot's soft top edge, the new
+ * one in through its soft bottom edge, like a strip of a counter. Every line
  * stays at least --ds-hold-status, so a fast run of changes never
  * flickers: a line that comes during the hold waits, and only the latest
  * one waits. The motion is js/wheel.js (wheelHooks for DS.dom.morphHtml,
@@ -34,18 +34,17 @@
  *   so the wave lies on the letters; it is cut with the same ellipsis.
  *
  * Hooks (on the element): --so-wheel-travel (how far a line glides as it
- * goes or comes, --ds-distance-md; read by the script), --so-wheel-fade
- * (the soft edge above and below, --ds-space-2), --so-shimmer-length (one
+ * goes or comes, 100%: one line, its own height; read by the script),
+ * --so-wheel-fade (the soft edge above and below, --ds-space-3), --so-shimmer-length (one
  * tile of the wave: the band and the pause after it, 480px),
  * --so-shimmer-loop (one tile's travel, --ds-loop-loader).
  * Colours (theme.css): --so-shimmer-glint (the wave, white),
  * --so-shimmer-peak (how much of it shows at its crest).
  *
- * Choreography (js/wheel.js): the old line glides out over --ds-dur-medium
- * (--ds-ease-in) and is faded within --ds-dur-fast (--ds-ease-out); the new
- * one starts once it has faded (--ds-dur-fast later) and glides in over
- * --ds-dur-slow on --ds-ease-out (no overshoot), fading in on
- * --ds-ease-in-out: one line at a time, never two on each other. Only translate and opacity, so
+ * Choreography (js/wheel.js): both lines glide over --ds-dur-slow on
+ * --ds-ease-in-out, together; the old one fades on --ds-ease-in (it holds
+ * until it is at the edge), the new one on --ds-ease-out. One line apart,
+ * they never lie on each other. Only translate and opacity, so
  * the text is as sharp in motion as at rest. A change during a roll carries
  * each line on from where it is. The shimmer's wave reuses
  * ds-progress-wave (the mask tile travels one --ds-progress-wave-length per
@@ -57,16 +56,16 @@
  */
 
 .so-wheel {
-  --so-wheel-travel: var(--ds-distance-md);
+  --so-wheel-travel: 100%;
   display: inline-grid;
   grid-template-columns: minmax(0, 1fr);
   min-width: 0;
   /* Room above and below for the turn, given back so nothing moves, and a
      static mask that fades it: lines come from and go into soft edges. */
-  padding-block: var(--so-wheel-fade, var(--ds-space-2));
-  margin-block: calc(-1 * var(--so-wheel-fade, var(--ds-space-2)));
-  -webkit-mask-image: linear-gradient(to bottom, transparent, var(--ds-text) var(--so-wheel-fade, var(--ds-space-2)), var(--ds-text) calc(100% - var(--so-wheel-fade, var(--ds-space-2))), transparent);
-  mask-image: linear-gradient(to bottom, transparent, var(--ds-text) var(--so-wheel-fade, var(--ds-space-2)), var(--ds-text) calc(100% - var(--so-wheel-fade, var(--ds-space-2))), transparent);
+  padding-block: var(--so-wheel-fade, var(--ds-space-3));
+  margin-block: calc(-1 * var(--so-wheel-fade, var(--ds-space-3)));
+  -webkit-mask-image: linear-gradient(to bottom, transparent, var(--ds-text) var(--so-wheel-fade, var(--ds-space-3)), var(--ds-text) calc(100% - var(--so-wheel-fade, var(--ds-space-3))), transparent);
+  mask-image: linear-gradient(to bottom, transparent, var(--ds-text) var(--so-wheel-fade, var(--ds-space-3)), var(--ds-text) calc(100% - var(--so-wheel-fade, var(--ds-space-3))), transparent);
 }
 
 .so-wheel > * {

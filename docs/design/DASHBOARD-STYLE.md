@@ -76,7 +76,7 @@ unchanged in 2.1.0), filled in for Socrates:
 | `css/so-question.css` | the question dialog |
 | `css/so-sheet.css` | the new-session sheet and its settings form |
 | `css/so-chat.css` | the chat view: the conversation and its parts, the composer, the chat's question dialog (over `so-question.css`) |
-| `css/so-motion.css` | `.so-wheel` (lines that roll quietly, one at a time) and `.so-shimmer` (a faint white wave over text at work), proposed to DS (below) |
+| `css/so-motion.css` | `.so-wheel` (lines that roll quietly, the new one pushing the old one out) and `.so-shimmer` (a faint white wave over text at work), proposed to DS (below) |
 | `css/so-admin.css` | the admin page |
 | `css/so-pages.css` | login, setup and costs |
 | `js/ui.js` | the bridge to DS: `startUI`, touch mode, icons, `html```, `morph`, `flipMorph`, `ms`, `faces`, overlays |
@@ -179,7 +179,7 @@ from here to there.
 
 | Part | Here | Proposal |
 |---|---|---|
-| The wheel and the shimmer: a running answer's live line (`.so-live`) rolls what the agent does, quietly and one line at a time, under a faint white wave | `css/so-motion.css`, `js/wheel.js`; the wave runs on DS's `ds-progress-wave` (no keyframes of our own) | [plans/wheel-and-shimmer.md](https://github.com/saschazesiger/Dashboard-Style/blob/main/plans/wheel-and-shimmer.md) |
+| The wheel and the shimmer: a running answer's live line (`.so-live`) rolls what the agent does, the new line quietly pushing the old one out, under a faint white wave | `css/so-motion.css`, `js/wheel.js`; the wave runs on DS's `ds-progress-wave` (no keyframes of our own) | [plans/wheel-and-shimmer.md](https://github.com/saschazesiger/Dashboard-Style/blob/main/plans/wheel-and-shimmer.md) |
 
 When DS ships one of them, the project's copy goes and the page takes DS's names.
 
