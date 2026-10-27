@@ -37,8 +37,8 @@ where the change is visible there).
 ## Design system: Dashboard-Style
 
 The web interface follows Dashboard-Style's rules for a project (its `AGENTS.md`, "Using Dashboard-Style in a
-project", 2.0), filled in for Socrates. `docs/design/DASHBOARD-STYLE.md` has them with Socrates' details, what
-moved onto DS in 2.0 and what is still Socrates' own on purpose. Run `make ds-check` before committing a change to
+project", 2.0, unchanged in 2.1), filled in for Socrates. `docs/design/DASHBOARD-STYLE.md` has them with Socrates'
+details, what moved onto DS in 2.0 and 2.1 and what is still Socrates' own on purpose. Run `make ds-check` before committing a change to
 the UI.
 
 - The UI is built on [Dashboard-Style](https://github.com/saschazesiger/Dashboard-Style) 2.x, vendored in

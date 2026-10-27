@@ -7,8 +7,8 @@ data directory it was written in.
 
 ## The rules
 
-These are DS's own rules for a project (its `AGENTS.md`, "Using Dashboard-Style in a project", as of 2.0.0), filled
-in for Socrates:
+These are DS's own rules for a project (its `AGENTS.md`, "Using Dashboard-Style in a project", as of 2.0.0 and
+unchanged in 2.1.0), filled in for Socrates:
 
 - **The UI is built on Dashboard-Style 2.x**, vendored in `internal/web/static/vendor/dashboard-style` (tokens
   `--ds-*`, components `.ds-*`, `DS.motion`, `DS.indicator`, `DS.dom`, `DS.ripple`, `DS.icons`, `DS.overlay`).
@@ -54,8 +54,9 @@ in for Socrates:
   template, never `innerHTML`; key list rows with `data-ds-key`. Reorders go through `flip()` or
   `DS.motion.sortable()`, figures through `DS.motion.countUp`, timing from `ms()` / `DS.motion.motionDuration`,
   never millisecond literals.
-- **Icons only from `DS.icons`**, through `icon()` / `iconEl()` / `data-icon` (`ui.js`); the meaning-to-glyph map is
-  `GLYPH`. Nothing is drawn by the project. Brand marks of the agents stay in `logos.js` and `.so-agent`.
+- **Icons only from `DS.icons`**, through `icon()` / `iconEl()` (`ui.js`, which read `GLYPH`, the meaning-to-glyph
+  map) and in markup `data-icon` with a DS glyph's name (`DS.icons.fill()`; `data-icon-place="start"` keeps the
+  element's content after the glyph). Nothing is drawn by the project. Brand marks of the agents stay in `logos.js` and `.so-agent`.
 - **Status never by colour alone; every action is a pill; one filled button per area; no red buttons.**
 - `ui.js` is the only module that reads `window.DS`.
 - Socrates' own design rules still hold (docs/design/DESIGN.md §E.10): technical detail (versions, paths) behind
@@ -112,15 +113,12 @@ looks, and the parts Socrates had built by hand that 2.0 ships. Moved onto DS's 
 
 Still Socrates' own, on purpose: the composer's growth (DS's `autosize()` hides the overflow of a field without a
 `max-height`, which the first message's field that fills the view has), the chat's stick-to-the-end and its
-"Latest" (it also lifts the snackbars and waits for a replay), the chat's file drop (the composer's own file input
-sits inside the chat, and DS's `dropzone()` would take its picks too), the chat's Markdown (`.so-md`) and fenced
+"Latest" (it also lifts the snackbars and waits for a replay), the chat's Markdown (`.so-md`) and fenced
 blocks with their bar (`.so-code`), the session's name in the top bar (a rename button, not a
 `.ds-topbar__title`), Home's tile grid (two a row on a phone, each row filled), the focus fallback to the terminal
-(`setFocusFallback`), `alertDialog` (lines and facts, which DS's `alert()` has not), the `data-icon` filler (it puts
-the glyph in front of a label; DS's `icons.fill()` replaces the content), the drawer list's cut-edge fade (DS fades
-menus and lists, not the drawer's list), the snackbar room in the session page's own view (DS keeps it on the
-`.ds-view`, which here does not scroll: `.so-view[data-toast-reserve]` takes DS's padding back, and `placeToasts`
-keeps the room above the key bar, the chat's dock and at the conversation's end), and the folders of the session
+(`setFocusFallback`), `alertDialog` (lines and facts, which DS's `alert()` has not), the snackbar room in the session page's own
+view (it does not scroll, so it keeps none of DS's room, `data-ds-toast-room="off"`, and `placeToasts` keeps the
+room above the key bar, the chat's dock and at the conversation's end), and the folders of the session
 list (`.so-folder`: their head has the VS Code button beside its toggle, which a `<summary>` cannot hold, shelves
 nest a level inside a folder, and which folders are open is the person's, saved across reloads; DS's
 `.ds-drawer__group` is a `<details>` with a summary for a toggle). A shut folder's head says what is behind it by
@@ -134,12 +132,40 @@ still place or size a DS part. Each is deliberate:
 
 | Rule | File | Why |
 |---|---|---|
-| `.so-view[data-toast-reserve]` | `so-frame.css` | The session page's view does not scroll: DS's room for a snackbar that stays would shrink the stage, refit the terminal and lift the key bar. The view keeps its safe area; the page keeps the room itself (`placeToasts`). |
-| `.so-touch .so-row__open` (end padding) | `so-frame.css` | In touch mode a row's ⋮ (`.ds-drawer__action`, `--ds-btn-sm-icon-size` 48px) is wider than the 40px DS keeps at the end of a drawer item, so the name ran under it. A wish for DS: the item's end padding read the action's size. |
 | `.so-row__open` (block padding, up to 900px) | `so-frame.css` | In the modal drawer a session's name takes two lines; two such rows keep a little air between them. |
 | `.so-line` (min-height) | `so-chat.css` | A line between messages is DS's labelled divider as tall as a small button, so a line with an "i" is as tall as one without. A refused command is not a divider: `.so-line--row`, a project row with its chip and buttons. |
 | `.so-auth__card` (grid, gap, children's margins) | `so-pages.css` | Setup's card holds sections of fields, a restore offer and a snapshot list: the card spaces them through one gap instead of each child's margin. |
 | `.ds-auth > .so-conn` (sticky) | `so-shared.css` | The connection alert in the sign-in page's slot stays in sight while setup's long form scrolls on a phone. |
+
+## Dashboard-Style 2.0 to 2.1 (October 2026)
+
+2.1.0 (vendored at `a7a78db`) fixes what Socrates worked around after the move to 2.0 and adds the options it asked
+for; it removes and renames nothing. Moved onto DS's part:
+
+| Before (Socrates' own) | Now (DS 2.1) |
+|---|---|
+| `.so-touch .so-row__open`: the drawer item's end padding for a 48px ⋮ | DS keeps room for the action at its own size (`--ds-btn-sm-icon-size`) |
+| the drawer list's fade at its foot (`.ds-drawer__list[data-ds-overflow-end]::after`) and the `ResizeObserver` that told `scrollEdges` about the session list | DS's shades at both cut edges of `.ds-drawer__list`; `scrollEdges()` watches every child of the list |
+| `.so-view[data-toast-reserve]` taking DS's snackbar room back from the fixed view | `data-ds-toast-room="off"` on the view |
+| Admin's and Costs' gutter for the last table column shown on a phone | DS's own rule |
+| the margin that kept a status chip in a chat card's head from hanging like a button | DS sits a status chip on the title's line |
+| `promptDialog` patching the field of DS's prompt (spellcheck, capitals, autocorrect, Enter) | `prompt({ input: { spellcheck, autocapitalize, autocorrect, enterkeyhint } })` |
+| the chat's own drop code (`data-dropping`) | `DS.dom.dropzone(chat, { input: null })`, the composer's file input left to the composer |
+| `fillIcons`' own loop and `data-icon-slot` | `DS.icons.fill()` with `data-icon-place="start"` |
+
+Still Socrates' own after 2.1, with the reason that still holds:
+
+- **The top bar in a phone's strip** (`.so-touch[data-so-short]`, `ds-check.json`): 2.1's `followViewport()` counts a
+  field in VS Code's frame, but the editor's text in Chromium is an EditContext element (code-server 4.143.1), neither a
+  textarea nor contenteditable, so `data-ds-keyboard` still does not come for it. A wish for DS: count an element
+  with an `editContext` as a field that types.
+- **The 8px row gap of a chat card's head** (`ds-check.json`): DS keeps 18px between a title and a chip that wraps under
+  it, the gap a button needs; the chat keeps a chip's gap. The answer row keeps its own rule too: its words are a
+  meta line, which DS still hangs out of the line like a button.
+- **The composer's growth** (DS's `autosize()` hides the overflow of a field without a `max-height`), **Home's tile
+  grid** (two a row on a phone, each row filled), **the Status
+  modal's figures in words**, **the brand's name on a phone** and **`alertDialog`**: 2.1 changes none of these; they
+  are the project's layout or content, as listed above.
 
 
 ## Work packages

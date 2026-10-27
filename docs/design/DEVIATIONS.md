@@ -2999,3 +2999,17 @@ pass and the work packages that were DS gaps:
 What still departs is listed with its reason in `ds-check.json` (the placement and wrapping rules on DS parts
 that DS's project check finds) and in DASHBOARD-STYLE.md ("Still Socrates' own", and "Rules on DS parts that the
 check does not see").
+
+## Dashboard-Style 2.1 (2026-10-27)
+
+Dashboard-Style 2.1.0 (DASHBOARD-STYLE.md, "Dashboard-Style 2.0 to 2.1") ends these deviations of the 2.0 move:
+
+- **The drawer row's room in touch mode, the drawer list's fade, the fixed view's snackbar room, the phone tables'
+  last gutter and the status chip in a card's head** are DS's own now; the project rules and their `ds-check.json`
+  exceptions are gone. The drawer list now shades both of its cut edges, not only the foot.
+- **The prompt's field, the chat's file drop and the `data-icon` filler** use DS's new options instead of code of
+  their own; nothing on screen changes.
+
+Still departing, with the reason updated: the top bar in a phone's strip (DS does not count VS Code's EditContext
+editor as a field), the 8px row gap in a chat card's head and its answer row (`ds-check.json`). The list of what
+stays Socrates' own is in DASHBOARD-STYLE.md.
