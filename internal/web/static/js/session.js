@@ -3623,10 +3623,16 @@ function closeNav() {
 // below it (so-frame.css): on a phone the list was cut through the second
 // line of a name above Costs, with nothing to say it scrolls. DS has no
 // fade for the drawer's list, but it reports which end has more to scroll
-// (DS.dom.scrollEdges, data-ds-overflow-end); the fade reads that.
+// (DS.dom.scrollEdges, data-ds-overflow-end); the fade reads that. DS
+// measures again on a scroll and when the list or its first child changes
+// size; the first child is Home, which never does, while the session list
+// grows and shrinks with every session and folder opened or shut, so it is
+// watched too.
 function drawerCue() {
   const list = document.getElementById('drawerList');
-  if (list) DS.dom.scrollEdges(list, { axis: 'block' });
+  if (!list) return;
+  const edges = DS.dom.scrollEdges(list, { axis: 'block' });
+  new ResizeObserver(() => edges.update()).observe(dom.sessionList);
 }
 
 // wireList is the session list's and the row menu's listeners, bound once:
