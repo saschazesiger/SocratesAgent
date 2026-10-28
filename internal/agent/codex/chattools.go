@@ -14,7 +14,7 @@ import (
 // tools it was started with, so a chat's thread from before has none.
 
 // chatsGuidance is what the developer instructions say about them.
-var chatsGuidance = chattools.Guidance(chattools.List)
+var chatsGuidance = chattools.Guidance("")
 
 // chatToolSpecs is the chat tools as DynamicToolSpecs.
 func chatToolSpecs() []json.RawMessage {

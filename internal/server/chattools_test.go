@@ -55,8 +55,12 @@ func TestTheChatsOfARepositoryReachEachOther(t *testing.T) {
 		return ep.Call(context.Background(), tool, raw)
 	}
 
+	if err := os.WriteFile(filepath.Join(repo, ".git", "HEAD"), []byte("ref: refs/heads/login-fix\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	res := call(ep, chattools.List, map[string]any{})
 	if res.Error || !strings.Contains(res.Text, "id "+web+": “Web” (Scripted agent)") || strings.Contains(res.Text, other) ||
+		!strings.Contains(res.Text, "in the same working tree as this chat, on the branch login-fix:") ||
 		strings.Contains(res.Text, api) || !strings.Contains(res.Text, "folder web") || !strings.Contains(res.Text, "("+repo+")") {
 		t.Fatalf("list: %+v", res)
 	}
@@ -113,6 +117,37 @@ func TestAChatsSendsAreCounted(t *testing.T) {
 	}
 	if !tools.allowSend("a", now.Add(time.Hour+time.Second)) {
 		t.Fatal("an hour on, the chat still could not send")
+	}
+}
+
+// The branch is read from the working tree's HEAD, a linked worktree's too,
+// and there is none for a detached HEAD or a folder that is no repository.
+func TestGitBranch(t *testing.T) {
+	main := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(main, ".git", "worktrees", "wt"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	write := func(path, text string) {
+		if err := os.WriteFile(path, []byte(text), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(filepath.Join(main, ".git", "HEAD"), "ref: refs/heads/main\n")
+	if got := gitBranch(main); got != "main" {
+		t.Fatalf("main: %q", got)
+	}
+	wt := t.TempDir()
+	write(filepath.Join(wt, ".git"), "gitdir: "+filepath.Join(main, ".git", "worktrees", "wt")+"\n")
+	write(filepath.Join(main, ".git", "worktrees", "wt", "HEAD"), "ref: refs/heads/feature/x\n")
+	if got := gitBranch(wt); got != "feature/x" {
+		t.Fatalf("worktree: %q", got)
+	}
+	write(filepath.Join(main, ".git", "HEAD"), "4b825dc642cb6eb9a060e54bf8d69288fbee4904\n")
+	if got := gitBranch(main); got != "" {
+		t.Fatalf("detached: %q", got)
+	}
+	if got := gitBranch(t.TempDir()); got != "" {
+		t.Fatalf("no repository: %q", got)
 	}
 }
 

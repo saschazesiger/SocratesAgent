@@ -15,14 +15,16 @@ import (
 // tool of the in-process server askuser.ServerName.
 const AskTool = "mcp__" + askuser.ServerName + "__" + askuser.Name
 
-// ChatsTool is the name the model knows list_chats by in Claude Code.
-const ChatsTool = "mcp__" + askuser.ServerName + "__" + chattools.List
+// chatsPrefix is what Claude Code puts before the name of a tool of the
+// socrates server.
+const chatsPrefix = "mcp__" + askuser.ServerName + "__"
 
 // chatsGuidance is the system-prompt text about the chat tools, for a chat
-// that has them.
-var chatsGuidance = chattools.Guidance(ChatsTool) +
-	" Load them with ToolSearch (select:" + ChatsTool + ",mcp__" + askuser.ServerName + "__" + chattools.Read +
-	",mcp__" + askuser.ServerName + "__" + chattools.Send + ") when you need them."
+// that has them. They are reached this way only: the CLI's own messaging
+// between sessions is off (cliEnv).
+var chatsGuidance = chattools.Guidance(chatsPrefix) +
+	"\nLoad them with ToolSearch (select:" + chatsPrefix + chattools.List + "," + chatsPrefix + chattools.Read +
+	"," + chatsPrefix + chattools.Send + ") when you need them."
 
 // askGuidance is the system-prompt text every chat gets (REBUILD.md §5.3).
 // Claude Code defers MCP tools behind ToolSearch, which the model finds on

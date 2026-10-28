@@ -347,6 +347,32 @@ Socrates' own MCP server (`internal/agent/chattools`).
   OpenCode's `socrates mcp-ask` gets it in its environment
   (`SOCRATES_CHAT_TOOLS_SOCKET`, `SOCRATES_CHAT_TOOLS_TOKEN`). The tools and
   their guidance are only there when the spec has the endpoint.
+- **The only way.** Claude Code's own messaging between the sessions of an
+  account (`ListAgents`/`SendMessage` to other sessions, its inbox under
+  `/tmp/cc-socks`) is off in every chat (`CLAUDE_CODE_HARBOR_KITE=0`, an
+  undocumented switch of the CLI, verified against 2.1.312: "[uds-messaging]
+  Skipped: cross-session messaging gate off"). Codex and OpenCode have no such
+  thing. A new CLI release can rename the switch: `claude -p --debug` with an
+  empty `CLAUDE_CONFIG_DIR` shows whether `[uds-messaging] Listening` is back.
+- **When the agents talk** is in their instructions (`chattools.Guidance`:
+  Claude Code's system prompt, Codex's developer instructions, the socrates
+  server's MCP instructions for OpenCode), and in short in the tools'
+  descriptions. They coordinate only where one's work affects another's:
+  with changes in the working tree they did not make, they commit only their
+  own files, by path; before pushing a branch another chat works on, or before
+  what would touch, move or hide its work (pull, rebase, branch switch, stash,
+  discard, mass moves, dependencies, migrations, shared services), they check
+  quietly (`list_chats`, `read_chat`) and ask only when its uncommitted files,
+  branch or service would change, then wait for the answer by ending their
+  turn; with nobody there, or unrelated work, they go ahead without asking.
+  A change another chat relies on gets one short note. Nothing else is sent
+  (no status, greetings, thanks, or answers that are not needed); whoever is
+  waited for says once when it is done; a missing answer is not asked again;
+  and a message that conflicts with what the person asked goes to the person.
+  `list_chats` names the branch the shared working tree is on (read from
+  `.git/HEAD`, never by running git in a folder the agents can configure).
+  The rules were checked against twelve situations by two independent
+  reviews (2026-10-28) before they shipped.
 
 ## Instructions per model
 

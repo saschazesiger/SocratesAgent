@@ -349,6 +349,13 @@ func effortLevel(e string) string {
 // an API-key account's key comes in as ANTHROPIC_API_KEY, and the fixed policy
 // is added. IS_SANDBOX=1 is what lets --dangerously-skip-permissions run as
 // root at all; CLAUDE_CODE_ENABLE_TODO_TOOLS=1 gives the model its task list.
+// CLAUDE_CODE_HARBOR_KITE=0 turns off the CLI's own messaging between
+// sessions (ListAgents and SendMessage reaching the other Claude Code
+// sessions of the account, and its inbox socket under /tmp/cc-socks): a chat
+// reaches the other chats of its repository through the chat tools only,
+// whatever the account (HARNESS-POLICY.md, "Chats of one repository").
+// Verified against 2.1.312: "[uds-messaging] Skipped: cross-session
+// messaging gate off" instead of "Listening: /tmp/cc-socks/<pid>.sock".
 func cliEnv(base []string) []string {
 	var out []string
 	key := ""
@@ -371,7 +378,7 @@ func cliEnv(base []string) []string {
 	if os.Geteuid() == 0 {
 		out = append(out, "IS_SANDBOX=1")
 	}
-	return append(out, "CLAUDE_CODE_ENABLE_TODO_TOOLS=1")
+	return append(out, "CLAUDE_CODE_ENABLE_TODO_TOOLS=1", "CLAUDE_CODE_HARBOR_KITE=0")
 }
 
 func hasValue(env []string, key, value string) bool {

@@ -455,7 +455,10 @@ Claude Code's shape, removed when it has none; `--strict-mcp-config` keeps the C
 `--session-id <new uuid>` or `--resume <id>`.
 
 **Environment.** `StartSpec.Env` minus every `CLAUDE*`/`ANTHROPIC*`/`IS_SANDBOX` variable except
-`CLAUDE_CONFIG_DIR`; plus `IS_SANDBOX=1` as root and `CLAUDE_CODE_ENABLE_TODO_TOOLS=1`. Two
+`CLAUDE_CONFIG_DIR`; plus `IS_SANDBOX=1` as root, `CLAUDE_CODE_ENABLE_TODO_TOOLS=1` and
+`CLAUDE_CODE_HARBOR_KITE=0` (the CLI's own messaging between sessions off: no inbox under
+`/tmp/cc-socks`, no `SendMessage` to the account's other sessions; a chat reaches others through
+the chat tools only, HARNESS-POLICY.md "Chats of one repository"; verified against 2.1.312). Two
 variables of the spec are instructions to the adapter, not passed on: `SOCRATES_CLAUDE_API_KEY`
 (an API-key account; becomes `ANTHROPIC_API_KEY`) and `SOCRATES_CLAUDE_ULTRACODE=1` (the session
 option, which the host sets from `host.json`'s `ultracode` and takes away otherwise,

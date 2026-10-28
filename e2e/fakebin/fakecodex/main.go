@@ -38,6 +38,8 @@
 //	                 arguments given (for ask_user, a call of two questions
 //	                 when none are); says its answer
 //	/bg S            leaves a background terminal for S seconds
+//	/thread          "tools: <names>" and "instructions: <text>": the dynamic
+//	                 tools and developer instructions thread/start gave
 //	/whoami          "account: <login> (home <CODEX_HOME>)": the login
 //	                 auth.json holds now, "none" before there is one
 //	anything else    reasoning, then "you said: <text>"
@@ -154,6 +156,10 @@ type thread struct {
 	assistant  bool
 	active     *fturn
 	bgUntil    time.Time
+	// tools and developer are what thread/start gave this process's thread:
+	// its dynamic tools by name and its developer instructions (/thread).
+	tools     []string
+	developer string
 }
 
 type fturn struct {
@@ -274,6 +280,16 @@ func (s *server) request(fr frame) {
 			s.fail(fr.ID, -32603, err.Error(), nil)
 			return
 		}
+		var tools []struct {
+			Name string `json:"name"`
+		}
+		_ = json.Unmarshal(p["dynamicTools"], &tools)
+		s.mu.Lock()
+		for _, t := range tools {
+			th.tools = append(th.tools, t.Name)
+		}
+		th.developer = str("developerInstructions")
+		s.mu.Unlock()
 		s.respond(fr.ID, s.threadResult(th))
 		s.notify("thread/started", map[string]any{"thread": s.threadJSON(th)})
 	case "thread/resume":
@@ -945,6 +961,11 @@ func (c *tcx) script(text string) (string, map[string]any) {
 		item["status"], item["success"], item["contentItems"] = "completed", res.Success, res.ContentItems
 		c.completed(item)
 		ok = c.say([]string{"tool said: " + strings.Join(said, " ")}, 0)
+	case "/thread":
+		c.s.mu.Lock()
+		said := "tools: " + strings.Join(c.th.tools, ",") + "\ninstructions: " + c.th.developer
+		c.s.mu.Unlock()
+		ok = c.say([]string{said}, 0)
 	case "/whoami":
 		who := accountOf(c.s.home)
 		if who == "" {

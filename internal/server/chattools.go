@@ -242,7 +242,13 @@ func (t *chatToolServer) list(row *store.Session) chattools.Response {
 		return chattools.Response{Text: "No other chat works in this repository (" + scope + ")."}
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "%d other chat(s) work in this repository (%s):\n", len(list), scope)
+	fmt.Fprintf(&b, "%d other chat(s) work in this repository (%s)", len(list), scope)
+	// The chats of a repository share its working tree, so they are all on
+	// the branch it has checked out.
+	if branch := gitBranch(scope); branch != "" {
+		fmt.Fprintf(&b, ", in the same working tree as this chat, on the branch %s", branch)
+	}
+	b.WriteString(":\n")
 	for _, other := range list {
 		state := "waiting"
 		model := other.Model
@@ -266,6 +272,33 @@ func (t *chatToolServer) list(row *store.Session) chattools.Response {
 		fmt.Fprintf(&b, ", %s, folder %s\n", state, where)
 	}
 	return chattools.Response{Text: b.String()}
+}
+
+// gitBranch is the branch a working tree has checked out, read from its
+// HEAD rather than by running git, whose config the agents can write; ""
+// when it is not a Git working tree or not on a branch.
+func gitBranch(dir string) string {
+	gitDir := filepath.Join(dir, ".git")
+	if data, err := os.ReadFile(gitDir); err == nil {
+		// A linked worktree's .git is a file naming its git directory.
+		path, ok := strings.CutPrefix(strings.TrimSpace(string(data)), "gitdir:")
+		if !ok {
+			return ""
+		}
+		gitDir = strings.TrimSpace(path)
+		if !filepath.IsAbs(gitDir) {
+			gitDir = filepath.Join(dir, gitDir)
+		}
+	}
+	head, err := os.ReadFile(filepath.Join(gitDir, "HEAD"))
+	if err != nil {
+		return ""
+	}
+	ref, ok := strings.CutPrefix(strings.TrimSpace(string(head)), "ref: refs/heads/")
+	if !ok {
+		return ""
+	}
+	return ref
 }
 
 func (t *chatToolServer) read(row *store.Session, args json.RawMessage) chattools.Response {

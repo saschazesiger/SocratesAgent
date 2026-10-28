@@ -329,7 +329,7 @@ func TestEnvironmentIsBuiltFromScratch(t *testing.T) {
 	r.turnsEnded(t, 1)
 	var text string
 	r.view(func(p *agent.Projection) { text = partsOf(lastAssistant(p), agent.PartText)[0].Text })
-	want := []string{"CLAUDE_CONFIG_DIR=" + e.conf, "CLAUDE_CODE_ENABLE_TODO_TOOLS=1", "ANTHROPIC_API_KEY=sk-account"}
+	want := []string{"CLAUDE_CONFIG_DIR=" + e.conf, "CLAUDE_CODE_ENABLE_TODO_TOOLS=1", "CLAUDE_CODE_HARBOR_KITE=0", "ANTHROPIC_API_KEY=sk-account"}
 	if os.Geteuid() == 0 {
 		want = append(want, "IS_SANDBOX=1")
 	}

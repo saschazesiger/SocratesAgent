@@ -1404,8 +1404,9 @@ async function adminoptions() {
     ok(settings.disableRemoteControl === true && settings.skipDangerousModePermissionPrompt === true,
       'its settings disable Remote Control and the bypass dialog', JSON.stringify(settings));
     const env = await answerTo(s, id, '/env');
-    ok(env.includes('CLAUDE_CODE_ENABLE_TODO_TOOLS=1') && !/CLAUDE_CODE_NO_FLICKER|CLAUDE_CODE_DISABLE_TERMINAL_TITLE|CLAUDE_REMOTE_CONTROL|ANTHROPIC_/.test(env),
-      'its environment is the chat’s: the task tools on, nothing of a terminal and no key of a subscription',
+    ok(env.includes('CLAUDE_CODE_ENABLE_TODO_TOOLS=1') && env.includes('CLAUDE_CODE_HARBOR_KITE=0')
+      && !/CLAUDE_CODE_NO_FLICKER|CLAUDE_CODE_DISABLE_TERMINAL_TITLE|CLAUDE_REMOTE_CONTROL|ANTHROPIC_/.test(env),
+      'its environment is the chat’s: the task tools on, the CLI’s own messaging between sessions off, nothing of a terminal and no key of a subscription',
       oneLine(env));
     const transcript = join(s.data, 'agents', 'claude', 'projects', preset.replace(/[^A-Za-z0-9]/g, '-'));
     ok(existsSync(transcript), 'and Claude Code ran there: its transcript is the preset’s project', transcript.replace(s.data, '<data>'));
@@ -2821,7 +2822,20 @@ async function chatpeers() {
       return null;
     };
 
+    // Each agent is told when to use the tools - before what changes another
+    // chat's work, and for nothing else - in its own place for it, with the
+    // names it knows them by; Claude Code's own messaging between sessions
+    // is off, so the tools are its only way to the other chats.
+    const RULE = 'Before you push a branch another chat works on';
     await openChat(s.page, claude);
+    const argv = await answerTo(s, claude, '/argv');
+    const prompt = (/--append-system-prompt (.*?)(?: --model | --effort | --session-id | --resume |$)/s.exec(argv) || [])[1] || '';
+    ok(prompt.includes(RULE) && prompt.includes('mcp__socrates__list_chats, mcp__socrates__read_chat and mcp__socrates__send_to_chat are the only way')
+      && prompt.includes('go ahead without asking') && prompt.includes('Send nothing else'),
+      'Claude Code’s system prompt says when to reach the other chats, and when not', prompt.slice(prompt.indexOf('Other chats'), prompt.indexOf('Other chats') + 160));
+    const claudeEnv = await answerTo(s, claude, '/env');
+    ok(claudeEnv.includes('CLAUDE_CODE_HARBOR_KITE=0'), 'Claude Code runs with its own messaging between sessions off',
+      (/CLAUDE_CODE_HARBOR_KITE=\S*/.exec(claudeEnv) || ['none'])[0]);
     const listed = await answerTo(s, claude, '/mcptool list_chats {}');
     ok(listed.startsWith('list_chats returned: 2 other chat(s) work in this repository (' + repo + ')')
       && listed.includes('id ' + codex + ': “Web work” (Codex)') && listed.includes('folder web')
@@ -2842,11 +2856,18 @@ async function chatpeers() {
     const bubble = await s.page.$eval('#chat .so-msg[data-role="user"] .so-msg__text', (n) => n.textContent);
     ok(bubble === 'Please check the login form.', 'and the message shows without the line meant for the agent', bubble);
     await shot(s.page, 'chatpeers-received');
-    const read = await answerTo(s, codex, '/tool read_chat {"chat":"' + claude + '","count":4}');
+    const thread = await answerTo(s, codex, '/thread');
+    ok(/^tools: .*list_chats/.test(thread) && thread.includes('read_chat') && thread.includes('send_to_chat')
+      && thread.includes(RULE) && thread.includes('list_chats, read_chat and send_to_chat are the only way'),
+      'Codex’s thread has the tools, and its developer instructions say when to use them', thread.split('\n')[0]);
+    const read = await answerTo(s, codex, '/tool read_chat {"chat":"' + claude + '","count":6}');
     ok(read.startsWith('tool said: The last ') && read.includes('of the chat “API work” (Claude Code)')
       && read.includes('list_chats returned:'), 'Codex reads what was said in the Claude Code chat', read.slice(0, 200));
 
     await openChat(s.page, opencode);
+    const instructions = await answerTo(s, opencode, '/mcpinstructions');
+    ok(instructions.includes(RULE) && instructions.includes('socrates_list_chats, socrates_read_chat and socrates_send_to_chat are the only way'),
+      'OpenCode is told the same by the socrates server, with the names it knows the tools by', instructions.slice(0, 120));
     const back = await answerTo(s, opencode, '/mcptool send_to_chat {"chat":"' + claude + '","text":"Docs are done."}');
     ok(/^send_to_chat returned: Sent to “API work” \(Claude Code\)\./.test(back), 'OpenCode sends the Claude Code chat a message', back);
     const answered = await received(claude, 'Docs are done.');

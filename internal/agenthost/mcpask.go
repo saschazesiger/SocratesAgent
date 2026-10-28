@@ -18,11 +18,8 @@ import (
 )
 
 // MCPAskTool is the name an agent that prefixes MCP tools with their server
-// (OpenCode: <server>_<tool>) knows ask_user by, and MCPChatsTool list_chats.
-const (
-	MCPAskTool   = askuser.ServerName + "_" + askuser.Name
-	MCPChatsTool = askuser.ServerName + "_" + chattools.List
-)
+// (OpenCode: <server>_<tool>) knows ask_user by.
+const MCPAskTool = askuser.ServerName + "_" + askuser.Name
 
 // MCPAskMain is the `socrates mcp-ask --socket <host socket>` subcommand, and
 // its exit code: ask_user as an MCP server on stdin and stdout, for an agent
@@ -69,7 +66,7 @@ func ServeMCPAsk(ctx context.Context, sock, version string, chats chattools.Endp
 	}
 	instructions := askuser.Guidance(MCPAskTool)
 	if chats.Usable() {
-		instructions += "\n\n" + chattools.Guidance(MCPChatsTool)
+		instructions += "\n\n" + chattools.Guidance(askuser.ServerName+"_")
 	}
 	m := &askuser.MCP{
 		Version:      version,
