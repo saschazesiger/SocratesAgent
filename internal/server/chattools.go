@@ -183,8 +183,8 @@ func (t *chatToolServer) handle(w http.ResponseWriter, r *http.Request) {
 	answer(http.StatusOK, res.Text, res.Error)
 }
 
-// peers is the other chats of a chat's repository, newest first, and the
-// repository.
+// peers is the other chats of a chat's repository that are at work (awake),
+// newest first, and the repository.
 func (t *chatToolServer) peers(row *store.Session) ([]*store.Session, string, error) {
 	scope := chatScope(row.Workdir)
 	rows, err := t.srv.store.ListSessions()
@@ -194,13 +194,25 @@ func (t *chatToolServer) peers(row *store.Session) ([]*store.Session, string, er
 	var out []*store.Session
 	for i := range rows {
 		other := rows[i]
-		if other.ID == row.ID || !other.IsChat() || scope == "" || chatScope(other.Workdir) != scope {
+		if other.ID == row.ID || !other.IsChat() || scope == "" || chatScope(other.Workdir) != scope || !t.awake(&other) {
 			continue
 		}
 		out = append(out, &other)
 	}
 	sort.SliceStable(out, func(i, j int) bool { return out[i].CreatedAt > out[j].CreatedAt })
 	return out, scope, nil
+}
+
+// awake says whether a chat is one the others see: not filed in the
+// background or done, and started - a chat nobody has sent anything yet is
+// on its folder's Not started shelf (sessionView.Fresh). The others neither
+// list, read nor write to the rest, as if they were not there.
+func (t *chatToolServer) awake(row *store.Session) bool {
+	if row.Status == store.StatusBackground || row.Status == store.StatusDone {
+		return false
+	}
+	p, err := t.srv.chats.peer(row.ID)
+	return err == nil && p.summary().Asked
 }
 
 // peer is the chat a call names, when it is one of the caller's peers.

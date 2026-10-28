@@ -329,6 +329,11 @@ Socrates' own MCP server (`internal/agent/chattools`).
   with a `.git`, else its folder alone (`chatScope`). A dynamic folder is a
   chat's own, so such a chat reaches nobody; preset and typed-in folders do.
 - **A message** goes into the other chat as the person's messages do
+- **Only the chats at work.** A chat filed in the background or done, or
+  one nobody has sent anything yet (its folder's Not started shelf), is not
+  there for the others: `list_chats` leaves it out, and `read_chat` and
+  `send_to_chat` answer as for a chat that does not exist (`awake`). Filed
+  back in progress, or sent its first message, it is there again.
   (`sendMessage`), after a `chat_message` notice that names the chat it came
   from ("A message from the chat “API work” (Claude Code)."). It opens with
   a line for the agent - which chat, its id, answer with `send_to_chat` -

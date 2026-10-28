@@ -13,13 +13,15 @@ import (
 	"github.com/saschazesiger/SocratesAgent/internal/agent"
 	"github.com/saschazesiger/SocratesAgent/internal/agent/chattools"
 	"github.com/saschazesiger/SocratesAgent/internal/agenthost"
+	"github.com/saschazesiger/SocratesAgent/internal/store"
 )
 
 // The agents of the chats in one repository reach each other through the
 // chat tools, with the token of their own chat: list_chats names the other
 // chats of the repository and no chat outside it, send_to_chat puts a
 // message into one - marked as another chat's, and its agent answers it -
-// and read_chat gives back what was said there.
+// and read_chat gives back what was said there. A chat in the background,
+// done or not started yet is not there for them at all.
 func TestTheChatsOfARepositoryReachEachOther(t *testing.T) {
 	c := newChatEnv(t, time.Hour)
 	next := c.srv.Settings()
@@ -45,6 +47,15 @@ func TestTheChatsOfARepositoryReachEachOther(t *testing.T) {
 	api := create("API", filepath.Join(repo, "api"))
 	web := create("Web", filepath.Join(repo, "web"))
 	other := create("Other", elsewhere)
+	draft := create("Draft", filepath.Join(repo, "web"))
+	service := create("Service", repo)
+	for _, id := range []string{web, service} {
+		c.send(t, id, "start-"+id, "hello")
+		c.waitJournal(t, id, 15*time.Second, "the first turn", turnsEnded(1))
+	}
+	if err := c.srv.store.SetSessionStatus(service, store.StatusBackground); err != nil {
+		t.Fatal(err)
+	}
 
 	ep, err := c.srv.chatToolsEndpoint(api)
 	if err != nil || !ep.Usable() || ep.Socket != agenthost.ToolsSocketPath(c.data) {
@@ -61,8 +72,17 @@ func TestTheChatsOfARepositoryReachEachOther(t *testing.T) {
 	res := call(ep, chattools.List, map[string]any{})
 	if res.Error || !strings.Contains(res.Text, "id "+web+": “Web” (Scripted agent)") || strings.Contains(res.Text, other) ||
 		!strings.Contains(res.Text, "in the same working tree as this chat, on the branch login-fix:") ||
-		strings.Contains(res.Text, api) || !strings.Contains(res.Text, "folder web") || !strings.Contains(res.Text, "("+repo+")") {
+		strings.Contains(res.Text, api) || !strings.Contains(res.Text, "folder web") || !strings.Contains(res.Text, "("+repo+")") ||
+		!strings.Contains(res.Text, "1 other chat(s)") || strings.Contains(res.Text, draft) || strings.Contains(res.Text, service) {
 		t.Fatalf("list: %+v", res)
+	}
+	for _, id := range []string{draft, service} {
+		if res := call(ep, chattools.Send, map[string]any{"chat": id, "text": "hi"}); !res.Error || !strings.Contains(res.Text, "no chat") {
+			t.Fatalf("a chat not started or in the background: %+v", res)
+		}
+		if res := call(ep, chattools.Read, map[string]any{"chat": id}); !res.Error {
+			t.Fatalf("reading a chat not started or in the background: %+v", res)
+		}
 	}
 	if res := call(ep, chattools.Send, map[string]any{"chat": other, "text": "hi"}); !res.Error || !strings.Contains(res.Text, "no chat") {
 		t.Fatalf("a chat outside the repository: %+v", res)
@@ -82,7 +102,7 @@ func TestTheChatsOfARepositoryReachEachOther(t *testing.T) {
 	if res.Error || !strings.Contains(res.Text, "Sent to “Web”") {
 		t.Fatalf("send: %+v", res)
 	}
-	evs := c.waitJournal(t, web, 15*time.Second, "the message answered", turnsEnded(1))
+	evs := c.waitJournal(t, web, 15*time.Second, "the message answered", turnsEnded(2))
 	notice := false
 	for _, ev := range evs {
 		if ev.Type == agent.TypeNotice && ev.Code == agent.NoticeChatMessage && strings.Contains(ev.Text, "“API”") {
