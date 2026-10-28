@@ -321,8 +321,8 @@ func (h *accountHub) codexCLI(a *store.Account) (string, []string, error) {
 
 // recommendAccount is the account of an agent a chat should run on: of the
 // signed-in accounts other than exclude that have not just run into a limit,
-// the one with the most allowance left for the time until it renews
-// (headroom), and one with no reading - an API key has no windows - only when
+// one that is still unused, else the one with the most allowance left for
+// the time until it renews (headroom), and one with no reading - an API key has no windows - only when
 // every account with a reading is at its limit. "" when there is none.
 func recommendAccount(views []accountView, agentName, exclude string, now time.Time) string {
 	for _, v := range rankAccounts(views, agentName, now) {
@@ -339,7 +339,8 @@ func recommendAccount(views []accountView, agentName, exclude string, now time.T
 
 // How an account stands for a chat to run on, best first.
 const (
-	standRoom    = iota // signed in, with allowance left by its reading
+	standUnused  = iota // signed in, its reading at 0% in every window
+	standRoom           // signed in, with allowance left by its reading
 	standUnknown        // signed in, with no reading (an API key)
 	standLimited        // signed in, at a limit
 	standOut            // not signed in
@@ -359,12 +360,14 @@ func standing(v accountView, now time.Time) (int, float64) {
 		return standUnknown, 0
 	case rate <= 0:
 		return standLimited, 0
+	case unused(v.Limits):
+		return standUnused, rate
 	}
 	return standRoom, rate
 }
 
-// rankAccounts is an agent's accounts in the order to take them: those with
-// room, the most headroom first; then those with no reading; then those at a
+// rankAccounts is an agent's accounts in the order to take them: the unused
+// ones, then those with room, each the most headroom first; then those with no reading; then those at a
 // limit, the one that renews first first; then those not signed in. Ties keep
 // the person's order. The page lists them so (accountView.Rank), and
 // recommendAccount takes the first that can be taken.
@@ -388,7 +391,7 @@ func rankAccounts(views []accountView, agentName string, now time.Time) []accoun
 		switch {
 		case a.tier != b.tier:
 			return a.tier < b.tier
-		case a.tier == standRoom && a.rate != b.rate:
+		case a.tier <= standRoom && a.rate != b.rate:
 			return a.rate > b.rate
 		case a.tier == standLimited && a.renew != b.renew:
 			return a.renew > 0 && (b.renew == 0 || a.renew < b.renew)

@@ -108,7 +108,7 @@ function metaOf(account, best, { all = false, current = false } = {}) {
   const renew = accounts.renewal(account);
   if (renew) parts.push(renew + ', ' + accounts.renewalAt(account));
   if (current) parts.push('this chat’s');
-  if (best) parts.push('most left');
+  if (best) parts.push(accounts.pickWords(account));
   return parts.join(' · ');
 }
 

@@ -97,3 +97,45 @@ func TestRankAccounts(t *testing.T) {
 		t.Fatalf("an account at its limit was recommended: %q", r)
 	}
 }
+
+// An account nobody has used yet comes before every other, however much
+// headroom the others have: 0% in both windows beats 50% of a week that
+// renews in a day, whose rate is far higher. Used at all - 1% of the week,
+// or the five hours alone - it is ranked by its headroom like the rest.
+func TestAnUnusedAccountIsRecommendedFirst(t *testing.T) {
+	now := time.Now()
+	reading := func(five, week float64, renews time.Duration) []usageWindow {
+		return []usageWindow{{Label: "5h", UsedPercent: five, ResetsAt: at(now, 3*time.Hour)}, {Label: "7d", UsedPercent: week, ResetsAt: at(now, renews)}}
+	}
+	views := []accountView{
+		{ID: "half", Agent: "claude", State: "signed_in", Order: 1, Limits: reading(0, 50, 24*time.Hour)},
+		{ID: "key", Agent: "claude", State: "signed_in", Order: 2},
+		{ID: "touched", Agent: "claude", State: "signed_in", Order: 3, Limits: reading(0, 1, 160*time.Hour)},
+		{ID: "fresh", Agent: "claude", State: "signed_in", Order: 4, Limits: []usageWindow{{Label: "5h", UsedPercent: 0}, {Label: "7d", UsedPercent: 0.2}}},
+		{ID: "burst", Agent: "claude", State: "signed_in", Order: 5, Limits: reading(30, 0, 160*time.Hour)},
+		{ID: "resting", Agent: "claude", State: "signed_in", Order: 6, LimitedUntil: now.Add(time.Hour).UnixMilli(), Limits: reading(0, 0, 160*time.Hour)},
+		{ID: "gone", Agent: "claude", State: "needs_signin", Order: 7, Limits: reading(0, 0, 160*time.Hour)},
+	}
+	var got []string
+	for _, v := range rankAccounts(views, "claude", now) {
+		got = append(got, v.ID)
+	}
+	if want := "fresh half touched burst key resting gone"; strings.Join(got, " ") != want {
+		t.Fatalf("ranked %v, want %s", got, want)
+	}
+	if r := recommendAccount(views, "claude", "", now); r != "fresh" {
+		t.Fatalf("recommended %q", r)
+	}
+	if r := recommendAccount(views, "claude", "fresh", now); r != "half" {
+		t.Fatalf("recommended past the unused one: %q", r)
+	}
+	// Two unused: the one whose week renews first, whose allowance would
+	// go to waste first.
+	two := []accountView{
+		{ID: "long", Agent: "claude", State: "signed_in", Order: 1, Limits: reading(0, 0, 150*time.Hour)},
+		{ID: "short", Agent: "claude", State: "signed_in", Order: 2, Limits: reading(0, 0, 20*time.Hour)},
+	}
+	if r := recommendAccount(two, "claude", "", now); r != "short" {
+		t.Fatalf("of two unused, recommended %q", r)
+	}
+}

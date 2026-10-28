@@ -1382,7 +1382,8 @@ new "Default" subscription; the choice is written back. The launch puts the newe
 dashboard reads usage; Codex's with `account/rateLimits/read` (a short-lived app-server, every 5
 minutes at most); every other account's are the last `rate_limit` events its chats reported. The
 recommended account of an agent is, of its signed-in accounts that have not run into a limit,
-the one with the most headroom: what is left of the week per hour until it renews, times what is
+one still unused (every window of its reading at 0%, `unused`; of several, the most headroom),
+else the one with the most headroom: what is left of the week per hour until it renews, times what is
 left of the five hours (`headroom`); one with no reading is recommended only when every account
 with one is at its limit.
 

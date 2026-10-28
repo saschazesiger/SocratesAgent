@@ -2,8 +2,10 @@ package server
 
 import "time"
 
-// Which account a chat starts on when nobody chooses (recommendAccount): the
-// one with the most allowance left for the time until it renews.
+// Which account a chat starts on when nobody chooses (recommendAccount): one
+// nobody has used yet in this week and these five hours (unused) whenever
+// there is one, since its whole allowance is still there; otherwise the one
+// with the most allowance left for the time until it renews.
 //
 // Each account has a five-hour and a seven-day window. What is left of a
 // window divided by the hours until it renews is how fast it could be used
@@ -41,6 +43,23 @@ func current(windows []usageWindow, now time.Time) []usageWindow {
 		out = append(out, w)
 	}
 	return out
+}
+
+// unused is whether a reading says an account has not been used at all: it
+// has a five-hour or a seven-day window, and each reads 0% as the page
+// rounds it.
+func unused(windows []usageWindow) bool {
+	seen := false
+	for _, w := range windows {
+		if _, ok := windowHours[w.Label]; !ok {
+			continue
+		}
+		if w.UsedPercent >= 0.5 {
+			return false
+		}
+		seen = true
+	}
+	return seen
 }
 
 // headroom is the rate described above, in percent of the week per hour. It

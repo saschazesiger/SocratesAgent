@@ -706,7 +706,8 @@ export function settingsForm(options = {}) {
   }
 
   // renderAccount offers a chat its agent's accounts. Until somebody picks
-  // one, the chat starts on the one with the most usage left. With no account
+  // one, the chat starts on the one recommended: an unused one, else the one
+  // with the most usage left. With no account
   // at all the chat would start on
   // a Default account the server makes for it, not signed in yet: the field
   // says so, and adds one.
@@ -758,7 +759,8 @@ export function settingsForm(options = {}) {
       words = chosen.label + ' is at its limit and ' + accounts.renewal(chosen) + '.';
     } else if (!pick.accountChosen && chosen && chosen.id === accounts.recommended(pick.harness)
       && accounts.forAgent(pick.harness).length > 1) {
-      words = 'Chosen automatically: the most usage left before it renews.';
+      words = accounts.unused(chosen) ? 'Chosen automatically: not used yet.'
+        : 'Chosen automatically: the most usage left before it renews.';
     }
     accountHint.textContent = words;
   }

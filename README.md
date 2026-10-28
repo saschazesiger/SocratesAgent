@@ -31,7 +31,7 @@
 | 🏠 **Home dashboard** | See at a glance what's running, what's finished and what needs you. |
 | 🙋 **Questions, not guesswork** | Agents ask you with buttons (`ask_user`). Answer on any device, even offline. |
 | 📱 **Made for the phone** | Full-screen questions, big buttons, dictation, read-aloud and push notifications. |
-| 👥 **Several accounts** | Work and private side by side. Chats pick the account with the most usage left. |
+| 👥 **Several accounts** | Work and private side by side. Chats pick an unused account first, else the one with the most usage left. |
 | 💾 **Encrypted backups** | Your whole setup is backed up to any S3 bucket, encrypted. Moving to a new server is a single restore. |
 | 🔄 **Updates itself** | Every night, with a self-test and automatic rollback. |
 
@@ -111,7 +111,7 @@ You can run it again at any time to repair or update the installation.
 <img src="docs/screenshot-admin.png" alt="Admin → Accounts: two Claude Code accounts, one Codex and one OpenCode account" width="760">
 
 - ➕ Add as many accounts as you like: subscriptions or API keys.
-- 🎯 New chats start on the account with the **most usage left**.
+- 🎯 New chats start on an account that is still **unused** (0%), else on the one with the **most usage left**.
 - 🔀 Move a chat to another account at any time, or let it switch on its own when it hits a limit.
 - 📜 All accounts of an agent share the same chat history.
 

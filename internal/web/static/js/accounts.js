@@ -175,6 +175,26 @@ export function usageWords(account, now = Date.now(), { all = false } = {}) {
     }).join(' · ');
 }
 
+/**
+ * unused says an account's reading has it untouched: it has a five-hour or
+ * a seven-day window, and each is at 0% as the meters round it (a window
+ * whose reset has passed is empty again). The server takes such an account
+ * first (headroom.go, unused).
+ */
+export function unused(account, now = Date.now()) {
+  const windows = (account.limits || []).filter((w) => w.label === '5h' || w.label === '7d');
+  return windows.length > 0 && windows.every((w) => {
+    const reset = w.resets_at ? new Date(w.resets_at).getTime() : 0;
+    return (reset && reset <= now) || Math.round(Number(w.used_percent) || 0) === 0;
+  });
+}
+
+/**
+ * pickWords is the tag of the account a new chat takes: why it is the one -
+ * nobody has used it yet, or it has the most left.
+ */
+export function pickWords(account) { return unused(account) ? 'unused' : 'most left'; }
+
 /** meters is an account's windows as the sheet's flat bars. */
 export function meters(account) { return harnesses.limitMeters(account.limits || []); }
 
@@ -187,8 +207,8 @@ export function who(account) { return KIND_WORDS[account.kind] || account.kind; 
 /**
  * entry is an account as a list to choose from shows it - the sheet's
  * dropdown and a chat's account menu: its name, who it is, why it cannot be
- * used or when its limit renews, the "most left" tag when it is the one to
- * take, and its usage meters, so the choice is made with the numbers in view.
+ * used or when its limit renews, the "unused" or "most left" tag when it is
+ * the one to take (pickWords), and its usage meters, so the choice is made with the numbers in view.
  */
 export function entry(account, { recommended: best = false, current = false } = {}) {
   const meta = [html`<span>${who(account)}</span>`];
@@ -198,7 +218,7 @@ export function entry(account, { recommended: best = false, current = false } = 
   const renew = renewal(account);
   if (renew) meta.push(html`<span data-tag="limited">${'at its limit, ' + renew + ', ' + renewalAt(account)}</span>`);
   if (current) meta.push(html`<span data-tag="current">this chat’s</span>`);
-  if (best) meta.push(html`<span data-tag="recommended">most left</span>`);
+  if (best) meta.push(html`<span data-tag="recommended">${pickWords(account)}</span>`);
   return html`<span class="ds-combo__name">${account.label}</span><span class="ds-combo__meta">${meta.map((part, i) => (i ? html` · ${part}` : part))}</span>${meters(account)}`;
 }
 

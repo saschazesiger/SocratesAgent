@@ -830,7 +830,7 @@ function accountRow(account) {
   const name = el('p', { class: 'so-account__name' }, accounts.iconFor(account, 16), el('span', { text: account.label }),
     el('span', { class: 'ds-meta', text: accounts.KIND_WORDS[account.kind] || account.kind }));
   const state = el('div', { class: 'so-account__state' });
-  morph(state, html`${accounts.stateChip(account)}${account.recommended ? html`<span class="ds-meta" data-tag="recommended">most left</span>` : ''}${accounts.renewal(account) ? html`<span class="ds-meta">${accounts.renewal(account)}</span>` : ''}`);
+  morph(state, html`${accounts.stateChip(account)}${account.recommended ? html`<span class="ds-meta" data-tag="recommended">${accounts.pickWords(account)}</span>` : ''}${accounts.renewal(account) ? html`<span class="ds-meta">${accounts.renewal(account)}</span>` : ''}`);
   const meters = el('div', { class: 'so-account__meters' });
   morph(meters, accounts.meters(account));
   const actions = [];

@@ -2678,6 +2678,7 @@ async function sheetmcp() {
     ok(put.ok(), 'Admin has two MCP servers and a preset folder with a .mcp.json', String(put.status()));
     const work = (await post('/api/accounts', { agent: 'claude', kind: 'api_key', label: 'Work', key: 'sk-ant-work-' + 'w'.repeat(16) })).account;
     const home = (await post('/api/accounts', { agent: 'claude', kind: 'api_key', label: 'Home', key: 'sk-ant-home-' + 'h'.repeat(16) })).account;
+    const fresh = (await post('/api/accounts', { agent: 'claude', kind: 'api_key', label: 'Fresh', key: 'sk-ant-fresh-' + 'f'.repeat(16) })).account;
     const at = Date.now();
     await s.context.route('**/api/accounts', async (route) => {
       if (route.request().method() !== 'GET') return route.fallback();
@@ -2686,7 +2687,12 @@ async function sheetmcp() {
       for (const one of body.accounts || []) {
         if (one.id === work.id) one.limits = [{ label: '5h', used_percent: 42, resets_at: new Date(at + 9e6).toISOString() }, { label: '7d', used_percent: 30, resets_at: new Date(at + 3e8).toISOString() }];
         if (one.id === home.id) one.limits = [{ label: '5h', used_percent: 10, resets_at: new Date(at + 5e6).toISOString() }, { label: '7d', used_percent: 70, resets_at: new Date(at + 2e8).toISOString() }];
+        if (one.id === fresh.id) one.limits = [{ label: '5h', used_percent: 0 }, { label: '7d', used_percent: 0.3 }];
+        one.recommended = one.id === fresh.id;
       }
+      // The server recommends an unused account first (headroom_test.go);
+      // the readings here are the stub's, so the stub says so for it.
+      body.recommended = { ...(body.recommended || {}), claude: fresh.id };
       return route.fulfill({ response: res, json: body });
     });
 
@@ -2712,8 +2718,21 @@ async function sheetmcp() {
     ok(Math.abs(cards.shell - cards.groups) <= 1 && cards.below && cards.shellHeight < cards.agentHeight && cards.beside,
       'the shell is a thin card across the whole width under the agents, its mark beside its name', JSON.stringify(cards));
 
-    // The chosen account's limits stand under its field.
+    // An unused account is the one taken, and says why.
     await page.waitForSelector('#nsAccountLimits:not([hidden]) .so-limits__row', { timeout: 10000 });
+    const picked = await page.evaluate(() => ({
+      face: document.querySelector('#nsAccount .so-drop__value').textContent,
+      hint: document.getElementById('nsAccountHint').textContent,
+    }));
+    ok(picked.face === 'Fresh' && picked.hint === 'Chosen automatically: not used yet.',
+      'the sheet starts on the unused account and says it is unused', JSON.stringify(picked));
+    await page.click('#nsAccount .so-drop__field');
+    const tag = await page.$eval('#nsAccount .ds-combo__option[data-value="' + fresh.id + '"] [data-tag="recommended"]', (n) => n.textContent);
+    ok(tag === 'unused', 'its entry in the list is tagged unused', tag);
+    await page.click('#nsAccount .ds-combo__option[data-value="' + work.id + '"]');
+
+    // The chosen account's limits stand under its field.
+    await page.waitForFunction(() => /42%/.test(document.getElementById('nsAccountLimits').textContent), null, { timeout: 5000 });
     const limits = async () => page.$$eval('#nsAccountLimits .so-limits__row', (rows) => rows.map((r) => [...r.children].map((c) => c.textContent.trim()).filter(Boolean).join(' ')));
     let shown = await limits();
     ok(shown.length === 2 && /^5h 42%/.test(shown[0]) && /^7d 30%/.test(shown[1]),
@@ -2757,8 +2776,10 @@ async function sheetmcp() {
     await chatUp(page);
     const id = await page.evaluate(() => location.hash.slice(1));
     const row = await sessionRow(s, id);
-    ok(row.options && JSON.stringify(row.options.mcp) === '{"github":false,"search":true}',
-      'the chat keeps only the switches moved from their default', JSON.stringify(row.options));
+    // Back from the shell the account is the recommended one again: another
+    // program has other accounts, so a program change starts the choice over.
+    ok(row.options && row.options.account === fresh.id && JSON.stringify(row.options.mcp) === '{"github":false,"search":true}',
+      'the chat keeps only the switches moved from their default, on the unused account', JSON.stringify(row.options));
     const servers = await (await s.context.request.get(s.url + '/api/sessions/' + id + '/mcp')).json();
     const on = (servers.servers || []).filter((one) => one.on).map((one) => one.name);
     ok(on.join(',') === 'db,search', 'and has the servers that were on', on.join(','));
