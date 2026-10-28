@@ -8287,8 +8287,8 @@ async function homelive() {
     ok(same, 'all of it without a reload', String(same));
     // The rule behind the cards, for the states that cannot be put on demand:
     // unread work counts as Finished whatever the session's state, and a
-    // session filed in the background is never news, only Ready - though its
-    // questions still count.
+    // session filed in the background is never news, only Ready - its
+    // questions too, which wait in the chat.
     const cards = await s.page.evaluate(async () => {
       const { cardsOf, needsYou } = await import('/static/js/home.js');
       const ctx = (activity, status = 'in_progress') => ({ statusOf: () => status, activityOf: () => activity, digestOf: () => null });
@@ -8306,10 +8306,10 @@ async function homelive() {
       };
     });
     ok(cards.stoppedUnread === 'stopped,finished' && cards.runningUnknownUnread === 'finished'
-      && cards.backgroundUnread === 'ready' && cards.backgroundAsks === 'questions'
+      && cards.backgroundUnread === 'ready' && cards.backgroundAsks === 'ready'
       && cards.fresh === 'unstarted' && cards.freshBusy === 'running'
       && cards.needsRunning === true && cards.needsStopped === false,
-      'unread work is Finished even when stopped, but only a running session is in Needs you; a background chat is Ready, and still asks; a chat not started is that until it works',
+      'unread work is Finished even when stopped, but only a running session is in Needs you; a background chat is Ready, even while it asks; a chat not started is that until it works',
       JSON.stringify(cards));
     ok(sockets.length > 0 && sockets.every((url) => url.includes('/api/events')),
       'and with nothing attached: the only socket is the event stream', sockets.join(' '));

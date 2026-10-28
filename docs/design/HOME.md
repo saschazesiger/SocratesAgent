@@ -358,7 +358,7 @@ The payload is `{title, body, id, kind, badge, asking, at}`. `kind` is `question
 `started` (the scheduler) or `test`. `badge` and `asking` are the **asking set** when the message
 went out: the sessions Home's Questions card counts (`askingSet` in asking.go, the same rule as
 home.js `cardsOf`: not done, not a tool, not prepared, live, and `waiting` or idle with a digest
-question of `source: "text"`; background sessions are counted). They are left out when the set
+question of `source: "text"`; background sessions are not counted). They are left out when the set
 could not be counted, and a worker that finds them missing leaves the badge and the tray alone.
 `at` is when they were counted (server milliseconds, strictly increasing): pushes reach a phone in
 any order, so the worker applies a count only if it is not older than the last one it applied.
@@ -509,17 +509,18 @@ the same run, or a run started later); a `hello` keeps a held run that started a
 Counts are computed in the browser from the list and the activity map with the sidebar's own
 predicates (`activityOf`, `statusOf`, `isPrepared`, `start_at`, live = running|starting|resuming),
 so Home and the sidebar can never disagree. A service filed `background` finishes turns so as not to
-interrupt anyone (no chime, no notification), so its unread turns are not Finished; a real prompt
-from it is still a Question. Tools (Shell, VS Code) have no activity and appear
+interrupt anyone (no chime, no notification), so its unread turns are not Finished, and its
+questions are not Questions either: they wait in the chat, out of the Questions card, the question
+dialog's walk and the badge, and the chat is Ready meanwhile. Tools (Shell, VS Code) have no activity and appear
 only in the session list and in "Not running". Done sessions count only in Done.
 
 | card | rule (live coding sessions unless said) |
 |---|---|
-| **Questions** | `waiting`, or `idle` with `digest.question.source == "text"` |
+| **Questions** | `waiting`, or `idle` with `digest.question.source == "text"`; not for a session filed `background` |
 | **Running** | `busy` |
 | **Background tasks** | `tasks` |
 | **Finished** | unread, without a text question: `idle`, `unknown`, and also a stopped session (it counts in Not running too); not for a session filed `background` |
-| **Ready** | `idle`, read (or filed `background`), without a text question |
+| **Ready** | `idle`, read (or filed `background`, asking or not), without a text question |
 | **Review pending** | `status == review` (any state) |
 | **Pending** | `status == pending` (any state) |
 | **Not running** | `needs_resume`, `exited`, `failed` (not done) |

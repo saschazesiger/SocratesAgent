@@ -55,10 +55,12 @@ func (s *Server) askingSet() []string {
 	return out
 }
 
-// askable is whether a session can be asking at all: not done, and live. A session filed background is counted, as Home counts it: it is
-// only kept from chiming and from notifying (DEVIATIONS.md).
+// askable is whether a session can be asking at all: not done, not filed
+// background, and live. A background chat's questions wait in the chat: Home
+// leaves them out of its Questions card and the question dialog's walk, so
+// the badge does too.
 func askable(row *store.Session) bool {
-	if row.Status == store.StatusDone {
+	if row.Status == store.StatusDone || row.Status == store.StatusBackground {
 		return false
 	}
 	return askingStates[row.State]

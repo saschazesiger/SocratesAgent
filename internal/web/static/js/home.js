@@ -133,7 +133,9 @@ export function cardsOf(ctx, session) {
   // that left a finished turn behind, a session the detector cannot read.
   // A service filed in the background finishes turns so as not to interrupt
   // anyone, so its turns are not news (no chime, no notification) and it
-  // is Ready rather than Finished.
+  // is Ready rather than Finished. Nor are its questions: they wait in the
+  // chat, out of the Questions card and the question dialog's walk, and
+  // the chat is Ready meanwhile.
   const background = status === 'background';
   const unread = !!act && !!act.unread && !background;
   if (STOPPED_STATES.has(session.state)) {
@@ -143,7 +145,7 @@ export function cardsOf(ctx, session) {
   }
   if (!LIVE_STATES.has(session.state)) return cards;
   if (!act) return cards;
-  if (act.state === 'waiting') cards.push('questions');
+  if (act.state === 'waiting') cards.push(background ? 'ready' : 'questions');
   else if (act.state === 'busy') cards.push('running');
   else if (act.state === 'tasks') cards.push('tasks');
   // A turn whose verdict is still being read is over, with something about

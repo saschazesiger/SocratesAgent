@@ -442,7 +442,7 @@ func TestAskingSetIsHomesQuestions(t *testing.T) {
 		{id: "idle", activity: agent.ActivityIdle},
 		{id: "busy", activity: agent.ActivityBusy},
 		{id: "done", status: store.StatusDone, activity: agent.ActivityWaiting},
-		{id: "background", status: store.StatusBackground, activity: agent.ActivityWaiting, want: true},
+		{id: "background", status: store.StatusBackground, activity: agent.ActivityWaiting},
 		{id: "review", status: store.StatusReview, activity: agent.ActivityWaiting, want: true},
 		{id: "shell", harness: config.HarnessShell, activity: agent.ActivityWaiting},
 		{id: "prepared", state: store.StatePrestart, activity: agent.ActivityWaiting},
