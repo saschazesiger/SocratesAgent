@@ -857,6 +857,9 @@ type createChatBody struct {
 	// reached (REBUILD.md §4.3, off unless asked for).
 	Account    string `json:"account"`
 	AutoSwitch bool   `json:"auto_switch"`
+	// MCP switches MCP servers on or off by name (newChatMCPChoices), as
+	// the chat's MCP servers dialog does later.
+	MCP map[string]bool `json:"mcp"`
 	// AutoContinue false keeps the chat from going on by itself once a
 	// limit that stopped it renews (schedule.go); absent is on.
 	AutoContinue *bool `json:"auto_continue"`
@@ -925,13 +928,23 @@ func (s *Server) handleCreateChat(w http.ResponseWriter, r *http.Request) {
 	}
 	label := chatLabel(harness)
 	model, effort := chatModel(settings, harness, body.Model, body.Effort)
+	// An option that is not set is not there at all (withOption): a nil map
+	// in an interface is not nil.
+	var mcp any
+	if len(body.MCP) > 0 {
+		folder, _ := agent.ReadFolderMCP(workdir)
+		list, _ := agent.ChatMCP(sharedMCP(settings), folder, nil)
+		if chosen := newChatMCPChoices(list, body.MCP); chosen != nil {
+			mcp = chosen
+		}
+	}
 	row := &store.Session{
 		ID: id, ClientID: clientID, Title: sessionTitle(body.Title, label, workdir, mode),
 		TitleSource: titleSource(body.Title), Harness: harness, Model: model,
 		Effort: effort, Workdir: workdir, WorkdirMode: mode,
 		Kind: store.KindChat, State: store.StateRunning,
-		Options: withAutoContinue(withChatAccount(withOption(nil, "ultracode", chatUltracode(harness, body.Ultracode)),
-			body.Account, body.AutoSwitch), body.AutoContinue == nil || *body.AutoContinue),
+		Options: withOption(withAutoContinue(withChatAccount(withOption(nil, "ultracode", chatUltracode(harness, body.Ultracode)),
+			body.Account, body.AutoSwitch), body.AutoContinue == nil || *body.AutoContinue), "mcp", mcp),
 	}
 	if err := s.store.CreateSession(row); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())

@@ -18,6 +18,8 @@ import { agentMark } from './logos.js';
 import { hideOverlay, html, icon, iconEl, morph, raw, showOverlay } from './ui.js';
 
 const CACHE_KEY = 'socrates.harnesses';
+// How long a typed path rests before the sheet asks for its MCP servers.
+const MCP_TYPING_PAUSE = 400;
 
 // The two programs that are not agents. Nothing is asked of a shell or of an
 // editor and nothing is reported back by them, so they have no model to run
@@ -336,21 +338,30 @@ function dynamicPreview(id) {
   return root.replace(/\/$/, '') + '/' + (id || 'session') + '-' + stamp + '-…';
 }
 
+// mcpSource is where an MCP server of a chat comes from, and what it is on
+// by itself, as the chat's MCP servers dialog says it.
+function mcpSource(server) {
+  const from = server.from === 'admin'
+    ? 'From Admin \u00b7 ' + (server.default ? 'on' : 'off') + ' in every chat'
+    : 'From the folder\u2019s .mcp.json';
+  return from + (server.transport === 'stdio' ? '' : ' \u00b7 ' + String(server.transport).toUpperCase());
+}
+
 /**
  * settingsForm builds the controls a session is bound by: the program, the
- * working directory, the model, the effort, Ultracode and the account. A chat
- * (isChat) is asked for its folder, model, effort and account - agent,
- * folder, model, account - whether it may switch accounts by itself at a
- * limit, and Claude Code for Ultracode too; a Shell for its folder and
- * nothing else.
+ * working directory, the model, the effort, Ultracode, the account and the
+ * MCP servers. A chat (isChat) is asked for its folder, model, effort and
+ * account - agent, folder, model, account - whether it may switch accounts
+ * by itself at a limit, which MCP servers it has, and Claude Code for
+ * Ultracode too; a Shell for its folder and nothing else.
  *
  * Every element id is `prefix` and the field's name, which is how the sheet
  * keeps the ids it has always had (nsHarness, nsDir, nsModelField, ...).
  *
  *   include(entry)            which programs are offered at all
  *   onChange(kind)            called after a change the person made; kind is
- *                             harness, dir, model, effort, ultracode, account
- *                             or auto_switch.
+ *                             harness, dir, model, effort, ultracode, account,
+ *                             auto_switch or mcp.
  *
  * It hands back the node to put on the page and the calls that read and
  * write it.
@@ -367,13 +378,14 @@ export function settingsForm(options = {}) {
 
   // The program is one choice in two groups of radio cards: the agents, and
   // under them the shell, which is not an agent - nothing is asked of it and
-  // nothing is reported back - so the choice reads as two kinds of thing. VS
+  // nothing is reported back - so the choice reads as two kinds of thing: the
+  // shell is a thin card across the whole width beneath the agents. VS
   // Code is not here at all: a folder has one editor, opened from its mark in
   // the sidebar. One radio name across both groups makes them one choice for
   // the keyboard as well.
   const harnessName = id('HarnessChoice');
   const harnessRow = el('div', { class: 'ds-radios so-settings__programs', id: id('Harness'), role: 'group', 'aria-label': 'Agent' });
-  const toolsRow = el('div', { class: 'ds-radios so-settings__programs', id: id('Tools'), role: 'group', 'aria-label': 'Tool' });
+  const toolsRow = el('div', { class: 'ds-radios so-settings__programs so-settings__tools', id: id('Tools'), role: 'group', 'aria-label': 'Tool' });
   const harnessField = el('fieldset', { class: 'ds-field', id: id('HarnessField') },
     el('legend', { class: 'ds-field__label', text: 'Program' }),
     el('div', { class: 'so-settings__groups' }, harnessRow, toolsRow));
@@ -410,16 +422,18 @@ export function settingsForm(options = {}) {
         + 'which uses much more of the account’s limits.',
     }));
 
-  // A chat runs on an account (REBUILD.md §4), the last thing it is asked
-  // for: a dropdown of every account of the agent with how full it is and
-  // when it renews, the one with the most left marked.
+  // A chat runs on an account (REBUILD.md §4): a dropdown of every account
+  // of the agent with how full it is and when it renews, the one with the
+  // most left marked. Under the closed field, the chosen one's limits: how
+  // full it is should not take opening the list to see.
   const accountRow = el('div', { id: id('Account') });
+  const accountLimits = el('div', { id: id('AccountLimits'), hidden: true });
   const accountHint = el('small', { class: 'ds-field__hint', id: id('AccountHint') });
   const accountSignIn = el('button', {
     class: 'ds-btn ds-btn--text ds-btn--sm', type: 'button', id: id('AccountSignIn'), hidden: true, text: 'Sign in',
   });
   const accountField = el('div', { class: 'ds-field', id: id('AccountField'), hidden: true },
-    el('label', { class: 'ds-field__label', for: id('AccountInput'), text: 'Account' }), accountRow,
+    el('label', { class: 'ds-field__label', for: id('AccountInput'), text: 'Account' }), accountRow, accountLimits,
     el('div', { class: 'so-settings__note' }, accountHint, accountSignIn));
 
   // Off unless asked for, on every opening: a chat that moves to another
@@ -432,10 +446,19 @@ export function settingsForm(options = {}) {
       text: 'When the account reaches a limit, the chat goes on with the account that has the most left.',
     }));
 
+  // The MCP servers a chat in the chosen folder would have - Admin's and the
+  // folder's .mcp.json's - each a switch on its default, as the chat's MCP
+  // servers dialog has them later. Asked of the server for the folder, so
+  // it follows the working directory.
+  const mcpList = el('div', { class: 'ds-switch-list', id: id('Mcp') });
+  const mcpHint = el('small', { class: 'ds-field__hint', id: id('McpHint') });
+  const mcpField = el('fieldset', { class: 'ds-field', id: id('McpField'), hidden: true },
+    el('legend', { class: 'ds-field__label', text: 'MCP servers' }), mcpList, mcpHint);
+
   // agent, folder, model and effort (and Ultracode, Claude Code's), then the
-  // account (REBUILD.md §7).
+  // account (REBUILD.md §7) and the MCP servers.
   const node = el('div', { class: 'so-settings' }, harnessField,
-    dirField, modelField, effortField, ultracodeField, accountField, autoSwitchField);
+    dirField, modelField, effortField, ultracodeField, accountField, autoSwitchField, mcpField);
 
   /* -------------------------------------------------------------- state */
 
@@ -446,7 +469,16 @@ export function settingsForm(options = {}) {
   const pick = {
     harness: '', model: '', effort: '', mode: DYNAMIC, workdir: '', ultracode: false,
     account: '', accountChosen: false, autoSwitch: false,
+    // The MCP switches the person moved, by name; the rest stay on their
+    // default.
+    mcp: {},
   };
+  // The MCP servers of the folder as the server last said, and which asking
+  // is the newest: a slow answer for a folder no longer chosen is dropped.
+  let mcpServers = null;
+  let mcpProblems = [];
+  let mcpAsked = 0;
+  let mcpTimer = 0;
 
   // Ultracode starts off on every opening: it costs a great deal more of the
   // account, so it is something asked for each time rather than remembered.
@@ -578,6 +610,12 @@ export function settingsForm(options = {}) {
     pick.autoSwitch = autoSwitchInput.checked;
     onChange('auto_switch');
   });
+  mcpList.addEventListener('change', (event) => {
+    const name = event.target.dataset.name;
+    if (!name) return;
+    pick.mcp[name] = event.target.checked;
+    onChange('mcp');
+  });
 
   /* ------------------------------------------------------------ drawing */
 
@@ -604,6 +642,50 @@ export function settingsForm(options = {}) {
     } else if (pick.mode === PRESET) dirHint.textContent = pick.workdir;
     // The path is in the field right above: the hint says what it has to be.
     else dirHint.textContent = 'An absolute path on this machine.';
+    askMcp();
+  }
+
+  // askMcp asks which MCP servers a chat in the chosen folder would have. A
+  // path being typed is asked about once the typing pauses.
+  function askMcp() {
+    clearTimeout(mcpTimer);
+    if (!isChat(pick.harness)) {
+      renderMcp();
+      return;
+    }
+    const asked = ++mcpAsked;
+    const query = '?workdir_mode=' + encodeURIComponent(pick.mode) + '&workdir=' + encodeURIComponent(pick.workdir);
+    const run = () => api('/api/mcp' + query, { attempts: 1, timeout: 8000 }).then((data) => {
+      if (asked !== mcpAsked) return;
+      mcpServers = (data && data.servers) || [];
+      mcpProblems = (data && data.problems) || [];
+      renderMcp();
+    }, () => {
+      // Offline, the list from before stays; with none, the field stays
+      // away and the chat starts on every server's default.
+      if (asked === mcpAsked) renderMcp();
+    });
+    if (pick.mode === CUSTOM) mcpTimer = setTimeout(run, MCP_TYPING_PAUSE);
+    else run();
+  }
+
+  // mcpOn is whether a server is on for the chat about to be made.
+  const mcpOn = (server) => (Object.hasOwn(pick.mcp, server.name) ? pick.mcp[server.name] : !!server.default);
+
+  function renderMcp() {
+    mcpField.hidden = !isChat(pick.harness) || mcpServers === null;
+    if (mcpField.hidden) return;
+    morph(mcpList, html`${mcpServers.map((server, i) => html`<label class="ds-switch" data-ds-key="${'mcp-' + server.name}"><input type="checkbox" role="switch" data-name="${server.name}" aria-labelledby="${id('McpName') + i}" aria-describedby="${id('McpFrom') + i}"><span class="ds-switch__track" aria-hidden="true"></span><span class="ds-switch__label" id="${id('McpName') + i}">${server.name}</span><small class="ds-switch__hint" id="${id('McpFrom') + i}">${mcpSource(server)}</small><span class="ds-switch__state" aria-hidden="true"><span class="ds-switch__on">On</span><span class="ds-switch__off">Off</span></span></label>`)}`);
+    // The checked state is the property, which a patch of the markup does
+    // not carry: it is said here, after it.
+    for (const input of mcpList.querySelectorAll('input[data-name]')) {
+      const server = mcpServers.find((one) => one.name === input.dataset.name);
+      input.checked = !!server && mcpOn(server);
+    }
+    mcpList.hidden = !mcpServers.length;
+    const words = mcpServers.length ? [] : ['None yet. Add one in Admin for every chat, or in a .mcp.json in the folder.'];
+    mcpHint.textContent = [...words, ...mcpProblems].join(' ');
+    mcpHint.hidden = !mcpHint.textContent;
   }
 
   // renderEffort follows the model: whether there is an effort to pick at all
@@ -659,6 +741,9 @@ export function settingsForm(options = {}) {
 
   function renderAccountHint() {
     const chosen = accounts.byId(pick.account);
+    const meters = chosen ? accounts.meters(chosen) : '';
+    morph(accountLimits, meters);
+    accountLimits.hidden = !meters;
     let words = '';
     accountSignIn.hidden = true;
     if (chosen && !accounts.usable(chosen)) {
@@ -712,6 +797,17 @@ export function settingsForm(options = {}) {
     renderAccount();
   }
 
+  // mcpChoices is the switches that differ from their server's default, for
+  // the servers the folder has: the rest is left to the default, which Admin
+  // may still change.
+  function mcpChoices() {
+    const out = {};
+    for (const server of mcpServers || []) {
+      if (Object.hasOwn(pick.mcp, server.name) && pick.mcp[server.name] !== !!server.default) out[server.name] = pick.mcp[server.name];
+    }
+    return out;
+  }
+
   /* ---------------------------------------------------------------- api */
 
   return {
@@ -731,6 +827,7 @@ export function settingsForm(options = {}) {
         workdir: pick.workdir,
         account: accountField.hidden ? '' : pick.account,
         auto_switch: !autoSwitchField.hidden && pick.autoSwitch,
+        mcp: mcpField.hidden ? {} : mcpChoices(),
       };
     },
 
@@ -807,7 +904,7 @@ export function settingsForm(options = {}) {
 /**
  * openNewSessionSheet asks the questions a session is bound by. It resolves
  * with {harness, model, effort, ultracode, workdir_mode, workdir, account,
- * auto_switch, chat} or null if the person backed out. `chat` says the agent is a chat: agent,
+ * auto_switch, mcp, chat} or null if the person backed out. `chat` says the agent is a chat: agent,
  * folder, model and account are all it asks; a Shell is a folder and nothing
  * else.
  *

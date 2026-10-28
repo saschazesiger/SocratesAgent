@@ -9,6 +9,8 @@
  *                              description under its name wraps
  *     __groups                 the agents' and the tools' groups, one under the other
  *     __programs               a group of program cards (.ds-radios) laid out as a grid
+ *     __tools                  the tools' group: each card a thin one across the whole
+ *                              width, its mark beside its name
  *     __program                one program card (.ds-radio): its mark above its name
  *     __note                   a field's hint with a button at its end (the account's
  *                              Sign in)
@@ -55,10 +57,10 @@
 
 /* ── Program cards ───────────────────────────────────────────────────── */
 
-/* The agents and the shell share one grid, the shell after the agents at
-   the same width, so the two groups read as one question in two kinds and
-   fill their rows: four agents and the shell are 3 + 2 in the sheet at a
-   desk, where each group in a grid of its own was 3 + 1 + 1. */
+/* The agents and the shell share one grid, so the two groups read as one
+   question in two kinds. The shell is not an agent: it is a thin card of its
+   own across the whole width under them (.so-settings__tools), its mark
+   beside its name, so the agents fill their rows by themselves. */
 .so-settings__programs {
   grid-template-columns: repeat(auto-fill, minmax(var(--so-settings-card-min), 1fr));
 }
@@ -74,8 +76,8 @@
   display: contents;
 }
 
-/* A phone has room for two cards a row, so four programs are two rows
-   rather than three. */
+/* A phone has room for two cards a row: three to a row break "OpenCode"
+   inside the word. */
 @media (max-width: 600px) {
   .so-settings__groups {
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -84,6 +86,17 @@
 
 .so-settings__program {
   min-width: 0;
+}
+
+.so-settings__tools > .so-settings__program {
+  grid-column: 1 / -1;
+}
+
+.so-settings__tools .so-settings__program-body {
+  grid-auto-flow: column;
+  justify-content: start;
+  align-items: center;
+  gap: var(--ds-space-2);
 }
 
 /* The mark over the name, so "Claude Code" fits beside the radio in a third

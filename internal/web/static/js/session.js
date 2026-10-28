@@ -3719,6 +3719,7 @@ async function startChat(pick) {
         ultracode: pick.ultracode || undefined,
         account: pick.account || undefined,
         auto_switch: pick.auto_switch || undefined,
+        mcp: pick.mcp && Object.keys(pick.mcp).length ? pick.mcp : undefined,
         workdir_mode: pick.workdir_mode,
         workdir: pick.workdir,
       },

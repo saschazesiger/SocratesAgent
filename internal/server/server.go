@@ -415,6 +415,8 @@ func (s *Server) routes() {
 	mux.HandleFunc("POST /api/chats/{id}/attachments", s.auth(s.handleChatAttachments))
 	mux.HandleFunc("POST /api/chats/{id}/options", s.auth(s.handleChatOptions))
 	mux.HandleFunc("POST /api/chats/{id}/mcp", s.auth(s.handleChatMCP))
+	// The MCP servers a chat about to be made would have, for the sheet.
+	mux.HandleFunc("GET /api/mcp", s.auth(s.handleNewChatMCP))
 	mux.HandleFunc("POST /api/chats/{id}/account", s.auth(s.handleChatAccount))
 	mux.HandleFunc("POST /api/chats/{id}/spoken", s.auth(s.handleChatSpoken))
 	mux.HandleFunc("PUT /api/chats/{id}/auto-switch", s.auth(s.handleChatAutoSwitch))

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -1064,6 +1065,75 @@ func TestAChatSwitchesTheDashboardsMCPServers(t *testing.T) {
 	}
 	row, err := c.store.GetSession(id)
 	if err != nil || readMCPChoices(row.Options)["github"] || len(readMCPChoices(row.Options)) != 1 {
+		t.Fatalf("the row's options: %s %v", row.Options, err)
+	}
+}
+
+// The new session sheet asks which MCP servers a chat in a folder would
+// have before it exists, and a chat is made with the sheet's switches: only
+// those that differ from a server's default are kept, and a server the
+// chat cannot have is left out.
+func TestANewChatStartsWithTheSheetsMCPChoices(t *testing.T) {
+	c := newChatEnv(t, time.Hour)
+	next := c.srv.Settings()
+	next.MCP.Servers = []config.MCPServerSetting{
+		{Name: "github", Type: "http", URL: "https://api.example/mcp", Default: true},
+		{Name: "search", Command: "search-mcp"},
+	}
+	next.Workspace.AllowCustom = true
+	if err := c.srv.saveSettings(next); err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, ".mcp.json"), []byte(`{"mcpServers":{"db":{"command":"db-mcp"}}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	list := func(body map[string]any) string {
+		var out []string
+		for _, s := range body["servers"].([]any) {
+			m := s.(map[string]any)
+			out = append(out, fmt.Sprintf("%s:%s:%v", m["name"], m["from"], m["on"]))
+		}
+		return strings.Join(out, " ")
+	}
+	res, got := c.do(t, c.client, "GET", "/api/mcp?workdir_mode=dynamic", "")
+	if res.StatusCode != http.StatusOK || list(got) != "github:admin:true search:admin:false" {
+		t.Fatalf("dynamic: %d %v", res.StatusCode, got)
+	}
+	res, got = c.do(t, c.client, "GET", "/api/mcp?workdir_mode=custom&workdir="+url.QueryEscape(dir), "")
+	if res.StatusCode != http.StatusOK || list(got) != "db:folder:true github:admin:true search:admin:false" {
+		t.Fatalf("custom: %d %v", res.StatusCode, got)
+	}
+	// A path half typed is the dashboard's servers, not an error.
+	res, got = c.do(t, c.client, "GET", "/api/mcp?workdir_mode=custom&workdir=rel", "")
+	if res.StatusCode != http.StatusOK || list(got) != "github:admin:true search:admin:false" {
+		t.Fatalf("half typed: %d %v", res.StatusCode, got)
+	}
+
+	code, body := c.post(t, "/api/chats", map[string]any{"client_id": "create-" + t.Name(), "harness": "fake",
+		"workdir_mode": "custom", "workdir": dir,
+		"mcp": map[string]bool{"github": true, "search": true, "db": false, "gone": true}})
+	if code != http.StatusCreated {
+		t.Fatalf("create: %d %v", code, body)
+	}
+	id := body["session"].(map[string]any)["id"].(string)
+	row, err := c.store.GetSession(id)
+	if err != nil || fmt.Sprint(readMCPChoices(row.Options)) != "map[db:false search:true]" {
+		t.Fatalf("the row's options: %s %v", row.Options, err)
+	}
+	res, got = c.do(t, c.client, "GET", "/api/sessions/"+id+"/mcp", "")
+	if res.StatusCode != http.StatusOK || list(got) != "db:folder:false github:admin:true search:admin:true" {
+		t.Fatalf("the chat's servers: %d %v", res.StatusCode, got)
+	}
+
+	// Nothing switched away from a default is no choice at all.
+	code, body = c.post(t, "/api/chats", map[string]any{"client_id": "plain-" + t.Name(), "harness": "fake",
+		"mcp": map[string]bool{"github": true}})
+	if code != http.StatusCreated {
+		t.Fatalf("create: %d %v", code, body)
+	}
+	row, err = c.store.GetSession(body["session"].(map[string]any)["id"].(string))
+	if err != nil || strings.Contains(string(row.Options), "mcp") {
 		t.Fatalf("the row's options: %s %v", row.Options, err)
 	}
 }

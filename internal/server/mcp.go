@@ -4,11 +4,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"path/filepath"
 	"strings"
 
 	"github.com/saschazesiger/SocratesAgent/internal/agent"
 	"github.com/saschazesiger/SocratesAgent/internal/agenthost"
 	"github.com/saschazesiger/SocratesAgent/internal/config"
+	"github.com/saschazesiger/SocratesAgent/internal/harnesses"
 	"github.com/saschazesiger/SocratesAgent/internal/store"
 )
 
@@ -78,14 +80,10 @@ func (s *Server) chatMCPView(row *store.Session) map[string]any {
 	folder, problems := agent.ReadFolderMCP(row.Workdir)
 	list, more := agent.ChatMCP(sharedMCP(s.Settings()), folder, readMCPChoices(row.Options))
 	problems = append(problems, more...)
-	out := make([]mcpServerView, 0, len(list))
-	for _, c := range list {
-		out = append(out, mcpServerView{Name: c.Name, Transport: c.Transport, From: c.From, Default: c.Default, On: c.On})
-	}
 	if problems == nil {
 		problems = []string{}
 	}
-	return map[string]any{"servers": out, "problems": problems}
+	return map[string]any{"servers": mcpViews(list), "problems": problems}
 }
 
 // chatHasMCP is whether name is one of the MCP servers a chat may have.
@@ -174,4 +172,68 @@ func (s *Server) handleChatMCP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, s.chatMCPView(next))
+}
+
+// mcpViews is a list of ChatMCP as the browser sees it.
+func mcpViews(list []agent.MCPChoice) []mcpServerView {
+	out := make([]mcpServerView, 0, len(list))
+	for _, c := range list {
+		out = append(out, mcpServerView{Name: c.Name, Transport: c.Transport, From: c.From, Default: c.Default, On: c.On})
+	}
+	return out
+}
+
+// newChatMCP is the MCP servers a chat about to be made in workdir may
+// have: the dashboard's and those of the folder's .mcp.json files. A dynamic
+// folder does not exist yet; it is looked at as the new folder it will be
+// under the workspace root, which has no .mcp.json of its own but may sit in
+// a repository that has one.
+func (s *Server) newChatMCP(settings config.Settings, mode, workdir string) ([]agent.MCPChoice, []string) {
+	dir, err := harnesses.CheckWorkdir(settings, mode, workdir)
+	if err == nil && dir == "" {
+		dir = filepath.Join(settings.Workspace.Root, "new")
+	}
+	var folder []agent.MCPServer
+	var problems []string
+	if err == nil {
+		folder, problems = agent.ReadFolderMCP(dir)
+	}
+	list, more := agent.ChatMCP(sharedMCP(settings), folder, nil)
+	return list, append(problems, more...)
+}
+
+// newChatMCPChoices is what a new chat keeps of the MCP choices the sheet
+// made: only a server it may have, and only where the choice is not that
+// server's default anyway, so that a default changed in Admin later still
+// counts for it - as a switch put back in the chat's MCP servers dialog
+// does. A server the sheet named that has gone since is left out.
+func newChatMCPChoices(list []agent.MCPChoice, chosen map[string]bool) map[string]bool {
+	out := map[string]bool{}
+	for _, c := range list {
+		if on, ok := chosen[c.Name]; ok && on != c.Default {
+			out[c.Name] = on
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// handleNewChatMCP is the MCP servers a chat would have in a folder, for
+// the new session sheet, before the chat exists:
+//
+//	GET /api/mcp?workdir_mode=…&workdir=…
+//	  {"servers":[{"name","transport","from","default","on"}…],"problems":["…"]}
+//
+// A folder the sheet cannot have yet (a path half typed) is no error here:
+// the answer is the dashboard's servers, and the start says what is wrong
+// with the folder.
+func (s *Server) handleNewChatMCP(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	list, problems := s.newChatMCP(s.Settings(), strings.TrimSpace(q.Get("workdir_mode")), strings.TrimSpace(q.Get("workdir")))
+	if problems == nil {
+		problems = []string{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"servers": mcpViews(list), "problems": problems})
 }

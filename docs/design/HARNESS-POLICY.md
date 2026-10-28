@@ -299,6 +299,11 @@ once switched on there.
   (`"mcp": {name: on}`), so a chat nobody switched follows Admin's default.
   Like Ultracode, a change parks the idle agent and counts from the next
   message.
+- **From the start.** The new session sheet has the same switches under
+  **MCP servers**, for the folder chosen there (`GET /api/mcp?workdir_mode=…&workdir=…`;
+  a dynamic folder is looked at as the new folder it will be). A chat is made
+  with those that differ from their default (`POST /api/chats` `"mcp"`),
+  kept as a switch in its dialog would be.
 - **Secrets.** Admin's servers are kept in the settings document, as the
   other keys of the dashboard are, and reach a chat's host sealed for that
   chat (`Spec.SharedMCP`, `agenthost.SealMCP`). `${VAR}` and

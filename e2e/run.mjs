@@ -2652,6 +2652,119 @@ async function sharedmcp() {
   } finally { await s.stop(); }
 }
 
+/* -------------------------------------------------------------- sheetmcp */
+
+// sheetmcp: the new session sheet. The shell is a thin card across the whole
+// width under the agents; the chosen account's limits are under its field,
+// without opening the list; and the MCP servers a chat in the chosen folder
+// would have are switches on their defaults, following the folder. The chat
+// starts with what was switched.
+async function sheetmcp() {
+  const s = await start({ viewport: { width: 1280, height: 900 } });
+  const { page } = s;
+  const post = async (path, data) => (await s.context.request.post(s.url + path, { data })).json();
+  try {
+    await setup(page, s.url);
+    const dir = join(s.data, 'projects', 'sheet-mcp');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, '.mcp.json'), JSON.stringify({ mcpServers: { db: { command: 'db-mcp' } } }));
+    const put = await s.context.request.put(s.url + '/api/settings', { data: { settings: {
+      workspace: { presets: [{ label: 'Notes', path: dir }] },
+      mcp: { servers: [
+        { name: 'github', type: 'http', url: 'https://gh.example/mcp', default: true },
+        { name: 'search', type: 'stdio', command: 'search-mcp', default: false },
+      ] },
+    } } });
+    ok(put.ok(), 'Admin has two MCP servers and a preset folder with a .mcp.json', String(put.status()));
+    const work = (await post('/api/accounts', { agent: 'claude', kind: 'api_key', label: 'Work', key: 'sk-ant-work-' + 'w'.repeat(16) })).account;
+    const home = (await post('/api/accounts', { agent: 'claude', kind: 'api_key', label: 'Home', key: 'sk-ant-home-' + 'h'.repeat(16) })).account;
+    const at = Date.now();
+    await s.context.route('**/api/accounts', async (route) => {
+      if (route.request().method() !== 'GET') return route.fallback();
+      const res = await route.fetch();
+      const body = await res.json();
+      for (const one of body.accounts || []) {
+        if (one.id === work.id) one.limits = [{ label: '5h', used_percent: 42, resets_at: new Date(at + 9e6).toISOString() }, { label: '7d', used_percent: 30, resets_at: new Date(at + 3e8).toISOString() }];
+        if (one.id === home.id) one.limits = [{ label: '5h', used_percent: 10, resets_at: new Date(at + 5e6).toISOString() }, { label: '7d', used_percent: 70, resets_at: new Date(at + 2e8).toISOString() }];
+      }
+      return route.fulfill({ response: res, json: body });
+    });
+
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await ensureNav(page);
+    await page.click('#newSession');
+    await page.waitForSelector('#newSessionSheet[open]', { timeout: 15000 });
+    await page.click('#newSessionSheet .so-settings__program[data-value="claude"]');
+    await wait(900);
+    const cards = await page.evaluate(() => {
+      const box = (n) => n.getBoundingClientRect();
+      const groups = box(document.querySelector('#newSessionSheet .so-settings__groups'));
+      const agent = box(document.querySelector('#nsHarness .so-settings__program'));
+      const shell = box(document.querySelector('#nsTools .so-settings__program[data-value="shell"]'));
+      const mark = box(document.querySelector('#nsTools .so-settings__program .so-agent'));
+      const name = box(document.querySelector('#nsTools .so-settings__program strong'));
+      return {
+        groups: Math.round(groups.width), shell: Math.round(shell.width), shellHeight: Math.round(shell.height),
+        agentHeight: Math.round(agent.height), below: shell.top >= agent.bottom,
+        beside: name.left > mark.right && Math.abs((name.top + name.bottom) / 2 - (mark.top + mark.bottom) / 2) <= 4,
+      };
+    });
+    ok(Math.abs(cards.shell - cards.groups) <= 1 && cards.below && cards.shellHeight < cards.agentHeight && cards.beside,
+      'the shell is a thin card across the whole width under the agents, its mark beside its name', JSON.stringify(cards));
+
+    // The chosen account's limits stand under its field.
+    await page.waitForSelector('#nsAccountLimits:not([hidden]) .so-limits__row', { timeout: 10000 });
+    const limits = async () => page.$$eval('#nsAccountLimits .so-limits__row', (rows) => rows.map((r) => [...r.children].map((c) => c.textContent.trim()).filter(Boolean).join(' ')));
+    let shown = await limits();
+    ok(shown.length === 2 && /^5h 42%/.test(shown[0]) && /^7d 30%/.test(shown[1]),
+      'the account chosen shows its limits under the field', shown.join(' | '));
+    await page.click('#nsAccount .so-drop__field');
+    await page.click('#nsAccount .ds-combo__option[data-value="' + home.id + '"]');
+    await page.waitForFunction(() => /10%/.test(document.getElementById('nsAccountLimits').textContent), null, { timeout: 5000 });
+    shown = await limits();
+    ok(/^5h 10%/.test(shown[0]) && /^7d 70%/.test(shown[1]), 'and another account’s when it is chosen', shown.join(' | '));
+
+    // The MCP servers, Admin's on their default.
+    const switches = () => page.$$eval('#nsMcp .ds-switch', (rows) => rows.map((r) =>
+      r.querySelector('.ds-switch__label').textContent + ':' + r.querySelector('input').checked));
+    await page.waitForSelector('#nsMcpField:not([hidden]) #nsMcp input[data-name="search"]', { timeout: 10000 });
+    let listed = await switches();
+    ok(listed.join(' ') === 'github:true search:false', 'the sheet offers Admin’s MCP servers, each on its default', listed.join(' '));
+    // The preset folder brings its own.
+    await page.click('#nsDir .so-drop__field');
+    await page.click('#nsDir .ds-combo__option[data-value="preset:' + dir + '"]');
+    await page.waitForSelector('#nsMcp input[data-name="db"]', { timeout: 10000 });
+    listed = await switches();
+    ok(listed.join(' ') === 'db:true github:true search:false', 'a folder with a .mcp.json adds its servers', listed.join(' '));
+    await page.click('#nsMcp label.ds-switch:has(input[data-name="search"])');
+    await page.click('#nsMcp label.ds-switch:has(input[data-name="github"])');
+    listed = await switches();
+    ok(listed.join(' ') === 'db:true github:false search:true', 'a switch is moved on the sheet', listed.join(' '));
+    await shot(page, 'sheet-mcp');
+    // The shell has none of it.
+    await page.click('#newSessionSheet .so-settings__program[data-value="shell"]');
+    const shell = await page.evaluate(() => ({
+      mcp: document.getElementById('nsMcpField').hidden, account: document.getElementById('nsAccountField').hidden,
+    }));
+    ok(shell.mcp && shell.account, 'a shell has no account and no MCP servers', JSON.stringify(shell));
+    await page.click('#newSessionSheet .so-settings__program[data-value="claude"]');
+    await page.waitForSelector('#nsMcpField:not([hidden])', { timeout: 10000 });
+    listed = await switches();
+    ok(listed.join(' ') === 'db:true github:false search:true', 'back on the agent, the switches are as they were', listed.join(' '));
+
+    await page.click('#nsStart');
+    await page.waitForSelector('#newSessionSheet[open]', { state: 'detached', timeout: 30000 });
+    await chatUp(page);
+    const id = await page.evaluate(() => location.hash.slice(1));
+    const row = await sessionRow(s, id);
+    ok(row.options && JSON.stringify(row.options.mcp) === '{"github":false,"search":true}',
+      'the chat keeps only the switches moved from their default', JSON.stringify(row.options));
+    const servers = await (await s.context.request.get(s.url + '/api/sessions/' + id + '/mcp')).json();
+    const on = (servers.servers || []).filter((one) => one.on).map((one) => one.name);
+    ok(on.join(',') === 'db,search', 'and has the servers that were on', on.join(','));
+  } finally { await s.stop(); }
+}
+
 /* ------------------------------------------------------- accounts-agents */
 
 // accounts-agents: an account is a second set of sign-ins for an agent
@@ -13196,6 +13309,7 @@ const ALL = [
   ['createclaude', 'Claude Code from the sheet to its command line, and back on its conversation after a crash', createclaude],
   ['foldermcp', 'a folder\u2019s .mcp.json reaches the agent, and Info names its servers', foldermcp],
   ['sharedmcp', 'Admin\u2019s MCP servers reach every chat, and a chat switches them for itself', sharedmcp],
+  ['sheetmcp', 'the new session sheet: the shell across the width, the account\u2019s limits, the MCP switches', sheetmcp],
   ['createcodex', 'Codex over its app server: one thread, kept, and resumed after a rest', createcodex],
   ['accounts-agents', 'an account of each agent reaches its CLI: its folder, its key, its home', accountsagents],
   ['createopencode', 'OpenCode over its own authenticated server: one session, resumed after a rest', createopencode],
