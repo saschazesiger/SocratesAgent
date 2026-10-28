@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/saschazesiger/SocratesAgent/internal/agent"
+	"github.com/saschazesiger/SocratesAgent/internal/agent/chattools"
 )
 
 // askPayload is a small ask_user call.
@@ -320,7 +321,9 @@ func TestMCPAskServesAskUserThroughTheHost(t *testing.T) {
 	inR, inW := io.Pipe()
 	outR, outW := io.Pipe()
 	done := make(chan error, 1)
-	go func() { done <- ServeMCPAsk(context.Background(), SocketPath(r.data, r.chat), "test", inR, outW) }()
+	go func() {
+		done <- ServeMCPAsk(context.Background(), SocketPath(r.data, r.chat), "test", chattools.Endpoint{}, inR, outW)
+	}()
 	out := bufio.NewReader(outR)
 	rpc := func(msg string) map[string]any {
 		t.Helper()

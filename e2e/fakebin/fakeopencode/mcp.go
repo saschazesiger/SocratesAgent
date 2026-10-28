@@ -39,9 +39,10 @@ type mcpClient struct {
 
 // mcpConfig is the part of an `mcp` entry the fake uses.
 type mcpConfig struct {
-	Type    string   `json:"type"`
-	Command []string `json:"command"`
-	Timeout int64    `json:"timeout"`
+	Type        string            `json:"type"`
+	Command     []string          `json:"command"`
+	Environment map[string]string `json:"environment"`
+	Timeout     int64             `json:"timeout"`
 }
 
 // startMCP starts every local server of the config and connects it.
@@ -56,7 +57,7 @@ func (s *srv) startMCP() {
 		if cfg.Type != "local" || len(cfg.Command) == 0 {
 			continue
 		}
-		c, err := startMCPServer(name, cfg.Command)
+		c, err := startMCPServer(name, cfg.Command, cfg.Environment)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "mcp %s: %v\n", name, err)
 			continue
@@ -65,9 +66,15 @@ func (s *srv) startMCP() {
 	}
 }
 
-func startMCPServer(name string, command []string) (*mcpClient, error) {
+func startMCPServer(name string, command []string, env map[string]string) (*mcpClient, error) {
 	cmd := exec.Command(command[0], command[1:]...)
 	cmd.Stderr = os.Stderr
+	// OpenCode starts a local server with the config's environment on top
+	// of its own.
+	cmd.Env = os.Environ()
+	for k, v := range env {
+		cmd.Env = append(cmd.Env, k+"="+v)
+	}
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, err
@@ -292,4 +299,64 @@ func (t *turn) askUser(arg string) error {
 		return t.say([]string{"ask_user failed: " + text}, 5*time.Millisecond)
 	}
 	return t.say([]string{"ask_user returned: " + text}, 5*time.Millisecond)
+}
+
+// mcpTool is the model calling another tool of the "socrates" server (the
+// chat tools): a tool part, the call, then "<name> returned: <result>" or
+// "<name> failed: <result>".
+func (t *turn) mcpTool(arg string) error {
+	name, js, _ := strings.Cut(strings.TrimSpace(arg), " ")
+	c := t.s.mcp["socrates"]
+	if c == nil || name == "" {
+		return t.say([]string{name + " is not available"}, 5*time.Millisecond)
+	}
+	args := json.RawMessage(`{}`)
+	if strings.TrimSpace(js) != "" {
+		args = json.RawMessage(strings.TrimSpace(js))
+	}
+	var input map[string]any
+	_ = json.Unmarshal(args, &input)
+	start := time.Now().UnixMilli()
+	p := t.part(map[string]any{"type": "tool", "tool": "socrates_" + name, "callID": "call_" + newID("x")[2:12],
+		"state": map[string]any{"status": "running", "input": input, "time": map[string]any{"start": start}}})
+	raw, err := c.request("tools/call", map[string]any{"name": name, "arguments": args}, t.run.cancel, time.Minute)
+	if err != nil {
+		p["state"] = map[string]any{"status": "error", "input": input, "error": err.Error(),
+			"time": map[string]any{"start": start, "end": time.Now().UnixMilli()}}
+		t.part(p)
+		if errors.Is(err, errAborted) {
+			return err
+		}
+		return t.say([]string{name + " failed: " + err.Error()}, 5*time.Millisecond)
+	}
+	var resp struct {
+		Result struct {
+			Content []struct {
+				Text string `json:"text"`
+			} `json:"content"`
+			IsError bool `json:"isError"`
+		} `json:"result"`
+		Error *struct {
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	_ = json.Unmarshal(raw, &resp)
+	text := ""
+	if len(resp.Result.Content) > 0 {
+		text = resp.Result.Content[0].Text
+	}
+	if resp.Error != nil {
+		text, resp.Result.IsError = resp.Error.Message, true
+	}
+	status := "completed"
+	if resp.Result.IsError {
+		status = "error"
+	}
+	p["state"] = map[string]any{"status": status, "input": input, "output": text, "title": name,
+		"time": map[string]any{"start": start, "end": time.Now().UnixMilli()}}
+	t.part(p)
+	if resp.Result.IsError {
+		return t.say([]string{name + " failed: " + text}, 5*time.Millisecond)
+	}
+	return t.say([]string{name + " returned: " + text}, 5*time.Millisecond)
 }

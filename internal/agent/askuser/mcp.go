@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"time"
+
+	"github.com/saschazesiger/SocratesAgent/internal/agent/chattools"
 )
 
 // ProgressEvery is how often a waiting call reports progress to an MCP
@@ -54,6 +56,9 @@ type MCP struct {
 	// a client that sent a progress token, and never once Handle has
 	// returned the call's response.
 	Progress func(token json.RawMessage, progress int)
+	// Chats is where the chat tools (list_chats, read_chat, send_to_chat)
+	// reach the server; the server offers them only when it is usable.
+	Chats chattools.Endpoint
 }
 
 type rpcMessage struct {
@@ -77,7 +82,13 @@ func (m *MCP) Handle(ctx context.Context, raw json.RawMessage) json.RawMessage {
 	case "ping":
 		return rpcResult(msg.ID, map[string]any{})
 	case "tools/list":
-		return rpcResult(msg.ID, map[string]any{"tools": []any{Tool()}})
+		tools := []any{Tool()}
+		if m.Chats.Usable() {
+			for _, d := range chattools.Tools() {
+				tools = append(tools, map[string]any{"name": d.Name, "title": d.Title, "description": d.Description, "inputSchema": d.Schema})
+			}
+		}
+		return rpcResult(msg.ID, map[string]any{"tools": tools})
 	case "tools/call":
 		return m.call(ctx, msg)
 	}
@@ -131,6 +142,10 @@ func (m *MCP) call(ctx context.Context, msg rpcMessage) json.RawMessage {
 		return rpcError(msg.ID, -32602, "unreadable tools/call parameters")
 	}
 	if p.Name != Name {
+		if m.Chats.Usable() && chatTool(p.Name) {
+			res := m.Chats.Call(ctx, p.Name, p.Arguments)
+			return rpcResult(msg.ID, toolResult(res.Text, res.Error))
+		}
 		return rpcError(msg.ID, -32602, "socrates has no tool "+p.Name)
 	}
 	payload, err := Parse(p.Arguments)
@@ -164,6 +179,16 @@ func (m *MCP) call(ctx context.Context, msg rpcMessage) json.RawMessage {
 		return nil
 	}
 	return rpcResult(msg.ID, toolResult("The question could not be put to the person: "+err.Error(), true))
+}
+
+// chatTool is whether name is one of the chat tools.
+func chatTool(name string) bool {
+	for _, d := range chattools.Tools() {
+		if d.Name == name {
+			return true
+		}
+	}
+	return false
 }
 
 func (m *MCP) progress(ctx context.Context, token json.RawMessage) {

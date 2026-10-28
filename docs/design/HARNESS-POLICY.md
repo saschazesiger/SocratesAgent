@@ -313,6 +313,41 @@ once switched on there.
   servers of one name, stdio without a command or http/sse without a URL is
   refused when Admin saves.
 
+## Chats of one repository
+
+The agents of the chats that work in one repository reach each other,
+whatever their harness and account: three tools beside `ask_user` on
+Socrates' own MCP server (`internal/agent/chattools`).
+
+| Tool | What it does |
+|---|---|
+| `list_chats` | the other chats of the repository: id, title, agent, model, working or waiting, folder |
+| `read_chat` | the last messages of one (10 unless `count` says, at most 50; 4000 characters each) |
+| `send_to_chat` | a message into one, at most 20 000 characters |
+
+- **The repository** of a chat is the nearest folder at or above its own
+  with a `.git`, else its folder alone (`chatScope`). A dynamic folder is a
+  chat's own, so such a chat reaches nobody; preset and typed-in folders do.
+- **A message** goes into the other chat as the person's messages do
+  (`sendMessage`), after a `chat_message` notice that names the chat it came
+  from ("A message from the chat “API work” (Claude Code)."). It opens with
+  a line for the agent - which chat, its id, answer with `send_to_chat` -
+  that the chat's bubble leaves out. It wakes a parked agent at once and
+  waits behind a running turn; the other agent answers, if it does, the same
+  way. Each message costs the receiving chat's account.
+- **The brake.** A chat sends at most 40 messages an hour
+  (`chatSendsPerHour`, counted in the server's memory); past that the tool
+  says so, so that two agents cannot answer each other for ever.
+- **How a call gets there.** The server serves the tools on its own socket,
+  `<data>/run/tools.sock` (`agenthost.ToolsSocketPath`, 0600), and puts it
+  into every chat's launch spec with a token: the chat's id sealed with
+  `secrets.key` (`chat_tools` in `host.json`, not backed up). Claude Code and
+  Codex call it from the host (in-process MCP server; dynamic tools of a new
+  thread - a Codex thread from before keeps the tools it started with);
+  OpenCode's `socrates mcp-ask` gets it in its environment
+  (`SOCRATES_CHAT_TOOLS_SOCKET`, `SOCRATES_CHAT_TOOLS_TOKEN`). The tools and
+  their guidance are only there when the spec has the endpoint.
+
 ## Instructions per model
 
 Each favourite model of a harness in Admin has an **Instructions** button: a

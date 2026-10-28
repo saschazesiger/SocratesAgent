@@ -14,18 +14,24 @@ import (
 	"sync"
 
 	"github.com/saschazesiger/SocratesAgent/internal/agent/askuser"
+	"github.com/saschazesiger/SocratesAgent/internal/agent/chattools"
 )
 
 // MCPAskTool is the name an agent that prefixes MCP tools with their server
-// (OpenCode: <server>_<tool>) knows ask_user by.
-const MCPAskTool = askuser.ServerName + "_" + askuser.Name
+// (OpenCode: <server>_<tool>) knows ask_user by, and MCPChatsTool list_chats.
+const (
+	MCPAskTool   = askuser.ServerName + "_" + askuser.Name
+	MCPChatsTool = askuser.ServerName + "_" + chattools.List
+)
 
 // MCPAskMain is the `socrates mcp-ask --socket <host socket>` subcommand, and
 // its exit code: ask_user as an MCP server on stdin and stdout, for an agent
 // CLI that runs its MCP servers as processes of its own (OpenCode). Every
 // call reaches the chat's agent host over its socket (OpAsk) and waits there
 // for the answer, sending progress notifications meanwhile, so that the
-// CLI's call timeout never runs out (research/05 §4.3).
+// CLI's call timeout never runs out (research/05 §4.3). The chat tools are
+// served beside it when the environment names their endpoint
+// (chattools.FromEnv).
 func MCPAskMain(args []string, version string) int {
 	fs := flag.NewFlagSet("mcp-ask", flag.ContinueOnError)
 	sock := fs.String("socket", "", "the agent host's socket")
@@ -38,20 +44,21 @@ func MCPAskMain(args []string, version string) int {
 	}
 	log.SetFlags(0)
 	log.SetPrefix("socrates mcp-ask: ")
-	if err := ServeMCPAsk(context.Background(), *sock, version, os.Stdin, os.Stdout); err != nil {
+	if err := ServeMCPAsk(context.Background(), *sock, version, chattools.FromEnv(), os.Stdin, os.Stdout); err != nil {
 		log.Print(err)
 		return 1
 	}
 	return 0
 }
 
-// ServeMCPAsk serves ask_user on one MCP stdio stream until in ends; version
-// is the server's in initialize. Requests run concurrently, each on a
+// ServeMCPAsk serves ask_user, and the chat tools at chats when it is
+// usable, on one MCP stdio stream until in ends; version is the server's in
+// initialize. Requests run concurrently, each on a
 // goroutine of its own because a tools/call blocks, under a context that is
 // registered before the next line is read: a notifications/cancelled, read
 // in order, always finds the call it withdraws. A call still waiting when in
 // ends is withdrawn.
-func ServeMCPAsk(ctx context.Context, sock, version string, in io.Reader, out io.Writer) error {
+func ServeMCPAsk(ctx context.Context, sock, version string, chats chattools.Endpoint, in io.Reader, out io.Writer) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	var wmu sync.Mutex
@@ -60,9 +67,14 @@ func ServeMCPAsk(ctx context.Context, sock, version string, in io.Reader, out io
 		defer wmu.Unlock()
 		_, _ = out.Write(append(line, '\n'))
 	}
+	instructions := askuser.Guidance(MCPAskTool)
+	if chats.Usable() {
+		instructions += "\n\n" + chattools.Guidance(MCPChatsTool)
+	}
 	m := &askuser.MCP{
 		Version:      version,
-		Instructions: askuser.Guidance(MCPAskTool),
+		Instructions: instructions,
+		Chats:        chats,
 		Ask: func(ctx context.Context, call askuser.Call) (json.RawMessage, error) {
 			return askHost(ctx, sock, call.Payload)
 		},

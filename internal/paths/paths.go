@@ -109,7 +109,7 @@ const (
 // kept, as a second line of defence, because the server writes the spec
 // again before every launch and a restored chat loses nothing by it.
 var Redacted = map[string][]string{
-	Chats + "/*/" + ChatSpec: {"env", "secret_env"},
+	Chats + "/*/" + ChatSpec: {"env", "secret_env", "chat_tools"},
 }
 
 // NotBackedUp are the parts of the data directory the backup leaves out, as

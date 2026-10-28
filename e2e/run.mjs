@@ -2786,6 +2786,81 @@ async function sheetmcp() {
   } finally { await s.stop(); }
 }
 
+/* ------------------------------------------------------------- chatpeers */
+
+// chatpeers: the agents of the chats in one repository reach each other,
+// whatever their harness: Claude Code, Codex and OpenCode each in a folder
+// of one Git repository list each other and no chat outside it, a message
+// sent with send_to_chat arrives in the other chat marked as that chat's -
+// a line over it says from which - and its agent answers it at once, and
+// read_chat gives back what was said there.
+async function chatpeers() {
+  const s = await start({ viewport: { width: 1280, height: 900 } });
+  try {
+    await setup(s.page, s.url);
+    const repo = join(s.data, 'projects', 'shop');
+    for (const dir of ['.git', 'api', 'web', 'docs']) mkdirSync(join(repo, dir), { recursive: true });
+    const put = await s.context.request.put(s.url + '/api/settings', { data: { settings: { workspace: { allow_custom: true } } } });
+    ok(put.ok(), 'typed-in folders are allowed', String(put.status()));
+    const claude = await makeChat(s, 'claude', { title: 'API work', workdir_mode: 'custom', workdir: join(repo, 'api') });
+    const codex = await makeChat(s, 'codex', { title: 'Web work', workdir_mode: 'custom', workdir: join(repo, 'web') });
+    const opencode = await makeChat(s, 'opencode', { title: 'Docs work', workdir_mode: 'custom', workdir: join(repo, 'docs') });
+    const alone = await makeChat(s, 'claude', { title: 'Elsewhere' });
+    await open(s);
+
+    // The message a chat got from another, and its agent's answer to it.
+    const received = async (id, needle, timeout = 30000) => {
+      const until = Date.now() + timeout;
+      while (Date.now() < until) {
+        const messages = (await historyOf(s, id)).messages || [];
+        const at = messages.findIndex((m) => m.role === 'user' && (m.text || '').includes(needle));
+        const reply = at >= 0 ? messages.slice(at + 1).find((m) => m.role === 'assistant' && textOf(m)) : null;
+        if (reply) return { message: messages[at].text, reply: textOf(reply) };
+        await wait(250);
+      }
+      return null;
+    };
+
+    await openChat(s.page, claude);
+    const listed = await answerTo(s, claude, '/mcptool list_chats {}');
+    ok(listed.startsWith('list_chats returned: 2 other chat(s) work in this repository (' + repo + ')')
+      && listed.includes('id ' + codex + ': “Web work” (Codex)') && listed.includes('folder web')
+      && listed.includes('id ' + opencode + ': “Docs work” (OpenCode)') && !listed.includes(alone) && !listed.includes(claude),
+      'Claude Code lists the Codex and OpenCode chats of the repository, and no chat outside it', listed);
+
+    const sent = await answerTo(s, claude, '/mcptool send_to_chat {"chat":"' + codex + '","text":"Please check the login form."}');
+    ok(/^send_to_chat returned: Sent to “Web work” \(Codex\)\./.test(sent), 'Claude Code sends the Codex chat a message', sent);
+    const got = await received(codex, 'Please check the login form.');
+    ok(!!got && got.message.startsWith('[A message from the chat “API work” (Claude Code), id ' + claude)
+      && got.reply.startsWith('you said: [A message from the chat'),
+      'it arrives in the Codex chat as Claude Code’s, and Codex answers it at once', JSON.stringify(got));
+
+    await openChat(s.page, codex);
+    await s.page.waitForSelector('#chat .so-line[data-code="chat_message"]', { timeout: 15000 });
+    const line = await s.page.$eval('#chat .so-line[data-code="chat_message"]', (n) => n.textContent.trim());
+    ok(line === 'A message from the chat “API work” (Claude Code).', 'a line over it says which chat it is from', line);
+    const bubble = await s.page.$eval('#chat .so-msg[data-role="user"] .so-msg__text', (n) => n.textContent);
+    ok(bubble === 'Please check the login form.', 'and the message shows without the line meant for the agent', bubble);
+    await shot(s.page, 'chatpeers-received');
+    const read = await answerTo(s, codex, '/tool read_chat {"chat":"' + claude + '","count":4}');
+    ok(read.startsWith('tool said: The last ') && read.includes('of the chat “API work” (Claude Code)')
+      && read.includes('list_chats returned:'), 'Codex reads what was said in the Claude Code chat', read.slice(0, 200));
+
+    await openChat(s.page, opencode);
+    const back = await answerTo(s, opencode, '/mcptool send_to_chat {"chat":"' + claude + '","text":"Docs are done."}');
+    ok(/^send_to_chat returned: Sent to “API work” \(Claude Code\)\./.test(back), 'OpenCode sends the Claude Code chat a message', back);
+    const answered = await received(claude, 'Docs are done.');
+    ok(!!answered && answered.message.includes('(OpenCode), id ' + opencode) && answered.reply.startsWith('you said:'),
+      'and Claude Code answers it', JSON.stringify(answered));
+
+    await openChat(s.page, alone);
+    const none = await answerTo(s, alone, '/mcptool list_chats {}');
+    ok(none.startsWith('list_chats returned: No other chat works in this repository'), 'a chat in a folder of its own has nobody to reach', none);
+    const refused = await answerTo(s, alone, '/mcptool send_to_chat {"chat":"' + claude + '","text":"hi"}');
+    ok(refused.startsWith('send_to_chat failed: There is no chat'), 'and cannot write to a chat of another repository', refused);
+  } finally { await s.stop(); }
+}
+
 /* ------------------------------------------------------- accounts-agents */
 
 // accounts-agents: an account is a second set of sign-ins for an agent
@@ -13331,6 +13406,7 @@ const ALL = [
   ['foldermcp', 'a folder\u2019s .mcp.json reaches the agent, and Info names its servers', foldermcp],
   ['sharedmcp', 'Admin\u2019s MCP servers reach every chat, and a chat switches them for itself', sharedmcp],
   ['sheetmcp', 'the new session sheet: the shell across the width, the account\u2019s limits, the MCP switches', sheetmcp],
+  ['chatpeers', 'the agents of the chats in one repository list, read and write to each other', chatpeers],
   ['createcodex', 'Codex over its app server: one thread, kept, and resumed after a rest', createcodex],
   ['accounts-agents', 'an account of each agent reaches its CLI: its folder, its key, its home', accountsagents],
   ['createopencode', 'OpenCode over its own authenticated server: one session, resumed after a rest', createopencode],

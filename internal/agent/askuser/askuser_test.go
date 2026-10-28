@@ -6,11 +6,13 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/saschazesiger/SocratesAgent/internal/agent/chattools"
 	"github.com/saschazesiger/SocratesAgent/internal/testhome"
 )
 
@@ -567,5 +569,41 @@ func TestMCPCancelAndProgress(t *testing.T) {
 	note := ProgressNotification(json.RawMessage(`"p"`), 3)
 	if !strings.Contains(string(note), `"method":"notifications/progress"`) || !strings.Contains(string(note), `"progressToken":"p"`) {
 		t.Fatalf("notification %s", note)
+	}
+}
+
+// The MCP server lists the chat tools beside ask_user only when it has an
+// endpoint for them, and hands a call of one to it.
+func TestTheServerOffersTheChatTools(t *testing.T) {
+	names := func(m *MCP) []string {
+		raw := m.Handle(context.Background(), json.RawMessage(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`))
+		var out struct {
+			Result struct {
+				Tools []struct {
+					Name string `json:"name"`
+				} `json:"tools"`
+			} `json:"result"`
+		}
+		_ = json.Unmarshal(raw, &out)
+		var list []string
+		for _, tool := range out.Result.Tools {
+			list = append(list, tool.Name)
+		}
+		return list
+	}
+	if got := strings.Join(names(&MCP{}), ","); got != "ask_user" {
+		t.Fatalf("without an endpoint: %s", got)
+	}
+	m := &MCP{Chats: chattools.Endpoint{Socket: filepath.Join(t.TempDir(), "none.sock"), Token: "c.x"}}
+	if got := strings.Join(names(m), ","); got != "ask_user,list_chats,read_chat,send_to_chat" {
+		t.Fatalf("with one: %s", got)
+	}
+	raw := m.Handle(context.Background(), json.RawMessage(`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"list_chats","arguments":{}}}`))
+	if !strings.Contains(string(raw), `"isError":true`) || !strings.Contains(string(raw), "could not be reached") {
+		t.Fatalf("a call to a server that is not there: %s", raw)
+	}
+	raw = (&MCP{}).Handle(context.Background(), json.RawMessage(`{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"list_chats","arguments":{}}}`))
+	if !strings.Contains(string(raw), "has no tool list_chats") {
+		t.Fatalf("a chat tool without an endpoint: %s", raw)
 	}
 }

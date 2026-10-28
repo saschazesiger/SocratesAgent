@@ -376,6 +376,7 @@ func (a *adapter) startThread(ctx context.Context, instructions string) error {
 	a.mu.Lock()
 	model, effort := a.model, a.effort
 	prompt := a.notes.Fresh(model)
+	chats := a.spec.ChatTools.Usable()
 	a.mu.Unlock()
 	if model != "" {
 		params["model"] = model
@@ -383,10 +384,17 @@ func (a *adapter) startThread(ctx context.Context, instructions string) error {
 	if effort != "" {
 		threadConfig(params)["model_reasoning_effort"] = effort
 	}
-	if tools := dynamicToolSpecs(); len(tools) > 0 {
+	tools := dynamicToolSpecs()
+	if chats {
+		tools = append(tools, chatToolSpecs()...)
+	}
+	if len(tools) > 0 {
 		params["dynamicTools"] = tools
 	}
 	developer := askGuidance
+	if chats {
+		developer += "\n\n" + chatsGuidance
+	}
 	if prompt != "" {
 		developer += "\n\n" + prompt
 	}

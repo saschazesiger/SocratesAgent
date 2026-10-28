@@ -182,6 +182,10 @@ const (
 	// that the harness cannot start); the text says which and why. The host
 	// writes it for the folder, an adapter for what its CLI cannot run.
 	NoticeMCP = "mcp_servers"
+	// NoticeChatMessage: the message after it comes from the agent of
+	// another chat (chattools send_to_chat). It is the server's, through
+	// the send it comes with.
+	NoticeChatMessage = "chat_message"
 )
 
 // ErrorAuth is an error event's code for a sign-in or key the provider

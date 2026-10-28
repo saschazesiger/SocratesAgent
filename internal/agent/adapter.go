@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/saschazesiger/SocratesAgent/internal/agent/askuser"
+	"github.com/saschazesiger/SocratesAgent/internal/agent/chattools"
 )
 
 // Adapter drives one agent CLI for one chat, inside that chat's agent host.
@@ -174,6 +175,11 @@ type StartSpec struct {
 	// to its CLI and keeps the CLI from loading the folder's MCP servers on
 	// its own.
 	MCPServers []MCPServer
+	// ChatTools is where the chat tools (list_chats, read_chat,
+	// send_to_chat) reach the server: the adapter offers them beside
+	// ask_user, in-process or through AskCommand (chattools.Endpoint.Env).
+	// The zero value offers none.
+	ChatTools chattools.Endpoint
 	// Spawn starts a CLI child: on the host's locked main thread, in a
 	// process group of its own, with SIGKILL as its parent-death signal, so
 	// that a host that dies takes its CLI with it (REBUILD.md §2.1). An

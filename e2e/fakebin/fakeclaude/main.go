@@ -47,6 +47,9 @@
 //	/model X         a local command answer, "Set model to X"
 //	/mcp             says the in-process MCP servers initialize declared,
 //	                 their configs and the tools their tools/list gave
+//	/mcptool NAME [JSON] calls another tool of the socrates server (the chat
+//	                 tools) through mcp_message and says "NAME returned:
+//	                 <result>" or "NAME failed: <result>"
 //	/askuser [JSON]  calls the socrates server's ask_user (a call of two
 //	                 questions, or the JSON given) through mcp_message, waits
 //	                 for the result and says it; an interrupt withdraws the
@@ -675,6 +678,8 @@ func (t *turnRun) script() {
 		t.say(text)
 	case "/askuser":
 		t.askUser(rest)
+	case "/mcptool":
+		t.mcpTool(rest)
 	case "/toolask":
 		t.tool("Bash", map[string]any{"command": "printf 'one\\ntwo\\n'", "description": "Print two lines"},
 			"one\ntwo", map[string]any{"stdout": "one\ntwo", "stderr": "", "interrupted": false}, false, "")
@@ -1367,6 +1372,60 @@ func (t *turnRun) askUser(arg string) {
 		return
 	}
 	t.say("ask_user returned: " + text)
+}
+
+// mcpTool is the model calling another tool of the socrates server: the
+// tool_use, the call over mcp_message, its result.
+func (t *turnRun) mcpTool(arg string) {
+	f := t.f
+	name, js, _ := strings.Cut(strings.TrimSpace(arg), " ")
+	t.closeText()
+	if t.apiMsg == "" {
+		t.msgStart()
+	}
+	input := json.RawMessage(`{}`)
+	if strings.TrimSpace(js) != "" {
+		input = json.RawMessage(strings.TrimSpace(js))
+	}
+	id := "toolu_fake_" + randHex(10)
+	full := "mcp__socrates__" + name
+	f.out(t.se(map[string]any{"type": "content_block_start", "index": t.index,
+		"content_block": map[string]any{"type": "tool_use", "id": id, "name": full, "input": map[string]any{}}}))
+	t.assistant(map[string]any{"type": "tool_use", "id": id, "name": full, "input": input}, "")
+	f.out(t.se(map[string]any{"type": "content_block_stop", "index": t.index}))
+	t.index++
+	raw, ok := f.mcpRequest(t.ctx, "socrates", "tools/call", map[string]any{"name": name, "arguments": input,
+		"_meta": map[string]any{"claudecode/toolUseId": id}}, false)
+	if !ok {
+		t.result(id, "[Tool call interrupted by user]", nil, true, "")
+		t.cut = true
+		return
+	}
+	var resp struct {
+		Result struct {
+			Content []struct {
+				Text string `json:"text"`
+			} `json:"content"`
+			IsError bool `json:"isError"`
+		} `json:"result"`
+		Error *struct {
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	_ = json.Unmarshal(raw, &resp)
+	text := ""
+	if len(resp.Result.Content) > 0 {
+		text = resp.Result.Content[0].Text
+	}
+	if resp.Error != nil {
+		text, resp.Result.IsError = resp.Error.Message, true
+	}
+	t.result(id, text, nil, resp.Result.IsError, "")
+	if resp.Result.IsError {
+		t.say(name + " failed: " + text)
+		return
+	}
+	t.say(name + " returned: " + text)
 }
 
 // askDrop is a call of ask_user withdrawn the moment it is made: the

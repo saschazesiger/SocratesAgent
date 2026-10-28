@@ -316,6 +316,9 @@ func cliArgs(spec agent.StartSpec, opts Options, ultracode bool) []string {
 		"--settings", string(settings),
 	}
 	prompt := askGuidance
+	if spec.ChatTools.Usable() {
+		prompt += "\n\n" + chatsGuidance
+	}
 	if p := strings.TrimSpace(opts.AppendSystemPrompt); p != "" {
 		prompt += "\n\n" + p
 	}

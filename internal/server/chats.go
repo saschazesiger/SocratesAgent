@@ -71,6 +71,8 @@ type chatHub struct {
 	ctx     context.Context
 	cancel  context.CancelFunc
 	pumps   sync.WaitGroup
+	// tools serves the chat tools from start to close (chattools.go).
+	tools *chatToolServer
 }
 
 func newChatHub(s *Server) *chatHub {
@@ -124,6 +126,7 @@ func (h *chatHub) start() {
 		}
 		p.mu.Unlock()
 	}
+	h.tools = h.srv.startChatTools()
 	go h.janitor()
 }
 
@@ -131,6 +134,7 @@ func (h *chatHub) start() {
 // the next server reattaches to them.
 func (h *chatHub) close() {
 	h.cancel()
+	h.tools.close()
 	h.mu.Lock()
 	peers := make([]*chatPeer, 0, len(h.chats))
 	for _, p := range h.chats {
@@ -520,6 +524,12 @@ func (p *chatPeer) launch(ctx context.Context) error {
 	}
 	if err := p.mcpSpec(row, &spec); err != nil {
 		return fmt.Errorf("the chat's MCP servers: %w", err)
+	}
+	// Without the tools the chat works all the same; a call says why.
+	if tools, err := p.hub.srv.chatToolsEndpoint(p.id); err == nil {
+		spec.ChatTools = tools
+	} else {
+		log.Printf("chats: %s: no chat tools: %v", p.id, err)
 	}
 	lctx, cancel := context.WithTimeout(ctx, chatLaunchWait)
 	defer cancel()

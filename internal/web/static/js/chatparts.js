@@ -773,6 +773,12 @@ function attachmentsHtml(list) {
   return html`<ul class="so-msg__files">${list.map((file, i) => html`<li class="so-attachment" data-ds-key="${'f' + i}">${raw(icon(String(file.mime || '').startsWith('image/') ? 'image' : 'file', 16))}<span class="so-break">${file.name}</span></li>`)}</ul>`;
 }
 
+// A message from another chat's agent (send_to_chat) opens with a line for
+// the agent it goes to: which chat sent it and how to answer. The line over
+// the message (notice chat_message) says the first to the person, so the
+// bubble shows the message alone.
+const FROM_CHAT = /^\[A message from the chat [^\n]*\]\n\n/;
+
 /**
  * userMessage is what the person sent: the text as written, the files, and -
  * while it is not the agent's yet - where it is. `sendNow` offers, for a
@@ -781,6 +787,7 @@ function attachmentsHtml(list) {
  */
 export function userMessage({ key, text, attachments, state, answerTo, error, sendNow = false }) {
   const chip = USER_STATE[state];
+  text = String(text || '').replace(FROM_CHAT, '');
   return html`<article class="so-msg" data-ds-key="${key}" data-role="user" data-state="${state || 'delivered'}"><div class="so-msg__bubble">${
     answerTo ? html`<p class="so-msg__label ds-meta">Answer to a question</p>` : ''
   }${text ? html`<p class="so-msg__text">${text}</p>` : ''}${attachmentsHtml(attachments)}</div>${
@@ -1581,7 +1588,7 @@ const NOTICE_WORDS = {
 // The glyph a line between messages leads with, by its notice code.
 const NOTICE_GLYPH = {
   compacted: 'archive', resumed: 'history', rebuilt: 'history', conversation_lost: 'alert', history_unavailable: 'alert',
-  mcp_servers: 'alert',
+  mcp_servers: 'alert', chat_message: 'chat',
   api_retry: 'sync', retrying: 'sync', retry: 'sync',
 };
 

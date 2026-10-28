@@ -49,6 +49,9 @@ import (
 //	/whoami          "account: <identity>"
 //	/mcp             the local MCP servers of the config: connected or not,
 //	                 their tools and the start of their instructions
+//	/mcptool NAME [JSON] the model calling another tool of the "socrates"
+//	                 server (list_chats, read_chat, send_to_chat); then
+//	                 "NAME returned: <result>" or "NAME failed: <result>"
 //	/askuser [JSON]  the model calling socrates_ask_user (a call of two
 //	                 questions, or the arguments given) on the "socrates"
 //	                 server: a running tool part until the call returns, then
@@ -519,6 +522,10 @@ func (t *turn) play(text string) error {
 		}
 	case "/askuser":
 		if err := t.askUser(args); err != nil {
+			return err
+		}
+	case "/mcptool":
+		if err := t.mcpTool(args); err != nil {
 			return err
 		}
 	case "/whoami":

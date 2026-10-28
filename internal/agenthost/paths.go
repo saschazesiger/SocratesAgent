@@ -10,6 +10,7 @@ import (
 	"regexp"
 
 	"github.com/saschazesiger/SocratesAgent/internal/agent"
+	"github.com/saschazesiger/SocratesAgent/internal/agent/chattools"
 	"github.com/saschazesiger/SocratesAgent/internal/paths"
 )
 
@@ -67,6 +68,18 @@ func SocketPath(dataDir, chatID string) string {
 	return filepath.Join(os.TempDir(), fmt.Sprintf("socrates-%d", os.Getuid()), hex.EncodeToString(sum[:6]), chatID+".sock")
 }
 
+// ToolsSocketPath is where the server serves the chat tools (chattools):
+// <data>/run/tools.sock, or a short path in the temporary directory when that
+// does not fit in a socket address, as SocketPath does.
+func ToolsSocketPath(dataDir string) string {
+	path := filepath.Join(dataDir, paths.Run, "tools.sock")
+	if len(path) < sockPathLimit {
+		return path
+	}
+	sum := sha256.Sum256([]byte(dataDir))
+	return filepath.Join(os.TempDir(), fmt.Sprintf("socrates-%d", os.Getuid()), hex.EncodeToString(sum[:6]), "tools.sock")
+}
+
 // Spec is what the server tells a host about the chat it is to run. It is
 // written to host.json before every launch, so a host started after a park
 // reads the chat's settings as they are now.
@@ -110,6 +123,10 @@ type Spec struct {
 	// alike; one not in it is on as its default says (agent.ChatMCP).
 	SharedMCP  string          `json:"shared_mcp,omitempty"`
 	MCPChoices map[string]bool `json:"mcp_choices,omitempty"`
+	// ChatTools is where the chat's tools reach the server, with the token
+	// that names the chat to it (agent.StartSpec.ChatTools). Not backed up:
+	// the socket is this machine's.
+	ChatTools chattools.Endpoint `json:"chat_tools,omitempty"`
 	// ParkAfterMS is how long the host may be idle before it parks.
 	ParkAfterMS int64 `json:"park_after_ms"`
 	// Watch overrides the watch on a running turn (watch.go), for tests;

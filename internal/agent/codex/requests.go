@@ -113,6 +113,9 @@ func handlerFor(method string, params json.RawMessage) Handler {
 		if t, ok := tools[p.Tool]; ok {
 			return t.Handle
 		}
+		if isChatTool(p.Tool) {
+			return chatToolCall
+		}
 	}
 	if h, ok := handlers[method]; ok {
 		return h
