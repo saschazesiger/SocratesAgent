@@ -19,8 +19,8 @@ import (
 func TestAChatsStatusIsToldFromItsJournal(t *testing.T) {
 	c := newChatEnv(t, time.Hour)
 	gw := c.withGateway(t)
-	gw.always(`{"summary":"It said hello.","now":"It is done.","eta":"Nothing is running.",` +
-		`"eta_minutes":null,"spoken":"It ran **echo** and said hello."}`)
+	gw.always(`{"goal":"Say hello","now":"It is done.","remaining":[],"progress":100,` +
+		`"eta_minutes":null,"eta_reason":"Nothing is left.","spoken":"It ran **echo** and said hello."}`)
 	id := c.create(t)
 	res, body := c.do(t, c.client, "POST", "/api/sessions/"+id+"/status", "")
 	if res.StatusCode != http.StatusBadRequest || len(statusCalls(gw)) != 0 {
@@ -35,13 +35,14 @@ func TestAChatsStatusIsToldFromItsJournal(t *testing.T) {
 		t.Fatalf("status: %d %v", res.StatusCode, body)
 	}
 	analysis, _ := body["analysis"].(map[string]any)
-	if analysis["summary"] != "It said hello." || analysis["now"] != "It is done." ||
-		analysis["eta"] != "Nothing is running." || analysis["eta_minutes"] != nil {
+	if analysis["goal"] != "Say hello" || analysis["now"] != "It is done." || analysis["progress"] != float64(100) ||
+		analysis["eta_reason"] != "Nothing is left." || analysis["eta_minutes"] != nil {
 		t.Fatalf("the analysis: %v", body["analysis"])
 	}
 	clock, _ := body["clock"].(map[string]any)
 	if clock["turns"] != float64(1) || clock["first_message"].(float64) <= 0 || clock["last_ended"].(float64) <= 0 ||
-		clock["turn_started"] != float64(0) {
+		clock["turn_started"] != float64(0) || clock["work_started"] != clock["first_message"] ||
+		clock["work_turns"] != float64(1) {
 		t.Fatalf("the clock: %v", body["clock"])
 	}
 	// A chat has no terminal socket: its phases reach the page on the event
@@ -54,9 +55,11 @@ func TestAChatsStatusIsToldFromItsJournal(t *testing.T) {
 				phases = append(phases, frame["phase"].(string))
 			}
 		}
-		return len(phases) >= 3
+		return len(phases) >= 2
 	})
-	if strings.Join(phases, ",") != "asking,speaking,done" {
+	// Nothing is read out loud by itself any more: there is no speaking
+	// phase.
+	if strings.Join(phases, ",") != "asking,done" {
 		t.Fatalf("the phases on the event stream: %v", phases)
 	}
 	call := statusCalls(gw)[0]
@@ -65,22 +68,33 @@ func TestAChatsStatusIsToldFromItsJournal(t *testing.T) {
 	}
 	prompt := call.last()
 	for _, want := range []string{"A chat with Scripted agent", "Facts:", "Turns so far: 1", "State: idle",
-		"The last turn ended:", "Record:", "] Person: /tool", "] Call: Running echo hello", "--- Turn 1 started",
-		"--- Turn 1 ended after"} {
+		"The last turn ended:", "The current request", ": /tool", "in 1 turn with 1 call", "its work ended:",
+		"Record:", "] Person: /tool", "] Call: Running echo hello", "--- Turn 1 started", "--- Turn 1 ended after"} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("the status prompt has no %q:\n%s", want, prompt)
 		}
 	}
 
+	// While it works, the estimate is the whole of the work, and it is
+	// said out loud at the end of the spoken text.
+	gw.always(`{"goal":"Pick","now":"It asks which one.","remaining":["Wait for the answer","Report"],` +
+		`"progress":50,"eta_minutes":4,"eta_reason":"One step left.","spoken":"It asks you to pick one."}`)
 	c.send(t, id, "m2", "/ask")
 	c.waitActivity(t, id, termux.StateWaiting)
 	res, body = c.do(t, c.client, "POST", "/api/sessions/"+id+"/status", "")
 	if res.StatusCode != http.StatusOK || body["state"] != "waiting" {
 		t.Fatalf("status while it asks: %d %v", res.StatusCode, body)
 	}
+	analysis, _ = body["analysis"].(map[string]any)
+	if analysis["eta_minutes"] == nil || analysis["eta_low"] == nil || analysis["eta_high"] == nil ||
+		fmt.Sprint(analysis["remaining"]) != "[Wait for the answer Report]" ||
+		!strings.HasPrefix(fmt.Sprint(body["text"]), "It asks you to pick one. It will probably need about ") {
+		t.Fatalf("the estimate while it works: %v", body)
+	}
 	prompt = statusCalls(gw)[1].last()
 	for _, want := range []string{"It has waited for the person's answer since:", "Agent asked the person: Pick one (A, B)",
-		"The current turn started:", "Turns so far: 2"} {
+		"The current turn started:", "Turns so far: 2", "How long the agent worked on the person's earlier requests",
+		": /tool"} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("the status prompt while it asks has no %q:\n%s", want, prompt)
 		}

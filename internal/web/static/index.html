@@ -41,12 +41,17 @@
   <div class="ds-topbar">
     <button class="ds-btn ds-btn--quiet ds-btn--icon ds-topbar__menu" id="menuBtn" type="button"
             aria-label="Sessions" data-tip="Sessions" aria-expanded="false" aria-controls="sidebar" data-icon="menu"></button>
-    <a class="ds-brand" href="#home" aria-label="Socrates" data-tip="Home"><img class="so-logo" src="/static/img/logo.png" alt="" width="32" height="32"><span class="ds-brand__name">Socrates</span></a>
-    <!-- At a desk the session list can be put away for the terminal's sake;
-         on a narrow window the drawer is modal and this is not there. -->
-    <button class="ds-btn ds-btn--quiet ds-btn--icon so-drawer-toggle" id="sideCollapse" type="button"
-            aria-label="Hide the session list" data-tip="Hide the session list"
-            aria-expanded="true" aria-controls="sidebar" data-icon="panelLeft"></button>
+    <!-- The brand and the toggle are as wide as the drawer under them while
+         it is there, so the toggle stands at its right edge, over the empty
+         VS Code, and the name starts where the panel does. -->
+    <div class="so-topbar__lead">
+      <a class="ds-brand" href="#home" aria-label="Socrates" data-tip="Home"><img class="so-logo" src="/static/img/logo.png" alt="" width="32" height="32"><span class="ds-brand__name">Socrates</span></a>
+      <!-- At a desk the session list can be put away for the terminal's sake;
+           on a narrow window the drawer is modal and this is not there. -->
+      <button class="ds-btn ds-btn--quiet ds-btn--icon so-drawer-toggle" id="sideCollapse" type="button"
+              aria-label="Hide the session list" data-tip="Hide the session list"
+              aria-expanded="true" aria-controls="sidebar" data-icon="panelLeft"></button>
+    </div>
     <div class="so-topbar" id="topbar">
       <!-- The name is edited where it is read; the mark beside it has a model
            name the session again, from its first prompt and its screen. -->

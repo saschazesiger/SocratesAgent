@@ -358,7 +358,11 @@ func (c *client) call(ctx context.Context, method string, params, out any) error
 		if err != nil {
 			return err
 		}
-		req.Params = b
+		// A nil map is no params at all: JSON-RPC allows only an object
+		// or an array, and strict servers (Cloudflare's) refuse null.
+		if string(b) != "null" {
+			req.Params = b
+		}
 	}
 	resp, err := c.t.roundTrip(ctx, req)
 	if err != nil {

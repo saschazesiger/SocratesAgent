@@ -107,7 +107,7 @@ looks, and the parts Socrates had built by hand that 2.0 ships. Moved onto DS's 
 | the question dialog restyled to the window, the option's ring | `.ds-dialog--full`, the selected interactive card |
 | Home's tile ring and the card title's button reset | the selected tile, the button form of `.ds-card__action` |
 | the chat's summaries and job rows, its dividers and task lists | `.ds-pressable`, `.ds-divider--label`, `.ds-tasks` |
-| the Status modal's task marks and three-column tiles | `.ds-tasks`, `.ds-tiles--3` (its figures still wrap: `ds-check.json`) |
+| the Status modal's task marks, its progress and facts | `.ds-tasks`, `.ds-progress`, `.ds-facts`, a `.ds-dialog__body` that scrolls alone |
 | the admin grip and its drag code, the voice guide's summary, the logs | `DS.motion.sortable()` with `.ds-grip`, `.ds-disclosure`, `.ds-code-block--wrap` |
 | the dropdown's button field, the combobox without a list | `.ds-combo--select`, DS's rule for a combobox without a toggle |
 | the sign-in card, "optional", the restore's share | `.ds-auth`, `.ds-card--elevated`, `.ds-field__optional`, `DS.dom.progress()` |

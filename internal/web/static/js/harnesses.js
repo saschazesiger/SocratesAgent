@@ -327,6 +327,23 @@ function dirItems() {
   return items;
 }
 
+/**
+ * folderChoice is how the new-session sheet can be started in a folder the
+ * sidebar shows: as the preset it is, or as a custom path where the dashboard
+ * allows one. null when neither: the server would not start a session there.
+ */
+export function folderChoice(path) {
+  // Only an absolute path is a folder: "More Chats" is keyed '#more'.
+  if (!String(path || '').startsWith('/')) return null;
+  const bare = (one) => String(one || '').trim().replace(/\/+$/, '') || '/';
+  const dir = bare(path);
+  const space = workspace();
+  const preset = (space.presets || []).find((one) => bare(one.path) === dir);
+  if (preset) return { mode: PRESET, workdir: preset.path };
+  if (space.allow_custom) return { mode: CUSTOM, workdir: dir };
+  return null;
+}
+
 // dynamicPreview is the directory a dynamic session will get, spelled the way
 // internal/harnesses/workdir.go spells it. It is shown greyed under the row so
 // that "Dynamic" is a place and not a promise.
@@ -893,6 +910,17 @@ export function settingsForm(options = {}) {
       if (first) selectHarness(first.id);
     },
 
+    /**
+     * selectFolder starts the form in a folder (folderChoice): the sidebar's
+     * + on a project. A folder it cannot be started in leaves it on Dynamic.
+     */
+    selectFolder(path) {
+      const choice = folderChoice(path);
+      if (!choice) return;
+      if (choice.mode === CUSTOM) dirPath.value = choice.workdir;
+      selectDir(choice.mode, choice.workdir, false);
+    },
+
     /** refreshAccounts reads the accounts and their usage again, then draws them. */
     async refreshAccounts() {
       await accounts.load().catch(() => { /* the copy this browser kept */ });
@@ -902,7 +930,8 @@ export function settingsForm(options = {}) {
 }
 
 /**
- * openNewSessionSheet asks the questions a session is bound by. It resolves
+ * openNewSessionSheet asks the questions a session is bound by; `workdir`
+ * opens it on that folder instead of Dynamic (the sidebar's +). It resolves
  * with {harness, model, effort, ultracode, workdir_mode, workdir, account,
  * auto_switch, mcp, chat} or null if the person backed out. `chat` says the agent is a chat: agent,
  * folder, model and account are all it asks; a Shell is a folder and nothing
@@ -911,7 +940,7 @@ export function settingsForm(options = {}) {
  * The catalogue is loaded first, but a failure is not fatal: the stored copy
  * is used and the hint says where it came from.
  */
-export async function openNewSessionSheet() {
+export async function openNewSessionSheet({ workdir = '' } = {}) {
   try {
     await load();
   } catch { /* the hint below says what happened */ }
@@ -950,6 +979,7 @@ export async function openNewSessionSheet() {
   }
 
   form.selectDefault();
+  if (workdir) form.selectFolder(workdir);
   render();
   form.refreshAccounts().then(() => { if (sheet.open) render(); });
 

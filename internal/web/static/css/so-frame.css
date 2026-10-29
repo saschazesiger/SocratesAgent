@@ -11,14 +11,17 @@
  *   .so-title        the session's name, a text button that renames it;
  *                    .so-title__home the words "Home" in its place on Home
  *   .so-outcome      the verdict on the last turn, beside the name
- *   .so-drawer-toggle  puts the session list away at a desk
+ *   .so-topbar__lead the brand and .so-drawer-toggle, which puts the session
+ *                    list away at a desk; as wide as the drawer under it
  *   .so-drawer-actions DS's drawer actions (.ds-drawer__actions): New session
- *                    and the empty VS Code; the foot is DS's .ds-drawer__foot
+ *                    and, at the right edge, the empty VS Code; the foot is
+ *                    DS's .ds-drawer__foot
  *                    (a rail of icons on a short screen, session.js)
  *   .so-session-list the folders and their rows (session.js)
  *   .so-folder       a project, a shelf of one (.so-folder--shelf), or the
  *                    Finished fold of projects (.so-folder--finished); its
- *                    head a .ds-pressable
+ *                    head a .ds-pressable, then a project's + (__new: a new
+ *                    session in it) and its VS Code (__ide)
  *   .so-row          one session: DS's drawer row (.ds-drawer__row), its item
  *                    and its ⋮ (.ds-drawer__action, .ds-hover-actions)
  *   .so-list-empty   what the list says when it has no rows
@@ -68,6 +71,37 @@
 @media (max-width: 900px) {
   .so-drawer-toggle {
     display: none;
+  }
+}
+
+/* The brand and the toggle are the bar's own items, as before, wherever
+   there is no drawer beside the panel. */
+.so-topbar__lead {
+  display: contents;
+}
+
+/* With the list beside the panel they take the drawer's column: the toggle
+   at its right edge, in line with the empty VS Code under it (the drawer
+   actions' padding), and the name where the panel starts (the bar's gap
+   and the topbar's margin make up the actions' padding). The bar's own
+   start is DS's padding beside a drawer (the brand's 32px mark centred on
+   the drawer's icon axis); the design scenario measures the alignment. */
+@media (min-width: 901px) {
+  .so-app:not([data-drawer-hidden]) .so-topbar__lead {
+    flex: none;
+    display: flex;
+    align-items: center;
+    gap: var(--ds-space-2);
+    width: calc(var(--ds-drawer-width) + env(safe-area-inset-left)
+      - max(calc(var(--ds-drawer-icon-axis) - 16px), env(safe-area-inset-left)) - var(--ds-space-3));
+  }
+
+  .so-app:not([data-drawer-hidden]) .so-drawer-toggle {
+    margin-left: auto;
+  }
+
+  .so-app:not([data-drawer-hidden]) .so-topbar {
+    margin-left: var(--ds-space-1);
   }
 }
 
@@ -183,11 +217,15 @@
 
 /* ── Drawer ───────────────────────────────────────────────────────────── */
 
-/* DS's drawer actions (.ds-drawer__actions): New session and the empty
-   VS Code side by side. */
+/* DS's drawer actions (.ds-drawer__actions): New session, and the empty
+   VS Code at the right edge, under the toggle in the bar. */
 .so-drawer-actions {
   gap: var(--ds-space-2);
   align-items: center;
+}
+
+.so-drawer-actions > #blankIDE {
+  margin-left: auto;
 }
 
 .so-btn-label {
@@ -349,6 +387,19 @@
 
 .so-folder--finished > .so-folder__rows {
   padding-left: var(--ds-space-2);
+}
+
+/* A folder's + and VS Code keep their size whatever the name beside them:
+   the name gives way, so they stand in one column down the list. */
+.so-folder__new,
+.so-folder__ide {
+  flex: none;
+}
+
+/* The +, a quieter grey than the name beside it: it is there when wanted
+   and does not compete with the list. Hover brings it to the text colour. */
+.so-folder__new {
+  --ds-btn-quiet-color: var(--ds-text-3);
 }
 
 /* The folder's VS Code: in its colours while it runs, quiet while it does
@@ -555,7 +606,7 @@
   }
 
   /* Home is the drawer's first item, so the mark can go too. */
-  .so-app .ds-topbar > .ds-brand {
+  .so-app .so-topbar__lead > .ds-brand {
     display: none;
   }
 
@@ -571,7 +622,7 @@
 /* A phone on its side: the brand gives its width to the session, and Home
    is the drawer's first item anyway. */
 @media (max-height: 500px) {
-  .so-app .ds-topbar > .ds-brand {
+  .so-app .so-topbar__lead > .ds-brand {
     display: none;
   }
 }
@@ -594,9 +645,10 @@
 }
 
 /* ── The Status modal of a chat (statusmodal.js) ─────────────────────────
-   A head with the agent's mark and the chat's name, then in the order a
-   glance wants them: where it is (a chip), what runs right now, three
-   figures, the task list with its progress, the summary. */
+   A head with the agent's mark and the chat's name, then the answer to
+   "when will it be done" large in a tinted block with its progress, and
+   under it what runs now, what is still to come, why the estimate is what
+   it is, and the measured figures. */
 
 .so-status .so-status__box {
   inline-size: min(var(--so-status-width), 100%);
@@ -641,6 +693,10 @@
   white-space: nowrap;
 }
 
+.so-status .so-status__title:focus {
+  outline: none;
+}
+
 .so-status__x {
   flex: none;
   align-self: flex-start;
@@ -657,18 +713,70 @@
   padding: var(--ds-space-6) 0;
 }
 
-.so-status__state {
+/* The answer: when it will be done, as a figure, in a tinted block. Its
+   progress bar's remaining track takes the surface, since the accent it
+   has by default is the block's own colour. */
+.so-status__hero {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-space-1);
+  padding: var(--ds-space-5);
+  border-radius: var(--ds-radius-lg);
+  background: var(--ds-accent);
+  color: var(--ds-on-accent);
+}
+
+.so-status__hero-head {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
+  justify-content: space-between;
   gap: var(--ds-space-3);
+  margin-bottom: var(--ds-space-3);
 }
 
 .so-status__by {
   min-width: 0;
-  color: var(--ds-text-3);
+  color: var(--ds-on-accent);
   font: var(--ds-font-meta);
   overflow-wrap: anywhere;
+}
+
+.so-status__hero-label {
+  margin: 0;
+  font: var(--ds-font-label);
+}
+
+.so-status__hero-value {
+  margin: 0;
+  font: var(--ds-font-display);
+  font-variant-numeric: tabular-nums;
+}
+
+.so-status__hero-note {
+  margin: 0;
+  font: var(--ds-font-body);
+}
+
+.so-status__progress {
+  --ds-progress-track: var(--ds-surface);
+  margin-top: var(--ds-space-4);
+}
+
+/* The goal, what the agent has to say about a task and a step are the
+   model's and the agent's words, and quote paths and URLs: such a token
+   breaks anywhere rather than running out of the box. */
+.so-status__goal,
+.so-status__text,
+.so-status__list {
+  overflow-wrap: anywhere;
+}
+
+.so-status__section-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--ds-space-3);
 }
 
 .so-status__label {
@@ -680,20 +788,10 @@
   font: var(--ds-font-label);
 }
 
-.so-status__now {
-  padding: var(--ds-space-4) var(--ds-space-5);
-  border-radius: var(--ds-radius-lg);
-  background: var(--ds-accent);
-}
-
-/* What runs now, the summary and a task are the model's and the agent's
-   words, and quote paths and URLs: such a token breaks anywhere rather than
-   running out of the box. */
-.so-status__now-text {
+.so-status__text {
   margin: 0;
   color: var(--ds-text);
-  font: var(--ds-font-subtitle);
-  overflow-wrap: anywhere;
+  font: var(--ds-font-reading);
 }
 
 .so-status__call {
@@ -711,48 +809,12 @@
   font-size: inherit;
 }
 
-/* Three figures side by side in the 600px modal (DS .ds-tiles--3): a
-   tile is a third of it there, narrower than DS's least tile width. */
-.so-status__tiles {
-  --ds-tile-min-width: var(--so-status-tile-min);
-}
-
-/* A figure here is a span in words ("~1:30 h", "Your turn"), not the two or
-   three digits a tile is made for, and a third of the modal is narrower
-   than "Your turn" at the figure's size: it takes a second line, between
-   words, rather than DS's ellipsis ("Your t…"). */
-.so-status__tiles .ds-tile__value {
-  white-space: normal;
-  overflow-wrap: break-word;
-}
-
-.so-status__clamp {
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 4;
-  overflow: hidden;
-}
-
-.so-status .so-status__title:focus {
-  outline: none;
-}
-
-.so-status__tasks-head {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: var(--ds-space-3);
-}
-
 .so-status__list {
-  margin-top: var(--ds-space-3);
+  margin-top: var(--ds-space-1);
 }
 
-.so-status__text {
-  margin: 0;
-  color: var(--ds-text);
-  font: var(--ds-font-reading);
-  overflow-wrap: anywhere;
+.so-status__measured {
+  margin: var(--ds-space-2) 0 0;
 }
 
 .so-status__actions {
@@ -760,12 +822,7 @@
 }
 
 @media (max-width: 600px) {
-  .so-status .so-status__eta {
-    grid-column: 1 / -1;
-    order: 3;
-  }
-
-  .so-status__now {
-    padding: var(--ds-space-3) var(--ds-space-4);
+  .so-status__hero {
+    padding: var(--ds-space-4);
   }
 }

@@ -138,6 +138,25 @@ func (m *MCPSettings) normalize() {
 		}
 		out = append(out, s)
 	}
+	// A server set up before Socrates had a built-in server of its name
+	// (an Admin "browserstack" from npx) keeps working under another name
+	// instead of making every save fail: name-admin, or name-admin-2 ...
+	taken := map[string]bool{}
+	for _, s := range out {
+		taken[s.Name] = true
+	}
+	for i := range out {
+		if !slices.Contains(BuiltinMCPNames, out[i].Name) {
+			continue
+		}
+		base := out[i].Name + "-admin"
+		name := base
+		for n := 2; taken[name]; n++ {
+			name = fmt.Sprintf("%s-%d", base, n)
+		}
+		taken[name] = true
+		out[i].Name = name
+	}
 	sort.SliceStable(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	m.Servers = out
 	var builtin []MCPBuiltinSetting

@@ -129,7 +129,7 @@ export function mountAssist(ctx) {
       const label = speaking ? 'Stop reading' : chat ? 'Status of this chat' : 'Status of this session';
       const tip = speaking ? 'Stop reading'
         : voiceKey() === false ? 'Needs an OpenRouter key (Admin, Voice)'
-          : chat ? 'Say what this chat is doing' : 'Say what this session is doing';
+          : chat ? 'What this chat is doing, and when it is done' : 'Say what this session is doing';
       if (btn.getAttribute('aria-label') !== label) btn.setAttribute('aria-label', label);
       if (btn.getAttribute('data-tip') !== tip) btn.setAttribute('data-tip', tip);
       // An editor has no screen to summarise. A chat is summarised from its
@@ -218,8 +218,9 @@ export function mountAssist(ctx) {
   }
 
   // runChatStatus is a chat's Status: a modal of its own opens at once and
-  // says what is being done until the analysis is in, then shows it, and the
-  // spoken version is read out loud. Nothing of it stays in the chat.
+  // says what is being done until the analysis is in, then shows it. The
+  // spoken version is read out loud only when the modal's Read aloud is
+  // pressed. Nothing of it stays in the chat.
   async function runChatStatus(session) {
     busyStatus = true;
     modal = openStatusModal({
@@ -245,9 +246,6 @@ export function mountAssist(ctx) {
       setVoiceKey(true);
       mine.spoken = text;
       mine.show(data);
-      busyStatus = false;
-      paint();
-      if (mine.isOpen()) await say(text);
     } catch (err) {
       if (noKeyRefusal(err)) {
         setVoiceKey(false);

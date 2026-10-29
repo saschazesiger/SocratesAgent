@@ -220,7 +220,7 @@ touch mode, except `options`, which measures the narrowest phone in use,
 | `unread` | bold when nobody saw it, gone when the chat is opened or sent a message |
 | `notify` | a chat that stops working while nobody is looking: one chime and one notification named after it, two switches in the options menu that each turn one of them off and are remembered on this device, and nothing fired for a replay or for a chat that has only just been started |
 | `session-title` | a chat names itself from its first message, once, while its name pulses; the arrow beside the name names it again; a naming that fails says so; a first message still being written in a chat's big field asks for no name |
-| `status-speak` | **Status** wears a turning ring while it asks, the answer about the chat lands on screen as words, and the same words go to `/api/voice/speak` once — intercepted in the browser, so no scenario ever calls Google |
+| `status-speak` | **Status** wears a turning ring while it asks, the answer about the chat lands on screen as words, nothing is read by itself, and Read aloud sends the same words to `/api/voice/speak` once — intercepted in the browser, so no scenario ever calls Google |
 | `status-ticker` | the phases of a status — reading the chat, asking the model, speaking, the answer — arrive in order in one line |
 | `dictate` | the microphone's sheet with its two endings: a discarded recording that transcribes nothing, and a kept one whose words wait in the chat's composer for the person's Send |
 | `no-overlap` | speech-to-text and text-to-speech are never open at once: **Status** while the microphone runs says nothing out loud, the same press with it closed does, and a recording that starts silences what is playing |
@@ -250,7 +250,8 @@ touch mode, except `options`, which measures the narrowest phone in use,
 | `chat-home` | Home reads a chat from its journal: what it does, Running and Finished, its question on the card, at a desk and on a phone |
 | `chat-push` | a chat's notification and badge: the question's words, how a turn ended, nothing for a Stop, a limit once |
 | `chat-title` | a chat names itself from its first message |
-| `chat-status` | Status says a chat from its journal, on its line and out loud |
+| `chat-status` | Status says a chat from its journal, in its modal and out loud on request |
+| `chat-status-eta` | While a chat works, Status says when all of it will be done (clock time, range, share done), what runs, the steps left and why; on a phone too |
 | `chat-outcome` | a chat's turn judged from its journal: the hourglass, the verdict, the notification |
 | `chat-schedule` | a chat set to start a few seconds ahead (through the API: the field is to the minute) does not start early, then sends its draft as the first message, once, with the notice that the clock sent it, and its draft and start time are gone; a chat with a message takes no start time (409) |
 | `chat-ultracode` | Ultracode for Claude Code alone: in the sheet, and in a Claude chat's menu |
