@@ -396,6 +396,12 @@
   flex: none;
 }
 
+/* The +, a quieter grey than the name beside it: it is there when wanted
+   and does not compete with the list. Hover brings it to the text colour. */
+.so-folder__new {
+  --ds-btn-quiet-color: var(--ds-text-3);
+}
+
 /* The folder's VS Code: in its colours while it runs, quiet while it does
    not, and pressed (the DS toggle) while it is on screen. */
 .so-folder__ide .so-agent {
