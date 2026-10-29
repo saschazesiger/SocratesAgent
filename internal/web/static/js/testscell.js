@@ -336,11 +336,23 @@ export function mount(ctx) {
     return { step: n, shot: shots.findIndex((s) => s.step === n) };
   }
 
+  // revealSoon asks the next draw to bring the chosen step and its
+  // screenshot into view: a cell opened on its sixth step shows it.
+  let revealSoon = false;
+
+  function reveal() {
+    const thumb = body.querySelector('[data-thumb="' + sel.shot + '"]');
+    if (thumb) thumb.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    const stepRow = body.querySelector('[data-step-row="' + sel.step + '"]');
+    if (stepRow) stepRow.scrollIntoView({ block: 'nearest' });
+  }
+
   function syncSelection(v, shots) {
     const key = keyOf(v.run, v.id);
     if (sel.key !== key) {
       sel = { key, manual: false, ...pickDefault(v, shots) };
       zoom = false;
+      revealSoon = true;
       return;
     }
     if (!sel.manual && V.OPEN_ATTEMPT.has(v.state) && shots.length) {
@@ -358,6 +370,7 @@ export function mount(ctx) {
     sel.manual = true;
     zoom = false;
     draw();
+    reveal();
   }
 
   function selectShot(i) {
@@ -368,10 +381,7 @@ export function mount(ctx) {
     sel.step = shots[i].step;
     sel.manual = true;
     draw();
-    const thumb = body.querySelector('[data-thumb="' + i + '"]');
-    if (thumb) thumb.scrollIntoView({ block: 'nearest', inline: 'nearest' });
-    const stepRow = body.querySelector('[data-step-row="' + sel.step + '"]');
-    if (stepRow) stepRow.scrollIntoView({ block: 'nearest' });
+    reveal();
   }
 
   function stepShot(by) {
@@ -471,6 +481,18 @@ export function mount(ctx) {
     if (list && !rovings.has(list)) {
       rovings.add(list);
       DS.dom.roving(list, { items: '[data-step]', orientation: 'vertical', wrap: false });
+    }
+    if (revealSoon && wide) {
+      revealSoon = false;
+      // Only the film strip moves: the page stays at its head, where the
+      // verdict and the actions are, and the viewer names the step.
+      requestAnimationFrame(() => {
+        const thumb = body.querySelector('[data-thumb="' + sel.shot + '"]');
+        const strip = thumb && thumb.closest('.so-cell-strip');
+        if (!strip) return;
+        const at = thumb.getBoundingClientRect().left - strip.getBoundingClientRect().left + strip.scrollLeft;
+        strip.scrollLeft = at - (strip.clientWidth - thumb.clientWidth) / 2;
+      });
     }
   }
 
