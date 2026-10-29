@@ -9,9 +9,16 @@
 
 import { html, raw, icon } from './ui.js';
 import * as harnesses from './harnesses.js';
+import * as accounts from './accounts.js';
 
-// The verdicts, worst first, as Socrates ranks them.
-export const VERDICTS = ['fail', 'blocked', 'issue', 'pass', 'na'];
+// The verdicts in the one order every part of the page shows them: the
+// tiles, the result bars and their counts, the filters, the legends, the
+// override dialog and a run's head all read Fail · Issue · Blocked · Pass ·
+// N/A, left to right (top to bottom in the trend's columns).
+export const VERDICTS = ['fail', 'issue', 'blocked', 'pass', 'na'];
+
+// The verdicts worst first, as Socrates ranks them (a test's worst cell).
+const WORST = ['fail', 'blocked', 'issue', 'pass', 'na'];
 
 // Each verdict's word, glyph and status tone ('' is the neutral chip).
 export const VERDICT = {
@@ -59,8 +66,33 @@ export const OPEN_ATTEMPT = new Set(['queued', 'waiting', 'starting', 'running']
 
 /** rank orders verdicts worst first (unknown last). */
 export function rank(verdict) {
-  const i = VERDICTS.indexOf(verdict);
-  return i < 0 ? VERDICTS.length : i;
+  const i = WORST.indexOf(verdict);
+  return i < 0 ? WORST.length : i;
+}
+
+// How a cell or a test stands while a problem lasts, before "since Run N".
+const STANDS = { fail: 'failing', issue: 'an issue', blocked: 'blocked' };
+
+/**
+ * sinceWords is a problem's streak in the words of its verdict: "failing
+ * since Run 1", "an issue since Run 1", "blocked since Run 3" ('' without
+ * a run).
+ */
+export function sinceWords(verdict, number) {
+  if (!number) return '';
+  return (STANDS[verdict] || 'a problem') + ' since Run ' + number;
+}
+
+/**
+ * testOrder is the order of a catalog's tests everywhere on the page, the
+ * one a run takes them in (catalog.Cells): P0 first, then by id.
+ */
+export function testOrder(a, b) {
+  const p = (t) => ({ P0: 0, P1: 1, P2: 2 })[t.priority] ?? 1;
+  // A catalog's test has its id in `id`; a run's row has it in `test` (its `id` is the attempt's).
+  const x = String(a.test || a.id);
+  const y = String(b.test || b.id);
+  return p(a) - p(b) || (x < y ? -1 : x > y ? 1 : 0);
 }
 
 /** sevRank orders severities worst first. */
@@ -98,6 +130,28 @@ export function attemptWord(state) { return (ATTEMPT[state] || { word: state }).
 export function verdictWord(verdict) { return (VERDICT[verdict] || ATTEMPT[verdict] || { word: verdict }).word; }
 export function runWord(state) { return (RUN[state] || { word: state }).word; }
 export function severityWord(severity) { return (SEVERITY[severity] || { word: severity || 'Unrated' }).word; }
+
+/**
+ * legend says what the marks beside a verdict mean, for the kinds a table
+ * shows (regressed, fixed, reviewed, overridden, attempt, flaky); empty
+ * without any.
+ */
+const LEGEND = {
+  regressed: { glyph: 'arrowDown', cls: 'so-tests-change so-tests-change--regressed', word: 'broke since the run before' },
+  fixed: { glyph: 'arrowUp', cls: 'so-tests-change so-tests-change--fixed', word: 'fixed since the run before' },
+  reviewed: { glyph: 'eye', cls: 'so-tests__mark', word: 'reviewed' },
+  overridden: { glyph: 'pencil', cls: 'so-tests__mark', word: 'your verdict' },
+  attempt: { text: '#2', word: 'attempt 2 or later' },
+  flaky: { glyph: 'activity', cls: 'so-tests__mark', word: 'flaky' },
+};
+export function legend(kinds) {
+  const shown = Object.keys(LEGEND).filter((k) => kinds.includes(k));
+  if (!shown.length) return '';
+  return html`<p class="ds-meta so-tests-legend"><span class="ds-parts"><span class="ds-parts__list">${shown.map((k) => {
+    const l = LEGEND[k];
+    return html`<span class="so-tests-nowrap">${l.text ? html`<span aria-hidden="true">${l.text}</span>` : html`<span class="${l.cls}">${raw(icon(l.glyph, 16))}</span>`}${l.word}</span>`;
+  })}</span></span></p>`;
+}
 
 /** mark is a verdict as a small glyph with its word for the reader and the tip. */
 export function mark(verdict, tip) {
@@ -220,11 +274,14 @@ export function numberRuns(runs) {
   return runs;
 }
 
-/** runName is how a run is named: "Run 12", with its name "Run 12 · nightly". */
+/**
+ * runName is how a run is named: "Run 12", with its name in quotes, "Run 12
+ * “nightly”", so that a name never reads like a state ("Run 6 · live").
+ */
 export function runName(run, { name = true } = {}) {
   if (!run) return '';
   const n = 'Run ' + (run.n || run.number || '?');
-  return name && run.name ? n + ' · ' + run.name : n;
+  return name && run.name ? n + ' “' + run.name + '”' : n;
 }
 
 /** runLabel is kept for the modules that name a run by date. */
@@ -280,8 +337,8 @@ export function dimsWords(dims, skip = '') {
 export function titleCase(name) { return name ? name.charAt(0).toUpperCase() + name.slice(1) : ''; }
 
 /**
- * resultBar is a run's counts as one stacked bar (pass · issue · fail ·
- * blocked · still to go), each part as wide as its share. It is decoration
+ * resultBar is a run's counts as one stacked bar (fail · issue · blocked ·
+ * pass · still to go, as VERDICTS), each part as wide as its share. It is decoration
  * beside the counts in words, so it is hidden from the reader.
  */
 export function resultBar(counts, { size = '' } = {}) {
@@ -289,8 +346,9 @@ export function resultBar(counts, { size = '' } = {}) {
   const v = c.verdicts || {};
   const total = c.cells || 0;
   if (!total) return html`<span class="${'so-tests-bar' + (size ? ' so-tests-bar--' + size : '')}" aria-hidden="true"></span>`;
-  const rest = Math.max(0, total - ['pass', 'issue', 'fail', 'blocked'].reduce((n, k) => n + (v[k] || 0), 0));
-  const parts = [['pass', v.pass], ['issue', v.issue], ['fail', v.fail], ['blocked', v.blocked], ['rest', rest]].filter(([, n]) => n > 0);
+  const shown = VERDICTS.filter((k) => k !== 'na');
+  const rest = Math.max(0, total - shown.reduce((n, k) => n + (v[k] || 0), 0));
+  const parts = [...shown.map((k) => [k, v[k]]), ['rest', rest]].filter(([, n]) => n > 0);
   return html`<span class="${'so-tests-bar' + (size ? ' so-tests-bar--' + size : '')}" aria-hidden="true">${parts.map(([k, n]) =>
     html`<span class="${'so-tests-bar__part so-tests-bar__part--' + k}" style="${'flex-grow: ' + n}"></span>`)}</span>`;
 }
@@ -300,7 +358,7 @@ export function resultParts(counts) {
   const c = counts || {};
   const v = c.verdicts || {};
   const parts = [];
-  for (const k of ['fail', 'issue', 'blocked', 'pass']) {
+  for (const k of VERDICTS.filter((x) => x !== 'na')) {
     if (v[k]) parts.push(html`<span class="so-tests-count">${raw(icon(VERDICT[k].glyph, 16))}${v[k] + ' ' + VERDICT[k].word.toLowerCase()}</span>`);
   }
   const states = c.states || {};
@@ -319,6 +377,130 @@ export function roleWords(role) {
   if (!role || !role.harness) return '';
   const model = role.model ? (harnesses.modelOf(role.harness, role.model) || {}).label || role.model : '';
   return [harnesses.label(role.harness), model, role.effort ? harnesses.effortLabel(role.effort) : ''].filter(Boolean).join(' · ');
+}
+
+// waitWords is the waiting cells in a few words: "3 waiting for a free
+// Fake devices account".
+function waitWords(cells) {
+  const reasons = new Map();
+  for (const row of cells || []) {
+    if (row.state !== 'waiting') continue;
+    const why = String(row.wait || '').replace(/\s*\(\d+ ahead\)\s*$/, '').replace(/^waiting:?\s*/i, '');
+    reasons.set(why, (reasons.get(why) || 0) + 1);
+  }
+  return [...reasons].sort((a, b) => b[1] - a[1]).map(([why, n]) => n + ' waiting' + (why ? (/^(for|on|until)\b/.test(why) ? ' ' : ': ') + why : ''));
+}
+
+/**
+ * activeWords is how far an active run is besides its count: "3 running ·
+ * 2 waiting for … · about 4 min left · $1.20". `cells` (its rows, when
+ * read) name why cells wait.
+ */
+export function activeWords(d, cells) {
+  const c = d.counts || {};
+  const states = c.states || {};
+  const running = (states.running || 0) + (states.starting || 0);
+  return [
+    running ? running + ' running' : '',
+    ...(cells ? waitWords(cells) : states.waiting ? [states.waiting + ' waiting'] : []),
+    states.queued ? states.queued + ' queued' : '',
+    c.reviews ? c.reviews + ' in review' : '',
+    d.eta_ms > 0 ? (d.eta_ms < 60000 ? 'less than a minute left' : 'about ' + span(d.eta_ms) + ' left') : '',
+    money(d.cost),
+  ].filter(Boolean).join(' · ') || countsWords(c);
+}
+
+/**
+ * runProgress is an active run's progress: a DS progress bar with "12 of
+ * 20 cells done" and activeWords under it; `bare` leaves the words out
+ * (the phone's one-line banner says the count itself).
+ */
+export function runProgress(d, { cells = null, label = '', bare = false } = {}) {
+  const c = d.counts || {};
+  const share = c.cells ? Math.min(1, (c.done || 0) / c.cells) : 0;
+  const pct = Math.round(share * 100);
+  return html`<div class="ds-progress" style="${'--ds-progress: ' + share.toFixed(4)}">
+    <div class="ds-progress__track" role="progressbar" aria-label="${(label || runName(d, { name: false })) + ': cells done'}" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${pct}"${bare ? raw(html` aria-valuetext="${(c.done || 0) + ' of ' + plural(c.cells || 0, 'cell') + ' done'}"`) : ''}><div class="ds-progress__bar"></div></div>
+    ${bare ? '' : html`<p class="ds-progress__label">${(c.done || 0) + ' of ' + plural(c.cells || 0, 'cell') + ' done'}</p>
+    <p class="ds-progress__detail">${activeWords(d, cells)}</p>`}
+  </div>`;
+}
+
+/**
+ * roleShort is a role in a word or two for a line of several: its model
+ * ("Sonnet 5.5"), else its program.
+ */
+export function roleShort(role) {
+  if (!role || !role.harness) return 'the default';
+  const model = role.model ? (harnesses.modelOf(role.harness, role.model) || {}).label || role.model : '';
+  return model || harnesses.label(role.harness);
+}
+
+/**
+ * rolesWords is the agents of a run in one line: "Cells: Sonnet 5.5 ·
+ * Review: Opus · Analysis: Opus" ("No review" when it is off).
+ */
+export function rolesWords(s) {
+  const set = s || {};
+  return [
+    'Cells: ' + roleShort(set.cell),
+    set.review === false ? 'No review' : 'Review: ' + roleShort(set.reviewer),
+    set.analysis === false ? 'No analysis' : 'Analysis: ' + roleShort(set.analyst),
+  ].join(' · ');
+}
+
+const ROLE_WORDS = { cell: 'the cell agent', reviewer: 'the reviewer', analyst: 'the analyst' };
+
+/**
+ * roleProblems is what stands in the way of the roles of a run's settings
+ * (the repository's, or the Run dialog's): a program this server cannot
+ * run, accounts chosen that are gone (both block a run: its sessions would
+ * wait for ever), or no account the role may use that Socrates knows to be
+ * signed in (a warning: the server still tries the others, as a chat does,
+ * since the program may be signed in on its own). Roles with the same
+ * problem on the same program are said together. Each:
+ * { block, text } (text without the link to Admin).
+ */
+export function roleProblems(settings) {
+  const s = settings || {};
+  const found = new Map();
+  const add = (role, key, block, tail) => {
+    if (!found.has(key)) found.set(key, { block, roles: [], tail });
+    found.get(key).roles.push(ROLE_WORDS[role]);
+  };
+  for (const role of ['cell', 'reviewer', 'analyst']) {
+    if (role === 'reviewer' && s.review === false) continue;
+    if (role === 'analyst' && s.analysis === false) continue;
+    const r = s[role] || {};
+    if (!r.harness) continue;
+    const name = harnesses.label(r.harness);
+    const h = harnesses.harness(r.harness);
+    if (h && !(h.enabled && h.installed)) {
+      add(role, 'off:' + r.harness, true, ' on ' + name + ', which is not installed or switched on on this server.');
+      continue;
+    }
+    if (!accounts.agents().includes(r.harness)) continue;
+    const allowed = r.accounts || [];
+    const list = accounts.forAgent(r.harness).filter((a) => !allowed.length || allowed.includes(a.id));
+    if (allowed.length && !list.length) {
+      add(role, 'gone:' + role, true, ' on ' + name + ' accounts that are no longer there: tick others, or none for every account.');
+    } else if (list.length && !list.some(accounts.usable)) {
+      add(role, 'out:' + r.harness + ':' + list.map((a) => a.id).join(','), false, ' on ' + name + ', and no account {they} may use is signed in: {their} sessions try '
+        + (list.length === 1 ? list[0].label : 'them') + ' anyway, which works only if ' + name + ' is signed in on its own.');
+    }
+  }
+  return [...found.values()].map((p) => {
+    const who = p.roles.length === 1 ? p.roles[0] : p.roles.slice(0, -1).join(', ') + ' and ' + p.roles[p.roles.length - 1];
+    const verb = p.roles.length === 1 ? ' runs' : ' run';
+    const one = p.roles.length === 1;
+    const tail = p.tail.replace('{they}', one ? 'it' : 'they').replace('{their}', one ? 'its' : 'their');
+    return { block: p.block, text: who.charAt(0).toUpperCase() + who.slice(1) + verb + tail };
+  });
+}
+
+/** roleAlerts is roleProblems as DS alerts, each with the way to Admin's accounts. */
+export function roleAlerts(problems) {
+  return html`${problems.map((p) => html`<div class="${'ds-alert ' + (p.block ? 'ds-alert--error' : 'ds-alert--warning')}"${p.block ? raw(' role="alert"') : ''} data-ds-key="${p.text}">${raw(icon(p.block ? 'alertCircle' : 'alert', 20))}<span class="ds-alert__text so-break">${p.text}</span><a class="ds-btn ds-btn--text ds-btn--sm" href="/admin#accountsCard">Accounts in Admin</a></div>`)}`;
 }
 
 /**
@@ -411,12 +593,18 @@ export const BUG_STATUSES = ['open', 'known', 'not_a_bug', 'fixed'];
 /** bugStatusChip is a bug's status; an open bug that came back after it was fixed says so. */
 export function bugStatusChip(bug) {
   if (bug.status === 'open' && bug.regressed) {
-    return chip({ word: 'Came back', glyph: 'sync', tone: 'error' }, { tip: 'Open again: it was fixed, then a later run reported it' });
+    return chip({ word: 'Open · came back', glyph: 'sync', tone: 'error' }, { tip: 'Open again: it was fixed, then a later run reported it' });
   }
   return chip(BUG_STATUS[bug.status] || { word: bug.status || 'Open', glyph: 'flag' });
 }
 
 export function bugStatusWord(status) { return (BUG_STATUS[status] || { word: status }).word; }
+
+/** bugStateWords is a bug's status in words, "open · came back" for one that returned. */
+export function bugStateWords(bug) {
+  const word = bugStatusWord(bug.status || 'open');
+  return (bug.status === 'open' || !bug.status) && bug.regressed ? word + ' · came back' : word;
+}
 
 /** seenWords is where a bug was seen: "Run 2 → Run 5", "Run 3" for one run. */
 export function seenWords(bug) {

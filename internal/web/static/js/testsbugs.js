@@ -14,14 +14,15 @@
 // verdict and the screenshot of its first failing step, opening the cell
 // viewer; the triage; the runs that saw it; its history.
 //
-// The triage saves a status or a severity the moment it is chosen, with a
-// snackbar that can undo it: a choice of a few words is one tap, never an
-// edit left unsaved, and a wrong tap is taken back from the same place. The
-// note is free text, saved with its own button: saving every keystroke
-// would write the bug's history full.
+// The triage saves every change by itself, so nothing in it is ever left
+// unsaved: a status or a severity the moment it is chosen, with a snackbar
+// that can undo it (a wrong tap is taken back from the same place); the
+// note when the field is left (or with Ctrl+Enter), with a quiet "Saved"
+// under it rather than a snackbar: saving every keystroke would write the
+// bug's history full.
 
 import { api, errorMessage, toast } from './api.js';
-import { DS, M, html, raw, icon, morph, faces } from './ui.js';
+import { DS, M, html, raw, icon, morph } from './ui.js';
 import { markdown } from './md.js';
 import * as V from './testsview.js';
 
@@ -355,7 +356,15 @@ export function mount(ctx) {
       return html`<button class="ds-btn" type="button" id="bvIssue" aria-haspopup="dialog" aria-expanded="false" aria-controls="issueDialog">${raw(icon('link', 16))}Create GitHub issue</button>`;
     }
     const why = st ? 'No GitHub issue can be made: ' + (st.reason || 'GitHub is not reachable from this server') + '.' : 'Checking whether this repository is on GitHub…';
-    return html`<button class="ds-btn" type="button" id="bvIssue" aria-disabled="true" data-ds-guard="off" data-tip="${why}" data-why="${why}">${raw(icon('link', 16))}Create GitHub issue</button>`;
+    return html`<button class="ds-btn" type="button" id="bvIssue" aria-disabled="true" aria-describedby="bvIssueWhy" data-ds-guard="off" data-tip="${why}" data-why="${why}">${raw(icon('link', 16))}Create GitHub issue</button>`;
+  }
+
+  // issueWhy says under the head why no issue can be made, in words a
+  // finger and an eye find without a tooltip.
+  function issueWhy(bug) {
+    const st = github && github.repo === state.repo ? github.status : null;
+    if (bug.issue || !st || st.available) return '';
+    return html`<p class="ds-meta so-bugs__why" id="bvIssueWhy">${raw(icon('info', 16))}<span>${'No GitHub issue: ' + (st.reason || 'GitHub is not reachable from this server') + '.'}</span></p>`;
   }
 
   function head(bug, data) {
@@ -384,6 +393,7 @@ export function mount(ctx) {
           <button class="ds-btn ds-btn--primary" type="button" id="bvFix" aria-haspopup="dialog" aria-expanded="false" aria-controls="chatDialog">${raw(icon('chat', 16))}Fix in a chat</button>
         </div>
       </div>
+      ${issueWhy(bug)}
     </header>`;
   }
 
@@ -430,11 +440,11 @@ export function mount(ctx) {
     const draft = notes.has(bug.id) ? notes.get(bug.id) : (bug.note || '');
     return html`<section class="ds-card" data-ds-key="triage" aria-labelledby="bvTriageTitle">
       <h3 class="ds-card__title" id="bvTriageTitle">Triage</h3>
-      <p class="ds-muted">A choice is saved at once; the snackbar can undo it.</p>
+      <p class="ds-muted">Every change is saved by itself: a choice at once (its snackbar can undo it), the note when you leave the field.</p>
       <div class="ds-form so-tests__stack">
         <fieldset class="ds-field">
           <legend class="ds-field__label">Status</legend>
-          <div class="ds-radios" role="radiogroup" aria-label="Status">${V.BUG_STATUSES.map((s) => html`<label class="ds-radio" data-ds-key="${s}"><input type="radio" name="bvStatus" value="${s}"${s === bug.status ? raw(' checked') : ''}><span><strong>${TRIAGE_TITLE[s]}</strong><small>${V.BUG_STATUS[s].hint}</small></span></label>`)}</div>
+          <div class="ds-radios" role="radiogroup" aria-label="Status">${V.BUG_STATUSES.map((s) => html`<label class="ds-radio" data-ds-key="${s}"><input type="radio" name="bvStatus" value="${s}"${s === bug.status ? raw(' checked') : ''}><span><strong>${s === 'open' && bug.status === 'open' && bug.regressed ? 'Open · came back' : TRIAGE_TITLE[s]}</strong><small>${s === 'open' && bug.status === 'open' && bug.regressed ? 'It was fixed, then a later run reported it again. ' + V.BUG_STATUS[s].hint : V.BUG_STATUS[s].hint}</small></span></label>`)}</div>
         </fieldset>
         <div class="ds-field">
           <label class="ds-field__label" for="bvSeverity">Severity</label>
@@ -445,28 +455,30 @@ export function mount(ctx) {
           <label class="ds-field__label" for="bvNote">Note <span class="ds-field__optional">(optional)</span></label>
           <textarea class="ds-input" id="bvNote" maxlength="${NOTE_MAX}" rows="3" aria-describedby="bvNoteHint" placeholder="Why it is known, who looks at it, what was tried">${draft}</textarea>
           <div class="ds-field__foot">
-            <small class="ds-field__hint" id="bvNoteHint">The analyst reads it with the bug list on the next run.</small>
+            <small class="ds-field__hint" id="bvNoteHint">Saved when you leave the field. The analyst reads it with the bug list on the next run.</small>
             <span class="ds-field__counter" aria-hidden="true" id="bvNoteCount">${draft.length + ' / ' + NOTE_MAX}</span>
           </div>
-        </div>
-        <div class="ds-form-actions">
-          <button class="ds-btn ds-btn--tonal" type="button" id="bvNoteSave">${faces('Save note', 'Saving')}</button>
-          <button class="ds-btn ds-btn--text" type="button" id="bvNoteReset">Discard</button>
+          <p class="ds-meta so-bugs__saved" id="bvNoteState" role="status"></p>
         </div>
       </div>
     </section>`;
   }
 
-  // noteState says whether the note has an edit to save (Save and Discard).
+  // noteSaved is what the note's quiet line says: bug id -> 'saving' |
+  // 'saved' | 'failed' (absent: nothing to say).
+  const noteSaved = new Map();
+
+  // noteState says how the note stands under it: an edit not saved yet,
+  // saving, saved; and its length.
   function noteState(bug) {
     const field = $('bvNote');
     if (!field) return;
     const edited = notes.has(bug.id) && notes.get(bug.id).trim() !== (bug.note || '');
-    const save = $('bvNoteSave');
-    save.setAttribute('aria-disabled', String(!edited));
-    if (edited) save.removeAttribute('data-tip');
-    else save.setAttribute('data-tip', 'Nothing to save: the note is as saved');
-    $('bvNoteReset').hidden = !edited;
+    const st = noteSaved.get(bug.id);
+    const words = st === 'saving' ? 'Saving…' : edited ? (st === 'failed' ? 'Not saved: it is saved when you leave the field' : 'Not saved yet: it is saved when you leave the field')
+      : st === 'saved' ? 'Saved' : '';
+    const line = $('bvNoteState');
+    if (line.textContent !== words) line.textContent = words;
     const count = field.value.length + ' / ' + NOTE_MAX;
     if ($('bvNoteCount').textContent !== count) $('bvNoteCount').textContent = count;
   }
@@ -543,17 +555,18 @@ export function mount(ctx) {
     choose(id, 'severity', severity, (v) => id + ' is ' + V.severityWord(v) + ' now.');
   }
 
-  async function saveNote(id, button) {
+  // saveNote saves the note as written, when it differs from the saved one.
+  async function saveNote(id) {
     const bug = bugOf(id);
     if (!bug || !notes.has(id)) return;
     const note = notes.get(id).trim();
-    const was = bug.note || '';
-    let ok = false;
-    await M.busy(button, (async () => { ok = await patch(id, { note }, { done: note ? 'The note is saved.' : 'The note is removed.', undo: { note: was } }); })(), { done: false });
-    if (ok) {
-      notes.delete(id);
-      ctx.redraw('bugs');
-    }
+    if (note === (bug.note || '')) { notes.delete(id); return; }
+    noteSaved.set(id, 'saving');
+    noteState(bug);
+    const ok = await patch(id, { note });
+    noteSaved.set(id, ok ? 'saved' : 'failed');
+    if (ok && notes.has(id) && notes.get(id).trim() === note) notes.delete(id);
+    ctx.redraw('bugs');
   }
 
   /* ---------------------------------------------------- runs and history */
@@ -799,19 +812,6 @@ export function mount(ctx) {
         if (bug) ctx.startRun({ cells: bug.cells }, t.closest('[data-bv-rerun]'));
         return;
       }
-      if (t.closest('#bvNoteSave')) {
-        const b = t.closest('#bvNoteSave');
-        if (b.getAttribute('aria-disabled') !== 'true') saveNote(id, b);
-        return;
-      }
-      if (t.closest('#bvNoteReset')) {
-        notes.delete(id);
-        const bug = bugOf(id);
-        $('bvNote').value = (bug && bug.note) || '';
-        ctx.redraw('bugs');
-        $('bvNote').focus();
-        return;
-      }
       if (t.closest('[data-bv-retry]')) { details.delete(id); ctx.redraw('bugs'); return; }
       if (t.closest('[data-bg-retry]')) { list = null; ctx.redraw('bugs'); return; }
       if (t.closest('[data-bg-dialog]')) { ctx.openRunDialog(undefined, t.closest('[data-bg-dialog]')); return; }
@@ -842,15 +842,19 @@ export function mount(ctx) {
     panel.addEventListener('input', (event) => {
       if (event.target.id !== 'bvNote') return;
       notes.set(state.route.bug, event.target.value);
+      noteSaved.delete(state.route.bug);
       const bug = bugOf(state.route.bug);
       if (bug) noteState(bug);
     });
+    // Leaving the note saves it (a link or a tab taken from it leaves it first).
+    panel.addEventListener('focusout', (event) => {
+      if (event.target.id === 'bvNote') saveNote(state.route.bug);
+    });
     panel.addEventListener('keydown', (event) => {
-      // Ctrl+Enter in the note saves it.
+      // Ctrl+Enter in the note saves it at once.
       if (event.target.id === 'bvNote' && event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
         event.preventDefault();
-        const b = $('bvNoteSave');
-        if (b.getAttribute('aria-disabled') !== 'true') saveNote(state.route.bug, b);
+        saveNote(state.route.bug);
       }
     });
   }

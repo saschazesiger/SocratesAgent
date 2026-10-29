@@ -126,16 +126,26 @@ export function mount(ctx) {
     const live = state.live;
     if (!live) return '';
     const run = ctx.runOf(live.id) || { ...live.detail, n: live.detail.number };
+    const d = { ...live.detail, n: run.n };
     const cells = live.cells || [];
     const running = cells.filter((r) => r.state === 'running' || r.state === 'starting');
     const waiting = cells.filter((r) => r.state === 'waiting' || r.state === 'queued');
     const pools = (live.detail && live.detail.pools) || [];
     const now = Date.now();
+    const name = V.runName(run, { name: false });
+    // The banner over the tabs is left out on the overview: this card is the
+    // active run's place here, with its progress, Watch and Stop.
     return html`<section class="ds-card" aria-labelledby="ovLiveTitle" data-ds-key="live">
       <div class="ds-card__row">
         <h2 class="ds-card__title" id="ovLiveTitle">${'Live: ' + V.runName(run)}</h2>
-        <button class="ds-btn ds-btn--sm" type="button" data-watch="${live.id}">${raw(icon('eye', 16))}Watch</button>
+        ${V.runChip(d.state)}
+        <span class="so-tests-active__acts">
+          <button class="ds-btn ds-btn--sm" type="button" data-watch="${live.id}" aria-label="${'Watch ' + name}">${raw(icon('eye', 16))}Watch</button>
+          ${d.state === 'paused' ? html`<button class="ds-btn ds-btn--sm" type="button" data-run-act="resume" data-run="${live.id}">${raw(icon('play', 16))}Resume</button>` : ''}
+          <button class="ds-btn ds-btn--sm" type="button" data-run-act="stop" data-run="${live.id}" aria-label="${'Stop ' + name}">${raw(icon('stopCircle', 16))}Stop</button>
+        </span>
       </div>
+      ${V.runProgress(d, { cells })}
       ${running.length ? html`<div class="so-tests-live" role="list" aria-label="Running cells">${running.map((r) => liveCell(r, live.id, now))}</div>`
         : html`<p class="ds-muted">${waiting.length ? 'No cell is running yet.' : 'The cells are done; the reviewer and the analyst are at work.'}</p>`}
       ${waiting.length ? html`<h3 class="ds-card__subtitle">${'Waiting · ' + waiting.length}</h3>
@@ -152,10 +162,25 @@ export function mount(ctx) {
     </section>`;
   }
 
+  // stepOf is the catalog's step a running cell is at ({ n, do }), for its
+  // card: "Step 2 of 4: Open the first result".
+  function stepOf(r) {
+    const l = r.live || {};
+    const cat = state.catalog;
+    if (!cat && !state.catalogError) ctx.ensureCatalog().then(() => ctx.redraw('overview'));
+    const test = cat ? (cat.areas || []).flatMap((a) => a.tests || []).find((t) => t.id === r.test) : null;
+    const steps = test ? test.steps || [] : [];
+    const n = l.step || (l.steps ? l.steps : 0);
+    return steps.find((s) => s.n === n) || steps[n - 1] || null;
+  }
+
   function liveCell(r, runId, now) {
     const l = r.live || {};
     const shot = l.shot || r.shot;
-    const step = l.steps ? 'Step ' + Math.min(l.step || 1, l.steps) + ' of ' + l.steps + (l.title ? ': ' + l.title : '') : r.state === 'starting' ? 'Starting the session' : '';
+    const at = l.steps ? Math.min(l.step || l.steps, l.steps) : 0;
+    const what = at ? stepOf(r) : null;
+    const step = l.steps ? (l.step ? 'Step ' + at + ' of ' + l.steps + (what && what.do ? ': ' + what.do : '') : 'Every step judged')
+      : r.state === 'starting' ? 'Starting the session' : '';
     const took = r.started_at ? V.span(now - r.started_at) : '';
     return html`<div class="ds-card ds-card--filled ds-card--interactive so-tests-live__card" role="listitem" data-ds-key="${'l' + r.id}">
       <div class="so-tests-live__shot">${shot
@@ -164,17 +189,22 @@ export function mount(ctx) {
       <h3 class="ds-card__title"><button class="ds-card__action" type="button" data-cell="${r.id}" data-run="${runId}" data-list="live">${r.title}</button></h3>
       <p class="ds-meta">${[V.dimsWords(r.dims), took ? 'for ' + took : ''].filter(Boolean).join(' · ')}</p>
       ${step ? html`<p class="so-tests-live__step so-break">${step}</p>` : ''}
-      ${l.activity ? html`<p class="ds-meta so-break">${l.activity}</p>` : ''}
     </div>`;
   }
 
   /* --------------------------------------------------------------- latest */
 
-  function delta(now, before, prevRun) {
-    if (!prevRun) return '';
+  // delta is a tile's change against the run before, with which way it
+  // went and what that means for the verdict (more fails is worse, more
+  // passes better) in a glyph and a word, never in colour alone.
+  function delta(verdict, now, before, prevRun) {
+    if (!prevRun) return null;
     const d = now - before;
     const name = V.runName(prevRun, { name: false });
-    return d === 0 ? 'same as ' + name : (d > 0 ? '+' + d : '−' + -d) + ' since ' + name;
+    if (d === 0) return { words: 'same as ' + name, html: html`<span class="so-tests-delta">${raw(icon('minimize', 16))}<span>${'same as ' + name}</span></span>` };
+    const good = (d > 0) === (verdict === 'pass');
+    const words = Math.abs(d) + (d > 0 ? ' more' : ' fewer') + ' than ' + name + ' · ' + (good ? 'better' : 'worse');
+    return { words, html: html`<span class="${'so-tests-delta so-tests-delta--' + (good ? 'better' : 'worse')}">${raw(icon(d > 0 ? 'arrowUp' : 'arrowDown', 16))}<span>${words}</span></span>` };
   }
 
   function latestCard(d) {
@@ -184,11 +214,12 @@ export function mount(ctx) {
     const rate = V.passRate(run.counts);
     const tile = (verdict, extra) => {
       const n = v[verdict] || 0;
-      const note = [extra, delta(n, pv[verdict] || 0, d.previous)].filter(Boolean).join(' · ');
+      const change = delta(verdict, n, pv[verdict] || 0, d.previous);
+      const note = [extra, change ? change.words : ''].filter(Boolean).join(' · ');
       return html`<button class="ds-tile" type="button" data-ov-verdict="${verdict}" aria-label="${n + ' ' + V.verdictWord(verdict) + ' in ' + V.runName(run, { name: false }) + (note ? ', ' + note : '') + ': show them'}">
         <span class="ds-tile__label">${raw(icon(V.VERDICT[verdict].glyph, 16))}<span>${V.verdictWord(verdict)}</span></span>
         <span class="ds-tile__value" data-count="${n}">${n}</span>
-        <span class="ds-tile__note">${note}</span>
+        <span class="ds-tile__note">${extra ? html`<span>${extra}</span>` : ''}${change ? change.html : ''}</span>
       </button>`;
     };
     const meta = [
@@ -208,7 +239,7 @@ export function mount(ctx) {
         <p class="ds-meta"><strong>${Math.round(rate * 100) + '%'}</strong> of the judged cells passed${d.previous && V.passRate(d.previous.counts) !== null ? html` (${Math.round(V.passRate(d.previous.counts) * 100) + '% in ' + V.runName(d.previous, { name: false })})` : ''}</p>
       </div>` : ''}
       <div class="ds-tiles so-tests-ov__tiles" role="group" aria-label="${'Cells of ' + V.runName(run, { name: false }) + ' by verdict'}">
-        ${tile('fail')}${tile('issue')}${tile('blocked')}${tile('pass', v.na ? v.na + ' n/a' : '')}
+        ${V.VERDICTS.filter((k) => k !== 'na').map((k) => tile(k, k === 'pass' && v.na ? v.na + ' n/a' : ''))}
       </div>
     </section>`;
   }
@@ -232,16 +263,20 @@ export function mount(ctx) {
     const since = (r) => {
       const s = r.since;
       const n = s && typeof s === 'object' ? s.number || (ctx.runOf(s.run) || {}).n : typeof s === 'string' ? (ctx.runOf(s) || {}).n : s;
-      return n ? 'failing since Run ' + n : '';
+      return V.sinceWords(r.final, n);
     };
     const groups = [];
     if (d.regressed.length) {
       groups.push(html`<h3 class="ds-card__subtitle">${'Broke since ' + prevName} <span class="ds-badge ds-badge--error">${d.regressed.length}</span></h3>
         ${cellRows(d.regressed, 'Broke since ' + prevName, was)}`);
     }
-    if (d.failing.length) {
-      groups.push(html`<h3 class="ds-card__subtitle">Still failing <span class="ds-badge ds-badge--warning">${d.failing.length}</span></h3>
-        ${cellRows(d.failing, 'Still failing', since)}`);
+    // The problems that stay, by their verdict's own words: a cell with an
+    // issue is not "failing".
+    for (const [verdict, title, badge] of [['fail', 'Still failing', 'error'], ['issue', 'Still with issues', 'warning'], ['blocked', 'Still blocked', 'neutral']]) {
+      const rows = d.failing.filter((r) => (r.final || 'fail') === verdict || (verdict === 'fail' && !['issue', 'blocked'].includes(r.final)));
+      if (!rows.length) continue;
+      groups.push(html`<h3 class="ds-card__subtitle">${title} <span class="${'ds-badge ds-badge--' + badge}">${rows.length}</span></h3>
+        ${cellRows(rows, title, since)}`);
     }
     if (d.flaky.length) {
       groups.push(html`<h3 class="ds-card__subtitle">Flaky tests <span class="ds-badge ds-badge--neutral">${d.flaky.length}</span></h3>
@@ -269,7 +304,7 @@ export function mount(ctx) {
         <h2 class="ds-card__title" id="ovAttentionTitle">Needs attention</h2>
         ${problems ? html`<button class="ds-btn ds-btn--sm" type="button" data-ov-rerun="${d.latest.id}">${raw(icon('sync', 16))}Run the problems again</button>` : ''}
       </div>
-      ${groups.length ? groups : html`<div class="ds-alert ds-alert--success">${raw(icon('checkCircle', 20))}<span class="ds-alert__text">${'Nothing: ' + (problems ? 'every problem of ' + V.runName(d.latest, { name: false }) + ' is one it had before and is not failing.' : 'every judged cell of ' + V.runName(d.latest, { name: false }) + ' passed.')}</span></div>`}
+      ${groups.length ? groups : html`<div class="ds-alert ds-alert--success">${raw(icon('checkCircle', 20))}<span class="ds-alert__text">${'Nothing: ' + (problems ? 'the problems of ' + V.runName(d.latest, { name: false }) + ' are cells that ended without a verdict; its Results list them.' : 'every judged cell of ' + V.runName(d.latest, { name: false }) + ' passed.')}</span></div>`}
     </section>`;
   }
 
@@ -292,14 +327,14 @@ export function mount(ctx) {
     return html`<section class="ds-card" aria-labelledby="ovTrendTitle" data-ds-key="trend">
       <h2 class="ds-card__title" id="ovTrendTitle">${'The last ' + V.plural(runs.length, 'run')}</h2>
       ${runs.length ? html`<figure class="so-tests-trend">
-        <figcaption class="ds-sr">Cells of each run by verdict, oldest first. Each column opens its run.</figcaption>
+        <figcaption class="ds-sr">Cells of each run by verdict (fail, issue, blocked, pass from the top), oldest first. Each column opens its run.</figcaption>
         <ol class="so-tests-trend__plot">${runs.map((r) => {
           const c = r.counts || {};
           const v = c.verdicts || {};
           const share = Math.max(0.04, (c.cells || 0) / most);
           return html`<li class="so-tests-trend__item" data-ds-key="${'t' + r.id}">
             <button class="ds-pressable so-tests-trend__col" type="button" data-open-run="${r.id}" aria-label="${words(r)}" data-tip="${words(r)}"${r.id === (d.latest && d.latest.id) ? raw(' aria-current="true"') : ''}>
-              <span class="so-tests-trend__stack" style="${'--so-share: ' + share.toFixed(4)}">${['blocked', 'fail', 'issue', 'pass'].filter((k) => v[k]).map((k) =>
+              <span class="so-tests-trend__stack" style="${'--so-share: ' + share.toFixed(4)}">${V.VERDICTS.filter((k) => k !== 'na' && v[k]).reverse().map((k) =>
                 html`<span class="${'so-tests-bar__part so-tests-bar__part--' + k}" style="${'flex-grow: ' + v[k]}"></span>`)}${
                 V.ACTIVE_RUN.has(r.state) ? html`<span class="so-tests-bar__part so-tests-bar__part--rest" style="${'flex-grow: ' + Math.max(1, (c.cells || 0) - (c.done || 0))}"></span>` : ''}</span>
               <span class="so-tests-trend__label">${String(r.n || '?')}</span>
@@ -308,10 +343,10 @@ export function mount(ctx) {
         })}</ol>
       </figure>
       <ul class="ds-legend">
-        <li><span class="ds-legend__key so-tests-key--pass"></span>Pass</li>
-        <li><span class="ds-legend__key ds-legend__key--warning"></span>Issue</li>
         <li><span class="ds-legend__key ds-legend__key--error"></span>Fail</li>
+        <li><span class="ds-legend__key ds-legend__key--warning"></span>Issue</li>
         <li><span class="ds-legend__key ds-legend__key--neutral"></span>Blocked</li>
+        <li><span class="ds-legend__key so-tests-key--pass"></span>Pass</li>
       </ul>` : html`<p class="ds-muted">No run has cells yet.</p>`}
     </section>`;
   }

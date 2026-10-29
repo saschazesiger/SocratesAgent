@@ -36,6 +36,8 @@ const $ = (id) => document.getElementById(id);
 
 // The split view of steps and screenshots needs this much window.
 const WIDE = window.matchMedia('(min-width: 900px)');
+// A phone takes the cell's other actions as an action sheet, not a menu.
+const PHONE = window.matchMedia('(max-width: 600px)');
 // A running cell is read again this often while it is shown.
 const LIVE_EVERY = 3000;
 
@@ -69,6 +71,9 @@ export function mount(ctx) {
   const nav = $('cellNav');
   const overrideDialog = $('overrideDialog');
   const keysDialog = $('cellKeys');
+  const moreMenu = $('cellMoreMenu');
+  const moreSheet = $('cellMoreSheet');
+  const rovings = new WeakSet(); // the step lists whose arrow keys are wired
 
   let shown = false; // the dialog is open
   let want = null; // { id, run }: the attempt the address asks for
@@ -284,11 +289,23 @@ export function mount(ctx) {
     return out;
   }
 
-  function shotWords(s) {
-    const where = s.step ? 'Step ' + s.step : 'Outside the steps';
+  // stepOf is a step of the shown attempt by its number.
+  const stepOf = (v, n) => (v.steps || []).find((x) => x.n === n) || null;
+
+  // shotWords is a screenshot in words: its step's action from the catalog
+  // ("Step 2 of 4: Open the first result, screenshot 1 of 2"); the tools'
+  // own caption only for one outside the steps (the actions log has them all).
+  function shotWords(s, v = view) {
     const n = s.of > 1 ? ', screenshot ' + (s.i + 1) + ' of ' + s.of : '';
-    const what = s.act ? s.act.summary || s.act.action : 'attached by the agent';
-    return where + n + ': ' + what;
+    if (!s.step) return 'Outside the steps' + n + ': ' + (s.act ? s.act.summary || s.act.action : 'attached by the agent');
+    return stepTitle(v, s.step) + n;
+  }
+
+  // stepTitle is "Step 2 of 4: Open the first result".
+  function stepTitle(v, n) {
+    const steps = (v && v.steps) || [];
+    const step = steps.find((x) => x.n === n);
+    return 'Step ' + n + (steps.length ? ' of ' + steps.length : '') + (step && step.do ? ': ' + step.do : '');
   }
 
   const fileOf = (v, name) => V.paths.file(v.run, v.id, name);
@@ -449,6 +466,12 @@ export function mount(ctx) {
         </div>`}
     </div>`);
     if (!wide) wirePartSwitch();
+    // The steps are one stop of Tab; the arrow keys walk them and show each one's screenshots.
+    const list = body.querySelector('.so-cell-steps');
+    if (list && !rovings.has(list)) {
+      rovings.add(list);
+      DS.dom.roving(list, { items: '[data-step]', orientation: 'vertical', wrap: false });
+    }
   }
 
   function stepsTitle(v) {
@@ -489,7 +512,7 @@ export function mount(ctx) {
     } else if (prev && prev.verdict && r.final) {
       bits.push(html`<span>${'The same as in '}${prevLink}${' (' + V.verdictWord(prev.verdict) + ')'}</span>`);
     }
-    if (r.since && r.final && !V.passed(r.final) && r.since.run !== v.run) bits.push(html`<span>${'a problem since Run ' + r.since.number}</span>`);
+    if (r.since && r.final && !V.passed(r.final) && r.since.run !== v.run) bits.push(html`<span>${V.sinceWords(r.final, r.since.number).replace(/^./, (c) => c.toUpperCase())}</span>`);
     if (!bits.length) return '';
     return html`<p class="ds-meta so-cell__change"><span class="ds-parts"><span class="ds-parts__list">${bits}</span></span></p>`;
   }
@@ -514,17 +537,55 @@ export function mount(ctx) {
   function liveLine(v, r) {
     if (v.state !== 'running') return '';
     const live = r && r.live;
-    const steps = (v.steps || []).length;
     const at = live ? live.step : liveStep(v);
     const last = (v.actions || [])[(v.actions || []).length - 1];
-    const activity = live && live.activity ? live.activity : last ? last.summary || last.action : '';
     const when = live && live.at ? live.at : last && last.at ? Date.parse(last.at) : 0;
-    return html`<p class="ds-meta so-cell__live" role="status">${at ? 'Step ' + at + ' of ' + steps : 'Every step judged'}${activity ? ' · ' + activity : ''}${when ? ' · ' + V.ago(when) : ''}</p>`;
+    return html`<p class="ds-meta so-cell__live" role="status">${at ? stepTitle(v, at) : 'Every step judged'}${when ? ' · last action ' + V.ago(when) : ''}</p>`;
+  }
+
+  // problem: the shown attempt did not pass (or ended without a verdict),
+  // so fixing it is an action of its own.
+  const problem = (v) => (v.final ? !V.passed(v.final) : !V.OPEN_ATTEMPT.has(v.state));
+
+  // moreItems is what the More menu (the action sheet on a phone) holds.
+  function moreItems(v) {
+    const open = V.OPEN_ATTEMPT.has(v.state);
+    const item = (glyph, label, what) => html`<button class="ds-menu__item" role="menuitem" type="button" data-cell-act="${what}">${raw(icon(glyph, 20))}<span class="ds-menu__label">${label}</span></button>`;
+    return [
+      v.chat ? item('external', 'Open the agent’s transcript', 'transcript') : '',
+      open ? '' : item('play', 'Run this cell in a new run', 'rerun'),
+    ].filter(Boolean);
+  }
+
+  // The actions follow the verdict: on a problem, check the verdict
+  // (Override) or try it again (Retry), then fix it in a chat; a pass has
+  // nothing to fix; a cell still at work has nothing to judge yet. What is
+  // left goes in More, with its words (a menu, an action sheet on a phone).
+  function actions(v) {
+    const open = V.OPEN_ATTEMPT.has(v.state);
+    const more = moreItems(v);
+    return html`<div class="so-cell__actions" role="group" aria-label="Actions of this cell">
+      ${open ? '' : html`<button class="ds-btn" type="button" data-cell-act="override" aria-haspopup="dialog" aria-expanded="false">${raw(icon('pencil', 16))}${v.override ? 'Change your verdict' : 'Override verdict'}</button>
+        <button class="ds-btn" type="button" data-cell-act="retry" data-tip="Run this cell once more in this run">${raw(icon('sync', 16))}Retry</button>`}
+      ${!open && problem(v) ? html`<button class="ds-btn" type="button" data-cell-act="chat" aria-haspopup="dialog">${raw(icon('chat', 16))}Fix in a chat</button>` : ''}
+      ${more.length ? html`<button class="ds-btn ds-btn--text" type="button" data-cell-more aria-haspopup="${PHONE.matches ? 'dialog' : 'menu'}" aria-expanded="false" aria-controls="${PHONE.matches ? 'cellMoreSheet' : 'cellMoreMenu'}">More${raw(icon('chevronDown', 16))}</button>` : ''}
+    </div>`;
+  }
+
+  // bugChips are the bugs the analyst filed the cell under, each with its
+  // severity and status, opening the bug: "B-5 · Major · open".
+  function bugChips(v) {
+    const ids = v.bugs || [];
+    if (!ids.length) return '';
+    const known = bugs && bugs.repo === state.repo ? bugs.list : [];
+    return html`<div class="ds-chips so-cell__bugs" role="group" aria-label="Bugs of this cell">${ids.map((id) => {
+      const bug = known.find((b) => b.id === id);
+      const words = bug ? id + ' · ' + V.severityWord(bug.severity) + ' · ' + V.bugStateWords(bug).toLowerCase() : id;
+      return html`<button class="ds-chip" type="button" data-go-bug="${id}" data-ds-key="${'bug-' + id}"${bug ? raw(html` data-tip="${bug.title}"`) : ''} aria-label="${'Bug ' + words + (bug ? ': ' + bug.title : '') + '. Open it'}"><span class="ds-chip__body">${raw(icon('flag', 18, 'ds-chip__icon'))}<span class="ds-chip__label">${words}</span></span></button>`;
+    })}</div>`;
   }
 
   function band(v, r) {
-    const open = V.OPEN_ATTEMPT.has(v.state);
-    const retryWhy = open ? 'The cell is still going' : '';
     return html`<section class="so-cell__band" aria-label="Verdict" data-ds-key="band">
       <div class="so-cell__verdict">
         <div class="so-cell__says">
@@ -534,14 +595,10 @@ export function mount(ctx) {
         </div>
         ${changeLine(v, r)}
         ${liveLine(v, r)}
+        ${bugChips(v)}
         ${attemptSwitch(v)}
       </div>
-      <div class="so-cell__actions" role="group" aria-label="Actions of this cell">
-        <button class="ds-btn ds-btn--tonal" type="button" data-cell-act="chat" aria-haspopup="dialog">${raw(icon('chat', 16))}Fix in a chat</button>
-        <button class="ds-btn ds-btn--adaptive" type="button" data-cell-act="override" aria-haspopup="dialog" aria-expanded="false" data-tip="${v.override ? 'Change or remove your verdict' : 'Override the verdict'}"${open ? raw(' aria-disabled="true"') : ''}>${raw(icon('pencil', 16))}<span class="ds-btn__label">${v.override ? 'Your verdict' : 'Override verdict'}</span></button>
-        <button class="ds-btn ds-btn--adaptive" type="button" data-cell-act="retry" data-tip="${retryWhy || 'Run this cell once more in this run'}"${open ? raw(' aria-disabled="true"') : ''}>${raw(icon('sync', 16))}<span class="ds-btn__label">Retry</span></button>
-        ${v.chat ? html`<a class="ds-btn ds-btn--adaptive ds-btn--text" href="${'/#open=' + encodeURIComponent(v.chat)}" target="_blank" rel="noopener" data-tip="Open the agent’s transcript in a new tab">${raw(icon('external', 16))}<span class="ds-btn__label">Open transcript</span></a>` : ''}
-      </div>
+      ${actions(v)}
       ${WIDE.matches ? '' : notes(v)}
     </section>`;
   }
@@ -583,7 +640,7 @@ export function mount(ctx) {
   function stepList(v, shots) {
     const steps = v.steps || [];
     if (!steps.length) return html`<p class="ds-muted">This test has no steps.</p>`;
-    return html`<ol class="ds-list ds-list--interactive so-cell-steps" aria-label="Steps" data-ds-key="steplist">${steps.map((step) => {
+    return html`<ol class="ds-list ds-list--interactive so-cell-steps" aria-label="Steps: the arrow keys move between them" data-ds-key="steplist">${steps.map((step) => {
       const mine = shots.filter((s) => s.step === step.n).length;
       const current = sel.step === step.n;
       return html`<li class="ds-list__item so-cell-step" data-ds-key="${'s' + step.n}" data-step-row="${step.n}">
@@ -630,9 +687,11 @@ export function mount(ctx) {
     const step = (v.steps || []).find((x) => x.n === sel.step);
     const two = !!(compare && s && pass && pass.state === 'ready');
     const theirs = two ? compareShot(s) : null;
-    const title = s ? (s.step ? 'Step ' + s.step : 'Outside the steps') + (s.of > 1 ? ' · ' + (s.i + 1) + ' of ' + s.of : '')
-      : step ? 'Step ' + step.n : 'Screenshots';
-    const meta = s && s.act ? [s.act.summary || s.act.action, s.act.at ? V.clock(Date.parse(s.act.at)) : '', s.act.url].filter(Boolean).join(' · ') : s ? 'Attached by the agent' : '';
+    // The step's action names the screenshot; the tools' caption is in the actions log.
+    const title = s ? (s.step ? stepTitle(v, s.step) : 'Outside the steps')
+      : step ? stepTitle(v, step.n) : 'Screenshots';
+    const meta = s ? [s.of > 1 ? 'Screenshot ' + (s.i + 1) + ' of ' + s.of : '', !s.step && s.act ? s.act.summary || s.act.action : '',
+      s.act && s.act.at ? V.clock(Date.parse(s.act.at)) : '', s.act ? s.act.url : 'Attached by the agent'].filter(Boolean).join(' · ') : '';
     return html`<section class="so-cell-viewer" aria-labelledby="cellShotTitle" data-ds-key="viewer">
       <div class="so-cell-viewer__bar">
         <div class="so-cell-viewer__caption">
@@ -730,7 +789,7 @@ export function mount(ctx) {
       <a class="so-cell-swipe__link ds-pressable" href="${fileOf(v, s.name)}" target="_blank" rel="noopener" aria-label="${'Open full size: ' + shotWords(s)}">
         <img src="${fileOf(v, s.name)}" alt="${shotWords(s)}" loading="lazy" decoding="async">
       </a>
-      <figcaption class="ds-meta so-break">${(s.of > 1 ? (s.i + 1) + ' of ' + s.of + ' · ' : '') + (s.act ? s.act.summary || s.act.action : 'attached')}</figcaption>
+      <figcaption class="ds-meta so-break">${[s.of > 1 ? (s.i + 1) + ' of ' + s.of : '', !s.step && s.act ? s.act.summary || s.act.action : '', s.act && s.act.at ? V.clock(Date.parse(s.act.at)) : '', s.act ? '' : 'attached by the agent'].filter(Boolean).join(' · ')}</figcaption>
     </figure>`)}</div>`;
   }
 
@@ -827,7 +886,7 @@ export function mount(ctx) {
     const model = role.model ? (harnesses.modelOf(role.harness, role.model) || {}).label || role.model : '';
     const took = v.started_at ? (v.ended_at || (V.OPEN_ATTEMPT.has(v.state) ? Date.now() : 0)) - v.started_at : 0;
     const facts = [
-      ['Test', html`<a href="${V.paths.page({ repo: state.repo, view: 'tests', test: v.test })}" data-go-test="${v.test}">${v.test}</a>`],
+      ['Test', html`<a href="${V.paths.page({ repo: state.repo, view: 'tests', test: v.test })}" data-go-test="${v.test}">${v.title || v.test}</a>${v.title ? html` <span class="ds-meta">${v.test}</span>` : ''}`],
       ...(v.dims || []).map((d) => [V.titleCase(d.name), d.label ? d.label + ' (' + d.id + ')' : d.id]),
       ['Priority', [v.priority, ...(v.tags || []).map((t) => '#' + t)].filter(Boolean).join(' · ')],
       ['Run', (() => { const run = ctx.runOf(v.run); return run ? V.runName(run) : v.run; })()],
@@ -857,7 +916,7 @@ export function mount(ctx) {
             return html`<li class="ds-list__item" data-ds-key="${'bug-' + id}">
               <span class="ds-list__text">
                 <span class="ds-list__title"><a class="ds-list__action" href="${V.paths.page({ repo: state.repo, view: 'bugs', bug: id })}" data-go-bug="${id}">${bug ? id + ' · ' + bug.title : id}</a></span>
-                ${bug ? html`<span class="ds-list__meta">${[bug.status ? bug.status.replace(/_/g, ' ') : '', bug.runs ? V.plural(bug.runs.length, 'run') : ''].filter(Boolean).join(' · ')}</span>` : ''}
+                ${bug ? html`<span class="ds-list__meta">${[V.bugStateWords(bug), bug.runs ? 'seen in ' + V.plural(bug.runs.length, 'run') : ''].filter(Boolean).join(' · ')}</span>` : ''}
               </span>
               ${bug ? V.severityChip(bug.severity) : ''}
             </li>`;
@@ -896,28 +955,47 @@ export function mount(ctx) {
     if (!v) return;
     const current = v.override ? v.override.verdict : '';
     morph($('overrideBody'), html`<p class="ds-dialog__text" id="overrideText">${'The verdict that counts is yours: in the counts, the history and the bugs. ' + (v.override ? 'Without yours it is ' : 'Now it is ') + V.verdictWord(v.reviewed || v.verdict || v.final || '') + '.'}</p>
-      <div class="ds-radios" role="radiogroup" aria-label="Verdict">${V.VERDICTS.slice().sort((a, b) => ['pass', 'issue', 'fail', 'blocked', 'na'].indexOf(a) - ['pass', 'issue', 'fail', 'blocked', 'na'].indexOf(b)).map((verdict) => html`<label class="ds-radio" data-ds-key="${verdict}"><input type="radio" name="overrideVerdict" value="${verdict}"${verdict === current ? raw(' checked') : ''}>
+      <div class="ds-radios" role="radiogroup" aria-label="Verdict">${V.VERDICTS.map((verdict) => html`<label class="ds-radio" data-ds-key="${verdict}"><input type="radio" name="overrideVerdict" value="${verdict}"${verdict === current ? raw(' checked') : ''}>
         <span><strong class="so-tests-nowrap">${raw(icon(V.VERDICT[verdict].glyph, 16))}${V.verdictWord(verdict)}</strong><small>${MEANS[verdict]}</small></span></label>`)}</div>
       <div class="ds-field">
         <label class="ds-field__label" for="overrideNote">Note <span class="ds-field__optional">(optional)</span></label>
         <textarea class="ds-input" id="overrideNote" maxlength="2000" aria-describedby="overrideNoteHint"></textarea>
         <small class="ds-field__hint" id="overrideNoteHint">Why: the analyst and the next person read it.</small>
-      </div>`);
+      </div>
+      ${alsoBugs(v)}`);
     $('overrideNote').value = v.override ? v.override.note || '' : '';
     $('overrideRemove').hidden = !v.override;
     syncOverrideSave();
     DS.overlay.open(overrideDialog, { opener });
   }
 
+  // alsoBugs offers, with a verdict that passes, to mark the cell's open
+  // bugs Not a bug in the same step (PATCH …/bugs/{id}); hidden otherwise.
+  function alsoBugs(v) {
+    const known = bugs && bugs.repo === state.repo ? bugs.list : [];
+    const open = (v.bugs || []).map((id) => known.find((b) => b.id === id)).filter((b) => b && (b.status === 'open' || b.status === 'known'));
+    if (!open.length) return '';
+    return html`<fieldset class="ds-field" id="overrideBugs" hidden>
+      <legend class="ds-field__label">Its bugs</legend>
+      <div class="ds-check-list">${open.map((b) => {
+        const others = (b.cells || []).filter((c) => c !== v.cell_id).length;
+        return html`<label class="ds-check" data-ds-key="${b.id}"><input type="checkbox" data-also-bug="${b.id}"><span>${'Also mark ' + b.id + ' Not a bug'} <span class="ds-meta">${'“' + b.title + '”' + (others ? ' · it covers ' + V.plural(others, 'other cell') + ' too' : '')}</span></span></label>`;
+      })}</div>
+      <small class="ds-field__hint">The analyst then stops reporting it, unless the evidence changes. Your note goes with it.</small>
+    </fieldset>`;
+  }
+
   function syncOverrideSave() {
     const picked = overrideDialog.querySelector('input[name="overrideVerdict"]:checked');
+    const also = $('overrideBugs');
+    if (also) also.hidden = !(picked && V.passed(picked.value));
     const save = $('overrideSave');
     save.setAttribute('aria-disabled', picked ? 'false' : 'true');
     if (picked) save.removeAttribute('data-tip');
     else save.setAttribute('data-tip', 'Choose a verdict');
   }
 
-  async function sendOverride(verdict, note, button) {
+  async function sendOverride(verdict, note, button, alsoNotABug = []) {
     const v = view;
     if (!v) return;
     overrideDialog.setAttribute('data-ds-busy', '');
@@ -931,8 +1009,23 @@ export function mount(ctx) {
       overrideDialog.removeAttribute('data-ds-busy');
       $('overrideCancel').removeAttribute('aria-disabled');
     }
+    // The bugs the person said are none go with it; one that fails says so.
+    const marked = [];
+    for (const id of alsoNotABug) {
+      const bug = ((bugs && bugs.list) || []).find((b) => b.id === id);
+      const change = { status: 'not_a_bug' };
+      if (note && bug && !bug.note) change.note = note;
+      try {
+        await api(V.paths.bug(state.repo, id), { method: 'PATCH', body: change });
+        marked.push(id);
+      } catch (err) {
+        toast(id + ': ' + errorMessage(err), 'error');
+      }
+    }
+    if (marked.length) bugs = null;
     DS.overlay.close(overrideDialog, { reason: 'confirm' });
-    toast(verdict ? 'You made it ' + V.verdictWord(verdict) + '.' : 'Your verdict is removed: the reviewer’s or the agent’s counts again.', 'success');
+    toast(verdict ? 'You made it ' + V.verdictWord(verdict) + (marked.length ? '; ' + marked.join(' and ') + (marked.length === 1 ? ' is' : ' are') + ' marked Not a bug.' : '.')
+      : 'Your verdict is removed: the reviewer’s or the agent’s counts again.', 'success');
     details.delete(keyOf(v.run, v.id));
     runCells.delete(v.run);
     histories.clear();
@@ -947,9 +1040,52 @@ export function mount(ctx) {
   $('overrideSave').addEventListener('click', () => {
     const picked = overrideDialog.querySelector('input[name="overrideVerdict"]:checked');
     if (!picked) return;
-    sendOverride(picked.value, $('overrideNote').value.trim(), $('overrideSave'));
+    const also = V.passed(picked.value) ? [...overrideDialog.querySelectorAll('[data-also-bug]:checked')].map((n) => n.dataset.alsoBug) : [];
+    sendOverride(picked.value, $('overrideNote').value.trim(), $('overrideSave'), also);
   });
   $('overrideRemove').addEventListener('click', () => sendOverride('', '', $('overrideRemove')));
+
+  /* ------------------------------------------------------ more actions */
+
+  function cellAction(act) {
+    if (act.getAttribute('aria-disabled') === 'true' || !view) return;
+    const what = act.dataset.cellAct;
+    if (what === 'retry') retry(act);
+    else if (what === 'override') openOverride(act);
+    else if (what === 'chat') ctx.openChat({ kind: 'fix-cell', subject: { run: view.run, attempt: view.id, view } }, act);
+    else if (what === 'transcript' && view.chat) window.open('/#open=' + encodeURIComponent(view.chat), '_blank', 'noopener');
+    else if (what === 'rerun') ctx.startRun({ cells: [view.cell_id] }, nav.querySelector('[data-cell-more]') || body.querySelector('[data-cell-more]'));
+  }
+
+  // openMore opens the cell's other actions: a menu at a desk, an action
+  // sheet on a phone (DS: the same items).
+  function openMore(trigger, event) {
+    if (!view || (event && event.detail > 1)) return;
+    if (PHONE.matches) {
+      morph($('cellMoreList'), html`${moreItems(view)}`);
+      DS.overlay.open(moreSheet, { opener: trigger });
+      return;
+    }
+    if (trigger.getAttribute('aria-expanded') === 'true') { DS.overlay.close(moreMenu); return; }
+    morph(moreMenu, html`${moreItems(view)}`);
+    DS.overlay.open(moreMenu, { opener: trigger });
+  }
+
+  for (const box of [moreMenu, moreSheet]) {
+    box.addEventListener('click', (event) => {
+      const act = event.target.closest('[data-cell-act]');
+      if (!act) return;
+      if (box === moreSheet) DS.overlay.close(moreSheet);
+      cellAction(act);
+    });
+  }
+  body.addEventListener('keydown', (event) => {
+    const more = event.target.closest('[data-cell-more]');
+    if (!more || PHONE.matches || (event.key !== 'ArrowDown' && event.key !== 'ArrowUp')) return;
+    event.preventDefault();
+    morph(moreMenu, html`${moreItems(view)}`);
+    DS.overlay.open(moreMenu, { opener: more });
+  });
 
   /* ------------------------------------------------------------ events */
 
@@ -997,15 +1133,10 @@ export function mount(ctx) {
       }
       return;
     }
+    const more = t.closest('[data-cell-more]');
+    if (more) { openMore(more, event); return; }
     const act = t.closest('[data-cell-act]');
-    if (act) {
-      if (act.getAttribute('aria-disabled') === 'true') return;
-      const what = act.dataset.cellAct;
-      if (what === 'retry') retry(act);
-      else if (what === 'override') openOverride(act);
-      else if (what === 'chat' && view) ctx.openChat({ kind: 'fix-cell', subject: { run: view.run, attempt: view.id, view } }, act);
-      return;
-    }
+    if (act) { cellAction(act); return; }
     const test = t.closest('[data-go-test]');
     if (test) {
       event.preventDefault();
@@ -1053,7 +1184,19 @@ export function mount(ctx) {
     }
   });
 
+  // Escape while a tooltip shows: DS gives that key to the tooltip (WCAG
+  // 1.4.13) and the viewer would need a second one. Here the first closes
+  // the viewer too: the tooltip goes with it. (Seen before the tooltip's own
+  // listener, in the capture phase of the window.)
+  window.addEventListener('keydown', (event) => {
+    if (event.key !== 'Escape' || event.isComposing || !shown || DS.overlay.topmost() !== dialog || typing(event.target)) return;
+    const tip = [...document.querySelectorAll('.ds-tooltip')].some((el) => !el.hidden && el.checkVisibility && el.checkVisibility());
+    if (!tip) return;
+    setTimeout(() => { if (shown && DS.overlay.topmost() === dialog) DS.overlay.close(dialog); }, 0);
+  }, true);
+
   WIDE.addEventListener('change', () => { if (shown && view) draw(); });
+  PHONE.addEventListener('change', () => { if (shown && view) draw(); });
 
   /* ------------------------------------------------------------ module */
 

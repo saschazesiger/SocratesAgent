@@ -29,8 +29,6 @@ const TYPE_PAUSE = 200;
 const HEALTH_EVERY = 10000;
 // More problems of the catalog than this fold into a list that opens.
 const ALERTS_OPEN = 3;
-// A test's problem in a few words, before "since Run N".
-const STANDS = { fail: 'failing', issue: 'an issue', blocked: 'blocked' };
 
 export function mount(ctx) {
   const { state } = ctx;
@@ -117,7 +115,7 @@ export function mount(ctx) {
         </div>
         <fieldset class="ds-chips" id="ttChips"><legend class="ds-sr">Show</legend></fieldset>
       </div>
-      <p class="ds-meta" id="ttCount" aria-live="polite"></p>
+      <div class="so-tests-countline"><p class="ds-meta" id="ttCount" aria-live="polite"></p><div id="ttLegend"></div></div>
       <div class="so-tests__stack" id="ttAreas"></div>
       <div class="so-tests__stack" id="ttTools"></div>`;
   }
@@ -179,7 +177,6 @@ export function mount(ctx) {
     const shown = all.filter((t) => matches(t));
     const count = !all.length ? '' : shown.length === all.length ? '' : shown.length + ' of ' + V.plural(all.length, 'test');
     if ($('ttCount').textContent !== count) $('ttCount').textContent = count;
-    $('ttCount').hidden = !count;
 
     visible = [];
     const phone = PHONE.matches;
@@ -198,8 +195,11 @@ export function mount(ctx) {
         <button class="ds-btn ds-btn--tonal" type="button" data-tt-clear>Show every test</button>
       </div></section>`);
     } else {
-      morph($('ttAreas'), html`${(cat.areas || []).map((area) => areaCard(area, shown.filter((t) => t.area.id === area.id), phone))}`);
+      // Every area's table as wide as the widest, so their columns line up.
+      const width = Math.max(1, ...(cat.areas || []).map((area) => columnsOf(area).length));
+      morph($('ttAreas'), html`${(cat.areas || []).map((area) => areaCard(area, shown.filter((t) => t.area.id === area.id).sort(V.testOrder), phone, width))}`);
     }
+    morph($('ttLegend'), phone ? '' : V.legend(shown.some(flakyOf) ? ['flaky'] : []));
     morph($('ttTools'), toolsCard(cat));
     if (pendingArea) {
       const card = $('tt-area-' + pendingArea);
@@ -260,13 +260,30 @@ export function mount(ctx) {
     return dims.map((d) => V.titleCase(d.name) + (d.name === area.columns ? ' (the columns)' : '') + ': ' + [...(d.values || []), ...(d.extra || [])].map((x) => x.label || x.id).join(', ')).join(' · ');
   }
 
-  function areaCard(area, shown, phone) {
+  // latestRun is the run most of an area's tests last ran in: the area says
+  // it once ("Latest: Run 6, just now"), a test only where its own differs.
+  function latestRun(tests) {
+    const count = new Map();
+    for (const t of tests) {
+      const l = t.health && t.health.last_run;
+      if (!l) continue;
+      const have = count.get(l.run) || { l, n: 0 };
+      have.n += 1;
+      count.set(l.run, have);
+    }
+    let best = null;
+    for (const c of count.values()) if (!best || c.n > best.n || (c.n === best.n && c.l.number > best.l.number)) best = c;
+    return best ? best.l : null;
+  }
+
+  function areaCard(area, shown, phone, width) {
     if (!shown.length) return '';
     const tests = area.tests || [];
     const cells = tests.reduce((n, t) => n + (t.cells || []).length, 0);
     const problems = tests.filter(problemOf).length;
-    const meta = [V.plural(tests.length, 'test'), V.plural(cells, 'cell'), problems ? V.plural(problems, 'problem') : '',
-      shown.length < tests.length ? shown.length + ' shown' : ''].filter(Boolean).join(' · ');
+    const latest = latestRun(tests);
+    const meta = html`${[V.plural(tests.length, 'test'), V.plural(cells, 'cell'), problems ? V.plural(problems, 'problem') : '',
+      shown.length < tests.length ? shown.length + ' shown' : ''].filter(Boolean).join(' · ')}${latest ? html` · Latest: <a href="${runHref(latest.run)}">${'Run ' + latest.number}</a>${latest.at ? ', ' + V.ago(latest.at) : ''}` : ''}`;
     const key = 'area:' + area.id;
     const dims = dimsLine(area);
     return html`<section class="ds-card so-tests-area" data-ds-key="${key}" id="${'tt-area-' + area.id}" aria-labelledby="${'tta-' + area.id}">
@@ -289,7 +306,7 @@ export function mount(ctx) {
           ${area.body ? html`<div class="ds-prose ds-prose--dense so-break">${markdown(area.body)}</div>` : ''}
         </div>
       </details>` : ''}
-      ${phone ? html`<div class="so-tests__stack">${shown.map((t) => testBlock(t, area))}</div>` : areaTable(area, shown)}
+      ${phone ? html`<div class="so-tests__stack">${shown.map((t) => testBlock(t, area, latest))}</div>` : areaTable(area, shown, width, latest)}
     </section>`;
   }
 
@@ -300,19 +317,18 @@ export function mount(ctx) {
     return html`<span class="so-tests__sub">${t.priority ? html`<span class="ds-tag ds-tag--neutral">${t.priority}</span>` : ''}${(t.tags || []).map((x) => html`<span class="ds-tag">${x}</span>`)}</span>`;
   }
 
-  // standing is how a test stands in words: failing since Run N, flaky.
-  function standing(t) {
+  // standing is how a test stands in words: "failing since Run N", "an
+  // issue since Run N", flaky; and its last run where the area's latest is
+  // not its own.
+  function standing(t, latest) {
     const h = t.health || {};
     const parts = [];
-    if (problemOf(t) && h.since) parts.push(html`<span class="so-tests-nowrap">${raw(icon(V.VERDICT[h.latest] ? V.VERDICT[h.latest].glyph : 'alert', 16))}${(STANDS[h.latest] || V.verdictWord(h.latest).toLowerCase()) + ' since Run ' + h.since.number}</span>`);
-    if (h.flaky) parts.push(html`<span class="so-tests-nowrap" data-tip="${'Its verdict changed ' + V.plural(h.flips || 0, 'time') + ' between passing and not over the last runs'}">${raw(icon('activity', 16))}${'flaky' + (h.flips ? ' · ' + V.plural(h.flips, 'flip') : '')}</span>`);
+    if (problemOf(t) && h.since) parts.push(html`<span class="so-tests-nowrap">${raw(icon(V.VERDICT[h.latest] ? V.VERDICT[h.latest].glyph : 'alert', 16))}${V.sinceWords(h.latest, h.since.number)}</span>`);
+    if (h.flaky) parts.push(html`<span class="so-tests-nowrap" data-tip="${'Its verdict changed ' + V.plural(h.flips || 0, 'time') + ' between passing and not over the last runs'}" tabindex="0">${raw(icon('activity', 16))}${'flaky' + (h.flips ? ' · ' + V.plural(h.flips, 'flip') : '')}</span>`);
+    const l = h.last_run;
+    if (!l) parts.push(html`<span>not run yet</span>`);
+    else if (!latest || l.run !== latest.run) parts.push(html`<span>last in <a href="${runHref(l.run)}">${'Run ' + l.number}</a></span>`);
     return parts;
-  }
-
-  function lastRun(t) {
-    const l = t.health && t.health.last_run;
-    if (!l) return html`<span class="ds-muted">Not run yet</span>`;
-    return html`<a href="${runHref(l.run)}">${'Run ' + l.number}</a>${l.at ? html` <span class="ds-meta" data-tip="${V.whenLong(l.at)}">${V.ago(l.at)}</span>` : ''}`;
   }
 
   function runButton(t, sm) {
@@ -322,50 +338,53 @@ export function mount(ctx) {
   // cellWords is everything a cell's button says, for the reader.
   function cellWords(t, c) {
     return [t.title, V.dimsWords(c.dims) || c.cell, c.latest ? V.verdictWord(c.latest) + ' in Run ' + c.number : 'not run yet',
-      c.flaky ? 'flaky' : '', c.since && c.latest && !V.passed(c.latest) ? 'since Run ' + c.since.number : ''].filter(Boolean).join(', ');
+      c.flaky ? 'flaky' : '', c.since && c.latest && !V.passed(c.latest) ? V.sinceWords(c.latest, c.since.number) : ''].filter(Boolean).join(', ');
   }
 
   function cellButton(t, c, area) {
     const others = (c.dims || []).filter((d) => d.name !== area.columns);
-    const body = html`${c.latest ? V.verdictChip(c.latest) : html`<span class="ds-status">${raw(icon('minimize', 16))}<span>Not run</span></span>`}${others.map((d) => html`<span class="ds-tag ds-tag--neutral">${d.label || d.id}</span>`)}${
-      c.flaky ? html`<span class="so-tests__mark" role="img" aria-label="Flaky" data-tip="${'Flaky: ' + V.plural(c.flips || 0, 'flip') + ' in ' + V.plural(c.runs || 0, 'run')}">${raw(icon('activity', 16))}</span>` : ''}`;
+    const body = html`<span class="so-tests__verdict">${c.latest ? V.verdictChip(c.latest) : html`<span class="ds-status">${raw(icon('minimize', 16))}<span>Not run</span></span>`}${
+      c.flaky ? html`<span class="so-tests__mark" role="img" aria-label="Flaky" data-tip="${'Flaky: ' + V.plural(c.flips || 0, 'flip') + ' in ' + V.plural(c.runs || 0, 'run')}">${raw(icon('activity', 16))}</span>` : ''}</span>${
+      others.length ? html`<span class="so-tests__dims">${others.map((d) => d.label || d.id).join(', ')}</span>` : ''}`;
     if (!c.attempt || !c.run) return html`<span class="so-tests__cell" data-ds-key="${c.cell_id}">${body}</span>`;
     visible.push({ attempt: c.attempt, run: c.run });
-    return html`<button class="ds-pressable so-tests__cell" type="button" data-cell="${c.attempt}" data-cell-run="${c.run}" data-ds-key="${c.cell_id}" aria-label="${cellWords(t, c)}" data-tip="${'Run ' + c.number + (c.since && !V.passed(c.latest) ? ' · a problem since Run ' + c.since.number : '') + ' · ' + V.plural(c.passes || 0, 'pass') + ' in ' + V.plural(c.runs || 0, 'run')}">${body}</button>`;
+    return html`<button class="ds-pressable so-tests__cell" type="button" data-cell="${c.attempt}" data-cell-run="${c.run}" data-ds-key="${c.cell_id}" aria-label="${cellWords(t, c)}" data-tip="${'Run ' + c.number + (c.since && !V.passed(c.latest) ? ' · ' + V.sinceWords(c.latest, c.since.number) : '') + ' · ' + V.plural(c.passes || 0, 'pass') + ' in ' + V.plural(c.runs || 0, 'run')}">${body}</button>`;
   }
 
-  function areaTable(area, shown) {
+  // An area's table: as a run's (testsruns.js), a column per value of the
+  // area's `columns` dimension, padded to `width` so the areas line up.
+  function areaTable(area, shown, width, latest) {
     const columns = columnsOf(area);
+    const n = Math.max(1, columns.length);
+    const pad = Math.max(0, width - n);
     const dimOf = (c) => ((c.dims || []).find((d) => d.name === area.columns) || {}).id;
-    return html`<div class="ds-table-wrap"><table class="ds-table ds-table--dense so-tests__table so-tests-tt__table">
+    return html`<div class="ds-table-wrap"><table class="ds-table ds-table--dense so-tests__table so-tests-tt__table" style="${'--so-cols: ' + width}">
       <caption class="ds-sr">${(area.title || area.id) + ': a row per test' + (area.columns ? ', a column per ' + area.columns : '') + '; each cell its latest verdict'}</caption>
+      <colgroup><col class="so-tests__col-test">${Array.from({ length: width }, () => html`<col>`)}<col class="so-tests__col-act"></colgroup>
       <thead><tr>
         <th scope="col">Test</th>
-        ${columns.length ? columns.map((c) => html`<th scope="col">${c.label || c.id}</th>`) : html`<th scope="col">Latest</th>`}
-        <th scope="col">Last run</th>
+        ${columns.length ? columns.map((c) => html`<th scope="col">${c.label || c.id}</th>`) : html`<th scope="col">Latest</th>`}${pad ? html`<td colspan="${String(pad)}"></td>` : ''}
         <th scope="col"><span class="ds-sr">Actions</span></th>
       </tr></thead>
       <tbody>${shown.map((t) => html`<tr data-ds-key="${t.id}">
         <th scope="row" class="so-tests__test">
           <a class="ds-link-btn" href="${testHref(t.id)}">${t.title}</a>
-          <small class="so-tests__sub ds-meta"><span class="ds-parts"><span class="ds-parts__list"><span>${t.id}</span>${standing(t).map((p) => html`<span>${p}</span>`)}</span></span></small>
+          <small class="so-tests__sub ds-meta"><span class="ds-parts"><span class="ds-parts__list"><span>${t.id}</span>${standing(t, latest).map((p) => html`<span>${p}</span>`)}</span></span></small>
           ${tagsOf(t)}
         </th>
         ${columns.length ? columns.map((col) => html`<td><span class="so-tests__cells">${(t.cell_health || []).filter((c) => dimOf(c) === col.id).map((c) => cellButton(t, c, area))}</span></td>`)
-          : html`<td><span class="so-tests__cells">${(t.cell_health || []).map((c) => cellButton(t, c, area))}</span></td>`}
-        <td><span class="so-tests__cells">${lastRun(t)}</span></td>
+          : html`<td><span class="so-tests__cells">${(t.cell_health || []).map((c) => cellButton(t, c, area))}</span></td>`}${pad ? html`<td colspan="${String(pad)}"></td>` : ''}
         <td class="ds-table__actions">${runButton(t)}</td>
       </tr>`)}</tbody>
     </table></div>`;
   }
 
-  function testBlock(t, area) {
-    const l = t.health && t.health.last_run;
+  function testBlock(t, area, latest) {
     return html`<div class="so-tests-block" data-ds-key="${t.id}">
       <div class="so-tests-block__head">
         <div class="so-tests-block__title">
           <a class="ds-link-btn" href="${testHref(t.id)}">${t.title}</a>
-          <small class="so-tests__sub ds-meta"><span class="ds-parts"><span class="ds-parts__list"><span>${t.id}</span>${standing(t).map((p) => html`<span>${p}</span>`)}${l ? html`<span>${'Run ' + l.number + (l.at ? ', ' + V.ago(l.at) : '')}</span>` : ''}</span></span></small>
+          <small class="so-tests__sub ds-meta"><span class="ds-parts"><span class="ds-parts__list"><span>${t.id}</span>${standing(t, latest).map((p) => html`<span>${p}</span>`)}</span></span></small>
           ${tagsOf(t)}
         </div>
         ${runButton(t, true)}
@@ -374,7 +393,8 @@ export function mount(ctx) {
         const can = c.attempt && c.run;
         if (can) visible.push({ attempt: c.attempt, run: c.run });
         const label = V.dimsWords(c.dims) || c.cell || 'Result';
-        const meta2 = [c.latest ? 'Run ' + c.number : 'not run yet', c.since && c.latest && !V.passed(c.latest) ? 'since Run ' + c.since.number : '', c.flaky ? 'flaky' : ''].filter(Boolean).join(' · ');
+        // Its run only where it is not the area's latest (the area's head says that one).
+        const meta2 = [!c.latest ? 'not run yet' : latest && c.run === latest.run ? '' : 'Run ' + c.number, c.since && c.latest && !V.passed(c.latest) ? V.sinceWords(c.latest, c.since.number) : '', c.flaky ? 'flaky' : ''].filter(Boolean).join(' · ');
         return html`<li class="ds-list__item" data-ds-key="${c.cell_id}">
           <span class="ds-list__text">
             <span class="ds-list__title">${can ? html`<button class="ds-list__action" type="button" data-cell="${c.attempt}" data-cell-run="${c.run}" aria-label="${cellWords(t, c)}">${label}</button>` : label}</span>
@@ -414,12 +434,18 @@ export function mount(ctx) {
       <dl class="ds-facts ds-facts--rows">
         <div><dt>Name</dt><dd><code>${tool.name}</code></dd></div>
         ${tool.secrets && tool.secrets.length ? html`<div><dt>Secrets</dt><dd><span class="so-tests__sub">${tool.secrets.map((n) => html`<span class="ds-tag ds-tag--neutral">${n + (optional.has(n) ? ' (optional)' : '')}</span>`)}</span></dd></div>` : ''}
-        ${tool.secrets_command ? html`<div><dt>Secrets from</dt><dd><code class="so-break">${tool.secrets_command}</code></dd></div>` : ''}
         ${tool.pool ? html`<div><dt>Pool</dt><dd>${'The accounts in ' + tool.pool + ', one a cell'}</dd></div>` : ''}
         ${tool.setup ? html`<div><dt>Setup</dt><dd><code class="so-break">${tool.setup}</code></dd></div>` : ''}
         ${tool.end ? html`<div><dt>At a cell’s end</dt><dd><code class="so-break">${tool.end}</code></dd></div>` : ''}
       </dl>
       ${r ? checkResult(r) : ''}
+      ${tool.secrets_command ? html`<details class="ds-collapsible ds-disclosure" data-key="${key + ':secrets'}"${opened.has(key + ':secrets') ? raw(' open') : ''}>
+        <summary>How secrets are read${raw(icon('chevronDown', 20, 'ds-chevron'))}</summary>
+        <div class="ds-disclosure__body so-tests__stack">
+          <p class="ds-muted">Socrates runs this command of the catalog when a run starts and gives each cell the names above; the values it prints are never shown or kept.</p>
+          <pre class="ds-code-block" tabindex="0" aria-label="The command that reads the secrets"><code>${tool.secrets_command}</code></pre>
+        </div>
+      </details>` : ''}
       ${tool.body ? html`<details class="ds-collapsible ds-disclosure" data-key="${key}"${opened.has(key) ? raw(' open') : ''}>
         <summary>How the agent uses it${raw(icon('chevronDown', 20, 'ds-chevron'))}</summary>
         <div class="ds-disclosure__body"><div class="ds-prose ds-prose--dense so-break">${markdown(tool.body)}</div></div>
@@ -543,7 +569,7 @@ export function mount(ctx) {
       ${sorted.length ? html`<ul class="ds-list ds-list--interactive" aria-label="Open bugs of this test">${sorted.map((b) => html`<li class="ds-list__item" data-ds-key="${b.id}">
         <span class="ds-list__text">
           <span class="ds-list__title"><a class="ds-list__action" href="${V.paths.page({ repo: state.repo, view: 'bugs', bug: b.id })}">${b.id + ' · ' + b.title}</a></span>
-          <span class="ds-list__meta">${[b.status === 'known' ? 'known' : b.regressed ? 'came back' : 'open', V.plural((b.runs || []).length, 'run'), V.plural((b.cells || []).length, 'cell')].join(' · ')}</span>
+          <span class="ds-list__meta">${[V.bugStateWords(b).toLowerCase(), 'seen in ' + V.plural((b.runs || []).length, 'run'), V.plural((b.cells || []).length, 'cell')].join(' · ')}</span>
         </span>
         ${V.severityChip(b.severity)}
       </li>`)}</ul>` : html`<p class="ds-muted">No bug of this test is open.</p>`}
@@ -566,7 +592,7 @@ export function mount(ctx) {
 
   function cellRecord(c) {
     return [c.runs ? c.passes + ' of ' + V.plural(c.runs, 'run') + ' passed' : '', c.flaky ? 'flaky' : '', c.flips ? V.plural(c.flips, 'flip') : '',
-      c.since && c.latest && !V.passed(c.latest) ? 'a problem since Run ' + c.since.number : ''].filter(Boolean).join(' · ');
+      c.since && c.latest && !V.passed(c.latest) ? V.sinceWords(c.latest, c.since.number) : ''].filter(Boolean).join(' · ');
   }
 
   function runCellButton(c) {

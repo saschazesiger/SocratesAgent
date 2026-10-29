@@ -138,6 +138,11 @@
   --so-tests-bar-height: 6px;
   --so-tests-trend-height: 120px;
   --so-tests-trend-col-max: 40px;
+  /* Tests: the columns every area's table shares (the test, each value,
+     the row's action), so that the areas line up */
+  --so-tests-col-test: 17rem;
+  --so-tests-col-cell: 9rem;
+  --so-tests-col-act: 4rem;
 }
 
 /* Touch mode (car, kiosk): <html class="so-touch ds-touch"> (ui.js). DS's

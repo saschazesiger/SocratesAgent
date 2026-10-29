@@ -21,6 +21,13 @@
  *   .so-tests-active      the active run's banner (a filled card)
  *   .so-tests-nowrap      a commit or a figure that stays on one line
  *   .so-tests__tabs       the views' tabs, closer together on a phone
+ *   .so-tests-head        the repository's head; Run sits in the title's
+ *                         row (__title), so it stays beside the title on a
+ *                         phone, where the title's menu says the path
+ *                         (__lead) instead
+ *   .so-tests-menu__where the path and commit atop the repositories' menu
+ *   .so-tests-active__row the banner's (and the Live card's) title, state,
+ *                         and Watch and Stop (__acts) at its end
  */
 
 .so-tests,
@@ -56,10 +63,54 @@
   min-width: 0;
 }
 
+.so-tests-head__title > .ds-page-head__title {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
 .so-tests-split {
   display: inline-flex;
+  flex: none;
   align-items: center;
   gap: var(--ds-space-1);
+  margin-inline-start: auto;
+}
+
+/* On a phone the path waits behind the title's menu, so that the tabs come
+   up the screen. */
+@container ds-content (max-width: 600px) {
+  .so-tests-head__lead {
+    display: none;
+  }
+
+  .so-tests-active {
+    --ds-card-padding-filled: var(--ds-space-3);
+  }
+}
+
+.so-tests-menu__where {
+  max-inline-size: 18rem;
+}
+
+.so-tests-active__row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--ds-space-1) var(--ds-space-3);
+  min-width: 0;
+}
+
+.so-tests-active__row > .ds-card__title {
+  margin: 0;
+  min-width: 0;
+}
+
+.so-tests-active__acts {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--ds-space-1);
+  margin-inline-start: auto;
 }
 
 .so-tests-nowrap {
@@ -91,6 +142,9 @@
  *   .so-tests-change      a cell's change against the run before: a glyph
  *                         (its words are its label): --regressed --fixed
  *   .so-mark              a verdict as a glyph (shape says which)
+ *   .so-tests-legend      what the marks beside the verdicts mean
+ *   .so-tests-countline   a view's count of what it shows, its legend at
+ *                         the end
  */
 
 .so-tests-bar {
@@ -152,6 +206,27 @@
   color: var(--ds-text-2);
 }
 
+.so-tests-legend {
+  margin: 0;
+}
+
+.so-tests-legend .so-tests-change,
+.so-tests-legend .so-tests__mark {
+  vertical-align: middle;
+}
+
+.so-tests-countline {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--ds-space-1) var(--ds-space-4);
+}
+
+.so-tests-countline > p {
+  margin: 0;
+}
+
 .so-mark {
   display: inline-flex;
   color: var(--ds-text-2);
@@ -179,6 +254,9 @@
  *   .so-tests-live__step  the step it is at
  *   .so-tests-trend       the last runs as columns stacked by verdict
  *   .so-tests-trend__col  a run's column, pressed to open the run
+ *   .so-tests-delta       a tile's change against the run before: which
+ *                         way (a glyph) and what it means (a word: better,
+ *                         worse), --better --worse tint it besides
  */
 
 .so-tests-ov__rate {
@@ -193,6 +271,28 @@
 
 .so-tests-ov__tiles {
   --ds-tile-min-width: 128px;
+}
+
+.so-tests-delta {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--ds-space-1);
+}
+
+.so-tests-delta > svg {
+  flex: none;
+}
+
+.so-tests-delta--worse {
+  color: var(--ds-error);
+}
+
+.so-tests-delta--better {
+  color: var(--ds-success);
+}
+
+.ds-card__row > .so-tests-active__acts {
+  flex: none;
 }
 
 .so-tests-live {
@@ -311,8 +411,14 @@
  *   .so-tests__test       a test's head cell: its title, priority and tags
  *   .so-tests__sub        a line of tags or meta under a title
  *   .so-tests__cells      the cells of a test in one column of the table
- *   .so-tests__cell       one cell: its verdict chip, the other dimensions'
- *                         values and its marks, pressed to open it
+ *   .so-tests__cell       one cell: its verdict chip and marks
+ *                         (.so-tests__verdict), the other dimensions'
+ *                         values quieter under them (.so-tests__dims),
+ *                         pressed to open it
+ *   .so-tests__col-test   the test's column of an area table, __col-act
+ *                         its action's: fixed widths (theme.css), so every
+ *                         area's table lines up (--so-cols: the values)
+ *   .so-tests-runs__changes  on a phone, a run's "3 broke · 1 fixed"
  *   .so-tests__mark       a reviewed or overridden mark beside a verdict
  *   .so-tests-block       on a phone, a test with its cells as a list
  *   .so-tests__links      a column of links (a bug's cells)
@@ -348,8 +454,7 @@
 }
 
 .so-tests__test {
-  min-inline-size: 12rem;
-  max-inline-size: 22rem;
+  min-inline-size: 0;
   text-align: start;
   white-space: normal;
 }
@@ -368,11 +473,48 @@
   gap: var(--ds-space-1);
 }
 
+.so-tests__table {
+  table-layout: fixed;
+  min-inline-size: calc(var(--so-tests-col-test) + var(--so-cols, 3) * var(--so-tests-col-cell) + var(--so-tests-col-act));
+}
+
+.so-tests__col-test {
+  inline-size: var(--so-tests-col-test);
+}
+
+.so-tests__col-act {
+  inline-size: var(--so-tests-col-act);
+}
+
+/* The last row has no rule under it: DS takes it off the row's td only,
+   so its row header (th) is told through the row's line hook. */
+.so-tests__table tbody tr:last-child,
+.so-tests-hist__table tbody tr:last-child {
+  --ds-table-row-line: none;
+}
+
+.so-tests__verdict {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--ds-space-1) var(--ds-space-2);
+  margin: 0;
+}
+
+.so-tests__dims {
+  font: var(--ds-font-meta);
+  color: var(--ds-text-2);
+  white-space: normal;
+}
+
+.so-tests-runs__changes {
+  margin-top: var(--ds-space-1);
+}
+
 .so-tests__cell {
   display: inline-flex;
-  flex-wrap: nowrap;
-  white-space: nowrap;
-  align-items: center;
+  flex-direction: column;
+  align-items: flex-start;
   gap: var(--ds-space-1);
   padding: var(--ds-space-1);
   border: 0;
@@ -422,12 +564,29 @@
  *
  *   .so-tests-tree        the areas and their tests to tick
  *   .so-tests-summary     the settings of a run in one line, and Change
+ *   .so-tests-tree__tools Select all and Select none over the tree
+ *   .so-tests-tree__test  a test's box and its Only this (on demand)
  */
 
 .so-tests-tree {
   display: flex;
   flex-direction: column;
   gap: var(--ds-space-3);
+}
+
+.so-tests-tree__tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--ds-space-1);
+  margin-bottom: var(--ds-space-2);
+}
+
+.so-tests-tree__test {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--ds-space-2);
+  min-width: 0;
 }
 
 .so-tests-summary {
@@ -587,6 +746,10 @@
   flex-wrap: wrap;
   justify-content: flex-end;
   gap: var(--ds-space-2);
+}
+
+.so-cell__bugs {
+  margin: 0;
 }
 
 .so-cell__summary {
@@ -1113,6 +1276,8 @@
  *                         words
  *   .so-bugs__step        a cell card's failing step: three lines at most
  *   .so-bugs__issue-repo  where a GitHub issue goes, after its lock
+ *   .so-bugs__why         why no GitHub issue can be made, under the head
+ *   .so-bugs__saved       the note's quiet "Saved" (it saves on leaving)
  *
  * A bug's cells are the overview's cards (.so-tests-live): a screenshot,
  * the test, its values and its verdict.
@@ -1153,6 +1318,22 @@
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 3;
   line-clamp: 3;
+}
+
+.so-bugs__why {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--ds-space-1);
+  margin: 0;
+}
+
+.so-bugs__why > svg {
+  flex: none;
+}
+
+.so-bugs__saved {
+  min-block-size: 1lh;
+  margin: 0;
 }
 
 .so-bugs__issue-repo {

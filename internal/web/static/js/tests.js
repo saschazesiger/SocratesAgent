@@ -44,6 +44,7 @@ const $ = (id) => document.getElementById(id);
 // its cells are read again this often (the live cards, the banner).
 const SETTLE = 600;
 const LIVE_EVERY = 3000;
+const PHONE = window.matchMedia('(max-width: 600px)');
 
 const VIEWS = ['overview', 'runs', 'tests', 'bugs', 'settings'];
 const LEGACY_TAB = { results: 'runs', runs: 'runs', bugs: 'bugs', catalog: 'tests', settings: 'settings' };
@@ -115,6 +116,10 @@ async function applyRoute() {
   if (normal !== location.hash) history.replaceState(history.state, '', normal);
   const was = state.route;
   state.route = { view: r.view, run: r.run, test: r.test, bug: r.bug, cell: r.cell };
+  // A snackbar is about the place it was raised in: it goes with it (the
+  // cell viewer opening or closing over the view is no new place).
+  const place = (x) => [x.view, x.cell ? '' : x.run, x.test, x.bug].join('|');
+  if (was.view && place(was) !== place(r)) DS.overlay.closeToasts(null);
   if (was.view && was.view !== r.view && views[was.view].close) views[was.view].close();
   setTab(r.view, !!was.view && was.view !== r.view);
   render();
@@ -273,6 +278,7 @@ function renderHead() {
   document.title = name + ' · Tests · Socrates';
   const last = repo.last || state.runs[0];
   const commit = last && last.commit ? last.commit.slice(0, 10) + (last.dirty ? ' with changes' : '') : '';
+  // On a phone the path and the commit are in the repositories' menu (the title's), not over the tabs.
   morph($('lead'), html`<span class="so-break">${repo.path}</span>${commit ? html` · <span class="so-tests-nowrap" data-tip="The commit the latest run ran on">${raw(icon('fileCode', 16))}${commit}</span>` : ''}`);
   const cat = state.catalog;
   const errors = cat && cat.errors ? cat.errors.length : 0;
@@ -281,61 +287,46 @@ function renderHead() {
     : '');
 }
 
-// The waiting cells in a few words: "3 waiting for a free Fake devices account".
-function waitWords(cells) {
-  const reasons = new Map();
-  for (const row of cells || []) {
-    if (row.state !== 'waiting') continue;
-    const why = String(row.wait || '').replace(/\s*\(\d+ ahead\)\s*$/, '').replace(/^waiting:?\s*/i, '');
-    reasons.set(why, (reasons.get(why) || 0) + 1);
-  }
-  return [...reasons].sort((a, b) => b[1] - a[1]).map(([why, n]) => n + ' waiting' + (why ? (/^(for|on|until)\b/.test(why) ? ' ' : ': ') + why : ''));
-}
-
 const ACTIVE_TITLE = {
   preparing: 'is being prepared', running: 'is running', finishing: 'is being reviewed',
   paused: 'is paused', waiting: 'waits for another run',
 };
 
+// shownElsewhere: the view shows the active run already, with its own
+// progress and actions (its run view, or the overview's Live card), so the
+// banner would say it twice.
+function shownElsewhere(run) {
+  const r = state.route;
+  if (r.view === 'runs' && r.run === run.id) return true;
+  return r.view === 'overview' && !!state.live && state.live.id === run.id;
+}
+
 function renderActive() {
   const box = $('active');
   const repo = repoOf(state.repo);
   const run = repo && repo.active;
-  box.hidden = !run;
-  if (!run) { morph(box, ''); return; }
+  box.hidden = !run || shownElsewhere(run);
+  if (box.hidden) { morph(box, ''); return; }
   const live = state.live && state.live.id === run.id ? state.live : null;
   const d = live ? live.detail : run;
   const known = runOf(run.id);
-  const name = V.runName({ ...d, n: known ? known.n : d.number }, { name: false });
+  const named = { ...d, n: known ? known.n : d.number };
+  const name = V.runName(named, { name: false });
   const c = d.counts || run.counts || {};
-  const states = c.states || {};
-  const share = c.cells ? Math.min(1, (c.done || 0) / c.cells) : 0;
-  const running = (states.running || 0) + (states.starting || 0);
-  const detail = [
-    running ? running + ' running' : '',
-    ...(live ? waitWords(live.cells) : states.waiting ? [states.waiting + ' waiting'] : []),
-    states.queued ? states.queued + ' queued' : '',
-    c.reviews ? c.reviews + ' in review' : '',
-    d.eta_ms > 0 ? (d.eta_ms < 60000 ? 'less than a minute left' : 'about ' + V.span(d.eta_ms) + ' left') : '',
-    V.money(d.cost),
-  ].filter(Boolean).join(' · ');
-  const watching = state.route.view === 'runs' && state.route.run === run.id;
-  const pct = Math.round(share * 100);
-  morph(box, html`<div class="ds-card__row">
-      <h2 class="ds-card__title" id="activeTitle">${name + ' ' + (ACTIVE_TITLE[run.state] || 'is active')}</h2>
-      ${V.runChip(run.state)}
+  const phone = PHONE.matches;
+  // On a phone the banner is one line over its bar: the run, its count, Watch and Stop.
+  const title = phone ? name + ' · ' + (c.done || 0) + ' of ' + (c.cells || 0) + ' done' : name + ' ' + (ACTIVE_TITLE[run.state] || 'is active');
+  morph(box, html`<div class="so-tests-active__row">
+      <h2 class="ds-card__title" id="activeTitle">${title}</h2>
+      ${phone ? '' : V.runChip(run.state)}
+      <span class="so-tests-active__acts">
+        <button class="ds-btn ds-btn--text ds-btn--sm" type="button" data-watch="${run.id}" aria-label="${'Watch ' + name}">${raw(icon('eye', 16))}Watch</button>
+        ${run.state === 'paused' ? html`<button class="ds-btn ds-btn--text ds-btn--sm" type="button" data-run-act="resume" data-run="${run.id}">${raw(icon('play', 16))}Resume</button>` : ''}
+        <button class="ds-btn ds-btn--text ds-btn--sm" type="button" data-run-act="stop" data-run="${run.id}" aria-label="${'Stop ' + name}">${raw(icon('stopCircle', 16))}Stop</button>
+      </span>
     </div>
-    ${run.error ? html`<div class="ds-alert ds-alert--warning">${raw(icon('alert', 20))}<span class="ds-alert__text so-break">${run.error}</span></div>` : ''}
-    <div class="ds-progress" style="${'--ds-progress: ' + share.toFixed(4)}">
-      <div class="ds-progress__track" role="progressbar" aria-label="${name + ': cells done'}" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${pct}"><div class="ds-progress__bar"></div></div>
-      <p class="ds-progress__label">${(c.done || 0) + ' of ' + V.plural(c.cells || 0, 'cell') + ' done' + (d.name ? ' · ' + d.name : '')}</p>
-      <p class="ds-progress__detail">${detail || V.countsWords(c)}</p>
-    </div>
-    <div class="ds-card__links">
-      ${watching ? '' : html`<button class="ds-btn ds-btn--text ds-card__link" type="button" data-watch="${run.id}">${raw(icon('eye', 16))}Watch</button>`}
-      ${run.state === 'paused' ? html`<button class="ds-btn ds-btn--text ds-card__link" type="button" data-run-act="resume" data-run="${run.id}">${raw(icon('play', 16))}Resume</button>` : ''}
-      <button class="ds-btn ds-btn--text ds-card__link" type="button" data-run-act="stop" data-run="${run.id}">${raw(icon('stopCircle', 16))}Stop</button>
-    </div>`);
+    ${run.error && !phone ? html`<div class="ds-alert ds-alert--warning">${raw(icon('alert', 20))}<span class="ds-alert__text so-break">${run.error}</span></div>` : ''}
+    ${V.runProgress({ ...named, counts: c }, { cells: live ? live.cells : null, bare: phone })}`);
 }
 
 /* ------------------------------------------------------------- the tabs */
@@ -401,7 +392,11 @@ function wireMenu(trigger, menu, fill) {
 const item = (glyph, label, attrs, meta = '') => html`<button class="ds-menu__item" role="menuitem" type="button" ${raw(attrs)}>${raw(icon(glyph, 20))}<span class="ds-menu__label">${label}</span>${meta ? html`<span class="ds-menu__meta">${meta}</span>` : ''}</button>`;
 
 function fillRepoMenu() {
-  morph($('repoMenu'), html`<div role="group" aria-labelledby="repoMenuHead">
+  const repo = repoOf(state.repo);
+  const last = repo && (repo.last || state.runs[0]);
+  const commit = last && last.commit ? 'Latest run on ' + last.commit.slice(0, 10) + (last.dirty ? ' with changes' : '') : '';
+  morph($('repoMenu'), html`${repo ? html`<p class="ds-menu__heading so-break so-tests-menu__where">${repo.path}${commit ? html`<br>${commit}` : ''}</p>
+    <div class="ds-menu__divider" role="separator"></div>` : ''}<div role="group" aria-labelledby="repoMenuHead">
       <p class="ds-menu__heading" id="repoMenuHead">Repositories</p>
       ${state.repos.map((r) => html`<button class="ds-menu__item" role="menuitemradio" type="button" aria-checked="${r.key === state.repo ? 'true' : 'false'}" data-repo="${r.key}">${raw(icon('check', 20, 'ds-menu__check'))}<span class="ds-menu__label">${r.title}</span>${r.active ? html`<span class="ds-menu__meta">running</span>` : ''}</button>`)}
     </div>
@@ -410,8 +405,9 @@ function fillRepoMenu() {
     ${item('trash', 'Remove from the list', 'data-repo-act="remove"')}`);
 }
 
-// The quick ways to run: everything, the problems of the latest run, one
-// priority; each says how many cells it runs and starts after a question.
+// The quick ways to run ("Start now"): everything, the problems of the
+// latest run, one priority; each says how many cells it runs, and starts
+// after a question that says them again (testsforms.js startDirect).
 async function fillRunMenu() {
   await ensureCatalog();
   const cat = state.catalog;
@@ -421,7 +417,7 @@ async function fillRunMenu() {
   const priorities = [...new Set(tests.map((t) => t.priority).filter(Boolean))].sort();
   const cellsOf = (p) => tests.filter((t) => t.priority === p).reduce((n, t) => n + (t.cells || []).length, 0);
   morph($('runMenu'), html`<div role="group" aria-labelledby="runMenuHead">
-      <p class="ds-menu__heading" id="runMenuHead">Run at once</p>
+      <p class="ds-menu__heading" id="runMenuHead">Start now</p>
       ${item('play', 'Everything', 'data-quick="all"', cat ? V.plural(cat.cells || 0, 'cell') : '')}
       ${problems ? item('sync', 'The problems of ' + V.runName(latest, { name: false }), html`data-quick="problems" data-run="${latest.id}"`, V.plural(problems, 'cell')) : ''}
       ${priorities.length > 1 ? priorities.map((p) => item('flag', 'Only ' + p, html`data-quick="priority" data-priority="${p}"`, V.plural(cellsOf(p), 'cell'))) : ''}
@@ -565,6 +561,8 @@ document.addEventListener('keydown', (event) => {
   event.preventDefault();
   field.focus();
 });
+
+PHONE.addEventListener('change', () => { if (state.loaded) renderActive(); });
 
 window.addEventListener('popstate', () => route());
 window.addEventListener('hashchange', () => route());

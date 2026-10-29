@@ -66,26 +66,28 @@
 
           <div class="so-tests" id="body" hidden>
             <!-- The repository: its name (a menu of the others), where it is, and Run. -->
-            <header class="ds-page-head" id="head">
+            <header class="ds-page-head so-tests-head" id="head">
               <div class="ds-page-head__row">
                 <div class="ds-page-head__text">
+                  <!-- The title's row holds Run too, so that Run stays beside the
+                       title on a phone (DS's page head puts its actions under it there). -->
                   <div class="so-tests-head__title">
                     <h1 class="ds-page-head__title" id="repoTitle" tabindex="-1">Tests</h1>
                     <button class="ds-btn ds-btn--quiet ds-btn--icon ds-btn--sm" id="repoMenuBtn" type="button" aria-haspopup="menu" aria-expanded="false" aria-controls="repoMenu" aria-label="Repositories" data-tip="Repositories" data-icon="chevronDown" data-icon-size="18"></button>
+                    <div class="so-tests-split" role="group" aria-label="Run tests">
+                      <button class="ds-btn ds-btn--primary" id="runBtn" type="button" aria-haspopup="dialog" aria-expanded="false" data-icon="play" data-icon-size="16" data-icon-place="start">Run</button>
+                      <button class="ds-btn ds-btn--tonal ds-btn--icon" id="runMoreBtn" type="button" aria-haspopup="menu" aria-expanded="false" aria-controls="runMenu" aria-label="More ways to run" data-tip="More ways to run" data-icon="chevronDown"></button>
+                    </div>
                   </div>
-                  <p class="ds-page-head__lead" id="lead"></p>
+                  <p class="ds-page-head__lead so-tests-head__lead" id="lead"></p>
                   <div class="ds-page-head__status" id="headStatus"></div>
-                </div>
-                <div class="ds-page-head__actions">
-                  <div class="so-tests-split" role="group" aria-label="Run tests">
-                    <button class="ds-btn ds-btn--primary" id="runBtn" type="button" aria-haspopup="dialog" aria-expanded="false" data-icon="play" data-icon-size="16" data-icon-place="start">Run</button>
-                    <button class="ds-btn ds-btn--tonal ds-btn--icon" id="runMoreBtn" type="button" aria-haspopup="menu" aria-expanded="false" aria-controls="runMenu" aria-label="More ways to run" data-tip="More ways to run" data-icon="chevronDown"></button>
-                  </div>
                 </div>
               </div>
             </header>
 
-            <!-- The repository's active run: how far it is, Watch and Stop. -->
+            <!-- The repository's active run: how far it is, Watch and Stop; left out
+                 where the view shows that run already (its run view, the
+                 overview's Live card). -->
             <section class="ds-card ds-card--filled so-tests-active" id="active" aria-labelledby="activeTitle" hidden></section>
 
             <div class="ds-tabs ds-scroll-x so-tests__tabs" role="tablist" aria-label="Tests of this repository" id="tabs">
@@ -189,6 +191,18 @@
   </div>
 </div>
 
+<!-- A cell's other actions: a menu at a desk, an action sheet on a phone
+     (the same items; testscell.js fills both). -->
+<div class="ds-menu" role="menu" id="cellMoreMenu" aria-label="More for this cell" hidden></div>
+<dialog class="ds-dialog ds-dialog--bottom" id="cellMoreSheet" aria-labelledby="cellMoreTitle">
+  <div class="ds-dialog__backdrop" data-close></div>
+  <div class="ds-dialog__box">
+    <h2 class="ds-dialog__title" id="cellMoreTitle">More for this cell</h2>
+    <div class="ds-dialog__list" id="cellMoreList"></div>
+    <div class="ds-dialog__actions"><button class="ds-btn ds-btn--text" type="button" data-close>Cancel</button></div>
+  </div>
+</dialog>
+
 <dialog class="ds-dialog ds-dialog--wide" id="overrideDialog" aria-labelledby="overrideTitle" aria-describedby="overrideText">
   <div class="ds-dialog__backdrop" data-close></div>
   <div class="ds-dialog__box">
@@ -209,6 +223,7 @@
     <div class="ds-dialog__body">
       <ul class="ds-kv-list so-cell__keys">
         <li><span><kbd class="ds-kbd">&larr;</kbd> <kbd class="ds-kbd">&rarr;</kbd></span><strong>Previous and next screenshot</strong></li>
+        <li><span><kbd class="ds-kbd">&uarr;</kbd> <kbd class="ds-kbd">&darr;</kbd></span><strong>Previous and next step, in the list of steps</strong></li>
         <li><span><kbd class="ds-kbd">[</kbd> <kbd class="ds-kbd">]</kbd> or <kbd class="ds-kbd">k</kbd> <kbd class="ds-kbd">j</kbd></span><strong>Previous and next cell</strong></li>
         <li><span><kbd class="ds-kbd">z</kbd></span><strong>Fit the screenshot, or show it at its own size</strong></li>
         <li><span><kbd class="ds-kbd">c</kbd></span><strong>Compare with the last pass</strong></li>

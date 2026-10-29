@@ -125,7 +125,21 @@ export function mount(ctx) {
           <span class="ds-field__label" id="chatFolderLabel">Folder</span>
           <span class="ds-field__value so-break">${shown.path || shown.repo}<span class="ds-lock" role="img" aria-label="The repository’s folder" data-tip="The repository’s folder: a chat about its tests works there">${raw(icon('lock', 16))}</span></span>
         </div>
-      </div>`;
+      </div>
+      ${signInAlert(pick, list)}`;
+  }
+
+  // signInAlert says when the chat would start on an account Socrates does
+  // not know to be signed in: it asks for the sign-in in the chat, unless
+  // the program is signed in on its own.
+  function signInAlert(pick, list) {
+    const chosen = pick.account ? list.find((a) => a.id === pick.account) : null;
+    const bad = chosen ? !accounts.usable(chosen) : list.length > 0 && !list.some(accounts.usable);
+    if (!bad) return '';
+    const name = harnesses.label(pick.harness);
+    const text = chosen ? chosen.label + ' is not signed in: the chat asks for the sign-in first, unless ' + name + ' is signed in on its own.'
+      : 'No ' + name + ' account is signed in: the chat starts on one and asks for the sign-in first, unless ' + name + ' is signed in on its own.';
+    return html`<div class="ds-alert ds-alert--warning">${raw(icon('alert', 20))}<span class="ds-alert__text so-break">${text}</span><a class="ds-btn ds-btn--text ds-btn--sm" href="/admin#accountsCard">Accounts in Admin</a></div>`;
   }
 
   function readPick() {
@@ -497,7 +511,7 @@ export function mount(ctx) {
       pick.account = '';
     } else if (t.dataset.pick === 'model') {
       pick.effort = defaultEffort(pick.harness, pick.model);
-    } else {
+    } else if (t.dataset.pick !== 'account') {
       return;
     }
     drawPickers(pick);

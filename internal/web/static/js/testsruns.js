@@ -197,11 +197,14 @@ export function mount(ctx) {
     return [V.when(r.created_at), V.selectionWords(r.selection, state.runs), V.startedBy(r) ? 'started by ' + V.startedBy(r) : ''].filter(Boolean).join(' · ');
   }
 
-  function changeWords(c) {
+  // changeWords is a run's changes against the run before: "↓ 3 broke ·
+  // ↑ 1 fixed" ("so far" while it runs).
+  function changeWords(c, active = false) {
     if (!c) return '';
-    return html`<span class="ds-parts"><span class="ds-parts__list">${c.regressed ? html`<span><span class="so-tests-change so-tests-change--regressed">${raw(icon('arrowDown', 16))}${c.regressed + ' broke'}</span></span>` : ''}${
-      c.fixed ? html`<span><span class="so-tests-change so-tests-change--fixed">${raw(icon('arrowUp', 16))}${c.fixed + ' fixed'}</span></span>` : ''}${
-      !c.regressed && !c.fixed ? html`<span class="ds-muted">No change</span>` : ''}</span></span>`;
+    const sofar = active ? ' so far' : '';
+    return html`<span class="ds-parts"><span class="ds-parts__list">${c.regressed ? html`<span><span class="so-tests-change so-tests-change--regressed">${raw(icon('arrowDown', 16))}${c.regressed + ' broke' + sofar}</span></span>` : ''}${
+      c.fixed ? html`<span><span class="so-tests-change so-tests-change--fixed">${raw(icon('arrowUp', 16))}${c.fixed + ' fixed' + sofar}</span></span>` : ''}${
+      !c.regressed && !c.fixed ? html`<span class="ds-muted">${active ? 'No change so far' : 'No change'}</span>` : ''}</span></span>`;
   }
 
   function runRow(r, changes, costs) {
@@ -209,7 +212,7 @@ export function mount(ctx) {
       <td class="ds-col--text"><a class="ds-link-btn ds-table__row-link" href="${runHref(r.id)}">${V.runName(r)}</a>${r.pinned ? html` <span class="so-tests-pin" role="img" aria-label="Pinned" data-tip="Pinned: kept whatever the retention says">${raw(icon('lock', 16))}</span>` : ''}
         <small class="so-tests__sub ds-meta">${runMeta(r)}</small></td>
       <td><span class="so-tests-result">${V.resultBar(r.counts)}${V.resultParts(r.counts)}</span></td>
-      ${changes ? html`<td class="ds-col--secondary">${prevRunOf(r.id) ? changeWords(r.changes) : html`<span class="ds-muted">First run</span>`}</td>` : ''}
+      ${changes ? html`<td class="ds-col--secondary">${prevRunOf(r.id) ? changeWords(r.changes, V.ACTIVE_RUN.has(r.state)) : html`<span class="ds-muted">First run</span>`}</td>` : ''}
       <td class="ds-num ds-col--secondary">${V.runSpan(r)}</td>
       ${costs ? html`<td class="ds-num ds-col--secondary">${V.money(r.cost)}</td>` : ''}
       <td>${V.runChip(r.state)}</td>
@@ -217,13 +220,15 @@ export function mount(ctx) {
   }
 
   function runItem(r) {
+    const c = r.changes;
     return html`<li class="ds-list__item" data-ds-key="${r.id}">
       <span class="ds-list__text">
         <span class="ds-list__title"><a class="ds-list__action" href="${runHref(r.id)}">${V.runName(r)}</a></span>
         <span class="ds-list__meta">${[runMeta(r), V.runSpan(r), V.money(r.cost)].filter(Boolean).join(' · ')}</span>
         <span class="so-tests-result">${V.resultBar(r.counts)}${V.resultParts(r.counts)}</span>
+        ${c && (c.regressed || c.fixed) && prevRunOf(r.id) ? html`<span class="so-tests-runs__changes">${changeWords(c, V.ACTIVE_RUN.has(r.state))}</span>` : ''}
       </span>
-      ${r.state === 'done' ? '' : V.runChip(r.state)}
+      ${V.runChip(r.state)}
     </li>`;
   }
 
@@ -267,8 +272,8 @@ export function mount(ctx) {
             <p class="ds-page-head__lead">${V.selectionWords(d.selection, state.runs) + ': ' + V.plural((d.counts && d.counts.cells) || 0, 'cell')}${by ? html` · started by ${V.startedByHref(d) ? html`<a href="${V.startedByHref(d)}">${by}</a>` : by}` : ''}</p>
             <div class="ds-page-head__status">
               ${V.runChip(d.state)}
-              ${changes && changes.regressed ? V.chip({ word: changes.regressed + ' broke since ' + (prev ? V.runName(prev, { name: false }) : 'the run before'), glyph: 'arrowDown', tone: 'error' }) : ''}
-              ${changes && changes.fixed ? V.chip({ word: changes.fixed + ' fixed', glyph: 'arrowUp', tone: 'ok' }) : ''}
+              ${changes && changes.regressed ? V.chip({ word: changes.regressed + ' broke since ' + (prev ? V.runName(prev, { name: false }) : 'the run before') + (active ? ' so far' : ''), glyph: 'arrowDown', tone: 'error' }) : ''}
+              ${changes && changes.fixed ? V.chip({ word: changes.fixed + ' fixed' + (active ? ' so far' : ''), glyph: 'arrowUp', tone: 'ok' }) : ''}
               ${d.pinned ? V.chip({ word: 'Pinned', glyph: 'lock' }) : ''}
             </div>
           </div>
@@ -280,13 +285,10 @@ export function mount(ctx) {
           </div>
         </div>
       </header>
+      ${active ? V.runProgress(d, { cells: rows }) : ''}
       ${d.error && !active ? html`<div class="ds-alert ds-alert--error" role="alert">${raw(icon('alertCircle', 20))}<span class="ds-alert__text so-break"><strong class="ds-alert__title">${'Why it ' + (d.state === 'stopped' ? 'stopped' : 'failed')}</strong> ${d.error}</span></div>` : ''}
       ${factsHtml}
-      <p class="ds-meta so-tests-agents">${raw(icon('users', 16))}${[
-        s.cell ? 'Cells: ' + V.roleWords(s.cell) : '',
-        s.review !== false && s.reviewer ? 'review: ' + V.roleWords(s.reviewer) : 'no review',
-        s.analysis !== false && s.analyst ? 'analysis: ' + V.roleWords(s.analyst) : 'no analysis',
-      ].filter(Boolean).join(' · ')}</p>`;
+      <p class="ds-meta so-tests-agents">${raw(icon('users', 16))}${V.rolesWords(s)}</p>`;
   }
 
   /* -------------------------------------------------------------- parts */
@@ -331,7 +333,7 @@ export function mount(ctx) {
         <fieldset class="ds-chips" id="rvChips"><legend class="ds-sr">Show</legend></fieldset>
         <div class="ds-chips" role="group" aria-label="Active filters" id="rvActive"></div>
       </div>
-      <p class="ds-meta" id="rvCount" aria-live="polite"></p>
+      <div class="so-tests-countline"><p class="ds-meta" id="rvCount" aria-live="polite"></p><div id="rvLegend"></div></div>
       <div class="so-tests__stack" id="rvGrid"></div>`;
   }
 
@@ -436,7 +438,18 @@ export function mount(ctx) {
     }
     const areas = (d.areas && d.areas.length) ? d.areas : [...new Set(rows.map((r) => r.area))].map((id) => ({ id, title: id }));
     const phone = PHONE.matches;
-    morph(grid, html`${areas.map((area) => areaCard(area, shownRows.filter((r) => r.area === area.id), rows.filter((r) => r.area === area.id), phone))}`);
+    // Every area's table has as many value columns as the widest one, so
+    // that their columns line up from card to card.
+    const width = Math.max(1, ...areas.map((area) => columnsOf(area, rows.filter((r) => r.area === area.id)).length));
+    morph(grid, html`${areas.map((area) => areaCard(area, shownRows.filter((r) => r.area === area.id), rows.filter((r) => r.area === area.id), phone, width))}`);
+    // The marks beside the verdicts, explained (on a phone the cells say them in words).
+    morph($('rvLegend'), phone ? '' : V.legend([
+      shownRows.some((r) => r.change === 'regressed') ? 'regressed' : '',
+      shownRows.some((r) => r.change === 'fixed') ? 'fixed' : '',
+      shownRows.some((r) => !r.override && (r.review === 'done' || r.reviewed)) ? 'reviewed' : '',
+      shownRows.some((r) => r.override) ? 'overridden' : '',
+      shownRows.some((r) => r.attempt > 1) ? 'attempt' : '',
+    ]));
   }
 
   function columnsOf(area, rows) {
@@ -455,10 +468,11 @@ export function mount(ctx) {
       if (!map.has(r.test)) { map.set(r.test, []); order.push(r); }
       map.get(r.test).push(r);
     }
-    return order.map((first) => ({ first, cells: map.get(first.test) }));
+    // The catalog's order, as the Tests view has it (P0 first, then by id).
+    return order.sort(V.testOrder).map((first) => ({ first, cells: map.get(first.test) }));
   }
 
-  function areaCard(area, rows, all, phone) {
+  function areaCard(area, rows, all, phone, width) {
     if (!rows.length) return '';
     const problems = all.filter(V.isProblem).length;
     const meta = V.plural(all.length, 'cell') + (problems ? ' · ' + V.plural(problems, 'problem') : '') + (rows.length < all.length ? ' · ' + rows.length + ' shown' : '');
@@ -468,7 +482,7 @@ export function mount(ctx) {
         <h3 class="ds-card__title" id="${'ra-' + area.id}">${area.title || area.id}</h3>
         <span class="ds-meta">${meta}</span>
       </div>
-      ${phone ? tests.map((t) => testBlock(t, area)) : areaTable(area, tests, rows)}
+      ${phone ? tests.map((t) => testBlock(t, area)) : areaTable(area, tests, rows, width)}
     </section>`;
   }
 
@@ -476,17 +490,24 @@ export function mount(ctx) {
     return html`<span class="so-tests__sub">${row.priority ? html`<span class="ds-tag ds-tag--neutral">${row.priority}</span>` : ''}${(row.tags || []).map((t) => html`<span class="ds-tag">${t}</span>`)}</span>`;
   }
 
+  /** colgroup is an area table's columns: the test, `width` values, the actions (so-tests.css sizes them). */
+  function colgroup(width) {
+    return html`<colgroup><col class="so-tests__col-test">${Array.from({ length: width }, () => html`<col>`)}<col class="so-tests__col-act"></colgroup>`;
+  }
+
   function rerunButton(row, sm) {
     return html`<button class="${'ds-btn ds-btn--quiet ds-btn--icon' + (sm ? ' ds-btn--sm' : '')}" type="button" data-rerun-test="${row.test}" aria-label="${'Run “' + row.title + '” again'}" data-tip="Run this test again">${raw(icon('play', sm ? 18 : 20))}</button>`;
   }
 
-  function areaTable(area, tests, rows) {
+  function areaTable(area, tests, rows, width) {
     const columns = columnsOf(area, rows);
-    return html`<div class="ds-table-wrap"><table class="ds-table ds-table--dense ds-table--pin-first so-tests__table">
+    const pad = Math.max(0, width - columns.length);
+    return html`<div class="ds-table-wrap"><table class="ds-table ds-table--dense ds-table--pin-first so-tests__table" style="${'--so-cols: ' + width}">
       <caption class="ds-sr">${(area.title || area.id) + (area.columns ? ': a row per test, a column per ' + area.columns : '')}</caption>
+      ${colgroup(width)}
       <thead><tr>
         <th scope="col">Test</th>
-        ${columns.map((c) => html`<th scope="col">${c.label || c.id}</th>`)}
+        ${columns.map((c) => html`<th scope="col">${c.label || c.id}</th>`)}${pad ? html`<td colspan="${String(pad)}"></td>` : ''}
         <th scope="col"><span class="ds-sr">Actions</span></th>
       </tr></thead>
       <tbody>${tests.map(({ first, cells }) => html`<tr data-ds-key="${first.test}">
@@ -494,7 +515,7 @@ export function mount(ctx) {
         ${columns.map((c) => {
           const here = cells.filter((r) => !area.columns || (dimOf(r, area.columns) || {}).id === c.id);
           return html`<td><span class="so-tests__cells">${here.map((r) => cellButton(r, area))}</span></td>`;
-        })}
+        })}${pad ? html`<td colspan="${String(pad)}"></td>` : ''}
         <td class="ds-table__actions">${rerunButton(first)}</td>
       </tr>`)}</tbody>
     </table></div>`;
@@ -519,11 +540,12 @@ export function mount(ctx) {
       row.attempt > 1 ? html`<span class="ds-meta" data-tip="${'Attempt ' + row.attempt}">${'#' + row.attempt}</span>` : ''}`;
   }
 
+  // A cell: its verdict and marks, the other dimensions' values quieter under them.
   function cellButton(row, area) {
     const others = (row.dims || []).filter((x) => x.name !== area.columns);
     const tip = row.state === 'waiting' && row.wait ? row.wait : row.summary || '';
     return html`<button class="ds-pressable so-tests__cell" type="button" data-cell="${row.id}" data-ds-key="${row.id}" aria-label="${cellWords(row, area)}"${tip ? raw(html` data-tip="${tip.length > 160 ? tip.slice(0, 157) + '…' : tip}"`) : ''}>
-      ${V.cellChip(row, { tip: false })}${others.map((x) => html`<span class="ds-tag ds-tag--neutral">${x.label || x.id}</span>`)}${marks(row)}
+      <span class="so-tests__verdict">${V.cellChip(row, { tip: false })}${marks(row)}</span>${others.length ? html`<span class="so-tests__dims">${others.map((x) => x.label || x.id).join(', ')}</span>` : ''}
     </button>`;
   }
 

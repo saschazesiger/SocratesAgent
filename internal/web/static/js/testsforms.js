@@ -199,14 +199,16 @@ export function mount(ctx) {
     morph(box, roleBody(prefix, role, { harness, model, effort, accounts: keep }));
   }
 
-  /** summaryWords is a run's settings in one line: "Cells: Claude Code · Sonnet 5.5 · Medium · 2 attempts · review on". */
+  /**
+   * summaryWords is a run's settings in one line, every role's model and
+   * how it goes: "Cells: Sonnet 5.5 · Review: Opus · Analysis: Opus · up to
+   * 2 attempts".
+   */
   function summaryWords(s) {
     return [
-      'Cells: ' + (V.roleWords(s.cell) || 'the default agent'),
+      V.rolesWords(s),
       s.parallel > 0 ? s.parallel + ' at once' : '',
-      V.plural(s.attempts || 1, 'attempt'),
-      s.review !== false ? 'review on' : 'no review',
-      s.analysis !== false ? 'analysis on' : 'no analysis',
+      (s.attempts || 1) > 1 ? 'up to ' + s.attempts + ' attempts' : 'one attempt',
     ].filter(Boolean).join(' · ');
   }
 
@@ -287,6 +289,7 @@ export function mount(ctx) {
     drawnFor = state.repo;
     const s = state.settings.settings;
     morph(panel, html`<form class="so-tests__stack" id="settingsForm" data-settings="st" novalidate>
+        <div class="so-tests__stack" id="stRoleAlerts">${V.roleAlerts(V.roleProblems(s))}</div>
         <section class="ds-card" aria-labelledby="stAgentsTitle">
           <h2 class="ds-card__title" id="stAgentsTitle">Agents</h2>
           <p class="ds-muted">Every run of this repository starts with these; the Run dialog can change them for one run.</p>
@@ -316,6 +319,10 @@ export function mount(ctx) {
       if (!event.target.closest('#settingsForm')) return;
       if (event.target.dataset.roleField) roleChanged(panel, 'st', event.target);
       setDirty(true);
+      // The roles as now chosen: what stands in their way, said at the top.
+      if (event.target.closest('[data-role-box], [data-flag]')) {
+        morph($('stRoleAlerts'), V.roleAlerts(V.roleProblems(readSettings(panel, state.settings.settings))));
+      }
     });
     panel.addEventListener('input', (event) => { if (event.target.closest('#settingsForm')) setDirty(true); });
     panel.addEventListener('submit', (event) => event.preventDefault());
@@ -361,6 +368,7 @@ export function mount(ctx) {
   let preset = {};
   let estimateTimer = 0;
   let asked = 0;
+  let roleBlock = null; // a role's problem that keeps the run from starting
 
   sheet.addEventListener('ds-close', (event) => { if (event.target === sheet) runOpen = false; });
 
@@ -384,6 +392,8 @@ export function mount(ctx) {
 
   async function openRunDialog(given, opener) {
     runOpen = true;
+    // The page's snackbars would stand over the sheet's foot.
+    DS.overlay.closeToasts(null);
     preset = given || {};
     morph(runBody, html`<div class="ds-loading" role="status"><span class="ds-loader ds-loader--sm" aria-hidden="true"></span>Reading the catalog</div>`);
     $('runCount').textContent = '';
@@ -437,7 +447,8 @@ export function mount(ctx) {
     else if (preset.problems_of && offerProblems) what = 'problems';
     else if (preset.priorities && preset.priorities.length === 1 && f.priorities.includes(preset.priorities[0])) what = 'prio:' + preset.priorities[0];
     else if (preset.tests || preset.choose || (preset.priorities && preset.priorities.length)) what = 'choose';
-    const ticked = (id) => !preset.tests || preset.tests.includes(id);
+    // Choose… starts with nothing ticked (or the tests it was opened for).
+    const ticked = (id) => !!preset.tests && preset.tests.includes(id);
     const narrowed = (name, value) => name === 'priorities' && what === 'choose' && preset.priorities ? preset.priorities.includes(value) : false;
     const s = state.settings.settings;
     const chips = (name, legend, items) => (items.length < 2 ? '' : html`<fieldset class="ds-field">
@@ -447,6 +458,7 @@ export function mount(ctx) {
     morph(runBody, html`<form class="ds-form so-tests__stack" id="runForm" novalidate>
       ${errors.length ? html`<div class="ds-alert ds-alert--error" role="alert">${raw(icon('alertCircle', 20))}<span class="ds-alert__text">${(errors.length === 1 ? 'The catalog has an error' : 'The catalog has ' + errors.length + ' errors') + ': a run would not start. The Tests view lists them with their files and lines.'}</span></div>` : ''}
       <div id="runEstimateErrors"></div>
+      <div class="so-tests__stack" id="runRoleAlerts"></div>
       <section class="so-tests__stack" aria-labelledby="runWhatTitle">
         <h3 class="ds-card__subtitle" id="runWhatTitle">What to run</h3>
         <div class="ds-radios ds-radios--tiles" role="radiogroup" aria-labelledby="runWhatTitle">
@@ -460,21 +472,28 @@ export function mount(ctx) {
       <div class="so-tests__stack" id="runChoose"${what === 'choose' ? '' : raw(' hidden')}>
         <fieldset class="ds-field">
           <legend class="ds-field__label">Tests</legend>
+          <div class="so-tests-tree__tools">
+            <button class="ds-btn ds-btn--text ds-btn--sm" type="button" data-pick-all="1">Select all</button>
+            <button class="ds-btn ds-btn--text ds-btn--sm" type="button" data-pick-all="0">Select none</button>
+          </div>
           <div class="so-tests-tree">${f.areas.map((area) => html`<div class="ds-check-group" data-area="${area.id}">
             <label class="ds-check"><input type="checkbox" data-all data-area-all="${area.id}"><span>${area.title || area.id} <span class="ds-meta">${V.plural((area.tests || []).length, 'test')}</span></span></label>
-            <div class="ds-check-group__children" role="group" aria-label="${'Tests of ' + (area.title || area.id)}">${(area.tests || []).map((t) => html`<label class="ds-check"><input type="checkbox" data-test="${t.id}" value="${t.id}"${ticked(t.id) ? raw(' checked') : ''}><span>${t.title} <span class="ds-meta">${[t.priority, V.plural((t.cells || []).length, 'cell')].filter(Boolean).join(' · ')}</span></span></label>`)}</div>
+            <div class="ds-check-group__children" role="group" aria-label="${'Tests of ' + (area.title || area.id)}">${(area.tests || []).slice().sort(V.testOrder).map((t) => html`<div class="so-tests-tree__test ds-hover-host">
+              <label class="ds-check"><input type="checkbox" data-test="${t.id}" value="${t.id}"${ticked(t.id) ? raw(' checked') : ''}><span>${t.title} <span class="ds-meta">${[t.priority, V.plural((t.cells || []).length, 'cell')].filter(Boolean).join(' · ')}</span></span></label>
+              <span class="ds-hover-actions"><button class="ds-btn ds-btn--text ds-btn--sm" type="button" data-only="${t.id}" aria-label="${'Only “' + t.title + '”'}">Only this</button></span>
+            </div>`)}</div>
           </div>`)}</div>
         </fieldset>
         ${chips('priorities', 'Only these priorities', f.priorities.map((p) => [p, p]))}
         ${chips('tags', 'Only with these tags', f.tags.map((t) => [t, t]))}
         ${[...f.dims].map(([name, values]) => chips('dim:' + name, 'Only these values of ' + name, [...values]))}
-        <p class="ds-field__hint">A row of chips with none ticked takes all of it.</p>
+        <p class="ds-field__hint">The chips narrow the tests ticked above; a row with none picked takes all of its values.</p>
       </div>
       <section class="so-tests__stack" aria-labelledby="runSetTitle">
         <h3 class="ds-card__subtitle" id="runSetTitle">Settings of this run</h3>
         <div class="so-tests-summary">
           <p class="so-break" id="runSummary">${summaryWords(s)}</p>
-          <button class="ds-btn ds-btn--disclosure ds-btn--sm" type="button" id="runChange" aria-expanded="false" aria-controls="runSettings">Change</button>
+          <button class="ds-btn ds-btn--disclosure ds-btn--sm" type="button" id="runChange" aria-expanded="false" aria-controls="runSettings">Change for this run</button>
         </div>
         <div class="so-tests__stack" id="runSettings" hidden>
           ${ROLES.map((spec) => roleSection('rs', spec, s[spec.key] || {}))}
@@ -487,7 +506,7 @@ export function mount(ctx) {
       <div class="ds-field">
         <label class="ds-field__label" for="runName">Name <span class="ds-field__optional">(optional)</span></label>
         <input class="ds-input" id="runName" type="text" maxlength="80" autocomplete="off" placeholder="Before the release" aria-describedby="runNameHint">
-        <small class="ds-field__hint" id="runNameHint">Shown after its number: “Run ${state.runs.length ? Math.max(...state.runs.map((r) => r.n || 0)) + 1 : 1} · Before the release”.</small>
+        <small class="ds-field__hint" id="runNameHint">Shown after its number: Run ${state.runs.length ? Math.max(...state.runs.map((r) => r.n || 0)) + 1 : 1} “Before the release”.</small>
       </div>
     </form>`);
     syncGroups();
@@ -619,10 +638,15 @@ export function mount(ctx) {
     }
     const settings = settingsChanged();
     if (settings) $('runSummary').textContent = summaryWords(settings);
+    const roles = V.roleProblems(settings || state.settings.settings);
+    morph($('runRoleAlerts'), V.roleAlerts(roles));
+    roleBlock = roles.find((p) => p.block) || null;
     const sel = selectionOf(what);
     const local = countLocal(sel);
     show(local, []);
     clearTimeout(estimateTimer);
+    // Nothing ticked yet: there is nothing to ask the server about.
+    if (what === 'choose' && !runBody.querySelector('.so-tests-tree input[data-test]:checked')) { asked += 1; return; }
     const me = ++asked;
     estimateTimer = setTimeout(async () => {
       const e = await estimate(sel, settings);
@@ -631,8 +655,6 @@ export function mount(ctx) {
   }
 
   function show(e, errors) {
-    const words = estimateWords(e);
-    if ($('runFootNote').textContent !== words) $('runFootNote').textContent = words;
     const count = V.plural(e.cells || 0, 'cell');
     if ($('runCount').textContent !== count) $('runCount').textContent = count;
     // The catalog's errors are said once, at the top; the estimate repeats them.
@@ -640,15 +662,20 @@ export function mount(ctx) {
     morph($('runEstimateErrors'), own.length ? html`<div class="ds-alert ds-alert--error" role="alert">${raw(icon('alertCircle', 20))}<span class="ds-alert__text so-break">${own.map((p) => html`<span>${typeof p === 'string' ? p : (p.file ? p.file + (p.line ? ':' + p.line : '') + ': ' : '') + p.message}</span> `)}</span></div>` : '');
     const start = $('runStart');
     const catErrors = state.catalog && state.catalog.errors && state.catalog.errors.length;
-    const blocked = !e.cells || catErrors || errors.length;
+    const nothing = !e.cells && currentWhat() === 'choose' && !runBody.querySelector('[data-test]:checked');
+    const blocked = !e.cells || catErrors || errors.length || roleBlock;
     if (blocked) {
       start.setAttribute('aria-disabled', 'true');
-      start.dataset.tip = !e.cells ? 'Nothing is chosen' : 'The catalog has errors';
+      start.dataset.tip = nothing ? 'Pick at least one test' : !e.cells ? 'This choice takes no cell'
+        : catErrors || errors.length ? 'The catalog has errors' : roleBlock.text;
     } else {
       start.removeAttribute('aria-disabled');
       delete start.dataset.tip;
     }
     morph(start.querySelector('.ds-btn__face'), e.cells ? 'Start ' + V.plural(e.cells, 'cell') : 'Start run');
+    // Why it cannot start, in words beside it, not only in its tooltip.
+    const why = blocked ? start.dataset.tip : estimateWords(e);
+    if ($('runFootNote').textContent !== why) $('runFootNote').textContent = why;
   }
 
   runBody.addEventListener('change', (event) => {
@@ -661,12 +688,22 @@ export function mount(ctx) {
     update();
   });
   runBody.addEventListener('click', (event) => {
+    const all = event.target.closest('[data-pick-all]');
+    const only = event.target.closest('[data-only]');
+    if (all || only) {
+      for (const box of runBody.querySelectorAll('.so-tests-tree input[data-test]')) {
+        box.checked = all ? all.dataset.pickAll === '1' : box.value === only.dataset.only;
+      }
+      syncGroups();
+      update();
+      return;
+    }
     const change = event.target.closest('#runChange');
     if (!change) return;
     const box = $('runSettings');
     box.hidden = !box.hidden;
     change.setAttribute('aria-expanded', String(!box.hidden));
-    change.textContent = box.hidden ? 'Change' : 'Keep the repository’s';
+    change.textContent = box.hidden ? 'Change for this run' : 'Use the defaults';
     if (box.hidden) {
       // Back to the repository's settings: the form forgets the changes.
       const s = state.settings.settings;
@@ -715,6 +752,13 @@ export function mount(ctx) {
     const sel = presetSelection(given);
     const e = await estimate(sel);
     if (!e.cells) { toast('That runs no cell.', 'info'); return; }
+    // The roles as the repository has them: a program or accounts that cannot
+    // run keep it from starting; a role without a signed-in account is said.
+    await Promise.all([ctx.ensureSettings().catch(() => null), prepare()]);
+    const roles = state.settings ? V.roleProblems(state.settings.settings) : [];
+    const stop = roles.find((r) => r.block);
+    if (stop) { toast(stop.text + ' Change it in Settings.', 'error'); return; }
+    const warn = roles.map((r) => r.text).join(' ');
     const what = given.problems_of ? 'the problems of ' + V.runName(problemsRun(given.problems_of), { name: false }) + ' again'
       : given.priorities ? given.priorities.join(' and ') + ' tests'
         : given.tests ? (given.tests.length === 1 ? 'this test' : V.plural(given.tests.length, 'test'))
@@ -723,7 +767,7 @@ export function mount(ctx) {
     const more = [e.eta_ms > 0 ? 'about ' + V.span(e.eta_ms) : '', typeof e.cost === 'number' && e.cost > 0 ? 'about ' + V.money(e.cost) : ''].filter(Boolean).join(', ');
     const yes = await confirmDialog({
       title: 'Run ' + what + '?',
-      body: V.plural(e.cells, 'cell') + ', each an agent session of its own, with this repository’s settings' + (more ? ': ' + more + '.' : '.'),
+      body: V.plural(e.cells, 'cell') + ', each an agent session of its own, with this repository’s settings' + (more ? ': ' + more + '.' : '.') + (warn ? ' ' + warn : ''),
       confirmLabel: 'Run ' + V.plural(e.cells, 'cell'),
       opener,
     });
