@@ -546,6 +546,7 @@ export function mount(ctx) {
     if (p.problems_of) return { problems_of: (problemsRun(p.problems_of) || {}).id };
     if (p.cells) return { cells: p.cells.slice() };
     const sel = {};
+    if (p.areas) sel.areas = p.areas.slice();
     if (p.tests) sel.tests = p.tests.slice();
     if (p.priorities) sel.priorities = p.priorities.slice();
     return sel;
@@ -717,7 +718,8 @@ export function mount(ctx) {
     const what = given.problems_of ? 'the problems of ' + V.runName(problemsRun(given.problems_of), { name: false }) + ' again'
       : given.priorities ? given.priorities.join(' and ') + ' tests'
         : given.tests ? (given.tests.length === 1 ? 'this test' : V.plural(given.tests.length, 'test'))
-          : given.cells ? 'these cells' : 'everything';
+          : given.cells ? (given.cells.length === 1 ? 'this cell' : 'these cells')
+            : given.areas ? (given.areas.length === 1 ? 'this area' : V.plural(given.areas.length, 'area')) : 'everything';
     const more = [e.eta_ms > 0 ? 'about ' + V.span(e.eta_ms) : '', typeof e.cost === 'number' && e.cost > 0 ? 'about ' + V.money(e.cost) : ''].filter(Boolean).join(', ');
     const yes = await confirmDialog({
       title: 'Run ' + what + '?',

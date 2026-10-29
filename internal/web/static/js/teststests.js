@@ -652,9 +652,7 @@ export function mount(ctx) {
       if (runCell) { ctx.startRun({ cells: [runCell.dataset.ttRunCell] }, runCell); return; }
       const runArea = t.closest('[data-tt-run-area]');
       if (runArea) {
-        // A run of an area is a run of its tests (the Run dialog's presets name tests, cells or priorities).
-        const area = ((state.catalog && state.catalog.areas) || []).find((a) => a.id === runArea.dataset.ttRunArea);
-        if (area) ctx.startRun({ tests: (area.tests || []).map((x) => x.id) }, runArea);
+        ctx.startRun({ areas: [runArea.dataset.ttRunArea] }, runArea);
         return;
       }
       const write = t.closest('[data-tt-write]');
