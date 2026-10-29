@@ -1240,6 +1240,17 @@ message text:
 | `/orphan` | starts a `setsid sleep 600` outside the process group (pid in `agent/fake/orphan.pid`) |
 | anything else | `you said: <text> (turn N of <conversation>)` |
 
+In a test session (`StartSpec.ChatTools.Kind` names a role; TEST-MODE.md) it works the runner's
+messages through the role's test tools, called in process on the endpoint the real harnesses' calls
+reach (`chattools.Endpoint.Call`), each shown as a tool part `mcp__socrates__<tool>`
+(`fake_tests.go`):
+
+| text | turn |
+|---|---|
+| `Run this cell of the test catalog.` | per step a screenshot (the catalog's `shot <n>` on the session's `PATH`, else a PNG it draws into `$SOCRATES_TEST_EVIDENCE` with its `actions.jsonl` line), `test_judge`; then `test_end`. The test's parameter `fake` (fakeclaude's modes): `fail`, `issue`, `blocked` (the rest), `flaky` (fails in odd runs), `slow`/`crawl` (2 s / 30 s a step), `abort`, `quiet`, `misjudged` (a pass whose action failed), the first five and `misjudged` phased with `from<n>`/`until<n>` |
+| `Review these cells …` | per cell `review_evidence`, `review_agent`, `review_step` issue for a passed step whose last action failed, `review_done` |
+| `Analyse test run …` | `bugs_known`, `run_overview`, `bugs_put` (a bug per test with issue or fail cells, a known bug's id kept, none for one marked `not_a_bug`), `conclusions_put` (per area, per device, the bugs) |
+
 `Command("compact")` emits `notice{compacted}`, `Command("context")` a `usage` and
 `notice{context}`; other commands are `unsupported`. Attachments are named in the reply (`with N
 attachment(s): …`).

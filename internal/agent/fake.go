@@ -66,6 +66,9 @@ func EnableFake() {
 //	/crash         the CLI child dies in the middle of the turn
 //	/orphan          a tool process that escapes the CLI's process group
 //	anything else    "you said: …" with the turn number of the conversation
+//
+// In a test session the runner's messages are worked through the test
+// tools instead (fake_tests.go).
 type fakeAdapter struct {
 	mu    sync.Mutex
 	out   Emitter
@@ -401,6 +404,14 @@ func (f *fakeAdapter) turn(ctx context.Context, msg Outgoing, n int) {
 		Event{Type: TypeTurnStarted, TurnID: t.id, MessageID: msg.MessageID},
 		Event{Type: TypeMessage, MessageID: t.msgID, Role: RoleAssistant, State: MessageStreaming, TurnID: t.id, Model: f.model},
 	)
+	if handled, ok := f.testSession(ctx, t, msg.Text); handled {
+		if !ok {
+			t.end(OutcomeInterrupted, "")
+			return
+		}
+		t.end(OutcomeCompleted, "")
+		return
+	}
 	word, args, _ := strings.Cut(strings.TrimSpace(msg.Text), " ")
 	fields := strings.Fields(args)
 	switch word {
