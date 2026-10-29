@@ -96,8 +96,20 @@ func githubStatus(ctx context.Context, dir string) GitHubStatus {
 	return GitHubStatus{Available: true, Repo: slug}
 }
 
+// ErrIssueExists is a bug that has an issue already, or whose issue is being
+// made: none is made again. URL is the issue's, empty while it is made.
+type ErrIssueExists struct{ URL string }
+
+func (e *ErrIssueExists) Error() string {
+	if e.URL == "" {
+		return "the bug's issue is being made"
+	}
+	return "the bug has an issue already: " + e.URL
+}
+
 // CreateIssue makes a GitHub issue of a bug with gh, in the repository, and
-// keeps its URL on the bug.
+// keeps its URL on the bug; a bug that has one, or whose issue is being
+// made, gets none (ErrIssueExists).
 func (r *Runner) CreateIssue(repoKey, bugID, title, body string) (string, error) {
 	title = clip(strings.Join(strings.Fields(title), " "), 256)
 	if title == "" {
@@ -107,11 +119,26 @@ func (r *Runner) CreateIssue(repoKey, bugID, title, body string) (string, error)
 		return "", errors.New("the issue's text is longer than 60000 characters")
 	}
 	r.mu.Lock()
-	if r.repos[repoKey] == nil || r.bugListLocked(repoKey).find(bugID) == nil {
+	b := r.bugListLocked(repoKey).find(bugID)
+	if r.repos[repoKey] == nil || b == nil {
 		r.mu.Unlock()
 		return "", ErrNotFound
 	}
+	key := repoKey + "/" + b.ID
+	if b.Issue != "" || r.issuing[key] {
+		r.mu.Unlock()
+		return "", &ErrIssueExists{URL: b.Issue}
+	}
+	if r.issuing == nil {
+		r.issuing = map[string]bool{}
+	}
+	r.issuing[key] = true
 	r.mu.Unlock()
+	defer func() {
+		r.mu.Lock()
+		delete(r.issuing, key)
+		r.mu.Unlock()
+	}()
 	st, err := r.GitHub(repoKey)
 	if err != nil {
 		return "", err
@@ -148,8 +175,7 @@ func (r *Runner) CreateIssue(repoKey, bugID, title, body string) (string, error)
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	b := r.bugListLocked(repoKey).find(bugID)
-	if b == nil {
+	if b = r.bugListLocked(repoKey).find(bugID); b == nil {
 		return url, nil
 	}
 	b.Issue = url

@@ -350,3 +350,39 @@ func TestTriageSurvivesAReanalysis(t *testing.T) {
 		t.Fatalf("the triaged bug no run reports any longer: %+v", b)
 	}
 }
+
+// A selection's description names its cells once.
+func TestASelectionDescribesItsCellsOnce(t *testing.T) {
+	for _, c := range []struct {
+		sel  Selection
+		want string
+	}{
+		{Selection{}, "everything"},
+		{Selection{Cells: []string{"web/a@x"}}, "cell web/a@x"},
+		{Selection{Areas: []string{"web"}, Cells: []string{"web/a@x", "web/b@x", "web/c@x"}}, "areas web; cells web/a@x, web/b@x, web/c@x"},
+		{Selection{Cells: []string{"a@1", "b@1", "c@1", "d@1", "e@1"}, ProblemsOf: "r-1"}, "cells a@1, b@1 and 3 more; problems of r-1"},
+	} {
+		if got := c.sel.Describe(); got != c.want {
+			t.Errorf("Describe(%+v) = %q, want %q", c.sel, got, c.want)
+		}
+	}
+}
+
+// A bug's cell that its last run did not run comes from the newest run
+// that did, and its row names that run: the page reads its steps there.
+func TestABugsCellsNameTheirRun(t *testing.T) {
+	r, _ := newRunner(t, newFakeHost())
+	const repo = "shop-1"
+	one := synth(t, r, repo, map[string]string{"web/a@x": "fail"}, 1000)
+	two := synth(t, r, repo, map[string]string{"web/z@x": "fail"}, 1000)
+	three := synth(t, r, repo, map[string]string{"web/a@x": "fail"}, 1000)
+	bugsOf(t, r, three, testtools.Bug{Title: "Both", Severity: "major", Cells: []string{"web/a@x", "web/z@x"}})
+	r.merge(three)
+	d, err := r.Bug(repo, "B-1")
+	if err != nil || len(d.Cells) != 2 {
+		t.Fatalf("detail: %+v %v", d, err)
+	}
+	if d.Cells[0].CellID != "web/a@x" || d.Cells[0].Run != three.ID || d.Cells[1].CellID != "web/z@x" || d.Cells[1].Run != two.ID {
+		t.Fatalf("cells: %s in %s, %s in %s (runs %s %s %s)", d.Cells[0].CellID, d.Cells[0].Run, d.Cells[1].CellID, d.Cells[1].Run, one.ID, two.ID, three.ID)
+	}
+}

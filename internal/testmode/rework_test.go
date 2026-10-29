@@ -2,6 +2,7 @@ package testmode
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -655,6 +656,27 @@ esac
 	if _, err := r.CreateIssue(key.Key, "B-1", " ", ""); err == nil {
 		t.Fatal("an issue without a title")
 	}
+	// A bug with an issue gets no second one, and the link stays; nor does
+	// a bug whose issue is being made.
+	var exists *ErrIssueExists
+	if _, err := r.CreateIssue(key.Key, "b-1", "Again", ""); !errors.As(err, &exists) || exists.URL != url {
+		t.Fatalf("a second issue: %v", err)
+	}
+	os.Remove(got + ".args")
+	r.mu.Lock()
+	r.issuing[key.Key+"/B-1"] = true
+	r.bugListLocked(key.Key).find("B-1").Issue = ""
+	r.mu.Unlock()
+	if _, err := r.CreateIssue(key.Key, "B-1", "Twice", ""); !errors.As(err, &exists) || exists.URL != "" {
+		t.Fatalf("an issue while one is made: %v", err)
+	}
+	if _, err := os.Stat(got + ".args"); err == nil {
+		t.Fatal("gh was run again")
+	}
+	r.mu.Lock()
+	delete(r.issuing, key.Key+"/B-1")
+	r.bugListLocked(key.Key).find("B-1").Issue = url
+	r.mu.Unlock()
 	for url, slug := range map[string]string{"https://github.com/acme/shop.git": "acme/shop", "https://x:tok@github.com/a/b": "a/b",
 		"ssh://git@github.com/a/b.git": "a/b", "https://gitlab.com/a/b": "", "git@github.com:a/b/c": ""} {
 		if got := githubSlug(url); got != slug {

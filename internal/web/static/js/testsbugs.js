@@ -20,7 +20,7 @@
 // note is free text, saved with its own button: saving every keystroke
 // would write the bug's history full.
 
-import { api, errorMessage, toast } from './api.js';
+import { api, errorMessage, toast, HttpError } from './api.js';
 import { DS, M, html, raw, icon, morph, faces } from './ui.js';
 import { markdown } from './md.js';
 import * as V from './testsview.js';
@@ -101,12 +101,13 @@ export function mount(ctx) {
 
   // readSteps reads the failing steps of a bug's first cells, which the
   // cards show under their screenshots.
+  // A cell is of the bug's last run, or of the newest run that has it when
+  // that run does not (row.run).
   function readSteps(data) {
-    const run = data.bug.last_run;
     for (const row of (data.cells || []).slice(0, STEPS_READ)) {
       if (steps.has(row.id) || V.passed(row.final)) continue;
       steps.set(row.id, null);
-      V.attemptView(run, row.id).then((view) => {
+      V.attemptView(row.run || data.bug.last_run, row.id).then((view) => {
         steps.set(row.id, V.problemSteps(view));
         if (state.route.bug === data.bug.id) ctx.redraw('bugs');
       }, () => steps.delete(row.id));
@@ -179,17 +180,24 @@ export function mount(ctx) {
       || (b.last_number || 0) - (a.last_number || 0) || num(a.id) - num(b.id));
   }
 
+  // wired is the elements a listener was bound to, which morph keeps.
+  const wired = new WeakSet();
+
   function renderList(panel) {
     if (drawn !== 'list') {
       drawn = 'list';
       morph(panel, listFrame());
       const search = $('bgSearch');
       search.value = filter.q;
-      let typing = 0;
-      search.addEventListener('input', () => {
-        clearTimeout(typing);
-        typing = setTimeout(() => { filter.q = search.value.trim(); ctx.redraw('bugs'); }, TYPE_PAUSE);
-      });
+      // morph keeps the field when the list is drawn again: bound once.
+      if (!wired.has(search)) {
+        wired.add(search);
+        let typing = 0;
+        search.addEventListener('input', () => {
+          clearTimeout(typing);
+          typing = setTimeout(() => { filter.q = search.value.trim(); ctx.redraw('bugs'); }, TYPE_PAUSE);
+        });
+      }
     }
     const box = $('bgList');
     if (!list || !list.bugs) {
@@ -407,12 +415,19 @@ export function mount(ctx) {
     return run ? V.runName(run, { name: false }) : bug.last_number ? 'Run ' + bug.last_number : 'its last run';
   }
 
+  // rowRunName names the run a cell of the bug is shown from.
+  function rowRunName(bug, r) {
+    if (!r.run || r.run === bug.last_run) return lastRunName(bug);
+    const run = ctx.runOf(r.run);
+    return run ? V.runName(run, { name: false }) : 'an earlier run';
+  }
+
   function cellCard(bug, r) {
-    const run = bug.last_run;
+    const run = r.run || bug.last_run;
     const found = steps.get(r.id);
     const first = found && found[0];
     const verdict = r.final ? V.verdictWord(r.final) : V.attemptWord(r.state);
-    const words = [r.title, V.dimsWords(r.dims) || r.cell, verdict + ' in ' + lastRunName(bug), first ? 'step ' + first.n + ': ' + first.observed : ''].filter(Boolean).join(', ');
+    const words = [r.title, V.dimsWords(r.dims) || r.cell, verdict + ' in ' + rowRunName(bug, r), first ? 'step ' + first.n + ': ' + first.observed : ''].filter(Boolean).join(', ');
     return html`<div class="ds-card ds-card--filled ds-card--interactive so-tests-live__card" role="listitem" data-ds-key="${'c' + r.id}">
       <div class="so-tests-live__shot">${r.shot
         ? html`<img src="${V.paths.file(run, r.id, r.shot)}" alt="${'Screenshot of ' + (first ? 'its failing step ' + first.n : 'the cell')}" loading="lazy" decoding="async">`
@@ -647,7 +662,7 @@ export function mount(ctx) {
   // steps, where it was seen, and the way back to it on this Socrates.
   async function issueBody(bug, data) {
     const rows = data.cells || [];
-    const views = await Promise.all(rows.slice(0, 10).map((r) => V.attemptView(bug.last_run, r.id).catch(() => null)));
+    const views = await Promise.all(rows.slice(0, 10).map((r) => V.attemptView(r.run || bug.last_run, r.id).catch(() => null)));
     const runs = (bug.first_number && bug.last_number && bug.first_number !== bug.last_number)
       ? 'Run ' + bug.first_number + '–' + bug.last_number : 'Run ' + (bug.last_number || bug.first_number || '?');
     const lines = [];
@@ -734,14 +749,22 @@ export function mount(ctx) {
     cancel.setAttribute('aria-disabled', 'true');
     cancel.setAttribute('data-tip', 'Wait until GitHub answers');
     let url = '';
+    let had = false;
     try {
       await M.busy(button, (async () => {
         const res = await api(V.paths.bugIssue(state.repo, id), { method: 'POST', body: { title, body }, timeout: 90000, attempts: 1 });
         url = res.url;
       })(), { done: false });
     } catch (e) {
-      err(errorMessage(e));
-      return;
+      // 409: the bug has an issue already (made elsewhere meanwhile), whose
+      // link the answer ends with; or one is being made.
+      const existing = e instanceof HttpError && e.status === 409 && /(https:\/\/\S+)$/.exec(errorMessage(e));
+      if (!existing) {
+        err(errorMessage(e));
+        return;
+      }
+      url = existing[1];
+      had = true;
     } finally {
       issueDialog.removeAttribute('data-ds-busy');
       cancel.removeAttribute('aria-disabled');
@@ -752,7 +775,8 @@ export function mount(ctx) {
     issuePrefill = { title, body };
     await DS.overlay.close(issueDialog, { reason: 'confirm' });
     const n = V.issueNumber(url);
-    toast((n ? 'Issue #' + n : 'The issue') + ' is on GitHub.', 'success', { action: { label: 'Open', run: () => window.open(url, '_blank', 'noopener') } });
+    toast(had ? id + ' has ' + (n ? 'issue #' + n : 'an issue') + ' already: no second one was made.' : (n ? 'Issue #' + n : 'The issue') + ' is on GitHub.',
+      had ? 'info' : 'success', { action: { label: 'Open', run: () => window.open(url, '_blank', 'noopener') } });
     const d = details.get(id);
     if (d) d.stale = true;
     loadBug(id);
@@ -777,9 +801,10 @@ export function mount(ctx) {
       const cellBtn = t.closest('[data-bv-cell]');
       if (cellBtn) {
         const d = details.get(id);
-        const run = d && d.data ? d.data.bug.last_run : '';
-        const list = d && d.data ? (d.data.cells || []).map((r) => ({ attempt: r.id, run })) : [];
-        ctx.openCell(cellBtn.dataset.bvCell, run, list);
+        const last = d && d.data ? d.data.bug.last_run : '';
+        const list = d && d.data ? (d.data.cells || []).map((r) => ({ attempt: r.id, run: r.run || last })) : [];
+        const here = list.find((x) => x.attempt === cellBtn.dataset.bvCell);
+        ctx.openCell(cellBtn.dataset.bvCell, here ? here.run : last, list);
         return;
       }
       if (t.closest('#bvFix')) {

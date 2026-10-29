@@ -124,6 +124,8 @@ type Runner struct {
 	// goroutine starts after that.
 	loaded bool
 	closed bool
+	// issuing is the bugs (repo/id) whose GitHub issue is being made.
+	issuing map[string]bool
 	// telling is the runs whose chat is being sent their results, and
 	// tellTries how often that failed (tellStarterLocked).
 	telling   map[string]bool
