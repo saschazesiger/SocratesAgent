@@ -104,6 +104,8 @@ const POLL_SLOW = 15000;
  *                        activity, in a notification's words: a chat's limit
  *   phase(frame)         a phase of a spoken Status being made, {id, phase,
  *                        text}: a chat's, which has no terminal socket
+ *   tests(frame)         a test run changed: {repo, run, state, counts,
+ *                        name, created_at}, or {repo, run, deleted: true}
  *   fresh()              a pong came back: the state on the page is the
  *                        server's as of the ping (stateAt)
  *   status(status)       'live' | 'connecting' | 'offline', whenever it moves,
@@ -389,7 +391,10 @@ export function mountEvents(ctx) {
   // Each handler is guarded on its own: a frame the page cannot draw is a
   // bug in the page, and it must not take the stream - and every frame after
   // it - down with it.
+  // A page that has no use for a kind of frame (the Tests page reads only
+  // `tests`) leaves its handler out.
   function hand(name, ...args) {
+    if (typeof ctx[name] !== 'function') return;
     try { ctx[name](...args); } catch (err) { setTimeout(() => { throw err; }, 0); }
   }
 
@@ -435,6 +440,9 @@ export function mountEvents(ctx) {
         break;
       case 'status':
         if (frame.id) hand('phase', frame);
+        break;
+      case 'tests':
+        if (frame.run) hand('tests', frame);
         break;
       case 'pong': {
         const sent = pings.get(frame.id);

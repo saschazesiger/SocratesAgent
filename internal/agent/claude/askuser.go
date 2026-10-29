@@ -8,7 +8,6 @@ import (
 
 	"github.com/saschazesiger/SocratesAgent/internal/agent"
 	"github.com/saschazesiger/SocratesAgent/internal/agent/askuser"
-	"github.com/saschazesiger/SocratesAgent/internal/agent/chattools"
 )
 
 // AskTool is the name the model knows ask_user by in Claude Code: an MCP
@@ -18,13 +17,6 @@ const AskTool = "mcp__" + askuser.ServerName + "__" + askuser.Name
 // chatsPrefix is what Claude Code puts before the name of a tool of the
 // socrates server.
 const chatsPrefix = "mcp__" + askuser.ServerName + "__"
-
-// chatsGuidance is the system-prompt text about the chat tools, for a chat
-// that has them. They are reached this way only: the CLI's own messaging
-// between sessions is off (cliEnv).
-var chatsGuidance = chattools.Guidance(chatsPrefix) +
-	"\nLoad them with ToolSearch (select:" + chatsPrefix + chattools.List + "," + chatsPrefix + chattools.Read +
-	"," + chatsPrefix + chattools.Send + ") when you need them."
 
 // askGuidance is the system-prompt text every chat gets (REBUILD.md §5.3).
 // Claude Code defers MCP tools behind ToolSearch, which the model finds on
@@ -55,8 +47,9 @@ func newAskServer(a *Adapter) *askServer {
 	a.mu.Lock()
 	chats := a.spec.ChatTools
 	a.mu.Unlock()
-	// The chat tools are on the same server: they reach Socrates directly
-	// and return at once, so they need no wait of their own.
+	// The chat tools (a test session's: its role's test tools) are on the
+	// same server: they reach Socrates directly and return at once, so they
+	// need no wait of their own.
 	s.mcp = &askuser.MCP{Ask: s.ask, Chats: chats}
 	return s
 }

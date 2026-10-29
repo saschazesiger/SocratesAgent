@@ -177,7 +177,8 @@ func (h *accountHub) refreshed(a store.Account) store.Account {
 
 // chatCounts is how many chats run on each account, by id.
 func (h *accountHub) chatCounts() (map[string]int, error) {
-	rows, err := h.srv.store.ListSessions()
+	// The test sessions run on accounts too: one is not deleted under them.
+	rows, err := h.srv.store.ListAllSessions()
 	if err != nil {
 		return nil, err
 	}

@@ -99,7 +99,7 @@ func newChatHub(s *Server) *chatHub {
 // yet acknowledged. Every other chat stays parked until it is sent something,
 // and is known by its brief alone: its history is read when it is wanted.
 func (h *chatHub) start() {
-	rows, err := h.srv.store.ListSessions()
+	rows, err := h.srv.store.ListAllSessions()
 	if err != nil {
 		log.Printf("chats: could not read the sessions: %v", err)
 		return
@@ -303,6 +303,9 @@ type chatPeer struct {
 	lineTimer *time.Timer
 	// gone is a chat being deleted: nothing more is written for it.
 	gone bool
+	// test is whether the chat is a test session (isTest), read once.
+	testOnce sync.Once
+	test     bool
 }
 
 func (p *chatPeer) summary() agent.Summary {
@@ -536,6 +539,11 @@ func (p *chatPeer) launch(ctx context.Context) error {
 	entry, _ := p.hub.srv.Settings().Harnesses.Entry(row.Harness)
 	spec.Binary = strings.TrimSpace(entry.Binary)
 	spec.Instructions = p.hub.srv.Settings().Harnesses.ModelInstructions(row.Harness)
+	if ref := row.TestRef(); ref != nil {
+		if err := p.testSpec(row, ref, &spec); err != nil {
+			return fmt.Errorf("the test session: %w", err)
+		}
+	}
 	return p.hub.launcher.Launch(lctx, spec)
 }
 
@@ -723,6 +731,15 @@ func (p *chatPeer) apply(ev agent.Event) {
 func (p *chatPeer) report() {
 	p.reportMu.Lock()
 	defer p.reportMu.Unlock()
+	// A test session's activity is its run's business: no push, no title,
+	// no verdict, nothing on Home.
+	if p.isTest() {
+		p.mu.Lock()
+		s := p.brief.Summary
+		p.mu.Unlock()
+		p.testObserve(s)
+		return
+	}
 	p.mu.Lock()
 	s := p.brief.Summary
 	if s.Activity == p.reported && s.Asked == p.asked {

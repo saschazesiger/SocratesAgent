@@ -75,6 +75,8 @@
 //	                 (for S seconds, interruptible) and a summary
 //	anything else    "you said: <text>"
 //
+// A test session's messages run the test mode's scripts (testcell.go).
+//
 // <this binary>.scripts.json, a JSON object of message → script, runs a
 // script for a message that names none: the README's pictures
 // (e2e/shots.mjs, which writes the file beside the fake it built) ask in
@@ -596,6 +598,9 @@ func (t *turnRun) script() {
 	text := strings.TrimSpace(t.job.text)
 	if line, ok := scripted()[text]; ok {
 		text = line
+	}
+	if t.testSession(text) {
+		return
 	}
 	word, rest, _ := strings.Cut(text, " ")
 	fields := strings.Fields(rest)

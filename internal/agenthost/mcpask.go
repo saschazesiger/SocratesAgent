@@ -49,7 +49,8 @@ func MCPAskMain(args []string, version string) int {
 }
 
 // ServeMCPAsk serves ask_user, and the chat tools at chats when it is
-// usable, on one MCP stdio stream until in ends; version is the server's in
+// usable (a test session's role's tools instead of both, chats.Test), on
+// one MCP stdio stream until in ends; version is the server's in
 // initialize. Requests run concurrently, each on a
 // goroutine of its own because a tools/call blocks, under a context that is
 // registered before the next line is read: a notifications/cancelled, read
@@ -64,9 +65,16 @@ func ServeMCPAsk(ctx context.Context, sock, version string, chats chattools.Endp
 		defer wmu.Unlock()
 		_, _ = out.Write(append(line, '\n'))
 	}
-	instructions := askuser.Guidance(MCPAskTool)
-	if chats.Usable() {
-		instructions += "\n\n" + chattools.Guidance(askuser.ServerName+"_")
+	// A test session has nobody to ask: its role's protocol replaces
+	// ask_user's guidance and the chat tools'.
+	var instructions string
+	switch {
+	case chats.Test():
+		instructions = chats.Guidance(askuser.ServerName+"_", false)
+	case chats.Usable():
+		instructions = askuser.Guidance(MCPAskTool) + "\n\n" + chats.Guidance(askuser.ServerName+"_", false)
+	default:
+		instructions = askuser.Guidance(MCPAskTool)
 	}
 	m := &askuser.MCP{
 		Version:      version,

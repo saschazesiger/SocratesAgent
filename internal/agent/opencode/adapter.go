@@ -971,9 +971,17 @@ func (a *Adapter) bodyLocked(j job, oc string) (any, error) {
 		}
 		// OpenCode adds a prompt's system to its own for that prompt's
 		// turn, so every prompt carries the instructions of the model it
-		// runs on, and a switch needs nothing more.
-		if p := agent.ModelPrompt(a.model, a.spec.InstructionsFor(a.model)); p != "" {
-			body["system"] = p
+		// runs on, and a switch needs nothing more; a test session's
+		// catalog instructions follow them.
+		system := agent.ModelPrompt(a.model, a.spec.InstructionsFor(a.model))
+		if p := strings.TrimSpace(a.spec.TestInstructions); p != "" {
+			if system != "" {
+				system += "\n\n"
+			}
+			system += p
+		}
+		if system != "" {
+			body["system"] = system
 		}
 		return body, nil
 	case jobShell:

@@ -1,0 +1,191 @@
+/*
+ * so-tests.css: the project components of the Tests page (tests.html,
+ * docs/design/TEST-MODE.md). They read tokens only (--ds-* and the --so-*
+ * of theme.css), are unlayered, and never restyle a .ds-* component.
+ *
+ *   .so-tests             the page under its head: the toolbar, the active
+ *                         run, the tabs and their panels, in the page's rhythm
+ *   .so-tests__panel      a tab's panel: its cards one under the other
+ *   .so-tests__stack      a column of blocks in a card or a sheet
+ *   .so-tests__dims       the filters of the dimensions, in the filter row
+ *   .so-tests__test       a test's head cell: its title, priority and tags
+ *   .so-tests__cells      the cells of a test in one column of the table
+ *   .so-tests__cell       one cell: its verdict chip and the other
+ *                         dimensions' values, pressed to open it
+ *   .so-tests__history    a test's verdicts over its last runs (.so-mark)
+ *   .so-tests__shots      a step's screenshots as thumbnails
+ *   .so-shotview          a screenshot at full size
+ */
+
+.so-tests,
+.so-tests__panel,
+.so-tests__stack {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.so-tests {
+  gap: var(--ds-space-5);
+}
+
+.so-tests__panel {
+  gap: var(--ds-space-5);
+  padding-top: var(--ds-space-2);
+}
+
+.so-tests__stack {
+  gap: var(--ds-space-4);
+}
+
+.so-tests__stack > *,
+.so-tests__panel > * {
+  margin-block: 0;
+}
+
+/* The dimension filters are fields of the filter row, like the others. */
+.so-tests__dims {
+  display: contents;
+}
+
+/* ── The results table ─────────────────────────────────────────────── */
+
+.so-tests__test {
+  min-inline-size: 12rem;
+  max-inline-size: 22rem;
+  text-align: start;
+  white-space: normal;
+}
+
+/* The repository and the run are named in full where there is room. */
+.so-tests__pick {
+  min-inline-size: min(100%, 18rem);
+}
+
+.so-tests__sub {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--ds-space-1);
+  margin-top: var(--ds-space-1);
+}
+
+.so-tests__cells {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--ds-space-1);
+}
+
+.so-tests__cell {
+  display: inline-flex;
+  flex-wrap: nowrap;
+  white-space: nowrap;
+  align-items: center;
+  gap: var(--ds-space-1);
+  padding: var(--ds-space-1);
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: start;
+  cursor: pointer;
+}
+
+.so-tests__mark {
+  display: inline-flex;
+  color: var(--ds-text-2);
+}
+
+.so-tests__links {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--ds-space-1);
+}
+
+/* A verdict as a glyph: its shape says which, its colour only repeats it. */
+.so-tests__history {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: var(--ds-space-1);
+}
+
+.so-mark {
+  display: inline-flex;
+  color: var(--ds-text-2);
+}
+
+.so-mark--pass {
+  color: var(--ds-success);
+}
+
+.so-mark--issue {
+  color: var(--ds-warning);
+}
+
+.so-mark--fail {
+  color: var(--ds-error);
+}
+
+/* ── The cell ──────────────────────────────────────────────────────── */
+
+.so-tests__verdict {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--ds-space-2);
+}
+
+.so-tests__role {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-space-3);
+}
+
+.so-tests__role > * {
+  margin-block: 0;
+}
+
+.so-tests__shots {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(7rem, 1fr));
+  gap: var(--ds-space-2);
+  margin-top: var(--ds-space-2);
+}
+
+.so-tests__shot {
+  display: block;
+  padding: 0;
+  border: 1px solid var(--ds-line);
+  border-radius: var(--ds-radius-sm);
+  background: var(--ds-surface-low);
+  overflow: hidden;
+  cursor: zoom-in;
+}
+
+.so-tests__shot img {
+  display: block;
+  inline-size: 100%;
+  block-size: 9rem;
+  object-fit: cover;
+  object-position: top;
+}
+
+.so-shotview {
+  display: grid;
+  place-items: center;
+}
+
+.so-shotview__figure {
+  display: grid;
+  justify-items: center;
+  gap: var(--ds-space-2);
+  margin: 0;
+}
+
+.so-shotview__img {
+  display: block;
+  max-inline-size: 100%;
+  max-block-size: calc(100dvh - 10rem);
+  object-fit: contain;
+}

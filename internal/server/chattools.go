@@ -169,6 +169,16 @@ func (t *chatToolServer) handle(w http.ResponseWriter, r *http.Request) {
 		answer(http.StatusOK, "This chat is gone.", true)
 		return
 	}
+	// A test session has the test tools and no chat tools (testmode).
+	if row.IsTest() {
+		if t.srv.tests == nil {
+			answer(http.StatusOK, "The test runner is not running.", true)
+			return
+		}
+		text, isErr := t.srv.tests.Call(r.Context(), row.ID, req.Tool, req.Arguments)
+		answer(http.StatusOK, text, isErr)
+		return
+	}
 	var res chattools.Response
 	switch req.Tool {
 	case chattools.List:

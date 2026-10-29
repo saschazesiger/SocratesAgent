@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/saschazesiger/SocratesAgent/internal/agent"
+	"github.com/saschazesiger/SocratesAgent/internal/agent/chattools"
 )
 
 // Call is one request codex sent the adapter, as a Handler sees it.
@@ -102,7 +103,9 @@ func dynamicToolSpecs() []json.RawMessage {
 	return out
 }
 
-func handlerFor(method string, params json.RawMessage) Handler {
+// handlerFor is the handler of a server request; chats is the chat's
+// endpoint, whose tools (Endpoint.Has) are dynamic tools too.
+func handlerFor(method string, params json.RawMessage, chats chattools.Endpoint) Handler {
 	hooksMu.Lock()
 	defer hooksMu.Unlock()
 	if method == "item/tool/call" {
@@ -113,7 +116,7 @@ func handlerFor(method string, params json.RawMessage) Handler {
 		if t, ok := tools[p.Tool]; ok {
 			return t.Handle
 		}
-		if isChatTool(p.Tool) {
+		if chats.Has(p.Tool) {
 			return chatToolCall
 		}
 	}
@@ -169,12 +172,12 @@ func (a *adapter) serverRequest(fr *frame) {
 		t = nil
 	}
 	a.calls[key] = &call{turn: t, cancel: cancel}
-	ending := a.ending
+	ending, chats := a.ending, a.spec.ChatTools
 	a.mu.Unlock()
 	if ending {
 		cancel()
 	}
-	h := handlerFor(fr.Method, fr.Params)
+	h := handlerFor(fr.Method, fr.Params, chats)
 	go func() {
 		defer func() {
 			cancel()

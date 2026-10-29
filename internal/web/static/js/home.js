@@ -17,7 +17,7 @@
 // The module draws and nothing else: what a tap does - open a session, open
 // the questions, start a new one - is the page's.
 
-import { setClass } from './api.js';
+import { api, setClass } from './api.js';
 import { M, html, raw, icon, morph, flipMorph } from './ui.js';
 import { agentMarkHtml } from './logos.js';
 import { isTool } from './harnesses.js';
@@ -40,6 +40,17 @@ const STALE_AFTER = 30000;
 // it gives is counted in seconds, and a count that only moved every fifteen
 // would be the stale number this line is there to warn about.
 const CONN_EVERY = 2000;
+
+// A burst of test frames (every cell that changes sends one) is read once,
+// this long after the last of them.
+const TESTS_SETTLE = 800;
+
+// The words of a test run's state on its Home card, when it is not simply
+// running.
+const TEST_RUN_WORDS = {
+  preparing: 'Preparing', waiting: 'Waiting for another run', finishing: 'Reviewing and analysing',
+  paused: 'Paused',
+};
 
 const LIVE_STATES = new Set(['running', 'starting', 'resuming']);
 const STOPPED_STATES = new Set(['needs_resume', 'exited', 'failed']);
@@ -348,6 +359,7 @@ export function mountHome(ctx) {
             <span class="ds-tile__note">${card.none}</span>
           </button>`)}</div>
         </section>
+        <section class="ds-stack so-home__tests" aria-label="Test runs" hidden></section>
         <section class="so-home__sessions" aria-labelledby="homeListTitle">
           <div class="so-home__list-head">
             <h2 class="so-home__list-title" id="homeListTitle">Needs you</h2>
@@ -381,6 +393,7 @@ export function mountHome(ctx) {
       qAnswer: $('.so-home__q-answer'),
       tiles,
       segs: [...host.querySelectorAll('.so-home__seg')],
+      tests: $('.so-home__tests'),
       listTitle: $('.so-home__list-title'),
       list: $('.so-home__list'),
       empty: $('.so-home__empty'),
@@ -409,6 +422,63 @@ export function mountHome(ctx) {
       case 'jobs': if (card && ctx.openJobs) ctx.openJobs(card.dataset.id); break;
       default: break;
     }
+  }
+
+  /* ------------------------------------------------------ the test runs */
+
+  // A test run that is going on is one card (TEST-MODE.md, "The Tests
+  // page"): how far it is and what its cells are doing, opening the run on
+  // the Tests page. Its sessions are not on Home; the run is.
+  let testRuns = [];
+  let testsTimer = 0;
+  let testsAsked = 0;
+
+  async function loadTests() {
+    const asked = ++testsAsked;
+    try {
+      const data = await api('/api/tests/active', { attempts: 1, timeout: 12000 });
+      if (asked !== testsAsked) return;
+      testRuns = Array.isArray(data && data.runs) ? data.runs : [];
+    } catch {
+      return; // the cards stay as they were; the next frame asks again
+    }
+    drawTests();
+  }
+
+  function testsSoon() {
+    clearTimeout(testsTimer);
+    testsTimer = setTimeout(loadTests, TESTS_SETTLE);
+  }
+
+  function testRunWords(run) {
+    const c = run.counts || {};
+    const states = c.states || {};
+    const parts = [(c.done || 0) + ' of ' + (c.cells || 0) + ' cells'];
+    const running = (states.running || 0) + (states.starting || 0);
+    if (running) parts.push(running + ' running');
+    if (states.waiting) parts.push(states.waiting + ' waiting');
+    if (TEST_RUN_WORDS[run.state]) parts.push(TEST_RUN_WORDS[run.state]);
+    return parts.join(' · ');
+  }
+
+  function drawTests() {
+    if (!built) return;
+    const node = built.tests;
+    node.hidden = !testRuns.length;
+    morph(node, html`${testRuns.map((run) => {
+      const c = run.counts || {};
+      const folder = String(run.path || '').replace(/\/+$/, '').split('/').pop() || run.repo;
+      const title = 'Tests · ' + folder + (run.name ? ' · ' + run.name : '');
+      const share = c.cells ? Math.min(1, (c.done || 0) / c.cells) : 0;
+      const href = '/tests#repo=' + encodeURIComponent(run.repo) + '&run=' + encodeURIComponent(run.id);
+      return html`<div class="ds-card ds-card--interactive" data-ds-key="${run.id}">
+        <h2 class="ds-card__title">${raw(icon('checkCircle', 20))}<a class="ds-card__action" href="${href}">${title}</a></h2>
+        <p class="ds-muted">${testRunWords(run)}</p>
+        <div class="ds-progress ds-progress--flat" style="${'--ds-progress: ' + share.toFixed(4)}">
+          <div class="ds-progress__track" role="progressbar" aria-label="${title}" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.round(share * 100)}"><div class="ds-progress__bar"></div></div>
+        </div>
+      </div>`;
+    })}`);
   }
 
   function choose(key) {
@@ -794,6 +864,7 @@ export function mountHome(ctx) {
       }
       if (!timer) timer = setInterval(render, REDRAW_EVERY);
       render();
+      loadTests();
     },
     hide() {
       host.hidden = true;
@@ -802,5 +873,7 @@ export function mountHome(ctx) {
     },
     shown: () => !host.hidden,
     render,
+    /** testsFrame is told of every change of a test run (events.js `tests`). */
+    testsFrame: () => testsSoon(),
   };
 }

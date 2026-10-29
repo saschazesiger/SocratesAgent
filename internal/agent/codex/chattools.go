@@ -10,16 +10,15 @@ import (
 )
 
 // The chat tools in Codex: dynamic tools of a thread started for a chat
-// that has them (StartSpec.ChatTools), beside ask_user. A thread keeps the
-// tools it was started with, so a chat's thread from before has none.
+// that has them (StartSpec.ChatTools), beside ask_user; in a test session
+// the role's test tools instead of both (chattools.Endpoint.Tools). A
+// thread keeps the tools it was started with, so a chat's thread from
+// before has none.
 
-// chatsGuidance is what the developer instructions say about them.
-var chatsGuidance = chattools.Guidance("")
-
-// chatToolSpecs is the chat tools as DynamicToolSpecs.
-func chatToolSpecs() []json.RawMessage {
+// chatToolSpecs is the endpoint's tools as DynamicToolSpecs.
+func chatToolSpecs(e chattools.Endpoint) []json.RawMessage {
 	var out []json.RawMessage
-	for _, d := range chattools.Tools() {
+	for _, d := range e.Tools() {
 		raw, _ := json.Marshal(map[string]any{"type": "function", "name": d.Name,
 			"description": d.Description, "inputSchema": d.Schema})
 		out = append(out, raw)
@@ -27,14 +26,19 @@ func chatToolSpecs() []json.RawMessage {
 	return out
 }
 
-// isChatTool is whether a dynamic tool call is one of the chat tools.
-func isChatTool(name string) bool {
-	for _, d := range chattools.Tools() {
-		if d.Name == name {
-			return true
+// withoutTool is specs without the DynamicToolSpec of that name.
+func withoutTool(specs []json.RawMessage, name string) []json.RawMessage {
+	var out []json.RawMessage
+	for _, raw := range specs {
+		var spec struct {
+			Name string `json:"name"`
 		}
+		if json.Unmarshal(raw, &spec) == nil && spec.Name == name {
+			continue
+		}
+		out = append(out, raw)
 	}
-	return false
+	return out
 }
 
 // chatToolCall makes the call through the chat's endpoint and gives the

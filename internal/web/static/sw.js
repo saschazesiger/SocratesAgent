@@ -212,8 +212,10 @@ const NOTE_BADGE = '/static/img/badge-96.png';
 // targetOf is the address a tap on a piece of news opens: the question for a
 // question, the session for a session that finished or was started, and
 // Home for anything else. The same forms a cold tab reads its route from
-// (session.js `routeOf`).
+// (session.js `routeOf`). A test run that ended is news of the Tests page:
+// its id is already that page's address ("repo=…&run=…", tests.js).
 function targetOf(id, kind) {
+  if (kind === 'testrun') return id ? '/tests#' + id : '/tests';
   if (!id) return '/';
   if (kind === 'question') return '/#q=' + encodeURIComponent(id);
   if (kind === 'finished' || kind === 'started') return '/#open=' + encodeURIComponent(id);
@@ -361,13 +363,28 @@ self.addEventListener('notificationclick', (event) => {
     };
     const tabs = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
     const pathOf = (client) => { try { return new URL(client.url).pathname; } catch { return ''; } };
+    const owned = new Set((await self.clients.matchAll({ type: 'window' })).map((client) => client.id));
+    // A test run is not the session page's to open: a tab on the Tests page,
+    // else any tab of Socrates, is taken to the run, else a new one opens.
+    if (kind === 'testrun') {
+      const tab = tabs.find((client) => owned.has(client.id) && pathOf(client) === '/tests')
+        || tabs.find((client) => owned.has(client.id));
+      if (tab && typeof tab.navigate === 'function') {
+        await focus(tab);
+        try {
+          await tab.navigate(url);
+          return;
+        } catch { /* a new window, then */ }
+      }
+      await self.clients.openWindow(url);
+      return;
+    }
     const app = tabs.find((client) => pathOf(client) === '/');
     if (app) {
       if (id) app.postMessage({ t: 'open', id, kind });
       await focus(app);
       return;
     }
-    const owned = new Set((await self.clients.matchAll({ type: 'window' })).map((client) => client.id));
     const other = tabs.find((client) => owned.has(client.id));
     if (other && typeof other.navigate === 'function') {
       await focus(other);

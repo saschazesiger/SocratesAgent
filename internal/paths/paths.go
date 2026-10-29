@@ -16,6 +16,7 @@
 //	profiles/<id>/            today's per-profile CLI state, until accounts replace it
 //	vscode/, vscode-extensions/  the editor's state per folder and its extensions
 //	backup.json               where the backup goes and its passphrase (not backed up)
+//	tests/<repo>/runs/<run>/  a repository's test runs: records, evidence, bugs
 //	run/                      sockets, locks, pids (not backed up)
 //	cache/                    anything that can be made again (not backed up)
 //
@@ -100,6 +101,16 @@ const (
 	// again from the journal whenever it does not match it, so it is not
 	// backed up.
 	ChatSummary = "summary.json"
+
+	// Tests holds the test runs of every repository with a test catalog
+	// (internal/testmode, docs/design/TEST-MODE.md): their records, evidence
+	// and screenshots, backed up. TestsRuntime is what a running test needs
+	// beside them and nothing after it - the vaults with the secrets, the
+	// tools' sockets, the run's installed copy of its tools - and TestsCache
+	// the installed tools kept for the next run.
+	Tests        = "tests"
+	TestsRuntime = Run + "/tests"
+	TestsCache   = Cache + "/tests"
 )
 
 // Redacted are files that are backed up without some of what they hold, as

@@ -14,6 +14,7 @@ import {
   killTmux, openRouterStub, fakeS3Switch, backupForm, prefixFor, sessionsOn, windowSize, scratchDir, PASSWORD, LIVE, SHOTS,
   tmuxSock, freePort, spawnServer, waitForHealth, STARTUP, REPO, agentProcessesOf,
 } from './harness.mjs';
+import { testmode } from './testmode.mjs';
 import http from 'node:http';
 import net from 'node:net';
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -473,7 +474,7 @@ async function pages() {
       await shot(s.page, 'pages-setup-' + tag);
 
       await setup(s.page, s.url);
-      for (const path of ['/', '/admin']) {
+      for (const path of ['/', '/admin', '/tests']) {
         s.errors.length = 0;
         await s.page.goto(s.url + path, { waitUntil: 'domcontentloaded' });
         await wait(1800);
@@ -13596,6 +13597,7 @@ const ALL = [
   ['chat-fresh', 'a chat\u2019s first message: one big field, its draft kept across a reload and on another device, a start time picked and cleared, a phone', chatfresh],
   ['chat-stream', 'a chat: streaming, Markdown, replay, queued, Stop, the draft, the palette, the model, the lines', chatstream],
   ['chat-restart', 'the server restarted mid-turn under a desk and a phone: the stream replays, the turn completes, nothing twice', chatrestart],
+  ['testmode', 'a test catalog run: the pool queue, the cells, the review, the analysis and the Tests page', testmode],
   ['chat-tools', 'tool rows, the diff viewer, a subagent, a workflow, and the task list pinned while it runs', chattools],
   ['chat-light', 'a chat read on a new device comes light, and what is opened is asked for: a workflow’s agents, a long output', chatlight],
   ['chat-fold', 'an answer\u2019s work folded in one line: what it does, then what it did, its steps and tokens; the answer and a question stand', chatfold],

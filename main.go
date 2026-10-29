@@ -72,6 +72,8 @@ func main() {
 		case "restore":
 			restoreCommand(args[1:])
 			return
+		case "tests":
+			os.Exit(testsCommand(args[1:]))
 		case "agent-host":
 			os.Exit(agenthost.Main(args[1:], version))
 		case "mcp-ask":
@@ -86,7 +88,8 @@ func main() {
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Socrates %s - chats with Claude Code, Codex and OpenCode, and a terminal for your shell\n\n", version)
 		fmt.Fprintf(os.Stderr, "Usage:\n  socrates [flags]        start the web server\n"+
-			"  socrates restore ...    restore a backup onto this machine (socrates restore -h)\n\nFlags:\n")
+			"  socrates restore ...    restore a backup onto this machine (socrates restore -h)\n"+
+			"  socrates tests check    validate a repository's test catalog (socrates tests -h)\n\nFlags:\n")
 		fs.PrintDefaults()
 	}
 	if err := fs.Parse(args); err != nil {

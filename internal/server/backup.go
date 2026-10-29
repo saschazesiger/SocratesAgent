@@ -64,7 +64,7 @@ func (s *Server) BackupExclusions() []string {
 	for _, p := range settings.Workspace.Presets {
 		candidates = append(candidates, p.Path)
 	}
-	if rows, err := s.store.ListSessions(); err == nil {
+	if rows, err := s.store.ListAllSessions(); err == nil {
 		for _, row := range rows {
 			if row.Workdir != "" {
 				candidates = append(candidates, row.Workdir)

@@ -362,3 +362,26 @@ Binding like the rest. Detail: `docs/design/DESIGN.md` §K and §L.
   replaces its one binary in place, while Claude Code's native updater switches versions
   atomically and is the fastest way to a fix.
 
+
+## Revision 10 — test mode, 2026-10-29
+
+The owner asked for a test mode per repository: a catalog of agent-run tests in the repository,
+run by Socrates, with the results kept and searchable. The specification and what was built are
+[TEST-MODE.md](TEST-MODE.md); the decisions:
+
+- **The catalog is the repository's, in `.socrates/tests/`**: `TESTS.md` for every test, a folder per
+  area with its `AREA.md`, one Markdown file per test (YAML front matter, the steps under `## Steps`),
+  and the tools in `tools/<name>/` with their `TOOL.md`.
+- **One agent session per cell** (a test on one value of each of its area's dimensions), with the
+  harness, model and effort set per role (cell agent, reviewer, analyst) and the accounts of each role
+  ticked (none ticked: all).
+- **Tools are command-line programs on the session's PATH**; their secrets come from a command the
+  tool names and reach the tool through a vault file, not the agent's environment or prompt.
+- **A tool's account is leased before the session starts**: a cell that finds no free account waits,
+  spending nothing, and starts by itself once one is free.
+- **A reviewer re-checks the doubtful cells, an analyst writes the bugs and conclusions, and a blocked
+  cell is retried once**; runs are started by hand only.
+- **Test sessions are chats their run owns**: off Home, the sidebar, push and the session list; their
+  transcript opens from the cell.
+- **The run's files are the truth and the only store** (no schema change): everything, screenshots
+  included, is backed up, and each repository keeps its last 20 runs unless one is pinned.

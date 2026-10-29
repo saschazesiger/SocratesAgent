@@ -117,7 +117,7 @@ The settings live in `/etc/socrates.env`:
 | `socrates-tmux.scope` | The Shell terminals |
 | `socrates-update.timer` | Nightly update: `journalctl -u socrates-update` |
 | `/etc/socrates.env` | Configuration (see above) |
-| `/var/lib/socrates` | **All data**: database, chats, accounts, transcripts, terminals, backup settings |
+| `/var/lib/socrates` | **All data**: database, chats, accounts, transcripts, terminals, test runs (`tests/`), backup settings |
 | `/usr/local/bin/socrates` | The binary |
 | `/usr/local/lib/socrates` | The updater |
 | `/opt/socrates` | Source, Go, Node, OpenCode, code-server |
@@ -125,11 +125,23 @@ The settings live in `/etc/socrates.env`:
 
 ---
 
+## 🧪 Test runs
+
+| | |
+| --- | --- |
+| 📂 **Where** | `<data>/tests/<repo>/runs/<run>/`: `run.json`, `plan.json`, the catalog as it ran, one `record.json` and `evidence/` per attempt, `bugs.json`, `conclusions.md` |
+| 🔑 **Secrets** | A tool's `secrets.command` runs as the Socrates service user in the repository root, when a run starts and again after a restart. The values stay in memory and in vault files under `<data>/run/tests/` (mode 0600, never backed up, removed when the cell ends) |
+| 🧰 **Tools** | Each run runs a copy of the catalog's tools, installed by their `setup` once per version under `<data>/cache/tests/tools/` |
+| 🧹 **Cleaning up** | Deleting a run on the Tests page deletes its sessions and files; old runs go by themselves beyond the repository's `keep_runs` |
+| ✅ **Check a catalog** | `socrates tests check /path/to/repo` |
+
+---
+
 ## 💾 Backup & restore
 
 Set it up under **Admin → Backup**. In short:
 
-- 📁 **What:** the whole data directory, i.e. database and key, `chats/`, `agents/`, `accounts/`, `terminals/`, `sessions/`, `vscode/`
+- 📁 **What:** the whole data directory, i.e. database and key, `chats/`, `agents/`, `accounts/`, `terminals/`, `sessions/`, `vscode/`, `tests/` (the test runs with their screenshots; each repository keeps its last 20 runs unless pinned)
 - 🚫 **Not included:** working directories (they live in git), caches, sockets, logs, and `backup.json` itself
 - 🧩 **How:** files are cut into 8 MiB chunks, and a chunk the bucket already has is never uploaded again. Databases are copied consistently while in use.
 - 🔐 **Encryption:** AES-256-GCM, with keys derived from your passphrase (PBKDF2-SHA256, 600 000 rounds). Even the chunk names reveal nothing. Only `meta.json` (salt and check value) is plain text.

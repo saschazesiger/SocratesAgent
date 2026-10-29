@@ -500,6 +500,7 @@ func (h *host) startAdapter(ctx context.Context, account string, env []string) e
 		ChatID: h.opts.ChatID, Workdir: h.spec.Workdir, StateDir: filepath.Join(h.dir, stateDir), DataDir: h.opts.DataDir,
 		Env: env, Account: account, Model: model, Effort: effort, ResumeID: resume, Held: held, Spawn: h.spawn,
 		Binary: h.spec.Binary, AskCommand: h.askCommand(), Instructions: h.spec.Instructions, MCPServers: h.chatMCP(env),
+		TestInstructions: h.spec.TestInstructions, ChatTools: h.spec.ChatTools,
 	}
 	sctx, cancel := context.WithTimeout(ctx, startWait)
 	defer cancel()

@@ -6,7 +6,10 @@ import (
 	"net"
 	"net/http"
 	"path/filepath"
+	"strings"
 	"testing"
+
+	"github.com/saschazesiger/SocratesAgent/internal/agent/testtools"
 )
 
 // A call reaches the server's socket with the chat's token and the tool's
@@ -42,5 +45,48 @@ func TestACallReachesTheServer(t *testing.T) {
 	}
 	if env := ep.Env(); env[EnvSocket] != sock || env[EnvToken] != "c1.seal" || (Endpoint{}).Env() != nil {
 		t.Fatalf("env %v", env)
+	}
+}
+
+// A test session's endpoint has its role's tools instead of the chat tools,
+// its protocol instead of their guidance, carries its kind to `socrates
+// mcp-ask`, and does not talk of other chats when it cannot be reached.
+func TestATestEndpointHasItsRolesTools(t *testing.T) {
+	names := func(e Endpoint) string {
+		var out []string
+		for _, d := range e.Tools() {
+			out = append(out, d.Name)
+		}
+		return strings.Join(out, ",")
+	}
+	chat := Endpoint{Socket: "/s", Token: "c.x"}
+	if chat.Test() || names(chat) != "list_chats,read_chat,send_to_chat" || !chat.Has(Send) || chat.Has(testtools.Judge) {
+		t.Fatalf("a chat's tools: %s", names(chat))
+	}
+	if g := chat.Guidance("p_", true); !strings.HasPrefix(g, Guidance("p_")) || !strings.Contains(g, "select:p_list_chats,p_read_chat,p_send_to_chat") {
+		t.Fatalf("a chat's guidance: %s", g)
+	}
+	cell := Endpoint{Socket: "/s", Token: "c.x", Kind: testtools.KindCell}
+	if !cell.Test() || names(cell) != "test_steps,test_judge,test_end,test_abort" || !cell.Has(testtools.Judge) || cell.Has(List) {
+		t.Fatalf("a cell's tools: %s", names(cell))
+	}
+	if cell.Guidance("p_", false) != testtools.Guidance(testtools.KindCell, "p_", false) {
+		t.Fatal("a cell's guidance is not its role's")
+	}
+	if env := cell.Env(); env[EnvKind] != testtools.KindCell {
+		t.Fatalf("env %v", env)
+	}
+	if _, ok := chat.Env()[EnvKind]; ok {
+		t.Fatal("a chat's environment names a kind")
+	}
+	t.Setenv(EnvSocket, "/s")
+	t.Setenv(EnvToken, "c.x")
+	t.Setenv(EnvKind, testtools.KindReviewer)
+	if got := FromEnv(); got != (Endpoint{Socket: "/s", Token: "c.x", Kind: testtools.KindReviewer}) {
+		t.Fatalf("from the environment: %+v", got)
+	}
+	gone := Endpoint{Socket: filepath.Join(t.TempDir(), "none.sock"), Token: "x", Kind: testtools.KindCell}
+	if res := gone.Call(context.Background(), testtools.Steps, nil); !res.Error || strings.Contains(res.Text, "chats") {
+		t.Fatalf("no server: %+v", res)
 	}
 }

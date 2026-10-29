@@ -22,6 +22,7 @@ import (
 	"github.com/saschazesiger/SocratesAgent/internal/config"
 	"github.com/saschazesiger/SocratesAgent/internal/store"
 	"github.com/saschazesiger/SocratesAgent/internal/termux"
+	"github.com/saschazesiger/SocratesAgent/internal/testmode"
 	"github.com/saschazesiger/SocratesAgent/internal/tunnel"
 	"github.com/saschazesiger/SocratesAgent/internal/web"
 )
@@ -115,7 +116,10 @@ type Server struct {
 
 	// chats is every agent chat and the host it runs in (chats.go), and
 	// accounts what they run on (accounts.go).
-	chats    *chatHub
+	chats *chatHub
+	// tests runs the repositories' test catalogs (tests.go); nil until
+	// StartSessions.
+	tests    *testmode.Runner
 	accounts *accountHub
 }
 
@@ -227,7 +231,12 @@ func (s *Server) StartSessions(ctx context.Context) error {
 	s.readyPreparedChats()
 	// Chats need no tmux: their hosts are reattached whatever the terminal
 	// engine says below, and so is their clock, once every chat is known.
+	// The test runner knows its runs before the chats come back, so that what
+	// a test session reports as it is reattached finds its run.
+	s.tests = testmode.New(s.dataDir, testHost{s})
+	s.tests.Load()
 	s.chats.start()
+	s.tests.Start()
 	s.sched.start(ctx)
 	// What every conversation cost is read from the CLIs' files, not from
 	// tmux, so a machine whose terminals cannot start still keeps its ledger.
@@ -249,6 +258,10 @@ func (s *Server) StartSessions(ctx context.Context) error {
 // StopSessions lets go of everything Socrates owns and nothing tmux owns: the
 // sessions themselves keep running, which is the whole point of them.
 func (s *Server) StopSessions() {
+	// The test runs go on at the next start; their sessions keep running.
+	if s.tests != nil {
+		s.tests.Close()
+	}
 	// The hosts keep running, like the tmux server; only the connections go.
 	s.chats.close()
 	s.push.stop()
@@ -350,6 +363,7 @@ func (s *Server) routes() {
 	mux.HandleFunc("GET /{$}", s.page("index.html"))
 	mux.HandleFunc("GET /admin", s.page("admin.html"))
 	mux.HandleFunc("GET /costs", s.page("costs.html"))
+	s.testRoutes(mux)
 	mux.HandleFunc("GET /login", s.pageLogin)
 	mux.HandleFunc("GET /setup", s.pageSetup)
 	mux.Handle("GET /static/", http.StripPrefix("/static/", web.Static()))

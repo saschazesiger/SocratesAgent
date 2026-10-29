@@ -1582,3 +1582,14 @@ keeps the agents an earlier run made a lost profile's accounts for. `rehearsal_t
 whole migration on a synthetic copy of today's installation, live tmux included, and kills a start
 in the middle of its cut.
 
+## 12. Test sessions (2026-10-29)
+
+A test run's sessions (docs/design/TEST-MODE.md) are chats whose options carry `test`, the run's
+reference to them. The host runs them as any chat; what differs is in its spec, written by the server
+at every launch from the run's files (so a parked or restarted host gets the same): `test_instructions`
+(the catalog's texts, appended after the model's instructions), `chat_tools.kind` (the role: the
+`socrates` server offers the role's test tools instead of `ask_user` and the chat tools), the
+`SOCRATES_TEST_*` variables and the tools' folders on `PATH` in `env`, and `mcp_choices` with every
+server off but those the area names. The server hands such a chat's activity to the test runner
+instead of the detector: no push, no title, no outcome, nothing on Home. An account switch keeps the
+test tools and the instructions (`switch.go` passes both on).

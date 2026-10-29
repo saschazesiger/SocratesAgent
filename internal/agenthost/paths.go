@@ -93,6 +93,9 @@ type Spec struct {
 	// (agent.StartSpec.Instructions), as they were when the server launched
 	// the host: a change in the dashboard counts from the next launch.
 	Instructions map[string]string `json:"instructions,omitempty"`
+	// TestInstructions is the catalog's instructions of a test session
+	// (agent.StartSpec.TestInstructions); empty for a chat.
+	TestInstructions string `json:"test_instructions,omitempty"`
 	// Account and Env are the chat's account and the CLI environment built
 	// for it (internal/accounts). Env empty is the host's own environment,
 	// scrubbed. An API-key account's key is never in Env: SecretEnv carries

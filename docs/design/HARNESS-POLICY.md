@@ -399,6 +399,24 @@ The note before a message says which model the chat now runs on, that the
 earlier model's instructions no longer apply, and the new ones. A transcript
 read back (a rebuilt journal) shows the person's message without it.
 
+## Test sessions
+
+A test session (docs/design/TEST-MODE.md) is launched like any chat, with three differences, the
+same for Claude Code, Codex and OpenCode:
+
+- **Its tools.** The chat-tools endpoint carries the session's role (`chattools.Endpoint.Kind`), and
+  the `socrates` server offers that role's test tools (`internal/agent/testtools`) instead of
+  `ask_user` and the chat tools: Claude Code's in-process server, Codex's dynamic tools (ask_user is
+  left out of the thread), OpenCode's `socrates mcp-ask`. Nobody watches a test session, so there is
+  nobody to ask.
+- **Its instructions.** The role's protocol (`testtools.Guidance`, with the harness' tool prefix)
+  takes the place of ask_user's and the chat tools' guidance; the catalog's texts
+  (`Spec.TestInstructions`, at most 64 KiB) come after the model's instructions: Claude Code's
+  system prompt, Codex's developer instructions, OpenCode's system on every prompt.
+- **Its environment and MCP servers.** The `SOCRATES_TEST_*` variables, the tools' folders first on
+  `PATH`, and only the MCP servers of the repository its area names; Admin's are off. Its account is
+  the runner's and does not switch by itself.
+
 ## Shell
 
 `<binary> -l`, in the working directory, with the shared terminal environment.

@@ -32,6 +32,7 @@
 | 🙋 **Questions, not guesswork** | Agents ask you with buttons (`ask_user`). Answer on any device, even offline. |
 | 📱 **Made for the phone** | Full-screen questions, big buttons, dictation, read-aloud and push notifications. |
 | 👥 **Several accounts** | Work and private side by side. Chats pick an unused account first, else the one with the most usage left. |
+| 🧪 **Test mode** | Your repository describes its tests in `.socrates/tests/`; Socrates runs every test on every device as its own agent session and shows what breaks. |
 | 💾 **Encrypted backups** | Your whole setup is backed up to any S3 bucket, encrypted. Moving to a new server is a single restore. |
 | 🔄 **Updates itself** | Every night, with a self-test and automatic rollback. |
 
@@ -115,6 +116,33 @@ You can run it again at any time to repair or update the installation.
 - 🎯 New chats start on an account that is still **unused** (0%), else on the one with the **most usage left**.
 - 🔀 Move a chat to another account at any time, or let it switch on its own when it hits a limit.
 - 📜 All accounts of an agent share the same chat history.
+
+---
+
+## 🧪 Tests
+
+<img src="docs/screenshot-tests.png" alt="Tests: a run's results, one row per test and one column per device" width="760">
+
+A repository brings its own test catalog; Socrates runs it with agents.
+
+```
+.socrates/tests/
+  TESTS.md                 what every test of the repository must know
+  tools/browserstack/      a tool: TOOL.md (its secrets, its account pool) and its commands
+  web/
+    AREA.md                the area: devices, locales, instructions for all its tests
+    checkout.md            one test: its steps, each with what it expects
+```
+
+| | |
+| --- | --- |
+| 🧩 **One session per cell** | Every test on every device (and locale…) is its own agent session, with the harness, model and accounts you pick. |
+| ⏳ **Queues for accounts** | A tool's accounts are a pool: a cell waits until one is free and then starts by itself. |
+| 📸 **Judged on evidence** | Each step gets pass, issue, fail, blocked or n/a, with the screenshots it was judged on. |
+| 🔍 **Reviewed and analysed** | A stronger model re-checks the doubtful cells, and an analyst writes one bug per root cause. |
+| 📊 **Results** | A table of tests × devices with the history of the last runs, full-text search, and every cell down to its screenshots. |
+
+The format and how it runs: [docs/design/TEST-MODE.md](docs/design/TEST-MODE.md). Check a catalog with `socrates tests check`.
 
 ---
 

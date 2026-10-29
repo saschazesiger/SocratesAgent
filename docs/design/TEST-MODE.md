@@ -1,8 +1,9 @@
 # Test mode: agent-run test catalogs per repository (plan, 2026-10-29)
 
-Status: planned with the owner on 2026-10-29; not built yet. This note is the specification the
-implementation follows, including the conversion of browser.lol's Device QA (BrowserStack) into the
-new format.
+Status: planned with the owner on 2026-10-29 and built the same day. This note is the specification
+the implementation follows, including the conversion of browser.lol's Device QA (BrowserStack) into
+the new format. Where the build settled a point differently from the first plan, this note says what
+was built.
 
 ## What it is
 
@@ -40,6 +41,7 @@ the repository is the catalog and a tool that drives the devices.
 | After the cells | A reviewer agent, a bug analysis with conclusions, one automatic retry of blocked cells |
 | Start | By hand in the UI only (all, an area, single tests, by priority or tag, only last run's problems) |
 | Test sessions | Not on Home or in the sidebar; reachable from their cell; a running run shows as one card on Home |
+| Accounts | Per role the harness accounts that may be used are ticked (none ticked: every account); within them Socrates picks for each session |
 | Backup | Everything, screenshots included; a retention keeps the last N runs per repository |
 | browser.lol | Converted on the `beta` branch (which holds `migration/step-1`); `tests/devices` is removed there |
 
@@ -247,10 +249,10 @@ The agent's own environment carries no secret: it is the tool that reads the vau
 `secretctl` itself). The agent could still read the file through its shell; the protocol forbids it
 (accepted by the owner). What Socrates stores goes through redaction: every known secret value of 6
 characters or more, and each pool member and each `:`-separated part of it on its own, becomes
-`‹NAME›` in records, ingested evidence and links, and, for test sessions, in the host's journal (the
-redaction list goes to the host sealed like `SecretEnv`, and its journal writer applies it). The
-harness CLI's own session files (Claude's `projects/*.jsonl`, Codex's rollouts) stay as the CLI writes
-them; they are deleted with the run.
+`‹NAME›` in records, ingested evidence, links, bug lists and conclusions. A cell's vault holds its own
+pool member (the lease), never the pool's list of every member. The session's transcript (the host's
+journal and the harness CLI's own session files) is not redacted: an agent that prints a secret against
+the protocol leaves it there, until the run and its sessions are deleted.
 
 **Order at the end of an attempt**: the `end` hooks run (with the vault still there), then the vault and
 the runtime folder are removed, then the leases are released.
@@ -283,17 +285,20 @@ its output, a failed `end` is logged on the attempt.
 
 ## The session of a cell
 
-A cell session is a chat whose row carries the new column `test` (the attempt id; reviewer and analyst
-sessions carry the run id and their role). `Kind` stays `chat`, so `IsChat()` still holds and every
+A cell session is a chat whose options carry the key `test` (`store.TestOption`): its reference, the
+role, the repository, the run and the attempt or helper. No schema change: `ListSessions` leaves such
+rows out in SQL (`json_extract`), `ListAllSessions` has them. `Kind` stays `chat`, so `IsChat()` still holds and every
 chat path (`chatHub.start`, `chatOf`, parking, the host) works unchanged; the pane loops never take it
 for a terminal. `IsTest()` is the one check, and each exclusion is written out where it applies:
 
-- **Hidden.** Not in `/api/sessions` or the sessions frame (Home, the sidebar), `chatCounts`, push
-  notifications, the title and outcome judges, the clock's auto-continue (`schedule.go`), `onSessionActivity`'s
-  activity broadcast, or `DoneRetention`'s sweep: it lives as long as its run. Costs count it (under the
+- **Hidden.** Not in `/api/sessions` or the sessions frame (Home, the sidebar), `chatCounts`, the
+  clock's auto-continue (`schedule.go`) or `DoneRetention`'s sweep (all of which read `ListSessions`):
+  it lives as long as its run. Its activity never reaches the detector (`chatPeer.report` hands it to
+  the runner instead), so no push, no title, no outcome verdict and no activity broadcast; Home is
+  sent no digest of it. Costs count it (under the
   run). Its transcript opens read-only from the cell page (the chat view with the composer hidden).
 - **Relaunch.** A host is rebuilt from the row on every launch (after parking too, `chats.go`): the
-  launch reads the attempt from the `test` column and rebuilds instructions, `PATH`, the
+  launch reads the reference from the options and rebuilds instructions, `PATH`, the
   `SOCRATES_TEST_*` variables, the vault and the role's tools from the run's catalog snapshot and the
   attempt's record, so a parked cell comes back the same.
 - **Workdir** the repository root, so the catalog's relative paths work; the harness reads the
@@ -382,19 +387,24 @@ limit*.
 **What a cell needs to start**, checked together under one lock in the runner (an in-process loop like
 `scheduler` in `schedule.go`, woken by every state change):
 
-1. Fewer running cells than the run's `parallel` and than Admin's server-wide `tests.max_sessions`
-   (default 8, protects the host).
+1. Fewer running cells than the run's `parallel` (when set; otherwise the pools are the limit) and
+   than the server-wide `max_sessions` of the Tests page's global settings (default 8, protects the
+   host; reviewers and analysts count too).
 2. A free lease on every pool its tools have (`per_member` sessions per member; members the `status`
-   hook calls busy go last). Leases are rows in the store, so a restart keeps them.
+   hook calls busy go last). A lease is part of the attempt's record, so a restart keeps it.
 3. No running cell naming one of its `exclusive` names.
-4. A harness account that is not at its limit (or automatic with one left).
+4. A harness account: of the ticked ones (or all), signed in and with room first, the one the fewest
+   test sessions of the server run on; then, as a chat's own pick does, one Socrates does not know as
+   signed in; never one at its limit. A session keeps its account (no automatic switch, which could
+   take an account the run may not use); a cell that runs into a limit ends blocked and is retried.
 
 Then: lease, write the attempt's vault, create the `test` session, send the first message. The lease is
 released after the `end` hooks of the attempt ran, whatever ended it.
 
-**Limits**: an attempt longer than its `timeout`, or idle for 20 min (no event from its agent and no
-tool call of it in progress, so a `qa start` waiting in BrowserStack's own queue for a member a team
-member uses does not count as idle), is aborted (the steps not judged become `blocked`, "not reached: timeout"). A turn that ends without
+**Limits**: an attempt longer than its `timeout` is aborted (the steps not judged become `blocked`,
+"not reached: ..."). There is no idle limit of its own: a tool call may wait long (in BrowserStack's
+queue, say), and the timeout bounds the attempt. An agent that does not start aborts the attempt
+at once. A turn that ends without
 `test_end` gets one automatic nudge ("Judge the remaining steps and call test_end"); a second such end
 aborts the attempt.
 
@@ -438,13 +448,15 @@ page repeats it, for example after cells were retried.
 
 ## Storage
 
-The files are the truth; the store holds an index that can be rebuilt from them (`socrates tests
-reindex`, and automatically when its schema changes).
+The files are the truth, and the only store: the runner reads every run at start into memory and
+lists, filters, searches and builds the history from there. The repositories and the settings are in
+the store's `kv` (`tests.repos`, `tests.settings.<repo>`, `tests.global`).
 
 ```
 <data>/tests/<repo-key>/                    repo-key: the folder's name and a short hash of its path
   runs/<run-id>/                            run-id: r-20261029-0915-abcd
-    run.json                                selection, settings, commit, catalog snapshot hash, state, counts, times
+    run.json                                selection, settings, commit, state, order of the attempts, helpers, times
+    plan.json                               what the run took from the catalog: areas, dimensions, prompts, tools
     catalog/                                the catalog as it was run (without tools/)
     cells/<test id>/<cell>/<attempt>/       cell: the dimension values joined, pixel.es
       record.json
@@ -452,37 +464,15 @@ reindex`, and automatically when its schema changes).
     bugs.json
     conclusions.md
 <data>/run/tests/<run>/vault                   the run's secrets while it is active (run/ is never backed up)
-<data>/run/tests/<run>/tools/                the run's copy of the tools, installed
 <data>/run/tests/<attempt>/                  SOCRATES_TEST_RUNTIME: the attempt's vault, sockets; removed at its end
-<data>/cache/tests/tools/<hash>/             installed tool copies, reused while a tool is unchanged
+<data>/cache/tests/tools/<name>-<hash>/      the installed copy of a tool a run runs from, made by its
+                                             setup once per version of the tool (the last 4 are kept)
 ```
 
-`record.json` of an attempt:
-
-```json
-{
-  "run": "r-20261029-0915-abcd", "test": "web-browser/header-navigation", "area": "web-browser",
-  "cell": "pixel.es", "attempt": 1, "dims": {"device": "pixel", "locale": "es"}, "params": {"consent": "accept"},
-  "state": "ended", "endReason": "", "chat": "s-…",
-  "role": {"harness": "claude", "model": "claude-sonnet-5-5", "effort": "medium", "account": "work"},
-  "leases": [{"tool": "browserstack", "member": 3, "label": "silvansutter_VeTcMj"}],
-  "queuedAt": "…", "startedAt": "…", "endedAt": "…", "waited": {"browserstack": 182000},
-  "steps": [{"n": 1, "do": "Open / …", "expect": "hero heading …", "verdict": "pass",
-             "observed": "Spanish home page …", "actions": [1, 2], "attach": [],
-             "review": {"verdict": "issue", "note": "the menu overlaps the logo on the first screenshot", "at": "…"}}],
-  "actions": [{"n": 1, "at": "…", "tool": "browserstack", "action": "open", "summary": "opened /es",
-               "url": "…", "screenshot": "01-open.png", "ms": 673, "error": null, "details": {}}],
-  "verdict": "pass", "reviewedVerdict": "issue", "summary": "…",
-  "review": {"at": "…", "note": "…", "chat": "s-…"},
-  "bugs": ["B1"], "links": {"Video": "…"}, "usage": {"input": 0, "output": 0, "costUSD": 0}
-}
-```
-
-Index tables (schema version 13, `internal/store`; plus the `test` column on `sessions`): `test_repos` (path, key, settings JSON),
-`test_runs`, `test_cells` (one row per attempt: run, test, area, cell, dims, priority, tags, state,
-wait reason, verdict, reviewed verdict, chat, times), `test_leases` (repo, tool, member, attempt) and an
-FTS5 table over test titles, observations, summaries, review notes and bug texts (FTS5 is in
-`modernc.org/sqlite`, checked).
+`record.json` of an attempt is `testmode.Attempt` (`internal/testmode/record.go`): the cell (test,
+dimension values, parameters, tools), its state and why it ended, the role it ran with and the account
+it took, its leases, its times and how long it waited, its steps with their judgements and reviews, the
+actions its tools recorded, its verdict and the reviewed one, its summary, review, bugs and links.
 
 **Backup**: everything under `tests/` is backed up (the owner wants the screenshots too). **Retention**:
 the last `keep_runs` runs per repository (default 20; a run can be pinned) are kept, older ones deleted
@@ -490,22 +480,23 @@ with their sessions, after the run that pushes them out is done.
 
 ## Settings
 
-Per repository (stored in `test_repos.settings`, edited on the Tests page, overridable per run):
+Per repository (in the store's `kv`, edited on the Tests page, overridable per run):
 
 | Setting | Default |
 |---|---|
-| Cell agent: harness, model, effort, account | Claude Code, Sonnet 5.5, medium, automatic |
-| Reviewer: harness, model, effort, account | Claude Code, Opus 5.5, high, automatic |
-| Analyst: harness, model, effort, account | Claude Code, Opus 5.5, high, automatic |
-| `parallel` (cells at once) | the sum of the pools' capacity, else 4 |
+| Cell agent: harness, model, effort, the accounts it may use | Claude Code, Sonnet 5.5, medium, every account |
+| Reviewer: harness, model, effort, the accounts it may use | Claude Code, Opus 5.5, high, every account |
+| Analyst: harness, model, effort, the accounts it may use | Claude Code, Opus 5.5, high, every account |
+| `parallel` (cells at once) | 0: the pools are the limit, else 4 |
 | `review_parallel` | 2 |
 | `review` | on |
 | `attempts` | 2 |
-| `idle_timeout` | 20 min |
+| `analysis` | on |
 | `keep_runs` | 20 |
 
 The model defaults follow Device QA's model evaluation (`PLAN.md`, 2026-10-28: Sonnet 5.5 judged the
-steps as well as Haiku 5.5 with fewer unsupported claims and fewer missed problems; Opus reviews). Admin gets one field: `tests.max_sessions`.
+steps as well as Haiku 5.5 with fewer unsupported claims and fewer missed problems; Opus reviews). Over
+every repository there is one setting, `max_sessions` (default 8), on the Tests page.
 
 ## API
 
@@ -570,19 +561,18 @@ waiting for BrowserStack") that opens the Tests page.
 
 | Where | What |
 |---|---|
-| `internal/testmode/catalog` | Parsing (front matter, `## Steps`), validation, expansion into cells, snapshot |
-| `internal/testmode/pool` | Secrets command, pools, leases, the `status` hook |
-| `internal/testmode/runner` | The scheduler loop, cell lifecycle, hooks, timeouts, retry, review and analysis sessions, reconciliation |
-| `internal/testmode/record` | `record.json`, evidence ingestion (`actions.jsonl`), redaction, review sampling, the index |
-| `internal/agent/testtools` | The test tools per role (definitions, guidance with the harness' prefix), beside `chattools` and `askuser` |
-| `internal/agent/claude`, `codex`, `opencode`, `askuser`, `agenthost/mcpask.go` | Offering the test tools and leaving out `ask_user` and the chat tools per session, in each harness' own mechanism |
-| `internal/store` | The `test` column, `IsTest()`, the index tables, schema 13 |
-| `internal/agenthost` | `Spec.TestInstructions`, the extra `PATH` and env, the sealed redaction list applied by the journal writer |
-| `internal/server/tests*.go` | API, events frame, the runner's account pick, the relaunch of a test session from its row |
-| `internal/server` (existing files) | `IsTest()` exclusions: sessions list and frame, `chatCounts`, push, titles, outcome, auto-continue, activity broadcast, `DoneRetention` |
-| `internal/paths` | `tests/` and `run/tests/` |
-| `main.go` | `socrates tests check|reindex` |
-| `internal/web/static` | `tests.html`, `js/tests.js`, `css/so-tests.css`, the Home card, drawer links |
+| `internal/testmode/catalog` | Parsing (front matter, a strict YAML subset of its own: no dependency, so the binary stays MIT/BSD/ISC), `## Steps`, validation, expansion into cells, snapshot, `ParseSecrets` |
+| `internal/testmode` | The runner: preparation and plan (`plan.go`), the scheduler, leases and sessions (`runner.go`), review and analysis (`review.go`), the test tools' calls (`calls.go`), stop, delete, retry, retention, repositories and settings (`control.go`), the views, history and search (`view.go`), evidence (`evidence.go`), secrets, installed tools and hooks (`tools.go`), redaction |
+| `internal/agent/testtools` | The test tools per role (definitions, arguments, guidance with the harness' prefix), beside `chattools` and `askuser` |
+| `internal/agent/chattools` | `Endpoint.Kind`: the role of a test session, whose tools the endpoint offers instead of the chat tools |
+| `internal/agent/claude`, `codex`, `opencode`, `askuser`, `agenthost/mcpask.go` | Offering the test tools and leaving out `ask_user` and the chat tools per session, in each harness' own mechanism; `TestInstructions` after the model's instructions |
+| `internal/store` | `TestOption`, `IsTest()`, `TestRef()`, `ListSessions` without and `ListAllSessions` with test sessions |
+| `internal/agenthost` | `Spec.TestInstructions` (also kept across an account switch) |
+| `internal/server/tests.go`, `tests_api.go` | The runner's host (sessions, the account pick, events, push, kv), the launch extras, the activity hand-over, the API |
+| `internal/paths` | `tests/`, `run/tests/`, `cache/tests/` |
+| `testscmd.go` | `socrates tests check [repo]` |
+| `internal/web/static` | `tests.html`, `js/tests*.js`, `css/so-tests.css`, the Home card, drawer links, the push target |
+| `e2e/testmode.mjs`, `e2e/fakebin/fakeclaude/testcell.go` | The browser scenario `testmode`, and the fake agent's cell, review and analysis |
 
 ## Tests of the feature
 

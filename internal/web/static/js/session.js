@@ -1748,6 +1748,8 @@ function mountStream() {
   return mountEvents({
     hello: (data) => {
       forgetTitling();
+      // A frame about a test run may have been missed while the stream was down.
+      if (state.home) state.home.testsFrame();
       if ('digests' in data) {
         replaceDigests(data.digests, data.sessions);
         state.digestsHeard = true;
@@ -1762,6 +1764,8 @@ function mountStream() {
     digest: digestFrame,
     outcome: outcomeFrame,
     news: newsFrame,
+    // A test run changed: Home's card of it reads the runs again.
+    tests: () => { if (state.home) state.home.testsFrame(); },
     // A chat's Status phases come this way; a terminal's come on its own
     // socket (onControl), and are not taken twice.
     phase: (frame) => {
