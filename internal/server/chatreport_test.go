@@ -251,3 +251,43 @@ func TestWaitsStayInsideTheirRequest(t *testing.T) {
 		t.Fatalf("the request with no turn: %+v", c.Earlier)
 	}
 }
+
+// Only the person starts a request: a message from another chat or Socrates'
+// own "go on" after an account switch is more of the work that runs, and
+// while a subagent or a background task runs between turns, that work goes
+// on until now.
+func TestOnlyThePersonStartsARequest(t *testing.T) {
+	base := time.Date(2026, 10, 25, 12, 0, 0, 0, time.UTC)
+	at := func(d time.Duration) int64 { return base.Add(d).UnixMilli() }
+	p := agent.NewProjection()
+	for _, ev := range []agent.Event{
+		{Type: agent.TypeMessage, MessageID: "u1", Role: agent.RoleUser, Text: "Migrate it", At: at(0)},
+		{Type: agent.TypeTurnStarted, TurnID: "t1", MessageID: "u1", At: at(time.Second)},
+		{Type: agent.TypeMessage, MessageID: "a1", Role: agent.RoleAssistant, TurnID: "t1", At: at(time.Second)},
+		{Type: agent.TypeTurnEnded, TurnID: "t1", Outcome: agent.OutcomeCompleted, At: at(time.Hour)},
+		{Type: agent.TypeMessage, MessageID: "u2", Role: agent.RoleUser, ClientID: "x:continue",
+			Text: "Switching the account restarted you", At: at(2 * time.Hour)},
+		{Type: agent.TypeTurnStarted, TurnID: "t2", MessageID: "u2", At: at(2 * time.Hour)},
+		{Type: agent.TypeMessage, MessageID: "a2", Role: agent.RoleAssistant, TurnID: "t2", At: at(2 * time.Hour)},
+		{Type: agent.TypeTurnEnded, TurnID: "t2", Outcome: agent.OutcomeCompleted, At: at(3 * time.Hour)},
+		{Type: agent.TypeMessage, MessageID: "u3", Role: agent.RoleUser, ClientID: "chat-tools-ab12",
+			Text: "[A message from the chat “Other”] hi", At: at(4 * time.Hour)},
+		{Type: agent.TypeTurnStarted, TurnID: "t3", MessageID: "u3", At: at(4 * time.Hour)},
+		{Type: agent.TypeMessage, MessageID: "a3", Role: agent.RoleAssistant, TurnID: "t3", At: at(4 * time.Hour)},
+		{Type: agent.TypeTurnEnded, TurnID: "t3", Outcome: agent.OutcomeCompleted, At: at(4*time.Hour + time.Minute)},
+		{Type: agent.TypeTasks, Count: 1, Agents: 1, At: at(4*time.Hour + time.Minute)},
+	} {
+		p.Apply(ev)
+	}
+	report := readChatReport(p, base.Add(5*time.Hour))
+	c := report.Clock
+	if c.Work.Request != "Migrate it" || len(c.Earlier) != 0 || c.Work.Turns != 3 || !c.Work.Running ||
+		c.Work.Working(c.Now) != (5*time.Hour).Milliseconds() {
+		t.Fatalf("the request: %+v, earlier %+v", c.Work, c.Earlier)
+	}
+	for _, want := range []string{"Socrates, on the person's behalf: Switching the account", "Another chat: [A message"} {
+		if !strings.Contains(report.Record, want) {
+			t.Fatalf("the record has no %q:\n%s", want, report.Record)
+		}
+	}
+}

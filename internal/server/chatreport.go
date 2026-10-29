@@ -84,7 +84,8 @@ type workSpan struct {
 	// the person's answers.
 	Start, End, Waited int64
 	Turns, Calls       int
-	// Running is whether a turn of it runs now.
+	// Running is whether its work goes on now: a turn of it runs, or a
+	// subagent or background task the agent waits for.
 	Running bool
 }
 
@@ -172,10 +173,17 @@ func readChatReportWith(p *agent.Projection, now time.Time, lim reportLimits) ch
 				clock.FirstMessage = m.At
 			}
 			who := "Person"
-			if m.AnswerTo != "" {
-				who = "Person (answering a question)"
-			} else {
-				requests = append(requests, m)
+			switch messageOrigin(m) {
+			case originChat:
+				who = "Another chat"
+			case originSocrates:
+				who = "Socrates, on the person's behalf"
+			default:
+				if m.AnswerTo != "" {
+					who = "Person (answering a question)"
+				} else {
+					requests = append(requests, m)
+				}
 			}
 			entries = append(entries, reportEntry{at: m.At, keep: firstUser,
 				text: who + ": " + clipRunes(messageWords(m), lim.Message)})
@@ -259,8 +267,31 @@ func readChatReportWith(p *agent.Projection, now time.Time, lim reportLimits) ch
 		}
 		return entries[i].rank < entries[j].rank
 	})
-	clock.Work, clock.Earlier = workSpans(requests, spans, order, calls, p.Asks, ms)
+	// Between turns, a subagent or a background task the agent waits for is
+	// still the work of the newest request.
+	active := clock.State == termux.StateBusy || clock.State == termux.StateTasks
+	clock.Work, clock.Earlier = workSpans(requests, spans, order, calls, p.Asks, ms, active)
 	return chatReport{Clock: clock, Record: renderReport(entries, now, lim.Max)}
+}
+
+// Where a user message came from, by its client id: the person, another
+// chat (send_to_chat, chattools.go) or Socrates itself telling the agent to
+// go on after an account switch (agenthost switch.go). Only the person's
+// messages are requests; the others are part of the work that runs.
+const (
+	originPerson = iota
+	originChat
+	originSocrates
+)
+
+func messageOrigin(m *agent.Message) int {
+	switch {
+	case strings.HasPrefix(m.ClientID, "chat-tools-"):
+		return originChat
+	case strings.HasSuffix(m.ClientID, ":continue"):
+		return originSocrates
+	}
+	return originPerson
 }
 
 // workSpans cuts a chat into the person's requests and the work each took
@@ -271,7 +302,7 @@ func readChatReportWith(p *agent.Projection, now time.Time, lim reportLimits) ch
 // projection keeps no record of background tasks between turns, so a turn
 // the agent started by itself belongs to the request before it.
 func workSpans(requests []*agent.Message, spans map[string]*turnSpan, order []string,
-	calls map[string]int, asks []*agent.Ask, now int64) (workSpan, []workSpan) {
+	calls map[string]int, asks []*agent.Ask, now int64, active bool) (workSpan, []workSpan) {
 	busy := func(at int64) bool {
 		for _, s := range spans {
 			end := s.end
@@ -312,6 +343,9 @@ func workSpans(requests []*agent.Message, spans map[string]*turnSpan, order []st
 		} else if s.end > w.End {
 			w.End = s.end
 		}
+	}
+	if active {
+		work[len(work)-1].Running = true
 	}
 	// A request whose turns left no trace ends where the next one starts,
 	// not now: it would grow for as long as the chat is open.

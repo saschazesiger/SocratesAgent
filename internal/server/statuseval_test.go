@@ -121,6 +121,10 @@ func evalEpisodes(events []agent.Event) []evalEpisode {
 			m := evalMessage(p, ev.MessageID)
 			if m != nil && m.AnswerTo == "" {
 				switch {
+				case cur != nil && messageOrigin(m) != originPerson:
+					// Another chat or Socrates itself: more for the work
+					// that runs, which nobody could have foreseen.
+					cur.interjections = append(cur.interjections, at)
 				case cur == nil:
 				case restAt != 0:
 					finish(restAt)
@@ -306,6 +310,43 @@ func evalVariants() map[string]evalVariant {
 			},
 		},
 	}
+}
+
+// TestStatusLive asks the Status of one journal as it stands now, the way
+// the server would, and shows what the shown estimate is made of:
+//
+//	STATUS_EVAL_LIVE=/path/events.jsonl STATUS_EVAL_KEY=sk-or-... \
+//	go test -tags statuseval -run TestStatusLive -v ./internal/server
+func TestStatusLive(t *testing.T) {
+	path := os.Getenv("STATUS_EVAL_LIVE")
+	if path == "" {
+		t.Skip("STATUS_EVAL_LIVE is not set")
+	}
+	events, err := agent.ReadJournal(path)
+	if err != nil || len(events) == 0 {
+		t.Fatalf("%s: %v", path, err)
+	}
+	now := time.Now()
+	report := readChatReport(agent.Fold(events), now)
+	user := statusUserPrompt("claude", report, events[0].At, now, "")
+	t.Logf("facts:\n%s\n(record %d runes)", clockFacts(report.Clock, events[0].At, now), len([]rune(report.Record)))
+	key := os.Getenv("STATUS_EVAL_KEY")
+	if key == "" {
+		return
+	}
+	model := os.Getenv("STATUS_EVAL_MODELS")
+	if model == "" {
+		model = "anthropic/claude-haiku-5.5"
+	}
+	var a chatAnalysis
+	if err := askJSON(context.Background(), openrouter.New("", key), model, []openrouter.Message{
+		{Role: "system", Content: statusSystemPrompt("en")}, {Role: "user", Content: user},
+	}, statusMaxTokens, 0.2, &a); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := json.MarshalIndent(a, "", "  ")
+	eta, ok := statusETA(a, report.Clock)
+	t.Logf("answer:\n%s\nworking %.1f min; shown %+v %v", b, float64(report.Clock.Work.Working(report.Clock.Now))/60000, eta, ok)
 }
 
 func TestStatusEval(t *testing.T) {

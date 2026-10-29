@@ -2987,7 +2987,11 @@ agent has to do, nothing should be read out loud by itself, and the chat needs n
 
 - **The estimate is for the whole request**: from the person's message that found the agent
   resting, through every turn, background task, subagent and queued message, to its final report,
-  without the time it waits for the person (`chatreport.go` `workSpans`).
+  without the time it waits for the person (`chatreport.go` `workSpans`). Only the person starts a
+  request: a message from another chat (`send_to_chat`) or Socrates' own "go on" after an account
+  switch is more of the same work, and while a subagent or background task runs between turns the
+  request's time runs on (the owner, on "Migration Phase 1": 40 minutes after five hours of work
+  could not be right - it had counted from another chat's message).
 - **More of the chat goes in**: the record holds up to 400k runes (messages 12k, texts 6k, calls
   400, 24 calls inside a subagent), queued messages, and measured facts on the current request (how
   long it has run, its turns and calls) and the earlier requests of the chat (how long each took).
