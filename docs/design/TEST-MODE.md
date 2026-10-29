@@ -522,41 +522,89 @@ Tests page and the Home card.
 
 ## The Tests page
 
-A page of its own, `/tests` (`tests.html`, `js/tests.js`, `css/so-tests.css`, registered like
-`/costs`), with a drawer link beside Costs and Admin; state in the hash
-(`#repo=…&run=…&cell=…&tab=…`). Built from Dashboard-Style components only (AGENTS.md rules,
-`make ds-check`):
+Reworked the same evening (owner: "best practices, extremely intuitive, every function it needs";
+see "Revision: the reworked Tests page" for what was added on the server). The first version is
+described in git history (46aa6ca); this is the page as it is now.
 
-- **Head**: the repository (a select when there are several), the run shown (latest by default), *Run*
-  (a `ds-sheet` with the selection and the settings, the role pickers reused from `harnesses.js` and
-  `accountpicker.js`), and while a run is active its progress (`ds-progress`, counts, *Stop*).
-- **Tabs** (`ds-tabs`): Results · Runs · Bugs · Catalog · Settings.
-- **Results**: tiles with the counts per verdict (`ds-tiles`, `DS.motion.countUp`); a toolbar with
-  search (`ds-search`, full text) and filters (`ds-filters`: area, priority, tag, verdict, every
-  dimension, reviewed only) and a *Problems only* chip; the table (`ds-table ds-table--dense
-  ds-table--interactive ds-table--pin-first`, `--stack` on a phone): a row per test grouped by area, a
-  column per value of the area's `columns` dimension, each cell its verdict as `ds-status` with icon and
-  word (never colour alone) and the other dimensions' values as a tag (`es`), a running cell as
-  running, a waiting one with its reason in a tooltip; the last column the test's **history**: its
-  worst verdict in each of the last 10 runs, so a test that fails often stands out even when it passed
-  now. A row opens the test (its text and every cell's history); a cell opens the cell.
-- **Cell** (`ds-sheet` with the wide panel; full screen on a phone): facts (`ds-facts`: test, dims,
-  attempt switcher, role, account, lease, times, waiting time, cost), the summary, the verdict (the
-  agent's and the reviewed one, with the review note), then the steps as a timeline (`ds-timeline`):
-  action and expectation, observation, verdict, the screenshots of its evidence as thumbnails, and its
-  actions in a `ds-disclosure`. A screenshot opens full size in a `ds-dialog--full` with previous and
-  next across the cell's screenshots. Below: links (video, network log), logs, the bugs it belongs to,
-  and *Open transcript*, *Retry*.
-- **Runs**: every run with its date, selection, settings, counts, duration and cost; an active run
-  lists its running and waiting cells with their reasons, and the pools with who holds which member.
-- **Bugs**: the run's `bugs.json` as a table (severity, title, cells as links) and `conclusions.md`
-  rendered (`md.js`); *Analyse again*.
-- **Catalog**: the areas and tests as the run would see them, errors as `ds-alert`, a test's text and
-  its expanded cells; the tools with their pools and *Check secrets*.
-- **Settings**: the table above, saved with a `ds-savebar`.
+A page of its own, `/tests` (`tests.html`, `js/tests*.js`, `css/so-tests.css`), with a drawer link
+beside Costs and Admin. Built from Dashboard-Style components only (AGENTS.md rules, `make
+ds-check`). Where the person is lives in the hash, so every place can be linked to and Back undoes
+every step: `#repo=<key>&view=<overview|runs|tests|bugs|settings>` and, inside a view, `run=<id>`
+(a run), `test=<id>` (a test), `bug=<id>` (a bug), `cell=<attempt id>` (the cell viewer, over any
+view; its run is `run=`).
+
+**Head.** The repository's title (a menu to switch when there are several, with *Add repository*),
+its path and checkout. Actions: **Run** (a split button: the main part opens the Run dialog; its
+menu has *Run everything*, *Run the problems of run N again* when the latest run has any, and one
+item per priority present, e.g. *Run P0*). While a run of the repository is active, a banner under
+the head says how far it is (progress, "23 of 54 cells · 4 running · 3 waiting for a BrowserStack
+account · about 18 min left · $3.20") with *Watch* (opens the run) and *Stop*.
+
+**Views** (`ds-tabs`): Overview · Runs · Tests · Bugs (badge: open bugs) · Settings.
+
+- **Overview**: how the repository stands. The latest finished run as tiles per verdict with the
+  change against the run before (`+2`), its pass rate; **Needs attention**: cells that broke since
+  the previous run (regressed), cells still failing (with "since run N"), flaky tests, and the open
+  critical and major bugs; **Fixed since the run before**; a **trend** of the last 20 runs (a stacked
+  bar per run, pass · issue · fail · blocked, a bar opens its run). While a run is active, **Live**:
+  a card per running cell with its latest screenshot, its step ("Step 2 of 4: Open New Session"),
+  its device and how long it runs, the waiting cells with their reasons and the pools. Empty
+  repository (no run yet): the catalog's size and *Run everything*.
+- **Runs**: every run, newest first: number and name, when, what it ran, a result bar with the
+  counts, regressed and fixed against the run before, duration, cost, state. A run opens the **run
+  view**: its head (state, commit, when, duration, cost, the roles' models) with *Stop*, *Run the
+  problems again*, *Analyse again*, and a menu (*Copy report*, *Download report*, *Pin*, *Delete*);
+  then **Results**, **Bugs** (this run's) and **Details** (settings, reviewers and analyst with
+  their transcripts, pools, why it failed).
+  - Results: a search box (filters this run's cells by text), chips *All · Problems · Changed ·
+    Reviewed · Overridden*, a *Filters* button (area, priority, tag, every dimension) with the
+    active filters as removable chips. Per area a table: a row per test, a column per value of the
+    area's `columns` dimension; each cell its verdict (`ds-status`, glyph and word), the other
+    dimensions' values as a tag, a change mark (regressed, fixed) and a review or override mark. A
+    row's actions: *Run this test again*. On a phone a test is a block with its cells as a list.
+- **Tests**: the catalog and how each test stands, together. Catalog errors and warnings first
+  (`ds-alert`, with file and line), then per area its tests: title, priority, tags, the latest
+  verdict of each of its cells (from the latest run that ran it), "failing since run N", a flaky
+  mark, and *Run*. *Write a test with an agent* opens the chat dialog. A test opens the **test
+  view**: its file, priority, tags, context and steps with their expectations; its history as a
+  grid (a row per cell, a column per run of the last 20, each a verdict glyph that opens that
+  attempt); its open bugs; *Run this test*, *Run this cell* per row, *Change it with an agent*.
+  The tools (pools, *Check secrets*) sit at the end of the view.
+- **Bugs**: the repository's bugs over every run (below): chips *Open · Known · Fixed · Not a bug ·
+  All*, sorted by severity and then by when last seen. A row: severity, id, title, status, how many
+  runs it was seen in, first and last seen, its cells, its GitHub issue. A bug opens the **bug
+  view**: description, its cells (each with its latest verdict and the screenshot of its first
+  failing step), the runs it was seen in, the triage (status and a note), *Fix in a chat*, *Create
+  GitHub issue* (or the issue's link), *Run its cells again*.
+- **Settings**: the roles (program, model, effort, accounts), how a run goes (cells at once,
+  attempts, review, analysis), the MCP servers of cells, runs kept, and this server's limit; saved
+  with a `ds-savebar`.
+
+**The cell viewer** (`ds-dialog--full`, on every view, phone and desktop): its head the test's title,
+the cell's dimensions, the attempt (a switcher when there are several), the verdict as it counts with
+who gave it ("the agent said Pass, the reviewer made it Issue, you made it Pass"), previous and next
+cell of the list it was opened from (`[` and `]`, or `j`/`k`). On a wide screen the steps on the left
+(action, expectation, observation, verdict, reviewer note), the selected step's screenshots large on
+the right with a film strip and ← → over every screenshot of the cell; *Compare with the last pass*
+puts the same step of the cell's latest passing attempt beside it. On a phone the steps are a list,
+each with its screenshots at full width. Below the steps: the summary, the actions log, links and
+logs, the facts (agent, account, lease, times, cost). Actions: *Override verdict* (a verdict and a
+note; *Remove override*), *Retry*, *Fix in a chat*, *Open transcript*. A running cell is live: its
+steps fill as they are judged and its latest screenshot is shown.
+
+**The Run dialog** (`ds-sheet`, wide): what to run as radio cards with their cell counts:
+*Everything*, *The problems of run N*, one per priority, *Choose…* (a tree of areas and tests with
+tri-state checkboxes, chips for priorities, tags and every dimension's values); the settings of this
+run as one summary line with *Change* (the settings form); an optional name. The foot says the exact
+number of cells, about how long it takes and what it costs (from earlier runs), and *Start run*.
+
+**The chat dialog** (*Fix in a chat*, *Write a test with an agent*, *Change it with an agent*): the
+program, model and effort (as the new-session sheet offers them), the message, prefilled and
+editable (the bug or the cell with its steps, observations and screenshot paths; or what a test is
+and where the format is described), the repository as the folder. *Start chat* opens the chat.
 
 **Home** shows an active run as one card ("Tests · browser.lol · 23 of 54 cells · 4 running · 3
-waiting for BrowserStack") that opens the Tests page.
+waiting for BrowserStack") that opens the run.
 
 ## Code layout in Socrates
 
@@ -736,6 +784,104 @@ Socrates (MCP.md), usable in every chat too. For test mode that means:
   dimensions, parameters, evidence folder), where `qa` read `SOCRATES_TEST_*`.
 - **Settings.** The repository's Tests settings have `mcp`: the MCP servers cell agents get besides
   those their area names (built-in, Admin's or the repository's).
+
+## Revision: the reworked Tests page (2026-10-29, evening)
+
+The owner asked for the Tests page to be redone "by best practices, extremely intuitive, with every
+function it needs", and chose: live cells, bugs tracked over runs, manual triage, *Fix in a chat*,
+runs started by chat agents, *Write a test with an agent*, a report to copy or download, GitHub
+issues from bugs; no scheduled runs. The catalog format stays as it is (nothing below needs it to
+change). What the server gained for it:
+
+**Run numbers.** `Run.Number`: 1, 2, 3 … per repository, given when a run is created (the largest
+so far plus one; runs of before are numbered by their creation time when they are loaded). The page
+names a run "Run 12" (and its name, if it has one).
+
+**Selection.** `Selection.Cells`: cell ids (`web/checkout@a`) to run, narrowing like the other
+lists. `ProblemsOf` may be `latest`: the repository's latest run that is not active, resolved to
+its id when the run is created (the id is what is stored).
+
+**Override.** A person may override a cell attempt's verdict: `Attempt.Override` `{verdict, note,
+at}`. The verdict that counts is the override, else the reviewed one, else the agent's (`Final`),
+everywhere: counts, history, changes, bug fixing, the problems of a run. Removing it puts the
+verdict back.
+
+**Changes against the run before.** Every row of a run's cells carries `prev`: the same cell's
+verdict (as it counts) in the latest earlier run of the repository that has an ended attempt of it
+(`{verdict, run, number, attempt}`), and `change`: `regressed` (it passed, pass or na, and now is
+issue or fail), `fixed` (it was issue or fail and now passes), `new` (no earlier run had it) or
+empty. A run's view counts them (`changes: {regressed, fixed}`).
+
+**Health of a test.** Over the last 20 runs of the repository, per cell: the latest verdict and its
+run, `since` (the first run of the current streak of problems: issue or fail), `runs` and `passes`,
+`flips` (changes between passed and issue/fail, blocked runs skipped) and `flaky` (at least 2 flips
+with both sides present). A test is flaky when one of its cells is.
+
+**Bugs over runs.** The repository keeps one bug list, `<data>/tests/<repo>/bugs.json` (backed
+up), of `TrackedBug`: `id` (`B-1`, `B-2` …, given by Socrates), `title`, `severity`, `status`
+(`open`, `known`, `not_a_bug`, `fixed`), `description`, `cells` (as last reported), `runs` (the
+runs that reported it), `first_run`, `last_run`, `fixed_in`, `regressed` (it came back after it
+was fixed), `note` (the person's), `issue` (a URL), `updated_at`, and `events` (`{at, run, what}`:
+reported, fixed, reopened, status set by hand, issue created).
+
+- The analyst gets a new tool `bugs_known`: the list (every bug but the ones fixed more than 10
+  runs ago), with id, title, severity, status, cells, description and note. Its protocol says: the
+  same root cause keeps its id; a bug the person marked `not_a_bug` is not reported again unless
+  the evidence shows something else; `known` bugs are reported again when seen (so they stay known).
+- `bugs_put` takes an `id` per bug that is either an id from `bugs_known` or empty (a new bug; the
+  analyst's own ids such as `B1` are taken as new too). The run's `bugs.json` keeps the list with
+  the ids Socrates settled, so a run's page and the repository's agree.
+- When the analysis of a run ends (or the run ends without one), the list is brought up to date:
+  every reported bug gets the run (`last_run`, `runs`); a `fixed` one is reopened (`open`,
+  `regressed`); an `open` bug the run did not report whose cells the run ran and all of which pass
+  now becomes `fixed` (`fixed_in`). `known` and `not_a_bug` are only changed by the person.
+- The person sets `status`, `severity` and `note` (`PATCH`); a GitHub issue made from the page sets
+  `issue`.
+
+**Live cells.** A running attempt's row has `live`: `{step, steps, activity, shot, at}` - the first
+step not judged yet, the number of steps, the last action's summary, its latest screenshot and
+when. The runner reads the attempt's new evidence lines for it (at most every 2 s per attempt).
+The page reads the cells again every few seconds while it shows a running run.
+
+**Times and costs.** A run's view has `cost` (USD of every session of the run: cells, reviewers,
+analyst, from the costs ledger; absent when unknown) and, while active, `eta_ms` (the cells left
+times the median duration of a cell in the repository's last runs, divided by how many run at
+once). `POST /api/tests/repos/{repo}/estimate` `{selection, settings}` expands a selection as a run
+would and answers `{cells, tests, eta_ms, cost, errors}`, which the Run dialog shows before
+anything starts.
+
+**Report.** `GET /api/tests/runs/{run}/report.md` (`?download=1` as a file): the run in Markdown -
+its head, the counts and changes, the bugs by severity, every problem cell with its failing steps
+and observations, and the conclusions.
+
+**GitHub issues.** `GET /api/tests/repos/{repo}/github` says whether the repository's `origin` is on
+GitHub and `gh` is signed in (`{available, repo, reason}`); `POST
+/api/tests/repos/{repo}/bugs/{id}/issue` `{title, body}` runs `gh issue create` in the repository
+and keeps the issue's URL on the bug.
+
+**Runs started by chat agents.** A chat whose repository has a catalog (or that was started from
+the Tests page) gets four more tools besides the chat tools: `tests_format` (the catalog format
+reference), `tests_check` (validates the catalog: errors and warnings with file and line, cells),
+`run_tests` (a selection - areas, tests, cells, tags, priorities, dimension values, or the problems
+of the latest run - and an optional name; starts a run with the repository's settings and answers
+its number, id and cell count) and `test_results` (a run - default the latest - in Markdown: counts,
+changes, every problem cell with its failing step, observation and screenshot paths, the bugs). A
+run remembers the chat that started it (`Run.StartedBy`); when it ends, Socrates sends that chat a
+message with the results, which starts its agent, as `send_to_chat` does. The person sees the run
+on the Tests page like any other ("started by <chat title>").
+
+**API additions**:
+
+| Route | Does |
+|---|---|
+| `GET /api/tests/repos/{repo}/overview` | `{latest, previous, trend, regressed, failing, fixed, flaky, bugs}` |
+| `GET /api/tests/repos/{repo}/catalog` | As before, and every test's `health` and every cell's latest verdict |
+| `GET /api/tests/repos/{repo}/tests/{test...}` | A test: its catalog entry and its history grid over the last 20 runs |
+| `POST /api/tests/repos/{repo}/estimate` | What a selection would run, how long and what it would cost |
+| `GET /api/tests/repos/{repo}/bugs`, `GET …/bugs/{id}`, `PATCH …/bugs/{id}` | The bug list, a bug with its cells, triage |
+| `GET /api/tests/repos/{repo}/github`, `POST …/bugs/{id}/issue` | GitHub issues |
+| `POST /api/tests/runs/{run}/attempts/{attempt}/override` | `{verdict, note}`; an empty verdict removes it |
+| `GET /api/tests/runs/{run}/report.md` | The report |
 
 ## Risks and open points
 
