@@ -516,6 +516,105 @@
 
 /* ══ Tests (teststests.js) ═════════════════════════════════════════════ */
 
-/* ══ Bugs (testsbugs.js) ═══════════════════════════════════════════════ */
+/* ══ Bugs (testsbugs.js) ═══════════════════════════════════════════════
+ *
+ *   .so-bugs__id          a bug's id before its title, kept on one line
+ *   .so-bugs__note        the person's note under a bug's title: its glyph
+ *                         and one line of it
+ *   .so-bugs__chips       on a phone, a bug's severity and status under its
+ *                         words
+ *   .so-bugs__step        a cell card's failing step: three lines at most
+ *   .so-bugs__issue-repo  where a GitHub issue goes, after its lock
+ *
+ * A bug's cells are the overview's cards (.so-tests-live): a screenshot,
+ * the test, its values and its verdict.
+ */
 
-/* ══ Chat dialog (testschat.js) ════════════════════════════════════════ */
+.so-bugs__id {
+  font-weight: var(--ds-weight-label);
+  white-space: nowrap;
+}
+
+.so-bugs__note {
+  flex-wrap: nowrap;
+  align-items: flex-start;
+}
+
+.so-bugs__note > svg {
+  flex: none;
+}
+
+.so-bugs__note > span {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 1;
+  line-clamp: 1;
+}
+
+.so-bugs__chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--ds-space-1);
+  margin-top: var(--ds-space-1);
+}
+
+.so-bugs__step {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+}
+
+.so-bugs__issue-repo {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--ds-space-1);
+  margin: 0;
+}
+
+.so-bugs__issue-repo > svg {
+  flex: none;
+}
+
+/* ══ Chat dialog (testschat.js) ════════════════════════════════════════
+ *
+ *   .so-tests-wide        a dialog wider than DS's wide one (its hook), for
+ *                         a message or an issue's text to read in lines of
+ *                         a usual length; the GitHub issue's dialog too
+ *   .so-tests-message     the message's field: as tall as a screen of it
+ *   .so-tests-chat__lead  what the chat is about, a chip and its words
+ *   .so-tests-chat__note  where Start chat leads, after its glyph
+ */
+
+.so-tests-wide {
+  --ds-dialog-width-wide: 48rem;
+}
+
+.so-tests-message {
+  min-block-size: 16rem;
+}
+
+.so-tests-chat__lead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--ds-space-2);
+  margin: 0;
+}
+
+.so-tests-chat__lead:empty {
+  display: none;
+}
+
+.so-tests-chat__note {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--ds-space-1);
+  margin: 0;
+}
+
+.so-tests-chat__note > svg {
+  flex: none;
+}

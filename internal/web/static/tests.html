@@ -197,6 +197,43 @@
 </dialog>
 
 <div class="ds-toasts" id="toasts"></div>
+<!-- ══ Bugs and chat (testsbugs.js, testschat.js) ═════════════════════
+  Both dialogs close through data-guarded-close (testsview.js guardClose):
+  edits made in them are not lost by a stray Escape or tap. -->
+
+<!-- A GitHub issue of a bug: its title and text, prefilled (testsbugs.js). -->
+<dialog class="ds-dialog ds-dialog--wide ds-dialog--full-narrow so-tests-wide" id="issueDialog" aria-labelledby="issueDialogTitle">
+  <div class="ds-dialog__backdrop" data-guarded-close></div>
+  <div class="ds-dialog__box">
+    <div class="ds-dialog__head">
+      <button class="ds-btn ds-btn--quiet ds-btn--icon" type="button" aria-label="Close" data-tip="Close" data-guarded-close data-icon="close"></button>
+      <h2 class="ds-dialog__title" id="issueDialogTitle">Create a GitHub issue</h2>
+    </div>
+    <div class="ds-dialog__body" id="issueBody"></div>
+    <div class="ds-dialog__actions">
+      <button class="ds-btn ds-btn--text" type="button" id="issueCancel" data-guarded-close>Cancel</button>
+      <button class="ds-btn ds-btn--primary" type="button" id="issueCreate"><span class="ds-btn__faces"><span class="ds-btn__face">Create issue</span><span class="ds-btn__face ds-btn__face--busy" aria-hidden="true"><span class="ds-spinner ds-spinner--sm"></span>Creating</span></span></button>
+    </div>
+  </div>
+</dialog>
+
+<!-- A chat started from the page: Fix in a chat, Write a test, Change a test (testschat.js). -->
+<dialog class="ds-dialog ds-dialog--wide ds-dialog--full-narrow so-tests-wide" id="chatDialog" aria-labelledby="chatDialogTitle" aria-describedby="chatLead">
+  <div class="ds-dialog__backdrop" data-guarded-close></div>
+  <div class="ds-dialog__box">
+    <div class="ds-dialog__head">
+      <button class="ds-btn ds-btn--quiet ds-btn--icon" type="button" aria-label="Close" data-tip="Close" data-guarded-close data-icon="close"></button>
+      <h2 class="ds-dialog__title" id="chatDialogTitle">Start a chat</h2>
+    </div>
+    <div class="ds-dialog__body" id="chatBody"></div>
+    <div class="ds-dialog__actions">
+      <button class="ds-btn ds-btn--text" type="button" id="chatCancel" data-guarded-close>Cancel</button>
+      <button class="ds-btn ds-btn--primary" type="button" id="chatStart" aria-keyshortcuts="Control+Enter"><span class="ds-btn__faces"><span class="ds-btn__face">Start chat</span><span class="ds-btn__face ds-btn__face--busy" aria-hidden="true"><span class="ds-spinner ds-spinner--sm"></span>Starting</span></span></button>
+    </div>
+  </div>
+</dialog>
+<!-- ══ end of Bugs and chat ══ -->
+
 <script type="module" src="/static/js/tests.js"></script>
 </body>
 </html>
