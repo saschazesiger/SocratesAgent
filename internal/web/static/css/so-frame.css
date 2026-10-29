@@ -11,14 +11,17 @@
  *   .so-title        the session's name, a text button that renames it;
  *                    .so-title__home the words "Home" in its place on Home
  *   .so-outcome      the verdict on the last turn, beside the name
- *   .so-drawer-toggle  puts the session list away at a desk
+ *   .so-topbar__lead the brand and .so-drawer-toggle, which puts the session
+ *                    list away at a desk; as wide as the drawer under it
  *   .so-drawer-actions DS's drawer actions (.ds-drawer__actions): New session
- *                    and the empty VS Code; the foot is DS's .ds-drawer__foot
+ *                    and, at the right edge, the empty VS Code; the foot is
+ *                    DS's .ds-drawer__foot
  *                    (a rail of icons on a short screen, session.js)
  *   .so-session-list the folders and their rows (session.js)
  *   .so-folder       a project, a shelf of one (.so-folder--shelf), or the
  *                    Finished fold of projects (.so-folder--finished); its
- *                    head a .ds-pressable
+ *                    head a .ds-pressable, then a project's + (__new: a new
+ *                    session in it) and its VS Code (__ide)
  *   .so-row          one session: DS's drawer row (.ds-drawer__row), its item
  *                    and its ⋮ (.ds-drawer__action, .ds-hover-actions)
  *   .so-list-empty   what the list says when it has no rows
@@ -68,6 +71,37 @@
 @media (max-width: 900px) {
   .so-drawer-toggle {
     display: none;
+  }
+}
+
+/* The brand and the toggle are the bar's own items, as before, wherever
+   there is no drawer beside the panel. */
+.so-topbar__lead {
+  display: contents;
+}
+
+/* With the list beside the panel they take the drawer's column: the toggle
+   at its right edge, in line with the empty VS Code under it (the drawer
+   actions' padding), and the name where the panel starts (the bar's gap
+   and the topbar's margin make up the actions' padding). The bar's own
+   start is DS's padding beside a drawer (the brand's 32px mark centred on
+   the drawer's icon axis); the design scenario measures the alignment. */
+@media (min-width: 901px) {
+  .so-app:not([data-drawer-hidden]) .so-topbar__lead {
+    flex: none;
+    display: flex;
+    align-items: center;
+    gap: var(--ds-space-2);
+    width: calc(var(--ds-drawer-width) + env(safe-area-inset-left)
+      - max(calc(var(--ds-drawer-icon-axis) - 16px), env(safe-area-inset-left)) - var(--ds-space-3));
+  }
+
+  .so-app:not([data-drawer-hidden]) .so-drawer-toggle {
+    margin-left: auto;
+  }
+
+  .so-app:not([data-drawer-hidden]) .so-topbar {
+    margin-left: var(--ds-space-1);
   }
 }
 
@@ -183,11 +217,15 @@
 
 /* ── Drawer ───────────────────────────────────────────────────────────── */
 
-/* DS's drawer actions (.ds-drawer__actions): New session and the empty
-   VS Code side by side. */
+/* DS's drawer actions (.ds-drawer__actions): New session, and the empty
+   VS Code at the right edge, under the toggle in the bar. */
 .so-drawer-actions {
   gap: var(--ds-space-2);
   align-items: center;
+}
+
+.so-drawer-actions > #blankIDE {
+  margin-left: auto;
 }
 
 .so-btn-label {
@@ -349,6 +387,13 @@
 
 .so-folder--finished > .so-folder__rows {
   padding-left: var(--ds-space-2);
+}
+
+/* A folder's + and VS Code keep their size whatever the name beside them:
+   the name gives way, so they stand in one column down the list. */
+.so-folder__new,
+.so-folder__ide {
+  flex: none;
 }
 
 /* The folder's VS Code: in its colours while it runs, quiet while it does
@@ -555,7 +600,7 @@
   }
 
   /* Home is the drawer's first item, so the mark can go too. */
-  .so-app .ds-topbar > .ds-brand {
+  .so-app .so-topbar__lead > .ds-brand {
     display: none;
   }
 
@@ -571,7 +616,7 @@
 /* A phone on its side: the brand gives its width to the session, and Home
    is the drawer's first item anyway. */
 @media (max-height: 500px) {
-  .so-app .ds-topbar > .ds-brand {
+  .so-app .so-topbar__lead > .ds-brand {
     display: none;
   }
 }

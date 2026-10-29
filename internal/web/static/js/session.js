@@ -1139,7 +1139,7 @@ function groupHtml(folder, children) {
   // on this page is: in a tooltip, and nowhere in the words. "More Chats" and
   // the shelves have no path, so their tooltip says what they hold instead.
   const tip = fold ? FINISHED_TITLE : SHELF_TITLES[folder.status] || folder.path || 'Sessions in a directory of their own';
-  const ide = shelf || fold || folder.key === MORE_KEY ? '' : ideButtonHtml(folder);
+  const ide = shelf || fold || folder.key === MORE_KEY ? '' : html`${newButtonHtml(folder)}${ideButtonHtml(folder)}`;
   const kind = fold ? html`data-finished` : shelf ? html`data-shelf="${folder.status}"` : html`data-folder="${folder.key}"`;
   // A project with nothing in it but done sessions steps back as they do,
   // and so does the fold they are put away in.
@@ -1149,6 +1149,14 @@ function groupHtml(folder, children) {
   return html`<section class="${className}" data-ds-key="${dsKey}" ${kind}${open ? html` data-open` : ''}${done ? html` data-done` : ''}><div class="so-folder__bar"><button class="so-folder__head ds-pressable ds-pressable--lg ds-pressable--inset" type="button" aria-expanded="${open ? 'true' : 'false'}" aria-controls="${id}" data-toggle="${id}" data-tip="${tip}"${attention ? html` data-attention="${attention}"` : ''}${unread ? html` data-unread` : ''}>${raw(icon('chevronDown', 16, 'ds-chevron'))}<span class="so-folder__name">${folder.label}</span><span class="so-folder__dot" aria-hidden="true">${attention === 'waiting' ? raw(icon(WAITING_GLYPH, 16)) : ''}</span><span class="so-folder__count">${count}</span>${
     !open && attention ? html`<span class="ds-sr">${', ' + (attention === 'waiting' ? ACTIVITY_WORDS.waiting : ACTIVITY_WORDS.busy).toLowerCase()}</span>` : ''
   }</button>${ide}</div><div class="so-folder__rows" id="${id}"${open ? '' : html` hidden`}>${children}</div></section>`;
+}
+
+// newButtonHtml is a folder's +: the new-session sheet, opened on the
+// folder. A folder the server would not start a session in (neither a preset
+// nor a path the dashboard lets be typed) has none.
+function newButtonHtml(folder) {
+  const words = 'New session in ' + folder.label;
+  return html`<button class="ds-btn ds-btn--quiet ds-btn--icon ds-btn--sm so-folder__new" type="button" data-new="${folder.key}" aria-label="${words}" data-tip="${words}"${harnesses.folderChoice(folder.key) ? '' : html` hidden`}>${raw(icon('plus', 16))}</button>`;
 }
 
 // ideButtonHtml is the VS Code mark of a folder: in its colours while the
@@ -3684,8 +3692,8 @@ function measureForStart() {
   }
 }
 
-async function newSession() {
-  const pick = await harnesses.openNewSessionSheet();
+async function newSession(workdir = '') {
+  const pick = await harnesses.openNewSessionSheet({ workdir });
   if (!pick) return;
   // On a phone the drawer is what "New session" was tapped in, and the thing
   // being started is behind it. Leaving it open puts a list over the terminal
@@ -3791,6 +3799,8 @@ function wireList() {
     }
     const ide = event.target.closest('.so-folder__ide');
     if (ide) { openFolderIDE(ide.dataset.ide); return; }
+    const add = event.target.closest('.so-folder__new');
+    if (add) { newSession(add.dataset.new); return; }
     const head = event.target.closest('.so-folder__head');
     if (head) {
       const key = keysOfRows.get(head.dataset.toggle);
@@ -3946,7 +3956,7 @@ function restoreSidebar() {
 /* ----------------------------------------------------------------- start */
 
 function wire() {
-  dom.newSession.addEventListener('click', newSession);
+  dom.newSession.addEventListener('click', () => newSession());
   dom.blankIDE.append(agentMark(IDE, 18));
   dom.blankIDE.addEventListener('click', openBlankIDE);
   dom.menuBtn.addEventListener('click', () => {

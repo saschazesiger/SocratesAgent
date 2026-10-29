@@ -4212,6 +4212,22 @@ async function design() {
     // the pane is re-measured for the width it has actually been given.
     const wide = await s.page.evaluate(() =>
       Math.round(document.getElementById('sidebar').getBoundingClientRect().width));
+    // With the list there, the toggle stands at the drawer's right edge, in
+    // line with New session's row under it, and the name starts at the panel.
+    const edges = await s.page.evaluate(() => {
+      const box = (sel) => document.querySelector(sel).getBoundingClientRect();
+      const actions = document.querySelector('#sidebar .so-drawer-actions');
+      const inner = box('#sidebar .so-drawer-actions').right - parseFloat(getComputedStyle(actions).paddingRight);
+      const ide = document.getElementById('blankIDE');
+      return {
+        toggle: Math.round(box('#sideCollapse').right - inner),
+        ide: ide.checkVisibility() ? Math.round(box('#blankIDE').right - inner) : 0,
+        title: Math.round(box('#sessionTitle').left - box('.ds-panel').left),
+      };
+    });
+    ok(edges.toggle === 0 && edges.ide === 0 && edges.title === 0,
+      'the toggle and the empty VS Code are at the drawer’s right edge, the name where the panel starts',
+      JSON.stringify(edges));
     const panelWide = await s.page.evaluate(() =>
       Math.round(document.querySelector('.ds-panel').getBoundingClientRect().width));
     await s.page.click('#sideCollapse');
@@ -4229,6 +4245,9 @@ async function design() {
       JSON.stringify({ wide, panelWide, ...away }));
     ok(away.toggle && away.expanded === 'false' && /Show/.test(away.said || ''),
       'and stays in the bar, saying it brings the list back', JSON.stringify(away));
+    const besideBrand = await s.page.evaluate(() => Math.round(document.getElementById('sideCollapse').getBoundingClientRect().left
+      - document.querySelector('.ds-brand').getBoundingClientRect().right));
+    ok(besideBrand > 0 && besideBrand <= 16, 'put away, the toggle stands beside the brand', besideBrand + 'px');
     await shot(s.page, 'design-rail');
 
     // Per device, and it survives the reload it is there to be useful across.
@@ -6241,6 +6260,25 @@ async function folders() {
     ok(visibleCount === 1, 'an open folder counts nothing: the rows under it are the count', visibleCount);
     await shot(s.page, 'folders-shut');
 
+    // A folder's + is the new-session sheet, opened on that folder: here a
+    // typed-in path, since the dashboard allows one. "More Chats" has none.
+    const plus = await s.page.evaluate((dir) => ({
+      folder: document.querySelector('#sessionList .so-folder[data-folder="' + dir + '"] > .so-folder__bar > .so-folder__new')?.checkVisibility() || false,
+      more: !!document.querySelector('#sessionList .so-folder[data-folder="#more"] .so-folder__new'),
+    }), projects.browser);
+    ok(plus.folder && !plus.more, 'a project folder has a + for a new session in it, "More Chats" none', JSON.stringify(plus));
+    await s.page.click('#sessionList .so-folder[data-folder="' + projects.browser + '"] > .so-folder__bar > .so-folder__new');
+    await s.page.waitForSelector('#newSessionSheet[open]', { timeout: 15000 });
+    const inFolder = await s.page.evaluate(() => ({
+      dir: document.querySelector('#nsDir .so-drop__value')?.textContent || '',
+      path: document.getElementById('nsDirPath').value,
+      typed: document.getElementById('nsDirPath').checkVisibility(),
+    }));
+    ok(inFolder.typed && inFolder.path === projects.browser,
+      'and the sheet opens on that folder', JSON.stringify(inFolder));
+    await s.page.click('#nsCancel');
+    await s.page.waitForSelector('#newSessionSheet:not([open])', { state: 'attached', timeout: 10000 });
+
     // It is a fact about this device, so a reload finds it the way it was
     // left - and the sessions in it are still there, not gone.
     await stampAll(s.page);
@@ -6385,7 +6423,9 @@ async function folders() {
         inside: box.left >= 0 && box.right <= window.innerWidth,
       };
     }, browserHead);
-    ok(thumb.height >= 44 && thumb.width >= 180 && thumb.inside,
+    // The + and VS Code beside it take two small buttons of the drawer's
+    // width; what is left is still most of it.
+    ok(thumb.height >= 44 && thumb.width >= 150 && thumb.inside,
       'on a phone a folder head is a target a thumb can hit', JSON.stringify(thumb));
     await s.page.click(browserHead);
     await s.page.waitForFunction((sel) => document.querySelector(sel)
