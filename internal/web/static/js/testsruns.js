@@ -708,10 +708,7 @@ export function mount(ctx) {
       </section>
       ${(d.pools || []).length ? html`<section class="ds-card" aria-labelledby="rvPoolTitle" data-ds-key="pools">
         <h3 class="ds-card__title" id="rvPoolTitle">Accounts of the tools</h3>
-        ${d.pools.map((pool) => html`<h4 class="ds-card__subtitle">${pool.title || pool.tool}</h4><ul class="ds-kv-list">${(pool.members || []).map((m) => html`<li><span>${m.label || 'Account ' + m.n}</span><strong>${
-          m.holders && m.holders.length ? V.holderWords(m.holders, entry(d.id).cells)
-            : m.busy ? html`${raw(icon('ban', 16, 'ds-kv-list__icon ds-kv-list__icon--warning'))}<span class="ds-sr">Busy:</span> in use outside Socrates`
-              : html`<span class="ds-muted">Free</span>`}</strong></li>`)}</ul>`)}
+        ${V.poolList(d.pools, entry(d.id).cells)}
       </section>` : ''}`);
   }
 

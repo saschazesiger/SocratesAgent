@@ -148,10 +148,7 @@ export function mount(ctx) {
         </li>`)}</ul>
         ${waiting.length > SHOWN ? html`<p class="ds-meta">${'And ' + (waiting.length - SHOWN) + ' more in the queue.'}</p>` : ''}` : ''}
       ${pools.length ? html`<h3 class="ds-card__subtitle">Accounts of the tools</h3>
-        ${pools.map((pool) => html`<ul class="ds-kv-list" aria-label="${pool.title || pool.tool}">${(pool.members || []).map((m) => html`<li><span>${(pool.title || pool.tool) + ' · ' + (m.label || 'account ' + m.n)}</span><strong>${
-          m.holders && m.holders.length ? V.holderWords(m.holders, cells)
-            : m.busy ? html`${raw(icon('ban', 16, 'ds-kv-list__icon ds-kv-list__icon--warning'))}<span class="ds-sr">Busy:</span> in use outside Socrates`
-              : html`<span class="ds-muted">Free</span>`}</strong></li>`)}</ul>`)}` : ''}
+        ${V.poolList(pools, cells)}` : ''}
     </section>`;
   }
 

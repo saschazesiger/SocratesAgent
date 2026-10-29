@@ -334,6 +334,22 @@ export function holderWords(holders, cells) {
   }).join(', ');
 }
 
+/**
+ * poolList is a run's pools as a list: a row per account of a pool, the
+ * cells that hold it below its name (a list, so long names wrap on a phone
+ * rather than squeezing beside a label).
+ */
+export function poolList(pools, cells) {
+  return html`${(pools || []).map((pool) => html`<ul class="ds-list" aria-label="${pool.title || pool.tool}" data-ds-key="${'pool-' + pool.tool}">${(pool.members || []).map((m) => html`<li class="ds-list__item" data-ds-key="${'m' + m.n}">
+    <span class="ds-list__text">
+      <span class="ds-list__title">${(pool.title || pool.tool) + ' · ' + (m.label || 'account ' + m.n)}</span>
+      <span class="ds-list__meta so-break">${m.holders && m.holders.length ? holderWords(m.holders, cells) : m.busy ? 'In use outside Socrates' : 'Free'}</span>
+    </span>
+    ${m.holders && m.holders.length ? chip({ word: 'In use', glyph: 'play' })
+      : m.busy ? chip({ word: 'Busy', glyph: 'ban', tone: 'warning' }) : chip({ word: 'Free', glyph: 'check' })}
+  </li>`)}</ul>`)}`;
+}
+
 /** stripHeading drops a leading "# Conclusions" (or any first-level heading) the card titles already. */
 export function stripHeading(md) {
   return String(md || '').replace(/^\s*#\s+[^\n]*\n+/, '');
