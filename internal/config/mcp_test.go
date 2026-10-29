@@ -56,3 +56,30 @@ func TestMCPServersThatCannotStartAreRefused(t *testing.T) {
 		t.Errorf("twice: %v", err)
 	}
 }
+
+// A server of Admin from before Socrates had a built-in server of its name
+// is renamed, so that the settings stay valid and every save still works.
+func TestAnAdminServerNamedLikeABuiltInOneIsRenamed(t *testing.T) {
+	old := BuiltinMCPNames
+	BuiltinMCPNames = []string{"browserstack"}
+	t.Cleanup(func() { BuiltinMCPNames = old })
+	s := Default()
+	s.MCP.Servers = []MCPServerSetting{
+		{Name: "browserstack", Command: "npx", Args: []string{"@browserstack/mcp-server"}},
+		{Name: "browserstack-admin", Command: "other"},
+	}
+	s.Normalize()
+	if err := s.Validate(); err != nil {
+		t.Fatalf("after normalize: %v", err)
+	}
+	var names []string
+	for _, m := range s.MCP.Servers {
+		names = append(names, m.Name)
+	}
+	if got := strings.Join(names, ","); got != "browserstack-admin,browserstack-admin-2" {
+		t.Fatalf("names: %s", got)
+	}
+	if s.MCP.Servers[1].Command != "npx" {
+		t.Fatalf("the renamed server: %+v", s.MCP.Servers[1])
+	}
+}
