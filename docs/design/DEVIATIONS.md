@@ -2970,11 +2970,8 @@ Asked for by the product owner on 2026-10-25, on branch `ui-simplify`.
   the chat's record - every message, call (with how long it took or has run), question and turn
   boundary, each with its time, cut from the old end past 160k runes - and the measured facts
   (`chatreport.go`), and answers a summary, what runs now and an estimate of the time left
-  (`chatstatus.go`). The modal (`statusmodal.js`) opens on the press and says what is being done
-  until the answer is in; then a state chip, "Right now" with the running call, three tiles (running
-  for / expected / session, the times measured by the server and counted on), the task list with its
-  progress and the summary, with Read aloud. Nothing of it stands in the chat's dock. A Shell's
-  Status still reads its screen and says it in the notice.
+  (`chatstatus.go`). <!-- rev: 2026-10-29 --> Reworked 2026-10-29, see "Status: when all of it is
+  done" below. A Shell's Status still reads its screen and says it in the notice, out loud.
 - **The rename dialog suggests a name** (its sparkles): `POST /api/sessions/{id}/title
   {"suggest":true}` answers a name from the journal and saves nothing; Rename does.
 - **Turn outcomes are on by default** (the owner: "always on"), and `openrouter.models_rev` 2 turns
@@ -2982,6 +2979,33 @@ Asked for by the product owner on 2026-10-25, on branch `ui-simplify`.
 - **Read aloud on an answer.** Beside Copy, an answer has Read aloud: `POST /api/chats/{id}/spoken`
   says it for the ear in the voice's language (what was done, what came of it, what it asks; code,
   paths and tables told rather than read), or hands back a short plain answer as it is.
+
+### Status: when all of it is done (2026-10-29)
+
+The owner: the estimate was far off, it was for the current turn rather than for everything the
+agent has to do, nothing should be read out loud by itself, and the chat needs no summary.
+
+- **The estimate is for the whole request**: from the person's message that found the agent
+  resting, through every turn, background task, subagent and queued message, to its final report,
+  without the time it waits for the person (`chatreport.go` `workSpans`).
+- **More of the chat goes in**: the record holds up to 400k runes (messages 12k, texts 6k, calls
+  400, 24 calls inside a subagent), queued messages, and measured facts on the current request (how
+  long it has run, its turns and calls) and the earlier requests of the chat (how long each took).
+- **The number is calibrated, not the model's own.** A backtest (`statuseval_test.go`, build tag
+  `statuseval`) cuts the real journals of this server into requests, asks the Status at moments
+  while they ran and compares with how long they really went on: 139 moments of 37 requests, one to
+  300 minutes. The old Status was off by a factor of 2.7 at the median (within a factor of two 41%);
+  asking the model for the whole request alone did not help, nor did Gemini 3.8 Flash, GPT-5.6 Luna
+  or DeepSeek v4.1 Flash, or the old, smaller record. The geometric mean of the model's estimate, the
+  time the request has run and that time carried forward by the share the model says is done was
+  off by a factor of 2.0 at the median (within a factor of two 50%, mean log error 1.14 to 0.83), so
+  that is what is shown, with a factor of two either way as its range. Haiku 5.5 stays the model.
+- **The modal answers "when"**: a tinted block with the state, "Everything done in about 25 min",
+  the clock time and the range, the share done as a progress bar and the request's goal; then
+  "Right now" with the running call, "Still to do" (the model's steps), the agent's own task list,
+  why the estimate is what it is, and the request's and session's figures. No summary.
+- **Read aloud only on request**: nothing is read when the answer arrives; the modal's Read aloud
+  reads the spoken version, whose last sentence is the shown estimate, said by the server.
 
 ## Dashboard-Style 2.0 (2026-10-27)
 

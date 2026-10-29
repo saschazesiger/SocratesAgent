@@ -492,7 +492,8 @@ export async function openRouterStub({ text = 'hello from the microphone', repli
       // stub told what to say says it as every part of one.
       const system = json && Array.isArray(json.messages) && json.messages[0] ? String(json.messages[0].content || '') : '';
       if (completion && system.startsWith('You analyse a coding session') && typeof reply === 'string' && !reply.trim().startsWith('{')) {
-        reply = JSON.stringify({ summary: reply, now: reply, eta: 'Nothing is running.', eta_minutes: null, spoken: reply });
+        reply = JSON.stringify({ goal: 'The task', now: reply, remaining: [], progress: 100, eta_minutes: null,
+          eta_reason: 'Nothing is left to do.', spoken: reply });
       }
       res.writeHead(200, { 'content-type': 'application/json' });
       res.end(JSON.stringify({ text: reply, choices: [{ message: { content: reply } }] }));

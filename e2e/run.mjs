@@ -5343,21 +5343,35 @@ async function watchTicker(page, sel = '#tickerWindow') {
 }
 
 // statusDialog waits for a chat's Status modal to have its analysis and
-// reads it: the chip (state), the two texts by their labels, and every tile
-// as label -> value with its note under "<label> note".
+// reads it: the chip (state), the answer's label, figure and note (Label,
+// Done in, Note), what runs now, the steps still to do, the reasons for the
+// estimate, and every fact as label -> value.
 async function statusDialog(page, timeout) {
-  await page.waitForSelector('dialog.so-status[open] .so-status__tiles', { timeout });
+  await page.waitForSelector('dialog.so-status[open] .so-status__hero', { timeout });
   return page.$eval('dialog.so-status', (d) => {
-    const out = { state: (d.querySelector('.so-status__state .ds-status') || {}).textContent || '' };
-    out['Right now'] = (d.querySelector('.so-status__now-text') || {}).textContent || '';
-    out['Summary'] = (d.querySelector('.so-status__summary .so-status__text') || {}).textContent || '';
-    for (const tile of d.querySelectorAll('.ds-tile')) {
-      const label = tile.querySelector('.ds-tile__label').textContent.trim();
-      out[label] = tile.querySelector('.ds-tile__value').textContent.trim();
-      out[label + ' note'] = (tile.querySelector('.ds-tile__note') || {}).textContent || '';
+    const text = (sel) => ((d.querySelector(sel) || {}).textContent || '').trim();
+    const out = {
+      state: text('.so-status__hero-head .ds-status'),
+      Label: text('.so-status__hero-label'),
+      'Done in': text('.so-status__hero-value'),
+      Note: text('.so-status__hero-note'),
+      Progress: text('.so-status__progress .ds-progress__label'),
+      'Right now': text('.so-status__now .so-status__text'),
+      'Still to do': [...d.querySelectorAll('.so-status__next .ds-tasks__item')].map((n) => n.textContent.trim()),
+      Why: text('.so-status__why .so-status__text'),
+      Summary: text('.so-status__summary'),
+    };
+    for (const row of d.querySelectorAll('.so-status__facts > div')) {
+      out[row.querySelector('dt').textContent.trim()] = row.querySelector('dd').textContent.trim();
     }
     return out;
   });
+}
+
+// readStatusAloud presses the modal's Read aloud.
+async function readStatusAloud(page) {
+  await page.waitForSelector('dialog.so-status[open] .so-status__speak:not([hidden])', { timeout: 10000 });
+  await page.$eval('dialog.so-status .so-status__speak', (b) => b.click());
 }
 
 // closeStatusDialog presses the modal's Close, and says whether it went.
@@ -5370,7 +5384,8 @@ async function closeStatusDialog(page) {
 /* ------------------------------------------------------- 34. status-speak */
 
 // The Status button: one request, a spinner while it is being made, the answer
-// on screen as words, and the same words handed to the voice.
+// on screen as words, and the same words handed to the voice when Read aloud
+// is pressed - and not before.
 async function statusspeak() {
   const stub = await openRouterStub({ text: 'Claude Code has finished and is waiting for your next message.' });
   const s = await start({
@@ -5436,19 +5451,24 @@ async function statusspeak() {
       'with reduced motion it still turns, rather than standing still', JSON.stringify(calm));
     await s.page.emulateMedia({ reducedMotion: null });
 
-    // A chat's Status is an analysis: a dialog with what it is about, what
-    // runs now, the server's clock and the estimate.
+    // A chat's Status is an analysis: a dialog with when it is done, what
+    // runs now, what is left, why, and the server's clock - and no summary
+    // of the chat.
     const facts = await statusDialog(s.page, 40000);
-    const shown = facts['Summary'] || '';
-    ok(shown.includes('finished') && shown === stub.text && facts['Right now'] === stub.text,
-      'what the model said is on screen, in words', oneLine(JSON.stringify(facts)));
-    ok(/^\d+\u00a0(s|min)$/.test(facts['Idle for'] || '') && /^1 turn · /.test(facts['Session note'] || '') &&
-      facts['Expected'] === 'Done' && facts['Expected note'] === 'Nothing is running.' && facts.state === 'Idle',
+    ok(facts['Right now'] === stub.text && facts.Summary === '',
+      'what the model said is on screen, in words, and no summary', oneLine(JSON.stringify(facts)));
+    ok(facts.state === 'Done' && facts.Label === 'Everything done at' && /^\d\d?:\d\d/.test(facts['Done in']) &&
+      /^after \d+ s of work on the request$/.test(facts.Note) && facts.Progress === '' && facts.Why === 'Nothing is left to do.' &&
+      /of work since/.test(facts['This request'] || '') && /1 turn · /.test(facts.Session || ''),
       'and the measured times and the estimate beside it', oneLine(JSON.stringify(facts)));
     await shot(s.page, 'status-speak');
 
+    // Nothing is read out loud until Read aloud is pressed.
+    await wait(1500);
+    ok(said.length === 0, 'it is not read out loud by itself', said.length + ' render(s)');
+    await readStatusAloud(s.page);
     for (let i = 0; i < 60 && said.length === 0; i += 1) await wait(200);
-    ok(said.length === 1, 'and it was read out loud exactly once', said.length + ' render(s)');
+    ok(said.length === 1, 'Read aloud reads it out loud exactly once', said.length + ' render(s)');
     ok(said[0] === stub.text, 'with the words that are on the screen', oneLine(said[0] || ''));
 
     // The model id and the state are facts about the machine, never in the
@@ -5511,7 +5531,7 @@ async function statusticker() {
     }, null, { timeout: 1000 }).then((h) => h.jsonValue(), () => null);
     ok(loading === 'Reading the chat…' || loading === 'Analysing the chat…', 'the modal opens at once and says what is being done', String(loading));
     const facts = await statusDialog(s.page, 45000).catch(() => null);
-    ok(!!facts && facts['Right now'] === stub.text && facts.state === 'Idle', 'then it shows the analysis', JSON.stringify(facts));
+    ok(!!facts && facts['Right now'] === stub.text && facts.state === 'Done', 'then it shows the analysis', JSON.stringify(facts));
     await wait(1500);
     const said = await lines();
     const ticker = await s.page.$eval('#chat .so-chat__dock .so-ticker', (n) => n.hidden);
@@ -5753,17 +5773,20 @@ async function nooverlap() {
     await s.page.waitForSelector('#statusBtn:not([hidden]):not([disabled])', { timeout: 15000 });
     await s.page.$eval('#statusBtn', (n) => n.click());
     const facts = await statusDialog(s.page, 45000).catch(() => null);
-    ok(!!facts, 'the summary arrived while the microphone was open', oneLine(JSON.stringify(facts)));
+    ok(!!facts, 'the analysis arrived while the microphone was open', oneLine(JSON.stringify(facts)));
     await wait(2000);
     ok(said.length === 0, 'and nothing at all was read out loud', said.length + ' render(s)');
     await closeStatusDialog(s.page);
 
     // The recording is thrown away, and the same button says the same thing
-    // out loud - so what stopped the voice was the microphone and nothing else.
+    // out loud when asked to - so what stopped the voice was the microphone
+    // and nothing else.
     await s.page.click('#recCancel');
     await s.page.waitForSelector('#recSheet:not([open])', { state: 'attached', timeout: 10000 });
     await s.page.waitForSelector('#statusBtn:not([hidden]):not([disabled])', { timeout: 20000 });
     await s.page.click('#statusBtn');
+    await statusDialog(s.page, 45000).catch(() => null);
+    await readStatusAloud(s.page);
     for (let i = 0; i < 120 && said.length === 0; i += 1) await wait(200);
     ok(said.length === 1, 'with the microphone closed it is read out loud',
       said.length + ' render(s)');
@@ -13113,8 +13136,8 @@ async function chattitle() {
   }
 }
 
-// chat-status: Status is there for a chat and says it from its journal, on
-// the chat's own line and out loud.
+// chat-status: Status is there for a chat and says it from its journal, in
+// its modal, and out loud when Read aloud is pressed.
 async function chatstatus() {
   const words = 'The agent ran echo and said hello.';
   const stub = await openRouterStub({ text: words });
@@ -13133,19 +13156,20 @@ async function chatstatus() {
     // The whole answer is the analysis dialog: its parts, and the server's
     // clock beside them.
     const facts = await statusDialog(page, 10000).catch(() => null);
-    ok(!!facts && facts['Summary'] === words && facts['Right now'] === words && !!facts['Idle for'] &&
-      /1 turn/.test(facts['Session note'] || ''),
+    ok(!!facts && facts['Right now'] === words && facts.Label === 'Everything done at' && /1 turn/.test(facts.Session || ''),
       'and the whole answer is the analysis, with the measured times', JSON.stringify(facts));
     const dock = await page.$eval('#chat .so-chat__dock', (d) => ({ ticker: d.querySelector('.so-ticker').hidden, notice: d.querySelector('.so-notice').hidden }));
     ok(dock.ticker && dock.notice, 'and nothing of it stands in the chat', JSON.stringify(dock));
     await wait(800);
     await shot(page, 'chat-status');
+    ok(spoken.length === 0, 'it is not read out loud by itself', JSON.stringify(spoken));
+    await readStatusAloud(page);
     const read = await (async () => {
       const until = Date.now() + 15000;
       while (Date.now() < until && !spoken.includes(words)) await wait(150);
       return spoken.includes(words);
     })();
-    ok(read, 'and it is read out loud', JSON.stringify(spoken));
+    ok(read, 'and Read aloud reads it out loud', JSON.stringify(spoken));
     await closeStatusDialog(page);
     const calls = stub.calls.filter((c) => String(c.path).includes('chat/completions'));
     const prompt = calls.map((c) => ((c.json || {}).messages || []))
@@ -13178,6 +13202,97 @@ async function chatstatus() {
       'on a phone the analysis is inside the screen, not cut', JSON.stringify(onPhone));
     await wait(800);
     await shot(small, 'chat-status-phone');
+    await phone.close();
+    ok(unexpected(s.errors).length === 0, 'no console errors', unexpected(s.errors).join(' | ') || '0');
+  } finally {
+    await s.stop();
+    await stub.close();
+  }
+}
+
+// chat-status-eta: while a chat works, its Status says when the whole of the
+// work will be done - large, with the clock time, a range and how far along
+// it is - what runs now, the steps still to come and why the estimate is
+// what it is, beside the agent's own task list.
+async function chatstatuseta() {
+  const analysis = {
+    goal: 'Ship the three fixes', now: 'It works through its task list, on the second task.',
+    remaining: ['Finish the second task', 'Do the third task', 'Run the tests', 'Report back'],
+    progress: 40, eta_minutes: 12,
+    eta_reason: 'Two of three tasks are left and each took about four minutes; then the tests and a report.',
+    spoken: 'It works through three fixes and is on the second.',
+  };
+  const stub = await openRouterStub({
+    answer: (json) => (String(((json.messages || [])[0] || {}).content || '').startsWith('You analyse a coding session')
+      ? JSON.stringify(analysis) : 'Ship three fixes'),
+  });
+  const s = await chatServer({ args: ['--autoplay-policy=no-user-gesture-required'] });
+  const { page } = s;
+  try {
+    await pointGateway(s, stub);
+    const spoken = await stubSpeech(s.context, { seconds: 4 });
+    const id = await startChat(page);
+    await say(page, '/todo 20000');
+    await awaitChat(s, id, (b) => b.chat.turn_running, 10000);
+    await page.waitForSelector('#statusBtn:not([hidden]):not([disabled])', { timeout: 10000 });
+    await page.click('#statusBtn');
+    const facts = await statusDialog(page, 15000).catch(() => null);
+    ok(!!facts && facts.state === 'Working' && facts.Label === 'Everything done in about' &&
+      /^\d+ min$/.test(facts['Done in']) && /^around \d\d?:\d\d( [AP]M)? · likely \d+ min to \d+ min$/.test(facts.Note),
+      'the answer is when the whole of the work will be done, with the clock time and a range', JSON.stringify(facts));
+    ok(facts && facts.Progress === '40% done' && facts['Right now'] === analysis.now && facts.Why === analysis.eta_reason,
+      'with how far along it is, what runs now and why', JSON.stringify(facts));
+    ok(facts && facts['Still to do'].length === 4 && facts['Still to do'][0].startsWith('Finish the second task'),
+      'and the steps still to come', JSON.stringify(facts && facts['Still to do']));
+    const marks = await page.$$eval('dialog.so-status .so-status__next .ds-tasks__item', (n) => n.map((i) => i.dataset.status));
+    ok(marks.join(',') === 'running,pending,pending,pending', 'the first of them runs', marks.join(','));
+    const tasks = await page.$eval('dialog.so-status', (d) => ({
+      count: ((d.querySelector('.so-status__tasks .ds-meta') || {}).textContent || '').trim(),
+      items: d.querySelectorAll('.so-status__tasks .ds-tasks__item').length,
+    }));
+    ok(tasks.items === 3 && / of 3 done$/.test(tasks.count), 'beside the agent\'s own task list', JSON.stringify(tasks));
+    await wait(800);
+    await shot(page, 'chat-status-eta');
+    ok(spoken.length === 0, 'nothing is read out loud by itself', JSON.stringify(spoken));
+    await readStatusAloud(page);
+    const until = Date.now() + 15000;
+    while (Date.now() < until && !spoken.length) await wait(150);
+    ok(spoken.length === 1 && spoken[0].startsWith(analysis.spoken + ' It will probably need about ') &&
+      spoken[0].endsWith(' more until everything is done.'),
+      'Read aloud reads it, with the estimate said by the server', JSON.stringify(spoken));
+    const stop = await page.waitForFunction(() => {
+      const b = document.querySelector('dialog.so-status .so-status__speak');
+      return b && b.getAttribute('aria-pressed') === 'true' ? b.textContent.trim() : null;
+    }, null, { timeout: 5000 }).then((h) => h.jsonValue(), () => null);
+    ok(stop === 'Stop reading', 'and the button turns into its stop while it reads', String(stop));
+    await page.$eval('dialog.so-status .so-status__speak', (b) => b.click());
+    const quiet = await page.waitForFunction(() => {
+      const b = document.querySelector('dialog.so-status .so-status__speak');
+      return b && b.getAttribute('aria-pressed') === 'false';
+    }, null, { timeout: 5000 }).then(() => true, () => false);
+    ok(quiet, 'and pressing it again stops the reading', String(quiet));
+
+    // A phone: the answer inside the screen, nothing cut.
+    const signedIn = await s.context.storageState();
+    const phone = await s.browser.newContext({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true,
+      storageState: { cookies: signedIn.cookies, origins: [] } });
+    const small = await phone.newPage();
+    await small.goto(s.url + '/#open=' + id, { waitUntil: 'domcontentloaded' });
+    await chatUp(small);
+    await small.waitForSelector('#statusBtn:not([hidden]):not([disabled])', { timeout: 10000 });
+    await small.tap('#statusBtn');
+    const onPhone = await small.waitForFunction(() => {
+      const box = document.querySelector('dialog.so-status[open] .ds-dialog__box');
+      if (!box || !box.querySelector('.so-status__hero')) return null;
+      const r = box.getBoundingClientRect();
+      const root = document.scrollingElement;
+      return { left: r.left, right: r.right, overflow: Math.max(root.scrollWidth - root.clientWidth, 0),
+        cut: Math.max(box.scrollWidth - box.clientWidth, 0) };
+    }, null, { timeout: 30000 }).then((h) => h.jsonValue(), () => null);
+    ok(!!onPhone && onPhone.left >= 0 && onPhone.right <= 390 && onPhone.overflow <= 1 && onPhone.cut <= 1,
+      'on a phone the answer is inside the screen, not cut', JSON.stringify(onPhone));
+    await wait(800);
+    await shot(small, 'chat-status-eta-phone');
     await phone.close();
     ok(unexpected(s.errors).length === 0, 'no console errors', unexpected(s.errors).join(' | ') || '0');
   } finally {
@@ -13834,7 +13949,8 @@ const ALL = [
   ['chat-home', 'Home reads a chat from its journal: what it does, Running and Finished, its question on the card, at a desk and on a phone', chathome],
   ['chat-push', 'a chat\u2019s notification and badge: the question\u2019s words, how a turn ended, nothing for a Stop, a limit once', chatpush],
   ['chat-title', 'a chat names itself from its first message', chattitle],
-  ['chat-status', 'Status says a chat from its journal, on its line and out loud', chatstatus],
+  ['chat-status', 'Status says a chat from its journal, in its modal and out loud on request', chatstatus],
+  ['chat-status-eta', 'While a chat works, Status says when all of it will be done, and why', chatstatuseta],
   ['chat-speak', 'an answer read out loud, said for the ear', chatspeak],
   ['chat-outcome', 'a chat\u2019s turn judged from its journal: the hourglass, the verdict, the notification', chatoutcome],
   ['chat-schedule', 'a chat started by its clock: its draft the first message, once, and no start time once it has one', chatschedule],

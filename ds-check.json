@@ -14,8 +14,6 @@
       "reason": "Placement: on a phone every page's bar shows the mark without its name; DS lets the name give way only beside a .ds-topbar__title, which these bars do not have (the session's name is a rename button)." },
     { "rule": "restyle", "file": "internal/web/static/css/so-frame.css", "selector": ".so-touch[data-so-short] .so-app > .ds-topbar",
       "reason": "Placement: a phone on its side with its keyboard up leaves a strip, and the bar steps aside whatever has the focus; DS's .ds-app--keyboard-hides-bar waits for html[data-ds-keyboard], which DS.dom.followViewport (2.1) sets for a field in VS Code's frame but not for its editor in Chromium, an EditContext element that is neither a textarea nor contenteditable." },
-    { "rule": "restyle", "file": "internal/web/static/css/so-frame.css", "selector": ".so-status__tiles .ds-tile__value",
-      "reason": "Wrapping: the Status modal's figures are spans in words (\"Your turn\"), wider than a third of the 600px modal at the figure's size; they take a second line between words instead of DS's ellipsis." },
     { "rule": "restyle", "file": "internal/web/static/css/so-home.css", "selector": ".so-home__tile .ds-tile__label",
       "reason": "Layout: the figures of a row of Home's tiles stand on one line however many lines a label takes." },
     { "rule": "restyle", "file": "internal/web/static/css/so-home.css", "selector": ".so-home__tile .ds-tile__label > span",
