@@ -648,7 +648,7 @@ export function mount(ctx) {
         ${sorted.length ? html`<div class="ds-disclosure-list">${sorted.map((bug) => html`<details class="ds-collapsible ds-disclosure ds-disclosure--row" data-ds-key="${'bug-' + bug.id}">
           <summary><span class="ds-disclosure__title">${bug.id + ' · ' + bug.title}</span><span class="ds-disclosure__meta">${V.severityWord(bug.severity) + ' · ' + V.plural((bug.cells || []).length, 'cell')}</span>${raw(icon('chevronDown', 20, 'ds-chevron'))}</summary>
           <div class="ds-disclosure__body so-tests__stack">
-            <p>${V.severityChip(bug.severity)}</p>
+            <p class="so-tests__verdict">${V.severityChip(bug.severity)}<a class="ds-link-btn" href="${V.paths.page({ repo: state.repo, view: 'bugs', bug: bug.id })}">${'Open ' + bug.id + ' in Bugs: triage, history'}</a></p>
             ${bug.description ? html`<div class="ds-prose ds-prose--dense so-break">${markdown(bug.description)}</div>` : ''}
             ${(bug.cells || []).length ? html`<p class="so-tests__links">${(bug.cells || []).map((ref) => {
               const r = byCell.get(ref);
@@ -708,10 +708,7 @@ export function mount(ctx) {
       </section>
       ${(d.pools || []).length ? html`<section class="ds-card" aria-labelledby="rvPoolTitle" data-ds-key="pools">
         <h3 class="ds-card__title" id="rvPoolTitle">Accounts of the tools</h3>
-        ${d.pools.map((pool) => html`<h4 class="ds-card__subtitle">${pool.title || pool.tool}</h4><ul class="ds-kv-list">${(pool.members || []).map((m) => html`<li><span>${m.label || 'Account ' + m.n}</span><strong>${
-          m.holders && m.holders.length ? V.holderWords(m.holders, entry(d.id).cells)
-            : m.busy ? html`${raw(icon('ban', 16, 'ds-kv-list__icon ds-kv-list__icon--warning'))}<span class="ds-sr">Busy:</span> in use outside Socrates`
-              : html`<span class="ds-muted">Free</span>`}</strong></li>`)}</ul>`)}
+        ${V.poolList(d.pools, entry(d.id).cells)}
       </section>` : ''}`);
   }
 

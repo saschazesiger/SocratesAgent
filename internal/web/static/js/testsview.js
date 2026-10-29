@@ -334,6 +334,22 @@ export function holderWords(holders, cells) {
   }).join(', ');
 }
 
+/**
+ * poolList is a run's pools as a list: a row per account of a pool, the
+ * cells that hold it below its name (a list, so long names wrap on a phone
+ * rather than squeezing beside a label).
+ */
+export function poolList(pools, cells) {
+  return html`${(pools || []).map((pool) => html`<ul class="ds-list" aria-label="${pool.title || pool.tool}" data-ds-key="${'pool-' + pool.tool}">${(pool.members || []).map((m) => html`<li class="ds-list__item" data-ds-key="${'m' + m.n}">
+    <span class="ds-list__text">
+      <span class="ds-list__title">${(pool.title || pool.tool) + ' · ' + (m.label || 'account ' + m.n)}</span>
+      <span class="ds-list__meta so-break">${m.holders && m.holders.length ? holderWords(m.holders, cells) : m.busy ? 'In use outside Socrates' : 'Free'}</span>
+    </span>
+    ${m.holders && m.holders.length ? chip({ word: 'In use', glyph: 'play' })
+      : m.busy ? chip({ word: 'Busy', glyph: 'ban', tone: 'warning' }) : chip({ word: 'Free', glyph: 'check' })}
+  </li>`)}</ul>`)}`;
+}
+
 /** stripHeading drops a leading "# Conclusions" (or any first-level heading) the card titles already. */
 export function stripHeading(md) {
   return String(md || '').replace(/^\s*#\s+[^\n]*\n+/, '');
@@ -374,3 +390,110 @@ export const paths = {
   /** page is the address of a place on the Tests page (for links and breadcrumbs). */
   page: (route) => '#' + new URLSearchParams(Object.entries(route).filter(([, v]) => v)).toString(),
 };
+
+/* --- bugs and chat --- */
+
+// (Imported here, with the part that needs them; imports are hoisted.)
+import { DS } from './ui.js';
+import { api, confirmDialog } from './api.js';
+
+// A tracked bug's status (TrackedBug.status), as the Bugs view and the bug
+// view say it: a glyph and a word, and what it means for the person who
+// sets it (the triage's explanation of each).
+export const BUG_STATUS = {
+  open: { word: 'Open', glyph: 'flag', tone: '', hint: 'Needs a fix. Counted on the Bugs tab and the overview.' },
+  known: { word: 'Known', glyph: 'eye', tone: '', hint: 'It stays listed and is reported again when seen, but no longer counts as open.' },
+  not_a_bug: { word: 'Not a bug', glyph: 'ban', tone: '', hint: 'The test or its expectation is wrong. The analyst does not report it again unless the evidence changes.' },
+  fixed: { word: 'Fixed', glyph: 'checkCircle', tone: 'ok', hint: 'Fixed in the code. A later run that reports it opens it again.' },
+};
+export const BUG_STATUSES = ['open', 'known', 'not_a_bug', 'fixed'];
+
+/** bugStatusChip is a bug's status; an open bug that came back after it was fixed says so. */
+export function bugStatusChip(bug) {
+  if (bug.status === 'open' && bug.regressed) {
+    return chip({ word: 'Came back', glyph: 'sync', tone: 'error' }, { tip: 'Open again: it was fixed, then a later run reported it' });
+  }
+  return chip(BUG_STATUS[bug.status] || { word: bug.status || 'Open', glyph: 'flag' });
+}
+
+export function bugStatusWord(status) { return (BUG_STATUS[status] || { word: status }).word; }
+
+/** seenWords is where a bug was seen: "Run 2 → Run 5", "Run 3" for one run. */
+export function seenWords(bug) {
+  const first = bug.first_number;
+  const last = bug.last_number;
+  if (!first && !last) return '';
+  if (!first || first === last) return 'Run ' + (last || first);
+  return 'Run ' + first + ' → Run ' + last;
+}
+
+/** issueNumber is the number of a GitHub issue's address ("123"), '' for another address. */
+export function issueNumber(url) {
+  const m = /\/issues\/(\d+)\b/.exec(String(url || ''));
+  return m ? m[1] : '';
+}
+
+/**
+ * problemSteps is what an attempt (GET …/attempts/{attempt}) found wrong:
+ * every step whose verdict is not a pass, each with what it did, what was
+ * expected, what was observed and the reviewer's word on it. A cell whose
+ * steps all passed but which did not (a blocked cell) has none.
+ */
+export function problemSteps(view) {
+  return ((view && view.steps) || []).filter((s) => s.verdict && !passed(s.verdict)).map((s) => ({
+    n: s.n, do: s.do, expect: s.expect, verdict: s.verdict, observed: s.observed || '',
+    review: s.review && s.review.note ? s.review.note : '',
+  }));
+}
+
+/** cellName is a cell as text: "The checkout takes an order · iPhone 15, German". */
+export function cellName(row) {
+  const dims = dimsWords(row.dims) || row.cell || '';
+  return (row.title || row.test || row.cell_id) + (dims ? ' · ' + dims : '');
+}
+
+// The attempts read for a bug's cells or a chat's message, by run and
+// attempt: an ended attempt does not change (an override aside, which the
+// bug view and the chat do not show).
+const attempts = new Map();
+
+/** attemptView reads an attempt in full (GET …/attempts/{attempt}), once. */
+export function attemptView(run, attempt) {
+  const key = run + '/' + attempt;
+  if (!attempts.has(key)) {
+    const read = api(paths.attempt(run, attempt), { attempts: 2 }).catch((err) => {
+      attempts.delete(key);
+      throw err;
+    });
+    attempts.set(key, read);
+  }
+  return attempts.get(key);
+}
+
+/**
+ * guardClose keeps a dialog's edits from going by accident: its Close,
+ * Cancel and backdrop carry data-guarded-close instead of DS's data-close,
+ * and they and Escape close it at once while nothing is edited, else after
+ * a question. A busy dialog (data-ds-busy) does not close.
+ */
+export function guardClose(dialog, { dirty, question }) {
+  async function request() {
+    if (dialog.hasAttribute('data-ds-busy') || !dialog.open) return;
+    if (dirty()) {
+      const yes = await confirmDialog({ ...question(), danger: true, opener: document.activeElement });
+      if (!yes) return;
+    }
+    DS.overlay.close(dialog);
+  }
+  dialog.addEventListener('keydown', (event) => {
+    if (event.key !== 'Escape' || event.isComposing || event.defaultPrevented || DS.overlay.topmost() !== dialog) return;
+    // DS closes it on its own when there is nothing to lose.
+    if (!dirty() || dialog.hasAttribute('data-ds-busy')) return;
+    event.preventDefault();
+    request();
+  });
+  dialog.addEventListener('click', (event) => {
+    if (event.target.closest('[data-guarded-close]')) request();
+  });
+  return request;
+}

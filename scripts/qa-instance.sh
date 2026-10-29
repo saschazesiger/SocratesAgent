@@ -11,7 +11,8 @@
 #
 #   qa-instance.sh install --hostname H --tunnel-token-file F [--ref REF]
 #   qa-instance.sh update [--ref REF]      rebuild, copy the CLIs again, restart
-#   qa-instance.sh reset                   delete every session, seed again
+#   qa-instance.sh reset                   delete every session, seed again, and
+#                                          make the demo shop's four test runs again
 #   qa-instance.sh status                  the service, the URL, the accounts
 #   qa-instance.sh password                print the password (to sign in by hand)
 #   qa-instance.sh uninstall               stop it and remove user, unit and data
@@ -21,6 +22,10 @@
 # command prints (BROWSERSTACK_ACCOUNTS, QA_SOCRATES_PASSWORD). install takes
 # BROWSERSTACK_ACCOUNTS (user:key,user:key,...) and, optionally,
 # OPENROUTER_API_KEY from the environment.
+#
+# The demo shop (scripts/qa-demo-tests) is a test repository of the instance
+# with a history of four test runs, worked by the Scripted agent for free, so
+# that the device tests find realistic content on the Tests page.
 set -euo pipefail
 
 QA_USER=socrates-qa
@@ -34,6 +39,7 @@ QA_UNIT=socrates-qa
 UNIT_FILE=/etc/systemd/system/$QA_UNIT.service
 REPO=$(cd "$(dirname "$(realpath "$0")")/.." && pwd)
 BUILD_TMP=${TMPDIR_QA:-/root/.cache/socrates-qa-build}
+DEMO_SHOP=$QA_HOME/work/demo-shop
 
 say() { printf '\n== %s\n' "$*"; }
 info() { printf '   %s\n' "$*"; }
@@ -254,6 +260,131 @@ seed() {
 	info "Seed: Shell"
 }
 
+# as_qa runs a command as the instance's user.
+as_qa() { (cd / && sudo -u "$QA_USER" -H "$@"); }
+
+# qa_git runs git in the demo shop as the instance's user.
+qa_git() { as_qa git -C "$DEMO_SHOP" -c user.name="Socrates QA" -c user.email=qa@socrates.invalid "$@"; }
+
+# demo_key is the key of the demo shop's test repository, empty when it is
+# not on the instance's list.
+demo_key() {
+	api GET /api/tests/repos | jq -r --arg p "$DEMO_SHOP" '[.repos[] | select(.path == $p) | .key][0] // ""'
+}
+
+# demo_dir is the demo shop's folder in the instance's data: its key as
+# Socrates makes it (testmode.RepoKey), whether it is listed or not.
+demo_dir() {
+	echo "$QA_DATA/tests/$(basename "$DEMO_SHOP")-$(printf '%s' "$DEMO_SHOP" | sha256sum | cut -c1-8)"
+}
+
+# demo_purge deletes the demo shop's test runs and then, with the instance
+# stopped for a moment, its bug list: the runs demo_tests makes are runs 1 to
+# 4 again (the tests' fake parameters count on the run numbers) and their
+# bugs are new.
+demo_purge() {
+	local key id n=0 dir
+	dir=$(demo_dir)
+	[ -e "$dir" ] || return 0
+	say "Deleting the demo shop's test runs"
+	key=$(demo_key)
+	if [ -z "$key" ] && [ -f "$DEMO_SHOP/.socrates/tests/TESTS.md" ]; then
+		# Removed from the list on the Tests page: adding it again lists
+		# its runs, which go with their sessions.
+		key=$(api POST /api/tests/repos "$(jq -n --arg p "$DEMO_SHOP" '{path: $p}')" | jq -r '.key')
+	fi
+	if [ -n "$key" ]; then
+		for id in $(api GET "/api/tests/repos/$key/runs" | jq -r '.runs[].id'); do
+			api DELETE "/api/tests/runs/$id" >/dev/null
+			n=$((n + 1))
+		done
+	fi
+	info "$n deleted"
+	# Their sessions are removed a moment later; every other session is
+	# gone already (delete_sessions), so the chats' folders empty out.
+	for _ in $(seq 1 60); do
+		[ -n "$(ls -A "$QA_DATA/chats" 2>/dev/null)" ] || break
+		sleep 0.5
+	done
+	api_logout
+	systemctl stop "$QA_UNIT"
+	rm -rf "${dir:?}"
+	systemctl start "$QA_UNIT"
+	wait_healthy
+	api_login
+	info "its bugs and run numbers are gone (the instance was restarted)"
+}
+
+# demo_shop (re)makes the demo shop's repository from scripts/qa-demo-tests
+# of the commit the instance was built from (of this checkout when that is
+# not known here), owned by the instance's user, with one commit.
+demo_shop() {
+	local version
+	version=$(curl -fsS "$QA_LOCAL/api/health" | jq -r '.version // ""')
+	rm -rf "$DEMO_SHOP"
+	install -d -o "$QA_USER" -g "$QA_USER" "$DEMO_SHOP"
+	if [ -n "$version" ] && git -C "$REPO" cat-file -e "$version:scripts/qa-demo-tests" 2>/dev/null; then
+		git -C "$REPO" archive "$version:scripts/qa-demo-tests" | tar -x -C "$DEMO_SHOP"
+	else
+		cp -a "$REPO/scripts/qa-demo-tests/." "$DEMO_SHOP/"
+	fi
+	chown -R "$QA_USER:$QA_USER" "$DEMO_SHOP"
+	qa_git init -q -b main
+	qa_git add -A
+	qa_git commit -qm "The demo shop and its test catalog"
+}
+
+# demo_commit is the commit made before demo run $1, if any
+# (e2e/testsfake.mjs makes the same).
+demo_commit() {
+	case $1 in
+	3) echo "Cart: recompute the total when the quantity changes" ;;
+	4) echo "Search: rank by sales; profile: wrap long streets" ;;
+	esac
+}
+
+# demo_wait waits for test run $1 to end and prints how it ended.
+demo_wait() {
+	local state=""
+	for _ in $(seq 1 240); do
+		state=$(api GET "/api/tests/runs/$1" | jq -r '.state')
+		case $state in done | failed | stopped) break ;; esac
+		sleep 0.5
+	done
+	echo "$state"
+}
+
+# demo_tests adds the demo shop as a test repository with every role on the
+# Scripted agent and runs its catalog four times, one run after another: a
+# history with an issue that stays, a cell fixed in run 3, a flaky one, a
+# regression and a fix in run 4, a correcting review and bugs over the runs
+# (scripts/qa-demo-tests/.socrates/tests/README.md).
+demo_tests() {
+	say "The demo shop's test runs (Scripted agent)"
+	local key settings n id state msg began=$SECONDS
+	demo_shop
+	key=$(api POST /api/tests/repos "$(jq -n --arg p "$DEMO_SHOP" '{path: $p}')" | jq -r '.key')
+	n=$(api GET "/api/tests/repos/$key/catalog" | jq '.errors | length')
+	[ "$n" = 0 ] || die "the demo shop's catalog has $n error(s)"
+	settings=$(api GET "/api/tests/repos/$key/settings" | jq '.settings
+		| .cell = {harness: "fake", model: "fake-small", effort: "low"} | .reviewer = .cell | .analyst = .cell
+		| .parallel = 8 | .review = true | .analysis = true')
+	api PUT "/api/tests/repos/$key/settings" "$settings" >/dev/null
+	for n in 1 2 3 4; do
+		msg=$(demo_commit "$n")
+		if [ -n "$msg" ]; then
+			printf -- '- %s\n' "$msg" | as_qa tee -a "$DEMO_SHOP/CHANGELOG.md" >/dev/null
+			qa_git commit -qam "$msg"
+		fi
+		id=$(api POST "/api/tests/repos/$key/runs" "$(jq -n --arg n "Demo run $n" '{name: $n}')" | jq -r '.id')
+		state=$(demo_wait "$id")
+		[ "$state" = "done" ] || die "demo run $n ($id) ended ${state:-in no state}"
+		api GET "/api/tests/runs/$id" | jq -r '"   run \(.number): \(.counts.cells) cells, " +
+			([.counts.verdicts | to_entries[] | "\(.value) \(.key)"] | join(", "))'
+	done
+	info "$key, $((SECONDS - began)) s"
+}
+
 # delete_sessions removes every session and chat of the instance.
 delete_sessions() {
 	say "Deleting every session"
@@ -308,7 +439,9 @@ cmd_install() {
 		first_setup "$host"
 	fi
 	configure
+	demo_purge
 	seed
+	demo_tests
 	cmd_status_body
 	cat <<EOT
 
@@ -332,8 +465,10 @@ cmd_reset() {
 	wait_healthy
 	api_login
 	delete_sessions
+	demo_purge
 	demo_project
 	seed
+	demo_tests
 }
 
 cmd_status_body() {
@@ -343,6 +478,17 @@ cmd_status_body() {
 	[ -n "$JAR" ] || api_login
 	api GET /api/accounts | jq -r '.accounts[] | "   \(.label) (\(.agent)): \(.state)"'
 	info "sessions: $(api GET /api/sessions | jq '.sessions | length')"
+	local key
+	key=$(demo_key)
+	if [ -z "$key" ]; then
+		info "demo shop: not set up (reset makes it)"
+		return 0
+	fi
+	local runs bugs
+	runs=$(api GET "/api/tests/repos/$key/runs" | jq -r '.runs | "\(length) test run(s)" +
+		(if length > 0 then ", the latest run \(max_by(.number).number) \(max_by(.number).state)" else "" end)')
+	bugs=$(api GET "/api/tests/repos/$key/bugs" | jq '[.bugs[] | select(.status == "open")] | length')
+	info "demo shop: $runs, $bugs open bug(s) ($DEMO_SHOP)"
 }
 
 cmd_uninstall() {
@@ -362,5 +508,5 @@ reset) cmd_reset ;;
 status) wait_healthy; cmd_status_body ;;
 password) secret QA_SOCRATES_PASSWORD; echo ;;
 uninstall) cmd_uninstall ;;
-*) sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+*) sed -n '2,29p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
 esac

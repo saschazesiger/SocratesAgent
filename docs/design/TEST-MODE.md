@@ -959,6 +959,27 @@ As built (branch `tests-b2`), where it differs from or adds to the paragraph abo
 - **Report.** Without `ProblemsOnly` it ends with a table of every cell; the download is
   `<repo key>-run-<n>.md`.
 
+**Test roles on the Scripted agent** (branch `tests-fd`). Where `SOCRATES_FAKE_AGENT=1` registers
+the Scripted agent (`harness: "fake"`, AGENT-HOST.md §8), a repository's settings may put any role on
+it (`fake-small`): the runner, the account pick and the API take it as any harness. In a test session
+it answers the runner's first message itself, through the role's test tools on the endpoint the real
+harnesses' calls reach (`chattools.Endpoint.Call`, in process): a cell judges every step and ends,
+with the outcome the test's `fake` parameter names - the modes of the fake Claude Code
+(`e2e/fakebin/fakeclaude/testcell.go`: fail, issue, blocked, flaky, slow, crawl, abort, quiet and the
+phased ones such as `failfrom4`), plus `misjudged` (a pass whose action failed, which its reviewer
+turns into an issue); a reviewer checks each cell's evidence against the agent's verdicts; an analyst
+writes a bug per test that failed or has an issue, keeping a known bug's id, and the conclusions. Its
+evidence is the catalog's `shot <n>` when a tool puts one on the session's `PATH`, else a screenshot it
+draws itself (a shop page in the shape of the cell's device, an error banner on a failed step) into
+`$SOCRATES_TEST_EVIDENCE` with its line in `actions.jsonl`, so an area may keep `evidence: screenshot`
+without any tool. It costs nothing, so the **QA instance** (`scripts/qa-instance.sh`) has a demo
+repository, the *Demo shop* (`scripts/qa-demo-tests`: two areas, ten tests, a device column of three
+values, a rotated locale), whose four runs `reset` makes again on the Scripted agent (about 20 s),
+deleting the earlier runs and, with the instance stopped for a moment, the bug list, so that they are
+runs 1 to 4 with the same history every time: an issue that stays, a cell fixed in run 3, a flaky one,
+a regression and a fix in run 4, a corrected review, bugs over the runs. `e2e/testsfake.mjs` runs it
+the same way.
+
 ## Risks and open points
 
 - **Secrets in reach of the agent.** The vault keeps them out of prompt and environment, not out of
