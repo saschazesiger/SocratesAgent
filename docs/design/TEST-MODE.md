@@ -455,6 +455,7 @@ the store's `kv` (`tests.repos`, `tests.settings.<repo>`, `tests.global`).
 
 ```
 <data>/tests/<repo-key>/                    repo-key: the folder's name and a short hash of its path
+  bugs.json                                 the repository's bugs over its runs (revision below)
   runs/<run-id>/                            run-id: r-20261029-0915-abcd
     run.json                                selection, settings, commit, state, order of the attempts, helpers, times
     plan.json                               what the run took from the catalog: areas, dimensions, prompts, tools
@@ -518,7 +519,8 @@ All behind `s.auth`, in `internal/server/tests*.go`:
 | `GET /api/tests/files/{run}/{path…}` | Evidence files, on the pattern of `handleChatPartImage` (resolved on the server, regular files only, size cap, `nosniff`, `private`) |
 
 Live updates: a `tests` frame on `/api/events` (run state and counts, cell state changes) feeds the
-Tests page and the Home card.
+Tests page and the Home card. The routes of the reworked page (overview, a test, estimate, the bug
+list, GitHub, overrides, the report) are in the revision's "API additions" below.
 
 ## The Tests page
 
@@ -611,7 +613,7 @@ waiting for BrowserStack") that opens the run.
 | Where | What |
 |---|---|
 | `internal/testmode/catalog` | Parsing (front matter, a strict YAML subset of its own: no dependency, so the binary stays MIT/BSD/ISC), `## Steps`, validation, expansion into cells, snapshot, `ParseSecrets` |
-| `internal/testmode` | The runner: preparation and plan (`plan.go`), the scheduler, leases and sessions (`runner.go`), review and analysis (`review.go`), the test tools' calls (`calls.go`), stop, delete, retry, retention, repositories and settings (`control.go`), the views, history and search (`view.go`), evidence (`evidence.go`), secrets, installed tools and hooks (`tools.go`), redaction |
+| `internal/testmode` | The runner: preparation and plan (`plan.go`), the scheduler, leases and sessions (`runner.go`), review and analysis (`review.go`), the test tools' calls (`calls.go`), stop, delete, retry, overrides, retention, repositories and settings (`control.go`), the views, history and search (`view.go`), changes, health, the overview and a test's history (`history.go`), live cells (`live.go`), the bug list over runs (`bugs.go`), estimates (`estimate.go`), the report (`report.go`), GitHub issues (`github.go`), evidence (`evidence.go`), secrets, installed tools and hooks (`tools.go`), redaction |
 | `internal/agent/testtools` | The test tools per role (definitions, arguments, guidance with the harness' prefix), beside `chattools` and `askuser` |
 | `internal/agent/chattools` | `Endpoint.Kind`: the role of a test session, whose tools the endpoint offers instead of the chat tools |
 | `internal/agent/claude`, `codex`, `opencode`, `askuser`, `agenthost/mcpask.go` | Offering the test tools and leaving out `ask_user` and the chat tools per session, in each harness' own mechanism; `TestInstructions` after the model's instructions |
@@ -622,6 +624,7 @@ waiting for BrowserStack") that opens the run.
 | `testscmd.go` | `socrates tests check [repo]` |
 | `internal/web/static` | `tests.html`, `js/tests*.js`, `css/so-tests.css`, the Home card, drawer links, the push target |
 | `e2e/testmode.mjs`, `e2e/fakebin/fakeclaude/testcell.go` | The browser scenario `testmode`, and the fake agent's cell, review and analysis |
+| `e2e/testsdemo.mjs` | A server with a demo history of five runs (`--live`: and a sixth that runs), left running to look at and to build the page against |
 
 ## Tests of the feature
 
@@ -882,6 +885,47 @@ on the Tests page like any other ("started by <chat title>").
 | `GET /api/tests/repos/{repo}/github`, `POST …/bugs/{id}/issue` | GitHub issues |
 | `POST /api/tests/runs/{run}/attempts/{attempt}/override` | `{verdict, note}`; an empty verdict removes it |
 | `GET /api/tests/runs/{run}/report.md` | The report |
+
+**As built** (where the build settled what the text above leaves open, or differs from it):
+
+- **Run numbers** are the largest number the repository's runs have plus one; the runner also remembers
+  the largest it gave while it runs, so that deleting the newest run does not hand its number out again
+  until the next restart. The cell's first message names its run (`- Run: 12`).
+- **Bugs.** `bugs.json` is `{next, bugs}`: `next` is the number the next new bug gets, kept so that no
+  id is given twice (an id `bugs_put` handed out for a list that was then written again, or for a run
+  that never finished, stays taken). `bugs_put` keeps an id of the list, and also an id Socrates gave in
+  an earlier `bugs_put` that is not on the list yet (its answer names the ids, and an analyst that
+  writes the list again repeats them); a new bug of a title the run's previous list had gets that
+  bug's id again. The list learns of a run when it is **done** (after its analysis, or without one);
+  a stopped run changes nothing. A run analysed again takes back what it reported before and no longer
+  does (a bug only it reported, without a note or an issue, goes). A report changes the title,
+  description and cells only when the run is not older than the bug's last report, and reopens a fixed
+  bug only when the run is newer than the one that fixed it. A severity the person set
+  (`severity_by_hand`) is kept over the analysts'. Marking a bug fixed by hand sets `fixed_in` to the
+  repository's latest run that is over. Every change of the list publishes `{t: "tests", repo, bugs:
+  true}`; run frames now carry the run's `number`.
+- **Overrides** answer `{cell}` (the row as below). An override is final when it is set: it does not
+  start a retry, and the bug list sees it with the next run that is done.
+- **Changes.** `prev` is the cell's latest ended attempt with a verdict in an earlier run (by number),
+  whatever that verdict (a blocked one too); `change` is set once the cell has a verdict, except `new`,
+  which a running cell gets too. `since` is on every row with a problem.
+- **Health.** A test's `latest` is the worst latest verdict of its cells in the latest run that ran
+  it, its `since` the oldest streak among its cells. The catalog keeps `cells` (the keys) and adds
+  `cell_health` in the same order, `health` and `file` per test. A flaky test's `flips` is the sum over
+  its flaky cells.
+- **Times and costs.** `cost` sums the cost ledger's rows of the run's sessions (a chat's ledgers name
+  the chat, `cost_convs.session_id`): what the ledger priced, as the Costs page shows it; it appears
+  once the ledger has read the sessions. The analyst replaced by *Analyse again* is no longer counted.
+  `eta_ms` and the estimate's `eta_ms` are absent while no cell of the repository has run; how many run
+  at once is the run's `parallel`, else the smallest pool's capacity (members times `per_member` from
+  a run that has the secrets in memory, else the members the repository's runs leased), else 4, never
+  more than `max_sessions`. The estimate's `errors` carry the catalog's errors and why the selection
+  cannot run (`{file, line, message}`, `file` empty for the latter).
+- **Live.** `at` is the time of the last action (when the tool wrote one), else when the attempt
+  started. The live read takes the new lines into the attempt the way a call of its agent does, so
+  they stay the next judgement's evidence.
+- **Report.** Without `ProblemsOnly` it ends with a table of every cell; the download is
+  `<repo key>-run-<n>.md`.
 
 ## Risks and open points
 
