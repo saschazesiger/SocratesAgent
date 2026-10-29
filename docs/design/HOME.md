@@ -832,7 +832,7 @@ sets no unread mark and so is not pushed, as before; it is judged and shown.
 - Home: a pending session is under **Background tasks**, then Finished/Ready; rows carry the
   hourglass or the verdict's mark (`.home-badge`), "Finished · Partly done: 2 open" in the meta
   line, and the reason and todos under the summary. `needs_input` and `blocked` are in
-  **Needs you** too.
+  **Needs you** too, unless the session is filed Done or Background.
 - The Status button is told the verdict (`statusPrompt`).
 - The filing status is never changed by a verdict (DEVIATIONS.md, "a turn's end files nothing").
 

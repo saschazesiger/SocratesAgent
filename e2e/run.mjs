@@ -8392,7 +8392,11 @@ async function homelive() {
     // questions too, which wait in the chat.
     const cards = await s.page.evaluate(async () => {
       const { cardsOf, needsYou } = await import('/static/js/home.js');
-      const ctx = (activity, status = 'in_progress') => ({ statusOf: () => status, activityOf: () => activity, digestOf: () => null });
+      const ctx = (activity, status = 'in_progress', outcome = null) => ({
+        statusOf: () => status, activityOf: () => activity, digestOf: () => null, outcomeOf: () => outcome,
+      });
+      const waits = { phase: 'ready', kind: 'needs_input' };
+      const stuck = { phase: 'ready', kind: 'blocked' };
       const row = (state) => ({ id: 'x', state, harness: 'claude', kind: 'chat' });
       return {
         stoppedUnread: cardsOf(ctx({ state: 'idle', unread: true }), row('needs_resume')).join(),
@@ -8404,13 +8408,18 @@ async function homelive() {
         needsRunning: needsYou(ctx({ state: 'idle', unread: true }), row('running')),
         needsStopped: needsYou(ctx({ state: 'idle', unread: true }), row('needs_resume'))
           || needsYou(ctx({ state: 'idle' }, 'review'), row('exited')),
+        needsWaiting: needsYou(ctx({ state: 'idle' }, 'in_progress', waits), row('running')),
+        needsPutAway: needsYou(ctx({ state: 'idle' }, 'done', waits), row('running'))
+          || needsYou(ctx({ state: 'idle' }, 'background', stuck), row('running'))
+          || needsYou(ctx({ state: 'idle', unread: true }, 'done', stuck), row('running')),
       };
     });
     ok(cards.stoppedUnread === 'stopped,finished' && cards.runningUnknownUnread === 'finished'
       && cards.backgroundUnread === 'ready' && cards.backgroundAsks === 'ready'
       && cards.fresh === 'unstarted' && cards.freshBusy === 'running'
-      && cards.needsRunning === true && cards.needsStopped === false,
-      'unread work is Finished even when stopped, but only a running session is in Needs you; a background chat is Ready, even while it asks; a chat not started is that until it works',
+      && cards.needsRunning === true && cards.needsStopped === false
+      && cards.needsWaiting === true && cards.needsPutAway === false,
+      'unread work is Finished even when stopped, but only a running session is in Needs you; a background chat is Ready, even while it asks; a chat not started is that until it works; a done or background session is never in Needs you, whatever its last turn said',
       JSON.stringify(cards));
     ok(sockets.length > 0 && sockets.every((url) => url.includes('/api/events')),
       'and with nothing attached: the only socket is the event stream', sockets.join(' '));

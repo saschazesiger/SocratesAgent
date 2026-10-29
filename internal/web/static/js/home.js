@@ -68,8 +68,11 @@ const NEEDS_YOU = ['questions', 'finished', 'review'];
 
 // The verdicts on a turn that are the person's to act on, read or not: a
 // session waiting on them, and one that is stuck. They are in "Needs you"
-// too, wherever else they are counted.
+// too, wherever else they are counted - unless the session is filed Done or
+// Background: work the person has put away is not on their list, whatever
+// its last turn said.
 const NEEDS_YOU_OUTCOMES = new Set(['needs_input', 'blocked']);
+const PUT_AWAY = new Set(['done', 'background']);
 
 // The status-chip colour of each verdict: green for work that is complete,
 // amber for a session that waits on the person, red for one that is stuck;
@@ -78,9 +81,10 @@ const OUTCOME_TONE = { complete: 'ok', needs_input: 'warning', blocked: 'error' 
 
 /**
  * waitsOnYou says whether the verdict on a session's last turn is one the
- * person has to act on (NEEDS_YOU_OUTCOMES).
+ * person has to act on (NEEDS_YOU_OUTCOMES), in a session not put away.
  */
 function waitsOnYou(ctx, session) {
+  if (PUT_AWAY.has(ctx.statusOf(session))) return false;
   const outcome = ctx.outcomeOf ? ctx.outcomeOf(session) : null;
   return !!outcome && outcome.phase === 'ready' && NEEDS_YOU_OUTCOMES.has(outcome.kind);
 }
