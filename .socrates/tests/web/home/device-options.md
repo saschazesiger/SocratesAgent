@@ -10,7 +10,7 @@ changes it.
 ## Steps
 
 1. Sign in and open the options for this device (⋮ at the top right).
-   Expect: a dialog "This device" with switches Key bar, Touch mode, Sound and Notifications, each with a hint, and Done; on a phone, tablet or the car screen Touch mode is already on, on a desktop off.
+   Expect: a dialog "This device" with switches Key bar, Touch mode, Sound and Notifications, each with a hint, and Done; on a phone, tablet or the car screen Touch mode is already on, on a desktop off (a desktop whose browser reports a touch screen starts with it on: note that as an observation, not an issue).
 2. Read the Notifications hint.
    Expect: a hint that fits the device: "When a session finishes or needs an answer" where notifications work, on an iPhone or iPad in Safari "Add to Home Screen for notifications" ("Needs iOS 16.4 or later" on older iOS), or "Not available in this browser"; never an empty or cut-off hint.
 3. Switch Touch mode the other way and close with Done.

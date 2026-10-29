@@ -262,6 +262,30 @@ func TestLoginLogout(t *testing.T) {
 	}
 }
 
+// A wrong current password is refused without looking like a lost session:
+// the client sends any 401 to the sign-in, and the message would never show.
+func TestChangePasswordWrongCurrent(t *testing.T) {
+	env := newEnv(t)
+	env.do(t, env.client, "POST", "/api/setup", `{"password":"a-good-password"}`)
+
+	res, payload := env.do(t, env.client, "POST", "/api/settings/password",
+		`{"current":"not-the-password","next":"another-good-password"}`)
+	if res.StatusCode != http.StatusForbidden {
+		t.Fatalf("a wrong current password answered %d, want 403", res.StatusCode)
+	}
+	if msg, _ := payload["error"].(string); msg != "the current password is wrong" {
+		t.Fatalf("message: %#v", payload)
+	}
+	res, _ = env.do(t, env.client, "GET", "/api/settings", "")
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("the refusal ended the session: %d", res.StatusCode)
+	}
+	res, _ = env.do(t, env.client, "POST", "/api/login", `{"password":"a-good-password"}`)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("the old password no longer works: %d", res.StatusCode)
+	}
+}
+
 func TestSettingsRoundTrip(t *testing.T) {
 	env := newEnv(t)
 	env.do(t, env.client, "POST", "/api/setup", `{"password":"a-good-password"}`)

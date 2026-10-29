@@ -367,8 +367,10 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "could not read the stored password")
 		return
 	}
+	// 403, not 401: the person is signed in, and the web client takes any 401
+	// outside /api/login for a lost session and sends the page to the sign-in.
 	if !verifyPassword(stored, body.Current) {
-		writeError(w, http.StatusUnauthorized, "the current password is wrong")
+		writeError(w, http.StatusForbidden, "the current password is wrong")
 		return
 	}
 	if len([]rune(body.Next)) < minPasswordLen {

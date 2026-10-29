@@ -18,6 +18,6 @@ go while you look.
 4. Tap the Finished tile (or another tile whose count is not 0).
    Expect: the list below shows only that tile's sessions and its title says so; tapping the tile again (or the segment) brings the full list back.
 5. Tap Answer on the questions card, look at what opens, and close it without answering (its close button, Escape or Back; never Approve).
-   Expect: the session "Seed: a plan waits" opens on its plan card (headed Plan, "Waiting for you", Approve and Keep planning) or a dialog with the plan; never a message that nothing is waiting; going back to Home, the card is still there.
+   Expect: the oldest waiting question opens, normally "Seed: a plan waits" on its plan card (headed Plan, "Waiting for you", Approve and Keep planning) or a dialog with the plan; another cell's question may be older: then that one opens, close it without answering (by design); never a message that nothing is waiting; going back to Home, the card is still there.
 6. Open one seed session from Home's list (for example "Seed: Markdown answer"), then come back to Home (the Home entry of the session list, or the logo).
    Expect: the session opens with its conversation; Home comes back (a seed just read may move from Finished to Ready).

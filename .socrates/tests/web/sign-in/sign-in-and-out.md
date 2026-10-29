@@ -5,8 +5,9 @@ tags: [smoke, auth]
 ---
 Signed out on a fresh device. This test is about signing in, so step 1 does not sign in first. Every
 wrong password counts against this device's address (five in a row lock it for a while): type a wrong
-one only where a step says so, once. Cells may share an outgoing address: a "too many attempts"
-answer here is `blocked`, not `fail`.
+one only where a step says so, once; the real password right after clears the count. Cells may share
+an outgoing address, and a lock also cuts their live connection, chats and terminals: a "too many
+attempts" answer here is `blocked`, not `fail`.
 
 ## Steps
 

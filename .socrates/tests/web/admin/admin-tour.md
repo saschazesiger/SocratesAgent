@@ -5,7 +5,8 @@ tags: [smoke, admin, layout]
 ---
 A look through Admin without saving anything. Admin's navigation groups the cards (Agents, New
 sessions, Voice and models, Access, This machine). Never press Sign in, Delete, Stop tunnel, Update now,
-Back up now, Turn off backups or Save changes here, and never press Ctrl+S or Cmd+S.
+Back up now, Turn off backups or Save changes here, never drag an account by its grip (the order is
+saved for every cell), and never press Ctrl+S or Cmd+S.
 
 ## Steps
 

@@ -15,7 +15,7 @@ recommended), Features (choose 1 to 3), Name (text), Migrations (yes or no) and 
    Expect: the dialog shows the first question (Database) with its options, "Recommended" on PostgreSQL, and You decide, Other and Add a note; Next and the step count; all of it inside the screen.
 3. Look at the preselection, then go on with Next: on Features choose two options; on Name type `qa-<device>` (through the device keyboard); on Migrations keep or choose Yes.
    Expect: PostgreSQL is already chosen and Next moves on to Features; every question moves on; the keyboard never hides the field or the button.
-4. On Replicas (the last question, 5 of 5, prefilled with 2) type `abc` and press Send answers; then type `3`.
+4. On Replicas (the last question, 5 of 5, prefilled with 2) clear the field, type `abc` and press Send answers; then clear it again and type `3`. A phone's number pad may offer no letters: then skip `abc` and say so.
    Expect: `abc` is refused with "That is not a number." (or the field does not take it), and 3 is taken; the button on the last question is Send answers.
 5. Go back with Previous question to Features, check the two choices are kept, then forward again to the end and press Send answers.
    Expect: the earlier answers are kept; after sending, the dialog closes (or offers Close) and the card says Answered.
