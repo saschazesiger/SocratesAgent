@@ -149,17 +149,26 @@ type adapter struct {
 	// recovered is how far the invalid_encrypted_content fallback chain got
 	// in this process (§4.3): 0 none, 1 stripped, 2 handed off.
 	recovered int
+	// goal is the thread's goal as codex last said it, nil for none
+	// (goal.go); commands are the commands of the terminals the turns
+	// started, by process id, and mcpFailed the MCP servers said not to
+	// start, with what was said.
+	goal      *threadGoal
+	commands  map[string]string
+	mcpFailed map[string]string
 }
 
 func newAdapter() *adapter {
 	return &adapter{
-		exited:  make(chan struct{}),
-		turns:   map[string]*turn{},
-		steered: map[string]agent.Outgoing{},
-		arrived: map[string]int64{},
-		agents:  map[string]*subagent{},
-		calls:   map[string]*call{},
-		limits:  map[string]agent.Event{},
+		exited:    make(chan struct{}),
+		turns:     map[string]*turn{},
+		steered:   map[string]agent.Outgoing{},
+		arrived:   map[string]int64{},
+		agents:    map[string]*subagent{},
+		calls:     map[string]*call{},
+		limits:    map[string]agent.Event{},
+		commands:  map[string]string{},
+		mcpFailed: map[string]string{},
 	}
 }
 

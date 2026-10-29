@@ -662,7 +662,11 @@ that a recovery can continue the same journal turn under another codex turn). Tu
 for a command (compact, review, shell) have no `message_id`. `turn/completed` status → outcome:
 `completed`, `interrupted`, `failed` (`usageLimitExceeded` → `limited`, plus `error{rate_limit}`); an
 `error` notification with `willRetry` → `notice{retrying}`, without it the turn ends failed if
-`turn/completed` does not follow within 30 s. `turn.ended.usage` sums the turn's model calls
+`turn/completed` does not follow within 30 s. A subagent's turn that fails or is interrupted ends
+its group `error` (status `failed`) or `interrupted`, with the turn's error (or the subagent's own
+`error` notification) as `content.error` and the group's text; what it left open ends
+`interrupted`, and the `subAgentActivity` "completed" codex sends after a failure does not make it
+done. `turn.ended.usage` sums the turn's model calls
 (`tokenUsage.last`; codex counts the cached and the cache-written input inside the input, the
 journal apart: `input` = input − cached − cache-written, `cache_read` = cached, `cache_write` =
 cache-written; its output counts the reasoning in, as the journal's does), `context`/`window` from
@@ -670,6 +674,37 @@ the last call;
 `usage{context, window}` follows each call. `account/rateLimits/updated` → one `rate_limit` per
 window that changed: `five_hour` (300 min), `weekly` (10080 min), else `<n>m`; `used` = percent/100.
 Cost is not reported by codex (0).
+
+**What codex does by itself** (`goal.go`; shapes verified against the schema of codex-cli
+0.165.0). A turn nobody asked for - no message is starting, no command's turn is expected, no
+recovery retries one - is one codex started by itself: its assistant message opens with a notice
+part `{code, detail}` (chatparts.js `noticePart`) saying why. With an active goal (the `goals`
+feature, on by default: the model's `create_goal`/`update_goal`; codex goes on toward it turn
+after turn with the prompt "Continue working toward the active thread goal", which the stream does
+not carry) that is `{code: "goal"}` "Continuing toward the goal: <objective>" (at the token budget
+"Wrapping up the goal at its token budget: …"), else `{code: "self_started"}` "Codex started this
+turn by itself." (an inter-agent message that triggers a turn, inferred from the binary, not
+seen). The goal itself is `thread/goal/updated {threadId, turnId?, goal: {objective, status,
+tokenBudget, tokensUsed, timeUsedSeconds}}` and `thread/goal/cleared {threadId}`: a new objective
+or status is a notice - a part in the running turn, else a line - "Goal set: …", "Goal changed",
+"Goal paused / blocked / resumed", "Goal complete (12,345 of 50,000 tokens, 4 min): …", "Goal
+stopped at the usage limit / at its token budget", "Goal cleared: …" (statuses `active`,
+`paused`, `blocked`, `usageLimited`, `budgetLimited`, `complete`); codex says the goal again each
+time it counts its tokens, which is no notice, and the snapshot a resumed thread hears first is
+kept without one. A rebuild opens a stored turn without a message (and not a compaction, review
+or `!` turn) with the `self_started` notice, and turns a stored goal prompt (should codex keep it
+as a `userMessage`, inferred) into the goal's opener. Also said: `hook/completed` with status
+`blocked`, `failed` or `stopped`, or with a warning, error or stop entry → a notice `{code: "hook"}`
+"The <event> hook blocked: <statusMessage>" with the entries and the hook file as detail (in its
+turn, under its subagent; a hook of no turn is a line); `mcpServer/startupStatus/updated` `failed`
+→ `notice{mcp_servers}` "The MCP server “x” could not start: <error>" or, for `failureReason:
+reauthenticationRequired`, "… needs its sign-in again", once per server and wording;
+`deprecationNotice {summary, details}` → `notice{deprecation}`; `guardianWarning {message}` and
+`configWarning {summary, details}` → `notice{warning}` (as `warning {message}`);
+`item/commandExecution/terminalInteraction {itemId, processId, stdin}` → a `tool` part of its own,
+done, `{tool: "terminal", summary: "waited for <command>" | "wrote to <command>", process_id,
+stdin, terminal_command}`, text = what was written, the command found by its process id among the
+turns' `commandExecution` items.
 
 **Parts** (part ids `<message>_p<n>`; text is the streamed text):
 
@@ -686,10 +721,13 @@ Cost is not reported by codex (0).
 | `dynamicToolCall` | `tool` | running → … | `{tool: "dynamic", namespace, name, arguments, content_items, success, status, duration_ms}` |
 | `collabAgentToolCall` | `tool` | running → … | `{tool: "collab", name, prompt, sender, receivers, model, effort, agents, status}` |
 | `subAgentActivity` started | `tool` (group) | running while the subagent works, done when idle/completed, interrupted | `{tool: "subagent", thread_id, path, name, model, effort, status}`; every item of that thread (and of its own subagents) is a part with `parent_part_id` = the group |
-| `imageView` / `imageGeneration` | `image` | done | `{path}` / `{item}` |
+| `imageView` | `image` | done | `{path}` |
+| `imageGeneration` | `image` | running → done \| error (a `failure`, the account's limit) | `{tool: "image_generation", status, path: savedPath, prompt: revisedPrompt, failure}`; the chat draws the file (GET `/api/chats/{id}/parts/{part}/image`, §7) with the prompt under it |
+| `sleep` | `tool` | running → done | `{tool: "sleep", summary: "for 2 min", item}` (`durationMs`) |
+| `hookPrompt` | `notice` | done | `{code: "hook", detail}`: "A hook added to the conversation: …" (its fragments) |
 | `enteredReviewMode` / `exitedReviewMode` | `notice` / `text` | done | `{notice: "review_started"}` / `{review: true}` (text = the review) |
 | `contextCompaction` | `notice` | streaming → done | `{notice: "compacted"}` |
-| `webSearch`, anything else | `tool` | … | `{tool: <item type>, item: <the raw item>}` |
+| `webSearch`, anything else (`functionCallOutput`) | `tool` | … | `{tool: <item type>, item: <the raw item>}` |
 
 A subagent's parts outlive the turn that spawned it; `tasks{count}` counts subagents at work and
 the background terminals a turn left running, which codex announces neither starting nor ending:
@@ -1058,7 +1096,10 @@ made after `since`, held back - the parent says how many (`held`); never a runni
 question names, or anything above them. What is live after `synced` goes whole. `GET
 /api/chats/{id}/parts/{part}` → `{seq, part, children}` is a part whole and its own light (each with
 `held`), as of `seq`, which the browser folds in (`chatfold.js fill`) when the part is opened,
-hovered or, for the groups of the last answers, idle. A hello with `"batch":true` gets a replay
+hovered or, for the groups of the last answers, idle. `GET /api/chats/{id}/parts/{part}/image` is
+the file an `image` part names (`content.path`, absolute, the adapter's), when its bytes are an
+image (sniffed; never an SVG), up to 32 MiB, `nosniff`: the chat draws image parts with it
+(chatparts.js `imageHtml`); anything else is 404, or 415 for a file that is not an image. A hello with `"batch":true` gets a replay
 of more than one event as `{"t":"evs","evs":[…]}` frames of about 256 KiB: a browser handles a
 frame per task, and a thousand of them cost it more than the events did.
 

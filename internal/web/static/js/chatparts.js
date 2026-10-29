@@ -169,6 +169,9 @@ export function toolOf(part) {
   else if (c.tool === 'subagent') name = 'Subagent';
   else if (c.tool === 'collab') name = 'Agents';
   else if (c.tool === 'file_change') name = 'Edit';
+  // A background terminal a turn waits on or writes to, and a pause.
+  else if (c.tool === 'terminal') name = 'Terminal';
+  else if (c.tool === 'sleep') name = 'Sleep';
   else if (c.tool === 'turn_diff') name = 'Changes';
   // A workflow's agent is one of its agents, under its label.
   else if (c.tool === 'WorkflowAgent') name = 'Agent';
@@ -215,7 +218,8 @@ export function isAskTool(part) {
 // The glyph a tool is drawn with, by what it does.
 export function toolGlyph(name) {
   const n = String(name).toLowerCase();
-  if (/wakeup|^cron/.test(n)) return 'clock';
+  if (/wakeup|^cron|^sleep$/.test(n)) return 'clock';
+  if (n === 'terminal') return 'terminal';
   if (/bash|command|shell|monitor/.test(n)) return 'monitor';
   if (/^read|notebookread/.test(n)) return 'fileText';
   if (/edit|write|change|patch/.test(n)) return 'pencil';
@@ -449,6 +453,7 @@ export function partHtml(part, view) {
     case 'plan':
       return planHtml(part, view);
     case 'image':
+      return imageHtml(part, view);
     case 'file':
       return fileHtml(part);
     case 'notice':
@@ -460,11 +465,13 @@ export function partHtml(part, view) {
 
 // What a notice an answer opens with leads with, by what started the turn
 // (the agent's own: a wakeup or a cron job it scheduled, a background task
-// reporting back, a Monitor's event, a message from another agent), and the
-// name of all it said behind the "i".
+// reporting back, a Monitor's event, a message from another agent, Codex
+// going on toward its goal or by itself), and the name of all it said behind
+// the "i". A goal set or ended and a hook's word lead the same way.
 const OPENER = {
   wakeup: ['clock', 'Prompt'], cron: ['clock', 'Prompt'], task: ['background', 'Result'],
-  monitor: ['monitor', 'Event'], peer: ['chat', 'Message'],
+  monitor: ['monitor', 'Event'], peer: ['chat', 'Message'], goal: ['flag', 'Goal'], self_started: ['sync', 'Details'],
+  hook: ['wrench', 'Hook'],
 };
 
 /**
@@ -492,10 +499,30 @@ function reasoningHtml(part, view) {
   }</details>`;
 }
 
+// What an image the agent is making says while it has no file, by its state.
+const IMAGE_WORDS = { running: 'Making an image…', streaming: 'Making an image…', error: 'The image could not be made' };
+
+/**
+ * imageHtml is an image the agent made or viewed, drawn from its file on the
+ * server (GET /api/chats/{id}/parts/{part}/image), with the prompt it was
+ * made from under it; one that has no file yet, or will not, is a row.
+ */
+function imageHtml(part, view) {
+  const c = part.content || {};
+  const src = c.path && view && view.imageSrc ? view.imageSrc(part) : '';
+  if (!src) return fileHtml(part);
+  const prompt = typeof c.prompt === 'string' ? c.prompt.trim() : '';
+  const name = String(c.path).split('/').pop();
+  return html`<figure class="so-part so-image" data-ds-key="${'p:' + part.id}" data-kind="image"><img class="so-image__img" src="${src}" alt="${prompt || name}" loading="lazy" decoding="async">${
+    prompt ? html`<figcaption class="so-image__caption">${prompt}</figcaption>` : ''
+  }</figure>`;
+}
+
 function fileHtml(part) {
   const c = part.content || {};
-  const name = c.name || String(c.path || '').split('/').pop() || 'file';
-  return html`<div class="so-part so-attachment" data-ds-key="${'p:' + part.id}" data-kind="${part.kind}">${raw(icon(part.kind === 'image' ? 'image' : 'file', 18))}<span class="so-ellipsis">${name}</span>${infoButton([c.path, c.mime], 'File details')}</div>`;
+  const name = c.name || String(c.path || '').split('/').pop()
+    || (c.tool === 'image_generation' ? IMAGE_WORDS[part.state] || 'An image' : 'file');
+  return html`<div class="so-part so-attachment" data-ds-key="${'p:' + part.id}" data-kind="${part.kind}">${raw(icon(part.kind === 'image' ? 'image' : 'file', 18))}<span class="so-ellipsis">${name}</span>${infoButton([c.path, c.mime, c.prompt, c.failure && c.failure.type ? 'Failed: ' + c.failure.type : ''], 'File details')}</div>`;
 }
 
 // summaryHtml is the call's one line. A file the call worked on is named as
@@ -1657,8 +1684,8 @@ const NOTICE_WORDS = {
 // The glyph a line between messages leads with, by its notice code.
 const NOTICE_GLYPH = {
   compacted: 'archive', resumed: 'history', rebuilt: 'history', conversation_lost: 'alert', history_unavailable: 'alert',
-  mcp_servers: 'alert', chat_message: 'chat',
-  api_retry: 'sync', retrying: 'sync', retry: 'sync',
+  mcp_servers: 'alert', chat_message: 'chat', warning: 'alert', deprecation: 'alert', goal: 'flag', hook: 'wrench',
+  self_started: 'sync', api_retry: 'sync', retrying: 'sync', retry: 'sync',
 };
 
 /**

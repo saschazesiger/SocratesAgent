@@ -42,6 +42,20 @@
 //	                 tools and developer instructions thread/start gave
 //	/whoami          "account: <login> (home <CODEX_HOME>)": the login
 //	                 auth.json holds now, "none" before there is one
+//	/goal TEXT       sets the thread's goal (thread/goal/updated, then once more
+//	                 with only its tokens); once the turn ends a turn of its own
+//	                 goes on toward it and marks it complete
+//	/goal clear      clears the goal (thread/goal/cleared)
+//	/subfail         a subagent whose turn fails, with codex's error notification
+//	/image           an imageGeneration saved as a PNG under CODEX_HOME, with
+//	                 its revised prompt
+//	/poll            a background command, then waits on it and writes "y" to
+//	                 it (item/commandExecution/terminalInteraction)
+//	/hook            a Stop hook that blocks, one that runs as it should, and
+//	                 the hookPrompt the blocking one added
+//	/nap             a sleep item of 90 s
+//	/warn            a deprecation notice, a guardian warning, a config
+//	                 warning, and MCP servers that fail to start (one twice)
 //	anything else    reasoning, then "you said: <text>"
 //
 // A message steered into a running turn is taken up at its next step: its
@@ -63,12 +77,17 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"image"
+	"image/color"
+	"image/draw"
+	"image/png"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -160,6 +179,8 @@ type thread struct {
 	// its dynamic tools by name and its developer instructions (/thread).
 	tools     []string
 	developer string
+	// goal is the thread's goal (/goal), kept in the rollout; nil for none.
+	goal map[string]any
 }
 
 type fturn struct {
@@ -299,6 +320,13 @@ func (s *server) request(fr frame) {
 			return
 		}
 		s.respond(fr.ID, s.threadResult(th))
+		// Like codex, a resumed thread's goal is said again, as a snapshot.
+		s.mu.Lock()
+		goal := th.goal
+		s.mu.Unlock()
+		if goal != nil {
+			s.notify("thread/goal/updated", map[string]any{"threadId": th.id, "turnId": nil, "goal": goal})
+		}
 	case "turn/start":
 		s.turnStart(fr, str("threadId"), str("clientUserMessageId"), p["input"])
 	case "turn/steer":
@@ -472,6 +500,9 @@ func (s *server) load(id string) (*thread, error) {
 				if t := byID[str("turn_id")]; t != nil {
 					t.status = "interrupted"
 				}
+			case "thread_goal":
+				th.goal = nil
+				_ = json.Unmarshal(p["goal"], &th.goal)
 			}
 		case "response_item":
 			switch str("type") {
@@ -590,6 +621,8 @@ type tcx struct {
 	n   int
 	// deaf turns leave steered input where it is.
 	deaf bool
+	// goal: the turn set a goal, which a turn of codex's own goes on toward.
+	goal bool
 }
 
 func (c *tcx) base() map[string]any {
@@ -680,6 +713,46 @@ func (s *server) run(th *thread, t *fturn, in userInput) {
 	}
 	status, terr := c.script(in.text)
 	c.end(status, terr)
+	if c.goal && status == "completed" {
+		s.goOn(th)
+	}
+}
+
+// setGoal is the thread's goal now (nil: cleared), said and kept.
+func (s *server) setGoal(th *thread, turnID any, goal map[string]any) {
+	s.mu.Lock()
+	th.goal = goal
+	s.mu.Unlock()
+	s.record(th, "event_msg", map[string]any{"type": "thread_goal", "goal": goal})
+	if goal == nil {
+		s.notify("thread/goal/cleared", map[string]any{"threadId": th.id})
+		return
+	}
+	s.notify("thread/goal/updated", map[string]any{"threadId": th.id, "turnId": turnID, "goal": goal})
+}
+
+func goalOf(th *thread, objective, status string, tokens, seconds int) map[string]any {
+	return map[string]any{"threadId": th.id, "objective": objective, "status": status, "tokenBudget": nil,
+		"tokensUsed": tokens, "timeUsedSeconds": seconds, "createdAt": 1, "updatedAt": time.Now().Unix()}
+}
+
+// goOn is the turn codex starts by itself toward an active goal: no user
+// message, the model's words, and the goal marked complete.
+func (s *server) goOn(th *thread) {
+	s.mu.Lock()
+	if th.active != nil || th.goal == nil {
+		s.mu.Unlock()
+		return
+	}
+	objective, _ := th.goal["objective"].(string)
+	t := s.openTurnLocked(th, "normal")
+	s.mu.Unlock()
+	c := &tcx{s: s, th: th, t: t, ctx: t.ctx}
+	s.record(th, "event_msg", map[string]any{"type": "task_started", "turn_id": t.id})
+	s.notify("turn/started", map[string]any{"threadId": th.id, "turn": map[string]any{"id": t.id, "rootTurnId": t.id, "items": []any{}, "status": "inProgress"}})
+	c.say([]string{"kept going toward: " + objective}, 0)
+	s.setGoal(th, t.id, goalOf(th, objective, "complete", 12345, 240))
+	c.end("completed", nil)
 }
 
 // end closes the turn the way codex does: the usage, the status, the rollout.
@@ -982,6 +1055,71 @@ func (c *tcx) script(text string) (string, map[string]any) {
 		c.th.bgUntil = time.Now().Add(time.Duration(atof(fields, 0, 1) * float64(time.Second)))
 		c.s.mu.Unlock()
 		ok = c.say([]string{"started a background terminal"}, 0)
+	case "/goal":
+		if rest == "clear" {
+			c.s.setGoal(c.th, c.t.id, nil)
+			ok = c.say([]string{"goal cleared"}, 0)
+			break
+		}
+		c.s.setGoal(c.th, c.t.id, goalOf(c.th, rest, "active", 0, 0))
+		// Codex says the goal again as it counts its tokens.
+		c.s.setGoal(c.th, c.t.id, goalOf(c.th, rest, "active", 100, 1))
+		c.goal = true
+		ok = c.say([]string{"goal set"}, 0)
+	case "/subfail":
+		c.subagentFails()
+		ok = c.say([]string{"the helper failed"}, 0)
+	case "/image":
+		dir := filepath.Join(c.s.home, "generated_images", c.th.id)
+		path := filepath.Join(dir, c.id("ig")+".png")
+		if err := os.MkdirAll(dir, 0o700); err == nil {
+			_ = os.WriteFile(path, redSquare(), 0o600)
+		}
+		id := c.id("ig")
+		c.started(map[string]any{"type": "imageGeneration", "id": id, "status": "generating", "revisedPrompt": nil, "savedPath": nil})
+		c.completed(map[string]any{"type": "imageGeneration", "id": id, "status": "completed",
+			"revisedPrompt": "A small red square on a white background", "savedPath": path})
+		ok = c.say([]string{"drew it"}, 0)
+	case "/poll":
+		id := c.id("call")
+		item := map[string]any{"type": "commandExecution", "id": id, "command": "/bin/bash -lc 'npm run dev'", "cwd": c.th.cwd,
+			"processId": "77", "source": "unifiedExecStartup", "status": "inProgress", "commandActions": []any{}, "aggregatedOutput": nil,
+			"exitCode": nil, "durationMs": nil}
+		c.started(item)
+		c.s.notify("item/commandExecution/terminalInteraction", c.with(map[string]any{"itemId": id, "processId": "77", "stdin": ""}))
+		c.s.notify("item/commandExecution/terminalInteraction", c.with(map[string]any{"itemId": id, "processId": "77", "stdin": "y\n"}))
+		item["status"], item["exitCode"], item["aggregatedOutput"] = "completed", 0, "ready\n"
+		c.completed(item)
+		ok = c.say([]string{"polled it"}, 0)
+	case "/hook":
+		run := func(id, status string, msg any, entries []any) map[string]any {
+			return map[string]any{"id": id, "eventName": "stop", "handlerType": "command", "executionMode": "sync", "scope": "turn",
+				"source": "project", "sourcePath": filepath.Join(c.th.cwd, ".codex", "hooks.json"), "displayOrder": 0,
+				"startedAt": 1, "status": status, "statusMessage": msg, "entries": entries}
+		}
+		blocked := run("hook-1", "blocked", "Tests are failing", []any{map[string]any{"kind": "feedback", "text": "Run the tests before you stop."}})
+		c.s.notify("hook/started", c.with(map[string]any{"run": run("hook-1", "running", nil, []any{})}))
+		c.s.notify("hook/completed", c.with(map[string]any{"run": blocked}))
+		c.s.notify("hook/completed", c.with(map[string]any{"run": run("hook-2", "completed", nil, []any{})}))
+		c.completed(map[string]any{"type": "hookPrompt", "id": c.id("hook"),
+			"fragments": []any{map[string]any{"hookRunId": "hook-1", "text": "Run the tests before you stop."}}})
+		ok = c.say([]string{"hooked"}, 0)
+	case "/nap":
+		id := c.id("sleep")
+		c.started(map[string]any{"type": "sleep", "id": id, "durationMs": 90000})
+		c.completed(map[string]any{"type": "sleep", "id": id, "durationMs": 90000})
+		ok = c.say([]string{"napped"}, 0)
+	case "/warn":
+		c.s.notify("deprecationNotice", map[string]any{"summary": "The old flag is deprecated.", "details": "Use the new one."})
+		c.s.notify("guardianWarning", map[string]any{"threadId": c.th.id, "message": "The guardian is unsure about that."})
+		c.s.notify("configWarning", map[string]any{"summary": "An unknown key in config.toml.", "details": nil, "path": nil})
+		for range 2 {
+			c.s.notify("mcpServer/startupStatus/updated", map[string]any{"threadId": c.th.id, "name": "lab", "status": "failed",
+				"error": "exited with status 1", "failureReason": nil})
+		}
+		c.s.notify("mcpServer/startupStatus/updated", map[string]any{"threadId": nil, "name": "docs", "status": "failed",
+			"error": nil, "failureReason": "reauthenticationRequired"})
+		ok = c.say([]string{"warned"}, 0)
 	default:
 		c.rateLimits(12)
 		c.reasoning()
@@ -1057,6 +1195,38 @@ func (c *tcx) subagent() {
 		"agentThreadId": child, "agentPath": "/root/helper"}
 	c.started(done)
 	c.completed(done)
+}
+
+// subagentFails spawns a thread whose turn fails, as a subagent's does when
+// its model call fails for good: the error notification, the failed turn,
+// and codex's completion item all the same.
+func (c *tcx) subagentFails() {
+	child := newUUID()
+	start := map[string]any{"type": "subAgentActivity", "id": c.id("call"), "kind": "started", "agentThreadId": child,
+		"agentPath": "/root/helper", "model": "gpt-fake", "reasoningEffort": "low"}
+	c.started(start)
+	c.completed(start)
+	childTurn := newUUID()
+	c.s.notify("turn/started", map[string]any{"threadId": child, "turn": map[string]any{"id": childTurn, "rootTurnId": c.t.id, "status": "inProgress"}})
+	msg := map[string]any{"type": "agentMessage", "id": "msg_subfail", "text": ""}
+	c.s.notify("item/started", map[string]any{"threadId": child, "turnId": childTurn, "item": msg})
+	terr := map[string]any{"message": "The helper's model is overloaded.", "codexErrorInfo": "serverOverloaded"}
+	c.s.notify("error", map[string]any{"threadId": child, "turnId": childTurn, "error": terr, "willRetry": false})
+	c.s.notify("turn/completed", map[string]any{"threadId": child, "turn": map[string]any{"id": childTurn, "rootTurnId": c.t.id,
+		"status": "failed", "error": terr}})
+	done := map[string]any{"type": "subAgentActivity", "id": "subagent-completed-" + childTurn, "kind": "completed",
+		"agentThreadId": child, "agentPath": "/root/helper"}
+	c.started(done)
+	c.completed(done)
+}
+
+// redSquare is a 64×64 red PNG.
+func redSquare() []byte {
+	img := image.NewRGBA(image.Rect(0, 0, 64, 64))
+	draw.Draw(img, img.Bounds(), &image.Uniform{C: color.RGBA{R: 220, A: 255}}, image.Point{}, draw.Src)
+	var b bytes.Buffer
+	_ = png.Encode(&b, img)
+	return b.Bytes()
 }
 
 // special runs a turn that a command starts rather than a message: a

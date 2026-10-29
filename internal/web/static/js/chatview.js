@@ -376,6 +376,10 @@ export function mountChat(ctx) {
       const dir = session && session.workdir ? String(session.workdir).replace(/\/+$/, '') : '';
       return dir && p.startsWith(dir + '/') ? p.slice(dir.length + 1) : p;
     },
+    // imageSrc is where an image part's file is drawn from: the server reads
+    // it at the path the part names (chatparts.js imageHtml).
+    imageSrc: (part) => (session
+      ? '/api/chats/' + encodeURIComponent(session.id) + '/parts/' + encodeURIComponent(part.id) + '/image' : ''),
     // Whether the chat goes on by itself once a limit renews (on unless
     // switched off), and whether a limit card is the chat's newest word.
     autoContinue: () => !!session && session.options?.auto_continue !== false,

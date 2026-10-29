@@ -62,7 +62,8 @@ func EnableFake() {
 //	/limit           the account's limit stops the turn
 //	/refused         the provider refuses the account's sign-in (an error of code auth)
 //	/account         which account the CLI runs on, and whether it has a key
-//	/crash           the CLI child dies in the middle of the turn
+//	/image PATH      an image part of the file at PATH
+//	/crash         the CLI child dies in the middle of the turn
 //	/orphan          a tool process that escapes the CLI's process group
 //	anything else    "you said: …" with the turn number of the conversation
 type fakeAdapter struct {
@@ -522,6 +523,12 @@ func (f *fakeAdapter) turn(ctx context.Context, msg Outgoing, n int) {
 		return
 	case "/account":
 		t.say(f.accountLine())
+	case "/image":
+		// An image part naming the file at the path given, as an agent's
+		// image a tool made or viewed.
+		content, _ := json.Marshal(map[string]any{"path": strings.TrimSpace(args), "prompt": "a red square"})
+		f.out.Emit(Event{Type: TypePart, MessageID: t.msgID, PartID: t.msgID + "_img", Kind: PartImage, State: PartDone, Content: content})
+		t.say("Here is the image.")
 	case "/crash":
 		t.say("about to crash")
 		f.crash()

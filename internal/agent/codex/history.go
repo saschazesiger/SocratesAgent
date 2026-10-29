@@ -109,13 +109,33 @@ func historyEvents(ht historyTurn, items []json.RawMessage) []agent.Event {
 		outcome, state, msgState = agent.OutcomeInterrupted, agent.PartInterrupted, agent.MessageInterrupted
 	}
 	var users, parts []agent.Event
+	opener := func(code, text, detail string) {
+		c := map[string]any{"code": code}
+		if detail != "" {
+			c["detail"] = detail
+		}
+		parts = append(parts, agent.Event{Type: agent.TypePart, MessageID: msgID, PartID: fmt.Sprintf("%s_p%d", msgID, len(parts)+1),
+			Kind: agent.PartNotice, State: agent.PartDone, Text: text, Content: jsonOf(c)})
+	}
+	// A turn nobody asked for - no message, and no command's (a compaction,
+	// a review, a "!" line) - codex started by itself, and opens with that.
+	if len(items) > 0 && !askedFor(items) {
+		opener(noticeSelf, "Codex started this turn by itself.", "")
+	}
 	for i, raw := range items {
 		var it item
 		if json.Unmarshal(raw, &it) != nil || it.Type == "" {
 			continue
 		}
 		if it.Type == "userMessage" {
-			users = append(users, userEvent(it, fmt.Sprintf("m_%s_%d", ht.ID, i)))
+			ev := userEvent(it, fmt.Sprintf("m_%s_%d", ht.ID, i))
+			// Should codex keep its goal's prompt as the turn's message,
+			// it is the opener rather than the person's words.
+			if objective, ok := goalPrompt(ev.Text); ok {
+				opener(noticeGoal, withFirstLine("Continuing toward the goal", objective), objective)
+			} else {
+				users = append(users, ev)
+			}
 			continue
 		}
 		m := mapItem(it, raw, true)
@@ -145,6 +165,38 @@ func historyEvents(ht historyTurn, items []json.RawMessage) []agent.Event {
 	return append(events,
 		agent.Event{Type: agent.TypeMessageState, MessageID: msgID, State: msgState},
 		agent.Event{Type: agent.TypeTurnEnded, TurnID: turnID, Outcome: outcome, Text: why})
+}
+
+// askedFor is whether a stored turn was asked for: it holds a message, or is
+// a command's turn (a compaction, a review, a "!" line).
+func askedFor(items []json.RawMessage) bool {
+	for _, raw := range items {
+		var it item
+		if json.Unmarshal(raw, &it) != nil {
+			continue
+		}
+		switch {
+		case it.Type == "userMessage", it.Type == "contextCompaction", it.Type == "enteredReviewMode",
+			it.Type == "commandExecution" && it.Source == "userShell":
+			return true
+		}
+	}
+	return false
+}
+
+// goalContinuation is how codex's prompt for a turn toward the goal begins
+// (its goals/continuation.md, codex-cli 0.165); the objective follows
+// between <objective> tags.
+const goalContinuation = "Continue working toward the active thread goal."
+
+// goalPrompt is the objective of codex's goal prompt, when text is one.
+func goalPrompt(text string) (string, bool) {
+	if !strings.HasPrefix(strings.TrimSpace(text), goalContinuation) {
+		return "", false
+	}
+	_, rest, _ := strings.Cut(text, "<objective>")
+	objective, _, _ := strings.Cut(rest, "</objective>")
+	return strings.TrimSpace(objective), true
 }
 
 // userEvent is a stored user message, delivered: its text and its images.

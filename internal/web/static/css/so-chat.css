@@ -55,6 +55,8 @@
  *                          [data-pinned] above the composer, folded
  *                          (.so-foldbox: shut until opened, as the agents
  *                          at work are, .so-footfold)
+ *   .so-image              an image the agent made or viewed, its prompt
+ *                          under it (.so-image__caption)
  *   .so-plan, .so-ask      the plan card and the question card (DS cards)
  *   .so-line               a line between messages: a notice, a command, a
  *                          model or an account change, an interrupted turn
@@ -994,6 +996,31 @@
 .so-attachment > svg {
   flex: none;
   color: var(--ds-text-2);
+}
+
+/* An image a part shows: as wide as the answer, as tall as most of a
+   screen, and the prompt it was made from under it in the meta type. */
+.so-image {
+  display: grid;
+  justify-items: start;
+  gap: var(--ds-space-2);
+  margin: 0;
+}
+
+.so-image__img {
+  display: block;
+  max-width: 100%;
+  max-height: min(60vh, calc(var(--ds-viewport-height, 100dvh) * 0.6));
+  height: auto;
+  border: 1px solid var(--ds-line);
+  border-radius: var(--ds-radius-md);
+  background: var(--ds-surface);
+}
+
+.so-image__caption {
+  color: var(--ds-text-2);
+  font: var(--ds-font-meta);
+  overflow-wrap: anywhere;
 }
 
 /* ── Parts ───────────────────────────────────────────────────────────── */

@@ -3036,6 +3036,53 @@ async function createcodex() {
   } finally { await s.stop(); }
 }
 
+/* ---------------------------------------------------------- 14b. owncodex */
+
+// What Codex does by itself, in the chat: a goal the model sets is a line in
+// the answer, the turn Codex then starts by itself opens with the goal it
+// goes on toward, and the goal's end says what it used; an image it makes is
+// drawn from its file, with the prompt under it; a subagent whose turn failed
+// ends failed, with why.
+async function owncodex() {
+  const s = await start({ viewport: { width: 1280, height: 720 } });
+  try {
+    await setup(s.page, s.url);
+    await open(s);
+    const id = await startChat(s.page, 'codex');
+    await say(s.page, '/goal Ship the release');
+    const went = await awaitLog(s.page, 'kept going toward: Ship the release', 20000);
+    const goals = await s.page.waitForFunction(() => {
+      const lines = [...document.querySelectorAll('#chat .so-part.so-line[data-code="goal"]')].map((n) => n.innerText.trim());
+      return lines.length === 3 ? lines : null;
+    }, null, { timeout: 10000 }).then((h) => h.jsonValue(), () => []);
+    ok(went && goals[0] === 'Goal set: Ship the release' && goals[1] === 'Continuing toward the goal: Ship the release'
+      && goals[2] === 'Goal complete (12,345 tokens, 4 min): Ship the release',
+    'a goal is a line where it was set; the turn Codex starts by itself opens with it, and its end says what it used',
+    JSON.stringify(goals));
+    const users = userTexts(await historyOf(s, id));
+    ok(users.join('|') === '/goal Ship the release', 'the turn of Codex’s own is no message of the person’s', users.join('|'));
+    await shot(s.page, 'codex-goal');
+
+    await say(s.page, '/image');
+    await awaitLog(s.page, 'drew it', 20000);
+    const image = await s.page.waitForFunction(() => {
+      const img = document.querySelector('#chat .so-image img');
+      return img && img.complete && img.naturalWidth > 0
+        ? { width: img.naturalWidth, alt: img.alt, caption: (img.closest('.so-image').querySelector('figcaption') || {}).textContent || '' } : null;
+    }, null, { timeout: 10000 }).then((h) => h.jsonValue(), () => null);
+    ok(!!image && image.width === 64 && image.caption === 'A small red square on a white background',
+      'an image Codex makes is drawn from its file, with the prompt under it', JSON.stringify(image));
+    await shot(s.page, 'codex-image');
+
+    const helper = await answerTo(s, id, '/subfail');
+    const parts = ((await historyOf(s, id)).messages || []).flatMap((m) => m.parts || []);
+    const group = parts.find((p) => p.content && p.content.tool === 'subagent');
+    ok(helper === 'the helper failed' && !!group && group.state === 'error' && group.content.error === "The helper's model is overloaded.",
+      'a subagent whose turn failed ends failed, with why', JSON.stringify(group && { state: group.state, error: group.content.error }));
+    ok(unexpected(s.errors).length === 0, 'no console errors', unexpected(s.errors).join(' | ') || '0');
+  } finally { await s.stop(); }
+}
+
 /* ------------------------------------------------------- 15. createopencode */
 
 // OpenCode as a chat: one `opencode serve` per chat, on a port and with a
@@ -13478,6 +13525,7 @@ const ALL = [
   ['sheetmcp', 'the new session sheet: the shell across the width, the account\u2019s limits, the MCP switches', sheetmcp],
   ['chatpeers', 'the agents of the chats in one repository list, read and write to each other', chatpeers],
   ['createcodex', 'Codex over its app server: one thread, kept, and resumed after a rest', createcodex],
+  ['own-codex', 'what Codex does by itself: its goal and the turns it starts for it, an image it made, a subagent that failed', owncodex],
   ['accounts-agents', 'an account of each agent reaches its CLI: its folder, its key, its home', accountsagents],
   ['createopencode', 'OpenCode over its own authenticated server: one session, resumed after a rest', createopencode],
   ['rebootresume', 'a machine that rebooted mid-turn, and the chat that comes back on its conversation', rebootresume],

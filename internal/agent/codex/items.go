@@ -2,7 +2,9 @@ package codex
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
+	"time"
 
 	"github.com/saschazesiger/SocratesAgent/internal/agent"
 )
@@ -71,7 +73,31 @@ type item struct {
 	// imageView, enteredReviewMode, exitedReviewMode
 	Path   string `json:"path"`
 	Review string `json:"review"`
+
+	// imageGeneration
+	SavedPath     *string         `json:"savedPath"`
+	RevisedPrompt *string         `json:"revisedPrompt"`
+	Failure       json.RawMessage `json:"failure"`
+
+	// hookPrompt
+	Fragments []struct {
+		Text string `json:"text"`
+	} `json:"fragments"`
 }
+
+// The codes of the notices the adapter writes of its own, in a part
+// ({code, detail}, chatparts.js noticePart) or a line.
+const (
+	// noticeGoal: the thread's goal was set or changed status, or a turn
+	// codex started by itself goes on toward it.
+	noticeGoal = "goal"
+	// noticeSelf: a turn codex started by itself, for no goal the adapter
+	// knows of.
+	noticeSelf = "self_started"
+	// noticeHook: a hook blocked, failed or said something, or added to the
+	// conversation.
+	noticeHook = "hook"
+)
 
 // mapped is what one item becomes: a part of some kind, in some state, with
 // its text (nil: keep what the deltas built) and its content.
@@ -178,7 +204,7 @@ func mapItem(it item, raw json.RawMessage, completed bool) mapped {
 	case "imageView":
 		return mapped{kind: agent.PartImage, state: agent.PartDone, content: jsonOf(map[string]any{"path": it.Path})}
 	case "imageGeneration":
-		return mapped{kind: agent.PartImage, state: itemState(it.Status, completed), content: jsonOf(map[string]any{"item": raw})}
+		return imageGeneration(it, completed)
 	case "enteredReviewMode":
 		return mapped{kind: agent.PartNotice, state: agent.PartDone, text: strp("Reviewing: " + it.Review),
 			content: jsonOf(map[string]any{"notice": "review_started"})}
@@ -195,9 +221,91 @@ func mapItem(it item, raw json.RawMessage, completed bool) mapped {
 		return m
 	case "webSearch":
 		return mapped{kind: agent.PartTool, state: streamState, content: jsonOf(map[string]any{"tool": "web_search", "item": raw})}
+	case "sleep":
+		// The sleep tool: the row says for how long, as the call asked.
+		summary := ""
+		if it.DurationMs != nil && *it.DurationMs > 0 {
+			summary = "for " + spoken(time.Duration(*it.DurationMs)*time.Millisecond)
+		}
+		return mapped{kind: agent.PartTool, state: itemState("", completed),
+			content: jsonOf(map[string]any{"tool": "sleep", "summary": summary, "item": raw})}
+	case "hookPrompt":
+		// What a hook added to the conversation (a Stop hook that sends the
+		// model on, a prompt's extra context): a notice of the hook's.
+		var texts []string
+		for _, f := range it.Fragments {
+			if t := strings.TrimSpace(f.Text); t != "" {
+				texts = append(texts, t)
+			}
+		}
+		detail := strings.Join(texts, "\n\n")
+		return mapped{kind: agent.PartNotice, state: agent.PartDone, text: strp(withFirstLine("A hook added to the conversation", detail)),
+			content: jsonOf(map[string]any{"code": noticeHook, "detail": detail})}
 	}
 	return mapped{kind: agent.PartTool, state: itemState(it.Status, completed),
 		content: jsonOf(map[string]any{"tool": it.Type, "item": raw})}
+}
+
+// imageGeneration is an image the model made: the file codex saved it to,
+// which the chat shows, and the prompt it was made from. One the account's
+// limit refused fails, with what the failure says.
+func imageGeneration(it item, completed bool) mapped {
+	c := map[string]any{"tool": "image_generation", "status": it.Status}
+	if it.SavedPath != nil && *it.SavedPath != "" {
+		c["path"] = *it.SavedPath
+	}
+	if it.RevisedPrompt != nil && *it.RevisedPrompt != "" {
+		c["prompt"] = *it.RevisedPrompt
+	}
+	state := itemState(it.Status, completed)
+	if len(it.Failure) > 0 && string(it.Failure) != "null" {
+		c["failure"] = it.Failure
+		state = agent.PartError
+	}
+	return mapped{kind: agent.PartImage, state: state, content: jsonOf(c)}
+}
+
+// spoken is a length of time the way a line says it: "45 s", "2 min",
+// "1 h 5 min".
+func spoken(d time.Duration) string {
+	switch {
+	case d < time.Minute:
+		return fmt.Sprintf("%d s", max(1, int(d.Round(time.Second)/time.Second)))
+	case d < time.Hour:
+		return fmt.Sprintf("%d min", int(d.Round(time.Minute)/time.Minute))
+	}
+	h, m := int(d/time.Hour), int((d%time.Hour).Round(time.Minute)/time.Minute)
+	if m == 60 {
+		h, m = h+1, 0
+	}
+	if m == 0 {
+		return fmt.Sprintf("%d h", h)
+	}
+	return fmt.Sprintf("%d h %d min", h, m)
+}
+
+// lineMax is how long a notice's line may be; its detail has all of it.
+const lineMax = 200
+
+// firstLine is the first line of s, trimmed and cut to lineMax characters.
+func firstLine(s string) string {
+	s = strings.TrimSpace(s)
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		s = strings.TrimSpace(s[:i])
+	}
+	if r := []rune(s); len(r) > lineMax {
+		s = string(r[:lineMax-1]) + "…"
+	}
+	return s
+}
+
+// withFirstLine is "lead: <the first line of detail>", or "lead." when
+// detail says nothing.
+func withFirstLine(lead, detail string) string {
+	if first := firstLine(detail); first != "" {
+		return lead + ": " + first
+	}
+	return lead + "."
 }
 
 // joinTexts reads a reasoning summary or content array, whose elements are

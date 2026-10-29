@@ -78,6 +78,8 @@ type subagent struct {
 	parent string
 	busy   bool
 	status string
+	// err is why its last turn failed or was interrupted, as codex said.
+	err string
 }
 
 // turnError is a turn's failure as codex reported it.
@@ -298,10 +300,33 @@ func (a *adapter) handle(fr *frame) {
 		a.rateLimits(fr.Params)
 	case "error":
 		a.turnErrorNote(p)
-	case "warning", "configWarning":
-		if p.Message != "" {
-			a.out.Emit(agent.Event{Type: agent.TypeNotice, Code: "warning", Text: p.Message})
+	case "warning", "configWarning", "guardianWarning", "deprecationNotice":
+		// A warning and the guardian's say a message; a config warning and
+		// a deprecation a summary, and maybe details.
+		text := p.Message
+		if text == "" {
+			text = p.Summary
 		}
+		if p.Details != nil && strings.TrimSpace(*p.Details) != "" {
+			text += " " + strings.TrimSpace(*p.Details)
+		}
+		code := "warning"
+		if fr.Method == "deprecationNotice" {
+			code = "deprecation"
+		}
+		if text != "" {
+			a.out.Emit(agent.Event{Type: agent.TypeNotice, Code: code, Text: text})
+		}
+	case "thread/goal/updated":
+		a.goalUpdated(fr.Params)
+	case "thread/goal/cleared":
+		a.goalCleared(p)
+	case "hook/completed":
+		a.hookCompleted(fr.Params)
+	case "mcpServer/startupStatus/updated":
+		a.mcpStatus(fr.Params)
+	case "item/commandExecution/terminalInteraction":
+		a.terminalInteraction(p)
 	case "model/rerouted":
 		a.out.Emit(agent.Event{Type: agent.TypeNotice, Code: "model_rerouted",
 			Text: fmt.Sprintf("Codex moved this turn from %s to %s.", p.FromModel, p.ToModel)})
@@ -339,6 +364,12 @@ type notification struct {
 	FromModel string          `json:"fromModel"`
 	ToModel   string          `json:"toModel"`
 	RequestID json.RawMessage `json:"requestId"`
+	// configWarning, deprecationNotice
+	Summary string  `json:"summary"`
+	Details *string `json:"details"`
+	// item/commandExecution/terminalInteraction
+	ProcessID string `json:"processId"`
+	Stdin     string `json:"stdin"`
 }
 
 type tokens struct {
@@ -362,15 +393,31 @@ func (a *adapter) turnStarted(p notification) {
 		userMsg, kind = a.starting.MessageID, turnNormal
 	}
 	a.expect, a.expectMsg = turnNormal, ""
+	fresh := a.turns[p.Turn.ID] == nil && a.retry == nil
 	t := a.openTurnLocked(p.Turn.ID, userMsg, kind)
 	if a.starting != nil {
 		t.addInput(*a.starting)
+	}
+	// Nobody asked for this turn: codex started it by itself (a goal it
+	// goes on toward). It opens with why.
+	if fresh && userMsg == "" && kind == turnNormal {
+		a.openerLocked(t)
 	}
 }
 
 func (a *adapter) turnCompleted(p notification) {
 	if p.ThreadID != a.thread {
 		if ag := a.agents[p.ThreadID]; ag != nil {
+			// A subagent's turn that failed or was stopped ends its group
+			// so, with why.
+			switch p.Turn.Status {
+			case "failed":
+				ag.status = "failed"
+				ag.err = pick(p.Turn.Error.text(), ag.err, "The agent's turn failed.")
+			case "interrupted":
+				ag.status = "interrupted"
+				ag.err = pick(p.Turn.Error.text(), ag.err)
+			}
 			a.agentBusy(ag, false)
 		}
 		return
@@ -414,6 +461,11 @@ func (a *adapter) turnErrorNote(p notification) {
 	}
 	if p.WillRetry {
 		a.out.Emit(agent.Event{Type: agent.TypeNotice, Code: "retrying", Text: "Codex is retrying: " + p.Error.text()})
+		return
+	}
+	// A subagent's failure is its group's, at its turn's end.
+	if ag := a.agents[p.ThreadID]; ag != nil && p.ThreadID != a.thread {
+		ag.err = p.Error.text()
 		return
 	}
 	t := a.turns[p.TurnID]
@@ -515,6 +567,9 @@ func (a *adapter) item(p notification, completed bool) {
 	if t == nil {
 		return
 	}
+	if it.Type == "commandExecution" && it.ProcessID != nil && *it.ProcessID != "" && it.Command != "" {
+		a.commands[*it.ProcessID] = it.Command
+	}
 	m := mapItem(it, p.Item, completed)
 	if m.skip {
 		if it.Type == "subAgentActivity" {
@@ -562,7 +617,10 @@ func (a *adapter) subAgentActivity(t *turn, parent *subagent, it item) {
 		a.newAgentLocked(it.AgentThreadID, it.AgentPath, it.Model, it.ReasoningEffort, t, parentGroup)
 	case "completed", "interrupted":
 		if ag := a.agents[it.AgentThreadID]; ag != nil {
-			ag.status = it.Kind
+			// Codex says an agent whose turn failed completed, too.
+			if ag.status != "failed" {
+				ag.status = it.Kind
+			}
 			a.agentBusy(ag, false)
 		}
 	}
@@ -584,7 +642,7 @@ func (a *adapter) agentBusy(ag *subagent, busy bool) {
 		ag.busy = busy
 		if busy {
 			a.running++
-			ag.status = "running"
+			ag.status, ag.err = "running", ""
 		} else {
 			a.running--
 			if ag.status == "running" {
@@ -601,14 +659,23 @@ func (a *adapter) agentBusy(ag *subagent, busy bool) {
 
 func (a *adapter) emitAgent(ag *subagent) {
 	p := ag.turn.parts["agent/"+ag.thread]
-	p.content, _ = json.Marshal(map[string]any{"tool": "subagent", "thread_id": ag.thread, "path": ag.path,
-		"name": agentName(ag.path), "model": ag.model, "effort": ag.effort, "status": ag.status})
+	c := map[string]any{"tool": "subagent", "thread_id": ag.thread, "path": ag.path,
+		"name": agentName(ag.path), "model": ag.model, "effort": ag.effort, "status": ag.status}
+	if ag.err != "" {
+		c["error"] = ag.err
+	}
+	p.content, _ = json.Marshal(c)
+	// The group's text is what its body says once it ended: why it failed.
+	p.text.Reset()
+	p.text.WriteString(ag.err)
 	state := agent.PartRunning
 	switch ag.status {
 	case "completed", "idle":
 		state = agent.PartDone
 	case "interrupted":
 		state = agent.PartInterrupted
+	case "failed":
+		state = agent.PartError
 	}
 	p.done = false
 	a.out.Emit(partEvent(ag.turn.msgID, p, state))
@@ -625,11 +692,15 @@ func (a *adapter) agentRunningLocked(thread string) bool {
 // parts outlive the spawning turn while it runs.
 func (a *adapter) closeAgentPartsLocked(ag *subagent) {
 	t := ag.turn
+	state := agent.PartDone
+	if ag.status == "failed" || ag.status == "interrupted" {
+		state = agent.PartInterrupted
+	}
 	for _, p := range t.order {
 		if p.done || p.agent != ag.thread || p.id == ag.group {
 			continue
 		}
-		a.emitPart(t, p, agent.PartDone)
+		a.emitPart(t, p, state)
 	}
 }
 
