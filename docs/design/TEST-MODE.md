@@ -24,7 +24,8 @@ the repository is the catalog and a tool that drives the devices.
 
 ### Not in scope
 
-- Scheduled runs, runs started by a chat agent, GitHub issues from the bug list (later, if wanted).
+- Scheduled runs, runs started by a chat agent, GitHub issues from the bug list (later, if wanted;
+  runs started by chat agents and GitHub issues came with the evening's revision below).
 - Record and replay: every cell is run live by an agent (Device QA decided the same on 2026-10-28).
 - Tools as MCP servers of the repository: a catalog's tools are command-line programs (decided below).
   Socrates' own MCP servers are the exception (revision below): BrowserStack is built into Socrates
@@ -869,6 +870,37 @@ changes, every problem cell with its failing step, observation and screenshot pa
 run remembers the chat that started it (`Run.StartedBy`); when it ends, Socrates sends that chat a
 message with the results, which starts its agent, as `send_to_chat` does. The person sees the run
 on the Tests page like any other ("started by <chat title>").
+
+As built (branch `tests-b2`), where it differs from or adds to the paragraph above:
+
+- **Which chats.** The four tools come with the chat tools on the same server and through the same
+  endpoint (`chattools.Endpoint.Tests`, `internal/agent/chattools/catalogtools.go`), so every
+  harness offers them its own way (Claude Code's in-process server, Codex's dynamic tools, OpenCode's
+  `socrates mcp-ask`). A chat has them when its repository holds `.socrates/tests/TESTS.md` as its
+  host starts (a catalog written later counts from the next launch), or when it was created with
+  `tests: true` (`POST /api/chats`, the session option `test_tools`); never a test session.
+- **`tests_format`** is `internal/testmode/catalog/FORMAT.md`, embedded in the binary: the
+  user-facing reference (`docs/TESTS-FORMAT.md` points at it), checked against the parser's keys
+  by a unit test. **`tests_check`** answers the problems with file and line, then every area with
+  its dimensions and every test with its priority, tags and cell ids.
+- **`run_tests`** (`Runner.StartChatRun`) refuses before anything starts: no catalog, a catalog with
+  errors, a selection that names an area, test, cell, priority, dimension or value the catalog does
+  not have (it says which there are), or one that takes no cell; `problems_of: "latest"` is resolved
+  to the latest run that is not active. It adds the repository to the list as `POST
+  /api/tests/repos` does and answers the run's id and cell count (the run's number once runs have
+  one), and that a run it waits behind comes first.
+- **`test_results`** is `Runner.Report` with the screenshots' absolute paths, the problems only
+  unless `problems_only` is false, cut at 40 KB with a note; `run` is an id of the chat's repository
+  or `latest` (its newest run, active or not).
+- **The message.** When the run is done, stopped or failed, the chat gets one message through the
+  path `send_to_chat` takes (`sendMessage`: it starts the agent or waits behind its turn), after a
+  `test_results` notice ("The results of the test run this chat started."). It opens with a line
+  for the agent ("[From Socrates Tests: ...]", left out of the bubble), then the run's state and
+  counts, a line per cell that did not pass (at most 10, its first step with that verdict and what
+  was observed) and "Call test_results". `StartedBy.Told` is set and saved before it goes, so a
+  second end or a restart never sends it again; a run that ended without it (a restart in between)
+  is told when the runner starts. A chat that is gone is not told. A cell retried by hand after the
+  message does not send another.
 
 **API additions**:
 
