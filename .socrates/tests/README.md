@@ -14,6 +14,7 @@ step on its screenshots.
 | `web/<group>/<test>.md` | 28 tests: `sign-in`, `home`, `sessions`, `chat`, `shell`, `admin`, `pages` |
 | `tools/browserstack/` | `qa`, the BrowserStack driver (ported from browser.lol's Device QA), its `TOOL.md` |
 | `../../scripts/qa-instance.sh` | Installs, updates, resets and removes the test instance |
+| `../../scripts/qa-demo-tests/` | The Demo shop: the test catalog whose runs the instance's Tests page shows |
 
 ## The devices
 
@@ -40,10 +41,19 @@ reach it; its password protects it). Its agents: Claude Code (Haiku), Codex (gpt
 `/etc/socrates-qa/` (`secrets.env` holds the BrowserStack accounts and the instance's password; the
 tool's secrets command reads it).
 
+Its Tests page has the **Demo shop** (`/var/lib/socrates-qa/work/demo-shop`, a copy of
+`scripts/qa-demo-tests` with a commit or three): two areas, ten tests, 21 cells, and four runs with
+reviews, bugs and conclusions, worked by the Scripted agent for free (`docs/design/TEST-MODE.md`,
+"Test roles on the Scripted agent"). Each test's `fake` parameter decides its outcome, so the history
+is the same after every reset: an issue that stays, a cell fixed in run 3, a flaky cell, a blocked
+one, a regression and a fix in run 4, a verdict the reviewer corrected. The cells share it: they read
+it and may start a quick run of `shop/home` of their own, never change what is there (`TESTS.md`).
+
 ```sh
-scripts/qa-instance.sh status      # service, public URL, accounts
+scripts/qa-instance.sh status      # service, public URL, accounts, the Demo shop's runs and bugs
 scripts/qa-instance.sh password    # the password, to sign in by hand
-scripts/qa-instance.sh reset       # delete every session, reset the demo project, seed again
+scripts/qa-instance.sh reset       # delete every session, reset the demo project, seed again,
+                                   # and the Demo shop's four test runs (restarts the instance; < 1 min)
 scripts/qa-instance.sh update      # rebuild from origin/main (--ref <ref> for another) and restart
 scripts/qa-instance.sh uninstall   # remove it (the tunnel and DNS record stay in Cloudflare)
 ```
