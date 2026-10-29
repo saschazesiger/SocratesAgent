@@ -16,6 +16,7 @@ import { combobox, dropdown } from './combobox.js';
 import { dictated, typeHere } from './keyboard.js';
 import { agentMark } from './logos.js';
 import { hideOverlay, html, icon, iconEl, morph, raw, showOverlay } from './ui.js';
+import { brief, fromWords, labelOf } from './mcpview.js';
 
 const CACHE_KEY = 'socrates.harnesses';
 // How long a typed path rests before the sheet asks for its MCP servers.
@@ -339,12 +340,9 @@ function dynamicPreview(id) {
 }
 
 // mcpSource is where an MCP server of a chat comes from, and what it is on
-// by itself, as the chat's MCP servers dialog says it.
+// by itself, as the chat's MCP servers dialog says it, with what it is for.
 function mcpSource(server) {
-  const from = server.from === 'admin'
-    ? 'From Admin \u00b7 ' + (server.default ? 'on' : 'off') + ' in every chat'
-    : 'From the folder\u2019s .mcp.json';
-  return from + (server.transport === 'stdio' ? '' : ' \u00b7 ' + String(server.transport).toUpperCase());
+  return [fromWords(server), brief(server.description)].filter(Boolean).join('. ');
 }
 
 /**
@@ -675,7 +673,7 @@ export function settingsForm(options = {}) {
   function renderMcp() {
     mcpField.hidden = !isChat(pick.harness) || mcpServers === null;
     if (mcpField.hidden) return;
-    morph(mcpList, html`${mcpServers.map((server, i) => html`<label class="ds-switch" data-ds-key="${'mcp-' + server.name}"><input type="checkbox" role="switch" data-name="${server.name}" aria-labelledby="${id('McpName') + i}" aria-describedby="${id('McpFrom') + i}"><span class="ds-switch__track" aria-hidden="true"></span><span class="ds-switch__label" id="${id('McpName') + i}">${server.name}</span><small class="ds-switch__hint" id="${id('McpFrom') + i}">${mcpSource(server)}</small><span class="ds-switch__state" aria-hidden="true"><span class="ds-switch__on">On</span><span class="ds-switch__off">Off</span></span></label>`)}`);
+    morph(mcpList, html`${mcpServers.map((server, i) => html`<label class="ds-switch" data-ds-key="${'mcp-' + server.name}"><input type="checkbox" role="switch" data-name="${server.name}" aria-labelledby="${id('McpName') + i}" aria-describedby="${id('McpFrom') + i}"><span class="ds-switch__track" aria-hidden="true"></span><span class="ds-switch__label" id="${id('McpName') + i}">${labelOf(server)}</span><small class="ds-switch__hint" id="${id('McpFrom') + i}">${mcpSource(server)}</small><span class="ds-switch__state" aria-hidden="true"><span class="ds-switch__on">On</span><span class="ds-switch__off">Off</span></span></label>`)}`);
     // The checked state is the property, which a patch of the markup does
     // not carry: it is said here, after it.
     for (const input of mcpList.querySelectorAll('input[data-name]')) {

@@ -8,12 +8,14 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/saschazesiger/SocratesAgent/internal/agent/testtools"
+	"github.com/saschazesiger/SocratesAgent/internal/mcpserver"
 	"github.com/saschazesiger/SocratesAgent/internal/testmode/catalog"
 )
 
@@ -42,6 +44,12 @@ type Host interface {
 	Notify(title, body, url string)
 	GetKV(key string) (string, error)
 	SetKV(key, value string) error
+	// MCPPool is the pool of accounts of an MCP server built into Socrates,
+	// nil for a server without one (or not built in).
+	MCPPool(server string) mcpserver.Pool
+	// EndMCP ends what the built-in MCP servers keep for a test session (a
+	// device it left open), before its leases are released.
+	EndMCP(chat string)
 }
 
 // SessionSpec is a test session to start.
@@ -390,6 +398,11 @@ func (r *Runner) resume(rs *runState) {
 		case a.State == AttemptRunning:
 			if err := r.writeAttemptVaultLocked(rs, a); err != nil {
 				log.Printf("tests: %s: %v", a.ID, err)
+			}
+			for _, l := range a.Leases {
+				if pool := r.host.MCPPool(l.Tool); l.MCP && pool != nil && !pool.Restore(a.ID, l.Account) {
+					log.Printf("tests: %s: the %s account %s is gone", a.ID, l.Tool, l.Label)
+				}
 			}
 			if n := r.reconcileLocked(rs, ref, a.Chat); n != "" {
 				nudges = append(nudges, [2]string{a.Chat, n})
@@ -764,6 +777,9 @@ func (r *Runner) heldLocked(repo string) map[string]map[int]int {
 				continue
 			}
 			for _, l := range a.Leases {
+				if l.MCP {
+					continue
+				}
 				if held[l.Tool] == nil {
 					held[l.Tool] = map[int]int{}
 				}
@@ -775,13 +791,20 @@ func (r *Runner) heldLocked(repo string) map[string]map[int]int {
 }
 
 // hasPools is whether the run's tools have a pool.
-func (rs *runState) hasPools() bool {
+func (r *Runner) hasPools(rs *runState) bool {
 	if rs.plan == nil {
 		return false
 	}
 	for _, t := range rs.plan.Tools {
 		if t.Pool != nil {
 			return true
+		}
+	}
+	for _, pa := range rs.plan.Areas {
+		for _, name := range append(slices.Clone(pa.MCP), rs.run.Settings.MCP...) {
+			if r.host.MCPPool(name) != nil {
+				return true
+			}
 		}
 	}
 	return false
@@ -856,7 +879,7 @@ func (r *Runner) startCellsLocked(rs *runState, running *int) []start {
 	// Without a limit of its own a run with pools is limited by them, and
 	// says so: a cell waits for an account, not for "a session".
 	capacity := rs.run.Settings.Parallel
-	if capacity == 0 && !rs.hasPools() {
+	if capacity == 0 && !r.hasPools(rs) {
 		capacity = DefaultParallel
 	}
 	var out []start
@@ -885,6 +908,13 @@ func (r *Runner) startCellsLocked(rs *runState, running *int) []start {
 		if wait == "" {
 			account, wait = r.host.PickAccount(rs.run.Settings.Cell.Harness, rs.run.Settings.Cell.Accounts, load)
 		}
+		// The accounts of the built-in MCP servers last: their pools keep
+		// the leases themselves.
+		if wait == "" {
+			var more []Lease
+			more, wait = r.leaseMCPLocked(rs, a, waitingFor)
+			got = append(got, more...)
+		}
 		if wait != "" {
 			if a.State != AttemptWaiting || a.Wait != wait {
 				a.State, a.Wait = AttemptWaiting, wait
@@ -894,6 +924,9 @@ func (r *Runner) startCellsLocked(rs *runState, running *int) []start {
 		}
 		// Taken: the leases count for the cells after it.
 		for _, l := range got {
+			if l.MCP {
+				continue
+			}
 			if leases[l.Tool] == nil {
 				leases[l.Tool] = map[int]int{}
 			}
@@ -960,6 +993,57 @@ func (r *Runner) leaseLocked(rs *runState, a *Attempt, held map[string]map[int]i
 		got = append(got, Lease{Tool: name, Member: best, Label: memberLabel(list[best-1], best)})
 	}
 	return got, ""
+}
+
+// mcpPools is the built-in MCP servers with a pool an attempt's session
+// gets: those its area names and those the run's settings add.
+func (r *Runner) mcpPools(rs *runState, a *Attempt) []string {
+	var names []string
+	if pa := rs.plan.Areas[a.Area]; pa != nil {
+		names = append(names, pa.MCP...)
+	}
+	names = append(names, rs.run.Settings.MCP...)
+	var out []string
+	for _, name := range names {
+		if !slices.Contains(out, name) && r.host.MCPPool(name) != nil {
+			out = append(out, name)
+		}
+	}
+	return out
+}
+
+// leaseMCPLocked takes an account of every built-in MCP server with a pool
+// the attempt's area names, for the attempt; none when one has no account
+// free, with the reason (and what was taken is given back).
+func (r *Runner) leaseMCPLocked(rs *runState, a *Attempt, waitingFor map[string]int) ([]Lease, string) {
+	var got []Lease
+	for _, name := range r.mcpPools(rs, a) {
+		pool := r.host.MCPPool(name)
+		lease, why := pool.Lease(a.ID)
+		if lease.Account == "" {
+			for _, l := range got {
+				r.host.MCPPool(l.Tool).Release(a.ID)
+			}
+			waitingFor["mcp:"+name]++
+			if strings.HasPrefix(why, "every ") || why == "" {
+				return nil, fmt.Sprintf("waiting for a free %s account (%d ahead)", pool.PoolTitle(), waitingFor["mcp:"+name]-1)
+			}
+			return nil, "waiting: " + why
+		}
+		got = append(got, Lease{Tool: name, Label: lease.Label, MCP: true, Account: lease.Account})
+	}
+	return got, ""
+}
+
+// releaseMCP gives back the attempt's leases of built-in MCP servers.
+func (r *Runner) releaseMCP(a *Attempt) {
+	for _, l := range a.Leases {
+		if l.MCP {
+			if pool := r.host.MCPPool(l.Tool); pool != nil {
+				pool.Release(a.ID)
+			}
+		}
+	}
 }
 
 // busyEvery is how long a pool's status reading is used.
@@ -1057,9 +1141,14 @@ func (r *Runner) launch(s start) {
 		r.byChat[chat] = s.spec.Ref
 		a.Chat = chat
 		if a.State != AttemptStarting {
-			// Stopped while it started.
+			// Stopped while it started: its end hooks ran without the
+			// session, so what a built-in MCP server keeps for it is closed
+			// here.
 			r.saveAttemptLocked(a)
-			r.spawnLocked(func() { r.host.StopSession(r.ctx, chat) })
+			r.spawnLocked(func() {
+				r.host.StopSession(r.ctx, chat)
+				r.host.EndMCP(chat)
+			})
 			return
 		}
 		a.State, a.StartedAt = AttemptRunning, now
@@ -1160,7 +1249,12 @@ func (r *Runner) LaunchFor(raw json.RawMessage) (*Launch, error) {
 		}
 		pa := rs.plan.Areas[a.Area]
 		if pa != nil {
-			l.Instructions, l.MCP = pa.Prompt, pa.MCP
+			l.Instructions, l.MCP = pa.Prompt, slices.Clone(pa.MCP)
+		}
+		for _, name := range rs.run.Settings.MCP {
+			if !slices.Contains(l.MCP, name) {
+				l.MCP = append(l.MCP, name)
+			}
 		}
 		runtime := r.layout.RuntimeDir(a.ID)
 		l.Env = append(l.Env,
@@ -1189,6 +1283,38 @@ func (r *Runner) LaunchFor(raw json.RawMessage) (*Launch, error) {
 		return nil, fmt.Errorf("unknown test session kind %q", ref.Kind)
 	}
 	return l, nil
+}
+
+// MCPCell is the cell a test session works, as an MCP server built into
+// Socrates sees it; nil for a session that works none (a reviewer).
+func (r *Runner) MCPCell(chat string) *mcpserver.TestCell {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	ref, ok := r.byChat[chat]
+	if !ok || ref.Kind != testtools.KindCell {
+		return nil
+	}
+	rs := r.runs[ref.Run]
+	if rs == nil {
+		return nil
+	}
+	a := rs.attempts[ref.ID]
+	// An attempt that ended has no device to start, and no lease.
+	if a == nil || a.State != AttemptRunning && a.State != AttemptStarting {
+		return nil
+	}
+	c := &mcpserver.TestCell{Run: rs.run.ID, Test: a.Test, Cell: a.CellID, Attempt: a.ID, N: a.N, Repo: rs.run.Path,
+		Dims: map[string]string{}, Params: map[string]string{}, Evidence: r.layout.EvidenceDir(a)}
+	for _, d := range a.Dims {
+		c.Dims[d.Name] = d.ID
+	}
+	for k, v := range a.Params {
+		c.Params[k] = v
+	}
+	if pa := rs.plan.Areas[a.Area]; pa != nil {
+		c.Prompted = slices.Clone(pa.MCP)
+	}
+	return c
 }
 
 // IsTestChat is whether a chat is one of the runner's sessions.
@@ -1331,6 +1457,7 @@ func (r *Runner) finishLocked(rs *runState, a *Attempt, state, reason string) {
 		r.spawnLocked(func() { r.runEndHooks(rs, a, env) })
 	} else {
 		_ = os.RemoveAll(r.layout.RuntimeDir(a.ID))
+		r.releaseMCP(a)
 	}
 	if state == AttemptStopped {
 		return
@@ -1381,6 +1508,7 @@ func (r *Runner) runEndHooks(rs *runState, a *Attempt, env []string) {
 	}
 	red := rs.red
 	dir := r.layout.EvidenceDir(a)
+	chat := a.Chat
 	r.mu.Unlock()
 	var problems []string
 	for _, t := range hooks {
@@ -1392,10 +1520,20 @@ func (r *Runner) runEndHooks(rs *runState, a *Attempt, env []string) {
 			problems = append(problems, fmt.Sprintf("the end hook of %s failed: %v %s", t.Name, err, tail(stdout+stderr, 400)))
 		}
 	}
+	// A device a built-in MCP server holds for the cell is closed (its links
+	// land in the evidence), then its account is given back.
+	if chat != "" {
+		r.host.EndMCP(chat)
+	}
+	r.releaseMCP(a)
 	redactEvidence(dir, red)
 	_ = os.RemoveAll(r.layout.RuntimeDir(a.ID))
 	r.mu.Lock()
 	delete(rs.ending, a.ID)
+	if links := readLinks(dir, red); len(links) > 0 {
+		a.Links = links
+		r.saveAttemptLocked(a)
+	}
 	if len(problems) > 0 {
 		note := red.String(strings.Join(problems, "; "))
 		if a.EndReason == "" {

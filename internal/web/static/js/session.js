@@ -37,6 +37,7 @@ import {
 } from './keyboard.js';
 import { mountEvents } from './events.js';
 import { forgetDraft } from './composer.js';
+import * as mcpView from './mcpview.js';
 import { mountHome, questionQueue, connectionLine } from './home.js';
 import {
   OUTCOME_WORDS, CHECKING_WORDS, outcomeCurrent, outcomeMark, outcomeLine, outcomeIconHtml,
@@ -2296,48 +2297,63 @@ async function setUltracode(session, on) {
   }
 }
 
-// mcpDialog is a chat's MCP servers, each a switch: Admin's, on or off by
-// their default until switched here, and the folder's .mcp.json's. A switch
-// applies at once; the agent is put to rest as soon as it is idle and takes
-// the change up with the next message, as with Ultracode. A switch put back
-// to the server's default gives the choice back to Admin.
+// mcpDialog is a chat's MCP servers, each a switch: those built into
+// Socrates and Admin's, on or off by their default until switched here, and
+// the folder's .mcp.json's. A switch applies at once; the agent is put to
+// rest as soon as it is idle and takes the change up with the next message,
+// as with Ultracode. A switch put back to the server's default gives the
+// choice back to Admin. The button beside a switch tests the server as this
+// chat's agent would have it and lists its tools.
 async function mcpDialog(session, opener) {
   const url = '/api/sessions/' + encodeURIComponent(session.id) + '/mcp';
-  const list = el('div', { class: 'ds-switch-list' });
+  const list = el('div', { class: 'so-mcp-switches' });
   const note = el('p', { class: 'ds-dialog__text', id: 'mcpDialogText' });
   const close = el('button', { class: 'ds-btn ds-btn--text', type: 'button', 'data-close': true, autofocus: true, text: 'Close' });
-  const dialog = el('dialog', { class: 'ds-dialog', 'aria-labelledby': 'mcpDialogTitle', 'aria-describedby': 'mcpDialogText' },
+  const dialog = el('dialog', { class: 'ds-dialog ds-dialog--wide', 'aria-labelledby': 'mcpDialogTitle', 'aria-describedby': 'mcpDialogText' },
     el('div', { class: 'ds-dialog__backdrop', 'data-close': true }),
     el('div', { class: 'ds-dialog__box' },
       el('h2', { class: 'ds-dialog__title', id: 'mcpDialogTitle', text: 'MCP servers' }),
-      note, list,
+      note, el('div', { class: 'ds-dialog__body' }, list),
       el('div', { class: 'ds-dialog__actions' }, close)));
+  let servers = [];
   const draw = (data) => {
-    const servers = (data && data.servers) || [];
+    servers = (data && data.servers) || [];
     note.textContent = servers.length
       ? 'What this chat\u2019s agent may use. A change counts from the next message.'
       : 'There is no MCP server yet. Add one in Admin for every chat, or in a .mcp.json in the chat\u2019s folder.';
     if (data && data.problems && data.problems.length) note.textContent += ' ' + data.problems.join(' ');
     list.hidden = !servers.length;
-    list.replaceChildren(...servers.map((server, i) => {
-      const labelId = 'mcpSwitch' + i;
-      const hintId = 'mcpSwitchHint' + i;
-      const from = server.from === 'admin'
-        ? 'From Admin \u00b7 ' + (server.default ? 'on' : 'off') + ' in every chat'
-        : 'From the folder\u2019s .mcp.json';
-      const input = el('input', {
-        type: 'checkbox', role: 'switch', checked: !!server.on, 'aria-labelledby': labelId, 'aria-describedby': hintId,
-        'data-name': server.name,
-        onchange: (event) => choose(server, event.currentTarget),
-      });
-      return el('label', { class: 'ds-switch' }, input,
-        el('span', { class: 'ds-switch__track', 'aria-hidden': 'true' }),
-        el('span', { class: 'ds-switch__label', id: labelId, text: server.name }),
-        el('small', { class: 'ds-switch__hint', id: hintId, text: from + (server.transport === 'stdio' ? '' : ' \u00b7 ' + server.transport.toUpperCase()) }),
-        el('span', { class: 'ds-switch__state', 'aria-hidden': 'true' },
-          el('span', { class: 'ds-switch__on', text: 'On' }), el('span', { class: 'ds-switch__off', text: 'Off' })));
-    }));
+    morph(list, html`${servers.map((server, i) => html`<div class="so-mcp-switch" data-ds-key="${'mcp-' + server.name}" data-name="${server.name}">
+      <label class="ds-switch">
+        <input type="checkbox" role="switch" data-name="${server.name}" aria-labelledby="${'mcpSwitch' + i}" aria-describedby="${'mcpSwitchHint' + i}">
+        <span class="ds-switch__track" aria-hidden="true"></span>
+        <span class="ds-switch__label" id="${'mcpSwitch' + i}">${mcpView.labelOf(server)}</span>
+        <small class="ds-switch__hint" id="${'mcpSwitchHint' + i}">${[mcpView.fromWords(server), mcpView.brief(server.description)].filter(Boolean).join('. ')}</small>
+        <span class="ds-switch__state" aria-hidden="true"><span class="ds-switch__on">On</span><span class="ds-switch__off">Off</span></span>
+      </label>
+      <button class="ds-btn ds-btn--quiet ds-btn--icon ds-btn--sm" type="button" data-test="${server.name}" aria-label="${'Test ' + mcpView.labelOf(server) + ' and show its tools'}" data-tip="Test it, show its tools">${raw(icon('info', 18))}</button>
+    </div>`)}`);
+    // morph keeps a switch as the page left it; the server says.
+    for (const input of list.querySelectorAll('input[data-name]')) {
+      const server = servers.find((one) => one.name === input.dataset.name);
+      input.checked = !!server && !!server.on;
+    }
   };
+  list.addEventListener('change', (event) => {
+    const input = event.target.closest('input[data-name]');
+    const server = input && servers.find((one) => one.name === input.dataset.name);
+    if (server) choose(server, input);
+  });
+  list.addEventListener('click', (event) => {
+    const button = event.target.closest('button[data-test]');
+    const server = button && servers.find((one) => one.name === button.dataset.test);
+    if (!server) return;
+    mcpView.probeDialog({
+      title: mcpView.labelOf(server),
+      run: () => api(url + '/test', { method: 'POST', body: { name: server.name }, timeout: 100000, attempts: 1 }),
+      opener: button,
+    });
+  });
   const choose = async (server, input) => {
     const on = input.checked;
     input.setAttribute('aria-busy', 'true');
@@ -2347,7 +2363,7 @@ async function mcpDialog(session, opener) {
       });
       if (dialog.isConnected) draw(data);
       list.querySelector('input[data-name="' + CSS.escape(server.name) + '"]')?.focus();
-      toast(server.name + (on ? ' is on' : ' is off') + ' from the next message.');
+      toast(mcpView.labelOf(server) + (on ? ' is on' : ' is off') + ' from the next message.');
     } catch (err) {
       input.checked = !on;
       toast(errorMessage(err), 'error');

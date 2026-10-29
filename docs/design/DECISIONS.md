@@ -363,6 +363,22 @@ Binding like the rest. Detail: `docs/design/DESIGN.md` §K and §L.
   atomically and is the fastest way to a fix.
 
 
+## Revision 11 — MCP servers reworked, BrowserStack built in, 2026-10-29
+
+The owner asked for browser.lol's BrowserStack CLI tool to become an MCP server inside Socrates that
+any chat can switch on (off by default) and test runs can be given, and then for the whole MCP
+management to be reworked (OAuth, testing a connection, the tools, more settings). What was built is
+[MCP.md](MCP.md); the decisions:
+
+- **Built-in MCP servers are components in the server process** (`internal/mcpserver`), reached by
+  the agents through `socrates mcp-server <name>` on stdio; what they hold outlives a parked agent.
+- **Admin keeps their accounts**, sealed, checked against the service when added and on demand; a
+  pool leases one account per chat or test cell.
+- **Repository specifics stay in the repository** (`.socrates/mcp/browserstack.json`: the site, its
+  logins' command, mailbox and logs commands); the BrowserStack accounts are Socrates'.
+- **OAuth is Socrates' own**: it signs in once in Admin and an agent reaches the server through a
+  proxy that adds the token, so no agent holds one.
+
 ## Revision 10 — test mode, 2026-10-29
 
 The owner asked for a test mode per repository: a catalog of agent-run tests in the repository,

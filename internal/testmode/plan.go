@@ -125,6 +125,16 @@ func cellPrompt(cat *catalog.Catalog, area *catalog.Area, tools []*planTool) str
 		b.WriteString(": " + area.Title)
 	}
 	b.WriteString("\n\n" + strings.TrimSpace(area.Instructions) + "\n")
+	// The MCP servers built into Socrates the area names: their tools are
+	// the agent's, their instructions part of the prompt.
+	for _, name := range area.MCP {
+		if catalog.BuiltinMCP == nil {
+			break
+		}
+		if b2 := catalog.BuiltinMCP(name); b2 != nil {
+			b.WriteString("\n# The MCP server " + name + "\n\n" + strings.TrimSpace(b2.Instructions) + "\n")
+		}
+	}
 	for _, t := range tools {
 		b.WriteString("\n# The tool " + t.Name)
 		if t.Title != "" {

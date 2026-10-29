@@ -21,6 +21,13 @@
  *                    (__value, the code to type on the agent's page, and its
  *                    Copy), __wait, __providers
  *   .so-account-form the body of the "Add an account" dialog
+ *   .so-mcp-probe    a test of an MCP server (mcpview.js probeView): its
+ *                    outcome, facts and __part (its tools)
+ *   .so-mcp-toollist a server's tools, prompts or resources: one per line,
+ *                    .so-mcp-tool__name in the code face over its meta
+ *   .so-mcp-prose    what a server tells agents, in paragraphs
+ *   .so-mcp-switches a chat's MCP servers: .so-mcp-switch rows, a switch
+ *                    and the button that tests the server
  *
  * Touch mode is DS's .ds-touch (theme.css, ui.js): every target a finger's
  * 48px through DS's own hooks.
@@ -240,4 +247,59 @@ body[data-stale] .so-mark[data-ring="busy"]::after {
 
 .so-signin__wait {
   justify-content: flex-start;
+}
+
+/* An MCP server's test (mcpview.js): the parts stand a card's gap apart. */
+.so-mcp-probe,
+.so-mcp-probe__part {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--ds-space-3);
+  min-width: 0;
+}
+
+.so-mcp-toollist {
+  display: grid;
+  gap: var(--ds-space-3);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.so-mcp-toollist > li {
+  display: grid;
+  gap: var(--ds-space-1);
+  min-width: 0;
+}
+
+/* A tool's name is the agent's word for it (browserstack_start_session):
+   the code face, breaking anywhere rather than widening the box. */
+.so-mcp-tool__name {
+  font-family: var(--ds-font-mono);
+  overflow-wrap: anywhere;
+}
+
+.so-mcp-prose {
+  overflow-wrap: anywhere;
+}
+
+/* A chat's MCP servers: the switch takes the row, the test button its end,
+   hairlines between the rows as in a switch list. */
+.so-mcp-switches {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.so-mcp-switch {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--ds-space-2);
+  min-height: var(--ds-switch-list-row-height, var(--ds-space-12));
+  padding-block: var(--ds-space-2);
+  border-bottom: 1px solid var(--ds-line);
+}
+
+.so-mcp-switch:last-child {
+  border-bottom: 0;
 }

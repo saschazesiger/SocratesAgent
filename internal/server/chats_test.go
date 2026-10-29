@@ -987,6 +987,7 @@ func TestAChatsFolderMCPServersAreListed(t *testing.T) {
 	if res.StatusCode != http.StatusOK {
 		t.Fatalf("%d %v", res.StatusCode, got)
 	}
+	got["servers"] = withoutBuiltinMCP(got["servers"])
 	raw, _ := json.Marshal(got)
 	if want := `{"problems":["The MCP server \"bad\" in ` + filepath.Join(dir, ".mcp.json") + ` was left out: it has no command"],` +
 		`"servers":[{"default":true,"from":"folder","name":"db","on":true,"transport":"stdio"},` +
@@ -1015,7 +1016,7 @@ func TestAChatSwitchesTheDashboardsMCPServers(t *testing.T) {
 	})
 	list := func(body map[string]any) string {
 		var out []string
-		for _, s := range body["servers"].([]any) {
+		for _, s := range withoutBuiltinMCP(body["servers"]) {
 			m := s.(map[string]any)
 			out = append(out, fmt.Sprintf("%s:%s:%v:%v", m["name"], m["from"], m["default"], m["on"]))
 		}
@@ -1090,7 +1091,7 @@ func TestANewChatStartsWithTheSheetsMCPChoices(t *testing.T) {
 	}
 	list := func(body map[string]any) string {
 		var out []string
-		for _, s := range body["servers"].([]any) {
+		for _, s := range withoutBuiltinMCP(body["servers"]) {
 			m := s.(map[string]any)
 			out = append(out, fmt.Sprintf("%s:%s:%v", m["name"], m["from"], m["on"]))
 		}
@@ -1136,4 +1137,16 @@ func TestANewChatStartsWithTheSheetsMCPChoices(t *testing.T) {
 	if err != nil || strings.Contains(string(row.Options), "mcp") {
 		t.Fatalf("the row's options: %s %v", row.Options, err)
 	}
+}
+
+// withoutBuiltinMCP is a list of a chat's MCP servers without those built
+// into Socrates, which every chat has.
+func withoutBuiltinMCP(list any) []any {
+	out := []any{}
+	for _, s := range list.([]any) {
+		if s.(map[string]any)["from"] != "socrates" {
+			out = append(out, s)
+		}
+	}
+	return out
 }

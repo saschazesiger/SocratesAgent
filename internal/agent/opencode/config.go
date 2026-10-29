@@ -74,6 +74,9 @@ func configContent(spec agent.StartSpec) ([]byte, error) {
 	if servers := mcpServers(spec); len(servers) > 0 {
 		doc["mcp"] = servers
 	}
+	if tools := disabledTools(spec); tools != nil {
+		doc["tools"] = tools
+	}
 	return json.Marshal(doc)
 }
 

@@ -200,6 +200,7 @@ touch mode, except `options`, which measures the narrowest phone in use,
 | `takeover` | a second tab with the same viewer id closes the first socket with 1012 and drives the session |
 | `offlinerestart` | the server is restarted inside an outage and the phone wakes with `online`, `focus` and `visibilitychange` at once: one handshake, and nothing typed is lost in silence |
 | `latehello` | what is typed before a slow `hello` arrives is delivered, exactly once, and leaves nothing behind |
+| `mcpcard` | Admin's MCP card: the server built into Socrates (BrowserStack) off and without an account, its sheet; a server from the gallery prefilled; Test connection in the editor and a row's Test against `e2e/fakemcp.mjs` (a tiny MCP server on stdio), its tools as switches saved with the page, a failed test with what the server printed; Connect asking to save first and the way back from the sign-in (the start stubbed); a chat's MCP dialog naming the built-in server by its title and testing a server; the Tests page's servers for test cells |
 | `adminoptions` | every harness option round-trips, the models and efforts set as defaults are what a chat starts on, and Claude Code's command line carries the fixed policy (HARNESS-POLICY.md) and never a flag it forbids |
 | `tmuxcard` | the engine card on a machine whose tmux is too old |
 | `twoviewers` | two devices on one Shell: both see the same pane, and the size notice is shown once |

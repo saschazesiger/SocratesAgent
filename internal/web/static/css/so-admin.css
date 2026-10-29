@@ -20,8 +20,13 @@
  *                      __actions; data-account-state is its state
  *   .so-model          one model of a short list: grip, __name, effort,
  *                      __actions (instructions, remove)
- *   .so-mcp            one MCP server: __main (__name, __what), its "in every
- *                      chat" switch, __actions
+ *   .so-mcp            one MCP server (built in or the person's): __main
+ *                      (__name with its tag, __desc, __what, __state of
+ *                      __fact chips and an __error), its "in every chat"
+ *                      switch, __actions
+ *   .so-mcp-sheet      the MCP side sheet's body: __part sections, __head (a
+ *                      section's title and its chip)
+ *   .so-mcp-test       the editor's Test connection and its .so-mcp-outcome
  *   .so-grip           the drag handle of a row (DS .ds-grip, a hook for the
  *                      tests); DS.motion.sortable raises the dragged row
  *   .so-program        a program's card: __name (mark and label), __state
@@ -257,10 +262,18 @@
 }
 
 .so-mcp__name {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--ds-space-2);
   margin: 0;
   font: var(--ds-font-label);
   color: var(--ds-text);
   overflow-wrap: anywhere;
+}
+
+.so-mcp__desc {
+  margin: 0;
 }
 
 /* A command or a URL is one long word: it breaks anywhere. */
@@ -270,10 +283,80 @@
   overflow-wrap: anywhere;
 }
 
-.so-mcp__actions,
+/* The sign-in and the last test, each a chip with its facts. */
+.so-mcp__state {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--ds-space-2) var(--ds-space-4);
+  margin-top: var(--ds-space-1);
+  min-width: 0;
+}
+
+/* What a failed test said, under its chip. */
+.so-mcp__error {
+  flex-basis: 100%;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.so-mcp__fact {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--ds-space-1) var(--ds-space-2);
+  min-width: 0;
+}
+
+.so-mcp-sheet,
+.so-mcp-sheet__part {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--ds-space-4);
+  min-width: 0;
+}
+
+.so-mcp-sheet__part {
+  gap: var(--ds-space-3);
+}
+
+.so-mcp-sheet__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--ds-space-2);
+}
+
+.so-mcp-test {
+  display: grid;
+  justify-items: start;
+  gap: var(--ds-space-2);
+}
+
+.so-mcp-outcome {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  justify-self: stretch;
+  gap: var(--ds-space-2);
+  min-width: 0;
+}
+
+.so-mcp-outcome:empty {
+  display: none;
+}
+
 .so-model__actions {
   display: flex;
   align-items: center;
+  gap: var(--ds-space-1);
+}
+
+.so-mcp__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
   gap: var(--ds-space-1);
 }
 
@@ -407,13 +490,14 @@
     grid-template-columns: auto minmax(0, 1fr);
   }
 
-  /* The switch and the actions go under the server's name. */
+  /* The switch and then the actions go under the server's name: a row's
+     buttons and the switch's words do not fit one line of a phone. */
   .so-mcp {
-    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-columns: minmax(0, 1fr);
   }
 
-  .so-mcp__main {
-    grid-column: 1 / -1;
+  .so-mcp__actions {
+    justify-content: flex-start;
   }
 
   /* The actions start under the account's name. */

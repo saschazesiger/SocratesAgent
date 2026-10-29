@@ -314,8 +314,14 @@ func cliArgs(spec agent.StartSpec, opts Options, ultracode bool) []string {
 		"--permission-prompt-tool", "stdio",
 		"--setting-sources", "project,local", "--strict-mcp-config",
 		"--dangerously-skip-permissions", "--disallowedTools", "AskUserQuestion",
-		"--settings", string(settings),
 	}
+	// The tools of an MCP server switched off in Admin are not the agent's.
+	for _, m := range spec.MCPServers {
+		for _, t := range m.DisabledTools {
+			args = append(args, "mcp__"+m.Name+"__"+t)
+		}
+	}
+	args = append(args, "--settings", string(settings))
 	// A test session has nobody to ask: its role's protocol replaces
 	// ask_user's guidance and the chat tools'. The chat tools are reached
 	// this way only: the CLI's own messaging between sessions is off

@@ -116,7 +116,8 @@ type Area struct {
 	ParamOrder []string
 	// Evidence is what a verdict needs: screenshot, any or none.
 	Evidence string
-	// MCP names the servers of the repository's .mcp.json the cells may use.
+	// MCP names the MCP servers the cells use: built into Socrates
+	// (BuiltinMCP) or of the repository's .mcp.json.
 	MCP     []string
 	Timeout time.Duration
 	// Tests are sorted by id.

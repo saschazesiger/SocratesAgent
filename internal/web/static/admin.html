@@ -119,13 +119,16 @@
 
           <section class="ds-card" id="mcpCard" aria-labelledby="mcpTitle">
             <h2 class="ds-card__title" id="mcpTitle">MCP servers</h2>
-            <p class="ds-muted">Tools for every chat's agent, whatever its program. A server that is on here is on in every chat; one that is off is there for a chat to switch on. Each chat switches them for itself in its ⋮ → MCP servers. A folder's <code>.mcp.json</code> adds its own servers, and its server wins a name both have.</p>
+            <p class="ds-muted">Tools for every chat's agent, whatever its program. A server that is on in every chat is on in each new chat; one that is off waits for a chat to switch it on (⋮ → MCP servers). A folder's <code>.mcp.json</code> adds its own servers. The servers built into Socrates are off until switched on.</p>
+            <h3 class="ds-card__subtitle">Built into Socrates</h3>
+            <div class="so-rows" id="mcpBuiltin"></div>
+            <h3 class="ds-card__subtitle">Your servers</h3>
             <div class="so-rows" id="mcpServers"></div>
             <div class="so-admin-actions">
-              <button class="ds-btn ds-btn--text ds-add-row" id="mcpAdd" type="button" data-icon="plus" data-icon-size="16" data-icon-place="start">Add an MCP server</button>
-              <button class="ds-btn ds-btn--text" id="mcpImport" type="button" data-icon="clipboard" data-icon-size="16" data-icon-place="start">Paste JSON</button>
+              <button class="ds-btn ds-btn--text ds-add-row" id="mcpAdd" type="button" data-icon="plus" data-icon-size="16" data-icon-place="start" aria-haspopup="dialog">Add an MCP server</button>
+              <button class="ds-btn ds-btn--text" id="mcpImport" type="button" data-icon="clipboard" data-icon-size="16" data-icon-place="start" aria-haspopup="dialog">Paste JSON</button>
             </div>
-            <small class="ds-field__hint">Saved with the page. A chat takes a change up when its agent next starts; a running one is not cut short. <code>${VAR}</code> and <code>${VAR:-default}</code> are filled in from the chat's environment, so a token can stay out of this page.</small>
+            <small class="ds-field__hint">Your servers and the switches are saved with the page; accounts and sign-ins count at once. A chat takes a change up with its next message. <code>${VAR}</code> and <code>${VAR:-default}</code> are filled in from the chat's environment, so a token can stay out of this page.</small>
           </section>
 
           <!-- ── New sessions ─────────────────────────────────────────── -->
@@ -593,6 +596,20 @@
     </main>
   </div>
 </div>
+<dialog class="ds-sheet" id="mcpSheet" aria-labelledby="mcpSheetTitle">
+  <div class="ds-sheet__backdrop" data-close></div>
+  <section class="ds-sheet__panel ds-sheet__panel--wide">
+    <div class="ds-sheet__head">
+      <div class="ds-sheet__heading">
+        <h2 class="ds-sheet__title" id="mcpSheetTitle">MCP server</h2>
+        <p class="ds-sheet__subtitle" id="mcpSheetSub"></p>
+      </div>
+      <button class="ds-btn ds-btn--quiet ds-btn--icon" type="button" aria-label="Close" data-close data-icon="close"></button>
+    </div>
+    <div class="ds-sheet__body" tabindex="0"></div>
+    <div class="ds-sheet__foot" id="mcpSheetFoot"></div>
+  </section>
+</dialog>
 <div class="ds-toasts" id="toasts"></div>
 <script type="module" src="/static/js/admin.js"></script>
 </body>

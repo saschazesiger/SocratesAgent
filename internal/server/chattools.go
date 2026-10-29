@@ -22,6 +22,7 @@ import (
 	"github.com/saschazesiger/SocratesAgent/internal/agent"
 	"github.com/saschazesiger/SocratesAgent/internal/agent/chattools"
 	"github.com/saschazesiger/SocratesAgent/internal/agenthost"
+	"github.com/saschazesiger/SocratesAgent/internal/mcpserver"
 	"github.com/saschazesiger/SocratesAgent/internal/store"
 	"github.com/saschazesiger/SocratesAgent/internal/vault"
 )
@@ -72,7 +73,9 @@ func (s *Server) startChatTools() *chatToolServer {
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST "+chattools.Path, t.handle)
-	t.http = &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second}
+	mux.HandleFunc("POST "+mcpserver.EndpointPath, t.handleMCP)
+	// A connection a client keeps between calls goes after a minute idle.
+	t.http = &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second, IdleTimeout: time.Minute}
 	go func() {
 		if err := t.http.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Printf("chat tools: %v", err)

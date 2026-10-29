@@ -14,7 +14,7 @@ import {
   killTmux, openRouterStub, fakeS3Switch, backupForm, prefixFor, sessionsOn, windowSize, scratchDir, PASSWORD, LIVE, SHOTS,
   tmuxSock, freePort, spawnServer, waitForHealth, STARTUP, REPO, agentProcessesOf,
 } from './harness.mjs';
-import { testmode } from './testmode.mjs';
+import { testmode, catalogRepo } from './testmode.mjs';
 import http from 'node:http';
 import net from 'node:net';
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -2587,6 +2587,7 @@ async function sharedmcp() {
     await s.page.waitForSelector('#mcpServers .so-mcp[data-name="github"]', { timeout: 5000 });
     // A server typed in, off in every chat; a bad name is refused in the dialog.
     await s.page.click('#mcpAdd');
+    await s.page.click('dialog button[data-pick="custom"]');
     await s.page.fill('#mcpEditName', 'no good');
     await s.page.fill('#mcpEditCommand', 'search-mcp');
     await s.page.click('dialog .ds-btn--primary');
@@ -2603,7 +2604,7 @@ async function sharedmcp() {
     ok(rows.join(' | ') === 'github:true:HTTP · https://gh.example/mcp | search:false:search-mcp --index my notes',
       'the card lists both, each with its switch for every chat', rows.join(' | '));
     await s.page.click('#saveTop');
-    await s.page.waitForSelector('.ds-toast', { timeout: 15000 });
+    await s.page.waitForFunction(() => /Settings saved/.test(document.getElementById('toasts').textContent), null, { timeout: 15000 });
     const saved = await (await s.context.request.get(s.url + '/api/settings')).json();
     const kept = (saved.settings.mcp && saved.settings.mcp.servers) || [];
     ok(kept.length === 2 && kept[1].args[1] === 'my notes' && kept[0].headers.Authorization.startsWith('Bearer'),
@@ -2627,16 +2628,17 @@ async function sharedmcp() {
 
     await rowMenu(s.page);
     await s.page.click('#sessionMenu [data-action="mcp"]');
-    await s.page.waitForSelector('dialog .ds-switch-list input[data-name="search"]', { timeout: 10000 });
-    const listed = await s.page.$$eval('dialog .ds-switch-list .ds-switch', (list) => list.map((row) =>
-      row.querySelector('.ds-switch__label').textContent + ':' + row.querySelector('input').checked));
-    ok(listed.join(' ') === 'db:true github:true search:false', 'the chat’s dialog lists every server with its state', listed.join(' '));
+    await s.page.waitForSelector('dialog .so-mcp-switches input[data-name="search"]', { timeout: 10000 });
+    const listed = await s.page.$$eval('dialog .so-mcp-switches .ds-switch', (list) => list.map((row) =>
+      row.querySelector('input').dataset.name + ':' + row.querySelector('input').checked));
+    ok(listed.join(' ') === 'browserstack:false db:true github:true search:false',
+      'the chat’s dialog lists every server with its state, the built-in one off', listed.join(' '));
     await s.page.click('dialog label.ds-switch:has(input[data-name="search"])');
     await s.page.waitForFunction(() => /search is on/.test(document.body.textContent), null, { timeout: 10000 });
     await s.page.click('dialog label.ds-switch:has(input[data-name="github"])');
     await s.page.waitForFunction(() => /github is off/.test(document.body.textContent), null, { timeout: 10000 });
     await s.page.keyboard.press('Escape');
-    await s.page.waitForSelector('dialog .ds-switch-list', { state: 'detached', timeout: 5000 });
+    await s.page.waitForSelector('dialog .so-mcp-switches', { state: 'detached', timeout: 5000 });
     const parked = await until(() => hostsOf(s.data).length === 0, 20000);
     ok(parked, 'the change puts the idle agent to rest', hostsOf(s.data).length + ' hosts');
     servers = await configOf('/argv after the switches');
@@ -2747,20 +2749,24 @@ async function sheetmcp() {
 
     // The MCP servers, Admin's on their default.
     const switches = () => page.$$eval('#nsMcp .ds-switch', (rows) => rows.map((r) =>
-      r.querySelector('.ds-switch__label').textContent + ':' + r.querySelector('input').checked));
+      r.querySelector('input').dataset.name + ':' + r.querySelector('input').checked));
     await page.waitForSelector('#nsMcpField:not([hidden]) #nsMcp input[data-name="search"]', { timeout: 10000 });
     let listed = await switches();
-    ok(listed.join(' ') === 'github:true search:false', 'the sheet offers Admin’s MCP servers, each on its default', listed.join(' '));
+    ok(listed.join(' ') === 'browserstack:false github:true search:false',
+      'the sheet offers Admin’s MCP servers, each on its default, and the built-in one off', listed.join(' '));
+    const builtin = await page.$eval('#nsMcp .ds-switch:has(input[data-name="browserstack"])', (r) =>
+      r.querySelector('.ds-switch__label').textContent + ' / ' + r.querySelector('.ds-switch__hint').textContent);
+    ok(/^BrowserStack \/ Built into Socrates/.test(builtin), 'the built-in server goes by its title and says where it is from', builtin);
     // The preset folder brings its own.
     await page.click('#nsDir .so-drop__field');
     await page.click('#nsDir .ds-combo__option[data-value="preset:' + dir + '"]');
     await page.waitForSelector('#nsMcp input[data-name="db"]', { timeout: 10000 });
     listed = await switches();
-    ok(listed.join(' ') === 'db:true github:true search:false', 'a folder with a .mcp.json adds its servers', listed.join(' '));
+    ok(listed.join(' ') === 'browserstack:false db:true github:true search:false', 'a folder with a .mcp.json adds its servers', listed.join(' '));
     await page.click('#nsMcp label.ds-switch:has(input[data-name="search"])');
     await page.click('#nsMcp label.ds-switch:has(input[data-name="github"])');
     listed = await switches();
-    ok(listed.join(' ') === 'db:true github:false search:true', 'a switch is moved on the sheet', listed.join(' '));
+    ok(listed.join(' ') === 'browserstack:false db:true github:false search:true', 'a switch is moved on the sheet', listed.join(' '));
     await shot(page, 'sheet-mcp');
     // The shell has none of it.
     await page.click('#newSessionSheet .so-settings__program[data-value="shell"]');
@@ -2771,7 +2777,7 @@ async function sheetmcp() {
     await page.click('#newSessionSheet .so-settings__program[data-value="claude"]');
     await page.waitForSelector('#nsMcpField:not([hidden])', { timeout: 10000 });
     listed = await switches();
-    ok(listed.join(' ') === 'db:true github:false search:true', 'back on the agent, the switches are as they were', listed.join(' '));
+    ok(listed.join(' ') === 'browserstack:false db:true github:false search:true', 'back on the agent, the switches are as they were', listed.join(' '));
 
     await page.click('#nsStart');
     await page.waitForSelector('#newSessionSheet[open]', { state: 'detached', timeout: 30000 });
@@ -2785,6 +2791,178 @@ async function sheetmcp() {
     const servers = await (await s.context.request.get(s.url + '/api/sessions/' + id + '/mcp')).json();
     const on = (servers.servers || []).filter((one) => one.on).map((one) => one.name);
     ok(on.join(',') === 'db,search', 'and has the servers that were on', on.join(','));
+  } finally { await s.stop(); }
+}
+
+/* --------------------------------------------------------------- mcpcard */
+
+// mcpcard: Admin's MCP card. The server built into Socrates (BrowserStack)
+// is a row of its own, off in every chat and without an account; its sheet
+// says so. A common server comes from the gallery prefilled; a server is
+// tested as an agent would connect to it (e2e/fakemcp.mjs, a tiny MCP server
+// on stdio): a test that works lists its tools, each a switch saved with the
+// page, and one that fails says why. A chat's MCP dialog tests a server too,
+// and the Tests page chooses the servers of its test cells.
+async function mcpcard() {
+  const s = await start({ viewport: { width: 1280, height: 900 } });
+  const { page } = s;
+  const fake = join(REPO, 'e2e', 'fakemcp.mjs');
+  try {
+    await setup(page, s.url);
+    const put = await s.context.request.put(s.url + '/api/settings', { data: { settings: { mcp: { servers: [
+      { name: 'fake', type: 'stdio', command: process.execPath, args: [fake], default: true },
+      { name: 'broken', type: 'stdio', command: process.execPath, args: [fake, '--fail'], default: false },
+      { name: 'linear', type: 'http', url: 'https://mcp.linear.example/mcp', auth: 'oauth', default: false },
+    ] } } } });
+    ok(put.ok(), 'Admin has a working, a broken and an OAuth MCP server', String(put.status()));
+    await page.goto(s.url + '/admin#mcpCard', { waitUntil: 'domcontentloaded' });
+    await page.waitForSelector('#mcpBuiltin .so-mcp[data-builtin="browserstack"]', { timeout: 20000 });
+    const builtin = await page.$eval('#mcpBuiltin .so-mcp[data-builtin="browserstack"]', (row) => ({
+      name: row.querySelector('.so-mcp__name').textContent.trim(),
+      state: row.querySelector('.ds-status').dataset.state,
+      on: row.querySelector('input[role="switch"]').checked,
+    }));
+    ok(builtin.name.startsWith('BrowserStack') && builtin.state === 'none' && !builtin.on,
+      'the built-in server is a row of its own: no account yet, off in every chat', JSON.stringify(builtin));
+    await page.click('#mcpBuiltin button[data-action="manage"]');
+    await page.waitForSelector('#mcpSheet[open] .ds-empty', { timeout: 5000 });
+    const sheet = await page.$eval('#mcpSheet', (n) => ({
+      title: n.querySelector('.ds-sheet__title').textContent, add: !!n.querySelector('[data-action="account-add"]'),
+      tools: (/Its tools \((\d+)\)/.exec(n.textContent) || [])[1] || '',
+    }));
+    ok(sheet.title === 'BrowserStack' && sheet.add && Number(sheet.tools) > 0,
+      'its sheet offers to add an account and lists its tools', JSON.stringify(sheet));
+    await page.click('#mcpSheet .ds-sheet__head [data-close]');
+    await page.waitForSelector('#mcpSheet', { state: 'hidden', timeout: 5000 });
+    await page.click('#mcpBuiltin label.ds-switch');
+
+    // A common server from the gallery, prefilled.
+    await page.click('#mcpAdd');
+    await page.click('dialog button[data-pick="context7"]');
+    await page.waitForSelector('#mcpEditURL', { timeout: 5000 });
+    const prefilled = await page.evaluate(() => [document.getElementById('mcpEditName').value,
+      document.getElementById('mcpEditType').value, document.getElementById('mcpEditURL').value].join(' '));
+    ok(prefilled === 'context7 http https://mcp.context7.com/mcp', 'the gallery fills the editor in', prefilled);
+    await page.click('dialog .ds-dialog__actions .ds-btn--primary');
+    await page.waitForSelector('#mcpServers .so-mcp[data-name="context7"]', { timeout: 5000 });
+    await page.waitForSelector('dialog.ds-dialog', { state: 'detached', timeout: 5000 });
+
+    // The editor tests what is typed before it is kept.
+    await page.click('#mcpAdd');
+    await page.click('dialog button[data-pick="custom"]');
+    await page.fill('#mcpEditName', 'fake2');
+    await page.fill('#mcpEditCommand', process.execPath);
+    await page.fill('#mcpEditArgs', fake);
+    await page.click('#mcpEditTest');
+    await page.waitForSelector('#mcpEditOutcome .ds-field__hint--success', { timeout: 30000 });
+    const outcome = await page.textContent('#mcpEditOutcome .ds-field__hint--success');
+    ok(/It works \(Fake MCP 1\.2\.3\): 2 tools · 1 prompt/.test(outcome), 'Test connection in the editor says what the server offers', outcome.trim());
+    await page.click('dialog .ds-dialog__actions [data-close]');
+    await page.waitForSelector('dialog.ds-dialog', { state: 'detached', timeout: 5000 });
+
+    // A row's Test: the sheet with the outcome, the tools as switches.
+    await page.click('#mcpServers .so-mcp[data-name="fake"] button[data-action="test"]');
+    await page.waitForSelector('#mcpSheet[open] .so-mcp-probe', { timeout: 30000 });
+    const probe = await page.$eval('#mcpSheet', (n) => ({
+      ok: n.querySelector('.ds-alert--success')?.textContent.trim(),
+      tools: [...n.querySelectorAll('input[data-tool]')].map((i) => i.dataset.tool + ':' + i.checked).join(' '),
+    }));
+    ok(probe.ok === 'It works: 2 tools · 1 prompt.' && probe.tools === 'echo:true add:true',
+      'a test that works lists the tools, each on', JSON.stringify(probe));
+    await page.click('#mcpSheet label.ds-switch:has(input[data-tool="add"])');
+    await page.click('#mcpSheet .ds-sheet__head [data-close]');
+    await page.waitForSelector('#mcpSheet', { state: 'hidden', timeout: 5000 });
+    const row = await page.$eval('#mcpServers .so-mcp[data-name="fake"] [data-test]', (n) => n.dataset.test + ' / ' + n.textContent.replace(/\s+/g, ' ').trim());
+    ok(/^ok \/ 2 tools.*1 tool off/.test(row), 'the row says the test worked and one tool is off', row);
+    await page.click('#mcpServers .so-mcp[data-name="broken"] button[data-action="test"]');
+    await page.waitForSelector('#mcpSheet[open] .so-mcp-probe .ds-alert--error', { timeout: 30000 });
+    const failed = await page.$eval('#mcpSheet .so-mcp-probe', (n) => n.textContent.replace(/\s+/g, ' '));
+    ok(/did not work/.test(failed) && /no token in FAKEMCP_TOKEN/.test(failed), 'a test that fails says why, with what the server printed', failed.slice(0, 160));
+    await page.click('#mcpSheet .ds-sheet__head [data-close]');
+    await page.waitForSelector('#mcpSheet', { state: 'hidden', timeout: 5000 });
+
+    await page.click('#saveTop');
+    await page.waitForFunction(() => /Settings saved/.test(document.getElementById('toasts').textContent), null, { timeout: 15000 });
+    const saved = (await (await s.context.request.get(s.url + '/api/settings')).json()).settings.mcp || {};
+    const fakeSaved = (saved.servers || []).find((one) => one.name === 'fake') || {};
+    ok(JSON.stringify(fakeSaved.disabled_tools) === '["add"]' && (saved.servers || []).some((one) => one.name === 'context7')
+      && JSON.stringify(saved.builtin) === '[{"name":"browserstack","default":true}]',
+      'Save keeps the server from the gallery, the tool switched off and the built-in server on in every chat', JSON.stringify(saved));
+
+    // Connecting leaves the page for the authorization server: a change not
+    // saved yet is saved first, and the way back says how it went. The start
+    // is stubbed, so nothing leaves the machine.
+    const sign = await page.$eval('#mcpServers .so-mcp[data-name="linear"] [data-state^="signin"]', (n) => n.dataset.state);
+    ok(sign === 'signin-none', 'an OAuth server that never signed in says it is not connected', sign);
+    await page.route('**/api/mcp/oauth/start', (route) => route.fulfill({ json: { url: s.url + '/admin?mcp_connected=linear#mcpCard' } }));
+    await page.click('#mcpServers .so-mcp[data-name="fake"] label.ds-switch');
+    await page.click('#mcpServers .so-mcp[data-name="linear"] button[data-action="connect"]');
+    await page.waitForSelector('dialog .ds-dialog__title', { timeout: 5000 });
+    const asked = await page.textContent('dialog .ds-dialog__title');
+    ok(asked === 'Save the changes first?', 'with a change not saved, Connect asks to save it first', asked);
+    await page.click('dialog .ds-dialog__actions .ds-btn--primary');
+    await page.waitForFunction(() => /linear is connected/.test(document.getElementById('toasts').textContent), null, { timeout: 15000 });
+    const back = await page.evaluate(() => location.search + location.hash);
+    const fakeNow = ((await (await s.context.request.get(s.url + '/api/settings')).json()).settings.mcp.servers || []).find((one) => one.name === 'fake');
+    ok(back === '#mcpCard' && fakeNow && fakeNow.default === false,
+      'the change was saved, and back from the sign-in the page says so and drops the query', back + ' ' + JSON.stringify(fakeNow && fakeNow.default));
+    await page.unroute('**/api/mcp/oauth/start');
+    // With nothing to save it goes at once; a refusal comes back in words.
+    await page.route('**/api/mcp/oauth/start', (route) => route.fulfill({ json: { url: s.url + '/admin?mcp_error=access_denied#mcpCard' } }));
+    await page.waitForSelector('#mcpServers .so-mcp[data-name="linear"] button[data-action="connect"]', { timeout: 20000 });
+    await wait(500);
+    await page.click('#mcpServers .so-mcp[data-name="linear"] button[data-action="connect"]');
+    await page.waitForFunction(() => /The sign-in did not work: access_denied/.test(document.getElementById('toasts').textContent), null, { timeout: 15000 });
+    const straight = await page.evaluate(() => ({ dialogs: document.querySelectorAll('dialog[open]').length, search: location.search }));
+    ok(straight.dialogs === 0 && straight.search === '', 'with nothing unsaved Connect goes at once, and a refusal is said', JSON.stringify(straight));
+    await page.unroute('**/api/mcp/oauth/start');
+    await page.click('#toasts .ds-toast__close').catch(() => {});
+    await page.waitForSelector('#mcpServers .so-mcp[data-name="fake"]', { timeout: 20000 });
+
+    const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+    await page.setViewportSize({ width: 390, height: 844 });
+    await wait(600);
+    const phone = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+    ok(overflow <= 1 && phone <= 1, 'the card scrolls nowhere sideways, at a desk and on a phone', overflow + 'px, ' + phone + 'px');
+    await shot(page, 'mcpcard-phone');
+    await page.setViewportSize({ width: 1280, height: 900 });
+
+    // A chat: the built-in server by its title, and a server's test.
+    const id = await makeChat(s, 'claude', { title: 'MCP card chat' });
+    await open(s);
+    await openChat(page, id);
+    await rowMenu(page);
+    await page.click('#sessionMenu [data-action="mcp"]');
+    await page.waitForSelector('dialog .so-mcp-switches input[data-name="fake"]', { timeout: 10000 });
+    const listed = await page.$$eval('dialog .so-mcp-switches .ds-switch', (list) => list.map((r) =>
+      r.querySelector('.ds-switch__label').textContent + ':' + r.querySelector('input').checked));
+    ok(listed.join(' ') === 'broken:false BrowserStack:true context7:true fake:false linear:false',
+      'the chat lists the servers, the built-in one by its title and on as Admin says', listed.join(' '));
+    await page.click('dialog .so-mcp-switch[data-name="fake"] button[data-test]');
+    await page.waitForSelector('dialog .so-mcp-probe .ds-alert--success', { timeout: 30000 });
+    const tested = await page.$$eval('dialog .so-mcp-probe__part .so-mcp-tool__name', (n) => n.map((x) => x.textContent).join(' '));
+    ok(tested === 'echo add', 'the chat’s info button tests the server and lists its tools', tested);
+    // The test's dialog stands inside the servers' dialog while it shows.
+    await page.click('dialog.ds-dialog--nested > .ds-dialog__box > .ds-dialog__actions [data-close]');
+    await page.waitForSelector('dialog .so-mcp-probe', { state: 'detached', timeout: 5000 });
+    await page.click('dialog:has(.so-mcp-switches) > .ds-dialog__box > .ds-dialog__actions [data-close]');
+    await page.waitForSelector('dialog .so-mcp-switches', { state: 'detached', timeout: 5000 });
+
+    // The Tests page: the servers of the test cells.
+    const repo = catalogRepo();
+    const added = await s.context.request.post(s.url + '/api/tests/repos', { data: { path: repo }, headers: { Origin: s.url } });
+    const key = (await added.json()).key || '';
+    ok(added.status() === 201 && key, 'a repository is added to the Tests page', added.status() + ' ' + key);
+    await page.goto(s.url + '/tests#repo=' + encodeURIComponent(key) + '&tab=settings', { waitUntil: 'domcontentloaded' });
+    await page.waitForSelector('#p-settings [data-mcp-list] input[data-mcp="fake"]', { timeout: 20000 });
+    const cells = await page.$$eval('#p-settings input[data-mcp]', (n) => n.map((i) => i.dataset.mcp + ':' + i.checked).join(' '));
+    ok(cells === 'broken:false browserstack:false context7:false fake:false linear:false', 'the Tests page lists every server for the cells, all off', cells);
+    await page.click('#p-settings label.ds-switch:has(input[data-mcp="fake"])');
+    await page.click('#save');
+    await page.waitForFunction(() => /settings are saved/.test(document.body.textContent), null, { timeout: 10000 });
+    const repoSettings = (await (await s.context.request.get(s.url + '/api/tests/repos/' + encodeURIComponent(key) + '/settings')).json()).settings || {};
+    ok(JSON.stringify(repoSettings.mcp) === '["fake"]', 'the switch is saved in the repository’s settings', JSON.stringify(repoSettings.mcp));
+    ok(unexpected(s.errors).length === 0, 'no console errors', unexpected(s.errors).join(' | ') || '0');
   } finally { await s.stop(); }
 }
 
@@ -13566,6 +13744,7 @@ const ALL = [
   ['foldermcp', 'a folder\u2019s .mcp.json reaches the agent, and Info names its servers', foldermcp],
   ['sharedmcp', 'Admin\u2019s MCP servers reach every chat, and a chat switches them for itself', sharedmcp],
   ['sheetmcp', 'the new session sheet: the shell across the width, the account\u2019s limits, the MCP switches', sheetmcp],
+  ['mcpcard', 'Admin\u2019s MCP card: the built-in server, the gallery, a test and its tools, a chat\u2019s test, the Tests page\u2019s servers', mcpcard],
   ['chatpeers', 'the agents of the chats in one repository list, read and write to each other', chatpeers],
   ['createcodex', 'Codex over its app server: one thread, kept, and resumed after a rest', createcodex],
   ['own-codex', 'what Codex does by itself: its goal and the turns it starts for it, an image it made, a subagent that failed', owncodex],

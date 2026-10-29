@@ -13,6 +13,7 @@ import { markdown } from './md.js';
 import * as harnesses from './harnesses.js';
 import * as accounts from './accounts.js';
 import * as V from './testsview.js';
+import { brief, labelOf } from './mcpview.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -210,8 +211,52 @@ export function mountForms(ctx) {
       return;
     }
     if (drawnFor === state.repo && (dirty || panel.querySelector('[data-settings]'))) return;
-    await prepare();
+    await Promise.all([prepare(), loadMcp()]);
     drawSettings(panel);
+  }
+
+  // The MCP servers a cell of the repository could have: built into
+  // Socrates, Admin's, and the repository's .mcp.json's - as a chat in the
+  // repository's folder would (GET /api/mcp).
+  let mcp = { repo: '', servers: null, problems: [], error: '' };
+  async function loadMcp() {
+    const repo = state.repo;
+    if (mcp.repo === repo && mcp.servers) return;
+    const info = state.repos.find((one) => one.key === repo);
+    if (!info || !info.path) {
+      mcp = { repo, servers: [], problems: [], error: '' };
+      return;
+    }
+    try {
+      const data = await api('/api/mcp?workdir_mode=custom&workdir=' + encodeURIComponent(info.path), { attempts: 2, timeout: 10000 });
+      mcp = { repo, servers: (data && data.servers) || [], problems: (data && data.problems) || [], error: '' };
+    } catch (err) {
+      mcp = { repo, servers: null, problems: [], error: errorMessage(err) };
+    }
+  }
+
+  const MCP_FROM = { socrates: 'Built into Socrates', admin: 'From Admin', folder: 'From the repository’s .mcp.json' };
+
+  // mcpSection is the switches of the MCP servers test cells get besides
+  // those their area names; saved as the settings' mcp list.
+  function mcpSection(s) {
+    const chosen = s.mcp || [];
+    const known = mcp.servers || [];
+    const gone = chosen.filter((name) => !known.some((one) => one.name === name)).map((name) => ({ name, gone: true }));
+    const list = [...known, ...gone];
+    return html`<div class="ds-subsection so-tests__stack" aria-labelledby="stMcpTitle">
+      <h3 class="ds-card__subtitle" id="stMcpTitle">MCP servers for test cells</h3>
+      <p class="ds-muted">A cell’s agent gets the servers switched on here, and those its area names under <code>mcp:</code> in its AREA.md, which are always on. Every other server is off in a test cell.</p>
+      ${mcp.error ? html`<div class="ds-alert ds-alert--error" role="alert">${raw(icon('alertCircle', 20))}<span class="ds-alert__text">${'The servers could not be listed: ' + mcp.error}</span></div>` : ''}
+      ${list.length ? html`<div class="ds-switch-list" data-mcp-list>${list.map((server, i) => html`<label class="ds-switch" data-ds-key="${'mcp-' + server.name}">
+        <input type="checkbox" role="switch" data-mcp="${server.name}"${chosen.includes(server.name) ? raw(' checked') : ''} aria-labelledby="${'stMcp' + i}" aria-describedby="${'stMcp' + i + 'Hint'}">
+        <span class="ds-switch__track" aria-hidden="true"></span>
+        <span class="ds-switch__label" id="${'stMcp' + i}">${labelOf(server)}</span>
+        <small class="ds-switch__hint" id="${'stMcp' + i + 'Hint'}">${server.gone ? 'Not found any more: switch it off.' : [MCP_FROM[server.from] || '', brief(server.description)].filter(Boolean).join('. ')}</small>
+        <span class="ds-switch__state" aria-hidden="true"><span class="ds-switch__on">On</span><span class="ds-switch__off">Off</span></span>
+      </label>`)}</div>` : mcp.error ? '' : html`<p class="ds-meta">There is none: add one in Admin, or in a .mcp.json in the repository.</p>`}
+      ${mcp.problems.length ? html`<p class="ds-meta">${mcp.problems.join(' ')}</p>` : ''}
+    </div>`;
   }
 
   function drawSettings(panel) {
@@ -221,6 +266,7 @@ export function mountForms(ctx) {
         <h2 class="ds-card__title" id="settingsTitle">Settings of this repository</h2>
         <p class="ds-muted">Every run starts with these; the Run sheet can change them for one run.</p>
         ${settingsForm('st', s)}
+        ${mcpSection(s)}
         <div class="ds-subsection so-tests__stack">
           <h3 class="ds-card__subtitle">Keeping runs</h3>
           ${numberField('st', 'keep_runs', 'Runs kept', s.keep_runs, { min: 1, max: 1000, hint: 'Older runs are deleted with their screenshots and sessions; pinned runs stay on top of these.' })}
@@ -248,6 +294,9 @@ export function mountForms(ctx) {
   $('save').addEventListener('click', async () => {
     const repo = state.repo;
     const body = readSettings(settingsPanel, state.settings.settings);
+    if (settingsPanel.querySelector('[data-mcp-list]')) {
+      body.mcp = [...settingsPanel.querySelectorAll('input[data-mcp]:checked')].map((node) => node.dataset.mcp);
+    }
     const maxNode = settingsPanel.querySelector('[data-num="max_sessions"]');
     const max = maxNode ? parseInt(maxNode.value, 10) : state.global.max_sessions;
     try {

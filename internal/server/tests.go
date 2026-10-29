@@ -16,6 +16,7 @@ import (
 	"github.com/saschazesiger/SocratesAgent/internal/agent"
 	"github.com/saschazesiger/SocratesAgent/internal/agenthost"
 	"github.com/saschazesiger/SocratesAgent/internal/harnesses"
+	"github.com/saschazesiger/SocratesAgent/internal/mcpserver"
 	"github.com/saschazesiger/SocratesAgent/internal/store"
 	"github.com/saschazesiger/SocratesAgent/internal/termux"
 	"github.com/saschazesiger/SocratesAgent/internal/testmode"
@@ -144,6 +145,17 @@ func (h testHost) GetKV(key string) (string, error) {
 
 func (h testHost) SetKV(key, value string) error { return h.s.store.SetKV(key, value) }
 
+// MCPPool is the pool of a built-in MCP server (mcpbuiltin.go).
+func (h testHost) MCPPool(server string) mcpserver.Pool {
+	if p, ok := h.s.mcp.Get(server).(mcpserver.Pool); ok {
+		return p
+	}
+	return nil
+}
+
+// EndMCP closes what the built-in MCP servers keep for a test session.
+func (h testHost) EndMCP(chat string) { h.s.endMCP(chat) }
+
 // forTests is the account a test session of harness runs on: of the
 // accounts the run may use (allowed; every account of the harness when it
 // is empty) and that are signed in and not at a limit, the one the fewest of
@@ -239,7 +251,7 @@ func (p *chatPeer) testSpec(row *store.Session, ref json.RawMessage, spec *agent
 	// Every MCP server of Admin and of the folder is off unless the area
 	// names it.
 	folder, _ := agent.ReadFolderMCP(row.Workdir)
-	list, _ := agent.ChatMCP(sharedMCP(s.Settings()), folder, nil)
+	list, _ := agent.ChatMCP(s.sharedMCP(s.Settings(), ""), folder, nil)
 	choices := map[string]bool{}
 	for _, c := range list {
 		choices[c.Name] = slices.Contains(l.MCP, c.Name)

@@ -22,6 +22,10 @@ type Settings struct {
 	Attempts int `json:"attempts"`
 	// KeepRuns is how many runs are kept; the pinned ones count on top.
 	KeepRuns int `json:"keep_runs"`
+	// MCP is the MCP servers (built into Socrates, of Admin or of the
+	// repository's .mcp.json) cell agents have besides those their area
+	// names; every other is off in a test session.
+	MCP []string `json:"mcp,omitempty"`
 }
 
 // Defaults of the settings (TEST-MODE.md, Settings).

@@ -12,7 +12,9 @@ import (
 	"time"
 
 	"github.com/saschazesiger/SocratesAgent/internal/agent/testtools"
+	"github.com/saschazesiger/SocratesAgent/internal/mcpserver"
 	"github.com/saschazesiger/SocratesAgent/internal/testhome"
+	"github.com/saschazesiger/SocratesAgent/internal/testmode/catalog"
 )
 
 // TestMain runs the tests with a home of their own (internal/testhome).
@@ -32,6 +34,8 @@ type fakeHost struct {
 	accounts []string
 	frames   int
 	running  map[string]bool
+	pools    map[string]mcpserver.Pool
+	endedMCP []string
 }
 
 func newFakeHost() *fakeHost {
@@ -123,6 +127,18 @@ func (h *fakeHost) GetKV(key string) (string, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return h.kv[key], nil
+}
+
+func (h *fakeHost) MCPPool(server string) mcpserver.Pool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.pools[server]
+}
+
+func (h *fakeHost) EndMCP(chat string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.endedMCP = append(h.endedMCP, chat)
 }
 
 func (h *fakeHost) SetKV(key, value string) error {
@@ -434,6 +450,98 @@ func TestCellsQueueForThePoolAndStartWhenAMemberIsFree(t *testing.T) {
 	if notes := host.notesNow(); !strings.Contains(notes[0], "3 cells: 3 pass") {
 		t.Fatalf("notes: %v", notes)
 	}
+}
+
+// fakePool is a built-in MCP server's pool of one account.
+type fakePool struct {
+	mu     sync.Mutex
+	holder string
+}
+
+func (p *fakePool) PoolTitle() string { return "Devices" }
+
+func (p *fakePool) Lease(holder string) (mcpserver.Lease, string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.holder != "" && p.holder != holder {
+		return mcpserver.Lease{}, "every Devices account is in use"
+	}
+	p.holder = holder
+	return mcpserver.Lease{Account: "acct-1", Label: "jane"}, ""
+}
+
+func (p *fakePool) Restore(holder, account string) bool {
+	p.mu.Lock()
+	p.holder = holder
+	p.mu.Unlock()
+	return true
+}
+
+func (p *fakePool) Release(holder string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.holder == holder {
+		p.holder = ""
+	}
+}
+
+// A cell whose area names a built-in MCP server with a pool waits for one
+// of its accounts, gets the cell's facts on its calls, and gives the account
+// back after the server closed what it kept for the cell.
+func TestCellsQueueForABuiltinMCPServersAccounts(t *testing.T) {
+	old := catalog.BuiltinMCP
+	catalog.BuiltinMCP = func(name string) *catalog.BuiltinServer {
+		if name == "devices" {
+			return &catalog.BuiltinServer{Instructions: "Drive the device with its tools."}
+		}
+		return nil
+	}
+	t.Cleanup(func() { catalog.BuiltinMCP = old })
+	host := newFakeHost()
+	pool := &fakePool{}
+	host.pools = map[string]mcpserver.Pool{"devices": pool}
+	r, _ := newRunner(t, host)
+	repo := t.TempDir()
+	base := filepath.Join(repo, ".socrates", "tests")
+	write(t, filepath.Join(base, "TESTS.md"), "---\ntitle: Fixture\n---\nTest the fixture.\n", 0o644)
+	write(t, filepath.Join(base, "web", "AREA.md"), "---\nmcp: [devices]\ndimensions:\n  device:\n    values: {a: Device A, b: Device B}\nparams:\n  consent: accept\nevidence: screenshot\n---\nWork every cell.\n", 0o644)
+	write(t, filepath.Join(base, "web", "two.md"), twoSteps, 0o644)
+	settings := noReview()
+	settings.MCP = []string{"github"}
+	run := startRun(t, r, repo, settings)
+	r.schedule()
+	waitFor(t, "one session", func() bool { return len(host.chats()) == 1 })
+	var waiting *Attempt
+	for _, a := range r.attemptsOf(run.ID) {
+		if a.State == AttemptWaiting {
+			waiting = a
+		}
+	}
+	if waiting == nil || !strings.Contains(waiting.Wait, "waiting for a free Devices account") {
+		t.Fatalf("the second cell should wait for the pool, got %+v", waiting)
+	}
+	first := host.chats()[0]
+	l, err := r.LaunchFor(refJSON(t, r, first))
+	if err != nil || !strings.Contains(l.Instructions, "Drive the device with its tools.") ||
+		strings.Join(l.MCP, ",") != "devices,github" {
+		t.Fatalf("launch: %+v %v", l, err)
+	}
+	c := r.MCPCell(first)
+	if c == nil || c.Dims["device"] == "" || c.Params["consent"] != "accept" || c.Evidence == "" || c.Attempt == "" ||
+		pool.holder != c.Attempt || strings.Join(c.Prompted, ",") != "devices" {
+		t.Fatalf("cell: %+v, holder %q", c, pool.holder)
+	}
+	passCell(t, r, first)
+	waitFor(t, "the account to come back", func() bool {
+		pool.mu.Lock()
+		defer pool.mu.Unlock()
+		return pool.holder != c.Attempt
+	})
+	if ended := host.list(func(h *fakeHost) []string { return h.endedMCP }); len(ended) != 1 || ended[0] != first {
+		t.Fatalf("ended: %v", ended)
+	}
+	r.schedule()
+	waitFor(t, "the second session", func() bool { return len(host.chats()) == 2 })
 }
 
 func TestAJudgementNeedsAScreenshot(t *testing.T) {

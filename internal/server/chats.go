@@ -212,6 +212,9 @@ func (h *chatHub) remove(ctx context.Context, id string) {
 	delete(h.chats, id)
 	h.mu.Unlock()
 	h.launcher.Stop(ctx, id)
+	// A device a built-in MCP server holds for the chat goes with it, in the
+	// background: closing a BrowserStack session can take a while.
+	go h.srv.endMCP(id)
 	_ = h.srv.store.ClearOutbox(id)
 	_ = os.Remove(agenthost.SocketPath(h.srv.dataDir, id))
 	_ = os.Remove(snapshotPath(h.srv.dataDir, id))
@@ -960,7 +963,7 @@ func (s *Server) handleCreateChat(w http.ResponseWriter, r *http.Request) {
 	var mcp any
 	if len(body.MCP) > 0 {
 		folder, _ := agent.ReadFolderMCP(workdir)
-		list, _ := agent.ChatMCP(sharedMCP(settings), folder, nil)
+		list, _ := agent.ChatMCP(s.sharedMCP(settings, ""), folder, nil)
 		if chosen := newChatMCPChoices(list, body.MCP); chosen != nil {
 			mcp = chosen
 		}

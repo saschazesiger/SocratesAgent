@@ -24,6 +24,8 @@ import (
 	_ "github.com/saschazesiger/SocratesAgent/internal/agent/claude"
 	_ "github.com/saschazesiger/SocratesAgent/internal/agent/codex"
 	"github.com/saschazesiger/SocratesAgent/internal/agenthost"
+	"github.com/saschazesiger/SocratesAgent/internal/mcpclient"
+	"github.com/saschazesiger/SocratesAgent/internal/mcpserver"
 	// The OpenCode chat adapter registers itself with the agent host.
 	_ "github.com/saschazesiger/SocratesAgent/internal/agent/opencode"
 	"github.com/saschazesiger/SocratesAgent/internal/backup"
@@ -57,6 +59,8 @@ func init() {
 
 func main() {
 	log.SetFlags(log.Ldate | log.Ltime)
+	// A test of an MCP server tells it which Socrates asks.
+	mcpclient.ClientVersion = version
 
 	args := os.Args[1:]
 	if len(args) > 0 {
@@ -78,6 +82,8 @@ func main() {
 			os.Exit(agenthost.Main(args[1:], version))
 		case "mcp-ask":
 			os.Exit(agenthost.MCPAskMain(args[1:], version))
+		case "mcp-server":
+			os.Exit(mcpserver.Main(args[1:], version))
 		}
 	}
 

@@ -63,6 +63,9 @@ func mcpConfig(servers []agent.MCPServer) ([]byte, error) {
 				entry["headers"] = s.Headers
 			}
 		}
+		if s.ToolTimeout > 0 {
+			entry["timeout"] = s.ToolTimeout * 1000
+		}
 		out[s.Name] = entry
 	}
 	return json.Marshal(map[string]any{"mcpServers": out})

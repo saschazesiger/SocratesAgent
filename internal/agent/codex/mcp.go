@@ -49,8 +49,23 @@ func (a *adapter) mcpOverrides(ctx context.Context) map[string]any {
 }
 
 // codexMCP is a server as a [mcp_servers.<name>] table: a command, or a
-// streamable HTTP endpoint. Codex has no SSE transport.
+// streamable HTTP endpoint, with its tool timeout and the tools switched off.
+// Codex has no SSE transport.
 func codexMCP(s agent.MCPServer) (map[string]any, bool) {
+	entry, ok := codexTransport(s)
+	if !ok {
+		return nil, false
+	}
+	if s.ToolTimeout > 0 {
+		entry["tool_timeout_sec"] = s.ToolTimeout
+	}
+	if len(s.DisabledTools) > 0 {
+		entry["disabled_tools"] = s.DisabledTools
+	}
+	return entry, true
+}
+
+func codexTransport(s agent.MCPServer) (map[string]any, bool) {
 	switch s.Transport {
 	case agent.MCPStdio:
 		entry := map[string]any{"command": s.Command, "args": nonNil(s.Args)}

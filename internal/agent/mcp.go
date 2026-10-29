@@ -38,6 +38,11 @@ type MCPServer struct {
 	Env       map[string]string `json:"env,omitempty"`
 	URL       string            `json:"url,omitempty"`
 	Headers   map[string]string `json:"headers,omitempty"`
+	// ToolTimeout is how long one call of a tool may take, in seconds; 0
+	// leaves it to the harness.
+	ToolTimeout int `json:"tool_timeout,omitempty"`
+	// DisabledTools are tools of the server the agent is not given.
+	DisabledTools []string `json:"disabled_tools,omitempty"`
 }
 
 // mcpName is a server name every harness takes as it is: Codex refuses
@@ -61,15 +66,20 @@ type mcpEntry struct {
 
 // The places an MCP server of a chat comes from.
 const (
-	MCPFromAdmin  = "admin"  // set up in the dashboard for every chat
-	MCPFromFolder = "folder" // the chat folder's .mcp.json
+	MCPFromAdmin    = "admin"    // set up in the dashboard for every chat
+	MCPFromFolder   = "folder"   // the chat folder's .mcp.json
+	MCPFromSocrates = "socrates" // built into Socrates (internal/mcpserver)
 )
 
-// SharedMCP is an MCP server set up in the dashboard for every chat, with
-// whether a chat has it when nobody switched it on or off there.
+// SharedMCP is an MCP server set up in the dashboard for every chat, or
+// built into Socrates, with whether a chat has it when nobody switched it
+// on or off there.
 type SharedMCP struct {
 	MCPServer
 	Default bool `json:"default"`
+	// Builtin is a server built into Socrates; a folder's server of the same
+	// name does not replace it.
+	Builtin bool `json:"builtin,omitempty"`
 }
 
 // MCPChoice is one MCP server a chat may have: where it comes from, whether
@@ -82,8 +92,9 @@ type MCPChoice struct {
 }
 
 // ChatMCP is every MCP server a chat may have, sorted by name: the shared
-// ones and its folder's (ReadFolderMCP), the folder's winning a name as the
-// nearer file does among .mcp.json files. Each is on as the chat chose
+// ones and its folder's (ReadFolderMCP), the folder's winning a name of
+// Admin's as the nearer file does among .mcp.json files; a server built
+// into Socrates keeps its name. Each is on as the chat chose
 // (choices, by name), else as its default; a folder's server is on unless
 // the chat switched it off. A shared server that cannot be started (a bad
 // or reserved name, no command or URL) is left out with a problem.
@@ -94,9 +105,17 @@ func ChatMCP(shared []SharedMCP, folder []MCPServer, choices map[string]bool) (l
 			problems = append(problems, fmt.Sprintf("The MCP server %q of Admin was left out: %v", s.Name, err))
 			continue
 		}
-		byName[s.Name] = MCPChoice{MCPServer: s.MCPServer, From: MCPFromAdmin, Default: s.Default}
+		from := MCPFromAdmin
+		if s.Builtin {
+			from = MCPFromSocrates
+		}
+		byName[s.Name] = MCPChoice{MCPServer: s.MCPServer, From: from, Default: s.Default}
 	}
 	for _, s := range folder {
+		if have, ok := byName[s.Name]; ok && have.From == MCPFromSocrates {
+			problems = append(problems, fmt.Sprintf("The MCP server %q of the folder was left out: Socrates has a server of that name", s.Name))
+			continue
+		}
 		byName[s.Name] = MCPChoice{MCPServer: s, From: MCPFromFolder, Default: true}
 	}
 	for name, c := range byName {
@@ -275,7 +294,8 @@ func ExpandMCP(servers []MCPServer, env []string) (out []MCPServer, problems []s
 				return ""
 			})
 		}
-		e := MCPServer{Name: s.Name, Transport: s.Transport, Command: expand(s.Command), URL: expand(s.URL)}
+		e := MCPServer{Name: s.Name, Transport: s.Transport, Command: expand(s.Command), URL: expand(s.URL),
+			ToolTimeout: s.ToolTimeout, DisabledTools: s.DisabledTools}
 		for _, a := range s.Args {
 			e.Args = append(e.Args, expand(a))
 		}

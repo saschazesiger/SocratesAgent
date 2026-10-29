@@ -22,9 +22,19 @@ func (c *Catalog) validate() {
 				c.errorf(areaFile, a.lines["tools"], "tools: there is no tool %q (a folder tools/%s with a %s)", name, name, ToolFile)
 			}
 		}
+		builtinPrompt := 0
 		for _, name := range a.MCP {
+			if b := builtin(name); b != nil {
+				builtinPrompt += len(b.Instructions)
+				if b.Check != nil {
+					for _, problem := range b.Check(a.dimValues(), a.Params) {
+						c.errorf(areaFile, a.lines["mcp"], "mcp: %s", problem)
+					}
+				}
+				continue
+			}
 			if !c.mcpServer(name) {
-				c.errorf(areaFile, a.lines["mcp"], "mcp: the repository's .mcp.json has no server %q", name)
+				c.errorf(areaFile, a.lines["mcp"], "mcp: neither Socrates nor the repository's .mcp.json has a server %q", name)
 			}
 		}
 		if len(a.Tests) == 0 {
@@ -63,8 +73,11 @@ func (c *Catalog) validate() {
 			}
 			lower[strings.ToLower(t.ID)] = t.ID
 		}
-		size := len(c.Instructions) + len(a.Instructions)
+		size := len(c.Instructions) + len(a.Instructions) + builtinPrompt
 		parts := []string{fmt.Sprintf("%s %s", TestsFile, kib(len(c.Instructions))), fmt.Sprintf("%s %s", AreaFile, kib(len(a.Instructions)))}
+		if builtinPrompt > 0 {
+			parts = append(parts, fmt.Sprintf("MCP servers %s", kib(builtinPrompt)))
+		}
 		for _, name := range c.ToolNames() {
 			if prompt[name] {
 				n := len(c.Tools[name].Instructions)
@@ -85,6 +98,38 @@ func (c *Catalog) validate() {
 }
 
 func kib(n int) string { return fmt.Sprintf("%.1f KiB", float64(n)/1024) }
+
+// BuiltinServer is an MCP server built into Socrates as the catalog sees
+// it: the instructions its cells' prompt gets, and the check of an area that
+// names it.
+type BuiltinServer struct {
+	Instructions string
+	Check        func(dims map[string][]string, params map[string]string) []string
+}
+
+// BuiltinMCP is the MCP server built into Socrates of a name, nil for none;
+// internal/mcpserver/builtin sets it.
+var BuiltinMCP func(name string) *BuiltinServer
+
+func builtin(name string) *BuiltinServer {
+	if BuiltinMCP == nil {
+		return nil
+	}
+	return BuiltinMCP(name)
+}
+
+// dimValues is every value of each dimension of the area, extra ones too.
+func (a *Area) dimValues() map[string][]string {
+	out := map[string][]string{}
+	for _, d := range a.Dimensions {
+		var ids []string
+		for _, v := range append(append([]Value{}, d.Values...), d.Extra...) {
+			ids = append(ids, v.ID)
+		}
+		out[d.Name] = ids
+	}
+	return out
+}
 
 // mcpServer reports whether the repository's .mcp.json has a server called
 // name. The file is read once, when an area first names a server.

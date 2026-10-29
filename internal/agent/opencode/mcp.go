@@ -26,13 +26,30 @@ func folderMCP(spec agent.StartSpec) map[string]MCPServer {
 	for _, s := range spec.MCPServers {
 		switch s.Transport {
 		case agent.MCPStdio:
-			servers[s.Name] = MCPServer{Type: "local", Command: append([]string{s.Command}, s.Args...), Environment: s.Env}
+			servers[s.Name] = MCPServer{Type: "local", Command: append([]string{s.Command}, s.Args...), Environment: s.Env,
+				Timeout: int64(s.ToolTimeout) * 1000}
 		default:
 			// "remote" tries streamable HTTP, then SSE.
-			servers[s.Name] = MCPServer{Type: "remote", URL: s.URL, Headers: s.Headers}
+			servers[s.Name] = MCPServer{Type: "remote", URL: s.URL, Headers: s.Headers, Timeout: int64(s.ToolTimeout) * 1000}
 		}
 	}
 	return servers
+}
+
+// disabledTools is the config's tools map that switches off the tools of
+// the chat's MCP servers Admin switched off (OpenCode knows them as
+// <server>_<tool>); nil for none.
+func disabledTools(spec agent.StartSpec) map[string]bool {
+	out := map[string]bool{}
+	for _, s := range spec.MCPServers {
+		for _, t := range s.DisabledTools {
+			out[s.Name+"_"+t] = false
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // projectConfigs are the files OpenCode reads its project config from, in a

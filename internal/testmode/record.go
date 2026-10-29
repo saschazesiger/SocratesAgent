@@ -201,6 +201,11 @@ type Lease struct {
 	Tool   string `json:"tool"`
 	Member int    `json:"member"` // 1-based
 	Label  string `json:"label,omitempty"`
+	// MCP marks a lease of an MCP server built into Socrates (Tool is its
+	// name), whose pool keeps the leases (Host.MCPPool); Account is the
+	// account's id there.
+	MCP     bool   `json:"mcp,omitempty"`
+	Account string `json:"account,omitempty"`
 }
 
 // Step is a step of the test with its judgement.

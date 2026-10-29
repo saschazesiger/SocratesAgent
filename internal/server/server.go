@@ -20,6 +20,7 @@ import (
 	"github.com/saschazesiger/SocratesAgent/internal/backup"
 	"github.com/saschazesiger/SocratesAgent/internal/catalog"
 	"github.com/saschazesiger/SocratesAgent/internal/config"
+	"github.com/saschazesiger/SocratesAgent/internal/mcpserver"
 	"github.com/saschazesiger/SocratesAgent/internal/store"
 	"github.com/saschazesiger/SocratesAgent/internal/termux"
 	"github.com/saschazesiger/SocratesAgent/internal/testmode"
@@ -121,6 +122,14 @@ type Server struct {
 	// StartSessions.
 	tests    *testmode.Runner
 	accounts *accountHub
+	// mcp is the MCP servers built into Socrates (mcpbuiltin.go).
+	mcp *mcpserver.Registry
+	// The sign-ins of Admin's OAuth MCP servers (mcpoauth.go) and the last
+	// test of each (mcpadmin.go), made when first used.
+	oauthOnce sync.Once
+	oauthKeep *oauthHub
+	probeOnce sync.Once
+	probeKeep *probeCache
 }
 
 type attempt struct {
@@ -185,6 +194,7 @@ func New(st *store.Store, dataDir string) (*Server, error) {
 	// A chat's push says what its journal says.
 	s.push.chatAsk, s.push.chatTurn = s.chats.askWords, s.chats.turnWords
 	s.accounts = newAccountHub(s)
+	s.mcp = s.newMCPRegistry()
 	manager, err := termux.New(st, cfg)
 	if err != nil {
 		return nil, err
@@ -432,6 +442,21 @@ func (s *Server) routes() {
 	mux.HandleFunc("POST /api/chats/{id}/mcp", s.auth(s.handleChatMCP))
 	// The MCP servers a chat about to be made would have, for the sheet.
 	mux.HandleFunc("GET /api/mcp", s.auth(s.handleNewChatMCP))
+	// The MCP servers built into Socrates, their accounts (mcpbuiltin.go).
+	mux.HandleFunc("GET /api/mcp/builtin", s.auth(s.handleBuiltinMCP))
+	// Testing a server, its sign-in, and the proxy that adds the sign-in's
+	// token for an agent (mcpadmin.go, mcpoauth.go).
+	mux.HandleFunc("GET /api/mcp/overview", s.auth(s.handleMCPOverview))
+	mux.HandleFunc("POST /api/mcp/test", s.auth(s.handleMCPTest))
+	mux.HandleFunc("POST /api/sessions/{id}/mcp/test", s.auth(s.handleChatMCPTest))
+	mux.HandleFunc("POST /api/mcp/oauth/start", s.auth(s.handleMCPOAuthStart))
+	mux.HandleFunc("GET /api/mcp/oauth/callback", s.auth(s.handleMCPOAuthCallback))
+	mux.HandleFunc("GET /api/mcp/oauth", s.auth(s.handleMCPOAuthStatus))
+	mux.HandleFunc("DELETE /api/mcp/oauth", s.auth(s.handleMCPOAuthDisconnect))
+	mux.HandleFunc("/mcp-proxy/{name}", s.handleMCPProxy)
+	mux.HandleFunc("POST /api/mcp/builtin/{name}/accounts", s.auth(s.handleBuiltinMCPAccountAdd))
+	mux.HandleFunc("POST /api/mcp/builtin/{name}/accounts/{id}/check", s.auth(s.handleBuiltinMCPAccountCheck))
+	mux.HandleFunc("DELETE /api/mcp/builtin/{name}/accounts/{id}", s.auth(s.handleBuiltinMCPAccountDelete))
 	mux.HandleFunc("POST /api/chats/{id}/account", s.auth(s.handleChatAccount))
 	mux.HandleFunc("POST /api/chats/{id}/spoken", s.auth(s.handleChatSpoken))
 	mux.HandleFunc("PUT /api/chats/{id}/auto-switch", s.auth(s.handleChatAutoSwitch))

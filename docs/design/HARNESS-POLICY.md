@@ -309,9 +309,24 @@ once switched on there.
   chat (`Spec.SharedMCP`, `agenthost.SealMCP`). `${VAR}` and
   `${VAR:-default}` are filled in from the chat's environment as for a
   folder's, so a token can stay in the account's environment instead.
-- **Checked on save.** A name other than `[A-Za-z0-9_-]+`, `socrates`, two
-  servers of one name, stdio without a command or http/sse without a URL is
-  refused when Admin saves.
+- **Checked on save.** A name other than `[A-Za-z0-9_-]+`, `socrates`, the
+  name of a server built into Socrates, two servers of one name, stdio
+  without a command or http/sse without a URL is refused when Admin saves.
+- **More per server** (MCP.md): a description, a tool timeout, tools no agent
+  gets (Claude Code `--disallowedTools`, Codex `disabled_tools`, OpenCode
+  `tools`), and OAuth for a remote server, signed in to once in Admin; an
+  agent reaches such a server through Socrates' proxy, which adds the token.
+  *Test* connects to a server as an agent would and lists what it offers.
+
+### MCP servers built into Socrates
+
+Socrates has MCP servers of its own (`internal/mcpserver`; MCP.md), the first
+BrowserStack's real devices. Each is in every chat's list (`from: socrates`),
+**off** unless Admin switches it on for every chat
+(`settings.mcp.builtin`) or the chat does. A chat that has one gets
+`socrates mcp-server <name>` as a stdio server, which hands every call to the
+server process with the chat's token; the server keeps what the calls build
+up (a device session) across parks of the agent. Admin keeps their accounts.
 
 ## Chats of one repository
 
@@ -414,7 +429,8 @@ same for Claude Code, Codex and OpenCode:
   (`Spec.TestInstructions`, at most 64 KiB) come after the model's instructions: Claude Code's
   system prompt, Codex's developer instructions, OpenCode's system on every prompt.
 - **Its environment and MCP servers.** The `SOCRATES_TEST_*` variables, the tools' folders first on
-  `PATH`, and only the MCP servers of the repository its area names; Admin's are off. Its account is
+  `PATH`, and only the MCP servers its area names (built into Socrates or of the repository's
+  `.mcp.json`) and those the repository's Tests settings switch on for cells; every other is off. Its account is
   the runner's and does not switch by itself.
 
 ## Shell

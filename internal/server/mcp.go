@@ -19,16 +19,24 @@ import (
 // each on as the chat chose or else by its default (agent.ChatMCP). The
 // chat's choices are its options' "mcp": {name: on}.
 
-// sharedMCP is the dashboard's MCP servers as the agent package has them.
-func sharedMCP(settings config.Settings) []agent.SharedMCP {
+// sharedMCP is the dashboard's MCP servers as the agent package has them,
+// and the servers built into Socrates. For a chat (chatID) a built-in server
+// is the command that reaches it and a server signed in to with OAuth is
+// Socrates' proxy to it (mcpoauth.go); without one they are only what a
+// view lists.
+func (s *Server) sharedMCP(settings config.Settings, chatID string) []agent.SharedMCP {
 	var out []agent.SharedMCP
-	for _, s := range settings.MCP.Servers {
-		out = append(out, agent.SharedMCP{Default: s.Default, MCPServer: agent.MCPServer{
-			Name: s.Name, Transport: s.Type, Command: s.Command, Args: s.Args, Env: s.Env,
-			URL: s.URL, Headers: s.Headers,
-		}})
+	for _, m := range settings.MCP.Servers {
+		srv := agent.MCPServer{
+			Name: m.Name, Transport: m.Type, Command: m.Command, Args: m.Args, Env: m.Env,
+			URL: m.URL, Headers: m.Headers, ToolTimeout: m.ToolTimeout, DisabledTools: m.DisabledTools,
+		}
+		if m.Auth == config.MCPAuthOAuth && chatID != "" {
+			srv = s.oauthProxied(srv, chatID)
+		}
+		out = append(out, agent.SharedMCP{Default: m.Default, MCPServer: srv})
 	}
-	return out
+	return append(out, s.builtinMCP(settings, chatID)...)
 }
 
 // readMCPChoices is the MCP servers a row's options switch on or off by
@@ -51,7 +59,7 @@ func readMCPChoices(raw json.RawMessage) map[string]bool {
 // token, and the chat's choices. The folder's the host reads itself.
 func (p *chatPeer) mcpSpec(row *store.Session, spec *agenthost.Spec) error {
 	spec.MCPChoices = readMCPChoices(row.Options)
-	shared := sharedMCP(p.hub.srv.Settings())
+	shared := p.hub.srv.sharedMCP(p.hub.srv.Settings(), p.id)
 	if len(shared) == 0 {
 		return nil
 	}
@@ -67,29 +75,31 @@ func (p *chatPeer) mcpSpec(row *store.Session, spec *agenthost.Spec) error {
 // what it is called, where it is from and whether it is on. What a server
 // is started with stays on the machine.
 type mcpServerView struct {
-	Name      string `json:"name"`
-	Transport string `json:"transport"`
-	From      string `json:"from"`
-	Default   bool   `json:"default"`
-	On        bool   `json:"on"`
+	Name        string `json:"name"`
+	Title       string `json:"title,omitempty"`
+	Description string `json:"description,omitempty"`
+	Transport   string `json:"transport"`
+	From        string `json:"from"`
+	Default     bool   `json:"default"`
+	On          bool   `json:"on"`
 }
 
 // chatMCPView is every MCP server a chat may have and what had to be left
 // out, for GET and POST …/mcp.
 func (s *Server) chatMCPView(row *store.Session) map[string]any {
 	folder, problems := agent.ReadFolderMCP(row.Workdir)
-	list, more := agent.ChatMCP(sharedMCP(s.Settings()), folder, readMCPChoices(row.Options))
+	list, more := agent.ChatMCP(s.sharedMCP(s.Settings(), ""), folder, readMCPChoices(row.Options))
 	problems = append(problems, more...)
 	if problems == nil {
 		problems = []string{}
 	}
-	return map[string]any{"servers": mcpViews(list), "problems": problems}
+	return map[string]any{"servers": s.mcpViews(list), "problems": problems}
 }
 
 // chatHasMCP is whether name is one of the MCP servers a chat may have.
 func (s *Server) chatHasMCP(row *store.Session, name string) bool {
 	folder, _ := agent.ReadFolderMCP(row.Workdir)
-	list, _ := agent.ChatMCP(sharedMCP(s.Settings()), folder, nil)
+	list, _ := agent.ChatMCP(s.sharedMCP(s.Settings(), ""), folder, nil)
 	for _, c := range list {
 		if c.Name == name {
 			return true
@@ -174,11 +184,25 @@ func (s *Server) handleChatMCP(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s.chatMCPView(next))
 }
 
-// mcpViews is a list of ChatMCP as the browser sees it.
-func mcpViews(list []agent.MCPChoice) []mcpServerView {
+// mcpViews is a list of ChatMCP as the browser sees it, with what Admin
+// says each server is for.
+func (s *Server) mcpViews(list []agent.MCPChoice) []mcpServerView {
+	notes := map[string]string{}
+	for _, m := range s.Settings().MCP.Servers {
+		notes[m.Name] = m.Description
+	}
 	out := make([]mcpServerView, 0, len(list))
 	for _, c := range list {
-		out = append(out, mcpServerView{Name: c.Name, Transport: c.Transport, From: c.From, Default: c.Default, On: c.On})
+		v := mcpServerView{Name: c.Name, Transport: c.Transport, From: c.From, Default: c.Default, On: c.On}
+		switch c.From {
+		case agent.MCPFromAdmin:
+			v.Description = notes[c.Name]
+		case agent.MCPFromSocrates:
+			if b := s.mcp.Get(c.Name); b != nil {
+				v.Title, v.Description = b.Title(), b.Description()
+			}
+		}
+		out = append(out, v)
 	}
 	return out
 }
@@ -198,7 +222,7 @@ func (s *Server) newChatMCP(settings config.Settings, mode, workdir string) ([]a
 	if err == nil {
 		folder, problems = agent.ReadFolderMCP(dir)
 	}
-	list, more := agent.ChatMCP(sharedMCP(settings), folder, nil)
+	list, more := agent.ChatMCP(s.sharedMCP(settings, ""), folder, nil)
 	return list, append(problems, more...)
 }
 
@@ -235,5 +259,5 @@ func (s *Server) handleNewChatMCP(w http.ResponseWriter, r *http.Request) {
 	if problems == nil {
 		problems = []string{}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"servers": mcpViews(list), "problems": problems})
+	writeJSON(w, http.StatusOK, map[string]any{"servers": s.mcpViews(list), "problems": problems})
 }

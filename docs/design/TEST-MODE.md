@@ -26,8 +26,9 @@ the repository is the catalog and a tool that drives the devices.
 
 - Scheduled runs, runs started by a chat agent, GitHub issues from the bug list (later, if wanted).
 - Record and replay: every cell is run live by an agent (Device QA decided the same on 2026-10-28).
-- Tools as MCP servers: tools are command-line programs (decided below); the only MCP tools of a test
-  session are Socrates' own.
+- Tools as MCP servers of the repository: a catalog's tools are command-line programs (decided below).
+  Socrates' own MCP servers are the exception (revision below): BrowserStack is built into Socrates
+  as an MCP server an area names in `mcp:`.
 
 ## Decisions (owner, 2026-10-29)
 
@@ -715,6 +716,26 @@ the check that image builds still pass without it (they took `tests/*`).
 in CI, and a run of the `eval` tag on the four BrowserStack accounts in Socrates gives the same verdicts
 as the roles test of 2026-10-28 (`out/runs/roles-test-2026-10-28/conclusions.md` in the worktree,
 gitignored) or explains each difference.
+
+## Revision: built-in MCP servers (2026-10-29)
+
+At the owner's request the BrowserStack driver left the catalog: it is an MCP server built into
+Socrates (MCP.md), usable in every chat too. For test mode that means:
+
+- **`AREA.md` `mcp:`** may name a built-in server (`mcp: [browserstack]`) as well as a server of the
+  repository's `.mcp.json`. The catalog check runs the server's own check of the area (BrowserStack:
+  the `device` values are its devices, `consent` is accept, reject or leave), and the server's
+  instructions join the cells' prompt in place of a `TOOL.md` body.
+- **Pools.** A built-in server with accounts (`mcpserver.Pool`) is leased like a tool's pool, before
+  the session starts, after the harness account: the lease (`Lease.MCP`, the account's id) is kept in
+  the attempt's record and taken again after a restart; the server's pool, shared with the chats,
+  keeps who holds what. A cell waits "for a free BrowserStack account (n ahead)".
+- **The end.** After the end hooks the runner has the server close what it kept for the session
+  (`Host.EndMCP`: the device, whose links land in `links.json`), then gives the account back.
+- **The cell's facts** reach the server with each call (`Runner.MCPCell`: run, cell key, attempt,
+  dimensions, parameters, evidence folder), where `qa` read `SOCRATES_TEST_*`.
+- **Settings.** The repository's Tests settings have `mcp`: the MCP servers cell agents get besides
+  those their area names (built-in, Admin's or the repository's).
 
 ## Risks and open points
 
