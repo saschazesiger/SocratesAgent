@@ -2953,7 +2953,7 @@ async function mcpcard() {
     const added = await s.context.request.post(s.url + '/api/tests/repos', { data: { path: repo }, headers: { Origin: s.url } });
     const key = (await added.json()).key || '';
     ok(added.status() === 201 && key, 'a repository is added to the Tests page', added.status() + ' ' + key);
-    await page.goto(s.url + '/tests#repo=' + encodeURIComponent(key) + '&tab=settings', { waitUntil: 'domcontentloaded' });
+    await page.goto(s.url + '/tests#repo=' + encodeURIComponent(key) + '&view=settings', { waitUntil: 'domcontentloaded' });
     await page.waitForSelector('#p-settings [data-mcp-list] input[data-mcp="fake"]', { timeout: 20000 });
     const cells = await page.$$eval('#p-settings input[data-mcp]', (n) => n.map((i) => i.dataset.mcp + ':' + i.checked).join(' '));
     ok(cells === 'broken:false browserstack:false context7:false fake:false linear:false', 'the Tests page lists every server for the cells, all off', cells);

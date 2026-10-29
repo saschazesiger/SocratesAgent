@@ -132,6 +132,12 @@
   --so-chart-gap: 2px;
   --so-chart-tip-min: 180px;
   --so-chart-tip-max: 280px;
+
+  /* Tests: a run's result bar, the trend of the runs, a live cell's
+     screenshot */
+  --so-tests-bar-height: 6px;
+  --so-tests-trend-height: 120px;
+  --so-tests-trend-col-max: 40px;
 }
 
 /* Touch mode (car, kiosk): <html class="so-touch ds-touch"> (ui.js). DS's

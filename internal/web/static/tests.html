@@ -25,6 +25,13 @@
 <script src="/static/vendor/dashboard-style/ds.js" defer></script>
 </head>
 <body>
+<!--
+  The Tests page (docs/design/TEST-MODE.md, "The Tests page"). This file is
+  the frame: the repository's head with the Run action, the active run's
+  banner, the views as tabs, and the overlays every view shares. tests.js
+  routes between the views; each view is a module of its own (tests*.js) that
+  draws into its panel.
+-->
 <div class="ds-app" id="app">
   <a class="ds-skip" href="#main">Skip to content</a>
 
@@ -37,69 +44,67 @@
     <main class="ds-view" id="main" tabindex="-1">
       <div class="ds-content">
         <div class="ds-page">
-          <header class="ds-page-head">
-            <div class="ds-page-head__row">
-              <div class="ds-page-head__text">
-                <h1 class="ds-page-head__title" tabindex="-1">Tests</h1>
-                <p class="ds-page-head__lead" id="lead">The test catalogs of your repositories, each cell run by an agent.</p>
-                <div class="ds-page-head__status" id="headStatus"></div>
-              </div>
-              <div class="ds-page-head__actions">
-                <button class="ds-btn ds-btn--text" id="addRepo" type="button" hidden data-icon="plus" data-icon-size="16" data-icon-place="start">Add repository</button>
-                <button class="ds-btn ds-btn--primary" id="runBtn" type="button" hidden aria-haspopup="dialog" aria-expanded="false" data-icon="play" data-icon-size="16" data-icon-place="start">Run</button>
-              </div>
-            </div>
-          </header>
+          <div class="ds-loading" role="status" id="loading"><span class="ds-loader ds-loader--sm" aria-hidden="true"></span>Reading the repositories</div>
 
           <div id="notice"></div>
 
-          <div class="ds-loading" role="status" id="loading"><span class="ds-loader ds-loader--sm" aria-hidden="true"></span>Reading the repositories</div>
-
           <!-- No repository with a catalog yet. -->
-          <div class="ds-card" id="noRepos" hidden>
-            <div class="ds-empty">
-              <span class="ds-empty__disc" aria-hidden="true" data-icon="checkCircle" data-icon-size="24"></span>
-              <p class="ds-empty__title">No repository with tests yet</p>
-              <p class="ds-empty__text">A repository takes part once it has a catalog in <code>.socrates/tests/TESTS.md</code>; add one by its path.</p>
-              <button class="ds-btn ds-btn--tonal" id="addRepoEmpty" type="button">Add repository</button>
+          <div id="noRepos" hidden>
+            <header class="ds-page-head">
+              <h1 class="ds-page-head__title" tabindex="-1">Tests</h1>
+              <p class="ds-page-head__lead">The test catalogs of your repositories, each cell run by an agent.</p>
+            </header>
+            <div class="ds-card">
+              <div class="ds-empty">
+                <span class="ds-empty__disc" aria-hidden="true" data-icon="checkCircle" data-icon-size="24"></span>
+                <p class="ds-empty__title">No repository with tests yet</p>
+                <p class="ds-empty__text">A repository takes part once it has a catalog in <code>.socrates/tests/TESTS.md</code>; add it by its path.</p>
+                <button class="ds-btn ds-btn--tonal" id="addRepoEmpty" type="button" data-icon="plus" data-icon-size="16" data-icon-place="start">Add repository</button>
+              </div>
             </div>
           </div>
 
           <div class="so-tests" id="body" hidden>
-            <!-- Which repository, which run. -->
-            <div class="ds-toolbar">
-              <div class="ds-filters">
-                <div class="ds-field so-tests__pick" id="repoField">
-                  <label class="ds-field__label" for="repoSel">Repository</label>
-                  <select class="ds-input ds-input--filled" id="repoSel"></select>
+            <!-- The repository: its name (a menu of the others), where it is, and Run. -->
+            <header class="ds-page-head" id="head">
+              <div class="ds-page-head__row">
+                <div class="ds-page-head__text">
+                  <div class="so-tests-head__title">
+                    <h1 class="ds-page-head__title" id="repoTitle" tabindex="-1">Tests</h1>
+                    <button class="ds-btn ds-btn--quiet ds-btn--icon ds-btn--sm" id="repoMenuBtn" type="button" aria-haspopup="menu" aria-expanded="false" aria-controls="repoMenu" aria-label="Repositories" data-tip="Repositories" data-icon="chevronDown" data-icon-size="18"></button>
+                  </div>
+                  <p class="ds-page-head__lead" id="lead"></p>
+                  <div class="ds-page-head__status" id="headStatus"></div>
                 </div>
-                <div class="ds-field so-tests__pick" id="runField">
-                  <label class="ds-field__label" for="runSel">Run</label>
-                  <select class="ds-input ds-input--filled" id="runSel"></select>
+                <div class="ds-page-head__actions">
+                  <div class="so-tests-split" role="group" aria-label="Run tests">
+                    <button class="ds-btn ds-btn--primary" id="runBtn" type="button" aria-haspopup="dialog" aria-expanded="false" data-icon="play" data-icon-size="16" data-icon-place="start">Run</button>
+                    <button class="ds-btn ds-btn--tonal ds-btn--icon" id="runMoreBtn" type="button" aria-haspopup="menu" aria-expanded="false" aria-controls="runMenu" aria-label="More ways to run" data-tip="More ways to run" data-icon="chevronDown"></button>
+                  </div>
                 </div>
               </div>
+            </header>
+
+            <!-- The repository's active run: how far it is, Watch and Stop. -->
+            <section class="ds-card ds-card--filled so-tests-active" id="active" aria-labelledby="activeTitle" hidden></section>
+
+            <div class="ds-tabs ds-scroll-x so-tests__tabs" role="tablist" aria-label="Tests of this repository" id="tabs">
+              <button class="ds-tabs__tab" role="tab" type="button" id="t-overview" aria-selected="true" aria-controls="p-overview" data-view="overview" data-label="Overview">Overview</button>
+              <button class="ds-tabs__tab" role="tab" type="button" id="t-runs" aria-selected="false" aria-controls="p-runs" tabindex="-1" data-view="runs" data-label="Runs">Runs</button>
+              <button class="ds-tabs__tab" role="tab" type="button" id="t-tests" aria-selected="false" aria-controls="p-tests" tabindex="-1" data-view="tests" data-label="Tests">Tests</button>
+              <button class="ds-tabs__tab" role="tab" type="button" id="t-bugs" aria-selected="false" aria-controls="p-bugs" tabindex="-1" data-view="bugs" data-label="Bugs">Bugs</button>
+              <button class="ds-tabs__tab" role="tab" type="button" id="t-settings" aria-selected="false" aria-controls="p-settings" tabindex="-1" data-view="settings" data-label="Settings">Settings</button>
             </div>
 
-            <!-- The repository's active run: how far it is, and Stop. -->
-            <section class="ds-card" id="active" aria-labelledby="activeTitle" hidden></section>
-
-            <div class="ds-tabs" role="tablist" aria-label="Tests" id="tabs">
-              <button class="ds-tabs__tab" role="tab" type="button" id="t-results" aria-selected="true" aria-controls="p-results" data-tab="results" data-label="Results">Results</button>
-              <button class="ds-tabs__tab" role="tab" type="button" id="t-runs" aria-selected="false" aria-controls="p-runs" tabindex="-1" data-tab="runs" data-label="Runs">Runs</button>
-              <button class="ds-tabs__tab" role="tab" type="button" id="t-bugs" aria-selected="false" aria-controls="p-bugs" tabindex="-1" data-tab="bugs" data-label="Bugs">Bugs</button>
-              <button class="ds-tabs__tab" role="tab" type="button" id="t-catalog" aria-selected="false" aria-controls="p-catalog" tabindex="-1" data-tab="catalog" data-label="Catalog">Catalog</button>
-              <button class="ds-tabs__tab" role="tab" type="button" id="t-settings" aria-selected="false" aria-controls="p-settings" tabindex="-1" data-tab="settings" data-label="Settings">Settings</button>
-            </div>
-
-            <div class="ds-tabs__panel so-tests__panel" role="tabpanel" id="p-results" aria-labelledby="t-results" tabindex="0"></div>
+            <div class="ds-tabs__panel so-tests__panel" role="tabpanel" id="p-overview" aria-labelledby="t-overview" tabindex="0"></div>
             <div class="ds-tabs__panel so-tests__panel" role="tabpanel" id="p-runs" aria-labelledby="t-runs" tabindex="0" hidden></div>
+            <div class="ds-tabs__panel so-tests__panel" role="tabpanel" id="p-tests" aria-labelledby="t-tests" tabindex="0" hidden></div>
             <div class="ds-tabs__panel so-tests__panel" role="tabpanel" id="p-bugs" aria-labelledby="t-bugs" tabindex="0" hidden></div>
-            <div class="ds-tabs__panel so-tests__panel" role="tabpanel" id="p-catalog" aria-labelledby="t-catalog" tabindex="0" hidden></div>
             <div class="ds-tabs__panel so-tests__panel" role="tabpanel" id="p-settings" aria-labelledby="t-settings" tabindex="0" hidden></div>
           </div>
         </div>
       </div>
-      <!-- The Settings tab's unsaved edits. -->
+      <!-- The Settings view's unsaved edits (testsforms.js). -->
       <div class="ds-savebar" id="savebar">
         <div class="ds-savebar__bar ds-presence" role="region" aria-label="Unsaved changes" hidden>
           <p class="ds-savebar__text" id="savebarText">Unsaved changes</p>
@@ -113,7 +118,16 @@
   </div>
 </div>
 
-<!-- Start a run: what it runs, with which settings. -->
+<!-- The repositories: switch, add, take off the list (tests.js fills it). -->
+<div class="ds-menu" role="menu" id="repoMenu" aria-label="Repositories" hidden></div>
+
+<!-- The quick ways to run (tests.js fills it from the catalog and the latest run). -->
+<div class="ds-menu" role="menu" id="runMenu" aria-label="More ways to run" hidden></div>
+
+<!-- A run's other actions (testsruns.js fills it). -->
+<div class="ds-menu" role="menu" id="runViewMenu" aria-label="More for this run" hidden></div>
+
+<!-- Start a run: what it runs, with which settings (testsforms.js). -->
 <dialog class="ds-sheet" id="runSheet" aria-labelledby="runSheetTitle">
   <div class="ds-sheet__backdrop" data-close></div>
   <section class="ds-sheet__panel ds-sheet__panel--wide">
@@ -126,14 +140,33 @@
     </div>
     <div class="ds-sheet__body" tabindex="0" id="runBody"></div>
     <div class="ds-sheet__foot">
-      <p class="ds-meta" id="runFootNote"></p>
+      <p class="ds-meta" id="runFootNote" aria-live="polite"></p>
       <button class="ds-btn ds-btn--text" type="button" data-close>Cancel</button>
       <button class="ds-btn ds-btn--primary" type="button" id="runStart"><span class="ds-btn__faces"><span class="ds-btn__face">Start run</span><span class="ds-btn__face ds-btn__face--busy" aria-hidden="true"><span class="ds-spinner ds-spinner--sm"></span>Starting</span></span></button>
     </div>
   </section>
 </dialog>
 
-<!-- A cell (one attempt of it), or a test with every cell of it. -->
+<!-- The filters of a run's results (testsruns.js). -->
+<dialog class="ds-sheet" id="filterSheet" aria-labelledby="filterTitle">
+  <div class="ds-sheet__backdrop" data-close></div>
+  <section class="ds-sheet__panel">
+    <div class="ds-sheet__head">
+      <div class="ds-sheet__heading">
+        <h2 class="ds-sheet__title" id="filterTitle">Filters</h2>
+        <p class="ds-sheet__subtitle" id="filterCount" aria-live="polite"></p>
+      </div>
+      <button class="ds-btn ds-btn--quiet ds-btn--icon" type="button" aria-label="Close" data-tip="Close" data-close data-icon="close"></button>
+    </div>
+    <div class="ds-sheet__body" tabindex="0" id="filterBody"></div>
+    <div class="ds-sheet__foot">
+      <button class="ds-btn ds-btn--text" type="button" id="filterReset">Reset</button>
+      <button class="ds-btn ds-btn--primary" type="button" id="filterShow" data-close>Show the cells</button>
+    </div>
+  </section>
+</dialog>
+
+<!-- A cell (one attempt of it): testscell.js. -->
 <dialog class="ds-sheet" id="cellSheet" aria-labelledby="cellTitle">
   <div class="ds-sheet__backdrop" data-close></div>
   <section class="ds-sheet__panel ds-sheet__panel--wide">

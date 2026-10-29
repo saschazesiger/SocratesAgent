@@ -1,20 +1,26 @@
 /*
  * so-tests.css: the project components of the Tests page (tests.html,
- * docs/design/TEST-MODE.md). They read tokens only (--ds-* and the --so-*
- * of theme.css), are unlayered, and never restyle a .ds-* component.
+ * docs/design/TEST-MODE.md "The Tests page"). They read tokens only (--ds-*
+ * and the --so-* of theme.css), are unlayered, and never restyle a .ds-*
+ * component: they place DS components and draw what DS has no part for
+ * (a result bar stacked by verdict, the trend of the runs, the live cards'
+ * screenshots).
  *
- *   .so-tests             the page under its head: the toolbar, the active
- *                         run, the tabs and their panels, in the page's rhythm
- *   .so-tests__panel      a tab's panel: its cards one under the other
- *   .so-tests__stack      a column of blocks in a card or a sheet
- *   .so-tests__dims       the filters of the dimensions, in the filter row
- *   .so-tests__test       a test's head cell: its title, priority and tags
- *   .so-tests__cells      the cells of a test in one column of the table
- *   .so-tests__cell       one cell: its verdict chip and the other
- *                         dimensions' values, pressed to open it
- *   .so-tests__history    a test's verdicts over its last runs (.so-mark)
- *   .so-tests__shots      a step's screenshots as thumbnails
- *   .so-shotview          a screenshot at full size
+ * One section per module of the page (tests*.js), each with its header
+ * comment; a module that is added or rebuilt keeps to its own section.
+ */
+
+/* ══ Frame (tests.js) ══════════════════════════════════════════════════
+ *
+ *   .so-tests             the page under the loading line: head, banner,
+ *                         tabs and panels, in the page's rhythm
+ *   .so-tests__panel      a view's panel: its cards one under the other
+ *   .so-tests__stack      a column of blocks in a card, a sheet or a view
+ *   .so-tests-head__title the repository's name and its menu button
+ *   .so-tests-split       Run and its menu of quick runs, side by side
+ *   .so-tests-active      the active run's banner (a filled card)
+ *   .so-tests-nowrap      a commit or a figure that stays on one line
+ *   .so-tests__tabs       the views' tabs, closer together on a phone
  */
 
 .so-tests,
@@ -43,23 +49,309 @@
   margin-block: 0;
 }
 
-/* The dimension filters are fields of the filter row, like the others. */
-.so-tests__dims {
-  display: contents;
+.so-tests-head__title {
+  display: flex;
+  align-items: center;
+  gap: var(--ds-space-1);
+  min-width: 0;
 }
 
-/* ── The results table ─────────────────────────────────────────────── */
+.so-tests-split {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--ds-space-1);
+}
+
+.so-tests-nowrap {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--ds-space-1);
+  white-space: nowrap;
+}
+
+/* The five views fit a phone's width: the tabs come closer together there
+   (an exception in ds-check.json); a narrower phone still scrolls them,
+   with DS's edge fade. */
+@container ds-content (max-width: 600px) {
+  .so-tests__tabs > .ds-tabs__tab {
+    padding-inline: var(--ds-space-2);
+  }
+}
+
+/* ══ Shared marks (testsview.js) ═══════════════════════════════════════
+ *
+ *   .so-tests-bar         a run's counts as one bar stacked by verdict
+ *                         (beside the counts in words, so hidden from the
+ *                         reader); --sm a thinner one
+ *   .so-tests-bar__part   one verdict's share: --pass --issue --fail
+ *                         --blocked, and --rest (still to go)
+ *   .so-tests-key--pass   the legend key of a pass (the others are DS's
+ *                         warning, error and neutral keys)
+ *   .so-tests-count       a glyph and its count in words ("3 fail")
+ *   .so-tests-change      a cell's change against the run before: a glyph
+ *                         (its words are its label): --regressed --fixed
+ *   .so-mark              a verdict as a glyph (shape says which)
+ */
+
+.so-tests-bar {
+  display: flex;
+  gap: calc(var(--ds-space-1) / 2);
+  inline-size: 100%;
+  min-inline-size: 6rem;
+  block-size: var(--so-tests-bar-height);
+  border-radius: var(--ds-radius-xs);
+  overflow: hidden;
+  background: var(--ds-chart-track);
+}
+
+.so-tests-bar__part {
+  display: block;
+  flex: 1 1 0;
+  min-inline-size: var(--ds-space-1);
+  background: var(--ds-chart-color, var(--ds-chart-neutral));
+}
+
+.so-tests-bar__part--pass,
+.so-tests-key--pass {
+  --ds-chart-color: var(--ds-success);
+}
+
+.so-tests-bar__part--issue {
+  --ds-chart-color: var(--ds-chart-warning);
+}
+
+.so-tests-bar__part--fail {
+  --ds-chart-color: var(--ds-chart-error);
+}
+
+.so-tests-bar__part--blocked {
+  --ds-chart-color: var(--ds-chart-neutral);
+}
+
+.so-tests-bar__part--rest {
+  --ds-chart-color: var(--ds-chart-track);
+}
+
+.so-tests-count,
+.so-tests-change {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--ds-space-1);
+  white-space: nowrap;
+}
+
+.so-tests-change--regressed {
+  color: var(--ds-error);
+}
+
+.so-tests-change--fixed {
+  color: var(--ds-success);
+}
+
+.so-tests-change--new {
+  color: var(--ds-text-2);
+}
+
+.so-mark {
+  display: inline-flex;
+  color: var(--ds-text-2);
+}
+
+.so-mark--pass {
+  color: var(--ds-success);
+}
+
+.so-mark--issue {
+  color: var(--ds-warning);
+}
+
+.so-mark--fail {
+  color: var(--ds-error);
+}
+
+/* ══ Overview (testsoverview.js) ═══════════════════════════════════════
+ *
+ *   .so-tests-ov__rate    the pass rate: a meter and its words
+ *   .so-tests-ov__tiles   the verdict tiles, two per row on a phone
+ *   .so-tests-live        the running cells, a card each
+ *   .so-tests-live__card  one: its latest screenshot, title, step, activity
+ *   .so-tests-live__shot  the screenshot's frame (a placeholder before one)
+ *   .so-tests-live__step  the step it is at
+ *   .so-tests-trend       the last runs as columns stacked by verdict
+ *   .so-tests-trend__col  a run's column, pressed to open the run
+ */
+
+.so-tests-ov__rate {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-space-2);
+}
+
+.so-tests-ov__rate > * {
+  margin: 0;
+}
+
+.so-tests-ov__tiles {
+  --ds-tile-min-width: 128px;
+}
+
+.so-tests-live {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 14rem), 1fr));
+  gap: var(--ds-space-3);
+}
+
+.so-tests-live__card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-space-2);
+  min-width: 0;
+}
+
+.so-tests-live__card > * {
+  margin: 0;
+}
+
+.so-tests-live__shot {
+  display: grid;
+  place-items: center;
+  aspect-ratio: 16 / 10;
+  border-radius: var(--ds-radius-sm);
+  background: var(--ds-surface-high);
+  overflow: hidden;
+}
+
+.so-tests-live__shot img {
+  display: block;
+  inline-size: 100%;
+  block-size: 100%;
+  object-fit: cover;
+  object-position: top;
+}
+
+.so-tests-live__none {
+  display: inline-flex;
+  color: var(--ds-text-2);
+}
+
+.so-tests-live__step {
+  font: var(--ds-font-label);
+}
+
+.so-tests-trend {
+  margin: 0;
+}
+
+.so-tests-trend__plot {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--ds-space-1);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.so-tests-trend__item {
+  display: flex;
+  flex: 1 1 0;
+  min-inline-size: 0;
+  max-inline-size: var(--so-tests-trend-col-max);
+}
+
+.so-tests-trend__col {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  justify-content: flex-end;
+  align-items: stretch;
+  gap: var(--ds-space-1);
+  min-inline-size: 0;
+  block-size: calc(var(--so-tests-trend-height) + var(--ds-space-6));
+  padding: var(--ds-space-1) 0 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+}
+
+.so-tests-trend__stack {
+  display: flex;
+  flex-direction: column-reverse;
+  gap: calc(var(--ds-space-1) / 2);
+  block-size: calc(var(--so-share, 1) * var(--so-tests-trend-height));
+  border-radius: var(--ds-radius-xs) var(--ds-radius-xs) 0 0;
+  overflow: hidden;
+}
+
+.so-tests-trend__stack .so-tests-bar__part {
+  min-inline-size: 0;
+  min-block-size: 2px;
+}
+
+.so-tests-trend__label {
+  font: var(--ds-font-meta);
+  color: var(--ds-text-2);
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.so-tests-trend__col[aria-current="true"] .so-tests-trend__label {
+  color: var(--ds-text);
+  font-weight: var(--ds-weight-label);
+}
+
+/* ══ Runs (testsruns.js) ═══════════════════════════════════════════════
+ *
+ *   .so-tests-record      a run's head inside the Runs panel
+ *   .so-tests-agents      the line of the roles' models under the facts
+ *   .so-tests-result      a run's result: the bar over the counts
+ *   .so-tests-pin         the lock of a pinned run beside its name
+ *   .so-tests-results__bar  the search, the filters and the chips
+ *   .so-tests__table      an area's table of tests and cells
+ *   .so-tests__test       a test's head cell: its title, priority and tags
+ *   .so-tests__sub        a line of tags or meta under a title
+ *   .so-tests__cells      the cells of a test in one column of the table
+ *   .so-tests__cell       one cell: its verdict chip, the other dimensions'
+ *                         values and its marks, pressed to open it
+ *   .so-tests__mark       a reviewed or overridden mark beside a verdict
+ *   .so-tests-block       on a phone, a test with its cells as a list
+ *   .so-tests__links      a column of links (a bug's cells)
+ */
+
+.so-tests-agents {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--ds-space-1);
+  margin: 0;
+}
+
+.so-tests-agents > svg {
+  flex: none;
+}
+
+.so-tests-result {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-space-1);
+  min-inline-size: 10rem;
+}
+
+.ds-list__text .so-tests-result {
+  min-inline-size: 0;
+  margin-top: var(--ds-space-1);
+}
+
+.so-tests-pin {
+  display: inline-flex;
+  vertical-align: middle;
+  color: var(--ds-text-2);
+}
 
 .so-tests__test {
   min-inline-size: 12rem;
   max-inline-size: 22rem;
   text-align: start;
   white-space: normal;
-}
-
-/* The repository and the run are named in full where there is room. */
-.so-tests__pick {
-  min-inline-size: min(100%, 18rem);
 }
 
 .so-tests__sub {
@@ -88,7 +380,6 @@
   color: inherit;
   font: inherit;
   text-align: start;
-  cursor: pointer;
 }
 
 .so-tests__mark {
@@ -96,38 +387,71 @@
   color: var(--ds-text-2);
 }
 
+.so-tests-block {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-space-2);
+}
+
+.so-tests-block + .so-tests-block {
+  margin-top: var(--ds-space-2);
+}
+
+.so-tests-block__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--ds-space-2);
+}
+
+.so-tests-block__title {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
 .so-tests__links {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
   gap: var(--ds-space-1);
+  margin: 0;
 }
 
-/* A verdict as a glyph: its shape says which, its colour only repeats it. */
-.so-tests__history {
-  display: inline-flex;
+/* ══ Run dialog and Settings (testsforms.js) ═══════════════════════════
+ *
+ *   .so-tests-tree        the areas and their tests to tick
+ *   .so-tests-summary     the settings of a run in one line, and Change
+ */
+
+.so-tests-tree {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-space-3);
+}
+
+.so-tests-summary {
+  display: flex;
   flex-wrap: wrap;
-  gap: var(--ds-space-1);
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--ds-space-2);
 }
 
-.so-mark {
-  display: inline-flex;
-  color: var(--ds-text-2);
+.so-tests-summary > p {
+  flex: 1 1 16rem;
+  margin: 0;
 }
 
-.so-mark--pass {
-  color: var(--ds-success);
-}
-
-.so-mark--issue {
-  color: var(--ds-warning);
-}
-
-.so-mark--fail {
-  color: var(--ds-error);
-}
-
-/* ── The cell ──────────────────────────────────────────────────────── */
+/* ══ Cell viewer (testscell.js) ════════════════════════════════════════
+ *
+ *   .so-tests__verdict    the verdict and who gave it, in a row
+ *   .so-tests__role       a column of the facts of the cell
+ *   .so-tests__shots      a step's screenshots as thumbnails
+ *   .so-tests__shot       one thumbnail, pressed to open it full size
+ *   .so-tests__actions    the actions of a step
+ *   .so-shotview          a screenshot at full size
+ */
 
 .so-tests__verdict {
   display: flex;
@@ -189,3 +513,9 @@
   max-block-size: calc(100dvh - 10rem);
   object-fit: contain;
 }
+
+/* ══ Tests (teststests.js) ═════════════════════════════════════════════ */
+
+/* ══ Bugs (testsbugs.js) ═══════════════════════════════════════════════ */
+
+/* ══ Chat dialog (testschat.js) ════════════════════════════════════════ */

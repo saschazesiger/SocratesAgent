@@ -30,6 +30,8 @@
       "reason": "Layout: the answer's chip and its words read as one line, not as two ends of the row; its words are a meta line, which DS hangs out of the line like a button, onto the chip when a long answer wraps." },
     { "rule": "restyle", "file": "internal/web/static/css/so-chat.css", "selector": ".so-schedule .ds-field__label",
       "reason": "Layout: the schedule field's label carries a clock glyph beside its words." },
+    { "rule": "restyle", "file": "internal/web/static/css/so-tests.css", "selector": ".so-tests__tabs > .ds-tabs__tab",
+      "reason": "Spacing: the Tests page's five views (Overview, Runs, Tests, Bugs with its badge, Settings) fit a 390px phone only with 8px beside each label instead of DS's 16px; DS has no hook for a tab's padding, and a row that scrolls hid Settings behind its fade." },
     { "rule": "restyle", "file": "internal/web/static/css/so-pages.css", "selector": ".so-costs .ds-filters select",
       "reason": "Wrapping: a closed filter cuts a long account or project with an ellipsis; its tip says it whole." },
     { "rule": "restyle", "file": "internal/web/static/css/so-sheet.css", "selector": ".so-settings .ds-combo__option .ds-combo__meta",

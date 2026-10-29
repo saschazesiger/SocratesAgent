@@ -1,9 +1,17 @@
-// A cell of a test run in a side sheet (docs/design/TEST-MODE.md, "The Tests
-// page", Cell): its verdict as the agent gave it and as the reviewer left
-// it, every attempt, the steps as a timeline with their screenshots and the
+// The cell viewer of the Tests page (docs/design/TEST-MODE.md, "The Tests
+// page", the cell viewer), over any view: a cell of a run (one attempt of
+// it) with its verdict as the agent gave it and as the reviewer left it,
+// every attempt, the steps as a timeline with their screenshots and the
 // actions behind them, its links, logs and bugs. A screenshot opens full
-// size with the cell's others before and after it. A test opens in the same
-// sheet: its text and how each of its cells stood over the last runs.
+// size with the cell's others before and after it.
+//
+// mount(ctx) hands back { open(attemptId, runId, list), close(), refresh() };
+// `list` ([{ attempt, run }]) is the cells it was opened from, for previous
+// and next.
+//
+// Stub: replaced by the full view.
+// (This is the first page's cell sheet, ported as it was; the full viewer is
+// a full-screen dialog with the steps beside their screenshots.)
 
 import { api, errorMessage, toast } from './api.js';
 import { DS, html, raw, icon, morph } from './ui.js';
@@ -13,16 +21,15 @@ import * as V from './testsview.js';
 
 const $ = (id) => document.getElementById(id);
 
-export function mountCell(ctx) {
-  const { state } = ctx;
+export function mount(ctx) {
   const sheet = $('cellSheet');
   const body = $('cellBody');
   const foot = $('cellFoot');
   const viewer = $('shotDialog');
   let open = false;
-  let shown = null; // { kind: 'cell' | 'test', id, run }
+  let shown = null; // { kind: 'cell', id, run }
   let view = null; // the attempt (AttemptView)
-  let testHistory = {}; // cell id -> points, for the open test
+  const runBugs = new Map(); // run id -> its bugs
   let shots = []; // { name, caption } of the open attempt, in step order
   let shotAt = 0;
   let asked = 0;
@@ -32,7 +39,7 @@ export function mountCell(ctx) {
     open = false;
     shown = null;
     view = null;
-    ctx.closeRoute();
+    ctx.closeCell();
   });
 
   function title(text, sub) {
@@ -57,10 +64,10 @@ export function mountCell(ctx) {
 
   /* ------------------------------------------------------------- a cell */
 
-  async function openCell(id) {
-    if (open && shown && shown.kind === 'cell' && shown.id === id && shown.run === state.run) return;
+  async function openCell(id, run) {
+    if (open && shown && shown.kind === 'cell' && shown.id === id && shown.run === run) return;
     const fresh = !open || !shown || shown.kind !== 'cell' || !view || !view.attempts.some((a) => a.id === id);
-    shown = { kind: 'cell', id, run: state.run };
+    shown = { kind: 'cell', id, run };
     if (fresh) {
       title('Cell', '');
       loading('Reading the cell');
@@ -81,7 +88,11 @@ export function mountCell(ctx) {
       if (me === asked) failed(err);
       return;
     }
-    if (view.bugs && view.bugs.length) await ctx.ensureBugs();
+    if (view.bugs && view.bugs.length && !runBugs.has(run)) {
+      try {
+        runBugs.set(run, (await api(V.paths.bugs(run))).bugs || []);
+      } catch { runBugs.set(run, []); }
+    }
     if (me === asked) drawCell();
   }
 
@@ -227,7 +238,7 @@ export function mountCell(ctx) {
 
   function bugsOf(a) {
     if (!a.bugs || !a.bugs.length) return '';
-    const known = (state.bugs && state.bugs.bugs) || [];
+    const known = runBugs.get(a.run) || [];
     return html`<section class="so-tests__stack" aria-labelledby="cellBugsTitle">
       <h3 class="ds-card__subtitle" id="cellBugsTitle">Bugs</h3>
       <ul class="ds-plain-list">${a.bugs.map((id) => {
@@ -246,7 +257,7 @@ export function mountCell(ctx) {
     const thumb = event.target.closest('[data-shot]');
     if (thumb) { openShot(Number(thumb.dataset.shot), thumb); return; }
     const cellBtn = event.target.closest('[data-cell]');
-    if (cellBtn) ctx.go({ cell: cellBtn.dataset.cell, test: '' });
+    if (cellBtn) ctx.go({ cell: cellBtn.dataset.cell });
   });
 
   foot.addEventListener('click', async (event) => {
@@ -297,66 +308,8 @@ export function mountCell(ctx) {
     if (event.key === 'ArrowRight') { event.preventDefault(); step(1); }
   });
 
-  /* ------------------------------------------------------------- a test */
-
-  async function openTest(id) {
-    if (open && shown && shown.kind === 'test' && shown.id === id) return;
-    shown = { kind: 'test', id, run: state.run };
-    view = null;
-    title('Test', id);
-    loading('Reading the test');
-    show();
-    const me = ++asked;
-    const cells = state.cells.filter((r) => r.test === id);
-    const [, ...histories] = await Promise.all([
-      ctx.ensureCatalog(),
-      ...cells.map((r) => api(V.paths.history(state.repo) + '&cell=' + encodeURIComponent(r.cell_id)).catch(() => ({ history: {} }))),
-    ]);
-    if (me !== asked) return;
-    testHistory = {};
-    for (const h of histories) Object.assign(testHistory, h.history || {});
-    drawTest();
-  }
-
-  function drawTest() {
-    const id = shown.id;
-    let test = null;
-    for (const area of (state.catalog && state.catalog.areas) || []) {
-      test = (area.tests || []).find((t) => t.id === id) || test;
-    }
-    const cells = state.cells.filter((r) => r.test === id);
-    const first = cells[0];
-    title((test && test.title) || (first && first.title) || id, [id, (test || first || {}).priority].filter(Boolean).join(' · '));
-    morph(body, html`<div class="so-tests__stack">
-      ${test && test.tags && test.tags.length ? html`<p>${test.tags.map((t) => html`<span class="ds-tag">${t}</span> `)}</p>` : ''}
-      ${test && test.context ? html`<p class="so-break">${test.context}</p>` : ''}
-      ${test ? html`<section class="so-tests__stack" aria-labelledby="testStepsTitle">
-        <h3 class="ds-card__subtitle" id="testStepsTitle">Steps</h3>
-        <ol class="ds-plain-list">${test.steps.map((s) => html`<li class="so-break">${s.n + '. ' + s.do}<br><span class="ds-meta">${'Expect: ' + s.expect}</span></li>`)}</ol>
-      </section>` : html`<p class="ds-muted">The catalog no longer has this test.</p>`}
-      <section class="so-tests__stack" aria-labelledby="testCellsTitle">
-        <h3 class="ds-card__subtitle" id="testCellsTitle">Its cells in this run</h3>
-        ${cells.length ? html`<ul class="ds-list ds-list--interactive" aria-label="Cells">${cells.map((r) => html`<li class="ds-list__item" data-ds-key="${r.id}">
-          <span class="ds-list__text">
-            <span class="ds-list__title"><button class="ds-list__action" type="button" data-cell="${r.id}">${(r.dims || []).map((d) => d.label || d.id).join(' · ') || r.cell}</button></span>
-            <span class="ds-list__meta">${historyLine(r.cell_id)}</span>
-          </span>
-          ${V.cellChip({ ...r, wait: '' })}
-        </li>`)}</ul>` : html`<p class="ds-muted">This run has no cell of it.</p>`}
-      </section>
-    </div>`);
-    morph(foot, '');
-  }
-
-  function historyLine(cellId) {
-    const points = (testHistory[cellId] || []).slice().reverse();
-    if (!points.length) return '';
-    return html`<span class="so-tests__history" role="list" aria-label="Last runs, oldest first">${points.map((p) => html`<span role="listitem">${V.mark(p.verdict, (V.VERDICT[p.verdict] ? V.verdictWord(p.verdict) : V.attemptWord(p.verdict)) + ' · ' + V.when(p.created_at))}</span>`)}</span>`;
-  }
-
   return {
-    openCell,
-    openTest,
+    open(attemptId, runId) { return openCell(attemptId, runId); },
     close() {
       if (!open) return;
       open = false;
@@ -367,8 +320,7 @@ export function mountCell(ctx) {
     /** refresh reads the open cell again (its run changed). */
     refresh() {
       if (!open || !shown) return;
-      if (shown.kind === 'cell' && view && (V.OPEN_ATTEMPT.has(view.state) || (view.review && (view.review.state === 'pending' || view.review.state === 'running')))) load();
-      else if (shown.kind === 'test') drawTest();
+      if (view && (V.OPEN_ATTEMPT.has(view.state) || (view.review && (view.review.state === 'pending' || view.review.state === 'running')))) load();
     },
   };
 }

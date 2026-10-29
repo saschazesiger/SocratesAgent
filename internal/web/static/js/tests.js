@@ -1,134 +1,137 @@
-// The Tests page (docs/design/TEST-MODE.md, "The Tests page"): the test
-// catalogs of the repositories, their runs and every cell of a run down to
-// its screenshots.
+// The Tests page (docs/design/TEST-MODE.md, "The Tests page"): the frame.
 //
-// Everything is the server's (internal/server/tests_api.go): the page reads
-// the repositories, the shown repository's runs and the shown run's cells,
-// and reads them again when the event stream says a run changed. Where it
-// is - repository, run, tab, the open cell or test - is in the address
-// (#repo=…&run=…&tab=…&cell=…), so a cell can be linked to and Back closes
-// it. This module draws the frame, the results, the runs and the bugs;
-// testscell.js the cell and the test, testsforms.js the catalog, the
-// settings and the Run sheet.
+// It owns where the person is, what is loaded for the repository shown, and
+// the parts every view shares: the head with the repository's name and the
+// Run action, the banner of the active run, the tabs, and the overlays. Each
+// view is a module of its own that draws into its panel:
+//
+//   testsoverview.js  Overview          testsruns.js   Runs and a run
+//   teststests.js     Tests and a test  testsbugs.js   Bugs and a bug
+//   testsforms.js     Settings, and the Run dialog
+//   testscell.js      the cell viewer (over any view)
+//   testschat.js      the chat dialog (Fix in a chat, Write a test ...)
+//
+// The module contract. Every view module exports `mount(ctx)` and hands back
+// `{ render(panel), refresh?(), close?(), repoChanged?() }`: render draws the
+// view from what it has (and may start loading, then draw again through
+// ctx.redraw); refresh reads its own data again after the server said
+// something changed; close is called when the person leaves the view;
+// repoChanged when another repository is shown. `ctx` is below (the object
+// handed to every module).
+//
+// Where the person is lives in the address, so every place can be linked to
+// and Back undoes every step: #repo=<key>&view=<view> and, inside a view,
+// run= (a run, also the run of an open cell), test=, bug=, and cell= (the
+// cell viewer over any view). Old links (#repo=…&run=…, &tab=…, &cell=…)
+// still land where they meant.
 
-import { api, el, errorMessage, toast, confirmDialog, promptDialog, onWake } from './api.js';
+import { api, errorMessage, toast, confirmDialog, promptDialog, onWake } from './api.js';
 import { DS, M, html, raw, icon, morph } from './ui.js';
 import { mountEvents } from './events.js';
-import { markdown } from './md.js';
 import * as V from './testsview.js';
-import { mountCell } from './testscell.js';
-import { mountForms } from './testsforms.js';
+import * as overviewView from './testsoverview.js';
+import * as runsView from './testsruns.js';
+import * as testsView from './teststests.js';
+import * as bugsView from './testsbugs.js';
+import * as forms from './testsforms.js';
+import * as cellViewer from './testscell.js';
+import * as chatDialog from './testschat.js';
 
 const $ = (id) => document.getElementById(id);
 
 // A burst of frames (every cell that changes sends one) is read once, this
-// long after the last of them; the search runs this long after the last key.
+// long after the last of them. While a run is active and the page is seen,
+// its cells are read again this often (the live cards, the banner).
 const SETTLE = 600;
-const TYPE_PAUSE = 300;
+const LIVE_EVERY = 3000;
+// The running cells whose latest screenshot and step the page reads itself
+// while the server's rows do not carry `live` yet.
+const LIVE_MAX = 8;
 
-const TABS = ['results', 'runs', 'bugs', 'catalog', 'settings'];
-const PHONE = window.matchMedia('(max-width: 600px)');
+const VIEWS = ['overview', 'runs', 'tests', 'bugs', 'settings'];
+const LEGACY_TAB = { results: 'runs', runs: 'runs', bugs: 'bugs', catalog: 'tests', settings: 'settings' };
 
 const state = {
   loaded: false,
   repos: [],
   global: { max_sessions: 8 },
   repo: '',
-  run: '',
-  tab: 'results',
-  runs: [],
-  detail: null, // the shown run (RunView with its areas and pools)
-  cells: [], // its cells (CellRow, the latest attempt of each)
-  history: {}, // test id -> its last runs, newest first
-  bugs: null, // { bugs, conclusions } of the shown run
-  catalog: null, // the repository's catalog as it is now
+  route: { view: '', run: '', test: '', bug: '', cell: '' },
+  runs: [], // the repository's runs, newest first, each with its number `n`
+  // The server has the reworked page's routes (overview, estimate, report,
+  // the bug list ...): it numbers its runs (TEST-MODE.md "Run numbers").
+  v2: false,
+  catalog: null, // the catalog as it is in the repository now
   catalogError: '',
   settings: null, // { settings, defaults }
-  active: null, // { detail, cells } of the repository's active run when it is not the shown one
-  filters: { area: '', priority: '', tag: '', verdict: '', dims: {}, reviewed: false, problems: false },
-  query: '',
-  hits: null,
-  expanded: new Set(), // bug ids whose description is open
+  live: null, // { id, detail, cells } of the repository's active run
+  openBugs: null, // the Bugs tab's badge
+  cellList: [], // [{ attempt, run }] the open cell was opened from (its previous and next)
 };
 
 /* ------------------------------------------------------------- the route */
 
 function readHash() {
   const p = new URLSearchParams(location.hash.slice(1));
-  const tab = p.get('tab') || 'results';
-  return {
-    repo: p.get('repo') || '', run: p.get('run') || '', tab: TABS.includes(tab) ? tab : 'results',
-    cell: p.get('cell') || '', test: p.get('test') || '',
+  const r = {
+    repo: p.get('repo') || '', run: p.get('run') || '', test: p.get('test') || '',
+    bug: p.get('bug') || '', cell: p.get('cell') || '', view: p.get('view') || '',
   };
+  if (!VIEWS.includes(r.view)) r.view = LEGACY_TAB[p.get('tab')] || '';
+  if (!r.view) r.view = r.test ? 'tests' : r.bug ? 'bugs' : r.run ? 'runs' : 'overview';
+  return r;
 }
 
 function hashOf(r) {
   const p = new URLSearchParams();
-  if (r.repo) p.set('repo', r.repo);
-  if (r.run) p.set('run', r.run);
-  if (r.tab && r.tab !== 'results') p.set('tab', r.tab);
-  if (r.cell) p.set('cell', r.cell);
-  else if (r.test) p.set('test', r.test);
+  for (const key of ['repo', 'view', 'run', 'test', 'bug', 'cell']) if (r[key]) p.set(key, r[key]);
   return '#' + p.toString();
 }
 
-// go moves to another place on the page: `push` for a step the person took
-// that Back should undo (a tab, a cell opened), else the address is only
-// corrected.
+/**
+ * go moves to another place on the page: `push` for a step the person took
+ * that Back should undo (a view, a run, a cell opened); else the address is
+ * only corrected. A step that opened the cell viewer is marked, so that
+ * closing it is Back rather than one more step.
+ */
 function go(change, { push = false } = {}) {
-  const next = { ...readHash(), ...change };
+  const cur = readHash();
+  const next = { ...cur, ...change };
   const target = hashOf(next);
   if (target !== location.hash) {
-    // A step that opened a cell or a test is marked, so that closing it is
-    // Back rather than one more step (testscell.js).
-    const sheet = !!(next.cell || next.test);
-    if (push) history.pushState({ sheet }, '', target);
-    else history.replaceState({ sheet: sheet && !!(history.state && history.state.sheet) }, '', target);
+    const overlay = !!next.cell && (cur.cell ? !!(history.state && history.state.overlay) : push);
+    if (push) history.pushState({ overlay }, '', target);
+    else history.replaceState({ overlay }, '', target);
   }
-  route();
+  return route();
 }
 
 let routing = Promise.resolve();
-let drawnRoute = '';
 function route() {
   routing = routing.then(applyRoute).catch((err) => console.error(err));
   return routing;
 }
 
 async function applyRoute() {
-  if (!state.repos.length) return;
+  if (!state.repos.length) { render(); return; }
   const r = readHash();
-  const repo = state.repos.some((x) => x.key === r.repo) ? r.repo : state.repos[0].key;
-  if (repo !== state.repo) {
-    state.repo = repo;
-    state.run = '';
-    Object.assign(state, { runs: [], history: {}, catalog: null, catalogError: '', settings: null, hits: null, query: '', active: null });
-    state.filters = { area: '', priority: '', tag: '', verdict: '', dims: {}, reviewed: false, problems: false };
-    forms.repoChanged();
-    await loadRepo();
-  }
-  const run = state.runs.some((x) => x.id === r.run) ? r.run : (state.runs[0] ? state.runs[0].id : '');
-  if (run !== state.run) {
-    state.run = run;
-    Object.assign(state, { detail: null, cells: [], bugs: null });
-    state.expanded.clear();
-    await loadRun();
-  }
-  if (r.repo !== repo || r.run !== run) history.replaceState(null, '', hashOf({ ...r, repo, run }));
-  setTab(r.tab);
-  // Opening or closing a cell changes nothing under it: the page is drawn
-  // again only for another repository, run or tab.
-  const key = [repo, run, r.tab].join('\n');
-  if (key !== drawnRoute) {
-    drawnRoute = key;
-    render();
-  }
-  if (r.cell) cell.openCell(r.cell);
-  else if (r.test) cell.openTest(r.test);
+  const repo = repoOf(r.repo) ? r.repo : state.repos[0].key;
+  if (repo !== state.repo) await switchRepo(repo);
+  const normal = hashOf({ ...r, repo });
+  if (normal !== location.hash) history.replaceState(history.state, '', normal);
+  const was = state.route;
+  state.route = { view: r.view, run: r.run, test: r.test, bug: r.bug, cell: r.cell };
+  if (was.view && was.view !== r.view && views[was.view].close) views[was.view].close();
+  setTab(r.view, !!was.view && was.view !== r.view);
+  render();
+  if (r.cell) cell.open(r.cell, r.run, state.cellList);
   else cell.close();
 }
 
 /* -------------------------------------------------------------- loading */
+
+function repoOf(key) { return state.repos.find((r) => r.key === key) || null; }
+function runOf(id) { return state.runs.find((r) => r.id === id) || null; }
 
 async function loadRepos() {
   const data = await api(V.paths.repos());
@@ -137,40 +140,89 @@ async function loadRepos() {
   state.loaded = true;
 }
 
-async function loadRepo() {
+async function switchRepo(key) {
+  state.repo = key;
+  Object.assign(state, { runs: [], v2: false, catalog: null, catalogError: '', settings: null, live: null, openBugs: null, cellList: [] });
+  for (const view of Object.values(views)) if (view.repoChanged) view.repoChanged();
+  await Promise.all([loadRuns(), loadLive()]);
+  loadBugCount();
+  // The Run menu and the empty overview read the catalog: it comes in behind.
+  ensureCatalog().then(() => renderHead());
+}
+
+async function loadRuns() {
   if (!state.repo) return;
-  const [runs, hist] = await Promise.all([
-    api(V.paths.runs(state.repo)).catch(() => ({ runs: [] })),
-    api(V.paths.history(state.repo)).catch(() => ({ history: {} })),
-  ]);
-  state.runs = runs.runs || [];
-  state.history = hist.history || {};
-}
-
-async function loadRun() {
-  if (!state.run) return;
-  const id = state.run;
+  const repo = state.repo;
   try {
-    const [detail, cells] = await Promise.all([api(V.paths.run(id)), api(V.paths.cells(id))]);
-    if (id !== state.run) return;
-    state.detail = detail;
-    state.cells = cells.cells || [];
+    const data = await api(V.paths.runs(repo));
+    if (repo !== state.repo) return;
+    state.runs = V.numberRuns(data.runs || []);
+    state.v2 = state.runs.some((r) => Number.isFinite(r.number));
   } catch (err) {
-    if (id === state.run) notice(errorMessage(err));
+    if (repo === state.repo) notice(errorMessage(err));
   }
-  if (state.tab === 'bugs') await ensureBugs();
 }
 
-async function ensureBugs(force = false) {
-  if (!state.run || (state.bugs && !force)) return state.bugs;
-  const id = state.run;
+/**
+ * loadLive reads the repository's active run: its detail (the pools, the
+ * estimate of the time left, the cost) and its cells. A running cell's
+ * latest screenshot, step and activity come with its row (`live`); from a
+ * server without them they are read from the attempt itself.
+ */
+async function loadLive() {
+  const repo = repoOf(state.repo);
+  const active = repo && repo.active;
+  if (!active) { state.live = null; return; }
   try {
-    const data = await api(V.paths.bugs(id));
-    if (id === state.run) state.bugs = { bugs: data.bugs || [], conclusions: data.conclusions || '' };
+    const [detail, cells] = await Promise.all([api(V.paths.run(active.id)), api(V.paths.cells(active.id))]);
+    const rows = cells.cells || [];
+    // API: CellRow.live (TEST-MODE.md "Live cells"); read from the attempt until the rows carry it.
+    const running = rows.filter((r) => (r.state === 'running' || r.state === 'starting') && r.live === undefined).slice(0, LIVE_MAX);
+    await Promise.all(running.map(async (row) => {
+      try { row.live = liveOf(await api(V.paths.attempt(active.id, row.id), { attempts: 1 })); } catch { /* the card shows no picture */ }
+    }));
+    if (state.repo === repo.key) state.live = { id: active.id, detail, cells: rows };
   } catch {
-    if (id === state.run && !state.bugs) state.bugs = { bugs: [], conclusions: '' };
+    // The next frame or tick reads it again.
   }
-  return state.bugs;
+}
+
+// liveOf is an attempt's `live`, as the server will send it with the row.
+function liveOf(a) {
+  const steps = a.steps || [];
+  const open = steps.find((s) => !s.verdict);
+  const actions = a.actions || [];
+  const last = actions[actions.length - 1];
+  const shot = [...actions].reverse().find((x) => x.screenshot);
+  return {
+    step: open ? open.n : steps.length,
+    steps: steps.length,
+    title: open ? open.do : '',
+    activity: last ? last.summary || last.action : '',
+    shot: shot ? shot.screenshot : '',
+    at: last ? Date.parse(last.at) || 0 : 0,
+  };
+}
+
+// The Bugs tab's badge: the open bugs of the repository, or (from a server
+// without the bug list) those of its latest finished run.
+async function loadBugCount() {
+  const repo = state.repo;
+  let n = null;
+  if (state.v2) {
+    // API: GET /api/tests/repos/{repo}/bugs (TEST-MODE.md "Bugs over runs").
+    try {
+      const data = await api(V.paths.repoBugs(repo), { attempts: 1 });
+      n = (data.bugs || []).filter((b) => !b.status || b.status === 'open').length;
+    } catch { n = null; }
+  }
+  if (n === null) {
+    const latest = state.runs.find((r) => !V.ACTIVE_RUN.has(r.state));
+    n = latest ? latest.bugs || 0 : 0;
+  }
+  if (repo !== state.repo) return;
+  state.openBugs = n;
+  renderTabs();
 }
 
 async function ensureCatalog(force = false) {
@@ -193,19 +245,6 @@ async function ensureSettings(force = false) {
   return state.settings;
 }
 
-// The repository's active run, when it is not the one shown: the Runs tab
-// lists its running and waiting cells and its pools.
-async function loadActive() {
-  const active = repoOf(state.repo) && repoOf(state.repo).active;
-  if (!active || active.id === state.run) { state.active = null; return; }
-  try {
-    const [detail, cells] = await Promise.all([api(V.paths.run(active.id)), api(V.paths.cells(active.id))]);
-    state.active = { detail, cells: cells.cells || [] };
-  } catch { state.active = null; }
-}
-
-function repoOf(key) { return state.repos.find((r) => r.key === key) || null; }
-
 // refresh reads again what a change of a run touches.
 let refreshTimer = 0;
 let refreshFrames = [];
@@ -219,28 +258,41 @@ async function refresh() {
   const frames = refreshFrames;
   refreshFrames = [];
   const all = !frames.length;
-  const mine = all || frames.some((f) => f.repo === state.repo);
   try {
     await loadRepos();
   } catch { return; /* the next frame tries again */ }
   if (!state.repos.length) { render(); return; }
   if (!repoOf(state.repo)) { state.repo = ''; await route(); return; }
-  if (mine) await loadRepo();
-  const shown = all || frames.some((f) => f.run === state.run);
-  if (state.run && !state.runs.some((r) => r.id === state.run)) {
-    // The shown run was deleted: the latest instead.
-    go({ run: '', cell: '', test: '' });
-    return;
+  const mine = all || frames.some((f) => f.repo === state.repo);
+  if (mine) {
+    await Promise.all([loadRuns(), loadLive()]);
+    loadBugCount();
+    const view = views[state.route.view];
+    if (view && view.refresh) await view.refresh();
   }
-  if (!state.run && state.runs.length) { await route(); return; }
-  if (shown) {
-    await loadRun();
-    if (state.bugs) await ensureBugs(true);
-  }
-  if (state.tab === 'runs') await loadActive();
   render();
-  if (shown) cell.refresh();
+  cell.refresh();
+  scheduleLive();
 }
+
+// While a run is active and the page is seen, its cells are read every few
+// seconds besides the frames: a running cell's screenshot and step change
+// without a frame.
+let liveTimer = 0;
+function scheduleLive() {
+  clearTimeout(liveTimer);
+  if (!state.live || document.hidden) return;
+  liveTimer = setTimeout(async () => {
+    await loadLive();
+    renderActive();
+    renderView();
+    scheduleLive();
+  }, LIVE_EVERY);
+}
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) clearTimeout(liveTimer);
+  else if (state.loaded) refreshSoon();
+});
 
 /* ------------------------------------------------------------ the frame */
 
@@ -254,33 +306,46 @@ function render() {
   const none = state.loaded && !state.repos.length;
   $('noRepos').hidden = !none;
   $('body').hidden = !state.loaded || none;
-  $('addRepo').hidden = !state.loaded || none;
-  $('runBtn').hidden = !state.repos.length;
   if (!state.loaded || none) return;
   renderHead();
   renderActive();
-  renderPanel();
+  renderTabs();
+  renderView();
 }
 
 function renderHead() {
   const repo = repoOf(state.repo);
-  $('repoField').hidden = state.repos.length < 2;
-  fill($('repoSel'), state.repos.map((r) => [r.key, r.title]), state.repo);
-  $('runField').hidden = !state.runs.length;
-  fill($('runSel'), state.runs.map((r) => [r.id, V.runLabel(r) + ' · ' + V.runWord(r.state)]), state.run);
-  const lead = repo ? (state.repos.length < 2 ? repo.title + ' · ' : '') + repo.path : '';
-  if ($('lead').textContent !== lead) $('lead').textContent = lead;
-  const d = state.detail;
-  morph($('headStatus'), d ? html`${V.runChip(d.state)}${d.commit ? html`<span class="ds-meta">${raw(icon('fileCode', 16))}${d.commit.slice(0, 10)}${d.dirty ? ' with changes' : ''}</span>` : ''}` : '');
+  if (!repo) return;
+  // The catalog's own title (TESTS.md) once it is read; the server's name for it before.
+  const name = (state.catalog && state.catalog.title) || repo.title;
+  const title = $('repoTitle');
+  if (title.textContent !== name) title.textContent = name;
+  document.title = name + ' · Tests · Socrates';
+  const last = repo.last || state.runs[0];
+  const commit = last && last.commit ? last.commit.slice(0, 10) + (last.dirty ? ' with changes' : '') : '';
+  morph($('lead'), html`<span class="so-break">${repo.path}</span>${commit ? html` · <span class="so-tests-nowrap" data-tip="The commit the latest run ran on">${raw(icon('fileCode', 16))}${commit}</span>` : ''}`);
+  const cat = state.catalog;
+  const errors = cat && cat.errors ? cat.errors.length : 0;
+  morph($('headStatus'), errors
+    ? html`<button class="ds-link-btn" type="button" data-go-view="tests">${V.chip({ word: errors === 1 ? 'The catalog has an error' : 'The catalog has ' + errors + ' errors', glyph: 'alertCircle', tone: 'error' })}</button>`
+    : '');
 }
 
-function fill(select, options, value) {
-  const same = select.options.length === options.length
-    && options.every(([v, label], i) => select.options[i].value === v && select.options[i].textContent === label);
-  if (!same) select.replaceChildren(...options.map(([v, label]) => el('option', { value: v, text: label })));
-  if (select.value !== value) select.value = value;
-  select.title = select.selectedOptions[0] ? select.selectedOptions[0].textContent : '';
+// The waiting cells in a few words: "3 waiting for a free Fake devices account".
+function waitWords(cells) {
+  const reasons = new Map();
+  for (const row of cells || []) {
+    if (row.state !== 'waiting') continue;
+    const why = String(row.wait || '').replace(/\s*\(\d+ ahead\)\s*$/, '').replace(/^waiting:?\s*/i, '');
+    reasons.set(why, (reasons.get(why) || 0) + 1);
+  }
+  return [...reasons].sort((a, b) => b[1] - a[1]).map(([why, n]) => n + ' waiting' + (why ? (/^(for|on|until)\b/.test(why) ? ' ' : ': ') + why : ''));
 }
+
+const ACTIVE_TITLE = {
+  preparing: 'is being prepared', running: 'is running', finishing: 'is being reviewed',
+  paused: 'is paused', waiting: 'waits for another run',
+};
 
 function renderActive() {
   const box = $('active');
@@ -288,25 +353,38 @@ function renderActive() {
   const run = repo && repo.active;
   box.hidden = !run;
   if (!run) { morph(box, ''); return; }
-  const c = run.counts || {};
+  const live = state.live && state.live.id === run.id ? state.live : null;
+  const d = live ? live.detail : run;
+  const known = runOf(run.id);
+  const name = V.runName({ ...d, n: known ? known.n : d.number }, { name: false });
+  const c = d.counts || run.counts || {};
   const states = c.states || {};
   const share = c.cells ? Math.min(1, (c.done || 0) / c.cells) : 0;
   const running = (states.running || 0) + (states.starting || 0);
-  const detail = [running ? running + ' running' : '', states.waiting ? states.waiting + ' waiting' : '',
-    states.queued ? states.queued + ' queued' : '', c.reviews ? c.reviews + ' in review' : ''].filter(Boolean).join(' · ');
+  // API: RunView.eta_ms and RunView.cost (TEST-MODE.md "Times and costs").
+  const detail = [
+    running ? running + ' running' : '',
+    ...(live ? waitWords(live.cells) : states.waiting ? [states.waiting + ' waiting'] : []),
+    states.queued ? states.queued + ' queued' : '',
+    c.reviews ? c.reviews + ' in review' : '',
+    d.eta_ms > 0 ? 'about ' + V.span(d.eta_ms) + ' left' : '',
+    V.money(d.cost),
+  ].filter(Boolean).join(' · ');
+  const watching = state.route.view === 'runs' && state.route.run === run.id;
+  const pct = Math.round(share * 100);
   morph(box, html`<div class="ds-card__row">
-      <h2 class="ds-card__title" id="activeTitle">${run.id === state.run ? 'This run' : V.runLabel(run)}</h2>
+      <h2 class="ds-card__title" id="activeTitle">${name + ' ' + (ACTIVE_TITLE[run.state] || 'is active')}</h2>
       ${V.runChip(run.state)}
     </div>
-    ${run.error ? html`<div class="ds-alert ds-alert--warning">${raw(icon('alert', 20))}<span class="ds-alert__text">${run.error}</span></div>` : ''}
+    ${run.error ? html`<div class="ds-alert ds-alert--warning">${raw(icon('alert', 20))}<span class="ds-alert__text so-break">${run.error}</span></div>` : ''}
     <div class="ds-progress" style="${'--ds-progress: ' + share.toFixed(4)}">
-      <div class="ds-progress__track" role="progressbar" aria-label="Cells done" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.round(share * 100)}"><div class="ds-progress__bar"></div></div>
-      <p class="ds-progress__label">${(c.done || 0) + ' of ' + (c.cells || 0) + ' cells'}</p>
+      <div class="ds-progress__track" role="progressbar" aria-label="${name + ': cells done'}" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${pct}"><div class="ds-progress__bar"></div></div>
+      <p class="ds-progress__label">${(c.done || 0) + ' of ' + V.plural(c.cells || 0, 'cell') + ' done' + (d.name ? ' · ' + d.name : '')}</p>
       <p class="ds-progress__detail">${detail || V.countsWords(c)}</p>
     </div>
     <div class="ds-card__links">
-      ${run.id === state.run ? '' : html`<button class="ds-btn ds-btn--text ds-card__link" type="button" data-open-run="${run.id}">Show this run</button>`}
-      ${run.state === 'paused' ? html`<button class="ds-btn ds-btn--text ds-card__link" type="button" data-run-act="resume" data-run="${run.id}">Resume</button>` : ''}
+      ${watching ? '' : html`<button class="ds-btn ds-btn--text ds-card__link" type="button" data-watch="${run.id}">${raw(icon('eye', 16))}Watch</button>`}
+      ${run.state === 'paused' ? html`<button class="ds-btn ds-btn--text ds-card__link" type="button" data-run-act="resume" data-run="${run.id}">${raw(icon('play', 16))}Resume</button>` : ''}
       <button class="ds-btn ds-btn--text ds-card__link" type="button" data-run-act="stop" data-run="${run.id}">${raw(icon('stopCircle', 16))}Stop</button>
     </div>`);
 }
@@ -317,568 +395,173 @@ const tabs = $('tabs');
 const indicator = DS.indicator.createIndicator(tabs, { active: '[aria-selected="true"]', className: 'ds-tabs__indicator', reveal: true });
 DS.dom.roving(tabs);
 
-function setTab(tab) {
-  const changed = tab !== state.tab;
-  state.tab = tab;
+function setTab(view, changed) {
   for (const button of tabs.querySelectorAll('[role="tab"]')) {
-    const on = button.dataset.tab === tab;
+    const on = button.dataset.view === view;
     button.setAttribute('aria-selected', String(on));
     button.tabIndex = on ? 0 : -1;
     $(button.getAttribute('aria-controls')).hidden = !on;
   }
   indicator.update();
-  if (changed) {
-    M.enter($('p-' + tab), 'swap');
-    if (tab === 'bugs') ensureBugs().then(render);
-    if (tab === 'catalog') ensureCatalog().then(render);
-    if (tab === 'settings') ensureSettings().then(render).catch((err) => notice(errorMessage(err)));
-    if (tab === 'runs') loadActive().then(render);
-  }
+  if (changed) M.enter($('p-' + view), 'swap');
+}
+
+function renderTabs() {
+  const n = state.openBugs;
+  morph($('t-bugs'), html`Bugs${n ? html`<span class="ds-badge">${n}</span>` : ''}`);
+  $('t-bugs').setAttribute('aria-label', n ? 'Bugs, ' + V.plural(n, 'open bug') : 'Bugs');
+}
+
+function renderView() {
+  const view = views[state.route.view];
+  if (view && state.repo) view.render($('p-' + state.route.view));
+}
+
+/** redraw draws a view again if it is the one shown (a module calls it once its data came in). */
+function redraw(name) {
+  if (state.route.view === name) renderView();
 }
 
 tabs.addEventListener('click', (event) => {
   const tab = event.target.closest('[role="tab"]');
-  if (!tab || tab.dataset.tab === state.tab) return;
-  go({ tab: tab.dataset.tab, cell: '', test: '' }, { push: true });
+  if (!tab) return;
+  const r = state.route;
+  if (tab.dataset.view === r.view && !r.run && !r.test && !r.bug) return;
+  go({ view: tab.dataset.view, run: '', test: '', bug: '', cell: '' }, { push: true });
 });
 
-function renderPanel() {
-  const counts = state.detail ? state.detail.bugs : 0;
-  morph($('t-bugs'), html`Bugs${counts ? html`<span class="ds-badge">${counts}</span>` : ''}`);
-  switch (state.tab) {
-    case 'results': renderResults(); break;
-    case 'runs': renderRuns(); break;
-    case 'bugs': renderBugs(); break;
-    case 'catalog': forms.renderCatalog($('p-catalog')); break;
-    case 'settings': forms.renderSettings($('p-settings')); break;
-    default: break;
-  }
+/* ------------------------------------------------------------ the menus */
+
+function toggleMenu(trigger, menu, fill) {
+  if (trigger.getAttribute('aria-expanded') === 'true') { DS.overlay.close(menu); return; }
+  Promise.resolve(fill()).then(() => DS.overlay.open(menu, { opener: trigger }));
 }
 
-/* ---------------------------------------------------------- the results */
-
-// isProblem: a cell that did not pass, or one that ended without a verdict.
-function isProblem(row) {
-  if (row.final) return row.final !== 'pass' && row.final !== 'na';
-  return row.state === 'aborted' || row.state === 'failed';
-}
-
-function matches(row, { verdict = true } = {}) {
-  const f = state.filters;
-  if (f.area && row.area !== f.area) return false;
-  if (f.priority && row.priority !== f.priority) return false;
-  if (f.tag && !(row.tags || []).includes(f.tag)) return false;
-  if (verdict && f.verdict && row.final !== f.verdict) return false;
-  for (const [name, id] of Object.entries(f.dims)) {
-    if (id && !(row.dims || []).some((d) => d.name === name && d.id === id)) return false;
-  }
-  if (f.reviewed && !row.reviewed && row.review !== 'done') return false;
-  if (f.problems && !isProblem(row)) return false;
-  return true;
-}
-
-let resultsBuilt = false;
-function buildResults() {
-  const panel = $('p-results');
-  morph(panel, html`<div class="ds-tiles" role="group" aria-label="Show cells by verdict" id="rTiles" style="--ds-tile-min-width: 128px">
-      ${['fail', 'issue', 'blocked', 'pass'].map((v) => html`<button class="ds-tile" type="button" aria-pressed="false" data-verdict="${v}">
-        <span class="ds-tile__label">${raw(icon(V.VERDICT[v].glyph, 16))}<span>${V.VERDICT[v].word}</span></span>
-        <span class="ds-tile__value" data-value="0">0</span>
-        <span class="ds-tile__note"></span>
-      </button>`)}
-    </div>
-    <div class="ds-toolbar">
-      <div class="ds-filters" id="rFilters">
-        <div class="ds-field ds-field--grow">
-          <label class="ds-sr" for="rSearch">Search every run</label>
-          <div class="ds-search">${raw(icon('search', 20))}<input class="ds-input" id="rSearch" type="search" placeholder="Search every run" autocomplete="off" spellcheck="false" aria-keyshortcuts="/"><kbd class="ds-kbd ds-search__key" aria-hidden="true">/</kbd></div>
-        </div>
-        <div class="ds-field"><label class="ds-field__label" for="fArea">Area</label><select class="ds-input ds-input--filled" id="fArea" data-filter="area"></select></div>
-        <div class="ds-field"><label class="ds-field__label" for="fPriority">Priority</label><select class="ds-input ds-input--filled" id="fPriority" data-filter="priority"></select></div>
-        <div class="ds-field"><label class="ds-field__label" for="fTag">Tag</label><select class="ds-input ds-input--filled" id="fTag" data-filter="tag"></select></div>
-        <div class="ds-field"><label class="ds-field__label" for="fVerdict">Verdict</label><select class="ds-input ds-input--filled" id="fVerdict" data-filter="verdict"></select></div>
-        <span class="so-tests__dims" id="fDims"></span>
-      </div>
-      <fieldset class="ds-chips" id="rChips">
-        <legend class="ds-sr">Show only</legend>
-        <label class="ds-chip"><input class="ds-chip__input" type="checkbox" data-flag="problems"><span class="ds-chip__body">${raw(icon('check', 18, 'ds-chip__check'))}<span>Problems only</span></span></label>
-        <label class="ds-chip"><input class="ds-chip__input" type="checkbox" data-flag="reviewed"><span class="ds-chip__body">${raw(icon('check', 18, 'ds-chip__check'))}<span>Reviewed only</span></span></label>
-        <button class="ds-btn ds-btn--text ds-btn--sm" type="button" id="rClear" hidden>Clear filters</button>
-      </fieldset>
-    </div>
-    <div id="rHits"></div>
-    <div class="so-tests__stack" id="rGrid"></div>`);
-  resultsBuilt = true;
-
-  panel.addEventListener('click', (event) => {
-    const tile = event.target.closest('[data-verdict]');
-    if (tile) {
-      state.filters.verdict = state.filters.verdict === tile.dataset.verdict ? '' : tile.dataset.verdict;
-      renderResults();
-      return;
-    }
-    const cellBtn = event.target.closest('[data-cell]');
-    if (cellBtn) { openCell(cellBtn.dataset.cell, cellBtn.dataset.run); return; }
-    const testBtn = event.target.closest('[data-test]');
-    if (testBtn) { go({ test: testBtn.dataset.test, cell: '' }, { push: true }); return; }
-    if (event.target.closest('#rClear')) {
-      state.filters = { area: '', priority: '', tag: '', verdict: '', dims: {}, reviewed: false, problems: false };
-      renderResults();
-      $('rSearch').focus();
-    }
+function wireMenu(trigger, menu, fill) {
+  trigger.addEventListener('click', (event) => {
+    if (event.detail > 1) return;
+    toggleMenu(trigger, menu, fill);
   });
-  panel.addEventListener('change', (event) => {
-    const t = event.target;
-    if (t.dataset.filter) state.filters[t.dataset.filter] = t.value;
-    else if (t.dataset.dim) state.filters.dims[t.dataset.dim] = t.value;
-    else if (t.dataset.flag) state.filters[t.dataset.flag] = t.checked;
-    else return;
-    renderResults();
-  });
-  let typing = 0;
-  $('rSearch').addEventListener('input', () => {
-    clearTimeout(typing);
-    typing = setTimeout(search, TYPE_PAUSE);
+  trigger.addEventListener('keydown', (event) => {
+    if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
+    event.preventDefault();
+    Promise.resolve(fill()).then(() => DS.overlay.open(menu, { opener: trigger }));
   });
 }
 
-function openCell(attempt, run) {
-  go({ run: run || state.run, cell: attempt, test: '', tab: 'results' }, { push: true });
-}
+const item = (glyph, label, attrs, meta = '') => html`<button class="ds-menu__item" role="menuitem" type="button" ${raw(attrs)}>${raw(icon(glyph, 20))}<span class="ds-menu__label">${label}</span>${meta ? html`<span class="ds-menu__meta">${meta}</span>` : ''}</button>`;
 
-async function search() {
-  const q = $('rSearch').value.trim();
-  state.query = q;
-  if (!q) { state.hits = null; renderHits(); return; }
-  try {
-    const data = await api(V.paths.search(state.repo, q));
-    if (q !== state.query) return;
-    state.hits = data.hits || [];
-  } catch (err) {
-    state.hits = [];
-    toast(errorMessage(err), 'error');
-  }
-  renderHits();
-}
-
-function renderHits() {
-  const box = $('rHits');
-  if (!state.hits) { morph(box, ''); return; }
-  if (!state.hits.length) {
-    morph(box, html`<p class="ds-muted">Nothing in any run matches “${state.query}”.</p>`);
-    return;
-  }
-  morph(box, html`<section class="ds-card" aria-labelledby="hitsTitle">
-    <h2 class="ds-card__title" id="hitsTitle">${state.hits.length === 1 ? '1 cell' : state.hits.length + ' cells'} match “${state.query}”</h2>
-    <ul class="ds-list ds-list--interactive" aria-label="Search results">
-      ${state.hits.map((hit) => html`<li class="ds-list__item" data-ds-key="${hit.run + '/' + hit.id}">
-        <span class="ds-list__text">
-          <span class="ds-list__title"><button class="ds-list__action" type="button" data-cell="${hit.id}" data-run="${hit.run}">${hit.title}</button></span>
-          <span class="ds-list__meta">${[dimsWords(hit.dims), V.when(hit.created_at), hit.snippet].filter(Boolean).join(' · ')}</span>
-        </span>
-        ${V.cellChip(hit)}
-      </li>`)}
-    </ul>
-  </section>`);
-}
-
-function dimsWords(dims) { return (dims || []).map((d) => d.label || d.id).join(', '); }
-
-function fillFilter(id, field, values, allLabel) {
-  const select = $(id);
-  fill(select, [['', allLabel], ...values], state.filters[field] || '');
-  select.closest('.ds-field').hidden = values.length < 2 && !state.filters[field];
-}
-
-function renderResults() {
-  if (!resultsBuilt) buildResults();
-  const grid = $('rGrid');
-  const tilesBox = $('rTiles');
-  const cells = state.cells;
-  const toolbar = $('rFilters').closest('.ds-toolbar');
-  tilesBox.hidden = !state.run;
-  toolbar.hidden = !state.run && !state.runs.length;
-  if (!state.run) {
-    morph(grid, html`<div class="ds-card"><div class="ds-empty">
-      <span class="ds-empty__disc" aria-hidden="true">${raw(icon('play', 24))}</span>
-      <p class="ds-empty__title">No run yet</p>
-      <p class="ds-empty__text">Run the catalog, or a part of it, and every cell shows up here with its verdict.</p>
-      <button class="ds-btn ds-btn--tonal" type="button" data-run-sheet>Run tests</button>
-    </div></div>`);
-    return;
-  }
-
-  // The filters offer what this run has.
-  const areas = state.detail ? state.detail.areas || [] : [];
-  const seen = (fn) => [...new Set(cells.flatMap(fn))].filter(Boolean).sort();
-  fillFilter('fArea', 'area', (areas.length ? areas.map((a) => [a.id, a.title || a.id]) : seen((r) => [r.area]).map((a) => [a, a])), 'All areas');
-  fillFilter('fPriority', 'priority', seen((r) => [r.priority]).map((p) => [p, p]), 'All priorities');
-  fillFilter('fTag', 'tag', seen((r) => r.tags || []).map((t) => [t, t]), 'All tags');
-  fillFilter('fVerdict', 'verdict', V.VERDICTS.map((v) => [v, V.VERDICT[v].word]), 'All verdicts');
-  const dims = new Map();
-  for (const row of cells) for (const d of row.dims || []) {
-    if (!dims.has(d.name)) dims.set(d.name, new Map());
-    dims.get(d.name).set(d.id, d.label || d.id);
-  }
-  const dimBox = $('fDims');
-  morph(dimBox, html`${[...dims.keys()].map((name) => html`<div class="ds-field" data-ds-key="${name}"><label class="ds-field__label" for="${'fDim-' + name}">${name.charAt(0).toUpperCase() + name.slice(1)}</label><select class="ds-input ds-input--filled" id="${'fDim-' + name}" data-dim="${name}"></select></div>`)}`);
-  for (const [name, values] of dims) {
-    const select = $('fDim-' + name);
-    fill(select, [['', 'All'], ...values], state.filters.dims[name] || '');
-  }
-  for (const input of $('rChips').querySelectorAll('[data-flag]')) input.checked = !!state.filters[input.dataset.flag];
-  const f = state.filters;
-  $('rClear').hidden = !(f.area || f.priority || f.tag || f.verdict || f.reviewed || f.problems || Object.values(f.dims).some(Boolean));
-
-  // The tiles count what the other filters leave.
-  const base = cells.filter((row) => matches(row, { verdict: false }));
-  for (const tile of tilesBox.querySelectorAll('[data-verdict]')) {
-    const v = tile.dataset.verdict;
-    const n = base.filter((row) => row.final === v).length;
-    tile.setAttribute('aria-pressed', String(f.verdict === v));
-    const value = tile.querySelector('.ds-tile__value');
-    value.dataset.value = String(n);
-    M.countUp(value, n);
-    let note = '';
-    if (v === 'pass') {
-      const na = base.filter((row) => row.final === 'na').length;
-      const open = base.filter((row) => V.OPEN_ATTEMPT.has(row.state)).length;
-      note = [na ? na + ' n/a' : '', open ? open + ' to go' : ''].filter(Boolean).join(' · ');
-    } else {
-      const reviewed = base.filter((row) => row.final === v && row.reviewed).length;
-      note = reviewed ? reviewed + ' by the reviewer' : '';
-    }
-    const noteNode = tile.querySelector('.ds-tile__note');
-    if (noteNode.textContent !== note) noteNode.textContent = note;
-  }
-
-  // Why a run that ended early ended (an active run says it in its card).
-  const d = state.detail;
-  const error = d && d.error && !V.ACTIVE_RUN.has(d.state)
-    ? html`<div class="ds-alert ds-alert--error" data-ds-key="run-error">${raw(icon('alertCircle', 20))}<span class="ds-alert__text so-break">${d.error}</span></div>` : '';
-  const rows = cells.filter((row) => matches(row));
-  if (!rows.length) {
-    const failed = d && (d.state === 'failed' || d.state === 'stopped');
-    morph(grid, html`${error}<div class="ds-card" data-ds-key="empty"><div class="ds-empty">
-      <span class="ds-empty__disc" aria-hidden="true">${raw(icon('filter', 24))}</span>
-      <p class="ds-empty__title">${cells.length ? 'No cell matches these filters' : 'No cells'}</p>
-      <p class="ds-empty__text">${cells.length ? 'Clear a filter to see more.' : failed ? 'The run ended before any cell was queued.' : 'The run is still being prepared.'}</p>
-    </div></div>`);
-    return;
-  }
-  const order = areas.length ? areas : [...new Set(rows.map((r) => r.area))].map((id) => ({ id, title: id }));
-  morph(grid, html`${error}${order.map((area) => areaTable(area, rows.filter((r) => r.area === area.id)))}`);
-}
-
-// areaTable is one area's tests as rows and the values of its columns
-// dimension as columns; a test with no cell in a column leaves it empty.
-function areaTable(area, rows) {
-  if (!rows.length) return '';
-  const phone = PHONE.matches;
-  const dim = (area.dims || []).find((d) => d.name === area.columns);
-  const used = new Set(rows.map((r) => dimId(r, area.columns)));
-  const columns = dim
-    ? [...(dim.values || []), ...(dim.extra || [])].filter((v) => used.has(v.id))
-    : [{ id: '', label: 'Result' }];
-  for (const id of used) if (dim && !columns.some((c) => c.id === id)) columns.push({ id, label: id });
-  const tests = [];
-  const byTest = new Map();
-  for (const row of rows) {
-    if (!byTest.has(row.test)) { byTest.set(row.test, []); tests.push(row); }
-    byTest.get(row.test).push(row);
-  }
-  const table = phone
-    ? 'ds-table ds-table--dense ds-table--stack so-tests__table'
-    : 'ds-table ds-table--dense ds-table--interactive ds-table--pin-first so-tests__table';
-  return html`<section class="ds-card" data-ds-key="${'area:' + area.id}" aria-labelledby="${'area-' + area.id}">
-    <h2 class="ds-card__title" id="${'area-' + area.id}">${area.title || area.id}</h2>
-    <div class="ds-table-wrap">
-      <table class="${table}">
-        <thead><tr>
-          <th scope="col">Test</th>
-          ${columns.map((c) => html`<th scope="col">${c.label || c.id}</th>`)}
-          <th scope="col">History</th>
-        </tr></thead>
-        <tbody>${tests.map((first) => testRow(first, byTest.get(first.test), columns, area, phone))}</tbody>
-      </table>
+function fillRepoMenu() {
+  morph($('repoMenu'), html`<div role="group" aria-labelledby="repoMenuHead">
+      <p class="ds-menu__heading" id="repoMenuHead">Repositories</p>
+      ${state.repos.map((r) => html`<button class="ds-menu__item" role="menuitemradio" type="button" aria-checked="${r.key === state.repo ? 'true' : 'false'}" data-repo="${r.key}">${raw(icon('check', 20, 'ds-menu__check'))}<span class="ds-menu__label">${r.title}</span>${r.active ? html`<span class="ds-menu__meta">running</span>` : ''}</button>`)}
     </div>
-  </section>`;
+    <div class="ds-menu__divider" role="separator"></div>
+    ${item('plus', 'Add repository', 'data-repo-act="add"')}
+    ${item('trash', 'Remove from the list', 'data-repo-act="remove"')}`);
 }
 
-function dimId(row, name) {
-  const d = (row.dims || []).find((x) => x.name === name);
-  return d ? d.id : '';
+// The quick ways to run: everything, the problems of the latest run, one
+// priority; each says how many cells it runs and starts after a question.
+async function fillRunMenu() {
+  await ensureCatalog();
+  const cat = state.catalog;
+  const latest = state.runs.find((r) => !V.ACTIVE_RUN.has(r.state));
+  const problems = latest ? V.problemCount(latest.counts) : 0;
+  const tests = cat ? (cat.areas || []).flatMap((a) => a.tests || []) : [];
+  const priorities = [...new Set(tests.map((t) => t.priority).filter(Boolean))].sort();
+  const cellsOf = (p) => tests.filter((t) => t.priority === p).reduce((n, t) => n + (t.cells || []).length, 0);
+  morph($('runMenu'), html`<div role="group" aria-labelledby="runMenuHead">
+      <p class="ds-menu__heading" id="runMenuHead">Run at once</p>
+      ${item('play', 'Everything', 'data-quick="all"', cat ? V.plural(cat.cells || 0, 'cell') : '')}
+      ${problems ? item('sync', 'The problems of ' + V.runName(latest, { name: false }), html`data-quick="problems" data-run="${latest.id}"`, V.plural(problems, 'cell')) : ''}
+      ${priorities.length > 1 ? priorities.map((p) => item('flag', 'Only ' + p, html`data-quick="priority" data-priority="${p}"`, V.plural(cellsOf(p), 'cell'))) : ''}
+    </div>
+    <div class="ds-menu__divider" role="separator"></div>
+    ${item('list', 'Choose what to run…', 'data-quick="choose"')}`);
 }
 
-function testRow(first, cells, columns, area, phone) {
-  const lead = phone
-    ? html`<button class="ds-link-btn" type="button" data-test="${first.test}">${first.title}</button>`
-    : html`<button class="ds-link-btn ds-table__row-link" type="button" data-test="${first.test}">${first.title}</button>`;
-  return html`<tr data-ds-key="${first.test}">
-    ${phone ? html`<td class="so-tests__test" data-label="Test">${lead}${testTags(first)}</td>`
-      : html`<th scope="row" class="so-tests__test">${lead}${testTags(first)}</th>`}
-    ${columns.map((c) => {
-      const here = cells.filter((r) => !area.columns || dimId(r, area.columns) === c.id);
-      return html`<td data-label="${c.label || c.id}"><span class="so-tests__cells">${here.map((r) => cellButton(r, area))}</span></td>`;
-    })}
-    <td data-label="History">${historyMarks(first.test)}</td>
-  </tr>`;
-}
+wireMenu($('repoMenuBtn'), $('repoMenu'), fillRepoMenu);
+wireMenu($('runMoreBtn'), $('runMenu'), fillRunMenu);
 
-function testTags(row) {
-  return html`<small class="so-tests__sub"><span class="ds-tag ds-tag--neutral">${row.priority || 'P?'}</span>${(row.tags || []).map((t) => html`<span class="ds-tag">${t}</span>`)}</small>`;
-}
-
-function cellButton(row, area) {
-  const others = (row.dims || []).filter((d) => d.name !== area.columns);
-  const word = row.final ? V.verdictWord(row.final) : V.attemptWord(row.state);
-  const tip = row.state === 'waiting' && row.wait ? row.wait
-    : row.reviewed && row.verdict && row.reviewed !== row.verdict ? 'Reviewed: the agent said ' + V.verdictWord(row.verdict)
-      : '';
-  return html`<button class="ds-pressable so-tests__cell" type="button" data-cell="${row.id}" data-ds-key="${row.id}"
-      aria-label="${row.title + ', ' + dimsWords(row.dims) + ': ' + word + (tip ? '. ' + tip : '')}"${tip ? raw(html` data-tip="${tip}"`) : ''}>
-    ${V.cellChip({ ...row, wait: '' })}${others.map((d) => html`<span class="ds-tag ds-tag--neutral">${d.id}</span>`)}${row.reviewed ? html`<span class="so-tests__mark">${raw(icon('eye', 16))}</span>` : ''}${row.attempt > 1 ? html`<span class="ds-meta">${'#' + row.attempt}</span>` : ''}
-  </button>`;
-}
-
-function historyMarks(test) {
-  const points = (state.history[test] || []).slice().reverse();
-  if (!points.length) return html`<span class="ds-meta">None</span>`;
-  return html`<span class="so-tests__history" role="list" aria-label="Last runs, oldest first">${points.map((p) => html`<span role="listitem">${
-    V.mark(p.verdict, (V.VERDICT[p.verdict] ? V.verdictWord(p.verdict) : V.attemptWord(p.verdict)) + ' · ' + V.when(p.created_at) + (p.run === state.run ? ' (this run)' : ''))}</span>`)}</span>`;
-}
-
-PHONE.addEventListener('change', () => { if (state.tab === 'results') renderResults(); });
-
-/* -------------------------------------------------------------- the runs */
-
-function renderRuns() {
-  const panel = $('p-runs');
-  if (!state.runs.length) {
-    morph(panel, html`<div class="ds-card"><div class="ds-empty">
-      <span class="ds-empty__disc" aria-hidden="true">${raw(icon('history', 24))}</span>
-      <p class="ds-empty__title">No run yet</p>
-      <p class="ds-empty__text">Every run of this repository is listed here, the newest first.</p>
-      <button class="ds-btn ds-btn--tonal" type="button" data-run-sheet>Run tests</button>
-    </div></div>`);
+$('repoMenu').addEventListener('click', (event) => {
+  const pick = event.target.closest('[data-repo]');
+  if (pick) {
+    if (pick.dataset.repo !== state.repo) go({ repo: pick.dataset.repo, view: 'overview', run: '', test: '', bug: '', cell: '' }, { push: true });
     return;
   }
-  const phone = PHONE.matches;
-  const repo = repoOf(state.repo);
-  const active = repo && repo.active;
-  const activeView = active && (active.id === state.run ? { detail: state.detail, cells: state.cells } : state.active);
-  morph(panel, html`<section class="ds-card" aria-labelledby="runsTitle">
-      <h2 class="ds-card__title" id="runsTitle">Runs</h2>
-      <div class="ds-table-wrap">
-        <table class="${phone ? 'ds-table ds-table--dense ds-table--stack' : 'ds-table ds-table--dense ds-table--interactive'}">
-          <thead><tr>
-            <th scope="col">Run</th><th scope="col">State</th><th scope="col" class="ds-col--secondary">Selection</th>
-            <th scope="col">Results</th><th scope="col" class="ds-col--secondary">Duration</th><th scope="col"><span class="ds-sr">Actions</span></th>
-          </tr></thead>
-          <tbody>${state.runs.map((run) => runRow(run, phone))}</tbody>
-        </table>
-      </div>
-    </section>
-    ${activeView && activeView.detail ? activeSection(activeView) : ''}`);
-}
+  const act = event.target.closest('[data-repo-act]');
+  if (!act) return;
+  if (act.dataset.repoAct === 'add') addRepo($('repoMenuBtn'));
+  else removeRepo($('repoMenuBtn'));
+});
 
-function runRow(run, phone) {
-  const shown = run.id === state.run;
-  const end = run.ended_at || (V.ACTIVE_RUN.has(run.state) ? Date.now() : 0);
-  const label = V.runLabel(run);
-  return html`<tr data-ds-key="${run.id}"${shown ? raw(' class="ds-table__row--selected"') : ''}>
-    <td class="ds-col--text" data-label="Run"><button class="${phone ? 'ds-link-btn' : 'ds-link-btn ds-table__row-link'}" type="button" data-open-run="${run.id}"${shown ? raw(' aria-current="true"') : ''}>${label}</button>${run.pinned ? html` <span class="ds-tag ds-tag--neutral">${raw(icon('lock', 16))}Pinned</span>` : ''}${shown ? html` <span class="ds-sr">(shown)</span>` : ''}</td>
-    <td data-label="State">${V.runChip(run.state)}</td>
-    <td class="ds-col--secondary" data-label="Selection">${V.selectionWords(run.selection)}</td>
-    <td data-label="Results">${V.countsWords(run.counts)}${run.bugs ? html`<small class="so-tests__sub">${run.bugs === 1 ? '1 bug' : run.bugs + ' bugs'}</small>` : ''}</td>
-    <td class="ds-col--secondary" data-label="Duration">${V.span(end - (run.started_at || run.created_at))}</td>
-    <td class="ds-table__actions"><span class="ds-hover-actions">
-      <button class="ds-btn ds-btn--quiet ds-btn--icon" type="button" data-run-act="pin" data-run="${run.id}" aria-pressed="${run.pinned ? 'true' : 'false'}" aria-label="${(run.pinned ? 'Unpin ' : 'Pin ') + label}" data-tip="${run.pinned ? 'Unpin: it may be deleted with the old runs' : 'Pin: keep it whatever the retention says'}">${raw(icon('lock', 20))}</button>
-      ${run.state === 'paused' ? html`<button class="ds-btn ds-btn--quiet ds-btn--icon" type="button" data-run-act="resume" data-run="${run.id}" aria-label="${'Resume ' + label}" data-tip="Resume">${raw(icon('play', 20))}</button>` : ''}
-      ${V.ACTIVE_RUN.has(run.state) ? html`<button class="ds-btn ds-btn--quiet ds-btn--icon" type="button" data-run-act="stop" data-run="${run.id}" aria-label="${'Stop ' + label}" data-tip="Stop">${raw(icon('stopCircle', 20))}</button>` : ''}
-      <button class="ds-btn ds-btn--quiet ds-btn--icon" type="button" data-run-act="delete" data-run="${run.id}" aria-label="${'Delete ' + label}" data-tip="Delete">${raw(icon('trash', 20))}</button>
-    </span></td>
-  </tr>`;
-}
+$('runMenu').addEventListener('click', (event) => {
+  const quick = event.target.closest('[data-quick]');
+  if (!quick) return;
+  const opener = $('runMoreBtn');
+  const kind = quick.dataset.quick;
+  if (kind === 'choose') form.openRunDialog({ choose: true }, opener);
+  else if (kind === 'all') form.startDirect({}, opener);
+  else if (kind === 'problems') form.startDirect({ problems_of: quick.dataset.run }, opener);
+  else if (kind === 'priority') form.startDirect({ priorities: [quick.dataset.priority] }, opener);
+});
 
-// activeSection is what the active run is doing right now: its cells that
-// run or wait, with their reasons, and who holds which member of a pool.
-function activeSection(view) {
-  const going = view.cells.filter((r) => r.state === 'running' || r.state === 'starting' || r.state === 'waiting');
-  const pools = view.detail.pools || [];
-  return html`<section class="ds-card" aria-labelledby="nowTitle">
-    <h2 class="ds-card__title" id="nowTitle">Now</h2>
-    ${going.length ? html`<ul class="ds-list ds-list--interactive" aria-label="Running and waiting cells">${going.map((r) => html`<li class="ds-list__item" data-ds-key="${r.id}">
-      <span class="ds-list__text">
-        <span class="ds-list__title"><button class="ds-list__action" type="button" data-cell="${r.id}" data-run="${view.detail.id}">${r.title}</button></span>
-        <span class="ds-list__meta">${[dimsWords(r.dims), r.state === 'waiting' ? r.wait : (r.started_at ? 'since ' + V.clock(r.started_at) : '')].filter(Boolean).join(' · ')}</span>
-      </span>
-      ${V.cellChip({ ...r, wait: '' })}
-    </li>`)}</ul>` : html`<p class="ds-muted">No cell is running or waiting.</p>`}
-    ${pools.map((pool) => html`<h3 class="ds-card__subtitle">${pool.title || pool.tool}</h3>
-      <ul class="ds-kv-list">${pool.members.map((m) => html`<li><span>${m.label || 'Member ' + m.n}</span><strong>${
-        m.holders && m.holders.length ? m.holders.join(', ')
-          : m.busy ? html`${raw(icon('ban', 16, 'ds-kv-list__icon ds-kv-list__icon--warning'))}<span class="ds-sr">Busy:</span> in use outside Socrates`
-            : html`<span class="ds-muted">Free</span>`}</strong></li>`)}</ul>`)}
-  </section>`;
-}
+/* ---------------------------------------------------------- the actions */
 
+/**
+ * runAction stops, resumes, pins, analyses or deletes a run, asking first
+ * where it cannot be undone.
+ */
 async function runAction(what, id, opener) {
-  const run = state.runs.find((r) => r.id === id) || (repoOf(state.repo) || {}).active || { id };
-  const label = V.runLabel(run) || id;
+  const run = runOf(id) || (repoOf(state.repo) || {}).active || { id };
+  const label = V.runName(run);
   try {
     if (what === 'delete') {
       const yes = await confirmDialog({
-        title: 'Delete the run of ' + label + '?',
+        title: 'Delete ' + label + '?',
         body: 'Its cells, screenshots, sessions and bugs go with it. This cannot be undone.',
         confirmLabel: 'Delete run', danger: true, opener,
       });
-      if (!yes) return;
+      if (!yes) return false;
       await api(V.paths.run(id), { method: 'DELETE' });
-      toast('The run is deleted.', 'success');
+      toast(label + ' is deleted.', 'success');
+      if (state.route.run === id) go({ run: '', cell: '' });
     } else if (what === 'stop') {
       const yes = await confirmDialog({
-        title: 'Stop the run?',
+        title: 'Stop ' + label + '?',
         body: 'Queued cells are dropped and running ones are stopped; what they found so far is kept.',
         confirmLabel: 'Stop run', danger: true, opener,
       });
-      if (!yes) return;
+      if (!yes) return false;
       await api(V.paths.action(id, 'stop'), { method: 'POST', body: {} });
     } else if (what === 'resume') {
       await api(V.paths.action(id, 'resume'), { method: 'POST', body: {} });
     } else if (what === 'pin') {
       await api(V.paths.action(id, 'pin'), { method: 'POST', body: { pinned: !run.pinned } });
+      toast(run.pinned ? label + ' may go with the old runs again.' : label + ' is kept whatever the retention says.', 'success');
     } else if (what === 'analyse') {
       await api(V.paths.action(id, 'analyse'), { method: 'POST', body: {} });
-      toast('The analyst reads the run again.', 'info');
+      toast('The analyst reads ' + label + ' again.', 'info');
     }
   } catch (err) {
     toast(errorMessage(err), 'error');
+    return false;
   }
   refreshSoon();
+  return true;
 }
-
-/* -------------------------------------------------------------- the bugs */
-
-function renderBugs() {
-  const panel = $('p-bugs');
-  if (!state.run) {
-    morph(panel, html`<div class="ds-card"><div class="ds-empty">
-      <span class="ds-empty__disc" aria-hidden="true">${raw(icon('flag', 24))}</span>
-      <p class="ds-empty__title">No run yet</p>
-      <p class="ds-empty__text">Once a run is reviewed, its analyst lists one bug per root cause here.</p>
-    </div></div>`);
-    return;
-  }
-  if (!state.bugs) {
-    morph(panel, html`<div class="ds-loading" role="status"><span class="ds-loader ds-loader--sm" aria-hidden="true"></span>Reading the bugs</div>`);
-    return;
-  }
-  const d = state.detail || {};
-  const analysis = d.analysis;
-  const analysing = analysis && analysis.state === 'running';
-  const { bugs, conclusions } = state.bugs;
-  const phone = PHONE.matches;
-  const sorted = bugs.slice().sort((a, b) => sevRank(a.severity) - sevRank(b.severity));
-  morph(panel, html`<section class="ds-card" aria-labelledby="bugsTitle">
-      <div class="ds-card__row">
-        <h2 class="ds-card__title" id="bugsTitle">Bugs</h2>
-        ${analysing ? V.runChip('finishing') : html`<button class="ds-btn ds-btn--sm" type="button" data-run-act="analyse" data-run="${state.run}"${V.ACTIVE_RUN.has(d.state) && d.state !== 'finishing' ? raw(' aria-disabled="true" data-tip="The run is not done yet"') : ''}>${raw(icon('sparkles', 16))}Analyse again</button>`}
-      </div>
-      ${analysis && analysis.error ? html`<div class="ds-alert ds-alert--warning">${raw(icon('alert', 20))}<span class="ds-alert__text">${analysis.error}</span></div>` : ''}
-      ${sorted.length ? html`<div class="ds-table-wrap"><table class="${phone ? 'ds-table ds-table--dense ds-table--stack' : 'ds-table ds-table--dense'}">
-        <thead><tr>${phone ? '' : html`<th scope="col"><span class="ds-sr">Details</span></th>`}<th scope="col">Severity</th><th scope="col">Bug</th><th scope="col">Cells</th></tr></thead>
-        <tbody>${sorted.map((bug) => bugRows(bug, phone))}</tbody>
-      </table></div>` : html`<p class="ds-muted">${analysis ? 'The analyst found no bug.' : d.settings && d.settings.analysis === false ? 'This run is not analysed.' : 'No analysis yet: it runs once the cells are reviewed.'}</p>`}
-    </section>
-    ${conclusions ? html`<section class="ds-card" aria-labelledby="conclTitle">
-      <h2 class="ds-card__title" id="conclTitle">Conclusions</h2>
-      <div class="ds-prose so-break">${markdown(conclusions)}</div>
-    </section>` : ''}`);
-}
-
-function sevRank(s) { const i = Object.keys(V.SEVERITY).indexOf(s); return i < 0 ? 9 : i; }
-
-function bugRows(bug, phone) {
-  const open = state.expanded.has(bug.id);
-  const key = 'bug-' + bug.id;
-  const cells = (bug.cells || []).map((ref) => {
-    const row = state.cells.find((r) => r.cell_id === ref || r.id === ref || r.cell === ref);
-    return row ? html`<button class="ds-link-btn" type="button" data-cell="${row.id}" data-run="${state.run}">${row.test.split('/').pop() + ' · ' + (dimsWords(row.dims) || row.cell)}</button>` : html`<span>${ref}</span>`;
-  });
-  const cellsHtml = html`<span class="so-tests__links">${cells}</span>`;
-  if (phone) {
-    return html`<tr data-ds-key="${key}">
-      <td data-label="Severity">${V.severityChip(bug.severity)}</td>
-      <td data-label="Bug"><strong>${bug.id}</strong> ${bug.title}<div class="ds-prose so-break">${markdown(bug.description || '')}</div></td>
-      <td data-label="Cells">${cellsHtml}</td>
-    </tr>`;
-  }
-  return html`<tr data-ds-key="${key}">
-      <td><button class="ds-btn ds-btn--quiet ds-btn--icon ds-table__toggle" type="button" aria-expanded="${open ? 'true' : 'false'}" aria-controls="${key + '-detail'}" aria-label="${'Description of ' + bug.id}" data-bug="${bug.id}">${raw(icon('chevronDown', 20, 'ds-chevron'))}</button></td>
-      <td>${V.severityChip(bug.severity)}</td>
-      <td class="ds-col--text"><strong>${bug.id}</strong> ${bug.title}</td>
-      <td>${cellsHtml}</td>
-    </tr>
-    <tr class="ds-table__detail" id="${key + '-detail'}" data-ds-key="${key + '-detail'}"${open ? '' : raw(' inert')}>
-      <td colspan="4"><div class="ds-table__expand"><div><div class="ds-prose so-break">${markdown(bug.description || 'No description.')}</div></div></div></td>
-    </tr>`;
-}
-
-/* ------------------------------------------------------------ the parts */
-
-const cell = mountCell({
-  state,
-  go,
-  ensureBugs,
-  ensureCatalog,
-  refreshSoon,
-  closeRoute: () => {
-    const r = readHash();
-    if (!r.cell && !r.test) return;
-    if (history.state && history.state.sheet) history.back();
-    else go({ cell: '', test: '' });
-  },
-});
-
-const forms = mountForms({
-  state,
-  ensureCatalog,
-  ensureSettings,
-  // A run was started: it is the one shown.
-  started: async (run) => {
-    try {
-      await loadRepos();
-      await loadRepo();
-    } catch { /* the frames bring it */ }
-    go({ run: run && run.id ? run.id : '', tab: 'results', cell: '', test: '' }, { push: true });
-  },
-});
-
-/* ---------------------------------------------------------- the actions */
 
 document.addEventListener('click', (event) => {
-  const runAct = event.target.closest('[data-run-act]');
-  if (runAct) { runAction(runAct.dataset.runAct, runAct.dataset.run, runAct); return; }
-  const openRun = event.target.closest('[data-open-run]');
-  if (openRun) { go({ run: openRun.dataset.openRun, tab: 'results', cell: '', test: '' }, { push: true }); return; }
-  const sheet = event.target.closest('[data-run-sheet]');
-  if (sheet) { forms.openRunSheet(sheet); return; }
-  const bug = event.target.closest('[data-bug]');
-  if (bug) {
-    if (state.expanded.has(bug.dataset.bug)) state.expanded.delete(bug.dataset.bug);
-    else state.expanded.add(bug.dataset.bug);
-    renderBugs();
-    return;
-  }
-  // A cell named outside the results (a bug's, the active run's list).
-  const cellBtn = event.target.closest('[data-cell]');
-  if (cellBtn && !cellBtn.closest('#p-results') && !cellBtn.closest('#cellSheet')) openCell(cellBtn.dataset.cell, cellBtn.dataset.run);
+  const act = event.target.closest('[data-run-act]');
+  if (act) { runAction(act.dataset.runAct, act.dataset.run, act); return; }
+  const watch = event.target.closest('[data-watch]');
+  if (watch) { go({ view: 'runs', run: watch.dataset.watch, test: '', bug: '', cell: '' }, { push: true }); return; }
+  const view = event.target.closest('[data-go-view]');
+  if (view) go({ view: view.dataset.goView, run: '', test: '', bug: '', cell: '' }, { push: true });
 });
 
-$('runBtn').addEventListener('click', () => forms.openRunSheet($('runBtn')));
-$('repoSel').addEventListener('change', () => go({ repo: $('repoSel').value, run: '', cell: '', test: '' }, { push: true }));
-$('runSel').addEventListener('change', () => go({ run: $('runSel').value, cell: '', test: '' }, { push: true }));
+$('runBtn').addEventListener('click', () => form.openRunDialog(undefined, $('runBtn')));
 $('notice').addEventListener('click', (event) => {
   if (!event.target.closest('[data-retry]')) return;
   notice('');
@@ -895,27 +578,107 @@ async function addRepo(opener) {
   try {
     const repo = await api(V.paths.repos(), { method: 'POST', body: { path } });
     await loadRepos();
-    go({ repo: repo.key, run: '', cell: '', test: '', tab: 'results' }, { push: true });
+    go({ repo: repo.key, view: 'overview', run: '', test: '', bug: '', cell: '' }, { push: true });
     toast('The repository is added.', 'success');
   } catch (err) {
     toast(errorMessage(err), 'error');
   }
 }
-$('addRepo').addEventListener('click', () => addRepo($('addRepo')));
+
+async function removeRepo(opener) {
+  const repo = repoOf(state.repo);
+  if (!repo) return;
+  const yes = await confirmDialog({
+    title: 'Take ' + repo.title + ' off the list?',
+    body: 'Its runs stay where they are and come back when it is added again. Nothing in the repository changes.',
+    confirmLabel: 'Remove from the list', opener,
+  });
+  if (!yes) return;
+  try {
+    await api(V.paths.repo(repo.key), { method: 'DELETE' });
+    await loadRepos();
+    state.repo = '';
+    go({ repo: '', view: 'overview', run: '', test: '', bug: '', cell: '' }, { push: true });
+    toast(repo.title + ' is off the list.', 'success');
+  } catch (err) {
+    toast(errorMessage(err), 'error');
+  }
+}
 $('addRepoEmpty').addEventListener('click', () => addRepo($('addRepoEmpty')));
 
-// "/" searches, as DS's search key says.
+// "/" searches the view's own list (a run's cells), as DS's search key says.
 document.addEventListener('keydown', (event) => {
   if (event.key !== '/' || event.defaultPrevented || event.ctrlKey || event.metaKey || event.altKey) return;
   if (event.target.closest('input, textarea, select, [contenteditable]') || DS.overlay.topmost()) return;
-  const field = $('rSearch');
-  if (!field || state.tab !== 'results') return;
+  const panel = $('p-' + state.route.view);
+  const field = panel && panel.querySelector('[data-search]');
+  if (!field || !field.offsetParent) return;
   event.preventDefault();
   field.focus();
 });
 
 window.addEventListener('popstate', () => route());
 window.addEventListener('hashchange', () => route());
+
+/* --------------------------------------------------------- the modules */
+
+/**
+ * ctx is what every module gets. `state` is the page's (read it, do not
+ * replace its parts but through the functions here); `go(change, { push })`
+ * moves to another place; `refreshSoon()` reads the repository again soon;
+ * `redraw(view)` draws a view again if it is shown.
+ */
+const ctx = {
+  state,
+  go,
+  refreshSoon,
+  redraw,
+  api,
+  paths: V.paths,
+  repoOf,
+  runOf,
+  ensureCatalog,
+  ensureSettings,
+  runAction,
+  /** openCell opens the cell viewer on an attempt; `list` ([{ attempt, run }]) is what previous and next walk. */
+  openCell(attempt, run, list) {
+    state.cellList = list || [];
+    return go({ cell: attempt, run: run || state.route.run }, { push: true });
+  },
+  /** closeCell closes the cell viewer: Back when opening it was a step. */
+  closeCell() {
+    const r = readHash();
+    if (!r.cell) return;
+    if (history.state && history.state.overlay) history.back();
+    else go({ cell: '' });
+  },
+  /** openRunDialog opens the Run dialog; preset: { tests } | { cells } | { problems_of } | { priorities } | { choose }. */
+  openRunDialog: (preset, opener) => form.openRunDialog(preset, opener),
+  /** startRun starts a preset at once, after a question that says how many cells. */
+  startRun: (preset, opener) => form.startDirect(preset, opener),
+  /** openChat opens the chat dialog: { kind: 'fix-bug' | 'fix-cell' | 'write-test' | 'change-test', subject }. */
+  openChat: (spec, opener) => chat.open(spec, opener),
+  /** started: a run was started from the page; it is the one shown. */
+  async started(run) {
+    try {
+      await loadRepos();
+      await Promise.all([loadRuns(), loadLive()]);
+    } catch { /* the frames bring it */ }
+    scheduleLive();
+    go({ view: 'runs', run: run && run.id ? run.id : '', test: '', bug: '', cell: '' }, { push: true });
+  },
+};
+
+const form = forms.mount(ctx);
+const views = {
+  overview: overviewView.mount(ctx),
+  runs: runsView.mount(ctx),
+  tests: testsView.mount(ctx),
+  bugs: bugsView.mount(ctx),
+  settings: form,
+};
+const cell = cellViewer.mount(ctx);
+const chat = chatDialog.mount(ctx);
 
 /* ------------------------------------------------------------ the start */
 
@@ -928,8 +691,8 @@ async function start() {
     notice(errorMessage(err));
     return;
   }
-  render();
   await route();
+  scheduleLive();
 }
 
 const events = mountEvents({
