@@ -122,7 +122,7 @@ Part types:
 **Files and diffs**
 
 - `file.edited {file}` arrives once per write or edit.
-- `session.diff {diff:[]}` is emitted a lot, but every one I saw was empty, even after edits. Use `GET /session/{id}/diff?messageID=` or the user message's `summary.diffs` instead. **INFERRED**: `session.diff` is only filled in some situations.
+- `session.diff {diff:[]}` is emitted a lot, but every one I saw was empty, even after edits. Use `GET /session/{id}/diff?messageID=` or the user message's `summary.diffs` instead. **Read from 1.19.5's source**: `SessionSummary.summarize`, run after every step-finish (after the step's `patch` part), publishes `session.diff` with `[]` and then stores the turn's diff so far in the user message's `summary.diffs` and sends it as `message.updated`; `POST /shell` takes no snapshot, so it makes neither a patch part nor a diff (verified).
 
 **Todos**: `todo.updated {sessionID, todos:[{content,status,priority}]}`.
 

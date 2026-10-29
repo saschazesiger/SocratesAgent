@@ -138,6 +138,8 @@ type Adapter struct {
 	questionsSeen map[string]bool
 	// allowed are the permissions already answered.
 	allowed map[string]bool
+	// notes is what was said about OpenCode itself (notices.go).
+	notes noticeState
 
 	// wait bounds the calls to OpenCode that are not long ones; zero is
 	// requestWait. Tests shorten it.
@@ -237,6 +239,7 @@ type turnState struct {
 	errors  []string
 	context int64
 	model   string
+	changes turnChanges
 }
 
 // persisted is what the adapter keeps beside the journal: the session, the
@@ -379,6 +382,7 @@ func (a *Adapter) startProcess(ctx context.Context) error {
 	// before it is this start failing, which the caller reports.
 	go a.watch(gen, srv)
 	a.loadWindows(ctx, cl)
+	go a.checkMCP(sctx, gen, cl)
 	return nil
 }
 
@@ -740,6 +744,7 @@ func (a *Adapter) reconcile(ctx context.Context, gen int, cl *client) {
 			a.handleQuestion(gen, q)
 		}
 	}
+	go a.checkMCP(ctx, gen, cl)
 	var status map[string]ocStatus
 	if err := cl.call(ctx, http.MethodGet, "/session/status", nil, &status); err != nil {
 		return

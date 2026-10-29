@@ -5,6 +5,7 @@ package opencode
 import (
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/saschazesiger/SocratesAgent/internal/agent"
@@ -31,10 +32,15 @@ type ToolContent struct {
 	Agent     string `json:"agent,omitempty"`
 }
 
-// DiffContent is a diff part's content: what one edit tool call changed.
+// DiffContent is a diff part's content: what one edit tool call changed
+// (ToolPart), or what a step changed that no edit call showed (Tool is
+// StepTool and ToolPart empty: changes.go).
 type DiffContent struct {
-	ToolPart string     `json:"tool_part"`
-	Files    []DiffFile `json:"files"`
+	ToolPart string `json:"tool_part,omitempty"`
+	// Tool is the edit tool, or StepTool; Title names the files.
+	Tool  string     `json:"tool,omitempty"`
+	Title string     `json:"title,omitempty"`
+	Files []DiffFile `json:"files"`
 }
 
 // DiffFile is one file of a diff, as a unified patch.
@@ -73,8 +79,10 @@ type converted struct {
 	state   string
 	text    string
 	content json.RawMessage
-	// diff is the diff part an edit tool also becomes, nil for others.
-	diff *converted
+	// diff is the diff part an edit tool also becomes, nil for others;
+	// paths are the files it changed, as the call named them.
+	diff  *converted
+	paths []string
 	// child is the subagent session a task tool runs.
 	child string
 }
@@ -83,7 +91,9 @@ type converted struct {
 const diffSuffix = "-diff"
 
 // convertPart maps one part of an assistant message. ok is false for parts
-// that are not shown (step boundaries, snapshots, patches, retries).
+// that are not shown (step boundaries, snapshots, retries) and for patches,
+// which become a diff part of their own once the turn's summary has their
+// diff (changes.go).
 func convertPart(p ocPart) (converted, bool) {
 	switch p.Type {
 	case partText, partReasoning:
@@ -192,8 +202,13 @@ func convertTool(p ocPart) converted {
 	c.content, _ = json.Marshal(tc)
 	if st.Status == toolCompleted {
 		if files := editFiles(p.Tool, input.FilePath, input.Content, meta.Diff, meta.FileDiff, meta.Files, meta.Exists); len(files) > 0 {
-			raw, _ := json.Marshal(DiffContent{ToolPart: p.ID, Files: files})
+			names := make([]string, 0, len(files))
+			for _, f := range files {
+				names = append(names, f.Path)
+			}
+			raw, _ := json.Marshal(DiffContent{ToolPart: p.ID, Tool: p.Tool, Title: strings.Join(names, ", "), Files: files})
 			c.diff = &converted{kind: agent.PartDiff, state: agent.PartDone, content: raw}
+			c.paths = editPaths(input.FilePath, meta.FileDiff, meta.Files)
 		}
 	}
 	return c
@@ -240,6 +255,26 @@ func editFiles(tool, path string, content *string, diff string, fd *ocFileDiff, 
 		return []DiffFile{{Path: path, Patch: patch, Additions: add, Status: "added"}}
 	}
 	return nil
+}
+
+// editPaths are the files an edit call changed, as it named them: its
+// filePath, edit's filediff, apply_patch's files (absolute, and relative).
+func editPaths(path string, fd *ocFileDiff, files []ocPatchFile) []string {
+	var out []string
+	add := func(p string) {
+		if p != "" && !slices.Contains(out, p) {
+			out = append(out, p)
+		}
+	}
+	add(path)
+	if fd != nil {
+		add(fd.File)
+	}
+	for _, f := range files {
+		add(f.FilePath)
+		add(f.RelativePath)
+	}
+	return out
 }
 
 // newFilePatch is the unified diff that creates a file with content.

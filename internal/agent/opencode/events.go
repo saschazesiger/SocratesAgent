@@ -94,6 +94,13 @@ func (a *Adapter) handle(gen int, ev ocEvent) {
 		if json.Unmarshal(ev.Properties, &p) == nil {
 			a.questionGone(gen, p.RequestID)
 		}
+	case "tui.toast.show":
+		var t ocToast
+		if json.Unmarshal(ev.Properties, &t) == nil {
+			a.handleToast(gen, t)
+		}
+	case "mcp.tools.changed":
+		a.mcpChanged(gen)
 	}
 }
 
@@ -137,6 +144,7 @@ func (a *Adapter) handleMessage(gen int, m ocMessage) {
 			a.users[m.ID] = u
 		}
 		a.beginTurnLocked(m.ID)
+		a.summaryLocked(m)
 	case "assistant":
 		a.assistantLocked(m)
 	}
@@ -240,15 +248,24 @@ func (a *Adapter) handlePart(gen int, p ocPart) {
 		}
 		msg, parent = c.msg, c.parent
 	}
-	if p.Type == partStepFinish {
+	switch p.Type {
+	case partStepFinish:
 		if p.Tokens != nil && p.SessionID == a.session {
 			a.stepLocked(*p.Tokens)
 		}
+		return
+	case partPatch:
+		a.patchLocked(p)
 		return
 	}
 	c, ok := convertPart(p)
 	if !ok {
 		return
+	}
+	for _, path := range c.paths {
+		if a.turn != nil && !slices.Contains(a.turn.changes.edited, path) {
+			a.turn.changes.edited = append(a.turn.changes.edited, path)
+		}
 	}
 	// A task part that names a subagent for the first time runs it from
 	// now on, a new one or one it resumes. A part that named it before (one
@@ -347,11 +364,16 @@ func (a *Adapter) handleDelta(gen int, partID, text string) {
 
 // handleStatus watches for the one status that never ends by itself: a
 // retry because the account's limit is reached (research/06 §3.7). That
-// turn is stopped as limited; other retries are said once per attempt.
+// turn is stopped as limited; other retries are said once per attempt. A
+// subagent's retry is said in its task part.
 func (a *Adapter) handleStatus(gen int, session string, st ocStatus) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if a.gen != gen || session != a.session {
+	if a.gen != gen {
+		return
+	}
+	if session != a.session {
+		a.childStatusLocked(session, st)
 		return
 	}
 	if st.Type != statusRetry {
@@ -402,7 +424,16 @@ func (a *Adapter) handleIdle(gen int, session string) {
 func (a *Adapter) handleError(gen int, session string, e *ocError) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if a.gen != gen || session != a.session || e == nil {
+	if a.gen != gen || e == nil {
+		return
+	}
+	if session != a.session {
+		// A subagent's: its task part shows it. An abort is the turn's,
+		// which says it.
+		if e.Name != errAborted {
+			head, _, _ := strings.Cut(e.text(), "\n    at ")
+			a.childNoticeLocked(session, "error", "The subagent failed: "+strings.TrimSpace(head), true)
+		}
 		return
 	}
 	if e.Name == errAborted {
@@ -520,6 +551,8 @@ func (a *Adapter) endTurnLocked() {
 	if t == nil {
 		return
 	}
+	// The steps whose summary never came are shown with the newest one.
+	a.showChangesLocked(t)
 	a.turn = nil
 	outcome := agent.OutcomeCompleted
 	switch {

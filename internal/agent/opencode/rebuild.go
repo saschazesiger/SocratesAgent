@@ -45,6 +45,7 @@ func historyEvents(msgs []ocMessageWithParts, child func(session string) []ocMes
 		case "user":
 			end()
 			turn = &rebuiltTurn{id: "t_" + m.Info.ID, outcome: agent.OutcomeCompleted, usage: &agent.Usage{}}
+			turn.changes.diffs, turn.changes.summarized = summaryDiffs(m.Info.Summary)
 			events = append(events,
 				agent.Event{Type: agent.TypeMessage, MessageID: m.Info.ID, Role: agent.RoleUser, State: agent.MessageDelivered,
 					Text: userText(m.Parts), Attachments: userAttachments(m.Parts)},
@@ -67,6 +68,9 @@ type rebuiltTurn struct {
 	failure string
 	usage   *agent.Usage
 	cost    float64
+	// changes has the turn's summary and what its edit calls showed, for
+	// its steps' changes.
+	changes turnChanges
 }
 
 func (t *rebuiltTurn) end() agent.Event {
@@ -112,14 +116,23 @@ const maxNesting = 4
 
 // finalParts are a message's parts as they ended, nested under parent, with
 // each task part followed by its subagent's parts inside it, whose usage and
-// cost count into the turn.
+// cost count into the turn. A step of the chat's own that changed files no
+// edit call showed is followed by those changes (changes.go).
 func (t *rebuiltTurn) finalParts(msg, parent string, parts []ocPart, complete bool, child func(string) []ocMessageWithParts, depth int) []agent.Event {
 	var events []agent.Event
 	for _, p := range parts {
+		if p.Type == partPatch {
+			if files := stepFiles(p.Files, t.changes.edited, t.changes.diffs, t.changes.summarized, ""); depth == 0 && len(files) > 0 {
+				c := stepDiff(files)
+				events = append(events, agent.Event{Type: agent.TypePart, MessageID: msg, PartID: p.ID, Kind: c.kind, State: c.state, Content: c.content})
+			}
+			continue
+		}
 		c, ok := convertPart(p)
 		if !ok {
 			continue
 		}
+		t.changes.edited = append(t.changes.edited, c.paths...)
 		state := c.state
 		if state == agent.PartStreaming && complete {
 			state = agent.PartDone

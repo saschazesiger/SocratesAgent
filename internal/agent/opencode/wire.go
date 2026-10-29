@@ -85,6 +85,9 @@ type ocMessage struct {
 	Cost   float64  `json:"cost"`
 	Tokens ocTokens `json:"tokens"`
 	Finish string   `json:"finish"`
+	// Summary is a user message's {title, diffs}, a boolean on an
+	// assistant message (summaryDiffs).
+	Summary json.RawMessage `json:"summary"`
 }
 
 func (m *ocMessage) model() string {
@@ -139,6 +142,8 @@ type ocPart struct {
 	Tokens   *ocTokens    `json:"tokens"`
 	Cost     float64      `json:"cost"`
 	Reason   string       `json:"reason"`
+	// Files are a patch part's: the absolute paths a step changed.
+	Files []string `json:"files"`
 }
 
 // Part types.
@@ -148,6 +153,7 @@ const (
 	partTool       = "tool"
 	partFile       = "file"
 	partStepFinish = "step-finish"
+	partPatch      = "patch"
 )
 
 type ocMessageWithParts struct {

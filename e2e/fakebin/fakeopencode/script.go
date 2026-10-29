@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -26,6 +27,14 @@ import (
 //	/todo            a todowrite tool with three items
 //	/subagent        a task tool running a child session (a text and a read
 //	                 tool part in it), then text
+//	/subagentfail    a task tool whose child session's call is retried once
+//	                 and then fails (session.status retry and session.error
+//	                 of the child), the task ending with the error
+//	/shellchange     a step that edits a.txt and changes b.txt with a shell
+//	                 command, its patch part and the summary.diffs OpenCode
+//	                 stores after it, then text in a second step
+//	/toast           tui.toast.show: the same warning twice and an info,
+//	                 then text
 //	/limit           retry with a free-tier-limit action, every second, until
 //	                 aborted (research/06 §3.7)
 //	/retry           one plain retry, then a normal answer
@@ -444,8 +453,20 @@ func (t *turn) play(text string) error {
 		if err := t.say([]string{"planned"}, 5*time.Millisecond); err != nil {
 			return err
 		}
-	case "/subagent":
-		if err := t.subagent(); err != nil {
+	case "/subagent", "/subagentfail":
+		if err := t.subagent(word == "/subagentfail"); err != nil {
+			return err
+		}
+	case "/shellchange":
+		if err := t.shellChange(); err != nil {
+			return err
+		}
+	case "/toast":
+		for _, variant := range []string{"warning", "warning", "info"} {
+			t.s.publish("tui.toast.show", map[string]any{"title": "Plugin", "message": "The plugin said " + variant,
+				"variant": variant, "duration": 5000})
+		}
+		if err := t.say([]string{"toasted"}, 5*time.Millisecond); err != nil {
 			return err
 		}
 	case "/limit":
@@ -569,7 +590,57 @@ func (t *turn) play(text string) error {
 }
 
 // subagent runs a task tool with a child session.
-func (t *turn) subagent() error {
+// shellChange is a step that edits a.txt with the edit tool and changes
+// b.txt with a shell command, as OpenCode ends it: the step-finish, a patch
+// part naming both files (absolute), and the turn's diff so far in the user
+// message's summary.diffs (paths relative to the worktree); then text in a
+// second step.
+func (t *turn) shellChange() error {
+	dir := ""
+	if sess, err := loadSession(t.sid); err == nil {
+		dir = sess.Directory
+	}
+	editPatch := "Index: a.txt\n===================================================================\n--- a.txt\n+++ a.txt\n@@ -1,1 +1,1 @@\n-old\n+new\n"
+	shellPatch := "Index: b.txt\n===================================================================\n--- b.txt\n+++ b.txt\n@@ -1,2 +1,2 @@\n-one\n+two\n same\n"
+	a, b := filepath.Join(dir, "a.txt"), filepath.Join(dir, "b.txt")
+	meta := map[string]any{"diff": editPatch, "filediff": map[string]any{"file": a, "patch": editPatch, "additions": 1, "deletions": 1}}
+	if _, err := t.tool("edit", map[string]any{"filePath": a, "oldString": "old", "newString": "new"}, nil, meta, "a.txt"); err != nil {
+		return err
+	}
+	if _, err := t.tool("bash", map[string]any{"command": "sed -i s/one/two/ b.txt", "description": "Change b.txt"}, nil, nil, "sed"); err != nil {
+		return err
+	}
+	t.finish("tool-calls", 100, 10)
+	t.part(map[string]any{"type": "patch", "hash": "0000", "files": []string{a, b}})
+	t.summarize([]map[string]any{
+		{"file": "a.txt", "patch": editPatch, "additions": 1, "deletions": 1, "status": "modified"},
+		{"file": "b.txt", "patch": shellPatch, "additions": 1, "deletions": 1, "status": "modified"},
+	})
+	t.step()
+	return t.say([]string{"changed two files"}, 5*time.Millisecond)
+}
+
+// summarize stores the turn's diff so far in its user message and announces
+// it, as SessionSummary.summarize does after a step.
+func (t *turn) summarize(diffs []map[string]any) {
+	var info map[string]any
+	_ = withStore(func(st *store) error {
+		for _, m := range st.Sessions[t.sid].Messages {
+			if m.Info["id"] == t.user {
+				m.Info["summary"] = map[string]any{"diffs": diffs}
+				info = m.Info
+			}
+		}
+		return nil
+	})
+	if info != nil {
+		t.s.publish("message.updated", map[string]any{"sessionID": t.sid, "info": info})
+	}
+}
+
+// subagent runs a task tool's child session; fail has the child's model
+// call retried and then fail, and the task end with its error.
+func (t *turn) subagent(fail bool) error {
 	child := &session{ID: newID("ses"), ParentID: t.sid, Title: "child", Messages: []*message{}}
 	_ = withStore(func(st *store) error {
 		child.Directory = st.Sessions[t.sid].Directory
@@ -588,6 +659,21 @@ func (t *turn) subagent() error {
 	sess, _ := loadSession(child.ID)
 	sub.user = sess.Messages[0].Info["id"].(string)
 	sub.step()
+	if fail {
+		t.s.publish("session.status", map[string]any{"sessionID": child.ID, "status": map[string]any{"type": "retry",
+			"attempt": 1, "message": "Provider is overloaded", "next": time.Now().Add(20 * time.Millisecond).UnixMilli()}})
+		if err := t.wait(20 * time.Millisecond); err != nil {
+			return err
+		}
+		e := map[string]any{"name": "APIError", "data": map[string]any{"message": "The model is not available.", "statusCode": 404}}
+		sub.msg["error"] = e
+		sub.finish("error", 10, 0)
+		t.s.publish("session.error", map[string]any{"sessionID": child.ID, "error": e})
+		task["state"] = map[string]any{"status": "error", "input": input, "metadata": meta,
+			"error": "The model is not available.", "time": map[string]any{"start": start, "end": time.Now().UnixMilli()}}
+		t.part(task)
+		return t.say([]string{"the subagent failed"}, 5*time.Millisecond)
+	}
 	if err := sub.say([]string{"child ", "says hi"}, 5*time.Millisecond); err != nil {
 		return err
 	}

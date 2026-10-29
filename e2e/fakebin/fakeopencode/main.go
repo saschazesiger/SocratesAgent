@@ -202,6 +202,8 @@ type srv struct {
 	// config names.
 	mcp       map[string]*mcpClient
 	mcpConfig map[string]mcpConfig
+	// mcpFailed is why a local server did not start, by name.
+	mcpFailed map[string]string
 	// asked are the pending permissions, as GET /permission lists them.
 	asked map[string]map[string]any
 }
@@ -316,6 +318,8 @@ func (s *srv) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			"model": map[string]any{"limit": map[string]any{"context": 100000}}}}}, "default": map[string]any{"fake": "model"}})
 	case r.Method == http.MethodGet && path == "session/status":
 		s.status(w)
+	case r.Method == http.MethodGet && path == "mcp":
+		writeJSON(w, 200, s.mcpStates())
 	case r.Method == http.MethodGet && path == "question":
 		s.mu.Lock()
 		list := []map[string]any{}

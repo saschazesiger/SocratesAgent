@@ -886,9 +886,36 @@ sees an ask_user answer: the host routes it (§4.4).
 | `text`, `reasoning` (not synthetic) | `text`, `reasoning` | the text (deltas) | – |
 | `tool` | `tool` | output (bash streams `metadata.output`), or the error | `ToolContent{tool, call_id, title, input, error, started_at, ended_at, duration_ms, exit, session_id, agent}` |
 | `tool` todowrite | `todo` | – | `TodoContent{todos:[{content, status, priority}]}` |
-| completed edit / apply_patch / write of a new file | `diff`, id `<tool part>-diff` | – | `DiffContent{tool_part, files:[{path, patch, additions, deletions, status}]}` |
+| completed edit / apply_patch / write of a new file | `diff`, id `<tool part>-diff` | – | `DiffContent{tool_part, tool, title (the files), files:[{path, patch, additions, deletions, status}]}` |
+| `patch` of the chat's own step (below) | `diff`, id the patch part's | – | `DiffContent{tool: "changes", title, files}`: the step's files no edit call of the turn showed |
 | `file` | `image` / `file` | – | `FileContent{mime, filename, url (file:// only)}` |
 | a task child session's parts | as above | | with `parent_part_id` = the task part running it (the newest to name the child: a task with `task_id` resumes an earlier task's) |
+| a child session's `session.error` / `retry` status | `notice`, id `<task part>-error` (state `error`) / `<task part>-retry` | "The subagent failed: …" / "The subagent's call is retried (attempt n): …" | `{code: "error"}` / `{code: "retry"}`; inside the task part, the newest word replacing the one before (an abort is the turn's) |
+
+**What a shell command changed.** OpenCode snapshots the worktree around every step and ends a step
+that changed files with a `patch` part `{hash, files}`: the absolute path of every file the step
+changed, by an edit call or a shell command alike. Right after it, it stores the turn's diff so far
+(first snapshot to the step's last) in the user message's `summary.diffs` (`{file (worktree-relative),
+patch, additions, deletions, status}`, what `GET /session/{id}/diff?messageID=` lists) and sends
+that message as `message.updated` (read from 1.19.5's source, `SessionProcessor` at step-finish and
+`SessionSummary.summarize`; `session.diff` always carries `[]`). The adapter holds a patch part of
+the running turn's own steps until that summary comes (or the turn ends, then with the newest one)
+and writes the step's files that no edit call of the turn (or of its subagents) showed, each with
+its diff from the summary: a file the summary does not list is one the turn left as it was; without
+any summary, a file is named without lines. A subagent's patch parts are left out: the step of the
+task that ran it has the same files. A rebuild does the same with the stored summary. `POST /shell`
+(a `!line`) takes no snapshot, so what it changes is not shown as a diff.
+
+**What OpenCode says only to its TUI.** `GET /mcp` (`{name: {status: connected | disabled | failed
+{error} | needs_auth | needs_client_registration {error}}}`, verified against 1.19.5; it answers once
+OpenCode has tried every server, as `GET /command` does, up to its 30 s timeout for one that never
+answers) is read after every process start and catch-up and on `mcp.tools.changed` (what a server
+whose connection closed publishes): every server failed or waiting for a sign-in is a line of a
+`notice{mcp_servers}`, written when the lines change (`disabled` is not one: the config turns off a
+folder's own `opencode.json` servers). `tui.toast.show` (`{title, message, variant, duration}`,
+verified) of variant `warning` or `error` is a `notice{toast}` "title: message", once per text for
+the adapter's life; one whose title names MCP ("MCP Authentication Required") reads `GET /mcp`
+instead, whose notice says it.
 
 **Commands** (`Command(name, args)`): `compact` (`/summarize`, a turn), `shell <cmd>`, `agent
 build|plan` (for every following prompt, kept across hosts; `notice{agent}`), `revert <message>`

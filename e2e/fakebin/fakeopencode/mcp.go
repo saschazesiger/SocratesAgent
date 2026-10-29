@@ -43,6 +43,7 @@ type mcpConfig struct {
 	Command     []string          `json:"command"`
 	Environment map[string]string `json:"environment"`
 	Timeout     int64             `json:"timeout"`
+	Enabled     *bool             `json:"enabled"`
 }
 
 // startMCP starts every local server of the config and connects it.
@@ -53,17 +54,37 @@ func (s *srv) startMCP() {
 	_ = json.Unmarshal([]byte(os.Getenv("OPENCODE_CONFIG_CONTENT")), &doc)
 	s.mcp = map[string]*mcpClient{}
 	s.mcpConfig = doc.MCP
+	s.mcpFailed = map[string]string{}
 	for name, cfg := range doc.MCP {
-		if cfg.Type != "local" || len(cfg.Command) == 0 {
+		if cfg.Type != "local" || len(cfg.Command) == 0 || (cfg.Enabled != nil && !*cfg.Enabled) {
 			continue
 		}
 		c, err := startMCPServer(name, cfg.Command, cfg.Environment)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "mcp %s: %v\n", name, err)
+			s.mcpFailed[name] = err.Error()
 			continue
 		}
 		s.mcp[name] = c
 	}
+}
+
+// mcpStates is GET /mcp, as opencode 1.19.5 answers it: every server of the
+// config by name, connected, disabled, or failed with why. A remote server
+// is taken for connected.
+func (s *srv) mcpStates() map[string]any {
+	out := map[string]any{}
+	for name, cfg := range s.mcpConfig {
+		switch {
+		case cfg.Enabled != nil && !*cfg.Enabled:
+			out[name] = map[string]any{"status": "disabled"}
+		case s.mcpFailed[name] != "":
+			out[name] = map[string]any{"status": "failed", "error": s.mcpFailed[name]}
+		default:
+			out[name] = map[string]any{"status": "connected"}
+		}
+	}
+	return out
 }
 
 func startMCPServer(name string, command []string, env map[string]string) (*mcpClient, error) {

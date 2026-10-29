@@ -173,6 +173,9 @@ export function toolOf(part) {
   else if (c.tool === 'terminal') name = 'Terminal';
   else if (c.tool === 'sleep') name = 'Sleep';
   else if (c.tool === 'turn_diff') name = 'Changes';
+  // OpenCode's: what a step changed that no edit call showed (a shell
+  // command's changes), its files in its title.
+  else if (c.tool === 'changes') name = 'Changes';
   // A workflow's agent is one of its agents, under its label.
   else if (c.tool === 'WorkflowAgent') name = 'Agent';
   const agent = c.agent && typeof c.agent === 'object' ? c.agent : null;
@@ -336,7 +339,18 @@ export function diffFiles(part) {
       return files;
     });
   }
-  if (Array.isArray(c.files)) return c.files.flatMap((one) => withPath(parseDiff(one.diff || '', one.path || ''), one.path));
+  if (Array.isArray(c.files)) {
+    // OpenCode's files carry their diff as `patch`; a file it could only
+    // name (its step changed it, and no diff came) is a file with no lines.
+    return c.files.flatMap((one) => {
+      const files = withPath(parseDiff(one.diff || one.patch || '', one.path || ''), one.path);
+      if (!files.length && one.path) {
+        files.push({ path: one.path, hunks: [], added: Number(one.additions) || 0, removed: Number(one.deletions) || 0 });
+      }
+      for (const file of files) if (one.status && !file.status) file.status = one.status;
+      return files;
+    });
+  }
   if (typeof c.diff === 'string' && c.diff) return withPath(parseDiff(c.diff, c.path || ''), c.path);
   if (/^(---|diff --git|@@ )/m.test(part.text || '')) return withPath(parseDiff(part.text, c.path || ''), c.path);
   return [];
@@ -467,11 +481,12 @@ export function partHtml(part, view) {
 // (the agent's own: a wakeup or a cron job it scheduled, a background task
 // reporting back, a Monitor's event, a message from another agent, Codex
 // going on toward its goal or by itself), and the name of all it said behind
-// the "i". A goal set or ended and a hook's word lead the same way.
+// the "i". A goal set or ended, a hook's word, and a subagent's error and its
+// retries (OpenCode's, inside its task) lead the same way.
 const OPENER = {
   wakeup: ['clock', 'Prompt'], cron: ['clock', 'Prompt'], task: ['background', 'Result'],
   monitor: ['monitor', 'Event'], peer: ['chat', 'Message'], goal: ['flag', 'Goal'], self_started: ['sync', 'Details'],
-  hook: ['wrench', 'Hook'],
+  hook: ['wrench', 'Hook'], error: ['alert', 'Details'], retry: ['sync', 'Details'],
 };
 
 /**
@@ -520,9 +535,18 @@ function imageHtml(part, view) {
 
 function fileHtml(part) {
   const c = part.content || {};
-  const name = c.name || String(c.path || '').split('/').pop()
+  // OpenCode names a file `filename` and points at it with a file:// URL.
+  const path = c.path || fileURLPath(c.url);
+  const name = c.name || c.filename || String(path).split('/').pop()
     || (c.tool === 'image_generation' ? IMAGE_WORDS[part.state] || 'An image' : 'file');
-  return html`<div class="so-part so-attachment" data-ds-key="${'p:' + part.id}" data-kind="${part.kind}">${raw(icon(part.kind === 'image' ? 'image' : 'file', 18))}<span class="so-ellipsis">${name}</span>${infoButton([c.path, c.mime, c.prompt, c.failure && c.failure.type ? 'Failed: ' + c.failure.type : ''], 'File details')}</div>`;
+  return html`<div class="so-part so-attachment" data-ds-key="${'p:' + part.id}" data-kind="${part.kind}">${raw(icon(part.kind === 'image' ? 'image' : 'file', 18))}<span class="so-ellipsis">${name}</span>${infoButton([path, c.mime, c.prompt, c.failure && c.failure.type ? 'Failed: ' + c.failure.type : ''], 'File details')}</div>`;
+}
+
+// fileURLPath is the path of a file:// URL, '' for any other.
+function fileURLPath(url) {
+  const s = String(url || '');
+  if (!s.startsWith('file://')) return '';
+  try { return decodeURIComponent(s.slice(7)); } catch { return s.slice(7); }
 }
 
 // summaryHtml is the call's one line. A file the call worked on is named as
@@ -1684,7 +1708,7 @@ const NOTICE_WORDS = {
 // The glyph a line between messages leads with, by its notice code.
 const NOTICE_GLYPH = {
   compacted: 'archive', resumed: 'history', rebuilt: 'history', conversation_lost: 'alert', history_unavailable: 'alert',
-  mcp_servers: 'alert', chat_message: 'chat', warning: 'alert', deprecation: 'alert', goal: 'flag', hook: 'wrench',
+  mcp_servers: 'alert', toast: 'alert', chat_message: 'chat', warning: 'alert', deprecation: 'alert', goal: 'flag', hook: 'wrench',
   self_started: 'sync', api_retry: 'sync', retrying: 'sync', retry: 'sync',
 };
 

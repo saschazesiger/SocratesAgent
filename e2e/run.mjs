@@ -3117,6 +3117,39 @@ async function createopencode() {
     ok(where === 'cwd: ' + row.workdir + ' | session: ' + row.workdir,
       'its server runs in the chat’s folder, and the session works there', where);
     await shot(s.page, 'createopencode');
+
+    // What OpenCode says only in its own TUI, or not at all: the files a
+    // shell command changed, a warning toast, a subagent's failure.
+    // The answer's first step has no words: its text is the second's.
+    await answerTo(s, id, '/shellchange');
+    const changed = await awaitLog(s.page, 'changed two files').then(() => 'changed two files', () => '');
+    await openWork(s.page);
+    const diffs = await s.page.$$eval('#chat .so-tool[data-kind="diff"]', (n) => n.map((one) => ({
+      name: one.querySelector('.so-tool__name').textContent,
+      files: [...one.querySelectorAll('.so-diff__file')].map((f) => ({
+        path: f.querySelector('.so-diff__path').textContent, added: f.querySelectorAll('.so-diff__line[data-type="add"]').length,
+      })),
+    })));
+    ok(changed === 'changed two files' && diffs.length === 2 && diffs[0].name === 'edit' && diffs[0].files.map((f) => f.path).join() === 'a.txt'
+      && diffs[1].name === 'Changes' && diffs[1].files.length === 1 && diffs[1].files[0].path === 'b.txt' && diffs[1].files[0].added === 1,
+      'an edit shows its diff, and what a shell command of the step changed follows as Changes, without the edited file',
+      JSON.stringify(diffs));
+    await answerTo(s, id, '/toast');
+    await answerTo(s, id, '/toast');
+    const toasts = (await linesOf(s.page)).filter((line) => line.includes('The plugin said'));
+    ok(toasts.join('|') === 'notice:Plugin: The plugin said warning', 'a warning OpenCode toasts is a line, once; an info is not',
+      toasts.join(' | '));
+    const failed = await answerTo(s, id, '/subagentfail');
+    await openWork(s.page, { last: true });
+    await s.page.evaluate(() => [...document.querySelectorAll('#chat .so-tool[data-group]')].pop().querySelector(':scope > summary').click());
+    const inside = await s.page.waitForFunction(() => {
+      const task = [...document.querySelectorAll('#chat .so-tool[data-group][open]')].pop();
+      const notes = task ? [...task.querySelectorAll('.so-part[data-kind="notice"]')] : [];
+      return notes.length === 2 ? notes.map((n) => n.dataset.code + ':' + n.innerText.trim()) : null;
+    }, null, { timeout: 5000 }).then((h) => h.jsonValue(), () => null);
+    ok(failed === 'the subagent failed' && !!inside && inside[0].startsWith('retry:The subagent')
+      && inside[1] === 'error:The subagent failed: The model is not available.',
+      'a subagent’s retry and its error are said inside its task', JSON.stringify(inside));
     ok(unexpected(s.errors).length === 0, 'no console errors', unexpected(s.errors).join(' | ') || '0');
   } finally { await s.stop(); }
 }
