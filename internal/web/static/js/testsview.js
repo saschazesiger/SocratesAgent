@@ -373,9 +373,30 @@ export function resultParts(counts) {
  * Medium" (the program's catalogue, harnesses.js, names the model once it
  * is loaded).
  */
+/**
+ * modelName is a model's name as the person knows it ("Sonnet"), found among
+ * the program's offered models first and then among all it has (a role may
+ * run on a model that is not one of Admin's favourites); else its id.
+ */
+export function modelName(harness, model) {
+  if (!model) return '';
+  const known = harnesses.modelOf(harness, model);
+  if (known) return known.label || known.id;
+  const all = (harnesses.harness(harness) || {}).models || [];
+  const exact = all.find((m) => m.id === model);
+  if (exact) return exact.label || exact.id;
+  if (/^claude-/i.test(model)) {
+    for (const word of String(model).toLowerCase().split(/[-_.]/).slice(1)) {
+      const alias = all.find((m) => m.id === word);
+      if (alias) return alias.label || alias.id;
+    }
+  }
+  return model;
+}
+
 export function roleWords(role) {
   if (!role || !role.harness) return '';
-  const model = role.model ? (harnesses.modelOf(role.harness, role.model) || {}).label || role.model : '';
+  const model = modelName(role.harness, role.model);
   return [harnesses.label(role.harness), model, role.effort ? harnesses.effortLabel(role.effort) : ''].filter(Boolean).join(' · ');
 }
 
@@ -432,7 +453,7 @@ export function runProgress(d, { cells = null, label = '', bare = false } = {}) 
  */
 export function roleShort(role) {
   if (!role || !role.harness) return 'the default';
-  const model = role.model ? (harnesses.modelOf(role.harness, role.model) || {}).label || role.model : '';
+  const model = modelName(role.harness, role.model);
   return model || harnesses.label(role.harness);
 }
 

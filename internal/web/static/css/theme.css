@@ -139,8 +139,8 @@
   --so-tests-trend-col-max: 40px;
   /* Tests: the columns every area's table shares (the test, each value,
      the row's action), so that the areas line up */
-  --so-tests-col-test: 17rem;
-  --so-tests-col-cell: 9rem;
+  --so-tests-col-test: 15rem;
+  --so-tests-col-cell: 8.5rem;
   --so-tests-col-act: 4rem;
 }
 

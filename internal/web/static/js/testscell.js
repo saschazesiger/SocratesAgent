@@ -883,7 +883,7 @@ export function mount(ctx) {
 
   function detailsSection(v, r) {
     const role = v.role || {};
-    const model = role.model ? (harnesses.modelOf(role.harness, role.model) || {}).label || role.model : '';
+    const model = V.modelName(role.harness, role.model);
     const took = v.started_at ? (v.ended_at || (V.OPEN_ATTEMPT.has(v.state) ? Date.now() : 0)) - v.started_at : 0;
     const facts = [
       ['Test', html`<a href="${V.paths.page({ repo: state.repo, view: 'tests', test: v.test })}" data-go-test="${v.test}">${v.title || v.test}</a>${v.title ? html` <span class="ds-meta">${v.test}</span>` : ''}`],

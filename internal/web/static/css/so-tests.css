@@ -1386,3 +1386,12 @@
 .so-tests-chat__note > svg {
   flex: none;
 }
+
+/* A column head names a device in full ("Galaxy Tab S9 landscape · Chrome
+   (car screen)"): in the fixed columns it wraps rather than running into
+   the next one. */
+.so-tests__table thead th {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  vertical-align: bottom;
+}
