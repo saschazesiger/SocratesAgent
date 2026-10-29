@@ -87,6 +87,11 @@ func streamable(t *testing.T, sse bool) (*httptest.Server, *fakeHTTP) {
 			http.Error(w, "bad json", http.StatusBadRequest)
 			return
 		}
+		if string(m.Params) == "null" {
+			// Strict like Cloudflare's server: params is an object or absent.
+			http.Error(w, "params is null", http.StatusBadRequest)
+			return
+		}
 		if m.Method == "initialize" {
 			if r.Header.Get("Mcp-Session-Id") != "" || r.Header.Get("MCP-Protocol-Version") != "" {
 				f.note(&f.problems, "initialize came with session headers")
