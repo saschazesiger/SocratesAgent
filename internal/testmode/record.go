@@ -83,8 +83,11 @@ type Role struct {
 
 // Run is a run's run.json.
 type Run struct {
-	ID        string    `json:"id"`
-	Repo      string    `json:"repo"`
+	ID   string `json:"id"`
+	Repo string `json:"repo"`
+	// Number is the run's number in its repository: 1, 2, 3 ... in the order
+	// the runs were created ("Run 12").
+	Number    int       `json:"number"`
 	Path      string    `json:"path"`
 	Name      string    `json:"name,omitempty"`
 	State     string    `json:"state"`
@@ -108,6 +111,9 @@ type Run struct {
 	Analysed int64 `json:"analysed,omitempty"`
 	// Notified is whether the end of the run was pushed.
 	Notified bool `json:"notified,omitempty"`
+	// StartedBy is the chat whose agent started the run (run_tests), which
+	// is sent the results when it ends; nil for a run started on the page.
+	StartedBy *StartedBy `json:"started_by,omitempty"`
 }
 
 // AttemptRef names an attempt and where its record is.
@@ -178,8 +184,11 @@ type Attempt struct {
 	Offset int64 `json:"offset,omitempty"`
 	Judged int   `json:"judged,omitempty"`
 
-	Verdict  string            `json:"verdict,omitempty"`
-	Reviewed string            `json:"reviewed,omitempty"`
+	Verdict  string `json:"verdict,omitempty"`
+	Reviewed string `json:"reviewed,omitempty"`
+	// Override is a person's verdict of the attempt, which counts over the
+	// agent's and the reviewer's.
+	Override *Override         `json:"override,omitempty"`
 	Summary  string            `json:"summary,omitempty"`
 	Review   *Review           `json:"review,omitempty"`
 	Bugs     []string          `json:"bugs,omitempty"`
@@ -253,8 +262,19 @@ type Action struct {
 	Details     json.RawMessage `json:"details,omitempty"`
 }
 
-// Final verdict of an attempt: the reviewed one where a reviewer changed it.
+// Override is a person's verdict of an attempt, with why.
+type Override struct {
+	Verdict string `json:"verdict"`
+	Note    string `json:"note,omitempty"`
+	At      int64  `json:"at"`
+}
+
+// Final verdict of an attempt, as it counts: a person's override, else the
+// reviewed one where a reviewer changed it, else the agent's.
 func (a *Attempt) Final() string {
+	if a.Override != nil && a.Override.Verdict != "" {
+		return a.Override.Verdict
+	}
 	if a.Reviewed != "" {
 		return a.Reviewed
 	}

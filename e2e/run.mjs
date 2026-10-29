@@ -15,6 +15,7 @@ import {
   tmuxSock, freePort, spawnServer, waitForHealth, STARTUP, REPO, agentProcessesOf,
 } from './harness.mjs';
 import { testmode, catalogRepo } from './testmode.mjs';
+import { testchat } from './testchat.mjs';
 import http from 'node:http';
 import net from 'node:net';
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -13777,6 +13778,7 @@ const ALL = [
   ['chat-stream', 'a chat: streaming, Markdown, replay, queued, Stop, the draft, the palette, the model, the lines', chatstream],
   ['chat-restart', 'the server restarted mid-turn under a desk and a phone: the stream replays, the turn completes, nothing twice', chatrestart],
   ['testmode', 'a test catalog run: the pool queue, the cells, the review, the analysis and the Tests page', testmode],
+  ['testchat', 'a chat\u2019s agent runs a test with run_tests, is sent the results when the run ends and reads them with test_results', testchat],
   ['chat-tools', 'tool rows, the diff viewer, a subagent, a workflow, and the task list pinned while it runs', chattools],
   ['chat-light', 'a chat read on a new device comes light, and what is opened is asked for: a workflow’s agents, a long output', chatlight],
   ['chat-fold', 'an answer\u2019s work folded in one line: what it does, then what it did, its steps and tokens; the answer and a question stand', chatfold],

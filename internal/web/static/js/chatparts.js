@@ -862,11 +862,12 @@ function attachmentsHtml(list) {
   return html`<ul class="so-msg__files">${list.map((file, i) => html`<li class="so-attachment" data-ds-key="${'f' + i}">${raw(icon(String(file.mime || '').startsWith('image/') ? 'image' : 'file', 16))}<span class="so-break">${file.name}</span></li>`)}</ul>`;
 }
 
-// A message from another chat's agent (send_to_chat) opens with a line for
-// the agent it goes to: which chat sent it and how to answer. The line over
-// the message (notice chat_message) says the first to the person, so the
-// bubble shows the message alone.
-const FROM_CHAT = /^\[A message from the chat [^\n]*\]\n\n/;
+// A message from another chat's agent (send_to_chat), or the results of a
+// test run the agent started (Socrates Tests), opens with a line for the
+// agent it goes to: who sent it and how to answer. The line over the message
+// (notice chat_message or test_results) says the first to the person, so
+// the bubble shows the message alone.
+const FROM_CHAT = /^\[(?:A message from the chat|From Socrates Tests:) [^\n]*\]\n\n/;
 
 /**
  * userMessage is what the person sent: the text as written, the files, and -
@@ -1708,7 +1709,7 @@ const NOTICE_WORDS = {
 // The glyph a line between messages leads with, by its notice code.
 const NOTICE_GLYPH = {
   compacted: 'archive', resumed: 'history', rebuilt: 'history', conversation_lost: 'alert', history_unavailable: 'alert',
-  mcp_servers: 'alert', toast: 'alert', chat_message: 'chat', warning: 'alert', deprecation: 'alert', goal: 'flag', hook: 'wrench',
+  mcp_servers: 'alert', toast: 'alert', chat_message: 'chat', test_results: 'checkCircle', warning: 'alert', deprecation: 'alert', goal: 'flag', hook: 'wrench',
   self_started: 'sync', api_retry: 'sync', retrying: 'sync', retry: 'sync',
 };
 

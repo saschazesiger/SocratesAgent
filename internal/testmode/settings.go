@@ -1,6 +1,7 @@
 package testmode
 
 import (
+	"fmt"
 	"slices"
 	"strings"
 )
@@ -114,10 +115,18 @@ type Selection struct {
 	Tags       []string            `json:"tags,omitempty"`
 	Priorities []string            `json:"priorities,omitempty"`
 	Dims       map[string][]string `json:"dims,omitempty"`
+	// Cells is cell ids (web/checkout@a) to run, narrowing like the lists
+	// above.
+	Cells []string `json:"cells,omitempty"`
 	// ProblemsOf is a run whose cells that did not pass are run again: only
-	// those, intersected with the rest.
+	// those, intersected with the rest. ProblemsLatest names the
+	// repository's latest run that is not active; StartRun stores its id.
 	ProblemsOf string `json:"problems_of,omitempty"`
 }
+
+// ProblemsLatest is the ProblemsOf that names the repository's latest run
+// that is not active.
+const ProblemsLatest = "latest"
 
 // Describe is the selection in a few words.
 func (s Selection) Describe() string {
@@ -131,6 +140,7 @@ func (s Selection) Describe() string {
 	add("tests", s.Tests)
 	add("tags", s.Tags)
 	add("priorities", s.Priorities)
+	add("cells", s.Cells)
 	keys := make([]string, 0, len(s.Dims))
 	for k := range s.Dims {
 		keys = append(keys, k)
@@ -138,6 +148,14 @@ func (s Selection) Describe() string {
 	slices.Sort(keys)
 	for _, k := range keys {
 		add(k, s.Dims[k])
+	}
+	switch n := len(s.Cells); {
+	case n == 1:
+		parts = append(parts, "cell "+s.Cells[0])
+	case n > 0 && n <= 3:
+		parts = append(parts, "cells "+strings.Join(s.Cells, ", "))
+	case n > 3:
+		parts = append(parts, fmt.Sprintf("cells %s and %d more", strings.Join(s.Cells[:2], ", "), n-2))
 	}
 	if s.ProblemsOf != "" {
 		parts = append(parts, "problems of "+s.ProblemsOf)

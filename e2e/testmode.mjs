@@ -1,8 +1,10 @@
 // The test mode (docs/design/TEST-MODE.md) end to end: a repository with a
-// catalog and a tool whose pool has two accounts, a run of four cells whose
+// catalog and a tool whose pool has two accounts, a run of five cells whose
 // sessions are the fake Claude Code working each cell through the real tool
 // and the test tools, the queue for the pool, the review, the analysis, and
-// the Tests page showing the result down to a cell's screenshots.
+// the Tests page showing the result down to a cell's screenshots. A second
+// run of three cells is set against the first: its changes, a bug that keeps
+// its id and one that is fixed, an override, the report and the estimate.
 
 import { chmodSync, copyFileSync, mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -15,7 +17,8 @@ function write(path, text, mode = 0o644) {
 }
 
 // catalogRepo is a repository with a catalog: one area on the devices a, b
-// and c, a test of two steps on every device and one that fails on a.
+// and c, a test of two steps on every device, one that fails on a and one
+// on b that fails in odd runs only.
 export function catalogRepo() {
   const repo = scratchDir('socrates-catalog-');
   mkdirSync(join(repo, '.git'));
@@ -57,6 +60,17 @@ params: {fake: fail}
 1. Search for "lamp".
    Expect: a list of lamps.
 `);
+  write(join(base, 'web', 'flaky.md'), `---
+title: The wish list keeps a product
+priority: P1
+device: [b]
+params: {fake: flaky}
+---
+## Steps
+
+1. Add the lamp to the wish list.
+   Expect: the wish list with the lamp.
+`);
   const tool = join(base, 'tools', 'fakedevice');
   write(join(tool, 'TOOL.md'), `---
 title: Fake devices
@@ -85,10 +99,29 @@ echo "took screenshot $1"
   return repo;
 }
 
+// runToEnd waits for a run to be over and answers its state.
+async function runToEnd(api, url, id, ms = 120000) {
+  const deadline = Date.now() + ms;
+  let state = '';
+  while (Date.now() < deadline) {
+    state = (await (await api.get(url + '/api/tests/runs/' + id)).json()).state;
+    if (['done', 'failed', 'stopped'].includes(state)) break;
+    await wait(200);
+  }
+  if (state !== 'done') {
+    const now = (await (await api.get(url + '/api/tests/runs/' + id + '/cells')).json()).cells || [];
+    console.log('  cells: ' + now.map((c) => c.cell_id + ' ' + c.state + ' ' + (c.wait || c.end_reason || '')).join(' | '));
+  }
+  return state;
+}
+
 export async function testmode() {
   const s = await start({ viewport: { width: 1280, height: 900 } });
   const api = s.context.request;
+  const post = (path, data) => api.post(s.url + path, { data, headers: { Origin: s.url } });
+  const get = async (path) => (await api.get(s.url + path)).json();
   let runID = '';
+  let secondID = '';
   try {
     await setup(s.page, s.url);
     const repo = catalogRepo();
@@ -96,7 +129,7 @@ export async function testmode() {
     ok(added.status() === 201, 'a repository with a catalog is added', String(added.status()));
     const key = (await added.json()).key;
     const catalog = await (await api.get(s.url + '/api/tests/repos/' + key + '/catalog')).json();
-    ok(catalog.errors.length === 0 && catalog.cells === 4, 'its catalog reads clean, with four cells',
+    ok(catalog.errors.length === 0 && catalog.cells === 5, 'its catalog reads clean, with five cells',
       catalog.errors.length + ' errors, ' + catalog.cells + ' cells');
     const check = await (await api.post(s.url + '/api/tests/repos/' + key + '/tools/fakedevice/check', { headers: { Origin: s.url } })).json();
     ok(check.found.includes('DEVICE_ACCOUNTS') && check.members.join(',') === 'alice,bob' && !JSON.stringify(check).includes('device-key'),
@@ -125,12 +158,14 @@ export async function testmode() {
       console.log('  cells: ' + now.map((c) => c.cell_id + ' ' + c.state + ' ' + (c.wait || c.end_reason || '')).join(' | '));
     }
     ok(state === 'done', 'the run ends done', state);
+    const first = await get('/api/tests/runs/' + runID);
+    ok(first.number === 1, 'the repository\'s first run is run 1', String(first.number));
     ok(most === 2, 'two cells ran at once, one per account of the pool', String(most));
     ok(waited !== '', 'a cell waited for a free account of the pool', waited);
 
     const cells = (await (await api.get(s.url + '/api/tests/runs/' + runID + '/cells')).json()).cells;
     const verdicts = cells.map((c) => c.cell_id + '=' + c.final).sort().join(' ');
-    ok(verdicts === 'web/checkout@a=pass web/checkout@b=pass web/checkout@c=pass web/search@a=fail',
+    ok(verdicts === 'web/checkout@a=pass web/checkout@b=pass web/checkout@c=pass web/flaky@b=fail web/search@a=fail',
       'every cell has the verdict its agent gave', verdicts);
     const failed = cells.find((c) => c.cell_id === 'web/search@a');
     ok(failed.review === 'done', 'the failed cell was reviewed', failed.review);
@@ -139,8 +174,10 @@ export async function testmode() {
       'its step has the tool\'s screenshot as evidence, and no secret', JSON.stringify(detail.actions[0]));
     ok(/account [12]$/.test(detail.actions[0].summary), 'the tool knew its leased account', detail.actions[0].summary);
     const bugs = await (await api.get(s.url + '/api/tests/runs/' + runID + '/bugs')).json();
-    ok(bugs.bugs.length === 1 && bugs.conclusions.includes('The fake run is analysed'), 'the analyst wrote the bugs and the conclusions',
-      bugs.bugs.length + ' bugs');
+    ok(bugs.bugs.length === 2 && bugs.bugs.every((b) => /^B-\d+$/.test(b.id)) && bugs.conclusions.includes('The fake run is analysed'),
+      'the analyst wrote the bugs, with ids Socrates gave, and the conclusions', bugs.bugs.map((b) => b.id).join(','));
+    const searchBug = bugs.bugs.find((b) => b.cells.includes('web/search@a'));
+    const flakyBug = bugs.bugs.find((b) => b.cells.includes('web/flaky@b'));
     const sessions = (await (await api.get(s.url + '/api/sessions')).json()).sessions;
     ok(sessions.length === 0, 'the test sessions are not in the session list', String(sessions.length));
 
@@ -167,10 +204,69 @@ export async function testmode() {
     ok(loaded > 0, 'the cell shows its step\'s screenshot', String(loaded));
     await shot(s.page, 'tests-cell');
     ok(s.errors.length === 0, 'the Tests page logged no errors', s.errors.join(' | '));
+
+    // A second run of three cells, set against the first.
+    const estimate = await (await post('/api/tests/repos/' + key + '/estimate', { selection: {} })).json();
+    ok(estimate.cells === 5 && estimate.tests === 3 && estimate.eta_ms > 0 && estimate.errors.length === 0,
+      'the estimate of everything counts its cells and tests and how long they take', JSON.stringify(estimate));
+    const nothing = await (await post('/api/tests/repos/' + key + '/estimate', { selection: { tests: ['web/none'] } })).json();
+    ok(nothing.cells === 0 && nothing.errors.length === 1, 'the estimate of a selection of nothing says why', JSON.stringify(nothing));
+    const again = await post('/api/tests/repos/' + key + '/runs',
+      { name: 'second', selection: { cells: ['web/search@a', 'web/flaky@b', 'web/checkout@a'] } });
+    ok(again.status() === 201, 'a run of three cells starts', String(again.status()));
+    secondID = (await again.json()).id;
+    ok(await runToEnd(api, s.url, secondID) === 'done', 'the second run ends done');
+    const second = await get('/api/tests/runs/' + secondID);
+    ok(second.number === 2 && second.counts.cells === 3 && second.changes.fixed === 1 && second.changes.regressed === 0,
+      'the second run is run 2, with one cell fixed against run 1', JSON.stringify({ number: second.number, changes: second.changes }));
+    const rows = (await get('/api/tests/runs/' + secondID + '/cells')).cells;
+    const row = (id) => rows.find((c) => c.cell_id === id);
+    ok(row('web/flaky@b').final === 'pass' && row('web/flaky@b').change === 'fixed' && row('web/flaky@b').prev.verdict === 'fail' &&
+      row('web/flaky@b').prev.number === 1, 'the flaky cell passes in an even run, fixed against its fail in run 1',
+    JSON.stringify(row('web/flaky@b').prev));
+    ok(!row('web/search@a').change && row('web/search@a').prev.verdict === 'fail' && row('web/search@a').shot === '1.png',
+      'the failing cell fails as before, its failing step\'s screenshot its picture', JSON.stringify(row('web/search@a')));
+    const repoBugs = (await get('/api/tests/repos/' + key + '/bugs')).bugs;
+    const search = repoBugs.find((b) => b.id === searchBug.id);
+    const flaky = repoBugs.find((b) => b.id === flakyBug.id);
+    ok(repoBugs.length === 2 && search.status === 'open' && search.runs.length === 2 && search.last_number === 2,
+      'the failing cell\'s bug kept its id over both runs', JSON.stringify(search && { id: search.id, runs: search.runs }));
+    ok(flaky.status === 'fixed' && flaky.fixed_in === secondID && flaky.fixed_number === 2,
+      'the flaky cell\'s bug is fixed by the run its cell passes in', JSON.stringify(flaky && { status: flaky.status, fixed_in: flaky.fixed_in }));
+    const overview = await get('/api/tests/repos/' + key + '/overview');
+    ok(overview.latest.id === secondID && overview.previous.id === runID && overview.trend.length === 2 &&
+      overview.fixed.length === 1 && overview.failing.length === 1 && overview.failing[0].since.number === 1,
+    'the overview has both runs, the fixed cell and the one failing since run 1',
+    JSON.stringify({ fixed: overview.fixed.length, failing: overview.failing.map((f) => f.since) }));
+    const repos = (await get('/api/tests/repos')).repos;
+    ok(repos.find((r) => r.key === key).open_bugs === 1, 'the repository counts its open bug', JSON.stringify(repos.map((r) => r.open_bugs)));
+
+    // An override changes what counts.
+    const over = await post('/api/tests/runs/' + secondID + '/attempts/' + row('web/search@a').id + '/override',
+      { verdict: 'pass', note: 'The error is the fixture\'s.' });
+    const overridden = await get('/api/tests/runs/' + secondID);
+    ok(over.status() === 200 && overridden.counts.verdicts.pass === 3 && !overridden.counts.verdicts.fail && overridden.changes.fixed === 2,
+      'an override to pass makes the run all pass', JSON.stringify(overridden.counts.verdicts));
+    const bad = await post('/api/tests/runs/' + secondID + '/attempts/' + row('web/search@a').id + '/override', { verdict: 'great' });
+    ok(bad.status() === 400, 'an override must be a verdict', String(bad.status()));
+
+    // The report, to read and to download.
+    const report = await api.get(s.url + '/api/tests/runs/' + secondID + '/report.md');
+    const md = await report.text();
+    ok(report.headers()['content-type'].startsWith('text/markdown') && md.includes('· Run 2: second') && md.includes('3 cells: 3 pass') &&
+      md.includes('## Every cell') && !md.includes('device-key'), 'the report has the run in Markdown, without a secret', md.slice(0, 120));
+    const download = await api.get(s.url + '/api/tests/runs/' + secondID + '/report.md?download=1');
+    ok(/attachment; filename=".+-run-2\.md"/.test(download.headers()['content-disposition'] || ''), 'the report downloads as a file',
+      download.headers()['content-disposition']);
+    const patched = await api.patch(s.url + '/api/tests/repos/' + key + '/bugs/' + searchBug.id,
+      { data: { status: 'known', note: 'We know.' }, headers: { Origin: s.url } });
+    ok(patched.status() === 200 && (await patched.json()).bug.status === 'known', 'a bug is triaged by hand', String(patched.status()));
   } finally {
     // The test sessions belong to the run, not to the session list the
     // sweep deletes: deleting the run deletes them.
-    if (runID) await api.delete(s.url + '/api/tests/runs/' + runID, { headers: { Origin: s.url } }).catch(() => {});
+    for (const id of [runID, secondID]) {
+      if (id) await api.delete(s.url + '/api/tests/runs/' + id, { headers: { Origin: s.url } }).catch(() => {});
+    }
     await s.stop();
   }
 }

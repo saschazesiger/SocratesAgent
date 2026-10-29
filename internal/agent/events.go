@@ -191,6 +191,10 @@ const (
 	// another chat (chattools send_to_chat). It is the server's, through
 	// the send it comes with.
 	NoticeChatMessage = "chat_message"
+	// NoticeTestResults: the message after it is the results of a test run
+	// the chat's agent started (run_tests), sent by Socrates when the run
+	// ended. It is the server's, through the send it comes with.
+	NoticeTestResults = "test_results"
 )
 
 // ErrorAuth is an error event's code for a sign-in or key the provider

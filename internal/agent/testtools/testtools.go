@@ -42,6 +42,7 @@ const (
 
 	RunOverview    = "run_overview"
 	RunCell        = "run_cell"
+	BugsKnown      = "bugs_known"
 	BugsPut        = "bugs_put"
 	ConclusionsPut = "conclusions_put"
 )
@@ -173,12 +174,13 @@ func Tools(kind string) []Def {
 		}
 	case KindAnalyst:
 		bug := object(map[string]any{
-			"id":          str("B1, B2, ... in order of severity."),
+			"id": str("The bug's id from bugs_known (B-3) when it has the same root cause as a known bug; empty for a new " +
+				"bug, which Socrates gives an id."),
 			"title":       str("One line."),
 			"severity":    map[string]any{"type": "string", "enum": Severities},
-			"cells":       map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "The ids of the cells that show it."},
+			"cells":       map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "The ids of the cells of this run that show it."},
 			"description": str("Markdown: what happens, where, how to reproduce, the suspected cause with file references."),
-		}, "id", "title", "severity", "cells", "description")
+		}, "title", "severity", "cells", "description")
 		return []Def{
 			{Name: RunOverview, Title: "Overview of the run",
 				Description: "Every cell of the run's latest attempts: its verdict (the reviewed one where a reviewer changed it), the observations of its non-pass steps and its summary.",
@@ -189,8 +191,14 @@ func Tools(kind string) []Def {
 			{Name: RunCell, Title: "One cell in full",
 				Description: "A cell's steps, verdicts, observations, review notes, actions and screenshot paths.",
 				Schema:      object(map[string]any{"cell": cellArg}, "cell")},
+			{Name: BugsKnown, Title: "The repository's known bugs",
+				Description: "The bugs earlier runs of this repository reported (all but those fixed long ago): id, status, " +
+					"severity, title, cells, the person's note and the description. A bug with the same root cause is reported " +
+					"again under its id.",
+				Schema: object(map[string]any{})},
 			{Name: BugsPut, Title: "Write the bug list",
-				Description: "Writes the run's bug list, replacing the one before: one bug per root cause, not per cell.",
+				Description: "Writes the run's bug list, replacing the one before: one bug per root cause, not per cell. A known " +
+					"bug keeps its id (bugs_known); a new one has an empty id. The answer names the ids Socrates kept and gave.",
 				Schema: object(map[string]any{
 					"bugs": map[string]any{"type": "array", "items": bug},
 				}, "bugs")},
@@ -271,11 +279,14 @@ func Guidance(kind, prefix string, toolSearch bool) string {
 		b.WriteString("# You are analysing a test run\n\n" +
 			"The cells of a test run are done and reviewed. Read the run with " + t(RunOverview) + " and " + t(RunCell) +
 			" (and the screenshots it names, with your file reading tool), and the repository's code where it helps to " +
-			"name the cause. Then write:\n\n" +
+			"name the cause. Read the bugs earlier runs found with " + t(BugsKnown) + ". Then write:\n\n" +
 			"1. The bug list with " + t(BugsPut) + ": one bug per root cause, not per cell, with its severity (critical " +
 			"blocks a core flow for many; major breaks a flow or a device class; minor has a workaround; cosmetic), the " +
 			"cells that show it, and a description: what happens, where, how to reproduce, the suspected cause with " +
-			"file references and how sure you are. Blocked cells are not bugs of the product.\n" +
+			"file references and how sure you are. Blocked cells are not bugs of the product. A bug with the same root " +
+			"cause as a known one keeps its id (give it in id; leave id empty for a new bug). Report a known bug again " +
+			"whenever this run shows it, whatever its status, so that it stays known; a bug the person marked not_a_bug " +
+			"is not reported again unless the evidence shows something else than its note says.\n" +
 			"2. The conclusions with " + t(ConclusionsPut) + ": a paragraph per area, then a line per column value " +
 			"(device), then the bugs by severity.\n\n" +
 			"Change nothing in the repository. End your turn when both are written.\n\n" + verdictTable)

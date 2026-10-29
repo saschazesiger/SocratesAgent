@@ -190,6 +190,8 @@ func (t *chatToolServer) handle(w http.ResponseWriter, r *http.Request) {
 		res = t.read(row, req.Arguments)
 	case chattools.Send:
 		res = t.send(r.Context(), row, req.Arguments)
+	case chattools.TestsFormat, chattools.TestsCheck, chattools.RunTests, chattools.TestResults:
+		res = t.srv.testChatCall(row, req.Tool, req.Arguments)
 	default:
 		res = chattools.Response{Text: "There is no tool " + req.Tool + ".", Error: true}
 	}

@@ -87,6 +87,9 @@ func (s Selection) selected(c catalog.Cell, problems map[string]bool) bool {
 	if len(s.Tests) > 0 && !slices.Contains(s.Tests, t.ID) {
 		return false
 	}
+	if len(s.Cells) > 0 && !slices.Contains(s.Cells, c.ID()) {
+		return false
+	}
 	if len(s.Priorities) > 0 && !slices.Contains(s.Priorities, t.Priority) {
 		return false
 	}
@@ -110,6 +113,33 @@ func (s Selection) selected(c catalog.Cell, problems map[string]bool) bool {
 		return false
 	}
 	return true
+}
+
+// selectCells is the cells of a catalog a selection takes, in the order a
+// run takes them: what a run of it runs, and what an estimate counts. A
+// catalog with errors takes none.
+func selectCells(cat *catalog.Catalog, sel Selection, problems map[string]bool) ([]catalog.Cell, error) {
+	if len(cat.Errors) > 0 {
+		var lines []string
+		for i, p := range cat.Errors {
+			if i == 10 {
+				lines = append(lines, fmt.Sprintf("and %d more", len(cat.Errors)-10))
+				break
+			}
+			lines = append(lines, p.String())
+		}
+		return nil, fmt.Errorf("the catalog has errors:\n%s", strings.Join(lines, "\n"))
+	}
+	var cells []catalog.Cell
+	for _, c := range cat.Cells() {
+		if sel.selected(c, problems) {
+			cells = append(cells, c)
+		}
+	}
+	if len(cells) == 0 {
+		return nil, fmt.Errorf("the selection (%s) takes no cell of the catalog", sel.Describe())
+	}
+	return cells, nil
 }
 
 // cellPrompt is an area's instructions for its cell agents.
@@ -181,25 +211,9 @@ func (r *Runner) prepare(ctx context.Context, run *Run, problems map[string]bool
 	if err != nil {
 		return nil, err
 	}
-	if len(cat.Errors) > 0 {
-		var lines []string
-		for i, p := range cat.Errors {
-			if i == 10 {
-				lines = append(lines, fmt.Sprintf("and %d more", len(cat.Errors)-10))
-				break
-			}
-			lines = append(lines, p.String())
-		}
-		return nil, fmt.Errorf("the catalog has errors:\n%s", strings.Join(lines, "\n"))
-	}
-	var cells []catalog.Cell
-	for _, c := range cat.Cells() {
-		if run.Selection.selected(c, problems) {
-			cells = append(cells, c)
-		}
-	}
-	if len(cells) == 0 {
-		return nil, fmt.Errorf("the selection (%s) takes no cell of the catalog", run.Selection.Describe())
+	cells, err := selectCells(cat, run.Selection, problems)
+	if err != nil {
+		return nil, err
 	}
 	dir := r.layout.RunDir(run.Repo, run.ID)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -315,11 +329,14 @@ func mergeParams(area *catalog.Area, t *catalog.Test) map[string]string {
 	return out
 }
 
-// firstMessage is what a cell's agent is sent to begin.
-func firstMessage(a *Attempt) string {
+// firstMessage is what a cell's agent is sent to begin; number is its run's.
+func firstMessage(a *Attempt, number int) string {
 	var b strings.Builder
 	b.WriteString("Run this cell of the test catalog.\n\n")
 	b.WriteString("- Test: " + a.Test + " - " + a.Title + "\n")
+	if number > 0 {
+		b.WriteString(fmt.Sprintf("- Run: %d\n", number))
+	}
 	b.WriteString("- Priority: " + a.Priority + "\n")
 	for _, d := range a.Dims {
 		label := d.ID

@@ -133,7 +133,8 @@ The settings live in `/etc/socrates.env`:
 | 🔑 **Secrets** | A tool's `secrets.command` runs as the Socrates service user in the repository root, when a run starts and again after a restart. The values stay in memory and in vault files under `<data>/run/tests/` (mode 0600, never backed up, removed when the cell ends) |
 | 🧰 **Tools** | Each run runs a copy of the catalog's tools, installed by their `setup` once per version under `<data>/cache/tests/tools/` |
 | 🧹 **Cleaning up** | Deleting a run on the Tests page deletes its sessions and files; old runs go by themselves beyond the repository's `keep_runs` |
-| ✅ **Check a catalog** | `socrates tests check /path/to/repo` |
+| ✅ **Check a catalog** | `socrates tests check /path/to/repo`; the format is in [TESTS-FORMAT.md](TESTS-FORMAT.md) |
+| 🤖 **Runs from chats** | A chat whose repository has a catalog can start runs (`run_tests`) with the repository's settings; the run shows "started by" that chat, and Socrates sends the chat the results when it ends |
 
 ---
 

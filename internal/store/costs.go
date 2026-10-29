@@ -304,3 +304,41 @@ func (s *Store) SetCostMeta(key, workdir, title, sessionID string) (bool, error)
 	}
 	return true, nil
 }
+
+// CostBySession is what the conversations the ledger has of each of the
+// sessions cost in all (USD, as the ledger priced them); a session the
+// ledger has no conversation of is absent.
+func (s *Store) CostBySession(ids []string) (map[string]float64, error) {
+	out := map[string]float64{}
+	// SQLite takes a bounded number of variables per statement.
+	const chunk = 500
+	for len(ids) > 0 {
+		part := ids[:min(chunk, len(ids))]
+		ids = ids[len(part):]
+		args := make([]any, len(part))
+		for i, id := range part {
+			args[i] = id
+		}
+		rows, err := s.db.Query(`SELECT c.session_id, COALESCE(SUM(h.cost_usd), 0) FROM cost_convs c
+			LEFT JOIN cost_hours h ON h.key = c.key
+			WHERE c.session_id IN (?`+strings.Repeat(", ?", len(part)-1)+`) GROUP BY c.session_id`, args...)
+		if err != nil {
+			return nil, err
+		}
+		for rows.Next() {
+			var id string
+			var cost float64
+			if err := rows.Scan(&id, &cost); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			out[id] = math.Round(cost*1e6) / 1e6
+		}
+		err = rows.Err()
+		rows.Close()
+		if err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
+}

@@ -142,8 +142,9 @@ A repository brings its own test catalog; Socrates runs it with agents.
 | 📸 **Judged on evidence** | Each step gets pass, issue, fail, blocked or n/a, with the screenshots it was judged on. |
 | 🔍 **Reviewed and analysed** | A stronger model re-checks the doubtful cells, and an analyst writes one bug per root cause. |
 | 📊 **Results** | A table of tests × devices with the history of the last runs, full-text search, and every cell down to its screenshots. |
+| 🤖 **From a chat** | Chat agents can run the tests themselves: after a fix they run the tests concerned, and the results come back into the chat when the run ends. |
 
-The format and how it runs: [docs/design/TEST-MODE.md](docs/design/TEST-MODE.md). Check a catalog with `socrates tests check`.
+How to write a catalog: [docs/TESTS-FORMAT.md](docs/TESTS-FORMAT.md). How it runs: [docs/design/TEST-MODE.md](docs/design/TEST-MODE.md). Check a catalog with `socrates tests check`.
 
 ---
 

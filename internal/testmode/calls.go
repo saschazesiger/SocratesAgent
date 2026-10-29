@@ -348,7 +348,7 @@ func (r *Runner) reviewCall(rs *runState, h *Helper, tool string, args json.RawM
 				}
 			}
 		}
-		r.retryLocked(rs, a)
+		r.retryLocked(rs, a, false)
 		left := 0
 		for _, id := range h.Cells {
 			if x := cellOf(rs, id); x != nil && x.Review != nil && x.Review.State == ReviewRunning {
@@ -474,9 +474,27 @@ func (r *Runner) analystCall(rs *runState, h *Helper, tool string, args json.Raw
 		text := r.evidenceText(a, true)
 		text += fmt.Sprintf("\nVerdict: %s (agent: %s)\nSummary: %s\n", a.Final(), a.Verdict, a.Summary)
 		return text, nil
+	case testtools.BugsKnown:
+		return r.knownBugsText(rs), nil
 	case testtools.BugsPut:
 		var p testtools.BugsArgs
 		if err := decode(args, &p); err != nil {
+			return "", err
+		}
+		for i := range p.Bugs {
+			bug := &p.Bugs[i]
+			bug.ID = strings.TrimSpace(bug.ID)
+			if strings.TrimSpace(bug.Title) == "" {
+				return "", fmt.Errorf("bug %d needs a title", i+1)
+			}
+			if !slices.Contains(testtools.Severities, bug.Severity) {
+				return "", fmt.Errorf("bug %d (%s): the severity must be one of %s", i+1, bug.Title, strings.Join(testtools.Severities, ", "))
+			}
+			bug.Title = clip(rs.red.String(bug.Title), 300)
+			bug.Description = clip(rs.red.String(bug.Description), 20000)
+		}
+		// The ids Socrates keeps: a known bug's stays, a new bug gets one.
+		if err := r.settleBugIDsLocked(rs, p.Bugs); err != nil {
 			return "", err
 		}
 		cells := map[string]*Attempt{}
@@ -484,37 +502,36 @@ func (r *Runner) analystCall(rs *runState, h *Helper, tool string, args json.Raw
 			cells[a.CellID] = a
 			a.Bugs = nil
 		}
+		var ids []string
 		for i := range p.Bugs {
 			bug := &p.Bugs[i]
-			bug.ID = strings.TrimSpace(bug.ID)
-			if bug.ID == "" || strings.TrimSpace(bug.Title) == "" {
-				return "", fmt.Errorf("bug %d needs an id and a title", i+1)
-			}
-			if !slices.Contains(testtools.Severities, bug.Severity) {
-				return "", fmt.Errorf("bug %s: the severity must be one of %s", bug.ID, strings.Join(testtools.Severities, ", "))
-			}
-			bug.Title = clip(rs.red.String(bug.Title), 300)
-			bug.Description = clip(rs.red.String(bug.Description), 20000)
-			var known []string
+			known := []string{}
 			for _, c := range bug.Cells {
-				if a := cells[strings.TrimSpace(c)]; a != nil {
+				if a := cells[strings.TrimSpace(c)]; a != nil && !slices.Contains(known, a.CellID) {
 					known = append(known, a.CellID)
 					a.Bugs = append(a.Bugs, bug.ID)
 				}
 			}
 			bug.Cells = known
+			ids = append(ids, bug.ID+" ("+bug.Title+")")
 		}
 		for _, a := range cells {
 			r.saveAttemptLocked(a)
 		}
-		if err := writeJSON(filepath.Join(r.layout.RunDir(rs.run.Repo, rs.run.ID), "bugs.json"), p.Bugs); err != nil {
+		if p.Bugs == nil {
+			p.Bugs = []testtools.Bug{}
+		}
+		if err := writeJSON(r.layout.runBugsPath(rs.run.Repo, rs.run.ID), p.Bugs); err != nil {
 			return "", err
 		}
 		if !slices.Contains(h.Wrote, "bugs") {
 			h.Wrote = append(h.Wrote, "bugs")
 			r.saveRunLocked(rs)
 		}
-		return fmt.Sprintf("%d bug(s) written.", len(p.Bugs)), nil
+		if len(ids) == 0 {
+			return "An empty bug list is written.", nil
+		}
+		return fmt.Sprintf("%d bug(s) written, with the ids Socrates keeps: %s.", len(p.Bugs), strings.Join(ids, "; ")), nil
 	case testtools.ConclusionsPut:
 		var p testtools.ConclusionsArgs
 		if err := decode(args, &p); err != nil {
