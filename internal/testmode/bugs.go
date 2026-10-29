@@ -1,6 +1,7 @@
 package testmode
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -54,14 +55,30 @@ type TrackedBug struct {
 	// after it was fixed.
 	FixedIn   string `json:"fixed_in,omitempty"`
 	Regressed bool   `json:"regressed,omitempty"`
+	// FixedAt is when it was marked fixed (by a run or by hand).
+	FixedAt int64 `json:"fixed_at,omitempty"`
 	// Note is the person's; Issue the URL of its issue.
 	Note  string `json:"note,omitempty"`
 	Issue string `json:"issue,omitempty"`
 	// SeverityByHand is a severity the person set, which the analysts'
-	// reports no longer change.
-	SeverityByHand bool       `json:"severity_by_hand,omitempty"`
-	UpdatedAt      int64      `json:"updated_at"`
-	Events         []BugEvent `json:"events"`
+	// reports no longer change; StatusByHand a status the person set. A bug
+	// with either (or a note or an issue) stays on the list when no run
+	// reports it any longer.
+	SeverityByHand bool `json:"severity_by_hand,omitempty"`
+	StatusByHand   bool `json:"status_by_hand,omitempty"`
+	// Reopened is how the bug stood before a report opened it again, so
+	// that the report taken back (its run analysed again) puts it back.
+	Reopened  *Reopened  `json:"reopened,omitempty"`
+	UpdatedAt int64      `json:"updated_at"`
+	Events    []BugEvent `json:"events"`
+}
+
+// Reopened is how a fixed bug stood before a run's report opened it again.
+type Reopened struct {
+	Run       string `json:"run"`
+	Status    string `json:"status"`
+	FixedIn   string `json:"fixed_in,omitempty"`
+	Regressed bool   `json:"regressed,omitempty"`
 }
 
 // BugEvent is one thing that happened to a bug.
@@ -76,6 +93,11 @@ type BugEvent struct {
 type bugList struct {
 	Next int           `json:"next"`
 	Bugs []*TrackedBug `json:"bugs"`
+	// rebuild is a list whose file could not be read and was moved aside:
+	// it is built again from the runs (mergePendingLocked). stuck is one
+	// that could not be moved aside either: it is not written over.
+	rebuild bool
+	stuck   bool
 }
 
 func (l Layout) bugsPath(repo string) string { return filepath.Join(l.RepoDir(repo), "bugs.json") }
@@ -113,22 +135,101 @@ func (r *Runner) bugListLocked(repo string) *bugList {
 		return l
 	}
 	l := &bugList{}
-	if err := readJSON(r.layout.bugsPath(repo), l); err != nil && !errors.Is(err, os.ErrNotExist) {
-		log.Printf("tests: %s: the bug list: %v", repo, err)
+	path := r.layout.bugsPath(repo)
+	if err := readJSON(path, l); err != nil && !errors.Is(err, os.ErrNotExist) {
+		// Never written over: the file is moved aside for a person to look
+		// at, and the list is built again from the runs' own lists.
+		l = &bugList{}
+		aside := fmt.Sprintf("%s.corrupt-%d", path, r.now().UnixMilli())
+		if mv := os.Rename(path, aside); mv != nil {
+			l.stuck = true
+			log.Printf("tests: %s: ERROR: the bug list %s could not be read (%v) nor moved aside (%v); it is not written until it can be read",
+				repo, path, err, mv)
+		} else {
+			l.rebuild = true
+			log.Printf("tests: %s: ERROR: the bug list %s could not be read (%v); it was moved to %s and is built again from the runs",
+				repo, path, err, aside)
+		}
 	}
 	for _, b := range l.Bugs {
 		l.Next = max(l.Next, bugNumber(b.ID)+1)
+	}
+	// An id a run's list has stays taken, whatever the repository's list
+	// says (one that was lost, or not written yet).
+	for _, rs := range r.runs {
+		if rs.run.Repo == repo {
+			for _, b := range r.reportedLocked(rs) {
+				l.Next = max(l.Next, bugNumber(b.ID)+1)
+			}
+		}
 	}
 	l.Next = max(l.Next, 1)
 	r.bugs[repo] = l
 	return l
 }
 
-func (r *Runner) saveBugsLocked(repo string) {
-	if err := writeJSON(r.layout.bugsPath(repo), r.bugListLocked(repo)); err != nil {
+func (r *Runner) saveBugsLocked(repo string) error {
+	l := r.bugListLocked(repo)
+	var err error
+	if l.stuck {
+		err = errors.New("the bug list's file could not be read, and is not written over")
+	} else {
+		err = writeJSON(r.layout.bugsPath(repo), l)
+	}
+	if err != nil {
 		log.Printf("tests: %s: the bug list: %v", repo, err)
 	}
 	r.host.Publish(map[string]any{"t": "tests", "repo": repo, "bugs": true})
+	return err
+}
+
+// catchUpBugsLocked reads every repository's bug list that has runs, and
+// brings it up to date with its runs that are done but that it did not
+// learn of (a restart or a failed write in between); a list that could not
+// be read is built again from the runs.
+func (r *Runner) catchUpBugsLocked() {
+	repos := map[string]bool{}
+	for _, rs := range r.runs {
+		repos[rs.run.Repo] = true
+	}
+	for repo := range repos {
+		r.mergePendingLocked(repo)
+	}
+}
+
+// mergePendingLocked takes the repository's runs that are done and pending
+// (BugsPending) into its bug list, in the order of their numbers; each is
+// no longer pending once the list is saved with it. A list built again
+// takes every run that is done.
+func (r *Runner) mergePendingLocked(repo string) {
+	l := r.bugListLocked(repo)
+	var list []*runState
+	for _, rs := range r.runs {
+		if rs.run.Repo != repo || rs.deleting || rs.run.State != RunDone {
+			continue
+		}
+		if l.rebuild || rs.run.BugsPending {
+			list = append(list, rs)
+		}
+	}
+	l.rebuild = false
+	sort.Slice(list, func(i, j int) bool {
+		if list[i].run.Number != list[j].run.Number {
+			return list[i].run.Number < list[j].run.Number
+		}
+		return list[i].run.CreatedAt < list[j].run.CreatedAt
+	})
+	for _, rs := range list {
+		if err := r.mergeBugsLocked(rs); err != nil {
+			// Kept pending: the next end of a run or the next start tries
+			// again.
+			return
+		}
+		if rs.run.BugsPending {
+			rs.run.BugsPending = false
+			r.saveRunLocked(rs)
+		}
+	}
 }
 
 // numberLocked is a run's number, 0 for a run that is gone.
@@ -238,10 +339,12 @@ func (r *Runner) settleBugIDsLocked(rs *runState, bugs []testtools.Bug) error {
 // ran and all of which pass now is fixed. A run analysed again takes back
 // what it reported before and no longer does. Known bugs and bugs that are
 // not one keep their status: only the person changes it.
-func (r *Runner) mergeBugsLocked(rs *runState) {
+//
+// Merging a run again changes nothing more (a crash between the run's end
+// and the list's save merges it again at the next start).
+func (r *Runner) mergeBugsLocked(rs *runState) error {
 	run := rs.run
-	var reported []testtools.Bug
-	_ = readJSON(r.layout.runBugsPath(run.Repo, run.ID), &reported)
+	reported := r.reportedLocked(rs)
 	list := r.bugListLocked(run.Repo)
 	now := r.now().UnixMilli()
 	num := run.Number
@@ -249,6 +352,7 @@ func (r *Runner) mergeBugsLocked(rs *runState) {
 	changed := false
 	for _, rb := range reported {
 		b := list.find(rb.ID)
+		var before []byte
 		if b == nil {
 			if bugNumber(rb.ID) == 0 {
 				continue
@@ -257,12 +361,15 @@ func (r *Runner) mergeBugsLocked(rs *runState) {
 			b.event(now, run.ID, fmt.Sprintf("reported in run %d", num))
 			list.Bugs = append(list.Bugs, b)
 			list.Next = max(list.Next, bugNumber(b.ID)+1)
-		} else if !slices.Contains(b.Runs, run.ID) {
-			b.event(now, run.ID, fmt.Sprintf("reported again in run %d", num))
+		} else {
+			before, _ = json.Marshal(b)
+			if !slices.Contains(b.Runs, run.ID) {
+				b.event(now, run.ID, fmt.Sprintf("reported again in run %d", num))
+			}
 		}
 		got[b.ID] = true
-		changed = true
-		if !slices.Contains(b.Runs, run.ID) {
+		wasIn := slices.Contains(b.Runs, run.ID)
+		if !wasIn {
 			b.Runs = append(b.Runs, run.ID)
 		}
 		if b.LastRun == "" || r.numberLocked(b.LastRun) <= num {
@@ -275,11 +382,22 @@ func (r *Runner) mergeBugsLocked(rs *runState) {
 		if b.FirstRun == "" || r.numberLocked(b.FirstRun) > num {
 			b.FirstRun = run.ID
 		}
-		if b.Status == BugFixed && num > r.numberLocked(b.FixedIn) {
+		switch {
+		case b.Status == BugFixed && b.FixedIn == run.ID && (!wasIn || b.FixedAt > 0 && run.Analysed > b.FixedAt):
+			// The run that showed it fixed (or the latest run when it was
+			// marked fixed by hand) reports it after all: analysed again
+			// since. The same report merged again changes nothing.
+			b.Reopened = &Reopened{Run: run.ID, Status: b.Status, FixedIn: b.FixedIn, Regressed: b.Regressed}
+			b.Status, b.FixedIn = BugOpen, ""
+			b.event(now, run.ID, fmt.Sprintf("open again: run %d, which had it fixed, reports it", num))
+		case b.Status == BugFixed && num > r.numberLocked(b.FixedIn):
+			b.Reopened = &Reopened{Run: run.ID, Status: b.Status, FixedIn: b.FixedIn, Regressed: b.Regressed}
 			b.Status, b.Regressed, b.FixedIn = BugOpen, true, ""
 			b.event(now, run.ID, fmt.Sprintf("reopened: reported again in run %d after it was fixed", num))
 		}
-		b.UpdatedAt = now
+		if after, _ := json.Marshal(b); before == nil || string(after) != string(before) {
+			b.UpdatedAt, changed = now, true
+		}
 	}
 	// What an earlier analysis of this run reported and this one does not.
 	keep := list.Bugs[:0]
@@ -290,7 +408,7 @@ func (r *Runner) mergeBugsLocked(rs *runState) {
 		}
 		changed = true
 		b.Runs = slices.DeleteFunc(b.Runs, func(id string) bool { return id == run.ID })
-		if len(b.Runs) == 0 && b.Note == "" && b.Issue == "" {
+		if len(b.Runs) == 0 && b.Note == "" && b.Issue == "" && !b.StatusByHand && !b.SeverityByHand {
 			continue
 		}
 		b.LastRun, b.FirstRun = "", ""
@@ -302,7 +420,33 @@ func (r *Runner) mergeBugsLocked(rs *runState) {
 				b.FirstRun = id
 			}
 		}
+		// What it says is the report of its last run that still has it.
+		if x := r.runs[b.LastRun]; x != nil {
+			for _, rb := range r.reportedLocked(x) {
+				if bugNumber(rb.ID) == bugNumber(b.ID) {
+					b.Title, b.Description, b.Cells = rb.Title, rb.Description, append([]string{}, rb.Cells...)
+					if !b.SeverityByHand {
+						b.Severity = rb.Severity
+					}
+				}
+			}
+		}
 		b.event(now, run.ID, fmt.Sprintf("no longer reported by run %d, which was analysed again", num))
+		// A reopening no run stands behind any longer is taken back: the
+		// bug is as it was before, unless the person changed it since.
+		if o := b.Reopened; o != nil && b.Status == BugOpen {
+			fixedNum := r.numberLocked(o.FixedIn)
+			later := false
+			for _, id := range b.Runs {
+				if r.numberLocked(id) > fixedNum {
+					later = true
+				}
+			}
+			if !later {
+				b.Status, b.FixedIn, b.Regressed, b.Reopened = o.Status, o.FixedIn, o.Regressed, nil
+				b.event(now, run.ID, fmt.Sprintf("%s again: no run reports it after run %d", o.Status, fixedNum))
+			}
+		}
 		keep = append(keep, b)
 	}
 	list.Bugs = keep
@@ -325,14 +469,15 @@ func (r *Runner) mergeBugsLocked(rs *runState) {
 			}
 		}
 		if fixed {
-			b.Status, b.FixedIn = BugFixed, run.ID
+			b.Status, b.FixedIn, b.FixedAt, b.Reopened = BugFixed, run.ID, now, nil
 			b.event(now, run.ID, fmt.Sprintf("fixed: its cells pass in run %d", num))
 			changed = true
 		}
 	}
 	if changed {
-		r.saveBugsLocked(run.Repo)
+		return r.saveBugsLocked(run.Repo)
 	}
+	return nil
 }
 
 // BugView is a bug as the page shows it: with the numbers of its runs.
@@ -416,21 +561,42 @@ func (r *Runner) Bug(repo, id string) (*BugDetail, error) {
 	if b == nil {
 		return nil, ErrNotFound
 	}
+	// The cell in the bug's last run, else in the newest run that has it;
+	// read live first where it runs.
+	type bugCell struct {
+		rs *runState
+		a  *Attempt
+	}
+	cellsOf := func(h *repoHistory) (out []bugCell) {
+		for _, cell := range b.Cells {
+			var rs *runState
+			var a *Attempt
+			if x := r.runs[b.LastRun]; x != nil {
+				rs, a = x, cellOf(x, cell)
+			}
+			for i := len(h.runs) - 1; a == nil && i >= 0; i-- {
+				rs, a = h.runs[i], cellOf(h.runs[i], cell)
+			}
+			if a != nil {
+				out = append(out, bugCell{rs, a})
+			}
+		}
+		return out
+	}
+	r.peekLocked(func() []*peek {
+		var list []*peek
+		for _, c := range cellsOf(r.historyLocked(repo)) {
+			list = append(list, r.peeksLocked(c.rs, []*Attempt{c.a}, false)...)
+		}
+		return list
+	})
+	if b = r.bugListLocked(repo).find(id); b == nil || r.repos[repo] == nil {
+		return nil, ErrNotFound
+	}
 	d := &BugDetail{Bug: r.bugViewLocked(b), Cells: []CellRow{}, Runs: []TestRunRef{}}
 	h := r.historyLocked(repo)
-	for _, cell := range b.Cells {
-		// The cell in the bug's last run, else in the newest run that has it.
-		var rs *runState
-		var a *Attempt
-		if x := r.runs[b.LastRun]; x != nil {
-			rs, a = x, cellOf(x, cell)
-		}
-		for i := len(h.runs) - 1; a == nil && i >= 0; i-- {
-			rs, a = h.runs[i], cellOf(h.runs[i], cell)
-		}
-		if a != nil {
-			d.Cells = append(d.Cells, r.cellRowLocked(h, h.index[rs.run.ID], rs, a))
-		}
+	for _, c := range cellsOf(h) {
+		d.Cells = append(d.Cells, r.cellRowLocked(h, h.index[c.rs.run.ID], c.rs, c.a))
 	}
 	for i := len(b.Runs) - 1; i >= 0; i-- {
 		if rs := r.runs[b.Runs[i]]; rs != nil {
@@ -480,12 +646,12 @@ func (r *Runner) PatchBug(repo, id string, p BugPatch) (*BugView, error) {
 	}
 	now := r.now().UnixMilli()
 	if p.Status != nil && *p.Status != b.Status {
-		b.Status = *p.Status
+		b.Status, b.StatusByHand, b.Reopened = *p.Status, true, nil
 		switch b.Status {
 		case BugFixed:
 			// Fixed by hand: as of the repository's latest run, so that a
 			// later report opens it again.
-			b.FixedIn = ""
+			b.FixedIn, b.FixedAt = "", now
 			if latest := r.latestRunLocked(repo); latest != nil {
 				b.FixedIn = latest.run.ID
 			}
@@ -510,7 +676,9 @@ func (r *Runner) PatchBug(repo, id string, p BugPatch) (*BugView, error) {
 		}
 		b.event(now, "", what)
 	}
-	r.saveBugsLocked(repo)
+	if err := r.saveBugsLocked(repo); err != nil {
+		return nil, err
+	}
 	v := r.bugViewLocked(b)
 	return &v, nil
 }

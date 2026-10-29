@@ -32,6 +32,9 @@ func (r *Runner) Call(_ context.Context, chat, tool string, args json.RawMessage
 	if rs.resuming {
 		return "Socrates is taking the test run up again after a restart; call again in a minute.", true
 	}
+	if ref.Kind == testtools.KindCell && rs.unredactable() {
+		return "The test run is paused: Socrates could not read its secrets again. Wait; call again later.", true
+	}
 	if !testtools.Has(ref.Kind, tool) {
 		return "There is no tool " + tool + " in this session.", true
 	}
@@ -521,6 +524,7 @@ func (r *Runner) analystCall(rs *runState, h *Helper, tool string, args json.Raw
 		if p.Bugs == nil {
 			p.Bugs = []testtools.Bug{}
 		}
+		rs.forgetReported()
 		if err := writeJSON(r.layout.runBugsPath(rs.run.Repo, rs.run.ID), p.Bugs); err != nil {
 			return "", err
 		}

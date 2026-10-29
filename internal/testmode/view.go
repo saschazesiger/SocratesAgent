@@ -2,6 +2,7 @@ package testmode
 
 import (
 	"errors"
+	"maps"
 	"os"
 	"path/filepath"
 	"sort"
@@ -42,6 +43,18 @@ func countsOf(rs *runState) Counts {
 			c.Reviews++
 		}
 	}
+	return c
+}
+
+// countsLocked is countsOf(rs), counted again only once a run or an
+// attempt changed (Runner.gen): the page polls the views that count every
+// run.
+func (r *Runner) countsLocked(rs *runState) Counts {
+	if !rs.countsOK || rs.countsGen != r.gen {
+		rs.counts, rs.countsGen, rs.countsOK = countsOf(rs), r.gen, true
+	}
+	c := rs.counts
+	c.Verdicts, c.States = maps.Clone(c.Verdicts), maps.Clone(c.States)
 	return c
 }
 
@@ -95,7 +108,7 @@ type PoolMember struct {
 
 func (r *Runner) runViewLocked(rs *runState, full bool) RunView {
 	run := *rs.run
-	v := RunView{Run: &run, Counts: countsOf(rs)}
+	v := RunView{Run: &run, Counts: r.countsLocked(rs)}
 	if rs.plan != nil && full {
 		for _, id := range rs.plan.AreaOrder {
 			pa := rs.plan.Areas[id]
@@ -138,14 +151,25 @@ func (r *Runner) runViewLocked(rs *runState, full bool) RunView {
 			v.Pools = append(v.Pools, p)
 		}
 	}
-	if raw, err := os.ReadFile(filepath.Join(r.layout.RunDir(rs.run.Repo, rs.run.ID), "bugs.json")); err == nil {
-		var bugs []testtools.Bug
-		if jsonUnmarshal(raw, &bugs) == nil {
-			v.Bugs = len(bugs)
-		}
-	}
+	v.Bugs = len(r.reportedLocked(rs))
 	return v
 }
+
+// reportedLocked is the bugs a run's analyst wrote (its bugs.json), read
+// once and kept until it writes them again (forgetReported).
+func (r *Runner) reportedLocked(rs *runState) []testtools.Bug {
+	if !rs.reportedRead {
+		rs.reported, rs.reportedRead = nil, true
+		var bugs []testtools.Bug
+		if raw, err := os.ReadFile(r.layout.runBugsPath(rs.run.Repo, rs.run.ID)); err == nil && jsonUnmarshal(raw, &bugs) == nil {
+			rs.reported = bugs
+		}
+	}
+	return rs.reported
+}
+
+// forgetReported is told that a run's bugs.json was written.
+func (rs *runState) forgetReported() { rs.reported, rs.reportedRead = nil, false }
 
 // publishLocked tells every page how a run stands.
 func (r *Runner) publishLocked(rs *runState) {
@@ -251,7 +275,10 @@ func (r *Runner) RunDetail(id string) (RunView, error) {
 
 // CellRow is the latest attempt of a cell, as a row of the results table.
 type CellRow struct {
-	ID        string   `json:"id"` // attempt
+	ID string `json:"id"` // attempt
+	// Run is the attempt's run: a row of a bug or of the overview may be
+	// of another run than the one the page shows.
+	Run       string   `json:"run"`
 	Test      string   `json:"test"`
 	Area      string   `json:"area"`
 	Title     string   `json:"title"`
@@ -290,7 +317,7 @@ type CellRow struct {
 }
 
 func rowOf(a *Attempt) CellRow {
-	row := CellRow{ID: a.ID, Test: a.Test, Area: a.Area, Title: a.Title, Priority: a.Priority, Tags: a.Tags, Cell: a.Cell,
+	row := CellRow{ID: a.ID, Run: a.Run, Test: a.Test, Area: a.Area, Title: a.Title, Priority: a.Priority, Tags: a.Tags, Cell: a.Cell,
 		CellID: a.CellID, Dims: a.Dims, N: a.N, State: a.State, Wait: a.Wait, Verdict: a.Verdict, Reviewed: a.Reviewed,
 		Final: a.Final(), Summary: a.Summary, EndReason: a.EndReason, Bugs: a.Bugs, StartedAt: a.StartedAt, EndedAt: a.EndedAt,
 		Shot: bestShot(a)}
@@ -314,6 +341,9 @@ func rowOf(a *Attempt) CellRow {
 func (r *Runner) Cells(id string) ([]CellRow, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if rs := r.runs[id]; rs != nil {
+		r.peekLocked(func() []*peek { return r.peeksLocked(rs, latestAttempts(rs), false) })
+	}
 	rs := r.runs[id]
 	if rs == nil {
 		return nil, ErrNotFound
@@ -328,11 +358,8 @@ func (r *Runner) Cells(id string) ([]CellRow, error) {
 }
 
 // cellRowLocked is an attempt's row with what its history says of it, and
-// live while it runs.
+// live while it runs (from what was read of it: peekLocked).
 func (r *Runner) cellRowLocked(h *repoHistory, i int, rs *runState, a *Attempt) CellRow {
-	if a.State == AttemptRunning {
-		r.peekLocked(rs, a)
-	}
 	row := rowOf(a)
 	h.decorate(&row, i, a)
 	if a.State == AttemptRunning {
@@ -354,6 +381,10 @@ type AttemptView struct {
 func (r *Runner) AttemptDetail(runID, attemptID string) (*AttemptView, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	// What the tools wrote while it runs is shown as it comes.
+	if rs := r.runs[runID]; rs != nil {
+		r.peekLocked(func() []*peek { return r.peeksLocked(rs, []*Attempt{rs.attempts[attemptID]}, true) })
+	}
 	rs := r.runs[runID]
 	if rs == nil {
 		return nil, ErrNotFound
@@ -361,12 +392,6 @@ func (r *Runner) AttemptDetail(runID, attemptID string) (*AttemptView, error) {
 	a := rs.attempts[attemptID]
 	if a == nil {
 		return nil, ErrNotFound
-	}
-	// What the tools wrote while it runs is shown as it comes.
-	if a.State == AttemptRunning {
-		if n, _ := ingest(a, r.layout.EvidenceDir(a), rs.red); n > 0 {
-			r.saveAttemptLocked(a)
-		}
 	}
 	c := *a
 	v := &AttemptView{Attempt: &c, Final: a.Final()}
@@ -393,8 +418,13 @@ func (r *Runner) EvidencePath(runID, attemptID, name string) (string, func([]byt
 	rs := r.runs[runID]
 	var a *Attempt
 	var red *Redactor
+	// A text file of an attempt that has not ended, of a run whose secrets
+	// are not read (taken up again, or paused for them), is not redacted on
+	// disk and cannot be redacted now: it is not served until they are.
+	hold := false
 	if rs != nil {
 		a, red = rs.attempts[attemptID], rs.red
+		hold = a != nil && !Final(a.State) && rs.unredactable()
 	}
 	r.mu.Unlock()
 	if a == nil {
@@ -403,6 +433,9 @@ func (r *Runner) EvidencePath(runID, attemptID, name string) (string, func([]byt
 	path, err := EvidenceFile(r.layout.EvidenceDir(a), name)
 	if err != nil {
 		return "", nil, err
+	}
+	if hold && redactable(name) {
+		return "", nil, ErrNotFound
 	}
 	redact := func(raw []byte) []byte { return raw }
 	if red != nil && redactable(name) {
@@ -508,13 +541,8 @@ func (r *Runner) Search(repo, q string, limit int) []Hit {
 	var out []Hit
 	for _, rs := range runs {
 		bugTitles := map[string]string{}
-		if raw, err := os.ReadFile(filepath.Join(r.layout.RunDir(rs.run.Repo, rs.run.ID), "bugs.json")); err == nil {
-			var bugs []testtools.Bug
-			if jsonUnmarshal(raw, &bugs) == nil {
-				for _, b := range bugs {
-					bugTitles[b.ID] = b.Title
-				}
-			}
+		for _, b := range r.reportedLocked(rs) {
+			bugTitles[b.ID] = b.Title
 		}
 		for _, ref := range rs.run.Order {
 			a := rs.attempts[ref.ID]

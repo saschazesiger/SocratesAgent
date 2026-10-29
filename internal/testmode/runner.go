@@ -124,9 +124,24 @@ type Runner struct {
 	// goroutine starts after that.
 	loaded bool
 	closed bool
+	// issuing is the bugs (repo/id) whose GitHub issue is being made.
+	issuing map[string]bool
+	// telling is the runs whose chat is being sent their results, and
+	// tellTries how often that failed (tellStarterLocked).
+	telling   map[string]bool
+	tellTries map[string]int
+	// gen counts the changes of the runs and attempts (changedLocked);
+	// hist is each repository's history as of a gen, read again once it
+	// moved on.
+	gen  uint64
+	hist map[string]*repoHistory
 	// now is the clock, a field for tests.
 	now func() time.Time
 }
+
+// changedLocked notes that a run or an attempt changed (or came or went):
+// the histories read before are read again when next asked for.
+func (r *Runner) changedLocked() { r.gen++ }
 
 type busyReading struct {
 	busy map[int]bool
@@ -153,6 +168,27 @@ type runState struct {
 	preparing bool
 	resuming  bool
 	deleting  bool
+	// counts is countsOf the run as of the runner's gen countsGen.
+	counts    Counts
+	countsGen uint64
+	countsOK  bool
+	// reported is the run's bugs.json as last read (reportedLocked).
+	reported     []testtools.Bug
+	reportedRead bool
+}
+
+// unredactable is whether what a run's sessions write cannot be redacted
+// now, so that nothing of it may be read into what Socrates stores or
+// shows: while the run is taken up again after a start (its secrets are
+// being read again), or when they could not be read (a run paused for it).
+// A run whose plan has no tool has no secrets to miss. Every read of a
+// running attempt's evidence (a call of its agent, the live view, the
+// attempt's view, its end) asks this first.
+func (rs *runState) unredactable() bool {
+	if rs.resuming {
+		return true
+	}
+	return rs.red == nil && (rs.plan == nil || len(rs.plan.Tools) > 0)
 }
 
 // New is a runner over the data directory; Start loads and starts it.
@@ -160,7 +196,7 @@ func New(dataDir string, host Host) *Runner {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Runner{host: host, layout: Layout{Data: dataDir}, ctx: ctx, cancel: cancel, wake: make(chan struct{}, 1),
 		repos: map[string]*Repo{}, settings: map[string]Settings{}, runs: map[string]*runState{}, numbers: map[string]int{},
-		bugs: map[string]*bugList{}, github: map[string]githubReading{}, byChat: map[string]Ref{}, turns: map[string]bool{}, busy: map[string]busyReading{}, now: time.Now}
+		bugs: map[string]*bugList{}, hist: map[string]*repoHistory{}, github: map[string]githubReading{}, byChat: map[string]Ref{}, turns: map[string]bool{}, busy: map[string]busyReading{}, now: time.Now}
 }
 
 // Load reads the settings and every run from the data directory. The
@@ -188,6 +224,10 @@ func (r *Runner) Start() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.sweepRuntimeLocked()
+	// The bug lists learn of the runs that were done when the server
+	// stopped before they did; a list that could not be read is built
+	// again from the runs.
+	r.catchUpBugsLocked()
 	// tests-b2: the chats of runs that ended before a restart told them.
 	r.tellStartersLocked()
 	for _, rs := range r.runs {
@@ -314,6 +354,7 @@ func (r *Runner) loadRunsLocked() {
 				continue
 			}
 			r.runs[rs.run.ID] = rs
+			r.changedLocked()
 		}
 	}
 	r.numberRunsLocked()
@@ -535,6 +576,7 @@ func flatten(secrets map[string]map[string]string) map[string]string {
 
 // saveRunLocked writes run.json; nothing for a run that was deleted.
 func (r *Runner) saveRunLocked(rs *runState) {
+	r.changedLocked()
 	if r.runs[rs.run.ID] != rs {
 		return
 	}
@@ -546,6 +588,7 @@ func (r *Runner) saveRunLocked(rs *runState) {
 // saveAttemptLocked writes an attempt's record.json; nothing for an attempt
 // of a run that was deleted.
 func (r *Runner) saveAttemptLocked(a *Attempt) {
+	r.changedLocked()
 	if rs := r.runs[a.Run]; rs == nil || rs.attempts[a.ID] != a {
 		return
 	}
@@ -1503,11 +1546,16 @@ func (r *Runner) finishLocked(rs *runState, a *Attempt, state, reason string) {
 	}
 	wasRunning := a.State == AttemptRunning || a.State == AttemptStarting
 	dir := r.layout.EvidenceDir(a)
-	if _, err := ingest(a, dir, rs.red); err != nil {
-		log.Printf("tests: %s: evidence: %v", a.ID, err)
-	}
-	if links := readLinks(dir, rs.red); len(links) > 0 {
-		a.Links = links
+	// Without the secrets (a paused run stopped) what the tools wrote last
+	// stays in the evidence folder only: read now, it would be stored with
+	// the secrets in it.
+	if !rs.unredactable() {
+		if _, err := ingest(a, dir, rs.red); err != nil {
+			log.Printf("tests: %s: evidence: %v", a.ID, err)
+		}
+		if links := readLinks(dir, rs.red); len(links) > 0 {
+			a.Links = links
+		}
 	}
 	if state != AttemptEnded {
 		for i := range a.Steps {
@@ -1729,13 +1777,23 @@ func (r *Runner) advanceLocked(rs *runState) {
 // run starts; old runs beyond the retention go.
 func (r *Runner) endRunLocked(rs *runState, state string) {
 	run := rs.run
+	if state == RunStopped {
+		run.Stopped = true
+	}
+	if state == RunDone && run.Stopped {
+		// A run that was stopped and taken up again (an analysis, a retry)
+		// ends stopped again: it changes nothing in the bug list.
+		state = RunStopped
+	}
 	run.State, run.EndedAt = state, r.now().UnixMilli()
+	run.BugsPending = state == RunDone
 	_ = os.RemoveAll(r.layout.RunRuntimeDir(run.ID))
 	r.saveRunLocked(rs)
 	if state == RunDone {
 		// The repository's bug list learns what the run reported, and which
-		// of its open bugs the run shows fixed.
-		r.mergeBugsLocked(rs)
+		// of its open bugs the run shows fixed; and of an earlier run that
+		// it did not learn of (a failed write).
+		r.mergePendingLocked(run.Repo)
 	}
 	r.publishLocked(rs)
 	if state == RunDone && !run.Notified {

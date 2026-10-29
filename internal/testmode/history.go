@@ -2,6 +2,7 @@ package testmode
 
 import (
 	"math"
+	"slices"
 	"sort"
 	"strconv"
 
@@ -63,14 +64,37 @@ func markOf(rs *runState) *RunMark {
 
 // repoHistory is a repository's runs in the order of their numbers, each
 // with the latest attempt of each of its cells that ended with a verdict.
+// It is kept until a run or an attempt changes (Runner.gen), and only read
+// after: the page polls every view that reads it.
 type repoHistory struct {
 	runs  []*runState
 	cells []map[string]*Attempt
 	index map[string]int
+	gen   uint64
+	// changed is every run's changes, counted in one pass when first asked
+	// for.
+	changed []Changes
+	// flaky is flakyTests, read when first asked for.
+	flaky []FlakyTest
 }
 
-// historyLocked reads a repository's history from the runs in memory.
+// historyLocked is a repository's history from the runs in memory: the one
+// read before while nothing changed since.
 func (r *Runner) historyLocked(repo string) *repoHistory {
+	if h := r.hist[repo]; h != nil && h.gen == r.gen {
+		return h
+	}
+	h := r.readHistoryLocked(repo)
+	h.gen = r.gen
+	if r.hist == nil {
+		r.hist = map[string]*repoHistory{}
+	}
+	r.hist[repo] = h
+	return h
+}
+
+// readHistoryLocked reads a repository's history.
+func (r *Runner) readHistoryLocked(repo string) *repoHistory {
 	h := &repoHistory{index: map[string]int{}}
 	for _, rs := range r.runs {
 		if rs.run.Repo == repo {
@@ -165,20 +189,29 @@ func (h *repoHistory) decorate(row *CellRow, i int, a *Attempt) {
 // changes counts the cells of the run at i that regressed and that were
 // fixed against the run before.
 func (h *repoHistory) changes(i int) *Changes {
-	c := &Changes{}
-	for cell, a := range h.cells[i] {
-		_, p := h.prev(i, cell)
-		if p == nil {
-			continue
-		}
-		switch changeOf(p.Final(), true, a.Final()) {
-		case ChangeRegressed:
-			c.Regressed++
-		case ChangeFixed:
-			c.Fixed++
+	if h.changed == nil {
+		// Every run's at once: each cell against its latest verdict before.
+		h.changed = make([]Changes, len(h.runs))
+		last := map[string]*Attempt{}
+		for j := range h.runs {
+			c := &h.changed[j]
+			for cell, a := range h.cells[j] {
+				if p := last[cell]; p != nil {
+					switch changeOf(p.Final(), true, a.Final()) {
+					case ChangeRegressed:
+						c.Regressed++
+					case ChangeFixed:
+						c.Fixed++
+					}
+				}
+			}
+			for cell, a := range h.cells[j] {
+				last[cell] = a
+			}
 		}
 	}
-	return c
+	c := h.changed[i]
+	return &c
 }
 
 // CellHealth is how a cell stands over the repository's last runs.
@@ -526,7 +559,7 @@ func (r *Runner) Overview(repo string) (*Overview, error) {
 	for i := max(0, len(h.runs)-healthRuns); i < len(h.runs); i++ {
 		rs := h.runs[i]
 		o.Trend = append(o.Trend, TrendPoint{ID: rs.run.ID, Number: rs.run.Number, Name: rs.run.Name,
-			CreatedAt: rs.run.CreatedAt, State: rs.run.State, Counts: countsOf(rs)})
+			CreatedAt: rs.run.CreatedAt, State: rs.run.State, Counts: r.countsLocked(rs)})
 	}
 	if latest >= 0 {
 		rs := h.runs[latest]
@@ -566,6 +599,13 @@ func (r *Runner) Overview(repo string) (*Overview, error) {
 
 // flakyTests is the tests with a flaky cell over the last runs, by test.
 func (h *repoHistory) flakyTests() []FlakyTest {
+	if h.flaky == nil {
+		h.flaky = h.readFlakyTests()
+	}
+	return slices.Clone(h.flaky)
+}
+
+func (h *repoHistory) readFlakyTests() []FlakyTest {
 	cells := map[string]*Attempt{}
 	for j := max(0, len(h.runs)-healthRuns); j < len(h.runs); j++ {
 		for id, a := range h.cells[j] {
