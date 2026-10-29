@@ -84,40 +84,69 @@ type toolLine struct {
 // attempt, and returns how many it took. Only whole lines are read: one being
 // written is read the next time.
 func ingest(a *Attempt, dir string, red *Redactor) (int, error) {
+	got, err := readActions(dir, a.Offset, len(a.Actions), red)
+	if err != nil {
+		return 0, err
+	}
+	got.apply(a)
+	return len(got.actions), nil
+}
+
+// actionsRead is what readActions read of an evidence folder's
+// actions.jsonl: the offset it read from (0 when the file was replaced), the
+// offset it got to, and the actions, numbered after the have the attempt
+// had.
+type actionsRead struct {
+	from, to int64
+	have     int
+	actions  []Action
+}
+
+// apply takes what was read into the attempt.
+func (got actionsRead) apply(a *Attempt) {
+	a.Offset = got.to
+	a.Actions = append(a.Actions, got.actions...)
+}
+
+// readActions reads the whole lines of the evidence's actions.jsonl after
+// offset into actions numbered after the have an attempt has, at most
+// maxActions in all; it reads files only, so that it may run without the
+// runner's lock (the live view).
+func readActions(dir string, offset int64, have int, red *Redactor) (actionsRead, error) {
+	got := actionsRead{from: offset, to: offset, have: have}
 	path := filepath.Join(dir, ActionsFile)
 	fi, err := os.Lstat(path)
 	if errors.Is(err, os.ErrNotExist) {
-		return 0, nil
+		return got, nil
 	}
 	if err != nil {
-		return 0, err
+		return got, err
 	}
 	if !fi.Mode().IsRegular() {
-		return 0, fmt.Errorf("%s is not a regular file", ActionsFile)
+		return got, fmt.Errorf("%s is not a regular file", ActionsFile)
 	}
-	if fi.Size() < a.Offset {
+	if fi.Size() < offset {
 		// The file was replaced: start again from its beginning.
-		a.Offset = 0
+		got.from, got.to = 0, 0
 	}
 	f, err := os.Open(path)
 	if err != nil {
-		return 0, err
+		return actionsRead{from: offset, to: offset, have: have}, err
 	}
 	defer f.Close()
-	if _, err := f.Seek(a.Offset, io.SeekStart); err != nil {
-		return 0, err
+	if _, err := f.Seek(got.to, io.SeekStart); err != nil {
+		return actionsRead{from: offset, to: offset, have: have}, err
 	}
 	rd := bufio.NewReaderSize(f, 64<<10)
-	n := 0
 	for {
 		line, err := rd.ReadBytes('\n')
 		if err != nil {
 			// A line without its newline is still being written.
 			break
 		}
-		a.Offset += int64(len(line))
+		got.to += int64(len(line))
 		line = bytes.TrimSpace(line)
-		if len(line) == 0 || len(line) > maxLine || len(a.Actions) >= maxActions {
+		if len(line) == 0 || len(line) > maxLine || have+len(got.actions) >= maxActions {
 			continue
 		}
 		var tl toolLine
@@ -125,7 +154,7 @@ func ingest(a *Attempt, dir string, red *Redactor) (int, error) {
 			continue
 		}
 		act := Action{
-			N: len(a.Actions) + 1, At: tl.At, Tool: tl.Tool, Action: tl.Action,
+			N: have + len(got.actions) + 1, At: tl.At, Tool: tl.Tool, Action: tl.Action,
 			Summary: red.String(tl.Summary), URL: red.String(tl.URL), MS: tl.MS, Interaction: tl.Interaction,
 			Details: red.JSON(tl.Details),
 		}
@@ -139,10 +168,9 @@ func ingest(a *Attempt, dir string, red *Redactor) (int, error) {
 				act.Error = strings.TrimSpace(act.Error + " (screenshot " + tl.Screenshot + " is not a file of the evidence)")
 			}
 		}
-		a.Actions = append(a.Actions, act)
-		n++
+		got.actions = append(got.actions, act)
 	}
-	return n, nil
+	return got, nil
 }
 
 func isImage(name string) bool {

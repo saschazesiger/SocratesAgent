@@ -62,8 +62,7 @@ func (r *Runner) Report(runID string, opt ReportOptions) (string, error) {
 	for _, b := range r.bugViewsLocked(run.Repo, "") {
 		bugs[b.ID] = b
 	}
-	var reported []testtools.Bug
-	_ = readJSON(r.layout.runBugsPath(run.Repo, run.ID), &reported)
+	reported := slices.Clone(r.reportedLocked(rs))
 	conclusions, _ := os.ReadFile(filepath.Join(r.layout.RunDir(run.Repo, run.ID), "conclusions.md"))
 	evidence := map[string]string{}
 	for id, a := range attempts {

@@ -287,6 +287,7 @@ func (r *Runner) deleteLocked(rs *runState) []string {
 		}
 	}
 	delete(r.runs, rs.run.ID)
+	r.changedLocked()
 	if err := os.RemoveAll(r.layout.RunDir(rs.run.Repo, rs.run.ID)); err != nil {
 		log.Printf("tests: run %s: %v", rs.run.ID, err)
 	}

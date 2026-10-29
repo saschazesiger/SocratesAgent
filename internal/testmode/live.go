@@ -23,25 +23,95 @@ type Live struct {
 	At       int64  `json:"at,omitempty"`
 }
 
-// peekLocked reads what a running attempt's tools wrote since it was last
-// read, at most once every liveEvery. The new lines are taken into the
-// attempt exactly as a call of its agent takes them (ingest): appended to
-// its actions, with the offset moved on, while the number of the last
+// A peek reads what a running attempt's tools wrote since it was last read,
+// for its live view and its attempt's view. The new lines are taken into
+// the attempt exactly as a call of its agent takes them (ingest): appended
+// to its actions, with the offset moved on, while the number of the last
 // action a judgement took (Judged) stays. So whatever a peek read is still
 // among the actions since the previous judgement, which the next judgement
 // takes as its evidence.
-func (r *Runner) peekLocked(rs *runState, a *Attempt) {
+//
+// The page reads the cells every few seconds while a run is active, and
+// every call of an agent takes the runner's lock: the file is read without
+// it. peeksLocked notes what to read (the attempt, its offset and the
+// redactor), readPeeks reads it, and applyPeeksLocked takes it in under the
+// lock again, only where nothing was read into the attempt meanwhile.
+type peek struct {
+	rs  *runState
+	a   *Attempt
+	dir string
+	red *Redactor
+	off int64
+	got actionsRead
+	err error
+}
+
+// peeksLocked is the peeks of the running attempts among list: each at
+// most once every liveEvery unless always, none of a run whose secrets are
+// not read (unredactable).
+func (r *Runner) peeksLocked(rs *runState, list []*Attempt, always bool) []*peek {
+	if rs.unredactable() || rs.deleting {
+		return nil
+	}
 	if rs.peeked == nil {
 		rs.peeked = map[string]time.Time{}
 	}
 	now := r.now()
-	if last, ok := rs.peeked[a.ID]; ok && now.Sub(last) < liveEvery {
+	var out []*peek
+	for _, a := range list {
+		if a == nil || a.State != AttemptRunning {
+			continue
+		}
+		if last, ok := rs.peeked[a.ID]; ok && !always && now.Sub(last) < liveEvery {
+			continue
+		}
+		rs.peeked[a.ID] = now
+		out = append(out, &peek{rs: rs, a: a, dir: r.layout.EvidenceDir(a), red: rs.red, off: a.Offset,
+			got: actionsRead{have: len(a.Actions)}})
+	}
+	return out
+}
+
+// readPeeks reads the files of the peeks: without the runner's lock.
+func readPeeks(list []*peek) {
+	for _, p := range list {
+		p.got, p.err = readActions(p.dir, p.off, p.got.have, p.red)
+	}
+}
+
+// applyPeeksLocked takes what the peeks read into their attempts: where the
+// attempt still runs in its run, nothing was read into it meanwhile (its
+// offset and actions are as they were) and its run's redactor is the one the
+// read used.
+func (r *Runner) applyPeeksLocked(list []*peek) {
+	for _, p := range list {
+		a, rs := p.a, p.rs
+		if p.err != nil || len(p.got.actions) == 0 && p.got.to == p.off {
+			continue
+		}
+		if r.runs[a.Run] != rs || rs.attempts[a.ID] != a || a.State != AttemptRunning || rs.unredactable() || rs.red != p.red ||
+			a.Offset != p.off || len(a.Actions) != p.got.have {
+			continue
+		}
+		p.got.apply(a)
+		if len(p.got.actions) > 0 {
+			r.saveAttemptLocked(a)
+		}
+	}
+}
+
+// peekLocked runs the peeks pick names (with the lock held): the lock is let
+// go while their files are read and held again when it returns, so that what
+// the caller read under it before has to be read again.
+func (r *Runner) peekLocked(pick func() []*peek) {
+	list := pick()
+	if len(list) == 0 {
 		return
 	}
-	rs.peeked[a.ID] = now
-	if n, _ := ingest(a, r.layout.EvidenceDir(a), rs.red); n > 0 {
-		r.saveAttemptLocked(a)
-	}
+	r.mu.Unlock()
+	readPeeks(list)
+	r.mu.Lock()
+	r.applyPeeksLocked(list)
 }
 
 // liveOf is a running attempt's live view from what was read of it.

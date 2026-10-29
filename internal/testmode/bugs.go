@@ -416,21 +416,42 @@ func (r *Runner) Bug(repo, id string) (*BugDetail, error) {
 	if b == nil {
 		return nil, ErrNotFound
 	}
+	// The cell in the bug's last run, else in the newest run that has it;
+	// read live first where it runs.
+	type bugCell struct {
+		rs *runState
+		a  *Attempt
+	}
+	cellsOf := func(h *repoHistory) (out []bugCell) {
+		for _, cell := range b.Cells {
+			var rs *runState
+			var a *Attempt
+			if x := r.runs[b.LastRun]; x != nil {
+				rs, a = x, cellOf(x, cell)
+			}
+			for i := len(h.runs) - 1; a == nil && i >= 0; i-- {
+				rs, a = h.runs[i], cellOf(h.runs[i], cell)
+			}
+			if a != nil {
+				out = append(out, bugCell{rs, a})
+			}
+		}
+		return out
+	}
+	r.peekLocked(func() []*peek {
+		var list []*peek
+		for _, c := range cellsOf(r.historyLocked(repo)) {
+			list = append(list, r.peeksLocked(c.rs, []*Attempt{c.a}, false)...)
+		}
+		return list
+	})
+	if b = r.bugListLocked(repo).find(id); b == nil || r.repos[repo] == nil {
+		return nil, ErrNotFound
+	}
 	d := &BugDetail{Bug: r.bugViewLocked(b), Cells: []CellRow{}, Runs: []TestRunRef{}}
 	h := r.historyLocked(repo)
-	for _, cell := range b.Cells {
-		// The cell in the bug's last run, else in the newest run that has it.
-		var rs *runState
-		var a *Attempt
-		if x := r.runs[b.LastRun]; x != nil {
-			rs, a = x, cellOf(x, cell)
-		}
-		for i := len(h.runs) - 1; a == nil && i >= 0; i-- {
-			rs, a = h.runs[i], cellOf(h.runs[i], cell)
-		}
-		if a != nil {
-			d.Cells = append(d.Cells, r.cellRowLocked(h, h.index[rs.run.ID], rs, a))
-		}
+	for _, c := range cellsOf(h) {
+		d.Cells = append(d.Cells, r.cellRowLocked(h, h.index[c.rs.run.ID], c.rs, c.a))
 	}
 	for i := len(b.Runs) - 1; i >= 0; i-- {
 		if rs := r.runs[b.Runs[i]]; rs != nil {

@@ -23,6 +23,11 @@ import (
 // attempt of one step per cell with the verdict given, each taking ms.
 func synth(t *testing.T, r *Runner, repo string, verdicts map[string]string, ms int64) *Run {
 	t.Helper()
+	return synthTB(t, r, repo, verdicts, ms)
+}
+
+func synthTB(t testing.TB, r *Runner, repo string, verdicts map[string]string, ms int64) *Run {
+	t.Helper()
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.repos[repo] == nil {
@@ -51,6 +56,7 @@ func synth(t *testing.T, r *Runner, repo string, verdicts map[string]string, ms 
 		run.Order = append(run.Order, AttemptRef{ID: a.ID, Test: a.Test, Cell: a.Cell, N: 1})
 	}
 	r.runs[run.ID] = rs
+	r.changedLocked()
 	return run
 }
 
@@ -381,6 +387,7 @@ func bugsOf(t *testing.T, r *Runner, run *Run, bugs ...testtools.Bug) []testtool
 		t.Fatal(err)
 	}
 	writeJSON(r.layout.runBugsPath(run.Repo, run.ID), bugs)
+	rs.forgetReported()
 	return bugs
 }
 
