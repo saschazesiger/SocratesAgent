@@ -52,6 +52,22 @@ type RunView struct {
 	Areas  []Area `json:"areas,omitempty"`
 	Pools  []Pool `json:"pools,omitempty"`
 	Bugs   int    `json:"bugs"`
+	// Changes is how many of its cells changed against the run before;
+	// Cost what its sessions cost (USD, absent when the ledger knows none
+	// of them); EtaMS about how long it still takes while it is active;
+	// DurationMS how long it ran (so far).
+	Changes    *Changes `json:"changes,omitempty"`
+	Cost       *float64 `json:"cost,omitempty"`
+	EtaMS      int64    `json:"eta_ms,omitempty"`
+	DurationMS int64    `json:"duration_ms,omitempty"`
+	// chats is its sessions, whose costs the view adds.
+	chats []string
+}
+
+// Changes counts a run's cells that changed against the run before.
+type Changes struct {
+	Regressed int `json:"regressed"`
+	Fixed     int `json:"fixed"`
 }
 
 // Area is an area of a run's plan: what the table is laid out by.
@@ -134,17 +150,18 @@ func (r *Runner) runViewLocked(rs *runState, full bool) RunView {
 // publishLocked tells every page how a run stands.
 func (r *Runner) publishLocked(rs *runState) {
 	v := r.runViewLocked(rs, false)
-	r.host.Publish(map[string]any{"t": "tests", "repo": rs.run.Repo, "run": rs.run.ID, "state": rs.run.State,
-		"counts": v.Counts, "name": rs.run.Name, "created_at": rs.run.CreatedAt})
+	r.host.Publish(map[string]any{"t": "tests", "repo": rs.run.Repo, "run": rs.run.ID, "number": rs.run.Number,
+		"state": rs.run.State, "counts": v.Counts, "name": rs.run.Name, "created_at": rs.run.CreatedAt})
 }
 
 // RepoView is a repository as the page lists it.
 type RepoView struct {
 	Repo
-	Title  string   `json:"title"`
-	Active *RunView `json:"active,omitempty"`
-	Last   *RunView `json:"last,omitempty"`
-	Runs   int      `json:"runs"`
+	Title    string   `json:"title"`
+	Active   *RunView `json:"active,omitempty"`
+	Last     *RunView `json:"last,omitempty"`
+	Runs     int      `json:"runs"`
+	OpenBugs int      `json:"open_bugs"`
 }
 
 // Repos is every repository on the list, by title.
@@ -178,6 +195,11 @@ func (r *Runner) Repos() []RepoView {
 			rv := r.runViewLocked(newest, false)
 			v.Last = &rv
 		}
+		for _, b := range r.bugListLocked(repo.Key).Bugs {
+			if b.Status == BugOpen {
+				v.OpenBugs++
+			}
+		}
 		out = append(out, v)
 	}
 	sort.Slice(out, func(i, j int) bool { return strings.ToLower(out[i].Title) < strings.ToLower(out[j].Title) })
@@ -197,29 +219,34 @@ func (r *Runner) Active() []RunView {
 	return out
 }
 
-// Runs is a repository's runs, newest first.
+// Runs is a repository's runs, newest first, with their changes, times and
+// costs.
 func (r *Runner) Runs(repo string) []RunView {
 	r.mu.Lock()
-	defer r.mu.Unlock()
-	var out []RunView
-	for _, rs := range r.runs {
-		if rs.run.Repo == repo {
-			out = append(out, r.runViewLocked(rs, false))
-		}
+	h := r.historyLocked(repo)
+	out := make([]RunView, 0, len(h.runs))
+	for i := len(h.runs) - 1; i >= 0; i-- {
+		out = append(out, r.fullViewLocked(h, i, false))
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt > out[j].CreatedAt })
+	r.mu.Unlock()
+	r.addCosts(out)
 	return out
 }
 
-// RunDetail is a run with its areas and pools.
+// RunDetail is a run with its areas and pools, its changes, times and cost.
 func (r *Runner) RunDetail(id string) (RunView, error) {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	rs := r.runs[id]
 	if rs == nil {
+		r.mu.Unlock()
 		return RunView{}, ErrNotFound
 	}
-	return r.runViewLocked(rs, true), nil
+	h := r.historyLocked(rs.run.Repo)
+	v := r.fullViewLocked(h, h.index[id], true)
+	r.mu.Unlock()
+	list := []RunView{v}
+	r.addCosts(list)
+	return list[0], nil
 }
 
 // CellRow is the latest attempt of a cell, as a row of the results table.
@@ -245,16 +272,34 @@ type CellRow struct {
 	Bugs      []string `json:"bugs,omitempty"`
 	StartedAt int64    `json:"started_at,omitempty"`
 	EndedAt   int64    `json:"ended_at,omitempty"`
-	// Shots is how many screenshots its evidence has.
-	Shots int `json:"shots"`
+	// Shots is how many screenshots its evidence has; Shot the one that
+	// shows the cell best: the first of its first step that did not pass,
+	// else its last.
+	Shots int    `json:"shots"`
+	Shot  string `json:"shot,omitempty"`
+	// Override is a person's verdict of the attempt.
+	Override *Override `json:"override,omitempty"`
+	// Prev is the cell's verdict in the latest earlier run that has one,
+	// Change what that makes of it now (regressed, fixed, new), Since the
+	// first run of its current streak of problems.
+	Prev   *PrevVerdict `json:"prev,omitempty"`
+	Change string       `json:"change,omitempty"`
+	Since  *RunMark     `json:"since,omitempty"`
+	// Live is how a running attempt stands.
+	Live *Live `json:"live,omitempty"`
 }
 
 func rowOf(a *Attempt) CellRow {
 	row := CellRow{ID: a.ID, Test: a.Test, Area: a.Area, Title: a.Title, Priority: a.Priority, Tags: a.Tags, Cell: a.Cell,
 		CellID: a.CellID, Dims: a.Dims, N: a.N, State: a.State, Wait: a.Wait, Verdict: a.Verdict, Reviewed: a.Reviewed,
-		Final: a.Final(), Summary: a.Summary, EndReason: a.EndReason, Bugs: a.Bugs, StartedAt: a.StartedAt, EndedAt: a.EndedAt}
+		Final: a.Final(), Summary: a.Summary, EndReason: a.EndReason, Bugs: a.Bugs, StartedAt: a.StartedAt, EndedAt: a.EndedAt,
+		Shot: bestShot(a)}
 	if a.Review != nil {
 		row.Review = a.Review.State
+	}
+	if a.Override != nil {
+		o := *a.Override
+		row.Override = &o
 	}
 	for _, act := range a.Actions {
 		if act.Screenshot != "" {
@@ -264,7 +309,8 @@ func rowOf(a *Attempt) CellRow {
 	return row
 }
 
-// Cells is the latest attempt of every cell of a run, in the run's order.
+// Cells is the latest attempt of every cell of a run, in the run's order,
+// each against the run before and, while it runs, live.
 func (r *Runner) Cells(id string) ([]CellRow, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -272,11 +318,27 @@ func (r *Runner) Cells(id string) ([]CellRow, error) {
 	if rs == nil {
 		return nil, ErrNotFound
 	}
+	h := r.historyLocked(rs.run.Repo)
+	i := h.index[id]
 	out := []CellRow{}
 	for _, a := range latestAttempts(rs) {
-		out = append(out, rowOf(a))
+		out = append(out, r.cellRowLocked(h, i, rs, a))
 	}
 	return out, nil
+}
+
+// cellRowLocked is an attempt's row with what its history says of it, and
+// live while it runs.
+func (r *Runner) cellRowLocked(h *repoHistory, i int, rs *runState, a *Attempt) CellRow {
+	if a.State == AttemptRunning {
+		r.peekLocked(rs, a)
+	}
+	row := rowOf(a)
+	h.decorate(&row, i, a)
+	if a.State == AttemptRunning {
+		row.Live = liveOf(a)
+	}
+	return row
 }
 
 // AttemptView is an attempt in full, with the other attempts of its cell.
@@ -553,7 +615,18 @@ type CatalogTest struct {
 	Tools    []string       `json:"tools,omitempty"`
 	Steps    []catalog.Step `json:"steps"`
 	Context  string         `json:"context,omitempty"`
-	Cells    []string       `json:"cells"`
+	// File is the test's file in the catalog folder.
+	File string `json:"file,omitempty"`
+	// Cells is its cells' keys; CellHealth how each of them stands over the
+	// last runs, in the same order; Health how the test stands.
+	Cells      []string     `json:"cells"`
+	CellHealth []CellHealth `json:"cell_health,omitempty"`
+	Health     *TestHealth  `json:"health,omitempty"`
+}
+
+func catalogTest(t *catalog.Test) CatalogTest {
+	return CatalogTest{ID: t.ID, Title: t.Title, Priority: t.Priority, Tags: t.Tags, Tools: t.Tools, Steps: t.Steps,
+		Context: t.Context, File: t.File, Cells: []string{}}
 }
 
 // CatalogTool is a tool of the catalog.
@@ -580,6 +653,10 @@ func (r *Runner) Catalog(key string) (*CatalogView, error) {
 		return nil, err
 	}
 	v := &CatalogView{Title: cat.Title, Errors: cat.Errors, Warnings: cat.Warnings}
+	// The health reads the runs' attempts, which the runner changes: under
+	// its lock.
+	r.mu.Lock()
+	h := r.historyLocked(key)
 	if v.Errors == nil {
 		v.Errors = []catalog.Problem{}
 	}
@@ -593,15 +670,21 @@ func (r *Runner) Catalog(key string) (*CatalogView, error) {
 			ca.Dims = append(ca.Dims, planDim{Name: d.Name, Values: d.Values, Extra: d.Extra})
 		}
 		for _, t := range area.Tests {
-			ct := CatalogTest{ID: t.ID, Title: t.Title, Priority: t.Priority, Tags: t.Tags, Tools: t.Tools, Steps: t.Steps, Context: t.Context}
+			ct := catalogTest(t)
 			for _, c := range cat.CellsOf(t) {
 				ct.Cells = append(ct.Cells, c.Key)
+				ch := h.health(c.ID())
+				ch.Cell, ch.Dims = c.Key, dimsOf(c)
+				ct.CellHealth = append(ct.CellHealth, ch)
 				v.Cells++
 			}
+			th := h.testHealth(ct.CellHealth)
+			ct.Health = &th
 			ca.Tests = append(ca.Tests, ct)
 		}
 		v.Areas = append(v.Areas, ca)
 	}
+	r.mu.Unlock()
 	for _, name := range cat.ToolNames() {
 		t := cat.Tools[name]
 		ct := CatalogTool{Name: name, Title: t.Title, Command: t.Secrets.Command, Setup: t.Setup, End: t.End, Body: t.Instructions}

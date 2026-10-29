@@ -41,6 +41,10 @@ func TestGuidanceNamesTheRolesTools(t *testing.T) {
 			}
 		}
 	}
+	// The analyst reads the bugs earlier runs found before it writes its own.
+	if g := Guidance(KindAnalyst, "socrates_", false); !Has(KindAnalyst, BugsKnown) || !strings.Contains(g, "socrates_bugs_known") {
+		t.Error("the analyst is not told of bugs_known")
+	}
 	if Tools("") != nil || Guidance("", "", false) != "" || IsTest("") {
 		t.Error("an ordinary chat has test tools")
 	}

@@ -384,7 +384,7 @@ func (r *Runner) RetryCell(runID, cellID string) (*Attempt, error) {
 	attempts := rs.run.Settings.Attempts
 	rs.run.Settings.Attempts = a.N + 1
 	a.Retried = ""
-	ok := r.retryAnyLocked(rs, a)
+	ok := r.retryLocked(rs, a, true)
 	rs.run.Settings.Attempts = max(attempts, a.N+1)
 	if !ok {
 		return nil, errors.New("the cell could not be queued again")
@@ -393,16 +393,6 @@ func (r *Runner) RetryCell(runID, cellID string) (*Attempt, error) {
 	r.publishLocked(rs)
 	r.poke()
 	return rs.attempts[a.Retried], nil
-}
-
-// retryAnyLocked queues another attempt whatever the verdict.
-func (r *Runner) retryAnyLocked(rs *runState, a *Attempt) bool {
-	verdict := a.Reviewed
-	a.Reviewed = testtools.Blocked
-	ok := r.retryLocked(rs, a)
-	a.Reviewed = verdict
-	r.saveAttemptLocked(a)
-	return ok
 }
 
 // Analyse runs the analysis of a run that is over again.
@@ -431,4 +421,38 @@ func (r *Runner) Analyse(id string) error {
 	r.publishLocked(rs)
 	r.poke()
 	return nil
+}
+
+// SetOverride sets a person's verdict of an attempt that is over, with a
+// note; an empty verdict removes it, which puts the reviewer's or the agent's
+// back. The repository's bug list learns of it with the next run that is
+// done, as it learns of every verdict.
+func (r *Runner) SetOverride(runID, attemptID, verdict, note string) (*CellRow, error) {
+	verdict = strings.TrimSpace(strings.ToLower(verdict))
+	if verdict != "" && !testtools.ValidVerdict(verdict) {
+		return nil, fmt.Errorf("the verdict must be one of %s, or empty to remove the override", strings.Join(testtools.Verdicts, ", "))
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	rs := r.runs[runID]
+	if rs == nil || rs.deleting {
+		return nil, ErrNotFound
+	}
+	a := rs.attempts[attemptID]
+	if a == nil {
+		return nil, ErrNotFound
+	}
+	if !Final(a.State) {
+		return nil, fmt.Errorf("the attempt is %s; its verdict can be overridden once it is over", a.State)
+	}
+	if verdict == "" {
+		a.Override = nil
+	} else {
+		a.Override = &Override{Verdict: verdict, Note: clip(rs.red.String(note), maxNote), At: r.now().UnixMilli()}
+	}
+	r.saveAttemptLocked(a)
+	r.publishLocked(rs)
+	h := r.historyLocked(rs.run.Repo)
+	row := r.cellRowLocked(h, h.index[rs.run.ID], rs, a)
+	return &row, nil
 }

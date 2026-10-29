@@ -50,6 +50,29 @@ func TestCostLedgerRoundTrip(t *testing.T) {
 	}
 }
 
+// A session's cost is the sum of every ledger that names it, over every
+// account and hour; a session no ledger names is absent.
+func TestCostBySession(t *testing.T) {
+	st := openTest(t)
+	for _, conv := range []string{"chat-c1@a", "chat-c1@b"} {
+		l := sampleLedger()
+		l.ConvID = conv
+		if _, err := st.PutCostLedger(l); err != nil {
+			t.Fatal(err)
+		}
+	}
+	other := sampleLedger()
+	other.ConvID, other.SessionID = "chat-c2", "s2"
+	other.Rows = nil
+	if _, err := st.PutCostLedger(other); err != nil {
+		t.Fatal(err)
+	}
+	got, err := st.CostBySession([]string{"s1", "s2", "s3"})
+	if err != nil || len(got) != 2 || got["s1"] != 2.502 || got["s2"] != 0 {
+		t.Fatalf("CostBySession = %v %v", got, err)
+	}
+}
+
 // The ledgers under one prefix are found by it, and no other.
 func TestCostKeysWithPrefix(t *testing.T) {
 	st := openTest(t)

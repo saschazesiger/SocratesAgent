@@ -128,7 +128,7 @@ func (r *Runner) startHelpersLocked(rs *runState, running *int) []start {
 			*running++
 			out = append(out, start{rs: rs, helper: h, spec: SessionSpec{
 				Ref:   Ref{Kind: testtools.KindAnalyst, Repo: run.Repo, Run: run.ID, ID: h.ID},
-				Title: "Analysis of test run " + run.ID,
+				Title: fmt.Sprintf("Analysis of test run %d (%s)", run.Number, run.ID),
 				Role:  h.Role, Workdir: run.Path,
 				Message: analysisMessage(rs),
 			}})
@@ -163,11 +163,12 @@ func reviewMessage(h *Helper) string {
 
 func analysisMessage(rs *runState) string {
 	c := countsOf(rs)
-	return fmt.Sprintf("Analyse test run %s (%s): %d cells, %d pass, %d issue, %d fail, %d blocked. "+
-		"Read it with %s and %s, then write the bugs with %s and the conclusions with %s.",
-		rs.run.ID, rs.run.Selection.Describe(), c.Cells, c.Verdicts[testtools.Pass], c.Verdicts[testtools.Issue],
+	return fmt.Sprintf("Analyse test run %s (run %d, %s): %d cells, %d pass, %d issue, %d fail, %d blocked. "+
+		"Read it with %s and %s and the bugs known from earlier runs with %s, then write the bugs with %s and the "+
+		"conclusions with %s.",
+		rs.run.ID, rs.run.Number, rs.run.Selection.Describe(), c.Cells, c.Verdicts[testtools.Pass], c.Verdicts[testtools.Issue],
 		c.Verdicts[testtools.Fail], c.Verdicts[testtools.Blocked], testtools.RunOverview, testtools.RunCell,
-		testtools.BugsPut, testtools.ConclusionsPut)
+		testtools.BugsKnown, testtools.BugsPut, testtools.ConclusionsPut)
 }
 
 // helperFailedLocked lets go of what a helper that failed held: its cells'

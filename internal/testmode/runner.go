@@ -50,6 +50,9 @@ type Host interface {
 	// EndMCP ends what the built-in MCP servers keep for a test session (a
 	// device it left open), before its leases are released.
 	EndMCP(chat string)
+	// SessionCosts is what each of the test sessions cost (USD) as the
+	// server's cost ledger has it; a session it knows nothing of is absent.
+	SessionCosts(chats []string) map[string]float64
 }
 
 // SessionSpec is a test session to start.
@@ -105,9 +108,18 @@ type Runner struct {
 	settings map[string]Settings
 	global   Global
 	runs     map[string]*runState
-	byChat   map[string]Ref
-	turns    map[string]bool // a turn of the chat was seen running
-	busy     map[string]busyReading
+	// numbers is the largest run number each repository has had, so that a
+	// number is not given twice while the server runs, even when the run
+	// that had it was deleted.
+	numbers map[string]int
+	// bugs is each repository's bug list (bugs.json), read when first
+	// needed; github whether its issues can be made, read at most once a
+	// minute.
+	bugs   map[string]*bugList
+	github map[string]githubReading
+	byChat map[string]Ref
+	turns  map[string]bool // a turn of the chat was seen running
+	busy   map[string]busyReading
 	// loaded is set once the runs are read, closed once Close began: no
 	// goroutine starts after that.
 	loaded bool
@@ -131,6 +143,9 @@ type runState struct {
 	// ending holds the attempts whose end hooks run: their leases are held
 	// until the hooks are done.
 	ending map[string]bool
+	// peeked is when the evidence of a running attempt was last read for
+	// its live view.
+	peeked map[string]time.Time
 	// preparing is set while prepare runs; resuming while an active run is
 	// taken up again after a start (its secrets are read again), when no
 	// cell of it starts and no call of its sessions is answered; deleting
@@ -144,8 +159,8 @@ type runState struct {
 func New(dataDir string, host Host) *Runner {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Runner{host: host, layout: Layout{Data: dataDir}, ctx: ctx, cancel: cancel, wake: make(chan struct{}, 1),
-		repos: map[string]*Repo{}, settings: map[string]Settings{}, runs: map[string]*runState{},
-		byChat: map[string]Ref{}, turns: map[string]bool{}, busy: map[string]busyReading{}, now: time.Now}
+		repos: map[string]*Repo{}, settings: map[string]Settings{}, runs: map[string]*runState{}, numbers: map[string]int{},
+		bugs: map[string]*bugList{}, github: map[string]githubReading{}, byChat: map[string]Ref{}, turns: map[string]bool{}, busy: map[string]busyReading{}, now: time.Now}
 }
 
 // Load reads the settings and every run from the data directory. The
@@ -299,6 +314,28 @@ func (r *Runner) loadRunsLocked() {
 			r.runs[rs.run.ID] = rs
 		}
 	}
+	r.numberRunsLocked()
+}
+
+// numberRunsLocked gives the runs from before run numbers theirs, in the
+// order they were created after the numbered ones, and saves them.
+func (r *Runner) numberRunsLocked() {
+	byRepo := map[string][]*runState{}
+	for _, rs := range r.runs {
+		byRepo[rs.run.Repo] = append(byRepo[rs.run.Repo], rs)
+		r.numbers[rs.run.Repo] = max(r.numbers[rs.run.Repo], rs.run.Number)
+	}
+	for repo, list := range byRepo {
+		sort.Slice(list, func(i, j int) bool { return list[i].run.CreatedAt < list[j].run.CreatedAt })
+		for _, rs := range list {
+			if rs.run.Number > 0 {
+				continue
+			}
+			r.numbers[repo]++
+			rs.run.Number = r.numbers[repo]
+			r.saveRunLocked(rs)
+		}
+	}
 }
 
 func (r *Runner) loadRun(repo, id string) (*runState, error) {
@@ -306,7 +343,7 @@ func (r *Runner) loadRun(repo, id string) (*runState, error) {
 	if err := readJSON(filepath.Join(r.layout.RunDir(repo, id), "run.json"), run); err != nil {
 		return nil, err
 	}
-	rs := &runState{run: run, attempts: map[string]*Attempt{}, ending: map[string]bool{}}
+	rs := newRunState(run)
 	p := &plan{}
 	if err := readJSON(r.layout.planPath(repo, id), p); err == nil {
 		rs.plan = p
@@ -535,16 +572,16 @@ func (r *Runner) StartRun(repoKey, name string, sel Selection, settings *Setting
 		s = *settings
 	}
 	s.Normalize()
-	if sel.ProblemsOf != "" {
-		if prev := r.runs[sel.ProblemsOf]; prev == nil || prev.run.Repo != repoKey {
-			r.mu.Unlock()
-			return nil, fmt.Errorf("no run %s of this repository", sel.ProblemsOf)
-		}
+	sel, err := r.resolveSelectionLocked(repoKey, sel)
+	if err != nil {
+		r.mu.Unlock()
+		return nil, err
 	}
 	now := r.now()
-	run := &Run{ID: newRunID(now), Repo: repoKey, Path: repo.Path, Name: strings.TrimSpace(name), State: RunWaiting,
-		Selection: sel, Settings: s, CreatedAt: now.UnixMilli()}
-	rs := &runState{run: run, attempts: map[string]*Attempt{}, ending: map[string]bool{}}
+	r.numbers[repoKey]++
+	run := &Run{ID: newRunID(now), Repo: repoKey, Number: r.numbers[repoKey], Path: repo.Path, Name: strings.TrimSpace(name),
+		State: RunWaiting, Selection: sel, Settings: s, CreatedAt: now.UnixMilli()}
+	rs := newRunState(run)
 	r.runs[run.ID] = rs
 	if r.activeRunLocked(repoKey, run.ID) == nil {
 		run.State = RunPreparing
@@ -556,6 +593,50 @@ func (r *Runner) StartRun(repoKey, name string, sel Selection, settings *Setting
 	}
 	r.mu.Unlock()
 	return run, nil
+}
+
+func newRunState(run *Run) *runState {
+	return &runState{run: run, attempts: map[string]*Attempt{}, ending: map[string]bool{}, peeked: map[string]time.Time{}}
+}
+
+// resolveSelectionLocked checks a selection's ProblemsOf against the
+// repository's runs and puts the id of the run it means for "latest".
+func (r *Runner) resolveSelectionLocked(repo string, sel Selection) (Selection, error) {
+	sel.Cells = slices.Clone(sel.Cells)
+	for i := range sel.Cells {
+		sel.Cells[i] = strings.TrimSpace(sel.Cells[i])
+	}
+	switch sel.ProblemsOf = strings.TrimSpace(sel.ProblemsOf); sel.ProblemsOf {
+	case "":
+	case ProblemsLatest:
+		latest := r.latestRunLocked(repo)
+		if latest == nil {
+			return sel, errors.New("the repository has no run that is over yet")
+		}
+		sel.ProblemsOf = latest.run.ID
+	default:
+		if prev := r.runs[sel.ProblemsOf]; prev == nil || prev.run.Repo != repo {
+			return sel, fmt.Errorf("no run %s of this repository", sel.ProblemsOf)
+		}
+	}
+	return sel, nil
+}
+
+// problemsLocked is the cells of the run a selection's ProblemsOf names
+// that did not pass, as they count; nil for a selection without one.
+func (r *Runner) problemsLocked(sel Selection) map[string]bool {
+	if sel.ProblemsOf == "" {
+		return nil
+	}
+	problems := map[string]bool{}
+	if prev := r.runs[sel.ProblemsOf]; prev != nil {
+		for _, a := range latestAttempts(prev) {
+			if v := a.Final(); v != testtools.Pass && v != testtools.NA {
+				problems[a.CellID] = true
+			}
+		}
+	}
+	return problems
 }
 
 // activeRunLocked is the repository's active run other than except, nil
@@ -580,17 +661,7 @@ func (r *Runner) activate(id string) {
 	rs.preparing = true
 	rs.run.State, rs.run.Error = RunPreparing, ""
 	run := *rs.run
-	var problems map[string]bool
-	if run.Selection.ProblemsOf != "" {
-		problems = map[string]bool{}
-		if prev := r.runs[run.Selection.ProblemsOf]; prev != nil {
-			for _, a := range latestAttempts(prev) {
-				if v := a.Final(); v != testtools.Pass && v != testtools.NA {
-					problems[a.CellID] = true
-				}
-			}
-		}
-	}
+	problems := r.problemsLocked(run.Selection)
 	r.saveRunLocked(rs)
 	r.publishLocked(rs)
 	r.mu.Unlock()
@@ -1096,7 +1167,7 @@ func (r *Runner) launch(s start) {
 			return
 		}
 		_ = os.MkdirAll(r.layout.EvidenceDir(s.a), 0o700)
-		s.spec.Message = firstMessage(s.a)
+		s.spec.Message = firstMessage(s.a, s.rs.run.Number)
 	}
 	// The session is known as soon as its row is: its first tool call may
 	// come before StartSession returns.
@@ -1462,7 +1533,7 @@ func (r *Runner) finishLocked(rs *runState, a *Attempt, state, reason string) {
 	if state == AttemptStopped {
 		return
 	}
-	if r.retryLocked(rs, a) {
+	if r.retryLocked(rs, a, false) {
 		return
 	}
 	r.queueReviewLocked(rs, a)
@@ -1556,12 +1627,13 @@ func (r *Runner) runEndHooks(rs *runState, a *Attempt, env []string) {
 }
 
 // retryLocked queues another attempt of a cell whose attempt was blocked or
-// failed to start, while the run's attempts allow; true when it did.
-func (r *Runner) retryLocked(rs *runState, a *Attempt) bool {
+// failed to start (any attempt with force), while the run's attempts allow;
+// true when it did.
+func (r *Runner) retryLocked(rs *runState, a *Attempt, force bool) bool {
 	if rs.run.State != RunRunning && rs.run.State != RunFinishing {
 		return false
 	}
-	if a.State != AttemptFailed && a.Final() != testtools.Blocked {
+	if !force && a.State != AttemptFailed && a.Final() != testtools.Blocked {
 		return false
 	}
 	if a.N >= rs.run.Settings.Attempts || a.Retried != "" {
@@ -1656,6 +1728,11 @@ func (r *Runner) endRunLocked(rs *runState, state string) {
 	run.State, run.EndedAt = state, r.now().UnixMilli()
 	_ = os.RemoveAll(r.layout.RunRuntimeDir(run.ID))
 	r.saveRunLocked(rs)
+	if state == RunDone {
+		// The repository's bug list learns what the run reported, and which
+		// of its open bugs the run shows fixed.
+		r.mergeBugsLocked(rs)
+	}
 	r.publishLocked(rs)
 	if state == RunDone && !run.Notified {
 		run.Notified = true

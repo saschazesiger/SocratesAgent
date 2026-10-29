@@ -28,6 +28,14 @@ func (s *Server) testRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/tests/repos/{repo}/runs", s.auth(s.handleStartTestRun))
 	mux.HandleFunc("GET /api/tests/repos/{repo}/history", s.auth(s.handleTestHistory))
 	mux.HandleFunc("GET /api/tests/repos/{repo}/search", s.auth(s.handleTestSearch))
+	mux.HandleFunc("GET /api/tests/repos/{repo}/overview", s.auth(s.handleTestOverview))
+	mux.HandleFunc("GET /api/tests/repos/{repo}/tests/{test...}", s.auth(s.handleTestTest))
+	mux.HandleFunc("POST /api/tests/repos/{repo}/estimate", s.auth(s.handleTestEstimate))
+	mux.HandleFunc("GET /api/tests/repos/{repo}/bugs", s.auth(s.handleTestRepoBugs))
+	mux.HandleFunc("GET /api/tests/repos/{repo}/bugs/{id}", s.auth(s.handleTestRepoBug))
+	mux.HandleFunc("PATCH /api/tests/repos/{repo}/bugs/{id}", s.auth(s.handlePatchTestRepoBug))
+	mux.HandleFunc("POST /api/tests/repos/{repo}/bugs/{id}/issue", s.auth(s.handleTestBugIssue))
+	mux.HandleFunc("GET /api/tests/repos/{repo}/github", s.auth(s.handleTestGitHub))
 	mux.HandleFunc("GET /api/tests/active", s.auth(s.handleActiveTestRuns))
 	mux.HandleFunc("GET /api/tests/global", s.auth(s.handleTestGlobal))
 	mux.HandleFunc("PUT /api/tests/global", s.auth(s.handlePutTestGlobal))
@@ -42,6 +50,8 @@ func (s *Server) testRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/tests/runs/{run}/retry", s.auth(s.handleRetryTestCell))
 	mux.HandleFunc("GET /api/tests/runs/{run}/attempts/{attempt}", s.auth(s.handleTestAttempt))
 	mux.HandleFunc("GET /api/tests/runs/{run}/attempts/{attempt}/files/{name...}", s.auth(s.handleTestFile))
+	mux.HandleFunc("POST /api/tests/runs/{run}/attempts/{attempt}/override", s.auth(s.handleTestOverride))
+	mux.HandleFunc("GET /api/tests/runs/{run}/report.md", s.auth(s.handleTestReport))
 }
 
 // testRunner is the runner, or a 503 when it is not running.
@@ -464,6 +474,179 @@ func (s *Server) handleTestFile(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Cache-Control", "private, max-age=86400")
 	http.ServeContent(w, r, "", info.ModTime(), f)
+}
+
+func (s *Server) handleTestOverview(w http.ResponseWriter, r *http.Request) {
+	t, repo := s.testRepo(w, r)
+	if repo == nil {
+		return
+	}
+	v, err := t.Overview(repo.Key)
+	if err != nil {
+		testError(w, err)
+		return
+	}
+	writeJSONCompressed(w, r, http.StatusOK, v)
+}
+
+func (s *Server) handleTestTest(w http.ResponseWriter, r *http.Request) {
+	t, repo := s.testRepo(w, r)
+	if repo == nil {
+		return
+	}
+	v, err := t.TestDetail(repo.Key, r.PathValue("test"))
+	if err != nil {
+		testError(w, err)
+		return
+	}
+	writeJSONCompressed(w, r, http.StatusOK, v)
+}
+
+func (s *Server) handleTestEstimate(w http.ResponseWriter, r *http.Request) {
+	t, repo := s.testRepo(w, r)
+	if repo == nil {
+		return
+	}
+	var body struct {
+		Selection testmode.Selection `json:"selection"`
+		Settings  *testmode.Settings `json:"settings"`
+	}
+	if !readJSON(w, r, &body) {
+		return
+	}
+	if body.Settings != nil {
+		if msg := s.checkTestSettings(body.Settings); msg != "" {
+			writeError(w, http.StatusBadRequest, msg)
+			return
+		}
+	}
+	v, err := t.Estimate(repo.Key, body.Selection, body.Settings)
+	if err != nil {
+		testError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, v)
+}
+
+func (s *Server) handleTestRepoBugs(w http.ResponseWriter, r *http.Request) {
+	t, repo := s.testRepo(w, r)
+	if repo == nil {
+		return
+	}
+	bugs, err := t.BugList(repo.Key, r.URL.Query().Get("status"))
+	if err != nil {
+		testError(w, err)
+		return
+	}
+	writeJSONCompressed(w, r, http.StatusOK, map[string]any{"bugs": bugs})
+}
+
+func (s *Server) handleTestRepoBug(w http.ResponseWriter, r *http.Request) {
+	t, repo := s.testRepo(w, r)
+	if repo == nil {
+		return
+	}
+	v, err := t.Bug(repo.Key, r.PathValue("id"))
+	if err != nil {
+		testError(w, err)
+		return
+	}
+	writeJSONCompressed(w, r, http.StatusOK, v)
+}
+
+func (s *Server) handlePatchTestRepoBug(w http.ResponseWriter, r *http.Request) {
+	t, repo := s.testRepo(w, r)
+	if repo == nil {
+		return
+	}
+	var body testmode.BugPatch
+	if !readJSON(w, r, &body) {
+		return
+	}
+	v, err := t.PatchBug(repo.Key, r.PathValue("id"), body)
+	if err != nil {
+		testError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"bug": v})
+}
+
+func (s *Server) handleTestGitHub(w http.ResponseWriter, r *http.Request) {
+	t, repo := s.testRepo(w, r)
+	if repo == nil {
+		return
+	}
+	v, err := t.GitHub(repo.Key)
+	if err != nil {
+		testError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, v)
+}
+
+func (s *Server) handleTestBugIssue(w http.ResponseWriter, r *http.Request) {
+	t, repo := s.testRepo(w, r)
+	if repo == nil {
+		return
+	}
+	var body struct {
+		Title string `json:"title"`
+		Body  string `json:"body"`
+	}
+	if !readJSON(w, r, &body) {
+		return
+	}
+	url, err := t.CreateIssue(repo.Key, r.PathValue("id"), body.Title, body.Body)
+	if err != nil {
+		testError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{"url": url})
+}
+
+func (s *Server) handleTestOverride(w http.ResponseWriter, r *http.Request) {
+	t := s.testRunner(w)
+	if t == nil {
+		return
+	}
+	var body struct {
+		Verdict string `json:"verdict"`
+		Note    string `json:"note"`
+	}
+	if !readJSON(w, r, &body) {
+		return
+	}
+	row, err := t.SetOverride(r.PathValue("run"), r.PathValue("attempt"), body.Verdict, body.Note)
+	if err != nil {
+		testError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"cell": row})
+}
+
+// handleTestReport answers a run's report in Markdown; ?download=1 as a
+// file named after the repository and the run's number.
+func (s *Server) handleTestReport(w http.ResponseWriter, r *http.Request) {
+	t := s.testRunner(w)
+	if t == nil {
+		return
+	}
+	id := r.PathValue("run")
+	md, err := t.Report(id, testmode.ReportOptions{})
+	if err != nil {
+		testError(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Cache-Control", "private, no-store")
+	if r.URL.Query().Get("download") == "1" {
+		if v, err := t.RunDetail(id); err == nil {
+			w.Header().Set("Content-Disposition", `attachment; filename="`+testmode.ReportFileName(v.Repo, v.Number)+`"`)
+		}
+	}
+	w.WriteHeader(http.StatusOK)
+	_, _ = io.WriteString(w, md)
 }
 
 // nonNil is a list as JSON: [] rather than null.

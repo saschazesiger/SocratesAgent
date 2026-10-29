@@ -156,6 +156,17 @@ func (h testHost) MCPPool(server string) mcpserver.Pool {
 // EndMCP closes what the built-in MCP servers keep for a test session.
 func (h testHost) EndMCP(chat string) { h.s.endMCP(chat) }
 
+// SessionCosts is what the test sessions cost as the cost ledger has them
+// (costs.go, chatcosts.go: a chat's ledgers name the chat).
+func (h testHost) SessionCosts(chats []string) map[string]float64 {
+	out, err := h.s.store.CostBySession(chats)
+	if err != nil {
+		log.Printf("tests: the costs of the sessions: %v", err)
+		return map[string]float64{}
+	}
+	return out
+}
+
 // forTests is the account a test session of harness runs on: of the
 // accounts the run may use (allowed; every account of the harness when it
 // is empty) and that are signed in and not at a limit, the one the fewest of

@@ -36,6 +36,7 @@ type fakeHost struct {
 	running  map[string]bool
 	pools    map[string]mcpserver.Pool
 	endedMCP []string
+	costs    map[string]float64
 }
 
 func newFakeHost() *fakeHost {
@@ -139,6 +140,20 @@ func (h *fakeHost) EndMCP(chat string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.endedMCP = append(h.endedMCP, chat)
+}
+
+// SessionCosts: every session cost what costs says, the others are not
+// known.
+func (h *fakeHost) SessionCosts(chats []string) map[string]float64 {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	out := map[string]float64{}
+	for _, c := range chats {
+		if v, ok := h.costs[c]; ok {
+			out[c] = v
+		}
+	}
+	return out
 }
 
 func (h *fakeHost) SetKV(key, value string) error {
