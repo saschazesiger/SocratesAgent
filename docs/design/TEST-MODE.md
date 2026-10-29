@@ -900,10 +900,13 @@ As built (branch `tests-b2`), where it differs from or adds to the paragraph abo
   `test_results` notice ("The results of the test run this chat started."). It opens with a line
   for the agent ("[From Socrates Tests: ...]", left out of the bubble), then the run's state and
   counts, a line per cell that did not pass (at most 10, its first step with that verdict and what
-  was observed) and "Call test_results". `StartedBy.Told` is set and saved before it goes, so a
-  second end or a restart never sends it again; a run that ended without it (a restart in between)
-  is told when the runner starts. A chat that is gone is not told. A cell retried by hand after the
-  message does not send another.
+  was observed) and "Call test_results". `StartedBy.Told` is set and saved once the message went
+  (or the chat is gone), never before: while it goes the run is held in memory so that a second
+  end does not send it twice, and the server takes a message once per key (`client_id`
+  `tests-<run>`). A send that fails (a peer whose host cannot be launched) is tried again four
+  times while the server runs, 15 s apart and doubling; one that failed every time, or that a
+  shutdown cut short, goes when the runner starts next (`tellStartersLocked`). A chat that is gone
+  is not told. A cell retried by hand after the message does not send another.
 
 **API additions**:
 
@@ -929,13 +932,29 @@ As built (branch `tests-b2`), where it differs from or adds to the paragraph abo
   an earlier `bugs_put` that is not on the list yet (its answer names the ids, and an analyst that
   writes the list again repeats them); a new bug of a title the run's previous list had gets that
   bug's id again. The list learns of a run when it is **done** (after its analysis, or without one);
-  a stopped run changes nothing. A run analysed again takes back what it reported before and no longer
-  does (a bug only it reported, without a note or an issue, goes). A report changes the title,
-  description and cells only when the run is not older than the bug's last report, and reopens a fixed
-  bug only when the run is newer than the one that fixed it. A severity the person set
+  a stopped run changes nothing, ever: one taken up again for *Analyse again* or a retried cell ends
+  `stopped` again (`Run.Stopped`), with its analysis and new attempts, and the page shows it stopped.
+  A run analysed again takes back what it reported before and no longer does; a bug only it reported
+  goes unless the person triaged it (`status_by_hand`, `severity_by_hand`, a note or an issue), and
+  the bug's title, description and cells go back to its last remaining report. A report changes the
+  title, description and cells only when the run is not older than the bug's last report, and
+  reopens a fixed bug when the run is newer than the one that fixed it, or is that run analysed
+  again (`fixed_in` is the run; for a bug marked fixed by hand only an analysis newer than the hand
+  fix, `fixed_at`, counts, so the same report merged again does not reopen it). The reopening
+  remembers how the bug stood (`reopened`: status, `fixed_in`, `regressed`); when the report that
+  reopened it is taken back and no remaining report is newer than the fix, the bug is fixed again as
+  it was (unless the person changed its status since). A severity the person set
   (`severity_by_hand`) is kept over the analysts'. Marking a bug fixed by hand sets `fixed_in` to the
   repository's latest run that is over. Every change of the list publishes `{t: "tests", repo, bugs:
   true}`; run frames now carry the run's `number`.
+- **The list is crash-safe.** A run is saved `done` with `bugs_pending`; the flag goes once
+  `bugs.json` is saved with the run. The runner's start, and the next end of a run of the
+  repository, merge the pending runs in the order of their numbers (a failed write stays pending);
+  merging a run twice changes nothing. A `bugs.json` that cannot be read is never written over: it
+  is moved to `bugs.json.corrupt-<unix ms>` (logged as an error) and the list is built again from
+  the done runs' own `bugs.json`, in order (the triage it had is in the file moved aside); one that
+  cannot be moved either is not written until it can be read. `next` stays above every id a run's
+  own `bugs.json` has, so no id is given twice.
 - **Overrides** answer `{cell}` (the row as below). An override is final when it is set: it does not
   start a retry, and the bug list sees it with the next run that is done.
 - **Changes.** `prev` is the cell's latest ended attempt with a verdict in an earlier run (by number),
@@ -955,7 +974,21 @@ As built (branch `tests-b2`), where it differs from or adds to the paragraph abo
   cannot run (`{file, line, message}`, `file` empty for the latter).
 - **Live.** `at` is the time of the last action (when the tool wrote one), else when the attempt
   started. The live read takes the new lines into the attempt the way a call of its agent does, so
-  they stay the next judgement's evidence.
+  they stay the next judgement's evidence. It reads the file without the runner's lock (the offset
+  is noted under it and the lines are taken in under it again only when nothing moved meanwhile).
+  Nothing reads a running attempt's evidence while its run's secrets are not in memory (the run
+  being taken up after a start, or paused because they could not be read again): not the live view,
+  the attempt's view, its end or a call of its agent (which is told the run is paused), and a text
+  file of its evidence is not served; what was written meanwhile is read, redacted, once they are
+  (a cell stopped before that keeps it in its evidence folder only).
+- **Polling.** The repository's history (changes, since, health, flaky tests) and every run's
+  counts and number of bugs are kept until a run or an attempt changes, and the changes of every run
+  are counted in one pass: the views the page polls stay well under a millisecond for 30 runs of 200
+  cells (`BenchmarkThePolledViews`).
+- **A bug's cells** (`GET …/bugs/{id}`) are rows with their `run`: the bug's last run, or the newest
+  run that has the cell when that one does not; the page reads their steps and opens them there.
+- **GitHub issues**: one per bug. A bug that has an issue, or whose issue is being made, gets no
+  other: `409` with a message that ends with its link, which the page then keeps on the bug.
 - **Report.** Without `ProblemsOnly` it ends with a table of every cell; the download is
   `<repo key>-run-<n>.md`.
 

@@ -2,6 +2,7 @@ package testmode
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -22,6 +23,11 @@ import (
 // synth puts a run that is done into the runner as if it had run: one ended
 // attempt of one step per cell with the verdict given, each taking ms.
 func synth(t *testing.T, r *Runner, repo string, verdicts map[string]string, ms int64) *Run {
+	t.Helper()
+	return synthTB(t, r, repo, verdicts, ms)
+}
+
+func synthTB(t testing.TB, r *Runner, repo string, verdicts map[string]string, ms int64) *Run {
 	t.Helper()
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -51,6 +57,7 @@ func synth(t *testing.T, r *Runner, repo string, verdicts map[string]string, ms 
 		run.Order = append(run.Order, AttemptRef{ID: a.ID, Test: a.Test, Cell: a.Cell, N: 1})
 	}
 	r.runs[run.ID] = rs
+	r.changedLocked()
 	return run
 }
 
@@ -381,6 +388,7 @@ func bugsOf(t *testing.T, r *Runner, run *Run, bugs ...testtools.Bug) []testtool
 		t.Fatal(err)
 	}
 	writeJSON(r.layout.runBugsPath(run.Repo, run.ID), bugs)
+	rs.forgetReported()
 	return bugs
 }
 
@@ -461,11 +469,39 @@ func TestTheBugListOverRuns(t *testing.T) {
 	if b := r.bug(repo, "B-1"); b.Status != BugOpen || !b.Regressed || b.FixedIn != "" || len(b.Runs) != 3 {
 		t.Fatalf("B-1 after run 4: %+v", b)
 	}
-	// Analysed again without it, run 4 takes its report back.
+	// Analysed again without it, run 4 takes its report back, and the
+	// reopening with it: B-1 is fixed in run 3 again, as it was.
 	bugsOf(t, r, four)
 	r.merge(four)
-	if b := r.bug(repo, "B-1"); len(b.Runs) != 2 || b.LastRun != two.ID {
+	if b := r.bug(repo, "B-1"); len(b.Runs) != 2 || b.LastRun != two.ID || b.Status != BugFixed || b.FixedIn != three.ID ||
+		b.Regressed || b.Reopened != nil {
 		t.Fatalf("B-1 after run 4 was analysed again: %+v", b)
+	}
+	// Run 3, which had it fixed, analysed again and reporting it, opens it
+	// again (not as a regression: it was not fixed); taken back, it is
+	// fixed in run 3 again.
+	bugsOf(t, r, three, testtools.Bug{ID: "B-1", Title: "The cart is still empty", Severity: "major", Cells: []string{"web/a@x"}})
+	r.merge(three)
+	if b := r.bug(repo, "B-1"); b.Status != BugOpen || b.FixedIn != "" || b.Regressed || b.LastRun != three.ID || len(b.Runs) != 3 {
+		t.Fatalf("B-1 reported by run 3 analysed again: %+v", b)
+	}
+	bugsOf(t, r, three)
+	r.merge(three)
+	if b := r.bug(repo, "B-1"); b.Status != BugFixed || b.FixedIn != three.ID || b.LastRun != two.ID || b.Title != "The cart stays empty" {
+		t.Fatalf("B-1 after run 3 took it back: %+v", b)
+	}
+	// A run merged twice (a restart between its end and the list's save)
+	// changes nothing the second time.
+	r.mu.Lock()
+	before, _ := json.Marshal(r.bugListLocked(repo))
+	r.mu.Unlock()
+	r.merge(two)
+	r.merge(three)
+	r.mu.Lock()
+	after, _ := json.Marshal(r.bugListLocked(repo))
+	r.mu.Unlock()
+	if string(before) != string(after) {
+		t.Fatalf("merged twice:\n%s\n%s", before, after)
 	}
 	// Two runs that report the same known id are refused.
 	r.mu.Lock()
@@ -620,6 +656,27 @@ esac
 	if _, err := r.CreateIssue(key.Key, "B-1", " ", ""); err == nil {
 		t.Fatal("an issue without a title")
 	}
+	// A bug with an issue gets no second one, and the link stays; nor does
+	// a bug whose issue is being made.
+	var exists *ErrIssueExists
+	if _, err := r.CreateIssue(key.Key, "b-1", "Again", ""); !errors.As(err, &exists) || exists.URL != url {
+		t.Fatalf("a second issue: %v", err)
+	}
+	os.Remove(got + ".args")
+	r.mu.Lock()
+	r.issuing[key.Key+"/B-1"] = true
+	r.bugListLocked(key.Key).find("B-1").Issue = ""
+	r.mu.Unlock()
+	if _, err := r.CreateIssue(key.Key, "B-1", "Twice", ""); !errors.As(err, &exists) || exists.URL != "" {
+		t.Fatalf("an issue while one is made: %v", err)
+	}
+	if _, err := os.Stat(got + ".args"); err == nil {
+		t.Fatal("gh was run again")
+	}
+	r.mu.Lock()
+	delete(r.issuing, key.Key+"/B-1")
+	r.bugListLocked(key.Key).find("B-1").Issue = url
+	r.mu.Unlock()
 	for url, slug := range map[string]string{"https://github.com/acme/shop.git": "acme/shop", "https://x:tok@github.com/a/b": "a/b",
 		"ssh://git@github.com/a/b.git": "a/b", "https://gitlab.com/a/b": "", "git@github.com:a/b/c": ""} {
 		if got := githubSlug(url); got != slug {

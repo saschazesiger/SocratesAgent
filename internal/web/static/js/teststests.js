@@ -120,9 +120,15 @@ export function mount(ctx) {
       <div class="so-tests__stack" id="ttTools"></div>`;
   }
 
+  // wired is the elements a listener was bound to, which morph keeps.
+  const wired = new WeakSet();
+
   function wireSearch() {
     const search = $('ttSearch');
     search.value = filters.q;
+    // morph keeps the field when the list is drawn again: bound once.
+    if (wired.has(search)) return;
+    wired.add(search);
     let pause = 0;
     search.addEventListener('input', () => {
       clearTimeout(pause);

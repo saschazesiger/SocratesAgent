@@ -434,6 +434,8 @@ export function mountHome(ctx) {
   let testsAsked = 0;
 
   async function loadTests() {
+    // Offline the request could only fail; the hello after the outage asks again.
+    if (navigator.onLine === false) return;
     const asked = ++testsAsked;
     try {
       const data = await api('/api/tests/active', { attempts: 1, timeout: 12000 });

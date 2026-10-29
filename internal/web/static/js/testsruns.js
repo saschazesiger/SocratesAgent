@@ -337,15 +337,27 @@ export function mount(ctx) {
       <div class="so-tests__stack" id="rvGrid"></div>`;
   }
 
+  // wired is the elements a listener was bound to, which morph keeps.
+  const wired = new WeakSet();
+
   function wireResults() {
     const search = $('rvSearch');
     search.value = filters.q;
-    let typing = 0;
-    search.addEventListener('input', () => {
-      clearTimeout(typing);
-      typing = setTimeout(() => { filters.q = search.value.trim(); ctx.redraw('runs'); }, TYPE_PAUSE);
-    });
-    $('rvFilters').addEventListener('click', () => openFilters($('rvFilters')));
+    // morph keeps the field and the button when the results are drawn
+    // again: each is bound once.
+    if (!wired.has(search)) {
+      wired.add(search);
+      let typing = 0;
+      search.addEventListener('input', () => {
+        clearTimeout(typing);
+        typing = setTimeout(() => { filters.q = search.value.trim(); ctx.redraw('runs'); }, TYPE_PAUSE);
+      });
+    }
+    const more = $('rvFilters');
+    if (!wired.has(more)) {
+      wired.add(more);
+      more.addEventListener('click', () => openFilters(more));
+    }
   }
 
   const dimOf = (row, name) => (row.dims || []).find((x) => x.name === name);

@@ -114,6 +114,14 @@ type Run struct {
 	// StartedBy is the chat whose agent started the run (run_tests), which
 	// is sent the results when it ends; nil for a run started on the page.
 	StartedBy *StartedBy `json:"started_by,omitempty"`
+	// Stopped is a run that was stopped: taken up again for an analysis or
+	// a retry, it ends stopped again, and the bug list never learns of it.
+	Stopped bool `json:"stopped,omitempty"`
+	// BugsPending is a run that is done whose bugs the repository's bug
+	// list has not taken in yet: set with the end, cleared once the list is
+	// saved with them, so that a crash or a failed write in between is
+	// caught up at the next start (or the next end of a run).
+	BugsPending bool `json:"bugs_pending,omitempty"`
 }
 
 // AttemptRef names an attempt and where its record is.
