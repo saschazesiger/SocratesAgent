@@ -241,6 +241,69 @@ export async function testmode() {
     const repos = (await get('/api/tests/repos')).repos;
     ok(repos.find((r) => r.key === key).open_bugs === 1, 'the repository counts its open bug', JSON.stringify(repos.map((r) => r.open_bugs)));
 
+    // The cell viewer: a failed cell of run 2 opened from its run, its
+    // step's screenshot large, an override from the page and its removal.
+    const failing = row('web/search@a');
+    await s.page.goto(s.url + '/tests#repo=' + key + '&view=runs&run=' + secondID, { waitUntil: 'domcontentloaded' });
+    const cellButton = s.page.locator('[data-cell="' + failing.id + '"]').first();
+    await cellButton.waitFor({ timeout: 15000 });
+    await cellButton.click();
+    const viewer = s.page.locator('#cellDialog');
+    const large = viewer.locator('.so-cell-shot__img').first();
+    await large.waitFor({ timeout: 15000 });
+    const largeWidth = await large.evaluate((el) => new Promise((resolve) => {
+      if (el.complete && el.naturalWidth) resolve(el.naturalWidth);
+      else {
+        el.addEventListener('load', () => resolve(el.naturalWidth), { once: true });
+        setTimeout(() => resolve(el.naturalWidth), 10000);
+      }
+    }));
+    const title = await viewer.locator('#cellTitle').innerText();
+    ok(largeWidth > 0 && title === 'The search finds a product' && s.page.url().includes('cell=' + failing.id),
+      'the cell viewer opens the failed cell with its step\'s screenshot large', title + ' ' + largeWidth);
+    const said = async (text, present) => s.page.waitForFunction(([t, p]) => {
+      const who = document.querySelector('#cellDialog .so-cell__who');
+      return !!who && who.textContent.includes(t) === p;
+    }, [text, present], { timeout: 10000 }).then(() => true).catch(() => false);
+    await viewer.locator('[data-cell-act="override"]').click();
+    await s.page.locator('#overrideDialog input[value="pass"]').check();
+    await s.page.fill('#overrideNote', 'Seen by hand: it works.');
+    await s.page.click('#overrideSave');
+    const madePass = await said('you made it Pass', true);
+    const byPage = await get('/api/tests/runs/' + secondID);
+    ok(madePass && byPage.counts.verdicts.pass === 3 && !byPage.counts.verdicts.fail,
+      'an override from the cell viewer says who made it pass, and the run counts it', JSON.stringify(byPage.counts.verdicts));
+    await shot(s.page, 'tests-cell-override');
+    await viewer.locator('[data-cell-act="override"]').click();
+    await s.page.click('#overrideRemove');
+    const removed = await said('you made it', false);
+    const backAgain = await get('/api/tests/runs/' + secondID);
+    ok(removed && backAgain.counts.verdicts.fail === 1, 'removing it puts the agent\'s fail back', JSON.stringify(backAgain.counts.verdicts));
+    await s.page.keyboard.press('Escape');
+    const closed = await s.page.waitForFunction(() => !location.hash.includes('cell='), null, { timeout: 10000 }).then(() => true).catch(() => false);
+    const gone = await viewer.waitFor({ state: 'hidden', timeout: 5000 }).then(() => true).catch(() => false);
+    ok(closed && gone, 'Escape closes the cell viewer and its place in the address', s.page.url());
+
+    // The test view: its history over both runs, a verdict opening its attempt.
+    await s.page.goto(s.url + '/tests#repo=' + key + '&view=tests&test=web/search', { waitUntil: 'domcontentloaded' });
+    await s.page.locator('.so-tests-hist__table').waitFor({ timeout: 15000 });
+    const runHeads = await s.page.locator('.so-tests-hist__run').allInnerTexts();
+    const marks = s.page.locator('.so-tests-hist [data-hist]');
+    ok(runHeads.join(',') === 'Run 2,Run 1' && await marks.count() === 2, 'the test view\'s history has a column per run, the newest first',
+      runHeads.join(',') + ' · ' + await marks.count() + ' verdicts');
+    await shot(s.page, 'tests-test');
+    await marks.last().click();
+    await viewer.locator('.so-cell__band').waitFor({ timeout: 15000 });
+    ok(s.page.url().includes('run=' + runID), 'a verdict of the history opens that run\'s attempt', s.page.url());
+    await s.page.keyboard.press('Escape');
+    await s.page.goto(s.url + '/tests#repo=' + key + '&view=tests', { waitUntil: 'domcontentloaded' });
+    const list = s.page.locator('.so-tests-area').first();
+    await list.waitFor({ timeout: 15000 });
+    const listText = (await list.innerText()).replace(/\s+/g, ' ');
+    ok(listText.includes('The search finds a product') && /Fail/.test(listText) && listText.includes('failing since Run 1'),
+      'the Tests view shows each test with its latest verdict and since when it fails', listText.slice(0, 200));
+    ok(s.errors.length === 0, 'the cell viewer and the Tests view logged no errors', s.errors.join(' | '));
+
     // An override changes what counts.
     const over = await post('/api/tests/runs/' + secondID + '/attempts/' + row('web/search@a').id + '/override',
       { verdict: 'pass', note: 'The error is the fixture\'s.' });

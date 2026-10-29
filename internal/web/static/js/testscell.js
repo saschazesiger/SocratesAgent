@@ -1,326 +1,1093 @@
 // The cell viewer of the Tests page (docs/design/TEST-MODE.md, "The Tests
-// page", the cell viewer), over any view: a cell of a run (one attempt of
-// it) with its verdict as the agent gave it and as the reviewer left it,
-// every attempt, the steps as a timeline with their screenshots and the
-// actions behind them, its links, logs and bugs. A screenshot opens full
-// size with the cell's others before and after it.
+// page", the cell viewer): one attempt of a cell, over any view, the whole
+// window on every screen.
+//
+// Its head names the test and the cell's values, and walks the list the
+// cell was opened from (previous and next, "3 of 12"). Under it the verdict
+// as it counts and who gave it, the change against the run before, the
+// attempts, and the actions: Override verdict, Retry, Fix in a chat, Open
+// transcript. Then the steps:
+//
+//   wide (900px and more)  the steps on the left, the chosen step's
+//                          screenshot large on the right with a film strip
+//                          of every screenshot of the cell; Compare with the
+//                          last pass puts the same step of the cell's latest
+//                          passing attempt beside it. Under them the actions
+//                          log and the facts.
+//   narrow                 a switch Steps · Actions · Details; the steps as a
+//                          list, each with its screenshots at full width in
+//                          a strip that swipes.
+//
+// A running cell is live: it is read again every few seconds while it is
+// shown, its steps fill as they are judged and its latest screenshot is the
+// one shown (until the person picks another).
 //
 // mount(ctx) hands back { open(attemptId, runId, list), close(), refresh() };
 // `list` ([{ attempt, run }]) is the cells it was opened from, for previous
-// and next.
-//
-// Stub: replaced by the full view.
-// (This is the first page's cell sheet, ported as it was; the full viewer is
-// a full-screen dialog with the steps beside their screenshots.)
+// and next (without one, the cells of the run in their order).
 
 import { api, errorMessage, toast } from './api.js';
-import { DS, html, raw, icon, morph } from './ui.js';
+import { DS, M, html, raw, icon, morph } from './ui.js';
 import * as accounts from './accounts.js';
 import * as harnesses from './harnesses.js';
 import * as V from './testsview.js';
 
 const $ = (id) => document.getElementById(id);
 
-export function mount(ctx) {
-  const sheet = $('cellSheet');
-  const body = $('cellBody');
-  const foot = $('cellFoot');
-  const viewer = $('shotDialog');
-  let open = false;
-  let shown = null; // { kind: 'cell', id, run }
-  let view = null; // the attempt (AttemptView)
-  const runBugs = new Map(); // run id -> its bugs
-  let shots = []; // { name, caption } of the open attempt, in step order
-  let shotAt = 0;
-  let asked = 0;
+// The split view of steps and screenshots needs this much window.
+const WIDE = window.matchMedia('(min-width: 900px)');
+// A running cell is read again this often while it is shown.
+const LIVE_EVERY = 3000;
 
-  sheet.addEventListener('ds-close', (event) => {
-    if (event.target !== sheet) return;
-    open = false;
-    shown = null;
-    view = null;
-    ctx.closeCell();
+// What each verdict means, for the override dialog.
+const MEANS = {
+  pass: 'It does what every step expects.',
+  issue: 'It works, with a flaw worth fixing.',
+  fail: 'A step does not do what it should.',
+  blocked: 'It could not be tested: a device, an account or the environment was in the way.',
+  na: 'It does not apply to this cell.',
+};
+
+// How a cell stood in the run before, after "Regressed:" or "Fixed:".
+const WAS = {
+  pass: 'it passed', issue: 'it had an issue', fail: 'it failed', blocked: 'it was blocked', na: 'it did not apply',
+};
+
+const PARTS = [
+  { id: 'steps', label: 'Steps' },
+  { id: 'actions', label: 'Actions' },
+  { id: 'details', label: 'Details' },
+];
+
+// Keys typed into a field are the field's.
+const typing = (el) => !!(el && el.closest && el.closest('input, textarea, select, [contenteditable="true"], [role="radiogroup"], [role="tablist"]'));
+
+export function mount(ctx) {
+  const { state } = ctx;
+  const dialog = $('cellDialog');
+  const body = $('cellBody');
+  const nav = $('cellNav');
+  const overrideDialog = $('overrideDialog');
+  const keysDialog = $('cellKeys');
+
+  let shown = false; // the dialog is open
+  let want = null; // { id, run }: the attempt the address asks for
+  let view = null; // its AttemptView, once read
+  let error = '';
+  let list = []; // [{ attempt, run }]: previous and next
+  let asked = 0;
+  let liveTimer = 0;
+  let part = 'steps'; // the narrow layout's part
+  let zoom = false; // the large screenshot at its own size
+  let compare = false; // the last pass beside it (kept from cell to cell)
+  let sel = { key: '', step: 0, shot: -1, manual: false };
+  let pass = null; // { for, state: 'loading' | 'none' | 'ready', run, attempt, label, view }
+  const details = new Map(); // `${run}/${attempt}` -> AttemptView
+  const runCells = new Map(); // run -> { rows } | { promise }
+  const histories = new Map(); // test -> Promise of GET …/tests/{test}
+  let bugs = null; // { repo, list } the repository's bugs, for the titles
+
+  harnesses.load().catch(() => {}).then(() => { if (shown && view) draw(); });
+  accounts.load().catch(() => {}).then(() => { if (shown && view) draw(); });
+
+  /* ------------------------------------------------------------- reading */
+
+  const keyOf = (run, attempt) => run + '/' + attempt;
+
+  async function detailOf(run, attempt, { fresh = false } = {}) {
+    const key = keyOf(run, attempt);
+    if (!fresh && details.has(key)) return details.get(key);
+    const v = await api(V.paths.attempt(run, attempt));
+    details.set(key, v);
+    return v;
+  }
+
+  // cellsOf is a run's rows (CellRow: prev, change, since, live): the
+  // frame's for the live run, else read once and again after a change.
+  async function cellsOf(run) {
+    if (state.live && state.live.id === run) return state.live.cells || [];
+    const have = runCells.get(run);
+    if (have && have.rows) return have.rows;
+    if (have && have.promise) return have.promise;
+    const promise = api(V.paths.cells(run)).then((d) => {
+      runCells.set(run, { rows: d.cells || [] });
+      return d.cells || [];
+    }).catch(() => {
+      runCells.delete(run);
+      return [];
+    });
+    runCells.set(run, { promise });
+    return promise;
+  }
+
+  function rowsNow(run) {
+    if (state.live && state.live.id === run) return state.live.cells || [];
+    const have = runCells.get(run);
+    return (have && have.rows) || [];
+  }
+
+  function rowOf(v) {
+    return v ? rowsNow(v.run).find((r) => r.id === v.id) || null : null;
+  }
+
+  function historyOf(test) {
+    const key = state.repo + ' ' + test;
+    if (!histories.has(key)) {
+      histories.set(key, api(V.paths.test(state.repo, test)).catch((err) => {
+        histories.delete(key);
+        throw err;
+      }));
+    }
+    return histories.get(key);
+  }
+
+  async function loadBugs() {
+    if (bugs && bugs.repo === state.repo) return;
+    const repo = state.repo;
+    bugs = { repo, list: [] };
+    try {
+      bugs = { repo, list: (await api(V.paths.repoBugs(repo), { attempts: 1 })).bugs || [] };
+    } catch { /* the ids stand alone */ }
+    if (shown && view) draw();
+  }
+
+  async function load({ quiet = false } = {}) {
+    if (!want) return;
+    const me = ++asked;
+    const { id, run } = want;
+    const cached = details.get(keyOf(run, id));
+    if (!quiet) {
+      if (cached) { view = cached; error = ''; draw(); } else if (!view || view.id !== id) { view = null; drawLoading(); }
+    }
+    try {
+      const [v] = await Promise.all([detailOf(run, id, { fresh: true }), cellsOf(run)]);
+      if (me !== asked) return;
+      view = v;
+      error = '';
+    } catch (err) {
+      if (me !== asked) return;
+      if (!cached && !quiet) {
+        error = err && err.status === 404 ? 'This cell is gone: its run was deleted, or it is older than the runs kept.' : errorMessage(err);
+        view = null;
+        drawError();
+        return;
+      }
+    }
+    if (!view) return;
+    if (view.bugs && view.bugs.length) loadBugs();
+    draw();
+    findPass(view);
+    scheduleLive();
+    prefetch();
+  }
+
+  // The cells before and after the shown one are read ahead, so walking the list is at once.
+  function prefetch() {
+    const i = indexInList();
+    for (const j of [i - 1, i + 1]) {
+      const n = list[j];
+      if (n && !details.has(keyOf(n.run, n.attempt))) detailOf(n.run, n.attempt).catch(() => {});
+    }
+  }
+
+  function scheduleLive() {
+    clearTimeout(liveTimer);
+    if (!shown || !view || document.hidden) return;
+    const reviewing = view.review && (view.review.state === 'pending' || view.review.state === 'running');
+    if (!V.OPEN_ATTEMPT.has(view.state) && !reviewing) return;
+    liveTimer = setTimeout(() => load({ quiet: true }), LIVE_EVERY);
+  }
+
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden && shown) load({ quiet: true });
   });
 
-  function title(text, sub) {
-    if ($('cellTitle').textContent !== text) $('cellTitle').textContent = text;
-    if ($('cellSub').textContent !== sub) $('cellSub').textContent = sub;
-  }
+  /* --------------------------------------------------- the last pass */
 
-  async function show() {
-    if (open) return;
-    open = true;
-    await DS.overlay.open(sheet, { opener: document.activeElement });
-  }
-
-  function loading(words) {
-    morph(body, html`<div class="ds-loading" role="status"><span class="ds-loader ds-loader--sm" aria-hidden="true"></span>${words}</div>`);
-    morph(foot, '');
-  }
-
-  function failed(err) {
-    morph(body, html`<div class="ds-alert ds-alert--error" role="alert">${raw(icon('alertCircle', 20))}<span class="ds-alert__text">${errorMessage(err)}</span></div>`);
-  }
-
-  /* ------------------------------------------------------------- a cell */
-
-  async function openCell(id, run) {
-    if (open && shown && shown.kind === 'cell' && shown.id === id && shown.run === run) return;
-    const fresh = !open || !shown || shown.kind !== 'cell' || !view || !view.attempts.some((a) => a.id === id);
-    shown = { kind: 'cell', id, run };
-    if (fresh) {
-      title('Cell', '');
-      loading('Reading the cell');
+  // findPass looks for the cell's latest passing attempt before this one:
+  // an earlier attempt of the same run, else the test's history of runs.
+  async function findPass(v) {
+    const key = keyOf(v.run, v.id);
+    if (pass && pass.for === key) return;
+    pass = { for: key, state: 'loading' };
+    let target = null;
+    const same = (v.attempts || []).filter((a) => a.id !== v.id && a.attempt < v.attempt && a.final === 'pass')
+      .sort((a, b) => b.attempt - a.attempt)[0];
+    if (same) target = { run: v.run, attempt: same.id, label: 'Attempt ' + same.attempt + ' of this run' };
+    if (!target) {
+      try {
+        const h = await historyOf(v.test);
+        const runs = h.runs || [];
+        const here = runs.find((r) => r.id === v.run);
+        const known = ctx.runOf(v.run);
+        const number = here ? here.number : known ? known.n : Infinity;
+        const row = (h.grid || {})[v.cell_id] || {};
+        for (const r of runs) {
+          if (!(r.number < number)) continue;
+          const g = row[r.id];
+          if (g && g.verdict === 'pass' && g.attempt) {
+            target = { run: r.id, attempt: g.attempt, label: 'Run ' + r.number };
+            break;
+          }
+        }
+      } catch { /* no history: nothing to compare */ }
     }
-    show();
-    await load();
-  }
-
-  async function load() {
-    if (!shown || shown.kind !== 'cell') return;
-    const me = ++asked;
-    const { id, run } = shown;
-    try {
-      const data = await api(V.paths.attempt(run, id));
-      if (me !== asked) return;
-      view = data;
-    } catch (err) {
-      if (me === asked) failed(err);
+    if (!pass || pass.for !== key) return;
+    if (!target) {
+      pass = { for: key, state: 'none' };
+      if (compare) zoom = false;
+      draw();
       return;
     }
-    if (view.bugs && view.bugs.length && !runBugs.has(run)) {
-      try {
-        runBugs.set(run, (await api(V.paths.bugs(run))).bugs || []);
-      } catch { runBugs.set(run, []); }
+    try {
+      const pv = await detailOf(target.run, target.attempt);
+      if (!pass || pass.for !== key) return;
+      pass = { for: key, state: 'ready', ...target, view: pv };
+    } catch {
+      if (pass && pass.for === key) pass = { for: key, state: 'none' };
     }
-    if (me === asked) drawCell();
+    if (view && keyOf(view.run, view.id) === key) draw();
   }
 
-  function drawCell() {
-    const a = view;
-    const dims = (a.dims || []).map((d) => d.label || d.id).join(' · ');
-    title(a.title || a.test, [dims, 'attempt ' + a.attempt].filter(Boolean).join(' · '));
-    shots = collectShots(a);
-    const reviewChanged = a.reviewed && a.reviewed !== a.verdict;
-    const review = a.review || null;
-    morph(body, html`<div class="so-tests__stack">
-      <div class="so-tests__verdict">
-        ${a.final ? V.verdictChip(a.final) : V.cellChip({ state: a.state, wait: a.wait })}
-        ${reviewChanged ? html`<span class="ds-meta">The agent said ${V.verdictWord(a.verdict)}; the reviewer made it ${V.verdictWord(a.reviewed)}.</span>`
-          : review && review.state === 'done' ? html`<span class="ds-meta">${raw(icon('eye', 16))}Reviewed, unchanged</span>` : ''}
-      </div>
-      ${review && review.note ? html`<div class="ds-alert">${raw(icon('eye', 20))}<div class="ds-alert__text"><p class="ds-alert__title">The reviewer</p><p>${review.note}</p></div></div>` : ''}
-      ${a.state === 'waiting' && a.wait ? html`<div class="ds-alert">${raw(icon('clock', 20))}<span class="ds-alert__text">${a.wait}</span></div>` : ''}
-      ${a.end_reason ? html`<div class="ds-alert ds-alert--warning">${raw(icon('alert', 20))}<span class="ds-alert__text">${a.end_reason}</span></div>` : ''}
-      ${a.summary ? html`<p class="so-break">${a.summary}</p>` : ''}
-      ${a.attempts && a.attempts.length > 1 ? attemptSwitch(a) : ''}
-      ${facts(a)}
-      <section class="so-tests__stack" aria-labelledby="stepsTitle">
-        <h3 class="ds-card__subtitle" id="stepsTitle">Steps</h3>
-        <ol class="ds-timeline" role="list" aria-label="Steps">${(a.steps || []).map((s) => stepItem(a, s))}</ol>
-      </section>
-      ${otherShots(a)}
-      ${linksAndLogs(a)}
-      ${bugsOf(a)}
-    </div>`);
-    morph(foot, html`${a.chat ? html`<a class="ds-btn ds-btn--text" href="${'/#open=' + encodeURIComponent(a.chat)}">${raw(icon('chat', 16))}Open transcript</a>` : ''}
-      <button class="ds-btn" type="button" data-retry-cell="${a.cell_id}"${V.OPEN_ATTEMPT.has(a.state) ? raw(' aria-disabled="true" data-tip="The cell is still going"') : ''}>${raw(icon('sync', 16))}Retry</button>`);
-  }
+  /* ------------------------------------------------------------ shots */
 
-  function attemptSwitch(a) {
-    return html`<fieldset class="ds-chips">
-      <legend class="ds-sr">Attempt</legend>
-      ${a.attempts.map((x) => html`<label class="ds-chip"><input class="ds-chip__input" type="radio" name="cellAttempt" value="${x.id}"${x.id === a.id ? raw(' checked') : ''} data-attempt="${x.id}"><span class="ds-chip__body">${raw(icon('check', 18, 'ds-chip__check'))}<span>${'Attempt ' + x.attempt + ' · ' + (x.final ? V.verdictWord(x.final) : V.attemptWord(x.state))}</span></span></label>`)}
-    </fieldset>`;
-  }
-
-  function facts(a) {
-    const role = a.role || {};
-    const model = role.model ? (harnesses.modelOf(role.harness, role.model) || {}).label || role.model : '';
-    const rows = [
-      ['Test', a.test],
-      ...(a.dims || []).map((d) => [d.name.charAt(0).toUpperCase() + d.name.slice(1), d.label ? d.label + ' (' + d.id + ')' : d.id]),
-      ['Priority', [a.priority, ...(a.tags || [])].filter(Boolean).join(' · ')],
-      ['State', V.attemptWord(a.state)],
-      ['Agent', [harnesses.label(role.harness), model, role.effort ? harnesses.effortLabel(role.effort) : ''].filter(Boolean).join(' · ')],
-      ['Account', role.account ? accounts.labelOf(role.account) || role.account : ''],
-      ['Lease', (a.leases || []).map((l) => (l.label || 'member ' + l.member) + ' (' + l.tool + ')').join(', ')],
-      ['Queued', V.whenLong(a.queued_at)],
-      ['Started', V.whenLong(a.started_at)],
-      ['Ended', V.whenLong(a.ended_at)],
-      ['Took', a.started_at ? V.span((a.ended_at || Date.now()) - a.started_at) : ''],
-      ['Waited', V.span(a.waited_ms)],
-    ].filter(([, value]) => value);
-    return html`<dl class="ds-facts ds-facts--rows">${rows.map(([k, v]) => html`<div><dt>${k}</dt><dd class="so-break">${v}</dd></div>`)}</dl>`;
-  }
+  const actionOf = (v, n) => (v.actions || []).find((x) => x.n === n);
 
   // The screenshots of a step: those of its actions, then what it attached.
-  function stepShots(a, step) {
+  function stepShots(v, step) {
     const out = [];
     for (const n of step.actions || []) {
-      const act = (a.actions || []).find((x) => x.n === n);
-      if (act && act.screenshot && !out.some((s) => s.name === act.screenshot)) out.push({ name: act.screenshot, caption: 'Step ' + step.n + ' · ' + (act.summary || act.action) });
+      const act = actionOf(v, n);
+      if (act && act.screenshot && !out.some((s) => s.name === act.screenshot)) out.push({ name: act.screenshot, act });
     }
-    for (const name of step.attach || []) if (!out.some((s) => s.name === name)) out.push({ name, caption: 'Step ' + step.n + ' · attached' });
+    for (const name of step.attach || []) if (!out.some((s) => s.name === name)) out.push({ name, act: null });
     return out;
   }
 
-  function collectShots(a) {
+  // allShots is every screenshot of the attempt in step order (step 0: no
+  // step took it), each with its place in its step.
+  function allShots(v) {
     const out = [];
-    for (const step of a.steps || []) for (const s of stepShots(a, step)) if (!out.some((x) => x.name === s.name)) out.push(s);
-    for (const act of a.actions || []) {
-      if (act.screenshot && !out.some((x) => x.name === act.screenshot)) out.push({ name: act.screenshot, caption: 'Action ' + act.n + ' · ' + (act.summary || act.action) });
+    const seen = new Set();
+    for (const step of v.steps || []) {
+      const mine = stepShots(v, step).filter((s) => !seen.has(s.name));
+      mine.forEach((s, i) => {
+        seen.add(s.name);
+        out.push({ ...s, step: step.n, i, of: mine.length });
+      });
     }
+    const rest = (v.actions || []).filter((a) => a.screenshot && !seen.has(a.screenshot));
+    rest.forEach((a, i) => {
+      seen.add(a.screenshot);
+      out.push({ name: a.screenshot, act: a, step: 0, i, of: rest.length });
+    });
     return out;
   }
 
-  function thumbs(a, list) {
-    if (!list.length) return '';
-    return html`<div class="so-tests__shots">${list.map((s) => {
-      const i = shots.findIndex((x) => x.name === s.name);
-      return html`<button class="ds-pressable so-tests__shot" type="button" data-shot="${i}" aria-label="${'Screenshot: ' + s.caption}" data-tip="${s.caption}"><img src="${V.paths.file(a.run, a.id, s.name)}" alt="" loading="lazy" decoding="async"></button>`;
+  function shotWords(s) {
+    const where = s.step ? 'Step ' + s.step : 'Outside the steps';
+    const n = s.of > 1 ? ', screenshot ' + (s.i + 1) + ' of ' + s.of : '';
+    const what = s.act ? s.act.summary || s.act.action : 'attached by the agent';
+    return where + n + ': ' + what;
+  }
+
+  const fileOf = (v, name) => V.paths.file(v.run, v.id, name);
+
+  // stepVerdict is a step's verdict as it counts (the reviewer's over the agent's).
+  function stepVerdict(step) {
+    return step.review && step.review.verdict ? step.review.verdict : step.verdict || '';
+  }
+
+  // liveStep is the step a running cell is at: the first not judged yet.
+  function liveStep(v) {
+    if (!V.OPEN_ATTEMPT.has(v.state) || v.state !== 'running') return 0;
+    const s = (v.steps || []).find((x) => !x.verdict);
+    return s ? s.n : 0;
+  }
+
+  // pickDefault chooses what a newly shown attempt shows first: the latest
+  // screenshot of a running cell, else the first step that did not pass,
+  // else the first step.
+  function pickDefault(v, shots) {
+    const steps = v.steps || [];
+    if (V.OPEN_ATTEMPT.has(v.state)) {
+      const last = shots.length - 1;
+      return { step: last >= 0 ? shots[last].step : liveStep(v) || (steps[0] || {}).n || 0, shot: last };
+    }
+    const bad = steps.find((s) => { const x = stepVerdict(s); return x && !V.passed(x); }) || steps[0];
+    const n = bad ? bad.n : 0;
+    return { step: n, shot: shots.findIndex((s) => s.step === n) };
+  }
+
+  function syncSelection(v, shots) {
+    const key = keyOf(v.run, v.id);
+    if (sel.key !== key) {
+      sel = { key, manual: false, ...pickDefault(v, shots) };
+      zoom = false;
+      return;
+    }
+    if (!sel.manual && V.OPEN_ATTEMPT.has(v.state) && shots.length) {
+      sel.shot = shots.length - 1;
+      sel.step = shots[sel.shot].step;
+    }
+    if (sel.shot >= shots.length) sel.shot = shots.length - 1;
+  }
+
+  function selectStep(n) {
+    if (!view) return;
+    const shots = allShots(view);
+    sel.step = n;
+    sel.shot = shots.findIndex((s) => s.step === n);
+    sel.manual = true;
+    zoom = false;
+    draw();
+  }
+
+  function selectShot(i) {
+    if (!view) return;
+    const shots = allShots(view);
+    if (!shots[i]) return;
+    sel.shot = i;
+    sel.step = shots[i].step;
+    sel.manual = true;
+    draw();
+    const thumb = body.querySelector('[data-thumb="' + i + '"]');
+    if (thumb) thumb.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    const stepRow = body.querySelector('[data-step-row="' + sel.step + '"]');
+    if (stepRow) stepRow.scrollIntoView({ block: 'nearest' });
+  }
+
+  function stepShot(by) {
+    if (!view) return;
+    const shots = allShots(view);
+    if (!shots.length) return;
+    const from = sel.shot < 0 ? (by > 0 ? -1 : shots.length) : sel.shot;
+    const next = from + by;
+    if (next < 0 || next >= shots.length) return;
+    selectShot(next);
+  }
+
+  /* -------------------------------------------------------------- list */
+
+  function indexInList() {
+    if (!want) return -1;
+    return list.findIndex((x) => x.attempt === want.id && (!x.run || x.run === want.run));
+  }
+
+  function fallbackList() {
+    if (!want || indexInList() >= 0) return;
+    const rows = rowsNow(want.run);
+    const own = rows.map((r) => ({ attempt: r.id, run: want.run }));
+    if (own.some((x) => x.attempt === want.id)) list = own;
+  }
+
+  function walk(by) {
+    const i = indexInList();
+    const next = list[i + by];
+    if (i < 0 || !next) return;
+    ctx.go({ cell: next.attempt, run: next.run || want.run });
+  }
+
+  /* ---------------------------------------------------------- drawing */
+
+  function setHead(title, sub) {
+    const t = $('cellTitle');
+    if (t.textContent !== title) t.textContent = title;
+    const s = $('cellSub');
+    if (s.textContent !== sub) s.textContent = sub;
+  }
+
+  function drawNav() {
+    fallbackList();
+    const i = indexInList();
+    const has = i >= 0 && list.length > 1;
+    const prev = has && i > 0;
+    const next = has && i < list.length - 1;
+    const where = has ? (i + 1) + ' of ' + list.length : '';
+    morph(nav, html`${has ? html`<button class="ds-btn ds-btn--quiet ds-btn--icon" type="button" data-walk="-1" aria-label="Previous cell" data-tip="Previous cell ([ or k)" aria-keyshortcuts="[ k"${prev ? '' : raw(' aria-disabled="true"')}>${raw(icon('chevronLeft', 20))}</button>
+      <span class="so-cell__count" aria-label="${'Cell ' + where}">${where}</span>
+      <button class="ds-btn ds-btn--quiet ds-btn--icon" type="button" data-walk="1" aria-label="Next cell" data-tip="Next cell (] or j)" aria-keyshortcuts="] j"${next ? '' : raw(' aria-disabled="true"')}>${raw(icon('chevronRight', 20))}</button>` : ''}
+      ${WIDE.matches ? html`<button class="ds-btn ds-btn--quiet ds-btn--icon" type="button" data-keys aria-haspopup="dialog" aria-expanded="false" aria-label="Keys" data-tip="Keys (?)" aria-keyshortcuts="?">${raw(icon('keyboard', 20))}</button>` : ''}`);
+  }
+
+  function drawLoading() {
+    setHead('Reading the cell', '');
+    drawNav();
+    morph(body, html`<div class="ds-loading" role="status" data-ds-key="loading"><span class="ds-loader ds-loader--sm" aria-hidden="true"></span>Reading the cell</div>`);
+  }
+
+  function drawError() {
+    setHead('Cell', '');
+    drawNav();
+    morph(body, html`<div class="ds-alert ds-alert--error" role="alert" data-ds-key="error">${raw(icon('alertCircle', 20))}<span class="ds-alert__text">${error}</span><button class="ds-btn ds-btn--text ds-btn--sm" type="button" data-reload>Try again</button></div>`);
+  }
+
+  function draw() {
+    const v = view;
+    if (!shown || !v) return;
+    const shots = allShots(v);
+    syncSelection(v, shots);
+    const r = rowOf(v);
+    setHead(v.title || v.test, [V.dimsWords(v.dims) || v.cell, (v.attempts || []).length > 1 ? 'attempt ' + v.attempt : ''].filter(Boolean).join(' · '));
+    drawNav();
+    const wide = WIDE.matches;
+    morph(body, html`<div class="so-cell__page" data-layout="${wide ? 'wide' : 'narrow'}">
+      ${band(v, r)}
+      ${wide ? html`<div class="so-cell__split" data-ds-key="split">
+          <section class="so-cell__steps" aria-labelledby="cellStepsTitle">
+            ${notes(v)}
+            <h3 class="ds-card__subtitle" id="cellStepsTitle">${stepsTitle(v)}</h3>
+            ${stepList(v, shots)}
+          </section>
+          ${viewer(v, shots)}
+        </div>
+        ${actionsSection(v)}
+        ${detailsSection(v, r)}`
+        : html`${partSwitch(v)}
+        <div class="so-cell__part" id="cellPart" role="tabpanel" aria-labelledby="${'cellPart-' + part}" data-ds-key="${'part-' + part}">
+          ${part === 'steps' ? html`${compareSwitch()}${stepBlocks(v, shots)}` : part === 'actions' ? actionsSection(v) : detailsSection(v, r)}
+        </div>`}
+    </div>`);
+    if (!wide) wirePartSwitch();
+  }
+
+  function stepsTitle(v) {
+    const steps = v.steps || [];
+    const judged = steps.filter((s) => s.verdict).length;
+    return V.OPEN_ATTEMPT.has(v.state) && steps.length ? 'Steps · ' + judged + ' of ' + steps.length + ' judged' : 'Steps';
+  }
+
+  /* ---------------------------------------------------- the verdict band */
+
+  // provenance is who gave the verdict that counts: "The agent said Fail ·
+  // the reviewer made it Issue · you made it Pass".
+  function provenance(v) {
+    const parts = [];
+    if (v.verdict) parts.push('the agent said ' + V.verdictWord(v.verdict));
+    else if (V.OPEN_ATTEMPT.has(v.state)) parts.push(v.state === 'running' ? 'the agent is at work' : 'the agent has not started');
+    else parts.push('the agent gave no verdict');
+    const review = v.review || null;
+    if (v.reviewed && v.reviewed !== v.verdict) parts.push('the reviewer made it ' + V.verdictWord(v.reviewed));
+    else if (review && review.state === 'done') parts.push('the reviewer kept it');
+    else if (review && (review.state === 'pending' || review.state === 'running')) parts.push('a reviewer looks at it');
+    if (v.override) parts.push('you made it ' + V.verdictWord(v.override.verdict));
+    const text = parts.join(' · ');
+    return text.charAt(0).toUpperCase() + text.slice(1);
+  }
+
+  function changeLine(v, r) {
+    if (!r) return '';
+    const bits = [];
+    const prev = r.prev;
+    const prevLink = prev && prev.attempt
+      ? html`<button class="ds-link-btn" type="button" data-open-prev="${prev.attempt}" data-prev-run="${prev.run}">${'Run ' + (prev.number || '?')}</button>`
+      : prev ? 'Run ' + (prev.number || '?') : '';
+    if (r.change === 'regressed' || r.change === 'fixed') {
+      bits.push(html`<span>${(WAS[prev && prev.verdict] || 'it was different').replace(/^i/, 'I')}${prev ? html` in ${prevLink}` : ''}</span>`);
+    } else if (r.change === 'new') {
+      bits.push(html`<span>No earlier run had this cell</span>`);
+    } else if (prev && prev.verdict && r.final) {
+      bits.push(html`<span>${'The same as in '}${prevLink}${' (' + V.verdictWord(prev.verdict) + ')'}</span>`);
+    }
+    if (r.since && r.final && !V.passed(r.final) && r.since.run !== v.run) bits.push(html`<span>${'a problem since Run ' + r.since.number}</span>`);
+    if (!bits.length) return '';
+    return html`<p class="ds-meta so-cell__change"><span class="ds-parts"><span class="ds-parts__list">${bits}</span></span></p>`;
+  }
+
+  // changeChip is how the cell moved against the run before, as a chip.
+  function changeChip(r) {
+    if (!r || !V.CHANGE[r.change]) return '';
+    const tone = r.change === 'regressed' ? 'error' : r.change === 'fixed' ? 'ok' : '';
+    return V.chip({ word: V.CHANGE[r.change].word, glyph: V.CHANGE[r.change].glyph, tone });
+  }
+
+  function attemptSwitch(v) {
+    const all = v.attempts || [];
+    if (all.length < 2) return '';
+    return html`<div class="ds-segmented so-cell__attempts" role="radiogroup" aria-label="Attempts of this cell" data-ds-key="attempts">${all.map((a) => {
+      const on = a.id === v.id;
+      const label = 'Attempt ' + a.attempt + ' · ' + (a.final ? V.verdictWord(a.final) : V.attemptWord(a.state));
+      return html`<button class="ds-segmented__option" type="button" role="radio" aria-checked="${on ? 'true' : 'false'}"${on ? '' : raw(' tabindex="-1"')} data-attempt="${a.id}" data-label="${label}">${label}</button>`;
     })}</div>`;
   }
 
-  function stepItem(a, step) {
-    const r = step.review;
-    const verdict = r && r.verdict ? r.verdict : step.verdict;
-    const acts = (step.actions || []).map((n) => (a.actions || []).find((x) => x.n === n)).filter(Boolean);
-    return html`<li class="${'ds-timeline__item' + (verdict ? '' : ' ds-timeline__item--muted')}" data-ds-key="${'s' + step.n}">
-      <div class="ds-timeline__head">
-        <p class="ds-timeline__title">${step.n + '. ' + step.do}</p>
-        ${verdict ? V.verdictChip(verdict) : html`<span class="ds-status">${raw(icon('minimize', 16))}<span>Not judged</span></span>`}
+  function liveLine(v, r) {
+    if (v.state !== 'running') return '';
+    const live = r && r.live;
+    const steps = (v.steps || []).length;
+    const at = live ? live.step : liveStep(v);
+    const last = (v.actions || [])[(v.actions || []).length - 1];
+    const activity = live && live.activity ? live.activity : last ? last.summary || last.action : '';
+    const when = live && live.at ? live.at : last && last.at ? Date.parse(last.at) : 0;
+    return html`<p class="ds-meta so-cell__live" role="status">${at ? 'Step ' + at + ' of ' + steps : 'Every step judged'}${activity ? ' · ' + activity : ''}${when ? ' · ' + V.ago(when) : ''}</p>`;
+  }
+
+  function band(v, r) {
+    const open = V.OPEN_ATTEMPT.has(v.state);
+    const retryWhy = open ? 'The cell is still going' : '';
+    return html`<section class="so-cell__band" aria-label="Verdict" data-ds-key="band">
+      <div class="so-cell__verdict">
+        <div class="so-cell__says">
+          ${v.final ? V.verdictChip(v.final) : V.cellChip({ state: v.state, wait: v.wait })}
+          ${changeChip(r)}
+          <p class="so-cell__who">${provenance(v)}</p>
+        </div>
+        ${changeLine(v, r)}
+        ${liveLine(v, r)}
+        ${attemptSwitch(v)}
       </div>
-      <p class="ds-timeline__meta">${'Expect: ' + step.expect}${step.at ? ' · ' + V.clock(step.at) : ''}</p>
-      ${step.observed ? html`<p class="ds-timeline__text so-break">${step.observed}</p>` : ''}
-      ${r ? html`<div class="ds-alert ds-alert--plain">${raw(icon('eye', 20))}<span class="ds-alert__text"><strong class="ds-alert__title">${'Reviewer: ' + V.verdictWord(r.verdict)}</strong> ${step.verdict && step.verdict !== r.verdict ? '(the agent said ' + V.verdictWord(step.verdict) + ') ' : ''}${r.note}</span></div>` : ''}
-      ${thumbs(a, stepShots(a, step))}
-      ${acts.length ? html`<details class="ds-collapsible ds-disclosure">
-        <summary>${acts.length === 1 ? '1 action' : acts.length + ' actions'}${raw(icon('chevronDown', 20, 'ds-chevron'))}</summary>
-        <div class="ds-disclosure__body">${actionList(acts)}</div>
-      </details>` : ''}
-    </li>`;
-  }
-
-  function actionList(acts) {
-    return html`<ol class="ds-plain-list so-tests__actions">${acts.map((x) => html`<li class="so-break">
-      <strong>${x.action}</strong> ${x.summary}${x.ms ? html` <span class="ds-meta">${V.span(x.ms) || x.ms + ' ms'}</span>` : ''}${x.interaction ? html` <span class="ds-tag ds-tag--neutral">interaction</span>` : ''}
-      ${x.url ? html`<br><span class="ds-meta">${x.url}</span>` : ''}
-      ${x.error ? html`<br><span class="ds-status ds-status--error">${raw(icon('alertCircle', 16))}<span>${x.error}</span></span>` : ''}
-    </li>`)}</ol>`;
-  }
-
-  // The screenshots no step took as its own.
-  function otherShots(a) {
-    const inSteps = new Set((a.steps || []).flatMap((s) => stepShots(a, s).map((x) => x.name)));
-    const rest = shots.filter((s) => !inSteps.has(s.name));
-    const loose = (a.actions || []).filter((x) => !(a.steps || []).some((s) => (s.actions || []).includes(x.n)));
-    if (!rest.length && !loose.length) return '';
-    return html`<section class="so-tests__stack" aria-labelledby="otherTitle">
-      <h3 class="ds-card__subtitle" id="otherTitle">Outside the steps</h3>
-      ${thumbs(a, rest)}
-      ${loose.length ? html`<details class="ds-collapsible ds-disclosure"><summary>${loose.length === 1 ? '1 action' : loose.length + ' actions'}${raw(icon('chevronDown', 20, 'ds-chevron'))}</summary><div class="ds-disclosure__body">${actionList(loose)}</div></details>` : ''}
+      <div class="so-cell__actions" role="group" aria-label="Actions of this cell">
+        <button class="ds-btn ds-btn--tonal" type="button" data-cell-act="chat" aria-haspopup="dialog">${raw(icon('chat', 16))}Fix in a chat</button>
+        <button class="ds-btn ds-btn--adaptive" type="button" data-cell-act="override" aria-haspopup="dialog" aria-expanded="false" data-tip="${v.override ? 'Change or remove your verdict' : 'Override the verdict'}"${open ? raw(' aria-disabled="true"') : ''}>${raw(icon('pencil', 16))}<span class="ds-btn__label">${v.override ? 'Your verdict' : 'Override verdict'}</span></button>
+        <button class="ds-btn ds-btn--adaptive" type="button" data-cell-act="retry" data-tip="${retryWhy || 'Run this cell once more in this run'}"${open ? raw(' aria-disabled="true"') : ''}>${raw(icon('sync', 16))}<span class="ds-btn__label">Retry</span></button>
+        ${v.chat ? html`<a class="ds-btn ds-btn--adaptive ds-btn--text" href="${'/#open=' + encodeURIComponent(v.chat)}" target="_blank" rel="noopener" data-tip="Open the agent’s transcript in a new tab">${raw(icon('external', 16))}<span class="ds-btn__label">Open transcript</span></a>` : ''}
+      </div>
+      ${WIDE.matches ? '' : notes(v)}
     </section>`;
   }
 
-  function linksAndLogs(a) {
-    const links = Object.entries(a.links || {});
-    const files = a.files || [];
-    if (!links.length && !files.length) return '';
-    return html`<section class="so-tests__stack" aria-labelledby="linksTitle">
-      <h3 class="ds-card__subtitle" id="linksTitle">Links and logs</h3>
-      <ul class="ds-plain-list">
-        ${links.map(([label, url]) => html`<li><a href="${url}" target="_blank" rel="noopener noreferrer">${label}${raw(icon('external', 16))}</a></li>`)}
-        ${files.map((name) => html`<li><a href="${V.paths.file(a.run, a.id, name)}" target="_blank" rel="noopener">${name.replace(/^logs\//, '')}</a></li>`)}
-      </ul>
+  function notes(v) {
+    const review = v.review || null;
+    const parts = [
+      v.override ? html`<div class="ds-alert" data-ds-key="override">${raw(icon('pencil', 20))}<div class="ds-alert__text"><p class="ds-alert__title">${'You made it ' + V.verdictWord(v.override.verdict) + (v.override.at ? ' · ' + V.ago(v.override.at) : '')}</p>${v.override.note ? html`<p class="so-break">${v.override.note}</p>` : ''}</div></div>` : '',
+      review && review.note ? html`<div class="ds-alert" data-ds-key="review">${raw(icon('eye', 20))}<div class="ds-alert__text"><p class="ds-alert__title">${v.reviewed && v.reviewed !== v.verdict ? 'The reviewer made it ' + V.verdictWord(v.reviewed) : 'The reviewer'}</p><p class="so-break">${review.note}</p></div></div>` : '',
+      v.state === 'waiting' && v.wait ? html`<div class="ds-alert" data-ds-key="wait">${raw(icon('clock', 20))}<span class="ds-alert__text so-break">${v.wait}</span></div>` : '',
+      v.end_reason ? html`<div class="ds-alert ds-alert--warning" data-ds-key="end">${raw(icon('alert', 20))}<div class="ds-alert__text"><p class="ds-alert__title">${'Why it ended ' + (v.state === 'ended' ? 'early' : V.attemptWord(v.state).toLowerCase())}</p><p class="so-break">${v.end_reason}</p></div></div>` : '',
+      v.summary ? html`<p class="so-break so-cell__summary" data-ds-key="summary">${v.summary}</p>` : '',
+    ].filter(Boolean);
+    return parts.length ? html`<div class="so-cell__notes">${parts}</div>` : '';
+  }
+
+  /* ---------------------------------------------------------- the steps */
+
+  function stepAria(step) {
+    const verdict = stepVerdict(step);
+    return 'Step ' + step.n + ': ' + step.do + ' ' + (verdict ? V.verdictWord(verdict) : 'not judged yet');
+  }
+
+  function stepChip(v, step) {
+    const verdict = stepVerdict(step);
+    if (verdict) return V.verdictChip(verdict);
+    if (liveStep(v) === step.n) return V.chip({ word: 'At work', spin: true });
+    return html`<span class="ds-status">${raw(icon('minimize', 16))}<span>${V.OPEN_ATTEMPT.has(v.state) ? 'Not yet' : 'Not judged'}</span></span>`;
+  }
+
+  function reviewNote(step) {
+    const r = step.review;
+    if (!r || (!r.note && !r.verdict)) return '';
+    const changed = r.verdict && step.verdict && r.verdict !== step.verdict;
+    return html`<span class="so-cell-step__note">${raw(icon('eye', 16))}<span><strong>${changed ? 'The reviewer made it ' + V.verdictWord(r.verdict) + ' (the agent said ' + V.verdictWord(step.verdict) + ')' : 'The reviewer'}</strong>${r.note ? ': ' + r.note : ''}</span></span>`;
+  }
+
+  // The wide layout's steps: rows that choose the step whose screenshots show.
+  function stepList(v, shots) {
+    const steps = v.steps || [];
+    if (!steps.length) return html`<p class="ds-muted">This test has no steps.</p>`;
+    return html`<ol class="ds-list ds-list--interactive so-cell-steps" aria-label="Steps" data-ds-key="steplist">${steps.map((step) => {
+      const mine = shots.filter((s) => s.step === step.n).length;
+      const current = sel.step === step.n;
+      return html`<li class="ds-list__item so-cell-step" data-ds-key="${'s' + step.n}" data-step-row="${step.n}">
+        <span class="ds-list__text">
+          <span class="ds-list__title"><button class="ds-list__action" type="button" data-step="${step.n}"${current ? raw(' aria-current="step"') : ''} aria-label="${stepAria(step) + (mine ? ', ' + V.plural(mine, 'screenshot') : '')}">${step.n + '. ' + step.do}</button></span>
+          <span class="ds-list__meta so-break">${'Expect: ' + step.expect}</span>
+          ${step.observed ? html`<span class="so-cell-step__seen so-break">${step.observed}</span>` : ''}
+          ${reviewNote(step)}
+          ${mine || step.at ? html`<span class="ds-list__meta">${mine ? html`<span class="so-tests-nowrap">${raw(icon('image', 16))}${V.plural(mine, 'screenshot')}</span>` : ''}${mine && step.at ? ' · ' : ''}${step.at ? V.clock(step.at) : ''}</span>` : ''}
+        </span>
+        ${stepChip(v, step)}
+      </li>`;
+    })}</ol>`;
+  }
+
+  function compareButton() {
+    const ready = pass && pass.state === 'ready';
+    const why = !pass || pass.state === 'loading' ? 'Looking for the last pass' : 'No earlier attempt of this cell passed';
+    return html`<button class="ds-btn ds-btn--quiet ds-btn--sm" type="button" data-compare aria-pressed="${compare && ready ? 'true' : 'false'}" aria-keyshortcuts="c"${ready ? raw(html` data-tip="${'Show ' + pass.label + '’s screenshot beside this one (c)'}"`) : raw(html` aria-disabled="true" data-tip="${why}"`)}>${raw(icon('columns', 16))}Compare with the last pass</button>`;
+  }
+
+  // compareShot is the last pass's screenshot of the same place: the same
+  // step, the same screenshot of it where it has as many, else its first.
+  function compareShot(s) {
+    if (!(pass && pass.state === 'ready' && pass.view && s)) return null;
+    const theirs = allShots(pass.view).filter((x) => x.step === s.step);
+    return theirs[s.i] || theirs[0] || null;
+  }
+
+  function figure(v, s, { label = '', big = true } = {}) {
+    const src = fileOf(v, s.name);
+    return html`<figure class="so-cell-shot" data-ds-key="${'fig-' + v.id + '-' + s.name + (label ? '-pass' : '')}">
+      ${label ? html`<figcaption class="so-cell-shot__label"><span class="ds-tag ds-tag--neutral">${label}</span></figcaption>` : ''}
+      <button class="so-cell-shot__frame ds-pressable" type="button" data-zoom aria-pressed="${zoom ? 'true' : 'false'}" aria-label="${(zoom ? 'Fit to the window: ' : 'Show at its own size: ') + shotWords(s)}" aria-keyshortcuts="z">
+        <img class="so-cell-shot__img" src="${src}" alt="${shotWords(s)}" decoding="async" data-ds-key="${'img-' + v.id + '-' + s.name}"${big ? '' : raw(' loading="lazy"')}>
+      </button>
+    </figure>`;
+  }
+
+  // The wide layout's screenshot panel: the chosen one large, a bar over it,
+  // and the film strip of every screenshot of the cell under it.
+  function viewer(v, shots) {
+    const s = shots[sel.shot];
+    const step = (v.steps || []).find((x) => x.n === sel.step);
+    const two = !!(compare && s && pass && pass.state === 'ready');
+    const theirs = two ? compareShot(s) : null;
+    const title = s ? (s.step ? 'Step ' + s.step : 'Outside the steps') + (s.of > 1 ? ' · ' + (s.i + 1) + ' of ' + s.of : '')
+      : step ? 'Step ' + step.n : 'Screenshots';
+    const meta = s && s.act ? [s.act.summary || s.act.action, s.act.at ? V.clock(Date.parse(s.act.at)) : '', s.act.url].filter(Boolean).join(' · ') : s ? 'Attached by the agent' : '';
+    return html`<section class="so-cell-viewer" aria-labelledby="cellShotTitle" data-ds-key="viewer">
+      <div class="so-cell-viewer__bar">
+        <div class="so-cell-viewer__caption">
+          <h3 class="ds-card__subtitle" id="cellShotTitle">${title}</h3>
+          ${meta ? html`<p class="ds-meta so-break">${meta}</p>` : ''}
+        </div>
+        <div class="so-cell-viewer__tools">
+          ${compareButton()}
+          ${s ? html`<button class="ds-btn ds-btn--quiet ds-btn--icon ds-btn--sm" type="button" data-zoom aria-pressed="${zoom ? 'true' : 'false'}" aria-label="Show at its own size" data-tip="${zoom ? 'Fit to the window (z)' : 'Show at its own size (z)'}" aria-keyshortcuts="z">${raw(icon(zoom ? 'minimize' : 'search', 18))}</button>
+          <a class="ds-btn ds-btn--quiet ds-btn--icon ds-btn--sm" href="${fileOf(v, s.name)}" target="_blank" rel="noopener" aria-label="Open the screenshot in a new tab" data-tip="Open in a new tab (o)" aria-keyshortcuts="o">${raw(icon('external', 18))}</a>` : ''}
+          <button class="ds-btn ds-btn--quiet ds-btn--icon ds-btn--sm" type="button" data-shot-step="-1" aria-label="Previous screenshot" data-tip="Previous screenshot (←)" aria-keyshortcuts="ArrowLeft"${sel.shot > 0 ? '' : raw(' aria-disabled="true"')}>${raw(icon('chevronLeft', 18))}</button>
+          <button class="ds-btn ds-btn--quiet ds-btn--icon ds-btn--sm" type="button" data-shot-step="1" aria-label="Next screenshot" data-tip="Next screenshot (→)" aria-keyshortcuts="ArrowRight"${sel.shot >= 0 && sel.shot < shots.length - 1 ? '' : raw(' aria-disabled="true"')}>${raw(icon('chevronRight', 18))}</button>
+        </div>
+      </div>
+      <div class="${'so-cell-viewer__stage' + (two ? ' so-cell-viewer__stage--two' : '')}" data-zoomed="${zoom ? 'true' : 'false'}" data-ds-key="stage">
+        ${s ? html`${figure(v, s, { label: two ? 'This attempt' : '' })}${two
+          ? theirs ? figure(pass.view, theirs, { label: 'Last pass · ' + pass.label }) : html`<div class="ds-empty so-cell-shot" data-ds-key="nopass"><p class="ds-empty__title">${'No screenshot of this step in ' + pass.label}</p></div>` : ''}`
+          : html`<div class="ds-empty" data-ds-key="noshot">
+            <span class="ds-empty__disc" aria-hidden="true">${raw(icon(V.OPEN_ATTEMPT.has(v.state) ? 'clock' : 'image', 24))}</span>
+            <p class="ds-empty__title">${V.OPEN_ATTEMPT.has(v.state) && !(step && step.verdict) ? 'No screenshot yet' : 'No screenshot of this step'}</p>
+            <p class="ds-empty__text">${shots.length ? 'The strip below has the cell’s ' + V.plural(shots.length, 'screenshot') + '.' : V.OPEN_ATTEMPT.has(v.state) ? 'They show up here as the agent takes them.' : 'The agent took none in this cell.'}</p>
+          </div>`}
+      </div>
+      ${shots.length ? strip(v, shots) : ''}
     </section>`;
   }
 
-  function bugsOf(a) {
-    if (!a.bugs || !a.bugs.length) return '';
-    const known = runBugs.get(a.run) || [];
-    return html`<section class="so-tests__stack" aria-labelledby="cellBugsTitle">
-      <h3 class="ds-card__subtitle" id="cellBugsTitle">Bugs</h3>
-      <ul class="ds-plain-list">${a.bugs.map((id) => {
-        const bug = known.find((b) => b.id === id);
-        return html`<li>${bug ? html`${V.severityChip(bug.severity)} <strong>${id}</strong> ${bug.title}` : id}</li>`;
-      })}</ul>
+  function strip(v, shots) {
+    return html`<ol class="so-cell-strip" aria-label="${'Every screenshot of the cell, ' + shots.length}" data-ds-key="strip">${shots.map((s, i) => {
+      const first = i === 0 || shots[i - 1].step !== s.step;
+      return html`<li class="so-cell-strip__item" data-ds-key="${'t-' + s.name}">
+        <span class="${'so-cell-strip__step' + (first ? '' : ' so-cell-strip__step--same')}" aria-hidden="true">${s.step ? 'Step ' + s.step : 'Other'}</span>
+        <button class="so-cell-strip__thumb ds-pressable" type="button" data-thumb="${i}" aria-label="${shotWords(s)}"${i === sel.shot ? raw(' aria-current="true"') : ''}>
+          <img src="${fileOf(v, s.name)}" alt="" loading="lazy" decoding="async">
+        </button>
+      </li>`;
+    })}</ol>`;
+  }
+
+  /* ------------------------------------------------ the narrow layout */
+
+  function partSwitch(v) {
+    const actions = (v.actions || []).length;
+    const errors = (v.actions || []).filter((a) => a.error).length;
+    return html`<div class="ds-tabs so-cell__tabs" role="tablist" aria-label="Parts of the cell" id="cellParts" data-ds-key="parts">${PARTS.map((p) => {
+      const on = p.id === part;
+      const n = p.id === 'actions' ? actions : 0;
+      return html`<button class="ds-tabs__tab" role="tab" type="button" id="${'cellPart-' + p.id}" aria-selected="${on ? 'true' : 'false'}" aria-controls="cellPart"${on ? '' : raw(' tabindex="-1"')} data-part="${p.id}" data-label="${p.label}">${p.label}${n ? html`<span class="${errors ? 'ds-badge ds-badge--error' : 'ds-badge ds-badge--neutral'}">${n}</span>` : ''}</button>`;
+    })}</div>`;
+  }
+
+  let partIndicator = null;
+  function wirePartSwitch() {
+    const tabs = $('cellParts');
+    if (!tabs) return;
+    if (!tabs.dataset.wired) {
+      tabs.dataset.wired = '1';
+      partIndicator = DS.indicator.createIndicator(tabs, { active: '[aria-selected="true"]', className: 'ds-tabs__indicator', reveal: true });
+      DS.dom.roving(tabs);
+    } else if (partIndicator) partIndicator.update();
+  }
+
+  function compareSwitch() {
+    if (!pass || pass.state !== 'ready') return '';
+    return html`<div class="so-cell__compare" data-ds-key="compare">${compareButton()}</div>`;
+  }
+
+  // The narrow layout's steps: each with its screenshots at full width, in
+  // a strip that swipes; compared, each beside the last pass's.
+  function stepBlocks(v, shots) {
+    const steps = v.steps || [];
+    const outside = shots.filter((s) => s.step === 0);
+    if (!steps.length && !outside.length) return html`<p class="ds-muted">This test has no steps.</p>`;
+    return html`<ol class="so-cell-blocks" aria-label="Steps" data-ds-key="blocks">${steps.map((step) => {
+      const mine = shots.filter((s) => s.step === step.n);
+      return html`<li class="so-cell-block" data-ds-key="${'b' + step.n}" data-step-row="${step.n}">
+        <div class="so-cell-block__head">
+          <h3 class="so-cell-block__title">${step.n + '. ' + step.do}</h3>
+          ${stepChip(v, step)}
+        </div>
+        <p class="ds-meta so-break">${'Expect: ' + step.expect}</p>
+        ${step.observed ? html`<p class="so-break">${step.observed}</p>` : ''}
+        ${reviewNote(step)}
+        ${comparing() && mine.length ? pairs(v, mine) : swipe(v, mine, 'Screenshots of step ' + step.n)}
+      </li>`;
+    })}${outside.length ? html`<li class="so-cell-block" data-ds-key="b0">
+        <div class="so-cell-block__head"><h3 class="so-cell-block__title">Outside the steps</h3></div>
+        ${swipe(v, outside, 'Screenshots outside the steps')}
+      </li>` : ''}</ol>`;
+  }
+
+  function swipe(v, mine, label) {
+    if (!mine.length) return '';
+    return html`<div class="so-cell-swipe" role="region" aria-label="${label}" tabindex="0" data-ds-key="${'sw-' + label}">${mine.map((s) => html`<figure class="so-cell-swipe__item" data-ds-key="${'f-' + v.id + '-' + s.name}">
+      <a class="so-cell-swipe__link ds-pressable" href="${fileOf(v, s.name)}" target="_blank" rel="noopener" aria-label="${'Open full size: ' + shotWords(s)}">
+        <img src="${fileOf(v, s.name)}" alt="${shotWords(s)}" loading="lazy" decoding="async">
+      </a>
+      <figcaption class="ds-meta so-break">${(s.of > 1 ? (s.i + 1) + ' of ' + s.of + ' · ' : '') + (s.act ? s.act.summary || s.act.action : 'attached')}</figcaption>
+    </figure>`)}</div>`;
+  }
+
+  const comparing = () => !!(compare && pass && pass.state === 'ready');
+
+  // pairs is a step's screenshots beside the last pass's of the same place,
+  // half the width each, labelled.
+  function pairs(v, mine) {
+    const half = (label, src, alt, key) => html`<figure class="so-cell-pair__item" data-ds-key="${key}">
+      <figcaption class="so-cell-shot__label"><span class="ds-tag ds-tag--neutral">${label}</span></figcaption>
+      <a class="so-cell-swipe__link ds-pressable" href="${src}" target="_blank" rel="noopener" aria-label="${'Open full size: ' + alt}">
+        <img src="${src}" alt="${alt}" loading="lazy" decoding="async">
+      </a>
+    </figure>`;
+    return html`<div class="so-cell-pairs" data-ds-key="pairs">${mine.map((s) => {
+      const theirs = compareShot(s);
+      return html`<div class="so-cell-pair" data-ds-key="${'pair-' + s.name}">
+        ${half('This attempt', fileOf(v, s.name), shotWords(s), 'mine-' + v.id + '-' + s.name)}
+        ${theirs ? half('Last pass · ' + pass.label, fileOf(pass.view, theirs.name), 'The last pass, ' + shotWords(theirs), 'pass-' + pass.attempt + '-' + theirs.name)
+          : html`<p class="ds-meta so-cell-pair__none" data-ds-key="nopass">${'No screenshot of this step in ' + pass.label + '.'}</p>`}
+      </div>`;
+    })}</div>`;
+  }
+
+  /* ------------------------------------------------------- the actions */
+
+  function stepOfAction(v, n) {
+    const step = (v.steps || []).find((s) => (s.actions || []).includes(n));
+    return step ? step.n : 0;
+  }
+
+  function actionsSection(v) {
+    const acts = v.actions || [];
+    const shots = allShots(v);
+    const errors = acts.filter((a) => a.error).length;
+    const wide = WIDE.matches;
+    const timed = acts.some((a) => a.ms);
+    const head = html`<div class="ds-card__row">
+        <h3 class="ds-card__title" id="cellActsTitle">Actions</h3>
+        <span class="ds-meta">${acts.length ? V.plural(acts.length, 'action') + (errors ? ' · ' + V.plural(errors, 'error') : '') : ''}</span>
+      </div>`;
+    if (!acts.length) {
+      return html`<section class="ds-card so-cell__section" aria-labelledby="cellActsTitle" data-ds-key="acts">${head}
+        <p class="ds-muted">${V.OPEN_ATTEMPT.has(v.state) ? 'The tools’ actions show up here as they happen.' : 'The tools wrote no action for this cell.'}</p></section>`;
+    }
+    const shotLink = (a) => {
+      const i = shots.findIndex((s) => s.name === a.screenshot);
+      if (!a.screenshot) return '';
+      return wide && i >= 0
+        ? html`<button class="ds-link-btn" type="button" data-thumb="${i}" aria-label="${'Show the screenshot of action ' + a.n}">${raw(icon('image', 16))}<span class="ds-sr">Screenshot</span></button>`
+        : html`<a href="${fileOf(v, a.screenshot)}" target="_blank" rel="noopener" aria-label="${'Open the screenshot of action ' + a.n}">${raw(icon('image', 16))}</a>`;
+    };
+    const what = (a) => html`<span class="so-break">${a.summary || a.action}</span>${a.url ? html`<small class="so-tests__sub ds-meta so-break">${a.url}</small>` : ''}${a.error ? html`<span class="so-tests__sub"><span class="ds-status ds-status--error">${raw(icon('alertCircle', 16))}<span>Error</span></span><span class="so-break">${a.error}</span></span>` : ''}`;
+    const when = (a) => (a.at ? V.clock(Date.parse(a.at)) : '');
+    if (wide) {
+      return html`<section class="ds-card so-cell__section" aria-labelledby="cellActsTitle" data-ds-key="acts">${head}
+        <div class="ds-table-wrap"><table class="ds-table ds-table--dense so-cell-acts">
+          <caption class="ds-sr">Every action the tools took in this cell, in order</caption>
+          <thead><tr><th scope="col" class="ds-num">#</th><th scope="col">Step</th><th scope="col">Time</th><th scope="col">Action</th><th scope="col">What happened</th>${timed ? html`<th scope="col" class="ds-num">Took</th>` : ''}<th scope="col"><span class="ds-sr">Screenshot</span></th></tr></thead>
+          <tbody>${acts.map((a) => {
+            const step = stepOfAction(v, a.n);
+            return html`<tr data-ds-key="${'a' + a.n}">
+              <td class="ds-num">${String(a.n)}</td>
+              <td>${step ? String(step) : html`<span class="ds-muted">–</span>`}</td>
+              <td><span class="so-tests-nowrap">${when(a)}</span></td>
+              <td><span class="so-tests-nowrap">${a.tool ? a.tool + ' · ' : ''}${a.action}</span>${a.interaction ? html`<small class="so-tests__sub ds-meta">interaction</small>` : ''}</td>
+              <td>${what(a)}</td>
+              ${timed ? html`<td class="ds-num">${a.ms ? V.span(a.ms) || a.ms + ' ms' : ''}</td>` : ''}
+              <td>${shotLink(a)}</td>
+            </tr>`;
+          })}</tbody>
+        </table></div>
+      </section>`;
+    }
+    return html`<section class="ds-card so-cell__section" aria-labelledby="cellActsTitle" data-ds-key="acts">${head}
+      <ol class="ds-list so-cell-actlist" aria-label="Actions">${acts.map((a) => {
+        const step = stepOfAction(v, a.n);
+        return html`<li class="ds-list__item" data-ds-key="${'a' + a.n}">
+          <span class="ds-list__text">
+            <span class="ds-list__title">${a.n + '. ' + (a.tool ? a.tool + ' · ' : '') + a.action}</span>
+            <span class="ds-list__meta">${[step ? 'step ' + step : 'outside the steps', when(a), a.ms ? V.span(a.ms) || a.ms + ' ms' : '', a.interaction ? 'interaction' : ''].filter(Boolean).join(' · ')}</span>
+            <span>${what(a)}</span>
+          </span>
+          ${a.screenshot ? html`<span class="ds-list__actions">${shotLink(a)}</span>` : ''}
+        </li>`;
+      })}</ol>
     </section>`;
   }
 
-  body.addEventListener('change', (event) => {
-    const input = event.target.closest('[data-attempt]');
-    if (input && input.checked) ctx.go({ cell: input.dataset.attempt });
-  });
+  /* ------------------------------------------------------- the details */
 
-  body.addEventListener('click', (event) => {
-    const thumb = event.target.closest('[data-shot]');
-    if (thumb) { openShot(Number(thumb.dataset.shot), thumb); return; }
-    const cellBtn = event.target.closest('[data-cell]');
-    if (cellBtn) ctx.go({ cell: cellBtn.dataset.cell });
-  });
+  function detailsSection(v, r) {
+    const role = v.role || {};
+    const model = role.model ? (harnesses.modelOf(role.harness, role.model) || {}).label || role.model : '';
+    const took = v.started_at ? (v.ended_at || (V.OPEN_ATTEMPT.has(v.state) ? Date.now() : 0)) - v.started_at : 0;
+    const facts = [
+      ['Test', html`<a href="${V.paths.page({ repo: state.repo, view: 'tests', test: v.test })}" data-go-test="${v.test}">${v.test}</a>`],
+      ...(v.dims || []).map((d) => [V.titleCase(d.name), d.label ? d.label + ' (' + d.id + ')' : d.id]),
+      ['Priority', [v.priority, ...(v.tags || []).map((t) => '#' + t)].filter(Boolean).join(' · ')],
+      ['Run', (() => { const run = ctx.runOf(v.run); return run ? V.runName(run) : v.run; })()],
+      ['Attempt', 'Attempt ' + v.attempt + ' · ' + V.attemptWord(v.state) + (v.retried ? ' · retried' : '')],
+      ['Agent', [harnesses.label(role.harness), model, role.effort ? harnesses.effortLabel(role.effort) : ''].filter(Boolean).join(' · ')],
+      ['Account', role.account ? accounts.labelOf(role.account) || role.account : ''],
+      ['Lease', (v.leases || []).map((l) => (l.label || 'account ' + l.member) + ' (' + l.tool + ')').join(', ')],
+      ['Queued', V.whenLong(v.queued_at)],
+      ['Started', V.whenLong(v.started_at)],
+      ['Ended', V.whenLong(v.ended_at)],
+      ['Took', V.span(took)],
+      ['Waited', V.span(v.waited_ms)],
+    ].filter(([, value]) => value);
+    const links = Object.entries(v.links || {});
+    const files = v.files || [];
+    const known = bugs && bugs.repo === state.repo ? bugs.list : [];
+    return html`<div class="so-cell__details" data-ds-key="details">
+      <section class="ds-card so-cell__section" aria-labelledby="cellFactsTitle">
+        <h3 class="ds-card__title" id="cellFactsTitle">Details</h3>
+        <dl class="ds-facts ds-facts--rows">${facts.map(([k, val]) => html`<div><dt>${k}</dt><dd class="so-break">${val}</dd></div>`)}</dl>
+      </section>
+      <div class="so-cell__aside">
+        ${(v.bugs || []).length ? html`<section class="ds-card so-cell__section" aria-labelledby="cellBugsTitle">
+          <h3 class="ds-card__title" id="cellBugsTitle">Bugs</h3>
+          <ul class="ds-list ds-list--interactive" aria-label="Bugs of this cell">${v.bugs.map((id) => {
+            const bug = known.find((b) => b.id === id);
+            return html`<li class="ds-list__item" data-ds-key="${'bug-' + id}">
+              <span class="ds-list__text">
+                <span class="ds-list__title"><a class="ds-list__action" href="${V.paths.page({ repo: state.repo, view: 'bugs', bug: id })}" data-go-bug="${id}">${bug ? id + ' · ' + bug.title : id}</a></span>
+                ${bug ? html`<span class="ds-list__meta">${[bug.status ? bug.status.replace(/_/g, ' ') : '', bug.runs ? V.plural(bug.runs.length, 'run') : ''].filter(Boolean).join(' · ')}</span>` : ''}
+              </span>
+              ${bug ? V.severityChip(bug.severity) : ''}
+            </li>`;
+          })}</ul>
+        </section>` : ''}
+        <section class="ds-card so-cell__section" aria-labelledby="cellLinksTitle">
+          <h3 class="ds-card__title" id="cellLinksTitle">Links and logs</h3>
+          ${links.length || files.length || v.chat ? html`<ul class="ds-plain-list so-cell__links">
+            ${v.chat ? html`<li><a href="${'/#open=' + encodeURIComponent(v.chat)}" target="_blank" rel="noopener">The agent’s transcript${raw(icon('external', 16))}</a></li>` : ''}
+            ${links.map(([label, url]) => html`<li><a href="${url}" target="_blank" rel="noopener noreferrer" class="so-break">${label}${raw(icon('external', 16))}</a></li>`)}
+            ${files.map((name) => html`<li><a href="${fileOf(v, name)}" target="_blank" rel="noopener" class="so-break">${raw(icon('fileText', 16))}${name.replace(/^logs\//, '')}</a></li>`)}
+          </ul>` : html`<p class="ds-muted">${V.OPEN_ATTEMPT.has(v.state) ? 'Links and logs show up here once the agent writes them.' : 'The cell left no link and no log.'}</p>`}
+        </section>
+      </div>
+    </div>`;
+  }
 
-  foot.addEventListener('click', async (event) => {
-    const retry = event.target.closest('[data-retry-cell]');
-    if (!retry || !shown) return;
+  /* -------------------------------------------------------- actions */
+
+  async function retry(button) {
+    const v = view;
+    if (!v) return;
     try {
-      const made = await DS.motion.busy(retry, api(V.paths.action(shown.run, 'retry'), { method: 'POST', body: { cell: retry.dataset.retryCell } }), { done: false });
-      toast('Another attempt is queued.', 'success');
+      const made = await M.busy(button, api(V.paths.action(v.run, 'retry'), { method: 'POST', body: { cell: v.cell_id } }), { done: false });
+      toast('Another attempt of this cell is queued.', 'success');
+      runCells.delete(v.run);
       ctx.refreshSoon();
-      if (made && made.id) ctx.go({ cell: made.id });
+      if (made && made.id) ctx.go({ cell: made.id, run: v.run });
     } catch (err) {
       toast(errorMessage(err), 'error');
     }
+  }
+
+  function openOverride(opener) {
+    const v = view;
+    if (!v) return;
+    const current = v.override ? v.override.verdict : '';
+    morph($('overrideBody'), html`<p class="ds-dialog__text" id="overrideText">${'The verdict that counts is yours: in the counts, the history and the bugs. ' + (v.override ? 'Without yours it is ' : 'Now it is ') + V.verdictWord(v.reviewed || v.verdict || v.final || '') + '.'}</p>
+      <div class="ds-radios" role="radiogroup" aria-label="Verdict">${V.VERDICTS.slice().sort((a, b) => ['pass', 'issue', 'fail', 'blocked', 'na'].indexOf(a) - ['pass', 'issue', 'fail', 'blocked', 'na'].indexOf(b)).map((verdict) => html`<label class="ds-radio" data-ds-key="${verdict}"><input type="radio" name="overrideVerdict" value="${verdict}"${verdict === current ? raw(' checked') : ''}>
+        <span><strong class="so-tests-nowrap">${raw(icon(V.VERDICT[verdict].glyph, 16))}${V.verdictWord(verdict)}</strong><small>${MEANS[verdict]}</small></span></label>`)}</div>
+      <div class="ds-field">
+        <label class="ds-field__label" for="overrideNote">Note <span class="ds-field__optional">(optional)</span></label>
+        <textarea class="ds-input" id="overrideNote" maxlength="2000" aria-describedby="overrideNoteHint"></textarea>
+        <small class="ds-field__hint" id="overrideNoteHint">Why: the analyst and the next person read it.</small>
+      </div>`);
+    $('overrideNote').value = v.override ? v.override.note || '' : '';
+    $('overrideRemove').hidden = !v.override;
+    syncOverrideSave();
+    DS.overlay.open(overrideDialog, { opener });
+  }
+
+  function syncOverrideSave() {
+    const picked = overrideDialog.querySelector('input[name="overrideVerdict"]:checked');
+    const save = $('overrideSave');
+    save.setAttribute('aria-disabled', picked ? 'false' : 'true');
+    if (picked) save.removeAttribute('data-tip');
+    else save.setAttribute('data-tip', 'Choose a verdict');
+  }
+
+  async function sendOverride(verdict, note, button) {
+    const v = view;
+    if (!v) return;
+    overrideDialog.setAttribute('data-ds-busy', '');
+    $('overrideCancel').setAttribute('aria-disabled', 'true');
+    try {
+      await M.busy(button, api(V.paths.override(v.run, v.id), { method: 'POST', body: { verdict, note } }), { done: false });
+    } catch (err) {
+      toast(errorMessage(err), 'error');
+      return;
+    } finally {
+      overrideDialog.removeAttribute('data-ds-busy');
+      $('overrideCancel').removeAttribute('aria-disabled');
+    }
+    DS.overlay.close(overrideDialog, { reason: 'confirm' });
+    toast(verdict ? 'You made it ' + V.verdictWord(verdict) + '.' : 'Your verdict is removed: the reviewer’s or the agent’s counts again.', 'success');
+    details.delete(keyOf(v.run, v.id));
+    runCells.delete(v.run);
+    histories.clear();
+    pass = null;
+    ctx.refreshSoon();
+    load({ quiet: true });
+  }
+
+  overrideDialog.addEventListener('change', (event) => {
+    if (event.target.name === 'overrideVerdict') syncOverrideSave();
+  });
+  $('overrideSave').addEventListener('click', () => {
+    const picked = overrideDialog.querySelector('input[name="overrideVerdict"]:checked');
+    if (!picked) return;
+    sendOverride(picked.value, $('overrideNote').value.trim(), $('overrideSave'));
+  });
+  $('overrideRemove').addEventListener('click', () => sendOverride('', '', $('overrideRemove')));
+
+  /* ------------------------------------------------------------ events */
+
+  dialog.addEventListener('ds-close', (event) => {
+    if (event.target !== dialog) return;
+    shown = false;
+    clearTimeout(liveTimer);
+    ctx.closeCell();
   });
 
-  /* -------------------------------------------------------- the viewer */
-
-  function drawShot() {
-    const s = shots[shotAt];
-    if (!s || !view) return;
-    $('shotTitle').textContent = 'Screenshot ' + (shotAt + 1) + ' of ' + shots.length;
-    morph($('shotBody'), html`<figure class="so-shotview__figure">
-      <img class="so-shotview__img" src="${V.paths.file(view.run, view.id, s.name)}" alt="${s.caption}">
-      <figcaption class="ds-meta">${s.caption}</figcaption>
-    </figure>`);
-    $('shotPrev').setAttribute('aria-disabled', String(shotAt === 0));
-    $('shotNext').setAttribute('aria-disabled', String(shotAt >= shots.length - 1));
-  }
-
-  function openShot(i, opener) {
-    if (!shots[i]) return;
-    shotAt = i;
-    drawShot();
-    DS.overlay.open(viewer, { opener });
-  }
-
-  function step(by) {
-    const next = shotAt + by;
-    if (next < 0 || next >= shots.length) return;
-    shotAt = next;
-    drawShot();
-  }
-
-  $('shotPrev').addEventListener('click', () => step(-1));
-  $('shotNext').addEventListener('click', () => step(1));
-  viewer.addEventListener('keydown', (event) => {
-    if (event.key === 'ArrowLeft') { event.preventDefault(); step(-1); }
-    if (event.key === 'ArrowRight') { event.preventDefault(); step(1); }
+  nav.addEventListener('click', (event) => {
+    const step = event.target.closest('[data-walk]');
+    if (step) { walk(Number(step.dataset.walk)); return; }
+    const keys = event.target.closest('[data-keys]');
+    if (keys) DS.overlay.open(keysDialog, { opener: keys });
   });
+
+  body.addEventListener('click', (event) => {
+    const t = event.target;
+    if (t.closest('[data-reload]')) { load(); return; }
+    const stepBtn = t.closest('[data-step]');
+    if (stepBtn) { selectStep(Number(stepBtn.dataset.step)); return; }
+    const thumb = t.closest('[data-thumb]');
+    if (thumb) { selectShot(Number(thumb.dataset.thumb)); return; }
+    const move = t.closest('[data-shot-step]');
+    if (move) { stepShot(Number(move.dataset.shotStep)); return; }
+    if (t.closest('[data-zoom]')) { zoom = !zoom; draw(); return; }
+    if (t.closest('[data-compare]')) {
+      if (pass && pass.state === 'ready') { compare = !compare; zoom = false; draw(); }
+      return;
+    }
+    const attempt = t.closest('[data-attempt]');
+    if (attempt) {
+      if (attempt.dataset.attempt !== (view && view.id)) ctx.go({ cell: attempt.dataset.attempt, run: view.run });
+      return;
+    }
+    const prev = t.closest('[data-open-prev]');
+    if (prev) { ctx.go({ cell: prev.dataset.openPrev, run: prev.dataset.prevRun }, { push: true }); return; }
+    const tab = t.closest('[data-part]');
+    if (tab) {
+      if (tab.dataset.part !== part) {
+        part = tab.dataset.part;
+        draw();
+        M.enter($('cellPart'), 'swap');
+      }
+      return;
+    }
+    const act = t.closest('[data-cell-act]');
+    if (act) {
+      if (act.getAttribute('aria-disabled') === 'true') return;
+      const what = act.dataset.cellAct;
+      if (what === 'retry') retry(act);
+      else if (what === 'override') openOverride(act);
+      else if (what === 'chat' && view) ctx.openChat({ kind: 'fix-cell', subject: { run: view.run, attempt: view.id, view } }, act);
+      return;
+    }
+    const test = t.closest('[data-go-test]');
+    if (test) {
+      event.preventDefault();
+      ctx.go({ view: 'tests', test: test.dataset.goTest, run: '', bug: '', cell: '' }, { push: true });
+      return;
+    }
+    const bug = t.closest('[data-go-bug]');
+    if (bug) {
+      event.preventDefault();
+      ctx.go({ view: 'bugs', bug: bug.dataset.goBug, run: '', test: '', cell: '' }, { push: true });
+    }
+  });
+
+  // The segmented switch of attempts: arrow keys move between them.
+  body.addEventListener('keydown', (event) => {
+    const option = event.target.closest('.so-cell__attempts [data-attempt]');
+    if (!option || !['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(event.key)) return;
+    const all = [...option.parentElement.querySelectorAll('[data-attempt]')];
+    const i = all.indexOf(option) + (event.key === 'ArrowLeft' || event.key === 'ArrowUp' ? -1 : 1);
+    if (!all[i]) return;
+    event.preventDefault();
+    event.stopPropagation();
+    all[i].focus();
+    ctx.go({ cell: all[i].dataset.attempt, run: view.run });
+  });
+
+  dialog.addEventListener('keydown', (event) => {
+    if (!shown || event.defaultPrevented || event.ctrlKey || event.metaKey || event.altKey) return;
+    if (DS.overlay.topmost() !== dialog) return;
+    if (typing(event.target)) return;
+    const k = event.key;
+    if (k === '[' || k === 'k') { event.preventDefault(); walk(-1); } else if (k === ']' || k === 'j') { event.preventDefault(); walk(1); } else if (k === 'ArrowLeft' || k === 'ArrowRight') {
+      if (event.target.closest('.so-cell-swipe, .ds-tabs')) return;
+      event.preventDefault();
+      stepShot(k === 'ArrowLeft' ? -1 : 1);
+    } else if (k === 'z' && WIDE.matches) { event.preventDefault(); zoom = !zoom; draw(); } else if (k === 'c') {
+      if (pass && pass.state === 'ready') { event.preventDefault(); compare = !compare; zoom = false; draw(); }
+    } else if (k === 'o' && view) {
+      const shots = allShots(view);
+      const s = shots[sel.shot];
+      if (s) { event.preventDefault(); window.open(fileOf(view, s.name), '_blank', 'noopener'); }
+    } else if (k === '?') {
+      event.preventDefault();
+      DS.overlay.open(keysDialog, { opener: nav.querySelector('[data-keys]') || document.activeElement });
+    }
+  });
+
+  WIDE.addEventListener('change', () => { if (shown && view) draw(); });
+
+  /* ------------------------------------------------------------ module */
+
+  async function show() {
+    if (shown) return;
+    shown = true;
+    await DS.overlay.open(dialog, { opener: document.activeElement, returnTo: () => document.querySelector('[data-cell="' + (want && want.id) + '"]') || $('main') });
+  }
 
   return {
-    open(attemptId, runId) { return openCell(attemptId, runId); },
-    close() {
-      if (!open) return;
-      open = false;
-      shown = null;
-      view = null;
-      DS.overlay.close(sheet);
+    /** open shows an attempt; a second call for the one shown only takes the list. */
+    open(attemptId, runId, frameList) {
+      if (frameList && frameList.length) list = frameList.slice();
+      const same = shown && want && want.id === attemptId && want.run === runId;
+      want = { id: attemptId, run: runId };
+      if (same) { drawNav(); return; }
+      if (!shown) { part = 'steps'; sel = { key: '', step: 0, shot: -1, manual: false }; }
+      show();
+      load();
     },
-    /** refresh reads the open cell again (its run changed). */
+    close() {
+      clearTimeout(liveTimer);
+      if (!shown) return;
+      shown = false;
+      want = null;
+      DS.overlay.close(dialog);
+    },
+    /** refresh reads the shown cell again: its run changed. */
     refresh() {
-      if (!open || !shown) return;
-      if (view && (V.OPEN_ATTEMPT.has(view.state) || (view.review && (view.review.state === 'pending' || view.review.state === 'running')))) load();
+      if (!shown || !want) return;
+      runCells.delete(want.run);
+      histories.clear();
+      bugs = null;
+      load({ quiet: true });
     },
   };
 }

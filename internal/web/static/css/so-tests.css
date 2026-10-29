@@ -445,76 +445,664 @@
 
 /* ══ Cell viewer (testscell.js) ════════════════════════════════════════
  *
- *   .so-tests__verdict    the verdict and who gave it, in a row
- *   .so-tests__role       a column of the facts of the cell
- *   .so-tests__shots      a step's screenshots as thumbnails
- *   .so-tests__shot       one thumbnail, pressed to open it full size
- *   .so-tests__actions    the actions of a step
- *   .so-shotview          a screenshot at full size
+ * A ds-dialog--full; the parts are placed here, their look is DS's.
+ *
+ *   .so-cell__heading     the head's title (.so-cell__title) and the cell's
+ *                         values, taking
+ *                         the head's room between close and the walk
+ *   .so-cell__nav         previous, "3 of 12", next, and the keys
+ *   .so-cell__count       "3 of 12"
+ *   .so-cell__page        the body's column, centred on a very wide window
+ *   .so-cell__band        the verdict, who gave it, the change, the
+ *                         attempts and the actions; notes under them
+ *   .so-cell__split       wide: the steps left, the screenshot panel right
+ *   .so-cell-step__seen   a step's observation, __note the reviewer's word
+ *   .so-cell-viewer       the screenshot panel, staying in view while the
+ *                         steps scroll: its bar, its stage, its strip
+ *   .so-cell-shot         one screenshot in the stage (two when compared),
+ *                         pressed to show it at its own size and back
+ *   .so-cell-strip        every screenshot of the cell as thumbnails; the
+ *                         one shown has the ring
+ *   .so-cell-blocks       narrow: the steps one under the other
+ *   .so-cell-swipe        narrow: a step's screenshots at full width, one
+ *                         at a time, swiped sideways; .so-cell-pair one
+ *                         beside the last pass's when compared
+ *   .so-cell__details     the facts beside the bugs and the links
  */
 
-.so-tests__verdict {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--ds-space-2);
+.so-cell {
+  --so-cell-stage-height: max(16rem, calc(100dvh - 22rem));
+  --so-cell-thumb-width: 6.5rem;
+  --so-cell-thumb-height: 4.25rem;
 }
 
-.so-tests__role {
+.so-cell__heading {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.so-cell__heading > * {
+  margin: 0;
+}
+
+/* The title is the cell's test: the dialog title's type, a smaller one
+   on a phone, two lines at most (the details have it whole). It takes
+   focus when the viewer opens, as a page's title does: no ring, it is
+   not a control. */
+.so-cell__title {
+  display: -webkit-box;
+  margin: 0;
+  overflow: hidden;
+  color: var(--ds-text);
+  font: var(--ds-font-title);
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+}
+
+.so-cell__title:focus {
+  outline: none;
+}
+
+@media (max-width: 600px) {
+  .so-cell__title {
+    font: var(--ds-font-subtitle);
+  }
+}
+
+.so-cell__nav {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--ds-space-1);
+}
+
+.so-cell__count {
+  min-inline-size: 4.5em;
+  font: var(--ds-font-meta);
+  color: var(--ds-text-2);
+  text-align: center;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.so-cell__page {
   display: flex;
   flex-direction: column;
+  gap: var(--ds-space-5);
+  inline-size: 100%;
+  max-inline-size: 110rem;
+  min-width: 0;
+  margin-inline: auto;
+  padding-top: var(--ds-space-2);
+}
+
+.so-cell__band {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: var(--ds-space-3) var(--ds-space-5);
+}
+
+.so-cell__verdict,
+.so-cell__notes {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-space-2);
+  min-width: 0;
+}
+
+.so-cell__verdict > *,
+.so-cell__notes > * {
+  margin: 0;
+}
+
+.so-cell__notes {
+  grid-column: 1 / -1;
   gap: var(--ds-space-3);
 }
 
-.so-tests__role > * {
-  margin-block: 0;
+.so-cell__says {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--ds-space-2) var(--ds-space-3);
 }
 
-.so-tests__shots {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(7rem, 1fr));
+.so-cell__who {
+  margin: 0;
+  font: var(--ds-font-body);
+}
+
+.so-cell__attempts {
+  align-self: flex-start;
+  max-inline-size: 100%;
+}
+
+.so-cell__actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
   gap: var(--ds-space-2);
-  margin-top: var(--ds-space-2);
 }
 
-.so-tests__shot {
+.so-cell__summary {
+  max-inline-size: var(--ds-measure);
+}
+
+.so-cell__split {
+  display: grid;
+  grid-template-columns: minmax(20rem, 2fr) minmax(0, 3fr);
+  align-items: start;
+  gap: var(--ds-space-5);
+}
+
+.so-cell__steps {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-space-3);
+  min-width: 0;
+}
+
+.so-cell__steps > h3 {
+  margin: 0;
+}
+
+.so-cell-step__seen {
+  font: var(--ds-font-body);
+  color: var(--ds-text);
+  margin-top: var(--ds-space-1);
+}
+
+.so-cell-step__note {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--ds-space-1);
+  margin-top: var(--ds-space-1);
+  font: var(--ds-font-meta);
+  color: var(--ds-text-2);
+  overflow-wrap: anywhere;
+}
+
+.so-cell-step__note > svg {
+  flex: none;
+  margin-top: 2px;
+}
+
+.so-cell-step__note strong {
+  font-weight: var(--ds-weight-label);
+}
+
+.so-cell-viewer {
+  position: sticky;
+  top: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-space-3);
+  min-width: 0;
+}
+
+.so-cell-viewer__bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--ds-space-2) var(--ds-space-3);
+}
+
+.so-cell-viewer__caption {
+  flex: 1 1 14rem;
+  min-width: 0;
+}
+
+.so-cell-viewer__caption > * {
+  margin: 0;
+}
+
+.so-cell-viewer__tools {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--ds-space-1);
+}
+
+.so-cell-viewer__stage {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--ds-space-3);
+  block-size: var(--so-cell-stage-height);
+  min-block-size: 16rem;
+  padding: var(--ds-space-3);
+  border-radius: var(--ds-radius-card);
+  background: var(--ds-surface-low);
+  overflow: hidden;
+}
+
+.so-cell-viewer__stage--two {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+}
+
+.so-cell-viewer__stage[data-zoomed="true"] {
+  overflow: auto;
+}
+
+.so-cell-viewer__stage > .ds-empty {
+  align-self: center;
+}
+
+.so-cell-shot {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-space-2);
+  min-width: 0;
+  min-height: 0;
+  margin: 0;
+}
+
+.so-cell-shot__label {
+  display: flex;
+  justify-content: center;
+}
+
+.so-cell-shot__frame {
+  position: relative;
+  display: grid;
+  flex: 1 1 auto;
+  place-items: center;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  cursor: zoom-in;
+}
+
+.so-cell-shot__img {
+  position: absolute;
+  inset: 0;
   display: block;
+  inline-size: 100%;
+  block-size: 100%;
+  object-fit: contain;
+}
+
+[data-zoomed="true"] .so-cell-shot__frame {
+  place-items: start center;
+  cursor: zoom-out;
+}
+
+[data-zoomed="true"] .so-cell-shot__img {
+  position: static;
+  inline-size: auto;
+  block-size: auto;
+  max-inline-size: none;
+}
+
+.so-cell-strip {
+  display: flex;
+  gap: var(--ds-space-2);
+  margin: 0;
+  padding: var(--ds-space-1);
+  overflow-x: auto;
+  list-style: none;
+  scrollbar-width: thin;
+  scrollbar-color: var(--ds-line-2) transparent;
+}
+
+.so-cell-strip__item {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  gap: var(--ds-space-1);
+}
+
+.so-cell-strip__step {
+  font: var(--ds-font-meta);
+  color: var(--ds-text-2);
+  white-space: nowrap;
+}
+
+.so-cell-strip__step--same {
+  visibility: hidden;
+}
+
+.so-cell-strip__thumb {
+  display: block;
+  inline-size: var(--so-cell-thumb-width);
+  block-size: var(--so-cell-thumb-height);
   padding: 0;
   border: 1px solid var(--ds-line);
   border-radius: var(--ds-radius-sm);
   background: var(--ds-surface-low);
   overflow: hidden;
-  cursor: zoom-in;
 }
 
-.so-tests__shot img {
+.so-cell-strip__thumb[aria-current="true"] {
+  outline: calc(var(--ds-focus-width) * 1.5) solid var(--ds-primary);
+  outline-offset: 1px;
+}
+
+.so-cell-strip__thumb img {
   display: block;
   inline-size: 100%;
-  block-size: 9rem;
+  block-size: 100%;
   object-fit: cover;
   object-position: top;
 }
 
-.so-shotview {
-  display: grid;
-  place-items: center;
+.so-cell__section > * {
+  margin-block: 0;
 }
 
-.so-shotview__figure {
+.so-cell__details {
   display: grid;
-  justify-items: center;
+  grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
+  align-items: start;
+  gap: var(--ds-space-5);
+}
+
+.so-cell__aside {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-space-5);
+  min-width: 0;
+}
+
+.so-cell__links a {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--ds-space-1);
+}
+
+.so-cell-acts td {
+  vertical-align: top;
+}
+
+.so-cell__keys kbd + kbd {
+  margin-inline-start: var(--ds-space-1);
+}
+
+.so-cell__remove {
+  margin-inline-end: auto;
+}
+
+/* The narrow layout: the band in one column, a switch of parts, the
+   steps one under the other with their screenshots at full width. */
+.so-cell__tabs {
+  margin-bottom: calc(-1 * var(--ds-space-2));
+}
+
+.so-cell__part {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-space-4);
+  min-width: 0;
+}
+
+.so-cell__compare {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.so-cell-blocks {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.so-cell-block {
+  display: flex;
+  flex-direction: column;
   gap: var(--ds-space-2);
+  min-width: 0;
+  padding-block: var(--ds-space-4);
+  border-top: 1px solid var(--ds-line);
+}
+
+.so-cell-block:first-child {
+  padding-top: 0;
+  border-top: 0;
+}
+
+.so-cell-block > * {
   margin: 0;
 }
 
-.so-shotview__img {
+.so-cell-block__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--ds-space-2);
+}
+
+.so-cell-block__title {
+  margin: 0;
+  font: var(--ds-font-label);
+  color: var(--ds-text);
+  overflow-wrap: anywhere;
+}
+
+.so-cell-swipe {
+  display: flex;
+  flex: none;
+  gap: var(--ds-space-3);
+  margin-top: var(--ds-space-1);
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  scroll-snap-type: x mandatory;
+  scrollbar-width: thin;
+  scrollbar-color: var(--ds-line-2) transparent;
+}
+
+.so-cell-swipe__item {
+  display: flex;
+  flex: 0 0 100%;
+  flex-direction: column;
+  gap: var(--ds-space-1);
+  min-width: 0;
+  margin: 0;
+  scroll-snap-align: start;
+}
+
+.so-cell-swipe:has(> .so-cell-swipe__item + .so-cell-swipe__item) > .so-cell-swipe__item {
+  flex-basis: 88%;
+}
+
+.so-cell-pairs {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-space-3);
+  margin-top: var(--ds-space-1);
+}
+
+.so-cell-pair {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  align-items: start;
+  gap: var(--ds-space-2);
+}
+
+.so-cell-pair__item {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-space-1);
+  min-width: 0;
+  margin: 0;
+}
+
+.so-cell-pair__none {
+  align-self: center;
+  text-align: center;
+}
+
+.so-cell-swipe__link {
+  display: grid;
+  place-items: center;
+  min-block-size: 10rem;
+  max-block-size: 70dvh;
+  border: 1px solid var(--ds-line);
+  border-radius: var(--ds-radius-sm);
+  background: var(--ds-surface-low);
+  overflow: hidden;
+}
+
+.so-cell-swipe__link img {
   display: block;
   max-inline-size: 100%;
-  max-block-size: calc(100dvh - 10rem);
+  max-block-size: 70dvh;
   object-fit: contain;
 }
 
-/* ══ Tests (teststests.js) ═════════════════════════════════════════════ */
+@media (max-width: 899px) {
+  .so-cell__band,
+  .so-cell__details {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .so-cell__actions {
+    justify-content: flex-start;
+  }
+}
+
+/* ══ Tests (teststests.js) ═════════════════════════════════════════════
+ *
+ * The list of tests reuses the run view's table parts (.so-tests__table,
+ * __test, __cells, __cell, __sub, -block above).
+ *
+ *   .so-tests-tt__head    the catalog's size beside Read again and Write a
+ *                         test with an agent
+ *   .so-tests-tt__problems  the catalog's errors or warnings by file
+ *   .so-tests-area__head  an area's title and size beside Run this area
+ *   .so-tests-hist        a test's history: a row per cell, a column per run
+ *   .so-tests-hist__cell  the pinned first column: the cell, its record and
+ *                         Run this cell
+ *   .so-tests-hist__mark  a verdict as a glyph, pressed to open the attempt
+ *   .so-tests-hist__none  a run that did not have the cell
+ */
+
+.so-tests-tt__head,
+.so-tests-area__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--ds-space-2) var(--ds-space-4);
+}
+
+.so-tests-tt__head > p {
+  flex: 1 1 16rem;
+  margin: 0;
+}
+
+.so-tests-tt__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--ds-space-2);
+}
+
+.so-tests-area__head {
+  align-items: flex-start;
+}
+
+.so-tests-area__title {
+  flex: 1 1 14rem;
+  min-width: 0;
+}
+
+.so-tests-area__title > * {
+  margin: 0;
+}
+
+.so-tests-tt__problems,
+.so-tests-tt__problems ul {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-space-1);
+  margin: 0;
+  padding-inline-start: var(--ds-space-5);
+}
+
+.so-tests-tt__problems {
+  gap: var(--ds-space-2);
+  margin-top: var(--ds-space-2);
+}
+
+.so-tests-hist__run {
+  text-align: center;
+}
+
+.so-tests-hist__slot {
+  text-align: center;
+}
+
+.so-tests-hist__cell {
+  min-inline-size: 9rem;
+  max-inline-size: 16rem;
+  text-align: start;
+  white-space: normal;
+}
+
+.so-tests-hist__name {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--ds-space-1);
+}
+
+.so-tests-hist__mark {
+  display: inline-grid;
+  place-items: center;
+  inline-size: var(--ds-space-8);
+  block-size: var(--ds-space-8);
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  vertical-align: middle;
+}
+
+.so-tests-hist__none {
+  color: var(--ds-text-3);
+}
+
+.so-tests-hist__run {
+  white-space: nowrap;
+}
+
+.so-tests-hist__strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--ds-space-1);
+  margin-top: var(--ds-space-2);
+}
+
+.so-tests-hist__col {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.so-tests-hist__num {
+  font: var(--ds-font-meta);
+  color: var(--ds-text-2);
+  font-variant-numeric: tabular-nums;
+}
+
+.so-tests-hist__col > .so-tests-hist__none {
+  display: inline-grid;
+  place-items: center;
+  inline-size: var(--ds-space-8);
+  block-size: var(--ds-space-8);
+}
+
+.so-tests-hist__legend .so-mark {
+  vertical-align: middle;
+}
 
 /* ══ Bugs (testsbugs.js) ═══════════════════════════════════════════════ */
 
