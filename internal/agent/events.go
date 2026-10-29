@@ -75,6 +75,11 @@ const (
 	// (the host's quietAfter) while it waits on nobody, and 0 when it is
 	// heard from again (AGENT-HOST.md §6, "Quiet turns").
 	TypeQuiet = "quiet"
+	// TypeSchedules is what the agent will start a turn for by itself
+	// later, in Content: the whole list of Schedule each time, empty when
+	// nothing is left (Claude Code's ScheduleWakeup and CronCreate). It
+	// lives in the agent's process: none is left once that is gone.
+	TypeSchedules = "schedules"
 )
 
 // Message roles.
@@ -310,6 +315,29 @@ type Event struct {
 	// agent is heard from again.
 	Since int64 `json:"since,omitempty"`
 }
+
+// Schedule is a turn the agent will start by itself: a wakeup at a time, or a
+// job that runs on a cron schedule.
+type Schedule struct {
+	ID string `json:"id"`
+	// Kind is ScheduleWakeup or ScheduleCron.
+	Kind string `json:"kind"`
+	// At is when it runs next (Unix ms), 0 when the agent did not say: a
+	// recurring job after its first run.
+	At        int64  `json:"at,omitempty"`
+	Cron      string `json:"cron,omitempty"`
+	Recurring bool   `json:"recurring,omitempty"`
+	// Prompt is what the agent will be told then, and Reason why it
+	// scheduled it.
+	Prompt string `json:"prompt,omitempty"`
+	Reason string `json:"reason,omitempty"`
+}
+
+// Schedule kinds.
+const (
+	ScheduleWakeup = "wakeup"
+	ScheduleCron   = "cron"
+)
 
 // Attachment is a file sent with a user message. Path is absolute on the
 // server's disk; Mime decides whether an adapter sends it as an image.

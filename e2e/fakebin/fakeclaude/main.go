@@ -34,6 +34,12 @@
 //	                 which reports back with a turn of the CLI's own
 //	/bg S            a background Bash task that reports back after S seconds;
 //	                 stop_task stops it (a killed notification, no report)
+//	/wakeup S        ScheduleWakeup: a turn of its own after S seconds, for
+//	                 the scheduled prompt (wakeup_source loop_wakeup)
+//	/cron S [recurring] CronCreate of a job that runs after S seconds, once
+//	                 or three times (wakeup_source schedule_wakeup)
+//	/monitor S       a Monitor whose event after S seconds starts a turn of
+//	                 its own without a frame before it; its stream ends after
 //	/plan            ExitPlanMode through can_use_tool; waits for the answer
 //	/limit           a rate limit that stops the turn
 //	/retry           an API retry, then text
@@ -130,7 +136,10 @@ type fake struct {
 	bg        map[string]string
 	// bgCall is the call that started each background shell, for the
 	// notification a stop_task sends.
-	bgCall     map[string]string
+	bgCall map[string]string
+	// wakeups counts ScheduleWakeup calls: a wakeup fires only while it
+	// is the newest, as the real one replaces the one before.
+	wakeups    int
 	lastUUID   string
 	results    int
 	interrupts int
@@ -149,6 +158,9 @@ type job struct {
 	uuid   string
 	text   string
 	origin string
+	// wakeup is a schedule's wakeup_source (loop_wakeup, schedule_wakeup):
+	// a turn the fake starts by itself for a prompt the model scheduled.
+	wakeup string
 }
 
 func newFake(args []string) *fake {
@@ -537,8 +549,16 @@ type turnRun struct {
 
 func (f *fake) turn(ctx context.Context, j job) {
 	t := &turnRun{f: f, ctx: ctx, job: j}
+	if j.origin != "" {
+		// The CLI writes what starts a turn of its own before it starts it.
+		f.writeOrigin(j)
+	}
 	if j.uuid != "" {
-		f.out(map[string]any{"type": "command_lifecycle", "command_uuid": j.uuid, "state": "started", "uuid": newUUID(), "session_id": f.session})
+		lc := map[string]any{"type": "command_lifecycle", "command_uuid": j.uuid, "state": "started", "uuid": newUUID(), "session_id": f.session}
+		if j.wakeup != "" {
+			lc["wakeup_source"] = j.wakeup
+		}
+		f.out(lc)
 	}
 	f.mu.Lock()
 	ready := f.mcpReady
@@ -556,7 +576,6 @@ func (f *fake) turn(ctx context.Context, j job) {
 		"permissionMode": f.mode, "claude_code_version": version, "uuid": newUUID()})
 	switch {
 	case j.origin != "":
-		f.writeLine("user", j.uuid, j.text, nil, false)
 	case strings.HasPrefix(j.text, "/compact"):
 		t.compact()
 		return
@@ -580,6 +599,10 @@ func (t *turnRun) script() {
 	}
 	word, rest, _ := strings.Cut(text, " ")
 	fields := strings.Fields(rest)
+	if t.job.wakeup != "" {
+		t.say("Woke up for: " + t.job.text)
+		return
+	}
 	if t.job.origin != "" {
 		t.say("The background task reported back.")
 		return
@@ -625,6 +648,12 @@ func (t *turnRun) script() {
 		}
 	case "/workflow":
 		t.workflow(floatArg(fields, 0, 1))
+	case "/wakeup":
+		t.scheduleWakeup(floatArg(fields, 0, 1))
+	case "/cron":
+		t.cronCreate(floatArg(fields, 0, 1), len(fields) > 1 && fields[1] == "recurring")
+	case "/monitor":
+		t.monitor(floatArg(fields, 0, 1))
 	case "/bg":
 		switch {
 		case len(fields) > 0 && fields[0] == "lost":
@@ -1211,7 +1240,8 @@ func (t *turnRun) background(seconds float64) {
 			"summary": "Background command completed (exit code 0)"})
 		f.mu.Lock()
 		delete(f.bg, taskID)
-		f.queue = append(f.queue, job{uuid: newUUID(), text: "<task-notification>\n<task-id>" + taskID + "</task-id>\n</task-notification>", origin: "task-notification"})
+		f.queue = append(f.queue, job{uuid: newUUID(), text: "<task-notification>\n<task-id>" + taskID +
+			"</task-id>\n<status>completed</status>\n<summary>Background command \"sleep then echo\" completed (exit code 0)</summary>\n</task-notification>", origin: "task-notification"})
 		f.mu.Unlock()
 		bt.tasksChanged()
 		f.poke()
@@ -1573,6 +1603,102 @@ func (f *fake) writeRaw(line map[string]any) {
 	path := f.transcriptPath(f.session)
 	_ = os.MkdirAll(filepath.Dir(path), 0o755)
 	appendJSONL(path, line)
+}
+
+// writeOrigin is the transcript line of what starts a turn of the CLI's
+// own, as the real one writes it: a task's report with its origin, a
+// schedule's prompt as a meta line that says where it came from.
+func (f *fake) writeOrigin(j job) {
+	line := map[string]any{"type": "user", "uuid": j.uuid, "isSidechain": false,
+		"message": map[string]any{"role": "user", "content": j.text}}
+	if j.wakeup != "" {
+		line["isMeta"], line["promptSource"], line["turnOrigin"], line["wakeupSource"] = true, "system", "scheduled", j.wakeup
+	} else {
+		line["origin"] = map[string]any{"kind": j.origin, "producer": "session-task"}
+	}
+	f.writeRaw(line)
+}
+
+// later queues a turn of the CLI's own after d, unless still says no then.
+func (f *fake) later(d time.Duration, j job, still func() bool) {
+	go func() {
+		time.Sleep(d)
+		f.mu.Lock()
+		if still != nil && !still() {
+			f.mu.Unlock()
+			return
+		}
+		f.queue = append(f.queue, j)
+		f.mu.Unlock()
+		f.poke()
+	}()
+}
+
+// scheduleWakeup is ScheduleWakeup: a turn of the CLI's own after s
+// seconds, for the prompt it was given.
+func (t *turnRun) scheduleWakeup(s float64) {
+	f := t.f
+	d := time.Duration(s * float64(time.Second))
+	at := time.Now().Add(d)
+	prompt := "Check on the build"
+	t.tool("ScheduleWakeup", map[string]any{"delaySeconds": s, "reason": "the build takes a while", "prompt": prompt},
+		fmt.Sprintf("Next wakeup scheduled for %s (in %.0fs).", at.Format("15:04:05"), s),
+		map[string]any{"scheduledFor": at.UnixMilli(), "clampedDelaySeconds": s, "wasClamped": false}, false, "")
+	f.mu.Lock()
+	f.wakeups++
+	gen := f.wakeups
+	f.mu.Unlock()
+	f.later(d, job{uuid: newUUID(), text: prompt, origin: "wakeup", wakeup: "loop_wakeup"}, func() bool { return f.wakeups == gen })
+	t.say("I will look again later.")
+}
+
+// cronCreate is CronCreate of a job that runs after s seconds - once, or
+// (recurring) three times, s seconds apart.
+func (t *turnRun) cronCreate(s float64, recurring bool) {
+	f := t.f
+	d := time.Duration(s * float64(time.Second))
+	id := randHex(4)
+	prompt := "Run the nightly check"
+	t.tool("CronCreate", map[string]any{"cron": "*/1 * * * *", "prompt": prompt, "recurring": recurring},
+		"Scheduled task "+id+" (Every minute). Session-only (not written to disk, dies when Claude exits).",
+		map[string]any{"id": id, "humanSchedule": "Every minute", "recurring": recurring, "durable": false,
+			"nextFireAt": time.Now().Add(d).UnixMilli()}, false, "")
+	runs := 1
+	if recurring {
+		runs = 3
+	}
+	for i := 1; i <= runs; i++ {
+		f.later(time.Duration(i)*d, job{uuid: newUUID(), text: prompt, origin: "wakeup", wakeup: "schedule_wakeup"}, nil)
+	}
+	t.say("Scheduled.")
+}
+
+// monitor is a Monitor that sees one event after s seconds, which starts a
+// turn of the CLI's own with no frame of its own before it (as the real
+// one), and whose stream ends a moment later.
+func (t *turnRun) monitor(s float64) {
+	f := t.f
+	taskID := "b" + randHex(6)
+	id := t.tool("Monitor", map[string]any{"command": "tail -f build.log", "description": "watch the build"},
+		"Monitor started (task "+taskID+"). You will be notified on each event.",
+		map[string]any{"taskId": taskID, "timeoutMs": 300000, "persistent": false}, false, "")
+	t.setBG(taskID, "local_bash")
+	t.system(map[string]any{"subtype": "task_started", "task_id": taskID, "tool_use_id": id, "description": "watch the build", "task_type": "local_bash"})
+	t.say("Watching the build.")
+	d := time.Duration(s * float64(time.Second))
+	f.later(d, job{uuid: newUUID(), origin: "task-notification", text: "<task-notification>\n<task-id>" + taskID +
+		"</task-id>\n<summary>Monitor event: \"watch the build\"</summary>\n<event>build passed</event>\n</task-notification>"}, nil)
+	go func() {
+		time.Sleep(d + d/2)
+		bt := &turnRun{f: f, ctx: context.Background()}
+		bt.system(map[string]any{"subtype": "task_updated", "task_id": taskID, "patch": map[string]any{"status": "completed"}})
+		bt.system(map[string]any{"subtype": "task_notification", "task_id": taskID, "tool_use_id": id, "status": "completed",
+			"summary": "Monitor \"watch the build\" stream ended"})
+		f.mu.Lock()
+		delete(f.bg, taskID)
+		f.mu.Unlock()
+		bt.tasksChanged()
+	}()
 }
 
 func (f *fake) writeLine(kind, id, text string, content any, sidechain bool) {

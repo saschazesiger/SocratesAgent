@@ -173,12 +173,26 @@ export function toolOf(part) {
   // A workflow's agent is one of its agents, under its label.
   else if (c.tool === 'WorkflowAgent') name = 'Agent';
   const agent = c.agent && typeof c.agent === 'object' ? c.agent : null;
-  const summary = c.summary || c.command || field('command') || c.path || field('file_path') || field('pattern')
-    || field('description') || field('url') || field('query') || (agent && (agent.label || agent.description))
+  // Codex keeps a web search's query in its item, OpenCode names a file
+  // filePath and says what a call does in its title.
+  const item = c.item && typeof c.item === 'object' ? c.item : {};
+  const action = item.action && typeof item.action === 'object' ? item.action : {};
+  const searched = typeof item.query === 'string' && item.query ? item.query : String(action.query || action.url || '');
+  let summary = c.summary || c.command || field('command') || c.path || field('file_path') || field('filePath') || field('pattern')
+    || field('description') || field('url') || field('query') || searched || (typeof c.title === 'string' ? c.title : '')
+    || (agent && (agent.label || agent.description))
     || (c.workflow && (c.workflow.description || c.workflow.name)) || c.name || '';
+  // A wakeup or a cron job the agent scheduled says when it runs, as its
+  // result said it.
+  const result = c.result && typeof c.result === 'object' ? c.result : {};
+  if (name === 'ScheduleWakeup' && Number(result.scheduledFor)) {
+    summary = 'at ' + clock(Number(result.scheduledFor)) + (summary ? ' · ' + summary : '');
+  } else if (name === 'CronCreate' && result.humanSchedule) {
+    summary = result.humanSchedule + (field('prompt') ? ' · ' + field('prompt') : '');
+  }
   // The file a call is about, when it is the call's summary: a Read, an
   // Edit, a Write, a NotebookEdit.
-  const path = c.path || field('file_path') || field('notebook_path') || '';
+  const path = c.path || field('file_path') || field('filePath') || field('notebook_path') || '';
   let duration = Number(c.duration_ms) || 0;
   if (!duration && part.state !== 'running' && part.state !== 'streaming' && part.updatedAt > part.at) {
     duration = part.updatedAt - part.at;
@@ -201,6 +215,7 @@ export function isAskTool(part) {
 // The glyph a tool is drawn with, by what it does.
 export function toolGlyph(name) {
   const n = String(name).toLowerCase();
+  if (/wakeup|^cron/.test(n)) return 'clock';
   if (/bash|command|shell|monitor/.test(n)) return 'monitor';
   if (/^read|notebookread/.test(n)) return 'fileText';
   if (/edit|write|change|patch/.test(n)) return 'pencil';
@@ -437,10 +452,33 @@ export function partHtml(part, view) {
     case 'file':
       return fileHtml(part);
     case 'notice':
-      return html`<div class="so-part so-line" data-ds-key="${'p:' + part.id}" data-kind="notice">${raw(icon('info', 16))}<span class="so-line__text">${part.text || ''}</span></div>`;
+      return noticePart(part);
     default:
       return part.text ? html`<div class="so-part so-md" data-ds-key="${'p:' + part.id}">${markdown(part.text)}</div>` : '';
   }
+}
+
+// What a notice an answer opens with leads with, by what started the turn
+// (the agent's own: a wakeup or a cron job it scheduled, a background task
+// reporting back, a Monitor's event, a message from another agent), and the
+// name of all it said behind the "i".
+const OPENER = {
+  wakeup: ['clock', 'Prompt'], cron: ['clock', 'Prompt'], task: ['background', 'Result'],
+  monitor: ['monitor', 'Event'], peer: ['chat', 'Message'],
+};
+
+/**
+ * noticePart is a notice in an answer: a line of the agent's, and - when an
+ * answer opens with why the agent started it by itself - what it was told,
+ * whole, behind an "i" when the line says only its first line.
+ */
+function noticePart(part) {
+  const c = part.content && typeof part.content === 'object' ? part.content : {};
+  const [glyph, label] = OPENER[c.code] || ['info', 'Details'];
+  const text = String(part.text || '');
+  const detail = typeof c.detail === 'string' ? c.detail.trim() : '';
+  const more = detail && !text.endsWith(detail) ? infoButton([[label, detail]], label) : '';
+  return html`<div class="so-part so-line" data-ds-key="${'p:' + part.id}" data-kind="notice"${c.code ? html` data-code="${c.code}"` : ''}>${raw(icon(glyph, 16))}<span class="so-line__text">${text}</span>${more}</div>`;
 }
 
 function reasoningHtml(part, view) {
@@ -1195,6 +1233,37 @@ export function jobsFold(jobs, others, { open = false, now = Date.now() } = {}) 
   return footFold({
     kind: 'jobs', glyph: 'background', words, counted, open, now, since: times.length ? Math.min(...times) : 0,
     body: () => html`<div class="so-foldbox__body so-jobs-foot">${jobsRows(jobs, others, now, { foot: true })}</div>`,
+  });
+}
+
+/**
+ * schedulesFold is what the agent will start a turn for by itself later - a
+ * wakeup at a time, a cron job - folded over the composer: shut, the next
+ * one and what it is for; opened, a row each with what the agent will be
+ * told then. It is the agent process's own, so it goes with the process.
+ */
+export function schedulesFold(list, { open = false, now = Date.now() } = {}) {
+  const at = (sc) => Number(sc.at) || 0;
+  const items = [...list].sort((a, b) => (at(a) || Infinity) - (at(b) || Infinity));
+  const when = (sc) => {
+    if (sc.kind === 'wakeup') return at(sc) ? 'Wakes up at ' + clock(at(sc)) : 'Wakes up later';
+    if (!sc.recurring) return at(sc) ? 'Scheduled task at ' + clock(at(sc)) : 'Scheduled task · ' + (sc.cron || 'once');
+    return 'Scheduled task · ' + (sc.cron || 'recurring') + (at(sc) ? ', next at ' + clock(at(sc)) : '');
+  };
+  const about = (sc) => String(sc.reason || sc.prompt || '').split('\n')[0].trim();
+  const counted = count(items.length, 'scheduled wakeup', 'scheduled wakeups');
+  const first = items[0];
+  const words = items.length === 1 ? [when(first), about(first)].filter(Boolean).join(' · ') : counted + ' · next: ' + when(first);
+  return footFold({
+    kind: 'scheduled', glyph: 'clock', words, counted, open, now, since: 0,
+    body: () => html`<div class="so-foldbox__body so-jobs-foot"><ul class="so-jobs">${items.map((sc) => {
+      const left = at(sc) > now ? renewsIn(at(sc) / 1000, now) : '';
+      return html`<li class="so-job" data-ds-key="${'sc:' + sc.id}"><span class="so-job__icon" aria-hidden="true">${raw(icon('clock', 18))}</span><span class="so-job__main"><span class="so-job__name">${when(sc)}</span>${
+        sc.prompt ? html`<span class="so-job__summary" data-tip="${sc.prompt}">${sc.prompt}</span>` : ''
+      }${sc.reason && sc.reason !== sc.prompt ? html`<span class="so-job__note">${sc.reason}</span>` : ''}</span>${
+        left ? html`<span class="so-job__state">${'in ' + left}</span>` : ''
+      }</li>`;
+    })}</ul></div>`,
   });
 }
 

@@ -343,7 +343,33 @@ func runningWork(p *agent.Projection) []string {
 			}
 		}
 	}
+	for _, sc := range p.Schedules {
+		if len(out) >= maxRestarts {
+			break
+		}
+		out = append(out, scheduleLine(sc))
+	}
 	return out
+}
+
+// scheduleLine is a turn the agent had scheduled, for it to schedule again:
+// when, and what it was going to be told.
+func scheduleLine(sc agent.Schedule) string {
+	var line string
+	switch {
+	case sc.Kind == agent.ScheduleWakeup && sc.At > 0:
+		line = "- the wakeup you scheduled for " + time.UnixMilli(sc.At).UTC().Format("2006-01-02 15:04 UTC")
+	case sc.Kind == agent.ScheduleWakeup:
+		line = "- the wakeup you scheduled"
+	case sc.Recurring:
+		line = fmt.Sprintf("- the recurring scheduled task `%s`", sc.Cron)
+	default:
+		line = fmt.Sprintf("- the scheduled task `%s`, which had not run yet", sc.Cron)
+	}
+	if sc.Prompt != "" {
+		line += fmt.Sprintf(", with the prompt %q", sc.Prompt)
+	}
+	return line
 }
 
 func firstOf(values ...string) string {
@@ -359,8 +385,8 @@ func firstOf(values ...string) string {
 // background work the switch stopped, and to go on where it left off when
 // the switch says so.
 func restartText(stopped []string, goOn bool) string {
-	text := "Switching the account restarted you, which stopped background work that was still running:\n" +
-		strings.Join(stopped, "\n") + "\n\nStart it again so that it finishes as it would have. A workflow resumes " +
+	text := "Switching the account restarted you, which stopped background work that was still running or scheduled:\n" +
+		strings.Join(stopped, "\n") + "\n\nStart it again (schedule again what was scheduled) so that it finishes as it would have. A workflow resumes " +
 		"from its run (Workflow with its script file and resumeFromRunId), which keeps what its agents had already finished."
 	if goOn {
 		text += " Then continue where you left off."
@@ -433,7 +459,7 @@ func (h *host) parkAdapter(ctx context.Context, restart bool) {
 	h.rec.View(func(p *agent.Projection) {
 		left, closed := leftovers(p)
 		events = append(events, left...)
-		if background > 0 || closed > 0 {
+		if background > 0 || closed > 0 || len(p.Schedules) > 0 {
 			text := "The switch restarted the agent on the other account, so the background work that was running stopped."
 			if restart {
 				text = "The switch restarted the agent on the other account, which stopped the background work that was running; the agent is asked to start it again."

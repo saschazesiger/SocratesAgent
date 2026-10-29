@@ -57,6 +57,8 @@ func EnableFake() {
 //	                 does nothing (the host's watch, AGENT-HOST.md §6)
 //	/bg S            a turn that leaves a background task running for S seconds
 //	/bgagent S       the same with a background subagent
+//	/schedule S      a turn that schedules a wakeup S seconds later, which
+//	                 is pending until then (Scheduler)
 //	/limit           the account's limit stops the turn
 //	/refused         the provider refuses the account's sign-in (an error of code auth)
 //	/account         which account the CLI runs on, and whether it has a key
@@ -79,10 +81,12 @@ type fakeAdapter struct {
 	waits   Waits
 	bg      int
 	bgAgent int
-	child   *exec.Cmd
-	ending  bool
-	wake    chan struct{}
-	quit    chan struct{}
+	// scheduled is how many wakeups are pending (/schedule).
+	scheduled int
+	child     *exec.Cmd
+	ending    bool
+	wake      chan struct{}
+	quit      chan struct{}
 }
 
 // fakeState is the conversation the fake keeps on disk, its stand-in for a
@@ -497,6 +501,10 @@ func (f *fakeAdapter) turn(ctx context.Context, msg Outgoing, n int) {
 		seconds := fakeFloat(fields, 0, 1)
 		f.background(time.Duration(seconds*float64(time.Second)), false)
 		t.say("started a background task")
+	case "/schedule":
+		seconds := fakeFloat(fields, 0, 1)
+		f.schedule(time.Duration(seconds * float64(time.Second)))
+		t.say("scheduled a wakeup")
 	case "/bgagent":
 		seconds := fakeFloat(fields, 0, 1)
 		f.background(time.Duration(seconds*float64(time.Second)), true)
@@ -594,6 +602,34 @@ func (f *fakeAdapter) askWith(ctx context.Context, t *fakeTurn, payload json.Raw
 func (f *fakeAdapter) askID(ctx context.Context, t *fakeTurn, id string, payload json.RawMessage) (json.RawMessage, bool) {
 	answer, err := f.waits.Wait(ctx, f.out, Event{Type: TypeAsk, AskID: id, TurnID: t.id, Payload: payload}, "")
 	return answer, err == nil
+}
+
+// Scheduled is how many wakeups are pending.
+func (f *fakeAdapter) Scheduled() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.scheduled
+}
+
+// schedule is a wakeup after d: pending until then, when it is no longer.
+func (f *fakeAdapter) schedule(d time.Duration) {
+	at := time.Now().Add(d).UnixMilli()
+	f.mu.Lock()
+	f.scheduled++
+	f.mu.Unlock()
+	list, _ := json.Marshal([]Schedule{{ID: "wakeup", Kind: ScheduleWakeup, At: at, Prompt: "look again"}})
+	f.out.Emit(Event{Type: TypeSchedules, Content: list})
+	go func() {
+		select {
+		case <-time.After(d):
+		case <-f.quit:
+			return
+		}
+		f.mu.Lock()
+		f.scheduled--
+		f.mu.Unlock()
+		f.out.Emit(Event{Type: TypeSchedules})
+	}()
 }
 
 func (f *fakeAdapter) background(d time.Duration, subagent bool) {

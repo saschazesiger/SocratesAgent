@@ -102,6 +102,12 @@ func diffTool(name string) bool { return name == "Edit" || name == "Write" || na
 
 func agentTool(name string) bool { return name == "Task" || name == "Agent" }
 
+// scheduleTool is a tool that schedules a turn of the CLI's own for later,
+// or takes one back (schedule.go).
+func scheduleTool(name string) bool {
+	return name == "ScheduleWakeup" || name == "CronCreate" || name == "CronDelete"
+}
+
 // toolUse creates or completes the part of a tool call. A task-list call
 // becomes the turn's todo part instead.
 func (s *state) toolUse(b block, parent string) *part {
@@ -188,8 +194,26 @@ func summarize(tool string, input json.RawMessage) (summary, command, path strin
 		if summary == "" {
 			summary = str("name")
 		}
+	case "ScheduleWakeup":
+		summary = pick(str("reason"), str("prompt"))
+		if in["stop"] == true {
+			summary = "stop the wakeups"
+		}
+	case "CronCreate":
+		summary = strings.TrimSpace(str("cron") + " · " + firstLine(str("prompt")))
+	case "CronDelete", "TaskStop", "TaskOutput":
+		summary = pick(str("id"), pick(str("task_id"), str("shell_id")))
+	case "SendMessage":
+		summary = pick(str("summary"), str("message"))
+		if to := str("to"); to != "" {
+			summary = "to " + to + ": " + summary
+		}
+	case "RemoteTrigger":
+		summary = strings.TrimSpace(str("action") + " " + str("trigger_id"))
+	case "Skill":
+		summary = strings.TrimSpace(str("skill") + " " + str("args"))
 	default:
-		for _, k := range []string{"description", "subject", "query", "path", "url", "name"} {
+		for _, k := range []string{"description", "subject", "query", "path", "url", "name", "message", "title", "prompt"} {
 			if v := str(k); v != "" {
 				summary = v
 				break
@@ -346,6 +370,9 @@ func (s *state) toolResult(b block, structured json.RawMessage, parent string) {
 	default:
 		if len(structured) > 0 && len(structured) <= 4096 && structured[0] == '{' {
 			c.Result = structured
+		}
+		if scheduleTool(c.Tool) && parent == "" {
+			s.scheduleResult(c, b.IsError, structured)
 		}
 	}
 	s.emitPart(p)

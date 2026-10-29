@@ -70,6 +70,7 @@ is one `agent.Event`: a flat JSON object, all fields optional except `seq`, `at`
 | `process` | `state` (`starting`\|`ready`\|`parked`\|`exited`\|`failed`), `detail`, `pid`, `version` | host/CLI life. `starting` carries the host pid, `ready` the CLI pid |
 | `conversation` | `conversation_id` | the CLI's own id, needed to resume |
 | `tasks` | `count` | background tasks still running |
+| `schedules` | `content`: `[{id, kind: wakeup\|cron, at?, cron?, recurring?, prompt?, reason?}]`, the whole list (none: nothing left) | what the agent will start a turn for by itself later (Claude Code's ScheduleWakeup and CronCreate, §5.1). `at` is the next run (Unix ms), absent for a recurring job after its first run. It lives in the CLI process: the projection drops it at any `process` other than `ready`, as it does the tasks. The summary says `schedules` (how many) and `wakes_at` (the first `at`); the chat shows them folded at its foot (`.so-footfold[data-kind="scheduled"]`) |
 | `quiet` | `turn_id`, `since`? (Unix ms) | the host's watch (§6, "Quiet turns"): the running turn has said nothing since `since` while it waits on nobody; without `since`, the agent is heard from again. The projection keeps it as the running turn's `quiet_since` (and the summary's) |
 | `agent.info` | `content`: an `agent.AgentInfo` `{agent, version?, commands: [{name, args?, description?}]}` plus the adapter's own fields (Claude's in §5.1) | what the CLI says about itself; `commands` is **the** composer palette (`Projection.Palette()`), each name what `Adapter.Command` takes. The newest wins (`Projection.Agent`) |
 | `command` | `op` (`interrupt`\|`set_model`\|`command`\|`park`\|`stop`\|`switch_account`\|`stop_task`: `args` is the task), `client_id`, `model`/`effort`, `text` (command name), `args` (a slash command's arguments; a switch's `when`), `to`/`reason` (a switch's account and why) | a command the host accepted; recorded so its `client_id` is acted on once. An `interrupt`, a `stop` or a `switch_account` that does not wait for the turn (`args` other than `after_turn`) to another account than the running turn's (`turn.started`'s `account`) marks the running turn as stopped by somebody (`Turn.Stopped`: not pushed, not judged); a switch to the account the turn runs on interrupts nothing |
@@ -313,7 +314,7 @@ after 1 s) and `Start` of a new adapter with the environment and the same `Resum
 (`agent.ErrConversationNotFound` → a fresh conversation with `notice{conversation_lost}`).
 Background work dies with the old process, so before the park the host reads what the journal
 shows running in the background (a workflow and its run, a subagent sent to the background, a
-shell left running), closes it with the leftovers (§6, `notice{background_stopped}`) and asks the
+shell left running) or scheduled (`schedules`: a wakeup, a cron job, with its time and prompt), closes it with the leftovers (§6, `notice{background_stopped}`) and asks the
 agent on the new account to start it again: one user message under `<the switch's
 client_id>:continue` that names each piece, says a workflow resumes from its run (`Workflow` with
 its script file and `resumeFromRunId`, which replays what its agents finished), and ends with
@@ -503,6 +504,27 @@ cumulative per process). `usage.context` = the last request's prompt + answer, `
 | task list | `todo_<assistant message>` | `todo` | `{items: [{id, subject, description, active_form, status}]}`, the whole list; TaskCreate/TaskUpdate make no rows of their own |
 | image from a tool | `<call>_img<n>`, nested in the call | `image` | `{mime, path, size}`; the file is under `chats/<id>/agent/images/` |
 | local command output, API error text | `n_<uuid>` | `notice` | `{code: command_output\|<error>\|claude}` |
+| why a turn of the CLI's own started | `n_<transcript line uuid>`, the turn's first part | `notice` | `{code: wakeup\|cron\|task\|monitor\|peer, detail?}`: the text is the line ("Woke up as scheduled: <prompt>", "A scheduled task ran: <prompt>", the task's summary, `Monitor "<description>": <event>`, "A message from the agent “<name>”: …"), `detail` all of the prompt, result, event or message |
+
+**Turns of the CLI's own** (verified with 2.1.312, research/09 for the tasks). The CLI starts a turn
+without a message of ours when a background task reports back, when a Monitor sees an event, when
+another session (a subagent's hand-back) sends a message, and when something the model scheduled
+comes due: ScheduleWakeup (one wakeup; a new one replaces it; `stop: true` takes it back) and
+CronCreate (session-only jobs, once or recurring, at most 7 days; CronDelete by id). Their results
+say when: `{scheduledFor}` and `{id, humanSchedule, recurring, nextFireAt}`; the adapter keeps the
+list and writes `schedules` whenever it changes. A schedule that comes due is a `command_lifecycle`
+`started` with `wakeup_source` (`loop_wakeup` for the wakeup, `schedule_wakeup` for a cron job) and
+a `command_uuid` that is the uuid of the transcript line with its prompt (`isMeta`, `turnOrigin:
+"scheduled"`, `wakeupSource`); the stream has no prompt. A task's report has its
+`system/task_notification` before the turn; a Monitor's event has nothing at all before its
+`system/init`. So every such turn opens with a `notice` part saying why, read from the transcript:
+the lines it gained since the last turn ended (only those after its last assistant line; the last
+256 KB before any turn of this process ended), looked at when the turn opens and again at each frame
+until found (the CLI writes them about when it starts the turn). A wakeup's line is also written at
+once from the call that scheduled it, under the same id, and replaced by the transcript's. A cron
+job that ran leaves the list (once) or loses its time (recurring): the one the transcript's prompt
+names, a job once that was due first. `Scheduled()` (`agent.Scheduler`) is how many are pending,
+which keeps the host from parking for being idle (§6).
 
 **Background work ends.** A group closes with its `task_notification`; the adapter does not rely on
 it alone. `background_tasks_changed` lists what runs, and a task that this list held once and then
@@ -571,7 +593,8 @@ description, efforts}], tools, permission_mode}` (from `initialize`, kept curren
 
 **Rebuild** (`Start` with `Rebuild`, via `Adapter.Rebuild` / `claude.RebuildTranscript`): the main transcript in file order (a
 compaction restarts the parentUuid chain); each user text opens a turn; `<command-name>` wrappers
-become the command as the user's text; `<task-notification>` opens a turn of the CLI's own;
+become the command as the user's text; a task's report (`<task-notification>`), a schedule's prompt
+and a message from another session open a turn of the CLI's own with its notice part;
 `<local-command-stdout>` becomes a notice part; the compaction summary is dropped and its boundary
 becomes `notice{compacted}`; the synthetic "No response requested." and "[Request interrupted…"
 mark the turn interrupted, and "[Tool call interrupted…" results mark the call interrupted; a
@@ -899,8 +922,10 @@ while a question is being waited on. An open ask **outside** a running turn does
 interrupted, or the host before this one died) or never waited (`via: "message"`), so its answer
 goes to the agent as a message whenever it comes, through whichever host is up then (WP6; the WP2
 review found that such an ask kept its host alive for ever). After
-`park_after_ms` (setting `chats.park_after_minutes`, default 20) of idle with no event or command,
-or as soon as idle after a `park` command: `Adapter.Park` (graceful), the leftovers closed (below),
+`park_after_ms` (setting `chats.park_after_minutes`, default 20) of idle with no event or command
+while nothing is scheduled (an `agent.Scheduler` adapter's `Scheduled() > 0`: a wakeup or a cron job
+lives in the CLI process and would be lost), or as soon as idle after a `park` command, scheduled or
+not (a chat filed as done): `Adapter.Park` (graceful), the leftovers closed (below),
 `process{parked}`, then the
 host closes its socket, lets connected clients read to the end (≤ 2 s) and exits. The next command
 launches a new host, which resumes the conversation: resume after idle, after an update and after a

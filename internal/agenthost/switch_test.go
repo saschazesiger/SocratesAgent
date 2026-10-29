@@ -435,3 +435,21 @@ func TestASwitchEndsTheBackgroundWorkOfTheOldProcess(t *testing.T) {
 		t.Fatalf("after the switch: %q", got)
 	}
 }
+
+// What the agent had scheduled is named for the agent on the new account to
+// schedule again, as background work is.
+func TestASwitchNamesWhatWasScheduled(t *testing.T) {
+	p := &agent.Projection{Schedules: []agent.Schedule{
+		{ID: "wakeup", Kind: agent.ScheduleWakeup, At: time.Date(2026, 10, 29, 20, 17, 0, 0, time.UTC).UnixMilli(), Prompt: "Check on the build"},
+		{ID: "c1", Kind: agent.ScheduleCron, Cron: "17,47 * * * *", Recurring: true, Prompt: "Heartbeat"},
+	}}
+	got := strings.Join(runningWork(p), "\n")
+	want := "- the wakeup you scheduled for 2026-10-29 20:17 UTC, with the prompt \"Check on the build\"\n" +
+		"- the recurring scheduled task `17,47 * * * *`, with the prompt \"Heartbeat\""
+	if got != want {
+		t.Fatalf("got\n%s\nwant\n%s", got, want)
+	}
+	if text := restartText(runningWork(p), true); !strings.Contains(text, "schedule again what was scheduled") {
+		t.Fatalf("restart text: %s", text)
+	}
+}

@@ -31,7 +31,7 @@ import { ChatStream } from './chatstream.js';
 import { loadChat, saveChat } from './chatcache.js';
 import {
   assistantMessage, userMessage, lineHtml, askCard, askPlaces, todoList, todoItems, renewsIn, seconds, outboxState,
-  backgroundJobs, jobsList, jobDetail, agentsFold, jobsFold, clock, infoButton, tickLive,
+  backgroundJobs, jobsList, jobDetail, agentsFold, jobsFold, schedulesFold, clock, infoButton, tickLive,
 } from './chatparts.js';
 import { mountComposer } from './composer.js';
 import { wheelHooks } from './wheel.js';
@@ -811,12 +811,14 @@ export function mountChat(ctx) {
   // (chatparts.js footFold) - the workflows, the subagents, and the other
   // background jobs (a shell, a monitor, what the agent only counts) - each
   // one quiet line of what it is doing until it is opened, then its cards
-  // or its rows. Nothing while nothing runs.
+  // or its rows - and, under them, what the agent will start a turn for by
+  // itself later (a wakeup, a cron job). Nothing while nothing runs.
   function drawJobs() {
     const { jobs, others } = backgroundJobs(chat);
     const agents = jobs.filter((job) => job.kind && chat.parts.get(job.id));
     const rest = jobs.filter((job) => !agents.includes(job));
-    jobsSlot.hidden = !rest.length && !others && !agents.length;
+    const schedules = chat.schedules || [];
+    jobsSlot.hidden = !rest.length && !others && !agents.length && !schedules.length;
     if (jobsSlot.hidden) { morph(jobsSlot, ''); return; }
     const now = Date.now();
     const parts = (kind) => agents.filter((job) => job.kind === kind).map((job) => chat.parts.get(job.id));
@@ -826,7 +828,8 @@ export function mountChat(ctx) {
       return list.length ? agentsFold(list, kind, { open: view.isOpen('foot:' + key, false), now }) : '';
     };
     const background = rest.length || others ? jobsFold(rest, others, { open: view.isOpen('foot:jobs', false), now }) : '';
-    morph(jobsSlot, html`${fold('workflow')}${fold('agent')}${background}`, wheelHooks);
+    const scheduled = schedules.length ? schedulesFold(schedules, { open: view.isOpen('foot:scheduled', false), now }) : '';
+    morph(jobsSlot, html`${fold('workflow')}${fold('agent')}${background}${scheduled}`, wheelHooks);
   }
 
   // drawSchedule is the scheduled start of a chat that has not started: a

@@ -31,6 +31,8 @@ type Projection struct {
 	Tasks int `json:"tasks,omitempty"`
 	// Agents is how many of those are subagents or workflows.
 	Agents int `json:"agents,omitempty"`
+	// Schedules is what the agent will start a turn for by itself later.
+	Schedules []Schedule `json:"schedules,omitempty"`
 	// Agent is the content of the newest agent.info event.
 	Agent json.RawMessage `json:"agent,omitempty"`
 
@@ -260,11 +262,20 @@ func (p *Projection) Apply(ev Event) {
 			// account switch's new one is ready only after the old one
 			// went, whose end the host journals.
 			p.Tasks, p.Agents = 0, 0
+			// So is what it scheduled.
+			p.Schedules = nil
 		}
 	case TypeConversation:
 		p.ConversationID = ev.ConversationID
 	case TypeTasks:
 		p.Tasks, p.Agents = ev.Count, ev.Agents
+	case TypeSchedules:
+		var list []Schedule
+		if json.Unmarshal(ev.Content, &list) == nil && len(list) > 0 {
+			p.Schedules = list
+		} else {
+			p.Schedules = nil
+		}
 	case TypeAgentInfo:
 		p.Agent = ev.Content
 	case TypeQuiet:
@@ -524,13 +535,18 @@ const (
 // Summary is what the rest of Socrates knows about a chat without its
 // history: the activity, and the first open question.
 type Summary struct {
-	LastSeq        int64  `json:"last_seq"`
-	LastAt         int64  `json:"last_at"`
-	Activity       string `json:"activity"`
-	TurnRunning    bool   `json:"turn_running"`
-	OpenAsks       int    `json:"open_asks"`
-	Tasks          int    `json:"tasks,omitempty"`
-	Agents         int    `json:"agents,omitempty"`
+	LastSeq     int64  `json:"last_seq"`
+	LastAt      int64  `json:"last_at"`
+	Activity    string `json:"activity"`
+	TurnRunning bool   `json:"turn_running"`
+	OpenAsks    int    `json:"open_asks"`
+	Tasks       int    `json:"tasks,omitempty"`
+	Agents      int    `json:"agents,omitempty"`
+	// Schedules is how many turns the agent will start by itself later,
+	// and WakesAt when the first of them is due (Unix ms; 0 when none says
+	// a time).
+	Schedules      int    `json:"schedules,omitempty"`
+	WakesAt        int64  `json:"wakes_at,omitempty"`
 	Process        string `json:"process,omitempty"`
 	ConversationID string `json:"conversation_id,omitempty"`
 	LastOutcome    string `json:"last_outcome,omitempty"`
@@ -559,6 +575,12 @@ func (p *Projection) Summary() Summary {
 	}
 	if p.LastTurn != nil {
 		s.LastOutcome = p.LastTurn.Outcome
+	}
+	s.Schedules = len(p.Schedules)
+	for _, sc := range p.Schedules {
+		if sc.At > 0 && (s.WakesAt == 0 || sc.At < s.WakesAt) {
+			s.WakesAt = sc.At
+		}
 	}
 	if p.Turn != nil {
 		s.TurnStartedAt, s.QuietSince = p.Turn.StartedAt, p.Turn.QuietSince

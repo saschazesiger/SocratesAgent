@@ -45,6 +45,9 @@ export function newChat() {
     processDetail: '',
     conversation: '',
     tasks: 0,
+    // What the agent will start a turn for by itself later (a wakeup, a
+    // cron job): { id, kind, at, cron, recurring, prompt, reason }.
+    schedules: [],
     info: null,
     usage: { context: 0, window: 0 },
     cost: 0,
@@ -468,7 +471,7 @@ export function apply(chat, ev) {
       chat.processDetail = ev.detail || '';
       // Background tasks are the process's own: none runs once it is gone
       // or a new host starts (agent.Projection does the same).
-      if (ev.state !== 'ready') chat.tasks = 0;
+      if (ev.state !== 'ready') { chat.tasks = 0; chat.schedules = []; }
       chat.rev += 1;
       break;
     case 'conversation':
@@ -476,6 +479,10 @@ export function apply(chat, ev) {
       break;
     case 'tasks':
       chat.tasks = Number(ev.count) || 0;
+      chat.rev += 1;
+      break;
+    case 'schedules':
+      chat.schedules = Array.isArray(ev.content) ? ev.content : [];
       chat.rev += 1;
       break;
     case 'agent.info':

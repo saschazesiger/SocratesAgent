@@ -409,6 +409,38 @@ func TestHostDoesNotParkWhileBusy(t *testing.T) {
 	cl.until(5*time.Second, isProcess(agent.ProcessParked))
 }
 
+// A wakeup the agent scheduled keeps the host from parking for being idle,
+// as its process is where it lives; it parks once nothing is pending. A park
+// asked for (a chat filed as done) does not wait for it, and the journal
+// says nothing is scheduled any more.
+func TestHostDoesNotParkWhileAWakeupIsPending(t *testing.T) {
+	r := newRig(t, 200*time.Millisecond)
+	r.launch()
+	cl := r.dial(0)
+	cl.send("m1", "/schedule 1")
+	cl.until(5*time.Second, isType(agent.TypeTurnEnded))
+	time.Sleep(700 * time.Millisecond)
+	if alive, _ := r.l.Alive(r.chat); !alive {
+		t.Fatal("a host parked with a wakeup pending")
+	}
+	cl.until(5*time.Second, isProcess(agent.ProcessParked))
+	r.waitDead(5 * time.Second)
+
+	r.launch()
+	events := r.journal()
+	next := r.dial(events[len(events)-1].Seq)
+	next.send("m2", "/schedule 60")
+	next.until(5*time.Second, isType(agent.TypeTurnEnded))
+	if err := next.c.Send(Command{Op: OpPark, ClientID: "p1"}); err != nil {
+		t.Fatal(err)
+	}
+	next.until(5*time.Second, isProcess(agent.ProcessParked))
+	p := agent.Fold(r.journal())
+	if len(p.Schedules) != 0 || p.Summary().Schedules != 0 {
+		t.Fatalf("schedules after the park: %+v", p.Schedules)
+	}
+}
+
 // The scope: the host runs in socrates-…-<chat>.scope, a tool process that
 // escaped the CLI's process group keeps the scope alive after the host is
 // killed, and Reap - which refuses while the host lives - ends it.

@@ -11539,6 +11539,55 @@ async function chatagents() {
 // full each of its limit windows is and when it renews - and, at the foot of
 // the chat, what runs in the background, which opens to a dialog that lists
 // it.
+// chatwakeups is what the agent starts by itself: a wakeup it scheduled is
+// a folded line at the foot of the chat until it fires - when, and what for -
+// and the turn it starts opens with a line saying it woke up as scheduled,
+// with the prompt; a Monitor's event opens its turn with the event.
+async function chatwakeups() {
+  const { s, id } = await claudeChat();
+  const { page } = s;
+  try {
+    await say(page, '/wakeup 6');
+    await awaitLog(page, 'I will look again later.', 20000);
+    const pending = await page.waitForSelector('#chat .so-chat__bg:not([hidden]) .so-footfold[data-kind="scheduled"]', { timeout: 15000 })
+      .then((n) => n.$eval('summary .so-foldbox__words', (w) => w.textContent.trim()), () => '');
+    ok(/^Wakes up at \d{1,2}:\d{2}.* · the build takes a while$/.test(pending),
+      'a wakeup the agent scheduled is a line at the foot of the chat: when, and why', JSON.stringify(pending));
+    const chat = await chatOf(s, id);
+    ok(chat.chat && chat.chat.schedules === 1 && chat.chat.wakes_at > Date.now() && chat.chat.activity === 'idle',
+      'the server says the chat rests with one wakeup pending, and when it is due', JSON.stringify(chat.chat));
+    await page.click('#chat .so-footfold[data-kind="scheduled"] > summary');
+    const row = await page.waitForSelector('#chat .so-footfold[data-kind="scheduled"][open] .so-job', { timeout: 5000 })
+      .then((n) => n.evaluate((r) => ({
+        name: (r.querySelector('.so-job__name') || {}).textContent || '',
+        prompt: (r.querySelector('.so-job__summary') || {}).textContent || '',
+        note: (r.querySelector('.so-job__note') || {}).textContent || '',
+        left: (r.querySelector('.so-job__state') || {}).textContent || '',
+      })), () => null);
+    ok(!!row && /^Wakes up at/.test(row.name) && row.prompt === 'Check on the build' && row.note === 'the build takes a while' && /^in \d+/.test(row.left),
+      'opened, its row says what the agent will be told then, why, and in how long', JSON.stringify(row));
+    await shot(page, 'chat-wakeup-pending');
+
+    const woke = await awaitLog(page, 'Woke up for: Check on the build', 30000);
+    const line = await page.waitForSelector('#chat .so-line[data-code="wakeup"]', { timeout: 10000 })
+      .then((n) => n.innerText(), () => '');
+    ok(woke && line.trim() === 'Woke up as scheduled: Check on the build',
+      'the turn it starts opens with a line saying it woke up as scheduled, and for what', JSON.stringify(line));
+    const gone = await page.waitForSelector('#chat .so-footfold[data-kind="scheduled"]', { state: 'detached', timeout: 10000 })
+      .then(() => true, () => false);
+    ok(gone, 'and the foot of the chat no longer says it is scheduled', String(gone));
+    await shot(page, 'chat-wakeup-fired');
+
+    await say(page, '/monitor 1');
+    await awaitLog(page, 'The background task reported back.', 20000);
+    const event = await page.waitForSelector('#chat .so-line[data-code="monitor"]', { timeout: 10000 })
+      .then((n) => n.innerText(), () => '');
+    ok(event.trim() === 'Monitor "watch the build": build passed',
+      'a Monitor\u2019s event opens the turn it starts with what it saw', JSON.stringify(event));
+    ok(unexpected(s.errors).length === 0, 'no console errors', unexpected(s.errors).join(' | ') || '0');
+  } finally { await s.stop(); }
+}
+
 async function chatsub() {
   const { s, id } = await claudeChat();
   const { page } = s;
@@ -13462,6 +13511,7 @@ const ALL = [
   ['chat-fold', 'an answer\u2019s work folded in one line: what it does, then what it did, its steps and tokens; the answer and a question stand', chatfold],
   ['chat-watch', 'nothing hangs unseen: work after a question under its card, times by the clock, a job stopped, a quiet turn said and a Stop it ignores ending it', chatwatch],
   ['chat-sub', 'the line under a chat\u2019s bar: its account and its limit windows; its background jobs at its foot, with their dialog', chatsub],
+  ['chat-wakeups', 'what the agent starts by itself: a wakeup pending at the foot of the chat, and the turns it and a Monitor start saying why', chatwakeups],
   ['chat-agents', 'a subagent or a workflow at work beside the chat is a card of its own at its foot, not one more background job, and opens its job', chatagents],
   ['chat-kept', 'a chat opened again is drawn at once from what the device kept, marked as such until its stream is through', chatkept],
   ['chat-send-now', 'a message waiting behind a turn, sent now: the turn interrupted, the message answered next', chatsendnow],

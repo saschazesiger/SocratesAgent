@@ -38,9 +38,11 @@ type frame struct {
 	Event        *streamEvent `json:"event"`
 	APIMessageID string       `json:"api_message_id"`
 
-	// command_lifecycle
-	CommandUUID string `json:"command_uuid"`
-	State       string `json:"state"`
+	// command_lifecycle; a schedule's turn says which kind it is
+	// (loop_wakeup, schedule_wakeup)
+	CommandUUID  string `json:"command_uuid"`
+	State        string `json:"state"`
+	WakeupSource string `json:"wakeup_source"`
 
 	// system/init
 	Model         string   `json:"model"`

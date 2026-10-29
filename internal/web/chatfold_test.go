@@ -158,6 +158,34 @@ func TestNoBackgroundTaskOutlivesItsProcess(t *testing.T) {
 	}
 }
 
+// What the agent scheduled is the process's own as well: the browser holds
+// the list the newest schedules event says, and none once the process is
+// gone, as the server does.
+func TestNoScheduleOutlivesItsProcess(t *testing.T) {
+	list := json.RawMessage(`[{"id":"wakeup","kind":"wakeup","at":1793253960000,"prompt":"Check on the build"},{"id":"c1","kind":"cron","cron":"Every minute","recurring":true}]`)
+	events := []agent.Event{
+		{Type: agent.TypeProcess, State: agent.ProcessReady},
+		{Type: agent.TypeSchedules, Content: list},
+		{Type: agent.TypeSchedules, Content: json.RawMessage(`[{"id":"c1","kind":"cron","cron":"Every minute","recurring":true}]`)},
+		{Type: agent.TypeSchedules, Content: list},
+		{Type: agent.TypeProcess, State: agent.ProcessParked},
+		{Type: agent.TypeProcess, State: agent.ProcessReady},
+		{Type: agent.TypeSchedules, Content: list},
+		{Type: agent.TypeSchedules},
+	}
+	for i := range events {
+		events[i].Seq, events[i].At = int64(i+1), int64(1000+i)
+	}
+	for n, want := range map[int]int{1: 0, 2: 2, 3: 1, 4: 2, 5: 0, 6: 0, 7: 2, 8: 0} {
+		if p := agent.Fold(events[:n]); len(p.Schedules) != want || p.Summary().Schedules != want {
+			t.Fatalf("after %d events the server holds %d schedules; want %d", n, len(p.Schedules), want)
+		}
+		if got := runFold(t, events[:n], `chat.schedules.length`); got != strconv.Itoa(want) {
+			t.Fatalf("after %d events the browser holds %s schedules; want %d", n, got, want)
+		}
+	}
+}
+
 // How a turn ended is said right under that turn, above what the person sent
 // while it ran: the journal has a message queued during the turn before the
 // turn's end, and "Interrupted" drawn under it read as if that message had

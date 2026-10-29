@@ -110,7 +110,7 @@ func stateKey(ev Event) string {
 	switch ev.Type {
 	case TypeRateLimit:
 		return TypeRateLimit + "\x00" + ev.Window
-	case TypeTasks, TypeAgentInfo:
+	case TypeTasks, TypeAgentInfo, TypeSchedules:
 		return ev.Type
 	case TypeUsage:
 		if ev.Usage != nil {

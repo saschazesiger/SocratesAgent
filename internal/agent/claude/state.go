@@ -88,6 +88,17 @@ type state struct {
 	info         agentInfo
 	terminalOnly map[string]bool
 	lastCost     float64
+
+	// schedules is what the CLI will start a turn for by itself later
+	// (ScheduleWakeup, CronCreate), and wake the schedule that fired for
+	// the turn it is starting (schedule.go).
+	schedules []agent.Schedule
+	wake      *opener
+	// transcript is the main transcript of transcriptOf, the conversation,
+	// and tail where the next look for a turn's openers starts in it (-1:
+	// the end, less tailWindow).
+	transcript, transcriptOf string
+	tail                     int64
 }
 
 func newState(spec agent.StartSpec, configDir string) *state {
@@ -99,6 +110,7 @@ func newState(spec agent.StartSpec, configDir string) *state {
 		taskInputs: map[string]json.RawMessage{}, plans: map[string]*planAsk{}, planByReq: map[string]string{},
 		wfAgents: map[string]string{}, tails: map[string]*tail{}, homes: map[string]home{}, wfDone: map[string]bool{},
 		terminalOnly: map[string]bool{"doctor": true, "color": true, "focus": true, "heapdump": true},
+		tail:         -1,
 	}
 }
 
@@ -116,6 +128,9 @@ type turn struct {
 	limited     bool
 	interrupted bool
 	limitText   string
+	// looking is a turn of the CLI's own that has not found in the
+	// transcript what it was started for yet.
+	looking bool
 }
 
 // refusal is the limit the CLI said it refused a request at: the window and
@@ -189,6 +204,11 @@ func (s *state) closeAll() {
 	if s.background != 0 || s.agents != 0 {
 		s.background, s.agents = 0, 0
 		s.emit(agent.Event{Type: agent.TypeTasks})
+	}
+	// What the CLI had scheduled went with it.
+	if len(s.schedules) > 0 {
+		s.schedules = nil
+		s.emitSchedules()
 	}
 }
 
@@ -300,6 +320,9 @@ func (s *state) lifecycle(f *frame) {
 		if s.turn == nil {
 			s.next, s.hasNext = msgID, true
 		}
+		if !ours && f.WakeupSource != "" {
+			s.fired(f.WakeupSource, f.CommandUUID)
+		}
 		if ours {
 			s.markDelivered(msgID)
 		}
@@ -337,6 +360,15 @@ func (s *state) ensureTurn() *turn {
 			agent.Event{Type: agent.TypeMessage, MessageID: t.msgID, Role: agent.RoleAssistant,
 				State: agent.MessageStreaming, TurnID: t.id, Model: s.model},
 		)
+		if user == "" {
+			// A turn of the CLI's own opens with what it was started for.
+			t.looking = true
+			if w := s.wake; w != nil {
+				s.wake = nil
+				s.emitOpener(*w)
+			}
+			s.lookForOpeners()
+		}
 	}
 	return s.turn
 }
@@ -439,6 +471,7 @@ func resultUsage(f *frame) *agent.Usage {
 // nested in one. A part an earlier turn left open that is in no running
 // group any more is closed with it: nothing else would.
 func (s *state) endTurn(outcome string, usage *agent.Usage, cost float64, why string) {
+	s.lookForOpeners()
 	t := s.turn
 	ids := make([]string, 0, len(s.parts))
 	for id, p := range s.parts {
@@ -477,6 +510,7 @@ func (s *state) endTurn(outcome string, usage *agent.Usage, cost float64, why st
 	s.refused = refusal{}
 	s.emit(agent.Event{Type: agent.TypeMessageState, MessageID: t.msgID, State: state}, end)
 	s.turn = nil
+	s.markTail()
 }
 
 // ---------------------------------------------------------------- system
@@ -649,6 +683,7 @@ func (s *state) stream(f *frame) {
 	if f.ParentToolUseID != "" || f.Event == nil {
 		return
 	}
+	s.lookForOpeners()
 	t := s.ensureTurn()
 	ev := f.Event
 	switch ev.Type {
@@ -719,6 +754,7 @@ func (s *state) messageFor(parent string) (msgID, turnID string) {
 }
 
 func (s *state) assistant(f *frame) {
+	s.lookForOpeners()
 	if f.UUID != "" {
 		if s.seen[f.UUID] {
 			return

@@ -108,6 +108,15 @@ type TaskStopper interface {
 	StopTask(ctx context.Context, taskID string) error
 }
 
+// Scheduler is an adapter whose agent can start a turn by itself at a later
+// time (Claude Code's ScheduleWakeup and CronCreate). What it scheduled
+// lives in its process only, so the host does not park it for being idle
+// while Scheduled is above 0; a park that was asked for (a chat filed as
+// done) still goes.
+type Scheduler interface {
+	Scheduled() int
+}
+
 // Releaser is an adapter that can end its CLI at once for another process to
 // take the conversation over (an account switch), without waiting for its
 // background work as Park does: that work ends with the CLI, and the host asks

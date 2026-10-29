@@ -1028,6 +1028,18 @@ func (a *Adapter) Background() int {
 	return a.st.background
 }
 
+// Scheduled is how many turns the CLI will start by itself later
+// (ScheduleWakeup, CronCreate): they live in its process, so the host does
+// not park it for being idle meanwhile (agent.Scheduler).
+func (a *Adapter) Scheduled() int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.st == nil {
+		return 0
+	}
+	return len(a.st.schedules)
+}
+
 // PID is the CLI's process id.
 func (a *Adapter) PID() int {
 	a.mu.Lock()

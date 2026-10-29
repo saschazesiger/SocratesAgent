@@ -31,6 +31,16 @@ type transcriptLine struct {
 	Timestamp        string          `json:"timestamp"`
 	Content          string          `json:"content"`
 	TotalCostUSD     float64         `json:"totalCostUSD"`
+	// What started a turn of the CLI's own (schedule.go openerOf).
+	Origin *struct {
+		Kind string `json:"kind"`
+		Name string `json:"name"`
+		From string `json:"from"`
+		Body string `json:"body"`
+	} `json:"origin"`
+	TurnOrigin     string `json:"turnOrigin"`
+	WakeupSource   string `json:"wakeupSource"`
+	ClientPlatform string `json:"clientPlatform"`
 }
 
 // findTranscript is the transcript of a conversation, empty when there is
@@ -263,7 +273,24 @@ func (r *rebuild) notice(text, code string) {
 	r.part(agent.Event{PartID: r.id("n_"), Kind: agent.PartNotice, State: agent.PartDone, Text: text, Content: content})
 }
 
+// opener is the notice part a turn of the CLI's own opens with.
+func (r *rebuild) opener(o opener) {
+	extra := map[string]any{"code": o.code}
+	if o.detail != "" {
+		extra["detail"] = o.detail
+	}
+	content, _ := json.Marshal(extra)
+	r.part(agent.Event{PartID: r.id("n_"), Kind: agent.PartNotice, State: agent.PartDone, Text: o.text, Content: content})
+}
+
 func (r *rebuild) user(l transcriptLine) {
+	if o, ok := openerOf(l); ok {
+		// A schedule, a task's report, a message from another session
+		// starts a turn of the CLI's own, which opens with what it was.
+		r.startTurn("")
+		r.opener(o)
+		return
+	}
 	if l.IsMeta {
 		return
 	}
@@ -277,10 +304,6 @@ func (r *rebuild) user(l transcriptLine) {
 	}
 	if text, ok := msg.text(); ok {
 		switch {
-		case strings.HasPrefix(text, "<task-notification>"):
-			// A background task reporting back starts a turn of the CLI's
-			// own.
-			r.startTurn("")
 		case strings.Contains(text, "<command-name>"):
 			name, _ := between(text, "<command-name>", "</command-name>")
 			args, _ := between(text, "<command-args>", "</command-args>")

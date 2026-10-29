@@ -321,6 +321,9 @@ func leftovers(p *agent.Projection) (events []agent.Event, closed int) {
 	if p.Tasks != 0 || p.Agents != 0 {
 		events = append(events, agent.Event{Type: agent.TypeTasks})
 	}
+	if len(p.Schedules) > 0 {
+		events = append(events, agent.Event{Type: agent.TypeSchedules})
+	}
 	return events, closed
 }
 
@@ -1002,10 +1005,17 @@ func (h *host) idleLoop() {
 		h.mu.Lock()
 		quiet, wanted := time.Since(h.lastActive), h.parkWanted
 		h.mu.Unlock()
-		if wanted || quiet >= h.parkAfter {
+		if wanted || (quiet >= h.parkAfter && !h.scheduled()) {
 			h.park(false)
 		}
 	}
+}
+
+// scheduled is whether the agent will start a turn by itself later: what it
+// scheduled dies with its process, so idle time alone does not park it.
+func (h *host) scheduled() bool {
+	s, ok := h.liveAdapter().(agent.Scheduler)
+	return ok && s.Scheduled() > 0
 }
 
 // park stops the CLI cleanly and ends the host, keeping the conversation for
