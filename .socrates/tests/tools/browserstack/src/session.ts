@@ -118,7 +118,7 @@ export class DeviceSession {
 
   /**
    * Runs one action, then settle, errors and a screenshot, whatever happened, and appends it to
-   * the evidence. `summary` says what was asked; the body's first output line, when it gives one, replaces it.
+   * the evidence. `summary` says what was asked; the body's first output line, when it is words rather than JSON, replaces it.
    */
   async act(action: string, summary: string, body: (entry: Action) => Promise<string | undefined | void>, options: { screenshot?: boolean; settle?: boolean } = {}): Promise<Action> {
     this.lastCommandAt = Date.now();
@@ -128,7 +128,9 @@ export class DeviceSession {
       const output = await body(entry);
       if (output) {
         entry.output = output;
-        entry.summary = output.split("\n")[0]!;
+        // A line of words replaces the summary; the opening bracket of a JSON answer (look) does not.
+        const first = output.split("\n")[0]!.trim();
+        if (first && !/^[[{]/.test(first)) entry.summary = first;
       }
     } catch (error) {
       entry.error = error instanceof Error ? error.message : String(error);
