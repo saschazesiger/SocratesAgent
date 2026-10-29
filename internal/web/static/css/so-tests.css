@@ -65,7 +65,6 @@
 
 .so-tests-head__title > .ds-page-head__title {
   min-width: 0;
-  overflow-wrap: anywhere;
 }
 
 .so-tests-split {

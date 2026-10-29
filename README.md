@@ -122,7 +122,7 @@ You can run it again at any time to repair or update the installation.
 
 ## 🧪 Tests
 
-<img src="docs/screenshot-tests.png" alt="Tests: a run's results, one row per test and one column per device" width="760">
+<img src="docs/screenshot-tests.png" alt="Tests: the latest run as tiles per verdict with the change against the run before, and what needs attention" width="760">
 
 A repository brings its own test catalog; Socrates runs it with agents.
 

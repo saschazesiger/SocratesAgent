@@ -11,7 +11,7 @@ step on its screenshots.
 |---|---|
 | `TESTS.md` | Rules for every cell: the test instance only, the shared instance, the agents in it, secrets |
 | `web/AREA.md` | The devices, the target URL, how a cell is worked, the layout checks every step makes, verdicts |
-| `web/<group>/<test>.md` | 28 tests: `sign-in`, `home`, `sessions`, `chat`, `shell`, `admin`, `pages` |
+| `web/<group>/<test>.md` | 30 tests: `sign-in`, `home`, `sessions`, `chat`, `shell`, `admin`, `pages` |
 | `tools/browserstack/` | `qa`, the BrowserStack driver (ported from browser.lol's Device QA), its `TOOL.md` |
 | `../../scripts/qa-instance.sh` | Installs, updates, resets and removes the test instance |
 | `../../scripts/qa-demo-tests/` | The Demo shop: the test catalog whose runs the instance's Tests page shows |
@@ -28,7 +28,7 @@ step on its screenshots.
 | `mac-safari` | macOS · Safari | Desktop |
 
 Extras a test may name: `iphone-old` (iOS 16), `moto`, `samsung` (Samsung Internet), `win-firefox`,
-`win-edge`. The full run is 166 cells (every test on every device; rotation only on the four that
+`win-edge`. The full run is 178 cells (every test on every device; rotation only on the four that
 rotate).
 
 ## The test instance

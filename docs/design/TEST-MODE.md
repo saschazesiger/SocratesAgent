@@ -609,6 +609,51 @@ and where the format is described), the repository as the folder. *Start chat* o
 **Home** shows an active run as one card ("Tests · browser.lol · 23 of 54 cells · 4 running · 3
 waiting for BrowserStack") that opens the run.
 
+**After the UX review** (branch `tests-ux`), where the page now differs from the text above:
+
+- **One way to say things.** The verdicts always come in the order Fail · Issue · Blocked · Pass ·
+  N/A (tiles, result bars and counts, filters, legends, the trend from the top, the override dialog;
+  `testsview.js` `VERDICTS`). A problem that lasts is said in its verdict's words: "failing since Run
+  1", "an issue since Run 1", "blocked since Run 3" (`sinceWords`). A run's name is quoted, Run 6
+  “live”, so it never reads like a state. Tests come in the order a run takes them, P0 first, then
+  by id, in the Tests view and in a run's results alike (`testOrder`).
+- **Head and banner.** Run sits in the title's row, so it stays beside the title on a phone; there the
+  path and commit are in the title's menu instead. The Run menu's quick runs are headed *Start now*
+  and each asks first with its cell count. The banner of the active run is left out where the view
+  shows that run already: its run view (whose head gets the progress) and the Overview (whose Live card
+  takes the progress, *Watch* and *Stop*). On a phone it is one line, "Run 7 · 17 of 20 done", with
+  *Watch* and *Stop*, over its bar. A running run's changes are "so far".
+- **Overview.** A tile's change says which way and what it means, by a glyph and a word ("↑ 1 more
+  than Run 5 · worse"). Needs attention keeps the problems that stay apart by verdict: *Still failing*,
+  *Still with issues*, *Still blocked*. A live card names its step from the catalog ("Step 2 of 4: Open
+  the first result"), never the tools' caption, which stays in the actions log.
+- **Tables.** A cell is its verdict and marks, the other dimensions' values in a quieter line under
+  them; a line over the tables explains the marks (broke, fixed, reviewed, your verdict, attempt 2 or
+  later; flaky in the Tests view). Every area's table has the same columns (the widest area's count,
+  fixed widths), so the areas line up. The Tests view says an area's latest run once in its head
+  ("Latest: Run 6"); a test names its run only where it differs. The phone's runs list has the state
+  and "↓ 3 broke · ↑ 1 fixed" too.
+- **The cell viewer.** Its actions follow the verdict: on a problem *Override verdict*, *Retry*, *Fix
+  in a chat*; on a pass no *Fix in a chat*; on a cell at work neither of the first two. The rest is in
+  *More* (a menu, an action sheet on a phone): *Open the agent’s transcript* and *Run this cell in a
+  new run*. Every action keeps its words on a phone. The cell's bugs are chips in its head ("B-5 ·
+  Major · open") that open the bug; overriding to Pass or N/A offers to mark them Not a bug too (PATCH,
+  the note going with it when the bug has none). The steps are one tab stop that ↑ and ↓ walk; one
+  Escape closes the viewer even while a tooltip shows (DS gives that key to the tooltip first).
+- **The Run dialog.** *Choose…* starts with nothing ticked (*Select all*, *Select none*, *Only this*
+  per test); Start says "Pick at least one test" until one is. The settings line names every role's
+  model ("Cells: Sonnet 5.5 · Review: Opus · Analysis: Opus · up to 2 attempts"); its toggle reads
+  *Change for this run* / *Use the defaults*. Settings, the Run dialog and *Start now* say when a role
+  has no account Socrates knows to be signed in (a warning: the server still tries the others, since
+  the program may be signed in on its own) and block a start only when a role's program is not
+  installed or switched on, or its chosen accounts are gone; the chat dialog warns the same way.
+- **Bugs.** A bug that came back is "Open · came back" in the list, its head and its triage. The note
+  saves itself when the field is left (or with Ctrl+Enter), with a quiet "Saved" under it, like the
+  rest of the triage. Why no GitHub issue can be made is written under the bug's head. The Tools card
+  shows the secrets command only inside *How secrets are read*.
+- **Snackbars** close when the person moves to another place of the page (not when the cell viewer
+  opens or closes) and when the Run dialog opens.
+
 ## Code layout in Socrates
 
 | Where | What |
