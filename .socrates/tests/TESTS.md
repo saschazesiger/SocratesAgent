@@ -10,8 +10,8 @@ against a **test instance** of Socrates on the build server.
   from `main`, with its own data, user and accounts; `scripts/qa-instance.sh`). The tool opens nothing
   else. Never open, sign in to or change any other Socrates, least of all the owner's real one.
 - It is password protected; the tool types the password (`qa type --secret QA_SOCRATES_PASSWORD`).
-- Its data is disposable: `scripts/qa-instance.sh reset` deletes every session and seeds it again
-  before a run. Still, other cells of the same run use it **at the same time** (one per BrowserStack
+- Its data is disposable: `scripts/qa-instance.sh reset` deletes every session and seeds it again,
+  and makes the Demo shop's test runs again, before a run. Still, other cells of the same run use it **at the same time** (one per BrowserStack
   account), so:
   - Lists hold other cells' sessions too. Never open, answer, rename, stop or delete a session you did
     not create in this cell. Find yours by the name you gave it.
@@ -22,7 +22,19 @@ against a **test instance** of Socrates on the build server.
     delete it at the end of the test, as the test's last step says.
   - Admin settings are shared: only a test that names `admin-settings` in `exclusive` saves a setting,
     and it puts the old value back.
-- Never press Ctrl+S or Cmd+S in Admin: it saves the whole settings document.
+- The Tests page has one repository, **Demo shop** (`/var/lib/socrates-qa/work/demo-shop`): a
+  fictional shop's catalog (areas `shop` and `account`, ten tests, devices phone, tablet and desktop
+  as the columns) with four runs, *Demo run 1* to *Demo run 4*, and their bugs, which reset makes
+  again on the Scripted agent. Run 4 has a regression (`shop/search`) and fixes, `shop/wishlist` is
+  flaky, `account/password-reset` is blocked, `account/order-history` was corrected by its reviewer.
+  These runs and bugs are shared by every cell: open and read them, but never delete, stop, retry,
+  override, pin or analyse them again, never triage a bug (status, severity, note, issue), never
+  change the repository's settings and never remove the repository.
+  - A test may start a run only of the Demo shop, only with the Scripted agent (the repository's
+    settings already say so: do not change the roles in the start dialog) and only of the test
+    `shop/home` (it always passes and touches no bug), named `QA <word> <device>`. It takes a few
+    seconds; another cell's run may make it wait first. Delete that run at the end of the test, as
+    the test's last step says, and no other.
 - Never: change the password (a successful change signs every other cell out), press Sign in or
   Delete on an account, stop or restart the tunnel, press Update now, Turn off backups, Back up now or
   anything under Restore, or delete a session that is not yours.
