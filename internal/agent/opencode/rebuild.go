@@ -25,12 +25,12 @@ func (a *Adapter) history(ctx context.Context, cl *client, msgs []ocMessageWithP
 		}
 		return out
 	}
-	return historyEvents(msgs, child)
+	return historyEvents(msgs, a.spec.Workdir, child)
 }
 
-// historyEvents is history without the HTTP: child reads a subagent's
-// session.
-func historyEvents(msgs []ocMessageWithParts, child func(session string) []ocMessageWithParts) []agent.Event {
+// historyEvents is history without the HTTP, for the chat's folder
+// workdir: child reads a subagent's session.
+func historyEvents(msgs []ocMessageWithParts, workdir string, child func(session string) []ocMessageWithParts) []agent.Event {
 	var events []agent.Event
 	var turn *rebuiltTurn
 	end := func() {
@@ -45,7 +45,10 @@ func historyEvents(msgs []ocMessageWithParts, child func(session string) []ocMes
 		case "user":
 			end()
 			turn = &rebuiltTurn{id: "t_" + m.Info.ID, outcome: agent.OutcomeCompleted, usage: &agent.Usage{}}
-			turn.changes.diffs, turn.changes.summarized = summaryDiffs(m.Info.Summary)
+			turn.changes.workdir = workdir
+			if diffs, ok := summaryDiffs(m.Info.Summary); ok {
+				turn.changes.summary(diffs)
+			}
 			events = append(events,
 				agent.Event{Type: agent.TypeMessage, MessageID: m.Info.ID, Role: agent.RoleUser, State: agent.MessageDelivered,
 					Text: userText(m.Parts), Attachments: userAttachments(m.Parts)},
@@ -53,6 +56,7 @@ func historyEvents(msgs []ocMessageWithParts, child func(session string) []ocMes
 		case "assistant":
 			if turn == nil {
 				turn = &rebuiltTurn{id: "t_" + m.Info.ID, outcome: agent.OutcomeCompleted, usage: &agent.Usage{}}
+				turn.changes.workdir = workdir
 				events = append(events, agent.Event{Type: agent.TypeTurnStarted, TurnID: turn.id})
 			}
 			events = append(events, turn.assistant(m, child)...)
@@ -80,6 +84,7 @@ func (t *rebuiltTurn) end() agent.Event {
 
 func (t *rebuiltTurn) assistant(m ocMessageWithParts, child func(string) []ocMessageWithParts) []agent.Event {
 	complete := m.Info.Time.Completed > 0
+	t.changes.place(m.Info.Path)
 	events := []agent.Event{{Type: agent.TypeMessage, MessageID: m.Info.ID, Role: agent.RoleAssistant,
 		State: agent.MessageStreaming, TurnID: t.id, Model: m.Info.model()}}
 	events = append(events, t.finalParts(m.Info.ID, "", m.Parts, complete, child, 0)...)
@@ -122,7 +127,7 @@ func (t *rebuiltTurn) finalParts(msg, parent string, parts []ocPart, complete bo
 	var events []agent.Event
 	for _, p := range parts {
 		if p.Type == partPatch {
-			if files := stepFiles(p.Files, t.changes.edited, t.changes.diffs, t.changes.summarized, ""); depth == 0 && len(files) > 0 {
+			if files, _ := t.changes.files(p.Files); depth == 0 && len(files) > 0 {
 				c := stepDiff(files)
 				events = append(events, agent.Event{Type: agent.TypePart, MessageID: msg, PartID: p.ID, Kind: c.kind, State: c.state, Content: c.content})
 			}
@@ -132,7 +137,7 @@ func (t *rebuiltTurn) finalParts(msg, parent string, parts []ocPart, complete bo
 		if !ok {
 			continue
 		}
-		t.changes.edited = append(t.changes.edited, c.paths...)
+		t.changes.edit(c.paths)
 		state := c.state
 		if state == agent.PartStreaming && complete {
 			state = agent.PartDone

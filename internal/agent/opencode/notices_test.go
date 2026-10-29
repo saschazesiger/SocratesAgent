@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -45,7 +46,7 @@ func TestAnMCPServerThatDidNotStartIsSaid(t *testing.T) {
 	}
 	// Read again (a catch-up, a server whose tools changed), the same
 	// state is not said again.
-	r.a.checkMCP(context.Background(), r.a.gen, r.a.client())
+	r.a.requestMCP(context.Background(), r.a.gen, r.a.client())
 	r.a.handle(r.a.gen, ocEvent{Type: "mcp.tools.changed", Properties: json.RawMessage(`{"server":"broken"}`)})
 	time.Sleep(300 * time.Millisecond)
 	if said := noticesOf(r.rec, agent.NoticeMCP); len(said) != 1 {
@@ -53,6 +54,45 @@ func TestAnMCPServerThatDidNotStartIsSaid(t *testing.T) {
 	}
 	r.send("hello")
 	r.waitTurns(1)
+}
+
+// However often GET /mcp is asked for while a read is under way (a burst
+// of mcp.tools.changed, MCP toasts), one read runs and one more after it.
+func TestMCPReadsAreCoalesced(t *testing.T) {
+	release := make(chan struct{})
+	var reads atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if reads.Add(1) == 1 {
+			<-release
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"x":{"status":"failed","error":"boom"}}`))
+	}))
+	defer srv.Close()
+	rec := newRecorder()
+	a := New()
+	a.out, a.session, a.cl = rec, "ses_root", newClient(srv.URL, "", t.TempDir())
+	life, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	a.life = life
+	a.requestMCP(life, 0, a.cl)
+	eventually(t, 5*time.Second, "the first read", func() bool { return reads.Load() == 1 })
+	for range 20 {
+		a.handle(0, ocEvent{Type: "mcp.tools.changed", Properties: json.RawMessage(`{"server":"x"}`)})
+		a.handle(0, ocEvent{Type: "tui.toast.show", Properties: json.RawMessage(`{"title":"MCP Authentication Required","message":"m","variant":"warning"}`)})
+	}
+	close(release)
+	eventually(t, 5*time.Second, "the reads to end", func() bool {
+		a.mu.Lock()
+		defer a.mu.Unlock()
+		return !a.notes.mcpRunning
+	})
+	if n := reads.Load(); n != 2 {
+		t.Fatalf("%d reads of GET /mcp, want 2", n)
+	}
+	if said := noticesOf(rec, agent.NoticeMCP); len(said) != 1 {
+		t.Fatalf("MCP notices %q", said)
+	}
 }
 
 // Every state GET /mcp reports (1.19.5) but connected and disabled - the
@@ -159,73 +199,178 @@ func TestWhatAShellCommandChangedIsShown(t *testing.T) {
 	}
 }
 
-// A catch-up reads the summary before the patch parts it covers: they are
-// shown when the turn ends, with the newest summary. A patch part of an
-// earlier turn is not shown, and without a summary a step's file is named
-// as the chat's folder sees it.
-func TestAStepsChangesAfterACatchUpAndWithoutASummary(t *testing.T) {
+// stepRig is an adapter in a turn of the user message msg_u1 in the folder
+// /w/repo/pkg, whose worktree is /w/repo, with one assistant message,
+// msg_a1.
+func stepRig(t *testing.T) (*Adapter, *recorder) {
+	t.Helper()
 	rec := newRecorder()
 	a := New()
 	a.out, a.session = rec, "ses_root"
-	a.spec.Workdir = "/w/repo"
+	a.spec.Workdir = "/w/repo/pkg"
 	a.users["msg_u1"] = &userMsg{our: "m1", journaled: true}
 	a.handleMessage(0, ocMessage{ID: "msg_u1", SessionID: "ses_root", Role: "user"})
-	a.handleMessage(0, ocMessage{ID: "msg_a1", SessionID: "ses_root", Role: "assistant", ParentID: "msg_u1"})
-	a.handleMessage(0, ocMessage{ID: "msg_u1", SessionID: "ses_root", Role: "user",
-		Summary: json.RawMessage(`{"diffs":[{"file":"b.txt","patch":"@@ -1 +1 @@\n-one\n+two\n","additions":1,"deletions":1,"status":"modified"}]}`)})
-	a.handlePart(0, mustPart(t, `{"id":"prt_p1","sessionID":"ses_root","messageID":"msg_a1","type":"patch","hash":"h","files":["/w/repo/b.txt"]}`))
-	// The patch part of a message of an earlier turn.
-	a.handlePart(0, mustPart(t, `{"id":"prt_old","sessionID":"ses_root","messageID":"msg_a0","type":"patch","hash":"h","files":["/w/repo/c.txt"]}`))
+	a.handleMessage(0, ocMessage{ID: "msg_a1", SessionID: "ses_root", Role: "assistant", ParentID: "msg_u1",
+		Path: &ocPath{Cwd: "/w/repo/pkg", Root: "/w/repo"}})
+	return a, rec
+}
+
+// summary is a user message whose summary.diffs lists files, each with one
+// line changed.
+func summary(id string, files ...string) ocMessage {
+	diffs := []ocSnapshotDiff{}
+	for _, f := range files {
+		diffs = append(diffs, ocSnapshotDiff{File: f, Patch: "@@ -1 +1 @@\n-one\n+" + f + "\n", Additions: 1, Deletions: 1, Status: "modified"})
+	}
+	raw, _ := json.Marshal(map[string]any{"diffs": diffs})
+	return ocMessage{ID: id, SessionID: "ses_root", Role: "user", Summary: raw}
+}
+
+// stepFilesOf is the files of a step's diff part as its newest event has
+// them: "path", or "path (no lines)" for one named without its diff.
+func stepFilesOf(t *testing.T, rec *recorder, part string) []string {
+	t.Helper()
+	var out []string
+	rec.view(func(_ *agent.Projection, events []agent.Event) {
+		for _, ev := range events {
+			if ev.Type != agent.TypePart || ev.PartID != part {
+				continue
+			}
+			out = nil
+			for _, f := range decode[DiffContent](t, ev.Content).Files {
+				if f.Patch == "" {
+					out = append(out, f.Path+" (no lines)")
+				} else {
+					out = append(out, f.Path)
+				}
+			}
+		}
+	})
+	return out
+}
+
+func patchPart(id, msg string, files ...string) ocPart {
+	return ocPart{ID: id, SessionID: "ses_root", MessageID: msg, Type: partPatch, Files: files}
+}
+
+// A catch-up reads the summary before the patch parts it covers: they are
+// shown when the turn ends, with it. A patch part of an earlier turn is not
+// shown; a file is named as the chat's folder sees it, the summary's from
+// the worktree.
+func TestAStepsChangesAfterACatchUp(t *testing.T) {
+	a, rec := stepRig(t)
+	a.handleMessage(0, summary("msg_u1", "pkg/b.txt"))
+	a.handlePart(0, patchPart("prt_p1", "msg_a1", "/w/repo/pkg/b.txt"))
+	a.handlePart(0, patchPart("prt_old", "msg_a0", "/w/repo/pkg/c.txt"))
 	if n := rec.count(agent.TypePart, func(ev agent.Event) bool { return ev.Kind == agent.PartDiff }); n != 0 {
 		t.Fatalf("%d diff parts before the turn's end", n)
 	}
 	a.handleIdle(0, "ses_root")
-	ev, ok := rec.first(agent.TypePart, func(ev agent.Event) bool { return ev.Kind == agent.PartDiff })
-	if !ok || ev.PartID != "prt_p1" || ev.MessageID != "msg_a1" {
-		t.Fatalf("the step's diff part %+v", ev)
-	}
-	if dc := decode[DiffContent](t, ev.Content); len(dc.Files) != 1 || dc.Files[0].Path != "b.txt" || !strings.Contains(dc.Files[0].Patch, "+two") {
-		t.Fatalf("the step's diff %s", ev.Content)
+	if got := stepFilesOf(t, rec, "prt_p1"); strings.Join(got, ",") != "b.txt" {
+		t.Fatalf("the step's files %q", got)
 	}
 	if n := rec.count(agent.TypePart, func(ev agent.Event) bool { return ev.Kind == agent.PartDiff }); n != 1 {
 		t.Fatalf("%d diff parts, want the step's alone", n)
 	}
+}
 
-	files := stepFiles([]string{"/w/repo/sub/x.go", "/w/repo/a.txt", "/elsewhere/y"}, []string{"a.txt"}, nil, false, "/w/repo")
-	if len(files) != 2 || files[0].Path != "sub/x.go" || files[0].Patch != "" || files[1].Path != "/elsewhere/y" {
-		t.Fatalf("files without a summary %+v", files)
+// No file of a step is dropped: one the summary that came does not list, or
+// one whose summary never came, is named without lines, and gets them when
+// a summary brings them - after the turn's end too.
+func TestAStepsFileIsNeverDropped(t *testing.T) {
+	a, rec := stepRig(t)
+	a.handlePart(0, patchPart("prt_p1", "msg_a1", "/w/repo/pkg/b.txt", "/w/repo/pkg/c.txt", "/elsewhere/y"))
+	a.handleMessage(0, summary("msg_u1", "pkg/b.txt"))
+	if got := stepFilesOf(t, rec, "prt_p1"); strings.Join(got, ",") != "b.txt,c.txt (no lines),/elsewhere/y (no lines)" {
+		t.Fatalf("the step's files %q", got)
 	}
-	// With a summary, a file it does not list is one the turn left as it was.
-	if files := stepFiles([]string{"/w/repo/x"}, nil, []ocSnapshotDiff{}, true, "/w/repo"); len(files) != 0 {
-		t.Fatalf("a file the summary does not list %+v", files)
+	a.handlePart(0, patchPart("prt_p2", "msg_a1", "/w/repo/pkg/d.txt"))
+	a.handleIdle(0, "ses_root")
+	if got := stepFilesOf(t, rec, "prt_p2"); strings.Join(got, ",") != "d.txt (no lines)" {
+		t.Fatalf("a step whose summary did not come by the end %q", got)
+	}
+	// The summary after session.idle.
+	a.handleMessage(0, summary("msg_u1", "pkg/b.txt", "pkg/c.txt", "pkg/d.txt"))
+	if got := stepFilesOf(t, rec, "prt_p2"); strings.Join(got, ",") != "d.txt" {
+		t.Fatalf("the step after a late summary %q", got)
+	}
+	if got := stepFilesOf(t, rec, "prt_p1"); strings.Join(got, ",") != "b.txt,c.txt,/elsewhere/y (no lines)" {
+		t.Fatalf("the first step after a late summary %q", got)
 	}
 }
 
-// A rebuilt history has a step's changes after the step, as live.
+// The steps after a compaction answer the compaction's user message, whose
+// summary is theirs; a turn that adopted its user message takes the summary
+// of the one its steps answer (and the worktree the turn before named,
+// until a step names it).
+func TestAStepAfterACompactionTakesItsSummary(t *testing.T) {
+	a, rec := stepRig(t)
+	// OpenCode's own user message inside the running turn.
+	a.handleMessage(0, ocMessage{ID: "msg_c", SessionID: "ses_root", Role: "user"})
+	a.handleMessage(0, ocMessage{ID: "msg_a2", SessionID: "ses_root", Role: "assistant", ParentID: "msg_c"})
+	a.handlePart(0, patchPart("prt_p", "msg_a2", "/w/repo/pkg/b.txt"))
+	a.handleMessage(0, summary("msg_c", "pkg/b.txt"))
+	if got := stepFilesOf(t, rec, "prt_p"); strings.Join(got, ",") != "b.txt" {
+		t.Fatalf("the step after the compaction %q", got)
+	}
+	a.handleIdle(0, "ses_root")
+	a.users["msg_u2"] = &userMsg{our: "m2", journaled: true, adopt: true}
+	a.handleMessage(0, ocMessage{ID: "msg_u2", SessionID: "ses_root", Role: "user"})
+	a.handleMessage(0, ocMessage{ID: "msg_a3", SessionID: "ses_root", Role: "assistant", ParentID: "msg_x"})
+	a.handlePart(0, patchPart("prt_q", "msg_a3", "/w/repo/pkg/e.txt"))
+	a.handleMessage(0, summary("msg_x", "pkg/e.txt"))
+	if got := stepFilesOf(t, rec, "prt_q"); strings.Join(got, ",") != "e.txt" {
+		t.Fatalf("the adopted turn's step %q", got)
+	}
+}
+
+// A file is the same file by its whole path: an edit of a.txt does not hide
+// a shell command's change to sub/a.txt, a relative name is the folder
+// OpenCode works in's, and an edit of an earlier turn a catch-up reads
+// hides nothing.
+func TestAStepsFilesAreMatchedByTheirWholePath(t *testing.T) {
+	a, rec := stepRig(t)
+	edit := func(id, msg, path string) ocPart {
+		return mustPart(t, `{"id":"`+id+`","sessionID":"ses_root","messageID":"`+msg+`","type":"tool","tool":"edit","callID":"c_`+id+`",
+			"state":{"status":"completed","input":{"filePath":"`+path+`"},"output":"","metadata":{"diff":"@@ -1 +1 @@\n-a\n+b\n"},"time":{"start":1,"end":2}}}`)
+	}
+	a.handlePart(0, edit("prt_e1", "msg_a1", "a.txt"))
+	a.handlePart(0, edit("prt_e0", "msg_a0", "/w/repo/pkg/c.txt"))
+	a.handlePart(0, patchPart("prt_p", "msg_a1", "/w/repo/pkg/a.txt", "/w/repo/pkg/sub/a.txt", "/w/repo/pkg/c.txt"))
+	a.handleMessage(0, summary("msg_u1", "pkg/a.txt", "pkg/sub/a.txt", "pkg/c.txt"))
+	if got := stepFilesOf(t, rec, "prt_p"); strings.Join(got, ",") != "sub/a.txt,c.txt" {
+		t.Fatalf("the step's files %q", got)
+	}
+}
+
+// A rebuilt history has a step's changes after the step, as live, named as
+// the chat's folder sees them.
 func TestARebuildShowsAStepsChanges(t *testing.T) {
 	var msgs []ocMessageWithParts
 	raw := `[
 		{"info":{"id":"msg_u1","sessionID":"ses_root","role":"user","time":{"created":90},
-		  "summary":{"diffs":[{"file":"a.txt","patch":"@@ -1 +1 @@\n-old\n+new\n","additions":1,"deletions":1},
-		                      {"file":"b.txt","patch":"@@ -1 +1 @@\n-one\n+two\n","additions":1,"deletions":1}]}},"parts":[]},
-		{"info":{"id":"msg_a1","sessionID":"ses_root","role":"assistant","parentID":"msg_u1","time":{"created":95,"completed":250},"summary":false},
+		  "summary":{"diffs":[{"file":"pkg/a.txt","patch":"@@ -1 +1 @@\n-old\n+new\n","additions":1,"deletions":1},
+		                      {"file":"pkg/b.txt","patch":"@@ -1 +1 @@\n-one\n+two\n","additions":1,"deletions":1}]}},"parts":[]},
+		{"info":{"id":"msg_a1","sessionID":"ses_root","role":"assistant","parentID":"msg_u1","time":{"created":95,"completed":250},"summary":false,
+		  "path":{"cwd":"/w/repo/pkg","root":"/w/repo"}},
 		 "parts":[
 		  {"id":"prt_e","sessionID":"ses_root","messageID":"msg_a1","type":"tool","tool":"edit","callID":"c1",
-		   "state":{"status":"completed","input":{"filePath":"/w/a.txt"},"output":"","metadata":{"diff":"@@ -1 +1 @@\n-old\n+new\n"},"time":{"start":96,"end":97}}},
-		  {"id":"prt_p","sessionID":"ses_root","messageID":"msg_a1","type":"patch","hash":"h","files":["/w/a.txt","/w/b.txt"]}]}]`
+		   "state":{"status":"completed","input":{"filePath":"/w/repo/pkg/a.txt"},"output":"","metadata":{"diff":"@@ -1 +1 @@\n-old\n+new\n"},"time":{"start":96,"end":97}}},
+		  {"id":"prt_p","sessionID":"ses_root","messageID":"msg_a1","type":"patch","hash":"h",
+		   "files":["/w/repo/pkg/a.txt","/w/repo/pkg/b.txt","/w/repo/pkg/c.txt"]}]}]`
 	if err := json.Unmarshal([]byte(raw), &msgs); err != nil {
 		t.Fatal(err)
 	}
 	var diffs []string
-	for _, ev := range historyEvents(msgs, nil) {
+	for _, ev := range historyEvents(msgs, "/w/repo/pkg", nil) {
 		if ev.Type == agent.TypePart && ev.Kind == agent.PartDiff {
 			dc := decode[DiffContent](t, ev.Content)
 			for _, f := range dc.Files {
-				diffs = append(diffs, ev.PartID+" "+dc.Tool+" "+f.Path)
+				diffs = append(diffs, ev.PartID+" "+dc.Tool+" "+f.Path+" "+strconv.Itoa(f.Additions))
 			}
 		}
 	}
-	if strings.Join(diffs, ", ") != "prt_e-diff edit /w/a.txt, prt_p changes b.txt" {
+	if strings.Join(diffs, ", ") != "prt_e-diff edit /w/repo/pkg/a.txt 1, prt_p changes b.txt 1, prt_p changes c.txt 0" {
 		t.Fatalf("diff parts %q", diffs)
 	}
 }

@@ -899,18 +899,26 @@ changed, by an edit call or a shell command alike. Right after it, it stores the
 patch, additions, deletions, status}`, what `GET /session/{id}/diff?messageID=` lists) and sends
 that message as `message.updated` (read from 1.19.5's source, `SessionProcessor` at step-finish and
 `SessionSummary.summarize`; `session.diff` always carries `[]`). The adapter holds a patch part of
-the running turn's own steps until that summary comes (or the turn ends, then with the newest one)
-and writes the step's files that no edit call of the turn (or of its subagents) showed, each with
-its diff from the summary: a file the summary does not list is one the turn left as it was; without
-any summary, a file is named without lines. A subagent's patch parts are left out: the step of the
-task that ran it has the same files. A rebuild does the same with the stored summary. `POST /shell`
-(a `!line`) takes no snapshot, so what it changes is not shown as a diff.
+the running turn's own steps until a summary comes (or the turn ends) and writes the step's files
+that no edit call of the turn (or of its subagents) showed, each with its newest diff from the
+summaries of the turn's user messages: its own, or the one its steps answer (a compaction's, the
+one an adopted turn took up). No file is dropped: one no summary has a diff for is named without
+lines, and its part is written again when a later summary brings them, one that comes after
+`session.idle` included (the turn that ended last still takes it). Files are compared by their
+whole path: a summary's names are joined with the worktree, an edit call's relative ones with the
+folder OpenCode works in (the assistant message's `path.root` and `path.cwd`, verified against
+1.19.5; the workdir until one names them), and only the edit calls of the turn's own messages
+count, not those a catch-up reads back from earlier turns. A file is shown as the workdir sees it.
+A subagent's patch parts are left out: the step of the task that ran it has the same files. A
+rebuild does the same with the stored summaries and the workdir. `POST /shell` (a `!line`) takes no
+snapshot, so what it changes is not shown as a diff.
 
 **What OpenCode says only to its TUI.** `GET /mcp` (`{name: {status: connected | disabled | failed
 {error} | needs_auth | needs_client_registration {error}}}`, verified against 1.19.5; it answers once
 OpenCode has tried every server, as `GET /command` does, up to its 30 s timeout for one that never
 answers) is read after every process start and catch-up and on `mcp.tools.changed` (what a server
-whose connection closed publishes): every server failed or waiting for a sign-in is a line of a
+whose connection closed publishes), one read at a time, a burst of asks while one runs making one
+more after it: every server failed or waiting for a sign-in is a line of a
 `notice{mcp_servers}`, written when the lines change (`disabled` is not one: the config turns off a
 folder's own `opencode.json` servers). `tui.toast.show` (`{title, message, variant, duration}`,
 verified) of variant `warning` or `error` is a `notice{toast}` "title: message", once per text for

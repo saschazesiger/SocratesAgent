@@ -88,6 +88,15 @@ type ocMessage struct {
 	// Summary is a user message's {title, diffs}, a boolean on an
 	// assistant message (summaryDiffs).
 	Summary json.RawMessage `json:"summary"`
+	// Path is an assistant message's folder and worktree.
+	Path *ocPath `json:"path"`
+}
+
+// ocPath is where an assistant message worked: {cwd, root} (the worktree;
+// verified against 1.19.5).
+type ocPath struct {
+	Cwd  string `json:"cwd"`
+	Root string `json:"root"`
 }
 
 func (m *ocMessage) model() string {

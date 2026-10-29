@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"sort"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/saschazesiger/SocratesAgent/internal/agent"
@@ -27,12 +26,46 @@ const mcpWait = 2 * time.Minute
 // noticeState is what the adapter has said about OpenCode itself, so that
 // it is said once.
 type noticeState struct {
-	// mcp serialises the reads of GET /mcp, and mcpSaid is what the last
-	// one said ("" for nothing wrong).
-	mcp     sync.Mutex
-	mcpSaid string
+	// mcpRunning is a read of GET /mcp under way, and mcpNext the one
+	// asked for meanwhile, which runs after it: however often a read is
+	// asked for, one runs and one waits. mcpSaid is what the last one said
+	// ("" for nothing wrong). All under the adapter's mu.
+	mcpRunning bool
+	mcpNext    *mcpRead
+	mcpSaid    string
 	// toasts are the toasts already said, by their words.
 	toasts map[string]bool
+}
+
+// mcpRead is one read of GET /mcp asked for: of the process gen, through
+// cl, for as long as ctx lasts.
+type mcpRead struct {
+	ctx context.Context
+	gen int
+	cl  *client
+}
+
+// requestMCP has GET /mcp read (checkMCP): now, or, while a read is under
+// way, once after it, the newest ask standing for every one made meanwhile.
+func (a *Adapter) requestMCP(ctx context.Context, gen int, cl *client) {
+	read := &mcpRead{ctx: ctx, gen: gen, cl: cl}
+	a.mu.Lock()
+	if a.notes.mcpRunning {
+		a.notes.mcpNext = read
+		a.mu.Unlock()
+		return
+	}
+	a.notes.mcpRunning = true
+	a.mu.Unlock()
+	go func() {
+		for read != nil {
+			a.checkMCP(read.ctx, read.gen, read.cl)
+			a.mu.Lock()
+			read, a.notes.mcpNext = a.notes.mcpNext, nil
+			a.notes.mcpRunning = read != nil
+			a.mu.Unlock()
+		}
+	}()
 }
 
 // ocMCPStatus is one server of GET /mcp: connected, disabled, failed{error},
@@ -46,10 +79,9 @@ type ocMCPStatus struct {
 // the chat (agent.NoticeMCP), when that changed since it last said it.
 // OpenCode reports a server it cannot start or that needs a sign-in nowhere
 // else but in a toast of its TUI. Called after a start, a catch-up and an
-// mcp.tools.changed (what a server whose connection closed publishes).
+// mcp.tools.changed (what a server whose connection closed publishes),
+// through requestMCP, which runs one at a time.
 func (a *Adapter) checkMCP(ctx context.Context, gen int, cl *client) {
-	a.notes.mcp.Lock()
-	defer a.notes.mcp.Unlock()
 	ctx, cancel := context.WithTimeout(ctx, mcpWait)
 	defer cancel()
 	var status map[string]ocMCPStatus
@@ -134,7 +166,7 @@ func (a *Adapter) handleToast(gen int, t ocToast) {
 	}
 	if strings.Contains(t.Title, "MCP") {
 		if cl != nil && life != nil {
-			go a.checkMCP(life, gen, cl)
+			a.requestMCP(life, gen, cl)
 		}
 		return
 	}
@@ -157,7 +189,7 @@ func (a *Adapter) mcpChanged(gen int) {
 	cl, life, ours := a.cl, a.life, a.gen == gen
 	a.mu.Unlock()
 	if ours && cl != nil && life != nil {
-		go a.checkMCP(life, gen, cl)
+		a.requestMCP(life, gen, cl)
 	}
 }
 

@@ -221,7 +221,7 @@ func TestARebuildSplitsAResumedSubagentBetweenItsTasks(t *testing.T) {
 		{"info":{"id":"msg_c2u","sessionID":"ses_c","role":"user","time":{"created":310}},"parts":[]},
 		{"info":{"id":"msg_c2","sessionID":"ses_c","role":"assistant","time":{"created":320,"completed":390},"tokens":{"input":11}},
 		 "parts":[{"id":"prt_c2","sessionID":"ses_c","messageID":"msg_c2","type":"text","text":"second","time":{"start":321,"end":322}}]}]`)
-	events := historyEvents(root, func(session string) []ocMessageWithParts {
+	events := historyEvents(root, "", func(session string) []ocMessageWithParts {
 		if session == "ses_c" {
 			return sub
 		}

@@ -136,6 +136,7 @@ func (a *Adapter) handleMessage(gen int, m ocMessage) {
 				// OpenCode's own message inside the running turn (an automatic
 				// compaction, a compaction's request).
 				a.users[m.ID] = &userMsg{our: m.ID, announced: true, started: true}
+				a.summaryLocked(m)
 				return
 			}
 			// A prompt from elsewhere (an attached TUI): it is shown, and it
@@ -176,6 +177,7 @@ func (a *Adapter) assistantLocked(m ocMessage) {
 			State: agent.MessageStreaming, TurnID: t.id, Model: m.model()})
 	}
 	as.tokens, as.cost = m.Tokens, m.Cost
+	t.changes.place(m.Path)
 	if model := m.model(); model != "" {
 		a.lastModel, t.model = model, model
 	}
@@ -262,10 +264,10 @@ func (a *Adapter) handlePart(gen int, p ocPart) {
 	if !ok {
 		return
 	}
-	for _, path := range c.paths {
-		if a.turn != nil && !slices.Contains(a.turn.changes.edited, path) {
-			a.turn.changes.edited = append(a.turn.changes.edited, path)
-		}
+	// The files an edit call of this turn showed; a catch-up also reads the
+	// earlier turns' calls.
+	if t := a.turn; t != nil && len(c.paths) > 0 && slices.Contains(t.assistants, msg) {
+		t.changes.edit(c.paths)
 	}
 	// A task part that names a subagent for the first time runs it from
 	// now on, a new one or one it resumes. A part that named it before (one
@@ -527,6 +529,11 @@ func (a *Adapter) beginTurnLocked(oc string) {
 	u.started = true
 	a.failedTurn = false
 	t := &turnState{id: newTurnID(), user: oc, our: u.our, adopt: u.adopt, model: a.model}
+	t.changes.workdir = a.spec.Workdir
+	if a.ended != nil {
+		// Where OpenCode worked, until a step of this turn says it.
+		t.changes.root, t.changes.cwd = a.ended.changes.root, a.ended.changes.cwd
+	}
 	if u.adopt {
 		t.user = ""
 	}
@@ -551,9 +558,10 @@ func (a *Adapter) endTurnLocked() {
 	if t == nil {
 		return
 	}
-	// The steps whose summary never came are shown with the newest one.
+	// The steps whose summary never came are shown with what is known; a
+	// summary that comes after the end still gives them their lines.
 	a.showChangesLocked(t)
-	a.turn = nil
+	a.turn, a.ended = nil, t
 	outcome := agent.OutcomeCompleted
 	switch {
 	case t.limited:

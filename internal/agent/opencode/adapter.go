@@ -140,6 +140,9 @@ type Adapter struct {
 	allowed map[string]bool
 	// notes is what was said about OpenCode itself (notices.go).
 	notes noticeState
+	// ended is the turn that ended last, which a late summary still
+	// reaches (changes.go).
+	ended *turnState
 
 	// wait bounds the calls to OpenCode that are not long ones; zero is
 	// requestWait. Tests shorten it.
@@ -382,7 +385,7 @@ func (a *Adapter) startProcess(ctx context.Context) error {
 	// before it is this start failing, which the caller reports.
 	go a.watch(gen, srv)
 	a.loadWindows(ctx, cl)
-	go a.checkMCP(sctx, gen, cl)
+	a.requestMCP(sctx, gen, cl)
 	return nil
 }
 
@@ -744,7 +747,7 @@ func (a *Adapter) reconcile(ctx context.Context, gen int, cl *client) {
 			a.handleQuestion(gen, q)
 		}
 	}
-	go a.checkMCP(ctx, gen, cl)
+	a.requestMCP(ctx, gen, cl)
 	var status map[string]ocStatus
 	if err := cl.call(ctx, http.MethodGet, "/session/status", nil, &status); err != nil {
 		return
