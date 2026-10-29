@@ -183,3 +183,170 @@ func BenchmarkThePolledViews(b *testing.B) {
 		r.Cells(runs[29].ID)
 	}
 }
+
+// persist writes a synthesised run and its attempts, as the runner keeps
+// them.
+func persist(t *testing.T, r *Runner, run *Run) {
+	t.Helper()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	rs := r.runs[run.ID]
+	r.saveReposLocked()
+	r.saveRunLocked(rs)
+	for _, a := range rs.attempts {
+		r.saveAttemptLocked(a)
+	}
+}
+
+func (r *Runner) end(run *Run, state string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.endRunLocked(r.runs[run.ID], state)
+}
+
+// A run that was done when the server stopped before the bug list learnt
+// of it is merged at the next start; a bug list that cannot be read is
+// moved aside, never written over, and built again from the runs, with no
+// id given twice.
+func TestTheBugListCatchesUpAndSurvivesACorruptFile(t *testing.T) {
+	host := newFakeHost()
+	data := t.TempDir()
+	r := New(data, host)
+	r.Start()
+	const repo = "shop-1"
+	one := synth(t, r, repo, map[string]string{"web/a@x": "fail", "web/b@x": "issue"}, 1000)
+	persist(t, r, one)
+	bugsOf(t, r, one, testtools.Bug{Title: "The cart is empty", Severity: "major", Cells: []string{"web/a@x"}},
+		testtools.Bug{Title: "The logo overlaps", Severity: "minor", Cells: []string{"web/b@x"}})
+	r.end(one, RunDone)
+	if b := r.bug(repo, "B-1"); b.Status != BugOpen {
+		t.Fatalf("B-1 after run 1: %+v", b)
+	}
+	// Run 2 is saved done, and the server stops before the list is.
+	two := synth(t, r, repo, map[string]string{"web/a@x": "pass", "web/b@x": "issue"}, 1000)
+	bugsOf(t, r, two, testtools.Bug{ID: "B-2", Title: "The logo overlaps", Severity: "minor", Cells: []string{"web/b@x"}})
+	r.mu.Lock()
+	r.runs[two.ID].run.BugsPending = true
+	r.mu.Unlock()
+	persist(t, r, two)
+	// Run 3 was stopped: its list is never merged, but its ids stay taken.
+	three := synth(t, r, repo, map[string]string{"web/a@x": "fail"}, 1000)
+	persist(t, r, three)
+	bugsOf(t, r, three, testtools.Bug{Title: "A new one", Severity: "minor", Cells: []string{"web/a@x"}})
+	r.end(three, RunStopped)
+	r.Close()
+
+	r2 := New(data, host)
+	r2.Start()
+	if b := r2.bug(repo, "B-1"); b.Status != BugFixed || b.FixedIn != two.ID {
+		t.Fatalf("B-1 after the restart: %+v", b)
+	}
+	if b := r2.bug(repo, "B-2"); len(b.Runs) != 2 || b.LastRun != two.ID {
+		t.Fatalf("B-2 after the restart: %+v", b)
+	}
+	var saved Run
+	readJSONFile(t, filepath.Join(r2.layout.RunDir(repo, two.ID), "run.json"), &saved)
+	if saved.BugsPending {
+		t.Fatal("run 2 is still pending")
+	}
+	if b := r2.bug(repo, "B-3"); b.ID != "" {
+		t.Fatalf("the stopped run was merged: %+v", b)
+	}
+	if _, err := r2.PatchBug(repo, "B-2", BugPatch{Status: ptr(BugKnown)}); err != nil {
+		t.Fatal(err)
+	}
+	r2.Close()
+
+	path := filepath.Join(data, "tests", repo, "bugs.json")
+	write(t, path, `{"next": 3, "bugs": [{"id": "B-1",`, 0o600)
+	r3 := New(data, host)
+	r3.Start()
+	defer r3.Close()
+	aside, _ := filepath.Glob(path + ".corrupt-*")
+	if len(aside) != 1 {
+		t.Fatalf("moved aside: %v", aside)
+	}
+	if raw, _ := os.ReadFile(aside[0]); string(raw) != `{"next": 3, "bugs": [{"id": "B-1",` {
+		t.Fatalf("aside: %s", raw)
+	}
+	if b := r3.bug(repo, "B-1"); b.Status != BugFixed || b.FixedIn != two.ID || len(b.Runs) != 1 {
+		t.Fatalf("B-1 built again: %+v", b)
+	}
+	if b := r3.bug(repo, "B-2"); b.Status != BugOpen || len(b.Runs) != 2 {
+		t.Fatalf("B-2 built again: %+v", b)
+	}
+	var list bugList
+	readJSONFile(t, path, &list)
+	if len(list.Bugs) != 2 || list.Next != 4 {
+		t.Fatalf("the list on disk: next %d, %d bugs", list.Next, len(list.Bugs))
+	}
+	// A new bug gets an id no run has had.
+	four := synth(t, r3, repo, map[string]string{"web/a@x": "fail"}, 1000)
+	if got := bugsOf(t, r3, four, testtools.Bug{Title: "Another", Severity: "minor"}); got[0].ID != "B-4" {
+		t.Fatalf("a new bug after the rebuild: %+v", got)
+	}
+}
+
+// Taken up again for an analysis or a retry, a stopped run ends stopped
+// again and changes nothing in the bug list.
+func TestAStoppedRunNeverChangesTheBugList(t *testing.T) {
+	r, _ := newRunner(t, newFakeHost())
+	const repo = "shop-1"
+	one := synth(t, r, repo, map[string]string{"web/a@x": "fail"}, 1000)
+	bugsOf(t, r, one, testtools.Bug{Title: "The cart is empty", Severity: "major", Cells: []string{"web/a@x"}})
+	r.end(one, RunDone)
+	two := synth(t, r, repo, map[string]string{"web/a@x": "pass"}, 1000)
+	bugsOf(t, r, two, testtools.Bug{Title: "Something else", Severity: "minor", Cells: []string{"web/a@x"}})
+	r.end(two, RunStopped)
+	if err := r.Analyse(two.ID); err != nil {
+		t.Fatal(err)
+	}
+	// The analyst is done: the run ends as advanceLocked ends it.
+	r.mu.Lock()
+	rs := r.runs[two.ID]
+	rs.run.Settings.Analysis = false
+	r.advanceLocked(rs)
+	state, stopped := rs.run.State, rs.run.Stopped
+	r.mu.Unlock()
+	if state != RunStopped || !stopped {
+		t.Fatalf("the analysed stopped run is %s", state)
+	}
+	if b := r.bug(repo, "B-1"); b.Status != BugOpen || len(b.Runs) != 1 {
+		t.Fatalf("B-1 after the stopped run: %+v", b)
+	}
+	if b := r.bug(repo, "B-2"); b.ID != "" {
+		t.Fatalf("the stopped run's bug is on the list: %+v", b)
+	}
+}
+
+// Taken back, a report keeps a bug the person triaged; and a bug fixed by
+// hand opens again only when its run is analysed again since, not when the
+// same report is merged again.
+func TestTriageSurvivesAReanalysis(t *testing.T) {
+	r, _ := newRunner(t, newFakeHost())
+	const repo = "shop-1"
+	one := synth(t, r, repo, map[string]string{"web/a@x": "fail", "web/b@x": "fail"}, 1000)
+	bugsOf(t, r, one, testtools.Bug{Title: "Footer", Severity: "minor", Cells: []string{"web/a@x"}},
+		testtools.Bug{Title: "Header", Severity: "minor", Cells: []string{"web/b@x"}})
+	r.merge(one)
+	r.PatchBug(repo, "B-1", BugPatch{Status: ptr(BugNotABug)})
+	r.PatchBug(repo, "B-2", BugPatch{Status: ptr(BugFixed)})
+	if b := r.bug(repo, "B-2"); b.FixedIn != one.ID || b.FixedAt == 0 {
+		t.Fatalf("fixed by hand: %+v", b)
+	}
+	r.merge(one)
+	if b := r.bug(repo, "B-2"); b.Status != BugFixed {
+		t.Fatalf("the same report merged again opened it: %+v", b)
+	}
+	r.mu.Lock()
+	r.runs[one.ID].run.Analysed = r.now().UnixMilli() + 1
+	r.mu.Unlock()
+	bugsOf(t, r, one, testtools.Bug{ID: "B-2", Title: "Header", Severity: "minor", Cells: []string{"web/b@x"}})
+	r.merge(one)
+	if b := r.bug(repo, "B-2"); b.Status != BugOpen || b.Regressed {
+		t.Fatalf("analysed again, reporting it: %+v", b)
+	}
+	if b := r.bug(repo, "B-1"); b.ID != "B-1" || b.Status != BugNotABug || len(b.Runs) != 0 {
+		t.Fatalf("the triaged bug no run reports any longer: %+v", b)
+	}
+}

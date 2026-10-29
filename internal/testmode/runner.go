@@ -218,6 +218,10 @@ func (r *Runner) Start() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.sweepRuntimeLocked()
+	// The bug lists learn of the runs that were done when the server
+	// stopped before they did; a list that could not be read is built
+	// again from the runs.
+	r.catchUpBugsLocked()
 	// tests-b2: the chats of runs that ended before a restart told them.
 	r.tellStartersLocked()
 	for _, rs := range r.runs {
@@ -1767,13 +1771,23 @@ func (r *Runner) advanceLocked(rs *runState) {
 // run starts; old runs beyond the retention go.
 func (r *Runner) endRunLocked(rs *runState, state string) {
 	run := rs.run
+	if state == RunStopped {
+		run.Stopped = true
+	}
+	if state == RunDone && run.Stopped {
+		// A run that was stopped and taken up again (an analysis, a retry)
+		// ends stopped again: it changes nothing in the bug list.
+		state = RunStopped
+	}
 	run.State, run.EndedAt = state, r.now().UnixMilli()
+	run.BugsPending = state == RunDone
 	_ = os.RemoveAll(r.layout.RunRuntimeDir(run.ID))
 	r.saveRunLocked(rs)
 	if state == RunDone {
 		// The repository's bug list learns what the run reported, and which
-		// of its open bugs the run shows fixed.
-		r.mergeBugsLocked(rs)
+		// of its open bugs the run shows fixed; and of an earlier run that
+		// it did not learn of (a failed write).
+		r.mergePendingLocked(run.Repo)
 	}
 	r.publishLocked(rs)
 	if state == RunDone && !run.Notified {

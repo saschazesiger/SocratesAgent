@@ -468,11 +468,39 @@ func TestTheBugListOverRuns(t *testing.T) {
 	if b := r.bug(repo, "B-1"); b.Status != BugOpen || !b.Regressed || b.FixedIn != "" || len(b.Runs) != 3 {
 		t.Fatalf("B-1 after run 4: %+v", b)
 	}
-	// Analysed again without it, run 4 takes its report back.
+	// Analysed again without it, run 4 takes its report back, and the
+	// reopening with it: B-1 is fixed in run 3 again, as it was.
 	bugsOf(t, r, four)
 	r.merge(four)
-	if b := r.bug(repo, "B-1"); len(b.Runs) != 2 || b.LastRun != two.ID {
+	if b := r.bug(repo, "B-1"); len(b.Runs) != 2 || b.LastRun != two.ID || b.Status != BugFixed || b.FixedIn != three.ID ||
+		b.Regressed || b.Reopened != nil {
 		t.Fatalf("B-1 after run 4 was analysed again: %+v", b)
+	}
+	// Run 3, which had it fixed, analysed again and reporting it, opens it
+	// again (not as a regression: it was not fixed); taken back, it is
+	// fixed in run 3 again.
+	bugsOf(t, r, three, testtools.Bug{ID: "B-1", Title: "The cart is still empty", Severity: "major", Cells: []string{"web/a@x"}})
+	r.merge(three)
+	if b := r.bug(repo, "B-1"); b.Status != BugOpen || b.FixedIn != "" || b.Regressed || b.LastRun != three.ID || len(b.Runs) != 3 {
+		t.Fatalf("B-1 reported by run 3 analysed again: %+v", b)
+	}
+	bugsOf(t, r, three)
+	r.merge(three)
+	if b := r.bug(repo, "B-1"); b.Status != BugFixed || b.FixedIn != three.ID || b.LastRun != two.ID || b.Title != "The cart stays empty" {
+		t.Fatalf("B-1 after run 3 took it back: %+v", b)
+	}
+	// A run merged twice (a restart between its end and the list's save)
+	// changes nothing the second time.
+	r.mu.Lock()
+	before, _ := json.Marshal(r.bugListLocked(repo))
+	r.mu.Unlock()
+	r.merge(two)
+	r.merge(three)
+	r.mu.Lock()
+	after, _ := json.Marshal(r.bugListLocked(repo))
+	r.mu.Unlock()
+	if string(before) != string(after) {
+		t.Fatalf("merged twice:\n%s\n%s", before, after)
 	}
 	// Two runs that report the same known id are refused.
 	r.mu.Lock()
