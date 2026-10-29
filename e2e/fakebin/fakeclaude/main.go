@@ -1410,8 +1410,9 @@ func (t *turnRun) askUser(arg string) {
 }
 
 // mcpTool is the model calling another tool of the socrates server: the
-// tool_use, the call over mcp_message, its result.
-func (t *turnRun) mcpTool(arg string) {
+// tool_use, the call over mcp_message, its result. It answers what the tool
+// said and whether that was an error.
+func (t *turnRun) mcpTool(arg string) (string, bool) {
 	f := t.f
 	name, js, _ := strings.Cut(strings.TrimSpace(arg), " ")
 	t.closeText()
@@ -1434,7 +1435,7 @@ func (t *turnRun) mcpTool(arg string) {
 	if !ok {
 		t.result(id, "[Tool call interrupted by user]", nil, true, "")
 		t.cut = true
-		return
+		return "", true
 	}
 	var resp struct {
 		Result struct {
@@ -1458,9 +1459,10 @@ func (t *turnRun) mcpTool(arg string) {
 	t.result(id, text, nil, resp.Result.IsError, "")
 	if resp.Result.IsError {
 		t.say(name + " failed: " + text)
-		return
+		return text, true
 	}
 	t.say(name + " returned: " + text)
+	return text, false
 }
 
 // askDrop is a call of ask_user withdrawn the moment it is made: the
