@@ -44,9 +44,6 @@ const $ = (id) => document.getElementById(id);
 // its cells are read again this often (the live cards, the banner).
 const SETTLE = 600;
 const LIVE_EVERY = 3000;
-// The running cells whose latest screenshot and step the page reads itself
-// while the server's rows do not carry `live` yet.
-const LIVE_MAX = 8;
 
 const VIEWS = ['overview', 'runs', 'tests', 'bugs', 'settings'];
 const LEGACY_TAB = { results: 'runs', runs: 'runs', bugs: 'bugs', catalog: 'tests', settings: 'settings' };
@@ -58,14 +55,11 @@ const state = {
   repo: '',
   route: { view: '', run: '', test: '', bug: '', cell: '' },
   runs: [], // the repository's runs, newest first, each with its number `n`
-  // The server has the reworked page's routes (overview, estimate, report,
-  // the bug list ...): it numbers its runs (TEST-MODE.md "Run numbers").
-  v2: false,
   catalog: null, // the catalog as it is in the repository now
   catalogError: '',
   settings: null, // { settings, defaults }
   live: null, // { id, detail, cells } of the repository's active run
-  openBugs: null, // the Bugs tab's badge
+  openBugs: null, // the Bugs tab's badge: the repository's open bugs
   cellList: [], // [{ attempt, run }] the open cell was opened from (its previous and next)
 };
 
@@ -138,14 +132,16 @@ async function loadRepos() {
   state.repos = data.repos || [];
   state.global = data.global || state.global;
   state.loaded = true;
+  const repo = repoOf(state.repo);
+  if (repo) state.openBugs = repo.open_bugs || 0;
 }
 
 async function switchRepo(key) {
   state.repo = key;
-  Object.assign(state, { runs: [], v2: false, catalog: null, catalogError: '', settings: null, live: null, openBugs: null, cellList: [] });
+  const known = repoOf(key);
+  Object.assign(state, { runs: [], catalog: null, catalogError: '', settings: null, live: null, openBugs: known ? known.open_bugs || 0 : null, cellList: [] });
   for (const view of Object.values(views)) if (view.repoChanged) view.repoChanged();
   await Promise.all([loadRuns(), loadLive()]);
-  loadBugCount();
   // The Run menu and the empty overview read the catalog: it comes in behind.
   ensureCatalog().then(() => renderHead());
 }
@@ -157,7 +153,6 @@ async function loadRuns() {
     const data = await api(V.paths.runs(repo));
     if (repo !== state.repo) return;
     state.runs = V.numberRuns(data.runs || []);
-    state.v2 = state.runs.some((r) => Number.isFinite(r.number));
   } catch (err) {
     if (repo === state.repo) notice(errorMessage(err));
   }
@@ -165,9 +160,8 @@ async function loadRuns() {
 
 /**
  * loadLive reads the repository's active run: its detail (the pools, the
- * estimate of the time left, the cost) and its cells. A running cell's
- * latest screenshot, step and activity come with its row (`live`); from a
- * server without them they are read from the attempt itself.
+ * estimate of the time left, the cost) and its cells; a running cell's row
+ * carries its step, activity and latest screenshot (`live`).
  */
 async function loadLive() {
   const repo = repoOf(state.repo);
@@ -176,53 +170,10 @@ async function loadLive() {
   try {
     const [detail, cells] = await Promise.all([api(V.paths.run(active.id)), api(V.paths.cells(active.id))]);
     const rows = cells.cells || [];
-    // API: CellRow.live (TEST-MODE.md "Live cells"); read from the attempt until the rows carry it.
-    const running = rows.filter((r) => (r.state === 'running' || r.state === 'starting') && r.live === undefined).slice(0, LIVE_MAX);
-    await Promise.all(running.map(async (row) => {
-      try { row.live = liveOf(await api(V.paths.attempt(active.id, row.id), { attempts: 1 })); } catch { /* the card shows no picture */ }
-    }));
     if (state.repo === repo.key) state.live = { id: active.id, detail, cells: rows };
   } catch {
     // The next frame or tick reads it again.
   }
-}
-
-// liveOf is an attempt's `live`, as the server will send it with the row.
-function liveOf(a) {
-  const steps = a.steps || [];
-  const open = steps.find((s) => !s.verdict);
-  const actions = a.actions || [];
-  const last = actions[actions.length - 1];
-  const shot = [...actions].reverse().find((x) => x.screenshot);
-  return {
-    step: open ? open.n : steps.length,
-    steps: steps.length,
-    title: open ? open.do : '',
-    activity: last ? last.summary || last.action : '',
-    shot: shot ? shot.screenshot : '',
-    at: last ? Date.parse(last.at) || 0 : 0,
-  };
-}
-
-// The Bugs tab's badge: the open bugs of the repository, or (from a server
-// without the bug list) those of its latest finished run.
-async function loadBugCount() {
-  const repo = state.repo;
-  let n = null;
-  if (state.v2) {
-    // API: GET /api/tests/repos/{repo}/bugs (TEST-MODE.md "Bugs over runs").
-    try {
-      const data = await api(V.paths.repoBugs(repo), { attempts: 1 });
-      n = (data.bugs || []).filter((b) => !b.status || b.status === 'open').length;
-    } catch { n = null; }
-  }
-  if (n === null) {
-    const latest = state.runs.find((r) => !V.ACTIVE_RUN.has(r.state));
-    n = latest ? latest.bugs || 0 : 0;
-  }
-  if (repo !== state.repo) return;
-  state.openBugs = n;
-  renderTabs();
 }
 
 async function ensureCatalog(force = false) {
@@ -266,7 +217,6 @@ async function refresh() {
   const mine = all || frames.some((f) => f.repo === state.repo);
   if (mine) {
     await Promise.all([loadRuns(), loadLive()]);
-    loadBugCount();
     const view = views[state.route.view];
     if (view && view.refresh) await view.refresh();
   }
@@ -361,13 +311,12 @@ function renderActive() {
   const states = c.states || {};
   const share = c.cells ? Math.min(1, (c.done || 0) / c.cells) : 0;
   const running = (states.running || 0) + (states.starting || 0);
-  // API: RunView.eta_ms and RunView.cost (TEST-MODE.md "Times and costs").
   const detail = [
     running ? running + ' running' : '',
     ...(live ? waitWords(live.cells) : states.waiting ? [states.waiting + ' waiting'] : []),
     states.queued ? states.queued + ' queued' : '',
     c.reviews ? c.reviews + ' in review' : '',
-    d.eta_ms > 0 ? 'about ' + V.span(d.eta_ms) + ' left' : '',
+    d.eta_ms > 0 ? (d.eta_ms < 60000 ? 'less than a minute left' : 'about ' + V.span(d.eta_ms) + ' left') : '',
     V.money(d.cost),
   ].filter(Boolean).join(' · ');
   const watching = state.route.view === 'runs' && state.route.run === run.id;

@@ -104,8 +104,9 @@ const POLL_SLOW = 15000;
  *                        activity, in a notification's words: a chat's limit
  *   phase(frame)         a phase of a spoken Status being made, {id, phase,
  *                        text}: a chat's, which has no terminal socket
- *   tests(frame)         a test run changed: {repo, run, state, counts,
- *                        name, created_at}, or {repo, run, deleted: true}
+ *   tests(frame)         a test run changed: {repo, run, number, state, counts,
+ *                        name, created_at}, {repo, run, deleted: true}, or
+ *                        {repo, bugs: true} when its bug list changed
  *   fresh()              a pong came back: the state on the page is the
  *                        server's as of the ping (stateAt)
  *   status(status)       'live' | 'connecting' | 'offline', whenever it moves,
@@ -442,7 +443,7 @@ export function mountEvents(ctx) {
         if (frame.id) hand('phase', frame);
         break;
       case 'tests':
-        if (frame.run) hand('tests', frame);
+        if (frame.run || frame.bugs) hand('tests', frame);
         break;
       case 'pong': {
         const sent = pings.get(frame.id);

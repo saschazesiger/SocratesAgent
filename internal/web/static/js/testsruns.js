@@ -37,7 +37,6 @@ const PARTS = [
 export function mount(ctx) {
   const { state } = ctx;
   const cache = new Map(); // run id -> { detail, cells, bugs, error, loading, bugsLoading }
-  const prevCells = new Map(); // run id -> its cells, for the change against the run before
   let part = 'results';
   let shown = ''; // the run whose view is drawn
   let partTabs = null; // the indicator of the parts' tabs
@@ -76,11 +75,6 @@ export function mount(ctx) {
       e.detail = detail;
       e.cells = cells;
       e.error = '';
-      // API: CellRow.change (TEST-MODE.md "Changes against the run before"): compared here until it comes.
-      const prev = !state.v2 && prevRunOf(id);
-      if (prev && !prevCells.has(prev.id)) {
-        prevCells.set(prev.id, await api(V.paths.cells(prev.id)).then((d) => d.cells || []).catch(() => []));
-      }
     } catch (err) {
       e.error = errorMessage(err);
     } finally {
@@ -106,12 +100,9 @@ export function mount(ctx) {
     ctx.redraw('runs');
   }
 
+  // rowsOf is a run's cells, each with its change against the run before (CellRow.prev, .change).
   function rowsOf(id) {
-    const e = entry(id);
-    const cells = e.cells || [];
-    if (state.v2) return cells;
-    const prev = prevRunOf(id);
-    return prev ? V.compareCells(cells, prevCells.get(prev.id) || [], prev) : cells;
+    return entry(id).cells || [];
   }
 
   /* ------------------------------------------------------------- render */
@@ -218,7 +209,7 @@ export function mount(ctx) {
       <td class="ds-col--text"><a class="ds-link-btn ds-table__row-link" href="${runHref(r.id)}">${V.runName(r)}</a>${r.pinned ? html` <span class="so-tests-pin" role="img" aria-label="Pinned" data-tip="Pinned: kept whatever the retention says">${raw(icon('lock', 16))}</span>` : ''}
         <small class="so-tests__sub ds-meta">${runMeta(r)}</small></td>
       <td><span class="so-tests-result">${V.resultBar(r.counts)}${V.resultParts(r.counts)}</span></td>
-      ${changes ? html`<td class="ds-col--secondary">${changeWords(r.changes)}</td>` : ''}
+      ${changes ? html`<td class="ds-col--secondary">${prevRunOf(r.id) ? changeWords(r.changes) : html`<span class="ds-muted">First run</span>`}</td>` : ''}
       <td class="ds-num ds-col--secondary">${V.runSpan(r)}</td>
       ${costs ? html`<td class="ds-num ds-col--secondary">${V.money(r.cost)}</td>` : ''}
       <td>${V.runChip(r.state)}</td>
@@ -262,7 +253,7 @@ export function mount(ctx) {
       ['Commit', d.commit ? html`<span class="so-tests-nowrap">${d.commit.slice(0, 10)}</span>${d.dirty ? ' with changes' : ''}` : 'none (not a Git checkout)'],
       ['Started', d.started_at || d.created_at ? html`<span data-tip="${V.whenLong(d.started_at || d.created_at)}">${V.ago(d.started_at || d.created_at)}</span>` : ''],
       [active ? 'Running for' : 'Took', V.runSpan(d) || '—'],
-      // API: RunView.cost (TEST-MODE.md "Times and costs"); the cells stand in until it comes.
+      // The cost is unknown for a run whose sessions are not in the costs ledger.
       typeof d.cost === 'number' ? ['Cost', V.money(d.cost)] : ['Cells', V.countsWords(d.counts)],
     ];
     const factsHtml = PHONE.matches
@@ -273,7 +264,7 @@ export function mount(ctx) {
         <div class="ds-page-head__row">
           <div class="ds-page-head__text">
             <h2 class="ds-page-head__title" tabindex="-1">${V.runName(d)}</h2>
-            <p class="ds-page-head__lead">${[V.selectionWords(d.selection, state.runs) + ': ' + V.plural((d.counts && d.counts.cells) || 0, 'cell'), by ? 'started by ' + by : ''].filter(Boolean).join(' · ')}</p>
+            <p class="ds-page-head__lead">${V.selectionWords(d.selection, state.runs) + ': ' + V.plural((d.counts && d.counts.cells) || 0, 'cell')}${by ? html` · started by ${V.startedByHref(d) ? html`<a href="${V.startedByHref(d)}">${by}</a>` : by}` : ''}</p>
             <div class="ds-page-head__status">
               ${V.runChip(d.state)}
               ${changes && changes.regressed ? V.chip({ word: changes.regressed + ' broke since ' + (prev ? V.runName(prev, { name: false }) : 'the run before'), glyph: 'arrowDown', tone: 'error' }) : ''}
@@ -368,7 +359,6 @@ export function mount(ctx) {
       case 'problems': return V.isProblem(row);
       case 'changed': return row.change === 'regressed' || row.change === 'fixed';
       case 'reviewed': return row.review === 'done' || !!row.reviewed;
-      // API: CellRow.override (TEST-MODE.md "Override").
       case 'overridden': return !!row.override;
       default: return true;
     }
@@ -404,7 +394,7 @@ export function mount(ctx) {
     // Chips count what the search and the filters leave.
     const base = rows.filter(filterMatch);
     const canChange = rows.some((r) => r.change !== undefined);
-    const canOverride = state.v2 || rows.some((r) => r.override);
+    const canOverride = rows.some((r) => r.override);
     const chips = CHIPS.filter((c) => (c.id !== 'changed' || canChange) && (c.id !== 'overridden' || canOverride));
     if (!chips.some((c) => c.id === filters.chip)) filters.chip = 'all';
     morph($('rvChips'), html`<legend class="ds-sr">Show</legend>${chips.map((c) => {
@@ -739,39 +729,11 @@ export function mount(ctx) {
       ${item('trash', 'Delete run…', 'data-rv-menu="delete"' + (V.ACTIVE_RUN.has(d.state) ? ' aria-disabled="true"' : ''))}`);
   }
 
-  // The report: the server's (report.md), or one written here from what the
-  // page has on a server without it.
+  // report is the run in Markdown (GET …/report.md): its head, the counts
+  // and changes, the bugs, every problem cell with its failing steps.
   async function report(id) {
-    if (state.v2) {
-      // API: GET /api/tests/runs/{run}/report.md (TEST-MODE.md "Report").
-      try {
-        const res = await api(V.paths.report(id), { raw: true, attempts: 1 });
-        return await res.text();
-      } catch { /* written here below */ }
-    }
-    const e = entry(id);
-    if (!e.bugs) await loadBugs(id);
-    return localReport({ ...e.detail, n: (ctx.runOf(id) || {}).n }, rowsOf(id), e.bugs || { bugs: [], conclusions: '' });
-  }
-
-  function localReport(d, rows, bugs) {
-    const out = ['# ' + V.runName(d) + ' · ' + ((ctx.repoOf(state.repo) || {}).title || ''), ''];
-    out.push('- State: ' + V.runWord(d.state), '- What: ' + V.selectionWords(d.selection, state.runs), '- Commit: ' + (d.commit || 'none') + (d.dirty ? ' with changes' : ''),
-      '- Started: ' + V.whenLong(d.started_at || d.created_at), '- Took: ' + (V.runSpan(d) || '-'), '- Cells: ' + V.countsWords(d.counts), '');
-    const problems = rows.filter(V.isProblem);
-    out.push('## Problems (' + problems.length + ')', '');
-    for (const r of problems) {
-      out.push('- **' + (r.final ? V.verdictWord(r.final) : V.attemptWord(r.state)) + '** ' + r.title + ' (' + (V.dimsWords(r.dims) || r.cell) + ')' + (r.change === 'regressed' ? ' - regressed' : ''));
-      if (r.summary) out.push('  ' + r.summary.replace(/\n+/g, ' '));
-      if (r.end_reason) out.push('  ' + r.end_reason.replace(/\n+/g, ' '));
-    }
-    if (!problems.length) out.push('Every cell passed.');
-    out.push('', '## Bugs (' + bugs.bugs.length + ')', '');
-    for (const b of bugs.bugs.slice().sort((a, x) => V.sevRank(a.severity) - V.sevRank(x.severity))) {
-      out.push('### ' + b.id + ' · ' + b.title + ' (' + V.severityWord(b.severity) + ')', '', b.description || '', '', 'Cells: ' + (b.cells || []).join(', '), '');
-    }
-    if (bugs.conclusions) out.push('## Conclusions', '', V.stripHeading(bugs.conclusions));
-    return out.join('\n') + '\n';
+    const res = await api(V.paths.report(id), { raw: true });
+    return res.text();
   }
 
   async function copy(text) {
@@ -801,13 +763,11 @@ export function mount(ctx) {
       } catch (err) { toast(errorMessage(err), 'error'); }
     } else if (what === 'download') {
       const a = document.createElement('a');
-      a.download = 'report-run-' + ((ctx.runOf(id) || {}).n || id) + '.md';
-      if (state.v2) a.href = V.paths.report(id, true);
-      else a.href = URL.createObjectURL(new Blob([await report(id)], { type: 'text/markdown' }));
+      a.href = V.paths.report(id, true);
+      a.download = '';
       document.body.append(a);
       a.click();
       a.remove();
-      if (a.href.startsWith('blob:')) setTimeout(() => URL.revokeObjectURL(a.href), 1000);
     } else if (what === 'pin') {
       await ctx.runAction('pin', id, $('rvMenuBtn'));
       entry(id).detail = { ...d, pinned: !d.pinned };
@@ -920,7 +880,6 @@ export function mount(ctx) {
     },
     repoChanged() {
       cache.clear();
-      prevCells.clear();
       shown = '';
       clearFilters();
       filters.q = '';

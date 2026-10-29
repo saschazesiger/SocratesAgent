@@ -6,9 +6,8 @@
 // (cells that broke, cells still failing, flaky tests, the open critical and
 // major bugs); what was fixed; and the trend of the last 20 runs.
 //
-// The numbers come from GET …/overview. A server without it (before the
-// reworked page's routes) gets the same view worked out here from the two
-// latest runs' cells and the history of the tests.
+// The numbers are the server's (GET …/overview); the live part is the
+// frame's active run (state.live), read every few seconds.
 
 import { api, toast, errorMessage } from './api.js';
 import { M, html, raw, icon, morph } from './ui.js';
@@ -30,7 +29,7 @@ export function mount(ctx) {
   // (or one deleted) makes it stale; a running run's frames do not.
   function key() {
     const done = state.runs.filter((r) => !V.ACTIVE_RUN.has(r.state));
-    return [state.repo, done.length, done[0] ? done[0].id + done[0].state + (done[0].bugs || 0) : '', state.v2].join('|');
+    return [state.repo, done.length, done[0] ? done[0].id + done[0].state + (done[0].bugs || 0) : '', state.openBugs, state.runs.length].join('|');
   }
 
   async function load() {
@@ -38,7 +37,7 @@ export function mount(ctx) {
     if (loadingKey === k) return;
     loadingKey = k;
     try {
-      const next = state.v2 ? await fromServer() : await worked();
+      const next = await fetchOverview();
       if (k !== key()) return;
       data = { ...next, key: k };
       error = '';
@@ -52,14 +51,10 @@ export function mount(ctx) {
     ctx.redraw('overview');
   }
 
-  // API: GET /api/tests/repos/{repo}/overview (TEST-MODE.md "Revision: the reworked Tests page").
-  async function fromServer() {
-    let o;
-    try {
-      o = await api(V.paths.overview(state.repo), { attempts: 1 });
-    } catch {
-      return worked();
-    }
+  // fetchOverview reads GET …/overview: the two latest finished runs, the
+  // trend, the cells that changed or keep failing, flaky tests, open bugs.
+  async function fetchOverview() {
+    const o = await api(V.paths.overview(state.repo));
     const runOf = (r) => (r ? { ...r, n: (ctx.runOf(r.id) || {}).n || r.number } : null);
     const latest = runOf(o.latest);
     const previous = runOf(o.previous);
@@ -69,72 +64,12 @@ export function mount(ctx) {
       previous,
       trend: (o.trend || []).map(runOf),
       regressed: (o.regressed || []).map(rowRun),
-      failing: (o.failing || []).map(rowRun),
+      // Still failing: the problems that are not new since the run before.
+      failing: (o.failing || []).filter((r) => r.change !== 'regressed').map(rowRun),
       fixed: (o.fixed || []).map(rowRun),
       flaky: o.flaky || [],
-      bugs: (o.bugs || []).filter((b) => !b.status || b.status === 'open'),
+      bugs: (o.bugs || []).filter((b) => (!b.status || b.status === 'open') && (b.severity === 'critical' || b.severity === 'major')),
     };
-  }
-
-  // worked is the overview from what every server has: the latest two
-  // finished runs' cells, the tests' history and the latest run's bugs.
-  async function worked() {
-    const done = state.runs.filter((r) => !V.ACTIVE_RUN.has(r.state) && r.counts && r.counts.cells);
-    const latest = done[0] || null;
-    const previous = done[1] || null;
-    const trend = state.runs.filter((r) => r.counts && r.counts.cells).slice(0, TREND).reverse();
-    if (!latest) return { latest, previous, trend, regressed: [], failing: [], fixed: [], flaky: [], bugs: [] };
-    const [now, before, history, bugs] = await Promise.all([
-      api(V.paths.cells(latest.id)).then((d) => d.cells || []),
-      previous ? api(V.paths.cells(previous.id)).then((d) => d.cells || []).catch(() => []) : [],
-      api(V.paths.history(state.repo, TREND)).then((d) => d.history || {}).catch(() => ({})),
-      api(V.paths.bugs(latest.id)).then((d) => d.bugs || []).catch(() => []),
-    ]);
-    const rows = V.compareCells(now, before, previous).map((r) => ({ ...r, run: latest.id }));
-    const titles = new Map(rows.map((r) => [r.test, r.title]));
-    const failing = rows.filter((r) => (r.final === 'fail' || r.final === 'issue') && r.change !== 'regressed')
-      .map((r) => ({ ...r, since: sinceOf(history[r.test] || []) }));
-    const flaky = [];
-    for (const [test, points] of Object.entries(history)) {
-      const flips = flipsOf(points);
-      if (flips >= 2) flaky.push({ test, title: titles.get(test) || test.split('/').pop(), flips, runs: points.length });
-    }
-    flaky.sort((a, b) => b.flips - a.flips);
-    return {
-      latest, previous, trend,
-      regressed: rows.filter((r) => r.change === 'regressed'),
-      failing,
-      fixed: rows.filter((r) => r.change === 'fixed'),
-      flaky,
-      bugs: bugs.filter((b) => b.severity === 'critical' || b.severity === 'major')
-        .map((b) => ({ ...b, run: latest.id })).sort((a, b) => V.sevRank(a.severity) - V.sevRank(b.severity)),
-    };
-  }
-
-  // sinceOf is the first run of a test's current streak of problems
-  // (its history, newest first), as a run number.
-  function sinceOf(points) {
-    let first = null;
-    for (const p of points) {
-      if (p.verdict !== 'issue' && p.verdict !== 'fail') break;
-      first = p;
-    }
-    const run = first && ctx.runOf(first.run);
-    return run ? run.n : null;
-  }
-
-  // flipsOf counts the changes between passed and issue or fail over a
-  // test's runs; blocked runs and runs without a verdict are skipped.
-  function flipsOf(points) {
-    let flips = 0;
-    let last = '';
-    for (const p of points.slice().reverse()) {
-      const side = V.passed(p.verdict) ? 'ok' : p.verdict === 'issue' || p.verdict === 'fail' ? 'bad' : '';
-      if (!side) continue;
-      if (last && side !== last) flips += 1;
-      last = side;
-    }
-    return flips;
   }
 
   /* ------------------------------------------------------------ drawing */
@@ -222,11 +157,12 @@ export function mount(ctx) {
 
   function liveCell(r, runId, now) {
     const l = r.live || {};
+    const shot = l.shot || r.shot;
     const step = l.steps ? 'Step ' + Math.min(l.step || 1, l.steps) + ' of ' + l.steps + (l.title ? ': ' + l.title : '') : r.state === 'starting' ? 'Starting the session' : '';
     const took = r.started_at ? V.span(now - r.started_at) : '';
     return html`<div class="ds-card ds-card--filled ds-card--interactive so-tests-live__card" role="listitem" data-ds-key="${'l' + r.id}">
-      <div class="so-tests-live__shot">${l.shot
-        ? html`<img src="${V.paths.file(runId, r.id, l.shot)}" alt="${'Latest screenshot of ' + r.title}" loading="lazy" decoding="async">`
+      <div class="so-tests-live__shot">${shot
+        ? html`<img src="${V.paths.file(runId, r.id, shot)}" alt="${'Latest screenshot of ' + r.title}" loading="lazy" decoding="async">`
         : html`<span class="so-tests-live__none" aria-hidden="true">${raw(icon('image', 24))}</span>`}</div>
       <h3 class="ds-card__title"><button class="ds-card__action" type="button" data-cell="${r.id}" data-run="${runId}" data-list="live">${r.title}</button></h3>
       <p class="ds-meta">${[V.dimsWords(r.dims), took ? 'for ' + took : ''].filter(Boolean).join(' · ')}</p>
@@ -315,7 +251,7 @@ export function mount(ctx) {
         <ul class="ds-list ds-list--interactive" aria-label="Flaky tests">${d.flaky.slice(0, SHOWN).map((t) => html`<li class="ds-list__item" data-ds-key="${'f' + t.test}">
           <span class="ds-list__text">
             <span class="ds-list__title"><button class="ds-list__action" type="button" data-test="${t.test}">${t.title || t.test}</button></span>
-            <span class="ds-list__meta">${'Passed and failed by turns: ' + V.plural(t.flips || 0, 'change') + (t.runs ? ' in the last ' + V.plural(t.runs, 'run') : '')}</span>
+            <span class="ds-list__meta">${'Passed and failed by turns, ' + V.plural(t.flips || 0, 'time') + ' over the last runs' + ((t.cells || []).length ? ' · ' + V.plural(t.cells.length, 'cell') : '')}</span>
           </span>
           ${V.chip({ word: 'Flaky', glyph: 'activity', tone: 'warning' })}
         </li>`)}</ul>`);
@@ -325,7 +261,7 @@ export function mount(ctx) {
         <ul class="ds-list ds-list--interactive" aria-label="Open critical and major bugs">${d.bugs.slice(0, SHOWN).map((b) => html`<li class="ds-list__item" data-ds-key="${'b' + b.id}">
           <span class="ds-list__text">
             <span class="ds-list__title"><button class="ds-list__action" type="button" data-bug="${b.id}">${b.id + ' · ' + b.title}</button></span>
-            <span class="ds-list__meta">${[b.runs && b.runs.length ? 'seen in ' + V.plural(b.runs.length, 'run') : '', V.plural((b.cells || []).length, 'cell')].filter(Boolean).join(' · ')}</span>
+            <span class="ds-list__meta">${[b.seen || (b.runs && b.runs.length) ? 'seen in ' + V.plural(b.seen || b.runs.length, 'run') : '', b.last_number ? 'last in Run ' + b.last_number : '', V.plural((b.cells || []).length, 'cell')].filter(Boolean).join(' · ')}</span>
           </span>
           ${V.severityChip(b.severity)}
         </li>`)}</ul>`);

@@ -153,34 +153,6 @@ export function changeMark(row, { label = false } = {}) {
   return html`<span class="${'so-tests-change so-tests-change--' + row.change}" role="img" aria-label="${words}" data-tip="${words}">${raw(icon(c.glyph, 16))}${label ? html`<span>${c.word}</span>` : ''}</span>`;
 }
 
-/**
- * compareCells gives every row of a run its change against the cells of the
- * run before (the same cell's verdict as it counts), the way the server
- * does once it sends `prev` and `change` itself.
- */
-// API: CellRow.prev and CellRow.change (TEST-MODE.md "Changes against the run before"); until the server
-// sends them the page compares the run with the one before it.
-export function compareCells(rows, prevRows, prevRun) {
-  const before = new Map((prevRows || []).map((r) => [r.cell_id, r]));
-  return rows.map((row) => {
-    if (row.change !== undefined || !prevRun) return row;
-    const old = before.get(row.cell_id);
-    const out = { ...row };
-    if (!old || !old.final) {
-      out.change = old ? '' : 'new';
-      return out;
-    }
-    out.prev = { verdict: old.final, run: prevRun.id, number: prevRun.n, attempt: old.id };
-    const was = old.final;
-    const now = row.final;
-    if (!now) out.change = '';
-    else if (passed(was) && (now === 'issue' || now === 'fail')) out.change = 'regressed';
-    else if ((was === 'issue' || was === 'fail') && passed(now)) out.change = 'fixed';
-    else out.change = '';
-    return out;
-  });
-}
-
 /* ---------------------------------------------------------------- times */
 
 const dateTime = new Intl.DateTimeFormat(undefined, { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
@@ -218,6 +190,7 @@ export function span(ms) {
 /** runSpan is how long a run took, or has taken so far. */
 export function runSpan(run, now = Date.now()) {
   if (!run) return '';
+  if (run.duration_ms > 0 && !ACTIVE_RUN.has(run.state)) return span(run.duration_ms);
   const end = run.ended_at || (ACTIVE_RUN.has(run.state) ? now : 0);
   return end ? span(end - (run.started_at || run.created_at)) : '';
 }
@@ -237,10 +210,10 @@ export function plural(n, one, many) { return n + ' ' + (n === 1 ? one : many ||
 /* ----------------------------------------------------------------- runs */
 
 /**
- * numberRuns gives every run its number `n`: the server's (Run.Number), else
- * its place among the repository's runs by creation, oldest 1.
+ * numberRuns gives every run its number `n`: the server's (Run.Number;
+ * a run of before the numbers is counted by its place among the
+ * repository's runs, oldest 1).
  */
-// API: Run.Number (TEST-MODE.md "Run numbers"); counted here until every run carries it.
 export function numberRuns(runs) {
   const byAge = runs.slice().sort((a, b) => a.created_at - b.created_at);
   byAge.forEach((run, i) => { run.n = Number.isFinite(run.number) && run.number > 0 ? run.number : i + 1; });
@@ -257,13 +230,16 @@ export function runName(run, { name = true } = {}) {
 /** runLabel is kept for the modules that name a run by date. */
 export function runLabel(run) { return runName(run); }
 
-/** startedBy is the chat that started a run, in words ('' for a person). */
-// API: Run.StartedBy (TEST-MODE.md "Runs started by chat agents").
+/** startedBy is the chat that started a run (Run.StartedBy {chat, title}), in words ('' for a person). */
 export function startedBy(run) {
   const s = run && run.started_by;
-  if (!s) return '';
-  if (typeof s === 'string') return s;
-  return s.title || s.chat || '';
+  return s ? s.title || 'a chat' : '';
+}
+
+/** startedByHref is the address of the chat that started a run ('' for a person). */
+export function startedByHref(run) {
+  const s = run && run.started_by;
+  return s && s.chat ? '/#open=' + encodeURIComponent(s.chat) : '';
 }
 
 /** countsWords is a run's counts in a line: "41 pass · 7 issue · 3 fail". */
@@ -377,7 +353,7 @@ export const paths = {
   runs: (repo) => '/api/tests/repos/' + enc(repo) + '/runs',
   history: (repo, limit = 10) => '/api/tests/repos/' + enc(repo) + '/history?limit=' + limit,
   search: (repo, q) => '/api/tests/repos/' + enc(repo) + '/search?q=' + enc(q),
-  // The reworked page's routes (TEST-MODE.md "Revision: the reworked Tests page").
+  // The reworked page's (TEST-MODE.md "Revision: the reworked Tests page").
   overview: (repo) => '/api/tests/repos/' + enc(repo) + '/overview',
   estimate: (repo) => '/api/tests/repos/' + enc(repo) + '/estimate',
   test: (repo, test) => '/api/tests/repos/' + enc(repo) + '/tests/' + testPath(test),

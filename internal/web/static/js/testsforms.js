@@ -359,7 +359,6 @@ export function mount(ctx) {
   const problems = new Map(); // run id -> Set of its cell ids that did not pass
   let runOpen = false;
   let preset = {};
-  let estimateMissing = false;
   let estimateTimer = 0;
   let asked = 0;
 
@@ -510,8 +509,7 @@ export function mount(ctx) {
     if (what === 'all') return {};
     if (what === 'problems') return { problems_of: (problemsRun(preset.problems_of) || {}).id };
     if (what === 'cells') {
-      // API: Selection.Cells (TEST-MODE.md "Selection"); an older server runs their tests instead.
-      return state.v2 ? { cells: preset.cells.slice() } : { tests: [...new Set(preset.cells.map((c) => c.split('@')[0]))] };
+      return { cells: preset.cells.slice() };
     }
     if (what.startsWith('prio:')) return { priorities: [what.slice(5)] };
     const sel = {};
@@ -546,7 +544,7 @@ export function mount(ctx) {
   // presetSelection is the selection of a preset that starts without the dialog.
   function presetSelection(p) {
     if (p.problems_of) return { problems_of: (problemsRun(p.problems_of) || {}).id };
-    if (p.cells) return state.v2 ? { cells: p.cells.slice() } : { tests: [...new Set(p.cells.map((c) => c.split('@')[0]))] };
+    if (p.cells) return { cells: p.cells.slice() };
     const sel = {};
     if (p.tests) sel.tests = p.tests.slice();
     if (p.priorities) sel.priorities = p.priorities.slice();
@@ -580,21 +578,16 @@ export function mount(ctx) {
 
   /**
    * estimate is what a selection would run: the exact cell count, about how
-   * long and what it costs (POST …/estimate), or the count worked out here
-   * on a server without it.
+   * long and what it costs, and why it would not start (POST …/estimate);
+   * the count worked out here when the server cannot be asked.
    */
   async function estimate(sel, settings) {
-    if (state.v2 && !estimateMissing) {
-      // API: POST /api/tests/repos/{repo}/estimate (TEST-MODE.md "Times and costs").
-      try {
-        const body = { selection: sel };
-        if (settings) body.settings = settings;
-        const e = await api(V.paths.estimate(state.repo), { method: 'POST', body, attempts: 1 });
-        if (e && typeof e.cells === 'number') return e;
-      } catch (err) {
-        if (err && (err.status === 404 || err.status === 405)) estimateMissing = true;
-      }
-    }
+    try {
+      const body = { selection: sel };
+      if (settings) body.settings = settings;
+      const e = await api(V.paths.estimate(state.repo), { method: 'POST', body, attempts: 1 });
+      if (e && typeof e.cells === 'number') return e;
+    } catch { /* counted here */ }
     return countLocal(sel);
   }
 
@@ -641,7 +634,9 @@ export function mount(ctx) {
     if ($('runFootNote').textContent !== words) $('runFootNote').textContent = words;
     const count = V.plural(e.cells || 0, 'cell');
     if ($('runCount').textContent !== count) $('runCount').textContent = count;
-    morph($('runEstimateErrors'), errors.length ? html`<div class="ds-alert ds-alert--error" role="alert">${raw(icon('alertCircle', 20))}<span class="ds-alert__text so-break">${errors.join(' ')}</span></div>` : '');
+    // The catalog's errors are said once, at the top; the estimate repeats them.
+    const own = state.catalog && state.catalog.errors && state.catalog.errors.length ? [] : errors;
+    morph($('runEstimateErrors'), own.length ? html`<div class="ds-alert ds-alert--error" role="alert">${raw(icon('alertCircle', 20))}<span class="ds-alert__text so-break">${own.map((p) => html`<span>${typeof p === 'string' ? p : (p.file ? p.file + (p.line ? ':' + p.line : '') + ': ' : '') + p.message}</span> `)}</span></div>` : '');
     const start = $('runStart');
     const catErrors = state.catalog && state.catalog.errors && state.catalog.errors.length;
     const blocked = !e.cells || catErrors || errors.length;
@@ -750,7 +745,6 @@ export function mount(ctx) {
     /** repoChanged forgets what was drawn for the repository before. */
     repoChanged() {
       problems.clear();
-      estimateMissing = false;
       if (dirty) setDirty(false);
       drawnFor = '';
     },

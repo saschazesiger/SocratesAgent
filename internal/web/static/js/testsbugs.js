@@ -15,9 +15,6 @@ export function mount(ctx) {
 
   async function load() {
     const repo = state.repo;
-    // API: GET /api/tests/repos/{repo}/bugs (TEST-MODE.md "Bugs over runs"); asked for only from a
-    // server that has the reworked page's routes.
-    if (!state.v2) { data = { repo, missing: true }; return; }
     try {
       const d = await api(V.paths.repoBugs(repo), { attempts: 1 });
       data = { repo, bugs: d.bugs || [] };
