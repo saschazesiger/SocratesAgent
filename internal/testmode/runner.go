@@ -173,6 +173,8 @@ func (r *Runner) Start() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.sweepRuntimeLocked()
+	// tests-b2: the chats of runs that ended before a restart told them.
+	r.tellStartersLocked()
 	for _, rs := range r.runs {
 		if rs.resuming {
 			rs := rs
@@ -609,6 +611,7 @@ func (r *Runner) activate(id string) {
 		rs.run.State, rs.run.Error, rs.run.EndedAt = RunFailed, err.Error(), r.now().UnixMilli()
 		r.saveRunLocked(rs)
 		r.publishLocked(rs)
+		r.tellStarterLocked(rs) // tests-b2
 		r.nextRunLocked(rs.run.Repo)
 		return
 	}
@@ -656,6 +659,7 @@ func (r *Runner) failRun(id, why string) {
 	rs.run.State, rs.run.Error, rs.run.EndedAt = RunFailed, why, r.now().UnixMilli()
 	r.saveRunLocked(rs)
 	r.publishLocked(rs)
+	r.tellStarterLocked(rs) // tests-b2
 	r.nextRunLocked(rs.run.Repo)
 }
 
@@ -1670,6 +1674,7 @@ func (r *Runner) endRunLocked(rs *runState, state string) {
 		url := "/tests#repo=" + run.Repo + "&run=" + run.ID
 		r.spawnLocked(func() { r.host.Notify(title, body, url) })
 	}
+	r.tellStarterLocked(rs) // tests-b2
 	r.nextRunLocked(run.Repo)
 	r.pruneLocked(run.Repo)
 }

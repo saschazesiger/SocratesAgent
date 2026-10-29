@@ -56,6 +56,9 @@
 //	/mcptool NAME [JSON] calls another tool of the socrates server (the chat
 //	                 tools) through mcp_message and says "NAME returned:
 //	                 <result>" or "NAME failed: <result>"
+//	/runtests TEST   calls the socrates server's run_tests (a chat's test
+//	                 tools) for the one test TEST, as /mcptool does, and says
+//	                 "run_tests returned: <result>"
 //	/askuser [JSON]  calls the socrates server's ask_user (a call of two
 //	                 questions, or the JSON given) through mcp_message, waits
 //	                 for the result and says it; an interrupt withdraws the
@@ -714,6 +717,9 @@ func (t *turnRun) script() {
 		t.askUser(rest)
 	case "/mcptool":
 		t.mcpTool(rest)
+	case "/runtests":
+		args, _ := json.Marshal(map[string]any{"tests": []string{strings.TrimSpace(rest)}, "name": "from a chat"})
+		t.mcpTool("run_tests " + string(args))
 	case "/toolask":
 		t.tool("Bash", map[string]any{"command": "printf 'one\\ntwo\\n'", "description": "Print two lines"},
 			"one\ntwo", map[string]any{"stdout": "one\ntwo", "stderr": "", "interrupted": false}, false, "")

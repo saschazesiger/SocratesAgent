@@ -114,6 +114,8 @@ type Selection struct {
 	Tags       []string            `json:"tags,omitempty"`
 	Priorities []string            `json:"priorities,omitempty"`
 	Dims       map[string][]string `json:"dims,omitempty"`
+	// Cells are cell ids (web/checkout@a) to run.
+	Cells []string `json:"cells,omitempty"`
 	// ProblemsOf is a run whose cells that did not pass are run again: only
 	// those, intersected with the rest.
 	ProblemsOf string `json:"problems_of,omitempty"`
@@ -131,6 +133,7 @@ func (s Selection) Describe() string {
 	add("tests", s.Tests)
 	add("tags", s.Tags)
 	add("priorities", s.Priorities)
+	add("cells", s.Cells)
 	keys := make([]string, 0, len(s.Dims))
 	for k := range s.Dims {
 		keys = append(keys, k)
