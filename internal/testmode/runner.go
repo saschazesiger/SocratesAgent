@@ -124,6 +124,10 @@ type Runner struct {
 	// goroutine starts after that.
 	loaded bool
 	closed bool
+	// telling is the runs whose chat is being sent their results, and
+	// tellTries how often that failed (tellStarterLocked).
+	telling   map[string]bool
+	tellTries map[string]int
 	// gen counts the changes of the runs and attempts (changedLocked);
 	// hist is each repository's history as of a gen, read again once it
 	// moved on.

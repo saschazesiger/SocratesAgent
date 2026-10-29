@@ -9,6 +9,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/saschazesiger/SocratesAgent/internal/agent/testtools"
 	"github.com/saschazesiger/SocratesAgent/internal/testmode/catalog"
@@ -24,8 +25,10 @@ import (
 type StartedBy struct {
 	Chat  string `json:"chat"`
 	Title string `json:"title,omitempty"`
-	// Told is when the chat was sent the run's results (ms); 0 until then.
-	// It is kept in run.json, so a restart never sends them twice.
+	// Told is when the chat took the run's results (ms; also set for a
+	// chat that is gone); 0 until then. It is set once the message went, and
+	// kept in run.json: a message that failed (or was cut short by a
+	// shutdown) is sent again, a restart never sends one that went.
 	Told int64 `json:"told,omitempty"`
 }
 
@@ -278,26 +281,71 @@ func (r *Runner) tellStartersLocked() {
 	}
 }
 
+// How often the results are sent again when sending fails while the
+// server runs, and how long it waits before the first retry (doubled for
+// each next one). Past them, the next start tries again.
+var (
+	tellTries   = 5
+	tellBackoff = 15 * time.Second
+)
+
 // tellStarterLocked sends the chat that started a run its results, once
-// the run is over (done, stopped or failed), and once only: Told is set and
-// kept before the message goes, so that neither a second end nor a restart
-// sends it again.
+// the run is over (done, stopped or failed), and once only. Told is set and
+// kept once the message went (or the chat is gone); while it goes, the run
+// is in r.telling, so that a second end does not send it twice. A message
+// that failed is sent again after a while, a few times; one a shutdown cut
+// short goes at the next start (tellStartersLocked). The server takes a
+// message whose key (client_id) the chat has already once.
 func (r *Runner) tellStarterLocked(rs *runState) {
 	by := rs.run.StartedBy
-	if by == nil || by.Chat == "" || by.Told != 0 || Active(rs.run.State) {
+	if by == nil || by.Chat == "" || by.Told != 0 || Active(rs.run.State) || rs.deleting || r.runs[rs.run.ID] != rs {
 		return
 	}
 	host, ok := r.host.(ChatHost)
-	if !ok {
+	if !ok || r.telling[rs.run.ID] || r.closed {
 		return
 	}
-	by.Told = r.now().UnixMilli()
-	r.saveRunLocked(rs)
+	if r.telling == nil {
+		r.telling = map[string]bool{}
+	}
+	r.telling[rs.run.ID] = true
 	chat, key, text := by.Chat, "tests-"+rs.run.ID, r.resultsMessageLocked(rs)
 	r.spawnLocked(func() {
-		if err := host.TellChat(r.ctx, chat, key, text); err != nil && !errors.Is(err, ErrNotFound) {
-			log.Printf("tests: could not tell the chat %s the results of its run: %v", chat, err)
+		err := host.TellChat(r.ctx, chat, key, text)
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		delete(r.telling, rs.run.ID)
+		if err == nil || errors.Is(err, ErrNotFound) {
+			delete(r.tellTries, rs.run.ID)
+			if rs.run.StartedBy != nil && rs.run.StartedBy.Told == 0 {
+				rs.run.StartedBy.Told = r.now().UnixMilli()
+				r.saveRunLocked(rs)
+			}
+			return
 		}
+		log.Printf("tests: could not tell the chat %s the results of its run %s: %v", chat, rs.run.ID, err)
+		if r.ctx.Err() != nil {
+			return // shutting down: the next start tells it
+		}
+		if r.tellTries == nil {
+			r.tellTries = map[string]int{}
+		}
+		r.tellTries[rs.run.ID]++
+		n := r.tellTries[rs.run.ID]
+		if n >= tellTries {
+			return
+		}
+		wait := tellBackoff << (n - 1)
+		r.spawnLocked(func() {
+			select {
+			case <-r.ctx.Done():
+				return
+			case <-time.After(wait):
+			}
+			r.mu.Lock()
+			defer r.mu.Unlock()
+			r.tellStarterLocked(rs)
+		})
 	})
 }
 

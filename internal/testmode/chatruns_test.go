@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/saschazesiger/SocratesAgent/internal/agent/testtools"
 )
@@ -20,15 +21,30 @@ type chatHost struct {
 	mu   sync.Mutex
 	told []string // chat|key|text
 	gone map[string]bool
+	// fails is how many sends fail next; hang makes a send wait until its
+	// context is cancelled (a shutdown).
+	fails int
+	hang  bool
+	tries int
 }
 
 func newChatHost() *chatHost { return &chatHost{fakeHost: newFakeHost(), gone: map[string]bool{}} }
 
-func (h *chatHost) TellChat(_ context.Context, chat, key, text string) error {
+func (h *chatHost) TellChat(ctx context.Context, chat, key, text string) error {
 	h.mu.Lock()
+	h.tries++
+	if h.hang {
+		h.mu.Unlock()
+		<-ctx.Done()
+		return ctx.Err()
+	}
 	defer h.mu.Unlock()
 	if h.gone[chat] {
 		return ErrNotFound
+	}
+	if h.fails > 0 {
+		h.fails--
+		return errors.New("the peer's host could not be launched")
 	}
 	h.told = append(h.told, chat+"|"+key+"|"+text)
 	return nil
@@ -289,4 +305,52 @@ func TestAChatsRunOfTheLatestProblems(t *testing.T) {
 	if _, err := r.ChatRunID(t.TempDir(), first.Run.ID); err == nil {
 		t.Fatal("a run of another repository was given")
 	}
+}
+
+// A message that could not be sent is sent again after a while, and Told is
+// set only once it went; one a shutdown cut short goes at the next start.
+func TestAChatsRunIsToldAgainWhenTheMessageFails(t *testing.T) {
+	defer func(b time.Duration) { tellBackoff = b }(tellBackoff)
+	tellBackoff = 10 * time.Millisecond
+	host := newChatHost()
+	host.fails = 1
+	data := t.TempDir()
+	r := New(data, host)
+	r.Start()
+	c := startChatRun(t, r, fixture(t, map[string]string{"two": twoSteps}), Selection{Cells: []string{"web/two@b"}})
+	path := filepath.Join(r.layout.RunDir(c.Run.Repo, c.Run.ID), "run.json")
+	if err := r.StopRun(c.Run.ID); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the chat to be told on the second try", func() bool { return len(host.toldNow()) == 1 })
+	var run Run
+	waitFor(t, "the run to be kept told", func() bool { return readJSON(path, &run) == nil && run.StartedBy.Told != 0 })
+	host.mu.Lock()
+	tries := host.tries
+	host.mu.Unlock()
+	if tries != 2 {
+		t.Fatalf("%d tries", tries)
+	}
+
+	// The server stops while the message goes: not told, told at the start.
+	run.StartedBy.Told = 0
+	_ = writeJSON(path, &run)
+	host.mu.Lock()
+	host.hang = true
+	host.mu.Unlock()
+	r2 := New(data, host)
+	r2.Start()
+	waitFor(t, "a send", func() bool { host.mu.Lock(); defer host.mu.Unlock(); return host.tries == 3 })
+	r2.Close()
+	if readJSON(path, &run) != nil || run.StartedBy.Told != 0 {
+		t.Fatalf("kept as told though the message did not go: %+v", run.StartedBy)
+	}
+	host.mu.Lock()
+	host.hang = false
+	host.mu.Unlock()
+	r3 := New(data, host)
+	r3.Start()
+	defer r3.Close()
+	waitFor(t, "the chat to be told at the start", func() bool { return len(host.toldNow()) == 2 })
+	waitFor(t, "the run to be kept told", func() bool { return readJSON(path, &run) == nil && run.StartedBy.Told != 0 })
 }
