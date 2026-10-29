@@ -1,6 +1,7 @@
 package testmode
 
 import (
+	"math"
 	"sort"
 	"strconv"
 
@@ -350,6 +351,7 @@ func (r *Runner) addCosts(views []RunView) {
 			}
 		}
 		if known {
+			sum = math.Round(sum*1e6) / 1e6
 			views[i].Cost = &sum
 		}
 	}

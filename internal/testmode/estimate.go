@@ -1,6 +1,7 @@
 package testmode
 
 import (
+	"math"
 	"slices"
 	"sort"
 
@@ -128,7 +129,7 @@ func (r *Runner) Estimate(repoKey string, sel Selection, settings *Settings) (*E
 		if len(per)%2 == 0 {
 			m = (per[len(per)/2-1] + per[len(per)/2]) / 2
 		}
-		c := m * float64(e.Cells)
+		c := math.Round(m*float64(e.Cells)*1e6) / 1e6
 		e.Cost = &c
 	}
 	return e, nil
