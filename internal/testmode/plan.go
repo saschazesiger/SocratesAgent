@@ -87,6 +87,9 @@ func (s Selection) selected(c catalog.Cell, problems map[string]bool) bool {
 	if len(s.Tests) > 0 && !slices.Contains(s.Tests, t.ID) {
 		return false
 	}
+	if len(s.Cells) > 0 && !slices.Contains(s.Cells, c.ID()) {
+		return false
+	}
 	if len(s.Priorities) > 0 && !slices.Contains(s.Priorities, t.Priority) {
 		return false
 	}
@@ -105,9 +108,6 @@ func (s Selection) selected(c catalog.Cell, problems map[string]bool) bool {
 		if want := s.Dims[d.Name]; len(want) > 0 && !slices.Contains(want, d.ID) {
 			return false
 		}
-	}
-	if len(s.Cells) > 0 && !slices.Contains(s.Cells, c.ID()) {
-		return false
 	}
 	if problems != nil && !problems[c.ID()] {
 		return false

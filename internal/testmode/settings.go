@@ -140,6 +140,7 @@ func (s Selection) Describe() string {
 	add("tests", s.Tests)
 	add("tags", s.Tags)
 	add("priorities", s.Priorities)
+	add("cells", s.Cells)
 	keys := make([]string, 0, len(s.Dims))
 	for k := range s.Dims {
 		keys = append(keys, k)

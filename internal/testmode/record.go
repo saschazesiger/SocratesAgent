@@ -111,6 +111,9 @@ type Run struct {
 	Analysed int64 `json:"analysed,omitempty"`
 	// Notified is whether the end of the run was pushed.
 	Notified bool `json:"notified,omitempty"`
+	// StartedBy is the chat whose agent started the run (run_tests), which
+	// is sent the results when it ends; nil for a run started on the page.
+	StartedBy *StartedBy `json:"started_by,omitempty"`
 }
 
 // AttemptRef names an attempt and where its record is.

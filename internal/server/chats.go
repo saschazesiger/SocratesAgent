@@ -534,6 +534,9 @@ func (p *chatPeer) launch(ctx context.Context) error {
 	// Without the tools the chat works all the same; a call says why.
 	if tools, err := p.hub.srv.chatToolsEndpoint(p.id); err == nil {
 		spec.ChatTools = tools
+		// The test tools, when the repository has a catalog as the host
+		// starts (testchat.go).
+		spec.ChatTools.Tests = offersTestTools(row)
 	} else {
 		log.Printf("chats: %s: no chat tools: %v", p.id, err)
 	}
@@ -895,6 +898,10 @@ type createChatBody struct {
 	AutoContinue *bool `json:"auto_continue"`
 	// Message is the first message, sent once the chat exists.
 	Message *chatMessageBody `json:"message"`
+	// Tests gives the chat the test tools even while its repository has no
+	// test catalog yet: a chat the Tests page starts to write the first
+	// test (testchat.go).
+	Tests bool `json:"tests"`
 }
 
 // chatMessageBody is one message from the composer.
@@ -975,6 +982,9 @@ func (s *Server) handleCreateChat(w http.ResponseWriter, r *http.Request) {
 		Kind: store.KindChat, State: store.StateRunning,
 		Options: withOption(withAutoContinue(withChatAccount(withOption(nil, "ultracode", chatUltracode(harness, body.Ultracode)),
 			body.Account, body.AutoSwitch), body.AutoContinue == nil || *body.AutoContinue), "mcp", mcp),
+	}
+	if body.Tests {
+		row.Options = withOption(row.Options, testToolsOption, true)
 	}
 	if err := s.store.CreateSession(row); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())

@@ -355,6 +355,16 @@ Socrates' own MCP server (`internal/agent/chattools`).
   that the chat's bubble leaves out. It wakes a parked agent at once and
   waits behind a running turn; the other agent answers, if it does, the same
   way. Each message costs the receiving chat's account.
+- **The test tools.** A chat whose repository holds `.socrates/tests/TESTS.md`
+  when its host starts, or that was created with `tests: true` (option
+  `test_tools`, a chat the Tests page starts to write a first test), gets
+  four more tools on the same server (`chattools.Endpoint.Tests`, carried to
+  `socrates mcp-ask` as `SOCRATES_CHAT_TOOLS_TESTS=1`): `tests_format` (the
+  catalog format, `internal/testmode/catalog/FORMAT.md`), `tests_check`,
+  `run_tests` and `test_results` (TEST-MODE.md, "Runs started by chat
+  agents"), and their guidance after the chat tools'. A test session never
+  has them. The results of a run a chat started come into it as a message
+  after a `test_results` notice, the same way a `send_to_chat` message does.
 - **The brake.** A chat sends at most 40 messages an hour
   (`chatSendsPerHour`, counted in the server's memory); past that the tool
   says so, so that two agents cannot answer each other for ever.
