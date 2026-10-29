@@ -153,6 +153,16 @@ func TestAFailedSubagentEndsFailed(t *testing.T) {
 		t.Fatalf("the turn %q, background %d", lastTurnText(p), a.Background())
 	}
 
+	// One whose turn was interrupted stays interrupted, though codex says
+	// it completed after.
+	_, n = send(t, a, r, "/subfail interrupted")
+	r.turnEnd(t, n, wait)
+	group = findPart(r.projection(), func(pt *agent.Part) bool { return contentOf(pt)["tool"] == "subagent" })
+	if group == nil || group.State != agent.PartInterrupted || contentOf(group)["status"] != "interrupted" ||
+		len(group.Children) != 1 || group.Children[0].State != agent.PartInterrupted {
+		t.Fatalf("an interrupted subagent %+v\n%s", group, dump(r.since(n)))
+	}
+
 	// The next subagent that works is done again.
 	_, n = send(t, a, r, "/subagent")
 	r.turnEnd(t, n, wait)
@@ -193,6 +203,12 @@ func TestWhatElseCodexDoesIsShown(t *testing.T) {
 	if strings.Join(rows, ",") != "waited for npm run dev|,wrote to npm run dev|y\n" {
 		t.Fatalf("terminal rows %q\n%s", rows, dump(r.since(n)))
 	}
+	a.mu.Lock()
+	left := len(a.commands)
+	a.mu.Unlock()
+	if left != 0 {
+		t.Fatalf("the name of a command whose process ended is kept: %d", left)
+	}
 
 	_, n = send(t, a, r, "/hook")
 	end := r.turnEnd(t, n, wait)
@@ -227,6 +243,34 @@ func TestWhatElseCodexDoesIsShown(t *testing.T) {
 	}
 	if strings.Join(lines, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("notices:\n%s", strings.Join(lines, "\n"))
+	}
+}
+
+// A terminal's command is named by its thread and process id, short, until
+// its process ends or codex no longer lists it; another thread's process of
+// the same id is another command.
+func TestTerminalNamesAreAThreadsAndGo(t *testing.T) {
+	a := newAdapter()
+	a.terminalCommandLocked("t1", "7", "/bin/bash -lc 'npm run dev'", false)
+	a.terminalCommandLocked("t2", "7", "make watch\n"+strings.Repeat("x", 4096), false)
+	a.terminalCommandLocked("t1", "8", "tail -f log", false)
+	if a.commands[terminalKey("t1", "7")] != "npm run dev" || a.commands[terminalKey("t2", "7")] != "make watch" {
+		t.Fatalf("names %q", a.commands)
+	}
+	// A completed item without an exit code runs on in the background.
+	a.terminalCommandLocked("t1", "8", "tail -f log", false)
+	a.terminalCommandLocked("t2", "7", "make watch", true)
+	if _, ok := a.commands[terminalKey("t2", "7")]; ok || a.commands[terminalKey("t1", "8")] != "tail -f log" {
+		t.Fatalf("after an exit %q", a.commands)
+	}
+	a.forgetTerminalsLocked("t1", []backgroundTerminal{{ProcessID: "8", Command: "/bin/bash -lc 'tail -f app.log'"}})
+	if len(a.commands) != 1 || a.commands[terminalKey("t1", "8")] != "tail -f app.log" {
+		t.Fatalf("what codex lists %q", a.commands)
+	}
+	a.terminalCommandLocked("t2", "9", "sleep 60", false)
+	a.forgetTerminalsLocked("t1", nil)
+	if len(a.commands) != 1 || a.commands[terminalKey("t2", "9")] != "sleep 60" {
+		t.Fatalf("one thread forgotten %q", a.commands)
 	}
 }
 

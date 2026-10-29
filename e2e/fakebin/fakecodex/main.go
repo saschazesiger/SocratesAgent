@@ -46,7 +46,8 @@
 //	                 with only its tokens); once the turn ends a turn of its own
 //	                 goes on toward it and marks it complete
 //	/goal clear      clears the goal (thread/goal/cleared)
-//	/subfail         a subagent whose turn fails, with codex's error notification
+//	/subfail [interrupted]  a subagent whose turn fails, with codex's error
+//	                 notification (or is interrupted), then says it completed
 //	/image           an imageGeneration saved as a PNG under CODEX_HOME, with
 //	                 its revised prompt
 //	/poll            a background command, then waits on it and writes "y" to
@@ -1067,7 +1068,12 @@ func (c *tcx) script(text string) (string, map[string]any) {
 		c.goal = true
 		ok = c.say([]string{"goal set"}, 0)
 	case "/subfail":
-		c.subagentFails()
+		interrupted := rest == "interrupted"
+		c.subagentFails(interrupted)
+		if interrupted {
+			ok = c.say([]string{"the helper was stopped"}, 0)
+			break
+		}
 		ok = c.say([]string{"the helper failed"}, 0)
 	case "/image":
 		dir := filepath.Join(c.s.home, "generated_images", c.th.id)
@@ -1199,8 +1205,9 @@ func (c *tcx) subagent() {
 
 // subagentFails spawns a thread whose turn fails, as a subagent's does when
 // its model call fails for good: the error notification, the failed turn,
-// and codex's completion item all the same.
-func (c *tcx) subagentFails() {
+// and codex's completion item all the same. Interrupted, its turn is
+// interrupted instead, with no error, and the completion item follows too.
+func (c *tcx) subagentFails(interrupted bool) {
 	child := newUUID()
 	start := map[string]any{"type": "subAgentActivity", "id": c.id("call"), "kind": "started", "agentThreadId": child,
 		"agentPath": "/root/helper", "model": "gpt-fake", "reasoningEffort": "low"}
@@ -1210,10 +1217,13 @@ func (c *tcx) subagentFails() {
 	c.s.notify("turn/started", map[string]any{"threadId": child, "turn": map[string]any{"id": childTurn, "rootTurnId": c.t.id, "status": "inProgress"}})
 	msg := map[string]any{"type": "agentMessage", "id": "msg_subfail", "text": ""}
 	c.s.notify("item/started", map[string]any{"threadId": child, "turnId": childTurn, "item": msg})
-	terr := map[string]any{"message": "The helper's model is overloaded.", "codexErrorInfo": "serverOverloaded"}
-	c.s.notify("error", map[string]any{"threadId": child, "turnId": childTurn, "error": terr, "willRetry": false})
+	status, terr := "interrupted", map[string]any(nil)
+	if !interrupted {
+		status, terr = "failed", map[string]any{"message": "The helper's model is overloaded.", "codexErrorInfo": "serverOverloaded"}
+		c.s.notify("error", map[string]any{"threadId": child, "turnId": childTurn, "error": terr, "willRetry": false})
+	}
 	c.s.notify("turn/completed", map[string]any{"threadId": child, "turn": map[string]any{"id": childTurn, "rootTurnId": c.t.id,
-		"status": "failed", "error": terr}})
+		"status": status, "error": terr}})
 	done := map[string]any{"type": "subAgentActivity", "id": "subagent-completed-" + childTurn, "kind": "completed",
 		"agentThreadId": child, "agentPath": "/root/helper"}
 	c.started(done)

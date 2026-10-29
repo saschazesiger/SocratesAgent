@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 
 	"github.com/saschazesiger/SocratesAgent/internal/agent"
 )
@@ -43,14 +44,22 @@ func (s *Server) handleChatPartImage(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "the chat has no such image")
 		return
 	}
-	f, err := os.Open(c.Path)
+	// A regular file only, looked at before it is opened - opening a FIFO
+	// would wait for a writer - and again once open (O_NONBLOCK, should it
+	// have been swapped for one in between), the same file both times.
+	before, err := os.Stat(c.Path)
+	if err != nil || !before.Mode().IsRegular() || before.Size() > imageMax {
+		writeError(w, http.StatusNotFound, "the image is no longer there")
+		return
+	}
+	f, err := os.OpenFile(c.Path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "the image is no longer there")
 		return
 	}
 	defer f.Close()
 	info, err := f.Stat()
-	if err != nil || !info.Mode().IsRegular() || info.Size() > imageMax {
+	if err != nil || !info.Mode().IsRegular() || !os.SameFile(before, info) || info.Size() > imageMax {
 		writeError(w, http.StatusNotFound, "the image is no longer there")
 		return
 	}

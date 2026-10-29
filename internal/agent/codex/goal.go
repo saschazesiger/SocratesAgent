@@ -312,19 +312,19 @@ func (a *adapter) terminalInteraction(p notification) {
 	if t == nil || t.ended && ag == nil {
 		return
 	}
-	command := a.commands[p.ProcessID]
+	command := a.commands[terminalKey(p.ThreadID, p.ProcessID)]
 	if command == "" {
 		if cmd := t.parts[p.ThreadID+"/"+p.ItemID]; cmd != nil {
 			var c struct {
 				Command string `json:"command"`
 			}
 			_ = json.Unmarshal(cmd.content, &c)
-			command = c.Command
+			command = commandName(c.Command)
 		}
 	}
 	what := "the background terminal"
 	if command != "" {
-		what = firstLine(unwrapShell(command))
+		what = command
 	}
 	summary := "waited for " + what
 	if p.Stdin != "" {
@@ -338,6 +338,56 @@ func (a *adapter) terminalInteraction(p notification) {
 		"stdin": p.Stdin, "terminal_command": command})
 	pt.text.WriteString(p.Stdin)
 	a.emitPart(t, pt, agent.PartDone)
+}
+
+// terminalKey is a terminal among the adapter's commands: process ids are a
+// thread's own.
+func terminalKey(thread, processID string) string { return thread + "\x00" + processID }
+
+// commandName is a command as a terminal's row names it: its first line,
+// without the shell around it, cut to a line's length.
+func commandName(command string) string { return firstLine(unwrapShell(command)) }
+
+// terminalCommandLocked keeps the name of the command a thread's process
+// runs, from its commandExecution item, until the process has ended (the
+// item completed with an exit code). One that goes on in the background
+// after its item completed (no exit code) stays until watchTerminals no
+// longer lists it. Called with mu held.
+func (a *adapter) terminalCommandLocked(thread, processID, command string, ended bool) {
+	key := terminalKey(thread, processID)
+	switch {
+	case ended:
+		delete(a.commands, key)
+	case command != "":
+		a.commands[key] = commandName(command)
+	}
+}
+
+// forgetTerminalsLocked drops the names of a thread's terminals, but those
+// of the background terminals codex still lists for it (nil: all of them),
+// with the command codex names. Called with mu held.
+func (a *adapter) forgetTerminalsLocked(thread string, live []backgroundTerminal) {
+	keep := map[string]bool{}
+	for _, bt := range live {
+		key := terminalKey(thread, bt.ProcessID)
+		keep[key] = true
+		if bt.Command != "" {
+			a.commands[key] = commandName(bt.Command)
+		}
+	}
+	prefix := thread + "\x00"
+	for key := range a.commands {
+		if strings.HasPrefix(key, prefix) && !keep[key] {
+			delete(a.commands, key)
+		}
+	}
+}
+
+// backgroundTerminal is the part of codex's ThreadBackgroundTerminal the
+// adapter reads.
+type backgroundTerminal struct {
+	ProcessID string `json:"processId"`
+	Command   string `json:"command"`
 }
 
 // unwrapShell is a command without the shell codex wraps it in:

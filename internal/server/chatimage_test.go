@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -66,6 +67,25 @@ func TestAnImagePartsFileIsServed(t *testing.T) {
 	if res, _ := c.do(t, c.client, "GET", url+text1+"/image", ""); res.StatusCode != http.StatusNotFound {
 		t.Fatalf("a text part: %d", res.StatusCode)
 	}
+	// A FIFO at the path is no image, and opening it would wait for a
+	// writer: it is refused at once.
+	fifo := filepath.Join(dir, "pipe.png")
+	if err := syscall.Mkfifo(fifo, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c.send(t, id, "m3", "/image "+fifo)
+	journal = c.waitJournal(t, id, 15*time.Second, "the FIFO's image", turnsEnded(3))
+	pipe := ""
+	for _, ev := range journal {
+		if ev.Type == agent.TypePart && ev.Kind == agent.PartImage {
+			pipe = ev.PartID
+		}
+	}
+	quick := &http.Client{Jar: c.client.Jar, Timeout: 5 * time.Second}
+	if res, _ := c.do(t, quick, "GET", url+pipe+"/image", ""); res.StatusCode != http.StatusNotFound {
+		t.Fatalf("a FIFO: %d", res.StatusCode)
+	}
+
 	_ = os.Remove(pic)
 	if res, _ := c.do(t, c.client, "GET", url+parts[0]+"/image", ""); res.StatusCode != http.StatusNotFound ||
 		strings.HasPrefix(res.Header.Get("Content-Type"), "image/") {

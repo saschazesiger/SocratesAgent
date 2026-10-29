@@ -567,8 +567,8 @@ func (a *adapter) item(p notification, completed bool) {
 	if t == nil {
 		return
 	}
-	if it.Type == "commandExecution" && it.ProcessID != nil && *it.ProcessID != "" && it.Command != "" {
-		a.commands[*it.ProcessID] = it.Command
+	if it.Type == "commandExecution" && it.ProcessID != nil && *it.ProcessID != "" {
+		a.terminalCommandLocked(p.ThreadID, *it.ProcessID, it.Command, completed && it.ExitCode != nil)
 	}
 	m := mapItem(it, p.Item, completed)
 	if m.skip {
@@ -617,8 +617,9 @@ func (a *adapter) subAgentActivity(t *turn, parent *subagent, it item) {
 		a.newAgentLocked(it.AgentThreadID, it.AgentPath, it.Model, it.ReasoningEffort, t, parentGroup)
 	case "completed", "interrupted":
 		if ag := a.agents[it.AgentThreadID]; ag != nil {
-			// Codex says an agent whose turn failed completed, too.
-			if ag.status != "failed" {
+			// Codex says an agent whose turn failed or was interrupted
+			// completed, too.
+			if ag.status != "failed" && ag.status != "interrupted" {
 				ag.status = it.Kind
 			}
 			a.agentBusy(ag, false)
@@ -648,6 +649,9 @@ func (a *adapter) agentBusy(ag *subagent, busy bool) {
 			if ag.status == "running" {
 				ag.status = "idle"
 			}
+			// Nobody lists a subagent's terminals: their names go with
+			// its turn.
+			a.forgetTerminalsLocked(ag.thread, nil)
 			a.closeAgentPartsLocked(ag)
 		}
 	}

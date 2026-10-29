@@ -150,9 +150,9 @@ type adapter struct {
 	// in this process (§4.3): 0 none, 1 stripped, 2 handed off.
 	recovered int
 	// goal is the thread's goal as codex last said it, nil for none
-	// (goal.go); commands are the commands of the terminals the turns
-	// started, by process id, and mcpFailed the MCP servers said not to
-	// start, with what was said.
+	// (goal.go); commands name the commands of the terminals still running,
+	// by thread and process id (terminalKey), and mcpFailed the MCP servers
+	// said not to start, with what was said.
 	goal      *threadGoal
 	commands  map[string]string
 	mcpFailed map[string]string
@@ -988,11 +988,15 @@ func (a *adapter) watchTerminals(thread string) {
 	for {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		var res struct {
-			Data []json.RawMessage `json:"data"`
+			Data []backgroundTerminal `json:"data"`
 		}
 		err := a.rpc.call(ctx, "thread/backgroundTerminals/list", map[string]any{"threadId": thread}, &res)
 		cancel()
 		a.mu.Lock()
+		// The commands of the terminals that ended are no longer named.
+		if err == nil {
+			a.forgetTerminalsLocked(thread, res.Data)
+		}
 		// A process on its way out is counted as having none: nothing of it
 		// is still working for the chat.
 		n := len(res.Data)
