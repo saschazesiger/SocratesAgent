@@ -6,8 +6,6 @@
  *
  *   .so-view, .so-main  the page as a column: the stage takes the height the
  *                    bar, the banners and the key bar leave
- *   .so-inset-probe  as tall as env(safe-area-inset-bottom), for script to
- *                    read (keybar.js)
  *   .so-topbar       the bar's contents after the brand: the name, its marks
  *                    and .so-topbar__actions
  *   .so-title        the session's name, a text button that renames it;
@@ -55,10 +53,6 @@
   min-height: 0;
   display: flex;
   flex-direction: column;
-  /* The strip at the foot that a keyboard covers although the visual
-     viewport counts it in (Chrome on Android drawn edge to edge, keybar.js
-     followViewport): the key bar and the composer stand above it. */
-  padding-bottom: var(--so-keyboard-lost);
 }
 
 .so-main > .so-stage {
@@ -68,18 +62,6 @@
 
 .so-main > .so-keybar {
   flex: none;
-}
-
-/* The bottom inset, measured: script cannot read env() itself. Out of sight
-   and out of the way, and never a box anything is laid out around. */
-.so-inset-probe {
-  position: fixed;
-  left: 0;
-  bottom: 0;
-  width: 0;
-  height: env(safe-area-inset-bottom);
-  visibility: hidden;
-  pointer-events: none;
 }
 
 /* ── Top bar ──────────────────────────────────────────────────────────── */

@@ -181,6 +181,11 @@ Still Socrates' own after 2.1, with the reason that still holds:
 DS 2.1.1 also closes a menu over a shown tooltip with one Escape (Tests B-33) and shows no focus ring on a layer
 that opens a moment after a tap.
 
+2.1.2 (vendored at `e5b2ab7`) takes the keyboard on Android (Tests B-29): `followViewport()` pans a visual viewport
+that was panned down past the frame back to the top, and takes the bottom inset that Chrome drops under the keyboard
+off `--ds-viewport-height`, so the key bar and the composer stand clear of it. Socrates' own `keyboardPan` and
+`--so-keyboard-lost` never shipped.
+
 
 ## Proposed to Dashboard-Style
 

@@ -1881,15 +1881,14 @@ async function keyboardpan() {
       const bar = document.getElementById('keybar').getBoundingClientRect();
       return {
         android: /Android/.test(navigator.userAgent),
-        lost: root.style.getPropertyValue('--so-keyboard-lost'),
-        pad: getComputedStyle(document.getElementById('mainColumn')).paddingBottom,
+        inset: root.style.getPropertyValue('--ds-keyboard-inset'),
         vh: root.style.getPropertyValue('--ds-viewport-height'),
         barBottom: Math.round(bar.bottom),
         inner: innerHeight,
       };
     });
     const before = await frame();
-    ok(before.android && before.lost === '' && before.pad === '0px' && before.barBottom > before.inner - 48,
+    ok(before.android && before.barBottom > before.inner - 48,
       'with no keyboard nothing is held back at the foot: the inset is the frame’s own', JSON.stringify(before));
 
     // The keyboard comes up for the pane: the visual viewport is 340px
@@ -1902,19 +1901,23 @@ async function keyboardpan() {
     await cdp.send('Emulation.setSafeAreaInsetsOverride', { insets: { bottom: 0 } });
     await wait(400);
     const up = await frame();
-    ok(up.lost === '24px' && up.pad === '24px' && up.barBottom === parseInt(up.vh, 10) - 24,
+    // Dashboard-Style (2.1.2, followViewport) takes the inset that went off
+    // the frame and adds it to the keyboard's.
+    ok(parseInt(up.vh, 10) === up.inner - 340 - 24 && up.inset === '364px' && up.barBottom === parseInt(up.vh, 10),
       'with the keyboard up the key bar stands the lost inset higher, clear of the keyboard Chrome draws over the visual viewport’s foot',
       JSON.stringify(up));
 
     // The visual viewport panned down past the frame, the window not
     // scrolled at all: the page is put back at its top.
-    const pan = (offset, scale) => s.page.evaluate(([o, z]) => {
+    const pan = (offset, scale) => s.page.evaluate(async ([o, z]) => {
       window.__panned = [];
       const root = document.documentElement;
       root.scrollIntoView = (options) => { window.__panned.push(options); };
       Object.defineProperty(window.visualViewport, 'offsetTop', { configurable: true, get: () => o });
       Object.defineProperty(window.visualViewport, 'scale', { configurable: true, get: () => z });
       window.visualViewport.dispatchEvent(new Event('scroll'));
+      // Dashboard-Style follows the viewport a frame later.
+      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
       const asked = window.__panned.slice();
       delete root.scrollIntoView;
       delete window.visualViewport.offsetTop;
@@ -1935,7 +1938,7 @@ async function keyboardpan() {
     });
     await wait(400);
     const down = await frame();
-    ok(down.lost === '' && down.pad === '0px' && down.barBottom === before.barBottom,
+    ok(down.barBottom === before.barBottom,
       'with the keyboard put away nothing is held back at the foot', JSON.stringify(down));
     const quiet = await pan(199, 1);
     ok(quiet.asked.length === 0, 'and with no keyboard up nothing is panned', JSON.stringify(quiet));

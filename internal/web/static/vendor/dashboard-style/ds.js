@@ -1,4 +1,4 @@
-/*! Dashboard-Style 2.1.1 | MIT License | https://github.com/saschazesiger/Dashboard-Style */
+/*! Dashboard-Style 2.1.2 | MIT License | https://github.com/saschazesiger/Dashboard-Style */
 /*
  * Classic-script build of src/js (no modules needed): window.DS.motion,
  * DS.indicator, DS.dom, DS.ripple, DS.icons and DS.overlay hold the same
@@ -15,7 +15,7 @@
  */
 (function (root) {
   'use strict';
-  var version = '2.1.1';
+  var version = '2.1.2';
   var registry = root.DashboardStyle || (root.DashboardStyle = {});
   var versions = registry.versions || (registry.versions = {});
   if (versions[version]) return;
@@ -4387,6 +4387,8 @@
      * Progressive:
      * - visualViewport (followViewport()): without it nothing follows the
      *   keyboard and the frame keeps its height.
+     * - scrollIntoView behavior "instant" (followViewport() panning the page
+     *   back to its top): without it scrollIntoView(true) instead.
      * - moveBefore (a keyed move keeps the node's animations, focus and iframe
      *   state): without it insertBefore, and a moved node that held the focus
      *   gets it back with its selection. insertBefore makes the node new to
@@ -5629,14 +5631,57 @@
     }
 
     /**
+     * The bottom safe-area inset (px), read off a probe as tall as
+     * env(safe-area-inset-bottom): script cannot ask for the value of env().
+     * The probe is fixed, empty, hidden and data-ds-keep (morphs leave it);
+     * created in <body> on the first read, or 0 while there is no body.
+     * @returns {number}
+     */
+    function bottomInset(doc, probes) {
+      if (!probes.probe) {
+        if (!doc.body || typeof doc.createElement !== 'function') return 0;
+        const probe = doc.createElement('div');
+        probe.setAttribute('aria-hidden', 'true');
+        probe.setAttribute('data-ds-keep', '');
+        probe.style.cssText = 'position:fixed;left:0;bottom:0;width:0;height:env(safe-area-inset-bottom, 0px);margin:0;border:0;padding:0;visibility:hidden;pointer-events:none';
+        probes.probe = probe;
+        // The inset can go a frame after the viewport shrank: the probe tells.
+        if (typeof probes.view.ResizeObserver === 'function') {
+          probes.sizes = new probes.view.ResizeObserver(probes.changed);
+          probes.sizes.observe(probe);
+        }
+      }
+      // A re-render of the body by other means than a morph may have taken it out.
+      if (!probes.probe.parentNode || !probes.probe.isConnected) doc.body?.append(probes.probe);
+      return probes.probe.parentNode ? probes.probe.getBoundingClientRect().height || 0 : 0;
+    }
+
+    /**
+     * Pans the visual viewport back to the top of the page: an element at the
+     * top scrolled into view moves it where window.scrollTo() cannot (the
+     * window has not scrolled). Progressive: behavior "instant" (an engine
+     * that rejects it scrolls with the boolean form instead).
+     */
+    function panToTop(root) {
+      if (typeof root.scrollIntoView !== 'function') return;
+      try {
+        root.scrollIntoView({ block: 'start', inline: 'nearest', behavior: 'instant' });
+      } catch {
+        root.scrollIntoView(true);
+      }
+    }
+
+    /**
      * Lets the app frame follow the on-screen keyboard: writes
      * --ds-viewport-height (the visual viewport's height, px) on <html>, sets
      * data-ds-keyboard on <html> while the visual viewport is shorter than its
      * tallest height at this width by more than 150px and focus is in a field
      * that types (also inside a same-origin iframe), writes --ds-keyboard-inset (px of the layout viewport the
-     * keyboard covers, for the snackbars, dialogs and side sheets) and scrolls the window back to the
-     * top when the browser panned it up for the keyboard (an unzoomed page).
-     * shell.css, toast.css, dialog.css and sheet.css read them. Once per document (a second call
+     * keyboard covers, for the snackbars, dialogs and side sheets) and puts the page back at its top when the
+     * browser scrolled the window up or panned the visual viewport down for the keyboard (an unzoomed page).
+     * A bottom safe-area inset that the keyboard took away (Chrome on Android, viewport-fit=cover: the visual
+     * viewport still counts the gesture bar's strip, which the keyboard covers) comes off the height and onto the
+     * inset. shell.css, toast.css, dialog.css and sheet.css read them. Once per document (a second call
      * returns the same handle); destroy() takes everything back.
      * Progressive: visualViewport (feature-detected): without it nothing
      * changes.
@@ -5654,22 +5699,42 @@
       own(root, 'attrs', 'data-ds-keyboard');
       for (const name of ['--ds-viewport-height', '--ds-keyboard-inset']) own(root, 'props', name);
       let frame = 0;
+      // The bottom inset while no keyboard is up or on its way: one that is coming takes the inset before the
+      // visual viewport shrinks, so only a full-height viewport with no field focused says what it is.
+      let openInset = 0;
+      const probes = { view, probe: null, sizes: null, changed: () => schedule() };
       const update = () => {
         frame = 0;
-        const width = Math.round(viewport.width * (viewport.scale || 1));
+        const scale = viewport.scale || 1;
+        const width = Math.round(viewport.width * scale);
         const height = viewport.height;
         const top = Math.max(height, tallest.get(width) ?? 0);
         tallest.set(width, top);
-        root.style.setProperty('--ds-viewport-height', `${Math.round(height)}px`);
-        const keyboard = top - height > KEYBOARD_MIN_PX && editing(doc);
-        const covered = Math.max(0, Math.round((view.innerHeight || height) - height - viewport.offsetTop));
+        const layout = view.innerHeight || height;
+        const short = top - height > KEYBOARD_MIN_PX;
+        // Chrome on Android drawn edge to edge (viewport-fit=cover) reads the bottom inset as 0 while the keyboard
+        // is up, yet its visual viewport still ends where the inset began: the strip is under the keyboard. An
+        // engine that keeps the inset under the keyboard (iOS) never reads 0 there, so nothing changes for it.
+        const typing = editing(doc);
+        const inset = bottomInset(doc, probes);
+        if (scale === 1 && layout - height < 2 && !typing) openInset = inset;
+        const lost = short && scale === 1 && inset < 0.5 ? openInset : 0;
+        root.style.setProperty('--ds-viewport-height', `${Math.round(height - lost)}px`);
+        const keyboard = short && typing;
+        const covered = Math.max(0, Math.round(layout - height - viewport.offsetTop + lost));
         root.style.setProperty('--ds-keyboard-inset', `${keyboard ? covered : 0}px`);
         if (keyboard !== root.hasAttribute('data-ds-keyboard')) {
           if (keyboard) root.setAttribute('data-ds-keyboard', '');
           else root.removeAttribute('data-ds-keyboard');
         }
-        // The browser panned the page up to show the field: the frame follows the viewport, so it goes back.
-        if (keyboard && viewport.offsetTop > 0 && (viewport.scale || 1) === 1 && (view.scrollY || 0) > 0) view.scrollTo(view.scrollX || 0, 0);
+        // The frame follows the visual viewport at the top of the page, so a page the browser moved for the
+        // keyboard goes back: iOS scrolls the window up to show the field; Chrome on Android keeps the window
+        // and pans the visual viewport down into the empty page under the frame (a field scrolled into view, a
+        // swipe), where scrolling the window moves nothing. A pinch zoom is the person's.
+        if (keyboard && scale === 1) {
+          if ((view.scrollY || 0) > 0 && viewport.offsetTop > 0) view.scrollTo(view.scrollX || 0, 0);
+          else if (viewport.offsetTop >= 1) panToTop(root);
+        }
       };
       const schedule = () => {
         if (frame) return;
@@ -5689,6 +5754,8 @@
           viewport.removeEventListener('scroll', schedule);
           doc.removeEventListener('focusin', schedule);
           doc.removeEventListener('focusout', schedule);
+          probes.sizes?.disconnect();
+          probes.probe?.remove();
           disown(root, 'attrs', 'data-ds-keyboard');
           for (const name of ['--ds-viewport-height', '--ds-keyboard-inset']) {
             disown(root, 'props', name);
