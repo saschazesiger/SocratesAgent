@@ -14409,6 +14409,14 @@ async function chataccount() {
     await page.click('.so-account-menu:not([hidden]) [data-account="' + beta.id + '"]');
     ok(await awaitLog(page, 'Switched from Alpha to Beta', 15000), 'Continue with switches', '');
     ok(await awaitLog(page, 'you said: ' + 'Continue where you left off.', 15000), 'and the new account is told to go on', '');
+    const marked = await page.$eval('#chat .so-chat__log', (log) => {
+      const card = [...log.querySelectorAll('.so-msg[data-from="socrates"]')].pop();
+      const mine = [...log.querySelectorAll('.so-msg[data-role="user"]')].some((n) => /Continue where you left off/.test(n.textContent));
+      return !!card && card.dataset.role === 'peer' && /From Socrates/.test(card.textContent)
+        && /after the account switch, not from you/.test(card.textContent) && /Continue where you left off/.test(card.textContent) && !mine;
+    }).catch((e) => String(e));
+    ok(marked === true, 'which the chat shows as Socrates’, not as the person’s', String(marked));
+    await shot(page, 'chat-account-socrates');
     const gone = await page.$('#chat [data-kind="limit"] [data-action="continue-with"]');
     ok(!gone, 'and the card offers nothing more', String(!gone));
 

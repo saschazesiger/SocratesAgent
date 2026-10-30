@@ -33,6 +33,7 @@ import {
   assistantMessage, userMessage, lineHtml, askCard, askPlaces, todoList, todoItems, renewsIn, seconds, outboxState,
   backgroundJobs, jobsList, jobDetail, agentsFold, jobsFold, schedulesFold, clock, infoButton, tickLive,
   peerMessage,
+  socratesMessage,
 } from './chatparts.js';
 import { mountComposer } from './composer.js';
 import { wheelHooks } from './wheel.js';
@@ -488,7 +489,12 @@ export function mountChat(ctx) {
         rev = message.rev + ':' + waits + ':' + interrupting;
         // Another chat's agent wrote it: a card that says so, with a link to
         // that chat, which the sidebar's list may add or take away.
-        if (message.sender) {
+        if (message.socrates) {
+          make = () => socratesMessage({
+            key: entry.key, why: message.socrates, text: message.text,
+            state: message.state === 'delivered' ? '' : message.state, sendNow: waits && !interrupting,
+          });
+        } else if (message.sender) {
           rev += ':' + peersRev;
           make = () => peerMessage({
             key: entry.key, sender: message.sender, text: message.text, view,

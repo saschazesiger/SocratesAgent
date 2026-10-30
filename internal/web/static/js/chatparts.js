@@ -1044,16 +1044,40 @@ function peerCard({ key, dir, chat, title, harness, harnessLabel, text, chip = '
  * turn it says so, and offers Send now as the person's own message does.
  */
 export function peerMessage({ key, sender, text, state, view, sendNow = false }) {
-  const chip = USER_STATE[state];
-  const waiting = chip || sendNow ? html`<div class="so-msg__queue so-peer__queue">${
-    chip ? html`<span class="${state === 'failed' ? 'ds-status ds-status--error so-msg__chip' : 'ds-status so-msg__chip'}" data-chip="${state}">${raw(icon(chip.glyph, 16))}<span>${chip.word}</span></span>` : ''
-  }${
-    sendNow ? html`<button class="ds-btn ds-btn--tonal ds-btn--sm so-msg__now" type="button" data-action="send-now" data-tip="Stop what the agent is doing and give it this message now">${raw(icon('arrowUp', 16))}<span>Send now</span></button>` : ''
-  }</div>` : '';
+  const waiting = peerQueue(state, sendNow);
   return html`<article class="so-msg" data-ds-key="${key}" data-role="peer" data-state="${state || 'delivered'}">${peerCard({
     key: key + ':card', dir: 'from', chat: sender.chat, title: sender.title, harness: sender.harness,
     harnessLabel: sender.harnessLabel, text: String(text || '').replace(FROM_CHAT, ''), view,
   })}${waiting}</article>`;
+}
+
+// peerQueue is where a card's message is while it is not the agent's yet,
+// and Send now while it waits behind a running turn.
+function peerQueue(state, sendNow) {
+  const chip = USER_STATE[state];
+  return chip || sendNow ? html`<div class="so-msg__queue so-peer__queue">${
+    chip ? html`<span class="${state === 'failed' ? 'ds-status ds-status--error so-msg__chip' : 'ds-status so-msg__chip'}" data-chip="${state}">${raw(icon(chip.glyph, 16))}<span>${chip.word}</span></span>` : ''
+  }${
+    sendNow ? html`<button class="ds-btn ds-btn--tonal ds-btn--sm so-msg__now" type="button" data-action="send-now" data-tip="Stop what the agent is doing and give it this message now">${raw(icon('arrowUp', 16))}<span>Send now</span></button>` : ''
+  }</div>` : '';
+}
+
+// Why Socrates sent the agent a message itself (chatfold.js fromSocrates).
+const SOCRATES_WHY = {
+  switch: 'after the account switch',
+  limit: 'after the limit renewed',
+};
+
+/**
+ * socratesMessage is a message Socrates sent the agent itself - go on after
+ * an account switch or a renewed limit, start stopped background work again -
+ * as a card of Socrates' on the agent's side, as another chat's is, never a
+ * bubble of the person's.
+ */
+export function socratesMessage({ key, why, text, state, sendNow = false }) {
+  return html`<article class="so-msg" data-ds-key="${key}" data-role="peer" data-from="socrates" data-state="${state || 'delivered'}"><section class="ds-card so-peer" data-ds-key="${key + ':card'}" data-dir="from"><div class="ds-card__row"><h3 class="ds-card__title so-peer__title">${raw(icon('sync', 18))}<span class="so-peer__who">From Socrates</span></h3></div><p class="so-peer__meta ds-meta">${raw(icon('chat', 16))}<span>${
+    'Sent to the agent ' + (SOCRATES_WHY[why] || '') + ', not from you'
+  }</span></p>${text ? html`<div class="so-md so-peer__text">${markdown(text)}</div>` : ''}</section>${peerQueue(state, sendNow)}</article>`;
 }
 
 // sentMessage is a send_to_chat call in the answer: the message it carried,

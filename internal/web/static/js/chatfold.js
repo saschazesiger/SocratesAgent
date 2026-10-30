@@ -232,6 +232,23 @@ function fromChat(ev) {
   return { sender: { chat: old[3], title: old[1], harnessLabel: old[2] }, text: ev.text.slice(old[0].length) };
 }
 
+// A message Socrates sent the agent itself, not the person: the Continue or
+// the restart of an account switch (client_id "<switch>:continue") and the
+// Continue after a limit renewed ("auto-continue-…"). It is a card of
+// Socrates' (chatparts.js socratesMessage) that says why, so the notice
+// before it says nothing more.
+const SOCRATES_SENT = { switch_message: 'switch', auto_continued: 'limit' };
+
+// fromSocrates is why Socrates sent a user message: 'switch' or 'limit', or
+// '' for one of the person's or another chat's.
+function fromSocrates(ev) {
+  if (ev.role !== 'user') return '';
+  const id = String(ev.client_id || '');
+  if (id.endsWith(':continue')) return 'switch';
+  if (id.startsWith('auto-continue-')) return 'limit';
+  return '';
+}
+
 function line(chat, ev, data) {
   add(chat, { key: 'l:' + ev.seq, type: 'line', line: { seq: ev.seq, at: ev.at, ...data }, rev: ++chat.rev });
 }
@@ -385,7 +402,7 @@ export function apply(chat, ev) {
         id: ev.message_id, role: ev.role || 'assistant', state: ev.state || '', clientId: ev.client_id || '',
         text: ev.text || '', attachments: ev.attachments || [], answerTo: ev.answer_to || '',
         turnId: ev.turn_id || '', model: ev.model || '', at: ev.at || 0, parts: [], cuts: [], rev: ++chat.rev,
-        ...fromChat(ev),
+        socrates: fromSocrates(ev), ...fromChat(ev),
       };
       chat.messages.set(message.id, message);
       // What the person says is the newest word; an answer goes above what
@@ -519,6 +536,8 @@ export function apply(chat, ev) {
       // A message from another chat's agent is a card that names the chat
       // (chatparts.js peerMessage): the notice before it says nothing more.
       if (ev.code === 'chat_message') break;
+      // Neither does the notice before a message of Socrates' own.
+      if (SOCRATES_SENT[ev.code]) break;
       line(chat, ev, { kind: 'notice', code: ev.code || '', text: ev.text || '', askId: ev.ask_id || '' });
       break;
     }

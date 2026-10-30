@@ -195,6 +195,10 @@ const (
 	// the chat's agent started (run_tests), sent by Socrates when the run
 	// ended. It is the server's, through the send it comes with.
 	NoticeTestResults = "test_results"
+	// NoticeSwitchMessage: the message after it is Socrates', sent by an
+	// account switch (agenthost): go on with the turn it stopped, or start
+	// again the background work the restart stopped.
+	NoticeSwitchMessage = "switch_message"
 )
 
 // ErrorAuth is an error event's code for a sign-in or key the provider

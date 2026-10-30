@@ -202,8 +202,8 @@ function openMenu(slot, button) {
 }
 
 // choose switches the chat to an account: at once when it is idle, and when
-// a turn runs, now (the turn stops and the new account carries it on) or
-// once the turn is done, as the person says. An account that is not signed
+// a turn or background work runs, now (the turn stops and the new account
+// carries it on) or once the agent is done, quietly, as the person says. An account that is not signed
 // in is signed in first. What does not happen is said in the chat's dock
 // (`error`), where the composer is, never over it.
 async function choose({ session, chat, error }, id, opener) {
@@ -223,10 +223,10 @@ async function choose({ session, chat, error }, id, opener) {
   }
   let when = 'now';
   let goOn = false;
-  if (chat && chat.turn && id !== current) {
-    when = await askWhen(accounts.byId(current), target, opener);
+  if (chat && (chat.turn || chat.tasks > 0) && id !== current) {
+    when = await askWhen(accounts.byId(current), target, opener, !!chat.turn);
     if (!when) return;
-    goOn = when === 'now';
+    goOn = when === 'now' && !!chat.turn;
   }
   try {
     await accounts.switchChat(session.id, id, { when, goOn });
@@ -236,16 +236,18 @@ async function choose({ session, chat, error }, id, opener) {
   }
 }
 
-// askWhen is the question a switch during a turn asks: "now" or
-// "after_turn", or null for neither.
-async function askWhen(from, to, opener) {
+// askWhen is the question a switch during a turn (or while background work
+// runs) asks: "now" or "after_turn", or null for neither. After the turn the
+// switch waits for the agent and its background work, and the agent goes on
+// without being told anything.
+async function askWhen(from, to, opener, turn) {
   const cancel = el('button', { class: 'ds-btn ds-btn--text', type: 'button', 'data-close': true, text: 'Cancel' });
   const now = el('button', { class: 'ds-btn ds-btn--tonal', type: 'button', 'data-when': 'now', text: 'Switch now' });
   const later = el('button', { class: 'ds-btn ds-btn--primary', type: 'button', 'data-when': 'after_turn', text: 'After this turn' });
   const { dialog, shown } = openDialog({
     title: 'Switch to ' + to.label + '?',
-    body: 'A turn is running' + (from ? ' on ' + from.label : '') + '. Switch now stops it, and ' + to.label
-      + ' carries it on; after this turn lets it finish first.',
+    body: (turn ? 'A turn is running' : 'The agent has background work running') + (from ? ' on ' + from.label : '') + '. Switch now stops it, and '
+      + to.label + ' is told to go on. After this turn waits until the agent is done, then switches quietly: the agent goes on as if nothing happened.',
     actions: [cancel, now, later],
     opener,
   });

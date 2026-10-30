@@ -184,6 +184,10 @@ func TestASwitchDuringATurnInterruptsItAndContinues(t *testing.T) {
 	if got := lastReply(events); !strings.HasPrefix(got, "you said: "+ContinueText) || end.TurnID == "" {
 		t.Fatalf("the continue: %q", got)
 	}
+	// The chat shows the continue as Socrates', not as the person's.
+	if !noticeBefore(events, agent.NoticeSwitchMessage, ContinueText) {
+		t.Fatal("the continue has no switch_message notice before it")
+	}
 	if accounts := strings.Join(turnAccounts(events), ","); accounts != "acct-a,acct-b" {
 		t.Fatalf("the turns ran on %s", accounts)
 	}
@@ -191,6 +195,19 @@ func TestASwitchDuringATurnInterruptsItAndContinues(t *testing.T) {
 	if before := agent.Fold(events[:indexOf(events, agent.TypeAccountSwitched)]); before.LastTurn == nil || !before.LastTurn.Stopped {
 		t.Fatal("the turn the switch stopped is not marked as stopped")
 	}
+}
+
+// noticeBefore is whether the journal has a notice with this code right
+// before a user message with this text.
+func noticeBefore(events []agent.Event, code, text string) bool {
+	for i := 1; i < len(events); i++ {
+		ev := events[i]
+		if ev.Type == agent.TypeMessage && ev.Role == agent.RoleUser && ev.Text == text {
+			prev := events[i-1]
+			return prev.Type == agent.TypeNotice && prev.Code == code && prev.Text != ""
+		}
+	}
+	return false
 }
 
 func indexOf(events []agent.Event, typ string) int {
@@ -256,6 +273,38 @@ func TestASwitchAfterTheTurnWaitsForIt(t *testing.T) {
 	p := agent.Fold(events)
 	if p.LastTurn == nil || p.LastTurn.Outcome != agent.OutcomeCompleted || p.Account != "acct-b" || p.LastTurn.Stopped {
 		t.Fatalf("last turn %+v, account %s", p.LastTurn, p.Account)
+	}
+	if got := cl.reply("m2", "/account"); got != "account acct-b, no key" {
+		t.Fatalf("after the switch: %q", got)
+	}
+}
+
+// A switch after the turn also waits for the background work, which the
+// restart would stop: the agent is not interrupted and told nothing, as if
+// nothing had happened.
+func TestASwitchAfterTheTurnWaitsForBackgroundWorkAndSaysNothing(t *testing.T) {
+	r := newSwitchRig(t)
+	r.launchOn("acct-a", "", "")
+	cl := r.dial(0)
+	if got := cl.reply("m1", "/bg 2"); got != "started a background task" {
+		t.Fatalf("reply %q", got)
+	}
+	cl.switchTo("s1", "acct-b", "", r, WhenAfterTurn, false)
+	if first := cl.ack("s1", 5*time.Second); !first.Pending {
+		t.Fatalf("the switch waiting for the background work was made at once: %+v", first)
+	}
+	cl.until(15*time.Second, isType(agent.TypeAccountSwitched))
+	events := r.journal()
+	if before := agent.Fold(events[:indexOf(events, agent.TypeAccountSwitched)]); before.Tasks != 0 {
+		t.Fatalf("switched with %d background tasks running", before.Tasks)
+	}
+	for _, ev := range events {
+		if ev.Type == agent.TypeMessage && ev.Role == agent.RoleUser && ev.ClientID != "m1" {
+			t.Fatalf("the agent was told %q", ev.Text)
+		}
+		if ev.Type == agent.TypeNotice && (ev.Code == agent.NoticeBackgroundStopped || ev.Code == agent.NoticeSwitchMessage) {
+			t.Fatalf("notice %s: %s", ev.Code, ev.Text)
+		}
 	}
 	if got := cl.reply("m2", "/account"); got != "account acct-b, no key" {
 		t.Fatalf("after the switch: %q", got)

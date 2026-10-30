@@ -148,13 +148,18 @@ func (h *host) switchCmd(cmd Command) any {
 }
 
 // busy is whether the agent is working on something a switch after the turn
-// waits for: a turn, or a message it has not taken up - unless what it has
-// not taken up is held behind a limit (the adapters hold their queue after a
-// limited turn), which waits for the switch.
+// waits for: a turn, background work (a shell, a subagent or a workflow
+// running beside the turns, which the restart would stop and the agent would
+// have to be told to start again), or a message it has not taken up - unless
+// what it has not taken up is held behind a limit (the adapters hold their
+// queue after a limited turn), which waits for the switch. What it waits for
+// is what lets the switch go unnoticed by the agent: no turn stopped, nothing
+// to tell it. A schedule is not waited for (a loop's next wakeup would never
+// let it go): the agent is asked to schedule it again.
 func (h *host) busy() bool {
 	busy := false
 	h.rec.View(func(p *agent.Projection) {
-		busy = p.Turn != nil || (len(p.Undelivered()) > 0 && !heldByLimit(p))
+		busy = p.Turn != nil || p.Tasks > 0 || (len(p.Undelivered()) > 0 && !heldByLimit(p))
 	})
 	return busy
 }
@@ -396,7 +401,7 @@ func restartText(stopped []string, goOn bool) string {
 
 // sendGoOn is what the new process is told after a switch: the background
 // work to start again, and the Continue; the Continue alone when nothing was
-// stopped. It goes as one message of the person's, under the switch's
+// stopped. It goes as one message of Socrates', under the switch's
 // client_id, so a switch sent twice says it once.
 func (h *host) sendGoOn(ctx context.Context, cmd Command, stopped []string, goOn bool) {
 	switch {
@@ -551,11 +556,12 @@ func (h *host) resendOwed(ctx context.Context) {
 }
 
 // sendContinue tells the agent on the new account to go on, as a message of
-// the person's: the turn the limit stopped continues there. Its client_id
+// Socrates': the turn the limit stopped continues there. Its client_id
 // is the switch's own, marked, so a switch sent twice says it once.
 func (h *host) sendContinue(ctx context.Context, cmd Command) { h.sendText(ctx, cmd, ContinueText) }
 
-// sendText sends text as the switch's message of the person's.
+// sendText sends text as the switch's message, which the chat shows as
+// Socrates' (notice switch_message before it), not as one of the person's.
 func (h *host) sendText(ctx context.Context, cmd Command, text string) {
 	clientID := ""
 	if cmd.ClientID != "" {
@@ -568,7 +574,8 @@ func (h *host) sendText(ctx context.Context, cmd Command, text string) {
 	}
 	msg := agent.Event{Type: agent.TypeMessage, MessageID: newID("m_"), Role: agent.RoleUser,
 		State: agent.MessagePending, ClientID: clientID, Text: text}
-	if _, err := h.rec.EmitDurable(msg); err != nil {
+	note := agent.Event{Type: agent.TypeNotice, Code: agent.NoticeSwitchMessage, Text: "Sent by Socrates after the account switch."}
+	if _, err := h.rec.EmitDurable(note, msg); err != nil {
 		log.Printf("journal: %v", err)
 		return
 	}

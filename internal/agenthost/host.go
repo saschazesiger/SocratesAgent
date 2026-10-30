@@ -601,7 +601,7 @@ func (h *host) record(events ...agent.Event) {
 	}
 	h.touch()
 	for _, ev := range events {
-		if ev.Type == agent.TypeTurnEnded {
+		if ev.Type == agent.TypeTurnEnded || ev.Type == agent.TypeTasks {
 			// A switch that waits for the agent to be done may be due.
 			go h.runPending()
 			break

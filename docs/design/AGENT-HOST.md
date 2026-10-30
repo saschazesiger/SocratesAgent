@@ -300,7 +300,7 @@ older version the server sends the note in the text instead (`agenthost.FoldNote
 | `stop_task` | `client_id`, `task` | journals `command{args: task}`, `agent.TaskStopper.StopTask` (Claude: the control request `stop_task`, §5.1): one background task - a shell, a subagent, a workflow - by the id its part's content names (`task.id`, `agent.id`, `workflow.task_id`); the agent reports its end as any other. An adapter without it: `unsupported` |
 | `ask` (version 2) | `payload` (an `ask_user` payload) | a local tool's question (`socrates mcp-ask`, §5.3): journals `ask{turn_id: the running turn}` and acks with its `ask_id`; the answer comes back on this connection as an `answer` frame (§4.4). Refused (`bad_request`) on a connection that said hello with protocol 1, without a payload, or while no turn runs (the CLI calls tools only inside a turn, so such a question comes from a call already withdrawn), `not_running` without an agent |
 
-| `switch_account` | `client_id`, `account`, `env` (required), `secret_env`, `reason`?, `when` (`now`\|`after_turn`), `continue`? | WP7, §11: journals `command{to, reason}`; `after_turn` while a turn runs (or a message waits that a limit does not hold) keeps it until the turn ends and acks it `pending` at once, then once more without `pending` when it is made or a newer switch replaces it; otherwise interrupts a running turn and waits for its end (30 s), moves the agent to the account, journals `account.switched` and acks. Without `env`: `bad_request` |
+| `switch_account` | `client_id`, `account`, `env` (required), `secret_env`, `reason`?, `when` (`now`\|`after_turn`), `continue`? | WP7, §11: journals `command{to, reason}`; `after_turn` while a turn runs, background work runs (`tasks` above 0) or a message waits that a limit does not hold keeps it until the turn ends and acks it `pending` at once, then once more without `pending` when it is made or a newer switch replaces it; otherwise interrupts a running turn and waits for its end (30 s), moves the agent to the account, journals `account.switched` and acks. Without `env`: `bad_request` |
 
 **switch_account.** The account's whole environment comes with the command: `env` without any
 key, and the key variables in `secret_env`, sealed for this chat (§11), which the host opens with
@@ -337,7 +337,13 @@ as a user message with `client_id` `<the switch's client_id>:continue`: what "Co
 automatic switch at a limit send. A switch to the account the chat is on journals nothing, and
 continues only when the last turn ended `limited` or `interrupted` and the agent has taken nothing
 up since: a second "Continue with", one from another device or an automatic switch on top of one
-by hand does not make the agent continue twice. A host that boots with a spec whose `account` differs from the journal's last
+by hand does not make the agent continue twice. Every message a switch sends (the restart, the
+continue) has `notice{switch_message}` right before it and a `client_id` ending in `:continue`: the chat
+shows it as a card "From Socrates" on the agent's side, as it shows another chat's message, never
+as the person's bubble (so is the Continue after a limit renewed, `auto-continue-…`). An `after_turn` switch also waits for
+the background work, so that it stops nothing and sends nothing: the agent goes on as if nothing
+had happened. Schedules are not waited for (a loop would never let it go); they are named in the
+restart. A host that boots with a spec whose `account` differs from the journal's last
 (the switch was asked for while no host ran) journals `account.switched{reason: switch_reason}` first.
 
 Commands are processed one at a time per host, in arrival order. **Idempotency:** a `client_id`
