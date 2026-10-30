@@ -330,7 +330,7 @@ export function mount(ctx) {
     morph($('bvBody'), html`
       ${bug.description ? html`<section class="ds-card" data-ds-key="about" aria-labelledby="bvAboutTitle">
         <h3 class="ds-card__title" id="bvAboutTitle">What the analyst found</h3>
-        <div class="ds-prose ds-prose--dense so-break">${markdown(V.stripHeading(bug.description))}</div>
+        <div class="ds-prose ds-prose--dense so-break">${markdown(V.cellIdsAsCode(V.stripHeading(bug.description)))}</div>
       </section>` : ''}
       ${cellsCard(bug, data.cells || [])}
       <div class="ds-grid-2" data-ds-key="grid">

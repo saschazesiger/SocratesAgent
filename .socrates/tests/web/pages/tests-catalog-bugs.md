@@ -13,8 +13,8 @@ retry a run here, never change a bug's status, severity or note and never make a
    Expect: the catalog's size ("10 tests in 2 areas"), Read again and Write a test with an agent, a search, the chips Problems, Flaky and the priorities; per area a card with "Latest: Run 4" in its head (or the newest run that ran it) and its tests in catalog order, P0 first. Each test shows its id and how it stands ("failing since Run 4", "an issue since Run 1", "flaky"), and its run only where it is not the area's latest.
 2. Look at the tables (on a phone, the lists of cells) from top to bottom.
    Expect: on a desktop or tablet the two areas' columns (phone, tablet, desktop) line up from card to card and no row has a stray line under its first column only; a cell is its verdict with the locale in a quieter line under it. No sideways page scroll; a wide table scrolls inside itself.
-3. Scroll to Tools at the end and open "How secrets are read".
-   Expect: the tool's name, its secret names and pool; the command that reads the secrets only inside the disclosure, with the line that the values are never shown. No secret value is printed anywhere on the page.
+3. Scroll to the end of the Tests view.
+   Expect: the last area's card ends the view. The Demo shop's catalog has no tools, so there is no Tools card (a catalog with tools lists them here); no secret value or secrets command is printed anywhere on the page.
 4. Open the test "The search finds a product".
    Expect: its head (file, cells, "Fail in Run 4, since Run 4", P1 and its tags) with Change it with an agent and Run this test; History as a grid, the newest run first (on a phone a row per cell with its last runs as glyphs), a legend in the order Fail, Issue, Blocked, Pass; What it does with its steps; its open bug.
 5. Press a verdict in the history, look, and close the viewer.

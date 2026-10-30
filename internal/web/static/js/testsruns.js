@@ -685,7 +685,7 @@ export function mount(ctx) {
           <summary><span class="ds-disclosure__title">${bug.id + ' · ' + bug.title}</span><span class="ds-disclosure__meta">${V.severityWord(bug.severity) + ' · ' + V.plural((bug.cells || []).length, 'cell')}</span>${raw(icon('chevronDown', 20, 'ds-chevron'))}</summary>
           <div class="ds-disclosure__body so-tests__stack">
             <p class="so-tests__verdict">${V.severityChip(bug.severity)}<a class="ds-link-btn" href="${V.paths.page({ repo: state.repo, view: 'bugs', bug: bug.id })}">${'Open ' + bug.id + ' in Bugs: triage, history'}</a></p>
-            ${bug.description ? html`<div class="ds-prose ds-prose--dense so-break">${markdown(bug.description)}</div>` : ''}
+            ${bug.description ? html`<div class="ds-prose ds-prose--dense so-break">${markdown(V.cellIdsAsCode(bug.description))}</div>` : ''}
             ${(bug.cells || []).length ? html`<p class="so-tests__links">${(bug.cells || []).map((ref) => {
               const r = byCell.get(ref);
               return r ? html`<button class="ds-link-btn" type="button" data-cell="${r.id}" data-bug-cells="${bug.id}">${r.title + ' · ' + (V.dimsWords(r.dims) || r.cell)}</button>` : html`<span class="ds-meta">${ref}</span>`;
@@ -695,7 +695,7 @@ export function mount(ctx) {
       </section>
       ${conclusions ? html`<section class="ds-card" aria-labelledby="rvConclTitle" data-ds-key="conclusions">
         <h3 class="ds-card__title" id="rvConclTitle">Conclusions</h3>
-        <div class="ds-prose ds-prose--dense so-break">${markdown(V.stripHeading(conclusions))}</div>
+        <div class="ds-prose ds-prose--dense so-break">${markdown(V.cellIdsAsCode(V.stripHeading(conclusions)))}</div>
       </section>` : ''}`);
   }
 

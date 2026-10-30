@@ -312,6 +312,7 @@
 }
 
 .so-tests-live__shot {
+  position: relative;
   display: grid;
   place-items: center;
   aspect-ratio: 16 / 10;
@@ -320,7 +321,12 @@
   overflow: hidden;
 }
 
+/* Laid over the frame rather than sized by it: Safari leaves a portrait
+   screenshot unpainted when a grid item takes 100% of an aspect-ratio
+   box's height under object-fit (seen on macOS and iOS, B-27). */
 .so-tests-live__shot img {
+  position: absolute;
+  inset: 0;
   display: block;
   inline-size: 100%;
   block-size: 100%;

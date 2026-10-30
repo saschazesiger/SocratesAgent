@@ -656,7 +656,7 @@ export function mount(ctx) {
           </tr>`;
         })}</tbody>
       </table></div>`}
-      ${used.length ? html`<p class="ds-meta so-tests-hist__legend" aria-hidden="true"><span class="ds-parts"><span class="ds-parts__list">${used.map((v) => html`<span><span class="${'so-tests-nowrap so-mark so-mark--' + v}">${raw(icon(V.VERDICT[v].glyph, 16))}</span> ${V.verdictWord(v)}</span>`)}<span>– not in that run</span></span></span></p>` : ''}
+      ${used.length ? html`<p class="ds-meta so-tests-hist__legend" aria-hidden="true"><span class="ds-parts"><span class="ds-parts__list">${used.map((v) => html`<span class="so-tests-nowrap"><span class="${'so-mark so-mark--' + v}">${raw(icon(V.VERDICT[v].glyph, 16))}</span> ${V.verdictWord(v)}</span>`)}<span class="so-tests-nowrap">– not in that run</span></span></span></p>` : ''}
     </section>`;
   }
 

@@ -555,6 +555,17 @@ export function poolList(pools, cells) {
   </li>`)}</ul>`)}`;
 }
 
+/**
+ * cellIdsAsCode puts the cell ids in an analyst's Markdown
+ * (shop/search@phone.de) in code spans, so that they read as ids and are
+ * never linked as mail addresses; text already in code is left alone.
+ */
+export function cellIdsAsCode(md) {
+  return String(md || '').split(/(```[\s\S]*?```|`[^`\n]*`)/).map((part, i) => (i % 2
+    ? part
+    : part.replace(/(^|[\s(\[,;:])([\w.-]+(?:\/[\w.-]+)+@[\w.-]*[\w-])(?=$|[\s).\],;:!?])/g, '$1`$2`'))).join('');
+}
+
 /** stripHeading drops a leading "# Conclusions" (or any first-level heading) the card titles already. */
 export function stripHeading(md) {
   return String(md || '').replace(/^\s*#\s+[^\n]*\n+/, '');
