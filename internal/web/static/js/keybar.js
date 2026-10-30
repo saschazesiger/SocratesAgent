@@ -231,11 +231,70 @@ export function mountKeyBar(host, term, socket) {
  *   - data-so-keyboard: the keyboard is up for a field of the page, not for
  *     the terminal's or the editor's - the bar holds the switch that puts
  *     that one away - so the bar steps aside only for the page's own fields
- *     (so-chat.css, so-question.css).
+ *     (so-chat.css, so-question.css);
+ *   - --so-keyboard-lost: what of the frame's foot the keyboard covers
+ *     although the visual viewport says it is in view (Chrome on Android,
+ *     drawn edge to edge), which .so-main keeps clear;
+ * and the page is panned back to its top when the browser panned the visual
+ * viewport down past the frame (keyboardPan).
  */
 // Below this many pixels of visible height - a phone on its side with its
 // keyboard up - the top bar steps aside (so-frame.css, data-so-short).
 const SHORT_VIEW = 300;
+
+// How much shorter than the window the visual viewport is when a keyboard is
+// up: the browser's own bars are less (keyboard.js says the same).
+const KEYBOARD_GAP = 150;
+
+// Chrome on Android 15 and later draws a page with viewport-fit=cover edge to
+// edge: the page runs on under the gesture bar, and env(safe-area-inset-bottom)
+// says how far (24px on a Pixel 9). With the keyboard up that inset reads 0,
+// and the visual viewport is still as tall as if the bar's strip were left
+// out of the keyboard: its foot - the key bar's, the composer's - is under
+// the keyboard by exactly the inset that went (measured on a Pixel 9,
+// Android 16, Chrome 152: visualViewport.height 460.6, the keyboard's edge at
+// 436.6; without viewport-fit=cover both are 436.6). An iPhone keeps its
+// inset under its keyboard, and its visual viewport stops at the keyboard.
+const ANDROID = /Android/i.test(navigator.userAgent || '');
+
+// The bottom inset, read off an element that is as tall as it: a value of
+// env() is not something script can ask for.
+let insetProbe = null;
+function bottomInset() {
+  if (!insetProbe || !insetProbe.isConnected) {
+    insetProbe = document.createElement('div');
+    insetProbe.className = 'so-inset-probe';
+    insetProbe.setAttribute('aria-hidden', 'true');
+    insetProbe.setAttribute('data-ds-keep', '');
+    document.body.append(insetProbe);
+  }
+  return insetProbe.getBoundingClientRect().height;
+}
+
+/**
+ * keyboardPan puts the page back at its top when the browser panned the
+ * visual viewport down while a keyboard is up.
+ *
+ * Chrome on Android shrinks only the visual viewport for a keyboard; the
+ * layout viewport keeps the whole window, and the frame is the visual
+ * viewport's height at its top (DS --ds-viewport-height), so below the frame
+ * there is a keyboard's height of empty page the visual viewport can be
+ * panned into: by scrollIntoView() of anything near the frame's foot (the
+ * device test tool does it before each tap: B-29), by a focus scrolled into
+ * view, by a swipe on the bar. The frame then stands half above the screen -
+ * no top bar, no prompt, a white pane over the key bar - until the keyboard
+ * goes. window.scrollY is 0 throughout, so scrolling the window, as DS does
+ * for a page iOS panned up, moves nothing: an element at the top scrolled
+ * into view pans the visual viewport back. Unzoomed only - a pinch zoom is
+ * the person's.
+ */
+function keyboardPan(vv) {
+  if (vv.offsetTop < 1 || Math.abs((vv.scale || 1) - 1) > 0.01) return;
+  if (window.innerHeight - vv.height < KEYBOARD_GAP) return;
+  // A window that did scroll is DS's to scroll back (followViewport).
+  if (window.scrollY >= 1) return;
+  document.documentElement.scrollIntoView({ block: 'start', inline: 'nearest', behavior: 'instant' });
+}
 
 export function followViewport() {
   DS.dom.followViewport();
@@ -243,9 +302,22 @@ export function followViewport() {
   if (!vv) return () => {};
   const root = document.documentElement;
   const app = document.querySelector('.ds-app');
+  // The bottom inset while no keyboard is up, which the keyboard takes away.
+  let openInset = ANDROID ? bottomInset() : 0;
   const apply = () => {
     const short = vv.height < SHORT_VIEW;
     const page = typingInPage();
+    const keyboard = window.innerHeight - vv.height >= KEYBOARD_GAP;
+    if (ANDROID) {
+      const inset = bottomInset();
+      // Only a viewport with nothing over it says what the inset is without
+      // a keyboard: one on its way up has already taken it.
+      if (window.innerHeight - vv.height < 2) openInset = inset;
+      const lost = keyboard && inset === 0 ? openInset : 0;
+      if (lost) root.style.setProperty('--so-keyboard-lost', lost + 'px');
+      else root.style.removeProperty('--so-keyboard-lost');
+    }
+    keyboardPan(vv);
     root.toggleAttribute('data-so-short', short);
     root.toggleAttribute('data-so-keyboard', root.hasAttribute('data-ds-keyboard') && page);
     // In touch mode the top bar gives its row to what is being typed while
@@ -262,17 +334,25 @@ export function followViewport() {
   const verdict = new MutationObserver(apply);
   verdict.observe(root, { attributes: true, attributeFilter: ['data-ds-keyboard'] });
   const refocus = () => setTimeout(apply, 0);
+  const pan = () => keyboardPan(vv);
+  // The inset can go a frame after the viewport shrank: the probe says when.
+  const inset = ANDROID && typeof ResizeObserver === 'function' ? new ResizeObserver(apply) : null;
+  if (inset) inset.observe(insetProbe);
   vv.addEventListener('resize', apply);
+  vv.addEventListener('scroll', pan);
   document.addEventListener('focusin', refocus);
   document.addEventListener('focusout', refocus);
   apply();
   return () => {
     verdict.disconnect();
+    if (inset) inset.disconnect();
     vv.removeEventListener('resize', apply);
+    vv.removeEventListener('scroll', pan);
     document.removeEventListener('focusin', refocus);
     document.removeEventListener('focusout', refocus);
     root.removeAttribute('data-so-short');
     root.removeAttribute('data-so-keyboard');
+    root.style.removeProperty('--so-keyboard-lost');
     if (app) app.classList.remove('ds-app--keyboard-hides-bar');
   };
 }

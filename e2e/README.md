@@ -197,6 +197,8 @@ touch mode, except `options`, which measures the narrowest phone in use,
 | `webglrenders` | the shipped renderer paints the terminal |
 | `touchscroll` | a finger dragged down the pane reaches what scrolled off it, a drag back up returns to the live bottom, a tap is still the tap that puts the keyboard on the pane, and with tmux's mouse off the drag types nothing |
 | `keybar` | a touch screen gets the key bar before anything asks for it and a desk does not, the ⋮ menu hides and shows it and is remembered per device; it sends the right bytes, a sticky `Ctrl` turns the next letter into a control code, and a physical keystroke does not take it away again |
+| `keyboard-pan` | an Android keyboard over the terminal (an Android user agent, a 24px bottom inset the keyboard takes away): the key bar stands that inset higher, clear of the keyboard, and a visual viewport panned down past the frame is panned back, unless the page is zoomed |
+| `paused-deadline` | a page held still past a deadline: one on a running page expires on time, a late one waits a grace, and a reply that came just after the pause is read with no "Connection lost" |
 | `offlineonce` | a whole command typed with the network off arrives **exactly once** when it comes back, the lost connection is visible while it is gone, and the app shell still opens offline, on Home, without claiming there are no sessions |
 | `sigtermreattach` | the server is killed mid-session and restarted; the pane still holds what was typed and the session is running |
 | `takeover` | a second tab with the same viewer id closes the first socket with 1012 and drives the session |

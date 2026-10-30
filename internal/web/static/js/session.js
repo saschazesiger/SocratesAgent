@@ -19,7 +19,7 @@ import {
   api, el, toast, infoTip, confirmDialog, alertDialog, promptDialog, errorMessage, isOffline, isBusyConflict,
   setClass, onWake, clientKey, CONNECTION_GRACE, restoreFocus, setFocusFallback, toastsStay, onToastsStay,
 } from './api.js';
-import { connectionSource } from './net.js';
+import { connectionSource, deadline } from './net.js';
 import { agentMark, agentMarkHtml } from './logos.js';
 import {
   MORE_KEY, FINISHED_KEY, FINISHED_LABEL, SHELVES, IDE, foldersOf, folderKeyOf, ideOf, momentOf, movesRow, notStarted,
@@ -256,7 +256,7 @@ class TermSocket {
   stopTimers() {
     if (this.helloDeadline) { clearTimeout(this.helloDeadline); this.helloDeadline = null; }
     if (this.pingTimer) { clearInterval(this.pingTimer); this.pingTimer = null; }
-    if (this.pingDeadline) { clearTimeout(this.pingDeadline); this.pingDeadline = null; }
+    if (this.pingDeadline) { this.pingDeadline.clear(); this.pingDeadline = null; }
     if (this.lagTimer) { clearInterval(this.lagTimer); this.lagTimer = null; }
     if (this.inputTimer) { clearInterval(this.inputTimer); this.inputTimer = null; }
   }
@@ -365,7 +365,7 @@ class TermSocket {
         this.acked(Number(frame.seq) || 0);
         break;
       case 'pong':
-        if (this.pingDeadline) { clearTimeout(this.pingDeadline); this.pingDeadline = null; }
+        if (this.pingDeadline) { this.pingDeadline.clear(); this.pingDeadline = null; }
         break;
       default:
         break;
@@ -478,14 +478,16 @@ class TermSocket {
       if (!this.isOpen()) return;
       this.pingId += 1;
       this.write(JSON.stringify({ t: 'ping', id: this.pingId }));
-      if (this.pingDeadline) clearTimeout(this.pingDeadline);
-      this.pingDeadline = setTimeout(() => {
+      if (this.pingDeadline) this.pingDeadline.clear();
+      // A deadline (net.js): a pong that came while the page was paused is
+      // read before the deadline counts it as missed.
+      this.pingDeadline = deadline(PING_TIMEOUT, () => {
         // Silence is not failure on a terminal - a pane is legitimately quiet
         // for hours - but a missed pong is.
         this.pingDeadline = null;
         this.report('connecting', { immediate: true });
         this.reconnect(0);
-      }, PING_TIMEOUT);
+      });
     };
     setTimeout(() => {
       if (this.stopped || !this.isOpen()) return;

@@ -1826,6 +1826,171 @@ async function keybar() {
   } finally { await s.stop(); }
 }
 
+/* ------------------------------------------------------- 12b. keyboardpan */
+
+// The terminal's frame against an Android keyboard (B-29), on what Chromium
+// can be made to report: an Android Chrome that shrinks only the visual
+// viewport for its keyboard, a page drawn edge to edge (a bottom inset of
+// 24px that the keyboard takes away), and a visual viewport panned down past
+// the frame - what the device test tool's scrollIntoView() did before each
+// tap. Measured on a Pixel 9 (Android 16, Chrome 152): visualViewport.height
+// 460.6 with the keyboard's edge at 436.6, and after a scrollIntoView() of
+// Enter visualViewport.offsetTop 198.9 with window.scrollY 0.
+async function keyboardpan() {
+  const s = await start({ viewport: { width: 412, height: 802 }, touch: true });
+  try {
+    const cdp = await s.context.newCDPSession(s.page);
+    const ua = await s.page.evaluate(() => navigator.userAgent);
+    await cdp.send('Emulation.setUserAgentOverride', {
+      userAgent: ua.replace(/\(X11;[^)]*\)/, '(Linux; Android 16; Pixel 9)').replace(/HeadlessChrome/, 'Chrome') + ' Mobile',
+    });
+    await cdp.send('Emulation.setSafeAreaInsetsOverride', { insets: { bottom: 24 } });
+    await setup(s.page, s.url);
+    await useDomRenderer(s);
+    await open(s);
+    await startSession(s.page, 'shell');
+    await s.page.waitForSelector('#term .xterm', { timeout: 15000 });
+    await s.page.waitForSelector('#keybar:not([hidden])', { timeout: 10000 });
+    await wait(400);
+
+    const frame = () => s.page.evaluate(() => {
+      const root = document.documentElement;
+      const bar = document.getElementById('keybar').getBoundingClientRect();
+      return {
+        android: /Android/.test(navigator.userAgent),
+        lost: root.style.getPropertyValue('--so-keyboard-lost'),
+        pad: getComputedStyle(document.getElementById('mainColumn')).paddingBottom,
+        vh: root.style.getPropertyValue('--ds-viewport-height'),
+        barBottom: Math.round(bar.bottom),
+        inner: innerHeight,
+      };
+    });
+    const before = await frame();
+    ok(before.android && before.lost === '' && before.pad === '0px' && before.barBottom > before.inner - 48,
+      'with no keyboard nothing is held back at the foot: the inset is the frame’s own', JSON.stringify(before));
+
+    // The keyboard comes up for the pane: the visual viewport is 340px
+    // shorter, and the inset is gone with it, as Chrome on Android says.
+    await s.page.click('#kbBtn');
+    await s.page.evaluate(() => {
+      Object.defineProperty(window.visualViewport, 'height', { configurable: true, get: () => window.innerHeight - 340 });
+      window.visualViewport.dispatchEvent(new Event('resize'));
+    });
+    await cdp.send('Emulation.setSafeAreaInsetsOverride', { insets: { bottom: 0 } });
+    await wait(400);
+    const up = await frame();
+    ok(up.lost === '24px' && up.pad === '24px' && up.barBottom === parseInt(up.vh, 10) - 24,
+      'with the keyboard up the key bar stands the lost inset higher, clear of the keyboard Chrome draws over the visual viewport’s foot',
+      JSON.stringify(up));
+
+    // The visual viewport panned down past the frame, the window not
+    // scrolled at all: the page is put back at its top.
+    const pan = (offset, scale) => s.page.evaluate(([o, z]) => {
+      window.__panned = [];
+      const root = document.documentElement;
+      root.scrollIntoView = (options) => { window.__panned.push(options); };
+      Object.defineProperty(window.visualViewport, 'offsetTop', { configurable: true, get: () => o });
+      Object.defineProperty(window.visualViewport, 'scale', { configurable: true, get: () => z });
+      window.visualViewport.dispatchEvent(new Event('scroll'));
+      const asked = window.__panned.slice();
+      delete root.scrollIntoView;
+      delete window.visualViewport.offsetTop;
+      delete window.visualViewport.scale;
+      return { asked, scrollY: window.scrollY };
+    }, [offset, scale]);
+    const panned = await pan(199, 1);
+    ok(panned.scrollY === 0 && panned.asked.length === 1 && panned.asked[0].block === 'start',
+      'a visual viewport panned down past the frame is panned back to the top', JSON.stringify(panned));
+    const zoomed = await pan(199, 2);
+    ok(zoomed.asked.length === 0, 'but not a page the person zoomed into', JSON.stringify(zoomed));
+
+    // The keyboard goes: the inset is the bar's own padding again.
+    await cdp.send('Emulation.setSafeAreaInsetsOverride', { insets: { bottom: 24 } });
+    await s.page.evaluate(() => {
+      delete window.visualViewport.height;
+      window.visualViewport.dispatchEvent(new Event('resize'));
+    });
+    await wait(400);
+    const down = await frame();
+    ok(down.lost === '' && down.pad === '0px' && down.barBottom === before.barBottom,
+      'with the keyboard put away nothing is held back at the foot', JSON.stringify(down));
+    const quiet = await pan(199, 1);
+    ok(quiet.asked.length === 0, 'and with no keyboard up nothing is panned', JSON.stringify(quiet));
+
+    ok(unexpected(s.errors, RESTART_NOISE).length === 0, 'no unexpected console errors',
+      unexpected(s.errors, RESTART_NOISE).join(' | ') || '0');
+  } finally { await s.stop(); }
+}
+
+/* ---------------------------------------------------- 13b. pauseddeadline */
+
+// A page the browser held still is not a connection that was lost (B-37). A
+// request's deadline that fires late - after the main thread did not run for
+// longer than the deadline - gives the reply that came meanwhile its chance
+// to be read, and the bar says nothing; a deadline nothing answers still
+// expires, a moment later.
+async function pauseddeadline() {
+  const s = await start({});
+  try {
+    await setup(s.page, s.url);
+    await open(s);
+    await wait(500);
+    const timed = await s.page.evaluate(async () => {
+      const { deadline } = await import('/static/js/net.js');
+      const hold = (ms) => { const end = Date.now() + ms; while (Date.now() < end) { /* the page held still */ } };
+      const on = (ms) => new Promise((resolve) => {
+        const t0 = Date.now();
+        deadline(ms, () => resolve(Date.now() - t0));
+      });
+      // On time: it expires when it is due.
+      const plain = await on(200);
+      // Held still past it, nothing answering: it expires all the same, a
+      // grace later than the pause ended.
+      const t0 = Date.now();
+      let late = 0;
+      deadline(100, () => { late = Date.now() - t0; });
+      hold(2600);
+      const afterHold = Date.now() - t0;
+      await new Promise((resolve) => setTimeout(resolve, 3600));
+      // Held still past it, an answer queued behind it: the answer clears it.
+      let expired = false;
+      const d = deadline(100, () => { expired = true; });
+      setTimeout(() => d.clear(), 150);
+      hold(2600);
+      await new Promise((resolve) => setTimeout(resolve, 3600));
+      return { plain, late, afterHold, expired };
+    });
+    ok(timed.plain >= 190 && timed.plain < 1500, 'a deadline on a page that runs expires when it is due', JSON.stringify(timed));
+    ok(timed.late >= timed.afterHold + 2500, 'one that fired late gives what was waiting a grace before it expires', JSON.stringify(timed));
+    ok(!timed.expired, 'and an answer that came while the page was held still clears it', JSON.stringify(timed));
+
+    // A request whose reply comes just after the page was held still past
+    // its timeout - a frozen page's network catching up: the reply is read,
+    // and no "Connection lost" for it. (Without the grace the late timeout
+    // aborts it the moment the page runs again.)
+    await s.page.route('**/api/sessions?held=1', async (route) => { await wait(1500); await route.continue(); });
+    const asked = await s.page.evaluate(async () => {
+      // The page's own copy of net.js (its address carries the build), whose
+      // state the bar shows.
+      const own = performance.getEntriesByType('resource').map((e) => e.name).find((u) => /\/static\/js\/net\.js/.test(u));
+      const { request } = await import(own);
+      const hold = (ms) => { const end = Date.now() + ms; while (Date.now() < end) { /* held still */ } };
+      let lost = false;
+      const watch = new MutationObserver(() => { if (document.body.hasAttribute('data-conn-lost')) lost = true; });
+      watch.observe(document.body, { attributes: true, attributeFilter: ['data-conn-lost'] });
+      const reply = request('/api/sessions?held=1', { timeout: 300, attempts: 1 }).then(() => 'answered', (err) => err.name + ': ' + err.message);
+      hold(2800);
+      const result = await reply;
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      watch.disconnect();
+      return { result, lost };
+    });
+    ok(asked.result === 'answered' && !asked.lost, 'a reply that came while the page was paused past its timeout is read, and the bar stays down',
+      JSON.stringify(asked));
+    ok(unexpected(s.errors).length === 0, 'no unexpected console errors', unexpected(s.errors).join(' | ') || '0');
+  } finally { await s.stop(); }
+}
+
 /* ------------------------------------------------------- 14. offlineonce */
 
 // The centrepiece. A phone in a car loses its network mid-sentence; §D.6
@@ -14578,6 +14743,7 @@ const ALL = [
   ['webglrenders', 'the shipped renderer paints the terminal', webglrenders],
   ['touchscroll', 'a finger scrolls the pane, and a tap is still a tap', touchscroll],
   ['keybar', 'a touch screen gets the key bar unasked, a desk does not, and it sends the right bytes', keybar],
+  ['paused-deadline', 'a page held still past a deadline: the reply that came meanwhile is read, and no connection is lost', pauseddeadline],
   ['offlineonce', 'a line typed with no network arrives exactly once', offlineonce],
   ['sigtermreattach', 'a restarted server reattaches to the pane that kept running', sigtermreattach],
   ['takeover', 'a second tab with the same viewer id takes the pane over', takeover],
@@ -14618,6 +14784,7 @@ const ALL = [
   ['no-overlap', 'the microphone and the voice are never open at the same time', nooverlap],
   ['typeafteroutage', 'a cut socket, a locked phone, and a pane that still takes keystrokes', typeafteroutage],
   ['typekeepsfocus', 'a dialog, the ⋮ menu and two sessions: the keys still land in the pane', typekeepsfocus],
+  ['keyboard-pan', 'an Android keyboard over the terminal: the key bar clear of it, and a page panned past the frame put back', keyboardpan],
   ['keyboard', 'on a touch screen only the button raises the terminal\u2019s keyboard, and every other field takes a tap', keyboard],
   ['options', 'this device\u2019s options: the ⋮ on Home, \u201cThis device\u2026\u201d in a session\u2019s menu; a chat\u2019s account says when its limit renews', optionsmenu],
   ['design', 'white surfaces, marks, hover-only detail and motion that does not restart', design],

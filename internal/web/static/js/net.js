@@ -62,6 +62,42 @@ function storageRemove(key) {
   try { localStorage.removeItem(key); } catch { /* ignore */ }
 }
 
+/* --------------------------------------------------------------- deadlines */
+
+// A deadline that fires this much later than it was due did not run on
+// time: the page was held still - a phone that froze it in the background,
+// a debugger, the device test tool's switch to the native layer - and what
+// the network brought meanwhile may be waiting right behind it in the
+// queue: a reply that came in time, now judged by a clock that stood still.
+const LATE_SLACK = 2000;
+// How long such a deadline waits once more before it expires after all: a
+// few turns of the queue, so a reply already in is read first.
+const LATE_GRACE = 3000;
+
+/**
+ * deadline calls `expire` after `ms` unless cleared first, like setTimeout,
+ * with one difference: a deadline that fires late (the page was paused)
+ * gives what was waiting for it LATE_GRACE more, once, before it expires.
+ * A stalled page is not a stalled connection, and saying "Connection lost"
+ * for one is the false alarm this avoids. Returns { clear() }.
+ */
+export function deadline(ms, expire) {
+  const due = Date.now() + ms;
+  let extended = false;
+  let timer = null;
+  const fire = () => {
+    timer = null;
+    if (!extended && Date.now() - due > LATE_SLACK) {
+      extended = true;
+      timer = setTimeout(fire, LATE_GRACE);
+      return;
+    }
+    expire();
+  };
+  timer = setTimeout(fire, ms);
+  return { clear() { if (timer) { clearTimeout(timer); timer = null; } } };
+}
+
 /* ------------------------------------------------------------ wake signals */
 
 // The browser gives several hints that it is worth trying again: the network
@@ -452,7 +488,9 @@ async function fetchOnce(path, { method, body, headers, signal, timeout }) {
     if (signal.aborted) controller.abort();
     else signal.addEventListener('abort', onAbort, { once: true });
   }
-  const timer = timeout ? setTimeout(() => controller.abort(), timeout) : null;
+  // A deadline, not a bare timer: one that fires after the page was paused
+  // gives the reply that may already be in a moment to be read (B-37).
+  const timer = timeout ? deadline(timeout, () => controller.abort()) : null;
   try {
     return await fetch(path, {
       method,
@@ -468,7 +506,7 @@ async function fetchOnce(path, { method, body, headers, signal, timeout }) {
       ? 'The server did not answer in time.'
       : 'Could not reach Socrates.');
   } finally {
-    if (timer) clearTimeout(timer);
+    if (timer) timer.clear();
     if (signal) signal.removeEventListener('abort', onAbort);
   }
 }
@@ -570,6 +608,9 @@ function sleep(ms, signal) {
 // is exactly what a tunnel through a lost cell does. So this one runs a
 // watchdog on the server's heartbeat, reconnects on its own schedule, and tells
 // the page - through onStatus - whenever what it shows stopped being live.
+// How often a LiveStream's watchdog looks at its heartbeat.
+const WATCHDOG_EVERY = 2000;
+
 export class LiveStream {
   constructor(options) {
     this.url = options.url;                        // () => string, read fresh on every attempt
@@ -581,6 +622,7 @@ export class LiveStream {
     this.lastData = 0;
     this.retryTimer = null;
     this.watchdog = null;
+    this.lastCheck = 0;
     this.status = 'idle';
     this.stopped = true;
     this.unwake = null;
@@ -602,7 +644,7 @@ export class LiveStream {
         if (this.status !== 'live' || Date.now() - this.lastData > 12000) this.reconnect(0);
       });
     }
-    if (!this.watchdog) this.watchdog = setInterval(() => this.check(), 2000);
+    if (!this.watchdog) this.watchdog = setInterval(() => this.check(), WATCHDOG_EVERY);
     this.open();
   }
 
@@ -613,6 +655,7 @@ export class LiveStream {
     this.setStatus('idle');
     this.close();
     if (this.watchdog) { clearInterval(this.watchdog); this.watchdog = null; }
+    this.lastCheck = 0;
     if (this.unwake) { this.unwake(); this.unwake = null; }
   }
 
@@ -707,9 +750,15 @@ export class LiveStream {
       this.reconnect(0);
       return;
     }
-    if (!this.source || this.status !== 'live') return;
+    // A watchdog that comes round late was paused with the page, and the
+    // beats that arrived meanwhile may still be queued behind it: silence is
+    // judged at the next round, once they have been read.
+    const now = Date.now();
+    const late = this.lastCheck && now - this.lastCheck > WATCHDOG_EVERY + LATE_SLACK;
+    this.lastCheck = now;
+    if (!this.source || this.status !== 'live' || late) return;
     // Two and a half missed beats of the server's ten second heartbeat.
-    if (Date.now() - this.lastData > 25000) this.reconnect(0);
+    if (now - this.lastData > 25000) this.reconnect(0);
   }
 
   reconnect(delay) {
