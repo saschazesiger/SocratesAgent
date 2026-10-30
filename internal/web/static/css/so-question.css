@@ -66,13 +66,19 @@
 
 /* ── Top bar ─────────────────────────────────────────────────────────── */
 
+/* --so-q-top-inset is the bar's side margin; the safe areas come on top of
+   it, so a phone on its side keeps Close and Open chat clear of its notch
+   or Dynamic Island, as the body and the actions are. */
 .so-q-top {
+  --so-q-top-inset: var(--ds-space-4);
   flex: none;
   display: flex;
   align-items: center;
   gap: var(--ds-space-2);
   padding: var(--ds-space-3) var(--ds-space-4) var(--ds-space-2);
   padding-top: calc(var(--ds-space-3) + env(safe-area-inset-top, 0px));
+  padding-left: calc(var(--so-q-top-inset) + env(safe-area-inset-left, 0px));
+  padding-right: calc(var(--so-q-top-inset) + env(safe-area-inset-right, 0px));
 }
 
 .so-q-top-title {
@@ -359,7 +365,7 @@
 
 @media (max-width: 600px) {
   .so-q-top {
-    padding-inline: var(--ds-space-2);
+    --so-q-top-inset: var(--ds-space-2);
   }
 
   /* The body, the actions and the connection line above them move in
