@@ -382,10 +382,19 @@ function wireMenu(trigger, menu, fill) {
     if (event.detail > 1) return;
     toggleMenu(trigger, menu, fill);
   });
-  trigger.addEventListener('keydown', (event) => {
+  // ↓ and ↑ open the menu (once) and put the focus on its first or last
+  // item, as a menu button does: the focus leaves the trigger, and with it
+  // the trigger's tooltip, which otherwise stayed over the open menu (B-35).
+  trigger.addEventListener('keydown', async (event) => {
     if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
     event.preventDefault();
-    Promise.resolve(fill()).then(() => DS.overlay.open(menu, { opener: trigger }));
+    if (trigger.getAttribute('aria-expanded') !== 'true') {
+      await fill();
+      await DS.overlay.open(menu, { opener: trigger });
+    }
+    const items = [...menu.querySelectorAll('[role^="menuitem"]:not([aria-disabled="true"])')];
+    const to = event.key === 'ArrowDown' ? items[0] : items[items.length - 1];
+    if (to) to.focus();
   });
 }
 

@@ -27,6 +27,31 @@ export function startUI() {
   DS.ripple.attach(document);
   DS.overlay.tooltips(document);
   fillIcons(document);
+  document.addEventListener('click', rowLinkByPoint, true);
+}
+
+// rowLinkByPoint sends a click on an interactive table's stretched row link
+// to the row under the pointer. Safari lays table rows out as static
+// whatever their position, so every row's link stretches over the whole
+// table and the last row's took every click (Tests B-34, checked on macOS
+// Safari); Dashboard-Style's rule (.ds-table__row-link::after) wants the
+// row as its box. A click from the keyboard (detail 0) has no point and
+// stays with its link.
+function rowLinkByPoint(event) {
+  const link = event.target instanceof Element ? event.target.closest('.ds-table--interactive .ds-table__row-link') : null;
+  if (!link || event.detail === 0) return;
+  const own = link.closest('tr');
+  const inside = (el) => {
+    const box = el.getBoundingClientRect();
+    return event.clientY >= box.top && event.clientY < box.bottom;
+  };
+  if (!own || inside(own)) return;
+  const row = Array.from(own.parentElement ? own.parentElement.children : []).find((tr) => tr !== own && inside(tr));
+  const target = row && row.querySelector('.ds-table__row-link');
+  if (!target) return;
+  event.preventDefault();
+  event.stopImmediatePropagation();
+  target.click();
 }
 
 /* ----------------------------------------------------------- touch mode */
