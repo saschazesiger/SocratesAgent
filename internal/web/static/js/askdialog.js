@@ -828,7 +828,7 @@ export function openAskDialog({ items, start = 0, watch, openChat, closed, more 
   // check holds the step on a problem with its answer, and says what it is.
   function check(q, final = false) {
     const text = q ? problemOf(q, st.draft.answers[q.id], { final }) : '';
-    st.problem = text ? { q: q.id, text } : null;
+    st.problem = text ? { q: q.id, text, final } : null;
     return !text;
   }
 
@@ -971,10 +971,21 @@ export function openAskDialog({ items, start = 0, watch, openChat, closed, more 
       // One's own words to a question of one take the place of an option.
       if (kindOf(q) === 'single') a.selected = [];
     }
+    // A problem said about this answer is asked again as it is typed, the
+    // way it was asked at first: once the answer is right it goes, and the
+    // field is no longer marked, rather than staying beside a good value
+    // until the next Send.
+    if (st.problem && st.problem.q === qid) {
+      const text = problemOf(q, a, { final: st.problem.final });
+      if (text !== st.problem.text) {
+        st.problem = text ? { ...st.problem, text } : null;
+        redraw = true;
+      }
+    }
     save();
     // The field keeps its focus and its text through the redraw (morph
     // never replaces the focused element); it only runs when the buttons
-    // beside it have something new to say.
+    // beside it, or the problem under it, have something new to say.
     if (redraw) draw();
   });
 

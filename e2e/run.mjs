@@ -12619,11 +12619,23 @@ async function answerAll(page) {
   await page.fill('#ask-replicas-other', '20');
   await page.click('dialog.so-askdlg [data-action="send"]');
   const refused = await page.waitForSelector('dialog.so-askdlg .so-ask-problem', { timeout: 5000 }).then((n) => n.innerText(), () => '');
+  // The problem is asked again as the answer is typed: another wrong one
+  // says its own, and a right one takes it and the field's mark away at once.
+  const problemNow = () => page.evaluate(() => ({
+    text: (document.querySelector('dialog.so-askdlg .so-ask-problem') || { innerText: '' }).innerText.trim(),
+    invalid: document.querySelector('#ask-replicas-other').getAttribute('aria-invalid') === 'true',
+  }));
+  await page.fill('#ask-replicas-other', 'abc');
+  const retyped = await page.waitForFunction(() => /not a number/.test((document.querySelector('dialog.so-askdlg .so-ask-problem') || {}).innerText || ''),
+    null, { timeout: 3000 }).then(() => true, () => false).then(problemNow);
   await page.fill('#ask-replicas-other', '3');
+  const corrected = await page.waitForFunction(() => !document.querySelector('dialog.so-askdlg .so-ask-problem'),
+    null, { timeout: 3000 }).then(() => true, () => false).then(problemNow);
+  const focusKept = await page.evaluate(() => document.activeElement && document.activeElement.id);
   await page.click('dialog.so-askdlg [data-action="general"]');
   await page.fill('#ask-all-general', 'ship it on Friday');
   await page.click('dialog.so-askdlg [data-action="send"]');
-  return { first, details, hint, multi, otherCounted, confirmDefault, numberDefault, refused };
+  return { first, details, hint, multi, otherCounted, confirmDefault, numberDefault, refused, retyped, corrected, focusKept };
 }
 
 // The answer the walk above gives, exactly as REBUILD.md §5.2 has it.
@@ -12697,6 +12709,10 @@ async function chatask() {
     ok(walk.confirmDefault.join(',') === 'yes' && walk.numberDefault === '2', 'a question’s default is preselected',
       JSON.stringify({ confirm: walk.confirmDefault, number: walk.numberDefault }));
     ok(/largest number it takes is 10/.test(walk.refused), 'a number out of range is refused, and says why', walk.refused);
+    ok(/not a number/.test(walk.retyped.text) && walk.retyped.invalid && !walk.corrected.text && !walk.corrected.invalid
+      && walk.focusKept === 'ask-replicas-other',
+    'the problem follows the answer as it is typed: another wrong one says its own, a right one clears it and the mark',
+    JSON.stringify({ retyped: walk.retyped, corrected: walk.corrected, focus: walk.focusKept }));
     const answered = await page.waitForSelector('dialog.so-askdlg .so-q-finished', { timeout: 15000 }).then((n) => n.innerText(), () => '');
     ok(/Answered/.test(answered), 'Send answers, and the dialog says it is answered', oneLine(answered));
     await page.waitForSelector('dialog.so-askdlg', { state: 'detached', timeout: 10000 }).catch(() => {});
