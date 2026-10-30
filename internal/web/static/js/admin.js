@@ -327,6 +327,12 @@ function renderWindowSizeHint() {
 let spyMuted = false;
 let spyIdle = 0;
 let hashSettled = false;
+// The item picked in the drawer (or named by the address) stays current while
+// its card's top is in view and the person has not scrolled by hand: a card
+// near the page's end cannot scroll up to the spy's line, and a card that
+// grows under it (Run checks) must not hand the pill to the one above.
+let picked = null;
+const SCROLL_KEYS = new Set(['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', ' ']);
 
 function wireFrame() {
   const app = $('app');
@@ -349,6 +355,7 @@ function wireFrame() {
       hashSettled = true;
       if (app.hasAttribute('data-drawer-open')) DS.overlay.close(drawer);
       setCurrent(link);
+      picked = link;
       muteSpy(view);
       target.scrollIntoView({ behavior: reducedMotion() ? 'auto' : 'smooth', block: 'start' });
       history.replaceState(null, '', '#' + target.id);
@@ -367,6 +374,15 @@ function wireFrame() {
   // take them back to the address's card any more.
   view.addEventListener('wheel', () => { hashSettled = true; }, { passive: true, once: true });
   view.addEventListener('touchstart', () => { hashSettled = true; }, { passive: true, once: true });
+  // Scrolling by hand lets go of the picked card: a wheel, a finger, the
+  // scroll keys, or the scrollbar (a press on the view itself).
+  const letGo = () => { picked = null; };
+  view.addEventListener('wheel', letGo, { passive: true });
+  view.addEventListener('touchstart', letGo, { passive: true });
+  view.addEventListener('pointerdown', (event) => { if (event.target === view) letGo(); });
+  document.addEventListener('keydown', (event) => {
+    if (SCROLL_KEYS.has(event.key) && !(event.target.closest && event.target.closest('input, textarea, select, [contenteditable]'))) letGo();
+  });
   // The page's own links to a card (the voice card names Status & naming).
   view.addEventListener('click', (event) => {
     const link = event.target.closest('a[href^="#"]');
@@ -441,6 +457,15 @@ function spy(view) {
   const links = sectionLinks();
   if (!links.length) return;
   const box = view.getBoundingClientRect();
+  if (picked) {
+    const card = $(picked.dataset.section);
+    const top = card ? card.getBoundingClientRect().top : -Infinity;
+    if (top >= box.top - 2 && top < box.bottom) {
+      if (picked.getAttribute('aria-current') !== 'page') setCurrent(picked);
+      return;
+    }
+    picked = null;
+  }
   let current = links[0];
   if (view.scrollTop + view.clientHeight >= view.scrollHeight - 2) {
     current = links[links.length - 1];
@@ -465,7 +490,10 @@ function settleHash() {
   if (!target) return;
   target.scrollIntoView({ block: 'start' });
   const link = sectionLinks().find((one) => one.dataset.section === id);
-  if (link) setCurrent(link);
+  if (link) {
+    setCurrent(link);
+    picked = link;
+  }
 }
 
 /* ---------------------------------------------------------- model pickers */
@@ -2023,19 +2051,37 @@ async function runChecks() {
   }
 }
 
+// The card's last word: an error stays until it is closed, so a second try
+// takes the first one's message away rather than stack its own above it.
+let passwordSaid = null;
+
+function sayPassword(message, kind) {
+  if (passwordSaid) passwordSaid.close();
+  passwordSaid = toast(message, kind);
+}
+
 async function changePassword() {
   const current = $('pwCurrent').value;
   const next = $('pwNext').value;
   if (!current || !next) {
-    toast('Fill in both password fields.', 'error');
+    sayPassword('Fill in both password fields.', 'error');
     return;
   }
+  if (passwordSaid) passwordSaid.close();
   try {
     await M.busy($('changePw'), api('/api/settings/password', { method: 'POST', body: { current, next } }));
     $('pwCurrent').value = '';
     $('pwNext').value = '';
-    toast('Password changed', 'success');
+    sayPassword('Password changed', 'success');
   } catch (err) {
-    toast(errorMessage(err), 'error');
+    // The server refuses in lowercase phrases ("the current password is
+    // wrong"); the card says them as the sentences it speaks in otherwise.
+    sayPassword(asSentence(errorMessage(err)), 'error');
   }
+}
+
+function asSentence(text) {
+  const words = String(text).trim();
+  if (!words) return 'Something went wrong.';
+  return words.charAt(0).toUpperCase() + words.slice(1) + (/[.!?]$/.test(words) ? '' : '.');
 }

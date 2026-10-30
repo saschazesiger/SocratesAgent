@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/saschazesiger/SocratesAgent/internal/catalog"
+	"github.com/saschazesiger/SocratesAgent/internal/config"
 	"github.com/saschazesiger/SocratesAgent/internal/store"
 	"github.com/saschazesiger/SocratesAgent/internal/termux"
 )
@@ -307,6 +309,23 @@ func TestDiagnosticsCleansWhatAProgramPrintedForItsVersion(t *testing.T) {
 	}
 	if len([]rune(got)) > 121 {
 		t.Fatalf("the version was not clamped: %d runes", len([]rune(got)))
+	}
+}
+
+// A Shell and VS Code have no models. An installed one is ready, not "no
+// models reported", while an agent that lists none is still not ready.
+func TestDiagnosticsAsksNoModelsOfTheProgramsWithoutAny(t *testing.T) {
+	for _, agent := range []catalog.Agent{
+		{ID: config.HarnessShell, Label: "Shell", Enabled: true, Installed: true, Path: "/bin/sh"},
+		{ID: config.HarnessVSCode, Label: "VS Code", Enabled: true, Installed: true, Version: "4.99.0", Path: "/usr/bin/code-server"},
+	} {
+		if row := harnessCheck(agent); !row.OK || row.Summary != "ready" {
+			t.Errorf("%s: %+v, want ready", agent.Label, row)
+		}
+	}
+	codex := catalog.Agent{ID: config.HarnessCodex, Label: "Codex", Enabled: true, Installed: true, Path: "/usr/bin/codex"}
+	if row := harnessCheck(codex); row.OK || row.Summary != "no models reported" {
+		t.Errorf("an agent without models: %+v", row)
 	}
 }
 

@@ -296,7 +296,9 @@ func harnessCheck(agent catalog.Agent) checkResult {
 		if agent.Path != "" {
 			row.Detail += " · " + agent.Path
 		}
-		if agent.ID == config.HarnessShell {
+		// A Shell and VS Code have no model step: "ready" is all there is
+		// to say about them, not a model list that failed to come.
+		if agent.ID == config.HarnessShell || agent.ID == config.HarnessVSCode {
 			break
 		}
 		count := len(agent.Models)

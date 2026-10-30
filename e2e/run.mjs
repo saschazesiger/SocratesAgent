@@ -1344,10 +1344,53 @@ async function adminoptions() {
     ok(Object.keys(versions).length === 3 && Object.values(versions).every((v) => /\d+\.\d+\.\d+/.test(v)),
       'the catalogue has every agent’s version', JSON.stringify(versions));
 
+    // The navigation's Setup check: a card near the page's end never reaches
+    // the spy's line, so the item picked stays current - through a scroll
+    // that is not the person's (a tool bringing Run checks to the middle)
+    // and through the card growing under its results - until the person
+    // scrolls by hand.
+    const navCurrent = () => s.page.evaluate(() =>
+      (document.querySelector('#adminNavList a[aria-current="page"]') || { dataset: {} }).dataset.section || 'none');
+    await s.page.click('#adminNavList a[data-section="checksCard"]');
+    await wait(1500);
+    await s.page.evaluate(() => document.getElementById('runChecks').scrollIntoView({ block: 'center' }));
+    await wait(400);
+    const pickedNow = await navCurrent();
+
     // §E.10 rule 3, in the setup check: the row says a verdict, the path and
     // the version are behind its "i".
     await s.page.click('#runChecks');
     await s.page.waitForSelector('#checks .so-check', { timeout: 60000 });
+    await wait(400);
+    const pickedAfter = await navCurrent();
+    ok(pickedNow === 'checksCard' && pickedAfter === 'checksCard',
+      'Setup check picked in the navigation stays current, also once its results are in',
+      pickedNow + ' -> ' + pickedAfter);
+    await s.page.mouse.move(700, 450);
+    await s.page.mouse.wheel(0, -2500);
+    await wait(800);
+    const scrolledTo = await navCurrent();
+    ok(scrolledTo !== 'checksCard' && scrolledTo !== 'none', 'and scrolling by hand hands the pill to the card in view', scrolledTo);
+
+    // The password card's refusals: an empty submit, then a wrong current
+    // password. One message is on screen at the end, the second one, said as
+    // a sentence; the first does not stay stacked above it.
+    const toastTexts = () => s.page.$$eval('#toasts .ds-toast', (ts) => ts.map((t) => (t.querySelector('.ds-toast__text') || t).textContent.trim()));
+    await s.page.click('#adminNavList a[data-section="passwordCard"]');
+    await wait(1200);
+    await s.page.click('#changePw');
+    await s.page.waitForSelector('#toasts .ds-toast', { timeout: 5000 });
+    const emptySaid = await toastTexts();
+    await s.page.fill('#pwCurrent', 'not-the-password');
+    await s.page.fill('#pwNext', 'another-password-1');
+    await s.page.click('#changePw');
+    await s.page.waitForFunction(() => /current password/i.test(document.getElementById('toasts').textContent), null, { timeout: 10000 });
+    await wait(1500);
+    const wrongSaid = await toastTexts();
+    ok(emptySaid.join() === 'Fill in both password fields.' && wrongSaid.join(' | ') === 'The current password is wrong.',
+      'the password card says one refusal at a time, as a sentence', emptySaid.join(' | ') + ' -> ' + wrongSaid.join(' | '));
+    // The refusal is a 403 the browser logs; it was asked for.
+    for (let i = s.errors.length - 1; i >= 0; i -= 1) if (/403 .*\/api\/settings\/password/.test(s.errors[i])) s.errors.splice(i, 1);
     const rows = await s.page.$$eval('#checks .so-check', (nodes) => nodes.map((node) => ({
       name: node.querySelector('.so-check__label').textContent.trim(),
       visible: node.querySelector('.so-check__summary').textContent.trim(),
