@@ -13739,9 +13739,13 @@ async function accountsscenario() {
     const profilesGone = await page.$('#profileList');
     ok(!profilesGone, 'and the Profiles card is gone', String(!profilesGone));
 
-    // An API key, for the scripted agent.
+    // An API key, for the scripted agent. At a desk the dialog opens on the
+    // Name, ready for the keys.
     await page.click('.so-account-group[data-agent="fake"] .ds-add-row');
     await page.waitForSelector('dialog.ds-dialog .so-account-form', { timeout: 5000 });
+    const deskFocus = await page.waitForFunction(() => document.activeElement && document.activeElement.id === 'accountLabel', null, { timeout: 3000 })
+      .then(() => 'accountLabel', () => page.evaluate(() => document.activeElement && (document.activeElement.id || document.activeElement.localName)));
+    ok(deskFocus === 'accountLabel', 'at a desk “Add an account” opens on its Name', deskFocus);
     await page.click('dialog.ds-dialog .ds-chip:has(input[value="api_key"])');
     await page.fill('#accountLabel', 'Key one');
     await page.fill('#accountKey', key);
@@ -13872,6 +13876,27 @@ async function accountsscenario() {
     }));
     ok(actions.length >= 3 && actions.every((a) => a.label), 'its actions are icons with a name each', JSON.stringify(actions));
     ok(actions.every((a) => a.h >= 48 && a.w >= 48), 'in touch mode each is a finger’s target', JSON.stringify(actions));
+    // On a touch screen the dialog opens on its first choice, not on the
+    // Name: Admin has no switch to mute a field, and a keyboard raised by
+    // that focus pushed the dialog's top off a car's short screen. A press
+    // on the Name takes the keys (touch mode is the device's choice here,
+    // a mouse its pointer).
+    await page.click('.so-account-group[data-agent="codex"] .ds-add-row');
+    await page.waitForSelector('dialog.ds-dialog .so-account-form', { timeout: 5000 });
+    await wait(400);
+    const touchFocus = await page.evaluate(() => {
+      const n = document.activeElement;
+      return { id: n && (n.id || n.localName), type: n && n.getAttribute('type'), name: n && n.getAttribute('name'),
+        autofocus: document.querySelector('#accountLabel').hasAttribute('autofocus') };
+    });
+    ok(touchFocus.id !== 'accountLabel' && touchFocus.type !== 'text' && !touchFocus.autofocus,
+      'in touch mode “Add an account” opens without focusing its Name, so no keyboard comes with it', JSON.stringify(touchFocus));
+    await page.click('#accountLabel');
+    await page.keyboard.type('Car');
+    const tappedName = await page.$eval('#accountLabel', (n) => ({ value: n.value, focused: document.activeElement === n }));
+    ok(tappedName.focused && tappedName.value === 'Car', 'and a press on the Name takes what is typed', JSON.stringify(tappedName));
+    await page.click('dialog.ds-dialog [data-close].ds-btn');
+    await page.waitForSelector('dialog.ds-dialog', { state: 'detached', timeout: 10000 }).catch(() => {});
     await shot(page, 'accounts-phone');
     // The refused delete is a 409 the browser reports by itself.
     const refusal = /409 \(Conflict\) @ .*\/api\/accounts\/a-/;

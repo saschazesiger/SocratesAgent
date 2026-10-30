@@ -12,7 +12,7 @@
 import { api, el, toast, errorMessage, clientKey, openDialog } from './api.js';
 import { DS, html, raw, icon, iconEl, morph } from './ui.js';
 import * as harnesses from './harnesses.js';
-import { typeHere } from './keyboard.js';
+import { touchScreen, typeHere } from './keyboard.js';
 
 const CACHE_KEY = 'socrates.accounts';
 // How often a sign-in in progress is asked about.
@@ -426,13 +426,19 @@ export function addAccountDialog(opener, agent = '') {
   const cancel = el('button', { class: 'ds-btn ds-btn--text', type: 'button', 'data-close': true, text: 'Cancel' });
   const add = el('button', { class: 'ds-btn ds-btn--primary', type: 'button', text: 'Add' });
   // Drawn before it opens, so that the focus goes to the Name (autofocus),
-  // not to Cancel, the only control of an empty dialog.
+  // not to Cancel, the only control of an empty dialog. On a touch screen
+  // the dialog opens on its first choice instead: a focus the page gives a
+  // field raises no keyboard (keyboard.js), and Admin, which has no switch
+  // to mute the field, would otherwise put one over half of a short screen
+  // - a car's - and push the dialog's title and choices off it. A tap on
+  // the Name raises it.
+  const focusName = !touchScreen();
   draw();
   const { dialog, shown } = openDialog({ title: 'Add an account', field: content, actions: [cancel, add], opener });
 
   function draw() {
     const key = pick.kind === 'api_key';
-    morph(content, html`<fieldset class="ds-field" data-ds-key="agent"><legend class="ds-field__label">Agent</legend><div class="ds-chips">${choices.map((a) => html`<label class="ds-chip" data-ds-key="${'agent-' + a}"><input class="ds-chip__input" type="radio" name="accountAgent" value="${a}"><span class="ds-chip__body">${raw(icon('check', 18, 'ds-chip__check'))}<span>${harnesses.label(a)}</span></span></label>`)}</div></fieldset><fieldset class="ds-field" data-ds-key="kind"><legend class="ds-field__label">Kind</legend><div class="ds-chips">${Object.entries(KIND_WORDS).map(([value, label]) => html`<label class="ds-chip" data-ds-key="${'kind-' + value}"><input class="ds-chip__input" type="radio" name="accountKind" value="${value}"><span class="ds-chip__body">${raw(icon('check', 18, 'ds-chip__check'))}<span>${label}</span></span></label>`)}</div><small class="ds-field__hint">${key ? 'The key is kept encrypted on this machine and is never shown again.' : 'You sign in with the agent’s own page once the account is added.'}</small></fieldset><div class="ds-field" data-ds-key="label"><label class="ds-field__label" for="accountLabel">Name</label><input class="ds-input" id="accountLabel" type="text" maxlength="40" placeholder="Work" autocomplete="off" autofocus enterkeyhint="${key ? 'next' : 'done'}"></div>${
+    morph(content, html`<fieldset class="ds-field" data-ds-key="agent"><legend class="ds-field__label">Agent</legend><div class="ds-chips">${choices.map((a) => html`<label class="ds-chip" data-ds-key="${'agent-' + a}"><input class="ds-chip__input" type="radio" name="accountAgent" value="${a}"><span class="ds-chip__body">${raw(icon('check', 18, 'ds-chip__check'))}<span>${harnesses.label(a)}</span></span></label>`)}</div></fieldset><fieldset class="ds-field" data-ds-key="kind"><legend class="ds-field__label">Kind</legend><div class="ds-chips">${Object.entries(KIND_WORDS).map(([value, label]) => html`<label class="ds-chip" data-ds-key="${'kind-' + value}"><input class="ds-chip__input" type="radio" name="accountKind" value="${value}"><span class="ds-chip__body">${raw(icon('check', 18, 'ds-chip__check'))}<span>${label}</span></span></label>`)}</div><small class="ds-field__hint">${key ? 'The key is kept encrypted on this machine and is never shown again.' : 'You sign in with the agent’s own page once the account is added.'}</small></fieldset><div class="ds-field" data-ds-key="label"><label class="ds-field__label" for="accountLabel">Name</label><input class="ds-input" id="accountLabel" type="text" maxlength="40" placeholder="Work" autocomplete="off"${focusName ? raw(' autofocus') : ''} enterkeyhint="${key ? 'next' : 'done'}"></div>${
       key ? html`<div class="ds-field" data-ds-key="key"><label class="ds-field__label" for="accountKey">API key</label><input class="ds-input" id="accountKey" type="password" autocomplete="off" spellcheck="false" enterkeyhint="${pick.agent === 'opencode' ? 'next' : 'done'}"></div>` : ''
     }${
       key && pick.agent === 'opencode' ? html`<div class="ds-field" data-ds-key="provider"><label class="ds-field__label" for="accountProvider">Provider</label><input class="ds-input" id="accountProvider" type="text" placeholder="openrouter" autocomplete="off" spellcheck="false" list="accountProviders" enterkeyhint="done"><datalist id="accountProviders">${providerIds().map((p) => html`<option value="${p}"></option>`)}</datalist><small class="ds-field__hint">The OpenCode provider the key is for.</small></div>` : ''
