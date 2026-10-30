@@ -8529,8 +8529,10 @@ const askLook = (page) => page.evaluate(() => {
   const kb = dialog.querySelector('.so-kb-copy');
   const at = document.activeElement;
   return {
-    top: text('.so-q-top-title'),
-    session: text('.so-q-session-title'),
+    // The bar: the chat's name, and how many other chats wait after it.
+    top: text('.so-q-top'),
+    session: text('.so-q-top-title'),
+    more: text('.so-q-top-more'),
     title: text('.so-ask-title'),
     context: text('.so-ask-context__body'),
     question: text('.so-q-text'),
@@ -9233,9 +9235,10 @@ async function homequeue() {
     ok(card.ok, 'the card counts two', JSON.stringify(card.seen.counts));
 
     await s.page.click('.so-home__q-action');
-    const opened = await awaitAsk(s.page, (d) => !!d && d.options.length === 2 && /of 2/.test(d.top), 10000);
-    ok(opened.ok && opened.seen.top === 'Questions · 1 of 2' && opened.seen.session === 'First question',
-      'the dialog walks them oldest first: "1 of 2"', JSON.stringify(opened.seen && { top: opened.seen.top, session: opened.seen.session }));
+    const opened = await awaitAsk(s.page, (d) => !!d && d.options.length === 2 && !!d.more, 10000);
+    ok(opened.ok && opened.seen.session === 'First question' && opened.seen.more === '+1 more chat' && !/ of /.test(opened.seen.top),
+      'the dialog walks them oldest first: the chat\u2019s name in its bar, and "+1 more chat"',
+      JSON.stringify(opened.seen && { top: opened.seen.top, session: opened.seen.session, more: opened.seen.more }));
     const named = await s.page.locator('dialog.so-askdlg').ariaSnapshot();
     const toggles = await s.page.$$eval('dialog.so-askdlg .so-q-option', (options) => options.map((o) => ({
       tag: o.tagName, role: o.getAttribute('role'), pressed: o.getAttribute('aria-pressed'), checked: o.getAttribute('aria-checked'),
@@ -9246,7 +9249,7 @@ async function homequeue() {
 
     await s.page.click('dialog.so-askdlg .so-q-option[data-option="postgres"]');
     await s.page.click('dialog.so-askdlg [data-action="send"]');
-    const moved = await awaitAsk(s.page, (d) => !!d && d.session === 'Second question' && d.top === 'Questions · 2 of 2'
+    const moved = await awaitAsk(s.page, (d) => !!d && d.session === 'Second question' && d.top === 'Second question' && !d.more
       && d.options.length === 2 && d.options.every((o) => o.pressed === 'false'), 20000);
     ok(moved.ok, 'once the first is answered the second takes the dialog', JSON.stringify(moved.seen && { session: moved.seen.session, top: moved.seen.top }));
     const toasts = await watchToasts(s.page);
@@ -9852,7 +9855,7 @@ async function homefocus() {
     // A third question joins the walk: the counter changes, the field must
     // not.
     await tellChat(s, gamma, '/askuser ' + JSON.stringify(DB_ASK));
-    const joined = await awaitAsk(s.page, (d) => !!d && d.top === 'Questions · 1 of 3', 30000);
+    const joined = await awaitAsk(s.page, (d) => !!d && d.more === '+2 more chats', 30000);
     ok(joined.ok && joined.seen.focus === 'own:ask-db-other', 'a third chat asking joins the walk and leaves the keyboard in the field',
       JSON.stringify({ top: joined.seen && joined.seen.top, focus: joined.seen && joined.seen.focus }));
 
@@ -10834,7 +10837,7 @@ async function homerestart() {
     await wait(2500);
 
     await s.page.click('.so-home__q-action');
-    const opened = await awaitAsk(s.page, (d) => !!d && d.options.length === 2 && /1 of 3$/.test(d.top), 10000);
+    const opened = await awaitAsk(s.page, (d) => !!d && d.options.length === 2 && d.more === '+2 more chats', 10000);
     ok(opened.ok && opened.seen.session === 'Pick a database', 'the dialog walks all three, oldest first',
       JSON.stringify(opened.seen && { top: opened.seen.top, s: opened.seen.session }));
     await s.page.click('dialog.so-askdlg .so-q-option[data-option="sqlite"]');
@@ -10850,7 +10853,7 @@ async function homerestart() {
           q: count ? Number(count.dataset.value) : -1,
           conn: conn ? conn.dataset.status : '',
           open: !!dialog && dialog.open,
-          counter: text('.so-q-top-title').trim(),
+          counter: text('.so-q-top-more').trim(),
           said: [text('.so-q-status'), text('.so-q-finished .ds-empty__title'), text('.so-refused')]
             .map((t) => t.replace(/\s+/g, ' ').trim()).filter(Boolean).join(' / '),
         });
@@ -10871,7 +10874,7 @@ async function homerestart() {
     ok(!dropped.length, 'a live Home counts every question all through the restart',
       (dropped.length ? dropped.map(show) : lines.map(show)).slice(0, 12).join(' > '));
     const told = lines.filter((l) => !l.open || /another device|Nothing is waiting|not taken/.test(l.said));
-    ok(!told.length && lines.every((l) => !l.counter || /of 3$/.test(l.counter)),
+    ok(!told.length && lines.every((l) => !l.open || l.counter === '+2 more chats'),
       'the dialog stays open on the walk, keeps all three in it, and never says the waiting questions went',
       (told.length ? told : lines).map(show).slice(0, 12).join(' > '));
     const after = await sinceOf();
@@ -10884,7 +10887,7 @@ async function homerestart() {
     await s.page.click('dialog.so-askdlg [data-action="send"]');
     const got = await returned(s, db.id, 30000);
     ok(!!got && got.answers.db.selected.join() === 'sqlite', 'and Send gives it', JSON.stringify(got && got.answers.db));
-    const walked = await awaitAsk(s.page, (d) => !!d && d.session === 'Pick a cache' && /2 of 3$/.test(d.top), 10000);
+    const walked = await awaitAsk(s.page, (d) => !!d && d.session === 'Pick a cache' && d.more === '+1 more chat', 10000);
     ok(walked.ok, 'and the walk goes on to the next', JSON.stringify(walked.seen && { top: walked.seen.top, s: walked.seen.session }));
     await s.page.click('dialog.so-askdlg [data-action="close"]').catch(() => {});
     await askShut(s.page, 5000);
@@ -11337,6 +11340,17 @@ async function chatstream() {
     const after = await logText(page);
     ok(replayed && after.replace(/\s+/g, ' ').includes('you said') === before.replace(/\s+/g, ' ').includes('you said'),
       'after a reload the conversation is replayed from the journal', oneLine(after.slice(-160)));
+
+    // The empty composer of a chat that has started is one line with
+    // nothing to scroll: its height was its scrollHeight without its
+    // borders, and Windows drew a scrollbar with arrows beside it (B-39).
+    // This Chromium has classic scrollbars too.
+    const field = await page.$eval('#chat .so-composer__input', (n) => ({
+      value: n.value, scroll: n.scrollHeight, client: n.clientHeight, bar: n.offsetWidth - n.clientWidth
+        - parseFloat(getComputedStyle(n).borderLeftWidth) - parseFloat(getComputedStyle(n).borderRightWidth),
+    }));
+    ok(field.value === '' && field.scroll <= field.client && field.bar === 0,
+      'the empty composer has nothing to scroll and no scrollbar', JSON.stringify(field));
 
     // A message sent during a turn is queued, and taken up after it.
     await say(page, '/sleep 4');
@@ -11877,6 +11891,41 @@ async function chatfold() {
     });
     ok(strip.seen > 0 && strip.closest >= strip.height - 0.5,
       'a change while a line still rolls in: the two roll as one strip, a line apart, never on each other', JSON.stringify(strip));
+    // Every frame of a roll: a line is no clearer than it is in the slot.
+    // The fade led the glide, and a frame 18 ms in showed the new line half
+    // there a whole line below, cut in half by the slot's edge ("Reading
+    // Read 0 s" under "Working" on Windows, B-21).
+    const frames = await page.evaluate(async () => {
+      const { wheelHooks } = await import('/static/js/wheel.js');
+      const box = document.createElement('div');
+      box.className = 'so-live';
+      document.body.append(box);
+      const draw = (text) => window.DS.dom.morphHtml(box, '<span class="so-wheel"><span class="so-wheel__line" data-ds-key="' + text + '">' + text + '</span></span>', wheelHooks);
+      draw('Working');
+      await new Promise((r) => setTimeout(r, window.DS.motion.motionDuration(box, '--ds-hold-status') + 300));
+      draw('Reading Read');
+      const slot = box.querySelector('.so-wheel');
+      const rest = slot.getBoundingClientRect().top + parseFloat(getComputedStyle(slot).paddingTop);
+      const animations = [...slot.querySelectorAll('.so-wheel__line')].flatMap((n) => n.getAnimations());
+      let worst = { over: -1 };
+      for (const f of [0.02, 0.05, 0.1, 0.2, 0.35, 0.5, 0.7, 0.9]) {
+        for (const a of animations) {
+          const t = a.effect.getTiming();
+          a.pause();
+          a.currentTime = t.delay + f * t.duration;
+        }
+        for (const line of slot.querySelectorAll('.so-wheel__line')) {
+          const r = line.getBoundingClientRect();
+          const inside = Math.max(0, 1 - Math.abs(r.top - rest) / r.height);
+          const over = Number(getComputedStyle(line).opacity) - inside;
+          if (over > worst.over) worst = { over: Math.round(over * 100) / 100, at: f, line: line.textContent, inside: Math.round(inside * 100) / 100 };
+        }
+      }
+      box.remove();
+      return { animations: animations.length, worst };
+    });
+    ok(frames.animations >= 4 && frames.worst.over <= 0.1,
+      'every frame of a roll: a line is no clearer than it is in the slot, never cut by an edge at full strength', JSON.stringify(frames));
     // A time that is not today says its day.
     const times = await page.evaluate(async () => {
       const { clock, span, about } = await import('/static/js/chatparts.js');
@@ -13185,6 +13234,22 @@ async function chatattach() {
       data: { client_id: 'forged-1', text: 'look', attachments: [{ name: 'passwd', path: '/etc/passwd' }] },
     });
     ok(forged.status() === 400, 'a message naming a file anywhere else is refused', String(forged.status()));
+
+    // The picker takes any file. A desk's names no types; Chrome on Android
+    // asked for the microphone before it showed an input with none (its
+    // sound recorder is offered for audio), so there it names images,
+    // videos (the camera) and the generic type, which keeps every file
+    // choosable, and no audio type.
+    const desk = await page.$eval('#chat .so-composer__picker', (n) => n.getAttribute('accept'));
+    const pixel = await deviceOf(s, { viewport: { width: 412, height: 915 }, hasTouch: true, isMobile: true,
+      userAgent: 'Mozilla/5.0 (Linux; Android 16; Pixel 9) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Mobile Safari/537.36' });
+    await pixel.page.goto(s.url + '/', { waitUntil: 'domcontentloaded' });
+    await openChat(pixel.page, id);
+    const android = await pixel.page.$eval('#chat .so-composer__picker', (n) => n.getAttribute('accept'));
+    await pixel.context.close();
+    ok(desk === null && android === 'image/*,video/*,application/octet-stream',
+      'the picker names no types at a desk, and on Android Chrome no audio type (no microphone prompt) and the generic one',
+      JSON.stringify({ desk, android }));
     ok(unexpected(s.errors).length === 0, 'no console errors', unexpected(s.errors).join(' | ') || '0');
   } finally { await s.stop(); }
 }

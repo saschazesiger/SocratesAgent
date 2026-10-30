@@ -14,7 +14,7 @@
 //     connection is back, exactly once, and is on screen as "Not sent yet"
 //     until then.
 
-import { api, el, toast, errorMessage, clientKey, onWake, alertDialog, openDialog } from './api.js';
+import { api, el, toast, errorMessage, clientKey, onWake, alertDialog, openDialog, ANY_FILE } from './api.js';
 import { DS, html, raw, icon, morph, faces, showOverlay, hideOverlay } from './ui.js';
 import { combobox } from './combobox.js';
 import * as harnesses from './harnesses.js';
@@ -287,7 +287,7 @@ export function mountComposer(host, ctx) {
     <p class="so-composer__hint ds-meta" id="${'composer-hint-' + id}" role="status"></p>
     <div class="so-composer__bar">
       <button class="ds-btn ds-btn--quiet ds-btn--icon so-composer__attach" type="button" data-action="attach" aria-label="Attach files" data-tip="Attach files">${raw(icon('plus', 20))}</button>
-      <input class="so-composer__picker" type="file" multiple hidden tabindex="-1" aria-hidden="true">
+      <input class="so-composer__picker" type="file" multiple${ANY_FILE ? html` accept="${ANY_FILE}"` : ''} hidden tabindex="-1" aria-hidden="true">
       <button class="ds-btn ds-btn--quiet ds-btn--sm so-composer__model" type="button" data-action="model" aria-haspopup="menu" aria-expanded="false"><span class="so-composer__model-text so-ellipsis"><span class="so-composer__model-name"></span><span class="so-composer__model-effort"></span></span>${raw(icon('chevronDown', 16))}</button>
       <button class="ds-btn ds-btn--quiet ds-btn--icon ds-btn--sm so-info so-composer__usage" type="button" data-action="usage" aria-label="Usage of this chat" data-tip="Usage of this chat" hidden>${raw(icon('info', 18))}</button>
       <span class="so-composer__gap" aria-hidden="true"></span>
@@ -337,8 +337,17 @@ export function mountComposer(host, ctx) {
       input.style.height = '';
       return;
     }
+    // The field is border-box and scrollHeight leaves its borders out: a
+    // height of scrollHeight alone was 2px short of the text, and a
+    // platform with classic scrollbars (Windows) drew one, arrows and
+    // all, beside an empty line (B-39). Its overflow stays the CSS's
+    // (auto): its cap follows the keyboard (--so-composer-max), and a
+    // field that is capped meanwhile must still scroll.
+    const style = getComputedStyle(input);
+    const borders = style.boxSizing === 'border-box'
+      ? (parseFloat(style.borderTopWidth) || 0) + (parseFloat(style.borderBottomWidth) || 0) : 0;
     input.style.height = 'auto';
-    input.style.height = input.scrollHeight + 'px';
+    input.style.height = Math.ceil(input.scrollHeight + borders) + 'px';
   }
 
   input.addEventListener('input', () => {

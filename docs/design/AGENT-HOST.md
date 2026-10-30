@@ -1214,7 +1214,9 @@ after reading it is drawn under it (`chatfold.js` `takenUp`).
 tapped notification) walks the open questions of every asking chat, oldest first, and is live:
 an answer from another device settles the one it shows ("Answered on another device"), and at the
 end of the walk it takes up what was asked while it went, so a follow-up asked right after an
-answer is the next step rather than a dialog that closed. A question it is asked for that the page
+answer is the next step rather than a dialog that closed. Its top bar names the chat whose
+questions it shows, with how many other chats wait after it ("+1 more chat"); the body counts
+the questions of the batch ("Question 1 of 5"). A question it is asked for that the page
 cannot read yet - no connection, or a chat the page has not heard of - waits for the connection
 (at most three tries in two minutes) and opens that question, never another chat's; a chat that
 asks nothing any more says "Nothing is waiting for an answer any more". For 600 ms after a

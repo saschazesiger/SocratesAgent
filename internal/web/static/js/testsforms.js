@@ -711,9 +711,11 @@ export function mount(ctx) {
       morph(box, html`${ROLES.map((spec) => roleSection('rs', spec, s[spec.key] || {}))}<section class="ds-subsection so-tests__stack" aria-labelledby="rsHowTitle"><h3 class="ds-card__subtitle" id="rsHowTitle">How it goes</h3>${howRunsGo('rs', s)}</section>`);
       $('runSummary').textContent = summaryWords(s);
     } else {
+      // Focus stays on the button, as a disclosure's does: the settings
+      // follow it, the next Tab reaches them. Focus moved to their first
+      // select opened that select's picker by itself on iOS, over the
+      // sheet, until the next tap (B-36).
       M.enter(box, 'fade');
-      const first = box.querySelector('select');
-      if (first) first.focus();
     }
     update();
   });

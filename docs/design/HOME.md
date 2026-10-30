@@ -540,9 +540,13 @@ session) and Answer - never a button inside a `role=button`. The empty state off
 
 A `dialog.sheet.question-sheet` opened with `showModal()` (keyboard.js needs a modal dialog),
 full screen below 900 px and on `html.touch`, otherwise up to 760 px wide. A queue of the
-question sessions, oldest first (the one asked for first), "2 of 3" with Previous/Next.
+question sessions, oldest first (the one asked for first).
 
-- Top: the session (mark, title, folder) and a large **Open session** button.
+- Top bar: Close, the chat whose questions these are (its agent's mark and its name, cut with an
+  ellipsis), how many other chats wait after it as a small hint ("+1 more chat", "+2 more
+  chats"; nothing when it is the only one) and **Open the chat**. It names no "1 of 2": that
+  counted the chats the way "Question 1 of 5" counts a batch's questions, and read as a
+  contradiction of it (B-38).
 - `context` (the digest), then the question `text` in large type, `detail` when there is one.
 - The options as full-width buttons, at least 64 px high, 20 px type, the description under the
   label; a recommended option is marked. They are toggle buttons (`aria-pressed`, no radio role).

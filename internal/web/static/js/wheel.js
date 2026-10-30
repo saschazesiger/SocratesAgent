@@ -15,8 +15,9 @@
 // two glide up together by one line (the slot's --so-wheel-travel, 100% of
 // a line's own height) on --ds-ease-in-out over --ds-dur-slow, like one
 // strip: the old line leaves through the slot's soft top edge and fades
-// out on the way (--ds-ease-in: it stays until it is at the edge), the new
-// one comes up through the soft bottom edge and fades in (--ds-ease-out).
+// out on the way, the new one comes up through the soft bottom edge and
+// fades in - each as clear as it is in the slot, its fade on the glide's
+// own curve, so no frame shows a line cut by an edge at full strength.
 // Only translate and opacity: the text stays sharp all the way. Every line
 // is shown for at least --ds-hold-status: a change during the hold waits,
 // and a later one takes the place of the waiting one (which then never
@@ -92,7 +93,13 @@ function travelOf(slot) {
 /**
  * roll is one line's part of the turn: the glide on --ds-ease-in-out over
  * --ds-dur-slow - the same for the line that goes and the one that comes,
- * so the two move as one strip - and the opacity along with it.
+ * so the two move as one strip - and the opacity along with it, on the
+ * same curve: a line is as clear as it is in the slot. The fade used to
+ * lead the glide (the new line on --ds-ease-out, the old on --ds-ease-in):
+ * 18 ms in, the new line was half there while still a whole line below,
+ * its glyphs cut in half by the slot's bottom edge, and halfway the old
+ * one was still at nine tenths, cut by the top edge ("Reading Read 0 s"
+ * cut off under "Working", B-21).
  */
 function roll(line, slot, from, to, opacity, delay, fill) {
   const duration = M.motionDuration(slot, '--ds-dur-slow');
@@ -100,7 +107,7 @@ function roll(line, slot, from, to, opacity, delay, fill) {
     duration, delay, easing: M.motionEasing(slot, '--ds-ease-in-out'), fill,
   });
   const fade = line.animate([{ opacity: opacity[0] }, { opacity: opacity[1] }], {
-    duration, delay, easing: M.motionEasing(slot, opacity[1] ? '--ds-ease-out' : '--ds-ease-in'), fill,
+    duration, delay, easing: M.motionEasing(slot, '--ds-ease-in-out'), fill,
   });
   return Promise.all([glide.finished, fade.finished]).then(() => {}, () => {});
 }

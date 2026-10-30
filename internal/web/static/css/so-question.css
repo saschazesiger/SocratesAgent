@@ -12,14 +12,13 @@
  *                        moment after a new question is drawn (its buttons
  *                        take no tap), [data-stale] while the connection is
  *                        not live (the question is dimmed)
- *   .so-q-top            Close, the step the walk is at, Open chat (an
- *                        icon) at its end, and on a short screen the chat's
- *                        name on one line (.so-q-top-session)
+ *   .so-q-top            Close, the chat whose questions these are (its
+ *                        agent's mark and name on one line), how many other
+ *                        chats wait after it (.so-q-top-more, "+1 more
+ *                        chat") and Open chat (an icon) at its end
  *   .so-q-conn           the connection line under the top bar (a DS alert)
- *   .so-q-scroll         the session, the question, its options, the field
- *                        of one's own, and the progress line
- *   .so-q-session        the agent's mark and the title (in full, on as many
- *                        lines as it takes)
+ *   .so-q-scroll         the question, its options, the field of one's
+ *                        own, and the progress line
  *   .so-q-body           the question; [data-state="pending"] while its
  *                        answer is on its way
  *   .so-q-option         an option: a DS interactive card as a toggle
@@ -56,8 +55,7 @@
 }
 
 .so-q-shell:focus,
-.so-q-text:focus,
-.so-q-session-title:focus {
+.so-q-text:focus {
   outline: none;
 }
 
@@ -81,26 +79,30 @@
   padding-right: calc(var(--so-q-top-inset) + env(safe-area-inset-right, 0px));
 }
 
-.so-q-top-title {
+/* The chat's name takes the bar's room and gives way first, cut with an
+   ellipsis (its tip has it whole); the mark and the count keep theirs. */
+.so-q-top-mark {
   flex: none;
+  display: inline-flex;
+}
+
+.so-q-top-title {
+  flex: 1 1 0;
+  min-width: 0;
   color: var(--ds-text);
   font: var(--ds-font-subtitle);
+}
+
+.so-q-top-more {
+  flex: none;
+  color: var(--ds-text-2);
+  font: var(--ds-font-label);
 }
 
 /* The bar's buttons keep a finger's size: the name beside them gives way
    (at 360 with a keyboard up, Close shrank to 41px with it). */
 .so-q-top > .ds-btn {
   flex: none;
-}
-
-/* The chat's name in the bar, only where the session row gives way (a
-   short screen, below). */
-.so-q-top-session {
-  display: none;
-  flex: 1 1 0;
-  min-width: 0;
-  color: var(--ds-text-2);
-  font: var(--ds-font-label);
 }
 
 .so-q-open {
@@ -140,27 +142,6 @@
   padding-left: max(calc(var(--so-q-inset) + env(safe-area-inset-left, 0px)), calc((100% - var(--so-question-measure)) / 2));
   padding-right: max(calc(var(--so-q-inset) + env(safe-area-inset-right, 0px)), calc((100% - var(--so-question-measure)) / 2));
 }
-
-.so-q-session {
-  display: flex;
-  align-items: center;
-  gap: var(--ds-space-3);
-  padding-bottom: var(--ds-space-4);
-  border-bottom: 1px solid var(--ds-line);
-}
-
-.so-q-session-text {
-  flex: 1 1 auto;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-}
-
-.so-q-session-title {
-  color: var(--ds-text);
-  font: var(--ds-font-subtitle);
-}
-
 
 .so-q-body {
   display: flex;
@@ -410,7 +391,7 @@
 
 /* A phone on its side in a car mount has room for the question and its
    options or for the chrome around them, not both: the bars shrink to a
-   finger's size and the session is one line. */
+   finger's size. */
 @media (max-height: 500px) {
   .so-q-top {
     padding-top: calc(var(--ds-space-1) + env(safe-area-inset-top, 0px));
@@ -424,15 +405,6 @@
 
   .so-q-body {
     gap: var(--ds-space-2);
-  }
-
-  /* The session row is the bar's one line of name instead. */
-  .so-q-session {
-    display: none;
-  }
-
-  .so-q-top-session {
-    display: block;
   }
 
   .so-q-text {
@@ -491,11 +463,11 @@
 
 /* A phone on its side with its keyboard up has a strip of screen left
    (keybar.js data-so-short): the question, the field being typed into and
-   the way on. Close, the session, the context and the step come back with
+   the way on. The bar, the context and the step come back with
    the keyboard's going, and so do Read aloud, Ask back and Back, and the
    connection line (the question stays dimmed while it is not live). The
    field is brought into the strip as the keyboard comes (askdialog.js). */
-.so-touch[data-so-short] :is(.so-q-top, .so-q-conn, .so-q-session, .so-q-step, .so-q-read, .so-ask-back, .so-q-back) {
+.so-touch[data-so-short] :is(.so-q-top, .so-q-conn, .so-q-step, .so-q-read, .so-ask-back, .so-q-back) {
   display: none;
 }
 

@@ -95,6 +95,9 @@ function forgetDraft(askId) {
 /** forgetAskDraft lets the draft of an answered question go. */
 export function forgetAskDraft(askId) { forgetDraft(askId); }
 
+// chatsWord is "1 more chat", "2 more chats".
+function chatsWord(n) { return n + (n === 1 ? ' more chat' : ' more chats'); }
+
 // An answer as the dialog keeps it: what is sent (selected, other, note,
 // delegated), whether its fields are open, and whether the person has had
 // it in hand - changed it, or moved past it - which is what the card's
@@ -390,7 +393,7 @@ export function openAskDialog({ items, start = 0, watch, openChat, closed, more 
   }
 
   // bringQuestionUp scrolls a question to the top on a phone on its side,
-  // the chat and the batch's title and context a swipe above it.
+  // the batch's title and context a swipe above it.
   function bringQuestionUp() {
     if (!SHORT_SCREEN.matches) return;
     const scroller = shell.querySelector('.so-q-scroll');
@@ -584,6 +587,19 @@ export function openAskDialog({ items, start = 0, watch, openChat, closed, more 
 
   function questionsOf() { return askQuestions(item().ask); }
 
+  // waitingAfter is how many other chats have questions the walk comes to
+  // after this one: still open, and not answered from here already.
+  function waitingAfter(one) {
+    const chats = new Set();
+    for (const other of st.items.slice(st.at + 1)) {
+      if (other.chatId === one.chatId || other.ask.answered) continue;
+      const pending = pendingAnswer(other.chatId, other.ask.id);
+      if (pending && pending.state !== 'failed') continue;
+      chats.add(other.chatId);
+    }
+    return chats.size;
+  }
+
   // doubt is the connection line while what the dialog shows may be old -
   // connecting again, checking a quiet stream, offline - and null while it
   // is live, or polled and current. The page's first connect is no doubt:
@@ -613,23 +629,27 @@ export function openAskDialog({ items, start = 0, watch, openChat, closed, more 
     const q = questions[step];
     const last = step >= questions.length - 1;
     const session = one.session || {};
-    const counter = st.items.length > 1 ? (st.at + 1) + ' of ' + st.items.length : '';
+    const others = waitingAfter(one);
     const settled = st.phase === 'answered' || st.phase === 'elsewhere';
     const conn = settled ? null : doubt();
     st.connSaid = conn ? conn.kind + ':' + conn.words + ':' + st.phase : '';
     shell.toggleAttribute('data-stale', !!conn);
-    // The top bar: Close, where the walk is, and Open chat at its end; on a
-    // short screen the chat's name too, on one line, in place of the session
-    // row (so-question.css). The connection line comes under it while the
-    // connection is not live. The batch's title, when it has context, is the
-    // context's own row rather than a row of its own.
+    // The top bar: Close, whose questions these are - the chat's agent and
+    // name - and, when the walk goes on to other chats' questions after
+    // these, how many chats wait ("+1 more chat"); Open chat at its end.
+    // "Questions · 1 of 2" over "Question 1 of 5" counted two different
+    // things the same way (B-38). The connection line comes under it while
+    // the connection is not live. The batch's title, when it has context,
+    // is the context's own row rather than a row of its own.
     const title = session.title || 'Chat';
-    morph(shell, html`<div class="so-q-top" data-ds-key="top"><button class="ds-btn ds-btn--quiet ds-btn--icon so-q-close" type="button" data-action="close" aria-label="Close" data-tip="Close">${raw(icon('close', 20))}</button><span class="so-q-top-title">${counter ? 'Questions · ' + counter : 'Question'}</span><span class="so-q-top-session so-ellipsis" data-tip="${title}">${title}</span>${
+    morph(shell, html`<div class="so-q-top" data-ds-key="top"><button class="ds-btn ds-btn--quiet ds-btn--icon so-q-close" type="button" data-action="close" aria-label="Close" data-tip="Close">${raw(icon('close', 20))}</button><span class="so-q-top-mark" aria-hidden="true">${raw(agentMarkHtml(session.harness || '', 24))}</span><span class="so-q-top-title so-ellipsis" data-tip="${title}">${title}</span>${
+      others ? html`<span class="so-q-top-more">${'+' + chatsWord(others)}</span>` : ''
+    }${
       openChat ? html`<button class="ds-btn ds-btn--quiet ds-btn--icon so-q-open" type="button" data-action="open-chat" aria-label="Open the chat" data-tip="Open the chat">${raw(icon('external', 20))}</button>` : ''
     }</div>${
       conn ? connHtml(conn) : ''
     }
-<div class="so-q-scroll" data-ds-key="${'scroll:' + ask.id}"><div class="so-q-session"><span class="so-mark">${raw(agentMarkHtml(session.harness || '', 24))}</span><span class="so-q-session-text"><span class="so-q-session-title so-break">${title}</span></span></div>${settled ? doneHtml(ask) : html`<div class="so-q-body so-ask-body" data-ds-key="${'q:' + ask.id + ':' + step}"${st.phase === 'sent' ? html` data-state="pending"` : ''}>${
+<div class="so-q-scroll" data-ds-key="${'scroll:' + ask.id}">${settled ? doneHtml(ask) : html`<div class="so-q-body so-ask-body" data-ds-key="${'q:' + ask.id + ':' + step}"${st.phase === 'sent' ? html` data-state="pending"` : ''}>${
       step === 0 && payload.context ? contextHtml('ctx', payload.context, payload.title || 'About these questions', !!payload.title)
         : step === 0 && payload.title ? html`<p class="so-ask-title">${payload.title}</p>` : ''
     }${st.refused ? html`<div class="ds-alert ds-alert--error so-refused" role="alert">${raw(icon('alertCircle', 20))}<span class="ds-alert__text">${'Your answer was not taken: ' + (st.refused.error || 'the server refused it.') + ' Send it again, or change it first.'}</span></div>` : ''}${q ? questionHtml(q, questions.length, step, last) : ''}${

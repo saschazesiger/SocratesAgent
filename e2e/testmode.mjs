@@ -302,6 +302,18 @@ export async function testmode() {
     const listText = (await list.innerText()).replace(/\s+/g, ' ');
     ok(listText.includes('The search finds a product') && /Fail/.test(listText) && listText.includes('failing since Run 1'),
       'the Tests view shows each test with its latest verdict and since when it fails', listText.slice(0, 200));
+    // Change for this run opens the settings and leaves focus on its button:
+    // focus on the first select opened its picker by itself on iOS (B-36).
+    await s.page.click('#runBtn');
+    await s.page.locator('#runChange').waitFor({ timeout: 15000 });
+    await s.page.click('#runChange');
+    await s.page.locator('#runSettings select').first().waitFor({ timeout: 5000 });
+    const focused = await s.page.evaluate(() => ({ id: document.activeElement && document.activeElement.id,
+      tag: document.activeElement && document.activeElement.tagName, text: document.getElementById('runChange').textContent }));
+    ok(focused.id === 'runChange' && focused.text === 'Use the defaults',
+      'Change for this run shows the settings and keeps focus on its button, not on a select', JSON.stringify(focused));
+    await s.page.keyboard.press('Escape');
+    await s.page.locator('#runSheet').waitFor({ state: 'hidden', timeout: 5000 }).catch(() => {});
     ok(s.errors.length === 0, 'the cell viewer and the Tests view logged no errors', s.errors.join(' | '));
 
     // An override changes what counts.

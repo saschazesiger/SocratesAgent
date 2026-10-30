@@ -14,7 +14,7 @@
 // file. A button, a file dropped on the pane and an image pasted into it all
 // take the same road.
 
-import { el, toast, errorMessage } from './api.js';
+import { el, toast, errorMessage, ANY_FILE } from './api.js';
 import { DS, M, showOverlay, hideOverlay } from './ui.js';
 import { copyText, forgetRefusal, pasteClipboard } from './term.js';
 
@@ -193,7 +193,7 @@ export function mountTransfer(ctx) {
     ctx.focus();
   }
 
-  const picker = el('input', { type: 'file', multiple: true, hidden: true, 'aria-hidden': 'true' });
+  const picker = el('input', { type: 'file', multiple: true, accept: ANY_FILE, hidden: true, 'aria-hidden': 'true' });
   picker.addEventListener('change', () => {
     const files = [...picker.files];
     picker.value = '';

@@ -47,6 +47,19 @@ export function errorMessage(err) {
   return err.message || String(err);
 }
 
+// ANY_FILE is the accept of a file input that takes any file. Left out,
+// Chrome on Android (and every browser built on it) offers its sound
+// recorder beside the files and asks for the microphone before it shows
+// the picker at all ("Allow Chrome to record audio?"), because an input
+// with no accept takes audio too. Naming images and videos keeps the
+// camera, no audio type leaves the recorder out, and
+// application/octet-stream, the generic type, makes Chrome put no type
+// filter on the picker: every file can still be chosen
+// (SelectFileDialog.java: acceptsType, GENERIC_TYPE). Elsewhere it is
+// left out: a desktop picker would start filtered to these types.
+export const ANY_FILE = /Android/.test(navigator.userAgent) && /Chrome\//.test(navigator.userAgent)
+  ? 'image/*,video/*,application/octet-stream' : null;
+
 export function el(tag, attrs = {}, ...children) {
   const node = document.createElement(tag);
   for (const [key, value] of Object.entries(attrs)) {

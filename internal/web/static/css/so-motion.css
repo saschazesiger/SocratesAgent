@@ -42,9 +42,9 @@
  * --so-shimmer-peak (how much of it shows at its crest).
  *
  * Choreography (js/wheel.js): both lines glide over --ds-dur-slow on
- * --ds-ease-in-out, together; the old one fades on --ds-ease-in (it holds
- * until it is at the edge), the new one on --ds-ease-out. One line apart,
- * they never lie on each other. Only translate and opacity, so
+ * --ds-ease-in-out, together, and fade on the same curve, so each is as
+ * clear as it is in the slot: never a line cut by an edge at full
+ * strength. One line apart, they never lie on each other. Only translate and opacity, so
  * the text is as sharp in motion as at rest. A line still rolling in when
  * the next change comes finishes its roll during the hold, then the two go
  * as one strip. The shimmer's wave reuses
