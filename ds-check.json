@@ -34,8 +34,6 @@
       "reason": "Wrapping: a closed filter cuts a long account or project with an ellipsis; its tip says it whole." },
     { "rule": "restyle", "file": "internal/web/static/css/so-sheet.css", "selector": ".so-settings .ds-combo__option .ds-combo__meta",
       "reason": "Wrapping: a model's description and a folder's path under its name in the open list are read to their end." },
-    { "rule": "restyle", "file": "internal/web/static/css/so-shared.css", "selector": "html[data-ds-keyboard] dialog.ds-dialog:not(.ds-dialog--full, .ds-dialog--full-narrow, .ds-dialog--bottom, .ds-dialog--contained)",
-      "reason": "Placement: DS (2.1) centres a dialog in the layout viewport, which an on-screen keyboard does not shrink, so a dialog's actions sat under the keys (B-1, Pixel 9); the box is centred above the keyboard by DS's own --ds-keyboard-inset until Dashboard-Style does it." },
     { "rule": "restyle", "file": "internal/web/static/css/so-sheet.css", "selector": ".so-settings .ds-field__hint",
       "reason": "Wrapping: a hint quoting a preset's bare path breaks anywhere rather than run out of the sheet." }
   ]

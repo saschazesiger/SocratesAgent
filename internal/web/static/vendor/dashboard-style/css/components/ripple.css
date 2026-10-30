@@ -45,7 +45,8 @@
  *
  * A table row cannot hold the ripple and does not clip: the ripple goes
  * into its first cell (a <td>, or a <th scope="row"> row header) as a box
- * over the whole row (against the positioned row) that clips the circle,
+ * over the whole row (against the positioned row; the script gives it the
+ * row's height, which WebKit would take from the table) that clips the circle,
  * its ::before. The row is isolated while it ripples, so the ripple
  * paints over the row's colour and under the cells' content and layers.
  * A row of a pinned table (.ds-table--pin-first) ripples in two parts with
@@ -110,7 +111,8 @@
   }
 
   /* A row's ripple: a box over the row (its first cell, <td> or a <th>
-     row header, is static, so the positioned row places it) that clips
+     row header, is static, so the row places it: positioned, and in an
+     interactive table transformed, which WebKit needs) that clips
      the circle. The cell neither
      clips nor isolates; the row is isolated instead. */
   :where(.ds-ripples tr:has(> :is(td, th) > .ds-press-ripple)) {

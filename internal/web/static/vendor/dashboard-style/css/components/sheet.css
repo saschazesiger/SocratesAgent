@@ -87,6 +87,10 @@
  * not use <header> in the head: outside main content it would be a second
  * banner landmark.
  *
+ * The on-screen keyboard: with DS.dom.followViewport() on the page, the
+ * panel ends above it (--ds-keyboard-inset, 0px without it) while the
+ * scrim covers the whole window.
+ *
  * Hook: --ds-sheet-width (560px), --ds-sheet-width-wide (720px),
  * --ds-sheet-foot-border (1px solid --ds-line).
  *
@@ -124,6 +128,9 @@
     margin: 0;
     display: flex;
     justify-content: flex-end;
+    /* The panel ends above the on-screen keyboard (DS.dom.followViewport()
+       writes its height); the scrim still covers the whole window. */
+    padding-bottom: var(--ds-keyboard-inset, 0px);
     /* The bleed past the panel's outer edge never makes anything scroll. */
     overflow: clip;
   }
@@ -136,7 +143,7 @@
     max-width: none;
     max-height: none;
     margin: 0;
-    padding: 0;
+    padding: 0 0 var(--ds-keyboard-inset, 0px);
     border: 0;
     background: transparent;
     color: inherit;

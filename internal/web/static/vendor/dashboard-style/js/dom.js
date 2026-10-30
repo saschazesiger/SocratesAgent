@@ -1324,9 +1324,9 @@ function editing(doc) {
  * data-ds-keyboard on <html> while the visual viewport is shorter than its
  * tallest height at this width by more than 150px and focus is in a field
  * that types (also inside a same-origin iframe), writes --ds-keyboard-inset (px of the layout viewport the
- * keyboard covers, for the snackbars) and scrolls the window back to the
+ * keyboard covers, for the snackbars, dialogs and side sheets) and scrolls the window back to the
  * top when the browser panned it up for the keyboard (an unzoomed page).
- * shell.css and toast.css read them. Once per document (a second call
+ * shell.css, toast.css, dialog.css and sheet.css read them. Once per document (a second call
  * returns the same handle); destroy() takes everything back.
  * Progressive: visualViewport (feature-detected): without it nothing
  * changes.

@@ -198,7 +198,9 @@
  * (warm-up; a visible one swaps text and place in place; anchored, its
  * data-placement is read again two frames later), hoverable during
  * the --ds-delay-tooltip-hide grace, hidden by Escape (only then is the key
- * the tooltip's), by any pointerdown and by open(). A tip that repeats the
+ * the tooltip's, unless an open layer lies over its trigger: then the same
+ * Escape also closes that layer), by any pointerdown and by open(); the
+ * opener of an open layer shows no tip. A tip that repeats the
  * trigger's visible text shows only while that text is cut off. On touch a
  * tap shows the tip of an image or a blocked control, a long press the
  * others. A trigger that leaves the document takes its tooltip with it.
@@ -240,10 +242,11 @@
  *   put back, the entrances already marked played (.ds-toast--shown).
  * - startViewTransition (through DS.motion.transition(), for `container:
  *   true`, only with .ds-theme on <html>): without it the usual entrance.
- * - focus({ focusVisible: false }) (a native dialog or sheet opened or
- *   closed with the pointer shows no keyboard ring in WebKit, which marks
- *   what showModal() and close() focus as :focus-visible): without it that
- *   ring stays as WebKit draws it.
+ * - focus({ focusVisible: false }) (an overlay opened or closed with the
+ *   pointer, or after the last input was a press, shows no keyboard ring
+ *   in WebKit, which marks what showModal(), close() and a script's
+ *   focus() focus as :focus-visible): without it that ring stays as WebKit
+ *   draws it.
  */
 import { busy, flip, motionDuration, originFrom, settled, transition } from './motion.js';
 import { scrollEdges, watchScrolled } from './dom.js';
@@ -314,13 +317,14 @@ const stack = /** @type {Element[]} */ ([]);
  * a symbol of the global registry like the owned record:
  * - `order`: the open overlays of every copy, the topmost last, each with
  *   its copy's `open()` and `escape(event)`, so Escape closes the topmost
- *   layer whichever copy opened it;
+ *   layer whichever copy opened it, and (2.1.1) `opener()`, so no copy
+ *   shows a tooltip for the opener of an open layer;
  * - `lock`: the scroll lock's count and the inline styles it replaced;
  * - `seq`: the counter of anchor names and tooltip ids, so two copies
  *   never write the same one;
  * - `tipRoots`: the roots tooltips() serves, root element to handle.
  * Copies before 1.6.1 keep their own.
- * @returns {{ order: Array<{ element: Element, open: () => boolean, escape: (event: Event) => void }>, lock: { count: number, saved: { gutter: string, padding: string } | null }, seq: number, tipRoots: WeakMap<Element, { destroy: () => void }> }}
+ * @returns {{ order: Array<{ element: Element, open: () => boolean, opener?: () => Element|null, escape: (event: Event) => void }>, lock: { count: number, saved: { gutter: string, padding: string } | null }, seq: number, tipRoots: WeakMap<Element, { destroy: () => void }> }}
  */
 /**
  * The focused element as seen from `node`'s tree: inside a shadow root its
@@ -373,6 +377,7 @@ function enterOrder(element) {
   order.push({
     element,
     open: () => element.isConnected && overlays.get(element)?.phase === 'open',
+    opener: () => overlays.get(element)?.opener ?? null,
     escape(event) {
       // A contained dialog owns Escape only inside its container: the host
       // page around an embedded widget keeps the key (its own dialogs, its
@@ -599,25 +604,61 @@ function hostsOf(node) {
 /** Controls that always show the keyboard ring when focused, by pointer or by key. */
 const TEXT_ENTRY = 'input:not([type="button"], [type="submit"], [type="reset"], [type="checkbox"], [type="radio"], [type="range"], [type="color"], [type="file"], [type="image"]), textarea, select, [contenteditable]:not([contenteditable="false"])';
 
+/** Keys that alone never ask for the keyboard ring (as in the engines' own :focus-visible). */
+const MODIFIER_KEYS = new Set(['Shift', 'Control', 'Alt', 'Meta', 'AltGraph', 'CapsLock']);
+
 /**
- * Runs showModal() or close() of a native dialog without the keyboard ring
- * a pointer never asked for: WebKit marks the element these focus (the
- * autofocus target, the opener the dialog gives focus back to) as
- * :focus-visible even after a mouse click, and the focus() that follows
- * is a no-op on an element that has focus already. Only inside a pointer
- * event (a click from Enter or Space has detail 0) and only when the
- * previous focus showed no ring: a key press (Escape) and a script open
- * keep the engine's own choice. Text-entry controls are left alone: they
- * match :focus-visible in every engine whatever the input modality, so
- * there is nothing to correct, and a blur would run the page's blur
- * handlers (validate on blur, a combobox that closes) on open.
+ * The last input of a document, shared under a symbol of the global
+ * registry with js/ripple.js (attach() installs the same listeners) and
+ * every other copy of ds.js on the page: { last } is 'pointer' (a press of
+ * a mouse, pen or finger), 'key' (a key other than a modifier) or '' before
+ * either. Only known once something of DS listens: DS.ripple.attach(), the
+ * first open() or tooltips().
+ */
+const INPUT = Symbol.for('ds.input');
+
+/**
+ * Remembers the last input modality of `doc` (capture listeners, passive
+ * for the pointer), for a focus that moves outside any input event: an
+ * overlay opened once another one's exit settled, after a fetch or a
+ * timer. Once per document, whichever module or copy comes first.
+ */
+function watchModality(doc) {
+  if (typeof doc?.addEventListener !== 'function' || doc[INPUT]) return;
+  const record = (doc[INPUT] = { last: '' });
+  // mousedown too: a tap that only WebKit's compatibility mouse events report (an automated tap on iOS).
+  for (const type of ['pointerdown', 'mousedown']) doc.addEventListener(type, () => { record.last = 'pointer'; }, { capture: true, passive: true });
+  doc.addEventListener('keydown', (/** @type {KeyboardEvent} */ event) => {
+    if (!MODIFIER_KEYS.has(event.key)) record.last = 'key';
+  }, true);
+}
+
+/**
+ * Runs what moves focus for an overlay (showModal() or close() of a native
+ * dialog, focusing into a layer, giving focus back) without the keyboard
+ * ring a pointer never asked for: WebKit marks the element these focus
+ * (the autofocus target, a first item, the opener) as :focus-visible even
+ * after a mouse click or a tap, and the focus() that follows is a no-op on
+ * an element that has focus already. Pointer-caused: inside a pointer,
+ * mouse or touch event (a click from Enter or Space has detail 0), or,
+ * inside no input event at all (a dialog opened when an action sheet's
+ * exit settled, after a fetch), when the document's last input was a
+ * press (watchModality()); and only when the previous focus showed no
+ * ring. A key press (Escape, Enter) keeps the engine's own choice.
+ * Text-entry controls are left alone: they match :focus-visible in every
+ * engine whatever the input modality, so there is nothing to correct, and
+ * a blur would run the page's blur handlers (validate on blur, a combobox
+ * that closes) on open.
  */
 function keepFocusVisibility(element, run) {
   const before = activeIn(element);
   const body = element.ownerDocument.body;
   const was = Boolean(before) && before !== body && before.matches(':focus-visible');
   const event = /** @type {any} */ (viewOf(element)).event;
-  const pointer = /^(pointer|mouse|click$)/.test(event?.type ?? '') && !(event.type === 'click' && event.detail === 0);
+  const type = event?.type ?? '';
+  const key = /^key/.test(type) || (type === 'click' && event.detail === 0);
+  const press = !key && /^(pointer|mouse|touch|click$)/.test(type);
+  const pointer = press || (!key && element.ownerDocument[INPUT]?.last === 'pointer');
   run();
   const now = activeIn(element);
   if (was || !pointer || !now || now === before || now === body || now.matches(TEXT_ENTRY) || !now.matches(':focus-visible')) return;
@@ -846,6 +887,7 @@ function topOpen() {
 function listen(doc) {
   if (listening.has(doc)) return;
   listening.add(doc);
+  watchModality(doc);
   // Escape in the bubble phase: a widget inside the overlay that handles
   // the key itself (an inline edit, a picker) runs first and keeps the
   // overlay open with preventDefault(), as with a plain <dialog>. A
@@ -1921,7 +1963,7 @@ function show(element, options, transform) {
     }
   }
 
-  focusInto(element, state, box);
+  keepFocusVisibility(element, () => focusInto(element, state, box));
   state.expander?.setAttribute('aria-expanded', 'true');
 
   const entrance = settled(box, { transitions: true }).then(() => {
@@ -1966,6 +2008,35 @@ export function topmost(doc = globalThis.document) {
   const order = doc[SHARED]?.order ?? [];
   for (let i = order.length - 1; i >= 0; i -= 1) if (order[i].open()) return order[i].element;
   return null;
+}
+
+/**
+ * The open layer over `node`: the topmost open overlay of its page when
+ * `node` lies outside it (a menu over the button that opened it), else
+ * null. A contained dialog lies only over its container. A tooltip whose
+ * trigger is under such a layer leaves Escape to the layer.
+ * @param {Element} node
+ * @returns {Element|null}
+ */
+function layerOver(node) {
+  const top = topmost(node.ownerDocument);
+  if (!top || composedContains(top, node)) return null;
+  if (containedDialog(top) && !composedContains(containerOf(top), node)) return null;
+  return top;
+}
+
+/**
+ * Whether `node` opened a layer that is open now (a menu button while its
+ * menu shows), in any copy of ds.js that records openers (2.1.1 and
+ * later): its tooltip would sit over or beside that layer and take its
+ * Escape, so it does not show.
+ * @param {Element} node
+ * @returns {boolean}
+ */
+function opensOpenLayer(node) {
+  pruneDetached();
+  const order = node.ownerDocument?.[SHARED]?.order ?? [];
+  return order.some((entry) => entry.open() && entry.opener?.() === node);
 }
 
 /* ── Promise dialogs ────────────────────────────────── */
@@ -2280,7 +2351,7 @@ function closeFrom(element, cause, reason = cause) {
   // 2. Focus back on the opener at once.
   state.expander?.setAttribute('aria-expanded', 'false');
   const returns = MODAL.has(kind) ? focusInside : cause !== 'outside' && element.contains(activeIn(element));
-  if (returns) returnTarget(element, state)?.focus({ preventScroll: true });
+  if (returns) keepFocusVisibility(element, () => returnTarget(element, state)?.focus({ preventScroll: true }));
   // The snackbars glide back to their place (from a sheet, with the
   // leaving panel) and stay inside it, above its scrim, until it settled.
   if (kind === 'dialog' || kind === 'sheet') hostToasts(element, 'exit');
@@ -3589,6 +3660,7 @@ export function tooltips(root = globalThis.document) {
   const roots = sharedOf(doc).tipRoots;
   const existing = roots.get(rootElement);
   if (existing) return existing;
+  watchModality(doc);
   const theme = shadow ? /** @type {ShadowRoot} */ (root).querySelector('.ds-theme')
     : rootElement.closest('.ds-theme') ?? (root.nodeType === 9 ? doc.querySelector('.ds-theme') : null);
   if (!theme && !tooltipWarned) {
@@ -3733,7 +3805,9 @@ export function tooltips(root = globalThis.document) {
   function show(next, touch = false) {
     cancelTimers();
     const text = next.getAttribute('data-tip') ?? '';
-    const why = next.isConnected ? tipWanted(next) : null;
+    // The opener of an open menu (or dialog) shows no tip: it would cover
+    // the layer or take the Escape that closes it.
+    const why = next.isConnected && !opensOpenLayer(next) ? tipWanted(next) : null;
     if (!text.trim() || !why) return;
     touchShown = touch;
     if (watcher && !watching) {
@@ -4020,13 +4094,18 @@ export function tooltips(root = globalThis.document) {
     if (!frame) update();
   }
 
-  /** Escape: hides a visible tooltip and reports that the key was its. */
+  /**
+   * Escape: hides a visible tooltip and reports whether the key was its.
+   * It is not when an open layer lies over the trigger (a menu over its
+   * opener's tip): the tooltip hides and the same Escape closes the layer.
+   */
   function escape() {
     if (phase !== 'open') return false;
+    const under = Boolean(trigger?.isConnected && layerOver(trigger));
     hovering = false;
     focusing = false;
     hide();
-    return true;
+    return !under;
   }
 
   const controller = {

@@ -1,4 +1,4 @@
-/*! Dashboard-Style 2.1.0 | MIT License | https://github.com/saschazesiger/Dashboard-Style */
+/*! Dashboard-Style 2.1.1 | MIT License | https://github.com/saschazesiger/Dashboard-Style */
 /*
  * Dashboard-Style: every stylesheet in cascade order. scripts/build.mjs
  * inlines these imports into dist/ds.css; a bundler can import this file
@@ -7207,7 +7207,17 @@
  *                          .ds-table__row-link, whose
  *                          ::after stretches over the row (the focus ring
  *                          sits on it, inset, so the scroller never clips
- *                          it); the press is the cell layer at
+ *                          it); the row is positioned and every body row
+ *                          has an identity transform, so it is the box of
+ *                          the stretched area also in WebKit, which lays
+ *                          rows out static (a row is then a stacking
+ *                          context and the box of fixed descendants; not
+ *                          while it holds a menu or combobox list that the
+ *                          script places); WebKit makes the area as tall
+ *                          as the table below the row's top, the rows
+ *                          below, painted above it, keep their own
+ *                          clicks, and a focused row clips its ring to
+ *                          itself; the press is the cell layer at
  *                          --ds-state-pressed in --ds-dur-micro, or the
  *                          ripple (js/ripple.js, the row is a host); other
  *                          controls in the row stay above the link and
@@ -7492,9 +7502,10 @@
 
   /*
    * Interactive rows: the row's primary link or button stretches over the
-   * row (::after against the positioned row). Other controls in the row
-   * stay above it (zero specificity: a control's own position wins). A row
-   * without a row link opens nothing, so it stays plain.
+   * row (::after against the row, positioned and transformed). Other
+   * controls in the row stay above it (zero specificity: a control's own
+   * position wins). A row without a row link opens nothing, so it stays
+   * plain.
    */
   /* Positioned rows paint after the table's collapsed borders (Firefox
      then covers a selected row's hairlines with its colour): separate
@@ -7509,6 +7520,28 @@
     position: relative;
     cursor: pointer;
     -webkit-tap-highlight-color: transparent;
+  }
+
+  /* WebKit lays a table row out static whatever its position, so the row
+     link's ::after (and the row's ripple box) would stretch over the
+     nearest positioned box around the table: every row's link over the
+     whole table, the last on top, taking hover, clicks and the status bar
+     URL of every row. An identity transform makes the row their containing
+     block in every engine (it is also a stacking context, which the
+     raised controls and the pinned cell stay inside). Every body row gets
+     it: WebKit makes the area as tall as the table
+     below the row's top, and a later row, painted above, keeps its own
+     clicks also when it has no row link (or is a detail row). */
+  .ds-table--interactive tbody tr {
+    transform: translateX(0);
+  }
+
+  /* A menu or combobox list that the script places inside a row (no top
+     layer: no popover or anchor positioning) is fixed or absolute against
+     the viewport or its field: the transform would make the row its box,
+     clipped by the scrolling wrapper and painted under the rows below. */
+  .ds-table--interactive tbody tr:has(:is(.ds-menu, .ds-combo__popup):not([hidden], [data-anchored])) {
+    transform: none;
   }
 
   :where(.ds-table--interactive tbody tr) :where(a[href], button, input, select, textarea, label, summary, [tabindex]):where(:not(.ds-table__row-link)) {
@@ -7535,10 +7568,18 @@
     outline-offset: calc(-1 * var(--ds-focus-width));
   }
 
-  /* Keyboard focus: the focus layer on the cells, at once. */
+  /* Keyboard focus: the focus layer on the cells, at once. WebKit gives a
+     transformed row's absolute boxes the row's top and width but the
+     table's height, so the link's ring would run on down to the table's
+     end: the focused row clips what it holds to its own box (the inset
+     ring and the cells' content lie inside it in every engine). Anchor
+     positioning would size the area itself, but WebKit then restyles the
+     link from its initial values on every load, so its underline and
+     ring offset transition. */
   .ds-table--interactive tbody tr:not(.ds-table__detail):where(:has(.ds-table__row-link:focus-visible)):focus-within {
     --ds-table-row-layer: color-mix(in srgb, currentColor calc(var(--ds-state-focus) * 100%), transparent);
     --ds-table-row-pace: 0s;
+    clip-path: inset(0);
   }
 
   /* Press-in in --ds-dur-micro (.ds-pressed: js/ripple.js holds it); not
@@ -13842,6 +13883,10 @@
  * not use <header> in the head: outside main content it would be a second
  * banner landmark.
  *
+ * The on-screen keyboard: with DS.dom.followViewport() on the page, the
+ * panel ends above it (--ds-keyboard-inset, 0px without it) while the
+ * scrim covers the whole window.
+ *
  * Hook: --ds-sheet-width (560px), --ds-sheet-width-wide (720px),
  * --ds-sheet-foot-border (1px solid --ds-line).
  *
@@ -13877,6 +13922,9 @@
     margin: 0;
     display: flex;
     justify-content: flex-end;
+    /* The panel ends above the on-screen keyboard (DS.dom.followViewport()
+       writes its height); the scrim still covers the whole window. */
+    padding-bottom: var(--ds-keyboard-inset, 0px);
     /* The bleed past the panel's outer edge never makes anything scroll. */
     overflow: clip;
   }
@@ -13889,7 +13937,7 @@
     max-width: none;
     max-height: none;
     margin: 0;
-    padding: 0;
+    padding: 0 0 var(--ds-keyboard-inset, 0px);
     border: 0;
     background: transparent;
     color: inherit;
@@ -14428,6 +14476,13 @@
  * DS.overlay moves focus through them with the arrow keys). A lone .ds-btn
  * directly in the body keeps its own width.
  *
+ * The on-screen keyboard: with DS.dom.followViewport() on the page, every
+ * dialog keeps clear of it (--ds-keyboard-inset, 0px without it): a
+ * centred box centres in the window above the keyboard, a full-screen box
+ * (--full, --full-narrow on phones) ends at its top edge, the action sheet
+ * (--bottom) sits on it, a contained box sticks above it; the scrim keeps
+ * covering the whole window. A box taller than the room scrolls its body.
+ *
  * Fallback focus: a box that took focus because nothing inside could
  * (tabindex="-1", set by DS.overlay) shows no ring.
  *
@@ -14468,6 +14523,10 @@
        pushes the cover off its container or the window. */
     margin: 0;
     padding: var(--ds-space-4);
+    /* The on-screen keyboard (DS.dom.followViewport() writes its height)
+       covers the bottom of the window, not of the layout: the box centres
+       in what is left above it, and the scrim still covers it all. */
+    padding-bottom: calc(var(--ds-space-4) + var(--ds-keyboard-inset, 0px));
   }
 
   /* A native <dialog> loses the UA box: it is the same full-window grid
@@ -14500,6 +14559,9 @@
   .ds-dialog--contained {
     position: absolute;
     z-index: var(--ds-z-popover);
+    /* It covers its container, not the window: the keyboard is the
+       sticky box's concern (below). */
+    padding-bottom: var(--ds-space-4);
   }
 
   /* The container may be taller than the window (a long list, a grid cell
@@ -14509,8 +14571,8 @@
   .ds-dialog--contained .ds-dialog__box {
     position: sticky;
     top: var(--ds-space-4);
-    bottom: var(--ds-space-4);
-    max-height: min(100%, calc(100dvh - 2 * var(--ds-space-4)));
+    bottom: calc(var(--ds-space-4) + var(--ds-keyboard-inset, 0px));
+    max-height: min(100%, calc(100dvh - 2 * var(--ds-space-4) - var(--ds-keyboard-inset, 0px)));
   }
 
   .ds-dialog--hidden,
@@ -14826,9 +14888,10 @@
     margin-top: 0;
   }
 
-  /* The whole window: no padding around the box, safe areas inside it. */
+  /* The whole window: no padding around the box, safe areas inside it;
+     it ends above the on-screen keyboard. */
   .ds-dialog--full {
-    padding: 0;
+    padding: 0 0 var(--ds-keyboard-inset, 0px);
   }
 
   .ds-dialog--full .ds-dialog__box {
@@ -14848,10 +14911,11 @@
     padding-top: env(safe-area-inset-top);
   }
 
-  /* The action sheet: at the bottom edge, above the home indicator. */
+  /* The action sheet: at the bottom edge, above the home indicator, or
+     above the on-screen keyboard while it is up. */
   .ds-dialog--bottom {
     place-items: end center;
-    padding-bottom: max(var(--ds-space-4), env(safe-area-inset-bottom));
+    padding-bottom: max(env(safe-area-inset-bottom), calc(var(--ds-space-4) + var(--ds-keyboard-inset, 0px)));
   }
 
   /* A window 320px high or less (a phone on its side with the keyboard):
@@ -14891,9 +14955,9 @@
         ds-shrink-out var(--ds-dur-base) var(--ds-ease-exit) forwards;
     }
 
-    /* Full screen on phones only. */
+    /* Full screen on phones only, above the on-screen keyboard. */
     .ds-dialog--full-narrow {
-      padding: 0;
+      padding: 0 0 var(--ds-keyboard-inset, 0px);
     }
 
     .ds-dialog--full-narrow .ds-dialog__box {
@@ -18107,7 +18171,8 @@
  *
  * A table row cannot hold the ripple and does not clip: the ripple goes
  * into its first cell (a <td>, or a <th scope="row"> row header) as a box
- * over the whole row (against the positioned row) that clips the circle,
+ * over the whole row (against the positioned row; the script gives it the
+ * row's height, which WebKit would take from the table) that clips the circle,
  * its ::before. The row is isolated while it ripples, so the ripple
  * paints over the row's colour and under the cells' content and layers.
  * A row of a pinned table (.ds-table--pin-first) ripples in two parts with
@@ -18170,7 +18235,8 @@
   }
 
   /* A row's ripple: a box over the row (its first cell, <td> or a <th>
-     row header, is static, so the positioned row places it) that clips
+     row header, is static, so the row places it: positioned, and in an
+     interactive table transformed, which WebKit needs) that clips
      the circle. The cell neither
      clips nor isolates; the row is isolated instead. */
   :where(.ds-ripples tr:has(> :is(td, th) > .ds-press-ripple)) {

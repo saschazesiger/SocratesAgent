@@ -111,6 +111,13 @@
  * DS.overlay moves focus through them with the arrow keys). A lone .ds-btn
  * directly in the body keeps its own width.
  *
+ * The on-screen keyboard: with DS.dom.followViewport() on the page, every
+ * dialog keeps clear of it (--ds-keyboard-inset, 0px without it): a
+ * centred box centres in the window above the keyboard, a full-screen box
+ * (--full, --full-narrow on phones) ends at its top edge, the action sheet
+ * (--bottom) sits on it, a contained box sticks above it; the scrim keeps
+ * covering the whole window. A box taller than the room scrolls its body.
+ *
  * Fallback focus: a box that took focus because nothing inside could
  * (tabindex="-1", set by DS.overlay) shows no ring.
  *
@@ -153,6 +160,10 @@
        pushes the cover off its container or the window. */
     margin: 0;
     padding: var(--ds-space-4);
+    /* The on-screen keyboard (DS.dom.followViewport() writes its height)
+       covers the bottom of the window, not of the layout: the box centres
+       in what is left above it, and the scrim still covers it all. */
+    padding-bottom: calc(var(--ds-space-4) + var(--ds-keyboard-inset, 0px));
   }
 
   /* A native <dialog> loses the UA box: it is the same full-window grid
@@ -185,6 +196,9 @@
   .ds-dialog--contained {
     position: absolute;
     z-index: var(--ds-z-popover);
+    /* It covers its container, not the window: the keyboard is the
+       sticky box's concern (below). */
+    padding-bottom: var(--ds-space-4);
   }
 
   /* The container may be taller than the window (a long list, a grid cell
@@ -194,8 +208,8 @@
   .ds-dialog--contained .ds-dialog__box {
     position: sticky;
     top: var(--ds-space-4);
-    bottom: var(--ds-space-4);
-    max-height: min(100%, calc(100dvh - 2 * var(--ds-space-4)));
+    bottom: calc(var(--ds-space-4) + var(--ds-keyboard-inset, 0px));
+    max-height: min(100%, calc(100dvh - 2 * var(--ds-space-4) - var(--ds-keyboard-inset, 0px)));
   }
 
   .ds-dialog--hidden,
@@ -511,9 +525,10 @@
     margin-top: 0;
   }
 
-  /* The whole window: no padding around the box, safe areas inside it. */
+  /* The whole window: no padding around the box, safe areas inside it;
+     it ends above the on-screen keyboard. */
   .ds-dialog--full {
-    padding: 0;
+    padding: 0 0 var(--ds-keyboard-inset, 0px);
   }
 
   .ds-dialog--full .ds-dialog__box {
@@ -533,10 +548,11 @@
     padding-top: env(safe-area-inset-top);
   }
 
-  /* The action sheet: at the bottom edge, above the home indicator. */
+  /* The action sheet: at the bottom edge, above the home indicator, or
+     above the on-screen keyboard while it is up. */
   .ds-dialog--bottom {
     place-items: end center;
-    padding-bottom: max(var(--ds-space-4), env(safe-area-inset-bottom));
+    padding-bottom: max(env(safe-area-inset-bottom), calc(var(--ds-space-4) + var(--ds-keyboard-inset, 0px)));
   }
 
   /* A window 320px high or less (a phone on its side with the keyboard):
@@ -576,9 +592,9 @@
         ds-shrink-out var(--ds-dur-base) var(--ds-ease-exit) forwards;
     }
 
-    /* Full screen on phones only. */
+    /* Full screen on phones only, above the on-screen keyboard. */
     .ds-dialog--full-narrow {
-      padding: 0;
+      padding: 0 0 var(--ds-keyboard-inset, 0px);
     }
 
     .ds-dialog--full-narrow .ds-dialog__box {

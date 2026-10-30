@@ -171,6 +171,16 @@ Still Socrates' own after 2.1, with the reason that still holds:
   modal's figures in words**, **the brand's name on a phone** and **`alertDialog`**: 2.1 changes none of these; they
   are the project's layout or content, as listed above.
 
+2.1.1 (vendored at `78f1d53`) takes two more of Socrates' workarounds, both found by the device tests:
+
+| Before (Socrates' own) | Now (DS 2.1.1) |
+|---|---|
+| `ui.js` `rowLinkByPoint`: a click on a table sent to the row under the pointer, because Safari lays rows out static and every row link covered the whole table (Tests B-34) | each interactive row is its link's box in WebKit too |
+| X2 in `so-shared.css` (a `ds-check.json` exception): a centred dialog padded by `--ds-keyboard-inset`, so a rename's buttons stood above a phone's keyboard (Tests B-1) | every dialog and side sheet keeps clear of the on-screen keyboard |
+
+DS 2.1.1 also closes a menu over a shown tooltip with one Escape (Tests B-33) and shows no focus ring on a layer
+that opens a moment after a tap.
+
 
 ## Proposed to Dashboard-Style
 
