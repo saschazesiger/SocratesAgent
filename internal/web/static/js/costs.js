@@ -498,7 +498,7 @@ function drawChart(filtered, range) {
   const total = list.reduce((s, b) => s + b.total, 0);
   const busiest = list.reduce((m, b) => (b.total > (m ? m.total : 0) ? b : m), null);
   $('chartSub').textContent = total > 0
-    ? `${money(total)} in ${keys.length} ${unit}s · the most on ${busiest ? (monthly ? monthLong.format(dayFromKey(busiest.key)) : dayLong.format(dayFromKey(busiest.key))) : '—'} (${busiest ? money(busiest.total) : ''})`
+    ? `${money(total)} in ${keys.length} ${keys.length === 1 ? unit : unit + 's'} · the most on ${busiest ? (monthly ? monthLong.format(dayFromKey(busiest.key)) : dayLong.format(dayFromKey(busiest.key))) : '—'} (${busiest ? money(busiest.total) : ''})`
     : 'Nothing was spent in this period.';
 
   // A legend for two series or more; one series is named by the title.

@@ -213,6 +213,14 @@
   overflow-wrap: anywhere;
 }
 
+/* The name's button as wide as its cell. Safari sizes an inline-block that
+   breaks anywhere a fraction of a pixel short of its text, so "Claude Code"
+   broke onto two lines in a column with room to spare; the cell's width is
+   the button's now, and its min-content stays the broken word's. */
+.so-costs-name > .ds-link-btn {
+  width: 100%;
+}
+
 .so-costs-name svg {
   vertical-align: -3px;
   margin-inline-end: var(--ds-space-1);
