@@ -1187,15 +1187,35 @@ function optionField(harness, option) {
     }
     case 'model': {
       // A program that could not list its models leaves an id to type in
-      // (combobox.js: no list, so no arrow either).
+      // (combobox.js: no list, so no arrow either). The field says the
+      // model's name, as the new-session sheet does, and an id the program
+      // does not report by its readable end: a provider/model id cut off by
+      // a phone's field is only its provider. What is saved is the id; a
+      // name typed in is the model it names.
+      const models = () => harness.models || [];
+      const named = (text) => {
+        const typed = String(text || '').trim();
+        return models().find((m) => m.id === typed || (m.label || '').toLowerCase() === typed.toLowerCase()) || null;
+      };
       const picker = combobox({
         value: value || '',
-        placeholder: (harness.models || []).length ? 'Pick from the list, or type a model id' : 'Type a model id',
-        items: () => (harness.models || []).map((m) => ({
+        placeholder: models().length ? 'Pick from the list, or type a model id' : 'Type a model id',
+        items: () => models().map((m) => ({
           value: m.id, label: m.label || m.id, hint: m.hint || '', group: m.group || '',
         })),
-        onChange: (next) => write(next.trim()),
+        display: (one) => {
+          const model = models().find((m) => m.id === one);
+          return model ? (model.label || model.id) : harnesses.readableModel(one);
+        },
+        onChange: (next) => {
+          const model = named(next);
+          write(model ? model.id : next.trim());
+        },
       });
+      // The whole id stays one hover away where the field shows a part of it.
+      const titled = () => { picker.input.title = picker.value() || ''; };
+      picker.input.addEventListener('blur', titled);
+      titled();
       picker.input.id = id;
       control = dictated(picker.node, picker.input);
       break;
@@ -1251,7 +1271,7 @@ function modelList(harness) {
       effort.addEventListener('change', () => {
         setPath(settings, path, picks().map((p) => (p.id === pick.id ? { ...p, effort: effort.value } : p)));
       });
-      const name = model ? (model.label || pick.id) : pick.id;
+      const name = model ? (model.label || pick.id) : harnesses.readableModel(pick.id);
       const instructions = el('button', {
         class: 'ds-btn ds-btn--quiet ds-btn--icon ds-btn--sm', type: 'button',
         'aria-label': 'Instructions for ' + pick.id, 'data-tip': 'Instructions',

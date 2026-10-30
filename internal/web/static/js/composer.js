@@ -493,7 +493,7 @@ export function mountComposer(host, ctx) {
     const chat = ctx.chat();
     const info = chat && chat.info && Array.isArray(chat.info.models) ? chat.info.models : [];
     const listed = info.find((one) => one.id === model);
-    return listed ? (listed.label || listed.id) : model;
+    return listed ? (listed.label || listed.id) : harnesses.readableModel(model);
   }
 
   // canonical is a model as the list offers it: the journal holds what an
@@ -621,7 +621,7 @@ export function mountComposer(host, ctx) {
       value: pick.model,
       items: () => harnesses.modelItems(harness),
       placeholder: 'Search by name, provider or id',
-      display: (value) => { const m = byId(value); return m ? m.label : value; },
+      display: (value) => { const m = byId(value); return m ? m.label : harnesses.readableModel(value); },
       onChange: (value) => {
         const typed = String(value || '').trim();
         const named = all.find((m) => m.id === typed || m.label.toLowerCase() === typed.toLowerCase());

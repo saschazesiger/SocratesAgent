@@ -298,9 +298,29 @@ export function modelOf(id, modelId) {
   return null;
 }
 
+// readableModel is how a model reads where its name is not known: an id the
+// listing does not have, or one typed in. A provider/model id reads as its
+// model, the end of the path ("deepseek-v4-flash" for
+// "openrouter/deepseek/deepseek-v4-flash"), because a narrow field that cut it
+// off would keep only the provider - the part everybody's ids share.
+export function readableModel(modelId) {
+  const text = String(modelId || '').trim();
+  // Words are a name typed in, not an id.
+  if (/\s/.test(text)) return text;
+  const last = text.split('/').filter(Boolean).pop();
+  return last || text;
+}
+
+// modelName is what a model is called: its name from the listing, else its
+// readable id.
+export function modelName(id, modelId) {
+  const model = modelOf(id, modelId);
+  return model ? (model.label || model.id) : readableModel(modelId);
+}
+
 // modelByWords is the entry a typed model names by its label ("Sonnet 1M"),
 // for a field that shows labels and takes ids.
-function modelByWords(id, typed) {
+export function modelByWords(id, typed) {
   const words = String(typed || '').trim().toLowerCase();
   if (!words) return null;
   return offered(id).find((m) => m.id === typed || String(m.label || '').toLowerCase() === words) || null;
@@ -644,10 +664,7 @@ export function settingsForm(options = {}) {
     value: '',
     items: () => modelItems(pick.harness),
     placeholder: 'Pick a model, or type its id',
-    display: (value) => {
-      const model = modelOf(pick.harness, value);
-      return model ? (model.label || model.id) : value;
-    },
+    display: (value) => modelName(pick.harness, value),
     onChange: (value) => {
       const named = modelByWords(pick.harness, value);
       pick.model = named ? named.id : value.trim();

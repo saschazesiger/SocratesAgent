@@ -378,7 +378,7 @@ export function mountChat(ctx) {
       if (found) return found.label || found.id;
       const listed = chat && chat.info && Array.isArray(chat.info.models)
         ? chat.info.models.find((one) => one.id === model) : null;
-      return listed ? (listed.label || listed.id) : model;
+      return listed ? (listed.label || listed.id) : harnesses.readableModel(model);
     },
     effortLabel: (effort) => harnesses.effortLabel(effort),
     // The other chats a message names (chatparts.js peerCard): their title

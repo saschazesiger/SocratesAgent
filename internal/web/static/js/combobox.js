@@ -43,9 +43,12 @@ function keepFocus(part) {
  *                      working directory is not: the server keeps a list of
  *                      the places a session may work, and a typed half-path is
  *                      not one of them.
- * options.display      how a value reads in the field. Without it the value is
- *                      its own label, which is right for a model id and wrong
- *                      for anything whose value is a key.
+ * options.display      how a value reads in the field: a model by its name, an
+ *                      id the list does not have by a readable part of it.
+ *                      Without it the value is its own label. An open field
+ *                      edits what it holds: while it has the focus, a value
+ *                      that is not on the list is shown as it is, so what is
+ *                      typed runs on from the value and not from its label.
  * options.emptyText    what the list says when nothing matches.
  *
  * With nothing to list at all - a program that could not list its models -
@@ -66,8 +69,14 @@ export function combobox(options = {}) {
     emptyText = 'No model matches',
   } = options;
 
-  // shown is the text the field wears for a value.
+  // shown is the text the field wears for a value. listed says whether a
+  // value is on the list; text is what the field says now: while it has the
+  // focus, a value off the list is itself, so typing edits the value rather
+  // than the part of it the display shows.
   const shown = (one) => (display ? display(one ?? '') : (one ?? ''));
+  const listed = (one) => (items() || []).some((item) => item.value === one);
+  const text = () => (display && !strict && document.activeElement === input && !listed(current)
+    ? current : shown(current));
 
   const id = 'combo' + (++comboCount);
   let current = value ?? '';
@@ -121,7 +130,7 @@ export function combobox(options = {}) {
 
   function setValue(next, notify = true) {
     current = next ?? '';
-    input.value = shown(current);
+    input.value = text();
     refresh();
     if (notify) onChange(current);
   }
@@ -193,8 +202,9 @@ export function combobox(options = {}) {
 
   function close() {
     // A strict field shows the entry it is on, never the half-typed filter
-    // that was used to find one.
-    if (strict) input.value = shown(current);
+    // that was used to find one; a field with a display shows its value's
+    // name again once it is left.
+    if (strict || display) input.value = text();
     input.removeAttribute('aria-activedescendant');
     if (isOpen()) DS.overlay.close(popup);
   }
@@ -210,6 +220,7 @@ export function combobox(options = {}) {
     // In a strict field the text is a label, so typing has to replace it
     // rather than run on from the end of it.
     if (strict) input.select();
+    else if (display) input.value = text();
     open('');
   });
   input.addEventListener('input', () => {
@@ -259,7 +270,7 @@ export function combobox(options = {}) {
         // The Escape is the list's: the sheet around it stays open, and the
         // field goes back to what it was before the typing.
         event.preventDefault();
-        input.value = shown(current);
+        input.value = text();
         close();
         break;
       case 'Tab':

@@ -1190,12 +1190,17 @@ async function livesession() {
 //
 // The controls are addressed by the id the dashboard derives from the storage
 // key, `opt-<harness>-<key>`.
+//
+// A model field shows the model's name and saves its id (B-11): Opus for
+// "opus", and an id the program does not report by the end of its path, so a
+// narrow field never shows just the provider. Focused, an unlisted id is
+// edited as itself.
 const ADMIN_OPTIONS = [
-  ['claude', 'default_model', 'text', 'opus'],
+  ['claude', 'default_model', 'model', 'opus', 'Opus'],
   ['claude', 'default_effort', 'select', 'high'],
-  ['codex', 'default_model', 'text', 'gpt-5.6-terra'],
+  ['codex', 'default_model', 'model', 'gpt-5.6-terra'],
   ['codex', 'default_effort', 'select', 'xhigh'],
-  ['opencode', 'default_model', 'text', 'anthropic/claude-sonnet-4-5'],
+  ['opencode', 'default_model', 'model', 'anthropic/claude-sonnet-4-5', 'claude-sonnet-4-5'],
 ];
 
 // The flags every chat of Claude Code is started with, whatever anybody
@@ -1220,7 +1225,10 @@ async function setOption(page, [harness, key, kind, value]) {
   await page.fill(selector, value);
 }
 
-async function readOption(page, [harness, key]) {
+// readOption is what a control holds: a model field's saved id, read from
+// the settings (the field itself says the model's name).
+async function readOption(page, [harness, key, kind], saved) {
+  if (kind === 'model') return saved.settings.harnesses[harness][key];
   return page.$eval('#opt-' + harness + '-' + key, (n) => n.value);
 }
 
@@ -1328,13 +1336,28 @@ async function adminoptions() {
     await s.page.reload({ waitUntil: 'domcontentloaded' });
     await s.page.waitForSelector('#harness-opencode', { timeout: 20000 });
 
+    const saved = await (await s.context.request.get(s.url + '/api/settings')).json();
     const wrong = [];
     for (const option of ADMIN_OPTIONS) {
-      const got = await readOption(s.page, option);
+      const got = await readOption(s.page, option, saved);
       if (String(got) !== String(option[3])) {
         wrong.push(option[0] + '.' + option[1] + '=' + got + ' (want ' + option[3] + ')');
       }
+      if (option[2] !== 'model') continue;
+      const shown = await s.page.$eval('#opt-' + option[0] + '-' + option[1], (n) => n.value);
+      const want = option[4] || option[3];
+      if (shown !== want) wrong.push(option[0] + '.' + option[1] + ' reads "' + shown + '" (want "' + want + '")');
     }
+    // Focused, the unlisted id is the field's text, and leaving it gives
+    // the readable end back.
+    const unlisted = '#opt-opencode-default_model';
+    await s.page.focus(unlisted);
+    const editing = await s.page.$eval(unlisted, (n) => n.value);
+    if (editing !== 'anthropic/claude-sonnet-4-5') wrong.push('focused, the OpenCode field reads "' + editing + '"');
+    await s.page.keyboard.press('Escape');
+    await s.page.$eval(unlisted, (n) => n.blur());
+    const left = await s.page.$eval(unlisted, (n) => n.value);
+    if (left !== 'claude-sonnet-4-5') wrong.push('left, the OpenCode field reads "' + left + '"');
     const shellBinary = await s.page.$eval('#opt-shell-binary', (n) => n.value);
     if (shellBinary !== '/bin/sh') wrong.push('shell.binary=' + shellBinary);
     ok(wrong.length === 0, 'every setting a harness card offers survived a save and a reload',
