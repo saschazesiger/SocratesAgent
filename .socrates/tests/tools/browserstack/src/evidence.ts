@@ -65,7 +65,7 @@ export interface EvidenceLine {
 }
 
 /** The actions that act on the page as a person would; Socrates' review rule reads the flag. */
-export const INTERACTIONS: ReadonlySet<string> = new Set(["tap", "type", "key"]);
+export const INTERACTIONS: ReadonlySet<string> = new Set(["tap", "type", "key", "prompt"]);
 
 /** Query values that carry credentials (sign-in and invitation links, OAuth, BrowserStack's public link) are cut from every recorded URL. */
 const SECRET_PARAMS = /([?&#](?:token|auth_token|code|key|auth|state|sig|signature|secret|password)=)[^&#]*/gi;

@@ -6,7 +6,7 @@ import { DEVICE_START_TIMEOUT_MS, IDLE_TIMEOUT_S, MARKER_GAP_CSS, PROJECT_NAME, 
 import type { Device } from "./devices";
 import { redactUrl, type Action, type Evidence, type PageEntry, type Settle, type Target } from "./evidence";
 import { KEYS, keyActions, parseKey } from "./keys";
-import { describePrompt, findNativePrompt, type NativePrompt } from "./prompt";
+import { answerButton, describePrompt, findNativePrompt, xpathLiteral, type NativePrompt } from "./prompt";
 import { onSite, pageUrl, sameDocument } from "./site";
 import { requireSecret, type Secrets } from "./vault";
 import { WebDriver, type Rect } from "./webdriver";
@@ -20,6 +20,10 @@ const PAGE = Object.fromEntries(["settle", "collector", "find", "look", "misc", 
 
 /** How often (every 0.5 s) native typing on iOS looks for the keyboard to slide in. */
 const KEYBOARD_WAIT_TRIES = 6;
+/** How long one switch between the page and Appium's native layer may take; it is tried twice. */
+const CONTEXT_TIMEOUT_MS = 25_000;
+/** How long one command in the native layer (screenshot, page source, a touch) may take. */
+const NATIVE_TIMEOUT_MS = 40_000;
 /** How long a native tap waits before it looks for its markers on the screen a second time. */
 const MARKER_RETRY_MS = 800;
 /** How often (every 0.5 s) `qa keyboard` looks for the keyboard to be gone. */
@@ -141,26 +145,50 @@ export class DeviceSession {
    */
   private async nativePrompt(): Promise<NativePrompt | null> {
     if (this.device.kind !== "android") return null;
-    const web = await this.driver.context().catch(() => null);
-    if (!web) return null;
-    try {
-      await this.driver.setContext("NATIVE_APP");
-      return findNativePrompt(await this.driver.source());
-    } catch {
-      return null;
-    } finally {
-      await this.driver.setContext(web).catch(() => undefined);
-    }
+    return this.inNative(async () => findNativePrompt(await this.driver.source(NATIVE_TIMEOUT_MS))).catch(() => null);
   }
 
   /** A screenshot of the whole screen (Appium's native context), browser prompts and bars included. */
   private async nativeScreenshot(): Promise<Buffer> {
-    const web = await this.driver.context();
-    await this.driver.setContext("NATIVE_APP");
+    return this.inNative(() => this.driver.screenshot(NATIVE_TIMEOUT_MS));
+  }
+
+  /**
+   * Runs `work` in Appium's native layer and comes back to the page. Appium sometimes hangs on the switch:
+   * each one is bounded and tried twice. A switch there that fails is NativeUnavailable (nothing was done on the
+   * device yet); failing to come back is an ActionError, the session may be broken.
+   */
+  private async inNative<T>(work: () => Promise<T>): Promise<T> {
+    const web = await this.retried("reading the page's context", () => this.driver.context(CONTEXT_TIMEOUT_MS)).catch((error: Error) => Promise.reject(new NativeUnavailable(error.message)));
+    await this.retried("switching to the native screen", () => this.driver.setContext("NATIVE_APP", CONTEXT_TIMEOUT_MS)).catch(async (error: Error) => {
+      // A switch that timed out here may still have happened on Appium's side: make sure the page has it back.
+      await this.driver.setContext(web, CONTEXT_TIMEOUT_MS).catch(() => undefined);
+      throw new NativeUnavailable(error.message);
+    });
+    let result: T;
     try {
-      return await this.driver.screenshot();
-    } finally {
-      await this.driver.setContext(web);
+      result = await work();
+    } catch (error) {
+      await this.retried("returning to the page", () => this.driver.setContext(web, CONTEXT_TIMEOUT_MS)).catch(() => undefined);
+      throw error;
+    }
+    await this.retried("returning to the page", () => this.driver.setContext(web, CONTEXT_TIMEOUT_MS)).catch((error: Error) =>
+      Promise.reject(new ActionError(`native: ${error.message}; the session may be broken (TOOL.md, "A broken session")`)),
+    );
+    return result;
+  }
+
+  /** One Appium command, tried a second time after a second's pause when it fails or hangs. */
+  private async retried<T>(what: string, command: () => Promise<T>): Promise<T> {
+    try {
+      return await command();
+    } catch {
+      await sleep(1000);
+      try {
+        return await command();
+      } catch (error) {
+        throw new Error(`${what} failed twice: ${(error as Error).message}`, { cause: error });
+      }
     }
   }
 
@@ -262,12 +290,11 @@ export class DeviceSession {
 
   /**
    * How a tap reaches the device: a desktop is clicked through WebDriver; a phone or tablet is touched natively
-   * with --native, and on iOS by default (Safari's WebDriver clicks behave like a keyboard and a mouse there:
-   * focus rings, tooltips, no pointerdown), unless --simulated asks for the WebDriver click.
+   * (WebDriver clicks behave like a mouse there, and like a keyboard in iOS Safari: focus rings, tooltips, no
+   * pointerdown), unless --simulated asks for the WebDriver click.
    */
   private touches(target: Target): boolean {
-    if (this.device.kind === "desktop" || target.simulated) return false;
-    return Boolean(target.native) || this.device.kind === "ios";
+    return this.device.kind !== "desktop" && !target.simulated;
   }
 
   async tap(target: Target, options: { force?: boolean } = {}): Promise<Action> {
@@ -288,7 +315,7 @@ export class DeviceSession {
           entry.target.via = "touch";
           return [`${tapped} with a touch`, ...notes].join("\n");
         } catch (error) {
-          // Only an explicit --native insists; the iOS default falls back when no touch reached the device.
+          // Only an explicit --native insists; the default falls back when no touch reached the device.
           if (!(error instanceof NativeUnavailable) || target.native) throw error;
           notes.unshift(`the native touch was not possible (${error.message})`);
         }
@@ -310,43 +337,36 @@ export class DeviceSession {
     const hide = () => this.driver.run<{ on: boolean; by: string; name: string } | null>(PAGE.marker, "hide").catch(() => null);
     const shown = await this.driver.run<{ placed: boolean; layer?: string }>(PAGE.marker, "show", MARKER_GAP_CSS, nonce);
     if (!shown.placed) throw new ActionError(`native: "${name}" is gone from the page`);
-    let web: string;
     let touched = false;
     try {
-      web = await this.driver.context();
-      await this.driver.setContext("NATIVE_APP");
+      await this.inNative(async () => {
+        // Only the native screenshot shows the whole screen (Android's web one is the page viewport alone).
+        const shoot = () => this.driver.screenshot(NATIVE_TIMEOUT_MS).catch((error: Error) => Promise.reject(new NativeUnavailable(`native screenshot: ${error.message}`)));
+        let markers = findMarkers(await shoot());
+        // A page still moving (an opening keyboard, a bar sliding away) may hide them for a moment: look once more.
+        if (!markers) {
+          await sleep(MARKER_RETRY_MS);
+          markers = findMarkers(await shoot());
+        }
+        if (!markers) throw new ActionError(`native: "${name}" is not visible on the screen (under the on-screen keyboard or scrolled away); scroll it into view or close the keyboard first (qa keyboard)`);
+        const rect = await this.driver.windowRect(NATIVE_TIMEOUT_MS).catch((error: Error) => Promise.reject(new NativeUnavailable(`screen size: ${error.message}`)));
+        const toNative = rect.width / markers.imageWidth;
+        const x = Math.round(((markers.first.x + markers.second.x) / 2) * toNative);
+        const y = Math.round(((markers.first.y + markers.second.y) / 2) * toNative);
+        touched = true;
+        await this.driver.actions(
+          [{ type: "pointer", id: "finger", parameters: { pointerType: "touch" }, actions: [{ type: "pointerMove", duration: 0, origin: "viewport", x, y }, { type: "pointerDown", button: 0 }, { type: "pause", duration: 80 }, { type: "pointerUp", button: 0 }] }],
+          NATIVE_TIMEOUT_MS,
+        );
+        this.lastNativeTap = { x, y };
+      });
     } catch (error) {
       await hide();
-      throw new NativeUnavailable(`switching to the native screen failed: ${(error as Error).message}`);
-    }
-    try {
-      // Only the native screenshot shows the whole screen (Android's web one is the page viewport alone).
-      const shoot = () => this.driver.screenshot().catch((error: Error) => Promise.reject(new NativeUnavailable(`native screenshot: ${error.message}`)));
-      let markers = findMarkers(await shoot());
-      // A page still moving (an opening keyboard, a bar sliding away) may hide them for a moment: look once more.
-      if (!markers) {
-        await sleep(MARKER_RETRY_MS);
-        markers = findMarkers(await shoot());
-      }
-      if (!markers) throw new ActionError(`native: "${name}" is not visible on the screen (under the on-screen keyboard or scrolled away); scroll it into view or close the keyboard first (qa keyboard)`);
-      const rect = await this.driver.windowRect().catch((error: Error) => Promise.reject(new NativeUnavailable(`screen size: ${error.message}`)));
-      const toNative = rect.width / markers.imageWidth;
-      const x = Math.round(((markers.first.x + markers.second.x) / 2) * toNative);
-      const y = Math.round(((markers.first.y + markers.second.y) / 2) * toNative);
-      touched = true;
-      await this.driver.actions([
-        { type: "pointer", id: "finger", parameters: { pointerType: "touch" }, actions: [{ type: "pointerMove", duration: 0, origin: "viewport", x, y }, { type: "pointerDown", button: 0 }, { type: "pause", duration: 80 }, { type: "pointerUp", button: 0 }] },
-      ]);
-      this.lastNativeTap = { x, y };
-    } catch (error) {
-      await this.driver.setContext(web).catch(() => undefined);
-      await hide();
-      if (error instanceof ActionError || error instanceof NativeUnavailable) throw error;
+      if (error instanceof ActionError) throw error;
       // A touch that may have reached the device is never stood in for: a second tap could act twice.
       if (touched) throw new ActionError(`native: the touch on "${name}" failed: ${(error as Error).message}`);
-      throw new NativeUnavailable((error as Error).message);
+      throw error instanceof NativeUnavailable ? error : new NativeUnavailable((error as Error).message);
     }
-    await this.driver.setContext(web);
     // What the page received: a touch that missed is an error of this action, not a silent success.
     const hit = await hide();
     if (hit && !hit.on) throw new ActionError(`native: the touch landed on ${hit.by}${hit.name ? ` "${hit.name}"` : ""}, not on "${name}"`);
@@ -396,9 +416,7 @@ export class DeviceSession {
    * Android shows no text field at all (the caller types through WebDriver and says so).
    */
   private async nativeType(value: string): Promise<string | null> {
-    const web = await this.driver.context();
-    await this.driver.setContext("NATIVE_APP");
-    try {
+    return this.inNative(async () => {
       if (this.device.kind === "ios") {
         let keyboard = false;
         for (let attempt = 0; attempt < KEYBOARD_WAIT_TRIES && !keyboard; attempt++) {
@@ -431,9 +449,7 @@ export class DeviceSession {
       if (!nearest) return null;
       await this.driver.sendKeys(nearest.field, value);
       return `the Android text field nearest the tap (${Number.isFinite(nearest.distance) ? `${Math.round(nearest.distance)} px away` : "distance unknown"})`;
-    } finally {
-      await this.driver.setContext(web);
-    }
+    });
   }
 
   /**
@@ -448,38 +464,36 @@ export class DeviceSession {
       if (this.device.kind === "desktop") throw new ActionError("a desktop has no on-screen keyboard");
       const viewport = () => this.driver.run<{ visible: number; window: number; active: string }>(PAGE.misc, "viewport").catch(() => null);
       const before = await viewport();
-      const web = await this.driver.context();
-      await this.driver.setContext("NATIVE_APP");
-      try {
-        if (this.device.kind === "ios") {
-          const shows = async () => (await this.driver.findXPath("//XCUIElementTypeKeyboard")).length > 0;
+      if (this.device.kind === "ios") {
+        return this.inNative(async () => {
+          const shows = async () => (await this.driver.findXPath("//XCUIElementTypeKeyboard", NATIVE_TIMEOUT_MS)).length > 0;
           if (!(await shows())) return "no on-screen keyboard was open: nothing to close";
-          const [done] = await this.driver.findXPath('//XCUIElementTypeToolbar//XCUIElementTypeButton[@name="Done"]');
-          if (done) await this.driver.click(done);
+          const [done] = await this.driver.findXPath('//XCUIElementTypeToolbar//XCUIElementTypeButton[@name="Done"]', NATIVE_TIMEOUT_MS);
+          if (done) await this.driver.click(done, NATIVE_TIMEOUT_MS);
           else await this.driver.hideKeyboard();
           for (let attempt = 0; attempt < KEYBOARD_GONE_TRIES && (await shows()); attempt++) await sleep(500);
           if (await shows()) throw new ActionError(`the keyboard is still open after ${done ? "Done" : "Appium's hide_keyboard"}`);
           return done ? "tapped Done above the keyboard" : "closed the keyboard (Appium's hide_keyboard: no Done button above it)";
-        }
-        const said = await this.driver.isKeyboardShown();
+        });
+      }
+      const pressed = await this.inNative(async () => {
+        const said = await this.driver.isKeyboardShown(NATIVE_TIMEOUT_MS);
         const shorter = before ? before.window - before.visible : 0;
-        const shows = said ?? shorter >= KEYBOARD_MIN_CSS;
         const facts = `Appium says the keyboard ${said === null ? "is unknown" : said ? "shows" : "is hidden"}; the page shows ${before ? `${before.visible} of ${before.window}` : "?"} css px`;
-        if (!shows) return `no on-screen keyboard was open: nothing pressed (Back would have reached the page) (${facts})`;
-        await this.driver.pressKeycode(4);
+        if (!(said ?? shorter >= KEYBOARD_MIN_CSS)) return { pressed: false, facts, gone: true };
+        await this.driver.pressKeycode(4, NATIVE_TIMEOUT_MS);
         let gone = false;
         for (let attempt = 0; attempt < KEYBOARD_GONE_TRIES && !gone; attempt++) {
           await sleep(500);
-          gone = (await this.driver.isKeyboardShown()) === false;
+          gone = (await this.driver.isKeyboardShown(NATIVE_TIMEOUT_MS)) === false;
         }
-        await this.driver.setContext(web);
-        const after = await viewport();
-        const heights = before && after ? `; the page shows ${before.visible} css px before, ${after.visible} after` : "";
-        if (!gone && !(before && after && after.visible - before.visible >= KEYBOARD_MIN_CSS)) throw new ActionError(`pressed Back, but the keyboard still shows${heights}`);
-        return `pressed Back while the keyboard showed: the keyboard closed${heights}`;
-      } finally {
-        await this.driver.setContext(web).catch(() => undefined);
-      }
+        return { pressed: true, facts, gone };
+      });
+      if (!pressed.pressed) return `no on-screen keyboard was open: nothing pressed (Back would have reached the page) (${pressed.facts})`;
+      const after = await viewport();
+      const heights = before && after ? `; the page shows ${before.visible} css px before, ${after.visible} after` : "";
+      if (!pressed.gone && !(before && after && after.visible - before.visible >= KEYBOARD_MIN_CSS)) throw new ActionError(`pressed Back, but the keyboard still shows${heights}`);
+      return `pressed Back while the keyboard showed: the keyboard closed${heights}`;
     });
   }
 
@@ -511,6 +525,30 @@ export class DeviceSession {
       if (result.moved) return `scrolled ${where}: ${result.box} from ${result.from} to ${place}`;
       const end = where === "down" || where === "bottom" ? "bottom" : "top";
       return `nothing scrolled ${where}: ${result.box} is at its ${end} (${place})${result.locked ? ", and the page itself is locked (overflow hidden)" : ""}`;
+    });
+  }
+
+  /**
+   * Answers the prompt Chrome draws over the page on Android (the clipboard's Block / Allow, notifications,
+   * Android's own permission dialogs) by pressing its button in the native layer, as a finger would.
+   */
+  async prompt(answer: "allow" | "block"): Promise<Action> {
+    return this.act("prompt", `answer the browser's prompt: ${answer}`, async () => {
+      if (this.device.kind !== "android") {
+        throw new ActionError(`qa prompt answers the prompts Chrome draws on Android; ${this.device.kind === "ios" ? "on iOS Safari's own prompts show in the screenshot and are part of the page's flow (tap them with qa tap when the page offers them, or judge the step blocked)" : "a desktop browser here shows none the driver can answer"}`);
+      }
+      return this.inNative(async () => {
+        const prompt = findNativePrompt(await this.driver.source(NATIVE_TIMEOUT_MS));
+        if (!prompt) throw new ActionError("no native prompt is open over the page: nothing to answer");
+        const label = answerButton(prompt, answer);
+        if (!label) throw new ActionError(`the prompt has no button that answers ${answer}: ${describePrompt(prompt)}`);
+        const [button] = await this.driver.findXPath(`//*[contains(@class, "Button") and @text=${xpathLiteral(label)} and not(ancestor::android.webkit.WebView)]`, NATIVE_TIMEOUT_MS);
+        if (!button) throw new ActionError(`the prompt's [${label}] button is gone: ${describePrompt(prompt)}`);
+        await this.driver.click(button, NATIVE_TIMEOUT_MS);
+        await sleep(700);
+        const still = findNativePrompt(await this.driver.source(NATIVE_TIMEOUT_MS).catch(() => ""));
+        return `pressed [${label}] on the native prompt ${describePrompt(prompt)}${still ? `\na native prompt is still open: ${describePrompt(still)}` : ""}`;
+      });
     });
   }
 

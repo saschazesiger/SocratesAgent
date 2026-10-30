@@ -60,3 +60,28 @@ export function describePrompt(prompt: NativePrompt): string {
   const said = prompt.texts.length ? prompt.texts.map((text) => `"${text}"`).join(" ") : "(no text)";
   return `${said} ${prompt.buttons.map((button) => `[${button}]`).join(" ")}`;
 }
+
+/** The labels that answer a prompt each way, best first (Chrome's own, then Android's permission dialogs). */
+const ANSWERS: Record<"allow" | "block", RegExp[]> = {
+  allow: [/^allow$/i, /^allow this time$/i, /^only this time$/i, /^while using the app$/i, /^allow\b/i, /^(ok|continue)$/i],
+  block: [/^block$/i, /^don[’']t allow$/i, /^deny$/i, /^never allow$/i, /^(block|don[’']t allow)\b/i, /^(cancel|not now|no thanks)$/i],
+};
+
+/** The prompt's button that gives `answer`, or null when it has none. */
+export function answerButton(prompt: NativePrompt, answer: "allow" | "block"): string | null {
+  for (const pattern of ANSWERS[answer]) {
+    const label = prompt.buttons.find((button) => pattern.test(button.trim()));
+    if (label) return label;
+  }
+  return null;
+}
+
+/** A string as an XPath 1.0 literal (it has no escapes: a value with both quote kinds is concatenated). */
+export function xpathLiteral(value: string): string {
+  if (!value.includes('"')) return `"${value}"`;
+  if (!value.includes("'")) return `'${value}'`;
+  return `concat(${value
+    .split('"')
+    .map((part) => `"${part}"`)
+    .join(`, '"', `)})`;
+}

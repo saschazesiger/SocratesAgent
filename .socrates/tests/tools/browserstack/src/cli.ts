@@ -27,6 +27,7 @@ into the cell's evidence with its screenshot.
   type --secret QA_NAME [--into <text>|--css sel] ...   type a login of the vault without it passing through you
   key <name>                                      ${KEY_NAMES} (combinations on desktops only)
   keyboard                                        close the on-screen keyboard as a person would (nothing when none is open)
+  prompt <allow|block>                            answer the prompt Chrome draws over the page on Android (the clipboard, ...)
   scroll <down|up|top|bottom>   rotate <portrait|landscape>   back | forward | reload   wait <seconds>
   look                                            screenshot and the controls on screen
   shot | env                                      screenshot only, device facts
@@ -240,6 +241,9 @@ async function main(): Promise<void> {
     case "rotate":
     case "wait":
       return commandOn(name, { key: text, where: text || "down", orientation: text, seconds: Number(text || 5) });
+    case "prompt":
+      if (text !== "allow" && text !== "block") fail("qa prompt allow or qa prompt block");
+      return commandOn("prompt", { answer: text });
     case "keyboard":
     case "back":
     case "forward":

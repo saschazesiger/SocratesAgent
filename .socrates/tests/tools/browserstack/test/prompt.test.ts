@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { describePrompt, findNativePrompt } from "../src/prompt";
+import { answerButton, describePrompt, findNativePrompt, xpathLiteral } from "../src/prompt";
 
 const fixture = (name: string) => readFileSync(new URL(`fixtures/${name}`, import.meta.url), "utf8");
 
@@ -40,4 +40,20 @@ test("Android's own permission dialog counts, its entities decoded", () => {
   </android.widget.LinearLayout>
 </hierarchy>`;
   assert.deepEqual(findNativePrompt(xml), { texts: ["Allow Chrome to record audio?"], buttons: ["While using the app", "Don't allow"] });
+});
+
+test("the answer's button, best label first", () => {
+  const chrome = { texts: ["x wants to see text and images copied to the clipboard"], buttons: ["Block", "Allow"] };
+  assert.equal(answerButton(chrome, "allow"), "Allow");
+  assert.equal(answerButton(chrome, "block"), "Block");
+  const location = { texts: ["x wants to use your device's location"], buttons: ["Allow this time", "Allow on every visit", "Don't allow"] };
+  assert.equal(answerButton(location, "allow"), "Allow this time");
+  assert.equal(answerButton(location, "block"), "Don't allow");
+  assert.equal(answerButton({ texts: [], buttons: ["Open"] }, "allow"), null);
+});
+
+test("XPath literals keep any quote", () => {
+  assert.equal(xpathLiteral("Allow"), '"Allow"');
+  assert.equal(xpathLiteral('Say "hi"'), `'Say "hi"'`);
+  assert.equal(xpathLiteral(`Don't "x"`), `concat("Don't ", '"', "x", '"', "")`);
 });

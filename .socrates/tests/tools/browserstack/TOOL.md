@@ -27,11 +27,12 @@ screenshot; that is what your judgements rest on.
 | `qa start` | Starts the device and prints `device ready: ...` with the test instance's URL. When BrowserStack queues the device (the account is busy elsewhere), it returns after about 8 minutes with `still queued` (exit status 3) while it keeps waiting: run `qa start` again, as often as it says so |
 | `qa open <path>` | Opens a page of the test instance: `qa open /admin` opens `<base_url>/admin`, a path may carry a hash (`qa open /#home`). A full URL is taken only on the test instance's own origin; any other site is refused |
 | `qa find <text>` | Scrolls a control into view without touching it: shows that it is there, whether it is disabled and what covers it |
-| `qa tap <text>` | Taps a control: a real touch on iOS, a WebDriver click elsewhere (`--native` for a real touch on Android too, `--simulated` for the WebDriver click on iOS, `--force` to tap one another element covers) |
+| `qa tap <text>` | Taps a control: a real touch on phones and tablets, a click on desktops (`--simulated` for a WebDriver click on a phone or tablet, `--native` to insist on the touch without a fallback, `--force` to tap one another element covers) |
 | `qa type <value> --into <field>` | Types into a field (`--native` through the device keyboard, `--clear` first, `--submit` presses Enter after); without `--into` into the focused field |
 | `qa type --secret QA_NAME --into <field>` | Types a login of the vault (`QA_SOCRATES_PASSWORD`) without it passing through you |
 | `qa key <name>` | Presses enter, tab, escape, backspace, up, down, left, right or space; on a desktop also `ctrl+<letter>`, `ctrl+enter`, `meta+enter`, `shift+enter` and `shift+tab` |
 | `qa keyboard` | Closes the on-screen keyboard as a person would (Done on iOS, Back on Android); does nothing when no keyboard is open |
+| `qa prompt allow\|block` | Answers the prompt Chrome draws over the page on Android (the clipboard's Block / Allow, notifications, location) by pressing its button; an error when none is open or on another device |
 | `qa scroll down\|up\|top\|bottom` | Scrolls what a swipe in the middle of the screen would (a dialog's body, the app's scrolling column, else the page) by most of a screen, or to its top or bottom; says which box moved and where it stands |
 | `qa rotate landscape\|portrait` | Rotates a phone or tablet (refused on a desktop) |
 | `qa back`, `qa forward`, `qa reload` | Browser navigation |
@@ -78,13 +79,13 @@ the page did not come to rest, the page errors, the URL and the screenshot path.
   dialog is touched like any other. A control the screen does not show (under the on-screen keyboard,
   scrolled away) is refused as `not visible`: scroll, or close the keyboard with `qa keyboard`, then
   judge whether a person could have reached it.
-- **Simulated taps.** On iOS `qa tap` touches natively unless `--simulated` asks otherwise; when the
-  native layer fails before the touch (Appium), it falls back to a WebDriver click and says why. A
-  WebDriver click on a phone or tablet is reported as `simulated click, not a finger`: it focuses the
-  control and can show its focus ring or tooltip where a finger would not, and Safari sends it as
-  mouse events without `pointerdown`. Before calling such an effect a bug, repeat the tap natively
-  (`--native` on Android, without `--simulated` on iOS). Android taps stay WebDriver clicks unless
-  `--native`.
+- **Simulated taps.** On phones and tablets `qa tap` touches natively unless `--simulated` asks
+  otherwise. Appium's switch to the native layer is bounded and tried twice; when it still fails
+  before the touch, the tap falls back to a WebDriver click and says why (`--native` makes that an
+  error instead). A WebDriver click on a phone or tablet is reported as `simulated click, not a
+  finger`: it focuses the control and can show its focus ring or tooltip where a finger would not,
+  and Safari sends it as mouse events without `pointerdown`. Before calling such an effect a bug,
+  repeat the tap without `--simulated`.
 - **The keyboard.** `qa keyboard` taps Done above the iOS keyboard. On Android it presses Back only
   while the keyboard shows (Appium's word for it, or a page shorter than the window): with the
   keyboard up Back only closes the keyboard; without it Back would reach the page and close its
@@ -95,8 +96,9 @@ the page did not come to rest, the page errors, the URL and the screenshot path.
   dialogs) outside the page, so the page's screenshot misses them. When the page loses the focus
   after an action, and on every `qa look` and `qa shot`, the driver looks at the native screen: a
   prompt is named in the output (`native prompt over the page: "..." [Block] [Allow]`) and that
-  action's screenshot shows the whole screen with it. `qa` cannot answer it: judge the step `blocked`
-  when it needs the answer. On iOS the screenshot shows Safari's prompts anyway.
+  action's screenshot shows the whole screen with it. Answer it as the step needs with `qa prompt
+  allow` or `qa prompt block` (it presses the prompt's own button); `qa prompt` says so when no
+  prompt is open. On iOS the screenshot shows Safari's prompts anyway, and `qa prompt` refuses there.
 - **Keys.** Phones and tablets have no hardware modifier keys: `qa key` refuses a combination there.
   Use what a person would, the app's own on-screen key bar (tap its Ctrl, Tab, Esc ... keys with
   `qa tap`), or the control the shortcut stands for.

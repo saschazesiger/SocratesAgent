@@ -16,7 +16,7 @@ selects a word. Never upload a file.
 3. Select `copy-me-please` in the terminal and copy it (touch: hold a finger still on it, then lift; desk: double-click it, then press Copy).
    Expect: a toast "Copied" (or the browser explains that it refused).
 4. Type `echo ` at the prompt and press Paste, then Enter.
-   Expect: the copied text is pasted after `echo ` and printed again, or a clear message says the browser would not let the clipboard be read (`blocked` if the device's own permission prompt cannot be answered).
+   Expect: the copied text is pasted after `echo ` and printed again, or a clear message says the browser would not let the clipboard be read (Chrome's own prompt on Android is answered with `qa prompt allow`; `blocked` only if the device's own permission prompt cannot be answered).
 5. On a touch device: use the key bar: type `ech`, press Tab, then type ` keybar` and press the key bar's Enter (na on a desktop without touch).
    Expect: Tab completes `echo`, and `keybar` is printed; the sticky Ctrl and Alt keys show when they are on.
 6. Open the ⋮ menu of the session.

@@ -66,8 +66,8 @@ export class WebDriver {
   async setScriptTimeout(ms: number): Promise<void> {
     await this.call("POST", "/timeouts", { script: ms });
   }
-  async windowRect(): Promise<Rect> {
-    return (await this.call("GET", "/window/rect")) as Rect;
+  async windowRect(timeoutMs?: number): Promise<Rect> {
+    return (await this.call("GET", "/window/rect", undefined, timeoutMs)) as Rect;
   }
   async maximize(): Promise<void> {
     await this.call("POST", "/window/maximize", {});
@@ -91,12 +91,12 @@ export class WebDriver {
     const value = (await this.call("POST", "/element", { using: "css selector", value: css })) as Record<string, string>;
     return elementId(value);
   }
-  async findXPath(xpath: string): Promise<string[]> {
-    const value = (await this.call("POST", "/elements", { using: "xpath", value: xpath })) as Record<string, string>[];
+  async findXPath(xpath: string, timeoutMs?: number): Promise<string[]> {
+    const value = (await this.call("POST", "/elements", { using: "xpath", value: xpath }, timeoutMs)) as Record<string, string>[];
     return value.map(elementId);
   }
-  async click(element: string): Promise<void> {
-    await this.call("POST", `/element/${element}/click`, {});
+  async click(element: string, timeoutMs?: number): Promise<void> {
+    await this.call("POST", `/element/${element}/click`, {}, timeoutMs);
   }
   async clear(element: string): Promise<void> {
     await this.call("POST", `/element/${element}/clear`, {});
@@ -111,12 +111,12 @@ export class WebDriver {
   async rect(element: string): Promise<Rect> {
     return (await this.call("GET", `/element/${element}/rect`)) as Rect;
   }
-  async actions(actions: ActionSequence[]): Promise<void> {
-    await this.call("POST", "/actions", { actions });
-    await this.call("DELETE", "/actions").catch(() => undefined);
+  async actions(actions: ActionSequence[], timeoutMs?: number): Promise<void> {
+    await this.call("POST", "/actions", { actions }, timeoutMs);
+    await this.call("DELETE", "/actions", undefined, timeoutMs).catch(() => undefined);
   }
-  async screenshot(): Promise<Buffer> {
-    return Buffer.from((await this.call("GET", "/screenshot")) as string, "base64");
+  async screenshot(timeoutMs?: number): Promise<Buffer> {
+    return Buffer.from((await this.call("GET", "/screenshot", undefined, timeoutMs)) as string, "base64");
   }
 
   /** Appium (real devices). */
@@ -135,26 +135,26 @@ export class WebDriver {
     await this.call("POST", "/appium/device/hide_keyboard", {});
   }
   /** Whether the on-screen keyboard shows (Appium); null when the driver cannot tell. */
-  async isKeyboardShown(): Promise<boolean | null> {
-    const value = await this.call("GET", "/appium/device/is_keyboard_shown").catch(() => null);
+  async isKeyboardShown(timeoutMs?: number): Promise<boolean | null> {
+    const value = await this.call("GET", "/appium/device/is_keyboard_shown", undefined, timeoutMs).catch(() => null);
     return typeof value === "boolean" ? value : null;
   }
   /** Presses an Android key (4 is Back) as the hardware or navigation bar does (Appium). */
-  async pressKeycode(keycode: number): Promise<void> {
-    await this.call("POST", "/appium/device/press_keycode", { keycode });
+  async pressKeycode(keycode: number, timeoutMs?: number): Promise<void> {
+    await this.call("POST", "/appium/device/press_keycode", { keycode }, timeoutMs);
   }
   /** The native UI hierarchy as XML (Appium, native context). */
-  async source(): Promise<string> {
-    return String(await this.call("GET", "/source"));
+  async source(timeoutMs?: number): Promise<string> {
+    return String(await this.call("GET", "/source", undefined, timeoutMs));
   }
   async contexts(): Promise<string[]> {
     return (await this.call("GET", "/contexts")) as string[];
   }
-  async context(): Promise<string> {
-    return (await this.call("GET", "/context")) as string;
+  async context(timeoutMs?: number): Promise<string> {
+    return (await this.call("GET", "/context", undefined, timeoutMs)) as string;
   }
-  async setContext(name: string): Promise<void> {
-    await this.call("POST", "/context", { name });
+  async setContext(name: string, timeoutMs?: number): Promise<void> {
+    await this.call("POST", "/context", { name }, timeoutMs);
   }
 
   async quit(): Promise<void> {

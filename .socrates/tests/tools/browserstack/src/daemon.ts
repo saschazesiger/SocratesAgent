@@ -125,6 +125,8 @@ async function handle(command: Command): Promise<Answer> {
       return answer(await s.scroll(String(a.where)));
     case "rotate":
       return answer(await s.rotate(a.orientation === "landscape" ? "landscape" : "portrait"));
+    case "prompt":
+      return answer(await s.prompt(a.answer === "allow" ? "allow" : "block"));
     case "back":
     case "forward":
     case "reload":
