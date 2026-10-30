@@ -202,7 +202,7 @@ func (s *Server) startIDE(w http.ResponseWriter, r *http.Request, id string, whe
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
-		writeJSON(w, http.StatusCreated, map[string]any{"session": s.view(row), "error": err.Error()})
+		writeJSON(w, http.StatusCreated, map[string]any{"session": s.view(row), "error": sentence(err.Error())})
 		return
 	}
 	writeJSON(w, http.StatusCreated, map[string]any{"session": s.view(row)})

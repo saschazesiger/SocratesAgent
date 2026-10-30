@@ -277,7 +277,7 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		// The row exists and carries tmux's own words in fail_reason. The
 		// session belongs in the list with its failure showing and a Try again
 		// button, rather than disappearing into a status code.
-		writeJSON(w, http.StatusCreated, map[string]any{"session": s.view(row), "error": err.Error()})
+		writeJSON(w, http.StatusCreated, map[string]any{"session": s.view(row), "error": sentence(err.Error())})
 		return
 	}
 	if row.ID != id {
@@ -635,7 +635,7 @@ func (s *Server) ensure(w http.ResponseWriter, r *http.Request, restart bool) {
 	case err != nil && next != nil:
 		// The relaunch failed and the row says why. It belongs in the list
 		// with its overlay, the same as a create that could not start.
-		writeJSON(w, http.StatusOK, map[string]any{"session": s.view(next), "error": err.Error()})
+		writeJSON(w, http.StatusOK, map[string]any{"session": s.view(next), "error": sentence(err.Error())})
 		return
 	case err != nil:
 		writeError(w, http.StatusInternalServerError, err.Error())

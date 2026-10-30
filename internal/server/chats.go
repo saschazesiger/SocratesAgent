@@ -1158,7 +1158,7 @@ func (p *chatPeer) command(ctx context.Context, cmd agenthost.Command) (int, map
 	var seq int64
 	seen := false
 	if err := p.view(func(proj *agent.Projection) { seq, seen = proj.Seen(cmd.ClientID) }); err != nil {
-		return http.StatusInternalServerError, map[string]any{"error": err.Error()}
+		return http.StatusInternalServerError, map[string]any{"error": sentence(err.Error())}
 	}
 	if seen {
 		return http.StatusOK, map[string]any{"client_id": cmd.ClientID, "seq": seq, "dup": true}
@@ -1166,7 +1166,7 @@ func (p *chatPeer) command(ctx context.Context, cmd agenthost.Command) (int, map
 	reply, queued, err := p.submit(ctx, cmd)
 	switch {
 	case err != nil:
-		return http.StatusInternalServerError, map[string]any{"error": err.Error()}
+		return http.StatusInternalServerError, map[string]any{"error": sentence(err.Error())}
 	case queued:
 		return http.StatusAccepted, map[string]any{"client_id": cmd.ClientID, "queued": true}
 	case reply.fail != nil:
@@ -1179,9 +1179,9 @@ func (p *chatPeer) command(ctx context.Context, cmd agenthost.Command) (int, map
 		case agenthost.CodeNotRunning, agenthost.CodeStopping:
 			return http.StatusAccepted, map[string]any{"client_id": cmd.ClientID, "queued": true, "detail": reply.fail.Msg}
 		}
-		return status, map[string]any{"error": reply.fail.Msg, "code": reply.fail.Code}
+		return status, map[string]any{"error": sentence(reply.fail.Msg), "code": reply.fail.Code}
 	case reply.ack.AnsweredElsewhere:
-		return http.StatusConflict, map[string]any{"error": "Answered on another device",
+		return http.StatusConflict, map[string]any{"error": "Answered on another device.",
 			"answered_elsewhere": true, "by_device": reply.ack.ByDevice}
 	}
 	return http.StatusOK, map[string]any{"client_id": cmd.ClientID, "seq": reply.ack.Seq, "dup": reply.ack.Dup}
@@ -1283,7 +1283,7 @@ func (s *Server) handleChatAnswer(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "this chat never asked that question")
 		return
 	case answered && answeredBy != body.ClientID:
-		writeJSON(w, http.StatusConflict, map[string]any{"error": "Answered on another device",
+		writeJSON(w, http.StatusConflict, map[string]any{"error": "Answered on another device.",
 			"answered_elsewhere": true, "by_device": by})
 		return
 	}

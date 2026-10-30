@@ -630,8 +630,9 @@ func acceptsGzip(r *http.Request) bool {
 	return false
 }
 
+// writeError answers with {"error": msg}, msg said as a sentence (sentence.go).
 func writeError(w http.ResponseWriter, code int, msg string) {
-	writeJSON(w, code, map[string]any{"error": msg})
+	writeJSON(w, code, map[string]any{"error": sentence(msg)})
 }
 
 // sleepFor waits d, or less when ctx ends first, which it then answers with.

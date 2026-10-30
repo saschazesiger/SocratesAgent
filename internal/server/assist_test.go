@@ -218,7 +218,7 @@ func TestStatusReportsAMissingKeyAndAnUnknownModel(t *testing.T) {
 		t.Fatalf("status with an unknown model = %d %#v", res.StatusCode, payload)
 	}
 	message, _ := payload["error"].(string)
-	if !strings.Contains(message, "unknown model nobody/nothing") || !strings.Contains(message, "/admin") {
+	if !strings.Contains(message, "Unknown model nobody/nothing") || !strings.Contains(message, "/admin") {
 		t.Fatalf("error = %q", message)
 	}
 }

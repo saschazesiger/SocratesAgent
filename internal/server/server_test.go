@@ -273,7 +273,7 @@ func TestChangePasswordWrongCurrent(t *testing.T) {
 	if res.StatusCode != http.StatusForbidden {
 		t.Fatalf("a wrong current password answered %d, want 403", res.StatusCode)
 	}
-	if msg, _ := payload["error"].(string); msg != "the current password is wrong" {
+	if msg, _ := payload["error"].(string); msg != "The current password is wrong." {
 		t.Fatalf("message: %#v", payload)
 	}
 	res, _ = env.do(t, env.client, "GET", "/api/settings", "")

@@ -2074,14 +2074,6 @@ async function changePassword() {
     $('pwNext').value = '';
     sayPassword('Password changed', 'success');
   } catch (err) {
-    // The server refuses in lowercase phrases ("the current password is
-    // wrong"); the card says them as the sentences it speaks in otherwise.
-    sayPassword(asSentence(errorMessage(err)), 'error');
+    sayPassword(errorMessage(err), 'error');
   }
-}
-
-function asSentence(text) {
-  const words = String(text).trim();
-  if (!words) return 'Something went wrong.';
-  return words.charAt(0).toUpperCase() + words.slice(1) + (/[.!?]$/.test(words) ? '' : '.');
 }

@@ -723,7 +723,7 @@ func (h *accountHub) switchChat(ctx context.Context, p *chatPeer, row *store.Ses
 	clientID, when string, cont bool, reason string) (int, map[string]any) {
 	env, sealed, err := h.chatEnv(target, row.ID)
 	if err != nil {
-		return http.StatusInternalServerError, map[string]any{"error": err.Error()}
+		return http.StatusInternalServerError, map[string]any{"error": sentence(err.Error())}
 	}
 	return p.command(ctx, agenthost.Command{Op: agenthost.OpSwitchAccount, ClientID: clientID, Account: target.ID,
 		Env: env, SecretEnv: sealed, Reason: reason, When: when, Continue: cont})

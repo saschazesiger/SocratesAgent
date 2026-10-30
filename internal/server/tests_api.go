@@ -598,7 +598,7 @@ func (s *Server) handleTestBugIssue(w http.ResponseWriter, r *http.Request) {
 	}
 	url, err := t.CreateIssue(repo.Key, r.PathValue("id"), body.Title, body.Body)
 	if exists := (*testmode.ErrIssueExists)(nil); errors.As(err, &exists) {
-		writeJSON(w, http.StatusConflict, map[string]any{"error": exists.Error(), "url": exists.URL})
+		writeJSON(w, http.StatusConflict, map[string]any{"error": sentence(exists.Error()), "url": exists.URL})
 		return
 	}
 	if err != nil {

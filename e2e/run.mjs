@@ -12421,7 +12421,7 @@ async function chatoffline() {
     await page.route('**/api/chats/*/command', async (route) => {
       await route.fetch().catch(() => null);
       await route.fulfill({ status: 409, contentType: 'application/json',
-        body: JSON.stringify({ error: 'the agent has no such command', code: 'unsupported' }) });
+        body: JSON.stringify({ error: 'The agent has no such command.', code: 'unsupported' }) });
     });
     await say(page, '/context ');
     const notRun = await page.waitForSelector('#chat .so-line[data-kind="command"][data-state="failed"]', { timeout: 15000 })

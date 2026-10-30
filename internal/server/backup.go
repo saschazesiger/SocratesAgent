@@ -117,7 +117,7 @@ func (s *Server) handleBackupRun(w http.ResponseWriter, r *http.Request) {
 	// The run belongs to the server, not to the request: it goes on after
 	// the answer, which is that it started.
 	if err := e.RunNow(context.Background()); err != nil {
-		writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error(), "status": e.Status()})
+		writeJSON(w, http.StatusConflict, map[string]any{"error": sentence(err.Error()), "status": e.Status()})
 		return
 	}
 	writeJSON(w, http.StatusAccepted, map[string]any{"status": e.Status()})
@@ -179,7 +179,7 @@ func (s *Server) handleBackupLegacyDelete(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusConflict, err.Error())
 		return
 	case err != nil:
-		writeJSON(w, http.StatusBadGateway, map[string]any{"error": backup.Explain(err), "deleted": deleted})
+		writeJSON(w, http.StatusBadGateway, map[string]any{"error": sentence(backup.Explain(err)), "deleted": deleted})
 		return
 	}
 	log.Printf("backup: deleted the %d objects the bucket mirror of the build before had left", deleted)
