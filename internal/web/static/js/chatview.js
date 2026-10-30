@@ -35,7 +35,7 @@ import {
 } from './chatparts.js';
 import { mountComposer } from './composer.js';
 import { wheelHooks } from './wheel.js';
-import { chatOutbox, pendingFor, pendingAnswer, pendingModel, failedItem, queueAnswer, answeredHere } from './chatoutbox.js';
+import { chatOutbox, pendingFor, pendingAnswer, pendingModel, failedItem, queueAnswer, answeredHere, keptSent, forgetSent } from './chatoutbox.js';
 import { askProgress, askDraftsRev, forgetAskDraft } from './askdialog.js';
 import { record, recPhase } from './dictate.js';
 import { typeHere } from './keyboard.js';
@@ -165,6 +165,11 @@ export function mountChat(ctx) {
   // A finger is on the conversation: nothing scrolls it to its end under the
   // finger, whatever the stream draws meanwhile.
   let held = false;
+  // "Latest" was pressed and the conversation is gliding to its end
+  // (jumpToEnd), with the timers that say when the glide is over.
+  let jumping = false;
+  let jumpIdle = null;
+  let jumpCeiling = null;
   // Where the conversation was scrolled to at the last scroll event, or by
   // this view itself.
   let lastTop = 0;
@@ -213,8 +218,10 @@ export function mountChat(ctx) {
   const asked = new Map();
   // What this browser sent that the server took and the journal does not
   // show yet: kept on screen as "Sent" so a message never blinks out between
-  // its answer and its event. Keyed by client_id.
-  const sent = new Map();
+  // its answer and its event. Keyed by client_id. A message's copy is kept
+  // on the device too (chatoutbox.js keptSent), so a reload before its event
+  // came does not lose it.
+  const sent = new Map(keptSent());
   // The same for answers, by ask: the card says "Sending" until the journal
   // says the question is answered, rather than asking again in between.
   const sentAnswers = new Map();
@@ -536,7 +543,11 @@ export function mountChat(ctx) {
   // not have yet: in the Outbox, on its way or waiting for a connection, or
   // taken by the server a moment ago.
   function localEntries() {
-    for (const clientId of [...sent.keys()]) if (seenClient(chat, clientId)) sent.delete(clientId);
+    for (const clientId of [...sent.keys()]) {
+      if (!seenClient(chat, clientId)) continue;
+      sent.delete(clientId);
+      forgetSent(clientId);
+    }
     const out = [];
     for (const item of pendingFor(session.id)) {
       if (!SAID.has(item.payload.kind) || seenClient(chat, item.payload.client_id)) continue;
@@ -1413,8 +1424,7 @@ export function mountChat(ctx) {
         render();
         break;
       case 'jump':
-        stuck = true;
-        scroller.scrollTo({ top: scroller.scrollHeight, behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' });
+        jumpToEnd();
         break;
       default:
         break;
@@ -1437,19 +1447,22 @@ export function mountChat(ctx) {
     const was = lastTop;
     lastTop = top;
     if (scroller.clientHeight !== scrollerHeight) return;
+    // A jump to the end is under way: its glide is not the person reading
+    // back, whatever a frame of it reads.
+    if (jumping) { showJump(!atEnd()); return; }
     const atBottom = scroller.scrollHeight - top - scroller.clientHeight <= 1;
     if (top < was - 1 && !atBottom) stuck = false;
     else if (top > was) stuck = stuck || atEnd();
     showJump(!atEnd());
   }, { passive: true });
   scroller.addEventListener('wheel', (event) => {
-    if (event.deltaY < 0) stuck = false;
+    if (event.deltaY < 0) { stuck = false; endJump(false); }
   }, { passive: true });
   scroller.addEventListener('keydown', (event) => {
     if (event.target.closest('input, textarea, select, [contenteditable]')) return;
-    if (['ArrowUp', 'PageUp', 'Home'].includes(event.key)) stuck = false;
+    if (['ArrowUp', 'PageUp', 'Home'].includes(event.key)) { stuck = false; endJump(false); }
   });
-  scroller.addEventListener('touchstart', () => { held = true; }, { passive: true });
+  scroller.addEventListener('touchstart', () => { held = true; endJump(false); }, { passive: true });
   // The finger is lifted: a conversation it left at its end follows it from
   // here. scrollend is there too because a touch whose element the stream
   // replaced ends on that element, out of the document, and never bubbles.
@@ -1461,6 +1474,54 @@ export function mountChat(ctx) {
   scroller.addEventListener('touchend', (event) => { if (!event.touches.length) letGo(); }, { passive: true });
   scroller.addEventListener('touchcancel', letGo, { passive: true });
   scroller.addEventListener('scrollend', letGo, { passive: true });
+
+  // jumpToEnd is "Latest": the conversation glides to its end and follows
+  // it from there. The end it glides to is where the end was at the tap;
+  // a stream that goes on meanwhile moves it, and a frame of the glide that
+  // reads as a move up would let go of the end again - the view stopping
+  // part of the way with "Latest" still showing, a second tap needed
+  // (B-22). So the end is held while the glide runs, and taken once it is
+  // over.
+  function jumpToEnd() {
+    stuck = true;
+    endJump(false);
+    if (matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      scroller.scrollTop = scroller.scrollHeight;
+      lastTop = scroller.scrollTop;
+      showJump(!atEnd());
+      return;
+    }
+    jumping = true;
+    scroller.addEventListener('scroll', jumpMoved, { passive: true });
+    if ('onscrollend' in scroller) scroller.addEventListener('scrollend', jumpLanded);
+    jumpCeiling = setTimeout(jumpLanded, ms('--ds-dur-long') * 3);
+    scroller.scrollTo({ top: scroller.scrollHeight, behavior: 'smooth' });
+  }
+
+  // Where the browser has no scrollend, the glide is over once no scroll
+  // came for a moment.
+  function jumpMoved() {
+    clearTimeout(jumpIdle);
+    jumpIdle = setTimeout(jumpLanded, ms('--ds-dur-fast') * 2);
+  }
+
+  function jumpLanded() { endJump(true); }
+
+  // endJump ends a jump: `land` takes the end as it is now, for a glide
+  // that is over; without it the person took the conversation over.
+  function endJump(land) {
+    if (!jumping) return;
+    jumping = false;
+    clearTimeout(jumpIdle);
+    clearTimeout(jumpCeiling);
+    scroller.removeEventListener('scroll', jumpMoved);
+    scroller.removeEventListener('scrollend', jumpLanded);
+    if (land && stuck && !held) {
+      scroller.scrollTop = scroller.scrollHeight;
+      lastTop = scroller.scrollTop;
+    }
+    showJump(!atEnd());
+  }
 
   const keepEnd = new ResizeObserver(() => {
     scrollerHeight = scroller.clientHeight;
@@ -1594,6 +1655,7 @@ export function mountChat(ctx) {
 
   function stop() {
     persist(true);
+    endJump(false);
     loadingId = '';
     clearTimeout(catchupTimer);
     if (stream) { stream.stop(); stream = null; }

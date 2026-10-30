@@ -45,8 +45,9 @@
  * --ds-ease-in-out, together; the old one fades on --ds-ease-in (it holds
  * until it is at the edge), the new one on --ds-ease-out. One line apart,
  * they never lie on each other. Only translate and opacity, so
- * the text is as sharp in motion as at rest. A change during a roll carries
- * each line on from where it is. The shimmer's wave reuses
+ * the text is as sharp in motion as at rest. A line still rolling in when
+ * the next change comes finishes its roll during the hold, then the two go
+ * as one strip. The shimmer's wave reuses
  * ds-progress-wave (the mask tile travels one --ds-progress-wave-length per
  * loop, linear), so it needs no keyframes of its own.
  *

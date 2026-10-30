@@ -49,10 +49,29 @@ function themeFor(host) {
 // measuring canvas.
 let MONO = 'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace';
 
-// Both the initial pane measurement and the renderer must use loaded fonts.
+// Both the initial pane measurement and the renderer must use loaded fonts,
+// so a terminal is measured and made once they are in (session.js waits for
+// loadTerminalFonts() before it does either).
+// Nothing else waits for them: the rest of the app is not drawn in them, and
+// a Safari that held the whole app back for the font - up to the eight
+// seconds below - showed a bare skeleton after signing in (B-20).
 // Keep the system fallback for this visit if loading fails or stalls, so a
 // late font cannot change glyph widths underneath an existing terminal grid.
-export async function loadTerminalFonts() {
+let fontsLoading = null;
+let fontsSettled = false;
+
+/** loadTerminalFonts starts loading the terminal's faces, once. */
+export function loadTerminalFonts() {
+  if (!fontsLoading) fontsLoading = loadFonts().finally(() => { fontsSettled = true; });
+  return fontsLoading;
+}
+
+/** terminalFontsSettled says whether a terminal can be made now. */
+export function terminalFontsSettled() {
+  return fontsSettled;
+}
+
+async function loadFonts() {
   if (!document.fonts) return;
   let timer;
   try {

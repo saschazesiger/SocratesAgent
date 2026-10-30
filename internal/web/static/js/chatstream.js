@@ -50,7 +50,17 @@ export class ChatStream {
     this.ws = null;
     this.stopped = true;
     this.attempt = 0;
-    this.state = 'connecting';
+    // Nothing said yet: the first connect is what the page is waiting for
+    // anyway ("Loading what is new…"), so it is not news. The first attempt
+    // that fails is: from there the page says the chat may be behind and
+    // the bar says the connection is lost. Starting at 'connecting' made
+    // every failed attempt the same status as the one before, and nothing
+    // was ever said - an iPad stayed on "Loading what is new…" for minutes
+    // with no stream (B-3).
+    this.state = '';
+    // The socket on hand has said hello: it is up, and its replay is on its
+    // way (until synced).
+    this.helloed = false;
     this.heardAt = 0;
     this.pingId = 0;
     this.timers = {};
@@ -82,7 +92,7 @@ export class ChatStream {
   }
 
   /** status is how the stream is: 'live' only once its replay is through. */
-  status() { return this.state; }
+  status() { return this.state || 'connecting'; }
 
   live() { return this.state === 'live'; }
 
@@ -118,6 +128,7 @@ export class ChatStream {
       return;
     }
     this.ws = socket;
+    this.helloed = false;
     this.timers.hello = setTimeout(() => { if (this.ws === socket) this.reconnect(); }, HELLO_TIMEOUT);
     socket.onopen = () => {
       socket.send(JSON.stringify({ t: 'hello', since: Number(this.since()) || 0, batch: true, ...(this.lite ? { lite: true } : {}) }));
@@ -185,6 +196,7 @@ export class ChatStream {
     switch (frame.t) {
       case 'hello':
         clearTimeout(this.timers.hello);
+        this.helloed = true;
         break;
       case 'synced':
         this.attempt = 0;
@@ -214,9 +226,12 @@ export class ChatStream {
     this.timers.pong = setTimeout(() => { this.timers.pong = null; this.reconnect(0); }, PONG_TIMEOUT);
   }
 
+  // A socket that went quiet is asked whether it is still there: a live
+  // one, and one whose replay stopped coming before it was through - the
+  // hello timeout is over by then, and nothing else would ever find out.
   watch() {
     if (this.stopped || !this.ws) return;
-    if (this.state === 'live' && Date.now() - this.heardAt > PROBE_AFTER) this.ping();
+    if ((this.state === 'live' || this.helloed) && Date.now() - this.heardAt > PROBE_AFTER) this.ping();
   }
 
   /** confirm checks a stream that says it is live, now. */

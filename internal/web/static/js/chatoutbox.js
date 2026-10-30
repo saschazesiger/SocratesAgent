@@ -56,13 +56,67 @@ function rememberMine(clientId) {
   } catch { /* a private window: the stream still says who answered */ }
 }
 
+// A message the server took is in the chat's journal, but this page sees
+// it only once the chat's stream brings it. Until then the page shows it as
+// sent (chatview.js), and the device keeps it, so that a reload in between
+// does not make it vanish: an iPad whose stream did not come back showed the
+// message as sent, and after a reload it was gone, with nothing to say the
+// server had it (B-3). One key per message, as the Outbox has, and only for
+// a while: one the journal never shows to this device - its chat deleted,
+// say - is let go after SENT_KEEP.
+const SENT_PREFIX = 'socrates.sent.';
+const SENT_KEEP = 2 * 24 * 3600 * 1000;
+
+function keepSent(payload) {
+  try {
+    localStorage.setItem(SENT_PREFIX + payload.client_id, JSON.stringify({ payload, at: Date.now() }));
+  } catch { /* a private window: the page's own copy is all there is */ }
+}
+
+/** forgetSent lets go of a sent message once the journal shows it. */
+export function forgetSent(clientId) {
+  try { localStorage.removeItem(SENT_PREFIX + clientId); } catch { /* ignore */ }
+}
+
+/** forgetAllSent drops every sent message kept, for a browser that signs out. */
+export function forgetAllSent() {
+  for (const [clientId] of keptSent()) forgetSent(clientId);
+}
+
+/**
+ * keptSent is every message this device sent that a page has not seen in
+ * its chat's journal yet, as [client_id, { payload, at }].
+ */
+export function keptSent() {
+  const out = [];
+  try {
+    const keys = [];
+    for (let i = 0; i < localStorage.length; i += 1) {
+      const key = localStorage.key(i);
+      if (key && key.startsWith(SENT_PREFIX)) keys.push(key);
+    }
+    for (const key of keys) {
+      let entry = null;
+      try { entry = JSON.parse(localStorage.getItem(key)); } catch { /* damaged: dropped below */ }
+      if (!entry || !entry.payload || !entry.payload.client_id || !(Date.now() - Number(entry.at) < SENT_KEEP)) {
+        localStorage.removeItem(key);
+        continue;
+      }
+      out.push([entry.payload.client_id, entry]);
+    }
+  } catch { /* no storage */ }
+  return out.sort((a, b) => a[1].at - b[1].at);
+}
+
 async function send(payload) {
   const { kind, chat } = payload;
   if (kind === 'message') {
-    return request(path(chat, '/messages'), {
+    const answer = await request(path(chat, '/messages'), {
       method: 'POST', attempts: 1, timeout: 20000,
       body: { client_id: payload.client_id, text: payload.text, attachments: payload.attachments || [] },
     });
+    keepSent(payload);
+    return answer;
   }
   if (kind === 'command') {
     return request(path(chat, '/command'), {

@@ -21,8 +21,10 @@
 // is shown for at least --ds-hold-status: a change during the hold waits,
 // and a later one takes the place of the waiting one (which then never
 // shows), so a quick run of changes rolls once, to the last; a line that
-// has not shown yet holds nothing. A change during a roll carries each
-// line on from where it is.
+// has not shown yet holds nothing. A line still rolling in when the next
+// change comes finishes its roll during the hold, and the two then go as
+// one strip; only a roll that would outlast the hold is carried on from
+// where it is.
 
 import { M } from './ui.js';
 
@@ -75,6 +77,14 @@ function unseen(line) {
     .some((one) => one.playState !== 'finished' && Number(one.currentTime) <= Number(one.effect.getTiming().delay));
 }
 
+// remaining is how long an animation has left to run, in ms.
+function remaining(animation) {
+  if (animation.playState === 'finished') return 0;
+  const end = Number(animation.effect && animation.effect.getComputedTiming().endTime);
+  const now = Number(animation.currentTime);
+  return Number.isFinite(end) && Number.isFinite(now) ? Math.max(0, end - now) : Infinity;
+}
+
 function travelOf(slot) {
   return getComputedStyle(slot).getPropertyValue('--so-wheel-travel').trim() || '100%';
 }
@@ -112,6 +122,16 @@ function turnOut(line, slot, delay) {
   if (unseen(line)) {
     running.forEach((one) => one.cancel());
     return null;
+  }
+  // A line still coming in when the change comes finishes coming in while
+  // the change waits out its hold, and goes from where it then rests: the
+  // two lines move as one strip, one line apart. Cut off where it was and
+  // sent up from there, it went from part of a line below its place while
+  // the new one came from a whole line below - the two lay on each other
+  // ("Thinking" over "Running seq 1 2000") - and it stood at its place,
+  // whole, while it waited.
+  if (running.every((one) => remaining(one) <= delay)) {
+    return roll(line, slot, 'translateY(0)', `translateY(calc(-1 * ${travelOf(slot)}))`, [1, 0], delay, 'forwards');
   }
   const style = getComputedStyle(line);
   const from = style.transform === 'none' ? 'translateY(0)' : style.transform;

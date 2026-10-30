@@ -26,7 +26,7 @@ import {
 } from './folders.js';
 import * as harnesses from './harnesses.js';
 import * as accounts from './accounts.js';
-import { createTerm, measurePane, loadTerminalFonts } from './term.js';
+import { createTerm, measurePane, loadTerminalFonts, terminalFontsSettled } from './term.js';
 import { mountAssist } from './assist.js';
 import { mountNotify } from './notify.js';
 import { mountTransfer } from './transfer.js';
@@ -50,7 +50,7 @@ import { mountBackupNotice } from './backup.js';
 import { setVoiceKey, voiceKey, onVoiceKey, keyMissing, setTtsKey } from './voice.js';
 import { explainNoKey } from './dictate.js';
 import { mountChat } from './chatview.js';
-import { chatOutbox, queueCommand, settled } from './chatoutbox.js';
+import { chatOutbox, queueCommand, settled, forgetAllSent } from './chatoutbox.js';
 import { openChatAsks, askDialogOpen, closeAskDialog, refreshAskDialog } from './askdialog.js';
 
 /* ------------------------------------------------------------- transport */
@@ -3129,6 +3129,17 @@ function attach(session) {
     drawOverlay(session);
   }
 
+  // The terminal is measured and drawn in its own font, so it waits for it
+  // (term.js loadTerminalFonts, which gives up after a while): the session
+  // is on the stage meanwhile, and its pane comes once the font is in -
+  // unless the person has gone somewhere else by then.
+  if (!terminalFontsSettled()) {
+    loadTerminalFonts().then(() => {
+      if (state.current && state.current.id === session.id && !state.term && !state.socket) attach(sessionOf(session.id) || session);
+    });
+    return;
+  }
+
   const socketRef = { socket: null };
   state.term = createTerm(dom.term, {
     // Everything typed on the device's own keyboard passes the key bar on its
@@ -3754,7 +3765,9 @@ async function newSession(workdir = '') {
     await startChat(pick);
     return;
   }
-  // A Shell: a folder, and the size of the pane it is about to be drawn in.
+  // A Shell: a folder, and the size of the pane it is about to be drawn in,
+  // measured in the terminal's font.
+  await loadTerminalFonts();
   const size = measureForStart();
   try {
     const data = await api('/api/sessions', {
@@ -4059,6 +4072,7 @@ function wire() {
     // What this browser kept of the chats is not left for whoever signs in
     // next.
     await forgetAll();
+    forgetAllSent();
     try { await api('/api/logout', { method: 'POST' }); } catch { /* going anyway */ }
     location.href = '/login';
   });
@@ -4147,7 +4161,9 @@ function routeOf(hash) {
 }
 
 async function boot() {
-  await loadTerminalFonts();
+  // The terminal's font is on its way meanwhile: a terminal waits for it
+  // (attach), the rest of the app is drawn without it (term.js).
+  loadTerminalFonts();
   wire();
   // Which folders this device keeps shut, before the first list is drawn.
   restoreFolders();

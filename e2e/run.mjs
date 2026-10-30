@@ -8675,6 +8675,28 @@ async function homelanding() {
     ok(phoneHome.seen.overflow <= 1, 'Home does not scroll sideways at 390 px', String(phoneHome.seen.overflow));
     await phone.context.close();
 
+    // The terminal's font does not hold the app back: with the font never
+    // arriving, Home and the list are drawn at once rather than after the
+    // font's eight second wait (B-20, a bare skeleton on Safari). Only a
+    // terminal waits for its font, and once that wait is given up it is
+    // drawn in the system's monospace.
+    // A context of its own, with the login and without the offline worker,
+    // so that the font is asked of the network and never comes.
+    const slowContext = await s.browser.newContext({ storageState: await s.context.storageState(), serviceWorkers: 'block', viewport: { width: 1280, height: 720 } });
+    const slow = await slowContext.newPage();
+    await slow.route(/SourceCodePro-[A-Za-z]+\.woff2/, () => { /* never answered */ });
+    const began = Date.now();
+    await slow.goto(s.url + '/', { waitUntil: 'domcontentloaded' });
+    const drawn = await slow.waitForSelector(rowSel(id), { state: 'attached', timeout: 7000 }).then(() => Date.now() - began, () => -1);
+    const homeUp = await slow.evaluate(() => !document.getElementById('home').hidden && document.getElementById('sessionTitle').textContent === 'Home');
+    ok(drawn >= 0 && drawn < 5000 && homeUp, 'with the terminal font never arriving, Home and the list are drawn without waiting for it',
+      JSON.stringify({ ms: drawn, homeUp }));
+    await slow.evaluate((target) => { location.hash = '#' + target; }, id);
+    const fallback = await slow.waitForSelector('#term .xterm-rows', { timeout: 15000 })
+      .then(() => slow.evaluate(() => getComputedStyle(document.querySelector('#term .xterm-rows')).fontFamily), () => '');
+    ok(!!fallback && !/Source Code Pro/.test(fallback), 'and a Shell opened meanwhile waits for its font, then for want of it is drawn in the system monospace', fallback);
+    await slowContext.close();
+
     ok(unexpected(s.errors).length === 0, 'no console errors', unexpected(s.errors).join(' | ') || '0');
   } finally { await s.stop(); }
 }
@@ -11702,6 +11724,39 @@ async function chatfold() {
       'a change right after a roll waits until the line before it was shown for the hold', JSON.stringify(wheel));
     ok(wheel.stand > wheel.hold - 450 && wheel.stand <= wheel.hold - 250 && wheel.showing.includes('Reading c.go') && wheel.showing.includes('Thinking (going)') && !wheel.showing.some((line) => line.startsWith('Writing')),
       'a change that replaces a line still waiting out the hold takes its time: it never waits a second hold', JSON.stringify(wheel));
+    // A change that comes while a line is still rolling in: the two go as
+    // one strip, one line apart, and never lie on each other ("Thinking"
+    // over "Running seq 1 2000", B-21).
+    const strip = await page.evaluate(async () => {
+      const { wheelHooks } = await import('/static/js/wheel.js');
+      const box = document.createElement('div');
+      box.className = 'so-live';
+      document.body.append(box);
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+      const draw = (text) => window.DS.dom.morphHtml(box, '<span class="so-wheel"><span class="so-wheel__line" data-ds-key="' + text + '">' + text + '</span></span>', wheelHooks);
+      const hold = window.DS.motion.motionDuration(box, '--ds-hold-status');
+      draw('Working');
+      await sleep(hold + 300);
+      draw('Thinking');
+      await sleep(40);
+      draw('Running seq 1 2000');
+      let closest = Infinity;
+      let seen = 0;
+      const until = performance.now() + hold + 1500;
+      while (performance.now() < until) {
+        await new Promise((r) => requestAnimationFrame(r));
+        const shown = [...box.querySelectorAll('.so-wheel__line')].filter((n) => Number(getComputedStyle(n).opacity) > 0.15);
+        if (shown.length > 1) {
+          seen += 1;
+          closest = Math.min(closest, Math.abs(shown[0].getBoundingClientRect().top - shown[1].getBoundingClientRect().top));
+        }
+      }
+      const height = box.querySelector('.so-wheel__line').getBoundingClientRect().height;
+      box.remove();
+      return { closest: Math.round(closest * 10) / 10, height: Math.round(height * 10) / 10, seen };
+    });
+    ok(strip.seen > 0 && strip.closest >= strip.height - 0.5,
+      'a change while a line still rolls in: the two roll as one strip, a line apart, never on each other', JSON.stringify(strip));
     // A time that is not today says its day.
     const times = await page.evaluate(async () => {
       const { clock, span, about } = await import('/static/js/chatparts.js');
@@ -12242,14 +12297,67 @@ async function chatkept() {
       'dimmed, and the dock says it is what the device last saw', JSON.stringify(held));
     await shot(page, 'chat-kept');
 
+    // A stream that does not come back is said, not loaded for ever: once
+    // its first try has failed (no hello in time), the dock says the chat
+    // may be behind and the bar says the connection is lost (B-3).
+    const said = await page.waitForFunction(() => !!document.querySelector('#chat [data-ds-key="reconnecting"]')
+      && !document.querySelector('#chat [data-ds-key="catchup"]') && document.body.hasAttribute('data-conn-lost'),
+    null, { timeout: 25000 }).then(() => true, () => false);
+    ok(said, 'a stream that does not come back: the dock says the chat may be behind, not "Loading what is new…" for ever',
+      oneLine(await page.$eval('#chat .so-chat__dock', (n) => n.innerText).catch(() => '')));
+
+    // What is sent meanwhile goes out over a plain request and shows as
+    // sent; the journal that would show it is not coming. A reload then
+    // does not lose it.
+    await say(page, 'sent while held');
+    const sentHeld = await page.waitForFunction(() => [...document.querySelectorAll('#chat .so-msg[data-role="user"]')]
+      .some((n) => n.innerText.includes('sent while held') && /Sent/.test(n.innerText)), null, { timeout: 15000 }).then(() => true, () => false);
+    ok(sentHeld, 'a message sent with no stream shows as sent', oneLine(await logText(page)));
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await page.waitForSelector('#sessionList .so-row[data-id="' + id + '"]', { state: 'attached', timeout: 20000 });
+    await page.evaluate((target) => { location.hash = '#' + target; }, id);
+    ok(await awaitLog(page, 'sent while held', 10000), 'and after a reload, still with no stream, it is still there',
+      oneLine(await logText(page)));
+
     // The stream let through: its next try catches up, and the chat is current.
     hold = false;
     const caught = await page.waitForFunction(() => !document.querySelector('#chat [data-ds-key="catchup"]')
       && !document.querySelector('#chat').hasAttribute('data-stale'), null, { timeout: 30000 }).then(() => true, () => false);
     ok(caught, 'once the stream is through the line and the dimming go', String(caught));
+    const answeredHeld = await awaitLog(page, 'you said: sent while held', 20000);
+    const once = await page.$$eval('#chat .so-msg[data-role="user"]', (nodes) => nodes.filter((n) => n.innerText.includes('sent while held')).length);
+    const leftKept = await page.evaluate(() => Object.keys(localStorage).filter((k) => k.startsWith('socrates.sent.')).length);
+    ok(answeredHeld && once === 1 && leftKept === 0, 'the message sent meanwhile is in the chat once, answered, and the device lets go of its copy',
+      JSON.stringify({ answeredHeld, once, leftKept }));
     await say(page, 'and this one');
     ok(await awaitLog(page, 'you said: and this one', 20000) || await awaitLog(page, 'and this one', 1000),
       'and the chat goes on', oneLine(await lastAnswer(page)));
+
+    // "Latest" during a long stream: one press takes the conversation to
+    // its end and it follows the end from there, the button gone (B-22).
+    await say(page, '/stream 2500 8');
+    await page.waitForFunction(() => {
+      const sc = document.querySelector('#chat .so-chat__scroll');
+      return !!sc && sc.scrollHeight > sc.clientHeight * 3;
+    }, null, { timeout: 30000 });
+    await page.hover('#chat .so-chat__log');
+    for (let i = 0; i < 6; i += 1) await page.mouse.wheel(0, -600);
+    const away = await page.waitForSelector('#chat .so-chat__jump:not([hidden])', { timeout: 5000 }).then(() => true, () => false);
+    await page.click('#chat .so-chat__jump');
+    await wait(1500);
+    const following = await page.evaluate(() => {
+      const sc = document.querySelector('#chat .so-chat__scroll');
+      return { gap: Math.round(sc.scrollHeight - sc.scrollTop - sc.clientHeight), jump: !document.querySelector('#chat .so-chat__jump').hidden };
+    });
+    const ended = await page.waitForFunction(() => !document.querySelector('#chat .so-composer__stop:not([hidden])'), null, { timeout: 60000 }).then(() => true, () => false);
+    await wait(500);
+    const atEnd = await page.evaluate(() => {
+      const sc = document.querySelector('#chat .so-chat__scroll');
+      return { gap: Math.round(sc.scrollHeight - sc.scrollTop - sc.clientHeight), jump: !document.querySelector('#chat .so-chat__jump').hidden };
+    });
+    ok(away && following.gap <= 64 && !following.jump && ended && atEnd.gap <= 64 && !atEnd.jump,
+      'one press of Latest during a long stream reaches the end and follows it there, the button gone',
+      JSON.stringify({ away, following, ended, atEnd }));
     ok(unexpected(s.errors).length === 0, 'no console errors', unexpected(s.errors).join(' | ') || '0');
   } finally { await s.stop(); }
 }
