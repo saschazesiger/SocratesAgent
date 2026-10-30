@@ -150,6 +150,10 @@ export class WebDriver {
   async pressKeycode(keycode: number, timeoutMs?: number): Promise<void> {
     await this.call("POST", "/appium/device/press_keycode", { keycode }, timeoutMs);
   }
+  /** Appium's driver settings (enableMultiWindows on Android: the keyboard's window in the source too). */
+  async settings(values: Record<string, unknown>): Promise<void> {
+    await this.call("POST", "/appium/settings", { settings: values });
+  }
   /** The native UI hierarchy as XML (Appium, native context). */
   async source(timeoutMs?: number): Promise<string> {
     return String(await this.call("GET", "/source", undefined, timeoutMs));

@@ -6,6 +6,7 @@ import { DEVICE_START_TIMEOUT_MS, IDLE_TIMEOUT_S, MARKER_GAP_CSS, PROJECT_NAME, 
 import { grantCapabilities, type Device, type Grant } from "./devices";
 import { redactUrl, type Action, type Evidence, type PageEntry, type Settle, type Target } from "./evidence";
 import { type At, type Direction, type Point, clampPoint, dragActions, holdActions, swipeEnd, tapActions, vector, wheelActions } from "./gesture";
+import { TO_LETTERS, TO_MORE_SYMBOLS, TO_SYMBOLS, find, isLetter, keyboardKeys, labelsFor, letterKey, type Key } from "./gboard";
 import { KEYS, keyActions, parseKey } from "./keys";
 import { MONTHS, PICK_KINDS, dayLabelMatches, formatValue, hour12, monthSteps, parseMonthYear, wantedMoment, type Moment, type PickKind } from "./picker";
 import { type NativeElement, type NativePlatform, type NativeScreen, describeElement, iosPrompt, matchNative, middle, nativeOverlay, parseNative } from "./native";
@@ -41,6 +42,9 @@ const NATIVE_AFTER_TAP_MS = 800;
 
 /** How long a picker's step (a month, a day, opening the wheels) waits before the native screen is read again. */
 const PICKER_STEP_MS = 500;
+
+/** How long the on-screen keyboard takes to redraw after Shift or a layout switch before its keys are read again. */
+const GBOARD_SETTLE_MS = 250;
 
 /** How long a gesture waits for the page to follow (a scroll's momentum, a selection) before it looks again. */
 const GESTURE_REST_MS = 700;
@@ -512,7 +516,10 @@ export class DeviceSession {
         // the field was touched natively and has the focus, the text then comes through WebDriver.
         path = native ? "WebDriver into the touched field (Chrome did not show the field to Android, so not through the keyboard)" : "WebDriver";
       }
-      if (options.submit) await this.driver.sendKeys(element, KEYS.enter!);
+      if (options.submit && native && this.device.kind === "android" && path.startsWith("Android's on-screen keyboard")) {
+        await this.inNative(() => this.typeOnGboard("\n"));
+        path += ", then its Enter";
+      } else if (options.submit) await this.driver.sendKeys(element, KEYS.enter!);
       const typed = options.into && !native && this.device.kind !== "desktop" ? `typed ${shown} via ${path} (the field focused by a simulated click, not a finger; --native types as a person would)` : `typed ${shown} via ${path}`;
       return [typed, ...notes].join("\n");
     });
@@ -586,15 +593,21 @@ export class DeviceSession {
         await this.driver.deviceKeys(value);
         return "the iOS keyboard";
       }
-      // Chrome publishes a focused web field to accessibility a moment after the tap: wait for it, and fall back
-      // to the field nearest the tap (the opening keyboard can move the page).
+      // Gboard's own keys, as a finger types: the page gets the key and insertText input events a person's
+      // typing gives (a terminal takes nothing else).
+      const keyed = await this.typeOnGboard(value);
+      if (keyed.typed) return keyed.typed;
+      // No keyboard to type on, or a character it has no key for: the field's text is set through Android's
+      // accessibility (one input event without data: a terminal ignores it). Chrome publishes a focused web field
+      // to accessibility a moment after the tap: wait for it, and fall back to the field nearest the tap.
+      const why = ` (not key by key: ${keyed.why})`;
       const tap = this.lastNativeTap;
       if (!tap) throw new ActionError("native typing on Android needs a native tap on the field first (--into ... --native)");
       for (let attempt = 0; attempt < 5; attempt++) {
         const [focused] = await this.driver.findXPath('//android.widget.EditText[@focused="true" and not(contains(@resource-id, "url_bar"))]');
         if (focused) {
           await this.driver.sendKeys(focused, value);
-          return "the focused Android text field";
+          return `the focused Android text field's text${why}`;
         }
         await new Promise((resolve) => setTimeout(resolve, 700));
       }
@@ -607,8 +620,69 @@ export class DeviceSession {
       }
       if (!nearest) return null;
       await this.driver.sendKeys(nearest.field, value);
-      return `the Android text field nearest the tap (${Number.isFinite(nearest.distance) ? `${Math.round(nearest.distance)} px away` : "distance unknown"})`;
+      return `the Android text field nearest the tap (${Number.isFinite(nearest.distance) ? `${Math.round(nearest.distance)} px away` : "distance unknown"})${why}`;
     });
+  }
+
+  /**
+   * Android (native context): types `value` on the on-screen keyboard key by key, as a finger does: each
+   * character's key is found by its label in the keyboard's window (Appium's enableMultiWindows shows it),
+   * Shift for a letter in the other case (Gboard capitalises by itself at a sentence's start), the symbol
+   * layouts for digits and signs, Enter for a line break. Nothing is typed when the keyboard is not open or a
+   * character has no key (`why` says which).
+   */
+  private async typeOnGboard(value: string): Promise<{ typed?: string; why: string }> {
+    const odd = [...value].find((char) => !isLetter(char) && !/^[0-9]$/.test(char) && !labelsFor(char).some((label) => label !== char) && !/^[.,@#$&*%^]$/.test(char));
+    if (odd !== undefined) return { why: `the keyboard has no key the driver knows for ${JSON.stringify(odd)}` };
+    await this.driver.settings({ enableMultiWindows: true }).catch(() => undefined);
+    try {
+      let keys = keyboardKeys(await this.driver.source(NATIVE_TIMEOUT_MS));
+      if (!keys.size) return { why: "no on-screen keyboard was open (open it first, as the page offers: a tap on the field, or Show the keyboard in a terminal)" };
+      const reread = async () => {
+        await sleep(GBOARD_SETTLE_MS);
+        keys = keyboardKeys(await this.driver.source(NATIVE_TIMEOUT_MS));
+      };
+      const press = (key: Key) => this.driver.actions(tapActions("touch", middle(key.rect)), NATIVE_TIMEOUT_MS);
+      // Brings the layout that has one of `labels` (letters, symbols, more symbols), at most a round of switches.
+      const reach = async (has: () => boolean, what: string) => {
+        for (const switchTo of [TO_LETTERS, TO_SYMBOLS, TO_MORE_SYMBOLS, TO_LETTERS]) {
+          if (has()) return;
+          const key = find(keys, switchTo);
+          if (!key) continue;
+          await press(key);
+          await reread();
+        }
+        if (!has()) throw new ActionError(`the on-screen keyboard has no key for ${what} (keys: ${[...keys.keys()].slice(0, 30).join(", ")})`);
+      };
+      let typed = 0;
+      for (const char of value) {
+        if (isLetter(char)) {
+          await reach(() => letterKey(keys, char) !== null, JSON.stringify(char));
+          let hit = letterKey(keys, char)!;
+          const upper = char !== char.toLowerCase();
+          if (hit.shifted !== upper) {
+            const shift = find(keys, ["Shift", "Shift enabled", "Caps lock"]);
+            if (!shift) throw new ActionError(`the on-screen keyboard shows no Shift to type ${JSON.stringify(char)}`);
+            await press(shift);
+            await reread();
+            hit = letterKey(keys, char)!;
+          }
+          await press(hit.key);
+          // Shift ends after one letter, and the keyboard may capitalise by itself after it: read it again then.
+          if (upper || hit.shifted) await reread();
+        } else {
+          const labels = labelsFor(char);
+          await reach(() => find(keys, labels) !== null, JSON.stringify(char));
+          await press(find(keys, labels)!);
+          // After a space, a full stop or a line the keyboard may switch back to letters or capitalise.
+          if (/[ .\n]/.test(char)) await reread();
+        }
+        typed += 1;
+      }
+      return { typed: `Android's on-screen keyboard, key by key (${typed} key${typed === 1 ? "" : "s"})`, why: "" };
+    } finally {
+      await this.driver.settings({ enableMultiWindows: false }).catch(() => undefined);
+    }
   }
 
   /**

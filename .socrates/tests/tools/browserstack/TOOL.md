@@ -77,10 +77,15 @@ the page did not come to rest, the page errors, the URL and the screenshot path.
   missed). `qa logs` adds the server's own lines; other cells of the run use the same test instance at
   the same time, so a line may be theirs.
 - **Native input.** On phones and tablets type with `--native`: the driver taps the field with a real
-  touch and types through the device keyboard (iOS) or the focused field (Android). When Chrome does
-  not show the field to Android (it happens, in dialogs too), the text goes in through WebDriver after
-  the real touch, and the output says so. Plain typing skips the keyboard and misses zoom, IME and
-  viewport effects. If a tap right after typing has no effect, repeat it with `--native` (the closing
+  touch and types through the device's on-screen keyboard: iOS's, and on Android Gboard's keys touched
+  one by one (Shift, the symbol layouts and Enter included; `--submit` presses its Enter), so the page
+  gets the key and input events a person's typing gives. That is what reaches a terminal: typing
+  without `--into` goes to the focused field, so open the terminal's keyboard first (Show the
+  keyboard), then `qa type "ls" --native --submit`. Where Android shows no keyboard, or for a
+  character Gboard has no key the driver knows, the field's text is set through Android's
+  accessibility instead (a terminal ignores that) or, when Chrome does not show the field to Android,
+  through WebDriver, and the output says which. Plain typing skips the keyboard and misses zoom, IME
+  and viewport effects. If a tap right after typing has no effect, repeat it with `--native` (the closing
   keyboard moves the page).
 - **A field the page focused itself (iOS).** iOS raises a keyboard only for a focus a touch gives. A
   dialog that opens on its field (Rename) leaves it focused with no keyboard, and a touch on it then
