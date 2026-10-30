@@ -18,6 +18,9 @@ import * as V from './testsview.js';
 
 const $ = (id) => document.getElementById(id);
 const PHONE = window.matchMedia('(max-width: 600px)');
+// The runs table has up to six columns: below this a tablet shows the list
+// a phone does, rather than a table whose state is cut off at the edge.
+const NARROW = window.matchMedia('(max-width: 960px)');
 const TYPE_PAUSE = 200;
 
 const CHIPS = [
@@ -166,7 +169,7 @@ export function mount(ctx) {
       </div></section>`);
       return;
     }
-    const phone = PHONE.matches;
+    const phone = NARROW.matches;
     const changes = state.runs.some((r) => r.changes);
     const costs = state.runs.some((r) => typeof r.cost === 'number');
     const keep = state.settings && state.settings.settings ? state.settings.settings.keep_runs : 0;
@@ -261,9 +264,8 @@ export function mount(ctx) {
       // The cost is unknown for a run whose sessions are not in the costs ledger.
       typeof d.cost === 'number' ? ['Cost', V.money(d.cost)] : ['Cells', V.countsWords(d.counts)],
     ];
-    const factsHtml = PHONE.matches
-      ? html`<p class="ds-meta"><span class="ds-parts"><span class="ds-parts__list">${facts.filter(([, v]) => v).map(([k, v]) => html`<span>${k + ' '}${v}</span>`)}</span></span></p>`
-      : html`<dl class="ds-facts">${facts.map(([k, v]) => html`<div><dt>${k}</dt><dd>${v}</dd></div>`)}</dl>`;
+    // Label above value on every width: a line of parts wrapped raggedly on a phone.
+    const factsHtml = html`<dl class="ds-facts">${facts.map(([k, v]) => html`<div><dt>${k}</dt><dd>${v}</dd></div>`)}</dl>`;
     return html`<header class="ds-page-head so-tests-record">
         ${crumbs(d)}
         <div class="ds-page-head__row">
@@ -879,6 +881,7 @@ export function mount(ctx) {
   }
 
   PHONE.addEventListener('change', () => ctx.redraw('runs'));
+  NARROW.addEventListener('change', () => ctx.redraw('runs'));
 
   return {
     render,

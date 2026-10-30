@@ -234,11 +234,13 @@ export function ago(ms, now = Date.now()) {
 export function span(ms) {
   if (!(ms > 0)) return '';
   const s = Math.round(ms / 1000);
-  if (s < 60) return s + ' s';
+  // A number never wraps away from its unit ("4 s", not "4" and "s").
+  const nb = '\u00a0';
+  if (s < 60) return s + nb + 's';
   const m = Math.round(s / 60);
-  if (m < 60) return m + ' min';
+  if (m < 60) return m + nb + 'min';
   const h = Math.floor(m / 60);
-  return h + ' h' + (m % 60 ? ' ' + (m % 60) + ' min' : '');
+  return h + nb + 'h' + (m % 60 ? ' ' + (m % 60) + nb + 'min' : '');
 }
 
 /** runSpan is how long a run took, or has taken so far. */
