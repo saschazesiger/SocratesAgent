@@ -246,7 +246,7 @@ func TestUpdatesRunReportsAStartThatFails(t *testing.T) {
 	systemd.startErr = errors.New("Access denied")
 	env := updatesEnv(t, systemd)
 	res, data := env.do(t, env.client, "POST", "/api/updates/run", "{}")
-	if res.StatusCode != http.StatusBadGateway {
+	if res.StatusCode != http.StatusInternalServerError {
 		t.Fatalf("a refused start answered %d", res.StatusCode)
 	}
 	if msg, _ := data["error"].(string); !strings.Contains(msg, "Access denied") {

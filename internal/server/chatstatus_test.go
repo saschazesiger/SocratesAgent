@@ -104,7 +104,7 @@ func TestAChatsStatusIsToldFromItsJournal(t *testing.T) {
 	// said to be what it is.
 	gw.always("Just prose.")
 	res, body = c.do(t, c.client, "POST", "/api/sessions/"+id+"/status", "")
-	if res.StatusCode != http.StatusBadGateway || !strings.Contains(fmt.Sprint(body["error"]), "usable JSON") {
+	if res.StatusCode != http.StatusInternalServerError || !strings.Contains(fmt.Sprint(body["error"]), "usable JSON") {
 		t.Fatalf("a model that will not answer with JSON: %d %v", res.StatusCode, body)
 	}
 }

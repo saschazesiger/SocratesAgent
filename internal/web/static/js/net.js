@@ -580,6 +580,12 @@ async function errorText(res) {
     const data = await res.clone().json();
     if (data && data.error) return data.error;
   } catch { /* not json */ }
+  // Socrates answers every error of its own in JSON. A 502, 504 or 52x
+  // without it is the tunnel's own page (Cloudflare): the request did not get
+  // through to Socrates, which is worth saying in words.
+  if (res.status === 502 || res.status === 504 || (res.status >= 520 && res.status <= 530)) {
+    return 'Socrates could not be reached just now (HTTP ' + res.status + ')';
+  }
   return res.statusText || ('HTTP ' + res.status);
 }
 

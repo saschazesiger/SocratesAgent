@@ -695,6 +695,7 @@ func (s *Server) handlePushTest(w http.ResponseWriter, r *http.Request) {
 		_ = s.push.remove(target.Endpoint)
 	}
 	if err != nil {
+		log.Printf("push test to %s: %v", hostOf(target.Endpoint), err)
 		writeError(w, http.StatusBadGateway, err.Error())
 		return
 	}

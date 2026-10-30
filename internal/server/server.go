@@ -577,9 +577,22 @@ func (s *Server) pageSetup(w http.ResponseWriter, r *http.Request) {
 
 // ------------------------------------------------------------------ helpers
 
+// keptStatus is the status an answer goes out with. Socrates is reached
+// through a Cloudflare tunnel, and Cloudflare puts its own error page in place
+// of an origin's 502 or 504 - "error code: 502", whatever the server said - so
+// "the push service refused it" reached the page as "HTTP 502". Those two are
+// sent as a 500, which Cloudflare passes through with its body, and which the
+// page retries the same way (net.js RETRYABLE_STATUS).
+func keptStatus(code int) int {
+	if code == http.StatusBadGateway || code == http.StatusGatewayTimeout {
+		return http.StatusInternalServerError
+	}
+	return code
+}
+
 func writeJSON(w http.ResponseWriter, code int, v any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	w.WriteHeader(code)
+	w.WriteHeader(keptStatus(code))
 	if err := json.NewEncoder(w).Encode(v); err != nil {
 		log.Printf("server: write json: %v", err)
 	}
@@ -602,6 +615,7 @@ func writeJSONCompressed(w http.ResponseWriter, r *http.Request, code int, v any
 	body = append(body, '\n')
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.Header().Add("Vary", "Accept-Encoding")
+	code = keptStatus(code)
 	if len(body) < compressFrom || !acceptsGzip(r) {
 		w.WriteHeader(code)
 		_, _ = w.Write(body)

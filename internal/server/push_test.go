@@ -5,8 +5,11 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -212,6 +215,17 @@ func TestPushEndpoints(t *testing.T) {
 	}
 	if res, _ := env.do(t, env.client, "POST", "/api/push/test", `{"endpoint":"https://push.example.net/b"}`); res.StatusCode != http.StatusNotFound {
 		t.Fatalf("test for a stranger = %d", res.StatusCode)
+	}
+
+	// A push service that refuses the test is said in its own words, with a
+	// status a Cloudflare tunnel passes on: it puts its own page in place of
+	// a 502, and the switch said only "HTTP 502".
+	env.srv.push.send = func(context.Context, pushSub, webpush.Message) error {
+		return errors.New("the push service answered 403: invalid JWT")
+	}
+	res, refused := env.do(t, env.client, "POST", "/api/push/test", `{"endpoint":"https://push.example.net/a"}`)
+	if res.StatusCode != http.StatusInternalServerError || !strings.Contains(fmt.Sprint(refused["error"]), "invalid JWT") {
+		t.Fatalf("a refused test = %d %v", res.StatusCode, refused)
 	}
 
 	if res, _ := env.do(t, env.client, "POST", "/api/push/unsubscribe", `{"endpoint":"https://push.example.net/a"}`); res.StatusCode != http.StatusOK {
