@@ -204,6 +204,8 @@ func New(st *store.Store, dataDir string) (*Server, error) {
 	// An update that replaced a program's binary makes the catalogue's
 	// versions stale; the updater's status file is how it finds out.
 	s.catalog.WatchUpdates(filepath.Join(dataDir, updatesFile))
+	// OpenCode's models are its accounts' providers'.
+	s.catalog.UseAccounts(catalogAccounts{s})
 
 	s.tunnel = tunnel.New(s.Settings, s.LocalURL, filepath.Join(dataDir, "bin"))
 

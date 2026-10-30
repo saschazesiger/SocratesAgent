@@ -6,7 +6,8 @@
 > adapters (`internal/agent/*`, AGENT-HOST.md).
 
 The admin dashboard exposes the basics only: whether a program is offered,
-where its binary lives, the short list of models its picker shows, and the
+where its binary lives, the favourite models its pickers offer first (every
+other model stays on offer after them, searched), and the
 model and effort a session starts on when the person starting it did not
 choose. Everything else about a launch — permissions, sandbox, approval,
 remote control, theme, terminal environment, generated configuration — is
@@ -344,12 +345,12 @@ Socrates' own MCP server (`internal/agent/chattools`).
 - **The repository** of a chat is the nearest folder at or above its own
   with a `.git`, else its folder alone (`chatScope`). A dynamic folder is a
   chat's own, so such a chat reaches nobody; preset and typed-in folders do.
-- **A message** goes into the other chat as the person's messages do
 - **Only the chats at work.** A chat filed in the background or done, or
   one nobody has sent anything yet (its folder's Not started shelf), is not
   there for the others: `list_chats` leaves it out, and `read_chat` and
   `send_to_chat` answer as for a chat that does not exist (`awake`). Filed
   back in progress, or sent its first message, it is there again.
+- **A message** goes into the other chat as the person's messages do
   (`sendMessage`), after a `chat_message` notice that names the chat it came
   from ("A message from the chat “API work” (Claude Code)."). It opens with
   a line for the agent - which chat, its id, answer with `send_to_chat` -

@@ -5,6 +5,10 @@ type Catalog struct {
 	Models []Model `json:"models"`
 	Static bool    `json:"static"` // true when the list is curated, not discovered
 	Notes  string  `json:"notes,omitempty"`
+	// Recent and Favorites are model ids the CLI itself keeps first: the ones
+	// OpenCode's TUI used last, newest first, and the ones starred there.
+	Recent    []string `json:"recent,omitempty"`
+	Favorites []string `json:"favorites,omitempty"`
 }
 
 // Model is one entry of that list, in the harness's own naming - "sonnet",
@@ -22,7 +26,7 @@ type Model struct {
 // EffortOrder is every reasoning-effort level any of the harnesses names, from
 // least to most. It is an ordering, not a whitelist: a model offers whatever
 // its CLI reports for it, and this only decides how those are lined up.
-var EffortOrder = []string{"minimal", "low", "medium", "high", "xhigh", "max", "ultra"}
+var EffortOrder = []string{"none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"}
 
 // OrderEfforts lines a model's reported levels up in EffortOrder, drops the
 // repeats, and keeps anything it has never heard of at the end in the order

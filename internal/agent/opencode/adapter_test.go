@@ -47,7 +47,7 @@ func TestATurnStreamsAndEnds(t *testing.T) {
 		for _, c := range p.Palette() {
 			names = append(names, c.Name+" "+c.Args)
 		}
-		want := "compact |shell <command>|agent build|plan|init |review <arguments>|hello <arg1> <arg2>"
+		want := "compact |shell <command>|agent build|plan|reviewer|init |review <arguments>|hello <arg1> <arg2>"
 		if strings.Join(names, "|") != want {
 			t.Fatalf("commands %q", names)
 		}
@@ -566,6 +566,23 @@ func TestRevertForkAndPlanMode(t *testing.T) {
 	}
 	if err := r.a.Command(ctx, "agent", "nonsense"); err == nil {
 		t.Fatal("a nonsense agent was taken")
+	}
+	// A subagent and a hidden one are not agents a chat runs as.
+	for _, no := range []string{"general", "title"} {
+		if err := r.a.Command(ctx, "agent", no); err == nil {
+			t.Fatalf("%s was taken as a chat's agent", no)
+		}
+	}
+	// One the project adds is.
+	if err := r.a.Command(ctx, "agent", "reviewer"); err != nil {
+		t.Fatal(err)
+	}
+	if ev, ok := r.rec.first(agent.TypeNotice, func(ev agent.Event) bool { return ev.Code == NoticeAgent && ev.Args == "reviewer" }); !ok ||
+		ev.Args != "reviewer" || ev.Text != "Agent reviewer. Reviews the changes and edits nothing." {
+		t.Fatalf("notice %+v", ev)
+	}
+	if err := r.a.Command(ctx, "agent", "plan"); err != nil {
+		t.Fatal(err)
 	}
 	if err := r.a.Command(ctx, "revert", "m_unknown"); err == nil {
 		t.Fatal("a revert to a message OpenCode never had was sent")

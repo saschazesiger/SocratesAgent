@@ -3045,3 +3045,29 @@ Dashboard-Style 2.1.0 (DASHBOARD-STYLE.md, "Dashboard-Style 2.0 to 2.1") ends th
 Still departing, with the reason updated: the top bar in a phone's strip (DS does not count VS Code's EditContext
 editor as a field), the 8px row gap in a chat card's head and its answer row (`ds-check.json`). The list of what
 stays Socrates' own is in DASHBOARD-STYLE.md.
+
+## OpenCode's models and agents (2026-10-27)
+
+The owner: every model OpenCode can run should be selectable in the web, as in the CLI, without
+listing models beforehand.
+
+- **The favourites are first, not all there is.** A harness's `models` setting was a short list
+  that replaced the CLI's list in the pickers; it is now the favourites, offered first (the first
+  one reported is what a new chat starts on), with every other model the CLI reports after them.
+  Admin calls it "Favourite models".
+- **OpenCode's models are its accounts'.** The catalogue lists them with `opencode models
+  --verbose` once per OpenCode account, in that account's environment (its auth.json, its key, a
+  scratch database in the shared cache, not the chats'), and merges them. A model is named and
+  grouped by its provider's name, its hint is its context, price and image input, its variants
+  are its efforts (`none` included), and a model that calls no tools or is deprecated is left out.
+  The TUI's `model.json` adds the recent and starred models and the default: the model it used
+  last, at the variant it last ran it at - what OpenCode itself starts on. A sign-in, a new key or
+  a TUI session (the files' mtimes, `catalog.Accounts.Fingerprint`) makes the cached catalogue
+  superseded, discovered again behind the next request.
+- **Search instead of a menu.** A chat's model menu with more than twelve models holds the one the
+  chat is on, the favourites and the ones used last (this device's, then the TUI's), and "All N
+  models…" opens a dialog: a search over name, provider, id and hint, and the chosen model's
+  efforts. A model the CLI reported without efforts offers none.
+- **Every primary agent.** `/agent` takes any primary agent `GET /agent` lists - build, plan, and
+  the ones a project or the configuration adds - not just build and plan.
+

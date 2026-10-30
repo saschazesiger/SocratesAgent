@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"syscall"
@@ -46,7 +47,8 @@ const (
 	maxImage = 20 << 20
 )
 
-// Agents a prompt can run as: OpenCode's two primary agents.
+// OpenCode's two built-in primary agents. A prompt can run as either, or as
+// any primary agent the configuration adds (GET /agent).
 const (
 	AgentBuild = "build"
 	AgentPlan  = "plan"
@@ -131,6 +133,9 @@ type Adapter struct {
 	// commands are the names GET /command listed: what Command posts to
 	// /command.
 	commands map[string]bool
+	// agents are the primary agents GET /agent listed, the ones a person can
+	// switch to (Tab in the TUI), in OpenCode's order; nil until it answered.
+	agents []ocAgent
 	// questions are OpenCode's own questions being asked, by ask id;
 	// questionsSeen every one ever asked, so that a question the event and a
 	// reconcile both bring is asked once.
@@ -593,15 +598,15 @@ func (a *Adapter) loadWindows(ctx context.Context, cl *client) {
 }
 
 // ownCommands are the commands the adapter implements itself, at the top
-// of the palette.
+// of the palette. agent's arguments are the primary agents there are.
 var ownCommands = []agent.CommandInfo{
 	{Name: "compact", Description: "Summarize the conversation to free context"},
 	{Name: "shell", Args: "<command>", Description: "Run a shell command in the working directory (same as a line starting with !)"},
-	{Name: "agent", Args: "build|plan", Description: "Plan without editing files, or build"},
+	{Name: "agent", Args: AgentBuild + "|" + AgentPlan, Description: "Plan without editing files, build, or run as another of OpenCode's agents"},
 }
 
-// loadCommands reads OpenCode's version and commands and tells the chat
-// (agent.info: the composer's palette).
+// loadCommands reads OpenCode's version, commands and primary agents and
+// tells the chat (agent.info: the composer's palette).
 func (a *Adapter) loadCommands(ctx context.Context) {
 	cl := a.client()
 	var health struct {
@@ -612,7 +617,23 @@ func (a *Adapter) loadCommands(ctx context.Context) {
 	if err := cl.call(ctx, http.MethodGet, "/command", nil, &list); err != nil {
 		log.Printf("opencode: list the commands: %v", err)
 	}
+	var all []ocAgent
+	if err := cl.call(ctx, http.MethodGet, "/agent", nil, &all); err != nil {
+		log.Printf("opencode: list the agents: %v", err)
+	}
+	primary := primaryAgents(all)
 	info := agent.AgentInfo{Agent: Harness, Version: health.Version, Commands: append([]agent.CommandInfo{}, ownCommands...)}
+	if len(primary) > 0 {
+		names := make([]string, 0, len(primary))
+		for _, ag := range primary {
+			names = append(names, ag.Name)
+		}
+		for i := range info.Commands {
+			if info.Commands[i].Name == "agent" {
+				info.Commands[i].Args = strings.Join(names, "|")
+			}
+		}
+	}
 	// One of OpenCode's commands named like one Command handles itself
 	// could never be reached.
 	taken := map[string]bool{"summarize": true, "revert": true, "unrevert": true, "fork": true}
@@ -629,9 +650,37 @@ func (a *Adapter) loadCommands(ctx context.Context) {
 	}
 	a.mu.Lock()
 	a.commands = names
+	if len(primary) > 0 {
+		a.agents = primary
+	}
 	a.mu.Unlock()
 	raw, _ := json.Marshal(info)
 	a.out.Emit(agent.Event{Type: agent.TypeAgentInfo, Content: raw})
+}
+
+// primaryAgents is the agents a chat can run as, as the TUI's agent switch
+// offers them: not a subagent (those run only as a task's), and not one of
+// the hidden ones OpenCode keeps for itself (compaction, title, summary).
+// build and plan come first, as they do there.
+func primaryAgents(all []ocAgent) []ocAgent {
+	var out []ocAgent
+	for _, ag := range all {
+		if ag.Name == "" || ag.Mode == "subagent" || ag.Hidden {
+			continue
+		}
+		out = append(out, ag)
+	}
+	rank := func(name string) int {
+		switch name {
+		case AgentBuild:
+			return 0
+		case AgentPlan:
+			return 1
+		}
+		return 2
+	}
+	sort.SliceStable(out, func(i, j int) bool { return rank(out[i].Name) < rank(out[j].Name) })
+	return out
 }
 
 // hintArgs is what a command's hints say in the palette: OpenCode names the
@@ -1132,18 +1181,43 @@ func (a *Adapter) Command(ctx context.Context, name, args string) error {
 	return a.submit(ctx, job{kind: jobCommand, name: name, args: args, display: display})
 }
 
+// setAgent makes the next prompts run as one of the primary agents: build,
+// plan, or one the configuration adds. Before OpenCode has listed them, build
+// and plan are what there is.
 func (a *Adapter) setAgent(id string) error {
-	if id != AgentBuild && id != AgentPlan {
-		return fmt.Errorf("the agent is %s or %s, not %q", AgentBuild, AgentPlan, id)
-	}
+	id = strings.TrimSpace(id)
 	a.mu.Lock()
+	known := a.agents
+	if len(known) == 0 {
+		known = []ocAgent{{Name: AgentBuild}, {Name: AgentPlan}}
+	}
+	var chosen *ocAgent
+	names := make([]string, 0, len(known))
+	for i := range known {
+		names = append(names, known[i].Name)
+		if known[i].Name == id {
+			chosen = &known[i]
+		}
+	}
+	if chosen == nil {
+		a.mu.Unlock()
+		return fmt.Errorf("the agent is one of %s, not %q", strings.Join(names, ", "), id)
+	}
 	a.agentID = id
 	a.state.Agent = id
 	a.saveState()
 	a.mu.Unlock()
-	text := "Plan mode: the agent plans and does not edit files."
-	if id == AgentBuild {
+	var text string
+	switch id {
+	case AgentPlan:
+		text = "Plan mode: the agent plans and does not edit files."
+	case AgentBuild:
 		text = "Build mode: the agent edits files and runs commands."
+	default:
+		text = "Agent " + id + "."
+		if d := strings.TrimSpace(chosen.Description); d != "" {
+			text += " " + d
+		}
 	}
 	a.out.Emit(agent.Event{Type: agent.TypeNotice, Code: NoticeAgent, Text: text, Args: id})
 	return nil

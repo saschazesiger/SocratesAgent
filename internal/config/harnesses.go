@@ -65,14 +65,15 @@ type Common struct {
 	// Binary overrides where the program is found. Empty means "look it up on
 	// PATH", which is what a normal installation wants.
 	Binary string `json:"binary,omitempty"`
-	// Models is the person's own short list: the models the new-session sheet
-	// offers for this harness, in this order, each with the effort it starts
-	// on. Empty means "offer everything the harness reports", which is what a
-	// fresh installation wants and what a four-hundred-entry list does not.
+	// Models is the person's favourites: the models the pickers offer first
+	// for this harness, in this order, each with the effort it starts on, and
+	// the first of them the one a new chat starts on. Every other model the
+	// harness reports stays on offer below them - a four-hundred-entry list is
+	// searched, not shortened.
 	Models []ModelPick `json:"models,omitempty"`
 }
 
-// ModelPick is one entry of that short list. The id is in the harness's own
+// ModelPick is one of those favourites. The id is in the harness's own
 // naming, picked from the discovered list or typed in - a typed one is not
 // checked against anything here, because the discovery may simply be older
 // than the model.
@@ -122,9 +123,9 @@ type CodexOptions struct {
 }
 
 // OpenCodeOptions is the same for OpenCode's chats. There is no default
-// effort here because OpenCode has no reasoning effort of its own: the level
-// a model runs at is part of the model id it is chosen with (provider/model),
-// which is what the Models list above already carries.
+// effort here because OpenCode's levels - its variants - are a model's own:
+// each favourite in the Models list above carries the one it starts on, and
+// any other model starts on the variant OpenCode's TUI last ran it at.
 type OpenCodeOptions struct {
 	Common
 	DefaultModel string `json:"default_model"`

@@ -59,7 +59,7 @@ const MODEL_PICKERS = [
 ];
 
 // FIELDS is every control that is one element and one path. Everything with a
-// shape of its own - the presets, the harness cards, the model short lists -
+// shape of its own - the presets, the harness cards, the favourite models -
 // is built and read below.
 const FIELDS = [
   ['orKey', 'openrouter.api_key'],
@@ -1211,10 +1211,11 @@ function optionField(harness, option) {
   return field(option.label, control, option.hint || '', id);
 }
 
-// modelList is the person's own short list for one harness: the models the
-// new-session sheet offers, in this order, each with the effort it starts on.
-// An empty list means the sheet offers everything the program reported. A
-// row moves by its grip, like an account.
+// modelList is the person's favourites for one harness: the models the
+// pickers offer first, in this order, each with the effort it starts on, the
+// first of them the one a new chat starts on. Every other model the program
+// reported stays on offer after them. A row moves by its grip, like an
+// account.
 function modelList(harness) {
   const path = optionPath(harness.id, 'models');
   const picks = () => (optionValue(harness.id, 'models') || [])
@@ -1233,8 +1234,9 @@ function modelList(harness) {
     const list = picks();
     if (!list.length) {
       rows.replaceChildren(el('p', { class: 'ds-meta', text: (harness.models || []).length
-        ? 'No short list — the new-session sheet offers every model ' + harness.label + ' reports.'
-        : 'No short list — the new-session sheet takes a model’s id typed in.' }));
+        ? 'No favourites — the pickers offer all ' + harness.models.length + ' models ' + harness.label + ' reports'
+          + (harness.recent && harness.recent.length ? ', the ones used last first.' : '.')
+        : 'No favourites — the new-session sheet takes a model’s id typed in.' }));
       return;
     }
     rows.replaceChildren(...list.map((pick) => {
@@ -1311,13 +1313,13 @@ function modelList(harness) {
   });
   render();
   return el('div', { class: 'ds-field' },
-    el('label', { class: 'ds-field__label', for: input.id, text: 'Models offered in the sheet' }),
+    el('label', { class: 'ds-field__label', for: input.id, text: 'Favourite models' }),
     rows,
     el('div', { class: 'ds-field__row' }, dictated(picker.node, input),
       el('button', { class: 'ds-btn', type: 'button', text: 'Add', id: 'add-model-' + harness.id, onclick: add })),
     el('small', { class: 'ds-field__hint', text: (harness.models || []).length
-      ? 'Pick from what ' + harness.label + ' reports or type an id, and set the effort a new session starts on. '
-        + 'Leave the list empty to offer all of them.'
+      ? 'Pick from what ' + harness.label + ' reports or type an id, and set the effort it starts on. '
+        + 'Favourites come first in the pickers, the first is what a new chat starts on, and every other model stays available.'
       : 'Type a model’s id, and set the effort a new session starts on. Leave the list empty to type one in the sheet.' }),
   );
 }

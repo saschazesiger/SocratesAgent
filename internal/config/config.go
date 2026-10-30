@@ -246,6 +246,7 @@ var WindowSizePolicies = []string{"manual", "latest", "largest"}
 // leaves the program on whatever it would have chosen for itself.
 const (
 	EffortDefault = ""
+	EffortNone    = "none" // OpenCode's variant that turns reasoning off
 	EffortMinimal = "minimal"
 	EffortLow     = "low"
 	EffortMedium  = "medium"
@@ -256,7 +257,7 @@ const (
 )
 
 // KnownEfforts is every level above, from least to most.
-var KnownEfforts = []string{EffortMinimal, EffortLow, EffortMedium, EffortHigh, EffortXHigh, EffortMax, EffortUltra}
+var KnownEfforts = []string{EffortNone, EffortMinimal, EffortLow, EffortMedium, EffortHigh, EffortXHigh, EffortMax, EffortUltra}
 
 // NormalizeEffort maps whatever is in the settings document onto one of the
 // known levels. Anything else - a typo, an empty field - becomes the

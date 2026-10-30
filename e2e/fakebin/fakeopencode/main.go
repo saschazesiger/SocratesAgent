@@ -8,6 +8,7 @@
 // user's message (script.go).
 //
 //	fakeopencode --version
+//	fakeopencode models --verbose       the models, as the catalogue reads them
 //	fakeopencode db "select 1"          creates or migrates the store
 //	fakeopencode serve --hostname 127.0.0.1 --port 0
 //
@@ -51,6 +52,12 @@ func main() {
 			os.Exit(1)
 		}
 		fmt.Println("1")
+	case "models":
+		// --verbose is the only form the catalogue asks for.
+		for _, m := range models {
+			raw, _ := json.MarshalIndent(m, "", "  ")
+			fmt.Printf("%s/%s\n%s\n", m["providerID"], m["id"], raw)
+		}
 	case "serve":
 		if err := serve(args[1:]); err != nil {
 			fmt.Fprintln(os.Stderr, "Error:", err)
@@ -313,6 +320,8 @@ func (s *srv) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.events(w, r)
 	case r.Method == http.MethodGet && path == "command":
 		writeJSON(w, 200, commands)
+	case r.Method == http.MethodGet && path == "agent":
+		writeJSON(w, 200, agents)
 	case r.Method == http.MethodGet && path == "config/providers":
 		writeJSON(w, 200, map[string]any{"providers": []any{map[string]any{"id": "fake", "models": map[string]any{
 			"model": map[string]any{"limit": map[string]any{"context": 100000}}}}}, "default": map[string]any{"fake": "model"}})

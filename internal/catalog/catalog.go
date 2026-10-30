@@ -34,7 +34,9 @@ const CacheKey = "agents_catalog"
 //
 //	1  the first shape
 //	2  efforts are every level the agent names, not the low/medium/high cut
-const cacheSchema = 3
+//	4  OpenCode's models are named, carry their variants, and are every
+//	   account's; recent and favorites
+const cacheSchema = 4
 
 // TTL is how long a discovered catalogue is treated as current. Models are
 // added to a CLI a few times a year; half an hour is generous either way.
@@ -70,12 +72,17 @@ type Agent struct {
 	DefaultEffort string            `json:"default_effort"`
 	Static        bool              `json:"static"`
 	Models        []harnesses.Model `json:"models"`
-	// Picks is the person's own short list from the dashboard, in their
-	// order, each entry filled in from Models where the id is known. Empty
-	// means the sheet offers Models instead.
+	// Picks is the person's favourites from the dashboard, in their order,
+	// each entry filled in from Models where the id is known. The pickers
+	// offer them first and every other model after them.
 	Picks []harnesses.Model `json:"picks"`
-	Notes string            `json:"notes"`
-	Error string            `json:"error"`
+	// Recent and Favorites are what the agent's own CLI keeps first: the
+	// models OpenCode's TUI used last, newest first, and the ones starred
+	// there.
+	Recent    []string `json:"recent"`
+	Favorites []string `json:"favorites"`
+	Notes     string   `json:"notes"`
+	Error     string   `json:"error"`
 }
 
 // AllEfforts is every effort level any of this agent's models offers, in
@@ -104,6 +111,8 @@ type Snapshot struct {
 	Agents      []Agent `json:"agents"`
 	RefreshedAt int64   `json:"refreshed_at"`
 	Schema      int     `json:"schema,omitempty"`
+	// Accounts is Accounts.Fingerprint as it was when the discovery began.
+	Accounts string `json:"accounts,omitempty"`
 }
 
 // Agent returns one entry of a snapshot.
@@ -133,10 +142,29 @@ type Store interface {
 	SetJSON(key string, in any) error
 }
 
+// Accounts is what the catalogue is told about the accounts the agents run
+// as. An OpenCode account's providers are whatever it signed in to, so its
+// models are only known by asking OpenCode as that account.
+type Accounts interface {
+	// Envs is the environment of every account of the agent, for a
+	// discovery. None means the service's own.
+	Envs(agent string) [][]string
+	// Fingerprint is cheap and changes whenever a discovery through the
+	// accounts would find something else: an account added or removed, a
+	// sign-in, or a CLI's own model state written.
+	Fingerprint() string
+}
+
 // Catalog is the cached answer plus the machinery to renew it.
 type Catalog struct {
 	store    Store
 	settings func() config.Settings
+
+	// accounts is what UseAccounts was given, and accountsSeen the last look
+	// at its fingerprint (see superseded).
+	accounts     Accounts
+	accountsSeen time.Time
+	accountsNow  string
 
 	mu       sync.Mutex
 	snapshot Snapshot
@@ -180,6 +208,16 @@ func New(st Store, settings func() config.Settings) *Catalog {
 	return &Catalog{store: st, settings: settings}
 }
 
+// UseAccounts makes the discoveries ask the agents as their accounts, and a
+// change to the accounts supersede the cached catalogue the way an update
+// does: answered from at once and discovered again behind the request.
+func (c *Catalog) UseAccounts(a Accounts) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.accounts = a
+	c.accountsSeen = time.Time{}
+}
+
 // WatchUpdates points the catalogue at the status file socrates-update.service
 // writes - <dataDir>/updates.json - so an update that replaced an agent's
 // binary is noticed without waiting out the TTL: the dashboard would otherwise
@@ -205,10 +243,22 @@ func (c *Catalog) WatchUpdates(path string) {
 }
 
 // superseded reports whether an update finished after the cached catalogue
-// was discovered. It is called with c.mu held.
+// was discovered, or the accounts changed since. It is called with c.mu held.
 func (c *Catalog) superseded(now time.Time) bool {
+	if len(c.snapshot.Agents) == 0 {
+		return false
+	}
+	if c.accounts != nil {
+		if now.Sub(c.accountsSeen) >= updatesEvery {
+			c.accountsSeen = now
+			c.accountsNow = c.accounts.Fingerprint()
+		}
+		if c.accountsNow != c.snapshot.Accounts {
+			return true
+		}
+	}
 	w := &c.updates
-	if w.path == "" || len(c.snapshot.Agents) == 0 {
+	if w.path == "" {
 		return false
 	}
 	if now.Sub(w.checked) >= w.every {
@@ -386,26 +436,44 @@ func (c *Catalog) discover() *discovery {
 // can run.
 func (c *Catalog) probeAll(ctx context.Context) Snapshot {
 	settings := c.settings()
+	c.mu.Lock()
+	accounts := c.accounts
+	c.mu.Unlock()
 	snap := Snapshot{RefreshedAt: time.Now().UnixMilli(), Schema: cacheSchema}
+	// The fingerprint is taken before the probes, so a sign-in while they
+	// run is a change the next look notices.
+	if accounts != nil {
+		snap.Accounts = accounts.Fingerprint()
+	}
 	for _, h := range harnesses.Registry() {
 		entry, known := settings.Harnesses.Entry(string(h.Kind()))
 		if !known {
 			continue
 		}
-		snap.Agents = append(snap.Agents, discoverOne(ctx, h, entry))
+		var envs [][]string
+		if _, ok := h.(harnesses.AccountDiscoverer); ok && accounts != nil {
+			envs = accounts.Envs(string(h.Kind()))
+		}
+		snap.Agents = append(snap.Agents, discoverOne(ctx, h, entry, envs))
 	}
 	return snap
 }
 
 // withSettings overlays the parts of an entry that are a setting rather than a
-// discovery, so switching an agent off or changing the short list in the
+// discovery, so switching an agent off or changing the favourites in the
 // dashboard takes effect without spawning anything.
 func (c *Catalog) withSettings(snap Snapshot) Snapshot {
 	settings := c.settings()
-	out := Snapshot{RefreshedAt: snap.RefreshedAt, Schema: snap.Schema, Agents: make([]Agent, 0, len(snap.Agents))}
+	out := Snapshot{RefreshedAt: snap.RefreshedAt, Schema: snap.Schema, Accounts: snap.Accounts, Agents: make([]Agent, 0, len(snap.Agents))}
 	for _, a := range snap.Agents {
 		if a.Models == nil {
 			a.Models = []harnesses.Model{}
+		}
+		if a.Recent == nil {
+			a.Recent = []string{}
+		}
+		if a.Favorites == nil {
+			a.Favorites = []string{}
 		}
 		a.Picks = []harnesses.Model{}
 		if entry, ok := settings.Harnesses.Entry(a.ID); ok {
@@ -417,12 +485,13 @@ func (c *Catalog) withSettings(snap Snapshot) Snapshot {
 	return out
 }
 
-// Picks fills the dashboard's short list in from what the agent reported: a
+// Picks fills the dashboard's favourites in from what the agent reported: a
 // known id keeps its label, hint and effort levels, and an id the agent has
 // not reported - typed in, or newer than the discovery - is offered as it was
 // typed, with every effort level when the agent has an effort mechanism at
 // all, because there is nothing to narrow it down with. The first entry is
-// the default, so the sheet starts on it.
+// the default, so the sheet starts on it (harnesses.js defaultModelFor: the
+// first one the agent reported, when it reported any).
 func Picks(a Agent, picks []config.ModelPick) []harnesses.Model {
 	out := make([]harnesses.Model, 0, len(picks))
 	for i, p := range picks {
@@ -438,8 +507,9 @@ func Picks(a Agent, picks []config.ModelPick) []harnesses.Model {
 }
 
 // discoverOne asks one harness where it is, what version it is and what it can
-// run.
-func discoverOne(ctx context.Context, h harnesses.Harness, entry config.Common) Agent {
+// run - as each of the accounts in envs, for a harness whose models depend on
+// the account.
+func discoverOne(ctx context.Context, h harnesses.Harness, entry config.Common, envs [][]string) Agent {
 	id := string(h.Kind())
 	a := Agent{
 		ID: id, Label: h.Label(), Enabled: entry.Enabled,
@@ -465,7 +535,12 @@ func discoverOne(ctx context.Context, h harnesses.Harness, entry config.Common) 
 	a.Path = path
 	a.Version = probeVersion(ctx, path, h.VersionArgs())
 
-	cat, err := h.DiscoverModels(ctx, path)
+	var cat harnesses.Catalog
+	if ad, ok := h.(harnesses.AccountDiscoverer); ok && len(envs) > 0 {
+		cat, err = ad.DiscoverModelsIn(ctx, path, envs)
+	} else {
+		cat, err = h.DiscoverModels(ctx, path)
+	}
 	switch {
 	case errors.Is(err, harnesses.ErrNoModels):
 		return a
@@ -488,6 +563,7 @@ func applyCatalog(a *Agent, cat harnesses.Catalog) {
 	if cat.Models != nil {
 		a.Models = cat.Models
 	}
+	a.Recent, a.Favorites = cat.Recent, cat.Favorites
 	// has_effort means "at least one of this agent's models offers one". It
 	// exists only so the picker can hide the effort control before a model has
 	// been chosen; once one is, that model's own list decides.

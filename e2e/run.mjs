@@ -3392,6 +3392,94 @@ async function createopencode() {
   } finally { await s.stop(); }
 }
 
+/* --------------------------------------------------- 15b. opencode-models */
+
+// Every model OpenCode can run is on offer, not a list made beforehand: the
+// sheet lists them by name with their provider, leaves out the one that
+// calls no tools, finds one by provider and words, and offers the chosen
+// model's own variants as its efforts. In a chat the menu holds the few that
+// matter and opens a search over all of them; what reaches OpenCode is the
+// model, the variant and the agent chosen, a project's own agent included.
+async function opencodemodels() {
+  const s = await start({ viewport: { width: 1280, height: 800 } });
+  const { page } = s;
+  const options = () => page.$$eval('.ds-combo__popup:not([hidden]) .ds-combo__option', (nodes) => nodes.map((n) => ({
+    value: n.dataset.value, name: n.querySelector('.ds-combo__name').innerText,
+    meta: (n.querySelector('.ds-combo__meta') || { innerText: '' }).innerText,
+  })));
+  try {
+    await setup(page, s.url);
+    await open(s);
+    await ensureNav(page);
+    await page.click('#newSession');
+    await page.waitForSelector('#newSessionSheet[open]', { timeout: 15000 });
+    await page.click('#newSessionSheet .so-settings__program[data-value="opencode"]');
+    await page.click('#nsModel .ds-combo__input');
+    await page.waitForSelector('#nsModel .ds-combo__option', { timeout: 10000 });
+    const all = await options();
+    await shot(page, 'opencodemodels-sheet');
+    const fake = all.find((o) => o.value === 'fake/model');
+    ok(all.length === 22 && !all.some((o) => o.value === 'fake/pictures') && !!fake && fake.name === 'Fake Model'
+      && /fake · 100k context · free/.test(fake.meta),
+    'the sheet offers every model OpenCode lists, by name and provider, and none that calls no tools',
+    all.length + ' · ' + JSON.stringify(fake));
+
+    await page.fill('#nsModel .ds-combo__input', 'router 07');
+    const found = await page.waitForFunction(() => document.querySelectorAll('.ds-combo__popup:not([hidden]) .ds-combo__option').length === 1,
+      null, { timeout: 5000 }).then(options, () => options());
+    ok(found.length === 1 && found[0].value === 'router/vendor/model-07',
+      'a search by provider and words finds the one model', JSON.stringify(found));
+
+    await page.fill('#nsModel .ds-combo__input', 'fake model');
+    await page.click('.ds-combo__popup:not([hidden]) .ds-combo__option[data-value="fake/model"]');
+    await page.waitForSelector('#nsEffortField:not([hidden])', { timeout: 5000 });
+    const efforts = await page.$$eval('#nsEffort .ds-chip', (n) => n.map((c) => c.dataset.value).join(','));
+    ok(efforts === ',low,high,max', 'the chosen model’s variants are its efforts', efforts);
+    await page.click('#nsEffort .ds-chip[data-value="high"]');
+
+    const was = await page.evaluate(() => location.hash.slice(1));
+    await leaveComposer(page, '');
+    await page.click('#nsStart');
+    await page.waitForSelector('#newSessionSheet[open]', { state: 'detached', timeout: 30000 });
+    await page.waitForFunction((before) => location.hash.length > 1 && location.hash.slice(1) !== before, was, { timeout: 30000 });
+    await chatUp(page);
+    const id = await page.evaluate(() => location.hash.slice(1));
+    const first = await answerTo(s, id, '/model');
+    ok(first === 'model: fake/model | variant: high | agent: build',
+      'the chat’s prompt goes to OpenCode with that model and variant', first);
+
+    await page.click('#chat .so-composer__model');
+    await page.waitForSelector('.so-model-menu:not([hidden]) [data-all-models]', { timeout: 5000 });
+    const menu = await page.$$eval('.so-model-menu [data-model]', (n) => n.map((b) => b.dataset.model));
+    const allItem = await page.$eval('.so-model-menu [data-all-models]', (n) => n.innerText);
+    ok(menu.length >= 1 && menu.length <= 8 && menu[0] === 'fake/model' && /All 22 models/.test(allItem),
+      'the menu holds the model the chat is on and the ones used last, and opens the rest', menu.join(',') + ' · ' + allItem);
+    await page.click('.so-model-menu [data-all-models]');
+    await page.waitForSelector('.so-model-search__dialog .ds-combo__input', { timeout: 5000 });
+    await page.waitForSelector('.ds-combo__popup:not([hidden]) .ds-combo__option', { timeout: 5000 });
+    await shot(page, 'opencodemodels-search');
+    await page.fill('.so-model-search__dialog .ds-combo__input', 'model 12');
+    await page.click('.ds-combo__popup:not([hidden]) .ds-combo__option[data-value="router/vendor/model-12"]');
+    const noEffort = await page.$eval('.so-model-search__effort', (n) => n.hidden);
+    ok(noEffort, 'a model without variants offers no effort', String(noEffort));
+    await page.click('.so-model-search__dialog .ds-btn--primary');
+    await page.waitForSelector('.so-model-search__dialog', { state: 'detached', timeout: 5000 });
+    const face = await page.waitForFunction(() => /Router Model 12/.test(document.querySelector('#chat .so-composer__model').innerText),
+      null, { timeout: 10000 }).then(() => true, () => false);
+    const second = await answerTo(s, id, '/model');
+    ok(face && second === 'model: router/vendor/model-12 | variant:  | agent: build',
+      'a model chosen in the search is the one the next prompt runs on', second);
+
+    await say(page, '/agent reviewer');
+    const notice = await awaitLog(page, 'Agent reviewer. Reviews the changes and edits nothing.', 10000);
+    const third = await answerTo(s, id, '/model');
+    ok(notice && third === 'model: router/vendor/model-12 | variant:  | agent: reviewer',
+      'a primary agent the project adds is one the chat can run as', third);
+    await shot(page, 'opencodemodels');
+    ok(unexpected(s.errors).length === 0, 'no console errors', unexpected(s.errors).join(' | ') || '0');
+  } finally { await s.stop(); }
+}
+
 /* --------------------------------------------------------- 16. rebootresume */
 
 // A machine that rebooted under a chat in the middle of a turn: the server,
@@ -14409,6 +14497,7 @@ const ALL = [
   ['own-codex', 'what Codex does by itself: its goal and the turns it starts for it, an image it made, a subagent that failed', owncodex],
   ['accounts-agents', 'an account of each agent reaches its CLI: its folder, its key, its home', accountsagents],
   ['createopencode', 'OpenCode over its own authenticated server: one session, resumed after a rest', createopencode],
+  ['opencode-models', 'every model OpenCode lists, searched, with its variants, and the agent a chat runs as', opencodemodels],
   ['rebootresume', 'a machine that rebooted mid-turn, and the chat that comes back on its conversation', rebootresume],
   ['lighttheme', 'the white terminal, from the painted pane to every drawn colour', lighttheme],
   ['activity-claude', 'Claude Code working, finishing, and a name that goes bold', activityclaude],

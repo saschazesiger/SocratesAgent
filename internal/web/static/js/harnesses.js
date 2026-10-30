@@ -40,7 +40,7 @@ export const CUSTOM = 'custom';
 // How a level reads on a button. A level nobody here has heard of is shown as
 // the CLI spells it: the CLI named it, so the CLI takes it.
 const EFFORT_LABELS = {
-  '': 'Default', minimal: 'Minimal', low: 'Low', medium: 'Medium', high: 'High',
+  '': 'Default', none: 'None', minimal: 'Minimal', low: 'Low', medium: 'Medium', high: 'High',
   xhigh: 'X-High', max: 'Max', ultra: 'Ultra',
 };
 
@@ -48,14 +48,15 @@ export function effortLabel(value) {
   return EFFORT_LABELS[value] || value;
 }
 
-// effortsFor is the levels to offer: the chosen model's own list, or - before
-// a model is chosen, or for one the CLI has not reported - every level any of
-// its models offers. The levels differ between harnesses (Claude Code goes up
-// to max, Codex to xhigh, OpenCode names them per model), so there is no fixed
-// row.
+// effortsFor is the levels to offer: the chosen model's own list - none for
+// a model the CLI reported without any, as OpenCode does for a model with no
+// variants - or, before a model is chosen or for one the CLI has not
+// reported, every level any of its models offers. The levels differ between
+// harnesses (Claude Code goes up to max, Codex to xhigh, OpenCode names them
+// per model), so there is no fixed row.
 export function effortsFor(id, modelId) {
   const model = modelOf(id, modelId);
-  if (model && model.efforts && model.efforts.length) return model.efforts;
+  if (model) return model.efforts || [];
   const found = harness(id);
   if (!found) return [];
   const all = [];
@@ -189,23 +190,94 @@ export function label(id) {
 // machine's answer right now. The sheet says so out loud.
 export function stale() { return fromStorage; }
 
-// offered is what the sheet shows for one harness: the short list from the
-// dashboard when there is one, otherwise everything the CLI reported.
+const RECENT_KEY = 'socrates.recentModels';
+const RECENT_MAX = 8;
+
+function readRecent() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(RECENT_KEY) || '{}');
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch { return {}; }
+}
+
+/**
+ * rememberModel puts a model at the top of this device's recent ones for a
+ * harness: what the pickers offer first after the favourites, as a CLI's own
+ * model dialog does.
+ */
+export function rememberModel(id, modelId) {
+  if (!id || !modelId) return;
+  const all = readRecent();
+  const list = Array.isArray(all[id]) ? all[id].filter((one) => one !== modelId) : [];
+  all[id] = [modelId, ...list].slice(0, RECENT_MAX);
+  try { localStorage.setItem(RECENT_KEY, JSON.stringify(all)); } catch { /* private window */ }
+}
+
+/**
+ * favorites is the ids a harness's pickers put first: the dashboard's
+ * favourites in their order, then the ones starred in the CLI's own TUI.
+ */
+export function favorites(id) {
+  const found = harness(id);
+  if (!found) return [];
+  const out = [];
+  for (const one of [...(found.picks || []).map((p) => p.id), ...(found.favorites || [])]) {
+    if (one && !out.includes(one)) out.push(one);
+  }
+  return out;
+}
+
+/**
+ * recent is the ids used last, newest first: this device's choices, then
+ * the ones the CLI's TUI used on this machine. Only models still on offer.
+ */
+export function recent(id) {
+  const found = harness(id);
+  if (!found) return [];
+  const known = new Set(offered(id).map((m) => m.id));
+  const local = readRecent()[id];
+  const out = [];
+  for (const one of [...(Array.isArray(local) ? local : []), ...(found.recent || [])]) {
+    if (one && known.has(one) && !out.includes(one)) out.push(one);
+  }
+  return out.slice(0, RECENT_MAX);
+}
+
+// offered is every model a harness can be run on: the dashboard's
+// favourites first - each as the dashboard set it up, with the effort it
+// starts on - and then everything else the CLI reported. The favourites are
+// what comes first, not all there is: a model left off them is searched for,
+// never refused.
 export function offered(id) {
   const found = harness(id);
   if (!found) return [];
-  if (found.picks && found.picks.length) return found.picks;
-  return found.models || [];
+  const picks = found.picks || [];
+  const ids = new Set(picks.map((p) => p.id));
+  return [...picks, ...(found.models || []).filter((m) => !ids.has(m.id))];
 }
 
 // modelItems is the combobox's view of one harness's models: the id is the
-// value, because that is what the server is given.
+// value, because that is what the server is given. The favourites come
+// first, then the ones used last, then the rest in the CLI's order; each
+// says which it is in its meta line.
 export function modelItems(id) {
-  return offered(id).map((model) => ({
-    value: model.id,
-    label: model.label || model.id,
-    hint: model.hint || '',
-    group: model.group || '',
+  const all = offered(id);
+  const starred = favorites(id);
+  const used = recent(id).filter((one) => !starred.includes(one));
+  const rank = (m) => {
+    const fav = starred.indexOf(m.id);
+    if (fav >= 0) return fav;
+    const at = used.indexOf(m.id);
+    return at >= 0 ? starred.length + at : Infinity;
+  };
+  const ordered = all.map((m, i) => ({ m, i, r: rank(m) }))
+    .sort((a, b) => (a.r === b.r ? a.i - b.i : a.r - b.r));
+  return ordered.map(({ m }) => ({
+    value: m.id,
+    label: m.label || m.id,
+    hint: m.hint || '',
+    group: m.group || '',
+    tag: starred.includes(m.id) ? 'Favourite' : (used.includes(m.id) ? 'Recent' : ''),
   }));
 }
 
@@ -235,12 +307,17 @@ function modelByWords(id, typed) {
 }
 
 // defaultModelFor is what the picker starts on: the first of the dashboard's
-// short list, else what the CLI says is its default, else the entry that flags
-// itself as one.
+// favourites the CLI reports, else the dashboard's default model or what the
+// CLI says is its default (OpenCode: the model its TUI used last), else the
+// entry that flags itself as one. A favourite typed in that the CLI does not
+// report is offered but not started on unasked - it may be a typo; with no
+// list at all there is nothing to check it against.
 export function defaultModelFor(id) {
   const found = harness(id);
   if (!found) return '';
-  if (found.picks && found.picks.length) return found.picks[0].id;
+  const models = found.models || [];
+  const picks = (found.picks || []).filter((p) => !models.length || models.some((m) => m.id === p.id));
+  if (picks.length) return picks[0].id;
   if (found.default_model) return found.default_model;
   const flagged = (found.models || []).find((m) => m.default);
   return flagged ? flagged.id : '';
@@ -1006,7 +1083,9 @@ export async function openNewSessionSheet({ workdir = '' } = {}) {
         toast(missing);
         return;
       }
-      finish({ ...form.value(), chat: isChat(form.harness()) });
+      const chosen = form.value();
+      rememberModel(chosen.harness, chosen.model);
+      finish({ ...chosen, chat: isChat(form.harness()) });
     }, on);
     sheet.addEventListener('close', () => finish(null), on);
     // It opens on the program chosen, not on its Close: the first focusable

@@ -56,6 +56,8 @@ import (
 //	/dropstream      text, every /event stream is closed, then more text that
 //	                 only a reader of GET …/message sees
 //	/whoami          "account: <identity>"
+//	/model           "model: <provider/model> | variant: <v> | agent: <a>",
+//	                 what the prompt was sent with
 //	/mcp             the local MCP servers of the config: connected or not,
 //	                 their tools and the start of their instructions
 //	/mcpinstructions the "socrates" server's instructions, whole
@@ -77,6 +79,42 @@ var commands = []map[string]any{
 	{"name": "hello", "description": "say hello", "source": "command", "template": "hello $1 and $2", "hints": []string{"$1", "$2"}},
 	// A project's command named like one the adapter has itself.
 	{"name": "shell", "description": "a project's shell command", "source": "command", "template": "shell"},
+}
+
+// agents is GET /agent: the two built-in primary agents, one a project
+// adds, a subagent and a hidden one, as 1.19.4 lists them.
+var agents = []map[string]any{
+	{"name": "build", "mode": "primary", "native": true, "description": "The default agent."},
+	{"name": "general", "mode": "subagent", "native": true, "description": "General-purpose agent."},
+	{"name": "reviewer", "mode": "primary", "description": "Reviews the changes and edits nothing."},
+	{"name": "plan", "mode": "primary", "native": true, "description": "Plan mode. Disallows all edit tools."},
+	{"name": "title", "mode": "primary", "native": true, "hidden": true},
+}
+
+// models is what `opencode models --verbose` lists: the provider fake's
+// models, one with variants, and one that calls no tools; and twenty of a
+// second provider, so that a picker has more than a menu holds.
+var models = append([]map[string]any{
+	{"id": "model", "providerID": "fake", "name": "Fake Model", "status": "active",
+		"cost": map[string]any{"input": 0, "output": 0}, "limit": map[string]any{"context": 100000},
+		"capabilities": map[string]any{"toolcall": true, "reasoning": true},
+		"variants":     map[string]any{"low": map[string]any{}, "high": map[string]any{}, "max": map[string]any{}}},
+	{"id": "large", "providerID": "fake", "name": "Fake Large", "status": "active",
+		"cost": map[string]any{"input": 3, "output": 15}, "limit": map[string]any{"context": 1000000},
+		"capabilities": map[string]any{"toolcall": true, "input": map[string]any{"image": true}}},
+	{"id": "pictures", "providerID": "fake", "name": "Fake Pictures", "status": "active",
+		"capabilities": map[string]any{"toolcall": false}},
+}, routerModels()...)
+
+func routerModels() []map[string]any {
+	var out []map[string]any
+	for i := 1; i <= 20; i++ {
+		out = append(out, map[string]any{"id": fmt.Sprintf("vendor/model-%02d", i), "providerID": "router",
+			"name": fmt.Sprintf("Router Model %02d", i), "status": "active",
+			"cost": map[string]any{"input": 1, "output": 2}, "limit": map[string]any{"context": 200000},
+			"capabilities": map[string]any{"toolcall": true}})
+	}
+	return out
 }
 
 type promptBody struct {
@@ -129,6 +167,19 @@ func (s *srv) prompt(sid string, body promptBody) *run {
 		}
 	}
 	s.userMessage(sid, body.MessageID, body.Agent, parts)
+	// What the prompt was sent with, for /model.
+	_ = withStore(func(st *store) error {
+		msgs := st.Sessions[sid].Messages
+		info := msgs[len(msgs)-1].Info
+		var ref map[string]any
+		if json.Unmarshal(body.Model, &ref) == nil && ref != nil {
+			info["model"] = ref
+		}
+		if body.Variant != "" {
+			info["variant"] = body.Variant
+		}
+		return nil
+	})
 	return s.ensureRun(sid)
 }
 
@@ -184,7 +235,7 @@ func (s *srv) loop(sid string, r *run) {
 		if last == nil || answered(sess, last.Info["id"].(string)) {
 			return
 		}
-		t := &turn{s: s, sid: sid, run: r, user: last.Info["id"].(string), n: turns}
+		t := &turn{s: s, sid: sid, run: r, user: last.Info["id"].(string), n: turns, info: last.Info}
 		if err := t.play(textOf(last)); err != nil {
 			t.aborted()
 			return
@@ -229,6 +280,9 @@ type turn struct {
 	pause time.Duration
 	// reasoned is the reasoning tokens the turn's last step reports.
 	reasoned int
+	// info is the user message's: the model, variant and agent it was sent
+	// with.
+	info map[string]any
 }
 
 var errAborted = errors.New("aborted")
@@ -560,6 +614,14 @@ func (t *turn) play(text string) error {
 		}
 	case "/whoami":
 		if err := t.say([]string{"account: " + identity()}, 5*time.Millisecond); err != nil {
+			return err
+		}
+	case "/model":
+		// What the prompt was sent with: provider/model, variant, agent.
+		ref, _ := t.info["model"].(map[string]any)
+		variant, _ := t.info["variant"].(string)
+		reply := fmt.Sprintf("model: %v/%v | variant: %s | agent: %v", ref["providerID"], ref["modelID"], variant, t.info["agent"])
+		if err := t.say([]string{reply}, 5*time.Millisecond); err != nil {
 			return err
 		}
 	case "/where":

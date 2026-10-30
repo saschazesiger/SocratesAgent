@@ -14,8 +14,9 @@
 //     connection is back, exactly once, and is on screen as "Not sent yet"
 //     until then.
 
-import { api, toast, errorMessage, clientKey, onWake, alertDialog } from './api.js';
-import { html, raw, icon, morph, faces, showOverlay, hideOverlay } from './ui.js';
+import { api, el, toast, errorMessage, clientKey, onWake, alertDialog, openDialog } from './api.js';
+import { DS, html, raw, icon, morph, faces, showOverlay, hideOverlay } from './ui.js';
+import { combobox } from './combobox.js';
 import * as harnesses from './harnesses.js';
 import { guard, touchScreen, micButton } from './keyboard.js';
 import { queueMessage, queueCommand, queueModel, pendingModel, settled, chatOutbox, failedItem } from './chatoutbox.js';
@@ -506,19 +507,55 @@ export function mountComposer(host, ctx) {
   function models() {
     const harness = ctx.session().harness;
     const offered = harnesses.offered(harness);
-    if (offered.length) return offered.map((m) => ({ id: m.id, label: m.label || m.id, efforts: harnesses.effortsFor(harness, m.id) }));
+    if (offered.length) {
+      return offered.map((m) => ({
+        id: m.id, label: m.label || m.id, efforts: harnesses.effortsFor(harness, m.id), default_effort: m.default_effort || '',
+      }));
+    }
     const chat = ctx.chat();
     const info = chat && chat.info && Array.isArray(chat.info.models) ? chat.info.models : [];
-    return info.map((m) => ({ id: m.id, label: m.label || m.id, efforts: m.efforts || [] }));
+    return info.map((m) => ({ id: m.id, label: m.label || m.id, efforts: m.efforts || [], default_effort: m.default_effort || '' }));
+  }
+
+  // effortAfter is the effort a model is switched to with: the one the chat
+  // is on when the model has it, else the model's own starting one, else the
+  // middle of its levels - never "none" by accident, which turns an OpenCode
+  // model's reasoning off.
+  function effortAfter(model, effort) {
+    const levels = (model && model.efforts) || [];
+    if (!levels.length || levels.includes(effort)) return levels.length ? effort : '';
+    if (model.default_effort && levels.includes(model.default_effort)) return model.default_effort;
+    for (const want of ['medium', 'high', 'low']) if (levels.includes(want)) return want;
+    return levels.find((one) => one !== 'none') || '';
+  }
+
+  // A menu holds a dozen models; more than that and it holds the few that
+  // matter - the one the chat is on, the favourites, the ones used last -
+  // and opens the search for the rest (chooseModel).
+  const MENU_MODELS = 12;
+  const MENU_SHORT = 8;
+
+  function shortList(list, nowId) {
+    const harness = ctx.session().harness;
+    const ids = [nowId, ...harnesses.favorites(harness), ...harnesses.recent(harness)];
+    const out = [];
+    for (const one of ids) {
+      const m = list.find((entry) => entry.id === one);
+      if (m && !out.includes(m)) out.push(m);
+      if (out.length >= MENU_SHORT) break;
+    }
+    return out;
   }
 
   let menu = null;
   function openModels() {
     const now = current();
     const nowId = canonical(now.model);
-    const list = models();
-    if (!list.length) { toast('This agent has no models to choose from.'); return; }
-    const chosen = list.find((m) => m.id === nowId) || list[0];
+    const all = models();
+    if (!all.length) { toast('This agent has no models to choose from.'); return; }
+    const many = all.length > MENU_MODELS;
+    const list = many ? shortList(all, nowId) : all;
+    const chosen = all.find((m) => m.id === nowId) || list[0] || all[0];
     if (menu) menu.remove();
     menu = document.createElement('div');
     menu.className = 'ds-menu so-model-menu';
@@ -531,6 +568,8 @@ export function mountComposer(host, ctx) {
     const usageHere = !usage.hidden && getComputedStyle(usage).display === 'none';
     // It opens on the model the chat is on (autofocus), not on the first.
     morph(menu, html`${list.map((m) => html`<button class="ds-menu__item" role="menuitemradio" type="button" aria-checked="${m.id === nowId ? 'true' : 'false'}"${m.id === nowId ? html` autofocus` : ''} data-model="${m.id}">${raw(icon('check', 20, 'ds-menu__check'))}<span class="ds-menu__label">${m.label}</span></button>`)}${
+      many ? html`<button class="ds-menu__item" role="menuitem" type="button" data-all-models${list.length ? '' : html` autofocus`}>${raw(icon('search', 20))}<span class="ds-menu__label">${'All ' + all.length + ' models…'}</span></button>` : ''
+    }${
       chosen.efforts && chosen.efforts.length ? html`<div class="ds-menu__divider" role="separator"></div>${chosen.efforts.map((e) => html`<button class="ds-menu__item" role="menuitemradio" type="button" aria-checked="${e === now.effort ? 'true' : 'false'}" data-effort="${e}">${raw(icon('check', 20, 'ds-menu__check'))}<span class="ds-menu__label">${'Effort: ' + harnesses.effortLabel(e)}</span></button>`)}` : ''
     }${usageHere ? html`<div class="ds-menu__divider" role="separator"></div><button class="ds-menu__item" role="menuitem" type="button" data-usage>${raw(icon('info', 20))}<span class="ds-menu__label">Usage of this chat</span></button>` : ''}`);
     menu.addEventListener('click', (event) => {
@@ -539,17 +578,79 @@ export function mountComposer(host, ctx) {
         showUsage(modelBtn);
         return;
       }
+      if (event.target.closest('[data-all-models]')) {
+        hideOverlay(menu);
+        chooseModel(all);
+        return;
+      }
       const item = event.target.closest('[data-model], [data-effort]');
       if (!item) return;
       const next = { ...now };
       if (item.dataset.model) {
         next.model = item.dataset.model;
-        const m = list.find((one) => one.id === next.model);
-        if (m && m.efforts && m.efforts.length && !m.efforts.includes(next.effort)) next.effort = m.efforts.includes('medium') ? 'medium' : m.efforts[0];
+        next.effort = effortAfter(all.find((one) => one.id === next.model), next.effort);
       } else next.effort = item.dataset.effort;
       setModel(next);
     });
     showOverlay(menu, modelBtn);
+  }
+
+  // chooseModel is every model of the agent in a dialog: a search field over
+  // names, providers, ids and what each costs - the favourites and the ones
+  // used last at the top before anything is typed - and the chosen model's
+  // efforts as chips under it. An id typed that is not on the list is sent
+  // as it was typed: the CLI may know a model its listing does not.
+  function chooseModel(all) {
+    const harness = ctx.session().harness;
+    const now = current();
+    const pick = { model: canonical(now.model), effort: now.effort };
+    const byId = (value) => all.find((m) => m.id === value) || null;
+    const effortRow = el('div', { class: 'ds-chips', role: 'radiogroup', 'aria-label': 'Effort' });
+    const effortField = el('fieldset', { class: 'ds-field so-model-search__effort' },
+      el('legend', { class: 'ds-field__label', text: 'Effort' }), effortRow);
+    const picker = combobox({
+      value: pick.model,
+      items: () => harnesses.modelItems(harness),
+      placeholder: 'Search by name, provider or id',
+      display: (value) => { const m = byId(value); return m ? m.label : value; },
+      onChange: (value) => {
+        const typed = String(value || '').trim();
+        const named = all.find((m) => m.id === typed || m.label.toLowerCase() === typed.toLowerCase());
+        pick.model = named ? named.id : typed;
+        pick.effort = effortAfter(byId(pick.model), pick.effort);
+        drawEffort();
+      },
+    });
+    picker.input.id = 'modelSearch-' + id;
+    picker.input.setAttribute('autofocus', '');
+    const field = el('div', { class: 'so-model-search' },
+      el('div', { class: 'ds-field' }, el('label', { class: 'ds-field__label', for: picker.input.id, text: 'Model' }), picker.node),
+      effortField);
+    function drawEffort() {
+      const levels = (byId(pick.model) || {}).efforts || [];
+      effortField.hidden = !levels.length;
+      morph(effortRow, html`${levels.map((value) => html`<label class="ds-chip" data-value="${value}" data-ds-key="${'effort-' + value}"><input class="ds-chip__input" type="radio" name="${'modelSearchEffort-' + id}" value="${value}"><span class="ds-chip__body">${raw(icon('check', 18, 'ds-chip__check'))}<span>${harnesses.effortLabel(value)}</span></span></label>`)}`);
+      for (const input of effortRow.querySelectorAll('input')) input.checked = input.value === pick.effort;
+    }
+    effortRow.addEventListener('change', (event) => { pick.effort = event.target.value; });
+    drawEffort();
+    const cancel = el('button', { class: 'ds-btn ds-btn--text', type: 'button', 'data-close': true, text: 'Cancel' });
+    const use = el('button', { class: 'ds-btn ds-btn--primary', type: 'button', text: 'Use this model' });
+    const { dialog } = openDialog({ title: 'Model', field, actions: [cancel, use], opener: modelBtn });
+    dialog.classList.add('so-model-search__dialog');
+    use.addEventListener('click', () => {
+      if (!pick.model) { picker.focus(); return; }
+      dialog.answer(true);
+      DS.overlay.close(dialog);
+      setModel({ model: pick.model, effort: pick.effort });
+    });
+    // Enter takes the highlighted entry while the list is open (the
+    // combobox's), and with it closed uses the model, as the button does.
+    picker.input.addEventListener('keydown', (event) => {
+      if (event.key !== 'Enter' || event.isComposing || picker.isOpen()) return;
+      event.preventDefault();
+      use.click();
+    });
   }
 
   // setModel goes through the Outbox like a message: chosen offline, it is
@@ -559,6 +660,7 @@ export function mountComposer(host, ctx) {
     const now = current();
     if (menu && !menu.hidden) hideOverlay(menu);
     if (canonical(next.model) === canonical(now.model) && next.effort === now.effort) return;
+    harnesses.rememberModel(ctx.session().harness, canonical(next.model));
     const clientId = queueModel(id, next.model, next.effort);
     paint();
     settled(clientId).catch((err) => {

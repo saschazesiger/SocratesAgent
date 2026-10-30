@@ -928,7 +928,9 @@ the adapter's life; one whose title names MCP ("MCP Authentication Required") re
 instead, whose notice says it.
 
 **Commands** (`Command(name, args)`): `compact` (`/summarize`, a turn), `shell <cmd>`, `agent
-build|plan` (for every following prompt, kept across hosts; `notice{agent}`), `revert <message>`
+<name>` - build, plan or any other primary agent `GET /agent` lists (not a subagent, not a hidden
+one; the palette's `args` name them) - (for every following prompt, kept across hosts;
+`notice{agent}`), `revert <message>`
 (`notice{reverted, message_id}`), `unrevert` (`notice{unreverted}`), `fork [<message>]`
 (`notice{forked, conversation_id}` — a new chat made with it as its `cli_session_id` resumes it,
 its history rebuilt), and any name from `GET /command` (a turn whose user message is `/name args`). `agent.info`

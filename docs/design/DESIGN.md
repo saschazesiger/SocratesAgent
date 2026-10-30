@@ -842,7 +842,7 @@ type Common struct {
     Binary    string   `json:"binary"`     // "" = look up on PATH
     ExtraArgs []string `json:"extra_args"` // raw, appended verbatim, start-only
     ExtraEnv  []string `json:"extra_env"`  // raw "KEY=VALUE", start-only
-    Models    []ModelPick `json:"models"`  // the short list offered in the new-session sheet
+    Models    []ModelPick `json:"models"`  // the favourites, offered first; every other model after them
 }
 ```
 
@@ -1652,7 +1652,7 @@ deliberately **not** offered.
 | `shell` | none; no model step in the sheet | — |
 | `claude` | the existing static curated list in `internal/harness/claude/discover.go`, moved to `internal/harnesses/claude_models.go`. Keep `Catalog.Static = true`. | free |
 | `codex` | `codex debug models --json`, a plain subprocess with a 20 s timeout ✅ — **replaces** the current `codex app-server` JSON-RPC handshake, which is far heavier and exists only because the old adapter needed the app-server anyway. | one short subprocess |
-| `opencode` | `opencode models --json` if it supports `--json`, else parse `opencode models` [V]. 20 s timeout. | one short subprocess |
+| `opencode` | `opencode models --verbose` once per OpenCode account, in its environment (names, providers, context, cost, variants as efforts; no tool-less or deprecated models), merged; the TUI's `model.json` gives recent, favourites and the default. Falls back to `--json`, then the plain listing [V]. 20 s timeout each. | one short subprocess per account |
 
 `internal/harness/{claude,codex,opencode}` — the protocol adapters — are deleted (§G). Only the
 model lists survive, as plain functions.

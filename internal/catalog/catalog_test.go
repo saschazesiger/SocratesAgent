@@ -580,3 +580,76 @@ func TestTheStatusFileIsNotStattedOnEveryRequest(t *testing.T) {
 		t.Fatal("the file was not looked at again after the interval")
 	}
 }
+
+// fakeAccounts is two OpenCode accounts as the server would describe them:
+// each one's environment, and a fingerprint the test moves by hand.
+type fakeAccounts struct {
+	mu   sync.Mutex
+	envs [][]string
+	fp   string
+}
+
+func (f *fakeAccounts) Envs(agent string) [][]string {
+	if agent != config.HarnessOpenCode {
+		return nil
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.envs
+}
+
+func (f *fakeAccounts) Fingerprint() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.fp
+}
+
+// OpenCode's models are listed as each of its accounts, and a change to the
+// accounts - a sign-in, a new key - is noticed the way an update is: the
+// cached answer at once, and the new one discovered behind it.
+func TestOpenCodeIsAskedAsEveryAccount(t *testing.T) {
+	onlyClaude(t)
+	bin := os.Getenv("PATH")
+	script := "#!/bin/sh\ncase \"$1\" in\n--version) echo 1.19.4-test ;;\nmodels) cat \"$LISTING\" ;;\n*) exit 2 ;;\nesac\n"
+	if err := os.WriteFile(filepath.Join(bin, "opencode"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	listing := func(name, provider string) []string {
+		path := filepath.Join(dir, name)
+		body := fmt.Sprintf("%s/m\n{\"id\": \"m\", \"providerID\": %q, \"name\": \"M of %s\", \"capabilities\": {\"toolcall\": true}}\n", provider, provider, provider)
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return []string{"PATH=/usr/bin:/bin", "LISTING=" + path, "XDG_STATE_HOME=" + filepath.Join(dir, name+"-state")}
+	}
+	accounts := &fakeAccounts{envs: [][]string{listing("one", "alpha")}, fp: "one"}
+	c := New(newStore(), settingsFn(config.Default()))
+	c.UseAccounts(accounts)
+	ids := func(snap Snapshot) string {
+		var out []string
+		for _, m := range mustAgent(t, snap, "opencode").Models {
+			out = append(out, m.ID+"="+m.Label)
+		}
+		return strings.Join(out, ",")
+	}
+	if got := ids(c.Refresh(context.Background())); got != "alpha/m=M of alpha" {
+		t.Fatalf("models = %q", got)
+	}
+
+	accounts.mu.Lock()
+	accounts.envs = append(accounts.envs, listing("two", "beta"))
+	accounts.fp = "one,two"
+	accounts.mu.Unlock()
+	c.mu.Lock()
+	c.accountsSeen = time.Time{}
+	c.mu.Unlock()
+	if got := ids(c.Get(context.Background())); got != "alpha/m=M of alpha" {
+		t.Fatalf("the request waited for the discovery: %q", got)
+	}
+	settle(t, c)
+	snap, _ := c.Cached()
+	if got := ids(snap); got != "alpha/m=M of alpha,beta/m=M of beta" {
+		t.Fatalf("the second account's models are not there: %q", got)
+	}
+}

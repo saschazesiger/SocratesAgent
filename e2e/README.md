@@ -60,11 +60,13 @@ What a message makes them do is the script in each package's comment (and
 docs/design/AGENT-HOST.md §5 and §8): `/stream`, `/slow`, `/tool`, `/edit`,
 `/todo`, `/bg`, `/plan`, `/askuser`, `/whoami`, `/crash`, `/argv` and the rest;
 anything else is answered "you said: …". They answer `--version`; fakeclaude's
-models come from the catalogue, while fakecodex and fakeopencode list none
-(`codex debug models` and `opencode models` exit 2), so in the suite the sheet
-offers Codex and OpenCode with an empty model field: an id typed in, or nothing
-for the CLI's own default, with Admin and the sheet saying the listing failed
-(the program's own error behind the "i"). The scenarios assert against what the fakes say back — the command line
+models come from the catalogue, fakeopencode lists twenty-three with `opencode
+models --verbose` (the `fake` provider's three, one of which calls no tools, and
+twenty of a `router` provider, more than a menu holds), while fakecodex lists
+none (`codex debug models` exits 2), so in the suite the sheet offers Codex with
+an empty model field: an id typed in, or nothing for the CLI's own default, with
+Admin and the sheet saying the listing failed (the program's own error behind
+the "i"). The scenarios assert against what the fakes say back — the command line
 they were started with, the account they found, the answer ask_user returned.
 
 The chat scenarios that need a richer script (Markdown of every kind, a
@@ -212,6 +214,7 @@ touch mode, except `options`, which measures the narrowest phone in use,
 | `own-codex` | what Codex does by itself: a goal the model sets is a line, the turn Codex then starts by itself opens with the goal it goes on toward and its end says what it used; an image it makes is drawn from its file with its prompt; a subagent whose turn failed ends failed, with why |
 | `accounts-agents` | an account reaches its agent's CLI: a second Claude Code account (with Ultracode) runs with its own `CLAUDE_CONFIG_DIR` and key, a Codex key is signed in by codex into the account's `CODEX_HOME`, an OpenCode key reaches its server; Info names the account, and an account is not deleted while a chat runs on it |
 | `createopencode` | one `opencode serve` per chat on a port and with a password of its own, spoken to over its authenticated API, its session kept and gone on with after the chat is filed as done; what a shell command of a step changed shown as Changes beside the edit diffs, a warning toast said once, a subagent's retry and error inside its task |
+| `opencode-models` | every model `opencode models --verbose` lists is in the sheet by its name, with its provider, context and price, and none that calls no tools; a search by provider and words finds one; a model's variants are its efforts; in a chat the model menu holds the few that matter and "All N models…" opens the search; the model, variant and agent chosen - a project's own primary agent included - are what the prompt reaches OpenCode with |
 | `rebootresume` | the server, every agent host and tmux gone at once mid-turn: the turn is closed as interrupted, the chat says once that it was resumed, the next message goes to Claude Code started again on its conversation, and the Shell is a working shell again when opened |
 | `lighttheme` | the white pane, and all sixteen ANSI colours a Shell prints drawn at 4.5:1 or better |
 | `activity-claude`, `activity-codex`, `activity-opencode` | each agent's chat working (a turning ring), finishing while nobody is looking, and the name that goes bold |

@@ -226,6 +226,15 @@ type ocCommand struct {
 	Hints       []string `json:"hints,omitempty"`
 }
 
+// ocAgent is one entry of GET /agent.
+type ocAgent struct {
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	// Mode is primary, subagent or all.
+	Mode   string `json:"mode,omitempty"`
+	Hidden bool   `json:"hidden,omitempty"`
+}
+
 // ocProviders is GET /config/providers, for the models' context windows.
 type ocProviders struct {
 	Providers []struct {

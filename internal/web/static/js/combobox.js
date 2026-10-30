@@ -35,7 +35,7 @@ function keepFocus(part) {
  *
  * options.value        current value
  * options.onChange     called with the new value
- * options.items        () => [{value, label, hint, group}]
+ * options.items        () => [{value, label, hint, group, tag}]
  * options.placeholder  shown while empty
  * options.strict       only a listed entry is a value; what is typed filters
  *                      the list and nothing else. A model catalogue is open -
@@ -126,8 +126,10 @@ export function combobox(options = {}) {
     if (notify) onChange(current);
   }
 
-  // matches ranks entries: an id that starts with the query beats one that
-  // merely contains it, so typing "claude" puts the Claude models on top.
+  // matches ranks entries: an id that starts with the query beats a name
+  // that does, which beats one that merely contains it, so typing "claude"
+  // puts the Claude models on top. Every word has to be somewhere in the
+  // id, the name, the group or the hint: "openrouter free", "gpt 1M".
   function matches(query) {
     const all = items() || [];
     total = all.length;
@@ -136,12 +138,15 @@ export function combobox(options = {}) {
     const words = q.split(/\s+/);
     const scored = [];
     for (const item of all) {
-      const haystack = ((item.value || '') + ' ' + (item.label || '')).toLowerCase();
+      const haystack = [item.value, item.label, item.group, item.hint, item.tag].join(' ').toLowerCase();
       if (!words.every((word) => haystack.includes(word))) continue;
       const value = (item.value || '').toLowerCase();
-      let score = 2;
-      if (value === q) score = 0;
-      else if (value.startsWith(q)) score = 1;
+      const name = (item.label || '').toLowerCase();
+      let score = 4;
+      if (value === q || name === q) score = 0;
+      else if (value.startsWith(q) || value.split('/').pop().startsWith(q)) score = 1;
+      else if (name.startsWith(q)) score = 2;
+      else if (name.includes(q)) score = 3;
       scored.push({ item, score });
     }
     scored.sort((a, b) => a.score - b.score);
@@ -149,13 +154,14 @@ export function combobox(options = {}) {
   }
 
   // render draws the filtered entries. The group an entry belongs to is said
-  // in its meta line ("Anthropic · 200k"): DS has no group heading in a
-  // listbox, and an uppercase eyebrow is not its style.
+  // in its meta line ("Anthropic · 200k"), after what marks it out
+  // ("Favourite"): DS has no group heading in a listbox, and an uppercase
+  // eyebrow is not its style.
   function render() {
     // Nothing matches: the list hides and the popup stays with its status line.
     list.hidden = !filtered.length;
     morph(list, filtered.map((item, index) => {
-      const meta = [item.group, item.hint].filter(Boolean).join(' · ');
+      const meta = [item.tag, item.group, item.hint].filter(Boolean).join(' · ');
       return html`<li class="ds-combo__option" id="${optionId(item.value)}" role="option" data-value="${item.value}" data-ds-key="${item.value}" aria-selected="${item.value === current ? 'true' : 'false'}"${index === active ? html` data-active` : ''}><span class="ds-combo__name">${item.label || item.value}</span>${meta ? html`<span class="ds-combo__meta">${meta}</span>` : ''}</li>`;
     }).join(''));
     status.textContent = filtered.length

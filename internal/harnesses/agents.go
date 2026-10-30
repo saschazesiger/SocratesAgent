@@ -44,7 +44,21 @@ func (OpenCode) Label() string         { return "OpenCode" }
 func (OpenCode) DefaultBinary() string { return "opencode" }
 func (OpenCode) VersionArgs() []string { return []string{"--version"} }
 
-// DiscoverModels asks the binary what it can run; see opencode_models.go.
+// DiscoverModels asks the binary what it can run in the service's own
+// environment; see opencode_models.go.
 func (OpenCode) DiscoverModels(ctx context.Context, bin string) (Catalog, error) {
-	return openCodeModels(ctx, bin)
+	return openCodeModels(ctx, bin, nil)
+}
+
+// DiscoverModelsIn asks it once in each of the accounts' environments, whose
+// credentials decide which providers - and so which models - there are.
+func (OpenCode) DiscoverModelsIn(ctx context.Context, bin string, envs [][]string) (Catalog, error) {
+	return openCodeModels(ctx, bin, envs)
+}
+
+// AccountDiscoverer is a harness whose model list depends on the account it
+// runs as: OpenCode, whose providers are whatever each account signed in to.
+// The catalogue hands it every account's environment (catalog.Accounts).
+type AccountDiscoverer interface {
+	DiscoverModelsIn(ctx context.Context, bin string, envs [][]string) (Catalog, error)
 }

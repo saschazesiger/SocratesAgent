@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"syscall"
 
@@ -55,4 +56,49 @@ func SignInTerminal(ctx context.Context, dataDir, account string, env []string, 
 		}
 	}
 	return bin, vars, nil
+}
+
+// ModelsEnv is the environment `opencode models` runs in to list what one
+// account can run: the account's environment (internal/accounts.Env, with
+// its key's variables for an API-key account) put on the layout as that
+// account, so the providers are the ones its auth.json and key connect, and
+// the TUI state read beside it (model.json) is the account's.
+//
+// Its database is a scratch one in the shared cache, not the chats': a
+// listing migrates the database it is pointed at, and the shared one is only
+// ever migrated under Migrate's lock.
+func ModelsEnv(dataDir, account string, env []string) ([]string, error) {
+	if account == "" {
+		account = DefaultAccount
+	}
+	layout := NewLayout(dataDir)
+	if err := layout.PrepareAccount(account); err != nil {
+		return nil, err
+	}
+	out := processEnv(env, layout, account, "", nil)
+	// processEnv is a server's; a listing wants none of the server's
+	// variables, and the shared database is not its to migrate.
+	kept := out[:0]
+	for _, kv := range out {
+		key, _, _ := strings.Cut(kv, "=")
+		switch key {
+		case "OPENCODE_SERVER_USERNAME", "OPENCODE_SERVER_PASSWORD", "OPENCODE_CONFIG_CONTENT", "OPENCODE_DB",
+			// A listing is what refreshes the models.dev catalogue the chats,
+			// which start offline-safe, read from the shared cache.
+			"OPENCODE_DISABLE_MODELS_FETCH":
+			continue
+		}
+		kept = append(kept, kv)
+	}
+	return append(kept, "OPENCODE_DB="+filepath.Join(layout.CacheHome(), "models-probe.db")), nil
+}
+
+// ModelsWatched is the files of an account whose change changes what
+// ModelsEnv's listing finds: its credentials, and the TUI's model state.
+func ModelsWatched(dataDir, account string) []string {
+	if account == "" {
+		account = DefaultAccount
+	}
+	layout := NewLayout(dataDir)
+	return []string{layout.AuthFile(account), filepath.Join(layout.AccountHome(account), "state", "opencode", "model.json")}
 }
