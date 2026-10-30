@@ -9531,8 +9531,10 @@ async function homereconnect() {
     const summary = await awaitHome(s.page, (h) => h.rows.some((r) => r.id === id && r.summary === HOME_QUESTION && r.answer), 20000);
     ok(summary.ok, 'the new server has the question from the chat’s journal, its words on the card', took(summary));
 
+    // A chat made with no first message is Not started (its own card since
+    // Home grew one), not Ready.
     const fresh = await makeChat(s, 'claude', { title: 'Made after the restart' });
-    const counted = await awaitHome(s.page, (h) => h.counts.ready === 1, 10000);
+    const counted = await awaitHome(s.page, (h) => h.counts.unstarted === 1, 10000);
     ok(counted.ok, 'a session made after the restart is counted live', JSON.stringify(counted.seen.counts) + ' ' + fresh);
     ok(await s.page.evaluate(() => window.__sameHome === true), 'all of it without a reload', 'same page');
 
