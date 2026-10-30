@@ -4043,6 +4043,16 @@ async function design() {
     });
     ok(dir.combo && dir.segs === 0 && dir.options.includes('dynamic') && dir.value === 'Dynamic',
       'the working directory is a dropdown, not a row of cells', JSON.stringify(dir));
+    // A press on the list keeps the focus on the field also when it comes as
+    // mouse events alone: WebDriver's tap in iOS Safari sends no pointerdown,
+    // and a mousedown that moved the focus closed the list on blur before
+    // its click chose anything (B-2).
+    const pressKept = await s.page.evaluate(() => {
+      const host = document.getElementById('nsDir');
+      const press = (n) => !n.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+      return { option: press(host.querySelector('.ds-combo__option')), toggle: press(host.querySelector('.ds-combo__toggle')) };
+    });
+    ok(pressKept.option && pressKept.toggle, 'a mouse-only press on the list or its chevron keeps the focus on the field', JSON.stringify(pressKept));
     await shot(s.page, 'design-dir-open');
     await s.page.keyboard.press('Escape');
     await s.page.keyboard.press('Escape');
@@ -6333,6 +6343,20 @@ async function folders() {
       shut[0].open + ', rows shown: ' + shut[0].rows.filter((r) => r.seen).length);
     ok(shut[0].count === '2' && caretBefore !== caretAfter,
       'and says how many are behind it, with the caret turned', shut[0].count + ', ' + caretAfter);
+    // The + after it is a target of its own, with room around its glyph, so
+    // the head ends at the count and the name keeps the space: in touch mode,
+    // with the + and VS Code at 48px each, "demo" was cut to "de…" (B-10).
+    const headEnd = await s.page.$eval(browserHead, (head) => {
+      const count = head.querySelector('.so-folder__count').getBoundingClientRect();
+      const finished = document.querySelector('#sessionList .so-folder--finished > .so-folder__bar > .so-folder__head');
+      return {
+        afterCount: Math.round(head.getBoundingClientRect().right - count.right),
+        finishedPad: finished ? getComputedStyle(finished).paddingInlineEnd : '',
+      };
+    });
+    ok(headEnd.afterCount === 0 && headEnd.finishedPad !== '0px',
+      'a shut folder’s head ends at its count where a + follows it; a head with nothing after it keeps its padding',
+      JSON.stringify(headEnd));
     ok(shut.slice(1).every((f) => f.shown), 'the other folders are untouched',
       shut.filter((f) => f.shown).map((f) => f.name).join(' | '));
     const visibleCount = await s.page.$$eval('#sessionList .so-folder__count',
@@ -13880,6 +13904,26 @@ async function chataccount() {
     await page.waitForSelector('#chat .so-chat__account:not([hidden]) .so-chat__account-btn', { timeout: 10000 });
     const face = await page.$eval('#chat .so-chat__account-text', (n) => n.textContent);
     ok(face === 'Alpha', 'the line over the chat names the account', face);
+    // A first visit, with no copy of the accounts in this browser and the
+    // list slow to come: the line waits for the name rather than show the
+    // account's raw id meanwhile (B-19).
+    let releaseAccounts;
+    const held = new Promise((resolve) => { releaseAccounts = resolve; });
+    const hold = async (route) => { await held; await route.continue(); };
+    await page.route('**/api/accounts', hold);
+    await page.evaluate(() => localStorage.removeItem('socrates.accounts'));
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await ensureNav(page);
+    await page.click('#sessionList .so-row[data-id="' + id + '"] .so-row__open');
+    await chatUp(page);
+    await wait(1500);
+    const waiting = await page.evaluate(() => document.querySelector('#chat .so-chat__account')?.textContent.trim() || '');
+    releaseAccounts();
+    const named = await page.waitForFunction(() => /Alpha/.test(document.querySelector('#chat .so-chat__account')?.textContent || ''),
+      null, { timeout: 10000 }).then(() => true, () => false);
+    await page.unroute('**/api/accounts', hold);
+    ok(!waiting.includes(alpha.id) && named, 'while the accounts are on their way the line shows no raw id, then the name',
+      JSON.stringify({ waiting, named }));
     await say(page, '/account');
     ok(await awaitLog(page, 'account ' + alpha.id + ', no key'), 'and the agent runs on it', alpha.id);
 

@@ -20,6 +20,9 @@ const POLL_MS = 1500;
 
 let cached = readCache();
 let loading = null;
+// fetched turns true with the server's first answer on this page: until
+// then the list is this browser's copy, or nothing on a first visit.
+let fetched = false;
 const listeners = new Set();
 
 function readCache() {
@@ -41,6 +44,7 @@ export function load() {
     try {
       const data = await api('/api/accounts', { attempts: 1, timeout: 15000 });
       cached = { accounts: data.accounts || [], recommended: data.recommended || {}, agents: data.agents || [] };
+      fetched = true;
       writeCache(cached);
       for (const listener of [...listeners]) listener(cached);
       return cached;
@@ -81,6 +85,13 @@ export function ranked(agent) {
 
 /** recommended is the account a new chat of an agent should run on. */
 export function recommended(agent) { return (cached.recommended || {})[agent] || ''; }
+
+/**
+ * settled says whether the server has answered on this page: an id the list
+ * has no name for is a missing account only then; before, it is an account
+ * the copy this browser kept does not have yet.
+ */
+export function settled() { return fetched; }
 
 /** labelOf is what an account is called, for an id the list may not have. */
 export function labelOf(id) {

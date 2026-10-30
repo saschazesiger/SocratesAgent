@@ -46,7 +46,10 @@ function draw(slot, { session, chat, error }) {
   for (const known of drawnFor.keys()) if (!known.isConnected && known !== slot) drawnFor.delete(known);
   if (accounts.forAgent(session.harness).length < 2) {
     const id = currentOf(session, chat);
-    const label = id ? accounts.labelOf(id) || id : '';
+    // The id stands in for a name only once the server's list is in: on a
+    // first visit the line stays empty while the list is on its way rather
+    // than read as a raw "a-…" id until it comes.
+    const label = id ? accounts.labelOf(id) || (accounts.settled() ? id : '') : '';
     const account = id ? accounts.byId(id) : null;
     morph(slot, label ? html`<span class="so-chat__account-label" data-tip="${'Account: ' + label}">${raw(icon(accounts.glyph(account), 16))}<span class="so-ellipsis">${label}</span></span>` : '');
     return !!label;

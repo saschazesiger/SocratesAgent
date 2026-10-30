@@ -308,6 +308,16 @@
   flex: none;
 }
 
+/* With a + or a VS Code after it, the head ends at its last glyph: the
+   button's own target is the space after the count, and the name keeps the
+   room. In touch mode the two take 48px each, and a shut head's name
+   ("demo" beside its glyph and count) was otherwise down to "de…". A
+   project's bar holds both even while they are hidden; a shelf and the
+   Finished fold have nothing after the head and keep its padding. */
+.so-folder__head:not(:last-child) {
+  padding-inline-end: 0;
+}
+
 .so-folder__name {
   flex: 1 1 auto;
   min-width: 0;

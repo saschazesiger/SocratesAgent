@@ -20,6 +20,16 @@ let comboCount = 0;
 // The most a list shows at once; a filter finds the rest.
 const LIST_MAX = 200;
 
+// keepFocus leaves the focus where it is through a press on part (a list,
+// a chevron), so the field's blur only ever means "somewhere else". Both
+// events: a press that sends mouse events without pointer events first -
+// WebDriver's tap in iOS Safari, which the device tests use - would
+// otherwise move the focus on mousedown, and the blur would close the list
+// before its click chose anything.
+function keepFocus(part) {
+  for (const type of ['pointerdown', 'mousedown']) part.addEventListener(type, (event) => event.preventDefault());
+}
+
 /**
  * combobox builds the control.
  *
@@ -260,7 +270,7 @@ export function combobox(options = {}) {
   // option kept by the patch keeps the listeners it had.
   // The chevron too: a press on it that took the focus would close the list
   // on blur only for the click to open it again.
-  for (const part of [list, toggle]) part.addEventListener('pointerdown', (event) => event.preventDefault());
+  for (const part of [list, toggle]) keepFocus(part);
   list.addEventListener('click', (event) => {
     const option = event.target.closest('.ds-combo__option');
     if (!option) return;
@@ -451,7 +461,7 @@ export function dropdown(options = {}) {
   // The field keeps the focus through a press on the list or the chevron, so
   // blur only ever means "somewhere else".
   button.addEventListener('blur', () => close());
-  for (const part of [list, toggle]) part.addEventListener('pointerdown', (event) => event.preventDefault());
+  for (const part of [list, toggle]) keepFocus(part);
   toggle.addEventListener('click', () => {
     button.focus();
     if (isOpen()) close();
