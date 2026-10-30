@@ -2884,8 +2884,9 @@ the four final audits (a desk, a phone, a deploy rehearsal, the real binaries) f
   keyboard; a button that brings a field to type in (Rename, Other, Add a note, Anything else,
   Ask the agent back, Keep planning, Custom path) gives it the keyboard with that tap and
   brings it into sight (`keyboard.js` `typeHere`). The keyboard switch is the terminal's alone.
-- **A session's menu on a phone is an action sheet** under the session's name, and a menu that is
-  cut short at a desk fades at its foot.
+- **A session's menu on a phone is an action sheet** under the session's name, and so it is on
+  any screen too short to show the whole menu (a car's 585 px: B-15); a menu that is cut short at
+  a desk fades at its foot.
 - **Snackbars** stand above the dock, the key bar and a keyboard, and a dialog keeps the strip
   they stand in.
 - **What a turn cost is said once**, under its last answer (OpenCode answers a step at a time),

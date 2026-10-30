@@ -188,7 +188,7 @@ touch mode, except `options`, which measures the narrowest phone in use,
 | `reloadkeepsscreen` | type, reload: Home, as every start is, and the session opened again is the same viewer with the same screen, and typing still works |
 | `pages` | `/`, `/admin`, `/login`, `/setup` and a chat are clean at 390×844 and 1280×720, and the sheet is a full-width bottom sheet on one and a side sheet docked to the right edge on the other |
 | `harnesses` | a Shell and a chat with each agent start from the sheet and are seen in the browser: the Shell runs a command, each agent answers its first message over its own protocol, every row wears its mark, and the facts are behind **Info** |
-| `browserlayout` | row menus flip upwards near the bottom and stay scrollable in short viewports; delayed local fonts give DOM and WebGL equal-width cells and matching initial pane sizes |
+| `browserlayout` | row menus flip upwards near the bottom, and in a viewport too short for the whole menu its items are the action sheet; delayed local fonts give DOM and WebGL equal-width cells and matching initial pane sizes |
 | `sessionlist` | rename, file, pick up again and delete, for a Shell and a chat — and the working directory survives the delete |
 | `folders` | the list read by project: one folder per working directory, named after it with the whole path on hover, ordered by the project worked in most recently, `More Chats` last; a folder shuts, says how many are behind it, is found shut after a reload and opens again for a chat inside it; a row keeps its element across a re-render |
 | `exitoverlay` | a Shell's `exit 7` raises the overlay with its status in a plain line under it, and **Restart** brings the session back |
@@ -254,6 +254,7 @@ touch mode, except `options`, which measures the narrowest phone in use,
 | `chat-status-eta` | While a chat works, Status says when all of it will be done (clock time, range, share done), what runs, the steps left and why; on a phone too |
 | `chat-outcome` | a chat's turn judged from its journal: the hourglass, the verdict, the notification |
 | `chat-schedule` | a chat set to start a few seconds ahead (through the API: the field is to the minute) does not start early, then sends its draft as the first message, once, with the notice that the clock sent it, and its draft and start time are gone; a chat with a message takes no start time (409) |
+| `menufit` | a session's ⋮ is a menu where it is seen whole and the action sheet where it is not: a chat's menu at a desk 900 px tall, and its sheet on a car's 585 px screen |
 | `chat-ultracode` | Ultracode for Claude Code alone: in the sheet, and in a Claude chat's menu |
 | `accounts` | the Accounts card: an API key, a Codex device code, OpenCode signing in in a Shell, rename, order, a delete refused then taken, a phone |
 | `chat-account` | a chat's account: from the sheet, switched idle and after a turn, a limit's Continue with, the automatic switch, a phone |

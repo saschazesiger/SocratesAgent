@@ -2460,6 +2460,34 @@ function menuItemHtml(action, label, glyph, checked, role = 'menuitemradio') {
 const actionSheetWanted = () => window.matchMedia('(max-width: 600px)').matches
   || (touchScreen() && window.matchMedia('(max-height: 500px)').matches);
 
+// menuFits is whether the menu, holding the items it is about to show, is
+// seen whole on the screen: its natural height against what can be seen
+// (the visual viewport, so a keyboard counts), less the margin DS keeps
+// around a menu - its own padding. A menu that does not fit - a chat's
+// fourteen items on a car's 585 px screen - would scroll inside itself
+// with Delete below its end, so its items go in the action sheet instead,
+// on any screen. It is measured on an unseen copy: the menu itself is DS's
+// to show and hide.
+function menuFits(menu) {
+  const copy = menu.cloneNode(true);
+  copy.removeAttribute('id');
+  // An anchored menu is a popover, which the browser does not lay out
+  // until it is shown.
+  copy.removeAttribute('popover');
+  for (const node of copy.querySelectorAll('[id]')) node.removeAttribute('id');
+  copy.setAttribute('aria-hidden', 'true');
+  copy.hidden = false;
+  copy.style.visibility = 'hidden';
+  copy.style.maxHeight = 'none';
+  document.body.append(copy);
+  // Its layout height: a closed menu stands scaled down for its entrance.
+  const natural = copy.offsetHeight;
+  const margin = parseFloat(getComputedStyle(copy).paddingTop) || 0;
+  copy.remove();
+  const seen = window.visualViewport ? window.visualViewport.height : window.innerHeight;
+  return natural <= seen - 2 * margin;
+}
+
 // openActionSheet shows the items of a menu in that dialog (DS
 // .ds-dialog--bottom, its items a .ds-dialog__list whose arrow keys DS
 // gives as in a menu). An item closes it and then runs, so a dialog it
@@ -2597,14 +2625,17 @@ async function openRowMenu(anchor, id, { device = false } = {}) {
     // back on the ⋮ and says it is shut - does not happen under the dialog.
     add('device', 'This device\u2026', 'settings', () => afterMenu(() => openOptions(anchor)));
   }
-  if (actionSheetWanted()) {
+  // A menu cut short (at 1280x800 a chat's twelve items stopped at
+  // Ultracode) fades at its cut edge: DS.overlay watches its scroll. One
+  // that would not fit the screen at all is the action sheet (menuFits).
+  morph(menu, html`${items}`);
+  const sheet = actionSheetWanted() || !menuFits(menu);
+  anchor.setAttribute('aria-haspopup', sheet ? 'dialog' : 'menu');
+  if (sheet) {
     openActionSheet(anchor, session.title, items);
     return;
   }
   anchor.setAttribute('aria-controls', 'sessionMenu');
-  // A menu cut short (at 1280x800 a chat's twelve items stopped at
-  // Ultracode) fades at its cut edge: DS.overlay watches its scroll.
-  morph(menu, html`${items}`);
   showOverlay(menu, anchor);
 }
 
