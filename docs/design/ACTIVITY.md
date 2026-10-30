@@ -284,7 +284,7 @@ WP1 provides the transport (`broadcast`, `broadcastAll`) and a pass-through `fun
  "done":false,"summary":"picked the model, now sending the prompt","note":""}
 ```
 
-`key` is a fixed vocabulary of tmux key names, a superset of the key bar's (keybar.js `KEYS` has `Escape · Tab · Left · Down · Up · Right · Enter · Ctrl-C · Ctrl-D · Ctrl-Z` — no BSpace/Space/Home/End/Page keys; the operator needs those for TUI menus): `Enter · Escape · Tab · BSpace · Space · Up · Down · Left · Right · Home · End · PageUp · PageDown · C-c · C-d · C-z · C-l`. <!-- rev: fable --> Digits and letters are `text`, never `key`; anything else is a rejected action.
+`key` is a fixed vocabulary of tmux key names, a superset of the key bar's (keybar.js `KEYS` has `Left · Down · Up · Right · Enter · Escape · Tab · Ctrl-C · Ctrl-D · Ctrl-Z` — no BSpace/Space/Home/End/Page keys; the operator needs those for TUI menus): `Enter · Escape · Tab · BSpace · Space · Up · Down · Left · Right · Home · End · PageUp · PageDown · C-c · C-d · C-z · C-l`. <!-- rev: fable --> Digits and letters are `text`, never `key`; anything else is a rejected action.
 
 **Guards.** A `text` action containing a newline has it stripped and is noted back to the model — submitting is always an explicit `{"key":"Enter"}`, so a multi-line paste can never fire a turn half-typed. `C-c` may never be sent twice in a row; a second consecutive one is dropped with a note, and the third anywhere in a run aborts it. `C-d` is dropped for a Shell session (it closes the pane). A rejected or dropped action does not abort the step; the note reaches the model on the next one.
 

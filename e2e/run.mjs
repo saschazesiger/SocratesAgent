@@ -1661,7 +1661,7 @@ async function keybar() {
     await closeOptions(s.page);
 
     const keys = await s.page.$$eval('#keybar .so-key', (nodes) => nodes.map((n) => n.dataset.key));
-    ok(keys.join(',') === 'Escape,Tab,Control,Alt,Left,Down,Up,Right,Enter,Ctrl-C,Ctrl-D,Ctrl-Z,Paste',
+    ok(keys.join(',') === 'Left,Down,Up,Right,Enter,Escape,Tab,Control,Alt,Ctrl-C,Ctrl-D,Ctrl-Z,Paste',
       'the key bar carries every key of §E.6, in order', keys.join(','));
     const placed = await s.page.evaluate(() => ({
       keybarTop: document.getElementById('keybar').getBoundingClientRect().top,

@@ -18,20 +18,22 @@ import { touchScreen, typingInPage } from './keyboard.js';
 
 /* ---------------------------------------------------------- the key bar */
 
-// The keys a phone keyboard does not have, in the order a thumb wants them.
+// The keys a phone keyboard does not have, in the order a thumb wants them:
+// the arrows and Enter first, because they are the keys pressed most and a
+// phone's width shows only the first half of the row without a swipe.
 // `send` is the bytes; a key with `mod` is a sticky modifier instead. A key
 // with a glyph is drawn as it (the arrows, Enter, Paste); the others are the
 // names printed on a keyboard's own keys, which no glyph says better.
 const KEYS = [
-  { label: 'Esc', send: '\x1b', name: 'Escape' },
-  { label: 'Tab', send: '\t', name: 'Tab' },
-  { label: 'Ctrl', mod: 'ctrl', name: 'Control' },
-  { label: 'Alt', mod: 'alt', name: 'Alt' },
   { glyph: 'arrowLeft', send: '\x1b[D', name: 'Left', tip: 'Left arrow' },
   { glyph: 'arrowDown', send: '\x1b[B', name: 'Down', tip: 'Down arrow' },
   { glyph: 'arrowUp', send: '\x1b[A', name: 'Up', tip: 'Up arrow' },
   { glyph: 'arrowRight', send: '\x1b[C', name: 'Right', tip: 'Right arrow' },
   { glyph: 'enter', send: '\r', name: 'Enter', tip: 'Enter' },
+  { label: 'Esc', send: '\x1b', name: 'Escape' },
+  { label: 'Tab', send: '\t', name: 'Tab' },
+  { label: 'Ctrl', mod: 'ctrl', name: 'Control' },
+  { label: 'Alt', mod: 'alt', name: 'Alt' },
   { label: '^C', send: '\x03', name: 'Ctrl-C' },
   { label: '^D', send: '\x04', name: 'Ctrl-D' },
   { label: '^Z', send: '\x1a', name: 'Ctrl-Z' },

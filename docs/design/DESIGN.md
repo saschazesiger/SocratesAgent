@@ -2377,16 +2377,18 @@ device.
 keyboard switch (`ACTIVITY.md` §D.7) can always raise the keyboard, so the bar is shown on
 `keyBarWanted()` alone and the ⋯ menu always offers it, except for VS Code.
 
-Keys, one row, horizontally scrollable, each `button.key[data-send]`:
+Keys, one row, horizontally scrollable, each `button.key[data-send]`, in this order. The arrows
+and Enter lead because they are pressed most, and a phone shows only the first half of the row
+without a swipe:
 
 | label | sends |
 |---|---|
+| `←` `↓` `↑` `→` | `\x1b[D` `\x1b[B` `\x1b[A` `\x1b[C` |
+| `⏎` | `\r` |
 | `Esc` | `\x1b` |
 | `Tab` | `\t` |
 | `Ctrl` | sticky modifier (see below) |
 | `Alt` | sticky modifier |
-| `←` `↓` `↑` `→` | `\x1b[D` `\x1b[B` `\x1b[A` `\x1b[C` |
-| `⏎` | `\r` |
 | `^C` | `\x03` |
 | `^D` | `\x04` |
 | `^Z` | `\x1a` |

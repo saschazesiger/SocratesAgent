@@ -4,8 +4,8 @@ priority: P0
 tags: [smoke, shell, touch]
 ---
 The Shell is a real shell (bash) in a terminal on the page. On touch devices the keyboard comes only
-through the top bar's Show the keyboard button, and the key bar above it gives Esc, Tab, Ctrl, Alt,
-the arrows, Enter, ^C, ^D, ^Z and Paste. At a desk click the terminal and type.
+through the top bar's Show the keyboard button, and the key bar above it gives the arrows, Enter, Esc,
+Tab, Ctrl, Alt, ^C, ^D, ^Z and Paste. At a desk click the terminal and type.
 
 ## Steps
 
