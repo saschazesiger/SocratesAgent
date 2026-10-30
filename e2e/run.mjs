@@ -11623,13 +11623,15 @@ async function chattools() {
       items: [...n.querySelectorAll('.so-todo__item')].map((i) => i.dataset.status),
       count: n.querySelector('.so-todo__count').textContent,
       now: (n.querySelector('summary .so-foldbox__words') || {}).textContent || '',
+      sum: (n.querySelector('summary .so-todo__time') || {}).textContent || '',
       above: n.getBoundingClientRect().bottom <= document.querySelector('#chat .so-composer').getBoundingClientRect().top + 1,
     }));
     const shutList = await page.waitForSelector('#chat .so-chat__todo:not([hidden]) .so-todo[data-pinned]', { timeout: 10000 })
       .then(pinnedNow, () => null);
     ok(once.inView && !once.pinned, 'a task list the conversation shows is not pinned a second time', JSON.stringify(once));
-    ok(!!shutList && !shutList.open && shutList.items.length === 0 && /of 3 done/.test(shutList.count) && shutList.now && shutList.above,
-      'scrolled out of sight while the turn works through it, it is pinned above the composer, folded into one line: the task at work and how many are done',
+    ok(!!shutList && !shutList.open && shutList.items.length === 0 && /of 3 done/.test(shutList.count) && shutList.now && shutList.above
+      && /^\d+:\d\d \/ 3:30$/.test(shutList.sum),
+      'scrolled out of sight while the turn works through it, it is pinned above the composer, folded into one line: the task at work, the time of all tasks against all their estimates, and how many are done',
       JSON.stringify(shutList));
     await page.click('#chat .so-todo[data-pinned] > summary');
     const pinned = await page.waitForSelector('#chat .so-todo[data-pinned][open] .so-todo__item', { timeout: 5000 }).then(pinnedNow, () => null);

@@ -437,12 +437,14 @@ export function todoItems(part) {
  * todoTime is how long a task has taken against its estimate, "1:20 / 5:00":
  * a task at work counts on with the clock while `live`, else up to `until`;
  * one still to do says its estimate only. Over the estimate is said in words
- * too, not by the colour alone.
+ * too, not by the colour alone. `of` names whose time it is in the tip
+ * ("All tasks", for the sum).
  */
-function todoTime(item, { live = false, until = 0 } = {}) {
+function todoTime(item, { live = false, until = 0, of = '' } = {}) {
   const estimate = item.estimate ? stopwatch(item.estimate) : '';
+  const whose = (words) => (of ? of + ': ' + words.toLowerCase() : words);
   if (item.status === 'pending' || !item.startedAt) {
-    return estimate ? html`<span class="so-todo__time" data-tip="Estimate"><span class="ds-sr">Estimate </span>~${estimate}</span>` : '';
+    return estimate ? html`<span class="so-todo__time" data-tip="${whose('Estimate')}"><span class="ds-sr">${whose('Estimate') + ' '}</span>~${estimate}</span>` : '';
   }
   const end = item.status === 'completed' ? item.doneAt : live ? Date.now() : until || item.startedAt;
   const took = Math.max(0, end - item.startedAt);
@@ -450,9 +452,25 @@ function todoTime(item, { live = false, until = 0 } = {}) {
   const watch = item.status === 'in_progress' && live
     ? html`<span data-since="${item.startedAt}" data-format="watch">${stopwatch(took)}</span>`
     : html`<span>${stopwatch(took)}</span>`;
-  const tip = (item.status === 'completed' ? 'Took' : 'Running for') + (estimate ? ' / estimate' : '');
+  const tip = whose((item.status === 'completed' ? 'Took' : 'Running for') + (estimate ? ' / estimate' : ''));
   return html`<span class="so-todo__time" data-tip="${tip}"${over ? html` data-over` : ''}>${watch}${
     estimate ? html`<span class="so-todo__estimate"> / ${estimate}</span>` : ''}${over ? html`<span class="ds-sr">, over the estimate</span>` : ''}</span>`;
+}
+
+/**
+ * todoSum is the whole list as one task for todoTime: the time every task
+ * has taken so far against all the estimates together. While a task is at
+ * work it starts as far before that task as the others took, so its watch
+ * counts the sum on with the clock.
+ */
+function todoSum(items) {
+  const estimate = items.reduce((sum, item) => sum + item.estimate, 0);
+  const done = items.filter((item) => item.status === 'completed' && item.startedAt);
+  const took = done.reduce((sum, item) => sum + Math.max(0, item.doneAt - item.startedAt), 0);
+  const current = items.find((item) => item.status === 'in_progress' && item.startedAt);
+  if (current) return { status: 'in_progress', estimate, startedAt: current.startedAt - took };
+  if (done.length) return { status: 'completed', estimate, startedAt: done[0].startedAt, doneAt: done[0].startedAt + took };
+  return { status: 'pending', estimate };
 }
 
 // A task's state as DS's task list says it (.ds-tasks: the mark's shape
@@ -479,13 +497,14 @@ export function todoList(part, { pinned = false, open = false, live = false, unt
     return html`<div class="so-todo"><div class="ds-tasks__head so-todo__head">${raw(icon('list', 18))}<span>Tasks</span><span class="ds-meta so-todo__count">${count}</span></div>${list}</div>`;
   }
   // Pinned over the composer the list is folded into one line by default:
-  // the task at work under the wave, rolling to the next one, and how many
-  // are done; opened, the whole list under it.
+  // the task at work under the wave, rolling to the next one, the time all
+  // tasks took together and how many are done; opened, the whole list under
+  // it.
   const current = items.find((item) => item.status === 'in_progress');
   const next = items.find((item) => item.status !== 'completed');
   const words = current ? current.active || current.text : next ? next.text : 'All tasks done';
   return html`<details class="ds-collapsible so-foldbox so-todo" data-pinned data-open-key="foot:todo"${open ? html` open` : ''}><summary class="ds-pressable so-foldbox__head" aria-label="${'Tasks, ' + count + ': ' + words}"><span class="so-foldbox__icon" aria-hidden="true">${raw(icon('list', 16))}</span><span class="so-wheel so-foldbox__now">${liveWords(words, 'so-foldbox__words', !!current)}</span>${
-    current ? todoTime(current, { live, until }) : ''}<span class="so-foldbox__meta so-todo__count">${count}</span>${chevron()}</summary>${
+    todoTime(todoSum(items), { live, until, of: 'All tasks' })}<span class="so-foldbox__meta so-todo__count">${count}</span>${chevron()}</summary>${
     open ? html`<div class="so-foldbox__body">${list}</div>` : ''
   }</details>`;
 }

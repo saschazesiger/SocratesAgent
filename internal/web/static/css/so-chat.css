@@ -2246,10 +2246,6 @@
     padding-bottom: calc(var(--ds-space-2) + env(safe-area-inset-bottom, 0px));
   }
 
-  .so-chat__todo {
-    padding: var(--ds-space-2) var(--ds-space-3);
-  }
-
   .so-msg__bubble {
     max-width: 100%;
   }
