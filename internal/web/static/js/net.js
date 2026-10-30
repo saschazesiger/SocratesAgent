@@ -231,7 +231,11 @@ export function connectionSource({ global = true } = {}) {
       source.status = status;
       if (!global) return;
       if (status === 'live') setConnection(LIVE);
-      else if (status !== 'idle') {
+      // A source that stops speaking for the page (a chat current through
+      // its polls) holds the bar down no longer: as when it is released.
+      else if (status === 'idle') {
+        if (navigator.onLine !== false && streamsHealthy() && connection.status !== LIVE) setConnection(LIVE);
+      } else {
         setConnection(navigator.onLine === false ? OFFLINE : CONNECTING, {
           retryAt: extra.retryAt || 0,
           immediate: !!extra.immediate,

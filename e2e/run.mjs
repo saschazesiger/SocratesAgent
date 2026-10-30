@@ -10213,10 +10213,12 @@ async function homestream() {
     }
     ok(!!polled && /Updated every 5 s/.test(polled.text) && !polled.dim,
       'a proxy that refuses the upgrade leaves Home polled, saying so, and not dimmed', JSON.stringify(polled || await connOf(page)));
-    const readyBefore = (await homeLook(page)).counts.ready;
+    // A chat made with no first message is Not started (its own card since
+    // Home grew one), not Ready.
+    const unstartedBefore = (await homeLook(page)).counts.unstarted;
     const madeWhilePolled = await makeChat(s, 'claude', { title: 'Made while polled' });
-    const counted = await awaitHome(page, (h) => h.rows.some((r) => r.id === madeWhilePolled) || h.counts.ready === readyBefore + 1, 15000);
-    ok(counted.ok, 'and the poll keeps it current: a chat made meanwhile is counted', 'ready ' + readyBefore + ' > ' + counted.seen.counts.ready);
+    const counted = await awaitHome(page, (h) => h.rows.some((r) => r.id === madeWhilePolled) || h.counts.unstarted === unstartedBefore + 1, 15000);
+    ok(counted.ok, 'and the poll keeps it current: a chat made meanwhile is counted', 'not started ' + unstartedBefore + ' > ' + counted.seen.counts.unstarted);
     // A slow link: each read takes four seconds, and the next poll is only
     // scheduled once it is in - so the page says how often it really updates.
     await page.route(/\/api\/home$/, async (route) => { await wait(4000); await route.continue().catch(() => {}); });
@@ -12362,6 +12364,52 @@ async function chatkept() {
   } finally { await s.stop(); }
 }
 
+// chat-poll: a chat whose WebSocket never gets through (a proxy that
+// refuses the upgrade, a device whose sockets stay down) is read by plain
+// requests instead - GET /api/chats/{id}/events - says so, and still shows
+// what the agent answers; once the stream gets through the polling stops.
+async function chatpoll() {
+  const { s, id } = await claudeChat();
+  const { page } = s;
+  try {
+    await say(page, 'before the block');
+    ok(await awaitLog(page, 'you said: before the block', 20000), 'the chat has a conversation', oneLine(await logText(page)));
+    // Every try of the stream is refused at once.
+    let block = true;
+    await page.routeWebSocket(/\/api\/chats\/[^/]+\/stream/, (ws) => {
+      if (block) ws.close({ code: 1011, reason: 'blocked' });
+      else ws.connectToServer();
+    });
+    const polls = [];
+    page.on('request', (req) => { if (/\/api\/chats\/[^/]+\/events\?/.test(req.url())) polls.push(Date.now()); });
+    // The page again (a route of a WebSocket takes a new page), and the
+    // chat opened - into the block.
+    await reloadBack(page, id);
+    const slower = await page.waitForSelector('#chat [data-ds-key="polling"]', { timeout: 30000 }).then((n) => n.innerText(), () => '');
+    const dimmed = await page.$eval('#chat', (n) => n.hasAttribute('data-stale'));
+    const barGone = await page.waitForFunction(() => !document.body.hasAttribute('data-conn-lost'), null, { timeout: 8000 }).then(() => true, () => false);
+    ok(/updated every 5 s/.test(slower) && !dimmed && barGone && polls.length > 0,
+      'a stream that never gets through: the chat is polled, says it is on the slower path, is not dimmed and the bar does not call it lost',
+      JSON.stringify({ slower: oneLine(slower), dimmed, barGone, polls: polls.length }));
+    await say(page, 'over the slow path');
+    ok(await awaitLog(page, 'you said: over the slow path', 20000), 'and what the agent answers meanwhile shows', oneLine(await lastAnswer(page)));
+    const once = await page.$$eval('#chat .so-msg[data-role="user"]', (nodes) => nodes.filter((n) => n.innerText.includes('over the slow path')).length);
+    ok(once === 1, 'the message is in the chat once', String(once));
+
+    // The stream let through: its next try takes over and the polls stop.
+    block = false;
+    const live = await page.waitForFunction(() => !document.querySelector('#chat [data-ds-key="polling"]')
+      && !document.querySelector('#chat [data-ds-key="reconnecting"]'), null, { timeout: 30000 }).then(() => true, () => false);
+    const at = Date.now();
+    await wait(12000);
+    const after = polls.filter((t) => t > at).length;
+    ok(live && after === 0, 'once the stream gets through it takes over, and the polling stops', JSON.stringify({ live, pollsAfter: after }));
+    await say(page, 'live again');
+    ok(await awaitLog(page, 'you said: live again', 20000), 'and the chat goes on live', oneLine(await lastAnswer(page)));
+    ok(unexpected(s.errors).length === 0, 'no console errors', unexpected(s.errors).join(' | ') || '0');
+  } finally { await s.stop(); }
+}
+
 // chat-send-now: a message written while a turn runs waits behind it with
 // Send now; Send now stops the turn - the chat says it was interrupted -
 // and the message is the next thing the agent answers.
@@ -14399,6 +14447,7 @@ const ALL = [
   ['chat-wakeups', 'what the agent starts by itself: a wakeup pending at the foot of the chat, and the turns it and a Monitor start saying why', chatwakeups],
   ['chat-agents', 'a subagent or a workflow at work beside the chat is a card of its own at its foot, not one more background job, and opens its job', chatagents],
   ['chat-kept', 'a chat opened again is drawn at once from what the device kept, marked as such until its stream is through', chatkept],
+  ['chat-poll', 'a chat whose stream never gets through is polled, says so, and shows what is answered; the stream back, the polling stops', chatpoll],
   ['chat-send-now', 'a message waiting behind a turn, sent now: the turn interrupted, the message answered next', chatsendnow],
   ['chat-auto-continue', 'a limit\u2019s card says the chat goes on by itself, and the ⋮ switches that off and on', chatautocontinue],
   ['chat-offline', 'what a chat is told offline (two tabs, a model, an answer), or whose answer was lost, or left across a reload: delivered once', chatoffline],

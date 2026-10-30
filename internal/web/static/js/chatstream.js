@@ -30,13 +30,24 @@ const PONG_TIMEOUT = 5000;
 const WATCH_EVERY = 2000;
 const WAKE_FRESH = 20000;
 const HIDDEN_GRACE = 30000;
+// How many tries in a row may fail to get through - no hello in time, or a
+// socket that closed before its replay was through - before the chat is
+// read by plain requests (GET /api/chats/{id}/events) as well, and how
+// often then: Home's fallback (events.js BLOCKED_AFTER, POLL_FAST). The
+// stream is tried on meanwhile, and the polling stops once it is through.
+const BLOCKED_AFTER = 3;
+export const POLL_EVERY = 5000;
+const POLL_TIMEOUT = 12000;
 
 /**
  * ChatStream keeps one chat's stream open while it is wanted.
  *
  *   since()          the last seq the page holds, read on every connect
- *   onFrame(frame)   every frame: hello, ev, delta, synced
- *   onStatus(status) 'connecting' | 'live' | 'offline', whenever it moves
+ *   onFrame(frame)   every frame: hello, ev, delta, synced (a poll hands
+ *                    the same, without the deltas)
+ *   onStatus(status) 'connecting' | 'live' | 'polling' | 'offline', whenever
+ *                    it moves; 'polling' is a chat that is current through
+ *                    the slower path, POLL_EVERY behind at most
  *   lite             the replay may leave out what is drawn only once it is
  *                    opened (agent.Lighten): the page asks for it then
  */
@@ -61,6 +72,15 @@ export class ChatStream {
     // The socket on hand has said hello: it is up, and its replay is on its
     // way (until synced).
     this.helloed = false;
+    // Tries in a row that did not get through, and the slower path: whether
+    // the chat is polled, whether the last poll was answered, the seq the
+    // polls have read up to, and whether they have read up to the end once.
+    this.failed = 0;
+    this.polling = false;
+    this.pollOk = false;
+    this.pollSince = 0;
+    this.pollSynced = false;
+    this.pollBusy = false;
     this.heardAt = 0;
     this.pingId = 0;
     this.timers = {};
@@ -83,6 +103,7 @@ export class ChatStream {
 
   stop() {
     this.stopped = true;
+    this.stopPolling();
     this.close();
     clearInterval(this.timers.watch);
     clearTimeout(this.timers.hidden);
@@ -97,10 +118,17 @@ export class ChatStream {
   live() { return this.state === 'live'; }
 
   setStatus(next) {
-    const value = navigator.onLine === false && next !== 'live' ? 'offline' : next;
+    let value = navigator.onLine === false && next !== 'live' ? 'offline' : next;
+    // A stream tried on in the background is no news while the polls keep
+    // the chat current.
+    if (value === 'connecting' && this.polling && this.pollOk) value = 'polling';
     if (value === this.state) return;
     this.state = value;
-    this.conn.report(value === 'live' ? 'live' : 'connecting', {
+    // Current through the polls: the plain requests that carry them say
+    // whether the server can be reached (net.js), and this stream does not
+    // hold the bar down.
+    if (value === 'polling') this.conn.report('idle');
+    else this.conn.report(value === 'live' ? 'live' : 'connecting', {
       immediate: value === 'offline', retryNow: () => this.reconnect(0),
     });
     try { this.onStatus(value); } catch (err) { setTimeout(() => { throw err; }, 0); }
@@ -124,12 +152,12 @@ export class ChatStream {
     try {
       socket = new WebSocket(this.url(), [PROTOCOL]);
     } catch {
-      this.reconnect();
+      this.fail();
       return;
     }
     this.ws = socket;
     this.helloed = false;
-    this.timers.hello = setTimeout(() => { if (this.ws === socket) this.reconnect(); }, HELLO_TIMEOUT);
+    this.timers.hello = setTimeout(() => { if (this.ws === socket) this.fail(); }, HELLO_TIMEOUT);
     socket.onopen = () => {
       socket.send(JSON.stringify({ t: 'hello', since: Number(this.since()) || 0, batch: true, ...(this.lite ? { lite: true } : {}) }));
     };
@@ -140,8 +168,92 @@ export class ChatStream {
       this.ws = null;
       this.clearTimers();
       if (event && event.code === SIGNED_OUT) { this.checkLogin(); return; }
-      if (!this.stopped) this.reconnect();
+      if (this.stopped) return;
+      // A socket that closed before its replay was through did not get
+      // through; one that was live and dropped is only a reconnect.
+      if (this.state === 'live') this.reconnect();
+      else this.fail();
     };
+  }
+
+  // fail is a try that did not get through. A few in a row and the chat is
+  // polled as well, while the stream is tried on.
+  fail() {
+    this.failed += 1;
+    if (this.failed >= BLOCKED_AFTER) this.startPolling();
+    this.reconnect();
+  }
+
+  /* ---------------------------------------------------- the slower path */
+
+  startPolling() {
+    if (this.polling || this.stopped) return;
+    this.polling = true;
+    this.pollOk = false;
+    this.pollSince = 0;
+    this.pollSynced = false;
+    this.poll();
+  }
+
+  stopPolling() {
+    this.polling = false;
+    this.pollOk = false;
+    clearTimeout(this.timers.poll);
+  }
+
+  schedulePoll(delay = POLL_EVERY) {
+    clearTimeout(this.timers.poll);
+    if (!this.polling || this.stopped) return;
+    this.timers.poll = setTimeout(() => this.poll(), delay);
+  }
+
+  // poll reads what came after what the page holds, a page at a time, and
+  // hands it on as the stream would: the hello, the events, and synced once
+  // it has read up to the end.
+  async poll() {
+    clearTimeout(this.timers.poll);
+    if (!this.polling || this.stopped || this.pollBusy) return;
+    if (document.visibilityState !== 'visible' || navigator.onLine === false) { this.schedulePoll(); return; }
+    this.pollBusy = true;
+    let again = POLL_EVERY;
+    try {
+      const held = Number(this.since()) || 0;
+      const since = Math.max(held, this.pollSince);
+      const lite = this.lite && !this.pollSynced ? '&lite=1' : '';
+      const page = await api('/api/chats/' + encodeURIComponent(this.chatId) + '/events?since=' + since + lite,
+        { attempts: 1, timeout: POLL_TIMEOUT });
+      // The stream got through while this was on its way: it says the rest.
+      if (!this.polling || this.stopped || this.state === 'live') return;
+      this.pollOk = true;
+      this.deliver({ t: 'hello', chat: page.chat, last_seq: page.last_seq, base: page.base, now: page.now });
+      // The page held more than the server has, or less than it keeps: it
+      // starts again from nothing (chatview.js), and so do the polls.
+      if ((Number(this.since()) || 0) < held) {
+        this.pollSince = 0;
+        this.pollSynced = false;
+        again = 0;
+      } else {
+        for (const ev of Array.isArray(page.events) ? page.events : []) this.deliver({ ...ev, t: 'ev' });
+        this.pollSince = Math.max(since, Number(page.seq) || 0);
+        if (page.more) again = 0;
+        else {
+          this.pollSynced = true;
+          this.deliver({ t: 'synced', seq: this.pollSince });
+        }
+      }
+      this.setStatus('polling');
+    } catch (err) {
+      if (err instanceof HttpError && err.status === 401) return;
+      this.pollOk = false;
+      if (this.state !== 'live') this.setStatus('connecting');
+    } finally {
+      this.pollBusy = false;
+      if (this.polling && !this.stopped) this.schedulePoll(again);
+    }
+  }
+
+  deliver(frame) {
+    try { this.onFrame(frame); } catch (err) { setTimeout(() => { throw err; }, 0); }
   }
 
   close() {
@@ -200,6 +312,8 @@ export class ChatStream {
         break;
       case 'synced':
         this.attempt = 0;
+        this.failed = 0;
+        this.stopPolling();
         this.setStatus('live');
         break;
       case 'pong':
@@ -242,6 +356,7 @@ export class ChatStream {
 
   wake() {
     if (this.stopped) return;
+    if (this.polling) this.poll();
     if (this.ws && this.state === 'live') {
       if (Date.now() - this.heardAt > WAKE_FRESH) this.ping();
       return;

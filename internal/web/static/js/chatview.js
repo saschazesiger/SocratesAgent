@@ -27,7 +27,7 @@ import * as harnesses from './harnesses.js';
 import * as accounts from './accounts.js';
 import { drawAccount, chooseAccount } from './accountpicker.js';
 import { newChat, apply, applyLive, busy, currentTodo, seenClient, compact, fill, touchPart } from './chatfold.js';
-import { ChatStream } from './chatstream.js';
+import { ChatStream, POLL_EVERY } from './chatstream.js';
 import { loadChat, saveChat } from './chatcache.js';
 import {
   assistantMessage, userMessage, lineHtml, askCard, askPlaces, todoList, todoItems, renewsIn, seconds, outboxState,
@@ -720,7 +720,8 @@ export function mountChat(ctx) {
   function stale() {
     if (!session) return false;
     const status = stream ? stream.status() : 'connecting';
-    return status !== 'live' && (navigator.onLine === false || (lostAt > 0 && Date.now() - lostAt >= CONNECTION_GRACE));
+    // Polled, the chat is current, only slower (chatstream.js).
+    return status !== 'live' && status !== 'polling' && (navigator.onLine === false || (lostAt > 0 && Date.now() - lostAt >= CONNECTION_GRACE));
   }
 
   // diedInTurn is an agent that exited during a turn: the conversation's
@@ -751,6 +752,10 @@ export function mountChat(ctx) {
       line = navigator.onLine === false
         ? html`<div class="ds-alert ds-alert--warning" data-ds-key="offline">${raw(icon('wifiOff', 20))}<span class="ds-alert__text">Offline. The chat may be behind; what you send goes out when the connection is back.</span></div>`
         : html`<div class="ds-alert ds-alert--warning" data-ds-key="reconnecting"><span class="so-chat__spin" aria-hidden="true"><span class="ds-spinner"></span></span><span class="ds-alert__text">Reconnecting… The chat may be behind.</span><button class="ds-btn ds-btn--quiet ds-btn--icon ds-btn--sm" type="button" data-action="reconnect" aria-label="Try to connect now" data-tip="Retry">${raw(icon('sync', 18))}</button></div>`;
+    } else if (stream && stream.status() === 'polling') {
+      // The stream does not get through, and the chat is read by plain
+      // requests meanwhile: current, only slower, and the stream is tried on.
+      line = html`<div class="ds-alert" data-ds-key="polling" role="status">${raw(icon('clock', 20))}<span class="ds-alert__text">${'No live connection. The chat is updated every ' + Math.round(POLL_EVERY / 1000) + ' s.'}</span><button class="ds-btn ds-btn--quiet ds-btn--icon ds-btn--sm" type="button" data-action="reconnect" aria-label="Try to connect now" data-tip="Retry">${raw(icon('sync', 18))}</button></div>`;
     } else if (kept) {
       const when = chat.lastAt ? new Date(chat.lastAt).toLocaleString([], { weekday: 'short', hour: '2-digit', minute: '2-digit' }) : '';
       line = html`<div class="ds-alert" data-ds-key="catchup"><span class="so-chat__spin" aria-hidden="true"><span class="ds-spinner"></span></span><span class="ds-alert__text">${'Showing the chat as this device last saw it' + (when ? ' (' + when + ')' : '') + '. Loading what is new…'}</span></div>`;
@@ -1262,10 +1267,11 @@ export function mountChat(ctx) {
   }
 
   function onStatus(status) {
-    if (status === 'live') lostAt = 0;
+    const current = status === 'live' || status === 'polling';
+    if (current) lostAt = 0;
     else if (!lostAt) lostAt = Date.now();
     clearTimeout(staleTimer);
-    if (status !== 'live') {
+    if (!current) {
       staleTimer = setTimeout(() => { schedule(); ctx.status(); }, CONNECTION_GRACE + 50);
     }
     schedule();

@@ -1104,6 +1104,7 @@ key (the existing `Outbox` in `net.js`).
 | `POST /api/sessions/{id}/status`, `…/title` | – | the spoken Status and naming again; for a chat read from its journal (§3) |
 | `GET`/`PUT /api/sessions/{id}/draft` | `text`, `base_rev` | the composer's draft, with PreStart's revision rule (409 `{conflict, text, rev}` when another device saved first); a prepared chat's draft is its first message |
 | `GET /api/chats/{id}/stream` | WebSocket | below |
+| `GET /api/chats/{id}/events` | `since`, `limit`?, `lite`? (query) | the stream's slower path, below: `{chat, last_seq, base, now, events, seq, more}`; 400 for a `since` or `limit` that is not a whole number (`since` ≥ 0, `limit` ≥ 1), 404 for a chat that is not there |
 | `PUT /api/sessions/{id}/workdir` | `workdir` (a folder that exists) | 200 `{session}`; 400 for a folder that is not there or not allowed; 409 while a turn runs. A host that is up is sent `park`, not `stop`: a turn that started a moment ago, which the server has not heard of yet, finishes in the old folder, and the next message starts the agent in the new one (REBUILD §6.2: a restored chat whose folder is missing) |
 
 Sending a message clears the chat's unread mark (as typing at a terminal does), and picks a chat
@@ -1139,6 +1140,22 @@ image (sniffed; never an SVG), up to 32 MiB, `nosniff`: the chat draws image par
 (chatparts.js `imageHtml`); anything else is 404, or 415 for a file that is not an image. A hello with `"batch":true` gets a replay
 of more than one event as `{"t":"evs","evs":[…]}` frames of about 256 KiB: a browser handles a
 frame per task, and a thousand of them cost it more than the events did.
+
+**Polling** (`GET /api/chats/{id}/events?since=<seq>`) is the stream's slower path, for a browser
+whose WebSocket does not get through - a proxy that refuses the upgrade, a device whose sockets
+stay down while its plain requests work. The answer is the stream's hello (`chat`,
+`last_seq`, `base`, `now`) with the events after `since`, compacted as a replay is (and light with
+`lite=1`), at most 1000 of them (`limit` asks for fewer) and about 4 MiB; `seq` is what the
+browser holds once it has taken them - the last event read, which compaction may have left out -
+and `more` says there are more after it, which the browser reads at once. There are no deltas: the
+journal carries the same text a moment later. Polling does what opening the stream does (the
+recovery of a chat whose host died, the rebuild of a lost one). The chat view (`chatstream.js`)
+polls after three tries of the stream in a row did not get through (no hello in time, or a socket
+closed before `synced`) - every 5 s, as Home's fallback does - and hands on what it reads as the
+stream's frames (`hello`, `ev`, `synced`), while it tries the stream on with its backoff; the
+first `synced` of the stream stops the polling. Meanwhile the chat says "No live connection. The
+chat is updated every 5 s." and is not dimmed, and the connection bar does not count it as lost; a
+poll that fails makes it "Reconnecting…" again.
 
 The server reads a chat's history from a **snapshot** when it has one that is still the
 journal's (`cache/chats/<id>.jsonl`, `chatsnapshot.go`): the journal compacted up to an event,

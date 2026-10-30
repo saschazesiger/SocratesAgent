@@ -433,6 +433,7 @@ func (s *Server) routes() {
 	mux.HandleFunc("POST /api/chats/{id}/tasks/{task}/stop", s.auth(s.handleChatStopTask))
 	mux.HandleFunc("POST /api/chats/{id}/asks/{ask}/answer", s.auth(s.handleChatAnswer))
 	mux.HandleFunc("GET /api/chats/{id}/stream", s.auth(s.handleChatStream))
+	mux.HandleFunc("GET /api/chats/{id}/events", s.auth(s.handleChatEvents))
 	mux.HandleFunc("GET /api/chats/{id}/parts/{part}", s.auth(s.handleChatPart))
 	mux.HandleFunc("GET /api/chats/{id}/parts/{part}/image", s.auth(s.handleChatPartImage))
 	mux.HandleFunc("POST /api/chats/{id}/model", s.auth(s.handleChatModel))
