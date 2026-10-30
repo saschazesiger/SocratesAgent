@@ -51,7 +51,8 @@
  *   .so-diff               the unified diff viewer, one file per .so-diff__file
  *                          ([data-single]: the only one, not collapsible)
  *   .so-todo               a task list (DS .ds-tasks under a head with its
- *                          count; .so-todo__item a hook for the tests);
+ *                          count; .so-todo__item a hook for the tests;
+ *                          .so-todo__time a task's time and estimate);
  *                          [data-pinned] above the composer, folded
  *                          (.so-foldbox: shut until opened, as the agents
  *                          at work are, .so-footfold)
@@ -1619,6 +1620,30 @@
 .so-todo__count {
   margin-inline-start: auto;
   font-variant-numeric: tabular-nums;
+}
+
+/* A task's time against its estimate at the end of its line, "1:20 / 5:00";
+   past the estimate it turns warning and weightier (and says so in words
+   for a reader). */
+.so-todo__time {
+  flex: none;
+  margin-inline-start: auto;
+  padding-inline-start: var(--ds-space-2);
+  color: var(--ds-text-3);
+  font: var(--ds-font-meta);
+  /* On the first line of the task, as tall as it (and its 20px mark). */
+  line-height: var(--ds-space-5);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.so-todo__time[data-over] {
+  color: var(--ds-warning);
+  font-weight: var(--ds-weight-label);
+}
+
+.so-foldbox > summary .so-todo__time {
+  margin-inline-start: 0;
 }
 
 /* ── The plan and the question cards ─────────────────────────────────── */

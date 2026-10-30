@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"encoding/json"
 	"errors"
 	"strings"
 	"sync"
@@ -125,6 +126,7 @@ func (r *Recorder) emitLocked(events []Event) ([]Event, error) {
 	if r.closed {
 		return nil, errClosed
 	}
+	events = r.timeTodosLocked(events)
 	for _, ev := range events {
 		if ev.Type == TypePart {
 			r.dropLocked(ev.PartID)
@@ -132,6 +134,32 @@ func (r *Recorder) emitLocked(events []Event) ([]Event, error) {
 	}
 	r.flushAllLocked()
 	return r.appendLocked(events)
+}
+
+// timeTodosLocked stamps the tasks of the todo parts among events
+// (TimeTodos), each against the list as it stood before it: the part's own
+// last version, else the chat's newest list.
+func (r *Recorder) timeTodosLocked(events []Event) []Event {
+	var out []Event
+	var last json.RawMessage
+	for i, ev := range events {
+		if ev.Type != TypePart || ev.Kind != PartTodo || len(ev.Content) == 0 {
+			continue
+		}
+		if out == nil {
+			out = append([]Event(nil), events...)
+		}
+		prev := last
+		if prev == nil {
+			prev = r.proj.todoBefore(ev.PartID)
+		}
+		out[i].Content = TimeTodos(ev.Content, prev, time.Now())
+		last = out[i].Content
+	}
+	if out == nil {
+		return events
+	}
+	return out
 }
 
 func (r *Recorder) appendLocked(events []Event) ([]Event, error) {

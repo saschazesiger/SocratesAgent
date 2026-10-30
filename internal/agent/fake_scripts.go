@@ -207,7 +207,7 @@ func (f *fakeAdapter) tools(ctx context.Context, t *fakeTurn) bool {
 // todoContent is Claude's task list with the first `done` tasks completed and
 // the next one in progress.
 func todoContent(done int) json.RawMessage {
-	subjects := []string{"Validate the request body", "Return 404 for an unknown id", "Log every failure"}
+	subjects := []string{"Validate the request body (~2m)", "Return 404 for an unknown id (~1m)", "Log every failure (~30s)"}
 	items := make([]map[string]any, len(subjects))
 	for i, subject := range subjects {
 		status := "pending"

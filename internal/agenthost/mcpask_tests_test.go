@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/saschazesiger/SocratesAgent/internal/agent"
 	"github.com/saschazesiger/SocratesAgent/internal/agent/askuser"
 	"github.com/saschazesiger/SocratesAgent/internal/agent/chattools"
 )
@@ -45,7 +46,7 @@ func TestMCPAskOffersAChatTheTestTools(t *testing.T) {
 		Instructions string `json:"instructions"`
 	}
 	_ = json.Unmarshal(byID[0], &init)
-	if want := askuser.Guidance(MCPAskTool) + "\n\n" + chattools.Guidance(prefix) + "\n\n" + chattools.TestGuidance(prefix); init.Instructions != want {
+	if want := askuser.Guidance(MCPAskTool) + "\n\n" + chattools.Guidance(prefix) + "\n\n" + chattools.TestGuidance(prefix) + "\n\n" + agent.TodoGuidance("todowrite"); init.Instructions != want {
 		t.Fatalf("instructions:\n%s\nwant\n%s", init.Instructions, want)
 	}
 	var list struct {

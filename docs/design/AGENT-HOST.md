@@ -88,7 +88,9 @@ of its message, keeping `parent_part_id`. A replacing `part` event keeps the par
 Part kinds: `text`, `reasoning`, `tool`, `diff`, `plan`, `todo`, `image`, `file`, `notice`. Part
 states: `streaming`, `running`, `done`, `error`, `interrupted`. `content` is kind-specific JSON
 whose shape the adapters define (WP3–5 must document theirs here); a tool part's **streamed output
-goes into `text`** so that every stream is a `part.delta`.
+goes into `text`** so that every stream is a `part.delta`. A `todo` part is the one the recorder
+rewrites: each task's estimate comes out of its title into `estimate_s` and it gains `added_at`,
+`started_at` and `done_at` (`agent.TimeTodos`, HARNESS-POLICY.md "Task lists").
 
 `usage` object: `input`, `output`, `cache_read`, `cache_write`, `reasoning`, `context`, `window`.
 Each token is counted once, the same way for every agent: `input` is the input neither read from
@@ -501,7 +503,7 @@ cumulative per process). `usage.context` = the last request's prompt + answer, `
 | workflow (Workflow) | its `tool_use` id | `tool`, `running` until `task_notification` | `workflow: {name, description, task_id, run_id, status, phases: [{index, title}], agents, agents_done, tokens, duration_ms, summary}` |
 | workflow agent | `<workflow part>_a<index>` | `tool` (`tool: "WorkflowAgent"`), nested in the workflow | `agent: {…, label, phase}`; its calls (read from `<transcriptDir>/agent-<id>.jsonl`) are nested in it |
 | background shell | the Bash call | `tool` | `task: {id, status}` |
-| task list | `todo_<assistant message>` | `todo` | `{items: [{id, subject, description, active_form, status}]}`, the whole list; TaskCreate/TaskUpdate make no rows of their own |
+| task list | `todo_<assistant message>` | `todo` | `{items: [{id, subject, description, active_form, status}]}`, the whole list; TaskCreate/TaskUpdate make no rows of their own. Every adapter's list gains its times in the recorder (HARNESS-POLICY.md, "Task lists") |
 | image from a tool | `<call>_img<n>`, nested in the call | `image` | `{mime, path, size}`; the file is under `chats/<id>/agent/images/` |
 | local command output, API error text | `n_<uuid>` | `notice` | `{code: command_output\|<error>\|claude}` |
 | why a turn of the CLI's own started | `n_<transcript line uuid>`, the turn's first part | `notice` | `{code: wakeup\|cron\|task\|monitor\|peer, detail?}`: the text is the line ("Woke up as scheduled: <prompt>", "A scheduled task ran: <prompt>", the task's summary, `Monitor "<description>": <event>`, "A message from the agent “<name>”: …"), `detail` all of the prompt, result, event or message |

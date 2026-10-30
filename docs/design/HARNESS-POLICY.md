@@ -425,6 +425,36 @@ The note before a message says which model the chat now runs on, that the
 earlier model's instructions no longer apply, and the new ones. A transcript
 read back (a rebuilt journal) shows the person's message without it.
 
+## Task lists
+
+Every chat that is not a test session is told how to keep its task list
+(`agent.TodoGuidance`): for work of three or more steps, or of more than a
+few minutes, an exact list first, one entry per step, each title ending in
+the step's estimate - `(~30s)`, `(~4m)`, `(~1h15m)` - and the list kept
+current as the work goes. The text goes where the ask_user guidance goes,
+after it: Claude Code's `--append-system-prompt` (TaskCreate, all entries in
+one message, and TaskUpdate), Codex's developer instructions (`update_plan`),
+OpenCode's `socrates mcp-ask` instructions (`todowrite`).
+
+The agent spends a few characters per entry on it, nothing more: the clock
+is the server's. The recorder (`internal/agent/todotime.go`) takes the
+estimate out of each title and stamps every task with when it was added,
+began and ended (`estimate_s`, `added_at`, `started_at`, `done_at`), carried
+over from the list as it last stood - by id, else by title - and journaled
+with the part, so a restart keeps them. A task completed without ever being
+in progress began when the one before it was done. The chat shows each
+task's time against its estimate ("1:20 / 5:00", ticking for the task at
+work; past the estimate in warning and in words).
+
+Checked with Claude Code 2.1.314 on Haiku (2026-10-30,
+`TestLiveTodoTimes`, `SOCRATES_CLAUDE_LIVE=1`): a list on each of three
+tasks of four or five steps, none for a question or a one-file edit; 18 of
+19 entries carried an estimate (the two timed builds took 27 s and 16 s
+against 30 s and 20 s); the TaskCreate calls went out in one message and
+the updates with the work they belonged to, about one extra model call per
+task. Without "three or more steps" in the text Haiku made no list for a
+five-step task.
+
 ## Test sessions
 
 A test session (docs/design/TEST-MODE.md) is launched like any chat, with three differences, the

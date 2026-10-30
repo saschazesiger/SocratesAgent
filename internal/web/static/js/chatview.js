@@ -300,11 +300,13 @@ export function mountChat(ctx) {
   }, TICK_MS);
   // The watches of the running answer's live line move every second, in
   // place: only their figures change between two drawings.
-  // So do those of the agents at the foot of the chat, turn or no turn.
+  // So do those of the agents at the foot of the chat, turn or no turn, and
+  // the task at work in the pinned task list.
   setInterval(() => {
     if (!session || !chat || host.hidden) return;
     if (chat.turn) tickLive(log);
     if (!jobsSlot.hidden) tickLive(jobsSlot);
+    if (!todoSlot.hidden) tickLive(todoSlot);
   }, LIVE_TICK_MS);
 
   // "Latest" comes and goes as the person scrolls; the snackbars move with it.
@@ -699,7 +701,7 @@ export function mountChat(ctx) {
     }
     if (todo && inline && todoInView) todo = null;
     todoSlot.hidden = !todo;
-    morph(todoSlot, todo ? todoList(todo, { pinned: true, open: view.isOpen('foot:todo', false) }) : '', wheelHooks);
+    morph(todoSlot, todo ? todoList(todo, { pinned: true, open: view.isOpen('foot:todo', false), live: true }) : '', wheelHooks);
   }
 
   // stale says whether what is on screen may be behind: the stream is not

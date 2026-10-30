@@ -51,6 +51,9 @@ type Projection struct {
 	parts    map[string]*Part
 	asks     map[string]*Ask
 	clients  map[string]int64
+	// lastTodo is the newest todo part's content: the task list as it
+	// stands, which the next list is timed against (TimeTodos).
+	lastTodo json.RawMessage
 }
 
 // Turn is one turn of the agent.
@@ -385,6 +388,9 @@ func (p *Projection) messageFor(ev Event) *Message {
 }
 
 func (p *Projection) part(ev Event) {
+	if ev.Kind == PartTodo && len(ev.Content) > 0 {
+		p.lastTodo = ev.Content
+	}
 	updated := ev.At
 	if ev.UpdatedAt != 0 {
 		updated = ev.UpdatedAt
@@ -413,6 +419,15 @@ func (p *Projection) part(ev Event) {
 	m := p.messageFor(ev)
 	part.MessageID = m.ID
 	m.Parts = append(m.Parts, part)
+}
+
+// todoBefore is the task list a new version of the todo part id is timed
+// against: that part's own last version, else the chat's newest list.
+func (p *Projection) todoBefore(id string) json.RawMessage {
+	if part := p.parts[id]; part != nil && part.Kind == PartTodo && len(part.Content) > 0 {
+		return part.Content
+	}
+	return p.lastTodo
 }
 
 // within reports whether p is q or nested somewhere inside q.

@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/saschazesiger/SocratesAgent/internal/agent"
 	"github.com/saschazesiger/SocratesAgent/internal/agent/askuser"
 	"github.com/saschazesiger/SocratesAgent/internal/agent/chattools"
 )
@@ -72,9 +73,10 @@ func ServeMCPAsk(ctx context.Context, sock, version string, chats chattools.Endp
 	case chats.Test():
 		instructions = chats.Guidance(askuser.ServerName+"_", false)
 	case chats.Usable():
-		instructions = askuser.Guidance(MCPAskTool) + "\n\n" + chats.Guidance(askuser.ServerName+"_", false)
+		instructions = askuser.Guidance(MCPAskTool) + "\n\n" + chats.Guidance(askuser.ServerName+"_", false) +
+			"\n\n" + agent.TodoGuidance("todowrite")
 	default:
-		instructions = askuser.Guidance(MCPAskTool)
+		instructions = askuser.Guidance(MCPAskTool) + "\n\n" + agent.TodoGuidance("todowrite")
 	}
 	m := &askuser.MCP{
 		Version:      version,

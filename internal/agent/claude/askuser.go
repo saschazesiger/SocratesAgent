@@ -24,6 +24,10 @@ const chatsPrefix = "mcp__" + askuser.ServerName + "__"
 var askGuidance = askuser.Guidance(AskTool) +
 	" If the tool is not loaded yet, load it with ToolSearch (select:" + AskTool + ") first."
 
+// todoGuidance is how a chat keeps its task list (agent.TodoGuidance): the
+// TaskCreate calls of a new list go out in one message.
+var todoGuidance = agent.TodoGuidance("TaskCreate (all entries in one message) and TaskUpdate")
+
 // askServerConfig is the server's sdkMcpServerConfigs entry. An in-process
 // server has no idle timeout, only the wall-clock one, which is set as high
 // as the CLI takes it (2^31-1 ms, almost 25 days), so that a question waits

@@ -405,7 +405,11 @@ export function diffViewer(part, view, info = '') {
 
 /* ------------------------------------------------------------- the todos */
 
-/** todoItems reads a task list from Claude's, Codex's or a plain shape. */
+/**
+ * todoItems reads a task list from Claude's, Codex's or a plain shape, with
+ * the times the server stamped on each task (agent.TimeTodos): its estimate
+ * in seconds and when it began and ended.
+ */
 export function todoItems(part) {
   const c = (part.content && typeof part.content === 'object') ? part.content : {};
   const list = c.items || c.todos || c.steps || [];
@@ -415,8 +419,33 @@ export function todoItems(part) {
       text: item.subject || item.content || item.step || item.text || '',
       active: item.active_form || item.activeForm || '',
       status: status === 'completed' || status === 'done' ? 'completed' : status === 'in_progress' ? 'in_progress' : 'pending',
+      estimate: Number(item.estimate_s) * 1000 || 0,
+      startedAt: Number(item.started_at) || 0,
+      doneAt: Number(item.done_at) || 0,
     };
   });
+}
+
+/**
+ * todoTime is how long a task has taken against its estimate, "1:20 / 5:00":
+ * a task at work counts on with the clock while `live`, else up to `until`;
+ * one still to do says its estimate only. Over the estimate is said in words
+ * too, not by the colour alone.
+ */
+function todoTime(item, { live = false, until = 0 } = {}) {
+  const estimate = item.estimate ? stopwatch(item.estimate) : '';
+  if (item.status === 'pending' || !item.startedAt) {
+    return estimate ? html`<span class="so-todo__time" data-tip="Estimate"><span class="ds-sr">Estimate </span>~${estimate}</span>` : '';
+  }
+  const end = item.status === 'completed' ? item.doneAt : live ? Date.now() : until || item.startedAt;
+  const took = Math.max(0, end - item.startedAt);
+  const over = !!item.estimate && took > item.estimate;
+  const watch = item.status === 'in_progress' && live
+    ? html`<span data-since="${item.startedAt}" data-format="watch">${stopwatch(took)}</span>`
+    : html`<span>${stopwatch(took)}</span>`;
+  const tip = (item.status === 'completed' ? 'Took' : 'Running for') + (estimate ? ' / estimate' : '');
+  return html`<span class="so-todo__time" data-tip="${tip}"${over ? html` data-over` : ''}>${watch}${
+    estimate ? html`<span class="so-todo__estimate"> / ${estimate}</span>` : ''}${over ? html`<span class="ds-sr">, over the estimate</span>` : ''}</span>`;
 }
 
 // A task's state as DS's task list says it (.ds-tasks: the mark's shape
@@ -424,15 +453,19 @@ export function todoItems(part) {
 const TODO_STATUS = { completed: 'done', in_progress: 'running', pending: 'pending' };
 const TODO_WORDS = { completed: 'done', in_progress: 'in progress', pending: 'to do' };
 
-/** todoList is a task list, each task with its state as a mark and a word. */
-export function todoList(part, { pinned = false, open = false } = {}) {
+/**
+ * todoList is a task list, each task with its state as a mark and a word and
+ * its time against its estimate (todoTime): `live` while the turn that keeps
+ * it runs, else the times stop at `until`, when that turn ended.
+ */
+export function todoList(part, { pinned = false, open = false, live = false, until = 0 } = {}) {
   const items = todoItems(part);
   const done = items.filter((item) => item.status === 'completed').length;
   const list = html`<ol class="ds-tasks so-todo__list" aria-label="Tasks">${
     items.map((item, i) => html`<li class="ds-tasks__item so-todo__item" data-ds-key="${'t' + i}" data-status="${TODO_STATUS[item.status]}"><span class="ds-tasks__mark" aria-hidden="true">${
       item.status === 'in_progress' ? html`<span class="ds-spinner ds-spinner--sm"></span>`
         : item.status === 'completed' ? raw(icon('checkCircle', 20)) : ''
-    }</span><span class="ds-tasks__text">${item.status === 'in_progress' && item.active ? item.active : item.text}<span class="ds-sr">${': ' + TODO_WORDS[item.status]}</span></span></li>`)
+    }</span><span class="ds-tasks__text">${item.status === 'in_progress' && item.active ? item.active : item.text}<span class="ds-sr">${': ' + TODO_WORDS[item.status]}</span></span>${todoTime(item, { live, until })}</li>`)
   }</ol>`;
   const count = done + ' of ' + items.length + ' done';
   if (!pinned) {
@@ -444,9 +477,22 @@ export function todoList(part, { pinned = false, open = false } = {}) {
   const current = items.find((item) => item.status === 'in_progress');
   const next = items.find((item) => item.status !== 'completed');
   const words = current ? current.active || current.text : next ? next.text : 'All tasks done';
-  return html`<details class="ds-collapsible so-foldbox so-todo" data-pinned data-open-key="foot:todo"${open ? html` open` : ''}><summary class="ds-pressable so-foldbox__head" aria-label="${'Tasks, ' + count + ': ' + words}"><span class="so-foldbox__icon" aria-hidden="true">${raw(icon('list', 16))}</span><span class="so-wheel so-foldbox__now">${liveWords(words, 'so-foldbox__words', !!current)}</span><span class="so-foldbox__meta so-todo__count">${count}</span>${chevron()}</summary>${
+  return html`<details class="ds-collapsible so-foldbox so-todo" data-pinned data-open-key="foot:todo"${open ? html` open` : ''}><summary class="ds-pressable so-foldbox__head" aria-label="${'Tasks, ' + count + ': ' + words}"><span class="so-foldbox__icon" aria-hidden="true">${raw(icon('list', 16))}</span><span class="so-wheel so-foldbox__now">${liveWords(words, 'so-foldbox__words', !!current)}</span>${
+    current ? todoTime(current, { live, until }) : ''}<span class="so-foldbox__meta so-todo__count">${count}</span>${chevron()}</summary>${
     open ? html`<div class="so-foldbox__body">${list}</div>` : ''
   }</details>`;
+}
+
+/**
+ * todoClock is how a list's times run: on with the clock while the turn that
+ * wrote it runs, else up to when that turn ended (or the list last changed).
+ */
+export function todoClock(part, view) {
+  const chat = view && view.chat;
+  const message = chat && chat.messages ? chat.messages.get(part.messageId) : null;
+  const ended = message && message.turn ? message.turn.endedAt || 0 : 0;
+  const running = !!chat && !!chat.turn && !!message && (!message.turnId || message.turnId === chat.turn.id);
+  return { live: running && !ended, until: ended || part.updatedAt || 0 };
 }
 
 /* ------------------------------------------------------------- the parts */
@@ -463,7 +509,7 @@ export function partHtml(part, view) {
     case 'diff':
       return toolHtml(part, view, { diff: true });
     case 'todo':
-      return html`<div class="so-part" data-ds-key="${'p:' + part.id}" data-kind="todo">${todoList(part)}</div>`;
+      return html`<div class="so-part" data-ds-key="${'p:' + part.id}" data-kind="todo">${todoList(part, todoClock(part, view))}</div>`;
     case 'plan':
       return planHtml(part, view);
     case 'image':
@@ -1585,7 +1631,7 @@ function ticking(ms, format) {
  */
 export function tickLive(root) {
   const now = Date.now();
-  for (const node of root.querySelectorAll('.so-live [data-since], .so-agentcard [data-since], .so-foldbox [data-since], .so-jobs [data-since]')) {
+  for (const node of root.querySelectorAll('.so-live [data-since], .so-agentcard [data-since], .so-foldbox [data-since], .so-jobs [data-since], .so-todo [data-since]')) {
     const text = ticking(now - Number(node.dataset.since), node.dataset.format);
     if (node.textContent !== text) node.textContent = text;
   }

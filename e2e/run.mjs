@@ -11338,10 +11338,30 @@ async function chattools() {
     const pinned = await page.waitForSelector('#chat .so-todo[data-pinned][open] .so-todo__item', { timeout: 5000 }).then(pinnedNow, () => null);
     ok(!!pinned && pinned.open && pinned.items.length === 3 && pinned.items.includes('running') && pinned.above,
       'opened, it lists every task', JSON.stringify(pinned));
+    // Each task says its time against the estimate the agent put at the end
+    // of its title, which the title no longer shows; the task at work counts
+    // on with the clock.
+    const times = () => page.$eval('#chat .so-chat__todo', (n) => [...n.querySelectorAll('.so-todo__item')].map((i) => ({
+      status: i.dataset.status,
+      text: i.querySelector('.ds-tasks__text').firstChild.textContent,
+      time: (i.querySelector('.so-todo__time') || {}).textContent || '',
+    })));
+    const timed1 = await times();
+    await wait(2200);
+    const timed2 = await times().catch(() => null);
+    const running1 = timed1.find((t) => t.status === 'running');
+    const running2 = timed2 && timed2.find((t) => t.status === 'running' && t.text === (running1 || {}).text);
+    ok(timed1.every((t) => !/\(~/.test(t.text)) && timed1.some((t) => t.status === 'pending' && /^Estimate ~\d+:\d\d$/.test(t.time))
+      && !!running1 && /^\d+:\d\d \/ \d+:\d\d$/.test(running1.time) && (!running2 || running2.time !== running1.time),
+    'every task shows its time against its estimate, the one at work ticking on, the estimate out of its title',
+    JSON.stringify({ timed1, timed2 }));
     await awaitLog(page, 'All three tasks are done.', 20000);
     const unpinned = await page.waitForSelector('#chat .so-chat__todo', { state: 'hidden', timeout: 5000 }).then(() => true, () => false);
     const inMessage = await page.$$eval('#chat .so-msg .so-part[data-kind="todo"] .so-todo__item[data-status="done"]', (n) => n.length);
     ok(unpinned && inMessage >= 3, 'and once the turn is over it is in the answer, not pinned', JSON.stringify({ unpinned, inMessage }));
+    const took = await page.$$eval('#chat .so-msg .so-part[data-kind="todo"] .so-todo__item[data-status="done"] .so-todo__time', (n) => n.map((t) => t.textContent));
+    ok(took.length >= 3 && took.every((t) => /^\d+:\d\d \/ \d+:\d\d(, over the estimate)?$/.test(t)),
+      'a done task keeps how long it took against its estimate', JSON.stringify(took));
     await shot(page, 'chat-tools');
     ok(unexpected(s.errors).length === 0, 'no console errors', unexpected(s.errors).join(' | ') || '0');
     void id;

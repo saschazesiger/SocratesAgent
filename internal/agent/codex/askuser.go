@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"strings"
 
+	"github.com/saschazesiger/SocratesAgent/internal/agent"
 	"github.com/saschazesiger/SocratesAgent/internal/agent/askuser"
 )
 
@@ -32,6 +33,10 @@ const DeferredText = "Questions delivered. End your turn now; the answers arrive
 // started before has only the tool's description, which says the same in
 // short.
 var askGuidance = askuser.Guidance(askuser.Name)
+
+// todoGuidance is how a thread keeps its task list: Codex's plan
+// (agent.TodoGuidance).
+var todoGuidance = agent.TodoGuidance("update_plan")
 
 // askToolSpec is ask_user as a DynamicToolSpec.
 func askToolSpec() json.RawMessage {

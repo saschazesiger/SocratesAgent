@@ -407,6 +407,9 @@ func (a *adapter) startThread(ctx context.Context, instructions string) error {
 		tools = append(tools, chatToolSpecs(endpoint)...)
 		developer += "\n\n" + endpoint.Guidance("", false)
 	}
+	if !endpoint.Test() {
+		developer += "\n\n" + todoGuidance
+	}
 	if len(tools) > 0 {
 		params["dynamicTools"] = tools
 	}

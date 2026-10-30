@@ -29,7 +29,7 @@ func TestAChatWithTestsHasTheTestToolsInCodex(t *testing.T) {
 			t.Errorf("the thread lacks %s: %s", name, tools)
 		}
 	}
-	if want := "instructions: " + askGuidance + "\n\n" + chattools.Guidance("") + "\n\n" + chattools.TestGuidance(""); instructions != want {
+	if want := "instructions: " + askGuidance + "\n\n" + chattools.Guidance("") + "\n\n" + chattools.TestGuidance("") + "\n\n" + todoGuidance; instructions != want {
 		t.Errorf("developer instructions\n%q\nwant\n%q", instructions, want)
 	}
 	_, n = send(t, a, r, "/tool "+chattools.RunTests+` {"tests":["web/checkout"]}`)

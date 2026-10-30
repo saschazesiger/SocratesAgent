@@ -331,9 +331,9 @@ func cliArgs(spec agent.StartSpec, opts Options, ultracode bool) []string {
 	case spec.ChatTools.Test():
 		prompt = spec.ChatTools.Guidance(chatsPrefix, true)
 	case spec.ChatTools.Usable():
-		prompt = askGuidance + "\n\n" + spec.ChatTools.Guidance(chatsPrefix, true)
+		prompt = askGuidance + "\n\n" + spec.ChatTools.Guidance(chatsPrefix, true) + "\n\n" + todoGuidance
 	default:
-		prompt = askGuidance
+		prompt = askGuidance + "\n\n" + todoGuidance
 	}
 	if p := strings.TrimSpace(opts.AppendSystemPrompt); p != "" {
 		prompt += "\n\n" + p
