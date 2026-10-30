@@ -2518,8 +2518,15 @@ function openActionSheet(anchor, title, items) {
     // A blocked item's press never gets here (DS's guard).
     if (!item) return;
     const run = menuActions.get(item.dataset.action) || null;
-    if (run && menuInTap.has(item.dataset.action)) run();
-    else chosen = run;
+    // An action that needs the tap runs inside it, once the sheet has
+    // started to leave: its focus went back to the ⋮ at once (DS), so the
+    // dialog the action opens (Rename) takes the focus after it.
+    if (run && menuInTap.has(item.dataset.action)) {
+      hideOverlay(dialog);
+      run();
+      return;
+    }
+    chosen = run;
     hideOverlay(dialog);
   });
   dialog.addEventListener('close', () => {
@@ -2586,6 +2593,10 @@ async function openRowMenu(anchor, id, { device = false } = {}) {
   }
   add('info', 'Info', 'info', () => infoDialog(session, anchor));
   if (!editor) add('rename', 'Rename', 'pencil', () => renameSession(session, anchor));
+  // Its field takes the keyboard with the focus the dialog gives it, which
+  // iOS raises one for only inside the tap; from the action sheet's close,
+  // a moment later, it got a focused field and no keyboard.
+  menuInTap.add('rename');
   if (!editor && session.workdir_missing) add('folder', 'Point to folder', 'folder', () => pointFolder(session, anchor));
   if (!editor) {
     // The statuses are one set: a group named by its heading (DS menu

@@ -400,7 +400,11 @@ function free(node) {
 export function typeHere(node, { focus = true } = {}) {
   if (!node) return;
   let handed = false;
-  if (touch && isField(node) && !underSwitch(node)) {
+  // Outside a tap there is no keyboard to be had on iOS: the field would
+  // take the focus without one, and a tap on it then offers Cut, Copy and
+  // Paste instead. Left muted, it is a field the page focused, and the
+  // first tap on it raises the keyboard (onFieldClick).
+  if (touch && isField(node) && !underSwitch(node) && inTap()) {
     const had = deepActive() === node;
     free(node);
     // A field that had the focus muted took no keyboard with it; handing
@@ -410,6 +414,17 @@ export function typeHere(node, { focus = true } = {}) {
   if (!focus) return;
   if (!handed && deepActive() !== node) node.focus({ preventScroll: true });
   node.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+}
+
+// Inputs inside which iOS raises a keyboard for a focus(): a tap and its
+// click, a key. A focus given from anything else - a dialog's close event,
+// a timer, the end of a fetch - gets none.
+const GESTURES = new Set(['click', 'pointerup', 'pointerdown', 'mouseup', 'mousedown', 'touchend', 'touchstart', 'keydown', 'keyup', 'keypress']);
+
+// inTap is whether the code running now runs for such an input.
+function inTap() {
+  const event = window.event;
+  return !!event && event.isTrusted && GESTURES.has(event.type);
 }
 
 // A finger coming down on an ordinary field frees it before the browser

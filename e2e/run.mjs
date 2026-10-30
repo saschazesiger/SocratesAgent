@@ -7543,6 +7543,41 @@ async function keyboard() {
     ok(after.open === 'false' && after.pane,
       'a closed dialog leaves the switch off and the pane muted', JSON.stringify({ open: after.open, pane: after.pane }));
 
+    // On a phone the ⋮'s items are the action sheet's, and its Rename runs
+    // inside the tap on it: iOS raises a keyboard only for a focus a tap
+    // caused, and from the sheet's close event, a moment later, the field
+    // had the focus and no keyboard, and a tap on it offered Cut, Copy and
+    // Paste.
+    const wide = s.page.viewportSize();
+    await s.page.setViewportSize({ width: 390, height: 800 });
+    await wait(400);
+    await s.page.tap('#optionsBtn');
+    await s.page.waitForSelector('dialog.so-actions[open] [data-action="rename"]', { timeout: 5000 });
+    await wait(400);
+    await s.page.tap('dialog.so-actions[open] [data-action="rename"]');
+    await s.page.waitForSelector('dialog.so-rename[open]', { timeout: 10000 });
+    await wait(400);
+    const sheeted = await keyboardable(s.page);
+    ok(sheeted.focus === 'dialog' && !sheeted.focusMuted,
+      'Rename from the action sheet opens on its field with the keyboard: it ran inside the tap', JSON.stringify(sheeted.fields));
+    await s.page.keyboard.press('Escape');
+    await s.page.waitForSelector('dialog.so-rename', { state: 'detached', timeout: 10000 }).catch(() => {});
+    await s.page.setViewportSize(wide);
+    await wait(300);
+    // Opened by no tap at all, it cannot have a keyboard, so its field is
+    // one the page focused: muted, and the first tap on it raises one.
+    await s.page.evaluate(() => setTimeout(() => document.getElementById('sessionTitle').click(), 0));
+    await s.page.waitForSelector('dialog.so-rename[open]', { timeout: 10000 });
+    await wait(400);
+    const untapped = await keyboardable(s.page);
+    const retyped = await tapTyped(s.page, '#renameInput', ' later');
+    ok(untapped.focus === 'dialog' && untapped.focusMuted && retyped.focus === 'dialog' && !retyped.muted && retyped.typed,
+      'a rename opened by no tap opens muted, and the first tap on its field raises the keyboard',
+      JSON.stringify({ before: untapped.focusMuted, after: retyped }));
+    await s.page.keyboard.press('Escape');
+    await s.page.waitForSelector('dialog.so-rename', { state: 'detached', timeout: 10000 }).catch(() => {});
+    await wait(300);
+
     /* ------------------------------------- a chat and a chat's first message */
 
     // A chat has no pane: the button goes, and its composer takes a tap.
