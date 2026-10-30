@@ -559,6 +559,46 @@ func TestCellsQueueForABuiltinMCPServersAccounts(t *testing.T) {
 	waitFor(t, "the second session", func() bool { return len(host.chats()) == 2 })
 }
 
+// A built-in MCP server may share its name with a catalog tool that has a
+// pool of its own (the BrowserStack server beside the browserstack tool):
+// the cell holds a lease of each, and its vault gets the tool's member only.
+func TestABuiltinMCPServerNamedLikeAPoolToolLeavesTheVaultToTheTool(t *testing.T) {
+	old := catalog.BuiltinMCP
+	catalog.BuiltinMCP = func(name string) *catalog.BuiltinServer {
+		if name == "pool" {
+			return &catalog.BuiltinServer{Instructions: "Drive the device with its tools."}
+		}
+		return nil
+	}
+	t.Cleanup(func() { catalog.BuiltinMCP = old })
+	host := newFakeHost()
+	pool := &fakePool{}
+	host.pools = map[string]mcpserver.Pool{"pool": pool}
+	r, _ := newRunner(t, host)
+	settings := noReview()
+	settings.MCP = []string{"pool"}
+	run := startRun(t, r, fixture(t, map[string]string{"two": twoSteps}), settings)
+	r.schedule()
+	waitFor(t, "one session", func() bool { return len(host.chats()) == 1 })
+	for _, a := range r.attemptsOf(run.ID) {
+		if a.State == AttemptFailed {
+			t.Fatalf("a cell could not be started: %+v", a)
+		}
+	}
+	first := host.chats()[0]
+	l, err := r.LaunchFor(refJSON(t, r, first))
+	if err != nil {
+		t.Fatal(err)
+	}
+	vault, err := os.ReadFile(envOf(l.Env, "SOCRATES_TEST_VAULT"))
+	if err != nil || !strings.Contains(string(vault), "SOCRATES_LEASE_POOL_VALUE=u") || pool.holder == "" {
+		t.Fatalf("vault: %q %v, MCP holder %q", vault, err, pool.holder)
+	}
+	if spec := host.spec(first); !strings.Contains(spec.Message, "pool (built-in MCP server): account jane") {
+		t.Fatalf("the cell's message names the MCP lease wrong: %s", spec.Message)
+	}
+}
+
 func TestAJudgementNeedsAScreenshot(t *testing.T) {
 	host := newFakeHost()
 	r, _ := newRunner(t, host)

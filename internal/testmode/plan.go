@@ -347,6 +347,10 @@ func firstMessage(a *Attempt, number int) string {
 	}
 	b.WriteString(fmt.Sprintf("- Attempt: %d\n", a.N))
 	for _, l := range a.Leases {
+		if l.MCP {
+			b.WriteString(fmt.Sprintf("- %s (built-in MCP server): account %s, leased for this cell\n", l.Tool, l.Label))
+			continue
+		}
 		b.WriteString(fmt.Sprintf("- %s: account %d (%s), leased for this cell\n", l.Tool, l.Member, l.Label))
 	}
 	if len(a.Params) > 0 {

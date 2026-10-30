@@ -1310,8 +1310,11 @@ func (r *Runner) writeAttemptVaultLocked(rs *runState, a *Attempt) error {
 		}
 	}
 	for _, l := range a.Leases {
+		// A built-in MCP server's account is its pool's to hand over, not
+		// the vault's, even when a catalog tool has the same name (the
+		// BrowserStack server beside the browserstack tool).
 		t := rs.plan.Tools[l.Tool]
-		if t == nil {
+		if t == nil || l.MCP {
 			continue
 		}
 		list := members(t.Pool, rs.secrets[l.Tool])

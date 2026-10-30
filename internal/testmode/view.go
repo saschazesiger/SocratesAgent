@@ -125,6 +125,9 @@ func (r *Runner) runViewLocked(rs *runState, full bool) RunView {
 					continue
 				}
 				for _, l := range a.Leases {
+					if l.MCP {
+						continue
+					}
 					if holders[l.Tool] == nil {
 						holders[l.Tool] = map[int][]string{}
 					}
