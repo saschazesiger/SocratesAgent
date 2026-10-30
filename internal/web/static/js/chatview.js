@@ -900,27 +900,81 @@ export function mountChat(ctx) {
     morph(scheduleSlot, html`<div class="ds-field so-schedule"><label class="ds-field__label" for="${fid}">${raw(icon('clock', 16))}<span>Start automatically</span></label><div class="ds-field__row"><input class="ds-input so-schedule__at" type="datetime-local" id="${fid}" value="${at ? localInput(at) : ''}" min="${localInput(now)}" aria-describedby="${fid + '-hint'}" data-schedule><button class="ds-btn ds-btn--text ds-btn--sm" type="button" data-action="schedule-clear"${at ? '' : html` hidden`}>Clear</button></div><small class="ds-field__hint" id="${fid + '-hint'}">${said}</small></div>`);
   }
 
-  // setStartAt saves the scheduled start (0: none).
+  // setStartAt saves the scheduled start (0: none). One save is on its way
+  // at a time, and only the time asked for last is sent after it: iOS's
+  // wheels say "change" at every step they turn through, and saves that
+  // overlapped could land in any order - the wheels at 14:25 and the chat
+  // saved, and said, for 14:22. An answer with a newer time already waiting
+  // behind it is not drawn either: the next one is.
+  let startSaving = false;
+  let startWanted = null;
   async function setStartAt(at) {
     if (!session) return;
-    const id = session.id;
+    startWanted = { id: session.id, at };
+    if (startSaving) return;
+    startSaving = true;
     try {
-      const data = await api('/api/chats/' + encodeURIComponent(id) + '/start_at', { method: 'PUT', body: { start_at: at } });
-      if (data && data.session && session && session.id === id) session = data.session;
-      scheduleDrawn = null;
-      schedule();
-    } catch (err) {
-      scheduleDrawn = null;
-      schedule();
-      sayError('The start time could not be saved: ' + errorMessage(err));
+      while (startWanted) {
+        const { id, at: next } = startWanted;
+        startWanted = null;
+        try {
+          const data = await api('/api/chats/' + encodeURIComponent(id) + '/start_at', { method: 'PUT', body: { start_at: next } });
+          if (startWanted) continue;
+          if (data && data.session && session && session.id === id) session = data.session;
+          scheduleDrawn = null;
+          schedule();
+        } catch (err) {
+          if (startWanted) continue;
+          scheduleDrawn = null;
+          schedule();
+          sayError('The start time could not be saved: ' + errorMessage(err));
+        }
+      }
+    } finally {
+      startSaving = false;
     }
   }
+
+  // The time iOS puts into an empty field the moment its picker opens - now,
+  // to the minute - before a wheel has been turned. It is no time anybody
+  // chose, so it is not an error to say "has to be in the future" about:
+  // it is left alone, and put back to what was saved if the picker closes on
+  // it. Any other time that is not in the future is said at once.
+  let startPrefill = '';
+  const wasEmpty = new WeakSet();
+  const nowMinute = (at) => Math.abs(at - Date.now()) < 2 * 60000;
+  scheduleSlot.addEventListener('focusin', (event) => {
+    const field = event.target.closest('[data-schedule]');
+    if (field && !field.value) wasEmpty.add(field);
+  });
+  scheduleSlot.addEventListener('focusout', (event) => {
+    const field = event.target.closest('[data-schedule]');
+    if (!field) return;
+    wasEmpty.delete(field);
+    const at = field.value ? new Date(field.value).getTime() : 0;
+    if (!field.value || at > Date.now()) return;
+    // The picker closed on the time it opened with, or on one that has
+    // gone by meanwhile: the field shows what is saved again.
+    if (field.value !== startPrefill) sayError('The start time has to be in the future.');
+    startPrefill = '';
+    // Set by hand: a redraw changes no value attribute here, so it would
+    // leave the live value standing.
+    const saved = session ? Number(session.start_at) || 0 : 0;
+    field.value = saved ? localInput(saved) : '';
+    scheduleDrawn = null;
+    schedule();
+  });
 
   scheduleSlot.addEventListener('change', (event) => {
     const field = event.target.closest('[data-schedule]');
     if (!field) return;
     const at = field.value ? new Date(field.value).getTime() : 0;
+    if (wasEmpty.has(field) && field.value) {
+      wasEmpty.delete(field);
+      startPrefill = nowMinute(at) && !(at > Date.now()) ? field.value : '';
+    }
     if (field.value && !(at > Date.now())) {
+      if (field.value === startPrefill) return;
       sayError('The start time has to be in the future.');
       scheduleDrawn = null;
       schedule();

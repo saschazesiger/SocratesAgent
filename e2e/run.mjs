@@ -8088,6 +8088,62 @@ async function chatfresh() {
     const past = await startAtOf(s, id, Date.now() - 60000);
     ok(past.status() === 400, 'a start time in the past is refused', past.status());
 
+    // iOS's wheels say "change" at every step: the saves go one after the
+    // other, and the last time picked is the one saved and said, however
+    // slowly the first answer comes back.
+    const sel = '#chat input[data-schedule]';
+    const first = Date.now() + 3 * 3600 * 1000 + 22 * 60 * 1000;
+    const last = first + 3 * 60 * 1000;
+    let held = 0;
+    const slowFirst = async (route) => {
+      if (route.request().method() === 'PUT' && held++ === 0) await wait(1500);
+      await route.continue();
+    };
+    await page.route('**/start_at', slowFirst);
+    await page.fill(sel, localInput(first));
+    await page.dispatchEvent(sel, 'change');
+    await wait(100);
+    await page.fill(sel, localInput(last));
+    await page.dispatchEvent(sel, 'change');
+    const wantLast = Math.floor(last / 60000) * 60000;
+    const raceBy = Date.now() + 10000;
+    await wait(2500);
+    while (Date.now() < raceBy && !((row = await sessionRow(s, id)) && row.start_at === wantLast)) await wait(300);
+    const raced = await page.evaluate((s2) => ({
+      value: document.querySelector(s2).value,
+      hint: document.querySelector('#chat .so-chat__schedule .ds-field__hint').textContent,
+    }), sel);
+    const lastWords = new Date(last).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    await page.unroute('**/start_at', slowFirst);
+    await page.$eval(sel, (n) => n.blur());
+    ok(row && row.start_at === wantLast && raced.value === localInput(last) && raced.hint.includes(lastWords),
+      'two wheel steps in a row save the last time picked, and the field and its hint say that one',
+      JSON.stringify({ saved: row && row.start_at && new Date(row.start_at).toISOString(), want: new Date(wantLast).toISOString(), ...raced, lastWords }));
+    await startAtOf(s, id, 0);
+    await page.waitForFunction((s2) => document.querySelector(s2).value === '', sel, { timeout: 10000 }).catch(() => {});
+
+    // iOS puts the current minute into an empty field as its picker opens,
+    // before anything was picked: that is no time to be told off about, and
+    // closing the picker on it leaves the field as it was. A time in the
+    // past that somebody did pick is said at once.
+    const futureNote = () => page.evaluate(() => /has to be in the future/.test(document.getElementById('chat').innerText));
+    await page.focus(sel);
+    await page.$eval(sel, (n, v) => { n.value = v; n.dispatchEvent(new Event('change', { bubbles: true })); }, localInput(Date.now()));
+    await wait(300);
+    const quietOpen = !(await futureNote());
+    await page.$eval(sel, (n) => n.blur());
+    await wait(300);
+    const putBack = await page.$eval(sel, (n) => n.value);
+    const quietClose = !(await futureNote());
+    await page.focus(sel);
+    await page.$eval(sel, (n, v) => { n.value = v; n.dispatchEvent(new Event('change', { bubbles: true })); }, localInput(Date.now() - 3600 * 1000));
+    await wait(300);
+    const told = await futureNote();
+    await page.$eval(sel, (n) => n.blur());
+    ok(quietOpen && quietClose && putBack === '' && told,
+      'the minute iOS fills in as its picker opens is no error, and closing on it empties the field; a past time picked is said',
+      JSON.stringify({ quietOpen, quietClose, putBack, told }));
+
     // On a phone the field is the screen.
     phone = await deviceOf(s, { viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
     await phone.page.goto(s.url + '/#open=' + id, { waitUntil: 'domcontentloaded' });
