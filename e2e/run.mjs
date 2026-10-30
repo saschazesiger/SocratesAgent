@@ -8322,7 +8322,8 @@ async function backup() {
     ok(!healed.warning && !healed.last_error, 'the next good run takes the warning and the error away', JSON.stringify({ warning: healed.warning, error: healed.last_error }));
     const snaps = ((await (await s.context.request.get(s.url + '/api/backup/snapshots')).json()).snapshots) || [];
     ok(snaps.length === 2, 'and there are two snapshots now', String(snaps.length));
-    ok(unexpected(s.errors, /503|502|409/).length === 0, 'no console errors', unexpected(s.errors, /503|502|409/).join(' | ') || '0');
+    // A failed bucket is a 500 now: Cloudflare replaces a 502 with its own page.
+    ok(unexpected(s.errors, /503|502|500|409/).length === 0, 'no console errors', unexpected(s.errors, /503|502|500|409/).join(' | ') || '0');
   } finally { await s.stop(); }
 }
 
