@@ -549,7 +549,7 @@ func (h *host) failStart(err error) {
 }
 
 func outgoing(m *agent.Message) agent.Outgoing {
-	return agent.Outgoing{MessageID: m.ID, ClientID: m.ClientID, Text: m.Text, Attachments: m.Attachments, AnswerTo: m.AnswerTo,
+	return agent.Outgoing{MessageID: m.ID, ClientID: m.ClientID, Text: agent.AgentText(m.Note, m.Text), Attachments: m.Attachments, AnswerTo: m.AnswerTo,
 		AfterTurn: m.AfterTurn}
 }
 
@@ -731,7 +731,8 @@ func (h *host) send(ctx context.Context, cmd Command) any {
 		return fail(cmd, CodeNotRunning, "the agent is not running")
 	}
 	msg := agent.Event{Type: agent.TypeMessage, MessageID: newID("m_"), Role: agent.RoleUser,
-		State: agent.MessagePending, ClientID: cmd.ClientID, Text: cmd.Text, Attachments: cmd.Attachments}
+		State: agent.MessagePending, ClientID: cmd.ClientID, Text: cmd.Text, Attachments: cmd.Attachments,
+		Note: cmd.Note, Sender: cmd.Sender}
 	// A question no call waits on any more is left behind by this message:
 	// the person moved on (pressed Stop and wrote something else, or wrote
 	// instead of answering a question meant for the next message). It stops
@@ -754,7 +755,7 @@ func (h *host) send(ctx context.Context, cmd Command) any {
 	if journaledHook != nil {
 		journaledHook()
 	}
-	out := agent.Outgoing{MessageID: msg.MessageID, ClientID: cmd.ClientID, Text: cmd.Text, Attachments: cmd.Attachments,
+	out := agent.Outgoing{MessageID: msg.MessageID, ClientID: cmd.ClientID, Text: agent.AgentText(cmd.Note, cmd.Text), Attachments: cmd.Attachments,
 		AfterTurn: h.afterTurn(msg.MessageID)}
 	if err := h.adapter.Send(ctx, out); err != nil {
 		// Journaled and acknowledged all the same: it stays pending, and the

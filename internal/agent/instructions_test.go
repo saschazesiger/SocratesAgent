@@ -55,7 +55,18 @@ func TestStripModelNote(t *testing.T) {
 	if got := StripModelNote(WithNote(n.Switch("b"), "hello\nthere")); got != "hello\nthere" {
 		t.Fatalf("stripped = %q", got)
 	}
-	for _, text := range []string{"hello", "<model-instructions> never closed", "x <model-instructions></model-instructions>"} {
+	// Socrates' own note comes off as well, after the model's or alone.
+	if got := StripModelNote(WithNote(n.Switch("a"), AgentText("From the chat “API”.", "go on"))); got != "go on" {
+		t.Fatalf("stripped both = %q", got)
+	}
+	if got := StripModelNote(AgentText("From the chat “API”.", "go on")); got != "go on" {
+		t.Fatalf("stripped Socrates' note = %q", got)
+	}
+	if got := AgentText("  ", "go on"); got != "go on" {
+		t.Fatalf("an empty note = %q", got)
+	}
+	for _, text := range []string{"hello", "<model-instructions> never closed", "x <model-instructions></model-instructions>",
+		"<socrates-note> never closed"} {
 		if got := StripModelNote(text); got != text {
 			t.Errorf("%q became %q", text, got)
 		}

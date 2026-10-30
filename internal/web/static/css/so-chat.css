@@ -30,9 +30,15 @@
  *                          three folds alike, .so-footfold, for the
  *                          workflows, the agents and the other jobs; a card
  *                          or a row opens .so-jobs-dialog) and the composer
- *   .so-msg                a message, data-role user | assistant; a user's
- *                          is a bubble with its state chip (.so-msg__chip);
- *                          an answer ends in Copy and its "i" (.so-msg__foot)
+ *   .so-msg                a message, data-role user | assistant | peer; a
+ *                          user's is a bubble with its state chip
+ *                          (.so-msg__chip); an answer ends in Copy and its
+ *                          "i" (.so-msg__foot); a peer's is another chat's
+ *                          agent's, a .so-peer card on the agent's side
+ *   .so-peer               a message between the agents of two chats (a DS
+ *                          card): from or to whom (.so-peer__title, a link
+ *                          to that chat), what agent (.so-peer__meta), the
+ *                          words (.so-peer__text) and how it went
  *   .so-live               a running answer's live line, the column's whole
  *                          width: what it does now (a wheel of shimmering
  *                          lines, so-motion.css), its steps and tokens, and
@@ -869,6 +875,62 @@
 
 .so-msg__chip {
   flex: none;
+}
+
+/* A message between the agents of two chats, the one another chat's agent
+   sent here or the one this chat's agent sent there: a card on the agent's
+   side, never the person's bubble, so that nobody takes it for their own. */
+.so-msg[data-role="peer"] {
+  align-items: flex-start;
+  gap: var(--ds-space-1);
+}
+
+.so-peer {
+  --ds-card-padding: var(--ds-space-3) var(--ds-space-4);
+  --ds-card-padding-sm: var(--ds-space-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-space-2);
+  max-width: var(--so-chat-bubble-max);
+}
+
+.so-peer__title {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--ds-space-2);
+  min-width: 0;
+}
+
+/* A chat's title is the person's words: it wraps, anywhere if it must. */
+.so-peer__who {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.so-peer__meta {
+  display: flex;
+  align-items: center;
+  gap: var(--ds-space-1);
+  margin: 0;
+  min-width: 0;
+}
+
+.so-peer__meta > svg {
+  flex: none;
+}
+
+.so-peer__text {
+  min-width: 0;
+}
+
+.so-peer__error {
+  margin: 0;
+  overflow-wrap: anywhere;
+  color: var(--ds-on-error-container);
+}
+
+.so-msg__queue.so-peer__queue {
+  justify-content: flex-start;
 }
 
 /* Under a waiting message: where it is, and Send now. */

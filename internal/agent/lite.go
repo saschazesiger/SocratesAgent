@@ -146,8 +146,10 @@ func partEvent(part *Part) Event {
 
 // Light is a part event made light, when it is a tool part of LiteFrom or
 // more whose content can be cut to what its row shows; any other is itself.
+// A message the agent sent another chat (send_to_chat) is no row: the chat
+// shows it whole, as a message (chatparts.js sentMessage).
 func Light(ev Event) Event {
-	if ev.Kind != PartTool || len(ev.Text)+len(ev.Content) < LiteFrom {
+	if ev.Kind != PartTool || len(ev.Text)+len(ev.Content) < LiteFrom || sentToChat(ev.Content) {
 		return ev
 	}
 	content, ok := liteContent(ev.Content)
@@ -232,4 +234,23 @@ func askPartID(payload json.RawMessage) string {
 		return ""
 	}
 	return p.PartID
+}
+
+// sentToChat says whether a tool part's content is a call of send_to_chat,
+// as each agent names it (mcp__socrates__send_to_chat, socrates_send_to_chat,
+// send_to_chat).
+func sentToChat(raw json.RawMessage) bool {
+	var c struct {
+		Tool string `json:"tool"`
+		Name string `json:"name"`
+	}
+	if json.Unmarshal(raw, &c) != nil {
+		return false
+	}
+	for _, name := range []string{c.Tool, c.Name} {
+		if name == "send_to_chat" || strings.HasSuffix(name, "_send_to_chat") {
+			return true
+		}
+	}
+	return false
 }

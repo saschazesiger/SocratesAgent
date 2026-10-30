@@ -28,6 +28,12 @@ func init() {
 // next turn.
 const DeferredText = "Questions delivered. End your turn now; the answers arrive as the next message."
 
+// AskedText is what ask_user returns to a code-mode model that asks again
+// what it has already handed over in the turn: a small model that does not
+// end its turn otherwise asks, sleeps and asks again, a question each time.
+const AskedText = "These questions are already with the person and still open. Do not ask again: end your turn now; " +
+	"the answers arrive as the next message."
+
 // askGuidance begins the developer instructions of every thread the adapter
 // starts: codex's equivalent of the system prompt (REBUILD.md §5.3). A thread
 // started before has only the tool's description, which says the same in
@@ -82,11 +88,23 @@ func askUserTool(ctx context.Context, c *Call) (any, error) {
 	if err != nil {
 		return toolResult(err.Error(), false), nil
 	}
-	payload.PartID = c.PartID
 	if codeMode(c.Model) {
+		asked := c.Turn + "\x00" + string(payload.JSON())
+		c.a.mu.Lock()
+		again := c.a.deferred[asked]
+		if c.a.deferred == nil {
+			c.a.deferred = map[string]bool{}
+		}
+		c.a.deferred[asked] = true
+		c.a.mu.Unlock()
+		if again {
+			return toolResult(AskedText, true), nil
+		}
+		payload.PartID = c.PartID
 		c.Defer(payload.JSON())
 		return toolResult(DeferredText, true), nil
 	}
+	payload.PartID = c.PartID
 	answer, err := c.Ask(ctx, payload.JSON())
 	if err != nil {
 		// Codex no longer waits for this call; the answer goes as a message.

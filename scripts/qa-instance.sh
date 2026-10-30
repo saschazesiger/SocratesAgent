@@ -96,6 +96,17 @@ copy_clis() {
 		mv -f "$QA_HOME/.local/bin/$name.new" "$QA_HOME/.local/bin/$name"
 		info "$name: $("$QA_HOME/.local/bin/$name" --version 2>/dev/null | head -1)"
 	done
+	# Codex runs its tools through helpers it finds beside its own binary
+	# (codex-code-mode-host, codex-exec-server): without them every command
+	# and MCP call of a Codex chat fails to start.
+	path=$(PATH=/root/.local/bin:/var/lib/socrates/bin:$PATH command -v codex || true)
+	if [ -n "$path" ]; then
+		local helper
+		for helper in "$(dirname "$(readlink -f "$path")")"/codex-*; do
+			[ -f "$helper" ] || continue
+			install -m 0755 -o "$QA_USER" -g "$QA_USER" "$helper" "$QA_HOME/.local/bin/$(basename "$helper")"
+		done
+	fi
 }
 
 write_unit() {

@@ -100,24 +100,108 @@ func TestTheChatsOfARepositoryReachEachOther(t *testing.T) {
 		t.Fatalf("another chat's id with this chat's seal: %+v", res)
 	}
 
-	res = call(ep, chattools.Send, map[string]any{"chat": web, "text": "please check the login route"})
-	if res.Error || !strings.Contains(res.Text, "Sent to “Web”") {
+	if res := call(ep, chattools.Send, map[string]any{"chat_id": web}); !res.Error || !strings.Contains(res.Text, `{"chat": "the id list_chats gives", "text":`) {
+		t.Fatalf("a call without the text says how to call it: %+v", res)
+	}
+	// An agent that calls the tool before it has loaded it guesses the
+	// names of its arguments; the usual guesses are taken.
+	res = call(ep, chattools.Send, map[string]any{"chat_id": web, "message": "please check the login route"})
+	if res.Error || !strings.Contains(res.Text, "to “Web” (Scripted agent).") || !strings.Contains(res.Text, "end your turn now") {
 		t.Fatalf("send: %+v", res)
 	}
 	evs := c.waitJournal(t, web, 15*time.Second, "the message answered", turnsEnded(2))
-	notice := false
+	notice, message, told := false, false, false
 	for _, ev := range evs {
 		if ev.Type == agent.TypeNotice && ev.Code == agent.NoticeChatMessage && strings.Contains(ev.Text, "“API”") {
 			notice = true
 		}
+		// The journal has the message as it was written, the chat it came
+		// from, and the note its agent got with it apart.
+		if ev.Type == agent.TypeMessage && ev.Role == agent.RoleUser && ev.Text == "please check the login route" &&
+			ev.Sender != nil && ev.Sender.Chat == api && ev.Sender.Title == "API" && ev.Sender.Harness == agent.FakeHarness &&
+			strings.Contains(ev.Note, "not from your person: the agent of the chat “API” (Scripted agent), id "+api) {
+			message = true
+		}
+		// The agent is given the note before the text.
+		if ev.Type == agent.TypePart && strings.HasPrefix(ev.Text, "you said: <socrates-note>\nThis message is from another agent") &&
+			strings.Contains(ev.Text, "</socrates-note>\n\nplease check the login route") {
+			told = true
+		}
 	}
-	if !notice {
-		t.Fatalf("no notice in %v", evs)
+	if !notice || !message || !told {
+		t.Fatalf("no notice, message from API or note for the agent in %v", evs)
 	}
 
 	res = call(ep, chattools.Read, map[string]any{"chat": web, "count": 5})
-	if res.Error || !strings.Contains(res.Text, "The person:\n[A message from the chat “API” (Scripted agent), id "+api) ||
-		!strings.Contains(res.Text, "please check the login route") || !strings.Contains(res.Text, "Its agent:\nyou said:") {
+	if res.Error || !strings.Contains(res.Text, "A message from the agent of the chat “API” (id "+api+"):\nplease check the login route") ||
+		!strings.Contains(res.Text, "Its agent:\nyou said: <socrates-note>") {
 		t.Fatalf("read: %+v", res)
+	}
+
+	// While the agent's own question to its person is open, it does not
+	// answer the other chat for them.
+	c.send(t, web, "ask-web", "/asknext")
+	c.waitJournal(t, web, 15*time.Second, "the question", turnsEnded(3))
+	// The server's own view of the chat follows the journal.
+	webPeer, err := c.srv.chats.peer(web)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for until := time.Now().Add(10 * time.Second); ; {
+		open := false
+		_ = webPeer.view(func(proj *agent.Projection) { open = awaitsAnswer(proj) })
+		if open {
+			break
+		}
+		if time.Now().After(until) {
+			t.Fatal("the server never saw the question open")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	webEP, err := c.srv.chatToolsEndpoint(web)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res := call(webEP, chattools.Send, map[string]any{"chat": api, "text": "Yes"}); !res.Error ||
+		!strings.Contains(res.Text, "Your person has not answered your question yet") {
+		t.Fatalf("a send while a question is open: %+v", res)
+	}
+
+	// A message of the person's own tells the agent which chats work beside
+	// it; a shell line goes as it is.
+	self, err := c.srv.chats.peer(api)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code, res := c.srv.sendMessage(context.Background(), self, &chatMessageBody{ClientID: "own-1", Text: "go on"}); code >= 300 {
+		t.Fatalf("a message of the person's: %d %v", code, res)
+	}
+	if code, res := c.srv.sendMessage(context.Background(), self, &chatMessageBody{ClientID: "own-2", Text: "!ls"}); code >= 300 {
+		t.Fatalf("a shell line: %d %v", code, res)
+	}
+	evs = c.waitJournal(t, api, 15*time.Second, "both messages", func(evs []agent.Event) bool {
+		n := 0
+		for _, ev := range evs {
+			if ev.Type == agent.TypeMessage && ev.Role == agent.RoleUser {
+				n++
+			}
+		}
+		return n >= 2
+	})
+	for _, ev := range evs {
+		if ev.Type != agent.TypeMessage || ev.Role != agent.RoleUser {
+			continue
+		}
+		switch ev.Text {
+		case "go on":
+			if ev.Sender != nil || !strings.Contains(ev.Note, "Other chats work in this repository right now") ||
+				!strings.Contains(ev.Note, "- “Web” (Scripted agent), id "+web) || strings.Contains(ev.Note, other) {
+				t.Fatalf("the person's message: %+v", ev)
+			}
+		case "!ls":
+			if ev.Note != "" {
+				t.Fatalf("a shell line got a note: %+v", ev)
+			}
+		}
 	}
 }

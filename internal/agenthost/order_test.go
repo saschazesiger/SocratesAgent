@@ -96,3 +96,19 @@ func TestAMessageGoesToTheAdapterWithItsPlaceInTheJournal(t *testing.T) {
 		t.Fatalf("the journal's order: %s", got)
 	}
 }
+
+// A host of a build before NoteProtocol would drop a send's note: the server
+// puts it into the text for one, and leaves everything else as it is.
+func TestFoldNote(t *testing.T) {
+	cmd := Command{Op: OpSend, ClientID: "c", Text: "go on", Note: "From “API”.", Sender: &agent.Sender{Chat: "x"}}
+	if got := FoldNote(cmd, NoteProtocol); got.Text != "go on" || got.Note != cmd.Note {
+		t.Fatalf("a host that knows notes: %+v", got)
+	}
+	got := FoldNote(cmd, AskProtocol)
+	if got.Note != "" || got.Text != agent.AgentText(cmd.Note, "go on") {
+		t.Fatalf("an older host: %+v", got)
+	}
+	if got := FoldNote(Command{Op: OpCommand, Text: "compact", Note: "n"}, 1); got.Text != "compact" {
+		t.Fatalf("not a send: %+v", got)
+	}
+}

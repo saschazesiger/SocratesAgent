@@ -3030,9 +3030,11 @@ async function mcpcard() {
 // chatpeers: the agents of the chats in one repository reach each other,
 // whatever their harness: Claude Code, Codex and OpenCode each in a folder
 // of one Git repository list each other and no chat outside it, a message
-// sent with send_to_chat arrives in the other chat marked as that chat's -
-// a line over it says from which - and its agent answers it at once, and
-// read_chat gives back what was said there.
+// sent with send_to_chat arrives in the other chat as that chat's agent's -
+// a card that names the chat, never the person's bubble, and its agent is
+// told so in a note before the text - and its agent answers it at once; the
+// sender's chat shows what it sent as the same card, and read_chat gives
+// back what was said there.
 async function chatpeers() {
   const s = await start({ viewport: { width: 1280, height: 900 } });
   try {
@@ -3041,10 +3043,13 @@ async function chatpeers() {
     for (const dir of ['.git', 'api', 'web', 'docs']) mkdirSync(join(repo, dir), { recursive: true });
     const put = await s.context.request.put(s.url + '/api/settings', { data: { settings: { workspace: { allow_custom: true } } } });
     ok(put.ok(), 'typed-in folders are allowed', String(put.status()));
-    const claude = await makeChat(s, 'claude', { title: 'API work', workdir_mode: 'custom', workdir: join(repo, 'api') });
-    const codex = await makeChat(s, 'codex', { title: 'Web work', workdir_mode: 'custom', workdir: join(repo, 'web') });
-    const opencode = await makeChat(s, 'opencode', { title: 'Docs work', workdir_mode: 'custom', workdir: join(repo, 'docs') });
-    const alone = await makeChat(s, 'claude', { title: 'Elsewhere' });
+    // Only a chat somebody has sent something is there for the others: each
+    // starts with a first message.
+    const first = () => ({ message: { client_id: 'first-' + Math.random().toString(36).slice(2), text: 'Hello' } });
+    const claude = await makeChat(s, 'claude', { title: 'API work', workdir_mode: 'custom', workdir: join(repo, 'api'), ...first() });
+    const codex = await makeChat(s, 'codex', { title: 'Web work', workdir_mode: 'custom', workdir: join(repo, 'web'), ...first() });
+    const opencode = await makeChat(s, 'opencode', { title: 'Docs work', workdir_mode: 'custom', workdir: join(repo, 'docs'), ...first() });
+    const alone = await makeChat(s, 'claude', { title: 'Elsewhere', ...first() });
     await open(s);
 
     // The message a chat got from another, and its agent's answer to it.
@@ -3080,20 +3085,41 @@ async function chatpeers() {
       && listed.includes('id ' + opencode + ': “Docs work” (OpenCode)') && !listed.includes(alone) && !listed.includes(claude),
       'Claude Code lists the Codex and OpenCode chats of the repository, and no chat outside it', listed);
 
-    const sent = await answerTo(s, claude, '/mcptool send_to_chat {"chat":"' + codex + '","text":"Please check the login form."}');
-    ok(/^send_to_chat returned: Sent to “Web work” \(Codex\)\./.test(sent), 'Claude Code sends the Codex chat a message', sent);
-    const got = await received(codex, 'Please check the login form.');
-    ok(!!got && got.message.startsWith('[A message from the chat “API work” (Claude Code), id ' + claude)
-      && got.reply.startsWith('you said: [A message from the chat'),
-      'it arrives in the Codex chat as Claude Code’s, and Codex answers it at once', JSON.stringify(got));
+    const sent = await answerTo(s, claude, '/mcptool send_to_chat {"chat":"' + codex + '","text":"Please check the **login** form."}');
+    ok(/^send_to_chat returned: Delivered to “Web work” \(Codex\)\./.test(sent), 'Claude Code sends the Codex chat a message', sent);
+    const got = await received(codex, 'Please check the **login** form.');
+    ok(!!got && got.message === 'Please check the **login** form.'
+      && got.reply.startsWith('you said: <socrates-note>\nThis message is from another agent, not from your person: the agent of the chat “API work” (Claude Code), id ' + claude),
+      'it arrives in the Codex chat as written, its agent told in a note that Claude Code’s agent sent it, and Codex answers it at once', JSON.stringify(got));
 
     await openChat(s.page, codex);
-    await s.page.waitForSelector('#chat .so-line[data-code="chat_message"]', { timeout: 15000 });
-    const line = await s.page.$eval('#chat .so-line[data-code="chat_message"]', (n) => n.textContent.trim());
-    ok(line === 'A message from the chat “API work” (Claude Code).', 'a line over it says which chat it is from', line);
-    const bubble = await s.page.$eval('#chat .so-msg[data-role="user"] .so-msg__text', (n) => n.textContent);
-    ok(bubble === 'Please check the login form.', 'and the message shows without the line meant for the agent', bubble);
+    const card = '#chat .so-msg[data-role="peer"] .so-peer[data-dir="from"]';
+    await s.page.waitForSelector(card, { timeout: 15000 });
+    const from = await s.page.$eval(card, (n) => ({
+      who: n.querySelector('.so-peer__who').textContent.trim(), href: n.querySelector('a.so-peer__chat')?.getAttribute('href'),
+      mark: n.querySelector('.so-peer__title .so-agent')?.dataset.agent, meta: n.querySelector('.so-peer__meta').textContent.trim(),
+      bold: n.querySelector('.so-peer__text strong')?.textContent, text: n.querySelector('.so-peer__text').textContent.trim(),
+    }));
+    ok(from.who === 'From the agent of API work' && from.href === '#' + claude && from.mark === 'claude' && from.bold === 'login'
+      && from.text === 'Please check the login form.' && from.meta === 'Claude Code · a message to this chat’s agent, not from you',
+      'it shows as a card from the agent of the Claude Code chat, linked to that chat, in Markdown', JSON.stringify(from));
+    const asOwn = await s.page.$$eval('#chat .so-msg[data-role="user"] .so-msg__text', (ns) => ns.some((n) => n.textContent.includes('Please check')));
+    const lines = await s.page.$$eval('#chat .so-line[data-code="chat_message"]', (ns) => ns.length);
+    ok(!asOwn && lines === 0, 'not as a bubble of the person’s, and with no line over it', JSON.stringify({ asOwn, lines }));
     await shot(s.page, 'chatpeers-received');
+
+    await openChat(s.page, claude);
+    const out = '#chat .so-peer[data-dir="to"]';
+    await s.page.waitForSelector(out, { timeout: 15000 });
+    const to = await s.page.$eval(out, (n) => ({
+      who: n.querySelector('.so-peer__who').textContent.trim(), href: n.querySelector('a.so-peer__chat')?.getAttribute('href'),
+      chip: n.querySelector('.so-peer__chip')?.textContent.trim(), text: n.querySelector('.so-peer__text').textContent.trim(),
+      folded: !!n.closest('.so-work'),
+    }));
+    ok(to.who === 'To the agent of Web work' && to.href === '#' + codex && to.chip === 'Delivered' && to.text === 'Please check the login form.'
+      && !to.folded, 'the Claude Code chat shows what its agent sent as a card to the Codex chat, outside the folded work', JSON.stringify(to));
+    await shot(s.page, 'chatpeers-sent');
+    await openChat(s.page, codex);
     const thread = await answerTo(s, codex, '/thread');
     ok(/^tools: .*list_chats/.test(thread) && thread.includes('read_chat') && thread.includes('send_to_chat')
       && thread.includes(RULE) && thread.includes('list_chats, read_chat and send_to_chat are the only way'),
@@ -3107,9 +3133,9 @@ async function chatpeers() {
     ok(instructions.includes(RULE) && instructions.includes('socrates_list_chats, socrates_read_chat and socrates_send_to_chat are the only way'),
       'OpenCode is told the same by the socrates server, with the names it knows the tools by', instructions.slice(0, 120));
     const back = await answerTo(s, opencode, '/mcptool send_to_chat {"chat":"' + claude + '","text":"Docs are done."}');
-    ok(/^send_to_chat returned: Sent to “API work” \(Claude Code\)\./.test(back), 'OpenCode sends the Claude Code chat a message', back);
+    ok(/^send_to_chat returned: Delivered to “API work” \(Claude Code\)\./.test(back), 'OpenCode sends the Claude Code chat a message', back);
     const answered = await received(claude, 'Docs are done.');
-    ok(!!answered && answered.message.includes('(OpenCode), id ' + opencode) && answered.reply.startsWith('you said:'),
+    ok(!!answered && answered.message === 'Docs are done.' && answered.reply.includes('“Docs work” (OpenCode), id ' + opencode),
       'and Claude Code answers it', JSON.stringify(answered));
 
     await openChat(s.page, alone);

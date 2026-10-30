@@ -273,6 +273,12 @@ type Event struct {
 	// AnswerTo marks a user message that carries the answer to an ask whose
 	// blocking call was gone.
 	AnswerTo string `json:"answer_to,omitempty"`
+	// Note is what a user message's agent is told with it and nobody else
+	// sees in it (AgentText): who sent it, which other chats work beside it.
+	// Sender is the chat whose agent sent it (send_to_chat), nil for one the
+	// person or Socrates sent.
+	Note   string  `json:"note,omitempty"`
+	Sender *Sender `json:"sender,omitempty"`
 
 	Outcome string  `json:"outcome,omitempty"`
 	Usage   *Usage  `json:"usage,omitempty"`

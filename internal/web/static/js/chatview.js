@@ -32,6 +32,7 @@ import { loadChat, saveChat } from './chatcache.js';
 import {
   assistantMessage, userMessage, lineHtml, askCard, askPlaces, todoList, todoItems, renewsIn, seconds, outboxState,
   backgroundJobs, jobsList, jobDetail, agentsFold, jobsFold, schedulesFold, clock, infoButton, tickLive,
+  peerMessage,
 } from './chatparts.js';
 import { mountComposer } from './composer.js';
 import { wheelHooks } from './wheel.js';
@@ -233,6 +234,11 @@ export function mountChat(ctx) {
   // Bumped by every change of the Outbox: what a card shows of this
   // browser's own answers and commands is drawn again then, and only then.
   let outboxRev = 0;
+  // peersRev counts the changes to the other chats' titles and agents, which
+  // a message between the agents names (view.peerChat), and peersSeen is
+  // what they were.
+  let peersRev = 0;
+  let peersSeen = '';
   // A Send now on its way: the turn is being stopped.
   let interrupting = false;
   // The chat a "Continue with" is being sent for, until the server answers.
@@ -374,6 +380,10 @@ export function mountChat(ctx) {
       return listed ? (listed.label || listed.id) : model;
     },
     effortLabel: (effort) => harnesses.effortLabel(effort),
+    // The other chats a message names (chatparts.js peerCard): their title
+    // and agent as the sidebar has them now, null for one that is gone.
+    peerChat: (id) => (ctx.sessionOf ? ctx.sessionOf(id) : null),
+    harnessLabel: (id) => harnesses.label(id),
     // What the chat was started on, for the first model line (lineHtml).
     started: () => (session ? { model: session.model || '', effort: session.effort || '' } : null),
     // where is a path as the chat's folder sees it: relative to it when it
@@ -476,16 +486,26 @@ export function mountChat(ctx) {
         // the agent takes it up next.
         const waits = (message.state === 'queued' || message.state === 'pending') && !!chat.turn;
         rev = message.rev + ':' + waits + ':' + interrupting;
-        make = () => userMessage({
-          key: entry.key, text: message.text, attachments: message.attachments,
-          state: message.state === 'delivered' ? '' : message.state, answerTo: message.answerTo,
-          sendNow: waits && !interrupting,
-        });
+        // Another chat's agent wrote it: a card that says so, with a link to
+        // that chat, which the sidebar's list may add or take away.
+        if (message.sender) {
+          rev += ':' + peersRev;
+          make = () => peerMessage({
+            key: entry.key, sender: message.sender, text: message.text, view,
+            state: message.state === 'delivered' ? '' : message.state, sendNow: waits && !interrupting,
+          });
+        } else {
+          make = () => userMessage({
+            key: entry.key, text: message.text, attachments: message.attachments,
+            state: message.state === 'delivered' ? '' : message.state, answerTo: message.answerTo,
+            sendNow: waits && !interrupting,
+          });
+        }
       } else {
         // A plan part is drawn from the question it waits on, and from the
         // answer this browser has on its way to it; so is a question card
         // drawn at its call, and from this browser's draft of it as well.
-        rev = message.rev + ':' + chat.askRev + (message.state === 'streaming' ? ':' + tick : '');
+        rev = message.rev + ':' + chat.askRev + ':' + peersRev + (message.state === 'streaming' ? ':' + tick : '');
         if (message.parts.some((part) => part.kind === 'plan') || askPlaces(chat).byMessage.has(message.id)) {
           rev += ':' + local + ':' + askDraftsRev();
         }
@@ -1766,6 +1786,15 @@ export function mountChat(ctx) {
      * is on screen and read: at once when it already is, else as soon as
      * its stream has caught up. Another chat shown first forgets it.
      */
+    // sessionsChanged is the sidebar's list as it is now: a message between
+    // the agents is drawn again when a chat it names is renamed or gone.
+    sessionsChanged(list) {
+      const seen = (list || []).map((one) => one.id + '\u0000' + (one.title || '') + '\u0000' + (one.harness || '')).join('\n');
+      if (seen === peersSeen) return;
+      peersSeen = seen;
+      peersRev += 1;
+      if (session) schedule();
+    },
     openJobs(id) {
       jobsWanted = id;
       schedule();

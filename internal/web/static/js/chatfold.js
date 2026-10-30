@@ -216,6 +216,22 @@ function applyDeltaTo(chat, ev) {
   return true;
 }
 
+// A message from another chat's agent in a journal from before the sender
+// was kept apart (agent.Event.Sender) says who sent it in a line for the
+// agent before the text.
+const OLD_FROM = /^\[A message from the chat “([^\n]*)” \(([^)\n]*)\), id ([0-9a-f]+), sent with send_to_chat\.[^\n]*\]\n\n/;
+
+// fromChat is who sent a user message, when the agent of another chat did:
+// { sender: { chat, title, harness | harnessLabel } } and its text without the
+// line meant for the agent, or nothing for the person's own.
+function fromChat(ev) {
+  if (ev.role !== 'user') return {};
+  if (ev.sender && ev.sender.chat) return { sender: { ...ev.sender } };
+  const old = OLD_FROM.exec(ev.text || '');
+  if (!old) return { sender: null };
+  return { sender: { chat: old[3], title: old[1], harnessLabel: old[2] }, text: ev.text.slice(old[0].length) };
+}
+
 function line(chat, ev, data) {
   add(chat, { key: 'l:' + ev.seq, type: 'line', line: { seq: ev.seq, at: ev.at, ...data }, rev: ++chat.rev });
 }
@@ -359,7 +375,7 @@ export function apply(chat, ev) {
         const was = waiting(known);
         Object.assign(known, {
           role: ev.role, state: ev.state || '', text: ev.text || '', attachments: ev.attachments || [],
-          answerTo: ev.answer_to || '', model: ev.model || '',
+          answerTo: ev.answer_to || '', model: ev.model || '', ...fromChat(ev),
         });
         if (was && !waiting(known)) takenUp(chat, known);
         touchMessage(chat, known.id);
@@ -369,6 +385,7 @@ export function apply(chat, ev) {
         id: ev.message_id, role: ev.role || 'assistant', state: ev.state || '', clientId: ev.client_id || '',
         text: ev.text || '', attachments: ev.attachments || [], answerTo: ev.answer_to || '',
         turnId: ev.turn_id || '', model: ev.model || '', at: ev.at || 0, parts: [], cuts: [], rev: ++chat.rev,
+        ...fromChat(ev),
       };
       chat.messages.set(message.id, message);
       // What the person says is the newest word; an answer goes above what
@@ -499,6 +516,9 @@ export function apply(chat, ev) {
         divider.rev = ++chat.rev;
         break;
       }
+      // A message from another chat's agent is a card that names the chat
+      // (chatparts.js peerMessage): the notice before it says nothing more.
+      if (ev.code === 'chat_message') break;
       line(chat, ev, { kind: 'notice', code: ev.code || '', text: ev.text || '', askId: ev.ask_id || '' });
       break;
     }

@@ -352,11 +352,42 @@ Socrates' own MCP server (`internal/agent/chattools`).
   back in progress, or sent its first message, it is there again.
 - **A message** goes into the other chat as the person's messages do
   (`sendMessage`), after a `chat_message` notice that names the chat it came
-  from ("A message from the chat “API work” (Claude Code)."). It opens with
-  a line for the agent - which chat, its id, answer with `send_to_chat` -
-  that the chat's bubble leaves out. It wakes a parked agent at once and
-  waits behind a running turn; the other agent answers, if it does, the same
-  way. Each message costs the receiving chat's account.
+  from, with its text as written. Beside the text the journal keeps who
+  sent it (`sender`: chat, title, agent) and a note for the receiving agent
+  alone (`note`, `receivedNote`): that another chat's agent wrote it, not its
+  person; how to answer (`send_to_chat` to that id) and only when it asks
+  something; that what only its person can say - whether their work is done,
+  whether something of theirs may change - it asks them first; that its
+  person's instructions come first. The host gives the agent the note before
+  the text, in `<socrates-note>` tags (`agent.AgentText`, which a transcript
+  read back strips). It wakes a parked agent at once and waits behind a
+  running turn; the other agent answers, if it does, the same way. Each
+  message costs the receiving chat's account.
+- **Who else is here.** A message of the person's own (and any other
+  without a note, but not a `!` shell line or a `/` command) carries a note
+  naming the other chats at work in the repository, when there are any
+  (`peersNote`): an agent that knows they are there thinks of them before
+  it discards, overwrites or commits changes that may be theirs, and tells
+  them when it changes what they rely on. Tested with the cheapest models
+  (Haiku, GPT-6-Luna, DeepSeek Flash): without it Haiku discarded another
+  chat's uncommitted work without a look; with it all three asked first.
+- **Forgiving calls.** `send_to_chat` takes the names an agent guesses
+  before it has loaded the tool (`chat_id`, `message` ...; Claude Code
+  defers MCP tools), and a call it cannot read says how to call it. An
+  agent whose own question to its person is still open cannot send: a
+  code-mode Codex model, whose `ask_user` returns at once, told the other
+  chat "Yes" before its person had answered. Its answer says the message was
+  delivered, or will be once the other agent's turn ends or its agent has
+  started, and that the answer comes as the next message: end the turn,
+  never poll.
+- **In the chat** a message from another chat's agent is a card on the
+  agent's side (`chatparts.js` `peerMessage`): from the agent of which chat
+  (a link to it), which agent, the text as Markdown - never the person's
+  bubble. What this chat's agent sent is the same card, "To the agent of",
+  with how it went (Delivered, Sending, Not delivered), standing outside the
+  folded work; `list_chats` and `read_chat` are rows named for what they
+  did. A journal from before the sender was kept apart is read from the
+  line it opens with.
 - **The test tools.** A chat whose repository holds `.socrates/tests/TESTS.md`
   when its host starts, or that was created with `tests: true` (option
   `test_tools`, a chat the Tests page starts to write a first test), gets

@@ -919,6 +919,7 @@ function drawList() {
   dom.blankIDE.hidden = !harnesses.ideAvailable();
   const host = dom.sessionList;
   const wanted = state.sessions;
+  if (state.chat) state.chat.sessionsChanged(wanted);
   if (!wanted.length) {
     let empty = 'No sessions yet.';
     if (state.loading) empty = 'Loading…';
@@ -4226,6 +4227,7 @@ async function boot() {
   // first moment, whatever is on the stage.
   state.chat = mountChat({
     host: dom.chat,
+    sessionOf: (id) => sessionOf(id),
     status: () => updateStale(),
     openAsk: (chatId, askId) => showChatQuestions(chatId, { askId, only: true }),
     toastRoom: (room) => { chatToastRoom = room; placeToasts(); },

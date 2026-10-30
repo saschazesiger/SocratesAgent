@@ -20,12 +20,15 @@ import (
 // MinProtocol to Protocol, so a host of the previous build - one that was busy
 // with a turn or an open question when the service was updated, and may stay
 // busy for a day - is still understood. Version 2 added the ask op of a local
-// tool (`socrates mcp-ask`); the server's own ops are those of version 1.
+// tool (`socrates mcp-ask`); version 3 a send's Note and Sender, which the
+// server puts into the text for a host of an older build (FoldNote).
 const (
-	Protocol    = 2
+	Protocol    = 3
 	MinProtocol = 1
 	// AskProtocol is the first version with OpAsk.
 	AskProtocol = 2
+	// NoteProtocol is the first version with Command.Note and Sender.
+	NoteProtocol = 3
 )
 
 // NoEvents is the since of a connection that wants no events at all, beyond
@@ -146,6 +149,21 @@ type Command struct {
 	// agent.NoticeScheduledStart). A host of an older build ignores it and
 	// sends the message all the same.
 	Notice string `json:"notice,omitempty"`
+	// Note is a send's words for the agent alone, journaled with the message
+	// and given to the agent before its text (agent.AgentText), and Sender
+	// the chat whose agent sent it (agent.Event.Note, Sender).
+	Note   string        `json:"note,omitempty"`
+	Sender *agent.Sender `json:"sender,omitempty"`
+}
+
+// FoldNote is a command as a host speaking proto is sent it: a host before
+// NoteProtocol would drop a send's note, so its agent gets it in the text.
+func FoldNote(cmd Command, proto int) Command {
+	if proto >= NoteProtocol || cmd.Op != OpSend || cmd.Note == "" {
+		return cmd
+	}
+	cmd.Text, cmd.Note = agent.AgentText(cmd.Note, cmd.Text), ""
+	return cmd
 }
 
 // Hello is the host's first frame.

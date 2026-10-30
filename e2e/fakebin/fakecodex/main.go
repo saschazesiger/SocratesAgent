@@ -998,10 +998,16 @@ func (c *tcx) script(text string) (string, map[string]any) {
 		item["text"] = text
 		c.completed(item)
 		ok = c.say([]string{"asked"}, 0)
-	case "/tool":
+	case "/tool", "/tooltwice":
+		// /tooltwice calls the tool twice in the turn, as a model does that
+		// asks again rather than ending its turn.
 		name := "ask_user"
 		if len(fields) > 0 {
 			name = fields[0]
+		}
+		calls := 1
+		if word == "/tooltwice" {
+			calls = 2
 		}
 		callID := c.id("call")
 		var args any = map[string]any{"question": "Deploy now?"}
@@ -1012,28 +1018,33 @@ func (c *tcx) script(text string) (string, map[string]any) {
 				`"kind":"single","options":[{"id":"pg","label":"PostgreSQL"},{"id":"sqlite","label":"SQLite"}]},` +
 				`{"id":"name","question":"What is it called?","kind":"text"}]}`)
 		}
-		item := map[string]any{"type": "dynamicToolCall", "id": callID, "namespace": nil, "tool": name, "arguments": args,
-			"status": "inProgress", "contentItems": nil, "success": nil, "durationMs": nil}
-		c.started(item)
-		r, err := c.s.ask(c.ctx, "item/tool/call", c.with(map[string]any{"callId": callID, "namespace": nil, "tool": name, "arguments": args}))
-		if err != nil {
-			item["status"], item["success"] = "failed", false
-			c.completed(item)
-			return "interrupted", nil
-		}
-		var res struct {
-			ContentItems []struct {
-				Text string `json:"text"`
-			} `json:"contentItems"`
-			Success bool `json:"success"`
-		}
-		_ = json.Unmarshal(r.Result, &res)
 		var said []string
-		for _, ci := range res.ContentItems {
-			said = append(said, ci.Text)
+		for i := 0; i < calls; i++ {
+			if i > 0 {
+				callID = c.id("call")
+			}
+			item := map[string]any{"type": "dynamicToolCall", "id": callID, "namespace": nil, "tool": name, "arguments": args,
+				"status": "inProgress", "contentItems": nil, "success": nil, "durationMs": nil}
+			c.started(item)
+			r, err := c.s.ask(c.ctx, "item/tool/call", c.with(map[string]any{"callId": callID, "namespace": nil, "tool": name, "arguments": args}))
+			if err != nil {
+				item["status"], item["success"] = "failed", false
+				c.completed(item)
+				return "interrupted", nil
+			}
+			var res struct {
+				ContentItems []struct {
+					Text string `json:"text"`
+				} `json:"contentItems"`
+				Success bool `json:"success"`
+			}
+			_ = json.Unmarshal(r.Result, &res)
+			for _, ci := range res.ContentItems {
+				said = append(said, ci.Text)
+			}
+			item["status"], item["success"], item["contentItems"] = "completed", res.Success, res.ContentItems
+			c.completed(item)
 		}
-		item["status"], item["success"], item["contentItems"] = "completed", res.Success, res.ContentItems
-		c.completed(item)
 		ok = c.say([]string{"tool said: " + strings.Join(said, " ")}, 0)
 	case "/thread":
 		c.s.mu.Lock()

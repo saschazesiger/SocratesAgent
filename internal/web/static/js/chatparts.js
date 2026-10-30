@@ -14,6 +14,7 @@
 import { html, raw, icon, faces } from './ui.js';
 import { markdown, codeBlock } from './md.js';
 import { fmtTokens } from './api.js';
+import { agentMarkHtml } from './logos.js';
 
 /* ------------------------------------------------------------- the basics */
 
@@ -178,13 +179,19 @@ export function toolOf(part) {
   else if (c.tool === 'changes') name = 'Changes';
   // A workflow's agent is one of its agents, under its label.
   else if (c.tool === 'WorkflowAgent') name = 'Agent';
+  // The chat tools say what they did with the other chats.
+  const chatTool = chatToolOf(part);
+  if (chatTool === 'list_chats') name = 'Other chats';
+  else if (chatTool === 'read_chat') name = 'Read chat';
   const agent = c.agent && typeof c.agent === 'object' ? c.agent : null;
   // Codex keeps a web search's query in its item, OpenCode names a file
   // filePath and says what a call does in its title.
   const item = c.item && typeof c.item === 'object' ? c.item : {};
   const action = item.action && typeof item.action === 'object' ? item.action : {};
   const searched = typeof item.query === 'string' && item.query ? item.query : String(action.query || action.url || '');
-  let summary = c.summary || c.command || field('command') || c.path || field('file_path') || field('filePath') || field('pattern')
+  let summary = chatTool === 'list_chats' ? 'Looked at the chats that work in this repository'
+    : chatTool === 'read_chat' ? ((NAMED.exec(toolText(part)) || [])[1] || field('chat') || field('chat_id')) : '';
+  summary = summary || c.summary || c.command || field('command') || c.path || field('file_path') || field('filePath') || field('pattern')
     || field('description') || field('url') || field('query') || searched || (typeof c.title === 'string' ? c.title : '')
     || (agent && (agent.label || agent.description))
     || (c.workflow && (c.workflow.description || c.workflow.name)) || c.name || '';
@@ -505,7 +512,8 @@ export function partHtml(part, view) {
     case 'reasoning':
       return reasoningHtml(part, view);
     case 'tool':
-      return isAskTool(part) ? '' : toolHtml(part, view);
+      if (isAskTool(part)) return '';
+      return chatToolOf(part) === 'send_to_chat' ? sentMessage(part, view) : toolHtml(part, view);
     case 'diff':
       return toolHtml(part, view, { diff: true });
     case 'todo':
@@ -908,11 +916,12 @@ function attachmentsHtml(list) {
   return html`<ul class="so-msg__files">${list.map((file, i) => html`<li class="so-attachment" data-ds-key="${'f' + i}">${raw(icon(String(file.mime || '').startsWith('image/') ? 'image' : 'file', 16))}<span class="so-break">${file.name}</span></li>`)}</ul>`;
 }
 
-// A message from another chat's agent (send_to_chat), or the results of a
-// test run the agent started (Socrates Tests), opens with a line for the
-// agent it goes to: who sent it and how to answer. The line over the message
-// (notice chat_message or test_results) says the first to the person, so
-// the bubble shows the message alone.
+// The results of a test run the agent started (Socrates Tests), and a
+// message from another chat's agent in a journal from before the agent's
+// note was kept apart (agent.Message.Note), open with a line for the agent:
+// who sent it and how to answer. The line over the message (notice
+// test_results) or the card (peerMessage) says the first to the person, so
+// the message shows alone.
 const FROM_CHAT = /^\[(?:A message from the chat|From Socrates Tests:) [^\n]*\]\n\n/;
 
 /**
@@ -933,6 +942,128 @@ export function userMessage({ key, text, attachments, state, answerTo, error, se
       sendNow ? html`<button class="ds-btn ds-btn--tonal ds-btn--sm so-msg__now" type="button" data-action="send-now" data-tip="Stop what the agent is doing and send this message now">${raw(icon('arrowUp', 16))}<span>Send now</span></button>` : ''
     }</div>` : ''
   }${error ? html`<p class="so-msg__error ds-meta">${error}</p>` : ''}</article>`;
+}
+
+/* ------------------------------------------------------- the other chats */
+
+// The chat tools (chattools.go): list_chats, read_chat and send_to_chat, as
+// each agent names them (mcp__socrates__send_to_chat, socrates_send_to_chat,
+// send_to_chat).
+const CHAT_TOOL = /(?:^|[_.:/])(list_chats|read_chat|send_to_chat)$/;
+
+/** chatToolOf is which chat tool a tool part calls, '' for none. */
+export function chatToolOf(part) {
+  const c = (part.content && typeof part.content === 'object') ? part.content : {};
+  for (const name of [c.tool, c.name]) {
+    const m = CHAT_TOOL.exec(String(name || ''));
+    if (m) return m[1];
+  }
+  return '';
+}
+
+// toolText is what a call answered: Claude's and OpenCode's in the part's
+// text, Codex's in its content items.
+function toolText(part) {
+  if (part.text) return String(part.text);
+  const items = part.content && Array.isArray(part.content.content_items) ? part.content.content_items : [];
+  return items.map((item) => (item && typeof item.text === 'string' ? item.text : '')).join('\n');
+}
+
+// arg is the first of the named arguments a call has: an agent that calls
+// a tool before it has loaded it guesses the names (the server takes the
+// same ones, chattools.go toolArg).
+function arg(input, names) {
+  if (!input || typeof input !== 'object') return '';
+  for (const name of names) if (typeof input[name] === 'string' && input[name].trim()) return input[name];
+  return '';
+}
+
+const CHAT_ARG = ['chat', 'chat_id', 'chatId', 'id', 'to', 'target', 'session_id'];
+const TEXT_ARG = ['text', 'message', 'body', 'content', 'msg'];
+
+// The chat a tool answer names: “Notes” (Claude Code).
+const NAMED = /“([^”]*)” \(([^)]*)\)/;
+
+/**
+ * sentOf reads a send_to_chat call: the chat it went to, what it said, and
+ * how it went - 'sending' while it runs, 'sent' once Socrates took it,
+ * 'failed' with the reason when it did not.
+ */
+export function sentOf(part) {
+  const c = (part.content && typeof part.content === 'object') ? part.content : {};
+  const input = c.input || c.arguments || null;
+  const answer = toolText(part).trim();
+  const named = NAMED.exec(answer) || [];
+  let state = 'sent';
+  if (part.state === 'running' || part.state === 'streaming') state = 'sending';
+  else if (part.state === 'error' || c.is_error === true || c.success === false
+    || (answer && !/^(Delivered|Sent) to /.test(answer))) state = 'failed';
+  return {
+    chat: arg(input, CHAT_ARG), text: arg(input, TEXT_ARG) || c.summary || '', state,
+    title: named[1] || '', harnessLabel: named[2] || '', error: state === 'failed' ? answer : '',
+  };
+}
+
+// The chip a message to another chat carries, by how it went.
+const SENT_CHIP = {
+  sending: html`<span class="ds-status ds-status--running so-peer__chip">${raw(icon('clock', 16))}<span>Sending</span></span>`,
+  sent: html`<span class="ds-status ds-status--ok so-peer__chip">${raw(icon('check', 16))}<span>Delivered</span></span>`,
+  failed: html`<span class="ds-status ds-status--error so-peer__chip">${raw(icon('alertCircle', 16))}<span>Not delivered</span></span>`,
+};
+
+/**
+ * peerCard is a message between the agents of two chats: who it is from or
+ * to - the other chat, by its title, a link to it while it is there, and its
+ * agent - and what it says, as Markdown. It is never a bubble of the
+ * person's: an agent wrote it. `dir` is 'from' (it came to this chat) or
+ * 'to' (this chat's agent sent it).
+ */
+function peerCard({ key, dir, chat, title, harness, harnessLabel, text, chip = '', error = '', view, extra = '' }) {
+  const other = chat && view && view.peerChat ? view.peerChat(chat) : null;
+  const name = (other && other.title) || title || 'another chat';
+  const agentId = (other && other.harness) || harness || '';
+  const agentName = (agentId && view && view.harnessLabel ? view.harnessLabel(agentId) : '') || harnessLabel || '';
+  const where = other
+    ? html`<a class="so-peer__chat" href="${'#' + chat}" data-tip="Open this chat">${name}</a>`
+    : html`<span class="so-peer__chat">${name}</span>`;
+  return html`<section class="ds-card so-peer" data-ds-key="${key}" data-dir="${dir}"><div class="ds-card__row"><h3 class="ds-card__title so-peer__title">${
+    agentId ? raw(agentMarkHtml(agentId, 20)) : raw(icon('users', 18))
+  }<span class="so-peer__who">${dir === 'from' ? 'From the agent of ' : 'To the agent of '}${where}</span></h3>${chip}</div>${
+    html`<p class="so-peer__meta ds-meta">${raw(icon(dir === 'from' ? 'chat' : 'send', 16))}<span>${
+      (agentName ? agentName + ' · ' : '') + (dir === 'from' ? 'a message to this chat’s agent, not from you' : 'sent by this chat’s agent')
+    }</span></p>`
+  }${text ? html`<div class="so-md so-peer__text">${markdown(text)}</div>` : ''}${
+    error ? html`<p class="so-peer__error ds-meta">${error}</p>` : ''
+  }${extra}</section>`;
+}
+
+/**
+ * peerMessage is a message another chat's agent sent this one
+ * (send_to_chat): a card that says so, on the agent's side of the chat,
+ * rather than a bubble of the person's. While it waits behind a running
+ * turn it says so, and offers Send now as the person's own message does.
+ */
+export function peerMessage({ key, sender, text, state, view, sendNow = false }) {
+  const chip = USER_STATE[state];
+  const waiting = chip || sendNow ? html`<div class="so-msg__queue so-peer__queue">${
+    chip ? html`<span class="${state === 'failed' ? 'ds-status ds-status--error so-msg__chip' : 'ds-status so-msg__chip'}" data-chip="${state}">${raw(icon(chip.glyph, 16))}<span>${chip.word}</span></span>` : ''
+  }${
+    sendNow ? html`<button class="ds-btn ds-btn--tonal ds-btn--sm so-msg__now" type="button" data-action="send-now" data-tip="Stop what the agent is doing and give it this message now">${raw(icon('arrowUp', 16))}<span>Send now</span></button>` : ''
+  }</div>` : '';
+  return html`<article class="so-msg" data-ds-key="${key}" data-role="peer" data-state="${state || 'delivered'}">${peerCard({
+    key: key + ':card', dir: 'from', chat: sender.chat, title: sender.title, harness: sender.harness,
+    harnessLabel: sender.harnessLabel, text: String(text || '').replace(FROM_CHAT, ''), view,
+  })}${waiting}</article>`;
+}
+
+// sentMessage is a send_to_chat call in the answer: the message it carried,
+// as the card the other chat shows it in, with how it went.
+function sentMessage(part, view) {
+  const sent = sentOf(part);
+  return html`<div class="so-part" data-ds-key="${'p:' + part.id}" data-kind="sent">${peerCard({
+    key: 'card', dir: 'to', chat: sent.chat, title: sent.title, harnessLabel: sent.harnessLabel,
+    text: sent.text, chip: SENT_CHIP[sent.state], error: sent.error, view,
+  })}</div>`;
 }
 
 // How a turn that did not complete ended, for its facts.
@@ -1429,8 +1560,13 @@ export function jobDetail(part, view, { running = false, stopping = null, now = 
 /* ---------------------------------------------------------- the work fold */
 
 // The parts that are never work: a plan to approve, the agent's notice, a
-// file it made. They stand where they are, folded or not.
+// file it made, a message it sent another chat. They stand where they are,
+// folded or not.
 const STANDS = new Set(['plan', 'notice', 'image', 'file']);
+
+function stands(part) {
+  return STANDS.has(part.kind) || (part.kind === 'tool' && chatToolOf(part) === 'send_to_chat');
+}
 
 /**
  * runsOf cuts a piece's parts after each part a question card is drawn at
@@ -1443,7 +1579,7 @@ function runsOf(piece, places) {
   let run = [];
   for (const part of piece.list) {
     run.push(part);
-    if (places.byPart.has(part.id) || (piece.shown.has(part) && STANDS.has(part.kind))) {
+    if (places.byPart.has(part.id) || (piece.shown.has(part) && stands(part))) {
       runs.push(run);
       run = [];
     }
@@ -1462,9 +1598,9 @@ function workOf(piece) {
   const shown = piece.list.filter((part) => piece.shown.has(part));
   let end = 0;
   shown.forEach((part, i) => {
-    if (part.kind !== 'text' && !STANDS.has(part.kind)) end = i + 1;
+    if (part.kind !== 'text' && !stands(part)) end = i + 1;
   });
-  return new Set(shown.slice(0, end).filter((part) => !STANDS.has(part.kind)));
+  return new Set(shown.slice(0, end).filter((part) => !stands(part)));
 }
 
 // What a call did, in the words of the fold's line: [singular, plural]
@@ -1583,7 +1719,7 @@ function liveHtml(message, chat) {
   for (const part of message.parts) {
     if (part.at && (!first || part.at < first)) first = part.at;
     if (part.state === 'running' || part.state === 'streaming') running = part;
-    if (part.kind !== 'text' && part.kind !== 'reasoning' && !STANDS.has(part.kind)) steps += 1;
+    if (part.kind !== 'text' && part.kind !== 'reasoning' && !stands(part)) steps += 1;
   }
   let doing = 'Working';
   let what = '';

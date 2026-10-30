@@ -11,7 +11,7 @@ browser ── POST /api/chats…, GET /api/chats/{id}/stream (socrates.chat.v1,
    │
 socrates serve ── chatHub: one chatPeer per chat (journal copy in memory, projection,
    │               host connection, pump); outbox in SQLite (chat_outbox)
-   │  unix socket, line JSON, protocol 2 (§4; the server also reads a version-1 host)
+   │  unix socket, line JSON, protocol 3 (§4; the server also reads a version-1 or -2 host)
    ▼
 socrates agent-host --data <data> --chat <id>      one per active chat, own scope
    │  owns: the adapter, the CLI child, the journal (only writer), parking
@@ -252,20 +252,21 @@ asks a model to read a screen; it is the projection.
   scanner skips it, and a ledger it made of one before is removed. The agents' shared folders
   (`agents/claude|codex|opencode`) are a root of the scanner like the profiles'.
 
-## 4. Host protocol (version 2)
+## 4. Host protocol (version 3)
 
 Unix socket, mode 0600, one JSON object per line in each direction, lines ≤ 16 MiB.
 
 ### 4.1 Handshake
 
-Client's first line, within 10 s: `{"op":"hello","proto":2,"since":<last seq it has>}`.
-Host: `{"t":"hello","proto":2,"version","chat","harness","host_pid","cli_pid","last_seq","process"}`
+Client's first line, within 10 s: `{"op":"hello","proto":3,"since":<last seq it has>}`.
+Host: `{"t":"hello","proto":3,"version","chat","harness","host_pid","cli_pid","last_seq","process"}`
 (`proto` = min of both), or `{"t":"err","code":"protocol",…}` and close when the client's `proto` is
 below the host's minimum. The server accepts hosts speaking `MinProtocol..Protocol` (currently
-1..2); when the protocol changes, keep the old version readable for a day (a busy host of the
+1..3); when the protocol changes, keep the old version readable for a day (a busy host of the
 previous build lives on, REBUILD §2.1). Version 2 (WP6) added the `ask` op of a local tool and its
 `answer` frame; the server's own ops are those of version 1, so a server and a host of either
-version understand each other. A connection asks for no events with `since` = `NoEvents`
+version understand each other. Version 3 added a `send`'s `note` and `sender`; to a host of an
+older version the server sends the note in the text instead (`agenthost.FoldNote`). A connection asks for no events with `since` = `NoEvents`
 (`1<<62`, beyond any journal), which is what a tool's connection does; it gets no deltas either.
 
 ### 4.2 Host → client
@@ -289,7 +290,7 @@ version understand each other. A connection asks for no events with `since` = `N
 
 | op | fields | host does |
 |---|---|---|
-| `send` | `client_id` (required), `text`, `attachments` | journals `message{user, pending}` and, in the same batch, `ask.closed` for every `Unwaited()` ask (§4.4), hands it to the adapter with `Outgoing.AfterTurn` (the turn that had ended last when it was journaled; a turn that ends between the journal write and the `Send` does not move it), acks with the message's seq |
+| `send` | `client_id` (required), `text`, `attachments`, `notice`?, `reason`?, `note`? and `sender`? (version 3) | journals the `notice` (with `reason` as its text) when there is one, then `message{user, pending, note, sender}` and, in the same batch, `ask.closed` for every `Unwaited()` ask (§4.4), hands it to the adapter - the `note`, Socrates' words for the agent alone, before the text (`agent.AgentText`) - with `Outgoing.AfterTurn` (the turn that had ended last when it was journaled; a turn that ends between the journal write and the `Send` does not move it), acks with the message's seq |
 | `interrupt` | `client_id`? | journals `command`, `Adapter.Interrupt` |
 | `answer` | `client_id`, `ask_id`, `answer` (JSON), `device` | §4.4 |
 | `set_model` | `client_id`?, `model`, `effort` | journals `command`, `Adapter.SetModel` (which emits `model.changed`) |

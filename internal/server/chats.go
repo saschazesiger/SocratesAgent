@@ -615,7 +615,7 @@ func (p *chatPeer) serve(conn *agenthost.Conn) {
 	for _, e := range pending {
 		var cmd agenthost.Command
 		if json.Unmarshal(e.Command, &cmd) == nil {
-			_ = conn.Send(cmd)
+			_ = conn.Send(agenthost.FoldNote(cmd, conn.Hello.Proto))
 		}
 	}
 	p.mu.Unlock()
@@ -796,7 +796,7 @@ func (p *chatPeer) submit(ctx context.Context, cmd agenthost.Command) (chatReply
 	p.mu.Lock()
 	p.waiters[cmd.ClientID] = append(p.waiters[cmd.ClientID], ch)
 	if p.conn != nil {
-		_ = p.conn.Send(cmd)
+		_ = p.conn.Send(agenthost.FoldNote(cmd, p.conn.Hello.Proto))
 	}
 	p.kickLocked()
 	p.mu.Unlock()
@@ -910,10 +910,13 @@ type chatMessageBody struct {
 	Text        string             `json:"text"`
 	Attachments []agent.Attachment `json:"attachments"`
 	// Notice and Reason are the notice the journal gets before a message
-	// the server sends by itself (agenthost.Command.Notice); never a
-	// browser's.
-	Notice string `json:"-"`
-	Reason string `json:"-"`
+	// the server sends by itself (agenthost.Command.Notice), Note what its
+	// agent is told with it and Sender the chat whose agent sent it
+	// (agenthost.Command.Note); never a browser's.
+	Notice string        `json:"-"`
+	Reason string        `json:"-"`
+	Note   string        `json:"-"`
+	Sender *agent.Sender `json:"-"`
 }
 
 func (s *Server) handleCreateChat(w http.ResponseWriter, r *http.Request) {
@@ -1149,7 +1152,7 @@ func (s *Server) sendMessage(ctx context.Context, p *chatPeer, m *chatMessageBod
 		}
 	}
 	return p.command(ctx, agenthost.Command{Op: agenthost.OpSend, ClientID: m.ClientID, Text: m.Text, Attachments: m.Attachments,
-		Notice: m.Notice, Reason: m.Reason})
+		Notice: m.Notice, Reason: m.Reason, Note: s.messageNote(p.id, m), Sender: m.Sender})
 }
 
 // command submits a command and words the outcome. A client_id this chat's

@@ -139,6 +139,23 @@ func TestAskUserOnACodeModeModelIsAnsweredAsTheNextMessage(t *testing.T) {
 	if err := a.Answer(context.Background(), ask.AskID, json.RawMessage(`{}`)); !errors.Is(err, agent.ErrAskGone) {
 		t.Fatalf("a deferred ask answered through the tool: %v", err)
 	}
+
+	// Asked again in the same turn, the questions are not asked twice: the
+	// model is told they are already with the person.
+	_, n = send(t, a, r, "/tooltwice ask_user")
+	r.turnEnd(t, n, wait)
+	if got := lastTurnText(r.projection()); got != "tool said: "+DeferredText+" "+AskedText {
+		t.Fatalf("the model got %q", got)
+	}
+	asks := 0
+	for _, ev := range r.since(n) {
+		if ev.Type == agent.TypeAsk {
+			asks++
+		}
+	}
+	if asks != 1 {
+		t.Fatalf("%d asks for the same questions in one turn", asks)
+	}
 }
 
 // Plan mode's request_user_input is asked as the same payload and answered

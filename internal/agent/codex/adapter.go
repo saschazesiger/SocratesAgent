@@ -95,6 +95,10 @@ type adapter struct {
 	// notes is whose instructions the agent has (agent.ModelNotes): the
 	// next message after a switch of model carries the new model's.
 	notes *agent.ModelNotes
+	// deferred is the questions a code-mode model has handed over in a turn
+	// (askUserTool), by turn and questions, so that asking the same again
+	// while the person has not answered does not ask them twice.
+	deferred map[string]bool
 	// active is the running root turn. starting is the message whose
 	// turn/start is in flight, so the turn/started that answers it is known
 	// as its turn.

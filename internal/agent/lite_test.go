@@ -160,3 +160,22 @@ func TestDetailIsAPartWholeAndItsOwnLight(t *testing.T) {
 		t.Errorf("a call opened: %q, %d children", leaf.Text[len(leaf.Text)-10:], len(kids))
 	}
 }
+
+// A message the agent sent another chat goes whole, however long: the chat
+// draws it as a message, not as a row.
+func TestLightKeepsAMessageToAnotherChatWhole(t *testing.T) {
+	long := strings.Repeat("words ", LiteFrom)
+	for _, content := range []string{
+		`{"tool":"mcp__socrates__send_to_chat","input":{"chat":"c1","text":"` + long + `"}}`,
+		`{"tool":"dynamic","name":"send_to_chat","arguments":{"chat":"c1","text":"` + long + `"}}`,
+	} {
+		ev := Event{Type: TypePart, Kind: PartTool, PartID: "p", Text: "Delivered.", Content: json.RawMessage(content)}
+		if got := Light(ev); got.Lite || string(got.Content) != content {
+			t.Fatalf("lightened: %+v", got)
+		}
+	}
+	ev := Event{Type: TypePart, Kind: PartTool, PartID: "p", Content: json.RawMessage(`{"tool":"Bash","input":{"command":"` + long + `"}}`)}
+	if !Light(ev).Lite {
+		t.Fatal("a long call of another tool stays whole")
+	}
+}
