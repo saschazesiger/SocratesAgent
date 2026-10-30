@@ -3754,6 +3754,17 @@ async function deletekeepsdir() {
     await s.page.waitForFunction((sel) => !document.querySelector(sel),
       '#sessionList .so-row[data-id="' + id + '"]', { timeout: 10000 });
 
+    // The server tells every viewer of a deleted terminal so, in a fatal
+    // frame; the tab that deleted it says it in its own words, once, and
+    // not also as an error.
+    await s.page.waitForFunction(() => [...document.querySelectorAll('#toasts .ds-toast')]
+      .some((t) => t.textContent.includes('Deleted.')), null, { timeout: 5000 }).catch(() => {});
+    await wait(800);
+    const said = await s.page.$$eval('#toasts .ds-toast', (ts) => ts.map((t) => t.textContent.trim()));
+    ok(said.some((t) => t.includes('Deleted. The working directory was kept.'))
+      && !said.some((t) => /session was deleted/i.test(t)),
+    'the tab that deleted it says so once, with no error about its own delete', JSON.stringify(said));
+
     const left = await (await s.context.request.get(s.url + '/api/sessions')).json();
     ok((left.sessions || []).length === 0, 'the row is gone', (left.sessions || []).length + ' left');
     let live = sessionsOn(s.data);
@@ -7395,6 +7406,72 @@ async function transfer() {
     await s.page.waitForSelector('#copySheet:not([open])', { state: 'attached', timeout: 5000 });
     const copied = await s.page.evaluate(() => navigator.clipboard.readText());
     ok(copied === shown, 'and Copy all puts all of it on the clipboard', copied.length + ' of ' + shown.length + ' chars');
+    const toastTexts = (page) => page.$$eval('#toasts .ds-toast', (ts) => ts.map((t) => t.textContent.trim()));
+    // Every message closed, or timed out, before the next one is read.
+    const clearToasts = async (page) => {
+      await page.$$eval('#toasts .ds-toast__close', (bs) => bs.forEach((b) => b.click())).catch(() => {});
+      await page.waitForFunction(() => !document.querySelector('#toasts .ds-toast'), null, { timeout: 15000 }).catch(() => {});
+    };
+    await clearToasts(s.page);
+
+    // A browser that refuses the write - iOS does, for a tap it does not
+    // count as one - is told about once: no "Copied" first, and the sheet
+    // stays open with its text to select by hand. The refusal goes with it.
+    await s.page.evaluate(() => {
+      window.__writeText = navigator.clipboard.writeText;
+      navigator.clipboard.writeText = () => Promise.reject(new DOMException('refused', 'NotAllowedError'));
+    });
+    await s.page.click('#copyBtn');
+    await s.page.waitForSelector('#copySheet[open]', { timeout: 5000 });
+    await s.page.click('#copyAll');
+    await s.page.waitForFunction(() => [...document.querySelectorAll('#toasts .ds-toast')]
+      .some((t) => t.textContent.includes('refused')), null, { timeout: 5000 }).catch(() => {});
+    await wait(400);
+    const refusedSaid = await toastTexts(s.page);
+    const sheetStays = await s.page.$eval('#copySheet', (n) => n.open);
+    ok(refusedSaid.length === 1 && /refused/.test(refusedSaid[0]) && sheetStays,
+      'a refused Copy all says only that, and leaves the sheet open', JSON.stringify({ refusedSaid, sheetStays }));
+    await s.page.evaluate(() => DS.overlay.close(document.getElementById('copySheet')));
+    await s.page.waitForFunction(() => ![...document.querySelectorAll('#toasts .ds-toast')]
+      .some((t) => t.textContent.includes('refused') && !t.closest('[data-leaving]')), null, { timeout: 5000 }).catch(() => {});
+    await wait(600);
+    const afterClose = (await toastTexts(s.page)).filter((t) => /refused/.test(t));
+    ok(afterClose.length === 0, 'and the refusal goes when the sheet is closed', JSON.stringify(afterClose));
+    await s.page.evaluate(() => { navigator.clipboard.writeText = window.__writeText; });
+    await clearToasts(s.page);
+
+    // Paste with no text on the clipboard says so instead of nothing.
+    await s.page.evaluate(() => navigator.clipboard.writeText(''));
+    await s.page.click('#pasteBtn');
+    const emptySaid = await s.page.waitForFunction(() => [...document.querySelectorAll('#toasts .ds-toast')]
+      .some((t) => t.textContent.includes('no text on the clipboard')), null, { timeout: 5000 }).then(() => true, () => false);
+    ok(emptySaid, 'Paste with nothing on the clipboard says so', JSON.stringify(await toastTexts(s.page)));
+    await clearToasts(s.page);
+
+    // Chrome asks the person before the page may read the clipboard, and the
+    // read waits on that prompt: the page says what it is waiting for, and
+    // stops saying it once the answer is in.
+    await s.page.evaluate(() => {
+      window.__readText = navigator.clipboard.readText;
+      window.__query = navigator.permissions.query;
+      navigator.permissions.query = () => Promise.resolve({ state: 'prompt' });
+      navigator.clipboard.readText = () => new Promise((resolve) => { window.__answer = resolve; });
+    });
+    await s.page.click('#pasteBtn');
+    const askingSaid = await s.page.waitForFunction(() => [...document.querySelectorAll('#toasts .ds-toast')]
+      .some((t) => t.textContent.includes('Allow the browser')), null, { timeout: 5000 }).then(() => true, () => false);
+    ok(askingSaid, 'while the browser asks to read the clipboard, the page says what it waits for',
+      JSON.stringify(await toastTexts(s.page)));
+    await s.page.evaluate(() => window.__answer('echo allowed'));
+    ok(await awaitScreen(s.page, 'echo allowed'), 'and pastes once it is allowed', oneLine(await screen(s.page)).slice(-60));
+    await wait(800);
+    const askingLeft = (await toastTexts(s.page)).filter((t) => /Allow the browser/.test(t));
+    ok(askingLeft.length === 0, 'and the waiting message goes', JSON.stringify(askingLeft));
+    await s.page.evaluate(() => {
+      navigator.clipboard.readText = window.__readText;
+      navigator.permissions.query = window.__query;
+    });
+    await s.page.keyboard.press('Control+U');
 
     /* ------------------------------------------------------- on a phone */
 

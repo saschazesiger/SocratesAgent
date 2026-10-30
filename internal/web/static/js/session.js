@@ -669,6 +669,12 @@ const state = {
   // The sessions whose automatic name is being asked for right now. Their
   // name pulses, in the list and in the header, until the answer is in.
   titling: new Set(),
+  // The sessions this tab is deleting or marking done right now. The server
+  // closes their terminals as part of the request and tells every viewer so
+  // in a fatal frame, which reaches this tab before the answer to its own
+  // request does; that news is for the other devices watching, not for the
+  // person who asked, whose own toast says what happened.
+  ending: new Set(),
   // Of those, the ones this page asked for itself (retitleSession), which
   // its own request settles; the others are only settled by a title frame,
   // and a frame can be lost (see forgetTitling).
@@ -2199,6 +2205,7 @@ function infoDialog(session, opener) {
 // instead; every other status changes nothing but the mark.
 async function setStatus(session, status) {
   if (statusOf(session) === status) return;
+  if (status === 'done') state.ending.add(session.id);
   try {
     const data = await api('/api/sessions/' + encodeURIComponent(session.id) + '/file', {
       method: 'POST', body: { status },
@@ -2211,7 +2218,11 @@ async function setStatus(session, status) {
         : 'Done. Its terminal was closed; the session is deleted in 24 hours.');
     }
     else if (isDone(session) && open) attach(data.session);
-  } catch (err) { toast(actionFailed(err, 'That session could not be refiled.'), 'error'); }
+  } catch (err) {
+    toast(actionFailed(err, 'That session could not be refiled.'), 'error');
+  } finally {
+    state.ending.delete(session.id);
+  }
 }
 
 async function deleteSession(session) {
@@ -2227,6 +2238,7 @@ async function deleteSession(session) {
     danger: true,
   });
   if (!yes) return;
+  state.ending.add(session.id);
   try {
     await api('/api/sessions/' + encodeURIComponent(session.id), { method: 'DELETE' });
     forgetDraft(session.id);
@@ -2245,6 +2257,8 @@ async function deleteSession(session) {
       : 'Deleted. The working directory was kept.');
   } catch (err) {
     toast(actionFailed(err, 'That session could not be deleted.'), 'error');
+  } finally {
+    state.ending.delete(session.id);
   }
 }
 
@@ -3575,6 +3589,9 @@ function onControl(sessionId, frame) {
       }
       break;
     case 'error':
+      // The terminal this tab is deleting or filing as done is closed by
+      // that very request; the tab's own toast tells of it.
+      if (frame.fatal && state.ending.has(sessionId)) break;
       toast(frame.message, 'error');
       break;
     default:

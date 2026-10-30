@@ -31,7 +31,7 @@ func (s *Server) park(ctx context.Context, id string) error {
 	if err := s.manager.Park(ctx, id); err != nil {
 		return err
 	}
-	s.hub.endSession(id, "this session is done, so its terminal was closed")
+	s.hub.endSession(id, "This session is done, so its terminal was closed.")
 	s.events.poke()
 	return nil
 }
@@ -92,7 +92,7 @@ func (s *Server) sweep(ctx context.Context, now time.Time) {
 			if err := s.deleteSession(one, row.ID); err != nil && !errors.Is(err, store.ErrNotFound) {
 				log.Printf("sweep: could not delete done session %s: %v", row.ID, err)
 			} else {
-				s.hub.endSession(row.ID, "this session was deleted")
+				s.hub.endSession(row.ID, "This session was deleted.")
 			}
 		} else if row.State == store.StateRunning || row.State == store.StateStarting {
 			if err := s.park(one, row.ID); err != nil && !errors.Is(err, store.ErrNotFound) {

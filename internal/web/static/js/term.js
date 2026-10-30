@@ -192,35 +192,59 @@ function isCopyKey(ev) {
 }
 
 /**
- * writeClipboard puts `text` on the clipboard, and answers whether it went.
+ * writeClipboard puts `text` on the clipboard, and answers - in a promise -
+ * whether it went.
  *
  * The async clipboard is the path, and it is not always there: it needs a
  * secure context, and this app is reached over plain http on a LAN often
  * enough - a tunnel is the usual way in, the address bar is not. So the old
  * hidden-textarea copy is the fallback rather than an error message, and
  * because it has to run inside the gesture that asked for it, the choice
- * between the two is made synchronously. The fallback borrows the focus for
- * the copy and gives it back: a terminal that has just been copied out of
- * must still take the next keystroke.
+ * between the two is made synchronously.
  *
- * A copy the async clipboard refuses is said so, once, rather than left to
- * look like a paste that produced the wrong thing later - unless it is
+ * The answer is the promise because the async clipboard only says once it has
+ * settled: a "Copied" said before that was followed, on iOS, by "refused" for
+ * the very same copy. Whatever says a copy went waits for it.
+ *
+ * A copy that is refused is said so, once, rather than left to look like a
+ * paste that produced the wrong thing later - `refused` is the words, for a
+ * caller that knows better what the person can do instead - unless it is
  * `quiet`, which is a copy nobody asked for: a program's OSC 52 arrives with
  * no gesture behind it, so the browser refusing it is the ordinary case and
  * not something to put on screen. The text is kept as the middle-click buffer
  * either way, which is the one place it is still reachable from.
  */
+const REFUSED = 'The browser refused the copy — select again and press the copy key.';
+let refusal = null;
+
 function writeClipboard(text, opts = {}) {
-  if (!text) return false;
+  if (!text) return Promise.resolve(false);
   primary = text;
-  if (window.isSecureContext && navigator.clipboard && navigator.clipboard.writeText) {
-    navigator.clipboard.writeText(text).catch((err) => {
-      if (opts.quiet) return;
-      console.error('copy', err);
-      toast('The browser refused the copy — select again and press the copy key.', 'error');
+  const said = (ok) => {
+    // A copy that went takes back what the last refused one said.
+    if (ok && refusal) { refusal.close(); refusal = null; }
+    if (!ok && !opts.quiet) refusal = toast(opts.refused || REFUSED, 'error');
+    return ok;
+  };
+  if (asyncClipboard()) {
+    return navigator.clipboard.writeText(text).then(() => said(true), (err) => {
+      if (!opts.quiet) console.warn('copy refused:', err && err.name);
+      return said(false);
     });
-    return true;
   }
+  return Promise.resolve(said(copyByField(text)));
+}
+
+function asyncClipboard() {
+  return !!(window.isSecureContext && navigator.clipboard && navigator.clipboard.writeText);
+}
+
+/**
+ * copyByField is the old copy: a hidden field selected and copied. It borrows
+ * the focus for the copy and gives it back, because a terminal that has just
+ * been copied out of must still take the next keystroke.
+ */
+function copyByField(text) {
   const focused = document.activeElement;
   const field = document.createElement('textarea');
   field.value = text;
@@ -240,9 +264,18 @@ function writeClipboard(text, opts = {}) {
 
 /**
  * copyText is a copy a button asked for: the same path the copy key takes,
- * inside the gesture that pressed the button.
+ * inside the gesture that pressed the button. It answers in a promise
+ * whether the text is on the clipboard; `refused` is what to say if not.
  */
-export function copyText(text) { return writeClipboard(text); }
+export function copyText(text, refused) { return writeClipboard(text, { refused }); }
+
+/**
+ * forgetRefusal takes a refused copy's message away: for a caller whose
+ * advice in it - select the text in this sheet - no longer applies.
+ */
+export function forgetRefusal() {
+  if (refusal) { refusal.close(); refusal = null; }
+}
 
 // pasteClipboard puts the clipboard into the pane, bracketed when the program
 // asked to be told that a paste is a paste - which is what stops an editor
@@ -252,20 +285,52 @@ export function copyText(text) { return writeClipboard(text); }
 // all, and one that has it can still refuse to be read - so what was last
 // copied out of the pane itself is the fallback. That is the round trip a
 // phone actually makes: hold a line to copy it, tap Paste to put it back.
+//
+// Chrome asks the person before a page may read the clipboard, in a prompt of
+// its own that the read waits on for as long as it is up; a Paste that did
+// nothing and said nothing while it waited looked broken. So while the
+// browser is asking, the page says what it is waiting for, and a clipboard
+// with no text on it is said too rather than met with silence.
 export async function pasteClipboard(term, send) {
   let text = '';
+  let settled = false;
+  let asking = null;
   try {
-    text = await navigator.clipboard.readText();
+    const read = navigator.clipboard.readText();
+    browserWillAsk('clipboard-read').then((yes) => {
+      if (yes && !settled) {
+        asking = toast('Allow the browser to show this page the clipboard to paste.', 'info', { persistent: true });
+      }
+    });
+    text = await read;
   } catch {
     text = primary;
     if (!text) {
       toast('The browser would not let the clipboard be read.', 'error');
       return;
     }
+  } finally {
+    settled = true;
+    if (asking) asking.close();
   }
-  if (!text) return;
+  if (!text) {
+    toast('There is no text on the clipboard to paste.');
+    return;
+  }
   const bracketed = !!(term && term.modes && term.modes.bracketedPasteMode);
   send(bracketed ? '\x1b[200~' + text + '\x1b[201~' : text);
+}
+
+// browserWillAsk is whether the browser is going to ask the person for the
+// permission `name` (its state is "prompt"). A browser that does not know the
+// permission by that name - Safari, Firefox - answers no.
+async function browserWillAsk(name) {
+  try {
+    const status = await navigator.permissions.query({ name });
+    return status.state === 'prompt';
+  } catch {
+    return false;
+  }
 }
 
 /** isEditable is whether a paste or copy aimed at `node` belongs to a field. */
@@ -313,7 +378,11 @@ function wireClipboard(term) {
   const copySelection = () => {
     const text = term.getSelection();
     if (!text) return false;
-    if (!writeClipboard(text)) return false;
+    // The async clipboard answers later and says a refusal itself; the old
+    // copy answers now, and one that fails is the interrupt after all.
+    if (asyncClipboard()) writeClipboard(text);
+    else if (copyByField(text)) primary = text;
+    else return false;
     term.clearSelection();
     return true;
   };
@@ -540,13 +609,12 @@ function selectionController(host, term) {
     extend(x, y) { grow(cellAt(x, y)); },
     /** active is whether a selection is being made. */
     active: () => anchor !== null,
-    /** finish ends it, copying what was selected; answers the text copied. */
+    /** finish ends it, copying what was selected; answers, in a promise, whether it was copied. */
     finish() {
       anchor = null;
       unit = null;
       const text = term.getSelection();
-      if (!text) return '';
-      return writeClipboard(text) ? text : '';
+      return text ? writeClipboard(text) : Promise.resolve(false);
     },
     /** abandon ends it without copying. */
     abandon() { anchor = null; unit = null; },
@@ -766,7 +834,7 @@ function wireTouch(host, term, sel) {
     // No click is made up from this release: the tap it would be is not one.
     if (ev.cancelable) ev.preventDefault();
     if (ev.type !== 'touchend') { sel.abandon(); return; }
-    if (sel.finish()) toast('Copied');
+    sel.finish().then((copied) => { if (copied) toast('Copied'); });
   };
 
   // Android opens a context menu on a long press; the finger is selecting.

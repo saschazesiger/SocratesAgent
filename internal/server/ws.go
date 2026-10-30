@@ -857,7 +857,7 @@ func (s *Server) endingViewers(next http.HandlerFunc) http.HandlerFunc {
 		recorder := &statusWriter{ResponseWriter: w, code: http.StatusOK}
 		next(recorder, r)
 		if recorder.code >= 200 && recorder.code < 300 {
-			s.hub.endSession(r.PathValue("id"), "this session was deleted")
+			s.hub.endSession(r.PathValue("id"), "This session was deleted.")
 		}
 	}
 }

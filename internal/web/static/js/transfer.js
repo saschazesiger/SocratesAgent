@@ -16,7 +16,7 @@
 
 import { el, toast, errorMessage } from './api.js';
 import { DS, M, showOverlay, hideOverlay } from './ui.js';
-import { copyText, pasteClipboard } from './term.js';
+import { copyText, forgetRefusal, pasteClipboard } from './term.js';
 
 // The server's own ceiling on one upload (internal/server/upload.go), checked
 // here first so a large video is refused before it is sent over a phone link.
@@ -78,16 +78,23 @@ export function mountTransfer(ctx) {
   if (sheet && area && copyAll) {
     area.addEventListener('select', paintCopy);
     document.addEventListener('selectionchange', () => { if (sheet.open) paintCopy(); });
+    // "Copied" waits for the clipboard's answer. A refused copy leaves the
+    // sheet open, because its text is still there to be selected and copied
+    // by hand.
     copyAll.addEventListener('click', () => {
       const part = selected();
-      if (copyText(part || area.value)) {
-        toast(part ? 'Copied the selection.' : 'Copied everything.');
-        hideOverlay(sheet);
-      }
+      copyText(part || area.value, 'The browser refused the copy — select the text in the sheet and copy it from there.')
+        .then((copied) => {
+          if (!copied) return;
+          toast(part ? 'Copied the selection.' : 'Copied everything.');
+          if (sheet.open) hideOverlay(sheet);
+        });
     });
     // However it closes - Copy, Close, Escape, the scrim - the keys go back
     // to the pane, and a thousand lines are not kept in a closed dialog.
     sheet.addEventListener('close', () => {
+      // A refusal that sent the person to the sheet's text goes with it.
+      forgetRefusal();
       area.value = '';
       ctx.focus();
     });
@@ -113,10 +120,11 @@ export function mountTransfer(ctx) {
     // What is selected on the pane is what the button means. Without a
     // selection, the sheet is where one can be made.
     if (term.hasSelection()) {
-      if (copyText(term.getSelection())) {
+      copyText(term.getSelection()).then((copied) => {
+        if (!copied) return;
         term.clearSelection();
         toast('Copied.');
-      }
+      });
       ctx.focus();
       return;
     }
