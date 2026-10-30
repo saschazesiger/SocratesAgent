@@ -2084,6 +2084,10 @@ function promptTitle(current, opener, session) {
     });
     const cancel = el('button', { class: 'ds-btn ds-btn--text', type: 'button', 'data-close': true, text: 'Cancel' });
     const accept = el('button', { class: 'ds-btn ds-btn--primary', type: 'button', text: 'Rename' });
+    // One row: the field, its microphone and - with a session - the
+    // sparkles, side by side (DS's field row), not a row inside a row.
+    const row = dictated(input, input);
+    if (session) row.append(suggestButton(session, input));
     const dialog = el('dialog', { class: 'ds-dialog so-rename', 'aria-labelledby': 'renameTitle' },
       el('div', { class: 'ds-dialog__backdrop', 'data-close': true }),
       el('div', { class: 'ds-dialog__box' },
@@ -2091,8 +2095,7 @@ function promptTitle(current, opener, session) {
         // A name is a sentence somebody says about a session, so it is one of
         // the fields that can be spoken instead of typed - and with the
         // keyboard put away it is the only way this dialog can be answered.
-        el('div', { class: 'ds-field' }, session ? el('div', { class: 'ds-field__row' }, dictated(input, input), suggestButton(session, input))
-          : dictated(input, input)),
+        el('div', { class: 'ds-field' }, row),
         el('div', { class: 'ds-dialog__actions' }, cancel, accept)));
     let answer = null;
     const was = opener && opener.isConnected ? opener : document.activeElement;
