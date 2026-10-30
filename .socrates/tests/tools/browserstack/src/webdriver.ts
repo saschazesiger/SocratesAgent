@@ -127,9 +127,25 @@ export class WebDriver {
   async deviceKeys(text: string): Promise<void> {
     await this.call("POST", "/keys", { value: [...text] });
   }
-  /** Closes the on-screen keyboard the platform's way (Appium). */
+  /**
+   * Closes the on-screen keyboard the platform's way (Appium). On Android this also sends Back when it cannot
+   * tell the keyboard closed, which an open page dialog takes as its own close: use it on iOS only.
+   */
   async hideKeyboard(): Promise<void> {
     await this.call("POST", "/appium/device/hide_keyboard", {});
+  }
+  /** Whether the on-screen keyboard shows (Appium); null when the driver cannot tell. */
+  async isKeyboardShown(): Promise<boolean | null> {
+    const value = await this.call("GET", "/appium/device/is_keyboard_shown").catch(() => null);
+    return typeof value === "boolean" ? value : null;
+  }
+  /** Presses an Android key (4 is Back) as the hardware or navigation bar does (Appium). */
+  async pressKeycode(keycode: number): Promise<void> {
+    await this.call("POST", "/appium/device/press_keycode", { keycode });
+  }
+  /** The native UI hierarchy as XML (Appium, native context). */
+  async source(): Promise<string> {
+    return String(await this.call("GET", "/source"));
   }
   async contexts(): Promise<string[]> {
     return (await this.call("GET", "/contexts")) as string[];

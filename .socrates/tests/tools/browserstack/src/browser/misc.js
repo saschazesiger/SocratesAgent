@@ -1,10 +1,22 @@
-// Small page actions: scroll by a share of the viewport or to the top or bottom, and the environment facts.
+// Small page actions and facts: the environment, the focus, the visible height (the on-screen keyboard takes
+// it), and moving through the history from the page.
 function main(command, value) {
-  if (command === "scroll") {
-    if (value === "top") window.scrollTo(0, 0);
-    else if (value === "bottom") window.scrollTo(0, document.documentElement.scrollHeight);
-    else window.scrollBy(0, (value === "up" ? -1 : 1) * Math.round(innerHeight * 0.8));
-    return { scrollY: Math.round(scrollY) };
+  if (command === "viewport") {
+    var vv = window.visualViewport;
+    var active = document.activeElement;
+    return { visible: Math.round(vv ? vv.height * vv.scale : innerHeight), window: innerHeight, active: active ? qaDescribe(active) : "" };
+  }
+  if (command === "history") {
+    // A mark on this document: when it is gone, the history step loaded another one.
+    var mark = "qa" + Math.random().toString(36).slice(2, 10);
+    window.__qaHistoryMark = mark;
+    history.go(value);
+    return mark;
+  }
+  if (command === "marked") return window.__qaHistoryMark === value;
+  if (command === "assign") {
+    location.href = value;
+    return true;
   }
   if (command === "env") {
     return { ua: navigator.userAgent, width: innerWidth, height: innerHeight, dpr: devicePixelRatio, lang: navigator.language, timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone, touch: navigator.maxTouchPoints };

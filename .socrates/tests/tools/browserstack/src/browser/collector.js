@@ -1,5 +1,6 @@
 // Installs (once per document) a collector of page errors, rejections and console errors and warnings;
-// returns and clears what it gathered since the last call.
+// returns and clears what it gathered since the last call, and whether the page has the focus (a prompt the
+// browser draws over it, such as Chrome's permission question on Android, takes the focus away).
 function main() {
   if (!window.__qa) {
     var store = { entries: [], installedAt: Date.now() };
@@ -16,9 +17,9 @@ function main() {
         return original.apply(console, arguments);
       };
     });
-    return { installed: true, entries: [] };
+    return { installed: true, entries: [], focused: document.hasFocus() };
   }
   var entries = window.__qa.entries;
   window.__qa.entries = [];
-  return { installed: false, entries: entries };
+  return { installed: false, entries: entries, focused: document.hasFocus() };
 }

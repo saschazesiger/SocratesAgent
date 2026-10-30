@@ -110,6 +110,11 @@ Besides what a step expects, look at every screenshot as a person on this device
   to rest. Wait (`qa wait`) and look again before judging.
 - A tap right after typing that has no effect is repeated with `--native` before it is called a bug
   (the closing keyboard moves the page).
+- A focus ring, a tooltip or another effect after a tap the output calls `simulated click, not a
+  finger` is repeated with a native tap before it is called a bug: a finger may not cause it.
+- On Android a `native prompt over the page` in an action's output is Chrome's own question (the
+  clipboard, notifications, ...), shown in that action's screenshot: the step is `blocked` when it
+  needs the answer, not a bug of Socrates.
 
 ## What is not a bug here
 

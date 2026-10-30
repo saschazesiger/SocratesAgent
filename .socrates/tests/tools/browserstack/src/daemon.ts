@@ -77,7 +77,7 @@ function describe(action: Action): string {
 }
 
 function target(args: Record<string, unknown>): Target {
-  return { text: args.text as string | undefined, role: args.role as string | undefined, css: args.css as string | undefined, nth: args.nth as number | undefined, exact: Boolean(args.exact), any: Boolean(args.any), native: Boolean(args.native) };
+  return { text: args.text as string | undefined, role: args.role as string | undefined, css: args.css as string | undefined, nth: args.nth as number | undefined, exact: Boolean(args.exact), any: Boolean(args.any), native: Boolean(args.native), simulated: Boolean(args.simulated) };
 }
 
 function answer(action: Action): Answer {
@@ -134,7 +134,7 @@ async function handle(command: Command): Promise<Answer> {
     case "look":
       return answer(await s.look());
     case "shot":
-      return answer(await s.act("shot", "took a screenshot", () => Promise.resolve(undefined), { settle: false }));
+      return answer(await s.shot());
     case "env":
       return { ok: true, state, text: JSON.stringify(await s.env(), null, 1) };
     default:

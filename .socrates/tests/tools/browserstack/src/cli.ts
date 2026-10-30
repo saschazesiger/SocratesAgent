@@ -22,11 +22,11 @@ into the cell's evidence with its screenshot.
   stop                                            close the BrowserStack session (Socrates runs it after every attempt)
   open <path>                                     open a page of the test instance (/admin, /#home, or a full URL of its origin), then settle
   find <text> [--role r] [--nth n] [--exact] [--any] [--css sel]   scroll a control into view without touching it
-  tap <text> [--role r] [--nth n] [--exact] [--any] [--css sel] [--native] [--force]   (with a text, --css is the area to search)
+  tap <text> [--role r] [--nth n] [--exact] [--any] [--css sel] [--native|--simulated] [--force]   (with a text, --css is the area to search)
   type <value> [--into <text>|--css sel] [--role r] [--native] [--clear] [--submit]
   type --secret QA_NAME [--into <text>|--css sel] ...   type a login of the vault without it passing through you
   key <name>                                      ${KEY_NAMES} (combinations on desktops only)
-  keyboard                                        close the on-screen keyboard as a person would
+  keyboard                                        close the on-screen keyboard as a person would (nothing when none is open)
   scroll <down|up|top|bottom>   rotate <portrait|landscape>   back | forward | reload   wait <seconds>
   look                                            screenshot and the controls on screen
   shot | env                                      screenshot only, device facts
@@ -40,6 +40,7 @@ const OPTIONS = {
   any: { type: "boolean" },
   css: { type: "string" },
   native: { type: "boolean" },
+  simulated: { type: "boolean" },
   force: { type: "boolean" },
   into: { type: "string" },
   clear: { type: "boolean" },
@@ -211,7 +212,8 @@ async function main(): Promise<void> {
   if (!name || name === "help" || values.help) return print(USAGE);
   const text = rest.join(" ");
   if (values.nth !== undefined && !/^[1-9]\d*$/.test(values.nth)) fail("--nth counts from 1");
-  const target = { role: values.role, nth: values.nth ? Number(values.nth) - 1 : undefined, exact: values.exact, any: values.any, css: values.css, native: values.native };
+  if (values.native && values.simulated) fail("--native and --simulated exclude each other");
+  const target = { role: values.role, nth: values.nth ? Number(values.nth) - 1 : undefined, exact: values.exact, any: values.any, css: values.css, native: values.native, simulated: values.simulated };
   switch (name) {
     case "start":
       return start();

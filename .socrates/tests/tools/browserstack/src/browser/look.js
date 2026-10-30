@@ -20,6 +20,8 @@ function main() {
     path: (location.pathname + location.search + location.hash).replace(/([?&#](?:token|auth_token|code|key|auth|state|sig|signature|secret|password)=)[^&#]*/gi, "$1…"),
     lang: document.documentElement.lang,
     viewport: { width: innerWidth, height: innerHeight, scrollY: Math.round(scrollY), pageHeight: document.documentElement.scrollHeight },
+    // What scrolls in the middle of the screen when it is not the page itself (an app's column, a dialog's body).
+    scroller: (function () { var box = qaScrollChain()[0]; return box === (document.scrollingElement || document.documentElement) ? undefined : qaScrollState(box); })(),
     headings: pick("h1, h2, h3, [role=heading]", 12, function (el) { return qaText(el.innerText).slice(0, 80); }),
     controls: controls,
     notices: pick('[role="alert"], [role="status"], [aria-live="assertive"], [aria-live="polite"]', 8, function (el) { return qaText(el.innerText).slice(0, 160); }).filter(Boolean),

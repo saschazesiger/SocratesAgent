@@ -15,8 +15,12 @@ export interface Target {
   exact?: boolean;
   any?: boolean;
   native?: boolean;
+  /** A WebDriver click on a phone or tablet where a native touch would be the default (iOS). */
+  simulated?: boolean;
   /** The accessible name of the control that was hit. */
   matched?: string;
+  /** How a tap reached the device: a native touch, or a WebDriver click (simulated on a phone or tablet). */
+  via?: "touch" | "webdriver";
 }
 
 export interface PageEntry {

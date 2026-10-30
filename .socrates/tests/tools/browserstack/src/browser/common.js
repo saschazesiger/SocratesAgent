@@ -58,3 +58,34 @@ function qaDescribe(el) {
   var cls = typeof el.className === "string" && el.className ? "." + el.className.trim().split(/\s+/).slice(0, 3).join(".") : "";
   return el.tagName.toLowerCase() + id + cls;
 }
+
+// What a person's swipe in the middle of the visible screen scrolls, innermost first: the boxes there that
+// scroll (a dialog's body, an app's main column), then the page (document.scrollingElement). Many apps keep the
+// page itself still and scroll a column, so window.scrollY alone stays 0.
+function qaScrollChain() {
+  var page = document.scrollingElement || document.documentElement;
+  var vv = window.visualViewport;
+  var x = vv ? vv.offsetLeft + vv.width / 2 : innerWidth / 2;
+  var y = vv ? vv.offsetTop + vv.height / 2 : innerHeight / 2;
+  var chain = [];
+  for (var el = document.elementFromPoint(x, y); el && el !== page; el = el.parentElement) {
+    var overflow = getComputedStyle(el).overflowY;
+    if (/(auto|scroll|overlay)/.test(overflow) && el.scrollHeight > el.clientHeight + 1) chain.push(el);
+  }
+  chain.push(page);
+  return chain;
+}
+
+// A page locked with overflow hidden (behind a modal dialog, in an app shell) moves for a script, not for a finger.
+function qaPageLocked() {
+  return [document.documentElement, document.body].some(function (node) { return node && /(hidden|clip)/.test(getComputedStyle(node).overflowY); });
+}
+
+// A scrolling box's position: where it is, how far it can go, how much of it shows.
+function qaScrollState(el) {
+  var page = el === (document.scrollingElement || document.documentElement);
+  var visible = page ? (window.visualViewport ? window.visualViewport.height : innerHeight) : el.clientHeight;
+  var height = el.scrollHeight;
+  var top = page ? scrollY : el.scrollTop;
+  return { box: page ? "the page" : qaDescribe(el), top: Math.round(top), max: Math.max(0, Math.round(height - (page ? innerHeight : el.clientHeight))), visible: Math.round(visible) };
+}

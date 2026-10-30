@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { onSite, pageUrl, parseBaseUrl } from "../src/site";
+import { onSite, pageUrl, parseBaseUrl, sameDocument } from "../src/site";
 
 const BASE = "https://socrates-qa.example.test";
 
@@ -37,4 +37,14 @@ test("a page is on the site when its origin is the base URL's", () => {
   assert.ok(!onSite(BASE, "https://github.com/x"));
   assert.ok(!onSite(BASE, "about:blank"));
   assert.ok(!onSite(BASE, ""));
+});
+
+test("only a hash step stays in the document", () => {
+  assert.equal(sameDocument(`${BASE}/tests#view=overview`, `${BASE}/tests#view=runs`), true);
+  assert.equal(sameDocument(`${BASE}/tests`, `${BASE}/tests#view=runs`), true);
+  assert.equal(sameDocument(`${BASE}/tests#a`, `${BASE}/tests`), false);
+  assert.equal(sameDocument(`${BASE}/tests#a`, `${BASE}/admin#a`), false);
+  assert.equal(sameDocument(`${BASE}/tests?x=1#a`, `${BASE}/tests#a`), false);
+  assert.equal(sameDocument("about:blank", `${BASE}/#home`), false);
+  assert.equal(sameDocument("", `${BASE}/#home`), false);
 });

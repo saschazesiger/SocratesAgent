@@ -46,3 +46,14 @@ export function pageUrl(base: string, path: string): string {
   if (!onSite(base, url)) throw new Error(`${value} leaves the test instance ${originOf(base)}`);
   return url;
 }
+
+/** Whether opening `to` from `from` stays in the document: the same page with a hash (only the hash may differ). */
+export function sameDocument(from: string, to: string): boolean {
+  try {
+    const a = new URL(from);
+    const b = new URL(to);
+    return a.origin === b.origin && a.pathname === b.pathname && a.search === b.search && b.hash !== "";
+  } catch {
+    return false;
+  }
+}
