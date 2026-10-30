@@ -4,8 +4,11 @@ priority: P2
 tags: [pages, voice]
 ---
 The Speak button (microphone in the top bar, tip "Dictate into this chat") records and transcribes
-through OpenRouter. BrowserStack devices may have no microphone or a permission prompt the tool cannot
-answer: then the step is `blocked`, unless the page shows no explanation at all.
+through OpenRouter. The browser asks for the microphone first: answer Safari's or Chrome's prompt with
+`qa prompt allow`. A desktop's prompt is out of reach: on Windows Chrome start the device with
+`qa start --grant microphone` (a fake microphone, the browser asks nothing); on the Mac's Safari the
+step is `blocked`, unless the page shows no explanation at all. A device with no microphone may give
+a clear message instead of the recorder.
 
 ## Steps
 

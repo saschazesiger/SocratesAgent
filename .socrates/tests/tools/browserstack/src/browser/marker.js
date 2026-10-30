@@ -7,7 +7,10 @@
 // elsewhere (iOS 16) it goes into the open dialog the control is in. Its place is measured and corrected, so a
 // transformed or scrolled container cannot shift it. It also notes which element the next touch reaches, in
 // sessionStorage so a same-origin navigation keeps it. "hide" removes the markers and returns that note.
-function main(command, gap, nonce) {
+// `at` (qaPointIn) moves the point from the control's centre to a place inside it; without a nonce the point
+// is in the viewport and any element may receive the touch.
+function main(command, gap, nonce, at, guardClipboard) {
+  if (guardClipboard) qaGuardClipboard();
   var old = document.querySelectorAll("[data-qa-marker]");
   for (var i = 0; i < old.length; i++) old[i].remove();
   var KEY = "qa-native-hit";
@@ -16,13 +19,13 @@ function main(command, gap, nonce) {
     try { note = JSON.parse(sessionStorage.getItem(KEY) || "null"); sessionStorage.removeItem(KEY); } catch (e) { note = null; }
     return note;
   }
-  var target = document.querySelector('[data-qa-hit="' + nonce + '"]');
-  if (!target) return { placed: false };
-  var r = target.getBoundingClientRect();
-  var cx = r.left + r.width / 2;
-  var cy = r.top + r.height / 2;
+  var target = nonce ? document.querySelector('[data-qa-hit="' + nonce + '"]') : null;
+  if (nonce && !target) return { placed: false };
+  var point = qaPointIn(target, at);
+  var cx = point.x;
+  var cy = point.y;
   var popover = typeof HTMLElement !== "undefined" && typeof HTMLElement.prototype.showPopover === "function";
-  var dialog = target.closest ? target.closest("dialog[open]") : null;
+  var dialog = target && target.closest ? target.closest("dialog[open]") : null;
   var layer = popover ? "top layer" : dialog ? "dialog" : "page";
   [-gap / 2, gap / 2].forEach(function (d) {
     var m = document.createElement("div");
@@ -43,10 +46,11 @@ function main(command, gap, nonce) {
     document.removeEventListener("pointerdown", record, true);
     document.removeEventListener("touchstart", record, true);
     var hit = event.target && event.target.closest ? event.target : null;
-    var noted = { on: !!(hit && hit.closest('[data-qa-hit="' + nonce + '"]')), by: hit ? qaDescribe(hit) : "", name: hit ? qaName(hit).slice(0, 60) : "", type: event.type };
+    var noted = { on: !nonce || !!(hit && hit.closest('[data-qa-hit="' + nonce + '"]')), by: hit ? qaDescribe(hit) : "", name: hit ? qaName(hit).slice(0, 60) : "", type: event.type };
     try { sessionStorage.setItem(KEY, JSON.stringify(noted)); } catch (e) { /* see above */ }
   };
   document.addEventListener("pointerdown", record, true);
   document.addEventListener("touchstart", record, true);
-  return { placed: true, layer: layer };
+  var under = document.elementFromPoint(cx, cy);
+  return { placed: true, layer: layer, point: { x: Math.round(cx), y: Math.round(cy) }, inView: point.inView, under: under ? qaDescribe(under) : "" };
 }

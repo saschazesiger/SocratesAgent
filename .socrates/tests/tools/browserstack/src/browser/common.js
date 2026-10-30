@@ -89,3 +89,36 @@ function qaScrollState(el) {
   var top = page ? scrollY : el.scrollTop;
   return { box: page ? "the page" : qaDescribe(el), top: Math.round(top), max: Math.max(0, Math.round(height - (page ? innerHeight : el.clientHeight))), visible: Math.round(visible) };
 }
+
+// A point of the page (viewport CSS px) inside `el` (its centre, or `at`: CSS px from its top-left or percent
+// of its size, each axis on its own), or of the viewport when there is no element. inView: on the visible part.
+function qaPointIn(el, at) {
+  var vv = window.visualViewport;
+  var box = el ? el.getBoundingClientRect() : { left: vv ? vv.offsetLeft : 0, top: vv ? vv.offsetTop : 0, width: vv ? vv.width : innerWidth, height: vv ? vv.height : innerHeight };
+  var x = box.left + (at ? (at.xPercent ? (box.width * at.x) / 100 : at.x) : box.width / 2);
+  var y = box.top + (at ? (at.yPercent ? (box.height * at.y) / 100 : at.y) : box.height / 2);
+  var left = vv ? vv.offsetLeft : 0;
+  var top = vv ? vv.offsetTop : 0;
+  var inView = x >= left && y >= top && x <= left + (vv ? vv.width : innerWidth) && y <= top + (vv ? vv.height : innerHeight);
+  return { x: x, y: y, inView: inView };
+}
+
+// iOS only: Safari answers a page's clipboard read (navigator.clipboard.readText or read, inside a touch) with its
+// Paste callout, and a native touch that opens it hangs the device session until BrowserStack ends it. So on iOS
+// the driver refuses such reads for the page, at once and as Safari does when the callout is dismissed
+// (NotAllowedError), and notes each refusal; the action's output says so. Installed once per document.
+function qaGuardClipboard() {
+  var clip = navigator.clipboard;
+  if (!clip || clip.__qaGuarded) return;
+  window.__qaClipboard = window.__qaClipboard || [];
+  ["readText", "read"].forEach(function (name) {
+    if (typeof clip[name] !== "function") return;
+    clip[name] = function () {
+      window.__qaClipboard.push(name);
+      var refusal;
+      try { refusal = new DOMException("The request is not allowed by the user agent or the platform in the current context.", "NotAllowedError"); } catch (e) { refusal = new Error("NotAllowedError"); refusal.name = "NotAllowedError"; }
+      return Promise.reject(refusal);
+    };
+  });
+  try { clip.__qaGuarded = true; } catch (e) { /* a frozen object: guarded anyway */ }
+}

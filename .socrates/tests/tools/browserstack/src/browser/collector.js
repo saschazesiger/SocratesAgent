@@ -1,7 +1,10 @@
 // Installs (once per document) a collector of page errors, rejections and console errors and warnings;
 // returns and clears what it gathered since the last call, and whether the page has the focus (a prompt the
-// browser draws over it, such as Chrome's permission question on Android, takes the focus away).
-function main() {
+// browser draws over it, such as Chrome's permission question on Android, takes the focus away). On iOS it also
+// guards the clipboard (qaGuardClipboard) and returns the reads it refused since the last call.
+function main(guardClipboard) {
+  if (guardClipboard) qaGuardClipboard();
+  var refused = window.__qaClipboard && window.__qaClipboard.length ? window.__qaClipboard.splice(0) : [];
   if (!window.__qa) {
     var store = { entries: [], installedAt: Date.now() };
     window.__qa = store;
@@ -17,9 +20,9 @@ function main() {
         return original.apply(console, arguments);
       };
     });
-    return { installed: true, entries: [], focused: document.hasFocus() };
+    return { installed: true, entries: [], focused: document.hasFocus(), clipboard: refused };
   }
   var entries = window.__qa.entries;
   window.__qa.entries = [];
-  return { installed: false, entries: entries, focused: document.hasFocus() };
+  return { installed: false, entries: entries, focused: document.hasFocus(), clipboard: refused };
 }

@@ -77,7 +77,7 @@ export function serviceUnit(): string {
 /** The attempt's runtime folder: the daemon's socket, pid, log and session facts. */
 export function runtimePaths() {
   const dir = required("SOCRATES_TEST_RUNTIME");
-  return { dir, socket: join(dir, "qa.sock"), pid: join(dir, "qa.pid"), log: join(dir, "daemon.log"), session: join(dir, "session.json"), startError: join(dir, "start-error.txt") };
+  return { dir, socket: join(dir, "qa.sock"), pid: join(dir, "qa.pid"), log: join(dir, "daemon.log"), session: join(dir, "session.json"), startError: join(dir, "start-error.txt"), grants: join(dir, "grants.json") };
 }
 
 /** What Socrates says about the cell this attempt works. */

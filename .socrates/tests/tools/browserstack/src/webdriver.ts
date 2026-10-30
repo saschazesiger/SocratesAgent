@@ -91,6 +91,10 @@ export class WebDriver {
     const value = (await this.call("POST", "/element", { using: "css selector", value: css })) as Record<string, string>;
     return elementId(value);
   }
+  /** The element a W3C action may take as its origin. */
+  static origin(element: string): Record<string, string> {
+    return { [ELEMENT]: element };
+  }
   async findXPath(xpath: string, timeoutMs?: number): Promise<string[]> {
     const value = (await this.call("POST", "/elements", { using: "xpath", value: xpath }, timeoutMs)) as Record<string, string>[];
     return value.map(elementId);
@@ -101,15 +105,18 @@ export class WebDriver {
   async clear(element: string): Promise<void> {
     await this.call("POST", `/element/${element}/clear`, {});
   }
-  async sendKeys(element: string, text: string): Promise<void> {
-    await this.call("POST", `/element/${element}/value`, { text });
+  async sendKeys(element: string, text: string, timeoutMs?: number): Promise<void> {
+    await this.call("POST", `/element/${element}/value`, { text }, timeoutMs);
   }
   async activeElement(): Promise<string> {
     const value = (await this.call("GET", "/element/active")) as Record<string, string>;
     return elementId(value);
   }
-  async rect(element: string): Promise<Rect> {
-    return (await this.call("GET", `/element/${element}/rect`)) as Rect;
+  async rect(element: string, timeoutMs?: number): Promise<Rect> {
+    return (await this.call("GET", `/element/${element}/rect`, undefined, timeoutMs)) as Rect;
+  }
+  async attribute(element: string, name: string, timeoutMs?: number): Promise<string | null> {
+    return (await this.call("GET", `/element/${element}/attribute/${encodeURIComponent(name)}`, undefined, timeoutMs)) as string | null;
   }
   async actions(actions: ActionSequence[], timeoutMs?: number): Promise<void> {
     await this.call("POST", "/actions", { actions }, timeoutMs);
@@ -157,6 +164,21 @@ export class WebDriver {
     await this.call("POST", "/context", { name }, timeoutMs);
   }
 
+  /** An Appium `mobile:` command or another executor script with one argument object (native context). */
+  async mobile<T>(command: string, args: Record<string, unknown> = {}, timeoutMs?: number): Promise<T> {
+    return (await this.call("POST", "/execute/sync", { script: `mobile: ${command}`, args: [args] }, timeoutMs)) as T;
+  }
+  /** The text of an open alert (W3C), or null when none is open. */
+  async alertText(timeoutMs?: number): Promise<string | null> {
+    return this.call("GET", "/alert/text", undefined, timeoutMs).then(
+      (value) => String(value ?? ""),
+      (error: Error) => {
+        if (error instanceof WebDriverError && /no such alert/i.test(error.code + error.message)) return null;
+        throw error;
+      },
+    );
+  }
+
   async quit(): Promise<void> {
     await this.call("DELETE", "");
   }
@@ -180,7 +202,8 @@ async function request(auth: string, method: string, url: string, body: unknown,
   if (!response.ok || (value && typeof value === "object" && "error" in value && value.error)) {
     throw new WebDriverError(value?.error ?? `http ${response.status}`, value?.message ?? text.slice(0, 300));
   }
-  // The legacy JSON wire answer of a new session carries the id beside the value.
-  if (parsed.sessionId && value && typeof value === "object" && !("sessionId" in value)) return { sessionId: parsed.sessionId, capabilities: value };
+  // The legacy JSON wire answer of a new session carries the id beside the value. Only that answer: Appium's
+  // Android driver puts the session id beside every value, and a rect read that way lost its x and y.
+  if (method === "POST" && /\/session$/.test(url) && parsed.sessionId && value && typeof value === "object" && !("sessionId" in value)) return { sessionId: parsed.sessionId, capabilities: value };
   return parsed.value;
 }

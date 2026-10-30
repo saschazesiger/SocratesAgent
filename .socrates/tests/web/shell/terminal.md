@@ -17,8 +17,8 @@ Tab, Ctrl, Alt, ^C, ^D, ^Z and Paste. At a desk click the terminal and type.
    Expect: "Hello, Socrates!" is printed.
 4. Run `sleep 300`, then stop it with Ctrl-C (the key bar's ^C on a touch device, or its Ctrl then c; Ctrl+C at a desk).
    Expect: the sleep ends at once with ^C and a fresh prompt.
-5. Run `seq 1 400`, then scroll the terminal up and down (one finger on a touch device, the wheel at a desk).
-   Expect: the output scrolls back to the early numbers and down again; the page itself does not scroll or zoom.
+5. Run `seq 1 400`, then scroll the terminal up and down (one finger on a touch device: `qa swipe down --css .xterm-screen`, several times, then `qa swipe up`; the wheel at a desk: `qa wheel up --css .xterm-screen`, then `qa wheel down`).
+   Expect: the output scrolls back to earlier numbers (tmux shows its place, `[n/…]`, at the top right) and down again to the prompt; the page itself does not scroll or zoom.
 6. Run `exit`.
    Expect: an overlay says the session ended (normally) with Restart.
 7. Press Restart.

@@ -63,7 +63,7 @@ export function describePrompt(prompt: NativePrompt): string {
 
 /** The labels that answer a prompt each way, best first (Chrome's own, then Android's permission dialogs). */
 const ANSWERS: Record<"allow" | "block", RegExp[]> = {
-  allow: [/^allow$/i, /^allow this time$/i, /^only this time$/i, /^while using the app$/i, /^allow\b/i, /^(ok|continue)$/i],
+  allow: [/^allow$/i, /^paste$/i, /^allow paste$/i, /^allow this time$/i, /^only this time$/i, /^while using the app$/i, /^allow\b/i, /^(ok|continue)$/i],
   block: [/^block$/i, /^don[’']t allow$/i, /^deny$/i, /^never allow$/i, /^(block|don[’']t allow)\b/i, /^(cancel|not now|no thanks)$/i],
 };
 

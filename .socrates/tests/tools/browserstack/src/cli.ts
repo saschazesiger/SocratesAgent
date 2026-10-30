@@ -1,13 +1,14 @@
 import { execFileSync, spawn } from "node:child_process";
-import { existsSync, openSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { request } from "node:http";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
 import { busyMembers, parseAccount, parseAccounts, planOf } from "./account";
 import { ACCOUNTS_SECRET, EXIT_QUEUED, LEASE_MEMBER, LEASE_VALUE, LOG_LINES_MAX, ROOT, START_WAIT_MS, STOP_WAIT_MS, cellEnv, evidenceDir, runtimePaths, serviceUnit, vaultFile } from "./config";
 import type { Answer, Command, SessionFacts } from "./daemon";
-import { deviceById } from "./devices";
+import { deviceById, parseGrants } from "./devices";
 import { Evidence, redactUrl } from "./evidence";
+import { parseAt, parseBy, parseDirection } from "./gesture";
 import { KEY_NAMES } from "./keys";
 import { sessionLinks } from "./session";
 import { readVault, requireSecret } from "./vault";
@@ -18,19 +19,26 @@ const USAGE = `usage: qa <command> [options]          (instructions: TOOL.md)
 The cell (device, test instance, account) comes from Socrates' environment; every action is written
 into the cell's evidence with its screenshot.
 
-  start                                           start the device (prints "device ready"); exit 3 = still queued, run it again
+  start [--grant microphone,notifications,...]    start the device (prints "device ready"); exit 3 = still queued, run it again (--grant: desktop Chrome, Edge, Firefox)
   stop                                            close the BrowserStack session (Socrates runs it after every attempt)
   open <path>                                     open a page of the test instance (/admin, /#home, or a full URL of its origin), then settle
   find <text> [--role r] [--nth n] [--exact] [--any] [--css sel]   scroll a control into view without touching it
   tap <text> [--role r] [--nth n] [--exact] [--any] [--css sel] [--native|--simulated] [--force]   (with a text, --css is the area to search)
+  tap [<text>|--css sel] --at x,y | --double      a tap at a point inside it (CSS px or %, from its top-left), or a double tap / double click
+  swipe <up|down|left|right> [<text>|--css sel] [--at x,y] [--distance px] [--ms n]   one finger on a phone or tablet; the content follows the finger
+  wheel <up|down|left|right> [<text>|--css sel] [--at x,y] [--amount px]   the mouse wheel on a desktop; up shows what is above
+  hold [<text>|--css sel] [--at x,y] [--seconds s]   a long press (a finger held still; the mouse button on a desktop), 1 s by default
+  drag [<text>|--css sel] [--at x,y] --by dx,dy [--seconds s] [--ms n]   press, move by dx,dy CSS px and lift (--seconds: rest that long first)
+  pick <value> --into <field> [--native]          set a date, time or datetime-local field with the device's own picker (2026-10-30T14:25, +5m)
+  native look | native tap <label> [--nth n] | native back   what Safari, Chrome or the system draw outside the page, touched by its label
   type <value> [--into <text>|--css sel] [--role r] [--native] [--clear] [--submit]
   type --secret QA_NAME [--into <text>|--css sel] ...   type a login of the vault without it passing through you
   key <name>                                      ${KEY_NAMES} (combinations on desktops only)
   keyboard                                        close the on-screen keyboard as a person would (nothing when none is open)
-  prompt <allow|block>                            answer the prompt Chrome draws over the page on Android (the clipboard, ...)
+  prompt <allow|block>                            answer the browser's prompt over the page: Chrome's on Android, Safari's alerts and paste callout on iOS
   scroll <down|up|top|bottom>   rotate <portrait|landscape>   back | forward | reload   wait <seconds>
   look                                            screenshot and the controls on screen
-  shot | env                                      screenshot only, device facts
+  shot [--native] | env                           screenshot only (--native: the whole screen on Android, the keyboard included), device facts
   logs                                            the test instance's server log (journalctl) since the device started
   pool-status                                     Socrates' pool hook: {"busy": [...]} members busy outside Socrates`;
 
@@ -47,6 +55,14 @@ const OPTIONS = {
   clear: { type: "boolean" },
   submit: { type: "boolean" },
   secret: { type: "string" },
+  at: { type: "string" },
+  distance: { type: "string" },
+  amount: { type: "string" },
+  seconds: { type: "string" },
+  ms: { type: "string" },
+  by: { type: "string" },
+  double: { type: "boolean" },
+  grant: { type: "string" },
   help: { type: "boolean" },
 } as const;
 
@@ -108,12 +124,19 @@ async function commandOn(name: string, args: Record<string, unknown>): Promise<v
 }
 
 /** Starts the cell's daemon unless one runs, then waits for the device at most START_WAIT_MS. */
-async function start(): Promise<void> {
+async function start(grant?: string): Promise<void> {
   const paths = runtimePaths();
   const cell = cellEnv();
-  deviceById(cell.device);
+  const device = deviceById(cell.device);
+  let grants: string[] = [];
+  try {
+    grants = parseGrants(grant, device);
+  } catch (error) {
+    fail((error as Error).message);
+  }
   if (!daemonPid(paths.pid)) {
     rmSync(paths.startError, { force: true });
+    writeFileSync(paths.grants, `${JSON.stringify(grants)}\n`);
     const log = openSync(paths.log, "a");
     const daemon = spawn(join(ROOT, "node_modules/.bin/tsx"), [join(ROOT, "src/daemon.ts")], { detached: true, stdio: ["ignore", log, log], cwd: ROOT });
     daemon.unref();
@@ -214,10 +237,29 @@ async function main(): Promise<void> {
   const text = rest.join(" ");
   if (values.nth !== undefined && !/^[1-9]\d*$/.test(values.nth)) fail("--nth counts from 1");
   if (values.native && values.simulated) fail("--native and --simulated exclude each other");
+  const number = (name: string, value: string | undefined, min: number, max: number): number | undefined => {
+    if (value === undefined) return undefined;
+    const n = Number(value);
+    if (!Number.isFinite(n) || n < min || n > max) fail(`--${name} takes a number from ${min} to ${max}, not ${value}`);
+    return n;
+  };
+  let gesture: Record<string, unknown> = {};
+  try {
+    gesture = {
+      at: values.at !== undefined ? parseAt(values.at) : undefined,
+      distance: number("distance", values.distance, 10, 3000),
+      amount: number("amount", values.amount, 10, 20000),
+      seconds: number("seconds", values.seconds, 0, 30),
+      ms: number("ms", values.ms, 50, 5000),
+      by: values.by !== undefined ? parseBy(values.by) : undefined,
+    };
+  } catch (error) {
+    fail((error as Error).message);
+  }
   const target = { role: values.role, nth: values.nth ? Number(values.nth) - 1 : undefined, exact: values.exact, any: values.any, css: values.css, native: values.native, simulated: values.simulated };
   switch (name) {
     case "start":
-      return start();
+      return start(values.grant);
     case "stop":
       return stop();
     case "pool-status":
@@ -229,7 +271,32 @@ async function main(): Promise<void> {
     case "find":
       return commandOn("find", { ...target, text: text || undefined });
     case "tap":
-      return commandOn("tap", { ...target, text: text || undefined, force: values.force });
+      if (!text && !values.css && !values.at) fail("qa tap <text> (or --css, or --at x,y for a point of the page)");
+      return commandOn("tap", { ...target, text: text || undefined, force: values.force, double: values.double, gesture });
+    case "swipe":
+    case "wheel": {
+      const [direction, ...words] = rest;
+      try {
+        parseDirection(direction, name);
+      } catch (error) {
+        fail((error as Error).message);
+      }
+      return commandOn(name, { ...target, text: words.join(" ") || undefined, direction, gesture });
+    }
+    case "pick":
+      if (!text || !(values.into || values.css)) fail("qa pick <value> --into <field> (2026-10-30T14:25, 14:25, 2026-10-30, or +5m from the device's clock)");
+      return commandOn("pick", { ...target, text: values.into, value: text });
+    case "hold":
+      return commandOn("hold", { ...target, text: text || undefined, gesture });
+    case "drag":
+      if (!gesture.by) fail("qa drag needs --by dx,dy (CSS px: 120,0 to the right, 0,-80 up)");
+      return commandOn("drag", { ...target, text: text || undefined, gesture });
+    case "native": {
+      const [sub, ...words] = rest;
+      if (sub === "look" || sub === "back") return commandOn(`native-${sub}`, {});
+      if (sub === "tap" && words.length) return commandOn("native-tap", { label: words.join(" "), nth: target.nth });
+      return fail("qa native look, qa native tap <label> or qa native back");
+    }
     case "type":
       return commandOn("type", {
         value: text,
@@ -244,12 +311,13 @@ async function main(): Promise<void> {
     case "prompt":
       if (text !== "allow" && text !== "block") fail("qa prompt allow or qa prompt block");
       return commandOn("prompt", { answer: text });
+    case "shot":
+      return commandOn("shot", { native: values.native });
     case "keyboard":
     case "back":
     case "forward":
     case "reload":
     case "look":
-    case "shot":
     case "env":
       return commandOn(name, {});
     default:

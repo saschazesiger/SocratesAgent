@@ -1,5 +1,5 @@
 // Finds the control an action names (visible text or accessible name, optional role, a CSS selector alone
-// or as the area the text is searched in, nth match), scrolls it to the centre of what is visible, checks what covers it, and marks
+// or as the area the text is searched in, nth match), scrolls it into sight when it is not (the least scroll), checks what covers it, and marks
 // it with data-qa-hit for WebDriver. Among equal names the one a person sees on top wins (an open menu's link
 // before the same link in the footer).
 var QA_INTERACTIVE = 'a[href], button, input:not([type="hidden"]), select, textarea, summary, label, [role="button"], [role="link"], [role="tab"], [role="menuitem"], [role="menuitemradio"], [role="menuitemcheckbox"], [role="option"], [role="checkbox"], [role="radio"], [role="switch"], [role="combobox"], [role="textbox"], [role="slider"], [tabindex]:not([tabindex="-1"]), [onclick]';
@@ -69,10 +69,22 @@ function main(query) {
   Array.prototype.forEach.call(document.querySelectorAll("[data-qa-hit]"), function (node) { node.removeAttribute("data-qa-hit"); });
   var nonce = "qa" + Math.random().toString(36).slice(2, 10);
   target.setAttribute("data-qa-hit", nonce);
-  // Instant, also on pages with smooth scrolling: the rect below must be where the control stays.
-  target.scrollIntoView({ block: "center", inline: "center", behavior: "instant" });
   // On phones the visible part can be smaller than the layout viewport (on-screen keyboard, zoom).
   var vv = window.visualViewport;
+  // A control already in sight stays where it is. Centring it moved what a person sees: with Android's keyboard
+  // up only the visual viewport shrinks, and scrolling to the centre slid the visible part into empty page and
+  // the key bar sideways. Otherwise the least scroll that brings it into sight (instant, also on pages with
+  // smooth scrolling: the rect below must be where the control stays).
+  var seen = target.getBoundingClientRect();
+  var top = vv ? vv.offsetTop : 0;
+  var left = vv ? vv.offsetLeft : 0;
+  var height = vv ? vv.height : innerHeight;
+  var width = vv ? vv.width : innerWidth;
+  var inside = seen.top >= top && seen.left >= left && seen.bottom <= top + height && seen.right <= left + width;
+  var cxSeen = seen.left + seen.width / 2;
+  var cySeen = seen.top + seen.height / 2;
+  var bigAndCentred = (seen.height > height || seen.width > width) && cySeen >= top && cySeen <= top + height && cxSeen >= left && cxSeen <= left + width;
+  if (!inside && !bigAndCentred) target.scrollIntoView({ block: "nearest", inline: "nearest", behavior: "instant" });
   if (vv) {
     var box = target.getBoundingClientRect();
     var middle = box.top + box.height / 2;

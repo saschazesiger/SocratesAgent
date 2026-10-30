@@ -4,8 +4,11 @@ priority: P2
 tags: [pages, pwa, notifications]
 ---
 Socrates is a web app with a manifest and a service worker (it runs over HTTPS here). Notifications
-need the browser's permission: a native permission prompt the tool cannot answer makes the step
-`blocked`, not `fail`. On iPhone and iPad they need the app added to the Home Screen (the hint says so).
+need the browser's permission: answer the browser's prompt with `qa prompt allow` on phones and
+tablets. A desktop's prompt is out of reach: on Windows Chrome start the device with
+`qa start --grant notifications` (the browser then asks nothing; say so); on the Mac's Safari, whose
+prompt cannot be answered, the step is `blocked`, not `fail`. On iPhone and iPad they need the app
+added to the Home Screen (the hint says so).
 
 ## Steps
 

@@ -36,3 +36,47 @@ export function deviceById(id: string): Device {
   if (!device) throw new Error(`unknown device ${id} (known: ${DEVICES.map((entry) => entry.id).join(", ")})`);
   return device;
 }
+
+/** The permissions `qa start --grant` can give a desktop browser in advance (its prompts are outside WebDriver's reach). */
+export const GRANTS = ["microphone", "camera", "notifications", "clipboard", "location"] as const;
+export type Grant = (typeof GRANTS)[number];
+
+/**
+ * Parses `--grant microphone,notifications`: only desktop Chrome, Edge and Firefox take permissions in advance
+ * (their profile's preferences). Safari has no such setting, and a phone or tablet answers its prompts natively
+ * (qa prompt).
+ */
+export function parseGrants(spec: string | undefined, device: Device): Grant[] {
+  if (spec === undefined) return [];
+  const grants = spec
+    .split(",")
+    .map((word) => word.trim().toLowerCase())
+    .filter(Boolean)
+    .map((word) => (word === "mic" ? "microphone" : word));
+  for (const grant of grants) if (!(GRANTS as readonly string[]).includes(grant)) throw new Error(`--grant takes ${GRANTS.join(", ")}, not ${grant}`);
+  if (device.kind !== "desktop") throw new Error(`--grant is for desktop browsers, whose prompts the tool cannot reach; on ${device.label} answer the browser's own prompt with qa prompt allow or block`);
+  if (device.browserName === "safari") throw new Error("--grant: Safari takes no permission in advance through WebDriver; judge a step that needs its prompt blocked");
+  return [...new Set(grants)] as Grant[];
+}
+
+/**
+ * The capabilities that give a desktop browser the permissions in advance: Chrome's and Edge's content settings
+ * (1: allow) with a fake microphone and camera (the cloud machines have none), Firefox's preferences.
+ */
+export function grantCapabilities(device: Device, grants: Grant[]): Record<string, unknown> {
+  if (!grants.length) return {};
+  const media = grants.includes("microphone") || grants.includes("camera");
+  if (device.browserName === "firefox") {
+    const prefs: Record<string, unknown> = {};
+    if (media) Object.assign(prefs, { "media.navigator.permission.disabled": true, "media.navigator.streams.fake": true });
+    if (grants.includes("notifications")) prefs["permissions.default.desktop-notification"] = 1;
+    if (grants.includes("clipboard")) prefs["dom.events.asyncClipboard.readText"] = true;
+    if (grants.includes("location")) prefs["permissions.default.geo"] = 1;
+    return { "moz:firefoxOptions": { prefs } };
+  }
+  const setting: Record<Grant, string> = { microphone: "media_stream_mic", camera: "media_stream_camera", notifications: "notifications", clipboard: "clipboard", location: "geolocation" };
+  const prefs: Record<string, number> = {};
+  for (const grant of grants) prefs[`profile.default_content_setting_values.${setting[grant]}`] = 1;
+  const options = { prefs, args: media ? ["--use-fake-device-for-media-stream", "--use-fake-ui-for-media-stream"] : [] };
+  return { [device.browserName === "edge" ? "ms:edgeOptions" : "goog:chromeOptions"]: options };
+}

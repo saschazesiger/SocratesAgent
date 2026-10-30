@@ -40,7 +40,12 @@ that does not work fails step 1.
 Then, for each step in turn:
 
 1. Carry it out with as many actions as it takes (`qa open`, `tap`, `type`, `scroll`, `rotate`,
-   `look`, ...). Each action prints its screenshot path: read the screenshot, and `qa look` where
+   `look`, ...). Gestures are there as a person makes them: `qa swipe` (one finger; the content
+   follows it, swipe down to see what is above), `qa wheel` (desktops), `qa hold` (a long press),
+   `qa tap --double`, `qa drag`, aimed with `--css` and `--at` at a point inside a box such as a
+   terminal (`--css .xterm-screen --at 5%,40%`); `qa pick` sets a date or time field with the
+   device's own picker; `qa native look` / `qa native tap` reach what the browser draws outside the
+   page (a file chooser, a picker), TOOL.md says how. Each action prints its screenshot path: read the screenshot, and `qa look` where
    controls matter. A step names the person's goal: reach it the way this device offers it (the
    Sessions button and the modal drawer on a phone, the docked list on a desktop, an action sheet
    instead of a menu on a phone); it is `na` only when it cannot exist on the device (rotation on a
@@ -112,10 +117,24 @@ Besides what a step expects, look at every screenshot as a person on this device
   (the closing keyboard moves the page).
 - A focus ring, a tooltip or another effect after a tap the output calls `simulated click, not a
   finger` is repeated without `--simulated` before it is called a bug: a finger may not cause it.
-- On Android a `native prompt over the page` in an action's output is Chrome's own question (the
-  clipboard, notifications, ...), shown in that action's screenshot, not a bug of Socrates. Answer it
-  as a person would with `qa prompt allow` (or `block`) and go on with the step; it is `blocked` only
-  when `qa prompt` cannot answer it.
+- A `native prompt over the page` in an action's output is the browser's own question (Chrome's or
+  Android's on Android, Safari's alert on iOS: the clipboard, the microphone, notifications), shown
+  in that action's screenshot, not a bug of Socrates. Answer it as a person would with `qa prompt
+  allow` (or `block`) and go on with the step; it is `blocked` only when `qa prompt` cannot answer it.
+- On a desktop the browser's prompts are out of reach. A step that needs the microphone or
+  notifications there starts the device with them given in advance: `qa start --grant microphone`
+  (or `notifications`) on Windows Chrome, then judge what follows and say the permission was given in
+  advance (the browser asked nothing). Safari on the Mac takes no such grant: that step is `blocked`.
+- A `NOTE:` line in an action's output is something the driver did as a person would, or had to do
+  instead: read it before judging. The first touch on a field the page focused itself raising no
+  keyboard on iOS (the driver then touched it again) is something a person meets: an `issue` when
+  it is the step's field. A clipboard read refused on iOS (the driver keeps Safari's Paste callout
+  from hanging the device) is the tool's doing: judge the page's answer to it (a clear message is
+  fine), and say Safari's callout itself was not tested.
+- `NOT THE DEVICE'S PICKER` in `qa pick` means the value was set by script: judge the field, the hint
+  and what follows, and say the picker itself could not be used.
+- A swipe, wheel or hold names where it went (CSS px and screenshot pixels): if it missed the word or
+  the line, aim again with `--at` before calling it a bug.
 
 ## What is not a bug here
 

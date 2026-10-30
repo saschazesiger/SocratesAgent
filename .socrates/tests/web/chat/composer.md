@@ -20,7 +20,7 @@ line; Ctrl+Enter (Cmd+Enter on a Mac) sends everywhere. A draft is kept on the s
    Expect: the command list "Commands" opens (compact and context for the Scripted agent) and closes with Escape or by deleting the slash.
 6. On a desktop send `ctrl enter works` with Ctrl+Enter (Cmd+Enter on the Mac) (na on phones and tablets).
    Expect: the message is sent and answered.
-7. Press Attach files and cancel the file picker (do not upload anything).
+7. Press Attach files and cancel the file picker (do not upload anything). The picker is the device's own: `qa native look` lists it, `qa native back` closes Android's chooser, `qa native tap Cancel` iOS's; a microphone or camera question Android asks first is answered with `qa prompt`.
    Expect: the device's file picker or a menu opens and closes again; no file chip stays behind.
 8. Delete `QA composer <device>`.
    Expect: the confirmation, then the toast; the session is gone.

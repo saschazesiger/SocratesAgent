@@ -3,13 +3,14 @@
  * answers the CLI over $SOCRATES_TEST_RUNTIME/qa.sock one command at a time, keeps the session alive
  * while the agent thinks and ends it on `qa stop`, on SIGTERM or when nobody has asked anything for too long.
  */
-import { existsSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { parseAccount, type Account } from "./account";
 import { DAEMON_IDLE_EXIT_MS, KEEPALIVE_MS, LEASE_MEMBER, LEASE_VALUE, SESSION_WARN_MS, cellEnv, evidenceDir, runtimePaths, vaultFile } from "./config";
-import { deviceById } from "./devices";
+import { deviceById, type Grant } from "./devices";
 import { Evidence, type Action, type Target } from "./evidence";
-import { DeviceSession, type TypeOptions } from "./session";
+import type { Direction } from "./gesture";
+import { DeviceSession, type GestureOptions, type TypeOptions } from "./session";
 import { onSite, originOf } from "./site";
 import { readVault, requireSecret } from "./vault";
 
@@ -42,16 +43,17 @@ function startFailed(message: string): never {
   process.exit(1);
 }
 
-let setup: { cell: ReturnType<typeof cellEnv>; device: ReturnType<typeof deviceById>; account: Account; evidence: Evidence; secrets: Record<string, string> };
+let setup: { cell: ReturnType<typeof cellEnv>; device: ReturnType<typeof deviceById>; account: Account; evidence: Evidence; secrets: Record<string, string>; grants: Grant[] };
 try {
   const cell = cellEnv();
   const secrets = readVault(vaultFile());
   const account = parseAccount(requireSecret(secrets, LEASE_VALUE), Number(secrets[LEASE_MEMBER]) || 0);
-  setup = { cell, device: deviceById(cell.device), account, evidence: new Evidence(evidenceDir()), secrets };
+  const grants = existsSync(paths.grants) ? (JSON.parse(readFileSync(paths.grants, "utf8")) as Grant[]) : [];
+  setup = { cell, device: deviceById(cell.device), account, evidence: new Evidence(evidenceDir()), secrets, grants };
 } catch (error) {
   startFailed(`the device did not start: ${(error as Error).message}`);
 }
-const { cell, device, account, evidence, secrets } = setup;
+const { cell, device, account, evidence, secrets, grants } = setup;
 
 let session: DeviceSession | null = null;
 let state: DaemonState = "starting";
@@ -85,7 +87,8 @@ function answer(action: Action): Answer {
 }
 
 function started(s: DeviceSession): string {
-  return `device ready: ${device.label} (${device.kind}${device.options.deviceOrientation ? `, ${device.options.deviceOrientation}` : ""}), test instance ${cell.baseUrl}, BrowserStack account ${account.user}, session ${s.driver.sessionId}`;
+  const given = grants.length ? `; given in advance: ${grants.join(", ")} (the browser asks nothing for them)` : "";
+  return `device ready: ${device.label} (${device.kind}${device.options.deviceOrientation ? `, ${device.options.deviceOrientation}` : ""}), test instance ${cell.baseUrl}, BrowserStack account ${account.user}, session ${s.driver.sessionId}${given}`;
 }
 
 /** Quits the session, writes its links into the evidence and exits; safe to call more than once. */
@@ -113,8 +116,30 @@ async function handle(command: Command): Promise<Answer> {
       return answer(await s.open(String(a.path)));
     case "find":
       return answer(await s.find(target(a)));
-    case "tap":
-      return answer(await s.tap(target(a), { force: Boolean(a.force) }));
+    case "tap": {
+      const g = (a.gesture ?? {}) as GestureOptions;
+      return answer(await s.tap(target(a), { force: Boolean(a.force), double: Boolean(a.double), at: g.at }));
+    }
+    case "swipe":
+    case "wheel": {
+      const aimed = a.text !== undefined || a.css ? target(a) : undefined;
+      const g = (a.gesture ?? {}) as GestureOptions;
+      return answer(await (command.name === "swipe" ? s.swipe(a.direction as Direction, aimed, g) : s.wheel(a.direction as Direction, aimed, g)));
+    }
+    case "pick":
+      return answer(await s.pick(String(a.value), target(a), { native: Boolean(a.native) }));
+    case "hold":
+      return answer(await s.hold(a.text !== undefined || a.css ? target(a) : undefined, (a.gesture ?? {}) as GestureOptions));
+    case "drag": {
+      const g = (a.gesture ?? {}) as GestureOptions & { by: { dx: number; dy: number } };
+      return answer(await s.drag(a.text !== undefined || a.css ? target(a) : undefined, g));
+    }
+    case "native-look":
+      return answer(await s.nativeLook());
+    case "native-tap":
+      return answer(await s.nativeTouch(String(a.label), a.nth as number | undefined));
+    case "native-back":
+      return answer(await s.nativeBack());
     case "type":
       return answer(await s.type(String(a.value ?? ""), { into: a.text || a.css ? target(a) : undefined, ...(a.options as TypeOptions) }));
     case "keyboard":
@@ -136,7 +161,7 @@ async function handle(command: Command): Promise<Answer> {
     case "look":
       return answer(await s.look());
     case "shot":
-      return answer(await s.shot());
+      return answer(await s.shot(Boolean(a.native)));
     case "env":
       return { ok: true, state, text: JSON.stringify(await s.env(), null, 1) };
     default:
@@ -175,7 +200,7 @@ process.on("SIGTERM", () => {
   void stop("SIGTERM").finally(() => shutdown(0));
 });
 
-DeviceSession.start({ cell, device, account }, secrets, evidence).then(
+DeviceSession.start({ cell, device, account, grants }, secrets, evidence).then(
   (begun) => {
     session = begun;
     if (stopping) {
