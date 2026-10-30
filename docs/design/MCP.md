@@ -99,6 +99,41 @@ What the server needs to know about a repository, all optional (without it, `ope
   `<command> --from <RFC 3339> --to <RFC 3339>` and prints one line each.
 - `base_url` may be overridden per test area with the parameter `base_url`, and in a chat by `start`.
 
+## Socrates Tests (`internal/mcpserver/tests`)
+
+Added on 2026-10-30 at the owner's request: everything the Tests page does with a repository's test
+catalog, as tools of a chat's agent. It needs no account and no configuration; like every built-in
+server it is in every chat's list and **off** until Admin switches it on for every chat or the chat
+does. It works on the repository of the chat's folder (`testmode.FindRoot`), never on another.
+
+| Tool | Does |
+|---|---|
+| `tests_format`, `tests_check`, `run_tests`, `test_results` | as the chat tools of the same names (TEST-MODE.md, "Runs started by chat agents"): a run it starts is the chat's, and its results come to the chat as a message |
+| `catalog_read {path?}` | a file of `.socrates/tests/`, or the list of its files |
+| `catalog_write {path, content, executable?}`, `catalog_delete {path}` | writes or deletes a file of the catalog (folders made, empty ones removed), then checks the catalog: this file's problems and the totals. Only inside `.socrates/tests/`, names of letters, digits, `-`, `_`, `.` that do not start with a dot, never through a symbolic link, at most 1 MB |
+| `test_read {test}` | a test's file, how each of its cells stood in the latest runs, its bugs |
+| `tests_estimate {selection}` | cells, tests, time and cost of a selection (`Runner.Estimate`) |
+| `test_runs {limit?}`, `test_run {run?}` | the runs, newest first; one run with every cell's state and verdict |
+| `test_cell {run?, cell}` | a cell (or an attempt) in full: steps, the agent's, reviewer's and person's verdicts, actions, screenshot paths, other attempts (`Runner.CellText`) |
+| `test_run_control {run, action}` | `stop`, `resume`, `analyse`, `pin`, `unpin`, `delete` |
+| `test_retry {run?, cell}`, `test_override {run?, cell, verdict, note?}` | another attempt of a cell; the person's verdict of it |
+| `test_bugs {status?}`, `test_bug {id}`, `test_bug_update {id, status?, severity?, note?, issue?}`, `test_bug_issue {id, title, body}` | the bug list, a bug in full, triage, a GitHub issue |
+| `test_search {query, limit?}` | cells of the runs that hold every word |
+| `test_settings {set?}` | the repository's test settings; `set` changes what it names (checked as the Tests page's are) |
+
+`run` is a run's id or `latest` (the default). Unknown arguments are refused. The instructions tell the
+agent to run as narrow as the question, to end its turn after `run_tests` rather than poll, and to
+leave stopping and deleting runs, overrides, triage, issues and settings to the person's word.
+
+- **Not twice.** A chat that has it on is not given the chat tools' four test tools
+  (`Server.testsMCPOn`, `spec.ChatTools.Tests`), which it has here under the same names.
+- **Chats only** (`mcpserver.ChatsOnly`). A test session never has it on, whatever the area or the
+  Tests settings say; its calls are refused there, an area that names it under `mcp:` is an error
+  of the catalog (`CheckArea`), and the Tests page does not offer it for the cells (`chat_only` in
+  the MCP views).
+- **The runner** comes from the server (`builtin.Deps`); without one the file tools and
+  `tests_check` work and the rest say the runner is not running.
+
 ## Admin's servers
 
 Admin → **MCP servers** has the built-in servers (with their accounts, their tools and what is in use)
@@ -141,6 +176,7 @@ refreshes.
 | `internal/mcpserver` | the component model, the registry and its accounts, `socrates mcp-server` |
 | `internal/mcpserver/builtin` | the list of built-in servers |
 | `internal/mcpserver/browserstack`, `…/driver` | the BrowserStack server; the device driver (WebDriver, native taps, evidence, page scripts) |
+| `internal/mcpserver/tests` | Socrates Tests |
 | `internal/mcpclient` | the probe (stdio, streamable HTTP, SSE) and the OAuth client |
 | `internal/server/mcpbuiltin.go`, `mcpadmin.go`, `mcpoauth.go`, `mcp.go` | the registry in the server, the tools socket route, Admin's API, the test, OAuth and the proxy |
 | `internal/testmode` | `Settings.MCP`, leases of built-in pools (`Lease.MCP`), `Host.MCPPool`/`EndMCP`, `Runner.MCPCell` |

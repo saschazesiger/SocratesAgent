@@ -354,3 +354,35 @@ func TestAChatsRunIsToldAgainWhenTheMessageFails(t *testing.T) {
 	waitFor(t, "the chat to be told at the start", func() bool { return len(host.toldNow()) == 2 })
 	waitFor(t, "the run to be kept told", func() bool { return readJSON(path, &run) == nil && run.StartedBy.Told != 0 })
 }
+
+// CellText is a cell's latest attempt in full, with its other attempts and
+// its verdicts; an attempt's id names that attempt.
+func TestACellsTextHasItsAttempts(t *testing.T) {
+	host := newFakeHost()
+	r, _ := newRunner(t, host)
+	one := strings.Replace(twoSteps, "device: all", "device: [a]", 1)
+	run := startRun(t, r, fixture(t, map[string]string{"one": one}), noReview())
+	r.schedule()
+	waitFor(t, "a session", func() bool { return len(host.chats()) == 1 })
+	mustCall(t, r, host.chats()[0], testtools.Abort, map[string]any{"reason": "the device died"})
+	waitFor(t, "the retry", func() bool { r.schedule(); return len(host.chats()) == 2 })
+	mustCall(t, r, host.chats()[1], testtools.Abort, map[string]any{"reason": "again"})
+	waitFor(t, "the run to end", func() bool { r.schedule(); return r.runState(run.ID) == RunDone })
+	list := r.attemptsOf(run.ID)
+	text, err := r.CellText(run.ID, list[1].CellID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"Cell " + list[1].CellID, "Attempt 2.", "## Step 1", "Agent: blocked - not reached: again",
+		"Verdict: blocked (agent: blocked)", "Other attempts of the cell: attempt 1 (" + list[0].ID + "): blocked"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("lacks %q:\n%s", want, text)
+		}
+	}
+	if text, err := r.CellText(run.ID, list[0].ID); err != nil || !strings.Contains(text, "Attempt 1.") {
+		t.Fatalf("by the attempt's id: %v\n%s", err, text)
+	}
+	if _, err := r.CellText(run.ID, "nope@a"); err == nil {
+		t.Fatal("a cell the run does not have")
+	}
+}

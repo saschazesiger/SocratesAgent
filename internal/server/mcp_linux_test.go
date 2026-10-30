@@ -12,15 +12,19 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 
 	"github.com/saschazesiger/SocratesAgent/internal/agent"
+	"github.com/saschazesiger/SocratesAgent/internal/agent/chattools"
 	"github.com/saschazesiger/SocratesAgent/internal/config"
 	"github.com/saschazesiger/SocratesAgent/internal/mcpserver"
 	"github.com/saschazesiger/SocratesAgent/internal/mcpserver/browserstack/driver"
+	testsmcp "github.com/saschazesiger/SocratesAgent/internal/mcpserver/tests"
 	"github.com/saschazesiger/SocratesAgent/internal/store"
+	"github.com/saschazesiger/SocratesAgent/internal/testmode"
 )
 
 // mcpChat is a chat row of a signed in server, with the server's tools
@@ -99,8 +103,11 @@ func TestABuiltInServerIsAChatsMCPServer(t *testing.T) {
 	if err := e.srv.saveSettings(next); err != nil {
 		t.Fatal(err)
 	}
-	if list, _ := agent.ChatMCP(e.srv.sharedMCP(e.srv.Settings(), ""), nil, nil); len(list) != 1 || !list[0].On {
-		t.Fatalf("on in every chat: %+v", list)
+	list, _ := agent.ChatMCP(e.srv.sharedMCP(e.srv.Settings(), ""), nil, nil)
+	for _, c := range list {
+		if c.On != (c.Name == "browserstack") {
+			t.Fatalf("on in every chat: %+v", list)
+		}
 	}
 
 	var d mcpserver.Description
@@ -128,6 +135,58 @@ func TestABuiltInServerIsAChatsMCPServer(t *testing.T) {
 	bad.MCP.Servers = []config.MCPServerSetting{{Name: "browserstack", Type: "stdio", Command: "x"}}
 	if err := bad.Validate(); err == nil || !strings.Contains(err.Error(), "built into Socrates") {
 		t.Fatalf("a server named like the built-in one: %v", err)
+	}
+}
+
+// Socrates Tests is built in, needs no account and is off in a chat until
+// switched on; on, it answers about the chat's repository's catalog and
+// the chat tools leave their own test tools out.
+func TestSocratesTestsIsAChatsMCPServer(t *testing.T) {
+	e := signedIn(t)
+	repo := catalogRepo(t)
+	chat := mcpChat(t, e, filepath.Join(repo, "sub"))
+	_, body := e.do(t, e.client, "GET", "/api/sessions/"+chat+"/mcp", "")
+	var found map[string]any
+	for _, s := range body["servers"].([]any) {
+		if m := s.(map[string]any); m["name"] == testsmcp.Name {
+			found = m
+		}
+	}
+	if found == nil || found["from"] != agent.MCPFromSocrates || found["on"] != false || found["title"] != "Socrates Tests" ||
+		found["chat_only"] != true {
+		t.Fatalf("the built-in server: %v", body)
+	}
+	row, err := e.srv.store.GetSession(chat)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if e.srv.testsMCPOn(row) || !offersTestTools(row) {
+		t.Fatal("off, the chat tools have the test tools")
+	}
+	row.Options = withOption(row.Options, "mcp", map[string]bool{testsmcp.Name: true})
+	if !e.srv.testsMCPOn(row) {
+		t.Fatal("switched on in the chat")
+	}
+
+	var d mcpserver.Description
+	if code := socketPost(t, e, chat, mcpserver.Request{Server: testsmcp.Name, Method: "describe"}, &d); code != http.StatusOK ||
+		!strings.Contains(d.Instructions, "end your turn") || len(d.Tools) < 20 {
+		t.Fatalf("describe: %d %+v", code, d)
+	}
+	var r mcpserver.Result
+	socketPost(t, e, chat, mcpserver.Request{Server: testsmcp.Name, Method: "call", Tool: chattools.TestsCheck}, &r)
+	if r.IsError || !strings.Contains(r.Content[0].Text, "The test catalog of Shop") {
+		t.Fatalf("tests_check: %+v", r)
+	}
+	socketPost(t, e, chat, mcpserver.Request{Server: testsmcp.Name, Method: "call", Tool: testsmcp.Runs}, &r)
+	if !r.IsError || !strings.Contains(r.Content[0].Text, "not running") {
+		t.Fatalf("test_runs without a runner: %+v", r)
+	}
+	e.srv.tests = testmode.New(t.TempDir(), testHost{e.srv})
+	r = mcpserver.Result{}
+	socketPost(t, e, chat, mcpserver.Request{Server: testsmcp.Name, Method: "call", Tool: testsmcp.Runs}, &r)
+	if r.IsError || !strings.Contains(r.Content[0].Text, "no test run yet") {
+		t.Fatalf("test_runs: %+v", r)
 	}
 }
 
@@ -171,7 +230,8 @@ func TestAdminKeepsTheBuiltInServersAccounts(t *testing.T) {
 		t.Fatalf("stored: %q", kv)
 	}
 	_, over := e.do(t, e.client, "GET", "/api/mcp/overview", "")
-	if b := over["builtin"].([]any); len(b) != 1 || len(b[0].(map[string]any)["accounts"].([]any)) != 1 {
+	if b := over["builtin"].([]any); len(b) != 2 || b[0].(map[string]any)["name"] != "browserstack" ||
+		len(b[0].(map[string]any)["accounts"].([]any)) != 1 {
 		t.Fatalf("overview: %v", over)
 	}
 	res, body = e.do(t, e.client, "DELETE", "/api/mcp/builtin/browserstack/accounts/"+a["id"].(string), "")

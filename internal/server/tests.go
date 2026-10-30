@@ -260,12 +260,13 @@ func (p *chatPeer) testSpec(row *store.Session, ref json.RawMessage, spec *agent
 	}
 	spec.Env = append(env, l.Env...)
 	// Every MCP server of Admin and of the folder is off unless the area
-	// names it.
+	// or the settings name it; one for chats alone is off whatever they say.
 	folder, _ := agent.ReadFolderMCP(row.Workdir)
 	list, _ := agent.ChatMCP(s.sharedMCP(s.Settings(), ""), folder, nil)
 	choices := map[string]bool{}
 	for _, c := range list {
-		choices[c.Name] = slices.Contains(l.MCP, c.Name)
+		_, chatsOnly := s.mcp.Get(c.Name).(mcpserver.ChatsOnly)
+		choices[c.Name] = slices.Contains(l.MCP, c.Name) && !(c.From == agent.MCPFromSocrates && chatsOnly)
 	}
 	spec.MCPChoices = choices
 	return nil

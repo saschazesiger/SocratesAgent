@@ -105,6 +105,7 @@ You can run it again at any time to repair or update the installation.
 | ⚡ **Ultracode** | Claude Code with dynamic workflows on every task, switched on per chat. |
 | 🤝 **Chats talk** | Agents of chats in the same repository list, read and message each other — Claude Code, Codex and OpenCode alike, on any account. |
 | 🔌 **MCP** | Set up MCP servers in **Admin** for every chat, on or off by default, and switch them per chat on the new session sheet or later in its ⋮ → **MCP servers**. **Test** a server to see its tools, sign in to remote ones with **OAuth**, switch single tools off. A folder's `.mcp.json` adds its own, with any agent. |
+| 🧪 **Socrates Tests** | Built in, nothing to set up: switch it on in a chat and its agent writes and checks tests, starts runs, reads results and triages bugs of the repository's test catalog. |
 | 📱 **BrowserStack** | Built in: real phones, tablets and desktop browsers for any chat or test run. Add the accounts in **Admin** (checked against BrowserStack), switch the server on where you need it; each account carries one session at a time. |
 
 ---

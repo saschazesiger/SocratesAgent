@@ -927,6 +927,9 @@ As built (branch `tests-b2`), where it differs from or adds to the paragraph abo
   `socrates mcp-ask`). A chat has them when its repository holds `.socrates/tests/TESTS.md` as its
   host starts (a catalog written later counts from the next launch), or when it was created with
   `tests: true` (`POST /api/chats`, the session option `test_tools`); never a test session.
+- **Socrates Tests.** The built-in MCP server `socrates-tests` (MCP.md, "Socrates Tests") has
+  these four and the rest of the Tests page (catalog files, estimates, run control, cells, bugs,
+  settings); a chat that has it on gets the four there and not from the chat tools.
 - **`tests_format`** is `internal/testmode/catalog/FORMAT.md`, embedded in the binary: the
   user-facing reference (`docs/TESTS-FORMAT.md` points at it), checked against the parser's keys
   by a unit test. **`tests_check`** answers the problems with file and line, then every area with

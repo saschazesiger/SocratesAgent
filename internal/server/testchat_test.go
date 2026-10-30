@@ -64,42 +64,6 @@ func TestAChatIsOfferedTheTestToolsWhereThereIsACatalog(t *testing.T) {
 	}
 }
 
-// run_tests' arguments become the run's selection, cleaned up.
-func TestRunTestsArgumentsAreTheSelection(t *testing.T) {
-	var a chattools.RunTestsArgs
-	raw := `{"areas":["web"," "],"tests":["web/buy.md"],"cells":["web/buy@a"],"tags":["smoke"],"priorities":["p0"],
-		"dims":{"device":["a",""],"locale":[]},"problems_of":" latest ","name":"after the fix"}`
-	if err := json.Unmarshal([]byte(raw), &a); err != nil {
-		t.Fatal(err)
-	}
-	sel := selectionOf(a)
-	got, _ := json.Marshal(sel)
-	want := `{"areas":["web"],"tests":["web/buy"],"tags":["smoke"],"priorities":["P0"],"dims":{"device":["a"]},"cells":["web/buy@a"],"problems_of":"latest"}`
-	if string(got) != want {
-		t.Fatalf("selection\n%s\nwant\n%s", got, want)
-	}
-	if a.Name != "after the fix" {
-		t.Fatalf("name %q", a.Name)
-	}
-}
-
-// test_results is cut at its cap, at a line's end, with a note that says
-// so; a short one is left as it is.
-func TestTestResultsAreCapped(t *testing.T) {
-	if got := capReport("short\n", 100, true); got != "short\n" {
-		t.Fatalf("short: %q", got)
-	}
-	long := strings.Repeat("a line of the report\n", 5000)
-	got := capReport(long, chattools.MaxResults, true)
-	body, note, ok := strings.Cut(got, "\n\n[The report is cut here at 40 KB")
-	if !ok || len(body) > chattools.MaxResults || !strings.HasSuffix(body, "a line of the report") || !strings.HasSuffix(note, "]") {
-		t.Fatalf("capped: %d bytes, ends %q", len(got), got[len(got)-200:])
-	}
-	if got := capReport(long, 1000, false); !strings.Contains(got, "problems_only true") {
-		t.Fatalf("not problems only: %q", got[len(got)-200:])
-	}
-}
-
 // tests_format is the format reference; tests_check lists the catalog's
 // problems, areas, tests and cells, or says there is none; run_tests and
 // test_results say when the runner is not there.

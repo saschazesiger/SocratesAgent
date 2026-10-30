@@ -535,8 +535,8 @@ func (p *chatPeer) launch(ctx context.Context) error {
 	if tools, err := p.hub.srv.chatToolsEndpoint(p.id); err == nil {
 		spec.ChatTools = tools
 		// The test tools, when the repository has a catalog as the host
-		// starts (testchat.go).
-		spec.ChatTools.Tests = offersTestTools(row)
+		// starts (testchat.go), unless Socrates Tests has them already.
+		spec.ChatTools.Tests = offersTestTools(row) && !p.hub.srv.testsMCPOn(row)
 	} else {
 		log.Printf("chats: %s: no chat tools: %v", p.id, err)
 	}

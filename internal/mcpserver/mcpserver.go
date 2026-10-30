@@ -212,5 +212,11 @@ type AreaChecker interface {
 	CheckArea(dims map[string][]string, params map[string]string) []string
 }
 
+// ChatsOnly is a server for chats alone: a test session never has it on,
+// and the Tests page does not offer it for the cells.
+type ChatsOnly interface {
+	ChatsOnly()
+}
+
 // NameRE is a server name every harness takes as it is.
 var NameRE = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)

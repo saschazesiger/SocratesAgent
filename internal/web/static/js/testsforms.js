@@ -267,7 +267,8 @@ export function mount(ctx) {
   // those their area names; saved as the settings' mcp list.
   function mcpSection(s) {
     const chosen = s.mcp || [];
-    const known = mcp.servers || [];
+    // A server for chats alone (Socrates Tests) is never a cell's.
+    const known = (mcp.servers || []).filter((one) => !one.chat_only);
     const gone = chosen.filter((name) => !known.some((one) => one.name === name)).map((name) => ({ name, gone: true }));
     const list = [...known, ...gone];
     return html`<section class="ds-card" aria-labelledby="stMcpTitle">

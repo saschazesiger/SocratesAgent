@@ -11,6 +11,7 @@ import (
 	"github.com/saschazesiger/SocratesAgent/internal/agenthost"
 	"github.com/saschazesiger/SocratesAgent/internal/config"
 	"github.com/saschazesiger/SocratesAgent/internal/harnesses"
+	"github.com/saschazesiger/SocratesAgent/internal/mcpserver"
 	"github.com/saschazesiger/SocratesAgent/internal/store"
 )
 
@@ -82,6 +83,9 @@ type mcpServerView struct {
 	From        string `json:"from"`
 	Default     bool   `json:"default"`
 	On          bool   `json:"on"`
+	// ChatOnly is a built-in server a test cell never has
+	// (mcpserver.ChatsOnly).
+	ChatOnly bool `json:"chat_only,omitempty"`
 }
 
 // chatMCPView is every MCP server a chat may have and what had to be left
@@ -200,6 +204,7 @@ func (s *Server) mcpViews(list []agent.MCPChoice) []mcpServerView {
 		case agent.MCPFromSocrates:
 			if b := s.mcp.Get(c.Name); b != nil {
 				v.Title, v.Description = b.Title(), b.Description()
+				_, v.ChatOnly = b.(mcpserver.ChatsOnly)
 			}
 		}
 		out = append(out, v)
