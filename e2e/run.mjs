@@ -13019,6 +13019,68 @@ async function chatphone() {
       return { bottom: Math.round(composer.bottom), field: Math.round(field.bottom), top: Math.round(field.top) };
     });
     ok(raised.bottom <= 480 && raised.top > 0, 'with the keyboard up the composer is above it, in view', JSON.stringify(raised));
+
+    // Rename with the keyboard up: the dialog stands in what can be seen,
+    // above the keyboard (DS's --ds-keyboard-inset), not in the middle of
+    // the whole screen with Rename under the keys; and a tap on Rename
+    // renames.
+    // The bar gives its row to the composer while the keyboard is up, so it
+    // comes back first, and the keyboard comes up again for the dialog's
+    // field.
+    const keyboardUp = (up) => page.evaluate((on) => {
+      if (on) Object.defineProperty(window.visualViewport, 'height', { configurable: true, get: () => 480 });
+      else delete window.visualViewport.height;
+      window.visualViewport.dispatchEvent(new Event('resize'));
+    }, up);
+    // The mouse Playwright last clicked with (Send) is put on the
+    // conversation: a phone has none, and the bar moving under it as the
+    // keyboard comes and goes would hover the model button into its tip.
+    await page.mouse.move(beside.x, beside.y);
+    await keyboardUp(false);
+    await wait(300);
+    await page.tap('#sessionTitle');
+    await page.waitForSelector('dialog.so-rename[open]', { timeout: 10000 });
+    await page.waitForFunction(() => document.activeElement && document.activeElement.id === 'renameInput', null, { timeout: 5000 }).catch(() => {});
+    await keyboardUp(true);
+    await wait(500);
+    const renameAbove = await page.evaluate(() => ({
+      keyboard: document.documentElement.hasAttribute('data-ds-keyboard'),
+      inset: document.documentElement.style.getPropertyValue('--ds-keyboard-inset'),
+      title: Math.round(document.querySelector('#renameTitle').getBoundingClientRect().top),
+      buttons: [...document.querySelectorAll('dialog.so-rename .ds-dialog__actions .ds-btn')].map((n) => Math.round(n.getBoundingClientRect().bottom)),
+      scrim: Math.round(document.querySelector('dialog.so-rename .ds-dialog__backdrop').getBoundingClientRect().bottom),
+      vh: innerHeight,
+    }));
+    ok(renameAbove.keyboard && renameAbove.title >= 0 && renameAbove.buttons.length === 2 && renameAbove.buttons.every((b) => b <= 480)
+      && renameAbove.scrim >= renameAbove.vh,
+    'with the keyboard up the rename dialog stands above it, Rename in view, and its scrim still covers the page', JSON.stringify(renameAbove));
+    await page.fill('#renameInput', 'Renamed on a phone');
+    await page.tap('dialog.so-rename .ds-btn--primary');
+    const renamedByTap = await page.waitForFunction(() => document.querySelector('#sessionTitleText').textContent === 'Renamed on a phone',
+      null, { timeout: 10000 }).then(() => true, () => false);
+    ok(renamedByTap, 'a tap on Rename renames', await page.$eval('#sessionTitleText', (n) => n.textContent));
+    await page.waitForSelector('dialog.so-rename', { state: 'detached', timeout: 10000 }).catch(() => {});
+    await keyboardUp(false);
+    await wait(300);
+
+    // A dialog put away by a tap beside it, its field still focused, gives
+    // the focus back to its opener without a keyboard's ring and without
+    // the opener's tooltip standing over the page: a finger did it.
+    await page.tap('#sessionTitle');
+    await page.waitForSelector('dialog.so-rename[open]', { timeout: 10000 });
+    await page.waitForFunction(() => document.activeElement && document.activeElement.id === 'renameInput', null, { timeout: 5000 }).catch(() => {});
+    await wait(600);
+    await page.touchscreen.tap(12, 12);
+    await page.waitForSelector('dialog.so-rename', { state: 'detached', timeout: 10000 }).catch(() => {});
+    await wait(400);
+    const quietBack = await page.evaluate(() => {
+      const now = document.activeElement;
+      const tip = document.querySelector('.ds-tooltip');
+      return { active: now && (now.id || now.localName), ring: !!now && now.matches(':focus-visible'),
+        tip: !!tip && tip.getAttribute('data-state') === 'open', title: document.querySelector('#sessionTitleText').textContent };
+    });
+    ok(quietBack.title === 'Renamed on a phone' && !quietBack.ring && !quietBack.tip,
+      'a tap beside the dialog puts it away without renaming, and leaves no focus ring and no tooltip on its opener', JSON.stringify(quietBack));
     await page.evaluate(() => {
       delete window.visualViewport.height;
       window.visualViewport.dispatchEvent(new Event('resize'));

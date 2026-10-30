@@ -31,12 +31,28 @@
  *
  * Touch mode is DS's .ds-touch (theme.css, ui.js): every target a finger's
  * 48px through DS's own hooks.
+ *
+ *   dialog.ds-dialog X2: a centred dialog stands above the on-screen
+ *                    keyboard (a ds-check.json exception)
  */
 
 /* X1 */
 html.ds-theme,
 html.ds-theme body {
   overscroll-behavior: none;
+}
+
+/* X2. A phone's keyboard shrinks only the visual viewport, and DS centres a
+   dialog in the whole window: with its field focused, a rename's Cancel and
+   Rename sat under the keys (Pixel 9: the buttons at 435-483 px of an 801 px
+   window, the keyboard from 461 px), and a tap meant for them reached the
+   keyboard or the scrim. The cover keeps the whole window, so the scrim
+   still hides the page, and the box is centred in what is left above the
+   keyboard (DS.dom.followViewport's --ds-keyboard-inset, on the pages that
+   follow the viewport); a box taller than that scrolls inside itself, as DS
+   lets it. Until Dashboard-Style places its dialogs by the keyboard itself. */
+html[data-ds-keyboard] dialog.ds-dialog:not(.ds-dialog--full, .ds-dialog--full-narrow, .ds-dialog--bottom, .ds-dialog--contained) {
+  padding-bottom: calc(var(--ds-space-4) + var(--ds-keyboard-inset, 0px));
 }
 
 .so-logo {
