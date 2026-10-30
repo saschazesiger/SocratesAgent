@@ -1323,7 +1323,8 @@
   display: flex;
   align-items: flex-start;
   gap: var(--ds-space-1);
-  margin: 0;
+  /* Clear of the head's actions when they wrap onto a line of their own. */
+  margin: var(--ds-space-3) 0 0;
 }
 
 .so-bugs__why > svg {

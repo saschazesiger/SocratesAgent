@@ -440,7 +440,7 @@ export function mount(ctx) {
     const words = [r.title, V.dimsWords(r.dims) || r.cell, verdict + ' in ' + rowRunName(bug, r), first ? 'step ' + first.n + ': ' + first.observed : ''].filter(Boolean).join(', ');
     return html`<div class="ds-card ds-card--filled ds-card--interactive so-tests-live__card" role="listitem" data-ds-key="${'c' + r.id}">
       <div class="so-tests-live__shot">${r.shot
-        ? html`<img src="${V.paths.file(run, r.id, r.shot)}" alt="${'Screenshot of ' + (first ? 'its failing step ' + first.n : 'the cell')}" loading="lazy" decoding="async">`
+        ? html`<img src="${V.paths.file(run, r.id, r.shot)}" alt="${'Screenshot of ' + (first ? 'its failing step ' + first.n : 'the cell')}" decoding="async">`
         : html`<span class="so-tests-live__none" aria-hidden="true">${raw(icon('image', 24))}</span>`}</div>
       <h4 class="ds-card__title"><button class="ds-card__action" type="button" data-bv-cell="${r.id}" aria-label="${words}">${r.title}</button></h4>
       <p class="ds-meta">${V.dimsWords(r.dims) || r.cell}</p>
