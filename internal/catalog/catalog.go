@@ -128,8 +128,10 @@ func (s Snapshot) Agent(id string) (Agent, bool) {
 // notes is the one sentence the dashboard shows under each harness. It lives
 // here rather than in the launcher because it is presentation: what the
 // program is for, in the words of the person choosing between four of them.
+// Whether it is installed is the card's to say (admin.js programTrouble), so
+// a note never says how to install it.
 var notes = map[string]string{
-	config.HarnessVSCode:   "VS Code in your browser, powered by code-server. Install code-server to enable it.",
+	config.HarnessVSCode:   "VS Code in your browser, powered by code-server.",
 	config.HarnessShell:    "A plain login shell in the session's working directory.",
 	config.HarnessClaude:   "Anthropic's Claude Code, resumed by the session id Socrates chooses for it.",
 	config.HarnessCodex:    "OpenAI's Codex, run as a chat over its app server.",

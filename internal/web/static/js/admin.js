@@ -1069,10 +1069,16 @@ function alertEl(kind, text, details = []) {
     details.length ? infoTip(details, { label: 'Details' }) : null);
 }
 
+// How to get a program whose name is not the one the card shows.
+const INSTALL_HINTS = { vscode: 'Install code-server to enable it.' };
+
 // programTrouble is what a program's error means here, in words; its own
 // message ("codex would not list its models: exit status 2") is the detail.
+// A program that is missing says how to get it where its name does not.
 function programTrouble(harness) {
-  if (!harness.installed) return harness.label + ' is not installed on this machine.';
+  if (!harness.installed) {
+    return [harness.label + ' is not installed on this machine.', INSTALL_HINTS[harness.id]].filter(Boolean).join(' ');
+  }
   return harness.label + ' could not list its models. The sheet takes a model’s id typed in, or starts it on its own default.';
 }
 
@@ -1152,7 +1158,9 @@ function harnessCard(harness) {
       el('span', { class: 'so-program__state' },
         harness.installed ? null : chipEl('warning', 'Not installed', 'missing'),
         facts.length ? infoTip(facts, { label: harness.label + ' details' }) : null)),
-    harness.error ? alertEl(harness.installed ? 'warning' : 'error', programTrouble(harness), [harness.error]) : null,
+    harness.error || !harness.installed
+      ? alertEl(harness.installed ? 'warning' : 'error', programTrouble(harness), harness.error ? [harness.error] : [])
+      : null,
     harness.notes ? el('p', { class: 'ds-muted', text: harness.notes }) : null,
     el('label', { class: 'ds-check' }, toggle,
       el('span', { text: 'Offer ' + harness.label + ' in the new-session sheet' })),

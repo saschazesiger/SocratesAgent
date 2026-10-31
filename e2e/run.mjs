@@ -1372,6 +1372,29 @@ async function adminoptions() {
       'the terminal card round-trips too', JSON.stringify(terminal));
     ok(terminal.preset === preset, 'the preset directory was stored', terminal.preset);
 
+    // A program's note says what it is; whether it is here, and how to get
+    // it, is the card's: VS Code's says to install code-server only while
+    // code-server is missing.
+    const vscodeCard = () => s.page.$eval('#harness-vscode', (card) => ({
+      installed: card.dataset.installed,
+      note: card.querySelector(':scope > p.ds-muted')?.textContent || '',
+      alert: card.querySelector(':scope > .ds-alert .ds-alert__text')?.textContent || '',
+    }));
+    const vscodeHere = await vscodeCard();
+    ok(vscodeHere.note === 'VS Code in your browser, powered by code-server.'
+      && (vscodeHere.installed === 'true') === !vscodeHere.alert.includes('Install code-server'),
+      'VS Code’s note says what it is, and nothing about installing it', JSON.stringify(vscodeHere));
+    await s.page.fill('#opt-vscode-binary', 'socrates-e2e-no-code-server');
+    const savedMissing = s.page.waitForResponse((r) => r.url().endsWith('/api/settings') && r.request().method() === 'PUT');
+    await s.page.click('#saveTop');
+    await savedMissing;
+    await s.page.click('#harnessRefresh');
+    await s.page.waitForSelector('#harness-vscode[data-installed="false"]', { timeout: 30000 });
+    const vscodeMissing = await vscodeCard();
+    ok(vscodeMissing.note === 'VS Code in your browser, powered by code-server.'
+      && vscodeMissing.alert === 'VS Code is not installed on this machine. Install code-server to enable it.',
+      'and a VS Code that is not installed says to install code-server', JSON.stringify(vscodeMissing));
+
     // Each agent's version, as its --version says it (the fakes answer as
     // the real CLIs do).
     const catalogue = await (await s.context.request.get(s.url + '/api/harnesses')).json();
