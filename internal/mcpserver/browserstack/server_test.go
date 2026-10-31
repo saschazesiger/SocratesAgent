@@ -108,25 +108,8 @@ func TestTheAccountsAreLeasedOneHolderEach(t *testing.T) {
 	if third, _ := s.Lease("chat-3"); third.Account != first.Account {
 		t.Fatalf("the account given back: %+v", third)
 	}
-	if !s.Restore("cell-9", "b") || s.Restore("cell-9", "gone") {
-		t.Fatal("restore")
-	}
 	if none, why := newServer(t).Lease("x"); none.Account != "" || !strings.Contains(why, "Admin") {
 		t.Fatalf("without accounts: %q", why)
-	}
-}
-
-func TestAnAreaIsCheckedAgainstTheDevices(t *testing.T) {
-	s := newServer(t)
-	if p := s.CheckArea(map[string][]string{"device": {"iphone", "pixel", "win-edge"}}, map[string]string{"consent": "accept"}); len(p) != 0 {
-		t.Fatalf("a good area: %v", p)
-	}
-	p := s.CheckArea(map[string][]string{"device": {"nokia"}}, map[string]string{"consent": "maybe"})
-	if len(p) != 2 || !strings.Contains(p[0], "nokia") || !strings.Contains(p[1], "maybe") {
-		t.Fatalf("a bad area: %v", p)
-	}
-	if p := s.CheckArea(map[string][]string{"locale": {"en"}}, nil); len(p) != 1 {
-		t.Fatalf("no device dimension: %v", p)
 	}
 }
 
@@ -208,45 +191,6 @@ func TestAChatStartsUsesAndStopsADevice(t *testing.T) {
 	}
 }
 
-// In a test cell the cell decides the device, the locale and the consent;
-// its account was leased before its session started.
-func TestACellStartsOnItsOwnDevice(t *testing.T) {
-	f := &fakeBrowserStack{}
-	f.start(t)
-	s := newServer(t, acct("a", "ann"), acct("b", "bob"))
-	cell := &mcpserver.TestCell{Run: "r-1", Cell: "web/home@pixel.de", Attempt: "att-1", Repo: t.TempDir(),
-		Dims: map[string]string{"device": "win-chrome", "locale": "de"}, Params: map[string]string{"consent": "reject"},
-		Evidence: filepath.Join(t.TempDir(), "evidence")}
-	if l, _ := s.Lease("att-1"); l.Account != "a" {
-		t.Fatal("lease")
-	}
-	sess := mcpserver.Session{ID: "chat-7", Test: cell}
-	ctx := context.Background()
-	if r := s.Call(ctx, sess, "start", json.RawMessage(`{"device":"iphone"}`)); !r.IsError || !strings.Contains(text(r), "this cell runs on win-chrome") {
-		t.Fatalf("another device: %v", text(r))
-	}
-	r := s.Call(ctx, sess, "start", json.RawMessage(`{}`))
-	if r.IsError || !strings.Contains(text(r), "locale de, consent reject, BrowserStack account ann") ||
-		!strings.Contains(text(r), "first page of the test") {
-		t.Fatalf("start: %v", text(r))
-	}
-	opts := f.created[0]["capabilities"].(map[string]any)["alwaysMatch"].(map[string]any)["bstack:options"].(map[string]any)
-	if opts["buildName"] != "r-1" || opts["sessionName"] != "web/home@pixel.de" {
-		t.Fatalf("options: %v", opts)
-	}
-	// The runner ends the cell: the device closes, the lease stays the
-	// runner's to give back.
-	if what := s.End(ctx, "chat-7"); !strings.Contains(what, "closed") {
-		t.Fatalf("end: %q", what)
-	}
-	if _, err := os.Stat(filepath.Join(cell.Evidence, "links.json")); err != nil {
-		t.Fatal(err)
-	}
-	if other, _ := s.Lease("att-2"); other.Account != "b" {
-		t.Fatalf("the cell's account was given back by the server: %+v", other)
-	}
-}
-
 func TestTheRepositorysMailboxIsReadThroughItsCommand(t *testing.T) {
 	repo := t.TempDir()
 	script := filepath.Join(repo, "mail")
@@ -304,27 +248,5 @@ func TestEveryToolIsDescribed(t *testing.T) {
 		if !seen[want] {
 			t.Errorf("no tool %s (qa %s)", want, want)
 		}
-	}
-}
-
-// A cell the runner leased nothing for (the server came from the Tests
-// settings, not its area) takes an account itself and gives it back when
-// its device ends; one the runner leased for keeps it for the runner.
-func TestACellsOwnLeaseGoesWithItsDevice(t *testing.T) {
-	f := &fakeBrowserStack{}
-	f.start(t)
-	s := newServer(t, acct("a", "ann"))
-	cell := &mcpserver.TestCell{Run: "r-1", Cell: "web/home@win-chrome", Attempt: "att-1", Repo: t.TempDir(),
-		Dims: map[string]string{"device": "win-chrome"}, Evidence: filepath.Join(t.TempDir(), "evidence")}
-	sess := mcpserver.Session{ID: "chat-8", Test: cell}
-	if r := s.Call(context.Background(), sess, "start", nil); r.IsError {
-		t.Fatalf("start: %v", text(r))
-	}
-	if s.pool.leaseOf("att-1") != "a" {
-		t.Fatal("the cell took no account")
-	}
-	s.End(context.Background(), "chat-8")
-	if s.pool.leaseOf("att-1") != "" {
-		t.Fatal("the cell's own lease was not given back")
 	}
 }

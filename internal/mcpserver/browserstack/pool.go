@@ -12,8 +12,7 @@ import (
 // The pool: every account Admin keeps carries one session at a time
 // (BrowserStack's plans of these accounts allow one parallel session), held
 // by a lease. A chat leases when it starts a device and gives it back when
-// it stops; a test cell's lease is taken by the runner before its session
-// starts and given back after its attempt ended. Accounts BrowserStack
+// it stops. Accounts BrowserStack
 // itself calls busy (a team member uses one, outside Socrates) go last: a
 // session started on one waits in BrowserStack's own queue.
 
@@ -82,19 +81,6 @@ func (p *pool) Lease(holder string) (mcpserver.Lease, string) {
 		}
 	}
 	return mcpserver.Lease{}, "every BrowserStack account is in use"
-}
-
-// Restore takes an account for holder again after a restart.
-func (p *pool) Restore(holder, account string) bool {
-	for _, a := range p.srv.accounts() {
-		if a.ID == account {
-			p.mu.Lock()
-			p.leases[holder] = account
-			p.mu.Unlock()
-			return true
-		}
-	}
-	return false
 }
 
 // Release gives back what holder holds.

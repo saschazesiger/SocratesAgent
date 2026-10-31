@@ -4,6 +4,7 @@ package agent
 
 import (
 	"encoding/json"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -62,7 +63,7 @@ func TestFakeEchoesTheTextWithoutItsNote(t *testing.T) {
 	}
 	defer f.Stop()
 	for i, text := range []string{AgentText("Other chats are active.", "/note"), "/note"} {
-		if err := f.Send(t.Context(), Outgoing{MessageID: "m" + itoa(i+2), Text: text}); err != nil {
+		if err := f.Send(t.Context(), Outgoing{MessageID: "m" + strconv.Itoa(i+2), Text: text}); err != nil {
 			t.Fatal(err)
 		}
 	}

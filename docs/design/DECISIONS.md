@@ -373,7 +373,7 @@ management to be reworked (OAuth, testing a connection, the tools, more settings
 - **Built-in MCP servers are components in the server process** (`internal/mcpserver`), reached by
   the agents through `socrates mcp-server <name>` on stdio; what they hold outlives a parked agent.
 - **Admin keeps their accounts**, sealed, checked against the service when added and on demand; a
-  pool leases one account per chat or test cell.
+  pool leases one account per chat (or test cell, while test mode lasted).
 - **Repository specifics stay in the repository** (`.socrates/mcp/browserstack.json`: the site, its
   logins' command, mailbox and logs commands); the BrowserStack accounts are Socrates'.
 - **OAuth is Socrates' own**: it signs in once in Admin and an agent reaches the server through a
@@ -381,9 +381,12 @@ management to be reworked (OAuth, testing a connection, the tools, more settings
 
 ## Revision 10 — test mode, 2026-10-29
 
+> **Superseded (2026-10-31) by Revision 12, chat tests:** test mode is removed with its data. What
+> follows is history; TEST-MODE.md is in git history (last in 925a2e1).
+
 The owner asked for a test mode per repository: a catalog of agent-run tests in the repository,
 run by Socrates, with the results kept and searchable. The specification and what was built are
-[TEST-MODE.md](TEST-MODE.md); the decisions:
+TEST-MODE.md; the decisions:
 
 - **The catalog is the repository's, in `.socrates/tests/`**: `TESTS.md` for every test, a folder per
   area with its `AREA.md`, one Markdown file per test (YAML front matter, the steps under `## Steps`),
@@ -401,3 +404,23 @@ run by Socrates, with the results kept and searchable. The specification and wha
   transcript opens from the cell.
 - **The run's files are the truth and the only store** (no schema change): everything, screenshots
   included, is backed up, and each repository keeps its last 20 runs unless one is pinned.
+
+## Revision 12 — chat tests, 2026-10-31
+
+The owner found test mode the wrong shape: tests should be the chats' own, not a separate place with
+predefined tests per repository. What was built is [CHAT-TESTS.md](CHAT-TESTS.md); the decisions:
+
+- **Test mode is removed entirely**: the catalog, the runner with its cell, reviewer and analyst
+  sessions, the bug list over runs, the Tests page, `socrates tests check`. Its data and sessions are
+  deleted once when the new build starts.
+- **A chat writes, runs and documents its own tests** through the built-in MCP server Socrates Tests,
+  switched on per chat (or for every chat in Admin) like any built-in server. Nothing is predefined per
+  repository.
+- **The chat's agent runs them itself** (and its own subagents), with whatever tools it has; Socrates
+  starts no sessions for them.
+- **Statuses**: Draft, Running, Passed, Issue, Failed, Blocked, Skipped; every step is judged with
+  what was observed and its evidence, every run is kept.
+- **The person is the only reviewer**: an override with a note, which the agent reads; the person may
+  also edit, delete and ask for a run again.
+- **Findings are documented in the tests**, free-form; what the agent does with them is its own call.
+- **Shown in the chat only**, live: a panel beside it, a sheet on the phone. No overview over chats.

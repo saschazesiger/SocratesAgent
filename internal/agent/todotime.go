@@ -29,8 +29,7 @@ import (
 // before it was done (one of the list as it stood, or one above it in this
 // list), or when it was added if that was later.
 
-// TodoGuidance is the instruction every chat that is not a test session
-// gets about its task list. tool is how the harness's task tool is named
+// TodoGuidance is the instruction every chat gets about its task list. tool is how the harness's task tool is named
 // to the model, with any hint on calling it cheaply.
 func TodoGuidance(tool string) string {
 	return "Task list: for work of three or more steps, or that will take more than a few minutes, first write " +

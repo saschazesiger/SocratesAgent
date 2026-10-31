@@ -351,7 +351,7 @@ func sameReading(a, b digest) bool {
 // the last one always does. Called with the lock held, so two readings reach
 // every page in the order they were made.
 func (p *chatPeer) publishReadingLocked() {
-	if p.gone || p.isTest() {
+	if p.gone {
 		return
 	}
 	now := time.Now()
@@ -407,9 +407,7 @@ func (h *chatHub) nextRev() int64 {
 func (h *chatHub) readings() map[string]digest {
 	out := map[string]digest{}
 	for _, p := range h.peers() {
-		if !p.isTest() {
-			out[p.id] = p.reading()
-		}
+		out[p.id] = p.reading()
 	}
 	return out
 }

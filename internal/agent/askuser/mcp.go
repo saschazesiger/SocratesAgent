@@ -57,9 +57,7 @@ type MCP struct {
 	// returned the call's response.
 	Progress func(token json.RawMessage, progress int)
 	// Chats is where the chat tools (list_chats, read_chat, send_to_chat)
-	// reach the server; the server offers them only when it is usable. A
-	// test session's endpoint (Chats.Test) offers its role's test tools
-	// instead, and no ask_user: nobody watches a test session.
+	// reach the server; the server offers them only when it is usable.
 	Chats chattools.Endpoint
 }
 
@@ -84,10 +82,7 @@ func (m *MCP) Handle(ctx context.Context, raw json.RawMessage) json.RawMessage {
 	case "ping":
 		return rpcResult(msg.ID, map[string]any{})
 	case "tools/list":
-		tools := []any{}
-		if !m.Chats.Test() {
-			tools = append(tools, Tool())
-		}
+		tools := []any{Tool()}
 		if m.Chats.Usable() {
 			for _, d := range m.Chats.Tools() {
 				tools = append(tools, map[string]any{"name": d.Name, "title": d.Title, "description": d.Description, "inputSchema": d.Schema})
@@ -153,11 +148,6 @@ func (m *MCP) call(ctx context.Context, msg rpcMessage) json.RawMessage {
 		}
 		return rpcError(msg.ID, -32602, "socrates has no tool "+p.Name)
 	}
-	if m.Chats.Test() {
-		// Not listed, but a model may still try it: tell it what to do
-		// instead of failing the call as unknown.
-		return rpcResult(msg.ID, toolResult(TestRefusal, true))
-	}
 	payload, err := Parse(p.Arguments)
 	if err != nil {
 		return rpcResult(msg.ID, toolResult(err.Error(), true))
@@ -190,9 +180,6 @@ func (m *MCP) call(ctx context.Context, msg rpcMessage) json.RawMessage {
 	}
 	return rpcResult(msg.ID, toolResult("The question could not be put to the person: "+err.Error(), true))
 }
-
-// TestRefusal is what an ask_user call in a test session is answered.
-const TestRefusal = "Nobody can be asked in a test session: decide yourself, or judge the step blocked."
 
 func (m *MCP) progress(ctx context.Context, token json.RawMessage) {
 	tick := time.NewTicker(progressEvery)

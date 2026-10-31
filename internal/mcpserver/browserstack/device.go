@@ -17,10 +17,9 @@ import (
 	"github.com/saschazesiger/SocratesAgent/internal/mcpserver/browserstack/driver"
 )
 
-// A device is what the qa daemon was: one BrowserStack session of one chat
-// or test cell, held between the agent's calls, kept alive while it thinks
-// and closed on stop, when the cell ends, or after 20 minutes without a
-// call. Its calls run one at a time.
+// A device is what the qa daemon was: one BrowserStack session of one chat,
+// held between the agent's calls, kept alive while it thinks and closed on
+// stop, when the chat is deleted, or after 20 minutes without a call. Its calls run one at a time.
 
 // The daemon's limits (config.ts).
 const (
@@ -47,8 +46,6 @@ type device struct {
 	holder  string
 	account string // the account's id
 	user    string
-	test    bool
-	cell    string
 	dev     driver.Device
 	locale  string
 	consent string
@@ -60,9 +57,6 @@ type device struct {
 	ready     chan struct{} // closed when the start is over, either way
 	cancel    context.CancelFunc
 	closeOnce sync.Once
-	// ownsLease: the account was leased by start, and goes back when the
-	// device does (a chat's; a test cell's lease is the runner's).
-	ownsLease bool
 	stopOnce  sync.Once
 	dropOnce  sync.Once
 
@@ -112,49 +106,26 @@ type setup struct {
 
 func (s *Server) resolve(sess mcpserver.Session, a args) (*setup, error) {
 	st := &setup{consent: "accept"}
-	if t := sess.Test; t != nil {
-		// The cell decides; the call may only say the same.
-		id := t.Dims["device"]
-		if id == "" {
-			return nil, errors.New("this test cell has no device dimension")
-		}
-		if a.Device != "" && a.Device != id {
-			return nil, fmt.Errorf("this cell runs on %s: start takes no device here", id)
-		}
-		st.locale = t.Dims["locale"]
-		if c := t.Params["consent"]; c != "" {
-			st.consent = c
-		}
-		st.baseURL = t.Params["base_url"]
-		st.repo = t.Repo
-		st.build, st.name, st.evidence = t.Run, t.Cell, t.Evidence
-		dev, err := driver.DeviceByID(id)
-		if err != nil {
-			return nil, err
-		}
-		st.dev = dev
-	} else {
-		if a.Device == "" {
-			return nil, errors.New("start needs a device: " + deviceIDs())
-		}
-		dev, err := driver.DeviceByID(a.Device)
-		if err != nil {
-			return nil, err
-		}
-		st.dev = dev
-		st.locale = a.Locale
-		if a.Consent != "" {
-			st.consent = a.Consent
-		}
-		st.baseURL = a.BaseURL
-		st.repo = repoRoot(sess.Workdir)
-		st.build = "Socrates chats"
-		st.name = sess.Title
-		if st.name == "" {
-			st.name = sess.ID
-		}
-		st.evidence = s.chatEvidence(sess.ID)
+	if a.Device == "" {
+		return nil, errors.New("start needs a device: " + deviceIDs())
 	}
+	dev, err := driver.DeviceByID(a.Device)
+	if err != nil {
+		return nil, err
+	}
+	st.dev = dev
+	st.locale = a.Locale
+	if a.Consent != "" {
+		st.consent = a.Consent
+	}
+	st.baseURL = a.BaseURL
+	st.repo = repoRoot(sess.Workdir)
+	st.build = "Socrates chats"
+	st.name = sess.Title
+	if st.name == "" {
+		st.name = sess.ID
+	}
+	st.evidence = s.chatEvidence(sess.ID)
 	if !slices.Contains(consents, st.consent) {
 		return nil, fmt.Errorf("consent %q: expected one of %s", st.consent, strings.Join(consents, ", "))
 	}
@@ -167,7 +138,7 @@ func (s *Server) resolve(sess mcpserver.Session, a args) (*setup, error) {
 		st.baseURL = conf.BaseURL
 	}
 	st.baseURL = strings.TrimRight(st.baseURL, "/")
-	if st.locale == "" && sess.Test == nil && len(conf.Locales) > 0 {
+	if st.locale == "" && len(conf.Locales) > 0 {
 		st.locale = conf.Locales[0]
 	}
 	if st.locale != "" && len(conf.Locales) > 0 && !slices.Contains(conf.Locales, st.locale) {
@@ -182,43 +153,15 @@ func (s *Server) start(ctx context.Context, sess mcpserver.Session, a args) mcps
 	until := time.Now().Add(startWait)
 	d := s.device(sess.ID)
 	if d == nil {
-		st, err := s.resolve(sess, a)
-		if err != nil {
-			return mcpserver.Error(err.Error())
-		}
-		// An account first: a chat waits here for one to be free; a cell
-		// was given its own before its session started, and gives it back
-		// through the runner. A lease taken here is the device's to give
-		// back when it stops.
-		owned := sess.Test == nil || s.pool.leaseOf(sess.Holder()) == ""
-		var lease mcpserver.Lease
-		for {
-			var why string
-			lease, why = s.pool.Lease(sess.Holder())
-			if lease.Account != "" {
-				break
-			}
-			if time.Now().After(until) {
-				return mcpserver.Text("still queued: " + why + "; Socrates has not handed out an account yet. Call start again.")
-			}
-			select {
-			case <-ctx.Done():
-				return mcpserver.Error("withdrawn")
-			case <-time.After(leasePoll):
-			}
-		}
-		if d, err = s.launch(sess, st, lease, owned); err != nil {
-			// Unless a start beside this one runs a device on it.
-			if owned && s.device(sess.ID) == nil {
-				s.pool.Release(sess.Holder())
-			}
-			return mcpserver.Error("the device did not start: " + err.Error())
+		// One holder's device goes and the next starts one after the
+		// other: a lease taken while the last device is dropped would be
+		// the one it gives back, under the new device.
+		var res *mcpserver.Result
+		if d, res = s.startDevice(ctx, sess, a, until); res != nil {
+			return *res
 		}
 	}
 	next := "next: open the first page (open)"
-	if sess.Test != nil {
-		next = "next: open the first page of the test (open)"
-	}
 	select {
 	case <-d.ready:
 	case <-ctx.Done():
@@ -246,7 +189,7 @@ func errText(err error) string {
 }
 
 // launch makes the device of a session and starts it in the background.
-func (s *Server) launch(sess mcpserver.Session, st *setup, lease mcpserver.Lease, owned bool) (*device, error) {
+func (s *Server) launch(sess mcpserver.Session, st *setup, lease mcpserver.Lease) (*device, error) {
 	var acct *mcpserver.Account
 	member := 0
 	for i, a := range s.accounts() {
@@ -281,12 +224,9 @@ func (s *Server) launch(sess mcpserver.Session, st *setup, lease mcpserver.Lease
 	ctx, cancel := context.WithCancel(context.Background())
 	d := &device{
 		srv: s, session: sess.ID, holder: sess.Holder(), account: acct.ID, user: acct.Values["user"],
-		test: sess.Test != nil, ownsLease: owned, dev: st.dev, locale: st.locale, consent: st.consent, repo: st.repo, logConf: st.conf.Logs,
+		dev: st.dev, locale: st.locale, consent: st.consent, repo: st.repo, logConf: st.conf.Logs,
 		evidence: ev, cmd: make(chan struct{}, 1), ready: make(chan struct{}), cancel: cancel,
 		state: "starting", stopping: make(chan struct{}), last: time.Now(),
-	}
-	if sess.Test != nil {
-		d.cell = sess.Test.Cell
 	}
 	s.mu.Lock()
 	if have := s.devices[sess.ID]; have != nil {
@@ -459,17 +399,70 @@ func (d *device) stoppedOrTimeout() <-chan struct{} {
 	return done
 }
 
+// startDevice leases an account for the session and launches its device,
+// under the holder's lock (holderLock) unless a device is there by then; a
+// result instead when it cannot.
+func (s *Server) startDevice(ctx context.Context, sess mcpserver.Session, a args, until time.Time) (*device, *mcpserver.Result) {
+	lock := s.holderLock(sess.Holder())
+	lock.Lock()
+	defer lock.Unlock()
+	if d := s.device(sess.ID); d != nil {
+		return d, nil
+	}
+	st, err := s.resolve(sess, a)
+	if err != nil {
+		return nil, ptr(mcpserver.Error(err.Error()))
+	}
+	// An account first: a chat waits here for one to be free. The lease
+	// is the device's to give back when it stops.
+	var lease mcpserver.Lease
+	for {
+		var why string
+		lease, why = s.pool.Lease(sess.Holder())
+		if lease.Account != "" {
+			break
+		}
+		if time.Now().After(until) {
+			return nil, ptr(mcpserver.Text("still queued: " + why + "; Socrates has not handed out an account yet. Call start again."))
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ptr(mcpserver.Error("withdrawn"))
+		case <-time.After(leasePoll):
+		}
+	}
+	d, err := s.launch(sess, st, lease)
+	if err != nil {
+		// Unless a start beside this one runs a device on it.
+		if s.device(sess.ID) == nil {
+			s.pool.Release(sess.Holder())
+		}
+		return nil, ptr(mcpserver.Error("the device did not start: " + err.Error()))
+	}
+	return d, nil
+}
+
+func ptr(r mcpserver.Result) *mcpserver.Result { return &r }
+
+// holderLock is the lock of a holder's lease: held while its device is
+// dropped and while a start leases and launches the next one.
+func (s *Server) holderLock(holder string) *sync.Mutex {
+	l, _ := s.holders.LoadOrStore(holder, &sync.Mutex{})
+	return l.(*sync.Mutex)
+}
+
 // drop takes a device off the server, gives back a chat's account and
 // forgets the session's facts.
 func (s *Server) drop(d *device) {
+	lock := s.holderLock(d.holder)
+	lock.Lock()
 	s.mu.Lock()
 	if s.devices[d.session] == d {
 		delete(s.devices, d.session)
 	}
 	s.mu.Unlock()
-	if d.ownsLease {
-		d.dropOnce.Do(func() { s.pool.Release(d.holder) })
-	}
+	d.dropOnce.Do(func() { s.pool.Release(d.holder) })
+	lock.Unlock()
 	s.forget(d.session)
 }
 

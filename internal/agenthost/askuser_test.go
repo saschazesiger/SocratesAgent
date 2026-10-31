@@ -16,7 +16,6 @@ import (
 	"github.com/saschazesiger/SocratesAgent/internal/agent"
 	"github.com/saschazesiger/SocratesAgent/internal/agent/askuser"
 	"github.com/saschazesiger/SocratesAgent/internal/agent/chattools"
-	"github.com/saschazesiger/SocratesAgent/internal/agent/testtools"
 )
 
 // askPayload is a small ask_user call.
@@ -376,8 +375,8 @@ func TestMCPAskServesAskUserThroughTheHost(t *testing.T) {
 }
 
 // `socrates mcp-ask` tells a chat's agent about ask_user and the chat tools
-// in its instructions, and a test session's about its role's protocol only.
-func TestMCPAskInstructsATestSessionInItsRole(t *testing.T) {
+// in its instructions.
+func TestMCPAskInstructsAChat(t *testing.T) {
 	instructions := func(chats chattools.Endpoint) string {
 		t.Helper()
 		in := strings.NewReader(`{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{}}}` + "\n")
@@ -399,10 +398,6 @@ func TestMCPAskInstructsATestSessionInItsRole(t *testing.T) {
 	chat := chattools.Endpoint{Socket: "/nonexistent/chat-tools.sock", Token: "c.x"}
 	if got := instructions(chat); got != askuser.Guidance(MCPAskTool)+"\n\n"+chattools.Guidance(prefix)+"\n\n"+agent.TodoGuidance("todowrite") {
 		t.Fatalf("a chat's instructions:\n%s", got)
-	}
-	chat.Kind = testtools.KindCell
-	if got := instructions(chat); got != testtools.Guidance(testtools.KindCell, prefix, false) {
-		t.Fatalf("a cell's instructions:\n%s", got)
 	}
 }
 

@@ -109,6 +109,19 @@
   --so-palette-max: 260px;
   --so-diff-no-width: 4ch;
 
+  /* A chat's tests (so-chattests.css): the column beside the chat at a
+     desk, the newest screenshot in a running test's row, a step's
+     thumbnails and number, the viewer's width, and how tall an image in
+     the lightbox may be (the window less its head and its buttons). */
+  --so-tests-width: clamp(320px, 28vw, 420px);
+  --so-tests-shot-width: 72px;
+  --so-tests-shot-height: 48px;
+  --so-shot-width: 168px;
+  --so-shot-height: 104px;
+  --so-step-n-size: 24px;
+  --so-testv-width: 760px;
+  --so-lightbox-img-max: calc(var(--ds-viewport-height, 100dvh) - 220px);
+
   /* Question sheet. Where it is the whole screen (a tablet, touch mode),
      its column (the measure) is as wide as in a desktop's 720px dialog. */
   --so-question-width: 720px;
@@ -131,17 +144,6 @@
   --so-chart-gap: 2px;
   --so-chart-tip-min: 180px;
   --so-chart-tip-max: 280px;
-
-  /* Tests: a run's result bar, the trend of the runs, a live cell's
-     screenshot */
-  --so-tests-bar-height: 6px;
-  --so-tests-trend-height: 120px;
-  --so-tests-trend-col-max: 40px;
-  /* Tests: the columns every area's table shares (the test, each value,
-     the row's action), so that the areas line up */
-  --so-tests-col-test: 15rem;
-  --so-tests-col-cell: 8.5rem;
-  --so-tests-col-act: 4rem;
 }
 
 /* Touch mode (car, kiosk): <html class="so-touch ds-touch"> (ui.js). DS's

@@ -32,7 +32,7 @@
 | 🙋 **Questions, not guesswork** | Agents ask you with buttons (`ask_user`). Answer on any device, even offline. |
 | 📱 **Made for the phone** | Full-screen questions, big buttons, dictation, read-aloud and push notifications. |
 | 👥 **Several accounts** | Work and private side by side. Chats pick an unused account first, else the one with the most usage left. |
-| 🧪 **Test mode** | Your repository describes its tests in `.socrates/tests/`; Socrates runs every test on every device as its own agent session and shows what breaks. |
+| 🧪 **Tests in every chat** | The agent writes and runs its own tests, step by step with screenshots, and you watch them pass or fail live beside the chat. |
 | 💾 **Encrypted backups** | Your whole setup is backed up to any S3 bucket, encrypted. Moving to a new server is a single restore. |
 | 🔄 **Updates itself** | Every night, with a self-test and automatic rollback. |
 
@@ -105,8 +105,8 @@ You can run it again at any time to repair or update the installation.
 | ⚡ **Ultracode** | Claude Code with dynamic workflows on every task, switched on per chat. |
 | 🤝 **Chats talk** | Agents of chats in the same repository list, read and message each other — Claude Code, Codex and OpenCode alike, on any account. |
 | 🔌 **MCP** | Set up MCP servers in **Admin** for every chat, on or off by default, and switch them per chat on the new session sheet or later in its ⋮ → **MCP servers**. **Test** a server to see its tools, sign in to remote ones with **OAuth**, switch single tools off. A folder's `.mcp.json` adds its own, with any agent. |
-| 🧪 **Socrates Tests** | Built in, nothing to set up: switch it on in a chat and its agent writes and checks tests, starts runs, reads results and triages bugs of the repository's test catalog. |
-| 📱 **BrowserStack** | Built in: real phones, tablets and desktop browsers for any chat or test run. Add the accounts in **Admin** (checked against BrowserStack), switch the server on where you need it; each account carries one session at a time. |
+| 🧪 **Socrates Tests** | Built in, nothing to set up: switch it on in a chat and its agent writes, runs and documents its own tests ([🧪 Tests](#-tests)). |
+| 📱 **BrowserStack** | Built in: real phones, tablets and desktop browsers for any chat, its screenshots the evidence of the chat's tests. Add the accounts in **Admin** (checked against BrowserStack), switch the server on where you need it; each account carries one session at a time. |
 
 ---
 
@@ -123,29 +123,19 @@ You can run it again at any time to repair or update the installation.
 
 ## 🧪 Tests
 
-<img src="docs/screenshot-tests.png" alt="Tests: the latest run as tiles per verdict with the change against the run before, and what needs attention" width="760">
+<img src="docs/screenshot-tests.png" alt="A chat with its Tests panel: every test with its status, one failed at step 3, one running" width="760">
 
-A repository brings its own test catalog; Socrates runs it with agents.
-
-```
-.socrates/tests/
-  TESTS.md                 what every test of the repository must know
-  tools/browserstack/      a tool: TOOL.md (its secrets, its account pool) and its commands
-  web/
-    AREA.md                the area: devices, locales, instructions for all its tests
-    checkout.md            one test: its steps, each with what it expects
-```
+Switch **Socrates Tests** on in a chat and its agent writes its own tests, runs them with whatever it has (a phone on BrowserStack, a browser, a shell) and documents every step. Nothing is set up per repository.
 
 | | |
 | --- | --- |
-| 🧩 **One session per cell** | Every test on every device (and locale…) is its own agent session, with the harness, model and accounts you pick. |
-| ⏳ **Queues for accounts** | A tool's accounts are a pool: a cell waits until one is free and then starts by itself. |
-| 📸 **Judged on evidence** | Each step gets pass, issue, fail, blocked or n/a, with the screenshots it was judged on. |
-| 🔍 **Reviewed and analysed** | A stronger model re-checks the doubtful cells, and an analyst writes one bug per root cause. |
-| 📊 **Results** | A table of tests × devices with the history of the last runs, full-text search, and every cell down to its screenshots. |
-| 🤖 **From a chat** | Chat agents can run the tests themselves: after a fix they run the tests concerned, and the results come back into the chat when the run ends. |
+| ✍️ **Written by the agent** | A test is a flow with steps, each with what must be seen. The agent writes it before it tests, and runs it again after a fix. |
+| 📸 **Judged on evidence** | Every step gets pass, issue, fail, blocked or n/a with what was seen, and the screenshots and logs that show it. BrowserStack's screenshots attach themselves. |
+| 👀 **Live in the chat** | The Tests panel beside the chat (a sheet on the phone) shows every test as it runs: Draft, Running, Passed, Issue, Failed, Blocked or Skipped. |
+| 🔎 **Every step** | Open a test for its steps, observations, screenshots (large, ← →), findings and every earlier run. |
+| ✋ **You decide** | Override a result with a note, edit a test, delete it, or ask for **Run again**. The agent sees what you set. |
 
-How to write a catalog: [docs/TESTS-FORMAT.md](docs/TESTS-FORMAT.md). How it runs: [docs/design/TEST-MODE.md](docs/design/TEST-MODE.md). Check a catalog with `socrates tests check`.
+How it works: [docs/design/CHAT-TESTS.md](docs/design/CHAT-TESTS.md).
 
 ---
 

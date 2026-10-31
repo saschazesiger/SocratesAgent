@@ -9,7 +9,6 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"slices"
 	"strings"
 	"time"
 
@@ -19,7 +18,6 @@ import (
 	"github.com/saschazesiger/SocratesAgent/internal/mcpserver/builtin"
 	testsmcp "github.com/saschazesiger/SocratesAgent/internal/mcpserver/tests"
 	"github.com/saschazesiger/SocratesAgent/internal/store"
-	"github.com/saschazesiger/SocratesAgent/internal/testmode"
 	"github.com/saschazesiger/SocratesAgent/internal/vault"
 )
 
@@ -71,15 +69,7 @@ func (k keySealer) Open(object string, sealed []byte) ([]byte, error) {
 // newMCPRegistry is the registry with every built-in server.
 func (s *Server) newMCPRegistry() *mcpserver.Registry {
 	r := mcpserver.NewRegistry(kvStore{s.store}, keySealer{s})
-	builtin.Register(r, s.dataDir, builtin.Deps{Tests: testsmcp.Deps{
-		Runner: func() *testmode.Runner { return s.tests },
-		CheckSettings: func(set *testmode.Settings) string {
-			if s.tests == nil {
-				return ""
-			}
-			return s.checkTestSettings(set)
-		},
-	}})
+	builtin.Register(r, s.dataDir, builtin.Deps{Tests: testsmcp.Deps{Store: s.chatTests}})
 	return r
 }
 
@@ -126,14 +116,9 @@ func (s *Server) builtinMCP(settings config.Settings, chatID string) []agent.Sha
 	return out
 }
 
-// mcpSession is a chat as a built-in server sees the caller: a test
-// session with its cell.
+// mcpSession is a chat as a built-in server sees the caller.
 func (s *Server) mcpSession(row *store.Session) mcpserver.Session {
-	sess := mcpserver.Session{ID: row.ID, Title: row.Title, Workdir: row.Workdir}
-	if row.IsTest() && s.tests != nil {
-		sess.Test = s.tests.MCPCell(row.ID)
-	}
-	return sess
+	return mcpserver.Session{ID: row.ID, Title: row.Title, Workdir: row.Workdir}
 }
 
 // handleMCPCall answers `socrates mcp-server` on the tools socket:
@@ -164,20 +149,9 @@ func (t *chatToolServer) handleMCP(w http.ResponseWriter, r *http.Request) {
 	}
 	switch req.Method {
 	case "describe":
-		d := mcpserver.Describe(srv)
-		if sess := s.mcpSession(row); sess.Test != nil && slices.Contains(sess.Test.Prompted, srv.Name()) {
-			// The cell's prompt has the instructions already.
-			d.Instructions = ""
-		}
-		writeJSON(w, http.StatusOK, d)
+		writeJSON(w, http.StatusOK, mcpserver.Describe(srv))
 	case "call":
-		sess := s.mcpSession(row)
-		if row.IsTest() && sess.Test == nil {
-			// A reviewer, the analyst, or a cell whose attempt ended.
-			writeJSON(w, http.StatusOK, mcpserver.Error("This test session works no running cell, so it has no device."))
-			return
-		}
-		writeJSON(w, http.StatusOK, s.mcp.Call(r.Context(), req.Server, sess, req.Tool, req.Arguments))
+		writeJSON(w, http.StatusOK, s.mcp.Call(r.Context(), req.Server, s.mcpSession(row), req.Tool, req.Arguments))
 	default:
 		writeError(w, http.StatusBadRequest, "unknown method "+req.Method)
 	}
@@ -266,9 +240,6 @@ func (s *Server) useWords(u mcpserver.Use) string {
 		return u.What
 	}
 	if row, err := s.store.GetSession(u.Session); err == nil {
-		if row.IsTest() {
-			return u.What
-		}
 		return u.What + ", chat " + strings.TrimSpace(row.Title)
 	}
 	return u.What

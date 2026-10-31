@@ -5,11 +5,14 @@
 //
 // It writes docs/screenshot-session.png (a chat at a desk),
 // docs/screenshot-home.png (Home), docs/screenshot-phone.png (a question on
-// a phone), docs/screenshot-admin.png (Admin's accounts) and
-// docs/screenshot-backup.png (Admin's backup), and nothing else -
+// a phone), docs/screenshot-admin.png (Admin's accounts),
+// docs/screenshot-backup.png (Admin's backup) and docs/screenshot-tests.png
+// (a chat with its tests beside it), and nothing else -
 // docs/screenshot-tunnel.png is hand-made and stays where it is. It is not
 // part of `make e2e`: the pictures are committed, so this is only run when
-// they need redoing.
+// they need redoing. Names on the command line take only those pictures:
+//
+//   node e2e/shots.mjs tests home
 //
 // The agents are the suite's protocol fakes (e2e/fakebin) under the three
 // names, because a picture of the interface should show the same thing
@@ -27,8 +30,9 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
-  start, setup, wait, ensureNav, REPO, cleanupBuild, LIVE, backupForm, prefixFor, binaries,
+  start, setup, wait, ensureNav, REPO, cleanupBuild, LIVE, backupForm, prefixFor, binaries, scratchDir,
 } from './harness.mjs';
+import { evidence, script as testsScript } from './chattests.mjs';
 
 const DOCS = join(REPO, 'docs');
 const DESKTOP = { width: 1280, height: 720 };
@@ -38,6 +42,8 @@ const DESKTOP = { width: 1280, height: 720 };
 const CHAT = { width: 1280, height: 900 };
 const TALL = { width: 1280, height: 840 };
 const PHONE = { width: 390, height: 844 };
+// The tests beside a chat: the column needs a desk wider than 1100px.
+const TESTS_VIEW = { width: 1280, height: 800 };
 
 // What the people in the pictures write, and the script each runs.
 const FIX = 'The retention window rounds down. Fix it and run the store tests.';
@@ -55,7 +61,15 @@ const STORAGE_ASK = {
     ],
   }],
 };
-const SCRIPTS = { [FIX]: '/readme', [WORKING]: '/readme 600', [STORAGE]: '/askuser ' + JSON.stringify(STORAGE_ASK) };
+// The tests: the agent writes four and runs three of them through the real
+// socrates-tests server, attaching the pictures written here
+// (e2e/chattests.mjs).
+const TESTS = 'Write tests for the sign-in, the checkout and the search, and run them.';
+const EVIDENCE = scratchDir('shots-evidence-');
+const SCRIPTS = {
+  [FIX]: '/readme', [WORKING]: '/readme 600', [STORAGE]: '/askuser ' + JSON.stringify(STORAGE_ASK),
+  [TESTS]: testsScript(evidence(EVIDENCE)),
+};
 
 writeFileSync(join(binaries().bin, 'claude.scripts.json'), JSON.stringify(SCRIPTS));
 
@@ -286,12 +300,40 @@ async function backupShot() {
   } finally { await s.stop(); }
 }
 
+// A chat with its tests in the column beside it: one failed, one at its
+// second step with its newest screenshot, one passed and one not run yet.
+async function testsShot() {
+  const s = await boot(TESTS_VIEW);
+  try {
+    await setup(s.page, s.url);
+    await shell(s, 'make check');
+    await chat(s, 'codex', 'The flaky store test');
+    const id = await chat(s, 'claude', 'Shop: sign-in and checkout', { mcp: { 'socrates-tests': true } });
+    // The column is open on this device, as a person leaves it.
+    await s.page.evaluate(() => localStorage.setItem('socrates.tests.panel', 'open'));
+    await openChat(s.page, id);
+    await s.page.fill('#chat .so-composer__input', TESTS);
+    await s.page.press('#chat .so-composer__input', 'Enter');
+    await until(s, id, (b) => b.chat.last_seq > 0 && !b.chat.turn_running && b.chat.process === 'ready', 60000);
+    await s.page.waitForFunction(() => document.querySelectorAll('#testsPanel:not([hidden]) .so-test').length === 4
+      && [...document.querySelectorAll('#testsPanel img')].every((img) => img.complete && img.naturalWidth > 0), null, { timeout: 30000 });
+    await s.page.evaluate(() => {
+      let node = document.querySelector('#chat .so-chat__log');
+      while (node && node.scrollHeight <= node.clientHeight) node = node.parentElement;
+      if (node) node.scrollTop = 0;
+    });
+    await still(s.page);
+    await write(s.page, 'screenshot-tests.png', TESTS_VIEW);
+  } finally { await s.stop(); }
+}
+
+const SHOTS = { session: sessionShot, home: homeShot, phone: phoneShot, admin: adminShot, backup: backupShot, tests: testsShot };
+const wanted = process.argv.slice(2);
 try {
-  await sessionShot();
-  await homeShot();
-  await phoneShot();
-  await adminShot();
-  await backupShot();
+  for (const [name, take] of Object.entries(SHOTS)) {
+    if (!wanted.length || wanted.includes(name)) await take();
+  }
 } finally {
+  rmSync(EVIDENCE, { recursive: true, force: true });
   cleanupBuild();
 }

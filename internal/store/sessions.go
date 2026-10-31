@@ -148,32 +148,6 @@ type Session struct {
 // IsChat reports whether the row is a chat rather than a terminal.
 func (s *Session) IsChat() bool { return s.Kind == KindChat }
 
-// TestOption is the options key that makes a chat a test session: one cell,
-// review or analysis of a test run (docs/design/TEST-MODE.md), which its run
-// owns and shows. Its value is the run's reference to the session
-// (internal/testmode).
-const TestOption = "test"
-
-// IsTest reports whether the row is a test session: a chat whose options
-// carry TestOption. Such a row is still a chat in every other respect.
-func (s *Session) IsTest() bool { return s.TestRef() != nil }
-
-// TestRef is the value of the row's TestOption, nil for a row that is no
-// test session.
-func (s *Session) TestRef() json.RawMessage {
-	if len(s.Options) == 0 {
-		return nil
-	}
-	var opts map[string]json.RawMessage
-	if json.Unmarshal(s.Options, &opts) != nil {
-		return nil
-	}
-	if ref, ok := opts[TestOption]; ok && string(ref) != "null" {
-		return ref
-	}
-	return nil
-}
-
 // Where the work in a session stands. A done session has had its terminal
 // closed and is deleted once its retention runs out. A background session is
 // its opposite: a service somebody left running on purpose, which is kept out
@@ -334,25 +308,32 @@ func (s *Store) sessionByClientID(clientID string) (*Session, error) {
 // The order is by ActiveAt, not UpdatedAt: a session moves in the list when
 // it did something, never because somebody looked at it. Two sessions whose
 // status changed in the same millisecond fall back to the row's own clock.
-//
-// A test session (IsTest) is not in it: it belongs to its test run, which
-// shows it, and nothing that lists sessions for a person - Home, the sidebar,
-// the chat tools, the clock, the retention of done sessions - has any business
-// with it. ListAllSessions is the list with them.
 func (s *Store) ListSessions() ([]Session, error) {
-	return s.listSessions(`WHERE ` + notTest)
-}
-
-// ListAllSessions is ListSessions with the test sessions: for what runs or
-// accounts for every chat, whoever it belongs to (the chats' hosts, costs).
-func (s *Store) ListAllSessions() ([]Session, error) {
 	return s.listSessions("")
 }
 
-// notTest is the condition of a row that is no test session: options without
-// a "test" key. CASE evaluates only the branch it takes, so an empty options
-// column never reaches json_extract, which would refuse it.
-const notTest = `(CASE WHEN options = '' THEN 1 ELSE json_extract(options, '$.test') IS NULL END)`
+// TestModeSessions is the ids of the sessions test mode made (a chat whose
+// options carry "test": a cell, reviewer or analyst of a test run), which
+// went with it (docs/design/CHAT-TESTS.md) and are deleted once when a
+// build without it starts. CASE evaluates only the branch it takes, so
+// options that are empty or not JSON never reach json_extract, which would
+// refuse them (and with them the whole query).
+func (s *Store) TestModeSessions() ([]string, error) {
+	rows, err := s.db.Query(`SELECT id FROM sessions WHERE (CASE WHEN options = '' OR NOT json_valid(options) THEN 0 ELSE json_extract(options, '$.test') IS NOT NULL END)`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
 
 func (s *Store) listSessions(where string) ([]Session, error) {
 	rows, err := s.db.Query(`SELECT ` + sessionCols + ` FROM sessions ` + where + ` ORDER BY active_at DESC, updated_at DESC`)

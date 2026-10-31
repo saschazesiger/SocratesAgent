@@ -135,9 +135,7 @@ func (c *costLedger) pass() {
 		return
 	}
 	bySession := map[string]*store.Session{}
-	// Every session, the test runs' too: a test session's conversations are
-	// its own, not strays.
-	rows, err := st.ListAllSessions()
+	rows, err := st.ListSessions()
 	if err != nil {
 		log.Printf("costs: %v", err)
 		return
@@ -257,7 +255,7 @@ func (s *Server) handleCosts(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	sessions, err := s.store.ListAllSessions()
+	sessions, err := s.store.ListSessions()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return

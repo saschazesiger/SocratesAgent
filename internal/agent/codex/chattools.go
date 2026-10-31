@@ -10,9 +10,7 @@ import (
 )
 
 // The chat tools in Codex: dynamic tools of a thread started for a chat
-// that has them (StartSpec.ChatTools), beside ask_user; in a test session
-// the role's test tools instead of both (chattools.Endpoint.Tools). A
-// thread keeps the tools it was started with, so a chat's thread from
+// that has them (StartSpec.ChatTools), beside ask_user. A thread keeps the tools it was started with, so a chat's thread from
 // before has none.
 
 // chatToolSpecs is the endpoint's tools as DynamicToolSpecs.
@@ -21,21 +19,6 @@ func chatToolSpecs(e chattools.Endpoint) []json.RawMessage {
 	for _, d := range e.Tools() {
 		raw, _ := json.Marshal(map[string]any{"type": "function", "name": d.Name,
 			"description": d.Description, "inputSchema": d.Schema})
-		out = append(out, raw)
-	}
-	return out
-}
-
-// withoutTool is specs without the DynamicToolSpec of that name.
-func withoutTool(specs []json.RawMessage, name string) []json.RawMessage {
-	var out []json.RawMessage
-	for _, raw := range specs {
-		var spec struct {
-			Name string `json:"name"`
-		}
-		if json.Unmarshal(raw, &spec) == nil && spec.Name == name {
-			continue
-		}
 		out = append(out, raw)
 	}
 	return out

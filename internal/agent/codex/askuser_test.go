@@ -12,7 +12,6 @@ import (
 	"github.com/saschazesiger/SocratesAgent/internal/agent"
 	"github.com/saschazesiger/SocratesAgent/internal/agent/askuser"
 	"github.com/saschazesiger/SocratesAgent/internal/agent/chattools"
-	"github.com/saschazesiger/SocratesAgent/internal/agent/testtools"
 )
 
 // ask_user is a dynamic tool of every thread: a call is asked as the ask of
@@ -62,18 +61,14 @@ func TestAskUserIsADynamicToolThatWaits(t *testing.T) {
 	}
 }
 
-// A chat's thread has the chat tools beside ask_user and both guidances; a
-// test session's has its role's tools instead of both, its role's protocol,
-// then the model's instructions and the catalog's, and nobody to ask.
-func TestATestSessionsThreadHasItsRolesToolsInsteadOfAskUser(t *testing.T) {
+// A chat's thread has the chat tools beside ask_user and both guidances,
+// then the model's instructions.
+func TestAChatsThreadHasTheChatToolsBesideAskUser(t *testing.T) {
 	thread := func(ep chattools.Endpoint) (*adapter, *recorder, string) {
 		lab := newFakeLab(t)
 		r := newRecorder()
 		spec := lab.spec("a", "")
 		spec.ChatTools, spec.Instructions = ep, map[string]string{"gpt-fake": "NOTE-FAKE"}
-		if ep.Test() {
-			spec.TestInstructions = "CATALOG-NOTES"
-		}
 		a := lab.start(spec, r)
 		_, n := send(t, a, r, "/thread")
 		r.turnEnd(t, n, wait)
@@ -82,39 +77,8 @@ func TestATestSessionsThreadHasItsRolesToolsInsteadOfAskUser(t *testing.T) {
 	sock := "/nonexistent/chat-tools.sock"
 	_, _, got := thread(chattools.Endpoint{Socket: sock, Token: "c.x"})
 	if !strings.Contains(got, askuser.Name) || !strings.Contains(got, chattools.List) ||
-		!strings.Contains(got, "instructions: "+askGuidance+"\n\n"+chattools.Guidance("")) || strings.Contains(got, "CATALOG-NOTES") {
+		!strings.Contains(got, "instructions: "+askGuidance+"\n\n"+chattools.Guidance("")) || !strings.Contains(got, agent.ModelPrompt("gpt-fake", "NOTE-FAKE")) {
 		t.Fatalf("a chat's thread:\n%s", got)
-	}
-
-	a, r, got := thread(chattools.Endpoint{Socket: sock, Token: "c.x", Kind: testtools.KindAnalyst})
-	tools, instructions, _ := strings.Cut(got, "\n")
-	for _, d := range testtools.Tools(testtools.KindAnalyst) {
-		if !strings.Contains(tools, d.Name) {
-			t.Errorf("the thread lacks %s: %s", d.Name, tools)
-		}
-	}
-	if strings.Contains(tools, askuser.Name) || strings.Contains(tools, chattools.List) {
-		t.Errorf("a test session's thread has ask_user or the chat tools: %s", tools)
-	}
-	want := "instructions: " + testtools.Guidance(testtools.KindAnalyst, "", false) + "\n\n" +
-		agent.ModelPrompt("gpt-fake", "NOTE-FAKE") + "\n\nCATALOG-NOTES"
-	if instructions != want {
-		t.Errorf("developer instructions\n%q\nwant\n%q", instructions, want)
-	}
-	_, n := send(t, a, r, "/tool "+testtools.RunOverview+" {}")
-	r.turnEnd(t, n, wait)
-	if got := lastTurnText(r.projection()); !strings.Contains(got, "The test run could not be reached") {
-		t.Errorf("a role's tool: %q", got)
-	}
-	_, n = send(t, a, r, "/tool ask_user")
-	r.turnEnd(t, n, wait)
-	if got := lastTurnText(r.projection()); got != "tool said: "+askuser.TestRefusal {
-		t.Errorf("ask_user: %q", got)
-	}
-	for _, ev := range r.since(n) {
-		if ev.Type == agent.TypeAsk {
-			t.Fatal("a test session asked the person")
-		}
 	}
 }
 

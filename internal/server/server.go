@@ -19,11 +19,11 @@ import (
 
 	"github.com/saschazesiger/SocratesAgent/internal/backup"
 	"github.com/saschazesiger/SocratesAgent/internal/catalog"
+	"github.com/saschazesiger/SocratesAgent/internal/chattests"
 	"github.com/saschazesiger/SocratesAgent/internal/config"
 	"github.com/saschazesiger/SocratesAgent/internal/mcpserver"
 	"github.com/saschazesiger/SocratesAgent/internal/store"
 	"github.com/saschazesiger/SocratesAgent/internal/termux"
-	"github.com/saschazesiger/SocratesAgent/internal/testmode"
 	"github.com/saschazesiger/SocratesAgent/internal/tunnel"
 	"github.com/saschazesiger/SocratesAgent/internal/web"
 )
@@ -117,13 +117,12 @@ type Server struct {
 
 	// chats is every agent chat and the host it runs in (chats.go), and
 	// accounts what they run on (accounts.go).
-	chats *chatHub
-	// tests runs the repositories' test catalogs (tests.go); nil until
-	// StartSessions.
-	tests    *testmode.Runner
+	chats    *chatHub
 	accounts *accountHub
 	// mcp is the MCP servers built into Socrates (mcpbuiltin.go).
 	mcp *mcpserver.Registry
+	// chatTests is every chat's tests (chattests.go).
+	chatTests *chattests.Store
 	// The sign-ins of Admin's OAuth MCP servers (mcpoauth.go) and the last
 	// test of each (mcpadmin.go), made when first used.
 	oauthOnce sync.Once
@@ -194,6 +193,7 @@ func New(st *store.Store, dataDir string) (*Server, error) {
 	// A chat's push says what its journal says.
 	s.push.chatAsk, s.push.chatTurn = s.chats.askWords, s.chats.turnWords
 	s.accounts = newAccountHub(s)
+	s.chatTests = s.newChatTests()
 	s.mcp = s.newMCPRegistry()
 	manager, err := termux.New(st, cfg)
 	if err != nil {
@@ -241,14 +241,12 @@ func (s *Server) StartSessions(ctx context.Context) error {
 	// The prepared chats of an older build are ordinary chats before anything
 	// reads the chats.
 	s.readyPreparedChats()
+	// Test mode's sessions and runs go before the chats come back, so that
+	// none of its sessions is taken for a chat (chattests.go).
+	s.forgetTestMode(ctx)
 	// Chats need no tmux: their hosts are reattached whatever the terminal
 	// engine says below, and so is their clock, once every chat is known.
-	// The test runner knows its runs before the chats come back, so that what
-	// a test session reports as it is reattached finds its run.
-	s.tests = testmode.New(s.dataDir, testHost{s})
-	s.tests.Load()
 	s.chats.start()
-	s.tests.Start()
 	s.sched.start(ctx)
 	// What every conversation cost is read from the CLIs' files, not from
 	// tmux, so a machine whose terminals cannot start still keeps its ledger.
@@ -270,10 +268,6 @@ func (s *Server) StartSessions(ctx context.Context) error {
 // StopSessions lets go of everything Socrates owns and nothing tmux owns: the
 // sessions themselves keep running, which is the whole point of them.
 func (s *Server) StopSessions() {
-	// The test runs go on at the next start; their sessions keep running.
-	if s.tests != nil {
-		s.tests.Close()
-	}
 	// The hosts keep running, like the tmux server; only the connections go.
 	s.chats.close()
 	s.push.stop()
@@ -375,7 +369,6 @@ func (s *Server) routes() {
 	mux.HandleFunc("GET /{$}", s.page("index.html"))
 	mux.HandleFunc("GET /admin", s.page("admin.html"))
 	mux.HandleFunc("GET /costs", s.page("costs.html"))
-	s.testRoutes(mux)
 	mux.HandleFunc("GET /login", s.pageLogin)
 	mux.HandleFunc("GET /setup", s.pageSetup)
 	mux.Handle("GET /static/", http.StripPrefix("/static/", web.Static()))
@@ -443,6 +436,13 @@ func (s *Server) routes() {
 	mux.HandleFunc("POST /api/chats/{id}/attachments", s.auth(s.handleChatAttachments))
 	mux.HandleFunc("POST /api/chats/{id}/options", s.auth(s.handleChatOptions))
 	mux.HandleFunc("POST /api/chats/{id}/mcp", s.auth(s.handleChatMCP))
+	mux.HandleFunc("GET /api/chats/{id}/tests", s.auth(s.handleChatTests))
+	mux.HandleFunc("GET /api/chats/{id}/tests/{test}", s.auth(s.handleChatTest))
+	mux.HandleFunc("PATCH /api/chats/{id}/tests/{test}", s.auth(s.handleChatTestPatch))
+	mux.HandleFunc("DELETE /api/chats/{id}/tests/{test}", s.auth(s.handleChatTestDelete))
+	mux.HandleFunc("POST /api/chats/{id}/tests/{test}/override", s.auth(s.handleChatTestOverride))
+	mux.HandleFunc("POST /api/chats/{id}/tests/{test}/rerun", s.auth(s.handleChatTestRerun))
+	mux.HandleFunc("GET /api/chats/{id}/tests/{test}/files/{file...}", s.auth(s.handleChatTestFile))
 	// The MCP servers a chat about to be made would have, for the sheet.
 	mux.HandleFunc("GET /api/mcp", s.auth(s.handleNewChatMCP))
 	// The MCP servers built into Socrates, their accounts (mcpbuiltin.go).

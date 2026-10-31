@@ -14,10 +14,7 @@ import {
   killTmux, openRouterStub, fakeS3Switch, backupForm, prefixFor, sessionsOn, windowSize, scratchDir, PASSWORD, LIVE, SHOTS,
   tmuxSock, freePort, spawnServer, waitForHealth, STARTUP, REPO, agentProcessesOf,
 } from './harness.mjs';
-import { testmode, catalogRepo } from './testmode.mjs';
-import { testchat } from './testchat.mjs';
-import { testsfake } from './testsfake.mjs';
-import { testsbugs } from './testsbugs.mjs';
+import { chattests } from './chattests.mjs';
 import http from 'node:http';
 import net from 'node:net';
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -479,7 +476,7 @@ async function pages() {
       await shot(s.page, 'pages-setup-' + tag);
 
       await setup(s.page, s.url);
-      for (const path of ['/', '/admin', '/tests']) {
+      for (const path of ['/', '/admin']) {
         s.errors.length = 0;
         await s.page.goto(s.url + path, { waitUntil: 'domcontentloaded' });
         await wait(1800);
@@ -3074,8 +3071,7 @@ async function sheetmcp() {
 // says so. A common server comes from the gallery prefilled; a server is
 // tested as an agent would connect to it (e2e/fakemcp.mjs, a tiny MCP server
 // on stdio): a test that works lists its tools, each a switch saved with the
-// page, and one that fails says why. A chat's MCP dialog tests a server too,
-// and the Tests page chooses the servers of its test cells.
+// page, and one that fails says why. A chat's MCP dialog tests a server too.
 async function mcpcard() {
   const s = await start({ viewport: { width: 1280, height: 900 } });
   const { page } = s;
@@ -3221,20 +3217,6 @@ async function mcpcard() {
     await page.click('dialog:has(.so-mcp-switches) > .ds-dialog__box > .ds-dialog__actions [data-close]');
     await page.waitForSelector('dialog .so-mcp-switches', { state: 'detached', timeout: 5000 });
 
-    // The Tests page: the servers of the test cells.
-    const repo = catalogRepo();
-    const added = await s.context.request.post(s.url + '/api/tests/repos', { data: { path: repo }, headers: { Origin: s.url } });
-    const key = (await added.json()).key || '';
-    ok(added.status() === 201 && key, 'a repository is added to the Tests page', added.status() + ' ' + key);
-    await page.goto(s.url + '/tests#repo=' + encodeURIComponent(key) + '&view=settings', { waitUntil: 'domcontentloaded' });
-    await page.waitForSelector('#p-settings [data-mcp-list] input[data-mcp="fake"]', { timeout: 20000 });
-    const cells = await page.$$eval('#p-settings input[data-mcp]', (n) => n.map((i) => i.dataset.mcp + ':' + i.checked).join(' '));
-    ok(cells === 'broken:false browserstack:false context7:false fake:false linear:false', 'the Tests page lists every server for the cells, all off', cells);
-    await page.click('#p-settings label.ds-switch:has(input[data-mcp="fake"])');
-    await page.click('#save');
-    await page.waitForFunction(() => /settings are saved/.test(document.body.textContent), null, { timeout: 10000 });
-    const repoSettings = (await (await s.context.request.get(s.url + '/api/tests/repos/' + encodeURIComponent(key) + '/settings')).json()).settings || {};
-    ok(JSON.stringify(repoSettings.mcp) === '["fake"]', 'the switch is saved in the repository’s settings', JSON.stringify(repoSettings.mcp));
     ok(unexpected(s.errors).length === 0, 'no console errors', unexpected(s.errors).join(' | ') || '0');
   } finally { await s.stop(); }
 }
@@ -14901,7 +14883,7 @@ const ALL = [
   ['foldermcp', 'a folder\u2019s .mcp.json reaches the agent, and Info names its servers', foldermcp],
   ['sharedmcp', 'Admin\u2019s MCP servers reach every chat, and a chat switches them for itself', sharedmcp],
   ['sheetmcp', 'the new session sheet: the shell across the width, the account\u2019s limits, the MCP switches', sheetmcp],
-  ['mcpcard', 'Admin\u2019s MCP card: the built-in server, the gallery, a test and its tools, a chat\u2019s test, the Tests page\u2019s servers', mcpcard],
+  ['mcpcard', 'Admin\u2019s MCP card: the built-in server, the gallery, a test and its tools, a chat\u2019s test', mcpcard],
   ['chatpeers', 'the agents of the chats in one repository list, read and write to each other', chatpeers],
   ['createcodex', 'Codex over its app server: one thread, kept, and resumed after a rest', createcodex],
   ['own-codex', 'what Codex does by itself: its goal and the turns it starts for it, an image it made, a subagent that failed', owncodex],
@@ -14935,10 +14917,7 @@ const ALL = [
   ['chat-fresh', 'a chat\u2019s first message: one big field, its draft kept across a reload and on another device, a start time picked and cleared, a phone', chatfresh],
   ['chat-stream', 'a chat: streaming, Markdown, replay, queued, Stop, the draft, the palette, the model, the lines', chatstream],
   ['chat-restart', 'the server restarted mid-turn under a desk and a phone: the stream replays, the turn completes, nothing twice', chatrestart],
-  ['testmode', 'a test catalog run: the pool queue, the cells, the review, the analysis and the Tests page', testmode],
-  ['testchat', 'a chat\u2019s agent runs a test with run_tests, is sent the results when the run ends and reads them with test_results', testchat],
-  ['testsfake', 'the QA demo shop run four times with every role on the Scripted agent: screenshots, a review, bugs over the runs', testsfake],
-  ['testsbugs', 'the Tests page\u2019s bugs: a bug\u2019s cells, triage with Undo and the badge, why no GitHub issue, Fix in a chat', testsbugs],
+  ['chattests', 'a chat\u2019s own tests: the button and its badge live, the column, the viewer and its screenshots, override, edit, run again, delete, a phone', chattests],
   ['chat-tools', 'tool rows, the diff viewer, a subagent, a workflow, and the task list pinned while it runs', chattools],
   ['chat-light', 'a chat read on a new device comes light, and what is opened is asked for: a workflow’s agents, a long output', chatlight],
   ['chat-fold', 'an answer\u2019s work folded in one line: what it does, then what it did, its steps and tokens; the answer and a question stand', chatfold],

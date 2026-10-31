@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/saschazesiger/SocratesAgent/internal/agent/chattools"
-	"github.com/saschazesiger/SocratesAgent/internal/agent/testtools"
 	"github.com/saschazesiger/SocratesAgent/internal/testhome"
 )
 
@@ -606,43 +605,5 @@ func TestTheServerOffersTheChatTools(t *testing.T) {
 	raw = (&MCP{}).Handle(context.Background(), json.RawMessage(`{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"list_chats","arguments":{}}}`))
 	if !strings.Contains(string(raw), "has no tool list_chats") {
 		t.Fatalf("a chat tool without an endpoint: %s", raw)
-	}
-}
-
-// A test session's server lists its role's tools and no ask_user, hands a
-// call of one to the endpoint, refuses the chat tools, and answers an
-// ask_user call that nobody can be asked.
-func TestATestSessionsServerOffersItsRolesTools(t *testing.T) {
-	m := &MCP{Ask: func(context.Context, Call) (json.RawMessage, error) {
-		t.Error("a test session asked the person")
-		return nil, errors.New("asked")
-	}, Chats: chattools.Endpoint{Socket: filepath.Join(t.TempDir(), "none.sock"), Token: "c.x", Kind: testtools.KindReviewer}}
-	raw := m.Handle(context.Background(), json.RawMessage(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`))
-	var out struct {
-		Result struct {
-			Tools []struct {
-				Name string `json:"name"`
-			} `json:"tools"`
-		} `json:"result"`
-	}
-	_ = json.Unmarshal(raw, &out)
-	var names []string
-	for _, tool := range out.Result.Tools {
-		names = append(names, tool.Name)
-	}
-	if got := strings.Join(names, ","); got != "review_list,review_evidence,review_agent,review_step,review_done" {
-		t.Fatalf("tools: %s", got)
-	}
-	call := func(name string) string {
-		return string(m.Handle(context.Background(), json.RawMessage(`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"`+name+`","arguments":{}}}`)))
-	}
-	if raw := call("review_list"); !strings.Contains(raw, `"isError":true`) || !strings.Contains(raw, "The test run could not be reached") {
-		t.Fatalf("a role's tool: %s", raw)
-	}
-	if raw := call("list_chats"); !strings.Contains(raw, "has no tool list_chats") {
-		t.Fatalf("a chat tool: %s", raw)
-	}
-	if raw := call("ask_user"); !strings.Contains(raw, `"isError":true`) || !strings.Contains(raw, "Nobody can be asked in a test session") {
-		t.Fatalf("ask_user: %s", raw)
 	}
 }

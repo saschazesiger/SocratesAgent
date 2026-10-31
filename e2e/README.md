@@ -205,7 +205,7 @@ touch mode, except `options`, which measures the narrowest phone in use,
 | `takeover` | a second tab with the same viewer id closes the first socket with 1012 and drives the session |
 | `offlinerestart` | the server is restarted inside an outage and the phone wakes with `online`, `focus` and `visibilitychange` at once: one handshake, and nothing typed is lost in silence |
 | `latehello` | what is typed before a slow `hello` arrives is delivered, exactly once, and leaves nothing behind |
-| `mcpcard` | Admin's MCP card: the server built into Socrates (BrowserStack) off and without an account, its sheet; a server from the gallery prefilled; Test connection in the editor and a row's Test against `e2e/fakemcp.mjs` (a tiny MCP server on stdio), its tools as switches saved with the page, a failed test with what the server printed; Connect asking to save first and the way back from the sign-in (the start stubbed); a chat's MCP dialog naming the built-in server by its title and testing a server; the Tests page's servers for test cells |
+| `mcpcard` | Admin's MCP card: the server built into Socrates (BrowserStack) off and without an account, its sheet; a server from the gallery prefilled; Test connection in the editor and a row's Test against `e2e/fakemcp.mjs` (a tiny MCP server on stdio), its tools as switches saved with the page, a failed test with what the server printed; Connect asking to save first and the way back from the sign-in (the start stubbed); a chat's MCP dialog naming the built-in server by its title and testing a server |
 | `adminoptions` | every harness option round-trips, the models and efforts set as defaults are what a chat starts on, and Claude Code's command line carries the fixed policy (HARNESS-POLICY.md) and never a flag it forbids |
 | `tmuxcard` | the engine card on a machine whose tmux is too old |
 | `twoviewers` | two devices on one Shell: both see the same pane, and the size notice is shown once |
@@ -241,6 +241,7 @@ touch mode, except `options`, which measures the narrowest phone in use,
 | `chat-fresh` | a chat nobody has written to yet is one big field (`#chat[data-fresh]`): what is written is the chat's draft on the server, byte for byte, kept across a reload, found by another device, and what that device writes comes into the field; a start time picked under it is saved to its minute, said, and worn by the row, and **Clear** takes it away; a time in the past is refused; two wheel steps in a row (a slow first answer) save and say the last time picked; the minute iOS fills in as its picker opens is no error, and closing on it empties the field; on a phone the field fills the screen and nothing scrolls sideways |
 | `chat-stream` | a chat: streaming, Markdown and its thinking (folded), a reload that replays the journal, a message queued during a turn, Stop, the draft, the palette, the model, the lines between messages |
 | `chat-restart` | the server restarted mid-turn under a desk and a phone on the chat: neither reloads, the stream replays the rest, the turn completes, and each shows one message and one answer with every word once and in order |
+| `chattests` | a chat's own tests (CHAT-TESTS.md): the fake agent writes and runs four tests through the real `socrates-tests` server (`/mcpcall`); the Tests button and its badge follow live, the column beside the chat lists them with their status, "Step 2 of 3" and the newest screenshot of the running one, and filters them; the viewer shows the steps with their verdicts, observations and screenshots, the lightbox goes through a run's images with the arrow keys; an override, an edit ("Changed since the last run"), Run again (a message in the chat) and a delete; at 390×844 the list is a side sheet and the viewer the whole screen, in touch mode too |
 | `chat-tools` | an answer's calls folded in one line that says a call failed; opened, tool rows that open to their input and output, a failed one, the diff viewer, a subagent's group, a workflow, and the task list pinned while it runs |
 | `chat-fold` | an answer's work (Claude Code's `/readme`) is one shut line: while it works "Working: …", turning; then how long it worked, what it did, its steps and tokens; under it stands the final answer and nothing of the work; opened, every part, and it stays open as the next answer is drawn; a question asked after work (`/toolask`) stands under the shut line |
 | `chat-watch` | nothing in a chat hangs unseen (AGENT-HOST.md §6, on a short clock: `SOCRATES_CHAT_WATCH_MS`): the work after an answered question (`/asktool`) goes on under its card in a fold of its own, which says by the clock when it was done; a background job (`/bg 120`) says since when it runs and Stop this job stops it; a turn that goes quiet (`/hang`) is said in the dock with when the agent was last heard from, and a Stop it ignores ends the agent, which takes the next message on the same conversation |
@@ -337,8 +338,10 @@ predict, or that holds one back while it looks.
 
 `node e2e/shots.mjs` regenerates `docs/screenshot-session.png` (a chat at a
 desk), `docs/screenshot-home.png`, `docs/screenshot-phone.png` (a question on a
-phone), `docs/screenshot-admin.png` (Admin's accounts) and
-`docs/screenshot-backup.png` (Admin's backup) — the real server and page, with
+phone), `docs/screenshot-admin.png` (Admin's accounts),
+`docs/screenshot-backup.png` (Admin's backup) and `docs/screenshot-tests.png`
+(a chat with its tests in the column beside it; `node e2e/shots.mjs tests`
+takes that one alone) — the real server and page, with
 the protocol fakes standing in for the three agents; the messages in the
 pictures are words, which `claude.scripts.json` beside the fake maps onto its
 scripts.

@@ -30,7 +30,7 @@ func TestVersionIsAShortStableHash(t *testing.T) {
 // The whole point of the stamp: a document can only ask for the scripts of its
 // own build, so a script kept from an earlier one is never handed to it.
 func TestPagesAskForStampedAssets(t *testing.T) {
-	for _, page := range []string{"index.html", "admin.html", "costs.html", "tests.html", "login.html", "setup.html"} {
+	for _, page := range []string{"index.html", "admin.html", "costs.html", "login.html", "setup.html"} {
 		rec := httptest.NewRecorder()
 		ServePage(rec, httptest.NewRequest(http.MethodGet, "/", nil), page)
 		body := rec.Body.String()
@@ -261,7 +261,7 @@ func TestStampedAssetsAreKeptUnstampedOnesRevalidated(t *testing.T) {
 // The documents have their own routes, and those routes are where signing in
 // is decided. Serving them from here as well would be a way around it.
 func TestPagesAreNotServedAsAssets(t *testing.T) {
-	for _, page := range []string{"/index.html", "/admin.html", "/costs.html", "/tests.html", "/login.html", "/setup.html"} {
+	for _, page := range []string{"/index.html", "/admin.html", "/costs.html", "/login.html", "/setup.html"} {
 		if code := do(t, page).Code; code != http.StatusNotFound {
 			t.Errorf("GET /static%s = %d, want 404: a page has to come from its own route", page, code)
 		}

@@ -19,7 +19,6 @@ import (
 	"time"
 
 	"github.com/saschazesiger/SocratesAgent/internal/agent"
-	"github.com/saschazesiger/SocratesAgent/internal/agent/askuser"
 )
 
 // Harness is the name the adapter is registered under.
@@ -384,15 +383,13 @@ func threadConfig(params map[string]any) map[string]any {
 // startThread starts a new thread. instructions, when set, are developer
 // instructions for it (a handoff summary), after the ask_user guidance that
 // every thread's developer instructions begin with and the instructions of
-// the model it starts on. A test session's thread has no ask_user: its
-// instructions begin with its role's protocol instead, and the catalog's
-// instructions follow the model's.
+// the model it starts on.
 func (a *adapter) startThread(ctx context.Context, instructions string) error {
 	params := a.policy(map[string]any{})
 	a.mu.Lock()
 	model, effort := a.model, a.effort
 	prompt := a.notes.Fresh(model)
-	endpoint, testPrompt := a.spec.ChatTools, strings.TrimSpace(a.spec.TestInstructions)
+	endpoint := a.spec.ChatTools
 	a.mu.Unlock()
 	if model != "" {
 		params["model"] = model
@@ -402,26 +399,16 @@ func (a *adapter) startThread(ctx context.Context, instructions string) error {
 	}
 	tools := dynamicToolSpecs()
 	developer := askGuidance
-	switch {
-	case endpoint.Test():
-		tools = withoutTool(tools, askuser.Name)
-		tools = append(tools, chatToolSpecs(endpoint)...)
-		developer = endpoint.Guidance("", false)
-	case endpoint.Usable():
+	if endpoint.Usable() {
 		tools = append(tools, chatToolSpecs(endpoint)...)
 		developer += "\n\n" + endpoint.Guidance("", false)
 	}
-	if !endpoint.Test() {
-		developer += "\n\n" + todoGuidance
-	}
+	developer += "\n\n" + todoGuidance
 	if len(tools) > 0 {
 		params["dynamicTools"] = tools
 	}
 	if prompt != "" {
 		developer += "\n\n" + prompt
-	}
-	if testPrompt != "" {
-		developer += "\n\n" + testPrompt
 	}
 	if instructions != "" {
 		developer += "\n\n" + instructions

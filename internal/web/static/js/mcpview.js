@@ -1,4 +1,4 @@
-// mcpview.js: what Admin, a chat and the Tests page say about an MCP server
+// mcpview.js: what Admin and a chat say about an MCP server
 // in the same words: where a server comes from, and the outcome of a test of
 // one (POST /api/mcp/test, POST /api/sessions/{id}/mcp/test): the server's
 // name and version, how long it took, its tools, prompts and resources, and

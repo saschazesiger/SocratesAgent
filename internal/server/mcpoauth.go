@@ -14,7 +14,6 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -490,16 +489,9 @@ func loopback(r *http.Request) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
-// chatHasMCPOn is whether a chat's agent has an MCP server on: as the chat
-// chose, or as its test run's area and settings say for a test session.
+// chatHasMCPOn is whether a chat's agent has an MCP server on, as the chat
+// chose.
 func (s *Server) chatHasMCPOn(row *store.Session, name string) bool {
-	if row.IsTest() {
-		if s.tests == nil {
-			return false
-		}
-		l, err := s.tests.LaunchFor(row.TestRef())
-		return err == nil && slices.Contains(l.MCP, name)
-	}
 	folder, _ := agent.ReadFolderMCP(row.Workdir)
 	list, _ := agent.ChatMCP(s.sharedMCP(s.Settings(), ""), folder, readMCPChoices(row.Options))
 	for _, c := range list {

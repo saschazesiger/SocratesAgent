@@ -1,0 +1,448 @@
+/*
+ * so-chattests.css: a chat's tests (docs/design/CHAT-TESTS.md, "The chat
+ * page"; js/chattests.js), with the prefix so-. Tokens only (--ds-* and the
+ * --so-* of theme.css, "A chat's tests"), unlayered, and no .ds-* component
+ * is restyled: the badge on the button is placed, nothing more.
+ *
+ *   .so-tests-btn      the top bar's Tests button; __badge its count, on
+ *                      the button's corner
+ *   .so-tests          the column on the chat's right at a desk (over
+ *                      1100px): __head (the title and Close), __scroll
+ *   .so-tests-sheet    the same list in DS's side sheet, narrower
+ *   .so-tests__content what both show: __top (the summary line, the filter
+ *                      chips, the alert that the server is off), the list
+ *                      (DS's row list, .so-tests__list), __rest (the empty
+ *                      states)
+ *   .so-test           one test's row: __id, __meta, __skip, __marks
+ *                      (the tags overridden and changed), __status, __shot
+ *                      (the newest screenshot while it runs)
+ *   .so-testv          the viewer, DS's dialog (full screen on a phone):
+ *                      __meta (status, who set it, id, environment, tags,
+ *                      the run switcher), __content (the sections),
+ *                      __actions (__secondary at a desk, __more on a phone)
+ *   .so-step           a step of the run shown: __head (__n, __action, the
+ *                      verdict chip), __line (expected, observed, note)
+ *   .so-evidence       a step's or the run's files: .so-shot (a screenshot's
+ *                      thumbnail, a .ds-pressable button) and .so-file (a
+ *                      link to any other file)
+ *   .so-lightbox       the run's images large, one at a time
+ *   .so-testform       the Edit and Override dialogs: __fields; .so-tedit
+ *                      the steps of Edit, each a row with its tools
+ */
+
+/* ── The button ──────────────────────────────────────────────────────── */
+
+.so-tests-btn {
+  position: relative;
+}
+
+/* The count sits on the button's corner, as a count on an app's icon,
+   clear of most of the glyph. */
+.so-tests-btn__badge {
+  position: absolute;
+  top: calc(-1 * var(--ds-space-1));
+  right: calc(-1 * var(--ds-space-1));
+}
+
+/* ── The column ──────────────────────────────────────────────────────── */
+
+/* Beside the chat, which narrows; the stage is a row. */
+.so-tests {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  width: var(--so-tests-width);
+  min-height: 0;
+  border-left: 1px solid var(--ds-line);
+  background: var(--ds-surface);
+}
+
+.so-tests__head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--ds-space-2);
+  min-height: var(--ds-touch-target);
+  padding: var(--ds-space-2) var(--ds-space-2) var(--ds-space-2) var(--ds-space-4);
+  border-bottom: 1px solid var(--ds-line);
+}
+
+.so-tests__title {
+  margin: 0;
+  font: var(--ds-font-subtitle);
+}
+
+.so-tests__title:focus {
+  outline: none;
+}
+
+.so-tests__scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: var(--ds-space-4);
+}
+
+/* ── What the column and the sheet show ──────────────────────────────── */
+
+.so-tests__content {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-space-3);
+  min-width: 0;
+}
+
+.so-tests__top {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-space-3);
+}
+
+.so-tests__top:empty,
+.so-tests__rest:empty {
+  display: none;
+}
+
+.so-tests__summary {
+  margin: 0;
+}
+
+.so-tests__none {
+  margin: 0;
+  text-align: center;
+}
+
+/* ── A test's row ────────────────────────────────────────────────────── */
+
+.so-test__id {
+  color: var(--ds-text-2);
+  font-variant-numeric: tabular-nums;
+}
+
+.so-test__meta,
+.so-test__skip {
+  overflow-wrap: anywhere;
+}
+
+.so-test__marks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--ds-space-1);
+  margin-top: var(--ds-space-1);
+}
+
+.so-test__shot {
+  flex: none;
+  width: var(--so-tests-shot-width);
+  height: var(--so-tests-shot-height);
+  object-fit: cover;
+  object-position: top;
+  border: 1px solid var(--ds-line);
+  border-radius: var(--ds-radius-sm);
+  background: var(--ds-surface-high);
+}
+
+/* ── The viewer ──────────────────────────────────────────────────────── */
+
+.so-testv {
+  --ds-dialog-width-wide: var(--so-testv-width);
+}
+
+/* A dialog opened from the viewer sits inside it (DS.overlay moves it
+   there) and would inherit the viewer's width: it keeps DS's own. */
+.so-testform,
+.so-lightbox {
+  --ds-dialog-width-wide: initial;
+}
+
+.so-testv__title {
+  overflow-wrap: anywhere;
+}
+
+.so-testv__meta {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-space-2);
+  min-width: 0;
+}
+
+.so-testv__line,
+.so-testv__tags,
+.so-testv__runs {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--ds-space-2);
+}
+
+.so-testv__tags {
+  gap: var(--ds-space-1);
+}
+
+.so-testv__facts {
+  margin: 0;
+}
+
+.so-testv__run {
+  width: auto;
+  max-width: 100%;
+}
+
+.so-testv__content {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-space-5);
+  min-width: 0;
+}
+
+.so-testv__h {
+  margin: 0 0 var(--ds-space-2);
+  font: var(--ds-font-label);
+  color: var(--ds-text-2);
+}
+
+.so-testv__when {
+  white-space: nowrap;
+}
+
+/* At a desk every action is in the row; on a phone the person's rarer
+   ones are in More, beside Run again. */
+.so-testv__more {
+  display: none;
+}
+
+@media (max-width: 600px) {
+  .so-testv__secondary {
+    display: none;
+  }
+
+  .so-testv__more {
+    display: inline-flex;
+  }
+}
+
+/* ── A step ──────────────────────────────────────────────────────────── */
+
+.so-testv__steps {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-space-3);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.so-step {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-space-2);
+  min-width: 0;
+  padding: var(--ds-space-3) var(--ds-space-4);
+  border: 1px solid var(--ds-line);
+  border-radius: var(--ds-radius-card);
+}
+
+.so-step__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: var(--ds-space-2);
+}
+
+.so-step__n,
+.so-tedit__n {
+  flex: none;
+  display: inline-grid;
+  place-items: center;
+  width: var(--so-step-n-size);
+  height: var(--so-step-n-size);
+  border-radius: var(--ds-radius-chip);
+  background: var(--ds-surface-high);
+  color: var(--ds-text-2);
+  font: var(--ds-font-meta);
+  font-variant-numeric: tabular-nums;
+}
+
+.so-step__action {
+  flex: 1 1 12rem;
+  min-width: 0;
+  margin: 0;
+  font: var(--ds-font-label);
+  white-space: pre-line;
+  overflow-wrap: anywhere;
+}
+
+.so-step__line {
+  margin: 0;
+  white-space: pre-line;
+  overflow-wrap: anywhere;
+}
+
+.so-step__label {
+  color: var(--ds-text-2);
+  font-weight: var(--ds-weight-label);
+}
+
+/* ── Evidence ────────────────────────────────────────────────────────── */
+
+.so-evidence {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--ds-space-2);
+}
+
+.so-shot {
+  --ds-pressable-radius: var(--ds-radius-md);
+  display: flex;
+  flex-direction: column;
+  width: var(--so-shot-width);
+  max-width: 100%;
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid var(--ds-line);
+  border-radius: var(--ds-radius-md);
+  background: var(--ds-surface);
+  color: inherit;
+  font: inherit;
+  text-align: start;
+  cursor: pointer;
+}
+
+.so-shot__img {
+  display: block;
+  width: 100%;
+  height: var(--so-shot-height);
+  object-fit: cover;
+  object-position: top;
+  background: var(--ds-surface-high);
+}
+
+.so-shot__caption {
+  padding: var(--ds-space-1) var(--ds-space-2);
+  overflow: hidden;
+  color: var(--ds-text-2);
+  font: var(--ds-font-meta);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.so-file {
+  --ds-pressable-radius: var(--ds-radius-md);
+  display: inline-flex;
+  align-items: center;
+  gap: var(--ds-space-2);
+  max-width: 100%;
+  min-height: var(--ds-touch-target);
+  padding: 0 var(--ds-space-3);
+  border: 1px solid var(--ds-line);
+  border-radius: var(--ds-radius-md);
+  color: var(--ds-link);
+  text-decoration: none;
+}
+
+.so-file__name {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.so-file__size {
+  flex: none;
+  color: var(--ds-text-2);
+  font: var(--ds-font-meta);
+}
+
+/* ── The lightbox ────────────────────────────────────────────────────── */
+
+.so-lightbox__figure {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--ds-space-2);
+  margin: 0;
+}
+
+.so-lightbox__img {
+  display: block;
+  max-width: 100%;
+  max-height: var(--so-lightbox-img-max);
+  object-fit: contain;
+  border: 1px solid var(--ds-line);
+  border-radius: var(--ds-radius-md);
+  background: var(--ds-surface-high);
+}
+
+.so-lightbox__caption {
+  max-width: 100%;
+  color: var(--ds-text-2);
+  overflow-wrap: anywhere;
+  text-align: center;
+}
+
+/* ── Edit and Override ───────────────────────────────────────────────── */
+
+.so-testform__fields {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-space-4);
+  min-width: 0;
+}
+
+.so-tedit__group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-space-3);
+}
+
+.so-tedit__steps {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-space-3);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.so-tedit__step {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: var(--ds-space-2) var(--ds-space-3);
+  padding: var(--ds-space-3);
+  border: 1px solid var(--ds-line);
+  border-radius: var(--ds-radius-card);
+}
+
+.so-tedit__fields {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-space-2);
+  min-width: 0;
+}
+
+.so-tedit__tools {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-space-1);
+}
+
+/* A phone: the step's tools are a row under its fields. */
+@media (max-width: 600px) {
+  .so-tedit__step {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .so-tedit__tools {
+    grid-column: 2;
+    flex-direction: row;
+    justify-content: flex-end;
+  }
+}
+
+.so-tedit__aside {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-space-2);
+}

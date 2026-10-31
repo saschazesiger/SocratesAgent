@@ -1,10 +1,11 @@
 // Package browserstack is the BrowserStack MCP server built into Socrates:
 // real phones, tablets and desktop browsers on BrowserStack Automate, driven
-// one action at a time by a chat's agent or a test cell's, with every
-// action recorded with its screenshot. Admin keeps the accounts; each
-// carries one session at a time, leased to the chat or cell that uses it.
+// one action at a time by a chat's agent, with every action recorded with
+// its screenshot (which the chat's tests take as evidence,
+// mcpserver.Recorder). Admin keeps the accounts; each carries one session at
+// a time, leased to the chat that uses it.
 //
-// It is the `qa` driver of browser.lol's test catalog, moved into Socrates:
+// It is the `qa` driver of browser.lol's Device QA, moved into Socrates:
 // the commands are its tools, the daemon that held a device between them is
 // a device of this server (device.go), the slots are the pool (pool.go),
 // and what was the repository's (the site, its logins, its mailbox, its
@@ -19,7 +20,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -48,6 +48,7 @@ type Server struct {
 
 	mu      sync.Mutex
 	devices map[string]*device // by session
+	holders sync.Map           // holder → *sync.Mutex (holderLock)
 }
 
 // New is the server; it closes what a server before it left open.
@@ -114,31 +115,8 @@ func (s *Server) CheckAccount(ctx context.Context, values map[string]string) mcp
 
 // ------------------------------------------------------------------- pool
 
-func (s *Server) PoolTitle() string                             { return "BrowserStack" }
 func (s *Server) Lease(holder string) (mcpserver.Lease, string) { return s.pool.Lease(holder) }
-func (s *Server) Restore(holder, account string) bool           { return s.pool.Restore(holder, account) }
 func (s *Server) Release(holder string)                         { s.pool.Release(holder) }
-
-// --------------------------------------------------------------- the area
-
-// CheckArea checks that a test catalog's area that uses the server names
-// devices this server has, and a consent policy it knows.
-func (s *Server) CheckArea(dims map[string][]string, params map[string]string) []string {
-	var out []string
-	values, ok := dims["device"]
-	if !ok {
-		out = append(out, "browserstack needs a dimension device (its values are BrowserStack's devices: "+deviceIDs()+")")
-	}
-	for _, id := range values {
-		if _, err := driver.DeviceByID(id); err != nil {
-			out = append(out, "browserstack: "+err.Error())
-		}
-	}
-	if c, ok := params["consent"]; ok && !slices.Contains(consents, c) {
-		out = append(out, fmt.Sprintf("browserstack: consent %q is not one of %s", c, strings.Join(consents, ", ")))
-	}
-	return out
-}
 
 var consents = []string{"accept", "reject", "leave"}
 
@@ -168,9 +146,6 @@ func (s *Server) Uses() []mcpserver.Use {
 		if !since.IsZero() {
 			what += " since " + since.Format("15:04")
 		}
-		if d.test {
-			what += " (test cell " + d.cell + ")"
-		}
 		seen[d.account] = true
 		out = append(out, mcpserver.Use{Account: d.account, Session: d.session, What: what})
 	}
@@ -179,7 +154,7 @@ func (s *Server) Uses() []mcpserver.Use {
 			continue
 		}
 		if h := s.pool.holderOf(a.ID); h != "" {
-			out = append(out, mcpserver.Use{Account: a.ID, What: "leased to a test cell that has not started its device"})
+			out = append(out, mcpserver.Use{Account: a.ID, Session: h, What: "leased, no device running"})
 		}
 	}
 	return out
@@ -217,8 +192,7 @@ func (s *Server) Tools() []mcpserver.Tool {
 	}
 	none := obj(map[string]any{})
 	return []mcpserver.Tool{
-		{Name: "start", Title: "Start the device", Description: "Starts the device and answers `device ready: ...`. In a test cell the " +
-			"device, locale and consent policy come from the cell, so give none. When BrowserStack queues the device (the account " +
+		{Name: "start", Title: "Start the device", Description: "Starts the device and answers `device ready: ...`. When BrowserStack queues the device (the account " +
 			"is busy elsewhere) or every account is in use, it answers `still queued` after about 8 minutes while Socrates keeps " +
 			"waiting: call start again, as often as it says so.",
 			Schema: obj(map[string]any{
@@ -274,7 +248,7 @@ func (s *Server) Tools() []mcpserver.Tool {
 			"or to `to`, and shows sender, subject, code and links.",
 			Schema: obj(map[string]any{"to": str("Another address to read."), "wait": map[string]any{"type": "integer", "minimum": 0, "maximum": 600, "description": "Seconds to wait, 90 when left out."}})},
 		{Name: "logs", Title: "Application logs", Description: "The application's WARN and ERROR lines since the device started; kept in the evidence.", Schema: none},
-		{Name: "stop", Title: "Stop the device", Description: "Closes the device session. Socrates closes it after a test cell and " +
+		{Name: "stop", Title: "Stop the device", Description: "Closes the device session. Socrates closes it when the chat is deleted and " +
 			"after 20 minutes without a command; you need it only to start over with start.", Schema: none},
 	}
 }
@@ -466,6 +440,15 @@ func (s *Server) device(session string) *device {
 // chatEvidence is where a chat's actions are recorded.
 func (s *Server) chatEvidence(session string) string {
 	return filepath.Join(s.deps.DataDir, "mcp", Name, "chats", session)
+}
+
+// EvidenceDir is the folder a chat's actions are recorded in, which its
+// tests take their screenshots from (mcpserver.Recorder).
+func (s *Server) EvidenceDir(session string) string {
+	if s.deps.DataDir == "" || session == "" || strings.ContainsAny(session, `/\.`) {
+		return ""
+	}
+	return s.chatEvidence(session)
 }
 
 // forgetChat removes what a chat's devices recorded: it is gone.

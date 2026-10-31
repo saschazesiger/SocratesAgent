@@ -298,8 +298,7 @@ func (a *Adapter) Start(ctx context.Context, spec agent.StartSpec, out agent.Emi
 
 // cliArgs is the fixed launch policy (REBUILD.md §3.1, HARNESS-POLICY.md):
 // stream-json both ways, every tool allowed, the CLI's own question tool off
-// and the system prompt pointing at ask_user instead (at the role's test
-// tools in a test session, which has neither), the user's settings and
+// and the system prompt pointing at ask_user instead, the user's settings and
 // connectors left out, the replay echo on as the delivery receipt.
 func cliArgs(spec agent.StartSpec, opts Options, ultracode bool) []string {
 	settings, _ := json.Marshal(map[string]any{
@@ -322,14 +321,10 @@ func cliArgs(spec agent.StartSpec, opts Options, ultracode bool) []string {
 		}
 	}
 	args = append(args, "--settings", string(settings))
-	// A test session has nobody to ask: its role's protocol replaces
-	// ask_user's guidance and the chat tools'. The chat tools are reached
-	// this way only: the CLI's own messaging between sessions is off
-	// (cliEnv).
+	// The chat tools are reached this way only: the CLI's own messaging
+	// between sessions is off (cliEnv).
 	var prompt string
 	switch {
-	case spec.ChatTools.Test():
-		prompt = spec.ChatTools.Guidance(chatsPrefix, true)
 	case spec.ChatTools.Usable():
 		prompt = askGuidance + "\n\n" + spec.ChatTools.Guidance(chatsPrefix, true) + "\n\n" + todoGuidance
 	default:
@@ -339,9 +334,6 @@ func cliArgs(spec agent.StartSpec, opts Options, ultracode bool) []string {
 		prompt += "\n\n" + p
 	}
 	if p := agent.ModelPrompt(strings.TrimSpace(spec.Model), spec.InstructionsFor(spec.Model)); p != "" {
-		prompt += "\n\n" + p
-	}
-	if p := strings.TrimSpace(spec.TestInstructions); p != "" {
 		prompt += "\n\n" + p
 	}
 	args = append(args, "--append-system-prompt", prompt)

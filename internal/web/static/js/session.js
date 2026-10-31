@@ -52,6 +52,7 @@ import { explainNoKey } from './dictate.js';
 import { mountChat } from './chatview.js';
 import { chatOutbox, queueCommand, settled, forgetAllSent } from './chatoutbox.js';
 import { openChatAsks, askDialogOpen, closeAskDialog, refreshAskDialog } from './askdialog.js';
+import { mountChatTests } from './chattests.js';
 
 /* ------------------------------------------------------------- transport */
 
@@ -699,6 +700,9 @@ const state = {
   // The chat view, which stands where the pane does for a session that is a
   // chat (chatview.js), mounted once in boot().
   chat: null,
+  // The chat's tests: the top bar's button and the panel (chattests.js),
+  // mounted once in boot().
+  tests: null,
   // Home, the page the stage shows when no session is open, and the event
   // stream that keeps it - and the sidebar - live whatever is on the stage.
   // Both mounted once in boot().
@@ -737,7 +741,7 @@ const ids = ['sidebar', 'navScrim', 'menuBtn', 'blankIDE', 'homeBtn', 'sideColla
   'statusBtn', 'kbBtn', 'optionsBtn',
   'stage', 'termWrap', 'term', 'termOverlay', 'termLines', 'termNotice',
   'termTicker', 'tickerWindow',
-  'micBtn',
+  'micBtn', 'testsBtn', 'testsPanel',
   'recSheet', 'recMeter', 'recTime', 'recSend', 'recCancel',
   'keybar', 'logout', 'chat', 'home'];
 for (const id of ids) dom[id] = document.getElementById(id);
@@ -1766,8 +1770,6 @@ function mountStream() {
   return mountEvents({
     hello: (data) => {
       forgetTitling();
-      // A frame about a test run may have been missed while the stream was down.
-      if (state.home) state.home.testsFrame();
       if ('digests' in data) {
         replaceDigests(data.digests, data.sessions);
         state.digestsHeard = true;
@@ -1775,6 +1777,8 @@ function mountStream() {
       if ('outcomes' in data) replaceMap(state.outcomes, data.outcomes);
       if (Array.isArray(data.sessions)) applyList(data.sessions, { rev: data.rev, source: 'hello' });
       else drawLive();
+      // The tests of the chat on screen may have changed meanwhile.
+      if (state.tests) state.tests.resync();
     },
     sessions: (rows, rev) => applyList(rows, { rev, source: 'stream' }),
     activity: (sessions) => mergeActivity(sessions),
@@ -1782,8 +1786,9 @@ function mountStream() {
     digest: digestFrame,
     outcome: outcomeFrame,
     news: newsFrame,
-    // A test run changed: Home's card of it reads the runs again.
-    tests: () => { if (state.home) state.home.testsFrame(); },
+    // A chat's tests changed (chattests.js reads them again when it is the
+    // chat on screen).
+    chattests: (frame) => { if (state.tests) state.tests.frame(frame); },
     // A chat's Status phases come this way; a terminal's come on its own
     // socket (onControl), and are not taken twice.
     phase: (frame) => {
@@ -2332,7 +2337,7 @@ async function setUltracode(session, on) {
 // as with Ultracode. A switch put back to the server's default gives the
 // choice back to Admin. The button beside a switch tests the server as this
 // chat's agent would have it and lists its tools.
-async function mcpDialog(session, opener) {
+async function mcpDialog(session, opener, { closed } = {}) {
   const url = '/api/sessions/' + encodeURIComponent(session.id) + '/mcp';
   const list = el('div', { class: 'so-mcp-switches' });
   const note = el('p', { class: 'ds-dialog__text', id: 'mcpDialogText' });
@@ -2403,6 +2408,10 @@ async function mcpDialog(session, opener) {
   list.hidden = true;
   dialog.addEventListener('close', () => {
     hideOverlay(dialog, { remove: true }).then(() => paneAfter(document.activeElement));
+    // Whether Socrates Tests is on decides what the chat's Tests panel
+    // offers; a switch changes nothing the tests' own frames would say.
+    if (state.tests && state.current && state.current.id === session.id) state.tests.resync();
+    if (closed) closed();
   }, { once: true });
   showOverlay(dialog, opener && opener.isConnected ? opener : document.activeElement);
   try {
@@ -3088,6 +3097,7 @@ function detachStage() {
   // A chat stands where the pane does; whatever comes next - a terminal,
   // another chat, nothing - starts from the pane.
   if (state.chat) state.chat.hide();
+  if (state.tests) state.tests.hide();
   dom.termWrap.hidden = false;
 }
 
@@ -3113,6 +3123,7 @@ function attach(session) {
     dom.termWrap.hidden = true;
     if (notifier) notifier.hush(session.id);
     state.chat.show(session);
+    if (state.tests) state.tests.show(session);
     if (state.assist) state.assist.attached();
     if (state.transfer) state.transfer.attached();
     return;
@@ -4246,6 +4257,13 @@ async function boot() {
     toastRoom: (room) => { chatToastRoom = room; placeToasts(); },
   });
   chatOutbox().pump();
+  // The chat's tests: the button, the column at a desk and the sheet
+  // narrower; switching the server on goes through the chat's MCP dialog.
+  state.tests = mountChatTests({
+    button: dom.testsBtn,
+    panel: dom.testsPanel,
+    mcpDialog: (session, opener, options) => mcpDialog(session, opener, options),
+  });
   // Home, drawn from the sidebar's own state and tests.
   state.home = mountHome({
     host: dom.home,

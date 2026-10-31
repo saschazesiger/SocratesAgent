@@ -72,9 +72,6 @@ func EnableFake() {
 //
 // A message's note is the agent's alone: the script reads the person's text
 // without it, and "you said" echoes only that text.
-//
-// In a test session the runner's messages are worked through the test
-// tools instead (fake_tests.go).
 type fakeAdapter struct {
 	mu    sync.Mutex
 	out   Emitter
@@ -418,14 +415,6 @@ func (f *fakeAdapter) turn(ctx context.Context, msg Outgoing, n int) {
 		Event{Type: TypeTurnStarted, TurnID: t.id, MessageID: msg.MessageID},
 		Event{Type: TypeMessage, MessageID: t.msgID, Role: RoleAssistant, State: MessageStreaming, TurnID: t.id, Model: f.model},
 	)
-	if handled, ok := f.testSession(ctx, t, text); handled {
-		if !ok {
-			t.end(OutcomeInterrupted, "")
-			return
-		}
-		t.end(OutcomeCompleted, "")
-		return
-	}
 	word, args, _ := strings.Cut(strings.TrimSpace(text), " ")
 	fields := strings.Fields(args)
 	switch word {

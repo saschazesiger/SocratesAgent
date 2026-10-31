@@ -1,4 +1,0 @@
-#!/usr/bin/env bash
-# qa - the BrowserStack device driver of Socrates' own test catalog (TOOL.md); runs src/cli.ts with the tool's own tsx.
-dir="$(cd "$(dirname "$(realpath "$0")")/.." && pwd)"
-exec "$dir/node_modules/.bin/tsx" "$dir/src/cli.ts" "$@"

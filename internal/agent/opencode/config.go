@@ -33,9 +33,8 @@ const askTimeout = 24 * 60 * 60 * 1000
 // and ask_user as the local server "socrates" (`socrates mcp-ask --socket
 // <host socket>`, StartSpec.AskCommand), whose tool the model knows as
 // socrates_ask_user and whose instructions OpenCode puts into the system
-// prompt. The same server has the chat tools when the chat has them (a
-// test session's role's tools instead of them and ask_user): it reads
-// their endpoint, with its kind, from its environment (chattools.FromEnv).
+// prompt. The same server has the chat tools when the chat has them: it
+// reads their endpoint from its environment (chattools.FromEnv).
 func mcpServers(spec agent.StartSpec) map[string]MCPServer {
 	servers := folderMCP(spec)
 	if len(spec.AskCommand) > 0 {

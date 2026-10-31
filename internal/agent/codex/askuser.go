@@ -65,15 +65,8 @@ func toolResult(text string, success bool) map[string]any {
 
 // askUserTool is the dynamic tool: a call that passes askuser.Parse is asked
 // and waited for, or on a code-mode model delivered and answered as the next
-// message; one that does not goes back to the model to fix. A test session's
-// thread is not offered it, and has nobody to ask should it call it anyway.
+// message; one that does not goes back to the model to fix.
 func askUserTool(ctx context.Context, c *Call) (any, error) {
-	c.a.mu.Lock()
-	test := c.a.spec.ChatTools.Test()
-	c.a.mu.Unlock()
-	if test {
-		return toolResult(askuser.TestRefusal, false), nil
-	}
 	var p struct {
 		Arguments json.RawMessage `json:"arguments"`
 	}

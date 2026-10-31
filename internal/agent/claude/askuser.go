@@ -51,8 +51,7 @@ func newAskServer(a *Adapter) *askServer {
 	a.mu.Lock()
 	chats := a.spec.ChatTools
 	a.mu.Unlock()
-	// The chat tools (a test session's: its role's test tools) are on the
-	// same server: they reach Socrates directly and return at once, so they
+	// The chat tools are on the same server: they reach Socrates directly and return at once, so they
 	// need no wait of their own.
 	s.mcp = &askuser.MCP{Ask: s.ask, Chats: chats}
 	return s

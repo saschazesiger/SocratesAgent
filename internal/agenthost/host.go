@@ -460,7 +460,7 @@ func (h *host) boot() {
 		ChatID: h.opts.ChatID, Workdir: h.spec.Workdir, StateDir: filepath.Join(h.dir, stateDir),
 		DataDir: h.opts.DataDir, Env: env, Account: h.spec.Account, Model: h.spec.Model, Effort: h.spec.Effort,
 		ResumeID: resume, Rebuild: rebuild, Held: held, Spawn: h.spawn, Binary: h.spec.Binary, AskCommand: h.askCommand(), Instructions: h.spec.Instructions,
-		TestInstructions: h.spec.TestInstructions, MCPServers: h.chatMCP(env), ChatTools: h.spec.ChatTools,
+		MCPServers: h.chatMCP(env), ChatTools: h.spec.ChatTools,
 	}
 	if resume == "" && len(pending) > 0 {
 		spec.First, pending = &pending[0], pending[1:]

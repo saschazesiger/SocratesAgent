@@ -6,7 +6,7 @@
 // layout is docs/design/REBUILD.md §6.1:
 //
 //	socrates.db               settings, logins, sessions, drafts, push, cost ledger
-//	chats/<id>/               a chat's journal, launch spec, attachments and adapter state
+//	chats/<id>/               a chat's journal, launch spec, attachments, adapter state and tests
 //	agents/claude|codex|opencode/  the agents' shared transcripts and data
 //	accounts/<id>/            one account's CLAUDE_CONFIG_DIR or CODEX_HOME (an OpenCode
 //	                          account's data home is agents/opencode/accounts/<id>/)
@@ -16,7 +16,6 @@
 //	profiles/<id>/            today's per-profile CLI state, until accounts replace it
 //	vscode/, vscode-extensions/  the editor's state per folder and its extensions
 //	backup.json               where the backup goes and its passphrase (not backed up)
-//	tests/<repo>/runs/<run>/  a repository's test runs: records, evidence, bugs
 //	run/                      sockets, locks, pids (not backed up)
 //	cache/                    anything that can be made again (not backed up)
 //
@@ -102,15 +101,16 @@ const (
 	// backed up.
 	ChatSummary = "summary.json"
 
-	// Tests holds the test runs of every repository with a test catalog
-	// (internal/testmode, docs/design/TEST-MODE.md): their records, evidence
-	// and screenshots, backed up. TestsRuntime is what a running test needs
-	// beside them and nothing after it - the vaults with the secrets, the
-	// tools' sockets, the run's installed copy of its tools - and TestsCache
-	// the installed tools kept for the next run.
-	Tests        = "tests"
-	TestsRuntime = Run + "/tests"
-	TestsCache   = Cache + "/tests"
+	// ChatTests is a chat's tests inside chats/<id>/: tests.json and the
+	// files of their runs (internal/chattests, docs/design/CHAT-TESTS.md).
+	ChatTests = "tests"
+
+	// TestMode is the folders of test mode, which chat tests replaced: the
+	// runs of every repository's catalog, the runtime of a running one and
+	// its installed tools. A build without test mode deletes them once.
+	TestMode        = "tests"
+	TestModeRuntime = Run + "/tests"
+	TestModeCache   = Cache + "/tests"
 )
 
 // Redacted are files that are backed up without some of what they hold, as

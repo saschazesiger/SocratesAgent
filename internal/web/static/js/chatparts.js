@@ -935,12 +935,12 @@ function attachmentsHtml(list) {
   return html`<ul class="so-msg__files">${list.map((file, i) => html`<li class="so-attachment" data-ds-key="${'f' + i}">${raw(icon(String(file.mime || '').startsWith('image/') ? 'image' : 'file', 16))}<span class="so-break">${file.name}</span></li>`)}</ul>`;
 }
 
-// The results of a test run the agent started (Socrates Tests), and a
-// message from another chat's agent in a journal from before the agent's
-// note was kept apart (agent.Message.Note), open with a line for the agent:
-// who sent it and how to answer. The line over the message (notice
-// test_results) or the card (peerMessage) says the first to the person, so
-// the message shows alone.
+// A message from another chat's agent in a journal from before the agent's
+// note was kept apart (agent.Message.Note), and the results of a run of
+// test mode (gone since chat tests, in a journal from before), open with a
+// line for the agent: who sent it and how to answer. The card
+// (peerMessage) or the line over the message (notice test_results) says
+// the first to the person, so the message shows alone.
 const FROM_CHAT = /^\[(?:A message from the chat|From Socrates Tests:) [^\n]*\]\n\n/;
 
 /**

@@ -132,8 +132,7 @@ func LoadRepo(root string) (*RepoConfig, error) {
 // secretLine is a NAME=value line; an export prefix is dropped.
 var secretName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
-// parseSecrets reads NAME=value lines as the test catalog's secrets command
-// does: split at the first =, the value taken raw.
+// parseSecrets reads NAME=value lines as `secretctl show` prints them: split at the first =, the value taken raw.
 func parseSecrets(text string) map[string]string {
 	out := map[string]string{}
 	for _, line := range strings.Split(text, "\n") {

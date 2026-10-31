@@ -147,10 +147,6 @@ type StartSpec struct {
 	// harness's favourites that have any (instructions.go): the adapter
 	// gives the agent the ones of the model the chat runs on.
 	Instructions map[string]string
-	// TestInstructions is the catalog's instructions of a test session (its
-	// tools, its accounts, how to reach the devices: TEST-MODE.md), which
-	// the adapter appends after the model's instructions; empty for a chat.
-	TestInstructions string
 	// ResumeID is the CLI conversation to continue, empty for a new one.
 	ResumeID string
 	// Binary is the CLI program the dashboard configured for the harness:

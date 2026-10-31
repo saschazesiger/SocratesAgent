@@ -8,14 +8,13 @@
 // agent reaches it through `socrates mcp-server <name>` (ServeStdio), a small
 // MCP server on stdio that every harness starts as it starts any other, and
 // that hands every call over the server's tools socket to the Registry
-// (Endpoint). A call knows the session it comes from (Session): a chat, or a
-// cell of a test run with its dimensions, parameters and evidence folder.
+// (Endpoint). A call knows the chat it comes from (Session).
 //
 // Beside its tools a server may have accounts that Admin keeps (Accounts),
-// a pool of them the test runner leases from before a cell starts (Pool),
-// state it ends with a session (Ender), what Admin shows about its use
-// (Reporter), and checks of a test catalog's area (AreaChecker). Adding a
-// server is one package that implements Server and one line in
+// a pool of them a chat leases from (Pool), state it ends with a chat
+// (Ender), what Admin shows about its use (Reporter), and a record of a
+// chat's actions that its tests take their evidence from (Recorder). Adding
+// a server is one package that implements Server and one line in
 // internal/mcpserver/builtin.
 package mcpserver
 
@@ -35,7 +34,7 @@ type Server interface {
 	// Description is one sentence on what it does, for Admin.
 	Description() string
 	// Instructions is what the agent is told about it: initialize's
-	// instructions, and part of a test cell's prompt.
+	// instructions.
 	Instructions() string
 	// Tools is its tools, in the order they are listed.
 	Tools() []Tool
@@ -75,46 +74,18 @@ func Error(text string) Result {
 	return Result{Content: []Content{{Type: "text", Text: text}}, IsError: true}
 }
 
-// Session is who calls a tool: a chat, or a test session.
+// Session is the chat that calls a tool.
 type Session struct {
-	// ID is the chat's id (a test session is a chat too).
+	// ID is the chat's id.
 	ID string
 	// Title is the chat's title, for Admin's view of who uses what.
 	Title string
 	// Workdir is the chat's folder.
 	Workdir string
-	// Test is the cell a test session works; nil for a chat.
-	Test *TestCell
 }
 
-// Holder is who holds a lease for the session: a cell's attempt, which the
-// runner leased for before its session existed, or the chat.
-func (s Session) Holder() string {
-	if s.Test != nil && s.Test.Attempt != "" {
-		return s.Test.Attempt
-	}
-	return s.ID
-}
-
-// TestCell is the cell of a test run a session works (docs/design/TEST-MODE.md).
-type TestCell struct {
-	Run     string
-	Test    string
-	Cell    string // the cell key, web-browser/header-navigation@pixel.es
-	Attempt string // the attempt's id, the holder of its leases
-	N       int    // the attempt's number
-	Repo    string // the repository's root
-	// Dims is the cell's value per dimension (device: pixel).
-	Dims map[string]string
-	// Params is the cell's merged parameters (consent: accept).
-	Params map[string]string
-	// Evidence is the attempt's evidence folder: actions.jsonl and the files
-	// it names, links.json, logs/.
-	Evidence string
-	// Prompted is the MCP servers the cell's area names, whose instructions
-	// its prompt holds already.
-	Prompted []string
-}
+// Holder is who holds a lease for the session: the chat.
+func (s Session) Holder() string { return s.ID }
 
 // Field is one value of an account, as Admin asks for it.
 type Field struct {
@@ -168,24 +139,17 @@ type Lease struct {
 }
 
 // Pool is a server whose accounts are leased, one holder at a time per
-// account: a chat when it starts using one, a test cell before its session
-// starts (the runner waits for a free one, no tokens spent).
+// account: a chat when it starts using one.
 type Pool interface {
-	// PoolTitle is how a waiting cell names what it waits for.
-	PoolTitle() string
 	// Lease takes a free account for holder (the one it holds already, if
 	// any); a zero Lease and why when none is free.
 	Lease(holder string) (Lease, string)
-	// Restore takes the account for holder again after a restart, whether
-	// or not it is free; false when the account is gone.
-	Restore(holder, account string) bool
 	// Release gives back what holder holds.
 	Release(holder string)
 }
 
-// Ender is a server that keeps state for a session: End closes it (a test
-// cell's attempt ended, the chat was deleted) and says what it closed, ""
-// for nothing.
+// Ender is a server that keeps state for a session: End closes it (the chat
+// was deleted) and says what it closed, "" for nothing.
 type Ender interface {
 	End(ctx context.Context, session string) string
 }
@@ -205,17 +169,14 @@ type Reporter interface {
 	Uses() []Use
 }
 
-// AreaChecker is a server that checks the area of a test catalog that names
-// it: the values of its dimensions (device: [iphone, pixel]), its
-// parameters. It returns the problems, in words for the catalog's author.
-type AreaChecker interface {
-	CheckArea(dims map[string][]string, params map[string]string) []string
-}
-
-// ChatsOnly is a server for chats alone: a test session never has it on,
-// and the Tests page does not offer it for the cells.
-type ChatsOnly interface {
-	ChatsOnly()
+// Recorder is a server that records what it does for a chat as evidence: a
+// folder with actions.jsonl (one JSON line per action, its screenshot named
+// in "screenshot") and the files the lines name. A chat's tests attach the
+// screenshots recorded while a step was worked to that step
+// (docs/design/CHAT-TESTS.md).
+type Recorder interface {
+	// EvidenceDir is the chat's folder; it need not exist.
+	EvidenceDir(session string) string
 }
 
 // NameRE is a server name every harness takes as it is.

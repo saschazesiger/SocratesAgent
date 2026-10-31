@@ -191,10 +191,6 @@ const (
 	// another chat (chattools send_to_chat). It is the server's, through
 	// the send it comes with.
 	NoticeChatMessage = "chat_message"
-	// NoticeTestResults: the message after it is the results of a test run
-	// the chat's agent started (run_tests), sent by Socrates when the run
-	// ended. It is the server's, through the send it comes with.
-	NoticeTestResults = "test_results"
 	// NoticeSwitchMessage: the message after it is Socrates', sent by an
 	// account switch (agenthost): go on with the turn it stopped, or start
 	// again the background work the restart stopped.

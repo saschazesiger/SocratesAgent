@@ -6,9 +6,6 @@
 //	read_chat      the last messages of one of them
 //	send_to_chat   a message into one of them, which wakes its agent
 //
-// A chat whose repository has a test catalog gets the test tools besides
-// (catalogtools.go, Endpoint.Tests).
-//
 // A call goes from the agent's host (Claude Code, Codex) or from `socrates
 // mcp-ask` (OpenCode) to the server over a Unix socket (Endpoint), with a
 // token that names the calling chat; the server does the rest
@@ -26,8 +23,6 @@ import (
 	"net/http"
 	"os"
 	"time"
-
-	"github.com/saschazesiger/SocratesAgent/internal/agent/testtools"
 )
 
 // The tools' names. An agent prefixes them with the server's name as it does
@@ -134,67 +129,25 @@ func Guidance(prefix string) string {
 type Endpoint struct {
 	Socket string `json:"socket,omitempty"`
 	Token  string `json:"token,omitempty"`
-	// Kind is the role of a test session (testtools.KindCell ...), whose
-	// agent gets that role's test tools instead of ask_user and the chat
-	// tools; empty for a chat.
-	Kind string `json:"kind,omitempty"`
-	// Tests is a chat that has the test tools besides the chat tools
-	// (TestTools): its repository has a test catalog, or it was started to
-	// write one. Never a test session's.
-	Tests bool `json:"tests,omitempty"`
 }
 
 // Usable is whether the endpoint can be called at all.
 func (e Endpoint) Usable() bool { return e.Socket != "" && e.Token != "" }
 
-// Test is whether the endpoint is a test session's: nobody can be asked
-// there, and its tools are the role's (Tools).
-func (e Endpoint) Test() bool { return testtools.IsTest(e.Kind) }
-
-// Tools is the tools the endpoint answers: the chat tools for a chat (with
-// the test tools when it has them), the role's test tools for a test
-// session.
-func (e Endpoint) Tools() []Def {
-	if !e.Test() {
-		if e.Tests {
-			return append(Tools(), TestTools()...)
-		}
-		return Tools()
-	}
-	var out []Def
-	for _, d := range testtools.Tools(e.Kind) {
-		out = append(out, Def(d))
-	}
-	return out
-}
+// Tools is the tools the endpoint answers.
+func (e Endpoint) Tools() []Def { return Tools() }
 
 // Has is whether name (bare) is one of the endpoint's Tools.
-func (e Endpoint) Has(name string) bool {
-	if e.Test() {
-		return testtools.Has(e.Kind, name)
-	}
-	return name == List || name == Read || name == Send || e.Tests && IsTestTool(name)
-}
+func (e Endpoint) Has(name string) bool { return name == List || name == Read || name == Send }
 
 // Guidance is what an agent's instructions say about the endpoint's tools
-// (prefix as Guidance's): the chat tools' guidance, or the role's protocol
-// in a test session, with the ToolSearch line an agent that defers MCP
+// (prefix as Guidance's), with the ToolSearch line an agent that defers MCP
 // tools needs when toolSearch is set.
 func (e Endpoint) Guidance(prefix string, toolSearch bool) string {
-	if e.Test() {
-		return testtools.Guidance(e.Kind, prefix, toolSearch)
-	}
 	out := Guidance(prefix)
 	if toolSearch {
 		out += "\nLoad them with ToolSearch (select:" + prefix + List + "," + prefix + Read + "," + prefix + Send +
 			") when you need them."
-	}
-	if e.Tests {
-		out += "\n\n" + TestGuidance(prefix)
-		if toolSearch {
-			out += "\nLoad these with ToolSearch (select:" + prefix + TestsFormat + "," + prefix + TestsCheck + "," +
-				prefix + RunTests + "," + prefix + TestResults + ") when you need them."
-		}
 	}
 	return out
 }
@@ -203,8 +156,6 @@ func (e Endpoint) Guidance(prefix string, toolSearch bool) string {
 const (
 	EnvSocket = "SOCRATES_CHAT_TOOLS_SOCKET"
 	EnvToken  = "SOCRATES_CHAT_TOOLS_TOKEN"
-	EnvKind   = "SOCRATES_CHAT_TOOLS_KIND"
-	EnvTests  = "SOCRATES_CHAT_TOOLS_TESTS"
 )
 
 // Env is the endpoint as the environment of `socrates mcp-ask`; nil when it
@@ -213,20 +164,12 @@ func (e Endpoint) Env() map[string]string {
 	if !e.Usable() {
 		return nil
 	}
-	env := map[string]string{EnvSocket: e.Socket, EnvToken: e.Token}
-	if e.Kind != "" {
-		env[EnvKind] = e.Kind
-	}
-	if e.Tests && !e.Test() {
-		env[EnvTests] = "1"
-	}
-	return env
+	return map[string]string{EnvSocket: e.Socket, EnvToken: e.Token}
 }
 
 // FromEnv is the endpoint the process environment names.
 func FromEnv() Endpoint {
-	return Endpoint{Socket: os.Getenv(EnvSocket), Token: os.Getenv(EnvToken), Kind: os.Getenv(EnvKind),
-		Tests: os.Getenv(EnvTests) == "1"}
+	return Endpoint{Socket: os.Getenv(EnvSocket), Token: os.Getenv(EnvToken)}
 }
 
 // Path is the request path on the server's socket.
@@ -253,12 +196,6 @@ const callTimeout = 30 * time.Second
 // an endpoint that cannot be reached is a text that says so, as an error.
 func (e Endpoint) Call(ctx context.Context, tool string, args json.RawMessage) Response {
 	what := "The other chats"
-	switch {
-	case e.Test():
-		what = "The test run"
-	case IsTestTool(tool):
-		what = "Socrates' tests"
-	}
 	if !e.Usable() {
 		return Response{Text: what + " cannot be reached from here.", Error: true}
 	}

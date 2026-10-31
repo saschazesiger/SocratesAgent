@@ -322,8 +322,8 @@ once switched on there.
 ### MCP servers built into Socrates
 
 Socrates has MCP servers of its own (`internal/mcpserver`; MCP.md):
-BrowserStack's real devices, and Socrates Tests (the repository's test catalog,
-its runs and bugs, for chats only). Each is in every chat's list (`from: socrates`),
+BrowserStack's real devices, and Socrates Tests (the chat's own tests,
+CHAT-TESTS.md). Each is in every chat's list (`from: socrates`),
 **off** unless Admin switches it on for every chat
 (`settings.mcp.builtin`) or the chat does. A chat that has one gets
 `socrates mcp-server <name>` as a stdio server, which hands every call to the
@@ -399,16 +399,6 @@ Socrates' own MCP server (`internal/agent/chattools`).
   folded work; `list_chats` and `read_chat` are rows named for what they
   did. A journal from before the sender was kept apart is read from the
   line it opens with.
-- **The test tools.** A chat whose repository holds `.socrates/tests/TESTS.md`
-  when its host starts, or that was created with `tests: true` (option
-  `test_tools`, a chat the Tests page starts to write a first test), gets
-  four more tools on the same server (`chattools.Endpoint.Tests`, carried to
-  `socrates mcp-ask` as `SOCRATES_CHAT_TOOLS_TESTS=1`): `tests_format` (the
-  catalog format, `internal/testmode/catalog/FORMAT.md`), `tests_check`,
-  `run_tests` and `test_results` (TEST-MODE.md, "Runs started by chat
-  agents"), and their guidance after the chat tools'. A test session never
-  has them. The results of a run a chat started come into it as a message
-  after a `test_results` notice, the same way a `send_to_chat` message does.
 - **The brake.** A chat sends at most 40 messages an hour
   (`chatSendsPerHour`, counted in the server's memory); past that the tool
   says so, so that two agents cannot answer each other for ever.
@@ -470,7 +460,7 @@ read back (a rebuilt journal) shows the person's message without it.
 
 ## Task lists
 
-Every chat that is not a test session is told how to keep its task list
+Every chat is told how to keep its task list
 (`agent.TodoGuidance`): for work of three or more steps, or of more than a
 few minutes, an exact list first, one entry per step, each title ending in
 the step's estimate - `(~30s)`, `(~4m)`, `(~1h15m)` - and the list kept
@@ -497,25 +487,6 @@ against 30 s and 20 s); the TaskCreate calls went out in one message and
 the updates with the work they belonged to, about one extra model call per
 task. Without "three or more steps" in the text Haiku made no list for a
 five-step task.
-
-## Test sessions
-
-A test session (docs/design/TEST-MODE.md) is launched like any chat, with three differences, the
-same for Claude Code, Codex and OpenCode:
-
-- **Its tools.** The chat-tools endpoint carries the session's role (`chattools.Endpoint.Kind`), and
-  the `socrates` server offers that role's test tools (`internal/agent/testtools`) instead of
-  `ask_user` and the chat tools: Claude Code's in-process server, Codex's dynamic tools (ask_user is
-  left out of the thread), OpenCode's `socrates mcp-ask`. Nobody watches a test session, so there is
-  nobody to ask.
-- **Its instructions.** The role's protocol (`testtools.Guidance`, with the harness' tool prefix)
-  takes the place of ask_user's and the chat tools' guidance; the catalog's texts
-  (`Spec.TestInstructions`, at most 64 KiB) come after the model's instructions: Claude Code's
-  system prompt, Codex's developer instructions, OpenCode's system on every prompt.
-- **Its environment and MCP servers.** The `SOCRATES_TEST_*` variables, the tools' folders first on
-  `PATH`, and only the MCP servers its area names (built into Socrates or of the repository's
-  `.mcp.json`) and those the repository's Tests settings switch on for cells; every other is off. Its account is
-  the runner's and does not switch by itself.
 
 ## Shell
 

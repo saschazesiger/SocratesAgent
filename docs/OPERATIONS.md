@@ -117,7 +117,7 @@ The settings live in `/etc/socrates.env`:
 | `socrates-tmux.scope` | The Shell terminals |
 | `socrates-update.timer` | Nightly update: `journalctl -u socrates-update` |
 | `/etc/socrates.env` | Configuration (see above) |
-| `/var/lib/socrates` | **All data**: database, chats, accounts, transcripts, terminals, test runs (`tests/`), backup settings |
+| `/var/lib/socrates` | **All data**: database, chats (with their tests), accounts, transcripts, terminals, backup settings |
 | `/usr/local/bin/socrates` | The binary |
 | `/usr/local/lib/socrates` | The updater |
 | `/opt/socrates` | Source, Go, Node, OpenCode, code-server |
@@ -125,16 +125,14 @@ The settings live in `/etc/socrates.env`:
 
 ---
 
-## 🧪 Test runs
+## 🧪 Chat tests
 
 | | |
 | --- | --- |
-| 📂 **Where** | `<data>/tests/<repo>/runs/<run>/`: `run.json`, `plan.json`, the catalog as it ran, one `record.json` and `evidence/` per attempt, `bugs.json`, `conclusions.md` |
-| 🔑 **Secrets** | A tool's `secrets.command` runs as the Socrates service user in the repository root, when a run starts and again after a restart. The values stay in memory and in vault files under `<data>/run/tests/` (mode 0600, never backed up, removed when the cell ends) |
-| 🧰 **Tools** | Each run runs a copy of the catalog's tools, installed by their `setup` once per version under `<data>/cache/tests/tools/` |
-| 🧹 **Cleaning up** | Deleting a run on the Tests page deletes its sessions and files; old runs go by themselves beyond the repository's `keep_runs` |
-| ✅ **Check a catalog** | `socrates tests check /path/to/repo`; the format is in [TESTS-FORMAT.md](TESTS-FORMAT.md) |
-| 🤖 **Runs from chats** | A chat whose repository has a catalog can start runs (`run_tests`) with the repository's settings; the run shows "started by" that chat, and Socrates sends the chat the results when it ends |
+| 📂 **Where** | `<data>/chats/<chat>/tests/`: `tests.json` (every test of the chat with its runs) and `files/<test>/r<run>/` (the screenshots, logs and output that are their evidence) |
+| 🧹 **Cleaning up** | They go with their chat; a test keeps its last 20 runs. Limits: 200 tests per chat, 20 MB per file, 500 MB per chat |
+| 🔌 **Switch** | Socrates Tests is a built-in MCP server: off in every chat until Admin (*In every chat*) or the chat switches it on |
+| 🗑️ **Test mode** | The per-repository test catalog it replaced is gone: the first start of this build deletes `<data>/tests/`, `<data>/run/tests/`, `<data>/cache/tests/` and the sessions of its runs. A repository's `.socrates/tests/` is no longer read |
 
 ---
 
@@ -144,7 +142,7 @@ The settings live in `/etc/socrates.env`:
 | --- | --- |
 | 🧩 **Built in** | `socrates mcp-server <name>` is what an agent starts for a built-in server (BrowserStack, Socrates Tests); it talks to the server over `<data>/run/` sockets. Off in every chat until Admin or the chat switches it on |
 | 🔑 **Accounts and sign-ins** | Built-in servers' accounts and OAuth sign-ins are in the database's `kv` table, sealed with `secrets.key`, so they are in the backup |
-| 📱 **BrowserStack** | A chat's screenshots in `<data>/mcp/browserstack/chats/<chat>/` (removed with the chat); a test cell's in its evidence. Sessions open when the server stopped are listed in `<data>/run/mcp/browserstack/sessions.json` and closed at the next start. A repository describes its site in `.socrates/mcp/browserstack.json` (docs/design/MCP.md) |
+| 📱 **BrowserStack** | A chat's screenshots in `<data>/mcp/browserstack/chats/<chat>/` (removed with the chat), the evidence a chat's tests take theirs from. Sessions open when the server stopped are listed in `<data>/run/mcp/browserstack/sessions.json` and closed at the next start. A repository describes its site in `.socrates/mcp/browserstack.json` (docs/design/MCP.md) |
 | 🔐 **OAuth** | The authorization server sends the browser back to `<the address Admin is open at>/api/mcp/oauth/callback`; agents reach such a server through `/mcp-proxy/<name>` on Socrates' local address |
 
 ---
@@ -153,7 +151,7 @@ The settings live in `/etc/socrates.env`:
 
 Set it up under **Admin → Backup**. In short:
 
-- 📁 **What:** the whole data directory, i.e. database and key, `chats/`, `agents/`, `accounts/`, `terminals/`, `sessions/`, `vscode/`, `tests/` (the test runs with their screenshots; each repository keeps its last 20 runs unless pinned)
+- 📁 **What:** the whole data directory, i.e. database and key, `chats/`, `agents/`, `accounts/`, `terminals/`, `sessions/`, `vscode/`
 - 🚫 **Not included:** working directories (they live in git), caches, sockets, logs, and `backup.json` itself
 - 🧩 **How:** files are cut into 8 MiB chunks, and a chunk the bucket already has is never uploaded again. Databases are copied consistently while in use.
 - 🔐 **Encryption:** AES-256-GCM, with keys derived from your passphrase (PBKDF2-SHA256, 600 000 rounds). Even the chunk names reveal nothing. Only `meta.json` (salt and check value) is plain text.

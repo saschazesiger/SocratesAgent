@@ -40,7 +40,7 @@ conversation id is stored in `cli_session_id` (`cli_session_state = known`). Ter
 | `<data>/secrets.key` | server, once (0600) | the key every API key and every chat's `secret_env` is sealed with (§11) |
 | `<data>/accounts/<acct>/` | server (folder), the agent's own sign-in (login) | a Claude Code or Codex account's `CLAUDE_CONFIG_DIR` / `CODEX_HOME`; an OpenCode account's is `<data>/agents/opencode/accounts/<acct>/` (§5.3, §11) |
 | `<data>/run/chats/<id>.sock` | host | the socket; if that path is ≥ 104 bytes, `$TMPDIR/socrates-<uid>/<sha256(data)[:6]>/<id>.sock` (both sides compute it) |
-| `<data>/run/tools.sock` | server (0600) | where the chat tools (`list_chats`, `read_chat`, `send_to_chat`, and a chat's test tools `tests_format`, `tests_check`, `run_tests`, `test_results`) reach the server, with the same fallback as a host's socket |
+| `<data>/run/tools.sock` | server (0600) | where the chat tools (`list_chats`, `read_chat`, `send_to_chat`) and the built-in MCP servers (`socrates mcp-server`) reach the server, with the same fallback as a host's socket |
 
 Chat ids are `[A-Za-z0-9_-]{1,64}` (the server uses 32 hex characters); they become file, socket
 and unit names.
@@ -1275,17 +1275,6 @@ The script reads the person's text without Socrates' note before it (`agent.Stri
 command works with a note, the echo is the text alone - the note is the agent's, never the chat's
 - and so is the turn's user text in its transcript, as a real CLI's read back is.
 
-In a test session (`StartSpec.ChatTools.Kind` names a role; TEST-MODE.md) it works the runner's
-messages through the role's test tools, called in process on the endpoint the real harnesses' calls
-reach (`chattools.Endpoint.Call`), each shown as a tool part `mcp__socrates__<tool>`
-(`fake_tests.go`):
-
-| text | turn |
-|---|---|
-| `Run this cell of the test catalog.` | per step a screenshot (the catalog's `shot <n>` on the session's `PATH`, else a PNG it draws into `$SOCRATES_TEST_EVIDENCE` with its `actions.jsonl` line), `test_judge`; then `test_end`. The test's parameter `fake` (fakeclaude's modes): `fail`, `issue`, `blocked` (the rest), `flaky` (fails in odd runs), `slow`/`crawl` (2 s / 30 s a step), `abort`, `quiet`, `misjudged` (a pass whose action failed), the first five and `misjudged` phased with `from<n>`/`until<n>` |
-| `Review these cells …` | per cell `review_evidence`, `review_agent`, `review_step` issue for a passed step whose last action failed, `review_done` |
-| `Analyse test run …` | `bugs_known`, `run_overview`, `bugs_put` (a bug per test with issue or fail cells, a known bug's id kept, none for one marked `not_a_bug`), `conclusions_put` (per area, per device, the bugs) |
-
 `Command("compact")` emits `notice{compacted}`, `Command("context")` a `usage` and
 `notice{context}`; other commands are `unsupported`. Attachments are named in the reply (`with N
 attachment(s): …`).
@@ -1628,14 +1617,8 @@ keeps the agents an earlier run made a lost profile's accounts for. `rehearsal_t
 whole migration on a synthetic copy of today's installation, live tmux included, and kills a start
 in the middle of its cut.
 
-## 12. Test sessions (2026-10-29)
+## 12. Test sessions (2026-10-29, gone 2026-10-31)
 
-A test run's sessions (docs/design/TEST-MODE.md) are chats whose options carry `test`, the run's
-reference to them. The host runs them as any chat; what differs is in its spec, written by the server
-at every launch from the run's files (so a parked or restarted host gets the same): `test_instructions`
-(the catalog's texts, appended after the model's instructions), `chat_tools.kind` (the role: the
-`socrates` server offers the role's test tools instead of `ask_user` and the chat tools), the
-`SOCRATES_TEST_*` variables and the tools' folders on `PATH` in `env`, and `mcp_choices` with every
-server off but those the area names. The server hands such a chat's activity to the test runner
-instead of the detector: no push, no title, no outcome, nothing on Home. An account switch keeps the
-test tools and the instructions (`switch.go` passes both on).
+Test mode's sessions (a chat whose options carried `test`) went with test mode (CHAT-TESTS.md): the
+`test_instructions` of the launch spec and the role of `chat_tools` are gone, and the server deletes
+such a chat once when it starts. A chat's tests are now its own, through a built-in MCP server.

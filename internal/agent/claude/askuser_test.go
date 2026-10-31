@@ -14,7 +14,6 @@ import (
 	"github.com/saschazesiger/SocratesAgent/internal/agent"
 	"github.com/saschazesiger/SocratesAgent/internal/agent/askuser"
 	"github.com/saschazesiger/SocratesAgent/internal/agent/chattools"
-	"github.com/saschazesiger/SocratesAgent/internal/agent/testtools"
 )
 
 // lastText is the newest assistant message's last text part.
@@ -73,18 +72,13 @@ func TestAskUserIsAnInProcessServerOfEveryChat(t *testing.T) {
 	}
 }
 
-// A chat with the chat tools has them beside ask_user, and both guidances; a
-// test session has its role's tools instead, and its role's protocol, then
-// the options' prompt, the model's instructions and the catalog's, in that
-// order, and nobody to ask.
-func TestATestSessionGetsItsRolesToolsInsteadOfAskUser(t *testing.T) {
+// A chat with the chat tools has them beside ask_user, and both guidances,
+// then the options' prompt and the model's instructions.
+func TestAChatGetsTheChatToolsBesideAskUser(t *testing.T) {
 	run := func(ep chattools.Endpoint) (mcp, argv string) {
 		e := newEnv(t)
 		spec := e.spec("")
 		spec.ChatTools, spec.Instructions = ep, map[string]string{"haiku": "NOTE-HAIKU"}
-		if ep.Test() {
-			spec.TestInstructions = "CATALOG-NOTES"
-		}
 		a := New(Options{AppendSystemPrompt: "OPTIONS-PROMPT"})
 		r := newRec()
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -112,21 +106,9 @@ func TestATestSessionGetsItsRolesToolsInsteadOfAskUser(t *testing.T) {
 	if !strings.Contains(mcp, "tools: "+AskTool+","+chatsPrefix+chattools.List) {
 		t.Errorf("a chat's tools:\n%s", mcp)
 	}
-	if !strings.Contains(argv, askGuidance+"\n\n"+chattools.Guidance(chatsPrefix)) || strings.Contains(argv, "CATALOG-NOTES") {
+	if !strings.Contains(argv, askGuidance+"\n\n"+chattools.Guidance(chatsPrefix)) ||
+		!strings.Contains(argv, "OPTIONS-PROMPT\n\n"+agent.ModelPrompt("haiku", "NOTE-HAIKU")) {
 		t.Errorf("a chat's system prompt:\n%s", argv)
-	}
-
-	mcp, argv = run(chattools.Endpoint{Socket: sock, Token: "c.x", Kind: testtools.KindCell})
-	if !strings.Contains(mcp, "tools: "+chatsPrefix+testtools.Steps+","+chatsPrefix+testtools.Judge) || strings.Contains(mcp, AskTool) {
-		t.Errorf("a cell's tools:\n%s", mcp)
-	}
-	want := "--append-system-prompt " + testtools.Guidance(testtools.KindCell, chatsPrefix, true) + "\n\nOPTIONS-PROMPT\n\n" +
-		agent.ModelPrompt("haiku", "NOTE-HAIKU") + "\n\nCATALOG-NOTES"
-	if !strings.Contains(argv, want) || strings.Contains(argv, askGuidance) || strings.Contains(argv, chattools.List) {
-		t.Errorf("a cell's system prompt:\n%s", argv)
-	}
-	if !strings.Contains(argv, "--disallowedTools AskUserQuestion") {
-		t.Errorf("AskUserQuestion is allowed in a test session:\n%s", argv)
 	}
 }
 

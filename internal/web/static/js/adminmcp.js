@@ -478,7 +478,7 @@ function builtinBody(view) {
         <h3 class="ds-card__subtitle" id="mcpAccountsTitle">Accounts</h3>
         ${V.chip(state.kind, state.label, state.state)}
       </div>
-      ${view.pooled ? html`<p class="ds-meta">A chat or a test cell that needs one borrows a free account and gives it back when it is done: more accounts, more at once.</p>` : ''}
+      ${view.pooled ? html`<p class="ds-meta">A chat that needs one borrows a free account and gives it back when it is done: more accounts, more at once.</p>` : ''}
       ${accounts.length ? html`<ul class="ds-list" aria-label="Accounts">${accounts.map((account) => {
         const check = account.check || { state: 'unknown' };
         const kind = check.state === 'valid' ? 'ok' : check.state === 'invalid' ? 'error' : 'plain';

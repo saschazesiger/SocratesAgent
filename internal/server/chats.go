@@ -99,7 +99,7 @@ func newChatHub(s *Server) *chatHub {
 // yet acknowledged. Every other chat stays parked until it is sent something,
 // and is known by its brief alone: its history is read when it is wanted.
 func (h *chatHub) start() {
-	rows, err := h.srv.store.ListAllSessions()
+	rows, err := h.srv.store.ListSessions()
 	if err != nil {
 		log.Printf("chats: could not read the sessions: %v", err)
 		return
@@ -306,9 +306,6 @@ type chatPeer struct {
 	lineTimer *time.Timer
 	// gone is a chat being deleted: nothing more is written for it.
 	gone bool
-	// test is whether the chat is a test session (isTest), read once.
-	testOnce sync.Once
-	test     bool
 }
 
 func (p *chatPeer) summary() agent.Summary {
@@ -534,9 +531,6 @@ func (p *chatPeer) launch(ctx context.Context) error {
 	// Without the tools the chat works all the same; a call says why.
 	if tools, err := p.hub.srv.chatToolsEndpoint(p.id); err == nil {
 		spec.ChatTools = tools
-		// The test tools, when the repository has a catalog as the host
-		// starts (testchat.go), unless Socrates Tests has them already.
-		spec.ChatTools.Tests = offersTestTools(row) && !p.hub.srv.testsMCPOn(row)
 	} else {
 		log.Printf("chats: %s: no chat tools: %v", p.id, err)
 	}
@@ -545,11 +539,6 @@ func (p *chatPeer) launch(ctx context.Context) error {
 	entry, _ := p.hub.srv.Settings().Harnesses.Entry(row.Harness)
 	spec.Binary = strings.TrimSpace(entry.Binary)
 	spec.Instructions = p.hub.srv.Settings().Harnesses.ModelInstructions(row.Harness)
-	if ref := row.TestRef(); ref != nil {
-		if err := p.testSpec(row, ref, &spec); err != nil {
-			return fmt.Errorf("the test session: %w", err)
-		}
-	}
 	return p.hub.launcher.Launch(lctx, spec)
 }
 
@@ -737,15 +726,6 @@ func (p *chatPeer) apply(ev agent.Event) {
 func (p *chatPeer) report() {
 	p.reportMu.Lock()
 	defer p.reportMu.Unlock()
-	// A test session's activity is its run's business: no push, no title,
-	// no verdict, nothing on Home.
-	if p.isTest() {
-		p.mu.Lock()
-		s := p.brief.Summary
-		p.mu.Unlock()
-		p.testObserve(s)
-		return
-	}
 	p.mu.Lock()
 	s := p.brief.Summary
 	if s.Activity == p.reported && s.Asked == p.asked {
@@ -898,10 +878,6 @@ type createChatBody struct {
 	AutoContinue *bool `json:"auto_continue"`
 	// Message is the first message, sent once the chat exists.
 	Message *chatMessageBody `json:"message"`
-	// Tests gives the chat the test tools even while its repository has no
-	// test catalog yet: a chat the Tests page starts to write the first
-	// test (testchat.go).
-	Tests bool `json:"tests"`
 }
 
 // chatMessageBody is one message from the composer.
@@ -985,9 +961,6 @@ func (s *Server) handleCreateChat(w http.ResponseWriter, r *http.Request) {
 		Kind: store.KindChat, State: store.StateRunning,
 		Options: withOption(withAutoContinue(withChatAccount(withOption(nil, "ultracode", chatUltracode(harness, body.Ultracode)),
 			body.Account, body.AutoSwitch), body.AutoContinue == nil || *body.AutoContinue), "mcp", mcp),
-	}
-	if body.Tests {
-		row.Options = withOption(row.Options, testToolsOption, true)
 	}
 	if err := s.store.CreateSession(row); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())

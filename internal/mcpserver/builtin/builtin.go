@@ -8,22 +8,30 @@ import (
 	"github.com/saschazesiger/SocratesAgent/internal/mcpserver"
 	"github.com/saschazesiger/SocratesAgent/internal/mcpserver/browserstack"
 	"github.com/saschazesiger/SocratesAgent/internal/mcpserver/tests"
-	"github.com/saschazesiger/SocratesAgent/internal/testmode/catalog"
 )
 
 // Deps is what the built-in servers need of the Socrates server besides
 // its data directory and the accounts Admin keeps.
 type Deps struct {
+	// Tests is the chats' tests, which Socrates Tests writes.
 	Tests tests.Deps
 }
 
 // servers makes every built-in server; accounts is how a server reads the
-// accounts Admin keeps for it.
+// accounts Admin keeps for it. Socrates Tests takes its evidence from every
+// other server that records a chat's actions.
 func servers(dataDir string, accounts func(server string) []mcpserver.Account, d Deps) []mcpserver.Server {
-	return []mcpserver.Server{
+	list := []mcpserver.Server{
 		browserstack.New(browserstack.Deps{DataDir: dataDir, Accounts: func() []mcpserver.Account { return accounts(browserstack.Name) }}),
-		tests.New(d.Tests),
 	}
+	var recorders []tests.NamedRecorder
+	for _, s := range list {
+		if r, ok := s.(mcpserver.Recorder); ok {
+			recorders = append(recorders, tests.NamedRecorder{Name: s.Name(), Recorder: r})
+		}
+	}
+	d.Tests.Recorders = func() []tests.NamedRecorder { return recorders }
+	return append(list, tests.New(d.Tests))
 }
 
 // Register adds every built-in server to r, running in dataDir.
@@ -33,8 +41,7 @@ func Register(r *mcpserver.Registry, dataDir string, d Deps) {
 	}
 }
 
-// inert is the servers as the catalog check sees them: names, instructions
-// and checks, nothing running.
+// inert is the servers as their names are known before any runs.
 var inert = servers("", func(string) []mcpserver.Account { return nil }, Deps{})
 
 // Names is the names of the built-in servers.
@@ -49,19 +56,4 @@ func Names() []string {
 func init() {
 	// No server of Admin may take a built-in server's name.
 	config.BuiltinMCPNames = Names()
-	// A test catalog's area may name a built-in server; the server checks
-	// the area that does, and its instructions join the cells' prompt.
-	catalog.BuiltinMCP = func(name string) *catalog.BuiltinServer {
-		for _, s := range inert {
-			if s.Name() != name {
-				continue
-			}
-			b := &catalog.BuiltinServer{Instructions: s.Instructions()}
-			if c, ok := s.(mcpserver.AreaChecker); ok {
-				b.Check = c.CheckArea
-			}
-			return b
-		}
-		return nil
-	}
 }

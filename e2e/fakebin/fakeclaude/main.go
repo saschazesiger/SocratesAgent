@@ -56,9 +56,11 @@
 //	/mcptool NAME [JSON] calls another tool of the socrates server (the chat
 //	                 tools) through mcp_message and says "NAME returned:
 //	                 <result>" or "NAME failed: <result>"
-//	/runtests TEST   calls the socrates server's run_tests (a chat's test
-//	                 tools) for the one test TEST, as /mcptool does, and says
-//	                 "run_tests returned: <result>"
+//	/mcpcall SERVER TOOL [JSON]  calls a tool of a stdio server of
+//	                 --mcp-config (a built-in one: socrates mcp-server NAME),
+//	                 started for the call as the CLI starts it, and says
+//	                 "TOOL returned: <result>" or "TOOL failed: <result>";
+//	                 several calls may follow, one per line
 //	/askuser [JSON]  calls the socrates server's ask_user (a call of two
 //	                 questions, or the JSON given) through mcp_message, waits
 //	                 for the result and says it; an interrupt withdraws the
@@ -77,8 +79,6 @@
 //	                 Edit of internal/store/retention.go, the store tests run
 //	                 (for S seconds, interruptible) and a summary
 //	anything else    "you said: <text>"
-//
-// A test session's messages run the test mode's scripts (testcell.go).
 //
 // <this binary>.scripts.json, a JSON object of message → script, runs a
 // script for a message that names none: the README's pictures
@@ -100,6 +100,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -602,9 +603,6 @@ func (t *turnRun) script() {
 	if line, ok := scripted()[text]; ok {
 		text = line
 	}
-	if t.testSession(text) {
-		return
-	}
 	word, rest, _ := strings.Cut(text, " ")
 	fields := strings.Fields(rest)
 	if t.job.wakeup != "" {
@@ -717,9 +715,14 @@ func (t *turnRun) script() {
 		t.askUser(rest)
 	case "/mcptool":
 		t.mcpTool(rest)
-	case "/runtests":
-		args, _ := json.Marshal(map[string]any{"tests": []string{strings.TrimSpace(rest)}, "name": "from a chat"})
-		t.mcpTool("run_tests " + string(args))
+	case "/mcpcall":
+		// The script's lines: a message of scripts.json runs the calls
+		// its script names (e2e/shots.mjs).
+		for _, line := range strings.Split(text, "\n") {
+			if call, ok := strings.CutPrefix(strings.TrimSpace(line), "/mcpcall "); ok {
+				t.mcpCall(call)
+			}
+		}
 	case "/toolask":
 		t.tool("Bash", map[string]any{"command": "printf 'one\\ntwo\\n'", "description": "Print two lines"},
 			"one\ntwo", map[string]any{"stdout": "one\ntwo", "stderr": "", "interrupted": false}, false, "")
@@ -1469,6 +1472,113 @@ func (t *turnRun) mcpTool(arg string) (string, bool) {
 	}
 	t.say(name + " returned: " + text)
 	return text, false
+}
+
+// mcpCall is /mcpcall: one call of a tool of a stdio MCP server of the
+// CLI's --mcp-config, shown as Claude Code shows an MCP tool call.
+func (t *turnRun) mcpCall(arg string) {
+	server, rest, _ := strings.Cut(strings.TrimSpace(arg), " ")
+	tool, js, _ := strings.Cut(strings.TrimSpace(rest), " ")
+	input := json.RawMessage(`{}`)
+	if strings.TrimSpace(js) != "" {
+		input = json.RawMessage(strings.TrimSpace(js))
+	}
+	t.closeText()
+	if t.apiMsg == "" {
+		t.msgStart()
+	}
+	id := "toolu_fake_" + randHex(10)
+	full := "mcp__" + server + "__" + tool
+	t.f.out(t.se(map[string]any{"type": "content_block_start", "index": t.index,
+		"content_block": map[string]any{"type": "tool_use", "id": id, "name": full, "input": map[string]any{}}}))
+	t.assistant(map[string]any{"type": "tool_use", "id": id, "name": full, "input": input}, "")
+	t.f.out(t.se(map[string]any{"type": "content_block_stop", "index": t.index}))
+	t.index++
+	text, isErr := t.f.stdioCall(t.ctx, server, tool, input)
+	t.result(id, text, nil, isErr, "")
+	if isErr {
+		t.say(tool + " failed: " + text)
+		return
+	}
+	t.say(tool + " returned: " + text)
+}
+
+// stdioCall starts the stdio server name of --mcp-config, initializes it,
+// calls tool and gives back the result's text and whether it is an error.
+func (f *fake) stdioCall(ctx context.Context, name, tool string, input json.RawMessage) (string, bool) {
+	path := f.flag("--mcp-config")
+	raw := []byte(path)
+	if !strings.HasPrefix(strings.TrimSpace(path), "{") {
+		var err error
+		if raw, err = os.ReadFile(path); err != nil {
+			return "no --mcp-config: " + err.Error(), true
+		}
+	}
+	var conf struct {
+		MCPServers map[string]struct {
+			Command string            `json:"command"`
+			Args    []string          `json:"args"`
+			Env     map[string]string `json:"env"`
+		} `json:"mcpServers"`
+	}
+	if err := json.Unmarshal(raw, &conf); err != nil {
+		return "unreadable --mcp-config: " + err.Error(), true
+	}
+	srv, ok := conf.MCPServers[name]
+	if !ok || srv.Command == "" {
+		return "no stdio server " + name + " in --mcp-config", true
+	}
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, srv.Command, srv.Args...)
+	cmd.Dir = f.cwd
+	cmd.Env = os.Environ()
+	for k, v := range srv.Env {
+		cmd.Env = append(cmd.Env, k+"="+v)
+	}
+	stdin, _ := cmd.StdinPipe()
+	stdout, _ := cmd.StdoutPipe()
+	if err := cmd.Start(); err != nil {
+		return "the server did not start: " + err.Error(), true
+	}
+	defer func() { _ = stdin.Close(); _ = cmd.Wait() }()
+	send := func(m map[string]any) { b, _ := json.Marshal(m); _, _ = stdin.Write(append(b, '\n')) }
+	send(map[string]any{"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": map[string]any{
+		"protocolVersion": "2025-06-18", "capabilities": map[string]any{}, "clientInfo": map[string]any{"name": "fakeclaude", "version": version}}})
+	sc := bufio.NewScanner(stdout)
+	sc.Buffer(make([]byte, 64*1024), 16*1024*1024)
+	for sc.Scan() {
+		var msg struct {
+			ID     json.RawMessage `json:"id"`
+			Result struct {
+				Content []struct {
+					Text string `json:"text"`
+				} `json:"content"`
+				IsError bool `json:"isError"`
+			} `json:"result"`
+			Error *struct {
+				Message string `json:"message"`
+			} `json:"error"`
+		}
+		if json.Unmarshal(sc.Bytes(), &msg) != nil {
+			continue
+		}
+		switch string(msg.ID) {
+		case "1":
+			send(map[string]any{"jsonrpc": "2.0", "method": "notifications/initialized"})
+			send(map[string]any{"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": map[string]any{"name": tool, "arguments": input}})
+		case "2":
+			if msg.Error != nil {
+				return msg.Error.Message, true
+			}
+			var parts []string
+			for _, c := range msg.Result.Content {
+				parts = append(parts, c.Text)
+			}
+			return strings.Join(parts, "\n"), msg.Result.IsError
+		}
+	}
+	return "the server ended without an answer", true
 }
 
 // askDrop is a call of ask_user withdrawn the moment it is made: the
