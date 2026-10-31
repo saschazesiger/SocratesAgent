@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/saschazesiger/SocratesAgent/internal/agent"
@@ -244,5 +245,110 @@ func TestARebuildSplitsAResumedSubagentBetweenItsTasks(t *testing.T) {
 	}
 	if len(inputs) != 2 || inputs[0] != 7 || inputs[1] != 11 {
 		t.Errorf("the turns' input %v, want [7 11]", inputs)
+	}
+}
+
+// The steps OpenCode answers a turn in are one answer, live and rebuilt
+// alike: the first step's message, until a step answers another user
+// message (a compaction's). A step that never completed interrupts it.
+func TestTheStepsOfATurnAreOneAnswer(t *testing.T) {
+	var msgs []ocMessageWithParts
+	if err := json.Unmarshal([]byte(`[
+		{"info":{"id":"msg_u1","sessionID":"ses_root","role":"user","time":{"created":90}},"parts":[]},
+		{"info":{"id":"msg_a1","sessionID":"ses_root","role":"assistant","parentID":"msg_u1","time":{"created":95,"completed":100},"tokens":{"input":3}},
+		 "parts":[{"id":"prt_1","sessionID":"ses_root","messageID":"msg_a1","type":"text","text":"Let me look.","time":{"start":96,"end":97}}]},
+		{"info":{"id":"msg_a2","sessionID":"ses_root","role":"assistant","parentID":"msg_u1","time":{"created":101,"completed":110},"tokens":{"input":5}},
+		 "parts":[{"id":"prt_2","sessionID":"ses_root","messageID":"msg_a2","type":"text","text":"Done.","time":{"start":102,"end":103}}]},
+		{"info":{"id":"msg_u2","sessionID":"ses_root","role":"user","time":{"created":200}},"parts":[]},
+		{"info":{"id":"msg_a3","sessionID":"ses_root","role":"assistant","parentID":"msg_u2","time":{"created":201,"completed":210}},"parts":[]},
+		{"info":{"id":"msg_a4","sessionID":"ses_root","role":"assistant","parentID":"msg_c","time":{"created":211,"completed":220}},"parts":[]},
+		{"info":{"id":"msg_a5","sessionID":"ses_root","role":"assistant","parentID":"msg_c","time":{"created":221}},
+		 "parts":[{"id":"prt_5","sessionID":"ses_root","messageID":"msg_a5","type":"text","text":"cut","time":{"start":222}}]}]`), &msgs); err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{"msg_a1": "msg_a1", "msg_a2": "msg_a1", "msg_a3": "msg_a3", "msg_a4": "msg_a4", "msg_a5": "msg_a4"}
+	got := answers(msgs)
+	for id, answer := range want {
+		if got[id] != answer {
+			t.Errorf("%s goes into %q, want %q", id, got[id], answer)
+		}
+	}
+	p := agent.NewProjection()
+	for i, ev := range historyEvents(msgs, "", nil) {
+		ev.Seq = int64(i + 1)
+		p.Apply(ev)
+	}
+	var shape []string
+	for _, m := range p.Messages {
+		if m.Role != agent.RoleAssistant {
+			continue
+		}
+		var texts []string
+		for _, part := range m.Parts {
+			texts = append(texts, part.Text)
+		}
+		shape = append(shape, m.ID+" "+m.State+" "+strings.Join(texts, "+"))
+	}
+	if strings.Join(shape, "|") != "msg_a1 done Let me look.+Done.|msg_a3 done |msg_a4 interrupted cut" {
+		t.Fatalf("rebuilt answers %q", shape)
+	}
+	if p.LastTurn == nil || p.LastTurn.Outcome != agent.OutcomeInterrupted {
+		t.Fatalf("last turn %+v", p.LastTurn)
+	}
+}
+
+// Every todowrite of an answer writes the answer's one task list, as Claude
+// Code's task calls do: a call before its input names no list, and a
+// catch-up that reads the earlier calls again does not take the list back.
+// One part is what lets the recorder time each list against the one before
+// (agent.TimeTodos takes a part's own last version first).
+func TestTheTodowritesOfAnAnswerAreOneList(t *testing.T) {
+	rec := newRecorder()
+	a := New()
+	a.out = rec
+	a.session = "ses_root"
+	todo := func(id, status, input string) ocPart {
+		var p ocPart
+		raw := `{"id":"` + id + `","sessionID":"ses_root","messageID":"msg_1","type":"tool","tool":"todowrite","callID":"c_` + id + `",
+			"state":{"status":"` + status + `","input":` + input + `,"time":{"start":1}}}`
+		if err := json.Unmarshal([]byte(raw), &p); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	first := `{"todos":[{"content":"Read","status":"in_progress"},{"content":"Fix","status":"pending"}]}`
+	second := `{"todos":[{"content":"Read","status":"completed"},{"content":"Fix","status":"in_progress"}]}`
+	calls := []ocPart{
+		todo("prt_a", "pending", `{}`),
+		todo("prt_a", "completed", first),
+		todo("prt_b", "pending", `{}`),
+		todo("prt_b", "running", second),
+		todo("prt_b", "completed", second),
+	}
+	for _, p := range calls {
+		a.handlePart(0, p)
+	}
+	// A catch-up reads them all again.
+	for _, p := range calls {
+		a.handlePart(0, p)
+	}
+	var writes []string
+	rec.view(func(p *agent.Projection, events []agent.Event) {
+		for _, ev := range events {
+			if ev.Type == agent.TypePart {
+				writes = append(writes, ev.PartID+" "+ev.State)
+			}
+		}
+		list := p.Part("todo_msg_1")
+		if list == nil {
+			t.Fatal("no task list")
+		}
+		tasks := decode[TodoContent](t, list.Content).Todos
+		if len(tasks) != 2 || tasks[0].Status != "completed" || tasks[1].Status != "in_progress" {
+			t.Fatalf("the list %s", list.Content)
+		}
+	})
+	if strings.Join(writes, ", ") != "todo_msg_1 done, todo_msg_1 done" {
+		t.Fatalf("writes %q", writes)
 	}
 }

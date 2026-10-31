@@ -370,7 +370,7 @@ func TestARebuildShowsAStepsChanges(t *testing.T) {
 			}
 		}
 	}
-	if strings.Join(diffs, ", ") != "prt_e-diff edit /w/repo/pkg/a.txt 1, prt_p changes b.txt 1, prt_p changes c.txt 0" {
+	if strings.Join(diffs, ", ") != "prt_e edit /w/repo/pkg/a.txt 1, prt_p changes b.txt 1, prt_p changes c.txt 0" {
 		t.Fatalf("diff parts %q", diffs)
 	}
 }

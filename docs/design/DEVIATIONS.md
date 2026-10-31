@@ -2889,7 +2889,8 @@ the four final audits (a desk, a phone, a deploy rehearsal, the real binaries) f
   a desk fades at its foot.
 - **Snackbars** stand above the dock, the key bar and a keyboard, and a dialog keeps the strip
   they stand in.
-- **What a turn cost is said once**, under its last answer (OpenCode answers a step at a time),
+- **What a turn cost is said once**, under its last answer (OpenCode's journals from before its
+  steps became one answer, AGENT-HOST.md §5.3, have an answer per step),
   and a turn's end ("Interrupted", "Failed") stands under that turn, above a message sent while it
   ran; a limit's card stays the chat's newest word.
 - **A model "change" to the same model draws no line**: the CLI naming the alias's full id at a

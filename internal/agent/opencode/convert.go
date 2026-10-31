@@ -32,14 +32,21 @@ type ToolContent struct {
 	Agent     string `json:"agent,omitempty"`
 }
 
-// DiffContent is a diff part's content: what one edit tool call changed
-// (ToolPart), or what a step changed that no edit call showed (Tool is
-// StepTool and ToolPart empty: changes.go).
+// DiffContent is the content of a diff part that is no call: what a step
+// changed that no edit call showed (Tool is StepTool: changes.go). Title
+// names the files.
 type DiffContent struct {
-	ToolPart string `json:"tool_part,omitempty"`
-	// Tool is the edit tool, or StepTool; Title names the files.
 	Tool  string     `json:"tool,omitempty"`
 	Title string     `json:"title,omitempty"`
+	Files []DiffFile `json:"files"`
+}
+
+// EditContent is an edit call's content once it changed files: the call
+// is a diff part then, one row with what it changed, as Claude Code's Edit
+// is. Title names the files, and Path the file when it is one.
+type EditContent struct {
+	ToolContent
+	Path  string     `json:"path,omitempty"`
 	Files []DiffFile `json:"files"`
 }
 
@@ -79,16 +86,28 @@ type converted struct {
 	state   string
 	text    string
 	content json.RawMessage
-	// diff is the diff part an edit tool also becomes, nil for others;
-	// paths are the files it changed, as the call named them.
-	diff  *converted
+	// paths are the files an edit call changed, as the call named them.
 	paths []string
 	// child is the subagent session a task tool runs.
 	child string
 }
 
-// diffSuffix makes a tool part's diff part id.
-const diffSuffix = "-diff"
+// emptyTodos is a todo part's content with no task.
+const emptyTodos = `{"todos":[]}`
+
+// todoPrefix makes the id of an answer's task list: every todowrite of the
+// answer writes the one list, as Claude Code's task calls do, rather than a
+// list per call.
+const todoPrefix = "todo_"
+
+// partID is the journal's id of a part of the answer msg: its own, or the
+// answer's task list's.
+func partID(p ocPart, c converted, msg, parent string) string {
+	if c.kind == agent.PartTodo && parent == "" {
+		return todoPrefix + msg
+	}
+	return p.ID
+}
 
 // convertPart maps one part of an assistant message. ok is false for parts
 // that are not shown (step boundaries, snapshots, retries) and for patches,
@@ -109,7 +128,14 @@ func convertPart(p ocPart) (converted, bool) {
 		}
 		return converted{kind: kind, state: state, text: p.Text}, true
 	case partTool:
-		return convertTool(p), true
+		c := convertTool(p)
+		// A task list's call names its list only once its input is in: an
+		// empty list before that is no list, and would time the next one
+		// against nothing (agent.TimeTodos).
+		if c.kind == agent.PartTodo && c.state == agent.PartRunning && string(c.content) == emptyTodos {
+			return converted{}, false
+		}
+		return c, true
 	case partFile:
 		kind := agent.PartFile
 		if strings.HasPrefix(p.Mime, "image/") {
@@ -206,8 +232,13 @@ func convertTool(p ocPart) converted {
 			for _, f := range files {
 				names = append(names, f.Path)
 			}
-			raw, _ := json.Marshal(DiffContent{ToolPart: p.ID, Tool: p.Tool, Title: strings.Join(names, ", "), Files: files})
-			c.diff = &converted{kind: agent.PartDiff, state: agent.PartDone, content: raw}
+			ec := EditContent{ToolContent: tc, Files: files}
+			ec.Title = strings.Join(names, ", ")
+			if len(files) == 1 {
+				ec.Path = files[0].Path
+			}
+			c.kind = agent.PartDiff
+			c.content, _ = json.Marshal(ec)
 			c.paths = editPaths(input.FilePath, meta.FileDiff, meta.Files)
 		}
 	}

@@ -90,8 +90,26 @@ func TestToolsStepsDiffsTodosAndReasoning(t *testing.T) {
 				}
 			}
 		}
-		if assistants != 5 {
-			t.Fatalf("%d assistant messages, want 5 (the tool turn has two steps)", assistants)
+		// The tool turn has two steps, and they are one answer: the call,
+		// then the words after it.
+		if assistants != 4 {
+			t.Fatalf("%d assistant messages, want 4 (one per turn)", assistants)
+		}
+		var answer []string
+		for _, m := range p.Messages {
+			if m.Role != agent.RoleAssistant {
+				continue
+			}
+			for _, part := range m.Parts {
+				answer = append(answer, part.Kind+":"+part.Text)
+			}
+			if m.State != agent.MessageDone {
+				t.Fatalf("the tool turn's answer is %s", m.State)
+			}
+			break
+		}
+		if strings.Join(answer, "|") != "tool:line 1\nline 2\nline 3\n|text:The tool finished." {
+			t.Fatalf("the tool turn's answer %q", answer)
 		}
 		var bash *agent.Part
 		for _, m := range p.Messages {
@@ -111,9 +129,13 @@ func TestToolsStepsDiffsTodosAndReasoning(t *testing.T) {
 		if diff == nil {
 			t.Fatal("no diff part")
 		}
-		dc := decode[DiffContent](t, diff.Content)
+		// The edit call is its diff, one part: the call and what it changed.
+		dc := decode[EditContent](t, diff.Content)
 		if len(dc.Files) != 1 || dc.Files[0].Path != "a.txt" || !contains(dc.Files[0].Patch, "+new") || dc.Files[0].Additions != 1 {
 			t.Fatalf("diff %s", diff.Content)
+		}
+		if dc.Tool != "edit" || dc.Path != "a.txt" || !contains(string(dc.Input), "a.txt") || dc.DurationMS <= 0 || strings.HasSuffix(diff.ID, "-diff") {
+			t.Fatalf("the edit's diff part %s %s", diff.ID, diff.Content)
 		}
 		todo := kinds[agent.PartTodo]
 		if todo == nil || todo.State != agent.PartDone {
@@ -642,10 +664,13 @@ func TestParkResumeRebuildAndRedelivery(t *testing.T) {
 	}
 	var users, texts []string
 	var outcomes []string
+	answers := 0
 	r.rec.view(func(p *agent.Projection, _ []agent.Event) {
 		for _, m := range p.Messages {
 			if m.Role == agent.RoleUser {
 				users = append(users, m.Text)
+			} else {
+				answers++
 			}
 			for _, part := range m.Parts {
 				if part.Kind == agent.PartText {
@@ -660,6 +685,10 @@ func TestParkResumeRebuildAndRedelivery(t *testing.T) {
 	outcomes = r.rec.turns()
 	if strings.Join(users, "|") != "/tool|hello|again" || len(outcomes) != 3 {
 		t.Fatalf("rebuilt users %q outcomes %v", users, outcomes)
+	}
+	// The tool turn's two steps are one answer, as they were live.
+	if answers != 3 {
+		t.Fatalf("%d rebuilt answers, want one per turn", answers)
 	}
 	// The conversation is written after its history: until then, a new host
 	// would rebuild again.

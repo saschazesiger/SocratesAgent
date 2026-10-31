@@ -849,7 +849,12 @@ with nothing as completed (measured on 1.19.4 against a real session).
 the adapter (`msg_` + 48-bit ms×4096+counter + 14 base-62), kept in `agent/opencode.json` (journal
 id → OpenCode id) so that revert/fork can name it and a message the previous host already handed
 over is recognised (`delivered` without a second turn). `delivered` + `turn.started` when the post
-is accepted; one turn per user message; every step is an assistant `message`. `turn.ended`'s usage
+is accepted; one turn per user message. OpenCode answers a step at a time, an assistant message
+per model call; the steps in a row that answer the same user message are **one** assistant
+`message`, the first step's id (`answers`, live, on resume and in a rebuild alike), which streams
+until `turn.ended` closes it, as a turn of the other agents does: the chat folds the turn's work
+behind one line. A step that answers another user message (after a compaction) starts an answer of
+its own. A journal written before this has a message per step, and keeps it. `turn.ended`'s usage
 and cost add up the turn's steps and its subagents' (OpenCode keeps those with the child session),
 live and in a rebuild. **While a turn runs,
 messages wait in the adapter (`queued`) and go one by one after `session.idle`** (DEVIATIONS).
@@ -895,7 +900,7 @@ sees an ask_user answer: the host routes it (§4.4).
 | `text`, `reasoning` (not synthetic) | `text`, `reasoning` | the text (deltas) | – |
 | `tool` | `tool` | output (bash streams `metadata.output`), or the error | `ToolContent{tool, call_id, title, input, error, started_at, ended_at, duration_ms, exit, session_id, agent}` |
 | `tool` todowrite | `todo` | – | `TodoContent{todos:[{content, status, priority}]}` |
-| completed edit / apply_patch / write of a new file | `diff`, id `<tool part>-diff` | – | `DiffContent{tool_part, tool, title (the files), files:[{path, patch, additions, deletions, status}]}` |
+| completed edit / apply_patch / write of a new file | `diff`: the tool part itself becomes it, one row as Claude's Edit (journals from before have a `tool` part and a `diff` `<tool part>-diff` beside it) | the output | `EditContent{` the `ToolContent` `, title (the files), path (the file, when one), files:[{path, patch, additions, deletions, status}]}` |
 | `patch` of the chat's own step (below) | `diff`, id the patch part's | – | `DiffContent{tool: "changes", title, files}`: the step's files no edit call of the turn showed |
 | `file` | `image` / `file` | – | `FileContent{mime, filename, url (file:// only)}` |
 | a task child session's parts | as above | | with `parent_part_id` = the task part running it (the newest to name the child: a task with `task_id` resumes an earlier task's) |

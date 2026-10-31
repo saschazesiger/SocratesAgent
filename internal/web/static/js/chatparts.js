@@ -1773,7 +1773,9 @@ function liveHtml(message, chat) {
     const tool = toolOf(running);
     const did = didOf(running);
     doing = DOING[did];
-    what = did === 'other' ? [tool.name, tool.summary].filter(Boolean).join(' ') : tool.summary || tool.name;
+    // A task list is said by the list itself, over the composer: no
+    // "Planning Tool".
+    if (did !== 'todo') what = did === 'other' ? [tool.name, tool.summary].filter(Boolean).join(' ') : tool.summary || tool.name;
     since = running.at || 0;
   }
   const started = (turn && turn.startedAt) || first;

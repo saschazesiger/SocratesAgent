@@ -170,11 +170,24 @@ func (a *Adapter) assistantLocked(m ocMessage) {
 		t.user, t.adopt = m.ParentID, false
 	}
 	if as == nil {
-		as = &asstMsg{parent: m.ParentID}
+		as = &asstMsg{parent: m.ParentID, our: m.ID}
 		a.assistants[m.ID] = as
 		t.assistants = append(t.assistants, m.ID)
-		a.out.Emit(agent.Event{Type: agent.TypeMessage, MessageID: m.ID, Role: agent.RoleAssistant,
-			State: agent.MessageStreaming, TurnID: t.id, Model: m.model()})
+		// OpenCode answers a step at a time, one assistant message per
+		// model call: the steps of one user message are one answer, as a
+		// turn of the other agents is (answers).
+		if t.answer != "" && t.answerParent == m.ParentID {
+			as.our = t.answer
+		} else {
+			var events []agent.Event
+			if t.answer != "" {
+				events = append(events, agent.Event{Type: agent.TypeMessageState, MessageID: t.answer, State: agent.MessageDone})
+			}
+			t.answer, t.answerParent = m.ID, m.ParentID
+			events = append(events, agent.Event{Type: agent.TypeMessage, MessageID: m.ID, Role: agent.RoleAssistant,
+				State: agent.MessageStreaming, TurnID: t.id, Model: m.model()})
+			a.out.Emit(events...)
+		}
 	}
 	as.tokens, as.cost = m.Tokens, m.Cost
 	t.changes.place(m.Path)
@@ -197,22 +210,46 @@ func (a *Adapter) assistantLocked(m ocMessage) {
 		return
 	}
 	as.done = true
-	// What still streams ends with the message: complete, or cut short by
-	// the abort or the error the message ended with.
+	// What still streams ends with the step: complete, or cut short by the
+	// abort or the error the step ended with. The answer goes on with the
+	// next step, and ends with the turn.
 	end := agent.PartDone
 	if m.Error != nil {
 		end = agent.PartInterrupted
 	}
 	for id, sp := range a.parts {
-		if sp.msg == m.ID && sp.parent == "" && sp.state == agent.PartStreaming {
+		if sp.step == m.ID && sp.parent == "" && sp.state == agent.PartStreaming {
 			a.emitPartLocked(id, sp.msg, sp.parent, converted{kind: sp.kind, state: end, text: sp.text, content: sp.content})
 		}
 	}
-	state := agent.MessageDone
-	if m.Error != nil {
-		state = agent.MessageInterrupted
+}
+
+// answerLocked is the journal's message an assistant message of the
+// session goes into (asstMsg.our): its own id when it is not known.
+func (a *Adapter) answerLocked(oc string) string {
+	if as := a.assistants[oc]; as != nil && as.our != "" {
+		return as.our
 	}
-	a.out.Emit(agent.Event{Type: agent.TypeMessageState, MessageID: m.ID, State: state})
+	return oc
+}
+
+// answers is the journal's message each assistant message of a session's
+// stored list goes into: the first of the steps in a row that answer the
+// same user message (assistantLocked).
+func answers(msgs []ocMessageWithParts) map[string]string {
+	out := map[string]string{}
+	answer, parent := "", ""
+	for _, m := range msgs {
+		if m.Info.Role != "assistant" {
+			answer = ""
+			continue
+		}
+		if answer == "" || m.Info.ParentID != parent {
+			answer, parent = m.Info.ID, m.Info.ParentID
+		}
+		out[m.Info.ID] = answer
+	}
+	return out
 }
 
 // childStepLocked counts a subagent's model call into the running turn:
@@ -236,7 +273,9 @@ func (a *Adapter) handlePart(gen int, p ocPart) {
 	if a.gen != gen || p.ID == "" {
 		return
 	}
-	msg, parent := p.MessageID, ""
+	// msg is the answer the part goes into, step the session's assistant
+	// message that holds it, or the task part a subagent's part is in.
+	msg, step, parent := a.answerLocked(p.MessageID), p.MessageID, ""
 	switch {
 	case p.SessionID == a.session:
 		if u := a.users[p.MessageID]; u != nil {
@@ -248,7 +287,7 @@ func (a *Adapter) handlePart(gen int, p ocPart) {
 		if !ok || a.childPrompts[p.MessageID] {
 			return
 		}
-		msg, parent = c.msg, c.parent
+		msg, step, parent = c.msg, c.step, c.parent
 	}
 	switch p.Type {
 	case partStepFinish:
@@ -266,7 +305,7 @@ func (a *Adapter) handlePart(gen int, p ocPart) {
 	}
 	// The files an edit call of this turn showed; a catch-up also reads the
 	// earlier turns' calls.
-	if t := a.turn; t != nil && len(c.paths) > 0 && slices.Contains(t.assistants, msg) {
+	if t := a.turn; t != nil && len(c.paths) > 0 && slices.Contains(t.assistants, step) {
 		t.changes.edit(c.paths)
 	}
 	// A task part that names a subagent for the first time runs it from
@@ -277,17 +316,24 @@ func (a *Adapter) handlePart(gen int, p ocPart) {
 		if p.State != nil {
 			since = p.State.Time.Start
 		}
-		a.children[c.child] = childSession{msg: msg, parent: p.ID, since: since}
+		a.children[c.child] = childSession{msg: msg, parent: p.ID, step: step, since: since}
 	}
-	a.emitPartLocked(p.ID, msg, parent, c)
-	if c.child != "" {
-		a.parts[p.ID].child = c.child
-	}
-	if c.diff != nil {
-		if sp := a.parts[p.ID]; sp != nil && !sp.diff {
-			sp.diff = true
-			a.emitPartLocked(p.ID+diffSuffix, msg, parent, *c.diff)
+	id := partID(p, c, msg, parent)
+	if id != p.ID {
+		// Each call writes the answer's one list when what it says changed:
+		// a catch-up that reads an earlier call again does not take the
+		// list back to it.
+		if own := a.parts[p.ID]; own != nil && own.state == c.state && bytes.Equal(own.content, c.content) {
+			return
 		}
+		a.parts[p.ID] = &seenPart{msg: msg, parent: parent, step: step, kind: c.kind, state: c.state, content: c.content}
+	}
+	a.emitPartLocked(id, msg, parent, c)
+	if parent == "" {
+		a.parts[id].step = step
+	}
+	if c.child != "" {
+		a.parts[id].child = c.child
 	}
 }
 
@@ -593,6 +639,7 @@ func (a *Adapter) endTurnLocked() {
 		if as == nil {
 			continue
 		}
+		as.done = true
 		usage.Input += as.tokens.Input
 		// OpenCode counts the reasoning apart from the output; the
 		// journal's output counts it in (AGENT-HOST.md §2).
@@ -601,14 +648,13 @@ func (a *Adapter) endTurnLocked() {
 		usage.CacheRead += as.tokens.Cache.Read
 		usage.CacheWrite += as.tokens.Cache.Write
 		cost += as.cost
-		if !as.done && !as.child {
-			as.done = true
-			state := agent.MessageDone
-			if outcome != agent.OutcomeCompleted {
-				state = agent.MessageInterrupted
-			}
-			events = append(events, agent.Event{Type: agent.TypeMessageState, MessageID: id, State: state})
+	}
+	if t.answer != "" {
+		state := agent.MessageDone
+		if outcome != agent.OutcomeCompleted {
+			state = agent.MessageInterrupted
 		}
+		events = append(events, agent.Event{Type: agent.TypeMessageState, MessageID: t.answer, State: state})
 	}
 	for i := len(t.assistants) - 1; i >= 0 && usage.Context == 0; i-- {
 		// The context is the chat's own, not a subagent's.

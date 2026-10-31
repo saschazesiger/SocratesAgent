@@ -198,9 +198,11 @@ type userMsg struct {
 }
 
 // asstMsg is an assistant message of the session, or of a subagent's
-// (child), whose usage and cost count into the turn that ran it.
+// (child), whose usage and cost count into the turn that ran it. our is the
+// journal's message it goes into (answers).
 type asstMsg struct {
 	parent string
+	our    string
 	done   bool
 	child  bool
 	tokens ocTokens
@@ -208,13 +210,15 @@ type asstMsg struct {
 }
 
 type seenPart struct {
-	msg     string
-	parent  string
+	msg    string
+	parent string
+	// step is the assistant message of the session a part at the top
+	// belongs to (msg is the answer it goes into).
+	step    string
 	kind    string
 	state   string
 	text    string
 	content []byte
-	diff    bool
 	// child is the subagent session a task part named.
 	child string
 }
@@ -228,6 +232,8 @@ type seenPart struct {
 type childSession struct {
 	msg    string
 	parent string
+	// step is the assistant message of the session that holds the task part.
+	step   string
 	seeded bool
 	since  int64
 }
@@ -238,10 +244,15 @@ type turnState struct {
 	our        string
 	adopt      bool
 	assistants []string
-	aborted    bool
-	limited    bool
-	limitSaid  bool
-	failure    string
+	// answer is the journal's message the turn's steps go into, and the
+	// user message they answer (answers): a step that answers another one
+	// (after a compaction) starts an answer of its own.
+	answer       string
+	answerParent string
+	aborted      bool
+	limited      bool
+	limitSaid    bool
+	failure      string
 	// errors are the texts of the errors the turn failed with, which
 	// OpenCode may say again after its end.
 	errors  []string
@@ -526,20 +537,28 @@ func (a *Adapter) dangling(msgs []ocMessageWithParts) []agent.Event {
 		done[id] = true
 	}
 	var events []agent.Event
+	answer := answers(msgs)
 	for _, m := range msgs {
 		if m.Info.Role != "assistant" || m.Info.Time.Completed > 0 || done[m.Info.ID] {
 			continue
 		}
+		our := answer[m.Info.ID]
 		for _, p := range m.Parts {
 			c, ok := convertPart(p)
-			if !ok || c.kind == agent.PartText || c.kind == agent.PartReasoning ||
+			// A task list is what it says, not a call cut short.
+			if !ok || c.kind == agent.PartText || c.kind == agent.PartReasoning || c.kind == agent.PartTodo ||
 				(c.state != agent.PartRunning && c.state != agent.PartStreaming) {
 				continue
 			}
-			events = append(events, agent.Event{Type: agent.TypePart, MessageID: m.Info.ID, PartID: p.ID,
+			events = append(events, agent.Event{Type: agent.TypePart, MessageID: our, PartID: p.ID,
 				Kind: c.kind, State: agent.PartInterrupted, Text: c.text, Content: c.content})
 		}
-		events = append(events, agent.Event{Type: agent.TypeMessageState, MessageID: m.Info.ID, State: agent.MessageInterrupted})
+		events = append(events, agent.Event{Type: agent.TypeMessageState, MessageID: our, State: agent.MessageInterrupted})
+		if our != m.Info.ID {
+			// A journal written before the steps were one answer has the
+			// step as a message of its own.
+			events = append(events, agent.Event{Type: agent.TypeMessageState, MessageID: m.Info.ID, State: agent.MessageInterrupted})
+		}
 		a.state.Interrupted = append(a.state.Interrupted, m.Info.ID)
 	}
 	if len(events) > 0 {
@@ -552,12 +571,14 @@ func (a *Adapter) dangling(msgs []ocMessageWithParts) []agent.Event {
 // mapping and a reconcile only write what changes from here on. Called with
 // mu held.
 func (a *Adapter) seed(msgs []ocMessageWithParts) {
+	answer := answers(msgs)
 	for _, m := range msgs {
 		switch m.Info.Role {
 		case "user":
 			a.users[m.Info.ID] = &userMsg{our: m.Info.ID, announced: true, started: true}
 		case "assistant":
-			a.assistants[m.Info.ID] = &asstMsg{parent: m.Info.ParentID, done: true, tokens: m.Info.Tokens, cost: m.Info.Cost}
+			our := answer[m.Info.ID]
+			a.assistants[m.Info.ID] = &asstMsg{parent: m.Info.ParentID, our: our, done: true, tokens: m.Info.Tokens, cost: m.Info.Cost}
 			if model := m.Info.model(); model != "" {
 				a.lastModel = model
 			}
@@ -566,10 +587,16 @@ func (a *Adapter) seed(msgs []ocMessageWithParts) {
 				if !ok {
 					continue
 				}
-				a.parts[p.ID] = &seenPart{msg: m.Info.ID, kind: c.kind, state: c.state, text: c.text, content: c.content,
-					diff: c.diff != nil, child: c.child}
+				seen := &seenPart{msg: our, step: m.Info.ID, kind: c.kind, state: c.state, text: c.text, content: c.content,
+					child: c.child}
+				a.parts[p.ID] = seen
+				if id := partID(p, c, our, ""); id != p.ID {
+					// The answer's task list, as its last call left it.
+					copied := *seen
+					a.parts[id] = &copied
+				}
 				if c.child != "" {
-					a.children[c.child] = childSession{msg: m.Info.ID, parent: p.ID, seeded: true}
+					a.children[c.child] = childSession{msg: our, parent: p.ID, step: m.Info.ID, seeded: true}
 				}
 			}
 		}

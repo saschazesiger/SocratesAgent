@@ -200,7 +200,7 @@ func (a *Adapter) showChangesLocked(t *turnState) {
 			t.changes.partial = append(t.changes.partial, p)
 		}
 		if len(files) > 0 {
-			a.emitPartLocked(p.ID, p.MessageID, "", stepDiff(files))
+			a.emitPartLocked(p.ID, a.answerLocked(p.MessageID), "", stepDiff(files))
 		}
 	}
 }

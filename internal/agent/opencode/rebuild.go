@@ -37,7 +37,7 @@ func historyEvents(msgs []ocMessageWithParts, workdir string, child func(session
 		if turn == nil {
 			return
 		}
-		events = append(events, turn.end())
+		events = append(events, turn.end()...)
 		turn = nil
 	}
 	for _, m := range msgs {
@@ -75,33 +75,53 @@ type rebuiltTurn struct {
 	// changes has the turn's summary and what its edit calls showed, for
 	// its steps' changes.
 	changes turnChanges
+	// answer is the message the turn's steps go into, as the live mapping
+	// has them (answers): the first step's, until a step answers another
+	// user message; parent is the one they answer, and state how the
+	// answer ended so far.
+	answer string
+	parent string
+	state  string
 }
 
-func (t *rebuiltTurn) end() agent.Event {
-	return agent.Event{Type: agent.TypeTurnEnded, TurnID: t.id, Outcome: t.outcome, Usage: t.usage,
-		CostUSD: t.cost, Text: t.failure}
+func (t *rebuiltTurn) end() []agent.Event {
+	return append(t.endAnswer(), agent.Event{Type: agent.TypeTurnEnded, TurnID: t.id, Outcome: t.outcome, Usage: t.usage,
+		CostUSD: t.cost, Text: t.failure})
+}
+
+// endAnswer ends the answer the steps so far went into.
+func (t *rebuiltTurn) endAnswer() []agent.Event {
+	if t.answer == "" {
+		return nil
+	}
+	ev := agent.Event{Type: agent.TypeMessageState, MessageID: t.answer, State: t.state}
+	t.answer = ""
+	return []agent.Event{ev}
 }
 
 func (t *rebuiltTurn) assistant(m ocMessageWithParts, child func(string) []ocMessageWithParts) []agent.Event {
 	complete := m.Info.Time.Completed > 0
 	t.changes.place(m.Info.Path)
-	events := []agent.Event{{Type: agent.TypeMessage, MessageID: m.Info.ID, Role: agent.RoleAssistant,
-		State: agent.MessageStreaming, TurnID: t.id, Model: m.Info.model()}}
-	events = append(events, t.finalParts(m.Info.ID, "", m.Parts, complete, child, 0)...)
-	state := agent.MessageDone
+	var events []agent.Event
+	if t.answer == "" || t.parent != m.Info.ParentID {
+		events = append(t.endAnswer(), agent.Event{Type: agent.TypeMessage, MessageID: m.Info.ID, Role: agent.RoleAssistant,
+			State: agent.MessageStreaming, TurnID: t.id, Model: m.Info.model()})
+		t.answer, t.parent, t.state = m.Info.ID, m.Info.ParentID, agent.MessageDone
+	}
+	events = append(events, t.finalParts(t.answer, "", m.Parts, complete, child, 0)...)
 	switch {
 	case !complete:
-		state, t.outcome = agent.MessageInterrupted, agent.OutcomeInterrupted
+		t.state, t.outcome = agent.MessageInterrupted, agent.OutcomeInterrupted
 	case m.Info.Error != nil && m.Info.Error.Name == errAborted:
-		state, t.outcome = agent.MessageInterrupted, agent.OutcomeInterrupted
+		t.state, t.outcome = agent.MessageInterrupted, agent.OutcomeInterrupted
 	case m.Info.Error != nil:
-		state, t.outcome, t.failure = agent.MessageInterrupted, agent.OutcomeFailed, m.Info.Error.text()
+		t.state, t.outcome, t.failure = agent.MessageInterrupted, agent.OutcomeFailed, m.Info.Error.text()
 	}
 	t.count(m.Info)
 	if c := m.Info.Tokens.context(); c > 0 {
 		t.usage.Context = c
 	}
-	return append(events, agent.Event{Type: agent.TypeMessageState, MessageID: m.Info.ID, State: state})
+	return events
 }
 
 // count adds what one model call, the chat's or a subagent's, used and cost.
@@ -145,12 +165,8 @@ func (t *rebuiltTurn) finalParts(msg, parent string, parts []ocPart, complete bo
 		if state == agent.PartStreaming || state == agent.PartRunning {
 			state = agent.PartInterrupted
 		}
-		events = append(events, agent.Event{Type: agent.TypePart, MessageID: msg, PartID: p.ID, ParentPartID: parent,
+		events = append(events, agent.Event{Type: agent.TypePart, MessageID: msg, PartID: partID(p, c, msg, parent), ParentPartID: parent,
 			Kind: c.kind, State: state, Text: c.text, Content: c.content})
-		if c.diff != nil {
-			events = append(events, agent.Event{Type: agent.TypePart, MessageID: msg, PartID: p.ID + diffSuffix,
-				ParentPartID: parent, Kind: c.diff.kind, State: c.diff.state, Content: c.diff.content})
-		}
 		if c.child != "" && depth < maxNesting && child != nil {
 			for _, cm := range child(c.child) {
 				if cm.Info.Role != "assistant" || !ranFor(p, cm.Info) {
