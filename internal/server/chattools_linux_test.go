@@ -110,7 +110,7 @@ func TestTheChatsOfARepositoryReachEachOther(t *testing.T) {
 		t.Fatalf("send: %+v", res)
 	}
 	evs := c.waitJournal(t, web, 15*time.Second, "the message answered", turnsEnded(2))
-	notice, message, told := false, false, false
+	notice, message := false, false
 	for _, ev := range evs {
 		if ev.Type == agent.TypeNotice && ev.Code == agent.NoticeChatMessage && strings.Contains(ev.Text, "“API”") {
 			notice = true
@@ -122,26 +122,36 @@ func TestTheChatsOfARepositoryReachEachOther(t *testing.T) {
 			strings.Contains(ev.Note, "not from your person: the agent of the chat “API” (Scripted agent), id "+api) {
 			message = true
 		}
-		// The agent is given the note before the text.
-		if ev.Type == agent.TypePart && strings.HasPrefix(ev.Text, "you said: <socrates-note>\nThis message is from another agent") &&
-			strings.Contains(ev.Text, "</socrates-note>\n\nplease check the login route") {
-			told = true
-		}
 	}
-	if !notice || !message || !told {
-		t.Fatalf("no notice, message from API or note for the agent in %v", evs)
+	if !notice || !message {
+		t.Fatalf("no notice or message from API in %v", evs)
+	}
+	// The agent is given the note with the text, and answers the text alone
+	// (the scripted agent's /note tells the note of the message before).
+	c.send(t, web, "note-web", "/note")
+	evs = c.waitJournal(t, web, 15*time.Second, "the note told", turnsEnded(3))
+	told, echoed := false, false
+	for _, ev := range evs {
+		if ev.Type != agent.TypePart || ev.Kind != agent.PartText || ev.State != agent.PartDone {
+			continue
+		}
+		told = told || strings.HasPrefix(ev.Text, "note: This message is from another agent, not from your person: the agent of the chat “API”")
+		echoed = echoed || strings.HasPrefix(ev.Text, "you said: please check the login route (turn 2")
+	}
+	if !told || !echoed {
+		t.Fatalf("the note for the agent (%v) or the echo of the text alone (%v) in %v", told, echoed, evs)
 	}
 
 	res = call(ep, chattools.Read, map[string]any{"chat": web, "count": 5})
 	if res.Error || !strings.Contains(res.Text, "A message from the agent of the chat “API” (id "+api+"):\nplease check the login route") ||
-		!strings.Contains(res.Text, "Its agent:\nyou said: <socrates-note>") {
+		!strings.Contains(res.Text, "Its agent:\nyou said: please check the login route") {
 		t.Fatalf("read: %+v", res)
 	}
 
 	// While the agent's own question to its person is open, it does not
 	// answer the other chat for them.
 	c.send(t, web, "ask-web", "/asknext")
-	c.waitJournal(t, web, 15*time.Second, "the question", turnsEnded(3))
+	c.waitJournal(t, web, 15*time.Second, "the question", turnsEnded(4))
 	// The server's own view of the chat follows the journal.
 	webPeer, err := c.srv.chats.peer(web)
 	if err != nil {

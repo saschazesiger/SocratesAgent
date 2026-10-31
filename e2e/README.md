@@ -72,7 +72,8 @@ they were started with, the account they found, the answer ask_user returned.
 The chat scenarios that need a richer script (Markdown of every kind, a
 workflow, a counter-question) use the scripted agent instead (`harness: "fake"`,
 `SOCRATES_FAKE_AGENT=1`, AGENT-HOST.md §8), which the server registers when that
-variable is set.
+variable is set. Its "you said: …" echoes the person's text without Socrates'
+note to the agent; `/note` tells the note the message before it came with.
 
 The agents do not run in a terminal any more (REBUILD.md §7); the Shell needs no
 fake at all: `/bin/sh` is the thing under test.

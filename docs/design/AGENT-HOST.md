@@ -1268,7 +1268,12 @@ message text:
 | `/limit` | `rate_limit`, `error`, `turn.ended{limited}` |
 | `/crash` | the CLI child is killed mid-turn |
 | `/orphan` | starts a `setsid sleep 600` outside the process group (pid in `agent/fake/orphan.pid`) |
+| `/note` | `note: <note>`, the `<socrates-note>` the message before this one came with (`agent.AgentText`: who sent it, which chats are active beside it), or `no note` |
 | anything else | `you said: <text> (turn N of <conversation>)` |
+
+The script reads the person's text without Socrates' note before it (`agent.StripModelNote`): a
+command works with a note, the echo is the text alone - the note is the agent's, never the chat's
+- and so is the turn's user text in its transcript, as a real CLI's read back is.
 
 In a test session (`StartSpec.ChatTools.Kind` names a role; TEST-MODE.md) it works the runner's
 messages through the role's test tools, called in process on the endpoint the real harnesses' calls

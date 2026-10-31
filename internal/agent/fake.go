@@ -65,7 +65,13 @@ func EnableFake() {
 //	/image PATH      an image part of the file at PATH
 //	/crash         the CLI child dies in the middle of the turn
 //	/orphan          a tool process that escapes the CLI's process group
+//	/note            the note Socrates put before the message received before
+//	                 this one (AgentText: who sent it, which chats are active
+//	                 beside it), or "no note"
 //	anything else    "you said: …" with the turn number of the conversation
+//
+// A message's note is the agent's alone: the script reads the person's text
+// without it, and "you said" echoes only that text.
 //
 // In a test session the runner's messages are worked through the test
 // tools instead (fake_tests.go).
@@ -87,10 +93,13 @@ type fakeAdapter struct {
 	bgAgent int
 	// scheduled is how many wakeups are pending (/schedule).
 	scheduled int
-	child     *exec.Cmd
-	ending    bool
-	wake      chan struct{}
-	quit      chan struct{}
+	// note is the note of the last message received, and lastNote the one
+	// of the message before it (/note).
+	note, lastNote string
+	child          *exec.Cmd
+	ending         bool
+	wake           chan struct{}
+	quit           chan struct{}
 }
 
 // fakeState is the conversation the fake keeps on disk, its stand-in for a
@@ -397,14 +406,19 @@ func (t *fakeTurn) end(outcome, detail string) {
 }
 
 func (f *fakeAdapter) turn(ctx context.Context, msg Outgoing, n int) {
-	t := &fakeTurn{f: f, id: "t_" + fakeID(), msgID: "a_" + fakeID(), user: msg.Text, usage: Usage{Input: int64(len(msg.Text))}}
+	text, note := StripModelNote(msg.Text), fakeAgentNote(msg.Text)
+	f.mu.Lock()
+	f.lastNote, f.note = f.note, note
+	lastNote := f.lastNote
+	f.mu.Unlock()
+	t := &fakeTurn{f: f, id: "t_" + fakeID(), msgID: "a_" + fakeID(), user: text, usage: Usage{Input: int64(len(msg.Text))}}
 	t.partID = t.msgID + "_text"
 	f.out.Emit(
 		Event{Type: TypeMessageState, MessageID: msg.MessageID, State: MessageDelivered},
 		Event{Type: TypeTurnStarted, TurnID: t.id, MessageID: msg.MessageID},
 		Event{Type: TypeMessage, MessageID: t.msgID, Role: RoleAssistant, State: MessageStreaming, TurnID: t.id, Model: f.model},
 	)
-	if handled, ok := f.testSession(ctx, t, msg.Text); handled {
+	if handled, ok := f.testSession(ctx, t, text); handled {
 		if !ok {
 			t.end(OutcomeInterrupted, "")
 			return
@@ -412,7 +426,7 @@ func (f *fakeAdapter) turn(ctx context.Context, msg Outgoing, n int) {
 		t.end(OutcomeCompleted, "")
 		return
 	}
-	word, args, _ := strings.Cut(strings.TrimSpace(msg.Text), " ")
+	word, args, _ := strings.Cut(strings.TrimSpace(text), " ")
 	fields := strings.Fields(args)
 	switch word {
 	case "/stream":
@@ -551,8 +565,14 @@ func (f *fakeAdapter) turn(ctx context.Context, msg Outgoing, n int) {
 		} else {
 			t.say("started a tool process")
 		}
+	case "/note":
+		if lastNote == "" {
+			t.say("no note")
+		} else {
+			t.say("note: " + lastNote)
+		}
 	default:
-		reply := fmt.Sprintf("you said: %s (turn %d of %s)", msg.Text, n, f.conv)
+		reply := fmt.Sprintf("you said: %s (turn %d of %s)", text, n, f.conv)
 		if len(msg.Attachments) > 0 {
 			names := make([]string, 0, len(msg.Attachments))
 			for _, a := range msg.Attachments {
@@ -569,6 +589,19 @@ func (f *fakeAdapter) turn(ctx context.Context, msg Outgoing, n int) {
 		}
 	}
 	t.end(OutcomeCompleted, "")
+}
+
+// fakeAgentNote is the text of Socrates' note before a message (AgentText),
+// without its tags; "" when it has none.
+func fakeAgentNote(text string) string {
+	rest := StripModelNote(text)
+	head := strings.TrimSuffix(text, rest)
+	start := strings.Index(head, agentNoteOpen)
+	end := strings.LastIndex(head, agentNoteClose)
+	if start < 0 || end < start {
+		return ""
+	}
+	return strings.TrimSpace(head[start+len(agentNoteOpen) : end])
 }
 
 // tool is one tool call: running, three lines of output, done.
