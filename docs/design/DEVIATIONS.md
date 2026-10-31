@@ -3072,3 +3072,38 @@ listing models beforehand.
 - **Every primary agent.** `/agent` takes any primary agent `GET /agent` lists - build, plan, and
   the ones a project or the configuration adds - not just build and plan.
 
+## OpenCode's folder configuration (2026-10-31)
+
+The owner: a folder with an `opencode.json` of its own - a provider of its own (a local Ollama),
+the model OpenCode starts on there, a model for the `general` subagent - should be in Socrates
+what it is in the CLI in that folder.
+
+- **A folder can change an agent.** `harnesses.FolderDiscoverer` (OpenCode's) finds a folder's own
+  configuration without running anything: `opencode.json[c]`, `.opencode/opencode.json[c]` and
+  `.opencode/agent[s]/*.md` in the folder and every folder above it (the home folder's
+  `.opencode` is read everywhere, so it is not a folder's). A folder with none is like any other;
+  one with some has its catalogue discovered there (in the nearest folder that exists, for one not
+  made yet): `opencode models --verbose` once per account, and `opencode debug config` for the model
+  it starts on, its providers' own names and the agents it puts on models of their own. `debug
+  config` merges the global configuration too, so it is also asked at `/`: only what the folder
+  changes is the folder's. A folder model OpenCode does not list is not one it can start on, and is
+  dropped. Nothing else of the resolved config is kept - it holds keys.
+- **Cached by what it was discovered from.** `catalog.Folder` keeps one answer per set of
+  configuration files - a project's subfolders and a dynamic chat's new folder share it - until
+  those files (their mtimes and sizes), the binary or the general catalogue change, or for the TTL;
+  a request that gives up leaves the discovery running, as for the general catalogue, and a
+  discovery that failed is not kept. At most 64 answers are remembered and two discoveries run at
+  once; the accounts' environments are made outside the catalogue's lock.
+- **The folder's model first.** `GET /api/harnesses/folder` answers the agents a folder changes, as
+  whole catalogue entries with a `folder` field. The sheet asks it for the folder chosen and, until
+  the person picks a model, starts on the one the folder names - ahead of the favourites and the
+  dashboard's default, as the project config is ahead of the global one in the CLI - and says under
+  the model what the folder's config does, its subagents' models too. The answer this device kept
+  for a folder is used until the server's comes, and Start waits for the server's (at most 15 s),
+  so a chat started at once still starts on the folder's model. A chat's composer, its model name
+  and its info ask it for the chat's folder. A chat made there without a model runs on the folder's
+  (`chatModelIn`, which waits up to 20 s for a first discovery and falls back to the dashboard's
+  default).
+- **Subagents are OpenCode's.** The serve process runs in the chat's folder and
+  `OPENCODE_CONFIG_CONTENT` sets no `agent`, so `agent.general.model` and the other agents' models
+  of the folder's config apply as in the CLI; Socrates only shows them.

@@ -377,7 +377,7 @@ export function mountChat(ctx) {
     pendingAnswer: (ask) => pendingAnswer(session.id, ask.id) || sentAnswers.get(ask.id) || null,
     failedItem: (clientId) => failedItem(clientId),
     modelLabel(model) {
-      const found = session && harnesses.modelOf(session.harness, model);
+      const found = session && harnesses.modelOf(session.harness, model, session.workdir);
       if (found) return found.label || found.id;
       const listed = chat && chat.info && Array.isArray(chat.info.models)
         ? chat.info.models.find((one) => one.id === model) : null;

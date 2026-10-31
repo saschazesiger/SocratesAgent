@@ -3543,6 +3543,107 @@ async function owncodex() {
   } finally { await s.stop(); }
 }
 
+/* ---------------------------------------------------- 15a. folderopencode */
+
+// A folder with an opencode.json of its own, as a project configures the CLI:
+// OpenCode there offers the models of the folder's provider and starts on the
+// folder's model, the sheet says what the folder's config does - its general
+// subagent's model too - and a chat started there runs on that model, with
+// the folder's models in its composer. Anywhere else nothing changes.
+async function folderopencode() {
+  const s = await start({ viewport: { width: 1280, height: 720 } });
+  try {
+    await setup(s.page, s.url);
+    // A default model of the dashboard's, which the folder's comes before.
+    const allowed = await s.context.request.put(s.url + '/api/settings',
+      { data: { settings: { workspace: { allow_custom: true }, harnesses: { opencode: { default_model: 'fake/model' } } } } });
+    ok(allowed.ok(), 'a typed-in working directory and a default model are set on this Socrates', allowed.status());
+    // An account the chats can run on: a key, so that every sheet may start.
+    const account = await s.context.request.post(s.url + '/api/accounts',
+      { data: { agent: 'opencode', kind: 'api_key', label: 'Router', key: 'sk-or-' + 'f'.repeat(20), provider: 'openrouter' } });
+    ok(account.ok(), 'an OpenCode account is added', account.status());
+    const dir = join(s.data, 'projects', 'lab');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'opencode.json'), JSON.stringify({
+      model: 'lab/qwen-27b',
+      provider: { lab: { name: 'Lab (test)', options: { apiKey: 'not-for-the-page' }, models: { 'qwen-27b': { name: 'Qwen 27B' } } } },
+      agent: { general: { model: 'fake/large' } },
+    }));
+    await open(s);
+
+    const asked = await s.context.request.get(s.url + '/api/harnesses/folder?workdir_mode=custom&workdir=' + encodeURIComponent(dir));
+    const answer = await asked.text();
+    const folder = JSON.parse(answer);
+    const oc = (folder.harnesses || []).find((h) => h.id === 'opencode');
+    const qwen = oc && oc.models.find((m) => m.id === 'lab/qwen-27b');
+    ok(asked.ok() && folder.workdir === dir && folder.harnesses.length === 1 && !!qwen && qwen.group === 'Lab (test)'
+      && oc.default_model === 'lab/qwen-27b' && oc.folder.agents.map((a) => a.name + '=' + a.model).join() === 'general=fake/large',
+      'the folder’s OpenCode has the folder’s provider, starts on its model and runs its general agent on another',
+      JSON.stringify(oc && { default: oc.default_model, qwen, folder: oc.folder }));
+    ok(!answer.includes('not-for-the-page'), 'nothing else of the folder’s config leaves the server', answer.length + ' bytes');
+    const general = await (await s.context.request.get(s.url + '/api/harnesses')).json();
+    const everywhere = general.harnesses.find((h) => h.id === 'opencode');
+    ok(!everywhere.models.some((m) => m.id === 'lab/qwen-27b') && !everywhere.folder,
+      'everywhere else OpenCode is what it always is', everywhere.models.length + ' models');
+
+    await ensureNav(s.page);
+    await s.page.click('#newSession');
+    await s.page.waitForSelector('#newSessionSheet[open]', { timeout: 15000 });
+    await s.page.click('#newSessionSheet .so-settings__program[data-value="opencode"]');
+    const modelValue = () => s.page.$eval('#nsModelInput', (n) => n.value);
+    const plain = await modelValue();
+    await s.page.click('#nsDirInput');
+    await s.page.click('#nsDir .ds-combo__option[data-value="custom"]');
+    await s.page.fill('#nsDirPath', dir);
+    const moved = await s.page.waitForFunction(() => document.getElementById('nsModelInput').value === 'Qwen 27B',
+      null, { timeout: 15000 }).then(() => true, () => false);
+    const hint = await s.page.$eval('#nsModelHint', (n) => (n.hidden ? '' : n.textContent));
+    ok(moved && plain === 'Fake Model', 'in the folder the sheet starts OpenCode on the folder’s model',
+      JSON.stringify({ plain, now: await modelValue() }));
+    ok(hint.includes('This folder’s OpenCode config starts on Qwen 27B; runs its general agent on Fake Large.'),
+      'and says what the folder’s config does, its subagent’s model too', hint);
+    await shot(s.page, 'folderopencode-sheet');
+
+    await s.page.click('#nsStart');
+    await s.page.waitForSelector('#newSessionSheet[open]', { state: 'detached', timeout: 30000 });
+    await s.page.waitForFunction(() => location.hash.length > 1, null, { timeout: 30000 });
+    await chatUp(s.page);
+    const id = await s.page.evaluate(() => location.hash.slice(1));
+    const ran = await answerTo(s, id, '/model');
+    ok(ran.startsWith('model: lab/qwen-27b '), 'the chat runs on the folder’s model', ran);
+    const shown = await s.page.waitForFunction(() => document.querySelector('#chat .so-composer__model-name')?.textContent === 'Qwen 27B',
+      null, { timeout: 10000 }).then(() => true, () => false);
+    ok(shown, 'its composer names the model as the folder’s provider does',
+      await s.page.$eval('#chat .so-composer__model-name', (n) => n.textContent));
+
+    // Started at once, before the answer about a folder nobody asked about
+    // yet: Start waits for it, and the chat still runs on the folder's model.
+    const fresh = join(s.data, 'projects', 'lab2');
+    mkdirSync(fresh, { recursive: true });
+    writeFileSync(join(fresh, 'opencode.json'), readFileSync(join(dir, 'opencode.json')));
+    await leaveComposer(s.page, '');
+    await s.page.click('#newSession');
+    await s.page.waitForSelector('#newSessionSheet[open]', { timeout: 15000 });
+    await s.page.click('#newSessionSheet .so-settings__program[data-value="opencode"]');
+    await s.page.click('#nsDirInput');
+    await s.page.click('#nsDir .ds-combo__option[data-value="custom"]');
+    await s.page.fill('#nsDirPath', fresh);
+    await s.page.click('#nsStart');
+    await s.page.waitForSelector('#newSessionSheet[open]', { state: 'detached', timeout: 30000 });
+    await s.page.waitForFunction((before) => location.hash.slice(1) !== before, id, { timeout: 30000 });
+    await chatUp(s.page);
+    const quick = await s.page.evaluate(() => location.hash.slice(1));
+    ok((await sessionRow(s, quick)).model === 'lab/qwen-27b', 'a chat started at once in a new folder still runs on the folder’s model',
+      (await sessionRow(s, quick)).model);
+
+    // A chat in the folder made without a model runs on the folder's too.
+    const bare = await makeChat(s, 'opencode', { workdir_mode: 'custom', workdir: dir });
+    ok((await sessionRow(s, bare)).model === 'lab/qwen-27b', 'a chat made there without a model runs on it',
+      (await sessionRow(s, bare)).model);
+    ok(unexpected(s.errors).length === 0, 'no console errors', unexpected(s.errors).join(' | ') || '0');
+  } finally { await s.stop(); }
+}
+
 /* ------------------------------------------------------- 15. createopencode */
 
 // OpenCode as a chat: one `opencode serve` per chat, on a port and with a
@@ -14960,6 +15061,7 @@ const ALL = [
   ['createcodex', 'Codex over its app server: one thread, kept, and resumed after a rest', createcodex],
   ['own-codex', 'what Codex does by itself: its goal and the turns it starts for it, an image it made, a subagent that failed', owncodex],
   ['accounts-agents', 'an account of each agent reaches its CLI: its folder, its key, its home', accountsagents],
+  ['folderopencode', 'OpenCode in a folder with an opencode.json: its models, its model and its subagent’s', folderopencode],
   ['createopencode', 'OpenCode over its own authenticated server: one session, resumed after a rest', createopencode],
   ['opencode-models', 'every model OpenCode lists, searched, with its variants, and the agent a chat runs as', opencodemodels],
   ['rebootresume', 'a machine that rebooted mid-turn, and the chat that comes back on its conversation', rebootresume],

@@ -469,6 +469,7 @@ func (s *Server) routes() {
 
 	// The harness catalogue: what can be started, and where.
 	mux.HandleFunc("GET /api/harnesses", s.auth(s.handleHarnesses))
+	mux.HandleFunc("GET /api/harnesses/folder", s.auth(s.handleFolderHarnesses))
 	mux.HandleFunc("POST /api/harnesses/refresh", s.auth(s.handleRefreshHarnesses))
 	mux.HandleFunc("GET /api/accounts", s.auth(s.handleListAccounts))
 	mux.HandleFunc("POST /api/accounts", s.auth(s.handleCreateAccount))

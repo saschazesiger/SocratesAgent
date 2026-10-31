@@ -21,6 +21,8 @@ import { brief, fromWords, labelOf } from './mcpview.js';
 const CACHE_KEY = 'socrates.harnesses';
 // How long a typed path rests before the sheet asks for its MCP servers.
 const MCP_TYPING_PAUSE = 400;
+// How long Start waits for what the folder chosen makes of the agents.
+const FOLDER_PATIENCE = 15000;
 
 // The two programs that are not agents. Nothing is asked of a shell or of an
 // editor and nothing is reported back by them, so they have no model to run
@@ -54,10 +56,10 @@ export function effortLabel(value) {
 // reported, every level any of its models offers. The levels differ between
 // harnesses (Claude Code goes up to max, Codex to xhigh, OpenCode names them
 // per model), so there is no fixed row.
-export function effortsFor(id, modelId) {
-  const model = modelOf(id, modelId);
+export function effortsFor(id, modelId, dir = '') {
+  const model = modelOf(id, modelId, dir);
   if (model) return model.efforts || [];
-  const found = harness(id);
+  const found = harness(id, dir);
   if (!found) return [];
   const all = [];
   for (const m of found.models || []) for (const e of m.efforts || []) if (!all.includes(e)) all.push(e);
@@ -135,6 +137,72 @@ export function snapshot() {
 }
 
 export function list() { return snapshot().harnesses; }
+
+// A folder can make an agent something else there than everywhere: an
+// opencode.json of its own adds providers, names the model OpenCode starts
+// on and puts its subagents on models of their own. The server says which
+// agents a folder changes, each as a whole entry (/api/harnesses/folder);
+// every call that takes a `dir` reads that folder's entry when there is one,
+// and the general one otherwise. The last folders' answers are kept on this
+// device, as the catalogue is, for a sheet or a chat opened offline.
+const FOLDERS_KEY = 'socrates.harnessFolders';
+const FOLDERS_MAX = 24;
+let folders = null; // dir -> { harnesses, at }
+
+function readFolders() {
+  if (folders) return folders;
+  folders = new Map();
+  try {
+    const parsed = JSON.parse(localStorage.getItem(FOLDERS_KEY) || '{}');
+    for (const [dir, entry] of Object.entries(parsed || {})) {
+      if (entry && Array.isArray(entry.harnesses)) folders.set(dir, entry);
+    }
+  } catch { /* nothing kept */ }
+  return folders;
+}
+
+function writeFolders() {
+  const newest = [...readFolders().entries()].sort((a, b) => (b[1].at || 0) - (a[1].at || 0)).slice(0, FOLDERS_MAX);
+  folders = new Map(newest);
+  try { localStorage.setItem(FOLDERS_KEY, JSON.stringify(Object.fromEntries(newest))); } catch { /* private window */ }
+}
+
+// inFolder is the entries the folder's answer changed; none for a folder
+// that is like any other, or not asked about yet.
+export function inFolder(dir) {
+  if (!dir) return [];
+  const entry = readFolders().get(dir);
+  return entry ? entry.harnesses : [];
+}
+
+/**
+ * loadFolder asks which agents a folder changes: the folder a new chat would
+ * get ({mode, workdir}, as the sheet has them) or a chat's own ({session}).
+ * It resolves with the folder's path - the `dir` to pass on - or '' when
+ * there is no folder to speak of yet. Offline, a folder asked about before
+ * keeps its answer.
+ */
+export async function loadFolder({ mode = '', workdir = '', session = '' } = {}) {
+  const query = session ? '?session=' + encodeURIComponent(session)
+    : '?workdir_mode=' + encodeURIComponent(mode) + '&workdir=' + encodeURIComponent(workdir);
+  const data = await api('/api/harnesses/folder' + query, { attempts: 1, timeout: 30000 });
+  const dir = (data && data.workdir) || '';
+  if (!dir) return '';
+  const found = Array.isArray(data.harnesses) ? data.harnesses : [];
+  const all = readFolders();
+  if (found.length) all.set(dir, { harnesses: found, at: Date.now() });
+  else all.delete(dir);
+  writeFolders();
+  return dir;
+}
+
+// folderConfig is what a folder's own configuration of an agent says
+// (harnesses.FolderConfig): its files, the model it starts on and the agents
+// it puts on a model of their own. null where the folder has none.
+export function folderConfig(id, dir) {
+  const found = inFolder(dir).find((h) => h.id === id);
+  return (found && found.folder) || null;
+}
 // untilReset is how long a limit window has until it renews, the way a
 // person says it: "2h 36m", "3d 4h", "12m". Empty when the window says
 // nothing about it, or its reset is already behind it.
@@ -158,7 +226,9 @@ export function resetDetail(window) {
 }
 
 export function workspace() { return snapshot().workspace || EMPTY_WORKSPACE; }
-export function harness(id) { return list().find((h) => h.id === id) || null; }
+export function harness(id, dir = '') {
+  return inFolder(dir).find((h) => h.id === id) || list().find((h) => h.id === id) || null;
+}
 
 /**
  * isChat says whether a session of this program is a chat - driven through
@@ -217,8 +287,8 @@ export function rememberModel(id, modelId) {
  * favorites is the ids a harness's pickers put first: the dashboard's
  * favourites in their order, then the ones starred in the CLI's own TUI.
  */
-export function favorites(id) {
-  const found = harness(id);
+export function favorites(id, dir = '') {
+  const found = harness(id, dir);
   if (!found) return [];
   const out = [];
   for (const one of [...(found.picks || []).map((p) => p.id), ...(found.favorites || [])]) {
@@ -231,10 +301,10 @@ export function favorites(id) {
  * recent is the ids used last, newest first: this device's choices, then
  * the ones the CLI's TUI used on this machine. Only models still on offer.
  */
-export function recent(id) {
-  const found = harness(id);
+export function recent(id, dir = '') {
+  const found = harness(id, dir);
   if (!found) return [];
-  const known = new Set(offered(id).map((m) => m.id));
+  const known = new Set(offered(id, dir).map((m) => m.id));
   const local = readRecent()[id];
   const out = [];
   for (const one of [...(Array.isArray(local) ? local : []), ...(found.recent || [])]) {
@@ -248,8 +318,8 @@ export function recent(id) {
 // starts on - and then everything else the CLI reported. The favourites are
 // what comes first, not all there is: a model left off them is searched for,
 // never refused.
-export function offered(id) {
-  const found = harness(id);
+export function offered(id, dir = '') {
+  const found = harness(id, dir);
   if (!found) return [];
   const picks = found.picks || [];
   const ids = new Set(picks.map((p) => p.id));
@@ -260,10 +330,10 @@ export function offered(id) {
 // value, because that is what the server is given. The favourites come
 // first, then the ones used last, then the rest in the CLI's order; each
 // says which it is in its meta line.
-export function modelItems(id) {
-  const all = offered(id);
-  const starred = favorites(id);
-  const used = recent(id).filter((one) => !starred.includes(one));
+export function modelItems(id, dir = '') {
+  const all = offered(id, dir);
+  const starred = favorites(id, dir);
+  const used = recent(id, dir).filter((one) => !starred.includes(one));
   const rank = (m) => {
     const fav = starred.indexOf(m.id);
     if (fav >= 0) return fav;
@@ -285,8 +355,8 @@ export function modelItems(id) {
 // the model an alias resolved to ("claude-sonnet-5-5" for "sonnet") in what
 // it reports, which is what a chat's journal holds: that is the alias's
 // entry, so a chat says "Sonnet" rather than the id.
-export function modelOf(id, modelId) {
-  const list = offered(id);
+export function modelOf(id, modelId, dir = '') {
+  const list = offered(id, dir);
   const exact = list.find((m) => m.id === modelId);
   if (exact || !/^claude-/i.test(String(modelId || ''))) return exact || null;
   const wide = /\[1m\]$/i.test(modelId) ? '[1m]' : '';
@@ -313,28 +383,30 @@ export function readableModel(modelId) {
 
 // modelName is what a model is called: its name from the listing, else its
 // readable id.
-export function modelName(id, modelId) {
-  const model = modelOf(id, modelId);
+export function modelName(id, modelId, dir = '') {
+  const model = modelOf(id, modelId, dir);
   return model ? (model.label || model.id) : readableModel(modelId);
 }
 
 // modelByWords is the entry a typed model names by its label ("Sonnet 1M"),
 // for a field that shows labels and takes ids.
-export function modelByWords(id, typed) {
+export function modelByWords(id, typed, dir = '') {
   const words = String(typed || '').trim().toLowerCase();
   if (!words) return null;
-  return offered(id).find((m) => m.id === typed || String(m.label || '').toLowerCase() === words) || null;
+  return offered(id, dir).find((m) => m.id === typed || String(m.label || '').toLowerCase() === words) || null;
 }
 
-// defaultModelFor is what the picker starts on: the first of the dashboard's
-// favourites the CLI reports, else the dashboard's default model or what the
-// CLI says is its default (OpenCode: the model its TUI used last), else the
-// entry that flags itself as one. A favourite typed in that the CLI does not
-// report is offered but not started on unasked - it may be a typo; with no
-// list at all there is nothing to check it against.
-export function defaultModelFor(id) {
-  const found = harness(id);
+// defaultModelFor is what the picker starts on: the model the folder's own
+// configuration names, as the CLI starts on it there; else the first of the
+// dashboard's favourites the CLI reports, else the dashboard's default model
+// or what the CLI says is its default (OpenCode: the model its TUI used
+// last), else the entry that flags itself as one. A favourite typed in that
+// the CLI does not report is offered but not started on unasked - it may be
+// a typo; with no list at all there is nothing to check it against.
+export function defaultModelFor(id, dir = '') {
+  const found = harness(id, dir);
   if (!found) return '';
+  if (found.folder && found.folder.model) return found.folder.model;
   const models = found.models || [];
   const picks = (found.picks || []).filter((p) => !models.length || models.some((m) => m.id === p.id));
   if (picks.length) return picks[0].id;
@@ -347,8 +419,8 @@ export function defaultModelFor(id) {
 // choose. §E.3: the whole step is hidden, not disabled. A program that could
 // not list its models still has the step: an id typed into it is passed on,
 // and an empty one starts the program on its own default (unlisted).
-export function needsModel(id) {
-  const found = harness(id);
+export function needsModel(id, dir = '') {
+  const found = harness(id, dir);
   if (!found) return !isTool(id);
   return (found.models || []).length > 0 || !!found.default_model || unlisted(found);
 }
@@ -473,7 +545,8 @@ function mcpSource(server) {
  *   include(entry)            which programs are offered at all
  *   onChange(kind)            called after a change the person made; kind is
  *                             harness, dir, model, effort, ultracode, account,
- *                             auto_switch or mcp.
+ *                             auto_switch or mcp - or folder, when the answer
+ *                             for the folder chosen moved the model.
  *
  * It hands back the node to put on the page and the calls that read and
  * write it.
@@ -513,8 +586,12 @@ export function settingsForm(options = {}) {
     el('label', { class: 'ds-field__label', for: id('DirInput'), text: 'Working directory' }), dirRow, dirPath, dirHint);
 
   const modelHost = el('div', { id: id('Model') });
+  // What the folder's own configuration of the agent says, when it has one:
+  // the model it starts on there and the agents it puts on models of their
+  // own.
+  const modelHint = el('small', { class: 'ds-field__hint so-break', id: id('ModelHint'), hidden: true });
   const modelField = el('div', { class: 'ds-field', id: id('ModelField') },
-    el('label', { class: 'ds-field__label', for: id('ModelInput'), text: 'Model' }), modelHost);
+    el('label', { class: 'ds-field__label', for: id('ModelInput'), text: 'Model' }), modelHost, modelHint);
 
   // The levels are a handful of words, so they are radio chips: every one in
   // view and one tap away, which is what a phone in a car needs.
@@ -581,6 +658,9 @@ export function settingsForm(options = {}) {
   const pick = {
     harness: '', model: '', effort: '', mode: DYNAMIC, workdir: '', ultracode: false,
     account: '', accountChosen: false, autoSwitch: false,
+    // The folder whose catalogue the model is picked from (loadFolder), and
+    // whether the person picked the model: until then it follows the folder.
+    folder: '', modelChosen: false,
     // The MCP switches the person moved, by name; the rest stay on their
     // default.
     mcp: {},
@@ -591,6 +671,10 @@ export function settingsForm(options = {}) {
   let mcpProblems = [];
   let mcpAsked = 0;
   let mcpTimer = 0;
+  let folderAsked = 0;
+  let folderTimer = 0;
+  // folderReady settles once the newest asking is answered.
+  let folderReady = Promise.resolve();
 
   // Ultracode starts off on every opening: it costs a great deal more of the
   // account, so it is something asked for each time rather than remembered.
@@ -662,15 +746,16 @@ export function settingsForm(options = {}) {
   // name from the list or an id the CLI takes.
   const picker = combobox({
     value: '',
-    items: () => modelItems(pick.harness),
+    items: () => modelItems(pick.harness, pick.folder),
     placeholder: 'Pick a model, or type its id',
-    display: (value) => modelName(pick.harness, value),
+    display: (value) => modelName(pick.harness, value, pick.folder),
     onChange: (value) => {
-      const named = modelByWords(pick.harness, value);
+      const named = modelByWords(pick.harness, value, pick.folder);
       pick.model = named ? named.id : value.trim();
+      pick.modelChosen = true;
       // A model brings its own starting effort - the one set for it in the
       // dashboard, or the CLI's.
-      const model = modelOf(pick.harness, pick.model);
+      const model = modelOf(pick.harness, pick.model, pick.folder);
       if (model) pick.effort = model.default_effort || '';
       renderEffort();
       onChange('model');
@@ -752,6 +837,56 @@ export function settingsForm(options = {}) {
     // The path is in the field right above: the hint says what it has to be.
     else dirHint.textContent = 'An absolute path on this machine.';
     askMcp();
+    askFolder();
+  }
+
+  // askFolder asks what the chosen folder makes of the agents: an
+  // opencode.json there can add models and name the one OpenCode starts on.
+  // A model the person has not picked follows the answer. The answer this
+  // device kept for the folder is used until the server's comes; offline it
+  // is the answer.
+  function askFolder() {
+    clearTimeout(folderTimer);
+    const asked = ++folderAsked;
+    const settle = (dir) => {
+      if (asked !== folderAsked) return;
+      pick.folder = dir;
+      if (!pick.harness) return;
+      const next = modelField.hidden ? '' : defaultModelFor(pick.harness, dir);
+      if (!pick.modelChosen && next !== pick.model) startModel();
+      else {
+        renderEffort();
+        renderModelHint();
+      }
+      onChange('folder');
+    };
+    const kept = pick.mode !== DYNAMIC && inFolder(pick.workdir).length ? pick.workdir : '';
+    settle(kept);
+    const run = () => loadFolder({ mode: pick.mode, workdir: pick.workdir }).then(settle, () => settle(kept));
+    folderReady = new Promise((resolve) => {
+      const go = () => run().then(resolve, resolve);
+      if (pick.mode === CUSTOM) folderTimer = setTimeout(go, MCP_TYPING_PAUSE);
+      else go();
+    });
+  }
+
+  // renderModelHint says what the folder's own configuration of the agent
+  // does to the model: the one it starts on there, and the agents - the
+  // subagents a task runs among them - it puts on models of their own.
+  function renderModelHint() {
+    const config = pick.harness ? folderConfig(pick.harness, pick.folder) : null;
+    modelHint.hidden = !config || modelField.hidden;
+    if (modelHint.hidden) {
+      modelHint.replaceChildren();
+      return;
+    }
+    const name = (model) => modelName(pick.harness, model, pick.folder);
+    const words = [];
+    if (config.model) words.push('starts on ' + name(config.model));
+    for (const one of config.agents || []) words.push('runs its ' + one.name + ' agent on ' + name(one.model));
+    const text = words.length ? 'This folder’s ' + label(pick.harness) + ' config ' + words.join('; ') + '.'
+      : 'This folder has a ' + label(pick.harness) + ' config of its own.';
+    modelHint.replaceChildren(text, infoTip(config.files || [], { label: 'Its config files' }));
   }
 
   // askMcp asks which MCP servers a chat in the chosen folder would have. A
@@ -800,7 +935,7 @@ export function settingsForm(options = {}) {
   // renderEffort follows the model: whether there is an effort to pick at all
   // is the model's own answer.
   function renderEffort() {
-    const efforts = effortsFor(pick.harness, pick.model);
+    const efforts = effortsFor(pick.harness, pick.model, pick.folder);
     effortField.hidden = efforts.length === 0 || modelField.hidden;
     if (!efforts.length) {
       pick.effort = '';
@@ -890,22 +1025,31 @@ export function settingsForm(options = {}) {
     for (const input of harnessField.querySelectorAll('input[name="' + harnessName + '"]')) {
       input.checked = input.value === harnessId;
     }
+    pick.modelChosen = false;
+    startModel();
+    renderDir();
+    renderAccount();
+  }
+
+  // startModel puts the model field on the model the chosen agent starts on
+  // in the chosen folder, with that model's starting effort.
+  function startModel() {
+    const harnessId = pick.harness;
     // Shell has nothing to run on, so the step is not there at all.
-    modelField.hidden = !needsModel(harnessId);
+    modelField.hidden = !needsModel(harnessId, pick.folder);
     // With no list to pick from, the field is for an id, or for nothing.
-    picker.input.placeholder = unlisted(harness(harnessId))
+    picker.input.placeholder = unlisted(harness(harnessId, pick.folder))
       ? 'Default, or a model’s id' : 'Pick a model, or type its id';
-    pick.model = modelField.hidden ? '' : defaultModelFor(harnessId);
+    pick.model = modelField.hidden ? '' : defaultModelFor(harnessId, pick.folder);
     picker.setValue(pick.model, false);
-    const model = modelOf(harnessId, pick.model);
+    const model = modelOf(harnessId, pick.model, pick.folder);
     // The dashboard's default effort goes with the model a chat starts on;
     // any other model brings its own.
-    const entry = harness(harnessId);
+    const entry = harness(harnessId, pick.folder);
     pick.effort = entry && entry.default_effort && pick.model === entry.default_model ? entry.default_effort
       : (model && model.default_effort ? model.default_effort : '');
     renderEffort();
-    renderDir();
-    renderAccount();
+    renderModelHint();
   }
 
   // mcpChoices is the switches that differ from their server's default, for
@@ -942,10 +1086,19 @@ export function settingsForm(options = {}) {
       };
     },
 
+    /**
+     * settled waits - at most a few seconds - for the answer about the folder
+     * chosen, which can move the model: a chat started at once still starts
+     * where the folder says.
+     */
+    settled() {
+      return Promise.race([folderReady, new Promise((resolve) => { setTimeout(resolve, FOLDER_PATIENCE); })]);
+    },
+
     /** missing is what still has to be chosen, as a sentence; '' when nothing. */
     missing() {
       if (!entries.length) return 'There is no program to start yet.';
-      if (!pick.harness || (!modelField.hidden && !pick.model && !unlisted(harness(pick.harness)))) return 'Pick a program and a model first.';
+      if (!pick.harness || (!modelField.hidden && !pick.model && !unlisted(harness(pick.harness, pick.folder)))) return 'Pick a program and a model first.';
       if (pick.mode === CUSTOM && !pick.workdir) return 'Type the directory this session should work in.';
       // A chat needs an account it can run on.
       const chosen = accountField.hidden ? null : accounts.byId(pick.account);
@@ -969,7 +1122,7 @@ export function settingsForm(options = {}) {
         parts.push('Socrates has not been able to ask this machine which programs are installed yet. '
           + 'Open this page once with a connection and the form will work offline after that.');
       }
-      const entry = harness(pick.harness);
+      const entry = harness(pick.harness, pick.folder);
       if (entry) {
         // The program's own error is detail (details() below); the line
         // says what it means here.
@@ -978,7 +1131,7 @@ export function settingsForm(options = {}) {
             ? entry.label + ' could not list its models. Type a model’s id, or leave it empty for its own default.'
             : entry.label + ' is not installed on this machine.');
         }
-        if (entry.installed && !entry.static && !defaultModelFor(entry.id) && !pick.model && !modelField.hidden && !unlisted(entry)) {
+        if (entry.installed && !entry.static && !defaultModelFor(entry.id, pick.folder) && !pick.model && !modelField.hidden && !unlisted(entry)) {
           parts.push('Pick a model - ' + entry.label + ' does not name a default.');
         }
       }
@@ -988,7 +1141,7 @@ export function settingsForm(options = {}) {
 
     /** details is the technical side of notes(): what goes behind its "i". */
     details() {
-      const entry = harness(pick.harness);
+      const entry = harness(pick.harness, pick.folder);
       return entry && entry.error ? [entry.error] : [];
     },
 
@@ -1094,7 +1247,12 @@ export async function openNewSessionSheet({ workdir = '' } = {}) {
       resolve(value);
       if (sheet.open) hideOverlay(sheet);
     };
-    start.addEventListener('click', () => {
+    start.addEventListener('click', async () => {
+      // A folder still being asked about can move the model.
+      start.setAttribute('aria-busy', 'true');
+      await form.settled();
+      start.removeAttribute('aria-busy');
+      if (settled) return;
       const missing = form.missing();
       if (missing) {
         toast(missing);

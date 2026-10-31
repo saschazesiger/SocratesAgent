@@ -1381,7 +1381,7 @@ function rowFacts(session, running = null, mcp = null) {
   const model = (running && running.model) || session.model;
   const effort = running && running.model ? running.effort : session.effort;
   if (model) {
-    const known = harnesses.modelOf(session.harness, model);
+    const known = harnesses.modelOf(session.harness, model, session.workdir);
     facts.push(['Model', (known ? known.label || known.id : model) + (effort ? ' · ' + harnesses.effortLabel(effort) : '')]);
   }
   const act = activityOf(session);

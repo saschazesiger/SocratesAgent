@@ -62,7 +62,8 @@ docs/design/AGENT-HOST.md §5 and §8): `/stream`, `/slow`, `/tool`, `/edit`,
 anything else is answered "you said: …". They answer `--version`; fakeclaude's
 models come from the catalogue, fakeopencode lists twenty-three with `opencode
 models --verbose` (the `fake` provider's three, one of which calls no tools, and
-twenty of a `router` provider, more than a menu holds), while fakecodex lists
+twenty of a `router` provider, more than a menu holds) and, in a folder with an
+`opencode.json`, its providers' models too (`opencode debug config` prints that file), while fakecodex lists
 none (`codex debug models` exits 2), so in the suite the sheet offers Codex with
 an empty model field: an id typed in, or nothing for the CLI's own default, with
 Admin and the sheet saying the listing failed (the program's own error behind
@@ -216,6 +217,7 @@ touch mode, except `options`, which measures the narrowest phone in use,
 | `createcodex` | one `codex app-server` per chat, its first thread the chat's conversation kept as one rollout, put to rest when the chat is filed as done and resumed on the same thread by the next message |
 | `own-codex` | what Codex does by itself: a goal the model sets is a line, the turn Codex then starts by itself opens with the goal it goes on toward and its end says what it used; an image it makes is drawn from its file with its prompt; a subagent whose turn failed ends failed, with why |
 | `accounts-agents` | an account reaches its agent's CLI: a second Claude Code account (with Ultracode) runs with its own `CLAUDE_CONFIG_DIR` and key, a Codex key is signed in by codex into the account's `CODEX_HOME`, an OpenCode key reaches its server; Info names the account, and an account is not deleted while a chat runs on it |
+| `folderopencode` | in a folder with an `opencode.json` of its own, OpenCode offers the folder's provider's models (named as the folder names the provider) and nothing of the config's keys reaches the page; the sheet starts on the folder's model once the folder is typed, ahead of the dashboard's default, and says what its config does, the general subagent's model too; the chat runs on that model and its composer names it; Start pressed at once in a folder nobody asked about yet waits for its answer; a chat made there without a model runs on it too; elsewhere nothing changes |
 | `createopencode` | one `opencode serve` per chat on a port and with a password of its own, spoken to over its authenticated API, its session kept and gone on with after the chat is filed as done; what a shell command of a step changed shown as Changes beside the edit diffs, a warning toast said once, a subagent's retry and error inside its task |
 | `opencode-models` | every model `opencode models --verbose` lists is in the sheet by its name, with its provider, context and price, and none that calls no tools; a search by provider and words finds one; a model's variants are its efforts; in a chat the model menu holds the few that matter and "All N models…" opens the search; the model, variant and agent chosen - a project's own primary agent included - are what the prompt reaches OpenCode with |
 | `rebootresume` | the server, every agent host and tmux gone at once mid-turn: the turn is closed as interrupted, the chat says once that it was resumed, the next message goes to Claude Code started again on its conversation, and the Shell is a working shell again when opened |

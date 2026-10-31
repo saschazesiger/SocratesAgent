@@ -1652,7 +1652,7 @@ deliberately **not** offered.
 | `shell` | none; no model step in the sheet | — |
 | `claude` | the existing static curated list in `internal/harness/claude/discover.go`, moved to `internal/harnesses/claude_models.go`. Keep `Catalog.Static = true`. | free |
 | `codex` | `codex debug models --json`, a plain subprocess with a 20 s timeout ✅ — **replaces** the current `codex app-server` JSON-RPC handshake, which is far heavier and exists only because the old adapter needed the app-server anyway. | one short subprocess |
-| `opencode` | `opencode models --verbose` once per OpenCode account, in its environment (names, providers, context, cost, variants as efforts; no tool-less or deprecated models), merged; the TUI's `model.json` gives recent, favourites and the default. Falls back to `--json`, then the plain listing [V]. 20 s timeout each. | one short subprocess per account |
+| `opencode` | `opencode models --verbose` once per OpenCode account, in its environment (names, providers, context, cost, variants as efforts; no tool-less or deprecated models), merged; the TUI's `model.json` gives recent, favourites and the default. Falls back to `--json`, then the plain listing [V]. 20 s timeout each. A folder with an OpenCode configuration of its own (`opencode.json[c]`, `.opencode/` in it or above it) is listed again, in that folder, with `opencode debug config` for the model it starts on there, its providers' names and its agents' models (`GET /api/harnesses/folder`). | one short subprocess per account; per configured folder, one more per account and one `debug config` |
 
 `internal/harness/{claude,codex,opencode}` — the protocol adapters — are deleted (§G). Only the
 model lists survive, as plain functions.
@@ -1929,6 +1929,8 @@ GET    /api/harnesses                      the catalogue — replaces BOTH /api/
                                            /api/models; the per-harness model lists are fields
                                            of its response, so handleModels is deleted
 POST   /api/harnesses/refresh
+GET    /api/harnesses/folder               ?workdir_mode=&workdir= or ?session=: the agents a
+                                           folder's own configuration changes, as whole entries
 GET    /api/state, POST /api/setup, /api/login, /api/logout       unchanged
 GET/PUT /api/settings, POST /api/settings/password                unchanged shape, new fields
 GET    /api/tmux                           {installed, path, version, ok, manager, log}

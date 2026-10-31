@@ -62,3 +62,25 @@ func (OpenCode) DiscoverModelsIn(ctx context.Context, bin string, envs [][]strin
 type AccountDiscoverer interface {
 	DiscoverModelsIn(ctx context.Context, bin string, envs [][]string) (Catalog, error)
 }
+
+// FolderFiles is the OpenCode configuration of dir and the folders above it;
+// see opencode_folder.go.
+func (OpenCode) FolderFiles(dir string) []string { return openCodeFolderFiles(dir) }
+
+// DiscoverModelsInFolder asks it in dir, as each of the accounts; see
+// opencode_folder.go.
+func (OpenCode) DiscoverModelsInFolder(ctx context.Context, bin, dir string, envs [][]string) (Catalog, error) {
+	return openCodeFolderModels(ctx, bin, dir, envs)
+}
+
+// FolderDiscoverer is a harness a folder can configure for itself: OpenCode,
+// whose project config can add providers, name the model it starts on and
+// put its subagents on models of their own. What it can be run on in such a
+// folder is only known by asking it there.
+type FolderDiscoverer interface {
+	// FolderFiles is the folder's own configuration files, cheaply found
+	// without running anything: none means the folder is like any other.
+	FolderFiles(dir string) []string
+	// DiscoverModelsInFolder is the catalogue in dir, with Folder set.
+	DiscoverModelsInFolder(ctx context.Context, bin, dir string, envs [][]string) (Catalog, error)
+}

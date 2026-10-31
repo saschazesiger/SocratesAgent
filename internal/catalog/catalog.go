@@ -83,6 +83,9 @@ type Agent struct {
 	Favorites []string `json:"favorites"`
 	Notes     string   `json:"notes"`
 	Error     string   `json:"error"`
+	// Folder is the folder's own configuration of the agent, on an entry
+	// discovered for one folder (Catalog.Folder) - never on the general one.
+	Folder *harnesses.FolderConfig `json:"folder,omitempty"`
 }
 
 // AllEfforts is every effort level any of this agent's models offers, in
@@ -178,6 +181,12 @@ type Catalog struct {
 
 	// updates is what WatchUpdates was told to watch; see there.
 	updates updatesWatch
+
+	// folders is the catalogue of an agent in a folder that configures it
+	// for itself, by agent and configuration files (folder.go), and
+	// folderSlots bounds the discoveries of them that run at once.
+	folders     map[string]*folderEntry
+	folderSlots chan struct{}
 }
 
 // updatesWatch is the little that is remembered about the updater's status
@@ -373,6 +382,7 @@ func (c *Catalog) Refresh(ctx context.Context) Snapshot {
 	c.mu.Lock()
 	c.snapshot = Snapshot{}
 	c.loaded = true
+	c.folders = nil
 	c.mu.Unlock()
 	if err := c.store.SetJSON(CacheKey, Snapshot{}); err != nil {
 		log.Printf("catalog: could not clear the cached agent list: %v", err)
@@ -566,6 +576,7 @@ func applyCatalog(a *Agent, cat harnesses.Catalog) {
 		a.Models = cat.Models
 	}
 	a.Recent, a.Favorites = cat.Recent, cat.Favorites
+	a.Folder = cat.Folder
 	// has_effort means "at least one of this agent's models offers one". It
 	// exists only so the picker can hide the effort control before a model has
 	// been chosen; once one is, that model's own list decides.

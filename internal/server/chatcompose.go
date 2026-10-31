@@ -12,6 +12,7 @@ package server
 //	POST /api/chats/{id}/attachments   multipart, one or more "file" parts  {"files":[attachment]}
 
 import (
+	"context"
 	"errors"
 	"io"
 	"mime"
@@ -23,6 +24,7 @@ import (
 
 	"github.com/saschazesiger/SocratesAgent/internal/agent"
 	"github.com/saschazesiger/SocratesAgent/internal/agenthost"
+	"github.com/saschazesiger/SocratesAgent/internal/catalog"
 	"github.com/saschazesiger/SocratesAgent/internal/config"
 	"github.com/saschazesiger/SocratesAgent/internal/harnesses"
 )
@@ -270,6 +272,27 @@ func chatModel(settings config.Settings, harness, model, effort string) (string,
 		effort = defaultEffort
 	}
 	return defaultModel, effort
+}
+
+// folderWait is how long a chat made without a model waits for its folder's
+// catalogue, when the folder configures the agent for itself and nobody
+// asked about it yet: a first discovery is a few runs of the CLI.
+const folderWait = 20 * time.Second
+
+// chatModelIn is chatModel for a chat in workdir. A folder that configures
+// the agent for itself (OpenCode's opencode.json) names the model a chat
+// there starts on, as it does for the CLI there, ahead of the dashboard's
+// default. Without an answer for the folder in time, the dashboard's default
+// it is.
+func (s *Server) chatModelIn(ctx context.Context, settings config.Settings, harness, workdir, model, effort string) (string, string) {
+	if strings.TrimSpace(model) == "" && s.catalog != nil && len(catalog.FolderFiles(harness, workdir)) > 0 {
+		ctx, cancel := context.WithTimeout(ctx, folderWait)
+		defer cancel()
+		if found, ok := s.catalog.FolderAgent(ctx, harness, workdir); ok && found.Folder != nil && found.Folder.Model != "" {
+			return found.Folder.Model, strings.TrimSpace(effort)
+		}
+	}
+	return chatModel(settings, harness, model, effort)
 }
 
 // checkChatHarness is the rule a chat's agent is held to: it has an adapter,

@@ -943,7 +943,7 @@ func (s *Server) handleCreateChat(w http.ResponseWriter, r *http.Request) {
 		mode = harnesses.WorkdirDynamic
 	}
 	label := chatLabel(harness)
-	model, effort := chatModel(settings, harness, body.Model, body.Effort)
+	model, effort := s.chatModelIn(r.Context(), settings, harness, workdir, body.Model, body.Effort)
 	// An option that is not set is not there at all (withOption): a nil map
 	// in an interface is not nil.
 	var mcp any

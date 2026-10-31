@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -163,7 +164,7 @@ func (s *Server) readyPreparedChats() {
 			log.Printf("prepared chats: %s: its folder could not be made (%v); it keeps %q", row.ID, err, row.Workdir)
 			workdir = row.Workdir
 		}
-		model, effort := chatModel(settings, row.Harness, row.Model, row.Effort)
+		model, effort := s.chatModelIn(context.Background(), settings, row.Harness, workdir, row.Model, row.Effort)
 		title := sessionTitle("", chatLabel(row.Harness), workdir, row.WorkdirMode)
 		err = s.store.ReadyPreparedChat(row.ID, workdir, model, effort, title)
 		switch {

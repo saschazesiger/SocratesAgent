@@ -487,8 +487,14 @@ export function mountComposer(host, ctx) {
 
   /* -------------------------------------------------------- the model */
 
+  // The chat's folder: one with a configuration of the agent of its own
+  // (OpenCode's opencode.json) has models of its own to offer, asked for
+  // once the composer is there and drawn again when they come.
+  const folder = () => ctx.session().workdir || '';
+  harnesses.loadFolder({ session: id }).then(() => { if (host.isConnected) paint(); }, () => { /* the kept answer, or none */ });
+
   function modelLabel(model) {
-    const found = harnesses.modelOf(ctx.session().harness, model);
+    const found = harnesses.modelOf(ctx.session().harness, model, folder());
     if (found) return found.label || found.id;
     const chat = ctx.chat();
     const info = chat && chat.info && Array.isArray(chat.info.models) ? chat.info.models : [];
@@ -499,7 +505,7 @@ export function mountComposer(host, ctx) {
   // canonical is a model as the list offers it: the journal holds what an
   // alias resolved to ("claude-sonnet-…" for "sonnet").
   function canonical(model) {
-    const found = harnesses.modelOf(ctx.session().harness, model);
+    const found = harnesses.modelOf(ctx.session().harness, model, folder());
     return found ? found.id : model;
   }
 
@@ -515,10 +521,10 @@ export function mountComposer(host, ctx) {
 
   function models() {
     const harness = ctx.session().harness;
-    const offered = harnesses.offered(harness);
+    const offered = harnesses.offered(harness, folder());
     if (offered.length) {
       return offered.map((m) => ({
-        id: m.id, label: m.label || m.id, efforts: harnesses.effortsFor(harness, m.id), default_effort: m.default_effort || '',
+        id: m.id, label: m.label || m.id, efforts: harnesses.effortsFor(harness, m.id, folder()), default_effort: m.default_effort || '',
       }));
     }
     const chat = ctx.chat();
@@ -546,7 +552,7 @@ export function mountComposer(host, ctx) {
 
   function shortList(list, nowId) {
     const harness = ctx.session().harness;
-    const ids = [nowId, ...harnesses.favorites(harness), ...harnesses.recent(harness)];
+    const ids = [nowId, ...harnesses.favorites(harness, folder()), ...harnesses.recent(harness, folder())];
     const out = [];
     for (const one of ids) {
       const m = list.find((entry) => entry.id === one);
@@ -619,7 +625,7 @@ export function mountComposer(host, ctx) {
       el('legend', { class: 'ds-field__label', text: 'Effort' }), effortRow);
     const picker = combobox({
       value: pick.model,
-      items: () => harnesses.modelItems(harness),
+      items: () => harnesses.modelItems(harness, folder()),
       placeholder: 'Search by name, provider or id',
       display: (value) => { const m = byId(value); return m ? m.label : harnesses.readableModel(value); },
       onChange: (value) => {

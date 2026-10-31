@@ -40,7 +40,7 @@ const version = "1.19.4"
 func main() {
 	args := os.Args[1:]
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: fakeopencode serve|db|--version")
+		fmt.Fprintln(os.Stderr, "usage: fakeopencode serve|db|models|debug|--version")
 		os.Exit(2)
 	}
 	switch args[0] {
@@ -53,11 +53,20 @@ func main() {
 		}
 		fmt.Println("1")
 	case "models":
-		// --verbose is the only form the catalogue asks for.
-		for _, m := range models {
+		// --verbose is the only form the catalogue asks for. The models of
+		// the working directory's opencode.json come after the fake's own.
+		for _, m := range append(models, folderModels()...) {
 			raw, _ := json.MarshalIndent(m, "", "  ")
 			fmt.Printf("%s/%s\n%s\n", m["providerID"], m["id"], raw)
 		}
+	case "debug":
+		// `debug config`: the working directory's opencode.json is all the
+		// configuration there is.
+		raw, err := os.ReadFile("opencode.json")
+		if err != nil {
+			raw = []byte("{}")
+		}
+		fmt.Println(string(raw))
 	case "serve":
 		if err := serve(args[1:]); err != nil {
 			fmt.Fprintln(os.Stderr, "Error:", err)
@@ -67,6 +76,33 @@ func main() {
 		fmt.Fprintln(os.Stderr, "unknown command", args[0])
 		os.Exit(2)
 	}
+}
+
+// folderModels is the models the providers of the working directory's
+// opencode.json define, as OpenCode lists a project's provider.
+func folderModels() []map[string]any {
+	raw, err := os.ReadFile("opencode.json")
+	if err != nil {
+		return nil
+	}
+	var doc struct {
+		Provider map[string]struct {
+			Models map[string]struct {
+				Name string `json:"name"`
+			} `json:"models"`
+		} `json:"provider"`
+	}
+	if json.Unmarshal(raw, &doc) != nil {
+		return nil
+	}
+	var out []map[string]any
+	for provider, p := range doc.Provider {
+		for id, m := range p.Models {
+			out = append(out, map[string]any{"id": id, "providerID": provider, "name": m.Name, "status": "active",
+				"cost": map[string]any{"input": 0, "output": 0}, "capabilities": map[string]any{"toolcall": true}})
+		}
+	}
+	return out
 }
 
 // ------------------------------------------------------------------ store

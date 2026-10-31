@@ -29,6 +29,13 @@ import (
 // recent, the first of which is OpenCode's own default when nothing else
 // names one), its favourites, and the variant it last ran each model at.
 func openCodeModels(ctx context.Context, bin string, envs [][]string) (Catalog, error) {
+	return openCodeModelsIn(ctx, bin, "", envs)
+}
+
+// openCodeModelsIn is openCodeModels asked in dir: OpenCode reads the
+// project config of the folder it runs in, whose providers add models. An
+// empty dir is this process's own working directory.
+func openCodeModelsIn(ctx context.Context, bin, dir string, envs [][]string) (Catalog, error) {
 	if bin == "" {
 		bin = "opencode"
 	}
@@ -45,7 +52,7 @@ func openCodeModels(ctx context.Context, bin string, envs [][]string) (Catalog, 
 		firstErr error
 	)
 	for _, env := range envs {
-		list, err := listOpenCodeModels(ctx, bin, env)
+		list, err := listOpenCodeModels(ctx, bin, dir, env)
 		if err != nil {
 			if firstErr == nil {
 				firstErr = err
@@ -64,10 +71,11 @@ func openCodeModels(ctx context.Context, bin string, envs [][]string) (Catalog, 
 	return mergeOpenCode(lists, states, names), nil
 }
 
-// listOpenCodeModels is one environment's listing.
-func listOpenCodeModels(ctx context.Context, bin string, env []string) ([]openCodeModel, error) {
+// listOpenCodeModels is one environment's listing, in dir.
+func listOpenCodeModels(ctx context.Context, bin, dir string, env []string) ([]openCodeModel, error) {
 	run := func(args ...string) ([]byte, error) {
 		cmd := exec.CommandContext(ctx, bin, args...)
+		cmd.Dir = dir
 		if env != nil {
 			cmd.Env = env
 		}
