@@ -44,7 +44,7 @@ import {
 } from './outcome.js';
 import {
   DS, icon, html, raw, morph, flipMorph, showOverlay, hideOverlay, overlayOpen, M,
-  faces, iconEl,
+  faces, iconEl, paced,
 } from './ui.js';
 import { mountBackupNotice } from './backup.js';
 import { setVoiceKey, voiceKey, onVoiceKey, keyMissing, setTtsKey } from './voice.js';
@@ -857,12 +857,19 @@ function chatShown() { return !!state.chat && !!state.chat.shownId(); }
 // sidebar, and Home and the question dialog when they are on screen. They are
 // drawn from the same state at the same moments, so a number on Home can
 // never be ahead of, or behind, the row it counts.
-function renderList() {
+//
+// renderListSoon is the same for news from the server: many sessions at work
+// send it faster than a slow phone can draw it, so it is drawn once for all
+// that came meanwhile, paced by how long drawing takes (ui.js paced()).
+// Whatever the person does is drawn at once.
+const listDraw = paced(() => {
   releaseHolds();
   drawList();
   drawLive();
   drawOutcomeTag();
-}
+});
+function renderList() { listDraw.now(); }
+function renderListSoon() { listDraw.soon(); }
 
 // drawOutcomeTag is the verdict on the open session's last turn, as a tag
 // beside where it is filed: "Checking…" while it is read, then its word. A
@@ -925,6 +932,8 @@ function drawList() {
   dom.blankIDE.hidden = !harnesses.ideAvailable();
   const host = dom.sessionList;
   const wanted = state.sessions;
+  const glide = glideList;
+  glideList = false;
   if (state.chat) state.chat.sessionsChanged(wanted);
   if (!wanted.length) {
     let empty = 'No sessions yet.';
@@ -956,8 +965,12 @@ function drawList() {
     markup.push(groupHtml({ key: FINISHED_KEY, label: FINISHED_LABEL, path: '', sessions: [], folders: finished },
       finished.map((folder) => folderHtml(folder))));
   }
-  flipMorph(host, html`${markup}`, { items: '.so-row, .so-folder__bar', live: true });
+  flipMorph(host, html`${markup}`, { items: '.so-row, .so-folder__bar', live: true, glide });
 }
+
+// glideList asks the next drawList for a glide even though no row comes, goes
+// or moves: a folder opened or shut moves everything under it (flipMorph).
+let glideList = false;
 
 // placeOf is the shelf a session is on, or '' for its folder's rows: what
 // is filed in the background or done by its status, else a chat nobody has
@@ -1077,6 +1090,7 @@ function saveFolders() {
 function toggleFolder(key) {
   if (closedFolders.has(key)) closedFolders.delete(key); else closedFolders.add(key);
   saveFolders();
+  glideList = true;
   renderList();
 }
 
@@ -1105,6 +1119,7 @@ function openFolder(session) {
   }
   if (!changed) return;
   saveFolders();
+  glideList = true;
   renderList();
 }
 
@@ -1459,7 +1474,7 @@ function mergeActivity(sessions, { full = false } = {}) {
     if (notifier) notifier.completed(id, next, prev);
     if (heldLine.has(id)) followAnnounce(id, next);
   }
-  if (changed) renderList();
+  if (changed) renderListSoon();
   for (const id of readHere) markRead(id);
 }
 
@@ -1648,6 +1663,10 @@ function applyList(rows, { rev, source = 'hello' } = {}) {
   else if (numbered) state.listRev = typeof state.listRev === 'number' ? Math.max(state.listRev, rev) : rev;
   if (source === 'fetch' && state.events) state.events.noteFresh();
   state.sessions = Array.isArray(rows) ? rows.filter(Boolean) : [];
+  // A list the stream sends after a change is news like any other frame and
+  // is drawn paced (renderListSoon); a hello and a list fetched for the
+  // person are drawn at once.
+  const paceIt = source === 'stream';
   // The list is the catch-up path for a sidebar nobody has a socket open
   // for: every view carries the activity of its own session. While the
   // stream is live it carries every committed change as a frame of its own,
@@ -1664,7 +1683,7 @@ function applyList(rows, { rev, source = 'hello' } = {}) {
   state.reachable = true;
   if (state.current) {
     const fresh = sessionOf(state.current.id);
-    if (fresh) applySession(fresh);
+    if (fresh) applySession(fresh, { soon: paceIt });
     else if (state.chat && state.chat.shownId() === state.current.id) {
       // A chat deleted on another device. A terminal finds out through its
       // socket; a chat has none, and its stream would go on asking for one.
@@ -1674,7 +1693,7 @@ function applyList(rows, { rev, source = 'hello' } = {}) {
   }
   // What is known about a session that is gone goes with it.
   for (const id of [...state.digests.keys()]) if (!sessionOf(id)) state.digests.delete(id);
-  renderList();
+  if (paceIt) renderListSoon(); else renderList();
   // The tab was asked for a session the list could not yet prove was there
   // - a notification opened while the network was down - and this is the
   // first list that can. Home leaves `wanted` empty, so nothing is attached
@@ -1735,7 +1754,7 @@ function replaceDigests(entries, rows) {
 
 function digestFrame(id, digest) {
   if (digest) state.digests.set(id, carriedOver(state.digests.get(id), digest)); else state.digests.delete(id);
-  drawLive();
+  renderListSoon();
 }
 
 // outcomeFrame is a verdict that changed, or went (null). Every outcome frame
@@ -1753,7 +1772,7 @@ function outcomeFrame(id, outcome) {
     releaseAnnounce(id, outcome);
     if (notifier) notifier.judged(id, outcome);
   }
-  renderList();
+  renderListSoon();
 }
 
 // newsFrame is news about a session in a notification's words, which the
@@ -2810,7 +2829,7 @@ function hideHome() {
 }
 
 // applySession draws everything about a session that is not the pane itself.
-function applySession(session) {
+function applySession(session, { soon = false } = {}) {
   state.current = session;
   setTitleText(session.title);
   drawTitling(session.id);
@@ -2823,7 +2842,7 @@ function applySession(session) {
   if (isChat(session) && state.chat) state.chat.update(session);
 
   drawOverlay(session);
-  renderList();
+  if (soon) renderListSoon(); else renderList();
 }
 
 // drawOverlay is §E.7's table. Everything it can say is a state the session is

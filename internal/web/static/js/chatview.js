@@ -240,6 +240,9 @@ export function mountChat(ctx) {
   // what they were.
   let peersRev = 0;
   let peersSeen = '';
+  // The last row update() was handed, as JSON, and whose it was.
+  let rowSeen = '';
+  let rowSeenId = '';
   // A Send now on its way: the turn is being stopped.
   let interrupting = false;
   // The chat a "Continue with" is being sent for, until the server answers.
@@ -1757,9 +1760,10 @@ export function mountChat(ctx) {
     /** show puts a chat on the stage. */
     show(next) {
       if (jobsWanted && jobsWanted !== next.id) jobsWanted = '';
-      if (session && session.id === next.id && (stream || loadingId === next.id)) { session = next; schedule(); return; }
+      if (session && session.id === next.id && (stream || loadingId === next.id)) { session = next; rowSeen = ''; schedule(); return; }
       stop();
       session = next;
+      rowSeen = '';
       const inMemory = chats.get(next.id);
       chat = inMemory || newChat();
       chats.delete(next.id);
@@ -1825,9 +1829,19 @@ export function mountChat(ctx) {
       liftToasts();
     },
 
-    /** update takes a newer row of the chat on screen. */
+    /**
+     * update takes a newer row of the chat on screen. Every list the server
+     * sends brings one, whichever session it changed for; a row that says
+     * what the last one said draws nothing.
+     */
     update(next) {
-      if (session && session.id === next.id) { session = next; schedule(); }
+      if (!session || session.id !== next.id) return;
+      const seen = JSON.stringify(next);
+      const same = seen === rowSeen && session.id === rowSeenId;
+      session = next;
+      rowSeen = seen;
+      rowSeenId = next.id;
+      if (!same) schedule();
     },
 
     hide() {
@@ -1847,9 +1861,10 @@ export function mountChat(ctx) {
      * its stream has caught up. Another chat shown first forgets it.
      */
     // sessionsChanged is the sidebar's list as it is now: a message between
-    // the agents is drawn again when a chat it names is renamed or gone.
+    // the agents is drawn again when a chat it names is renamed or gone. Not
+    // when the list only reorders, as it does at every turn of every chat.
     sessionsChanged(list) {
-      const seen = (list || []).map((one) => one.id + '\u0000' + (one.title || '') + '\u0000' + (one.harness || '')).join('\n');
+      const seen = (list || []).map((one) => one.id + '\u0000' + (one.title || '') + '\u0000' + (one.harness || '')).sort().join('\n');
       if (seen === peersSeen) return;
       peersSeen = seen;
       peersRev += 1;

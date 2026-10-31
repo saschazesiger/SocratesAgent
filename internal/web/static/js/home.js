@@ -18,7 +18,7 @@
 // the questions, start a new one - is the page's.
 
 import { api, setClass } from './api.js';
-import { M, html, raw, icon, morph, flipMorph } from './ui.js';
+import { M, html, raw, icon, morph, flipMorph, ms } from './ui.js';
 import { agentMarkHtml } from './logos.js';
 import { isTool } from './harnesses.js';
 import { foldersOf, folderKeyOf, momentOf, notStarted as unstarted } from './folders.js';
@@ -440,6 +440,7 @@ export function mountHome(ctx) {
   // glides at once, one the data reordered waits while it is pointed at.
   function render({ live = true } = {}) {
     if (!built || host.hidden) return;
+    const started = performance.now();
     // The connection line is this device's own reckoning (when it last heard
     // anything); every other age on the page is a server timestamp, and is
     // measured on the server's clock - a phone a few minutes fast would
@@ -541,14 +542,35 @@ export function mountHome(ctx) {
     const cards = shown.map((session) => cardHtml(session, cardsBy.get(session.id) || [], labels, now));
     flipMorph(built.list, html`${cards}`, { items: '.so-home__card', live });
     drawEmpty(sessions, shown);
+    renderCost = performance.now() - started;
   }
+
+  // How long the last render took. A device that needs more than a frame
+  // for it has its figures land at once (figure): a count measures its
+  // figure every time it starts, which is what such a device has no time for.
+  let renderCost = 0;
+  const FRAME = 16;
 
   // A figure counts from what it shows to what it is now (DS.motion.countUp);
   // the number itself is kept in data-value beside it, which is what is read
-  // back - a figure halfway through its count is not the count.
+  // back - a figure halfway through its count is not the count. A figure that
+  // changes again while it is still counting shows its number at once: with
+  // many sessions at work the counts change faster than they can be watched,
+  // and every count measures its figure again. So does every figure on a
+  // device too slow to draw Home within a frame.
   function figure(node, value) {
-    M.countUp(node, value);
+    if (countedTo.get(node) === value) return;
+    countedTo.set(node, value);
+    const now = performance.now();
+    if (countFor < 0) countFor = ms('--ds-dur-glide');
+    const recent = now - (countedAt.get(node) ?? -Infinity) < countFor;
+    const still = recent || renderCost > FRAME;
+    if (!still) countedAt.set(node, now);
+    M.countUp(node, value, still ? { duration: 0 } : undefined);
   }
+  const countedTo = new WeakMap();
+  const countedAt = new WeakMap();
+  let countFor = -1;
 
   function setText(node, text) {
     if (node.textContent !== text) node.textContent = text;

@@ -168,6 +168,8 @@ export function html(strings, ...values) {
 
 /** morph patches `target` to the markup, touching only what changed. */
 export function morph(target, markup, options) {
+  // What a list was drawn from by flipMorph is not what it shows any more.
+  drawnFrom.delete(target);
   return DS.dom.morphHtml(target, String(markup), options);
 }
 
@@ -175,10 +177,175 @@ export function morph(target, markup, options) {
  * flipMorph is morph() for a keyed list whose items come, go and reorder:
  * they glide to their places. `live` for data that changes by itself (it waits
  * while the list is pointed at), not for the person's own action.
+ *
+ * Live data is drawn far more often than it moves, and a FLIP measures every
+ * item before and after, which on a slow phone with many sessions is most of
+ * what the page does. So a live redraw of the markup the list already shows
+ * does nothing at all, and one where no keyed element comes, goes or moves is
+ * a plain morph: there is nothing to glide. A device too slow to glide a live
+ * list within a frame (slowGlide) has its reorders land where they go. `glide`
+ * asks for the FLIP all the same, for a person's own change that moves items
+ * without reordering them (a folder shut). A FLIP that holds a reorder until
+ * the pointer leaves draws the newest markup when it lets go, never the
+ * markup it was called with.
  */
-export function flipMorph(container, markup, { items, live = false } = {}) {
-  return M.flip(container, (o) => DS.dom.morphHtml(container, String(markup), o), { items, live });
+export function flipMorph(container, markup, { items, live = false, glide = !live } = {}) {
+  const text = String(markup);
+  const last = drawnFrom.get(container);
+  if (!glide && last === text) return Promise.resolve();
+  drawnFrom.set(container, text);
+  if (!glide && keysStay(container, text, items)) {
+    DS.dom.morphHtml(container, text);
+    return Promise.resolve();
+  }
+  const slow = live && slowGlide(container);
+  if (slow && !glide) {
+    // A list under the pointer still keeps its order until it is left, as
+    // DS's own hold does, but without measuring anything.
+    if (pointedAt(container, items)) {
+      DS.dom.morphHtml(container, text, { holdOrder: true });
+      holdOrder(container, items);
+    } else {
+      DS.dom.morphHtml(container, text);
+    }
+    return Promise.resolve();
+  }
+  const started = performance.now();
+  const done = M.flip(container, (o) => DS.dom.morphHtml(container, drawnFrom.get(container), o),
+    { items, live, ...(live && !glide ? { max: slow ? 0 : LIVE_MOVES } : {}) });
+  if (live && !slow) glideTook(container, performance.now() - started);
+  return done;
 }
+
+// How many items of a live list glide at once. Each one that glides is
+// measured and lifted on its own, which a slow phone pays for per item; a
+// change that moves more of them than this is drawn where it lands, as DS
+// does above its own limit. A person's own change keeps DS's limit.
+const LIVE_MOVES = 12;
+
+// What a live list's glide may cost before the device is taken for too slow
+// to glide it: a frame at 60 Hz. Past it, the list's reorders land without
+// motion, and every GLIDE_RETRY-th of them glides again to see whether the
+// device has caught up (a slow moment, not a slow phone).
+const GLIDE_BUDGET = 16;
+const GLIDE_RETRY = 20;
+const glideCosts = new WeakMap();
+
+function glideTook(container, cost) {
+  const held = glideCosts.get(container);
+  glideCosts.set(container, { cost: held ? (held.cost + cost) / 2 : cost, skipped: 0 });
+}
+
+function slowGlide(container) {
+  const held = glideCosts.get(container);
+  if (!held || held.cost <= GLIDE_BUDGET) return false;
+  held.skipped += 1;
+  if (held.skipped < GLIDE_RETRY) return true;
+  held.skipped = 0;
+  return false;
+}
+
+// holdOrder draws the newest markup of a list whose order was held for the
+// pointer once the pointer or the focus has left it, or after as long as DS
+// holds a live reorder at most (flip's `hold`).
+const LIVE_HOLD = 2000;
+const holding = new WeakMap();
+
+function holdOrder(container, items) {
+  if (holding.has(container)) return;
+  const release = () => {
+    const hold = holding.get(container);
+    if (!hold) return;
+    clearTimeout(hold.timer);
+    holding.delete(container);
+    container.removeEventListener('pointerleave', hold.leave);
+    container.removeEventListener('focusout', hold.leave);
+    DS.dom.morphHtml(container, drawnFrom.get(container));
+  };
+  // Focus has left by the next task, and so has :hover.
+  const leave = () => setTimeout(() => { if (!pointedAt(container, hold.items)) release(); }, 0);
+  const hold = { timer: setTimeout(release, LIVE_HOLD), leave, items };
+  holding.set(container, hold);
+  container.addEventListener('pointerleave', leave);
+  container.addEventListener('focusout', leave);
+}
+
+// pointedAt is DS's own reason to hold a live reorder: a mouse or a pen over
+// the list, or the focus in one of its items. A finger never holds: :hover
+// stays where a finger tapped, so the kind of the last pointer is asked.
+function pointedAt(container, items) {
+  if (!pointerKnown) {
+    pointerKnown = true;
+    document.addEventListener('pointerover', (event) => { lastPointer = event.pointerType || 'mouse'; }, { capture: true, passive: true });
+  }
+  const active = document.activeElement;
+  const item = active && container.contains(active) && active !== container
+    ? (items ? active.closest(items) : active) : null;
+  if (item && container.contains(item)) return true;
+  return lastPointer !== 'touch' && window.matchMedia('(hover: hover)').matches && container.matches(':hover');
+}
+let pointerKnown = false;
+let lastPointer = '';
+
+// What each flipMorph list was last drawn from (flipMorph).
+const drawnFrom = new WeakMap();
+
+const KEY_ATTR = /\sdata-ds-key="([^"]*)"/g;
+
+// keysStay says whether drawing `text` into `container` leaves every keyed
+// element where it is: the same keys in the same order, and every item of the
+// list inside one of them, so that nothing unkeyed can come or go unseen.
+// The markup's keys are compared as html`` wrote them, escaped.
+function keysStay(container, text, items) {
+  const kept = container.querySelectorAll('[data-ds-key]');
+  const next = Array.from(text.matchAll(KEY_ATTR), (match) => match[1]);
+  if (kept.length !== next.length) return false;
+  for (let i = 0; i < next.length; i += 1) {
+    if (esc(kept[i].getAttribute('data-ds-key')) !== next[i]) return false;
+  }
+  for (const item of items ? container.querySelectorAll(items) : container.children) {
+    const keyed = item.closest('[data-ds-key]');
+    if (!keyed || !container.contains(keyed) || keyed === container) return false;
+  }
+  return true;
+}
+
+/**
+ * paced is `draw` for data that arrives faster than a slow device can draw
+ * it. `now()` draws at once - the person's own action, which is answered
+ * without waiting. `soon()` draws once for any number of calls, after a rest
+ * twice as long as the last drawing took: a fast machine draws at once all
+ * the same, and a slow one with many sessions draws a little later and keeps
+ * two thirds of its time for the person, rather than drawing every frame of
+ * a busy stream one after the other and answering nothing in between. A
+ * `now()` meanwhile takes the place of the pending `soon()`.
+ */
+export function paced(draw) {
+  let timer = 0;
+  let cost = 0;
+  let doneAt = 0;
+  const now = () => {
+    clearTimeout(timer);
+    timer = 0;
+    const started = performance.now();
+    try {
+      draw();
+    } finally {
+      doneAt = performance.now();
+      cost = doneAt - started;
+    }
+  };
+  const soon = () => {
+    if (timer) return;
+    const rest = Math.min(PACE_MAX, cost * 2) - (performance.now() - doneAt);
+    timer = setTimeout(now, Math.max(0, rest));
+  };
+  return { now, soon };
+}
+
+// The longest rest paced() takes, however long a drawing took: news is never
+// held back by more than this.
+const PACE_MAX = 1000;
 
 /** ms is a DS motion token in milliseconds, as this element computes it. */
 export function ms(token, el = document.documentElement) {

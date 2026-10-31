@@ -109,6 +109,20 @@ html.ds-theme body {
   animation: ds-spin var(--ds-loop-spin) linear infinite;
 }
 
+/* A turning ring is a layer of its own, and Chromium cannot tell where a
+   rotation will reach, so it takes everything painted after it for
+   overlapping and makes a layer of each: twenty busy sessions were two
+   hundred layers, put together again every frame, which a slow phone could
+   not keep up with. Clipped to the mark - with room for the ring and the
+   badge, which stand out of it by the same space - it overlaps nothing.
+   Where the margin is not known, nothing is clipped. */
+@supports (overflow-clip-margin: 1px) {
+  .so-mark[data-ring="busy"] {
+    contain: paint;
+    overflow-clip-margin: var(--ds-space-1);
+  }
+}
+
 /* A stale page says so by stopping the one loop that claims "working now";
    DS spinners elsewhere keep turning (§1.2 Frame Q11). */
 body[data-stale] .so-mark[data-ring="busy"]::after {

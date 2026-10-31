@@ -56,6 +56,12 @@ unchanged in 2.1.0), filled in for Socrates:
   template, never `innerHTML`; key list rows with `data-ds-key`. Reorders go through `flip()` or
   `DS.motion.sortable()`, figures through `DS.motion.countUp`, timing from `ms()` / `DS.motion.motionDuration`,
   never millisecond literals.
+- **Live data stays cheap on a slow device with many sessions.** A live `flipMorph()` does nothing for the markup
+  it already shows and only morphs when no keyed element comes, goes or moves. At most 12 items glide at once, and
+  a list whose glide costs more than a frame lands its reorders without motion. It still holds its order under the
+  pointer for up to DS's 2 s. News from the server is drawn through `paced()`, and Home's figures land at once
+  when they change mid-count or Home takes more than a frame to draw. These budgets (a frame, the 2 s hold, the
+  1 s longest rest) are measured cost, not motion, so they are numbers in `ui.js` and `home.js`.
 - **Icons only from `DS.icons`**, through `icon()` / `iconEl()` (`ui.js`, which read `GLYPH`, the meaning-to-glyph
   map) and in markup `data-icon` with a DS glyph's name (`DS.icons.fill()`; `data-icon-place="start"` keeps the
   element's content after the glyph). Nothing is drawn by the project. Brand marks of the agents stay in `logos.js` and `.so-agent`.

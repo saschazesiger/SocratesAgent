@@ -11544,6 +11544,9 @@ async function chatstream() {
     ok(row.kind === 'chat' && stage.chat && stage.term, 'a chat is a session of kind chat, drawn by the page where a terminal would stand',
       JSON.stringify({ kind: row.kind, ...stage }));
     ok(stage.focus, 'and the cursor is in its composer', String(stage.focus));
+    // It is drawn once the chat's stream has caught up, a frame after the
+    // composer: waited for, not read the moment the composer is there.
+    await page.waitForSelector('#chat .so-chat__empty', { timeout: 10000 }).catch(() => {});
     const empty = await page.$eval('#chat .so-chat__empty', (n) => n.innerText.replace(/\s+/g, ' ').trim()).catch(() => '');
     ok(/What should Scripted agent do\?/.test(empty), 'an empty chat says what it is for', empty);
 
@@ -14853,6 +14856,75 @@ async function chataccount() {
 
 // -------------------------------------------------------------------- run
 
+// many-chats: a slow device with many chats at work stays responsive. Sixty
+// chats take turns four times a second, on a CPU slowed down six times, and
+// the page is measured from inside: how late a timer that should fire every
+// 50 ms fires (the delay a tap would have), on Home and with a chat open. Before
+// the list was drawn paced and the glides were dropped on a slow device, every
+// frame of that stream was a whole-list FLIP, and the page lagged ten seconds.
+async function manychats() {
+  const s = await chatServer();
+  const { page } = s;
+  let stop = false;
+  let load = null;
+  try {
+    const ids = [];
+    for (let i = 0; i < 60; i += 1) ids.push(await makeChat(s, 'fake'));
+    for (const id of ids) await tellChat(s, id, 'hello');
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await page.waitForFunction((n) => document.querySelectorAll('#sessionList .so-row').length === n, ids.length, { timeout: 30000 });
+    // A row kept through every reorder is the same element at the end.
+    await page.evaluate((id) => { document.querySelector('#sessionList .so-row[data-id="' + id + '"]').__kept = true; }, ids[5]);
+    const cdp = await s.context.newCDPSession(page);
+    await cdp.send('Emulation.setCPUThrottlingRate', { rate: 6 });
+    let n = 0;
+    load = (async () => {
+      while (!stop) {
+        n += 1;
+        tellChat(s, ids[(n * 7) % ids.length], '/stream 15 100').catch(() => {});
+        await wait(250);
+      }
+    })();
+    const lagFor = async (ms) => {
+      await page.evaluate(() => {
+        window.__lag = [];
+        let last = performance.now();
+        window.__lagTimer = setInterval(() => { const now = performance.now(); window.__lag.push(now - last - 50); last = now; }, 50);
+      });
+      await wait(ms);
+      return page.evaluate(() => {
+        clearInterval(window.__lagTimer);
+        const lag = window.__lag.sort((a, b) => a - b);
+        return { samples: lag.length, p50: Math.round(lag[Math.floor(lag.length / 2)]), p95: Math.round(lag[Math.floor(lag.length * 0.95)]) };
+      });
+    };
+    await wait(2000);
+    const home = await lagFor(10000);
+    ok(home.samples > 50 && home.p95 < 1000, 'Home with sixty chats at work on a slow CPU answers within a second, mostly at once', JSON.stringify(home));
+    await page.evaluate((id) => { location.hash = id; }, ids[3]);
+    await chatUp(page, 60000);
+    await wait(2000);
+    const chat = await lagFor(10000);
+    ok(chat.samples > 50 && chat.p95 < 1000, 'and so does a chat open beside them', JSON.stringify(chat));
+    stop = true;
+    await load;
+    await cdp.send('Emulation.setCPUThrottlingRate', { rate: 1 });
+    // What the stream said is all drawn in the end: every row there, the
+    // kept one the same element, and the list in the order of the data.
+    const settled = await page.waitForFunction((want) => {
+      const rows = [...document.querySelectorAll('#sessionList .so-row')];
+      const kept = document.querySelector('#sessionList .so-row[data-id="' + want + '"]');
+      return rows.length === 60 && !!kept && kept.__kept === true && !document.querySelector('#sessionList .so-mark[data-ring="busy"]');
+    }, ids[5], { timeout: 30000 }).then(() => true, () => false);
+    ok(settled, 'once the turns are over every row is drawn idle, and a row kept its element through every reorder', String(settled));
+    ok(unexpected(s.errors).length === 0, 'no console errors', unexpected(s.errors).join(' | ') || '0');
+  } finally {
+    stop = true;
+    if (load) await load.catch(() => {});
+    await s.stop();
+  }
+}
+
 const ALL = [
   ['createshell', 'the sheet makes a Shell session and the shell answers', createshell],
   ['typeandsee', 'keystrokes reach the pane and the journal agrees with the screen', typeandsee],
@@ -14949,6 +15021,7 @@ const ALL = [
   ['restore', 'a machine that is gone, and a new one restored from its backup on the setup page', restore],
   ['home-landing', 'every start of the page is Home, and the button and the address go back to it', homelanding],
   ['home-live', 'the numbers on Home move by themselves, with no terminal attached', homelive],
+  ['many-chats', 'sixty chats at work on a slow CPU: Home and an open chat still answer at once', manychats],
   ['outcome', 'a turn\'s end is judged: the hourglass while it is read, then the verdict everywhere', outcome],
   ['home-question', 'a chat\u2019s question answered with a tap, and the choice at the agent', homequestion],
   ['home-own-answer', 'an answer of one\u2019s own, typed into the question dialog', homeownanswer],
