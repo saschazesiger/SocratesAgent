@@ -198,8 +198,9 @@ func (t *chatToolServer) handle(w http.ResponseWriter, r *http.Request) {
 	answer(http.StatusOK, res.Text, res.Error)
 }
 
-// peers is the other chats of a chat's repository that are at work (awake),
-// newest first, and the repository.
+// peers is the other chats of a chat's repository that the others can reach
+// (awake), newest first, and the repository. The note on the person's
+// messages names only the active ones among them (activePeer).
 func (t *chatToolServer) peers(row *store.Session) ([]*store.Session, string, error) {
 	scope := chatScope(row.Workdir)
 	rows, err := t.srv.store.ListSessions()
@@ -277,13 +278,11 @@ func (t *chatToolServer) list(row *store.Session) chattools.Response {
 	}
 	b.WriteString(":\n")
 	for _, other := range list {
-		state := "waiting"
+		state := "idle"
 		model := other.Model
 		if p, err := t.srv.chats.peer(other.ID); err == nil {
 			sum := p.summary()
-			if sum.TurnRunning {
-				state = "working"
-			}
+			state = peerState(sum)
 			if sum.Model != "" {
 				model = sum.Model
 			}
@@ -528,7 +527,7 @@ func receivedNote(from *store.Session) string {
 
 // messageNote is what a chat's agent is told with a message besides its
 // text: the note the message came with (a message from another chat), else,
-// while other chats work in the same repository, which ones they are - an
+// while other chats are active in the same repository, which ones they are - an
 // agent that knows they are there thinks of them before it touches what
 // may be theirs. A shell line or a slash command goes without one.
 func (s *Server) messageNote(chatID string, m *chatMessageBody) string {
@@ -545,21 +544,73 @@ func (s *Server) messageNote(chatID string, m *chatMessageBody) string {
 	return s.chats.tools.peersNote(row)
 }
 
-// peersNote names the other chats at work in a chat's repository, "" when
-// there are none.
+// chatActiveWithin is how long after its last event a chat filed In
+// progress counts as active while its agent is not at work (activePeer): a
+// pause in a working day - lunch, a meeting - keeps it in the note, a chat
+// last touched yesterday is not.
+const chatActiveWithin = 12 * time.Hour
+
+// activePeer says whether a chat the others can reach (awake) is active, for
+// the note on the person's messages (peersNote): its agent is at work right
+// now - a turn, or a subagent left running - or the chat is filed In
+// progress and has a background task running, or something happened in it
+// within chatActiveWithin. A chat filed Review pending or Pending is put
+// aside by its person, so only its agent at work brings it in (and work
+// files it back in progress anyway); one filed done or in the background,
+// or nobody has sent anything yet, never is. list_chats keeps listing every
+// chat that is awake: the note is who is active, the tool who is there.
+func activePeer(row *store.Session, sum agent.Summary, now time.Time) bool {
+	if row.Status == store.StatusDone || row.Status == store.StatusBackground || !sum.Asked {
+		return false
+	}
+	if sum.TurnRunning || sum.Activity == agent.ActivityBusy {
+		return true
+	}
+	if row.Status != store.StatusInProgress && row.Status != store.StatusUnsorted {
+		return false
+	}
+	return sum.Activity == agent.ActivityTasks || now.Sub(time.UnixMilli(sum.LastAt)) < chatActiveWithin
+}
+
+// peerState is what a chat's agent is doing, in the words list_chats and
+// peersNote give the other agents.
+func peerState(sum agent.Summary) string {
+	switch {
+	case sum.Activity == agent.ActivityWaiting:
+		return "waiting for its person's answer"
+	case sum.TurnRunning || sum.Activity == agent.ActivityBusy:
+		return "working"
+	case sum.Activity == agent.ActivityTasks:
+		return "idle, with background tasks running"
+	}
+	return "idle"
+}
+
+// peersNote names the other chats active in a chat's repository
+// (activePeer), "" when there are none.
 func (t *chatToolServer) peersNote(row *store.Session) string {
 	list, _, err := t.peers(row)
-	if err != nil || len(list) == 0 {
+	if err != nil {
 		return ""
 	}
+	now := time.Now()
 	var b strings.Builder
-	b.WriteString("Other chats work in this repository right now, each with an agent of its own:\n")
 	for _, other := range list {
-		state := "waiting"
-		if p, err := t.srv.chats.peer(other.ID); err == nil && p.summary().TurnRunning {
-			state = "working"
+		p, err := t.srv.chats.peer(other.ID)
+		if err != nil {
+			continue
 		}
-		fmt.Fprintf(&b, "- %s, id %s, %s\n", chatName(other), other.ID, state)
+		sum := p.summary()
+		if !activePeer(other, sum, now) {
+			continue
+		}
+		if b.Len() == 0 {
+			b.WriteString("Other chats are active in this repository, each with an agent of its own:\n")
+		}
+		fmt.Fprintf(&b, "- %s, id %s, %s\n", chatName(other), other.ID, peerState(sum))
+	}
+	if b.Len() == 0 {
+		return ""
 	}
 	b.WriteString("Changes in the working tree that you did not make may be theirs: before you discard, overwrite or " +
 		"commit them, ask that chat (" + chattools.Send + "). When you change something one of them relies on - a " +

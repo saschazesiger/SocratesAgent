@@ -23,7 +23,9 @@ import (
 // chats of the repository and no chat outside it, send_to_chat puts a
 // message into one - marked as another chat's, and its agent answers it -
 // and read_chat gives back what was said there. A chat in the background,
-// done or not started yet is not there for them at all.
+// done or not started yet is not there for them at all; one put aside
+// (Review pending) is, but the note on the person's messages, which names
+// only the active chats, leaves it out.
 func TestTheChatsOfARepositoryReachEachOther(t *testing.T) {
 	c := newChatEnv(t, time.Hour)
 	next := c.srv.Settings()
@@ -51,11 +53,15 @@ func TestTheChatsOfARepositoryReachEachOther(t *testing.T) {
 	other := create("Other", elsewhere)
 	draft := create("Draft", filepath.Join(repo, "web"))
 	service := create("Service", repo)
-	for _, id := range []string{web, service} {
+	aside := create("Aside", filepath.Join(repo, "web"))
+	for _, id := range []string{web, service, aside} {
 		c.send(t, id, "start-"+id, "hello")
 		c.waitJournal(t, id, 15*time.Second, "the first turn", turnsEnded(1))
 	}
 	if err := c.srv.store.SetSessionStatus(service, store.StatusBackground); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.srv.store.SetSessionStatus(aside, store.StatusReview); err != nil {
 		t.Fatal(err)
 	}
 
@@ -75,7 +81,8 @@ func TestTheChatsOfARepositoryReachEachOther(t *testing.T) {
 	if res.Error || !strings.Contains(res.Text, "id "+web+": “Web” (Scripted agent)") || strings.Contains(res.Text, other) ||
 		!strings.Contains(res.Text, "in the same working tree as this chat, on the branch login-fix:") ||
 		strings.Contains(res.Text, api) || !strings.Contains(res.Text, "folder web") || !strings.Contains(res.Text, "("+repo+")") ||
-		!strings.Contains(res.Text, "1 other chat(s)") || strings.Contains(res.Text, draft) || strings.Contains(res.Text, service) {
+		!strings.Contains(res.Text, "2 other chat(s)") || strings.Contains(res.Text, draft) || strings.Contains(res.Text, service) ||
+		!strings.Contains(res.Text, "id "+aside+": “Aside” (Scripted agent)") || !strings.Contains(res.Text, ", idle, folder web") {
 		t.Fatalf("list: %+v", res)
 	}
 	for _, id := range []string{draft, service} {
@@ -177,8 +184,8 @@ func TestTheChatsOfARepositoryReachEachOther(t *testing.T) {
 		t.Fatalf("a send while a question is open: %+v", res)
 	}
 
-	// A message of the person's own tells the agent which chats work beside
-	// it; a shell line goes as it is.
+	// A message of the person's own tells the agent which chats are active
+	// beside it, and what each is doing; a shell line goes as it is.
 	self, err := c.srv.chats.peer(api)
 	if err != nil {
 		t.Fatal(err)
@@ -204,8 +211,9 @@ func TestTheChatsOfARepositoryReachEachOther(t *testing.T) {
 		}
 		switch ev.Text {
 		case "go on":
-			if ev.Sender != nil || !strings.Contains(ev.Note, "Other chats work in this repository right now") ||
-				!strings.Contains(ev.Note, "- “Web” (Scripted agent), id "+web) || strings.Contains(ev.Note, other) {
+			if ev.Sender != nil || !strings.Contains(ev.Note, "Other chats are active in this repository") ||
+				!strings.Contains(ev.Note, "- “Web” (Scripted agent), id "+web+", waiting for its person's answer") ||
+				strings.Contains(ev.Note, other) || strings.Contains(ev.Note, aside) || strings.Contains(ev.Note, service) {
 				t.Fatalf("the person's message: %+v", ev)
 			}
 		case "!ls":

@@ -5,6 +5,9 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/saschazesiger/SocratesAgent/internal/agent"
+	"github.com/saschazesiger/SocratesAgent/internal/store"
 )
 
 // A chat sends at most chatSendsPerHour messages an hour.
@@ -74,5 +77,60 @@ func TestChatScope(t *testing.T) {
 	}
 	if chatScope("") != "" {
 		t.Fatal("no folder has a scope")
+	}
+}
+
+// The note on the person's messages names only the chats that are active:
+// an agent at work, or a chat filed In progress that something happened in
+// lately. Done, background, not started, put aside or quiet since yesterday
+// is not.
+func TestActivePeers(t *testing.T) {
+	now := time.UnixMilli(1_800_000_000_000)
+	recent, old := now.Add(-time.Hour).UnixMilli(), now.Add(-chatActiveWithin-time.Minute).UnixMilli()
+	idle := agent.Summary{Asked: true, Activity: agent.ActivityIdle, LastAt: recent}
+	with := func(f func(*agent.Summary)) agent.Summary { s := idle; f(&s); return s }
+	working := with(func(s *agent.Summary) { s.TurnRunning, s.Activity = true, agent.ActivityBusy })
+	for _, c := range []struct {
+		name   string
+		status string
+		sum    agent.Summary
+		want   bool
+	}{
+		{"in progress, idle a little while", store.StatusInProgress, idle, true},
+		{"unsorted, idle a little while", store.StatusUnsorted, idle, true},
+		{"in progress, quiet since yesterday", store.StatusInProgress, with(func(s *agent.Summary) { s.LastAt = old }), false},
+		{"in progress, never told when", store.StatusInProgress, with(func(s *agent.Summary) { s.LastAt = 0 }), false},
+		{"in progress, working for a day", store.StatusInProgress, with(func(s *agent.Summary) { *s = working; s.LastAt = old }), true},
+		{"in progress, a subagent left running", store.StatusInProgress,
+			with(func(s *agent.Summary) { s.Activity, s.LastAt = agent.ActivityBusy, old }), true},
+		{"in progress, a background task", store.StatusInProgress,
+			with(func(s *agent.Summary) { s.Activity, s.LastAt = agent.ActivityTasks, old }), true},
+		{"in progress, asking its person lately", store.StatusInProgress,
+			with(func(s *agent.Summary) { s.Activity = agent.ActivityWaiting }), true},
+		{"in progress, asking its person since yesterday", store.StatusInProgress,
+			with(func(s *agent.Summary) { s.Activity, s.LastAt = agent.ActivityWaiting, old }), false},
+		{"in progress, not started", store.StatusInProgress, with(func(s *agent.Summary) { s.Asked = false }), false},
+		{"review pending, idle", store.StatusReview, idle, false},
+		{"pending, idle", store.StatusPending, idle, false},
+		{"pending, a background task", store.StatusPending, with(func(s *agent.Summary) { s.Activity = agent.ActivityTasks }), false},
+		{"pending, working", store.StatusPending, working, true},
+		{"done", store.StatusDone, idle, false},
+		{"done, working", store.StatusDone, working, false},
+		{"background, working", store.StatusBackground, working, false},
+	} {
+		if got := activePeer(&store.Session{Status: c.status}, c.sum, now); got != c.want {
+			t.Errorf("%s: active %v, want %v", c.name, got, c.want)
+		}
+	}
+
+	for want, sum := range map[string]agent.Summary{
+		"working":                             working,
+		"idle":                                idle,
+		"waiting for its person's answer":     with(func(s *agent.Summary) { s.Activity = agent.ActivityWaiting }),
+		"idle, with background tasks running": with(func(s *agent.Summary) { s.Activity = agent.ActivityTasks }),
+	} {
+		if got := peerState(sum); got != want {
+			t.Errorf("peerState(%+v) = %q, want %q", sum, got, want)
+		}
 	}
 }

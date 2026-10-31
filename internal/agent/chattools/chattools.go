@@ -55,7 +55,7 @@ func Tools() []Def {
 			Name:  List,
 			Title: "List the other chats here",
 			Description: "Lists the other chats whose agents work in this repository (this folder, or the same Git " +
-				"repository), with their id, title, agent, model and whether they are working or waiting. " +
+				"repository), with their id, title, agent, model and what they are doing (working, waiting for their person's answer, or idle). " +
 				"It disturbs nobody: use it before an action that could change another chat's work, such as a " +
 				"push, a pull or a branch change. Use read_chat and send_to_chat with an id from it.",
 			Schema: map[string]any{"type": "object", "properties": map[string]any{}},

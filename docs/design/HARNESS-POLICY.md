@@ -338,18 +338,21 @@ Socrates' own MCP server (`internal/agent/chattools`).
 
 | Tool | What it does |
 |---|---|
-| `list_chats` | the other chats of the repository: id, title, agent, model, working or waiting, folder |
+| `list_chats` | the other chats of the repository: id, title, agent, model, what it is doing (working, waiting for its person's answer, idle, idle with background tasks running), folder |
 | `read_chat` | the last messages of one (10 unless `count` says, at most 50; 4000 characters each) |
 | `send_to_chat` | a message into one, at most 20 000 characters |
 
 - **The repository** of a chat is the nearest folder at or above its own
   with a `.git`, else its folder alone (`chatScope`). A dynamic folder is a
   chat's own, so such a chat reaches nobody; preset and typed-in folders do.
-- **Only the chats at work.** A chat filed in the background or done, or
+- **Only the chats in use.** A chat filed in the background or done, or
   one nobody has sent anything yet (its folder's Not started shelf), is not
   there for the others: `list_chats` leaves it out, and `read_chat` and
   `send_to_chat` answer as for a chat that does not exist (`awake`). Filed
-  back in progress, or sent its first message, it is there again.
+  back in progress, or sent its first message, it is there again. Every
+  other chat is - idle or put aside (Review pending, Pending) too: its
+  uncommitted work may still be in the working tree, and its agent can be
+  asked about it.
 - **A message** goes into the other chat as the person's messages do
   (`sendMessage`), after a `chat_message` notice that names the chat it came
   from, with its text as written. Beside the text the journal keeps who
@@ -365,10 +368,22 @@ Socrates' own MCP server (`internal/agent/chattools`).
   message costs the receiving chat's account.
 - **Who else is here.** A message of the person's own (and any other
   without a note, but not a `!` shell line or a `/` command) carries a note
-  naming the other chats at work in the repository, when there are any
-  (`peersNote`): an agent that knows they are there thinks of them before
-  it discards, overwrites or commits changes that may be theirs, and tells
-  them when it changes what they rely on. Tested with the cheapest models
+  naming the other chats active in the repository, when there are any
+  (`peersNote`): "Other chats are active in this repository, each with an
+  agent of its own:", each with its id and what it is doing (as
+  `list_chats` says it). An agent that knows they are there thinks of them
+  before it discards, overwrites or commits changes that may be theirs, and
+  tells them when it changes what they rely on. Active (`activePeer`, the
+  owner's decision of 2026-10-31) is narrower than `list_chats`: of the
+  chats there for the others, those whose agent is at work right now (a
+  turn, a subagent left running), and those filed In progress that have a
+  background task running or saw anything happen in the last 12 hours
+  (`chatActiveWithin`: a pause in a working day keeps a chat in the note, a
+  chat last touched yesterday is not). A chat filed Review pending or
+  Pending is put aside by its person and is in only while its agent works
+  (which files it back in progress); one waiting for its person's answer
+  since yesterday is not. `list_chats` still names them all, for the
+  quiet check before a change to shared work. Tested with the cheapest models
   (Haiku, GPT-6-Luna, DeepSeek Flash): without it Haiku discarded another
   chat's uncommitted work without a look; with it all three asked first.
 - **Forgiving calls.** `send_to_chat` takes the names an agent guesses
