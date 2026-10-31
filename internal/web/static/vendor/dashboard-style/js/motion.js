@@ -295,8 +295,11 @@ export function motionEasing(element, token) {
  * @returns {number} ms
  */
 export function travelDuration(element, px) {
-  const medium = motionDuration(element, '--ds-dur-medium');
-  const slow = motionDuration(element, '--ds-dur-slow');
+  return travelBetween(motionDuration(element, '--ds-dur-medium'), motionDuration(element, '--ds-dur-slow'), px);
+}
+
+/** travelDuration() with its two tokens already read (a FLIP reads them once for all its movers). */
+function travelBetween(medium, slow, px) {
   return medium + (slow - medium) * Math.min(1, Math.abs(Number(px) || 0) / TRAVEL_FULL_PX);
 }
 
@@ -808,11 +811,37 @@ function differs(property, a, b) {
  * @returns {string[]|undefined} the animation names to wait for
  */
 function play(element, classes, leaving, state) {
-  if (ownAnimations(element).some(holdsMotion)) return handoff(element, classes, leaving, state);
-  cancelHandoffs(element, state);
-  if (clearMotion(element)) flushStyle(element);
-  element.classList.add(...classes);
-  return animationNames(element);
+  return playEach([{ element, classes, state }], leaving)[0];
+}
+
+/**
+ * play() for many elements at once (a FLIP's entering or leaving items):
+ * every read for all of them, then every write, with one style flush in
+ * between, so that n items cost a few style recalculations rather than
+ * three each. For each element it does what play() does for it alone.
+ * @param {{ element: Element, classes: string[], state: MotionState }[]} entries
+ * @param {boolean} leaving
+ * @returns {(string[]|undefined)[]} the animation names to wait for, per entry
+ */
+function playEach(entries, leaving) {
+  // Read: what is still moving continues from where it is (handoff()).
+  const moving = entries.map(({ element }) => ownAnimations(element).some(holdsMotion));
+  // Write: the classes of an earlier call go, then one flush, so that
+  // adding them back starts the animation afresh.
+  let dirty = null;
+  entries.forEach(({ element, state }, index) => {
+    if (moving[index]) return;
+    cancelHandoffs(element, state);
+    if (clearMotion(element)) dirty ??= element;
+  });
+  if (dirty) flushStyle(dirty);
+  entries.forEach(({ element, classes }, index) => {
+    if (!moving[index]) element.classList.add(...classes);
+  });
+  // Read: the animations the classes started.
+  return entries.map(({ element, classes, state }, index) => (moving[index]
+    ? handoff(element, classes, leaving, state)
+    : animationNames(element)));
 }
 
 /**
@@ -1028,23 +1057,37 @@ export function settled(element, options = {}) {
  */
 export function enter(element, variant = '') {
   if (!element) return Promise.resolve();
-  const state = stateOf(element);
-  const gen = ++state.gen;
-  const doc = element.ownerDocument;
-  const active = activeIn(element);
-  state.opener = active && active !== doc?.body && !element.contains?.(active) ? active : null;
-  dropStep(element);
-  if (/** @type {HTMLElement} */ (element).hidden) /** @type {HTMLElement} */ (element).hidden = false;
-  if (/** @type {HTMLElement} */ (element).inert) /** @type {HTMLElement} */ (element).inert = false;
-  state.inert = false;
-  markLeaving(element, state, false);
+  return enterEach([element], variant)[0];
+}
+
+/**
+ * enter() for each of many elements, as one batch of reads and writes
+ * (playEach()); a FLIP's items that come. Not a stagger: see enterAll().
+ * @param {Element[]} elements
+ * @param {string} [variant]
+ * @returns {Promise<void>[]} one per element, as enter() returns it
+ */
+function enterEach(elements, variant = '') {
   const classes = variant ? ['ds-enter', `ds-enter--${variant}`] : ['ds-enter'];
-  const names = play(element, classes, false, state);
-  return settled(element, { names }).then(() => {
+  const entries = elements.map((element) => {
+    const state = stateOf(element);
+    const gen = ++state.gen;
+    const doc = element.ownerDocument;
+    const active = activeIn(element);
+    state.opener = active && active !== doc?.body && !element.contains?.(active) ? active : null;
+    dropStep(element);
+    if (/** @type {HTMLElement} */ (element).hidden) /** @type {HTMLElement} */ (element).hidden = false;
+    if (/** @type {HTMLElement} */ (element).inert) /** @type {HTMLElement} */ (element).inert = false;
+    state.inert = false;
+    markLeaving(element, state, false);
+    return { element, classes, state, gen };
+  });
+  const names = playEach(entries, false);
+  return entries.map(({ element, state, gen }, index) => settled(element, { names: names[index] }).then(() => {
     if (state.gen !== gen) return;
     clearMotion(element);
     cancelHandoffs(element, state);
-  });
+  }));
 }
 
 /**
@@ -1064,18 +1107,33 @@ export function enter(element, variant = '') {
  */
 export function leave(element, variant = '', options = {}) {
   if (!element) return Promise.resolve();
+  return leaveEach([element], variant, options)[0];
+}
+
+/**
+ * leave() for each of many elements, as one batch of reads and writes
+ * (playEach()); a FLIP's items that go.
+ * @param {Element[]} elements
+ * @param {string} [variant]
+ * @param {{ then?: 'remove'|'hide'|'keep', focus?: Element|(() => Element|null)|null }} [options]
+ * @returns {Promise<void>[]} one per element, as leave() returns it
+ */
+function leaveEach(elements, variant = '', options = {}) {
   const then = options.then || 'remove';
-  const state = stateOf(element);
-  const gen = ++state.gen;
-  releaseFocus(element, options.focus, state);
-  if (!(/** @type {HTMLElement} */ (element).inert)) {
-    /** @type {HTMLElement} */ (element).inert = true;
-    state.inert = true;
-  }
-  markLeaving(element, state, then === 'remove');
   const classes = variant ? ['ds-leave', `ds-leave--${variant}`] : ['ds-leave'];
-  const names = play(element, classes, true, state);
-  return settled(element, { names }).then(() => {
+  const entries = elements.map((element) => {
+    const state = stateOf(element);
+    const gen = ++state.gen;
+    releaseFocus(element, options.focus, state);
+    if (!(/** @type {HTMLElement} */ (element).inert)) {
+      /** @type {HTMLElement} */ (element).inert = true;
+      state.inert = true;
+    }
+    markLeaving(element, state, then === 'remove');
+    return { element, classes, state, gen };
+  });
+  const names = playEach(entries, true);
+  return entries.map(({ element, state, gen }, index) => settled(element, { names: names[index] }).then(() => {
     if (state.gen !== gen) return;
     if (then === 'remove') element.remove();
     else if (then === 'hide') {
@@ -1085,7 +1143,7 @@ export function leave(element, variant = '', options = {}) {
       clearMotion(element);
       cancelHandoffs(element, state);
     }
-  });
+  }));
 }
 
 /**
@@ -2170,10 +2228,15 @@ function offscreen(rect, view) {
   return box.bottom <= 0 || box.right <= 0 || box.top >= height || box.left >= width;
 }
 
-/** Whether a removed item can leave out of flow (a table row cannot: it goes at once). */
-function liftable(node) {
-  const display = computed(node)?.display ?? '';
-  return node.tagName !== 'TR' && !display.startsWith('table');
+/**
+ * Whether a removed item can leave out of flow (a table row cannot: it goes
+ * at once). `display` is its computed display as measure() read it: read
+ * again here, after a morph and the lifts before it wrote styles, it would
+ * cost a style recalculation per removed item.
+ */
+function liftable(node, display) {
+  if (node.tagName === 'TR') return false;
+  return !(display ?? computed(node)?.display ?? '').startsWith('table');
 }
 
 /**
@@ -2184,11 +2247,10 @@ function liftable(node) {
  * `max-width: 100%` item of a shrink-wrapped container (the snackbar
  * region, once its last message leaves) would otherwise collapse.
  */
-function lift(container, node, rect, frame, state) {
-  const style = computed(container);
+function lift(container, node, rect, frame, state, box = liftBox(container)) {
   if (!state.lifted) {
     state.position = null;
-    if (style?.position === 'static') {
+    if (box.position === 'static') {
       state.position = container.style.position;
       // Owned while items leave: a morph of an ancestor (a live re-render
       // of the card) keeps their containing block.
@@ -2197,15 +2259,15 @@ function lift(container, node, rect, frame, state) {
     }
   }
   state.lifted += 1;
-  const box = edges(rect);
-  const left = box.left - frame.left - (parseFloat(style?.borderLeftWidth) || 0) + (container.scrollLeft || 0);
-  const top = box.top - frame.top - (parseFloat(style?.borderTopWidth) || 0) + (container.scrollTop || 0);
+  const at = edges(rect);
+  const left = at.left - frame.left - box.borderLeft + box.scrollLeft;
+  const top = at.top - frame.top - box.borderTop + box.scrollTop;
   setStyles(node, {
     position: 'absolute',
     left: `${round(left)}px`,
     top: `${round(top)}px`,
-    width: `${round(box.right - box.left)}px`,
-    height: `${round(box.bottom - box.top)}px`,
+    width: `${round(at.right - at.left)}px`,
+    height: `${round(at.bottom - at.top)}px`,
     'min-width': '0',
     'max-width': 'none',
     'min-height': '0',
@@ -2213,6 +2275,29 @@ function lift(container, node, rect, frame, state) {
     margin: '0',
     'box-sizing': 'border-box',
   });
+}
+
+/**
+ * What lift() reads off the container: its position, its top and left
+ * borders and its scroll offsets. A FLIP reads them once for all the items
+ * it lifts (lazyLiftBox()), not once per item between the styles each lift
+ * writes, which would recalculate style and layout every time.
+ */
+function liftBox(container) {
+  const style = computed(container);
+  return {
+    position: style?.position ?? '',
+    borderLeft: parseFloat(style?.borderLeftWidth) || 0,
+    borderTop: parseFloat(style?.borderTopWidth) || 0,
+    scrollLeft: container.scrollLeft || 0,
+    scrollTop: container.scrollTop || 0,
+  };
+}
+
+/** liftBox() read at the first lift of a FLIP and kept for the rest of it. */
+function lazyLiftBox(container) {
+  let box = null;
+  return () => (box ??= liftBox(container));
 }
 
 /** Whether a computed colour paints anything (alpha above 0); ripple.js has the same for the chips. */
@@ -2241,12 +2326,12 @@ function backdropOf(element) {
  * (table.css) and never show each other through. At rest the backing
  * matches what is behind, and it goes with the last raised item.
  */
-function backContainer(container, state) {
+function backContainer(container, state, known) {
   if (state.backed) return;
   state.backed = true;
   own(container, 'attrs', 'data-ds-glide');
   own(container, 'props', '--ds-flip-backdrop');
-  const backdrop = backdropOf(container);
+  const backdrop = known ?? backdropOf(container);
   if (backdrop) container.style.setProperty('--ds-flip-backdrop', backdrop);
   container.setAttribute('data-ds-glide', '');
 }
@@ -2274,16 +2359,16 @@ function unbackContainer(container, state) {
  * nothing else. Items without a background of their own get one from the
  * container's data-ds-glide (backContainer()).
  */
-function raise(container, state, item, rank, layers) {
+function raise(container, state, item, rank, layers, known = {}) {
   if (!raisedItems.has(item)) {
     raisedItems.set(item, { position: item.style.position, zIndex: item.style.zIndex, container });
     for (const name of ['position', 'z-index']) own(item, 'props', name);
-    if (computed(item)?.position === 'static') item.style.position = 'relative';
+    if ((known.position ?? computed(item)?.position) === 'static') item.style.position = 'relative';
     if (!state.raised) {
       state.isolation = container.style.isolation ?? '';
       own(container, 'props', 'isolation');
       container.style.isolation = 'isolate';
-      backContainer(container, state);
+      backContainer(container, state, known.backdrop);
     }
     state.raised += 1;
   }
@@ -2353,12 +2438,15 @@ function holdSize(container, state, height) {
   // Owned while held, like position, isolation and align-content: a morph
   // of an ancestor would otherwise drop it and what follows would jump.
   own(container, 'props', 'min-height');
+  // Read before the write below, so that it costs no second recalculation.
+  const style = computed(container);
+  const display = style?.display ?? '';
+  const alignContent = style?.alignContent ?? '';
   container.style.minHeight = `${round(Math.max(0, minHeightFor(container, height)))}px`;
   // A grid stretches its auto rows into a held height (align-content:
   // normal): the items that stay would grow and shrink back. They keep
   // their size until the held height has glided away.
-  const style = computed(container);
-  if (state.align === null && /grid/.test(style?.display ?? '') && /^(normal|stretch)$/.test(style?.alignContent ?? '')) {
+  if (state.align === null && /grid/.test(display) && /^(normal|stretch)$/.test(alignContent)) {
     state.align = container.style.alignContent ?? '';
     own(container, 'props', 'align-content');
     container.style.alignContent = 'start';
@@ -2440,12 +2528,16 @@ function landed(container, state, glide = true) {
 function measure(container, selector) {
   const before = new Map();
   for (const item of flipItems(container, selector)) before.set(item, item.getBoundingClientRect());
+  // Read now, while the rects above left style clean: whether an item can
+  // leave out of flow (liftable()) is asked only once the morph is writing.
+  const displays = new Map();
+  for (const item of before.keys()) if (item.tagName !== 'TR') displays.set(item, computed(item)?.display ?? '');
   const childrenOf = new Set(Array.from(before.keys()).filter((item) => item.parentElement === container));
   const nextOf = new Map(Array.from(container.childNodes, (node) => [node, node.nextSibling]));
   // Where focus is (refocus): the focused element and the item that holds it.
   const active = activeIn(container);
   const owner = active && container.contains?.(active) ? Array.from(before.keys()).find((item) => item.contains(active)) ?? null : null;
-  return { before, childrenOf, nextOf, frame: edges(container.getBoundingClientRect()), focus: owner ? { active, owner } : null };
+  return { before, displays, childrenOf, nextOf, frame: edges(container.getBoundingClientRect()), focus: owner ? { active, owner } : null };
 }
 
 /**
@@ -2556,7 +2648,8 @@ function runFlip(container, mutate, options, state, first) {
   const max = options.max ?? 50;
   const view = windowOf(container);
   // First.
-  const { before, childrenOf, nextOf, frame, focus } = first ?? measure(container, selector);
+  const { before, displays, childrenOf, nextOf, frame, focus } = first ?? measure(container, selector);
+  const box = lazyLiftBox(container);
   const firstHeight = frame.bottom - frame.top;
   for (const item of before.keys()) {
     glides.get(item)?.cancel();
@@ -2578,9 +2671,9 @@ function runFlip(container, mutate, options, state, first) {
     },
     onRemove(node) {
       const rect = before.get(node);
-      if (!rect || !liftable(node)) return undefined;
+      if (!rect || !liftable(node, displays?.get(node))) return undefined;
       holdSize(container, state, firstHeight);
-      lift(container, node, rect, frame, state);
+      lift(container, node, rect, frame, state, box());
       return new Promise((resolve) => removed.push({ node, resolve }));
     },
   });
@@ -2604,12 +2697,12 @@ function runFlip(container, mutate, options, state, first) {
   for (const item of back) item.removeAttribute('data-ds-moving');
   for (const item of back) {
     const rect = before.get(item);
-    if (!liftable(item)) {
+    if (!liftable(item, displays?.get(item))) {
       item.remove();
       continue;
     }
     holdSize(container, state, firstHeight);
-    lift(container, item, rect, frame, state);
+    lift(container, item, rect, frame, state, box());
     removed.push({ node: item, resolve() {} });
   }
   // The focused item went: its neighbour takes the focus (before leave() would drop it).
@@ -2648,13 +2741,20 @@ function runFlip(container, mutate, options, state, first) {
   const easing = motionEasing(container, '--ds-ease-spatial');
   // The farthest travel paints on top; at equal distance, the rising item.
   const layers = moves.length ? glideLayers(container) : null;
-  moves.map((move) => ({ move, distance: Math.hypot(move.dx, move.dy) }))
-    .sort((a, b) => (a.distance - b.distance) || (a.move.dy - b.move.dy))
-    .forEach(({ move }, rank) => raise(container, state, move.item, rank, layers));
+  // Everything the glides need is read before the first of them writes: a
+  // read between two writes recalculates style (and with :has() rules, for
+  // much of the page) once per moving item.
+  const medium = moves.length ? motionDuration(container, '--ds-dur-medium') : 0;
+  const slow = moves.length ? motionDuration(container, '--ds-dur-slow') : 0;
+  const ranked = moves.map((move) => ({ move, distance: Math.hypot(move.dx, move.dy) }))
+    .sort((a, b) => (a.distance - b.distance) || (a.move.dy - b.move.dy));
+  const positions = ranked.map(({ move }) => computed(move.item)?.position);
+  const backdrop = ranked.length && !state.raised && !state.backed ? backdropOf(container) : undefined;
+  ranked.forEach(({ move }, rank) => raise(container, state, move.item, rank, layers, { position: positions[rank], backdrop }));
   const running = moves.map(({ item, dx, dy }) => {
     const animation = animateSafe(item, [{ translate: `${round(dx)}px ${round(dy)}px` }, { translate: '0px 0px' }], {
       id: 'ds-flip',
-      duration: travelDuration(container, Math.hypot(dx, dy)),
+      duration: travelBetween(medium, slow, Math.hypot(dx, dy)),
       easing,
       composite: 'add',
     }, '--ds-ease-spatial');
@@ -2670,8 +2770,9 @@ function runFlip(container, mutate, options, state, first) {
       throw error;
     });
   });
-  const entering = inserted.map((node) => enter(node, 'fade'));
-  const leaving = removed.map((entry) => leave(entry.node).then(() => gone(entry)));
+  // Each as enter() and leave() would, in one batch of reads and writes.
+  const entering = enterEach(inserted, 'fade');
+  const leaving = leaveEach(removed.map((entry) => entry.node)).map((done, index) => done.then(() => gone(removed[index])));
   return Promise.allSettled([...running, ...entering, ...leaving, resizing]).then(() => {});
 }
 
