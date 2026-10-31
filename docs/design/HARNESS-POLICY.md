@@ -374,15 +374,11 @@ Socrates' own MCP server (`internal/agent/chattools`).
   `list_chats` says it). An agent that knows they are there thinks of them
   before it discards, overwrites or commits changes that may be theirs, and
   tells them when it changes what they rely on. Active (`activePeer`, the
-  owner's decision of 2026-10-31) is narrower than `list_chats`: of the
-  chats there for the others, those whose agent is at work right now (a
-  turn, a subagent left running), and those filed In progress that have a
-  background task running or saw anything happen in the last 12 hours
-  (`chatActiveWithin`: a pause in a working day keeps a chat in the note, a
-  chat last touched yesterday is not). A chat filed Review pending or
-  Pending is put aside by its person and is in only while its agent works
-  (which files it back in progress); one waiting for its person's answer
-  since yesterday is not. `list_chats` still names them all, for the
+  owner's decision of 2026-10-31) goes by the chat's status: every chat
+  there for the others that is not filed done or in the background and was
+  sent something - idle, waiting for its person or filed for review, it is
+  still someone's work in progress, and the note says how it stands.
+  `list_chats` still names them all, for the
   quiet check before a change to shared work. Tested with the cheapest models
   (Haiku, GPT-6-Luna, DeepSeek Flash): without it Haiku discarded another
   chat's uncommitted work without a look; with it all three asked first.

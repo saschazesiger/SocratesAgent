@@ -544,32 +544,15 @@ func (s *Server) messageNote(chatID string, m *chatMessageBody) string {
 	return s.chats.tools.peersNote(row)
 }
 
-// chatActiveWithin is how long after its last event a chat filed In
-// progress counts as active while its agent is not at work (activePeer): a
-// pause in a working day - lunch, a meeting - keeps it in the note, a chat
-// last touched yesterday is not.
-const chatActiveWithin = 12 * time.Hour
-
 // activePeer says whether a chat the others can reach (awake) is active, for
-// the note on the person's messages (peersNote): its agent is at work right
-// now - a turn, or a subagent left running - or the chat is filed In
-// progress and has a background task running, or something happened in it
-// within chatActiveWithin. A chat filed Review pending or Pending is put
-// aside by its person, so only its agent at work brings it in (and work
-// files it back in progress anyway); one filed done or in the background,
-// or nobody has sent anything yet, never is. list_chats keeps listing every
-// chat that is awake: the note is who is active, the tool who is there.
-func activePeer(row *store.Session, sum agent.Summary, now time.Time) bool {
-	if row.Status == store.StatusDone || row.Status == store.StatusBackground || !sum.Asked {
-		return false
-	}
-	if sum.TurnRunning || sum.Activity == agent.ActivityBusy {
-		return true
-	}
-	if row.Status != store.StatusInProgress && row.Status != store.StatusUnsorted {
-		return false
-	}
-	return sum.Activity == agent.ActivityTasks || now.Sub(time.UnixMilli(sum.LastAt)) < chatActiveWithin
+// the note on the person's messages (peersNote): by its status, the owner's
+// rule - anything but done or in the background - once something was sent to
+// it. Idle, waiting or put aside for review, it is still somebody's work in
+// progress; how it stands the note says beside it (peerState). list_chats
+// lists every chat that is awake: the note is who is active, the tool who is
+// there.
+func activePeer(row *store.Session, sum agent.Summary) bool {
+	return row.Status != store.StatusDone && row.Status != store.StatusBackground && sum.Asked
 }
 
 // peerState is what a chat's agent is doing, in the words list_chats and
@@ -593,7 +576,6 @@ func (t *chatToolServer) peersNote(row *store.Session) string {
 	if err != nil {
 		return ""
 	}
-	now := time.Now()
 	var b strings.Builder
 	for _, other := range list {
 		p, err := t.srv.chats.peer(other.ID)
@@ -601,7 +583,7 @@ func (t *chatToolServer) peersNote(row *store.Session) string {
 			continue
 		}
 		sum := p.summary()
-		if !activePeer(other, sum, now) {
+		if !activePeer(other, sum) {
 			continue
 		}
 		if b.Len() == 0 {

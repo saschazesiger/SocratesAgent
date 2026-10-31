@@ -24,8 +24,8 @@ import (
 // message into one - marked as another chat's, and its agent answers it -
 // and read_chat gives back what was said there. A chat in the background,
 // done or not started yet is not there for them at all; one put aside
-// (Review pending) is, but the note on the person's messages, which names
-// only the active chats, leaves it out.
+// (Review pending) is, and the note on the person's messages, which names
+// the chats active by their status, names it too.
 func TestTheChatsOfARepositoryReachEachOther(t *testing.T) {
 	c := newChatEnv(t, time.Hour)
 	next := c.srv.Settings()
@@ -213,7 +213,8 @@ func TestTheChatsOfARepositoryReachEachOther(t *testing.T) {
 		case "go on":
 			if ev.Sender != nil || !strings.Contains(ev.Note, "Other chats are active in this repository") ||
 				!strings.Contains(ev.Note, "- “Web” (Scripted agent), id "+web+", waiting for its person's answer") ||
-				strings.Contains(ev.Note, other) || strings.Contains(ev.Note, aside) || strings.Contains(ev.Note, service) {
+				!strings.Contains(ev.Note, "- “Aside” (Scripted agent), id "+aside+", idle") ||
+				strings.Contains(ev.Note, other) || strings.Contains(ev.Note, service) {
 				t.Fatalf("the person's message: %+v", ev)
 			}
 		case "!ls":
