@@ -1200,47 +1200,24 @@ function ideButtonHtml(folder) {
   return html`<button class="ds-btn ds-btn--quiet ds-btn--icon ds-btn--sm so-folder__ide" type="button" data-ide="${folder.key}" aria-pressed="${shown ? 'true' : 'false'}" aria-label="${words}" data-tip="${words}"${running ? html` data-running` : ''}${!ide && !usable ? html` hidden` : ''}>${raw(agentMarkHtml(IDE, 16))}</button>`;
 }
 
-// The folders a VS Code is being asked for right now, so that a second tap
-// on the same mark waits for the first rather than asking again.
+// What a VS Code is being opened for right now - a folder, the empty
+// editor, a session - so that a second tap on the same mark waits for the
+// first rather than opening a second tab.
 const openingIDE = new Set();
 
 /**
- * openFolderIDE is the VS Code mark of a folder: the folder's editor, opened
- * in the pane. A folder that has one opens it, and one that does not asks the
- * server for it - which answers with the one it has if another tab made it in
- * the meantime, so there is still only ever one per folder.
+ * openIDETab opens an editor in a tab of its own, which is where VS Code
+ * always opens, wherever it was asked for: it is a whole workbench, and the
+ * pane beside the list is too small to work in. `find` resolves with the
+ * session to open - one that is there, or one the server was asked for.
+ *
+ * The tab is opened inside the click. One opened once the editor answers
+ * would be a pop-up, and browsers block those.
  */
-async function openFolderIDE(key) {
-  const found = ideOf(state.sessions, key);
-  if (found) { selectSession(found.id); return; }
+async function openIDETab(key, find) {
   if (openingIDE.has(key)) return;
   openingIDE.add(key);
-  try {
-    const data = await api('/api/ide', { method: 'POST', attempts: 2, timeout: 60000, body: { workdir: key } });
-    replaceSession(data.session);
-    if (data.error) toast('VS Code could not start.', 'error');
-    selectSession(data.session.id);
-  } catch (err) {
-    toast(errorMessage(err), 'error');
-  } finally {
-    openingIDE.delete(key);
-  }
-}
-
-// Whether the empty editor is being asked for right now, so that a second
-// tap waits for the first rather than opening a second tab.
-let openingBlankIDE = false;
-
-/**
- * openBlankIDE is the VS Code mark at the top of the drawer: an editor with
- * no folder open, in a new tab. There is one, shared by every tab it is
- * opened in; it is listed under "More Chats", where it can be stopped.
- */
-async function openBlankIDE() {
-  if (openingBlankIDE) return;
-  openingBlankIDE = true;
-  // The tab is opened inside the click. One opened once the editor answers
-  // would be a pop-up, and browsers block those.
+  closeNav();
   const tab = window.open('', '_blank');
   if (tab) {
     tab.document.title = 'VS Code';
@@ -1248,10 +1225,8 @@ async function openBlankIDE() {
     tab.document.body.textContent = 'Opening VS Code…';
   }
   try {
-    const data = await api('/api/ide/blank', { method: 'POST', attempts: 2, timeout: 60000 });
-    replaceSession(data.session);
-    if (data.error) throw new Error(data.error);
-    const url = (await readyIDE(data.session, () => true)) + ideQuery(data.session);
+    const session = await find();
+    const url = (await readyIDE(session, () => true)) + ideQuery(session);
     // A tab closed while it waited was closed on purpose.
     if (tab) {
       if (!tab.closed) tab.location.replace(url);
@@ -1262,8 +1237,38 @@ async function openBlankIDE() {
     if (tab) tab.close();
     toast(errorMessage(err), 'error');
   } finally {
-    openingBlankIDE = false;
+    openingIDE.delete(key);
   }
+}
+
+// askIDE is a session the server was asked to start an editor for: it
+// answers with the one it has if another tab made it in the meantime, so
+// there is still only ever one per folder, and the empty editor is one
+// shared by every tab.
+async function askIDE(path, body) {
+  const data = await api(path, { method: 'POST', attempts: 2, timeout: 60000, body });
+  replaceSession(data.session);
+  if (data.error) throw new Error(data.error);
+  return data.session;
+}
+
+/**
+ * openFolderIDE is the VS Code mark of a folder: the folder's editor, in a
+ * new tab. A folder that has one opens it, and one that does not asks the
+ * server for it.
+ */
+function openFolderIDE(key) {
+  const found = ideOf(state.sessions, key);
+  openIDETab('folder:' + key, async () => found || askIDE('/api/ide', { workdir: key }));
+}
+
+/**
+ * openBlankIDE is the VS Code mark at the top of the drawer: an editor with
+ * no folder open, in a new tab. It is listed under "More Chats", where it can
+ * be stopped.
+ */
+function openBlankIDE() {
+  openIDETab('blank', () => askIDE('/api/ide/blank'));
 }
 
 // The glyph of each status that has a mark: a flag for a review, a clock for
@@ -3721,6 +3726,9 @@ function updateStale() {
 function selectSession(id) {
   const session = sessionOf(id);
   if (!session) return;
+  // An editor is never opened in the pane, whoever asked for it: its row,
+  // Home, a notification.
+  if (session.harness === IDE) { openIDETab('session:' + id, async () => session); return; }
   // Already open.
   const chatOpen = !!state.chat && state.chat.shownId() === id;
   if (state.current && state.current.id === id && (chatOpen
