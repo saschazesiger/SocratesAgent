@@ -71,8 +71,8 @@ func (s *Store) keep(chat string, d *doc, t *Test, r *Run, have int, files []Att
 		return nil, nil, fmt.Errorf("the output is %s; output over %s is not kept: cut it to what matters", size(int64(len(output))), size(MaxFileSize))
 	}
 	total += int64(len(output))
-	if used := usage(d); used+total > MaxChatSize {
-		return nil, nil, fmt.Errorf("the chat's tests already keep %s of evidence and these files would pass the %s a chat may keep: delete tests that are no longer needed", size(used), size(MaxChatSize))
+	if used, limit := usage(d), s.chatLimit(); used+total > limit {
+		return nil, nil, fmt.Errorf("the chat's tests already keep %s of evidence and these files would pass the %s a chat may keep: delete tests that are no longer needed", size(used), size(limit))
 	}
 
 	dir := filepath.Join(s.FilesDir(chat, t.ID), "r"+strconv.Itoa(r.N))
@@ -130,7 +130,7 @@ func (s *Store) keep(chat string, d *doc, t *Test, r *Run, have int, files []Att
 // be kept is left out; it never fails the call that judged the step.
 func (s *Store) keepRecorded(chat string, d *doc, t *Test, r *Run, have int, files []Attach, now time.Time) ([]Evidence, []string) {
 	room := MaxStepFiles - have
-	budget := MaxChatSize - usage(d)
+	budget := s.chatLimit() - usage(d)
 	type source struct {
 		Attach
 		info fs.FileInfo

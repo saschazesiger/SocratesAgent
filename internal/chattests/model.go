@@ -87,7 +87,9 @@ const (
 	KeepRuns     = 20
 	MaxStepFiles = 40
 	MaxFileSize  = 20 << 20
-	MaxChatSize  = 500 << 20
+	// MaxChatSize is the evidence a chat keeps when the store is given no
+	// limit of its own (Store.SetChatLimit).
+	MaxChatSize = 500 << 20
 
 	MaxTitle       = 200
 	MaxGoal        = 20 << 10

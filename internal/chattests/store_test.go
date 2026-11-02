@@ -523,6 +523,15 @@ func TestAttachLimits(t *testing.T) {
 	}
 	_, _, err = s.Attach("c1", "T1", 0, []Attach{{Path: file(t, src, "three.txt", "abc")}})
 	wantErr(t, err, "would pass the 500 MB a chat may keep")
+
+	// A limit of its own moves the chat's total, at once.
+	s.SetChatLimit(func() int64 { return MaxChatSize + 1<<10 })
+	if _, _, err := s.Attach("c1", "T1", 0, []Attach{{Path: file(t, src, "four.txt", "abc")}}); err != nil {
+		t.Fatal(err)
+	}
+	s.SetChatLimit(func() int64 { return MaxChatSize })
+	_, _, err = s.Attach("c1", "T1", 0, []Attach{{Path: file(t, src, "five.txt", "abc")}})
+	wantErr(t, err, "would pass the 500 MB a chat may keep")
 }
 
 func TestOutputIsKeptAsText(t *testing.T) {

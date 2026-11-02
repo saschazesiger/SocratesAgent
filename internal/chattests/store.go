@@ -25,6 +25,7 @@ type Store struct {
 	mu       sync.Mutex
 	locks    map[string]*sync.Mutex
 	onChange func(chat string)
+	limit    func() int64
 
 	// now is the clock, replaced by the tests.
 	now func() time.Time
@@ -41,6 +42,28 @@ func (s *Store) SetOnChange(f func(chat string)) {
 	s.mu.Lock()
 	s.onChange = f
 	s.mu.Unlock()
+}
+
+// SetChatLimit sets how many bytes of evidence a chat's tests may keep. It
+// is asked at every attach, so a changed setting counts at once; without
+// one, or when it answers zero or less, the limit is MaxChatSize.
+func (s *Store) SetChatLimit(f func() int64) {
+	s.mu.Lock()
+	s.limit = f
+	s.mu.Unlock()
+}
+
+// chatLimit is the evidence a chat's tests may keep, in bytes.
+func (s *Store) chatLimit() int64 {
+	s.mu.Lock()
+	f := s.limit
+	s.mu.Unlock()
+	if f != nil {
+		if n := f(); n > 0 {
+			return n
+		}
+	}
+	return MaxChatSize
 }
 
 // doc is tests.json.

@@ -130,7 +130,7 @@ The settings live in `/etc/socrates.env`:
 | | |
 | --- | --- |
 | 📂 **Where** | `<data>/chats/<chat>/tests/`: `tests.json` (every test of the chat with its runs) and `files/<test>/r<run>/` (the screenshots, logs and output that are their evidence) |
-| 🧹 **Cleaning up** | They go with their chat; a test keeps its last 20 runs. Limits: 200 tests per chat, 20 MB per file, 500 MB per chat |
+| 🧹 **Cleaning up** | They go with their chat; a test keeps its last 20 runs. Limits: 200 tests per chat, 20 MB per file, 500 MB per chat (`chats.test_evidence_mb` in the settings document, `PUT /api/settings`) |
 | 🔌 **Switch** | Socrates Tests is a built-in MCP server: off in every chat until Admin (*In every chat*) or the chat switches it on |
 | 🗑️ **Test mode** | The per-repository test catalog it replaced is gone: the first start of this build deletes `<data>/tests/`, `<data>/run/tests/`, `<data>/cache/tests/` and the sessions of its runs. A repository's `.socrates/tests/` is no longer read |
 

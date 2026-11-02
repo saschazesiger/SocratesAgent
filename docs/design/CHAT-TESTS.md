@@ -93,7 +93,8 @@ files/T1/r2/03-home.png    evidence, per test and run
 A run copies the steps it was started with, so a later edit never rewrites what a run judged.
 Limits (`internal/chattests`, exported constants): 200 tests per chat, 50 steps per test, the last 20
 runs per test (older ones go with their files), 40 evidence files per step, 20 MB per file, 500 MB
-per chat (counted from the sizes in `tests.json`), 200 events per test, and caps on every text. A
+per chat (setting `chats.test_evidence_mb`, read at every attach; counted from the sizes in
+`tests.json`), 200 events per test, and caps on every text. A
 call that attaches files keeps all of them or none; a file is copied, never moved, and must be a
 regular file (no symbolic link).
 

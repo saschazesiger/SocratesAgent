@@ -29,6 +29,7 @@ import (
 // they go with the chat and are backed up with it.
 func (s *Server) newChatTests() *chattests.Store {
 	st := chattests.New(func(chat string) string { return agenthost.ChatDir(s.dataDir, chat) })
+	st.SetChatLimit(func() int64 { return int64(s.Settings().Chats.TestEvidenceMB) << 20 })
 	st.SetOnChange(func(chat string) {
 		rev, _ := st.Rev(chat)
 		s.events.publish(map[string]any{"t": "chattests", "session": chat, "rev": rev})

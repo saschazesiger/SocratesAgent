@@ -55,11 +55,18 @@ type Settings struct {
 // (REBUILD.md §2.1).
 const DefaultParkAfterMinutes = 20
 
+// DefaultTestEvidenceMB is how many megabytes of evidence a chat's tests
+// keep (docs/design/CHAT-TESTS.md).
+const DefaultTestEvidenceMB = 500
+
 // ChatSettings configures the agent chats.
 type ChatSettings struct {
 	// ParkAfterMinutes is how long a chat is idle - no turn, no open
 	// question, no background task - before its CLI is stopped.
 	ParkAfterMinutes int `json:"park_after_minutes"`
+	// TestEvidenceMB is how many megabytes of evidence (screenshots, logs,
+	// output) a chat's tests may keep in all.
+	TestEvidenceMB int `json:"test_evidence_mb"`
 }
 
 // OpenRouterSettings configures access to the OpenRouter API. Since Socrates
@@ -329,7 +336,7 @@ func Default() Settings {
 			WebGL:        true,
 		},
 		Harnesses: DefaultHarnesses(),
-		Chats:     ChatSettings{ParkAfterMinutes: DefaultParkAfterMinutes},
+		Chats:     ChatSettings{ParkAfterMinutes: DefaultParkAfterMinutes, TestEvidenceMB: DefaultTestEvidenceMB},
 	}
 }
 
@@ -372,6 +379,9 @@ func (s *Settings) Normalize() {
 	}
 	if s.Chats.ParkAfterMinutes <= 0 {
 		s.Chats.ParkAfterMinutes = DefaultParkAfterMinutes
+	}
+	if s.Chats.TestEvidenceMB <= 0 {
+		s.Chats.TestEvidenceMB = DefaultTestEvidenceMB
 	}
 	s.Voice.Language = NormalizeLanguage(s.Voice.Language)
 	if strings.TrimSpace(s.Voice.STTPrompt) == "" {
