@@ -33,7 +33,8 @@ func TestReadFolderMCPGoesUpToTheRepositoryRoot(t *testing.T) {
 		"db":{"command":"db-mcp","args":["--ro"]}}}`)
 	writeFile(t, filepath.Join(sub, FolderMCPFile), `{"mcpServers":{"db":{"command":"db-mcp","args":["--rw"],"env":{"A":"1"}}}}`)
 
-	servers, problems := ReadFolderMCP(sub)
+	folder, problems := ReadFolderMCP(sub)
+	servers := folder.Servers
 	if len(problems) > 0 {
 		t.Fatalf("problems: %v", problems)
 	}
@@ -47,12 +48,12 @@ func TestReadFolderMCPGoesUpToTheRepositoryRoot(t *testing.T) {
 
 	alone := filepath.Join(root, "alone", "deeper")
 	writeFile(t, filepath.Join(alone, FolderMCPFile), `{"mcpServers":{"mine":{"command":"m"}}}`)
-	servers, _ = ReadFolderMCP(alone)
-	if len(servers) != 1 || servers[0].Name != "mine" {
+	folder, _ = ReadFolderMCP(alone)
+	if servers = folder.Servers; len(servers) != 1 || servers[0].Name != "mine" {
 		t.Fatalf("outside a repository: %+v", servers)
 	}
-	if servers, problems := ReadFolderMCP(filepath.Join(root, "nothing")); servers != nil || problems != nil {
-		t.Fatalf("a folder without a file: %+v %v", servers, problems)
+	if folder, problems := ReadFolderMCP(filepath.Join(root, "nothing")); folder.Servers != nil || folder.Off != nil || problems != nil {
+		t.Fatalf("a folder without a file: %+v %v", folder, problems)
 	}
 }
 
@@ -69,7 +70,8 @@ func TestReadFolderMCPLeavesOutWhatCannotStart(t *testing.T) {
 		"sse":{"type":"sse"},
 		"remote":{"url":"https://r.example/mcp"},
 		"odd":["not an object"]}}`)
-	servers, problems := ReadFolderMCP(dir)
+	folder, problems := ReadFolderMCP(dir)
+	servers := folder.Servers
 	if len(servers) != 2 || servers[0].Name != "good" || servers[1].Name != "remote" || servers[1].Transport != MCPHTTP {
 		t.Fatalf("servers %+v", servers)
 	}
@@ -82,8 +84,46 @@ func TestReadFolderMCPLeavesOutWhatCannotStart(t *testing.T) {
 	}
 
 	writeFile(t, filepath.Join(dir, FolderMCPFile), `{"mcpServers": {`)
-	if servers, problems := ReadFolderMCP(dir); servers != nil || len(problems) != 1 || !strings.Contains(problems[0], "is not valid") {
-		t.Fatalf("a broken file: %+v %v", servers, problems)
+	if folder, problems := ReadFolderMCP(dir); folder.Servers != nil || len(problems) != 1 || !strings.Contains(problems[0], "is not valid") {
+		t.Fatalf("a broken file: %+v %v", folder, problems)
+	}
+}
+
+// .socrates/mcp.json names servers as .mcp.json does, winning a name next to
+// it, and the servers a chat has off by default: its own, a .mcp.json's or
+// Admin's. Off in a .mcp.json means nothing.
+func TestSocratesMCPFileAddsServersAndTurnsThemOff(t *testing.T) {
+	repo := t.TempDir()
+	sub := filepath.Join(repo, "app")
+	writeFile(t, filepath.Join(repo, ".git", "HEAD"), "ref: refs/heads/main\n")
+	writeFile(t, filepath.Join(repo, FolderMCPFile), `{"mcpServers":{"db":{"command":"plain-db"},"logs":{"command":"l"}},"off":["logs"]}`)
+	writeFile(t, filepath.Join(repo, SocratesMCPFile), `{"mcpServers":{"db":{"command":"socrates-db"},"beta":{"url":"https://b.example/mcp"}},
+		"off":["beta"," github "],"browserstack":{"base_url":"https://x.example"}}`)
+	writeFile(t, filepath.Join(sub, SocratesMCPFile), `{"off":["db"]}`)
+
+	folder, problems := ReadFolderMCP(sub)
+	if len(problems) > 0 {
+		t.Fatalf("problems: %v", problems)
+	}
+	var names []string
+	for _, s := range folder.Servers {
+		names = append(names, s.Name+":"+s.Command+s.URL)
+	}
+	if got := strings.Join(names, " "); got != "beta:https://b.example/mcp db:socrates-db logs:l" {
+		t.Fatalf("servers %s", got)
+	}
+	if want := map[string]bool{"beta": true, "github": true, "db": true}; !reflect.DeepEqual(folder.Off, want) {
+		t.Fatalf("off %v", folder.Off)
+	}
+
+	shared := []SharedMCP{{MCPServer: MCPServer{Name: "github", Transport: MCPHTTP, URL: "https://g/mcp"}, Default: true}}
+	list, _ := ChatMCP(shared, folder, map[string]bool{"beta": true})
+	var got []string
+	for _, c := range list {
+		got = append(got, fmt.Sprintf("%s:%v:%v", c.Name, c.Default, c.On))
+	}
+	if want := "beta:false:true db:false:false github:false:false logs:true:true"; strings.Join(got, " ") != want {
+		t.Fatalf("got  %s\nwant %s", strings.Join(got, " "), want)
 	}
 }
 
@@ -117,7 +157,7 @@ func TestChatMCPMergesTheDashboardsAndTheFoldersServers(t *testing.T) {
 		{MCPServer: MCPServer{Name: "socrates", Transport: MCPStdio, Command: "s"}, Default: true},
 		{MCPServer: MCPServer{Name: "broken", Transport: MCPStdio}, Default: true},
 	}
-	folder := []MCPServer{{Name: "db", Transport: MCPStdio, Command: "folder-db"}, {Name: "notes", Transport: MCPStdio, Command: "n"}}
+	folder := FolderMCP{Servers: []MCPServer{{Name: "db", Transport: MCPStdio, Command: "folder-db"}, {Name: "notes", Transport: MCPStdio, Command: "n"}}}
 	list, problems := ChatMCP(shared, folder, map[string]bool{"github": false, "off": true})
 	var got []string
 	for _, c := range list {

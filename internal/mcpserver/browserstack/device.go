@@ -473,7 +473,7 @@ func (d *device) logs(ctx context.Context) mcpserver.Result {
 	d.last = time.Now()
 	d.mu.Unlock()
 	if d.logConf == nil || strings.TrimSpace(d.logConf.Command) == "" {
-		return mcpserver.Error("this repository names no logs (" + RepoFile + ", logs)")
+		return mcpserver.Error("this repository names no logs (" + RepoFile + ", " + RepoKey + ".logs)")
 	}
 	_, since := d.status()
 	if since.IsZero() {

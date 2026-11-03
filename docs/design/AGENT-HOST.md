@@ -434,11 +434,12 @@ conversation is `ErrConversationNotFound` as for any resume.
 (custom commands and skills included) and the commands the adapter itself implements.
 
 **MCP servers of a folder** (HARNESS-POLICY.md, "MCP servers of a folder"). At every start of a
-CLI (boot and every account switch) the host reads the chat folder's `.mcp.json`, and those of the
+CLI (boot and every account switch) the host reads the chat folder's `.mcp.json` and `.socrates/mcp.json`, and those of the
 folders above it up to the repository's root (`agent.ReadFolderMCP`: the nearer file wins a name,
 a folder in no repository has only its own), adds Admin's servers (`Spec.SharedMCP`, sealed for the
 chat, opened with the data directory's key; the folder's win a name), keeps those the chat has on
-(`Spec.MCPChoices` by name, else each one's default: Admin's "In every chat", on for a folder's;
+(`Spec.MCPChoices` by name, else each one's default: Admin's "In every chat", on for a folder's, off for a name its
+`.socrates/mcp.json` has in `off`;
 `agent.StartMCP`), expands `${VAR}`/`${VAR:-default}` on the CLI's environment and passes the
 servers as `StartSpec.MCPServers`. A file that is not valid, a server
 that cannot start (no command or URL, a type other than stdio/http/sse, a name other than

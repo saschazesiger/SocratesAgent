@@ -18,7 +18,8 @@ import (
 // servers (StartSpec.MCPServers) in codex's shape, and every server a
 // project layer of the working directory defines (its .codex/config.toml,
 // which codex loads because the folder is trusted) turned off, since a
-// folder's MCP servers come from its .mcp.json alone. A thread's config is
+// folder's MCP servers come from its .mcp.json and .socrates/mcp.json
+// alone. A thread's config is
 // merged into codex's own, table by table: a server is only gone when it is
 // turned off by name, which is why the project's names are asked for first
 // (config/read). Servers of the account's own config.toml stay. Nil is
@@ -39,8 +40,8 @@ func (a *adapter) mcpOverrides(ctx context.Context) map[string]any {
 	}
 	if len(skipped) > 0 {
 		a.out.Emit(agent.Event{Type: agent.TypeNotice, Code: agent.NoticeMCP, Text: fmt.Sprintf(
-			"Codex cannot reach an MCP server over SSE, so %s from this folder's %s was left out.",
-			strings.Join(skipped, ", "), agent.FolderMCPFile)})
+			"Codex cannot reach an MCP server over SSE, so %s was left out.",
+			strings.Join(skipped, ", "))})
 	}
 	if len(servers) == 0 {
 		return nil

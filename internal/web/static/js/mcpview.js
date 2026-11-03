@@ -16,11 +16,13 @@ import { html, raw, icon, morph } from './ui.js';
 
 /** fromWords is where a chat's server comes from, as its switch's hint says it. */
 export function fromWords(server) {
-  const from = server.from === 'socrates'
+  // A server the folder's .socrates/mcp.json names off is off there by
+  // default, whatever Admin says for every chat.
+  const from = (server.from === 'socrates'
     ? 'Built into Socrates'
     : server.from === 'admin'
-      ? 'From Admin · ' + (server.default ? 'on' : 'off') + ' in every chat'
-      : 'From the folder’s .mcp.json';
+      ? 'From Admin' + (server.folder_off ? '' : ' · ' + (server.default ? 'on' : 'off') + ' in every chat')
+      : 'From the folder') + (server.folder_off ? ' · off in this folder' : '');
   const transport = server.transport && server.transport !== 'stdio' && server.from !== 'socrates'
     ? ' · ' + String(server.transport).toUpperCase() : '';
   return from + transport;

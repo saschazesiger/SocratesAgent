@@ -2377,7 +2377,7 @@ async function mcpDialog(session, opener, { closed } = {}) {
     servers = (data && data.servers) || [];
     note.textContent = servers.length
       ? 'What this chat\u2019s agent may use. A change counts from the next message.'
-      : 'There is no MCP server yet. Add one in Admin for every chat, or in a .mcp.json in the chat\u2019s folder.';
+      : 'There is no MCP server yet. Add one in Admin for every chat, or in the chat folder\u2019s .mcp.json or .socrates/mcp.json.';
     if (data && data.problems && data.problems.length) note.textContent += ' ' + data.problems.join(' ');
     list.hidden = !servers.length;
     morph(list, html`${servers.map((server, i) => html`<div class="so-mcp-switch" data-ds-key="${'mcp-' + server.name}" data-name="${server.name}">

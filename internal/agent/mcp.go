@@ -14,11 +14,29 @@ import (
 
 // FolderMCPFile is the file a folder names its MCP servers in, in the shape
 // Claude Code and most other tools read: {"mcpServers": {<name>: {...}}}.
-// It is the one source of a chat's MCP servers besides ask_user, whatever
-// the harness (HARNESS-POLICY.md, "MCP servers of a folder"): each adapter
-// passes them to its CLI in that CLI's own form and keeps the CLI from
-// loading MCP servers from the folder by itself.
+// It and SocratesMCPFile are the one source of a chat's MCP servers besides
+// Admin's and Socrates' own, whatever the harness (HARNESS-POLICY.md, "MCP
+// servers of a folder"): each adapter passes them to its CLI in that CLI's
+// own form and keeps the CLI from loading MCP servers from the folder by
+// itself.
 const FolderMCPFile = ".mcp.json"
+
+// SocratesMCPFile is Socrates' own MCP file of a folder: servers in the
+// shape of FolderMCPFile (mcpServers), which only Socrates reads; the
+// servers a chat there has off unless it switches them on (off); and the
+// settings of a server built into Socrates under its name (browserstack).
+// Next to a .mcp.json in the same folder, its server wins a name.
+const SocratesMCPFile = ".socrates/mcp.json"
+
+// FolderMCP is what a chat's folder says about its MCP servers
+// (ReadFolderMCP).
+type FolderMCP struct {
+	// Servers are the folder's servers, sorted by name, as written.
+	Servers []MCPServer
+	// Off names the servers a chat there has off unless it switches them
+	// on: the folder's own, Admin's or Socrates'.
+	Off map[string]bool
+}
 
 // The transports of an MCP server.
 const (
@@ -53,6 +71,8 @@ var mcpName = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
 // bad entry does not cost the others.
 type mcpFile struct {
 	Servers map[string]json.RawMessage `json:"mcpServers"`
+	// Off is SocratesMCPFile's alone.
+	Off []string `json:"off"`
 }
 
 type mcpEntry struct {
@@ -89,16 +109,20 @@ type MCPChoice struct {
 	From    string `json:"from"`
 	Default bool   `json:"default"`
 	On      bool   `json:"on"`
+	// FolderOff is a server the folder's .socrates/mcp.json names off: its
+	// default is off there, whatever it would be elsewhere.
+	FolderOff bool `json:"folder_off,omitempty"`
 }
 
 // ChatMCP is every MCP server a chat may have, sorted by name: the shared
 // ones and its folder's (ReadFolderMCP), the folder's winning a name of
 // Admin's as the nearer file does among .mcp.json files; a server built
 // into Socrates keeps its name. Each is on as the chat chose
-// (choices, by name), else as its default; a folder's server is on unless
-// the chat switched it off. A shared server that cannot be started (a bad
-// or reserved name, no command or URL) is left out with a problem.
-func ChatMCP(shared []SharedMCP, folder []MCPServer, choices map[string]bool) (list []MCPChoice, problems []string) {
+// (choices, by name), else as its default; a folder's server is on by
+// default, and any server the folder names off is off by default. A shared
+// server that cannot be started (a bad or reserved name, no command or URL)
+// is left out with a problem.
+func ChatMCP(shared []SharedMCP, folder FolderMCP, choices map[string]bool) (list []MCPChoice, problems []string) {
 	byName := map[string]MCPChoice{}
 	for _, s := range shared {
 		if err := checkMCP(s.MCPServer); err != nil {
@@ -111,7 +135,7 @@ func ChatMCP(shared []SharedMCP, folder []MCPServer, choices map[string]bool) (l
 		}
 		byName[s.Name] = MCPChoice{MCPServer: s.MCPServer, From: from, Default: s.Default}
 	}
-	for _, s := range folder {
+	for _, s := range folder.Servers {
 		if have, ok := byName[s.Name]; ok && have.From == MCPFromSocrates {
 			problems = append(problems, fmt.Sprintf("The MCP server %q of the folder was left out: Socrates has a server of that name", s.Name))
 			continue
@@ -119,6 +143,9 @@ func ChatMCP(shared []SharedMCP, folder []MCPServer, choices map[string]bool) (l
 		byName[s.Name] = MCPChoice{MCPServer: s, From: MCPFromFolder, Default: true}
 	}
 	for name, c := range byName {
+		if folder.Off[name] {
+			c.Default, c.FolderOff = false, true
+		}
 		c.On = c.Default
 		if on, chosen := choices[name]; chosen {
 			c.On = on
@@ -146,21 +173,26 @@ func StartMCP(workdir string, shared []SharedMCP, choices map[string]bool, env [
 	return servers, append(problems, more...)
 }
 
-// ReadFolderMCP reads the MCP servers of workdir: its .mcp.json and those of
-// the folders above it up to the root of the repository it is in (the
-// nearest folder with a .git), the nearer folder's server winning a name.
+// ReadFolderMCP reads the MCP servers of workdir: its .mcp.json and
+// .socrates/mcp.json and those of the folders above it up to the root of
+// the repository it is in (the nearest folder with a .git), the nearer
+// folder's server winning a name, and within a folder .socrates/mcp.json's.
 // A folder in no repository has only its own. Servers come sorted by name,
-// as written: ${VAR} is not expanded yet. A server that cannot be started
-// (no command, an unknown transport, a bad or reserved name) is left out
-// with a problem, as is a file that cannot be read.
-func ReadFolderMCP(workdir string) (servers []MCPServer, problems []string) {
+// as written: ${VAR} is not expanded yet. Off is every name any of the
+// .socrates/mcp.json files names off. A server that cannot be started (no
+// command, an unknown transport, a bad or reserved name) is left out with a
+// problem, as is a file that cannot be read.
+func ReadFolderMCP(workdir string) (folder FolderMCP, problems []string) {
 	if strings.TrimSpace(workdir) == "" {
-		return nil, nil
+		return FolderMCP{}, nil
 	}
 	byName := map[string]MCPServer{}
 	dirs := mcpDirs(workdir)
+	var paths []string
 	for i := len(dirs) - 1; i >= 0; i-- {
-		path := filepath.Join(dirs[i], FolderMCPFile)
+		paths = append(paths, filepath.Join(dirs[i], FolderMCPFile), filepath.Join(dirs[i], SocratesMCPFile))
+	}
+	for _, path := range paths {
 		data, err := os.ReadFile(path)
 		if err != nil {
 			if !os.IsNotExist(err) {
@@ -172,6 +204,17 @@ func ReadFolderMCP(workdir string) (servers []MCPServer, problems []string) {
 		if err := json.Unmarshal(data, &file); err != nil {
 			problems = append(problems, fmt.Sprintf("%s is not valid: %v", path, err))
 			continue
+		}
+		for _, name := range file.Off {
+			if !strings.HasSuffix(path, SocratesMCPFile) {
+				break
+			}
+			if name = strings.TrimSpace(name); name != "" {
+				if folder.Off == nil {
+					folder.Off = map[string]bool{}
+				}
+				folder.Off[name] = true
+			}
 		}
 		names := make([]string, 0, len(file.Servers))
 		for name := range file.Servers {
@@ -189,10 +232,10 @@ func ReadFolderMCP(workdir string) (servers []MCPServer, problems []string) {
 		}
 	}
 	for _, s := range byName {
-		servers = append(servers, s)
+		folder.Servers = append(folder.Servers, s)
 	}
-	sort.Slice(servers, func(i, j int) bool { return servers[i].Name < servers[j].Name })
-	return servers, problems
+	sort.Slice(folder.Servers, func(i, j int) bool { return folder.Servers[i].Name < folder.Servers[j].Name })
+	return folder, problems
 }
 
 // mcpDirs is workdir and the folders above it up to its repository's root,

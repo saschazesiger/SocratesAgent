@@ -19,13 +19,21 @@ import (
 )
 
 // RepoFile is where a repository says what the BrowserStack server needs to
-// know about it, relative to its root: the site under test, its locales, the
-// logins a page may be typed and where they come from, its mailbox and its
-// logs. Everything is optional; without the file a session opens full URLs
-// only.
-const RepoFile = ".socrates/mcp/browserstack.json"
+// know about it, relative to its root, under RepoKey: the site under test,
+// its locales, the logins a page may be typed and where they come from, its
+// mailbox and its logs. It is the repository's Socrates MCP file
+// (agent.SocratesMCPFile), which names its MCP servers too. Everything is
+// optional; without it a session opens full URLs only.
+const (
+	RepoFile = ".socrates/mcp.json"
+	RepoKey  = "browserstack"
+)
 
-// RepoConfig is RepoFile.
+// OldRepoFile is where a repository said it before RepoFile, as RepoConfig
+// alone; it is still read when RepoFile has no RepoKey.
+const OldRepoFile = ".socrates/mcp/browserstack.json"
+
+// RepoConfig is RepoFile's RepoKey.
 type RepoConfig struct {
 	// BaseURL is the site a path is opened on (https://beta.browser.lol).
 	BaseURL string `json:"base_url"`
@@ -104,27 +112,42 @@ func repoRoot(dir string) string {
 	}
 }
 
-// LoadRepo reads RepoFile of a repository; a zero config when it has none.
+// LoadRepo reads RepoFile's RepoKey of a repository, else OldRepoFile; a
+// zero config when it has neither.
 func LoadRepo(root string) (*RepoConfig, error) {
 	c := &RepoConfig{}
 	if root == "" {
 		return c, nil
 	}
+	where := RepoFile + ", " + RepoKey
 	data, err := os.ReadFile(filepath.Join(root, RepoFile))
-	if errors.Is(err, os.ErrNotExist) {
-		return c, nil
-	}
-	if err != nil {
+	if err == nil {
+		var file map[string]json.RawMessage
+		if err := json.Unmarshal(data, &file); err != nil {
+			return nil, fmt.Errorf("%s: %v", RepoFile, err)
+		}
+		data = file[RepoKey]
+	} else if !errors.Is(err, os.ErrNotExist) {
 		return nil, err
+	}
+	if len(data) == 0 {
+		where = OldRepoFile
+		data, err = os.ReadFile(filepath.Join(root, OldRepoFile))
+		if errors.Is(err, os.ErrNotExist) {
+			return c, nil
+		}
+		if err != nil {
+			return nil, err
+		}
 	}
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(c); err != nil {
-		return nil, fmt.Errorf("%s: %v", RepoFile, err)
+		return nil, fmt.Errorf("%s: %v", where, err)
 	}
 	c.BaseURL = strings.TrimRight(strings.TrimSpace(c.BaseURL), "/")
 	if c.BaseURL != "" && !strings.HasPrefix(c.BaseURL, "https://") && !strings.HasPrefix(c.BaseURL, "http://") {
-		return nil, fmt.Errorf("%s: base_url %q is not an http(s) address", RepoFile, c.BaseURL)
+		return nil, fmt.Errorf("%s: base_url %q is not an http(s) address", where, c.BaseURL)
 	}
 	return c, nil
 }

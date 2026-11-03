@@ -15,7 +15,7 @@ import (
 )
 
 // A chat's MCP servers are the ones set up in the dashboard for every chat
-// (config.MCPSettings) and its folder's .mcp.json files (agent.ReadFolderMCP),
+// (config.MCPSettings) and its folder's .mcp.json and .socrates/mcp.json files (agent.ReadFolderMCP),
 // each on as the chat chose or else by its default (agent.ChatMCP). The
 // chat's choices are its options' "mcp": {name: on}.
 
@@ -82,6 +82,8 @@ type mcpServerView struct {
 	From        string `json:"from"`
 	Default     bool   `json:"default"`
 	On          bool   `json:"on"`
+	// FolderOff is a server the folder's .socrates/mcp.json names off.
+	FolderOff bool `json:"folder_off,omitempty"`
 }
 
 // chatMCPView is every MCP server a chat may have and what had to be left
@@ -193,7 +195,7 @@ func (s *Server) mcpViews(list []agent.MCPChoice) []mcpServerView {
 	}
 	out := make([]mcpServerView, 0, len(list))
 	for _, c := range list {
-		v := mcpServerView{Name: c.Name, Transport: c.Transport, From: c.From, Default: c.Default, On: c.On}
+		v := mcpServerView{Name: c.Name, Transport: c.Transport, From: c.From, Default: c.Default, On: c.On, FolderOff: c.FolderOff}
 		switch c.From {
 		case agent.MCPFromAdmin:
 			v.Description = notes[c.Name]
@@ -208,7 +210,8 @@ func (s *Server) mcpViews(list []agent.MCPChoice) []mcpServerView {
 }
 
 // newChatMCP is the MCP servers a chat about to be made in workdir may
-// have: the dashboard's and those of the folder's .mcp.json files. A dynamic
+// have: the dashboard's and those of the folder's .mcp.json and
+// .socrates/mcp.json files. A dynamic
 // folder does not exist yet; it is looked at as the new folder it will be
 // under the workspace root, which has no .mcp.json of its own but may sit in
 // a repository that has one.
@@ -217,7 +220,7 @@ func (s *Server) newChatMCP(settings config.Settings, mode, workdir string) ([]a
 	if err == nil && dir == "" {
 		dir = filepath.Join(settings.Workspace.Root, "new")
 	}
-	var folder []agent.MCPServer
+	var folder agent.FolderMCP
 	var problems []string
 	if err == nil {
 		folder, problems = agent.ReadFolderMCP(dir)

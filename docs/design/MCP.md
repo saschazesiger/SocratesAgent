@@ -10,11 +10,12 @@ driver (a command-line tool of browser.lol's test catalog) moved into Socrates a
 |---|---|---|
 | **Socrates** | built into the binary (`internal/mcpserver`), its accounts in Admin | off unless Admin switches it on for every chat, or the chat does |
 | **Admin** | Admin → MCP servers (`settings.mcp.servers`) | as Admin's *In every chat* says, unless the chat says otherwise |
-| **Folder** | the chat folder's `.mcp.json` (and those above it in the repository) | on unless the chat switches it off |
+| **Folder** | the chat folder's `.mcp.json` and `.socrates/mcp.json` (and those above it in the repository) | on unless the chat switches it off, or `.socrates/mcp.json` names it in `off` |
 
 A chat switches any of them in ⋮ → *MCP servers…*, and the new session sheet has the same switches
 (HARNESS-POLICY.md, "MCP servers of a folder"). A folder's server wins a name of Admin's; no server of
-a folder or of Admin may take the name of a built-in one (`socrates` stays ask_user's).
+a folder or of Admin may take the name of a built-in one (`socrates` stays ask_user's). A folder's
+`.socrates/mcp.json` `off` turns any of them off by default in a chat there.
 
 
 ## Servers built into Socrates
@@ -64,18 +65,21 @@ table below went with it.
 | the daemon per session (`qa.sock`), keep-alive every minute, 20 min idle stop, 8 min `start` wait then "still queued", 40 min device start limit, 2 h warning | a device per session in the server (`device.go`), same limits |
 | `BROWSERSTACK_ACCOUNTS` in the vault, the test pool, `qa pool-status` | Admin's accounts, the server's pool (busy accounts read from Automate's plan once a minute go last), a chat's lease through `Pool` |
 | `SOCRATES_TEST_DIM_DEVICE`/`_LOCALE`, `SOCRATES_TEST_PARAM_CONSENT` | `start {device, locale, consent, base_url}` |
-| `QA_BASE_URL`, locales, `QA_*` logins from `secretctl`, the mailbox (`bin/bp beta db`), OneUptime logs (`infra/logs`), project name | the repository's `.socrates/mcp/browserstack.json` (below) |
+| `QA_BASE_URL`, locales, `QA_*` logins from `secretctl`, the mailbox (`bin/bp beta db`), OneUptime logs (`infra/logs`), project name | the repository's `.socrates/mcp.json`, `browserstack` (below) |
 | `qa stop` as the cell's end hook, closing an orphaned session | `Ender.End` when the chat is deleted; sessions open at a restart are written to `<data>/run/mcp/browserstack/sessions.json` and closed when the server starts again |
 | evidence in `$SOCRATES_TEST_EVIDENCE` | `<data>/mcp/browserstack/chats/<chat>/`, removed with the chat; the server is a `Recorder`, so a chat's tests take their screenshots from it |
 
 The device list is the driver's (`driver.Devices`).
 
-### `.socrates/mcp/browserstack.json`
+### `.socrates/mcp.json`, `browserstack`
 
-What the server needs to know about a repository, all optional (without it, `open` takes full URLs):
+What the server needs to know about a repository, all optional (without it, `open` takes full URLs),
+in the `browserstack` key of the repository root's `.socrates/mcp.json` (HARNESS-POLICY.md, "MCP
+servers of a folder"). The older `.socrates/mcp/browserstack.json`, the same object alone, is still
+read while `.socrates/mcp.json` has no `browserstack`.
 
 ```json
-{
+"browserstack": {
   "base_url": "https://beta.browser.lol",
   "locales": ["en", "de", "fr", "es", "it", "pt", "ja"],
   "project": "browser.lol device QA",

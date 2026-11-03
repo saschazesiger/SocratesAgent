@@ -927,7 +927,7 @@ export function settingsForm(options = {}) {
       input.checked = !!server && mcpOn(server);
     }
     mcpList.hidden = !mcpServers.length;
-    const words = mcpServers.length ? [] : ['None yet. Add one in Admin for every chat, or in a .mcp.json in the folder.'];
+    const words = mcpServers.length ? [] : ['None yet. Add one in Admin for every chat, or in the folder\u2019s .mcp.json or .socrates/mcp.json.'];
     mcpHint.textContent = [...words, ...mcpProblems].join(' ');
     mcpHint.hidden = !mcpHint.textContent;
   }

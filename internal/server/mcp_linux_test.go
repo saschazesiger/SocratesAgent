@@ -99,7 +99,7 @@ func TestABuiltInServerIsAChatsMCPServer(t *testing.T) {
 	if err := e.srv.saveSettings(next); err != nil {
 		t.Fatal(err)
 	}
-	list, _ := agent.ChatMCP(e.srv.sharedMCP(e.srv.Settings(), ""), nil, nil)
+	list, _ := agent.ChatMCP(e.srv.sharedMCP(e.srv.Settings(), ""), agent.FolderMCP{}, nil)
 	for _, c := range list {
 		if c.On != (c.Name == "browserstack") {
 			t.Fatalf("on in every chat: %+v", list)

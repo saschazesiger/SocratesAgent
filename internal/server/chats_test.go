@@ -1137,6 +1137,26 @@ func TestANewChatStartsWithTheSheetsMCPChoices(t *testing.T) {
 	if err != nil || strings.Contains(string(row.Options), "mcp") {
 		t.Fatalf("the row's options: %s %v", row.Options, err)
 	}
+
+	// The folder's .socrates/mcp.json adds a server and turns its own and
+	// Admin's off by default there; the sheet says so.
+	if err := os.MkdirAll(filepath.Join(dir, ".socrates"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".socrates", "mcp.json"),
+		[]byte(`{"mcpServers":{"beta":{"url":"https://beta.example/mcp"}},"off":["beta","github"]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	res, got = c.do(t, c.client, "GET", "/api/mcp?workdir_mode=custom&workdir="+url.QueryEscape(dir), "")
+	if res.StatusCode != http.StatusOK || list(got) != "beta:folder:false db:folder:true github:admin:false search:admin:false" {
+		t.Fatalf("with .socrates/mcp.json: %d %v", res.StatusCode, got)
+	}
+	for _, s := range withoutBuiltinMCP(got["servers"]) {
+		m := s.(map[string]any)
+		if off := m["name"] == "beta" || m["name"] == "github"; m["folder_off"] != (map[bool]any{true: true, false: nil})[off] {
+			t.Fatalf("folder_off of %v", m)
+		}
+	}
 }
 
 // withoutBuiltinMCP is a list of a chat's MCP servers without those built

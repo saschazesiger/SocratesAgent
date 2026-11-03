@@ -390,7 +390,7 @@ func (s *Server) Call(ctx context.Context, sess mcpserver.Session, tool string, 
 			if addr := ds.Address(); addr != "" {
 				return mcpserver.Text(addr)
 			}
-			return mcpserver.Error("this repository has no mailbox (" + RepoFile + ", mail)")
+			return mcpserver.Error("this repository has no mailbox (" + RepoFile + ", " + RepoKey + ".mail)")
 		case "mail":
 			wait := 90
 			if a.Wait != nil {

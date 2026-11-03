@@ -252,8 +252,9 @@ for. `--fork` is not offered: a resume continues the session it names.
 ## MCP servers of a folder
 
 A chat gets the MCP servers its folder names, whatever the harness: the
-folder's `.mcp.json`, in the shape Claude Code and most other tools read, and
-those of the folders above it up to the repository's root.
+folder's `.mcp.json`, in the shape Claude Code and most other tools read, its
+`.socrates/mcp.json`, and those of the folders above it up to the
+repository's root.
 
 ```json
 {"mcpServers": {
@@ -262,6 +263,20 @@ those of the folders above it up to the repository's root.
 }}
 ```
 
+- **`.socrates/mcp.json`** is Socrates' own file of a folder, read only by
+  Socrates: `mcpServers` in the same shape (next to a `.mcp.json` in the same
+  folder, its server wins a name), `off` (the names of servers a chat there
+  has off until it switches them on: the folder's own, Admin's or
+  Socrates'; the lists of every file up to the repository's root add up),
+  and the settings of a server built into Socrates under its name
+  (`browserstack`, MCP.md). A repository that wants its servers only in
+  Socrates, or some of them off by default, keeps them there.
+
+  ```json
+  {"mcpServers": {"beta": {"type": "http", "url": "https://beta.example/mcp"}},
+   "off": ["beta"],
+   "browserstack": {"base_url": "https://beta.example"}}
+  ```
 - **One source.** Socrates reads the file (`agent.ReadFolderMCP`) and hands
   the servers to the CLI in its own form: Claude Code `--mcp-config`, Codex
   `mcp_servers` in the thread's config, OpenCode `mcp` in
@@ -272,7 +287,8 @@ those of the folders above it up to the repository's root.
   account's own Codex `config.toml` stay.
 - **Started without asking.** Like every tool of a chat, the servers run with
   no approval: a folder's `.mcp.json` is trusted as its code is. A repository
-  checked out into a chat's folder starts the commands its `.mcp.json` names.
+  checked out into a chat's folder starts the commands its `.mcp.json` (and
+  `.socrates/mcp.json`) names, unless they are `off`.
 - **Variables.** `${VAR}` and `${VAR:-default}` take the chat's environment
   (the account's); a server that needs a variable the chat does not have is
   left out, and the chat says so.
@@ -293,7 +309,8 @@ once switched on there.
 
 - **Merged with the folder's.** A chat may have Admin's servers and its
   folder's (`agent.ChatMCP`); a folder's server wins a name both have, as the
-  nearer `.mcp.json` does.
+  nearer `.mcp.json` does. A name the folder's `.socrates/mcp.json` has in
+  `off` is off by default in a chat there, Admin's *In every chat* or not.
 - **Per chat.** A chat's ⋮ → *MCP servers…* has a switch for each, Admin's
   and the folder's alike. A switch put where the default is gives the choice
   back to Admin; any other is kept in the chat's options

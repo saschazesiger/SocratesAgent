@@ -140,7 +140,7 @@ func TestAChatStartsUsesAndStopsADevice(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(repo, ".socrates", "mcp"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(repo, RepoFile), []byte(conf), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(repo, RepoFile), []byte(`{"browserstack": `+conf+`}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	s := newServer(t, acct("a", "ann"))
@@ -217,18 +217,43 @@ func TestTheRepositoryFileIsStrict(t *testing.T) {
 	if c, err := LoadRepo(repo); err != nil || c.BaseURL != "" {
 		t.Fatalf("no file: %+v %v", c, err)
 	}
-	_ = os.WriteFile(filepath.Join(repo, RepoFile), []byte(`{"base_ur": "x"}`), 0o644)
+	write := func(conf string) {
+		_ = os.WriteFile(filepath.Join(repo, RepoFile), []byte(`{"mcpServers": {}, "off": [], "browserstack": `+conf+`}`), 0o644)
+	}
+	write(`{"base_ur": "x"}`)
 	if _, err := LoadRepo(repo); err == nil {
 		t.Fatal("an unknown key was taken")
 	}
-	_ = os.WriteFile(filepath.Join(repo, RepoFile), []byte(`{"base_url": "ftp://x"}`), 0o644)
+	write(`{"base_url": "ftp://x"}`)
 	if _, err := LoadRepo(repo); err == nil {
 		t.Fatal("a base URL that is not http was taken")
 	}
-	_ = os.WriteFile(filepath.Join(repo, RepoFile), []byte(`{"secrets": {"command": "printf 'A=1\\n'", "names": ["A", "B"]}}`), 0o644)
+	write(`{"secrets": {"command": "printf 'A=1\\n'", "names": ["A", "B"]}}`)
 	c, _ := LoadRepo(repo)
 	if _, err := c.readSecrets(context.Background(), repo); err == nil || !strings.Contains(err.Error(), "did not print B") {
 		t.Fatalf("a missing secret: %v", err)
+	}
+}
+
+// The old file is read while the new one has no browserstack of its own.
+func TestTheOldRepositoryFileStillCounts(t *testing.T) {
+	repo := t.TempDir()
+	_ = os.MkdirAll(filepath.Join(repo, ".socrates", "mcp"), 0o755)
+	_ = os.WriteFile(filepath.Join(repo, OldRepoFile), []byte(`{"base_url": "https://old.example/"}`), 0o644)
+	if c, err := LoadRepo(repo); err != nil || c.BaseURL != "https://old.example" {
+		t.Fatalf("the old file alone: %+v %v", c, err)
+	}
+	_ = os.WriteFile(filepath.Join(repo, RepoFile), []byte(`{"off": ["x"]}`), 0o644)
+	if c, err := LoadRepo(repo); err != nil || c.BaseURL != "https://old.example" {
+		t.Fatalf("a new file without browserstack: %+v %v", c, err)
+	}
+	_ = os.WriteFile(filepath.Join(repo, RepoFile), []byte(`{"browserstack": {"base_url": "https://new.example"}}`), 0o644)
+	if c, err := LoadRepo(repo); err != nil || c.BaseURL != "https://new.example" {
+		t.Fatalf("the new file: %+v %v", c, err)
+	}
+	_ = os.WriteFile(filepath.Join(repo, RepoFile), []byte(`{"browserstack": `), 0o644)
+	if _, err := LoadRepo(repo); err == nil {
+		t.Fatal("a broken new file was taken")
 	}
 }
 
