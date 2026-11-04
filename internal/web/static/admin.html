@@ -135,7 +135,7 @@
 
           <section class="ds-card" id="workspaceCard" aria-labelledby="workspaceTitle">
             <h2 class="ds-card__title" id="workspaceTitle">Workspace</h2>
-            <p class="ds-muted">Where a session works, which program it starts on, and the directories the new-session sheet offers by name.</p>
+            <p class="ds-muted">Where a session works, which program it starts on, the directories the new-session sheet offers by name, and how long a done session is kept.</p>
             <div class="ds-form">
               <div class="ds-field">
                 <label class="ds-field__label" for="workspaceRoot">Workspace root</label>
@@ -150,6 +150,17 @@
               <div class="ds-field">
                 <label class="ds-check"><input type="checkbox" id="allowCustomDir" aria-describedby="allowCustomDirHint"><span>Allow a typed-in directory</span></label>
                 <small class="ds-field__hint" id="allowCustomDirHint">With it off the sheet offers only the workspace root and the presets below — which is what you want on a machine published through a tunnel.</small>
+              </div>
+              <div class="ds-field">
+                <label class="ds-field__label" for="doneDays">Keep done sessions for</label>
+                <select class="ds-input" id="doneDays" aria-describedby="doneDaysHint">
+                  <option value="1">1 day</option>
+                  <option value="3">3 days</option>
+                  <option value="7">7 days</option>
+                  <option value="14">14 days</option>
+                  <option value="30">30 days</option>
+                </select>
+                <small class="ds-field__hint" id="doneDaysHint">A session filed under Done stops its program at once and costs only its files on disk. After this long it is deleted; its working directory stays.</small>
               </div>
               <fieldset class="ds-field">
                 <legend class="ds-field__label">Preset directories</legend>

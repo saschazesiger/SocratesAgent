@@ -96,7 +96,7 @@ no digest, no outcome, no PreStart.
 | Adoption / "Recovered session" | on start, re-adopt `soc_*` tmux sessions; one without a row becomes "Recovered session", never killed | `termux/adopt.go` | TERMINAL-ONLY (agent equivalent: re-attach to surviving agent hosts — ADAPT, inferred) |
 | Lifecycle poll | `list-panes -a` every 2 s, 2 misses → `needs_resume` | `termux/adopt.go Poll` | TERMINAL-ONLY |
 | Delete | kill tmux session, delete row/journal, keep workdir (`workdir_kept`); stops operator first | `sessions.go`, `done.go deleteSession`, `termux/manager.go Delete` | ADAPT |
-| Status filing ("shelves") | in_progress/review/pending/done/background via `POST …/file`; `done` parks (closes terminal) and is swept after **24 h** (`DoneRetention`); background = service, never notified as Finished; a session that starts working again goes back to in_progress | `sessions.go handleSetStatus`, `done.go park/sweep` | KEEP |
+| Status filing ("shelves") | in_progress/review/pending/done/background via `POST …/file`; `done` parks (closes terminal) and is swept after `workspace.done_days` (**14 days** by default; was 24 h); background = service, never notified as Finished; a session that starts working again goes back to in_progress | `sessions.go handleSetStatus`, `done.go park/sweep` | KEEP |
 | Rename | `PATCH /api/sessions/{id}` `{title}` | `sessions.go` | KEEP |
 | Mark read | `POST …/read` and WS `read` frame clear unread | `sessions.go`, `ws.go` | KEEP |
 | Journal download | `GET …/journal` last 16 MB of raw bytes | `sessions.go handleJournal`, `termux/journal.go` | TERMINAL-ONLY (agent equivalent: export transcript/event log — ADAPT, inferred) |

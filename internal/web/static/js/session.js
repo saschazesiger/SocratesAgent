@@ -837,6 +837,11 @@ function deleteWords(session) {
   const hours = Math.max(0, Math.round((at - Date.now()) / 3600000));
   const when = new Date(at);
   const clock = String(when.getHours()).padStart(2, '0') + ':' + String(when.getMinutes()).padStart(2, '0');
+  // Past two days the hour stops mattering and the day is what to know.
+  if (hours >= 48) {
+    return 'Deleted in ' + Math.round(hours / 24) + ' days, on ' +
+      when.toLocaleDateString([], { day: 'numeric', month: 'short' });
+  }
   return hours >= 1 ? 'Deleted in ' + hours + ' h, at ' + clock : 'Deleted within the hour';
 }
 

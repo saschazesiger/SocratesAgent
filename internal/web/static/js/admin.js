@@ -66,6 +66,7 @@ const FIELDS = [
   ['orOutcomes', 'openrouter.outcomes', 'bool'],
   ['workspaceRoot', 'workspace.root'],
   ['allowCustomDir', 'workspace.allow_custom', 'bool'],
+  ['doneDays', 'workspace.done_days', 'int'],
   ['windowSize', 'terminal.window_size'],
   ['historyLimit', 'terminal.history_limit', 'int'],
   ['scrollback', 'terminal.scrollback', 'int'],
@@ -260,7 +261,15 @@ function fillForm() {
     const value = getPath(settings, path);
     if (type === 'bool') node.checked = !!value;
     else if (type === 'args') node.value = (value || []).join(' ');
-    else node.value = value ?? '';
+    else {
+      // A value set through the API that the list does not offer is shown
+      // as it is, so that saving the page does not change it.
+      if (node.tagName === 'SELECT' && value != null && value !== '' &&
+          ![...node.options].some((o) => o.value === String(value))) {
+        node.append(el('option', { value: String(value) }, String(value)));
+      }
+      node.value = value ?? '';
+    }
   }
   renderWindowSizeHint();
   // The microphones on this page ask whether there is a key to transcribe

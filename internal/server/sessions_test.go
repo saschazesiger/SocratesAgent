@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/saschazesiger/SocratesAgent/internal/config"
 	"github.com/saschazesiger/SocratesAgent/internal/store"
 	"github.com/saschazesiger/SocratesAgent/internal/termux"
 )
@@ -311,8 +312,9 @@ func TestSessionLifecycle(t *testing.T) {
 	if e.hasTmuxSession(id) {
 		t.Fatal("a done session kept its tmux session")
 	}
-	if at, _ := done["status_at"].(float64); done["delete_at"] != at+float64(DoneRetention.Milliseconds()) {
-		t.Fatalf("a done session is deleted at %v, want %v after %v", done["delete_at"], DoneRetention, at)
+	retention := time.Duration(config.DefaultDoneDays) * 24 * time.Hour
+	if at, _ := done["status_at"].(float64); done["delete_at"] != at+float64(retention.Milliseconds()) {
+		t.Fatalf("a done session is deleted at %v, want %v after %v", done["delete_at"], retention, at)
 	}
 	_, payload = e.do(t, e.client, "GET", "/api/sessions", "")
 	if list, _ := payload["sessions"].([]any); len(list) != len(cases) {
@@ -898,7 +900,19 @@ func TestSweepParksAndDeletesDoneSessions(t *testing.T) {
 		t.Fatalf("the sweep left a done session running: state %s, tmux %v", row.State, e.hasTmuxSession(id))
 	}
 
-	e.srv.sweep(context.Background(), time.Now().Add(DoneRetention+time.Minute))
+	// A day after it was filed it is still there under the default, and gone
+	// as soon as the setting says a day is all a done session gets.
+	dayLater := time.Now().Add(24*time.Hour + time.Minute)
+	e.srv.sweep(context.Background(), dayLater)
+	if _, err := e.store.GetSession(id); err != nil {
+		t.Fatalf("a done session was deleted a day in, under a %d-day retention: %v", config.DefaultDoneDays, err)
+	}
+	next := e.srv.Settings()
+	next.Workspace.DoneDays = 1
+	if err := e.srv.saveSettings(next); err != nil {
+		t.Fatal(err)
+	}
+	e.srv.sweep(context.Background(), dayLater)
 	if !e.hasTmuxSession(serviceID) {
 		t.Fatal("the sweep stopped a background session")
 	}

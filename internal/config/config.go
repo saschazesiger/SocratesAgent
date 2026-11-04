@@ -205,7 +205,18 @@ type WorkspaceSettings struct {
 	DefaultHarness string      `json:"default_harness"`
 	Presets        []PresetDir `json:"presets"`
 	AllowCustom    bool        `json:"allow_custom"`
+	// DoneDays is how many days a session filed under done is kept before
+	// it is deleted. A done session costs no process, only its files on
+	// disk, so the default leaves time to come back to one.
+	DoneDays int `json:"done_days"`
 }
+
+// DefaultDoneDays is how long a done session is kept, in days.
+const DefaultDoneDays = 14
+
+// MaxDoneDays is the longest a done session may be kept: beyond it, done
+// would be a second archive rather than a grace period.
+const MaxDoneDays = 365
 
 // PresetDir is one quick pick: a label a person recognises and the path it
 // stands for.
@@ -326,6 +337,7 @@ func Default() Settings {
 			Root:           DefaultWorkspaceRoot(),
 			DefaultHarness: HarnessClaude,
 			AllowCustom:    true,
+			DoneDays:       DefaultDoneDays,
 		},
 		Terminal: TerminalSettings{
 			WindowSize:   "manual",
@@ -428,6 +440,10 @@ func (s *Settings) normalizeWorkspace(d Settings) {
 		s.Workspace.Root = d.Workspace.Root
 	}
 	s.Workspace.Root = strings.TrimSpace(s.Workspace.Root)
+	if s.Workspace.DoneDays <= 0 {
+		s.Workspace.DoneDays = DefaultDoneDays
+	}
+	s.Workspace.DoneDays = min(s.Workspace.DoneDays, MaxDoneDays)
 	if !IsHarness(s.Workspace.DefaultHarness) {
 		s.Workspace.DefaultHarness = d.Workspace.DefaultHarness
 	}

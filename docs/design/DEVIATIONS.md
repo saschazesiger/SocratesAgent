@@ -1917,7 +1917,7 @@ one **status** instead, set from the row's menu under "Status":
 | `review` | runs | its project folder, an eye | never |
 | `pending` | runs | its project folder, a clock | never |
 | `background` | runs, never stopped or deleted | a folder of its own, shut by default; no chime, no notification | never |
-| `done` | **closed** | a folder of its own, shut by default | never; deleted `DoneRetention` (24 h) later |
+| `done` | **closed** | a folder of its own, shut by default | never; deleted `workspace.done_days` (default 14 days, Admin → Workspace) later |
 
 - **Done parks the session** (`Manager.Park`): the tmux session is killed and
   the row is left `needs_resume`, which is exactly what a reboot leaves — row,

@@ -874,7 +874,7 @@ async function sessionlist() {
     ok(done.status === 'done' && done.state === 'needs_resume' && done.delete_at > Date.now(),
       'Done closes the terminal and keeps the session for a while', done.state + ' until ' + done.delete_at);
     const overlay = await s.page.$eval('#termOverlay', (n) => n.textContent);
-    ok(/Deleted in/.test(overlay), 'the page says when a done session is deleted', oneLine(overlay));
+    ok(/Deleted in 14 days, on /.test(overlay), 'the page says when a done session is deleted: 14 days on', oneLine(overlay));
     await shot(s.page, 'sessionlist-done');
 
     // Picked up again, it resumes on the same row.
@@ -1310,6 +1310,9 @@ async function adminoptions() {
     await s.page.fill(row + ' input:nth-child(2)', preset);
     await s.page.selectOption('#windowSize', 'largest');
     await s.page.fill('#historyLimit', '31000');
+    const doneDefault = await s.page.$eval('#doneDays', (n) => n.value);
+    ok(doneDefault === '14', 'a done session is kept 14 days unless Admin says otherwise', doneDefault);
+    await s.page.selectOption('#doneDays', '3');
 
     // Nothing the owner took out of the dashboard may still be in it: the page
     // is the promise, and a leftover control is a promise the app breaks.
@@ -1368,6 +1371,9 @@ async function adminoptions() {
     ok(terminal.windowSize === 'largest' && terminal.history === '31000',
       'the terminal card round-trips too', JSON.stringify(terminal));
     ok(terminal.preset === preset, 'the preset directory was stored', terminal.preset);
+    const doneDays = await s.page.$eval('#doneDays', (n) => n.value);
+    ok(doneDays === '3' && saved.settings.workspace.done_days === 3, 'how long done sessions are kept is saved',
+      doneDays + ' / ' + saved.settings.workspace.done_days);
 
     // A program's note says what it is; whether it is here, and how to get
     // it, is the card's: VS Code's says to install code-server only while

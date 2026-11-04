@@ -123,6 +123,8 @@ The settings live in `/etc/socrates.env`:
 | `/opt/socrates` | Source, Go, Node, OpenCode, code-server |
 | `/root` | `HOME`: the agents' folders link into the accounts |
 
+🗑️ A session filed under **Done** stops its program at once and keeps only its files (for a chat, `<data>/chats/<chat>/`). It is deleted 14 days later; Admin → Workspace → *Keep done sessions for* changes that (`workspace.done_days`, 1 to 365), for the done sessions already there too. Its working directory is never deleted.
+
 ---
 
 ## 🧪 Chat tests

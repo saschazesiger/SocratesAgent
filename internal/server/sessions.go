@@ -134,7 +134,7 @@ func (s *Server) viewWith(row *store.Session, drafts map[string]store.DraftMeta)
 		}
 	}
 	if row.Status == store.StatusDone {
-		v.DeleteAt = row.StatusAt + DoneRetention.Milliseconds()
+		v.DeleteAt = row.StatusAt + s.doneRetention().Milliseconds()
 	}
 	return v
 }
@@ -536,10 +536,10 @@ func (s *Server) handleSetWorkdir(w http.ResponseWriter, r *http.Request) {
 
 // handleSetStatus files a session under a status. Done is the one status
 // that does something to the machine: the terminal is closed, so a finished
-// session stops costing anything, and the session itself is kept until
-// DoneRetention has passed. Any other status is the row and nothing more; a
-// session taken out of done is resumed the next time it is opened, like one
-// a reboot took away.
+// session stops costing anything, and the session itself is kept until its
+// retention (workspace.done_days) has passed. Any other status is the row and
+// nothing more; a session taken out of done is resumed the next time it is
+// opened, like one a reboot took away.
 func (s *Server) handleSetStatus(w http.ResponseWriter, r *http.Request) {
 	row, ok := s.session(w, r)
 	if !ok {

@@ -203,6 +203,24 @@ func TestSlug(t *testing.T) {
 		}
 	}
 }
+
+// A done session is kept for the default when nothing was chosen, and never
+// for longer than MaxDoneDays.
+func TestNormalizeDoneDays(t *testing.T) {
+	for _, tc := range []struct{ in, want int }{
+		{0, DefaultDoneDays}, {-3, DefaultDoneDays}, {1, 1}, {30, 30}, {10000, MaxDoneDays},
+	} {
+		s := Settings{Workspace: WorkspaceSettings{DoneDays: tc.in}}
+		s.Normalize()
+		if s.Workspace.DoneDays != tc.want {
+			t.Fatalf("done_days %d normalized to %d, want %d", tc.in, s.Workspace.DoneDays, tc.want)
+		}
+	}
+	if Default().Workspace.DoneDays != DefaultDoneDays {
+		t.Fatalf("the default document keeps done sessions %d days", Default().Workspace.DoneDays)
+	}
+}
+
 func TestNormalizeDefaultsTheLanguage(t *testing.T) {
 	s := Settings{}
 	s.Normalize()

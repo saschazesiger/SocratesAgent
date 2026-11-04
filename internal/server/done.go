@@ -6,14 +6,24 @@ import (
 	"log"
 	"time"
 
+	"github.com/saschazesiger/SocratesAgent/internal/config"
 	"github.com/saschazesiger/SocratesAgent/internal/store"
 )
 
-// DoneRetention is how long a session is kept once it is done. Its terminal
-// is closed the moment it is marked, so what the retention keeps is the row,
-// the scrollback and the conversation id - enough to take it out of done
-// again and carry on where it stopped.
-const DoneRetention = 24 * time.Hour
+// doneRetention is how long a session is kept once it is done
+// (workspace.done_days). Its terminal is closed the moment it is marked, so
+// what the retention keeps is the row, the scrollback and the conversation id
+// - enough to take it out of done again and carry on where it stopped. It is
+// read whenever it is needed, so a changed setting moves the deletion of
+// every done session at once. A document that was never normalized must not
+// make the sweep delete every done session, so zero is the default.
+func (s *Server) doneRetention() time.Duration {
+	days := s.Settings().Workspace.DoneDays
+	if days <= 0 {
+		days = config.DefaultDoneDays
+	}
+	return time.Duration(days) * 24 * time.Hour
+}
 
 // sweepEvery is how often done sessions are looked at. A deletion a minute
 // late is nobody's problem, and a sweep is one read of the session table.
@@ -83,12 +93,13 @@ func (s *Server) sweep(ctx context.Context, now time.Time) {
 		log.Printf("sweep: could not read the sessions: %v", err)
 		return
 	}
+	retention := s.doneRetention().Milliseconds()
 	for _, row := range rows {
 		if row.Status != store.StatusDone {
 			continue
 		}
 		one, cancel := context.WithTimeout(ctx, 30*time.Second)
-		if now.UnixMilli() >= row.StatusAt+DoneRetention.Milliseconds() {
+		if now.UnixMilli() >= row.StatusAt+retention {
 			if err := s.deleteSession(one, row.ID); err != nil && !errors.Is(err, store.ErrNotFound) {
 				log.Printf("sweep: could not delete done session %s: %v", row.ID, err)
 			} else {
