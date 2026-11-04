@@ -128,6 +128,9 @@ type host struct {
 	account string
 	env     []string
 	pending *pendingSwitch
+	// tasksAt is when the agent's background work last changed
+	// (switchSettle).
+	tasksAt time.Time
 	// mcpSaid is what the chat was last told about its MCP servers
 	// (chatMCP), so that a switch does not say it again.
 	mcpSaid string
@@ -600,6 +603,11 @@ func (h *host) record(events ...agent.Event) {
 		log.Printf("journal: %v", err)
 	}
 	h.touch()
+	for _, ev := range events {
+		if ev.Type == agent.TypeTasks {
+			h.noteTasks()
+		}
+	}
 	for _, ev := range events {
 		if ev.Type == agent.TypeTurnEnded || ev.Type == agent.TypeTasks {
 			// A switch that waits for the agent to be done may be due.

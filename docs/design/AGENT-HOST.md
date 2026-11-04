@@ -331,18 +331,28 @@ adapter started on the account the journal's last turn was `limited` on, with no
 the old account again after a switch that failed, or a new host on it (§6) - gets that turn as
 `StartSpec.Held` and holds what it is handed as the adapter before it did (§5.2, §5.3): the
 turn's `account` (stamped by the host on `turn.started`) against the account it starts on decides.
-On another account nothing is held: that is what the switch, by hand or automatic, was for. With
-`continue`, the new account is then sent `agenthost.ContinueText` ("Continue where you left off.")
-as a user message with `client_id` `<the switch's client_id>:continue`: what "Continue with" and the
-automatic switch at a limit send. A switch to the account the chat is on journals nothing, and
-continues only when the last turn ended `limited` or `interrupted` and the agent has taken nothing
-up since: a second "Continue with", one from another device or an automatic switch on top of one
-by hand does not make the agent continue twice. Every message a switch sends (the restart, the
+On another account nothing is held: that is what the switch, by hand or automatic, was for. The
+new account is then sent `agenthost.ContinueText` ("Continue where you left off.") as a user
+message with `client_id` `<the switch's client_id>:continue` whenever the agent would have gone on
+on the old one, whether or not the switch has `continue`: the switch stops a running turn (one made
+now, or a turn the CLI started by itself while a switch after the turn was being made), or the last
+turn ended `limited` on another account and the agent has taken nothing up since (`limitOwes`:
+messages the limit held go to the new account and carry the chat on themselves). `continue`
+(what "Continue with" and the automatic switch at a limit send) adds a last turn the person
+stopped. Seen in real chats: a switch by the account menu after a limit, or one that cut a turn
+the CLI had just started, left the agent idle until the person wrote "continue". A switch to the
+account the chat is on journals nothing (unless the divider is missing), and continues when the
+last turn ended `limited` on another account (the server moved the chat while no host ran, and
+this host started on the new account), or, with `continue`, `limited` or `interrupted`, and the
+agent has taken nothing up since: a second "Continue with", one from another device or an
+automatic switch on top of one by hand does not make the agent continue twice. Every message a switch sends (the restart, the
 continue) has `notice{switch_message}` right before it and a `client_id` ending in `:continue`: the chat
 shows it as a card "From Socrates" on the agent's side, as it shows another chat's message, never
 as the person's bubble (so is the Continue after a limit renewed, `auto-continue-…`). An `after_turn` switch also waits for
 the background work, so that it stops nothing and sends nothing: the agent goes on as if nothing
-had happened. Schedules are not waited for (a loop would never let it go); they are named in the
+had happened. Once that work ends, it waits `switchSettle` (2 s) more since the last `tasks`
+event: Claude Code starts a turn of its own about what the work brought a few milliseconds later,
+and a switch made in between killed the CLI with that turn unstarted and the work's report lost. Schedules are not waited for (a loop would never let it go); they are named in the
 restart. A host that boots with a spec whose `account` differs from the journal's last
 (the switch was asked for while no host ran) journals `account.switched{reason: switch_reason}` first.
 

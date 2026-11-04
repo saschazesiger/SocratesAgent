@@ -502,3 +502,142 @@ func TestASwitchNamesWhatWasScheduled(t *testing.T) {
 		t.Fatalf("restart text: %s", text)
 	}
 }
+
+// userTexts is what the journal's user messages say, in order.
+func userTexts(events []agent.Event) []string {
+	var out []string
+	for _, ev := range events {
+		if ev.Type == agent.TypeMessage && ev.Role == agent.RoleUser {
+			out = append(out, ev.Text)
+		}
+	}
+	return out
+}
+
+// A switch away from an account whose limit stopped the agent makes it go
+// on, even when the switch does not ask for it (the account menu): it would
+// have gone on, had the limit not stopped it. Seen in real chats, where the
+// person had to say "continue" after every such switch.
+func TestASwitchAfterALimitGoesOnWithoutBeingAsked(t *testing.T) {
+	r := newSwitchRig(t)
+	r.launchOn("acct-a", "", "")
+	cl := r.dial(0)
+	cl.reply("m1", "/limit")
+	cl.switchTo("s1", "acct-b", "", r, WhenNow, false)
+	cl.ack("s1", 30*time.Second)
+	cl.until(10*time.Second, func(ev agent.Event) bool {
+		return ev.Type == agent.TypeTurnEnded && ev.Outcome == agent.OutcomeCompleted
+	})
+	events := r.journal()
+	if got := strings.Join(userTexts(events), "|"); got != "/limit|"+ContinueText {
+		t.Fatalf("the agent was told %q", got)
+	}
+	if !noticeBefore(events, agent.NoticeSwitchMessage, ContinueText) {
+		t.Fatal("the continue has no switch_message notice before it")
+	}
+	if accounts := strings.Join(turnAccounts(events), ","); accounts != "acct-a,acct-b" {
+		t.Fatalf("the turns ran on %s", accounts)
+	}
+}
+
+// The same when the server moved the chat while no host ran: the new host
+// starts on the other account, and the switch that reaches it then - to the
+// account it is on - still makes the agent go on, once.
+func TestASwitchAfterALimitWhileNoHostRanGoesOn(t *testing.T) {
+	r := newSwitchRig(t)
+	r.launchOn("acct-a", "", "")
+	cl := r.dial(0)
+	cl.reply("m1", "/limit")
+	if err := cl.c.Send(Command{Op: OpPark}); err != nil {
+		t.Fatal(err)
+	}
+	r.waitDead(10 * time.Second)
+	r.launchOn("acct-b", "", "")
+	again := r.dial(0)
+	again.switchTo("s1", "acct-b", "", r, WhenNow, false)
+	again.ack("s1", 30*time.Second)
+	again.until(10*time.Second, func(ev agent.Event) bool {
+		return ev.Type == agent.TypeTurnEnded && ev.Outcome == agent.OutcomeCompleted
+	})
+	delete(again.acks, "s1")
+	again.switchTo("s1", "acct-b", "", r, WhenNow, false)
+	again.ack("s1", 10*time.Second)
+	again.switchTo("s2", "acct-b", "", r, WhenNow, false)
+	again.ack("s2", 10*time.Second)
+	time.Sleep(300 * time.Millisecond)
+	events := r.journal()
+	if got := strings.Join(userTexts(events), "|"); got != "/limit|"+ContinueText {
+		t.Fatalf("the agent was told %q", got)
+	}
+	if got := dividers(events); len(got) != 1 || got[0].From != "acct-a" || got[0].To != "acct-b" {
+		t.Fatalf("dividers %+v", got)
+	}
+}
+
+// A switch made now in the middle of a turn makes the agent go on on the new
+// account even when the switch does not say so: the turn would have gone on.
+func TestASwitchThatStopsATurnGoesOnWithoutBeingAsked(t *testing.T) {
+	r := newSwitchRig(t)
+	r.launchOn("acct-a", "", "")
+	cl := r.dial(0)
+	cl.send("m1", "/sleep 30")
+	cl.until(10*time.Second, isType(agent.TypeTurnStarted))
+	cl.switchTo("s1", "acct-b", "", r, WhenNow, false)
+	cl.ack("s1", 30*time.Second)
+	cl.until(10*time.Second, func(ev agent.Event) bool {
+		return ev.Type == agent.TypeTurnEnded && ev.Outcome == agent.OutcomeCompleted
+	})
+	if got := strings.Join(userTexts(r.journal()), "|"); got != "/sleep 30|"+ContinueText {
+		t.Fatalf("the agent was told %q", got)
+	}
+}
+
+// A turn the person stopped is not taken up again by a switch that does not
+// ask for it, nor is an agent that was done: neither would have gone on.
+func TestASwitchAfterAStopOrADoneTurnSaysNothing(t *testing.T) {
+	r := newSwitchRig(t)
+	r.launchOn("acct-a", "", "")
+	cl := r.dial(0)
+	cl.reply("m1", "hello")
+	cl.switchTo("s1", "acct-b", "", r, WhenNow, false)
+	cl.ack("s1", 30*time.Second)
+	cl.send("m2", "/sleep 30")
+	cl.until(10*time.Second, func(ev agent.Event) bool { return ev.Type == agent.TypeTurnStarted && ev.Account == "acct-b" })
+	if err := cl.c.Send(Command{Op: OpInterrupt, ClientID: "i1"}); err != nil {
+		t.Fatal(err)
+	}
+	cl.until(10*time.Second, func(ev agent.Event) bool {
+		return ev.Type == agent.TypeTurnEnded && ev.Outcome == agent.OutcomeInterrupted
+	})
+	cl.switchTo("s2", "acct-a", "", r, WhenNow, false)
+	cl.ack("s2", 30*time.Second)
+	time.Sleep(300 * time.Millisecond)
+	if got := strings.Join(userTexts(r.journal()), "|"); got != "hello|/sleep 30" {
+		t.Fatalf("the agent was told %q", got)
+	}
+}
+
+// A switch that waits for the background work is not made the moment the
+// work ends: the CLI starts a turn of its own about it right after, which the
+// switch would otherwise kill unstarted.
+func TestASwitchAfterBackgroundWorkLetsItSettle(t *testing.T) {
+	r := newSwitchRig(t)
+	r.launchOn("acct-a", "", "")
+	cl := r.dial(0)
+	cl.reply("m1", "/bg 1")
+	cl.switchTo("s1", "acct-b", "", r, WhenAfterTurn, false)
+	cl.ack("s1", 5*time.Second)
+	cl.until(15*time.Second, isType(agent.TypeAccountSwitched))
+	var ended, switched int64
+	for _, ev := range r.journal() {
+		switch {
+		case ev.Type == agent.TypeTasks && ev.Count == 0:
+			ended = ev.At
+		case ev.Type == agent.TypeAccountSwitched && switched == 0:
+			switched = ev.At
+		}
+	}
+	if ended == 0 || time.Duration(switched-ended)*time.Millisecond < switchSettle {
+		t.Fatalf("switched %d ms after the background work ended", switched-ended)
+	}
+}

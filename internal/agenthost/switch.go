@@ -31,6 +31,14 @@ import (
 // parked anyway; parking ends it either way.
 const switchWait = 30 * time.Second
 
+// switchSettle is how long a switch that waits for the agent still waits once
+// its background work has ended: the CLI starts a turn of its own about what
+// the work brought (Claude Code's task notification) a few milliseconds
+// later, and a switch made in between would kill the CLI with that turn
+// unstarted. Seen in real chats: the subagent's report was lost, and the
+// person had to say "continue". A variable for the tests.
+var switchSettle = 2 * time.Second
+
 // pendingSwitch is a switch_account that waits for the agent to be done.
 // It is acknowledged as pending at once, so the person's request is
 // answered, and finally once it is made or replaced: until then it stays in
@@ -45,6 +53,22 @@ func (h *host) currentAccount() string {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return h.account
+}
+
+// noteTasks keeps when the agent's background work last changed, for
+// switchSettle.
+func (h *host) noteTasks() {
+	h.mu.Lock()
+	h.tasksAt = time.Now()
+	h.mu.Unlock()
+}
+
+// settling reports whether the background work changed too recently for a
+// waiting switch to be made.
+func (h *host) settling() bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return !h.tasksAt.IsZero() && time.Since(h.tasksAt) < switchSettle
 }
 
 func (h *host) hasPending() bool {
@@ -182,6 +206,17 @@ func heldFor(p *agent.Projection, account string) string {
 	return p.LastTurn.ID
 }
 
+// limitOwes reports whether the agent was stopped by the limit of another
+// account than to, and has taken nothing up since: it would have gone on had
+// the limit not stopped it, so a switch to an account that has room tells it
+// to go on, whether or not the switch asked for it (the account menu, a switch
+// the server made while no host ran). Messages the limit held go to the new
+// account and carry the chat on by themselves. A turn that names no account
+// ran before the journal knew any, and counts as another's.
+func limitOwes(p *agent.Projection, to string) bool {
+	return heldByLimit(p) && len(p.Undelivered()) == 0 && p.LastTurn.Account != to
+}
+
 // owesContinue reports whether a switch's Continue still has a turn to carry
 // on: the last one stopped (by the limit, or by the switch) and the agent has
 // taken nothing up since. A Continue sent twice - a second tap, another
@@ -205,7 +240,7 @@ func (h *host) runPending() {
 		return
 	}
 	defer h.cmdMu.Unlock()
-	if h.adapter == nil || h.isEnding() || h.busy() {
+	if h.adapter == nil || h.isEnding() || h.busy() || h.settling() {
 		return
 	}
 	h.mu.Lock()
@@ -239,14 +274,20 @@ func (h *host) doSwitch(ctx context.Context, cmd Command, env []string) error {
 		h.mu.Lock()
 		h.env = env
 		h.mu.Unlock()
-		owed := false
-		h.rec.View(func(p *agent.Projection) { owed = owesContinue(p) })
-		if cmd.Continue && owed {
+		goOn := false
+		h.rec.View(func(p *agent.Projection) { goOn = (cmd.Continue && owesContinue(p)) || limitOwes(p, cmd.Account) })
+		if goOn {
 			h.sendContinue(ctx, cmd)
 		}
 		return nil
 	}
 	log.Printf("switching from account %s to %s", from, cmd.Account)
+	// The agent goes on on the new account when it would have gone on on
+	// the old one: a turn the switch stops (now, or one the CLI started by
+	// itself while a switch after the turn was being made) and a turn the
+	// limit stopped, as much as when the switch asks for it.
+	goOn := cmd.Continue
+	h.rec.View(func(p *agent.Projection) { goOn = goOn || p.Turn != nil || limitOwes(p, cmd.Account) })
 	h.interruptAndWait(ctx)
 	divider := agent.Event{Type: agent.TypeAccountSwitched, From: from, To: cmd.Account, Reason: cmd.Reason}
 	if sw, ok := h.adapter.(agent.AccountSwitcher); ok {
@@ -261,40 +302,40 @@ func (h *host) doSwitch(ctx context.Context, cmd Command, env []string) error {
 			return err
 		}
 		h.cliPID.Store(int64(h.adapter.PID()))
-	} else {
-		// What runs in the background dies with the old process; the agent
-		// on the new one is asked to start it again.
-		var stopped []string
-		h.rec.View(func(p *agent.Projection) { stopped = runningWork(p) })
-		h.parkAdapter(ctx, len(stopped) > 0)
-		h.record(divider)
-		if err := h.startAdapter(ctx, cmd.Account, env); err != nil {
-			// The other account could not start the agent (signed out, a
-			// key that is refused): the chat goes on where it was, and says
-			// both.
-			h.mu.Lock()
-			back := h.env
-			h.mu.Unlock()
-			h.record(agent.Event{Type: agent.TypeError, Code: "switch_failed",
-				Text: fmt.Sprintf("The agent could not start on the other account: %v", err)},
-				agent.Event{Type: agent.TypeAccountSwitched, From: cmd.Account, To: from,
-					Reason: "The switch did not work, so the chat stays on the account it was on."})
-			if berr := h.startAdapter(ctx, from, back); berr != nil {
-				h.failStart(berr)
-				return err
-			}
-			h.resendOwed(ctx)
-			h.sendGoOn(ctx, cmd, stopped, false)
-			return err
+		if goOn {
+			h.sendContinue(ctx, cmd)
 		}
-		h.setAccount(cmd.Account, env)
-		h.resendOwed(ctx)
-		h.sendGoOn(ctx, cmd, stopped, cmd.Continue)
 		return nil
 	}
-	if cmd.Continue {
-		h.sendContinue(ctx, cmd)
+	// What runs in the background dies with the old process; the agent on
+	// the new one is asked to start it again.
+	var stopped []string
+	h.rec.View(func(p *agent.Projection) { stopped = runningWork(p) })
+	if h.parkAdapter(ctx, len(stopped) > 0) {
+		goOn = true
 	}
+	h.record(divider)
+	if err := h.startAdapter(ctx, cmd.Account, env); err != nil {
+		// The other account could not start the agent (signed out, a key
+		// that is refused): the chat goes on where it was, and says both.
+		h.mu.Lock()
+		back := h.env
+		h.mu.Unlock()
+		h.record(agent.Event{Type: agent.TypeError, Code: "switch_failed",
+			Text: fmt.Sprintf("The agent could not start on the other account: %v", err)},
+			agent.Event{Type: agent.TypeAccountSwitched, From: cmd.Account, To: from,
+				Reason: "The switch did not work, so the chat stays on the account it was on."})
+		if berr := h.startAdapter(ctx, from, back); berr != nil {
+			h.failStart(berr)
+			return err
+		}
+		h.resendOwed(ctx)
+		h.sendGoOn(ctx, cmd, stopped, false)
+		return err
+	}
+	h.setAccount(cmd.Account, env)
+	h.resendOwed(ctx)
+	h.sendGoOn(ctx, cmd, stopped, goOn)
 	return nil
 }
 
@@ -439,10 +480,10 @@ func (h *host) interruptAndWait(ctx context.Context) {
 }
 
 // parkAdapter stops the CLI for a switch, and closes a turn the park cut
-// short. An adapter that can be released is not waited for while background
-// work of it runs: that work ends either way, and restart says the agent is
-// asked to start it again.
-func (h *host) parkAdapter(ctx context.Context, restart bool) {
+// short, which it reports. An adapter that can be released is not waited for
+// while background work of it runs: that work ends either way, and restart
+// says the agent is asked to start it again.
+func (h *host) parkAdapter(ctx context.Context, restart bool) (cut bool) {
 	old := h.adapter
 	h.setAdapter(nil)
 	h.cliPID.Store(0)
@@ -472,6 +513,7 @@ func (h *host) parkAdapter(ctx context.Context, restart bool) {
 			events = append(events, agent.Event{Type: agent.TypeNotice, Code: agent.NoticeBackgroundStopped, Text: text})
 		}
 		if p.Turn != nil {
+			cut = true
 			events = append(events, agent.Event{Type: agent.TypeTurnEnded, TurnID: p.Turn.ID,
 				Outcome: agent.OutcomeInterrupted, Text: "The turn was stopped to switch the account."})
 		}
@@ -479,6 +521,7 @@ func (h *host) parkAdapter(ctx context.Context, restart bool) {
 	if len(events) > 0 {
 		h.record(events...)
 	}
+	return cut
 }
 
 // startAdapter starts a new adapter on account with env, resuming the chat's
