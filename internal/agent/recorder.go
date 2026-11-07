@@ -33,7 +33,6 @@ type Recorder struct {
 	// lengths is the UTF-16 length of each part's text, counting the live
 	// deltas not yet journaled: the offset the next delta starts at.
 	lengths map[string]int
-	err     error
 	closed  bool
 
 	stop chan struct{}
@@ -86,17 +85,14 @@ func (r *Recorder) View(fn func(*Projection)) {
 	fn(r.proj)
 }
 
-// Err is the first write error, after which nothing more is written.
-func (r *Recorder) Err() error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return r.err
-}
-
 // Emit records events. The coalesced deltas waiting to be written go first, so
 // the journal is always the order things happened in; a part event replaces
 // its part whole, so deltas of that same part still waiting are dropped
 // instead.
+//
+// A write that fails (the disk is full) records nothing and returns the
+// error; deltas still waiting stay waiting. The next write tries again, so
+// the chat goes on by itself once there is room.
 func (r *Recorder) Emit(events ...Event) ([]Event, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -113,16 +109,12 @@ func (r *Recorder) EmitDurable(events ...Event) ([]Event, error) {
 		return nil, err
 	}
 	if err := r.journal.Sync(); err != nil {
-		r.err = err
 		return nil, err
 	}
 	return out, nil
 }
 
 func (r *Recorder) emitLocked(events []Event) ([]Event, error) {
-	if r.err != nil {
-		return nil, r.err
-	}
 	if r.closed {
 		return nil, errClosed
 	}
@@ -132,7 +124,9 @@ func (r *Recorder) emitLocked(events []Event) ([]Event, error) {
 			r.dropLocked(ev.PartID)
 		}
 	}
-	r.flushAllLocked()
+	if err := r.flushAllLocked(); err != nil {
+		return nil, err
+	}
 	return r.appendLocked(events)
 }
 
@@ -163,12 +157,8 @@ func (r *Recorder) timeTodosLocked(events []Event) []Event {
 }
 
 func (r *Recorder) appendLocked(events []Event) ([]Event, error) {
-	if r.err != nil {
-		return nil, r.err
-	}
 	out, err := r.journal.Append(events...)
 	if err != nil {
-		r.err = err
 		return nil, err
 	}
 	for _, ev := range out {
@@ -189,7 +179,7 @@ func (r *Recorder) Delta(messageID, partID, text string) {
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if r.err != nil || r.closed {
+	if r.closed {
 		return
 	}
 	offset := r.lengths[partID]
@@ -209,21 +199,34 @@ func (r *Recorder) Delta(messageID, partID, text string) {
 func (r *Recorder) Flush() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.flushAllLocked()
-}
-
-func (r *Recorder) flushPart(partID string) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if p := r.pending[partID]; p != nil {
-		r.forgetLocked(partID)
-		_, _ = r.appendLocked([]Event{p.event(partID)})
+	if !r.closed {
+		_ = r.flushAllLocked()
 	}
 }
 
-func (r *Recorder) flushAllLocked() {
-	if len(r.pending) == 0 {
+// flushPart writes one part's pending deltas when its window is up. When the
+// write fails they stay pending and are tried again a window later.
+func (r *Recorder) flushPart(partID string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	p := r.pending[partID]
+	if p == nil || r.closed {
 		return
+	}
+	if _, err := r.appendLocked([]Event{p.event(partID)}); err != nil {
+		p.timer.Reset(r.window)
+		return
+	}
+	r.forgetLocked(partID)
+}
+
+// flushAllLocked writes every pending delta. When the write fails they stay
+// pending, their text whole, and are tried again a window later: live readers
+// already have them, and the journal must not skip text the next deltas'
+// offsets count on.
+func (r *Recorder) flushAllLocked() error {
+	if len(r.pending) == 0 {
+		return nil
 	}
 	events := make([]Event, 0, len(r.order))
 	for _, id := range r.order {
@@ -231,8 +234,14 @@ func (r *Recorder) flushAllLocked() {
 		p.timer.Stop()
 		events = append(events, p.event(id))
 	}
+	if _, err := r.appendLocked(events); err != nil {
+		for _, id := range r.order {
+			r.pending[id].timer.Reset(r.window)
+		}
+		return err
+	}
 	r.pending, r.order = map[string]*pendingDelta{}, nil
-	_, _ = r.appendLocked(events)
+	return nil
 }
 
 func (r *Recorder) dropLocked(partID string) {
@@ -267,13 +276,8 @@ func (r *Recorder) syncLoop() {
 		case <-r.stop:
 			return
 		case <-tick.C:
-			if err := r.journal.Sync(); err != nil {
-				r.mu.Lock()
-				if r.err == nil {
-					r.err = err
-				}
-				r.mu.Unlock()
-			}
+			// A sync that fails is tried again on the next tick.
+			_ = r.journal.Sync()
 		}
 	}
 }
@@ -285,7 +289,10 @@ func (r *Recorder) Close() error {
 		r.mu.Unlock()
 		return nil
 	}
-	r.flushAllLocked()
+	_ = r.flushAllLocked()
+	for _, p := range r.pending {
+		p.timer.Stop()
+	}
 	r.closed = true
 	r.mu.Unlock()
 	close(r.stop)

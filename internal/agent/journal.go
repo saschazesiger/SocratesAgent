@@ -30,6 +30,11 @@ const maxLine = 64 << 20
 // at most a quarter of a second after a write (Recorder). What a power loss
 // can take is therefore never an acknowledged line, and at worst it leaves a
 // torn last line, which the reader skips and the next open cuts off.
+//
+// A write that fails - the disk is full - is cut back off the file at once,
+// so the journal ends on a whole line again and the next append, once there
+// is room, goes on from there. Nothing stays broken after a failed write: the
+// host does not have to be restarted for the chat to work again.
 type Journal struct {
 	path string
 
@@ -37,6 +42,12 @@ type Journal struct {
 	f     *os.File
 	last  int64
 	dirty bool
+	// size is where the last whole line ends: what a failed write is cut
+	// back to.
+	size int64
+	// torn is a failed write that could not be cut back yet; the next append
+	// tries again before it writes.
+	torn bool
 }
 
 // OpenJournal opens a journal for appending, creating it and its directory if
@@ -90,7 +101,12 @@ func OpenJournal(path string) (*Journal, []Event, error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	j := &Journal{path: path, f: af}
+	info, err := af.Stat()
+	if err != nil {
+		af.Close()
+		return nil, nil, err
+	}
+	j := &Journal{path: path, f: af, size: info.Size()}
 	if n := len(events); n > 0 {
 		j.last = events[n-1].Seq
 	}
@@ -142,15 +158,29 @@ func (j *Journal) Append(events ...Event) ([]Event, error) {
 		buf.WriteByte('\n')
 		out[i] = ev
 	}
+	if j.torn {
+		if err := j.f.Truncate(j.size); err != nil {
+			return nil, err
+		}
+		j.torn = false
+	}
 	if _, err := j.f.Write(buf.Bytes()); err != nil {
+		// Part of the batch may have reached the file. Cut it off, so that
+		// the next append starts on a line of its own and no seq is written
+		// twice; the batch is not in the journal.
+		if terr := j.f.Truncate(j.size); terr != nil {
+			j.torn = true
+		}
 		return nil, err
 	}
+	j.size += int64(buf.Len())
 	j.last = seq
 	j.dirty = true
 	return out, nil
 }
 
-// Sync makes every line appended so far durable.
+// Sync makes every line appended so far durable. One that fails is tried
+// again by the next.
 func (j *Journal) Sync() error {
 	j.mu.Lock()
 	defer j.mu.Unlock()
