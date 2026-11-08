@@ -138,11 +138,22 @@ The settings live in `/etc/socrates.env`:
 
 ---
 
+## 🖼️ Chat artifacts
+
+| | |
+| --- | --- |
+| 📂 **Where** | `<data>/chats/<chat>/artifacts/`: `artifacts.json` (every artifact of the chat), `pages/<artifact>/<version>.html` or `.md` (the content of each version) and `files/<artifact>/` (the pictures and data a page uses) |
+| 🧹 **Cleaning up** | They go with their chat; an artifact keeps its last 20 versions. Limits: 100 artifacts per chat, 2 MB per version, 20 MB per file, 200 MB per chat |
+| 🔌 **Switch** | Socrates Artifacts is a built-in MCP server: off in every chat until Admin (*In every chat*) or the chat switches it on |
+| 🌐 **Addresses** | A page is served at `/artifacts/<chat>/<artifact>/<key>/` (signed in), its files beside it (the key is enough), the page kit at `/artifact-kit/`. Mermaid diagrams load Mermaid from `cdn.jsdelivr.net` in the person's browser |
+
+---
+
 ## 🔌 MCP servers
 
 | | |
 | --- | --- |
-| 🧩 **Built in** | `socrates mcp-server <name>` is what an agent starts for a built-in server (BrowserStack, Socrates Tests); it talks to the server over `<data>/run/` sockets. Off in every chat until Admin or the chat switches it on |
+| 🧩 **Built in** | `socrates mcp-server <name>` is what an agent starts for a built-in server (BrowserStack, Socrates Tests, Socrates Artifacts); it talks to the server over `<data>/run/` sockets. Off in every chat until Admin or the chat switches it on |
 | 🔑 **Accounts and sign-ins** | Built-in servers' accounts and OAuth sign-ins are in the database's `kv` table, sealed with `secrets.key`, so they are in the backup |
 | 📱 **BrowserStack** | A chat's screenshots in `<data>/mcp/browserstack/chats/<chat>/` (removed with the chat), the evidence a chat's tests take theirs from. Sessions open when the server stopped are listed in `<data>/run/mcp/browserstack/sessions.json` and closed at the next start. A repository describes its site in `.socrates/mcp.json`, `browserstack` (docs/design/MCP.md) |
 | 🔐 **OAuth** | The authorization server sends the browser back to `<the address Admin is open at>/api/mcp/oauth/callback`; agents reach such a server through `/mcp-proxy/<name>` on Socrates' local address |

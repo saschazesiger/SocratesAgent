@@ -174,7 +174,7 @@ func TestAdminKeepsTheBuiltInServersAccounts(t *testing.T) {
 		t.Fatalf("stored: %q", kv)
 	}
 	_, over := e.do(t, e.client, "GET", "/api/mcp/overview", "")
-	if b := over["builtin"].([]any); len(b) != 2 || b[0].(map[string]any)["name"] != "browserstack" ||
+	if b := over["builtin"].([]any); len(b) != 3 || b[0].(map[string]any)["name"] != "browserstack" ||
 		len(b[0].(map[string]any)["accounts"].([]any)) != 1 {
 		t.Fatalf("overview: %v", over)
 	}

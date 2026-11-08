@@ -1,0 +1,201 @@
+/*
+ * so-artifacts.css: a chat's artifacts (docs/design/ARTIFACTS.md, "The chat
+ * page"; js/artifacts.js), with the prefix so-. Tokens only (--ds-* and the
+ * --so-* of theme.css, "A chat's artifacts"), unlayered, and no .ds-*
+ * component is restyled: the badge on the button is placed, nothing more.
+ *
+ *   .so-artifacts-btn    the top bar's Artifacts button; __badge its count
+ *                        of new or changed artifacts, on the button's corner
+ *   .so-artifacts        the column on the chat's right at a desk (over
+ *                        1100px): __head (Back on a page, the title, a
+ *                        page's actions, Close), __scroll (the list), and
+ *                        .so-artpage while it shows a page ([data-page]:
+ *                        it widens to about half the stage)
+ *   .so-artifacts-sheet  the same list in DS's side sheet, narrower
+ *   .so-artifacts__content what both show: __top (the alert that the server
+ *                        is off), the list (DS's row list), __rest (the
+ *                        empty states)
+ *   .so-artifact         one artifact's row: __desc, __meta, __tag (New or
+ *                        Changed while this device has not shown it)
+ *   .so-artpage          one artifact's page: __bar (the version, a select
+ *                        when there are several), __frame (the sandboxed
+ *                        frame, filling the height; --boxed in the dialog)
+ *   .so-artdialog        the page in DS's full screen dialog, narrower
+ */
+
+/* ── The button ──────────────────────────────────────────────────────── */
+
+.so-artifacts-btn {
+  position: relative;
+}
+
+.so-artifacts-btn__badge {
+  position: absolute;
+  top: calc(-1 * var(--ds-space-1));
+  right: calc(-1 * var(--ds-space-1));
+}
+
+/* ── The column ──────────────────────────────────────────────────────── */
+
+.so-artifacts {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  width: var(--so-artifacts-width);
+  min-width: 0;
+  min-height: 0;
+  border-left: 1px solid var(--ds-line);
+  background: var(--ds-surface);
+}
+
+/* A page wants room: the column takes about half the stage. */
+.so-artifacts[data-page] {
+  width: var(--so-artifacts-page-width);
+}
+
+.so-artifacts__head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--ds-space-1);
+  min-height: var(--ds-touch-target);
+  padding: var(--ds-space-2) var(--ds-space-2) var(--ds-space-2) var(--ds-space-4);
+  border-bottom: 1px solid var(--ds-line);
+}
+
+.so-artifacts[data-page] .so-artifacts__head {
+  padding-left: var(--ds-space-2);
+}
+
+.so-artifacts__title {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  font: var(--ds-font-subtitle);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.so-artifacts__title:focus {
+  outline: none;
+}
+
+.so-artifacts__actions {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--ds-space-1);
+}
+
+.so-artifacts__actions:empty {
+  display: none;
+}
+
+.so-artifacts__scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: var(--ds-space-4);
+}
+
+/* ── What the column and the sheet show ──────────────────────────────── */
+
+.so-artifacts__content {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-space-3);
+  min-width: 0;
+}
+
+.so-artifacts__top:empty,
+.so-artifacts__rest:empty,
+.so-artifacts__list:empty {
+  display: none;
+}
+
+/* ── An artifact's row ───────────────────────────────────────────────── */
+
+.so-artifact__desc,
+.so-artifact__meta {
+  overflow-wrap: anywhere;
+}
+
+.so-artifact__tag {
+  flex: none;
+}
+
+/* ── A page ──────────────────────────────────────────────────────────── */
+
+.so-artpage {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.so-artpage__bar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--ds-space-2);
+  min-width: 0;
+  padding: var(--ds-space-2) var(--ds-space-4);
+  border-bottom: 1px solid var(--ds-line);
+}
+
+.so-artpage__version {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.so-artpage__select {
+  width: auto;
+  max-width: 100%;
+}
+
+.so-artpage__meta {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.so-artpage__frame {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  background: var(--ds-surface);
+}
+
+.so-artpage__iframe {
+  position: absolute;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  background: var(--ds-surface);
+}
+
+/* In the dialog the page stands in a frame of its own, inside the box. */
+.so-artpage__frame--boxed {
+  position: absolute;
+  inset: 0;
+}
+
+.so-artpage__frame--boxed .so-artpage__iframe {
+  border: 1px solid var(--ds-line);
+  border-radius: var(--ds-radius-md);
+}
+
+/* ── The dialog, narrower ────────────────────────────────────────────── */
+
+.so-artdialog__bar {
+  padding-inline: 0;
+  border-bottom: 0;
+}
+
+/* The body only holds the frame, which fills it. */
+.so-artdialog__body {
+  min-height: var(--so-artdialog-frame-min);
+}

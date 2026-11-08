@@ -17,6 +17,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/saschazesiger/SocratesAgent/internal/artifacts"
 	"github.com/saschazesiger/SocratesAgent/internal/backup"
 	"github.com/saschazesiger/SocratesAgent/internal/catalog"
 	"github.com/saschazesiger/SocratesAgent/internal/chattests"
@@ -123,6 +124,8 @@ type Server struct {
 	mcp *mcpserver.Registry
 	// chatTests is every chat's tests (chattests.go).
 	chatTests *chattests.Store
+	// artifacts is every chat's artifacts (artifacts.go).
+	artifacts *artifacts.Store
 	// The sign-ins of Admin's OAuth MCP servers (mcpoauth.go) and the last
 	// test of each (mcpadmin.go), made when first used.
 	oauthOnce sync.Once
@@ -194,6 +197,7 @@ func New(st *store.Store, dataDir string) (*Server, error) {
 	s.push.chatAsk, s.push.chatTurn = s.chats.askWords, s.chats.turnWords
 	s.accounts = newAccountHub(s)
 	s.chatTests = s.newChatTests()
+	s.artifacts = s.newArtifacts()
 	s.mcp = s.newMCPRegistry()
 	manager, err := termux.New(st, cfg)
 	if err != nil {
@@ -443,6 +447,12 @@ func (s *Server) routes() {
 	mux.HandleFunc("POST /api/chats/{id}/tests/{test}/override", s.auth(s.handleChatTestOverride))
 	mux.HandleFunc("POST /api/chats/{id}/tests/{test}/rerun", s.auth(s.handleChatTestRerun))
 	mux.HandleFunc("GET /api/chats/{id}/tests/{test}/files/{file...}", s.auth(s.handleChatTestFile))
+	// A chat's artifacts (artifacts.go): the list, a delete, and every
+	// page at an address of its own, with its files and the kit beside it.
+	mux.HandleFunc("GET /api/chats/{id}/artifacts", s.auth(s.handleChatArtifacts))
+	mux.HandleFunc("DELETE /api/chats/{id}/artifacts/{artifact}", s.auth(s.handleChatArtifactDelete))
+	mux.HandleFunc("GET /artifacts/{id}/{artifact}/{key}/{file...}", s.handleArtifact)
+	mux.Handle("GET /artifact-kit/{name}", web.ArtifactKit())
 	// The MCP servers a chat about to be made would have, for the sheet.
 	mux.HandleFunc("GET /api/mcp", s.auth(s.handleNewChatMCP))
 	// The MCP servers built into Socrates, their accounts (mcpbuiltin.go).

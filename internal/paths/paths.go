@@ -105,6 +105,11 @@ const (
 	// files of their runs (internal/chattests, docs/design/CHAT-TESTS.md).
 	ChatTests = "tests"
 
+	// ChatArtifacts is a chat's artifacts inside chats/<id>/:
+	// artifacts.json, the content of their versions and their files
+	// (internal/artifacts, docs/design/ARTIFACTS.md).
+	ChatArtifacts = "artifacts"
+
 	// TestMode is the folders of test mode, which chat tests replaced: the
 	// runs of every repository's catalog, the runtime of a running one and
 	// its installed tools. A build without test mode deletes them once.

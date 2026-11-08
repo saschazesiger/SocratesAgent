@@ -165,11 +165,13 @@ function whoSet(t) {
  * mountChatTests wires the Tests button, the column and the sheet.
  *
  * `ctx`: button (the top bar's #testsBtn), panel (the column, #testsPanel),
- * mcpDialog(session, opener, { closed }) the chat's MCP servers dialog.
+ * mcpDialog(session, opener, { closed }) the chat's MCP servers dialog,
+ * onColumnOpen() called when the column opens (the Artifacts column shuts
+ * then).
  *
- * It answers { show(session), hide(), frame(frame), resync() }: a chat on
- * the stage, nothing on it, a chattests frame, and a hello (frames may
- * have been missed).
+ * It answers { show(session), hide(), frame(frame), resync(), shut() }: a
+ * chat on the stage, nothing on it, a chattests frame, a hello (frames may
+ * have been missed), and the column shut because another one opened.
  */
 export function mountChatTests(ctx) {
   const { button, panel } = ctx;
@@ -384,6 +386,7 @@ export function mountChatTests(ctx) {
     if (WIDE.matches) {
       const opening = !columnShown();
       setPref(opening);
+      if (opening && ctx.onColumnOpen) ctx.onColumnOpen();
       place();
       if (opening) panel.querySelector('.so-tests__title').focus({ preventScroll: true });
       return;
@@ -403,6 +406,7 @@ export function mountChatTests(ctx) {
   WIDE.addEventListener('change', () => {
     if (WIDE.matches && sheetOpen()) {
       setPref(true);
+      if (ctx.onColumnOpen) ctx.onColumnOpen();
       hideOverlay(sheet);
     }
     place();
@@ -465,6 +469,12 @@ export function mountChatTests(ctx) {
     /** resync is a hello: frames may have been missed. */
     resync() {
       if (session) schedule();
+    },
+    /** shut closes the column because another one opened beside the chat. */
+    shut() {
+      if (!prefOpen()) return;
+      setPref(false);
+      place();
     },
   };
 }

@@ -194,6 +194,9 @@ func ServePage(w http.ResponseWriter, r *http.Request, name string) {
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Referrer-Policy", "same-origin")
+	// Only the app frames its own pages: never another site, and never an
+	// artifact's page (an opaque origin), which could dress the app up.
+	w.Header().Set("Content-Security-Policy", "frame-ancestors 'self'")
 	_, _ = w.Write(data)
 }
 
@@ -225,4 +228,33 @@ func rootImage(w http.ResponseWriter, r *http.Request, name string) {
 	// stated lifetime the browser refetches it every visit.
 	w.Header().Set("Cache-Control", cacheFor(r, "public, max-age=86400"))
 	_, _ = w.Write(data)
+}
+
+// Version is the build stamp of the embedded assets (?v=…).
+func Version() string { return version }
+
+// artifactKit is the files of the chats' artifacts' page kit, by the name
+// they are served at under /artifact-kit/, and where they are embedded.
+var artifactKit = map[string]string{
+	"kit.css":       "artifact-kit/kit.css",
+	"kit.js":        "artifact-kit/kit.js",
+	"marked.esm.js": "vendor/markdown/marked.esm.js",
+}
+
+// ArtifactKit serves the page kit of the chats' artifacts
+// (docs/design/ARTIFACTS.md) at /artifact-kit/{name}. An artifact's page
+// has an opaque origin, and a module script is fetched with CORS, so they
+// go to any origin: they are code and style, nothing private.
+func ArtifactKit() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		name, ok := artifactKit[r.PathValue("name")]
+		data := asset(name)
+		if !ok || data == nil {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		serve(w, r, name, data)
+	})
 }

@@ -424,3 +424,21 @@ predefined tests per repository. What was built is [CHAT-TESTS.md](CHAT-TESTS.md
   also edit, delete and ask for a run again.
 - **Findings are documented in the tests**, free-form; what the agent does with them is its own call.
 - **Shown in the chat only**, live: a panel beside it, a sheet on the phone. No overview over chats.
+
+## Revision 13 — chat artifacts, 2026-11-08
+
+The owner asked for a built-in MCP server, like Socrates Tests, with which a chat's agent makes pages
+that explain things graphically, listed in a panel beside the chat, per chat. What was built is
+[ARTIFACTS.md](ARTIFACTS.md); the decisions (the agent's, as the owner left them to it):
+
+- **Two formats**: an HTML fragment in Socrates' page kit (or a whole document of the agent's), and
+  Markdown with Mermaid diagrams, the simplest for an agent. Mermaid is loaded from jsDelivr only by a
+  page that has a diagram; nothing big is vendored.
+- **Edits like a file's**: exact replacements on the latest version, or a whole new content; every
+  change is a version, the last 20 kept.
+- **A sandbox of its own origin**: a page may run scripts and load from the internet, but never act as
+  the person on Socrates. Its files go to whoever has the page's random key, since the page's own
+  requests carry no cookie.
+- **Beside the chat, live**: a new artifact opens the column at a desk; a new version replaces what is
+  on screen. The person looks, opens a page in a new tab or deletes it; changes are asked for in the
+  chat.

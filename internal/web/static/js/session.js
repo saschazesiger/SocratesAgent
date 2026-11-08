@@ -53,6 +53,7 @@ import { mountChat } from './chatview.js';
 import { chatOutbox, queueCommand, settled, forgetAllSent } from './chatoutbox.js';
 import { openChatAsks, askDialogOpen, closeAskDialog, refreshAskDialog } from './askdialog.js';
 import { mountChatTests } from './chattests.js';
+import { mountChatArtifacts } from './artifacts.js';
 
 /* ------------------------------------------------------------- transport */
 
@@ -703,6 +704,9 @@ const state = {
   // The chat's tests: the top bar's button and the panel (chattests.js),
   // mounted once in boot().
   tests: null,
+  // The chat's artifacts: the button, the column and its page view
+  // (artifacts.js), mounted once in boot().
+  artifacts: null,
   // Home, the page the stage shows when no session is open, and the event
   // stream that keeps it - and the sidebar - live whatever is on the stage.
   // Both mounted once in boot().
@@ -741,7 +745,7 @@ const ids = ['sidebar', 'navScrim', 'menuBtn', 'blankIDE', 'homeBtn', 'sideColla
   'statusBtn', 'kbBtn', 'optionsBtn',
   'stage', 'termWrap', 'term', 'termOverlay', 'termLines', 'termNotice',
   'termTicker', 'tickerWindow',
-  'micBtn', 'testsBtn', 'testsPanel',
+  'micBtn', 'testsBtn', 'testsPanel', 'artifactsBtn', 'artifactsPanel',
   'recSheet', 'recMeter', 'recTime', 'recSend', 'recCancel',
   'keybar', 'logout', 'chat', 'home'];
 for (const id of ids) dom[id] = document.getElementById(id);
@@ -1806,8 +1810,10 @@ function mountStream() {
       if ('outcomes' in data) replaceMap(state.outcomes, data.outcomes);
       if (Array.isArray(data.sessions)) applyList(data.sessions, { rev: data.rev, source: 'hello' });
       else drawLive();
-      // The tests of the chat on screen may have changed meanwhile.
+      // The tests and artifacts of the chat on screen may have changed
+      // meanwhile.
       if (state.tests) state.tests.resync();
+      if (state.artifacts) state.artifacts.resync();
     },
     sessions: (rows, rev) => applyList(rows, { rev, source: 'stream' }),
     activity: (sessions) => mergeActivity(sessions),
@@ -1818,6 +1824,9 @@ function mountStream() {
     // A chat's tests changed (chattests.js reads them again when it is the
     // chat on screen).
     chattests: (frame) => { if (state.tests) state.tests.frame(frame); },
+    // A chat's artifacts changed (artifacts.js reads them again when it is
+    // the chat on screen, and opens a new one).
+    artifacts: (frame) => { if (state.artifacts) state.artifacts.frame(frame); },
     // A chat's Status phases come this way; a terminal's come on its own
     // socket (onControl), and are not taken twice.
     phase: (frame) => {
@@ -2437,9 +2446,11 @@ async function mcpDialog(session, opener, { closed } = {}) {
   list.hidden = true;
   dialog.addEventListener('close', () => {
     hideOverlay(dialog, { remove: true }).then(() => paneAfter(document.activeElement));
-    // Whether Socrates Tests is on decides what the chat's Tests panel
-    // offers; a switch changes nothing the tests' own frames would say.
+    // Whether Socrates Tests (Artifacts) is on decides what the chat's
+    // Tests (Artifacts) panel offers; a switch changes nothing the panels'
+    // own frames would say.
     if (state.tests && state.current && state.current.id === session.id) state.tests.resync();
+    if (state.artifacts && state.current && state.current.id === session.id) state.artifacts.resync();
     if (closed) closed();
   }, { once: true });
   showOverlay(dialog, opener && opener.isConnected ? opener : document.activeElement);
@@ -3127,6 +3138,7 @@ function detachStage() {
   // another chat, nothing - starts from the pane.
   if (state.chat) state.chat.hide();
   if (state.tests) state.tests.hide();
+  if (state.artifacts) state.artifacts.hide();
   dom.termWrap.hidden = false;
 }
 
@@ -3153,6 +3165,7 @@ function attach(session) {
     if (notifier) notifier.hush(session.id);
     state.chat.show(session);
     if (state.tests) state.tests.show(session);
+    if (state.artifacts) state.artifacts.show(session);
     if (state.assist) state.assist.attached();
     if (state.transfer) state.transfer.attached();
     return;
@@ -4291,10 +4304,21 @@ async function boot() {
   chatOutbox().pump();
   // The chat's tests: the button, the column at a desk and the sheet
   // narrower; switching the server on goes through the chat's MCP dialog.
+  // The Tests and Artifacts columns are never open together: opening one
+  // shuts the other.
   state.tests = mountChatTests({
     button: dom.testsBtn,
     panel: dom.testsPanel,
     mcpDialog: (session, opener, options) => mcpDialog(session, opener, options),
+    onColumnOpen: () => { if (state.artifacts) state.artifacts.shut(); },
+  });
+  // The chat's artifacts: the button, the column (a page in it) at a desk,
+  // the sheet and the page dialog narrower.
+  state.artifacts = mountChatArtifacts({
+    button: dom.artifactsBtn,
+    panel: dom.artifactsPanel,
+    mcpDialog: (session, opener, options) => mcpDialog(session, opener, options),
+    onColumnOpen: () => { if (state.tests) state.tests.shut(); },
   });
   // Home, drawn from the sidebar's own state and tests.
   state.home = mountHome({

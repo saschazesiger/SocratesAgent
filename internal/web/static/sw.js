@@ -58,6 +58,7 @@ const SHELL = [
   '/static/css/so-sheet.css',
   '/static/css/so-chat.css',
   '/static/css/so-chattests.css',
+  '/static/css/so-artifacts.css',
   '/static/css/so-motion.css',
   '/static/fonts/SourceCodePro-Regular.woff2',
   '/static/fonts/SourceCodePro-Bold.woff2',
@@ -102,6 +103,7 @@ const SHELL = [
   '/static/js/accountpicker.js',
   '/static/js/md.js',
   '/static/js/chattests.js',
+  '/static/js/artifacts.js',
   '/static/vendor/markdown/marked.esm.js',
   '/static/vendor/markdown/purify.es.js',
   '/static/manifest.json',
@@ -110,12 +112,15 @@ const SHELL = [
 ].map((path) => (path === '/' ? path : path + '?v=' + VERSION));
 
 // The API is state, not the app. It is never cached: a stale answer presented
-// as current is exactly the thing this whole change is against.
+// as current is exactly the thing this whole change is against. Nor is a
+// chat's artifact (/artifacts/): a private page and its files, which must
+// never be kept on the device, and are no part of the app (ARTIFACTS.md).
 function isShellRequest(request) {
   if (request.method !== 'GET') return false;
   const url = new URL(request.url);
   if (url.origin !== self.location.origin) return false;
   if (url.pathname.startsWith('/api/') || url.pathname.startsWith('/ide/')) return false;
+  if (url.pathname.startsWith('/artifacts/')) return false;
   return true;
 }
 

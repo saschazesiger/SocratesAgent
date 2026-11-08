@@ -339,8 +339,8 @@ once switched on there.
 ### MCP servers built into Socrates
 
 Socrates has MCP servers of its own (`internal/mcpserver`; MCP.md):
-BrowserStack's real devices, and Socrates Tests (the chat's own tests,
-CHAT-TESTS.md). Each is in every chat's list (`from: socrates`),
+BrowserStack's real devices, Socrates Tests (the chat's own tests,
+CHAT-TESTS.md) and Socrates Artifacts (pages that explain, ARTIFACTS.md). Each is in every chat's list (`from: socrates`),
 **off** unless Admin switches it on for every chat
 (`settings.mcp.builtin`) or the chat does. A chat that has one gets
 `socrates mcp-server <name>` as a stdio server, which hands every call to the

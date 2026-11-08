@@ -122,6 +122,14 @@
   --so-testv-width: 760px;
   --so-lightbox-img-max: calc(var(--ds-viewport-height, 100dvh) - 220px);
 
+  /* A chat's artifacts (so-artifacts.css): the column's list beside the
+     chat at a desk, the column while it shows a page (about half the
+     stage), and the least height of a page in the dialog of a narrow
+     window. */
+  --so-artifacts-width: clamp(320px, 28vw, 420px);
+  --so-artifacts-page-width: 50%;
+  --so-artdialog-frame-min: 240px;
+
   /* Question sheet. Where it is the whole screen (a tablet, touch mode),
      its column (the measure) is as wide as in a desktop's 720px dialog. */
   --so-question-width: 720px;

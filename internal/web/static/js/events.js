@@ -105,6 +105,8 @@ const POLL_SLOW = 15000;
  *   phase(frame)         a phase of a spoken Status being made, {id, phase,
  *                        text}: a chat's, which has no terminal socket
  *   chattests(frame)     a chat's tests changed: {session, rev}
+ *   artifacts(frame)     a chat's artifacts changed: {session, rev, artifact,
+ *                        what} (what: created, updated, deleted)
  *   fresh()              a pong came back: the state on the page is the
  *                        server's as of the ping (stateAt)
  *   status(status)       'live' | 'connecting' | 'offline', whenever it moves,
@@ -441,6 +443,9 @@ export function mountEvents(ctx) {
         break;
       case 'chattests':
         if (frame.session) hand('chattests', frame);
+        break;
+      case 'artifacts':
+        if (frame.session) hand('artifacts', frame);
         break;
       case 'pong': {
         const sent = pings.get(frame.id);
