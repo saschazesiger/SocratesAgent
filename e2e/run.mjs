@@ -12606,7 +12606,15 @@ async function chatagents() {
 
     // A workflow: its agents done of all, the phase it is in, and its agents
     // at work by name in the dialog.
-    await say(page, '/workflow 9');
+    // While the model still writes its script (3 s here, a minute and more
+    // for a real one) it is already the workflow beside the chat, saying so.
+    await say(page, '/workflow 9 3');
+    const writing = await page.waitForFunction(() => {
+      const fold = document.querySelector('#chat .so-chat__bg:not([hidden]) .so-footfold[data-kind="workflows"]');
+      const words = fold && fold.querySelector('summary .so-foldbox__words');
+      return !!words && /Writing the workflow script/.test(fold.textContent) ? words.textContent : '';
+    }, null, { timeout: 2500 }).then((h) => h.jsonValue(), () => '');
+    ok(!!writing, 'a workflow whose script is still being written is already a workflow beside the chat', JSON.stringify(writing));
     await awaitLog(page, 'The workflow is running in the background.', 20000);
     await page.waitForSelector('#chat .so-chat__bg:not([hidden]) .so-footfold[data-kind="workflows"]:not([open])', { timeout: 15000 }).catch(() => {});
     await page.click('#chat .so-footfold[data-kind="workflows"] > summary');

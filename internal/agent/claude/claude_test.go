@@ -525,6 +525,78 @@ func TestAWorkflowShowsPhasesAgentsAndTheirCalls(t *testing.T) {
 	}
 }
 
+// A Workflow call is a workflow from its first event on: while the model
+// writes the script (a minute and more for a big one) it is already the
+// running workflow beside the chat, not a plain call in the turn, and it
+// names itself from the script's meta before the CLI launches it.
+func TestAWorkflowIsOneWhileItsScriptIsWritten(t *testing.T) {
+	e := newEnv(t)
+	a, r := start(t, e, "")
+	send(t, a, "m1", "/workflow 0.5 1")
+	isWorkflow := func(ev agent.Event, input bool) bool {
+		if ev.Type != agent.TypePart || ev.Kind != agent.PartTool || ev.State != agent.PartRunning {
+			return false
+		}
+		var c toolContent
+		_ = json.Unmarshal(ev.Content, &c)
+		return c.Tool == "Workflow" && c.Workflow != nil && c.Workflow.Status == "running" && (len(c.Input) > 0) == input
+	}
+	r.waitFor(t, "the workflow while its script is written", func(evs []agent.Event) bool {
+		for _, ev := range evs {
+			if isWorkflow(ev, false) {
+				return true
+			}
+		}
+		return false
+	})
+	r.waitFor(t, "the workflow named by its script", func(evs []agent.Event) bool {
+		for _, ev := range evs {
+			if isWorkflow(ev, true) {
+				var c toolContent
+				_ = json.Unmarshal(ev.Content, &c)
+				return c.Workflow.Name == "fake-flow" && c.Workflow.Description == "A fake workflow"
+			}
+		}
+		return false
+	})
+	r.turnsEnded(t, 2)
+}
+
+// A Workflow call the CLI refuses launched nothing: it is a failed
+// workflow, not one that runs on.
+func TestARefusedWorkflowCallFails(t *testing.T) {
+	s := newState(agent.StartSpec{}, "")
+	s.a = &Adapter{out: newRec()}
+	p := s.toolUse(block{Type: "tool_use", ID: "toolu_wf", Name: "Workflow", Input: json.RawMessage(`{"script":"x"}`)}, "")
+	if p.tool.Workflow == nil || p.tool.Workflow.Status != "running" {
+		t.Fatalf("workflow at its call = %+v", p.tool.Workflow)
+	}
+	s.toolResult(block{Type: "tool_result", ToolUseID: "toolu_wf", IsError: true,
+		Content: json.RawMessage(`"<tool_use_error>Invalid workflow script</tool_use_error>"`)}, nil, "")
+	if p.state != agent.PartError || p.tool.Workflow.Status != "failed" {
+		t.Fatalf("refused workflow: state %q, %+v", p.state, p.tool.Workflow)
+	}
+}
+
+func TestALaunchIsReadFromTheResultsWords(t *testing.T) {
+	text := "Workflow launched in background. Task ID: wi3g8p45z\nSummary: Build it\n" +
+		"Transcript dir: /x/subagents/workflows/wf_be3636df-148\nScript file: /var/tmp/a.js\nRun ID: wf_be3636df-148\n"
+	status, task, run, dir := launchedText(text)
+	if status != "async_launched" || task != "wi3g8p45z" || run != "wf_be3636df-148" || dir != "/x/subagents/workflows/wf_be3636df-148" {
+		t.Fatalf("launch = %q %q %q %q", status, task, run, dir)
+	}
+	if status, _, _, _ := launchedText("Error: no"); status != "" {
+		t.Fatalf("an error read as a launch: %q", status)
+	}
+	name, desc := workflowMeta(json.RawMessage(`{"script":"export const meta = {\n  name: 'review-changes',\n  description: \"Review the diff\",\n  phases: [{ title: 'Review' }],\n}\nconst x = { name: 'other' }"}`))
+	if name != "review-changes" || desc != "Review the diff" {
+		t.Fatalf("meta = %q %q", name, desc)
+	}
+	if name, _ := workflowMeta(json.RawMessage(`{"name":"saved-flow"}`)); name != "saved-flow" {
+		t.Fatalf("a saved workflow's name = %q", name)
+	}
+}
+
 func TestTheBackgroundTaskReportsBackWithATurnOfItsOwn(t *testing.T) {
 	e := newEnv(t)
 	a, r := start(t, e, "")

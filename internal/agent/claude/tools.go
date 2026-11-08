@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -133,6 +134,13 @@ func (s *state) toolUse(b block, parent string) *part {
 		p.msgID, p.turnID = s.messageFor(parent)
 		s.parts[b.ID] = p
 	}
+	if b.Name == "Workflow" && p.tool.Workflow == nil {
+		// A workflow is one from its first event on, not only once the CLI
+		// has launched it: the model can write its script for a minute and
+		// more, and all that time the call must be the workflow it is (a card
+		// beside the chat), not a plain call in the turn.
+		p.tool.Workflow = &workflowInfo{Status: "running"}
+	}
 	if len(b.Input) > 0 && string(b.Input) != "{}" {
 		p.tool.Input = b.Input
 		p.tool.Summary, p.tool.Command, p.tool.Path = summarize(b.Name, b.Input)
@@ -157,6 +165,11 @@ func (s *state) toolUse(b block, parent string) *part {
 			}
 			p.tool.Agent.Description, p.tool.Agent.Type = in.Description, in.SubagentType
 			p.tool.Agent.Prompt, p.tool.Agent.Model = in.Prompt, in.Model
+		}
+		if b.Name == "Workflow" {
+			name, desc := workflowMeta(b.Input)
+			w := p.tool.Workflow
+			w.Name, w.Description = pick(w.Name, name), pick(w.Description, desc)
 		}
 	}
 	s.emitPart(p)
@@ -335,6 +348,11 @@ func (s *state) toolResult(b block, structured json.RawMessage, parent string) {
 			TranscriptDir string `json:"transcriptDir"`
 		}
 		_ = json.Unmarshal(structured, &r)
+		if r.Status == "" && p.state == agent.PartDone {
+			// A result without its structured part still says, in words,
+			// that the workflow runs on in the background.
+			r.Status, r.TaskID, r.RunID, r.TranscriptDir = launchedText(text)
+		}
 		if c.Workflow == nil {
 			c.Workflow = &workflowInfo{}
 		}
@@ -355,6 +373,16 @@ func (s *state) toolResult(b block, structured json.RawMessage, parent string) {
 			p.state = agent.PartError
 		case w.Status == "killed" || w.Status == "stopped":
 			p.state = agent.PartInterrupted
+		case p.state == agent.PartError:
+			// The CLI refused the call (a script that does not parse, a
+			// path it cannot read): nothing was launched.
+			w.Status = "failed"
+		case p.state == agent.PartInterrupted:
+			w.Status = "stopped"
+		case !finalStatus(w.Status) && r.Status != "async_launched" && w.TaskID == "":
+			// A call that answered without launching anything in the
+			// background ran to its end.
+			w.Status = "completed"
 		}
 	case c.Tool == "ExitPlanMode":
 		if c.Plan == nil {
@@ -387,6 +415,59 @@ func (s *state) toolResult(b block, structured json.RawMessage, parent string) {
 		delete(s.ended, started)
 		s.taskStatus(started, e.status, e.summary, nil)
 	}
+}
+
+// workflowMeta is the name and description a Workflow call's script gives
+// itself in its meta literal, before the CLI says them.
+func workflowMeta(input json.RawMessage) (name, description string) {
+	var in struct {
+		Script string `json:"script"`
+		Name   string `json:"name"`
+	}
+	if json.Unmarshal(input, &in) != nil {
+		return "", ""
+	}
+	if m := metaField.FindAllStringSubmatch(in.Script, -1); m != nil {
+		for _, f := range m {
+			v := pick(f[2], pick(f[3], f[4]))
+			switch {
+			case f[1] == "name" && name == "":
+				name = v
+			case f[1] == "description" && description == "":
+				description = v
+			}
+		}
+	}
+	return pick(name, in.Name), description
+}
+
+// metaField is a name or description in a workflow script's meta literal.
+var metaField = regexp.MustCompile(`(?m)^\s*(name|description)\s*:\s*(?:'([^'\n]*)'|"([^"\n]*)"|` + "`([^`\\n]*)`" + `)`)
+
+// launchedText reads the result Claude Code gives a Workflow call that
+// launched its workflow ("Workflow launched in background. Task ID: …"):
+// "async_launched" and the ids it names, or nothing.
+func launchedText(text string) (status, taskID, runID, dir string) {
+	if !strings.HasPrefix(strings.TrimSpace(text), "Workflow launched in background") {
+		return "", "", "", ""
+	}
+	for _, line := range strings.Split(text, "\n") {
+		line = strings.TrimSpace(line)
+		for _, f := range []struct {
+			prefix string
+			to     *string
+		}{{"Task ID:", &taskID}, {"Run ID:", &runID}, {"Transcript dir:", &dir}} {
+			if strings.HasPrefix(line, f.prefix) && *f.to == "" {
+				*f.to = strings.TrimSpace(strings.TrimPrefix(line, f.prefix))
+			}
+		}
+		if i := strings.Index(line, "Task ID:"); i > 0 && taskID == "" {
+			if f := strings.Fields(line[i+len("Task ID:"):]); len(f) > 0 {
+				taskID = f[0]
+			}
+		}
+	}
+	return "async_launched", taskID, runID, dir
 }
 
 func pick(v, fallback string) string {

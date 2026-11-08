@@ -250,7 +250,9 @@ export function toolGlyph(name) {
  * 'agent' too.
  */
 export function agentKind(part, tool = toolOf(part)) {
-  if (tool.workflow) return 'workflow';
+  // A Workflow call is a workflow from its start, before the CLI has said
+  // anything about the run (while the model still writes its script).
+  if (tool.workflow || (tool.content.tool || tool.name) === 'Workflow') return 'workflow';
   if (tool.agent || tool.content.tool === 'subagent' || tool.content.session_id) return 'agent';
   return ['Task', 'Agent', 'WorkflowAgent'].includes(tool.content.tool || tool.name) ? 'agent' : '';
 }
@@ -1265,7 +1267,7 @@ export function backgroundJobs(chat) {
     // A workflow always runs beside the turn that started it: its call
     // answers at once.
     const background = input.run_in_background === true || tool.content.background === true
-      || (tool.agent && tool.agent.background === true) || !!tool.workflow;
+      || (tool.agent && tool.agent.background === true) || agentKind(part, tool) === 'workflow';
     // Inside a turn, only what was sent to the background is a job of its
     // own; the rest is the turn's work, which its fold shows.
     if (inTurn(part) && !background) continue;
@@ -1347,7 +1349,7 @@ function agentFacts(part, tool = toolOf(part)) {
   const line = (value) => String(value || '').split('\n')[0].trim();
   const title = line((a && (a.description || a.label)) || (wf && (wf.description || wf.name)) || input.description || c.title
     || tool.summary || c.name) || tool.name;
-  const type = line(kind === 'workflow' ? wf.name : (a && a.type) || input.subagent_type || (typeof c.agent === 'string' ? c.agent : '') || c.name);
+  const type = line(kind === 'workflow' ? wf && wf.name : (a && a.type) || input.subagent_type || (typeof c.agent === 'string' ? c.agent : '') || c.name);
   const model = line((a && a.model) || c.model);
   const effort = line(c.effort);
   const out = {
@@ -1358,6 +1360,11 @@ function agentFacts(part, tool = toolOf(part)) {
     share: -1, done: 0, total: 0, phase: '', running: [],
   };
   if (a && a.activity) out.doing = line(a.activity);
+  // A workflow the CLI has not launched yet: its script is still being
+  // written, or checked and started.
+  if (kind === 'workflow' && !(wf && wf.task_id) && !part.children.length && part.state === 'running') {
+    out.doing = Object.keys(input).length ? 'Starting the workflow' : 'Writing the workflow script';
+  }
   if (wf) {
     out.total = Number(wf.agents) || 0;
     out.done = Number(wf.agents_done) || 0;

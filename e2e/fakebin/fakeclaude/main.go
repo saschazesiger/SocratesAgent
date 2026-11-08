@@ -30,8 +30,9 @@
 //	/subagent        a background Agent call with a Bash call inside it
 //	/subagent bg S   one whose Bash call still runs when the turn ends (S s)
 //	/subagent fail   a foreground one that fails before its call returns
-//	/workflow [S]    a Workflow run of two phases and three agents (S seconds),
-//	                 which reports back with a turn of the CLI's own
+//	/workflow [S] [W] a Workflow run of two phases and three agents (S seconds),
+//	                 which reports back with a turn of the CLI's own; the
+//	                 model takes W seconds to write its script
 //	/bg S            a background Bash task that reports back after S seconds;
 //	                 stop_task stops it (a killed notification, no report)
 //	/wakeup S        ScheduleWakeup: a turn of its own after S seconds, for
@@ -653,7 +654,7 @@ func (t *turnRun) script() {
 			t.subagent()
 		}
 	case "/workflow":
-		t.workflow(floatArg(fields, 0, 1))
+		t.workflow(floatArg(fields, 0, 1), floatArg(fields, 1, 0))
 	case "/wakeup":
 		t.scheduleWakeup(floatArg(fields, 0, 1))
 	case "/cron":
@@ -1131,8 +1132,10 @@ func (t *turnRun) subagentFailing() {
 
 // workflow launches a background workflow of two phases and three agents.
 // The turn ends at once; the workflow reports through task_progress, writes
-// each agent's transcript, and its end starts a turn of the CLI's own.
-func (t *turnRun) workflow(seconds float64) {
+// each agent's transcript, and its end starts a turn of the CLI's own. The
+// model takes `writing` seconds to write the script, between the call's
+// start and its input.
+func (t *turnRun) workflow(seconds, writing float64) {
 	t.closeText()
 	if t.apiMsg == "" {
 		t.msgStart()
@@ -1145,7 +1148,10 @@ func (t *turnRun) workflow(seconds float64) {
 	_ = os.MkdirAll(dir, 0o755)
 	t.f.out(t.se(map[string]any{"type": "content_block_start", "index": t.index,
 		"content_block": map[string]any{"type": "tool_use", "id": id, "name": "Workflow", "input": map[string]any{}}}))
-	t.assistant(map[string]any{"type": "tool_use", "id": id, "name": "Workflow", "input": map[string]any{"script": "export const meta = {name: 'fake-flow'}"}}, "")
+	if writing > 0 {
+		time.Sleep(time.Duration(writing * float64(time.Second)))
+	}
+	t.assistant(map[string]any{"type": "tool_use", "id": id, "name": "Workflow", "input": map[string]any{"script": "export const meta = {\n  name: 'fake-flow',\n  description: 'A fake workflow',\n}"}}, "")
 	t.index++
 	t.setBG(taskID, "local_workflow")
 	t.system(map[string]any{"subtype": "task_started", "task_id": taskID, "tool_use_id": id, "description": "A fake workflow",
