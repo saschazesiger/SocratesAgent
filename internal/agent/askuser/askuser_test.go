@@ -153,6 +153,51 @@ func TestParseSaysEverythingThatIsWrong(t *testing.T) {
 }
 
 // The schema the model sees is JSON and has the limits of §5.1.
+// A call carries every text the person needs beside its questions: the
+// steps to take before answering and sections of the agent's own, for the
+// batch and for a question, in the shapes models write them.
+func TestParseKeepsTheStepsAndSections(t *testing.T) {
+	p, err := Parse(json.RawMessage(`{
+	  "title": "Log in to the staging server",
+	  "steps": ["Open https://staging.example.com", {"title": "Run the check", "command": "make smoke"}],
+	  "sections": [
+	    {"title": "What I tried", "body": "Three logins, all 401."},
+	    {"title": "Careful", "text": "Do **not** use the prod password.", "tone": "danger", "open": true},
+	    {"body": "untitled"}
+	  ],
+	  "questions": [{"id": "ok", "question": "Did the smoke test pass?", "kind": "confirm",
+	    "steps": "Look at the last line", "sections": [{"title": "Log", "body": "` + "```\\nok\\n```" + `", "tone": "info"}]}]
+	}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(p.Steps) != 2 || p.Steps[0] != "Open https://staging.example.com" || p.Steps[1] != "Run the check\n\n`make smoke`" {
+		t.Fatalf("steps = %q", p.Steps)
+	}
+	want := []Section{
+		{Title: "What I tried", Body: "Three logins, all 401.", Tone: ToneNote},
+		{Title: "Careful", Body: "Do **not** use the prod password.", Tone: ToneWarning, Open: true},
+		{Title: "Details", Body: "untitled", Tone: ToneNote},
+	}
+	if fmt.Sprint(p.Sections) != fmt.Sprint(want) {
+		t.Fatalf("sections = %+v", p.Sections)
+	}
+	q := p.Questions[0]
+	if len(q.Steps) != 1 || q.Steps[0] != "Look at the last line" || len(q.Sections) != 1 || q.Sections[0].Tone != ToneInfo {
+		t.Fatalf("question = %+v", q)
+	}
+	_, err = Parse(json.RawMessage(`{"steps": [""], "sections": [{"title": "x"}, 3], "questions": [{"question": "q"}]}`))
+	for _, want := range []string{"steps: step 1 must be a non-empty string", "sections must be a list"} {
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Fatalf("error %v does not say %q", err, want)
+		}
+	}
+	_, err = Parse(json.RawMessage(`{"sections": [{"title": "x"}], "questions": [{"question": "q"}]}`))
+	if err == nil || !strings.Contains(err.Error(), "sections: section 1 has no body") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
 func TestTheSchemaHasTheLimits(t *testing.T) {
 	var s struct {
 		Properties struct {
@@ -173,7 +218,8 @@ func TestTheSchemaHasTheLimits(t *testing.T) {
 	}
 	q := s.Properties.Questions
 	if q.MaxItems != MaxQuestions || q.Items.Properties["header"].MaxLength != MaxHeader ||
-		q.Items.Properties["options"].MaxItems != MaxOptions || len(q.Items.Properties["kind"].Enum) != 5 {
+		q.Items.Properties["options"].MaxItems != MaxOptions || len(q.Items.Properties["kind"].Enum) != 5 ||
+		q.Items.Properties["steps"].MaxItems != MaxSteps || q.Items.Properties["sections"].MaxItems != MaxSections {
 		t.Fatalf("schema %+v", q)
 	}
 }

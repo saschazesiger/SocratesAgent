@@ -67,7 +67,7 @@ func TestAskUserIsAnInProcessServerOfEveryChat(t *testing.T) {
 			t.Errorf("the MCP setup lacks %q:\n%s", want, mcp)
 		}
 	}
-	if !strings.Contains(argv, "--append-system-prompt When you need a decision or any information from the person, call the "+AskTool) {
+	if !strings.Contains(argv, "--append-system-prompt When you need a decision, any information or an action from the person, call the "+AskTool) {
 		t.Errorf("the system prompt does not point at ask_user:\n%s", argv)
 	}
 }

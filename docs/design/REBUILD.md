@@ -278,12 +278,20 @@ Socrates tool, the same in all three agents, removes the limits and gives one UI
 ask_user({
   "title": "Deployment setup",              // optional: what this batch is about
   "context": "markdown",                     // optional: background for all questions
+  "steps": ["markdown", "..."],              // optional, 0..20: what the person must do before
+                                             // answering, in order (a command, a login, a device)
+  "sections": [                              // optional, 0..10: further texts of the agent's own
+    { "title": "What I tried", "body": "markdown",
+      "tone": "note" | "info" | "warning" | "success",  // warning always shows; note is the default
+      "open": false }                        // unfolded rather than under its title
+  ],
   "questions": [                             // 1..20
     {
       "id": "db",                            // stable id, used in the answer
       "header": "Database",                  // short chip, ≤ 24 chars
       "question": "Which database should the service use?",
       "context": "markdown",                 // why it matters, trade-offs, code, links
+      "steps": [], "sections": [],           // the question's own, as above
       "kind": "single" | "multi" | "text" | "confirm" | "number",
       "options": [                           // 0..12 (single/multi)
         { "id": "pg", "label": "PostgreSQL", "description": "one line",
@@ -299,6 +307,10 @@ ask_user({
   ]
 })
 ```
+
+A call stands on its own: the person often answers from a notification or Home's list of
+questions without the chat in front of them, so the tool description and the guidance tell the
+model to put everything an answer needs into the call and never to point at earlier messages.
 
 ### 5.2 Answer (what the model gets back)
 
@@ -338,6 +350,9 @@ note to any answer, or reply with a counter-question instead of an answer.
 - Touch mode / phone: the existing full-screen question dialog, one question per step, 64 px
   options, expandable option details, context collapsible, "Read aloud" (Google TTS) for question
   and context, dictation for free text and notes, Back/Next, "Send answers" at the end.
+- Steps show as a numbered list "Before you answer" above the questions (the batch's on the first
+  step, a question's above its options); sections fold under their own titles (open ones and
+  warnings show unfolded, a warning as a warning alert).
 - Home's Questions card and the push notification carry the first question's text; the badge
   counts chats with an open `ask` (replaces the screen-digest logic in `asking.go`).
 

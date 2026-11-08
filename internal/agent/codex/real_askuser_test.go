@@ -28,7 +28,7 @@ func TestRealAskUserBlocksUntilTheAnswer(t *testing.T) {
 		t.Fatalf("ask %+v\n%s", ask, dump(r.since(n)))
 	}
 	if log := lab.modelLog(t); !strings.Contains(log, `"name":"ask_user"`) ||
-		!strings.Contains(log, "When you need a decision or any information from the person, call the ask_user tool") {
+		!strings.Contains(log, "When you need a decision, any information or an action from the person, call the ask_user tool") {
 		t.Fatal("the model was not offered ask_user, or not told to use it")
 	}
 	time.Sleep(time.Second)

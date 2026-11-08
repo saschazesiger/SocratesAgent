@@ -2130,6 +2130,41 @@
   border-left: 2px solid var(--ds-line);
 }
 
+/* What the person has to do before answering, in the agent's order. */
+.so-ask-steps {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-space-2);
+  min-width: 0;
+}
+
+.so-ask-steps__head {
+  display: flex;
+  align-items: center;
+  gap: var(--ds-space-2);
+  margin: 0;
+  color: var(--ds-text-2);
+  font: var(--ds-font-label);
+}
+
+.so-ask-steps__list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-space-2);
+  margin: 0;
+  padding-left: var(--ds-space-6);
+}
+
+.so-ask-steps__list > li {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.so-ask-section {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
 .so-ask-option {
   display: flex;
   flex-direction: column;

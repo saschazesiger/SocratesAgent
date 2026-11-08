@@ -9535,6 +9535,78 @@ async function outcome() {
   }
 }
 
+// ask-texts: what the agent writes around its questions besides context -
+// the steps to take before answering, a warning, a section it wants read
+// and one that folds - all in the dialog, the batch's on the first
+// question, a question's own above its options; and Read aloud says them.
+async function asktexts() {
+  const s = await homeChats();
+  try {
+    await awaitHome(s.page, (h) => h.shown, 10000);
+    const ask = {
+      title: 'Staging login',
+      context: 'The deploy to staging fails with **401** since this morning.',
+      steps: ['Open https://staging.example.com and sign in', 'Run `make smoke` in the repository'],
+      sections: [
+        { title: 'Do not use production', body: 'The prod password locks the account.', tone: 'warning' },
+        { title: 'What I tried', body: 'Three logins with the token from the vault.', open: true },
+        { title: 'Full log', body: '```\nHTTP 401\n```', tone: 'info' },
+      ],
+      questions: [
+        { id: 'ok', header: 'Smoke test', question: 'Did the smoke test pass?', kind: 'confirm' },
+        { id: 'why', header: 'Error', question: 'What did the last line say?', kind: 'text',
+          steps: ['Scroll to the end of the output'], sections: [{ title: 'Where to look', body: 'The line after **FAIL**.' }] },
+      ],
+    };
+    await askingChat(s, 'Staging', ask);
+    await awaitHome(s.page, (h) => h.counts.questions === 1 && h.asking, 10000);
+    await s.page.click('.so-home__q-action');
+    const texts = () => s.page.evaluate(() => {
+      const dialog = document.querySelector('dialog.so-askdlg');
+      const body = dialog && dialog.querySelector('.so-q-body');
+      if (!body) return null;
+      const words = (n) => (n ? n.textContent.replace(/\s+/g, ' ').trim() : '');
+      return {
+        question: words(body.querySelector('.so-q-text')),
+        steps: [...body.querySelectorAll('.so-ask-steps li')].map(words),
+        stepsHead: words(body.querySelector('.so-ask-steps__head')),
+        warning: words(body.querySelector('.so-ask-section.ds-alert--warning')),
+        folds: [...body.querySelectorAll('details.so-ask-context')].map((d) => ({ title: words(d.querySelector('summary')), open: d.open })),
+        stepsBeforeOptions: (() => {
+          const st = body.querySelector('.so-ask-steps');
+          const opt = body.querySelector('.so-q-options, .so-q-own');
+          return !!st && !!opt && !!(st.compareDocumentPosition(opt) & Node.DOCUMENT_POSITION_FOLLOWING);
+        })(),
+        overflow: dialog.querySelector('.ds-dialog__box').scrollWidth - dialog.querySelector('.ds-dialog__box').clientWidth,
+      };
+    });
+    await awaitAsk(s.page, (d) => !!d && d.question === 'Did the smoke test pass?', 10000);
+    await askSettled(s.page);
+    const first = await texts();
+    ok(!!first && first.stepsHead === 'Before you answer' && first.steps.join('|') === 'Open https://staging.example.com and sign in|Run make smoke in the repository'
+      && first.stepsBeforeOptions,
+    'the steps to take before answering show as a numbered list above the options', JSON.stringify(first));
+    ok(!!first && /Do not use production/.test(first.warning) && /locks the account/.test(first.warning),
+      'a warning always shows, with its title and its text', JSON.stringify(first && first.warning));
+    const fold = (title) => (first ? first.folds.find((f) => f.title === title) : null);
+    ok(!!fold('What I tried') && fold('What I tried').open && !!fold('Full log') && !fold('Full log').open && !!fold('Staging login'),
+      'a section the agent wants read is unfolded, another folds under its own title', JSON.stringify(first && first.folds));
+    ok(!!first && first.overflow <= 0, 'nothing widens the dialog', String(first && first.overflow));
+    await shot(s.page, 'ask-texts');
+
+    await s.page.click('dialog.so-askdlg [data-action="choose"][data-option="yes"]');
+    await s.page.click('dialog.so-askdlg [data-action="forward"]').catch(() => {});
+    await awaitAsk(s.page, (d) => !!d && d.question === 'What did the last line say?', 5000);
+    const second = await texts();
+    ok(!!second && second.steps.join('|') === 'Scroll to the end of the output' && !second.warning
+      && second.folds.some((f) => f.title === 'Where to look' && !f.open) && !second.folds.some((f) => f.title === 'What I tried'),
+    'the next question shows its own steps and sections, not the batch’s', JSON.stringify(second));
+    ok(unexpected(s.errors).length === 0, 'no console errors', unexpected(s.errors).join(' | ') || '0');
+  } finally {
+    await s.stop();
+  }
+}
+
 // home-question: the Questions card, the dialog, a tap, and the answer at the
 // agent - Claude Code's ask_user returning the person's choice.
 async function homequestion() {
@@ -15139,6 +15211,7 @@ const ALL = [
   ['home-live', 'the numbers on Home move by themselves, with no terminal attached', homelive],
   ['many-chats', 'sixty chats at work on a slow CPU: Home and an open chat still answer at once', manychats],
   ['outcome', 'a turn\'s end is judged: the hourglass while it is read, then the verdict everywhere', outcome],
+  ['ask-texts', 'the steps, warnings and sections an agent writes around its questions, in the dialog', asktexts],
   ['home-question', 'a chat\u2019s question answered with a tap, and the choice at the agent', homequestion],
   ['home-own-answer', 'an answer of one\u2019s own, typed into the question dialog', homeownanswer],
   ['home-queue', 'two questions, one after the other, oldest first', homequeue],

@@ -96,6 +96,13 @@ function forgetDraft(askId) {
 export function forgetAskDraft(askId) { forgetDraft(askId); }
 
 // chatsWord is "1 more chat", "2 more chats".
+// sectionsOf is a batch's or a question's own sections, those with a body.
+function sectionsOf(of) {
+  const list = of && Array.isArray(of.sections) ? of.sections : [];
+  return list.filter((sec) => sec && typeof sec.body === 'string' && sec.body.trim())
+    .map((sec) => ({ title: String(sec.title || 'Details'), body: sec.body, tone: String(sec.tone || 'note'), open: sec.open === true }));
+}
+
 function chatsWord(n) { return n + (n === 1 ? ' more chat' : ' more chats'); }
 
 // An answer as the dialog keeps it: what is sent (selected, other, note,
@@ -433,6 +440,10 @@ export function openAskDialog({ items, start = 0, watch, openChat, closed, more 
     st.draft = startDraft(one.ask);
     st.problem = null;
     st.details.clear();
+    // A section the agent wants read starts unfolded.
+    const asked = one.ask.payload && typeof one.ask.payload === 'object' ? one.ask.payload : {};
+    sectionsOf(asked).forEach((sec, i) => { if (sec.open) st.details.add('sec:' + i); });
+    askQuestions(one.ask).forEach((q) => sectionsOf(q).forEach((sec, i) => { if (sec.open) st.details.add('qsec:' + q.id + ':' + i); }));
     st.phase = one.ask.answered ? settledPhase(one.ask) : 'ask';
     // An answer from here is already on its way: the dialog says so. One
     // the server refused is said above the questions, to be sent again.
@@ -652,7 +663,7 @@ export function openAskDialog({ items, start = 0, watch, openChat, closed, more 
 <div class="so-q-scroll" data-ds-key="${'scroll:' + ask.id}">${settled ? doneHtml(ask) : html`<div class="so-q-body so-ask-body" data-ds-key="${'q:' + ask.id + ':' + step}"${st.phase === 'sent' ? html` data-state="pending"` : ''}>${
       step === 0 && payload.context ? contextHtml('ctx', payload.context, payload.title || 'About these questions', !!payload.title)
         : step === 0 && payload.title ? html`<p class="so-ask-title">${payload.title}</p>` : ''
-    }${st.refused ? html`<div class="ds-alert ds-alert--error so-refused" role="alert">${raw(icon('alertCircle', 20))}<span class="ds-alert__text">${'Your answer was not taken: ' + (st.refused.error || 'the server refused it.') + ' Send it again, or change it first.'}</span></div>` : ''}${q ? questionHtml(q, questions.length, step, last) : ''}${
+    }${step === 0 ? sectionsHtml('sec', sectionsOf(payload)) : ''}${step === 0 ? stepsHtml('steps', payload.steps) : ''}${st.refused ? html`<div class="ds-alert ds-alert--error so-refused" role="alert">${raw(icon('alertCircle', 20))}<span class="ds-alert__text">${'Your answer was not taken: ' + (st.refused.error || 'the server refused it.') + ' Send it again, or change it first.'}</span></div>` : ''}${q ? questionHtml(q, questions.length, step, last) : ''}${
       st.draft.asking ? followUpHtml() : ''
     }${last && !st.draft.asking ? generalHtml() : ''}</div>`}${
       st.phase === 'sent' ? html`<div class="ds-alert so-q-status" role="status">${raw(icon('clock', 20))}<span class="ds-alert__text">${navigator.onLine === false ? 'Saved. Your answer goes out when the connection is back.' : 'Sending your answer…'}</span></div>` : ''
@@ -686,10 +697,33 @@ export function openAskDialog({ items, start = 0, watch, openChat, closed, more 
   // (`titled`), which opens onto what the agent said about the questions.
   // On a short screen "Why this matters" is its icon beside the question
   // (so-question.css), and its words are then its tip.
-  function contextHtml(key, text, label, titled = false) {
+  function contextHtml(key, text, label, titled = false, glyph = 'info') {
     const open = st.details.has(key);
     const tip = !titled && SHORT_SCREEN.matches ? label : '';
-    return html`<details class="ds-collapsible so-ask-context" data-open-key="${key}"${open ? html` open` : ''}><summary class="ds-pressable so-ask-context__head"${tip ? html` data-tip="${tip}"` : ''}>${raw(icon('info', 16))}<span${titled ? html` class="so-ask-title"` : ''}>${label}</span>${raw(icon('chevronDown', 20, 'ds-chevron'))}</summary><div class="so-ask-context__body so-md">${markdown(text)}</div></details>`;
+    return html`<details class="ds-collapsible so-ask-context" data-open-key="${key}"${open ? html` open` : ''}><summary class="ds-pressable so-ask-context__head"${tip ? html` data-tip="${tip}"` : ''}>${raw(icon(glyph, 16))}<span${titled ? html` class="so-ask-title"` : ''}>${label}</span>${raw(icon('chevronDown', 20, 'ds-chevron'))}</summary><div class="so-ask-context__body so-md">${markdown(text)}</div></details>`;
+  }
+
+  // stepsHtml is what the person has to do before they can answer, in the
+  // agent's order: a numbered list that always shows.
+  function stepsHtml(key, steps) {
+    const list = Array.isArray(steps) ? steps.filter((step) => typeof step === 'string' && step.trim()) : [];
+    if (!list.length) return '';
+    return html`<section class="so-ask-steps" data-ds-key="${key}" aria-label="Before you answer"><p class="so-ask-steps__head">${raw(icon('list', 16))}<span>Before you answer</span></p><ol class="so-ask-steps__list">${
+      list.map((step, i) => html`<li class="so-md" data-ds-key="${key + ':' + i}">${markdown(step)}</li>`)
+    }</ol></section>`;
+  }
+
+  // sectionsHtml is the agent's further texts, each under its own title: a
+  // warning always shows, as a warning; the others fold as the context does
+  // (unfolded when the agent asked for that).
+  function sectionsHtml(key, sections) {
+    return sections.map((sec, i) => {
+      const k = key + ':' + i;
+      if (sec.tone === 'warning') {
+        return html`<div class="ds-alert ds-alert--warning so-ask-section" data-ds-key="${k}">${raw(icon('alert', 20))}<div class="ds-alert__text"><p class="ds-alert__title">${sec.title}</p><div class="so-md">${markdown(sec.body)}</div></div></div>`;
+      }
+      return contextHtml(k, sec.body, sec.title, true, sec.tone === 'success' ? 'checkCircle' : 'info');
+    });
   }
 
   function questionHtml(q, total, step, last) {
@@ -705,6 +739,7 @@ export function openAskDialog({ items, start = 0, watch, openChat, closed, more 
     const problem = st.problem && st.problem.q === q.id ? st.problem.text : '';
     return html`<div class="so-q-step">${total > 1 ? html`<span>${'Question ' + (step + 1) + ' of ' + total}</span>` : ''}${q.header ? html`<span class="so-q-chip">${q.header}</span>` : ''}${q.required === true ? html`<span class="so-q-chip">Required</span>` : ''}</div>
 <h2 class="so-q-text" tabindex="-1">${q.question || q.header || ''}</h2>${q.context ? contextHtml('qctx:' + q.id, q.context, 'Why this matters') : ''}${
+      sectionsHtml('qsec:' + q.id, sectionsOf(q))}${stepsHtml('qsteps:' + q.id, q.steps)}${
       hintWords ? html`<p class="so-q-detail">${hintWords}</p>` : ''
     }${options.length ? html`<div class="so-q-options" role="group" aria-label="${q.question || 'Options'}">${options.map((option, i) => optionHtml(q, option, i, multi, a))}</div>` : ''}${
       kind === 'text' ? fieldHtml(q.id, 'other', 'Your answer', a.other, 3, last ? 'done' : 'next') : ''
@@ -803,16 +838,26 @@ export function openAskDialog({ items, start = 0, watch, openChat, closed, more 
     const step = st.draft.step || 0;
     const q = questionsOf()[step];
     const parts = [];
-    if (step === 0) parts.push(payload.title || '', payload.context || '');
+    if (step === 0) parts.push(payload.title || '', payload.context || '', ...sayableExtras(payload));
     if (q) {
       parts.push(q.question || q.header || '');
       if (q.context) parts.push(q.context);
+      parts.push(...sayableExtras(q));
       const options = kindOf(q) === 'confirm' ? [{ label: 'Yes' }, { label: 'No' }] : (q.options || []);
       options.forEach((option, i) => {
         parts.push((i + 1) + ': ' + (option.label || option.id) + (option.description ? '. ' + option.description : '') + '.');
       });
     }
     return parts.filter(Boolean).join('\n');
+  }
+
+  // sayableExtras is what Read aloud says of a batch's or a question's own
+  // texts: the warnings and the sections shown unfolded, then the steps.
+  function sayableExtras(of) {
+    const out = sectionsOf(of).filter((sec) => sec.tone === 'warning' || sec.open).map((sec) => sec.title + '. ' + sec.body);
+    const steps = Array.isArray(of.steps) ? of.steps.filter((step) => typeof step === 'string' && step.trim()) : [];
+    if (steps.length) out.push('Before you answer:', ...steps.map((step, i) => (i + 1) + '. ' + step));
+    return out;
   }
 
   async function toggleRead(opener) {

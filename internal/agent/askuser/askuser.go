@@ -36,6 +36,16 @@ const (
 	MaxQuestions = 20
 	MaxOptions   = 12
 	MaxHeader    = 24
+	MaxSteps     = 20
+	MaxSections  = 10
+)
+
+// Section tones: how a section of the agent's own text stands out.
+const (
+	ToneNote    = "note"
+	ToneInfo    = "info"
+	ToneWarning = "warning"
+	ToneSuccess = "success"
 )
 
 // Question kinds.
@@ -59,8 +69,13 @@ const (
 // Payload is an ask_user call as the person sees it: the ask event's payload
 // (AGENT-HOST.md §2). Every field is normalised by Parse.
 type Payload struct {
-	Title     string     `json:"title,omitempty"`
-	Context   string     `json:"context,omitempty"`
+	Title   string `json:"title,omitempty"`
+	Context string `json:"context,omitempty"`
+	// Steps is what the person has to do before they can answer, in order
+	// (a command to run, a login, a check on a device), and Sections the
+	// agent's further texts, each under a title of its own.
+	Steps     []string   `json:"steps,omitempty"`
+	Sections  []Section  `json:"sections,omitempty"`
 	Questions []Question `json:"questions"`
 	// PartID is the tool part the call belongs to, when the adapter knows
 	// it, so that a chat view can draw the two together.
@@ -72,12 +87,16 @@ type Payload struct {
 
 // Question is one question of a call.
 type Question struct {
-	ID       string   `json:"id"`
-	Header   string   `json:"header"`
-	Question string   `json:"question"`
-	Context  string   `json:"context,omitempty"`
-	Kind     string   `json:"kind"`
-	Options  []Option `json:"options,omitempty"`
+	ID       string `json:"id"`
+	Header   string `json:"header"`
+	Question string `json:"question"`
+	Context  string `json:"context,omitempty"`
+	// Steps and Sections are a question's own, as the payload's are the
+	// batch's.
+	Steps    []string  `json:"steps,omitempty"`
+	Sections []Section `json:"sections,omitempty"`
+	Kind     string    `json:"kind"`
+	Options  []Option  `json:"options,omitempty"`
 	// Min and Max bound how many options a multi question takes, or the
 	// value of a number question.
 	Min *float64 `json:"min,omitempty"`
@@ -95,6 +114,16 @@ type Question struct {
 	Secret bool `json:"secret,omitempty"`
 }
 
+// Section is a text of the agent's own beside the questions: what it tried,
+// a log, the risks, a summary of its changes. Open shows it unfolded; a
+// warning always is.
+type Section struct {
+	Title string `json:"title"`
+	Body  string `json:"body"`
+	Tone  string `json:"tone,omitempty"`
+	Open  bool   `json:"open,omitempty"`
+}
+
 // Option is one choice of a single or multi question.
 type Option struct {
 	ID          string `json:"id"`
@@ -108,10 +137,19 @@ type Option struct {
 // that matter most, because a tool description reaches the model in every
 // agent, a system prompt not always.
 const Description = "Ask the person one or more questions and wait for the answers. " +
-	"Use this tool for every decision or piece of information you need from the person; " +
-	"never ask in plain text and never use another question tool. " +
-	"Put everything you need to know into one call (up to 20 questions), with the context that makes each " +
-	"question answerable: what you found, the options and their trade-offs, your recommendation. " +
+	"Use this tool whenever you need a decision, a piece of information or an action from the person " +
+	"(a login, a command only they can run, a check on their device, an approval), and whenever you are unsure " +
+	"how to go on and a wrong guess would cost work; never ask in plain text and never use another question tool: " +
+	"a reply that would end with a question to the person is this call instead. " +
+	"The person often answers from a notification or a list of questions without the chat in front of them, " +
+	"so every call must stand on its own: put everything they need to answer into the call itself " +
+	"(what you found, file paths, commands, errors, the options with their trade-offs, your recommendation) " +
+	"and never refer to earlier messages (\"as above\", \"the error I mentioned\"). " +
+	"context is the background for all questions; steps is what the person has to do before they can answer, in order " +
+	"(each step with the exact command, page or setting; answering is not a step); sections are further texts of your own, each under its own " +
+	"title (what you tried, a log, risks; tone warning for what they must not miss); each question has its own " +
+	"context, steps and sections too. " +
+	"Put everything you need to know into one call (up to 20 questions). " +
 	"The call blocks until the person answers, which can take minutes or hours; then continue from the answers. " +
 	"The person may skip a question, leave it to you (delegated: decide yourself and say what you chose), " +
 	"add a note, or ask a question back (follow_up: answer it first)."
@@ -119,20 +157,33 @@ const Description = "Ask the person one or more questions and wait for the answe
 // Guidance is the system-prompt text that steers the model to ask_user. tool
 // is the name the model knows the tool by in that agent.
 func Guidance(tool string) string {
-	return "When you need a decision or any information from the person, call the " + tool + " tool. " +
+	return "When you need a decision, any information or an action from the person, call the " + tool + " tool: " +
+		"also when you are unsure how to go on and a wrong guess would cost work, and when only the person can do " +
+		"something (log in, run a command on their machine, test on a device, approve a change). " +
 		"Never ask questions in plain text, and never use another question tool. " +
+		"This holds at the end of your work too: when you stop because something needs the person's decision or answer, " +
+		"the last thing you do is call " + tool + "; a reply that ends with a question or a choice for the person " +
+		"(\"Should I …?\", \"Which do you want?\") is wrong. " +
+		"Each call must stand on its own: the person may answer it from a notification without reading the chat, " +
+		"so put all the context the questions need into the call (its context, steps and sections, and each question's " +
+		"context and options), never \"see above\". " +
+		"What the person has to do before they can answer goes into steps, in order and exact (answering is not a step). " +
 		"Ask everything you need in one call, with the context and the options that make each question " +
 		"easy to answer, and mark the option you recommend. " +
 		"The person always answers, possibly much later: wait for the answer and continue from it; " +
 		"do not stop the work to ask in a message instead."
 }
 
-// schema is the input schema of the tool (REBUILD.md §5.1).
-const schema = `{
+// schema is the input schema of the tool (REBUILD.md §5.1). The steps and
+// sections of a call and of a question are the same (stepsSchema,
+// sectionsSchema).
+var schema = `{
   "type": "object",
   "properties": {
     "title": {"type": "string", "description": "What this batch of questions is about, in a few words."},
-    "context": {"type": "string", "description": "Markdown background for all questions: what you found, what is at stake."},
+    "context": {"type": "string", "description": "Markdown background for all questions, complete enough to answer without the chat: what you found, what is at stake, the paths, commands and errors involved."},
+    "steps": ` + stepsSchema + `,
+    "sections": ` + sectionsSchema + `,
     "questions": {
       "type": "array", "minItems": 1, "maxItems": 20,
       "items": {
@@ -142,6 +193,8 @@ const schema = `{
           "header": {"type": "string", "maxLength": 24, "description": "A short label shown as a chip, at most 24 characters."},
           "question": {"type": "string", "description": "The question, as one sentence."},
           "context": {"type": "string", "description": "Markdown: why it matters, trade-offs, code, links."},
+          "steps": ` + stepsSchema + `,
+          "sections": ` + sectionsSchema + `,
           "kind": {"type": "string", "enum": ["single", "multi", "text", "confirm", "number"],
             "description": "single: pick one option; multi: pick several; text: a free answer; confirm: yes or no; number: a number."},
           "options": {
@@ -175,6 +228,28 @@ const schema = `{
   "required": ["questions"]
 }`
 
+// stepsSchema is the steps of a call or a question.
+const stepsSchema = `{
+  "type": "array", "maxItems": 20, "items": {"type": "string"},
+  "description": "What the person has to do before they can answer, in order, one Markdown step each: the exact command, page, setting or device. Shown as a numbered list above the questions. Answering is not a step."
+}`
+
+// sectionsSchema is the sections of a call or a question.
+const sectionsSchema = `{
+  "type": "array", "maxItems": 10,
+  "description": "Further texts of your own, each under its own title: what you already tried, a log, the risks, a summary of the changes, links.",
+  "items": {
+    "type": "object",
+    "properties": {
+      "title": {"type": "string", "description": "The section's heading, a few words."},
+      "body": {"type": "string", "description": "Markdown."},
+      "tone": {"type": "string", "enum": ["note", "info", "warning", "success"], "description": "note (default) and info fold away under their title; warning always shows, for what the person must not miss; success for what already works."},
+      "open": {"type": "boolean", "description": "Show the section unfolded rather than under its title. Default false."}
+    },
+    "required": ["title", "body"]
+  }
+}`
+
 // Schema is the tool's input schema, as JSON.
 func Schema() json.RawMessage {
 	var b bytes.Buffer
@@ -195,6 +270,8 @@ type rawQuestion struct {
 	Header        any             `json:"header"`
 	Question      any             `json:"question"`
 	Context       any             `json:"context"`
+	Steps         json.RawMessage `json:"steps"`
+	Sections      json.RawMessage `json:"sections"`
 	Kind          any             `json:"kind"`
 	Options       json.RawMessage `json:"options"`
 	Min           any             `json:"min"`
@@ -240,13 +317,16 @@ func Parse(args json.RawMessage) (Payload, error) {
 	var raw struct {
 		Title     any             `json:"title"`
 		Context   any             `json:"context"`
+		Steps     json.RawMessage `json:"steps"`
+		Sections  json.RawMessage `json:"sections"`
 		Questions json.RawMessage `json:"questions"`
 	}
 	if err := json.Unmarshal(bytes.TrimSpace(args), &raw); err != nil {
 		return Payload{}, fmt.Errorf("%w: the arguments are not a JSON object (%v). Fix the call and call %s again.", ErrInvalid, err, Name)
 	}
 	var probs problems
-	p := Payload{Title: text(raw.Title, "title", &probs), Context: text(raw.Context, "context", &probs)}
+	p := Payload{Title: text(raw.Title, "title", &probs), Context: text(raw.Context, "context", &probs),
+		Steps: parseSteps("steps", raw.Steps, &probs), Sections: parseSections("sections", raw.Sections, &probs)}
 	var questions []json.RawMessage
 	switch {
 	case len(raw.Questions) == 0 || string(raw.Questions) == "null":
@@ -354,6 +434,8 @@ func parseQuestion(i int, raw json.RawMessage, probs *problems) Question {
 	q.Question = text(rq.Question, at+": question", probs)
 	q.Header = text(rq.Header, at+": header", probs)
 	q.Context = text(rq.Context, at+": context", probs)
+	q.Steps = parseSteps(at+": steps", rq.Steps, probs)
+	q.Sections = parseSections(at+": sections", rq.Sections, probs)
 	kind := kindOf(text(rq.Kind, at+": kind", probs))
 	if rq.AllowOther == nil {
 		rq.AllowOther = rq.AllowFreeText
@@ -414,6 +496,101 @@ func parseQuestion(i int, raw json.RawMessage, probs *problems) Question {
 	}
 	q.Default = parseDefault(q, rq.Default)
 	return q
+}
+
+// parseSteps reads a list of steps: Markdown strings, or objects that say
+// their text under a name a model may choose (text, title, step,
+// description, details). One string alone is one step.
+func parseSteps(at string, raw json.RawMessage, probs *problems) []string {
+	if len(bytes.TrimSpace(raw)) == 0 || string(raw) == "null" {
+		return nil
+	}
+	var one string
+	if json.Unmarshal(raw, &one) == nil {
+		if one = strings.TrimSpace(one); one != "" {
+			return []string{one}
+		}
+		return nil
+	}
+	var list []any
+	if json.Unmarshal(raw, &list) != nil {
+		probs.add("%s must be a list of steps, each a string", at)
+		return nil
+	}
+	if len(list) > MaxSteps {
+		probs.add("%s has %d steps; at most %d", at, len(list), MaxSteps)
+		return nil
+	}
+	var out []string
+	for i, v := range list {
+		var step string
+		switch t := v.(type) {
+		case string:
+			step = strings.TrimSpace(t)
+		case map[string]any:
+			var lines []string
+			for _, k := range []string{"title", "text", "step", "description", "details", "command"} {
+				if s, ok := t[k].(string); ok && strings.TrimSpace(s) != "" {
+					if k == "command" {
+						s = "`" + strings.TrimSpace(s) + "`"
+					}
+					lines = append(lines, strings.TrimSpace(s))
+				}
+			}
+			step = strings.Join(lines, "\n\n")
+		}
+		if step == "" {
+			probs.add("%s: step %d must be a non-empty string", at, i+1)
+			continue
+		}
+		out = append(out, step)
+	}
+	return out
+}
+
+// parseSections reads a list of sections. The body may come as body, text,
+// content or markdown; a tone outside the four is a note.
+func parseSections(at string, raw json.RawMessage, probs *problems) []Section {
+	if len(bytes.TrimSpace(raw)) == 0 || string(raw) == "null" {
+		return nil
+	}
+	var list []map[string]any
+	if json.Unmarshal(raw, &list) != nil {
+		probs.add("%s must be a list of objects with a title and a body", at)
+		return nil
+	}
+	if len(list) > MaxSections {
+		probs.add("%s has %d sections; at most %d", at, len(list), MaxSections)
+		return nil
+	}
+	var out []Section
+	for i, m := range list {
+		where := fmt.Sprintf("%s: section %d", at, i+1)
+		sec := Section{Title: text(m["title"], where+": title", probs)}
+		for _, k := range []string{"body", "text", "content", "markdown"} {
+			if v, ok := m[k]; ok && sec.Body == "" {
+				sec.Body = text(v, where+": "+k, probs)
+			}
+		}
+		if sec.Body == "" {
+			probs.add("%s has no body", where)
+			continue
+		}
+		if sec.Title == "" {
+			sec.Title = "Details"
+		}
+		switch tone := strings.ToLower(text(m["tone"], where+": tone", probs)); tone {
+		case ToneInfo, ToneWarning, ToneSuccess:
+			sec.Tone = tone
+		case "warn", "danger", "error", "caution", "important":
+			sec.Tone = ToneWarning
+		default:
+			sec.Tone = ToneNote
+		}
+		sec.Open = flag(m["open"], false, where+": open", probs)
+		out = append(out, sec)
+	}
+	return out
 }
 
 // kindSynonyms are the names models give the kinds when they do not use the
