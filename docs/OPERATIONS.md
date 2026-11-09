@@ -146,6 +146,7 @@ The settings live in `/etc/socrates.env`:
 | 🧹 **Cleaning up** | They go with their chat; an artifact keeps its last 20 versions. Limits: 100 artifacts per chat, 2 MB per version, 20 MB per file, 200 MB per chat |
 | 🔌 **Switch** | Socrates Artifacts is a built-in MCP server: off in every chat until Admin (*In every chat*) or the chat switches it on |
 | 🌐 **Addresses** | A page is served at `/artifacts/<chat>/<artifact>/<key>/` (signed in), its files beside it (the key is enough), the page kit at `/artifact-kit/`. Mermaid diagrams load Mermaid from `cdn.jsdelivr.net` in the person's browser |
+| 🚪 **Login proxy** | Behind Cloudflare Access or another login gateway, let `/artifacts/` and `/artifact-kit/` through (Access: an app of their own for these two paths with a *Bypass* policy). A page runs sandboxed and its requests carry no cookie: blocked, the kit and files get the proxy's login page and a page stays white. Socrates' login (the page) and the random key (its files) still guard them |
 
 ---
 

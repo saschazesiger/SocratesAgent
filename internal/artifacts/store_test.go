@@ -225,8 +225,11 @@ func TestPage(t *testing.T) {
 		!strings.Contains(string(frag), KitPath+"kit.js\"") {
 		t.Fatalf("fragment page: %s", frag)
 	}
-	md := string(Page(a, Version{Format: Markdown}, []byte("# T\n</script><script>alert(1)</script>"), ""))
-	if strings.Contains(md, "</script><script>") || !strings.Contains(md, `\u003c/script\u003e`) {
+	// Markdown is its text, escaped, in a pre the kit renders: readable
+	// even when the kit cannot load, and nothing in it is markup.
+	md := string(Page(a, Version{Format: Markdown}, []byte("\n# T & \"q\"\n</pre><script>alert(1)</script>"), ""))
+	if strings.Contains(md, "<script>alert") || strings.Contains(md, "</pre><script>") ||
+		!strings.Contains(md, "<pre id=\"artifact-markdown\" style=\"white-space:pre-wrap;overflow-wrap:anywhere\">\n\n# T &amp; &#34;q&#34;\n&lt;/pre&gt;&lt;script&gt;alert(1)&lt;/script&gt;</pre></main>") {
 		t.Fatalf("markdown page: %s", md)
 	}
 	// Markdown that looks like a document is still Markdown.

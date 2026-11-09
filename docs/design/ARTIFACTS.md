@@ -87,8 +87,8 @@ An `html` content that is not a whole document (it has no `<html` or `<!doctype`
 </head><body><main class="page">…the fragment…</main></body></html>
 ```
 
-Markdown goes in as `<script type="application/json" id="artifact-markdown">` and `kit.js` renders
-it into `main` with marked (Socrates' vendored copy, served as `/artifact-kit/marked.esm.js`); raw
+Markdown goes in as its text, escaped, in `<pre id="artifact-markdown">` inside `main` (so that the page
+shows its Markdown rather than nothing when the kit cannot load), and `kit.js` renders it into `main` with marked (Socrates' vendored copy, served as `/artifact-kit/marked.esm.js`); raw
 HTML in Markdown stays (the frame is sandboxed). `kit.js` then draws every Mermaid diagram
 (`<pre class="mermaid">`, and Markdown's ```` ```mermaid ```` blocks) with Mermaid 11 from
 `https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs`.
@@ -129,6 +129,10 @@ its file.
   name, with `Content-Security-Policy: sandbox` (an SVG or HTML file opened by itself runs
   nothing), `Access-Control-Allow-Origin: *` (the page may fetch its data), `nosniff`.
 - The service worker leaves `/artifacts/` alone.
+- A login proxy in front of Socrates (Cloudflare Access, an auth gateway) must let `/artifacts/`
+  and `/artifact-kit/` through: the page's own requests (the kit, its files) carry no cookie, so a
+  proxy that wants one answers them with its login page and the page stays empty. Socrates' login
+  and the key still guard them.
 - The app's own pages go with `Content-Security-Policy: frame-ancestors 'self'`, so a page cannot
   frame the app and dress it up.
 - An address anyone may ask for (a file's) is checked for its form and for a chat that has

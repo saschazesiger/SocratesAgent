@@ -11,19 +11,14 @@ const MERMAID = 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mj
 
 const escapeHtml = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
 
-// renderMarkdown draws the page's Markdown into its main; a ```mermaid
-// block becomes a diagram to draw, and raw HTML stays (the frame is a
-// sandbox).
+// renderMarkdown draws the page's Markdown (its text in a pre, shown as it
+// is when this kit cannot load) into its main; a ```mermaid block becomes
+// a diagram to draw, and raw HTML stays (the frame is a sandbox).
 function renderMarkdown() {
   const source = document.getElementById('artifact-markdown');
   const main = document.querySelector('main.page');
   if (!source || !main) return;
-  let text = '';
-  try {
-    text = JSON.parse(source.textContent);
-  } catch {
-    return;
-  }
+  const text = source.textContent;
   const marked = new Marked({
     gfm: true,
     renderer: {

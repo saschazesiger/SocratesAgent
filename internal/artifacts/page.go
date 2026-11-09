@@ -2,7 +2,6 @@ package artifacts
 
 import (
 	"bytes"
-	"encoding/json"
 	"html"
 	"strings"
 )
@@ -30,12 +29,15 @@ func Page(a Artifact, v Version, content []byte, stamp string) []byte {
 	b.WriteString("</title>\n<link rel=\"stylesheet\" href=\"" + KitPath + "kit.css" + q + "\">\n" +
 		"<script type=\"module\" src=\"" + KitPath + "kit.js" + q + "\"></script>\n</head>\n<body>\n")
 	if v.Format == Markdown {
-		// JSON as Go writes it escapes <, > and &, so nothing in the text
-		// can end the script element.
-		data, _ := json.Marshal(string(content))
-		b.WriteString("<main class=\"page\" data-format=\"markdown\"></main>\n<script type=\"application/json\" id=\"artifact-markdown\">")
-		b.Write(data)
-		b.WriteString("</script>\n")
+		// The text itself, escaped, in a pre the kit replaces with the
+		// rendered page: when the kit cannot load (a login proxy in front
+		// of Socrates that wants a cookie the sandboxed page does not
+		// send), the page shows its Markdown rather than nothing. The
+		// newline after <pre> is the one the parser drops.
+		b.WriteString("<main class=\"page\" data-format=\"markdown\">" +
+			"<pre id=\"artifact-markdown\" style=\"white-space:pre-wrap;overflow-wrap:anywhere\">\n")
+		b.WriteString(html.EscapeString(string(content)))
+		b.WriteString("</pre></main>\n")
 	} else {
 		b.WriteString("<main class=\"page\">\n")
 		b.Write(content)
