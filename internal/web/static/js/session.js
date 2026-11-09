@@ -742,7 +742,7 @@ const dom = {};
 const ids = ['sidebar', 'navScrim', 'menuBtn', 'blankIDE', 'homeBtn', 'sideCollapse', 'newSession', 'sessionList',
   'activityLive', 'sessionTitle', 'titleRegen', 'sessionStatus', 'sessionOutcome',
   'transfer', 'copyBtn', 'pasteBtn', 'uploadBtn',
-  'statusBtn', 'kbBtn', 'optionsBtn',
+  'statusBtn', 'passageBtn', 'kbBtn', 'optionsBtn',
   'stage', 'termWrap', 'term', 'termOverlay', 'termLines', 'termNotice',
   'termTicker', 'tickerWindow',
   'micBtn', 'testsBtn', 'testsPanel', 'artifactsBtn', 'artifactsPanel',

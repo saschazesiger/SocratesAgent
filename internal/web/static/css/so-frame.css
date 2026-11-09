@@ -836,3 +836,84 @@
     padding: var(--ds-space-4);
   }
 }
+
+/* ── Ask about a passage (passage.js) ────────────────────────────────────
+   The Status modal's frame, with the passage quoted at the top, the
+   questions and answers under it, and the question field at the bottom.
+   Only the middle scrolls, so the field stays in reach on a phone. */
+
+.so-passage .so-status__box {
+  max-block-size: 100%;
+}
+
+.so-passage__body {
+  flex: 1 1 auto;
+  min-block-size: 0;
+  overflow-y: auto;
+}
+
+.so-passage__quote {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-space-1);
+  margin: 0;
+}
+
+.so-passage__text {
+  margin: 0;
+  max-block-size: var(--so-passage-quote-height);
+  overflow-y: auto;
+  padding: var(--ds-space-2) var(--ds-space-3);
+  border-inline-start: var(--ds-space-1) solid var(--ds-accent);
+  border-radius: var(--ds-radius-sm);
+  background: var(--ds-surface-high);
+  color: var(--ds-text);
+  font: var(--ds-font-reading);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.so-passage__presets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--ds-space-2);
+}
+
+.so-passage__turn {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-space-2);
+  min-width: 0;
+}
+
+.so-passage__q {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--ds-space-2);
+  margin: 0;
+  color: var(--ds-text-2);
+  font: var(--ds-font-label);
+  overflow-wrap: anywhere;
+}
+
+.so-passage__q svg {
+  flex: none;
+  margin-block-start: var(--ds-space-1);
+}
+
+.so-passage__a {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.so-passage__loading {
+  padding: var(--ds-space-2) 0;
+}
+
+.so-passage__form {
+  flex: none;
+}
+
+.so-passage__input {
+  resize: none;
+}

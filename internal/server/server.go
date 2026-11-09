@@ -417,6 +417,8 @@ func (s *Server) routes() {
 	mux.HandleFunc("GET /api/costs", s.auth(s.handleCosts))
 	// What a terminal is doing, said out loud.
 	mux.HandleFunc("POST /api/sessions/{id}/status", s.auth(s.handleSessionStatus))
+	// A question about a passage of a chat, answered beside it (chatask.go).
+	mux.HandleFunc("POST /api/sessions/{id}/ask", s.auth(s.handleSessionAsk))
 	// Home: the event stream, and its hello as a poll.
 	mux.HandleFunc("GET /api/events", s.auth(s.handleEvents))
 	mux.HandleFunc("GET /api/home", s.auth(s.handleHome))

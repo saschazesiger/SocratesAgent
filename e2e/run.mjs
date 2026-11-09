@@ -5991,6 +5991,132 @@ async function statusspeak() {
   }
 }
 
+/* ------------------------------------------------------------ passage */
+
+// A passage of a chat selected, the bubble in the top bar, and a question
+// about it: answered by the status model from the chat's record, the passage
+// and the question, a follow-up with the dialog so far, and nothing of it in
+// the chat.
+async function passage() {
+  const MARKER = 'You answer a question about a passage';
+  const stub = await openRouterStub({
+    answer: (json) => {
+      const system = String(((json.messages || [])[0] || {}).content || '');
+      if (!system.startsWith(MARKER)) return undefined;
+      return json.messages.length > 2 ? 'Because you **asked** it to.' : '**echo** prints its arguments.';
+    },
+  });
+  const s = await start({ viewport: { width: 1280, height: 720 } });
+  try {
+    await setup(s.page, s.url);
+    await useDomRenderer(s);
+    await pointGateway(s, stub);
+    await open(s);
+    const id = await startChat(s.page, 'claude');
+    const first = await answerTo(s, id, 'run the tests');
+    ok(first === 'you said: run the tests', 'the chat has done something', first || 'no answer');
+    const before = ((await historyOf(s, id)).messages || []).length;
+
+    const hidden = await s.page.$eval('#passageBtn', (b) => b.hidden);
+    ok(hidden, 'with nothing selected there is no bubble', hidden ? 'hidden' : 'shown');
+
+    // The agent's words, selected as a mouse would.
+    const selected = await s.page.evaluate((words) => {
+      const log = document.querySelector('#chat .so-chat__log');
+      const walker = document.createTreeWalker(log, NodeFilter.SHOW_TEXT);
+      for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+        const at = n.data.indexOf(words);
+        if (at < 0) continue;
+        const range = document.createRange();
+        range.setStart(n, at);
+        range.setEnd(n, at + words.length);
+        const sel = document.getSelection();
+        sel.removeAllRanges();
+        sel.addRange(range);
+        return sel.toString();
+      }
+      return '';
+    }, 'you said: run the tests');
+    ok(selected === 'you said: run the tests', 'a passage of the chat is selected', selected || 'nothing');
+    const shown = await s.page.waitForSelector('#passageBtn:not([hidden])', { timeout: 5000 }).then(() => true).catch(() => false);
+    ok(shown, 'and the bubble is in the top bar', shown ? 'shown' : 'still hidden');
+    await s.page.click('#passageBtn');
+    await s.page.waitForSelector('dialog.so-passage[open]', { timeout: 5000 });
+    const quoted = await s.page.$eval('dialog.so-passage .so-passage__text', (q) => q.textContent.trim());
+    ok(quoted === 'you said: run the tests', 'the dialog quotes the passage', quoted);
+    const focused = await s.page.evaluate(() => document.activeElement && document.activeElement.classList.contains('so-passage__input'));
+    ok(focused, 'and waits in its question field', focused ? 'focused' : 'focus elsewhere');
+
+    // A ready-made question.
+    await s.page.click('dialog.so-passage [data-preset="What does this mean?"]');
+    await s.page.waitForSelector('dialog.so-passage .so-passage__a strong', { timeout: 20000 });
+    const answer = await s.page.$eval('dialog.so-passage .so-passage__a', (a) => a.textContent.trim());
+    ok(answer === 'echo prints its arguments.', 'the answer is drawn as Markdown', answer);
+    const asked = stub.calls.filter((c) => c.json && String(((c.json.messages || [])[0] || {}).content || '').startsWith(MARKER));
+    const firstCall = asked[0] ? asked[0].json.messages : [];
+    const prompt = String((firstCall[1] || {}).content || '');
+    ok(asked.length === 1 && firstCall.length === 2 && /ready-made one: answer in English/.test(firstCall[0].content)
+      && prompt.includes('Record:') && prompt.includes('<<<\nyou said: run the tests\n>>>')
+      && prompt.includes('Their question: What does this mean?'),
+      'the model was given the record, the passage and the question', oneLine(prompt.slice(-300)));
+    const presetsGone = await s.page.$$eval('dialog.so-passage [data-preset]', (b) => b.length);
+    ok(presetsGone === 0, 'the quick questions make way for the answer', presetsGone + ' left');
+    await shot(s.page, 'passage');
+
+    // A follow-up, typed: the dialog so far goes with it.
+    await s.page.fill('dialog.so-passage .so-passage__input', 'Und warum?');
+    await s.page.press('dialog.so-passage .so-passage__input', 'Enter');
+    await s.page.waitForFunction(() => document.querySelectorAll('dialog.so-passage .so-passage__a').length === 2, null, { timeout: 20000 });
+    const again = stub.calls.filter((c) => c.json && String(((c.json.messages || [])[0] || {}).content || '').startsWith(MARKER));
+    const roles = again[1] ? again[1].json.messages.map((m) => m.role).join(',') : '';
+    ok(roles === 'system,user,assistant,user' && again[1].json.messages[3].content === 'Und warum?'
+      && /in the language the question is written in/.test(again[1].json.messages[0].content),
+      'a follow-up carries the question before it and its answer', roles);
+    const turns = await s.page.$$eval('dialog.so-passage .so-passage__q', (q) => q.map((n) => n.textContent.trim()));
+    ok(turns.join(' | ') === 'What does this mean? | Und warum?', 'both questions stay in the dialog', turns.join(' | '));
+
+    // Closing forgets it, and the chat never heard of it.
+    await s.page.keyboard.press('Escape');
+    const gone = await s.page.waitForFunction(() => !document.querySelector('dialog.so-passage'), null, { timeout: 9000 })
+      .then(() => true).catch(() => false);
+    ok(gone, 'Escape puts the dialog away', gone ? 'gone' : 'still up');
+    const after = ((await historyOf(s, id)).messages || []).length;
+    ok(after === before, 'nothing of it reached the chat', before + ' -> ' + after + ' messages');
+    await s.page.evaluate(() => document.getSelection().removeAllRanges());
+    const away = await s.page.waitForSelector('#passageBtn[hidden]', { state: 'attached', timeout: 5000 }).then(() => true).catch(() => false);
+    ok(away, 'and with the selection gone the bubble goes too', away ? 'hidden' : 'still shown');
+
+    // On a phone: the bubble in the top bar, and the dialog with its quick
+    // questions and its field on screen.
+    await s.page.setViewportSize({ width: 390, height: 844 });
+    await s.page.evaluate(() => {
+      const target = [...document.querySelectorAll('#chat .so-chat__log *')].find((n) => n.childElementCount === 0 && /you said/.test(n.textContent));
+      const range = document.createRange();
+      range.selectNodeContents(target);
+      document.getSelection().removeAllRanges();
+      document.getSelection().addRange(range);
+    });
+    await s.page.waitForSelector('#passageBtn:not([hidden])', { timeout: 5000 });
+    const inBar = await s.page.$eval('#passageBtn', (b) => { const r = b.getBoundingClientRect(); return r.width > 0 && r.right <= innerWidth && r.top >= 0; });
+    ok(inBar, 'on a phone the bubble is in the top bar too', inBar ? 'on screen' : 'off screen');
+    await s.page.click('#passageBtn');
+    await s.page.waitForSelector('dialog.so-passage[open] [data-preset]', { timeout: 5000 });
+    await wait(600);
+    const fits = await s.page.$eval('dialog.so-passage', (d) => {
+      const field = d.querySelector('.so-passage__input').getBoundingClientRect();
+      const send = d.querySelector('.so-passage__send').getBoundingClientRect();
+      return field.bottom <= innerHeight && send.right <= innerWidth && field.left >= 0;
+    });
+    ok(fits, 'and its field and Ask fit the screen', fits ? 'fits' : 'cut off');
+    await shot(s.page, 'passage-phone');
+    await s.page.keyboard.press('Escape');
+    ok(unexpected(s.errors).length === 0, 'no console errors', unexpected(s.errors).join(' | ') || '0');
+  } finally {
+    await s.stop();
+    await stub.close();
+  }
+}
+
 /* ------------------------------------------------------ 35. status-ticker */
 
 // Pressing Status is a question asked over a network, and the phases of it
@@ -15229,6 +15355,7 @@ const ALL = [
   ['session-title', 'a chat that names itself on its first message, again by the arrow, and not while that is being written', sessiontitle],
   ['status-speak', 'Status says what a chat did, on the page and out loud', statusspeak],
   ['status-ticker', 'a chat\'s Status opens its modal at once, and says nothing in the chat', statusticker],
+  ['passage', 'a passage of a chat selected and asked about beside it, with a follow-up, and nothing in the chat', passage],
   ['dictate', 'a recording with two endings, and the words it kept in the composer', dictate],
   ['no-overlap', 'the microphone and the voice are never open at the same time', nooverlap],
   ['typeafteroutage', 'a cut socket, a locked phone, and a pane that still takes keystrokes', typeafteroutage],

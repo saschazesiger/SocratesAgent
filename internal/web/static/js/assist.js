@@ -16,6 +16,7 @@ import {
   speak, stopSpeaking, onSpeechError, voiceKey, setVoiceKey, onVoiceKey, noKeyRefusal, keyMissing,
 } from './voice.js';
 import { mountDictation, explainNoKey } from './dictate.js';
+import { mountPassage } from './passage.js';
 
 // How long a finished status keeps the ticker before the line goes. Long
 // enough to read one line, and the same number as NOTICE_LINGER in session.js
@@ -140,6 +141,7 @@ export function mountAssist(ctx) {
       btn.disabled = speaking ? false : (!usable && !busyStatus);
     }
     dictation.live();
+    passage.paint();
     if (modal && modal.isOpen()) modal.paint();
     paintTicker();
   }
@@ -307,6 +309,10 @@ export function mountAssist(ctx) {
     live: () => ctx.live(),
     insert: (text) => ctx.insert(text),
   });
+
+  /* -------------------------------------------------- ask about a passage */
+
+  const passage = mountPassage({ button: dom.passageBtn, current: () => ctx.current(), live: () => ctx.live() });
 
   /* --------------------------------------------------------------- wiring */
 

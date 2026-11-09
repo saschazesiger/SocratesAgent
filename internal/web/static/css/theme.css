@@ -40,6 +40,7 @@
   --so-done-opacity: 0.5;
   --so-rename-width: 400px;
   --so-status-width: 600px;
+  --so-passage-quote-height: 30vh;
   /* The Status modal's overline ("Status" over the chat's name): caption
      type in capitals, spaced as capitals want; DS has no overline role. */
   --so-overline-tracking: 0.06em;
