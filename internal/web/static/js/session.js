@@ -40,7 +40,7 @@ import { forgetDraft } from './composer.js';
 import * as mcpView from './mcpview.js';
 import { mountHome, questionQueue, connectionLine } from './home.js';
 import {
-  OUTCOME_WORDS, CHECKING_WORDS, outcomeCurrent, outcomeMark, outcomeLine, outcomeIconHtml,
+  OUTCOME_WORDS, CHECKING_WORDS, outcomeCurrent, outcomeMark, outcomeLine, outcomeIconHtml, limitOf, limitLine,
 } from './outcome.js';
 import {
   DS, icon, html, raw, morph, flipMorph, showOverlay, hideOverlay, overlayOpen, M,
@@ -1297,7 +1297,9 @@ const STATUS_GLYPH = { review: 'review', pending: 'clock', background: 'backgrou
  * being looked at is never unread - it is open. A turn that is over while
  * something it started still runs has no ring - nothing is being worked on -
  * and a small hourglass on the mark's corner instead; the verdict on a turn
- * takes the same corner (outcome.js).
+ * takes the same corner (outcome.js). A chat its account's usage limit
+ * stopped wears a red person struck through there, before all of these: it
+ * will not go on until the account is switched or the limit renews.
  */
 function rowHtml(session) {
   const id = session.id;
@@ -1325,11 +1327,13 @@ function rowHtml(session) {
   if (tasks) word = ACTIVITY_WORDS.tasks;
   if (judging) word = CHECKING_WORDS;
   else if (kind) word = outcomeLine(outcome);
+  const limit = live && !busy && !waiting ? limitOf(state.digests.get(id)) : null;
+  if (limit) word = limitLine(limit);
   const ring = busy ? 'busy' : waiting ? 'waiting' : '';
-  // The corner: the verdict once it is in, else the hourglass of background
-  // work or of a verdict being read.
-  const badge = kind || (judging ? 'checking' : tasks ? 'tasks' : '');
-  const badgeIcon = kind ? outcomeIconHtml(kind, 16) : badge ? TASKS_SVG : '';
+  // The corner: the limit a chat stopped at, else the verdict once it is in,
+  // else the hourglass of background work or of a verdict being read.
+  const badge = limit ? 'limited' : kind || (judging ? 'checking' : tasks ? 'tasks' : '');
+  const badgeIcon = limit || kind ? outcomeIconHtml(badge, 16) : badge ? TASKS_SVG : '';
   const unread = !!act && !!act.unread && !attached;
 
   return html`<div class="so-row ds-drawer__row" data-ds-key="${'row:' + id}" data-id="${id}" data-status="${status}"${unread ? html` data-unread` : ''}><a class="ds-drawer__item so-row__open" href="${'#' + id}"${attached ? html` aria-current="page"` : ''}><span class="so-mark" data-tip="${word}"${ring ? html` data-ring="${ring}"` : ''}>${raw(agentMarkHtml(session.harness, 20))}${

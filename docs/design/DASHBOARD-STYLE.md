@@ -192,6 +192,9 @@ that was panned down past the frame back to the top, and takes the bottom inset 
 off `--ds-viewport-height`, so the key bar and the composer stand clear of it. Socrates' own `keyboardPan` and
 `--so-keyboard-lost` never shipped.
 
+2.2.0 (vendored at `533199e`) adds the glyph `userOff`, a person struck through, for the corner of a chat's mark in
+the sidebar and on Home when its account's usage limit stopped it (`outcome.js` `LIMIT_ICON`).
+
 
 ## Proposed to Dashboard-Style
 

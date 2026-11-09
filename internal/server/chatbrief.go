@@ -333,20 +333,21 @@ func (h *chatHub) loaded() int {
 /* --------------------------------------------------------- Home's reading */
 
 // readingLocked is the chat as Home's digests say it: its line as the
-// summary, its question, and the activity they are true in. Called with the
-// lock held.
+// summary, its question, the limit it stands at, and the activity they are
+// true in. Called with the lock held.
 func (p *chatPeer) readingLocked(rev int64, at time.Time) digest {
 	return digest{SessionID: p.id, Rev: rev, Phase: digestReady, State: p.brief.Summary.Activity,
-		MadeAt: at.UnixMilli(), Summary: p.brief.Line, Question: p.brief.Question, News: p.brief.News}
+		MadeAt: at.UnixMilli(), Summary: p.brief.Line, Question: p.brief.Question, News: p.brief.News, Limit: p.brief.Limit}
 }
 
 // sameReading is whether two readings say the same thing.
 func sameReading(a, b digest) bool {
-	return a.Summary == b.Summary && a.State == b.State && a.News == b.News && reflect.DeepEqual(a.Question, b.Question)
+	return a.Summary == b.Summary && a.State == b.State && a.News == b.News && reflect.DeepEqual(a.Question, b.Question) &&
+		reflect.DeepEqual(a.Limit, b.Limit)
 }
 
 // publishReadingLocked tells every page when what the chat's reading says
-// has changed. A new question or a new state goes at once; a line whose
+// has changed. A new question, a new state or a limit goes at once; a line whose
 // words changed while the rest stayed goes at most once a chatLineGap, and
 // the last one always does. Called with the lock held, so two readings reach
 // every page in the order they were made.
@@ -360,7 +361,7 @@ func (p *chatPeer) publishReadingLocked() {
 		return
 	}
 	if wait := chatLineGap - now.Sub(p.shownAt); p.shown.Rev != 0 && wait > 0 && next.State == p.shown.State &&
-		reflect.DeepEqual(next.Question, p.shown.Question) {
+		reflect.DeepEqual(next.Question, p.shown.Question) && reflect.DeepEqual(next.Limit, p.shown.Limit) {
 		if p.lineTimer == nil {
 			p.lineTimer = time.AfterFunc(wait, func() {
 				p.mu.Lock()

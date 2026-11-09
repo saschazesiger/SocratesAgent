@@ -11922,7 +11922,29 @@ async function chatstream() {
     ok(/Limit reached — renews in (1\sh\s5\d\smin|2\sh)/.test(limit), 'a limit says so, with when it renews', oneLine(limit));
 
     await shot(page, 'chat-stream');
+    // The sidebar says it too: a red person struck through on the chat's mark,
+    // and what stopped it, until the chat goes on.
+    const limitRow = `.so-row[data-id="${id}"]`;
+    const marked = await page.waitForSelector(`${limitRow} .so-mark__badge[data-kind="limited"]`, { timeout: 10000 })
+      .then(() => page.$eval(limitRow, (n) => {
+        const badge = n.querySelector('.so-mark__badge');
+        const probe = document.createElement('span');
+        probe.style.color = 'var(--ds-error)';
+        badge.append(probe);
+        const red = getComputedStyle(probe).color;
+        probe.remove();
+        return { tip: n.querySelector('.so-mark').dataset.tip, color: getComputedStyle(badge).color, red,
+          glyph: badge.querySelector('svg') ? badge.querySelector('svg').innerHTML.length : 0 };
+      }), () => null);
+    ok(!!marked && marked.color === marked.red && marked.glyph > 0
+      && /^Stopped at the account’s limit · renews (today|tomorrow) at \d/.test(marked.tip),
+      'the sidebar marks a chat a limit stopped with a red person struck through, and says when it renews', JSON.stringify(marked));
     // The refused draft is the browser's own report of the conflict above.
+    // A new message takes the mark off: the chat goes on.
+    await say(page, 'go on');
+    const cleared = await page.waitForSelector(`${limitRow} .so-mark__badge[data-kind="limited"]`, { state: 'detached', timeout: 15000 })
+      .then(() => true, () => false);
+    ok(cleared, 'the mark goes once the chat is written to again');
     const refusedDraft = /status of 409 \(Conflict\) @ \S+\/draft$/;
     ok(unexpected(s.errors, refusedDraft).length === 0, 'no console errors', unexpected(s.errors, refusedDraft).join(' | ') || '0');
   } finally { await s.stop(); }

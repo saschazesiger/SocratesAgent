@@ -23,7 +23,7 @@ import { agentMarkHtml } from './logos.js';
 import { isTool } from './harnesses.js';
 import { foldersOf, folderKeyOf, momentOf, notStarted as unstarted } from './folders.js';
 import {
-  OUTCOME_WORDS, OUTCOME_ICON, CHECKING_WORDS, outcomeMark, outcomeLine, outcomeIconHtml,
+  OUTCOME_WORDS, OUTCOME_ICON, CHECKING_WORDS, LIMIT_ICON, outcomeMark, outcomeLine, outcomeIconHtml, limitOf, limitLine,
 } from './outcome.js';
 
 // How often the times on the page are worked out again: "2 min ago" turns
@@ -654,8 +654,11 @@ export function mountHome(ctx) {
     const outcome = live && ctx.outcomeOf ? ctx.outcomeOf(session) : null;
     const judging = !!outcome && outcome.phase === 'pending';
     const tasks = live && !!act && act.state === 'tasks';
-    const badge = tasks || judging ? 'tasks' : outcomeMark(outcome);
-    const ring = asking ? 'waiting' : live && !!act && act.state === 'busy' ? 'busy' : '';
+    const busy = live && !!act && act.state === 'busy';
+    // A chat its account's limit stopped: the sidebar's red mark, first.
+    const limit = live && !busy && !asking ? limitOf(digest) : null;
+    const badge = limit ? 'limited' : tasks || judging ? 'tasks' : outcomeMark(outcome);
+    const ring = asking ? 'waiting' : busy ? 'busy' : '';
     let mark = agentMarkHtml(session.harness, 24);
     if (done) mark = mark.replace('class="so-agent', 'class="so-agent so-agent--quiet');
 
@@ -676,7 +679,7 @@ export function mountHome(ctx) {
           badge ? html`<span class="so-mark__badge" data-kind="${badge}">${raw(outcomeIconHtml(badge, 16))}</span>` : ''}</span>
         <span class="so-home__card-text">
           <button class="ds-card__action so-home__card-title" type="button" data-action="open">${session.title}</button>
-          <span class="so-home__card-status">${stateChip(session, cards, act, outcome, judging, now)}<span class="ds-meta so-home__card-meta">${meta}</span></span>
+          <span class="so-home__card-status">${stateChip(session, cards, act, outcome, judging, now, limit)}<span class="ds-meta so-home__card-meta">${meta}</span></span>
         </span>
         <button class="ds-btn ds-btn--tonal so-home__answer" type="button" data-action="answer"${offer ? '' : ' hidden'}>Answer</button>
         <button class="ds-btn ds-btn--tonal so-home__jobs" type="button" data-action="jobs" aria-label="Show the background jobs" data-tip="What runs in the background"${tasks && !offer ? '' : ' hidden'}>Jobs</button>
@@ -703,7 +706,8 @@ export function mountHome(ctx) {
   // it. The colour is the chip's for what the state asks of the person: amber
   // for a question, green for work that finished, the spinner for work that
   // goes on.
-  function stateChip(session, cards, act, outcome, judging, now) {
+  function stateChip(session, cards, act, outcome, judging, now, limit) {
+    if (limit) return html`<span class="ds-status ds-status--error so-home__chip">${raw(icon(LIMIT_ICON, 16))}<span>${limitLine(limit, now)}</span></span>`;
     const said = stateWords(session, cards, act, now);
     let tone = '';
     // A session counted in none of the cards below is one that is there,

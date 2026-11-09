@@ -6,6 +6,7 @@
 // words and the marks are here, once.
 
 import { icon, iconEl } from './ui.js';
+import { renewalAt } from './accounts.js';
 
 // The words for each kind, as a row's tooltip, the header's tag and a
 // notification say them. "Waiting on you" is not "Needs you": that is Home's
@@ -37,8 +38,37 @@ export const OUTCOME_ICON = {
 // background work it started, or the read of its verdict.
 export const TASKS_ICON = 'waiting';
 
-// glyphFor is the glyph a badge kind draws: an outcome, 'tasks', or nothing.
+// The mark of a chat its account's usage limit stopped: a person struck
+// through, in red. It stands still until somebody switches the account,
+// writes, or the limit renews and the chat goes on by itself, so it takes the
+// corner before any verdict on the turn the limit cut short.
+export const LIMIT_ICON = 'userOff';
+export const LIMIT_WORDS = 'Stopped at the account\u2019s limit';
+
+/**
+ * limitOf is the limit a chat stands at, from its digest (the server's
+ * chatBrief.Limit: turn, ended_at, renews_at), or null.
+ */
+export function limitOf(digest) {
+  return (digest && digest.limit) || null;
+}
+
+/**
+ * limitLine is a limit in one line: that the chat stopped at it, and when it
+ * renews by the clock while that is still ahead ("· renews today at 15:42").
+ * The clock, not a countdown: a row is drawn when news comes, not by the
+ * minute.
+ */
+export function limitLine(limit, now = Date.now()) {
+  if (!limit) return '';
+  const when = renewalAt({ limited_until: Number(limit.renews_at) || 0 }, now);
+  return when ? LIMIT_WORDS + ' \u00b7 renews ' + when : LIMIT_WORDS;
+}
+
+// glyphFor is the glyph a badge kind draws: an outcome, 'tasks', 'limited',
+// or nothing.
 function glyphFor(kind) {
+  if (kind === 'limited') return LIMIT_ICON;
   return kind === 'tasks' ? TASKS_ICON : OUTCOME_ICON[kind] || '';
 }
 

@@ -151,6 +151,7 @@ export const key = '<path d="M2.586 17.414A2 2 0 0 0 2 18.828V21a1 1 0 0 0 1 1h3
 export const shield = '<path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/>';
 export const user = '<circle cx="12" cy="8" r="5"/><path d="M20 21a8 8 0 0 0-16 0"/>';
 export const users = '<path d="M18 21a8 8 0 0 0-16 0"/><circle cx="10" cy="8" r="5"/><path d="M22 20c0-3.37-2-6.5-4-8a5 5 0 0 0-.45-8.3"/>';
+export const userOff = '<path d="M7.928 5.099a5 5 0 1 1 6.973 6.973"/><path d="M10.345 13.173A8 8 0 0 0 4 21"/><path d="m2 2 20 20"/>';
 export const userPlus = '<path d="M2 21a8 8 0 0 1 13.292-6"/><circle cx="10" cy="8" r="5"/><path d="M19 16v6"/><path d="M22 19h-6"/>';
 export const ticket = '<path d="M2 9a3 3 0 0 1 0 6v2a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-2a3 3 0 0 1 0-6V7a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2z"/><path d="M13 5v2"/><path d="M13 17v2"/><path d="M13 11v2"/>';
 export const file = '<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/>';
@@ -246,7 +247,7 @@ const GLYPHS = {
   printer, play, pause, stopCircle, trash, archive, logout, chat, send, bell, mic, micOff, volume, mail, phone,
   globe, link, flag, thumbUp, thumbDown, check, checkCircle, alert, alertCircle, info, helpCircle, eye, eyeOff,
   clock, ban, calendar, activity, wifi, wifiOff, home, panelLeft, keyboard, terminal, tag, sun, moon, overview, apps,
-  list, columns, rows, barChart, settings, cpu, lock, key, shield, user, users, userPlus, ticket, file, fileText,
+  list, columns, rows, barChart, settings, cpu, lock, key, shield, user, users, userPlus, userOff, ticket, file, fileText,
   fileCode, folder, box, building, mapPin, laptop, monitor, hardDrive, server, graduationCap, presentation, camera,
   video, image, leaf, wrench, sparkles
 };

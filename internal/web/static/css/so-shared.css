@@ -164,6 +164,8 @@ body[data-stale] .so-mark[data-ring="busy"]::after {
 .so-mark__badge[data-kind="blocked"] { --so-outcome: var(--ds-error); }
 .so-mark__badge[data-kind="error"] { --so-outcome: var(--ds-error); }
 .so-mark__badge:is([data-kind="tasks"], [data-kind="checking"]) { --so-outcome: var(--ds-primary); }
+/* A chat its account's usage limit stopped: red, as anything stuck is. */
+.so-mark__badge[data-kind="limited"] { --so-outcome: var(--ds-error); }
 
 /* ── Layout helpers ──────────────────────────────────────────────────── */
 

@@ -81,6 +81,9 @@ type digest struct {
 	// its question while it asks, how its last turn ended between turns, and
 	// nothing for a turn that is no news.
 	News string `json:"news,omitempty"`
+	// Limit is a chat that stands still because its account's usage limit
+	// stopped its last turn (chatBrief.Limit): the sidebar marks its row.
+	Limit *chatLimit `json:"limit,omitempty"`
 }
 
 type digestQuestion struct {
@@ -115,6 +118,10 @@ func (d digest) clone() digest {
 			q.Items[i] = item
 		}
 		d.Question = &q
+	}
+	if d.Limit != nil {
+		l := *d.Limit
+		d.Limit = &l
 	}
 	return d
 }

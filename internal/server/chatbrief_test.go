@@ -251,3 +251,20 @@ func TestAChatsHistoryComesAndGoes(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// A chat a usage limit stopped says so in its digest, with when the limit
+// renews, for the sidebar's mark; the next message takes it off again.
+func TestAChatsDigestSaysItStandsAtALimit(t *testing.T) {
+	c := newChatEnv(t, time.Hour)
+	id := c.create(t)
+	c.send(t, id, "m1", "/limit")
+	d := c.waitDigest(t, id, "the limit", func(d map[string]any) bool { return d["limit"] != nil })
+	limit := d["limit"].(map[string]any)
+	if renews, _ := limit["renews_at"].(float64); renews <= float64(time.Now().UnixMilli()) || limit["turn"] == "" {
+		t.Fatalf("the limit of a limited chat: %v", d)
+	}
+	c.send(t, id, "m2", "hello")
+	c.waitDigest(t, id, "no limit after a new message", func(d map[string]any) bool {
+		return d["limit"] == nil && d["state"] == agent.ActivityIdle
+	})
+}

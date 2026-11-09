@@ -108,6 +108,7 @@ export declare const shield: string;
 export declare const user: string;
 export declare const users: string;
 export declare const userPlus: string;
+export declare const userOff: string;
 export declare const ticket: string;
 export declare const file: string;
 export declare const fileText: string;
