@@ -150,6 +150,15 @@ The settings live in `/etc/socrates.env`:
 
 ---
 
+## 🗂️ Project notes
+
+| | |
+| --- | --- |
+| 💾 **Where** | Every project folder's board (columns, cards, named colours) is one row of the database's `kv` table, `board:<folder path>`, so it is in the backup and comes back with a restore |
+| 🔗 **Address** | `/#board=<folder path, URI-encoded>` opens a folder's notes; `GET`/`PUT /api/boards` read and save them (docs/design/BOARDS.md) |
+
+---
+
 ## 🔌 MCP servers
 
 | | |

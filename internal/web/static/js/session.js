@@ -54,6 +54,7 @@ import { chatOutbox, queueCommand, settled, forgetAllSent } from './chatoutbox.j
 import { openChatAsks, askDialogOpen, closeAskDialog, refreshAskDialog } from './askdialog.js';
 import { mountChatTests } from './chattests.js';
 import { mountChatArtifacts } from './artifacts.js';
+import { mountBoard } from './boards.js';
 
 /* ------------------------------------------------------------- transport */
 
@@ -707,6 +708,9 @@ const state = {
   // The chat's artifacts: the button, the column and its page view
   // (artifacts.js), mounted once in boot().
   artifacts: null,
+  // The notes of the project folder on the stage (boards.js), mounted once
+  // in boot().
+  board: null,
   // Home, the page the stage shows when no session is open, and the event
   // stream that keeps it - and the sidebar - live whatever is on the stage.
   // Both mounted once in boot().
@@ -747,7 +751,7 @@ const ids = ['sidebar', 'navScrim', 'menuBtn', 'blankIDE', 'homeBtn', 'sideColla
   'termTicker', 'tickerWindow',
   'micBtn', 'testsBtn', 'testsPanel', 'artifactsBtn', 'artifactsPanel',
   'recSheet', 'recMeter', 'recTime', 'recSend', 'recCancel',
-  'keybar', 'logout', 'chat', 'home'];
+  'keybar', 'logout', 'chat', 'home', 'board'];
 for (const id of ids) dom[id] = document.getElementById(id);
 // The frame's own parts: the app, the bar's contents, the row menu and the
 // options dialog of the bar.
@@ -1176,7 +1180,7 @@ function groupHtml(folder, children) {
   // on this page is: in a tooltip, and nowhere in the words. "More Chats" and
   // the shelves have no path, so their tooltip says what they hold instead.
   const tip = fold ? FINISHED_TITLE : SHELF_TITLES[folder.status] || folder.path || 'Sessions in a directory of their own';
-  const ide = shelf || fold || folder.key === MORE_KEY ? '' : html`${newButtonHtml(folder)}${ideButtonHtml(folder)}`;
+  const ide = shelf || fold || folder.key === MORE_KEY ? '' : html`${newButtonHtml(folder)}${boardButtonHtml(folder)}${ideButtonHtml(folder)}`;
   const kind = fold ? html`data-finished` : shelf ? html`data-shelf="${folder.status}"` : html`data-folder="${folder.key}"`;
   // A project with nothing in it but done sessions steps back as they do,
   // and so does the fold they are put away in.
@@ -1194,6 +1198,14 @@ function groupHtml(folder, children) {
 function newButtonHtml(folder) {
   const words = 'New session in ' + folder.label;
   return html`<button class="ds-btn ds-btn--quiet ds-btn--icon ds-btn--sm so-folder__new" type="button" data-new="${folder.key}" aria-label="${words}" data-tip="${words}"${harnesses.folderChoice(folder.key) ? '' : html` hidden`}>${raw(icon('plus', 16))}</button>`;
+}
+
+// boardButtonHtml is a folder's notes mark: its board of columns and cards
+// (boards.js), on the stage. It is pressed while that board is on screen.
+function boardButtonHtml(folder) {
+  const shown = boardShown() && state.board.folder() === folder.key;
+  const words = 'Notes for ' + folder.label;
+  return html`<button class="ds-btn ds-btn--quiet ds-btn--icon ds-btn--sm so-folder__board" type="button" data-board="${folder.key}" aria-pressed="${shown ? 'true' : 'false'}" aria-label="${words}" data-tip="${words}">${raw(icon('fileText', 16))}</button>`;
 }
 
 // ideButtonHtml is the VS Code mark of a folder: in its colours while the
@@ -1818,6 +1830,7 @@ function mountStream() {
       // meanwhile.
       if (state.tests) state.tests.resync();
       if (state.artifacts) state.artifacts.resync();
+      if (state.board) state.board.resync();
     },
     sessions: (rows, rev) => applyList(rows, { rev, source: 'stream' }),
     activity: (sessions) => mergeActivity(sessions),
@@ -1831,6 +1844,9 @@ function mountStream() {
     // A chat's artifacts changed (artifacts.js reads them again when it is
     // the chat on screen, and opens a new one).
     artifacts: (frame) => { if (state.artifacts) state.artifacts.frame(frame); },
+    // A folder's notes were saved somewhere (boards.js reads them again
+    // when they are the ones on screen).
+    board: (frame) => { if (state.board) state.board.frame(frame); },
     // A chat's Status phases come this way; a terminal's come on its own
     // socket (onControl), and are not taken twice.
     phase: (frame) => {
@@ -2838,6 +2854,7 @@ function showHome({ replace = false } = {}) {
     else location.hash = '#home';
   }
   closeNav();
+  hideBoard();
   dom.homeBtn.setAttribute('aria-current', 'page');
   if (state.home) state.home.show();
   if (state.events) state.events.refresh();
@@ -2851,6 +2868,58 @@ function hideHome() {
   if (!homeShown()) return;
   state.home.hide();
   if (state.events) state.events.refresh();
+}
+
+function boardShown() { return !!state.board && state.board.shown(); }
+
+/**
+ * showBoard puts a project folder's notes on the stage (boards.js): its
+ * columns and cards. Like Home, nothing is attached while they are shown,
+ * and the address says whose they are (`#board=<folder>`), so Back leaves
+ * them and a reload comes back to them.
+ */
+function showBoard(key, { replace = false } = {}) {
+  if (!key || key === MORE_KEY || !state.board) return;
+  if (state.pendingAttach) { clearTimeout(state.pendingAttach); state.pendingAttach = null; }
+  detachStage();
+  state.current = null;
+  state.wanted = '';
+  dom.keybar.hidden = true;
+  dom.termWrap.hidden = true;
+  if (state.home && state.home.shown()) state.home.hide();
+  dom.homeBtn.removeAttribute('aria-current');
+  setTitleText('Notes');
+  dom.titleRegen.hidden = true;
+  if (state.assist) state.assist.attached();
+  if (state.transfer) state.transfer.attached();
+  dom.sessionStatus.hidden = true;
+  dom.sessionOutcome.hidden = true;
+  closeCover();
+  clearNotice();
+  const hash = '#board=' + encodeURIComponent(key);
+  if (location.hash !== hash) {
+    if (replace) history.replaceState(history.state, '', hash);
+    else location.hash = hash;
+  }
+  closeNav();
+  state.board.show(key, boardLabel(key));
+  if (state.events) state.events.refresh();
+  drawList();
+}
+
+// boardLabel is what the sidebar calls a folder, or the last part of its
+// path for one that has no sessions in the list (any more).
+function boardLabel(key) {
+  const folder = foldersOf(state.sessions, placeOf).find((one) => one.key === key);
+  if (folder) return folder.label;
+  return key.split('/').filter(Boolean).pop() || key;
+}
+
+// hideBoard takes the notes off the stage, for Home or a session.
+function hideBoard() {
+  if (!boardShown()) return;
+  state.board.hide();
+  state.board.flush();
 }
 
 // applySession draws everything about a session that is not the pane itself.
@@ -3156,6 +3225,7 @@ function detachStage() {
 function attach(session) {
   detachStage();
   hideHome();
+  hideBoard();
   // A session nobody can see is a session nobody can leave: the row is the
   // only way back to it, so the folder it is in is opened if the person had
   // shut it.
@@ -3939,6 +4009,8 @@ function wireList() {
     if (ide) { openFolderIDE(ide.dataset.ide); return; }
     const add = event.target.closest('.so-folder__new');
     if (add) { newSession(add.dataset.new); return; }
+    const notes = event.target.closest('.so-folder__board');
+    if (notes) { showBoard(notes.dataset.board); return; }
     const head = event.target.closest('.so-folder__head');
     if (head) {
       const key = keysOfRows.get(head.dataset.toggle);
@@ -4171,6 +4243,10 @@ function wire() {
       questionsOnHome({ replace: true });
       return;
     }
+    if (route.kind === 'board') {
+      if (!boardShown() || state.board.folder() !== route.id) showBoard(route.id, { replace: true });
+      return;
+    }
     openOnNews(route.id);
   });
   // The page coming back into view - unlocked, switched to, restored from
@@ -4218,7 +4294,8 @@ function wire() {
 /**
  * routeOf reads what an address asks for (HOME.md §2.3): Home for `#home` and
  * for nothing at all, the question dialog for `#q=<id>`, the dialog at the
- * oldest question for `#questions` (the app's shortcut), and a session for
+ * oldest question for `#questions` (the app's shortcut), a project folder's
+ * notes for `#board=<folder>`, and a session for
  * `#open=<id>` - the form a notification opens a cold tab with - or `#<id>`.
  */
 function routeOf(hash) {
@@ -4228,6 +4305,7 @@ function routeOf(hash) {
   let id = raw;
   let kind = 'session';
   if (raw.startsWith('q=')) { kind = 'question'; id = raw.slice(2); }
+  else if (raw.startsWith('board=')) { kind = 'board'; id = raw.slice(6); }
   else if (raw.startsWith('open=')) { kind = 'open'; id = raw.slice(5); }
   try { id = decodeURIComponent(id); } catch { /* an id is never escaped by this app */ }
   if (!id) return { kind: 'home', id: '' };
@@ -4324,6 +4402,8 @@ async function boot() {
     mcpDialog: (session, opener, options) => mcpDialog(session, opener, options),
     onColumnOpen: () => { if (state.tests) state.tests.shut(); },
   });
+  // A project folder's notes: a board of columns and cards (boards.js).
+  state.board = mountBoard({ host: dom.board });
   // Home, drawn from the sidebar's own state and tests.
   state.home = mountHome({
     host: dom.home,
@@ -4414,6 +4494,7 @@ async function boot() {
   if (!homeShown() || state.current || state.socket || state.pendingAttach) return;
   if (route.kind === 'question') questionOnHome(route.id);
   else if (route.kind === 'questions') questionsOnHome({ replace: true });
+  else if (route.kind === 'board') showBoard(route.id, { replace: true });
 }
 
 boot();

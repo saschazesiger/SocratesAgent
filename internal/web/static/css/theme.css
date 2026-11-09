@@ -141,6 +141,34 @@
   --so-question-action-height: 56px;
   --so-question-grow-basis: 140px;
 
+  /* A project's notes (so-board.css): a column's width and how much of a
+     card's subtitle shows, and the colours a card's label can be - DS's
+     own roles and chart colours, so they follow the light and the dark.
+     A tag is the colour's tint behind the text; the dot and the card's
+     edge are the colour itself. */
+  --so-board-col-width: 288px;
+  --so-board-sub-lines: 4;
+  --so-board-tint: 18%;
+  --so-board-edge: 4px;
+  --so-board-dot: 10px;
+  --so-board-dot-lg: 16px;
+  --so-label-blue: var(--ds-chart-1);
+  --so-label-orange: var(--ds-chart-2);
+  --so-label-teal: var(--ds-chart-3);
+  --so-label-purple: var(--ds-chart-4);
+  --so-label-red: var(--ds-error);
+  --so-label-green: var(--ds-success);
+  --so-label-yellow: var(--ds-warning);
+  --so-label-grey: var(--ds-outline);
+  --so-label-blue-tint: color-mix(in srgb, var(--so-label-blue) var(--so-board-tint), var(--ds-surface));
+  --so-label-orange-tint: color-mix(in srgb, var(--so-label-orange) var(--so-board-tint), var(--ds-surface));
+  --so-label-teal-tint: color-mix(in srgb, var(--so-label-teal) var(--so-board-tint), var(--ds-surface));
+  --so-label-purple-tint: color-mix(in srgb, var(--so-label-purple) var(--so-board-tint), var(--ds-surface));
+  --so-label-red-tint: color-mix(in srgb, var(--so-label-red) var(--so-board-tint), var(--ds-surface));
+  --so-label-green-tint: color-mix(in srgb, var(--so-label-green) var(--so-board-tint), var(--ds-surface));
+  --so-label-yellow-tint: color-mix(in srgb, var(--so-label-yellow) var(--so-board-tint), var(--ds-surface));
+  --so-label-grey-tint: color-mix(in srgb, var(--so-label-grey) var(--so-board-tint), var(--ds-surface));
+
   /* Admin */
   --so-log-max-height: 280px;
   --so-col-status: 136px;

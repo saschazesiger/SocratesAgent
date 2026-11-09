@@ -33,6 +33,7 @@
 <link rel="stylesheet" href="/static/css/so-chat.css">
 <link rel="stylesheet" href="/static/css/so-chattests.css">
 <link rel="stylesheet" href="/static/css/so-artifacts.css">
+<link rel="stylesheet" href="/static/css/so-board.css">
 <link rel="stylesheet" href="/static/css/so-motion.css">
 <script src="/static/vendor/dashboard-style/ds.js" defer></script>
 </head>
@@ -217,6 +218,9 @@
           <!-- Home: what every session is doing, live. The landing page, and
                what the stage shows when no session is open. home.js draws it. -->
           <section class="so-home" id="home" aria-label="Home" hidden></section>
+          <!-- A project folder's notes: columns of cards, opened from the
+               folder's notes mark in the sidebar. boards.js draws them. -->
+          <section class="so-board" id="board" aria-label="Notes" hidden></section>
         </div>
         <!-- The keys a phone keyboard does not have. keybar.js fills them in. -->
         <div class="so-keybar" id="keybar" hidden></div>

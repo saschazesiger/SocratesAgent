@@ -33,6 +33,7 @@
 | 📱 **Made for the phone** | Full-screen questions, big buttons, dictation, read-aloud and push notifications. |
 | 👥 **Several accounts** | Work and private side by side. Chats pick an unused account first, else the one with the most usage left. |
 | 🧪 **Tests in every chat** | The agent writes and runs its own tests, step by step with screenshots, and you watch them pass or fail live beside the chat. |
+| 🗂️ **Notes per project** | A Kanban board for every project folder, one tap from its **+**: your own columns, cards with a title and a subtitle, and colours you name (Bug, Idea …). Saved on the server and backed up. |
 | 💾 **Encrypted backups** | Your whole setup is backed up to any S3 bucket, encrypted. Moving to a new server is a single restore. |
 | 🔄 **Updates itself** | Every night, with a self-test and automatic rollback. |
 

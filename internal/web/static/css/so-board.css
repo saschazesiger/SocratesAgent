@@ -1,0 +1,332 @@
+/*
+ * so-board.css: a project folder's notes (boards.js), columns of cards on
+ * the stage, and the folder's notes mark in the sidebar. Tokens only
+ * (--ds-* and the --so-board-* and --so-label-* of theme.css), unlayered,
+ * and no .ds-* component restyled: a card is a DS interactive card, its
+ * colour a DS tag on its hooks, the dialogs DS dialogs and fields. What is
+ * here is the layout around them and the few parts DS has no component for.
+ *
+ *   .so-folder__board   the notes mark beside a folder's + in the sidebar
+ *   .so-board           the section on the stage; it does not scroll, the
+ *                       row of columns does (sideways) and each column's
+ *                       cards do (down)
+ *   .so-board__top      the page head: "Notes", the folder, Colours and
+ *                       Column, and the legend of the folder's colours
+ *   .so-board__columns  the row of columns
+ *   .so-board__col      one column: its head (__col-head, the name as a
+ *                       button __col-btn, the count, a +), its cards
+ *                       (__cards) and "Add a card"
+ *   .so-board__card     one card (an <li> around a DS interactive card,
+ *                       __card-btn): the colour's edge (__edge), the title,
+ *                       the subtitle (__card-sub) and the colour's tag
+ *   .so-board__ghost    the copy of a card that follows the pointer while
+ *                       it is dragged; the card itself stays in its list as
+ *                       the gap ([data-lifted])
+ *   .so-board__dot      a colour as a dot, in the tags and the pickers
+ */
+
+/* ── The sidebar ─────────────────────────────────────────────────────── */
+
+/* Beside the folder's +, the same size and the same quiet grey; pressed
+   (the DS toggle) while the folder's notes are on screen. */
+.so-folder__board {
+  flex: none;
+  --ds-btn-quiet-color: var(--ds-text-3);
+}
+
+/* ── The page ────────────────────────────────────────────────────────── */
+
+.so-board {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  padding-inline: env(safe-area-inset-left, 0px) env(safe-area-inset-right, 0px);
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+  background: var(--ds-surface);
+}
+
+.so-board__frame {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.so-board__top {
+  flex: none;
+  padding: var(--ds-space-5) var(--ds-space-6) var(--ds-space-4);
+}
+
+.so-board__folder {
+  overflow-wrap: anywhere;
+}
+
+.so-board__saving {
+  margin-inline-start: var(--ds-space-3);
+}
+
+.so-board__legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--ds-space-2);
+  margin-top: var(--ds-space-3);
+}
+
+.so-board__loading {
+  display: flex;
+  justify-content: center;
+  padding: var(--ds-space-8);
+}
+
+/* ── Columns ─────────────────────────────────────────────────────────── */
+
+.so-board__columns {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  align-items: flex-start;
+  gap: var(--ds-space-4);
+  overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior-x: contain;
+  scrollbar-width: thin;
+  scrollbar-color: var(--ds-line-2) transparent;
+  padding: 0 var(--ds-space-6) var(--ds-space-5);
+}
+
+.so-board__col {
+  flex: 0 0 var(--so-board-col-width);
+  max-height: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  padding: var(--ds-space-2);
+  border-radius: var(--ds-radius-card);
+  background: var(--ds-surface-low);
+}
+
+/* "Add a column" stands where the next column would. */
+.so-board__col--new {
+  background: transparent;
+}
+
+.so-board__col-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--ds-space-2);
+  padding: 0 0 var(--ds-space-2);
+}
+
+.so-board__col-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+  font: var(--ds-font-subtitle);
+}
+
+/* The name is a button that opens the column's dialog: it reads as the
+   heading it is in, with DS's pressable layer under the pointer. */
+.so-board__col-btn {
+  display: block;
+  width: 100%;
+  padding: var(--ds-space-1) var(--ds-space-2);
+  border: 0;
+  border-radius: var(--ds-radius-md);
+  background: none;
+  color: var(--ds-text);
+  font: inherit;
+  text-align: start;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+
+.so-board__count {
+  flex: none;
+}
+
+.so-board__cards {
+  flex: 0 1 auto;
+  min-height: var(--ds-space-8);
+  margin: 0;
+  padding: var(--ds-space-1);
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-space-2);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: var(--ds-line-2) transparent;
+}
+
+.so-board__add {
+  flex: none;
+  align-self: flex-start;
+}
+
+/* ── Cards ───────────────────────────────────────────────────────────── */
+
+.so-board__card {
+  position: relative;
+}
+
+/* A card is held, not selected: no callout and no text selection under a
+   finger that holds it, so a hold can lift it. */
+.so-board__card-btn {
+  --ds-card-padding: var(--ds-space-4);
+  --ds-card-padding-sm: var(--ds-space-3);
+  -webkit-touch-callout: none;
+  user-select: none;
+  touch-action: manipulation;
+}
+
+.so-board__card[data-color] .so-board__card-btn {
+  padding-inline-start: calc(var(--ds-space-4) + var(--so-board-edge));
+}
+
+.so-board__edge {
+  position: absolute;
+  inset-block: var(--ds-space-3);
+  inset-inline-start: var(--ds-space-2);
+  width: var(--so-board-edge);
+  border-radius: var(--ds-radius-action);
+  background: var(--so-c);
+}
+
+.so-board__card-title {
+  font: var(--ds-font-label);
+  overflow-wrap: anywhere;
+}
+
+/* A card is a note, not a page: its parts sit closer than DS's 16px
+   rhythm between the blocks of a card. */
+.so-board__card-sub,
+.so-board__tag {
+  margin-top: var(--ds-space-2);
+}
+
+.so-board__card-sub {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: var(--so-board-sub-lines);
+  overflow: hidden;
+  white-space: pre-line;
+  overflow-wrap: anywhere;
+}
+
+.so-board__tag {
+  align-self: flex-start;
+  --ds-tag-bg: var(--so-t);
+  --ds-tag-color: var(--ds-text);
+}
+
+.so-board__dot {
+  display: inline-block;
+  flex: none;
+  width: var(--so-board-dot);
+  height: var(--so-board-dot);
+  margin-inline-end: var(--ds-space-1);
+  border-radius: var(--ds-radius-action);
+  background: var(--so-c, var(--ds-outline));
+}
+
+.so-board__dot--lg {
+  width: var(--so-board-dot-lg);
+  height: var(--so-board-dot-lg);
+  margin: 0;
+}
+
+:is(.so-board__card, .so-board__tag, .so-board__dot)[data-color="blue"] { --so-c: var(--so-label-blue); --so-t: var(--so-label-blue-tint); }
+:is(.so-board__card, .so-board__tag, .so-board__dot)[data-color="orange"] { --so-c: var(--so-label-orange); --so-t: var(--so-label-orange-tint); }
+:is(.so-board__card, .so-board__tag, .so-board__dot)[data-color="teal"] { --so-c: var(--so-label-teal); --so-t: var(--so-label-teal-tint); }
+:is(.so-board__card, .so-board__tag, .so-board__dot)[data-color="purple"] { --so-c: var(--so-label-purple); --so-t: var(--so-label-purple-tint); }
+:is(.so-board__card, .so-board__tag, .so-board__dot)[data-color="red"] { --so-c: var(--so-label-red); --so-t: var(--so-label-red-tint); }
+:is(.so-board__card, .so-board__tag, .so-board__dot)[data-color="green"] { --so-c: var(--so-label-green); --so-t: var(--so-label-green-tint); }
+:is(.so-board__card, .so-board__tag, .so-board__dot)[data-color="yellow"] { --so-c: var(--so-label-yellow); --so-t: var(--so-label-yellow-tint); }
+:is(.so-board__card, .so-board__tag, .so-board__dot)[data-color="grey"] { --so-c: var(--so-label-grey); --so-t: var(--so-label-grey-tint); }
+
+/* ── Dragging ────────────────────────────────────────────────────────── */
+
+.so-board[data-dragging] {
+  cursor: grabbing;
+  user-select: none;
+}
+
+/* The gap the card will land in. */
+.so-board__card[data-lifted] {
+  opacity: var(--ds-state-disabled);
+}
+
+.so-board__ghost {
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: var(--ds-z-popover);
+  pointer-events: none;
+  border-radius: var(--ds-radius-card);
+  box-shadow: var(--ds-elev-2);
+}
+
+.so-board__ghost[data-settling] {
+  transition: transform var(--ds-dur-fast) var(--ds-ease-out);
+}
+
+/* ── Dialogs ─────────────────────────────────────────────────────────── */
+
+.so-board__fields {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-space-4);
+}
+
+.so-board__labels {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-space-2);
+}
+
+.so-board__label-row {
+  display: grid;
+  grid-template-columns: auto minmax(7rem, 9rem) minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--ds-space-2);
+}
+
+/* Delete stands apart from Cancel and the primary action. */
+.so-board__delete {
+  margin-inline-end: auto;
+}
+
+/* ── A phone ─────────────────────────────────────────────────────────── */
+
+@media (max-width: 600px) {
+  .so-board__top {
+    padding: var(--ds-space-4) var(--ds-space-4) var(--ds-space-3);
+  }
+
+  .so-board__columns {
+    padding: 0 var(--ds-space-4) var(--ds-space-4);
+    scroll-snap-type: x mandatory;
+    scroll-padding-inline: var(--ds-space-4);
+  }
+
+  .so-board__col {
+    flex-basis: min(var(--so-board-col-width), 85vw);
+    scroll-snap-align: start;
+  }
+
+  .so-board__label-row {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+  }
+
+  .so-board__label-row .so-board__pick {
+    grid-column: 2 / 4;
+    grid-row: 1;
+  }
+}

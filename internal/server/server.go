@@ -415,6 +415,9 @@ func (s *Server) routes() {
 	mux.HandleFunc("POST /api/sessions/{id}/read", s.auth(s.handleMarkRead))
 	// What every conversation on this machine cost, for the costs page.
 	mux.HandleFunc("GET /api/costs", s.auth(s.handleCosts))
+	// A project folder's board of notes (boards.go).
+	mux.HandleFunc("GET /api/boards", s.auth(s.handleGetBoard))
+	mux.HandleFunc("PUT /api/boards", s.auth(s.handlePutBoard))
 	// What a terminal is doing, said out loud.
 	mux.HandleFunc("POST /api/sessions/{id}/status", s.auth(s.handleSessionStatus))
 	// A question about a passage of a chat, answered beside it (chatask.go).
