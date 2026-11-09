@@ -1115,6 +1115,20 @@ func promptParts(msg agent.Outgoing) ([]any, error) {
 	return parts, nil
 }
 
+// Withdraw takes a message out of the queue while it waits there
+// (agent.MessageWithdrawer). One that was posted already is OpenCode's.
+func (a *Adapter) Withdraw(_ context.Context, messageID string) (bool, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for i, j := range a.queue {
+		if j.msg.MessageID == messageID {
+			a.queue = append(a.queue[:i], a.queue[i+1:]...)
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 // Interrupt aborts the running turn. What was written stays; queued
 // messages run after it.
 func (a *Adapter) Interrupt(ctx context.Context) error {

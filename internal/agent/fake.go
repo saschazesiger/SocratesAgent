@@ -251,6 +251,20 @@ func (f *fakeAdapter) Send(_ context.Context, msg Outgoing) error {
 	return nil
 }
 
+// Withdraw takes a message back while it waits in the queue
+// (MessageWithdrawer); one the loop has taken is the agent's.
+func (f *fakeAdapter) Withdraw(_ context.Context, messageID string) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for i, msg := range f.queue {
+		if msg.MessageID == messageID {
+			f.queue = append(f.queue[:i], f.queue[i+1:]...)
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 func (f *fakeAdapter) Interrupt(context.Context) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()

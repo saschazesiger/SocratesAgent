@@ -868,8 +868,9 @@
   margin: 0;
 }
 
-/* Not the agent's yet: the bubble says so with its chip, and is quieter. */
-.so-msg[data-role="user"]:is([data-state="local"], [data-state="sending"], [data-state="pending"], [data-state="queued"]) .so-msg__bubble {
+/* Not the agent's yet, or never to be (taken back): the bubble says so with
+   its chip, and is quieter. */
+.so-msg[data-role="user"]:is([data-state="local"], [data-state="sending"], [data-state="pending"], [data-state="queued"], [data-state="withdrawn"]) .so-msg__bubble {
   opacity: var(--ds-state-stale);
 }
 

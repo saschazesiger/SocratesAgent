@@ -696,7 +696,8 @@ func (h *host) handle(c *hostConn, cmd Command) any {
 		var seen bool
 		h.rec.View(func(p *agent.Projection) { seq, seen = p.Seen(cmd.ClientID) })
 		if seen {
-			return Ack{T: FrameAck, ClientID: cmd.ClientID, Op: cmd.Op, Seq: seq, Dup: true, Pending: h.isPending(cmd.ClientID)}
+			return Ack{T: FrameAck, ClientID: cmd.ClientID, Op: cmd.Op, Seq: seq, Dup: true, Pending: h.isPending(cmd.ClientID),
+				Withdrawn: cmd.Op == OpWithdraw && h.withdrawn(cmd.Message)}
 		}
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
@@ -712,6 +713,8 @@ func (h *host) handle(c *hostConn, cmd Command) any {
 		return h.control(ctx, cmd)
 	case OpSwitchAccount:
 		return h.switchCmd(cmd)
+	case OpWithdraw:
+		return h.withdraw(ctx, cmd)
 	}
 	return fail(cmd, CodeBadRequest, "unknown command "+cmd.Op)
 }
@@ -913,6 +916,71 @@ func (h *host) deliverAsMessage(ctx context.Context, ask *agent.Ask, answer json
 	if err := h.adapter.Send(ctx, out); err != nil {
 		h.record(agent.Event{Type: agent.TypeError, Code: "send_failed", MessageID: msg.MessageID, Text: err.Error()})
 	}
+}
+
+// withdraw takes back a message of the person's while it waits behind a
+// running turn (OpWithdraw). The command is journaled first, as every command
+// is; the message is journaled withdrawn once the adapter gave it back, and
+// from then on no host hands it to the agent (Projection.Undelivered). A
+// message the agent has taken up is acknowledged without Withdrawn; so is one
+// the agent dropped by itself. Without an adapter nothing holds the message
+// but the journal, so it is withdrawn there.
+func (h *host) withdraw(ctx context.Context, cmd Command) any {
+	if cmd.ClientID == "" || cmd.Message == "" {
+		return fail(cmd, CodeBadRequest, "a withdraw needs a client_id and the message")
+	}
+	state, known := "", false
+	h.rec.View(func(p *agent.Projection) {
+		if m := p.Message(cmd.Message); m != nil && m.Role == agent.RoleUser {
+			state, known = m.State, true
+		}
+	})
+	if !known {
+		return fail(cmd, CodeUnknownMessage, "this chat has no such message of yours")
+	}
+	events, err := h.rec.EmitDurable(agent.Event{Type: agent.TypeCommand, ClientID: cmd.ClientID, Op: cmd.Op,
+		MessageID: cmd.Message})
+	if err != nil {
+		return fail(cmd, CodeFailed, "the command could not be journaled: "+err.Error())
+	}
+	ack := Ack{T: FrameAck, ClientID: cmd.ClientID, Op: cmd.Op, Seq: events[0].Seq}
+	switch state {
+	case agent.MessageWithdrawn:
+		ack.Withdrawn = true
+		return ack
+	case agent.MessagePending, agent.MessageQueued:
+	default:
+		return ack
+	}
+	took := true
+	if h.adapter != nil {
+		w, ok := h.adapter.(agent.MessageWithdrawer)
+		if !ok {
+			return fail(cmd, CodeUnsupported, "this agent cannot take a message back")
+		}
+		if took, err = w.Withdraw(ctx, cmd.Message); err != nil {
+			return fail(cmd, CodeFailed, err.Error())
+		}
+	}
+	if took {
+		if _, err := h.rec.EmitDurable(agent.Event{Type: agent.TypeMessageState, MessageID: cmd.Message,
+			State: agent.MessageWithdrawn}); err != nil {
+			return fail(cmd, CodeFailed, "the withdrawal could not be journaled: "+err.Error())
+		}
+		ack.Withdrawn = true
+	}
+	return ack
+}
+
+// withdrawn is whether the journal has the message as withdrawn.
+func (h *host) withdrawn(messageID string) bool {
+	out := false
+	h.rec.View(func(p *agent.Projection) {
+		if m := p.Message(messageID); m != nil {
+			out = m.State == agent.MessageWithdrawn
+		}
+	})
+	return out
 }
 
 // control is every command that is journaled as a command event: interrupt,

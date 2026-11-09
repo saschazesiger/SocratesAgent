@@ -763,6 +763,49 @@ func (a *Adapter) Send(_ context.Context, msg agent.Outgoing) error {
 		"message": map[string]any{"role": "user", "content": content}})
 }
 
+// Withdraw takes a message back from the CLI's queue while it waits behind a
+// running turn (agent.MessageWithdrawer): cancel_async_message, which the CLI
+// answers cancelled:false for a message it has taken up already - at the
+// turn's next tool boundary, or its end - and for one it does not know. It
+// says command_lifecycle cancelled just before it answers true; the state
+// takes that frame for this withdrawal, so no drop is reported.
+func (a *Adapter) Withdraw(ctx context.Context, messageID string) (bool, error) {
+	id := messageUUID(messageID)
+	a.mu.Lock()
+	if _, ok := a.st.pending[id]; !ok || a.st.deliveredMsgs[messageID] || a.ending {
+		a.mu.Unlock()
+		return false, nil
+	}
+	a.st.withdrawing[id] = false
+	a.mu.Unlock()
+	// The host waits for this with every other command of the chat behind
+	// it: a CLI that neither answers nor refuses is not waited on for long.
+	// A cancelled frame that comes later is reported as a drop.
+	ctx, cancel := context.WithTimeout(ctx, withdrawWait)
+	defer cancel()
+	raw, err := a.request(ctx, map[string]any{"subtype": "cancel_async_message", "message_uuid": id})
+	var res struct {
+		Cancelled bool `json:"cancelled"`
+	}
+	if err == nil && len(raw) > 0 {
+		err = json.Unmarshal(raw, &res)
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	// The CLI's own word that it dropped the message counts, even when its
+	// answer did not arrive.
+	cancelled := a.st.withdrawing[id]
+	delete(a.st.withdrawing, id)
+	if cancelled || (err == nil && res.Cancelled) {
+		delete(a.st.pending, id)
+		return true, nil
+	}
+	return false, err
+}
+
+// withdrawWait is how long Withdraw waits for the CLI's answer.
+const withdrawWait = 10 * time.Second
+
 // messageUUID is the CLI-side uuid of a Socrates message.
 func messageUUID(messageID string) string {
 	return uuid.NewSHA1(uuidSpace, []byte(messageID)).String()

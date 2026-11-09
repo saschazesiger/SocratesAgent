@@ -417,6 +417,9 @@ export function apply(chat, ev) {
       if (message) {
         const was = waiting(message);
         message.state = ev.state || '';
+        // Queued inside the running turn (Codex's steer): the agent has it,
+        // and it can no longer be withdrawn.
+        message.inTurn = message.state === 'queued' && ev.via === 'turn';
         if (was && !waiting(message)) takenUp(chat, message);
         touchMessage(chat, message.id);
       }

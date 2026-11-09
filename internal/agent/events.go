@@ -103,7 +103,16 @@ const (
 	// up (Claude's command_lifecycle cancelled). It is not delivered and is
 	// not handed to the agent again.
 	MessageCancelled = "cancelled"
+	// MessageWithdrawn is a user message the person took back before the
+	// agent took it up (MessageWithdrawer). It is not handed to the agent
+	// again either.
+	MessageWithdrawn = "withdrawn"
 )
+
+// ViaTurn is the Via of a message.state queued event for a message the agent
+// holds inside its running turn already: it takes it up at its next step, and
+// it can no longer be withdrawn.
+const ViaTurn = "turn"
 
 // Part kinds.
 const (
@@ -219,6 +228,9 @@ const (
 	OpSwitchAccount = "switch_account"
 	// OpStopTask stops one background task; Args is its id.
 	OpStopTask = "stop_task"
+	// OpWithdraw takes back a user message the agent has not taken up yet;
+	// MessageID is the message.
+	OpWithdraw = "withdraw"
 )
 
 // SwitchAfterTurn is the Args of a journaled switch_account that waits for
@@ -291,7 +303,9 @@ type Event struct {
 	// event, ViaMessage says the answer is to be sent as the next user
 	// message by design - the call that asked has already returned, as in
 	// Codex code mode (REBUILD.md §5.3) - and not because a blocking call was
-	// lost.
+	// lost. On a message.state queued event, ViaTurn says the agent holds
+	// the message inside its running turn already (Codex's steer), where it
+	// cannot be withdrawn any more.
 	Via string `json:"via,omitempty"`
 
 	From   string `json:"from,omitempty"`

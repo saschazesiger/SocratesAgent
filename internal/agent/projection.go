@@ -104,6 +104,10 @@ type Message struct {
 	// it was journaled, empty when none had: its place in the journal's
 	// order, which goes to the adapter with it (Outgoing.AfterTurn).
 	AfterTurn string `json:"-"`
+	// InTurn is a queued user message the agent holds inside its running
+	// turn already (a message.state queued with Via ViaTurn): it can no
+	// longer be withdrawn.
+	InTurn bool `json:"in_turn,omitempty"`
 }
 
 // Part is one part of an assistant message.
@@ -212,6 +216,7 @@ func (p *Projection) Apply(ev Event) {
 	case TypeMessageState:
 		if m := p.messages[ev.MessageID]; m != nil {
 			m.State = ev.State
+			m.InTurn = ev.State == MessageQueued && ev.Via == ViaTurn
 		}
 	case TypePart:
 		p.part(ev)
@@ -525,7 +530,8 @@ func (p *Projection) Unwaited() []*Ask {
 func (p *Projection) Undelivered() []*Message {
 	var out []*Message
 	for _, m := range p.Messages {
-		if m.Role == RoleUser && m.State != MessageDelivered && m.State != MessageCancelled {
+		if m.Role == RoleUser && m.State != MessageDelivered && m.State != MessageCancelled &&
+			m.State != MessageWithdrawn {
 			out = append(out, m)
 		}
 	}

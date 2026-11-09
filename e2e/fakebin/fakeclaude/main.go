@@ -12,7 +12,8 @@
 //   - every turn starts with command_lifecycle started and system/init, and
 //     ends with a result whose total_cost_usd counts for the whole process;
 //   - user messages are echoed with isReplay (--replay-user-messages);
-//   - a message sent during a turn is queued and runs after it;
+//   - a message sent during a turn is queued and runs after it, unless
+//     cancel_async_message takes it out of the queue first;
 //   - --resume of an unknown id fails at once with "No conversation found";
 //     a resume after a turn that was cut off appends the synthetic lines the
 //     real one does ("No response requested.", "[Tool call interrupted…");
@@ -369,6 +370,28 @@ func (f *fake) control(id string, raw json.RawMessage) {
 		}
 		f.mu.Unlock()
 		ok(map[string]any{"still_queued": []string{}})
+	case "cancel_async_message":
+		// A message still in the queue leaves it, with command_lifecycle
+		// cancelled just before the answer (as 2.1.319 does); one taken up
+		// already, or unknown, is answered cancelled:false.
+		var body struct {
+			MessageUUID string `json:"message_uuid"`
+		}
+		_ = json.Unmarshal(raw, &body)
+		f.mu.Lock()
+		cancelled := false
+		for i, j := range f.queue {
+			if j.uuid == body.MessageUUID && j.origin == "" {
+				f.queue = append(f.queue[:i], f.queue[i+1:]...)
+				cancelled = true
+				break
+			}
+		}
+		f.mu.Unlock()
+		if cancelled {
+			f.out(map[string]any{"type": "command_lifecycle", "command_uuid": body.MessageUUID, "state": "cancelled", "uuid": newUUID(), "session_id": f.session})
+		}
+		ok(map[string]any{"cancelled": cancelled})
 	case "set_model":
 		f.mu.Lock()
 		f.model = resolveModel(req.Model)

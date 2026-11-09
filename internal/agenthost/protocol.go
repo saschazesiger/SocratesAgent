@@ -21,14 +21,17 @@ import (
 // with a turn or an open question when the service was updated, and may stay
 // busy for a day - is still understood. Version 2 added the ask op of a local
 // tool (`socrates mcp-ask`); version 3 a send's Note and Sender, which the
-// server puts into the text for a host of an older build (FoldNote).
+// server puts into the text for a host of an older build (FoldNote); version
+// 4 the withdraw op.
 const (
-	Protocol    = 3
+	Protocol    = 4
 	MinProtocol = 1
 	// AskProtocol is the first version with OpAsk.
 	AskProtocol = 2
 	// NoteProtocol is the first version with Command.Note and Sender.
 	NoteProtocol = 3
+	// WithdrawProtocol is the first version with OpWithdraw.
+	WithdrawProtocol = 4
 )
 
 // NoEvents is the since of a connection that wants no events at all, beyond
@@ -57,6 +60,11 @@ const (
 	// beside the turns. Journaled as a command; an agent that cannot is
 	// unsupported.
 	OpStopTask = agent.OpStopTask
+	// OpWithdraw takes back the user message in Message while the agent has
+	// not taken it up (agent.MessageWithdrawer), protocol 4. Journaled as a
+	// command, then the message as withdrawn; the ack's Withdrawn says
+	// whether it was in time.
+	OpWithdraw = agent.OpWithdraw
 	// OpAsk is a local tool's question (protocol 2): the host journals it as
 	// an ask of the running turn, acknowledges it with its ask id, and sends
 	// the answer on the same connection, as an answer frame, when it comes.
@@ -98,6 +106,9 @@ const (
 	CodeNotRunning = "not_running"
 	// CodeUnknownAsk is an answer to a question the chat never asked.
 	CodeUnknownAsk = "unknown_ask"
+	// CodeUnknownMessage is a withdraw of a message the person never sent
+	// in this chat.
+	CodeUnknownMessage = "unknown_message"
 	// CodeUnsupported is a command the agent does not have.
 	CodeUnsupported = "unsupported"
 	// CodeFailed is a command the agent refused or failed.
@@ -131,6 +142,8 @@ type Command struct {
 	Payload json.RawMessage `json:"payload,omitempty"`
 	// Task is a stop_task's task id.
 	Task string `json:"task,omitempty"`
+	// Message is a withdraw's message id.
+	Message string `json:"message,omitempty"`
 
 	// A switch_account's account, the CLI environment built for it (without
 	// its key), the key's variables sealed for this chat (SealEnv), why it
@@ -197,6 +210,9 @@ type Ack struct {
 	// not made yet. The client keeps it to send again until the final ack
 	// of the same client_id, which comes once it is made or replaced.
 	Pending bool `json:"pending,omitempty"`
+	// Withdrawn is a withdraw that took the message back: false is a
+	// message the agent has taken up already.
+	Withdrawn bool `json:"withdrawn,omitempty"`
 }
 
 // Answer is the answer to an ask a connection asked (OpAsk).

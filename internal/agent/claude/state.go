@@ -31,6 +31,10 @@ type state struct {
 	pending       map[string]string
 	delivered     map[string]bool
 	deliveredMsgs map[string]bool
+	// withdrawing is the uuids a cancel_async_message is on its way for,
+	// true once the CLI said it cancelled the message: that lifecycle frame
+	// is the person's withdrawal (Withdraw), not a drop to report.
+	withdrawing map[string]bool
 	// next is the message the CLI said it started, for the turn its next
 	// system/init opens; hasNext says there is one (a command has none).
 	next    string
@@ -105,7 +109,8 @@ func newState(spec agent.StartSpec, configDir string) *state {
 	return &state{
 		spec: spec, configDir: configDir, effort: effortLevel(spec.Effort),
 		pending: map[string]string{}, delivered: map[string]bool{}, deliveredMsgs: map[string]bool{},
-		seen: map[string]bool{}, parts: map[string]*part{}, tasks: map[string]string{},
+		withdrawing: map[string]bool{},
+		seen:        map[string]bool{}, parts: map[string]*part{}, tasks: map[string]string{},
 		ended: map[string]taskEnd{}, late: map[string]*part{}, gone: map[string]*part{}, wasListed: map[string]bool{},
 		taskInputs: map[string]json.RawMessage{}, plans: map[string]*planAsk{}, planByReq: map[string]string{},
 		wfAgents: map[string]string{}, tails: map[string]*tail{}, homes: map[string]home{}, wfDone: map[string]bool{},
@@ -327,6 +332,11 @@ func (s *state) lifecycle(f *frame) {
 			s.markDelivered(msgID)
 		}
 	case "cancelled":
+		if _, asked := s.withdrawing[f.CommandUUID]; asked && ours {
+			delete(s.pending, f.CommandUUID)
+			s.withdrawing[f.CommandUUID] = true
+			return
+		}
 		if ours && !s.deliveredMsgs[msgID] {
 			delete(s.pending, f.CommandUUID)
 			s.emit(agent.Event{Type: agent.TypeMessageState, MessageID: msgID, State: agent.MessageCancelled},

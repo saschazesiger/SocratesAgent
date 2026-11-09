@@ -214,11 +214,17 @@ func (a *adapter) closeTurnLocked(t *turn, outcome, why string) {
 	// A message steered into the turn that codex never took up (the turn
 	// ended first) gets a turn of its own rather than staying queued, at its
 	// place in the journal's order among what waits.
+	// It is the adapter's again, so it can be withdrawn.
+	var back []agent.Event
 	for _, msg := range t.input {
 		if _, ok := a.steered[msg.MessageID]; ok {
 			delete(a.steered, msg.MessageID)
 			a.queueLocked(msg)
+			back = append(back, agent.Event{Type: agent.TypeMessageState, MessageID: msg.MessageID, State: agent.MessageQueued})
 		}
+	}
+	if len(back) > 0 {
+		a.out.Emit(back...)
 	}
 	a.held = ""
 	if outcome == agent.OutcomeLimited {

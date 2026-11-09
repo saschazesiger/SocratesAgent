@@ -99,7 +99,7 @@ You can run it again at any time to repair or update the installation.
 | ⏰ **Schedule** | **Start automatically** sends the first message at a set time, even with no browser open. |
 | 📦 **Compact** | All of a turn's work (thinking, edits, commands) fits in one line: *"Edited 2 files, ran 3 commands"*. Tap to open it. |
 | 📊 **Limits** | Below the top bar: the account in use, its usage and when it resets. |
-| 📨 **Queue** | Messages written while the agent works wait as *Queued*. **Send now** interrupts the turn. |
+| 📨 **Queue** | Messages written while the agent works wait as *Queued*. **Send now** interrupts the turn, **Withdraw** takes a message back before the agent reads it. |
 | ⏯️ **Resume** | A turn stopped by a usage limit continues on its own once the limit resets. |
 | 📎 **Files** | Attach, drop or paste them into the chat or the Shell. |
 | ⚡ **Ultracode** | Claude Code with dynamic workflows on every task, switched on per chat. |

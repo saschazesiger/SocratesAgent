@@ -100,6 +100,18 @@ type QuietLimiter interface {
 	QuietLimit() time.Duration
 }
 
+// MessageWithdrawer is an adapter that can take a user message back while it
+// waits behind a running turn, before the agent has taken it up: from the
+// CLI's queue (Claude Code's cancel_async_message) or from its own (Codex,
+// OpenCode). Withdraw reports whether it did; false, without an error, is a
+// message the agent has taken up already, holds where it cannot be taken
+// back (a message Codex was steered with), or does not know. It emits
+// nothing for a message it withdrew: the host journals it withdrawn
+// (MessageWithdrawn), and the agent never hears of it again.
+type MessageWithdrawer interface {
+	Withdraw(ctx context.Context, messageID string) (bool, error)
+}
+
 // TaskStopper is an adapter that can stop one background task of its
 // agent by the id the agent gave it (a task's `task.id`, a subagent's
 // `agent.id`, a workflow's `workflow.task_id` in the part's content). The

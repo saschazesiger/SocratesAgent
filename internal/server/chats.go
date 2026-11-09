@@ -1150,7 +1150,7 @@ func (p *chatPeer) command(ctx context.Context, cmd agenthost.Command) (int, map
 		switch reply.fail.Code {
 		case agenthost.CodeBadRequest:
 			status = http.StatusBadRequest
-		case agenthost.CodeUnknownAsk:
+		case agenthost.CodeUnknownAsk, agenthost.CodeUnknownMessage:
 			status = http.StatusNotFound
 		case agenthost.CodeNotRunning, agenthost.CodeStopping:
 			return http.StatusAccepted, map[string]any{"client_id": cmd.ClientID, "queued": true, "detail": reply.fail.Msg}
@@ -1160,7 +1160,11 @@ func (p *chatPeer) command(ctx context.Context, cmd agenthost.Command) (int, map
 		return http.StatusConflict, map[string]any{"error": "Answered on another device.",
 			"answered_elsewhere": true, "by_device": reply.ack.ByDevice}
 	}
-	return http.StatusOK, map[string]any{"client_id": cmd.ClientID, "seq": reply.ack.Seq, "dup": reply.ack.Dup}
+	out := map[string]any{"client_id": cmd.ClientID, "seq": reply.ack.Seq, "dup": reply.ack.Dup}
+	if cmd.Op == agenthost.OpWithdraw {
+		out["withdrawn"] = reply.ack.Withdrawn
+	}
+	return http.StatusOK, out
 }
 
 func (s *Server) handleChatInterrupt(w http.ResponseWriter, r *http.Request) {
@@ -1221,6 +1225,73 @@ func (s *Server) handleChatStopTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	code, answer := p.command(r.Context(), agenthost.Command{Op: agenthost.OpStopTask, ClientID: body.ClientID, Task: task})
+	writeJSON(w, code, answer)
+}
+
+// handleChatWithdraw takes back a message of the person's that waits behind
+// a running turn, while the agent has not taken it up. The answer's
+// withdrawn says whether that was in time: false is a message the agent has
+// already (Claude Code takes queued messages up at its next tool call).
+func (s *Server) handleChatWithdraw(w http.ResponseWriter, r *http.Request) {
+	_, p, ok := s.chatOf(w, r)
+	if !ok {
+		return
+	}
+	var body struct {
+		ClientID string `json:"client_id"`
+	}
+	if !readJSON(w, r, &body) {
+		return
+	}
+	body.ClientID = strings.TrimSpace(body.ClientID)
+	message := strings.TrimSpace(r.PathValue("message"))
+	if body.ClientID == "" || message == "" {
+		writeError(w, http.StatusBadRequest, "taking a message back needs a client_id and the message")
+		return
+	}
+	state, known := "", false
+	if err := p.view(func(proj *agent.Projection) {
+		if m := proj.Message(message); m != nil && m.Role == agent.RoleUser {
+			state, known = m.State, true
+		}
+	}); err != nil {
+		writeError(w, http.StatusInternalServerError, sentence(err.Error()))
+		return
+	}
+	if !known {
+		writeError(w, http.StatusNotFound, "This chat has no such message of yours.")
+		return
+	}
+	// What is no longer waiting needs no host to say so.
+	if state != agent.MessagePending && state != agent.MessageQueued {
+		writeJSON(w, http.StatusOK, map[string]any{"client_id": body.ClientID, "withdrawn": state == agent.MessageWithdrawn})
+		return
+	}
+	p.mu.Lock()
+	up := p.conn != nil
+	old := up && p.conn.Hello.Proto < agenthost.WithdrawProtocol
+	p.mu.Unlock()
+	// Without a host the message waits in the journal, and the host that
+	// starts hands it to the agent before it reads any command: starting
+	// one for the withdraw would deliver the message it is meant to stop.
+	if !up {
+		writeJSON(w, http.StatusConflict, map[string]any{"code": agenthost.CodeNotRunning,
+			"error": "The agent is not running right now, so the message cannot be taken back."})
+		return
+	}
+	if old {
+		writeJSON(w, http.StatusConflict, map[string]any{"code": agenthost.CodeUnsupported,
+			"error": "This chat's agent runs on an older version of Socrates, which cannot take a message back. It can once the agent has restarted."})
+		return
+	}
+	code, answer := p.command(r.Context(), agenthost.Command{Op: agenthost.OpWithdraw, ClientID: body.ClientID, Message: message})
+	if dup, _ := answer["dup"].(bool); code == http.StatusOK && dup {
+		_ = p.view(func(proj *agent.Projection) {
+			if m := proj.Message(message); m != nil {
+				answer["withdrawn"] = m.State == agent.MessageWithdrawn
+			}
+		})
+	}
 	writeJSON(w, code, answer)
 }
 

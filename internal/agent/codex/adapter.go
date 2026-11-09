@@ -124,10 +124,14 @@ type adapter struct {
 	// host hands messages over one at a time, each right after it journaled
 	// it, and a new adapter what is owed in the journal's order. One number
 	// per message, for the adapter's life.
-	queue    []agent.Outgoing
-	steered  map[string]agent.Outgoing
-	arrived  map[string]int64
-	arrivals int64
+	queue []agent.Outgoing
+	// withdrawn is the messages Withdraw took out of the queue: a send of
+	// one already on its way (a flush that steers it while its turn ends)
+	// lets it go rather than start a turn with it.
+	withdrawn map[string]bool
+	steered   map[string]agent.Outgoing
+	arrived   map[string]int64
+	arrivals  int64
 	// held is the turn the account's limit ended, which stops the queue:
 	// what was queued behind it would go into the account at its limit and
 	// end limited too. An account switch (a new adapter, which the host
@@ -167,6 +171,7 @@ func newAdapter() *adapter {
 		exited:    make(chan struct{}),
 		turns:     map[string]*turn{},
 		steered:   map[string]agent.Outgoing{},
+		withdrawn: map[string]bool{},
 		arrived:   map[string]int64{},
 		agents:    map[string]*subagent{},
 		calls:     map[string]*call{},
@@ -512,6 +517,10 @@ func (a *adapter) send(ctx context.Context, msg agent.Outgoing) error {
 		a.mu.Unlock()
 		return errClosed
 	}
+	if a.withdrawn[msg.MessageID] {
+		a.mu.Unlock()
+		return nil
+	}
 	if a.heldBackLocked(msg) {
 		a.mu.Unlock()
 		a.out.Emit(agent.Event{Type: agent.TypeMessageState, MessageID: msg.MessageID, State: agent.MessageQueued})
@@ -549,6 +558,10 @@ func (a *adapter) send(ctx context.Context, msg agent.Outgoing) error {
 		return nil
 	case errors.As(err, &rerr) && notSteerable(rerr):
 		a.mu.Lock()
+		if a.withdrawn[msg.MessageID] {
+			a.mu.Unlock()
+			return nil
+		}
 		a.queueLocked(msg)
 		a.mu.Unlock()
 		a.out.Emit(agent.Event{Type: agent.TypeMessageState, MessageID: msg.MessageID, State: agent.MessageQueued})
@@ -560,6 +573,10 @@ func (a *adapter) send(ctx context.Context, msg agent.Outgoing) error {
 		// waited for: a turn started now would run into the same limit.
 		a.awaitGone(ctx, active)
 		a.mu.Lock()
+		if a.withdrawn[msg.MessageID] {
+			a.mu.Unlock()
+			return nil
+		}
 		held := a.heldBackLocked(msg)
 		a.mu.Unlock()
 		if held {
@@ -736,9 +753,27 @@ func (a *adapter) steer(ctx context.Context, t *turn, msg agent.Outgoing) error 
 		return err
 	}
 	if waiting {
-		a.out.Emit(agent.Event{Type: agent.TypeMessageState, MessageID: msg.MessageID, State: agent.MessageQueued})
+		// Codex has it now, for the turn's next step: it cannot be withdrawn.
+		a.out.Emit(agent.Event{Type: agent.TypeMessageState, MessageID: msg.MessageID, State: agent.MessageQueued,
+			Via: agent.ViaTurn})
 	}
 	return nil
+}
+
+// Withdraw takes a message out of the queue while it waits there
+// (agent.MessageWithdrawer). One steered into the running turn is codex's,
+// and so is one a flush is handing over right now.
+func (a *adapter) Withdraw(_ context.Context, messageID string) (bool, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for i, q := range a.queue {
+		if q.MessageID == messageID {
+			a.queue = slices.Delete(a.queue, i, i+1)
+			a.withdrawn[messageID] = true
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // flush starts the next turn with what was held, once a turn has ended.

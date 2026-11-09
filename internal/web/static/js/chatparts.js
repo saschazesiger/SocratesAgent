@@ -930,7 +930,20 @@ const USER_STATE = {
   failed: { word: 'Not sent', glyph: 'alertCircle' },
   // The agent dropped it unread (a turn that ended before taking it up).
   cancelled: { word: 'Not taken up', glyph: 'ban' },
+  // The person took it back before the agent took it up.
+  withdrawn: { word: 'Withdrawn', glyph: 'undo' },
 };
+
+// withdrawButton offers to take a waiting message back before the agent
+// reads it: `withdraw` is { message } for one the chat's journal has, and
+// { outbox } for one still in this browser's Outbox.
+function withdrawButton(withdraw) {
+  if (!withdraw) return '';
+  const target = withdraw.outbox
+    ? html`data-action="outbox-drop" data-id="${withdraw.outbox}"`
+    : html`data-action="withdraw" data-message="${withdraw.message}"`;
+  return html`<button class="ds-btn ds-btn--quiet ds-btn--sm so-msg__withdraw" type="button" ${target} data-tip="Take this message back: the agent never reads it">${raw(icon('undo', 16))}<span>Withdraw</span></button>`;
+}
 
 function attachmentsHtml(list) {
   if (!list || !list.length) return '';
@@ -949,17 +962,17 @@ const FROM_CHAT = /^\[(?:A message from the chat|From Socrates Tests:) [^\n]*\]\
  * userMessage is what the person sent: the text as written, the files, and -
  * while it is not the agent's yet - where it is. `sendNow` offers, for a
  * message that waits behind a running turn, to stop that turn so this one
- * goes at once.
+ * goes at once, and `withdraw` to take it back (withdrawButton).
  */
-export function userMessage({ key, text, attachments, state, answerTo, error, sendNow = false }) {
+export function userMessage({ key, text, attachments, state, answerTo, error, sendNow = false, withdraw = null }) {
   const chip = USER_STATE[state];
   text = String(text || '').replace(FROM_CHAT, '');
   return html`<article class="so-msg" data-ds-key="${key}" data-role="user" data-state="${state || 'delivered'}"><div class="so-msg__bubble">${
     answerTo ? html`<p class="so-msg__label ds-meta">Answer to a question</p>` : ''
   }${text ? html`<p class="so-msg__text">${text}</p>` : ''}${attachmentsHtml(attachments)}</div>${
-    chip || sendNow ? html`<div class="so-msg__queue">${
+    chip || sendNow || withdraw ? html`<div class="so-msg__queue">${
       chip ? html`<span class="${state === 'failed' ? 'ds-status ds-status--error so-msg__chip' : 'ds-status so-msg__chip'}" data-chip="${state}">${raw(icon(chip.glyph, 16))}<span>${chip.word}</span></span>` : ''
-    }${
+    }${withdrawButton(withdraw)}${
       sendNow ? html`<button class="ds-btn ds-btn--tonal ds-btn--sm so-msg__now" type="button" data-action="send-now" data-tip="Stop what the agent is doing and send this message now">${raw(icon('arrowUp', 16))}<span>Send now</span></button>` : ''
     }</div>` : ''
   }${error ? html`<p class="so-msg__error ds-meta">${error}</p>` : ''}</article>`;
@@ -1064,8 +1077,8 @@ function peerCard({ key, dir, chat, title, harness, harnessLabel, text, chip = '
  * rather than a bubble of the person's. While it waits behind a running
  * turn it says so, and offers Send now as the person's own message does.
  */
-export function peerMessage({ key, sender, text, state, view, sendNow = false }) {
-  const waiting = peerQueue(state, sendNow);
+export function peerMessage({ key, sender, text, state, view, sendNow = false, withdraw = null }) {
+  const waiting = peerQueue(state, sendNow, withdraw);
   return html`<article class="so-msg" data-ds-key="${key}" data-role="peer" data-state="${state || 'delivered'}">${peerCard({
     key: key + ':card', dir: 'from', chat: sender.chat, title: sender.title, harness: sender.harness,
     harnessLabel: sender.harnessLabel, text: String(text || '').replace(FROM_CHAT, ''), view,
@@ -1073,12 +1086,12 @@ export function peerMessage({ key, sender, text, state, view, sendNow = false })
 }
 
 // peerQueue is where a card's message is while it is not the agent's yet,
-// and Send now while it waits behind a running turn.
-function peerQueue(state, sendNow) {
+// and Send now and Withdraw while it waits behind a running turn.
+function peerQueue(state, sendNow, withdraw) {
   const chip = USER_STATE[state];
-  return chip || sendNow ? html`<div class="so-msg__queue so-peer__queue">${
+  return chip || sendNow || withdraw ? html`<div class="so-msg__queue so-peer__queue">${
     chip ? html`<span class="${state === 'failed' ? 'ds-status ds-status--error so-msg__chip' : 'ds-status so-msg__chip'}" data-chip="${state}">${raw(icon(chip.glyph, 16))}<span>${chip.word}</span></span>` : ''
-  }${
+  }${withdrawButton(withdraw)}${
     sendNow ? html`<button class="ds-btn ds-btn--tonal ds-btn--sm so-msg__now" type="button" data-action="send-now" data-tip="Stop what the agent is doing and give it this message now">${raw(icon('arrowUp', 16))}<span>Send now</span></button>` : ''
   }</div>` : '';
 }
@@ -1095,10 +1108,10 @@ const SOCRATES_WHY = {
  * as a card of Socrates' on the agent's side, as another chat's is, never a
  * bubble of the person's.
  */
-export function socratesMessage({ key, why, text, state, sendNow = false }) {
+export function socratesMessage({ key, why, text, state, sendNow = false, withdraw = null }) {
   return html`<article class="so-msg" data-ds-key="${key}" data-role="peer" data-from="socrates" data-state="${state || 'delivered'}"><section class="ds-card so-peer" data-ds-key="${key + ':card'}" data-dir="from"><div class="ds-card__row"><h3 class="ds-card__title so-peer__title">${raw(icon('sync', 18))}<span class="so-peer__who">From Socrates</span></h3></div><p class="so-peer__meta ds-meta">${raw(icon('chat', 16))}<span>${
     'Sent to the agent ' + (SOCRATES_WHY[why] || '') + ', not from you'
-  }</span></p>${text ? html`<div class="so-md so-peer__text">${markdown(text)}</div>` : ''}</section>${peerQueue(state, sendNow)}</article>`;
+  }</span></p>${text ? html`<div class="so-md so-peer__text">${markdown(text)}</div>` : ''}</section>${peerQueue(state, sendNow, withdraw)}</article>`;
 }
 
 // sentMessage is a send_to_chat call in the answer: the message it carried,

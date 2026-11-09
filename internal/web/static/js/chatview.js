@@ -245,6 +245,9 @@ export function mountChat(ctx) {
   let rowSeenId = '';
   // A Send now on its way: the turn is being stopped.
   let interrupting = false;
+  // The messages being taken back: their Withdraw is gone until the server
+  // answers.
+  const withdrawing = new Set();
   // The chat a "Continue with" is being sent for, until the server answers.
   let continuing = '';
   // The asks whose answer has been seen, whose draft has been let go.
@@ -489,25 +492,32 @@ export function mountChat(ctx) {
         // A message that waits behind a running turn can go now: Stop, and
         // the agent takes it up next.
         const waits = (message.state === 'queued' || message.state === 'pending') && !!chat.turn;
-        rev = message.rev + ':' + waits + ':' + interrupting;
+        // It can be taken back while it waits where the agent has not read
+        // it: behind a running turn, or held after a limit (queued with no
+        // turn). One Codex was steered with is the agent's already.
+        // An answer sent as a message is not: its question counts as
+        // answered, and would not be asked again.
+        const withdraw = (waits || message.state === 'queued') && !message.inTurn && !message.answerTo
+          && !withdrawing.has(message.id) ? { message: message.id } : null;
+        rev = message.rev + ':' + waits + ':' + interrupting + ':' + !!withdraw;
         // Another chat's agent wrote it: a card that says so, with a link to
         // that chat, which the sidebar's list may add or take away.
         if (message.socrates) {
           make = () => socratesMessage({
             key: entry.key, why: message.socrates, text: message.text,
-            state: message.state === 'delivered' ? '' : message.state, sendNow: waits && !interrupting,
+            state: message.state === 'delivered' ? '' : message.state, sendNow: waits && !interrupting, withdraw,
           });
         } else if (message.sender) {
           rev += ':' + peersRev;
           make = () => peerMessage({
             key: entry.key, sender: message.sender, text: message.text, view,
-            state: message.state === 'delivered' ? '' : message.state, sendNow: waits && !interrupting,
+            state: message.state === 'delivered' ? '' : message.state, sendNow: waits && !interrupting, withdraw,
           });
         } else {
           make = () => userMessage({
             key: entry.key, text: message.text, attachments: message.attachments,
             state: message.state === 'delivered' ? '' : message.state, answerTo: message.answerTo,
-            sendNow: waits && !interrupting,
+            sendNow: waits && !interrupting, withdraw,
           });
         }
       } else {
@@ -587,6 +597,9 @@ export function mountChat(ctx) {
         markup: String(html`${userMessage({
           key: 'o:' + item.payload.client_id, text: item.payload.text, attachments: item.payload.attachments, state,
           error: failed ? item.error : '',
+          // Never tried for want of a connection: it can still stay unsaid.
+          // One tried already may have reached the server, its answer lost.
+          withdraw: state === 'local' && !item.attempts ? { outbox: item.id } : null,
         })}${failed ? html`<div class="so-msg__actions" data-ds-key="${'oa:' + item.payload.client_id}"><button class="ds-btn ds-btn--quiet ds-btn--icon ds-btn--sm" type="button" data-action="outbox-edit" data-id="${item.id}" aria-label="Edit the message" data-tip="Edit">${raw(icon('pencil', 18))}</button><button class="ds-btn ds-btn--tonal ds-btn--icon ds-btn--sm" type="button" data-action="outbox-retry" data-id="${item.id}" aria-label="Send again" data-tip="Send again">${raw(icon('sync', 18))}</button></div>` : ''}`),
       });
     }
@@ -989,6 +1002,30 @@ export function mountChat(ctx) {
   // sendNow stops the running turn, so the messages waiting behind it go to
   // the agent at once (the owner's choice: the same for every agent).
   function sendNow() { return stopTurn('The message could not be sent now: '); }
+
+  // withdraw takes back a message that waits for the agent. The agent may
+  // have taken it up meanwhile - Claude Code takes queued messages up at its
+  // next tool call - and then it stays, and the snackbar says so.
+  async function withdraw(messageId) {
+    if (!session || !messageId || withdrawing.has(messageId)) return;
+    withdrawing.add(messageId);
+    schedule();
+    let gone = false;
+    try {
+      const answer = await api('/api/chats/' + encodeURIComponent(session.id) + '/messages/' + encodeURIComponent(messageId) + '/withdraw',
+        { method: 'POST', body: { client_id: clientKey() } });
+      if (answer && answer.queued) toast('The message is taken back if the agent has not read it yet.');
+      else if (answer && !answer.withdrawn) toast('Too late: the agent has read this message already.');
+      // Taken back: Withdraw stays away, also while the stream has not
+      // brought the message's new state yet.
+      gone = !!(answer && answer.withdrawn);
+    } catch (err) {
+      toast('The message could not be taken back: ' + errorMessage(err), 'error');
+    } finally {
+      if (!gone) withdrawing.delete(messageId);
+      schedule();
+    }
+  }
 
   // stopTurn interrupts the running turn; failed says what did not happen.
   async function stopTurn(failed = 'The agent could not be stopped: ') {
@@ -1428,6 +1465,9 @@ export function mountChat(ctx) {
         break;
       case 'send-now':
         sendNow();
+        break;
+      case 'withdraw':
+        withdraw(target.dataset.message || '');
         break;
       case 'stop-turn':
         stopTurn();

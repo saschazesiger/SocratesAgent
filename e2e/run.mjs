@@ -13113,6 +13113,49 @@ async function chatsendnow() {
   } finally { await s.stop(); }
 }
 
+// chat-withdraw: a message written while a turn runs can be taken back
+// before the agent reads it. Withdraw sits beside Send now; once pressed the
+// message says Withdrawn, offers neither any more, and the agent never
+// answers it - the next message is answered instead.
+async function chatwithdraw() {
+  const { s, id } = await claudeChat();
+  const { page } = s;
+  try {
+    await say(page, '/slow 60');
+    await page.waitForSelector('#chat .so-composer__stop:not([hidden])', { timeout: 10000 });
+    await say(page, 'take this back');
+    const waiting = await page.waitForSelector('#chat .so-msg[data-role="user"] .so-msg__withdraw', { timeout: 10000 })
+      .then(() => page.$eval('#chat .so-msg[data-role="user"]:has(.so-msg__withdraw)', (n) => ({
+        state: n.dataset.state, text: n.querySelector('.so-msg__text').textContent,
+        buttons: [...n.querySelectorAll('.so-msg__queue button')].map((b) => b.innerText.trim()),
+      })), () => null);
+    ok(!!waiting && waiting.text === 'take this back' && /queued|pending/.test(waiting.state)
+      && waiting.buttons.join(',') === 'Withdraw,Send now',
+    'a message waiting behind the turn offers Withdraw beside Send now', JSON.stringify(waiting));
+    await page.click('#chat .so-msg__withdraw');
+    const taken = await page.waitForSelector('#chat .so-msg[data-role="user"][data-state="withdrawn"]', { timeout: 10000 })
+      .then(() => page.$eval('#chat .so-msg[data-role="user"][data-state="withdrawn"]', (n) => ({
+        chip: n.querySelector('.so-msg__chip')?.innerText.trim() || '',
+        buttons: n.querySelectorAll('.so-msg__queue button').length,
+      })), () => null);
+    ok(!!taken && taken.chip === 'Withdrawn' && taken.buttons === 0,
+      'withdrawn, it says so and offers nothing any more', JSON.stringify(taken));
+    const toasts = await page.$$eval('.ds-snackbar', (n) => n.map((one) => one.innerText.trim()).filter(Boolean));
+    ok(!toasts.some((t) => /too late|could not/i.test(t)), 'and no snackbar says it failed', JSON.stringify(toasts));
+    await page.click('#chat .so-composer__stop');
+    await awaitChat(s, id, idle, 20000);
+    await say(page, 'this one instead');
+    const answered = await awaitLog(page, 'you said: this one instead', 20000);
+    const log = await page.$eval('#chat', (n) => n.innerText);
+    ok(answered && !log.includes('you said: take this back'),
+      'the agent never answers the withdrawn message, and answers the next', JSON.stringify({ answered }));
+    const history = await historyOf(s, id);
+    const states = history.messages ? history.messages.filter((m) => m.role === 'user').map((m) => m.text + ':' + (m.state || '')) : [];
+    ok(states.includes('take this back:withdrawn'), 'the chat keeps it as withdrawn', JSON.stringify(states));
+    ok(unexpected(s.errors).length === 0, 'no console errors', unexpected(s.errors).join(' | ') || '0');
+  } finally { await s.stop(); }
+}
+
 // chat-auto-continue: a chat stopped by a limit goes on by itself a minute
 // after the limit renews (the server's clock, in minutes; its Go tests run
 // it). What the page shows of it: the limit's card says so, and the row's
@@ -15212,6 +15255,7 @@ const ALL = [
   ['chat-kept', 'a chat opened again is drawn at once from what the device kept, marked as such until its stream is through', chatkept],
   ['chat-poll', 'a chat whose stream never gets through is polled, says so, and shows what is answered; the stream back, the polling stops', chatpoll],
   ['chat-send-now', 'a message waiting behind a turn, sent now: the turn interrupted, the message answered next', chatsendnow],
+  ['chat-withdraw', 'a message waiting behind a turn, withdrawn: it says so, and the agent never answers it', chatwithdraw],
   ['chat-auto-continue', 'a limit\u2019s card says the chat goes on by itself, and the ⋮ switches that off and on', chatautocontinue],
   ['chat-offline', 'what a chat is told offline (two tabs, a model, an answer), or whose answer was lost, or left across a reload: delivered once', chatoffline],
   ['chat-ask', 'questions: the card and the dialog, every kind, a plan, a counter-question, Home, two devices', chatask],

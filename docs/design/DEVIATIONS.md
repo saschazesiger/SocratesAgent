@@ -2938,9 +2938,12 @@ Asked for by the product owner on 2026-10-25, on branch `ui-simplify`.
   reset, and the background jobs - always shown, "No background jobs" when there are none; a tap
   lists them.
 - **Send now** on a message queued behind a turn stops the turn (the owner's choice over steering
-  it into the running turn), so the queued message goes next. Cancelling a queued message was
-  dropped: the CLI holds a message once it is handed over, and holding messages in the host
-  instead would have taken away Claude Code's and Codex's own mid-turn pick-up.
+  it into the running turn), so the queued message goes next. **Withdraw** beside it takes the
+  message back while the agent has not taken it up (2026-11-09): from Claude Code's own queue
+  with `cancel_async_message`, from the adapter's queue for Codex and OpenCode. Messages are still
+  handed to the CLI at once rather than held in the host, which keeps Claude Code's and Codex's
+  mid-turn pick-up; so a message Claude Code took up at a tool boundary, or one Codex was steered
+  with, is the agent's and offers no Withdraw (Codex) or answers "too late" (Claude Code).
 - **A chat goes on after a limit renews**, on by default (`options.auto_continue`, the chat's ⋮):
   one minute after the limit renews (the refusal's renewal, else the used-up window's reset, of
   the account the chat is on: until 2026-10-27 a week another account had used up was taken

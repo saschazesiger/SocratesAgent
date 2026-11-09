@@ -11,7 +11,7 @@ browser ── POST /api/chats…, GET /api/chats/{id}/stream (socrates.chat.v1,
    │
 socrates serve ── chatHub: one chatPeer per chat (journal copy in memory, projection,
    │               host connection, pump); outbox in SQLite (chat_outbox)
-   │  unix socket, line JSON, protocol 3 (§4; the server also reads a version-1 or -2 host)
+   │  unix socket, line JSON, protocol 4 (§4; the server also reads a version-1 to -3 host)
    ▼
 socrates agent-host --data <data> --chat <id>      one per active chat, own scope
    │  owns: the adapter, the CLI child, the journal (only writer), parking
@@ -56,7 +56,7 @@ is one `agent.Event`: a flat JSON object, all fields optional except `seq`, `at`
 | `turn.started` | `turn_id`, `message_id`?, `account`? | the agent took up a user message (or started on its own). `account` is the account the turn runs on (WP7): the host stamps it on every turn, so a turn's cost belongs to the account that paid for it (the cost ledger, WP9). A journal written before accounts has none |
 | `turn.ended` | `turn_id`, `outcome` (`completed`\|`interrupted`\|`failed`\|`limited`), `usage`, `cost_usd`, `text` (why), `window`? and `resets_at`? (Unix s) on a `limited` one | end of the turn. A `limited` turn says which window refused and when it renews where the agent said (Claude's rejected `rate_limit_event`) |
 | `message` | `message_id`, `role` (`user`\|`assistant`), `state`, `client_id`?, `text`?, `attachments`?, `answer_to`?, `turn_id`?, `model`? | creates a message. **User messages carry text and attachments inline**; assistant messages are containers for parts |
-| `message.state` | `message_id`, `state` | user: `pending` (journaled by the host) → `queued` (the agent holds it behind a running turn) → `delivered` (taken up), or `cancelled` (the agent dropped it unread; not handed to it again). Assistant: `streaming` → `done`\|`interrupted` |
+| `message.state` | `message_id`, `state`, `via`? | user: `pending` (journaled by the host) → `queued` (the agent holds it behind a running turn; `via: "turn"` when it holds it inside that turn already, Codex's steer, where it can no longer be withdrawn) → `delivered` (taken up), or `cancelled` (the agent dropped it unread; not handed to it again), or `withdrawn` (the person took it back before the agent took it up, `withdraw` §4.3; not handed to it again either). Assistant: `streaming` → `done`\|`interrupted` |
 | `part` | `message_id`, `part_id`, `parent_part_id`?, `kind`, `state`, `text`, `content` | creates **or replaces whole** the part with that id (kind, state, text, content); `parent_part_id` nests it (below) |
 | `part.delta` | `message_id`, `part_id`, `offset`, `text` | appends `text` to the part's text; `offset` is where it starts, in **UTF-16 code units** |
 | `ask` | `ask_id`, `turn_id`, `payload` (an `ask_user` payload, below, or Claude's plan card, §5.1), `via`? | a question the agent waits for. `via: "message"`: the call already returned by design (Codex code mode, REBUILD §5.3) and the answer is to be sent as the next user message (§4.4) |
@@ -73,7 +73,7 @@ is one `agent.Event`: a flat JSON object, all fields optional except `seq`, `at`
 | `schedules` | `content`: `[{id, kind: wakeup\|cron, at?, cron?, recurring?, prompt?, reason?}]`, the whole list (none: nothing left) | what the agent will start a turn for by itself later (Claude Code's ScheduleWakeup and CronCreate, §5.1). `at` is the next run (Unix ms), absent for a recurring job after its first run. It lives in the CLI process: the projection drops it at any `process` other than `ready`, as it does the tasks. The summary says `schedules` (how many) and `wakes_at` (the first `at`); the chat shows them folded at its foot (`.so-footfold[data-kind="scheduled"]`) |
 | `quiet` | `turn_id`, `since`? (Unix ms) | the host's watch (§6, "Quiet turns"): the running turn has said nothing since `since` while it waits on nobody; without `since`, the agent is heard from again. The projection keeps it as the running turn's `quiet_since` (and the summary's) |
 | `agent.info` | `content`: an `agent.AgentInfo` `{agent, version?, commands: [{name, args?, description?}]}` plus the adapter's own fields (Claude's in §5.1) | what the CLI says about itself; `commands` is **the** composer palette (`Projection.Palette()`), each name what `Adapter.Command` takes. The newest wins (`Projection.Agent`) |
-| `command` | `op` (`interrupt`\|`set_model`\|`command`\|`park`\|`stop`\|`switch_account`\|`stop_task`: `args` is the task), `client_id`, `model`/`effort`, `text` (command name), `args` (a slash command's arguments; a switch's `when`), `to`/`reason` (a switch's account and why) | a command the host accepted; recorded so its `client_id` is acted on once. An `interrupt`, a `stop` or a `switch_account` that does not wait for the turn (`args` other than `after_turn`) to another account than the running turn's (`turn.started`'s `account`) marks the running turn as stopped by somebody (`Turn.Stopped`: not pushed, not judged); a switch to the account the turn runs on interrupts nothing |
+| `command` | `op` (`interrupt`\|`set_model`\|`command`\|`park`\|`stop`\|`switch_account`\|`stop_task`: `args` is the task\|`withdraw`: `message_id` is the message), `client_id`, `model`/`effort`, `text` (command name), `args` (a slash command's arguments; a switch's `when`), `to`/`reason` (a switch's account and why) | a command the host accepted; recorded so its `client_id` is acted on once. An `interrupt`, a `stop` or a `switch_account` that does not wait for the turn (`args` other than `after_turn`) to another account than the running turn's (`turn.started`'s `account`) marks the running turn as stopped by somebody (`Turn.Stopped`: not pushed, not judged); a switch to the account the turn runs on interrupts nothing |
 | `notice` | `code`, `text`, `ask_id`? | a line of its own. Host codes: `resumed`, `answer_as_message`, `conversation_lost`, `unresponsive` (the watch stopped a quiet turn, or ended and started again an agent that ignored a Stop, §6); every adapter's rebuild: `rebuilt`, `history_unavailable` |
 | `error` | `code`, `text`, `message_id`? | a failure that is not a turn's end (e.g. `send_failed`, `rate_limit`, `switch_failed`: the other account's agent did not start, and the chat is back on its account) |
 
@@ -258,15 +258,17 @@ Unix socket, mode 0600, one JSON object per line in each direction, lines ≤ 16
 
 ### 4.1 Handshake
 
-Client's first line, within 10 s: `{"op":"hello","proto":3,"since":<last seq it has>}`.
-Host: `{"t":"hello","proto":3,"version","chat","harness","host_pid","cli_pid","last_seq","process"}`
+Client's first line, within 10 s: `{"op":"hello","proto":4,"since":<last seq it has>}`.
+Host: `{"t":"hello","proto":4,"version","chat","harness","host_pid","cli_pid","last_seq","process"}`
 (`proto` = min of both), or `{"t":"err","code":"protocol",…}` and close when the client's `proto` is
 below the host's minimum. The server accepts hosts speaking `MinProtocol..Protocol` (currently
-1..3); when the protocol changes, keep the old version readable for a day (a busy host of the
+1..4); when the protocol changes, keep the old version readable for a day (a busy host of the
 previous build lives on, REBUILD §2.1). Version 2 (WP6) added the `ask` op of a local tool and its
 `answer` frame; the server's own ops are those of version 1, so a server and a host of either
 version understand each other. Version 3 added a `send`'s `note` and `sender`; to a host of an
-older version the server sends the note in the text instead (`agenthost.FoldNote`). A connection asks for no events with `since` = `NoEvents`
+older version the server sends the note in the text instead (`agenthost.FoldNote`). Version 4
+added the `withdraw` op; the server refuses one for a connected host of an older version (the
+agent cannot take a message back until it has restarted), and one for a chat without a host. A connection asks for no events with `since` = `NoEvents`
 (`1<<62`, beyond any journal), which is what a tool's connection does; it gets no deltas either.
 
 ### 4.2 Host → client
@@ -276,14 +278,14 @@ older version the server sends the note in the text instead (`agenthost.FoldNote
   slow client only slows itself (write deadline 30 s, then dropped; reconnect with `since`).
 - `{"t":"delta","message_id","part_id","offset","text"}` – live, never journaled, never ahead of
   the event that created its part; dropped for a client more than 4096 behind.
-- `{"t":"ack","client_id","op","seq","dup","answered_elsewhere","by_device","ask_id"}` – the
+- `{"t":"ack","client_id","op","seq","dup","answered_elsewhere","by_device","ask_id","withdrawn"}` – the
   command's events are journaled **and synced**. `seq` is the first event it produced; a repeat
   gets the same seq with `dup:true`. An ack is written after every event before it. `ask_id` is
-  the id an `ask` op's question was journaled under.
+  the id an `ask` op's question was journaled under; `withdrawn` says a `withdraw` was in time.
 - `{"t":"answer","ask_id","answer"}` (version 2) – the answer to the connection's own `ask`, sent
   on that connection only, possibly before the ask's ack.
 - `{"t":"err","client_id","op","code","msg"}` – codes: `bad_request`, `protocol`, `not_running`,
-  `unknown_ask`, `unsupported`, `failed`, `stopping`. The server keeps `not_running`/`stopping`
+  `unknown_ask`, `unknown_message`, `unsupported`, `failed`, `stopping`. The server keeps `not_running`/`stopping`
   commands in its outbox (they go to the next host) and drops the rest.
 
 ### 4.3 Client → host
@@ -298,6 +300,7 @@ older version the server sends the note in the text instead (`agenthost.FoldNote
 | `park` | `client_id`? | parks as soon as idle (§6) |
 | `stop` | `client_id`? | stops the CLI now, records an interrupted turn, exits |
 | `stop_task` | `client_id`, `task` | journals `command{args: task}`, `agent.TaskStopper.StopTask` (Claude: the control request `stop_task`, §5.1): one background task - a shell, a subagent, a workflow - by the id its part's content names (`task.id`, `agent.id`, `workflow.task_id`); the agent reports its end as any other. An adapter without it: `unsupported` |
+| `withdraw` (version 4) | `client_id`, `message` (required) | takes back a user message the agent has not taken up: journals `command{message_id}`; for a message still `pending` or `queued`, `agent.MessageWithdrawer.Withdraw` (Claude: the control request `cancel_async_message`, §5.1; Codex and OpenCode: out of the adapter's own queue, §5.2, §5.3), and when that gave it back `message.state{withdrawn}`, acked `withdrawn: true`. A message the agent has taken up (or holds inside its turn, or dropped) is acked without `withdrawn`; a repeat is answered from the journal. Without an adapter the journal is all that holds it, so it is withdrawn there. An unknown message (or another role's): `unknown_message`; an adapter without it: `unsupported` |
 | `ask` (version 2) | `payload` (an `ask_user` payload) | a local tool's question (`socrates mcp-ask`, §5.3): journals `ask{turn_id: the running turn}` and acks with its `ask_id`; the answer comes back on this connection as an `answer` frame (§4.4). Refused (`bad_request`) on a connection that said hello with protocol 1, without a payload, or while no turn runs (the CLI calls tools only inside a turn, so such a question comes from a call already withdrawn), `not_running` without an agent |
 
 | `switch_account` | `client_id`, `account`, `env` (required), `secret_env`, `reason`?, `when` (`now`\|`after_turn`), `continue`? | WP7, §11: journals `command{to, reason}`; `after_turn` while a turn runs, background work runs (`tasks` above 0) or a message waits that a limit does not hold keeps it until the turn ends and acks it `pending` at once, then once more without `pending` when it is made or a newer switch replaces it; otherwise interrupts a running turn and waits for its end (30 s), moves the agent to the account, journals `account.switched` and acks. Without `env`: `bad_request` |
@@ -598,6 +601,13 @@ foreground takes that long (a command goes to the background after 2 min and is 
 10, subagents and workflows report as they go, an API retry is a notice) - so a turn that quiet is
 stuck, and the host stops it. `StopTask` is the control request `{subtype: "stop_task", task_id}`
 (2.1.311); the CLI ends the task and sends its `task_notification` (`killed`), which closes its part.
+`Withdraw` is `{subtype: "cancel_async_message", message_uuid}` (verified live, 2.1.319): a message
+still in the CLI's queue leaves it, with `command_lifecycle cancelled` just before the answer
+`{cancelled: true}`, which the state takes for the withdrawal rather than a drop (no `cancelled`
+state, no `message_dropped` error); a message taken up already, and one the CLI does not know,
+are answered `{cancelled: false}` (never an error). The CLI takes a queued message up at the
+running turn's next tool boundary (replay, `command_lifecycle started`, answered in the same
+turn), or at its end: that is how long it can be withdrawn.
 
 **Events of its own.** `notice` codes `compacted` (`compact_boundary`, a divider with the token
 counts), `api_retry`, `informational` (warnings such as "can't use thinking from another
@@ -1118,6 +1128,7 @@ key (the existing `Outbox` in `net.js`).
 | `POST /api/chats/{id}/messages` | `client_id`, `text`, `attachments` | 200 `{client_id, seq, dup}`; 202 `{client_id, queued: true}` when the host has not acked within 10 s (a host still starting holds commands until its agent is up; it will receive it once) |
 | `POST /api/chats/{id}/interrupt` | `client_id` | as messages; 200 `{idle: true}` when nothing runs and no host is up |
 | `POST /api/chats/{id}/tasks/{task}/stop` | `client_id` | `stop_task` (§4.3), as messages; 200 `{idle: true}` when no host is up (its tasks went with it) |
+| `POST /api/chats/{id}/messages/{message}/withdraw` | `client_id` | `withdraw` (§4.3), as messages, with `withdrawn` in the 200: false is a message the agent has taken up already. A message no longer `pending` or `queued` is answered from the journal without a host; 404 for a message that is not the person's in this chat; 409 `{code: unsupported}` for a host of a protocol before 4, and 409 `{code: not_running}` when no host is connected (the host that starts hands every undelivered message to the agent before it reads a command, so a withdraw sent to it would come too late). The page offers no Withdraw for an answer sent as a message (its question counts as answered) nor for a message Codex was steered with |
 | `POST /api/chats/{id}/asks/{ask}/answer` | `client_id`, `answer` (any JSON), `device` | 200 / 202 as messages; **409 `{answered_elsewhere: true, by_device}`** when another device answered; 404 for an unknown ask |
 | `POST /api/chats/{id}/model` | `client_id`, `model`, `effort` | as messages (a `set_model` command) |
 | `POST /api/chats/{id}/command` | `client_id`, `name`, `args` | as messages; 409 `{code: "unsupported"}` for a command the agent does not have |
