@@ -1,12 +1,11 @@
 /*
  * so-board.css: a project folder's notes (boards.js), columns of cards on
- * the stage, and the folder's notes mark in the sidebar. Tokens only
+ * the stage. Tokens only
  * (--ds-* and the --so-board-* and --so-label-* of theme.css), unlayered,
  * and no .ds-* component restyled: a card is a DS interactive card, its
  * colour a DS tag on its hooks, the dialogs DS dialogs and fields. What is
  * here is the layout around them and the few parts DS has no component for.
  *
- *   .so-folder__board   the notes mark beside a folder's + in the sidebar
  *   .so-board           the section on the stage; it does not scroll, the
  *                       row of columns does (sideways) and each column's
  *                       cards do (down)
@@ -24,15 +23,6 @@
  *                       itself stays in its place as the gap ([data-lifted])
  *   .so-board__dot      a colour as a dot, in the tags and the pickers
  */
-
-/* ── The sidebar ─────────────────────────────────────────────────────── */
-
-/* Beside the folder's +, the same size and the same quiet grey; pressed
-   (the DS toggle) while the folder's notes are on screen. */
-.so-folder__board {
-  flex: none;
-  --ds-btn-quiet-color: var(--ds-text-3);
-}
 
 /* ── The page ────────────────────────────────────────────────────────── */
 

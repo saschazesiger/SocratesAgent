@@ -8,13 +8,13 @@ server and in the backup, so it is never lost.
 
 ## 1. Where it is
 
-- The mark (`.so-folder__board`, DS glyph `fileText`) sits right after the folder's + in a project
-  folder's head (session.js `boardButtonHtml`). "More Chats" (sessions in directories of
-  Socrates' own) is no project and has none. It is pressed while its folder's board is on the
-  stage.
+- **Notes** is the first item of a project folder's ⋮ (`.so-folder__more`, beside its +, session.js
+  `openFolderMenu`; DOCS.md §1), with Docs and VS Code. Until 2026-11-10 it was a mark of its own
+  (`fileText`) right after the +. "More Chats" (sessions in directories of Socrates' own) is no project
+  and has none.
 - The board is a page on the stage like Home (`#board`, boards.js `mountBoard`): nothing is
   attached while it is shown. The address is `#board=<folder path, URI-encoded>`, so Back leaves it,
-  a reload comes back to it and a link opens it. Home, a session or another folder's mark takes
+  a reload comes back to it and a link opens it. Home, a session or another folder's Notes takes
   the stage back.
 - The folder is the sidebar's folder key (folders.js `dirOf`): the working directory without
   trailing slashes. A folder whose sessions were all deleted keeps its board; its address still

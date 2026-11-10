@@ -17,6 +17,7 @@ import {
 import { chattests } from './chattests.mjs';
 import { artifacts } from './artifacts.mjs';
 import { boards } from './boards.mjs';
+import { docs } from './docs.mjs';
 import http from 'node:http';
 import net from 'node:net';
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -15443,6 +15444,7 @@ const ALL = [
   ['chattests', 'a chat\u2019s own tests: the button and its badge live, the column, the viewer and its screenshots, override, edit, run again, delete, a phone', chattests],
   ['artifacts', 'a chat\u2019s artifacts: the button and its badge, the column opening on a new one, the page in its frame, versions, delete, a phone', artifacts],
   ['boards', 'a project folder\u2019s notes: columns, cards, named colours, a drag, a reload, another device, another folder, a phone', boards],
+  ['docs', 'a project folder\u2019s docs: Docs in its \u22ee, the README and the tree, links, a file changed on disk, the filter, a reload, the sandbox, a link in a chat, a phone', docs],
   ['chat-tools', 'tool rows, the diff viewer, a subagent, a workflow, and the task list pinned while it runs', chattools],
   ['chat-light', 'a chat read on a new device comes light, and what is opened is asked for: a workflow’s agents, a long output', chatlight],
   ['chat-fold', 'an answer\u2019s work folded in one line: what it does, then what it did, its steps and tokens; the answer and a question stand', chatfold],

@@ -469,30 +469,35 @@
   padding-left: var(--ds-space-2);
 }
 
-/* A folder's + and VS Code keep their size whatever the name beside them:
-   the name gives way, so they stand in one column down the list. */
+/* A folder's + and ⋮ keep their size whatever the name beside them: the
+   name gives way, so they stand in one column down the list. */
 .so-folder__new,
-.so-folder__ide {
+.so-folder__more {
   flex: none;
 }
 
-/* The +, a quieter grey than the name beside it: it is there when wanted
-   and does not compete with the list. Hover brings it to the text colour. */
-.so-folder__new {
+/* The + and the ⋮, a quieter grey than the name beside them: they are
+   there when wanted and do not compete with the list. Hover brings them to
+   the text colour. */
+.so-folder__new,
+.so-folder__more {
   --ds-btn-quiet-color: var(--ds-text-3);
 }
 
-/* The folder's VS Code: in its colours while it runs, quiet while it does
-   not, and pressed (the DS toggle) while it is on screen. */
-.so-folder__ide .so-agent {
-  opacity: var(--ds-state-disabled);
-  filter: grayscale(1);
-  transition: opacity var(--ds-dur-fast) var(--ds-ease-in-out);
+/* The ⋮ of a folder whose VS Code runs wears a dot in VS Code's colour. */
+.so-folder__more {
+  position: relative;
 }
 
-.so-folder__ide[data-running] .so-agent {
-  opacity: 1;
-  filter: none;
+.so-folder__running {
+  position: absolute;
+  top: var(--ds-space-1);
+  right: var(--ds-space-1);
+  width: var(--so-folder-running-size);
+  height: var(--so-folder-running-size);
+  border-radius: var(--ds-radius-action);
+  background: var(--so-brand-vscode);
+  pointer-events: none;
 }
 
 /* ── Rows ─────────────────────────────────────────────────────────────── */

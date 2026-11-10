@@ -107,6 +107,7 @@ func TestAChatGetsTheChatToolsBesideAskUser(t *testing.T) {
 		t.Errorf("a chat's tools:\n%s", mcp)
 	}
 	if !strings.Contains(argv, askGuidance+"\n\n"+chattools.Guidance(chatsPrefix)) ||
+		!strings.Contains(argv, todoGuidance+"\n\n"+agent.DocsGuidance+"\n\nOPTIONS-PROMPT") ||
 		!strings.Contains(argv, "OPTIONS-PROMPT\n\n"+agent.ModelPrompt("haiku", "NOTE-HAIKU")) {
 		t.Errorf("a chat's system prompt:\n%s", argv)
 	}

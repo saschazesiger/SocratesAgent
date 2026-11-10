@@ -396,7 +396,7 @@ func TestMCPAskInstructsAChat(t *testing.T) {
 	}
 	prefix := askuser.ServerName + "_"
 	chat := chattools.Endpoint{Socket: "/nonexistent/chat-tools.sock", Token: "c.x"}
-	if got := instructions(chat); got != askuser.Guidance(MCPAskTool)+"\n\n"+chattools.Guidance(prefix)+"\n\n"+agent.TodoGuidance("todowrite") {
+	if got := instructions(chat); got != askuser.Guidance(MCPAskTool)+"\n\n"+chattools.Guidance(prefix)+"\n\n"+agent.TodoGuidance("todowrite")+"\n\n"+agent.DocsGuidance {
 		t.Fatalf("a chat's instructions:\n%s", got)
 	}
 }

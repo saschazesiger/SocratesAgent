@@ -22,7 +22,7 @@ import {
 import { connectionSource, deadline } from './net.js';
 import { agentMark, agentMarkHtml } from './logos.js';
 import {
-  MORE_KEY, FINISHED_KEY, FINISHED_LABEL, SHELVES, IDE, foldersOf, folderKeyOf, ideOf, momentOf, movesRow, notStarted,
+  MORE_KEY, FINISHED_KEY, FINISHED_LABEL, SHELVES, IDE, foldersOf, folderKeyOf, dirOf, ideOf, momentOf, movesRow, notStarted,
 } from './folders.js';
 import * as harnesses from './harnesses.js';
 import * as accounts from './accounts.js';
@@ -56,6 +56,9 @@ import { openChatAsks, askDialogOpen, closeAskDialog, refreshAskDialog } from '.
 import { mountChatTests } from './chattests.js';
 import { mountChatArtifacts } from './artifacts.js';
 import { mountBoard } from './boards.js';
+import { mountDocs, docsHash, parseDocsRoute } from './docs.js';
+import { probeDocs, knownDocs, hasDocs } from './docview.js';
+import { mountChatDocside, docLinkTarget } from './docside.js';
 
 /* ------------------------------------------------------------- transport */
 
@@ -712,6 +715,8 @@ const state = {
   // The notes of the project folder on the stage (boards.js), mounted once
   // in boot().
   board: null,
+  // The docs of the project folder on the stage (docs.js), mounted once.
+  docs: null,
   // Home, the page the stage shows when no session is open, and the event
   // stream that keeps it - and the sidebar - live whatever is on the stage.
   // Both mounted once in boot().
@@ -752,7 +757,7 @@ const ids = ['sidebar', 'navScrim', 'menuBtn', 'blankIDE', 'homeBtn', 'sideColla
   'termTicker', 'tickerWindow',
   'micBtn', 'testsBtn', 'testsPanel', 'artifactsBtn', 'artifactsPanel',
   'recSheet', 'recMeter', 'recTime', 'recSend', 'recCancel',
-  'keybar', 'logout', 'chat', 'home', 'board'];
+  'keybar', 'logout', 'chat', 'home', 'board', 'docs', 'docsidePanel'];
 for (const id of ids) dom[id] = document.getElementById(id);
 // The frame's own parts: the app, the bar's contents, the row menu and the
 // options dialog of the bar.
@@ -973,6 +978,9 @@ function drawList() {
   // A project with nothing left to do in it goes into the Finished fold at
   // the bottom, shut, so the projects being worked on are all there is.
   const all = foldersOf(wanted, placeOf);
+  // Which project folders have docs, for their menus: asked in one request
+  // for the folders not asked about lately (docview.js).
+  probeDocs(all.filter((folder) => folder.key !== MORE_KEY).map((folder) => folder.key));
   const finished = all.filter((folder) => folder.finished);
   const markup = all.filter((folder) => !folder.finished).map((folder) => folderHtml(folder));
   if (finished.length) {
@@ -1181,7 +1189,7 @@ function groupHtml(folder, children) {
   // on this page is: in a tooltip, and nowhere in the words. "More Chats" and
   // the shelves have no path, so their tooltip says what they hold instead.
   const tip = fold ? FINISHED_TITLE : SHELF_TITLES[folder.status] || folder.path || 'Sessions in a directory of their own';
-  const ide = shelf || fold || folder.key === MORE_KEY ? '' : html`${newButtonHtml(folder)}${boardButtonHtml(folder)}${ideButtonHtml(folder)}`;
+  const ide = shelf || fold || folder.key === MORE_KEY ? '' : html`${newButtonHtml(folder)}${folderMoreHtml(folder)}`;
   const kind = fold ? html`data-finished` : shelf ? html`data-shelf="${folder.status}"` : html`data-folder="${folder.key}"`;
   // A project with nothing in it but done sessions steps back as they do,
   // and so does the fold they are put away in.
@@ -1201,25 +1209,15 @@ function newButtonHtml(folder) {
   return html`<button class="ds-btn ds-btn--quiet ds-btn--icon ds-btn--sm so-folder__new" type="button" data-new="${folder.key}" aria-label="${words}" data-tip="${words}"${harnesses.folderChoice(folder.key) ? '' : html` hidden`}>${raw(icon('plus', 16))}</button>`;
 }
 
-// boardButtonHtml is a folder's notes mark: its board of columns and cards
-// (boards.js), on the stage. It is pressed while that board is on screen.
-function boardButtonHtml(folder) {
-  const shown = boardShown() && state.board.folder() === folder.key;
-  const words = 'Notes for ' + folder.label;
-  return html`<button class="ds-btn ds-btn--quiet ds-btn--icon ds-btn--sm so-folder__board" type="button" data-board="${folder.key}" aria-pressed="${shown ? 'true' : 'false'}" aria-label="${words}" data-tip="${words}">${raw(icon('fileText', 16))}</button>`;
-}
-
-// ideButtonHtml is the VS Code mark of a folder: in its colours while the
-// folder's editor is running, quiet while there is none or it is stopped, and
-// pressed while it is the one on screen. Where VS Code is switched off and
-// the folder has no editor to return to, the mark is not there.
-function ideButtonHtml(folder) {
+// folderMoreHtml is a project folder's ⋮: its menu of what belongs to the
+// folder rather than to one of its sessions - its notes, its docs and its
+// VS Code (openFolderMenu). It wears a dot while the folder's editor runs,
+// which the VS Code mark beside the + used to show by its colours.
+function folderMoreHtml(folder) {
   const ide = folder.ide;
-  const usable = harnesses.ideAvailable();
   const running = !!ide && (ide.state === 'running' || ide.state === 'starting');
-  const shown = !!ide && !!state.current && state.current.id === ide.id;
-  const words = (running ? 'VS Code is open in ' : 'Open VS Code in ') + folder.label;
-  return html`<button class="ds-btn ds-btn--quiet ds-btn--icon ds-btn--sm so-folder__ide" type="button" data-ide="${folder.key}" aria-pressed="${shown ? 'true' : 'false'}" aria-label="${words}" data-tip="${words}"${running ? html` data-running` : ''}${!ide && !usable ? html` hidden` : ''}>${raw(agentMarkHtml(IDE, 16))}</button>`;
+  const words = 'More for ' + folder.label + (running ? ', VS Code is open' : '');
+  return html`<button class="ds-btn ds-btn--quiet ds-btn--icon ds-btn--sm so-folder__more" type="button" data-folder-more="${folder.key}" aria-label="${words}" data-tip="${words}" aria-haspopup="menu" aria-expanded="false"${running ? html` data-running` : ''}>${raw(icon('moreVertical', 16))}${running ? html`<span class="so-folder__running" aria-hidden="true"></span>` : ''}</button>`;
 }
 
 // What a VS Code is being opened for right now - a folder, the empty
@@ -1832,6 +1830,7 @@ function mountStream() {
       if (state.tests) state.tests.resync();
       if (state.artifacts) state.artifacts.resync();
       if (state.board) state.board.resync();
+      if (state.docs) state.docs.resync();
     },
     sessions: (rows, rev) => applyList(rows, { rev, source: 'stream' }),
     activity: (sessions) => mergeActivity(sessions),
@@ -2723,6 +2722,49 @@ async function openRowMenu(anchor, id, { device = false } = {}) {
   showOverlay(menu, anchor);
 }
 
+/**
+ * openFolderMenu is a project folder's ⋮ (folderMoreHtml): its notes, its
+ * docs - there when the folder has Markdown files - and its VS Code, open
+ * or to be opened. It is the row menu's element and listener, drawn for
+ * the folder.
+ */
+async function openFolderMenu(anchor, key) {
+  const menu = dom.sessionMenu;
+  const folder = foldersOf(state.sessions, placeOf).find((one) => one.key === key);
+  if (!menu || !folder) return;
+  if (anchor.getAttribute('aria-expanded') === 'true') { hideOverlay(menu); return; }
+  if (!menu.hidden) await hideOverlay(menu);
+  // Whether the folder has docs is mostly known (the list asks for every
+  // folder); a folder asked about for the first time waits for the answer.
+  if (knownDocs(key) === undefined) await hasDocs(key);
+  menuActions.clear();
+  menuInTap.clear();
+  const items = [];
+  const add = (action, label, glyph, run) => {
+    menuActions.set(action, run);
+    items.push(menuItemHtml(action, label, glyph));
+  };
+  add('notes', 'Notes', 'columns', () => showBoard(key));
+  if (knownDocs(key)) add('docs', 'Docs', 'fileText', () => showDocs(key));
+  const ide = folder.ide;
+  const running = !!ide && (ide.state === 'running' || ide.state === 'starting');
+  if (ide || harnesses.ideAvailable()) {
+    add('ide', running ? 'VS Code (open)' : 'Open VS Code', 'fileCode', () => openFolderIDE(key));
+    // VS Code opens in a tab of its own, which a browser allows only
+    // inside the tap.
+    menuInTap.add('ide');
+  }
+  morph(menu, html`${items}`);
+  const sheet = actionSheetWanted() || !menuFits(menu);
+  anchor.setAttribute('aria-haspopup', sheet ? 'dialog' : 'menu');
+  if (sheet) {
+    openActionSheet(anchor, folder.label, items);
+    return;
+  }
+  anchor.setAttribute('aria-controls', 'sessionMenu');
+  showOverlay(menu, anchor);
+}
+
 /* ------------------------------------------------------ the options dialog */
 
 // The top bar's ⋮: the choices that belong to this device and not to any
@@ -2856,6 +2898,7 @@ function showHome({ replace = false } = {}) {
   }
   closeNav();
   hideBoard();
+  hideDocs();
   dom.homeBtn.setAttribute('aria-current', 'page');
   if (state.home) state.home.show();
   if (state.events) state.events.refresh();
@@ -2882,6 +2925,7 @@ function boardShown() { return !!state.board && state.board.shown(); }
 function showBoard(key, { replace = false } = {}) {
   if (!key || key === MORE_KEY || !state.board) return;
   if (state.pendingAttach) { clearTimeout(state.pendingAttach); state.pendingAttach = null; }
+  hideDocs();
   detachStage();
   state.current = null;
   state.wanted = '';
@@ -2921,6 +2965,49 @@ function hideBoard() {
   if (!boardShown()) return;
   state.board.hide();
   state.board.flush();
+}
+
+function docsShown() { return !!state.docs && state.docs.shown(); }
+
+/**
+ * showDocs puts a project folder's docs on the stage (docs.js): its
+ * Markdown files in a tree and one of them, `page` or the README. As the
+ * notes, nothing is attached meanwhile and the address says what is shown
+ * (`#docs=<folder>&page=<path>`), so Back, a reload and a link work.
+ */
+function showDocs(key, { page = '', at = '', replace = false } = {}) {
+  if (!key || key === MORE_KEY || !state.docs) return;
+  if (state.pendingAttach) { clearTimeout(state.pendingAttach); state.pendingAttach = null; }
+  hideBoard();
+  detachStage();
+  state.current = null;
+  state.wanted = '';
+  dom.keybar.hidden = true;
+  dom.termWrap.hidden = true;
+  if (state.home && state.home.shown()) state.home.hide();
+  dom.homeBtn.removeAttribute('aria-current');
+  setTitleText('Docs');
+  dom.titleRegen.hidden = true;
+  if (state.assist) state.assist.attached();
+  if (state.transfer) state.transfer.attached();
+  dom.sessionStatus.hidden = true;
+  dom.sessionOutcome.hidden = true;
+  closeCover();
+  clearNotice();
+  const hash = docsHash(key, page);
+  if (location.hash !== hash) {
+    if (replace) history.replaceState(history.state, '', hash);
+    else location.hash = hash;
+  }
+  closeNav();
+  state.docs.show(key, boardLabel(key), page, at);
+  if (state.events) state.events.refresh();
+  drawList();
+}
+
+// hideDocs takes the docs off the stage, for Home, the notes or a session.
+function hideDocs() {
+  if (docsShown()) state.docs.hide();
 }
 
 // applySession draws everything about a session that is not the pane itself.
@@ -3213,6 +3300,7 @@ function detachStage() {
   if (state.chat) state.chat.hide();
   if (state.tests) state.tests.hide();
   if (state.artifacts) state.artifacts.hide();
+  if (state.docside) state.docside.hide();
   dom.termWrap.hidden = false;
 }
 
@@ -3227,6 +3315,7 @@ function attach(session) {
   detachStage();
   hideHome();
   hideBoard();
+  hideDocs();
   // A session nobody can see is a session nobody can leave: the row is the
   // only way back to it, so the folder it is in is opened if the person had
   // shut it.
@@ -4006,12 +4095,10 @@ function wireList() {
       openRowMenu(more, more.closest('.so-row').dataset.id);
       return;
     }
-    const ide = event.target.closest('.so-folder__ide');
-    if (ide) { openFolderIDE(ide.dataset.ide); return; }
     const add = event.target.closest('.so-folder__new');
     if (add) { newSession(add.dataset.new); return; }
-    const notes = event.target.closest('.so-folder__board');
-    if (notes) { showBoard(notes.dataset.board); return; }
+    const folderMore = event.target.closest('.so-folder__more');
+    if (folderMore) { openFolderMenu(folderMore, folderMore.dataset.folderMore); return; }
     const head = event.target.closest('.so-folder__head');
     if (head) {
       const key = keysOfRows.get(head.dataset.toggle);
@@ -4027,11 +4114,12 @@ function wireList() {
   });
   // ArrowDown on a ⋮ opens its menu on the first item, ArrowUp on the last.
   dom.sessionList.addEventListener('keydown', (event) => {
-    const more = event.target.closest('.so-row__more');
+    const more = event.target.closest('.so-row__more, .so-folder__more');
     if (!more || (event.key !== 'ArrowDown' && event.key !== 'ArrowUp')) return;
     if (more.getAttribute('aria-expanded') === 'true') return;
     event.preventDefault();
-    openRowMenu(more, more.closest('.so-row').dataset.id);
+    if (more.classList.contains('so-folder__more')) openFolderMenu(more, more.dataset.folderMore);
+    else openRowMenu(more, more.closest('.so-row').dataset.id);
   });
   // The row menu has no close event: its hidden attribute is the news.
   new MutationObserver(() => {
@@ -4248,6 +4336,13 @@ function wire() {
       if (!boardShown() || state.board.folder() !== route.id) showBoard(route.id, { replace: true });
       return;
     }
+    if (route.kind === 'docs') {
+      const { folder, page, at } = parseDocsRoute(route.id);
+      if (!docsShown() || state.docs.folder() !== folder || (page && page !== state.docs.page()) || at) {
+        showDocs(folder, { page, at, replace: true });
+      }
+      return;
+    }
     openOnNews(route.id);
   });
   // The page coming back into view - unlocked, switched to, restored from
@@ -4296,7 +4391,8 @@ function wire() {
  * routeOf reads what an address asks for (HOME.md §2.3): Home for `#home` and
  * for nothing at all, the question dialog for `#q=<id>`, the dialog at the
  * oldest question for `#questions` (the app's shortcut), a project folder's
- * notes for `#board=<folder>`, and a session for
+ * notes for `#board=<folder>`, its docs for `#docs=<folder>&page=<path>`
+ * (the rest is docs.js parseDocsRoute's to read), and a session for
  * `#open=<id>` - the form a notification opens a cold tab with - or `#<id>`.
  */
 function routeOf(hash) {
@@ -4307,6 +4403,7 @@ function routeOf(hash) {
   let kind = 'session';
   if (raw.startsWith('q=')) { kind = 'question'; id = raw.slice(2); }
   else if (raw.startsWith('board=')) { kind = 'board'; id = raw.slice(6); }
+  else if (raw.startsWith('docs=')) return { kind: 'docs', id: raw.slice(5) };
   else if (raw.startsWith('open=')) { kind = 'open'; id = raw.slice(5); }
   try { id = decodeURIComponent(id); } catch { /* an id is never escaped by this app */ }
   if (!id) return { kind: 'home', id: '' };
@@ -4390,6 +4487,15 @@ async function boot() {
     status: () => updateStale(),
     openAsk: (chatId, askId) => showChatQuestions(chatId, { askId, only: true }),
     toastRoom: (room) => { chatToastRoom = room; placeToasts(); },
+    // A link to a Markdown file of the chat's folder opens it beside the
+    // chat (docside.js); any other link is the browser's.
+    docLink: (href, session, opener) => {
+      const folder = dirOf(session.workdir || '');
+      const target = docLinkTarget(href, folder);
+      if (!target || !state.docside) return false;
+      state.docside.open(folder, target.path, { at: target.at, opener });
+      return true;
+    },
   });
   chatOutbox().pump();
   // The chat's tests: the button, the column at a desk and the sheet
@@ -4400,7 +4506,10 @@ async function boot() {
     button: dom.testsBtn,
     panel: dom.testsPanel,
     mcpDialog: (session, opener, options) => mcpDialog(session, opener, options),
-    onColumnOpen: () => { if (state.artifacts) state.artifacts.shut(); },
+    onColumnOpen: () => {
+      if (state.artifacts) state.artifacts.shut();
+      if (state.docside) state.docside.shut();
+    },
   });
   // The chat's artifacts: the button, the column (a page in it) at a desk,
   // the sheet and the page dialog narrower.
@@ -4408,10 +4517,32 @@ async function boot() {
     button: dom.artifactsBtn,
     panel: dom.artifactsPanel,
     mcpDialog: (session, opener, options) => mcpDialog(session, opener, options),
-    onColumnOpen: () => { if (state.tests) state.tests.shut(); },
+    onColumnOpen: () => {
+      if (state.tests) state.tests.shut();
+      if (state.docside) state.docside.shut();
+    },
+  });
+  // A Markdown file of the chat's folder a link in the chat opened: a
+  // column beside it at a desk (never with the tests' or the artifacts'),
+  // a full screen dialog narrower.
+  state.docside = mountChatDocside({
+    panel: dom.docsidePanel,
+    onColumnOpen: () => {
+      if (state.tests) state.tests.shut();
+      if (state.artifacts) state.artifacts.shut();
+    },
   });
   // A project folder's notes: a board of columns and cards (boards.js).
   state.board = mountBoard({ host: dom.board });
+  // A project folder's docs: its Markdown files and one of them (docs.js).
+  // The file the frame shows goes into the address, in place.
+  state.docs = mountDocs({
+    host: dom.docs,
+    onPage: (folder, page) => {
+      const hash = docsHash(folder, page);
+      if (docsShown() && location.hash !== hash) history.replaceState(history.state, '', hash);
+    },
+  });
   // Home, drawn from the sidebar's own state and tests.
   state.home = mountHome({
     host: dom.home,
@@ -4503,6 +4634,10 @@ async function boot() {
   if (route.kind === 'question') questionOnHome(route.id);
   else if (route.kind === 'questions') questionsOnHome({ replace: true });
   else if (route.kind === 'board') showBoard(route.id, { replace: true });
+  else if (route.kind === 'docs') {
+    const { folder, page, at } = parseDocsRoute(route.id);
+    showDocs(folder, { page, at, replace: true });
+  }
 }
 
 boot();

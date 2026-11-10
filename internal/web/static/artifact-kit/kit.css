@@ -223,3 +223,12 @@ ol.steps > li:not(:last-child)::after {
   main.page { max-width: none; padding: 0; }
   tbody tr:hover { background: none; }
 }
+
+/* GitHub's alerts (> [!NOTE]) drawn as callouts, with their name */
+.callout-title { font-weight: 600; margin-bottom: 0.35em; }
+.callout.info > .callout-title { color: var(--accent); }
+.callout.ok > .callout-title { color: var(--ok); }
+.callout.warn > .callout-title { color: var(--warn); }
+.callout.error > .callout-title { color: var(--error); }
+/* A heading an anchor jumps to keeps a little air above it */
+h1[id], h2[id], h3[id], h4[id], h5[id], h6[id] { scroll-margin-top: 16px; }

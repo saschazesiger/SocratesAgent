@@ -1,5 +1,5 @@
 // boards: a project folder's notes (internal/server/boards.go, boards.js).
-// A folder's notes mark beside its + opens its board on the stage at
+// A folder's ⋮ beside its + has Notes, which opens its board on the stage at
 // #board=<folder>: the default columns and colours, a card added with a
 // title, a subtitle and a colour, a column added, a card dragged into
 // another column, the colours renamed, recoloured and one added, a card
@@ -21,6 +21,12 @@ async function folderChat(s, title, workdir) {
   });
   if (res.status() !== 201) throw new Error('could not make the chat: ' + res.status() + ' ' + await res.text());
   return (await res.json()).session.id;
+}
+
+// openNotes opens a folder's notes from its ⋮ in the sidebar.
+async function openNotes(page, folder) {
+  await page.click(`#sessionList .so-folder__more[data-folder-more="${folder}"]`);
+  await page.click('#sessionMenu:not([hidden]) [data-action="notes"]');
 }
 
 async function boardOf(s, folder) {
@@ -111,19 +117,20 @@ export async function boards() {
     await folderChat(s, 'Checkout', shop);
     await folderChat(s, 'Posts', blog);
 
-    // The mark beside the folder's +.
-    const mark = `#sessionList .so-folder__board[data-board="${shop}"]`;
+    // The folder's ⋮ beside its +, and Notes in its menu.
+    const mark = `#sessionList .so-folder__more[data-folder-more="${shop}"]`;
     await page.waitForSelector(mark, { timeout: 20000 });
     const beside = await page.$eval(mark, (b) => b.previousElementSibling && b.previousElementSibling.classList.contains('so-folder__new'));
-    ok(beside, 'the notes mark stands right after the folder’s +');
-    ok(await page.$eval(mark, (b) => b.getAttribute('aria-label')) === 'Notes for shop', 'the mark says whose notes it opens',
+    ok(beside, 'the folder’s ⋮ stands right after its +');
+    ok(await page.$eval(mark, (b) => b.getAttribute('aria-label')) === 'More for shop', 'the ⋮ says whose it is',
       await page.$eval(mark, (b) => b.getAttribute('aria-label')));
-    await page.click(mark);
+    await openNotes(page, shop);
     await page.waitForSelector('#board:not([hidden]) .so-board__col[data-col]', { timeout: 10000 });
     ok(await page.evaluate(() => decodeURIComponent(location.hash)) === '#board=' + shop, 'the address names the folder’s board',
       await page.evaluate(() => location.hash));
     ok(await page.$eval('#home', (h) => h.hidden), 'Home is off the stage');
-    ok(await page.$eval(mark, (b) => b.getAttribute('aria-pressed')) === 'true', 'the mark is pressed while its notes are on screen');
+    ok(await page.waitForFunction(() => document.getElementById('sessionMenu').hidden, null, { timeout: 5000 }).then(() => true, () => false),
+      'the menu is put away');
     let cols = await columns(page);
     ok(cols.map((c) => c.name).join('|') === 'To do|In progress|Done', 'a new board has three columns', cols.map((c) => c.name).join('|'));
     const legend = await page.$$eval('#board .so-board__legend .so-board__tag', (t) => t.map((one) => one.textContent.trim()));
@@ -280,6 +287,9 @@ export async function boards() {
 
     // A column dragged by its head past In progress, and back to the front.
     {
+      // The column's dialog may still be on its way out, its backdrop over
+      // the board.
+      await page.waitForFunction(() => !document.querySelector('dialog.ds-dialog--closing'), null, { timeout: 5000 });
       await page.$eval('#board .so-board__columns', (r) => { r.scrollLeft = 0; });
       await wait(100);
       const past = await (await page.$('#board .so-board__col:has(.so-board__col-btn:text-is("In progress"))')).boundingBox();
@@ -318,7 +328,7 @@ export async function boards() {
     ok(titles(await columns(page), 'To do').includes('Added on the phone'), 'the page shows another device’s save by itself');
 
     // Another folder has notes of its own.
-    await page.click(`#sessionList .so-folder__board[data-board="${blog}"]`);
+    await openNotes(page, blog);
     await page.waitForFunction((want) => decodeURIComponent(location.hash) === '#board=' + want
       && document.querySelector('#board .so-board__folder')?.textContent === 'blog'
       && document.querySelectorAll('#board .so-board__col[data-col]').length === 3, blog, { timeout: 10000 });
@@ -340,8 +350,9 @@ export async function boards() {
 
     // Home takes the stage back.
     await page.click('#homeBtn');
-    await page.waitForFunction(() => !document.getElementById('home').hidden && document.getElementById('board').hidden, null, { timeout: 5000 });
-    ok(await page.$eval(mark, (b) => b.getAttribute('aria-pressed')) === 'false', 'Home takes the notes off the stage, and the mark lets go');
+    const homeBack = await page.waitForFunction(() => !document.getElementById('home').hidden && document.getElementById('board').hidden, null, { timeout: 5000 })
+      .then(() => true, () => false);
+    ok(homeBack, 'Home takes the notes off the stage');
 
     // A phone.
     const phone = await s.browser.newContext({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true, colorScheme: 'light' });

@@ -1436,6 +1436,16 @@ export function mountChat(ctx) {
       toggle(details.dataset.openKey, details.open);
       return;
     }
+    // A link to a Markdown file of the chat's folder opens beside the chat
+    // (ctx.docLink, docside.js) rather than in a tab that cannot show it.
+    const link = event.target.closest('a[href]');
+    if (link && log.contains(link) && ctx.docLink && event.button === 0
+      && !event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey) {
+      if (ctx.docLink(link.getAttribute('href'), session, link)) {
+        event.preventDefault();
+        return;
+      }
+    }
     const target = event.target.closest('[data-action]');
     if (!target || !host.contains(target)) return;
     switch (target.dataset.action) {

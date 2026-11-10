@@ -73,6 +73,8 @@ func ServeMCPAsk(ctx context.Context, sock, version string, chats chattools.Endp
 	default:
 		instructions = askuser.Guidance(MCPAskTool) + "\n\n" + agent.TodoGuidance("todowrite")
 	}
+	// How to link a Markdown file so that it opens beside the chat (DOCS.md §3).
+	instructions += "\n\n" + agent.DocsGuidance
 	m := &askuser.MCP{
 		Version:      version,
 		Instructions: instructions,

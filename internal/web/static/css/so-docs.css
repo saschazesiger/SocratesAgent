@@ -1,0 +1,327 @@
+/*
+ * so-docs.css: a project folder's documentation (docs.js on the stage,
+ * docside.js beside a chat). Tokens only (--ds-* and the --so-docs-* of
+ * theme.css), unlayered, and no .ds-* component restyled: the head is DS's
+ * page head with its breadcrumbs, the filter DS's search, the narrow tree a
+ * DS side sheet. What is here is the layout around them and the tree, which
+ * DS has no component for.
+ *
+ *   .so-docs            the section on the stage; it does not scroll, the
+ *                       tree and the frame do
+ *   .so-docs__top       the page head: the breadcrumbs, "Docs", the folder,
+ *                       Files (narrow), read again, open in a new tab
+ *   .so-docs__body      the tree (__nav), the file (__main: the sandboxed
+ *                       frame __view, or a state __state) and the
+ *                       headings of the page (__toc, wide only)
+ *   .so-docs__tree      the folders and files: __list a level, __item one
+ *                       entry, __row its press (a .ds-pressable), --dir a
+ *                       folder that opens and closes, __glyph its icon,
+ *                       __name, __where a found file's folder
+ *   .so-docs-sheet      the tree in a side sheet, under 900px
+ *   .so-docside         a Markdown file beside a chat (the chat's column)
+ */
+
+/* ── The page ────────────────────────────────────────────────────────── */
+
+.so-docs {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  padding-inline: env(safe-area-inset-left, 0px) env(safe-area-inset-right, 0px);
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+  background: var(--ds-surface);
+}
+
+.so-docs__frame {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.so-docs__top {
+  flex: none;
+  padding: var(--ds-space-5) var(--ds-space-6) var(--ds-space-4);
+  border-bottom: 1px solid var(--ds-line);
+}
+
+.so-docs__folder {
+  overflow-wrap: anywhere;
+}
+
+.so-docs__title:focus {
+  outline: none;
+}
+
+.so-docs__body {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: var(--so-docs-nav-width) minmax(0, 1fr);
+}
+
+/* The headings of the page get a column of their own where there is room. */
+@media (min-width: 1400px) {
+  .so-docs[data-toc] .so-docs__body {
+    grid-template-columns: var(--so-docs-nav-width) minmax(0, 1fr) var(--so-docs-toc-width);
+  }
+}
+
+@media (max-width: 1399px) {
+  .so-docs__toc {
+    display: none;
+  }
+}
+
+/* ── The tree ────────────────────────────────────────────────────────── */
+
+.so-docs__nav {
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-space-3);
+  padding: var(--ds-space-4) var(--ds-space-3);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  border-inline-end: 1px solid var(--ds-line);
+  background: var(--ds-surface-low);
+}
+
+.so-docs__search {
+  flex: none;
+}
+
+.so-docs__list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.so-docs__list .so-docs__list {
+  padding-inline-start: var(--ds-space-4);
+}
+
+.so-docs__row {
+  display: flex;
+  align-items: center;
+  gap: var(--ds-space-2);
+  width: 100%;
+  min-height: var(--so-docs-row-height);
+  padding: 0 var(--ds-space-2);
+  border: 0;
+  border-radius: var(--ds-radius-sm);
+  background: none;
+  color: var(--ds-text-2);
+  font: var(--ds-font-body);
+  text-align: start;
+  cursor: pointer;
+}
+
+.so-docs__row[aria-current="page"] {
+  background: var(--ds-accent);
+  color: var(--ds-text);
+  font-weight: var(--ds-weight-label);
+}
+
+.so-docs__row--dir {
+  color: var(--ds-text);
+}
+
+.so-docs__glyph {
+  flex: none;
+  color: var(--ds-text-3);
+}
+
+.so-docs__row[aria-current="page"] .so-docs__glyph {
+  color: inherit;
+}
+
+.so-docs__chevron {
+  flex: none;
+  margin-inline-start: calc(-1 * var(--ds-space-1));
+  color: var(--ds-text-3);
+}
+
+.so-docs__name {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.so-docs__where {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--ds-text-3);
+  font: var(--ds-font-meta);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  direction: rtl;
+  text-align: end;
+}
+
+.so-docs__none {
+  margin: var(--ds-space-2);
+}
+
+/* ── The file ────────────────────────────────────────────────────────── */
+
+.so-docs__main {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+}
+
+.so-docs__view {
+  position: absolute;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  background: var(--ds-surface);
+}
+
+.so-docs__state {
+  height: 100%;
+  overflow-y: auto;
+  padding: var(--ds-space-6);
+}
+
+.so-docs__loading {
+  display: flex;
+  justify-content: center;
+  padding: var(--ds-space-8);
+}
+
+/* ── The headings of the page ────────────────────────────────────────── */
+
+.so-docs__toc {
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--ds-space-5) var(--ds-space-4);
+  border-inline-start: 1px solid var(--ds-line);
+}
+
+.so-docs__toc-title {
+  margin: 0 0 var(--ds-space-2);
+  color: var(--ds-text-3);
+  font: var(--ds-font-label);
+}
+
+.so-docs__toc-items {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.so-docs__toc-items li[data-level="3"] {
+  padding-inline-start: var(--ds-space-3);
+}
+
+.so-docs__toc-link {
+  display: block;
+  padding: var(--ds-space-1) 0;
+  color: var(--ds-text-2);
+  font: var(--ds-font-meta);
+  text-decoration: none;
+  overflow-wrap: anywhere;
+}
+
+.so-docs__toc-link:hover {
+  color: var(--ds-primary);
+  text-decoration: underline;
+}
+
+.so-docs__toc-link:focus-visible {
+  outline: 2px solid var(--ds-primary);
+  outline-offset: 2px;
+  border-radius: var(--ds-radius-xs);
+}
+
+/* ── Narrower: the tree in a side sheet ──────────────────────────────── */
+
+@media (min-width: 900px) {
+  .so-docs__files-btn {
+    display: none;
+  }
+}
+
+@media (max-width: 899px) {
+  .so-docs__body {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .so-docs__nav {
+    display: none;
+  }
+
+  .so-docs__top {
+    padding: var(--ds-space-4) var(--ds-space-4) var(--ds-space-3);
+  }
+}
+
+.so-docs-sheet__body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-space-3);
+}
+
+/* ── Beside a chat ───────────────────────────────────────────────────── */
+
+.so-docside {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  width: var(--so-artifacts-page-width);
+  min-width: 0;
+  min-height: 0;
+  border-left: 1px solid var(--ds-line);
+  background: var(--ds-surface);
+}
+
+.so-docside__head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--ds-space-1);
+  min-height: var(--ds-touch-target);
+  padding: var(--ds-space-2);
+  border-bottom: 1px solid var(--ds-line);
+}
+
+.so-docside__title {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+  padding-inline-start: var(--ds-space-2);
+  overflow: hidden;
+  font: var(--ds-font-subtitle);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.so-docside__title:focus {
+  outline: none;
+}
+
+.so-docside__frame {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.so-docside__dialog-body {
+  position: relative;
+  padding: 0;
+}
+
+/* A finger gets rows of the touch size (touch mode, ui.js). */
+.so-touch .so-docs__row {
+  min-height: var(--ds-touch-target);
+}

@@ -31,7 +31,11 @@ try {
  await s.page.locator('#nsCancel').click();
  console.log('VS Code is not on the new-session sheet');
  writeFileSync(join(project,'smoke.txt'),'hello from Socrates\n');
- const ideButton = s.page.locator('.so-folder[data-folder="'+project+'"] > .so-folder__bar > .so-folder__ide');
+ // The folder's VS Code is in its ⋮ menu in the sidebar.
+ const ideButton = { click: async () => {
+  await s.page.locator('.so-folder[data-folder="'+project+'"] > .so-folder__bar > .so-folder__more').click();
+  await s.page.locator('#sessionMenu:not([hidden]) [data-action="ide"]').click();
+ } };
  // VS Code always opens in a tab of its own, never in the pane.
  const openTab = async (trigger, timeout = 45000) => {
   const [tab] = await Promise.all([s.context.waitForEvent('page'), trigger()]);

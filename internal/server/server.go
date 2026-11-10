@@ -126,6 +126,8 @@ type Server struct {
 	chatTests *chattests.Store
 	// artifacts is every chat's artifacts (artifacts.go).
 	artifacts *artifacts.Store
+	// docsKeep is the Docs view's token key and probe answers (docs.go).
+	docsKeep docsState
 	// The sign-ins of Admin's OAuth MCP servers (mcpoauth.go) and the last
 	// test of each (mcpadmin.go), made when first used.
 	oauthOnce sync.Once
@@ -459,6 +461,13 @@ func (s *Server) routes() {
 	mux.HandleFunc("DELETE /api/chats/{id}/artifacts/{artifact}", s.auth(s.handleChatArtifactDelete))
 	mux.HandleFunc("GET /artifacts/{id}/{artifact}/{key}/{file...}", s.handleArtifact)
 	mux.Handle("GET /artifact-kit/{name}", web.ArtifactKit())
+	// A project folder's docs (docs.go): which folders have any, a folder's
+	// Markdown, one file's time, and the pages, outside the login with a
+	// token of their own (their requests carry no cookie).
+	mux.HandleFunc("POST /api/docs/probe", s.auth(s.handleDocsProbe))
+	mux.HandleFunc("GET /api/docs", s.auth(s.handleDocs))
+	mux.HandleFunc("GET /api/docs/stat", s.auth(s.handleDocsStat))
+	mux.HandleFunc("GET /docs/{token}/{path...}", s.handleDocsPage)
 	// The MCP servers a chat about to be made would have, for the sheet.
 	mux.HandleFunc("GET /api/mcp", s.auth(s.handleNewChatMCP))
 	// The MCP servers built into Socrates, their accounts (mcpbuiltin.go).

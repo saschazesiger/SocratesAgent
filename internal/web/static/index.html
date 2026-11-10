@@ -34,6 +34,7 @@
 <link rel="stylesheet" href="/static/css/so-chattests.css">
 <link rel="stylesheet" href="/static/css/so-artifacts.css">
 <link rel="stylesheet" href="/static/css/so-board.css">
+<link rel="stylesheet" href="/static/css/so-docs.css">
 <link rel="stylesheet" href="/static/css/so-motion.css">
 <script src="/static/vendor/dashboard-style/ds.js" defer></script>
 </head>
@@ -219,12 +220,20 @@
                lists them and turns into one's page, open or shut per device
                (artifacts.js). Never open with the tests' column. -->
           <aside class="so-artifacts" id="artifactsPanel" aria-labelledby="artifactsPanelTitle" hidden></aside>
+          <!-- A Markdown file of the chat's folder that a link in the chat
+               opened: its page beside the chat (docside.js). Never open with
+               the tests' or the artifacts' column. -->
+          <aside class="so-docside" id="docsidePanel" aria-labelledby="docsideTitle" hidden></aside>
           <!-- Home: what every session is doing, live. The landing page, and
                what the stage shows when no session is open. home.js draws it. -->
           <section class="so-home" id="home" aria-label="Home" hidden></section>
           <!-- A project folder's notes: columns of cards, opened from the
                folder's notes mark in the sidebar. boards.js draws them. -->
           <section class="so-board" id="board" aria-label="Notes" hidden></section>
+          <!-- A project folder's docs: its Markdown files in a tree and the
+               one chosen, opened from the folder's menu in the sidebar.
+               docs.js draws them. -->
+          <section class="so-docs" id="docs" aria-label="Docs" hidden></section>
         </div>
         <!-- The keys a phone keyboard does not have. keybar.js fills them in. -->
         <div class="so-keybar" id="keybar" hidden></div>

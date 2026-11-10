@@ -77,7 +77,7 @@ func TestAChatsThreadHasTheChatToolsBesideAskUser(t *testing.T) {
 	sock := "/nonexistent/chat-tools.sock"
 	_, _, got := thread(chattools.Endpoint{Socket: sock, Token: "c.x"})
 	if !strings.Contains(got, askuser.Name) || !strings.Contains(got, chattools.List) ||
-		!strings.Contains(got, "instructions: "+askGuidance+"\n\n"+chattools.Guidance("")) || !strings.Contains(got, agent.ModelPrompt("gpt-fake", "NOTE-FAKE")) {
+		!strings.Contains(got, "instructions: "+askGuidance+"\n\n"+chattools.Guidance("")) || !strings.Contains(got, todoGuidance+"\n\n"+agent.DocsGuidance) || !strings.Contains(got, agent.ModelPrompt("gpt-fake", "NOTE-FAKE")) {
 		t.Fatalf("a chat's thread:\n%s", got)
 	}
 }

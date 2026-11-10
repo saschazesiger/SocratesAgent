@@ -150,6 +150,16 @@ The settings live in `/etc/socrates.env`:
 
 ---
 
+## 📚 Docs per project
+
+| | |
+| --- | --- |
+| 📂 **What** | A project folder's Markdown files, read where they are (nothing is copied or stored). Hidden folders, `node_modules`, `vendor`, `dist`, `build` and the like are skipped; at most 2000 files are listed |
+| 🌐 **Addresses** | A file is served at `/docs/<token>/<path>`: the token is made from a key kept in the database and is only handed to a signed-in browser. Only Markdown and pictures inside the folder are served, never code, `.env` or a hidden folder |
+| 🚪 **Login proxy** | As for artifacts: let `/docs/` through too (its requests come from a sandboxed frame and carry no cookie) |
+
+---
+
 ## 🗂️ Project notes
 
 | | |

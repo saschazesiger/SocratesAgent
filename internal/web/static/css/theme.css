@@ -131,6 +131,14 @@
   --so-artifacts-page-width: 50%;
   --so-artdialog-frame-min: 240px;
 
+  /* A folder's docs (so-docs.css): the tree's column, the headings'
+     column at a wide desk, and a row of the tree. */
+  --so-docs-nav-width: clamp(220px, 22vw, 300px);
+  --so-docs-toc-width: 240px;
+  --so-docs-row-height: 32px;
+  /* The dot on a folder's ⋮ while its VS Code runs (so-frame.css). */
+  --so-folder-running-size: 8px;
+
   /* Question sheet. Where it is the whole screen (a tablet, touch mode),
      its column (the measure) is as wide as in a desktop's 720px dialog. */
   --so-question-width: 720px;
