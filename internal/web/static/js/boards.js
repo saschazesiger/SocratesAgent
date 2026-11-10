@@ -17,7 +17,8 @@
 //
 // A card is moved by dragging it (a mouse at once, a finger after holding
 // it a moment, so a swipe still scrolls) or in its dialog, which also names
-// the column - the way a keyboard moves one.
+// the column - the way a keyboard moves one. A column is dragged the same
+// way by its head, or moved with the Position of its dialog.
 
 import { el, toast, confirmDialog, promptDialog } from './api.js';
 import { M, html, raw, icon, iconEl, morph, ms, showOverlay, hideOverlay } from './ui.js';
@@ -172,7 +173,7 @@ export function mountBoard({ host }) {
     const name = column.title || 'Untitled';
     return html`<section class="so-board__col" data-ds-key="${'col:' + column.id}" data-col="${column.id}" aria-labelledby="${headId}">
       <div class="so-board__col-head">
-        <h2 class="so-board__col-name" id="${headId}"><button class="so-board__col-btn ds-pressable ds-pressable--inset" type="button" data-edit-col="${column.id}" data-tip="Rename, move or delete this column">${name}</button></h2>
+        <h2 class="so-board__col-name" id="${headId}"><button class="so-board__col-btn ds-pressable ds-pressable--inset" type="button" data-edit-col="${column.id}" data-tip="Rename, move or delete this column; drag it to move it">${name}</button></h2>
         <span class="ds-badge ds-badge--neutral so-board__count" aria-label="${column.cards.length + (column.cards.length === 1 ? ' card' : ' cards')}">${column.cards.length}</span>
         <button class="ds-btn ds-btn--quiet ds-btn--icon ds-btn--sm" type="button" data-add-card="${column.id}" aria-label="${'Add a card to ' + name}" data-tip="Add a card">${raw(icon('plus', 16))}</button>
       </div>
@@ -637,17 +638,26 @@ export function mountBoard({ host }) {
 
   /* ------------------------------------------------------------ dragging */
 
-  // A press on a card may become a drag: a mouse once it has moved a few
-  // pixels, a finger once it has held still for HOLD_MS (until then a
-  // swipe is the page scrolling). While a card is dragged it is held in its
-  // list as a gap (data-lifted), a copy of it follows the pointer, and the
-  // gap moves to where the card would land; letting go puts it there.
-  function pressCard(event) {
+  // A press on a card, or on a column's head, may become a drag: a mouse
+  // once it has moved a few pixels, a finger once it has held still for
+  // HOLD_MS (until then a swipe is the page scrolling). While a card or a
+  // column is dragged it is held in its place as a gap (data-lifted), a
+  // copy of it follows the pointer, and the gap moves to where it would
+  // land; letting go puts it there.
+  function pressItem(event) {
     if (event.button !== 0 || !st.loaded || st.drag) return;
-    const item = event.target.closest('.so-board__card');
+    const card = event.target.closest('.so-board__card');
+    const head = card ? null : event.target.closest('.so-board__col-head');
+    // The head's + adds a card; it lifts nothing.
+    if (head && event.target.closest('[data-add-card]')) return;
+    const item = card || (head && head.closest('.so-board__col[data-col]'));
     if (!item) return;
+    const kind = card ? 'card' : 'col';
     const touch = event.pointerType === 'touch';
-    const press = { item, id: item.dataset.card, x: event.clientX, y: event.clientY, pointer: event.pointerId, touch, timer: null, started: false };
+    const press = {
+      kind, item, id: card ? item.dataset.card : item.dataset.col,
+      x: event.clientX, y: event.clientY, pointer: event.pointerId, touch, timer: null, started: false,
+    };
     st.drag = press;
     if (touch) press.timer = setTimeout(() => lift(press), HOLD_MS);
     window.addEventListener('pointermove', movePress, { passive: false });
@@ -679,14 +689,18 @@ export function mountBoard({ host }) {
 
   function lift(press) {
     if (st.drag !== press || press.started) return;
-    const card = press.item.querySelector('.so-board__card-btn');
-    if (!card) { cancelPress(); return; }
+    const shape = press.kind === 'col' ? press.item : press.item.querySelector('.so-board__card-btn');
+    if (!shape) { cancelPress(); return; }
     press.started = true;
-    const box = card.getBoundingClientRect();
+    const box = shape.getBoundingClientRect();
     press.dx = press.x - box.left;
     press.dy = press.y - box.top;
-    const ghost = el('div', { class: 'so-board__ghost', 'aria-hidden': 'true' }, card.cloneNode(true));
+    const copyOf = shape.cloneNode(true);
+    // The copy is a picture: no second element with the column's ids.
+    for (const one of [copyOf, ...copyOf.querySelectorAll('[id]')]) one.removeAttribute('id');
+    const ghost = el('div', { class: 'so-board__ghost', 'aria-hidden': 'true', 'data-kind': press.kind }, copyOf);
     ghost.style.width = box.width + 'px';
+    if (press.kind === 'col') ghost.style.height = box.height + 'px';
     ghost.style.transform = `translate(${box.left}px, ${box.top}px)`;
     // Beside the page rather than in it: a redraw of the board leaves it be.
     document.body.append(ghost);
@@ -705,6 +719,7 @@ export function mountBoard({ host }) {
     press.lastX = x;
     press.lastY = y;
     press.ghost.style.transform = `translate(${x - press.dx}px, ${y - press.dy}px)`;
+    if (press.kind === 'col') { followColumn(press, x); return; }
     const lists = [...host.querySelectorAll('.so-board__cards')];
     let list = null;
     for (const one of lists) {
@@ -724,23 +739,42 @@ export function mountBoard({ host }) {
     M.flip(columns, () => { list.insertBefore(press.item, before); }, { items: '.so-board__card:not([data-lifted])' });
   }
 
+  // followColumn moves a held column's gap to where it would land: before
+  // the first other column whose middle is right of the pointer, and never
+  // after "Add a column".
+  function followColumn(press, x) {
+    const row = host.querySelector('[data-columns]');
+    if (!row) return;
+    const others = [...row.querySelectorAll('.so-board__col[data-col]:not([data-lifted])')];
+    let before = row.querySelector('.so-board__col--new');
+    for (const other of others) {
+      const r = other.getBoundingClientRect();
+      if (x < r.left + r.width / 2) { before = other; break; }
+    }
+    if (press.item.nextElementSibling === before || before === press.item) return;
+    M.flip(row, () => { row.insertBefore(press.item, before); }, { items: '.so-board__col:not([data-lifted])' });
+  }
+
   // While a card is held near the edge of the columns or of a column's
   // cards, they scroll towards it.
   function scrollLoop(press) {
     const step = () => {
       if (st.drag !== press || !press.started) return;
       const columns = host.querySelector('[data-columns]');
+      const list = press.kind === 'card' ? press.item.closest('.so-board__cards') : null;
+      const was = [columns && columns.scrollLeft, list && list.scrollTop];
       if (columns) {
         const r = columns.getBoundingClientRect();
         if (press.lastX < r.left + EDGE) columns.scrollLeft -= 12;
         else if (press.lastX > r.right - EDGE) columns.scrollLeft += 12;
       }
-      const list = press.item.closest('.so-board__cards');
       if (list) {
         const r = list.getBoundingClientRect();
         if (press.lastY < r.top + EDGE) list.scrollTop -= 10;
         else if (press.lastY > r.bottom - EDGE) list.scrollTop += 10;
       }
+      // What scrolled under a still pointer moves the gap as well.
+      if (was[0] !== (columns && columns.scrollLeft) || was[1] !== (list && list.scrollTop)) follow(press.lastX, press.lastY);
       requestAnimationFrame(step);
     };
     requestAnimationFrame(step);
@@ -754,6 +788,7 @@ export function mountBoard({ host }) {
     const swallow = (click) => { click.stopPropagation(); click.preventDefault(); };
     window.addEventListener('click', swallow, { capture: true, once: true });
     setTimeout(() => window.removeEventListener('click', swallow, { capture: true }), 0);
+    if (press.kind === 'col') { dropColumn(press); return; }
     const list = press.item.closest('.so-board__cards');
     const target = list ? list.dataset.cards : '';
     const order = list ? [...list.querySelectorAll('.so-board__card')].map((one) => one.dataset.card) : [];
@@ -773,6 +808,19 @@ export function mountBoard({ host }) {
       const after = order.slice(0, index).filter((cardId) => into.cards.some((k) => k.id === cardId));
       const prev = after.length ? into.cards.findIndex((k) => k.id === after[after.length - 1]) + 1 : 0;
       into.cards.splice(prev, 0, moving);
+    });
+    draw();
+  }
+
+  // dropColumn puts the columns in the order the row shows them in.
+  function dropColumn(press) {
+    const row = press.item.parentElement;
+    const order = row ? [...row.querySelectorAll('.so-board__col[data-col]')].map((one) => one.dataset.col) : [];
+    settleGhost(press);
+    finish();
+    change((b) => {
+      const at = (c) => { const i = order.indexOf(c.id); return i < 0 ? order.length : i; };
+      b.columns = b.columns.map((c, i) => ({ c, i })).sort((p, q) => at(p.c) - at(q.c) || p.i - q.i).map((one) => one.c);
     });
     draw();
   }
@@ -809,9 +857,9 @@ export function mountBoard({ host }) {
     window.removeEventListener('pointercancel', cancelPress);
   }
 
-  // A held card opens no context menu.
-  host.addEventListener('contextmenu', (event) => { if (event.target.closest('.so-board__card')) event.preventDefault(); });
-  host.addEventListener('pointerdown', pressCard);
+  // A held card or column opens no context menu.
+  host.addEventListener('contextmenu', (event) => { if (event.target.closest('.so-board__card, .so-board__col-head')) event.preventDefault(); });
+  host.addEventListener('pointerdown', pressItem);
   document.addEventListener('keydown', (event) => { if (event.key === 'Escape' && st.drag) cancelPress(); });
   window.addEventListener('blur', () => { if (st.drag) cancelPress(); });
 

@@ -3,7 +3,8 @@
 // #board=<folder>: the default columns and colours, a card added with a
 // title, a subtitle and a colour, a column added, a card dragged into
 // another column, the colours renamed, recoloured and one added, a card
-// moved in its dialog, a column deleted with its cards. Everything is the
+// moved in its dialog, a column moved in its dialog and dragged by its
+// head, a column deleted with its cards. Everything is the
 // server's after a reload; another folder has a board of its own; another
 // device's save shows up live; and on a phone the columns scroll sideways
 // one by one and the page itself does not.
@@ -66,6 +67,20 @@ async function drag(page, title, column) {
       from.x + from.width / 2 + (to.x + to.width / 2 - from.x - from.width / 2) * i / steps,
       from.y + from.height / 2 + (to.y + to.height - 8 - from.y - from.height / 2) * i / steps,
     );
+    await wait(20);
+  }
+  await page.mouse.up();
+}
+
+// dragColumn moves a column by its head, the mouse let go at `x`.
+async function dragColumn(page, column, x) {
+  const head = await (await page.$(`#board .so-board__col-btn:text-is("${column}")`)).boundingBox();
+  const y = head.y + head.height / 2;
+  await page.mouse.move(head.x + 20, y);
+  await page.mouse.down();
+  const steps = 12;
+  for (let i = 1; i <= steps; i += 1) {
+    await page.mouse.move(head.x + 20 + (x - head.x - 20) * i / steps, y);
     await wait(20);
   }
   await page.mouse.up();
@@ -262,6 +277,30 @@ export async function boards() {
     await dialogGone(page);
     cols = await columns(page);
     ok(cols.map((c) => c.name).join('|') === 'Someday|To do|In progress|Done', 'a column is renamed and moved', cols.map((c) => c.name).join('|'));
+
+    // A column dragged by its head past In progress, and back to the front.
+    {
+      await page.$eval('#board .so-board__columns', (r) => { r.scrollLeft = 0; });
+      await wait(100);
+      const past = await (await page.$('#board .so-board__col:has(.so-board__col-btn:text-is("In progress"))')).boundingBox();
+      await dragColumn(page, 'Someday', past.x + past.width * 0.75);
+      await wait(400);
+      cols = await columns(page);
+      ok(cols.map((c) => c.name).join('|') === 'To do|In progress|Someday|Done', 'a column dragged by its head lands where it is let go',
+        cols.map((c) => c.name).join('|'));
+      ok(!(await page.$('dialog[open]')), 'the release of a column’s drag opens no dialog');
+      ok(await page.$eval('#board .so-board__columns > :last-child', (c) => c.classList.contains('so-board__col--new')), '"Add a column" stays last');
+      ok(!(await page.$('#board [data-lifted], .so-board__ghost')), 'nothing is left lifted after the drop');
+      data = await saved(s, shop, (d) => d.board.columns[2].title === 'Someday');
+      ok(data.board.columns.map((c) => c.title).join('|') === 'To do|In progress|Someday|Done', 'the server has the columns in the new order',
+        data.board.columns.map((c) => c.title).join('|'));
+      ok(data.board.columns.find((c) => c.title === 'In progress').cards[0].title === 'Dark mode', 'a moved column keeps its cards and the others theirs');
+      const first = await (await page.$('#board .so-board__col[data-col]')).boundingBox();
+      await dragColumn(page, 'Someday', first.x + 10);
+      await wait(400);
+      cols = await columns(page);
+      ok(cols.map((c) => c.name).join('|') === 'Someday|To do|In progress|Done', 'and dragged back to the front', cols.map((c) => c.name).join('|'));
+    }
 
     // After a reload, from the server.
     data = await saved(s, shop, (d) => d.board.columns[0].title === 'Someday');

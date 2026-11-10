@@ -69,6 +69,10 @@ One JSON document per folder:
   the pointer, the others glide (`DS.motion.flip`), and near the edges the row of columns and the
   column scroll. Escape cancels. The card's dialog moves it too (its Column field), which is the
   way for a keyboard.
+- Columns are dragged the same way by their head (the name; the head's + adds a card instead):
+  the column stays in the row as the gap, a copy follows the pointer, and it lands before the
+  first column whose middle is right of the pointer, never after "Add a column". Its dialog's
+  Position moves it too, for a keyboard. (Asked for by the owner on 2026-11-10.)
 - Dialogs: a card (title, subtitle, colour chips, column; Delete), a column (name, position;
   Delete, asked first when it holds cards), the colours (colour and name per row, add, delete),
   and a new column's name. On a phone the columns snap one by one and the page itself never

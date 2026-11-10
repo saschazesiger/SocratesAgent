@@ -19,9 +19,9 @@
  *   .so-board__card     one card (an <li> around a DS interactive card,
  *                       __card-btn): the colour's edge (__edge), the title,
  *                       the subtitle (__card-sub) and the colour's tag
- *   .so-board__ghost    the copy of a card that follows the pointer while
- *                       it is dragged; the card itself stays in its list as
- *                       the gap ([data-lifted])
+ *   .so-board__ghost    the copy of a card or a column that follows the
+ *                       pointer while it is dragged; the card or column
+ *                       itself stays in its place as the gap ([data-lifted])
  *   .so-board__dot      a colour as a dot, in the tags and the pickers
  */
 
@@ -115,6 +115,11 @@
 
 .so-board__col-head {
   flex: none;
+  /* The head is the column's grip: a finger holds it without a callout
+     or a selection, so a hold can lift the column. */
+  -webkit-touch-callout: none;
+  user-select: none;
+  touch-action: manipulation;
   display: flex;
   align-items: center;
   gap: var(--ds-space-2);
@@ -258,8 +263,8 @@
   user-select: none;
 }
 
-/* The gap the card will land in. */
-.so-board__card[data-lifted] {
+/* The gap the card or the column will land in. */
+:is(.so-board__card, .so-board__col)[data-lifted] {
   opacity: var(--ds-state-disabled);
 }
 
@@ -271,6 +276,16 @@
   pointer-events: none;
   border-radius: var(--ds-radius-card);
   box-shadow: var(--ds-elev-2);
+}
+
+/* A held card or column scrolls the row by the pixel, not column by
+   column (a phone's snap). */
+.so-board[data-dragging] .so-board__columns {
+  scroll-snap-type: none;
+}
+
+.so-board__ghost[data-kind="col"] > .so-board__col {
+  height: 100%;
 }
 
 .so-board__ghost[data-settling] {
