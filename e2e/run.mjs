@@ -4773,6 +4773,75 @@ async function design() {
       'and the pane is re-measured when the stage changes width',
       railCols + ' px (put away) -> ' + wideCols + ' px (column)');
 
+    /* ------------------------------------------------ the list's width */
+
+    // The drawer's edge is a sash: dragged, the list takes the width the
+    // pointer gives it, the toggle above it follows its right edge, the pane
+    // is measured again, the device remembers it, and a double click puts
+    // the list back to DS's width.
+    const sashBox = () => s.page.$eval('#drawerSash', (n) => {
+      const r = n.getBoundingClientRect();
+      return { x: r.left + r.width / 2, y: r.top + r.height / 2, shown: n.checkVisibility() };
+    });
+    const listWidth = () => s.page.evaluate(() =>
+      Math.round(document.getElementById('sidebar').getBoundingClientRect().width));
+    const sash = await sashBox();
+    const before = await listWidth();
+    await s.page.mouse.move(sash.x, sash.y);
+    await s.page.mouse.down();
+    await s.page.mouse.move(sash.x + 60, sash.y, { steps: 6 });
+    await s.page.mouse.move(sash.x + 120, sash.y, { steps: 6 });
+    await wait(300);
+    await shot(s.page, 'design-sash');
+    await s.page.mouse.up();
+    await wait(600);
+    const dragged = await listWidth();
+    ok(sash.shown && Math.abs(dragged - (before + 120)) <= 2,
+      'dragging the drawer’s edge widens the session list by as much', before + ' -> ' + dragged + ' px');
+    const draggedEdges = await s.page.evaluate(() => {
+      const box = (sel) => document.querySelector(sel).getBoundingClientRect();
+      const actions = document.querySelector('#sidebar .so-drawer-actions');
+      const inner = box('#sidebar .so-drawer-actions').right - parseFloat(getComputedStyle(actions).paddingRight);
+      return {
+        toggle: Math.round(box('#sideCollapse').right - inner),
+        title: Math.round(box('#sessionTitle').left - box('.ds-panel').left),
+        sash: Math.round(box('#drawerSash').left + box('#drawerSash').width / 2 - box('.ds-panel').left),
+        now: document.getElementById('drawerSash').getAttribute('aria-valuenow'),
+      };
+    });
+    ok(draggedEdges.toggle === 0 && draggedEdges.title === 0 && draggedEdges.sash === 0
+      && Number(draggedEdges.now) === dragged,
+      'the toggle, the name and the sash follow the new edge', JSON.stringify(draggedEdges));
+    const narrowerCols = await screenWidth();
+    ok(narrowerCols < wideCols, 'and the pane is re-measured for the panel it has left',
+      wideCols + ' px -> ' + narrowerCols + ' px');
+    await reloadBack(s.page);
+    await s.page.waitForSelector('#term .xterm', { timeout: 20000 });
+    await wait(500);
+    const keptWidth = await listWidth();
+    ok(keptWidth === dragged, 'a reload keeps the width this device chose', keptWidth + ' px');
+    // The keys move it too, while it has the focus.
+    await s.page.focus('#drawerSash');
+    await s.page.keyboard.press('ArrowLeft');
+    await wait(400);
+    const keyed = await listWidth();
+    ok(keyed === keptWidth - 16, 'the arrow keys move the focused sash', keptWidth + ' -> ' + keyed + ' px');
+    // A drag never goes below the floor or past the share of the window.
+    const at = await sashBox();
+    await s.page.mouse.move(at.x, at.y);
+    await s.page.mouse.down();
+    await s.page.mouse.move(at.x - 600, at.y, { steps: 8 });
+    await s.page.mouse.up();
+    await wait(400);
+    const floor = await listWidth();
+    ok(floor === 220, 'it narrows no further than the list’s floor', floor + ' px');
+    await s.page.dblclick('#drawerSash');
+    await wait(600);
+    const back = await listWidth();
+    const stored = await s.page.evaluate(() => localStorage.getItem('socrates.sidebarWidth'));
+    ok(back === before && stored === null, 'a double click puts it back to its own width',
+      JSON.stringify({ before, back, stored }));
+
     /* -------------------------------------------------------- the chat view */
 
     // The chat view keeps the same rules: it is on the white panel, its row

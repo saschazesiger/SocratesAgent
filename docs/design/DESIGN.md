@@ -2492,6 +2492,16 @@ words go; the group's hairline stays. The answer is kept per device in `localSto
 drawer breakpoint the control is not on the page at all and the rail is never entered — a drawer
 that is also a rail is a drawer with nothing in it to read.
 
+**The list's width is dragged.** At a desk the drawer's right edge is a sash (`#drawerSash`,
+`.so-drawer-sash`, `drawerwidth.js`): a vertical `role="separator"` straddling the edge, with a
+resize cursor and a primary line while it is pointed at, dragged or focused. Dragging gives the
+list the pointer's width, from 220px up to 480px and never more than 40% of the window; the arrow
+keys move it by 16px, Home and End to the ends, and a double click or Enter puts it back to DS's
+`--ds-drawer-width`. The width is `--so-drawer-width` on `<html>` (with `data-so-drawer-width`),
+which `so-frame.css` turns into `--ds-drawer-width` above 900px only, so the top bar's lead and the
+snackbars follow it and the modal drawer of a phone keeps DS's width. Like the rail it is kept per
+device (`socrates.sidebarWidth`), and the terminal is refitted once the drag is over.
+
 <!-- rev 4 --> The rows are **grouped by day** — Today, Yesterday, This week, This month, Older,
 by `updated_at` in the browser's own local calendar (`daygroups.js`), a group with nothing in it
 not drawn at all — because a phone's call list is read that way: what is being worked on today,

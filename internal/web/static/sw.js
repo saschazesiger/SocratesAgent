@@ -88,6 +88,7 @@ const SHELL = [
   '/static/js/keyboard.js',
   '/static/js/transfer.js',
   '/static/js/backup.js',
+  '/static/js/drawerwidth.js',
   '/static/js/events.js',
   '/static/js/home.js',
   '/static/js/outcome.js',

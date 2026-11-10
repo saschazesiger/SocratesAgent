@@ -47,6 +47,7 @@ import {
   faces, iconEl, paced,
 } from './ui.js';
 import { mountBackupNotice } from './backup.js';
+import { mountDrawerWidth } from './drawerwidth.js';
 import { setVoiceKey, voiceKey, onVoiceKey, keyMissing, setTtsKey } from './voice.js';
 import { explainNoKey } from './dictate.js';
 import { mountChat } from './chatview.js';
@@ -4323,6 +4324,13 @@ async function boot() {
   // terminal fitted to the wide one and then narrowed is a terminal that
   // reflows in front of the person.
   restoreSidebar();
+  // The list's width this device chose, before the pane is measured too; a
+  // new width fits the pane again once the panel has it.
+  mountDrawerWidth({
+    sash: document.getElementById('drawerSash'),
+    drawer: dom.sidebar,
+    onChange: () => requestAnimationFrame(() => { if (state.term) state.term.refit(); }),
+  });
   // Status and the microphone, mounted before anything is measured so that
   // the bar is its final height before the pane is fitted into what is left.
   state.assist = mountAssist({

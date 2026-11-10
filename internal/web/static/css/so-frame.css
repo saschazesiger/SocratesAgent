@@ -13,6 +13,8 @@
  *   .so-outcome      the verdict on the last turn, beside the name
  *   .so-topbar__lead the brand and .so-drawer-toggle, which puts the session
  *                    list away at a desk; as wide as the drawer under it
+ *   .so-drawer-sash  the drawer's edge at a desk, dragged to widen or narrow
+ *                    the list (drawerwidth.js)
  *   .so-drawer-actions DS's drawer actions (.ds-drawer__actions): New session
  *                    and, at the right edge, the empty VS Code; the foot is
  *                    DS's .ds-drawer__foot
@@ -102,6 +104,74 @@
 
   .so-app:not([data-drawer-hidden]) .so-topbar {
     margin-left: var(--ds-space-1);
+  }
+}
+
+/* ── The list's width ─────────────────────────────────────────────────── */
+
+/* The width the person dragged the list to (drawerwidth.js), on the theme
+   element so the snackbars beside the drawer follow it too; never more than
+   a share of the window. The modal drawer of a phone keeps DS's width. */
+@media (min-width: 901px) {
+  .ds-theme[data-so-drawer-width] {
+    --ds-drawer-width: min(var(--so-drawer-width), 40vw);
+  }
+}
+
+/* The sash straddles the drawer's edge, where the panel starts: a strip
+   with a resize cursor, and a line on it while it is pointed at, dragged
+   or focused. */
+.so-drawer-sash {
+  grid-area: nav;
+  justify-self: end;
+  align-self: stretch;
+  position: relative;
+  z-index: var(--ds-z-raised);
+  width: var(--ds-space-3);
+  margin-right: calc(var(--ds-space-3) / -2);
+  cursor: col-resize;
+  touch-action: none;
+}
+
+.so-drawer-sash::after {
+  content: '';
+  position: absolute;
+  inset-block: 0;
+  left: 50%;
+  width: var(--ds-focus-width);
+  translate: -50% 0;
+  background: var(--ds-primary);
+  opacity: 0;
+  transition: opacity var(--ds-dur-fast) var(--ds-ease-in-out);
+}
+
+.so-drawer-sash:hover::after,
+.so-drawer-sash:focus-visible::after,
+[data-so-resizing] .so-drawer-sash::after {
+  opacity: 1;
+}
+
+.so-drawer-sash:focus-visible {
+  outline: none;
+}
+
+/* While it is dragged the page selects nothing and keeps the resize cursor,
+   wherever the pointer is. */
+[data-so-resizing],
+[data-so-resizing] * {
+  cursor: col-resize;
+  user-select: none;
+}
+
+/* Only beside a drawer that is there: not when the list is put away, not
+   beside the modal drawer of a narrow window. */
+.so-app[data-drawer-hidden] > .so-drawer-sash {
+  display: none;
+}
+
+@media (max-width: 900px) {
+  .so-drawer-sash {
+    display: none;
   }
 }
 

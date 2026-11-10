@@ -171,6 +171,10 @@
       <button class="ds-drawer__item" id="logout" type="button" aria-label="Sign out" data-icon="logout" data-icon-place="start"><span class="ds-drawer__label">Sign out</span></button>
     </div>
   </nav>
+  <!-- The list's edge at a desk: dragged, it widens or narrows the list;
+       a double click puts it back (drawerwidth.js). -->
+  <div class="so-drawer-sash" id="drawerSash" role="separator" aria-orientation="vertical"
+       aria-label="Width of the session list" tabindex="0"></div>
 
   <div class="ds-panel">
     <!-- The view does not scroll: room for a snackbar that stays would only
