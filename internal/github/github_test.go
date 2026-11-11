@@ -44,6 +44,8 @@ type fakeGitHub struct {
 	pulls map[string]int
 	// lastPull is the body of the last pull request asked for.
 	lastPull map[string]any
+	// uninstalled are the installations removed with DELETE.
+	uninstalled map[int64]bool
 }
 
 type tokenGrant struct {
@@ -64,8 +66,9 @@ func newFake(t *testing.T, now func() time.Time) (*fakeGitHub, *rsa.PrivateKey) 
 			11: {"alice/one", "alice/two", "alice/three"},
 			22: {"acme/web"},
 		},
-		tokens: map[string]tokenGrant{},
-		pulls:  map[string]int{},
+		tokens:      map[string]tokenGrant{},
+		pulls:       map[string]int{},
+		uninstalled: map[int64]bool{},
 	}, key
 }
 
@@ -144,12 +147,35 @@ func (f *fakeGitHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, 401, map[string]any{"message": err.Error()})
 			return
 		}
-		all := []map[string]any{
+		all := []map[string]any{}
+		f.mu.Lock()
+		for _, in := range []map[string]any{
 			{"id": 22, "account": map[string]any{"login": "acme", "type": "Organization"}},
 			{"id": 11, "account": map[string]any{"login": "alice", "type": "User"}},
+		} {
+			if !f.uninstalled[int64(in["id"].(int))] {
+				all = append(all, in)
+			}
 		}
+		f.mu.Unlock()
 		from, to := page(r, len(all))
 		writeJSON(w, 200, all[from:to])
+	case r.Method == "DELETE" && strings.HasPrefix(path, "/app/installations/"):
+		if err := f.verifyJWT(r); err != nil {
+			writeJSON(w, 401, map[string]any{"message": err.Error()})
+			return
+		}
+		id, _ := strconv.ParseInt(strings.TrimPrefix(path, "/app/installations/"), 10, 64)
+		f.mu.Lock()
+		_, known := f.repos[id]
+		gone := f.uninstalled[id]
+		f.uninstalled[id] = true
+		f.mu.Unlock()
+		if !known || gone {
+			writeJSON(w, 404, map[string]any{"message": "Not Found"})
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
 	case r.Method == "POST" && strings.HasPrefix(path, "/app/installations/") && strings.HasSuffix(path, "/access_tokens"):
 		if err := f.verifyJWT(r); err != nil {
 			writeJSON(w, 401, map[string]any{"message": err.Error()})
@@ -286,6 +312,7 @@ func setup(t *testing.T) (*Service, *fakeGitHub, *clock) {
 	if err := s.SetApp(&App{ID: f.appID, Slug: "socrates-example", PEM: []byte(f.pem)}); err != nil {
 		t.Fatal(err)
 	}
+	s.SetAccepted([]int64{11, 22})
 	old := pageSize
 	pageSize = 2
 	t.Cleanup(func() { pageSize = old })
@@ -435,7 +462,7 @@ func TestManifestAndConversion(t *testing.T) {
 	s, f, _ := setup(t)
 	m := NewManifest("https://socrates.example.org/")
 	if m.Name != "Socrates socrates.example.org" || m.RedirectURL != "https://socrates.example.org/api/github/app/created" ||
-		m.SetupURL != "https://socrates.example.org/api/github/app/installed" || !m.SetupOnUpdate || m.Public ||
+		m.SetupURL != "https://socrates.example.org/api/github/app/installed" || !m.SetupOnUpdate || !m.Public ||
 		m.HookAttributes.Active || m.DefaultPermissions["workflows"] != "write" || m.DefaultPermissions["metadata"] != "read" {
 		t.Fatalf("manifest %+v", m)
 	}
@@ -512,5 +539,141 @@ func TestCloneURLAndConfig(t *testing.T) {
 	}
 	if err := s.SetApp(&App{ID: 1, PEM: []byte("nope")}); err == nil {
 		t.Fatal("a broken key was taken")
+	}
+}
+
+// tokensFor is how many tokens the fake handed out for installation id.
+func (f *fakeGitHub) tokensFor(id int64) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	n := 0
+	for _, g := range f.tokens {
+		if g.installation == id {
+			n++
+		}
+	}
+	return n
+}
+
+func TestOnlyAcceptedInstallationsCount(t *testing.T) {
+	s, f, c := setup(t)
+	ctx := context.Background()
+	s.SetAccepted([]int64{11})
+	repos, err := s.Repos(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, r := range repos {
+		names = append(names, r.FullName)
+	}
+	if got := strings.Join(names, ","); got != "alice/one,alice/three,alice/two" {
+		t.Fatalf("repos %s", got)
+	}
+	// The installation not accepted is pending, and asked no token for.
+	installs, _ := s.Installations(ctx)
+	pending, _ := s.Pending(ctx)
+	if len(installs) != 1 || installs[0].ID != 11 || len(pending) != 1 || pending[0].ID != 22 || pending[0].Account != "acme" {
+		t.Fatalf("installations %+v, pending %+v", installs, pending)
+	}
+	if n := f.tokensFor(22); n != 0 {
+		t.Fatalf("%d tokens of the pending installation", n)
+	}
+	// Its repositories are not reached, not even after asking again.
+	c.add(5 * time.Second)
+	if _, ok, err := s.Reaches(ctx, "acme/web"); err != nil || ok {
+		t.Fatalf("a pending installation's repository is reached: %v %v", ok, err)
+	}
+	if _, err := s.RepoToken(ctx, "acme/web"); !errors.Is(err, ErrNotReached) {
+		t.Fatalf("token of a pending installation's repository: %v", err)
+	}
+	if _, err := s.OpenPullRequest(ctx, "acme/web", "x", "main", "t", "", false); !errors.Is(err, ErrNotReached) {
+		t.Fatalf("pull request in a pending installation's repository: %v", err)
+	}
+	if n := f.tokensFor(22); n != 0 {
+		t.Fatalf("%d tokens of the pending installation", n)
+	}
+	// Installation finds either kind, and nothing GitHub does not have.
+	if in, ok, err := s.Installation(ctx, 22); err != nil || !ok || in.AccountType != "Organization" {
+		t.Fatalf("Installation(22) = %+v %v %v", in, ok, err)
+	}
+	if _, ok, err := s.Installation(ctx, 99); err != nil || ok {
+		t.Fatalf("Installation(99) = %v %v", ok, err)
+	}
+	// Accepted, it counts.
+	s.SetAccepted([]int64{11, 22})
+	if !s.Accepted(22) {
+		t.Fatal("22 not accepted")
+	}
+	if _, ok, err := s.Reaches(ctx, "acme/web"); err != nil || !ok {
+		t.Fatalf("an accepted installation's repository is not reached: %v %v", ok, err)
+	}
+	if pending, _ := s.Pending(ctx); len(pending) != 0 {
+		t.Fatalf("pending %+v", pending)
+	}
+}
+
+func TestTheOwnersInstallationIsAdopted(t *testing.T) {
+	s, f, _ := setup(t)
+	ctx := context.Background()
+	var adopted [][]int64
+	s.OnAdopt(func(ids []int64) { adopted = append(adopted, ids) })
+
+	// An App of bob's: nothing on his account, nothing accepted.
+	if err := s.SetApp(&App{ID: f.appID, Slug: "socrates-example", Owner: "bob", PEM: []byte(f.pem)}); err != nil {
+		t.Fatal(err)
+	}
+	s.SetAccepted(nil)
+	if repos, err := s.Repos(ctx); err != nil || len(repos) != 0 || len(adopted) != 0 {
+		t.Fatalf("bob's App: %+v %v, adopted %v", repos, err, adopted)
+	}
+
+	// alice's: her installation is accepted, acme's stays pending.
+	if err := s.SetApp(&App{ID: f.appID, Slug: "socrates-example", Owner: "Alice", PEM: []byte(f.pem)}); err != nil {
+		t.Fatal(err)
+	}
+	repos, err := s.Repos(ctx)
+	if err != nil || len(repos) != 3 || !s.Accepted(11) || s.Accepted(22) {
+		t.Fatalf("alice's App: %+v %v", repos, err)
+	}
+	if len(adopted) != 1 || len(adopted[0]) != 1 || adopted[0][0] != 11 {
+		t.Fatalf("adopted %v", adopted)
+	}
+	// Once something is accepted, nothing is adopted again.
+	if _, _, err := s.Refresh(ctx); err != nil || len(adopted) != 1 {
+		t.Fatalf("adopted again: %v %v", adopted, err)
+	}
+	s.SetAccepted([]int64{22})
+	if _, _, err := s.Refresh(ctx); err != nil || len(adopted) != 1 || s.Accepted(11) {
+		t.Fatalf("adopted beside an accepted one: %v %v", adopted, err)
+	}
+}
+
+func TestUninstall(t *testing.T) {
+	s, f, _ := setup(t)
+	ctx := context.Background()
+	if pending, _ := s.Installations(ctx); len(pending) != 2 {
+		t.Fatalf("installations %+v", pending)
+	}
+	if err := s.Uninstall(ctx, 22); err != nil {
+		t.Fatal(err)
+	}
+	f.mu.Lock()
+	gone := f.uninstalled[22]
+	f.mu.Unlock()
+	if !gone {
+		t.Fatal("not uninstalled on GitHub")
+	}
+	// The listing is asked again at once.
+	if installs, _ := s.Installations(ctx); len(installs) != 1 || installs[0].ID != 11 {
+		t.Fatalf("installations after the uninstall %+v", installs)
+	}
+	// One GitHub no longer has is gone already.
+	if err := s.Uninstall(ctx, 22); err != nil {
+		t.Fatalf("uninstalled twice: %v", err)
+	}
+	_ = s.SetApp(nil)
+	if err := s.Uninstall(ctx, 11); !errors.Is(err, ErrNotConnected) {
+		t.Fatalf("without an App: %v", err)
 	}
 }

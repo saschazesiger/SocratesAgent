@@ -7,20 +7,26 @@
 //   POST /settings/apps/new?state=S            the manifest form; 302 to its
 //                                              redirect_url?code=…&state=S
 //   POST /app-manifests/{code}/conversions     the App, with its private key
-//   GET  /apps/{slug}/installations/new        302 to the manifest's setup_url
-//   GET  /app/installations                    (App JWT) the one installation
+//   GET  /apps/{slug}/installations/new?state=S 302 to the manifest's
+//                                              setup_url, with state=S
+//   GET  /app/installations                    (App JWT) the installations: the
+//                                              one on the owner, and `others`
 //   POST /app/installations/{id}/access_tokens (App JWT) a token
-//   GET  /installation/repositories            (token) the repositories
+//   DELETE /app/installations/{id}             (App JWT) uninstalls it
+//   GET  /installation/repositories            (token) its repositories
 //   POST /repos/{owner}/{name}/pulls           (token) a pull request
 //
-// `calls` is every request as "METHOD path", and `problems` every request
-// that was refused (a bad JWT, an unknown token): a scenario asserts it is
-// empty.
+// `others` are more installations, each { id, account, type, repos }, as
+// someone else (an organisation, a stranger) installing the public App makes
+// them. `calls` is every request as "METHOD path", and `problems` every
+// request that was refused (a bad JWT, an unknown token): a scenario asserts
+// it is empty. `uninstalled` are the ids removed, `installStates` the state
+// each visit of the install page carried.
 
 import http from 'node:http';
 import { generateKeyPairSync, createPublicKey, verify, randomBytes } from 'node:crypto';
 
-export async function startFakeGitHub({ owner = 'acme', repos = [], appId = 4242, slug = 'socrates-e2e', installation = 7 } = {}) {
+export async function startFakeGitHub({ owner = 'acme', repos = [], appId = 4242, slug = 'socrates-e2e', installation = 7, others = [] } = {}) {
   const { privateKey } = generateKeyPairSync('rsa', {
     modulusLength: 2048,
     privateKeyEncoding: { type: 'pkcs1', format: 'pem' },
@@ -28,9 +34,13 @@ export async function startFakeGitHub({ owner = 'acme', repos = [], appId = 4242
   });
   const publicKey = createPublicKey(privateKey);
   const gh = {
-    calls: [], problems: [], manifest: null, tokens: new Map(), pulls: [], url: '',
+    calls: [], problems: [], manifest: null, tokens: new Map(), pulls: [], url: '', uninstalled: new Set(), installStates: [],
     owner, slug, appId, installation,
   };
+  // Every installation by id: the owner's first, then the others.
+  const installs = new Map([[installation, { id: installation, account: owner, type: 'User', repos }]]);
+  for (const one of others) installs.set(one.id, { type: 'User', repos: [], ...one });
+  const live = (id) => installs.has(id) && !gh.uninstalled.has(id);
   const code = 'code-' + randomBytes(6).toString('hex');
 
   const json = (res, status, body) => {
@@ -96,6 +106,9 @@ export async function startFakeGitHub({ owner = 'acme', repos = [], appId = 4242
       const back = new URL(gh.manifest.setup_url);
       back.searchParams.set('installation_id', String(installation));
       back.searchParams.set('setup_action', 'install');
+      // GitHub hands the install page's state back to the setup URL.
+      gh.installStates.push(u.searchParams.get('state') || '');
+      if (u.searchParams.has('state')) back.searchParams.set('state', u.searchParams.get('state'));
       res.writeHead(302, { Location: back.toString() });
       return res.end();
     }
@@ -103,22 +116,32 @@ export async function startFakeGitHub({ owner = 'acme', repos = [], appId = 4242
       const why = appAuth(req);
       if (why) return refuse(res, req, why);
       const page = Number(u.searchParams.get('page') || 1);
-      return json(res, 200, page === 1 ? [{ id: installation, account: { login: owner, type: 'User' } }] : []);
+      const list = [...installs.values()].filter((one) => live(one.id)).map((one) => ({ id: one.id, account: { login: one.account, type: one.type } }));
+      return json(res, 200, page === 1 ? list : []);
+    }
+    if (req.method === 'DELETE' && (m = /^\/app\/installations\/(\d+)$/.exec(path))) {
+      const why = appAuth(req);
+      if (why) return refuse(res, req, why);
+      if (!live(Number(m[1]))) return json(res, 404, { message: 'Not Found' });
+      gh.uninstalled.add(Number(m[1]));
+      res.writeHead(204);
+      return res.end();
     }
     if (req.method === 'POST' && (m = /^\/app\/installations\/(\d+)\/access_tokens$/.exec(path))) {
       const why = appAuth(req);
       if (why) return refuse(res, req, why);
-      if (Number(m[1]) !== installation) return json(res, 404, { message: 'Not Found' });
+      if (!live(Number(m[1]))) return json(res, 404, { message: 'Not Found' });
       const asked = raw ? (JSON.parse(raw).repositories || null) : null;
       const token = 'ghs_' + randomBytes(12).toString('hex');
-      gh.tokens.set(token, { repositories: asked });
+      gh.tokens.set(token, { installation: Number(m[1]), repositories: asked });
       return json(res, 201, { token, expires_at: new Date(Date.now() + 3600e3).toISOString() });
     }
     if (req.method === 'GET' && path === '/installation/repositories') {
       const tok = tokenAuth(req);
       if (!tok) return refuse(res, req, 'unknown token');
       const page = Number(u.searchParams.get('page') || 1);
-      const list = page === 1 ? repos.map((r) => ({ full_name: r.full_name, default_branch: r.default_branch || 'main', private: !!r.private })) : [];
+      const granted = installs.get(tok.installation).repos;
+      const list = page === 1 ? granted.map((r) => ({ full_name: r.full_name, default_branch: r.default_branch || 'main', private: !!r.private })) : [];
       return json(res, 200, { total_count: list.length, repositories: list });
     }
     if (req.method === 'POST' && (m = /^\/repos\/([^/]+)\/([^/]+)\/pulls$/.exec(path))) {

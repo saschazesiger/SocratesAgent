@@ -3184,7 +3184,11 @@ async function repochat() {
 // new-chat sheet picks it, its default branch as the base and the branch it
 // generates; the chat's worktree is <workspace root>/<name>-<id8> on that
 // branch, the chat is grouped under the repository with its branch in the
-// header. The fake Claude Code commits a file in the worktree (/sh), and the
+// header. An organisation that installed the App too waits on the card until
+// it is accepted; then its repositories are listed in short lines, filtered
+// and cut to the first eight until "Show all", a setup script is saved
+// through its dialog, and Remove uninstalls it again. The fake Claude Code
+// commits a file in the worktree (/sh), and the
 // turn's end pushes the branch to the bare remote; open_pull_request opens a
 // pull request on the fake with a token for that repository alone, and the
 // chip then links it. Filed as done, the clean and pushed worktree goes, and
@@ -3215,7 +3219,11 @@ async function repoflow() {
   rmSync(seed, { recursive: true, force: true });
   const remoteRef = (ref) => { try { return sh(bare, 'rev-parse', '--verify', '-q', ref); } catch { return ''; } };
 
-  const gh = await startFakeGitHub({ owner: 'acme', repos: [{ full_name: 'acme/widget', default_branch: 'main', private: true }] });
+  const orgRepos = Array.from({ length: 9 }, (_, i) => ({ full_name: 'Browser-Project/repo' + (i + 1), private: i % 2 === 0 }));
+  const gh = await startFakeGitHub({
+    owner: 'acme', repos: [{ full_name: 'acme/widget', default_branch: 'main', private: true }],
+    others: [{ id: 9, account: 'Browser-Project', type: 'Organization', repos: orgRepos }],
+  });
   const s = await start({
     viewport: { width: 1280, height: 900 },
     env: { SOCRATES_GITHUB_API: gh.url, SOCRATES_GITHUB_WEB: gh.url, SOCRATES_GITHUB_GIT: 'file://' + git },
@@ -3233,7 +3241,7 @@ async function repoflow() {
     const card = await page.evaluate(() => ({
       status: document.querySelector('#githubStatus .so-state__line')?.innerText.replace(/\s+/g, ' ').trim() || '',
       repo: !!document.querySelector('#github [data-repo="acme/widget"]'),
-      problem: document.querySelector('#github .ds-alert')?.innerText || '',
+      problem: document.querySelector('#github .ds-alert[role="alert"]')?.innerText || '',
     }));
     ok(/Connected/.test(card.status) && /1 installation/.test(card.status) && /1 repository/.test(card.status) && card.repo && !card.problem,
       'Connect GitHub goes through the manifest flow and the card lists the App’s installation and repository', JSON.stringify(card));
@@ -3241,7 +3249,64 @@ async function repoflow() {
     ok(m.redirect_url === s.url + '/api/github/app/created' && m.setup_url === s.url + '/api/github/app/installed'
       && m.default_permissions && m.default_permissions.contents === 'write',
       'the manifest GitHub was given sends the browser back to this server', JSON.stringify({ redirect: m.redirect_url, setup: m.setup_url }));
+    ok(m.public === true, 'the App is made public, so organisations can install it', String(m.public));
+    ok(gh.installStates.length === 1 && /^[A-Za-z0-9_-]{16,}$/.test(gh.installStates[0]),
+      'the install page is opened with a state of the server’s own, which GitHub hands back', JSON.stringify(gh.installStates));
+
+    // The organisation's installation waits to be accepted.
+    const pendingCard = await page.evaluate(() => ({
+      alert: document.querySelector('#github .ds-alert[data-installation="9"]')?.innerText.replace(/\s+/g, ' ').trim() || '',
+      status: document.querySelector('#githubStatus .so-state__line')?.innerText.replace(/\s+/g, ' ').trim() || '',
+      orgRepo: !!document.querySelector('#github [data-repo^="Browser-Project/"]'),
+      addOrg: document.querySelector('#github .so-gh__actions a[href="/api/github/app/install"]')?.textContent.trim() || '',
+      advanced: document.querySelector('#github a[href$="/advanced"]')?.getAttribute('href') || '',
+    }));
+    ok(/Installed on Browser-Project — accept only if that is yours/.test(pendingCard.alert) && /1 waiting to be accepted/.test(pendingCard.status)
+      && !pendingCard.orgRepo && pendingCard.addOrg === 'Add an organisation' && pendingCard.advanced === gh.url + '/settings/apps/' + gh.slug + '/advanced',
+      'an organisation’s installation waits to be accepted, its repositories unused, beside Add an organisation and the Make public link', JSON.stringify(pendingCard));
+    await page.click('#github .ds-alert[data-installation="9"] button[data-action="accept-install"]');
+    await page.waitForSelector('#github [data-repo="Browser-Project/repo1"]', { timeout: 15000 }).catch(() => {});
+    const listed = () => page.evaluate(() => ({
+      rows: [...document.querySelectorAll('#githubRepoList [data-repo]')].map((n) => n.dataset.repo),
+      more: document.querySelector('#githubRepoList [data-action="more"]')?.textContent.trim() || '',
+      filter: !!document.getElementById('githubFilter'),
+      pending: document.querySelectorAll('#github .ds-alert[data-installation]').length,
+    }));
+    let list = await listed();
+    ok(list.pending === 0 && list.filter && list.rows.length === 8 && list.more === 'Show all 10' && list.rows[0] === 'acme/widget',
+      'accepted, its repositories join the list: a filter, the first eight, and Show all', JSON.stringify(list));
+    await page.fill('#githubFilter', 'repo7');
+    await page.waitForFunction(() => document.querySelectorAll('#githubRepoList [data-repo]').length === 1, null, { timeout: 5000 }).catch(() => {});
+    list = await listed();
+    ok(list.rows.join() === 'Browser-Project/repo7' && !list.more, 'the filter leaves the repositories that match', JSON.stringify(list));
+    await page.fill('#githubFilter', '');
+    await page.click('#githubRepoList [data-action="more"]');
+    await page.waitForFunction(() => document.querySelectorAll('#githubRepoList [data-repo]').length === 10, null, { timeout: 5000 }).catch(() => {});
+    list = await listed();
+    ok(list.rows.length === 10 && list.more === 'Show fewer', 'Show all shows every repository', JSON.stringify(list));
+
+    // A setup script, through its dialog.
+    await page.click('#githubRepoList [data-repo="Browser-Project/repo5"] button[data-action="edit-setup"]');
+    await page.waitForSelector('dialog.ds-dialog[open] #githubSetupText', { timeout: 5000 });
+    await page.fill('dialog.ds-dialog[open] #githubSetupText', 'echo ready\n');
+    await page.click('dialog.ds-dialog[open] .ds-btn--filled');
+    await page.waitForSelector('dialog.ds-dialog[open]', { state: 'detached', timeout: 15000 }).catch(() => {});
+    await page.waitForFunction(() => /Setup set/.test(document.querySelector('#githubRepoList [data-repo="Browser-Project/repo5"]')?.textContent || ''), null, { timeout: 5000 }).catch(() => {});
+    list = await listed();
+    const kept = await (await s.context.request.get(s.url + '/api/github')).json();
+    const repo5 = (kept.repos || []).find((r) => r.full_name === 'Browser-Project/repo5') || {};
+    ok(list.rows[0] === 'Browser-Project/repo5' && repo5.setup === 'echo ready\n',
+      'the setup dialog saves the script, and a repository with one is listed first, tagged', JSON.stringify({ first: list.rows[0], setup: repo5.setup }));
     await shot(page, 'repoflow-admin');
+
+    // Remove uninstalls the App from the organisation.
+    await page.click('#github .so-gh[data-installation="9"] button[data-action="remove-install"]');
+    await page.waitForSelector('dialog.ds-dialog[open] .ds-btn--filled', { timeout: 5000 });
+    await page.click('dialog.ds-dialog[open] .ds-btn--filled');
+    await page.waitForFunction(() => !document.querySelector('#github [data-repo^="Browser-Project/"]'), null, { timeout: 15000 }).catch(() => {});
+    list = await listed();
+    ok(gh.uninstalled.has(9) && list.rows.join() === 'acme/widget' && !list.filter,
+      'Remove uninstalls the App from the organisation, and its repositories go', JSON.stringify({ uninstalled: [...gh.uninstalled], rows: list.rows }));
 
     // The new-chat sheet: the repository, its default branch, the branch.
     await page.goto(s.url + '/', { waitUntil: 'domcontentloaded' });
