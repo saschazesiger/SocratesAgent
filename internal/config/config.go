@@ -48,6 +48,7 @@ type Settings struct {
 	Harnesses  HarnessSettings    `json:"harnesses"`
 	Chats      ChatSettings       `json:"chats"`
 	MCP        MCPSettings        `json:"mcp"`
+	GitHub     GitHubSettings     `json:"github"`
 }
 
 // DefaultParkAfterMinutes is how long a chat may sit idle before its agent
@@ -415,6 +416,7 @@ func (s *Settings) Normalize() {
 	s.normalizeTerminal(d)
 	s.Harnesses.normalize()
 	s.MCP.normalize()
+	s.GitHub.normalize()
 	if s.Tunnel.Mode != TunnelToken {
 		s.Tunnel.Mode = TunnelQuick
 	}

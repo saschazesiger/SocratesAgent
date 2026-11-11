@@ -234,15 +234,7 @@ func oauthView(st *oauthState) map[string]any {
 // redirectURI is where an authorization server sends the browser back: the
 // address the browser has this page at.
 func redirectURI(r *http.Request) string {
-	origin := strings.TrimRight(r.Header.Get("Origin"), "/")
-	if origin == "" || origin == "null" {
-		scheme := "http"
-		if r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https") {
-			scheme = "https"
-		}
-		origin = scheme + "://" + r.Host
-	}
-	return origin + "/api/mcp/oauth/callback"
+	return pageOrigin(r) + "/api/mcp/oauth/callback"
 }
 
 // handleMCPOAuthStart begins a sign-in for a remote server and gives the

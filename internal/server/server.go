@@ -22,6 +22,7 @@ import (
 	"github.com/saschazesiger/SocratesAgent/internal/catalog"
 	"github.com/saschazesiger/SocratesAgent/internal/chattests"
 	"github.com/saschazesiger/SocratesAgent/internal/config"
+	"github.com/saschazesiger/SocratesAgent/internal/github"
 	"github.com/saschazesiger/SocratesAgent/internal/mcpserver"
 	"github.com/saschazesiger/SocratesAgent/internal/store"
 	"github.com/saschazesiger/SocratesAgent/internal/termux"
@@ -134,6 +135,10 @@ type Server struct {
 	oauthKeep *oauthHub
 	probeOnce sync.Once
 	probeKeep *probeCache
+	// github is the GitHub App's connection, and githubFlow the manifest
+	// flows under way (github.go).
+	github     *github.Service
+	githubFlow githubFlow
 }
 
 type attempt struct {
@@ -201,6 +206,7 @@ func New(st *store.Store, dataDir string) (*Server, error) {
 	s.chatTests = s.newChatTests()
 	s.artifacts = s.newArtifacts()
 	s.mcp = s.newMCPRegistry()
+	s.github = s.newGitHub()
 	manager, err := termux.New(st, cfg)
 	if err != nil {
 		return nil, err
@@ -485,6 +491,13 @@ func (s *Server) routes() {
 	mux.HandleFunc("POST /api/mcp/builtin/{name}/accounts", s.auth(s.handleBuiltinMCPAccountAdd))
 	mux.HandleFunc("POST /api/mcp/builtin/{name}/accounts/{id}/check", s.auth(s.handleBuiltinMCPAccountCheck))
 	mux.HandleFunc("DELETE /api/mcp/builtin/{name}/accounts/{id}", s.auth(s.handleBuiltinMCPAccountDelete))
+	// GitHub: the App, its installations and repositories (github.go).
+	mux.HandleFunc("GET /api/github", s.auth(s.handleGitHub))
+	mux.HandleFunc("POST /api/github/app/start", s.auth(s.handleGitHubAppStart))
+	mux.HandleFunc("GET /api/github/app/created", s.auth(s.handleGitHubAppCreated))
+	mux.HandleFunc("GET /api/github/app/installed", s.handleGitHubAppInstalled)
+	mux.HandleFunc("DELETE /api/github/app", s.auth(s.handleGitHubAppDelete))
+	mux.HandleFunc("PUT /api/github/repos/{owner}/{name}/settings", s.auth(s.handleGitHubRepoSettings))
 	mux.HandleFunc("POST /api/chats/{id}/account", s.auth(s.handleChatAccount))
 	mux.HandleFunc("POST /api/chats/{id}/spoken", s.auth(s.handleChatSpoken))
 	mux.HandleFunc("PUT /api/chats/{id}/auto-switch", s.auth(s.handleChatAutoSwitch))

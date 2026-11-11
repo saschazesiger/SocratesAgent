@@ -87,7 +87,14 @@ func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	previous := s.Settings().Terminal
-	if err := s.saveSettings(next); err != nil {
+	// settings.github is written by the GitHub endpoints only (github.go):
+	// a page loaded before GitHub was connected would otherwise disconnect
+	// it by saving anything else.
+	s.githubFlow.edit.Lock()
+	next.GitHub = s.Settings().GitHub
+	err := s.saveSettings(next)
+	s.githubFlow.edit.Unlock()
+	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}

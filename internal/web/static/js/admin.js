@@ -31,6 +31,7 @@ import { dictated } from './keyboard.js';
 import * as harnesses from './harnesses.js';
 import * as accounts from './accounts.js';
 import * as mcpCard from './adminmcp.js';
+import * as githubCard from './admingithub.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -1407,6 +1408,7 @@ function bind() {
     row.querySelector('input').focus();
   });
   mcpCard.mountMCP({ save, dirty: isDirty });
+  githubCard.mountGitHub({ save, dirty: isDirty });
   $('windowSize').addEventListener('change', renderWindowSizeHint);
   $('tunnelStart').addEventListener('click', startTunnel);
   $('tunnelStop').addEventListener('click', stopTunnel);

@@ -24,6 +24,11 @@
  *                      (__name with its tag, __desc, __what, __state of
  *                      __fact chips and an __error), its "in every chat"
  *                      switch, __actions
+ *   .so-gh-body        the GitHub card's body below its status line, in
+ *                      .so-gh-part parts (a subtitle and its rows)
+ *   .so-gh             one row of the GitHub card (the App, an installation,
+ *                      a repository): __main (__name with its tag), __actions;
+ *                      a repository's __setup field and __save under it
  *   .so-mcp-sheet      the MCP side sheet's body: __part sections, __head (a
  *                      section's title and its chip)
  *   .so-mcp-test       the editor's Test connection and its .so-mcp-outcome
@@ -162,7 +167,8 @@
 
 .so-account,
 .so-model,
-.so-mcp {
+.so-mcp,
+.so-gh {
   display: grid;
   align-items: center;
   gap: var(--ds-space-2) var(--ds-space-3);
@@ -173,7 +179,8 @@
 
 .so-account:first-child,
 .so-model:first-child,
-.so-mcp:first-child {
+.so-mcp:first-child,
+.so-gh:first-child {
   border-top: 1px solid var(--ds-line);
 }
 
@@ -306,6 +313,72 @@
   align-items: center;
   gap: var(--ds-space-1) var(--ds-space-2);
   min-width: 0;
+}
+
+/* ── GitHub ──────────────────────────────────────────────────────────── */
+
+.so-gh-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--ds-space-4);
+  min-width: 0;
+}
+
+.so-gh-body:empty {
+  display: none;
+}
+
+/* One part of the card: the App, the installations, the repositories. */
+.so-gh-part {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--ds-space-2);
+  min-width: 0;
+}
+
+.so-gh-part > .ds-card__subtitle,
+.so-gh-part > .ds-muted {
+  margin: 0;
+}
+
+.so-gh {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.so-gh__main {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--ds-space-1);
+  min-width: 0;
+}
+
+.so-gh__main > p {
+  margin: 0;
+}
+
+.so-gh__name {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--ds-space-2);
+  font: var(--ds-font-label);
+  color: var(--ds-text);
+  overflow-wrap: anywhere;
+}
+
+.so-gh__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--ds-space-1);
+}
+
+/* A repository's setup script takes the row's width under its name, and
+   its Save sits under the script. */
+.so-gh__setup,
+.so-gh__save {
+  grid-column: 1 / -1;
 }
 
 .so-mcp-sheet,
@@ -497,6 +570,15 @@
   }
 
   .so-mcp__actions {
+    justify-content: flex-start;
+  }
+
+  /* The App's and an installation's actions go under the name. */
+  .so-gh {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .so-gh__actions {
     justify-content: flex-start;
   }
 

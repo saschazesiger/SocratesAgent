@@ -63,6 +63,7 @@
       </div>
       <div class="ds-drawer__group">
         <p class="ds-drawer__heading">New sessions</p>
+        <a class="ds-drawer__item" href="#github" data-section="github" data-icon="gitBranch" data-icon-place="start"><span class="ds-drawer__label">GitHub</span></a>
         <a class="ds-drawer__item" href="#workspaceCard" data-section="workspaceCard" data-icon="folder" data-icon-place="start"><span class="ds-drawer__label">Workspace</span></a>
         <a class="ds-drawer__item" href="#terminalCard" data-section="terminalCard" data-icon="monitor" data-icon-place="start"><span class="ds-drawer__label">Terminal</span></a>
       </div>
@@ -132,6 +133,27 @@
           </section>
 
           <!-- ── New sessions ─────────────────────────────────────────── -->
+
+          <!-- GitHub (admingithub.js): the App, its installations and the
+               repositories with their setup scripts, drawn from GET
+               /api/github. Its actions count at once, not with Save. -->
+          <section class="ds-card" id="github" aria-labelledby="githubTitle">
+            <div class="ds-card__row">
+              <h2 class="ds-card__title" id="githubTitle">GitHub</h2>
+              <button class="ds-btn ds-sm" id="githubRefresh" type="button" data-action="refresh" hidden>
+                <span class="ds-btn__faces">
+                  <span class="ds-btn__face">Refresh</span>
+                  <span class="ds-btn__face ds-btn__face--busy" aria-hidden="true"><span class="ds-spinner ds-spinner--ink ds-sm"></span>Asking GitHub</span>
+                </span>
+              </button>
+            </div>
+            <p class="ds-muted">Chats work in GitHub repositories, each in its own worktree on its own branch, which is pushed as the work goes on. Socrates connects through a GitHub App of its own that reaches only the repositories you choose on GitHub.</p>
+            <div class="so-state" id="githubStatus" aria-live="polite">
+              <span class="so-state__line"><span class="ds-status"><span class="ds-spinner ds-status__spinner" aria-hidden="true"></span><span>Loading</span></span></span>
+              <span class="so-state__tip"></span>
+            </div>
+            <div class="so-gh-body" id="githubBody"></div>
+          </section>
 
           <section class="ds-card" id="workspaceCard" aria-labelledby="workspaceTitle">
             <h2 class="ds-card__title" id="workspaceTitle">Workspace</h2>
