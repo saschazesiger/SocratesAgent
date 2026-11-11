@@ -3242,13 +3242,15 @@ async function repoflow() {
       && m.default_permissions && m.default_permissions.contents === 'write',
       'the manifest GitHub was given sends the browser back to this server', JSON.stringify({ redirect: m.redirect_url, setup: m.setup_url }));
     ok(m.public === true, 'the App is made public, so organisations can install it', String(m.public));
+    ok(gh.installStates.length === 1 && /^[A-Za-z0-9_-]{16,}$/.test(gh.installStates[0]),
+      'the install page is opened with a state of the server’s own, which GitHub hands back', JSON.stringify(gh.installStates));
 
     // The organisation's installation waits to be accepted.
     const pendingCard = await page.evaluate(() => ({
       alert: document.querySelector('#github .ds-alert[data-installation="9"]')?.innerText.replace(/\s+/g, ' ').trim() || '',
       status: document.querySelector('#githubStatus .so-state__line')?.innerText.replace(/\s+/g, ' ').trim() || '',
       orgRepo: !!document.querySelector('#github [data-repo^="Browser-Project/"]'),
-      addOrg: document.querySelector('#github .so-gh__actions a[href$="/installations/new"]')?.textContent.trim() || '',
+      addOrg: document.querySelector('#github .so-gh__actions a[href="/api/github/app/install"]')?.textContent.trim() || '',
       advanced: document.querySelector('#github a[href$="/advanced"]')?.getAttribute('href') || '',
     }));
     ok(/Installed on Browser-Project — accept only if that is yours/.test(pendingCard.alert) && /1 waiting to be accepted/.test(pendingCard.status)

@@ -17,9 +17,10 @@
 // with the page.
 //
 // The App is public, so it can be installed on an organisation too ("Add an
-// organisation" opens GitHub's install page, where the account is picked).
+// organisation" goes through /api/github/app/install, which adds a state of
+// the server's own, to GitHub's install page, where the account is picked).
 // Anyone may install a public App, so an installation counts once it is
-// accepted: coming back signed in from installing it accepts it, and one
+// accepted: coming back signed in with that state accepts it, and one
 // that is installed but not accepted waits on the card with Accept and
 // Remove (POST /api/github/installations/{id}/accept, DELETE
 // /api/github/installations/{id}, which uninstalls it on GitHub).

@@ -79,15 +79,20 @@ Admin gets a card **GitHub**. Without an App it shows *Connect GitHub* and an op
    `slug`, `name`, `owner.login` and `html_url` in the settings document (`settings.github`), and seals `pem`
    (the private key), `client_secret` and `webhook_secret` with the data directory's key (`vault.Seal`, objects
    `github:pem`, `github:client_secret`, `github:webhook_secret`) into the kv table. Then it redirects the
-   browser to `https://github.com/apps/<slug>/installations/new`.
+   browser to `https://github.com/apps/<slug>/installations/new?state=<install state>` (below).
 4. The person picks the account and the repositories on GitHub and installs. GitHub redirects to
-   `setup_url?installation_id=…&setup_action=install`. `GET /api/github/app/installed`, in a signed-in browser,
-   accepts that installation (§3.5) once the App's own listing (JWT, §3.2) has it, and redirects to
-   `/admin#github`; an id GitHub does not list goes back with `github_error`. A browser that is not signed in is
-   only redirected: the installation then waits on the card.
+   `setup_url?installation_id=…&setup_action=install&state=<install state>`. `GET /api/github/app/installed`
+   accepts that installation (§3.5) only when the browser is signed in **and** the state is one this server
+   handed out for an install page in the last fifteen minutes (random, kept in memory, good once); then the App's
+   own listing (JWT, §3.2) must have the id, else it goes back with `github_error`. Without a valid state (a
+   link someone made up with their own installation's id) or signed out, it only redirects to `/admin#github`
+   and the installation waits on the card.
 
-Admin then shows the App (name, owner, link, *Add an organisation* → `https://github.com/apps/<slug>/installations/new`,
-where GitHub asks for the account), the installations waiting to be accepted (§3.5), every accepted installation
+   Install states come from `GET /api/github/app/install`, which redirects to the install page with a new one
+   (the card's *Add an organisation* and *Install it* link there), and from step 3.
+
+Admin then shows the App (name, owner, link, *Add an organisation* → `/api/github/app/install` → GitHub's install
+page, where GitHub asks for the account), the installations waiting to be accepted (§3.5), every accepted installation
 (account, *Choose repositories* → `https://github.com/settings/installations/<id>` or the organisation's
 equivalent, *Remove*) and the repositories with their settings (§3.4), and *Disconnect* (forgets the App's keys
 and the accepted installations here; the App on GitHub is deleted by the person, Admin links to its settings
@@ -126,6 +131,7 @@ bare repositories (`file://`).
 | `GET /api/github` | `{connected, app: {name, slug, owner, html_url, settings_url, install_url, advanced_url}, installations: [{id, account, type, settings_url}], pending: [...the same], repos: [{full_name, default_branch, private, installation, setup}], problem}`; `installations` and `repos` are the accepted ones only, `pending` the installations not accepted |
 | `POST /api/github/app/start` | `{org}` → `{action, manifest, state}`; the page builds and submits the form. |
 | `GET /api/github/app/created` | GitHub's redirect (§3.1). |
+| `GET /api/github/app/install` | Redirects to GitHub's install page with a new install state (§3.1). |
 | `GET /api/github/app/installed` | GitHub's redirect (§3.1). |
 | `DELETE /api/github/app` | Disconnect. |
 | `POST /api/github/installations/{id}/accept` | Accepts an installation the App's listing has (§3.5); answers like `GET /api/github`. |
@@ -151,7 +157,8 @@ accepted, and `internal/github` uses only those: the repositories listed, `Reach
 pull requests. The listing asks for repositories and tokens of accepted installations only; the others are
 *pending*.
 
-- **Accepting**: coming back from GitHub's install page in a signed-in browser (§3.1 step 4), or *Accept* on a
+- **Accepting**: coming back from an install page Socrates sent the browser to, signed in and with its state
+  (§3.1 step 4), or *Accept* on a
   pending installation, which the card shows in the warning tone: *installed on <account> — accept only if that
   is yours*. Either way the id must be in the App's own listing.
 - **Removing**: *Remove* (on a pending or an accepted installation) uninstalls the App there and drops the id.

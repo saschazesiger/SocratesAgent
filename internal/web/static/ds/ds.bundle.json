@@ -215,7 +215,7 @@
     },
     {
       "name": "text",
-      "reason": "static/js/admingithub.js:299 ds-mono",
+      "reason": "static/js/admingithub.js:300 ds-mono",
       "bytes": 795,
       "gzip": 351
     },
@@ -475,7 +475,7 @@
     },
     {
       "name": "search",
-      "reason": "static/js/admingithub.js:190"
+      "reason": "static/js/admingithub.js:191"
     },
     {
       "name": "filter",
@@ -491,7 +491,7 @@
     },
     {
       "name": "pencil",
-      "reason": "static/js/admingithub.js:223"
+      "reason": "static/js/admingithub.js:224"
     },
     {
       "name": "save",
@@ -651,7 +651,7 @@
     },
     {
       "name": "ban",
-      "reason": "static/js/admingithub.js:108"
+      "reason": "static/js/admingithub.js:109"
     },
     {
       "name": "calendar",
@@ -1505,9 +1505,9 @@
   "classes": {
     "ds-add-row": "static/admin.html:129",
     "ds-alert": "static/admin.html:357",
-    "ds-alert__actions": "static/js/admingithub.js:173",
+    "ds-alert__actions": "static/js/admingithub.js:174",
     "ds-alert__text": "static/admin.html:357",
-    "ds-alert__title": "static/js/admingithub.js:173",
+    "ds-alert__title": "static/js/admingithub.js:174",
     "ds-app": "static/admin.html:30",
     "ds-app--drawer": "static/admin.html:30",
     "ds-app--keyboard-hides-bar": "static/js/keybar.js:252",
@@ -1533,7 +1533,7 @@
     "ds-card--elevated": "static/login.html:31",
     "ds-card--interactive": "static/js/askdialog.js:771",
     "ds-card__action": "static/js/chatparts.js:1460",
-    "ds-card__more": "static/js/admingithub.js:213",
+    "ds-card__more": "static/js/admingithub.js:214",
     "ds-card__row": "static/admin.html:141",
     "ds-card__section": "static/admin.html:258",
     "ds-card__subtitle": "static/admin.html:124",
@@ -1655,7 +1655,7 @@
     "ds-menu__meta": "static/js/session.js:2560",
     "ds-meta": "static/admin.html:109",
     "ds-meter": "static/js/costs.js:650",
-    "ds-mono": "static/js/admingithub.js:299",
+    "ds-mono": "static/js/admingithub.js:300",
     "ds-muted": "static/admin.html:107",
     "ds-num": "static/admin.html:501",
     "ds-page": "static/admin.html:93",
@@ -1688,7 +1688,7 @@
     "ds-radio__note": "static/js/harnesses.js:447",
     "ds-radios": "static/js/chattests.js:839",
     "ds-scrim": "static/admin.html:51",
-    "ds-search": "static/js/admingithub.js:190",
+    "ds-search": "static/js/admingithub.js:191",
     "ds-sheet": "static/admin.html:622",
     "ds-sheet__backdrop": "static/admin.html:623",
     "ds-sheet__body": "static/admin.html:632",
@@ -1721,7 +1721,7 @@
     "ds-table-wrap": "static/admin.html:461",
     "ds-table__row--selected": "static/js/costs.js:649",
     "ds-table__row-link": "static/js/costs.js:632",
-    "ds-tag": "static/js/admingithub.js:179",
+    "ds-tag": "static/js/admingithub.js:180",
     "ds-tasks": "static/js/chatparts.js:478",
     "ds-tasks__head": "static/js/chatparts.js:499",
     "ds-tasks__item": "static/js/chatparts.js:492",
@@ -1742,7 +1742,7 @@
     "ds-toast": "static/js/session.js:3649",
     "ds-toasts": "static/admin.html:636",
     "ds-tone-error": "static/admin.html:357",
-    "ds-tone-neutral": "static/js/admingithub.js:179",
+    "ds-tone-neutral": "static/js/admingithub.js:180",
     "ds-tone-success": "static/js/accounts.js:114",
     "ds-tone-warning": "static/admin.html:604",
     "ds-toolbar": "static/costs.html:71",

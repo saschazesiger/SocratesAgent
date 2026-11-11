@@ -7,7 +7,8 @@
 //   POST /settings/apps/new?state=S            the manifest form; 302 to its
 //                                              redirect_url?code=…&state=S
 //   POST /app-manifests/{code}/conversions     the App, with its private key
-//   GET  /apps/{slug}/installations/new        302 to the manifest's setup_url
+//   GET  /apps/{slug}/installations/new?state=S 302 to the manifest's
+//                                              setup_url, with state=S
 //   GET  /app/installations                    (App JWT) the installations: the
 //                                              one on the owner, and `others`
 //   POST /app/installations/{id}/access_tokens (App JWT) a token
@@ -19,7 +20,8 @@
 // someone else (an organisation, a stranger) installing the public App makes
 // them. `calls` is every request as "METHOD path", and `problems` every
 // request that was refused (a bad JWT, an unknown token): a scenario asserts
-// it is empty. `uninstalled` are the ids removed.
+// it is empty. `uninstalled` are the ids removed, `installStates` the state
+// each visit of the install page carried.
 
 import http from 'node:http';
 import { generateKeyPairSync, createPublicKey, verify, randomBytes } from 'node:crypto';
@@ -32,7 +34,7 @@ export async function startFakeGitHub({ owner = 'acme', repos = [], appId = 4242
   });
   const publicKey = createPublicKey(privateKey);
   const gh = {
-    calls: [], problems: [], manifest: null, tokens: new Map(), pulls: [], url: '', uninstalled: new Set(),
+    calls: [], problems: [], manifest: null, tokens: new Map(), pulls: [], url: '', uninstalled: new Set(), installStates: [],
     owner, slug, appId, installation,
   };
   // Every installation by id: the owner's first, then the others.
@@ -104,6 +106,9 @@ export async function startFakeGitHub({ owner = 'acme', repos = [], appId = 4242
       const back = new URL(gh.manifest.setup_url);
       back.searchParams.set('installation_id', String(installation));
       back.searchParams.set('setup_action', 'install');
+      // GitHub hands the install page's state back to the setup URL.
+      gh.installStates.push(u.searchParams.get('state') || '');
+      if (u.searchParams.has('state')) back.searchParams.set('state', u.searchParams.get('state'));
       res.writeHead(302, { Location: back.toString() });
       return res.end();
     }

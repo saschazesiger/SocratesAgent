@@ -162,7 +162,7 @@ func TestGitHubConnectRepositoriesAndDisconnect(t *testing.T) {
 	}
 	// GitHub's redirect: the App is kept and the browser goes on to install it.
 	res, _ = env.do(t, env.client, "GET", "/api/github/app/created?code=good-code&state="+url.QueryEscape(state), "")
-	if loc := res.Header.Get("Location"); res.StatusCode != http.StatusSeeOther || loc != "https://web.example/apps/socrates-test/installations/new" {
+	if loc := res.Header.Get("Location"); res.StatusCode != http.StatusSeeOther || !strings.HasPrefix(loc, "https://web.example/apps/socrates-test/installations/new?state=") {
 		t.Fatalf("created: %d %s", res.StatusCode, loc)
 	}
 	// The state was good once.
@@ -214,7 +214,7 @@ func TestGitHubConnectRepositoriesAndDisconnect(t *testing.T) {
 	if pending := view["pending"].([]any); len(pending) != 2 || pending[0].(map[string]any)["account"] != "acme" {
 		t.Fatalf("pending: %#v", pending)
 	}
-	if app["advanced_url"] != "https://web.example/settings/apps/socrates-test/advanced" {
+	if app["advanced_url"] != "https://web.example/settings/apps/socrates-test/advanced" || app["install_url"] != "/api/github/app/install" {
 		t.Fatalf("advanced URL: %#v", app)
 	}
 	repos := view["repos"].([]any)
@@ -292,9 +292,21 @@ func connectGitHub(t *testing.T, env *testEnv) {
 	_, start := env.do(t, env.client, "POST", "/api/github/app/start", `{}`)
 	state, _ := start["state"].(string)
 	res, _ := env.do(t, env.client, "GET", "/api/github/app/created?code=good-code&state="+url.QueryEscape(state), "")
-	if res.StatusCode != http.StatusSeeOther || !strings.HasSuffix(res.Header.Get("Location"), "/installations/new") {
+	if res.StatusCode != http.StatusSeeOther || !strings.Contains(res.Header.Get("Location"), "/installations/new?state=") {
 		t.Fatalf("created: %d %s", res.StatusCode, res.Header.Get("Location"))
 	}
+}
+
+// installState is the state of an install page the server sends the
+// browser to (Add an organisation).
+func installState(t *testing.T, env *testEnv) string {
+	t.Helper()
+	res, _ := env.do(t, env.client, "GET", "/api/github/app/install", "")
+	loc, err := url.Parse(res.Header.Get("Location"))
+	if res.StatusCode != http.StatusSeeOther || err != nil || loc.Path != "/apps/socrates-test/installations/new" || loc.Query().Get("state") == "" {
+		t.Fatalf("install: %d %s", res.StatusCode, res.Header.Get("Location"))
+	}
+	return loc.Query().Get("state")
 }
 
 func githubNames(view map[string]any, key, field string) string {
@@ -340,13 +352,34 @@ func TestGitHubInstallationsAcceptPendingAndRemove(t *testing.T) {
 		t.Fatalf("setup of a pending installation's repository: %d", res.StatusCode)
 	}
 
-	// Signed in, GitHub's redirect accepts the installation, once GitHub
+	// Signed in but without the state of an install page this server sent
+	// the browser to (a link someone made up), or with one it did not hand
+	// out, nothing is accepted: the installation stays pending.
+	for _, query := range []string{"installation_id=6&setup_action=install", "installation_id=6&setup_action=install&state=forged"} {
+		res, _ = env.do(t, env.client, "GET", "/api/github/app/installed?"+query, "")
+		if res.StatusCode != http.StatusSeeOther || res.Header.Get("Location") != "/admin#github" || env.srv.ghApp.Accepted(6) {
+			t.Fatalf("%s: %d %s", query, res.StatusCode, res.Header.Get("Location"))
+		}
+	}
+	// Signed out, a good state accepts nothing either, and keeps the state.
+	state := installState(t, env)
+	res, _ = env.do(t, env.anon, "GET", "/api/github/app/installed?installation_id=6&state="+url.QueryEscape(state), "")
+	if res.StatusCode != http.StatusSeeOther || env.srv.ghApp.Accepted(6) {
+		t.Fatalf("signed out with a state: %d", res.StatusCode)
+	}
+	// With the state, GitHub's redirect accepts the installation once GitHub
 	// lists it; an id it does not know is refused.
-	res, _ = env.do(t, env.client, "GET", "/api/github/app/installed?installation_id=999&setup_action=install", "")
+	res, _ = env.do(t, env.client, "GET", "/api/github/app/installed?installation_id=999&setup_action=install&state="+url.QueryEscape(state), "")
 	if !strings.Contains(res.Header.Get("Location"), "github_error=") || env.srv.ghApp.Accepted(999) {
 		t.Fatalf("an unknown installation: %s", res.Header.Get("Location"))
 	}
-	res, _ = env.do(t, env.client, "GET", "/api/github/app/installed?installation_id=6&setup_action=install", "")
+	// A state is good for one redirect.
+	res, _ = env.do(t, env.client, "GET", "/api/github/app/installed?installation_id=6&state="+url.QueryEscape(state), "")
+	if env.srv.ghApp.Accepted(6) {
+		t.Fatalf("a state used twice accepted: %s", res.Header.Get("Location"))
+	}
+	state = installState(t, env)
+	res, _ = env.do(t, env.client, "GET", "/api/github/app/installed?installation_id=6&setup_action=install&state="+url.QueryEscape(state), "")
 	if res.StatusCode != http.StatusSeeOther || res.Header.Get("Location") != "/admin#github" || !env.srv.ghApp.Accepted(6) {
 		t.Fatalf("installed on acme: %d %s", res.StatusCode, res.Header.Get("Location"))
 	}
@@ -409,5 +442,20 @@ func TestGitHubInstallationsAcceptPendingAndRemove(t *testing.T) {
 	env.do(t, env.client, "DELETE", "/api/github/app", "")
 	if got := env.srv.Settings().GitHub.AcceptedInstallations; got != nil || env.srv.ghApp.Accepted(5) {
 		t.Fatalf("accepted after disconnect %v", got)
+	}
+}
+
+func TestGitHubInstallStatesExpire(t *testing.T) {
+	var f githubFlow
+	now := time.Now()
+	f.addInstall("old", now.Add(-16*time.Minute))
+	f.addInstall("new", now.Add(-14*time.Minute))
+	if f.takeInstall("old", now) || !f.takeInstall("new", now) || f.takeInstall("new", now) || f.takeInstall("", now) {
+		t.Fatal("install states")
+	}
+	// A manifest state is no install state.
+	f.add("manifest", now)
+	if f.takeInstall("manifest", now) || !f.take("manifest", now) {
+		t.Fatal("the two kinds of state mix")
 	}
 }

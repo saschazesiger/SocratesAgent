@@ -501,6 +501,7 @@ func (s *Server) routes() {
 	mux.HandleFunc("GET /api/github", s.auth(s.handleGitHub))
 	mux.HandleFunc("POST /api/github/app/start", s.auth(s.handleGitHubAppStart))
 	mux.HandleFunc("GET /api/github/app/created", s.auth(s.handleGitHubAppCreated))
+	mux.HandleFunc("GET /api/github/app/install", s.auth(s.handleGitHubAppInstall))
 	mux.HandleFunc("GET /api/github/app/installed", s.handleGitHubAppInstalled)
 	mux.HandleFunc("DELETE /api/github/app", s.auth(s.handleGitHubAppDelete))
 	mux.HandleFunc("POST /api/github/installations/{id}/accept", s.auth(s.handleGitHubInstallationAccept))

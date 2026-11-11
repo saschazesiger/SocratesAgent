@@ -43,32 +43,33 @@ const (
 // GitHub's redirect back.
 const githubStateFor = 10 * time.Minute
 
+// githubInstallFor is how long an installation may take from the install
+// page to GitHub's redirect back to the setup URL.
+const githubInstallFor = 15 * time.Minute
+
 // maxSetupScript is the longest setup script a repository may have.
 const maxSetupScript = 64 << 10
 
-// githubFlow is the manifest flows under way: their state values and when
-// each was handed out.
+// githubFlow is the manifest flows and the installations under way: their
+// state values and when each was handed out.
 type githubFlow struct {
 	mu     sync.Mutex
 	states map[string]time.Time
+	// installs are the states of the install pages Socrates sent a browser
+	// to (/api/github/app/install, and after the App was created). GitHub
+	// hands an install page's state back to the setup URL, and only an
+	// installation that comes back with one is accepted on its own.
+	installs map[string]time.Time
 	// edit makes each change of settings.github one read and one write, so
 	// two of them at once do not lose one.
 	edit sync.Mutex
 }
 
-// add keeps a new state and drops the expired ones.
+// add keeps a new manifest state and drops the expired ones.
 func (f *githubFlow) add(state string, now time.Time) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if f.states == nil {
-		f.states = map[string]time.Time{}
-	}
-	for k, at := range f.states {
-		if now.Sub(at) > githubStateFor {
-			delete(f.states, k)
-		}
-	}
-	f.states[state] = now
+	keepState(&f.states, state, now, githubStateFor)
 }
 
 // take is whether state was handed out in the last ten minutes; it is good
@@ -76,9 +77,48 @@ func (f *githubFlow) add(state string, now time.Time) {
 func (f *githubFlow) take(state string, now time.Time) bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	at, ok := f.states[state]
-	delete(f.states, state)
-	return ok && state != "" && now.Sub(at) <= githubStateFor
+	return takeState(f.states, state, now, githubStateFor)
+}
+
+// addInstall keeps a new install page's state and drops the expired ones.
+func (f *githubFlow) addInstall(state string, now time.Time) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	keepState(&f.installs, state, now, githubInstallFor)
+}
+
+// takeInstall is whether state was handed out for an install page in the
+// last fifteen minutes; it is good for one redirect only.
+func (f *githubFlow) takeInstall(state string, now time.Time) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return takeState(f.installs, state, now, githubInstallFor)
+}
+
+func keepState(states *map[string]time.Time, state string, now time.Time, life time.Duration) {
+	if *states == nil {
+		*states = map[string]time.Time{}
+	}
+	for k, at := range *states {
+		if now.Sub(at) > life {
+			delete(*states, k)
+		}
+	}
+	(*states)[state] = now
+}
+
+func takeState(states map[string]time.Time, state string, now time.Time, life time.Duration) bool {
+	at, ok := states[state]
+	delete(states, state)
+	return ok && state != "" && now.Sub(at) <= life
+}
+
+// installPage is GitHub's page that installs the App, with a new state that
+// brings the installation back accepted (handleGitHubAppInstalled).
+func (s *Server) installPage(slug string) string {
+	state := randomState()
+	s.githubFlow.addInstall(state, time.Now())
+	return s.ghApp.InstallURL(slug) + "?state=" + url.QueryEscape(state)
 }
 
 // newGitHub is the GitHub connection with the App the data directory keeps,
@@ -202,7 +242,9 @@ type githubAppView struct {
 	Owner       string `json:"owner"`
 	HTMLURL     string `json:"html_url"`
 	SettingsURL string `json:"settings_url"`
-	InstallURL  string `json:"install_url"`
+	// InstallURL is Socrates' own address that sends the browser on to
+	// GitHub's install page with a state of its own.
+	InstallURL string `json:"install_url"`
 	// AdvancedURL is the App's "Advanced" settings on GitHub, where an App
 	// created private before Socrates made them public is made public.
 	AdvancedURL string `json:"advanced_url"`
@@ -246,7 +288,7 @@ func (s *Server) githubState(ctx context.Context, refresh bool) githubView {
 	out.App = &githubAppView{
 		Name: g.Name, Slug: g.Slug, Owner: g.Owner, HTMLURL: g.HTMLURL,
 		SettingsURL: s.ghApp.AppSettingsURL(g.Slug, g.Owner, g.OwnerType),
-		InstallURL:  s.ghApp.InstallURL(g.Slug),
+		InstallURL:  "/api/github/app/install",
 		AdvancedURL: s.ghApp.AppAdvancedURL(g.Slug, g.Owner, g.OwnerType),
 	}
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
@@ -374,7 +416,21 @@ func (s *Server) handleGitHubAppCreated(w http.ResponseWriter, r *http.Request) 
 		githubBack(w, r, err.Error())
 		return
 	}
-	http.Redirect(w, r, s.ghApp.InstallURL(conv.Slug), http.StatusSeeOther)
+	http.Redirect(w, r, s.installPage(conv.Slug), http.StatusSeeOther)
+}
+
+// handleGitHubAppInstall sends the browser to GitHub's page that installs
+// the App, where GitHub asks for the account (an organisation, say), with a
+// state that GitHub hands back to the setup URL.
+//
+//	GET /api/github/app/install   303 to GitHub's install page
+func (s *Server) handleGitHubAppInstall(w http.ResponseWriter, r *http.Request) {
+	app, ok := s.ghApp.App()
+	if !ok {
+		githubBack(w, r, github.ErrNotConnected.Error())
+		return
+	}
+	http.Redirect(w, r, s.installPage(app.Slug), http.StatusSeeOther)
 }
 
 // githubBack takes the browser back to Admin's GitHub card with a problem
@@ -384,22 +440,25 @@ func githubBack(w http.ResponseWriter, r *http.Request, problem string) {
 }
 
 // handleGitHubAppInstalled is where GitHub sends the browser after an
-// installation or a change of its repositories. A signed-in browser that
-// comes back from installing the App accepts that installation: it is the
-// person who installed it. The id is not believed from the address alone:
-// it must be an installation of the App as GitHub lists them with the App's
-// own JWT. A browser that is not signed in is sent on all the same; the
-// installation then waits on Admin's card to be accepted.
+// installation or a change of its repositories. It accepts the installation
+// only when the browser is signed in and brings back the state of an install
+// page this server sent it to (installPage), once: so it is the person who
+// installed it, and not a link someone else made up with their own
+// installation's id. The id is not believed from the address either: it
+// must be an installation of the App as GitHub lists them with the App's own
+// JWT. Anything else is only sent on; the installation then waits on
+// Admin's card to be accepted.
 //
-//	GET /api/github/app/installed?installation_id=…   303 to /admin#github
+//	GET /api/github/app/installed?installation_id=…&state=…   303 to /admin#github
 func (s *Server) handleGitHubAppInstalled(w http.ResponseWriter, r *http.Request) {
 	if !s.authenticated(r) {
 		http.Redirect(w, r, "/admin#github", http.StatusSeeOther)
 		return
 	}
 	s.ghApp.Forget()
-	id, err := strconv.ParseInt(r.URL.Query().Get("installation_id"), 10, 64)
-	if err != nil || id <= 0 || !s.ghApp.Connected() || s.ghApp.Accepted(id) {
+	q := r.URL.Query()
+	id, err := strconv.ParseInt(q.Get("installation_id"), 10, 64)
+	if err != nil || id <= 0 || !s.ghApp.Connected() || s.ghApp.Accepted(id) || !s.githubFlow.takeInstall(q.Get("state"), time.Now()) {
 		http.Redirect(w, r, "/admin#github", http.StatusSeeOther)
 		return
 	}
