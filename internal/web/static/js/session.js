@@ -1330,7 +1330,8 @@ const STATUS_GLYPH = { review: 'review', pending: 'clock', background: 'backgrou
 
 /**
  * rowHtml is one session in the list: its agent's mark, its name, and the ⋮
- * of what can be done to it. The row is a link to the session, so a middle
+ * that files it (its status; everything else is in the top bar's ⋮ once the
+ * session is open). The row is a link to the session, so a middle
  * click opens it in a tab of its own; a plain click is the page's (wire).
  *
  * The activity of a row is two marks and no words: the agent's own mark wears
@@ -1385,7 +1386,10 @@ function rowHtml(session) {
     startAt ? html`<span class="so-row__when" aria-label="${startWords}" data-tip="${startWords}">${raw(icon('clock', 16))}<span class="so-row__time">${whenShort(startAt)}</span></span>` : ''
   }${
     STATUS_GLYPH[status] ? html`<span class="so-row__status" data-status="${status}" role="img" aria-label="${said}" data-tip="${said}">${raw(icon(STATUS_GLYPH[status], 16))}</span>` : ''
-  }</a><button class="ds-btn ds-btn--quiet ds-btn--icon ds-sm ds-drawer__action ds-hover-actions so-row__more" type="button" aria-label="Session actions" data-tip="Session actions" aria-haspopup="menu" aria-expanded="false" aria-controls="sessionMenu">${raw(icon('moreVertical', 20))}</button></div>`;
+  }</a>${
+    // An editor has no status to file it by, so nothing to choose here.
+    session.harness === IDE ? '' : html`<button class="ds-btn ds-btn--quiet ds-btn--icon ds-sm ds-drawer__action ds-hover-actions so-row__more" type="button" aria-label="Status" data-tip="Status" aria-haspopup="menu" aria-expanded="false" aria-controls="sessionMenu">${raw(icon('moreVertical', 20))}</button>`
+  }</div>`;
 }
 
 // whenShort is a start time for a row: the time of day when it is today,
@@ -1402,7 +1406,7 @@ function whenShort(at, now = Date.now()) {
 
 // The technical detail of a session - what it runs, where it works, what it
 // runs on, which conversation it is holding, how often it has been brought
-// back. It is never in the words of a row: the "Info" item of the row's menu
+// back. It is never in the words of a row: the "Info" item of the session's ⋮
 // is the one place it is shown, for the list and for the header alike. Each
 // fact is a label and its value, in plain words.
 //
@@ -2267,7 +2271,7 @@ function suggestButton(session, input) {
   return button;
 }
 
-// infoDialog is the "Info" item of the row menu: everything the machine knows
+// infoDialog is the "Info" item of the session's ⋮: everything the machine knows
 // about one session, in one place and in one shape. It is the only place these
 // facts are drawn - a row is a mark and a name, and nothing else.
 function infoDialog(session, opener) {
@@ -2535,9 +2539,10 @@ function replaceSession(next) {
   renderList();
 }
 
-// The row's ⋮: everything that can be done to one session. What belongs to
-// this device rather than to a session - the key bar, touch mode, sound and
-// notifications - is in the options dialog of the top bar instead.
+// The row's ⋮ files a session: its status, and nothing else, so the list
+// stays a place to sort the work in. Everything else that can be done to a
+// session - Info, Rename, the chat's switches, Delete - is in the top bar's ⋮
+// of the session on the stage (openSessionMenu), with "This device…" last.
 //
 // There is one menu element (#sessionMenu), drawn again for the row that
 // opens it; what each of its items does is kept here, by data-action, and run
@@ -2665,25 +2670,54 @@ function afterMenu(fn) {
   watch.observe(menu, { attributes: true, attributeFilter: ['hidden'] });
 }
 
-// openRowMenu is a session's menu, from its row's ⋮ or - with `device`, and
-// then with this device's options as its last item - from the top bar's.
-async function openRowMenu(anchor, id, { device = false } = {}) {
+// statusGroupHtml is a session's statuses, one set: a group named by its
+// heading (DS menu groups), whose radio items the arrow keys walk past the
+// heading to. It puts what each does in menuActions.
+function statusGroupHtml(session) {
+  const heading = 'menuStatus' + (++menuSeq);
+  const group = [];
+  for (const one of STATUSES) {
+    menuActions.set('status:' + one.id, () => setStatus(session, one.id));
+    group.push(menuItemHtml('status:' + one.id, one.label, '', statusOf(session) === one.id));
+  }
+  return html`<div role="group" aria-labelledby="${heading}"><p class="ds-menu__heading" id="${heading}">Status</p>${group}</div>`;
+}
+
+// menuReady makes the one menu element ready to be drawn for `anchor`: a
+// second press of the ⋮ it hangs from puts it away (false), and one hanging
+// from another ⋮ goes first, so it is never drawn for one session while it
+// hangs from another.
+async function menuReady(anchor, menu) {
+  if (anchor.getAttribute('aria-expanded') === 'true') { hideOverlay(menu); return false; }
+  if (!menu.hidden) await hideOverlay(menu);
+  menuActions.clear();
+  menuInTap.clear();
+  return true;
+}
+
+// openStatusMenu is a row's ⋮: the session's statuses only.
+async function openStatusMenu(anchor, id) {
+  const session = sessionOf(id);
+  const menu = dom.sessionMenu;
+  if (!session || !menu || session.harness === IDE) return;
+  if (!(await menuReady(anchor, menu))) return;
+  showMenu(anchor, session.title, [statusGroupHtml(session)], 'Status');
+}
+
+// openSessionMenu is the top bar's ⋮ with a session on the stage: everything
+// that can be done to it, its status among them, and this device's options
+// as its last item.
+async function openSessionMenu(anchor, id) {
   const session = sessionOf(id);
   const menu = dom.sessionMenu;
   if (!session || !menu) return;
-  // A second press of the ⋮ a menu hangs from puts the menu away.
-  if (anchor.getAttribute('aria-expanded') === 'true') { hideOverlay(menu); return; }
-  // Open from another row: that one goes first, so the menu is never drawn
-  // for one session while it hangs from another.
-  if (!menu.hidden) await hideOverlay(menu);
+  if (!(await menuReady(anchor, menu))) return;
   // A folder's editor is not work that is filed: it is open or it is not, and
   // closing it keeps everything it remembers, which is kept per folder.
   const editor = session.harness === IDE;
   // A chat has no scrollback either: its conversation is its history, and
   // compacting it is something to ask of its agent.
   const chat = isChat(session);
-  menuActions.clear();
-  menuInTap.clear();
   const items = [];
   const add = (action, label, glyph, run, checked, role) => {
     menuActions.set(action, run);
@@ -2709,17 +2743,7 @@ async function openRowMenu(anchor, id, { device = false } = {}) {
   // A chat in a repository has its worktree, made again by the server when
   // it is gone: there is no folder to point it to.
   if (!editor && !session.repo && session.workdir_missing) add('folder', 'Point to folder', 'folder', () => pointFolder(session, anchor));
-  if (!editor) {
-    // The statuses are one set: a group named by its heading (DS menu
-    // groups), whose radio items the arrow keys walk past the heading to.
-    const heading = 'menuStatus' + (++menuSeq);
-    const group = [];
-    for (const one of STATUSES) {
-      menuActions.set('status:' + one.id, () => setStatus(session, one.id));
-      group.push(menuItemHtml('status:' + one.id, one.label, '', statusOf(session) === one.id));
-    }
-    items.push(html`<div class="ds-menu__divider" role="separator"></div><div role="group" aria-labelledby="${heading}"><p class="ds-menu__heading" id="${heading}">Status</p>${group}</div>`);
-  }
+  if (!editor) items.push(html`<div class="ds-menu__divider" role="separator"></div>`, statusGroupHtml(session));
   items.push(html`<div class="ds-menu__divider" role="separator"></div>`);
   if (editor && state.current?.id === session.id) add('reload', 'Reload editor', 'sync', () => attach(session));
   if (chat) {
@@ -2744,12 +2768,10 @@ async function openRowMenu(anchor, id, { device = false } = {}) {
     add('journal', editor ? 'Download server log' : 'Download scrollback', 'download', () => downloadJournal(session));
   }
   add('delete', editor ? 'Close VS Code' : 'Delete', editor ? 'close' : 'trash', () => deleteSession(session));
-  if (device) {
-    items.push(html`<div class="ds-menu__divider" role="separator"></div>`);
-    // Once the menu has gone, so that its leaving - which puts the focus
-    // back on the ⋮ and says it is shut - does not happen under the dialog.
-    add('device', 'This device\u2026', 'settings', () => afterMenu(() => openOptions(anchor)));
-  }
+  items.push(html`<div class="ds-menu__divider" role="separator"></div>`);
+  // Once the menu has gone, so that its leaving - which puts the focus
+  // back on the ⋮ and says it is shut - does not happen under the dialog.
+  add('device', 'This device\u2026', 'settings', () => afterMenu(() => openOptions(anchor)));
   // A menu cut short (at 1280x800 a chat's twelve items stopped at
   // Ultracode) fades at its cut edge: DS.overlay watches its scroll. One
   // that would not fit the screen at all is the action sheet (menuFits).
@@ -2766,16 +2788,13 @@ async function openFolderMenu(anchor, key) {
   const menu = dom.sessionMenu;
   const folder = foldersOf(state.sessions, placeOf).find((one) => one.key === key);
   if (!menu || !folder) return;
-  if (anchor.getAttribute('aria-expanded') === 'true') { hideOverlay(menu); return; }
-  if (!menu.hidden) await hideOverlay(menu);
+  if (!(await menuReady(anchor, menu))) return;
   // Whether the folder has docs is mostly known (the list asks for every
   // folder); a folder asked about for the first time waits for the answer.
   // A repository's group has its notes only, for now: no docs, and no VS
   // Code, which is a folder's and each chat has a worktree of its own.
   const repo = !!folder.repo;
   if (!repo && knownDocs(key) === undefined) await hasDocs(key);
-  menuActions.clear();
-  menuInTap.clear();
   const items = [];
   const add = (action, label, glyph, run) => {
     menuActions.set(action, run);
@@ -2803,10 +2822,7 @@ async function openFolderMenu(anchor, key) {
 async function openListMenu(anchor, title, entries) {
   const menu = dom.sessionMenu;
   if (!menu) return;
-  if (anchor.getAttribute('aria-expanded') === 'true') { hideOverlay(menu); return; }
-  if (!menu.hidden) await hideOverlay(menu);
-  menuActions.clear();
-  menuInTap.clear();
+  if (!(await menuReady(anchor, menu))) return;
   const items = entries.map((one) => {
     // Once the menu has gone: its leaving puts the focus back on the
     // anchor, which must not happen under what the entry opens.
@@ -3091,7 +3107,7 @@ function applySession(session, { soon = false } = {}) {
   drawBranchChip();
 
   // What it runs and on which model is in the list's mark and in "Info" in
-  // the row's menu; the bar keeps its width for the name. A chat says what
+  // the top bar's ⋮; the bar keeps its width for the name. A chat says what
   // it used under its own "i" (chatview.js).
   if (isChat(session) && state.chat) state.chat.update(session);
 
@@ -4167,7 +4183,7 @@ function wireList() {
     const more = event.target.closest('.so-row__more');
     if (more) {
       event.preventDefault();
-      openRowMenu(more, more.closest('.so-row').dataset.id);
+      openStatusMenu(more, more.closest('.so-row').dataset.id);
       return;
     }
     const add = event.target.closest('.so-folder__new');
@@ -4194,7 +4210,7 @@ function wireList() {
     if (more.getAttribute('aria-expanded') === 'true') return;
     event.preventDefault();
     if (more.classList.contains('so-folder__more')) openFolderMenu(more, more.dataset.folderMore);
-    else openRowMenu(more, more.closest('.so-row').dataset.id);
+    else openStatusMenu(more, more.closest('.so-row').dataset.id);
   });
   // The row menu has no close event: its hidden attribute is the news.
   new MutationObserver(() => {
@@ -4345,7 +4361,7 @@ function wire() {
   dom.optionsBtn.addEventListener('click', (event) => {
     const button = event.currentTarget;
     const session = barMenuSession();
-    if (session) openRowMenu(button, session.id, { device: true });
+    if (session) openSessionMenu(button, session.id);
     else openOptions(button);
   });
   // The two buttons say whether their dialog is open: DS.overlay keeps

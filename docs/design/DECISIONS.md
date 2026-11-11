@@ -286,7 +286,8 @@ Binding like the rest. Detail: `docs/design/DESIGN.md` §K and §L.
   sound and notifications are switches in it, and it stays open while they are pressed. *Why:* the
   four are facts about this phone or this browser, two of them were buttons crowding a phone's bar
   and the key bar was hidden in a menu about something else; everything about a session is
-  already in its row's `…`.
+  already in its row's `…`. *(Since revision 15 the row's `⋮` holds the statuses only; with a
+  session on the stage the top bar's `⋮` is that session's menu, "This device…" its last item.)*
 - **Touch mode can be set by hand, per device, and the setting wins.** *Why:* the guess is right
   for a phone and wrong for a tablet in a keyboard case or a browser that hides its finger, and
   the mistake was not one the person could correct.
@@ -457,3 +458,13 @@ Markdown file and link it would do. Decided with the owner ([PAGES.md](PAGES.md)
 - **Markdown links that work however written**: the agents are told to link every Markdown file they
   mention, and the chat also opens a `code` path to one and a link to it on the folder's own forge
   repository beside the chat (DOCS.md §3).
+
+## Revision 15 — the row's ⋮ files a session, 2026-11-11
+
+- **A row's `⋮` in the sidebar holds the statuses and nothing else** (In progress, Review pending,
+  Pending, Background, Done). Everything else that can be done to a session - Info, Rename, Point to
+  folder, the chat's switches, MCP servers, Compact, Download, Delete - is in the top bar's `⋮` of
+  the session on the stage, the statuses among them, with "This device…" last. A folder's own VS
+  Code row has no `⋮`: it has no status. *Why:* the owner wanted the list to be the place to sort the
+  work in; the same eleven items in two menus were one menu too many, and a session is opened
+  before it is renamed or deleted.

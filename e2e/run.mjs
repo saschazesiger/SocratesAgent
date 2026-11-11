@@ -233,11 +233,30 @@ const factsLine = (facts) => oneLine(facts.map(([name, value]) => name + ': ' + 
 // sheet (session.js menuFits).
 const MENU = ':is(#sessionMenu:not([hidden]), dialog.so-actions[open])';
 
-// rowMenu opens the ⋮ of the session on screen, in the list - where what can
-// be done to a session is, now that the top bar's ⋮ is this device's.
-async function rowMenu(page) {
+// STATUS_LABELS are the items of a row's ⋮: it files a session, and does
+// nothing else.
+const STATUS_LABELS = ['In progress', 'Review pending', 'Pending', 'Background', 'Done'];
+
+// sessionMenu opens the top bar's ⋮ of the session on the stage - where what
+// can be done to a session is - after opening the session `id` when it is
+// given and not on the stage yet.
+async function sessionMenu(page, id) {
+  if (id && (await page.evaluate(() => location.hash.slice(1))) !== id) {
+    await ensureNav(page);
+    await page.click('#sessionList .so-row[data-id="' + id + '"] .so-row__open');
+    // On the stage: its row is the current one.
+    await page.waitForSelector('#sessionList .so-row[data-id="' + id + '"] .so-row__open[aria-current="page"]',
+      { state: 'attached', timeout: 10000 });
+  }
+  await page.waitForFunction(() => document.getElementById('optionsBtn').getAttribute('aria-label') !== 'Options for this device',
+    null, { timeout: 10000 });
+  await page.click('#optionsBtn');
+  await page.waitForSelector(MENU + ' .ds-menu__item', { timeout: 5000 });
+}
+
+// statusMenu opens the ⋮ of a session's row: its statuses.
+async function statusMenu(page, id) {
   await ensureNav(page);
-  const id = await page.evaluate(() => location.hash.slice(1));
   await page.click('#sessionList .so-row[data-id="' + id + '"] .so-row__more', { force: true });
   await page.waitForSelector(MENU + ' .ds-menu__item', { timeout: 5000 });
 }
@@ -650,9 +669,9 @@ async function harnesses() {
       rows.map((r) => r.words).join(' | '));
 
     // Info is where the facts of a session are: one dialog, opened from the
-    // row's own menu - for a chat its folder and the account it runs on.
+    // session's ⋮ - for a chat its folder and the account it runs on.
     const row = await sessionRow(s, chats.claude);
-    await s.page.click(rowSel(chats.claude) + ' .so-row__more', { force: true });
+    await sessionMenu(s.page, chats.claude);
     await s.page.click(':is(#sessionMenu:not([hidden]), dialog.so-actions[open]) [data-action="info"]');
     await s.page.waitForSelector('dialog.so-info-dialog .so-facts', { timeout: 5000 });
     const facts = await infoFacts(s.page);
@@ -723,20 +742,20 @@ async function browserlayout() {
     await s.page.setViewportSize({ width: 1000, height: 240 });
     await wait(300);
     await s.page.click(row + ' .so-row__more');
-    const sheeted = await s.page.waitForSelector('dialog.so-actions[open] [data-action="delete"]', { timeout: 5000 })
+    const sheeted = await s.page.waitForSelector('dialog.so-actions[open] [data-action="status:done"]', { timeout: 5000 })
       .then(() => true, () => false);
     const menuShut = await s.page.$eval('#sessionMenu', (n) => n.hidden);
     const popup = await s.page.$eval(row + ' .so-row__more', (n) => n.getAttribute('aria-haspopup'));
     ok(sheeted && menuShut && popup === 'dialog', 'in a window too short for the menu its items are the action sheet',
       JSON.stringify({ sheeted, menuShut, popup }));
     await wait(300);
-    await s.page.$eval('dialog.so-actions[open] [data-action="delete"]', (node) => node.scrollIntoView({ block: 'nearest' }));
+    await s.page.$eval('dialog.so-actions[open] [data-action="status:done"]', (node) => node.scrollIntoView({ block: 'nearest' }));
     await wait(100);
-    const reached = await s.page.$eval('dialog.so-actions[open] [data-action="delete"]', (node) => {
+    const reached = await s.page.$eval('dialog.so-actions[open] [data-action="status:done"]', (node) => {
       const r = node.getBoundingClientRect();
       return r.top >= 0 && r.bottom <= innerHeight && document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2)?.closest('[data-action]') === node;
     });
-    ok(reached, 'and its last action, Delete, is reached in the sheet', String(reached));
+    ok(reached, 'and its last item, Done, is reached in the sheet', String(reached));
     await s.page.keyboard.press('Escape');
     await s.page.waitForSelector('dialog.so-actions', { state: 'detached', timeout: 5000 }).catch(() => {});
     await s.page.setViewportSize({ width: 1280, height: 720 });
@@ -797,10 +816,11 @@ async function sessionlist() {
     await s.page.waitForSelector('#term .xterm', { timeout: 15000 });
 
     const rowSelector = '#sessionList .so-row[data-id="' + id + '"]';
+    // A status is chosen in the row's ⋮, everything else in the top bar's.
     const menu = async (label) => {
-      await s.page.click(rowSelector + ' .so-row__more');
-      await s.page.waitForSelector(':is(#sessionMenu:not([hidden]), dialog.so-actions[open])', { timeout: 5000 });
-      await s.page.click(':is(#sessionMenu:not([hidden]), dialog.so-actions[open]) .ds-menu__item:has(.ds-menu__label:text-is("' + label + '"))');
+      if (STATUS_LABELS.includes(label)) await statusMenu(s.page, id);
+      else await sessionMenu(s.page, id);
+      await s.page.click(MENU + ' .ds-menu__item:has(.ds-menu__label:text-is("' + label + '"))');
     };
 
     // Rename.
@@ -910,9 +930,9 @@ async function sessionlist() {
     const chat = await startChat(s.page, 'claude');
     const chatSel = rowSel(chat);
     const chatMenu = async (label) => {
-      await s.page.click(chatSel + ' .so-row__more');
-      await s.page.waitForSelector(':is(#sessionMenu:not([hidden]), dialog.so-actions[open])', { timeout: 5000 });
-      await s.page.click(':is(#sessionMenu:not([hidden]), dialog.so-actions[open]) .ds-menu__item:has(.ds-menu__label:text-is("' + label + '"))');
+      if (STATUS_LABELS.includes(label)) await statusMenu(s.page, chat);
+      else await sessionMenu(s.page, chat);
+      await s.page.click(MENU + ' .ds-menu__item:has(.ds-menu__label:text-is("' + label + '"))');
     };
     await chatMenu('Rename');
     await s.page.waitForSelector('dialog.so-rename[open] .ds-input', { timeout: 5000 });
@@ -923,7 +943,7 @@ async function sessionlist() {
       return !!row && row.querySelector('.so-row__label').textContent === 'A chat renamed by the suite'
         && document.getElementById('sessionTitle').textContent === 'A chat renamed by the suite';
     }, chatSel, { timeout: 8000 }).then(() => true, () => false);
-    ok(renamedChat, 'a chat is renamed from its row, in the row and in the header', String(renamedChat));
+    ok(renamedChat, 'a chat is renamed from its ⋮, in the row and in the header', String(renamedChat));
     const worked = await answerTo(s, chat, 'before it is done');
     ok(worked === 'you said: before it is done', 'the chat has worked', worked);
     await chatMenu('Done');
@@ -2747,7 +2767,7 @@ async function createclaude() {
     });
     ok(!badge.mark && !badge.model && /haiku/i.test(badge.composer),
       'the header names neither the agent nor the model; the composer says the model', JSON.stringify(badge));
-    await rowMenu(s.page);
+    await sessionMenu(s.page);
     await s.page.click(':is(#sessionMenu:not([hidden]), dialog.so-actions[open]) [data-action="info"]');
     await s.page.waitForSelector('dialog.so-info-dialog .so-facts', { timeout: 5000 });
     const facts = await s.page.$$eval('dialog.so-info-dialog .so-fact', (nodes) => nodes.map((n) => n.textContent));
@@ -2817,7 +2837,7 @@ async function foldermcp() {
       null, { timeout: 10000 }).then(() => true, () => false);
     ok(notice, 'the chat says which server was left out', 'vault');
 
-    await rowMenu(s.page);
+    await sessionMenu(s.page);
     await s.page.click(':is(#sessionMenu:not([hidden]), dialog.so-actions[open]) [data-action="info"]');
     await s.page.waitForSelector('dialog.so-info-dialog .so-facts', { timeout: 5000 });
     await s.page.waitForFunction(() => /MCP servers/.test(document.querySelector('dialog.so-info-dialog').textContent),
@@ -2888,7 +2908,7 @@ async function sharedmcp() {
     ok(Object.keys(servers).sort().join(',') === 'db,github' && servers.github.headers.Authorization === 'Bearer t0k',
       'the agent gets Admin’s server that is on, with its variable put in, next to the folder’s', JSON.stringify(servers));
 
-    await rowMenu(s.page);
+    await sessionMenu(s.page);
     await s.page.click(':is(#sessionMenu:not([hidden]), dialog.so-actions[open]) [data-action="mcp"]');
     await s.page.waitForSelector('dialog .so-mcp-switches input[data-name="search"]', { timeout: 10000 });
     const listed = await s.page.$$eval('dialog .so-mcp-switches .ds-switch', (list) => list.map((row) =>
@@ -2907,7 +2927,7 @@ async function sharedmcp() {
     ok(Object.keys(servers).sort().join(',') === 'db,search' && servers.search.args[1] === 'my notes',
       'the next start has the chat’s choice', JSON.stringify(servers));
 
-    await rowMenu(s.page);
+    await sessionMenu(s.page);
     await s.page.click(':is(#sessionMenu:not([hidden]), dialog.so-actions[open]) [data-action="info"]');
     await s.page.waitForSelector('dialog.so-info-dialog .so-facts', { timeout: 5000 });
     await s.page.waitForFunction(() => /MCP servers/.test(document.querySelector('dialog.so-info-dialog').textContent),
@@ -3625,7 +3645,7 @@ async function mcpcard() {
     const id = await makeChat(s, 'claude', { title: 'MCP card chat' });
     await open(s);
     await openChat(page, id);
-    await rowMenu(page);
+    await sessionMenu(page);
     await page.click(':is(#sessionMenu:not([hidden]), dialog.so-actions[open]) [data-action="mcp"]');
     await page.waitForSelector('dialog .so-mcp-switches input[data-name="fake"]', { timeout: 10000 });
     const listed = await page.$$eval('dialog .so-mcp-switches .ds-switch', (list) => list.map((r) =>
@@ -3824,7 +3844,7 @@ async function accountsagents() {
     const argv = await answerTo(s, id, '/argv');
     ok(/"ultracode":true/.test(argv), 'and with Ultracode on in its settings', (/--settings \{[^}]*\}/.exec(argv) || ['none'])[0]);
 
-    await rowMenu(page);
+    await sessionMenu(page);
     await page.click(':is(#sessionMenu:not([hidden]), dialog.so-actions[open]) [data-action="info"]');
     await page.waitForSelector('dialog.so-info-dialog .so-facts', { timeout: 5000 });
     const facts = await infoFacts(page);
@@ -3889,7 +3909,7 @@ async function createcodex() {
       JSON.stringify({ thread, rollouts: kept.map((f) => f.replace(s.data, '<data>')) }));
 
     // Done: the chat is filed away, and its CLI with its host is put to rest.
-    await rowMenu(s.page);
+    await sessionMenu(s.page);
     await s.page.click(':is(#sessionMenu:not([hidden]), dialog.so-actions[open]) [data-action="status:done"]');
     const parked = await until(() => hostsOf(s.data).length === 0, 20000);
     const body = await awaitChat(s, id, (b) => b.chat.process === 'parked', 10000);
@@ -4056,7 +4076,7 @@ async function createopencode() {
     ok(!JSON.stringify(spec).includes('OPENCODE_SERVER_PASSWORD'),
       'its password is made for the process and kept in no file', Object.keys(spec).join(','));
 
-    await rowMenu(s.page);
+    await sessionMenu(s.page);
     await s.page.click(':is(#sessionMenu:not([hidden]), dialog.so-actions[open]) [data-action="status:done"]');
     const parked = await until(() => hostsOf(s.data).length === 0, 20000);
     ok(parked, 'filed as done, its server is put to rest', hostsOf(s.data).length + ' hosts');
@@ -4556,11 +4576,10 @@ async function deletekeepsdir() {
     ok(/attachment/.test(journal.headers()['content-disposition'] || ''),
       'as an attachment', journal.headers()['content-disposition'] || 'no disposition');
 
-    await s.page.click('#sessionList .so-row[data-id="' + id + '"] .so-row__more');
-    await s.page.waitForSelector(':is(#sessionMenu:not([hidden]), dialog.so-actions[open])', { timeout: 5000 });
-    const items = await s.page.$$eval(':is(#sessionMenu:not([hidden]), dialog.so-actions[open]) .ds-menu__item', (nodes) =>
+    await sessionMenu(s.page, id);
+    const items = await s.page.$$eval(MENU + ' .ds-menu__item', (nodes) =>
       nodes.map((n) => n.textContent.trim()));
-    ok(items.includes('Download scrollback'), 'and the row is where it is offered',
+    ok(items.includes('Download scrollback'), 'and the session’s ⋮ is where it is offered',
       items.join(' | '));
     await s.page.click(':is(#sessionMenu:not([hidden]), dialog.so-actions[open]) .ds-menu__item:has(.ds-menu__label:text-is("Delete"))');
     await s.page.waitForSelector('dialog.ds-dialog[open] .ds-btn--filled', { timeout: 5000 });
@@ -4615,11 +4634,10 @@ async function deletekeepsdir() {
     const conversation = await exported.text();
     ok(exported.ok() && conversation.includes('Wrote new.txt.'), 'its conversation can be taken away before it goes',
       exported.status() + ', ' + conversation.length + ' bytes');
-    await s.page.click(rowSel(chat) + ' .so-row__more');
-    await s.page.waitForSelector(':is(#sessionMenu:not([hidden]), dialog.so-actions[open])', { timeout: 5000 });
-    const chatItems = await s.page.$$eval(':is(#sessionMenu:not([hidden]), dialog.so-actions[open]) .ds-menu__item', (nodes) => nodes.map((n) => n.textContent.trim()));
+    await sessionMenu(s.page, chat);
+    const chatItems = await s.page.$$eval(MENU + ' .ds-menu__item', (nodes) => nodes.map((n) => n.textContent.trim()));
     ok(chatItems.includes('Download the conversation') && !chatItems.includes('Download scrollback'),
-      'and its row offers the conversation, not a scrollback', chatItems.join(' | '));
+      'and its ⋮ offers the conversation, not a scrollback', chatItems.join(' | '));
     await s.page.click(':is(#sessionMenu:not([hidden]), dialog.so-actions[open]) .ds-menu__item:has(.ds-menu__label:text-is("Delete"))');
     await s.page.waitForSelector('dialog.ds-dialog[open] .ds-btn--filled', { timeout: 5000 });
     await s.page.click('dialog.ds-dialog[open] .ds-btn--filled');
@@ -4903,8 +4921,8 @@ async function design() {
       'the workdir and the tmux name are behind the "i", and the name is what is read',
       JSON.stringify(hidden));
     // The facts are in one place, and that place is the Info item of the
-    // row's own menu.
-    await s.page.click(rowSel(id) + ' .so-row__more');
+    // session's ⋮.
+    await sessionMenu(s.page, id);
     await s.page.click(':is(#sessionMenu:not([hidden]), dialog.so-actions[open]) [data-action="info"]');
     await s.page.waitForSelector('dialog.so-info-dialog .so-facts', { timeout: 5000 });
     const inInfo = await s.page.$$eval('dialog.so-info-dialog .so-fact', (nodes) =>
@@ -9277,12 +9295,18 @@ async function optionsmenu() {
     await typeLine(s.page, 'echo ' + typed);
     ok(await awaitScreen(s.page, typed, 15000), 'the pane still takes a typed line', oneLine(await screen(s.page)).slice(-60));
 
-    // What is done to a session is in its row, and the key bar is not.
-    await rowMenu(s.page);
-    const rowItems = await s.page.$$eval(':is(#sessionMenu:not([hidden]), dialog.so-actions[open]) .ds-menu__item', (nodes) => nodes.map((n) => n.textContent.trim()));
-    ok(rowItems.includes('Info') && rowItems.includes('Rename') && rowItems.includes('Delete')
-      && !rowItems.some((w) => /key bar/i.test(w)),
-      'the row menu holds the session’s actions and no device option', rowItems.join(','));
+    // What is done to a session is in the top bar's ⋮, the key bar is not;
+    // its row's ⋮ files it, and holds nothing but the statuses.
+    await sessionMenu(s.page);
+    const barItems = await s.page.$$eval(MENU + ' .ds-menu__item', (nodes) => nodes.map((n) => n.querySelector('.ds-menu__label').textContent.trim()));
+    ok(barItems.includes('Info') && barItems.includes('Rename') && barItems.includes('Delete')
+      && barItems.includes('This device\u2026') && !barItems.some((w) => /key bar/i.test(w)),
+      'the session’s ⋮ holds its actions and no device option but the way to them', barItems.join(','));
+    await s.page.keyboard.press('Escape');
+    await s.page.waitForSelector('#sessionMenu', { state: 'hidden', timeout: 3000 });
+    await statusMenu(s.page, await s.page.evaluate(() => location.hash.slice(1)));
+    const rowItems = await s.page.$$eval(MENU + ' .ds-menu__item', (nodes) => nodes.map((n) => n.querySelector('.ds-menu__label').textContent.trim()));
+    ok(rowItems.join(',') === STATUS_LABELS.join(','), 'the row’s ⋮ holds the statuses and nothing else', rowItems.join(','));
     await s.page.keyboard.press('Escape');
     await s.page.waitForSelector('#sessionMenu', { state: 'hidden', timeout: 3000 });
 
@@ -13749,12 +13773,7 @@ async function chatautocontinue() {
     ok(/Limit reached — renews in .*\. The chat goes on by itself then\./.test(oneLine(card)),
       'a limit’s card says the chat goes on by itself once it renews', oneLine(card));
     const itemOf = async () => {
-      await ensureNav(page);
-      await page.$eval(rowSel(id), (n) => n.scrollIntoView({ block: 'center' }));
-      for (let tries = 0; tries < 3; tries += 1) {
-        await page.click(rowSel(id) + ' .so-row__more', { force: true });
-        if (await page.waitForSelector(MENU + ' .ds-menu__item', { timeout: 3000 }).then(() => true, () => false)) break;
-      }
+      await sessionMenu(page, id);
       return page.$eval(MENU, (menu) => {
         const node = menu.querySelector('[data-action="auto-continue"]');
         return node ? { role: node.getAttribute('role'), checked: node.getAttribute('aria-checked'), text: node.innerText.trim() } : null;
@@ -15235,15 +15254,8 @@ async function chatultracode() {
     ok(made.status() === 201, 'a Claude Code chat is made', made.status());
     await page.waitForSelector(rowSel(claude), { state: 'attached', timeout: 15000 });
     const itemOf = async (id) => {
-      await ensureNav(page);
-      await page.waitForSelector(rowSel(id), { timeout: 15000 });
-      await page.$eval(rowSel(id), (n) => n.scrollIntoView({ block: 'center' }));
-      // A list that is drawn again under the tap (a new row arriving) puts
-      // the menu away; it is opened again.
-      for (let tries = 0; tries < 3; tries += 1) {
-        await page.click(rowSel(id) + ' .so-row__more', { force: true });
-        if (await page.waitForSelector(MENU + ' .ds-menu__item', { timeout: 3000 }).then(() => true, () => false)) break;
-      }
+      await page.waitForSelector(rowSel(id), { state: 'attached', timeout: 15000 });
+      await sessionMenu(page, id);
       const item = await page.$eval(MENU, (menu) => {
         const node = menu.querySelector('[data-action="ultracode"]');
         return node ? { role: node.getAttribute('role'), checked: node.getAttribute('aria-checked') } : null;
@@ -15638,7 +15650,7 @@ async function chataccount() {
 
     // The automatic switch, from the chat's menu.
     const gamma = (await post('/api/accounts', { agent: 'fake', kind: 'subscription', label: 'Gamma' })).account;
-    await rowMenu(page);
+    await sessionMenu(page);
     await page.waitForSelector(':is(#sessionMenu:not([hidden]), dialog.so-actions[open]) [data-action="auto-switch"][aria-checked="false"]', { timeout: 5000 });
     await page.click(':is(#sessionMenu:not([hidden]), dialog.so-actions[open]) [data-action="auto-switch"]');
     const on = await (async () => {

@@ -13,6 +13,8 @@
   are pressed — **Key bar**, **Touch mode**, **Sound** and **Notifications** — and it is there
   whether or not a session is attached. The sound and bell buttons are gone from the bar, and what
   can be done to a session (Info, Rename, Status, Download, Delete) is in its row's `…` only.
+  *(Since DECISIONS.md revision 15 the row's `⋮` holds the statuses only, and the top bar's `⋮`
+  with a session on the stage is that session's whole menu, "This device…" its last item.)*
   Touch mode is the keyboard switch's question answered by hand: `localStorage['socrates.touch']`
   (`on`/`off`, absent until the menu is used) wins over every sign of a finger; the key bar
   still follows touch mode until it has been set on its own. The usage strip is a button: a tap
