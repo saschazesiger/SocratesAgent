@@ -3184,7 +3184,9 @@ async function repochat() {
 // new-chat sheet picks it, its default branch as the base and the branch it
 // generates; the chat's worktree is <workspace root>/<name>-<id8> on that
 // branch, the chat is grouped under the repository with its branch in the
-// header. An organisation that installed the App too waits on the card until
+// header. The App starts private: Add an organisation explains how to make
+// it public, and Check again finds it public. An organisation that installed
+// the App too waits on the card until
 // it is accepted; then its repositories are listed in short lines, filtered
 // and cut to the first eight until "Show all", a setup script is saved
 // through its dialog, and Remove uninstalls it again. The fake Claude Code
@@ -3223,6 +3225,7 @@ async function repoflow() {
   const gh = await startFakeGitHub({
     owner: 'acme', repos: [{ full_name: 'acme/widget', default_branch: 'main', private: true }],
     others: [{ id: 9, account: 'Browser-Project', type: 'Organization', repos: orgRepos }],
+    public: false,
   });
   const s = await start({
     viewport: { width: 1280, height: 900 },
@@ -3253,17 +3256,44 @@ async function repoflow() {
     ok(gh.installStates.length === 1 && /^[A-Za-z0-9_-]{16,}$/.test(gh.installStates[0]),
       'the install page is opened with a state of the server’s own, which GitHub hands back', JSON.stringify(gh.installStates));
 
+    // The App is private (as one created before Socrates made them public):
+    // Add an organisation explains how to make it public instead of going to
+    // GitHub's install page, which would only lead to the owner's
+    // installation; Check again sees it public once it is.
+    const privateCard = () => page.evaluate(() => ({
+      installLink: !!document.querySelector('#github a[href="/api/github/app/install"]'),
+      addOrg: document.querySelector('#github .so-gh__actions button[data-action="add-org"]')?.textContent.trim() || '',
+      alert: document.querySelector('#github .ds-alert.ds-tone-warning#githubPrivate')?.innerText.replace(/\s+/g, ' ').trim() || '',
+      advanced: document.querySelector('#githubPrivate a[href$="/advanced"]')?.getAttribute('href') || '',
+      check: !!document.querySelector('#githubPrivate button[data-action="check-public"]'),
+      note: !!document.querySelector('#github [data-ds-key="public-note"]'),
+    }));
+    let priv = await privateCard();
+    ok(priv.addOrg === 'Add an organisation' && !priv.installLink && !priv.alert && !priv.note,
+      'a private App’s Add an organisation does not link GitHub’s install page', JSON.stringify(priv));
+    await page.click('#github button[data-action="add-org"]');
+    await page.waitForSelector('#githubPrivate', { timeout: 5000 }).catch(() => {});
+    priv = await privateCard();
+    ok(/GitHub installs a private App only on its owner's account/.test(priv.alert) && /Advanced → Make public/.test(priv.alert)
+      && priv.advanced === gh.url + '/settings/apps/' + gh.slug + '/advanced' && priv.check && !priv.installLink,
+      'it explains how to make the App public, with its Advanced settings and Check again', JSON.stringify(priv));
+    gh.public = true;
+    await page.click('#githubPrivate button[data-action="check-public"]');
+    await page.waitForSelector('#github .so-gh__actions a[href="/api/github/app/install"]', { timeout: 15000 }).catch(() => {});
+    priv = await privateCard();
+    ok(priv.installLink && !priv.addOrg && !priv.alert && !priv.note,
+      'made public, Check again brings the install link back, without the note', JSON.stringify(priv));
+
     // The organisation's installation waits to be accepted.
     const pendingCard = await page.evaluate(() => ({
       alert: document.querySelector('#github .ds-alert[data-installation="9"]')?.innerText.replace(/\s+/g, ' ').trim() || '',
       status: document.querySelector('#githubStatus .so-state__line')?.innerText.replace(/\s+/g, ' ').trim() || '',
       orgRepo: !!document.querySelector('#github [data-repo^="Browser-Project/"]'),
       addOrg: document.querySelector('#github .so-gh__actions a[href="/api/github/app/install"]')?.textContent.trim() || '',
-      advanced: document.querySelector('#github a[href$="/advanced"]')?.getAttribute('href') || '',
     }));
     ok(/Installed on Browser-Project — accept only if that is yours/.test(pendingCard.alert) && /1 waiting to be accepted/.test(pendingCard.status)
-      && !pendingCard.orgRepo && pendingCard.addOrg === 'Add an organisation' && pendingCard.advanced === gh.url + '/settings/apps/' + gh.slug + '/advanced',
-      'an organisation’s installation waits to be accepted, its repositories unused, beside Add an organisation and the Make public link', JSON.stringify(pendingCard));
+      && !pendingCard.orgRepo && pendingCard.addOrg === 'Add an organisation',
+      'an organisation’s installation waits to be accepted, its repositories unused, beside Add an organisation', JSON.stringify(pendingCard));
     await page.click('#github .ds-alert[data-installation="9"] button[data-action="accept-install"]');
     await page.waitForSelector('#github [data-repo="Browser-Project/repo1"]', { timeout: 15000 }).catch(() => {});
     const listed = () => page.evaluate(() => ({

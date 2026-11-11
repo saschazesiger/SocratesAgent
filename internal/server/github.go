@@ -271,6 +271,9 @@ type githubView struct {
 	Pending []githubInstallView `json:"pending"`
 	Repos   []githubRepoView    `json:"repos"`
 	Problem string              `json:"problem"`
+	// Public is whether the App is public, which GitHub needs to install it
+	// on an organisation; null when GitHub did not say.
+	Public *bool `json:"public"`
 }
 
 // githubState is what GET /api/github answers; refresh asks GitHub now
@@ -308,6 +311,9 @@ func (s *Server) githubState(ctx context.Context, refresh bool) githubView {
 	}
 	if err != nil {
 		out.Problem = err.Error()
+	}
+	if public, err := s.ghApp.Public(ctx); err == nil {
+		out.Public = &public
 	}
 	view := func(in github.Installation) githubInstallView {
 		return githubInstallView{ID: in.ID, Account: in.Account, Type: in.AccountType, SettingsURL: s.ghApp.InstallationSettingsURL(in)}

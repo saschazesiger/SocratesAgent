@@ -61,6 +61,13 @@ func fakeGitHubAPI(t *testing.T) *httptest.Server {
 				"client_id": "Iv1.x", "client_secret": "client-secret-value", "webhook_secret": "hook-secret-value", "pem": pemText,
 				"owner": map[string]any{"login": "alice", "type": "User"},
 			})
+		case r.Method == "GET" && r.URL.Path == "/apps/socrates-test":
+			// The App is public: GitHub shows it without authentication.
+			if r.Header.Get("Authorization") != "" {
+				answer(w, 400, map[string]any{"message": "no authentication expected"})
+				return
+			}
+			answer(w, 200, map[string]any{"id": 99, "slug": "socrates-test"})
 		case r.Method == "GET" && r.URL.Path == "/app/installations":
 			if !strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") {
 				answer(w, 401, map[string]any{"message": "no JWT"})
@@ -129,7 +136,7 @@ func TestGitHubConnectRepositoriesAndDisconnect(t *testing.T) {
 		t.Fatalf("signed out: %d", res.StatusCode)
 	}
 	_, view := env.do(t, env.client, "GET", "/api/github", "")
-	if view["connected"] != false || view["problem"] != "" {
+	if view["connected"] != false || view["problem"] != "" || view["public"] != nil {
 		t.Fatalf("before connecting: %#v", view)
 	}
 
@@ -199,7 +206,7 @@ func TestGitHubConnectRepositoriesAndDisconnect(t *testing.T) {
 
 	// The card: the App, its installation and the repositories.
 	_, view = env.do(t, env.client, "GET", "/api/github?refresh=1", "")
-	if view["connected"] != true || view["problem"] != "" {
+	if view["connected"] != true || view["problem"] != "" || view["public"] != true {
 		t.Fatalf("connected: %#v", view)
 	}
 	app := view["app"].(map[string]any)

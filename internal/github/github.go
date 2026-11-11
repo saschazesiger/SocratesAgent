@@ -179,6 +179,18 @@ type Service struct {
 	// listMu makes a refresh of the listing one request at a time: the
 	// callers that arrive meanwhile wait for it and take its result.
 	listMu sync.Mutex
+
+	// pub is what GitHub last said about whether the App is public (Public),
+	// pubMu makes asking it one request at a time.
+	pub   publicity
+	pubMu sync.Mutex
+}
+
+// publicity is whether the App was public when GitHub was last asked.
+type publicity struct {
+	public bool
+	at     time.Time
+	err    error
 }
 
 // New is a service for cfg, without an App.
@@ -223,6 +235,7 @@ func (s *Service) SetApp(app *App) error {
 	s.app, s.key = app, key
 	s.tokens = map[string]token{}
 	s.list = listing{}
+	s.pub = publicity{}
 	s.gen++
 	return nil
 }
@@ -327,10 +340,65 @@ func (s *Service) split(all []Installation, accepted bool) []Installation {
 }
 
 // Refresh asks GitHub again now and answers the accepted installations and
-// the repositories.
+// the repositories. Whether the App is public (Public) is asked again too,
+// the next time it is wanted.
 func (s *Service) Refresh(ctx context.Context) ([]Installation, []Repo, error) {
+	s.mu.Lock()
+	s.pub = publicity{}
+	s.mu.Unlock()
 	l, err := s.listing(ctx, true)
 	return s.split(l.installs, true), l.repos, err
+}
+
+// Public is whether the App is public, so that GitHub installs it on other
+// accounts than its owner's (an organisation). GitHub's API answers
+// GET /apps/{slug} without authentication for a public App only, and 404 for
+// a private one (with the App's JWT, GET /app answers either way). The answer
+// is believed for a minute, a failure for a few seconds; Refresh asks again.
+// An error (GitHub not reached, a rate limit) means it is not known.
+func (s *Service) Public(ctx context.Context) (bool, error) {
+	fresh := func() (publicity, string, int, bool) {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		if s.app == nil {
+			return publicity{}, "", s.gen, false
+		}
+		p := s.pub
+		return p, s.app.Slug, s.gen, !p.at.IsZero() && s.cfg.Now().Sub(p.at) < listFor
+	}
+	p, slug, _, ok := fresh()
+	if slug == "" {
+		return false, ErrNotConnected
+	}
+	if ok {
+		return p.public, p.err
+	}
+	s.pubMu.Lock()
+	defer s.pubMu.Unlock()
+	// An answer that came while this one waited is as good.
+	p, slug, gen, ok := fresh()
+	if slug == "" {
+		return false, ErrNotConnected
+	}
+	if ok {
+		return p.public, p.err
+	}
+	err := s.call(ctx, http.MethodGet, "/apps/"+url.PathEscape(slug), "", nil, nil)
+	p = publicity{public: err == nil, at: s.cfg.Now()}
+	var apiErr *APIError
+	if errors.As(err, &apiErr) && apiErr.Status == http.StatusNotFound {
+		err = nil
+	}
+	if err != nil {
+		p.err = err
+		p.at = p.at.Add(-listFor + 5*time.Second)
+	}
+	s.mu.Lock()
+	if gen == s.gen {
+		s.pub = p
+	}
+	s.mu.Unlock()
+	return p.public, err
 }
 
 // Installation asks GitHub now whether id is an installation of the App,

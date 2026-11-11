@@ -46,6 +46,10 @@ type fakeGitHub struct {
 	lastPull map[string]any
 	// uninstalled are the installations removed with DELETE.
 	uninstalled map[int64]bool
+	// appStatus is how GET /apps/{slug} answers without authentication:
+	// 200 for a public App, 0 (404) for a private one. appAsked counts it.
+	appStatus int
+	appAsked  int
 }
 
 type tokenGrant struct {
@@ -225,6 +229,23 @@ func (f *fakeGitHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			list = append(list, map[string]any{"full_name": full, "default_branch": "main", "private": strings.HasPrefix(full, "acme/")})
 		}
 		writeJSON(w, 200, map[string]any{"total_count": len(owned), "repositories": list})
+	case r.Method == "GET" && path == "/apps/socrates-example":
+		f.mu.Lock()
+		f.appAsked++
+		status := f.appStatus
+		f.mu.Unlock()
+		if r.Header.Get("Authorization") != "" {
+			writeJSON(w, 400, map[string]any{"message": "no authentication expected"})
+			return
+		}
+		switch status {
+		case 0:
+			writeJSON(w, 404, map[string]any{"message": "Not Found"})
+		case 200:
+			writeJSON(w, 200, map[string]any{"id": f.appID, "slug": "socrates-example"})
+		default:
+			writeJSON(w, status, map[string]any{"message": "API rate limit exceeded"})
+		}
 	case r.Method == "POST" && strings.HasPrefix(path, "/app-manifests/"):
 		if r.Header.Get("Authorization") != "" {
 			writeJSON(w, 400, map[string]any{"message": "no authentication expected"})
@@ -674,6 +695,74 @@ func TestUninstall(t *testing.T) {
 	}
 	_ = s.SetApp(nil)
 	if err := s.Uninstall(ctx, 11); !errors.Is(err, ErrNotConnected) {
+		t.Fatalf("without an App: %v", err)
+	}
+}
+
+func TestPublicAsksWithoutAuthenticationAndCaches(t *testing.T) {
+	s, f, c := setup(t)
+	ctx := context.Background()
+	asked := func() int {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		return f.appAsked
+	}
+	set := func(status int) {
+		f.mu.Lock()
+		f.appStatus = status
+		f.mu.Unlock()
+	}
+
+	// Private: GitHub answers 404 without authentication.
+	if public, err := s.Public(ctx); err != nil || public {
+		t.Fatalf("private App: %v, %v", public, err)
+	}
+	// Made public on GitHub, the answer is believed for the minute...
+	set(200)
+	c.add(30 * time.Second)
+	if public, err := s.Public(ctx); err != nil || public || asked() != 1 {
+		t.Fatalf("asked again within the minute: %v, %v, %d", public, err, asked())
+	}
+	// ...and Refresh asks again.
+	if _, _, err := s.Refresh(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if public, err := s.Public(ctx); err != nil || !public || asked() != 2 {
+		t.Fatalf("after Refresh: %v, %v, %d", public, err, asked())
+	}
+	// After the minute it is asked again on its own.
+	set(0)
+	c.add(61 * time.Second)
+	if public, err := s.Public(ctx); err != nil || public || asked() != 3 {
+		t.Fatalf("after the minute: %v, %v, %d", public, err, asked())
+	}
+
+	// Any other answer is not known, and believed for a few seconds only.
+	set(403)
+	c.add(61 * time.Second)
+	if _, err := s.Public(ctx); err == nil {
+		t.Fatal("a rate limit counted as an answer")
+	}
+	if _, err := s.Public(ctx); err == nil || asked() != 4 {
+		t.Fatalf("the failure was not kept for a moment: %v, %d", err, asked())
+	}
+	set(200)
+	c.add(6 * time.Second)
+	if public, err := s.Public(ctx); err != nil || !public || asked() != 5 {
+		t.Fatalf("after the failure: %v, %v, %d", public, err, asked())
+	}
+
+	// GitHub not reached is not known either.
+	off := New(Config{API: "http://127.0.0.1:1", Now: c.now})
+	if err := off.SetApp(&App{ID: f.appID, Slug: "socrates-example", PEM: []byte(f.pem)}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := off.Public(ctx); err == nil {
+		t.Fatal("an unreachable GitHub gave an answer")
+	}
+	// Without an App there is nothing to ask.
+	_ = s.SetApp(nil)
+	if _, err := s.Public(ctx); !errors.Is(err, ErrNotConnected) {
 		t.Fatalf("without an App: %v", err)
 	}
 }

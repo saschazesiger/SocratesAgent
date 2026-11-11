@@ -24,6 +24,13 @@
 // that is installed but not accepted waits on the card with Accept and
 // Remove (POST /api/github/installations/{id}/accept, DELETE
 // /api/github/installations/{id}, which uninstalls it on GitHub).
+//
+// An App created before Socrates made them public is private, and GitHub
+// installs a private App only on its owner's account: its install page would
+// only lead to the existing installation. GET /api/github says so (`public`:
+// false; null when GitHub did not say), and then "Add an organisation" opens
+// an explanation with the App's Advanced settings, where it is made public,
+// and "Check again" instead of going to GitHub.
 
 import { api, el, toast, errorMessage, confirmDialog, openDialog } from './api.js';
 import { M, html, raw, icon, morph, faces } from './ui.js';
@@ -36,6 +43,8 @@ let loadError = '';
 // The repositories' filter, and whether all of them are shown.
 let filter = '';
 let showAll = false;
+// Whether the explanation of a private App is open ("Add an organisation").
+let privateOpen = false;
 
 // More repositories than FILTER_FROM get a filter; without one typed, the
 // first SHOW_FIRST are shown until "Show all".
@@ -153,6 +162,9 @@ function connectedHtml() {
   const installs = view.installations || [];
   const pending = view.pending || [];
   const repos = view.repos || [];
+  // Only a private App's own owner can install it: "Add an organisation"
+  // explains instead of going to GitHub.
+  const isPrivate = view.public === false;
   return html`<div class="so-gh-part" data-ds-key="app">
     <h3 class="ds-card__subtitle">App</h3>
     <div class="so-rows">
@@ -162,12 +174,15 @@ function connectedHtml() {
           <p class="ds-meta">Owned by ${app.owner}</p>
         </div>
         <div class="so-gh__actions">
-          <a class="ds-btn ds-btn--text ds-sm" href="${app.install_url}" target="_blank" rel="noopener">${raw(icon('external', 16))}<span>Add an organisation</span></a>
+          ${isPrivate
+    ? html`<button class="ds-btn ds-btn--text ds-sm" type="button" data-action="add-org" aria-expanded="${privateOpen ? 'true' : 'false'}" aria-controls="githubPrivate">${raw(icon('plus', 16))}<span>Add an organisation</span></button>`
+    : html`<a class="ds-btn ds-btn--text ds-sm" href="${app.install_url}" target="_blank" rel="noopener">${raw(icon('external', 16))}<span>Add an organisation</span></a>`}
           <button class="ds-btn ds-sm" type="button" data-action="disconnect">${faces('Disconnect', 'Disconnecting')}</button>
         </div>
       </div>
     </div>
-    <p class="ds-meta" data-ds-key="public-note">Add an organisation installs the App there; GitHub asks which account. That needs the App to be public. An App created before Socrates made them public is private: make it public once in <a href="${app.advanced_url}" target="_blank" rel="noopener">its settings → Advanced → Make public</a>.</p>
+    ${isPrivate && privateOpen ? html`<div class="ds-alert ds-tone-warning" id="githubPrivate" data-ds-key="private">${raw(icon('alert', 20))}<div class="ds-alert__text"><p>Your App is private, and GitHub installs a private App only on its owner's account. Make it public once: App settings → Advanced → Make public. Socrates still uses only installations you accept.</p></div><div class="ds-alert__actions"><a class="ds-btn ds-btn--text ds-sm" href="${app.advanced_url}" target="_blank" rel="noopener">${raw(icon('external', 16))}<span>Open Advanced settings</span></a><button class="ds-btn ds-sm" type="button" data-action="check-public">${faces('Check again', 'Checking')}</button></div></div>` : ''}
+    ${view.public == null ? html`<p class="ds-meta" data-ds-key="public-note">Add an organisation installs the App there; GitHub asks which account. That needs the App to be public. An App created before Socrates made them public is private: make it public once in <a href="${app.advanced_url}" target="_blank" rel="noopener">its settings → Advanced → Make public</a>.</p>` : ''}
   </div>
   ${pending.length ? html`<div class="so-gh-part" data-ds-key="pending">
     <h3 class="ds-card__subtitle">Waiting to be accepted</h3>
@@ -238,10 +253,31 @@ function onAction(event) {
   else if (action === 'accept-install') acceptInstall(button);
   else if (action === 'remove-install') removeInstall(button);
   else if (action === 'refresh') refresh(true, button);
+  else if (action === 'add-org') {
+    privateOpen = !privateOpen;
+    render();
+  } else if (action === 'check-public') checkPublic(button);
   else if (action === 'more') {
     showAll = !showAll;
     const list = $('githubRepoList');
     if (list) morph(list, repoListHtml());
+  }
+}
+
+// checkPublic asks GitHub again whether the App is public, after the person
+// made it public in its settings.
+async function checkPublic(button) {
+  await refresh(true, button);
+  if (loadError || !view || !view.connected) return;
+  if (view.public === true) {
+    privateOpen = false;
+    toast('The App is public now: Add an organisation installs it there.', 'success');
+    const add = document.querySelector('#github .so-gh__actions a[href="' + view.app.install_url + '"]');
+    if (add) add.focus();
+  } else if (view.public === false) {
+    toast('GitHub still says the App is private.');
+  } else {
+    toast('GitHub did not say whether the App is public. Try again in a moment.', 'error');
   }
 }
 

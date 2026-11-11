@@ -9,6 +9,8 @@
 //   POST /app-manifests/{code}/conversions     the App, with its private key
 //   GET  /apps/{slug}/installations/new?state=S 302 to the manifest's
 //                                              setup_url, with state=S
+//   GET  /apps/{slug}                          (no authentication) the App
+//                                              while `public`, else 404
 //   GET  /app/installations                    (App JWT) the installations: the
 //                                              one on the owner, and `others`
 //   POST /app/installations/{id}/access_tokens (App JWT) a token
@@ -21,12 +23,13 @@
 // them. `calls` is every request as "METHOD path", and `problems` every
 // request that was refused (a bad JWT, an unknown token): a scenario asserts
 // it is empty. `uninstalled` are the ids removed, `installStates` the state
-// each visit of the install page carried.
+// each visit of the install page carried. `public` is whether the App is
+// public (a scenario flips it, as making it public on GitHub would).
 
 import http from 'node:http';
 import { generateKeyPairSync, createPublicKey, verify, randomBytes } from 'node:crypto';
 
-export async function startFakeGitHub({ owner = 'acme', repos = [], appId = 4242, slug = 'socrates-e2e', installation = 7, others = [] } = {}) {
+export async function startFakeGitHub({ owner = 'acme', repos = [], appId = 4242, slug = 'socrates-e2e', installation = 7, others = [], public: isPublic = true } = {}) {
   const { privateKey } = generateKeyPairSync('rsa', {
     modulusLength: 2048,
     privateKeyEncoding: { type: 'pkcs1', format: 'pem' },
@@ -35,7 +38,7 @@ export async function startFakeGitHub({ owner = 'acme', repos = [], appId = 4242
   const publicKey = createPublicKey(privateKey);
   const gh = {
     calls: [], problems: [], manifest: null, tokens: new Map(), pulls: [], url: '', uninstalled: new Set(), installStates: [],
-    owner, slug, appId, installation,
+    owner, slug, appId, installation, public: isPublic,
   };
   // Every installation by id: the owner's first, then the others.
   const installs = new Map([[installation, { id: installation, account: owner, type: 'User', repos }]]);
@@ -111,6 +114,13 @@ export async function startFakeGitHub({ owner = 'acme', repos = [], appId = 4242
       if (u.searchParams.has('state')) back.searchParams.set('state', u.searchParams.get('state'));
       res.writeHead(302, { Location: back.toString() });
       return res.end();
+    }
+    if (req.method === 'GET' && path === '/apps/' + slug) {
+      // GitHub shows a public App to anyone, a private one to nobody
+      // without its JWT: Socrates asks without authentication.
+      if (req.headers.authorization) return refuse(res, req, 'no authentication expected');
+      if (!gh.public) return json(res, 404, { message: 'Not Found' });
+      return json(res, 200, { id: appId, slug, name: gh.manifest ? gh.manifest.name : slug, owner: { login: owner, type: 'User' } });
     }
     if (req.method === 'GET' && path === '/app/installations') {
       const why = appAuth(req);

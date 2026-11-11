@@ -98,10 +98,9 @@ equivalent, *Remove*) and the repositories with their settings (§3.4), and *Dis
 and the accepted installations here; the App on GitHub is deleted by the person, Admin links to its settings
 page).
 
-An App created before the manifest said `"public": true` is private. The card always carries a short note that
-links its *Advanced* settings (`https://github.com/settings/apps/<slug>/advanced`, or
-`https://github.com/organizations/<owner>/settings/apps/<slug>/advanced` for an organisation's App), where *Make
-public* is. Socrates does not read whether the App is public from GitHub, so the note is always there.
+An App created before the manifest said `"public": true` is private, and GitHub installs a private App only on
+its owner's account: its install page only leads to the existing installation. Whether the App is public is read
+from GitHub (§3.5), and the card handles a private one there.
 
 Creating the App needs the person's GitHub login in the browser, which only they can do. A Socrates without an
 App offers new chats only without a repository (§4.1) and says in the new-chat sheet where to connect GitHub.
@@ -128,7 +127,7 @@ bare repositories (`file://`).
 
 | Method and path | What |
 |---|---|
-| `GET /api/github` | `{connected, app: {name, slug, owner, html_url, settings_url, install_url, advanced_url}, installations: [{id, account, type, settings_url}], pending: [...the same], repos: [{full_name, default_branch, private, installation, setup}], problem}`; `installations` and `repos` are the accepted ones only, `pending` the installations not accepted |
+| `GET /api/github` | `{connected, app: {name, slug, owner, html_url, settings_url, install_url, advanced_url}, installations: [{id, account, type, settings_url}], pending: [...the same], repos: [{full_name, default_branch, private, installation, setup}], problem, public}`; `installations` and `repos` are the accepted ones only, `pending` the installations not accepted; `public` is `true`, `false` or `null` (not known, §3.5) |
 | `POST /api/github/app/start` | `{org}` → `{action, manifest, state}`; the page builds and submits the form. |
 | `GET /api/github/app/created` | GitHub's redirect (§3.1). |
 | `GET /api/github/app/install` | Redirects to GitHub's install page with a new install state (§3.1). |
@@ -166,6 +165,17 @@ pull requests. The listing asks for repositories and tokens of accepted installa
   accepts the installations on the App's owner's account on its own and saves them; only that account's owners
   could install it there.
 - *Disconnect* and a new App start with an empty list.
+
+**A private App.** GitHub's API answers `GET /apps/<slug>` without authentication for a public App and 404 for a
+private one (with the App's JWT, `GET /app` answers either way). `internal/github` `Public` asks that, believes the
+answer for a minute (a failure for five seconds) and asks again after a refresh; any other answer or no answer
+(a rate limit, GitHub not reached) is not known, `public: null`. With `public: false` the card's *Add an
+organisation* does not link the install page but opens a warning: *Your App is private, and GitHub installs a
+private App only on its owner's account. Make it public once: App settings → Advanced → Make public. Socrates
+still uses only installations you accept.*, with *Open Advanced settings* (`advanced_url`:
+`https://github.com/settings/apps/<slug>/advanced`, or `https://github.com/organizations/<owner>/settings/apps/<slug>/advanced`
+for an organisation's App) and *Check again* (`GET /api/github?refresh=1`). When public, the card links the install
+page and says nothing more; when not known, it links it and keeps a short note with the *Advanced* link.
 
 ## 4. A chat in a repository
 
