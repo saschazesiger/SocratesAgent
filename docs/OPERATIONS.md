@@ -105,6 +105,27 @@ The settings live in `/etc/socrates.env`:
 | `SOCRATES_CODE_SERVER_VERSION` | `latest` | Pin code-server to a version |
 | `SOCRATES_CLAUDE_CHANNEL` | `latest` | Claude Code's release channel |
 | `SOCRATES_REPO` / `SOCRATES_BRANCH` | this repo / `main` | Where Socrates is built from |
+| `SOCRATES_GITHUB_API` / `SOCRATES_GITHUB_WEB` / `SOCRATES_GITHUB_GIT` | `https://api.github.com` / `https://github.com` / `https://github.com` | Where GitHub is (only the tests change these) |
+| `SOCRATES_FOLDER_CHATS` | unset | `1` lets `POST /api/chats` still start a chat in a preset or typed folder (the test suites); the sheet never offers it |
+
+---
+
+## 🐙 GitHub & repositories
+
+New chats work in GitHub repositories: each chat gets its own worktree on its own branch, and the branch is pushed to GitHub ([📐 spec](design/REPOS.md)).
+
+| | |
+| --- | --- |
+| 🔗 **Connect** | **Admin → GitHub → Connect GitHub** (optionally for an organisation). GitHub creates a private App of this Socrates' own; confirm its name, then pick the repositories on GitHub's install page. **Choose repositories** changes the pick later |
+| 🔑 **Rights** | The App may read and write contents, pull requests and workflows of the chosen repositories, nothing else. Every token Socrates hands out reaches one repository and lasts an hour; the App's private key is sealed with the data directory's key (`secrets.key`) |
+| 🌿 **A chat** | The sheet asks for the repository, the base branch and the branch (`socrates/…`; an existing branch is continued). *No repository* is an empty folder of its own |
+| 🧰 **Setup** | Admin → GitHub → a repository's *Setup*: a shell script run in every new worktree before the agent starts (`npm ci`, copying an `.env` …). Without it an executable `.socrates/setup` in the repository runs. Log: `<data>/chats/<chat>/setup.log` |
+| 📤 **Push** | At the end of every turn Socrates pushes the branch if it has new commits. How work comes back (pull request or merge into the base) is the repository's `AGENTS.md`; without a rule the agent opens a pull request |
+| 📂 **Where** | `<workspace root>/.repos/<owner>/<name>.git` is one shared clone per repository, `<workspace root>/<name>-<chat id[:8]>` a chat's worktree. Both are outside the backup: **the branch on GitHub is what survives a lost server** |
+| 🧹 **Cleaning up** | **Done**: a clean, pushed worktree is removed (made again if the chat is reopened). **Delete**: uncommitted changes are committed as `WIP: …` and pushed first. Branches on GitHub are never deleted by Socrates (GitHub's *Automatically delete head branches* does it for merged ones) |
+| 🔌 **Disconnect** | Admin → GitHub → *Disconnect* forgets the App's keys here; delete the App itself on GitHub (the card links to it) |
+
+Chats from before this change keep their folder.
 
 ---
 
@@ -123,7 +144,7 @@ The settings live in `/etc/socrates.env`:
 | `/opt/socrates` | Source, Go, Node, OpenCode, code-server |
 | `/root` | `HOME`: the agents' folders link into the accounts |
 
-🗑️ A session filed under **Done** stops its program at once and keeps only its files (for a chat, `<data>/chats/<chat>/`). It is deleted 14 days later; Admin → Workspace → *Keep done sessions for* changes that (`workspace.done_days`, 1 to 365), for the done sessions already there too. Its working directory is never deleted.
+🗑️ A session filed under **Done** stops its program at once and keeps only its files (for a chat, `<data>/chats/<chat>/`). It is deleted 14 days later; Admin → Workspace → *Keep done sessions for* changes that (`workspace.done_days`, 1 to 365), for the done sessions already there too. A folder chat's working directory is never deleted; a repository chat's worktree goes as described under [GitHub & repositories](#-github--repositories).
 
 ---
 

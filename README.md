@@ -27,13 +27,14 @@
 | | |
 | --- | --- |
 | 🤖 **Three agents, one place** | Claude Code, Codex and OpenCode as chats, plus a real **Shell** (tmux) and **VS Code** in the browser. |
+| 🐙 **GitHub repositories** | Connect GitHub once, pick your repositories, and every chat works in its own copy on its own branch, pushed as it goes. The repository's `AGENTS.md` decides: pull request or straight into `main` ([📐 spec](docs/design/REPOS.md)). |
 | 🔁 **Never lose a session** | Closed tab, dead phone, lost network, update: the agent keeps working on the server. |
 | 🏠 **Home dashboard** | See at a glance what's running, what's finished and what needs you. |
 | 🙋 **Questions, not guesswork** | Agents ask you with buttons (`ask_user`). Answer on any device, even offline. |
 | 📱 **Made for the phone** | Full-screen questions, big buttons, dictation, read-aloud and push notifications. |
 | 👥 **Several accounts** | Work and private side by side. Chats pick an unused account first, else the one with the most usage left. |
 | 🧪 **Tests in every chat** | The agent writes and runs its own tests, step by step with screenshots, and you watch them pass or fail live beside the chat. |
-| 🗂️ **Notes per project** | A Kanban board for every project folder, in its **⋮** beside the **+**: your own columns, cards with a title and a subtitle, and colours you name (Bug, Idea …). Saved on the server and backed up. |
+| 🗂️ **Notes per project** | A Kanban board for every repository (and older project folder), in its **⋮** beside the **+**: your own columns, cards with a title and a subtitle, and colours you name (Bug, Idea …). Saved on the server and backed up. |
 | 📚 **Docs per project** | Every Markdown file of a project in its own folder tree, opening on the README: Mermaid diagrams, tables, pictures and GitHub's notes drawn, the page's headings beside it, redrawn live when an agent edits it. A link to a `.md` file in a chat opens it right beside the chat ([📐 spec](docs/design/DOCS.md)). |
 | 💾 **Encrypted backups** | Your whole setup is backed up to any S3 bucket, encrypted. Moving to a new server is a single restore. |
 | 🔄 **Updates itself** | Every night, with a self-test and automatic rollback. |
@@ -81,13 +82,14 @@ sudo scripts/install.sh
 This installs everything (Go, Node, tmux, Claude Code, Codex, OpenCode, code-server) and starts Socrates as a service.
 You can run it again at any time to repair or update the installation.
 
-### Then, in 3 steps
+### Then, in 4 steps
 
 | | Step | How |
 | :---: | --- | --- |
 | 1️⃣ | **Open it** | `ssh -L 8080:localhost:8080 root@your-server`, then go to <http://localhost:8080> and choose a password. |
 | 2️⃣ | **Sign in the agents** | **Admin → Accounts**: Claude Code and Codex with their own sign-in, OpenCode in its own terminal (`/connect`), or any agent with an API key. |
 | 3️⃣ | **Reach it from anywhere** | **Admin → Remote access**: a Cloudflare tunnel, with Cloudflare Access in front. |
+| 4️⃣ | **Connect GitHub** | **Admin → GitHub → Connect GitHub**, then pick the repositories the chats work in. |
 
 > 💡 Moving from another server? In step 1, choose **Restore from a backup** instead.
 
