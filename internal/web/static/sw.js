@@ -80,6 +80,7 @@ const SHELL = [
   '/static/js/harnesses.js',
   '/static/js/logos.js',
   '/static/js/folders.js',
+  '/static/js/repos.js',
   '/static/js/combobox.js',
   '/static/js/voice.js',
   '/static/js/assist.js',

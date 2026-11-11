@@ -543,11 +543,11 @@ async function pages() {
       ok(bare.tips === 0 && !bare.advanced && bare.prose === '',
         `the sheet has no "i", no Advanced and no explanations at ${tag}`, JSON.stringify(bare));
 
-      // Where a session works is a dropdown, not a row of cells: a machine with
-      // a dozen preset directories on it still has one control the width of
-      // the sheet, and the field says which place is chosen.
+      // Where a chat works is a dropdown of repositories, not a row of
+      // cells: an App that reaches a dozen of them still has one control the
+      // width of the sheet. Without GitHub it is No repository, alone.
       const dir = await s.page.evaluate(() => {
-        const host = document.getElementById('nsDir');
+        const host = document.getElementById('nsRepo');
         const input = host.querySelector('.ds-combo__input');
         const box = host.getBoundingClientRect();
         return {
@@ -559,8 +559,8 @@ async function pages() {
           sheet: Math.round(document.getElementById('newSessionSheet').getBoundingClientRect().width),
         };
       });
-      ok(dir.combo && dir.segs === 0 && dir.value === 'Dynamic' && dir.closed,
-        `the working directory is a closed dropdown - nothing typed, nothing spoken - starting on Dynamic at ${tag}`, JSON.stringify(dir));
+      ok(dir.combo && dir.segs === 0 && /^No repository/.test(dir.value) && dir.closed,
+        `the repository is a closed dropdown - nothing typed, nothing spoken - on No repository without GitHub at ${tag}`, JSON.stringify(dir));
       await shot(s.page, 'pages-sheet-' + tag);
       await s.page.click('#nsCancel');
 
@@ -1468,27 +1468,15 @@ async function adminoptions() {
     ok(rows.some((row) => row.tip), 'and the technical detail is behind the row\u2019s "i"',
       rows.filter((row) => row.tip).length + ' of ' + rows.length + ' rows have one');
 
-    // The sheet is where a preset is used, so that is where it is checked.
+    // The chat is started from the sheet: presets are gone from it
+    // (REPOS.md §4.1), and without GitHub it works in a new folder of its own.
     await s.page.goto(s.url + '/', { waitUntil: 'domcontentloaded' });
     await s.page.waitForSelector('#newSession', { timeout: 15000 });
     await ensureNav(s.page);
     await s.page.click('#newSession');
     await s.page.waitForSelector('#newSessionSheet[open]', { timeout: 15000 });
-    // The directory is picked out of the dropdown: open it, and take the entry
-    // whose value is this preset. Its own label is the directory's name and
-    // the full path is the sub-text under it.
-    await s.page.click('#nsDir .ds-combo__input');
-    const cell = '#nsDir .ds-combo__option[data-value="preset:' + preset + '"]';
-    await s.page.waitForSelector(cell, { timeout: 5000 }).catch(() => {});
-    const offered = await s.page.$(cell);
-    ok(!!offered, 'the new-session sheet offers the preset directory', cell);
-    if (offered) {
-      const hint = await s.page.$eval(cell, (n) => (n.querySelector('.ds-combo__meta') || {}).textContent || '');
-      ok(hint === preset, 'and its full path is the sub-text under its name', hint);
-      await s.page.click(cell);
-      await s.page.waitForFunction(() =>
-        document.getElementById('nsDirHint').textContent.length > 0, null, { timeout: 5000 });
-    }
+    const where = await s.page.$eval('#nsRepo .ds-combo__input', (n) => n.textContent.trim());
+    ok(/^No repository/.test(where), 'the sheet offers no preset folder, only No repository without GitHub', where);
     await s.page.click('#newSessionSheet .so-settings__program[data-value="claude"]');
     const model = await s.page.$eval('#nsModel .ds-combo__input', (n) => n.value.trim());
     ok(/opus/i.test(model), 'the sheet starts Claude Code on the default model', model);
@@ -1497,7 +1485,7 @@ async function adminoptions() {
     await chatUp(s.page);
     const id = await s.page.evaluate(() => location.hash.slice(1));
     const made = await sessionRow(s, id);
-    ok(made.workdir === preset, 'the chat works in the preset directory', made.workdir);
+    ok(made.workdir_mode === 'dynamic' && !!made.workdir && !made.repo, 'the chat works in a new folder of its own', made.workdir_mode + ' ' + made.workdir);
 
     // What reached `claude -p` is asked of the CLI itself.
     const argv = await answerTo(s, id, '/argv');
@@ -1520,8 +1508,8 @@ async function adminoptions() {
       && !/CLAUDE_CODE_NO_FLICKER|CLAUDE_CODE_DISABLE_TERMINAL_TITLE|CLAUDE_REMOTE_CONTROL|ANTHROPIC_/.test(env),
       'its environment is the chat’s: the task tools on, the CLI’s own messaging between sessions off, nothing of a terminal and no key of a subscription',
       oneLine(env));
-    const transcript = join(s.data, 'agents', 'claude', 'projects', preset.replace(/[^A-Za-z0-9]/g, '-'));
-    ok(existsSync(transcript), 'and Claude Code ran there: its transcript is the preset’s project', transcript.replace(s.data, '<data>'));
+    const transcript = join(s.data, 'agents', 'claude', 'projects', made.workdir.replace(/[^A-Za-z0-9]/g, '-'));
+    ok(existsSync(transcript), 'and Claude Code ran there: its transcript is the folder’s project', transcript.replace(s.data, '<data>'));
 
     ok(unexpected(s.errors).length === 0, 'no console errors',
       unexpected(s.errors).join(' | ') || '0');
@@ -2939,26 +2927,22 @@ async function sharedmcp() {
 
 // sheetmcp: the new session sheet. The shell is a thin card across the whole
 // width under the agents; the chosen account's limits are under its field,
-// without opening the list; and the MCP servers a chat in the chosen folder
-// would have are switches on their defaults, following the folder. The chat
-// starts with what was switched.
+// without opening the list; and the MCP servers a chat would have are
+// switches on their defaults. The chat starts with what was switched. (A
+// repository's .mcp.json is the worktree's, made when the chat starts.)
 async function sheetmcp() {
   const s = await start({ viewport: { width: 1280, height: 900 } });
   const { page } = s;
   const post = async (path, data) => (await s.context.request.post(s.url + path, { data })).json();
   try {
     await setup(page, s.url);
-    const dir = join(s.data, 'projects', 'sheet-mcp');
-    mkdirSync(dir, { recursive: true });
-    writeFileSync(join(dir, '.mcp.json'), JSON.stringify({ mcpServers: { db: { command: 'db-mcp' } } }));
     const put = await s.context.request.put(s.url + '/api/settings', { data: { settings: {
-      workspace: { presets: [{ label: 'Notes', path: dir }] },
       mcp: { servers: [
         { name: 'github', type: 'http', url: 'https://gh.example/mcp', default: true },
         { name: 'search', type: 'stdio', command: 'search-mcp', default: false },
       ] },
     } } });
-    ok(put.ok(), 'Admin has two MCP servers and a preset folder with a .mcp.json', String(put.status()));
+    ok(put.ok(), 'Admin has two MCP servers', String(put.status()));
     const work = (await post('/api/accounts', { agent: 'claude', kind: 'api_key', label: 'Work', key: 'sk-ant-work-' + 'w'.repeat(16) })).account;
     const home = (await post('/api/accounts', { agent: 'claude', kind: 'api_key', label: 'Home', key: 'sk-ant-home-' + 'h'.repeat(16) })).account;
     const fresh = (await post('/api/accounts', { agent: 'claude', kind: 'api_key', label: 'Fresh', key: 'sk-ant-fresh-' + 'f'.repeat(16) })).account;
@@ -3036,16 +3020,10 @@ async function sheetmcp() {
     const builtin = await page.$eval('#nsMcp .ds-switch:has(input[data-name="browserstack"])', (r) =>
       r.querySelector('.ds-switch__label').textContent + ' / ' + r.querySelector('.ds-switch__hint').textContent);
     ok(/^BrowserStack \/ Built into Socrates/.test(builtin), 'the built-in server goes by its title and says where it is from', builtin);
-    // The preset folder brings its own.
-    await page.click('#nsDir .so-drop__field');
-    await page.click('#nsDir .ds-combo__option[data-value="preset:' + dir + '"]');
-    await page.waitForSelector('#nsMcp input[data-name="db"]', { timeout: 10000 });
-    listed = await switches();
-    ok(listed.join(' ') === 'browserstack:false db:true github:true search:false socrates-artifacts:false socrates-tests:false', 'a folder with a .mcp.json adds its servers', listed.join(' '));
     await page.click('#nsMcp label.ds-switch:has(input[data-name="search"])');
     await page.click('#nsMcp label.ds-switch:has(input[data-name="github"])');
     listed = await switches();
-    ok(listed.join(' ') === 'browserstack:false db:true github:false search:true socrates-artifacts:false socrates-tests:false', 'a switch is moved on the sheet', listed.join(' '));
+    ok(listed.join(' ') === 'browserstack:false github:false search:true socrates-artifacts:false socrates-tests:false', 'a switch is moved on the sheet', listed.join(' '));
     await shot(page, 'sheet-mcp');
     // The shell has none of it.
     await page.click('#newSessionSheet .so-settings__program[data-value="shell"]');
@@ -3056,7 +3034,7 @@ async function sheetmcp() {
     await page.click('#newSessionSheet .so-settings__program[data-value="claude"]');
     await page.waitForSelector('#nsMcpField:not([hidden])', { timeout: 10000 });
     listed = await switches();
-    ok(listed.join(' ') === 'browserstack:false db:true github:false search:true socrates-artifacts:false socrates-tests:false', 'back on the agent, the switches are as they were', listed.join(' '));
+    ok(listed.join(' ') === 'browserstack:false github:false search:true socrates-artifacts:false socrates-tests:false', 'back on the agent, the switches are as they were', listed.join(' '));
 
     await page.click('#nsStart');
     await page.waitForSelector('#newSessionSheet[open]', { state: 'detached', timeout: 30000 });
@@ -3069,7 +3047,136 @@ async function sheetmcp() {
       'the chat keeps only the switches moved from their default, on the unused account', JSON.stringify(row.options));
     const servers = await (await s.context.request.get(s.url + '/api/sessions/' + id + '/mcp')).json();
     const on = (servers.servers || []).filter((one) => one.on).map((one) => one.name);
-    ok(on.join(',') === 'db,search', 'and has the servers that were on', on.join(','));
+    ok(on.join(',') === 'search', 'and has the servers that were on', on.join(','));
+  } finally { await s.stop(); }
+}
+
+/* -------------------------------------------------------------- repochat */
+
+// repochat: the new-chat sheet's repository (REPOS.md §4.1). Without GitHub
+// connected - which is how every e2e server starts - the only place is No
+// repository, the sheet says where GitHub is connected, and the chat gets a
+// folder of its own in "More Chats" with no branch in the header. Then, with
+// /api/github and a branch list answered in the browser (the server is not
+// stubbed: what it does with a repository is the integrator's fuller
+// scenario), the sheet lists the repositories, preselects the default
+// branch, offers a branch of its own, says when a typed one exists already,
+// and asks for {repo, base, branch} instead of a folder.
+async function repochat() {
+  const s = await chatServer();
+  const { page } = s;
+  try {
+    await ensureNav(page);
+    await page.click('#newSession');
+    await page.waitForSelector('#newSessionSheet[open]', { timeout: 15000 });
+    await page.click('#newSessionSheet .so-settings__program[data-value="fake"]');
+    await page.waitForFunction(() => /GitHub/.test(document.getElementById('nsRepoHint').textContent), null, { timeout: 10000 });
+    const bare = await page.evaluate(() => ({
+      value: document.querySelector('#nsRepo .ds-combo__input').textContent.trim(),
+      hint: document.getElementById('nsRepoHint').textContent,
+      link: document.querySelector('#nsRepoHint a')?.getAttribute('href') || '',
+      base: document.getElementById('nsBaseField').hidden,
+      branch: document.getElementById('nsBranchField').hidden,
+      start: document.getElementById('nsStart').disabled,
+    }));
+    ok(/^No repository/.test(bare.value) && bare.link === '/admin#github' && bare.base && bare.branch && !bare.start,
+      'without GitHub the sheet offers No repository, links to Admin to connect it, and asks for no branch',
+      JSON.stringify(bare));
+    await page.click('#nsRepo .ds-combo__input');
+    const only = await page.$$eval('#nsRepo .ds-combo__option', (n) => n.map((x) => x.dataset.value));
+    ok(only.join() === 'none', 'and No repository is all its list has', only.join());
+    await page.keyboard.press('Escape');
+    await page.click('#nsStart');
+    await page.waitForSelector('#newSessionSheet[open]', { state: 'detached', timeout: 30000 });
+    await chatUp(page);
+    const id = await page.evaluate(() => location.hash.slice(1));
+    const row = await sessionRow(s, id);
+    ok(row.workdir_mode === 'dynamic' && !row.repo, 'the chat gets a folder of its own', JSON.stringify({ mode: row.workdir_mode, repo: row.repo }));
+    const placed = await page.evaluate((chat) => ({
+      group: document.querySelector('#sessionList .so-row[data-id="' + chat + '"]')?.closest('.so-folder:not(.so-folder--shelf)')?.dataset.folder || '',
+      chip: document.getElementById('sessionBranch').hidden,
+    }), id);
+    ok(placed.group === '#more' && placed.chip, 'in "More Chats", with no branch in the header', JSON.stringify(placed));
+
+    // GitHub, answered in the browser.
+    const github = {
+      connected: true,
+      app: { name: 'Socrates test', slug: 'socrates-test', owner: 'acme', html_url: 'https://github.com/apps/socrates-test' },
+      installations: [{ id: 1, account: 'acme', settings_url: 'https://github.com/settings/installations/1' }],
+      repos: [
+        { full_name: 'acme/api', default_branch: 'main', private: true, installation: 1 },
+        { full_name: 'acme/web', default_branch: 'trunk', private: false, installation: 1 },
+      ],
+      problem: '',
+    };
+    const branches = {
+      default: 'trunk',
+      branches: [
+        { name: 'feature/login', sha: 'a'.repeat(40), date: '2026-11-10T10:00:00Z' },
+        { name: 'trunk', sha: 'b'.repeat(40), date: '2026-11-09T10:00:00Z' },
+        { name: 'release', sha: 'c'.repeat(40), date: '2026-11-01T10:00:00Z' },
+      ],
+    };
+    let asked = null;
+    await page.route('**/api/github', (route) => route.fulfill({ json: github }));
+    await page.route('**/api/github/repos/*/*/branches', (route) => {
+      const repo = new URL(route.request().url()).pathname.split('/').slice(4, 6).join('/');
+      return route.fulfill({ json: repo === 'acme/web' ? branches : { default: 'main', branches: [{ name: 'main', sha: 'd'.repeat(40), date: '2026-11-01T10:00:00Z' }] } });
+    });
+    await page.route('**/api/chats', (route) => {
+      if (route.request().method() !== 'POST') return route.fallback();
+      asked = route.request().postDataJSON();
+      return route.fulfill({ status: 400, json: { error: 'stubbed by repochat' } });
+    });
+    await page.evaluate(() => localStorage.removeItem('socrates.recentRepos'));
+    await page.click('#newSession');
+    await page.waitForSelector('#newSessionSheet[open]', { timeout: 15000 });
+    await page.click('#newSessionSheet .so-settings__program[data-value="fake"]');
+    await page.waitForSelector('#nsBaseField:not([hidden])', { timeout: 10000 });
+    await page.click('#nsRepo .ds-combo__input');
+    const listed = await page.$$eval('#nsRepo .ds-combo__option', (n) => n.map((x) => x.dataset.value));
+    ok(listed.join() === 'acme/api,acme/web,none', 'the repositories the App reaches, then No repository last', listed.join());
+    await page.click('#nsRepo .ds-combo__option[data-value="acme/web"]');
+    await page.waitForFunction(() => document.querySelector('#nsBase .ds-combo__input').textContent.trim() === 'trunk'
+      && document.getElementById('nsBaseHint').hidden, null, { timeout: 10000 });
+    const repoState = await page.evaluate(() => ({
+      repo: document.querySelector('#nsRepo .ds-combo__input').textContent.trim(),
+      base: document.querySelector('#nsBase .ds-combo__input').textContent.trim(),
+      branch: document.getElementById('nsBranch').value,
+      hint: document.getElementById('nsBranchHint').textContent,
+    }));
+    ok(repoState.base === 'trunk' && /^socrates\/[0-9a-f]{8}$/.test(repoState.branch) && /made from trunk/.test(repoState.hint),
+      'a repository brings its default branch as the base and a branch of the chat’s own', JSON.stringify(repoState));
+    await page.click('#nsBase .ds-combo__input');
+    const bases = await page.$$eval('#nsBase .ds-combo__option', (n) => n.map((x) => x.dataset.value));
+    ok(bases.join() === 'trunk,feature/login,release', 'the base is picked from the branches, the default first', bases.join());
+    await page.keyboard.press('Escape');
+    await page.fill('#nsBranch', 'feature/login');
+    const existing = await page.evaluate(() => ({
+      hint: document.getElementById('nsBranchHint').textContent,
+      base: document.querySelector('#nsBase .ds-combo__input').disabled,
+    }));
+    ok(/continues the existing branch/i.test(existing.hint) && existing.base,
+      'a branch GitHub has is continued, and the base is not asked', JSON.stringify(existing));
+    await page.fill('#nsBranch', 'bad name');
+    const refused = await page.evaluate(() => ({
+      start: document.getElementById('nsStart').disabled,
+      invalid: document.getElementById('nsBranch').getAttribute('aria-invalid'),
+    }));
+    ok(refused.start && refused.invalid === 'true', 'a name git does not take holds Start back', JSON.stringify(refused));
+    await page.fill('#nsBranch', 'socrates/new-login');
+    await shot(page, 'repochat-sheet');
+    await page.click('#nsStart');
+    await page.waitForFunction(() => document.querySelector('.ds-toast')?.textContent.includes('stubbed'), null, { timeout: 10000 })
+      .catch(() => {});
+    ok(!!asked && asked.repo === 'acme/web' && asked.base === 'trunk' && asked.branch === 'socrates/new-login'
+      && !('workdir_mode' in asked) && !('workdir' in asked),
+      'the chat is asked for in the repository, on its base and branch, and not in a folder', JSON.stringify(asked));
+    const recent = await page.evaluate(() => localStorage.getItem('socrates.recentRepos'));
+    ok(recent === '["acme/web"]', 'and the repository is this device’s last choice', recent);
+    // The stubbed refusal of the chat is this scenario's own 400.
+    const quiet = /@ \S*\/api\/chats$/;
+    ok(unexpected(s.errors, quiet).length === 0, 'no console errors', unexpected(s.errors, quiet).join(' | ') || '0');
   } finally { await s.stop(); }
 }
 
@@ -4460,13 +4567,13 @@ async function design() {
       && sheetMarks.every((one) => one.mark === one.harness),
       'the sheet gives every harness its own mark', JSON.stringify(sheetMarks));
 
-    // Where a session works is a dropdown, and it opens on a list of places
-    // with the full path as the sub-text - never a row of cells three
-    // characters wide.
-    await s.page.click('#nsDir .ds-combo__input');
-    await s.page.waitForSelector('#nsDir .ds-combo__option', { timeout: 5000 });
+    // Where a chat works is a dropdown, and it opens on a list of
+    // repositories with their owner as the sub-text - never a row of cells
+    // three characters wide. Without GitHub, No repository is all of it.
+    await s.page.click('#nsRepo .ds-combo__input');
+    await s.page.waitForSelector('#nsRepo .ds-combo__option', { timeout: 5000 });
     const dir = await s.page.evaluate(() => {
-      const host = document.getElementById('nsDir');
+      const host = document.getElementById('nsRepo');
       return {
         combo: !!host.querySelector('.ds-combo'),
         segs: host.querySelectorAll('.so-settings__program, .ds-chip').length,
@@ -4474,14 +4581,14 @@ async function design() {
         value: host.querySelector('.ds-combo__input').textContent.trim(),
       };
     });
-    ok(dir.combo && dir.segs === 0 && dir.options.includes('dynamic') && dir.value === 'Dynamic',
-      'the working directory is a dropdown, not a row of cells', JSON.stringify(dir));
+    ok(dir.combo && dir.segs === 0 && dir.options.join() === 'none' && /^No repository/.test(dir.value),
+      'the repository is a dropdown, not a row of cells', JSON.stringify(dir));
     // A press on the list keeps the focus on the field also when it comes as
     // mouse events alone: WebDriver's tap in iOS Safari sends no pointerdown,
     // and a mousedown that moved the focus closed the list on blur before
     // its click chose anything (B-2).
     const pressKept = await s.page.evaluate(() => {
-      const host = document.getElementById('nsDir');
+      const host = document.getElementById('nsRepo');
       const press = (n) => !n.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
       return { option: press(host.querySelector('.ds-combo__option')), toggle: press(host.querySelector('.ds-combo__toggle')) };
     });
@@ -6781,7 +6888,15 @@ async function folders() {
           ['a directory Socrates made up', { workdir: '/data/workspaces/claude-1', workdir_mode: 'dynamic' }],
           ['a row from a server that never said', { workdir: '/root/browser' }],
           ['a row with no directory at all', { workdir: '' }],
+          ['a chat in a repository', { workdir: '/data/workspaces/web-1a2b3c4d', repo: 'acme/web', branch: 'socrates/x' }],
         ].map(([what, row]) => what + ': ' + mod.folderKeyOf(row)).join(' | '),
+        repos: mod.foldersOf([
+          { ...at(9), workdir: '/data/workspaces/web-1', repo: 'acme/web' },
+          { ...at(8), workdir: '/data/workspaces/web-2', repo: 'acme/web' },
+          { ...at(7), workdir: '/data/workspaces/web-3', repo: 'other/web' },
+          { ...at(6), workdir: '/data/workspaces/api-4', repo: 'acme/api' },
+          { ...at(5), workdir: '/root/web', workdir_mode: 'preset' },
+        ]).map((f) => f.label + '(' + f.sessions.length + ')' + (f.repo ? ':' + f.key : '')).join(' | '),
         order: dirs([
           { ...at(30), workdir: '/root/old', workdir_mode: 'preset' },
           { ...at(90), workdir: '/data/w/x', workdir_mode: 'dynamic' },
@@ -6815,7 +6930,7 @@ async function folders() {
     });
     ok(pure.keys === 'a project: /root/browser | the same one with a trailing slash: /root/browser'
       + ' | a directory Socrates made up: #more | a row from a server that never said: /root/browser'
-      + ' | a row with no directory at all: #more',
+      + ' | a row with no directory at all: #more | a chat in a repository: github:acme/web',
       'a session belongs to the directory it works in, and one of Socrates’ own making to "More Chats"',
       pure.keys);
     ok(pure.order === 'new(2) | old(1) | More Chats(1)',
@@ -6828,6 +6943,9 @@ async function folders() {
       'a folder with nothing left to do - only done sessions, or an editor that is shut - is finished and goes last',
       pure.finished);
     ok(pure.inside === 'new,mid,old', 'inside a folder the sessions are newest first', pure.inside);
+    ok(pure.repos === 'acme/web(2):github:acme/web | other/web(1):github:other/web | api(1):github:acme/api | web(1)',
+      'a chat in a repository is grouped by its repository, named by its name and by its owner too where two share it',
+      pure.repos);
     ok(pure.moment === '9,7,3',
       'a session is ordered by its last status change, by its last write from an older server, else by its creation',
       pure.moment);
@@ -6992,24 +7110,14 @@ async function folders() {
     ok(visibleCount === 1, 'an open folder counts nothing: the rows under it are the count', visibleCount);
     await shot(s.page, 'folders-shut');
 
-    // A folder's + is the new-session sheet, opened on that folder: here a
-    // typed-in path, since the dashboard allows one. "More Chats" has none.
+    // New chats are made in repositories (REPOS.md §4.1): a folder of
+    // sessions made before has no + any more, and "More Chats" never had
+    // one. A repository's group has one (repochat).
     const plus = await s.page.evaluate((dir) => ({
       folder: document.querySelector('#sessionList .so-folder[data-folder="' + dir + '"] > .so-folder__bar > .so-folder__new')?.checkVisibility() || false,
       more: !!document.querySelector('#sessionList .so-folder[data-folder="#more"] .so-folder__new'),
     }), projects.browser);
-    ok(plus.folder && !plus.more, 'a project folder has a + for a new session in it, "More Chats" none', JSON.stringify(plus));
-    await s.page.click('#sessionList .so-folder[data-folder="' + projects.browser + '"] > .so-folder__bar > .so-folder__new');
-    await s.page.waitForSelector('#newSessionSheet[open]', { timeout: 15000 });
-    const inFolder = await s.page.evaluate(() => ({
-      dir: document.querySelector('#nsDir .so-drop__value')?.textContent || '',
-      path: document.getElementById('nsDirPath').value,
-      typed: document.getElementById('nsDirPath').checkVisibility(),
-    }));
-    ok(inFolder.typed && inFolder.path === projects.browser,
-      'and the sheet opens on that folder', JSON.stringify(inFolder));
-    await s.page.click('#nsCancel');
-    await s.page.waitForSelector('#newSessionSheet:not([open])', { state: 'attached', timeout: 10000 });
+    ok(!plus.folder && !plus.more, 'a folder of earlier sessions has no + for a new one, "More Chats" none', JSON.stringify(plus));
 
     // It is a fact about this device, so a reload finds it the way it was
     // left - and the sessions in it are still there, not gone.
@@ -11896,7 +12004,7 @@ async function chatstream() {
   const s = await chatServer();
   const { page } = s;
   try {
-    // The sheet asks a chat for its agent, its folder and its model.
+    // The sheet asks a chat for its agent, its repository and its model.
     await ensureNav(page);
     await page.click('#newSession');
     await page.waitForSelector('#newSessionSheet[open]', { timeout: 15000 });
@@ -11904,11 +12012,11 @@ async function chatstream() {
     await page.click('#newSessionSheet .so-settings__program[data-value="fake"]');
     // The profile field went with the profiles (WP10): a step that is not
     // there is a step not asked.
-    const steps = await page.evaluate(() => Object.fromEntries(['nsHarnessField', 'nsDirField', 'nsModelField',
-      'nsEffortField', 'nsProfileField', 'nsUltracodeField'].map((one) => [one.replace(/^ns|Field$/g, '').toLowerCase(),
+    const steps = await page.evaluate(() => Object.fromEntries(['nsHarnessField', 'nsRepoField', 'nsModelField',
+      'nsEffortField', 'nsProfileField', 'nsUltracodeField', 'nsBaseField', 'nsBranchField'].map((one) => [one.replace(/^ns|Field$/g, '').toLowerCase(),
       !!document.getElementById(one) && !document.getElementById(one).hidden])));
-    ok(steps.harness && steps.dir && steps.model && !steps.profile && !steps.ultracode,
-      'the sheet asks a chat for its agent, its folder and its model, and nothing else', JSON.stringify(steps));
+    ok(steps.harness && steps.repo && steps.model && !steps.profile && !steps.ultracode && !steps.base && !steps.branch,
+      'the sheet asks a chat for its agent, its repository and its model, and nothing else', JSON.stringify(steps));
     await page.keyboard.press('Escape');
     await page.waitForSelector('#newSessionSheet[open]', { state: 'detached', timeout: 10000 }).catch(() => {});
     const id = await startChat(page);
@@ -15117,7 +15225,7 @@ async function chataccount() {
     const beta = (await post('/api/accounts', { agent: 'fake', kind: 'api_key', label: 'Beta', key: 'sk-beta-0123456789' })).account;
     ok(alpha && beta && beta.state === 'signed_in', 'two accounts of the scripted agent', JSON.stringify([alpha, beta]).slice(0, 200));
 
-    // The sheet: agent, folder, model, account.
+    // The sheet: agent, repository, model, account.
     await page.reload({ waitUntil: 'domcontentloaded' });
     await ensureNav(page);
     await page.click('#newSession');
@@ -15126,8 +15234,8 @@ async function chataccount() {
     await page.waitForSelector('#nsAccountField:not([hidden]) .so-drop__field', { timeout: 10000 });
     const order = await page.evaluate(() => [...document.querySelectorAll('#nsForm .so-settings > .ds-field:not([hidden])')].map((n) => n.id));
     const at = (id) => order.indexOf(id);
-    ok(at('nsHarnessField') < at('nsDirField') && at('nsDirField') < at('nsModelField') && at('nsModelField') < at('nsAccountField'),
-      'the sheet asks for the agent, the folder, the model, then the account', order.join(','));
+    ok(at('nsHarnessField') < at('nsRepoField') && at('nsRepoField') < at('nsModelField') && at('nsModelField') < at('nsAccountField'),
+      'the sheet asks for the agent, the repository, the model, then the account', order.join(','));
     const auto = await page.$eval('#nsAutoSwitch', (n) => !n.checked && !n.closest('[hidden]'));
     ok(auto, 'and offers the automatic switch, off', String(auto));
     await page.click('#nsAccount .so-drop__field');
@@ -15405,6 +15513,7 @@ const ALL = [
   ['foldermcp', 'a folder\u2019s .mcp.json reaches the agent, and Info names its servers', foldermcp],
   ['sharedmcp', 'Admin\u2019s MCP servers reach every chat, and a chat switches them for itself', sharedmcp],
   ['sheetmcp', 'the new session sheet: the shell across the width, the account\u2019s limits, the MCP switches', sheetmcp],
+  ['repochat', 'the new-chat sheet\u2019s repository: No repository without GitHub, and a repository, its base and branch', repochat],
   ['mcpcard', 'Admin\u2019s MCP card: the built-in server, the gallery, a test and its tools, a chat\u2019s test', mcpcard],
   ['chatpeers', 'the agents of the chats in one repository list, read and write to each other', chatpeers],
   ['createcodex', 'Codex over its app server: one thread, kept, and resumed after a rest', createcodex],

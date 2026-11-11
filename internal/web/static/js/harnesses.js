@@ -13,14 +13,14 @@
 import { api, el, infoTip, toast } from './api.js';
 import * as accounts from './accounts.js';
 import { combobox, dropdown } from './combobox.js';
-import { dictated, typeHere } from './keyboard.js';
+import { dictated } from './keyboard.js';
 import { agentMark } from './logos.js';
 import { hideOverlay, html, icon, iconEl, morph, raw, showOverlay } from './ui.js';
 import { brief, fromWords, labelOf } from './mcpview.js';
+import * as repos from './repos.js';
+import { NO_REPO } from './repos.js';
 
 const CACHE_KEY = 'socrates.harnesses';
-// How long a typed path rests before the sheet asks for its MCP servers.
-const MCP_TYPING_PAUSE = 400;
 // How long Start waits for what the folder chosen makes of the agents.
 const FOLDER_PATIENCE = 15000;
 
@@ -33,11 +33,10 @@ export const TOOLS = ['shell', 'vscode'];
 
 export function isTool(id) { return TOOLS.includes(id); }
 
-// The three ways of choosing a working directory, as internal/harnesses names
-// them.
+// A fresh folder of its own, as internal/harnesses names it: what a chat
+// without a repository and a Shell get. Presets and typed paths are gone
+// for new sessions (REPOS.md §4.1).
 export const DYNAMIC = 'dynamic';
-export const PRESET = 'preset';
-export const CUSTOM = 'custom';
 
 // How a level reads on a button. A level nobody here has heard of is shown as
 // the CLI spells it: the CLI named it, so the CLI takes it.
@@ -177,14 +176,16 @@ export function inFolder(dir) {
 
 /**
  * loadFolder asks which agents a folder changes: the folder a new chat would
- * get ({mode, workdir}, as the sheet has them) or a chat's own ({session}).
+ * get ({mode, workdir}, and the repository whose worktree it will be) or a
+ * chat's own ({session}).
  * It resolves with the folder's path - the `dir` to pass on - or '' when
  * there is no folder to speak of yet. Offline, a folder asked about before
  * keeps its answer.
  */
-export async function loadFolder({ mode = '', workdir = '', session = '' } = {}) {
+export async function loadFolder({ mode = '', workdir = '', repo = '', session = '' } = {}) {
   const query = session ? '?session=' + encodeURIComponent(session)
-    : '?workdir_mode=' + encodeURIComponent(mode) + '&workdir=' + encodeURIComponent(workdir);
+    : '?workdir_mode=' + encodeURIComponent(mode) + '&workdir=' + encodeURIComponent(workdir)
+      + (repo ? '&repo=' + encodeURIComponent(repo) : '');
   const data = await api('/api/harnesses/folder' + query, { attempts: 1, timeout: 30000 });
   const dir = (data && data.workdir) || '';
   if (!dir) return '';
@@ -469,50 +470,6 @@ function accountFace(name, who) {
   return html`<span class="ds-combo__value so-drop__value">${name}</span>${who ? html`<span class="ds-combo__meta">${who}</span>` : ''}`;
 }
 
-// The value a directory option carries. A preset is a mode and a path, and one
-// string holds both so the dropdown has one value per entry and nothing has to
-// be kept in step beside it.
-const dirValue = (mode, path) => (mode === PRESET ? PRESET + ':' + path : mode);
-
-// dirName is what a preset is called in the list: the name the dashboard gave
-// it, or the last segment of its path. The path itself is the sub-text, so the
-// list reads as places rather than as a column of prefixes.
-function dirName(preset) {
-  if (preset.label) return preset.label;
-  const parts = String(preset.path || '').split('/').filter(Boolean);
-  return parts.length ? parts[parts.length - 1] : preset.path;
-}
-
-// dirItems is the dropdown's view of where a session may work: a fresh
-// directory, every place the dashboard named, and - when the dashboard allows
-// one at all - a path typed by hand.
-function dirItems() {
-  const space = workspace();
-  const items = [{ value: DYNAMIC, label: 'Dynamic', hint: 'a fresh directory for every session' }];
-  for (const preset of space.presets || []) {
-    items.push({ value: dirValue(PRESET, preset.path), label: dirName(preset), hint: preset.path });
-  }
-  if (space.allow_custom) items.push({ value: CUSTOM, label: 'Custom path…' });
-  return items;
-}
-
-/**
- * folderChoice is how the new-session sheet can be started in a folder the
- * sidebar shows: as the preset it is, or as a custom path where the dashboard
- * allows one. null when neither: the server would not start a session there.
- */
-export function folderChoice(path) {
-  // Only an absolute path is a folder: "More Chats" is keyed '#more'.
-  if (!String(path || '').startsWith('/')) return null;
-  const bare = (one) => String(one || '').trim().replace(/\/+$/, '') || '/';
-  const dir = bare(path);
-  const space = workspace();
-  const preset = (space.presets || []).find((one) => bare(one.path) === dir);
-  if (preset) return { mode: PRESET, workdir: preset.path };
-  if (space.allow_custom) return { mode: CUSTOM, workdir: dir };
-  return null;
-}
-
 // dynamicPreview is the directory a dynamic session will get, spelled the way
 // internal/harnesses/workdir.go spells it. It is shown greyed under the row so
 // that "Dynamic" is a place and not a promise.
@@ -533,20 +490,21 @@ function mcpSource(server) {
 
 /**
  * settingsForm builds the controls a session is bound by: the program, the
- * working directory, the model, the effort, Ultracode, the account and the
- * MCP servers. A chat (isChat) is asked for its folder, model, effort and
- * account - agent, folder, model, account - whether it may switch accounts
+ * repository (its base branch and its own branch), the model, the effort,
+ * Ultracode, the account and the MCP servers. A chat (isChat) is asked for
+ * its repository, model, effort and account, whether it may switch accounts
  * by itself at a limit, which MCP servers it has, and Claude Code for
- * Ultracode too; a Shell for its folder and nothing else.
+ * Ultracode too; a Shell gets a fresh folder and is asked nothing else.
  *
  * Every element id is `prefix` and the field's name, which is how the sheet
- * keeps the ids it has always had (nsHarness, nsDir, nsModelField, ...).
+ * keeps the ids it has always had (nsHarness, nsRepo, nsModelField, ...).
  *
  *   include(entry)            which programs are offered at all
  *   onChange(kind)            called after a change the person made; kind is
- *                             harness, dir, model, effort, ultracode, account,
- *                             auto_switch or mcp - or folder, when the answer
- *                             for the folder chosen moved the model.
+ *                             harness, repo, base, branch, model, effort,
+ *                             ultracode, account, auto_switch or mcp - or
+ *                             branches and folder, when an answer from the
+ *                             server came in.
  *
  * It hands back the node to put on the page and the calls that read and
  * write it.
@@ -575,15 +533,27 @@ export function settingsForm(options = {}) {
     el('legend', { class: 'ds-field__label', text: 'Program' }),
     el('div', { class: 'so-settings__groups' }, harnessRow, toolsRow));
 
-  const dirRow = el('div', { id: id('Dir') });
-  const dirPath = el('input', {
-    class: 'ds-input', type: 'text', id: id('DirPath'), spellcheck: 'false', 'aria-label': 'Directory path',
-    autocorrect: 'off', autocapitalize: 'none', placeholder: '/srv/projects/socrates',
-    'aria-describedby': id('DirHint'), enterkeyhint: 'go',
+  // Where a chat works (REPOS.md §4.1): a repository of the GitHub App's,
+  // the base branch its own branch is made from, and that branch - or No
+  // repository, a fresh folder of its own. A Shell always gets the fresh
+  // folder: a worktree is a chat's.
+  const repoRow = el('div', { id: id('Repo') });
+  const repoHint = el('small', { class: 'ds-field__hint so-break', id: id('RepoHint') });
+  const repoField = el('div', { class: 'ds-field', id: id('RepoField') },
+    el('label', { class: 'ds-field__label', for: id('RepoInput'), text: 'Repository' }), repoRow, repoHint);
+
+  const baseRow = el('div', { id: id('Base') });
+  const baseHint = el('small', { class: 'ds-field__hint so-break', id: id('BaseHint'), hidden: true });
+  const baseField = el('div', { class: 'ds-field', id: id('BaseField'), hidden: true },
+    el('label', { class: 'ds-field__label', for: id('BaseInput'), text: 'Base branch' }), baseRow, baseHint);
+
+  const branchInput = el('input', {
+    class: 'ds-input', type: 'text', id: id('Branch'), spellcheck: 'false', autocorrect: 'off', autocapitalize: 'none',
+    autocomplete: 'off', 'aria-describedby': id('BranchHint'), enterkeyhint: 'go',
   });
-  const dirHint = el('small', { class: 'ds-field__hint so-break', id: id('DirHint') });
-  const dirField = el('div', { class: 'ds-field', id: id('DirField') },
-    el('label', { class: 'ds-field__label', for: id('DirInput'), text: 'Working directory' }), dirRow, dirPath, dirHint);
+  const branchHint = el('small', { class: 'ds-field__hint so-break', id: id('BranchHint') });
+  const branchField = el('div', { class: 'ds-field', id: id('BranchField'), hidden: true },
+    el('label', { class: 'ds-field__label', for: id('Branch'), text: 'Branch' }), branchInput, branchHint);
 
   const modelHost = el('div', { id: id('Model') });
   // What the folder's own configuration of the agent says, when it has one:
@@ -644,20 +614,27 @@ export function settingsForm(options = {}) {
   const mcpField = el('fieldset', { class: 'ds-field', id: id('McpField'), hidden: true },
     el('legend', { class: 'ds-field__label', text: 'MCP servers' }), mcpList, mcpHint);
 
-  // agent, folder, model and effort (and Ultracode, Claude Code's), then the
-  // account (REBUILD.md §7) and the MCP servers.
+  // agent, repository (its base and branch), model and effort (and
+  // Ultracode, Claude Code's), then the account (REBUILD.md §7) and the MCP
+  // servers.
   const node = el('div', { class: 'so-settings' }, harnessField,
-    dirField, modelField, effortField, ultracodeField, accountField, autoSwitchField, mcpField);
+    repoField, baseField, branchField, modelField, effortField, ultracodeField, accountField, autoSwitchField, mcpField);
 
   /* -------------------------------------------------------------- state */
 
   // VS Code is not something a session is started as: a folder has one
   // editor, opened from the folder's own mark in the sidebar.
   const entries = list().filter((entry) => entry.id !== 'vscode' && include(entry));
-  const space = workspace();
   const pick = {
-    harness: '', model: '', effort: '', mode: DYNAMIC, workdir: '', ultracode: false,
+    harness: '', model: '', effort: '', ultracode: false,
     account: '', accountChosen: false, autoSwitch: false,
+    // The repository (NO_REPO for a fresh folder), whether the person picked
+    // it - an answer from GitHub arriving later does not move a choice -
+    // its base and the branch, and whether the branch was typed.
+    repo: NO_REPO, repoChosen: false, base: '', branch: '', branchTyped: false,
+    // The repository's branches as the server said ({default, branches}),
+    // null while they are asked for, and the problem when they could not be.
+    branches: null, branchesError: '',
     // The folder whose catalogue the model is picked from (loadFolder), and
     // whether the person picked the model: until then it follows the folder.
     folder: '', modelChosen: false,
@@ -670,9 +647,8 @@ export function settingsForm(options = {}) {
   let mcpServers = null;
   let mcpProblems = [];
   let mcpAsked = 0;
-  let mcpTimer = 0;
   let folderAsked = 0;
-  let folderTimer = 0;
+  let branchesAsked = 0;
   // folderReady settles once the newest asking is answered.
   let folderReady = Promise.resolve();
 
@@ -706,40 +682,45 @@ export function settingsForm(options = {}) {
     onChange('effort');
   });
 
-  // Where a session works is a dropdown rather than a row of cells: a machine
-  // with a dozen preset directories on it would otherwise be a dozen cells
-  // three characters wide. It is a closed one - nothing is typed into it and
-  // nothing spoken: the list is the whole of what the server allows - Dynamic,
-  // every preset, and a path typed by hand where the dashboard permits one.
-  const dirPicker = dropdown({
-    value: DYNAMIC,
-    id: id('DirInput'),
-    label: 'Working directory',
-    items: dirItems,
+  // The repository is a closed dropdown: the list is what the GitHub App
+  // reaches, the ones used last first, and No repository last.
+  const repoPicker = dropdown({
+    value: NO_REPO,
+    id: id('RepoInput'),
+    label: 'Repository',
+    items: repoItems,
+    renderItem: (item) => html`<span class="ds-combo__name">${item.label}</span>${item.hint ? html`<span class="ds-combo__meta">${item.hint}</span>` : ''}`,
+    renderValue: (item) => html`<span class="ds-combo__value so-drop__value">${item.label}</span>${item.hint && item.value !== NO_REPO ? html`<span class="ds-combo__meta">${item.hint}</span>` : ''}`,
+    onChange: (value) => {
+      pick.repoChosen = true;
+      selectRepo(value);
+      onChange('repo');
+    },
+  });
+  repoPicker.button.setAttribute('aria-describedby', id('RepoHint'));
+  repoRow.append(repoPicker.node);
+
+  // The base is one of the repository's branches, its default one first.
+  const basePicker = dropdown({
+    value: '',
+    id: id('BaseInput'),
+    label: 'Base branch',
+    items: baseItems,
     renderItem: (item) => html`<span class="ds-combo__name">${item.label}</span>${item.hint ? html`<span class="ds-combo__meta">${item.hint}</span>` : ''}`,
     renderValue: (item) => html`<span class="ds-combo__value so-drop__value">${item.label}</span>`,
     onChange: (value) => {
-      if (value === DYNAMIC || value === CUSTOM) {
-        selectDir(value, value === CUSTOM ? dirPath.value.trim() : '');
-      } else {
-        selectDir(PRESET, value.slice(PRESET.length + 1));
-      }
-      onChange('dir');
+      pick.base = value;
+      onChange('base');
     },
   });
-  dirPicker.button.setAttribute('aria-describedby', id('DirHint'));
-  dirRow.append(dirPicker.node);
-  // The free-form path is a field like any other: it can be spoken, which with
-  // the keyboard put away is the only way it can be filled. The row is what is
-  // hidden and shown from here on, because hiding the field alone would leave
-  // its microphone standing on the form with nothing beside it.
-  const dirPathRow = dictated(dirPath, dirPath);
-  dirPathRow.hidden = true;
-  dirPath.addEventListener('input', () => {
-    if (pick.mode !== CUSTOM) return;
-    pick.workdir = dirPath.value.trim();
-    renderDir();
-    onChange('dir');
+  basePicker.button.setAttribute('aria-describedby', id('BaseHint'));
+  baseRow.append(basePicker.node);
+
+  branchInput.addEventListener('input', () => {
+    pick.branch = branchInput.value.trim();
+    pick.branchTyped = true;
+    renderBranch();
+    onChange('branch');
   });
 
   // The field says a model's name, as its list does; what is typed is a
@@ -813,40 +794,165 @@ export function settingsForm(options = {}) {
 
   /* ------------------------------------------------------------ drawing */
 
-  function selectDir(mode, path, focus = true) {
-    pick.mode = mode;
-    pick.workdir = mode === DYNAMIC ? '' : path;
-    // Only "Custom path…" has anything left to ask, so it is the only choice
-    // that puts a second field on the form.
-    dirPathRow.hidden = mode !== CUSTOM;
-    // Picked by a tap: the path is what is left to type, so it takes the
-    // keyboard at once.
-    if (mode === CUSTOM && focus) typeHere(dirPath);
-    renderDir();
+  // repoItems is the repository dropdown's list: every repository the App
+  // reaches, the ones used last first, then No repository.
+  function repoItems() {
+    const items = repos.ordered().map((repo) => ({
+      value: repo.full_name,
+      label: repos.nameOf(repo.full_name),
+      hint: [repos.ownerOf(repo.full_name), repo.private ? 'private' : ''].filter(Boolean).join(' · '),
+    }));
+    // A preset repository the list does not have (yet): offered as itself,
+    // the server says whether it is reached.
+    if (pick.repo !== NO_REPO && !items.some((item) => item.value === pick.repo)) {
+      items.unshift({ value: pick.repo, label: repos.nameOf(pick.repo), hint: repos.ownerOf(pick.repo) });
+    }
+    items.push({ value: NO_REPO, label: 'No repository', hint: 'a new folder of its own' });
+    return items;
   }
 
-  function renderDir() {
+  // baseItems is the base dropdown's list: the branches, newest first, with
+  // the default one at the top; before they are known, the default one.
+  function baseItems() {
+    const known = pick.branches ? pick.branches.branches : [];
+    const fallback = defaultBranch();
+    const names = known.map((one) => one.name);
+    const first = names.includes(fallback) || !fallback ? [] : [fallback];
+    const all = [...first, ...names];
+    if (pick.base && !all.includes(pick.base)) all.unshift(pick.base);
+    all.sort((a, b) => (a === fallback ? -1 : b === fallback ? 1 : 0));
+    return all.map((name) => ({ value: name, label: name, hint: name === fallback ? 'default' : '' }));
+  }
+
+  // defaultBranch is the repository's default branch: the branch list's
+  // answer, else what /api/github said.
+  function defaultBranch() {
+    if (pick.branches && pick.branches.default) return pick.branches.default;
+    const repo = repos.repoOf(pick.repo);
+    return (repo && repo.default_branch) || '';
+  }
+
+  // inRepo says whether the chat about to be made works in a repository:
+  // one is chosen and the program is an agent.
+  const inRepo = () => pick.repo !== NO_REPO && isChat(pick.harness);
+
+  // existing is whether the branch typed is one GitHub already has: the chat
+  // continues it rather than making it from the base.
+  function existing() {
+    return !!pick.branches && pick.branches.branches.some((one) => one.name === pick.branch);
+  }
+
+  function selectRepo(value) {
+    const changed = value !== pick.repo;
+    pick.repo = value || NO_REPO;
+    if (changed) {
+      pick.branches = null;
+      pick.branchesError = '';
+      pick.base = '';
+      if (pick.repo !== NO_REPO) loadBranches();
+    }
+    renderRepo();
+    if (changed && pick.harness) {
+      askMcp();
+      askFolder();
+    }
+  }
+
+  // loadBranches asks for the chosen repository's branches. The base starts
+  // on the default branch at once and stays where the person put it.
+  function loadBranches() {
+    const asked = ++branchesAsked;
+    const repo = pick.repo;
+    pick.base = pick.base || defaultBranch();
+    repos.branches(repo).then((data) => {
+      if (asked !== branchesAsked || repo !== pick.repo) return;
+      pick.branches = data;
+      if (!pick.base) pick.base = data.default || '';
+      renderRepo();
+      onChange('branches');
+    }, (err) => {
+      if (asked !== branchesAsked || repo !== pick.repo) return;
+      pick.branchesError = (err && err.message) || 'The branches could not be listed.';
+      renderRepo();
+      onChange('branches');
+    });
+  }
+
+  // renderRepo draws the repository, its base and its branch, and what is
+  // said under them.
+  function renderRepo() {
+    const chat = isChat(pick.harness);
+    // A Shell works in a folder of its own; a worktree is a chat's.
+    repoField.hidden = !chat;
     // `false`: the field is being told what was chosen, not told to choose.
-    dirPicker.setValue(dirValue(pick.mode, pick.workdir), false);
-    // Where a dynamic session's folder will be is a path nobody reads on the
-    // way to a chat: the line says what it is, its "i" the path.
-    if (pick.mode === DYNAMIC) {
-      dirHint.replaceChildren('A new folder of its own, made when it starts.',
+    repoPicker.setValue(pick.repo, false);
+    const github = repos.snapshot();
+    const words = [];
+    if (!github.connected) {
+      words.push('GitHub is not connected, so a chat works in a new folder of its own. ',
+        el('a', { class: 'ds-link', href: '/admin#github', text: 'Connect GitHub in Admin' }), '.');
+    } else if (github.problem) {
+      words.push(github.problem);
+    } else if (!github.repos.length) {
+      words.push('The GitHub App reaches no repository yet. ',
+        el('a', { class: 'ds-link', href: '/admin#github', text: 'Choose repositories in Admin' }), '.');
+    } else if (pick.repo === NO_REPO) {
+      words.push('A new folder of its own, made when it starts.',
         infoTip([dynamicPreview(pick.harness)], { label: 'The folder it will get' }));
-    } else if (pick.mode === PRESET) dirHint.textContent = pick.workdir;
-    // The path is in the field right above: the hint says what it has to be.
-    else dirHint.textContent = 'An absolute path on this machine.';
-    askMcp();
-    askFolder();
+    } else {
+      words.push('Its own worktree and branch, pushed to GitHub as it works.');
+    }
+    if (repos.stale() && github.repos.length) words.push(' Showing the repositories from your last visit.');
+    repoHint.replaceChildren(...words);
+
+    const repo = inRepo();
+    baseField.hidden = !repo;
+    branchField.hidden = !repo;
+    if (!repo) return;
+    if (!pick.base) pick.base = defaultBranch();
+    basePicker.setValue(pick.base, false);
+    if (!pick.branchTyped && !pick.branch) {
+      pick.branch = repos.branchFor();
+      branchInput.value = pick.branch;
+    }
+    renderBranch();
+  }
+
+  // renderBranch says what the typed branch will be: a new one made from the
+  // base, or an existing one continued - and then the base is not asked.
+  function renderBranch() {
+    const continues = existing();
+    basePicker.button.disabled = continues;
+    basePicker.node.querySelector('.ds-combo__toggle').disabled = continues;
+    if (pick.branches === null && !pick.branchesError) {
+      baseHint.hidden = false;
+      baseHint.textContent = 'Loading the branches…';
+    } else if (pick.branchesError) {
+      baseHint.hidden = false;
+      baseHint.textContent = 'The branches could not be listed: ' + pick.branchesError;
+    } else {
+      baseHint.hidden = !continues;
+      baseHint.textContent = continues ? 'Not used: the branch exists already.' : '';
+    }
+    const problem = repos.branchProblem(pick.branch);
+    if (problem && pick.branchTyped) branchInput.setAttribute('aria-invalid', 'true');
+    else branchInput.removeAttribute('aria-invalid');
+    if (problem && pick.branchTyped) branchHint.textContent = problem;
+    else if (continues) branchHint.textContent = 'Continues the existing branch.';
+    else branchHint.textContent = 'A new branch, made from ' + (pick.base || 'the base') + '.';
+  }
+
+  // folderQuery is how the server is asked about the folder a new chat
+  // would get: a fresh one, or a worktree of a repository.
+  function folderQuery() {
+    return '?workdir_mode=' + DYNAMIC + '&workdir=' + (inRepo() ? '&repo=' + encodeURIComponent(pick.repo) : '');
   }
 
   // askFolder asks what the chosen folder makes of the agents: an
   // opencode.json there can add models and name the one OpenCode starts on.
-  // A model the person has not picked follows the answer. The answer this
-  // device kept for the folder is used until the server's comes; offline it
-  // is the answer.
+  // A model the person has not picked follows the answer. A new chat's
+  // folder does not exist yet, so the answer is mostly that there is none.
   function askFolder() {
-    clearTimeout(folderTimer);
     const asked = ++folderAsked;
     const settle = (dir) => {
       if (asked !== folderAsked) return;
@@ -860,14 +966,9 @@ export function settingsForm(options = {}) {
       }
       onChange('folder');
     };
-    const kept = pick.mode !== DYNAMIC && inFolder(pick.workdir).length ? pick.workdir : '';
-    settle(kept);
-    const run = () => loadFolder({ mode: pick.mode, workdir: pick.workdir }).then(settle, () => settle(kept));
-    folderReady = new Promise((resolve) => {
-      const go = () => run().then(resolve, resolve);
-      if (pick.mode === CUSTOM) folderTimer = setTimeout(go, MCP_TYPING_PAUSE);
-      else go();
-    });
+    settle('');
+    folderReady = loadFolder({ mode: DYNAMIC, workdir: '', repo: inRepo() ? pick.repo : '' })
+      .then(settle, () => settle(''));
   }
 
   // renderModelHint says what the folder's own configuration of the agent
@@ -889,17 +990,14 @@ export function settingsForm(options = {}) {
     modelHint.replaceChildren(text, infoTip(config.files || [], { label: 'Its config files' }));
   }
 
-  // askMcp asks which MCP servers a chat in the chosen folder would have. A
-  // path being typed is asked about once the typing pauses.
+  // askMcp asks which MCP servers a chat in the chosen folder would have.
   function askMcp() {
-    clearTimeout(mcpTimer);
     if (!isChat(pick.harness)) {
       renderMcp();
       return;
     }
     const asked = ++mcpAsked;
-    const query = '?workdir_mode=' + encodeURIComponent(pick.mode) + '&workdir=' + encodeURIComponent(pick.workdir);
-    const run = () => api('/api/mcp' + query, { attempts: 1, timeout: 8000 }).then((data) => {
+    api('/api/mcp' + folderQuery(), { attempts: 1, timeout: 8000 }).then((data) => {
       if (asked !== mcpAsked) return;
       mcpServers = (data && data.servers) || [];
       mcpProblems = (data && data.problems) || [];
@@ -909,8 +1007,6 @@ export function settingsForm(options = {}) {
       // away and the chat starts on every server's default.
       if (asked === mcpAsked) renderMcp();
     });
-    if (pick.mode === CUSTOM) mcpTimer = setTimeout(run, MCP_TYPING_PAUSE);
-    else run();
   }
 
   // mcpOn is whether a server is on for the chat about to be made.
@@ -1027,7 +1123,9 @@ export function settingsForm(options = {}) {
     }
     pick.modelChosen = false;
     startModel();
-    renderDir();
+    renderRepo();
+    askMcp();
+    askFolder();
     renderAccount();
   }
 
@@ -1078,8 +1176,13 @@ export function settingsForm(options = {}) {
         model: modelField.hidden ? '' : pick.model,
         effort: pick.effort,
         ultracode: !ultracodeField.hidden && pick.ultracode,
-        workdir_mode: pick.mode,
-        workdir: pick.workdir,
+        // A chat in a repository is made from {repo, base, branch}; every
+        // other session gets a fresh folder of its own.
+        repo: inRepo() ? pick.repo : '',
+        base: inRepo() ? pick.base : '',
+        branch: inRepo() ? pick.branch : '',
+        workdir_mode: inRepo() ? '' : DYNAMIC,
+        workdir: '',
         account: accountField.hidden ? '' : pick.account,
         auto_switch: !autoSwitchField.hidden && pick.autoSwitch,
         mcp: mcpField.hidden ? {} : mcpChoices(),
@@ -1099,7 +1202,11 @@ export function settingsForm(options = {}) {
     missing() {
       if (!entries.length) return 'There is no program to start yet.';
       if (!pick.harness || (!modelField.hidden && !pick.model && !unlisted(harness(pick.harness, pick.folder)))) return 'Pick a program and a model first.';
-      if (pick.mode === CUSTOM && !pick.workdir) return 'Type the directory this session should work in.';
+      if (inRepo()) {
+        const problem = repos.branchProblem(pick.branch);
+        if (problem) return problem;
+        if (!pick.base && !existing()) return 'Pick the base branch.';
+      }
       // A chat needs an account it can run on.
       const chosen = accountField.hidden ? null : accounts.byId(pick.account);
       if (chosen && !accounts.usable(chosen)) {
@@ -1151,21 +1258,44 @@ export function settingsForm(options = {}) {
      * common case is two taps.
      */
     selectDefault() {
+      const space = workspace();
       const first = entries.find((h) => h.id === space.default_harness && h.enabled && h.installed)
         || entries.find((h) => h.enabled && h.installed);
-      selectDir(DYNAMIC, '', false);
+      selectRepo(repos.lastChoice());
       if (first) selectHarness(first.id);
     },
 
     /**
-     * selectFolder starts the form in a folder (folderChoice): the sidebar's
-     * + on a project. A folder it cannot be started in leaves it on Dynamic.
+     * selectRepo starts the form in a repository: the sidebar's + on a
+     * repository's group.
      */
-    selectFolder(path) {
-      const choice = folderChoice(path);
-      if (!choice) return;
-      if (choice.mode === CUSTOM) dirPath.value = choice.workdir;
-      selectDir(choice.mode, choice.workdir, false);
+    selectRepo(fullName) {
+      if (!fullName) return;
+      pick.repoChosen = true;
+      selectRepo(fullName);
+    },
+
+    /**
+     * refreshRepos asks GitHub's side again which repositories there are,
+     * then draws them. A repository the person has not picked follows the
+     * answer: the one used last.
+     */
+    async refreshRepos() {
+      await repos.load();
+      if (!node.isConnected) return;
+      if (!pick.repoChosen) selectRepo(repos.lastChoice());
+      else renderRepo();
+    },
+
+    /**
+     * remember keeps the repository chosen as this device's last choice,
+     * once the chat is made from it.
+     */
+    remember() {
+      // No repository is a choice only where there was a repository to
+      // choose: without GitHub it is all there is.
+      if (!isChat(pick.harness) || (!inRepo() && !repos.snapshot().repos.length)) return;
+      repos.rememberRepo(inRepo() ? pick.repo : NO_REPO);
     },
 
     /** refreshAccounts reads the accounts and their usage again, then draws them. */
@@ -1177,17 +1307,21 @@ export function settingsForm(options = {}) {
 }
 
 /**
- * openNewSessionSheet asks the questions a session is bound by; `workdir`
- * opens it on that folder instead of Dynamic (the sidebar's +). It resolves
- * with {harness, model, effort, ultracode, workdir_mode, workdir, account,
- * auto_switch, mcp, chat} or null if the person backed out. `chat` says the agent is a chat: agent,
- * folder, model and account are all it asks; a Shell is a folder and nothing
- * else.
+ * openNewSessionSheet asks the questions a session is bound by; `repo`
+ * opens it on that repository instead of the one used last (the sidebar's +
+ * on a repository). It resolves with {harness, model, effort, ultracode,
+ * repo, base, branch, workdir_mode, workdir, account, auto_switch, mcp,
+ * chat} or null if the person backed out: `repo` empty and `workdir_mode`
+ * dynamic for a fresh folder. `chat` says the agent is a chat: agent,
+ * repository, model and account are what it asks; a Shell gets a fresh
+ * folder and nothing else.
  *
  * The catalogue is loaded first, but a failure is not fatal: the stored copy
- * is used and the hint says where it came from.
+ * is used and the hint says where it came from. The repositories come
+ * meanwhile: the sheet opens on this device's copy and follows the answer.
  */
-export async function openNewSessionSheet({ workdir = '' } = {}) {
+export async function openNewSessionSheet({ repo = '' } = {}) {
+  const github = repos.load();
   try {
     await load();
   } catch { /* the hint below says what happened */ }
@@ -1226,9 +1360,10 @@ export async function openNewSessionSheet({ workdir = '' } = {}) {
   }
 
   form.selectDefault();
-  if (workdir) form.selectFolder(workdir);
+  if (repo) form.selectRepo(repo);
   render();
   form.refreshAccounts().then(() => { if (sheet.open) render(); });
+  github.then(() => form.refreshRepos()).then(() => { if (sheet.open) render(); });
 
   // The sheet is one element that is opened again and again, so every handler
   // this call adds is taken off with it. Without that, the second opening
@@ -1260,6 +1395,7 @@ export async function openNewSessionSheet({ workdir = '' } = {}) {
       }
       const chosen = form.value();
       rememberModel(chosen.harness, chosen.model);
+      form.remember();
       finish({ ...chosen, chat: isChat(form.harness()) });
     }, on);
     sheet.addEventListener('close', () => finish(null), on);

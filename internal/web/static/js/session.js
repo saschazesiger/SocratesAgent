@@ -23,8 +23,10 @@ import { connectionSource, deadline } from './net.js';
 import { agentMark, agentMarkHtml } from './logos.js';
 import {
   MORE_KEY, FINISHED_KEY, FINISHED_LABEL, SHELVES, IDE, foldersOf, folderKeyOf, dirOf, ideOf, momentOf, movesRow, notStarted,
+  repoOfKey,
 } from './folders.js';
 import * as harnesses from './harnesses.js';
+import { branchUrl } from './repos.js';
 import * as accounts from './accounts.js';
 import { createTerm, measurePane, loadTerminalFonts, terminalFontsSettled } from './term.js';
 import { mountAssist } from './assist.js';
@@ -750,7 +752,7 @@ const state = {
 
 const dom = {};
 const ids = ['sidebar', 'navScrim', 'menuBtn', 'blankIDE', 'homeBtn', 'sideCollapse', 'newSession', 'sessionList',
-  'activityLive', 'sessionTitle', 'titleRegen', 'sessionStatus', 'sessionOutcome',
+  'activityLive', 'sessionTitle', 'titleRegen', 'sessionStatus', 'sessionOutcome', 'sessionBranch',
   'transfer', 'copyBtn', 'pasteBtn', 'uploadBtn',
   'statusBtn', 'passageBtn', 'kbBtn', 'optionsBtn',
   'stage', 'termWrap', 'term', 'termOverlay', 'termLines', 'termNotice',
@@ -886,6 +888,7 @@ const listDraw = paced(() => {
   drawList();
   drawLive();
   drawOutcomeTag();
+  drawBranchChip();
 });
 function renderList() { listDraw.now(); }
 function renderListSoon() { listDraw.soon(); }
@@ -911,6 +914,31 @@ function drawOutcomeTag() {
   // Its glyph alone on a phone (so-frame.css), so the words are its name.
   tag.setAttribute('aria-label', words);
   tag.setAttribute('data-tip', outcomeLine(outcome));
+}
+
+// drawBranchChip is the branch of the chat on the stage, when it works in a
+// repository (REPOS.md §5.3): a link to its pull request once there is one,
+// else to the branch on GitHub. The glyph says which, and so do the words of
+// its name and tip: never the colour alone.
+function drawBranchChip() {
+  const chip = dom.sessionBranch;
+  if (!chip) return;
+  const session = state.current ? sessionOf(state.current.id) || state.current : null;
+  chip.hidden = !session || !session.repo || !session.branch;
+  if (chip.hidden) return;
+  const pr = session.options && session.options.pr;
+  const url = branchUrl(session);
+  const words = pr && pr.url
+    ? 'Pull request' + (pr.number ? ' #' + pr.number : '') + ' of ' + session.branch + ' on GitHub'
+    : 'Branch ' + session.branch + ' of ' + session.repo + ' on GitHub';
+  const key = url + '|' + words;
+  if (chip.dataset.key === key) return;
+  chip.dataset.key = key;
+  chip.dataset.kind = pr && pr.url ? 'pr' : 'branch';
+  chip.setAttribute('href', url);
+  chip.setAttribute('aria-label', words);
+  chip.setAttribute('data-tip', words);
+  morph(chip, html`${raw(icon(pr && pr.url ? 'gitPullRequest' : 'gitBranch', 16))}<span class="so-branch__name">${session.branch}</span>`);
 }
 
 // showOutcome is a tap on the tag: the verdict in full.
@@ -980,7 +1008,9 @@ function drawList() {
   const all = foldersOf(wanted, placeOf);
   // Which project folders have docs, for their menus: asked in one request
   // for the folders not asked about lately (docview.js).
-  probeDocs(all.filter((folder) => folder.key !== MORE_KEY).map((folder) => folder.key));
+  // A repository's group has no docs yet (REPOS.md §5.3 reads them from
+  // its cache; not asked for here until the server has them).
+  probeDocs(all.filter((folder) => folder.key !== MORE_KEY && !folder.repo).map((folder) => folder.key));
   const finished = all.filter((folder) => folder.finished);
   const markup = all.filter((folder) => !folder.finished).map((folder) => folderHtml(folder));
   if (finished.length) {
@@ -1188,7 +1218,9 @@ function groupHtml(folder, children) {
   // The whole path is technical detail, so it is where every technical string
   // on this page is: in a tooltip, and nowhere in the words. "More Chats" and
   // the shelves have no path, so their tooltip says what they hold instead.
-  const tip = fold ? FINISHED_TITLE : SHELF_TITLES[folder.status] || folder.path || 'Sessions in a directory of their own';
+  // A repository's group says its full name, where the label has its name.
+  const tip = fold ? FINISHED_TITLE : SHELF_TITLES[folder.status]
+    || (folder.repo ? folder.repo + ' on GitHub' : '') || folder.path || 'Sessions in a directory of their own';
   const ide = shelf || fold || folder.key === MORE_KEY ? '' : html`${newButtonHtml(folder)}${folderMoreHtml(folder)}`;
   const kind = fold ? html`data-finished` : shelf ? html`data-shelf="${folder.status}"` : html`data-folder="${folder.key}"`;
   // A project with nothing in it but done sessions steps back as they do,
@@ -1201,12 +1233,12 @@ function groupHtml(folder, children) {
   }</button>${ide}</div><div class="so-folder__rows" id="${id}"${open ? '' : html` hidden`}>${children}</div></section>`;
 }
 
-// newButtonHtml is a folder's +: the new-session sheet, opened on the
-// folder. A folder the server would not start a session in (neither a preset
-// nor a path the dashboard lets be typed) has none.
+// newButtonHtml is a group's +: the new-session sheet, opened on the
+// group's repository. A folder of chats made before repositories has none:
+// new chats are made in repositories only (REPOS.md §4.1).
 function newButtonHtml(folder) {
-  const words = 'New session in ' + folder.label;
-  return html`<button class="ds-btn ds-btn--quiet ds-btn--icon ds-sm so-folder__new" type="button" data-new="${folder.key}" aria-label="${words}" data-tip="${words}"${harnesses.folderChoice(folder.key) ? '' : html` hidden`}>${raw(icon('plus', 16))}</button>`;
+  const words = 'New chat in ' + folder.label;
+  return html`<button class="ds-btn ds-btn--quiet ds-btn--icon ds-sm so-folder__new" type="button" data-new="${folder.key}" aria-label="${words}" data-tip="${words}"${folder.repo ? '' : html` hidden`}>${raw(icon('plus', 16))}</button>`;
 }
 
 // folderMoreHtml is a project folder's ⋮: its menu of what belongs to the
@@ -1388,8 +1420,17 @@ function rowFacts(session, running = null, mcp = null) {
   const facts = [
     ['Program', harnesses.label(session.harness)],
     ['State', STATE_WORDS[session.state] || session.state],
-    ['Folder', session.workdir],
   ];
+  // A chat in a repository (REPOS.md §5.3) works on its own branch in a
+  // worktree of its own; its pull request, once there is one, is a link.
+  if (session.repo) {
+    const pr = session.options && session.options.pr;
+    facts.push(['Repository', session.repo], ['Branch', session.branch], ['Base', session.base]);
+    if (pr && pr.url) facts.push(['Pull request', { text: pr.number ? '#' + pr.number : pr.url, href: pr.url }]);
+    facts.push(['Worktree', session.workdir]);
+  } else {
+    facts.push(['Folder', session.workdir]);
+  }
   // The MCP servers a chat's agent has on - Admin's and its folder's
   // .mcp.json's - and what of them could not be used (GET …/mcp).
   const mcpOn = mcp && Array.isArray(mcp.servers) ? mcp.servers.filter((s) => s.on !== false) : [];
@@ -2237,8 +2278,12 @@ function infoDialog(session, opener) {
   const list = el('dl', { class: 'ds-facts so-facts' });
   let running = null;
   let mcp = null;
+  // A fact is words, or a link ({text, href}) that opens on GitHub.
+  const fact = (value) => (value && value.href
+    ? el('dd', { class: 'so-fact' }, el('a', { class: 'ds-link', href: value.href, target: '_blank', rel: 'noopener', text: value.text }))
+    : el('dd', { class: 'so-fact', text: value }));
   const draw = () => list.replaceChildren(...rowFacts(session, running, mcp).map(([label, value]) => el('div', {},
-    el('dt', { text: label }), el('dd', { class: 'so-fact', text: value }))));
+    el('dt', { text: label }), fact(value))));
   const dialog = el('dialog', { class: 'ds-dialog so-info-dialog', 'aria-labelledby': 'infoTitle' },
     el('div', { class: 'ds-dialog__backdrop', 'data-ds-close': true }),
     el('div', { class: 'ds-dialog__box' },
@@ -2666,7 +2711,9 @@ async function openRowMenu(anchor, id, { device = false } = {}) {
   // iOS raises one for only inside the tap; from the action sheet's close,
   // a moment later, it got a focused field and no keyboard.
   menuInTap.add('rename');
-  if (!editor && session.workdir_missing) add('folder', 'Point to folder', 'folder', () => pointFolder(session, anchor));
+  // A chat in a repository has its worktree, made again by the server when
+  // it is gone: there is no folder to point it to.
+  if (!editor && !session.repo && session.workdir_missing) add('folder', 'Point to folder', 'folder', () => pointFolder(session, anchor));
   if (!editor) {
     // The statuses are one set: a group named by its heading (DS menu
     // groups), whose radio items the arrow keys walk past the heading to.
@@ -2736,7 +2783,10 @@ async function openFolderMenu(anchor, key) {
   if (!menu.hidden) await hideOverlay(menu);
   // Whether the folder has docs is mostly known (the list asks for every
   // folder); a folder asked about for the first time waits for the answer.
-  if (knownDocs(key) === undefined) await hasDocs(key);
+  // A repository's group has its notes only, for now: no docs, and no VS
+  // Code, which is a folder's and each chat has a worktree of its own.
+  const repo = !!folder.repo;
+  if (!repo && knownDocs(key) === undefined) await hasDocs(key);
   menuActions.clear();
   menuInTap.clear();
   const items = [];
@@ -2745,10 +2795,10 @@ async function openFolderMenu(anchor, key) {
     items.push(menuItemHtml(action, label, glyph));
   };
   add('notes', 'Notes', 'columns', () => showBoard(key));
-  if (knownDocs(key)) add('docs', 'Docs', 'fileText', () => showDocs(key));
+  if (!repo && knownDocs(key)) add('docs', 'Docs', 'fileText', () => showDocs(key));
   const ide = folder.ide;
   const running = !!ide && (ide.state === 'running' || ide.state === 'starting');
-  if (ide || harnesses.ideAvailable()) {
+  if (!repo && (ide || harnesses.ideAvailable())) {
     add('ide', running ? 'VS Code (open)' : 'Open VS Code', 'fileCode', () => openFolderIDE(key));
     // VS Code opens in a tab of its own, which a browser allows only
     // inside the tap.
@@ -2886,6 +2936,7 @@ function showHome({ replace = false } = {}) {
   if (state.transfer) state.transfer.attached();
   dom.sessionStatus.hidden = true;
   dom.sessionOutcome.hidden = true;
+  dom.sessionBranch.hidden = true;
   closeCover();
   clearNotice();
   // A move the person made is a step Back can undo; the page putting its
@@ -2939,6 +2990,7 @@ function showBoard(key, { replace = false } = {}) {
   if (state.transfer) state.transfer.attached();
   dom.sessionStatus.hidden = true;
   dom.sessionOutcome.hidden = true;
+  dom.sessionBranch.hidden = true;
   closeCover();
   clearNotice();
   const hash = '#board=' + encodeURIComponent(key);
@@ -2992,6 +3044,7 @@ function showDocs(key, { page = '', at = '', replace = false } = {}) {
   if (state.transfer) state.transfer.attached();
   dom.sessionStatus.hidden = true;
   dom.sessionOutcome.hidden = true;
+  dom.sessionBranch.hidden = true;
   closeCover();
   clearNotice();
   const hash = docsHash(key, page);
@@ -3017,6 +3070,7 @@ function applySession(session, { soon = false } = {}) {
   drawTitling(session.id);
   drawStatusChip(statusOf(session));
   drawOutcomeTag();
+  drawBranchChip();
 
   // What it runs and on which model is in the list's mark and in "Info" in
   // the row's menu; the bar keeps its width for the name. A chat says what
@@ -3988,8 +4042,10 @@ function measureForStart() {
   }
 }
 
-async function newSession(workdir = '') {
-  const pick = await harnesses.openNewSessionSheet({ workdir });
+// newSession opens the new-session sheet; `key`, a group's key from its +,
+// opens it on that group's repository.
+async function newSession(key = '') {
+  const pick = await harnesses.openNewSessionSheet({ repo: repoOfKey(key) });
   if (!pick) return;
   // On a phone the drawer is what "New session" was tapped in, and the thing
   // being started is behind it. Leaving it open puts a list over the terminal
@@ -4011,8 +4067,7 @@ async function newSession(workdir = '') {
       body: {
         client_id: clientKey(),
         harness: pick.harness,
-        workdir_mode: pick.workdir_mode,
-        workdir: pick.workdir,
+        workdir_mode: harnesses.DYNAMIC,
         cols: size.cols || undefined,
         rows: size.rows || undefined,
       },
@@ -4046,8 +4101,10 @@ async function startChat(pick) {
         account: pick.account || undefined,
         auto_switch: pick.auto_switch || undefined,
         mcp: pick.mcp && Object.keys(pick.mcp).length ? pick.mcp : undefined,
-        workdir_mode: pick.workdir_mode,
-        workdir: pick.workdir,
+        // A repository's worktree on its own branch (REPOS.md §4.2), or a
+        // fresh folder of its own.
+        ...(pick.repo ? { repo: pick.repo, base: pick.base, branch: pick.branch }
+          : { workdir_mode: pick.workdir_mode || harnesses.DYNAMIC }),
       },
     });
     replaceSession(data.session);
