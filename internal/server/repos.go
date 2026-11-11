@@ -25,6 +25,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 
@@ -166,8 +167,57 @@ type repoChat struct {
 	repo     string
 }
 
+// repoFetchTimeout bounds the git work of a request that makes a cache or
+// fetches it: a first clone of a large repository takes minutes.
+const repoFetchTimeout = 15 * time.Minute
+
+// detached is the request's context without its cancellation, for the git
+// work that must not stop half way when the browser gives up waiting: a
+// cache cut off in its first fetch is made from the start again next time.
+func detached(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), repoFetchTimeout)
+}
+
+// keyedLocks is one mutex per key, there while somebody holds or waits for
+// it.
+type keyedLocks struct {
+	mu    sync.Mutex
+	locks map[string]*keyedLock
+}
+
+type keyedLock struct {
+	mu    sync.Mutex
+	users int
+}
+
+// lock takes the key's lock and returns its release.
+func (k *keyedLocks) lock(key string) func() {
+	k.mu.Lock()
+	if k.locks == nil {
+		k.locks = map[string]*keyedLock{}
+	}
+	l := k.locks[key]
+	if l == nil {
+		l = &keyedLock{}
+		k.locks[key] = l
+	}
+	l.users++
+	k.mu.Unlock()
+	l.mu.Lock()
+	return func() {
+		l.mu.Unlock()
+		k.mu.Lock()
+		if l.users--; l.users == 0 {
+			delete(k.locks, key)
+		}
+		k.mu.Unlock()
+	}
+}
+
 // makeRepoWorktree checks a new chat's repository, base and branch and makes
-// its worktree; the status is the request's answer when it fails.
+// its worktree; the status is the request's answer when it fails. The
+// repository is named as GitHub spells it (Reaches), whatever the request
+// wrote, so that its cache and lock are one per repository.
 func (s *Server) makeRepoWorktree(ctx context.Context, body *createChatBody, id string) (*repoChat, int, string) {
 	repo := strings.TrimSpace(body.Repo)
 	gh, err := s.githubReady()
@@ -184,27 +234,33 @@ func (s *Server) makeRepoWorktree(ctx context.Context, body *createChatBody, id 
 	case !ok:
 		return nil, http.StatusBadRequest, "Socrates' GitHub App does not reach " + repo + ": choose it on the App's installation page on GitHub"
 	}
+	if repos.ValidName(remote.FullName) {
+		repo = remote.FullName
+	}
+	gitCtx, cancel := detached(ctx)
+	defer cancel()
 	base := strings.TrimSpace(body.Base)
 	if base == "" {
 		base = remote.DefaultBranch
 	}
 	branch := strings.TrimSpace(body.Branch)
-	if branch == "" {
+	generated := branch == ""
+	if generated {
 		text := ""
 		if body.Message != nil {
 			text = body.Message.Text
 		}
 		branch = defaultBranch(text, id)
 	}
-	if err := repos.CheckBranch(ctx, branch); err != nil {
+	if err := repos.CheckBranch(gitCtx, branch); err != nil {
 		return nil, http.StatusBadRequest, err.Error()
 	}
 	if base != "" {
-		if err := repos.CheckBranch(ctx, base); err != nil {
+		if err := repos.CheckBranch(gitCtx, base); err != nil {
 			return nil, http.StatusBadRequest, "the base: " + err.Error()
 		}
 	}
-	co, err := s.repos.Create(ctx, repo, id, branch, base)
+	co, err := s.repos.Create(gitCtx, repo, id, branch, base, generated)
 	var inUse *repos.ErrBranchInUse
 	switch {
 	case errors.As(err, &inUse):
@@ -282,6 +338,42 @@ func (s *Server) setSetup(id string, st repoSetupState) {
 	s.events.poke()
 }
 
+// readLease is options.lease: the commit Socrates last pushed the chat's
+// branch at, or made it from (repos.Chat.Lease).
+func readLease(raw json.RawMessage) string {
+	var o struct {
+		Lease string `json:"lease"`
+	}
+	if len(raw) > 0 {
+		_ = json.Unmarshal(raw, &o)
+	}
+	return o.Lease
+}
+
+// repoChatOf is a chat in a repository as internal/repos works on it, its
+// lease read from the chat's options at every call and kept there. A chat
+// that is gone (deleted, its worktree still being dealt with) keeps the
+// lease it had.
+func (s *Server) repoChatOf(row *store.Session) repos.Chat {
+	id, lease := row.ID, readLease(row.Options)
+	return repos.Chat{FullName: row.Repo, ID: row.ID, Path: row.Workdir, Branch: row.Branch, Base: row.Base,
+		Lease: func() string {
+			if now, err := s.store.GetSession(id); err == nil {
+				lease = readLease(now.Options)
+			}
+			return lease
+		},
+		SetLease: func(sha string) {
+			lease = sha
+			if _, err := s.store.UpdateChatOptions(id, func(raw json.RawMessage) json.RawMessage {
+				return withOption(raw, "lease", sha)
+			}); err != nil && !errors.Is(err, store.ErrNotFound) {
+				log.Printf("chat %s: could not record its branch's lease: %v", id, err)
+			}
+		},
+	}
+}
+
 // readDoneAt is options.worktree_done: the status_at of the done-filing whose
 // worktree was dealt with, so that the sweep, which parks a done chat every
 // minute, deals with it once.
@@ -305,14 +397,28 @@ func readDoneAt(raw json.RawMessage) int64 {
 // says that it is being set up (options.setup).
 func (p *chatPeer) prepareRepo(ctx context.Context, row *store.Session, tools *chattools.Endpoint) error {
 	s := p.hub.srv
-	if _, err := s.repos.Ensure(ctx, row.Repo, row.Workdir, row.Branch, row.Base); err != nil {
+	chat := s.repoChatOf(row)
+	co, err := s.repos.Ensure(ctx, chat)
+	if err != nil {
 		var inUse *repos.ErrBranchInUse
 		if errors.As(err, &inUse) {
 			return errors.New(s.branchInUse(inUse))
 		}
+		if errors.Is(err, repos.ErrNoCache) {
+			p.notice(agent.NoticeRepository, "The worktree "+row.Workdir+" cannot be used: "+err.Error()+".")
+		}
 		return fmt.Errorf("the chat's worktree of %s: %w", row.Repo, err)
 	}
+	if co.Start != "" {
+		chat.SetLease(co.Start)
+	}
 	setup := readSetup(row.Options)
+	// A worktree made again is a fresh checkout: what the setup installed
+	// went with the old one.
+	if co.Added && setup.State != setupPending {
+		setup = repoSetupState{State: setupPending}
+		s.setSetup(row.ID, setup)
+	}
 	if setup.State == setupPending || setup.State == setupRunning {
 		setup = p.runSetup(ctx, row)
 	}
@@ -435,10 +541,22 @@ func (p *chatPeer) pushAfterTurn() {
 	}
 	ctx, cancel := context.WithTimeout(p.hub.ctx, 5*time.Minute)
 	defer cancel()
-	if _, err := s.repos.Push(ctx, row.Repo, row.Branch); err != nil && ctx.Err() == nil {
+	if _, err := s.repos.Push(ctx, s.repoChatOf(row)); err != nil && ctx.Err() == nil {
 		log.Printf("chat %s: the push of %s failed: %v", p.id, row.Branch, err)
-		p.notice(agent.NoticeRepository, "The branch "+row.Branch+" could not be pushed to GitHub: "+err.Error())
+		p.notice(agent.NoticeRepository, pushFailure(row.Branch, err))
 	}
+}
+
+// pushFailure says in the chat why its branch was not pushed.
+func pushFailure(branch string, err error) string {
+	var rejected *repos.ErrRejected
+	switch {
+	case errors.As(err, &rejected):
+		return "The branch " + branch + " was not pushed: " + err.Error() + "."
+	case errors.Is(err, repos.ErrNoCache):
+		return "The branch " + branch + " was not pushed: " + err.Error() + ". Nothing of this chat reaches GitHub until it is found."
+	}
+	return "The branch " + branch + " could not be pushed to GitHub: " + err.Error()
 }
 
 // repoDone deals with the worktree of a chat that is done (REPOS.md §4.4),
@@ -467,7 +585,7 @@ func (s *Server) repoDone(ctx context.Context, row *store.Session) {
 		alive, _ := s.chats.launcher.Alive(row.ID)
 		return err == nil && now.Status == store.StatusDone && now.StatusAt == row.StatusAt && !alive
 	}
-	removed, kept, err := s.repos.Done(ctx, row.Repo, row.Workdir, row.Branch, stillDone)
+	removed, kept, err := s.repos.Done(ctx, s.repoChatOf(row), stillDone)
 	if ctx.Err() != nil || (!removed && kept == "" && err == nil) {
 		return
 	}
@@ -497,19 +615,113 @@ func (s *Server) repoDone(ctx context.Context, row *store.Session) {
 // uncommitted changes are committed as WIP and pushed, then the worktree and
 // the local branch go; GitHub keeps the branch. It runs in the background,
 // after the chat's host is gone; a failure leaves the worktree where it is,
-// so nothing is lost silently, and is logged - the chat is gone.
+// so nothing is lost silently, is logged - the chat is gone - and is tried
+// again every hour (repoDeletesFile). A worktree kept for untracked files
+// that were not committed (repos.ErrLeftOut) is not: it stays for somebody to
+// look at.
 func (s *Server) repoDelete(row *store.Session) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
-	if err := s.repos.Delete(ctx, row.Repo, row.Workdir, row.Branch, row.Title); err != nil {
-		log.Printf("chat %s: its worktree %s stays: %v", row.ID, row.Workdir, err)
+	d := pendingDelete{ID: row.ID, Repo: row.Repo, Workdir: row.Workdir, Branch: row.Branch, Base: row.Base,
+		Title: row.Title, Lease: readLease(row.Options)}
+	if err := s.deleteWorktree(ctx, d); err != nil && ctx.Err() == nil {
+		s.updateRepoDeletes(func(list []pendingDelete) []pendingDelete { return append(withoutDelete(list, d.ID), d) })
+	}
+}
+
+// deleteWorktree runs one delete and logs how it failed; a delete that is
+// not worth trying again is not an error.
+func (s *Server) deleteWorktree(ctx context.Context, d pendingDelete) error {
+	lease := d.Lease
+	chat := repos.Chat{FullName: d.Repo, ID: d.ID, Path: d.Workdir, Branch: d.Branch, Base: d.Base,
+		Lease: func() string { return lease }, SetLease: func(sha string) { lease = sha }}
+	err := s.repos.Delete(ctx, chat, d.Title)
+	var leftOut *repos.ErrLeftOut
+	switch {
+	case err == nil:
+		return nil
+	case errors.As(err, &leftOut):
+		log.Printf("chat %s: %v", d.ID, err)
+		return nil
+	}
+	log.Printf("chat %s: its worktree %s stays, and its delete is tried again within the hour: %v", d.ID, d.Workdir, err)
+	return err
+}
+
+// pendingDelete is a deleted chat whose worktree could not be dealt with
+// yet: what repos.Delete needs, as the chat's row had it.
+type pendingDelete struct {
+	ID      string `json:"id"`
+	Repo    string `json:"repo"`
+	Workdir string `json:"workdir"`
+	Branch  string `json:"branch"`
+	Base    string `json:"base"`
+	Title   string `json:"title"`
+	Lease   string `json:"lease,omitempty"`
+}
+
+// repoDeletesFile is the list of the deletes to try again.
+func (s *Server) repoDeletesFile() string { return filepath.Join(s.dataDir, "repo-deletes.json") }
+
+func withoutDelete(list []pendingDelete, id string) []pendingDelete {
+	out := list[:0:0]
+	for _, d := range list {
+		if d.ID != id {
+			out = append(out, d)
+		}
+	}
+	return out
+}
+
+// updateRepoDeletes changes the list of the deletes to try again.
+func (s *Server) updateRepoDeletes(change func([]pendingDelete) []pendingDelete) {
+	s.chats.repoDeletes.Lock()
+	defer s.chats.repoDeletes.Unlock()
+	var list []pendingDelete
+	if raw, err := os.ReadFile(s.repoDeletesFile()); err == nil {
+		_ = json.Unmarshal(raw, &list)
+	}
+	list = change(list)
+	if len(list) == 0 {
+		if err := os.Remove(s.repoDeletesFile()); err != nil && !os.IsNotExist(err) {
+			log.Printf("repos: %v", err)
+		}
+		return
+	}
+	raw, _ := json.MarshalIndent(list, "", "  ")
+	tmp := s.repoDeletesFile() + ".tmp"
+	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
+		log.Printf("repos: the deletes to try again could not be kept: %v", err)
+		return
+	}
+	if err := os.Rename(tmp, s.repoDeletesFile()); err != nil {
+		log.Printf("repos: the deletes to try again could not be kept: %v", err)
+	}
+}
+
+// retryRepoDeletes tries every delete that failed before once more.
+func (s *Server) retryRepoDeletes(ctx context.Context) {
+	var list []pendingDelete
+	s.updateRepoDeletes(func(l []pendingDelete) []pendingDelete { list = append(list, l...); return l })
+	for _, d := range list {
+		if ctx.Err() != nil {
+			return
+		}
+		dctx, cancel := context.WithTimeout(ctx, 10*time.Minute)
+		err := s.deleteWorktree(dctx, d)
+		cancel()
+		if err == nil {
+			log.Printf("chat %s: its worktree %s is dealt with now", d.ID, d.Workdir)
+			s.updateRepoDeletes(func(l []pendingDelete) []pendingDelete { return withoutDelete(l, d.ID) })
+		}
 	}
 }
 
 // repoCareEvery is how often the caches are looked after.
 const repoCareEvery = time.Hour
 
-// repoCare prunes and packs every cache once an hour.
+// repoCare prunes and packs every cache once an hour, and tries the deletes
+// that failed again.
 func (h *chatHub) repoCare() {
 	t := time.NewTicker(repoCareEvery)
 	defer t.Stop()
@@ -519,6 +731,7 @@ func (h *chatHub) repoCare() {
 			return
 		case <-t.C:
 			h.srv.repos.Maintain(h.ctx)
+			h.srv.retryRepoDeletes(h.ctx)
 		}
 	}
 }
@@ -550,7 +763,12 @@ func (s *Server) handleRepoBranches(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "Socrates' GitHub App does not reach "+repo+".")
 		return
 	}
-	list, err := s.repos.Branches(r.Context(), repo)
+	if repos.ValidName(remote.FullName) {
+		repo = remote.FullName
+	}
+	gitCtx, cancel := detached(r.Context())
+	defer cancel()
+	list, err := s.repos.Branches(gitCtx, repo)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "the branches could not be fetched: "+err.Error())
 		return
@@ -619,10 +837,11 @@ func (t *chatToolServer) pullRequest(ctx context.Context, row *store.Session, ar
 	if a.Title == "" {
 		return chattools.Response{Text: chattools.PullRequest + ` takes {"title": "…", "body": "…", "draft": false}; the title is missing.`, Error: true}
 	}
-	if _, err := s.repos.Push(ctx, row.Repo, row.Branch); err != nil {
-		return chattools.Response{Text: "The branch " + row.Branch + " could not be pushed to GitHub: " + err.Error(), Error: true}
+	chat := s.repoChatOf(row)
+	if _, err := s.repos.Push(ctx, chat); err != nil {
+		return chattools.Response{Text: pushFailure(row.Branch, err), Error: true}
 	}
-	if !s.repos.OnGitHub(ctx, row.Repo, row.Branch) {
+	if !s.repos.OnGitHub(ctx, chat) {
 		return chattools.Response{Text: "The branch " + row.Branch + " has no commits beyond " + row.Base + " yet: commit your work first.", Error: true}
 	}
 	pr, err := gh.OpenPullRequest(ctx, row.Repo, row.Branch, row.Base, a.Title, a.Body, a.Draft)
@@ -671,7 +890,10 @@ func (s *Server) seedClaudeMemory(row *store.Session, account string) {
 	if row.Harness != config.HarnessClaude || row.Repo == "" || account == "" {
 		return
 	}
-	cache := s.repos.CacheDir(row.Repo)
+	cache, err := s.repos.CacheOf(context.Background(), s.repoChatOf(row))
+	if err != nil {
+		return
+	}
 	if real, err := filepath.EvalSymlinks(cache); err == nil {
 		cache = real
 	}

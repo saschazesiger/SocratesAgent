@@ -155,13 +155,24 @@ those chats and is refused for a chat in a repository.
 `workdir_mode: "dynamic"` = *No repository*; preset and custom answer 400 with a sentence that says presets are
 gone). With a repository the handler:
 
-1. Checks that the App reaches the repository.
+1. Checks that the App reaches the repository. *As built:* the row keeps the name as GitHub spells it (`Reaches`),
+   whatever case the request used, and the cache path and the repository's lock follow it (the lock ignores
+   case); Admin's setup of a repository is found whatever the case (`GitHubSettings.RepoSetup`).
 2. **Fetches the cache** (`git fetch --prune origin`), creating it the first time: `git init --bare`, `git remote
    add origin <url>`, `remote.origin.fetch = +refs/heads/*:refs/remotes/origin/*` (so a fetch never moves a
    chat's local branch), `git fetch`. The repository's git operations run under one lock per repository.
+   *As built:* the fetch runs on a context detached from the request (fifteen minutes at most), so a browser
+   that gives up does not cut a first clone off half way; a retried request with the same `client_id` waits for
+   the first one and answers with its chat. Before every fetch, and before every push, the cache's
+   configuration is put back: `remote.origin.url` the expected URL, no `remote.origin.pushurl`, the fetch
+   refspec above, `core.logAllRefUpdates = true` (existing caches get it at their next fetch). A cache whose
+   `HEAD` is missing is made again only when it is not there at all and has no `worktrees/`; any other
+   trouble is an error, never a delete.
 3. **Makes the worktree**: `git worktree add -b <branch> <root>/<name>-<id8> origin/<base>`, without an upstream (the branch is not on GitHub yet; the first push sets it); for an
    existing branch `git worktree add -b <branch> <path> origin/<branch>` with upstream `origin/<branch>`. A branch already
-   checked out in another chat's worktree answers 409 naming that chat.
+   checked out in another chat's worktree answers 409 naming that chat. *As built:* a branch name Socrates
+   generated (the request named none) that the cache or GitHub has already gets `-<id8>` appended instead of
+   continuing that branch; only a name the person gives continues an existing branch.
 4. Writes the worktree's own git configuration (`extensions.worktreeConfig`, `git config --worktree`):
    `remote.origin.url` stays the plain HTTPS URL; the credentials come from the helper (§5.2).
    *As built:* nothing is written per worktree. The cache's configuration (shared by its worktrees) has the
@@ -181,17 +192,22 @@ server's, plus `SOCRATES_REPO=owner/name`, `SOCRATES_BRANCH`, `SOCRATES_BASE`, `
 credential helper (§5.2), so `npm ci` against private packages on GitHub works. Timeout ten minutes. Output goes to
 `<data>/chats/<id>/setup.log`. The chat shows *Setting up the repository…* while it runs and a notice when it
 failed (with the log's last lines); the agent's instructions name the log and the failure, and the agent starts
-either way. A typical script: `npm ci`, `cp /etc/<project>/.env .env`.
+either way. A typical script: `npm ci`, `cp /etc/<project>/.env .env`. *As built:* a worktree made again (the
+chat was done and goes on) sets the setup back to `pending`, so it runs again in the fresh checkout.
 
 ### 4.4 The chat's lifetime
 
 | When | What Socrates does |
 |---|---|
-| Every **turn end** (`TypeTurnEnded`, not during a rebuild) | If the branch has commits GitHub does not have, `git push --force-with-lease origin <branch>` (the branch is the chat's own; a rebase onto the base rewrites it). Uncommitted changes are left alone: committing is the agent's work. A failed push is a notice in the chat. |
-| **Done** | The turn-end push, then: worktree clean and everything pushed → `git worktree remove`, local branch deleted from the cache (GitHub has it). Otherwise the worktree stays, and the chat says why. |
-| **Reopened**, or started after its worktree was removed | Before the host starts, the worktree is made again from `origin/<branch>` (§4.2 step 3, existing branch). |
-| **Deleted** (by hand or by the retention sweep) | Uncommitted changes are committed to the branch as `WIP: uncommitted changes of chat "<title>"` and pushed, then the worktree and the local branch go. Nothing is lost silently. The branch on GitHub stays: GitHub's *Automatically delete head branches* removes merged ones. |
-| **Every hour** | `git worktree prune` and `git gc --auto` in each cache. |
+| Every **turn end** (`TypeTurnEnded`, not during a rebuild) | If the branch's tip is not the chat's **lease** (`options.lease`: the commit Socrates last pushed it at, or made it from), it is pushed with `git push --force-with-lease=refs/heads/<branch>:<expected>` (the branch is the chat's own; a rebase onto the base rewrites it). `<expected>` is what GitHub has now (`git ls-remote`), and only when the chat has that commit: the lease, an ancestor of the tip, or an earlier tip of the branch (its reflog: the agent pushed it itself and rewrote it). Anything else is somebody else's commit: no push, never a retry with force, and a notice: *the branch on GitHub has commits this chat does not have: fetch and rebase*. A tip that is the lease is not pushed even when GitHub has no such branch any more, so a branch squash-merged and deleted on GitHub comes back only with new commits. Uncommitted changes are left alone: committing is the agent's work. A failed push is a notice in the chat. |
+| **Done** | The turn-end push, then: worktree on its branch (`git symbolic-ref HEAD` is `refs/heads/<branch>`, no rebase, merge, cherry-pick, revert or bisect under way), clean and everything pushed (the tip is the lease, or GitHub's branches have it) → `git worktree remove`, local branch deleted from the cache. Otherwise the worktree stays, and the chat says why. |
+| **Reopened**, or started after its worktree was removed | Before the host starts, the worktree is made again from the local branch if the cache still has it, else from `origin/<branch>` (§4.2 step 3, existing branch), else from the base; the setup runs again (§4.3). |
+| **Deleted** (by hand or by the retention sweep) | Uncommitted changes are committed to the branch as `WIP: uncommitted changes of chat "<title>"` (no hooks; tracked changes and untracked files, except files over 10 MB and names that look like secrets: `.env`, `.env.*`, `*.pem`, `*.key`, `id_rsa*`, `id_ed25519*`, `*.p12`) and pushed, then the worktree and the local branch go. A worktree not on its branch, or with an operation under way, is kept as it is instead: a WIP commit on its HEAD goes to `socrates/rescue/<id8>` on GitHub, the chat's branch is pushed as it is. A push GitHub refuses (somebody else's commits) goes to the rescue branch as well. Untracked files left out keep the worktree where it is: they are listed in the commit's message and in the log. Any other failure keeps the worktree too and is tried again every hour (`<data>/repo-deletes.json`). The branch on GitHub stays: GitHub's *Automatically delete head branches* removes merged ones. |
+| **Every hour** | `git worktree prune` and `git gc --auto` in each cache under the current root; the deletes that failed are tried again. |
+
+*As built:* a chat's cache is found from its worktree (`git rev-parse --git-common-dir`), or, with the worktree
+gone, beside where it was (`<dir of the worktree>/.repos/<owner>/<name>.git`): a chat made before the workspace
+root changed keeps its own cache. A chat whose cache cannot be found is not pushed, and says so in a notice.
 
 ### 4.5 Pull requests and the base
 
@@ -242,7 +258,10 @@ chat's tool socket with the chat's token (both already in the host's environment
 token for that repository. The server answers only for **the chat's own repository**; anything else gets no
 credentials and git fails with its own message. The answer is `username=x-access-token`, `password=<installation
 token>`. Server-side git (cache, push at turn end) passes the same token with `-c
-http.extraHeader=Authorization: Basic …` and never writes it to disk.
+http.extraHeader=Authorization: Basic …` and never writes it to disk. *As built:* the header is scoped to the
+clone URL's scheme and host (`http.https://github.com/.extraHeader`), so a remote URL changed to another host
+never gets it, and every server-side git runs with `-c core.hooksPath=/dev/null -c core.fsmonitor=false`: the
+cache and the worktrees are the agent's to write, and nothing in them is run by the server.
 
 *As built:* the configuration is a file, `<data>/chats/<id>/gitconfig`, named by `GIT_CONFIG_GLOBAL` in the
 agent's environment (written by the host at every start and account switch). It includes the person's own
@@ -298,7 +317,8 @@ start of a Claude chat of a repository on an account, the memory of an older fol
 - `sessions` gets `repo TEXT NOT NULL DEFAULT ''`, `base TEXT NOT NULL DEFAULT ''`, `branch TEXT NOT NULL
   DEFAULT ''` (schema version 13, `addSessionColumns`). `repo` empty = a chat without a repository or an old
   folder chat.
-- `options.pr = {number, url}` once a pull request is open; `options.setup = {state, at}`.
+- `options.pr = {number, url}` once a pull request is open; `options.setup = {state, at}`; `options.lease`, the
+  commit Socrates last pushed the branch at or made it from (§4.4).
 - kv: the sealed App keys (§3.1).
 - settings: `github = {app_id, slug, name, owner, html_url, repos: {"owner/name": {setup}}}`.
 - `workspace.presets` and `workspace.allow_custom` are no longer read for new chats and leave Admin; they stay in

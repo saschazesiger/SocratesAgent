@@ -75,6 +75,11 @@ type chatHub struct {
 	tools *chatToolServer
 	// repoBusy is the chats whose worktree repoDone is dealing with.
 	repoBusy sync.Map
+	// repoDeletes guards the file of the deletes to retry (repoDeletesFile).
+	repoDeletes sync.Mutex
+	// creating are the client_ids whose create request is under way, so
+	// that a retry waits for the first and answers with its chat.
+	creating keyedLocks
 }
 
 func newChatHub(s *Server) *chatHub {
@@ -932,6 +937,10 @@ func (s *Server) handleCreateChat(w http.ResponseWriter, r *http.Request) {
 	defer s.events.poke()
 	clientID := strings.TrimSpace(body.ClientID)
 	if clientID != "" {
+		// A retry of a create whose first request is still at work (the
+		// first fetch of a big repository takes minutes) waits for it, and
+		// then finds its chat.
+		defer s.chats.creating.lock(clientID)()
 		if existing, err := s.store.SessionByClientID(clientID); err == nil {
 			s.answerChat(w, http.StatusOK, existing, nil)
 			return
@@ -1017,7 +1026,7 @@ func (s *Server) handleCreateChat(w http.ResponseWriter, r *http.Request) {
 		row.Repo, row.Base, row.Branch = inRepo.repo, inRepo.checkout.Base, inRepo.checkout.Branch
 		// The setup runs before the agent's first turn, in the pump that
 		// launches its host (prepareRepo), so this request does not wait.
-		row.Options = withOption(row.Options, "setup", repoSetupState{State: setupPending})
+		row.Options = withOption(withOption(row.Options, "setup", repoSetupState{State: setupPending}), "lease", inRepo.checkout.Start)
 	}
 	if err := s.store.CreateSession(row); err != nil {
 		s.discardWorktree(inRepo)

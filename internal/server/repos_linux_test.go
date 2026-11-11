@@ -20,6 +20,7 @@ import (
 	"github.com/saschazesiger/SocratesAgent/internal/agent"
 	"github.com/saschazesiger/SocratesAgent/internal/agent/chattools"
 	"github.com/saschazesiger/SocratesAgent/internal/agenthost"
+	"github.com/saschazesiger/SocratesAgent/internal/config"
 	"github.com/saschazesiger/SocratesAgent/internal/repos"
 	"github.com/saschazesiger/SocratesAgent/internal/store"
 )
@@ -39,11 +40,19 @@ type fakeGitHub struct {
 
 func (f *fakeGitHub) Connected() bool { return true }
 
+// Reaches finds the repository whatever the case of its name, and names it
+// as it is spelled, as GitHub does.
 func (f *fakeGitHub) Reaches(_ context.Context, fullName string) (repos.Remote, bool, error) {
-	if _, err := os.Stat(filepath.Join(f.dir, fullName+".git")); err != nil {
-		return repos.Remote{}, false, nil
+	owners, _ := os.ReadDir(f.dir)
+	for _, owner := range owners {
+		names, _ := os.ReadDir(filepath.Join(f.dir, owner.Name()))
+		for _, name := range names {
+			if canonical := owner.Name() + "/" + strings.TrimSuffix(name.Name(), ".git"); strings.EqualFold(canonical, fullName) {
+				return repos.Remote{FullName: canonical, DefaultBranch: "main"}, true, nil
+			}
+		}
 	}
-	return repos.Remote{FullName: fullName, DefaultBranch: "main"}, true, nil
+	return repos.Remote{}, false, nil
 }
 
 func (f *fakeGitHub) RepoToken(_ context.Context, fullName string) (string, error) {
@@ -521,7 +530,7 @@ func TestClaudeMemoryIsBroughtOverOnce(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	row := &store.Session{ID: "new", Harness: "claude", Repo: "octo/app", Kind: store.KindChat}
+	row := &store.Session{ID: "new", Harness: "claude", Repo: "octo/app", Kind: store.KindChat, Workdir: srv.repos.WorktreeDir("octo/app", "new")}
 	srv.seedClaudeMemory(row, "a1")
 	target := filepath.Join(projects, claudeProjectDir(srv.repos.CacheDir("octo/app")), "memory")
 	if got, err := os.ReadFile(filepath.Join(target, "notes", "push.md")); err != nil || string(got) != "push to main\n" {
@@ -533,5 +542,180 @@ func TestClaudeMemoryIsBroughtOverOnce(t *testing.T) {
 	srv.seedClaudeMemory(row, "a1")
 	if got, _ := os.ReadFile(filepath.Join(target, "MEMORY.md")); string(got) != "- [Push](push.md)\n" {
 		t.Fatalf("the memory was brought over twice: %q", got)
+	}
+}
+
+// A worktree made again (the chat was done, then goes on) runs the setup
+// again: what it installed went with the old one.
+func TestTheSetupRunsAgainInAWorktreeMadeAgain(t *testing.T) {
+	f := newFakeGitHub(t)
+	counter := filepath.Join(t.TempDir(), "setups")
+	c := newRepoEnv(t, f, "echo ran >> "+counter)
+	code, body := c.createIn(t, "repo-1", map[string]any{"repo": "octo/app", "branch": "socrates/again",
+		"message": map[string]any{"client_id": "m1", "text": "Start"}})
+	if code != http.StatusCreated {
+		t.Fatalf("create: %d %v", code, body)
+	}
+	id, workdir := sessionOf(t, body)["id"].(string), sessionOf(t, body)["workdir"].(string)
+	c.waitJournal(t, id, 15*time.Second, "the first turn", turnsEnded(1))
+	res, _ := c.do(t, c.client, "POST", "/api/sessions/"+id+"/file", `{"status":"done"}`)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("done: %d", res.StatusCode)
+	}
+	waitForCond(t, 15*time.Second, "the host to park", func() bool { alive, _ := c.srv.chats.launcher.Alive(id); return !alive })
+	waitForCond(t, 15*time.Second, "the worktree to go", func() bool {
+		c.srv.sweep(context.Background(), time.Now())
+		_, err := os.Stat(workdir)
+		return os.IsNotExist(err)
+	})
+	c.send(t, id, "m2", "Go on")
+	c.waitJournal(t, id, 15*time.Second, "the second turn", turnsEnded(2))
+	if raw, _ := os.ReadFile(counter); strings.Count(string(raw), "ran") != 2 {
+		t.Fatalf("the setup ran %q", raw)
+	}
+}
+
+// Somebody else's commit on the chat's branch is never overwritten: the turn
+// end's push is refused, and the chat says to fetch and rebase.
+func TestAPushOverSomebodysCommitIsANotice(t *testing.T) {
+	f := newFakeGitHub(t)
+	c := newRepoEnv(t, f, "")
+	code, body := c.createIn(t, "repo-1", map[string]any{"repo": "octo/app", "branch": "socrates/shared",
+		"message": map[string]any{"client_id": "m1", "text": "Start"}})
+	if code != http.StatusCreated {
+		t.Fatalf("create: %d %v", code, body)
+	}
+	id, workdir := sessionOf(t, body)["id"].(string), sessionOf(t, body)["workdir"].(string)
+	c.waitJournal(t, id, 15*time.Second, "the first turn", turnsEnded(1))
+	other := t.TempDir()
+	testGit(t, other, "clone", "--quiet", f.base+"/octo/app.git", ".")
+	if err := os.WriteFile(filepath.Join(other, "theirs.txt"), []byte("theirs\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	testGit(t, other, "add", ".")
+	testGit(t, other, "commit", "--quiet", "-m", "theirs")
+	testGit(t, other, "push", "--quiet", "origin", "HEAD:refs/heads/socrates/shared")
+	theirs := f.remoteBranch("octo/app", "socrates/shared")
+	// Another chat's fetch brings their commit into the cache.
+	if res, _ := c.do(t, c.client, "GET", "/api/github/repos/octo/app/branches", ""); res.StatusCode != http.StatusOK {
+		t.Fatalf("branches: %d", res.StatusCode)
+	}
+	if err := os.WriteFile(filepath.Join(workdir, "mine.txt"), []byte("mine\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	testGit(t, workdir, "add", ".")
+	testGit(t, workdir, "commit", "--quiet", "-m", "mine")
+	c.send(t, id, "m2", "Go on")
+	c.waitJournal(t, id, 15*time.Second, "the notice", func(events []agent.Event) bool {
+		for _, ev := range events {
+			if ev.Type == agent.TypeNotice && ev.Code == agent.NoticeRepository && strings.Contains(ev.Text, "fetch and rebase") {
+				return true
+			}
+		}
+		return false
+	})
+	if f.remoteBranch("octo/app", "socrates/shared") != theirs {
+		t.Fatal("their commit was overwritten")
+	}
+}
+
+// A create keeps going when the browser gives up on it, a retry with the
+// same client_id gets the chat the first one made, a generated branch name
+// that is taken gets the chat's id8, and the repository is named as GitHub
+// spells it.
+func TestCreatingAChatInARepositoryIsRobust(t *testing.T) {
+	f := newFakeGitHub(t)
+	c := newRepoEnv(t, f, "")
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	made, status, msg := c.srv.makeRepoWorktree(ctx, &createChatBody{Repo: "octo/app", Branch: "socrates/cancelled"}, "cccccccc11112222")
+	if status != 0 || made == nil {
+		t.Fatalf("a create whose request went away: %d %s", status, msg)
+	}
+
+	var wg sync.WaitGroup
+	ids := make([]string, 2)
+	codes := make([]int, 2)
+	for i := range ids {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			code, body := c.post(t, "/api/chats", map[string]any{"client_id": "same", "harness": "fake", "repo": "OCTO/App",
+				"message": map[string]any{"client_id": "m1", "text": "Fix it"}})
+			codes[i] = code
+			if s, ok := body["session"].(map[string]any); ok {
+				ids[i], _ = s["id"].(string)
+			}
+		}(i)
+	}
+	wg.Wait()
+	if ids[0] == "" || ids[0] != ids[1] || codes[0]+codes[1] != http.StatusCreated+http.StatusOK {
+		t.Fatalf("a retried create: %v %v", codes, ids)
+	}
+	row, err := c.srv.store.GetSession(ids[0])
+	if err != nil || row.Repo != "octo/app" || row.Branch != "socrates/fix-it" || readLease(row.Options) == "" {
+		t.Fatalf("the chat: %+v %v", row, err)
+	}
+	code, body := c.createIn(t, "another", map[string]any{"repo": "octo/app", "message": map[string]any{"client_id": "m1", "text": "Fix it"}})
+	if s := sessionOf(t, body); code != http.StatusCreated || s["branch"] != "socrates/fix-it-"+s["id"].(string)[:8] {
+		t.Fatalf("a generated name that is taken: %d %v", code, body)
+	}
+}
+
+// Admin's setup of a repository is found whatever the case of its name.
+func TestTheSetupIsFoundWhateverTheCase(t *testing.T) {
+	e := signedIn(t)
+	next := e.srv.Settings()
+	next.GitHub.Repos = map[string]config.RepoSettings{"Octo/App": {Setup: "npm ci"}}
+	if err := e.srv.saveSettings(next); err != nil {
+		t.Fatal(err)
+	}
+	e.srv.useGitHubApp()
+	if got := e.srv.setupScript("octo/app"); got != "npm ci" {
+		t.Fatalf("the setup of octo/app: %q", got)
+	}
+}
+
+// A delete that fails keeps the worktree and is tried again by the hourly
+// care until it goes through.
+func TestAFailedDeleteIsTriedAgain(t *testing.T) {
+	f := newFakeGitHub(t)
+	c := newRepoEnv(t, f, "")
+	code, body := c.createIn(t, "repo-1", map[string]any{"repo": "octo/app", "branch": "socrates/retry", "title": "Retry",
+		"message": map[string]any{"client_id": "m1", "text": "Start"}})
+	if code != http.StatusCreated {
+		t.Fatalf("create: %d %v", code, body)
+	}
+	id, workdir := sessionOf(t, body)["id"].(string), sessionOf(t, body)["workdir"].(string)
+	c.waitJournal(t, id, 15*time.Second, "the first turn", turnsEnded(1))
+	if err := os.WriteFile(filepath.Join(workdir, "half.txt"), []byte("half\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	bare := filepath.Join(f.dir, "octo", "app.git")
+	if err := os.Rename(bare, bare+".away"); err != nil {
+		t.Fatal(err)
+	}
+	if res, _ := c.do(t, c.client, "DELETE", "/api/sessions/"+id, ""); res.StatusCode != http.StatusOK {
+		t.Fatalf("delete: %d", res.StatusCode)
+	}
+	waitForCond(t, 15*time.Second, "the delete to be kept for later", func() bool {
+		raw, err := os.ReadFile(c.srv.repoDeletesFile())
+		return err == nil && strings.Contains(string(raw), id)
+	})
+	if _, err := os.Stat(filepath.Join(workdir, "half.txt")); err != nil {
+		t.Fatal("the worktree went without its work on GitHub")
+	}
+	if err := os.Rename(bare+".away", bare); err != nil {
+		t.Fatal(err)
+	}
+	c.srv.retryRepoDeletes(context.Background())
+	if _, err := os.Stat(workdir); !os.IsNotExist(err) {
+		t.Fatal("the worktree is still there")
+	}
+	if _, err := os.Stat(c.srv.repoDeletesFile()); !os.IsNotExist(err) {
+		t.Fatal("the delete is still kept for later")
+	}
+	if tip := f.remoteBranch("octo/app", "socrates/retry"); tip == "" || testGit(t, bare, "log", "-1", "--format=%s", tip) != repos.WIPMessage("Retry") {
+		t.Fatal("the WIP commit is not on GitHub")
 	}
 }

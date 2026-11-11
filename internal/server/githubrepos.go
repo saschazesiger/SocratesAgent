@@ -34,6 +34,6 @@ func (a githubRepos) CloneURL(fullName string) string { return a.svc.CloneURL(fu
 // repository's setup script read from the settings at the moment it runs.
 func (s *Server) useGitHubApp() {
 	s.UseGitHub(githubRepos{s.ghApp}, func(fullName string) string {
-		return s.Settings().GitHub.Repos[fullName].Setup
+		return s.Settings().GitHub.RepoSetup(fullName)
 	})
 }

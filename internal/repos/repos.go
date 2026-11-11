@@ -62,6 +62,42 @@ type Checkout struct {
 	Branch   string
 	Base     string
 	Existing bool
+	// Added says that the worktree was made now (Ensure: it was not there).
+	Added bool
+	// Start is the commit a worktree made now starts at when it was made
+	// from GitHub's branch or the base, "" when it was made from the chat's
+	// own local branch: the caller keeps it as the chat's lease (Chat).
+	Start string
+}
+
+// Chat is a chat's worktree as the operations after its creation need it.
+type Chat struct {
+	FullName string
+	// ID is the chat's id; its first eight characters name RescueBranch.
+	ID     string
+	Path   string
+	Branch string
+	Base   string
+	// Lease is the commit Socrates last pushed the branch at, or made it
+	// from (Checkout.Start), "" when it is not known; SetLease keeps a new
+	// one. Both are called under the repository's lock: the caller keeps
+	// the lease where it lasts (the chat's options) and reads it from there
+	// at every call, never from a copy taken earlier. nil is none.
+	Lease    func() string
+	SetLease func(sha string)
+}
+
+func (c Chat) lease() string {
+	if c.Lease == nil {
+		return ""
+	}
+	return c.Lease()
+}
+
+func (c Chat) setLease(sha string) {
+	if c.SetLease != nil && sha != "" && sha != c.lease() {
+		c.SetLease(sha)
+	}
 }
 
 // ErrBranchInUse is a branch that is checked out in another worktree already:
@@ -102,6 +138,8 @@ type Manager struct {
 
 // lock takes the repository's lock and returns its release.
 func (m *Manager) lock(fullName string) func() {
+	// GitHub's names do not care about case, and neither does the lock.
+	fullName = strings.ToLower(fullName)
 	m.mu.Lock()
 	if m.locks == nil {
 		m.locks = map[string]*sync.Mutex{}
@@ -203,11 +241,12 @@ func lastLines(s string, n int) string {
 
 // gitEnv is the environment of a git the server runs: the server's own,
 // without what would point git elsewhere, never asking at a terminal, and,
-// with a token, the token as an Authorization header for an https remote.
-// The header goes in through GIT_CONFIG_* rather than `-c` so that it is in
-// no process listing; the credential helpers are switched off at the same
-// time, so that root's own login (gh) is never asked instead.
-func gitEnv(token string) []string {
+// with a token, the token as an Authorization header for the remote's scheme
+// and host only (remoteURL): a remote URL somebody changed to another host
+// never sees it. The header goes in through GIT_CONFIG_* rather than `-c` so
+// that it is in no process listing; the credential helpers are switched off
+// at the same time, so that root's own login (gh) is never asked instead.
+func gitEnv(token, remoteURL string) []string {
 	var env []string
 	for _, kv := range os.Environ() {
 		key, _, _ := strings.Cut(kv, "=")
@@ -220,22 +259,31 @@ func gitEnv(token string) []string {
 		env = append(env, kv)
 	}
 	env = append(env, "GIT_TERMINAL_PROMPT=0")
-	if token != "" {
+	if u, err := url.Parse(remoteURL); token != "" && err == nil && u.Scheme != "" && u.Host != "" {
 		basic := base64.StdEncoding.EncodeToString([]byte("x-access-token:" + token))
 		env = append(env, "GIT_CONFIG_COUNT=2",
 			"GIT_CONFIG_KEY_0=credential.helper", "GIT_CONFIG_VALUE_0=",
-			"GIT_CONFIG_KEY_1=http.extraHeader", "GIT_CONFIG_VALUE_1=Authorization: Basic "+basic)
+			"GIT_CONFIG_KEY_1=http."+u.Scheme+"://"+u.Host+"/.extraHeader", "GIT_CONFIG_VALUE_1=Authorization: Basic "+basic)
 	}
 	return env
 }
 
-// run runs git in dir and returns what it printed.
-func run(ctx context.Context, env []string, dir string, args ...string) (string, error) {
+// safeConfig goes before every git command the server runs: the cache and
+// its worktrees are the agent's to write, so nothing in them that git would
+// run - a hook, an fsmonitor - is run by the server.
+var safeConfig = []string{"-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false"}
+
+// run runs git in dir and returns what it printed; stdin, when it is not
+// empty, is its input.
+func run(ctx context.Context, env []string, dir, stdin string, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, gitTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd := exec.CommandContext(ctx, "git", append(append([]string{}, safeConfig...), args...)...)
 	cmd.Dir = dir
 	cmd.Env = env
+	if stdin != "" {
+		cmd.Stdin = strings.NewReader(stdin)
+	}
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	if err := cmd.Run(); err != nil {
@@ -246,24 +294,63 @@ func run(ctx context.Context, env []string, dir string, args ...string) (string,
 
 // local runs a git that needs no network.
 func (m *Manager) local(ctx context.Context, dir string, args ...string) (string, error) {
-	return run(ctx, gitEnv(""), dir, args...)
+	return run(ctx, gitEnv("", ""), dir, "", args...)
 }
 
 // remote runs a git that reaches the repository's remote, with its token
 // when the remote is https.
 func (m *Manager) remote(ctx context.Context, fullName, dir string, args ...string) (string, error) {
 	token := ""
-	if u, err := url.Parse(m.URL(fullName)); err == nil && u.Scheme == "https" && m.Token != nil {
+	remoteURL := m.URL(fullName)
+	if u, err := url.Parse(remoteURL); err == nil && u.Scheme == "https" && m.Token != nil {
 		t, err := m.Token(ctx, fullName)
 		if err != nil {
 			return "", fmt.Errorf("no token for %s: %w", fullName, err)
 		}
 		token = t
 	}
-	return run(ctx, gitEnv(token), dir, args...)
+	return run(ctx, gitEnv(token, remoteURL), dir, "", args...)
 }
 
 // ------------------------------------------------------------- the cache
+
+// ErrNoCache is a chat whose repository's cache cannot be found: its
+// worktree's .git names one that is gone, or neither is there.
+var ErrNoCache = errors.New("the chat's repository cache cannot be found")
+
+// cacheOf is the cache of a chat's worktree: the worktree's common git
+// directory when the worktree is there, so that a chat made before the
+// workspace root changed keeps its own cache, and otherwise the one beside
+// where the worktree was (<root>/.repos/<owner>/<name>.git, with the root the
+// chat was made under).
+func (m *Manager) cacheOf(ctx context.Context, c Chat) (string, error) {
+	if isWorktree(c.Path) {
+		out, err := m.local(ctx, c.Path, "rev-parse", "--path-format=absolute", "--git-common-dir")
+		if err != nil {
+			return "", fmt.Errorf("%w: %s is no worktree of it (%v)", ErrNoCache, c.Path, err)
+		}
+		return filepath.Clean(strings.TrimSpace(out)), nil
+	}
+	owner, name, _ := strings.Cut(c.FullName, "/")
+	return filepath.Join(filepath.Dir(filepath.Clean(c.Path)), ".repos", owner, name+".git"), nil
+}
+
+// existingCache is cacheOf, and ErrNoCache when that cache is not there.
+func (m *Manager) existingCache(ctx context.Context, c Chat) (string, error) {
+	cache, err := m.cacheOf(ctx, c)
+	if err != nil {
+		return "", err
+	}
+	if _, err := os.Stat(filepath.Join(cache, "HEAD")); err != nil {
+		return "", fmt.Errorf("%w: %s is not there", ErrNoCache, cache)
+	}
+	return cache, nil
+}
+
+// CacheOf is the cache of a chat's worktree (cacheOf).
+func (m *Manager) CacheOf(ctx context.Context, c Chat) (string, error) {
+	return m.cacheOf(ctx, c)
+}
 
 // Fetch brings the repository's cache up to date with GitHub, making it the
 // first time.
@@ -272,30 +359,66 @@ func (m *Manager) Fetch(ctx context.Context, fullName string) error {
 		return fmt.Errorf("%q is not a repository", fullName)
 	}
 	defer m.lock(fullName)()
-	return m.fetchLocked(ctx, fullName)
+	return m.fetchLocked(ctx, fullName, m.CacheDir(fullName))
 }
 
-func (m *Manager) fetchLocked(ctx context.Context, fullName string) error {
-	cache := m.CacheDir(fullName)
-	if _, err := os.Stat(filepath.Join(cache, "HEAD")); err != nil {
+func (m *Manager) fetchLocked(ctx context.Context, fullName, cache string) error {
+	_, err := os.Stat(filepath.Join(cache, "HEAD"))
+	switch {
+	case err == nil:
+	case os.IsNotExist(err):
+		// A cache without HEAD is a start that failed half way - unless
+		// worktrees hang on it, whose branches may hold commits GitHub
+		// does not have: that one is nobody's to delete.
+		if _, err := os.Stat(filepath.Join(cache, "worktrees")); err == nil {
+			return fmt.Errorf("the cache %s has worktrees but no HEAD: it is left as it is for somebody to look at", cache)
+		}
 		if err := m.initCache(ctx, fullName, cache); err != nil {
 			return err
 		}
-	} else if out, _ := m.local(ctx, cache, "config", "--get", "remote.origin.url"); strings.TrimSpace(out) != m.URL(fullName) {
-		// GitHub's address changed (SOCRATES_GITHUB_GIT): the cache follows.
-		if _, err := m.local(ctx, cache, "config", "remote.origin.url", m.URL(fullName)); err != nil {
+	default:
+		return err
+	}
+	if err := m.configure(ctx, fullName, cache); err != nil {
+		return err
+	}
+	_, err = m.remote(ctx, fullName, cache, "fetch", "--prune", "--quiet", "origin")
+	return err
+}
+
+// configure puts the cache's configuration back as Socrates wants it, every
+// time it reaches GitHub: the cache's configuration is shared with the
+// worktrees, where an agent may have changed it. The remote is the
+// repository's URL with no push URL of its own (GitHub's address may change,
+// SOCRATES_GITHUB_GIT), the fetch never moves a local branch, and every ref
+// update is logged, so that a branch's earlier tips are known (pushLocked)
+// and a rewrite can be undone.
+func (m *Manager) configure(ctx context.Context, fullName, cache string) error {
+	for _, args := range [][]string{
+		{"config", "remote.origin.url", m.URL(fullName)},
+		{"config", "--replace-all", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*"},
+		{"config", "core.logAllRefUpdates", "true"},
+	} {
+		if _, err := m.local(ctx, cache, args...); err != nil {
 			return err
 		}
 	}
-	_, err := m.remote(ctx, fullName, cache, "fetch", "--prune", "--quiet", "origin")
-	return err
+	// Exit status 5 is "there was none".
+	if _, err := m.local(ctx, cache, "config", "--unset-all", "remote.origin.pushurl"); err != nil {
+		var exit *exec.ExitError
+		if !errors.As(err, &exit) || exit.ExitCode() != 5 {
+			return err
+		}
+	}
+	return nil
 }
 
 // initCache makes an empty bare repository whose fetch puts GitHub's branches
 // under refs/remotes/origin/, never onto a local branch: the local branches
 // are the chats', and a fetch must never move one of them.
 func (m *Manager) initCache(ctx context.Context, fullName, cache string) error {
-	// A half-made cache of a start that failed is made again.
+	// A half-made cache of a start that failed is made again (the caller
+	// has made sure that it has no worktrees).
 	_ = os.RemoveAll(cache)
 	if err := os.MkdirAll(filepath.Dir(cache), 0o755); err != nil {
 		return err
@@ -328,7 +451,7 @@ func (m *Manager) Branches(ctx context.Context, fullName string) ([]Branch, erro
 		return nil, fmt.Errorf("%q is not a repository", fullName)
 	}
 	defer m.lock(fullName)()
-	if err := m.fetchLocked(ctx, fullName); err != nil {
+	if err := m.fetchLocked(ctx, fullName, m.CacheDir(fullName)); err != nil {
 		return nil, err
 	}
 	out, err := m.local(ctx, m.CacheDir(fullName), "for-each-ref", "--sort=-committerdate",
@@ -354,8 +477,17 @@ func (m *Manager) Branches(ctx context.Context, fullName string) ([]Branch, erro
 
 // hasRef says whether the cache has the ref.
 func (m *Manager) hasRef(ctx context.Context, cache, ref string) bool {
-	_, err := m.local(ctx, cache, "rev-parse", "--verify", "--quiet", ref+"^{commit}")
-	return err == nil
+	_, ok := m.resolve(ctx, cache, ref)
+	return ok
+}
+
+// resolve is the commit a ref names.
+func (m *Manager) resolve(ctx context.Context, dir, ref string) (string, bool) {
+	out, err := m.local(ctx, dir, "rev-parse", "--verify", "--quiet", ref+"^{commit}")
+	if err != nil {
+		return "", false
+	}
+	return strings.TrimSpace(out), true
 }
 
 // ---------------------------------------------------------- the worktrees
@@ -363,8 +495,10 @@ func (m *Manager) hasRef(ctx context.Context, cache, ref string) bool {
 // Create fetches the repository and makes a chat's worktree: on a new branch
 // made from base, or - when GitHub has the branch already - on that branch,
 // tracking it. A branch another worktree has checked out is an
-// *ErrBranchInUse.
-func (m *Manager) Create(ctx context.Context, fullName, chatID, branch, base string) (Checkout, error) {
+// *ErrBranchInUse. generated says that Socrates named the branch, not the
+// person: a generated name that GitHub or the cache has already gets the
+// chat's id8 appended instead of continuing that branch.
+func (m *Manager) Create(ctx context.Context, fullName, chatID, branch, base string, generated bool) (Checkout, error) {
 	if !ValidName(fullName) {
 		return Checkout{}, fmt.Errorf("%q is not a repository", fullName)
 	}
@@ -372,29 +506,50 @@ func (m *Manager) Create(ctx context.Context, fullName, chatID, branch, base str
 		return Checkout{}, err
 	}
 	defer m.lock(fullName)()
-	if err := m.fetchLocked(ctx, fullName); err != nil {
+	cache := m.CacheDir(fullName)
+	if err := m.fetchLocked(ctx, fullName, cache); err != nil {
 		return Checkout{}, err
 	}
-	return m.addLocked(ctx, fullName, m.WorktreeDir(fullName, chatID), branch, base)
+	if generated && (m.hasRef(ctx, cache, "refs/heads/"+branch) || m.hasRef(ctx, cache, "refs/remotes/origin/"+branch)) {
+		branch += "-" + id8(chatID)
+		if err := CheckBranch(ctx, branch); err != nil {
+			return Checkout{}, err
+		}
+	}
+	return m.addLocked(ctx, fullName, cache, m.WorktreeDir(fullName, chatID), branch, base)
+}
+
+// id8 is the first eight characters of a chat id.
+func id8(chatID string) string {
+	if len(chatID) > 8 {
+		return chatID[:8]
+	}
+	return chatID
 }
 
 // Ensure makes sure a chat's worktree is there before its agent starts: one
 // that was removed when the chat was done is made again, from the local branch
-// if the cache still has it and from GitHub's otherwise.
-func (m *Manager) Ensure(ctx context.Context, fullName, path, branch, base string) (Checkout, error) {
-	if !ValidName(fullName) {
-		return Checkout{}, fmt.Errorf("%q is not a repository", fullName)
+// if the cache still has it and from GitHub's otherwise (Checkout.Added).
+// The cache is the one the chat was made with (cacheOf), whatever the
+// workspace root is now.
+func (m *Manager) Ensure(ctx context.Context, c Chat) (Checkout, error) {
+	if !ValidName(c.FullName) {
+		return Checkout{}, fmt.Errorf("%q is not a repository", c.FullName)
 	}
 	// Under the lock: a done chat's worktree being removed right now is
 	// made again once that is over, not taken for one that is there.
-	defer m.lock(fullName)()
-	if isWorktree(path) {
-		return Checkout{Path: path, Branch: branch, Base: base}, nil
-	}
-	if err := m.fetchLocked(ctx, fullName); err != nil {
+	defer m.lock(c.FullName)()
+	cache, err := m.cacheOf(ctx, c)
+	if err != nil {
 		return Checkout{}, err
 	}
-	return m.addLocked(ctx, fullName, path, branch, base)
+	if isWorktree(c.Path) {
+		return Checkout{Path: c.Path, Branch: c.Branch, Base: c.Base}, nil
+	}
+	if err := m.fetchLocked(ctx, c.FullName, cache); err != nil {
+		return Checkout{}, err
+	}
+	return m.addLocked(ctx, c.FullName, cache, c.Path, c.Branch, c.Base)
 }
 
 // isWorktree says whether path is a checkout: a folder with a .git in it.
@@ -403,8 +558,7 @@ func isWorktree(path string) bool {
 	return err == nil
 }
 
-func (m *Manager) addLocked(ctx context.Context, fullName, path, branch, base string) (Checkout, error) {
-	cache := m.CacheDir(fullName)
+func (m *Manager) addLocked(ctx context.Context, fullName, cache, path, branch, base string) (Checkout, error) {
 	// A worktree whose folder went (removed by hand, a restore without it)
 	// still holds its branch until it is pruned.
 	if _, err := m.local(ctx, cache, "worktree", "prune"); err != nil {
@@ -421,7 +575,7 @@ func (m *Manager) addLocked(ctx context.Context, fullName, path, branch, base st
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return Checkout{}, err
 	}
-	out := Checkout{Path: path, Branch: branch, Base: base}
+	out := Checkout{Path: path, Branch: branch, Base: base, Added: true}
 	local, remote := "refs/heads/"+branch, "refs/remotes/origin/"+branch
 	var args []string
 	switch {
@@ -433,16 +587,19 @@ func (m *Manager) addLocked(ctx context.Context, fullName, path, branch, base st
 	case m.hasRef(ctx, cache, remote):
 		args = []string{"worktree", "add", "--quiet", "--track", "-b", branch, path, "origin/" + branch}
 		out.Existing = true
+		out.Start, _ = m.resolve(ctx, cache, remote)
 	default:
 		if base == "" {
 			return Checkout{}, fmt.Errorf("the branch %s is not on GitHub, and there is no base to make it from", branch)
 		}
-		if !m.hasRef(ctx, cache, "refs/remotes/origin/"+base) {
+		start, ok := m.resolve(ctx, cache, "refs/remotes/origin/"+base)
+		if !ok {
 			return Checkout{}, fmt.Errorf("the base branch %s is not on GitHub", base)
 		}
 		// No upstream: the branch is not on GitHub yet, and its first push
 		// sets one.
 		args = []string{"worktree", "add", "--quiet", "--no-track", "-b", branch, path, "origin/" + base}
+		out.Start = start
 	}
 	if _, err := m.local(ctx, cache, args...); err != nil {
 		return Checkout{}, err
@@ -530,40 +687,125 @@ func (m *Manager) Discard(ctx context.Context, fullName, path, branch string) er
 	return m.removeLocked(ctx, cache, path, branch)
 }
 
-// OnGitHub says whether GitHub has the branch, as of the cache's last look.
-func (m *Manager) OnGitHub(ctx context.Context, fullName, branch string) bool {
-	defer m.lock(fullName)()
-	return m.hasRef(ctx, m.CacheDir(fullName), "refs/remotes/origin/"+branch)
+// OnGitHub says whether GitHub has the chat's branch, as of the cache's last
+// look.
+func (m *Manager) OnGitHub(ctx context.Context, c Chat) bool {
+	defer m.lock(c.FullName)()
+	cache, err := m.cacheOf(ctx, c)
+	return err == nil && m.hasRef(ctx, cache, "refs/remotes/origin/"+c.Branch)
 }
 
-// Ahead says whether the chat's branch has commits GitHub does not have.
-func (m *Manager) Ahead(ctx context.Context, fullName, branch string) (bool, error) {
-	defer m.lock(fullName)()
-	return m.ahead(ctx, m.CacheDir(fullName), branch)
+// ErrRejected is a push that would have thrown away a commit GitHub has and
+// the chat does not: somebody else pushed to the chat's branch. Socrates
+// never forces it; the agent fetches and rebases.
+type ErrRejected struct{ Branch string }
+
+func (e *ErrRejected) Error() string {
+	return "the branch " + e.Branch + " on GitHub has commits this chat does not have: fetch and rebase (git fetch origin && git rebase origin/" +
+		e.Branch + "), and it is pushed again"
 }
 
-// Push pushes the chat's branch when it has commits GitHub does not have, and
-// says whether it did. The push is --force-with-lease: the branch is the
-// chat's own and a rebase onto its base rewrites it, but a commit somebody
-// else pushed to it on GitHub since the cache last saw it is never
-// overwritten - that push fails instead. Uncommitted changes are left alone:
-// committing is the agent's work.
-func (m *Manager) Push(ctx context.Context, fullName, branch string) (bool, error) {
-	defer m.lock(fullName)()
-	return m.pushLocked(ctx, fullName, branch)
-}
-
-func (m *Manager) pushLocked(ctx context.Context, fullName, branch string) (bool, error) {
-	cache := m.CacheDir(fullName)
-	ahead, err := m.ahead(ctx, cache, branch)
-	if err != nil || !ahead {
+// Push pushes the chat's branch when it has moved since Socrates last pushed
+// it or made it (Chat.Lease), and says whether it did (pushLocked).
+// Uncommitted changes are left alone: committing is the agent's work.
+func (m *Manager) Push(ctx context.Context, c Chat) (bool, error) {
+	defer m.lock(c.FullName)()
+	cache, err := m.existingCache(ctx, c)
+	if err != nil {
 		return false, err
 	}
+	if err := m.configure(ctx, c.FullName, cache); err != nil {
+		return false, err
+	}
+	return m.pushLocked(ctx, c, cache)
+}
+
+// pushLocked pushes the chat's branch when its tip is not the commit
+// Socrates last pushed or made it from. A branch whose tip is that commit is
+// not pushed even when GitHub no longer has it: a branch squash-merged and
+// deleted on GitHub is not brought back unless the chat committed after it.
+//
+// The push is forced, with an explicit lease: the branch is the chat's own and
+// a rebase onto its base rewrites it, but a commit on GitHub that the chat
+// does not have is never overwritten (pushRef). That is an *ErrRejected, and
+// is never retried with force. A chat made before the lease was kept
+// (Lease "") is pushed when it has commits GitHub does not have.
+func (m *Manager) pushLocked(ctx context.Context, c Chat, cache string) (bool, error) {
+	ref := "refs/heads/" + c.Branch
+	tip, ok := m.resolve(ctx, cache, ref)
+	if !ok {
+		return false, nil
+	}
+	lease := c.lease()
+	if lease == tip {
+		return false, nil
+	}
+	if lease == "" {
+		if ahead, err := m.ahead(ctx, cache, c.Branch); err != nil || !ahead {
+			return false, err
+		}
+	}
+	pushed, err := m.pushRef(ctx, c.FullName, cache, c.Branch, tip, lease)
+	if err != nil {
+		return false, err
+	}
+	c.setLease(tip)
+	return pushed, nil
+}
+
+// pushRef pushes tip to the branch on GitHub unless GitHub has it there
+// already. What GitHub has is asked (ls-remote), not taken from the cache's
+// last fetch, and it may only be overwritten when the chat has it: the commit
+// Socrates last pushed or made the branch from (lease), one the branch's tip
+// contains, or one the branch pointed at before (its reflog: the agent pushed
+// it itself, then rewrote it). The push's lease is that commit, so a push to
+// GitHub in between fails rather than being overwritten.
+func (m *Manager) pushRef(ctx context.Context, fullName, cache, branch, tip, lease string) (bool, error) {
 	ref := "refs/heads/" + branch
-	if _, err := m.remote(ctx, fullName, cache, "push", "--quiet", "--force-with-lease="+ref, "origin", ref+":"+ref); err != nil {
+	out, err := m.remote(ctx, fullName, cache, "ls-remote", "origin", ref)
+	if err != nil {
+		return false, err
+	}
+	theirs := ""
+	for _, line := range strings.Split(out, "\n") {
+		if sha, name, ok := strings.Cut(strings.TrimSpace(line), "\t"); ok && name == ref {
+			theirs = sha
+		}
+	}
+	switch {
+	case theirs == tip:
+		// Pushed already, by the agent: the cache learns it.
+		_, _ = m.local(ctx, cache, "update-ref", "refs/remotes/origin/"+branch, tip)
+		return false, nil
+	case theirs != "" && theirs != lease && !m.chatHas(ctx, cache, branch, theirs, tip):
+		return false, &ErrRejected{Branch: branch}
+	}
+	if _, err := m.remote(ctx, fullName, cache, "push", "--quiet", "--force-with-lease="+ref+":"+theirs, "origin", ref+":"+ref); err != nil {
+		var ge *gitError
+		if errors.As(err, &ge) && (strings.Contains(ge.stderr, "stale info") || strings.Contains(ge.stderr, "[rejected]")) {
+			return false, &ErrRejected{Branch: branch}
+		}
 		return false, err
 	}
 	return true, nil
+}
+
+// chatHas says whether the commit is one the chat's branch has: in its tip's
+// history, or a tip it had before (the branch's reflog).
+func (m *Manager) chatHas(ctx context.Context, cache, branch, sha, tip string) bool {
+	if _, err := m.local(ctx, cache, "merge-base", "--is-ancestor", sha, tip); err == nil {
+		return true
+	}
+	out, err := m.local(ctx, cache, "reflog", "show", "--format=%H", "refs/heads/"+branch, "--")
+	if err != nil {
+		return false
+	}
+	for _, line := range strings.Split(out, "\n") {
+		if strings.TrimSpace(line) == sha {
+			return true
+		}
+	}
+	return false
 }
 
 // dirty says whether the worktree has changes that are not committed,
@@ -577,35 +819,87 @@ func (m *Manager) dirty(ctx context.Context, path string) (bool, error) {
 	return strings.TrimSpace(out) != "", nil
 }
 
+// inProgress are the files in a worktree's git directory that say an
+// operation is under way, with what it is.
+var inProgress = []struct{ file, what string }{
+	{"rebase-merge", "a rebase"}, {"rebase-apply", "a rebase"}, {"MERGE_HEAD", "a merge"},
+	{"CHERRY_PICK_HEAD", "a cherry-pick"}, {"REVERT_HEAD", "a revert"}, {"BISECT_LOG", "a bisect"},
+}
+
+// offBranch says why the worktree is not simply on the chat's branch, ""
+// when it is: an operation under way (a rebase, a merge ...), or HEAD
+// detached or on another branch. Committing or removing such a worktree
+// would lose or misplace what is in it.
+func (m *Manager) offBranch(ctx context.Context, path, branch string) (string, error) {
+	gitDir, err := m.local(ctx, path, "rev-parse", "--absolute-git-dir")
+	if err != nil {
+		return "", err
+	}
+	for _, p := range inProgress {
+		if _, err := os.Stat(filepath.Join(strings.TrimSpace(gitDir), p.file)); err == nil {
+			return p.what + " is in progress in it", nil
+		}
+	}
+	out, err := m.local(ctx, path, "symbolic-ref", "-q", "HEAD")
+	head := strings.TrimSpace(out)
+	switch {
+	case err != nil || head == "":
+		return "its HEAD is detached, not on its branch " + branch, nil
+	case head != "refs/heads/"+branch:
+		return "it is on " + strings.TrimPrefix(head, "refs/heads/") + ", not on its branch " + branch, nil
+	}
+	return "", nil
+}
+
 // Done is what filing a chat as done does to its worktree: the branch is
-// pushed, and a worktree that is clean and has everything on GitHub goes,
-// with the local branch (GitHub has it). Otherwise the worktree stays, and
-// kept says why, in words for the chat. mayRemove, when it is set, is asked
-// under the repository's lock just before the worktree goes: a chat picked up
-// again meanwhile keeps it, and kept is "".
-func (m *Manager) Done(ctx context.Context, fullName, path, branch string, mayRemove func() bool) (removed bool, kept string, err error) {
-	defer m.lock(fullName)()
-	cache := m.CacheDir(fullName)
-	if !isWorktree(path) {
+// pushed, and a worktree that is on its branch, clean and has everything on
+// GitHub goes, with the local branch (GitHub has it). Otherwise the worktree
+// stays, and kept says why, in words for the chat. mayRemove, when it is set,
+// is asked under the repository's lock just before the worktree goes: a chat
+// picked up again meanwhile keeps it, and kept is "".
+func (m *Manager) Done(ctx context.Context, c Chat, mayRemove func() bool) (removed bool, kept string, err error) {
+	defer m.lock(c.FullName)()
+	if !isWorktree(c.Path) {
 		return true, "", nil
 	}
-	if _, err := m.pushLocked(ctx, fullName, branch); err != nil {
+	cache, err := m.existingCache(ctx, c)
+	if err != nil {
+		return false, "its repository's cache cannot be found, so nothing was pushed", err
+	}
+	if err := m.configure(ctx, c.FullName, cache); err != nil {
+		return false, "", err
+	}
+	if _, err := m.pushLocked(ctx, c, cache); err != nil {
+		var rejected *ErrRejected
+		if errors.As(err, &rejected) {
+			return false, rejected.Error(), nil
+		}
 		return false, "its branch could not be pushed to GitHub", err
 	}
-	if d, err := m.dirty(ctx, path); err != nil {
+	if why, err := m.offBranch(ctx, c.Path, c.Branch); err != nil {
+		return false, "", err
+	} else if why != "" {
+		return false, why, nil
+	}
+	if d, err := m.dirty(ctx, c.Path); err != nil {
 		return false, "", err
 	} else if d {
 		return false, "it has changes that are not committed", nil
 	}
-	if a, err := m.ahead(ctx, cache, branch); err != nil {
-		return false, "", err
-	} else if a {
-		return false, "its branch has commits that are not on GitHub", nil
+	// Everything is on GitHub when the tip is what Socrates last pushed
+	// (GitHub may have merged and deleted the branch since), or GitHub's
+	// branches have it.
+	if tip, _ := m.resolve(ctx, cache, "refs/heads/"+c.Branch); tip == "" || tip != c.lease() {
+		if a, err := m.ahead(ctx, cache, c.Branch); err != nil {
+			return false, "", err
+		} else if a {
+			return false, "its branch has commits that are not on GitHub", nil
+		}
 	}
 	if mayRemove != nil && !mayRemove() {
 		return false, "", nil
 	}
-	if err := m.removeLocked(ctx, cache, path, branch); err != nil {
+	if err := m.removeLocked(ctx, cache, c.Path, c.Branch); err != nil {
 		return false, "", err
 	}
 	return true, "", nil
@@ -616,54 +910,227 @@ func WIPMessage(title string) string {
 	return fmt.Sprintf("WIP: uncommitted changes of chat %q", title)
 }
 
+// RescueBranch is the branch a deleted chat's worktree is kept on when it
+// was not simply on the chat's branch (a rebase under way, HEAD detached), or
+// when GitHub's branch has moved on without it.
+func RescueBranch(chatID string) string { return "socrates/rescue/" + id8(chatID) }
+
+// ErrLeftOut is a deleted chat's worktree that stays because untracked files
+// in it were not committed: they look like secrets, or are too big.
+type ErrLeftOut struct {
+	Path  string
+	Files []string
+}
+
+func (e *ErrLeftOut) Error() string {
+	return fmt.Sprintf("the worktree %s stays: %d untracked file(s) were not committed, as they look like secrets or are over %d MB: %s",
+		e.Path, len(e.Files), wipMaxSize>>20, strings.Join(e.Files, ", "))
+}
+
 // Delete is what deleting a chat does to its worktree: uncommitted changes
 // are committed to the branch (WIPMessage), the branch is pushed, and the
-// worktree and the local branch go; GitHub keeps the branch. Nothing is lost
-// silently: when the commit or the push fails, the worktree and the branch
-// stay where they are and the error says why.
-func (m *Manager) Delete(ctx context.Context, fullName, path, branch, title string) error {
-	defer m.lock(fullName)()
-	cache := m.CacheDir(fullName)
-	if isWorktree(path) {
-		d, err := m.dirty(ctx, path)
+// worktree and the local branch go; GitHub keeps the branch. A worktree that
+// is not simply on its branch (offBranch) is kept on RescueBranch instead,
+// and so is a branch GitHub has moved on without. Nothing is lost silently:
+// when the commit or the push fails, the worktree and the branch stay where
+// they are and the error says why, and untracked files that look like
+// secrets or are big are not committed, and keep the worktree (*ErrLeftOut).
+func (m *Manager) Delete(ctx context.Context, c Chat, title string) error {
+	defer m.lock(c.FullName)()
+	if !isWorktree(c.Path) {
+		return m.deleteBranchLocked(ctx, c)
+	}
+	cache, err := m.existingCache(ctx, c)
+	if err != nil {
+		return err
+	}
+	if err := m.configure(ctx, c.FullName, cache); err != nil {
+		return err
+	}
+	why, err := m.offBranch(ctx, c.Path, c.Branch)
+	if err != nil {
+		return err
+	}
+	var left []string
+	rescue := RescueBranch(c.ID)
+	if why != "" {
+		// The state as it is goes to a branch of its own: the chat's
+		// branch is pushed as it is.
+		sha, l, err := m.snapshot(ctx, c.Path, WIPMessage(title)+"\n\nThe worktree was kept as it was: "+why+".")
+		if err != nil {
+			return err
+		}
+		left = l
+		if err := m.pushRescue(ctx, c, cache, rescue, sha); err != nil {
+			return err
+		}
+		rescue += "-branch"
+	} else {
+		d, err := m.dirty(ctx, c.Path)
 		if err != nil {
 			return err
 		}
 		if d {
-			if err := m.commitAll(ctx, path, WIPMessage(title)); err != nil {
+			old, _ := m.resolve(ctx, cache, "refs/heads/"+c.Branch)
+			sha, l, err := m.snapshot(ctx, c.Path, WIPMessage(title))
+			if err != nil {
 				return err
+			}
+			left = l
+			if sha != old {
+				if _, err := m.local(ctx, c.Path, "update-ref", "-m", "socrates: WIP", "refs/heads/"+c.Branch, sha, old); err != nil {
+					return err
+				}
 			}
 		}
 	}
-	if _, err := m.pushLocked(ctx, fullName, branch); err != nil {
+	if _, err := m.pushLocked(ctx, c, cache); err != nil {
+		var rejected *ErrRejected
+		if !errors.As(err, &rejected) {
+			return err
+		}
+		tip, _ := m.resolve(ctx, cache, "refs/heads/"+c.Branch)
+		if err := m.pushRescue(ctx, c, cache, rescue, tip); err != nil {
+			return err
+		}
+	}
+	if len(left) > 0 {
+		return &ErrLeftOut{Path: c.Path, Files: left}
+	}
+	if err := m.removeLocked(ctx, cache, c.Path, c.Branch); err != nil {
 		return err
 	}
-	if isWorktree(path) {
-		return m.removeLocked(ctx, cache, path, branch)
+	for _, b := range []string{RescueBranch(c.ID), RescueBranch(c.ID) + "-branch"} {
+		if m.hasRef(ctx, cache, "refs/heads/"+b) {
+			_, _ = m.local(ctx, cache, "branch", "--quiet", "-D", b)
+		}
+	}
+	return nil
+}
+
+// deleteBranchLocked is Delete for a chat whose worktree is gone already:
+// its local branch, if the cache still has it, is pushed and goes.
+func (m *Manager) deleteBranchLocked(ctx context.Context, c Chat) error {
+	cache, err := m.existingCache(ctx, c)
+	if err != nil {
+		// No cache, no local branch: nothing here is lost.
+		return nil
+	}
+	if err := m.configure(ctx, c.FullName, cache); err != nil {
+		return err
+	}
+	if _, err := m.pushLocked(ctx, c, cache); err != nil {
+		var rejected *ErrRejected
+		if !errors.As(err, &rejected) {
+			return err
+		}
+		tip, _ := m.resolve(ctx, cache, "refs/heads/"+c.Branch)
+		if err := m.pushRescue(ctx, c, cache, RescueBranch(c.ID), tip); err != nil {
+			return err
+		}
 	}
 	_, _ = m.local(ctx, cache, "worktree", "prune")
-	if m.hasRef(ctx, cache, "refs/heads/"+branch) {
-		if other, _ := m.checkedOut(ctx, cache, branch); other == "" {
-			_, err := m.local(ctx, cache, "branch", "--quiet", "-D", branch)
+	if m.hasRef(ctx, cache, "refs/heads/"+c.Branch) {
+		if other, _ := m.checkedOut(ctx, cache, c.Branch); other == "" {
+			_, err := m.local(ctx, cache, "branch", "--quiet", "-D", c.Branch)
 			return err
 		}
 	}
 	return nil
 }
 
-// commitAll commits everything in the worktree. Hooks are not run - a WIP
-// commit is a rescue, not a contribution - and a machine without a git
-// identity commits as Socrates.
-func (m *Manager) commitAll(ctx context.Context, path, message string) error {
-	if _, err := m.local(ctx, path, "add", "--all"); err != nil {
+// pushRescue keeps sha on GitHub as the branch rescue.
+func (m *Manager) pushRescue(ctx context.Context, c Chat, cache, rescue, sha string) error {
+	if sha == "" {
+		return nil
+	}
+	if _, err := m.local(ctx, cache, "update-ref", "-m", "socrates: rescue", "refs/heads/"+rescue, sha); err != nil {
 		return err
 	}
-	args := []string{"commit", "--quiet", "--no-verify", "-m", message}
+	_, err := m.pushRef(ctx, c.FullName, cache, rescue, sha, "")
+	return err
+}
+
+// wipMaxSize is the largest untracked file a WIP commit takes.
+const wipMaxSize = 10 << 20
+
+// secretNames are the untracked files a WIP commit never takes: they are
+// what a secret is usually kept in, and a WIP commit goes to GitHub.
+var secretNames = []string{".env", ".env.*", "*.pem", "*.key", "id_rsa*", "id_ed25519*", "*.p12"}
+
+// leaveOut says whether an untracked file stays out of a WIP commit.
+func leaveOut(worktree, file string) bool {
+	base := filepath.Base(strings.TrimSuffix(file, "/"))
+	for _, pattern := range secretNames {
+		if ok, _ := filepath.Match(pattern, base); ok {
+			return true
+		}
+	}
+	fi, err := os.Lstat(filepath.Join(worktree, file))
+	return err == nil && fi.Mode().IsRegular() && fi.Size() > wipMaxSize
+}
+
+// snapshot commits everything in the worktree that is worth keeping and
+// returns the commit, made on HEAD without moving it or any branch: tracked
+// changes, and untracked files except those that look like secrets or are
+// over wipMaxSize, which it returns (they are listed in the commit's
+// message). A worktree with nothing to commit is its HEAD. Hooks are not run
+// - a WIP commit is a rescue, not a contribution - and a machine without a
+// git identity commits as Socrates.
+func (m *Manager) snapshot(ctx context.Context, path, message string) (string, []string, error) {
+	head, ok := m.resolve(ctx, path, "HEAD")
+	if !ok {
+		return "", nil, fmt.Errorf("%s has no HEAD commit", path)
+	}
+	if _, err := m.local(ctx, path, "add", "--update"); err != nil {
+		return "", nil, err
+	}
+	out, err := m.local(ctx, path, "ls-files", "-z", "--others", "--exclude-standard")
+	if err != nil {
+		return "", nil, err
+	}
+	var take, left []string
+	for _, file := range strings.Split(out, "\x00") {
+		switch {
+		case file == "":
+		case leaveOut(path, file):
+			left = append(left, file)
+		default:
+			take = append(take, file)
+		}
+	}
+	if len(take) > 0 {
+		if _, err := run(ctx, gitEnv("", ""), path, strings.Join(take, "\x00"),
+			"--literal-pathspecs", "add", "--pathspec-from-file=-", "--pathspec-file-nul"); err != nil {
+			return "", nil, err
+		}
+	}
+	tree, err := m.local(ctx, path, "write-tree")
+	if err != nil {
+		return "", nil, err
+	}
+	tree = strings.TrimSpace(tree)
+	if headTree, _ := m.resolveTree(ctx, path, head); headTree == tree {
+		return head, left, nil
+	}
+	if len(left) > 0 {
+		message += "\n\nLeft out (they look like secrets or are over 10 MB), still in " + path + ":\n- " + strings.Join(left, "\n- ")
+	}
+	args := []string{"commit-tree", tree, "-p", head, "-m", message}
 	if out, _ := m.local(ctx, path, "config", "user.email"); strings.TrimSpace(out) == "" {
 		args = append([]string{"-c", "user.name=Socrates", "-c", "user.email=socrates@localhost"}, args...)
 	}
-	_, err := m.local(ctx, path, args...)
-	return err
+	sha, err := m.local(ctx, path, args...)
+	if err != nil {
+		return "", nil, err
+	}
+	return strings.TrimSpace(sha), left, nil
+}
+
+// resolveTree is the tree of a commit.
+func (m *Manager) resolveTree(ctx context.Context, dir, commit string) (string, bool) {
+	out, err := m.local(ctx, dir, "rev-parse", "--verify", "--quiet", commit+"^{tree}")
+	return strings.TrimSpace(out), err == nil
 }
 
 // removeLocked removes a worktree and the chat's local branch. The caller has
