@@ -68,9 +68,11 @@ const probeWaiters = [];
 let probeTimer = null;
 let probeListeners = [];
 
-function noteProbe(folder, has) {
+function noteProbe(folder, has, repo) {
   const was = probes.get(folder);
-  probes.set(folder, { at: Date.now(), has });
+  // A listing says nothing of the repository: what the probe said stays.
+  if (repo === undefined) repo = (was && was.repo) || null;
+  probes.set(folder, { at: Date.now(), has, repo });
   if (!was || was.has !== has) for (const fn of probeListeners) fn(folder, has);
 }
 
@@ -84,6 +86,16 @@ export function onProbe(fn) {
 export function knownDocs(folder) {
   const kept = probes.get(folder);
   return kept ? kept.has : undefined;
+}
+
+/**
+ * knownRepo is where a folder's files are on a forge, as the last probe
+ * said: {remote: "github.com/owner/name", prefix: "the/folder/in/it"}, or
+ * null.
+ */
+export function knownRepo(folder) {
+  const kept = probes.get(folder);
+  return (kept && kept.repo) || null;
 }
 
 /**
@@ -112,7 +124,8 @@ async function runProbe() {
   try {
     const data = await api('/api/docs/probe', { method: 'POST', body: { folders }, attempts: 2 });
     const docs = (data && data.docs) || {};
-    for (const folder of folders) noteProbe(folder, !!docs[folder]);
+    const repos = (data && data.repos) || {};
+    for (const folder of folders) noteProbe(folder, !!docs[folder], repos[folder] || null);
   } catch {
     // Unknown stays unknown: the next drawing of the list asks again.
   }

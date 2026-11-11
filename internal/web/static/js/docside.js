@@ -63,6 +63,60 @@ export function docLinkTarget(href, folder) {
 }
 
 /**
+ * forgeLinkTarget is a link to a file of the folder by its address on the
+ * repository's forge - https://github.com/owner/name/blob/main/docs/x.md,
+ * GitLab's /-/blob/ - as docLinkTarget's {path, at}, when `repo` (docview.js
+ * knownRepo: {remote, prefix}) is the repository the address names and the
+ * file is a Markdown file inside the folder; else null. The branch in the
+ * address is not looked at: the file beside the chat is the one on disk.
+ */
+export function forgeLinkTarget(href, repo) {
+  if (!repo || !repo.remote) return null;
+  let url;
+  try { url = new URL(String(href || '')); } catch { return null; }
+  if (url.protocol !== 'https:' && url.protocol !== 'http:') return null;
+  const parts = url.pathname.split('/').filter(Boolean);
+  const blob = parts.indexOf('blob');
+  if (blob < 2 || parts.length < blob + 3) return null;
+  let name = parts.slice(0, blob);
+  if (name[name.length - 1] === '-') name = name.slice(0, -1);
+  let remote;
+  try { remote = (url.hostname + '/' + name.map(decodeURIComponent).join('/')).toLowerCase(); } catch { return null; }
+  if (remote !== String(repo.remote).toLowerCase()) return null;
+  let rel = parts.slice(blob + 2).join('/');
+  const prefix = String(repo.prefix || '').replace(/^\/+|\/+$/g, '');
+  if (prefix) {
+    if (!rel.startsWith(prefix + '/')) return null;
+    rel = rel.slice(prefix.length + 1);
+  }
+  // The heading GitHub's own anchors name is the kit's too.
+  return docLinkTarget(rel + url.hash, '/');
+}
+
+/**
+ * isPathLink is whether a link's target is a path to a Markdown file rather
+ * than an address (no scheme): one that names no file of the folder is said
+ * so, rather than left to a tab that would show Socrates' own page.
+ */
+export function isPathLink(href) {
+  const ref = String(href || '').trim().split(/[?#]/)[0];
+  return !!ref && !/^[a-z][a-z0-9+.-]*:/i.test(ref) && !ref.startsWith('//') && isMarkdown(ref);
+}
+
+/**
+ * fileIn is the listed file a link's path means: the path itself, else -
+ * an agent naming a file by its name or the end of its path - the one file
+ * whose path ends in it. null when there is none or more than one.
+ */
+export function fileIn(files, path) {
+  const list = (files || []).map((f) => f.path);
+  if (list.includes(path)) return path;
+  const tail = '/' + path;
+  const found = list.filter((p) => p.endsWith(tail));
+  return found.length === 1 ? found[0] : null;
+}
+
+/**
  * mountChatDocside wires the column (`panel`, #docsidePanel) and the
  * dialog. `onColumnOpen()` is called when the column opens (the tests' and
  * the artifacts' columns shut then). It answers
@@ -211,6 +265,14 @@ export function mountChatDocside({ panel, onColumnOpen }) {
       return;
     }
     if (my !== gen) return;
+    // A path the listing does not have: the one file it may mean, else a
+    // word (a listing cut short may not have every file).
+    const found = fileIn(data.files, path);
+    if (found) path = found;
+    else if (!data.truncated) {
+      toast(`${path} is not a Markdown file of this chat's folder.`, 'error');
+      return;
+    }
     // sent: the file the frame was sent to, until it says it shows it (a
     // frame the browser gives its old address back is sent there again).
     doc = { folder, path, base: data.base, mtime: 0, y: 0, title: '', sent: path };

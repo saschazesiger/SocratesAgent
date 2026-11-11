@@ -102,8 +102,9 @@ type docsState struct {
 }
 
 type docsProbed struct {
-	has bool
-	at  time.Time
+	has  bool
+	repo docs.Repo
+	at   time.Time
 }
 
 // docsKey is the key the tokens are signed with: 32 random bytes, kept in
@@ -244,10 +245,13 @@ func (s *Server) sessionWorkdirs() map[string]bool {
 
 // handleDocsProbe says which folders have Markdown, for the sidebar:
 //
-//	POST /api/docs/probe  {"folders": [...]}  ->  {"docs": {"<folder>": true|false}}
+//	POST /api/docs/probe  {"folders": [...]}  ->  {"docs": {"<folder>": true|false},
+//	                                               "repos": {"<folder>": {remote, prefix}}}
 //
 // The answer is keyed by the folders as they were sent. A folder whose docs
-// may not be shown is false.
+// may not be shown is false. `repos` names, for a folder with docs in a git
+// repository with a remote, where its files are on the forge, so that a chat
+// can open a link to one of them by its forge address beside the chat.
 func (s *Server) handleDocsProbe(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, 2<<20)
 	var body struct {
@@ -260,7 +264,7 @@ func (s *Server) handleDocsProbe(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "ask about at most "+strconv.Itoa(maxDocsProbe)+" folders at once")
 		return
 	}
-	answers := make([]bool, len(body.Folders))
+	answers := make([]docsProbed, len(body.Folders))
 	workdirs := s.sessionWorkdirs()
 	sem := make(chan struct{}, docsProbeWorkers)
 	var wg sync.WaitGroup
@@ -272,8 +276,8 @@ func (s *Server) handleDocsProbe(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		asked[folder] = true
-		if has, ok := s.docsProbeCached(folder); ok {
-			answers[i] = has
+		if p, ok := s.docsProbeCached(folder); ok {
+			answers[i] = p
 			continue
 		}
 		wg.Add(1)
@@ -281,42 +285,49 @@ func (s *Server) handleDocsProbe(w http.ResponseWriter, r *http.Request) {
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
-			has := s.docsAllowed(folder, workdirs) && docs.Has(folder)
-			s.docsProbeKeep(folder, has)
-			answers[i] = has
+			p := docsProbed{has: s.docsAllowed(folder, workdirs) && docs.Has(folder)}
+			if p.has {
+				p.repo = docs.RepoOf(folder)
+			}
+			answers[i] = s.docsProbeKeep(folder, p)
 		}()
 	}
 	wg.Wait()
 	// Every name of a folder gets its answer.
-	byFolder := make(map[string]bool, len(body.Folders))
+	byFolder := make(map[string]docsProbed, len(body.Folders))
 	for i, raw := range body.Folders {
-		if folder, err := boardFolder(raw); err == nil && answers[i] {
-			byFolder[folder] = true
+		if folder, err := boardFolder(raw); err == nil && answers[i].has {
+			byFolder[folder] = answers[i]
 		}
 	}
 	out := make(map[string]bool, len(body.Folders))
+	repos := map[string]docs.Repo{}
 	for _, raw := range body.Folders {
 		folder, err := boardFolder(raw)
-		out[raw] = err == nil && byFolder[folder]
+		p := byFolder[folder]
+		out[raw] = err == nil && p.has
+		if out[raw] && p.repo.Remote != "" {
+			repos[raw] = p.repo
+		}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"docs": out})
+	writeJSON(w, http.StatusOK, map[string]any{"docs": out, "repos": repos})
 }
 
 // docsProbeCached is a probe's answer for a folder from the last
 // docsProbeTTL.
-func (s *Server) docsProbeCached(folder string) (bool, bool) {
+func (s *Server) docsProbeCached(folder string) (docsProbed, bool) {
 	s.docsKeep.probeMu.Lock()
 	defer s.docsKeep.probeMu.Unlock()
 	p, ok := s.docsKeep.probe[folder]
 	if !ok || time.Since(p.at) > docsProbeTTL {
-		return false, false
+		return docsProbed{}, false
 	}
-	return p.has, true
+	return p, true
 }
 
 // docsProbeKeep keeps a probe's answer, and drops the old ones once there
-// are many.
-func (s *Server) docsProbeKeep(folder string, has bool) {
+// are many. It answers what it kept.
+func (s *Server) docsProbeKeep(folder string, p docsProbed) docsProbed {
 	s.docsKeep.probeMu.Lock()
 	defer s.docsKeep.probeMu.Unlock()
 	if s.docsKeep.probe == nil {
@@ -329,7 +340,9 @@ func (s *Server) docsProbeKeep(folder string, has bool) {
 			}
 		}
 	}
-	s.docsKeep.probe[folder] = docsProbed{has: has, at: time.Now()}
+	p.at = time.Now()
+	s.docsKeep.probe[folder] = p
+	return p
 }
 
 // docsHome is the page a folder's docs open on: its README (as spelt on

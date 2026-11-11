@@ -57,8 +57,8 @@ import { mountChatTests } from './chattests.js';
 import { mountChatArtifacts } from './artifacts.js';
 import { mountBoard } from './boards.js';
 import { mountDocs, docsHash, parseDocsRoute } from './docs.js';
-import { probeDocs, knownDocs, hasDocs } from './docview.js';
-import { mountChatDocside, docLinkTarget } from './docside.js';
+import { probeDocs, knownDocs, hasDocs, knownRepo } from './docview.js';
+import { mountChatDocside, docLinkTarget, forgeLinkTarget, isPathLink } from './docside.js';
 
 /* ------------------------------------------------------------- transport */
 
@@ -4488,12 +4488,19 @@ async function boot() {
     openAsk: (chatId, askId) => showChatQuestions(chatId, { askId, only: true }),
     toastRoom: (room) => { chatToastRoom = room; placeToasts(); },
     // A link to a Markdown file of the chat's folder opens it beside the
-    // chat (docside.js); any other link is the browser's.
+    // chat (docside.js): by its path, or by its address on the folder's own
+    // forge repository. A path to one that is not there is said so; any
+    // other link is the browser's.
     docLink: (href, session, opener) => {
       const folder = dirOf(session.workdir || '');
-      const target = docLinkTarget(href, folder);
-      if (!target || !state.docside) return false;
-      state.docside.open(folder, target.path, { at: target.at, opener });
+      if (!folder || !state.docside) return false;
+      const target = docLinkTarget(href, folder) || forgeLinkTarget(href, knownRepo(folder));
+      if (target) {
+        state.docside.open(folder, target.path, { at: target.at, opener });
+        return true;
+      }
+      if (!isPathLink(href)) return false;
+      toast(`${href} is not a Markdown file of this chat's folder.`, 'error');
       return true;
     },
   });
