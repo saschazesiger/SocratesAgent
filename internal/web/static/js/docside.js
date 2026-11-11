@@ -4,12 +4,14 @@
 // file:// address - opens the file here rather than in a tab that could not
 // show it, and so does a page of the chat's pages folder (pages.js). At a
 // desk it is a column on the chat's right, like the tests' (never open with
-// it); narrower a full screen dialog.
+// it); narrower a full screen dialog. A file the folder does not have is
+// looked for in the other working trees of its git repository: an agent
+// working in a `git worktree` of its own links what it wrote there.
 // "Open in Docs" takes it to the folder's Docs page with its tree.
 
 import { el, toast } from './api.js';
 import { html, raw, icon, iconEl, morph, showOverlay, hideOverlay } from './ui.js';
-import { SANDBOX, frameName, listing, pageUrl, stat, listenFrame, fileName, isMarkdown } from './docview.js';
+import { SANDBOX, frameName, listing, pageUrl, stat, locate, listenFrame, fileName, isMarkdown } from './docview.js';
 import { docsHash } from './docs.js';
 
 // Over this width the file is a column beside the chat (as the tests').
@@ -61,6 +63,19 @@ export function docLinkTarget(href, folder) {
   }
   if (!parts.length) return null;
   return { path: parts.join('/'), at };
+}
+
+/**
+ * outsideTarget is a path link that leads out of `folder` (docLinkTarget
+ * said null) as {path, at}, `path` absolute: a path relative to the folder
+ * is joined to it. null for anything that is no path to a Markdown file.
+ */
+export function outsideTarget(href, folder) {
+  let ref = String(href || '').trim().replace(/^file:\/\/(localhost)?/i, '');
+  if (!isPathLink(ref) || !folder) return null;
+  if (!ref.startsWith('/')) ref = folder.replace(/\/+$/, '') + '/' + ref;
+  const target = docLinkTarget(ref, '/');
+  return target ? { path: '/' + target.path, at: target.at } : null;
 }
 
 /**
@@ -123,7 +138,10 @@ export function fileIn(files, path) {
  * column shuts then); `onPage(folder, path)` each time the frame shows a
  * file (opened, followed to by a link, drawn again after a change). It
  * answers
- *   open(folder, path, {at, opener})   a file of a chat's folder
+ *   open(folder, path, {at, opener})   a file of a chat's folder (or of
+ *                                      another working tree of its repository)
+ *   openOutside(folder, href, {opener}) a path link out of the folder, when
+ *                                      another working tree has the file
  *   hide()                             the chat left the stage
  *   shut()                             another column opened
  *   isOpen()                           whether a file is shown
@@ -260,7 +278,7 @@ export function mountChatDocside({ panel, onColumnOpen, onPage }) {
 
   /* --------------------------------------------------------------- open */
 
-  async function open(folder, path, { at = '', opener = null } = {}) {
+  async function open(folder, path, { at = '', opener = null, elsewhere = true } = {}) {
     const my = ++gen;
     let data;
     try {
@@ -284,8 +302,33 @@ export function mountChatDocside({ panel, onColumnOpen, onPage }) {
       if (my !== gen) return;
       found = fileIn(data.files, path);
     }
+    // A listing cut short may not name a file the folder has.
+    if (!found && data.truncated) {
+      try {
+        const s = await stat(folder, path);
+        if (s) found = s.path;
+      } catch { /* looked for below */ }
+      if (my !== gen) return;
+    }
     if (found) path = found;
-    else if (!data.truncated) {
+    else if (elsewhere) {
+      // Not in the folder: the file in another working tree of its
+      // repository, where the chat's agent may have written it.
+      let there = null;
+      try {
+        there = await locate(folder, path);
+      } catch { /* said below */ }
+      if (my !== gen) return;
+      if (!there) {
+        toast(`${path} is not a Markdown file of this chat's folder.`, 'error');
+        return;
+      }
+      if (there.folder !== folder) {
+        open(there.folder, there.path, { at, opener, elsewhere: false });
+        return;
+      }
+      path = there.path;
+    } else {
       toast(`${path} is not a Markdown file of this chat's folder.`, 'error');
       return;
     }
@@ -306,6 +349,23 @@ export function mountChatDocside({ panel, onColumnOpen, onPage }) {
     clearInterval(timer);
     timer = setInterval(look, WATCH);
     look();
+  }
+
+  // A link out of the folder, by an absolute path or one with "..": the
+  // file when it lies in another working tree of the folder's repository.
+  async function openOutside(folder, href, { opener = null } = {}) {
+    const target = outsideTarget(href, folder);
+    const my = ++gen;
+    let there = null;
+    if (target) {
+      try { there = await locate(folder, target.path); } catch { /* said below */ }
+    }
+    if (my !== gen) return;
+    if (!there) {
+      toast(`${href} is not a Markdown file of this chat's folder.`, 'error');
+      return;
+    }
+    open(there.folder, there.path, { at: target.at, opener, elsewhere: false });
   }
 
   function close() {
@@ -331,6 +391,7 @@ export function mountChatDocside({ panel, onColumnOpen, onPage }) {
 
   return {
     open,
+    openOutside,
     hide: close,
     shut() {
       if (!panel.hidden) close();

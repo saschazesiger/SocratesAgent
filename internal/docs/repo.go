@@ -53,6 +53,21 @@ func RepoOf(folder string) Repo {
 // a directory, or a file `gitdir: <dir>` (a worktree or submodule), whose
 // directory may name the shared one in `commondir`. "" when there is none.
 func gitConfig(dotGit string) string {
+	common := gitCommonDir(dotGit)
+	if common == "" {
+		return ""
+	}
+	config := filepath.Join(common, "config")
+	if fi, err := os.Stat(config); err != nil || !fi.Mode().IsRegular() {
+		return ""
+	}
+	return config
+}
+
+// gitCommonDir is the repository's own directory for the `.git` at dotGit
+// (gitConfig): the one every working tree of the repository shares,
+// cleaned. "" when there is none.
+func gitCommonDir(dotGit string) string {
 	fi, err := os.Stat(dotGit)
 	if err != nil {
 		return ""
@@ -79,11 +94,143 @@ func gitConfig(dotGit string) string {
 		}
 		gitDir = common
 	}
-	config := filepath.Join(gitDir, "config")
-	if fi, err := os.Stat(config); err != nil || !fi.Mode().IsRegular() {
+	if fi, err := os.Stat(gitDir); err != nil || !fi.IsDir() {
 		return ""
 	}
-	return config
+	return filepath.Clean(gitDir)
+}
+
+// maxWorktrees is the most working trees Worktrees reads.
+const maxWorktrees = 500
+
+// Worktrees is the folder as it stands in every working tree of its git
+// repository: the main one and each `git worktree add` made, read from the
+// repository's directory without running git, the folder itself first.
+// An agent that works in another working tree than its chat's folder links
+// the files it writes there by paths that mean that tree.
+//
+// Only what the repository itself names counts: the tree the folder is in
+// must be one of its trees (a `.git` that merely points at a repository
+// makes no tree of it), each tree's own `.git` must lead back to the same
+// repository, and the folder must be a directory inside each tree, its
+// symbolic links followed (a link in one branch's tree leads nowhere else).
+// nil when the folder is in no such tree.
+func Worktrees(folder string) []string {
+	folder = filepath.Clean(folder)
+	dir := folder
+	for range maxRepoUp {
+		if common := gitCommonDir(filepath.Join(dir, ".git")); common != "" {
+			rel, err := filepath.Rel(dir, folder)
+			if err != nil || !filepath.IsLocal(rel) && rel != "." {
+				return nil
+			}
+			return worktreesOf(common, dir, rel)
+		}
+		up := filepath.Dir(dir)
+		if up == dir {
+			break
+		}
+		dir = up
+	}
+	return nil
+}
+
+// worktreesOf is Worktrees for the repository whose directory is common,
+// the folder being rel inside the tree at top.
+func worktreesOf(common, top, rel string) []string {
+	tops := worktreeTops(common)
+	own := -1
+	realTop, _ := filepath.EvalSymlinks(top)
+	for i, t := range tops {
+		if t == top {
+			own = i
+			break
+		}
+		if real, err := filepath.EvalSymlinks(t); err == nil && real == realTop {
+			own = i
+		}
+	}
+	if own < 0 {
+		return nil
+	}
+	tops = append([]string{top}, append(tops[:own:own], tops[own+1:]...)...)
+	var out []string
+	seen := map[string]bool{}
+	for i, t := range tops {
+		at := filepath.Join(t, rel)
+		if !inTree(t, at) {
+			if i == 0 {
+				return nil
+			}
+			continue
+		}
+		real, _ := filepath.EvalSymlinks(at)
+		if seen[real] {
+			continue
+		}
+		seen[real] = true
+		out = append(out, at)
+	}
+	return out
+}
+
+// worktreeTops is the top of every working tree of the repository whose
+// directory is common: the main tree, whose .git it is, and each one
+// .git/worktrees names, as long as the tree's own .git leads back here.
+func worktreeTops(common string) []string {
+	var tops []string
+	seen := map[string]bool{}
+	add := func(top string) {
+		top = filepath.Clean(top)
+		if !filepath.IsAbs(top) || seen[top] || gitCommonDir(filepath.Join(top, ".git")) != common {
+			return
+		}
+		seen[top] = true
+		tops = append(tops, top)
+	}
+	if filepath.Base(common) == ".git" {
+		add(filepath.Dir(common))
+	}
+	entries, err := os.ReadDir(filepath.Join(common, "worktrees"))
+	if err != nil {
+		return tops
+	}
+	for i, e := range entries {
+		if i >= maxWorktrees {
+			break
+		}
+		own := filepath.Join(common, "worktrees", e.Name())
+		b, err := os.ReadFile(filepath.Join(own, "gitdir"))
+		if err != nil || len(b) > 4096 {
+			continue
+		}
+		// gitdir names the tree's .git file, relative to this entry when
+		// the repository writes relative paths.
+		dotGit := strings.TrimSpace(string(b))
+		if !filepath.IsAbs(dotGit) {
+			dotGit = filepath.Join(own, dotGit)
+		}
+		add(filepath.Dir(dotGit))
+	}
+	return tops
+}
+
+// inTree is whether at is a directory inside the tree at top once every
+// symbolic link of both is followed.
+func inTree(top, at string) bool {
+	realTop, err := filepath.EvalSymlinks(top)
+	if err != nil {
+		return false
+	}
+	real, err := filepath.EvalSymlinks(at)
+	if err != nil {
+		return false
+	}
+	if fi, err := os.Stat(real); err != nil || !fi.IsDir() {
+		return false
+	}
+	rel, err := filepath.Rel(realTop, real)
+	return err == nil && (rel == "." || filepath.IsLocal(rel))
 }
 
 // remoteURL is the url of the origin remote in a git config file, else of

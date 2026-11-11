@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/saschazesiger/SocratesAgent/internal/store"
 )
@@ -365,5 +366,77 @@ func TestDocsKeyIsKept(t *testing.T) {
 	var stored string
 	if err := e.store.GetJSON(docsKeyName, &stored); err != nil || len(stored) != 64 {
 		t.Fatalf("stored key: %q %v", stored, err)
+	}
+}
+
+// A chat's agent that worked in another git worktree of the chat's folder
+// links the file it wrote there: the file is found in that tree, whose docs
+// may then be shown, while a tree of another repository stays closed.
+func TestDocsLocateInWorktree(t *testing.T) {
+	e, _, elsewhere := docsEnv(t)
+	trees := t.TempDir()
+	devenv := filepath.Join(trees, "devenv")
+	other := filepath.Join(trees, "other")
+	writeTree(t, elsewhere, map[string]string{
+		".git/config":                     "[core]\n",
+		".git/worktrees/devenv/commondir": "../..\n",
+		".git/worktrees/devenv/gitdir":    filepath.Join(devenv, ".git") + "\n",
+		"docs/SHARED.md":                  "# shared, old\n",
+	})
+	writeTree(t, devenv, map[string]string{
+		".git":           "gitdir: " + filepath.Join(elsewhere, ".git/worktrees/devenv") + "\n",
+		"docs/NEW.md":    "# new\n",
+		"docs/SHARED.md": "# shared, new\n",
+	})
+	writeTree(t, other, map[string]string{".git/config": "[core]\n", "docs/NEW.md": "# other\n"})
+	old := time.Now().Add(-time.Hour)
+	if err := os.Chtimes(filepath.Join(elsewhere, "docs/SHARED.md"), old, old); err != nil {
+		t.Fatal(err)
+	}
+
+	locate := func(folder, p string) (int, map[string]any) {
+		res, body := e.do(t, e.client, "GET", "/api/docs/locate?folder="+url.QueryEscape(folder)+"&path="+url.QueryEscape(p), "")
+		return res.StatusCode, body
+	}
+	for p, want := range map[string][2]string{
+		"docs/NEW.md":                        {devenv, "docs/NEW.md"},
+		"docs/SHARED.md":                     {devenv, "docs/SHARED.md"},
+		"NOTES.md":                           {elsewhere, "NOTES.md"},
+		filepath.Join(devenv, "docs/NEW.md"): {devenv, "docs/NEW.md"},
+		filepath.Join(devenv, "docs"):        {},
+	} {
+		code, body := locate(elsewhere, p)
+		if want[0] == "" {
+			if code != http.StatusNotFound {
+				t.Errorf("locate %s: %d %v", p, code, body)
+			}
+			continue
+		}
+		if code != http.StatusOK || body["folder"] != want[0] || body["path"] != want[1] {
+			t.Errorf("locate %s: %d %v, want %v", p, code, body, want)
+		}
+	}
+	for _, p := range []string{filepath.Join(other, "docs/NEW.md"), "docs/GONE.md", "../devenv/docs/NEW.md", "", "/etc/passwd"} {
+		if code, body := locate(elsewhere, p); code != http.StatusNotFound {
+			t.Errorf("locate %q: %d %v", p, code, body)
+		}
+	}
+	if code, _ := locate(other, "docs/NEW.md"); code != http.StatusNotFound {
+		t.Errorf("locate in a folder not shown: %d", code)
+	}
+
+	// The worktree's docs are served; the other repository's are not.
+	base, _ := docsBase(t, e, devenv)
+	if res, body := get(t, e, base+"docs/NEW.md"); res.StatusCode != http.StatusOK || !strings.Contains(body, "# new") {
+		t.Fatalf("a page of the worktree: %d %q", res.StatusCode, body)
+	}
+	if res, _ := e.do(t, e.client, "GET", "/api/docs?folder="+url.QueryEscape(other), ""); res.StatusCode != http.StatusNotFound {
+		t.Fatalf("another repository's docs: %d", res.StatusCode)
+	}
+	// A folder whose .git merely points at the repository is no tree of it.
+	stranger := filepath.Join(trees, "stranger")
+	writeTree(t, stranger, map[string]string{".git": "gitdir: " + filepath.Join(elsewhere, ".git") + "\n", "x.md": "# x\n"})
+	if res, _ := e.do(t, e.client, "GET", "/api/docs?folder="+url.QueryEscape(stranger), ""); res.StatusCode != http.StatusNotFound {
+		t.Fatalf("a folder that only claims the repository: %d", res.StatusCode)
 	}
 }

@@ -78,6 +78,12 @@ file opens it beside the chat. Decided with the owner the same day:
   `/-/blob/`), when `<host>/<owner>/<name>` is the folder's remote as the probe said it (below) and
   the path lies in the folder. The branch is not looked at: the file shown is the one on disk.
   Another repository's address stays the browser's.
+- **Another working tree** of the folder's git repository: an agent that works in a `git worktree`
+  outside the chat's folder (a folder chat whose agent made one for its branch) names the files it
+  wrote there by paths that mean that tree. A path the folder does not have (docside.js `open`), and
+  a path out of the folder, absolute or with `..` (`openOutside`), is looked for with `GET
+  /api/docs/locate`; the file found opens beside the chat with its tree as the folder. Only a path no
+  tree has gets the snackbar.
 - At a desk (over 1100 px) the file is a column on the chat's right (`#docsidePanel`, half the
   stage), never open with the tests' column: opening one shuts the other. Its head:
   the page's title, *Open in Docs* (the Docs page on the same file, with the tree), *Open in a new tab*,
@@ -88,7 +94,8 @@ file opens it beside the chat. Decided with the owner the same day:
   developer instructions and the instructions of the ask server other agents get): every time a
   Markdown file of the working directory is mentioned (in a list, a table, the closing summary), as a
   Markdown link with its path relative to the working directory, optionally with a `#heading`; never
-  only as a `code` path or a bare name, never by a GitHub, web or `file://` address.
+  only as a `code` path or a bare name, never by a GitHub, web or `file://` address. A file it wrote in
+  another working tree (a `git worktree` outside the working directory) by its absolute path.
 
 ## 4. Server
 
@@ -96,7 +103,15 @@ file opens it beside the chat. Decided with the owner the same day:
 
 - **A folder** is the sidebar's folder key (the working directory without trailing slashes). It is
   served only when it is an absolute, existing directory and either some session's working directory
-  or inside the workspace root.
+  or inside the workspace root, or that folder as it stands in another working tree of its git
+  repository (`docs.Worktrees`).
+- **Working trees** (`docs.Worktrees`): the folder in every working tree of its repository, read from
+  the repository's directory: the main tree (whose `.git` it is) and each entry of `.git/worktrees/`
+  (its `gitdir` file names the tree's `.git`, absolute or relative to the entry). Only what the
+  repository names counts: the folder's own tree must be one of them (a `.git` that merely points at a
+  repository makes no tree), each tree's `.git` must lead back to the same repository, and the folder
+  must be a directory inside each tree with its symbolic links followed. Whether a folder is shown as
+  such a tree is kept 20 s: every page and picture asks.
 - **Scan**: every regular `.md`/`.markdown` file under the folder, without following symbolic links,
   skipping folders whose name starts with `.` and `node_modules`, `vendor`, `third_party`,
   `bower_components`, `dist`, `build`, `target`, `out`, `__pycache__`, `venv`, `site-packages`,
@@ -114,6 +129,7 @@ file opens it beside the chat. Decided with the owner the same day:
 | `POST /api/docs/probe` `{folders: [...]}` (at most 300) | `{docs: {"<folder>": true\|false}, repos: {"<folder>": {remote, prefix}}}`: `repos` for a folder with docs in a git repository with a remote (`docs.RepoOf`) |
 | `GET /api/docs?folder=<path>` | `{folder, files: [{path, size, mtime}], truncated, base, readme}`: `base` is `/docs/<token>/`, `readme` the README.md, README.markdown or index.md at the top (or the first file, or "") |
 | `GET /api/docs/stat?folder=<path>&path=<rel>` | `{path, size, mtime, kind}` of one file (a folder's README for a folder), 404 when it is gone |
+| `GET /api/docs/locate?folder=<path>&path=<rel or abs>` | `{folder, path}` of a Markdown file in a working tree of the folder's repository: a relative path in the tree that has it (the one changed last when several do), an absolute one in the tree it lies in; 404 when none has it |
 | `GET /docs/{token}/{path...}` | The file (below) |
 
 - **The token** is the capability for a folder's files: `base64url(folder) + "." +

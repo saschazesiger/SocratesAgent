@@ -74,6 +74,13 @@ export async function docs() {
   write(guide, '.git/config', '[core]\n\tbare = false\n[remote "origin"]\n\turl = git@github.com:Acme/Guide.git\n');
   write(guide, '.env', 'SECRET=1\n');
   write(guide, 'main.go', 'package main\n');
+  // A git worktree of the guide outside it, where an agent wrote a file.
+  const feature = join(scratch, 'feature');
+  write(guide, '.git/worktrees/feature/commondir', '../..\n');
+  write(guide, '.git/worktrees/feature/gitdir', join(feature, '.git') + '\n');
+  write(feature, '.git', 'gitdir: ' + join(guide, '.git/worktrees/feature') + '\n');
+  write(feature, 'docs/DEV-VS-PROD.md', '# Dev and production\n');
+  write(feature, 'docs/OTHER.md', '# Another of the worktree\n');
   mkdirSync(bare);
   write(bare, 'main.go', 'package main\n');
   const s = await start({ viewport: { width: 1440, height: 900 } });
@@ -201,6 +208,11 @@ export async function docs() {
     ok(await page.$('.ds-toast:has-text("MISSING.md is not a Markdown file")') !== null, 'a `code` path to a file that is not there says so');
     ok(await page.$eval('#chat a[href="https://github.com/other/repo/blob/main/README.md"]', (a) => a.target) === '_blank', 'another repository stays a link of the browser');
     await shot(page, 'docs-chat-paths');
+
+    // A file the agent wrote in another worktree of the folder's repository.
+    await tell(s, chat, `Wrote [the differences](docs/DEV-VS-PROD.md) and [another](${feature}/docs/OTHER.md).`);
+    await opens('#chat a[href="docs/DEV-VS-PROD.md"]', 'Dev and production', 'a relative link to a file of another worktree opens it beside the chat');
+    await opens(`#chat a[href="${feature}/docs/OTHER.md"]`, 'Another of the worktree', 'so does its absolute path');
     await opens(link, 'Architecture', 'the first link opens its file again');
     await page.click('#docsidePanel [data-docside="docs"]');
     await page.waitForSelector('#docs:not([hidden])', { timeout: 8000 });

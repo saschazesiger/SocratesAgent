@@ -104,6 +104,17 @@ type docsState struct {
 
 	probeMu sync.Mutex
 	probe   map[string]docsProbed
+
+	// treesMu and trees keep, for docsTreesCached, whether a folder is shown
+	// as another working tree of a shown folder: every page and picture of
+	// such a folder asks.
+	treesMu sync.Mutex
+	trees   map[string]docsTreeSeen
+}
+
+type docsTreeSeen struct {
+	ok bool
+	at time.Time
 }
 
 type docsProbed struct {
@@ -192,8 +203,10 @@ func (s *Server) docsTokenFolder(token string) (string, bool) {
 // docsAllowed is whether a folder's docs may be shown: an absolute
 // directory that is there, spelt as the sidebar spells it (boardFolder),
 // which is a session's working directory, lies inside the workspace root,
-// or is the pages folder of a chat that exists. workdirs is every session's
-// working directory, cleaned, read here when nil.
+// or is the pages folder of a chat that exists - or is such a folder as it
+// stands in another working tree of its git repository (docs.Worktrees),
+// where a chat's agent may have written the file it links. workdirs is
+// every session's working directory, cleaned, read here when nil.
 func (s *Server) docsAllowed(folder string, workdirs map[string]bool) bool {
 	if !filepath.IsAbs(folder) || filepath.Clean(folder) != folder {
 		return false
@@ -207,6 +220,49 @@ func (s *Server) docsAllowed(folder string, workdirs map[string]bool) bool {
 	if workdirs == nil {
 		workdirs = s.sessionWorkdirs()
 	}
+	if s.docsOwnFolder(folder, workdirs) {
+		return true
+	}
+	return s.docsTreesCached(folder, func() bool {
+		for i, tree := range docs.Worktrees(folder) {
+			if i > 0 && s.docsOwnFolder(tree, workdirs) {
+				return true
+			}
+		}
+		return false
+	})
+}
+
+// docsTreesCached is look's answer for a folder, kept docsProbeTTL.
+func (s *Server) docsTreesCached(folder string, look func() bool) bool {
+	k := &s.docsKeep
+	k.treesMu.Lock()
+	seen, ok := k.trees[folder]
+	k.treesMu.Unlock()
+	if ok && time.Since(seen.at) <= docsProbeTTL {
+		return seen.ok
+	}
+	answer := look()
+	k.treesMu.Lock()
+	defer k.treesMu.Unlock()
+	if k.trees == nil {
+		k.trees = map[string]docsTreeSeen{}
+	}
+	if len(k.trees) > 4*maxDocsProbe {
+		for f, seen := range k.trees {
+			if time.Since(seen.at) > docsProbeTTL {
+				delete(k.trees, f)
+			}
+		}
+	}
+	k.trees[folder] = docsTreeSeen{ok: answer, at: time.Now()}
+	return answer
+}
+
+// docsOwnFolder is docsAllowed's own rule for an existing, cleaned folder
+// that is no pages folder: a session's working directory, or inside the
+// workspace root.
+func (s *Server) docsOwnFolder(folder string, workdirs map[string]bool) bool {
 	if workdirs[folder] {
 		return true
 	}
@@ -452,6 +508,75 @@ func (s *Server) handleDocsStat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"path": t.Rel, "size": t.Size, "mtime": t.Mtime, "kind": t.Kind})
+}
+
+// handleDocsLocate finds a Markdown file a chat links that is not in the
+// chat's folder, in another working tree of the folder's git repository
+// (docs.Worktrees): its agent worked in a `git worktree` of its own and
+// named the file by its path there, relative or absolute.
+//
+//	GET /api/docs/locate?folder=/root/project&path=docs/A.md   {"folder", "path"}
+//	GET /api/docs/locate?folder=/root/project&path=/root/wt/x/docs/A.md
+//
+// A relative path is looked for in every tree, the folder's own first, and
+// where more than one has it, the one changed last wins: the tree its agent
+// is writing in. An absolute path is the file in the tree it lies in. The
+// folder answered is one whose docs may be shown; a directory answers for
+// the page it opens on.
+func (s *Server) handleDocsLocate(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	folder, err := boardFolder(q.Get("folder"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	workdirs := s.sessionWorkdirs()
+	if !s.docsAllowed(folder, workdirs) {
+		writeError(w, http.StatusNotFound, "there are no docs for that folder")
+		return
+	}
+	ref := q.Get("path")
+	if ref == "" || strings.ContainsRune(ref, 0) {
+		writeError(w, http.StatusNotFound, "That file is not there.")
+		return
+	}
+	trees := docs.Worktrees(folder)
+	if len(trees) == 0 {
+		trees = []string{folder}
+	}
+	resolve := func(tree, rel string) (docs.Target, bool) {
+		t, err := docs.Resolve(tree, rel)
+		if err == nil && t.Redirect {
+			t, err = docs.Resolve(tree, t.Rel)
+		}
+		return t, err == nil && !t.Redirect && t.Kind == docs.Markdown
+	}
+	var best docs.Target
+	bestTree := ""
+	if path.IsAbs(ref) {
+		// The tree the path lies in; the deepest, should one hold another.
+		abs := filepath.Clean(filepath.FromSlash(ref))
+		for _, tree := range trees {
+			rel, err := filepath.Rel(tree, abs)
+			if err != nil || !filepath.IsLocal(rel) || len(tree) <= len(bestTree) {
+				continue
+			}
+			if t, ok := resolve(tree, filepath.ToSlash(rel)); ok {
+				best, bestTree = t, tree
+			}
+		}
+	} else {
+		for _, tree := range trees {
+			if t, ok := resolve(tree, ref); ok && (bestTree == "" || t.Mtime > best.Mtime) {
+				best, bestTree = t, tree
+			}
+		}
+	}
+	if bestTree == "" || !s.docsAllowed(bestTree, workdirs) {
+		writeError(w, http.StatusNotFound, "That file is not there.")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"folder": bestTree, "path": best.Rel})
 }
 
 // docsMissing is what a 404 says about a file Resolve did not find.

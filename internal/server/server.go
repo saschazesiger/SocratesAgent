@@ -479,6 +479,7 @@ func (s *Server) routes() {
 	mux.HandleFunc("POST /api/docs/probe", s.auth(s.handleDocsProbe))
 	mux.HandleFunc("GET /api/docs", s.auth(s.handleDocs))
 	mux.HandleFunc("GET /api/docs/stat", s.auth(s.handleDocsStat))
+	mux.HandleFunc("GET /api/docs/locate", s.auth(s.handleDocsLocate))
 	mux.HandleFunc("GET /docs/{token}/{path...}", s.handleDocsPage)
 	// The MCP servers a chat about to be made would have, for the sheet.
 	mux.HandleFunc("GET /api/mcp", s.auth(s.handleNewChatMCP))

@@ -4565,7 +4565,8 @@ async function boot() {
     // A link to a Markdown file of the chat's folder opens it beside the
     // chat (docside.js): by its path, or by its address on the folder's own
     // forge repository; so does a page of the chat's pages folder, by its
-    // absolute path (pages.js). A path to one that is not there is said so;
+    // absolute path (pages.js), and a file in another working tree of the
+    // folder's repository. A path to one that is not there is said so;
     // any other link is the browser's.
     docLink: (href, session, opener) => {
       if (!state.docside) return false;
@@ -4584,7 +4585,9 @@ async function boot() {
         return true;
       }
       if (!isPathLink(href)) return false;
-      toast(`${href} is not a Markdown file of this chat's folder.`, 'error');
+      // A path out of the folder: another working tree of its repository
+      // may have the file; else a snackbar says so.
+      state.docside.openOutside(folder, href, { opener });
       return true;
     },
   });

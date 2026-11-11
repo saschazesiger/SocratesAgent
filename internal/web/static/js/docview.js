@@ -164,6 +164,21 @@ export async function stat(folder, path) {
   }
 }
 
+/**
+ * locate is where a Markdown file a chat links is when its folder does not
+ * have it: {folder, path} in another working tree of the folder's git
+ * repository (a `git worktree` its agent wrote in), or null. `path` is
+ * relative to the folder or absolute.
+ */
+export async function locate(folder, path) {
+  try {
+    return await api('/api/docs/locate?folder=' + encodeURIComponent(folder) + '&path=' + encodeURIComponent(path), { attempts: 1 });
+  } catch (err) {
+    if (err && err.status === 404) return null;
+    throw err;
+  }
+}
+
 /* ---------------------------------------------------------------- glyphs */
 
 // The usual names of a project's Markdown files, each with the glyph that

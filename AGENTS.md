@@ -29,10 +29,23 @@ The only exceptions are deliberate:
 
 ## Finishing a change
 
-Unless the task says otherwise, a change that is done and tested is
-committed straight to `main` and pushed: no branch and no pull request.
-Test it first (`make check`, and the browser suite or the running app
-where the change is visible there).
+Unless the task says otherwise, an agent merges its own work into `main`
+and pushes it, without asking and without a pull request, as soon as it is
+confident the change is completely ready to merge. Being confident means
+having checked it all yourself, not assuming it:
+
+- The change does everything the task asked, and nothing is left half done.
+- `make check` passes, and so do the tests for what changed: the browser
+  suite (`node e2e/run.mjs <scenario>`) or the running app where the change
+  is visible there, and `make ds-check` for a change to the UI.
+- The branch is brought up to date first (`git fetch origin && git rebase
+  origin/main`), and the checks are run again on the rebased branch.
+- The documentation and design notes that describe the change are updated
+  with it.
+
+Then `git push origin HEAD:main` (from a chat's own branch; never
+force-push `main`). When any of this fails or is in doubt, fix it first; when
+it cannot be fixed, ask the person instead of merging.
 
 ## Design system: Z-Dash
 
