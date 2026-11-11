@@ -158,6 +158,8 @@ type Ask struct {
 	// though it may still come.
 	Closed   bool  `json:"closed,omitempty"`
 	ClosedAt int64 `json:"closed_at,omitempty"`
+	// ClosedBy is why it was closed: AskClosedMessage or AskClosedStopped.
+	ClosedBy string `json:"closed_by,omitempty"`
 }
 
 // RateLimit is the last reading of one usage window.
@@ -239,7 +241,10 @@ func (p *Projection) Apply(ev Event) {
 		}
 	case TypeAskClosed:
 		if a := p.asks[ev.AskID]; a != nil && !a.Answered && !a.Closed {
-			a.Closed, a.ClosedAt = true, ev.At
+			a.Closed, a.ClosedAt, a.ClosedBy = true, ev.At, ev.Code
+			if a.ClosedBy == "" {
+				a.ClosedBy = AskClosedMessage
+			}
 		}
 	case TypeAccountSwitched:
 		p.onAccount(ev.To)

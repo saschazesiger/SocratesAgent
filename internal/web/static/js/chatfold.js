@@ -436,6 +436,7 @@ export function apply(chat, ev) {
         chat.asks.set(ev.ask_id, {
           id: ev.ask_id, turnId: ev.turn_id || '', payload: ev.payload || {}, at: ev.at, seq,
           answered: false, answer: null, byDevice: '', clientId: '', delivered: '', deliver: ev.via || '', closed: false,
+          closedBy: '',
           rev: 0,
         });
         add(chat, { key: 'a:' + ev.ask_id, type: 'ask', id: ev.ask_id });
@@ -463,11 +464,13 @@ export function apply(chat, ev) {
       break;
     }
     case 'ask.closed': {
-      // The person wrote something else after the call was gone: nobody
-      // waits for the answer any more, though it may still come.
+      // The person wrote something else instead, or stopped the turn that
+      // asked (code 'stopped'): nobody waits for the answer any more, though
+      // it may still come.
       const ask = chat.asks.get(ev.ask_id);
       if (ask && !ask.answered && !ask.closed) {
         ask.closed = true;
+        ask.closedBy = ev.code || 'message';
         touchAsk(chat, ev.ask_id);
       }
       break;

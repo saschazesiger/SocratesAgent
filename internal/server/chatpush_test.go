@@ -98,38 +98,37 @@ func TestAChatsPushesSayWhatItsJournalSays(t *testing.T) {
 }
 
 // The edges of a chat's activity as the badge and Home see them: a question
-// left open by a turn that was stopped keeps the chat waiting and counted,
-// through a park of its host too, until the person writes something else,
-// which closes it.
-func TestAQuestionLeftByAStoppedTurnKeepsTheChatWaiting(t *testing.T) {
+// keeps the chat waiting and counted while its call waits; stopping the turn
+// that asked ends the wait, and so does a message the person writes instead
+// of answering, which releases the call so the agent goes on with it.
+func TestStoppingOrWritingPastAQuestionEndsTheWait(t *testing.T) {
 	c := newChatEnv(t, time.Hour)
 	id := c.create(t)
 	c.send(t, id, "m1", "/ask")
 	c.waitAsk(t, id)
 	c.waitActivity(t, id, termux.StateWaiting)
+	if got := c.srv.askingSet(); len(got) != 1 || got[0] != id {
+		t.Fatalf("asking while it waits: %v", got)
+	}
 	if code, body := c.post(t, "/api/chats/"+id+"/interrupt", map[string]any{"client_id": "stop"}); code != http.StatusOK {
 		t.Fatalf("interrupt: %d %v", code, body)
 	}
 	c.waitJournal(t, id, 10*time.Second, "the stopped turn", turnsEnded(1))
-	if a := c.srv.manager.ActivityOf(id); a.State != termux.StateWaiting {
-		t.Fatalf("after the stop: %+v", a)
-	}
-	if got := c.srv.askingSet(); len(got) != 1 || got[0] != id {
+	c.waitActivity(t, id, termux.StateIdle)
+	if got := c.srv.askingSet(); len(got) != 0 {
 		t.Fatalf("asking after the stop: %v", got)
 	}
-	c.srv.chats.park(id)
-	c.waitJournal(t, id, 10*time.Second, "the park", func(evs []agent.Event) bool {
-		return count(evs, func(ev agent.Event) bool { return ev.Type == agent.TypeProcess && ev.State == agent.ProcessParked }) > 0
+	if d := c.homeDigest(t, id); d["question"] != nil {
+		t.Fatalf("Home after the stop: %v", d)
+	}
+
+	c.send(t, id, "m2", "/ask")
+	c.waitJournal(t, id, 10*time.Second, "the second question", func(evs []agent.Event) bool {
+		return count(evs, isEv(agent.TypeAsk)) == 2
 	})
-	c.waitHostGone(t, id)
-	if a := c.srv.manager.ActivityOf(id); a.State != termux.StateWaiting || len(c.srv.askingSet()) != 1 {
-		t.Fatalf("after the park: %+v, asking %v", a, c.srv.askingSet())
-	}
-	if d := c.homeDigest(t, id); d["question"] == nil || d["summary"] != "Pick one" {
-		t.Fatalf("Home after the park: %v", d)
-	}
-	c.send(t, id, "m2", "never mind, do this instead")
-	c.waitJournal(t, id, 10*time.Second, "the next turn", turnsEnded(2))
+	c.waitActivity(t, id, termux.StateWaiting)
+	c.send(t, id, "m3", "never mind, do this instead")
+	c.waitJournal(t, id, 10*time.Second, "the released turn and the next", turnsEnded(3))
 	c.waitActivity(t, id, termux.StateIdle)
 	if got := c.srv.askingSet(); len(got) != 0 {
 		t.Fatalf("asking after moving on: %v", got)

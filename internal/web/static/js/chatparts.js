@@ -886,8 +886,10 @@ export function askCard(ask, view) {
         : state === 'local' ? html`<p class="so-ask__progress ds-meta">It goes out when the connection is back.</p>` : ''
     }`;
   } else if (state === 'closed') {
-    // A message moved the chat on; an answer can still be sent, as a message.
-    body = html`<p class="so-ask__done ds-meta">You wrote something else instead. The agent no longer waits for this.</p><div class="ds-form-actions"><button class="ds-btn ds-btn--tonal so-ask__open" type="button" data-action="ask-open" data-ask="${ask.id}">Answer anyway</button></div>`;
+    // A message or a Stop moved the chat on; an answer can still be sent,
+    // as a message.
+    const why = ask.closedBy === 'stopped' ? 'You stopped the agent before answering.' : 'You wrote something else instead.';
+    body = html`<p class="so-ask__done ds-meta">${why} The agent no longer waits for this.</p><div class="ds-form-actions"><button class="ds-btn ds-btn--tonal so-ask__open" type="button" data-action="ask-open" data-ask="${ask.id}">Answer anyway</button></div>`;
   } else {
     body = html`<p class="so-ask__done ds-meta">${answerSummary(ask)}</p>`;
   }

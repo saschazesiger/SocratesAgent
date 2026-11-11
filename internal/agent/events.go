@@ -40,8 +40,9 @@ const (
 	// blocking tool call, or as a user message because the call was gone.
 	TypeAskDelivered = "ask.delivered"
 	// TypeAskClosed says an open question is no longer waited for: the
-	// person wrote to the agent instead, after the call that asked was gone.
-	// It can still be answered; the answer then goes as a message.
+	// person wrote to the agent instead, or stopped the turn that asked
+	// (Code says which: AskClosedMessage, AskClosedStopped). It can still be
+	// answered; the answer then goes as a message.
 	TypeAskClosed = "ask.closed"
 	// TypeAccountSwitched is a divider: the chat continues on another account.
 	TypeAccountSwitched = "account.switched"
@@ -143,6 +144,15 @@ const (
 	OutcomeFailed      = "failed"
 	// OutcomeLimited is a turn the account's limit stopped.
 	OutcomeLimited = "limited"
+)
+
+// Why an ask was closed (the ask.closed event's Code).
+const (
+	// AskClosedMessage is a message of the person's sent instead of an
+	// answer, and the default of an ask.closed without a code.
+	AskClosedMessage = "message"
+	// AskClosedStopped is the person stopping the turn that asked.
+	AskClosedStopped = "stopped"
 )
 
 // Process states.

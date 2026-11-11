@@ -407,7 +407,7 @@
     },
     {
       "name": "arrowUp",
-      "reason": "static/js/chatparts.js:976"
+      "reason": "static/js/chatparts.js:978"
     },
     {
       "name": "arrowDown",
@@ -427,7 +427,7 @@
     },
     {
       "name": "chevronLeft",
-      "reason": "static/js/chatparts.js:1614"
+      "reason": "static/js/chatparts.js:1616"
     },
     {
       "name": "chevronFirst",
@@ -507,7 +507,7 @@
     },
     {
       "name": "undo",
-      "reason": "static/js/chatparts.js:945"
+      "reason": "static/js/chatparts.js:947"
     },
     {
       "name": "history",
@@ -583,7 +583,7 @@
     },
     {
       "name": "volume",
-      "reason": "static/js/chatparts.js:1918"
+      "reason": "static/js/chatparts.js:1920"
     },
     {
       "name": "mail",
@@ -743,7 +743,7 @@
     },
     {
       "name": "user",
-      "reason": "static/js/chatparts.js:2009"
+      "reason": "static/js/chatparts.js:2011"
     },
     {
       "name": "users",
@@ -1532,7 +1532,7 @@
     "ds-card": "static/admin.html:105",
     "ds-card--elevated": "static/login.html:31",
     "ds-card--interactive": "static/js/askdialog.js:771",
-    "ds-card__action": "static/js/chatparts.js:1460",
+    "ds-card__action": "static/js/chatparts.js:1462",
     "ds-card__more": "static/js/admingithub.js:214",
     "ds-card__row": "static/admin.html:141",
     "ds-card__section": "static/admin.html:258",
@@ -1582,8 +1582,8 @@
     "ds-dialog__title": "static/index.html:252",
     "ds-disclosure": "static/admin.html:302",
     "ds-disclosure__body": "static/admin.html:304",
-    "ds-divider": "static/js/chatparts.js:1984",
-    "ds-divider--label": "static/js/chatparts.js:1984",
+    "ds-divider": "static/js/chatparts.js:1986",
+    "ds-divider--label": "static/js/chatparts.js:1986",
     "ds-drawer": "static/admin.html:54",
     "ds-drawer__action": "static/js/session.js:1388",
     "ds-drawer__actions": "static/index.html:155",
@@ -1675,11 +1675,11 @@
     "ds-pressable--inset": "static/js/boards.js:176",
     "ds-pressable--lg": "static/js/session.js:1231",
     "ds-progress": "static/admin.html:456",
-    "ds-progress--flat": "static/js/chatparts.js:1419",
+    "ds-progress--flat": "static/js/chatparts.js:1421",
     "ds-progress--indeterminate": "static/admin.html:456",
     "ds-progress__bar": "static/admin.html:458",
     "ds-progress__detail": "static/js/statusmodal.js:154",
-    "ds-progress__label": "static/js/chatparts.js:1419",
+    "ds-progress__label": "static/js/chatparts.js:1421",
     "ds-progress__track": "static/admin.html:457",
     "ds-prose": "static/js/mcpview.js:138",
     "ds-prose--dense": "static/js/mcpview.js:138",
@@ -1754,8 +1754,8 @@
   },
   "unknown": [
     "static/index.html:170 module DS.ds",
-    "static/js/chatparts.js:1322 icon background",
-    "static/js/chatparts.js:1469 icon stop",
+    "static/js/chatparts.js:1324 icon background",
+    "static/js/chatparts.js:1471 icon stop",
     "static/js/home.js:340 icon waiting"
   ]
 }

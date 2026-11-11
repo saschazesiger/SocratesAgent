@@ -774,15 +774,34 @@ func (h *host) send(ctx context.Context, cmd Command) any {
 	// the person moved on (pressed Stop and wrote something else, or wrote
 	// instead of answering a question meant for the next message). It stops
 	// counting as waiting; an answer that still comes goes as a message.
+	//
+	// A message of the person's (not a scheduled start, nor another chat's)
+	// leaves the questions a call still waits on behind as well: the person
+	// wrote instead of answering. Those calls are released once the message
+	// is with the agent (dismiss), so that it goes on from the message
+	// rather than holding it behind a question nobody answers.
 	batch := []agent.Event{msg}
 	at := 0
 	if cmd.Notice != "" {
 		batch = []agent.Event{{Type: agent.TypeNotice, Code: cmd.Notice, Text: cmd.Reason}, msg}
 		at = 1
 	}
+	person := cmd.Notice == "" && cmd.Sender == nil
+	var waited []agent.Ask
 	h.rec.View(func(p *agent.Projection) {
+		unwaited := map[string]bool{}
 		for _, a := range p.Unwaited() {
-			batch = append(batch, agent.Event{Type: agent.TypeAskClosed, AskID: a.ID})
+			unwaited[a.ID] = true
+			batch = append(batch, agent.Event{Type: agent.TypeAskClosed, AskID: a.ID, Code: agent.AskClosedMessage})
+		}
+		if !person {
+			return
+		}
+		for _, a := range p.OpenAsks() {
+			if !unwaited[a.ID] {
+				waited = append(waited, *a)
+				batch = append(batch, agent.Event{Type: agent.TypeAskClosed, AskID: a.ID, Code: agent.AskClosedMessage})
+			}
 		}
 	})
 	events, err := h.rec.EmitDurable(batch...)
@@ -799,7 +818,27 @@ func (h *host) send(ctx context.Context, cmd Command) any {
 		// next host hands it to the agent.
 		h.record(agent.Event{Type: agent.TypeError, Code: "send_failed", MessageID: msg.MessageID, Text: err.Error()})
 	}
+	for i := range waited {
+		h.dismiss(ctx, &waited[i])
+	}
 	return Ack{T: FrameAck, ClientID: cmd.ClientID, Op: cmd.Op, Seq: events[at].Seq}
+}
+
+// dismiss releases a call still waiting on a question the person wrote a
+// message instead of answering (send): it returns that it was not answered
+// (askuser.Dismissal), and the agent takes up the message next. The ask
+// stays closed, not answered: an answer that still comes goes as a message,
+// because the call is gone by then. A call that is gone already has nothing
+// to release.
+func (h *host) dismiss(ctx context.Context, ask *agent.Ask) {
+	answer := askuser.Dismissal(ask.Payload)
+	if h.answerTool(ask, answer) || h.adapter == nil {
+		return
+	}
+	err := h.adapter.Answer(ctx, ask.ID, answer)
+	if err != nil && !errors.Is(err, agent.ErrAskGone) && !errors.Is(err, agent.ErrAskDeferred) {
+		log.Printf("the call waiting on %s could not be released: %v", ask.ID, err)
+	}
 }
 
 func (h *host) answer(ctx context.Context, cmd Command) any {
@@ -1019,6 +1058,7 @@ func (h *host) control(ctx context.Context, cmd Command) any {
 		return fail(cmd, CodeBadRequest, "stop_task needs the task's id")
 	}
 	var seq int64
+	var batch []agent.Event
 	if cmd.ClientID != "" {
 		ev := agent.Event{Type: agent.TypeCommand, ClientID: cmd.ClientID, Op: cmd.Op}
 		switch cmd.Op {
@@ -1029,11 +1069,28 @@ func (h *host) control(ctx context.Context, cmd Command) any {
 		case OpStopTask:
 			ev.Args = cmd.Task
 		}
-		events, err := h.rec.EmitDurable(ev)
+		batch = append(batch, ev)
+	}
+	if cmd.Op == OpInterrupt {
+		// The person stopped the turn while it asked: nobody waits for those
+		// answers any more, so the chat stops waiting on them. An answer that
+		// still comes goes as a message.
+		h.rec.View(func(p *agent.Projection) {
+			for _, a := range p.OpenAsks() {
+				if p.Turn != nil && a.TurnID == p.Turn.ID {
+					batch = append(batch, agent.Event{Type: agent.TypeAskClosed, AskID: a.ID, Code: agent.AskClosedStopped})
+				}
+			}
+		})
+	}
+	if len(batch) > 0 {
+		events, err := h.rec.EmitDurable(batch...)
 		if err != nil {
 			return fail(cmd, CodeFailed, "the command could not be journaled: "+err.Error())
 		}
-		seq = events[0].Seq
+		if cmd.ClientID != "" {
+			seq = events[0].Seq
+		}
 	}
 	var err error
 	switch cmd.Op {
@@ -1079,8 +1136,9 @@ func (h *host) control(ctx context.Context, cmd Command) any {
 // waited (an ask answered as the next message), so its answer goes to the
 // agent as a message whenever it comes, through whichever host is up then.
 // The ask itself stays open across parks, host deaths and recoveries, and
-// the chat stays "waiting" until it is answered or the person writes
-// something else (REBUILD.md §5.3: a question survives everything).
+// the chat stays "waiting" until it is answered, the person writes something
+// else or stops the turn that asked (REBUILD.md §5.3: a question survives
+// everything but the person moving on).
 func (h *host) idle() bool {
 	if h.adapter == nil || h.isEnding() || h.hasPending() {
 		return false

@@ -73,9 +73,10 @@ func TestTwoDevicesAnswerOneAsk(t *testing.T) {
 	}
 }
 
-// An ask left by an interrupted turn stays open, but does not keep the host
-// from parking: its call is gone. Answered later, it reaches the agent of
-// the next host as a message.
+// An ask of a turn the person stopped is closed, so the chat no longer
+// waits on it, and it does not keep the host from parking: its call is gone.
+// Answered later all the same, it reaches the agent of the next host as a
+// message.
 func TestAnAskOfAnInterruptedTurnLetsTheHostParkAndIsAnsweredAsAMessage(t *testing.T) {
 	r := newRig(t, 300*time.Millisecond)
 	r.launch()
@@ -89,8 +90,9 @@ func TestAnAskOfAnInterruptedTurnLetsTheHostParkAndIsAnsweredAsAMessage(t *testi
 	cl.until(5*time.Second, isProcess(agent.ProcessParked))
 	r.waitDead(5 * time.Second)
 	p := agent.Fold(r.journal())
-	if len(p.OpenAsks()) != 1 || p.Summary().Activity != "waiting" {
-		t.Fatalf("after the park: %d open asks, activity %s", len(p.OpenAsks()), p.Summary().Activity)
+	if a := p.Ask(ask.AskID); a == nil || !a.Closed || a.ClosedBy != agent.AskClosedStopped ||
+		len(p.OpenAsks()) != 0 || p.Summary().Activity != agent.ActivityIdle {
+		t.Fatalf("after the park: %+v, %d open asks, activity %s", a, len(p.OpenAsks()), p.Summary().Activity)
 	}
 	last := r.journal()[len(r.journal())-1].Seq
 	r.park = time.Hour
@@ -106,42 +108,66 @@ func TestAnAskOfAnInterruptedTurnLetsTheHostParkAndIsAnsweredAsAMessage(t *testi
 	}
 }
 
-// A message sent while the call waits leaves the question open; one sent
-// after the call is gone (the person pressed Stop and wrote something else)
-// closes it, and the chat stops waiting. A closed question still takes an
-// answer, which goes as a message.
-func TestAMessageAfterTheCallIsGoneClosesTheQuestion(t *testing.T) {
+// A message the person sends while the call waits closes the question and
+// releases the call, which returns that it was not answered: the agent goes
+// on with the message, and the chat stops waiting. A closed question still
+// takes an answer, which goes as a message.
+func TestAMessageWhileTheCallWaitsClosesTheQuestion(t *testing.T) {
 	r := newRig(t, time.Hour)
 	r.launch()
 	cl := r.dial(0)
 	cl.send("m1", "/ask")
 	ask := cl.until(5*time.Second, isType(agent.TypeAsk))
-	cl.send("m2", "meanwhile")
-	cl.ack("m2", 5*time.Second)
-	if err := cl.c.Send(Command{Op: OpInterrupt, ClientID: "i1"}); err != nil {
-		t.Fatal(err)
+	cl.send("m2", "skip that, do X")
+	closed := cl.seen(5*time.Second, isType(agent.TypeAskClosed))
+	if closed.AskID != ask.AskID || closed.Code != agent.AskClosedMessage {
+		t.Fatalf("closed %+v", closed)
 	}
-	// The interrupted turn, then the queued message's.
+	// The released turn, then the message's.
 	cl.until(5*time.Second, isType(agent.TypeTurnEnded))
 	cl.until(5*time.Second, isType(agent.TypeTurnEnded))
 	p := agent.Fold(r.journal())
-	if p.Ask(ask.AskID).Closed || p.Summary().Activity != agent.ActivityWaiting {
-		t.Fatalf("after the queued message: %+v, %s", p.Ask(ask.AskID), p.Summary().Activity)
+	if a := p.Ask(ask.AskID); a.Answered || !a.Closed || len(p.OpenAsks()) != 0 || p.Summary().Activity != agent.ActivityIdle {
+		t.Fatalf("after the message: %+v, %d open, %s", a, len(p.OpenAsks()), p.Summary().Activity)
 	}
-	cl.send("m3", "skip that, do X")
-	closed := cl.until(5*time.Second, isType(agent.TypeAskClosed))
-	if closed.AskID != ask.AskID {
-		t.Fatalf("closed %+v", closed)
+	released := ""
+	for _, m := range p.Messages {
+		for _, part := range m.Parts {
+			if strings.HasPrefix(part.Text, "you answered: ") {
+				released = part.Text
+			}
+		}
 	}
-	cl.until(5*time.Second, isType(agent.TypeTurnEnded))
-	if p := agent.Fold(r.journal()); len(p.OpenAsks()) != 0 || p.Summary().Activity != agent.ActivityIdle {
-		t.Fatalf("after the message: %d open, %s", len(p.OpenAsks()), p.Summary().Activity)
+	if !strings.Contains(released, "wrote a new message instead") {
+		t.Fatalf("the released call returned %q", released)
+	}
+	if got := lastReply(r.journal()); !strings.HasPrefix(got, "you said: skip that, do X") {
+		t.Fatalf("the agent got %q", got)
 	}
 	cl.answer("a1", ask.AskID, "phone", json.RawMessage(`{"answers":{"q1":{"selected":["a"]}}}`))
 	if ev := cl.seen(5*time.Second, isType(agent.TypeAskDelivered)); ev.Via != agent.ViaMessage {
 		t.Fatalf("delivered %+v", ev)
 	}
 	cl.seen(5*time.Second, isNotice(agent.NoticeAnswerAsMessage))
+}
+
+// A message the person did not write - another chat's - leaves a question
+// the call waits on open: the person has not moved on.
+func TestAnotherChatsMessageLeavesTheQuestionOpen(t *testing.T) {
+	r := newRig(t, time.Hour)
+	r.launch()
+	cl := r.dial(0)
+	cl.send("m1", "/ask")
+	ask := cl.until(5*time.Second, isType(agent.TypeAsk))
+	if err := cl.c.Send(Command{Op: OpSend, ClientID: "m2", Text: "hello from next door", Notice: agent.NoticeChatMessage,
+		Sender: &agent.Sender{Chat: "c_other", Title: "Other"}}); err != nil {
+		t.Fatal(err)
+	}
+	cl.ack("m2", 5*time.Second)
+	p := agent.Fold(r.journal())
+	if a := p.Ask(ask.AskID); a.Closed || p.Summary().Activity != agent.ActivityWaiting {
+		t.Fatalf("after the other chat's message: %+v, %s", a, p.Summary().Activity)
+	}
 }
 
 // A question survives the death of its host: recovery closes the turn but

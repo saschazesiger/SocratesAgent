@@ -14237,6 +14237,32 @@ async function chatask() {
       JSON.stringify({ refused, told: oneLine(told), kept: lateAsk.answer.answers.q1.selected }));
     await device.close();
     await shot(page, 'chat-ask');
+
+    // Stopped while it asks, and written past while it asks: the row stops
+    // waiting, the card says why, and the question can still be answered.
+    if (await page.$('dialog.so-askdlg')) {
+      await page.keyboard.press('Escape');
+      await page.waitForSelector('dialog.so-askdlg', { state: 'detached', timeout: 10000 }).catch(() => {});
+    }
+    await awaitChat(s, id, (b) => !b.chat.turn_running);
+    await say(page, '/ask');
+    const cut = await openAskCard(page);
+    await awaitRow(page, id, (r) => r.waiting, 10000);
+    await page.click('.so-composer__stop:not([hidden])');
+    const stoppedCard = await page.waitForSelector('#chat .so-ask[data-ask="' + cut + '"][data-state="closed"]', { timeout: 15000 })
+      .then((n) => n.innerText(), () => '');
+    const afterStop = await awaitRow(page, id, (r) => !r.waiting, 10000);
+    ok(afterStop.ok && /You stopped the agent before answering/.test(stoppedCard) && /Answer anyway/.test(stoppedCard),
+      'Stop while it asks ends the wait, and the card says the agent was stopped', took(afterStop) + ' · ' + oneLine(stoppedCard));
+    await say(page, '/ask');
+    const past = await openAskCard(page);
+    await awaitRow(page, id, (r) => r.waiting, 10000);
+    await say(page, 'never mind, do this instead');
+    const pastCard = await page.waitForSelector('#chat .so-ask[data-ask="' + past + '"][data-state="closed"]', { timeout: 15000 })
+      .then((n) => n.innerText(), () => '');
+    const afterPast = await awaitRow(page, id, (r) => !r.waiting, 10000);
+    ok(afterPast.ok && /You wrote something else instead/.test(pastCard),
+      'a message while it asks ends the wait, and the card says so', took(afterPast) + ' · ' + oneLine(pastCard));
     ok(unexpected(s.errors).length === 0, 'no console errors', unexpected(s.errors).join(' | ') || '0');
   } finally { await s.stop(); }
 }

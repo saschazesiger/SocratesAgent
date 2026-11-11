@@ -9,9 +9,10 @@
 // For every agent: the model calls ask_user, the answer goes in through
 // POST /api/chats/{id}/asks/{ask}/answer in the shape of REBUILD.md §5.2 (as
 // askdialog.js builds it) and comes back to the model through its transport;
-// an answer after an interrupt goes to the agent as a message instead; a
-// message sent after Stop closes the question nobody waits on (which still
-// takes an answer); and a second device is told the question was answered. Codex on a code-mode
+// an answer after an interrupt goes to the agent as a message instead; Stop
+// closes the question (which still takes an answer), and so does a message
+// sent while the call waits, which releases the call; and a second device is
+// told the question was answered. Codex on a code-mode
 // model gets its answer as the next message by design.
 //
 // Every check prints what it measured beside its verdict, like run.mjs.
@@ -90,6 +91,22 @@ function stream(srv, id) {
 const lastText = (events, after) => [...events].reverse()
   .find((e) => e.seq > after && e.type === 'part' && e.kind === 'text' && e.state === 'done')?.text || '';
 
+// textsBetween is every finished text part after seq a and up to seq b, joined.
+const textsBetween = (events, a, b) => events
+  .filter((e) => e.seq > a && e.seq <= b && e.type === 'part' && e.kind === 'text' && e.state === 'done')
+  .map((e) => e.text).join('\n');
+
+// settled is the chat once its agent is no longer at work (or after a few
+// seconds, as it is then).
+async function settled(srv, id) {
+  const end = Date.now() + 10000;
+  for (;;) {
+    const got = await call(srv, 'GET', `/api/chats/${id}`);
+    if (got.json?.chat?.activity !== 'busy' || Date.now() > end) return got;
+    await wait(50);
+  }
+}
+
 // dialogAnswer is the answer askdialog.js sends for the scripts' call of two
 // questions: an option of the first, the person's own words for the second.
 const dialogAnswer = {
@@ -139,7 +156,7 @@ async function agent(srv, data, harness) {
     const again = await s.next((e) => e.type === 'ask', before);
     await call(srv, 'POST', `/api/chats/${id}/interrupt`, { client_id: `${harness}-i1` });
     const cut = await s.next((e) => e.type === 'turn.ended', again?.seq || before);
-    check(cut?.outcome === 'interrupted', `${harness}: the interrupt ends the turn, the ask stays open`, cut?.outcome);
+    check(cut?.outcome === 'interrupted', `${harness}: the interrupt ends the turn`, cut?.outcome);
     await call(srv, 'POST', `/api/chats/${id}/asks/${again.ask_id}/answer`, { client_id: `${harness}-a3`, answer: dialogAnswer, device: 'phone' });
     const notice = await s.next((e) => e.type === 'notice' && e.code === 'answer_as_message', cut?.seq || before);
     const reply = await s.next((e) => e.type === 'turn.ended' && e.outcome === 'completed', notice?.seq || before);
@@ -147,22 +164,36 @@ async function agent(srv, data, harness) {
     check(notice && reply && said.includes('Answer to your earlier question (Setup)') && said.includes('SQLite [sqlite]'),
       `${harness}: the answer after the interrupt reached the agent as a message`, said.slice(0, 120));
 
-    // Stopped, and then told something else: the question nobody waits on
-    // is closed, the chat stops waiting, and it can still be answered.
+    // Stopped while it waits: the question is closed at once, the chat
+    // stops waiting, and it can still be answered.
     const mark = s.events[s.events.length - 1].seq;
     await call(srv, 'POST', `/api/chats/${id}/messages`, { client_id: `${harness}-m3`, text: askTurn[harness] });
     const third = await s.next((e) => e.type === 'ask', mark);
     await call(srv, 'POST', `/api/chats/${id}/interrupt`, { client_id: `${harness}-i2` });
+    const closed = await s.next((e) => e.type === 'ask.closed' && e.ask_id === third?.ask_id, third?.seq || mark);
     const stopped = await s.next((e) => e.type === 'turn.ended', third?.seq || mark);
-    await call(srv, 'POST', `/api/chats/${id}/messages`, { client_id: `${harness}-m4`, text: 'skip that, do X' });
-    const closed = await s.next((e) => e.type === 'ask.closed' && e.ask_id === third?.ask_id, stopped?.seq || mark);
-    await s.next((e) => e.type === 'turn.ended' && e.outcome === 'completed', closed?.seq || mark);
-    const after = await call(srv, 'GET', `/api/chats/${id}`);
-    check(closed && !(after.json?.asks || []).length && after.json?.chat?.activity !== 'waiting',
-      `${harness}: a message after Stop closes the question`, { closed: !!closed, open: (after.json?.asks || []).length, activity: after.json?.chat?.activity });
+    const after = await settled(srv, id);
+    check(closed?.code === 'stopped' && stopped && !(after.json?.asks || []).length && after.json?.chat?.activity !== 'waiting',
+      `${harness}: Stop closes the question`, { code: closed?.code, open: (after.json?.asks || []).length, activity: after.json?.chat?.activity });
     const late = await call(srv, 'POST', `/api/chats/${id}/asks/${third?.ask_id}/answer`, { client_id: `${harness}-a4`, answer: dialogAnswer, device: 'phone' });
     const lateGone = await s.next((e) => e.type === 'ask.delivered' && e.ask_id === third?.ask_id, closed?.seq || mark);
     check(late.status === 200 && lateGone?.via === 'message', `${harness}: a closed question still takes an answer, as a message`, { status: late.status, via: lateGone?.via });
+    await s.next((e) => e.type === 'turn.ended', lateGone?.seq || mark);
+
+    // Told something else while the call waits: the question is closed, the
+    // call returns that it was not answered, and the agent goes on.
+    const mark2 = s.events[s.events.length - 1].seq;
+    await call(srv, 'POST', `/api/chats/${id}/messages`, { client_id: `${harness}-m5`, text: askTurn[harness] });
+    const fourth = await s.next((e) => e.type === 'ask', mark2);
+    await call(srv, 'POST', `/api/chats/${id}/messages`, { client_id: `${harness}-m6`, text: 'skip that, do X' });
+    const wrote = await s.next((e) => e.type === 'ask.closed' && e.ask_id === fourth?.ask_id, fourth?.seq || mark2);
+    const released = await s.next((e) => e.type === 'turn.ended', wrote?.seq || mark2);
+    const said4 = textsBetween(s.events, fourth?.seq || mark2, released?.seq || 0);
+    const after4 = await settled(srv, id);
+    check(wrote?.code === 'message' && released && said4.includes('wrote a new message instead'),
+      `${harness}: a message while the call waits releases it`, { code: wrote?.code, said: said4.slice(0, 120) });
+    check(!(after4.json?.asks || []).length && after4.json?.chat?.activity !== 'waiting',
+      `${harness}: the chat stops waiting on the question it wrote past`, { open: (after4.json?.asks || []).length, activity: after4.json?.chat?.activity });
   } finally {
     s.close();
   }
