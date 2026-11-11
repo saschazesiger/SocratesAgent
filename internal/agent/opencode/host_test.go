@@ -413,14 +413,19 @@ func TestASwitchAfterTheTurnIsMadeWhileALimitHoldsTheQueue(t *testing.T) {
 // limit already ended that turn (within milliseconds of its post), and a
 // message written after a limited turn is the person going on with this
 // account, which lets the hold go (AGENT-HOST.md §5.3;
-// rig.queueBehindAQuestion does the same without a host).
+// rig.queueBehindAQuestion does the same without a host). They come from
+// another chat: a message of the person's would release the question it
+// waits on (the person wrote instead of answering), and the turn with it.
 func (cn *conn) holdBehindALimit() string {
 	cn.t.Helper()
 	cn.send("q1", "/question")
 	ask := cn.until("the question", func(ev agent.Event) bool { return ev.Type == agent.TypeAsk })
 	held := ""
 	for _, m := range []struct{ clientID, text string }{{"m1", "/limit"}, {"m2", "/whoami"}} {
-		cn.send(m.clientID, m.text)
+		if err := cn.c.Send(agenthost.Command{Op: agenthost.OpSend, ClientID: m.clientID, Text: m.text,
+			Notice: agent.NoticeChatMessage, Sender: &agent.Sender{Chat: "c_other", Title: "Other"}}); err != nil {
+			cn.t.Fatal(err)
+		}
 		msg := cn.until(m.text, func(ev agent.Event) bool { return ev.Type == agent.TypeMessage && ev.ClientID == m.clientID })
 		cn.until(m.text+" queued", func(ev agent.Event) bool {
 			return ev.Type == agent.TypeMessageState && ev.MessageID == msg.MessageID && ev.State == agent.MessageQueued

@@ -385,3 +385,24 @@ func planText(raw json.RawMessage) string {
 	}
 	return text
 }
+
+// dismissalNote is what a call that waited on the person gets back when the
+// person wrote a message instead of answering.
+const dismissalNote = "Not an answer: the person wrote a new message instead of answering, and it reaches you next. " +
+	"Go on from that message; ask again only if you still need these answers."
+
+// Dismissal is the answer that releases a call still waiting on the person
+// when they wrote a message instead (the ask is closed, not answered): every
+// question skipped with a note that says so, and for a plan card a decision
+// to keep planning, never an approval.
+func Dismissal(payload json.RawMessage) json.RawMessage {
+	var plan struct {
+		Kind string `json:"kind"`
+	}
+	if json.Unmarshal(payload, &plan) == nil && plan.Kind == "plan" {
+		raw, _ := json.Marshal(map[string]string{"decision": "keep_planning", "note": dismissalNote})
+		return raw
+	}
+	raw, _ := json.Marshal(map[string]any{"answers": map[string]any{}, "general_note": dismissalNote})
+	return raw
+}

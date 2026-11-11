@@ -748,8 +748,8 @@ func TestChatAnswerAfterTheCallIsGoneBecomesAMessage(t *testing.T) {
 		t.Fatalf("interrupt: %d %v", code, body)
 	}
 	c.waitJournal(t, id, 10*time.Second, "the interrupt", turnsEnded(1))
-	// The question is still open: the agent still waits for it.
-	c.waitActivity(t, id, termux.StateWaiting)
+	// The Stop closed the question, but it still takes an answer.
+	c.waitActivity(t, id, termux.StateIdle)
 	code, body := c.post(t, "/api/chats/"+id+"/asks/"+ask+"/answer", map[string]any{"client_id": "a1", "answer": "b", "device": "phone"})
 	if code != http.StatusOK {
 		t.Fatalf("answer: %d %v", code, body)
