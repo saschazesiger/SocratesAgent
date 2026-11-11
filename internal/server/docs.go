@@ -20,21 +20,22 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/saschazesiger/SocratesAgent/internal/artifacts"
+	"github.com/saschazesiger/SocratesAgent/internal/agenthost"
 	"github.com/saschazesiger/SocratesAgent/internal/docs"
 	"github.com/saschazesiger/SocratesAgent/internal/store"
 	"github.com/saschazesiger/SocratesAgent/internal/web"
 )
 
 // Docs: every project folder of the sidebar has a Docs view, its Markdown
-// files as a tree, each rendered by the artifacts' page kit in a sandboxed
+// files as a tree, each rendered by the page kit (/artifact-kit/) in a sandboxed
 // frame (internal/docs finds and checks them). A chat's link to a Markdown
 // file of its folder opens the same page beside the chat.
 //
-// A folder is shown only when it is a session's working directory or lies
-// inside the workspace root: the folder a request names is the person's
-// choice, but it has to be one Socrates already works in, not any path on
-// the disk.
+// A folder is shown only when it is a session's working directory, lies
+// inside the workspace root, or is a chat's pages folder (paths.ChatPages,
+// where its agent writes the pages it links in the chat): the folder a
+// request names is the person's choice, but it has to be one Socrates
+// already works in, not any path on the disk.
 //
 // The pages are served at /docs/{token}/{path}, outside the login: a page is
 // a sandbox with an opaque origin, so the requests it makes itself (its
@@ -58,23 +59,27 @@ const (
 	// docsSigLen is the length of a token's signature, in base64url
 	// characters (192 bits).
 	docsSigLen = 32
+	// maxDocsTitles is the most files a listing reads the titles of
+	// (?titles=1): a chat's pages, not a repository's docs.
+	maxDocsTitles = 300
 	// maxDocsToken bounds a token: a folder of maxBoardFolder bytes,
 	// encoded, and its signature.
 	maxDocsToken = (maxBoardFolder*4+2)/3 + 1 + docsSigLen
 )
 
-// docsPageCSP is a doc page's policy: an artifact page's (artifactPageCSP)
-// but for forms, which a doc has none of, and with scripts held to the
-// kit and Mermaid. An artifact is the chat's own agent's page; a doc is a
-// file of someone's repository, and its HTML (an <img onerror>, a
-// <script>) must run nothing: no inline script, no request of its own
-// (connect-src) that could carry the page's address - its token - away.
+// docsPageCSP is a doc page's policy: a sandbox with an opaque origin
+// wherever it is shown, a frame of the app or a tab of its own, so that
+// nothing it asks of Socrates carries the person's cookie, with scripts held
+// to the kit and Mermaid. A doc is a file of someone's repository or what a
+// chat's agent wrote, and its HTML (an <img onerror>, a <script>) must run
+// nothing: no inline script, no request of its own (connect-src) that could
+// carry the page's address - its token - away.
 // The kit is named by host as well as 'self', which a sandboxed page's
 // opaque origin does not match everywhere.
 func docsPageCSP(r *http.Request) string {
 	kit := "'self'"
 	if host := r.Host; host != "" && docsHostOK(host) {
-		kit += " " + host + artifacts.KitPath
+		kit += " " + host + docs.KitPath
 	}
 	return "sandbox allow-scripts allow-popups allow-popups-to-escape-sandbox allow-modals allow-downloads; " +
 		"frame-ancestors 'self'; script-src " + kit + " https://cdn.jsdelivr.net/npm/mermaid@11/; " +
@@ -186,15 +191,18 @@ func (s *Server) docsTokenFolder(token string) (string, bool) {
 
 // docsAllowed is whether a folder's docs may be shown: an absolute
 // directory that is there, spelt as the sidebar spells it (boardFolder),
-// which is a session's working directory or lies inside the workspace
-// root. workdirs is every session's working directory, cleaned, read here
-// when nil.
+// which is a session's working directory, lies inside the workspace root,
+// or is the pages folder of a chat that exists. workdirs is every session's
+// working directory, cleaned, read here when nil.
 func (s *Server) docsAllowed(folder string, workdirs map[string]bool) bool {
 	if !filepath.IsAbs(folder) || filepath.Clean(folder) != folder {
 		return false
 	}
 	if info, err := os.Stat(folder); err != nil || !info.IsDir() {
 		return false
+	}
+	if _, ok := s.chatOfPages(folder); ok {
+		return true
 	}
 	if workdirs == nil {
 		workdirs = s.sessionWorkdirs()
@@ -357,18 +365,34 @@ func docsHome(folder string, files []docs.File) string {
 	return ""
 }
 
+// titledFile is a file of a listing with its title (?titles=1).
+type titledFile struct {
+	docs.File
+	// Title is its first level-1 heading, "" for none (docs.Title).
+	Title string `json:"title"`
+}
+
 // handleDocs lists a folder's Markdown:
 //
-//	GET /api/docs?folder=/root/project
-//	  {"folder", "files": [{"path", "size", "mtime"}], "truncated", "base", "readme"}
+//	GET /api/docs?folder=/root/project[&titles=1]
+//	  {"folder", "files": [{"path", "size", "mtime"[, "title"]}], "truncated", "base", "readme"}
 //
 // base is where the pages are served, "/docs/<token>/": a file's page is
-// base + its path, each segment escaped.
+// base + its path, each segment escaped. titles=1 gives every file its
+// title, the text of its first "# " heading or "", when the listing has at
+// most maxDocsTitles files; a longer one is listed without. A chat's pages
+// folder that is not there yet (a chat from before pages) is made.
 func (s *Server) handleDocs(w http.ResponseWriter, r *http.Request) {
 	folder, err := boardFolder(r.URL.Query().Get("folder"))
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
+	}
+	if id, ok := s.chatOfPages(folder); ok {
+		if _, err := agenthost.MakePages(s.dataDir, id); err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
 	}
 	if !s.docsAllowed(folder, nil) {
 		writeError(w, http.StatusNotFound, "there are no docs for that folder")
@@ -384,9 +408,17 @@ func (s *Server) handleDocs(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	var files any = list.Files
+	if r.URL.Query().Get("titles") == "1" && len(list.Files) <= maxDocsTitles {
+		titled := make([]titledFile, len(list.Files))
+		for i, f := range list.Files {
+			titled[i] = titledFile{File: f, Title: docs.Title(folder, f.Path)}
+		}
+		files = titled
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"folder":    folder,
-		"files":     list.Files,
+		"files":     files,
 		"truncated": list.Truncated,
 		"base":      "/docs/" + token + "/",
 		"readme":    docsHome(folder, list.Files),

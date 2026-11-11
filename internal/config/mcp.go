@@ -31,6 +31,13 @@ type MCPBuiltinSetting struct {
 // no server of Admin may take; internal/mcpserver/builtin sets it.
 var BuiltinMCPNames []string
 
+// retiredBuiltinMCP is the names of MCP servers once built into Socrates
+// and gone since: Admin's choice for one is dropped (normalize), and a
+// chat's choice for one finds no server and is passed over (agent.ChatMCP).
+// socrates-artifacts made a chat's artifacts, which its pages folder
+// replaced (paths.ChatPages).
+var retiredBuiltinMCP = []string{"socrates-artifacts"}
+
 // The ways a remote MCP server of Admin is signed in to.
 const (
 	MCPAuthNone  = ""
@@ -162,7 +169,7 @@ func (m *MCPSettings) normalize() {
 	var builtin []MCPBuiltinSetting
 	seen := map[string]bool{}
 	for _, b := range m.Builtin {
-		if b.Name = strings.TrimSpace(b.Name); b.Name != "" && !seen[b.Name] {
+		if b.Name = strings.TrimSpace(b.Name); b.Name != "" && !seen[b.Name] && !slices.Contains(retiredBuiltinMCP, b.Name) {
 			seen[b.Name] = true
 			builtin = append(builtin, b)
 		}

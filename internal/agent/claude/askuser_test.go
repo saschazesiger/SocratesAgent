@@ -73,12 +73,14 @@ func TestAskUserIsAnInProcessServerOfEveryChat(t *testing.T) {
 }
 
 // A chat with the chat tools has them beside ask_user, and both guidances,
-// then the options' prompt and the model's instructions.
+// the docs' and its pages folder's, then the options' prompt and the model's
+// instructions.
 func TestAChatGetsTheChatToolsBesideAskUser(t *testing.T) {
 	run := func(ep chattools.Endpoint) (mcp, argv string) {
 		e := newEnv(t)
 		spec := e.spec("")
 		spec.ChatTools, spec.Instructions = ep, map[string]string{"haiku": "NOTE-HAIKU"}
+		spec.DataDir = "/data"
 		a := New(Options{AppendSystemPrompt: "OPTIONS-PROMPT"})
 		r := newRec()
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -107,7 +109,7 @@ func TestAChatGetsTheChatToolsBesideAskUser(t *testing.T) {
 		t.Errorf("a chat's tools:\n%s", mcp)
 	}
 	if !strings.Contains(argv, askGuidance+"\n\n"+chattools.Guidance(chatsPrefix)) ||
-		!strings.Contains(argv, todoGuidance+"\n\n"+agent.DocsGuidance+"\n\nOPTIONS-PROMPT") ||
+		!strings.Contains(argv, todoGuidance+"\n\n"+agent.DocsGuidance+"\n\n"+agent.PagesGuidance("/data/chats/c1/pages")+"\n\nOPTIONS-PROMPT") ||
 		!strings.Contains(argv, "OPTIONS-PROMPT\n\n"+agent.ModelPrompt("haiku", "NOTE-HAIKU")) {
 		t.Errorf("a chat's system prompt:\n%s", argv)
 	}

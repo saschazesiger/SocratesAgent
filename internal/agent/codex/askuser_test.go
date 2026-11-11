@@ -62,13 +62,14 @@ func TestAskUserIsADynamicToolThatWaits(t *testing.T) {
 }
 
 // A chat's thread has the chat tools beside ask_user and both guidances,
-// then the model's instructions.
+// the docs' and its pages folder's, then the model's instructions.
 func TestAChatsThreadHasTheChatToolsBesideAskUser(t *testing.T) {
 	thread := func(ep chattools.Endpoint) (*adapter, *recorder, string) {
 		lab := newFakeLab(t)
 		r := newRecorder()
 		spec := lab.spec("a", "")
 		spec.ChatTools, spec.Instructions = ep, map[string]string{"gpt-fake": "NOTE-FAKE"}
+		spec.DataDir = "/data"
 		a := lab.start(spec, r)
 		_, n := send(t, a, r, "/thread")
 		r.turnEnd(t, n, wait)
@@ -77,7 +78,7 @@ func TestAChatsThreadHasTheChatToolsBesideAskUser(t *testing.T) {
 	sock := "/nonexistent/chat-tools.sock"
 	_, _, got := thread(chattools.Endpoint{Socket: sock, Token: "c.x"})
 	if !strings.Contains(got, askuser.Name) || !strings.Contains(got, chattools.List) ||
-		!strings.Contains(got, "instructions: "+askGuidance+"\n\n"+chattools.Guidance("")) || !strings.Contains(got, todoGuidance+"\n\n"+agent.DocsGuidance) || !strings.Contains(got, agent.ModelPrompt("gpt-fake", "NOTE-FAKE")) {
+		!strings.Contains(got, "instructions: "+askGuidance+"\n\n"+chattools.Guidance("")) || !strings.Contains(got, todoGuidance+"\n\n"+agent.DocsGuidance+"\n\n"+agent.PagesGuidance("/data/chats/c1/pages")) || !strings.Contains(got, agent.ModelPrompt("gpt-fake", "NOTE-FAKE")) {
 		t.Fatalf("a chat's thread:\n%s", got)
 	}
 }

@@ -15,9 +15,9 @@ import {
   tmuxSock, freePort, spawnServer, waitForHealth, STARTUP, REPO, agentProcessesOf,
 } from './harness.mjs';
 import { chattests } from './chattests.mjs';
-import { artifacts } from './artifacts.mjs';
 import { boards } from './boards.mjs';
 import { docs } from './docs.mjs';
+import { pages as chatPages } from './pages.mjs';
 import http from 'node:http';
 import net from 'node:net';
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -2910,7 +2910,7 @@ async function sharedmcp() {
     await s.page.waitForSelector('dialog .so-mcp-switches input[data-name="search"]', { timeout: 10000 });
     const listed = await s.page.$$eval('dialog .so-mcp-switches .ds-switch', (list) => list.map((row) =>
       row.querySelector('input').dataset.name + ':' + row.querySelector('input').checked));
-    ok(listed.join(' ') === 'browserstack:false db:true github:true search:false socrates-artifacts:false socrates-tests:false',
+    ok(listed.join(' ') === 'browserstack:false db:true github:true search:false socrates-tests:false',
       'the chat’s dialog lists every server with its state, the built-in ones off', listed.join(' '));
     await s.page.click('dialog label.ds-switch:has(input[data-name="search"])');
     await s.page.waitForFunction(() => /search is on/.test(document.body.textContent), null, { timeout: 10000 });
@@ -3031,7 +3031,7 @@ async function sheetmcp() {
       r.querySelector('input').dataset.name + ':' + r.querySelector('input').checked));
     await page.waitForSelector('#nsMcpField:not([hidden]) #nsMcp input[data-name="search"]', { timeout: 10000 });
     let listed = await switches();
-    ok(listed.join(' ') === 'browserstack:false github:true search:false socrates-artifacts:false socrates-tests:false',
+    ok(listed.join(' ') === 'browserstack:false github:true search:false socrates-tests:false',
       'the sheet offers Admin’s MCP servers, each on its default, and the built-in ones off', listed.join(' '));
     const builtin = await page.$eval('#nsMcp .ds-switch:has(input[data-name="browserstack"])', (r) =>
       r.querySelector('.ds-switch__label').textContent + ' / ' + r.querySelector('.ds-switch__hint').textContent);
@@ -3041,11 +3041,11 @@ async function sheetmcp() {
     await page.click('#nsDir .ds-combo__option[data-value="preset:' + dir + '"]');
     await page.waitForSelector('#nsMcp input[data-name="db"]', { timeout: 10000 });
     listed = await switches();
-    ok(listed.join(' ') === 'browserstack:false db:true github:true search:false socrates-artifacts:false socrates-tests:false', 'a folder with a .mcp.json adds its servers', listed.join(' '));
+    ok(listed.join(' ') === 'browserstack:false db:true github:true search:false socrates-tests:false', 'a folder with a .mcp.json adds its servers', listed.join(' '));
     await page.click('#nsMcp label.ds-switch:has(input[data-name="search"])');
     await page.click('#nsMcp label.ds-switch:has(input[data-name="github"])');
     listed = await switches();
-    ok(listed.join(' ') === 'browserstack:false db:true github:false search:true socrates-artifacts:false socrates-tests:false', 'a switch is moved on the sheet', listed.join(' '));
+    ok(listed.join(' ') === 'browserstack:false db:true github:false search:true socrates-tests:false', 'a switch is moved on the sheet', listed.join(' '));
     await shot(page, 'sheet-mcp');
     // The shell has none of it.
     await page.click('#newSessionSheet .so-settings__program[data-value="shell"]');
@@ -3056,7 +3056,7 @@ async function sheetmcp() {
     await page.click('#newSessionSheet .so-settings__program[data-value="claude"]');
     await page.waitForSelector('#nsMcpField:not([hidden])', { timeout: 10000 });
     listed = await switches();
-    ok(listed.join(' ') === 'browserstack:false db:true github:false search:true socrates-artifacts:false socrates-tests:false', 'back on the agent, the switches are as they were', listed.join(' '));
+    ok(listed.join(' ') === 'browserstack:false db:true github:false search:true socrates-tests:false', 'back on the agent, the switches are as they were', listed.join(' '));
 
     await page.click('#nsStart');
     await page.waitForSelector('#newSessionSheet[open]', { state: 'detached', timeout: 30000 });
@@ -3214,7 +3214,7 @@ async function mcpcard() {
     await page.waitForSelector('dialog .so-mcp-switches input[data-name="fake"]', { timeout: 10000 });
     const listed = await page.$$eval('dialog .so-mcp-switches .ds-switch', (list) => list.map((r) =>
       r.querySelector('.ds-switch__label').textContent + ':' + r.querySelector('input').checked));
-    ok(listed.join(' ') === 'broken:false BrowserStack:true context7:true fake:false linear:false Socrates Artifacts:false Socrates Tests:false',
+    ok(listed.join(' ') === 'broken:false BrowserStack:true context7:true fake:false linear:false Socrates Tests:false',
       'the chat lists the servers, the built-in ones by their titles and on as Admin says', listed.join(' '));
     await page.click('dialog .so-mcp-switch[data-name="fake"] button[data-test]');
     await page.waitForSelector('dialog .so-mcp-probe .ds-alert.ds-tone-success', { timeout: 30000 });
@@ -15442,9 +15442,9 @@ const ALL = [
   ['chat-stream', 'a chat: streaming, Markdown, replay, queued, Stop, the draft, the palette, the model, the lines', chatstream],
   ['chat-restart', 'the server restarted mid-turn under a desk and a phone: the stream replays, the turn completes, nothing twice', chatrestart],
   ['chattests', 'a chat\u2019s own tests: the button and its badge live, the column, the viewer and its screenshots, override, edit, run again, delete, a phone', chattests],
-  ['artifacts', 'a chat\u2019s artifacts: the button and its badge, the column opening on a new one, the page in its frame, versions, delete, a phone', artifacts],
   ['boards', 'a project folder\u2019s notes: columns, cards, named colours, a drag, a reload, another device, another folder, a phone', boards],
   ['docs', 'a project folder\u2019s docs: Docs in its \u22ee, the README and the tree, links, a file changed on disk, the filter, a reload, the sandbox, a link in a chat, a phone', docs],
+  ['chatpages', 'a chat\u2019s pages: the folder, the Pages button and its badge, a link to a page, the menu newest first, a page changed on disk', chatPages],
   ['chat-tools', 'tool rows, the diff viewer, a subagent, a workflow, and the task list pinned while it runs', chattools],
   ['chat-light', 'a chat read on a new device comes light, and what is opened is asked for: a workflow’s agents, a long output', chatlight],
   ['chat-fold', 'an answer\u2019s work folded in one line: what it does, then what it did, its steps and tokens; the answer and a question stand', chatfold],

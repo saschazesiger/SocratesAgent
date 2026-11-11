@@ -1,7 +1,8 @@
 /*
- * The page kit of a chat's artifacts (docs/design/ARTIFACTS.md, "The page
- * kit"): the look of a page an agent writes as an HTML fragment or as
- * Markdown, shown in a sandboxed frame beside the chat. It is not the app's
+ * The page kit of the Docs viewer (docs/design/DOCS.md; made for Socrates
+ * Artifacts, removed for the chat pages of docs/design/PAGES.md): the look
+ * of a Markdown file, a project's or a page a chat's agent wrote, shown in a
+ * sandboxed frame beside the chat. It is not the app's
  * UI (no Z-Dash, outside make ds-check): a quiet, light stylesheet
  * in Socrates' colours, with a few classes the agent is told about.
  *

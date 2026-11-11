@@ -158,6 +158,11 @@ func Run(opts Options) error {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
+	// The agent is told to write its pages there (agent.PagesGuidance). A
+	// folder that cannot be made costs the chat its pages, not its agent.
+	if _, err := MakePages(opts.DataDir, opts.ChatID); err != nil {
+		log.Printf("agenthost: the pages folder: %v", err)
+	}
 	lock, err := takeLock(filepath.Join(dir, lockName))
 	if err != nil {
 		return err
@@ -506,16 +511,21 @@ func (h *host) boot() {
 	h.touch()
 }
 
-// askCommand is `socrates mcp-ask --socket <this host's socket>`, ask_user as
-// a stdio MCP server for a CLI that starts its MCP servers itself (OpenCode):
-// this very binary, which is what the host was started as.
+// askCommand is `socrates mcp-ask --socket <this host's socket> --pages
+// <the chat's pages folder>`, ask_user as a stdio MCP server for a CLI that
+// starts its MCP servers itself (OpenCode): this very binary, which is what
+// the host was started as.
 func (h *host) askCommand() []string {
 	exe, err := os.Executable()
 	if err != nil {
 		log.Printf("ask_user has no command: %v", err)
 		return nil
 	}
-	return []string{exe, "mcp-ask", "--socket", h.sock}
+	cmd := []string{exe, "mcp-ask", "--socket", h.sock}
+	if pages := agent.PagesDir(h.opts.DataDir, h.opts.ChatID); pages != "" {
+		cmd = append(cmd, "--pages", pages)
+	}
+	return cmd
 }
 
 // chatMCP is the MCP servers the chat's CLI starts with on env

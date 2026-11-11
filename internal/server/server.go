@@ -17,7 +17,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/saschazesiger/SocratesAgent/internal/artifacts"
 	"github.com/saschazesiger/SocratesAgent/internal/backup"
 	"github.com/saschazesiger/SocratesAgent/internal/catalog"
 	"github.com/saschazesiger/SocratesAgent/internal/chattests"
@@ -124,8 +123,6 @@ type Server struct {
 	mcp *mcpserver.Registry
 	// chatTests is every chat's tests (chattests.go).
 	chatTests *chattests.Store
-	// artifacts is every chat's artifacts (artifacts.go).
-	artifacts *artifacts.Store
 	// docsKeep is the Docs view's token key and probe answers (docs.go).
 	docsKeep docsState
 	// The sign-ins of Admin's OAuth MCP servers (mcpoauth.go) and the last
@@ -199,7 +196,6 @@ func New(st *store.Store, dataDir string) (*Server, error) {
 	s.push.chatAsk, s.push.chatTurn = s.chats.askWords, s.chats.turnWords
 	s.accounts = newAccountHub(s)
 	s.chatTests = s.newChatTests()
-	s.artifacts = s.newArtifacts()
 	s.mcp = s.newMCPRegistry()
 	manager, err := termux.New(st, cfg)
 	if err != nil {
@@ -250,6 +246,9 @@ func (s *Server) StartSessions(ctx context.Context) error {
 	// Test mode's sessions and runs go before the chats come back, so that
 	// none of its sessions is taken for a chat (chattests.go).
 	s.forgetTestMode(ctx)
+	// The chats' artifacts went with Socrates Artifacts, which their pages
+	// folder replaced (pages.go).
+	s.forgetArtifacts()
 	// Chats need no tmux: their hosts are reattached whatever the terminal
 	// engine says below, and so is their clock, once every chat is known.
 	s.chats.start()
@@ -455,15 +454,11 @@ func (s *Server) routes() {
 	mux.HandleFunc("POST /api/chats/{id}/tests/{test}/override", s.auth(s.handleChatTestOverride))
 	mux.HandleFunc("POST /api/chats/{id}/tests/{test}/rerun", s.auth(s.handleChatTestRerun))
 	mux.HandleFunc("GET /api/chats/{id}/tests/{test}/files/{file...}", s.auth(s.handleChatTestFile))
-	// A chat's artifacts (artifacts.go): the list, a delete, and every
-	// page at an address of its own, with its files and the kit beside it.
-	mux.HandleFunc("GET /api/chats/{id}/artifacts", s.auth(s.handleChatArtifacts))
-	mux.HandleFunc("DELETE /api/chats/{id}/artifacts/{artifact}", s.auth(s.handleChatArtifactDelete))
-	mux.HandleFunc("GET /artifacts/{id}/{artifact}/{key}/{file...}", s.handleArtifact)
+	// A project folder's docs, and a chat's pages folder (docs.go): which
+	// folders have any, a folder's Markdown, one file's time, and the pages,
+	// outside the login with a token of their own (their requests carry no
+	// cookie), with the kit that renders them.
 	mux.Handle("GET /artifact-kit/{name}", web.ArtifactKit())
-	// A project folder's docs (docs.go): which folders have any, a folder's
-	// Markdown, one file's time, and the pages, outside the login with a
-	// token of their own (their requests carry no cookie).
 	mux.HandleFunc("POST /api/docs/probe", s.auth(s.handleDocsProbe))
 	mux.HandleFunc("GET /api/docs", s.auth(s.handleDocs))
 	mux.HandleFunc("GET /api/docs/stat", s.auth(s.handleDocsStat))

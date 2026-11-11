@@ -6,7 +6,6 @@ package builtin
 import (
 	"github.com/saschazesiger/SocratesAgent/internal/config"
 	"github.com/saschazesiger/SocratesAgent/internal/mcpserver"
-	"github.com/saschazesiger/SocratesAgent/internal/mcpserver/artifacts"
 	"github.com/saschazesiger/SocratesAgent/internal/mcpserver/browserstack"
 	"github.com/saschazesiger/SocratesAgent/internal/mcpserver/tests"
 )
@@ -16,8 +15,6 @@ import (
 type Deps struct {
 	// Tests is the chats' tests, which Socrates Tests writes.
 	Tests tests.Deps
-	// Artifacts is the chats' artifacts, which Socrates Artifacts makes.
-	Artifacts artifacts.Deps
 }
 
 // servers makes every built-in server; accounts is how a server reads the
@@ -34,7 +31,7 @@ func servers(dataDir string, accounts func(server string) []mcpserver.Account, d
 		}
 	}
 	d.Tests.Recorders = func() []tests.NamedRecorder { return recorders }
-	return append(list, tests.New(d.Tests), artifacts.New(d.Artifacts))
+	return append(list, tests.New(d.Tests))
 }
 
 // Register adds every built-in server to r, running in dataDir.

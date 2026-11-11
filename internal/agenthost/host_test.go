@@ -255,6 +255,18 @@ func TestHostRunsATurnAndActsOnAClientIDOnce(t *testing.T) {
 	}
 }
 
+// A chat's pages folder is there whenever its agent runs: the agent is told
+// to write into it.
+func TestHostMakesTheChatsPagesFolder(t *testing.T) {
+	r := newRig(t, time.Hour)
+	r.launch()
+	r.dial(0)
+	dir := agent.PagesDir(r.data, r.chat)
+	if info, err := os.Stat(dir); err != nil || !info.IsDir() || info.Mode().Perm() != 0o700 {
+		t.Fatalf("the pages folder %s: %v %v", dir, info, err)
+	}
+}
+
 // A client that drops in the middle of a turn and comes back with since gets
 // exactly the events it missed.
 func TestHostReplaysExactlyWhatAClientMissed(t *testing.T) {

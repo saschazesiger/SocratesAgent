@@ -79,7 +79,7 @@ file opens it beside the chat. Decided with the owner the same day:
   the path lies in the folder. The branch is not looked at: the file shown is the one on disk.
   Another repository's address stays the browser's.
 - At a desk (over 1100 px) the file is a column on the chat's right (`#docsidePanel`, half the
-  stage), never open with the tests' or the artifacts' column: opening one shuts the others. Its head:
+  stage), never open with the tests' column: opening one shuts the other. Its head:
   the page's title, *Open in Docs* (the Docs page on the same file, with the tree), *Open in a new tab*,
   *Close*. Narrower it is a full screen dialog with the same head. A link in it to another Markdown
   file stays in it; the file is drawn again when it changes on disk. Another chat on the stage closes
@@ -120,19 +120,17 @@ file opens it beside the chat. Decided with the owner the same day:
   base64url(HMAC-SHA256(key, "docs\0" + folder))` (32 characters), the key 32 random bytes made once and
   kept in the database (`kv` `docs.key`, so in the backup). Only a signed-in caller gets it (`GET
   /api/docs`). The frame's own requests carry no cookie (its origin is opaque), so `/docs/` asks for the
-  token and not the login, as an artifact's files do (ARTIFACTS.md).
+  token and not the login.
 - **What is served**: a Markdown file or a picture (`png jpg jpeg gif svg webp avif ico bmp`) inside
   the folder, by a path with no `..`, no part starting with `.` and none of the skipped folders, that
   resolves (symbolic links followed) inside the folder; Markdown up to 5 MB, a picture up to 20 MB. A
   folder is redirected to its README.md (or index.md). Everything else is a 404: source code, `.env`,
   `.git`, a path out of the folder.
-- **A Markdown file** goes in the kit's document (`docs.Page`, as `artifacts.Page` with `<body
-  data-docs="<path>">`) with `Content-Security-Policy: sandbox allow-scripts allow-popups
+- **A Markdown file** goes in the kit's document (`docs.Page`, `<body data-docs="<path>">`) with `Content-Security-Policy: sandbox allow-scripts allow-popups
   allow-popups-to-escape-sandbox allow-modals allow-downloads; frame-ancestors 'self'; script-src 'self'
   <host>/artifact-kit/ https://cdn.jsdelivr.net/npm/mermaid@11/; connect-src 'none'; object-src 'none';
   base-uri 'none'; form-action 'none'`, `Referrer-Policy: no-referrer`, `nosniff`, `Cache-Control:
-  private, no-cache`. Unlike an artifact (its own agent's page), a doc is a file of someone's
-  repository: its raw HTML stays (marked), but no script of its own runs (no inline script or
+  private, no-cache`. A doc is a file of someone's repository (or a page a chat's agent wrote, PAGES.md): its raw HTML stays (marked), but no script of its own runs (no inline script or
   handler) and it makes no request of its own that could carry the page's address - the token - away.
   `?raw=1` is its text (a sandbox, no CORS).
 - **A picture** goes as its type with `Content-Security-Policy: sandbox`, `nosniff`,
@@ -147,7 +145,8 @@ file opens it beside the chat. Decided with the owner the same day:
 (`scroll`), and a link it did not follow (`file`: a file of the folder that is not Markdown,
 `outside`: a link out of the folder); a link to a Markdown file or a folder of the folder is followed
 in the frame, a picture opens in a tab. The app sends `scroll` (a heading's id). The anchors, the
-alerts and the scroll back to `#heading` are the kit's for artifacts too.
+alerts and the scroll back to `#heading` are the kit's own. The kit (`/artifact-kit/`) keeps the name
+of Socrates Artifacts, which it was made for (removed 2026-11-11, PAGES.md).
 
 ## 6. Code and tests
 

@@ -1,6 +1,6 @@
 // A project folder's documentation on the stage (docs/design/DOCS.md): every
 // Markdown file of the folder in its own tree of folders, the file chosen
-// drawn by the artifact kit in a sandboxed frame (Mermaid diagrams, tables,
+// drawn by the page kit in a sandboxed frame (Mermaid diagrams, tables,
 // GitHub's alerts), and the headings of the page beside it. The address is
 // `#docs=<folder>&page=<path>`; session.js puts the page on the stage and
 // takes it off again, as it does a folder's notes.

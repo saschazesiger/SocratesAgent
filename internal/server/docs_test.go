@@ -165,7 +165,7 @@ func TestDocsListing(t *testing.T) {
 	}
 }
 
-// A Markdown page goes out like an artifact's page, sandboxed, with its text
+// A Markdown page goes out sandboxed, with its text
 // escaped inside the kit's document; ?raw=1 is the text itself.
 func TestDocsPage(t *testing.T) {
 	e, project, _ := docsEnv(t)

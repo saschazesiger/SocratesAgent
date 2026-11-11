@@ -54,7 +54,7 @@ import { mountChat } from './chatview.js';
 import { chatOutbox, queueCommand, settled, forgetAllSent } from './chatoutbox.js';
 import { openChatAsks, askDialogOpen, closeAskDialog, refreshAskDialog } from './askdialog.js';
 import { mountChatTests } from './chattests.js';
-import { mountChatArtifacts } from './artifacts.js';
+import { mountChatPages } from './pages.js';
 import { mountBoard } from './boards.js';
 import { mountDocs, docsHash, parseDocsRoute } from './docs.js';
 import { probeDocs, knownDocs, hasDocs, knownRepo } from './docview.js';
@@ -709,9 +709,9 @@ const state = {
   // The chat's tests: the top bar's button and the panel (chattests.js),
   // mounted once in boot().
   tests: null,
-  // The chat's artifacts: the button, the column and its page view
-  // (artifacts.js), mounted once in boot().
-  artifacts: null,
+  // The chat's pages: the top bar's Pages button and its menu (pages.js),
+  // mounted once in boot().
+  pages: null,
   // The notes of the project folder on the stage (boards.js), mounted once
   // in boot().
   board: null,
@@ -755,7 +755,7 @@ const ids = ['sidebar', 'navScrim', 'menuBtn', 'blankIDE', 'homeBtn', 'sideColla
   'statusBtn', 'passageBtn', 'kbBtn', 'optionsBtn',
   'stage', 'termWrap', 'term', 'termOverlay', 'termLines', 'termNotice',
   'termTicker', 'tickerWindow',
-  'micBtn', 'testsBtn', 'testsPanel', 'artifactsBtn', 'artifactsPanel',
+  'micBtn', 'testsBtn', 'testsPanel', 'pagesBtn',
   'recSheet', 'recMeter', 'recTime', 'recSend', 'recCancel',
   'keybar', 'logout', 'chat', 'home', 'board', 'docs', 'docsidePanel'];
 for (const id of ids) dom[id] = document.getElementById(id);
@@ -1825,10 +1825,10 @@ function mountStream() {
       if ('outcomes' in data) replaceMap(state.outcomes, data.outcomes);
       if (Array.isArray(data.sessions)) applyList(data.sessions, { rev: data.rev, source: 'hello' });
       else drawLive();
-      // The tests and artifacts of the chat on screen may have changed
+      // The tests and pages of the chat on screen may have changed
       // meanwhile.
       if (state.tests) state.tests.resync();
-      if (state.artifacts) state.artifacts.resync();
+      if (state.pages) state.pages.refresh();
       if (state.board) state.board.resync();
       if (state.docs) state.docs.resync();
     },
@@ -1841,9 +1841,6 @@ function mountStream() {
     // A chat's tests changed (chattests.js reads them again when it is the
     // chat on screen).
     chattests: (frame) => { if (state.tests) state.tests.frame(frame); },
-    // A chat's artifacts changed (artifacts.js reads them again when it is
-    // the chat on screen, and opens a new one).
-    artifacts: (frame) => { if (state.artifacts) state.artifacts.frame(frame); },
     // A folder's notes were saved somewhere (boards.js reads them again
     // when they are the ones on screen).
     board: (frame) => { if (state.board) state.board.frame(frame); },
@@ -2466,11 +2463,9 @@ async function mcpDialog(session, opener, { closed } = {}) {
   list.hidden = true;
   dialog.addEventListener('close', () => {
     hideOverlay(dialog, { remove: true }).then(() => paneAfter(document.activeElement));
-    // Whether Socrates Tests (Artifacts) is on decides what the chat's
-    // Tests (Artifacts) panel offers; a switch changes nothing the panels'
-    // own frames would say.
+    // Whether Socrates Tests is on decides what the chat's Tests panel
+    // offers; a switch changes nothing the panel's own frames would say.
     if (state.tests && state.current && state.current.id === session.id) state.tests.resync();
-    if (state.artifacts && state.current && state.current.id === session.id) state.artifacts.resync();
     if (closed) closed();
   }, { once: true });
   showOverlay(dialog, opener && opener.isConnected ? opener : document.activeElement);
@@ -2711,15 +2706,7 @@ async function openRowMenu(anchor, id, { device = false } = {}) {
   // A menu cut short (at 1280x800 a chat's twelve items stopped at
   // Ultracode) fades at its cut edge: DS.overlay watches its scroll. One
   // that would not fit the screen at all is the action sheet (menuFits).
-  morph(menu, html`${items}`);
-  const sheet = actionSheetWanted() || !menuFits(menu);
-  anchor.setAttribute('aria-haspopup', sheet ? 'dialog' : 'menu');
-  if (sheet) {
-    openActionSheet(anchor, session.title, items);
-    return;
-  }
-  anchor.setAttribute('aria-controls', 'sessionMenu');
-  showOverlay(menu, anchor);
+  showMenu(anchor, session.title, items, isChat(session) ? 'Chat actions' : 'Session actions');
 }
 
 /**
@@ -2754,11 +2741,42 @@ async function openFolderMenu(anchor, key) {
     // inside the tap.
     menuInTap.add('ide');
   }
+  showMenu(anchor, folder.label, items, 'Folder actions');
+}
+
+/**
+ * openListMenu is a menu of things to open, hanging from `anchor` (the
+ * chat's Pages): each entry {action, label, glyph, meta, run}, `meta` a
+ * short word at its end (when it changed). It is the row menu's element
+ * and listener, or the action sheet under `title`.
+ */
+async function openListMenu(anchor, title, entries) {
+  const menu = dom.sessionMenu;
+  if (!menu) return;
+  if (anchor.getAttribute('aria-expanded') === 'true') { hideOverlay(menu); return; }
+  if (!menu.hidden) await hideOverlay(menu);
+  menuActions.clear();
+  menuInTap.clear();
+  const items = entries.map((one) => {
+    // Once the menu has gone: its leaving puts the focus back on the
+    // anchor, which must not happen under what the entry opens.
+    menuActions.set(one.action, () => afterMenu(one.run));
+    return html`<button class="ds-menu__item" role="menuitem" type="button" data-action="${one.action}">${raw(icon(one.glyph, 20))}<span class="ds-menu__label">${one.label}</span>${one.meta ? html`<span class="ds-menu__meta">${one.meta}</span>` : ''}</button>`;
+  });
+  showMenu(anchor, title, items, title);
+}
+
+// showMenu shows the drawn items in the row menu hanging from `anchor`,
+// named `label`, or - on a phone, or when it would not fit the screen - in
+// the action sheet under `title`.
+function showMenu(anchor, title, items, label) {
+  const menu = dom.sessionMenu;
+  if (menu.getAttribute('aria-label') !== label) menu.setAttribute('aria-label', label);
   morph(menu, html`${items}`);
   const sheet = actionSheetWanted() || !menuFits(menu);
   anchor.setAttribute('aria-haspopup', sheet ? 'dialog' : 'menu');
   if (sheet) {
-    openActionSheet(anchor, folder.label, items);
+    openActionSheet(anchor, title, items);
     return;
   }
   anchor.setAttribute('aria-controls', 'sessionMenu');
@@ -3299,7 +3317,7 @@ function detachStage() {
   // another chat, nothing - starts from the pane.
   if (state.chat) state.chat.hide();
   if (state.tests) state.tests.hide();
-  if (state.artifacts) state.artifacts.hide();
+  if (state.pages) state.pages.hide();
   if (state.docside) state.docside.hide();
   dom.termWrap.hidden = false;
 }
@@ -3329,7 +3347,7 @@ function attach(session) {
     if (notifier) notifier.hush(session.id);
     state.chat.show(session);
     if (state.tests) state.tests.show(session);
-    if (state.artifacts) state.artifacts.show(session);
+    if (state.pages) state.pages.show(session);
     if (state.assist) state.assist.attached();
     if (state.transfer) state.transfer.attached();
     return;
@@ -4489,11 +4507,20 @@ async function boot() {
     toastRoom: (room) => { chatToastRoom = room; placeToasts(); },
     // A link to a Markdown file of the chat's folder opens it beside the
     // chat (docside.js): by its path, or by its address on the folder's own
-    // forge repository. A path to one that is not there is said so; any
-    // other link is the browser's.
+    // forge repository; so does a page of the chat's pages folder, by its
+    // absolute path (pages.js). A path to one that is not there is said so;
+    // any other link is the browser's.
     docLink: (href, session, opener) => {
+      if (!state.docside) return false;
+      const pages = session.pages_dir || '';
+      const page = pages && String(href || '').trim().replace(/^file:\/\/(localhost)?/i, '').startsWith('/')
+        ? docLinkTarget(href, pages) : null;
+      if (page) {
+        state.docside.open(pages, page.path, { at: page.at, opener });
+        return true;
+      }
       const folder = dirOf(session.workdir || '');
-      if (!folder || !state.docside) return false;
+      if (!folder) return false;
       const target = docLinkTarget(href, folder) || forgeLinkTarget(href, knownRepo(folder));
       if (target) {
         state.docside.open(folder, target.path, { at: target.at, opener });
@@ -4507,37 +4534,33 @@ async function boot() {
   chatOutbox().pump();
   // The chat's tests: the button, the column at a desk and the sheet
   // narrower; switching the server on goes through the chat's MCP dialog.
-  // The Tests and Artifacts columns are never open together: opening one
-  // shuts the other.
+  // The Tests column and the file beside the chat are never open together:
+  // opening one shuts the other.
   state.tests = mountChatTests({
     button: dom.testsBtn,
     panel: dom.testsPanel,
     mcpDialog: (session, opener, options) => mcpDialog(session, opener, options),
     onColumnOpen: () => {
-      if (state.artifacts) state.artifacts.shut();
       if (state.docside) state.docside.shut();
     },
   });
-  // The chat's artifacts: the button, the column (a page in it) at a desk,
-  // the sheet and the page dialog narrower.
-  state.artifacts = mountChatArtifacts({
-    button: dom.artifactsBtn,
-    panel: dom.artifactsPanel,
-    mcpDialog: (session, opener, options) => mcpDialog(session, opener, options),
-    onColumnOpen: () => {
-      if (state.tests) state.tests.shut();
-      if (state.docside) state.docside.shut();
-    },
-  });
-  // A Markdown file of the chat's folder a link in the chat opened: a
-  // column beside it at a desk (never with the tests' or the artifacts'),
-  // a full screen dialog narrower.
+  // A Markdown file of the chat's folder (or of its pages folder) a link in
+  // the chat opened: a column beside it at a desk (never with the tests'),
+  // a full screen dialog narrower. A page shown is a page seen (pages.js).
   state.docside = mountChatDocside({
     panel: dom.docsidePanel,
     onColumnOpen: () => {
       if (state.tests) state.tests.shut();
-      if (state.artifacts) state.artifacts.shut();
     },
+    onPage: (folder, path) => { if (state.pages) state.pages.seen(folder, path); },
+  });
+  // The chat's pages: the Pages button, its badge and its menu, which opens
+  // one beside the chat.
+  state.pages = mountChatPages({
+    button: dom.pagesBtn,
+    menu: (anchor, title, entries) => openListMenu(anchor, title, entries),
+    open: (folder, path, opener) => state.docside.open(folder, path, { opener }),
+    shown: () => state.docside.shown(),
   });
   // A project folder's notes: a board of columns and cards (boards.js).
   state.board = mountBoard({ host: dom.board });

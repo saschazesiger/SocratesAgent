@@ -24,6 +24,7 @@ import (
 //	<data>/chats/<id>/host.lock      held by the live host, and only by it
 //	<data>/chats/<id>/host.log       the host's own output
 //	<data>/chats/<id>/agent/         the adapter's own state
+//	<data>/chats/<id>/pages/         the pages the agent writes (paths.ChatPages)
 //	<data>/run/chats/<id>.sock       the host's socket
 const (
 	chatsDir  = paths.Chats
@@ -49,6 +50,17 @@ func ValidChatID(id string) bool { return chatIDPattern.MatchString(id) }
 
 // ChatDir is the directory of one chat.
 func ChatDir(dataDir, chatID string) string { return filepath.Join(dataDir, chatsDir, chatID) }
+
+// MakePages makes the chat's pages folder (agent.PagesDir), with its
+// directory, if they are not there yet, and answers where it is. It is
+// there whenever the chat's agent runs: the agent is told to write into it.
+func MakePages(dataDir, chatID string) (string, error) {
+	dir := agent.PagesDir(dataDir, chatID)
+	if dir == "" {
+		return "", fmt.Errorf("chat %q has no pages folder", chatID)
+	}
+	return dir, os.MkdirAll(dir, 0o700)
+}
 
 // JournalPath is the chat's journal.
 func JournalPath(dataDir, chatID string) string {

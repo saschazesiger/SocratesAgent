@@ -971,6 +971,11 @@ func (s *Server) handleCreateChat(w http.ResponseWriter, r *http.Request) {
 		s.answerChat(w, http.StatusOK, row, nil)
 		return
 	}
+	// The chat's pages folder is there from the start, for the page to
+	// list before the agent has run (the host makes it too).
+	if _, err := agenthost.MakePages(s.dataDir, row.ID); err != nil {
+		log.Printf("chat %s: could not make its pages folder: %v", row.ID, err)
+	}
 	p, err := s.chats.peer(row.ID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())

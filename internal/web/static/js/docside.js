@@ -2,8 +2,9 @@
 // "Links in a chat"): a link in the conversation to a .md file inside the
 // chat's working directory - `docs/ARCHITECTURE.md`, its absolute path, a
 // file:// address - opens the file here rather than in a tab that could not
-// show it. At a desk it is a column on the chat's right, like the tests'
-// and the artifacts' (never open with them); narrower a full screen dialog.
+// show it, and so does a page of the chat's pages folder (pages.js). At a
+// desk it is a column on the chat's right, like the tests' (never open with
+// it); narrower a full screen dialog.
 // "Open in Docs" takes it to the folder's Docs page with its tree.
 
 import { el, toast } from './api.js';
@@ -11,7 +12,7 @@ import { html, raw, icon, iconEl, morph, showOverlay, hideOverlay } from './ui.j
 import { SANDBOX, frameName, listing, pageUrl, stat, listenFrame, fileName, isMarkdown } from './docview.js';
 import { docsHash } from './docs.js';
 
-// Over this width the file is a column beside the chat (as the artifacts').
+// Over this width the file is a column beside the chat (as the tests').
 const WIDE = window.matchMedia('(min-width: 1101px)');
 // How often the file on screen is checked for a change on disk.
 const WATCH = 4 * 1000;
@@ -118,14 +119,17 @@ export function fileIn(files, path) {
 
 /**
  * mountChatDocside wires the column (`panel`, #docsidePanel) and the
- * dialog. `onColumnOpen()` is called when the column opens (the tests' and
- * the artifacts' columns shut then). It answers
+ * dialog. `onColumnOpen()` is called when the column opens (the tests'
+ * column shuts then); `onPage(folder, path)` each time the frame shows a
+ * file (opened, followed to by a link, drawn again after a change). It
+ * answers
  *   open(folder, path, {at, opener})   a file of a chat's folder
  *   hide()                             the chat left the stage
  *   shut()                             another column opened
  *   isOpen()                           whether a file is shown
+ *   shown()                            {folder, path} of the file shown, or null
  */
-export function mountChatDocside({ panel, onColumnOpen }) {
+export function mountChatDocside({ panel, onColumnOpen, onPage }) {
   // What is shown: {folder, path, base, mtime, y, title}, or null.
   let doc = null;
   let dlg = null;
@@ -244,6 +248,7 @@ export function mountChatDocside({ panel, onColumnOpen }) {
       }
       doc.title = String(m.title || '');
       draw();
+      if (onPage) onPage(doc.folder, doc.path);
     } else if (m.t === 'scroll') {
       doc.y = Number(m.y) || 0;
     } else if (m.t === 'file') {
@@ -265,9 +270,20 @@ export function mountChatDocside({ panel, onColumnOpen }) {
       return;
     }
     if (my !== gen) return;
-    // A path the listing does not have: the one file it may mean, else a
-    // word (a listing cut short may not have every file).
-    const found = fileIn(data.files, path);
+    // A path the listing does not have: the one file it may mean, or a file
+    // written since the listing kept was read; else a word (a listing cut
+    // short may not have every file).
+    let found = fileIn(data.files, path);
+    if (!found && !data.truncated) {
+      try {
+        data = await listing(folder, { fresh: true });
+      } catch {
+        toast('The files of this folder could not be read.', 'error');
+        return;
+      }
+      if (my !== gen) return;
+      found = fileIn(data.files, path);
+    }
     if (found) path = found;
     else if (!data.truncated) {
       toast(`${path} is not a Markdown file of this chat's folder.`, 'error');
@@ -320,5 +336,6 @@ export function mountChatDocside({ panel, onColumnOpen }) {
       if (!panel.hidden) close();
     },
     isOpen: () => !!doc,
+    shown: () => (doc ? { folder: doc.folder, path: doc.path } : null),
   };
 }

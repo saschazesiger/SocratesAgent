@@ -166,8 +166,8 @@ function whoSet(t) {
  *
  * `ctx`: button (the top bar's #testsBtn), panel (the column, #testsPanel),
  * mcpDialog(session, opener, { closed }) the chat's MCP servers dialog,
- * onColumnOpen() called when the column opens (the Artifacts column shuts
- * then).
+ * onColumnOpen() called when the column opens (the file beside the chat
+ * shuts then).
  *
  * It answers { show(session), hide(), frame(frame), resync(), shut() }: a
  * chat on the stage, nothing on it, a chattests frame, a hello (frames may

@@ -15,7 +15,6 @@ import (
 	"github.com/saschazesiger/SocratesAgent/internal/agent"
 	"github.com/saschazesiger/SocratesAgent/internal/config"
 	"github.com/saschazesiger/SocratesAgent/internal/mcpserver"
-	artifactsmcp "github.com/saschazesiger/SocratesAgent/internal/mcpserver/artifacts"
 	"github.com/saschazesiger/SocratesAgent/internal/mcpserver/builtin"
 	testsmcp "github.com/saschazesiger/SocratesAgent/internal/mcpserver/tests"
 	"github.com/saschazesiger/SocratesAgent/internal/store"
@@ -70,8 +69,7 @@ func (k keySealer) Open(object string, sealed []byte) ([]byte, error) {
 // newMCPRegistry is the registry with every built-in server.
 func (s *Server) newMCPRegistry() *mcpserver.Registry {
 	r := mcpserver.NewRegistry(kvStore{s.store}, keySealer{s})
-	builtin.Register(r, s.dataDir, builtin.Deps{Tests: testsmcp.Deps{Store: s.chatTests},
-		Artifacts: artifactsmcp.Deps{Store: s.artifacts}})
+	builtin.Register(r, s.dataDir, builtin.Deps{Tests: testsmcp.Deps{Store: s.chatTests}})
 	return r
 }
 
