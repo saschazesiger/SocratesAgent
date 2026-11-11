@@ -257,7 +257,10 @@ async function sessionMenu(page, id) {
 // statusMenu opens the ⋮ of a session's row: its statuses.
 async function statusMenu(page, id) {
   await ensureNav(page);
-  await page.click('#sessionList .so-row[data-id="' + id + '"] .so-row__more', { force: true });
+  // The ⋮ is shown on the row's hover (DS .ds-hover-actions): the row is
+  // pointed at first, the way a mouse gets to it.
+  await page.hover('#sessionList .so-row[data-id="' + id + '"]');
+  await page.click('#sessionList .so-row[data-id="' + id + '"] .so-row__more');
   await page.waitForSelector(MENU + ' .ds-menu__item', { timeout: 5000 });
 }
 
