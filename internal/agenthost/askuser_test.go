@@ -323,7 +323,7 @@ func TestMCPAskServesAskUserThroughTheHost(t *testing.T) {
 	outR, outW := io.Pipe()
 	done := make(chan error, 1)
 	go func() {
-		done <- ServeMCPAsk(context.Background(), SocketPath(r.data, r.chat), "test", chattools.Endpoint{}, inR, outW)
+		done <- ServeMCPAsk(context.Background(), SocketPath(r.data, r.chat), "test", chattools.Endpoint{}, "", inR, outW)
 	}()
 	out := bufio.NewReader(outR)
 	rpc := func(msg string) map[string]any {
@@ -374,14 +374,14 @@ func TestMCPAskServesAskUserThroughTheHost(t *testing.T) {
 	}
 }
 
-// `socrates mcp-ask` tells a chat's agent about ask_user and the chat tools
-// in its instructions.
+// `socrates mcp-ask` tells a chat's agent about ask_user, the chat tools
+// and its pages folder in its instructions.
 func TestMCPAskInstructsAChat(t *testing.T) {
-	instructions := func(chats chattools.Endpoint) string {
+	instructions := func(chats chattools.Endpoint, pages string) string {
 		t.Helper()
 		in := strings.NewReader(`{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{}}}` + "\n")
 		var out strings.Builder
-		if err := ServeMCPAsk(context.Background(), "/nonexistent.sock", "test", chats, in, &out); err != nil {
+		if err := ServeMCPAsk(context.Background(), "/nonexistent.sock", "test", chats, pages, in, &out); err != nil {
 			t.Fatal(err)
 		}
 		var v struct {
@@ -396,8 +396,13 @@ func TestMCPAskInstructsAChat(t *testing.T) {
 	}
 	prefix := askuser.ServerName + "_"
 	chat := chattools.Endpoint{Socket: "/nonexistent/chat-tools.sock", Token: "c.x"}
-	if got := instructions(chat); got != askuser.Guidance(MCPAskTool)+"\n\n"+chattools.Guidance(prefix)+"\n\n"+agent.TodoGuidance("todowrite")+"\n\n"+agent.DocsGuidance {
+	base := askuser.Guidance(MCPAskTool) + "\n\n" + chattools.Guidance(prefix) + "\n\n" + agent.TodoGuidance("todowrite") + "\n\n" + agent.DocsGuidance
+	if got := instructions(chat, ""); got != base {
 		t.Fatalf("a chat's instructions:\n%s", got)
+	}
+	pages := "/data/chats/c1/pages"
+	if got := instructions(chat, pages); got != base+"\n\n"+agent.PagesGuidance(pages) {
+		t.Fatalf("a chat's instructions with its pages:\n%s", got)
 	}
 }
 

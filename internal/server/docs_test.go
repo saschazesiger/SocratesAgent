@@ -95,6 +95,8 @@ func TestDocsProbe(t *testing.T) {
 	writeTree(t, bare, map[string]string{"main.go": ""})
 	stranger := t.TempDir()
 	writeTree(t, stranger, map[string]string{"README.md": ""})
+	// The project is a GitHub checkout: the probe says where its files are.
+	writeTree(t, project, map[string]string{".git/config": "[remote \"origin\"]\n\turl = https://github.com/Acme/Guide.git\n"})
 
 	body := `{"folders":["` + project + `/","` + elsewhere + `","` + bare + `","` + stranger + `","#more",""]}`
 	for round := 0; round < 2; round++ {
@@ -106,6 +108,11 @@ func TestDocsProbe(t *testing.T) {
 		if m[project+"/"] != true || m[elsewhere] != true || m[bare] != false || m[stranger] != false ||
 			m["#more"] != false || len(m) != 6 {
 			t.Fatalf("probe round %d: %v", round, m)
+		}
+		repos := got["repos"].(map[string]any)
+		repo, _ := repos[project+"/"].(map[string]any)
+		if repo == nil || repo["remote"] != "github.com/acme/guide" || repo["prefix"] != "" || repos[bare] != nil || repos[stranger] != nil {
+			t.Fatalf("probe round %d repos: %v", round, repos)
 		}
 	}
 
@@ -158,7 +165,7 @@ func TestDocsListing(t *testing.T) {
 	}
 }
 
-// A Markdown page goes out like an artifact's page, sandboxed, with its text
+// A Markdown page goes out sandboxed, with its text
 // escaped inside the kit's document; ?raw=1 is the text itself.
 func TestDocsPage(t *testing.T) {
 	e, project, _ := docsEnv(t)

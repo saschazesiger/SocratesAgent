@@ -12,6 +12,7 @@ file opens it beside the chat. Decided with the owner the same day:
 | Where | The folder's ⋮ in the sidebar (beside its +) holds Notes, Docs and VS Code; Docs only when the folder has Markdown |
 | Reading only | The files are changed through the chat; an editor in the browser would compete with the agents editing the same files |
 | Agents | Every chat's agent is told to link a Markdown file of its folder as a relative Markdown link (`agent.DocsGuidance`) |
+| Agents that do not (2026-11-11) | In the first day agents named such files 1513 times as a `code` path against 17 links, and a few times by their GitHub address. The instruction now says "every time" and names what not to write, and the chat opens a `code` path to a Markdown file, and a link to one on the folder's own forge repository, beside the chat as well |
 
 ## 1. The sidebar
 
@@ -66,15 +67,28 @@ file opens it beside the chat. Decided with the owner the same day:
   a path relative to the folder (`docs/ARCH.md`, `./README.md#setup`), an absolute path inside it, or
   a `file://` address of one. A web address, a file outside the folder or one that is not Markdown is
   left to the browser. A modified or middle click is the browser's too.
+- **A `code` path** to a Markdown file (`` `docs/ARCH.md` ``, `` `./README.md#setup` ``, an absolute path;
+  nothing else in the span) is drawn as a link to it (md.js `codespan`, not inside a link's text), and
+  opens the same way. A path the folder's listing does not have opens the one file whose path ends in
+  it (`` `ARCH.md` `` is `docs/ARCH.md` when only one file is called so); else a snackbar says it is
+  not a Markdown file of the folder, and a path link never goes to the browser (it would show
+  Socrates' own page).
+- **A forge address** of the folder's own repository opens beside the chat too
+  (docside.js `forgeLinkTarget`): `https://<host>/<owner>/<name>/blob/<ref>/<path>` (GitLab's
+  `/-/blob/`), when `<host>/<owner>/<name>` is the folder's remote as the probe said it (below) and
+  the path lies in the folder. The branch is not looked at: the file shown is the one on disk.
+  Another repository's address stays the browser's.
 - At a desk (over 1100 px) the file is a column on the chat's right (`#docsidePanel`, half the
-  stage), never open with the tests' or the artifacts' column: opening one shuts the others. Its head:
+  stage), never open with the tests' column: opening one shuts the other. Its head:
   the page's title, *Open in Docs* (the Docs page on the same file, with the tree), *Open in a new tab*,
   *Close*. Narrower it is a full screen dialog with the same head. A link in it to another Markdown
   file stays in it; the file is drawn again when it changes on disk. Another chat on the stage closes
   it.
 - Chat agents are told (`agent.DocsGuidance`, appended to Claude Code's system prompt, Codex's
-  developer instructions and the instructions of the ask server other agents get): link a Markdown file of the working directory as a Markdown link with its
-  path relative to the working directory, optionally with a `#heading`.
+  developer instructions and the instructions of the ask server other agents get): every time a
+  Markdown file of the working directory is mentioned (in a list, a table, the closing summary), as a
+  Markdown link with its path relative to the working directory, optionally with a `#heading`; never
+  only as a `code` path or a bare name, never by a GitHub, web or `file://` address.
 
 ## 4. Server
 
@@ -89,10 +103,15 @@ file opens it beside the chat. Decided with the owner the same day:
   `coverage`. At most 2000 files, 16 folders deep, 100000 entries looked at (then `truncated`).
 - **Probe**: any Markdown at the top, else a walk with the same rules that stops at the first file or
   after 5000 entries; answers kept 20 s.
+- **Repository** (`docs.RepoOf`, for the probe): the nearest `.git` at or above the folder (a
+  directory, or a worktree's file `gitdir:` with its `commondir`), its config's `origin` url (else the
+  first remote's) as `host/owner/name` in lower case (https, ssh and `git@host:` forms; a local path
+  is none), and the folder's path inside the repository as `prefix`. Read from the files: no git
+  is run.
 
 | Route | Does |
 |---|---|
-| `POST /api/docs/probe` `{folders: [...]}` (at most 300) | `{docs: {"<folder>": true\|false}}` |
+| `POST /api/docs/probe` `{folders: [...]}` (at most 300) | `{docs: {"<folder>": true\|false}, repos: {"<folder>": {remote, prefix}}}`: `repos` for a folder with docs in a git repository with a remote (`docs.RepoOf`) |
 | `GET /api/docs?folder=<path>` | `{folder, files: [{path, size, mtime}], truncated, base, readme}`: `base` is `/docs/<token>/`, `readme` the README.md, README.markdown or index.md at the top (or the first file, or "") |
 | `GET /api/docs/stat?folder=<path>&path=<rel>` | `{path, size, mtime, kind}` of one file (a folder's README for a folder), 404 when it is gone |
 | `GET /docs/{token}/{path...}` | The file (below) |
@@ -101,19 +120,17 @@ file opens it beside the chat. Decided with the owner the same day:
   base64url(HMAC-SHA256(key, "docs\0" + folder))` (32 characters), the key 32 random bytes made once and
   kept in the database (`kv` `docs.key`, so in the backup). Only a signed-in caller gets it (`GET
   /api/docs`). The frame's own requests carry no cookie (its origin is opaque), so `/docs/` asks for the
-  token and not the login, as an artifact's files do (ARTIFACTS.md).
+  token and not the login.
 - **What is served**: a Markdown file or a picture (`png jpg jpeg gif svg webp avif ico bmp`) inside
   the folder, by a path with no `..`, no part starting with `.` and none of the skipped folders, that
   resolves (symbolic links followed) inside the folder; Markdown up to 5 MB, a picture up to 20 MB. A
   folder is redirected to its README.md (or index.md). Everything else is a 404: source code, `.env`,
   `.git`, a path out of the folder.
-- **A Markdown file** goes in the kit's document (`docs.Page`, as `artifacts.Page` with `<body
-  data-docs="<path>">`) with `Content-Security-Policy: sandbox allow-scripts allow-popups
+- **A Markdown file** goes in the kit's document (`docs.Page`, `<body data-docs="<path>">`) with `Content-Security-Policy: sandbox allow-scripts allow-popups
   allow-popups-to-escape-sandbox allow-modals allow-downloads; frame-ancestors 'self'; script-src 'self'
   <host>/artifact-kit/ https://cdn.jsdelivr.net/npm/mermaid@11/; connect-src 'none'; object-src 'none';
   base-uri 'none'; form-action 'none'`, `Referrer-Policy: no-referrer`, `nosniff`, `Cache-Control:
-  private, no-cache`. Unlike an artifact (its own agent's page), a doc is a file of someone's
-  repository: its raw HTML stays (marked), but no script of its own runs (no inline script or
+  private, no-cache`. A doc is a file of someone's repository (or a page a chat's agent wrote, PAGES.md): its raw HTML stays (marked), but no script of its own runs (no inline script or
   handler) and it makes no request of its own that could carry the page's address - the token - away.
   `?raw=1` is its text (a sandbox, no CORS).
 - **A picture** goes as its type with `Content-Security-Policy: sandbox`, `nosniff`,
@@ -128,18 +145,20 @@ file opens it beside the chat. Decided with the owner the same day:
 (`scroll`), and a link it did not follow (`file`: a file of the folder that is not Markdown,
 `outside`: a link out of the folder); a link to a Markdown file or a folder of the folder is followed
 in the frame, a picture opens in a tab. The app sends `scroll` (a heading's id). The anchors, the
-alerts and the scroll back to `#heading` are the kit's for artifacts too.
+alerts and the scroll back to `#heading` are the kit's own. The kit (`/artifact-kit/`) keeps the name
+of Socrates Artifacts, which it was made for (removed 2026-11-11, PAGES.md).
 
 ## 6. Code and tests
 
 | Where | What |
 |---|---|
-| `internal/docs` | Scan, Has, Resolve, Page |
+| `internal/docs` | Scan, Has, Resolve, Page, RepoOf |
 | `internal/server/docs.go` | The routes, the token, the allowed folders |
 | `internal/agent/docsguide.go` | `DocsGuidance` |
 | `internal/web/static/js/docview.js` | Listing, probe, addresses, glyphs, frame messages |
 | `internal/web/static/js/docs.js` | The Docs page |
-| `internal/web/static/js/docside.js` | A file beside a chat |
+| `internal/web/static/js/docside.js` | A file beside a chat; which link means which file (`docLinkTarget`, `forgeLinkTarget`, `fileIn`) |
+| `internal/web/static/js/md.js` | A `code` path to a Markdown file as a link |
 | `internal/web/static/css/so-docs.css` | Both |
 | `internal/web/static/artifact-kit/kit.js` | Docs mode, anchors, alerts |
 

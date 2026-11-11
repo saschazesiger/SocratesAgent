@@ -83,3 +83,17 @@ func TestAnAdminServerNamedLikeABuiltInOneIsRenamed(t *testing.T) {
 		t.Fatalf("the renamed server: %+v", s.MCP.Servers[1])
 	}
 }
+
+// Admin's choice for a built-in server that is gone (Socrates Artifacts)
+// is dropped as the settings are read, and the others stay.
+func TestARetiredBuiltInServersChoiceIsDropped(t *testing.T) {
+	s := Default()
+	s.MCP.Builtin = []MCPBuiltinSetting{{Name: "socrates-artifacts", Default: true}, {Name: "browserstack", Default: true}}
+	s.Normalize()
+	if err := s.Validate(); err != nil {
+		t.Fatalf("after normalize: %v", err)
+	}
+	if len(s.MCP.Builtin) != 1 || s.MCP.Builtin[0].Name != "browserstack" || !s.MCP.Builtin[0].Default {
+		t.Fatalf("builtin: %+v", s.MCP.Builtin)
+	}
+}

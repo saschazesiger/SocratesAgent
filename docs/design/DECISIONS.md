@@ -429,7 +429,7 @@ predefined tests per repository. What was built is [CHAT-TESTS.md](CHAT-TESTS.md
 
 The owner asked for a built-in MCP server, like Socrates Tests, with which a chat's agent makes pages
 that explain things graphically, listed in a panel beside the chat, per chat. What was built is
-[ARTIFACTS.md](ARTIFACTS.md); the decisions (the agent's, as the owner left them to it):
+ARTIFACTS.md (removed with it); the decisions (the agent's, as the owner left them to it):
 
 - **Two formats**: an HTML fragment in Socrates' page kit (or a whole document of the agent's), and
   Markdown with Mermaid diagrams, the simplest for an agent. Mermaid is loaded from jsDelivr only by a
@@ -442,3 +442,18 @@ that explain things graphically, listed in a panel beside the chat, per chat. Wh
 - **Beside the chat, live**: a new artifact opens the column at a desk; a new version replaces what is
   on screen. The person looks, opens a page in a new tab or deletes it; changes are asked for in the
   chat.
+
+## Revision 14 — chat pages instead of artifacts, 2026-11-11
+
+The owner asked whether Socrates Artifacts was still needed, or whether a short instruction to write a
+Markdown file and link it would do. Decided with the owner ([PAGES.md](PAGES.md)):
+
+- **Pages, not artifacts**: every chat has a pages folder (`<data>/chats/<chat>/pages/`), the agent
+  writes Markdown there with its own file tools and links it; the Docs viewer shows it beside the
+  chat. The MCP server, its store and its column are removed; the existing artifacts were discarded.
+- **The chat's folder, not the repository or `/tmp`**: nothing lands in a working tree other chats
+  share, and the pages go and are backed up with the chat.
+- **Listed in the chat's head**: a Pages button with the chat's pages, newest first.
+- **Markdown links that work however written**: the agents are told to link every Markdown file they
+  mention, and the chat also opens a `code` path to one and a link to it on the folder's own forge
+  repository beside the chat (DOCS.md §3).

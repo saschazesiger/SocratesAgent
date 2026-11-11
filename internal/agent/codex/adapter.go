@@ -394,7 +394,7 @@ func (a *adapter) startThread(ctx context.Context, instructions string) error {
 	a.mu.Lock()
 	model, effort := a.model, a.effort
 	prompt := a.notes.Fresh(model)
-	endpoint := a.spec.ChatTools
+	endpoint, pages := a.spec.ChatTools, a.spec.PagesDir()
 	a.mu.Unlock()
 	if model != "" {
 		params["model"] = model
@@ -408,7 +408,7 @@ func (a *adapter) startThread(ctx context.Context, instructions string) error {
 		tools = append(tools, chatToolSpecs(endpoint)...)
 		developer += "\n\n" + endpoint.Guidance("", false)
 	}
-	developer += "\n\n" + todoGuidance + "\n\n" + agent.DocsGuidance
+	developer = agent.WithPagesGuidance(developer+"\n\n"+todoGuidance+"\n\n"+agent.DocsGuidance, pages)
 	if len(tools) > 0 {
 		params["dynamicTools"] = tools
 	}

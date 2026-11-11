@@ -22,6 +22,7 @@ func TestExcluded(t *testing.T) {
 		"socrates.db":               false,
 		"sessions/s1/plan.json":     false,
 		"chats/c1/events.jsonl":     false,
+		"chats/c1/pages/plan.md":    false,
 		"agents/claude/projects":    false,
 		"agents/opencode/cache":     true,
 		"agents/opencode/config":    false,

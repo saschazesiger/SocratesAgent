@@ -16,6 +16,10 @@ import { Marked } from '../vendor/markdown/marked.esm.js';
 import DOMPurify from '../vendor/markdown/purify.es.js';
 import { html, raw, icon } from './ui.js';
 
+// A path to a Markdown file, nothing else in the span (`docs/X.md`,
+// `./README.md#setup`, `/abs/path/NOTES.md`): no spaces, no placeholders.
+const MD_PATH = /^(?:\.{0,2}\/)?[\w@+-][\w@+.\/-]*\.(?:md|markdown)(?:#[\w-]*)?$/i;
+
 const marked = new Marked({
   gfm: true,
   breaks: false,
@@ -24,6 +28,14 @@ const marked = new Marked({
     // ask for.
     image({ href, text }) {
       return html`<a href="${href || ''}">${text || href || ''}</a>`.toString();
+    },
+    // A Markdown file named as a `code` path is a link to it, which the chat
+    // opens beside itself when the file is in its folder (session.js
+    // docLink): agents name files that way out of habit, however they are
+    // told to link them.
+    codespan({ text, inLink }) {
+      if (inLink || !MD_PATH.test(text)) return false;
+      return html`<a href="${text}"><code>${text}</code></a>`.toString();
     },
     // A task list's box is a mark, not a form field: nothing in an agent's
     // text is something to fill in.
@@ -102,6 +114,11 @@ export function markdown(text, { keep = true } = {}) {
   let out;
   try {
     const tokens = marked.lexer(source);
+    // A `code` path that is already a link's text stays plain code: a link
+    // in a link is no link at all.
+    marked.walkTokens(tokens, (token) => {
+      if (token.type === 'link') marked.walkTokens(token.tokens || [], (inner) => { inner.inLink = true; });
+    });
     const blocks = [];
     let run = [];
     const flush = () => {

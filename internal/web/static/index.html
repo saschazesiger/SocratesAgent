@@ -32,7 +32,6 @@
 <link rel="stylesheet" href="/static/css/so-sheet.css">
 <link rel="stylesheet" href="/static/css/so-chat.css">
 <link rel="stylesheet" href="/static/css/so-chattests.css">
-<link rel="stylesheet" href="/static/css/so-artifacts.css">
 <link rel="stylesheet" href="/static/css/so-board.css">
 <link rel="stylesheet" href="/static/css/so-docs.css">
 <link rel="stylesheet" href="/static/css/so-motion.css">
@@ -101,13 +100,13 @@
         <button class="ds-btn ds-btn--quiet ds-btn--icon so-tests-btn" id="testsBtn" type="button" hidden
                 aria-label="Tests" data-tip="Tests" aria-expanded="false" aria-controls="testsPanel"
                 data-icon="checkCircle" data-icon-place="start"><span class="ds-badge so-tests-btn__badge" hidden></span></button>
-        <!-- A chat's artifacts (artifacts.js): shown for a chat with Socrates
-             Artifacts on or with artifacts, its badge the ones this device
-             has not shown yet. At a desk it opens the column beside the
-             chat, narrower the side sheet. -->
-        <button class="ds-btn ds-btn--quiet ds-btn--icon so-artifacts-btn" id="artifactsBtn" type="button" hidden
-                aria-label="Artifacts" data-tip="Artifacts" aria-expanded="false" aria-controls="artifactsPanel"
-                data-icon="presentation" data-icon-place="start"><span class="ds-badge so-artifacts-btn__badge" hidden></span></button>
+        <!-- A chat's pages (pages.js): shown for a chat whose pages folder
+             has a Markdown file, its badge the ones new or changed since this
+             device opened them. It opens the menu of them; one chosen opens
+             beside the chat. -->
+        <button class="ds-btn ds-btn--quiet ds-btn--icon so-pages-btn" id="pagesBtn" type="button" hidden
+                aria-label="Pages" data-tip="Pages" aria-haspopup="menu" aria-expanded="false" aria-controls="sessionMenu"
+                data-icon="fileText" data-icon-place="start"><span class="ds-badge so-pages-btn__badge" hidden></span></button>
         <!-- Ask about a passage: shown while text of a chat's conversation is
              selected (passage.js). -->
         <button class="ds-btn ds-btn--quiet ds-btn--icon" id="passageBtn" type="button" hidden
@@ -220,13 +219,10 @@
                shut per device (chattests.js). Narrower, the same list is a
                side sheet over the chat. -->
           <aside class="so-tests" id="testsPanel" aria-labelledby="testsPanelTitle" hidden></aside>
-          <!-- A chat's artifacts at a desk: a column on the chat's right that
-               lists them and turns into one's page, open or shut per device
-               (artifacts.js). Never open with the tests' column. -->
-          <aside class="so-artifacts" id="artifactsPanel" aria-labelledby="artifactsPanelTitle" hidden></aside>
-          <!-- A Markdown file of the chat's folder that a link in the chat
-               opened: its page beside the chat (docside.js). Never open with
-               the tests' or the artifacts' column. -->
+          <!-- A Markdown file of the chat's folder (or of its pages folder)
+               that a link in the chat or the Pages menu opened: its page
+               beside the chat (docside.js). Never open with the tests'
+               column. -->
           <aside class="so-docside" id="docsidePanel" aria-labelledby="docsideTitle" hidden></aside>
           <!-- Home: what every session is doing, live. The landing page, and
                what the stage shows when no session is open. home.js draws it. -->

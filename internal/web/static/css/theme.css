@@ -123,13 +123,9 @@
   --so-testv-width: 760px;
   --so-lightbox-img-max: calc(var(--ds-viewport-height, 100dvh) - 220px);
 
-  /* A chat's artifacts (so-artifacts.css): the column's list beside the
-     chat at a desk, the column while it shows a page (about half the
-     stage), and the least height of a page in the dialog of a narrow
-     window. */
-  --so-artifacts-width: clamp(320px, 28vw, 420px);
-  --so-artifacts-page-width: 50%;
-  --so-artdialog-frame-min: 240px;
+  /* A Markdown file beside a chat (so-docs.css .so-docside): about half
+     the stage. */
+  --so-docside-width: 50%;
 
   /* A folder's docs (so-docs.css): the tree's column, the headings'
      column at a wide desk, and a row of the tree. */

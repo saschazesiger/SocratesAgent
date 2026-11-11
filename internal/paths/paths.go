@@ -6,7 +6,7 @@
 // layout is docs/design/REBUILD.md §6.1:
 //
 //	socrates.db               settings, logins, sessions, drafts, push, cost ledger
-//	chats/<id>/               a chat's journal, launch spec, attachments, adapter state and tests
+//	chats/<id>/               a chat's journal, launch spec, attachments, adapter state, tests and pages
 //	agents/claude|codex|opencode/  the agents' shared transcripts and data
 //	accounts/<id>/            one account's CLAUDE_CONFIG_DIR or CODEX_HOME (an OpenCode
 //	                          account's data home is agents/opencode/accounts/<id>/)
@@ -105,10 +105,18 @@ const (
 	// files of their runs (internal/chattests, docs/design/CHAT-TESTS.md).
 	ChatTests = "tests"
 
-	// ChatArtifacts is a chat's artifacts inside chats/<id>/:
-	// artifacts.json, the content of their versions and their files
-	// (internal/artifacts, docs/design/ARTIFACTS.md).
-	ChatArtifacts = "artifacts"
+	// ChatPages is a chat's pages folder inside chats/<id>/: the Markdown
+	// files its agent writes with its own file tools and links in the chat,
+	// which the Docs view shows beside the chat (docs/design/DOCS.md). It is
+	// made whenever the chat's agent runs, and is backed up and deleted with
+	// the chat.
+	ChatPages = "pages"
+
+	// ChatArtifactsGone is where the chat artifacts of the built-in MCP
+	// server Socrates Artifacts were kept inside chats/<id>/, which the
+	// pages folder replaced. A build without it deletes them once
+	// (internal/server, forgetArtifacts).
+	ChatArtifactsGone = "artifacts"
 
 	// TestMode is the folders of test mode, which chat tests replaced: the
 	// runs of every repository's catalog, the runtime of a running one and

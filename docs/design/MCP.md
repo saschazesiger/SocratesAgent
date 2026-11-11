@@ -120,22 +120,11 @@ Unknown arguments are refused. A `Recorder`'s actions are read from `actions.jso
 cursor for that server (set to the line count when the run starts, moved on with every judgement; a
 recording that was started over is read from its start).
 
-## Socrates Artifacts (`internal/mcpserver/artifacts`)
+## Socrates Artifacts (removed 2026-11-11)
 
-Built on 2026-11-08 (ARTIFACTS.md): the tools a chat's agent makes pages with that explain with
-diagrams, charts and tables; the chat's page shows them beside the chat. No account, no
-configuration, **off** until switched on like every built-in server. The artifacts are the calling
-chat's (`internal/artifacts`, in `<data>/chats/<chat>/artifacts/`).
-
-| Tool | Does |
-|---|---|
-| `artifacts_list` | every artifact of the chat with its latest version and files |
-| `artifact_create {title, content, format?, description?, files?}` | a new artifact; `format` `html` (default) or `markdown` |
-| `artifact_update {artifact, content?, edits?, format?, note?, title?, description?, files?, remove_files?}` | a new version (whole content, or exact `edits` `[{old, new, all?}]` on the latest), new title or description, files attached or taken away |
-| `artifact_delete {artifact}` | deletes it with its versions and files |
-| `artifact_read {artifact, version?}` | the content of a version, its versions and its files as absolute paths |
-
-`artifact` is an id (`A3`) or an exact title; files are absolute or relative to the chat's folder.
+Built on 2026-11-08 and removed on 2026-11-11: a chat's agent now writes its explaining pages as
+Markdown files in the chat's pages folder, with no tools of its own (PAGES.md). A stored choice of
+`socrates-artifacts` is dropped.
 
 ## Admin's servers
 
@@ -180,7 +169,6 @@ refreshes.
 | `internal/mcpserver/builtin` | the list of built-in servers |
 | `internal/mcpserver/browserstack`, `…/driver` | the BrowserStack server; the device driver (WebDriver, native taps, evidence, page scripts) |
 | `internal/mcpserver/tests` | Socrates Tests (its store: `internal/chattests`) |
-| `internal/mcpserver/artifacts` | Socrates Artifacts (its store: `internal/artifacts`) |
 | `internal/mcpclient` | the probe (stdio, streamable HTTP, SSE) and the OAuth client |
 | `internal/server/mcpbuiltin.go`, `mcpadmin.go`, `mcpoauth.go`, `mcp.go` | the registry in the server, the tools socket route, Admin's API, the test, OAuth and the proxy |
 | `internal/web/static/js/adminmcp.js` | Admin's MCP servers |

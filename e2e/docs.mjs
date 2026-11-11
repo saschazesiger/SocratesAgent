@@ -7,7 +7,10 @@
 // the frame and the address follows; a file changed on disk is drawn
 // again by itself; the filter finds a file; a reload comes back to it. The
 // frame is a sandbox and serves no file outside the docs. In a chat, a
-// link to a Markdown file of its folder opens the file beside the chat.
+// link to a Markdown file of its folder opens the file beside the chat, as
+// does a `code` path to one (by its name alone when only one file has it)
+// and a link to it on the folder's own GitHub repository; a `code` path to
+// a file that is not there says so.
 
 import { mkdirSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
@@ -68,6 +71,7 @@ export async function docs() {
   write(guide, 'docs/design/ARCHITECTURE.md', '# Architecture\n\n## Parts\n\n## Flow\n');
   write(guide, 'node_modules/lib/README.md', '# A dependency\n');
   write(guide, '.private/notes.md', '# Private\n');
+  write(guide, '.git/config', '[core]\n\tbare = false\n[remote "origin"]\n\turl = git@github.com:Acme/Guide.git\n');
   write(guide, '.env', 'SECRET=1\n');
   write(guide, 'main.go', 'package main\n');
   mkdirSync(bare);
@@ -177,6 +181,27 @@ export async function docs() {
     ok(await page.evaluate(() => !decodeURIComponent(location.hash).startsWith('#docs=')), 'and the chat stays on the stage');
     ok(await page.$eval('#docsidePanel .so-docside__title', (t) => t.textContent.trim()) === 'Architecture', 'the column is named after the page');
     await shot(page, 'docs-chat');
+
+    // A `code` path, a name alone, the folder's own GitHub address.
+    await tell(s, chat, 'See `docs/setup.md`, `ARCHITECTURE.md`, `MISSING.md`, [on GitHub](https://github.com/acme/guide/blob/main/CHANGELOG.md) and [elsewhere](https://github.com/other/repo/blob/main/README.md).');
+    const opens = async (selector, h1, what) => {
+      await page.waitForSelector(selector, { timeout: 20000 });
+      await page.click(selector);
+      await page.waitForFunction((want) => {
+        const t = document.querySelector('#docsidePanel .so-docside__title');
+        return t && t.textContent.trim() === want;
+      }, h1, { timeout: 8000 }).catch(() => {});
+      ok((await frameText(page, '#docsidePanel iframe.so-docs__view', 'h1')) === h1, what);
+    };
+    await opens('#chat a[href="docs/setup.md"] code', 'Setup, revised', 'a `code` path opens the file beside the chat');
+    await opens('#chat a[href="ARCHITECTURE.md"] code', 'Architecture', 'a file named alone opens the one file of that name');
+    await opens('#chat a[href="https://github.com/acme/guide/blob/main/CHANGELOG.md"]', 'Changes', 'a link to the folder\'s own GitHub repository opens beside the chat');
+    await page.click('#chat a[href="MISSING.md"] code');
+    await page.waitForSelector('.ds-toast:has-text("MISSING.md is not a Markdown file")', { timeout: 5000 }).catch(() => {});
+    ok(await page.$('.ds-toast:has-text("MISSING.md is not a Markdown file")') !== null, 'a `code` path to a file that is not there says so');
+    ok(await page.$eval('#chat a[href="https://github.com/other/repo/blob/main/README.md"]', (a) => a.target) === '_blank', 'another repository stays a link of the browser');
+    await shot(page, 'docs-chat-paths');
+    await opens(link, 'Architecture', 'the first link opens its file again');
     await page.click('#docsidePanel [data-docside="docs"]');
     await page.waitForSelector('#docs:not([hidden])', { timeout: 8000 });
     ok(await page.evaluate(() => decodeURIComponent(location.hash).endsWith('&page=docs/design/ARCHITECTURE.md')), 'Open in Docs shows it with the tree',

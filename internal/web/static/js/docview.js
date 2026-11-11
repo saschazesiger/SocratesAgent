@@ -4,9 +4,10 @@
 // sandboxed frame, the glyph a file's name gets, and the messages of the
 // page kit inside that frame.
 //
-// A file is shown by the artifact kit in a frame of its own opaque origin,
-// served at /docs/<token>/<path>: the folder's files are someone's
-// repository, and nothing in them may act as the person on Socrates.
+// A file is shown by the page kit (/artifact-kit/) in a frame of its own
+// opaque origin, served at /docs/<token>/<path>: the folder's files are
+// someone's repository, and nothing in them may act as the person on
+// Socrates.
 
 import { api } from './api.js';
 
@@ -33,24 +34,26 @@ const listings = new Map();
 /**
  * listing is a folder's Markdown files: {folder, files: [{path, size,
  * mtime}], truncated, base, readme}. `fresh` asks the server even when a
- * recent answer is kept.
+ * recent answer is kept; `titles` asks for each file's first heading too
+ * (`title`, "" when it has none). A listing with titles serves a caller
+ * that does not want them, not the other way round.
  */
-export function listing(folder, { fresh = false } = {}) {
+export function listing(folder, { fresh = false, titles = false } = {}) {
   const kept = listings.get(folder);
-  if (kept && kept.pending) return kept.pending;
-  if (kept && kept.data && !fresh && Date.now() - kept.at < LISTING_FRESH) return Promise.resolve(kept.data);
-  const pending = api('/api/docs?folder=' + encodeURIComponent(folder), { attempts: 2 })
+  if (kept && kept.pending && (!titles || kept.pendingTitles)) return kept.pending;
+  if (kept && kept.data && !fresh && (!titles || kept.titles) && Date.now() - kept.at < LISTING_FRESH) return Promise.resolve(kept.data);
+  const pending = api('/api/docs?folder=' + encodeURIComponent(folder) + (titles ? '&titles=1' : ''), { attempts: 2 })
     .then((data) => {
-      listings.set(folder, { at: Date.now(), data });
+      listings.set(folder, { at: Date.now(), data, titles });
       noteProbe(folder, !!(data && data.files && data.files.length));
       return data;
     })
     .catch((err) => {
-      if (kept && kept.data) listings.set(folder, kept);
+      if (kept && kept.data) listings.set(folder, { at: kept.at, data: kept.data, titles: !!kept.titles });
       else listings.delete(folder);
       throw err;
     });
-  listings.set(folder, { ...(kept || {}), pending });
+  listings.set(folder, { ...(kept || {}), pending, pendingTitles: titles });
   return pending;
 }
 
@@ -68,9 +71,11 @@ const probeWaiters = [];
 let probeTimer = null;
 let probeListeners = [];
 
-function noteProbe(folder, has) {
+function noteProbe(folder, has, repo) {
   const was = probes.get(folder);
-  probes.set(folder, { at: Date.now(), has });
+  // A listing says nothing of the repository: what the probe said stays.
+  if (repo === undefined) repo = (was && was.repo) || null;
+  probes.set(folder, { at: Date.now(), has, repo });
   if (!was || was.has !== has) for (const fn of probeListeners) fn(folder, has);
 }
 
@@ -84,6 +89,16 @@ export function onProbe(fn) {
 export function knownDocs(folder) {
   const kept = probes.get(folder);
   return kept ? kept.has : undefined;
+}
+
+/**
+ * knownRepo is where a folder's files are on a forge, as the last probe
+ * said: {remote: "github.com/owner/name", prefix: "the/folder/in/it"}, or
+ * null.
+ */
+export function knownRepo(folder) {
+  const kept = probes.get(folder);
+  return (kept && kept.repo) || null;
 }
 
 /**
@@ -112,7 +127,8 @@ async function runProbe() {
   try {
     const data = await api('/api/docs/probe', { method: 'POST', body: { folders }, attempts: 2 });
     const docs = (data && data.docs) || {};
-    for (const folder of folders) noteProbe(folder, !!docs[folder]);
+    const repos = (data && data.repos) || {};
+    for (const folder of folders) noteProbe(folder, !!docs[folder], repos[folder] || null);
   } catch {
     // Unknown stays unknown: the next drawing of the list asks again.
   }

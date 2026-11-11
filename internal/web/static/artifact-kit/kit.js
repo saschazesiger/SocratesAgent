@@ -1,5 +1,6 @@
-// The page kit of a chat's artifacts (docs/design/ARTIFACTS.md, "The page
-// kit"). It runs inside an artifact's page, a sandbox of its own origin
+// The page kit of the Docs viewer (docs/design/DOCS.md; it was made for
+// Socrates Artifacts, removed for the chat pages of docs/design/PAGES.md,
+// and keeps the name). It runs inside a page, a sandbox of its own origin
 // beside the chat, never in the app: it renders a Markdown page, wraps
 // tables so that they scroll on a phone, opens links out of the frame, and
 // draws Mermaid diagrams with Mermaid from jsDelivr, loaded only when the

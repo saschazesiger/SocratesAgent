@@ -111,7 +111,7 @@ You can run it again at any time to repair or update the installation.
 | 🤝 **Chats talk** | Agents of chats in the same repository list, read and message each other — Claude Code, Codex and OpenCode alike, on any account. |
 | 🔌 **MCP** | Set up MCP servers in **Admin** for every chat, on or off by default, and switch them per chat on the new session sheet or later in its ⋮ → **MCP servers**. **Test** a server to see its tools, sign in to remote ones with **OAuth**, switch single tools off. A folder's `.mcp.json` adds its own, with any agent; its `.socrates/mcp.json` adds servers only Socrates sees and turns any `off` by default. |
 | 🧪 **Socrates Tests** | Built in, nothing to set up: switch it on in a chat and its agent writes, runs and documents its own tests ([🧪 Tests](#-tests)). |
-| 🖼️ **Socrates Artifacts** | Built in: switch it on in a chat and its agent explains with pages — diagrams, charts, tables — shown beside the chat ([🖼️ Artifacts](#️-artifacts)). |
+| 📄 **Pages** | Every chat's agent can explain with a page — diagrams, charts, tables — shown beside the chat ([📄 Pages](#-pages)). |
 | 📱 **BrowserStack** | Built in: real phones, tablets and desktop browsers for any chat, its screenshots the evidence of the chat's tests. Add the accounts in **Admin** (checked against BrowserStack), switch the server on where you need it; each account carries one session at a time. |
 
 ---
@@ -145,19 +145,18 @@ How it works: [docs/design/CHAT-TESTS.md](docs/design/CHAT-TESTS.md).
 
 ---
 
-## 🖼️ Artifacts
+## 📄 Pages
 
-Switch **Socrates Artifacts** on in a chat and its agent can show instead of tell: a page with a diagram of the architecture, a chart of the numbers, a comparison table, a timeline.
+Every chat's agent can show instead of tell: a page with a diagram of the architecture, a chart of the numbers, a comparison table, a plan.
 
 | | |
 | --- | --- |
-| ✍️ **Made by the agent** | Written as Markdown with Mermaid diagrams, or as HTML with SVG and charts. Socrates gives it a clean look. |
-| 👀 **Beside the chat** | The Artifacts panel lists the chat's pages; open one and it stands next to the conversation (full screen on the phone). |
-| 🔄 **Live** | When the agent changes a page, you see the new version at once. Older versions stay a click away. |
-| 🔒 **Sandboxed** | A page runs in a frame of its own: it can never act as you on Socrates. |
-| 🗑️ **Yours to keep** | Open a page in a new tab or delete it; ask for changes in the chat. |
+| ✍️ **Written by the agent** | A Markdown file in the chat's own pages folder, with Mermaid diagrams, tables and callouts. Nothing lands in your repository. |
+| 👀 **Beside the chat** | Click the link in the chat, or pick it from **Pages** in the chat's head; it stands next to the conversation (full screen on the phone). |
+| 🔄 **Live** | When the agent changes a page, you see it at once; the badge counts what you have not seen. |
+| 🔗 **Docs too** | Any Markdown file of the project the agent mentions opens the same way. |
 
-How it works: [docs/design/ARTIFACTS.md](docs/design/ARTIFACTS.md).
+How it works: [docs/design/PAGES.md](docs/design/PAGES.md).
 
 ---
 

@@ -330,7 +330,7 @@ func cliArgs(spec agent.StartSpec, opts Options, ultracode bool) []string {
 	default:
 		prompt = askGuidance + "\n\n" + todoGuidance
 	}
-	prompt += "\n\n" + agent.DocsGuidance
+	prompt = agent.WithPagesGuidance(prompt+"\n\n"+agent.DocsGuidance, spec.PagesDir())
 	if p := strings.TrimSpace(opts.AppendSystemPrompt); p != "" {
 		prompt += "\n\n" + p
 	}

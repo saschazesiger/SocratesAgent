@@ -22,17 +22,19 @@ import (
 // (OpenCode: <server>_<tool>) knows ask_user by.
 const MCPAskTool = askuser.ServerName + "_" + askuser.Name
 
-// MCPAskMain is the `socrates mcp-ask --socket <host socket>` subcommand, and
-// its exit code: ask_user as an MCP server on stdin and stdout, for an agent
-// CLI that runs its MCP servers as processes of its own (OpenCode). Every
-// call reaches the chat's agent host over its socket (OpAsk) and waits there
-// for the answer, sending progress notifications meanwhile, so that the
-// CLI's call timeout never runs out (research/05 §4.3). The chat tools are
-// served beside it when the environment names their endpoint
-// (chattools.FromEnv).
+// MCPAskMain is the `socrates mcp-ask --socket <host socket> [--pages
+// <dir>]` subcommand, and its exit code: ask_user as an MCP server on stdin
+// and stdout, for an agent CLI that runs its MCP servers as processes of its
+// own (OpenCode). Every call reaches the chat's agent host over its socket
+// (OpAsk) and waits there for the answer, sending progress notifications
+// meanwhile, so that the CLI's call timeout never runs out (research/05
+// §4.3). The chat tools are served beside it when the environment names
+// their endpoint (chattools.FromEnv). --pages is the chat's pages folder, which the
+// server's instructions name (agent.PagesGuidance).
 func MCPAskMain(args []string, version string) int {
 	fs := flag.NewFlagSet("mcp-ask", flag.ContinueOnError)
 	sock := fs.String("socket", "", "the agent host's socket")
+	pages := fs.String("pages", "", "the chat's pages folder")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -42,7 +44,7 @@ func MCPAskMain(args []string, version string) int {
 	}
 	log.SetFlags(0)
 	log.SetPrefix("socrates mcp-ask: ")
-	if err := ServeMCPAsk(context.Background(), *sock, version, chattools.FromEnv(), os.Stdin, os.Stdout); err != nil {
+	if err := ServeMCPAsk(context.Background(), *sock, version, chattools.FromEnv(), *pages, os.Stdin, os.Stdout); err != nil {
 		log.Print(err)
 		return 1
 	}
@@ -51,12 +53,13 @@ func MCPAskMain(args []string, version string) int {
 
 // ServeMCPAsk serves ask_user, and the chat tools at chats when it is
 // usable, on one MCP stdio stream until in ends; version is the server's in
-// initialize. Requests run concurrently, each on a
-// goroutine of its own because a tools/call blocks, under a context that is
+// initialize, and pages the chat's pages folder its instructions name ("" for
+// none). Requests run concurrently, each on a goroutine of its own because a
+// tools/call blocks, under a context that is
 // registered before the next line is read: a notifications/cancelled, read
 // in order, always finds the call it withdraws. A call still waiting when in
 // ends is withdrawn.
-func ServeMCPAsk(ctx context.Context, sock, version string, chats chattools.Endpoint, in io.Reader, out io.Writer) error {
+func ServeMCPAsk(ctx context.Context, sock, version string, chats chattools.Endpoint, pages string, in io.Reader, out io.Writer) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	var wmu sync.Mutex
@@ -73,8 +76,9 @@ func ServeMCPAsk(ctx context.Context, sock, version string, chats chattools.Endp
 	default:
 		instructions = askuser.Guidance(MCPAskTool) + "\n\n" + agent.TodoGuidance("todowrite")
 	}
-	// How to link a Markdown file so that it opens beside the chat (DOCS.md §3).
-	instructions += "\n\n" + agent.DocsGuidance
+	// How to link a Markdown file so that it opens beside the chat (DOCS.md
+	// §3), and the chat's pages folder.
+	instructions = agent.WithPagesGuidance(instructions+"\n\n"+agent.DocsGuidance, pages)
 	m := &askuser.MCP{
 		Version:      version,
 		Instructions: instructions,

@@ -107,6 +107,10 @@ type sessionView struct {
 	// Fresh is a chat nobody has sent anything yet: a draft, perhaps with a
 	// time to start at, and no conversation. Home files it as not started.
 	Fresh bool `json:"fresh,omitempty"`
+	// PagesDir is a chat's pages folder (paths.ChatPages), absolute: the
+	// Markdown its agent writes there the Docs view lists and shows beside
+	// the chat (GET /api/docs?folder=…). Chats only.
+	PagesDir string `json:"pages_dir,omitempty"`
 }
 
 func (s *Server) view(row *store.Session) sessionView {
@@ -132,6 +136,9 @@ func (s *Server) viewWith(row *store.Session, drafts map[string]store.DraftMeta)
 		if brief, ok := s.chats.briefOfChat(row.ID); ok {
 			v.Fresh = !brief.Summary.Asked
 		}
+	}
+	if row.IsChat() {
+		v.PagesDir = s.chatPagesDir(row.ID)
 	}
 	if row.Status == store.StatusDone {
 		v.DeleteAt = row.StatusAt + s.doneRetention().Milliseconds()
