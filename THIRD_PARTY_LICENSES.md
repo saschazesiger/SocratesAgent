@@ -15,8 +15,10 @@ Three groups, and they are legally different:
   runtime, never linked into anything.
 - **Shipped in the web assets** — the xterm.js terminal and its addons, MIT,
   vendored as minified bundles under `internal/web/static/vendor/`, and the
-  Dashboard-Style design system the interface is built on, MIT, vendored under
-  `internal/web/static/vendor/dashboard-style/` with its `LICENSE`, and the chat
+  Z-Dash design system (Dashboard-Style until 2.x) the interface is built on,
+  MIT, vendored under `internal/web/static/vendor/z-dash/` with its `LICENSE`
+  and served as the project bundle built from it (`internal/web/static/ds/`,
+  whose files carry its notice), and the chat
   view's Markdown renderer (marked, MIT) and sanitizer (DOMPurify,
   Apache-2.0 or MPL-2.0), vendored under `internal/web/static/vendor/markdown/`;
   all of it is embedded into the binary. Shipping the binary ships those files, so their
@@ -38,10 +40,10 @@ under the SIL Open Font License 1.1. The unmodified WOFF2 files come from
 The complete copyright and licence notice is shipped alongside them in
 [`internal/web/static/fonts/LICENSE.md`](internal/web/static/fonts/LICENSE.md).
 
-Dashboard-Style brings **Google Sans** (latin and latin-ext, variable weight),
+Z-Dash brings **Google Sans** (latin and latin-ext, variable weight),
 also under the SIL Open Font License 1.1, unmodified. Its licence is shipped
 beside the files in
-[`internal/web/static/vendor/dashboard-style/fonts/OFL.txt`](internal/web/static/vendor/dashboard-style/fonts/OFL.txt).
+[`internal/web/static/vendor/z-dash/fonts/OFL.txt`](internal/web/static/vendor/z-dash/fonts/OFL.txt).
 
 ## Compiled into the binary
 

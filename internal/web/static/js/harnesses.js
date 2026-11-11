@@ -619,7 +619,7 @@ export function settingsForm(options = {}) {
   const accountLimits = el('div', { id: id('AccountLimits'), hidden: true });
   const accountHint = el('small', { class: 'ds-field__hint', id: id('AccountHint') });
   const accountSignIn = el('button', {
-    class: 'ds-btn ds-btn--text ds-btn--sm', type: 'button', id: id('AccountSignIn'), hidden: true, text: 'Sign in',
+    class: 'ds-btn ds-btn--text ds-sm', type: 'button', id: id('AccountSignIn'), hidden: true, text: 'Sign in',
   });
   const accountField = el('div', { class: 'ds-field', id: id('AccountField'), hidden: true },
     el('label', { class: 'ds-field__label', for: id('AccountInput'), text: 'Account' }), accountRow, accountLimits,
@@ -1234,7 +1234,7 @@ export async function openNewSessionSheet({ workdir = '' } = {}) {
   // this call adds is taken off with it. Without that, the second opening
   // would resolve the first opening's promise as well. Closing - the close
   // button, Cancel, Escape, a tap on the backdrop - is DS.overlay's, through
-  // their data-close; whichever way it closes, a sheet that closed without
+  // their data-ds-close; whichever way it closes, a sheet that closed without
   // Start is a no.
   return new Promise((resolve) => {
     const off = new AbortController();

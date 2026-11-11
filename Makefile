@@ -2,7 +2,7 @@ BINARY  ?= socrates
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -s -w -X main.version=$(VERSION)
 
-.PHONY: build test race fmt fmt-check vet tidy-check check e2e vendor-ds vendor-markdown ds-check clean
+.PHONY: build test race fmt fmt-check vet tidy-check check e2e vendor-ds ds-bundle vendor-markdown ds-check clean
 
 ## build: compile the single binary into ./socrates, for the tests and a quick
 ## compile check. scripts/install.sh and scripts/update.sh build the installed
@@ -69,27 +69,45 @@ vendor-xterm: ## re-download the pinned xterm.js bundle set
 vendor-markdown: ## re-download the pinned marked and DOMPurify
 	@bash scripts/vendor-markdown.sh
 
-## vendor-ds replaces the vendored Dashboard-Style with the latest main of
-## github.com/saschazesiger/Dashboard-Style, through that commit's own
-## vendor.sh. DS_REF picks a branch, tag or commit instead
-## (make vendor-ds DS_REF=<sha>): vendoring by commit is how a release that
-## is not on main yet comes in. The copy is committed and checksummed; the
-## nightly update-dashboard-style workflow does the same on its own.
-DS_DEST := internal/web/static/vendor/dashboard-style
-DS_REPO := saschazesiger/Dashboard-Style
-DS_REF  ?= main
-vendor-ds: ## update the vendored Dashboard-Style to its latest main (or DS_REF)
+## vendor-ds replaces the vendored Z-Dash (Dashboard-Style until 2.x) with
+## the latest main of github.com/saschazesiger/Z-Dash, through that commit's
+## own vendor.sh, and rebuilds the project bundle from it. DS_REF picks a
+## branch, tag or commit instead (make vendor-ds DS_REF=<sha>): vendoring by
+## commit is how a release that is not on main yet comes in. The copy and the
+## bundle are committed, the copy checksummed; the nightly update-z-dash
+## workflow does the same on its own.
+DS_DEST   := internal/web/static/vendor/z-dash
+DS_REPO   := saschazesiger/Z-Dash
+DS_REF    ?= main
+DS_BUNDLE := internal/web/ds.config.json
+DS_BUNDLE_FILES := internal/web/static/ds/ds.bundle.css internal/web/static/ds/ds.bundle.js internal/web/static/ds/properties.css
+vendor-ds: ## update the vendored Z-Dash to its latest main (or DS_REF) and rebuild the bundle
 	@tmp=$$(mktemp -d) && trap 'rm -rf "$$tmp"' EXIT && \
 	curl -fsSL "https://raw.githubusercontent.com/$(DS_REPO)/$(DS_REF)/scripts/vendor.sh" -o "$$tmp/vendor.sh" && \
 	sh "$$tmp/vendor.sh" "$(DS_REF)" "$(DS_DEST)"
+	@$(MAKE) --no-print-directory ds-bundle
+
+## ds-bundle writes the project bundle (internal/web/static/ds/ds.bundle.css
+## and .js), only the components, modules and glyphs the pages use, from the
+## vendored copy and internal/web/ds.config.json. Run it, and commit the
+## bundle, whenever a page or script starts using a ds- class or DS module
+## it did not use before: the bundle rule of `make ds-check` (and CI) fails
+## on a stale one.
+ds-bundle: ## rebuild the Z-Dash project bundle the pages load
+	node $(DS_DEST)/tools/bundle.mjs --config $(DS_BUNDLE)
 
 ## ds-check verifies the vendored copy against its SHA256SUMS (the same check
 ## internal/web's tests make, so `make check` covers it) and, where node is
-## installed, runs Dashboard-Style's project check with ds-check.json (CI and
-## the nightly update run it too).
+## installed, rebuilds the bundle and fails when its stylesheet or script
+## differ from the committed ones (its report, ds.bundle.json, names lines,
+## so it changes with any edit and is not compared), then runs Z-Dash's
+## project check with ds-check.json. CI runs the same.
 ds-check:
-	go test ./internal/web/ -run 'TestVendoredDashboardStyleIsUntouched' -count=1
+	go test ./internal/web/ -run 'TestVendoredZDashIsUntouched|TestZDashBundleMatchesTheCopy' -count=1
 	@if command -v node >/dev/null 2>&1; then \
+	  node $(DS_DEST)/tools/bundle.mjs --config $(DS_BUNDLE) >/dev/null && \
+	  git diff --exit-code --stat -- $(DS_BUNDLE_FILES) || \
+	    { echo "the bundle was stale: commit internal/web/static/ds with your change"; exit 1; }; \
 	  node $(DS_DEST)/tools/check-project.mjs --config ds-check.json; \
 	else \
 	  echo "node is not installed: the project check is left to CI"; \

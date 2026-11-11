@@ -3,7 +3,7 @@
  * composer (composer.js) and the chat's question dialog (askdialog.js, on
  * top of so-question.css). Tokens only (--ds-* and the chat --so-* of
  * theme.css), unlayered, and never restyling a .ds-* component: alerts,
- * cards, buttons, menus, fields and status chips are Dashboard-Style's own,
+ * cards, buttons, menus, fields and status chips are Z-Dash's own,
  * placed and spaced from here.
  *
  *   .so-chat               the view: fills the stage, the conversation above
@@ -1034,12 +1034,14 @@
   margin-top: calc(-1 * var(--ds-space-1));
 }
 
+/* A DS icon button is at least --ds-target-min (Z-Dash 3.0: 48px under
+   .ds-touch, whatever its size hook says), so the offsets take the larger. */
 .so-msg__foot > .ds-btn {
-  margin-block: calc((var(--ds-space-8) - var(--ds-btn-icon-size, var(--ds-space-8))) / 2);
+  margin-block: calc((var(--ds-space-8) - max(var(--ds-target-min, 0px), var(--ds-btn-icon-size, var(--ds-space-8)))) / 2);
 }
 
 .so-msg__foot > .ds-btn:first-child {
-  margin-inline-start: calc((var(--ds-space-5) - var(--ds-btn-icon-size, var(--ds-space-8))) / 2);
+  margin-inline-start: calc((var(--ds-space-5) - max(var(--ds-target-min, 0px), var(--ds-btn-icon-size, var(--ds-space-8)))) / 2);
 }
 
 /* A file a message carries, or one a part shows. */
@@ -1460,7 +1462,7 @@
    into the padding. */
 .so-tool__body > .so-info:last-child:not(:first-child) {
   justify-self: end;
-  margin-block: calc((var(--ds-space-8) - var(--ds-btn-icon-size, var(--ds-space-8))) / 2);
+  margin-block: calc((var(--ds-space-8) - max(var(--ds-target-min, 0px), var(--ds-btn-icon-size, var(--ds-space-8)))) / 2);
 }
 
 .so-tool__out {

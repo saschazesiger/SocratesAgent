@@ -140,11 +140,11 @@ export function mountDocs({ host, onPage }) {
   // The tree narrower: a side sheet from the start edge.
   const sheetTree = el('div', { class: 'so-docs__tree' });
   const sheet = el('dialog', { class: 'ds-sheet so-docs-sheet', id: 'docsSheet', 'aria-labelledby': 'docsSheetTitle' },
-    el('div', { class: 'ds-sheet__backdrop', 'data-close': true }),
+    el('div', { class: 'ds-sheet__backdrop', 'data-ds-close': true }),
     el('section', { class: 'ds-sheet__panel' },
       el('div', { class: 'ds-sheet__head' },
         el('h2', { class: 'ds-sheet__title', id: 'docsSheetTitle', text: 'Files' }),
-        el('button', { class: 'ds-btn ds-btn--quiet ds-btn--icon', type: 'button', 'data-close': true, 'aria-label': 'Close', 'data-tip': 'Close' }, iconEl('close', 20))),
+        el('button', { class: 'ds-btn ds-btn--quiet ds-btn--icon', type: 'button', 'data-ds-close': true, 'aria-label': 'Close', 'data-tip': 'Close' }, iconEl('close', 20))),
       el('div', { class: 'ds-sheet__body so-docs-sheet__body', tabindex: '0' }, search('docsSheetFilter'), sheetTree)));
   document.body.append(sheet);
   const sheetOpen = () => !sheet.hidden && sheet.open && sheet.getAttribute('data-state') !== 'closed';

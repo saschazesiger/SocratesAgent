@@ -147,14 +147,14 @@
 /* ── The viewer ──────────────────────────────────────────────────────── */
 
 .so-testv {
-  --ds-dialog-width-wide: var(--so-testv-width);
+  --ds-dialog-width-lg: var(--so-testv-width);
 }
 
 /* A dialog opened from the viewer sits inside it (DS.overlay moves it
    there) and would inherit the viewer's width: it keeps DS's own. */
 .so-testform,
 .so-lightbox {
-  --ds-dialog-width-wide: initial;
+  --ds-dialog-width-lg: initial;
 }
 
 .so-testv__title {

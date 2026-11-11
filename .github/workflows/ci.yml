@@ -4,7 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
-  # Started by update-dashboard-style.yml: its push of the new copy is made
+  # Started by update-z-dash.yml: its push of the new copy is made
   # with GITHUB_TOKEN, which starts no workflow by itself.
   workflow_dispatch:
 
@@ -56,19 +56,33 @@ jobs:
       - name: Vet
         run: go vet ./...
 
-      # The project rules of Dashboard-Style (its AGENTS.md project block):
+      # The project rules of Z-Dash (its AGENTS.md project block):
       # the copy verifies, every ds- class exists, no removed name, no
       # literal, no own keyframes, no restyle of a ds component outside the
-      # exceptions in ds-check.json, each with its reason. Node is on the
+      # exceptions in ds-check.json, each with its reason, and the project
+      # bundle the pages load (internal/web/static/ds) is what bundle.mjs
+      # writes from the copy and holds every class they use. Node is on the
       # runner; the tool has no dependencies.
       - uses: actions/setup-node@v4
         if: matrix.os == 'ubuntu-latest'
         with:
           node-version: 22
 
-      - name: Dashboard-Style project check
+      # The bundle the pages load is rebuilt from the copy and compared with
+      # the committed one: a ds- class or DS module a change started to use
+      # and the bundle lacks fails here (make ds-bundle). Its report,
+      # ds.bundle.json, names the lines it found each class on, so it moves
+      # with any edit; it is rewritten, not compared, which also lets the
+      # bundle rule of the project check below pass on it.
+      - name: Z-Dash bundle is fresh
         if: matrix.os == 'ubuntu-latest'
-        run: node internal/web/static/vendor/dashboard-style/tools/check-project.mjs --config ds-check.json
+        run: |
+          node internal/web/static/vendor/z-dash/tools/bundle.mjs --config internal/web/ds.config.json
+          git diff --exit-code --stat -- internal/web/static/ds/ds.bundle.css internal/web/static/ds/ds.bundle.js internal/web/static/ds/properties.css
+
+      - name: Z-Dash project check
+        if: matrix.os == 'ubuntu-latest'
+        run: node internal/web/static/vendor/z-dash/tools/check-project.mjs --config ds-check.json
 
       # The default ten minutes per package is not enough room: internal/server
       # alone took 547s on macos-latest and 575s on ubuntu-latest in run

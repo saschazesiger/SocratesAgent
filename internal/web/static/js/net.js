@@ -345,7 +345,7 @@ const narrow = window.matchMedia('(max-width: 600px)');
 // answer to "is what I am looking at still true?", and it is never hidden
 // behind a menu or a toast that has already faded away.
 //
-// It is a Dashboard-Style alert in the page's own slot (#connSlot), not a bar
+// It is a Z-Dash alert in the page's own slot (#connSlot), not a bar
 // laid over the page: the slot sits where the page put it, so nothing has to
 // move out from under it. The alert is built once and only its words change
 // afterwards, because a live region that is replaced together with its text
@@ -363,7 +363,7 @@ export function mountConnectionBar() {
   }
 
   const alert = document.createElement('div');
-  alert.className = 'ds-alert ds-alert--warning';
+  alert.className = 'ds-alert ds-tone-warning';
   const label = document.createElement('span');
   label.className = 'ds-alert__text';
   label.setAttribute('role', 'status');
@@ -400,8 +400,8 @@ export function mountConnectionBar() {
       }
       return;
     }
-    setClass(alert, 'ds-alert--warning', !offline);
-    setClass(alert, 'ds-alert--error', offline);
+    setClass(alert, 'ds-tone-warning', !offline);
+    setClass(alert, 'ds-tone-error', offline);
 
     // Read at a glance, possibly from behind a steering wheel: what is wrong,
     // and how old what is on screen is.

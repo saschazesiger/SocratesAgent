@@ -27,7 +27,7 @@ export function mountBackupNotice(host) {
     const warning = backup && backup.warning;
     host.hidden = !warning;
     if (!warning) return;
-    morph(host, html`<div class="ds-alert ds-alert--warning">${raw(icon('alert', 20))}<span class="ds-alert__text so-banner__text">${warning}</span><a class="ds-btn ds-btn--text ds-btn--sm" href="/admin#backupCard">Backup</a></div>`);
+    morph(host, html`<div class="ds-alert ds-tone-warning">${raw(icon('alert', 20))}<span class="ds-alert__text so-banner__text">${warning}</span><a class="ds-btn ds-btn--text ds-sm" href="/admin#backupCard">Backup</a></div>`);
   };
 
   const read = async () => {

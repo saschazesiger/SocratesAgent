@@ -19,9 +19,9 @@
 <link rel="icon" href="/favicon.png">
 <link rel="apple-touch-icon" sizes="180x180" href="/static/img/apple-touch-icon.png">
 <link rel="manifest" href="/static/manifest.json">
-<link rel="preload" href="/static/vendor/dashboard-style/fonts/google-sans-latin-opsz-normal.woff2" as="font" type="font/woff2" crossorigin>
-<link rel="stylesheet" href="/static/vendor/dashboard-style/fonts/fonts.css">
-<link rel="stylesheet" href="/static/vendor/dashboard-style/ds.css">
+<link rel="preload" href="/static/vendor/z-dash/fonts/google-sans-latin-opsz-normal.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="/static/vendor/z-dash/fonts/fonts.css">
+<link rel="stylesheet" href="/static/ds/ds.bundle.css">
 <link rel="stylesheet" href="/static/css/theme.css">
 <link rel="stylesheet" href="/static/vendor/xterm.css">
 <link rel="stylesheet" href="/static/css/so-shared.css">
@@ -36,7 +36,7 @@
 <link rel="stylesheet" href="/static/css/so-board.css">
 <link rel="stylesheet" href="/static/css/so-docs.css">
 <link rel="stylesheet" href="/static/css/so-motion.css">
-<script src="/static/vendor/dashboard-style/ds.js" defer></script>
+<script src="/static/ds/ds.bundle.js" defer></script>
 </head>
 <body>
 <div class="ds-app ds-app--drawer so-app" id="app">
@@ -64,18 +64,18 @@
         <!-- Home has no name to rename: the bar says where it is, as words. -->
         <span class="so-title__home" id="homeTitle" hidden>Home</span>
       </h1>
-      <button class="ds-btn ds-btn--quiet ds-btn--icon ds-btn--sm" id="titleRegen" type="button" hidden
+      <button class="ds-btn ds-btn--quiet ds-btn--icon ds-sm" id="titleRegen" type="button" hidden
               aria-label="Name this session again" data-tip="Name this session again from what it is about">
         <span class="ds-btn__faces">
           <span class="ds-btn__face" data-icon="sparkles" data-icon-size="18"></span>
-          <span class="ds-btn__face ds-btn__face--busy" aria-hidden="true"><span class="ds-spinner ds-spinner--sm"></span></span>
+          <span class="ds-btn__face ds-btn__face--busy" aria-hidden="true"><span class="ds-spinner ds-spinner--ink ds-sm"></span></span>
         </span>
       </button>
       <!-- Where the person filed this session; In progress says nothing. -->
       <span class="ds-status" id="sessionStatus" hidden></span>
       <!-- How the last turn left the work, when the dashboard checks it. A tap
            says why. -->
-      <button class="ds-btn ds-btn--quiet ds-btn--sm so-outcome" id="sessionOutcome" type="button" hidden></button>
+      <button class="ds-btn ds-btn--quiet ds-sm so-outcome" id="sessionOutcome" type="button" hidden></button>
       <div class="so-topbar__actions">
         <!-- Copy, paste and upload (transfer.js), hidden until a terminal is
              attached. -->
@@ -150,7 +150,7 @@
   <nav class="ds-drawer" id="sidebar" aria-label="Sessions" tabindex="-1">
     <div class="ds-drawer__head" aria-hidden="true"><img class="so-logo" src="/static/img/logo.png" alt="" width="32" height="32"><span class="ds-brand__name">Socrates</span></div>
     <div class="ds-drawer__actions so-drawer-actions">
-      <button class="ds-btn ds-btn--primary" id="newSession" type="button" data-icon="plus" data-icon-size="16" data-icon-place="start"><span class="so-btn-label">New session</span></button>
+      <button class="ds-btn ds-btn--filled" id="newSession" type="button" data-icon="plus" data-icon-size="16" data-icon-place="start"><span class="so-btn-label">New session</span></button>
       <!-- An editor with no folder open, in a tab of its own. Its mark is put
            in by session.js, which draws every agent's mark. -->
       <button class="ds-btn ds-btn--quiet ds-btn--icon" id="blankIDE" type="button" hidden
@@ -247,7 +247,7 @@
 <div class="ds-menu" role="menu" id="sessionMenu" aria-label="Session actions" hidden></div>
 
 <dialog class="ds-dialog" id="optionsDialog" aria-labelledby="optionsTitle">
-  <div class="ds-dialog__backdrop" data-close></div>
+  <div class="ds-dialog__backdrop" data-ds-close></div>
   <div class="ds-dialog__box">
     <h2 class="ds-dialog__title" id="optionsTitle">This device</h2>
     <div class="so-options">
@@ -278,7 +278,7 @@
         <small class="ds-field__hint" id="optNotifyHint">Not available in this browser</small>
       </div>
     </div>
-    <div class="ds-dialog__actions"><button class="ds-btn ds-btn--text" type="button" data-close autofocus>Done</button></div>
+    <div class="ds-dialog__actions"><button class="ds-btn ds-btn--text" type="button" data-ds-close autofocus>Done</button></div>
   </div>
 </dialog>
 
@@ -286,20 +286,20 @@
      A session is bound to all three before it exists, so they are chosen once
      rather than guessed at and corrected afterwards. -->
 <dialog class="ds-sheet so-ns" id="newSessionSheet" aria-labelledby="nsTitle">
-  <div class="ds-sheet__backdrop" data-close></div>
+  <div class="ds-sheet__backdrop" data-ds-close></div>
   <section class="ds-sheet__panel">
     <div class="ds-sheet__head">
       <h2 class="ds-sheet__title" id="nsTitle">What should this session run?</h2>
-      <button class="ds-btn ds-btn--quiet ds-btn--icon" type="button" aria-label="Close" data-tip="Close" data-close data-icon="close"></button>
+      <button class="ds-btn ds-btn--quiet ds-btn--icon" type="button" aria-label="Close" data-tip="Close" data-ds-close data-icon="close"></button>
     </div>
     <div class="ds-sheet__body" tabindex="0">
       <!-- harnesses.js draws the settings (settingsForm) every time the sheet
            opens, with the ids they have always had. -->
       <div id="nsForm"></div>
-      <div class="ds-alert ds-alert--warning" id="nsHint" role="status" hidden data-icon="alert" data-icon-place="start"><span class="ds-alert__text" id="nsHintText"></span></div>
+      <div class="ds-alert ds-tone-warning" id="nsHint" role="status" hidden data-icon="alert" data-icon-place="start"><span class="ds-alert__text" id="nsHintText"></span></div>
       <div class="ds-form-actions">
-        <button class="ds-btn ds-btn--primary" type="button" id="nsStart">Start session</button>
-        <button class="ds-btn ds-btn--text" type="button" id="nsCancel" data-close>Cancel</button>
+        <button class="ds-btn ds-btn--filled" type="button" id="nsStart">Start session</button>
+        <button class="ds-btn ds-btn--text" type="button" id="nsCancel" data-ds-close>Cancel</button>
       </div>
     </div>
   </section>
@@ -309,20 +309,20 @@
      only thing being asked, and the meter makes a microphone that hears
      nothing look like one. -->
 <dialog class="ds-dialog so-rec" id="recSheet" aria-labelledby="recTitle">
-  <div class="ds-dialog__backdrop" data-close></div>
+  <div class="ds-dialog__backdrop" data-ds-close></div>
   <div class="ds-dialog__box">
     <h2 class="ds-dialog__title" id="recTitle">Listening…</h2>
     <div class="so-meter" id="recMeter" aria-hidden="true"></div>
     <p class="ds-meta ds-center" id="recTime">0:00</p>
     <div class="ds-dialog__actions so-rec__actions">
       <button class="ds-btn so-rec__action" type="button" id="recCancel">Cancel</button>
-      <button class="ds-btn ds-btn--primary so-rec__action" type="button" id="recSend">Send</button>
+      <button class="ds-btn ds-btn--filled so-rec__action" type="button" id="recSend">Send</button>
     </div>
   </div>
 </dialog>
 
 <dialog class="ds-dialog so-copy" id="copySheet" aria-labelledby="copyTitle" aria-describedby="copyText">
-  <div class="ds-dialog__backdrop" data-close></div>
+  <div class="ds-dialog__backdrop" data-ds-close></div>
   <div class="ds-dialog__box">
     <h2 class="ds-dialog__title" id="copyTitle">Copy from the terminal</h2>
     <p class="ds-dialog__text" id="copyText">Select a part to copy just that, or copy everything.</p>
@@ -331,8 +331,8 @@
       <textarea class="ds-input so-copy__text" id="copyArea" readonly spellcheck="false"></textarea>
     </div>
     <div class="ds-dialog__actions">
-      <button class="ds-btn ds-btn--text" type="button" data-close>Close</button>
-      <button class="ds-btn ds-btn--primary" type="button" id="copyAll" autofocus>Copy all</button>
+      <button class="ds-btn ds-btn--text" type="button" data-ds-close>Close</button>
+      <button class="ds-btn ds-btn--filled" type="button" id="copyAll" autofocus>Copy all</button>
     </div>
   </div>
 </dialog>

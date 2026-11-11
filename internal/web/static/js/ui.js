@@ -1,5 +1,6 @@
-// ui.js is the one bridge to Dashboard-Style: window.DS from the classic
-// vendor ds.js, which every page loads with `defer` before its modules. No
+// ui.js is the one bridge to Z-Dash: window.DS from the classic project
+// bundle (static/ds/ds.bundle.js), which every page loads with `defer` before
+// its modules. No
 // other module reads window.DS or imports the vendored modules - a second copy
 // of the runtime would mean a second Escape stack, a second tooltip and a
 // second ripple root - so everything a page needs from DS comes through here.
@@ -82,11 +83,26 @@ function glyphOf(name) {
   let glyph = name;
   if (Object.hasOwn(GLYPH, name)) {
     glyph = GLYPH[name];
-    if (!glyph) throw new Error(`Dashboard-Style ${DS.version} has no glyph for "${name}": make it a text button`);
+    if (!glyph) throw new Error(`Z-Dash ${DS.version} has no glyph for "${name}": make it a text button`);
   }
   const body = Object.hasOwn(DS.icons, glyph) ? DS.icons[glyph] : undefined;
   if (typeof body !== 'string' || body.charAt(0) !== '<') throw new Error('Unknown icon: ' + name);
   return body;
+}
+
+/**
+ * tone is the class a status word gives a DS component, with a space before
+ * it: 'ok', 'success', 'warning' and 'error' are Z-Dash's tone options,
+ * 'running' is the status chip's own turning modifier, and anything else is
+ * the neutral look (no class). The names are written out whole so that the
+ * bundle's scan sees them.
+ */
+const TONES = {
+  ok: ' ds-tone-success', success: ' ds-tone-success', warning: ' ds-tone-warning', error: ' ds-tone-error',
+  running: ' ds-status--running',
+};
+export function tone(kind) {
+  return Object.hasOwn(TONES, kind) ? TONES[kind] : '';
 }
 
 /** icon is the SVG markup of one glyph, for html`` templates. */
@@ -360,7 +376,7 @@ export function ms(token, el = document.documentElement) {
  * the check with it. DS.motion.busy() switches between them.
  */
 export function faces(label, busyLabel, doneLabel) {
-  return html`<span class="ds-btn__faces"><span class="ds-btn__face">${label}</span><span class="ds-btn__face ds-btn__face--busy" aria-hidden="true"><span class="ds-spinner ds-spinner--sm"></span>${busyLabel}</span>${
+  return html`<span class="ds-btn__faces"><span class="ds-btn__face">${label}</span><span class="ds-btn__face ds-btn__face--busy" aria-hidden="true"><span class="ds-spinner ds-spinner--ink ds-sm"></span>${busyLabel}</span>${
     doneLabel ? html`<span class="ds-btn__face ds-btn__face--done" aria-hidden="true">${raw(icon('check', 16))}${doneLabel}</span>` : ''
   }</span>`;
 }

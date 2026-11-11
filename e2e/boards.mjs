@@ -198,7 +198,7 @@ export async function boards() {
         await page.waitForSelector('dialog[open] .so-board__delete');
         await page.click('dialog[open] .so-board__delete');
         await page.waitForSelector('dialog[role="alertdialog"][open]');
-        await page.click('dialog[role="alertdialog"][open] .ds-btn--primary');
+        await page.click('dialog[role="alertdialog"][open] .ds-btn--filled');
         await dialogGone(page);
       }
     }
@@ -343,7 +343,7 @@ export async function boards() {
     await page.waitForSelector('dialog[open] .so-board__delete');
     await page.click('dialog[open] .so-board__delete');
     await page.waitForSelector('dialog[role="alertdialog"][open]');
-    await page.click('dialog[role="alertdialog"][open] .ds-btn--primary');
+    await page.click('dialog[role="alertdialog"][open] .ds-btn--filled');
     await page.waitForFunction(() => ![...document.querySelectorAll('#board .so-board__col-btn')].some((b) => b.textContent.trim() === 'Done'), null, { timeout: 5000 });
     data = await saved(s, shop, (d) => !d.board.columns.some((c) => c.title === 'Done'));
     ok(!data.board.columns.some((c) => c.title === 'Done'), 'a deleted column is gone on the server too');

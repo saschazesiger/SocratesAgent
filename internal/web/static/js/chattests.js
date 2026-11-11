@@ -12,7 +12,7 @@
 // with morph(), so a redraw keeps the scroll, the focus and the images.
 
 import { api, el, toast, errorMessage, confirmDialog, clientKey } from './api.js';
-import { M, html, raw, icon, morph, flipMorph, showOverlay, hideOverlay } from './ui.js';
+import { M, html, raw, icon, morph, flipMorph, showOverlay, hideOverlay, tone } from './ui.js';
 import { markdown } from './md.js';
 import { clock } from './chatparts.js';
 
@@ -95,7 +95,7 @@ function chip(kind, extra = '') {
   const mark = kind.tone === 'running'
     ? html`<span class="ds-spinner ds-status__spinner" aria-hidden="true"></span>`
     : raw(icon(kind.glyph, 16));
-  return html`<span class="${'ds-status' + (kind.tone ? ' ds-status--' + kind.tone : '') + (extra ? ' ' + extra : '')}">${mark}<span>${kind.word}</span></span>`;
+  return html`<span class="${'ds-status' + tone(kind.tone) + (extra ? ' ' + extra : '')}">${mark}<span>${kind.word}</span></span>`;
 }
 
 const statusChip = (status, extra) => chip(STATUS[status] || STATUS.blocked, extra);
@@ -197,7 +197,7 @@ export function mountChatTests(ctx) {
     el('div', { class: 'so-tests__head' },
       el('h2', { class: 'so-tests__title', id: 'testsPanelTitle', tabindex: '-1', text: 'Tests' }),
       el('button', {
-        class: 'ds-btn ds-btn--quiet ds-btn--icon ds-btn--sm', type: 'button', 'data-tests-close': true,
+        class: 'ds-btn ds-btn--quiet ds-btn--icon ds-sm', type: 'button', 'data-tests-close': true,
         'aria-label': 'Close the tests', 'data-tip': 'Close the tests',
       })),
     el('div', { class: 'so-tests__scroll' }, columnBody));
@@ -206,16 +206,16 @@ export function mountChatTests(ctx) {
   // The sheet, for a window too narrow for the column.
   const sheetBody = el('div', { class: 'so-tests__content' });
   const sheet = el('dialog', { class: 'ds-sheet so-tests-sheet', id: 'testsSheet', 'aria-labelledby': 'testsSheetTitle' },
-    el('div', { class: 'ds-sheet__backdrop', 'data-close': true }),
+    el('div', { class: 'ds-sheet__backdrop', 'data-ds-close': true }),
     el('section', { class: 'ds-sheet__panel' },
       el('div', { class: 'ds-sheet__head' },
         el('h2', { class: 'ds-sheet__title', id: 'testsSheetTitle', text: 'Tests' }),
         el('button', {
-          class: 'ds-btn ds-btn--quiet ds-btn--icon', type: 'button', 'data-close': true,
+          class: 'ds-btn ds-btn--quiet ds-btn--icon', type: 'button', 'data-ds-close': true,
           'aria-label': 'Close', 'data-tip': 'Close',
         })),
       el('div', { class: 'ds-sheet__body', tabindex: '0' }, sheetBody)));
-  morph(sheet.querySelector('.ds-sheet__head [data-close]'), html`${raw(icon('close', 20))}`);
+  morph(sheet.querySelector('.ds-sheet__head [data-ds-close]'), html`${raw(icon('close', 20))}`);
   document.body.append(sheet);
 
   const hosts = [makeHost(columnBody, 'c'), makeHost(sheetBody, 's')];
@@ -277,7 +277,7 @@ export function mountChatTests(ctx) {
     if (button.getAttribute('aria-label') !== label) button.setAttribute('aria-label', label);
     if (button.getAttribute('data-tip') !== label) button.setAttribute('data-tip', label);
     const value = problems || running || 0;
-    const tone = problems ? 'ds-badge ds-badge--error so-tests-btn__badge' : 'ds-badge so-tests-btn__badge';
+    const tone = problems ? 'ds-badge ds-tone-error so-tests-btn__badge' : 'ds-badge so-tests-btn__badge';
     const was = badge.hidden ? '' : badge.textContent;
     if (badge.className !== tone) badge.className = tone;
     badge.textContent = value ? String(value) : '';
@@ -309,13 +309,13 @@ export function mountChatTests(ctx) {
     const shown = tests.filter((FILTERS.find(([id]) => id === filter) || FILTERS[0])[2]);
     const name = 'testsFilter-' + host.key;
     morph(host.top, html`${tests.length ? html`<p class="ds-meta so-tests__summary"><span class="ds-parts"><span class="ds-parts__list">${words.map((w) => html`<span>${w}</span>`)}</span></span></p>
-      <fieldset class="ds-chips so-tests__filters"><legend class="ds-sr">Show</legend>${FILTERS.map(([id, word]) => html`<label class="ds-chip"${id === 'open' ? html` data-tip="Not run yet, running, blocked, or changed since the last run"` : ''}><input class="ds-chip__input" type="radio" name="${name}" value="${id}" data-filter="${id}"><span class="ds-chip__body">${raw(icon('check', 18, 'ds-chip__check'))}<span>${word}</span>${id !== 'all' && counts[id] ? html` <span class="${'ds-badge' + (id === 'problems' ? ' ds-badge--error' : ' ds-badge--neutral')}">${counts[id]}</span>` : ''}</span></label>`)}</fieldset>` : ''}
-      ${loaded && !on && tests.length ? html`<div class="ds-alert ds-alert--warning so-tests__off" role="status">${raw(icon('alert', 20))}<span class="ds-alert__text">Socrates Tests is off in this chat: its agent cannot run these tests.</span><button class="ds-btn ds-btn--text ds-btn--sm" type="button" data-tests-mcp>Switch it on</button></div>` : ''}`);
+      <fieldset class="ds-chips so-tests__filters"><legend class="ds-sr">Show</legend>${FILTERS.map(([id, word]) => html`<label class="ds-chip"${id === 'open' ? html` data-tip="Not run yet, running, blocked, or changed since the last run"` : ''}><input class="ds-chip__input" type="radio" name="${name}" value="${id}" data-filter="${id}"><span class="ds-chip__body">${raw(icon('check', 18, 'ds-chip__check'))}<span>${word}</span>${id !== 'all' && counts[id] ? html` <span class="${'ds-badge' + (id === 'problems' ? ' ds-tone-error' : ' ds-tone-neutral')}">${counts[id]}</span>` : ''}</span></label>`)}</fieldset>` : ''}
+      ${loaded && !on && tests.length ? html`<div class="ds-alert ds-tone-warning so-tests__off" role="status">${raw(icon('alert', 20))}<span class="ds-alert__text">Socrates Tests is off in this chat: its agent cannot run these tests.</span><button class="ds-btn ds-btn--text ds-sm" type="button" data-tests-mcp>Switch it on</button></div>` : ''}`);
     for (const input of host.top.querySelectorAll('input[data-filter]')) input.checked = input.value === filter;
     flipMorph(host.list, html`${shown.map((t) => rowHtml(t, host.key))}`, { items: '.so-test', live });
     let rest = '';
     if (!loaded) {
-      rest = html`<div class="ds-loading" role="status"><span class="ds-loader ds-loader--sm" aria-hidden="true"></span><span>Reading the tests…</span></div>`;
+      rest = html`<div class="ds-loading" role="status"><span class="ds-loader ds-sm" aria-hidden="true"></span><span>Reading the tests…</span></div>`;
     } else if (!tests.length && !on) {
       rest = html`<div class="ds-empty so-tests__empty"><span class="ds-empty__disc" aria-hidden="true">${raw(icon('checkCircle', 24))}</span><p class="ds-empty__title">Socrates Tests is off</p><p class="ds-empty__text">Switched on, this chat’s agent can write tests, run them with its tools and show here what it saw, step by step.</p><button class="ds-btn ds-btn--tonal" type="button" data-tests-mcp>Switch it on…</button></div>`;
     } else if (!tests.length) {
@@ -336,7 +336,7 @@ export function mountChatTests(ctx) {
     const shot = running ? latestImage(run) : null;
     const marks = [];
     if (t.override && t.override.status) marks.push(html`<span class="ds-tag so-test__mark" data-mark="override">Set by you</span>`);
-    if (t.stale) marks.push(html`<span class="ds-tag ds-tag--neutral so-test__mark" data-mark="stale">Changed since the last run</span>`);
+    if (t.stale) marks.push(html`<span class="ds-tag ds-tone-neutral so-test__mark" data-mark="stale">Changed since the last run</span>`);
     return html`<li class="ds-list__item so-test" data-ds-key="${t.id}" data-test="${t.id}" data-status="${t.status}">
       <span class="ds-list__text">
         <span class="ds-list__title"><button class="ds-list__action" type="button" id="${'testRow-' + key + '-' + t.id}" data-open="${t.id}"><span class="so-test__id">${t.id}</span> ${t.title}</button></span>
@@ -500,10 +500,10 @@ function testViewer({ chat, id, opener, onGone }) {
   let reading = 0;
 
   const title = el('h2', { class: 'ds-dialog__title so-testv__title', id: titleId, text: id });
-  const close = el('button', { class: 'ds-btn ds-btn--quiet ds-btn--icon', type: 'button', 'data-close': true, 'aria-label': 'Close', 'data-tip': 'Close' });
+  const close = el('button', { class: 'ds-btn ds-btn--quiet ds-btn--icon', type: 'button', 'data-ds-close': true, 'aria-label': 'Close', 'data-tip': 'Close' });
   morph(close, html`${raw(icon('close', 20))}`);
   const body = el('div', { class: 'ds-dialog__body so-testv__body', tabindex: '0', role: 'region', 'aria-label': 'The test' });
-  const rerun = el('button', { class: 'ds-btn ds-btn--primary so-testv__rerun', type: 'button', 'data-act': 'rerun' });
+  const rerun = el('button', { class: 'ds-btn ds-btn--filled so-testv__rerun', type: 'button', 'data-act': 'rerun' });
   morph(rerun, html`${raw(icon('sync', 18))}<span>Run again</span>`);
   const more = el('button', {
     class: 'ds-btn ds-btn--quiet ds-btn--icon so-testv__more', type: 'button', 'aria-label': 'More actions', 'data-tip': 'More actions',
@@ -520,8 +520,8 @@ function testViewer({ chat, id, opener, onGone }) {
   const menu = el('div', { class: 'ds-menu', role: 'menu', id: 'testvMenu' + n, 'aria-label': 'Test actions', hidden: true });
   morph(menu, html`<button class="ds-menu__item" role="menuitem" type="button" data-act="override">${raw(icon('flag', 20))}<span class="ds-menu__label">Override…</span></button><button class="ds-menu__item" role="menuitem" type="button" data-act="edit">${raw(icon('pencil', 20))}<span class="ds-menu__label">Edit…</span></button><button class="ds-menu__item" role="menuitem" type="button" data-act="delete">${raw(icon('trash', 20))}<span class="ds-menu__label">Delete…</span></button>`);
   const actions = el('div', { class: 'ds-dialog__actions so-testv__actions' }, deleteBtn, editBtn, overrideBtn, more, rerun);
-  const dialog = el('dialog', { class: 'ds-dialog ds-dialog--wide ds-dialog--full-narrow so-testv', 'aria-labelledby': titleId },
-    el('div', { class: 'ds-dialog__backdrop', 'data-close': true }),
+  const dialog = el('dialog', { class: 'ds-dialog ds-dialog--lg ds-dialog--full-narrow so-testv', 'aria-labelledby': titleId },
+    el('div', { class: 'ds-dialog__backdrop', 'data-ds-close': true }),
     el('div', { class: 'ds-dialog__box' },
       el('div', { class: 'ds-dialog__head' }, close, title),
       body, actions, menu));
@@ -552,7 +552,7 @@ function testViewer({ chat, id, opener, onGone }) {
     }
     const meta = html`<div class="so-testv__meta"><div class="so-testv__line">${statusChip(test.status, 'so-testv__status')}<span class="ds-meta so-testv__who">${whoSet(test)}</span></div>
       <p class="ds-meta so-testv__facts"><span class="ds-parts"><span class="ds-parts__list"><span class="so-testv__id">${test.id}</span>${test.environment ? html`<span class="so-testv__env">${test.environment}</span>` : ''}</span></span></p>
-      ${test.tags && test.tags.length ? html`<div class="so-testv__tags">${test.tags.map((tag) => html`<span class="ds-tag ds-tag--neutral">${tag}</span>`)}</div>` : ''}
+      ${test.tags && test.tags.length ? html`<div class="so-testv__tags">${test.tags.map((tag) => html`<span class="ds-tag ds-tone-neutral">${tag}</span>`)}</div>` : ''}
       ${runs.length ? html`<div class="so-testv__runs"><label class="ds-meta" for="${'testvRun' + n}">Run</label><select class="ds-input so-testv__run" id="${'testvRun' + n}">${[...runs].reverse().map((r) => html`<option value="${r.n}">${r.n + ' of ' + runs.length + ' · ' + (isOpenRun(r) ? 'Running' : (STATUS[verdictStatus(r.verdict)] || STATUS.blocked).word) + ' · ' + clock(r.started_at)}</option>`)}</select></div>` : ''}</div>`;
     morph(body, bodyHtml(test, run, meta));
     const select = body.querySelector('.so-testv__run');
@@ -568,7 +568,7 @@ function testViewer({ chat, id, opener, onGone }) {
       alerts.push(html`<div class="ds-alert so-testv__skip" role="status">${raw(icon('chevronLast', 20))}<span class="ds-alert__text">${'Set aside by ' + byWords(t.skip.by) + ': ' + t.skip.reason}</span></div>`);
     }
     if (t.stale) {
-      alerts.push(html`<div class="ds-alert ds-alert--warning so-testv__stale" role="status">${raw(icon('alert', 20))}<span class="ds-alert__text">Changed since the last run: the steps below are the ones that run was given.</span></div>`);
+      alerts.push(html`<div class="ds-alert ds-tone-warning so-testv__stale" role="status">${raw(icon('alert', 20))}<span class="ds-alert__text">Changed since the last run: the steps below are the ones that run was given.</span></div>`);
     }
     const images = imagesOf(run);
     const shotIndex = new Map(images.map((ev, i) => [ev.src, i]));
@@ -626,7 +626,7 @@ function testViewer({ chat, id, opener, onGone }) {
         return;
       }
       if (!test) {
-        morph(body, html`<div class="ds-alert ds-alert--error" role="alert">${raw(icon('alertCircle', 20))}<span class="ds-alert__text">${errorMessage(err)}</span></div>`);
+        morph(body, html`<div class="ds-alert ds-tone-error" role="alert">${raw(icon('alertCircle', 20))}<span class="ds-alert__text">${errorMessage(err)}</span></div>`);
       }
     }
   }
@@ -718,7 +718,7 @@ function testViewer({ chat, id, opener, onGone }) {
     hideOverlay(dialog, { remove: true });
   }, { once: true });
   showOverlay(dialog, opener);
-  morph(body, html`<div class="ds-loading" role="status"><span class="ds-loader ds-loader--sm" aria-hidden="true"></span><span>Reading the test…</span></div>`);
+  morph(body, html`<div class="ds-loading" role="status"><span class="ds-loader ds-sm" aria-hidden="true"></span><span>Reading the test…</span></div>`);
   reload();
   return { reload, close: shut };
 }
@@ -739,7 +739,7 @@ function lightbox(images, start, chat, test, opener) {
   let at = Math.max(0, Math.min(images.length - 1, start || 0));
   const titleId = 'lightboxTitle' + (++viewerSeq);
   const title = el('h2', { class: 'ds-dialog__title', id: titleId });
-  const close = el('button', { class: 'ds-btn ds-btn--quiet ds-btn--icon', type: 'button', 'data-close': true, 'aria-label': 'Close', 'data-tip': 'Close' });
+  const close = el('button', { class: 'ds-btn ds-btn--quiet ds-btn--icon', type: 'button', 'data-ds-close': true, 'aria-label': 'Close', 'data-tip': 'Close' });
   morph(close, html`${raw(icon('close', 20))}`);
   const figure = el('figure', { class: 'so-lightbox__figure' });
   const prev = el('button', { class: 'ds-btn', type: 'button', 'data-go': '-1' });
@@ -747,7 +747,7 @@ function lightbox(images, start, chat, test, opener) {
   const next = el('button', { class: 'ds-btn', type: 'button', 'data-go': '1' });
   morph(next, html`<span>Next</span>${raw(icon('arrowRight', 18))}`);
   const dialog = el('dialog', { class: 'ds-dialog ds-dialog--full so-lightbox', 'aria-labelledby': titleId },
-    el('div', { class: 'ds-dialog__backdrop', 'data-close': true }),
+    el('div', { class: 'ds-dialog__backdrop', 'data-ds-close': true }),
     el('div', { class: 'ds-dialog__box' },
       el('div', { class: 'ds-dialog__head' }, close, title),
       el('div', { class: 'ds-dialog__body so-lightbox__body' }, figure),
@@ -793,13 +793,13 @@ let formSeq = 0;
  */
 function formDialog({ title, text, fields, saveLabel, save, extra = [], opener, wide = true }) {
   const id = 'testForm' + (++formSeq);
-  const cancel = el('button', { class: 'ds-btn ds-btn--text', type: 'button', 'data-close': true, text: 'Cancel' });
-  const ok = el('button', { class: 'ds-btn ds-btn--primary', type: 'button', text: saveLabel });
+  const cancel = el('button', { class: 'ds-btn ds-btn--text', type: 'button', 'data-ds-close': true, text: 'Cancel' });
+  const ok = el('button', { class: 'ds-btn ds-btn--filled', type: 'button', text: saveLabel });
   const dialog = el('dialog', {
-    class: 'ds-dialog ds-dialog--full-narrow so-testform' + (wide ? ' ds-dialog--wide' : ''), 'aria-labelledby': id + '-title',
+    class: 'ds-dialog ds-dialog--full-narrow so-testform' + (wide ? ' ds-dialog--lg' : ''), 'aria-labelledby': id + '-title',
     'aria-describedby': text ? id + '-text' : null,
   },
-  el('div', { class: 'ds-dialog__backdrop', 'data-close': true }),
+  el('div', { class: 'ds-dialog__backdrop', 'data-ds-close': true }),
   el('div', { class: 'ds-dialog__box' },
     el('h2', { class: 'ds-dialog__title', id: id + '-title', text: title }),
     text ? el('p', { class: 'ds-dialog__text', id: id + '-text', text }) : null,
@@ -884,7 +884,7 @@ function editDialog(test, base, opener) {
   const stepRow = (s) => {
     const k = id + '-s' + (++stepSeq);
     const tool = (what, glyph) => {
-      const b = el('button', { class: 'ds-btn ds-btn--quiet ds-btn--icon ds-btn--sm', type: 'button', 'data-step-act': what });
+      const b = el('button', { class: 'ds-btn ds-btn--quiet ds-btn--icon ds-sm', type: 'button', 'data-step-act': what });
       morph(b, html`${raw(icon(glyph, 18))}`);
       return b;
     };

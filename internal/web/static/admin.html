@@ -17,14 +17,14 @@
 <link rel="icon" href="/favicon.png">
 <link rel="apple-touch-icon" sizes="180x180" href="/static/img/apple-touch-icon.png">
 <link rel="manifest" href="/static/manifest.json">
-<link rel="preload" href="/static/vendor/dashboard-style/fonts/google-sans-latin-opsz-normal.woff2" as="font" type="font/woff2" crossorigin>
-<link rel="stylesheet" href="/static/vendor/dashboard-style/fonts/fonts.css">
-<link rel="stylesheet" href="/static/vendor/dashboard-style/ds.css">
+<link rel="preload" href="/static/vendor/z-dash/fonts/google-sans-latin-opsz-normal.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="/static/vendor/z-dash/fonts/fonts.css">
+<link rel="stylesheet" href="/static/ds/ds.bundle.css">
 <link rel="stylesheet" href="/static/css/theme.css">
 <link rel="stylesheet" href="/static/css/so-shared.css">
 <link rel="stylesheet" href="/static/css/so-sheet.css">
 <link rel="stylesheet" href="/static/css/so-admin.css">
-<script src="/static/vendor/dashboard-style/ds.js" defer></script>
+<script src="/static/ds/ds.bundle.js" defer></script>
 </head>
 <body>
 <div class="ds-app ds-app--drawer so-admin" id="app">
@@ -38,10 +38,10 @@
          is what sends it. Accounts, the backup, the tunnel and the password
          have buttons of their own and take effect at once. -->
     <div class="so-admin-bar">
-      <button class="ds-btn ds-btn--primary" id="saveTop" type="button">
+      <button class="ds-btn ds-btn--filled" id="saveTop" type="button">
         <span class="ds-btn__faces">
           <span class="ds-btn__face">Save changes</span>
-          <span class="ds-btn__face ds-btn__face--busy" aria-hidden="true"><span class="ds-spinner ds-spinner--sm"></span>Saving</span>
+          <span class="ds-btn__face ds-btn__face--busy" aria-hidden="true"><span class="ds-spinner ds-spinner--ink ds-sm"></span>Saving</span>
           <span class="ds-btn__face ds-btn__face--done" aria-hidden="true" data-icon="check" data-icon-size="16" data-icon-place="start">Saved</span>
         </span>
       </button>
@@ -113,7 +113,7 @@
           <div class="so-admin-group" id="harnessCards">
             <section class="ds-card">
               <h2 class="ds-card__title">Programs</h2>
-              <div class="ds-loading" role="status"><span class="ds-loader ds-loader--sm" aria-hidden="true"></span>Asking this machine which programs are installed</div>
+              <div class="ds-loading" role="status"><span class="ds-loader ds-sm" aria-hidden="true"></span>Asking this machine which programs are installed</div>
             </section>
           </div>
 
@@ -243,7 +243,7 @@
               </div>
             </div>
 
-            <div class="ds-subsection">
+            <div class="ds-card__section">
               <h3 class="ds-card__subtitle">Reading answers out loud</h3>
               <div class="ds-form">
                 <div class="ds-field">
@@ -271,16 +271,16 @@
                   <span class="so-state__line"></span>
                 </div>
                 <div class="so-admin-actions">
-                  <button class="ds-btn ds-btn--sm" id="testVoice" type="button">
+                  <button class="ds-btn ds-sm" id="testVoice" type="button">
                     <span class="ds-btn__faces">
                       <span class="ds-btn__face">Test voice output</span>
-                      <span class="ds-btn__face ds-btn__face--busy" aria-hidden="true"><span class="ds-spinner ds-spinner--sm"></span>Reading</span>
+                      <span class="ds-btn__face ds-btn__face--busy" aria-hidden="true"><span class="ds-spinner ds-spinner--ink ds-sm"></span>Reading</span>
                     </span>
                   </button>
-                  <button class="ds-btn ds-btn--sm" id="checkVoiceKey" type="button">
+                  <button class="ds-btn ds-sm" id="checkVoiceKey" type="button">
                     <span class="ds-btn__faces">
                       <span class="ds-btn__face">Check key</span>
-                      <span class="ds-btn__face ds-btn__face--busy" aria-hidden="true"><span class="ds-spinner ds-spinner--sm"></span>Checking</span>
+                      <span class="ds-btn__face ds-btn__face--busy" aria-hidden="true"><span class="ds-spinner ds-spinner--ink ds-sm"></span>Checking</span>
                     </span>
                   </button>
                 </div>
@@ -342,7 +342,7 @@
               <span class="so-state__line"><span class="ds-status"><span class="ds-spinner ds-status__spinner" aria-hidden="true"></span><span>Loading</span></span></span>
               <span class="so-state__tip"></span>
             </div>
-            <div class="ds-alert ds-alert--error" id="tunnelErrorBox" hidden data-icon="alertCircle" data-icon-place="start"><span class="ds-alert__text" id="tunnelError"></span></div>
+            <div class="ds-alert ds-tone-error" id="tunnelErrorBox" hidden data-icon="alertCircle" data-icon-place="start"><span class="ds-alert__text" id="tunnelError"></span></div>
             <div class="ds-form">
               <div class="ds-form-grid ds-form-grid--2">
                 <div class="ds-field">
@@ -377,19 +377,19 @@
                 <button class="ds-btn ds-btn--tonal" id="tunnelStart" type="button">
                   <span class="ds-btn__faces">
                     <span class="ds-btn__face">Start tunnel</span>
-                    <span class="ds-btn__face ds-btn__face--busy" aria-hidden="true"><span class="ds-spinner ds-spinner--sm"></span>Starting</span>
+                    <span class="ds-btn__face ds-btn__face--busy" aria-hidden="true"><span class="ds-spinner ds-spinner--ink ds-sm"></span>Starting</span>
                   </span>
                 </button>
                 <button class="ds-btn" id="tunnelStop" type="button">
                   <span class="ds-btn__faces">
                     <span class="ds-btn__face">Stop tunnel</span>
-                    <span class="ds-btn__face ds-btn__face--busy" aria-hidden="true"><span class="ds-spinner ds-spinner--sm"></span>Stopping</span>
+                    <span class="ds-btn__face ds-btn__face--busy" aria-hidden="true"><span class="ds-spinner ds-spinner--ink ds-sm"></span>Stopping</span>
                   </span>
                 </button>
                 <button class="ds-btn" id="tunnelInstall" type="button" hidden>
                   <span class="ds-btn__faces">
                     <span class="ds-btn__face">Download cloudflared</span>
-                    <span class="ds-btn__face ds-btn__face--busy" aria-hidden="true"><span class="ds-spinner ds-spinner--sm"></span>Downloading</span>
+                    <span class="ds-btn__face ds-btn__face--busy" aria-hidden="true"><span class="ds-spinner ds-spinner--ink ds-sm"></span>Downloading</span>
                   </span>
                 </button>
                 <button class="ds-btn ds-btn--text" id="tunnelLogToggle" type="button" aria-expanded="false" aria-controls="tunnelLog">Show log</button>
@@ -416,7 +416,7 @@
                 <button class="ds-btn" id="changePw" type="button">
                   <span class="ds-btn__faces">
                     <span class="ds-btn__face">Change password</span>
-                    <span class="ds-btn__face ds-btn__face--busy" aria-hidden="true"><span class="ds-spinner ds-spinner--sm"></span>Changing</span>
+                    <span class="ds-btn__face ds-btn__face--busy" aria-hidden="true"><span class="ds-spinner ds-spinner--ink ds-sm"></span>Changing</span>
                     <span class="ds-btn__face ds-btn__face--done" aria-hidden="true" data-icon="check" data-icon-size="16" data-icon-place="start">Changed</span>
                   </span>
                 </button>
@@ -429,10 +429,10 @@
           <section class="ds-card" id="updatesCard" aria-labelledby="updatesTitle">
             <div class="ds-card__row">
               <h2 class="ds-card__title" id="updatesTitle">Updates</h2>
-              <button class="ds-btn ds-btn--sm" id="updatesRun" type="button">
+              <button class="ds-btn ds-sm" id="updatesRun" type="button">
                 <span class="ds-btn__faces">
                   <span class="ds-btn__face">Update now</span>
-                  <span class="ds-btn__face ds-btn__face--busy" aria-hidden="true"><span class="ds-spinner ds-spinner--sm"></span>Starting</span>
+                  <span class="ds-btn__face ds-btn__face--busy" aria-hidden="true"><span class="ds-spinner ds-spinner--ink ds-sm"></span>Starting</span>
                 </span>
               </button>
             </div>
@@ -447,7 +447,7 @@
               </div>
             </div>
             <div class="ds-table-wrap" id="updatesTable" hidden>
-              <table class="ds-table ds-table--dense">
+              <table class="ds-table ds-density-tight">
                 <caption class="ds-sr">What the last run did</caption>
                 <thead><tr>
                   <th scope="col">Component</th>
@@ -459,7 +459,7 @@
             </div>
             <p class="ds-muted" id="updatesHint"></p>
             <div class="so-admin-actions">
-              <button class="ds-btn ds-btn--text ds-btn--sm" id="updatesLogToggle" type="button" aria-expanded="false" aria-controls="updatesLog">Show log</button>
+              <button class="ds-btn ds-btn--text ds-sm" id="updatesLogToggle" type="button" aria-expanded="false" aria-controls="updatesLog">Show log</button>
             </div>
             <pre class="ds-code-block ds-code-block--wrap so-log" id="updatesLog" tabindex="0" aria-label="Update log" hidden></pre>
           </section>
@@ -467,10 +467,10 @@
           <section class="ds-card" id="backupCard" aria-labelledby="backupTitle">
             <div class="ds-card__row">
               <h2 class="ds-card__title" id="backupTitle">Backup</h2>
-              <button class="ds-btn ds-btn--sm" id="backupRun" type="button">
+              <button class="ds-btn ds-sm" id="backupRun" type="button">
                 <span class="ds-btn__faces">
                   <span class="ds-btn__face">Back up now</span>
-                  <span class="ds-btn__face ds-btn__face--busy" aria-hidden="true"><span class="ds-spinner ds-spinner--sm"></span>Starting</span>
+                  <span class="ds-btn__face ds-btn__face--busy" aria-hidden="true"><span class="ds-spinner ds-spinner--ink ds-sm"></span>Starting</span>
                 </span>
               </button>
             </div>
@@ -481,7 +481,7 @@
             </div>
             <div class="so-admin-notice" id="backupDetail"></div>
             <div class="ds-table-wrap" id="backupSnapshots" hidden>
-              <table class="ds-table ds-table--dense">
+              <table class="ds-table ds-density-tight">
                 <caption class="ds-sr">Snapshots in the bucket</caption>
                 <thead><tr>
                   <th scope="col">Taken</th>
@@ -497,7 +497,7 @@
                  backup, and once there is a snapshot of this machine the
                  button that deletes it (admin.js, loadLegacy). -->
             <div class="so-admin-notice" id="backupLegacy"></div>
-            <div class="ds-subsection">
+            <div class="ds-card__section">
               <h3 class="ds-card__subtitle">Bucket</h3>
               <div class="ds-form">
                 <div class="ds-form-grid ds-form-grid--2">
@@ -541,14 +541,14 @@
                   <button class="ds-btn" id="backupSave" type="button">
                     <span class="ds-btn__faces">
                       <span class="ds-btn__face">Save backup settings</span>
-                      <span class="ds-btn__face ds-btn__face--busy" aria-hidden="true"><span class="ds-spinner ds-spinner--sm"></span>Checking</span>
+                      <span class="ds-btn__face ds-btn__face--busy" aria-hidden="true"><span class="ds-spinner ds-spinner--ink ds-sm"></span>Checking</span>
                       <span class="ds-btn__face ds-btn__face--done" aria-hidden="true" data-icon="check" data-icon-size="16" data-icon-place="start">Saved</span>
                     </span>
                   </button>
                   <button class="ds-btn ds-btn--text" id="backupTest" type="button">
                     <span class="ds-btn__faces">
                       <span class="ds-btn__face">Test connection</span>
-                      <span class="ds-btn__face ds-btn__face--busy" aria-hidden="true"><span class="ds-spinner ds-spinner--sm"></span>Testing</span>
+                      <span class="ds-btn__face ds-btn__face--busy" aria-hidden="true"><span class="ds-spinner ds-spinner--ink ds-sm"></span>Testing</span>
                     </span>
                   </button>
                   <button class="ds-btn ds-btn--text" id="backupOff" type="button" hidden>Turn off backups</button>
@@ -561,16 +561,16 @@
           <section class="ds-card" id="checksCard" aria-labelledby="checksTitle">
             <div class="ds-card__row">
               <h2 class="ds-card__title" id="checksTitle">Setup check</h2>
-              <button class="ds-btn ds-btn--sm" id="runChecks" type="button">
+              <button class="ds-btn ds-sm" id="runChecks" type="button">
                 <span class="ds-btn__faces">
                   <span class="ds-btn__face">Run checks</span>
-                  <span class="ds-btn__face ds-btn__face--busy" aria-hidden="true"><span class="ds-spinner ds-spinner--sm"></span>Checking</span>
+                  <span class="ds-btn__face ds-btn__face--busy" aria-hidden="true"><span class="ds-spinner ds-spinner--ink ds-sm"></span>Checking</span>
                 </span>
               </button>
             </div>
             <p class="ds-muted">Asks this machine everything Socrates depends on: tmux and its socket, the workspace, each program, the OpenRouter key, and the disk underneath all of it.</p>
             <div class="ds-table-wrap" id="checksTable" hidden>
-              <table class="ds-table ds-table--dense">
+              <table class="ds-table ds-density-tight">
                 <caption class="ds-sr">Setup check</caption>
                 <thead><tr>
                   <th scope="col">Check</th>
@@ -589,14 +589,14 @@
               <span class="so-state__line"><span class="ds-status"><span class="ds-spinner ds-status__spinner" aria-hidden="true"></span><span>Loading</span></span></span>
               <span class="so-state__tip"></span>
             </div>
-            <div class="ds-alert ds-alert--warning" id="tmuxReasonBox" hidden data-icon="alert" data-icon-place="start"><span class="ds-alert__text" id="tmuxReason"></span></div>
+            <div class="ds-alert ds-tone-warning" id="tmuxReasonBox" hidden data-icon="alert" data-icon-place="start"><span class="ds-alert__text" id="tmuxReason"></span></div>
           </section>
 
           <div class="ds-form-actions so-admin-foot">
-            <button class="ds-btn ds-btn--primary" id="saveBottom" type="button">
+            <button class="ds-btn ds-btn--filled" id="saveBottom" type="button">
               <span class="ds-btn__faces">
                 <span class="ds-btn__face">Save changes</span>
-                <span class="ds-btn__face ds-btn__face--busy" aria-hidden="true"><span class="ds-spinner ds-spinner--sm"></span>Saving</span>
+                <span class="ds-btn__face ds-btn__face--busy" aria-hidden="true"><span class="ds-spinner ds-spinner--ink ds-sm"></span>Saving</span>
                 <span class="ds-btn__face ds-btn__face--done" aria-hidden="true" data-icon="check" data-icon-size="16" data-icon-place="start">Saved</span>
               </span>
             </button>
@@ -608,14 +608,14 @@
   </div>
 </div>
 <dialog class="ds-sheet" id="mcpSheet" aria-labelledby="mcpSheetTitle">
-  <div class="ds-sheet__backdrop" data-close></div>
+  <div class="ds-sheet__backdrop" data-ds-close></div>
   <section class="ds-sheet__panel ds-sheet__panel--wide">
     <div class="ds-sheet__head">
       <div class="ds-sheet__heading">
         <h2 class="ds-sheet__title" id="mcpSheetTitle">MCP server</h2>
         <p class="ds-sheet__subtitle" id="mcpSheetSub"></p>
       </div>
-      <button class="ds-btn ds-btn--quiet ds-btn--icon" type="button" aria-label="Close" data-close data-icon="close"></button>
+      <button class="ds-btn ds-btn--quiet ds-btn--icon" type="button" aria-label="Close" data-ds-close data-icon="close"></button>
     </div>
     <div class="ds-sheet__body" tabindex="0"></div>
     <div class="ds-sheet__foot" id="mcpSheetFoot"></div>

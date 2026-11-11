@@ -6,7 +6,7 @@ product owner can still do before the merge into `main`. The plan the rebuild fo
 `REBUILD.md`; this file is where it ended.
 
 It describes the state of 2026-10-24. The front end has since moved to Dashboard-Style 2.0
-(2026-10-27); where this file names a part of the 1.6 front end, DASHBOARD-STYLE.md ("Dashboard-Style
+(2026-10-27); where this file names a part of the 1.6 front end, Z-DASH.md ("Dashboard-Style
 1.6 to 2.0") says what replaced it, and that file is current.
 
 ## 1. Where it stands
@@ -44,7 +44,7 @@ Binding documents, in order:
    codex 0.164.0, opencode 1.19.4; the spikes).
 5. DECISIONS.md, DESIGN.md, HOME.md, ACTIVITY.md, HARNESS-POLICY.md hold where REBUILD.md did not
    supersede them; where it did, they say so at the place (pointers, not rewrites).
-   DASHBOARD-STYLE.md is binding for all UI.
+   Z-DASH.md is binding for all UI.
 6. `e2e/README.md`: the suite, and what each scenario proves.
 
 ## 2. What is done
@@ -151,7 +151,7 @@ numbers.
 - **The phone pass** (branch `mobile`, on `wp10`): an audit at 390, 360, 430 and on its side,
   touch mode only, found 48 things, and two more audits after the fixes found fewer each time. Icons
   rather than text buttons, with the glyphs Dashboard-Style 1.6.2 lacks taken from Lucide (`ui.js`
-  `LUCIDE`, DASHBOARD-STYLE.md; since Dashboard-Style 2.0 every glyph is DS's own); a tap on a field types at once and the keyboard switch is the
+  `LUCIDE`, Z-DASH.md; since Dashboard-Style 2.0 every glyph is DS's own); a tap on a field types at once and the keyboard switch is the
   terminal's alone (`keyboard.js`); a session's menu as an action sheet on a phone; the question
   dialog as the whole screen with one footer row; Stop and Send one 48px slot; snackbars placed
   above the dock, the key bar and a keyboard; "needs an OpenRouter key" (or a Text-to-Speech key)
@@ -236,7 +236,7 @@ numbers.
 - **A toast over a dialog still keeps its strip** at the dialog's foot (`keepDialogRoom`), on
   purpose; what raised one over the question dialog without need is gone. Since Dashboard-Style
   2.0 that room is DS's own (`DS.overlay.toast`, a message that stays keeps room in the dialog or
-  sheet that hosts it; DASHBOARD-STYLE.md, "1.6 to 2.0").
+  sheet that hosts it; Z-DASH.md, "1.6 to 2.0").
 - **`docs/screenshot-tunnel.png`** is hand-made and kept as it is (DESIGN.md §G.2), although it
   shows the look from before Dashboard-Style; the README does not show it.
 - **Not run in the build container**, by its rules: the real `claude` binary beyond `--version`

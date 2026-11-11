@@ -1,6 +1,6 @@
 /*
- * The Socrates theme for Dashboard-Style: loaded after ds.css, unlayered, on
- * .ds-theme. Socrates wears Dashboard-Style's own look; the one DS role it
+ * The Socrates theme for Z-Dash: loaded after ds.css, unlayered, on
+ * .ds-theme. Socrates wears Z-Dash's own look; the one DS role it
  * sets is the code font (--ds-font-mono), to the bundled Source Code Pro
  * instead of whatever monospace the device has. Besides it only the
  * project's --so-* tokens, a documented hook for touch mode, and that font
@@ -192,10 +192,10 @@
 }
 
 /* Touch mode (car, kiosk): <html class="so-touch ds-touch"> (ui.js). DS's
-   .ds-touch makes every DS target a finger's --ds-touch-target (48px)
-   through its own hooks, small buttons, fields, check and switch rows,
-   the combobox, menus and the snackbar's Close included; the project's own
-   targets follow here (X16). */
+   .ds-touch sets --ds-target-min to a finger's --ds-touch-target (48px),
+   and every DS control takes at least that, small buttons, fields, check
+   and switch rows, the combobox, menus and the snackbar's Close included;
+   the project's own targets follow here (X16). */
 .ds-theme.so-touch {
   --so-row-height: 48px;
   --so-folder-head-height: 48px;

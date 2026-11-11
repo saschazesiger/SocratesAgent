@@ -114,7 +114,7 @@ func stamp(name string, data []byte) []byte {
 
 // Font requests must use the same build addresses as the offline shell. That
 // covers the absolute /static/ addresses of our own stylesheets and the
-// relative ones of the vendored Dashboard-Style fonts.css, which resolve
+// relative ones of the vendored Z-Dash fonts.css, which resolve
 // against the stylesheet's address but do not inherit its query.
 var stampedCSSURL = regexp.MustCompile(`(url\(['"]?)([^)'"]+)(['"]?\))`)
 

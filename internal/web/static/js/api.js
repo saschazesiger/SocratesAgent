@@ -6,7 +6,7 @@ import { DS, startUI, iconEl, region } from './ui.js';
 
 export { clientKey, onWake, LiveStream, Outbox, HttpError, NetworkError, RetryLater, setClass, CONNECTION_GRACE } from './net.js';
 
-// Every page gets Dashboard-Style's delegated behaviour (ripple, tooltips, the
+// Every page gets Z-Dash's delegated behaviour (ripple, tooltips, the
 // icons of its static markup), and the connection line, because every page
 // can be looking at something that stopped being true.
 startUI();
@@ -105,9 +105,9 @@ export function restoreFocus(was) {
 
 let dialogSeq = 0;
 
-// openDialog builds a Dashboard-Style dialog for one question, shows it and
+// openDialog builds a Z-Dash dialog for one question, shows it and
 // resolves with what the person answered. The native `close` event comes at
-// the start of every way out - Escape, the backdrop, a [data-close] button,
+// the start of every way out - Escape, the backdrop, a [data-ds-close] button,
 // an accept that calls close - so it is the one place the answer is given.
 // The dialog leaves the page once its exit has played. `field` is any node
 // the dialog holds between its text and its actions; a caller with a form of
@@ -137,7 +137,7 @@ export function openDialog({ title, body, lines, facts, code, field, actions, al
     role: alert ? 'alertdialog' : null,
     'aria-labelledby': id + '-title',
     'aria-describedby': body || listed || named ? id + '-text' : null,
-  }, el('div', { class: 'ds-dialog__backdrop', 'data-close': true }), box);
+  }, el('div', { class: 'ds-dialog__backdrop', 'data-ds-close': true }), box);
 
   // Where the focus was. DS gives it back to the opener; when the opener is
   // gone by then - very often the terminal's textarea, rebuilt meanwhile -
@@ -171,9 +171,10 @@ function afterDialog(was) {
 
 // confirmDialog is window.confirm in the app's own clothes: DS's question
 // with yes or no (DS.overlay.confirm), same promise in, same yes or no
-// out, and a button that says what it actually does. There are no red
-// buttons: a destructive question (`danger`) is an alertdialog that opens
-// on Cancel, and its accept button names the consequence.
+// out, and a button that says what it actually does. A destructive question
+// (`danger`) is an alertdialog that opens on Cancel, and its accept button
+// names the consequence; it is the one red button there is (Z-Dash 3.0
+// fills a destructive confirmation's button in the error tone, D10).
 export async function confirmDialog({
   title, body = '', confirmLabel = 'Confirm', cancelLabel = 'Cancel', danger = false, opener = null,
 } = {}) {
@@ -189,7 +190,7 @@ export async function confirmDialog({
 // `facts` ([label, value]) as labelled rows after them.
 export function alertDialog({ title, body = '', lines = [], facts = [], code = false, confirmLabel = 'OK', opener = null } = {}) {
   const ok = el('button', {
-    class: 'ds-btn ds-btn--text', type: 'button', 'data-close': true, autofocus: true, text: confirmLabel,
+    class: 'ds-btn ds-btn--text', type: 'button', 'data-ds-close': true, autofocus: true, text: confirmLabel,
   });
   const { dialog, shown } = openDialog({ title, body, lines, facts, code, actions: [ok], opener });
   ok.addEventListener('click', () => dialog.answer(true));
@@ -318,7 +319,7 @@ export function infoTip(content, { label = 'Details', code = false } = {}) {
     .filter((line) => line !== null && line !== undefined && line !== '')
     .map((line) => (line && line.nodeType ? line.textContent : String(line)));
   const button = el('button', {
-    class: 'ds-btn ds-btn--quiet ds-btn--icon ds-btn--sm so-info',
+    class: 'ds-btn ds-btn--quiet ds-btn--icon ds-sm so-info',
     type: 'button',
     'aria-label': label,
     'data-tip': lines.join('\n'),

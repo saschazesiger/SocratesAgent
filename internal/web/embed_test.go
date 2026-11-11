@@ -3,6 +3,7 @@ package web
 import (
 	"bytes"
 	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -39,11 +40,11 @@ func TestPagesAskForStampedAssets(t *testing.T) {
 				t.Errorf("%s asks for %s without the build stamp", page, ref[1])
 			}
 		}
-		// Every page wears Dashboard-Style the documented way: its stylesheet
-		// and its one classic runtime, then the project's theme and shared
-		// components on top.
+		// Every page wears Z-Dash the documented way: the project bundle's
+		// stylesheet and its one classic runtime, then the project's theme and
+		// shared components on top.
 		for _, want := range []string{
-			"/static/vendor/dashboard-style/ds.css", "/static/vendor/dashboard-style/ds.js",
+			"/static/ds/ds.bundle.css", "/static/ds/ds.bundle.js",
 			"/static/css/theme.css", "/static/css/so-shared.css",
 		} {
 			if !strings.Contains(body, want+"?v="+version) {
@@ -214,13 +215,13 @@ func TestSessionPageAssetsArePrecached(t *testing.T) {
 		}
 	}
 
-	fonts := string(assets["vendor/dashboard-style/fonts/fonts.css"])
+	fonts := string(assets["vendor/z-dash/fonts/fonts.css"])
 	urls := regexp.MustCompile(`url\(['"]?([^)'"?]+)`).FindAllStringSubmatch(fonts, -1)
 	if len(urls) == 0 {
 		t.Fatal("fonts.css names no font files, so this proves nothing")
 	}
 	for _, u := range urls {
-		path := "/static/vendor/dashboard-style/fonts/" + u[1]
+		path := "/static/vendor/z-dash/fonts/" + u[1]
 		if assets[strings.TrimPrefix(path, "/static/")] == nil {
 			t.Errorf("fonts.css names %s, which is not embedded", path)
 		}
@@ -270,7 +271,7 @@ func TestPagesAreNotServedAsAssets(t *testing.T) {
 	// ever get as far as signing in.
 	for _, file := range []string{
 		"/css/theme.css", "/css/so-shared.css", "/css/so-pages.css",
-		"/vendor/dashboard-style/ds.css", "/vendor/dashboard-style/ds.js", "/vendor/dashboard-style/fonts/fonts.css",
+		"/ds/ds.bundle.css", "/ds/ds.bundle.js", "/vendor/z-dash/fonts/fonts.css",
 		"/js/net.js", "/js/ui.js", "/img/logo.png",
 	} {
 		if code := do(t, file).Code; code != http.StatusOK {
@@ -323,14 +324,14 @@ func TestAppleTouchIconAtTheRoot(t *testing.T) {
 	}
 }
 
-// Dashboard-Style is vendored, not edited: the copy has to match the
+// Z-Dash is vendored, not edited: the copy has to match the
 // SHA256SUMS that vendor.sh wrote next to it, with no file missing and none
 // added, or `make vendor-ds` would silently throw a local change away.
-func TestVendoredDashboardStyleIsUntouched(t *testing.T) {
-	const dir = "static/vendor/dashboard-style"
+func TestVendoredZDashIsUntouched(t *testing.T) {
+	const dir = "static/vendor/z-dash"
 	sums, err := files.ReadFile(dir + "/SHA256SUMS")
 	if err != nil {
-		t.Fatalf("no vendored Dashboard-Style: %v", err)
+		t.Fatalf("no vendored Z-Dash: %v", err)
 	}
 	listed := map[string]bool{}
 	for _, line := range strings.Split(strings.TrimSpace(string(sums)), "\n") {
@@ -349,13 +350,50 @@ func TestVendoredDashboardStyleIsUntouched(t *testing.T) {
 		}
 	}
 	for name := range assets {
-		rel, ok := strings.CutPrefix(name, "vendor/dashboard-style/")
+		rel, ok := strings.CutPrefix(name, "vendor/z-dash/")
 		if ok && rel != "SHA256SUMS" && !listed[rel] {
 			t.Errorf("%s was added to the vendored copy", name)
 		}
 	}
 	if !listed["ds.css"] || !listed["ds.js"] {
 		t.Fatal("the vendored copy has no ds.css or ds.js")
+	}
+}
+
+// The pages load the project bundle (static/ds, `make ds-bundle`), not the
+// vendored copy itself: it has to be built from the copy that is vendored, or
+// a page wears one version of Z-Dash's look and runs another's script. Whether
+// it holds every class the pages use is the bundle rule of `make ds-check`,
+// which needs node; this is the part Go can see.
+func TestZDashBundleMatchesTheCopy(t *testing.T) {
+	stamp, err := files.ReadFile("static/vendor/z-dash/VERSION")
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, _, _ := strings.Cut(string(stamp), "\n")
+	want, ok := strings.CutPrefix(strings.TrimSpace(first), "version ")
+	if !ok {
+		t.Fatalf("VERSION starts with %q", first)
+	}
+	for _, name := range []string{"ds.bundle.css", "ds.bundle.js"} {
+		data, err := files.ReadFile("static/ds/" + name)
+		if err != nil {
+			t.Fatalf("no bundle: %v (make ds-bundle)", err)
+		}
+		if !bytes.HasPrefix(data, []byte("/*! Z-Dash "+want+" ")) {
+			line, _, _ := strings.Cut(string(data), "\n")
+			t.Errorf("%s is not built from Z-Dash %s: %q (make ds-bundle)", name, want, line)
+		}
+	}
+	var report struct {
+		Version string `json:"version"`
+	}
+	data, err := files.ReadFile("static/ds/ds.bundle.json")
+	if err == nil {
+		err = json.Unmarshal(data, &report)
+	}
+	if err != nil || report.Version != want {
+		t.Errorf("ds.bundle.json says %q (%v), the copy is %s (make ds-bundle)", report.Version, err, want)
 	}
 }
 
@@ -401,12 +439,12 @@ func TestVendoredMarkdownIsUntouched(t *testing.T) {
 // The vendored fonts.css names its files relative to itself, and a relative
 // address does not inherit the stylesheet's query: it has to be stamped too.
 // A data: mask in ds.css must come through untouched.
-func TestDashboardStyleURLsAreStamped(t *testing.T) {
-	fonts := string(asset("vendor/dashboard-style/fonts/fonts.css"))
+func TestZDashURLsAreStamped(t *testing.T) {
+	fonts := string(asset("vendor/z-dash/fonts/fonts.css"))
 	if !strings.Contains(fonts, "google-sans-latin-opsz-normal.woff2?v="+version) {
 		t.Error("fonts.css names its font without the build stamp")
 	}
-	ds := string(asset("vendor/dashboard-style/ds.css"))
+	ds := string(asset("ds/ds.bundle.css"))
 	if strings.Contains(ds, "data:image/svg+xml") && regexp.MustCompile(`data:[^)'"]*\?v=`).MatchString(ds) {
 		t.Error("a data: URL in ds.css was stamped")
 	}

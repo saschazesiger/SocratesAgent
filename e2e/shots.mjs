@@ -293,7 +293,7 @@ async function backupShot() {
     await scrollTo(s.page, 'backupCard');
     await still(s.page);
     const cut = await s.page.evaluate(() => {
-      const bucket = document.querySelector('#backupCard .ds-subsection');
+      const bucket = document.querySelector('#backupCard .ds-card__section');
       return bucket ? Math.round(bucket.getBoundingClientRect().top) : innerHeight;
     });
     await write(s.page, 'screenshot-backup.png', DESKTOP, { x: 0, y: 0, width: DESKTOP.width, height: Math.min(DESKTOP.height, cut) });

@@ -1,0 +1,1747 @@
+{
+  "name": "z-dash",
+  "version": "3.0.1",
+  "entry": "bundle",
+  "minify": true,
+  "js": "classic",
+  "files": {
+    "css": {
+      "file": "ds.bundle.css",
+      "bytes": 451451,
+      "gzip": 65833
+    },
+    "js": {
+      "file": "ds.bundle.js",
+      "bytes": 835926,
+      "gzip": 202149
+    },
+    "properties": {
+      "file": "properties.css",
+      "count": 36
+    }
+  },
+  "components": [
+    {
+      "name": "utilities",
+      "reason": "static/admin.html:106 ds-muted",
+      "bytes": 5326,
+      "gzip": 1448
+    },
+    {
+      "name": "spinner",
+      "reason": "static/admin.html:44 ds-spinner",
+      "bytes": 3193,
+      "gzip": 888
+    },
+    {
+      "name": "loader",
+      "reason": "static/admin.html:116 ds-loader",
+      "bytes": 873,
+      "gzip": 452
+    },
+    {
+      "name": "indicator",
+      "reason": "needed by module indicator",
+      "bytes": 2868,
+      "gzip": 619
+    },
+    {
+      "name": "button",
+      "reason": "static/admin.html:34 ds-btn",
+      "bytes": 14634,
+      "gzip": 2439
+    },
+    {
+      "name": "loading",
+      "reason": "static/admin.html:116 ds-loading",
+      "bytes": 6865,
+      "gzip": 1666
+    },
+    {
+      "name": "disclosure",
+      "reason": "static/admin.html:290 ds-disclosure",
+      "bytes": 3367,
+      "gzip": 1022
+    },
+    {
+      "name": "timeline",
+      "reason": "static/js/chattests.js:598 ds-timeline",
+      "bytes": 5511,
+      "gzip": 1367
+    },
+    {
+      "name": "tasks",
+      "reason": "static/js/chatparts.js:478 ds-tasks",
+      "bytes": 1864,
+      "gzip": 686
+    },
+    {
+      "name": "status",
+      "reason": "static/admin.html:342 ds-status",
+      "bytes": 2830,
+      "gzip": 865
+    },
+    {
+      "name": "alert",
+      "reason": "static/admin.html:345 ds-alert",
+      "bytes": 6019,
+      "gzip": 1532
+    },
+    {
+      "name": "switch",
+      "reason": "static/index.html:255 ds-switch",
+      "bytes": 13984,
+      "gzip": 2262
+    },
+    {
+      "name": "progress",
+      "reason": "static/admin.html:444 ds-progress",
+      "bytes": 6008,
+      "gzip": 1430
+    },
+    {
+      "name": "chart",
+      "reason": "static/costs.html:116 ds-legend",
+      "bytes": 23123,
+      "gzip": 4396
+    },
+    {
+      "name": "tile",
+      "reason": "static/costs.html:96 ds-tiles",
+      "bytes": 6931,
+      "gzip": 1673
+    },
+    {
+      "name": "list",
+      "reason": "static/js/admin.js:181 ds-parts",
+      "bytes": 18493,
+      "gzip": 3387
+    },
+    {
+      "name": "card",
+      "reason": "static/admin.html:104 ds-card",
+      "bytes": 16531,
+      "gzip": 2644
+    },
+    {
+      "name": "prose",
+      "reason": "static/js/mcpview.js:138 ds-prose",
+      "bytes": 10564,
+      "gzip": 1980
+    },
+    {
+      "name": "empty",
+      "reason": "static/costs.html:61 ds-empty",
+      "bytes": 3869,
+      "gzip": 1174
+    },
+    {
+      "name": "menu",
+      "reason": "static/index.html:247 ds-menu",
+      "bytes": 8287,
+      "gzip": 2087
+    },
+    {
+      "name": "chip",
+      "reason": "static/admin.html:147 ds-chips",
+      "bytes": 8706,
+      "gzip": 1866
+    },
+    {
+      "name": "badge",
+      "reason": "static/index.html:99 ds-badge",
+      "bytes": 3304,
+      "gzip": 896
+    },
+    {
+      "name": "sheet",
+      "reason": "static/admin.html:610 ds-sheet",
+      "bytes": 12282,
+      "gzip": 2502
+    },
+    {
+      "name": "dialog",
+      "reason": "static/index.html:198 ds-dialog",
+      "bytes": 15933,
+      "gzip": 2468
+    },
+    {
+      "name": "table",
+      "reason": "static/admin.html:449 ds-table-wrap",
+      "bytes": 32273,
+      "gzip": 4685
+    },
+    {
+      "name": "form",
+      "reason": "static/admin.html:128 ds-add-row",
+      "bytes": 49188,
+      "gzip": 7063
+    },
+    {
+      "name": "drag",
+      "reason": "static/js/admin.js:597 ds-grip",
+      "bytes": 8418,
+      "gzip": 1901
+    },
+    {
+      "name": "combobox",
+      "reason": "static/js/accounts.js:233 ds-combo__name",
+      "bytes": 13500,
+      "gzip": 3016
+    },
+    {
+      "name": "tooltip",
+      "reason": "static/admin.html:35 data-tip",
+      "bytes": 2413,
+      "gzip": 811
+    },
+    {
+      "name": "page",
+      "reason": "static/admin.html:91 ds-content",
+      "bytes": 7990,
+      "gzip": 2178
+    },
+    {
+      "name": "shell",
+      "reason": "static/admin.html:30 ds-app",
+      "bytes": 39239,
+      "gzip": 6579
+    },
+    {
+      "name": "toast",
+      "reason": "static/admin.html:624 ds-toasts",
+      "bytes": 5272,
+      "gzip": 1486
+    },
+    {
+      "name": "button-group",
+      "reason": "safelist \"ds-btn*\"",
+      "bytes": 2357,
+      "gzip": 771
+    },
+    {
+      "name": "copy",
+      "reason": "required by code",
+      "bytes": 1927,
+      "gzip": 659
+    },
+    {
+      "name": "listbox",
+      "reason": "needed by module listbox",
+      "bytes": 7975,
+      "gzip": 1832
+    },
+    {
+      "name": "formatted",
+      "reason": "static/admin.html:35 data-tip",
+      "bytes": 596,
+      "gzip": 300
+    },
+    {
+      "name": "composer",
+      "reason": "static/js/transfer.js:206 data-ds-dragover",
+      "bytes": 7077,
+      "gzip": 1739
+    },
+    {
+      "name": "highlight",
+      "reason": "needed by module code",
+      "bytes": 789,
+      "gzip": 275
+    },
+    {
+      "name": "code",
+      "reason": "static/admin.html:398 ds-code-block",
+      "bytes": 5372,
+      "gzip": 1386
+    },
+    {
+      "name": "ripple",
+      "reason": "needed by module ripple",
+      "bytes": 14615,
+      "gzip": 1422
+    }
+  ],
+  "modules": [
+    {
+      "name": "core",
+      "reason": "always included"
+    },
+    {
+      "name": "motion",
+      "reason": "static/js/admin.js:597 DS.motion.sortable"
+    },
+    {
+      "name": "indicator",
+      "reason": "static/js/admin.js:354 DS.indicator.create"
+    },
+    {
+      "name": "dom",
+      "reason": "static/js/admin.js:352 DS.dom.watchScrolled"
+    },
+    {
+      "name": "ripple",
+      "reason": "static/js/ui.js:28 DS.ripple.attach"
+    },
+    {
+      "name": "icons",
+      "reason": "static/js/ui.js:88 DS.icons"
+    },
+    {
+      "name": "position",
+      "reason": "imported by overlay"
+    },
+    {
+      "name": "overlay",
+      "reason": "static/admin.html:611 data-ds-close"
+    },
+    {
+      "name": "a11y",
+      "reason": "imported by shell"
+    },
+    {
+      "name": "format",
+      "reason": "needed by toast"
+    },
+    {
+      "name": "store",
+      "reason": "imported by shell"
+    },
+    {
+      "name": "virtual",
+      "reason": "needed by list"
+    },
+    {
+      "name": "dnd",
+      "reason": "needed by list"
+    },
+    {
+      "name": "badge",
+      "reason": "needed by badge"
+    },
+    {
+      "name": "chart",
+      "reason": "needed by chart"
+    },
+    {
+      "name": "composer",
+      "reason": "needed by composer"
+    },
+    {
+      "name": "dialog",
+      "reason": "needed by dialog"
+    },
+    {
+      "name": "form",
+      "reason": "needed by form"
+    },
+    {
+      "name": "formatted",
+      "reason": "needed by formatted"
+    },
+    {
+      "name": "highlight",
+      "reason": "imported by code"
+    },
+    {
+      "name": "code",
+      "reason": "needed by code"
+    },
+    {
+      "name": "list",
+      "reason": "needed by list"
+    },
+    {
+      "name": "listbox",
+      "reason": "needed by combobox"
+    },
+    {
+      "name": "combobox",
+      "reason": "needed by combobox"
+    },
+    {
+      "name": "menu",
+      "reason": "needed by page"
+    },
+    {
+      "name": "page",
+      "reason": "needed by page"
+    },
+    {
+      "name": "sheet",
+      "reason": "needed by sheet"
+    },
+    {
+      "name": "shell",
+      "reason": "needed by shell"
+    },
+    {
+      "name": "toast",
+      "reason": "needed by toast"
+    },
+    {
+      "name": "tooltip",
+      "reason": "needed by tooltip"
+    }
+  ],
+  "icons": [
+    {
+      "name": "arrowRight",
+      "reason": "static/js/chattests.js:748"
+    },
+    {
+      "name": "arrowLeft",
+      "reason": "static/admin.html:57"
+    },
+    {
+      "name": "arrowUp",
+      "reason": "static/js/chatparts.js:976"
+    },
+    {
+      "name": "arrowDown",
+      "reason": "static/js/chatview.js:265"
+    },
+    {
+      "name": "chevronDown",
+      "reason": "static/js/adminmcp.js:513"
+    },
+    {
+      "name": "chevronUp",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "chevronRight",
+      "reason": "static/js/adminmcp.js:977"
+    },
+    {
+      "name": "chevronLeft",
+      "reason": "static/js/chatparts.js:1614"
+    },
+    {
+      "name": "chevronFirst",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "chevronLast",
+      "reason": "static/js/chattests.js:568"
+    },
+    {
+      "name": "cornerDownLeft",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "external",
+      "reason": "static/js/accounts.js:331"
+    },
+    {
+      "name": "plus",
+      "reason": "static/admin.html:128"
+    },
+    {
+      "name": "close",
+      "reason": "static/admin.html:618"
+    },
+    {
+      "name": "minimize",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "menu",
+      "reason": "static/admin.html:35"
+    },
+    {
+      "name": "moreVertical",
+      "reason": "static/index.html:142"
+    },
+    {
+      "name": "moreHorizontal",
+      "reason": "used by module shell"
+    },
+    {
+      "name": "grip",
+      "reason": "used by module list"
+    },
+    {
+      "name": "search",
+      "reason": "static/js/composer.js:586"
+    },
+    {
+      "name": "filter",
+      "reason": "static/costs.html:106"
+    },
+    {
+      "name": "sort",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "compose",
+      "reason": "static/js/askdialog.js:753"
+    },
+    {
+      "name": "pencil",
+      "reason": "static/js/adminmcp.js:286"
+    },
+    {
+      "name": "save",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "reset",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "sync",
+      "reason": "static/js/adminmcp.js:495"
+    },
+    {
+      "name": "undo",
+      "reason": "static/js/chatparts.js:945"
+    },
+    {
+      "name": "history",
+      "reason": "static/admin.html:82"
+    },
+    {
+      "name": "copy",
+      "reason": "static/index.html:83"
+    },
+    {
+      "name": "download",
+      "reason": "static/admin.html:81"
+    },
+    {
+      "name": "upload",
+      "reason": "static/index.html:87"
+    },
+    {
+      "name": "clipboard",
+      "reason": "static/admin.html:129"
+    },
+    {
+      "name": "paperclip",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "printer",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "play",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "pause",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "stopCircle",
+      "reason": "static/index.html:118"
+    },
+    {
+      "name": "trash",
+      "reason": "static/js/adminmcp.js:287"
+    },
+    {
+      "name": "archive",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "logout",
+      "reason": "static/index.html:172"
+    },
+    {
+      "name": "chat",
+      "reason": "static/admin.html:71"
+    },
+    {
+      "name": "send",
+      "reason": "static/js/passage.js:131"
+    },
+    {
+      "name": "bell",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "mic",
+      "reason": "static/index.html:127"
+    },
+    {
+      "name": "micOff",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "volume",
+      "reason": "static/js/chatparts.js:1918"
+    },
+    {
+      "name": "mail",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "phone",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "globe",
+      "reason": "static/admin.html:76"
+    },
+    {
+      "name": "link",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "flag",
+      "reason": "static/js/chatparts.js:834"
+    },
+    {
+      "name": "thumbUp",
+      "reason": "static/js/askdialog.js:773"
+    },
+    {
+      "name": "thumbDown",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "check",
+      "reason": "static/admin.html:45"
+    },
+    {
+      "name": "checkCircle",
+      "reason": "static/index.html:99"
+    },
+    {
+      "name": "alert",
+      "reason": "static/admin.html:592"
+    },
+    {
+      "name": "alertCircle",
+      "reason": "static/admin.html:345"
+    },
+    {
+      "name": "info",
+      "reason": "static/js/admin.js:1755"
+    },
+    {
+      "name": "helpCircle",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "eye",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "eyeOff",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "clock",
+      "reason": "static/js/askdialog.js:669"
+    },
+    {
+      "name": "ban",
+      "reason": "static/js/chatparts.js:2047"
+    },
+    {
+      "name": "calendar",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "activity",
+      "reason": "static/admin.html:83"
+    },
+    {
+      "name": "wifi",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "wifiOff",
+      "reason": "static/js/askdialog.js:627"
+    },
+    {
+      "name": "home",
+      "reason": "static/index.html:160"
+    },
+    {
+      "name": "panelLeft",
+      "reason": "static/index.html:57"
+    },
+    {
+      "name": "keyboard",
+      "reason": "static/index.html:136"
+    },
+    {
+      "name": "terminal",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "tag",
+      "reason": "static/js/boards.js:221"
+    },
+    {
+      "name": "sun",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "moon",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "overview",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "apps",
+      "reason": "static/admin.html:61"
+    },
+    {
+      "name": "list",
+      "reason": "static/js/askdialog.js:711"
+    },
+    {
+      "name": "columns",
+      "reason": "static/js/boards.js:194"
+    },
+    {
+      "name": "rows",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "barChart",
+      "reason": "static/costs.html:62"
+    },
+    {
+      "name": "settings",
+      "reason": "static/index.html:171"
+    },
+    {
+      "name": "cpu",
+      "reason": "static/admin.html:84"
+    },
+    {
+      "name": "lock",
+      "reason": "static/admin.html:77"
+    },
+    {
+      "name": "key",
+      "reason": "static/js/adminmcp.js:486"
+    },
+    {
+      "name": "shield",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "user",
+      "reason": "static/js/chatparts.js:2009"
+    },
+    {
+      "name": "users",
+      "reason": "static/admin.html:60"
+    },
+    {
+      "name": "userOff",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "userPlus",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "ticket",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "file",
+      "reason": "used by module composer"
+    },
+    {
+      "name": "fileText",
+      "reason": "static/js/docs.js:249"
+    },
+    {
+      "name": "fileCode",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "folder",
+      "reason": "static/admin.html:66"
+    },
+    {
+      "name": "box",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "building",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "mapPin",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "laptop",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "monitor",
+      "reason": "static/admin.html:67"
+    },
+    {
+      "name": "hardDrive",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "server",
+      "reason": "static/admin.html:62"
+    },
+    {
+      "name": "graduationCap",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "presentation",
+      "reason": "static/index.html:106"
+    },
+    {
+      "name": "camera",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "video",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "image",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "leaf",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "wrench",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "sparkles",
+      "reason": "static/admin.html:72"
+    },
+    {
+      "name": "fileImage",
+      "reason": "used by module composer"
+    },
+    {
+      "name": "fileArchive",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "fileSpreadsheet",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "fileJson",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "filePlus",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "fileCheck",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "fileDown",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "fileUp",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "files",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "folderOpen",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "folderPlus",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "cloudUpload",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "cloudDownload",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "lineChart",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "areaChart",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "barChartHorizontal",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "pieChart",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "donutChart",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "scatterChart",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "gauge",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "trendingUp",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "trendingDown",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "table",
+      "reason": "used by module chart"
+    },
+    {
+      "name": "tableProperties",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "filterX",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "sortAscending",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "sortDescending",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "group",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "layoutGrid",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "listTree",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "kanban",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "bold",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "italic",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "code",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "quote",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "heading",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "listOrdered",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "unlink",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "redo",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "cut",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "paste",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "duplicate",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "gripHorizontal",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "move",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "resize",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "expandAll",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "collapseAll",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "fullscreen",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "fullscreenExit",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "splitView",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "panelRight",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "wrapText",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "shieldCheck",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "shieldAlert",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "unlock",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "fingerprint",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "verified",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "bug",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "bookmark",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "pin",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "star",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "starHalf",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "heart",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "smilePlus",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "bellOff",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "volumeOff",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "circleX",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "octagonAlert",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "circle",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "circleDot",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "square",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "squareCheck",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "squareMinus",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "toggleOn",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "toggleOff",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "userMinus",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "userCheck",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "userX",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "userCircle",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "idCard",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "network",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "database",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "cloud",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "cloudOff",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "memory",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "router",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "smartphone",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "tablet",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "terminalSquare",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "braces",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "gitBranch",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "gitCommit",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "gitMerge",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "gitPullRequest",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "gitCompare",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "webhook",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "plug",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "power",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "qrCode",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "barcode",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "scan",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "calendarDays",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "calendarCheck",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "calendarPlus",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "calendarRange",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "timer",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "hourglass",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "refresh",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "repeat",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "arrowUpRight",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "arrowUpLeft",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "arrowDownRight",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "arrowDownLeft",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "arrowLeftRight",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "cornerUpLeft",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "chevronsLeft",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "chevronsRight",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "login",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "launch",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "sparkle",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "wand",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "bot",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "chatText",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "chatDots",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "reply",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "audioLines",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "videoOff",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "skipForward",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "skipBack",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "atSign",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "creditCard",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "receipt",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "wallet",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "coupon",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "tags",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "cart",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "truck",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "map",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "route",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "compass",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "anchor",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "languages",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "palette",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "brush",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "contrast",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "mailOpen",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "inbox",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "archiveRestore",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "clipboardCheck",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "share",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "sliders",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "layers",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "stack",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "puzzle",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "rocket",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "lightbulb",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "beaker",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "book",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "newspaper",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "megaphone",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "gift",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "trophy",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "medal",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "target",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "zap",
+      "reason": "config \"icons\": \"all\""
+    },
+    {
+      "name": "scrollText",
+      "reason": "config \"icons\": \"all\""
+    }
+  ],
+  "classes": {
+    "ds-add-row": "static/admin.html:128",
+    "ds-alert": "static/admin.html:345",
+    "ds-alert__actions": "static/js/adminmcp.js:963",
+    "ds-alert__text": "static/admin.html:345",
+    "ds-alert__title": "static/js/adminmcp.js:965",
+    "ds-app": "static/admin.html:30",
+    "ds-app--drawer": "static/admin.html:30",
+    "ds-app--keyboard-hides-bar": "static/js/keybar.js:252",
+    "ds-auth": "static/js/net.js:361",
+    "ds-auth__alert": "static/login.html:30",
+    "ds-auth__card": "static/login.html:31",
+    "ds-badge": "static/index.html:99",
+    "ds-base": "static/admin.html:2",
+    "ds-brand": "static/admin.html:36",
+    "ds-brand__name": "static/admin.html:36",
+    "ds-breadcrumbs": "static/js/docs.js:175",
+    "ds-btn": "static/admin.html:34",
+    "ds-btn--filled": "static/admin.html:41",
+    "ds-btn--icon": "static/admin.html:34",
+    "ds-btn--quiet": "static/admin.html:34",
+    "ds-btn--text": "static/admin.html:128",
+    "ds-btn--tonal": "static/admin.html:377",
+    "ds-btn__face": "static/admin.html:43",
+    "ds-btn__face--busy": "static/admin.html:44",
+    "ds-btn__face--done": "static/admin.html:45",
+    "ds-btn__faces": "static/admin.html:42",
+    "ds-card": "static/admin.html:104",
+    "ds-card--elevated": "static/login.html:31",
+    "ds-card--interactive": "static/js/askdialog.js:771",
+    "ds-card__action": "static/js/chatparts.js:1460",
+    "ds-card__more": "static/js/costs.js:664",
+    "ds-card__row": "static/admin.html:430",
+    "ds-card__section": "static/admin.html:246",
+    "ds-card__subtitle": "static/admin.html:123",
+    "ds-card__title": "static/admin.html:105",
+    "ds-center": "static/index.html:316",
+    "ds-check": "static/admin.html:151",
+    "ds-chevron": "static/js/admin.js:1430",
+    "ds-chip": "static/js/accounts.js:441",
+    "ds-chip__body": "static/js/accounts.js:441",
+    "ds-chip__check": "static/js/accounts.js:441",
+    "ds-chip__input": "static/js/accounts.js:441",
+    "ds-chip__label": "static/js/boards.js:439",
+    "ds-chips": "static/admin.html:147",
+    "ds-chips--wrap": "static/js/boards.js:440",
+    "ds-code-block": "static/admin.html:398",
+    "ds-code-block--wrap": "static/admin.html:398",
+    "ds-col--secondary": "static/admin.html:490",
+    "ds-col--text": "static/js/admin.js:893",
+    "ds-collapsible": "static/admin.html:290",
+    "ds-combo": "static/js/combobox.js:105",
+    "ds-combo--select": "static/js/combobox.js:379",
+    "ds-combo__input": "static/js/combobox.js:88",
+    "ds-combo__list": "static/js/combobox.js:102",
+    "ds-combo__meta": "static/js/accounts.js:233",
+    "ds-combo__name": "static/js/accounts.js:233",
+    "ds-combo__option": "static/js/combobox.js:174",
+    "ds-combo__popup": "static/js/combobox.js:104",
+    "ds-combo__status": "static/js/combobox.js:103",
+    "ds-combo__toggle": "static/js/combobox.js:100",
+    "ds-combo__value": "static/js/combobox.js:344",
+    "ds-content": "static/admin.html:91",
+    "ds-density-tight": "static/admin.html:450",
+    "ds-dialog": "static/index.html:198",
+    "ds-dialog--bottom": "static/js/session.js:2564",
+    "ds-dialog--contained": "static/index.html:198",
+    "ds-dialog--full": "static/js/artifacts.js:497",
+    "ds-dialog--full-narrow": "static/js/boards.js:391",
+    "ds-dialog--lg": "static/js/admin.js:1387",
+    "ds-dialog__actions": "static/index.html:281",
+    "ds-dialog__backdrop": "static/index.html:199",
+    "ds-dialog__body": "static/js/adminmcp.js:858",
+    "ds-dialog__box": "static/index.html:200",
+    "ds-dialog__head": "static/js/artifacts.js:500",
+    "ds-dialog__list": "static/js/session.js:2564",
+    "ds-dialog__text": "static/index.html:328",
+    "ds-dialog__title": "static/index.html:252",
+    "ds-disclosure": "static/admin.html:290",
+    "ds-disclosure__body": "static/admin.html:292",
+    "ds-divider": "static/js/chatparts.js:1984",
+    "ds-divider--label": "static/js/chatparts.js:1984",
+    "ds-drawer": "static/admin.html:54",
+    "ds-drawer__action": "static/js/session.js:1356",
+    "ds-drawer__actions": "static/index.html:152",
+    "ds-drawer__foot": "static/index.html:166",
+    "ds-drawer__foot--rail": "static/index.html:168",
+    "ds-drawer__group": "static/admin.html:58",
+    "ds-drawer__head": "static/admin.html:55",
+    "ds-drawer__heading": "static/admin.html:59",
+    "ds-drawer__indicator": "static/js/admin.js:354",
+    "ds-drawer__item": "static/admin.html:57",
+    "ds-drawer__label": "static/admin.html:57",
+    "ds-drawer__list": "static/admin.html:56",
+    "ds-drawer__list--overflow": "static/js/admin.js:427",
+    "ds-drawer__row": "static/js/session.js:1350",
+    "ds-empty": "static/costs.html:61",
+    "ds-empty__disc": "static/costs.html:62",
+    "ds-empty__text": "static/costs.html:64",
+    "ds-empty__title": "static/costs.html:63",
+    "ds-facts": "static/js/adminmcp.js:544",
+    "ds-facts--rows": "static/js/adminmcp.js:544",
+    "ds-field": "static/admin.html:140",
+    "ds-field--full": "static/admin.html:371",
+    "ds-field__hint": "static/admin.html:131",
+    "ds-field__hint--error": "static/js/adminmcp.js:892",
+    "ds-field__hint--success": "static/js/adminmcp.js:911",
+    "ds-field__label": "static/admin.html:141",
+    "ds-field__optional": "static/js/adminmcp.js:809",
+    "ds-field__row": "static/js/admin.js:1355",
+    "ds-field__row--top": "static/js/askdialog.js:784",
+    "ds-filters": "static/costs.html:75",
+    "ds-form": "static/admin.html:139",
+    "ds-form-actions": "static/admin.html:376",
+    "ds-form-grid": "static/admin.html:178",
+    "ds-form-grid--2": "static/admin.html:178",
+    "ds-form-grid--3": "static/admin.html:254",
+    "ds-grid-2": "static/costs.html:123",
+    "ds-grip": "static/js/admin.js:597",
+    "ds-hover-actions": "static/js/session.js:1356",
+    "ds-icon-swap": "static/index.html:118",
+    "ds-icon-swap__a": "static/index.html:118",
+    "ds-icon-swap__b": "static/index.html:118",
+    "ds-input": "static/admin.html:142",
+    "ds-input--filled": "static/costs.html:78",
+    "ds-legend": "static/costs.html:116",
+    "ds-legend__key--s2": "static/js/costs.js:435",
+    "ds-legend__key--s3": "static/js/costs.js:435",
+    "ds-legend__key--s4": "static/js/costs.js:435",
+    "ds-link-btn": "static/js/accountpicker.js:66",
+    "ds-link-btn--quiet": "static/js/accountpicker.js:66",
+    "ds-list": "static/js/adminmcp.js:482",
+    "ds-list--interactive": "static/js/adminmcp.js:974",
+    "ds-list__action": "static/js/adminmcp.js:976",
+    "ds-list__actions": "static/js/adminmcp.js:494",
+    "ds-list__chevron": "static/js/adminmcp.js:977",
+    "ds-list__icon": "static/js/adminmcp.js:486",
+    "ds-list__item": "static/js/adminmcp.js:486",
+    "ds-list__meta": "static/js/adminmcp.js:489",
+    "ds-list__text": "static/js/adminmcp.js:487",
+    "ds-list__title": "static/js/adminmcp.js:488",
+    "ds-loader": "static/admin.html:116",
+    "ds-loading": "static/admin.html:116",
+    "ds-menu": "static/index.html:247",
+    "ds-menu__check": "static/js/accountpicker.js:184",
+    "ds-menu__divider": "static/js/accountpicker.js:144",
+    "ds-menu__heading": "static/js/session.js:2679",
+    "ds-menu__item": "static/js/accountpicker.js:144",
+    "ds-menu__label": "static/js/accountpicker.js:144",
+    "ds-menu__meta": "static/js/session.js:2520",
+    "ds-meta": "static/admin.html:108",
+    "ds-meter": "static/js/costs.js:650",
+    "ds-muted": "static/admin.html:106",
+    "ds-num": "static/admin.html:489",
+    "ds-page": "static/admin.html:92",
+    "ds-page-head": "static/admin.html:93",
+    "ds-page-head__actions": "static/costs.html:47",
+    "ds-page-head__lead": "static/admin.html:95",
+    "ds-page-head__row": "static/costs.html:42",
+    "ds-page-head__status": "static/js/home.js:323",
+    "ds-page-head__text": "static/costs.html:43",
+    "ds-page-head__title": "static/admin.html:94",
+    "ds-panel": "static/admin.html:89",
+    "ds-parts": "static/js/admin.js:181",
+    "ds-parts__list": "static/js/admin.js:181",
+    "ds-plain-list": "static/js/adminmcp.js:511",
+    "ds-presence": "static/costs.html:141",
+    "ds-pressable": "static/js/askdialog.js:703",
+    "ds-pressable--inset": "static/js/boards.js:176",
+    "ds-pressable--lg": "static/js/session.js:1199",
+    "ds-progress": "static/admin.html:444",
+    "ds-progress--flat": "static/js/chatparts.js:1419",
+    "ds-progress--indeterminate": "static/admin.html:444",
+    "ds-progress__bar": "static/admin.html:446",
+    "ds-progress__detail": "static/js/statusmodal.js:154",
+    "ds-progress__label": "static/js/chatparts.js:1419",
+    "ds-progress__track": "static/admin.html:445",
+    "ds-prose": "static/js/mcpview.js:138",
+    "ds-prose--dense": "static/js/mcpview.js:138",
+    "ds-radio": "static/js/chattests.js:840",
+    "ds-radio--disabled": "static/js/harnesses.js:441",
+    "ds-radio__note": "static/js/harnesses.js:446",
+    "ds-radios": "static/js/chattests.js:839",
+    "ds-scrim": "static/admin.html:51",
+    "ds-search": "static/js/docs.js:119",
+    "ds-sheet": "static/admin.html:610",
+    "ds-sheet__backdrop": "static/admin.html:611",
+    "ds-sheet__body": "static/admin.html:620",
+    "ds-sheet__foot": "static/admin.html:621",
+    "ds-sheet__head": "static/admin.html:613",
+    "ds-sheet__heading": "static/admin.html:614",
+    "ds-sheet__panel": "static/admin.html:612",
+    "ds-sheet__panel--wide": "static/admin.html:612",
+    "ds-sheet__subtitle": "static/admin.html:616",
+    "ds-sheet__title": "static/admin.html:615",
+    "ds-skip": "static/admin.html:31",
+    "ds-sm": "static/admin.html:44",
+    "ds-spinner": "static/admin.html:44",
+    "ds-spinner--ink": "static/admin.html:44",
+    "ds-sr": "static/admin.html:451",
+    "ds-stale": "static/js/home.js:602",
+    "ds-status": "static/admin.html:342",
+    "ds-status--running": "static/js/admin.js:157",
+    "ds-status__spinner": "static/admin.html:342",
+    "ds-switch": "static/index.html:255",
+    "ds-switch-list": "static/js/harnesses.js:642",
+    "ds-switch__hint": "static/js/harnesses.js:922",
+    "ds-switch__label": "static/index.html:256",
+    "ds-switch__off": "static/index.html:257",
+    "ds-switch__on": "static/index.html:257",
+    "ds-switch__state": "static/index.html:257",
+    "ds-switch__track": "static/index.html:256",
+    "ds-table": "static/admin.html:450",
+    "ds-table--interactive": "static/js/costs.js:657",
+    "ds-table-wrap": "static/admin.html:449",
+    "ds-table__row--selected": "static/js/costs.js:649",
+    "ds-table__row-link": "static/js/costs.js:632",
+    "ds-tag": "static/js/adminmcp.js:197",
+    "ds-tasks": "static/js/chatparts.js:478",
+    "ds-tasks__head": "static/js/chatparts.js:499",
+    "ds-tasks__item": "static/js/chatparts.js:492",
+    "ds-tasks__mark": "static/js/chatparts.js:492",
+    "ds-tasks__text": "static/js/chatparts.js:495",
+    "ds-theme": "static/admin.html:2",
+    "ds-tile": "static/costs.html:97",
+    "ds-tile__label": "static/costs.html:97",
+    "ds-tile__note": "static/costs.html:97",
+    "ds-tile__value": "static/costs.html:97",
+    "ds-tiles": "static/costs.html:96",
+    "ds-timeline": "static/js/chattests.js:598",
+    "ds-timeline__head": "static/js/chattests.js:598",
+    "ds-timeline__item": "static/js/chattests.js:598",
+    "ds-timeline__meta": "static/js/chattests.js:598",
+    "ds-timeline__text": "static/js/chattests.js:598",
+    "ds-timeline__title": "static/js/chattests.js:598",
+    "ds-toast": "static/js/session.js:3577",
+    "ds-toasts": "static/admin.html:624",
+    "ds-tone-error": "static/admin.html:345",
+    "ds-tone-neutral": "static/js/adminmcp.js:197",
+    "ds-tone-success": "static/js/accounts.js:114",
+    "ds-tone-warning": "static/admin.html:592",
+    "ds-toolbar": "static/costs.html:71",
+    "ds-topbar": "static/admin.html:33",
+    "ds-topbar__menu": "static/admin.html:34",
+    "ds-touch": "static/js/keyboard.js:72",
+    "ds-view": "static/admin.html:90",
+    "ds-view--fixed": "static/index.html:186"
+  },
+  "unknown": [
+    "static/index.html:167 module DS.ds",
+    "static/js/chatparts.js:1322 icon background",
+    "static/js/chatparts.js:1469 icon stop",
+    "static/js/home.js:340 icon waiting"
+  ]
+}

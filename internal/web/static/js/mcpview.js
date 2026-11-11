@@ -10,7 +10,7 @@
 //    tools[{name,title,description}], prompts[], resources[], stderr, oauth}.
 
 import { el, openDialog, errorMessage } from './api.js';
-import { html, raw, icon, morph } from './ui.js';
+import { html, raw, icon, morph, tone } from './ui.js';
 
 /* ----------------------------------------------------------------- words */
 
@@ -76,9 +76,9 @@ export function firstLine(text, max = 140) {
 /* ----------------------------------------------------------------- chips */
 
 const CHIPS = {
-  ok: ['ds-status ds-status--ok', 'check'],
-  warning: ['ds-status ds-status--warning', 'alert'],
-  error: ['ds-status ds-status--error', 'alertCircle'],
+  ok: ['ds-status ds-tone-success', 'check'],
+  warning: ['ds-status ds-tone-warning', 'alert'],
+  error: ['ds-status ds-tone-error', 'alertCircle'],
   running: ['ds-status ds-status--running', null],
   plain: ['ds-status', 'clock'],
   off: ['ds-status', 'ban'],
@@ -173,10 +173,10 @@ export function probeView(probe, { toolOn = null, alertActions = '', idPrefix = 
   const resources = probe.resources || [];
   let outcome;
   if (probe.state === 'ok') {
-    outcome = html`<div class="ds-alert ds-alert--success" role="status">${raw(icon('checkCircle', 20))}<span class="ds-alert__text">${'It works: ' + counts(probe) + '.'}</span></div>`;
+    outcome = html`<div class="ds-alert ds-tone-success" role="status">${raw(icon('checkCircle', 20))}<span class="ds-alert__text">${'It works: ' + counts(probe) + '.'}</span></div>`;
   } else {
     const kind = probe.state === 'auth' ? 'warning' : 'error';
-    outcome = html`<div class="${'ds-alert ds-alert--' + kind}" role="alert">${raw(icon(kind === 'warning' ? 'alert' : 'alertCircle', 20))}<div class="ds-alert__text"><p class="ds-alert__title">${probe.state === 'auth' ? 'It wants a sign-in' : 'It did not work'}</p><p class="so-break">${probe.error || 'No answer.'}</p></div>${alertActions ? html`<div class="ds-alert__actions">${alertActions}</div>` : ''}</div>`;
+    outcome = html`<div class="${'ds-alert' + tone(kind)}" role="alert">${raw(icon(kind === 'warning' ? 'alert' : 'alertCircle', 20))}<div class="ds-alert__text"><p class="ds-alert__title">${probe.state === 'auth' ? 'It wants a sign-in' : 'It did not work'}</p><p class="so-break">${probe.error || 'No answer.'}</p></div>${alertActions ? html`<div class="ds-alert__actions">${alertActions}</div>` : ''}</div>`;
   }
   const who = [probe.server_title || probe.server_name, probe.server_version].filter(Boolean).join(' ');
   const facts = [
@@ -212,14 +212,14 @@ function tail(text, lines) {
  */
 export function probeDialog({ title, run, opener }) {
   const body = el('div', { class: 'ds-dialog__body', tabindex: '0', role: 'region', 'aria-label': 'Test of ' + title });
-  morph(body, html`<div class="ds-loading" role="status"><span class="ds-loader ds-loader--sm" aria-hidden="true"></span>Connecting to the server as an agent would</div>`);
-  const close = el('button', { class: 'ds-btn ds-btn--text', type: 'button', 'data-close': true, autofocus: true, text: 'Close' });
+  morph(body, html`<div class="ds-loading" role="status"><span class="ds-loader ds-sm" aria-hidden="true"></span>Connecting to the server as an agent would</div>`);
+  const close = el('button', { class: 'ds-btn ds-btn--text', type: 'button', 'data-ds-close': true, autofocus: true, text: 'Close' });
   const { dialog, shown } = openDialog({ title, field: body, actions: [close], opener });
-  dialog.classList.add('ds-dialog--wide');
+  dialog.classList.add('ds-dialog--lg');
   run().then((probe) => {
     if (dialog.isConnected) morph(body, probeView(probe));
   }, (err) => {
-    if (dialog.isConnected) morph(body, html`<div class="ds-alert ds-alert--error" role="alert">${raw(icon('alertCircle', 20))}<span class="ds-alert__text">${errorMessage(err)}</span></div>`);
+    if (dialog.isConnected) morph(body, html`<div class="ds-alert ds-tone-error" role="alert">${raw(icon('alertCircle', 20))}<span class="ds-alert__text">${errorMessage(err)}</span></div>`);
   });
   return shown;
 }

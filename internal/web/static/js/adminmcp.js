@@ -21,7 +21,7 @@
 // unsaved changes to be saved first.
 
 import { api, el, toast, errorMessage, confirmDialog, openDialog } from './api.js';
-import { DS, M, html, raw, icon, iconEl, morph, flipMorph, faces } from './ui.js';
+import { DS, M, html, raw, icon, iconEl, morph, flipMorph, faces, tone } from './ui.js';
 import * as V from './mcpview.js';
 
 const $ = (id) => document.getElementById(id);
@@ -93,7 +93,7 @@ export function mountMCP({ save, dirty }) {
     const box = event.target;
     if (box instanceof HTMLDetailsElement && box.dataset.dsKey) sheetOpen.set(box.dataset.dsKey, box.open);
   }, true);
-  sheet.addEventListener('ds-close', (event) => {
+  sheet.addEventListener('ds:close', (event) => {
     if (event.target !== sheet) return;
     sheetOf = null;
     clearInterval(sheetTimer);
@@ -178,11 +178,11 @@ function renderBuiltin() {
   const host = $('mcpBuiltin');
   if (!host) return;
   if (!overviewLoaded) {
-    morph(host, html`<div class="ds-loading" role="status"><span class="ds-loader ds-loader--sm" aria-hidden="true"></span>Asking which servers Socrates has</div>`);
+    morph(host, html`<div class="ds-loading" role="status"><span class="ds-loader ds-sm" aria-hidden="true"></span>Asking which servers Socrates has</div>`);
     return;
   }
   if (overviewError && !overview.builtin.length) {
-    morph(host, html`<div class="ds-alert ds-alert--error" role="alert">${raw(icon('alertCircle', 20))}<span class="ds-alert__text">${overviewError}</span></div>`);
+    morph(host, html`<div class="ds-alert ds-tone-error" role="alert">${raw(icon('alertCircle', 20))}<span class="ds-alert__text">${overviewError}</span></div>`);
     return;
   }
   if (!overview.builtin.length) {
@@ -194,13 +194,13 @@ function renderBuiltin() {
     const uses = (view.uses || []).length;
     return html`<div class="so-mcp" data-ds-key="${'builtin-' + view.name}" data-builtin="${view.name}">
       <div class="so-mcp__main">
-        <p class="so-mcp__name">${view.title || view.name}<span class="ds-tag ds-tag--neutral">Built in</span></p>
+        <p class="so-mcp__name">${view.title || view.name}<span class="ds-tag ds-tone-neutral">Built in</span></p>
         ${view.description ? html`<p class="ds-meta so-mcp__desc">${view.description}</p>` : ''}
         <div class="so-mcp__state"><span class="so-mcp__fact">${V.chip(state.kind, state.label, state.state)}<span class="ds-meta">${V.parts([uses ? uses + ' in use now' : '', (view.tools || []).length + ' tools'])}</span></span></div>
       </div>
       ${switchHtml('In every chat', builtinOn(view), 'builtin-default', (view.title || view.name) + ' in every chat')}
       <div class="so-mcp__actions">
-        <button class="ds-btn ds-btn--sm" type="button" data-action="manage" aria-haspopup="dialog" aria-expanded="false">${state.state === 'none' ? 'Add an account' : 'Manage'}</button>
+        <button class="ds-btn ds-sm" type="button" data-action="manage" aria-haspopup="dialog" aria-expanded="false">${state.state === 'none' ? 'Add an account' : 'Manage'}</button>
       </div>
     </div>`;
   })}`);
@@ -270,7 +270,7 @@ function renderServers() {
     const type = server.type === 'stdio' ? 'Local' : server.type === 'sse' ? 'SSE' : 'HTTP';
     return html`<div class="so-mcp" data-ds-key="${'server-' + server.name}" data-name="${server.name}">
       <div class="so-mcp__main">
-        <p class="so-mcp__name">${server.name}<span class="ds-tag ds-tag--neutral">${type}</span></p>
+        <p class="so-mcp__name">${server.name}<span class="ds-tag ds-tone-neutral">${type}</span></p>
         ${server.description ? html`<p class="ds-meta so-mcp__desc">${server.description}</p>` : ''}
         <p class="ds-meta so-mcp__what">${summary(server)}</p>
         <div class="so-mcp__state">
@@ -281,10 +281,10 @@ function renderServers() {
       </div>
       ${switchHtml('In every chat', !!server.default, 'default', server.name + ' in every chat')}
       <div class="so-mcp__actions">
-        <button class="ds-btn ds-btn--sm" type="button" data-action="test">${faces('Test', 'Testing')}</button>
-        ${sign && sign.action ? html`<button class="ds-btn ds-btn--sm" type="button" data-action="connect">${faces(sign.actionLabel, 'Opening')}</button>` : ''}
-        <button class="ds-btn ds-btn--quiet ds-btn--icon ds-btn--sm" type="button" data-action="edit" aria-label="${'Edit ' + server.name}" data-tip="Edit">${raw(icon('pencil', 18))}</button>
-        <button class="ds-btn ds-btn--quiet ds-btn--icon ds-btn--sm" type="button" data-action="delete" aria-label="${'Remove ' + server.name}" data-tip="Remove">${raw(icon('trash', 18))}</button>
+        <button class="ds-btn ds-sm" type="button" data-action="test">${faces('Test', 'Testing')}</button>
+        ${sign && sign.action ? html`<button class="ds-btn ds-sm" type="button" data-action="connect">${faces(sign.actionLabel, 'Opening')}</button>` : ''}
+        <button class="ds-btn ds-btn--quiet ds-btn--icon ds-sm" type="button" data-action="edit" aria-label="${'Edit ' + server.name}" data-tip="Edit">${raw(icon('pencil', 18))}</button>
+        <button class="ds-btn ds-btn--quiet ds-btn--icon ds-sm" type="button" data-action="delete" aria-label="${'Remove ' + server.name}" data-tip="Remove">${raw(icon('trash', 18))}</button>
       </div>
     </div>`;
   });
@@ -452,7 +452,7 @@ function renderSheet() {
     title.textContent = view.title || view.name;
     sub.textContent = 'Built into Socrates';
     morph(body, builtinBody(view));
-    morph(foot, html`<button class="ds-btn ds-btn--text" type="button" data-close>Close</button>`);
+    morph(foot, html`<button class="ds-btn ds-btn--text" type="button" data-ds-close>Close</button>`);
     return;
   }
   const server = servers.find((one) => one.name === sheetOf.name);
@@ -492,8 +492,8 @@ function builtinBody(view) {
           </span>
           ${V.chip(kind, label, 'account-' + check.state)}
           <span class="ds-list__actions">
-            <button class="ds-btn ds-btn--quiet ds-btn--icon ds-btn--sm" type="button" data-action="account-check" aria-label="${'Check ' + (account.label || account.id)}" data-tip="Check it now">${raw(icon('sync', 18))}</button>
-            <button class="ds-btn ds-btn--quiet ds-btn--icon ds-btn--sm" type="button" data-action="account-remove" aria-label="${'Remove ' + (account.label || account.id)}" data-tip="Remove">${raw(icon('trash', 18))}</button>
+            <button class="ds-btn ds-btn--quiet ds-btn--icon ds-sm" type="button" data-action="account-check" aria-label="${'Check ' + (account.label || account.id)}" data-tip="Check it now">${raw(icon('sync', 18))}</button>
+            <button class="ds-btn ds-btn--quiet ds-btn--icon ds-sm" type="button" data-action="account-remove" aria-label="${'Remove ' + (account.label || account.id)}" data-tip="Remove">${raw(icon('trash', 18))}</button>
           </span>
         </li>`;
       })}</ul>` : html`<div class="ds-empty">
@@ -525,8 +525,8 @@ function serverBody(server) {
   let alertActions = '';
   if (probe && probe.state === 'auth') {
     alertActions = server.auth === 'oauth'
-      ? html`<button class="ds-btn ds-btn--text ds-btn--sm" type="button" data-action="sheet-connect">Connect</button>`
-      : isRemote(server) ? html`<button class="ds-btn ds-btn--text ds-btn--sm" type="button" data-action="sheet-use-oauth">Sign in with OAuth</button>` : '';
+      ? html`<button class="ds-btn ds-btn--text ds-sm" type="button" data-action="sheet-connect">Connect</button>`
+      : isRemote(server) ? html`<button class="ds-btn ds-btn--text ds-sm" type="button" data-action="sheet-use-oauth">Sign in with OAuth</button>` : '';
   }
   const signFacts = sign ? [
     ['Authorization server', o.authorization_server],
@@ -543,14 +543,14 @@ function serverBody(server) {
       <p class="ds-meta">Socrates signs in once, here, and gives every chat’s agent the token; the agents never see the sign-in.</p>
       ${signFacts.length ? html`<dl class="ds-facts ds-facts--rows">${signFacts.map(([label, value]) => html`<div><dt>${label}</dt><dd class="so-break">${value}</dd></div>`)}</dl>` : ''}
       <div class="so-admin-actions">
-        <button class="ds-btn ds-btn--sm" type="button" data-action="sheet-connect">${faces(o.connected ? 'Reconnect' : 'Connect', 'Opening')}</button>
-        ${o.connected ? html`<button class="ds-btn ds-btn--text ds-btn--sm" type="button" data-action="sheet-disconnect">${faces('Disconnect', 'Disconnecting')}</button>` : ''}
+        <button class="ds-btn ds-sm" type="button" data-action="sheet-connect">${faces(o.connected ? 'Reconnect' : 'Connect', 'Opening')}</button>
+        ${o.connected ? html`<button class="ds-btn ds-btn--text ds-sm" type="button" data-action="sheet-disconnect">${faces('Disconnect', 'Disconnecting')}</button>` : ''}
       </div>
     </section>` : ''}
     <section class="so-mcp-sheet__part" aria-labelledby="mcpTestTitle">
       <h3 class="ds-card__subtitle" id="mcpTestTitle">Connection</h3>
       ${testing.has(server.name)
-        ? html`<div class="ds-loading" role="status"><span class="ds-loader ds-loader--sm" aria-hidden="true"></span>Connecting to it as an agent would; a server npx installs first can take a minute</div>`
+        ? html`<div class="ds-loading" role="status"><span class="ds-loader ds-sm" aria-hidden="true"></span>Connecting to it as an agent would; a server npx installs first can take a minute</div>`
         : probe ? V.probeView(probe, { toolOn: (name) => !disabled.has(name), alertActions, idPrefix: 'mcpSheetTool', isOpen })
           : html`<p class="ds-meta">Not tested yet. A test connects to it as an agent would, and lists its tools.</p>`}
       ${!probe && disabled.size ? html`<p class="ds-meta">${disabled.size + (disabled.size === 1 ? ' tool is' : ' tools are') + ' switched off: ' + [...disabled].join(', ')}</p>` : ''}
@@ -652,8 +652,8 @@ async function addAccount(view, opener) {
   });
   const problem = el('div', { class: 'so-admin-notice' });
   problem.hidden = true;
-  const cancel = el('button', { class: 'ds-btn ds-btn--text', type: 'button', 'data-close': true, text: 'Cancel' });
-  const accept = el('button', { class: 'ds-btn ds-btn--primary', type: 'button' });
+  const cancel = el('button', { class: 'ds-btn ds-btn--text', type: 'button', 'data-ds-close': true, text: 'Cancel' });
+  const accept = el('button', { class: 'ds-btn ds-btn--filled', type: 'button' });
   morph(accept, faces('Check and add', 'Checking'));
   const { dialog, shown } = openDialog({
     title: 'A ' + (view.title || view.name) + ' account',
@@ -698,7 +698,7 @@ async function addAccount(view, opener) {
 }
 
 function showProblem(slot, text, kind = 'error') {
-  morph(slot, html`<div class="${'ds-alert ds-alert--' + kind}" role="alert">${raw(icon(kind === 'error' ? 'alertCircle' : 'alert', 20))}<span class="ds-alert__text">${text}</span></div>`);
+  morph(slot, html`<div class="${'ds-alert' + tone(kind)}" role="alert">${raw(icon(kind === 'error' ? 'alertCircle' : 'alert', 20))}<span class="ds-alert__text">${text}</span></div>`);
   slot.hidden = false;
 }
 
@@ -834,7 +834,7 @@ async function editServer(previous, opener, start = null) {
       el('span', { class: 'ds-switch__on', text: 'On' }), el('span', { class: 'ds-switch__off', text: 'Off' }))),
   el('small', { class: 'ds-field__hint', id: 'mcpEditDefaultHint', text: 'Off, a chat has it only once it is switched on there (⋮ → MCP servers).' }));
 
-  const test = el('button', { class: 'ds-btn ds-btn--sm', type: 'button', id: 'mcpEditTest' });
+  const test = el('button', { class: 'ds-btn ds-sm', type: 'button', id: 'mcpEditTest' });
   morph(test, faces('Test connection', 'Testing'));
   const outcome = el('div', { class: 'so-mcp-outcome', id: 'mcpEditOutcome', 'aria-live': 'polite' });
   const testRow = el('div', { class: 'so-mcp-test' }, test, outcome);
@@ -856,13 +856,13 @@ async function editServer(previous, opener, start = null) {
 
   const form = el('div', { class: 'ds-form' }, problem, nameField, descField, typeField, ...local, ...remote, advanced, onField, testRow);
   const body = el('div', { class: 'ds-dialog__body' }, form);
-  const cancel = el('button', { class: 'ds-btn ds-btn--text', type: 'button', 'data-close': true, text: 'Cancel' });
-  const accept = el('button', { class: 'ds-btn ds-btn--primary', type: 'button', text: previous ? 'Keep the changes' : 'Add the server' });
+  const cancel = el('button', { class: 'ds-btn ds-btn--text', type: 'button', 'data-ds-close': true, text: 'Cancel' });
+  const accept = el('button', { class: 'ds-btn ds-btn--filled', type: 'button', text: previous ? 'Keep the changes' : 'Add the server' });
   const { dialog, shown } = openDialog({
     title: previous ? 'MCP server ' + previous.name : start && start.name ? 'Add ' + start.name : 'A new MCP server',
     field: body, actions: [cancel, accept], opener,
   });
-  dialog.classList.add('ds-dialog--wide');
+  dialog.classList.add('ds-dialog--lg');
 
   const read = () => {
     const next = {
@@ -958,11 +958,11 @@ function outcomeHtml(probe, server) {
   }
   if (probe.state === 'auth') {
     const canOAuth = server.type !== 'stdio' && server.auth !== 'oauth';
-    return html`<div class="ds-alert ds-alert--warning" role="alert">${raw(icon('alert', 20))}<span class="ds-alert__text">${canOAuth
+    return html`<div class="ds-alert ds-tone-warning" role="alert">${raw(icon('alert', 20))}<span class="ds-alert__text">${canOAuth
       ? 'It wants a sign-in. Most hosted servers sign in with OAuth: switch Sign-in to OAuth, or give it a token in a header.'
-      : 'It wants a sign-in. Add the server, save, then Connect it on its row.'}</span>${canOAuth ? html`<div class="ds-alert__actions"><button class="ds-btn ds-btn--text ds-btn--sm" type="button" data-action="use-oauth">Use OAuth</button></div>` : ''}</div>`;
+      : 'It wants a sign-in. Add the server, save, then Connect it on its row.'}</span>${canOAuth ? html`<div class="ds-alert__actions"><button class="ds-btn ds-btn--text ds-sm" type="button" data-action="use-oauth">Use OAuth</button></div>` : ''}</div>`;
   }
-  return html`<div class="ds-alert ds-alert--error" role="alert">${raw(icon('alertCircle', 20))}<div class="ds-alert__text"><p class="ds-alert__title">It did not work</p><p class="so-break">${probe.error || 'No answer.'}</p></div></div>
+  return html`<div class="ds-alert ds-tone-error" role="alert">${raw(icon('alertCircle', 20))}<div class="ds-alert__text"><p class="ds-alert__title">It did not work</p><p class="so-break">${probe.error || 'No answer.'}</p></div></div>
     ${probe.stderr ? html`<details class="ds-collapsible ds-disclosure" open><summary>What it printed${raw(icon('chevronDown', 20, 'ds-chevron'))}</summary><div class="ds-disclosure__body"><pre class="ds-code-block ds-code-block--wrap"><code>${String(probe.stderr).trim().split('\n').slice(-20).join('\n')}</code></pre></div></details>` : ''}`;
 }
 
@@ -982,13 +982,13 @@ async function addServer(opener) {
   morph(list, html`${GALLERY.map((one) => row(one.id, one.server.type === 'stdio' ? 'terminal' : 'globe', one.title, one.what + ' · ' + how(one.server)))}
     ${row('custom', 'plus', 'Another server', 'A local command or a URL of your own')}
     ${row('paste', 'clipboard', 'Paste JSON', 'Servers as a .mcp.json or a program’s docs write them')}`);
-  const cancel = el('button', { class: 'ds-btn ds-btn--text', type: 'button', 'data-close': true, text: 'Cancel' });
+  const cancel = el('button', { class: 'ds-btn ds-btn--text', type: 'button', 'data-ds-close': true, text: 'Cancel' });
   const { dialog, shown } = openDialog({
     title: 'Add an MCP server',
     body: 'Start from a common one, or set up your own. Everything stays editable before it is added.',
     field: el('div', { class: 'ds-dialog__body' }, list), actions: [cancel], opener,
   });
-  dialog.classList.add('ds-dialog--wide');
+  dialog.classList.add('ds-dialog--lg');
   list.addEventListener('click', (event) => {
     const pick = event.target.closest('button[data-pick]');
     if (!pick) return;
@@ -1010,8 +1010,8 @@ async function importServers(opener) {
     placeholder: '{"mcpServers": {"github": {"command": "npx", "args": ["-y", "@modelcontextprotocol/server-github"]}}}' });
   const problem = el('div', { class: 'so-admin-notice' });
   problem.hidden = true;
-  const cancel = el('button', { class: 'ds-btn ds-btn--text', type: 'button', 'data-close': true, text: 'Cancel' });
-  const accept = el('button', { class: 'ds-btn ds-btn--primary', type: 'button', text: 'Add the servers' });
+  const cancel = el('button', { class: 'ds-btn ds-btn--text', type: 'button', 'data-ds-close': true, text: 'Cancel' });
+  const accept = el('button', { class: 'ds-btn ds-btn--filled', type: 'button', text: 'Add the servers' });
   const { dialog, shown } = openDialog({
     title: 'Paste MCP servers',
     field: el('div', { class: 'ds-form' }, problem, field('JSON', text, 'As a .mcp.json has it. Each server comes in on in every chat.', 'mcpImportText')),

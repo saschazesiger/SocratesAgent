@@ -198,7 +198,7 @@ const button = (page) => page.evaluate(() => {
     shown: !b.hidden && b.offsetWidth > 0,
     label: b.getAttribute('aria-label'),
     badge: badge && !badge.hidden ? badge.textContent : '',
-    error: !!badge && badge.classList.contains('ds-badge--error'),
+    error: !!badge && badge.classList.contains('ds-tone-error'),
     expanded: b.getAttribute('aria-expanded'),
   };
 });
@@ -259,7 +259,7 @@ export async function chattests() {
     await tell(s, id, script(files));
     const live = await page.waitForFunction(() => {
       const badge = document.querySelector('#testsBtn .ds-badge');
-      return !!badge && !badge.hidden && badge.textContent === '1' && badge.classList.contains('ds-badge--error')
+      return !!badge && !badge.hidden && badge.textContent === '1' && badge.classList.contains('ds-tone-error')
         && document.querySelectorAll('#testsPanel .so-test').length === 4
         && !!document.querySelector('#testsPanel .so-test[data-test="T2"][data-status="running"] img.so-test__shot');
     }, null, { timeout: 40000 }).then(() => true, () => false);
@@ -358,7 +358,7 @@ export async function chattests() {
     await page.fill('dialog.so-testform textarea', 'The reload is how this shop shows the error; fine for now.');
     await still(page);
     await shot(page, 'chattests-override');
-    await page.click('dialog.so-testform .ds-btn--primary');
+    await page.click('dialog.so-testform .ds-btn--filled');
     await page.waitForSelector('dialog.so-testform', { state: 'detached', timeout: 10000 });
     const overridden = await page.waitForFunction(() => {
       const v = document.querySelector('dialog.so-testv');
@@ -388,7 +388,7 @@ export async function chattests() {
     await page.click('dialog.so-testform .so-tedit__step:last-child [data-step-act="up"]');
     await still(page);
     await shot(page, 'chattests-edit');
-    await page.click('dialog.so-testform .ds-btn--primary');
+    await page.click('dialog.so-testform .ds-btn--filled');
     await page.waitForSelector('dialog.so-testform', { state: 'detached', timeout: 10000 });
     const edited = (await testsOf(s, id)).find((t) => t.id === 'T1');
     ok(stepsBefore === 2 && edited.steps.length === 3 && edited.steps[1].action === 'Sign in with the right password' && edited.stale,

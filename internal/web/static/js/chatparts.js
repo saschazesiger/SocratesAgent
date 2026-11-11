@@ -123,7 +123,7 @@ export function infoButton(lines, label = 'Details') {
   // A fact with a name ([label, value]) is a row of the dialog the "i"
   // opens, as Info's are (chatview.js), and "Label: value" in its tip.
   const named = shown.some((line) => Array.isArray(line));
-  return html`<button class="ds-btn ds-btn--quiet ds-btn--icon ds-btn--sm so-info" type="button" data-action="info" aria-label="${label}" data-tip="${shown.map(factLine).join('\n')}"${named ? html` data-facts="${JSON.stringify(shown)}"` : ''}>${raw(icon('info', 18))}</button>`;
+  return html`<button class="ds-btn ds-btn--quiet ds-btn--icon ds-sm so-info" type="button" data-action="info" aria-label="${label}" data-tip="${shown.map(factLine).join('\n')}"${named ? html` data-facts="${JSON.stringify(shown)}"` : ''}>${raw(icon('info', 18))}</button>`;
 }
 
 /** factLine is one fact as a line of text: "Label: value", or the line itself. */
@@ -490,7 +490,7 @@ export function todoList(part, { pinned = false, open = false, live = false, unt
   const done = items.filter((item) => item.status === 'completed').length;
   const list = html`<ol class="ds-tasks so-todo__list" aria-label="Tasks">${
     items.map((item, i) => html`<li class="ds-tasks__item so-todo__item" data-ds-key="${'t' + i}" data-status="${TODO_STATUS[item.status]}"><span class="ds-tasks__mark" aria-hidden="true">${
-      item.status === 'in_progress' ? html`<span class="ds-spinner ds-spinner--sm"></span>`
+      item.status === 'in_progress' ? html`<span class="ds-spinner ds-spinner--ink ds-sm"></span>`
         : item.status === 'completed' ? raw(icon('checkCircle', 20)) : ''
     }</span><span class="ds-tasks__text">${item.status === 'in_progress' && item.active ? item.active : item.text}<span class="ds-sr">${': ' + TODO_WORDS[item.status]}</span></span>${todoTime(item, { live, until })}</li>`)
   }</ol>`;
@@ -686,9 +686,9 @@ function toolHtml(part, view, { diff = false } = {}) {
 // happened and a way to ask again.
 function detailsHtml(part, view) {
   if (view.details && view.details(part) === 'failed') {
-    return html`<div class="so-tool__wait so-details" data-ds-key="details"><span class="ds-meta">The details could not be loaded.</span><button class="ds-btn ds-btn--text ds-btn--sm" type="button" data-action="details-retry" data-part="${part.id}">Try again</button></div>`;
+    return html`<div class="so-tool__wait so-details" data-ds-key="details"><span class="ds-meta">The details could not be loaded.</span><button class="ds-btn ds-btn--text ds-sm" type="button" data-action="details-retry" data-part="${part.id}">Try again</button></div>`;
   }
-  return html`<div class="ds-loading so-tool__wait so-details" data-ds-key="details" role="status"><span class="ds-loader ds-loader--sm" aria-hidden="true"></span><span>Loading the details…</span></div>`;
+  return html`<div class="ds-loading so-tool__wait so-details" data-ds-key="details" role="status"><span class="ds-loader ds-sm" aria-hidden="true"></span><span>Loading the details…</span></div>`;
 }
 
 // bodyWithInfo places the call's "i" where it costs no row of its own: in a
@@ -782,7 +782,7 @@ function planAskOf(part, chat) {
 }
 
 const DECISION_WORDS = { approved: 'Approved', keep_planning: 'Sent back to planning', pending: 'Waiting for you' };
-const DECISION_TONE = { approved: 'ds-status ds-status--ok', keep_planning: 'ds-status', pending: 'ds-status ds-status--warning' };
+const DECISION_TONE = { approved: 'ds-status ds-tone-success', keep_planning: 'ds-status', pending: 'ds-status ds-tone-warning' };
 const DECISION_GLYPH = { approved: 'check', keep_planning: 'pencil', pending: 'clock' };
 
 // What an answer of this browser that the server does not have yet says on
@@ -790,7 +790,7 @@ const DECISION_GLYPH = { approved: 'check', keep_planning: 'pencil', pending: 'c
 const ANSWER_ON_ITS_WAY = {
   local: { word: 'Not sent yet', glyph: 'wifiOff', tone: 'ds-status' },
   sending: { word: 'Sending', glyph: 'clock', tone: 'ds-status' },
-  failed: { word: 'Not sent', glyph: 'alertCircle', tone: 'ds-status ds-status--error' },
+  failed: { word: 'Not sent', glyph: 'alertCircle', tone: 'ds-status ds-tone-error' },
 };
 
 function onItsWayChip(state) {
@@ -801,7 +801,7 @@ function onItsWayChip(state) {
 // refusedHtml is why the server would not take an answer, and what can be
 // done about it: send it again as it is, or answer afresh.
 function refusedHtml(item, again) {
-  return html`<div class="ds-alert ds-alert--error so-refused" role="alert">${raw(icon('alertCircle', 20))}<span class="ds-alert__text">${'Your answer was not taken: ' + (item.error || 'the server refused it.')}</span></div><div class="ds-form-actions"><button class="ds-btn ds-btn--tonal ds-btn--icon" type="button" data-action="outbox-retry" data-id="${item.id}" aria-label="Send the answer again" data-tip="Send again">${raw(icon('sync', 20))}</button>${again}</div>`;
+  return html`<div class="ds-alert ds-tone-error so-refused" role="alert">${raw(icon('alertCircle', 20))}<span class="ds-alert__text">${'Your answer was not taken: ' + (item.error || 'the server refused it.')}</span></div><div class="ds-form-actions"><button class="ds-btn ds-btn--tonal ds-btn--icon" type="button" data-action="outbox-retry" data-id="${item.id}" aria-label="Send the answer again" data-tip="Send again">${raw(icon('sync', 20))}</button>${again}</div>`;
 }
 
 function planHtml(part, view) {
@@ -829,7 +829,7 @@ function planHtml(part, view) {
   } else if (waiting) {
     answer = html`<div class="so-plan__answer">${sending === 'failed' ? refusedHtml(pending, '') : ''}${
       noting ? html`<div class="ds-field so-plan__field"><label class="ds-field__label" for="${'note-' + part.id}">What should change?</label><div class="ds-field__row ds-field__row--top"><textarea class="ds-input so-plan__input" id="${'note-' + part.id}" rows="3" enterkeyhint="enter" data-plan-note="${ask.id}"></textarea><button class="ds-btn ds-btn--quiet ds-btn--icon so-mic" type="button" data-action="plan-dictate" data-target="${'note-' + part.id}" aria-label="Dictate what should change" data-tip="Dictate">${faces(raw(icon('mic', 20)), '')}</button></div></div>` : ''
-    }<div class="ds-form-actions"><button class="ds-btn ds-btn--primary" type="button" data-action="plan-approve" data-ask="${ask.id}">Approve</button><button class="ds-btn ds-btn--tonal" type="button" data-action="${noting ? 'plan-send' : 'plan-note'}" data-ask="${ask.id}" data-part="${part.id}">${noting ? 'Send back' : 'Keep planning'}</button></div></div>`;
+    }<div class="ds-form-actions"><button class="ds-btn ds-btn--filled" type="button" data-action="plan-approve" data-ask="${ask.id}">Approve</button><button class="ds-btn ds-btn--tonal" type="button" data-action="${noting ? 'plan-send' : 'plan-note'}" data-ask="${ask.id}" data-part="${part.id}">${noting ? 'Send back' : 'Keep planning'}</button></div></div>`;
   }
   return html`<section class="ds-card so-part so-plan" data-ds-key="${'p:' + part.id}" data-kind="plan" data-decision="${decision || (waiting ? 'pending' : '')}"${sending ? html` data-sending="${sending}"` : ''}><div class="ds-card__row"><h3 class="ds-card__title so-plan__title">${raw(icon('flag', 18))}<span>Plan</span></h3>${
     decision && DECISION_WORDS[decision] ? html`<span class="${DECISION_TONE[decision]}">${raw(icon(DECISION_GLYPH[decision], 16))}<span>${DECISION_WORDS[decision]}</span></span>` : ''
@@ -867,10 +867,10 @@ export function askCard(ask, view) {
   else if (pending) state = outboxState(pending);
   else if (ask.closed) state = 'closed';
   const head = html`<div class="ds-card__row"><h3 class="ds-card__title so-ask__title">${raw(icon('chat', 18))}<span>${title}</span></h3>${
-    state === 'open' ? html`<span class="ds-status ds-status--warning">${raw(icon('clock', 16))}<span>Waiting for you</span></span>`
+    state === 'open' ? html`<span class="ds-status ds-tone-warning">${raw(icon('clock', 16))}<span>Waiting for you</span></span>`
       : state === 'closed' ? html`<span class="ds-status">${raw(icon('chat', 16))}<span>Not answered</span></span>`
       : ANSWER_ON_ITS_WAY[state] ? onItsWayChip(state)
-        : html`<span class="ds-status ds-status--ok">${raw(icon('check', 16))}<span>${state === 'elsewhere' ? 'Answered on another device' : 'Answered'}</span></span>`
+        : html`<span class="ds-status ds-tone-success">${raw(icon('check', 16))}<span>${state === 'elsewhere' ? 'Answered on another device' : 'Answered'}</span></span>`
   }</div>`;
   let body;
   if (state === 'open') {
@@ -878,7 +878,7 @@ export function askCard(ask, view) {
     const first = questions.find((q) => !progress.answered.has(q.id)) || questions[0];
     body = html`<p class="so-ask__progress ds-meta">${questions.length > 1 ? progress.count + ' of ' + questions.length + ' answered' : 'One question'}</p>${
       first ? html`<p class="so-ask__question">${first.question || first.header || ''}</p>` : ''
-    }<div class="ds-form-actions"><button class="ds-btn ds-btn--primary so-ask__open" type="button" data-action="ask-open" data-ask="${ask.id}">Answer</button></div>`;
+    }<div class="ds-form-actions"><button class="ds-btn ds-btn--filled so-ask__open" type="button" data-action="ask-open" data-ask="${ask.id}">Answer</button></div>`;
   } else if (pending) {
     const summary = answerSummary({ ...ask, answer: pending.payload.answer });
     body = html`${summary ? html`<p class="so-ask__done ds-meta">${summary}</p>` : ''}${
@@ -942,7 +942,7 @@ function withdrawButton(withdraw) {
   const target = withdraw.outbox
     ? html`data-action="outbox-drop" data-id="${withdraw.outbox}"`
     : html`data-action="withdraw" data-message="${withdraw.message}"`;
-  return html`<button class="ds-btn ds-btn--quiet ds-btn--sm so-msg__withdraw" type="button" ${target} data-tip="Take this message back: the agent never reads it">${raw(icon('undo', 16))}<span>Withdraw</span></button>`;
+  return html`<button class="ds-btn ds-btn--quiet ds-sm so-msg__withdraw" type="button" ${target} data-tip="Take this message back: the agent never reads it">${raw(icon('undo', 16))}<span>Withdraw</span></button>`;
 }
 
 function attachmentsHtml(list) {
@@ -971,9 +971,9 @@ export function userMessage({ key, text, attachments, state, answerTo, error, se
     answerTo ? html`<p class="so-msg__label ds-meta">Answer to a question</p>` : ''
   }${text ? html`<p class="so-msg__text">${text}</p>` : ''}${attachmentsHtml(attachments)}</div>${
     chip || sendNow || withdraw ? html`<div class="so-msg__queue">${
-      chip ? html`<span class="${state === 'failed' ? 'ds-status ds-status--error so-msg__chip' : 'ds-status so-msg__chip'}" data-chip="${state}">${raw(icon(chip.glyph, 16))}<span>${chip.word}</span></span>` : ''
+      chip ? html`<span class="${state === 'failed' ? 'ds-status ds-tone-error so-msg__chip' : 'ds-status so-msg__chip'}" data-chip="${state}">${raw(icon(chip.glyph, 16))}<span>${chip.word}</span></span>` : ''
     }${withdrawButton(withdraw)}${
-      sendNow ? html`<button class="ds-btn ds-btn--tonal ds-btn--sm so-msg__now" type="button" data-action="send-now" data-tip="Stop what the agent is doing and send this message now">${raw(icon('arrowUp', 16))}<span>Send now</span></button>` : ''
+      sendNow ? html`<button class="ds-btn ds-btn--tonal ds-sm so-msg__now" type="button" data-action="send-now" data-tip="Stop what the agent is doing and send this message now">${raw(icon('arrowUp', 16))}<span>Send now</span></button>` : ''
     }</div>` : ''
   }${error ? html`<p class="so-msg__error ds-meta">${error}</p>` : ''}</article>`;
 }
@@ -1041,8 +1041,8 @@ export function sentOf(part) {
 // The chip a message to another chat carries, by how it went.
 const SENT_CHIP = {
   sending: html`<span class="ds-status ds-status--running so-peer__chip">${raw(icon('clock', 16))}<span>Sending</span></span>`,
-  sent: html`<span class="ds-status ds-status--ok so-peer__chip">${raw(icon('check', 16))}<span>Delivered</span></span>`,
-  failed: html`<span class="ds-status ds-status--error so-peer__chip">${raw(icon('alertCircle', 16))}<span>Not delivered</span></span>`,
+  sent: html`<span class="ds-status ds-tone-success so-peer__chip">${raw(icon('check', 16))}<span>Delivered</span></span>`,
+  failed: html`<span class="ds-status ds-tone-error so-peer__chip">${raw(icon('alertCircle', 16))}<span>Not delivered</span></span>`,
 };
 
 /**
@@ -1090,9 +1090,9 @@ export function peerMessage({ key, sender, text, state, view, sendNow = false, w
 function peerQueue(state, sendNow, withdraw) {
   const chip = USER_STATE[state];
   return chip || sendNow || withdraw ? html`<div class="so-msg__queue so-peer__queue">${
-    chip ? html`<span class="${state === 'failed' ? 'ds-status ds-status--error so-msg__chip' : 'ds-status so-msg__chip'}" data-chip="${state}">${raw(icon(chip.glyph, 16))}<span>${chip.word}</span></span>` : ''
+    chip ? html`<span class="${state === 'failed' ? 'ds-status ds-tone-error so-msg__chip' : 'ds-status so-msg__chip'}" data-chip="${state}">${raw(icon(chip.glyph, 16))}<span>${chip.word}</span></span>` : ''
   }${withdrawButton(withdraw)}${
-    sendNow ? html`<button class="ds-btn ds-btn--tonal ds-btn--sm so-msg__now" type="button" data-action="send-now" data-tip="Stop what the agent is doing and give it this message now">${raw(icon('arrowUp', 16))}<span>Send now</span></button>` : ''
+    sendNow ? html`<button class="ds-btn ds-btn--tonal ds-sm so-msg__now" type="button" data-action="send-now" data-tip="Stop what the agent is doing and give it this message now">${raw(icon('arrowUp', 16))}<span>Send now</span></button>` : ''
   }</div>` : '';
 }
 
@@ -1466,7 +1466,7 @@ export function agentCard(part, { full = false, foot = false, stopping = null, n
   }<div class="so-agentcard__foot"><p class="so-agentcard__meta"><span class="so-agentcard__kind">${facts.label.join(' · ')}</span>${
     stats ? html`<span class="so-agentcard__stats">${stats}</span>` : ''
   }</p>${
-    full && taskId ? html`<button class="ds-btn ds-btn--text ds-btn--sm so-agentcard__stop" type="button" data-job-stop="${taskId}"${stopping && stopping.has(taskId) ? html` aria-busy="true"` : ''}>${raw(icon('stop', 16))}<span>Stop</span></button>` : ''
+    full && taskId ? html`<button class="ds-btn ds-btn--text ds-sm so-agentcard__stop" type="button" data-job-stop="${taskId}"${stopping && stopping.has(taskId) ? html` aria-busy="true"` : ''}>${raw(icon('stop', 16))}<span>Stop</span></button>` : ''
   }</div></div>`;
 }
 
@@ -1608,13 +1608,13 @@ export function jobDetail(part, view, { running = false, stopping = null, now = 
   const taskId = running ? (task && task.id) || (wf && wf.task_id) || (agent && agent.id) || '' : '';
   const state = running
     ? html`<span class="ds-status ds-status--running so-jobd__state"><span class="ds-spinner ds-status__spinner" aria-hidden="true"></span><span>${seconds(ran) || 'Running'}</span></span>`
-    : html`<span class="${'ds-status so-jobd__state' + (endState === 'done' ? ' ds-status--ok' : endState === 'error' ? ' ds-status--error' : '')}">${raw(icon(endState === 'error' ? 'alertCircle' : endState === 'interrupted' ? 'ban' : 'checkCircle', 16))}<span>${endWord}</span></span>`;
+    : html`<span class="${'ds-status so-jobd__state' + (endState === 'done' ? ' ds-tone-success' : endState === 'error' ? ' ds-tone-error' : '')}">${raw(icon(endState === 'error' ? 'alertCircle' : endState === 'interrupted' ? 'ban' : 'checkCircle', 16))}<span>${endWord}</span></span>`;
   // A job sent light is asked for, as an opened call is (detailsHtml).
   const body = part.lite || part.held ? detailsHtml(part, view) : toolBody(part, tool, view, { diff: false, group: isGroup(part, tool) });
-  return html`<div class="so-jobd" data-ds-key="${'job:' + part.id}" data-state="${running ? 'running' : endState}"><div class="so-jobd__nav"><button class="ds-btn ds-btn--text ds-btn--sm so-jobd__back" type="button" data-job-back>${raw(icon('chevronLeft', 18))}<span>All jobs</span></button><button class="ds-btn ds-btn--text ds-btn--sm so-jobd__reveal" type="button" data-job-reveal="${part.id}"><span>Show in chat</span>${raw(icon('chevronRight', 18))}</button></div><div class="so-jobd__head"><span class="so-job__icon" aria-hidden="true">${raw(icon(toolGlyph(tool.name), 18))}</span><div class="so-jobd__title"><h3 class="so-jobd__name" tabindex="-1">${tool.name}</h3>${
+  return html`<div class="so-jobd" data-ds-key="${'job:' + part.id}" data-state="${running ? 'running' : endState}"><div class="so-jobd__nav"><button class="ds-btn ds-btn--text ds-sm so-jobd__back" type="button" data-job-back>${raw(icon('chevronLeft', 18))}<span>All jobs</span></button><button class="ds-btn ds-btn--text ds-sm so-jobd__reveal" type="button" data-job-reveal="${part.id}"><span>Show in chat</span>${raw(icon('chevronRight', 18))}</button></div><div class="so-jobd__head"><span class="so-job__icon" aria-hidden="true">${raw(icon(toolGlyph(tool.name), 18))}</span><div class="so-jobd__title"><h3 class="so-jobd__name" tabindex="-1">${tool.name}</h3>${
     tool.summary ? html`<p class="so-jobd__summary">${tool.summary}</p>` : ''
   }</div>${state}</div>${
-    taskId ? html`<div class="so-jobd__actions"><button class="ds-btn ds-btn--tonal ds-btn--sm" type="button" data-job-stop="${taskId}"${stopping && stopping.has(taskId) ? html` aria-busy="true"` : ''}>${raw(icon('stop', 16))}<span>Stop this job</span></button></div>` : ''
+    taskId ? html`<div class="so-jobd__actions"><button class="ds-btn ds-btn--tonal ds-sm" type="button" data-job-stop="${taskId}"${stopping && stopping.has(taskId) ? html` aria-busy="true"` : ''}>${raw(icon('stop', 16))}<span>Stop this job</span></button></div>` : ''
   }${wf && running ? agentProgress(agentFacts(part, tool)) : ''}<dl class="ds-facts so-facts so-jobd__facts">${facts.map(([label, value]) => html`<div><dt>${label}</dt><dd class="so-fact">${value}</dd></div>`)}</dl>${
     body ? html`<div class="so-tool__body so-jobd__body">${body}</div>` : ''
   }</div>`;
@@ -1915,7 +1915,7 @@ export function assistantMessage(message, view, segment = 0) {
     runs.map(runHtml)
   }${working ? liveHtml(message, view.chat) : ''}${
     copyable || facts.length ? html`<div class="so-msg__foot">${
-      copyable ? html`<button class="ds-btn ds-btn--quiet ds-btn--icon ds-btn--sm so-msg__copy" type="button" data-action="copy-answer" data-message="${message.id}" aria-label="Copy the answer" data-tip="Copy">${raw(icon('copy', 18))}</button><button class="ds-btn ds-btn--quiet ds-btn--icon ds-btn--sm so-msg__speak" type="button" data-action="speak-answer" data-message="${message.id}" aria-label="Read the answer out loud" data-tip="Read aloud (again to stop)">${faces(raw(icon('volume', 18)), '')}</button>` : ''
+      copyable ? html`<button class="ds-btn ds-btn--quiet ds-btn--icon ds-sm so-msg__copy" type="button" data-action="copy-answer" data-message="${message.id}" aria-label="Copy the answer" data-tip="Copy">${raw(icon('copy', 18))}</button><button class="ds-btn ds-btn--quiet ds-btn--icon ds-sm so-msg__speak" type="button" data-action="speak-answer" data-message="${message.id}" aria-label="Read the answer out loud" data-tip="Read aloud (again to stop)">${faces(raw(icon('volume', 18)), '')}</button>` : ''
     }${infoButton(facts, 'Usage of this answer')}</div>` : ''
   }</article>`;
 }
@@ -1992,7 +1992,7 @@ export function lineHtml(entry, view) {
       // a divider (.so-line--row: no hairlines, and on a phone it wraps).
       const refused = view.failedItem(l.clientId);
       return html`<div class="${refused ? 'so-line so-line--row' : 'ds-divider ds-divider--label so-line'}" data-ds-key="${key}" data-kind="command"${refused ? html` data-state="failed"` : ''}>${raw(icon('chevronRight', 16))}<span class="so-line__text so-line__command">${l.text}</span>${
-        refused ? html`<span class="ds-status ds-status--error" data-chip="failed">${raw(icon('alertCircle', 16))}<span>Not run</span></span>${infoButton([refused.error], 'Why it did not run')}<button class="ds-btn ds-btn--quiet ds-btn--icon ds-btn--sm" type="button" data-action="outbox-drop" data-id="${refused.id}" aria-label="Dismiss" data-tip="Dismiss">${raw(icon('close', 18))}</button>` : ''
+        refused ? html`<span class="ds-status ds-tone-error" data-chip="failed">${raw(icon('alertCircle', 16))}<span>Not run</span></span>${infoButton([refused.error], 'Why it did not run')}<button class="ds-btn ds-btn--quiet ds-btn--icon ds-sm" type="button" data-action="outbox-drop" data-id="${refused.id}" aria-label="Dismiss" data-tip="Dismiss">${raw(icon('close', 18))}</button>` : ''
       }</div>`;
     }
     case 'account': {
@@ -2021,7 +2021,7 @@ export function lineHtml(entry, view) {
       return html`<div class="ds-divider ds-divider--label so-line" data-ds-key="${key}" data-kind="model">${raw(icon('cpu', 16))}<span class="so-line__text">${'Model: ' + view.modelLabel(l.model) + (l.effort ? ' · ' + view.effortLabel(l.effort) : '')}</span></div>`;
     }
     case 'error':
-      return html`<div class="ds-alert ds-alert--error so-line-alert" data-ds-key="${key}" data-kind="error" role="alert">${raw(icon('alertCircle', 20))}<span class="ds-alert__text">${l.text || 'Something went wrong.'}</span>${infoButton([l.code ? 'code ' + l.code : ''], 'Error details')}</div>`;
+      return html`<div class="ds-alert ds-tone-error so-line-alert" data-ds-key="${key}" data-kind="error" role="alert">${raw(icon('alertCircle', 20))}<span class="ds-alert__text">${l.text || 'Something went wrong.'}</span>${infoButton([l.code ? 'code ' + l.code : ''], 'Error details')}</div>`;
     case 'turn': {
       if (l.outcome === 'limited') {
         const renew = view.renewal(l.turn);
@@ -2033,8 +2033,8 @@ export function lineHtml(entry, view) {
         // on a line of its own.
         // Under the newest limit, whether the chat goes on by itself then.
         const goesOn = !!renew && !!view.autoContinue && view.autoContinue() && (!view.lastLimit || view.lastLimit(entry));
-        return html`<div class="ds-alert ds-alert--warning so-line-alert" data-ds-key="${key}" data-kind="limit" role="status">${raw(icon('clock', 20))}<span class="ds-alert__text so-line-alert__stack"><span>${'Limit reached' + (renew ? ' — renews in ' + renew : '') + (goesOn ? '. The chat goes on by itself then.' : '')}</span>${
-          offer ? html`<span class="so-line-alert__actions"><button class="ds-btn ds-btn--sm" type="button" data-action="continue-with" aria-haspopup="menu" aria-expanded="false" data-tip="Go on with another account">${raw(icon('user', 16))}<span>Continue with…</span>${raw(icon('chevronDown', 16))}</button></span>` : ''
+        return html`<div class="ds-alert ds-tone-warning so-line-alert" data-ds-key="${key}" data-kind="limit" role="status">${raw(icon('clock', 20))}<span class="ds-alert__text so-line-alert__stack"><span>${'Limit reached' + (renew ? ' — renews in ' + renew : '') + (goesOn ? '. The chat goes on by itself then.' : '')}</span>${
+          offer ? html`<span class="so-line-alert__actions"><button class="ds-btn ds-sm" type="button" data-action="continue-with" aria-haspopup="menu" aria-expanded="false" data-tip="Go on with another account">${raw(icon('user', 16))}<span>Continue with…</span>${raw(icon('chevronDown', 16))}</button></span>` : ''
         }</span>${infoButton([l.text, ...silentTurnFacts(l.turn, view)], 'About the limit')}</div>`;
       }
       if (l.outcome === 'failed') {
@@ -2042,7 +2042,7 @@ export function lineHtml(entry, view) {
         // (the CLI's exit, a signal) is the "i"'s (agenthost cliExited).
         const died = /^The agent exited during the turn: ([\s\S]+)$/.exec(String(l.text || ''));
         const words = died ? 'The agent stopped during the turn. The next message starts it again.' : 'The turn failed.' + (l.text ? ' ' + l.text : '');
-        return html`<div class="ds-alert ds-alert--error so-line-alert" data-ds-key="${key}" data-kind="failed" role="alert">${raw(icon('alertCircle', 20))}<span class="ds-alert__text">${words}</span>${infoButton([died ? died[1] : '', l.code ? 'code ' + l.code : '', ...silentTurnFacts(l.turn, view)], 'Error details')}</div>`;
+        return html`<div class="ds-alert ds-tone-error so-line-alert" data-ds-key="${key}" data-kind="failed" role="alert">${raw(icon('alertCircle', 20))}<span class="ds-alert__text">${words}</span>${infoButton([died ? died[1] : '', l.code ? 'code ' + l.code : '', ...silentTurnFacts(l.turn, view)], 'Error details')}</div>`;
       }
       return html`<div class="ds-divider ds-divider--label so-line" data-ds-key="${key}" data-kind="interrupted">${raw(icon('ban', 16))}<span class="so-line__text">Interrupted</span>${infoButton(silentTurnFacts(l.turn, view), 'Usage of this answer')}</div>`;
     }

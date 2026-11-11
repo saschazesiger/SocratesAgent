@@ -600,7 +600,7 @@ export function mountChat(ctx) {
           // Never tried for want of a connection: it can still stay unsaid.
           // One tried already may have reached the server, its answer lost.
           withdraw: state === 'local' && !item.attempts ? { outbox: item.id } : null,
-        })}${failed ? html`<div class="so-msg__actions" data-ds-key="${'oa:' + item.payload.client_id}"><button class="ds-btn ds-btn--quiet ds-btn--icon ds-btn--sm" type="button" data-action="outbox-edit" data-id="${item.id}" aria-label="Edit the message" data-tip="Edit">${raw(icon('pencil', 18))}</button><button class="ds-btn ds-btn--tonal ds-btn--icon ds-btn--sm" type="button" data-action="outbox-retry" data-id="${item.id}" aria-label="Send again" data-tip="Send again">${raw(icon('sync', 18))}</button></div>` : ''}`),
+        })}${failed ? html`<div class="so-msg__actions" data-ds-key="${'oa:' + item.payload.client_id}"><button class="ds-btn ds-btn--quiet ds-btn--icon ds-sm" type="button" data-action="outbox-edit" data-id="${item.id}" aria-label="Edit the message" data-tip="Edit">${raw(icon('pencil', 18))}</button><button class="ds-btn ds-btn--tonal ds-btn--icon ds-sm" type="button" data-action="outbox-retry" data-id="${item.id}" aria-label="Send again" data-tip="Send again">${raw(icon('sync', 18))}</button></div>` : ''}`),
       });
     }
     for (const [clientId, one] of sent) {
@@ -683,7 +683,7 @@ export function mountChat(ctx) {
     }
     if (!synced) {
       const share = target > 0 ? Math.min(100, Math.floor((chat.lastSeq / target) * 100)) : 0;
-      entries.push({ key: 'loading', markup: String(html`<div class="ds-loading so-chat__loading" role="status"><span class="ds-loader ds-loader--sm" aria-hidden="true"></span><span>Loading the conversation…</span>${
+      entries.push({ key: 'loading', markup: String(html`<div class="ds-loading so-chat__loading" role="status"><span class="ds-loader ds-sm" aria-hidden="true"></span><span>Loading the conversation…</span>${
         share ? html`<span class="so-chat__loading-share">${share + '\u00a0%'}</span>` : ''
       }</div>`) });
     }
@@ -788,16 +788,16 @@ export function mountChat(ctx) {
     // While this line says the connection, the page's bar does not say it
     // again (net.js).
     connectionSaidElsewhere(old);
-    const said = note ? html`<div class="ds-alert ds-alert--error" data-ds-key="note" role="alert">${raw(icon('alertCircle', 20))}<span class="ds-alert__text">${note.text}</span><button class="ds-btn ds-btn--quiet ds-btn--icon ds-btn--sm" type="button" data-action="note-close" aria-label="Dismiss" data-tip="Dismiss">${raw(icon('close', 18))}</button></div>` : '';
+    const said = note ? html`<div class="ds-alert ds-tone-error" data-ds-key="note" role="alert">${raw(icon('alertCircle', 20))}<span class="ds-alert__text">${note.text}</span><button class="ds-btn ds-btn--quiet ds-btn--icon ds-sm" type="button" data-action="note-close" aria-label="Dismiss" data-tip="Dismiss">${raw(icon('close', 18))}</button></div>` : '';
     let line = '';
     if (old) {
       line = navigator.onLine === false
-        ? html`<div class="ds-alert ds-alert--warning" data-ds-key="offline">${raw(icon('wifiOff', 20))}<span class="ds-alert__text">Offline. The chat may be behind; what you send goes out when the connection is back.</span></div>`
-        : html`<div class="ds-alert ds-alert--warning" data-ds-key="reconnecting"><span class="so-chat__spin" aria-hidden="true"><span class="ds-spinner"></span></span><span class="ds-alert__text">Reconnecting… The chat may be behind.</span><button class="ds-btn ds-btn--quiet ds-btn--icon ds-btn--sm" type="button" data-action="reconnect" aria-label="Try to connect now" data-tip="Retry">${raw(icon('sync', 18))}</button></div>`;
+        ? html`<div class="ds-alert ds-tone-warning" data-ds-key="offline">${raw(icon('wifiOff', 20))}<span class="ds-alert__text">Offline. The chat may be behind; what you send goes out when the connection is back.</span></div>`
+        : html`<div class="ds-alert ds-tone-warning" data-ds-key="reconnecting"><span class="so-chat__spin" aria-hidden="true"><span class="ds-spinner"></span></span><span class="ds-alert__text">Reconnecting… The chat may be behind.</span><button class="ds-btn ds-btn--quiet ds-btn--icon ds-sm" type="button" data-action="reconnect" aria-label="Try to connect now" data-tip="Retry">${raw(icon('sync', 18))}</button></div>`;
     } else if (stream && stream.status() === 'polling') {
       // The stream does not get through, and the chat is read by plain
       // requests meanwhile: current, only slower, and the stream is tried on.
-      line = html`<div class="ds-alert" data-ds-key="polling" role="status">${raw(icon('clock', 20))}<span class="ds-alert__text">${'No live connection. The chat is updated every ' + Math.round(POLL_EVERY / 1000) + ' s.'}</span><button class="ds-btn ds-btn--quiet ds-btn--icon ds-btn--sm" type="button" data-action="reconnect" aria-label="Try to connect now" data-tip="Retry">${raw(icon('sync', 18))}</button></div>`;
+      line = html`<div class="ds-alert" data-ds-key="polling" role="status">${raw(icon('clock', 20))}<span class="ds-alert__text">${'No live connection. The chat is updated every ' + Math.round(POLL_EVERY / 1000) + ' s.'}</span><button class="ds-btn ds-btn--quiet ds-btn--icon ds-sm" type="button" data-action="reconnect" aria-label="Try to connect now" data-tip="Retry">${raw(icon('sync', 18))}</button></div>`;
     } else if (kept) {
       const when = chat.lastAt ? new Date(chat.lastAt).toLocaleString([], { weekday: 'short', hour: '2-digit', minute: '2-digit' }) : '';
       line = html`<div class="ds-alert" data-ds-key="catchup"><span class="so-chat__spin" aria-hidden="true"><span class="ds-spinner"></span></span><span class="ds-alert__text">${'Showing the chat as this device last saw it' + (when ? ' (' + when + ')' : '') + '. Loading what is new…'}</span></div>`;
@@ -805,14 +805,14 @@ export function mountChat(ctx) {
       // A restore brings the chats back, not the code they worked on
       // (REBUILD §6.2): the conversation stays readable, and the agent can
       // go on once it is told where the folder is on this machine.
-      line = html`<div class="ds-alert ds-alert--warning" data-ds-key="workdir">${raw(icon('alert', 20))}<span class="ds-alert__text">This chat's folder is not on this machine.</span><button class="ds-btn ds-btn--quiet ds-btn--icon ds-btn--sm so-info" type="button" data-action="info" aria-label="The missing folder" data-tip="${session.workdir}">${raw(icon('info', 18))}</button><button class="ds-btn ds-btn--sm" type="button" data-action="point-folder">Point to folder</button></div>`;
+      line = html`<div class="ds-alert ds-tone-warning" data-ds-key="workdir">${raw(icon('alert', 20))}<span class="ds-alert__text">This chat's folder is not on this machine.</span><button class="ds-btn ds-btn--quiet ds-btn--icon ds-sm so-info" type="button" data-action="info" aria-label="The missing folder" data-tip="${session.workdir}">${raw(icon('info', 18))}</button><button class="ds-btn ds-sm" type="button" data-action="point-folder">Point to folder</button></div>`;
     } else if (chat.process === 'failed' && !chat.turn && !diedInTurn()) {
-      line = html`<div class="ds-alert ds-alert--error" data-ds-key="failed">${raw(icon('alertCircle', 20))}<span class="ds-alert__text">The agent could not start. Send a message to try again.</span><button class="ds-btn ds-btn--quiet ds-btn--icon ds-btn--sm so-info" type="button" data-action="info" aria-label="Why it did not start" data-tip="${chat.processDetail || 'No detail was given.'}">${raw(icon('info', 18))}</button></div>`;
+      line = html`<div class="ds-alert ds-tone-error" data-ds-key="failed">${raw(icon('alertCircle', 20))}<span class="ds-alert__text">The agent could not start. Send a message to try again.</span><button class="ds-btn ds-btn--quiet ds-btn--icon ds-sm so-info" type="button" data-action="info" aria-label="Why it did not start" data-tip="${chat.processDetail || 'No detail was given.'}">${raw(icon('info', 18))}</button></div>`;
     } else if (chat.turn && stopSlow(chat.turn)) {
       // A Stop the agent has not acted on yet: the host ends the agent and
       // starts it again when it has not by then.
       const by = clock(chat.turn.stopAskedAt + STOP_RESTART, true);
-      line = html`<div class="ds-alert ds-alert--warning" data-ds-key="stopping"><span class="so-chat__spin" aria-hidden="true"><span class="ds-spinner"></span></span><span class="ds-alert__text">${'Stopping… The agent has not stopped yet. If it has not by ' + by + ', it is ended and started again.'}</span></div>`;
+      line = html`<div class="ds-alert ds-tone-warning" data-ds-key="stopping"><span class="so-chat__spin" aria-hidden="true"><span class="ds-spinner"></span></span><span class="ds-alert__text">${'Stopping… The agent has not stopped yet. If it has not by ' + by + ', it is ended and started again.'}</span></div>`;
     } else if (chat.turn && chat.turn.quietSince) {
       // The host's watch: nothing from the agent for minutes while it waits
       // on nobody. It may be stuck; Stop is the way out, and works even when
@@ -822,7 +822,7 @@ export function mountChat(ctx) {
       const about = ['Started ' + clock(chat.turn.startedAt, true), 'Last sign of life ' + clock(since, true),
         session.harness === 'claude' ? 'A turn quiet for 30 min is stopped by itself.' : '',
         'Stop ends the turn; an agent that does not stop within 30 s is ended and started again on the same conversation.'];
-      line = html`<div class="ds-alert ds-alert--warning" data-ds-key="quiet" role="status">${raw(icon('clock', 20))}<span class="ds-alert__text">${'Nothing from the agent since ' + clock(since) + (quiet ? ' (' + quiet + ')' : '') + '. It may be stuck.'}</span>${infoButton(about, 'About the quiet agent')}<button class="ds-btn ds-btn--sm" type="button" data-action="stop-turn"${interrupting ? html` aria-busy="true"` : ''}>${raw(icon('stop', 16))}<span>Stop</span></button></div>`;
+      line = html`<div class="ds-alert ds-tone-warning" data-ds-key="quiet" role="status">${raw(icon('clock', 20))}<span class="ds-alert__text">${'Nothing from the agent since ' + clock(since) + (quiet ? ' (' + quiet + ')' : '') + '. It may be stuck.'}</span>${infoButton(about, 'About the quiet agent')}<button class="ds-btn ds-sm" type="button" data-action="stop-turn"${interrupting ? html` aria-busy="true"` : ''}>${raw(icon('stop', 16))}<span>Stop</span></button></div>`;
     } else if (chat.process === 'starting') {
       line = html`<div class="ds-alert" data-ds-key="starting"><span class="so-chat__spin" aria-hidden="true"><span class="ds-spinner"></span></span><span class="ds-alert__text">Starting the agent…</span></div>`;
     }
@@ -913,7 +913,7 @@ export function mountChat(ctx) {
     const said = at > now
       ? 'Sends the message above by itself ' + inWords(at - now) + ' (' + new Date(at).toLocaleString([], { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) + ').'
       : 'Optional: pick a time, and the message above is sent then by itself.';
-    morph(scheduleSlot, html`<div class="ds-field so-schedule"><label class="ds-field__label" for="${fid}">${raw(icon('clock', 16))}<span>Start automatically</span></label><div class="ds-field__row"><input class="ds-input so-schedule__at" type="datetime-local" id="${fid}" value="${at ? localInput(at) : ''}" min="${localInput(now)}" aria-describedby="${fid + '-hint'}" data-schedule><button class="ds-btn ds-btn--text ds-btn--sm" type="button" data-action="schedule-clear"${at ? '' : html` hidden`}>Clear</button></div><small class="ds-field__hint" id="${fid + '-hint'}">${said}</small></div>`);
+    morph(scheduleSlot, html`<div class="ds-field so-schedule"><label class="ds-field__label" for="${fid}">${raw(icon('clock', 16))}<span>Start automatically</span></label><div class="ds-field__row"><input class="ds-input so-schedule__at" type="datetime-local" id="${fid}" value="${at ? localInput(at) : ''}" min="${localInput(now)}" aria-describedby="${fid + '-hint'}" data-schedule><button class="ds-btn ds-btn--text ds-sm" type="button" data-action="schedule-clear"${at ? '' : html` hidden`}>Clear</button></div><small class="ds-field__hint" id="${fid + '-hint'}">${said}</small></div>`);
   }
 
   // setStartAt saves the scheduled start (0: none). One save is on its way
@@ -1133,7 +1133,7 @@ export function mountChat(ctx) {
     const close = document.createElement('button');
     close.className = 'ds-btn ds-btn--text';
     close.type = 'button';
-    close.dataset.close = '';
+    close.dataset.dsClose = '';
     // Opened on a job (a row or a card at the foot), the focus starts on
     // its name, as when it is picked from the list; else on Close.
     const named = picked ? body.querySelector('.so-jobd__name') : null;

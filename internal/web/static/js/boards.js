@@ -174,8 +174,8 @@ export function mountBoard({ host }) {
     return html`<section class="so-board__col" data-ds-key="${'col:' + column.id}" data-col="${column.id}" aria-labelledby="${headId}">
       <div class="so-board__col-head">
         <h2 class="so-board__col-name" id="${headId}"><button class="so-board__col-btn ds-pressable ds-pressable--inset" type="button" data-edit-col="${column.id}" data-tip="Rename, move or delete this column; drag it to move it">${name}</button></h2>
-        <span class="ds-badge ds-badge--neutral so-board__count" aria-label="${column.cards.length + (column.cards.length === 1 ? ' card' : ' cards')}">${column.cards.length}</span>
-        <button class="ds-btn ds-btn--quiet ds-btn--icon ds-btn--sm" type="button" data-add-card="${column.id}" aria-label="${'Add a card to ' + name}" data-tip="Add a card">${raw(icon('plus', 16))}</button>
+        <span class="ds-badge ds-tone-neutral so-board__count" aria-label="${column.cards.length + (column.cards.length === 1 ? ' card' : ' cards')}">${column.cards.length}</span>
+        <button class="ds-btn ds-btn--quiet ds-btn--icon ds-sm" type="button" data-add-card="${column.id}" aria-label="${'Add a card to ' + name}" data-tip="Add a card">${raw(icon('plus', 16))}</button>
       </div>
       <ol class="so-board__cards" data-cards="${column.id}" aria-label="${name}">${column.cards.map(cardHtml)}</ol>
       <button class="ds-btn ds-btn--text ds-add-row so-board__add" type="button" data-add-card="${column.id}">${raw(icon('plus', 16))}Add a card</button>
@@ -382,14 +382,14 @@ export function mountBoard({ host }) {
   // to keep it open (a field it marked).
   function formDialog({ title, fields, okLabel, submit, extra = [], opener }) {
     const id = 'boardForm' + (++seq);
-    const cancel = el('button', { class: 'ds-btn ds-btn--text', type: 'button', 'data-close': true, text: 'Cancel' });
-    const ok = el('button', { class: 'ds-btn ds-btn--primary', type: 'submit', text: okLabel });
+    const cancel = el('button', { class: 'ds-btn ds-btn--text', type: 'button', 'data-ds-close': true, text: 'Cancel' });
+    const ok = el('button', { class: 'ds-btn ds-btn--filled', type: 'submit', text: okLabel });
     const form = el('form', { class: 'ds-dialog__box so-board__form', method: 'dialog', novalidate: true },
       el('h2', { class: 'ds-dialog__title', id: id + '-title', text: title }),
       el('div', { class: 'ds-dialog__body so-board__fields' }, fields),
       el('div', { class: 'ds-dialog__actions' }, ...extra, cancel, ok));
     const dialog = el('dialog', { class: 'ds-dialog ds-dialog--full-narrow', 'aria-labelledby': id + '-title' },
-      el('div', { class: 'ds-dialog__backdrop', 'data-close': true }), form);
+      el('div', { class: 'ds-dialog__backdrop', 'data-ds-close': true }), form);
     form.addEventListener('submit', (event) => {
       event.preventDefault();
       if (submit() === false) return;

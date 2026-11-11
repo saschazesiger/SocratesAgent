@@ -34,15 +34,15 @@ committed straight to `main` and pushed: no branch and no pull request.
 Test it first (`make check`, and the browser suite or the running app
 where the change is visible there).
 
-## Design system: Dashboard-Style
+## Design system: Z-Dash
 
-The web interface follows Dashboard-Style's rules for a project (its `AGENTS.md`, "Using Dashboard-Style in a
-project", 2.0, unchanged in 2.1), filled in for Socrates. `docs/design/DASHBOARD-STYLE.md` has them with Socrates'
-details, what moved onto DS in 2.0 and 2.1 and what is still Socrates' own on purpose. Run `make ds-check` before committing a change to
-the UI.
+The web interface follows Z-Dash's rules for a project (its `AGENTS.md`, "Using Z-Dash in a project"; Z-Dash was
+called Dashboard-Style until 2.x), filled in for Socrates. `docs/design/Z-DASH.md` has them with Socrates' details,
+what moved onto DS in 2.0, 2.1 and 3.0 and what is still Socrates' own on purpose. Run `make ds-check` before
+committing a change to the UI.
 
-- The UI is built on [Dashboard-Style](https://github.com/saschazesiger/Dashboard-Style) 2.x, vendored in
-  `internal/web/static/vendor/dashboard-style` (tokens `--ds-*`, components `.ds-*`, `DS.motion`, `DS.indicator`,
+- The UI is built on [Z-Dash](https://github.com/saschazesiger/Z-Dash) 3.x, vendored in
+  `internal/web/static/vendor/z-dash` (tokens `--ds-*`, components `.ds-*`, `DS.motion`, `DS.indicator`,
   `DS.dom`, `DS.ripple`, `DS.icons`, `DS.overlay`). `ui.js` `startUI()` calls `DS.ripple.attach(document)` once:
   every action gets the pointer ripple, and the action guard it installs blocks busy, done and
   `aria-disabled="true"` actions for every input (click, keys, submit); a control that explains itself on click
@@ -50,20 +50,27 @@ the UI.
   with `DS.overlay.open(el, { opener })` / `DS.overlay.close(el)`, show snackbars with `api.js` `toast()` (on
   `DS.overlay.toast`) and tooltips with one `DS.overlay.tooltips(document)`; every overlay sits inside the
   `.ds-theme` element (`<html>`).
-- Never edit `internal/web/static/vendor/dashboard-style`: it is checksummed (`SHA256SUMS`, checked by
-  `make ds-check` and `make check`) and replaced by the nightly `.github/workflows/update-dashboard-style.yml` (by
+- Never edit `internal/web/static/vendor/z-dash`: it is checksummed (`SHA256SUMS`, checked by
+  `make ds-check` and `make check`) and replaced by the nightly `.github/workflows/update-z-dash.yml` (by
   hand: `make vendor-ds`, or `make vendor-ds DS_REF=<commit>` for a release not on main yet). A fix or a component
-  every dashboard could use goes to Dashboard-Style itself (project-neutral, English), then the copy is updated.
+  every dashboard could use goes to Z-Dash itself (project-neutral, English), then the copy is updated.
+- The pages do not load the copy itself but the project bundle `internal/web/static/ds/ds.bundle.css` and
+  `ds.bundle.js`: only the components, modules and glyphs the pages use, written by `make ds-bundle` from
+  `internal/web/ds.config.json` (the nightly update and `make vendor-ds` rebuild it). A change that uses a `ds-`
+  class or `DS` module the pages did not use before runs `make ds-bundle` and commits the bundle with it;
+  `make ds-check` fails on a stale bundle. The scan sees whole names only: write class names out (`ui.js` `tone()`
+  maps a status word to its `.ds-tone-*` class), never build them from pieces.
 - When the nightly update fails at "Verify", nothing was committed and the site keeps the old copy: run
-  `make vendor-ds` and `make ds-check` locally, read Dashboard-Style's `CHANGELOG.md` for deprecations and removals,
-  and commit the new copy together with the project's fix (or fix Dashboard-Style; the next run picks it up). Then
-  Actions → "Update Dashboard-Style" → *Run workflow*. More in its `docs/install.md`, "When the update fails".
+  `make vendor-ds` and `make ds-check` locally, read Z-Dash's `CHANGELOG.md` for deprecations and removals (a new
+  major version comes with `docs/migration.md` and `tools/migrate.mjs`), and commit the new copy and bundle
+  together with the project's fix (or fix Z-Dash; the next run picks it up). Then Actions → "Update Z-Dash" →
+  *Run workflow*. More in its `docs/install.md`, "When the update fails".
 - Reach for an existing component first. The docs are not part of the vendored copy: the table "Which component
   for which need" and the markup of every component are in
-  https://github.com/saschazesiger/Dashboard-Style/blob/main/docs/components.md; for live examples clone the
+  https://github.com/saschazesiger/Z-Dash/blob/main/docs/components.md; for live examples clone the
   repository and open `styleguide/index.html` (every component) and `styleguide/motion.html` (the Motion Lab: every
   choreography, replayable and slowed down with its speed select; both work from disk). What each component plays
-  is the choreography in https://github.com/saschazesiger/Dashboard-Style/blob/main/docs/motion.md. Copy the
+  is the choreography in https://github.com/saschazesiger/Z-Dash/blob/main/docs/motion.md. Copy the
   documented markup and attributes exactly; behaviour (wiring the triggers, filtering, choosing) is the project's
   own script, and opening and closing go through `DS.overlay`.
 - Theme only through tokens in `internal/web/static/css/theme.css`, on `.ds-theme`, loaded after `ds.css`: roles
@@ -77,11 +84,11 @@ the UI.
   before ds (`@layer reset;` first, or `@layer reset, ds, app;`). Under `.ds-base`, `hidden` always hides; never add
   a `[hidden]` rule.
 - Never write the attributes the system owns (those the "Attributes" table in
-  https://github.com/saschazesiger/Dashboard-Style/blob/main/docs/components.md lists as written by the system, such
+  https://github.com/saschazesiger/Z-Dash/blob/main/docs/components.md lists as written by the system, such
   as `data-scrolled`, `data-ds-*`, `data-toast-reserve`); the page sets only its own ones.
 - Never change the look of a `.ds-*` component in project CSS (colour, radius, type, motion); set its hooks
   instead, in the theme or on the element. Placing a `.ds-*` element inside a project container is fine; document
-  any deliberate deviation with its reason (`ds-check.json`, or DASHBOARD-STYLE.md for a rule the check cannot
+  any deliberate deviation with its reason (`ds-check.json`, or Z-DASH.md for a rule the check cannot
   see).
 - Local components use the project prefix `so-` and read tokens only (`--ds-*` and `--so-*`): no colour, radius,
   font, shadow, duration or curve literals, no own `@keyframes` (use the `ds-*` keyframes and motion tokens). A
@@ -94,9 +101,13 @@ the UI.
   patches in place, so bind listeners once (or mark a subtree `data-ds-replace`). Reorders go through
   `DS.motion.flip`, figures through `DS.motion.countUp`; JS timing comes from `DS.motion.motionDuration()`
   (`ui.js` `ms()`), never ms literals.
+- Tone, size and density are option classes (3.0): `.ds-tone-success|warning|error|neutral`, `.ds-sm`, `.ds-lg`,
+  `.ds-density-*`, and `.ds-btn--filled` for the one filled button; an option class applies to everything inside
+  its element.
 - Icons only from `DS.icons` / `js/icons.js` (through `ui.js` `icon()`); status never by colour alone; actions are
   pills.
-- `make ds-check` runs `node internal/web/static/vendor/dashboard-style/tools/check-project.mjs --config
+- `make ds-check` runs `node internal/web/static/vendor/z-dash/tools/check-project.mjs --config
   ds-check.json` (CI and the nightly update run it too): it checks the bullets above (rules `vendor`, `classes`,
   `deprecated`, `literals`, `keyframes`, `themes`, `layers`, `hidden`, `restyle`, `attributes`, `dom`,
-  `pressable`); a deliberate deviation is an exception in `ds-check.json` with its reason.
+  `pressable`, and in 3.0 `options` and `bundle`); a deliberate deviation is an exception in `ds-check.json` with
+  its reason.

@@ -9,7 +9,7 @@
 // itself: the modal's Read aloud button reads the spoken version.
 
 import { el } from './api.js';
-import { DS, html, raw, icon, morph } from './ui.js';
+import { DS, html, raw, icon, morph, tone } from './ui.js';
 import { agentMarkHtml } from './logos.js';
 
 // The words of the chip, by committed state, and the DS status it wears.
@@ -52,7 +52,7 @@ const minutesWords = (minutes) => spanWords(Math.max(1, Math.round(minutes)) * 6
 // its text's weight say where it stands, and a word does for a reader.
 const TASK = {
   completed: { status: 'done', word: 'done', mark: () => raw(icon('checkCircle', 20)) },
-  in_progress: { status: 'running', word: 'running', mark: () => html`<span class="ds-spinner ds-spinner--sm"></span>` },
+  in_progress: { status: 'running', word: 'running', mark: () => html`<span class="ds-spinner ds-spinner--ink ds-sm"></span>` },
 };
 
 function taskHtml(t) {
@@ -79,12 +79,12 @@ export function openStatusModal({ session, opener, speaking, toggle }) {
   // Nothing in it takes the focus, so it does, for the keyboard to scroll it.
   const body = el('div', { class: 'ds-dialog__body so-status__body', 'aria-live': 'polite', tabindex: '0', role: 'region', 'aria-label': 'Status' });
   const speakBtn = el('button', { class: 'ds-btn ds-btn--tonal so-status__speak', type: 'button', hidden: true });
-  const close = el('button', { class: 'ds-btn ds-btn--primary', type: 'button', 'data-close': true, text: 'Close' });
+  const close = el('button', { class: 'ds-btn ds-btn--filled', type: 'button', 'data-ds-close': true, text: 'Close' });
   const dialog = el('dialog', { class: 'ds-dialog so-status', 'aria-labelledby': titleId },
-    el('div', { class: 'ds-dialog__backdrop', 'data-close': true }),
+    el('div', { class: 'ds-dialog__backdrop', 'data-ds-close': true }),
     el('div', { class: 'ds-dialog__box so-status__box' }));
   const box = dialog.querySelector('.so-status__box');
-  morph(box, html`<header class="so-status__head"><span class="so-status__mark" aria-hidden="true">${raw(agentMarkHtml(session.harness, 24))}</span><div class="so-status__titles"><p class="so-status__overline">Status</p><h2 class="ds-dialog__title so-status__title" id="${titleId}" tabindex="-1" autofocus>${session.title || 'Chat'}</h2></div><button class="ds-btn ds-btn--quiet ds-btn--icon so-status__x" type="button" data-close aria-label="Close" data-tip="Close">${raw(icon('close', 20))}</button></header>`);
+  morph(box, html`<header class="so-status__head"><span class="so-status__mark" aria-hidden="true">${raw(agentMarkHtml(session.harness, 24))}</span><div class="so-status__titles"><p class="so-status__overline">Status</p><h2 class="ds-dialog__title so-status__title" id="${titleId}" tabindex="-1" autofocus>${session.title || 'Chat'}</h2></div><button class="ds-btn ds-btn--quiet ds-btn--icon so-status__x" type="button" data-ds-close aria-label="Close" data-tip="Close">${raw(icon('close', 20))}</button></header>`);
   box.append(body, el('div', { class: 'ds-dialog__actions so-status__actions' }, speakBtn, close));
   speakBtn.addEventListener('click', () => toggle());
 
@@ -95,12 +95,12 @@ export function openStatusModal({ session, opener, speaking, toggle }) {
 
   function phase(text) {
     if (data || !open) return;
-    morph(body, html`<div class="ds-loading so-status__loading" role="status"><span class="ds-loader ds-loader--sm" aria-hidden="true"></span><span>${text}</span></div>`);
+    morph(body, html`<div class="ds-loading so-status__loading" role="status"><span class="ds-loader ds-sm" aria-hidden="true"></span><span>${text}</span></div>`);
   }
 
   function fail(text) {
     if (!open) return;
-    morph(body, html`<div class="ds-alert ds-alert--error" role="alert">${raw(icon('alertCircle', 20))}<span class="ds-alert__text">${text}</span></div>`);
+    morph(body, html`<div class="ds-alert ds-tone-error" role="alert">${raw(icon('alertCircle', 20))}<span class="ds-alert__text">${text}</span></div>`);
   }
 
   // since is how long ago a moment of the server's clock was, by this one.
@@ -143,7 +143,7 @@ export function openStatusModal({ session, opener, speaking, toggle }) {
     const a = data.analysis || {};
     const c = data.clock || {};
     const state = STATE[data.state] || { label: 'Unknown', kind: '' };
-    const chip = html`<span class="${'ds-status' + (state.kind ? ' ds-status--' + state.kind : '')}">${
+    const chip = html`<span class="${'ds-status' + tone(state.kind)}">${
       state.kind === 'running' ? html`<span class="ds-spinner ds-status__spinner" aria-hidden="true"></span>` : state.icon ? raw(icon(state.icon, 16)) : ''
     }<span>${state.label}</span></span>`;
     const h = hero(a, c);

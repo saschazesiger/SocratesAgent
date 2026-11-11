@@ -236,14 +236,14 @@ export function mountChatArtifacts(ctx) {
   /* ------------------------------------------------------------ the hosts */
 
   const back = el('button', {
-    class: 'ds-btn ds-btn--quiet ds-btn--icon ds-btn--sm so-artifacts__back', type: 'button', 'data-art-back': true,
+    class: 'ds-btn ds-btn--quiet ds-btn--icon ds-sm so-artifacts__back', type: 'button', 'data-art-back': true,
     'aria-label': 'Back to the artifacts', 'data-tip': 'Back to the artifacts', hidden: true,
   });
   morph(back, html`${raw(icon('arrowLeft', 18))}`);
   const title = el('h2', { class: 'so-artifacts__title', id: 'artifactsPanelTitle', tabindex: '-1', text: 'Artifacts' });
   const headActions = el('div', { class: 'so-artifacts__actions' });
   const closeBtn = el('button', {
-    class: 'ds-btn ds-btn--quiet ds-btn--icon ds-btn--sm', type: 'button', 'data-art-close': true,
+    class: 'ds-btn ds-btn--quiet ds-btn--icon ds-sm', type: 'button', 'data-art-close': true,
     'aria-label': 'Close the artifacts', 'data-tip': 'Close the artifacts',
   });
   morph(closeBtn, html`${raw(icon('close', 18))}`);
@@ -258,16 +258,16 @@ export function mountChatArtifacts(ctx) {
   // The sheet, for a window too narrow for the column.
   const sheetBody = el('div', { class: 'so-artifacts__content' });
   const sheet = el('dialog', { class: 'ds-sheet so-artifacts-sheet', id: 'artifactsSheet', 'aria-labelledby': 'artifactsSheetTitle' },
-    el('div', { class: 'ds-sheet__backdrop', 'data-close': true }),
+    el('div', { class: 'ds-sheet__backdrop', 'data-ds-close': true }),
     el('section', { class: 'ds-sheet__panel' },
       el('div', { class: 'ds-sheet__head' },
         el('h2', { class: 'ds-sheet__title', id: 'artifactsSheetTitle', text: 'Artifacts' }),
         el('button', {
-          class: 'ds-btn ds-btn--quiet ds-btn--icon', type: 'button', 'data-close': true,
+          class: 'ds-btn ds-btn--quiet ds-btn--icon', type: 'button', 'data-ds-close': true,
           'aria-label': 'Close', 'data-tip': 'Close',
         })),
       el('div', { class: 'ds-sheet__body', tabindex: '0' }, sheetBody)));
-  morph(sheet.querySelector('.ds-sheet__head [data-close]'), html`${raw(icon('close', 20))}`);
+  morph(sheet.querySelector('.ds-sheet__head [data-ds-close]'), html`${raw(icon('close', 20))}`);
   document.body.append(sheet);
 
   const hosts = [makeHost(columnBody, 'c'), makeHost(sheetBody, 's')];
@@ -370,7 +370,7 @@ export function mountChatArtifacts(ctx) {
   }
 
   function drawHost(host, live) {
-    morph(host.top, html`${loaded && !on && artifacts.length ? html`<div class="ds-alert ds-alert--warning so-artifacts__off" role="status">${raw(icon('alert', 20))}<span class="ds-alert__text">Socrates Artifacts is off in this chat: its agent cannot make or change these pages.</span><button class="ds-btn ds-btn--text ds-btn--sm" type="button" data-art-mcp>Switch it on</button></div>` : ''}`);
+    morph(host.top, html`${loaded && !on && artifacts.length ? html`<div class="ds-alert ds-tone-warning so-artifacts__off" role="status">${raw(icon('alert', 20))}<span class="ds-alert__text">Socrates Artifacts is off in this chat: its agent cannot make or change these pages.</span><button class="ds-btn ds-btn--text ds-sm" type="button" data-art-mcp>Switch it on</button></div>` : ''}`);
     const seen = session ? seenOf(session.id) : {};
     // The newest change first: what the agent made or changed last is what
     // the person looks for.
@@ -378,7 +378,7 @@ export function mountChatArtifacts(ctx) {
     flipMorph(host.list, html`${shown.map((a) => rowHtml(a, host.key, seen))}`, { items: '.so-artifact', live });
     let rest = '';
     if (!loaded) {
-      rest = html`<div class="ds-loading" role="status"><span class="ds-loader ds-loader--sm" aria-hidden="true"></span><span>Reading the artifacts…</span></div>`;
+      rest = html`<div class="ds-loading" role="status"><span class="ds-loader ds-sm" aria-hidden="true"></span><span>Reading the artifacts…</span></div>`;
     } else if (!artifacts.length && !on) {
       rest = html`<div class="ds-empty so-artifacts__empty"><span class="ds-empty__disc" aria-hidden="true">${raw(icon('presentation', 24))}</span><p class="ds-empty__title">Socrates Artifacts is off</p><p class="ds-empty__text">Switched on, this chat’s agent can make pages that show what words cannot: a diagram, a chart, a comparison. They appear here.</p><button class="ds-btn ds-btn--tonal" type="button" data-art-mcp>Switch it on…</button></div>`;
     } else if (!artifacts.length) {
@@ -398,7 +398,7 @@ export function mountChatArtifacts(ctx) {
         ${a.description ? html`<span class="ds-list__meta so-artifact__desc">${a.description}</span>` : ''}
         <span class="ds-list__meta so-artifact__meta">${'Version ' + a.version + (when ? ' · ' + when : '')}</span>
       </span>
-      ${fresh ? html`<span class="${'ds-tag so-artifact__tag' + (fresh === 'changed' ? ' ds-tag--neutral' : '')}">${fresh === 'new' ? 'New' : 'Changed'}</span>` : ''}
+      ${fresh ? html`<span class="${'ds-tag so-artifact__tag' + (fresh === 'changed' ? ' ds-tone-neutral' : '')}">${fresh === 'new' ? 'New' : 'Changed'}</span>` : ''}
     </li>`;
   }
 
@@ -490,12 +490,12 @@ export function mountChatArtifacts(ctx) {
     const titleId = 'artDialogTitle' + (++pageSeq);
     const heading = el('h2', { class: 'ds-dialog__title so-artdialog__title', id: titleId, text: a.title });
     const backBtn = el('button', {
-      class: 'ds-btn ds-btn--quiet ds-btn--icon', type: 'button', 'data-close': true,
+      class: 'ds-btn ds-btn--quiet ds-btn--icon', type: 'button', 'data-ds-close': true,
       'aria-label': 'Back', 'data-tip': 'Back',
     });
     morph(backBtn, html`${raw(icon('arrowLeft', 20))}`);
     const dialog = el('dialog', { class: 'ds-dialog ds-dialog--full so-artdialog', 'aria-labelledby': titleId },
-      el('div', { class: 'ds-dialog__backdrop', 'data-close': true }),
+      el('div', { class: 'ds-dialog__backdrop', 'data-ds-close': true }),
       el('div', { class: 'ds-dialog__box' },
         el('div', { class: 'ds-dialog__head' }, backBtn, heading, ...view.actions),
         el('div', { class: 'so-artpage__bar so-artdialog__bar' }, view.version),

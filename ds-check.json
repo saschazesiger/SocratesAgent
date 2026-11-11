@@ -1,10 +1,12 @@
 {
   "prefix": "so",
+  "major": 3,
+  "bundle": "internal/web/ds.config.json",
   "css": ["internal/web/static/css/so-*.css"],
   "js": ["internal/web/static/js/*.js"],
   "html": ["internal/web/static/*.html"],
   "themes": ["internal/web/static/css/theme.css"],
-  "vendor": "internal/web/static/vendor/dashboard-style",
+  "vendor": "internal/web/static/vendor/z-dash",
   "exceptions": [
     { "rule": "restyle", "file": "internal/web/static/css/so-frame.css", "selector": ".so-app .ds-drawer__head",
       "reason": "Placement: a phone on its side hides the drawer's brand (the top bar under the scrim has it) so the session list keeps its height." },

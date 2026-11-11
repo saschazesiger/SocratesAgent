@@ -16,14 +16,14 @@
 // fixed policy inside the app. What that policy is, and where each flag in it
 // was verified, is in docs/design/HARNESS-POLICY.md.
 //
-// The page wears the Dashboard-Style app frame: the drawer is its table of
+// The page wears the Z-Dash app frame: the drawer is its table of
 // contents, each card is one section, and every state the machine reports is
 // a status chip with its word, the technical detail behind the "i".
 
 import {
   api, el, toast, isOffline, errorMessage, onWake, infoTip, confirmDialog, alertDialog, promptDialog, openDialog,
 } from './api.js';
-import { DS, M, html, raw, icon, iconEl, morph, flipMorph, ms, faces } from './ui.js';
+import { DS, M, html, raw, icon, iconEl, morph, flipMorph, ms, faces, tone } from './ui.js';
 import { agentMark } from './logos.js';
 import { speak, speechKind, setVoiceKey } from './voice.js';
 import { combobox } from './combobox.js';
@@ -37,7 +37,7 @@ const $ = (id) => document.getElementById(id);
 // facedButton is a button built in script with the busy face (and the done
 // face, when `doneLabel` is given) of the ones in admin.html.
 function facedButton(label, busyLabel, doneLabel, attrs = {}) {
-  const button = el('button', { class: 'ds-btn ds-btn--sm', type: 'button', ...attrs });
+  const button = el('button', { class: 'ds-btn ds-sm', type: 'button', ...attrs });
   morph(button, faces(label, busyLabel, doneLabel));
   return button;
 }
@@ -151,9 +151,9 @@ const START_ONLY_NOTE = 'These apply to sessions started from now on.';
 // chip's look, data-state the machine's own word for it, so a test or a
 // script reads what was reported rather than a colour.
 const CHIP = {
-  ok: ['ds-status ds-status--ok', 'check'],
-  warning: ['ds-status ds-status--warning', 'alert'],
-  error: ['ds-status ds-status--error', 'alertCircle'],
+  ok: ['ds-status ds-tone-success', 'check'],
+  warning: ['ds-status ds-tone-warning', 'alert'],
+  error: ['ds-status ds-tone-error', 'alertCircle'],
   running: ['ds-status ds-status--running', null],
   waiting: ['ds-status', 'clock'],
   off: ['ds-status', 'ban'],
@@ -351,7 +351,7 @@ function wireFrame() {
   // The top bar's hairline while the view is scrolled (DS App frame).
   DS.dom.watchScrolled(view);
   fitDrawer();
-  DS.indicator.createIndicator($('adminNavList'), { active: '[aria-current="page"]', className: 'ds-drawer__indicator' });
+  DS.indicator.create($('adminNavList'), { active: '[aria-current="page"]', className: 'ds-drawer__indicator' });
   menu.addEventListener('click', () => {
     if (app.hasAttribute('data-drawer-open')) DS.overlay.close(drawer);
     else DS.overlay.open(drawer, { opener: menu });
@@ -570,7 +570,7 @@ function presetRow(preset = { label: '', path: '' }) {
   });
   const row = el('div', { class: 'so-preset' }, label, path,
     el('button', {
-      class: 'ds-btn ds-btn--quiet ds-btn--icon ds-btn--sm', type: 'button',
+      class: 'ds-btn ds-btn--quiet ds-btn--icon ds-sm', type: 'button',
       'aria-label': 'Remove this directory', 'data-tip': 'Remove this directory',
       onclick: () => M.flip(row.parentElement, () => row.remove()),
     }, iconEl('trash', 18)));
@@ -599,7 +599,7 @@ function readPresets() {
 // went, and tells the list's onChange once it is let go.
 function gripButton(label) {
   return el('button', {
-    class: 'ds-btn ds-btn--quiet ds-btn--icon ds-btn--sm ds-grip so-grip', type: 'button',
+    class: 'ds-btn ds-btn--quiet ds-btn--icon ds-sm ds-grip so-grip', type: 'button',
     'aria-label': label + ' (arrow keys)', 'data-tip': 'Drag to reorder',
   }, iconEl('grip', 18));
 }
@@ -671,13 +671,13 @@ function accountRow(account) {
   const actions = [];
   if (!signedIn) {
     actions.push(el('button', {
-      class: 'ds-btn ds-btn--sm', type: 'button', 'data-action': 'signin',
+      class: 'ds-btn ds-sm', type: 'button', 'data-action': 'signin',
       text: key ? 'Enter the key' : (account.state_detail ? 'Sign in again' : 'Sign in'),
       onclick: (event) => signInAccount(account, event.currentTarget),
     }));
   } else {
     actions.push(el('button', {
-      class: 'ds-btn ds-btn--quiet ds-btn--icon ds-btn--sm', type: 'button', 'data-action': 'signin',
+      class: 'ds-btn ds-btn--quiet ds-btn--icon ds-sm', type: 'button', 'data-action': 'signin',
       'aria-label': (key ? 'Replace the key of ' : 'Sign in again to ') + account.label,
       'data-tip': key ? 'Replace the key' : 'Sign in again',
       onclick: (event) => signInAccount(account, event.currentTarget),
@@ -685,12 +685,12 @@ function accountRow(account) {
   }
   actions.push(infoTip(accounts.facts(account), { label: 'About ' + account.label }));
   actions.push(el('button', {
-    class: 'ds-btn ds-btn--quiet ds-btn--icon ds-btn--sm', type: 'button', 'data-action': 'rename',
+    class: 'ds-btn ds-btn--quiet ds-btn--icon ds-sm', type: 'button', 'data-action': 'rename',
     'aria-label': 'Rename ' + account.label, 'data-tip': 'Rename',
     onclick: (event) => renameAccount(account, event.currentTarget),
   }, iconEl('pencil', 18)));
   actions.push(el('button', {
-    class: 'ds-btn ds-btn--quiet ds-btn--icon ds-btn--sm', type: 'button', 'data-action': 'delete',
+    class: 'ds-btn ds-btn--quiet ds-btn--icon ds-sm', type: 'button', 'data-action': 'delete',
     'aria-label': 'Delete ' + account.label, 'data-tip': 'Delete',
     onclick: (event) => deleteAccount(account, event.currentTarget),
   }, iconEl('trash', 18)));
@@ -723,8 +723,8 @@ async function signInAccount(account, opener) {
 async function promptSecret(title, opener) {
   const input = el('input', { class: 'ds-input', type: 'password', id: 'accountKeyAgain', autocomplete: 'off', spellcheck: 'false', autofocus: true, enterkeyhint: 'done' });
   const field = el('div', { class: 'ds-field' }, el('label', { class: 'ds-field__label', for: 'accountKeyAgain', text: 'API key' }), input);
-  const cancel = el('button', { class: 'ds-btn ds-btn--text', type: 'button', 'data-close': true, text: 'Cancel' });
-  const accept = el('button', { class: 'ds-btn ds-btn--primary', type: 'button', text: 'Save the key' });
+  const cancel = el('button', { class: 'ds-btn ds-btn--text', type: 'button', 'data-ds-close': true, text: 'Cancel' });
+  const accept = el('button', { class: 'ds-btn ds-btn--filled', type: 'button', text: 'Save the key' });
   const { dialog, shown } = openDialog({ title, body: 'It is kept encrypted on this machine and is never shown again.', field, actions: [cancel, accept], opener });
   const done = () => {
     dialog.answer(input.value.trim());
@@ -1073,7 +1073,7 @@ function optionValue(id, key) {
 // the technical side (a program's own error), goes behind its "i".
 function alertEl(kind, text, details = []) {
   const glyph = kind === 'error' ? 'alertCircle' : kind === 'warning' ? 'alert' : 'info';
-  return el('div', { class: 'ds-alert' + (kind ? ' ds-alert--' + kind : ''), role: kind === 'error' ? 'alert' : 'status' },
+  return el('div', { class: 'ds-alert' + tone(kind), role: kind === 'error' ? 'alert' : 'status' },
     iconEl(glyph, 20), el('span', { class: 'ds-alert__text', text }),
     details.length ? infoTip(details, { label: 'Details' }) : null);
 }
@@ -1106,7 +1106,7 @@ function renderHarnesses(status) {
   if (!found.length) {
     intro.append(status === 'loading'
       ? el('div', { class: 'ds-loading', role: 'status' },
-        el('span', { class: 'ds-loader ds-loader--sm', 'aria-hidden': 'true' }),
+        el('span', { class: 'ds-loader ds-sm', 'aria-hidden': 'true' }),
         'Asking this machine which programs are installed')
       : alertEl('error', status || 'Socrates could not ask this machine which programs are installed.'));
     host.replaceChildren(intro);
@@ -1290,7 +1290,7 @@ function modelList(harness) {
       });
       const name = model ? (model.label || pick.id) : harnesses.readableModel(pick.id);
       const instructions = el('button', {
-        class: 'ds-btn ds-btn--quiet ds-btn--icon ds-btn--sm', type: 'button',
+        class: 'ds-btn ds-btn--quiet ds-btn--icon ds-sm', type: 'button',
         'aria-label': 'Instructions for ' + pick.id, 'data-tip': 'Instructions',
         onclick: async (event) => {
           const text = await modelInstructions(harness, name, pick.instructions, event.currentTarget);
@@ -1300,7 +1300,7 @@ function modelList(harness) {
         },
       }, iconEl('fileText', 18));
       const remove = el('button', {
-        class: 'ds-btn ds-btn--quiet ds-btn--icon ds-btn--sm', type: 'button',
+        class: 'ds-btn ds-btn--quiet ds-btn--icon ds-sm', type: 'button',
         'aria-label': 'Remove ' + pick.id, 'data-tip': 'Remove',
         onclick: () => { setPath(settings, path, picks().filter((p) => p.id !== pick.id)); render(); },
       }, iconEl('trash', 18));
@@ -1372,8 +1372,8 @@ async function modelInstructions(harness, name, value, opener) {
     placeholder: 'For example: answer briefly, and ask before a change that touches more than one file.',
   });
   text.value = value || '';
-  const cancel = el('button', { class: 'ds-btn ds-btn--text', type: 'button', 'data-close': true, text: 'Cancel' });
-  const accept = el('button', { class: 'ds-btn ds-btn--primary', type: 'button', text: 'Keep the instructions' });
+  const cancel = el('button', { class: 'ds-btn ds-btn--text', type: 'button', 'data-ds-close': true, text: 'Cancel' });
+  const accept = el('button', { class: 'ds-btn ds-btn--filled', type: 'button', text: 'Keep the instructions' });
   const { dialog, shown } = openDialog({
     title: 'Instructions for ' + name,
     body: 'A ' + harness.label + ' chat on this model is told these with its own instructions, and only while it runs on '
@@ -1384,7 +1384,7 @@ async function modelInstructions(harness, name, value, opener) {
     opener,
   });
   // Instructions run to paragraphs: DS's wide dialog gives them the room.
-  dialog.classList.add('ds-dialog--wide');
+  dialog.classList.add('ds-dialog--lg');
   accept.addEventListener('click', () => {
     dialog.answer({ text: text.value.trim() });
     DS.overlay.close(dialog);
@@ -1475,8 +1475,8 @@ async function save() {
 // showNotice is the page's one standing message, as a DS alert.
 function showNotice(text, kind) {
   const notice = $('notice');
-  const [cls, glyph] = kind === 'error' ? ['ds-alert ds-alert--error', 'alertCircle']
-    : kind === 'ok' ? ['ds-alert ds-alert--success', 'checkCircle'] : ['ds-alert', 'info'];
+  const [cls, glyph] = kind === 'error' ? ['ds-alert ds-tone-error', 'alertCircle']
+    : kind === 'ok' ? ['ds-alert ds-tone-success', 'checkCircle'] : ['ds-alert', 'info'];
   morph(notice, html`<div class="${cls}" role="${kind === 'error' ? 'alert' : 'status'}">${raw(icon(glyph, 20))}<span class="ds-alert__text">${text}</span></div>`);
   notice.hidden = false;
 }
@@ -1749,10 +1749,10 @@ function bytes(n) {
 // backupAlert is one alert of the card. What it is about - paths, the
 // technical rest - goes behind its "i", which the card's click handler opens.
 function backupAlert(kind, text, tip = [], tipLabel = 'Details') {
-  const [cls, glyph, role] = kind === 'error' ? ['ds-alert ds-alert--error', 'alertCircle', 'alert']
-    : kind === 'warning' ? ['ds-alert ds-alert--warning', 'alert', 'alert'] : ['ds-alert', 'info', 'status'];
+  const [cls, glyph, role] = kind === 'error' ? ['ds-alert ds-tone-error', 'alertCircle', 'alert']
+    : kind === 'warning' ? ['ds-alert ds-tone-warning', 'alert', 'alert'] : ['ds-alert', 'info', 'status'];
   const info = tip.length
-    ? html`<button class="ds-btn ds-btn--quiet ds-btn--icon ds-btn--sm so-info" type="button" aria-label="${tipLabel}" data-tip="${tip.join('\n')}">${raw(icon('info', 18))}</button>`
+    ? html`<button class="ds-btn ds-btn--quiet ds-btn--icon ds-sm so-info" type="button" aria-label="${tipLabel}" data-tip="${tip.join('\n')}">${raw(icon('info', 18))}</button>`
     : '';
   return html`<div class="${cls}" role="${role}">${raw(icon(glyph, 20))}<span class="ds-alert__text">${text}</span>${info}</div>`;
 }
@@ -1945,7 +1945,7 @@ async function loadLegacy() {
   // The button goes under the sentence, as a limit card's does: beside it,
   // it left the sentence a column of 120px at 360.
   morph(host, html`<div class="ds-alert" role="status">${raw(icon('info', 20))}<span class="ds-alert__text so-admin-stack"><span>${text}</span>${
-    legacy.snapshot ? html`<button class="ds-btn ds-btn--text ds-btn--sm" type="button" data-action="delete-legacy" data-objects="${legacy.objects}" data-where="${legacyWhere(legacy)}">${faces('Delete them', 'Deleting')}</button>` : ''
+    legacy.snapshot ? html`<button class="ds-btn ds-btn--text ds-sm" type="button" data-action="delete-legacy" data-objects="${legacy.objects}" data-where="${legacyWhere(legacy)}">${faces('Delete them', 'Deleting')}</button>` : ''
   }</span></div>`);
 }
 

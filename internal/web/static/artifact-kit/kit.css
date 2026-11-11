@@ -2,7 +2,7 @@
  * The page kit of a chat's artifacts (docs/design/ARTIFACTS.md, "The page
  * kit"): the look of a page an agent writes as an HTML fragment or as
  * Markdown, shown in a sandboxed frame beside the chat. It is not the app's
- * UI (no Dashboard-Style, outside make ds-check): a quiet, light stylesheet
+ * UI (no Z-Dash, outside make ds-check): a quiet, light stylesheet
  * in Socrates' colours, with a few classes the agent is told about.
  *
  * Colours for CSS and inline SVG: --bg --surface --text --muted --line

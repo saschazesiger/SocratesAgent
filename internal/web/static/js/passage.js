@@ -121,25 +121,25 @@ export function openPassageDialog({ session, quote, opener }) {
   let open = true;
 
   const dialog = el('dialog', { class: 'ds-dialog so-status so-passage', 'aria-labelledby': titleId },
-    el('div', { class: 'ds-dialog__backdrop', 'data-close': true }),
+    el('div', { class: 'ds-dialog__backdrop', 'data-ds-close': true }),
     el('div', { class: 'ds-dialog__box so-status__box' }));
   const box = dialog.querySelector('.so-status__box');
-  morph(box, html`<header class="so-status__head"><span class="so-status__mark" aria-hidden="true">${raw(agentMarkHtml(session.harness, 24))}</span><div class="so-status__titles"><p class="so-status__overline">Ask about this passage</p><h2 class="ds-dialog__title so-status__title" id="${titleId}">${session.title || 'Chat'}</h2></div><button class="ds-btn ds-btn--quiet ds-btn--icon so-status__x" type="button" data-close aria-label="Close" data-tip="Close">${raw(icon('close', 20))}</button></header>`);
+  morph(box, html`<header class="so-status__head"><span class="so-status__mark" aria-hidden="true">${raw(agentMarkHtml(session.harness, 24))}</span><div class="so-status__titles"><p class="so-status__overline">Ask about this passage</p><h2 class="ds-dialog__title so-status__title" id="${titleId}">${session.title || 'Chat'}</h2></div><button class="ds-btn ds-btn--quiet ds-btn--icon so-status__x" type="button" data-ds-close aria-label="Close" data-tip="Close">${raw(icon('close', 20))}</button></header>`);
   const body = el('div', { class: 'ds-dialog__body so-status__body so-passage__body', tabindex: '0', role: 'region', 'aria-label': 'Questions and answers' });
   const form = el('form', { class: 'so-passage__form' });
   box.append(body, form);
-  morph(form, html`<div class="ds-field ds-field--full"><label class="ds-field__label" for="${fieldId}">Your question</label><div class="ds-field__row ds-field__row--top"><textarea class="ds-input so-passage__input" id="${fieldId}" rows="2" enterkeyhint="send" placeholder="What does this mean?" autofocus></textarea><button class="ds-btn ds-btn--primary ds-btn--icon so-passage__send" type="submit" aria-label="Ask" data-tip="Ask (Enter)">${raw(icon('send', 20))}</button></div></div>`);
+  morph(form, html`<div class="ds-field ds-field--full"><label class="ds-field__label" for="${fieldId}">Your question</label><div class="ds-field__row ds-field__row--top"><textarea class="ds-input so-passage__input" id="${fieldId}" rows="2" enterkeyhint="send" placeholder="What does this mean?" autofocus></textarea><button class="ds-btn ds-btn--filled ds-btn--icon so-passage__send" type="submit" aria-label="Ask" data-tip="Ask (Enter)">${raw(icon('send', 20))}</button></div></div>`);
   const input = form.querySelector('textarea');
   const send = form.querySelector('.so-passage__send');
 
   function draw() {
     if (!open) return;
     const presets = !thread.length
-      ? html`<div class="so-passage__presets" role="group" aria-label="Quick questions">${PRESETS.map((q) => html`<button class="ds-btn ds-btn--tonal ds-btn--sm" type="button" data-preset="${q}">${q}</button>`)}</div>` : '';
+      ? html`<div class="so-passage__presets" role="group" aria-label="Quick questions">${PRESETS.map((q) => html`<button class="ds-btn ds-btn--tonal ds-sm" type="button" data-preset="${q}">${q}</button>`)}</div>` : '';
     const turns = thread.map((t, i) => html`<section class="so-passage__turn" data-ds-key="${'t' + i}" aria-label="${'Question ' + (i + 1)}"><p class="so-passage__q">${raw(icon('chat', 16))}<span>${t.question}</span></p>${
       t.answer ? html`<div class="so-md so-passage__a">${markdown(t.answer)}</div>`
-        : t.error ? html`<div class="ds-alert ds-alert--error" role="alert">${raw(icon('alertCircle', 20))}<span class="ds-alert__text">${t.error}</span></div>`
-          : html`<div class="ds-loading so-passage__loading" role="status"><span class="ds-loader ds-loader--sm" aria-hidden="true"></span><span>Reading the chat…</span></div>`
+        : t.error ? html`<div class="ds-alert ds-tone-error" role="alert">${raw(icon('alertCircle', 20))}<span class="ds-alert__text">${t.error}</span></div>`
+          : html`<div class="ds-loading so-passage__loading" role="status"><span class="ds-loader ds-sm" aria-hidden="true"></span><span>Reading the chat…</span></div>`
     }</section>`);
     morph(body, html`<figure class="so-passage__quote" data-ds-key="quote"><figcaption class="ds-meta">You selected</figcaption><blockquote class="so-passage__text">${quote}</blockquote></figure>${presets}${turns}`);
     if (busy) send.setAttribute('aria-busy', 'true'); else send.removeAttribute('aria-busy');

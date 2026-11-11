@@ -1,10 +1,10 @@
 /*
  * so-motion.css: two pieces of motion for a line that says what is going on
- * right now, written the way a Dashboard-Style component is (markup, hooks,
+ * right now, written the way a Z-Dash component is (markup, hooks,
  * choreography, progressive features) and naming nothing of Socrates, so
- * that they can move into Dashboard-Style as they are: proposed there in
- * plans/wheel-and-shimmer.md (docs/design/DASHBOARD-STYLE.md, "Proposed to
- * Dashboard-Style"). Tokens only, unlayered like every so-*.css.
+ * that they can move into Z-Dash as they are: proposed there in
+ * plans/wheel-and-shimmer.md (docs/design/Z-DASH.md, "Proposed to
+ * Z-Dash"). Tokens only, unlayered like every so-*.css.
  *
  * Wheel: a slot whose lines roll, quietly, in the background. When its
  * line changes, the new one pushes the old one out: both glide up by one

@@ -81,7 +81,7 @@ export function mountChatDocside({ panel, onColumnOpen }) {
   const title = el('h2', { class: 'so-docside__title', id: 'docsideTitle', tabindex: '-1', text: 'Docs' });
   const actions = el('div', { class: 'so-docside__actions' });
   const closeBtn = el('button', {
-    class: 'ds-btn ds-btn--quiet ds-btn--icon ds-btn--sm', type: 'button',
+    class: 'ds-btn ds-btn--quiet ds-btn--icon ds-sm', type: 'button',
     'aria-label': 'Close the file', 'data-tip': 'Close the file',
   }, iconEl('close', 18));
   const frame = el('iframe', { class: 'so-docs__view', title: 'Document', sandbox: SANDBOX, referrerpolicy: 'no-referrer', name: frameName() });
@@ -90,7 +90,7 @@ export function mountChatDocside({ panel, onColumnOpen }) {
 
   function actionsHtml() {
     if (!doc) return '';
-    return html`<a class="ds-btn ds-btn--quiet ds-btn--icon ds-btn--sm" href="${docsHash(doc.folder, doc.path)}" data-docside="docs" aria-label="Open in Docs, with every file of the folder" data-tip="Open in Docs">${raw(icon('list', 18))}</a><a class="ds-btn ds-btn--quiet ds-btn--icon ds-btn--sm" href="${pageUrl(doc.base, doc.path)}" target="_blank" rel="noopener noreferrer" aria-label="Open in a new tab" data-tip="Open in a new tab">${raw(icon('external', 18))}</a>`;
+    return html`<a class="ds-btn ds-btn--quiet ds-btn--icon ds-sm" href="${docsHash(doc.folder, doc.path)}" data-docside="docs" aria-label="Open in Docs, with every file of the folder" data-tip="Open in Docs">${raw(icon('list', 18))}</a><a class="ds-btn ds-btn--quiet ds-btn--icon ds-sm" href="${pageUrl(doc.base, doc.path)}" target="_blank" rel="noopener noreferrer" aria-label="Open in a new tab" data-tip="Open in a new tab">${raw(icon('external', 18))}</a>`;
   }
 
   function drawHead(heading) {
@@ -125,10 +125,10 @@ export function mountChatDocside({ panel, onColumnOpen }) {
     if (dlg) return;
     const heading = el('h2', { class: 'ds-dialog__title so-docside__title', id: 'docsideDialogTitle' });
     const head = el('div', { class: 'so-docside__actions' });
-    const back = el('button', { class: 'ds-btn ds-btn--quiet ds-btn--icon', type: 'button', 'data-close': true, 'aria-label': 'Back', 'data-tip': 'Back' }, iconEl('arrowLeft', 20));
+    const back = el('button', { class: 'ds-btn ds-btn--quiet ds-btn--icon', type: 'button', 'data-ds-close': true, 'aria-label': 'Back', 'data-tip': 'Back' }, iconEl('arrowLeft', 20));
     const body = el('div', { class: 'ds-dialog__body so-docside__dialog-body' }, frame);
     const dialog = el('dialog', { class: 'ds-dialog ds-dialog--full so-docside-dialog', 'aria-labelledby': 'docsideDialogTitle' },
-      el('div', { class: 'ds-dialog__backdrop', 'data-close': true }),
+      el('div', { class: 'ds-dialog__backdrop', 'data-ds-close': true }),
       el('div', { class: 'ds-dialog__box' },
         el('div', { class: 'ds-dialog__head' }, back, heading, head),
         body));

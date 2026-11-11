@@ -4,7 +4,7 @@
 // it into HTML, and DOMPurify takes out everything that could run, fetch or
 // dress itself up as the page's own - scripts and handlers, images (a remote
 // image is a request the person never made), forms, and every class, id and
-// style, so that only the project's ds-/so- classes are ever in the page.
+// style, so that only the project's DS and so- classes are ever in the page.
 // What comes back is markup for html`` and morph(); nothing here touches the
 // document.
 //
@@ -64,7 +64,7 @@ function sanitize(markup) {
  */
 export function codeBlock(code, lang = '', extra = '') {
   const language = String(lang || '').split(/\s/)[0].slice(0, 24);
-  return html`<div class="so-code"><div class="so-code__bar"><span class="so-code__lang">${language || 'text'}</span><button class="ds-btn ds-btn--quiet ds-btn--icon ds-btn--sm so-code__copy" type="button" data-action="copy-code" aria-label="Copy code" data-tip="Copy code">${raw(icon('copy', 18))}</button>${extra}</div><pre class="so-code__pre"><code>${code}</code></pre></div>`;
+  return html`<div class="so-code"><div class="so-code__bar"><span class="so-code__lang">${language || 'text'}</span><button class="ds-btn ds-btn--quiet ds-btn--icon ds-sm so-code__copy" type="button" data-action="copy-code" aria-label="Copy code" data-tip="Copy code">${raw(icon('copy', 18))}</button>${extra}</div><pre class="so-code__pre"><code>${code}</code></pre></div>`;
 }
 
 // A long chat renders the same texts again and again (every re-render of a

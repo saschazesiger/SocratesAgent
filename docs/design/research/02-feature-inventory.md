@@ -546,7 +546,7 @@ pane, cover, key bar, copy sheet), `so-home.css`, `so-question.css`, `so-prestar
 
 ---
 
-## 10. Design system essentials a new chat UI must follow (DASHBOARD-STYLE.md + DESIGN §E.10)
+## 10. Design system essentials a new chat UI must follow (Z-DASH.md + DESIGN §E.10)
 
 - Built on **Dashboard-Style** 1.6.2 vendored at `static/vendor/dashboard-style` (checksummed by
   `embed_test.go`, replaced nightly by a workflow) — **never edit the vendored copy**; upstream anything general.
@@ -576,7 +576,7 @@ pane, cover, key bar, copy sheet), `so-home.css`, `so-question.css`, `so-prestar
   turning at 900 ms). The `design` e2e scenario measures: white surfaces, marks, hover-only detail,
   animations that do not restart on re-render.
 - Note (inferred): DESIGN §E.10 says "every surface is pure white", while DS's own look (manifest
-  `theme_color #f0f4f9`) is not all white; DASHBOARD-STYLE.md (newer, Oct 2026) says Socrates wears DS's
+  `theme_color #f0f4f9`) is not all white; Z-DASH.md (newer, Oct 2026) says Socrates wears DS's
   look, so DS wins for chrome; the terminal pane itself stays white (`--so-term-bg: var(--ds-surface)`).
 - Done criteria per change: no non `ds-`/`so-` class; looks right at 1280×800 and 390×844 incl. touch
   mode, no console errors; `go test ./internal/web/... ./internal/server/...` and the area's e2e pass;

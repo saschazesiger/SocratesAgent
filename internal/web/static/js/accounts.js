@@ -111,11 +111,11 @@ export function usable(account) { return !!account && account.state === 'signed_
 export function stateChip(account) {
   switch (account.state) {
     case 'signed_in':
-      return html`<span class="ds-status ds-status--ok" data-state="signed_in">${raw(icon('check', 16))}<span>Signed in</span></span>`;
+      return html`<span class="ds-status ds-tone-success" data-state="signed_in">${raw(icon('check', 16))}<span>Signed in</span></span>`;
     case 'error':
-      return html`<span class="ds-status ds-status--error" data-state="error">${raw(icon('alertCircle', 16))}<span>Sign-in failed</span></span>`;
+      return html`<span class="ds-status ds-tone-error" data-state="error">${raw(icon('alertCircle', 16))}<span>Sign-in failed</span></span>`;
     default:
-      return html`<span class="ds-status ds-status--warning" data-state="needs_sign_in">${raw(icon('alert', 16))}<span>${account.state_detail ? 'Sign in again' : 'Not signed in'}</span></span>`;
+      return html`<span class="ds-status ds-tone-warning" data-state="needs_sign_in">${raw(icon('alert', 16))}<span>${account.state_detail ? 'Sign in again' : 'Not signed in'}</span></span>`;
   }
 }
 
@@ -307,8 +307,8 @@ export async function signIn(account, opener) {
 // here.
 function flowDialog(account, first, opener) {
   const content = el('div', { class: 'so-signin' });
-  const cancel = el('button', { class: 'ds-btn ds-btn--text', type: 'button', 'data-close': true, text: 'Cancel' });
-  const next = el('button', { class: 'ds-btn ds-btn--primary', type: 'button', hidden: true, text: 'Continue' });
+  const cancel = el('button', { class: 'ds-btn ds-btn--text', type: 'button', 'data-ds-close': true, text: 'Cancel' });
+  const next = el('button', { class: 'ds-btn ds-btn--filled', type: 'button', hidden: true, text: 'Continue' });
   const { dialog, shown } = openDialog({
     title: 'Sign in to ' + account.label,
     body: account.agent === 'claude'
@@ -325,7 +325,7 @@ function flowDialog(account, first, opener) {
     next.hidden = true;
     const parts = [];
     if (flow.code) {
-      parts.push(html`<p class="ds-meta">Open the page, and type this code there:</p><p class="so-signin__code" data-ds-key="code"><span class="so-signin__value" aria-label="${'The code ' + flow.code}">${flow.code}</span><button class="ds-btn ds-btn--quiet ds-btn--icon ds-btn--sm" type="button" data-action="copy-code" aria-label="Copy the code" data-tip="Copy the code">${raw(icon('copy', 18))}</button></p>`);
+      parts.push(html`<p class="ds-meta">Open the page, and type this code there:</p><p class="so-signin__code" data-ds-key="code"><span class="so-signin__value" aria-label="${'The code ' + flow.code}">${flow.code}</span><button class="ds-btn ds-btn--quiet ds-btn--icon ds-sm" type="button" data-action="copy-code" aria-label="Copy the code" data-tip="Copy the code">${raw(icon('copy', 18))}</button></p>`);
     }
     if (flow.url) {
       parts.push(html`<p data-ds-key="url"><a class="ds-btn ds-btn--tonal" href="${flow.url}" target="_blank" rel="noopener">${raw(icon('external', 18))}<span>Open the sign-in page</span></a></p>`);
@@ -336,10 +336,10 @@ function flowDialog(account, first, opener) {
       next.textContent = 'Sign in';
     }
     if (flow.state === 'waiting') {
-      parts.push(html`<p class="ds-loading so-signin__wait" role="status" data-ds-key="wait"><span class="ds-loader ds-loader--sm" aria-hidden="true"></span>Waiting for the sign-in…</p>`);
+      parts.push(html`<p class="ds-loading so-signin__wait" role="status" data-ds-key="wait"><span class="ds-loader ds-sm" aria-hidden="true"></span>Waiting for the sign-in…</p>`);
     }
     if (flow.state === 'failed') {
-      parts.push(html`<div class="ds-alert ds-alert--error" role="alert" data-ds-key="failed">${raw(icon('alertCircle', 20))}<span class="ds-alert__text">${flow.error || 'The sign-in did not finish.'}</span></div>`);
+      parts.push(html`<div class="ds-alert ds-tone-error" role="alert" data-ds-key="failed">${raw(icon('alertCircle', 20))}<span class="ds-alert__text">${flow.error || 'The sign-in did not finish.'}</span></div>`);
     }
     morph(content, html`${parts}`);
   }
@@ -423,8 +423,8 @@ export function addAccountDialog(opener, agent = '') {
   const choices = agents();
   const pick = { agent: agent || choices[0], kind: 'subscription' };
   const content = el('div', { class: 'so-account-form' });
-  const cancel = el('button', { class: 'ds-btn ds-btn--text', type: 'button', 'data-close': true, text: 'Cancel' });
-  const add = el('button', { class: 'ds-btn ds-btn--primary', type: 'button', text: 'Add' });
+  const cancel = el('button', { class: 'ds-btn ds-btn--text', type: 'button', 'data-ds-close': true, text: 'Cancel' });
+  const add = el('button', { class: 'ds-btn ds-btn--filled', type: 'button', text: 'Add' });
   // Drawn before it opens, so that the focus goes to the Name (autofocus),
   // not to Cancel, the only control of an empty dialog. On a touch screen
   // the dialog opens on its first choice instead: a focus the page gives a

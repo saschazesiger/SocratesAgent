@@ -1206,7 +1206,7 @@ function groupHtml(folder, children) {
 // nor a path the dashboard lets be typed) has none.
 function newButtonHtml(folder) {
   const words = 'New session in ' + folder.label;
-  return html`<button class="ds-btn ds-btn--quiet ds-btn--icon ds-btn--sm so-folder__new" type="button" data-new="${folder.key}" aria-label="${words}" data-tip="${words}"${harnesses.folderChoice(folder.key) ? '' : html` hidden`}>${raw(icon('plus', 16))}</button>`;
+  return html`<button class="ds-btn ds-btn--quiet ds-btn--icon ds-sm so-folder__new" type="button" data-new="${folder.key}" aria-label="${words}" data-tip="${words}"${harnesses.folderChoice(folder.key) ? '' : html` hidden`}>${raw(icon('plus', 16))}</button>`;
 }
 
 // folderMoreHtml is a project folder's ⋮: its menu of what belongs to the
@@ -1217,7 +1217,7 @@ function folderMoreHtml(folder) {
   const ide = folder.ide;
   const running = !!ide && (ide.state === 'running' || ide.state === 'starting');
   const words = 'More for ' + folder.label + (running ? ', VS Code is open' : '');
-  return html`<button class="ds-btn ds-btn--quiet ds-btn--icon ds-btn--sm so-folder__more" type="button" data-folder-more="${folder.key}" aria-label="${words}" data-tip="${words}" aria-haspopup="menu" aria-expanded="false"${running ? html` data-running` : ''}>${raw(icon('moreVertical', 16))}${running ? html`<span class="so-folder__running" aria-hidden="true"></span>` : ''}</button>`;
+  return html`<button class="ds-btn ds-btn--quiet ds-btn--icon ds-sm so-folder__more" type="button" data-folder-more="${folder.key}" aria-label="${words}" data-tip="${words}" aria-haspopup="menu" aria-expanded="false"${running ? html` data-running` : ''}>${raw(icon('moreVertical', 16))}${running ? html`<span class="so-folder__running" aria-hidden="true"></span>` : ''}</button>`;
 }
 
 // What a VS Code is being opened for right now - a folder, the empty
@@ -1353,7 +1353,7 @@ function rowHtml(session) {
     startAt ? html`<span class="so-row__when" aria-label="${startWords}" data-tip="${startWords}">${raw(icon('clock', 16))}<span class="so-row__time">${whenShort(startAt)}</span></span>` : ''
   }${
     STATUS_GLYPH[status] ? html`<span class="so-row__status" data-status="${status}" role="img" aria-label="${said}" data-tip="${said}">${raw(icon(STATUS_GLYPH[status], 16))}</span>` : ''
-  }</a><button class="ds-btn ds-btn--quiet ds-btn--icon ds-btn--sm ds-drawer__action ds-hover-actions so-row__more" type="button" aria-label="Session actions" data-tip="Session actions" aria-haspopup="menu" aria-expanded="false" aria-controls="sessionMenu">${raw(icon('moreVertical', 20))}</button></div>`;
+  }</a><button class="ds-btn ds-btn--quiet ds-btn--icon ds-sm ds-drawer__action ds-hover-actions so-row__more" type="button" aria-label="Session actions" data-tip="Session actions" aria-haspopup="menu" aria-expanded="false" aria-controls="sessionMenu">${raw(icon('moreVertical', 20))}</button></div>`;
 }
 
 // whenShort is a start time for a row: the time of day when it is today,
@@ -2148,14 +2148,14 @@ function promptTitle(current, opener, session) {
       class: 'ds-input', type: 'text', id: 'renameInput', value: current, autofocus: true,
       'aria-labelledby': 'renameTitle', enterkeyhint: 'done',
     });
-    const cancel = el('button', { class: 'ds-btn ds-btn--text', type: 'button', 'data-close': true, text: 'Cancel' });
-    const accept = el('button', { class: 'ds-btn ds-btn--primary', type: 'button', text: 'Rename' });
+    const cancel = el('button', { class: 'ds-btn ds-btn--text', type: 'button', 'data-ds-close': true, text: 'Cancel' });
+    const accept = el('button', { class: 'ds-btn ds-btn--filled', type: 'button', text: 'Rename' });
     // One row: the field, its microphone and - with a session - the
     // sparkles, side by side (DS's field row), not a row inside a row.
     const row = dictated(input, input);
     if (session) row.append(suggestButton(session, input));
     const dialog = el('dialog', { class: 'ds-dialog so-rename', 'aria-labelledby': 'renameTitle' },
-      el('div', { class: 'ds-dialog__backdrop', 'data-close': true }),
+      el('div', { class: 'ds-dialog__backdrop', 'data-ds-close': true }),
       el('div', { class: 'ds-dialog__box' },
         el('h2', { class: 'ds-dialog__title', id: 'renameTitle', text: 'Rename this session' }),
         // A name is a sentence somebody says about a session, so it is one of
@@ -2198,7 +2198,7 @@ function suggestButton(session, input) {
     'aria-label': 'Suggest a name', 'data-tip': 'Suggest a name from what it is about',
   }, el('span', { class: 'ds-btn__faces' },
     el('span', { class: 'ds-btn__face' }, iconEl('sparkles', 18)),
-    el('span', { class: 'ds-btn__face ds-btn__face--busy', 'aria-hidden': 'true' }, el('span', { class: 'ds-spinner ds-spinner--sm' }))));
+    el('span', { class: 'ds-btn__face ds-btn__face--busy', 'aria-hidden': 'true' }, el('span', { class: 'ds-spinner ds-spinner--ink ds-sm' }))));
   // A press while it asks never gets here: DS blocks a busy button (its guard).
   button.addEventListener('click', async () => {
     button.setAttribute('aria-busy', 'true');
@@ -2233,14 +2233,14 @@ function suggestButton(session, input) {
 // about one session, in one place and in one shape. It is the only place these
 // facts are drawn - a row is a mark and a name, and nothing else.
 function infoDialog(session, opener) {
-  const close = el('button', { class: 'ds-btn ds-btn--text', type: 'button', 'data-close': true, autofocus: true, text: 'Close' });
+  const close = el('button', { class: 'ds-btn ds-btn--text', type: 'button', 'data-ds-close': true, autofocus: true, text: 'Close' });
   const list = el('dl', { class: 'ds-facts so-facts' });
   let running = null;
   let mcp = null;
   const draw = () => list.replaceChildren(...rowFacts(session, running, mcp).map(([label, value]) => el('div', {},
     el('dt', { text: label }), el('dd', { class: 'so-fact', text: value }))));
   const dialog = el('dialog', { class: 'ds-dialog so-info-dialog', 'aria-labelledby': 'infoTitle' },
-    el('div', { class: 'ds-dialog__backdrop', 'data-close': true }),
+    el('div', { class: 'ds-dialog__backdrop', 'data-ds-close': true }),
     el('div', { class: 'ds-dialog__box' },
       el('h2', { class: 'ds-dialog__title so-break', id: 'infoTitle', text: session.title }),
       list,
@@ -2399,9 +2399,9 @@ async function mcpDialog(session, opener, { closed } = {}) {
   const url = '/api/sessions/' + encodeURIComponent(session.id) + '/mcp';
   const list = el('div', { class: 'so-mcp-switches' });
   const note = el('p', { class: 'ds-dialog__text', id: 'mcpDialogText' });
-  const close = el('button', { class: 'ds-btn ds-btn--text', type: 'button', 'data-close': true, autofocus: true, text: 'Close' });
-  const dialog = el('dialog', { class: 'ds-dialog ds-dialog--wide', 'aria-labelledby': 'mcpDialogTitle', 'aria-describedby': 'mcpDialogText' },
-    el('div', { class: 'ds-dialog__backdrop', 'data-close': true }),
+  const close = el('button', { class: 'ds-btn ds-btn--text', type: 'button', 'data-ds-close': true, autofocus: true, text: 'Close' });
+  const dialog = el('dialog', { class: 'ds-dialog ds-dialog--lg', 'aria-labelledby': 'mcpDialogTitle', 'aria-describedby': 'mcpDialogText' },
+    el('div', { class: 'ds-dialog__backdrop', 'data-ds-close': true }),
     el('div', { class: 'ds-dialog__box' },
       el('h2', { class: 'ds-dialog__title', id: 'mcpDialogTitle', text: 'MCP servers' }),
       note, el('div', { class: 'ds-dialog__body' }, list),
@@ -2422,7 +2422,7 @@ async function mcpDialog(session, opener, { closed } = {}) {
         <small class="ds-switch__hint" id="${'mcpSwitchHint' + i}">${[mcpView.fromWords(server), mcpView.brief(server.description)].filter(Boolean).join('. ')}</small>
         <span class="ds-switch__state" aria-hidden="true"><span class="ds-switch__on">On</span><span class="ds-switch__off">Off</span></span>
       </label>
-      <button class="ds-btn ds-btn--quiet ds-btn--icon ds-btn--sm" type="button" data-test="${server.name}" aria-label="${'Test ' + mcpView.labelOf(server) + ' and show its tools'}" data-tip="Test it, show its tools">${raw(icon('info', 18))}</button>
+      <button class="ds-btn ds-btn--quiet ds-btn--icon ds-sm" type="button" data-test="${server.name}" aria-label="${'Test ' + mcpView.labelOf(server) + ' and show its tools'}" data-tip="Test it, show its tools">${raw(icon('info', 18))}</button>
     </div>`)}`);
     // morph keeps a switch as the page left it; the server says.
     for (const input of list.querySelectorAll('input[data-name]')) {
@@ -2569,13 +2569,13 @@ function openActionSheet(anchor, title, items) {
   const list = el('div', { class: 'ds-dialog__list', role: 'menu', 'aria-labelledby': titleId });
   morph(list, html`${items}`);
   const close = el('button', {
-    class: 'ds-btn ds-btn--quiet ds-btn--icon', type: 'button', 'data-close': true,
+    class: 'ds-btn ds-btn--quiet ds-btn--icon', type: 'button', 'data-ds-close': true,
     'aria-label': 'Close', 'data-tip': 'Close',
   }, iconEl('close', 20));
   // The title is the chat's name, which can be a whole first prompt: two
   // lines of it (so-frame.css), the rest is in Info and Rename.
   const dialog = el('dialog', { class: 'ds-dialog ds-dialog--bottom so-actions', 'aria-labelledby': titleId },
-    el('div', { class: 'ds-dialog__backdrop', 'data-close': true }),
+    el('div', { class: 'ds-dialog__backdrop', 'data-ds-close': true }),
     el('div', { class: 'ds-dialog__box' },
       el('div', { class: 'ds-dialog__head' },
         close, el('h2', { class: 'ds-dialog__title so-break', id: titleId },
@@ -3091,7 +3091,7 @@ function coverMarkup(session) {
   const title = (words) => html`<h2 class="ds-dialog__title" id="termOverlayTitle">${words}</h2>`;
   const actions = (...buttons) => html`<div class="ds-dialog__actions">${buttons}</div>`;
   // The way out is where the focus lands when the cover comes up.
-  const button = (action, label, primary = false) => html`<button class="ds-btn${primary ? ' ds-btn--primary' : ''}" type="button" data-cover="${action}"${primary ? raw(' autofocus') : ''}>${label}</button>`;
+  const button = (action, label, primary = false) => html`<button class="ds-btn${primary ? ' ds-btn--filled' : ''}" type="button" data-cover="${action}"${primary ? raw(' autofocus') : ''}>${label}</button>`;
   // A done session's terminal was closed on purpose, and that is the whole of
   // what there is to say about it, whatever state the row is in.
   if (isDone(session)) {
@@ -3128,7 +3128,7 @@ function coverMarkup(session) {
         ${session.fail_reason ? html`<p class="so-pane__detail" id="termOverlayText">${session.fail_reason}</p>` : ''}
         ${actions(actionButton(session, 'Try again', 'Trying again'))}`;
     case 'resuming':
-      return html`<div class="so-pane__wait" role="status"><span class="ds-loader ds-loader--sm" aria-hidden="true"></span>${title('Resuming after a restart…')}</div>`;
+      return html`<div class="so-pane__wait" role="status"><span class="ds-loader ds-sm" aria-hidden="true"></span>${title('Resuming after a restart…')}</div>`;
     case 'needs_resume':
       return html`${title('This session is not running.')}
         ${actions(button('open', 'Open', true))}`;
@@ -3142,7 +3142,7 @@ function coverMarkup(session) {
 // offering to start it again.
 function actionButton(session, label, busyLabel) {
   const busy = state.restarting === session.id;
-  return html`<button class="ds-btn ds-btn--primary" type="button" id="termRestart" data-cover="restart" autofocus${
+  return html`<button class="ds-btn ds-btn--filled" type="button" id="termRestart" data-cover="restart" autofocus${
     busy ? raw(' aria-busy="true"') : ''}>${faces(label, busyLabel)}</button>`;
 }
 
@@ -3210,7 +3210,7 @@ function notice(kind, text, onDismiss, facts, extra) {
     if (onDismiss) onDismiss();
   };
   const close = el('button', {
-    class: 'ds-btn ds-btn--quiet ds-btn--icon ds-btn--sm', type: 'button',
+    class: 'ds-btn ds-btn--quiet ds-btn--icon ds-sm', type: 'button',
     'aria-label': 'Dismiss', 'data-tip': 'Dismiss', onclick: dismiss,
   }, iconEl('close', 18));
   // `replaceChildren` writes a null argument as the word "null", so the parts
@@ -4185,7 +4185,7 @@ function setTitleText(text) {
 
 // The status chip beside the name: where the person filed the session, as an
 // icon and a word. In progress says nothing, so it has no chip.
-const STATUS_CHIP = { review: '', pending: 'ds-status--warning', background: '', done: 'ds-status--ok' };
+const STATUS_CHIP = { review: '', pending: 'ds-tone-warning', background: '', done: 'ds-tone-success' };
 function drawStatusChip(status) {
   const chip = dom.sessionStatus;
   chip.hidden = status === 'in_progress';

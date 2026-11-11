@@ -1,0 +1,7 @@
+{
+  "content": ["static/*.html", "static/js/*.js"],
+  "out": "static/ds",
+  "icons": "all",
+  "js": "classic",
+  "safelist": ["ds-alert*", "ds-status*", "ds-badge*", "ds-field*", "ds-legend__key*", "ds-btn*"]
+}

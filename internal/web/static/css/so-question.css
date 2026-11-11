@@ -2,7 +2,7 @@
  * so-question.css: the question dialog (askdialog.js). It reads tokens only
  * (--ds-* and the --so-question-* / --so-option-* of theme.css), is
  * unlayered, and never restyles a .ds-* component: the dialog, the cards,
- * the alerts, the buttons and the field are Dashboard-Style's own, set
+ * the alerts, the buttons and the field are Z-Dash's own, set
  * through their hooks and laid out from here.
  *
  *   dialog.so-question   the DS dialog; the whole screen (.ds-dialog--full)

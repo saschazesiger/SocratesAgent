@@ -52,7 +52,7 @@
 
 .so-settings .ds-field__hint > .so-info {
   vertical-align: middle;
-  margin-block: calc(var(--ds-btn-icon-size, var(--ds-space-10)) / -4);
+  margin-block: calc(max(var(--ds-target-min, 0px), var(--ds-btn-icon-size, var(--ds-space-10))) / -4);
 }
 
 /* ── Program cards ───────────────────────────────────────────────────── */

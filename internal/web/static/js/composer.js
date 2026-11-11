@@ -288,12 +288,12 @@ export function mountComposer(host, ctx) {
     <div class="so-composer__bar">
       <button class="ds-btn ds-btn--quiet ds-btn--icon so-composer__attach" type="button" data-action="attach" aria-label="Attach files" data-tip="Attach files">${raw(icon('plus', 20))}</button>
       <input class="so-composer__picker" type="file" multiple${ANY_FILE ? html` accept="${ANY_FILE}"` : ''} hidden tabindex="-1" aria-hidden="true">
-      <button class="ds-btn ds-btn--quiet ds-btn--sm so-composer__model" type="button" data-action="model" aria-haspopup="menu" aria-expanded="false"><span class="so-composer__model-text so-ellipsis"><span class="so-composer__model-name"></span><span class="so-composer__model-effort"></span></span>${raw(icon('chevronDown', 16))}</button>
-      <button class="ds-btn ds-btn--quiet ds-btn--icon ds-btn--sm so-info so-composer__usage" type="button" data-action="usage" aria-label="Usage of this chat" data-tip="Usage of this chat" hidden>${raw(icon('info', 18))}</button>
+      <button class="ds-btn ds-btn--quiet ds-sm so-composer__model" type="button" data-action="model" aria-haspopup="menu" aria-expanded="false"><span class="so-composer__model-text so-ellipsis"><span class="so-composer__model-name"></span><span class="so-composer__model-effort"></span></span>${raw(icon('chevronDown', 16))}</button>
+      <button class="ds-btn ds-btn--quiet ds-btn--icon ds-sm so-info so-composer__usage" type="button" data-action="usage" aria-label="Usage of this chat" data-tip="Usage of this chat" hidden>${raw(icon('info', 18))}</button>
       <span class="so-composer__gap" aria-hidden="true"></span>
       <span class="so-composer__mic"></span>
       <button class="ds-btn ds-btn--tonal ds-btn--icon so-composer__stop" type="button" data-action="stop" aria-label="Stop the agent" data-tip="Stop" hidden>${faces(raw(icon('stop', 20)), '')}</button>
-      <button class="ds-btn ds-btn--primary ds-btn--icon so-composer__send" type="button" data-action="send" aria-label="Send" data-tip="Send">${raw(icon('arrowUp', 20))}</button>
+      <button class="ds-btn ds-btn--filled ds-btn--icon so-composer__send" type="button" data-action="send" aria-label="Send" data-tip="Send">${raw(icon('arrowUp', 20))}</button>
     </div>
   </div>`);
   const $ = (sel) => host.querySelector(sel);
@@ -467,7 +467,7 @@ export function mountComposer(host, ctx) {
         : raw(icon(entry.state === 'failed' ? 'alertCircle' : (entry.file.type || '').startsWith('image/') ? 'image' : 'file', 16))
     }<span class="so-break so-composer__file-name">${entry.file.name || 'Pasted image'}</span>${
       FILE_WORDS[entry.state] ? html`<span class="ds-meta">${FILE_WORDS[entry.state]}</span>` : ''
-    }${entry.state === 'failed' ? html`<button class="ds-btn ds-btn--quiet ds-btn--icon ds-btn--sm" type="button" data-action="file-retry" data-key="${entry.key}" aria-label="${'Upload ' + (entry.file.name || 'the file') + ' again'}" data-tip="${'Upload again' + (entry.error ? ' (' + entry.error + ')' : '')}">${raw(icon('sync', 18))}</button>` : ''}<button class="ds-btn ds-btn--quiet ds-btn--icon ds-btn--sm" type="button" data-action="file-remove" data-key="${entry.key}" aria-label="${'Remove ' + (entry.file.name || 'the file')}" data-tip="Remove">${raw(icon('close', 16))}</button></li>`)}`);
+    }${entry.state === 'failed' ? html`<button class="ds-btn ds-btn--quiet ds-btn--icon ds-sm" type="button" data-action="file-retry" data-key="${entry.key}" aria-label="${'Upload ' + (entry.file.name || 'the file') + ' again'}" data-tip="${'Upload again' + (entry.error ? ' (' + entry.error + ')' : '')}">${raw(icon('sync', 18))}</button>` : ''}<button class="ds-btn ds-btn--quiet ds-btn--icon ds-sm" type="button" data-action="file-remove" data-key="${entry.key}" aria-label="${'Remove ' + (entry.file.name || 'the file')}" data-tip="Remove">${raw(icon('close', 16))}</button></li>`)}`);
     ctx.changed();
   }
 
@@ -649,8 +649,8 @@ export function mountComposer(host, ctx) {
     }
     effortRow.addEventListener('change', (event) => { pick.effort = event.target.value; });
     drawEffort();
-    const cancel = el('button', { class: 'ds-btn ds-btn--text', type: 'button', 'data-close': true, text: 'Cancel' });
-    const use = el('button', { class: 'ds-btn ds-btn--primary', type: 'button', text: 'Use this model' });
+    const cancel = el('button', { class: 'ds-btn ds-btn--text', type: 'button', 'data-ds-close': true, text: 'Cancel' });
+    const use = el('button', { class: 'ds-btn ds-btn--filled', type: 'button', text: 'Use this model' });
     const { dialog } = openDialog({ title: 'Model', field, actions: [cancel, use], opener: modelBtn });
     dialog.classList.add('so-model-search__dialog');
     use.addEventListener('click', () => {
@@ -788,7 +788,7 @@ export function mountComposer(host, ctx) {
   function drawConflict(theirs) {
     const preview = theirs.text.length > 400 ? theirs.text.slice(0, 400) + '…' : theirs.text;
     conflictBox.hidden = false;
-    morph(conflictBox, html`<div class="ds-alert ds-alert--warning" role="alert">${raw(icon('alert', 20))}<span class="ds-alert__text">This message was changed on another device while this one was writing it. Choose which text to keep.</span></div><pre class="so-mono so-composer__theirs" tabindex="0" aria-label="The other device’s text">${preview || '(empty)'}</pre><div class="ds-form-actions"><button class="ds-btn ds-btn--tonal" type="button" data-action="keep-mine">Keep mine</button><button class="ds-btn" type="button" data-action="use-theirs">Use the other device’s text</button></div>`);
+    morph(conflictBox, html`<div class="ds-alert ds-tone-warning" role="alert">${raw(icon('alert', 20))}<span class="ds-alert__text">This message was changed on another device while this one was writing it. Choose which text to keep.</span></div><pre class="so-mono so-composer__theirs" tabindex="0" aria-label="The other device’s text">${preview || '(empty)'}</pre><div class="ds-form-actions"><button class="ds-btn ds-btn--tonal" type="button" data-action="keep-mine">Keep mine</button><button class="ds-btn" type="button" data-action="use-theirs">Use the other device’s text</button></div>`);
     ctx.changed();
   }
 

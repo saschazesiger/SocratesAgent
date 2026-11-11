@@ -3,7 +3,7 @@
 //
 // The model catalogue has several hundred entries, so a plain <select> is
 // unusable and a datalist gives no control over what is shown. This is the
-// Dashboard-Style combobox: type to filter, arrow keys to move, enter to take
+// Z-Dash combobox: type to filter, arrow keys to move, enter to take
 // the highlighted entry, escape to go back to what was there before. DS opens,
 // places and closes the list (DS.overlay), so it is never cut off by the
 // dialog or sheet it sits in and follows its field while anything moves; this

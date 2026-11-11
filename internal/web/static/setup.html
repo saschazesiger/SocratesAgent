@@ -17,13 +17,13 @@
 <link rel="icon" href="/favicon.png">
 <link rel="apple-touch-icon" sizes="180x180" href="/static/img/apple-touch-icon.png">
 <link rel="manifest" href="/static/manifest.json">
-<link rel="preload" href="/static/vendor/dashboard-style/fonts/google-sans-latin-opsz-normal.woff2" as="font" type="font/woff2" crossorigin>
-<link rel="stylesheet" href="/static/vendor/dashboard-style/fonts/fonts.css">
-<link rel="stylesheet" href="/static/vendor/dashboard-style/ds.css">
+<link rel="preload" href="/static/vendor/z-dash/fonts/google-sans-latin-opsz-normal.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="/static/vendor/z-dash/fonts/fonts.css">
+<link rel="stylesheet" href="/static/ds/ds.bundle.css">
 <link rel="stylesheet" href="/static/css/theme.css">
 <link rel="stylesheet" href="/static/css/so-shared.css">
 <link rel="stylesheet" href="/static/css/so-pages.css">
-<script src="/static/vendor/dashboard-style/ds.js" defer></script>
+<script src="/static/ds/ds.bundle.js" defer></script>
 </head>
 <body>
 <main class="ds-auth">
@@ -49,14 +49,14 @@
           <input class="ds-input" type="password" id="repeat" autocomplete="new-password" enterkeyhint="next" minlength="6" required aria-describedby="repeatError">
           <small class="ds-field__hint ds-field__hint--error" id="repeatError" hidden></small>
         </div>
-        <div class="ds-subsection">
+        <div class="ds-card__section">
           <div class="ds-field">
             <label class="ds-field__label" for="key">OpenRouter API key <span class="ds-field__optional">· optional</span></label>
             <input class="ds-input" type="password" id="key" placeholder="sk-or-v1-…" autocomplete="off" enterkeyhint="done" aria-describedby="keyHint">
             <small class="ds-field__hint" id="keyHint">It transcribes what you dictate and writes the spoken status and the chats' names, and with the turn outcome switched on it checks each chat's turn — which sends the chat's last instruction, answer, calls and task list to OpenRouter. The coding agents bring their own accounts, and the voice that reads answers out loud has a key of its own in Admin → Voice. Get one at openrouter.ai/keys — you can also add it later.</small>
           </div>
         </div>
-        <div class="ds-subsection">
+        <div class="ds-card__section">
           <div class="ds-field">
             <label class="ds-field__label" for="tunnelMode">Reach it from outside <span class="ds-field__optional">· optional</span></label>
             <select class="ds-input" id="tunnelMode" aria-describedby="tunnelHint">
@@ -78,16 +78,16 @@
           </div>
         </div>
         <div id="notice"></div>
-        <button class="ds-btn ds-btn--primary so-auth__submit" type="submit" id="submit">
+        <button class="ds-btn ds-btn--filled so-auth__submit" type="submit" id="submit">
           <span class="ds-btn__faces">
             <span class="ds-btn__face">Create workspace</span>
-            <span class="ds-btn__face ds-btn__face--busy" aria-hidden="true"><span class="ds-spinner ds-spinner--sm"></span>Setting up</span>
+            <span class="ds-btn__face ds-btn__face--busy" aria-hidden="true"><span class="ds-spinner ds-spinner--ink ds-sm"></span>Setting up</span>
           </span>
         </button>
       </form>
       <!-- Offered only while this machine holds nothing a restore would
            overwrite. -->
-      <div class="ds-subsection so-restore-offer" id="restoreOffer" hidden>
+      <div class="ds-card__section so-restore-offer" id="restoreOffer" hidden>
         <p class="ds-muted">Moving Socrates to this machine? Restore it from its backup instead: the settings, the password, the chats and the accounts' sign-ins come back with it.</p>
         <button class="ds-btn" type="button" id="restoreOpen" data-icon="history" data-icon-size="16" data-icon-place="start">Restore from a backup</button>
       </div>
@@ -141,10 +141,10 @@
           <small class="ds-field__hint" id="rPassphraseHint">The passphrase the backup was made with. Nothing is written before it is proved right.</small>
         </div>
         <div id="restoreNotice"></div>
-        <button class="ds-btn ds-btn--primary so-auth__submit" type="submit" id="findBtn">
+        <button class="ds-btn ds-btn--filled so-auth__submit" type="submit" id="findBtn">
           <span class="ds-btn__faces">
             <span class="ds-btn__face">Find backups</span>
-            <span class="ds-btn__face ds-btn__face--busy" aria-hidden="true"><span class="ds-spinner ds-spinner--sm"></span>Looking</span>
+            <span class="ds-btn__face ds-btn__face--busy" aria-hidden="true"><span class="ds-spinner ds-spinner--ink ds-sm"></span>Looking</span>
           </span>
         </button>
       </form>
@@ -156,10 +156,10 @@
           <div class="ds-radios" role="radiogroup" aria-label="Snapshot" id="snapshotList"></div>
         </fieldset>
         <div id="pickNotice"></div>
-        <button class="ds-btn ds-btn--primary so-auth__submit" type="button" id="restoreBtn">
+        <button class="ds-btn ds-btn--filled so-auth__submit" type="button" id="restoreBtn">
           <span class="ds-btn__faces">
             <span class="ds-btn__face">Restore this snapshot</span>
-            <span class="ds-btn__face ds-btn__face--busy" aria-hidden="true"><span class="ds-spinner ds-spinner--sm"></span>Starting</span>
+            <span class="ds-btn__face ds-btn__face--busy" aria-hidden="true"><span class="ds-spinner ds-spinner--ink ds-sm"></span>Starting</span>
           </span>
         </button>
       </div>
@@ -221,8 +221,8 @@ async function post(path, body) {
 // notice puts one alert into a slot, or empties it: 'error' for what went
 // wrong, 'ok' for what worked, 'info' for how things stand.
 const ALERTS = {
-  error: ['ds-alert ds-alert--error', 'alert', 'alertCircle'],
-  ok: ['ds-alert ds-alert--success', 'status', 'checkCircle'],
+  error: ['ds-alert ds-tone-error', 'alert', 'alertCircle'],
+  ok: ['ds-alert ds-tone-success', 'status', 'checkCircle'],
   info: ['ds-alert', 'status', 'info'],
 };
 function notice(node, text, kind = 'error') {
@@ -413,7 +413,7 @@ function bucketBody() {
 for (const id of ['rEndpoint', 'rRegion', 'rBucket', 'rPrefix', 'rKey', 'rSecret', 'rPathStyle', 'rPassphrase']) {
   $(id).addEventListener('input', () => {
     $('snapshotBox').hidden = true;
-    $('findBtn').classList.add('ds-btn--primary');
+    $('findBtn').classList.add('ds-btn--filled');
     notice($('restoreNotice'), '');
   });
 }
@@ -468,7 +468,7 @@ $('restoreForm').addEventListener('submit', async (event) => {
   }
   morph($('snapshotList'), html`${snapshots.map((s) => snapshotRow(s, first.id))}`);
   $('snapshotBox').hidden = false;
-  $('findBtn').classList.remove('ds-btn--primary');
+  $('findBtn').classList.remove('ds-btn--filled');
   $('restoreBtn').focus();
 });
 

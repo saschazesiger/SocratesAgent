@@ -805,7 +805,7 @@ async function sessionlist() {
     await menu('Rename');
     await s.page.waitForSelector('dialog.so-rename[open] .ds-input', { timeout: 5000 });
     await s.page.fill('dialog.so-rename[open] .ds-input', 'Renamed by the suite');
-    await s.page.click('dialog.so-rename[open] .ds-btn--primary');
+    await s.page.click('dialog.so-rename[open] .ds-btn--filled');
     await s.page.waitForFunction((sel) => {
       const row = document.querySelector(sel);
       return row && row.querySelector('.so-row__label').textContent === 'Renamed by the suite';
@@ -881,7 +881,7 @@ async function sessionlist() {
     await shot(s.page, 'sessionlist-done');
 
     // Picked up again, it resumes on the same row.
-    await s.page.click('#termOverlay .ds-btn--primary');
+    await s.page.click('#termOverlay .ds-btn--filled');
     await s.page.waitForSelector('#term .xterm', { timeout: 15000 });
     const back = await current();
     ok(back.status === 'in_progress', 'picking a done session up puts it back in progress', back.status);
@@ -889,10 +889,10 @@ async function sessionlist() {
     // Delete: the row goes, the tmux session goes, the directory stays.
     const workdir = back.workdir;
     await menu('Delete');
-    await s.page.waitForSelector('dialog.ds-dialog[open] .ds-btn--primary', { timeout: 5000 });
+    await s.page.waitForSelector('dialog.ds-dialog[open] .ds-btn--filled', { timeout: 5000 });
     const body = await s.page.$eval('dialog.ds-dialog[open] .ds-dialog__text', (n) => n.textContent);
     ok(/working directory/i.test(body), 'the dialog says the working directory is kept', oneLine(body));
-    await s.page.click('dialog.ds-dialog[open] .ds-btn--primary');
+    await s.page.click('dialog.ds-dialog[open] .ds-btn--filled');
     await s.page.waitForFunction((sel) => !document.querySelector(sel), rowSelector, { timeout: 10000 });
     const left = await (await s.context.request.get(s.url + '/api/sessions')).json();
     ok((left.sessions || []).length === 0, 'the session is gone', (left.sessions || []).length + ' left');
@@ -915,7 +915,7 @@ async function sessionlist() {
     await chatMenu('Rename');
     await s.page.waitForSelector('dialog.so-rename[open] .ds-input', { timeout: 5000 });
     await s.page.fill('dialog.so-rename[open] .ds-input', 'A chat renamed by the suite');
-    await s.page.click('dialog.so-rename[open] .ds-btn--primary');
+    await s.page.click('dialog.so-rename[open] .ds-btn--filled');
     const renamedChat = await s.page.waitForFunction((sel) => {
       const row = document.querySelector(sel);
       return !!row && row.querySelector('.so-row__label').textContent === 'A chat renamed by the suite'
@@ -935,8 +935,8 @@ async function sessionlist() {
     ok(pickedUp.status === 'in_progress', 'and puts it back in progress', pickedUp.status);
     const chatDir = pickedUp.workdir;
     await chatMenu('Delete');
-    await s.page.waitForSelector('dialog.ds-dialog[open] .ds-btn--primary', { timeout: 5000 });
-    await s.page.click('dialog.ds-dialog[open] .ds-btn--primary');
+    await s.page.waitForSelector('dialog.ds-dialog[open] .ds-btn--filled', { timeout: 5000 });
+    await s.page.click('dialog.ds-dialog[open] .ds-btn--filled');
     await s.page.waitForFunction((sel) => !document.querySelector(sel), chatSel, { timeout: 10000 });
     const gone = await until(() => hostsOf(s.data).length === 0 && !existsSync(join(s.data, 'chats', chat)), 15000);
     ok(gone, 'deleting it takes its agent and the chat’s own folder',
@@ -1559,7 +1559,7 @@ async function tmuxcard() {
       reason: document.getElementById('tmuxReason').textContent,
     }));
     // The checklist item: 3.2a is amber and "too old", never green and "ok".
-    ok(/\bold\b/.test(card.chip) && /ds-status--warning/.test(card.chip) && /too old/i.test(card.label),
+    ok(/\bold\b/.test(card.chip) && /ds-tone-warning/.test(card.chip) && /too old/i.test(card.label),
       'tmux 3.2a is reported as too old, not as ok', card.chip + ' \u00b7 ' + card.label);
     ok(card.detail.includes('3.2a') && card.detail.includes('3.3'),
       'the card shows the version it found and the one it needs', oneLine(card.detail));
@@ -2862,20 +2862,20 @@ async function sharedmcp() {
     await s.page.fill('#mcpImportText', JSON.stringify({ mcpServers: {
       github: { type: 'http', url: 'https://gh.example/mcp', headers: { Authorization: 'Bearer ${SOCRATES_E2E_GH:-t0k}' } },
     } }));
-    await s.page.click('dialog .ds-btn--primary');
+    await s.page.click('dialog .ds-btn--filled');
     await s.page.waitForSelector('#mcpServers .so-mcp[data-name="github"]', { timeout: 5000 });
     // A server typed in, off in every chat; a bad name is refused in the dialog.
     await s.page.click('#mcpAdd');
     await s.page.click('dialog button[data-pick="custom"]');
     await s.page.fill('#mcpEditName', 'no good');
     await s.page.fill('#mcpEditCommand', 'search-mcp');
-    await s.page.click('dialog .ds-btn--primary');
+    await s.page.click('dialog .ds-btn--filled');
     const refused = await s.page.waitForSelector('dialog [role="alert"]', { timeout: 5000 }).then(() => true, () => false);
     ok(refused, 'a name no agent takes is refused in the dialog', '');
     await s.page.fill('#mcpEditName', 'search');
     await s.page.fill('#mcpEditArgs', '--index "my notes"');
     await s.page.click('dialog label.ds-switch:has(#mcpEditDefault)');
-    await s.page.click('dialog .ds-btn--primary');
+    await s.page.click('dialog .ds-btn--filled');
     await s.page.waitForSelector('#mcpServers .so-mcp[data-name="search"]', { timeout: 5000 });
     await s.page.waitForSelector('dialog.ds-dialog', { state: 'detached', timeout: 5000 });
     const rows = await s.page.$$eval('#mcpServers .so-mcp', (list) => list.map((row) =>
@@ -3110,7 +3110,7 @@ async function mcpcard() {
     }));
     ok(sheet.title === 'BrowserStack' && sheet.add && Number(sheet.tools) > 0,
       'its sheet offers to add an account and lists its tools', JSON.stringify(sheet));
-    await page.click('#mcpSheet .ds-sheet__head [data-close]');
+    await page.click('#mcpSheet .ds-sheet__head [data-ds-close]');
     await page.waitForSelector('#mcpSheet', { state: 'hidden', timeout: 5000 });
     await page.click('#mcpBuiltin label.ds-switch');
 
@@ -3121,7 +3121,7 @@ async function mcpcard() {
     const prefilled = await page.evaluate(() => [document.getElementById('mcpEditName').value,
       document.getElementById('mcpEditType').value, document.getElementById('mcpEditURL').value].join(' '));
     ok(prefilled === 'context7 http https://mcp.context7.com/mcp', 'the gallery fills the editor in', prefilled);
-    await page.click('dialog .ds-dialog__actions .ds-btn--primary');
+    await page.click('dialog .ds-dialog__actions .ds-btn--filled');
     await page.waitForSelector('#mcpServers .so-mcp[data-name="context7"]', { timeout: 5000 });
     await page.waitForSelector('dialog.ds-dialog', { state: 'detached', timeout: 5000 });
 
@@ -3135,28 +3135,28 @@ async function mcpcard() {
     await page.waitForSelector('#mcpEditOutcome .ds-field__hint--success', { timeout: 30000 });
     const outcome = await page.textContent('#mcpEditOutcome .ds-field__hint--success');
     ok(/It works \(Fake MCP 1\.2\.3\): 2 tools · 1 prompt/.test(outcome), 'Test connection in the editor says what the server offers', outcome.trim());
-    await page.click('dialog .ds-dialog__actions [data-close]');
+    await page.click('dialog .ds-dialog__actions [data-ds-close]');
     await page.waitForSelector('dialog.ds-dialog', { state: 'detached', timeout: 5000 });
 
     // A row's Test: the sheet with the outcome, the tools as switches.
     await page.click('#mcpServers .so-mcp[data-name="fake"] button[data-action="test"]');
     await page.waitForSelector('#mcpSheet[open] .so-mcp-probe', { timeout: 30000 });
     const probe = await page.$eval('#mcpSheet', (n) => ({
-      ok: n.querySelector('.ds-alert--success')?.textContent.trim(),
+      ok: n.querySelector('.ds-alert.ds-tone-success')?.textContent.trim(),
       tools: [...n.querySelectorAll('input[data-tool]')].map((i) => i.dataset.tool + ':' + i.checked).join(' '),
     }));
     ok(probe.ok === 'It works: 2 tools · 1 prompt.' && probe.tools === 'echo:true add:true',
       'a test that works lists the tools, each on', JSON.stringify(probe));
     await page.click('#mcpSheet label.ds-switch:has(input[data-tool="add"])');
-    await page.click('#mcpSheet .ds-sheet__head [data-close]');
+    await page.click('#mcpSheet .ds-sheet__head [data-ds-close]');
     await page.waitForSelector('#mcpSheet', { state: 'hidden', timeout: 5000 });
     const row = await page.$eval('#mcpServers .so-mcp[data-name="fake"] [data-test]', (n) => n.dataset.test + ' / ' + n.textContent.replace(/\s+/g, ' ').trim());
     ok(/^ok \/ 2 tools.*1 tool off/.test(row), 'the row says the test worked and one tool is off', row);
     await page.click('#mcpServers .so-mcp[data-name="broken"] button[data-action="test"]');
-    await page.waitForSelector('#mcpSheet[open] .so-mcp-probe .ds-alert--error', { timeout: 30000 });
+    await page.waitForSelector('#mcpSheet[open] .so-mcp-probe .ds-alert.ds-tone-error', { timeout: 30000 });
     const failed = await page.$eval('#mcpSheet .so-mcp-probe', (n) => n.textContent.replace(/\s+/g, ' '));
     ok(/did not work/.test(failed) && /no token in FAKEMCP_TOKEN/.test(failed), 'a test that fails says why, with what the server printed', failed.slice(0, 160));
-    await page.click('#mcpSheet .ds-sheet__head [data-close]');
+    await page.click('#mcpSheet .ds-sheet__head [data-ds-close]');
     await page.waitForSelector('#mcpSheet', { state: 'hidden', timeout: 5000 });
 
     await page.click('#saveTop');
@@ -3178,7 +3178,7 @@ async function mcpcard() {
     await page.waitForSelector('dialog .ds-dialog__title', { timeout: 5000 });
     const asked = await page.textContent('dialog .ds-dialog__title');
     ok(asked === 'Save the changes first?', 'with a change not saved, Connect asks to save it first', asked);
-    await page.click('dialog .ds-dialog__actions .ds-btn--primary');
+    await page.click('dialog .ds-dialog__actions .ds-btn--filled');
     await page.waitForFunction(() => /linear is connected/.test(document.getElementById('toasts').textContent), null, { timeout: 15000 });
     const back = await page.evaluate(() => location.search + location.hash);
     const fakeNow = ((await (await s.context.request.get(s.url + '/api/settings')).json()).settings.mcp.servers || []).find((one) => one.name === 'fake');
@@ -3217,13 +3217,13 @@ async function mcpcard() {
     ok(listed.join(' ') === 'broken:false BrowserStack:true context7:true fake:false linear:false Socrates Artifacts:false Socrates Tests:false',
       'the chat lists the servers, the built-in ones by their titles and on as Admin says', listed.join(' '));
     await page.click('dialog .so-mcp-switch[data-name="fake"] button[data-test]');
-    await page.waitForSelector('dialog .so-mcp-probe .ds-alert--success', { timeout: 30000 });
+    await page.waitForSelector('dialog .so-mcp-probe .ds-alert.ds-tone-success', { timeout: 30000 });
     const tested = await page.$$eval('dialog .so-mcp-probe__part .so-mcp-tool__name', (n) => n.map((x) => x.textContent).join(' '));
     ok(tested === 'echo add', 'the chat’s info button tests the server and lists its tools', tested);
     // The test's dialog stands inside the servers' dialog while it shows.
-    await page.click('dialog.ds-dialog--nested > .ds-dialog__box > .ds-dialog__actions [data-close]');
+    await page.click('dialog.ds-dialog--nested > .ds-dialog__box > .ds-dialog__actions [data-ds-close]');
     await page.waitForSelector('dialog .so-mcp-probe', { state: 'detached', timeout: 5000 });
-    await page.click('dialog:has(.so-mcp-switches) > .ds-dialog__box > .ds-dialog__actions [data-close]');
+    await page.click('dialog:has(.so-mcp-switches) > .ds-dialog__box > .ds-dialog__actions [data-ds-close]');
     await page.waitForSelector('dialog .so-mcp-switches', { state: 'detached', timeout: 5000 });
 
     ok(unexpected(s.errors).length === 0, 'no console errors', unexpected(s.errors).join(' | ') || '0');
@@ -3794,7 +3794,7 @@ async function opencodemodels() {
     await page.click('.ds-combo__popup:not([hidden]) .ds-combo__option[data-value="router/vendor/model-12"]');
     const noEffort = await page.$eval('.so-model-search__effort', (n) => n.hidden);
     ok(noEffort, 'a model without variants offers no effort', String(noEffort));
-    await page.click('.so-model-search__dialog .ds-btn--primary');
+    await page.click('.so-model-search__dialog .ds-btn--filled');
     await page.waitForSelector('.so-model-search__dialog', { state: 'detached', timeout: 5000 });
     const face = await page.waitForFunction(() => /Router Model 12/.test(document.querySelector('#chat .so-composer__model').innerText),
       null, { timeout: 10000 }).then(() => true, () => false);
@@ -4182,8 +4182,8 @@ async function deletekeepsdir() {
     ok(items.includes('Download scrollback'), 'and the row is where it is offered',
       items.join(' | '));
     await s.page.click(':is(#sessionMenu:not([hidden]), dialog.so-actions[open]) .ds-menu__item:has(.ds-menu__label:text-is("Delete"))');
-    await s.page.waitForSelector('dialog.ds-dialog[open] .ds-btn--primary', { timeout: 5000 });
-    await s.page.click('dialog.ds-dialog[open] .ds-btn--primary');
+    await s.page.waitForSelector('dialog.ds-dialog[open] .ds-btn--filled', { timeout: 5000 });
+    await s.page.click('dialog.ds-dialog[open] .ds-btn--filled');
     await s.page.waitForFunction((sel) => !document.querySelector(sel),
       '#sessionList .so-row[data-id="' + id + '"]', { timeout: 10000 });
 
@@ -4240,8 +4240,8 @@ async function deletekeepsdir() {
     ok(chatItems.includes('Download the conversation') && !chatItems.includes('Download scrollback'),
       'and its row offers the conversation, not a scrollback', chatItems.join(' | '));
     await s.page.click(':is(#sessionMenu:not([hidden]), dialog.so-actions[open]) .ds-menu__item:has(.ds-menu__label:text-is("Delete"))');
-    await s.page.waitForSelector('dialog.ds-dialog[open] .ds-btn--primary', { timeout: 5000 });
-    await s.page.click('dialog.ds-dialog[open] .ds-btn--primary');
+    await s.page.waitForSelector('dialog.ds-dialog[open] .ds-btn--filled', { timeout: 5000 });
+    await s.page.click('dialog.ds-dialog[open] .ds-btn--filled');
     await s.page.waitForFunction((sel) => !document.querySelector(sel), rowSel(chat), { timeout: 10000 });
     const stopped = await until(() => hostsOf(s.data).length === 0, 15000);
     ok(stopped, 'deleting the chat stops its agent', hostsOf(s.data).length + ' hosts');
@@ -5945,7 +5945,7 @@ async function readStatusAloud(page) {
 
 // closeStatusDialog presses the modal's Close, and says whether it went.
 async function closeStatusDialog(page) {
-  await page.$eval('dialog.so-status .so-status__actions [data-close]', (b) => b.click()).catch(() => {});
+  await page.$eval('dialog.so-status .so-status__actions [data-ds-close]', (b) => b.click()).catch(() => {});
   return page.waitForFunction(() => !document.querySelector('dialog.so-status'), null, { timeout: 9000 })
     .then(() => true).catch(() => false);
 }
@@ -8605,7 +8605,7 @@ async function backup() {
       await useDomRenderer(s);
       await s.page.click('#backupRun');
       const failed = await s.page.waitForFunction(() => /Last backup failed/.test(document.querySelector('#backupStatus').textContent)
-        && document.querySelector('#backupDetail .ds-alert--error'), null, { timeout: 30000 }).then(() => true, () => false);
+        && document.querySelector('#backupDetail .ds-alert.ds-tone-error'), null, { timeout: 30000 }).then(() => true, () => false);
       ok(failed, 'a run against a bucket that is down says it failed, and why', await chipOf(s.page));
       const tip = await s.page.$eval('#backupStatus .so-info', (n) => n.getAttribute('data-tip')).catch(() => '');
       ok(/503|ServiceUnavailable/.test(tip), 'with what the bucket said behind the "i"', oneLine(tip || ''));
@@ -8616,7 +8616,7 @@ async function backup() {
       const state = await (await s.context.request.get(s.url + '/api/state')).json();
       ok(state.backup && /last successful backup/.test(state.backup.warning || ''), 'and so does /api/state', JSON.stringify(state.backup));
       await s.page.reload({ waitUntil: 'domcontentloaded' });
-      const cardWarns = await s.page.waitForSelector('#backupDetail .ds-alert--warning', { timeout: 15000 }).then((n) => n.textContent(), () => '');
+      const cardWarns = await s.page.waitForSelector('#backupDetail .ds-alert.ds-tone-warning', { timeout: 15000 }).then((n) => n.textContent(), () => '');
       ok(/last successful backup/.test(cardWarns), 'and the card', oneLine(cardWarns));
       await s.page.goto(s.url + '/', { waitUntil: 'domcontentloaded' });
       const notice = await s.page.waitForSelector('#backupNotice:not([hidden])', { timeout: 15000 }).then((n) => n.textContent(), () => '');
@@ -8802,7 +8802,7 @@ async function optionsmenu() {
     // is modal, so the button under it cannot be pressed meanwhile.
     const gone = () => s.page.waitForSelector('#optionsDialog[open]', { state: 'detached', timeout: 3000 })
       .then(() => true).catch(() => false);
-    await s.page.click('#optionsDialog .ds-dialog__actions [data-close]');
+    await s.page.click('#optionsDialog .ds-dialog__actions [data-ds-close]');
     const byButton = await gone();
     await openOptions(s.page);
     await s.page.keyboard.press('Escape');
@@ -9768,7 +9768,7 @@ async function asktexts() {
         question: words(body.querySelector('.so-q-text')),
         steps: [...body.querySelectorAll('.so-ask-steps li')].map(words),
         stepsHead: words(body.querySelector('.so-ask-steps__head')),
-        warning: words(body.querySelector('.so-ask-section.ds-alert--warning')),
+        warning: words(body.querySelector('.so-ask-section.ds-alert.ds-tone-warning')),
         folds: [...body.querySelectorAll('details.so-ask-context')].map((d) => ({ title: words(d.querySelector('summary')), open: d.open })),
         stepsBeforeOptions: (() => {
           const st = body.querySelector('.so-ask-steps');
@@ -14148,7 +14148,7 @@ async function chatphone() {
       && renameAbove.scrim >= renameAbove.vh,
     'with the keyboard up the rename dialog stands above it, Rename in view, and its scrim still covers the page', JSON.stringify(renameAbove));
     await page.fill('#renameInput', 'Renamed on a phone');
-    await page.tap('dialog.so-rename .ds-btn--primary');
+    await page.tap('dialog.so-rename .ds-btn--filled');
     const renamedByTap = await page.waitForFunction(() => document.querySelector('#sessionTitleText').textContent === 'Renamed on a phone',
       null, { timeout: 10000 }).then(() => true, () => false);
     ok(renamedByTap, 'a tap on Rename renames', await page.$eval('#sessionTitleText', (n) => n.textContent));
@@ -14463,7 +14463,7 @@ async function chattitle() {
     const kept = await page.$eval(rowSel(id) + ' .so-row__label', (n) => n.textContent.trim());
     ok(suggested && kept === want, 'the dialog suggests a name in its field and saves nothing yet',
       JSON.stringify({ suggested, kept }));
-    await page.click('.so-rename .ds-btn--primary');
+    await page.click('.so-rename .ds-btn--filled');
     const renamed = await page.waitForFunction((arg) => document.querySelector(arg.sel)?.textContent.trim() === arg.want,
       { sel: rowSel(id) + ' .so-row__label', want: suggestion }, { timeout: 10000 }).then(() => true, () => false);
     ok(renamed, 'and Rename takes it', suggestion);
@@ -14949,7 +14949,7 @@ async function accountsscenario() {
     await page.click('dialog.ds-dialog .ds-chip:has(input[value="api_key"])');
     await page.fill('#accountLabel', 'Key one');
     await page.fill('#accountKey', key);
-    await page.click('dialog.ds-dialog .ds-btn--primary');
+    await page.click('dialog.ds-dialog .ds-btn--filled');
     await page.waitForSelector('dialog.ds-dialog', { state: 'detached', timeout: 15000 });
     let list = await accountsOf(s);
     const keyed = list.find((a) => a.label === 'Key one');
@@ -14967,7 +14967,7 @@ async function accountsscenario() {
     await page.click('.so-account-group[data-agent="codex"] .ds-add-row');
     await page.waitForSelector('dialog.ds-dialog .so-account-form', { timeout: 5000 });
     await page.fill('#accountLabel', 'Codex work');
-    await page.click('dialog.ds-dialog .ds-btn--primary');
+    await page.click('dialog.ds-dialog .ds-btn--filled');
     const coded = await page.waitForSelector('dialog.ds-dialog .so-signin__code', { timeout: 20000 }).then(() => true, () => false);
     const flow = coded ? await page.evaluate(() => ({
       code: document.querySelector('dialog.ds-dialog .so-signin__value').textContent,
@@ -14992,7 +14992,7 @@ async function accountsscenario() {
     await page.waitForSelector('dialog.ds-dialog .so-account-form', { timeout: 5000 });
     await page.fill('#accountLabel', 'OpenCode work');
     const signinRes = page.waitForResponse((r) => /\/api\/accounts\/[^/]+\/signin$/.test(r.url()) && r.request().method() === 'POST', { timeout: 20000 });
-    await page.click('dialog.ds-dialog .ds-btn--primary');
+    await page.click('dialog.ds-dialog .ds-btn--filled');
     const shell = ((await (await signinRes).json()).session) || {};
     const onShell = shell.id ? await page.waitForFunction((id) => location.hash.includes(id) && !!document.querySelector('#term .xterm'),
       shell.id, { timeout: 20000 }).then(() => true, () => false) : false;
@@ -15015,7 +15015,7 @@ async function accountsscenario() {
     await page.click(accountRowSel(keyed.id) + ' [data-action="rename"]');
     await page.waitForSelector('dialog.ds-dialog .ds-input', { timeout: 5000 });
     await page.fill('dialog.ds-dialog .ds-input', 'Renamed key');
-    await page.click('dialog.ds-dialog .ds-btn--primary');
+    await page.click('dialog.ds-dialog .ds-btn--filled');
     await page.waitForFunction((id) => document.querySelector('#accountList .so-account[data-id="' + id + '"] .so-account__name')?.textContent.includes('Renamed key'),
       keyed.id, { timeout: 10000 });
     list = await accountsOf(s);
@@ -15041,8 +15041,8 @@ async function accountsscenario() {
     await page.reload({ waitUntil: 'domcontentloaded' });
     await page.waitForSelector(accountRowSel(keyed.id), { timeout: 15000 });
     await page.click(accountRowSel(keyed.id) + ' [data-action="delete"]');
-    await page.waitForSelector('dialog.ds-dialog .ds-btn--primary', { timeout: 5000 });
-    await page.click('dialog.ds-dialog .ds-btn--primary');
+    await page.waitForSelector('dialog.ds-dialog .ds-btn--filled', { timeout: 5000 });
+    await page.click('dialog.ds-dialog .ds-btn--filled');
     const toastSaid = await page.waitForFunction(() => [...document.querySelectorAll('.ds-toast, .ds-snackbar, [role="status"]')]
       .some((n) => /chat/i.test(n.textContent) && /run|use/i.test(n.textContent)), null, { timeout: 8000 }).then(() => true, () => false);
     list = await accountsOf(s);
@@ -15052,8 +15052,8 @@ async function accountsscenario() {
     await page.reload({ waitUntil: 'domcontentloaded' });
     await page.waitForSelector(accountRowSel(keyed.id), { timeout: 15000 });
     await page.click(accountRowSel(keyed.id) + ' [data-action="delete"]');
-    await page.waitForSelector('dialog.ds-dialog .ds-btn--primary', { timeout: 5000 });
-    await page.click('dialog.ds-dialog .ds-btn--primary');
+    await page.waitForSelector('dialog.ds-dialog .ds-btn--filled', { timeout: 5000 });
+    await page.click('dialog.ds-dialog .ds-btn--filled');
     await page.waitForSelector(accountRowSel(keyed.id), { state: 'detached', timeout: 10000 });
     list = await accountsOf(s);
     ok(!list.some((a) => a.id === keyed.id), 'with no chat on it, it is deleted', list.map((a) => a.label).join(','));
@@ -15095,7 +15095,7 @@ async function accountsscenario() {
     await page.keyboard.type('Car');
     const tappedName = await page.$eval('#accountLabel', (n) => ({ value: n.value, focused: document.activeElement === n }));
     ok(tappedName.focused && tappedName.value === 'Car', 'and a press on the Name takes what is typed', JSON.stringify(tappedName));
-    await page.click('dialog.ds-dialog [data-close].ds-btn');
+    await page.click('dialog.ds-dialog [data-ds-close].ds-btn');
     await page.waitForSelector('dialog.ds-dialog', { state: 'detached', timeout: 10000 }).catch(() => {});
     await shot(page, 'accounts-phone');
     // The refused delete is a 409 the browser reports by itself.

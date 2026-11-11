@@ -434,7 +434,7 @@ function seriesKey(slot) {
 // keyHtml is a series' key, DS's legend key in its chart role.
 const KEY_TONE = ['', ' ds-legend__key--s2', ' ds-legend__key--s3', ' ds-legend__key--s4'];
 function keyHtml(slot) {
-  return html`<span class="${'ds-legend__key' + (slot < SERIES ? KEY_TONE[slot] : ' ds-legend__key--neutral')}"></span>`;
+  return html`<span class="${'ds-legend__key' + (slot < SERIES ? KEY_TONE[slot] : ' ds-tone-neutral')}"></span>`;
 }
 
 // px is a length token of the chart's box in pixels.
@@ -654,14 +654,14 @@ function table(id, groups, { column, name, sub, onPick, picked, href, limit = LI
       <td class="ds-num ds-col--secondary">${g.requests.toLocaleString()}</td>
     </tr>`;
   });
-  morph(box, html`<div class="ds-table-wrap"><table class="ds-table ds-table--dense so-costs-table${rowsOpen || linked ? ' ds-table--interactive' : ''}">
+  morph(box, html`<div class="ds-table-wrap"><table class="ds-table ds-density-tight so-costs-table${rowsOpen || linked ? ' ds-table--interactive' : ''}">
     <thead><tr>
       <th scope="col">${column}</th><th scope="col" class="ds-num">Cost</th><th scope="col" class="ds-num ds-col--secondary">Share</th>
       <th scope="col" class="ds-num ds-col--secondary">Tokens</th><th scope="col" class="ds-num ds-col--secondary">Requests</th>
     </tr></thead>
     <tbody>${rows}</tbody>
   </table></div>${groups.length > limit
-    ? html`<div class="ds-more"><button class="ds-btn ds-btn--text" type="button" data-more>${open ? 'Show fewer' : `Show all ${groups.length}`}</button></div>`
+    ? html`<div class="ds-card__more"><button class="ds-btn ds-btn--text" type="button" data-more>${open ? 'Show fewer' : `Show all ${groups.length}`}</button></div>`
     : ''}`);
   box.onclick = (ev) => {
     const pick = ev.target.closest('[data-pick]');
@@ -785,7 +785,7 @@ function drawState() {
 // notice says that the ledger could not be read, with a way to try again.
 function notice(text) {
   if (!text) { morph($('notice'), ''); return; }
-  morph($('notice'), html`<div class="ds-alert ds-alert--error" role="alert">${raw(icon('alertCircle', 20))}<span class="ds-alert__text">${text}</span><button class="ds-btn ds-btn--text ds-btn--sm" type="button" data-retry>Try again</button></div>`);
+  morph($('notice'), html`<div class="ds-alert ds-tone-error" role="alert">${raw(icon('alertCircle', 20))}<span class="ds-alert__text">${text}</span><button class="ds-btn ds-btn--text ds-sm" type="button" data-retry>Try again</button></div>`);
 }
 
 async function load() {

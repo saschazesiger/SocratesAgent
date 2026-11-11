@@ -228,8 +228,8 @@ const NO_KEY_WORDS = {
  */
 export function explainNoKey(what = 'dictate', opener = null) {
   const words = NO_KEY_WORDS[what] || NO_KEY_WORDS.dictate;
-  const admin = el('a', { class: 'ds-btn ds-btn--primary', href: '/admin#voiceCard', text: 'Open Admin' });
-  const close = el('button', { class: 'ds-btn ds-btn--text', type: 'button', 'data-close': true, autofocus: true, text: 'Close' });
+  const admin = el('a', { class: 'ds-btn ds-btn--filled', href: '/admin#voiceCard', text: 'Open Admin' });
+  const close = el('button', { class: 'ds-btn ds-btn--text', type: 'button', 'data-ds-close': true, autofocus: true, text: 'Close' });
   return openDialog({ title: words.title, body: words.body, actions: [close, admin], opener }).shown;
 }
 

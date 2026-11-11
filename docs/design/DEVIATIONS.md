@@ -2869,12 +2869,12 @@ for a reason in the code, not in the test:
 The phone pass (branch `mobile`, merged into `integ` after WP10 and WP11) audited every screen at
 390, 360, 430 and on its side in touch mode, fixed what it found, and was audited twice again;
 the four final audits (a desk, a phone, a deploy rehearsal, the real binaries) followed on
-`integ`. What departs from REBUILD §7.1, DESIGN.md or DASHBOARD-STYLE.md:
+`integ`. What departs from REBUILD §7.1, DESIGN.md or Z-DASH.md:
 
 - **Glyphs from Lucide.** Where Dashboard-Style 1.6.2 has no glyph a phone needs (microphone,
   stop in a circle, keyboard, upload, clipboard, Enter, paperclip, speaker, terminal), `ui.js`
   `LUCIDE` holds Lucide's, drawn by DS's own `icon()`; `GLYPH` names what each control means. Each
-  goes when DS ships it (DASHBOARD-STYLE.md, "Icons").
+  goes when DS ships it (Z-DASH.md, "Icons").
 - **Icons rather than text buttons** on the top bar, the composer, the key bar, the question
   dialog and a failed message (Status, the microphone, Keys, Read aloud, Ask back, Back, Open
   chat, Copy, Paste, Upload, retry and edit), each with its name and its tip. On a phone at 480 px
@@ -3018,7 +3018,7 @@ agent has to do, nothing should be read out loud by itself, and the chat needs n
 
 ## Dashboard-Style 2.0 (2026-10-27)
 
-The move to Dashboard-Style 2.0.0 (DASHBOARD-STYLE.md, "Dashboard-Style 1.6 to 2.0") ends deviations of the phone
+The move to Dashboard-Style 2.0.0 (Z-DASH.md, "Dashboard-Style 1.6 to 2.0") ends deviations of the phone
 pass and the work packages that were DS gaps:
 
 - **Glyphs from Lucide** are gone: every glyph is DS's own (`ui.js` `GLYPH` maps meanings to them).
@@ -3033,12 +3033,12 @@ pass and the work packages that were DS gaps:
   line at a desk instead of at the foot of the head.
 
 What still departs is listed with its reason in `ds-check.json` (the placement and wrapping rules on DS parts
-that DS's project check finds) and in DASHBOARD-STYLE.md ("Still Socrates' own", and "Rules on DS parts that the
+that DS's project check finds) and in Z-DASH.md ("Still Socrates' own", and "Rules on DS parts that the
 check does not see").
 
 ## Dashboard-Style 2.1 (2026-10-27)
 
-Dashboard-Style 2.1.0 (DASHBOARD-STYLE.md, "Dashboard-Style 2.0 to 2.1") ends these deviations of the 2.0 move:
+Dashboard-Style 2.1.0 (Z-DASH.md, "Dashboard-Style 2.0 to 2.1") ends these deviations of the 2.0 move:
 
 - **The drawer row's room in touch mode, the drawer list's fade, the fixed view's snackbar room, the phone tables'
   last gutter and the status chip in a card's head** are DS's own now; the project rules and their `ds-check.json`
@@ -3048,7 +3048,7 @@ Dashboard-Style 2.1.0 (DASHBOARD-STYLE.md, "Dashboard-Style 2.0 to 2.1") ends th
 
 Still departing, with the reason updated: the top bar in a phone's strip (DS does not count VS Code's EditContext
 editor as a field), the 8px row gap in a chat card's head and its answer row (`ds-check.json`). The list of what
-stays Socrates' own is in DASHBOARD-STYLE.md.
+stays Socrates' own is in Z-DASH.md.
 
 ## OpenCode's models and agents (2026-10-27)
 

@@ -241,9 +241,9 @@ async function choose({ session, chat, error }, id, opener) {
 // switch waits for the agent and its background work, and the agent goes on
 // without being told anything.
 async function askWhen(from, to, opener, turn) {
-  const cancel = el('button', { class: 'ds-btn ds-btn--text', type: 'button', 'data-close': true, text: 'Cancel' });
+  const cancel = el('button', { class: 'ds-btn ds-btn--text', type: 'button', 'data-ds-close': true, text: 'Cancel' });
   const now = el('button', { class: 'ds-btn ds-btn--tonal', type: 'button', 'data-when': 'now', text: 'Switch now' });
-  const later = el('button', { class: 'ds-btn ds-btn--primary', type: 'button', 'data-when': 'after_turn', text: 'After this turn' });
+  const later = el('button', { class: 'ds-btn ds-btn--filled', type: 'button', 'data-when': 'after_turn', text: 'After this turn' });
   const { dialog, shown } = openDialog({
     title: 'Switch to ' + to.label + '?',
     body: (turn ? 'A turn is running' : 'The agent has background work running') + (from ? ' on ' + from.label : '') + '. Switch now stops it, and '

@@ -624,7 +624,7 @@ export function openAskDialog({ items, start = 0, watch, openChat, closed, more 
   // under the top bar. A question still to be answered may have been
   // answered on another device meanwhile, and nothing would have said so.
   function connHtml(conn) {
-    return html`<div class="${'ds-alert ' + (conn.kind === 'offline' ? 'ds-alert--error' : 'ds-alert--warning') + ' so-q-conn'}" role="status" data-ds-key="conn" data-status="${conn.kind}">${raw(icon('wifiOff', 20))}<span class="ds-alert__text"><span class="so-q-conn-words">${conn.words}</span>${
+    return html`<div class="${'ds-alert ' + (conn.kind === 'offline' ? 'ds-tone-error' : 'ds-tone-warning') + ' so-q-conn'}" role="status" data-ds-key="conn" data-status="${conn.kind}">${raw(icon('wifiOff', 20))}<span class="ds-alert__text"><span class="so-q-conn-words">${conn.words}</span>${
       st.phase === 'ask' ? html`<span class="so-q-conn-detail">This question may already have been answered.</span>` : ''
     }</span></div>`;
   }
@@ -663,7 +663,7 @@ export function openAskDialog({ items, start = 0, watch, openChat, closed, more 
 <div class="so-q-scroll" data-ds-key="${'scroll:' + ask.id}">${settled ? doneHtml(ask) : html`<div class="so-q-body so-ask-body" data-ds-key="${'q:' + ask.id + ':' + step}"${st.phase === 'sent' ? html` data-state="pending"` : ''}>${
       step === 0 && payload.context ? contextHtml('ctx', payload.context, payload.title || 'About these questions', !!payload.title)
         : step === 0 && payload.title ? html`<p class="so-ask-title">${payload.title}</p>` : ''
-    }${step === 0 ? sectionsHtml('sec', sectionsOf(payload)) : ''}${step === 0 ? stepsHtml('steps', payload.steps) : ''}${st.refused ? html`<div class="ds-alert ds-alert--error so-refused" role="alert">${raw(icon('alertCircle', 20))}<span class="ds-alert__text">${'Your answer was not taken: ' + (st.refused.error || 'the server refused it.') + ' Send it again, or change it first.'}</span></div>` : ''}${q ? questionHtml(q, questions.length, step, last) : ''}${
+    }${step === 0 ? sectionsHtml('sec', sectionsOf(payload)) : ''}${step === 0 ? stepsHtml('steps', payload.steps) : ''}${st.refused ? html`<div class="ds-alert ds-tone-error so-refused" role="alert">${raw(icon('alertCircle', 20))}<span class="ds-alert__text">${'Your answer was not taken: ' + (st.refused.error || 'the server refused it.') + ' Send it again, or change it first.'}</span></div>` : ''}${q ? questionHtml(q, questions.length, step, last) : ''}${
       st.draft.asking ? followUpHtml() : ''
     }${last && !st.draft.asking ? generalHtml() : ''}</div>`}${
       st.phase === 'sent' ? html`<div class="ds-alert so-q-status" role="status">${raw(icon('clock', 20))}<span class="ds-alert__text">${navigator.onLine === false ? 'Saved. Your answer goes out when the connection is back.' : 'Sending your answer…'}</span></div>` : ''
@@ -720,7 +720,7 @@ export function openAskDialog({ items, start = 0, watch, openChat, closed, more 
     return sections.map((sec, i) => {
       const k = key + ':' + i;
       if (sec.tone === 'warning') {
-        return html`<div class="ds-alert ds-alert--warning so-ask-section" data-ds-key="${k}">${raw(icon('alert', 20))}<div class="ds-alert__text"><p class="ds-alert__title">${sec.title}</p><div class="so-md">${markdown(sec.body)}</div></div></div>`;
+        return html`<div class="ds-alert ds-tone-warning so-ask-section" data-ds-key="${k}">${raw(icon('alert', 20))}<div class="ds-alert__text"><p class="ds-alert__title">${sec.title}</p><div class="so-md">${markdown(sec.body)}</div></div></div>`;
       }
       return contextHtml(k, sec.body, sec.title, true, sec.tone === 'success' ? 'checkCircle' : 'info');
     });
@@ -746,7 +746,7 @@ export function openAskDialog({ items, start = 0, watch, openChat, closed, more 
     }${kind === 'number' ? numberHtml(q, a, !!problem, last ? 'done' : 'next') : ''}${
       other && (a.othering || a.other) ? fieldHtml(q.id, 'other', 'In your own words', a.other, 2, last ? 'done' : 'next') : ''
     }${a.noting || a.note ? fieldHtml(q.id, 'note', 'A note to the agent', a.note, 2) : ''}${
-      problem ? html`<div class="ds-alert ds-alert--error so-ask-problem" role="alert">${raw(icon('alertCircle', 20))}<span class="ds-alert__text">${problem}</span></div>` : ''
+      problem ? html`<div class="ds-alert ds-tone-error so-ask-problem" role="alert">${raw(icon('alertCircle', 20))}<span class="ds-alert__text">${problem}</span></div>` : ''
     }<div class="so-ask-extras">${
       delegate ? html`<button class="ds-btn ds-btn--quiet so-ask-delegate" type="button" data-action="delegate" data-q="${q.id}" aria-pressed="${a.delegated ? 'true' : 'false'}">${raw(icon('sparkles', 16))}You decide</button>` : ''
     }${other && !(a.othering || a.other) ? html`<button class="ds-btn ds-btn--quiet so-ask-other" type="button" data-action="other" data-q="${q.id}">${raw(icon('pencil', 16))}Other</button>` : ''}${
@@ -770,8 +770,8 @@ export function openAskDialog({ items, start = 0, watch, openChat, closed, more 
     const open = st.details.has(detailKey);
     return html`<div class="so-ask-option" data-ds-key="${'o:' + id}"><button class="ds-card ds-card--interactive so-q-option" type="button" data-action="choose" data-q="${q.id}" data-option="${id}" aria-pressed="${chosen ? 'true' : 'false'}"${multi ? html` data-multi` : ''}><span class="so-q-option-row"><span class="so-q-option-key" aria-hidden="true">${chosen ? raw(icon('check', 20)) : String(i + 1)}</span><span class="so-q-option-text"><span class="so-q-option-label">${option.label || id}</span>${
       option.description ? html`<span class="so-q-option-desc">${option.description}</span>` : ''
-    }${option.recommended ? html`<span class="ds-status ds-status--ok so-q-recommended">${raw(icon('thumbUp', 16))}<span>Recommended</span></span>` : ''}</span></span></button>${
-      option.details ? html`<button class="ds-btn ds-btn--text ds-btn--sm so-ask-more" type="button" data-action="details" data-key="${detailKey}" aria-expanded="${open ? 'true' : 'false'}">${open ? 'Fewer details' : 'Details'}${raw(icon('chevronDown', 16, 'ds-chevron'))}</button>${open ? html`<div class="so-ask-details so-md">${markdown(option.details)}</div>` : ''}` : ''
+    }${option.recommended ? html`<span class="ds-status ds-tone-success so-q-recommended">${raw(icon('thumbUp', 16))}<span>Recommended</span></span>` : ''}</span></span></button>${
+      option.details ? html`<button class="ds-btn ds-btn--text ds-sm so-ask-more" type="button" data-action="details" data-key="${detailKey}" aria-expanded="${open ? 'true' : 'false'}">${open ? 'Fewer details' : 'Details'}${raw(icon('chevronDown', 16, 'ds-chevron'))}</button>${open ? html`<div class="so-ask-details so-md">${markdown(option.details)}</div>` : ''}` : ''
     }</div>`;
   }
 
@@ -814,18 +814,18 @@ export function openAskDialog({ items, start = 0, watch, openChat, closed, more 
     const readTip = !st.speaking && ttsKey() === false ? 'Needs a Text-to-Speech key (Admin, Voice)' : reading;
     const read = html`<button class="ds-btn ds-btn--icon so-q-big so-q-read" type="button" data-action="read" aria-pressed="${st.speaking ? 'true' : 'false'}" aria-label="${reading}" data-tip="${readTip}">${raw(icon(st.speaking ? 'stop' : 'speak', 20))}</button>`;
     if (st.phase === 'answered' || st.phase === 'elsewhere') {
-      return html`<button class="ds-btn ds-btn--primary so-q-big so-q-send" type="button" data-action="next">${st.at < st.items.length - 1 ? 'Next question' : 'Close'}</button>`;
+      return html`<button class="ds-btn ds-btn--filled so-q-big so-q-send" type="button" data-action="next">${st.at < st.items.length - 1 ? 'Next question' : 'Close'}</button>`;
     }
     if (st.phase === 'sent') {
       const more = st.at < st.items.length - 1;
       return html`${read}<button class="ds-btn so-q-big" type="button" data-action="${more ? 'next' : 'close'}">${more ? 'Next question' : 'Close'}</button>`;
     }
     if (st.draft.asking) {
-      return html`${read}<button class="ds-btn ds-btn--icon so-q-big so-q-back" type="button" data-action="ask-cancel" aria-label="Back to the questions" data-tip="Back to the questions">${raw(icon('arrowLeft', 20))}</button><button class="ds-btn ds-btn--primary so-q-big so-q-send" type="button" data-action="send">Send question</button>`;
+      return html`${read}<button class="ds-btn ds-btn--icon so-q-big so-q-back" type="button" data-action="ask-cancel" aria-label="Back to the questions" data-tip="Back to the questions">${raw(icon('arrowLeft', 20))}</button><button class="ds-btn ds-btn--filled so-q-big so-q-send" type="button" data-action="send">Send question</button>`;
     }
     return html`${read}<button class="ds-btn ds-btn--icon so-q-big so-ask-back" type="button" data-action="ask-back" aria-label="Ask the agent back" data-tip="Ask back: a question to the agent first">${raw(icon('chat', 20))}</button>${
       step > 0 ? html`<button class="ds-btn ds-btn--icon so-q-big so-q-back" type="button" data-action="back" aria-label="Previous question" data-tip="Previous question">${raw(icon('arrowLeft', 20))}</button>` : ''
-    }<button class="ds-btn ds-btn--primary so-q-big so-q-send" type="button" data-action="${last ? 'send' : 'forward'}">${last ? 'Send answers' : 'Next'}</button>`;
+    }<button class="ds-btn ds-btn--filled so-q-big so-q-send" type="button" data-action="${last ? 'send' : 'forward'}">${last ? 'Send answers' : 'Next'}</button>`;
   }
 
   /* ---------------------------------------------------------- reading */

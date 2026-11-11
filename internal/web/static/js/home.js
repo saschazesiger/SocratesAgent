@@ -18,7 +18,7 @@
 // the questions, start a new one - is the page's.
 
 import { api, setClass } from './api.js';
-import { M, html, raw, icon, morph, flipMorph, ms } from './ui.js';
+import { M, html, raw, icon, morph, flipMorph, ms, tone as toneClass } from './ui.js';
 import { agentMarkHtml } from './logos.js';
 import { isTool } from './harnesses.js';
 import { foldersOf, folderKeyOf, momentOf, notStarted as unstarted } from './folders.js';
@@ -276,9 +276,9 @@ function connectionChip({ kind, words }) {
     return html`<span class="ds-status ds-status--running"><span class="ds-spinner ds-status__spinner" aria-hidden="true"></span><span>${words}</span></span>`;
   }
   const [modifier, glyph] = {
-    live: [' ds-status--ok', 'wifi'],
+    live: [' ds-tone-success', 'wifi'],
     polling: ['', 'clock'],
-    offline: [' ds-status--warning', 'wifiOff'],
+    offline: [' ds-tone-warning', 'wifiOff'],
   }[kind] || ['', 'info'];
   return html`<span class="ds-status${modifier}">${raw(icon(glyph, 16))}<span>${words}</span></span>`;
 }
@@ -337,8 +337,8 @@ export function mountHome(ctx) {
                 <span class="ds-meta so-home__q-meta" hidden></span>
               </span>
               <span class="so-home__q-end">
-                <span class="ds-status ds-status--warning so-home__q-status" hidden>${raw(icon('waiting', 16))}<span>Waiting for you</span></span>
-                <button class="ds-btn ds-btn--primary so-home__q-answer" type="button" data-action="questions" hidden>Answer</button>
+                <span class="ds-status ds-tone-warning so-home__q-status" hidden>${raw(icon('waiting', 16))}<span>Waiting for you</span></span>
+                <button class="ds-btn ds-btn--filled so-home__q-answer" type="button" data-action="questions" hidden>Answer</button>
               </span>
             </div>
           </div>
@@ -707,7 +707,7 @@ export function mountHome(ctx) {
   // for a question, green for work that finished, the spinner for work that
   // goes on.
   function stateChip(session, cards, act, outcome, judging, now, limit) {
-    if (limit) return html`<span class="ds-status ds-status--error so-home__chip">${raw(icon(LIMIT_ICON, 16))}<span>${limitLine(limit, now)}</span></span>`;
+    if (limit) return html`<span class="ds-status ds-tone-error so-home__chip">${raw(icon(LIMIT_ICON, 16))}<span>${limitLine(limit, now)}</span></span>`;
     const said = stateWords(session, cards, act, now);
     let tone = '';
     // A session counted in none of the cards below is one that is there,
@@ -730,7 +730,7 @@ export function mountHome(ctx) {
     const lead = tone === 'running'
       ? html`<span class="ds-spinner ds-status__spinner" aria-hidden="true"></span>`
       : raw(icon(glyph, 16));
-    return html`<span class="ds-status${tone ? ' ds-status--' + tone : ''} so-home__chip">${lead}<span>${said}</span></span>`;
+    return html`<span class="${'ds-status' + toneClass(tone) + ' so-home__chip'}">${lead}<span>${said}</span></span>`;
   }
 
   // The state of a card in words: the card it is counted in, said the way
@@ -776,7 +776,7 @@ export function mountHome(ctx) {
     if (shown.length) { empty.hidden = true; return; }
     let markup;
     if (!sessions.length && ctx.loading()) {
-      markup = html`<div class="ds-loading" role="status"><span class="ds-loader ds-loader--sm" aria-hidden="true"></span>Loading…</div>`;
+      markup = html`<div class="ds-loading" role="status"><span class="ds-loader ds-sm" aria-hidden="true"></span>Loading…</div>`;
     } else if (!sessions.length && !ctx.reachable()) {
       markup = html`<div class="ds-empty"><span class="ds-empty__disc" aria-hidden="true">${raw(icon('wifiOff', 24))}</span>
         <p class="ds-empty__title">No connection</p>

@@ -194,7 +194,7 @@ body[data-stale] .so-mark[data-ring="busy"]::after {
    keeps its size. */
 .ds-field__hint > .so-info {
   vertical-align: middle;
-  margin-block: calc(var(--ds-btn-icon-size, var(--ds-space-8)) / -4);
+  margin-block: calc(max(var(--ds-target-min, 0px), var(--ds-btn-icon-size, var(--ds-space-8))) / -4);
 }
 
 /* The connection alert stays in view while the page scrolls under it. */

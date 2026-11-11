@@ -1,7 +1,7 @@
 // The motion of a .so-wheel slot (so-motion.css): its lines roll. Written
-// the way a Dashboard-Style module is - it reads the motion tokens through
+// the way a Z-Dash module is - it reads the motion tokens through
 // DS.motion and names nothing of Socrates - so it can move there as it is
-// (Dashboard-Style plans/wheel-and-shimmer.md).
+// (Z-Dash plans/wheel-and-shimmer.md).
 //
 // A slot drawn with DS.dom.morphHtml rolls by itself when the morph is
 // given wheelHooks: its lines are keyed by what they say, so a new text is

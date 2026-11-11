@@ -297,7 +297,7 @@ export async function artifacts() {
       width: Math.round(n.getBoundingClientRect().width),
       frame: Math.round(n.querySelector('iframe').getBoundingClientRect().height),
       title: n.querySelector('.ds-dialog__title').textContent,
-      back: !!n.querySelector('.ds-dialog__head [data-close]'),
+      back: !!n.querySelector('.ds-dialog__head [data-ds-close]'),
       open: !!n.querySelector('.ds-dialog__head a.so-artpage__open'), del: !!n.querySelector('.ds-dialog__head .so-artpage__delete'),
     }));
     ok(phoneFrame && box.width === 390 && box.frame > 500 && box.title === 'How a request flows' && box.back && box.open && box.del,

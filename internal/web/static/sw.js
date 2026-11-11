@@ -27,7 +27,7 @@ const PUSH_STATE = 'socrates-push';
 // The shell is small and entirely local, so it is worth having in full before
 // the first bad connection rather than only what happened to load. It is the
 // session page, everything it imports, the stylesheets and fonts it wears, and
-// the vendored terminal and Dashboard-Style it loads with plain tags - and
+// the vendored terminal and the Z-Dash bundle it loads with plain tags - and
 // nothing else: the dashboard's own modules can never be reached from a page
 // this worker serves offline, and a file that has to arrive before anything
 // can be served offline at all is a file worth not having in the list.
@@ -35,8 +35,9 @@ const PUSH_STATE = 'socrates-push';
 // The vendored terminal alone is 801 KB uncompressed and 210 KB gzipped -
 // xterm.js is 489 KB of that and the WebGL renderer 248 KB - and both earn it,
 // because a terminal that has to be fetched is a terminal that is not there in
-// a tunnel. Dashboard-Style 2.1 adds about 1.4 MB for the same reason - ds.css
-// and ds.js are 731 KB and 575 KB, 165 KB and 158 KB gzipped, and the two
+// a tunnel. Z-Dash 3.0 adds about 1.3 MB for the same reason - the project
+// bundle (static/ds, only the components and modules the pages use) is
+// 441 KB of CSS and 816 KB of script, 64 KB and 197 KB gzipped, and the two
 // Google Sans files 86 KB - because a page without its look is not one anybody
 // can use. Socrates itself serves the files as they are: the compression is
 // whatever is in front of it, the Cloudflare edge or a reverse proxy. The
@@ -44,11 +45,11 @@ const PUSH_STATE = 'socrates-push';
 // works with no network", and is where an addition should be noticed.
 const SHELL = [
   '/',
-  '/static/vendor/dashboard-style/fonts/fonts.css',
-  '/static/vendor/dashboard-style/fonts/google-sans-latin-opsz-normal.woff2',
-  '/static/vendor/dashboard-style/fonts/google-sans-latin-ext-opsz-normal.woff2',
-  '/static/vendor/dashboard-style/ds.css',
-  '/static/vendor/dashboard-style/ds.js',
+  '/static/vendor/z-dash/fonts/fonts.css',
+  '/static/vendor/z-dash/fonts/google-sans-latin-opsz-normal.woff2',
+  '/static/vendor/z-dash/fonts/google-sans-latin-ext-opsz-normal.woff2',
+  '/static/ds/ds.bundle.css',
+  '/static/ds/ds.bundle.js',
   '/static/css/theme.css',
   '/static/css/so-shared.css',
   '/static/css/so-frame.css',
