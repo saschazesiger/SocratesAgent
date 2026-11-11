@@ -23,6 +23,9 @@ import { NO_REPO } from './repos.js';
 const CACHE_KEY = 'socrates.harnesses';
 // How long Start waits for what the folder chosen makes of the agents.
 const FOLDER_PATIENCE = 15000;
+// How long the sheet waits for the repository and base to stop changing
+// before it asks what their configuration makes of the agents.
+const FOLDER_DEBOUNCE = 250;
 
 // The two programs that are not agents. Nothing is asked of a shell or of an
 // editor and nothing is reported back by them, so they have no model to run
@@ -176,16 +179,17 @@ export function inFolder(dir) {
 
 /**
  * loadFolder asks which agents a folder changes: the folder a new chat would
- * get ({mode, workdir}, and the repository whose worktree it will be) or a
+ * get ({mode, workdir}), the configuration of a repository's base branch a
+ * new chat's worktree will be made from ({repo, base}, REPOS.md §4.1), or a
  * chat's own ({session}).
  * It resolves with the folder's path - the `dir` to pass on - or '' when
  * there is no folder to speak of yet. Offline, a folder asked about before
  * keeps its answer.
  */
-export async function loadFolder({ mode = '', workdir = '', repo = '', session = '' } = {}) {
+export async function loadFolder({ mode = '', workdir = '', repo = '', base = '', session = '' } = {}) {
   const query = session ? '?session=' + encodeURIComponent(session)
-    : '?workdir_mode=' + encodeURIComponent(mode) + '&workdir=' + encodeURIComponent(workdir)
-      + (repo ? '&repo=' + encodeURIComponent(repo) : '');
+    : repo ? '?repo=' + encodeURIComponent(repo) + '&base=' + encodeURIComponent(base)
+      : '?workdir_mode=' + encodeURIComponent(mode) + '&workdir=' + encodeURIComponent(workdir);
   const data = await api('/api/harnesses/folder' + query, { attempts: 1, timeout: 30000 });
   const dir = (data && data.workdir) || '';
   if (!dir) return '';
@@ -648,6 +652,9 @@ export function settingsForm(options = {}) {
   let mcpProblems = [];
   let mcpAsked = 0;
   let folderAsked = 0;
+  // The repository the folder answered for is ('' for none): another one
+  // drops the answer at once, another base of it keeps it until its own.
+  let folderRepo = '';
   let branchesAsked = 0;
   // folderReady settles once the newest asking is answered.
   let folderReady = Promise.resolve();
@@ -709,7 +716,13 @@ export function settingsForm(options = {}) {
     renderItem: (item) => html`<span class="ds-combo__name">${item.label}</span>${item.hint ? html`<span class="ds-combo__meta">${item.hint}</span>` : ''}`,
     renderValue: (item) => html`<span class="ds-combo__value so-drop__value">${item.label}</span>`,
     onChange: (value) => {
+      const changed = value !== pick.base;
       pick.base = value;
+      // Another base can have another configuration.
+      if (changed && inRepo()) {
+        askMcp();
+        askFolder();
+      }
       onChange('base');
     },
   });
@@ -869,6 +882,12 @@ export function settingsForm(options = {}) {
       pick.branches = data;
       if (!pick.base) pick.base = data.default || '';
       renderRepo();
+      // The branch list has just fetched the repository: its base may have
+      // a newer commit than the one looked at.
+      if (inRepo()) {
+        askMcp();
+        askFolder();
+      }
       onChange('branches');
     }, (err) => {
       if (asked !== branchesAsked || repo !== pick.repo) return;
@@ -943,17 +962,24 @@ export function settingsForm(options = {}) {
   }
 
   // folderQuery is how the server is asked about the folder a new chat
-  // would get: a fresh one, or a worktree of a repository.
+  // would get: a fresh one, or a worktree of a repository made from its
+  // base, whose configuration the server looks at (REPOS.md §4.1).
   function folderQuery() {
-    return '?workdir_mode=' + DYNAMIC + '&workdir=' + (inRepo() ? '&repo=' + encodeURIComponent(pick.repo) : '');
+    return inRepo() ? '?repo=' + encodeURIComponent(pick.repo) + '&base=' + encodeURIComponent(pick.base)
+      : '?workdir_mode=' + DYNAMIC + '&workdir=';
   }
 
   // askFolder asks what the chosen folder makes of the agents: an
   // opencode.json there can add models and name the one OpenCode starts on.
   // A model the person has not picked follows the answer. A new chat's
-  // folder does not exist yet, so the answer is mostly that there is none.
+  // folder does not exist yet: without a repository the answer is mostly
+  // that there is none, with one it is the configuration of its base branch.
+  // A repository is asked about once its choice has stopped changing, and
+  // only the newest asking counts; Start waits for it (settled).
   function askFolder() {
     const asked = ++folderAsked;
+    const repo = inRepo() ? pick.repo : '';
+    const base = repo ? pick.base : '';
     const settle = (dir) => {
       if (asked !== folderAsked) return;
       pick.folder = dir;
@@ -966,8 +992,13 @@ export function settingsForm(options = {}) {
       }
       onChange('folder');
     };
-    settle('');
-    folderReady = loadFolder({ mode: DYNAMIC, workdir: '', repo: inRepo() ? pick.repo : '' })
+    if (repo !== folderRepo) {
+      folderRepo = repo;
+      settle('');
+    }
+    const wait = repo ? new Promise((resolve) => { setTimeout(resolve, FOLDER_DEBOUNCE); }) : Promise.resolve();
+    folderReady = wait
+      .then(() => (asked === folderAsked ? loadFolder({ mode: DYNAMIC, workdir: '', repo, base }) : ''))
       .then(settle, () => settle(''));
   }
 
@@ -985,8 +1016,9 @@ export function settingsForm(options = {}) {
     const words = [];
     if (config.model) words.push('starts on ' + name(config.model));
     for (const one of config.agents || []) words.push('runs its ' + one.name + ' agent on ' + name(one.model));
-    const text = words.length ? 'This folder’s ' + label(pick.harness) + ' config ' + words.join('; ') + '.'
-      : 'This folder has a ' + label(pick.harness) + ' config of its own.';
+    const where = inRepo() ? 'repository' : 'folder';
+    const text = words.length ? 'This ' + where + '’s ' + label(pick.harness) + ' config ' + words.join('; ') + '.'
+      : 'This ' + where + ' has a ' + label(pick.harness) + ' config of its own.';
     modelHint.replaceChildren(text, infoTip(config.files || [], { label: 'Its config files' }));
   }
 

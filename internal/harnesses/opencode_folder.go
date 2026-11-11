@@ -21,6 +21,34 @@ var openCodeConfigFiles = []string{"opencode.jsonc", "opencode.json",
 // agents, each of which can name its own model.
 var openCodeAgentDirs = []string{filepath.Join(".opencode", "agent"), filepath.Join(".opencode", "agents")}
 
+// FolderConfigRoots are the paths in a folder under which the agents a
+// folder configures for itself (FolderDiscoverer) find that configuration:
+// what a look at a repository's configuration before its worktree exists
+// copies (REPOS.md §4.1), with FolderConfigFile saying which files.
+func FolderConfigRoots() []string {
+	return []string{"opencode.jsonc", "opencode.json", ".opencode"}
+}
+
+// FolderConfigFile says whether rel, a slash-separated path in a folder, is
+// one of the files openCodeFolderFiles finds there: a config file, or an
+// agent's markdown file.
+func FolderConfigFile(rel string) bool {
+	for _, name := range openCodeConfigFiles {
+		if rel == filepath.ToSlash(name) {
+			return true
+		}
+	}
+	if !strings.HasSuffix(rel, ".md") {
+		return false
+	}
+	for _, sub := range openCodeAgentDirs {
+		if strings.HasPrefix(rel, filepath.ToSlash(sub)+"/") {
+			return true
+		}
+	}
+	return false
+}
+
 // openCodeFolderFiles is the OpenCode configuration that applies in dir and
 // not everywhere: the config files and agent files of dir and every folder
 // above it, nearest last. It runs nothing, so the catalogue can ask it on

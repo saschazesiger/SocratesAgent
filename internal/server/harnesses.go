@@ -100,17 +100,26 @@ func withDefaults(settings config.Settings, list []catalog.Agent) []catalog.Agen
 // chat for its own:
 //
 //	GET /api/harnesses/folder?workdir_mode=…&workdir=…
+//	GET /api/harnesses/folder?repo=<owner/name>&base=<branch>
 //	GET /api/harnesses/folder?session=<id>
 //	  {"workdir":"/abs/dir","harnesses":[…]}
 //
+// For a repository the folder is the preview of its configuration at the
+// base branch (its default branch without one, REPOS.md §4.1), and the
+// config files are named as the repository has them.
+//
 // An agent that is not in the answer is in that folder what the general
-// catalogue says. A folder the sheet cannot have yet (a path half typed) is
-// no error: it changes nothing.
+// catalogue says. A folder the sheet cannot have yet (a path half typed, a
+// repository it cannot look at) is no error: it changes nothing.
 func (s *Server) handleFolderHarnesses(w http.ResponseWriter, r *http.Request) {
 	settings := s.Settings()
 	q := r.URL.Query()
 	var dir string
-	if id := strings.TrimSpace(q.Get("session")); id != "" {
+	var preview repoPreview
+	if repo := strings.TrimSpace(q.Get("repo")); repo != "" && q.Get("session") == "" {
+		preview = s.previewRepo(r.Context(), repo, q.Get("base"))
+		dir = preview.dir
+	} else if id := strings.TrimSpace(q.Get("session")); id != "" {
 		row, err := s.store.GetSession(id)
 		switch {
 		case errors.Is(err, store.ErrNotFound):
@@ -131,7 +140,7 @@ func (s *Server) handleFolderHarnesses(w http.ResponseWriter, r *http.Request) {
 	}
 	agents := []catalog.Agent{}
 	if dir != "" {
-		agents = withDefaults(settings, s.catalog.Folder(r.Context(), dir))
+		agents = preview.agents(withDefaults(settings, s.catalog.Folder(r.Context(), dir)))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"workdir": dir, "harnesses": agents})
 }

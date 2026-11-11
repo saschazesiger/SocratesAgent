@@ -3188,17 +3188,25 @@ async function repochat() {
 // turn's end pushes the branch to the bare remote; open_pull_request opens a
 // pull request on the fake with a token for that repository alone, and the
 // chip then links it. Filed as done, the clean and pushed worktree goes, and
-// with it the cache's local branch.
+// with it the cache's local branch. The repository's opencode.json is
+// previewed in the sheet before the chat exists (REPOS.md §4.1): OpenCode
+// there starts on its model, and the hint says what the config does.
 async function repoflow() {
   const git = scratchDir('socrates-gh-');
   const sh = (cwd, ...args) => execFileSync('git', ['-c', 'user.name=E2E', '-c', 'user.email=e2e@example.invalid', ...args],
     { cwd, stdio: ['ignore', 'pipe', 'pipe'] }).toString().trim();
-  // acme/widget: one commit on main.
+  // acme/widget: one commit on main, with an OpenCode config of its own
+  // (as the folderopencode scenario's folder has).
   const seed = join(git, 'seed');
   mkdirSync(seed);
   sh(seed, 'init', '-q', '-b', 'main');
   writeFileSync(join(seed, 'README.md'), '# widget\n');
-  sh(seed, 'add', 'README.md');
+  writeFileSync(join(seed, 'opencode.json'), JSON.stringify({
+    model: 'lab/qwen-27b',
+    provider: { lab: { name: 'Lab (test)', options: { apiKey: 'not-for-the-page' }, models: { 'qwen-27b': { name: 'Qwen 27B' } } } },
+    agent: { general: { model: 'fake/large' } },
+  }));
+  sh(seed, 'add', 'README.md', 'opencode.json');
   sh(seed, 'commit', '-q', '-m', 'First commit');
   const first = sh(seed, 'rev-parse', 'HEAD');
   mkdirSync(join(git, 'acme'));
@@ -3250,6 +3258,25 @@ async function repoflow() {
     const hint = await page.$eval('#nsBranchHint', (n) => n.textContent);
     ok(/^socrates\/[0-9a-f]{8}$/.test(branch) && /made from main/.test(hint),
       'the sheet takes main from the repository’s branches as the base and offers a branch of the chat’s own', branch + ' / ' + hint);
+    // OpenCode in the repository is what its opencode.json on main makes of
+    // it, before there is a worktree: its model, and the hint saying so.
+    await page.click('#newSessionSheet .so-settings__program[data-value="opencode"]');
+    const previewed = await page.waitForFunction(() => document.querySelector('#nsModel .ds-combo__input').value.trim() === 'Qwen 27B'
+      && /config starts on/.test(document.getElementById('nsModelHint').textContent), null, { timeout: 30000 }).then(() => true, () => false);
+    const sheetModel = await page.evaluate(() => ({
+      model: document.querySelector('#nsModel .ds-combo__input').value.trim(),
+      hint: document.getElementById('nsModelHint').hidden ? '' : document.getElementById('nsModelHint').textContent.trim(),
+    }));
+    ok(previewed && sheetModel.hint === 'This repository’s OpenCode config starts on Qwen 27B; runs its general agent on Fake Large.',
+      'the sheet previews the repository’s opencode.json: OpenCode starts on its model, and the hint says what it does',
+      JSON.stringify(sheetModel));
+    const preview = await (await s.context.request.get(s.url + '/api/harnesses/folder?repo=acme/widget&base=main')).text();
+    const previewDir = join(s.data, 'workspaces', '.repos', 'acme', 'widget.preview', first);
+    ok(JSON.parse(preview).workdir === previewDir && !preview.includes('not-for-the-page')
+      && readdirSync(previewDir).join() === 'opencode.json',
+      'the preview is the config file of main’s commit alone, and nothing else of it leaves the server',
+      JSON.stringify({ workdir: JSON.parse(preview).workdir.replace(s.data, '<data>'), files: existsSync(previewDir) ? readdirSync(previewDir) : [] }));
+    await page.click('#newSessionSheet .so-settings__program[data-value="claude"]');
     await pickModelIfNeeded(page);
     await page.click('#nsStart');
     await page.waitForSelector('#newSessionSheet[open]', { state: 'detached', timeout: 60000 });

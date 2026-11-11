@@ -146,6 +146,25 @@ The folder controls (dynamic, preset, typed path) give way to:
   branch out instead of making one (picking up a pull request's review, say). The server checks the name with
   `git check-ref-format --branch`.
 
+**What the repository configures** (*as built*): the sheet's model picker and MCP switches follow the repository's
+own agent configuration before the chat and its worktree exist. Whenever the repository or the base changes, and
+again once the branch list has fetched the cache (debounced, the newest asking wins), the sheet asks
+`GET /api/harnesses/folder?repo=<owner/name>&base=<branch>` and `GET /api/mcp?repo=…&base=…` (no base: the
+default branch). The server resolves `origin/<base>` in the cache (fetching only when the cache is missing or does
+not know the branch; the branch list fetches it anyway) and copies the files the folder probes read, as they are
+at that commit, into `<root>/.repos/<owner>/<name>.preview/<sha>/`: `opencode.json`, `opencode.jsonc`,
+`.opencode/opencode.json(c)`, the agents' `.opencode/agent(s)/**/*.md`, `.mcp.json` and `.socrates/mcp.json`
+(`git ls-tree` and `git cat-file`; no symlink, submodule, file over 1 MB, or path with `..` or `.git` in it, and at
+most 256 files). A commit's preview is made once; the four used last per repository are kept. The probes then
+answer for that folder exactly as for any folder (OpenCode's models, its model and its subagents'; the MCP
+servers), with the config files named as the repository has them (`owner/name/opencode.json`), and the hint says
+*This repository's OpenCode config starts on …*. Without GitHub, for a repository the App does not reach, a branch
+it does not have or a git that fails, the answer is that of no folder, not an error. Start waits for the newest
+answer as it does for a folder (at most 15 seconds). A chat made without a model gets the model of its worktree's
+configuration, the worktree being made before the model is resolved. The preview is no git checkout, so OpenCode
+there may also read a config in a folder above it (the workspace root's, say) that the worktree, where it stops at
+the repository's root, does not.
+
 Presets and typed paths go from Admin and the sheet. Existing chats keep their folder, their group in the sidebar
 and their guidance (§6) until they are deleted. `PUT /api/sessions/{id}/workdir` ("Point to folder") stays for
 those chats and is refused for a chat in a repository.
@@ -285,14 +304,12 @@ what Socrates hands out, it is not a sandbox.
 | `list_chats`, peers note | same git working tree (`chatScope`) | same repository; each entry names its branch and whether it is on the base |
 | Notes board | `board:<folder>` | `board:github:<owner>/<name>` |
 | Docs of a group | Markdown files of the folder | Markdown files on the default branch, read from the cache (`git ls-tree`, `git show`); a chat's links resolve in its own worktree |
-| Folder agent config and MCP of the folder | read from the folder | read from the worktree (unchanged code: the worktree is a folder) |
+| Folder agent config and MCP of the folder | read from the folder | read from the worktree (unchanged code: the worktree is a folder); before it exists, from the preview of the base branch (§4.1) |
 | Info dialog | Folder | Repository, Branch, Base, Pull request, Worktree |
 | Header | — | a chip with the branch, linking to the pull request or the branch on GitHub |
 
 Not built yet, on purpose: **Docs of a repository group** (the group's ⋮ offers Notes only; a chat's own links
-to Markdown files still open beside it), and the sheet's preview of a folder's agent configuration (an
-`opencode.json`'s models and default model) before a repository chat exists: the chat itself, once made, reads the
-configuration from its worktree.
+to Markdown files still open beside it).
 
 ## 6. What stays as it was
 

@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -214,15 +215,23 @@ func (s *Server) mcpViews(list []agent.MCPChoice) []mcpServerView {
 // .socrates/mcp.json files. A dynamic
 // folder does not exist yet; it is looked at as the new folder it will be
 // under the workspace root, which has no .mcp.json of its own but may sit in
-// a repository that has one.
-func (s *Server) newChatMCP(settings config.Settings, mode, workdir string) ([]agent.MCPChoice, []string) {
-	dir, err := harnesses.CheckWorkdir(settings, mode, workdir)
-	if err == nil && dir == "" {
-		dir = filepath.Join(settings.Workspace.Root, "new")
-	}
+// a repository that has one. A chat in a repository is looked at in the
+// preview of the repository's configuration at its base (REPOS.md §4.1):
+// the dashboard's servers alone when there is none.
+func (s *Server) newChatMCP(ctx context.Context, settings config.Settings, mode, workdir, repo, base string) ([]agent.MCPChoice, []string) {
 	var folder agent.FolderMCP
 	var problems []string
-	if err == nil {
+	if strings.TrimSpace(repo) != "" {
+		if preview := s.previewRepo(ctx, repo, base); preview.dir != "" {
+			folder, problems = agent.ReadFolderMCP(preview.dir)
+			for i := range problems {
+				problems[i] = preview.names(problems[i])
+			}
+		}
+	} else if dir, err := harnesses.CheckWorkdir(settings, mode, workdir); err == nil {
+		if dir == "" {
+			dir = filepath.Join(settings.Workspace.Root, "new")
+		}
 		folder, problems = agent.ReadFolderMCP(dir)
 	}
 	list, more := agent.ChatMCP(s.sharedMCP(settings, ""), folder, nil)
@@ -251,6 +260,7 @@ func newChatMCPChoices(list []agent.MCPChoice, chosen map[string]bool) map[strin
 // the new session sheet, before the chat exists:
 //
 //	GET /api/mcp?workdir_mode=…&workdir=…
+//	GET /api/mcp?repo=<owner/name>&base=<branch>
 //	  {"servers":[{"name","transport","from","default","on"}…],"problems":["…"]}
 //
 // A folder the sheet cannot have yet (a path half typed) is no error here:
@@ -258,7 +268,8 @@ func newChatMCPChoices(list []agent.MCPChoice, chosen map[string]bool) map[strin
 // with the folder.
 func (s *Server) handleNewChatMCP(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
-	list, problems := s.newChatMCP(s.Settings(), strings.TrimSpace(q.Get("workdir_mode")), strings.TrimSpace(q.Get("workdir")))
+	list, problems := s.newChatMCP(r.Context(), s.Settings(), strings.TrimSpace(q.Get("workdir_mode")), strings.TrimSpace(q.Get("workdir")),
+		q.Get("repo"), q.Get("base"))
 	if problems == nil {
 		problems = []string{}
 	}

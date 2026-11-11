@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -192,5 +193,26 @@ esac
 	}
 	if want := filepath.Join(dir, "project", ".opencode", "agents", "nested", "deep.md"); len(f.Files) == 0 || f.Files[len(f.Files)-1] != want {
 		t.Fatalf("files = %v", f.Files)
+	}
+}
+
+// The paths a repository's preview copies are the ones openCodeFolderFiles
+// finds in a folder.
+func TestFolderConfigFile(t *testing.T) {
+	for rel, ok := range map[string]bool{
+		"opencode.json": true, "opencode.jsonc": true, ".opencode/opencode.json": true, ".opencode/opencode.jsonc": true,
+		".opencode/agent/review.md": true, ".opencode/agents/deep/x.md": true,
+		".opencode/agent/notes.txt": false, ".opencode/plugin/x.js": false, ".opencode/command/x.md": false,
+		"src/opencode.json": false, "README.md": false,
+	} {
+		if FolderConfigFile(rel) != ok {
+			t.Errorf("FolderConfigFile(%q) = %v", rel, !ok)
+		}
+	}
+	for _, rel := range []string{"opencode.json", ".opencode/agent/review.md"} {
+		root, _, _ := strings.Cut(rel, "/")
+		if !slices.Contains(FolderConfigRoots(), root) {
+			t.Errorf("%s is under none of the roots", rel)
+		}
 	}
 }
