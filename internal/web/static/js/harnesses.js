@@ -149,6 +149,8 @@ export function list() { return snapshot().harnesses; }
 // device, as the catalogue is, for a sheet or a chat opened offline.
 const FOLDERS_KEY = 'socrates.harnessFolders';
 const FOLDERS_MAX = 24;
+// How many of the repositories used last the sheet lists above the others.
+const RECENT_SHOWN = 5;
 let folders = null; // dir -> { harnesses, at }
 
 function readFolders() {
@@ -689,22 +691,24 @@ export function settingsForm(options = {}) {
     onChange('effort');
   });
 
-  // The repository is a closed dropdown: the list is what the GitHub App
-  // reaches, the ones used last first, and No repository last.
-  const repoPicker = dropdown({
+  // The repository is searched for by its name or its owner: an App can
+  // reach dozens of them. While nothing is typed the list shows the ones
+  // used last on this device on top, then all the others by name.
+  const repoPicker = combobox({
     value: NO_REPO,
-    id: id('RepoInput'),
-    label: 'Repository',
     items: repoItems,
-    renderItem: (item) => html`<span class="ds-combo__name">${item.label}</span>${item.hint ? html`<span class="ds-combo__meta">${item.hint}</span>` : ''}`,
-    renderValue: (item) => html`<span class="ds-combo__value so-drop__value">${item.label}</span>${item.hint && item.value !== NO_REPO ? html`<span class="ds-combo__meta">${item.hint}</span>` : ''}`,
+    strict: true,
+    placeholder: 'Search repositories',
+    emptyText: 'No repository matches',
+    display: (value) => (!value || value === NO_REPO ? 'No repository' : value),
     onChange: (value) => {
       pick.repoChosen = true;
       selectRepo(value);
       onChange('repo');
     },
   });
-  repoPicker.button.setAttribute('aria-describedby', id('RepoHint'));
+  repoPicker.input.id = id('RepoInput');
+  repoPicker.input.setAttribute('aria-describedby', id('RepoHint'));
   repoRow.append(repoPicker.node);
 
   // The base is one of the repository's branches, its default one first.
@@ -807,21 +811,36 @@ export function settingsForm(options = {}) {
 
   /* ------------------------------------------------------------ drawing */
 
-  // repoItems is the repository dropdown's list: every repository the App
-  // reaches, the ones used last first, then No repository.
+  // repoItems is the repository field's list: the choices used last on this
+  // device (No repository among them when it was one) under Recently used,
+  // then every other repository the App reaches by name, and No repository
+  // last. Before anything was used here it is one list without headings.
   function repoItems() {
-    const items = repos.ordered().map((repo) => ({
-      value: repo.full_name,
-      label: repos.nameOf(repo.full_name),
-      hint: [repos.ownerOf(repo.full_name), repo.private ? 'private' : ''].filter(Boolean).join(' · '),
-    }));
-    // A preset repository the list does not have (yet): offered as itself,
+    const offered = repos.snapshot().repos;
+    const entry = (fullName) => {
+      if (fullName === NO_REPO) return { value: NO_REPO, label: 'No repository', hint: 'a new folder of its own' };
+      const repo = repos.repoOf(fullName);
+      return {
+        value: fullName,
+        label: repos.nameOf(fullName),
+        hint: [repos.ownerOf(fullName), repo && repo.private ? 'private' : ''].filter(Boolean).join(' · '),
+      };
+    };
+    const known = new Set(offered.map((repo) => repo.full_name));
+    // A preset repository the list does not have (yet) is offered as itself:
     // the server says whether it is reached.
-    if (pick.repo !== NO_REPO && !items.some((item) => item.value === pick.repo)) {
-      items.unshift({ value: pick.repo, label: repos.nameOf(pick.repo), hint: repos.ownerOf(pick.repo) });
-    }
-    items.push({ value: NO_REPO, label: 'No repository', hint: 'a new folder of its own' });
-    return items;
+    const preset = pick.repo !== NO_REPO && !known.has(pick.repo) ? [pick.repo] : [];
+    const recent = offered.length
+      ? [...preset, ...repos.recent().filter((one) => one === NO_REPO || known.has(one))].slice(0, RECENT_SHOWN)
+      : preset;
+    const rest = offered.map((repo) => repo.full_name).filter((one) => !recent.includes(one))
+      .sort((a, b) => a.localeCompare(b));
+    if (!recent.includes(NO_REPO)) rest.push(NO_REPO);
+    if (!recent.length) return rest.map(entry);
+    return [
+      ...recent.map((one) => ({ ...entry(one), section: 'Recently used' })),
+      ...rest.map((one) => ({ ...entry(one), section: rest.some((one) => one !== NO_REPO) ? 'All repositories' : 'Other' })),
+    ];
   }
 
   // baseItems is the base dropdown's list: the branches, newest first, with
@@ -904,7 +923,9 @@ export function settingsForm(options = {}) {
     // A Shell works in a folder of its own; a worktree is a chat's.
     repoField.hidden = !chat;
     // `false`: the field is being told what was chosen, not told to choose.
-    repoPicker.setValue(pick.repo, false);
+    // An open field is left alone, so an answer arriving while the person
+    // types does not wipe what they typed.
+    if (!repoPicker.isOpen() || repoPicker.value() !== pick.repo) repoPicker.setValue(pick.repo, false);
     const github = repos.snapshot();
     const words = [];
     if (!github.connected) {

@@ -113,6 +113,9 @@ export function rememberRepo(choice) {
   try { localStorage.setItem(RECENT_KEY, JSON.stringify(list)); } catch { /* private window */ }
 }
 
+/** recent is this device's choices of the sheet, the last one first: full names and NO_REPO. */
+export function recent() { return readRecent(); }
+
 /**
  * ordered is every repository the sheet offers: those used last first, the
  * rest by name.

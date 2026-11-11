@@ -544,9 +544,10 @@ async function pages() {
       ok(bare.tips === 0 && !bare.advanced && bare.prose === '',
         `the sheet has no "i", no Advanced and no explanations at ${tag}`, JSON.stringify(bare));
 
-      // Where a chat works is a dropdown of repositories, not a row of
-      // cells: an App that reaches a dozen of them still has one control the
-      // width of the sheet. Without GitHub it is No repository, alone.
+      // Where a chat works is a field that searches the repositories, not a
+      // row of cells: an App that reaches dozens of them still has one
+      // control the width of the sheet. Without GitHub it is No repository,
+      // alone.
       const dir = await s.page.evaluate(() => {
         const host = document.getElementById('nsRepo');
         const input = host.querySelector('.ds-combo__input');
@@ -554,14 +555,14 @@ async function pages() {
         return {
           combo: !!host.querySelector('.ds-combo'),
           segs: host.querySelectorAll('.so-settings__program, .ds-chip').length,
-          value: input ? input.textContent.trim() : '',
-          closed: !!input && input.localName === 'button' && !host.querySelector('input, .so-mic'),
+          value: input ? input.value.trim() : '',
+          search: !!input && input.localName === 'input' && !host.querySelector('.so-mic'),
           width: Math.round(box.width),
           sheet: Math.round(document.getElementById('newSessionSheet').getBoundingClientRect().width),
         };
       });
-      ok(dir.combo && dir.segs === 0 && /^No repository/.test(dir.value) && dir.closed,
-        `the repository is a closed dropdown - nothing typed, nothing spoken - on No repository without GitHub at ${tag}`, JSON.stringify(dir));
+      ok(dir.combo && dir.segs === 0 && /^No repository/.test(dir.value) && dir.search,
+        `the repository is a search field - typed, not spoken - on No repository without GitHub at ${tag}`, JSON.stringify(dir));
       await shot(s.page, 'pages-sheet-' + tag);
       await s.page.click('#nsCancel');
 
@@ -1469,7 +1470,7 @@ async function adminoptions() {
     await ensureNav(s.page);
     await s.page.click('#newSession');
     await s.page.waitForSelector('#newSessionSheet[open]', { timeout: 15000 });
-    const where = await s.page.$eval('#nsRepo .ds-combo__input', (n) => n.textContent.trim());
+    const where = await s.page.$eval('#nsRepo .ds-combo__input', (n) => n.value.trim());
     ok(/^No repository/.test(where), 'the sheet offers no preset folder, only No repository without GitHub', where);
     await s.page.click('#newSessionSheet .so-settings__program[data-value="claude"]');
     const model = await s.page.$eval('#nsModel .ds-combo__input', (n) => n.value.trim());
@@ -3066,7 +3067,7 @@ async function repochat() {
     await page.click('#newSessionSheet .so-settings__program[data-value="fake"]');
     await page.waitForFunction(() => /GitHub/.test(document.getElementById('nsRepoHint').textContent), null, { timeout: 10000 });
     const bare = await page.evaluate(() => ({
-      value: document.querySelector('#nsRepo .ds-combo__input').textContent.trim(),
+      value: document.querySelector('#nsRepo .ds-combo__input').value.trim(),
       hint: document.getElementById('nsRepoHint').textContent,
       link: document.querySelector('#nsRepoHint a')?.getAttribute('href') || '',
       base: document.getElementById('nsBaseField').hidden,
@@ -3134,7 +3135,7 @@ async function repochat() {
     await page.waitForFunction(() => document.querySelector('#nsBase .ds-combo__input').textContent.trim() === 'trunk'
       && document.getElementById('nsBaseHint').hidden, null, { timeout: 10000 });
     const repoState = await page.evaluate(() => ({
-      repo: document.querySelector('#nsRepo .ds-combo__input').textContent.trim(),
+      repo: document.querySelector('#nsRepo .ds-combo__input').value.trim(),
       base: document.querySelector('#nsBase .ds-combo__input').textContent.trim(),
       branch: document.getElementById('nsBranch').value,
       hint: document.getElementById('nsBranchHint').textContent,
@@ -3168,6 +3169,33 @@ async function repochat() {
       'the chat is asked for in the repository, on its base and branch, and not in a folder', JSON.stringify(asked));
     const recent = await page.evaluate(() => localStorage.getItem('socrates.recentRepos'));
     ok(recent === '["acme/web"]', 'and the repository is this device’s last choice', recent);
+
+    // Opened again, the list has the repository used last on top, under its
+    // heading, and the others below; typing filters across them without
+    // headings, and Enter takes the first match.
+    await page.waitForSelector('#newSessionSheet[open]', { state: 'detached', timeout: 10000 }).catch(() => {});
+    if (!await page.$('#newSessionSheet[open]')) {
+      await page.click('#newSession');
+      await page.waitForSelector('#newSessionSheet[open]', { timeout: 15000 });
+      await page.click('#newSessionSheet .so-settings__program[data-value="fake"]');
+    }
+    await page.waitForSelector('#nsRepo .ds-combo__input', { state: 'visible', timeout: 10000 });
+    await page.click('#nsRepo .ds-combo__input');
+    await page.waitForSelector('#nsRepo .ds-combo__heading', { timeout: 5000 });
+    const grouped = await page.$$eval('#nsRepo .ds-combo__group', (groups) => groups.map((g) =>
+      g.querySelector('.ds-combo__heading').textContent + ':' + [...g.querySelectorAll('.ds-combo__option')].map((o) => o.dataset.value).join('+')));
+    ok(grouped.join() === 'Recently used:acme/web,All repositories:acme/api+none',
+      'the repository used last is listed first, under Recently used, then all the others', grouped.join());
+    await page.keyboard.type('api');
+    const found = await page.evaluate(() => ({
+      options: [...document.querySelectorAll('#nsRepo .ds-combo__option')].map((o) => o.dataset.value),
+      headings: document.querySelectorAll('#nsRepo .ds-combo__heading').length,
+    }));
+    ok(found.options.join() === 'acme/api' && found.headings === 0, 'typing searches the repositories', JSON.stringify(found));
+    await page.keyboard.press('Enter');
+    await page.waitForFunction(() => document.querySelector('#nsBase .ds-combo__input').textContent.trim() === 'main', null, { timeout: 10000 });
+    const searched = await page.$eval('#nsRepo .ds-combo__input', (n) => n.value);
+    ok(searched === 'acme/api', 'and a match found is taken with the keyboard, its base with it', searched);
     // The stubbed refusal of the chat is this scenario's own 400.
     const quiet = /@ \S*\/api\/chats$/;
     ok(unexpected(s.errors, quiet).length === 0, 'no console errors', unexpected(s.errors, quiet).join(' | ') || '0');
@@ -4813,7 +4841,7 @@ async function design() {
       && sheetMarks.every((one) => one.mark === one.harness),
       'the sheet gives every harness its own mark', JSON.stringify(sheetMarks));
 
-    // Where a chat works is a dropdown, and it opens on a list of
+    // Where a chat works is a search field, and it opens on a list of
     // repositories with their owner as the sub-text - never a row of cells
     // three characters wide. Without GitHub, No repository is all of it.
     await s.page.click('#nsRepo .ds-combo__input');
@@ -4824,11 +4852,11 @@ async function design() {
         combo: !!host.querySelector('.ds-combo'),
         segs: host.querySelectorAll('.so-settings__program, .ds-chip').length,
         options: [...host.querySelectorAll('.ds-combo__option')].map((n) => n.dataset.value),
-        value: host.querySelector('.ds-combo__input').textContent.trim(),
+        value: host.querySelector('.ds-combo__input').value.trim(),
       };
     });
     ok(dir.combo && dir.segs === 0 && dir.options.join() === 'none' && /^No repository/.test(dir.value),
-      'the repository is a dropdown, not a row of cells', JSON.stringify(dir));
+      'the repository is a search field, not a row of cells', JSON.stringify(dir));
     // A press on the list keeps the focus on the field also when it comes as
     // mouse events alone: WebDriver's tap in iOS Safari sends no pointerdown,
     // and a mousedown that moved the focus closed the list on blur before

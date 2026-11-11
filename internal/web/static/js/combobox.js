@@ -51,6 +51,11 @@ function keepFocus(part) {
  *                      typed runs on from the value and not from its label.
  * options.emptyText    what the list says when nothing matches.
  *
+ * An item may carry a `section`: while nothing is typed, the entries are
+ * drawn under a heading per section, in the order they come (DS's
+ * .ds-combo__group) - the repositories used last above all the others. A
+ * filter ranks across them, without headings.
+ *
  * With nothing to list at all - a program that could not list its models -
  * the field is a plain one: no arrow, and no list that only says nothing
  * matches. items() is asked again whenever the field is opened or given a
@@ -83,6 +88,8 @@ export function combobox(options = {}) {
   let filtered = [];
   let total = 0;
   let active = -1;
+  // What the list was last filtered by: the headings are for the whole list.
+  let query = '';
 
   const input = el('input', {
     class: 'ds-input ds-combo__input',
@@ -169,10 +176,24 @@ export function combobox(options = {}) {
   function render() {
     // Nothing matches: the list hides and the popup stays with its status line.
     list.hidden = !filtered.length;
-    morph(list, filtered.map((item, index) => {
+    const rows = filtered.map((item, index) => {
       const meta = [item.tag, item.group, item.hint].filter(Boolean).join(' · ');
       return html`<li class="ds-combo__option" id="${optionId(item.value)}" role="option" data-value="${item.value}" data-ds-key="${item.value}" aria-selected="${item.value === current ? 'true' : 'false'}"${index === active ? html` data-active` : ''}><span class="ds-combo__name">${item.label || item.value}</span>${meta ? html`<span class="ds-combo__meta">${meta}</span>` : ''}</li>`;
-    }).join(''));
+    });
+    // The options stay in the order of `filtered` inside their groups, so
+    // the keyboard's place (an index into it) is the same either way.
+    const sections = [];
+    if (!query.trim() && filtered.some((item) => item.section)) {
+      filtered.forEach((item, index) => {
+        const name = item.section || '';
+        const last = sections[sections.length - 1];
+        if (last && last.name === name) last.rows.push(rows[index]);
+        else sections.push({ name, rows: [rows[index]] });
+      });
+    }
+    morph(list, sections.length
+      ? sections.map((one, at) => html`<ul class="ds-combo__group" role="group" aria-labelledby="${id}-group-${at}" data-ds-key="${'group:' + one.name}"><li class="ds-combo__heading" id="${id}-group-${at}" role="presentation">${one.name}</li>${one.rows}</ul>`).join('')
+      : rows.join(''));
     status.textContent = filtered.length
       ? filtered.length + ' of ' + total
       : emptyText;
@@ -191,11 +212,15 @@ export function combobox(options = {}) {
     }
   }
 
-  function open(query) {
+  function open(typed) {
     if (!refresh()) return;
-    filtered = matches(query ?? '');
+    query = typed ?? '';
+    filtered = matches(query);
     // Start on the entry that is already chosen, so enter is a no-op.
     active = filtered.findIndex((item) => item.value === current);
+    // In a strict field what is typed only finds: the best match is the
+    // one Enter takes.
+    if (strict && active < 0 && query.trim() && filtered.length) active = 0;
     render();
     if (!isOpen()) DS.overlay.open(popup, { opener: input });
   }
@@ -221,6 +246,13 @@ export function combobox(options = {}) {
     // rather than run on from the end of it.
     if (strict) input.select();
     else if (display) input.value = text();
+    open('');
+  });
+  // A click in the field that already has the focus - after a choice, say -
+  // opens the list again; the first click's focus has opened it already.
+  input.addEventListener('click', () => {
+    if (isOpen()) return;
+    if (strict) input.select();
     open('');
   });
   input.addEventListener('input', () => {
