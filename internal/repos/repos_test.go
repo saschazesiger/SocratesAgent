@@ -1,0 +1,488 @@
+package repos
+
+import (
+	"context"
+	"errors"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
+	"strings"
+	"testing"
+	"time"
+)
+
+// fakeGitHub is a folder of bare repositories that stands in for GitHub: the
+// clone URL of owner/name is file://<dir>/owner/name.git.
+type fakeGitHub struct {
+	dir string
+}
+
+func (f fakeGitHub) url(fullName string) string {
+	return "file://" + filepath.Join(f.dir, fullName+".git")
+}
+
+// git runs git for a test, failing it when git fails.
+func git(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, out)
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// testEnv gives git an identity and no configuration of this machine's.
+func testEnv(t *testing.T) {
+	t.Helper()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git is not installed")
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	t.Setenv("GIT_AUTHOR_NAME", "Tester")
+	t.Setenv("GIT_AUTHOR_EMAIL", "tester@example.com")
+	t.Setenv("GIT_COMMITTER_NAME", "Tester")
+	t.Setenv("GIT_COMMITTER_EMAIL", "tester@example.com")
+}
+
+// newFake makes octo/app on the fake GitHub: main with one commit, and the
+// branch feature one commit further on, a day later.
+func newFake(t *testing.T) fakeGitHub {
+	t.Helper()
+	testEnv(t)
+	f := fakeGitHub{dir: t.TempDir()}
+	bare := filepath.Join(f.dir, "octo", "app.git")
+	if err := os.MkdirAll(filepath.Dir(bare), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	git(t, f.dir, "init", "--quiet", "--bare", "-b", "main", bare)
+	work := t.TempDir()
+	git(t, work, "init", "--quiet", "-b", "main")
+	writeFile(t, filepath.Join(work, "README.md"), "app\n")
+	git(t, work, "add", ".")
+	t.Setenv("GIT_COMMITTER_DATE", "2026-01-01T00:00:00Z")
+	git(t, work, "commit", "--quiet", "-m", "first")
+	git(t, work, "checkout", "--quiet", "-b", "feature")
+	writeFile(t, filepath.Join(work, "feature.txt"), "feature\n")
+	git(t, work, "add", ".")
+	t.Setenv("GIT_COMMITTER_DATE", "2026-01-02T00:00:00Z")
+	git(t, work, "commit", "--quiet", "-m", "feature")
+	os.Unsetenv("GIT_COMMITTER_DATE")
+	git(t, work, "push", "--quiet", bare, "main", "feature")
+	return f
+}
+
+func writeFile(t *testing.T, path, text string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(text), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func newManager(t *testing.T, f fakeGitHub) *Manager {
+	root := t.TempDir()
+	return &Manager{Root: func() string { return root }, URL: f.url}
+}
+
+// remoteHas is the commit the fake GitHub has for a branch, "" for none.
+func remoteHas(t *testing.T, f fakeGitHub, branch string) string {
+	t.Helper()
+	cmd := exec.Command("git", "rev-parse", "--verify", "--quiet", "refs/heads/"+branch)
+	cmd.Dir = filepath.Join(f.dir, "octo", "app.git")
+	out, _ := cmd.Output()
+	return strings.TrimSpace(string(out))
+}
+
+func TestValidNames(t *testing.T) {
+	for name, ok := range map[string]bool{
+		"octo/app": true, "Octo-1/app.js": true, "a_b/c": true,
+		"octo": false, "octo/": false, "/app": false, "../app": false, "octo/..": false, "octo/.git": false,
+		"octo/app/x": false, "octo/a b": false,
+	} {
+		if ValidName(name) != ok {
+			t.Errorf("ValidName(%q) = %v", name, !ok)
+		}
+	}
+	ctx := context.Background()
+	for name, ok := range map[string]bool{"socrates/fix-it": true, "feature": true, "-x": false, "a..b": false, "a b": false, "": false, "x.lock": false} {
+		if err := CheckBranch(ctx, name); (err == nil) != ok {
+			t.Errorf("CheckBranch(%q) = %v", name, err)
+		}
+	}
+}
+
+// The first look at a repository makes its cache and lists GitHub's
+// branches, the newest commit first; a fetch never moves a local branch.
+func TestTheCacheIsMadeAndListsTheBranches(t *testing.T) {
+	f := newFake(t)
+	m := newManager(t, f)
+	ctx := context.Background()
+	list, err := m.Branches(ctx, "octo/app")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 2 || list[0].Name != "feature" || list[1].Name != "main" || list[0].SHA == "" || list[0].Date <= list[1].Date {
+		t.Fatalf("branches %+v", list)
+	}
+	cache := m.CacheDir("octo/app")
+	if got := git(t, cache, "config", "remote.origin.fetch"); got != "+refs/heads/*:refs/remotes/origin/*" {
+		t.Fatalf("refspec %q", got)
+	}
+	if got := git(t, cache, "rev-parse", "--is-bare-repository"); got != "true" {
+		t.Fatalf("the cache is not bare: %s", got)
+	}
+	// A second look fetches into the same cache.
+	if _, err := m.Branches(ctx, "octo/app"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.Branches(ctx, "../evil"); err == nil {
+		t.Fatal("a name that is no repository was listed")
+	}
+}
+
+// A new branch is made from its base, without an upstream; a branch GitHub
+// has is checked out tracking it; a branch another worktree has is refused.
+func TestWorktreesForNewAndExistingBranches(t *testing.T) {
+	f := newFake(t)
+	m := newManager(t, f)
+	ctx := context.Background()
+	co, err := m.Create(ctx, "octo/app", "abcdef1234567890", "socrates/fix-it", "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if co.Path != filepath.Join(m.Root(), "app-abcdef12") || co.Existing {
+		t.Fatalf("checkout %+v", co)
+	}
+	if got := git(t, co.Path, "branch", "--show-current"); got != "socrates/fix-it" {
+		t.Fatalf("branch %q", got)
+	}
+	if _, err := os.Stat(filepath.Join(co.Path, "README.md")); err != nil {
+		t.Fatal("the worktree is not main's")
+	}
+	if cmd := exec.Command("git", "rev-parse", "--abbrev-ref", "@{u}"); func() error { cmd.Dir = co.Path; return cmd.Run() }() == nil {
+		t.Fatal("a new branch has an upstream before its first push")
+	}
+
+	ex, err := m.Create(ctx, "octo/app", "1111111199999999", "feature", "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ex.Existing || git(t, ex.Path, "rev-parse", "--abbrev-ref", "@{u}") != "origin/feature" {
+		t.Fatalf("existing branch %+v", ex)
+	}
+	if _, err := os.Stat(filepath.Join(ex.Path, "feature.txt")); err != nil {
+		t.Fatal("the worktree is not the branch's")
+	}
+
+	_, err = m.Create(ctx, "octo/app", "2222222299999999", "feature", "main")
+	var inUse *ErrBranchInUse
+	if !errors.As(err, &inUse) || inUse.Path != ex.Path {
+		t.Fatalf("a branch in use: %v", err)
+	}
+	if _, err := m.Create(ctx, "octo/app", "3333333399999999", "socrates/new", "nope"); err == nil {
+		t.Fatal("a base GitHub does not have was taken")
+	}
+	if _, err := m.Create(ctx, "octo/app", "4444444499999999", "bad..name", "main"); err == nil {
+		t.Fatal("a branch name git refuses was taken")
+	}
+	list, err := m.Worktrees(ctx, "octo/app")
+	if err != nil || list[co.Path] != "socrates/fix-it" || list[ex.Path] != "feature" || len(list) != 2 {
+		t.Fatalf("worktrees %v %v", list, err)
+	}
+}
+
+// The branch is pushed when it has commits GitHub does not have, and only
+// then; a commit somebody else pushed meanwhile is never overwritten.
+func TestPushOnlyWhenAhead(t *testing.T) {
+	f := newFake(t)
+	m := newManager(t, f)
+	ctx := context.Background()
+	co, err := m.Create(ctx, "octo/app", "abcdef1234567890", "socrates/work", "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pushed, err := m.Push(ctx, "octo/app", co.Branch); err != nil || pushed {
+		t.Fatalf("a branch without commits was pushed: %v %v", pushed, err)
+	}
+	writeFile(t, filepath.Join(co.Path, "a.txt"), "a\n")
+	if pushed, err := m.Push(ctx, "octo/app", co.Branch); err != nil || pushed {
+		t.Fatalf("uncommitted changes were pushed: %v %v", pushed, err)
+	}
+	git(t, co.Path, "add", ".")
+	git(t, co.Path, "commit", "--quiet", "-m", "a")
+	if pushed, err := m.Push(ctx, "octo/app", co.Branch); err != nil || !pushed {
+		t.Fatalf("the commit was not pushed: %v %v", pushed, err)
+	}
+	if remoteHas(t, f, co.Branch) != git(t, co.Path, "rev-parse", "HEAD") {
+		t.Fatal("GitHub does not have the commit")
+	}
+	if pushed, err := m.Push(ctx, "octo/app", co.Branch); err != nil || pushed {
+		t.Fatalf("pushed again: %v %v", pushed, err)
+	}
+	// A rebase rewrites the branch: the push is forced, with a lease.
+	git(t, co.Path, "commit", "--quiet", "--amend", "-m", "a, amended")
+	if pushed, err := m.Push(ctx, "octo/app", co.Branch); err != nil || !pushed {
+		t.Fatalf("the rewritten branch was not pushed: %v %v", pushed, err)
+	}
+	// Somebody pushes to the branch on GitHub; the chat commits on: the
+	// lease fails rather than throwing their commit away.
+	other := t.TempDir()
+	git(t, other, "clone", "--quiet", "-b", co.Branch, f.url("octo/app"), ".")
+	writeFile(t, filepath.Join(other, "b.txt"), "b\n")
+	git(t, other, "add", ".")
+	git(t, other, "commit", "--quiet", "-m", "theirs")
+	git(t, other, "push", "--quiet")
+	theirs := git(t, other, "rev-parse", "HEAD")
+	writeFile(t, filepath.Join(co.Path, "c.txt"), "c\n")
+	git(t, co.Path, "add", ".")
+	git(t, co.Path, "commit", "--quiet", "-m", "c")
+	if _, err := m.Push(ctx, "octo/app", co.Branch); err == nil {
+		t.Fatal("the push overwrote a commit GitHub had")
+	}
+	if remoteHas(t, f, co.Branch) != theirs {
+		t.Fatal("their commit is gone")
+	}
+}
+
+// Done removes a clean worktree whose branch GitHub has, with its local
+// branch, and keeps one with uncommitted changes; a chat started again gets
+// its worktree back from GitHub.
+func TestDoneAndReopen(t *testing.T) {
+	f := newFake(t)
+	m := newManager(t, f)
+	ctx := context.Background()
+	co, err := m.Create(ctx, "octo/app", "abcdef1234567890", "socrates/done", "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(co.Path, "a.txt"), "a\n")
+	git(t, co.Path, "add", ".")
+	git(t, co.Path, "commit", "--quiet", "-m", "a")
+	head := git(t, co.Path, "rev-parse", "HEAD")
+	writeFile(t, filepath.Join(co.Path, "loose.txt"), "not committed\n")
+
+	removed, kept, err := m.Done(ctx, "octo/app", co.Path, co.Branch, nil)
+	if err != nil || removed || !strings.Contains(kept, "not committed") {
+		t.Fatalf("a dirty worktree: removed %v, kept %q, %v", removed, kept, err)
+	}
+	if remoteHas(t, f, co.Branch) != head {
+		t.Fatal("done did not push the branch")
+	}
+	if _, err := os.Stat(co.Path); err != nil {
+		t.Fatal("the dirty worktree went")
+	}
+
+	os.Remove(filepath.Join(co.Path, "loose.txt"))
+	// What a setup installs is ignored, and goes with the worktree.
+	writeFile(t, filepath.Join(co.Path, ".gitignore"), "node_modules/\n")
+	git(t, co.Path, "add", ".gitignore")
+	git(t, co.Path, "commit", "--quiet", "-m", "ignore")
+	writeFile(t, filepath.Join(co.Path, "node_modules", "x.js"), "x\n")
+	removed, kept, err = m.Done(ctx, "octo/app", co.Path, co.Branch, nil)
+	if err != nil || !removed || kept != "" {
+		t.Fatalf("a clean worktree: removed %v, kept %q, %v", removed, kept, err)
+	}
+	if _, err := os.Stat(co.Path); !os.IsNotExist(err) {
+		t.Fatal("the worktree is still there")
+	}
+	if cmd := exec.Command("git", "rev-parse", "--verify", "--quiet", "refs/heads/socrates/done"); func() error {
+		cmd.Dir = m.CacheDir("octo/app")
+		return cmd.Run()
+	}() == nil {
+		t.Fatal("the local branch is still there")
+	}
+	tip := remoteHas(t, f, co.Branch)
+
+	again, err := m.Ensure(ctx, "octo/app", co.Path, co.Branch, co.Base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.Path != co.Path || git(t, co.Path, "rev-parse", "HEAD") != tip || git(t, co.Path, "branch", "--show-current") != co.Branch {
+		t.Fatalf("reopened %+v", again)
+	}
+	// An existing worktree is left as it is.
+	if _, err := m.Ensure(ctx, "octo/app", co.Path, co.Branch, co.Base); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A worktree whose branch is not on GitHub and whose folder went is made
+// again from the local branch, which kept its commits.
+func TestEnsureKeepsTheLocalBranch(t *testing.T) {
+	f := newFake(t)
+	m := newManager(t, f)
+	ctx := context.Background()
+	co, err := m.Create(ctx, "octo/app", "abcdef1234567890", "socrates/local", "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(co.Path, "a.txt"), "a\n")
+	git(t, co.Path, "add", ".")
+	git(t, co.Path, "commit", "--quiet", "-m", "local only")
+	head := git(t, co.Path, "rev-parse", "HEAD")
+	if err := os.RemoveAll(co.Path); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.Ensure(ctx, "octo/app", co.Path, co.Branch, co.Base); err != nil {
+		t.Fatal(err)
+	}
+	if git(t, co.Path, "rev-parse", "HEAD") != head {
+		t.Fatal("the local commit is lost")
+	}
+}
+
+// Deleting a chat commits its uncommitted changes as WIP and pushes them,
+// then the worktree and the local branch go; GitHub keeps the branch.
+func TestDeleteKeepsTheWorkOnGitHub(t *testing.T) {
+	f := newFake(t)
+	m := newManager(t, f)
+	ctx := context.Background()
+	co, err := m.Create(ctx, "octo/app", "abcdef1234567890", "socrates/wip", "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(co.Path, "draft.txt"), "half done\n")
+	writeFile(t, filepath.Join(co.Path, "README.md"), "changed\n")
+	if err := m.Delete(ctx, "octo/app", co.Path, co.Branch, `Fix "it"`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(co.Path); !os.IsNotExist(err) {
+		t.Fatal("the worktree is still there")
+	}
+	tip := remoteHas(t, f, co.Branch)
+	if tip == "" {
+		t.Fatal("GitHub does not have the branch")
+	}
+	bare := filepath.Join(f.dir, "octo", "app.git")
+	if msg := git(t, bare, "log", "-1", "--format=%s", tip); msg != WIPMessage(`Fix "it"`) {
+		t.Fatalf("the commit says %q", msg)
+	}
+	if got := git(t, bare, "show", tip+":draft.txt"); got != "half done" {
+		t.Fatalf("draft.txt is %q", got)
+	}
+
+	// A clean chat with nothing new leaves no branch behind on GitHub.
+	clean, err := m.Create(ctx, "octo/app", "9999999912345678", "socrates/clean", "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Delete(ctx, "octo/app", clean.Path, clean.Branch, "Clean"); err != nil {
+		t.Fatal(err)
+	}
+	if remoteHas(t, f, clean.Branch) != "" {
+		t.Fatal("an empty branch was pushed")
+	}
+}
+
+// A delete whose push fails keeps the worktree: nothing is lost silently.
+func TestDeleteKeepsTheWorktreeWhenThePushFails(t *testing.T) {
+	f := newFake(t)
+	m := newManager(t, f)
+	ctx := context.Background()
+	co, err := m.Create(ctx, "octo/app", "abcdef1234567890", "socrates/stuck", "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(co.Path, "draft.txt"), "x\n")
+	// GitHub goes away.
+	if err := os.Rename(filepath.Join(f.dir, "octo", "app.git"), filepath.Join(f.dir, "octo", "gone.git")); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Delete(ctx, "octo/app", co.Path, co.Branch, "Stuck"); err == nil {
+		t.Fatal("the delete went on without the push")
+	}
+	if _, err := os.Stat(filepath.Join(co.Path, "draft.txt")); err != nil {
+		t.Fatal("the worktree went without its work on GitHub")
+	}
+	removed, kept, err := m.Done(ctx, "octo/app", co.Path, co.Branch, nil)
+	if removed || kept == "" || err == nil {
+		t.Fatalf("done without GitHub: removed %v, kept %q, %v", removed, kept, err)
+	}
+}
+
+// The hourly care prunes the worktrees whose folders are gone.
+func TestMaintainPrunes(t *testing.T) {
+	f := newFake(t)
+	m := newManager(t, f)
+	ctx := context.Background()
+	co, err := m.Create(ctx, "octo/app", "abcdef1234567890", "socrates/prune", "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.RemoveAll(co.Path)
+	m.Maintain(ctx)
+	list, err := m.Worktrees(ctx, "octo/app")
+	if err != nil || len(list) != 0 {
+		t.Fatalf("worktrees after the care: %v %v", list, err)
+	}
+}
+
+func TestSetup(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the setup runs sh")
+	}
+	ctx := context.Background()
+	dir := t.TempDir()
+	logs := t.TempDir()
+
+	// Without a script and without .socrates/setup there is nothing to run.
+	if ran, err := RunSetup(ctx, Setup{Dir: dir, Log: filepath.Join(logs, "none.log")}); ran || err != nil {
+		t.Fatalf("nothing to run: %v %v", ran, err)
+	}
+
+	env := append(os.Environ(), "SOCRATES_REPO=octo/app")
+	ok := filepath.Join(logs, "ok.log")
+	ran, err := RunSetup(ctx, Setup{Script: "echo \"setting up $SOCRATES_REPO\"\ntouch made", Dir: dir, Log: ok, Env: env})
+	if !ran || err != nil {
+		t.Fatalf("the script: %v %v", ran, err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "made")); err != nil {
+		t.Fatal("the script did not run in the worktree")
+	}
+	if tail := LogTail(ok, 5); !strings.Contains(tail, "setting up octo/app") || !strings.Contains(tail, "# done") {
+		t.Fatalf("the log: %q", tail)
+	}
+
+	// sh -e: the first command that fails ends it.
+	failed := filepath.Join(logs, "failed.log")
+	ran, err = RunSetup(ctx, Setup{Script: "echo before\nfalse\necho after", Dir: dir, Log: failed, Env: env})
+	if !ran || err == nil {
+		t.Fatalf("a failing script: %v %v", ran, err)
+	}
+	if log := LogTail(failed, 10); !strings.Contains(log, "before") || strings.Contains(log, "\nafter\n") || !strings.Contains(log, "# failed") {
+		t.Fatalf("the log: %q", log)
+	}
+
+	slow := filepath.Join(logs, "slow.log")
+	start := time.Now()
+	ran, err = RunSetup(ctx, Setup{Script: "sleep 30 & sleep 30", Dir: dir, Log: slow, Env: env, Timeout: 300 * time.Millisecond})
+	if !ran || !errors.Is(err, ErrSetupTimeout) || time.Since(start) > 10*time.Second {
+		t.Fatalf("a script that does not end: %v %v after %s", ran, err, time.Since(start))
+	}
+	if !strings.Contains(LogTail(slow, 3), "# stopped") {
+		t.Fatalf("the log: %q", LogTail(slow, 3))
+	}
+
+	// The repository's own setup, when it is executable and Admin has none.
+	writeFile(t, filepath.Join(dir, SetupFile), "#!/bin/sh\necho own > own.txt\n")
+	if ran, err := RunSetup(ctx, Setup{Dir: dir, Log: filepath.Join(logs, "plain.log"), Env: env}); ran || err != nil {
+		t.Fatalf("a setup file that is not executable ran: %v %v", ran, err)
+	}
+	if err := os.Chmod(filepath.Join(dir, SetupFile), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if ran, err := RunSetup(ctx, Setup{Dir: dir, Log: filepath.Join(logs, "own.log"), Env: env}); !ran || err != nil {
+		t.Fatalf("the repository's setup: %v %v", ran, err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "own.txt")); err != nil {
+		t.Fatal("the repository's setup did not run")
+	}
+}

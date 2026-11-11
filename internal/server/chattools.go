@@ -180,17 +180,35 @@ func (t *chatToolServer) handle(w http.ResponseWriter, r *http.Request) {
 		res = t.read(row, req.Arguments)
 	case chattools.Send:
 		res = t.send(r.Context(), row, req.Arguments)
+	case chattools.PullRequest:
+		res = t.pullRequest(r.Context(), row, req.Arguments)
+	case chattools.Credential:
+		res = t.credential(r.Context(), row, req.Arguments)
 	default:
 		res = chattools.Response{Text: "There is no tool " + req.Tool + ".", Error: true}
 	}
 	answer(http.StatusOK, res.Text, res.Error)
 }
 
+// repoScope is the scope of the chats in a GitHub repository: the repository,
+// whatever worktree each of them has.
+func repoScope(repo string) string { return "github:" + repo }
+
+// scopeOf is the scope a chat reaches the others in: its repository, or for
+// a chat without one (and a chat in a folder of an older build) the folder's
+// working tree (chatScope).
+func scopeOf(row *store.Session) string {
+	if row.Repo != "" {
+		return repoScope(row.Repo)
+	}
+	return chatScope(row.Workdir)
+}
+
 // peers is the other chats of a chat's repository that the others can reach
 // (awake), newest first, and the repository. The note on the person's
 // messages names only the active ones among them (activePeer).
 func (t *chatToolServer) peers(row *store.Session) ([]*store.Session, string, error) {
-	scope := chatScope(row.Workdir)
+	scope := scopeOf(row)
 	rows, err := t.srv.store.ListSessions()
 	if err != nil {
 		return nil, scope, err
@@ -198,7 +216,7 @@ func (t *chatToolServer) peers(row *store.Session) ([]*store.Session, string, er
 	var out []*store.Session
 	for i := range rows {
 		other := rows[i]
-		if other.ID == row.ID || !other.IsChat() || scope == "" || chatScope(other.Workdir) != scope || !t.awake(&other) {
+		if other.ID == row.ID || !other.IsChat() || scope == "" || scopeOf(&other) != scope || !t.awake(&other) {
 			continue
 		}
 		out = append(out, &other)
@@ -254,6 +272,9 @@ func (t *chatToolServer) list(row *store.Session) chattools.Response {
 	if err != nil {
 		return chattools.Response{Text: err.Error(), Error: true}
 	}
+	if row.Repo != "" {
+		return t.listRepo(row, list)
+	}
 	if len(list) == 0 {
 		return chattools.Response{Text: "No other chat works in this repository (" + scope + ")."}
 	}
@@ -287,6 +308,55 @@ func (t *chatToolServer) list(row *store.Session) chattools.Response {
 	}
 	fmt.Fprintf(&b, "\nTo write to one: %s with {\"chat\": \"its id\", \"text\": \"your message\"}.", chattools.Send)
 	return chattools.Response{Text: b.String()}
+}
+
+// listRepo is list_chats for a chat in a GitHub repository: the other chats
+// of the repository, each in its own worktree on its own branch, which the
+// entry names, and says when it is this chat's base.
+func (t *chatToolServer) listRepo(row *store.Session, list []*store.Session) chattools.Response {
+	if len(list) == 0 {
+		return chattools.Response{Text: "No other chat works in this repository (" + row.Repo + ")."}
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "%d other chat(s) work in this repository (%s), each in its own worktree on its own branch:\n", len(list), row.Repo)
+	for _, other := range list {
+		state, model := t.peerReading(other)
+		fmt.Fprintf(&b, "- id %s: %s", other.ID, chatName(other))
+		if model != "" {
+			fmt.Fprintf(&b, " on %s", model)
+		}
+		fmt.Fprintf(&b, ", %s, %s\n", state, peerBranch(row, other))
+	}
+	fmt.Fprintf(&b, "\nTo write to one: %s with {\"chat\": \"its id\", \"text\": \"your message\"}.", chattools.Send)
+	return chattools.Response{Text: b.String()}
+}
+
+// peerReading is what another chat's agent is doing and on which model.
+func (t *chatToolServer) peerReading(other *store.Session) (string, string) {
+	state, model := "idle", other.Model
+	if p, err := t.srv.chats.peer(other.ID); err == nil {
+		sum := p.summary()
+		state = peerState(sum)
+		if sum.Model != "" {
+			model = sum.Model
+		}
+	}
+	return state, model
+}
+
+// peerBranch is where another chat of the repository works, as row's agent
+// is told: its branch, and whether that is row's base. A chat of the
+// repository from before repositories has a folder instead.
+func peerBranch(row, other *store.Session) string {
+	switch {
+	case other.Branch == "":
+		return "in the folder " + other.Workdir
+	case other.Branch == row.Base:
+		return "on branch " + other.Branch + ", which is this chat's base"
+	case other.Base != "" && other.Base != row.Base:
+		return "on branch " + other.Branch + " (from " + other.Base + ")"
+	}
+	return "on branch " + other.Branch
 }
 
 // gitBranch is the branch a working tree has checked out, read from its
@@ -577,10 +647,20 @@ func (t *chatToolServer) peersNote(row *store.Session) string {
 		if b.Len() == 0 {
 			b.WriteString("Other chats are active in this repository, each with an agent of its own:\n")
 		}
+		if row.Repo != "" {
+			fmt.Fprintf(&b, "- %s, id %s, %s, %s\n", chatName(other), other.ID, peerState(sum), peerBranch(row, other))
+			continue
+		}
 		fmt.Fprintf(&b, "- %s, id %s, %s\n", chatName(other), other.ID, peerState(sum))
 	}
 	if b.Len() == 0 {
 		return ""
+	}
+	if row.Repo != "" {
+		b.WriteString("They work on their own branches in their own worktrees. When you change something one of them " +
+			"relies on - " + row.Base + " under its branch, an interface, the build, a shared service - tell it once, briefly (" +
+			chattools.Send + "). Anything else needs no message.")
+		return b.String()
 	}
 	b.WriteString("Changes in the working tree that you did not make may be theirs: before you discard, overwrite or " +
 		"commit them, ask that chat (" + chattools.Send + "). When you change something one of them relies on - a " +

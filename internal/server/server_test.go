@@ -38,8 +38,14 @@ func TestMain(m *testing.M) {
 			// An OpenCode chat's ask_user server, which its host runs as
 			// this binary (agenthost.MCPAskMain).
 			os.Exit(agenthost.MCPAskMain(os.Args[2:], "test"))
+		case "git-credential":
+			// A chat's git asking for its repository's token.
+			os.Exit(agenthost.GitCredentialMain(os.Args[2:]))
 		}
 	}
+	// The chats of these tests work in folders the tests made: presets and
+	// typed folders are gone for everyone else (folderChatsAllowed).
+	os.Setenv("SOCRATES_FOLDER_CHATS", "1")
 	// The real adapters are registered here too (the accounts package
 	// imports them), so Claude Code, Codex and OpenCode are chats, as in the
 	// product; most chats here run the scripted agent, and a test that wants

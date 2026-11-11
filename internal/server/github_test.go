@@ -169,7 +169,7 @@ func TestGitHubConnectRepositoriesAndDisconnect(t *testing.T) {
 	if len(repos) != 2 || repos[0].(map[string]any)["full_name"] != "alice/One" || repos[1].(map[string]any)["default_branch"] != "trunk" {
 		t.Fatalf("repos: %#v", repos)
 	}
-	if env.srv.github.CloneURL("alice/two") != "file:///srv/git/alice/two.git" {
+	if env.srv.ghApp.CloneURL("alice/two") != "file:///srv/git/alice/two.git" {
 		t.Fatal("clone URL does not follow SOCRATES_GITHUB_GIT")
 	}
 
@@ -217,7 +217,7 @@ func TestGitHubConnectRepositoriesAndDisconnect(t *testing.T) {
 	if res.StatusCode != http.StatusOK || view["connected"] != false {
 		t.Fatalf("disconnect: %d %#v", res.StatusCode, view)
 	}
-	if env.srv.github.Connected() || env.srv.Settings().GitHub.Connected() {
+	if env.srv.ghApp.Connected() || env.srv.Settings().GitHub.Connected() {
 		t.Fatal("still connected")
 	}
 	if env.srv.Settings().GitHub.RepoSetup("alice/two") != "make" {

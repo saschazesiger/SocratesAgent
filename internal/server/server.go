@@ -24,6 +24,7 @@ import (
 	"github.com/saschazesiger/SocratesAgent/internal/config"
 	"github.com/saschazesiger/SocratesAgent/internal/github"
 	"github.com/saschazesiger/SocratesAgent/internal/mcpserver"
+	"github.com/saschazesiger/SocratesAgent/internal/repos"
 	"github.com/saschazesiger/SocratesAgent/internal/store"
 	"github.com/saschazesiger/SocratesAgent/internal/termux"
 	"github.com/saschazesiger/SocratesAgent/internal/tunnel"
@@ -137,8 +138,14 @@ type Server struct {
 	probeKeep *probeCache
 	// github is the GitHub App's connection, and githubFlow the manifest
 	// flows under way (github.go).
-	github     *github.Service
+	ghApp      *github.Service
 	githubFlow githubFlow
+
+	// ghState is GitHub and the repositories' setup scripts from Admin
+	// (UseGitHub, github), unset while GitHub is not connected; repos is the
+	// caches and worktrees of the chats in repositories (repos.go).
+	ghState atomic.Pointer[githubState]
+	repos   *repos.Manager
 }
 
 type attempt struct {
@@ -199,6 +206,7 @@ func New(st *store.Store, dataDir string) (*Server, error) {
 	s.push.checking = s.digests.outcomePending
 	s.sched = newScheduler(s)
 	s.costs = newCostLedger(s)
+	s.repos = s.newRepoManager()
 	s.chats = newChatHub(s)
 	// A chat's push says what its journal says.
 	s.push.chatAsk, s.push.chatTurn = s.chats.askWords, s.chats.turnWords
@@ -206,7 +214,8 @@ func New(st *store.Store, dataDir string) (*Server, error) {
 	s.chatTests = s.newChatTests()
 	s.artifacts = s.newArtifacts()
 	s.mcp = s.newMCPRegistry()
-	s.github = s.newGitHub()
+	s.ghApp = s.newGitHub()
+	s.useGitHubApp()
 	manager, err := termux.New(st, cfg)
 	if err != nil {
 		return nil, err
@@ -424,6 +433,8 @@ func (s *Server) routes() {
 	// What every conversation on this machine cost, for the costs page.
 	mux.HandleFunc("GET /api/costs", s.auth(s.handleCosts))
 	// A project folder's board of notes (boards.go).
+	mux.HandleFunc("GET /api/github/repos/{owner}/{name}/branches", s.auth(s.handleRepoBranches))
+
 	mux.HandleFunc("GET /api/boards", s.auth(s.handleGetBoard))
 	mux.HandleFunc("PUT /api/boards", s.auth(s.handlePutBoard))
 	// What a terminal is doing, said out loud.

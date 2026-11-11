@@ -11,7 +11,7 @@ browser ── POST /api/chats…, GET /api/chats/{id}/stream (socrates.chat.v1,
    │
 socrates serve ── chatHub: one chatPeer per chat (journal copy in memory, projection,
    │               host connection, pump); outbox in SQLite (chat_outbox)
-   │  unix socket, line JSON, protocol 4 (§4; the server also reads a version-1 to -3 host)
+   │  unix socket, line JSON, protocol 5 (§4; the server also reads a version-1 to -4 host)
    ▼
 socrates agent-host --data <data> --chat <id>      one per active chat, own scope
    │  owns: the adapter, the CLI child, the journal (only writer), parking
@@ -258,17 +258,19 @@ Unix socket, mode 0600, one JSON object per line in each direction, lines ≤ 16
 
 ### 4.1 Handshake
 
-Client's first line, within 10 s: `{"op":"hello","proto":4,"since":<last seq it has>}`.
-Host: `{"t":"hello","proto":4,"version","chat","harness","host_pid","cli_pid","last_seq","process"}`
+Client's first line, within 10 s: `{"op":"hello","proto":5,"since":<last seq it has>}`.
+Host: `{"t":"hello","proto":5,"version","chat","harness","host_pid","cli_pid","last_seq","process"}`
 (`proto` = min of both), or `{"t":"err","code":"protocol",…}` and close when the client's `proto` is
 below the host's minimum. The server accepts hosts speaking `MinProtocol..Protocol` (currently
-1..4); when the protocol changes, keep the old version readable for a day (a busy host of the
+1..5); when the protocol changes, keep the old version readable for a day (a busy host of the
 previous build lives on, REBUILD §2.1). Version 2 (WP6) added the `ask` op of a local tool and its
 `answer` frame; the server's own ops are those of version 1, so a server and a host of either
 version understand each other. Version 3 added a `send`'s `note` and `sender`; to a host of an
 older version the server sends the note in the text instead (`agenthost.FoldNote`). Version 4
 added the `withdraw` op; the server refuses one for a connected host of an older version (the
-agent cannot take a message back until it has restarted), and one for a chat without a host. A connection asks for no events with `since` = `NoEvents`
+agent cannot take a message back until it has restarted), and one for a chat without a host. Version 5
+added the `notice` op; to a host of an older version the server sends none (the line is lost, the
+chat goes on). A connection asks for no events with `since` = `NoEvents`
 (`1<<62`, beyond any journal), which is what a tool's connection does; it gets no deltas either.
 
 ### 4.2 Host → client
@@ -301,6 +303,7 @@ agent cannot take a message back until it has restarted), and one for a chat wit
 | `stop` | `client_id`? | stops the CLI now, records an interrupted turn, exits |
 | `stop_task` | `client_id`, `task` | journals `command{args: task}`, `agent.TaskStopper.StopTask` (Claude: the control request `stop_task`, §5.1): one background task - a shell, a subagent, a workflow - by the id its part's content names (`task.id`, `agent.id`, `workflow.task_id`); the agent reports its end as any other. An adapter without it: `unsupported` |
 | `withdraw` (version 4) | `client_id`, `message` (required) | takes back a user message the agent has not taken up: journals `command{message_id}`; for a message still `pending` or `queued`, `agent.MessageWithdrawer.Withdraw` (Claude: the control request `cancel_async_message`, §5.1; Codex and OpenCode: out of the adapter's own queue, §5.2, §5.3), and when that gave it back `message.state{withdrawn}`, acked `withdrawn: true`. A message the agent has taken up (or holds inside its turn, or dropped) is acked without `withdrawn`; a repeat is answered from the journal. Without an adapter the journal is all that holds it, so it is withdrawn there. An unknown message (or another role's): `unknown_message`; an adapter without it: `unsupported` |
+| `notice` (version 5) | `notice` (a code), `text` | a line the server has to say in the chat (`agent.NoticeRepository`: a failed setup, a failed push, a worktree that stays after done; REPOS.md §4): journals `notice{code, text}` and acks with its seq. Needs no agent and no `client_id`; the server holds the notices of a chat without a host and sends them first to the next one |
 | `ask` (version 2) | `payload` (an `ask_user` payload) | a local tool's question (`socrates mcp-ask`, §5.3): journals `ask{turn_id: the running turn}` and acks with its `ask_id`; the answer comes back on this connection as an `answer` frame (§4.4). Refused (`bad_request`) on a connection that said hello with protocol 1, without a payload, or while no turn runs (the CLI calls tools only inside a turn, so such a question comes from a call already withdrawn), `not_running` without an agent |
 
 | `switch_account` | `client_id`, `account`, `env` (required), `secret_env`, `reason`?, `when` (`now`\|`after_turn`), `continue`? | WP7, §11: journals `command{to, reason}`; `after_turn` while a turn runs, background work runs (`tasks` above 0) or a message waits that a limit does not hold keeps it until the turn ends and acks it `pending` at once, then once more without `pending` when it is made or a newer switch replaces it; otherwise interrupts a running turn and waits for its end (30 s), moves the agent to the account, journals `account.switched` and acks. Without `env`: `bad_request` |

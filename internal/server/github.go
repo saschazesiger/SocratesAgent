@@ -190,7 +190,7 @@ type githubView struct {
 func (s *Server) githubState(ctx context.Context, refresh bool) githubView {
 	g := s.Settings().GitHub
 	out := githubView{Installations: []githubInstallView{}, Repos: []githubRepoView{}}
-	if !s.github.Connected() {
+	if !s.ghApp.Connected() {
 		if g.Connected() {
 			out.Problem = "The App " + g.Name + " is set up, but its private key cannot be opened on this machine. Disconnect and connect GitHub again."
 		}
@@ -199,8 +199,8 @@ func (s *Server) githubState(ctx context.Context, refresh bool) githubView {
 	out.Connected = true
 	out.App = &githubAppView{
 		Name: g.Name, Slug: g.Slug, Owner: g.Owner, HTMLURL: g.HTMLURL,
-		SettingsURL: s.github.AppSettingsURL(g.Slug, g.Owner, g.OwnerType),
-		InstallURL:  s.github.InstallURL(g.Slug),
+		SettingsURL: s.ghApp.AppSettingsURL(g.Slug, g.Owner, g.OwnerType),
+		InstallURL:  s.ghApp.InstallURL(g.Slug),
 	}
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
@@ -210,16 +210,16 @@ func (s *Server) githubState(ctx context.Context, refresh bool) githubView {
 		err      error
 	)
 	if refresh {
-		installs, repos, err = s.github.Refresh(ctx)
-	} else if installs, err = s.github.Installations(ctx); err == nil {
-		repos, err = s.github.Repos(ctx)
+		installs, repos, err = s.ghApp.Refresh(ctx)
+	} else if installs, err = s.ghApp.Installations(ctx); err == nil {
+		repos, err = s.ghApp.Repos(ctx)
 	}
 	if err != nil {
 		out.Problem = err.Error()
 	}
 	for _, in := range installs {
 		out.Installations = append(out.Installations, githubInstallView{
-			ID: in.ID, Account: in.Account, Type: in.AccountType, SettingsURL: s.github.InstallationSettingsURL(in),
+			ID: in.ID, Account: in.Account, Type: in.AccountType, SettingsURL: s.ghApp.InstallationSettingsURL(in),
 		})
 	}
 	for _, r := range repos {
@@ -249,7 +249,7 @@ func (s *Server) handleGitHubAppStart(w http.ResponseWriter, r *http.Request) {
 	if !readJSON(w, r, &body) {
 		return
 	}
-	if s.github.Connected() {
+	if s.ghApp.Connected() {
 		writeError(w, http.StatusConflict, "GitHub is already connected; disconnect it first to create another App")
 		return
 	}
@@ -261,7 +261,7 @@ func (s *Server) handleGitHubAppStart(w http.ResponseWriter, r *http.Request) {
 	state := randomState()
 	s.githubFlow.add(state, time.Now())
 	writeJSON(w, http.StatusOK, map[string]any{
-		"action":   s.github.ManifestAction(org, state),
+		"action":   s.ghApp.ManifestAction(org, state),
 		"manifest": github.NewManifest(pageOrigin(r)),
 		"state":    state,
 	})
@@ -294,7 +294,7 @@ func (s *Server) handleGitHubAppCreated(w http.ResponseWriter, r *http.Request) 
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 45*time.Second)
 	defer cancel()
-	conv, err := s.github.ConvertManifest(ctx, q.Get("code"))
+	conv, err := s.ghApp.ConvertManifest(ctx, q.Get("code"))
 	if err != nil {
 		githubBack(w, r, "GitHub's App could not be fetched: "+err.Error())
 		return
@@ -314,11 +314,11 @@ func (s *Server) handleGitHubAppCreated(w http.ResponseWriter, r *http.Request) 
 		githubBack(w, r, "The App could not be saved: "+err.Error())
 		return
 	}
-	if err := s.github.SetApp(conv.App()); err != nil {
+	if err := s.ghApp.SetApp(conv.App()); err != nil {
 		githubBack(w, r, err.Error())
 		return
 	}
-	http.Redirect(w, r, s.github.InstallURL(conv.Slug), http.StatusSeeOther)
+	http.Redirect(w, r, s.ghApp.InstallURL(conv.Slug), http.StatusSeeOther)
 }
 
 // githubBack takes the browser back to Admin's GitHub card with a problem
@@ -337,7 +337,7 @@ func (s *Server) handleGitHubAppInstalled(w http.ResponseWriter, r *http.Request
 	// It changes nothing but how fresh a listing is, so a browser that is
 	// not signed in is sent on too: Admin asks it to sign in.
 	if s.authenticated(r) {
-		s.github.Forget()
+		s.ghApp.Forget()
 	}
 	http.Redirect(w, r, "/admin#github", http.StatusSeeOther)
 }
@@ -348,7 +348,7 @@ func (s *Server) handleGitHubAppInstalled(w http.ResponseWriter, r *http.Request
 //
 //	DELETE /api/github/app
 func (s *Server) handleGitHubAppDelete(w http.ResponseWriter, r *http.Request) {
-	if err := s.github.SetApp(nil); err != nil {
+	if err := s.ghApp.SetApp(nil); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -387,13 +387,13 @@ func (s *Server) handleGitHubRepoSettings(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusRequestEntityTooLarge, "the setup script is longer than 64 KB")
 		return
 	}
-	if !s.github.Connected() {
+	if !s.ghApp.Connected() {
 		writeError(w, http.StatusConflict, github.ErrNotConnected.Error())
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
-	repo, ok, err := s.github.Reaches(ctx, fullName)
+	repo, ok, err := s.ghApp.Reaches(ctx, fullName)
 	switch {
 	case err == nil && !ok:
 		writeError(w, http.StatusNotFound, "the GitHub App does not reach "+fullName+"; choose it under the installation's repositories on GitHub")

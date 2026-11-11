@@ -43,7 +43,10 @@ var ErrNotFound = errors.New("not found")
 // (internal/backup), so mirror_pending and the mirror's kv rows go.
 // Version 12 adds the accounts a chat runs on (accounts.go), which replace
 // the sign-in profiles.
-const SchemaVersion = 12
+// Version 13 adds a chat's repository, base and branch (repo, base, branch):
+// a chat in a GitHub repository works in a worktree of its own on a branch
+// of its own (docs/design/REPOS.md §8).
+const SchemaVersion = 13
 
 // accountsVersion is the schema that brought accounts. A database brought up
 // to it from an older one is of a build whose agents ran on their own
@@ -108,7 +111,10 @@ CREATE TABLE IF NOT EXISTS sessions (
   status         TEXT NOT NULL DEFAULT 'in_progress',
   status_at      INTEGER NOT NULL DEFAULT 0,
   start_at       INTEGER NOT NULL DEFAULT 0,
-  kind           TEXT NOT NULL DEFAULT 'terminal'
+  kind           TEXT NOT NULL DEFAULT 'terminal',
+  repo           TEXT NOT NULL DEFAULT '',
+  base           TEXT NOT NULL DEFAULT '',
+  branch         TEXT NOT NULL DEFAULT ''
 );
 
 -- The prompt a prepared session will be started with. It is a table of its
@@ -535,6 +541,9 @@ func addSessionColumns(db *sql.DB) error {
 		{"status_at", `INTEGER NOT NULL DEFAULT 0`},
 		{"start_at", `INTEGER NOT NULL DEFAULT 0`},
 		{"kind", `TEXT NOT NULL DEFAULT 'terminal'`},
+		{"repo", `TEXT NOT NULL DEFAULT ''`},
+		{"base", `TEXT NOT NULL DEFAULT ''`},
+		{"branch", `TEXT NOT NULL DEFAULT ''`},
 	} {
 		has, err := hasColumn(db, "sessions", col[0])
 		if err != nil {

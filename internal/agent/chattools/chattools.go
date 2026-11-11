@@ -2,9 +2,14 @@
 // other: three tools every agent gets beside ask_user, on the same MCP server
 // (askuser.ServerName), whatever the harness and whatever the account.
 //
-//	list_chats     the other chats in this chat's repository
-//	read_chat      the last messages of one of them
-//	send_to_chat   a message into one of them, which wakes its agent
+//	list_chats          the other chats in this chat's repository
+//	read_chat           the last messages of one of them
+//	send_to_chat        a message into one of them, which wakes its agent
+//	open_pull_request   a chat in a GitHub repository only (Repo): its branch
+//	                    pushed and a pull request into its base opened
+//
+// The same socket answers `socrates git-credential` (Credential), which hands
+// a chat's git the token for its own repository (docs/design/REPOS.md §5.2).
 //
 // A call goes from the agent's host (Claude Code, Codex) or from `socrates
 // mcp-ask` (OpenCode) to the server over a Unix socket (Endpoint), with a
@@ -32,6 +37,11 @@ const (
 	List = "list_chats"
 	Read = "read_chat"
 	Send = "send_to_chat"
+	// PullRequest is a chat in a repository's own (Endpoint.Repo).
+	PullRequest = "open_pull_request"
+	// Credential is not a tool any agent is told about: it is the request of
+	// `socrates git-credential`, which the chat's git runs for a token.
+	Credential = "git_credential"
 )
 
 // Def is one tool as an agent is told about it.
@@ -90,11 +100,45 @@ const (
 	MaxText     = 20000
 )
 
+// pullRequestTool is open_pull_request as an agent is told about it.
+func pullRequestTool() Def {
+	return Def{
+		Name:  PullRequest,
+		Title: "Open a pull request",
+		Description: "Pushes this chat's branch to GitHub and opens a pull request from it into the chat's base branch. " +
+			"It answers with the pull request's URL, or with the pull request the branch has already. Bring the branch " +
+			"up to date with its base and run the tests before you call it.",
+		Schema: map[string]any{"type": "object", "properties": map[string]any{
+			"title": map[string]any{"type": "string", "description": "The pull request's title."},
+			"body":  map[string]any{"type": "string", "description": "What the pull request changes and why, in Markdown."},
+			"draft": map[string]any{"type": "boolean", "description": "Open it as a draft. False when left out."},
+		}, "required": []string{"title"}},
+	}
+}
+
+// Repo is the GitHub repository a chat works in, as its agent is told about
+// it: the repository, the chat's own branch and worktree, the base the branch
+// came from, and how the setup of the worktree went when it failed.
+type Repo struct {
+	FullName string `json:"repo"`
+	Branch   string `json:"branch"`
+	Base     string `json:"base"`
+	Worktree string `json:"worktree"`
+	// URL is the repository's clone URL, whose host the chat's git asks
+	// `socrates git-credential` for credentials for.
+	URL string `json:"url,omitempty"`
+	// SetupFailure is why the repository's setup failed, "" when it did not;
+	// SetupLog is the file with its output.
+	SetupFailure string `json:"setup_failure,omitempty"`
+	SetupLog     string `json:"setup_log,omitempty"`
+}
+
 // Guidance is what an agent's instructions say about the tools: that they
 // are the only way to the other chats, and when to use them - before what
 // would change another chat's work, and for nothing else. prefix is what
 // the agent puts before a tool's name (Claude Code: "mcp__socrates__",
-// OpenCode: "socrates_", Codex: none).
+// OpenCode: "socrates_", Codex: none). It is the guidance of a chat in a
+// folder, which it may share with other chats.
 func Guidance(prefix string) string {
 	list, read, send := prefix+List, prefix+Read, prefix+Send
 	return "Other chats may work in this repository at the same time, each with an agent of its own. " +
@@ -113,8 +157,53 @@ func Guidance(prefix string) string {
 		"asks you to go on, read its chat once and decide; do not ask again. If no other chat is there, or " +
 		"its work is unrelated, go ahead without asking.\n" +
 		"- When you have changed something another chat relies on (a file it edits, an interface, the " +
-		"build), tell it once and briefly.\n" +
-		"Send nothing else: no status reports, greetings, thanks or confirmations, and no answer to a " +
+		"build), tell it once and briefly.\n" + sendNothingElse(send)
+}
+
+// RepoGuidance is the guidance of a chat in a GitHub repository: its own
+// worktree on its own branch, how its work goes back, and the other chats of
+// the repository on theirs (docs/design/REPOS.md §5.1).
+func RepoGuidance(prefix string, r Repo) string {
+	list, read, send, pr := prefix+List, prefix+Read, prefix+Send, prefix+PullRequest
+	tick := func(s string) string { return "`" + s + "`" }
+	base, branch := tick(r.Base), tick(r.Branch)
+	out := "You work in your own git worktree of " + tick(r.FullName) + " at " + tick(r.Worktree) + ", on branch " +
+		branch + ", made from " + base + ". Nobody else works in this folder. Commit as you go and push (" +
+		tick("git push -u origin "+r.Branch) + "); the remote and the credentials are set up, and Socrates pushes the " +
+		"branch at the end of every turn too.\n" +
+		"How finished work goes back is the repository's rule: follow its `AGENTS.md` (or `CLAUDE.md`). If it says " +
+		"nothing about it, open a pull request into " + base + " with " + pr + ". Before you merge or open the pull " +
+		"request, bring the branch up to date (" + tick("git fetch origin && git rebase origin/"+r.Base) + "), run the " +
+		"tests again and push with `--force-with-lease`. To merge into " + base + " yourself: " +
+		tick("git push origin HEAD:"+r.Base) + " after that rebase; never force-push " + base + ", never switch this " +
+		"worktree to another branch.\n" +
+		"Other chats work on their own branches in their own worktrees of this repository, each with an agent of its own. " +
+		list + ", " + read + " and " + send + " are the only way to reach them. Use them when your work affects " +
+		"theirs: the same files on " + base + ", a shared service, a database, the build on the server.\n" +
+		"- Before such an action - pushing to " + base + " what another chat builds on, changing dependencies or the " +
+		"build, migrating a database, restarting a shared service - check quietly with " + list + ", and with " + read +
+		" for a chat whose work it touches. Ask it with " + send + " only when the action would change what it works " +
+		"on or a service it uses; then wait for the answer before you act: end your turn saying what you are waiting " +
+		"for, and the answer arrives as the next message. If no answer comes and the person asks you to go on, read " +
+		"its chat once and decide; do not ask again. If no other chat is there, or its work is unrelated, go ahead " +
+		"without asking.\n" +
+		"- When you have changed something another chat relies on (an interface, the build, " + base + " under its " +
+		"branch), tell it once and briefly.\n" + sendNothingElse(send)
+	if r.SetupFailure != "" {
+		out += "\nThe repository's setup failed when this worktree was made: " + r.SetupFailure + "."
+		if r.SetupLog != "" {
+			out += " Its output is in " + tick(r.SetupLog) + "."
+		}
+		out += " What it installs may be missing: read the log before you build or test, and tell the person if it " +
+			"stands in the way."
+	}
+	return out
+}
+
+// sendNothingElse is the end of both guidances: what not to send, how to
+// answer another chat's agent, and that the person comes first.
+func sendNothingElse(send string) string {
+	return "Send nothing else: no status reports, greetings, thanks or confirmations, and no answer to a " +
 		"message that needs none. A message from another chat's agent comes with a note that names the " +
 		"chat and its id: answer it with " + send + " only when it asks something or waits for you; when " +
 		"one of you holds off for the other, the one waited for says once when it is done. Answer only " +
@@ -125,29 +214,46 @@ func Guidance(prefix string) string {
 }
 
 // Endpoint is where a chat's tools reach the server: its socket, and the
-// token that names the chat to it. The zero Endpoint has no tools.
+// token that names the chat to it. The zero Endpoint has no tools. Repo is
+// the chat's repository, nil for a chat in a folder: it decides the tools
+// (open_pull_request) and the guidance, wherever the endpoint goes - the
+// adapters of Claude Code and Codex, and OpenCode's `socrates mcp-ask`.
 type Endpoint struct {
 	Socket string `json:"socket,omitempty"`
 	Token  string `json:"token,omitempty"`
+	Repo   *Repo  `json:"repo,omitempty"`
 }
 
 // Usable is whether the endpoint can be called at all.
 func (e Endpoint) Usable() bool { return e.Socket != "" && e.Token != "" }
 
 // Tools is the tools the endpoint answers.
-func (e Endpoint) Tools() []Def { return Tools() }
+func (e Endpoint) Tools() []Def {
+	if e.Repo != nil {
+		return append(Tools(), pullRequestTool())
+	}
+	return Tools()
+}
 
 // Has is whether name (bare) is one of the endpoint's Tools.
-func (e Endpoint) Has(name string) bool { return name == List || name == Read || name == Send }
+func (e Endpoint) Has(name string) bool {
+	return name == List || name == Read || name == Send || name == PullRequest && e.Repo != nil
+}
 
 // Guidance is what an agent's instructions say about the endpoint's tools
 // (prefix as Guidance's), with the ToolSearch line an agent that defers MCP
 // tools needs when toolSearch is set.
 func (e Endpoint) Guidance(prefix string, toolSearch bool) string {
-	out := Guidance(prefix)
+	var out string
+	names := prefix + List + "," + prefix + Read + "," + prefix + Send
+	if e.Repo != nil {
+		out = RepoGuidance(prefix, *e.Repo)
+		names += "," + prefix + PullRequest
+	} else {
+		out = Guidance(prefix)
+	}
 	if toolSearch {
-		out += "\nLoad them with ToolSearch (select:" + prefix + List + "," + prefix + Read + "," + prefix + Send +
-			") when you need them."
+		out += "\nLoad them with ToolSearch (select:" + names + ") when you need them."
 	}
 	return out
 }
@@ -156,6 +262,8 @@ func (e Endpoint) Guidance(prefix string, toolSearch bool) string {
 const (
 	EnvSocket = "SOCRATES_CHAT_TOOLS_SOCKET"
 	EnvToken  = "SOCRATES_CHAT_TOOLS_TOKEN"
+	// EnvRepo is the chat's Repo as JSON, unset for a chat in a folder.
+	EnvRepo = "SOCRATES_CHAT_TOOLS_REPO"
 )
 
 // Env is the endpoint as the environment of `socrates mcp-ask`; nil when it
@@ -164,12 +272,24 @@ func (e Endpoint) Env() map[string]string {
 	if !e.Usable() {
 		return nil
 	}
-	return map[string]string{EnvSocket: e.Socket, EnvToken: e.Token}
+	env := map[string]string{EnvSocket: e.Socket, EnvToken: e.Token}
+	if e.Repo != nil {
+		raw, _ := json.Marshal(e.Repo)
+		env[EnvRepo] = string(raw)
+	}
+	return env
 }
 
 // FromEnv is the endpoint the process environment names.
 func FromEnv() Endpoint {
-	return Endpoint{Socket: os.Getenv(EnvSocket), Token: os.Getenv(EnvToken)}
+	e := Endpoint{Socket: os.Getenv(EnvSocket), Token: os.Getenv(EnvToken)}
+	if raw := os.Getenv(EnvRepo); raw != "" {
+		var r Repo
+		if json.Unmarshal([]byte(raw), &r) == nil && r.FullName != "" {
+			e.Repo = &r
+		}
+	}
+	return e
 }
 
 // Path is the request path on the server's socket.

@@ -137,3 +137,41 @@ func TestChatOptionsChangesDoNotWriteOneAnotherBack(t *testing.T) {
 		t.Fatal("options that are not JSON were written")
 	}
 }
+
+// A chat in a repository keeps its repository, base and branch, and a
+// database of the build before repositories gets the three columns empty: its
+// chats keep their folders.
+func TestChatRepositoryColumnsRoundTripAndMigrate(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "s.db")
+	st, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateSession(&Session{ID: "r", Harness: "fake", Workdir: "/w/app-r", WorkdirMode: "repo", Kind: KindChat,
+		Repo: "octo/app", Base: "main", Branch: "socrates/fix-it"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateSession(&Session{ID: "f", Harness: "fake", Workdir: "/w/f", WorkdirMode: WorkdirCustom, Kind: KindChat}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := st.GetSession("r")
+	if err != nil || got.Repo != "octo/app" || got.Base != "main" || got.Branch != "socrates/fix-it" {
+		t.Fatalf("repository chat %+v %v", got, err)
+	}
+	for _, q := range []string{`ALTER TABLE sessions DROP COLUMN repo`, `ALTER TABLE sessions DROP COLUMN base`,
+		`ALTER TABLE sessions DROP COLUMN branch`, `PRAGMA user_version = 12`} {
+		if _, err := st.db.Exec(q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	st.Close()
+	st, err = Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	got, err = st.GetSession("f")
+	if err != nil || got.Repo != "" || got.Base != "" || got.Branch != "" || got.Workdir != "/w/f" {
+		t.Fatalf("migrated folder chat %+v %v", got, err)
+	}
+}
