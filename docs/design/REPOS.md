@@ -139,8 +139,9 @@ The folder controls (dynamic, preset, typed path) give way to:
   on the server that is no project). Opened from a repository group's "+" in the sidebar, it is preset.
 - **Base branch** (only with a repository): a `dropdown()` from the branch list, the repository's default branch
   preselected.
-- **Branch**: a text field, prefilled `socrates/<slug>`, where `<slug>` is the first message's first words
-  (lower case, `a-z0-9-`, at most 40 characters) or `<id8>` without a message. If the name is an existing branch
+- **Branch**: a text field, prefilled `socrates/<8 random hex characters>` (the sheet opens before there is a
+  message or a chat id; a request without a branch gets `socrates/<slug of the first message>` or
+  `socrates/<id8>` from the server, with `-<id8>` appended when that name is taken). If the name is an existing branch
   on GitHub, the hint says *continues the existing branch* and the base field is disabled: the chat checks that
   branch out instead of making one (picking up a pull request's review, say). The server checks the name with
   `git check-ref-format --branch`.
