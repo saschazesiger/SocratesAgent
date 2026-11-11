@@ -76,6 +76,10 @@
       <!-- How the last turn left the work, when the dashboard checks it. A tap
            says why. -->
       <button class="ds-btn ds-btn--quiet ds-sm so-outcome" id="sessionOutcome" type="button" hidden></button>
+      <!-- A chat in a repository: its branch, a link to its pull request when
+           it has one, else to the branch on GitHub (session.js
+           drawBranchChip). -->
+      <a class="ds-btn ds-btn--quiet ds-sm so-branch" id="sessionBranch" hidden target="_blank" rel="noopener"></a>
       <div class="so-topbar__actions">
         <!-- Copy, paste and upload (transfer.js), hidden until a terminal is
              attached. -->

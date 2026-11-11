@@ -29,6 +29,24 @@ export const MORE_KEY = '#more';
 export const MORE_LABEL = 'More Chats';
 
 /**
+ * REPO_PREFIX starts the key of a repository's group: a chat in a GitHub
+ * repository (REPOS.md §5.3) is grouped by its repository, not by its
+ * worktree, which is a folder of its own for every chat. The key is the
+ * notes board's too (`github:<owner>/<name>`); like MORE_KEY it is not a
+ * path, so no directory can be called it.
+ */
+export const REPO_PREFIX = 'github:';
+
+/** repoKeyOf is the group key of a repository, by its full name. */
+export function repoKeyOf(fullName) { return REPO_PREFIX + fullName; }
+
+/** repoOfKey is the repository a group key names, or '' for any other group. */
+export function repoOfKey(key) {
+  const text = String(key || '');
+  return text.startsWith(REPO_PREFIX) ? text.slice(REPO_PREFIX.length) : '';
+}
+
+/**
  * momentOf is the last time a session's status changed, as the list
  * understands it - which is the moment the list orders by.
  *
@@ -86,10 +104,12 @@ export function dirOf(path) {
  * the others. A row from a server too old to have said how its directory was
  * chosen is judged by whether it has one at all, which is the honest reading:
  * the field has been written since the first release, and a row without one
- * has nothing to be grouped by either way.
+ * has nothing to be grouped by either way. A chat in a repository goes into
+ * its repository's group.
  */
 export function folderKeyOf(session) {
   if (!session) return MORE_KEY;
+  if (session.repo) return repoKeyOf(String(session.repo));
   if (String(session.workdir_mode || '') === 'dynamic') return MORE_KEY;
   return dirOf(session.workdir) || MORE_KEY;
 }
@@ -117,7 +137,8 @@ function segmentsOf(path) {
  * construction.
  */
 function nameFolders(folders) {
-  const dirs = folders.filter((folder) => folder.key !== MORE_KEY);
+  nameRepos(folders.filter((folder) => folder.repo));
+  const dirs = folders.filter((folder) => folder.key !== MORE_KEY && !folder.repo);
   for (const folder of dirs) folder.label = segmentsOf(folder.path).slice(-1)[0] || folder.path || '/';
   for (let depth = 2; depth <= 12; depth += 1) {
     const byLabel = new Map();
@@ -136,6 +157,19 @@ function nameFolders(folders) {
     if (!widened) break;
   }
   for (const folder of folders) if (folder.key === MORE_KEY) folder.label = MORE_LABEL;
+}
+
+// nameRepos writes the label of every repository's group: its name, and
+// its owner too where two owners have a repository of that name. The full
+// name is on the group's tooltip.
+function nameRepos(groups) {
+  const count = new Map();
+  for (const group of groups) {
+    const name = group.repo.slice(group.repo.indexOf('/') + 1) || group.repo;
+    group.label = name;
+    count.set(name, (count.get(name) || 0) + 1);
+  }
+  for (const group of groups) if (count.get(group.label) > 1) group.label = group.repo;
 }
 
 /**
@@ -177,7 +211,7 @@ export const IDE = 'vscode';
  * "More Chats" is not a place anybody would open an editor on.
  */
 export function ideOf(sessions, key) {
-  if (key === MORE_KEY) return null;
+  if (key === MORE_KEY || repoOfKey(key)) return null;
   let found = null;
   for (const session of sessions || []) {
     if (!session || session.harness !== IDE || session.status === 'done') continue;
@@ -240,7 +274,10 @@ export function foldersOf(sessions, shelfOf = shelfByStatus) {
     const key = folderKeyOf(session);
     const folder = byKey.get(key);
     if (folder) folder.all.push(session);
-    else byKey.set(key, { key, path: key === MORE_KEY ? '' : key, label: '', at: 0, all: [session] });
+    else {
+      const repo = repoOfKey(key);
+      byKey.set(key, { key, path: key === MORE_KEY || repo ? '' : key, repo, label: '', at: 0, all: [session] });
+    }
   }
   const folders = [...byKey.values()];
   for (const folder of folders) {

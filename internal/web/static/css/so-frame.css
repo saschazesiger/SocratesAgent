@@ -11,6 +11,8 @@
  *   .so-title        the session's name, a text button that renames it;
  *                    .so-title__home the words "Home" in its place on Home
  *   .so-outcome      the verdict on the last turn, beside the name
+ *   .so-branch       a chat's branch in its repository, beside the name: a
+ *                    link to its pull request or to the branch on GitHub
  *   .so-topbar__lead the brand and .so-drawer-toggle, which puts the session
  *                    list away at a desk; as wide as the drawer under it
  *   .so-drawer-sash  the drawer's edge at a desk, dragged to widen or narrow
@@ -275,6 +277,19 @@
 /* "Checking…" is news, not a control. */
 .so-outcome[data-kind="checking"] {
   cursor: default;
+}
+
+/* A long branch name gives way before the session's name does. */
+.so-branch {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
+.so-branch__name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .so-topbar__actions {
@@ -665,10 +680,11 @@
   /* The session's status says itself by its glyph alone (its words are its
      label and its tip): in words it took the name's width, down to 18px of
      a Shell's at 360, and between 481 and 600px "Review pending" and the
-     outcome's words still pushed the ⋮ off the bar. The outcome beside it
-     does the same. */
+     outcome's words still pushed the ⋮ off the bar. The outcome and the
+     branch beside it do the same: the branch's name is its label and tip. */
   .so-topbar > #sessionStatus,
-  .so-topbar > #sessionOutcome {
+  .so-topbar > #sessionOutcome,
+  .so-topbar > #sessionBranch {
     flex: none;
   }
 
@@ -676,7 +692,7 @@
     padding: var(--ds-space-1);
   }
 
-  .so-topbar > :is(#sessionStatus, #sessionOutcome) > span:last-child {
+  .so-topbar > :is(#sessionStatus, #sessionOutcome, #sessionBranch) > span:last-child {
     display: none;
   }
 }
