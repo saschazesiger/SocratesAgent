@@ -58,7 +58,7 @@ with the control protocol and the in-process MCP server that carries ask_user,
 authenticated HTTP and its event stream with the `socrates mcp-ask` server.
 What a message makes them do is the script in each package's comment (and
 docs/design/AGENT-HOST.md §5 and §8): `/stream`, `/slow`, `/tool`, `/edit`,
-`/todo`, `/bg`, `/plan`, `/askuser`, `/whoami`, `/crash`, `/argv` and the rest;
+`/todo`, `/sh`, `/bg`, `/plan`, `/askuser`, `/whoami`, `/crash`, `/argv` and the rest;
 anything else is answered "you said: …". They answer `--version`; fakeclaude's
 models come from the catalogue, fakeopencode lists twenty-three with `opencode
 models --verbose` (the `fake` provider's three, one of which calls no tools, and
@@ -207,6 +207,7 @@ touch mode, except `options`, which measures the narrowest phone in use,
 | `offlinerestart` | the server is restarted inside an outage and the phone wakes with `online`, `focus` and `visibilitychange` at once: one handshake, and nothing typed is lost in silence |
 | `latehello` | what is typed before a slow `hello` arrives is delivered, exactly once, and leaves nothing behind |
 | `repochat` | the new-chat sheet's repository (REPOS.md §4.1): without GitHub only *No repository*, a link to Admin to connect it, no base or branch, and the chat in a folder of its own in `More Chats`; with `/api/github` and a branch list answered in the browser, the repositories then *No repository*, the default branch as the base, a `socrates/…` branch of its own, *continues the existing branch* with the base disabled for a branch GitHub has, a bad name holding Start back, and `{repo, base, branch}` sent instead of a folder (the create stubbed) |
+| `repoflow` | a chat in a GitHub repository end to end, nothing stubbed in the browser (REPOS.md §3, §4, §9): a fake GitHub (`e2e/fakegithub.mjs`, every App JWT checked against the App's key) and a folder of bare repositories as `SOCRATES_GITHUB_GIT=file://…`; Admin's *Connect GitHub* through the manifest flow and back, the card listing the repository; the sheet's repository, `main` as the base and the generated branch; the worktree at `<workspace root>/<name>-<id8>` on the branch, the chat grouped under the repository with its branch chip; the fake Claude Code committing in the worktree (`/sh`) and the turn's end pushing the branch to the bare remote; `open_pull_request` with a token for that repository alone and the chip then linking the pull request; filed as done, the clean, pushed worktree and the cache's branch removed (within the one-minute done sweep) |
 | `mcpcard` | Admin's MCP card: the server built into Socrates (BrowserStack) off and without an account, its sheet; a server from the gallery prefilled; Test connection in the editor and a row's Test against `e2e/fakemcp.mjs` (a tiny MCP server on stdio), its tools as switches saved with the page, a failed test with what the server printed; Connect asking to save first and the way back from the sign-in (the start stubbed); a chat's MCP dialog naming the built-in server by its title and testing a server |
 | `adminoptions` | every harness option round-trips, the models and efforts set as defaults are what a chat starts on, and Claude Code's command line carries the fixed policy (HARNESS-POLICY.md) and never a flag it forbids |
 | `tmuxcard` | the engine card on a machine whose tmux is too old |

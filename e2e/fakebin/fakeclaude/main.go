@@ -26,6 +26,8 @@
 //	/tool            a Bash call with output
 //	/edit            an Edit of fake.txt in the working directory, with a patch
 //	/write           a Write that creates new.txt
+//	/sh COMMAND      a Bash call that runs COMMAND with sh -c in the working
+//	                 directory, and says its output and how it exited
 //	/todo            TaskCreate twice, then TaskUpdate the first to completed
 //	/todo done       TaskUpdate the second to completed as well
 //	/subagent        a background Agent call with a Bash call inside it
@@ -661,6 +663,8 @@ func (t *turnRun) script() {
 			"File created successfully at: "+path, map[string]any{"type": "create", "filePath": path,
 				"content": "hello\nworld\n", "structuredPatch": []any{}, "originalFile": nil}, false, "")
 		t.say("Wrote new.txt.")
+	case "/sh":
+		t.shell(rest)
 	case "/todo":
 		if len(fields) > 0 && fields[0] == "done" {
 			t.todoDone()
@@ -850,6 +854,23 @@ func (t *turnRun) say(text string) {
 		t.stream(chunk, 2*time.Millisecond)
 	}
 	t.closeText()
+}
+
+// shell is /sh: the command really runs, in the working directory, as the
+// real CLI's Bash tool runs it, so that a scenario can have the agent do
+// work there (commit to a repository's worktree, say).
+func (t *turnRun) shell(command string) {
+	cmd := exec.CommandContext(t.ctx, "sh", "-c", command)
+	cmd.Dir = t.f.cwd
+	out, err := cmd.CombinedOutput()
+	text := strings.TrimRight(string(out), "\n")
+	t.tool("Bash", map[string]any{"command": command, "description": "Run a command"},
+		text, map[string]any{"stdout": text, "stderr": "", "interrupted": false}, err != nil, "")
+	if err != nil {
+		t.say("The command failed: " + err.Error() + "\n" + text)
+		return
+	}
+	t.say("The command ran.\n" + text)
 }
 
 // tool is one tool call and its result, in the main thread or (with parent)

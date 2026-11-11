@@ -18,6 +18,7 @@ import { chattests } from './chattests.mjs';
 import { artifacts } from './artifacts.mjs';
 import { boards } from './boards.mjs';
 import { docs } from './docs.mjs';
+import { startFakeGitHub } from './fakegithub.mjs';
 import http from 'node:http';
 import net from 'node:net';
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -3178,6 +3179,171 @@ async function repochat() {
     const quiet = /@ \S*\/api\/chats$/;
     ok(unexpected(s.errors, quiet).length === 0, 'no console errors', unexpected(s.errors, quiet).join(' | ') || '0');
   } finally { await s.stop(); }
+}
+
+/* -------------------------------------------------------------- repoflow */
+
+// repoflow: a chat in a GitHub repository end to end, against a fake GitHub
+// (e2e/fakegithub.mjs) and a folder of bare repositories as its git
+// (SOCRATES_GITHUB_GIT=file://…), with nothing stubbed in the browser
+// (REPOS.md §3, §4, §9). Admin's Connect GitHub goes through the manifest
+// flow to the fake and back, and the card lists the repository; the
+// new-chat sheet picks it, its default branch as the base and the branch it
+// generates; the chat's worktree is <workspace root>/<name>-<id8> on that
+// branch, the chat is grouped under the repository with its branch in the
+// header. The fake Claude Code commits a file in the worktree (/sh), and the
+// turn's end pushes the branch to the bare remote; open_pull_request opens a
+// pull request on the fake with a token for that repository alone, and the
+// chip then links it. Filed as done, the clean and pushed worktree goes, and
+// with it the cache's local branch.
+async function repoflow() {
+  const git = scratchDir('socrates-gh-');
+  const sh = (cwd, ...args) => execFileSync('git', ['-c', 'user.name=E2E', '-c', 'user.email=e2e@example.invalid', ...args],
+    { cwd, stdio: ['ignore', 'pipe', 'pipe'] }).toString().trim();
+  // acme/widget: one commit on main.
+  const seed = join(git, 'seed');
+  mkdirSync(seed);
+  sh(seed, 'init', '-q', '-b', 'main');
+  writeFileSync(join(seed, 'README.md'), '# widget\n');
+  sh(seed, 'add', 'README.md');
+  sh(seed, 'commit', '-q', '-m', 'First commit');
+  const first = sh(seed, 'rev-parse', 'HEAD');
+  mkdirSync(join(git, 'acme'));
+  const bare = join(git, 'acme', 'widget.git');
+  sh(git, 'clone', '-q', '--bare', seed, bare);
+  rmSync(seed, { recursive: true, force: true });
+  const remoteRef = (ref) => { try { return sh(bare, 'rev-parse', '--verify', '-q', ref); } catch { return ''; } };
+
+  const gh = await startFakeGitHub({ owner: 'acme', repos: [{ full_name: 'acme/widget', default_branch: 'main', private: true }] });
+  const s = await start({
+    viewport: { width: 1280, height: 900 },
+    env: { SOCRATES_GITHUB_API: gh.url, SOCRATES_GITHUB_WEB: gh.url, SOCRATES_GITHUB_GIT: 'file://' + git },
+  });
+  const { page } = s;
+  try {
+    await setup(page, s.url);
+
+    // Admin → GitHub: Connect, through the fake's pages, and back.
+    await page.goto(s.url + '/admin#github', { waitUntil: 'domcontentloaded' });
+    await page.waitForSelector('#github button[data-action="connect"]', { timeout: 15000 });
+    await page.click('#github button[data-action="connect"]');
+    await page.waitForURL((u) => u.origin === s.url && u.pathname === '/admin', { timeout: 30000 });
+    await page.waitForSelector('#githubStatus [data-state="connected"]', { timeout: 30000 }).catch(() => {});
+    const card = await page.evaluate(() => ({
+      status: document.querySelector('#githubStatus .so-state__line')?.innerText.replace(/\s+/g, ' ').trim() || '',
+      repo: !!document.querySelector('#github [data-repo="acme/widget"]'),
+      problem: document.querySelector('#github .ds-alert')?.innerText || '',
+    }));
+    ok(/Connected/.test(card.status) && /1 installation/.test(card.status) && /1 repository/.test(card.status) && card.repo && !card.problem,
+      'Connect GitHub goes through the manifest flow and the card lists the App’s installation and repository', JSON.stringify(card));
+    const m = gh.manifest || {};
+    ok(m.redirect_url === s.url + '/api/github/app/created' && m.setup_url === s.url + '/api/github/app/installed'
+      && m.default_permissions && m.default_permissions.contents === 'write',
+      'the manifest GitHub was given sends the browser back to this server', JSON.stringify({ redirect: m.redirect_url, setup: m.setup_url }));
+    await shot(page, 'repoflow-admin');
+
+    // The new-chat sheet: the repository, its default branch, the branch.
+    await page.goto(s.url + '/', { waitUntil: 'domcontentloaded' });
+    await ensureNav(page);
+    await page.click('#newSession');
+    await page.waitForSelector('#newSessionSheet[open]', { timeout: 15000 });
+    await page.click('#newSessionSheet .so-settings__program[data-value="claude"]');
+    await page.click('#nsRepo .ds-combo__input');
+    await page.waitForSelector('#nsRepo .ds-combo__option[data-value="acme/widget"]', { timeout: 15000 });
+    await page.click('#nsRepo .ds-combo__option[data-value="acme/widget"]');
+    await page.waitForFunction(() => document.querySelector('#nsBase .ds-combo__input').textContent.trim() === 'main'
+      && /^socrates\//.test(document.getElementById('nsBranch').value), null, { timeout: 30000 });
+    const branch = await page.$eval('#nsBranch', (n) => n.value);
+    const hint = await page.$eval('#nsBranchHint', (n) => n.textContent);
+    ok(/^socrates\/[0-9a-f]{8}$/.test(branch) && /made from main/.test(hint),
+      'the sheet takes main from the repository’s branches as the base and offers a branch of the chat’s own', branch + ' / ' + hint);
+    await pickModelIfNeeded(page);
+    await page.click('#nsStart');
+    await page.waitForSelector('#newSessionSheet[open]', { state: 'detached', timeout: 60000 });
+    await chatUp(page, 60000);
+    const id = await page.evaluate(() => location.hash.slice(1));
+    let row = await sessionRow(s, id);
+    const worktree = join(s.data, 'workspaces', 'widget-' + id.slice(0, 8));
+    ok(row.repo === 'acme/widget' && row.base === 'main' && row.branch === branch && row.workdir === worktree,
+      'the chat is made in the repository, on main, on its branch, in <workspace root>/<name>-<id8>',
+      JSON.stringify({ repo: row.repo, base: row.base, branch: row.branch, workdir: row.workdir.replace(s.data, '<data>') }));
+    const checkedOut = existsSync(join(worktree, '.git')) ? sh(worktree, 'rev-parse', '--abbrev-ref', 'HEAD') + ' ' + sh(worktree, 'rev-parse', 'HEAD') : 'none';
+    ok(checkedOut === branch + ' ' + first && existsSync(join(worktree, 'README.md')),
+      'the worktree is there, on the branch, at main’s commit', checkedOut);
+    ok(remoteRef('refs/heads/' + branch) === '', 'and GitHub has no such branch yet', remoteRef('refs/heads/' + branch) || 'none');
+
+    await page.waitForFunction((chat) => {
+      const r = document.querySelector('#sessionList .so-row[data-id="' + chat + '"]');
+      return r && r.closest('.so-folder:not(.so-folder--shelf)')?.dataset.folder === 'github:acme/widget';
+    }, id, { timeout: 15000 }).catch(() => {});
+    const placed = await page.evaluate((chat) => {
+      const r = document.querySelector('#sessionList .so-row[data-id="' + chat + '"]');
+      const folder = r && r.closest('.so-folder:not(.so-folder--shelf)');
+      const chip = document.getElementById('sessionBranch');
+      return {
+        group: folder ? folder.dataset.folder : '',
+        label: folder ? (folder.querySelector('.so-folder__name, .so-folder__label, summary')?.textContent || '').replace(/\s+/g, ' ').trim() : '',
+        chip: chip.hidden ? '' : chip.querySelector('.so-branch__name')?.textContent || '',
+        kind: chip.dataset.kind || '',
+      };
+    }, id);
+    ok(placed.group === 'github:acme/widget' && /widget/.test(placed.label),
+      'the sidebar groups the chat under its repository', JSON.stringify(placed));
+    ok(placed.chip === branch && placed.kind === 'branch', 'the header’s chip shows the branch', JSON.stringify(placed));
+
+    // The agent commits; the turn's end pushes.
+    const said = await answerTo(s, id, '/sh printf "hello\\n" > hello.txt && git add hello.txt'
+      + ' && git -c user.name=Agent -c user.email=agent@example.invalid commit -q -m "Add hello.txt" && git rev-parse HEAD', 40000);
+    const commit = (/[0-9a-f]{40}/.exec(said) || [''])[0];
+    ok(/^The command ran\./.test(said) && !!commit && sh(worktree, 'rev-parse', 'HEAD') === commit,
+      'the fake Claude Code commits a file in the worktree', oneLine(said));
+    const pushed = await until(() => remoteRef('refs/heads/' + branch) === commit, 30000);
+    ok(pushed && sh(bare, 'rev-parse', commit + '^') === first && sh(bare, 'show', commit + ':hello.txt') === 'hello'
+      && remoteRef('refs/heads/main') === first,
+      'at the turn’s end the branch is on GitHub with the commit, and main is as it was',
+      remoteRef('refs/heads/' + branch) || 'no branch');
+
+    // A pull request, with a token for this repository alone.
+    const pr = await answerTo(s, id, '/mcptool open_pull_request {"title":"Add hello.txt","body":"From the e2e."}', 40000);
+    const opened = gh.pulls[0] || {};
+    ok(/^open_pull_request returned: Opened pull request #1 from /.test(pr) && opened.repo === 'acme/widget'
+      && opened.head === branch && opened.base === 'main' && opened.title === 'Add hello.txt',
+      'open_pull_request opens the pull request from the branch into main', oneLine(pr) + ' ' + JSON.stringify(opened));
+    const scoped = [...gh.tokens.values()].filter((t) => t.repositories);
+    ok(scoped.length > 0 && scoped.every((t) => t.repositories.length === 1 && t.repositories[0] === 'widget'),
+      'its token was asked for the one repository', JSON.stringify(scoped));
+    await page.waitForFunction(() => document.getElementById('sessionBranch').dataset.kind === 'pr', null, { timeout: 15000 }).catch(() => {});
+    const prChip = await page.evaluate(() => {
+      const chip = document.getElementById('sessionBranch');
+      return { kind: chip.dataset.kind, href: chip.getAttribute('href'), label: chip.getAttribute('aria-label') };
+    });
+    ok(prChip.kind === 'pr' && prChip.href === gh.url + '/acme/widget/pull/1' && /Pull request #1/.test(prChip.label),
+      'the chip then links the pull request', JSON.stringify(prChip));
+    await shot(page, 'repoflow-chat');
+
+    // Done: clean and pushed, the worktree goes, and the local branch with it.
+    const done = await s.context.request.post(s.url + '/api/sessions/' + id + '/file', { data: { status: 'done' } });
+    ok(done.ok(), 'the chat is filed as done', String(done.status()));
+    const cache = join(s.data, 'workspaces', '.repos', 'acme', 'widget.git');
+    // The worktree goes once the parked host is gone; the done sweep comes
+    // back every minute until it is.
+    const filed = Date.now();
+    const gone = await until(() => !existsSync(worktree), 100000);
+    const took = Date.now() - filed;
+    let local = 'cache missing';
+    try { local = sh(cache, 'branch', '--list', branch); } catch { /* reported */ }
+    row = await sessionRow(s, id);
+    ok(gone && local === '' && remoteRef('refs/heads/' + branch) === commit,
+      'the clean, pushed worktree is removed, the cache’s branch too, and GitHub keeps the branch',
+      JSON.stringify({ gone, ms: took, local, done_at: row.options && row.options.worktree_done }));
+    ok(gh.problems.length === 0, 'the fake GitHub refused nothing (every JWT checked against the App’s key)', gh.problems.join(' | ') || '0');
+    // GitHub's own pages are another origin: the browser has nothing to say about them.
+    ok(unexpected(s.errors).length === 0, 'no console errors', unexpected(s.errors).join(' | ') || '0');
+  } finally {
+    await s.stop();
+    await gh.close();
+    rmSync(git, { recursive: true, force: true });
+  }
 }
 
 /* --------------------------------------------------------------- mcpcard */
@@ -15514,6 +15680,7 @@ const ALL = [
   ['sharedmcp', 'Admin\u2019s MCP servers reach every chat, and a chat switches them for itself', sharedmcp],
   ['sheetmcp', 'the new session sheet: the shell across the width, the account\u2019s limits, the MCP switches', sheetmcp],
   ['repochat', 'the new-chat sheet\u2019s repository: No repository without GitHub, and a repository, its base and branch', repochat],
+  ['repoflow', 'a chat in a GitHub repository end to end: connect, sheet, worktree, commit, push, pull request, done', repoflow],
   ['mcpcard', 'Admin\u2019s MCP card: the built-in server, the gallery, a test and its tools, a chat\u2019s test', mcpcard],
   ['chatpeers', 'the agents of the chats in one repository list, read and write to each other', chatpeers],
   ['createcodex', 'Codex over its app server: one thread, kept, and resumed after a rest', createcodex],
