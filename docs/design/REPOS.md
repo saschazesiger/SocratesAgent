@@ -59,7 +59,7 @@ Admin gets a card **GitHub**. Without an App it shows *Connect GitHub* and an op
      "redirect_url": "<origin>/api/github/app/created",
      "setup_url": "<origin>/api/github/app/installed",
      "setup_on_update": true,
-     "public": false,
+     "public": true,
      "hook_attributes": { "url": "<origin>/api/github/hook", "active": false },
      "default_permissions": {
        "contents": "write", "pull_requests": "write", "workflows": "write", "metadata": "read"
@@ -70,7 +70,9 @@ Admin gets a card **GitHub**. Without an App it shows *Connect GitHub* and an op
    `<origin>` is the origin the Admin page is open on. `<state>` is a random value the server keeps for ten
    minutes (`POST /api/github/app/start` returns it with the manifest and the target URL). `workflows: write` is
    needed because a push that changes `.github/workflows/` is refused without it. No webhook: Socrates asks
-   GitHub when it needs to know.
+   GitHub when it needs to know. The App is **public**: a private App can only be installed on the account that
+   owns it, so not on the person's organisations. Anyone may then install it, which is why only accepted
+   installations count (§3.5).
 2. The person confirms the name on GitHub. GitHub redirects the browser to `redirect_url?code=…&state=…`.
 3. `GET /api/github/app/created` checks the state and exchanges the code (`POST
    https://api.github.com/app-manifests/{code}/conversions`, no authentication). It keeps the App's `id`,
@@ -79,14 +81,22 @@ Admin gets a card **GitHub**. Without an App it shows *Connect GitHub* and an op
    `github:pem`, `github:client_secret`, `github:webhook_secret`) into the kv table. Then it redirects the
    browser to `https://github.com/apps/<slug>/installations/new`.
 4. The person picks the account and the repositories on GitHub and installs. GitHub redirects to
-   `setup_url?installation_id=…&setup_action=install`; `GET /api/github/app/installed` redirects to
-   `/admin#github`. The installation id itself is not trusted from the URL: Socrates lists installations with the
-   App's JWT (§3.2).
+   `setup_url?installation_id=…&setup_action=install`. `GET /api/github/app/installed`, in a signed-in browser,
+   accepts that installation (§3.5) once the App's own listing (JWT, §3.2) has it, and redirects to
+   `/admin#github`; an id GitHub does not list goes back with `github_error`. A browser that is not signed in is
+   only redirected: the installation then waits on the card.
 
-Admin then shows the App (name, owner, link), every installation (account, *Choose repositories* →
-`https://github.com/settings/installations/<id>` or the organisation's equivalent) and the repositories with
-their settings (§3.4), and *Disconnect* (forgets the App's keys here; the App on GitHub is deleted by the person,
-Admin links to its settings page).
+Admin then shows the App (name, owner, link, *Add an organisation* → `https://github.com/apps/<slug>/installations/new`,
+where GitHub asks for the account), the installations waiting to be accepted (§3.5), every accepted installation
+(account, *Choose repositories* → `https://github.com/settings/installations/<id>` or the organisation's
+equivalent, *Remove*) and the repositories with their settings (§3.4), and *Disconnect* (forgets the App's keys
+and the accepted installations here; the App on GitHub is deleted by the person, Admin links to its settings
+page).
+
+An App created before the manifest said `"public": true` is private. The card always carries a short note that
+links its *Advanced* settings (`https://github.com/settings/apps/<slug>/advanced`, or
+`https://github.com/organizations/<owner>/settings/apps/<slug>/advanced` for an organisation's App), where *Make
+public* is. Socrates does not read whether the App is public from GitHub, so the note is always there.
 
 Creating the App needs the person's GitHub login in the browser, which only they can do. A Socrates without an
 App offers new chats only without a repository (§4.1) and says in the new-chat sheet where to connect GitHub.
@@ -113,11 +123,13 @@ bare repositories (`file://`).
 
 | Method and path | What |
 |---|---|
-| `GET /api/github` | `{connected, app: {name, slug, owner, html_url}, installations: [{id, account, settings_url}], repos: [{full_name, default_branch, private, installation}], problem}` |
+| `GET /api/github` | `{connected, app: {name, slug, owner, html_url, settings_url, install_url, advanced_url}, installations: [{id, account, type, settings_url}], pending: [...the same], repos: [{full_name, default_branch, private, installation, setup}], problem}`; `installations` and `repos` are the accepted ones only, `pending` the installations not accepted |
 | `POST /api/github/app/start` | `{org}` → `{action, manifest, state}`; the page builds and submits the form. |
 | `GET /api/github/app/created` | GitHub's redirect (§3.1). |
 | `GET /api/github/app/installed` | GitHub's redirect (§3.1). |
 | `DELETE /api/github/app` | Disconnect. |
+| `POST /api/github/installations/{id}/accept` | Accepts an installation the App's listing has (§3.5); answers like `GET /api/github`. |
+| `DELETE /api/github/installations/{id}` | Uninstalls the App from that account (`DELETE /app/installations/{id}` with the App's JWT; one GitHub no longer has is gone already) and drops it from the accepted ones. |
 | `GET /api/github/repos/{owner}/{name}/branches` | Fetches the cache (creating it the first time) and lists `refs/remotes/origin/*`: `{default, branches: [{name, sha, date}]}`, newest first. |
 | `PUT /api/github/repos/{owner}/{name}/settings` | `{setup}` (§3.4). |
 
@@ -125,8 +137,28 @@ All of them are Admin-only except `GET /api/github` and the branch list, which e
 
 ### 3.4 Settings per repository
 
-`settings.github.repos["owner/name"] = {setup: "<shell script>"}`. Admin shows a text area *Setup* per
-repository. Only the setup script is kept per repository; everything else comes from the repository itself.
+`settings.github.repos["owner/name"] = {setup: "<shell script>"}`. Admin lists each repository on one short line
+(its name, *Private*, *Setup set* when it has a script, and *Setup*), those with a script first, then by name; a
+filter above them once there are more than six, and the first eight until *Show all N*. *Setup* opens a dialog with
+the script, saved at once (`PUT …/settings`); an empty one removes it. Only the setup script is kept per
+repository; everything else comes from the repository itself.
+
+### 3.5 Accepted installations
+
+Anyone may install a public App on their own account, and an installation's repositories would then be
+offered to new chats. So `settings.github.accepted_installations` (installation ids) lists the ones the person
+accepted, and `internal/github` uses only those: the repositories listed, `Reaches`, the repository tokens and
+pull requests. The listing asks for repositories and tokens of accepted installations only; the others are
+*pending*.
+
+- **Accepting**: coming back from GitHub's install page in a signed-in browser (§3.1 step 4), or *Accept* on a
+  pending installation, which the card shows in the warning tone: *installed on <account> — accept only if that
+  is yours*. Either way the id must be in the App's own listing.
+- **Removing**: *Remove* (on a pending or an accepted installation) uninstalls the App there and drops the id.
+- **The owner's installation**: while none is accepted (a connection from before this list), the next listing
+  accepts the installations on the App's owner's account on its own and saves them; only that account's owners
+  could install it there.
+- *Disconnect* and a new App start with an empty list.
 
 ## 4. A chat in a repository
 

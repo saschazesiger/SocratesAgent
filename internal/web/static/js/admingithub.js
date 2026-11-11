@@ -10,11 +10,21 @@
 // comes back as /admin?github_error=<words>#github.
 //
 // With an App the card shows it, its installations (each with a link to
-// choose its repositories on GitHub) and the repositories they grant, each
-// with its setup script, which is saved on its own (PUT
-// /api/github/repos/{owner}/{name}/settings), not with the page.
+// choose its repositories on GitHub) and the repositories they grant, one
+// short line each: a filter above them once there are many, and the first
+// few until "Show all". A repository's setup script is edited in a dialog
+// and saved on its own (PUT /api/github/repos/{owner}/{name}/settings), not
+// with the page.
+//
+// The App is public, so it can be installed on an organisation too ("Add an
+// organisation" opens GitHub's install page, where the account is picked).
+// Anyone may install a public App, so an installation counts once it is
+// accepted: coming back signed in from installing it accepts it, and one
+// that is installed but not accepted waits on the card with Accept and
+// Remove (POST /api/github/installations/{id}/accept, DELETE
+// /api/github/installations/{id}, which uninstalls it on GitHub).
 
-import { api, el, toast, errorMessage, confirmDialog } from './api.js';
+import { api, el, toast, errorMessage, confirmDialog, openDialog } from './api.js';
 import { M, html, raw, icon, morph, faces } from './ui.js';
 
 const $ = (id) => document.getElementById(id);
@@ -22,6 +32,14 @@ const $ = (id) => document.getElementById(id);
 let hooks = { save: async () => false, dirty: () => false };
 let view = null;
 let loadError = '';
+// The repositories' filter, and whether all of them are shown.
+let filter = '';
+let showAll = false;
+
+// More repositories than FILTER_FROM get a filter; without one typed, the
+// first SHOW_FIRST are shown until "Show all".
+const FILTER_FROM = 6;
+const SHOW_FIRST = 8;
 
 /**
  * mountGitHub wires the card once. `save` is Admin's Save (resolves true
@@ -32,6 +50,12 @@ export function mountGitHub({ save, dirty }) {
   const card = $('github');
   if (!card) return;
   card.addEventListener('click', onAction);
+  card.addEventListener('input', (event) => {
+    if (event.target.id !== 'githubFilter') return;
+    filter = event.target.value;
+    const list = $('githubRepoList');
+    if (list) morph(list, repoListHtml());
+  });
   // Enter in the organisation field is Connect.
   card.addEventListener('keydown', (event) => {
     if (event.key === 'Enter' && event.target.id === 'githubOrg') {
@@ -84,6 +108,8 @@ function statusLine() {
     return html`<span class="ds-status" data-state="off">${raw(icon('ban', 16))}<span>Not connected</span></span>`;
   }
   const facts = [plural(view.installations.length, 'installation', 'installations'), plural(view.repos.length, 'repository', 'repositories')];
+  const waiting = (view.pending || []).length;
+  if (waiting) facts.push(waiting + ' waiting to be accepted');
   const chip = view.problem
     ? html`<span class="ds-status ds-tone-warning" data-state="problem">${raw(icon('alert', 16))}<span>Connected, GitHub not answering</span></span>`
     : html`<span class="ds-status ds-tone-success" data-state="connected">${raw(icon('check', 16))}<span>Connected</span></span>`;
@@ -124,6 +150,7 @@ function connectHtml() {
 function connectedHtml() {
   const app = view.app || {};
   const installs = view.installations || [];
+  const pending = view.pending || [];
   const repos = view.repos || [];
   return html`<div class="so-gh-part" data-ds-key="app">
     <h3 class="ds-card__subtitle">App</h3>
@@ -134,44 +161,66 @@ function connectedHtml() {
           <p class="ds-meta">Owned by ${app.owner}</p>
         </div>
         <div class="so-gh__actions">
-          <a class="ds-btn ds-btn--text ds-sm" href="${app.install_url}" target="_blank" rel="noopener">${raw(icon('external', 16))}<span>Install on another account</span></a>
+          <a class="ds-btn ds-btn--text ds-sm" href="${app.install_url}" target="_blank" rel="noopener">${raw(icon('external', 16))}<span>Add an organisation</span></a>
           <button class="ds-btn ds-sm" type="button" data-action="disconnect">${faces('Disconnect', 'Disconnecting')}</button>
         </div>
       </div>
     </div>
+    <p class="ds-meta" data-ds-key="public-note">Add an organisation installs the App there; GitHub asks which account. That needs the App to be public. An App created before Socrates made them public is private: make it public once in <a href="${app.advanced_url}" target="_blank" rel="noopener">its settings → Advanced → Make public</a>.</p>
   </div>
+  ${pending.length ? html`<div class="so-gh-part" data-ds-key="pending">
+    <h3 class="ds-card__subtitle">Waiting to be accepted</h3>
+    ${pending.map((one) => html`<div class="ds-alert ds-tone-warning" data-ds-key="${'pending-' + one.id}" data-installation="${one.id}">${raw(icon('alert', 20))}<div class="ds-alert__text"><p class="ds-alert__title">Installed on ${one.account} — accept only if that is yours</p><p>Anyone can install the App on their own account. Socrates uses its repositories only once you accept it; Remove uninstalls it there.</p></div><div class="ds-alert__actions"><button class="ds-btn ds-btn--text ds-sm" type="button" data-action="remove-install">${faces('Remove', 'Removing')}</button><button class="ds-btn ds-sm" type="button" data-action="accept-install">${faces('Accept', 'Accepting')}</button></div></div>`)}
+  </div>` : ''}
   <div class="so-gh-part" data-ds-key="installs">
     <h3 class="ds-card__subtitle">Installations</h3>
-    <div class="so-rows">${installs.length ? installs.map((one) => html`<div class="so-gh" data-ds-key="${'install-' + one.id}">
+    <div class="so-rows">${installs.length ? installs.map((one) => html`<div class="so-gh" data-ds-key="${'install-' + one.id}" data-installation="${one.id}">
         <div class="so-gh__main">
           <p class="so-gh__name">${one.account}<span class="ds-tag ds-tone-neutral">${one.type === 'Organization' ? 'Organisation' : 'Personal'}</span></p>
         </div>
         <div class="so-gh__actions">
-          <a class="ds-btn ds-sm" href="${one.settings_url}" target="_blank" rel="noopener">${raw(icon('external', 16))}<span>Choose repositories</span></a>
+          <a class="ds-btn ds-btn--text ds-sm" href="${one.settings_url}" target="_blank" rel="noopener">${raw(icon('external', 16))}<span>Choose repositories</span></a>
+          <button class="ds-btn ds-btn--text ds-sm" type="button" data-action="remove-install">${faces('Remove', 'Removing')}</button>
         </div>
       </div>`) : html`<p class="ds-meta" data-ds-key="no-installs">The App is not installed anywhere yet. <a href="${app.install_url}" target="_blank" rel="noopener">Install it</a> and choose the repositories it may reach.</p>`}</div>
   </div>
   <div class="so-gh-part" data-ds-key="repos">
     <h3 class="ds-card__subtitle">Repositories</h3>
     <p class="ds-muted">Each new chat in a repository gets its own worktree and branch. A setup script runs there with <code>sh -e</code> before the agent starts, for example <code>npm ci</code>; without one, an executable <code>.socrates/setup</code> in the repository runs.</p>
-    <div class="so-rows">${repos.length ? repos.map((repo, i) => repoHtml(repo, i)) : html`<p class="ds-meta" data-ds-key="no-repos">No repositories yet. Choose them under an installation above, then refresh.</p>`}</div>
+    ${repos.length > FILTER_FROM ? html`<div class="ds-search so-gh__filter" data-ds-key="filter">${raw(icon('search', 20))}<input class="ds-input" type="search" id="githubFilter" value="${filter}" placeholder="Filter repositories" aria-label="Filter repositories" aria-controls="githubRepoList" autocomplete="off" spellcheck="false" autocapitalize="off" enterkeyhint="search"></div>` : ''}
+    <div id="githubRepoList" class="so-gh-list" data-ds-key="repo-list">${repoListHtml()}</div>
   </div>
   <p class="ds-meta" data-ds-key="foot">Disconnect forgets the App's keys on this machine; the setup scripts stay. The App itself stays on GitHub until you delete it in <a href="${app.settings_url}" target="_blank" rel="noopener">its settings</a>.</p>`;
 }
 
-function repoHtml(repo, i) {
-  const id = 'githubSetup' + i;
-  return html`<div class="so-gh" data-ds-key="${'repo-' + repo.full_name}" data-repo="${repo.full_name}">
-    <div class="so-gh__main">
-      <p class="so-gh__name">${repo.full_name}<span class="ds-tag ds-tone-neutral">${repo.private ? 'Private' : 'Public'}</span></p>
-      <p class="ds-meta">Default branch ${repo.default_branch}</p>
-    </div>
-    <div class="ds-field so-gh__setup">
-      <label class="ds-field__label" for="${id}">Setup</label>
-      <textarea class="ds-input" id="${id}" rows="3" spellcheck="false" autocomplete="off" autocapitalize="off" placeholder="npm ci">${repo.setup || ''}</textarea>
-    </div>
-    <div class="so-gh__actions so-gh__save">
-      <button class="ds-btn ds-sm" type="button" data-action="save-setup">${faces('Save setup', 'Saving', 'Saved')}</button>
+// sortedRepos is the repositories with a setup script first, then the
+// others, each part by name.
+function sortedRepos() {
+  const set = (repo) => (repo.setup && repo.setup.trim() ? 0 : 1);
+  return [...((view && view.repos) || [])].sort((a, b) => set(a) - set(b)
+    || a.full_name.localeCompare(b.full_name, undefined, { sensitivity: 'base' }));
+}
+
+// repoListHtml is the rows the filter and "Show all" leave, and the toggle.
+function repoListHtml() {
+  const all = sortedRepos();
+  if (!all.length) return html`<p class="ds-meta" data-ds-key="no-repos">No repositories yet. Choose them under an installation above, then refresh.</p>`;
+  const words = all.length > FILTER_FROM ? filter.trim().toLowerCase() : '';
+  const matching = words ? all.filter((repo) => repo.full_name.toLowerCase().includes(words)) : all;
+  const cut = !words && !showAll && matching.length > SHOW_FIRST;
+  const shown = cut ? matching.slice(0, SHOW_FIRST) : matching;
+  const toggle = !words && matching.length > SHOW_FIRST
+    ? html`<div class="ds-card__more" data-ds-key="more"><button class="ds-btn ds-btn--text" type="button" data-action="more" aria-expanded="${showAll ? 'true' : 'false'}" aria-controls="githubRepoList">${showAll ? 'Show fewer' : `Show all ${matching.length}`}</button></div>`
+    : '';
+  return html`<div class="so-rows" data-ds-key="rows">${shown.length ? shown.map(repoHtml) : html`<p class="ds-meta" data-ds-key="no-match">No repository matches “${filter.trim()}”.</p>`}</div>${toggle}`;
+}
+
+function repoHtml(repo) {
+  const hasSetup = !!(repo.setup && repo.setup.trim());
+  return html`<div class="so-gh so-gh--repo" data-ds-key="${'repo-' + repo.full_name}" data-repo="${repo.full_name}">
+    <p class="so-gh__name">${repo.full_name}${repo.private ? html`<span class="ds-tag ds-tone-neutral">Private</span>` : ''}${hasSetup ? html`<span class="ds-tag ds-tone-success">Setup set</span>` : ''}</p>
+    <div class="so-gh__actions">
+      <button class="ds-btn ds-btn--text ds-sm" type="button" data-action="edit-setup" aria-label="${'Setup of ' + repo.full_name}">${raw(icon('pencil', 16))}<span>Setup</span></button>
     </div>
   </div>`;
 }
@@ -184,8 +233,15 @@ function onAction(event) {
   const action = button.dataset.action;
   if (action === 'connect') connect(button);
   else if (action === 'disconnect') disconnect(button);
-  else if (action === 'save-setup') saveSetup(button);
+  else if (action === 'edit-setup') editSetup(button);
+  else if (action === 'accept-install') acceptInstall(button);
+  else if (action === 'remove-install') removeInstall(button);
   else if (action === 'refresh') refresh(true, button);
+  else if (action === 'more') {
+    showAll = !showAll;
+    const list = $('githubRepoList');
+    if (list) morph(list, repoListHtml());
+  }
 }
 
 // connect posts the manifest to GitHub. That leaves the page, so changes
@@ -230,17 +286,87 @@ async function disconnect(button) {
   }
 }
 
-async function saveSetup(button) {
+// editSetup opens a repository's setup script in a dialog; Save keeps it on
+// the server at once, an empty script removes it.
+async function editSetup(button) {
   const row = button.closest('[data-repo]');
-  if (!row) return;
+  if (!row || !view) return;
   const fullName = row.dataset.repo;
+  const repo = (view.repos || []).find((one) => one.full_name === fullName);
+  if (!repo) return;
+  const id = 'githubSetupText';
+  const text = el('textarea', {
+    class: 'ds-input ds-mono', id, rows: 10, autofocus: true, placeholder: 'npm ci',
+    spellcheck: 'false', autocomplete: 'off', autocapitalize: 'off', 'aria-describedby': id + 'Hint',
+  });
+  text.value = repo.setup || '';
+  const cancel = el('button', { class: 'ds-btn ds-btn--text', type: 'button', 'data-ds-close': true, text: 'Cancel' });
+  const accept = el('button', { class: 'ds-btn ds-btn--filled', type: 'button' });
+  morph(accept, faces('Save setup', 'Saving'));
+  const { dialog, shown } = openDialog({
+    title: 'Setup of ' + fullName,
+    body: 'Runs with sh -e in each new chat’s worktree, on a branch made from ' + (repo.default_branch || 'the default branch')
+      + ', before the agent starts.',
+    field: el('div', { class: 'ds-form' }, el('div', { class: 'ds-field' },
+      el('label', { class: 'ds-field__label', for: id, text: 'Setup script' }),
+      text,
+      el('small', { class: 'ds-field__hint', id: id + 'Hint', text: 'For example npm ci, or copying an .env. Empty removes it; then an executable .socrates/setup in the repository runs.' }))),
+    actions: [cancel, accept],
+    opener: button,
+  });
+  dialog.classList.add('ds-dialog--lg');
   const [owner, name] = fullName.split('/');
-  const setup = row.querySelector('textarea').value;
   const path = '/api/github/repos/' + encodeURIComponent(owner) + '/' + encodeURIComponent(name) + '/settings';
+  accept.addEventListener('click', async () => {
+    try {
+      const saved = await M.busy(accept, api(path, { method: 'PUT', attempts: 3, body: { setup: text.value } }), { done: false });
+      dialog.answer(saved);
+      DS.overlay.close(dialog);
+    } catch (err) {
+      toast(errorMessage(err), 'error');
+    }
+  });
+  const saved = await shown;
+  if (!saved) return;
+  repo.setup = saved.setup;
+  render();
+  toast(saved.setup ? 'The setup of ' + fullName + ' is saved.' : 'The setup of ' + fullName + ' is removed.', 'success');
+}
+
+function installOf(button) {
+  const holder = button.closest('[data-installation]');
+  if (!holder || !view) return null;
+  const id = Number(holder.dataset.installation);
+  return [...(view.installations || []), ...(view.pending || [])].find((one) => one.id === id) || null;
+}
+
+async function acceptInstall(button) {
+  const one = installOf(button);
+  if (!one) return;
   try {
-    const saved = await M.busy(button, api(path, { method: 'PUT', attempts: 3, body: { setup } }));
-    const repo = view && (view.repos || []).find((one) => one.full_name === fullName);
-    if (repo) repo.setup = saved.setup;
+    view = await M.busy(button, api('/api/github/installations/' + one.id + '/accept', { method: 'POST' }), { done: false });
+    loadError = '';
+    render();
+    toast('Socrates now uses the repositories of ' + one.account + '.', 'success');
+  } catch (err) {
+    toast(errorMessage(err), 'error');
+  }
+}
+
+async function removeInstall(button) {
+  const one = installOf(button);
+  if (!one) return;
+  const yes = await confirmDialog({
+    title: 'Remove the App from ' + one.account + '?',
+    body: 'This uninstalls the App from ' + one.account + ' on GitHub, and new chats cannot work in its repositories any more. Chats already there keep their worktrees but cannot push. Installing it again brings them back.',
+    confirmLabel: 'Uninstall from ' + one.account, danger: true, opener: button,
+  });
+  if (!yes) return;
+  try {
+    view = await M.busy(button, api('/api/github/installations/' + one.id, { method: 'DELETE' }), { done: false });
+    loadError = '';
+    render();
+    toast('The App is removed from ' + one.account + '.');
   } catch (err) {
     toast(errorMessage(err), 'error');
   }

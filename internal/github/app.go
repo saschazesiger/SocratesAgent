@@ -87,7 +87,10 @@ const maxAppName = 34
 // NewManifest is the manifest of an App for the Socrates the browser has at
 // origin ("https://host[:port]"). It may write contents and pull requests,
 // and workflows too, since a push that changes .github/workflows is refused
-// without it.
+// without it. It is public: a private App can only be installed on the
+// account that owns it, so not on the person's organisations. Anyone may
+// install a public App, which is why Socrates uses only the installations
+// the person accepted (Service.SetAccepted).
 func NewManifest(origin string) Manifest {
 	origin = strings.TrimRight(strings.TrimSpace(origin), "/")
 	host := origin
@@ -104,7 +107,7 @@ func NewManifest(origin string) Manifest {
 		RedirectURL:    origin + "/api/github/app/created",
 		SetupURL:       origin + "/api/github/app/installed",
 		SetupOnUpdate:  true,
-		Public:         false,
+		Public:         true,
 		HookAttributes: HookAttributes{URL: origin + "/api/github/hook", Active: false},
 		DefaultPermissions: map[string]string{
 			"contents": "write", "pull_requests": "write", "workflows": "write", "metadata": "read",

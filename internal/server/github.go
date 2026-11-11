@@ -7,6 +7,8 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -19,6 +21,11 @@ import (
 // Admin → GitHub (docs/design/REPOS.md §3): the GitHub App this Socrates
 // creates for itself through GitHub's manifest flow, its installations and
 // the repositories they grant, and the setup script of each repository.
+//
+// The App is public, so that it can be installed on the person's
+// organisations too, and so anyone may install it. An installation counts
+// once the person accepted it (settings.github.accepted_installations): by
+// coming back signed in from installing it, or with Accept on Admin's card.
 //
 // The App's public facts live in the settings document (settings.github);
 // its secrets are sealed with the data directory's key into the kv table,
@@ -80,6 +87,8 @@ func (f *githubFlow) take(state string, now time.Time) bool {
 func (s *Server) newGitHub() *github.Service {
 	svc := github.New(github.ConfigFromEnv())
 	g := s.Settings().GitHub
+	svc.SetAccepted(g.AcceptedInstallations)
+	svc.OnAdopt(s.adoptGitHubInstallations)
 	if !g.Connected() {
 		return svc
 	}
@@ -129,6 +138,7 @@ func (s *Server) editGitHub(change func(g *config.GitHubSettings)) error {
 	s.githubFlow.edit.Lock()
 	defer s.githubFlow.edit.Unlock()
 	next := s.Settings()
+	next.GitHub.AcceptedInstallations = slices.Clone(next.GitHub.AcceptedInstallations)
 	if next.GitHub.Repos != nil {
 		repos := make(map[string]config.RepoSettings, len(next.GitHub.Repos))
 		for k, v := range next.GitHub.Repos {
@@ -138,6 +148,36 @@ func (s *Server) editGitHub(change func(g *config.GitHubSettings)) error {
 	}
 	change(&next.GitHub)
 	return s.saveSettings(next)
+}
+
+// adoptGitHubInstallations keeps the installations the service accepted on
+// its own: those on the App's owner's account, while none was accepted (a
+// connection from before installations had to be accepted).
+func (s *Server) adoptGitHubInstallations(ids []int64) {
+	err := s.editGitHub(func(g *config.GitHubSettings) {
+		for _, id := range ids {
+			if !g.Accepts(id) {
+				g.AcceptedInstallations = append(g.AcceptedInstallations, id)
+			}
+		}
+	})
+	if err != nil {
+		log.Printf("github: the owner's installations %v could not be kept as accepted: %v", ids, err)
+	}
+}
+
+// acceptGitHubInstallation makes in one of the installations Socrates uses.
+func (s *Server) acceptGitHubInstallation(in github.Installation) error {
+	if err := s.editGitHub(func(g *config.GitHubSettings) {
+		if !g.Accepts(in.ID) {
+			g.AcceptedInstallations = append(g.AcceptedInstallations, in.ID)
+		}
+	}); err != nil {
+		return err
+	}
+	s.ghApp.SetAccepted(s.Settings().GitHub.AcceptedInstallations)
+	log.Printf("github: installation %d on %s accepted", in.ID, in.Account)
+	return nil
 }
 
 // pageOrigin is the origin the browser has this page at: what it sent as
@@ -163,6 +203,9 @@ type githubAppView struct {
 	HTMLURL     string `json:"html_url"`
 	SettingsURL string `json:"settings_url"`
 	InstallURL  string `json:"install_url"`
+	// AdvancedURL is the App's "Advanced" settings on GitHub, where an App
+	// created private before Socrates made them public is made public.
+	AdvancedURL string `json:"advanced_url"`
 }
 
 type githubInstallView struct {
@@ -181,15 +224,18 @@ type githubView struct {
 	Connected     bool                `json:"connected"`
 	App           *githubAppView      `json:"app"`
 	Installations []githubInstallView `json:"installations"`
-	Repos         []githubRepoView    `json:"repos"`
-	Problem       string              `json:"problem"`
+	// Pending are installations of the App nobody accepted here: their
+	// repositories are not used until they are.
+	Pending []githubInstallView `json:"pending"`
+	Repos   []githubRepoView    `json:"repos"`
+	Problem string              `json:"problem"`
 }
 
 // githubState is what GET /api/github answers; refresh asks GitHub now
 // rather than taking a listing up to a minute old.
 func (s *Server) githubState(ctx context.Context, refresh bool) githubView {
 	g := s.Settings().GitHub
-	out := githubView{Installations: []githubInstallView{}, Repos: []githubRepoView{}}
+	out := githubView{Installations: []githubInstallView{}, Pending: []githubInstallView{}, Repos: []githubRepoView{}}
 	if !s.ghApp.Connected() {
 		if g.Connected() {
 			out.Problem = "The App " + g.Name + " is set up, but its private key cannot be opened on this machine. Disconnect and connect GitHub again."
@@ -201,26 +247,34 @@ func (s *Server) githubState(ctx context.Context, refresh bool) githubView {
 		Name: g.Name, Slug: g.Slug, Owner: g.Owner, HTMLURL: g.HTMLURL,
 		SettingsURL: s.ghApp.AppSettingsURL(g.Slug, g.Owner, g.OwnerType),
 		InstallURL:  s.ghApp.InstallURL(g.Slug),
+		AdvancedURL: s.ghApp.AppAdvancedURL(g.Slug, g.Owner, g.OwnerType),
 	}
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	var (
-		installs []github.Installation
-		repos    []github.Repo
-		err      error
+		installs, pending []github.Installation
+		repos             []github.Repo
+		err               error
 	)
 	if refresh {
 		installs, repos, err = s.ghApp.Refresh(ctx)
 	} else if installs, err = s.ghApp.Installations(ctx); err == nil {
 		repos, err = s.ghApp.Repos(ctx)
 	}
+	if err == nil {
+		pending, err = s.ghApp.Pending(ctx)
+	}
 	if err != nil {
 		out.Problem = err.Error()
 	}
+	view := func(in github.Installation) githubInstallView {
+		return githubInstallView{ID: in.ID, Account: in.Account, Type: in.AccountType, SettingsURL: s.ghApp.InstallationSettingsURL(in)}
+	}
 	for _, in := range installs {
-		out.Installations = append(out.Installations, githubInstallView{
-			ID: in.ID, Account: in.Account, Type: in.AccountType, SettingsURL: s.ghApp.InstallationSettingsURL(in),
-		})
+		out.Installations = append(out.Installations, view(in))
+	}
+	for _, in := range pending {
+		out.Pending = append(out.Pending, view(in))
 	}
 	for _, r := range repos {
 		out.Repos = append(out.Repos, githubRepoView{Repo: r, Setup: g.RepoSetup(r.FullName)})
@@ -310,10 +364,12 @@ func (s *Server) handleGitHubAppCreated(w http.ResponseWriter, r *http.Request) 
 	if err := s.editGitHub(func(g *config.GitHubSettings) {
 		g.AppID, g.Slug, g.Name, g.HTMLURL = conv.ID, conv.Slug, conv.Name, conv.HTMLURL
 		g.Owner, g.OwnerType = conv.Owner.Login, conv.Owner.Type
+		g.AcceptedInstallations = nil
 	}); err != nil {
 		githubBack(w, r, "The App could not be saved: "+err.Error())
 		return
 	}
+	s.ghApp.SetAccepted(nil)
 	if err := s.ghApp.SetApp(conv.App()); err != nil {
 		githubBack(w, r, err.Error())
 		return
@@ -328,18 +384,108 @@ func githubBack(w http.ResponseWriter, r *http.Request, problem string) {
 }
 
 // handleGitHubAppInstalled is where GitHub sends the browser after an
-// installation or a change of its repositories. The installation id it
-// carries is not taken from the address: what the App reaches is asked of
-// GitHub with the App's own JWT, so the listing is only dropped here.
+// installation or a change of its repositories. A signed-in browser that
+// comes back from installing the App accepts that installation: it is the
+// person who installed it. The id is not believed from the address alone:
+// it must be an installation of the App as GitHub lists them with the App's
+// own JWT. A browser that is not signed in is sent on all the same; the
+// installation then waits on Admin's card to be accepted.
 //
-//	GET /api/github/app/installed   303 to /admin#github
+//	GET /api/github/app/installed?installation_id=…   303 to /admin#github
 func (s *Server) handleGitHubAppInstalled(w http.ResponseWriter, r *http.Request) {
-	// It changes nothing but how fresh a listing is, so a browser that is
-	// not signed in is sent on too: Admin asks it to sign in.
-	if s.authenticated(r) {
-		s.ghApp.Forget()
+	if !s.authenticated(r) {
+		http.Redirect(w, r, "/admin#github", http.StatusSeeOther)
+		return
 	}
-	http.Redirect(w, r, "/admin#github", http.StatusSeeOther)
+	s.ghApp.Forget()
+	id, err := strconv.ParseInt(r.URL.Query().Get("installation_id"), 10, 64)
+	if err != nil || id <= 0 || !s.ghApp.Connected() || s.ghApp.Accepted(id) {
+		http.Redirect(w, r, "/admin#github", http.StatusSeeOther)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+	in, ok, err := s.ghApp.Installation(ctx, id)
+	switch {
+	case err != nil:
+		githubBack(w, r, "GitHub could not be asked about the new installation: "+err.Error()+". Accept it on this card once GitHub answers.")
+	case !ok:
+		githubBack(w, r, "GitHub does not know the installation this page was sent back with.")
+	default:
+		if err := s.acceptGitHubInstallation(in); err != nil {
+			githubBack(w, r, "The installation could not be accepted: "+err.Error())
+			return
+		}
+		http.Redirect(w, r, "/admin#github", http.StatusSeeOther)
+	}
+}
+
+// installationID is the {id} of the path, false (with the answer written)
+// when it is not one or there is no App.
+func (s *Server) installationID(w http.ResponseWriter, r *http.Request) (int64, bool) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil || id <= 0 {
+		writeError(w, http.StatusBadRequest, "that is not an installation's id")
+		return 0, false
+	}
+	if !s.ghApp.Connected() {
+		writeError(w, http.StatusConflict, github.ErrNotConnected.Error())
+		return 0, false
+	}
+	return id, true
+}
+
+// handleGitHubInstallationAccept accepts an installation of the App, after
+// GitHub confirmed it is one: its repositories are used from now on.
+//
+//	POST /api/github/installations/{id}/accept   the card's view
+func (s *Server) handleGitHubInstallationAccept(w http.ResponseWriter, r *http.Request) {
+	id, ok := s.installationID(w, r)
+	if !ok {
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+	in, found, err := s.ghApp.Installation(ctx, id)
+	switch {
+	case err != nil:
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	case !found:
+		writeError(w, http.StatusNotFound, "the App has no such installation")
+		return
+	}
+	if err := s.acceptGitHubInstallation(in); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, s.githubState(r.Context(), false))
+}
+
+// handleGitHubInstallationDelete uninstalls the App from an account, an
+// accepted installation or a pending one, and forgets that it was accepted.
+//
+//	DELETE /api/github/installations/{id}   the card's view
+func (s *Server) handleGitHubInstallationDelete(w http.ResponseWriter, r *http.Request) {
+	id, ok := s.installationID(w, r)
+	if !ok {
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+	if err := s.ghApp.Uninstall(ctx, id); err != nil {
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	if err := s.editGitHub(func(g *config.GitHubSettings) {
+		g.AcceptedInstallations = slices.DeleteFunc(g.AcceptedInstallations, func(have int64) bool { return have == id })
+	}); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	s.ghApp.SetAccepted(s.Settings().GitHub.AcceptedInstallations)
+	log.Printf("github: installation %d removed", id)
+	writeJSON(w, http.StatusOK, s.githubState(r.Context(), false))
 }
 
 // handleGitHubAppDelete forgets the App here: its keys and its facts. The
@@ -352,6 +498,7 @@ func (s *Server) handleGitHubAppDelete(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	s.ghApp.SetAccepted(nil)
 	for _, key := range []string{kvGitHubPEM, kvGitHubClientSecret, kvGitHubWebhookSecret} {
 		if err := s.store.DeleteKV(key); err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())

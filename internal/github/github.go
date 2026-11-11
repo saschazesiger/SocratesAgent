@@ -3,6 +3,10 @@
 // reach one repository each, the repositories the installations grant, the
 // manifest flow that creates the App, and pull requests.
 //
+// The App is public, so anyone may install it on their own account. Only the
+// installations the person accepted count (SetAccepted): the repositories,
+// tokens and pull requests come from those alone, and the others are pending.
+//
 // It uses the standard library only. The API, web and git bases come from the
 // environment (ConfigFromEnv), so the tests run against a fake.
 package github
@@ -166,6 +170,12 @@ type Service struct {
 	// while the App changed is not kept.
 	gen int
 
+	// accepted are the installations the person accepted; only their
+	// repositories are listed and reached.
+	accepted map[int64]bool
+	// adopt is told the installations accepted on their own (adoptOwner).
+	adopt func(ids []int64)
+
 	// listMu makes a refresh of the listing one request at a time: the
 	// callers that arrive meanwhile wait for it and take its result.
 	listMu sync.Mutex
@@ -244,25 +254,115 @@ func (s *Service) Forget() {
 	s.mu.Unlock()
 }
 
-// Repos is every repository the App's installations grant, sorted by name,
-// from a listing at most a minute old.
+// SetAccepted makes ids the installations the person accepted, and drops the
+// listing, which only has the repositories of the ones accepted before.
+//
+// While none is accepted, the next listing accepts the installations on the
+// App's owner's account on its own and tells OnAdopt: only that account's
+// owners can install the App there, and a connection made before
+// installations had to be accepted keeps working.
+func (s *Service) SetAccepted(ids []int64) {
+	set := map[int64]bool{}
+	for _, id := range ids {
+		if id > 0 {
+			set[id] = true
+		}
+	}
+	s.mu.Lock()
+	s.accepted = set
+	s.list = listing{}
+	s.gen++
+	s.mu.Unlock()
+}
+
+// Accepted is whether installation id is one the person accepted.
+func (s *Service) Accepted(id int64) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.accepted[id]
+}
+
+// OnAdopt sets what is told the installations a listing accepted on its own
+// (SetAccepted), to keep them.
+func (s *Service) OnAdopt(fn func(ids []int64)) {
+	s.mu.Lock()
+	s.adopt = fn
+	s.mu.Unlock()
+}
+
+// Repos is every repository the accepted installations grant, sorted by
+// name, from a listing at most a minute old.
 func (s *Service) Repos(ctx context.Context) ([]Repo, error) {
 	l, err := s.listing(ctx, false)
 	return l.repos, err
 }
 
-// Installations is the App's installations, from a listing at most a minute
-// old.
+// Installations is the App's accepted installations, from a listing at most
+// a minute old.
 func (s *Service) Installations(ctx context.Context) ([]Installation, error) {
 	l, err := s.listing(ctx, false)
-	return l.installs, err
+	return s.split(l.installs, true), err
 }
 
-// Refresh asks GitHub again now and answers the installations and the
-// repositories.
+// Pending is the App's installations the person has not accepted, from a
+// listing at most a minute old: anyone may install a public App on their
+// own account, so they count for nothing until accepted.
+func (s *Service) Pending(ctx context.Context) ([]Installation, error) {
+	l, err := s.listing(ctx, false)
+	return s.split(l.installs, false), err
+}
+
+// split is the installations of all that are accepted, or those that are
+// not.
+func (s *Service) split(all []Installation, accepted bool) []Installation {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := []Installation{}
+	for _, in := range all {
+		if s.accepted[in.ID] == accepted {
+			out = append(out, in)
+		}
+	}
+	return out
+}
+
+// Refresh asks GitHub again now and answers the accepted installations and
+// the repositories.
 func (s *Service) Refresh(ctx context.Context) ([]Installation, []Repo, error) {
 	l, err := s.listing(ctx, true)
-	return l.installs, l.repos, err
+	return s.split(l.installs, true), l.repos, err
+}
+
+// Installation asks GitHub now whether id is an installation of the App,
+// accepted or not, and answers it.
+func (s *Service) Installation(ctx context.Context, id int64) (Installation, bool, error) {
+	l, err := s.listing(ctx, true)
+	if err != nil {
+		return Installation{}, false, err
+	}
+	for _, in := range l.installs {
+		if in.ID == id {
+			return in, true, nil
+		}
+	}
+	return Installation{}, false, nil
+}
+
+// Uninstall removes installation id from its account on GitHub
+// (DELETE /app/installations/{id} with the App's JWT). An installation
+// GitHub no longer has is gone already, which is not an error.
+func (s *Service) Uninstall(ctx context.Context, id int64) error {
+	jwt, err := s.appJWT()
+	if err != nil {
+		return err
+	}
+	err = s.call(ctx, http.MethodDelete, "/app/installations/"+strconv.FormatInt(id, 10), "Bearer "+jwt, nil, nil)
+	var apiErr *APIError
+	if errors.As(err, &apiErr) && apiErr.Status == http.StatusNotFound {
+		err = nil
+	}
+	s.Forget()
+	return err
 }
 
 // Reaches is whether an installation grants fullName ("owner/name", in any
@@ -346,6 +446,12 @@ func (s *Service) AppSettingsURL(slug, owner, ownerType string) string {
 		return s.cfg.Web + "/organizations/" + url.PathEscape(owner) + "/settings/apps/" + url.PathEscape(slug)
 	}
 	return s.cfg.Web + "/settings/apps/" + url.PathEscape(slug)
+}
+
+// AppAdvancedURL is the App's "Advanced" settings page, where an App created
+// private is made public so that it can be installed on other accounts.
+func (s *Service) AppAdvancedURL(slug, owner, ownerType string) string {
+	return s.AppSettingsURL(slug, owner, ownerType) + "/advanced"
 }
 
 // OpenPullRequest opens a pull request of head into base in fullName. When
@@ -470,8 +576,12 @@ func (s *Service) fetchListing(ctx context.Context) ([]Installation, []Repo, err
 	sort.Slice(installs, func(i, j int) bool {
 		return strings.ToLower(installs[i].Account) < strings.ToLower(installs[j].Account)
 	})
+	accepted := s.adoptOwner(installs)
 	var repos []Repo
 	for _, in := range installs {
+		if !accepted[in.ID] {
+			continue
+		}
 		tok, err := s.installationToken(ctx, in.ID, "#"+strconv.FormatInt(in.ID, 10), nil)
 		if err != nil {
 			return nil, nil, err
@@ -498,6 +608,39 @@ func (s *Service) fetchListing(ctx context.Context) ([]Installation, []Repo, err
 	}
 	sort.Slice(repos, func(i, j int) bool { return strings.ToLower(repos[i].FullName) < strings.ToLower(repos[j].FullName) })
 	return installs, repos, nil
+}
+
+// adoptOwner is the accepted installations as a listing of installs finds
+// them: while none is accepted, those on the App's owner's account are
+// accepted on their own (SetAccepted) and OnAdopt is told.
+func (s *Service) adoptOwner(installs []Installation) map[int64]bool {
+	s.mu.Lock()
+	accepted := s.accepted
+	var owner string
+	if s.app != nil {
+		owner = s.app.Owner
+	}
+	adopt := s.adopt
+	var adopted []int64
+	if len(accepted) == 0 && owner != "" {
+		for _, in := range installs {
+			if strings.EqualFold(in.Account, owner) {
+				adopted = append(adopted, in.ID)
+			}
+		}
+		if len(adopted) > 0 {
+			accepted = map[int64]bool{}
+			for _, id := range adopted {
+				accepted[id] = true
+			}
+			s.accepted = accepted
+		}
+	}
+	s.mu.Unlock()
+	if len(adopted) > 0 && adopt != nil {
+		adopt(adopted)
+	}
+	return accepted
 }
 
 // installationToken is a token of installation id, scoped to repos (nil:

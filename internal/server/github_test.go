@@ -1,22 +1,29 @@
 package server
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
+
+	"github.com/saschazesiger/SocratesAgent/internal/config"
 )
 
 // fakeGitHubAPI is GitHub's API as Admin's GitHub card uses it: the manifest
-// conversion, one installation on alice with two repositories, and tokens.
+// conversion of an App alice owns, its installations - on alice with two
+// repositories, on the organisation acme and on mallory with one each - and
+// tokens, and uninstalling.
 func fakeGitHubAPI(t *testing.T) *httptest.Server {
 	t.Helper()
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
@@ -29,7 +36,24 @@ func fakeGitHubAPI(t *testing.T) *httptest.Server {
 		w.WriteHeader(code)
 		_ = json.NewEncoder(w).Encode(v)
 	}
+	installs := []map[string]any{
+		{"id": 6, "account": map[string]any{"login": "acme", "type": "Organization"}},
+		{"id": 5, "account": map[string]any{"login": "alice", "type": "User"}},
+		{"id": 8, "account": map[string]any{"login": "mallory", "type": "User"}},
+	}
+	repos := map[string][]map[string]any{
+		"ghs_5": {
+			{"full_name": "alice/One", "default_branch": "main", "private": true},
+			{"full_name": "alice/two", "default_branch": "trunk", "private": false},
+		},
+		"ghs_6": {{"full_name": "acme/web", "default_branch": "main", "private": true}},
+		"ghs_8": {{"full_name": "mallory/trap", "default_branch": "main", "private": false}},
+	}
+	var mu sync.Mutex
+	uninstalled := map[string]bool{}
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
 		switch {
 		case r.Method == "POST" && r.URL.Path == "/app-manifests/good-code/conversions":
 			answer(w, 201, map[string]any{
@@ -42,18 +66,39 @@ func fakeGitHubAPI(t *testing.T) *httptest.Server {
 				answer(w, 401, map[string]any{"message": "no JWT"})
 				return
 			}
-			answer(w, 200, []map[string]any{{"id": 5, "account": map[string]any{"login": "alice", "type": "User"}}})
-		case r.Method == "POST" && r.URL.Path == "/app/installations/5/access_tokens":
-			answer(w, 201, map[string]any{"token": "ghs_test", "expires_at": time.Now().Add(time.Hour).UTC().Format(time.RFC3339)})
+			list := []map[string]any{}
+			for _, in := range installs {
+				if !uninstalled[fmt.Sprint(in["id"])] {
+					list = append(list, in)
+				}
+			}
+			answer(w, 200, list)
+		case r.Method == "POST" && strings.HasPrefix(r.URL.Path, "/app/installations/") && strings.HasSuffix(r.URL.Path, "/access_tokens"):
+			id := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/app/installations/"), "/access_tokens")
+			if _, ok := repos["ghs_"+id]; !ok || uninstalled[id] {
+				answer(w, 404, map[string]any{"message": "Not Found"})
+				return
+			}
+			answer(w, 201, map[string]any{"token": "ghs_" + id, "expires_at": time.Now().Add(time.Hour).UTC().Format(time.RFC3339)})
+		case r.Method == "DELETE" && strings.HasPrefix(r.URL.Path, "/app/installations/"):
+			id := strings.TrimPrefix(r.URL.Path, "/app/installations/")
+			if !strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") {
+				answer(w, 401, map[string]any{"message": "no JWT"})
+				return
+			}
+			if _, ok := repos["ghs_"+id]; !ok || uninstalled[id] {
+				answer(w, 404, map[string]any{"message": "Not Found"})
+				return
+			}
+			uninstalled[id] = true
+			w.WriteHeader(http.StatusNoContent)
 		case r.Method == "GET" && r.URL.Path == "/installation/repositories":
-			if r.Header.Get("Authorization") != "token ghs_test" {
+			list, ok := repos[strings.TrimPrefix(r.Header.Get("Authorization"), "token ")]
+			if !ok {
 				answer(w, 401, map[string]any{"message": "Bad credentials"})
 				return
 			}
-			answer(w, 200, map[string]any{"repositories": []map[string]any{
-				{"full_name": "alice/One", "default_branch": "main", "private": true},
-				{"full_name": "alice/two", "default_branch": "trunk", "private": false},
-			}})
+			answer(w, 200, map[string]any{"repositories": list})
 		default:
 			answer(w, 404, map[string]any{"message": "Not Found"})
 		}
@@ -99,7 +144,7 @@ func TestGitHubConnectRepositoriesAndDisconnect(t *testing.T) {
 	}
 	manifest := start["manifest"].(map[string]any)
 	if manifest["redirect_url"] != env.server.URL+"/api/github/app/created" ||
-		manifest["setup_url"] != env.server.URL+"/api/github/app/installed" || manifest["public"] != false ||
+		manifest["setup_url"] != env.server.URL+"/api/github/app/installed" || manifest["public"] != true ||
 		manifest["default_permissions"].(map[string]any)["contents"] != "write" {
 		t.Fatalf("manifest: %#v", manifest)
 	}
@@ -161,9 +206,16 @@ func TestGitHubConnectRepositoriesAndDisconnect(t *testing.T) {
 	if app["name"] != "Socrates test" || app["settings_url"] != "https://web.example/settings/apps/socrates-test" {
 		t.Fatalf("app: %#v", app)
 	}
+	// alice's own installation is accepted on its own; the others wait.
 	installs := view["installations"].([]any)
 	if len(installs) != 1 || installs[0].(map[string]any)["settings_url"] != "https://web.example/settings/installations/5" {
 		t.Fatalf("installations: %#v", installs)
+	}
+	if pending := view["pending"].([]any); len(pending) != 2 || pending[0].(map[string]any)["account"] != "acme" {
+		t.Fatalf("pending: %#v", pending)
+	}
+	if app["advanced_url"] != "https://web.example/settings/apps/socrates-test/advanced" {
+		t.Fatalf("advanced URL: %#v", app)
 	}
 	repos := view["repos"].([]any)
 	if len(repos) != 2 || repos[0].(map[string]any)["full_name"] != "alice/One" || repos[1].(map[string]any)["default_branch"] != "trunk" {
@@ -230,5 +282,132 @@ func TestGitHubConnectRepositoriesAndDisconnect(t *testing.T) {
 	}
 	if res, _ := env.do(t, env.client, "PUT", "/api/github/repos/alice/two/settings", `{"setup":"x"}`); res.StatusCode != http.StatusConflict {
 		t.Fatalf("setup without an App: %d", res.StatusCode)
+	}
+}
+
+// connectGitHub creates the App through the manifest flow, without
+// installing it.
+func connectGitHub(t *testing.T, env *testEnv) {
+	t.Helper()
+	_, start := env.do(t, env.client, "POST", "/api/github/app/start", `{}`)
+	state, _ := start["state"].(string)
+	res, _ := env.do(t, env.client, "GET", "/api/github/app/created?code=good-code&state="+url.QueryEscape(state), "")
+	if res.StatusCode != http.StatusSeeOther || !strings.HasSuffix(res.Header.Get("Location"), "/installations/new") {
+		t.Fatalf("created: %d %s", res.StatusCode, res.Header.Get("Location"))
+	}
+}
+
+func githubNames(view map[string]any, key, field string) string {
+	var names []string
+	for _, one := range view[key].([]any) {
+		names = append(names, fmt.Sprint(one.(map[string]any)[field]))
+	}
+	return strings.Join(names, ",")
+}
+
+func TestGitHubInstallationsAcceptPendingAndRemove(t *testing.T) {
+	env := githubEnv(t)
+	connectGitHub(t, env)
+	ctx := context.Background()
+
+	// Coming back from installing on acme signed out accepts nothing.
+	res, _ := env.do(t, env.anon, "GET", "/api/github/app/installed?installation_id=6&setup_action=install", "")
+	if res.StatusCode != http.StatusSeeOther || res.Header.Get("Location") != "/admin#github" || env.srv.ghApp.Accepted(6) {
+		t.Fatalf("signed out: %d %s", res.StatusCode, res.Header.Get("Location"))
+	}
+	// The owner's own installation is accepted on its own and kept.
+	_, view := env.do(t, env.client, "GET", "/api/github?refresh=1", "")
+	if got := githubNames(view, "installations", "account"); got != "alice" {
+		t.Fatalf("installations %s", got)
+	}
+	if got := githubNames(view, "pending", "account"); got != "acme,mallory" {
+		t.Fatalf("pending %s", got)
+	}
+	if got := githubNames(view, "repos", "full_name"); got != "alice/One,alice/two" {
+		t.Fatalf("repos %s", got)
+	}
+	if got := env.srv.Settings().GitHub.AcceptedInstallations; len(got) != 1 || got[0] != 5 {
+		t.Fatalf("accepted %v", got)
+	}
+	// A pending installation's repositories are not used.
+	if _, ok, err := env.srv.ghApp.Reaches(ctx, "acme/web"); ok || err != nil {
+		t.Fatalf("acme/web reached while pending: %v %v", ok, err)
+	}
+	if _, err := env.srv.ghApp.RepoToken(ctx, "mallory/trap"); err == nil {
+		t.Fatal("a token for a pending installation's repository")
+	}
+	if res, _ := env.do(t, env.client, "PUT", "/api/github/repos/acme/web/settings", `{"setup":"x"}`); res.StatusCode != http.StatusNotFound {
+		t.Fatalf("setup of a pending installation's repository: %d", res.StatusCode)
+	}
+
+	// Signed in, GitHub's redirect accepts the installation, once GitHub
+	// lists it; an id it does not know is refused.
+	res, _ = env.do(t, env.client, "GET", "/api/github/app/installed?installation_id=999&setup_action=install", "")
+	if !strings.Contains(res.Header.Get("Location"), "github_error=") || env.srv.ghApp.Accepted(999) {
+		t.Fatalf("an unknown installation: %s", res.Header.Get("Location"))
+	}
+	res, _ = env.do(t, env.client, "GET", "/api/github/app/installed?installation_id=6&setup_action=install", "")
+	if res.StatusCode != http.StatusSeeOther || res.Header.Get("Location") != "/admin#github" || !env.srv.ghApp.Accepted(6) {
+		t.Fatalf("installed on acme: %d %s", res.StatusCode, res.Header.Get("Location"))
+	}
+	if _, ok, err := env.srv.ghApp.Reaches(ctx, "acme/web"); !ok || err != nil {
+		t.Fatalf("acme/web not reached once accepted: %v %v", ok, err)
+	}
+
+	// Accept on the card.
+	if res, _ := env.do(t, env.client, "POST", "/api/github/installations/999/accept", ""); res.StatusCode != http.StatusNotFound {
+		t.Fatalf("accept an unknown installation: %d", res.StatusCode)
+	}
+	if res, _ := env.do(t, env.client, "POST", "/api/github/installations/x/accept", ""); res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("accept a bad id: %d", res.StatusCode)
+	}
+	if res, _ := env.do(t, env.anon, "POST", "/api/github/installations/8/accept", ""); res.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("accept signed out: %d", res.StatusCode)
+	}
+	res, view = env.do(t, env.client, "POST", "/api/github/installations/8/accept", "")
+	if res.StatusCode != http.StatusOK || githubNames(view, "installations", "account") != "acme,alice,mallory" ||
+		githubNames(view, "pending", "account") != "" || githubNames(view, "repos", "full_name") != "acme/web,alice/One,alice/two,mallory/trap" {
+		t.Fatalf("accept: %d %#v", res.StatusCode, view)
+	}
+	if got := env.srv.Settings().GitHub.AcceptedInstallations; fmt.Sprint(got) != "[5 6 8]" {
+		t.Fatalf("accepted %v", got)
+	}
+	// A restart keeps them.
+	if again := env.srv.newGitHub(); !again.Accepted(6) || !again.Accepted(8) {
+		t.Fatal("the accepted installations are not loaded again")
+	}
+
+	// Remove uninstalls it on GitHub and forgets it.
+	res, view = env.do(t, env.client, "DELETE", "/api/github/installations/8", "")
+	if res.StatusCode != http.StatusOK || githubNames(view, "installations", "account") != "acme,alice" ||
+		githubNames(view, "pending", "account") != "" || strings.Contains(githubNames(view, "repos", "full_name"), "mallory") {
+		t.Fatalf("remove: %d %#v", res.StatusCode, view)
+	}
+	if got := env.srv.Settings().GitHub.AcceptedInstallations; fmt.Sprint(got) != "[5 6]" || env.srv.ghApp.Accepted(8) {
+		t.Fatalf("accepted after the removal %v", got)
+	}
+	// Gone on GitHub already is no error.
+	if res, _ := env.do(t, env.client, "DELETE", "/api/github/installations/8", ""); res.StatusCode != http.StatusOK {
+		t.Fatalf("remove twice: %d", res.StatusCode)
+	}
+
+	// A document from before installations were accepted: the owner's is
+	// accepted again on its own, the others wait.
+	if err := env.srv.editGitHub(func(g *config.GitHubSettings) { g.AcceptedInstallations = nil }); err != nil {
+		t.Fatal(err)
+	}
+	env.srv.ghApp = env.srv.newGitHub()
+	_, view = env.do(t, env.client, "GET", "/api/github", "")
+	if githubNames(view, "installations", "account") != "alice" || githubNames(view, "pending", "account") != "acme" {
+		t.Fatalf("adopted: %#v", view)
+	}
+	if got := env.srv.Settings().GitHub.AcceptedInstallations; fmt.Sprint(got) != "[5]" {
+		t.Fatalf("adopted kept as %v", got)
+	}
+
+	// Disconnect forgets what was accepted.
+	env.do(t, env.client, "DELETE", "/api/github/app", "")
+	if got := env.srv.Settings().GitHub.AcceptedInstallations; got != nil || env.srv.ghApp.Accepted(5) {
+		t.Fatalf("accepted after disconnect %v", got)
 	}
 }

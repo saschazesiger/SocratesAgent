@@ -27,7 +27,9 @@
  *                      .so-gh-part parts (a subtitle and its rows)
  *   .so-gh             one row of the GitHub card (the App, an installation,
  *                      a repository): __main (__name with its tag), __actions;
- *                      a repository's __setup field and __save under it
+ *                      .so-gh--repo a repository's one short line (__name
+ *                      and its tags, __actions); .so-gh-list the repositories
+ *                      the filter (__filter, a DS search) leaves
  *   .so-mcp-sheet      the MCP side sheet's body: __part sections, __head (a
  *                      section's title and its chip)
  *   .so-mcp-test       the editor's Test connection and its .so-mcp-outcome
@@ -325,7 +327,8 @@
 }
 
 .so-gh-part > .ds-card__subtitle,
-.so-gh-part > .ds-muted {
+.so-gh-part > .ds-muted,
+.so-gh-part > .ds-meta {
   margin: 0;
 }
 
@@ -362,11 +365,28 @@
   gap: var(--ds-space-1);
 }
 
-/* A repository's setup script takes the row's width under its name, and
-   its Save sits under the script. */
-.so-gh__setup,
-.so-gh__save {
-  grid-column: 1 / -1;
+/* A repository is one short line: its name and tags, and Setup. */
+.so-gh--repo {
+  padding-block: var(--ds-space-2);
+}
+
+.so-gh--repo > .so-gh__name {
+  margin: 0;
+}
+
+.so-gh-list {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--ds-space-2);
+  min-width: 0;
+}
+
+.so-gh-list > .ds-meta {
+  margin: 0;
+}
+
+.so-gh__filter {
+  max-width: 420px;
 }
 
 .so-mcp-sheet,

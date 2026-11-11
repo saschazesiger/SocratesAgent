@@ -1,6 +1,7 @@
 package config
 
 import (
+	"slices"
 	"strings"
 )
 
@@ -22,6 +23,10 @@ type GitHubSettings struct {
 	// the App's settings page, where it is deleted, is a different address
 	// for each.
 	OwnerType string `json:"owner_type,omitempty"`
+	// AcceptedInstallations are the ids of the App's installations the
+	// person accepted. The App is public, so anyone may install it on their
+	// own account; only these installations' repositories are used.
+	AcceptedInstallations []int64 `json:"accepted_installations,omitempty"`
 	// Repos are the settings of each repository by "owner/name".
 	Repos map[string]RepoSettings `json:"repos,omitempty"`
 }
@@ -32,6 +37,16 @@ type RepoSettings struct {
 	// Setup is a shell script run with `sh -e` in a new chat's worktree
 	// before the agent's first turn (§4.3).
 	Setup string `json:"setup"`
+}
+
+// Accepts is whether installation id is accepted.
+func (g GitHubSettings) Accepts(id int64) bool {
+	for _, have := range g.AcceptedInstallations {
+		if have == id {
+			return true
+		}
+	}
+	return false
 }
 
 // Connected is whether an App has been created.
@@ -85,6 +100,13 @@ func (g *GitHubSettings) normalize() {
 	if g.AppID < 0 {
 		g.AppID = 0
 	}
+	var accepted []int64
+	for _, id := range g.AcceptedInstallations {
+		if id > 0 && !slices.Contains(accepted, id) {
+			accepted = append(accepted, id)
+		}
+	}
+	g.AcceptedInstallations = accepted
 	var repos map[string]RepoSettings
 	for name, r := range g.Repos {
 		name = strings.TrimSpace(name)
