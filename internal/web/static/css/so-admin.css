@@ -13,7 +13,6 @@
  *   .so-admin-foot     the second Save and the version at the page's end
  *   .so-state          a status line: __line (chip and facts), __tip (the "i")
  *   .so-rows           a list of editable rows with hairlines between them
- *   .so-preset         one preset directory: name, path, remove
  *   .so-account-groups the Accounts card's list: one .so-account-group per
  *                      agent, its __title, rows and Add button
  *   .so-account        one account: grip, __main (__name, __state, __meters),
@@ -152,17 +151,6 @@
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   min-width: 0;
-}
-
-.so-rows > .so-preset + .so-preset {
-  margin-top: var(--ds-space-2);
-}
-
-.so-preset {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 2fr) auto;
-  align-items: center;
-  gap: var(--ds-space-2);
 }
 
 .so-account,
@@ -551,14 +539,6 @@
 /* ── Phones ──────────────────────────────────────────────────────────── */
 
 @media (max-width: 600px) {
-  .so-preset {
-    grid-template-columns: minmax(0, 1fr) auto;
-  }
-
-  .so-preset > .ds-input:first-child {
-    grid-column: 1 / -1;
-  }
-
   .so-account {
     grid-template-columns: auto minmax(0, 1fr);
   }

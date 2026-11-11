@@ -289,6 +289,11 @@ what Socrates hands out, it is not a sandbox.
 | Info dialog | Folder | Repository, Branch, Base, Pull request, Worktree |
 | Header | — | a chip with the branch, linking to the pull request or the branch on GitHub |
 
+Not built yet, on purpose: **Docs of a repository group** (the group's ⋮ offers Notes only; a chat's own links
+to Markdown files still open beside it), and the sheet's preview of a folder's agent configuration (an
+`opencode.json`'s models and default model) before a repository chat exists: the chat itself, once made, reads the
+configuration from its worktree.
+
 ## 6. What stays as it was
 
 - Chats made before this change keep their folder, their sidebar group, "Point to folder" and the shared-tree

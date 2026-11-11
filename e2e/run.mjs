@@ -1295,8 +1295,6 @@ async function adminoptions() {
   const s = await start({ viewport: { width: 1280, height: 900 } });
   try {
     await setup(s.page, s.url);
-    const preset = join(s.data, 'preset-dir');
-    mkdirSync(preset, { recursive: true });
 
     await s.page.goto(s.url + '/admin', { waitUntil: 'domcontentloaded' });
     await s.page.waitForSelector('#harness-opencode', { timeout: 20000 });
@@ -1307,11 +1305,6 @@ async function adminoptions() {
     // installation genuinely differs on.
     await s.page.fill('#opt-shell-binary', '/bin/sh');
 
-    // The preset row, typed the way a person types it.
-    await s.page.click('#presetAdd');
-    const row = '#presetDirs .so-preset:last-child';
-    await s.page.fill(row + ' input:nth-child(1)', 'Projects');
-    await s.page.fill(row + ' input:nth-child(2)', preset);
     await s.page.selectOption('#windowSize', 'largest');
     await s.page.fill('#historyLimit', '31000');
     const doneDefault = await s.page.$eval('#doneDays', (n) => n.value);
@@ -1370,11 +1363,11 @@ async function adminoptions() {
     const terminal = await s.page.evaluate(() => ({
       windowSize: document.getElementById('windowSize').value,
       history: document.getElementById('historyLimit').value,
-      preset: document.querySelector('#presetDirs .so-preset input:nth-child(2)')?.value || '',
+      folders: !!document.getElementById('presetDirs') || !!document.getElementById('allowCustomDir'),
     }));
     ok(terminal.windowSize === 'largest' && terminal.history === '31000',
       'the terminal card round-trips too', JSON.stringify(terminal));
-    ok(terminal.preset === preset, 'the preset directory was stored', terminal.preset);
+    ok(!terminal.folders, 'Admin offers no preset or typed-in folders: chats work in repositories', String(terminal.folders));
     const doneDays = await s.page.$eval('#doneDays', (n) => n.value);
     ok(doneDays === '3' && saved.settings.workspace.done_days === 3, 'how long done sessions are kept is saved',
       doneDays + ' / ' + saved.settings.workspace.done_days);
@@ -3829,9 +3822,9 @@ async function owncodex() {
 
 // A folder with an opencode.json of its own, as a project configures the CLI:
 // OpenCode there offers the models of the folder's provider and starts on the
-// folder's model, the sheet says what the folder's config does - its general
-// subagent's model too - and a chat started there runs on that model, with
-// the folder's models in its composer. Anywhere else nothing changes.
+// folder's model, the folder probe says what the folder's config does - its
+// general subagent's model too - and a chat made there runs on that model,
+// with the folder's models in its composer. Anywhere else nothing changes.
 async function folderopencode() {
   const s = await start({ viewport: { width: 1280, height: 720 } });
   try {
@@ -3868,55 +3861,20 @@ async function folderopencode() {
     ok(!everywhere.models.some((m) => m.id === 'lab/qwen-27b') && !everywhere.folder,
       'everywhere else OpenCode is what it always is', everywhere.models.length + ' models');
 
-    await ensureNav(s.page);
-    await s.page.click('#newSession');
-    await s.page.waitForSelector('#newSessionSheet[open]', { timeout: 15000 });
-    await s.page.click('#newSessionSheet .so-settings__program[data-value="opencode"]');
-    const modelValue = () => s.page.$eval('#nsModelInput', (n) => n.value);
-    const plain = await modelValue();
-    await s.page.click('#nsDirInput');
-    await s.page.click('#nsDir .ds-combo__option[data-value="custom"]');
-    await s.page.fill('#nsDirPath', dir);
-    const moved = await s.page.waitForFunction(() => document.getElementById('nsModelInput').value === 'Qwen 27B',
-      null, { timeout: 15000 }).then(() => true, () => false);
-    const hint = await s.page.$eval('#nsModelHint', (n) => (n.hidden ? '' : n.textContent));
-    ok(moved && plain === 'Fake Model', 'in the folder the sheet starts OpenCode on the folder’s model',
-      JSON.stringify({ plain, now: await modelValue() }));
-    ok(hint.includes('This folder’s OpenCode config starts on Qwen 27B; runs its general agent on Fake Large.'),
-      'and says what the folder’s config does, its subagent’s model too', hint);
-    await shot(s.page, 'folderopencode-sheet');
-
-    await s.page.click('#nsStart');
-    await s.page.waitForSelector('#newSessionSheet[open]', { state: 'detached', timeout: 30000 });
-    await s.page.waitForFunction(() => location.hash.length > 1, null, { timeout: 30000 });
+    // The sheet no longer offers folders (REPOS.md §4.1): a chat in the
+    // folder is made through the API, as the test suites still may
+    // (SOCRATES_FOLDER_CHATS=1), and runs on the folder's model, with the
+    // folder's models in its composer.
+    const id = await makeChat(s, 'opencode', { workdir_mode: 'custom', workdir: dir, model: 'lab/qwen-27b' });
+    await s.page.goto(s.url + '/#' + id);
     await chatUp(s.page);
-    const id = await s.page.evaluate(() => location.hash.slice(1));
     const ran = await answerTo(s, id, '/model');
     ok(ran.startsWith('model: lab/qwen-27b '), 'the chat runs on the folder’s model', ran);
     const shown = await s.page.waitForFunction(() => document.querySelector('#chat .so-composer__model-name')?.textContent === 'Qwen 27B',
       null, { timeout: 10000 }).then(() => true, () => false);
     ok(shown, 'its composer names the model as the folder’s provider does',
       await s.page.$eval('#chat .so-composer__model-name', (n) => n.textContent));
-
-    // Started at once, before the answer about a folder nobody asked about
-    // yet: Start waits for it, and the chat still runs on the folder's model.
-    const fresh = join(s.data, 'projects', 'lab2');
-    mkdirSync(fresh, { recursive: true });
-    writeFileSync(join(fresh, 'opencode.json'), readFileSync(join(dir, 'opencode.json')));
-    await leaveComposer(s.page, '');
-    await s.page.click('#newSession');
-    await s.page.waitForSelector('#newSessionSheet[open]', { timeout: 15000 });
-    await s.page.click('#newSessionSheet .so-settings__program[data-value="opencode"]');
-    await s.page.click('#nsDirInput');
-    await s.page.click('#nsDir .ds-combo__option[data-value="custom"]');
-    await s.page.fill('#nsDirPath', fresh);
-    await s.page.click('#nsStart');
-    await s.page.waitForSelector('#newSessionSheet[open]', { state: 'detached', timeout: 30000 });
-    await s.page.waitForFunction((before) => location.hash.slice(1) !== before, id, { timeout: 30000 });
-    await chatUp(s.page);
-    const quick = await s.page.evaluate(() => location.hash.slice(1));
-    ok((await sessionRow(s, quick)).model === 'lab/qwen-27b', 'a chat started at once in a new folder still runs on the folder’s model',
-      (await sessionRow(s, quick)).model);
+    await shot(s.page, 'folderopencode-chat');
 
     // A chat in the folder made without a model runs on the folder's too.
     const bare = await makeChat(s, 'opencode', { workdir_mode: 'custom', workdir: dir });

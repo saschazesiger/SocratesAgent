@@ -60,13 +60,12 @@ const MODEL_PICKERS = [
 ];
 
 // FIELDS is every control that is one element and one path. Everything with a
-// shape of its own - the presets, the harness cards, the favourite models -
+// shape of its own - the harness cards, the favourite models -
 // is built and read below.
 const FIELDS = [
   ['orKey', 'openrouter.api_key'],
   ['orOutcomes', 'openrouter.outcomes', 'bool'],
   ['workspaceRoot', 'workspace.root'],
-  ['allowCustomDir', 'workspace.allow_custom', 'bool'],
   ['doneDays', 'workspace.done_days', 'int'],
   ['windowSize', 'terminal.window_size'],
   ['historyLimit', 'terminal.history_limit', 'int'],
@@ -230,7 +229,6 @@ async function load() {
   fillForm();
   buildModelPickers();
   renderDefaultHarness();
-  renderPresets();
   mcpCard.load(settings);
   savedJSON = canonical(settings);
   bind();
@@ -289,7 +287,6 @@ function collect() {
     else if (type === 'args') setPath(next, path, splitArgs(node.value));
     else setPath(next, path, node.value);
   }
-  next.workspace.presets = readPresets();
   next.mcp = { ...(next.mcp || {}), ...mcpCard.collect() };
   return next;
 }
@@ -556,41 +553,6 @@ function renderDefaultHarness() {
       el('span', { class: 'ds-chip__body' }, iconEl('check', 18, 'ds-chip__check'),
         agentMark(id, 18), el('span', { text: harnessLabel(id) })));
   }));
-}
-
-// The preset editor is a repeating row, read back as a list when the page is
-// saved rather than written into the document on every keystroke: a half-typed
-// path is not a preset yet.
-function presetRow(preset = { label: '', path: '' }) {
-  const label = el('input', {
-    class: 'ds-input', type: 'text', placeholder: 'Name', value: preset.label || '', 'aria-label': 'Name',
-  });
-  const path = el('input', {
-    class: 'ds-input', type: 'text', spellcheck: 'false', placeholder: '/srv/projects',
-    value: preset.path || '', 'aria-label': 'Path',
-  });
-  const row = el('div', { class: 'so-preset' }, label, path,
-    el('button', {
-      class: 'ds-btn ds-btn--quiet ds-btn--icon ds-sm', type: 'button',
-      'aria-label': 'Remove this directory', 'data-tip': 'Remove this directory',
-      onclick: () => M.flip(row.parentElement, () => row.remove()),
-    }, iconEl('trash', 18)));
-  return row;
-}
-
-function renderPresets() {
-  const host = $('presetDirs');
-  if (!host) return;
-  host.replaceChildren(...(getPath(settings, 'workspace.presets') || []).map((preset) => presetRow(preset)));
-}
-
-function readPresets() {
-  const host = $('presetDirs');
-  if (!host) return [];
-  return [...host.querySelectorAll('.so-preset')].map((row) => {
-    const [label, path] = row.querySelectorAll('input');
-    return { label: label.value.trim(), path: path.value.trim() };
-  }).filter((preset) => preset.path !== '');
 }
 
 /* ------------------------------------------------------------ reordering */
@@ -1401,12 +1363,6 @@ function bind() {
   $('saveBottom').addEventListener('click', save);
   $('runChecks').addEventListener('click', runChecks);
   $('changePw').addEventListener('click', changePassword);
-  $('presetAdd').addEventListener('click', () => {
-    const host = $('presetDirs');
-    const row = presetRow();
-    M.flip(host, () => host.append(row));
-    row.querySelector('input').focus();
-  });
   mcpCard.mountMCP({ save, dirty: isDirty });
   githubCard.mountGitHub({ save, dirty: isDirty });
   $('windowSize').addEventListener('change', renderWindowSizeHint);
@@ -1455,8 +1411,7 @@ async function save() {
     settings = data.settings;
     fillForm();
     syncModelPickers();
-    renderPresets();
-    mcpCard.load(settings);
+      mcpCard.load(settings);
     savedJSON = canonical(settings);
     mcpCard.refresh();
     // The cards are drawn from the settings they just wrote, so they have to

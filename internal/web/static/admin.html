@@ -157,22 +157,18 @@
 
           <section class="ds-card" id="workspaceCard" aria-labelledby="workspaceTitle">
             <h2 class="ds-card__title" id="workspaceTitle">Workspace</h2>
-            <p class="ds-muted">Where a session works, which program it starts on, the directories the new-session sheet offers by name, and how long a done session is kept.</p>
+            <p class="ds-muted">Where a session works, which program it starts on, and how long a done session is kept. Chats work in GitHub repositories (GitHub, below).</p>
             <div class="ds-form">
               <div class="ds-field">
                 <label class="ds-field__label" for="workspaceRoot">Workspace root</label>
                 <input class="ds-input" type="text" id="workspaceRoot" spellcheck="false" aria-describedby="workspaceRootHint">
-                <small class="ds-field__hint" id="workspaceRootHint">An absolute path. A session with a dynamic directory gets its own folder below this one.</small>
+                <small class="ds-field__hint" id="workspaceRootHint">An absolute path. A chat's worktree, the repositories' shared clones (<code>.repos</code>) and a chat without a repository get their folders below this one.</small>
               </div>
               <fieldset class="ds-field">
                 <legend class="ds-field__label">Default program</legend>
                 <div class="ds-chips" id="defaultHarness"></div>
                 <small class="ds-field__hint">What the new-session sheet opens on.</small>
               </fieldset>
-              <div class="ds-field">
-                <label class="ds-check"><input type="checkbox" id="allowCustomDir" aria-describedby="allowCustomDirHint"><span>Allow a typed-in directory</span></label>
-                <small class="ds-field__hint" id="allowCustomDirHint">With it off the sheet offers only the workspace root and the presets below — which is what you want on a machine published through a tunnel.</small>
-              </div>
               <div class="ds-field">
                 <label class="ds-field__label" for="doneDays">Keep done sessions for</label>
                 <select class="ds-input" id="doneDays" aria-describedby="doneDaysHint">
@@ -182,14 +178,8 @@
                   <option value="14">14 days</option>
                   <option value="30">30 days</option>
                 </select>
-                <small class="ds-field__hint" id="doneDaysHint">A session filed under Done stops its program at once and costs only its files on disk. After this long it is deleted; its working directory stays.</small>
+                <small class="ds-field__hint" id="doneDaysHint">A session filed under Done stops its program at once and costs only its files on disk. After this long it is deleted; a repository chat's work is on its branch on GitHub.</small>
               </div>
-              <fieldset class="ds-field">
-                <legend class="ds-field__label">Preset directories</legend>
-                <div class="so-rows" id="presetDirs"></div>
-                <button class="ds-btn ds-btn--text ds-add-row" id="presetAdd" type="button" data-icon="plus" data-icon-size="16" data-icon-place="start">Add a directory</button>
-                <small class="ds-field__hint">Each one becomes a choice in the new-session sheet. A path that is not there yet is saved with a warning, because a mount may simply be down.</small>
-              </fieldset>
             </div>
           </section>
 
