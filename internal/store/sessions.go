@@ -60,6 +60,8 @@ const (
 	WorkdirDynamic = "dynamic"
 	WorkdirPreset  = "preset"
 	WorkdirCustom  = "custom"
+	// WorkdirRepo is a chat's own worktree of its GitHub repository (Repo).
+	WorkdirRepo = "repo"
 )
 
 // DefaultCols and DefaultRows are the size a session is created at when nobody
@@ -143,6 +145,14 @@ type Session struct {
 	// Kind is KindTerminal or KindChat. For a chat, CLISessionID is the
 	// agent's own conversation id, as the host reported it.
 	Kind string `json:"kind"`
+	// Repo is the GitHub repository (owner/name) a chat works in, empty for
+	// a chat without one and for a chat of a build before repositories, which
+	// keeps its folder. Branch is the chat's own branch, checked out in its
+	// worktree (Workdir), and Base the branch it was made from and where its
+	// work goes back to (docs/design/REPOS.md).
+	Repo   string `json:"repo,omitempty"`
+	Base   string `json:"base,omitempty"`
+	Branch string `json:"branch,omitempty"`
 }
 
 // IsChat reports whether the row is a chat rather than a terminal.
@@ -186,7 +196,8 @@ const (
 const sessionCols = `id, client_id, title, title_source, harness, model, effort, workdir, workdir_mode,
                      options, tmux_name, cli_session_id, cli_session_state, state, exit_status,
                      fail_reason, resumed, resume_count, cols, rows,
-                     created_at, updated_at, last_attached, active_at, status, status_at, start_at, kind`
+                     created_at, updated_at, last_attached, active_at, status, status_at, start_at, kind,
+                     repo, base, branch`
 
 func scanSession(row interface{ Scan(...any) error }) (*Session, error) {
 	s := &Session{}
@@ -195,7 +206,8 @@ func scanSession(row interface{ Scan(...any) error }) (*Session, error) {
 	err := row.Scan(&s.ID, &s.ClientID, &s.Title, &s.TitleSource, &s.Harness, &s.Model, &s.Effort,
 		&s.Workdir, &s.WorkdirMode, &options, &s.TmuxName, &s.CLISessionID, &s.CLISessionState,
 		&s.State, &s.ExitStatus, &s.FailReason, &resumed, &s.ResumeCount, &s.Cols, &s.Rows,
-		&s.CreatedAt, &s.UpdatedAt, &s.LastAttached, &s.ActiveAt, &s.Status, &s.StatusAt, &s.StartAt, &s.Kind)
+		&s.CreatedAt, &s.UpdatedAt, &s.LastAttached, &s.ActiveAt, &s.Status, &s.StatusAt, &s.StartAt, &s.Kind,
+		&s.Repo, &s.Base, &s.Branch)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -258,12 +270,12 @@ func (s *Store) CreateSession(sess *Session) error {
 		sess.StartAt = 0
 	}
 	_, err := s.db.Exec(`INSERT INTO sessions(`+sessionCols+`)
-		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		sess.ID, sess.ClientID, sess.Title, sess.TitleSource, sess.Harness, sess.Model, sess.Effort,
 		sess.Workdir, sess.WorkdirMode, options, sess.TmuxName, sess.CLISessionID,
 		sess.CLISessionState, sess.State, sess.ExitStatus, sess.FailReason, 0,
 		sess.ResumeCount, sess.Cols, sess.Rows, sess.CreatedAt, sess.UpdatedAt, 0, sess.ActiveAt,
-		sess.Status, sess.StatusAt, sess.StartAt, sess.Kind)
+		sess.Status, sess.StatusAt, sess.StartAt, sess.Kind, sess.Repo, sess.Base, sess.Branch)
 	if err != nil && sess.ClientID != "" && isUniqueViolation(err) {
 		existing, lookupErr := s.sessionByClientID(sess.ClientID)
 		if lookupErr != nil {

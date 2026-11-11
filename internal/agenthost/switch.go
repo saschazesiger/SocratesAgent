@@ -137,7 +137,7 @@ func (h *host) switchCmd(cmd Command) any {
 		return fail(cmd, CodeBadRequest, err.Error())
 	}
 	// Ultracode stays as the chat has it, whatever account the CLI runs on.
-	env := withUltracode(joinEnv(cmd.Env, secret), h.spec.Ultracode)
+	env := h.withRepoGit(withUltracode(joinEnv(cmd.Env, secret), h.spec.Ultracode))
 	var seq int64
 	if cmd.ClientID != "" {
 		// Args says whether the switch waits for the turn: one made now

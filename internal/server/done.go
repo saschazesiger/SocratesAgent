@@ -36,6 +36,12 @@ func (s *Server) park(ctx context.Context, id string) error {
 		// A chat has no terminal to close: its host parks as soon as it is
 		// idle, and the next message resumes it.
 		s.chats.park(id)
+		// A chat in a repository has its branch pushed and its worktree
+		// taken away once the host has parked (repoDone); the sweep comes
+		// back here every minute until it has.
+		if row.Repo != "" {
+			go s.repoDone(s.chats.ctx, row)
+		}
 		return nil
 	}
 	if err := s.manager.Park(ctx, id); err != nil {
@@ -52,11 +58,17 @@ func (s *Server) deleteSession(ctx context.Context, id string) error {
 	// A title run writing into a row that is being removed is nothing good.
 	s.titles.forget(id)
 	s.push.forget(id)
-	if row, err := s.store.GetSession(id); err == nil && row.IsChat() {
+	row, err := s.store.GetSession(id)
+	if err == nil && row.IsChat() {
 		s.chats.remove(ctx, id)
 	}
 	if err := s.manager.Delete(ctx, id); err != nil {
 		return err
+	}
+	// The host is gone: a chat in a repository leaves its work on GitHub
+	// and its worktree goes (repoDelete).
+	if row != nil && row.IsChat() && row.Repo != "" {
+		go s.repoDelete(row)
 	}
 	// After the delete rather than before it, so that a turn the detector
 	// commits in between cannot start a verdict on a session that is going.

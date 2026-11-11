@@ -142,7 +142,7 @@ func TestADatabaseOfTodaysMainIsUpgraded(t *testing.T) {
 	if err := st.CreateAccount(&Account{ID: "a-1", Agent: "claude", Label: "Team Sascha", Kind: "subscription"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(path + ".pre-v12.bak"); err != nil {
+	if _, err := os.Stat(PreUpgradeCopy(path)); err != nil {
 		t.Fatalf("the upgrade was not backed up: %v", err)
 	}
 	if pending, err := st.AccountsMigrationPending(); err != nil || !pending {

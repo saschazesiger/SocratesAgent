@@ -80,6 +80,9 @@ func main() {
 			os.Exit(agenthost.Main(args[1:], version))
 		case "mcp-ask":
 			os.Exit(agenthost.MCPAskMain(args[1:], version))
+		case "git-credential":
+			// The credential helper of a chat's git (docs/design/REPOS.md §5.2).
+			os.Exit(agenthost.GitCredentialMain(args[1:]))
 		case "mcp-server":
 			os.Exit(mcpserver.Main(args[1:], version))
 		}

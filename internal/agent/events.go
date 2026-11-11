@@ -204,6 +204,10 @@ const (
 	// account switch (agenthost): go on with the turn it stopped, or start
 	// again the background work the restart stopped.
 	NoticeSwitchMessage = "switch_message"
+	// NoticeRepository: something the server did with the chat's GitHub
+	// repository went wrong or needs saying - its setup failed, its branch
+	// could not be pushed, its worktree stays after done (REPOS.md §4).
+	NoticeRepository = "repository"
 )
 
 // ErrorAuth is an error event's code for a sign-in or key the provider

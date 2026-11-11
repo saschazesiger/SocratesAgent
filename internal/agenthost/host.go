@@ -454,7 +454,7 @@ func (h *host) boot() {
 	}
 	// Ultracode is the chat's option, not the account's: it goes on top of
 	// the account's environment, here and at every switch.
-	env = withUltracode(joinEnv(env, secret), h.spec.Ultracode)
+	env = h.withRepoGit(withUltracode(joinEnv(env, secret), h.spec.Ultracode))
 	h.mu.Lock()
 	h.account, h.env = h.spec.Account, env
 	h.mu.Unlock()
@@ -715,8 +715,24 @@ func (h *host) handle(c *hostConn, cmd Command) any {
 		return h.switchCmd(cmd)
 	case OpWithdraw:
 		return h.withdraw(ctx, cmd)
+	case OpNotice:
+		return h.notice(cmd)
 	}
 	return fail(cmd, CodeBadRequest, "unknown command "+cmd.Op)
+}
+
+// notice journals a line the server has to say in the chat (OpNotice).
+func (h *host) notice(cmd Command) any {
+	text := strings.TrimSpace(cmd.Text)
+	if cmd.Notice == "" || text == "" {
+		return fail(cmd, CodeBadRequest, "a notice needs its code and its text")
+	}
+	out, err := h.rec.Emit(agent.Event{Type: agent.TypeNotice, Code: cmd.Notice, Text: text})
+	if err != nil || len(out) == 0 {
+		return fail(cmd, CodeFailed, fmt.Sprintf("the notice could not be journaled: %v", err))
+	}
+	h.touch()
+	return Ack{T: FrameAck, ClientID: cmd.ClientID, Op: cmd.Op, Seq: out[0].Seq}
 }
 
 func fail(cmd Command, code, msg string) Fail {

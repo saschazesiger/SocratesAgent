@@ -326,6 +326,9 @@ export function spawnServer({ data, port, live = false, env = {}, pathFirst = ''
       // does not exist, an exec failure that reads as "claude: no such file or
       // directory".
       SOCRATES_WORKSPACE_ROOT: join(data, 'workspaces'),
+      // The scenarios make their chats in folders of their own; without
+      // this a chat is made in a GitHub repository or in a fresh folder.
+      SOCRATES_FOLDER_CHATS: '1',
       // Every CLI's own state goes under the run's data directory, so that a
       // fake run can neither read nor write the machine's real credentials,
       // transcripts or session databases. (A chat's agent gets its account's

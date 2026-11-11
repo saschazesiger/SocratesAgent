@@ -8,6 +8,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/saschazesiger/SocratesAgent/internal/repos"
 	"github.com/saschazesiger/SocratesAgent/internal/store"
 )
 
@@ -101,6 +102,12 @@ func boardFolder(raw string) (string, error) {
 	switch {
 	case folder == "":
 		return "", errors.New("name the folder whose board this is")
+	case strings.HasPrefix(folder, "github:"):
+		// A repository's board: github:<owner>/<name> (REPOS.md §5.3).
+		if !repos.ValidName(strings.TrimPrefix(folder, "github:")) {
+			return "", errors.New("a repository's board is named github:<owner>/<name>")
+		}
+		return folder, nil
 	case strings.HasPrefix(folder, "#"):
 		return "", errors.New("only a project folder has a board")
 	case len(folder) > maxBoardFolder, !utf8.ValidString(folder), strings.ContainsRune(folder, 0):

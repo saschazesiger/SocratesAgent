@@ -164,9 +164,14 @@ gone). With a repository the handler:
    checked out in another chat's worktree answers 409 naming that chat.
 4. Writes the worktree's own git configuration (`extensions.worktreeConfig`, `git config --worktree`):
    `remote.origin.url` stays the plain HTTPS URL; the credentials come from the helper (§5.2).
+   *As built:* nothing is written per worktree. The cache's configuration (shared by its worktrees) has the
+   plain URL and `push.autoSetupRemote = true`, so a bare `git push` of a new branch works as well.
 5. Stores the row with `workdir = <worktree>`, `repo`, `base`, `branch` (§8) and starts the chat as before.
 6. Runs the **setup** (§4.3) before the agent's first turn, in the chat host's boot, so the HTTP request does
-   not wait for it.
+   not wait for it. *As built:* it runs in the server's pump just before the host is launched
+   (`chatPeer.launch` → `prepareRepo`), which is where the worktree is made again too: the request has
+   answered, the first message waits in the outbox, and the agent's instructions can name a failed setup.
+   `options.setup.state` is `pending` → `running` → `done`, `failed` or `none`.
 
 ### 4.3 Setup
 
@@ -239,6 +244,15 @@ credentials and git fails with its own message. The answer is `username=x-access
 token>`. Server-side git (cache, push at turn end) passes the same token with `-c
 http.extraHeader=Authorization: Basic …` and never writes it to disk.
 
+*As built:* the configuration is a file, `<data>/chats/<id>/gitconfig`, named by `GIT_CONFIG_GLOBAL` in the
+agent's environment (written by the host at every start and account switch). It includes the person's own
+global configuration first, then the three lines above for the scheme and host of the clone URL, the helper
+being `<socrates> git-credential --data <data> --chat <id>`, which reads the chat's tool endpoint from
+`host.json`. Not `GIT_CONFIG_COUNT/KEY/VALUE` and not the token variable: Codex keeps variables whose names
+hold `KEY`, `SECRET` or `TOKEN` out of the commands its agent runs. The setup (§4.3), a child of the server,
+gets the helper through `GIT_CONFIG_COUNT`. The server's own git passes the header through `GIT_CONFIG_*`
+too, so the token is in no process listing.
+
 `GH_TOKEN` is not given: the installation token expires within the hour, and `open_pull_request` covers what
 `gh` would be used for. The agent still runs as root, so root's own `gh` login stays reachable: the App limits
 what Socrates hands out, it is not a sandbox.
@@ -271,6 +285,13 @@ implementation checks this against the installed binary and, if the path is per 
 memory folder to one per repository (`<config>/projects/-socrates-repo-<owner>-<name>/memory`), so memory is
 shared per repository as it was per folder. The memories of `/root/SocratesAgent` are copied into the
 repository's folder once, the first time a chat of `saschazesiger/SocratesAgent` starts.
+
+*As built (checked against Claude Code 2.1.322):* the default memory path is keyed by the project's
+canonical git root, and for a linked worktree of a bare repository that is the common git directory: a
+chat in `<root>/app-1234abcd` writes to `<config>/projects/<root with every non-alphanumeric a dash>--repos-
+<owner>-<name>-git/memory`. Every worktree of one cache shares it already, so nothing is linked. At the first
+start of a Claude chat of a repository on an account, the memory of an older folder chat whose checkout's
+`origin` is the same GitHub repository is copied into that folder (`seedClaudeMemory`), once.
 
 ## 8. Data
 

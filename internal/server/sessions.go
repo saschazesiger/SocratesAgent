@@ -141,7 +141,9 @@ func (s *Server) viewWith(row *store.Session, drafts map[string]store.DraftMeta)
 
 // workdirMissing is whether a session's folder is not on this machine.
 func workdirMissing(row *store.Session) bool {
-	if row.Workdir == "" {
+	// A chat in a repository whose worktree went (it was done) has it made
+	// again before its agent starts: nothing is missing.
+	if row.Workdir == "" || row.Repo != "" {
 		return false
 	}
 	info, err := os.Stat(row.Workdir)
@@ -499,6 +501,12 @@ func (s *Server) handleSetWorkdir(w http.ResponseWriter, r *http.Request) {
 	if !readJSON(w, r, &body) {
 		return
 	}
+	// A chat in a repository has its own worktree, made again whenever it
+	// is missing: there is no folder to point it to.
+	if row.Repo != "" {
+		writeError(w, http.StatusConflict, "This chat works in its own worktree of "+row.Repo+", which Socrates makes again when it is missing.")
+		return
+	}
 	mode, workdir, err := harnesses.PointWorkdir(s.Settings(), body.Workdir)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -586,10 +594,12 @@ func (s *Server) handleDeleteSession(w http.ResponseWriter, r *http.Request) {
 	}
 	// The working directory is kept, in every mode. Work the user did is not
 	// ours to throw away, and the answer says so because the dialog does.
+	// A chat in a repository leaves its work on GitHub instead, and its
+	// worktree goes (repoDelete).
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":           true,
 		"workdir":      row.Workdir,
-		"workdir_kept": true,
+		"workdir_kept": row.Repo == "",
 	})
 }
 

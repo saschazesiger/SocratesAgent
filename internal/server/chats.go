@@ -73,6 +73,8 @@ type chatHub struct {
 	pumps   sync.WaitGroup
 	// tools serves the chat tools from start to close (chattools.go).
 	tools *chatToolServer
+	// repoBusy is the chats whose worktree repoDone is dealing with.
+	repoBusy sync.Map
 }
 
 func newChatHub(s *Server) *chatHub {
@@ -128,6 +130,7 @@ func (h *chatHub) start() {
 	}
 	h.tools = h.srv.startChatTools()
 	go h.janitor()
+	go h.repoCare()
 }
 
 // close lets go of every host without stopping one: they keep running, and
@@ -306,6 +309,9 @@ type chatPeer struct {
 	lineTimer *time.Timer
 	// gone is a chat being deleted: nothing more is written for it.
 	gone bool
+	// notices are the lines the server has to say in the chat while no host
+	// is there to journal them (notice): they go to the next one.
+	notices []agenthost.Command
 }
 
 func (p *chatPeer) summary() agent.Summary {
@@ -534,6 +540,14 @@ func (p *chatPeer) launch(ctx context.Context) error {
 	} else {
 		log.Printf("chats: %s: no chat tools: %v", p.id, err)
 	}
+	// A chat in a repository needs its worktree, and its setup before the
+	// agent's first turn (repos.go).
+	if row.Repo != "" {
+		if err := p.prepareRepo(ctx, row, &spec.ChatTools); err != nil {
+			return err
+		}
+		p.hub.srv.seedClaudeMemory(row, spec.Account)
+	}
 	lctx, cancel := context.WithTimeout(ctx, chatLaunchWait)
 	defer cancel()
 	entry, _ := p.hub.srv.Settings().Harnesses.Entry(row.Harness)
@@ -597,6 +611,8 @@ func (p *chatPeer) serve(conn *agenthost.Conn) {
 	p.mu.Lock()
 	p.conn, p.hostErr = conn, ""
 	feed := p.feed
+	// What the server had to say while no host was there comes first.
+	p.sendNoticesLocked(conn)
 	pending, err := p.hub.srv.store.Outbox(p.id)
 	if err != nil {
 		log.Printf("chats: %s: could not read the outbox: %v", p.id, err)
@@ -718,6 +734,11 @@ func (p *chatPeer) apply(ev agent.Event) {
 	}
 	if !held {
 		p.report()
+	}
+	// A chat in a repository has its branch pushed at the end of every
+	// turn; a rebuild's turns ended long ago.
+	if ev.Type == agent.TypeTurnEnded && !held {
+		go p.pushAfterTurn()
 	}
 }
 
@@ -862,7 +883,15 @@ type createChatBody struct {
 	Effort      string `json:"effort"`
 	WorkdirMode string `json:"workdir_mode"`
 	Workdir     string `json:"workdir"`
-	Title       string `json:"title"`
+	// Repo is the GitHub repository (owner/name) the chat works in, in a
+	// worktree of its own on Branch, made from Base (REPOS.md §4.2): Base
+	// empty is the repository's default branch, Branch empty socrates/ and
+	// the first words of the message. Without Repo the chat gets a folder
+	// of its own (workdir_mode dynamic).
+	Repo   string `json:"repo"`
+	Base   string `json:"base"`
+	Branch string `json:"branch"`
+	Title  string `json:"title"`
 	// Ultracode is Claude Code's session option (chatUltracode).
 	Ultracode bool `json:"ultracode"`
 	// Account is the account the chat runs on, empty for the recommended
@@ -933,14 +962,31 @@ func (s *Server) handleCreateChat(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	id := termux.NewID()
-	workdir, err := harnesses.ResolveWorkdir(settings, body.WorkdirMode, body.Workdir, harness, id)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
 	mode := strings.TrimSpace(body.WorkdirMode)
 	if mode == "" {
 		mode = harnesses.WorkdirDynamic
+	}
+	var workdir string
+	var inRepo *repoChat
+	switch {
+	case strings.TrimSpace(body.Repo) != "":
+		made, status, msg := s.makeRepoWorktree(r.Context(), &body, id)
+		if status != 0 {
+			writeError(w, status, msg)
+			return
+		}
+		inRepo, workdir, mode = made, made.checkout.Path, store.WorkdirRepo
+	case mode != harnesses.WorkdirDynamic && !folderChatsAllowed():
+		writeError(w, http.StatusBadRequest, "Presets and typed folders are gone: a chat works in a GitHub repository (repo), "+
+			"or without one in a folder of its own (workdir_mode dynamic).")
+		return
+	default:
+		dir, err := harnesses.ResolveWorkdir(settings, body.WorkdirMode, body.Workdir, harness, id)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		workdir = dir
 	}
 	label := chatLabel(harness)
 	model, effort := s.chatModelIn(r.Context(), settings, harness, workdir, body.Model, body.Effort)
@@ -954,20 +1000,33 @@ func (s *Server) handleCreateChat(w http.ResponseWriter, r *http.Request) {
 			mcp = chosen
 		}
 	}
+	title := sessionTitle(body.Title, label, workdir, mode)
+	if inRepo != nil && strings.TrimSpace(body.Title) == "" {
+		_, name, _ := strings.Cut(inRepo.repo, "/")
+		title = label + " · " + name
+	}
 	row := &store.Session{
-		ID: id, ClientID: clientID, Title: sessionTitle(body.Title, label, workdir, mode),
+		ID: id, ClientID: clientID, Title: title,
 		TitleSource: titleSource(body.Title), Harness: harness, Model: model,
 		Effort: effort, Workdir: workdir, WorkdirMode: mode,
 		Kind: store.KindChat, State: store.StateRunning,
 		Options: withOption(withAutoContinue(withChatAccount(withOption(nil, "ultracode", chatUltracode(harness, body.Ultracode)),
 			body.Account, body.AutoSwitch), body.AutoContinue == nil || *body.AutoContinue), "mcp", mcp),
 	}
+	if inRepo != nil {
+		row.Repo, row.Base, row.Branch = inRepo.repo, inRepo.checkout.Base, inRepo.checkout.Branch
+		// The setup runs before the agent's first turn, in the pump that
+		// launches its host (prepareRepo), so this request does not wait.
+		row.Options = withOption(row.Options, "setup", repoSetupState{State: setupPending})
+	}
 	if err := s.store.CreateSession(row); err != nil {
+		s.discardWorktree(inRepo)
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	if row.ID != id {
 		// Two identical requests raced, and the other one made the chat.
+		s.discardWorktree(inRepo)
 		s.answerChat(w, http.StatusOK, row, nil)
 		return
 	}

@@ -22,9 +22,9 @@ import (
 // busy for a day - is still understood. Version 2 added the ask op of a local
 // tool (`socrates mcp-ask`); version 3 a send's Note and Sender, which the
 // server puts into the text for a host of an older build (FoldNote); version
-// 4 the withdraw op.
+// 4 the withdraw op; version 5 the notice op.
 const (
-	Protocol    = 4
+	Protocol    = 5
 	MinProtocol = 1
 	// AskProtocol is the first version with OpAsk.
 	AskProtocol = 2
@@ -32,6 +32,8 @@ const (
 	NoteProtocol = 3
 	// WithdrawProtocol is the first version with OpWithdraw.
 	WithdrawProtocol = 4
+	// NoticeProtocol is the first version with OpNotice.
+	NoticeProtocol = 5
 )
 
 // NoEvents is the since of a connection that wants no events at all, beyond
@@ -69,6 +71,12 @@ const (
 	// an ask of the running turn, acknowledges it with its ask id, and sends
 	// the answer on the same connection, as an answer frame, when it comes.
 	OpAsk = "ask"
+	// OpNotice is a line the server has to say in the chat (protocol 5):
+	// the host journals a notice with Notice as its code and Text as its
+	// words, and acknowledges it. It needs no agent, and no client_id: a
+	// notice sent twice is said twice. What a chat in a repository has to be
+	// told - a push that failed, a setup that failed - comes this way.
+	OpNotice = "notice"
 )
 
 // When a switch_account takes effect.
