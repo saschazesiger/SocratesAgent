@@ -43,6 +43,7 @@ import { record, recPhase } from './dictate.js';
 import { typeHere } from './keyboard.js';
 import { speak, stopSpeaking } from './voice.js';
 import { lightbox } from './lightbox.js';
+import { chatImages } from './md.js';
 
 // How many chats keep their fold in memory, so that going back to one does
 // not replay its whole journal.
@@ -364,9 +365,6 @@ export function mountChat(ctx) {
 
   /* ---------------------------------------------------------- the view */
 
-  // The image drawer of the chat shown (view.shownImages), one per chat so
-  // that Markdown's cache keeps what it drew.
-  let shown = null;
   const view = {
     get chat() { return chat; },
     isOpen(key, fallback) { return open.has(key) ? open.get(key) : fallback; },
@@ -417,12 +415,7 @@ export function mountChat(ctx) {
     // shownImages draws the images of files on this machine an agent's
     // text shows (md.js): the server serves one its text names.
     get shownImages() {
-      if (!session) return null;
-      const id = session.id;
-      return shown && shown.key === id ? shown : (shown = {
-        key: id,
-        src: (href) => '/api/chats/' + encodeURIComponent(id) + '/image?path=' + encodeURIComponent(decodePath(href)),
-      });
+      return session ? chatImages(session.id) : null;
     },
     // Whether the chat goes on by itself once a limit renews (on unless
     // switched off), and whether a limit card is the chat's newest word.
@@ -2006,9 +1999,3 @@ export function mountChat(ctx) {
   };
 }
 
-// decodePath is a Markdown image's path as the agent wrote it: marked
-// percent-encodes what a URL may not hold (a space), which the text names
-// plain.
-function decodePath(href) {
-  try { return decodeURI(String(href || '')); } catch { return String(href || ''); }
-}

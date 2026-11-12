@@ -21,6 +21,6 @@ const DocsGuidance = "Linking Markdown files: every time you mention a Markdown 
 	"[DEV.md](/root/wt/feature/docs/DEV.md). This takes precedence over writing file paths as `code`; files " +
 	"that are not Markdown stay plain `code` paths.\n\n" +
 	"Showing images: to show the person an image file on this machine - a screenshot you saved, a chart, a " +
-	"diagram or a picture you made - write it in your reply as a Markdown image with its absolute path, e.g. " +
-	"![The login page](/tmp/login.png) (PNG, JPEG, GIF or WebP). Socrates draws it small in the chat and the " +
-	"person opens it large with a click. An image a tool returns (a browser's screenshot) is shown by itself."
+	"diagram or a picture you made - write it in your reply, or in a question you ask (its context, steps, sections or an option's details), " +
+	"as a Markdown image with its absolute path, e.g. ![The login page](/tmp/login.png) (PNG, JPEG, GIF or WebP). " +
+	"Socrates draws it small there and the person opens it large with a click, to zoom in and move around. An image a tool returns (a browser's screenshot) is shown by itself."

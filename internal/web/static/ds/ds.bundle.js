@@ -1,7 +1,7 @@
 /*! Z-Dash 3.0.1 | MIT License | https://github.com/saschazesiger/Z-Dash | bundle "bundle" (ds.bundle.json) */
 /*
  * Z-Dash bundle "bundle" (tools/bundle.mjs; do not edit): window.DS with
- * DS.core, DS.motion, DS.indicator, DS.dom, DS.ripple, DS.icons, DS.position, DS.overlay, DS.a11y, DS.format, DS.store, DS.virtual, DS.dnd, DS.badge, DS.chart, DS.composer, DS.dialog, DS.form, DS.formatted, DS.highlight, DS.code, DS.list, DS.listbox, DS.combobox, DS.menu, DS.page, DS.sheet, DS.shell, DS.toast, DS.tooltip and 276 icons.
+ * DS.core, DS.motion, DS.indicator, DS.dom, DS.ripple, DS.icons, DS.position, DS.overlay, DS.a11y, DS.format, DS.store, DS.virtual, DS.dnd, DS.badge, DS.chart, DS.composer, DS.dialog, DS.form, DS.formatted, DS.highlight, DS.code, DS.lightbox, DS.list, DS.listbox, DS.combobox, DS.menu, DS.page, DS.sheet, DS.shell, DS.toast, DS.tooltip and 276 icons.
  * Icon shapes: Lucide (ISC) and Feather (MIT), see LICENSE.
  * Another bundle or ds.js of the same version on the page adds its modules
  * to the same ZDash.versions[version] object.
@@ -13983,6 +13983,455 @@
       parseLines: parseLines,
       linesHtml: linesHtml,
       create: create
+    });
+  });
+
+  add('lightbox', ['MAX_ZOOM', 'nextZoom', 'clampPan', 'create', 'open', 'close', 'show'], function () {
+    /*! Z-Dash 3.0.1 | MIT License | https://github.com/saschazesiger/Z-Dash */
+    const define = DS.core.define, emit = DS.core.emit, t = DS.core.t;
+    const enter = DS.motion.enter, motionDuration = DS.motion.motionDuration;
+    const chevronLeft = DS.icons.chevronLeft, chevronRight = DS.icons.chevronRight, closeIcon = DS.icons.close, alertCircle = DS.icons.alertCircle, minimize = DS.icons.minimize, plus = DS.icons.plus, iconElement = DS.icons.iconElement;
+    const openOverlay = DS.overlay.open, closeOverlay = DS.overlay.close, internals = DS.overlay.internals;
+    const announce = DS.a11y.announce, roving = DS.a11y.roving;
+    const { overlays } = internals;
+    const MAX_ZOOM = 4;
+    const ITEMS = '.ds-lightbox__item, [data-ds-lightbox-item]';
+    function nextZoom(zoom, direction) {
+    if (direction === 0) return 1;
+    const next = direction > 0 ? zoom * 2 : zoom / 2;
+    return Math.min(MAX_ZOOM, Math.max(1, Math.round(next * 100) / 100));
+    }
+    function clampPan(x, y, size, frame, zoom) {
+    const reach = (length, room) => Math.max(0, (length * zoom - room) / 2);
+    const rx = reach(size.width, frame.width);
+    const ry = reach(size.height, frame.height);
+    const clamp = (value, limit) => (limit === 0 ? 0 : Math.round(Math.min(limit, Math.max(-limit, value))));
+    return { x: clamp(x, rx), y: clamp(y, ry) };
+    }
+    function imagesOf(gallery) {
+    return [...gallery.querySelectorAll(ITEMS)].map((item) => {
+    const thumb = item.querySelector('img');
+    return {
+    src: item.getAttribute('data-src') ?? item.getAttribute('href') ?? thumb?.getAttribute('src') ?? '',
+    alt: thumb?.getAttribute('alt') || item.getAttribute('aria-label') || '',
+    caption: item.getAttribute('data-caption') ?? '',
+    thumb: thumb?.getAttribute('src') ?? '',
+    item,
+    };
+    });
+    }
+    function buildViewer(home, label) {
+    const doc = home.ownerDocument;
+    const make = (tag, className) => {
+    const node = doc.createElement(tag);
+    if (className) node.className = className;
+    return node;
+    };
+    const button = (className, name, glyph) => {
+    const node = make('button', `ds-btn ds-btn--ghost ds-btn--icon${className ? ` ${className}` : ''}`);
+    node.type = 'button';
+    node.setAttribute('aria-label', name);
+    node.append(iconElement(glyph, 20, undefined, doc));
+    return node;
+    };
+    const native = typeof make('dialog').showModal === 'function';
+    const dialog = make(native ? 'dialog' : 'div', 'ds-dialog ds-lightbox');
+    const box = make('div', 'ds-dialog__box ds-lightbox__box');
+    if (native) dialog.setAttribute('aria-label', label);
+    else {
+    dialog.hidden = true;
+    box.setAttribute('role', 'dialog');
+    box.setAttribute('aria-modal', 'true');
+    box.setAttribute('aria-label', label);
+    }
+    const backdrop = make('div', 'ds-dialog__backdrop');
+    backdrop.setAttribute('data-ds-close', '');
+    const bar = make('div', 'ds-lightbox__bar');
+    const count = make('p', 'ds-lightbox__count');
+    const zoomOut = button('', t('zoomOut'), minimize);
+    const zoomIn = button('', t('zoomIn'), plus);
+    const closer = button('', t('close'), closeIcon);
+    closer.setAttribute('data-ds-close', '');
+    bar.append(count, zoomOut, zoomIn, closer);
+    const stage = make('div', 'ds-lightbox__stage');
+    const prev = button('ds-lightbox__nav ds-lightbox__nav--prev', t('previous'), chevronLeft);
+    const next = button('ds-lightbox__nav ds-lightbox__nav--next', t('next'), chevronRight);
+    const figure = make('figure', 'ds-lightbox__figure');
+    const frame = make('div', 'ds-lightbox__frame');
+    const image = (make('img', 'ds-lightbox__image'));
+    image.draggable = false;
+    image.decoding = 'async';
+    const spinner = make('span', 'ds-spinner');
+    spinner.setAttribute('aria-hidden', 'true');
+    const error = make('p', 'ds-lightbox__error');
+    error.append(iconElement(alertCircle, 20, undefined, doc), doc.createTextNode(t('imageFailed')));
+    frame.append(image, spinner, error);
+    const caption = make('figcaption', 'ds-lightbox__caption');
+    figure.append(frame, caption);
+    stage.append(prev, figure, next);
+    const thumbs = make('div', 'ds-lightbox__thumbs');
+    thumbs.setAttribute('role', 'group');
+    thumbs.setAttribute('aria-label', t('images'));
+    box.append(bar, stage, thumbs);
+    dialog.append(backdrop, box);
+    const theme = home.closest('.ds-theme');
+    const parent = !theme || theme === doc.documentElement ? doc.body : theme;
+    parent.append(dialog);
+    return { dialog, box, count, zoomIn, zoomOut, closer, prev, next, figure, frame, image, caption, thumbs };
+    }
+    const OPTIONS = ['--ds-size-step', '--ds-size-font', '--ds-density', '--ds-shape', '--ds-target-min'];
+    function carryOptions(home, dialog) {
+    const view = dialog.ownerDocument.defaultView;
+    if (!view?.getComputedStyle || !home?.isConnected || !dialog.style) return;
+    for (const name of OPTIONS) dialog.style.removeProperty(name);
+    const there = view.getComputedStyle(dialog);
+    const inherited = OPTIONS.map((name) => there.getPropertyValue(name).trim());
+    const here = view.getComputedStyle(home);
+    OPTIONS.forEach((name, index) => {
+    const value = here.getPropertyValue(name).trim();
+    if (value && value !== inherited[index]) dialog.style.setProperty(name, value);
+    });
+    }
+    const controllers = new WeakMap();
+    function create(gallery, options = {}) {
+    const known = controllers.get(gallery);
+    if (known) return known;
+    const abort = new AbortController();
+    const signal = abort.signal;
+    const listeners = [];
+    const list = () => (typeof options.images === 'function' ? options.images() : imagesOf(gallery));
+    const state = { index: 0, zoom: 1, x: 0, y: 0, images: ([]), viewer: (null), rover: (null), pointers: new Map(), gesture: (null), lastTap: 0 };
+    const homeOf = () => options.home ?? (gallery.isConnected ? gallery : gallery.ownerDocument?.body ?? globalThis.document.body);
+    const viewer = () => {
+    if (state.viewer?.dialog.isConnected) return state.viewer;
+    const label = options.label ?? gallery.getAttribute?.('aria-label') ?? t('images');
+    state.viewer = buildViewer(homeOf(), label);
+    wireViewer(state.viewer);
+    return state.viewer;
+    };
+    const isOpen = () => Boolean(state.viewer) && overlays.get(state.viewer.dialog)?.phase === 'open';
+    const measure = () => {
+    const { frame, image } = state.viewer;
+    const box = frame.getBoundingClientRect();
+    return { frame: { width: box.width, height: box.height }, size: { width: image.offsetWidth, height: image.offsetHeight } };
+    };
+    const paintTransform = () => {
+    const { frame } = state.viewer;
+    frame.style.setProperty('--ds-lightbox-zoom', String(state.zoom));
+    frame.style.setProperty('--ds-lightbox-x', `${state.x}px`);
+    frame.style.setProperty('--ds-lightbox-y', `${state.y}px`);
+    if (state.zoom > 1) frame.setAttribute('data-zoomed', '');
+    else frame.removeAttribute('data-zoomed');
+    state.viewer.zoomOut.setAttribute('aria-disabled', String(state.zoom <= 1));
+    state.viewer.zoomIn.setAttribute('aria-disabled', String(state.zoom >= MAX_ZOOM));
+    };
+    const zoomTo = (zoom, point = { x: 0, y: 0 }) => {
+    if (!state.viewer) return;
+    const next = Math.min(MAX_ZOOM, Math.max(1, zoom));
+    const ratio = next / state.zoom;
+    const x = point.x - (point.x - state.x) * ratio;
+    const y = point.y - (point.y - state.y) * ratio;
+    const before = state.zoom;
+    state.zoom = next;
+    const { frame, size } = measure();
+    const pan = clampPan(x, y, size, frame, next);
+    state.x = pan.x;
+    state.y = pan.y;
+    paintTransform();
+    if (before !== next) emit(gallery, 'zoom', { zoom: next });
+    };
+    const panBy = (dx, dy) => {
+    const { frame, size } = measure();
+    const pan = clampPan(state.x + dx, state.y + dy, size, frame, state.zoom);
+    state.x = pan.x;
+    state.y = pan.y;
+    paintTransform();
+    };
+    const paintThumbs = () => {
+    const { thumbs } = state.viewer;
+    const doc = thumbs.ownerDocument;
+    const total = state.images.length;
+    if (total < 2) {
+    thumbs.replaceChildren();
+    return;
+    }
+    if (thumbs.children.length !== total) {
+    thumbs.replaceChildren(...state.images.map((image, index) => {
+    const node = doc.createElement('button');
+    node.type = 'button';
+    node.className = 'ds-lightbox__thumb';
+    node.setAttribute('aria-label', image.alt ? `${t('imageOf', { index: index + 1, total })}: ${image.alt}` : t('imageOf', { index: index + 1, total }));
+    const img = doc.createElement('img');
+    img.alt = '';
+    img.loading = 'lazy';
+    img.src = image.thumb || image.src;
+    node.append(img);
+    return node;
+    }));
+    }
+    [...thumbs.children].forEach((node, index) => {
+    if (index === state.index) node.setAttribute('aria-current', 'true');
+    else node.removeAttribute('aria-current');
+    });
+    const current = (thumbs.children[state.index]);
+    current?.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
+    };
+    const show = (index, say = true) => {
+    const v = viewer();
+    const total = state.images.length;
+    if (!total) return;
+    state.index = ((index % total) + total) % total;
+    const image = state.images[state.index];
+    state.zoom = 1;
+    state.x = 0;
+    state.y = 0;
+    paintTransform();
+    v.frame.removeAttribute('data-failed');
+    v.frame.setAttribute('data-loading', '');
+    v.image.alt = image.alt ?? '';
+    const done = () => v.frame.removeAttribute('data-loading');
+    v.image.onload = done;
+    v.image.onerror = () => {
+    done();
+    v.frame.setAttribute('data-failed', '');
+    };
+    if (v.image.getAttribute('src') !== image.src) v.image.src = image.src;
+    else if (v.image.complete) done();
+    v.caption.textContent = image.caption ?? '';
+    v.count.textContent = t('imageOf', { index: state.index + 1, total });
+    v.prev.hidden = total < 2;
+    v.next.hidden = total < 2;
+    v.next.toggleAttribute('autofocus', total >= 2);
+    v.closer.toggleAttribute('autofocus', total < 2);
+    paintThumbs();
+    if (say) {
+    enter(v.figure, 'swap');
+    announce(`${t('imageOf', { index: state.index + 1, total })}. ${image.caption || image.alt || ''}`.trim());
+    emit(gallery, 'change', { index: state.index, total });
+    }
+    };
+    function wireViewer(v) {
+    v.zoomIn.addEventListener('click', () => {
+    if (v.zoomIn.getAttribute('aria-disabled') !== 'true') zoomTo(nextZoom(state.zoom, 1));
+    }, { signal });
+    v.zoomOut.addEventListener('click', () => {
+    if (v.zoomOut.getAttribute('aria-disabled') !== 'true') zoomTo(nextZoom(state.zoom, -1));
+    }, { signal });
+    v.prev.addEventListener('click', () => show(state.index - 1), { signal });
+    v.next.addEventListener('click', () => show(state.index + 1), { signal });
+    v.thumbs.addEventListener('click', (event) => {
+    const node = (event.target)?.closest?.('.ds-lightbox__thumb');
+    if (node) show([...v.thumbs.children].indexOf(node));
+    }, { signal });
+    state.rover = roving(v.thumbs, { items: '.ds-lightbox__thumb', orientation: 'horizontal', wrap: true, onActivate: (node) => {
+    const index = [...v.thumbs.children].indexOf(node);
+    if (index >= 0 && index !== state.index) show(index);
+    } });
+    v.dialog.addEventListener('keydown', ( event) => {
+    if (event.defaultPrevented || event.altKey || event.ctrlKey || event.metaKey || event.isComposing) return;
+    if ( (event.target)?.closest?.('.ds-lightbox__thumbs')) return;
+    const step = Math.round(v.frame.getBoundingClientRect().width / 10);
+    const zoomed = state.zoom > 1;
+    const keys = {
+    ArrowLeft: () => (zoomed ? panBy(step, 0) : show(state.index - 1)),
+    ArrowRight: () => (zoomed ? panBy(-step, 0) : show(state.index + 1)),
+    ArrowUp: () => zoomed && panBy(0, step),
+    ArrowDown: () => zoomed && panBy(0, -step),
+    Home: () => show(0),
+    End: () => show(state.images.length - 1),
+    '+': () => zoomTo(nextZoom(state.zoom, 1)),
+    '=': () => zoomTo(nextZoom(state.zoom, 1)),
+    '-': () => zoomTo(nextZoom(state.zoom, -1)),
+    0: () => zoomTo(1),
+    Escape: () => zoomTo(1),
+    };
+    const run = keys[event.key];
+    if (!run) return;
+    if (event.key === 'Escape' && !zoomed) return;
+    if ((event.key === 'ArrowUp' || event.key === 'ArrowDown') && !zoomed) return;
+    event.preventDefault();
+    run();
+    }, { signal });
+    const frame = v.frame;
+    const centre = (event) => {
+    const box = frame.getBoundingClientRect();
+    return { x: event.clientX - box.left - box.width / 2, y: event.clientY - box.top - box.height / 2 };
+    };
+    frame.addEventListener('dblclick', (event) => zoomTo(state.zoom > 1 ? 1 : 2, centre(event)), { signal });
+    frame.addEventListener('wheel', ( event) => {
+    if (!event.ctrlKey) return;
+    event.preventDefault();
+    zoomTo(state.zoom * Math.exp(-event.deltaY / 200), centre(event));
+    }, { signal, passive: false });
+    frame.addEventListener('pointerdown', ( event) => {
+    if (event.button !== 0 || state.images.length === 0) return;
+    try {
+    frame.setPointerCapture?.(event.pointerId);
+    } catch {
+    }
+    state.pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+    if (state.pointers.size > 2) return;
+    if (state.pointers.size === 2) {
+    const [a, b] = [...state.pointers.values()];
+    state.gesture = { kind: 'pinch', distance: Math.hypot(a.x - b.x, a.y - b.y) || 1, zoom: state.zoom };
+    return;
+    }
+    state.gesture = { kind: state.zoom > 1 ? 'pan' : 'swipe', start: { x: event.clientX, y: event.clientY }, from: { x: state.x, y: state.y }, touch: event.pointerType !== 'mouse', moved: false };
+    }, { signal });
+    frame.addEventListener('pointermove', ( event) => {
+    if (!state.pointers.has(event.pointerId) || !state.gesture) return;
+    state.pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+    const gesture = state.gesture;
+    if (gesture.kind === 'pinch') {
+    if (state.pointers.size !== 2) return;
+    const [a, b] = [...state.pointers.values()];
+    frame.setAttribute('data-dragging', '');
+    zoomTo(gesture.zoom * (Math.hypot(a.x - b.x, a.y - b.y) / gesture.distance));
+    return;
+    }
+    const dx = event.clientX - gesture.start.x;
+    const dy = event.clientY - gesture.start.y;
+    if (!gesture.moved && Math.hypot(dx, dy) < 4) return;
+    gesture.moved = true;
+    frame.setAttribute('data-dragging', '');
+    if (gesture.kind === 'pan') {
+    const { frame: room, size } = measure();
+    const pan = clampPan(gesture.from.x + dx, gesture.from.y + dy, size, room, state.zoom);
+    state.x = pan.x;
+    state.y = pan.y;
+    paintTransform();
+    } else if (gesture.touch && state.images.length > 1) {
+    state.x = Math.round(dx);
+    paintTransform();
+    }
+    }, { signal });
+    const end = ( event) => {
+    if (!state.pointers.delete(event.pointerId)) return;
+    const gesture = state.gesture;
+    if (state.pointers.size > 0) {
+    if (gesture?.kind === 'pinch' && state.pointers.size === 1) {
+    const [rest] = [...state.pointers.values()];
+    state.gesture = { kind: state.zoom > 1 ? 'pan' : 'swipe', start: { x: rest.x, y: rest.y }, from: { x: state.x, y: state.y }, touch: true, moved: true };
+    } else if (gesture?.kind === 'pinch' && state.pointers.size === 2) {
+    const [a, b] = [...state.pointers.values()];
+    state.gesture = { kind: 'pinch', distance: Math.hypot(a.x - b.x, a.y - b.y) || 1, zoom: state.zoom };
+    }
+    return;
+    }
+    state.gesture = null;
+    frame.removeAttribute('data-dragging');
+    if (!gesture) return;
+    if (gesture.kind === 'swipe' && gesture.touch) {
+    const dx = event.clientX - gesture.start.x;
+    const width = frame.getBoundingClientRect().width;
+    if (gesture.moved && Math.abs(dx) > width / 5 && state.images.length > 1) show(state.index + (dx < 0 ? 1 : -1));
+    else if (gesture.moved) {
+    state.x = 0;
+    paintTransform();
+    } else {
+    const now = event.timeStamp;
+    if (now - state.lastTap < motionDuration(frame, '--ds-delay-dismiss')) zoomTo(state.zoom > 1 ? 1 : 2, centre(event));
+    state.lastTap = now;
+    }
+    }
+    };
+    frame.addEventListener('pointerup', end, { signal });
+    frame.addEventListener('pointercancel', end, { signal });
+    v.dialog.addEventListener('ds:close', (event) => {
+    if (event.target !== v.dialog) return;
+    emit(gallery, 'close', { index: state.index });
+    }, { signal });
+    }
+    if (typeof gallery.addEventListener === 'function') {
+    gallery.addEventListener('click', ( event) => {
+    if (event.defaultPrevented || event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey) return;
+    const item = (event.target)?.closest?.(ITEMS);
+    if (!item || !gallery.contains(item)) return;
+    event.preventDefault();
+    const index = [...gallery.querySelectorAll(ITEMS)].indexOf(item);
+    controller.open(index, item);
+    }, { signal });
+    }
+    const controller = {
+    element: gallery,
+    get: () => ({ open: isOpen(), index: state.index, total: state.images.length, zoom: state.zoom }),
+    set( value) {
+    const next = typeof value === 'number' ? { index: value } : value ?? {};
+    if (typeof next.index === 'number') {
+    if (!state.images.length) state.images = list();
+    show(next.index, isOpen());
+    }
+    if (typeof next.zoom === 'number' && state.viewer) zoomTo(next.zoom);
+    },
+    open( index = 0, opener = null) {
+    state.images = list();
+    if (!state.images.length) return Promise.resolve();
+    const v = viewer();
+    carryOptions(homeOf(), v.dialog);
+    show(index, false);
+    const opened = openOverlay(v.dialog, { opener });
+    announce(`${t('imageOf', { index: state.index + 1, total: state.images.length })}. ${state.images[state.index].caption || state.images[state.index].alt || ''}`.trim());
+    emit(gallery, 'open', { index: state.index });
+    return opened;
+    },
+    close: () => (state.viewer ? closeOverlay(state.viewer.dialog) : Promise.resolve()),
+    next: () => show(state.index + 1),
+    prev: () => show(state.index - 1),
+    on( type, fn) {
+    if (typeof gallery.addEventListener !== 'function') return () => {};
+    const name = `ds:${type}`;
+    gallery.addEventListener(name, fn);
+    const off = () => gallery.removeEventListener(name, fn);
+    listeners.push(off);
+    return off;
+    },
+    destroy() {
+    if (controllers.get(gallery) !== controller) return;
+    controllers.delete(gallery);
+    abort.abort();
+    state.rover?.destroy?.();
+    for (const off of listeners.splice(0)) off();
+    const dialog = state.viewer?.dialog;
+    state.viewer = null;
+    if (!dialog) return;
+    const phase = overlays.get(dialog);
+    if (phase?.phase === 'open') closeOverlay(dialog).then(() => dialog.remove());
+    else if (phase?.phase === 'closing') Promise.resolve(phase.closing).then(() => dialog.remove());
+    else dialog.remove();
+    },
+    };
+    controllers.set(gallery, controller);
+    return controller;
+    }
+    function open(gallery, options = {}) {
+    return create(gallery).open(options.index ?? 0, options.opener ?? null);
+    }
+    function close(gallery) {
+    return controllers.get(gallery)?.close() ?? Promise.resolve();
+    }
+    function show(images, options = {}) {
+    const doc = options.opener?.ownerDocument ?? globalThis.document;
+    const home = options.opener ?? doc.querySelector('.ds-theme') ?? doc.body;
+    const key = doc.createElement('div');
+    if (options.label) key.setAttribute('aria-label', options.label);
+    const controller = create(key, { images: () => images.slice(), label: options.label, home });
+    key.addEventListener('ds:close', () => controller.destroy(), { once: true });
+    controller.open(options.index ?? 0, options.opener ?? null);
+    return controller;
+    }
+    define('lightbox', {
+    attribute: 'data-ds-lightbox',
+    init: (element) => create(element),
+    });
+
+    return Object.freeze({
+      MAX_ZOOM: MAX_ZOOM,
+      nextZoom: nextZoom,
+      clampPan: clampPan,
+      create: create,
+      open: open,
+      close: close,
+      show: show
     });
   });
 

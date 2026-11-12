@@ -151,8 +151,7 @@
 
 /* A dialog opened from the viewer sits inside it (DS.overlay moves it
    there) and would inherit the viewer's width: it keeps DS's own. */
-.so-testform,
-.so-lightbox {
+.so-testform {
   --ds-dialog-width-lg: initial;
 }
 

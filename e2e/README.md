@@ -262,7 +262,7 @@ touch mode, except `options`, which measures the narrowest phone in use,
 | `chat-offline` | what a chat is told offline — from two tabs, a model switch, an answer — or whose answer was lost, or left across a reload, is delivered once |
 | `chat-ask` | questions: the card and the dialog, every kind, a plan, a counter-question, Home, two devices; Enter in a field of the dialog or a plan's note presses its main button (Next, Send answers, Send question, Send back), Shift+Enter is a new line |
 | `chat-attach` | files from the button, dropped and pasted, at the paths the server chose; a pasted image previewed in the composer and drawn small in the bubble |
-| `chat-images` | a Claude Code tool's image stands beside its call, outside the fold; an image part and a Markdown image of a file the agent shows are drawn small; a path no text names is refused; a click opens the chat's images in the lightbox, Next goes on |
+| `chat-images` | a Claude Code tool's image stands beside its call, outside the fold; an image part and a Markdown image of a file the agent shows are drawn small; a path no text names is refused; a click opens the chat's images in the lightbox, a double click zooms in, a drag pans the zoomed image, Escape fits it again before it closes, Next goes on |
 | `chat-phone` | a chat on a phone: 48 px targets, no sideways scroll, the keyboard, the dialog as the whole screen; Enter sends from the composer and Shift+Enter is a new line, as at a desk |
 | `chat-home` | Home reads a chat from its journal: what it does, Running and Finished, its question on the card, at a desk and on a phone |
 | `chat-push` | a chat's notification and badge: the question's words, how a turn ended, nothing for a Stop, a limit once |

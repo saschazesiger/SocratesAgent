@@ -126,6 +126,31 @@ function remember(source, out) {
 }
 
 /**
+ * chatImages is how a chat draws the images of files on this machine that
+ * an agent's text shows (markdown's `images`): from the chat's image route,
+ * which serves one only when a text of the agent's names it (server
+ * handleChatShownImage) - an answer's, or a question's (ask_user). One per
+ * chat, so that the cache keeps what it drew.
+ */
+export function chatImages(id) {
+  if (!id) return null;
+  let one = drawers.get(id);
+  if (!one) {
+    one = { key: id, src: (href) => '/api/chats/' + encodeURIComponent(id) + '/image?path=' + encodeURIComponent(decodePath(href)) };
+    drawers.set(id, one);
+  }
+  return one;
+}
+const drawers = new Map();
+
+// decodePath is a Markdown image's path as the agent wrote it: marked
+// percent-encodes what a URL may not hold (a space), which the text names
+// plain.
+function decodePath(href) {
+  try { return decodeURI(String(href || '')); } catch { return String(href || ''); }
+}
+
+/**
  * markdown is a text as safe markup, ready for html``. `keep: false` is for
  * a text that is still being written: each of its states is drawn once and
  * never again, so none is kept. `images` draws the images of files on this

@@ -95,3 +95,23 @@ func TestAnAskCanAskForItsAnswerAsTheNextMessage(t *testing.T) {
 		t.Fatalf("deliver %q %q", p.Ask("k").Deliver, p.Ask("j").Deliver)
 	}
 }
+
+// A file a question names (its context, a step, a section, an option's
+// details) is one the chat may show, as one an answer names is; a path
+// that only the JSON escapes differently is still the path.
+func TestAQuestionNamesTheFilesItShows(t *testing.T) {
+	p := Fold([]Event{
+		{Seq: 1, Type: TypePart, MessageID: "m", PartID: "p", Kind: PartText, State: PartDone, Text: "Here: ![a](/tmp/answer.png)"},
+		{Seq: 2, Type: TypeAsk, AskID: "k", Payload: json.RawMessage(`{"questions":[{"id":"q","question":"Which?","context":"See ![shot](\/tmp\/shöt.png)","options":[{"id":"a","label":"A","details":"![b](rel/b.png)"}]}],"steps":["Look at ![c](/tmp/c.png)"]}`)},
+	})
+	for _, named := range []string{"/tmp/answer.png", "/tmp/shöt.png", "rel/b.png", "/tmp/c.png"} {
+		if !p.AgentNames(named) {
+			t.Errorf("%s is named but not served", named)
+		}
+	}
+	for _, other := range []string{"/etc/passwd", "/tmp/other.png", ""} {
+		if p.AgentNames(other) {
+			t.Errorf("%q is not named but would be served", other)
+		}
+	}
+}

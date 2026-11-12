@@ -515,8 +515,9 @@ func (p *Projection) Seen(clientID string) (int64, bool) {
 func (p *Projection) Message(id string) *Message { return p.messages[id] }
 
 // AgentNames says whether a text the agent wrote in this chat (a text part,
-// at any depth) has s in it: what the chat may show of a file the agent
-// named (server handleChatShownImage).
+// at any depth, or any text of a question it asked: its context, steps,
+// sections, options) has s in it: what the chat may show of a file the
+// agent named (server handleChatShownImage).
 func (p *Projection) AgentNames(s string) bool {
 	if s == "" {
 		return false
@@ -526,7 +527,43 @@ func (p *Projection) AgentNames(s string) bool {
 			return true
 		}
 	}
+	for _, a := range p.Asks {
+		if payloadNames(a.Payload, s) {
+			return true
+		}
+	}
 	return false
+}
+
+// payloadNames says whether a string anywhere in a question's payload has s
+// in it. The strings are decoded first: the JSON may escape what the text
+// names plain (a non-ASCII letter as \u00fc, a slash as \/).
+func payloadNames(payload json.RawMessage, s string) bool {
+	var v any
+	if json.Unmarshal(payload, &v) != nil {
+		return false
+	}
+	var walk func(any) bool
+	walk = func(v any) bool {
+		switch t := v.(type) {
+		case string:
+			return strings.Contains(t, s)
+		case []any:
+			for _, e := range t {
+				if walk(e) {
+					return true
+				}
+			}
+		case map[string]any:
+			for _, e := range t {
+				if walk(e) {
+					return true
+				}
+			}
+		}
+		return false
+	}
+	return walk(v)
 }
 
 // Part is one part by id.

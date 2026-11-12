@@ -7,13 +7,13 @@
   "files": {
     "css": {
       "file": "ds.bundle.css",
-      "bytes": 457271,
-      "gzip": 66913
+      "bytes": 463539,
+      "gzip": 67904
     },
     "js": {
       "file": "ds.bundle.js",
-      "bytes": 835926,
-      "gzip": 202149
+      "bytes": 856128,
+      "gzip": 206914
     },
     "properties": {
       "file": "properties.css",
@@ -262,6 +262,12 @@
       "gzip": 1739
     },
     {
+      "name": "lightbox",
+      "reason": "needed by module lightbox",
+      "bytes": 6268,
+      "gzip": 1692
+    },
+    {
       "name": "highlight",
       "reason": "needed by module code",
       "bytes": 789,
@@ -315,7 +321,7 @@
     },
     {
       "name": "a11y",
-      "reason": "imported by shell"
+      "reason": "imported by lightbox"
     },
     {
       "name": "format",
@@ -366,6 +372,10 @@
       "reason": "needed by code"
     },
     {
+      "name": "lightbox",
+      "reason": "static/js/lightbox.js:4 DS.lightbox"
+    },
+    {
       "name": "list",
       "reason": "needed by list"
     },
@@ -405,7 +415,7 @@
   "icons": [
     {
       "name": "arrowRight",
-      "reason": "static/js/lightbox.js:30"
+      "reason": "config \"icons\": \"all\""
     },
     {
       "name": "arrowLeft",
@@ -417,7 +427,7 @@
     },
     {
       "name": "arrowDown",
-      "reason": "static/js/chatview.js:266"
+      "reason": "static/js/chatview.js:267"
     },
     {
       "name": "chevronDown",
@@ -461,7 +471,7 @@
     },
     {
       "name": "minimize",
-      "reason": "config \"icons\": \"all\""
+      "reason": "used by module lightbox"
     },
     {
       "name": "menu",
@@ -493,7 +503,7 @@
     },
     {
       "name": "compose",
-      "reason": "static/js/askdialog.js:753"
+      "reason": "static/js/askdialog.js:758"
     },
     {
       "name": "pencil",
@@ -613,7 +623,7 @@
     },
     {
       "name": "thumbUp",
-      "reason": "static/js/askdialog.js:773"
+      "reason": "static/js/askdialog.js:778"
     },
     {
       "name": "thumbDown",
@@ -653,7 +663,7 @@
     },
     {
       "name": "clock",
-      "reason": "static/js/askdialog.js:669"
+      "reason": "static/js/askdialog.js:674"
     },
     {
       "name": "ban",
@@ -673,7 +683,7 @@
     },
     {
       "name": "wifiOff",
-      "reason": "static/js/askdialog.js:627"
+      "reason": "static/js/askdialog.js:632"
     },
     {
       "name": "home",
@@ -713,7 +723,7 @@
     },
     {
       "name": "list",
-      "reason": "static/js/askdialog.js:711"
+      "reason": "static/js/askdialog.js:716"
     },
     {
       "name": "columns",
@@ -1537,7 +1547,7 @@
     "ds-btn__faces": "static/admin.html:42",
     "ds-card": "static/admin.html:104",
     "ds-card--elevated": "static/login.html:31",
-    "ds-card--interactive": "static/js/askdialog.js:771",
+    "ds-card--interactive": "static/js/askdialog.js:776",
     "ds-card__action": "static/js/chatparts.js:1475",
     "ds-card__more": "static/js/admingithub.js:229",
     "ds-card__row": "static/admin.html:140",
@@ -1578,7 +1588,7 @@
     "ds-dialog": "static/index.html:201",
     "ds-dialog--bottom": "static/js/session.js:2608",
     "ds-dialog--contained": "static/index.html:201",
-    "ds-dialog--full": "static/js/askdialog.js:377",
+    "ds-dialog--full": "static/js/askdialog.js:378",
     "ds-dialog--full-narrow": "static/js/boards.js:391",
     "ds-dialog--lg": "static/js/admin.js:1337",
     "ds-dialog__actions": "static/index.html:281",
@@ -1621,7 +1631,7 @@
     "ds-field__label": "static/admin.html:162",
     "ds-field__optional": "static/js/adminmcp.js:809",
     "ds-field__row": "static/js/admin.js:1305",
-    "ds-field__row--top": "static/js/askdialog.js:784",
+    "ds-field__row--top": "static/js/askdialog.js:789",
     "ds-filters": "static/costs.html:75",
     "ds-form": "static/admin.html:160",
     "ds-form-actions": "static/admin.html:376",
@@ -1683,7 +1693,7 @@
     "ds-parts__list": "static/js/admin.js:176",
     "ds-plain-list": "static/js/adminmcp.js:511",
     "ds-presence": "static/costs.html:141",
-    "ds-pressable": "static/js/askdialog.js:703",
+    "ds-pressable": "static/js/askdialog.js:708",
     "ds-pressable--inset": "static/js/boards.js:176",
     "ds-pressable--lg": "static/js/session.js:1230",
     "ds-progress": "static/admin.html:405",

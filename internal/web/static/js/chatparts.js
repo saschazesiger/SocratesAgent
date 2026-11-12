@@ -838,7 +838,7 @@ function planHtml(part, view) {
   }
   return html`<section class="ds-card so-part so-plan" data-ds-key="${'p:' + part.id}" data-kind="plan" data-decision="${decision || (waiting ? 'pending' : '')}"${sending ? html` data-sending="${sending}"` : ''}><div class="ds-card__row"><h3 class="ds-card__title so-plan__title">${raw(icon('flag', 18))}<span>Plan</span></h3>${
     decision && DECISION_WORDS[decision] ? html`<span class="${DECISION_TONE[decision]}">${raw(icon(DECISION_GLYPH[decision], 16))}<span>${DECISION_WORDS[decision]}</span></span>` : ''
-  }</div><div class="so-md">${markdown(text)}</div>${
+  }</div><div class="so-md">${markdown(text, { images: view.shownImages })}</div>${
     meta.note ? html`<p class="ds-meta so-plan__note">${'Note: ' + meta.note}</p>` : ''
   }${answer}</section>`;
 }

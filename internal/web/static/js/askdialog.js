@@ -29,7 +29,8 @@
 
 import { api, restoreFocus, toast, errorMessage, isOffline } from './api.js';
 import { html, raw, icon, morph, showOverlay, hideOverlay, M, faces } from './ui.js';
-import { markdown } from './md.js';
+import { markdown, chatImages } from './md.js';
+import { lightbox } from './lightbox.js';
 import { agentMarkHtml } from './logos.js';
 import { askQuestions } from './chatparts.js';
 import { queueAnswer, answeredHere, onOutbox, pendingAnswer, chatOutbox } from './chatoutbox.js';
@@ -428,6 +429,10 @@ export function openAskDialog({ items, start = 0, watch, openChat, closed, more 
   }
 
   function item() { return st.items[st.at] || null; }
+  // md is an agent's text of the question as markup, with the images of
+  // files on this machine it shows drawn small (md.js chatImages): the
+  // server serves those a question of the chat names.
+  function md(text) { return markdown(text, { images: chatImages((item() || {}).chatId) }); }
 
   function settledPhase(ask) {
     return answeredHere(ask.clientId) ? 'answered' : 'elsewhere';
@@ -700,7 +705,7 @@ export function openAskDialog({ items, start = 0, watch, openChat, closed, more 
   function contextHtml(key, text, label, titled = false, glyph = 'info') {
     const open = st.details.has(key);
     const tip = !titled && SHORT_SCREEN.matches ? label : '';
-    return html`<details class="ds-collapsible so-ask-context" data-open-key="${key}"${open ? html` open` : ''}><summary class="ds-pressable so-ask-context__head"${tip ? html` data-tip="${tip}"` : ''}>${raw(icon(glyph, 16))}<span${titled ? html` class="so-ask-title"` : ''}>${label}</span>${raw(icon('chevronDown', 20, 'ds-chevron'))}</summary><div class="so-ask-context__body so-md">${markdown(text)}</div></details>`;
+    return html`<details class="ds-collapsible so-ask-context" data-open-key="${key}"${open ? html` open` : ''}><summary class="ds-pressable so-ask-context__head"${tip ? html` data-tip="${tip}"` : ''}>${raw(icon(glyph, 16))}<span${titled ? html` class="so-ask-title"` : ''}>${label}</span>${raw(icon('chevronDown', 20, 'ds-chevron'))}</summary><div class="so-ask-context__body so-md">${md(text)}</div></details>`;
   }
 
   // stepsHtml is what the person has to do before they can answer, in the
@@ -709,7 +714,7 @@ export function openAskDialog({ items, start = 0, watch, openChat, closed, more 
     const list = Array.isArray(steps) ? steps.filter((step) => typeof step === 'string' && step.trim()) : [];
     if (!list.length) return '';
     return html`<section class="so-ask-steps" data-ds-key="${key}" aria-label="Before you answer"><p class="so-ask-steps__head">${raw(icon('list', 16))}<span>Before you answer</span></p><ol class="so-ask-steps__list">${
-      list.map((step, i) => html`<li class="so-md" data-ds-key="${key + ':' + i}">${markdown(step)}</li>`)
+      list.map((step, i) => html`<li class="so-md" data-ds-key="${key + ':' + i}">${md(step)}</li>`)
     }</ol></section>`;
   }
 
@@ -720,7 +725,7 @@ export function openAskDialog({ items, start = 0, watch, openChat, closed, more 
     return sections.map((sec, i) => {
       const k = key + ':' + i;
       if (sec.tone === 'warning') {
-        return html`<div class="ds-alert ds-tone-warning so-ask-section" data-ds-key="${k}">${raw(icon('alert', 20))}<div class="ds-alert__text"><p class="ds-alert__title">${sec.title}</p><div class="so-md">${markdown(sec.body)}</div></div></div>`;
+        return html`<div class="ds-alert ds-tone-warning so-ask-section" data-ds-key="${k}">${raw(icon('alert', 20))}<div class="ds-alert__text"><p class="ds-alert__title">${sec.title}</p><div class="so-md">${md(sec.body)}</div></div></div>`;
       }
       return contextHtml(k, sec.body, sec.title, true, sec.tone === 'success' ? 'checkCircle' : 'info');
     });
@@ -771,7 +776,7 @@ export function openAskDialog({ items, start = 0, watch, openChat, closed, more 
     return html`<div class="so-ask-option" data-ds-key="${'o:' + id}"><button class="ds-card ds-card--interactive so-q-option" type="button" data-action="choose" data-q="${q.id}" data-option="${id}" aria-pressed="${chosen ? 'true' : 'false'}"${multi ? html` data-multi` : ''}><span class="so-q-option-row"><span class="so-q-option-key" aria-hidden="true">${chosen ? raw(icon('check', 20)) : String(i + 1)}</span><span class="so-q-option-text"><span class="so-q-option-label">${option.label || id}</span>${
       option.description ? html`<span class="so-q-option-desc">${option.description}</span>` : ''
     }${option.recommended ? html`<span class="ds-status ds-tone-success so-q-recommended">${raw(icon('thumbUp', 16))}<span>Recommended</span></span>` : ''}</span></span></button>${
-      option.details ? html`<button class="ds-btn ds-btn--text ds-sm so-ask-more" type="button" data-action="details" data-key="${detailKey}" aria-expanded="${open ? 'true' : 'false'}">${open ? 'Fewer details' : 'Details'}${raw(icon('chevronDown', 16, 'ds-chevron'))}</button>${open ? html`<div class="so-ask-details so-md">${markdown(option.details)}</div>` : ''}` : ''
+      option.details ? html`<button class="ds-btn ds-btn--text ds-sm so-ask-more" type="button" data-action="details" data-key="${detailKey}" aria-expanded="${open ? 'true' : 'false'}">${open ? 'Fewer details' : 'Details'}${raw(icon('chevronDown', 16, 'ds-chevron'))}</button>${open ? html`<div class="so-ask-details so-md">${md(option.details)}</div>` : ''}` : ''
     }</div>`;
   }
 
@@ -948,6 +953,12 @@ export function openAskDialog({ items, start = 0, watch, openChat, closed, more 
     const qid = target.dataset.q;
     switch (target.dataset.action) {
       case 'close': close(); break;
+      case 'image': {
+        // Every image of the question, in its order, from this one.
+        const all = [...shell.querySelectorAll('[data-action="image"]')];
+        lightbox(all.map((one) => ({ src: one.dataset.src, name: one.dataset.name })), Math.max(0, all.indexOf(target)), target);
+        break;
+      }
       case 'open-chat': { const one = item(); close(); if (openChat) openChat(one.chatId); break; }
       case 'choose': choose(qid, target.dataset.option); break;
       case 'delegate': {

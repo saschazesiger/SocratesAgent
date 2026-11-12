@@ -335,20 +335,20 @@ export async function chattests() {
 
     // The lightbox, over every image of the run.
     await page.click('dialog.so-testv .so-step[data-step="1"] .so-shot');
-    await page.waitForSelector('dialog.so-lightbox[open] img.so-lightbox__img', { timeout: 5000 });
-    const first = await page.$eval('dialog.so-lightbox', (n) => n.querySelector('.ds-dialog__title').textContent);
+    await page.waitForSelector('dialog.ds-lightbox[open] img.ds-lightbox__image', { timeout: 5000 });
+    const first = await page.$eval('dialog.ds-lightbox', (n) => n.getAttribute('aria-label') + ': ' + n.querySelector('.ds-lightbox__count').textContent);
     await page.keyboard.press('ArrowRight');
     await wait(200);
-    const second = await page.$eval('dialog.so-lightbox', (n) => ({ title: n.querySelector('.ds-dialog__title').textContent, src: n.querySelector('img').getAttribute('src'), caption: n.querySelector('figcaption').textContent }));
+    const second = await page.$eval('dialog.ds-lightbox', (n) => ({ title: n.querySelector('.ds-lightbox__count').textContent, src: n.querySelector('.ds-lightbox__image').getAttribute('src'), caption: n.querySelector('figcaption').textContent }));
     await page.keyboard.press('ArrowLeft');
     await wait(200);
-    const back = await page.$eval('dialog.so-lightbox .ds-dialog__title', (n) => n.textContent);
-    ok(first === 'Screenshot 1 of 2' && second.title === 'Screenshot 2 of 2' && /02-wrong-password\.png$/.test(second.src) && /Step 2/.test(second.caption) && back === 'Screenshot 1 of 2',
+    const back = await page.$eval('dialog.ds-lightbox .ds-lightbox__count', (n) => n.textContent);
+    ok(first === 'Screenshots: Image 1 of 2' && second.title === 'Image 2 of 2' && /02-wrong-password\.png$/.test(second.src) && /Step 2/.test(second.caption) && back === 'Image 1 of 2',
       'a thumbnail opens the image large; the arrow keys go through every image of the run', JSON.stringify({ first, second, back }));
     await still(page);
     await shot(page, 'chattests-lightbox');
     await page.keyboard.press('Escape');
-    const lbClosed = await page.waitForSelector('dialog.so-lightbox', { state: 'detached', timeout: 5000 }).then(() => true, () => false);
+    const lbClosed = await page.waitForSelector('dialog.ds-lightbox', { state: 'detached', timeout: 5000 }).then(() => true, () => false);
     ok(lbClosed && !!(await page.$('dialog.so-testv[open]')), 'Escape closes the lightbox and leaves the viewer', String(lbClosed));
 
     // Override.

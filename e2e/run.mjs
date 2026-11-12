@@ -10217,19 +10217,29 @@ async function outcome() {
 
 // ask-texts: what the agent writes around its questions besides context -
 // the steps to take before answering, a warning, a section it wants read
-// and one that folds - all in the dialog, the batch's on the first
-// question, a question's own above its options; and Read aloud says them.
+// (with a screenshot the agent took, drawn small and opened large) and one
+// that folds - all in the dialog, the batch's on the first question, a
+// question's own above its options; and Read aloud says them.
 async function asktexts() {
   const s = await homeChats();
   try {
     await awaitHome(s.page, (h) => h.shown, 10000);
+    const picture = join(s.data, 'login-error.png');
+    const pixels = await s.page.evaluate(() => {
+      const c = document.createElement('canvas');
+      c.width = 600; c.height = 300;
+      const g = c.getContext('2d');
+      g.fillStyle = '#36c'; g.fillRect(0, 0, 600, 300);
+      return c.toDataURL('image/png').split(',')[1];
+    });
+    writeFileSync(picture, Buffer.from(pixels, 'base64'));
     const ask = {
       title: 'Staging login',
       context: 'The deploy to staging fails with **401** since this morning.',
       steps: ['Open https://staging.example.com and sign in', 'Run `make smoke` in the repository'],
       sections: [
         { title: 'Do not use production', body: 'The prod password locks the account.', tone: 'warning' },
-        { title: 'What I tried', body: 'Three logins with the token from the vault.', open: true },
+        { title: 'What I tried', body: 'Three logins with the token from the vault:\n\n![the login error](' + picture + ')', open: true },
         { title: 'Full log', body: '```\nHTTP 401\n```', tone: 'info' },
       ],
       questions: [
@@ -10272,7 +10282,22 @@ async function asktexts() {
     ok(!!fold('What I tried') && fold('What I tried').open && !!fold('Full log') && !fold('Full log').open && !!fold('Staging login'),
       'a section the agent wants read is unfolded, another folds under its own title', JSON.stringify(first && first.folds));
     ok(!!first && first.overflow <= 0, 'nothing widens the dialog', String(first && first.overflow));
+    const drawn = await s.page.waitForFunction(() => {
+      const img = document.querySelector('dialog.so-askdlg .so-ask-context .so-thumb img');
+      return img && img.complete && img.naturalWidth > 0 ? { alt: img.alt, w: img.naturalWidth } : null;
+    }, null, { timeout: 10000 }).then((h) => h.jsonValue(), () => null);
+    ok(!!drawn && drawn.alt === 'the login error' && drawn.w === 600, 'an image a question shows is drawn small in the dialog', JSON.stringify(drawn));
     await shot(s.page, 'ask-texts');
+    await s.page.click('dialog.so-askdlg .so-ask-context .so-thumb');
+    const large = await s.page.waitForFunction(() => {
+      const img = document.querySelector('dialog.ds-lightbox[open] .ds-lightbox__image');
+      return img && img.complete && img.naturalWidth === 600 ? img.alt : null;
+    }, null, { timeout: 5000 }).then((h) => h.jsonValue(), () => null);
+    await wait(400);
+    await s.page.keyboard.press('Escape');
+    const back = await s.page.waitForSelector('dialog.ds-lightbox', { state: 'detached', timeout: 5000 }).then(() => true, () => false);
+    const still = await s.page.evaluate(() => !!document.querySelector('dialog.so-askdlg[open]'));
+    ok(large === 'the login error' && back && still, 'a click opens it large over the question; Escape closes it and leaves the question', JSON.stringify({ large, back, still }));
 
     await s.page.click('dialog.so-askdlg [data-action="choose"][data-option="yes"]');
     await s.page.click('dialog.so-askdlg [data-action="forward"]').catch(() => {});
@@ -14569,17 +14594,38 @@ async function chatimages() {
 
     await shot(page, 'chat-images-small');
     await page.click('#chat .so-thumb');
-    await page.waitForSelector('.so-lightbox[open]', { timeout: 5000 });
-    const first = await page.$eval('.so-lightbox .ds-dialog__title', (n) => n.textContent);
-    await page.click('.so-lightbox [data-go="1"]');
+    await page.waitForSelector('dialog.ds-lightbox[open]', { timeout: 5000 });
+    await wait(400);
+    const first = await page.$eval('dialog.ds-lightbox .ds-lightbox__count', (n) => n.textContent);
+    // Zoom and pan: a double click zooms in there, a drag moves it, Escape
+    // goes back to the fit before it closes.
+    const frameBox = await page.$eval('dialog.ds-lightbox .ds-lightbox__frame', (n) => { const r = n.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; });
+    const view = () => page.$eval('dialog.ds-lightbox .ds-lightbox__frame', (n) => ({
+      zoom: Number(n.style.getPropertyValue('--ds-lightbox-zoom') || 1), x: parseFloat(n.style.getPropertyValue('--ds-lightbox-x') || '0') }));
+    await page.mouse.dblclick(frameBox.x, frameBox.y);
+    await wait(400);
+    const zoomed = await view();
+    await page.mouse.move(frameBox.x, frameBox.y);
+    await page.mouse.down();
+    await page.mouse.move(frameBox.x + 80, frameBox.y, { steps: 6 });
+    await page.mouse.up();
+    const panned = await view();
+    await page.keyboard.press('Escape');
+    await wait(400);
+    const fit = await view();
+    const open = await page.evaluate(() => !!document.querySelector('dialog.ds-lightbox[open]'));
+    ok(zoomed.zoom >= 2 && panned.zoom === zoomed.zoom && panned.x > zoomed.x && fit.zoom === 1 && open,
+      'a double click zooms in, a drag pans the zoomed image, Escape fits it again first', JSON.stringify({ zoomed, panned, fit, open }));
+    await page.click('dialog.ds-lightbox .ds-lightbox__nav--next');
     const second = await page.waitForFunction(() => {
-      const t = document.querySelector('.so-lightbox .ds-dialog__title').textContent;
-      const img = document.querySelector('.so-lightbox__img');
+      const t = document.querySelector('dialog.ds-lightbox .ds-lightbox__count').textContent;
+      const img = document.querySelector('dialog.ds-lightbox .ds-lightbox__image');
       return t.endsWith('2 of 2') && img.complete && img.naturalWidth === 400 ? t : null;
     }, null, { timeout: 5000 }).then((h) => h.jsonValue(), () => null);
+    await wait(400);
     await shot(page, 'chat-images');
     await page.keyboard.press('Escape');
-    await page.waitForSelector('.so-lightbox', { state: 'detached', timeout: 5000 });
+    await page.waitForSelector('dialog.ds-lightbox', { state: 'detached', timeout: 5000 });
     ok(first === 'Image 1 of 2' && second === 'Image 2 of 2', 'a click opens the chat\u2019s images large, and Next goes to the next', JSON.stringify({ first, second }));
     ok(unexpected(s.errors).length === 0, 'no console errors', unexpected(s.errors).join(' | ') || '0');
   } finally { await s.stop(); }
@@ -16080,7 +16126,7 @@ const ALL = [
   ['home-live', 'the numbers on Home move by themselves, with no terminal attached', homelive],
   ['many-chats', 'sixty chats at work on a slow CPU: Home and an open chat still answer at once', manychats],
   ['outcome', 'a turn\'s end is judged: the hourglass while it is read, then the verdict everywhere', outcome],
-  ['ask-texts', 'the steps, warnings and sections an agent writes around its questions, in the dialog', asktexts],
+  ['ask-texts', 'the steps, warnings, sections and images an agent writes around its questions, in the dialog', asktexts],
   ['home-question', 'a chat\u2019s question answered with a tap, and the choice at the agent', homequestion],
   ['home-own-answer', 'an answer of one\u2019s own, typed into the question dialog', homeownanswer],
   ['home-queue', 'two questions, one after the other, oldest first', homequeue],

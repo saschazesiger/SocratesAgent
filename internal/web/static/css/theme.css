@@ -112,8 +112,7 @@
 
   /* A chat's tests (so-chattests.css): the column beside the chat at a
      desk, the newest screenshot in a running test's row, a step's
-     thumbnails and number, the viewer's width, and how tall an image in
-     the lightbox may be (the window less its head and its buttons). */
+     thumbnails and number, and the viewer's width. */
   --so-tests-width: clamp(320px, 28vw, 420px);
   --so-tests-shot-width: 72px;
   --so-tests-shot-height: 48px;
@@ -121,7 +120,6 @@
   --so-shot-height: 104px;
   --so-step-n-size: 24px;
   --so-testv-width: 760px;
-  --so-lightbox-img-max: calc(var(--ds-viewport-height, 100dvh) - 220px);
 
   /* A chat's images drawn small (so-chat.css .so-thumb): how tall and how
      wide a screenshot or a picture the agent showed may be, and the square
