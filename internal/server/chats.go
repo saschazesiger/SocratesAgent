@@ -256,7 +256,7 @@ func (h *chatHub) revoke() {
 	}
 	h.mu.Unlock()
 	for _, st := range streams {
-		if !h.srv.store.ValidLogin(st.token) {
+		if !h.srv.stillSignedIn(st.login) {
 			st.end(eventsSignedOut, "signed out")
 		}
 	}

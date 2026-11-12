@@ -95,6 +95,9 @@ const (
 	ChatLock    = "host.lock"
 	ChatLog     = "host.log"
 	ChatSockets = Run + "/chats"
+	// TunnelSocket is where cloudflared reaches Socrates: requests on it come
+	// from the Cloudflare tunnel and nowhere else (internal/cloudflare).
+	TunnelSocket = Run + "/tunnel.sock"
 	// ChatSummary is the server's summary of a chat's journal as of one seq,
 	// which it starts from instead of reading the history (WP9). It is made
 	// again from the journal whenever it does not match it, so it is not

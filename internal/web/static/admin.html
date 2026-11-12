@@ -16,7 +16,7 @@
 <meta name="apple-mobile-web-app-title" content="Socrates">
 <link rel="icon" href="/favicon.png">
 <link rel="apple-touch-icon" sizes="180x180" href="/static/img/apple-touch-icon.png">
-<link rel="manifest" href="/static/manifest.json">
+<link rel="manifest" href="/static/manifest.json" crossorigin="use-credentials">
 <link rel="preload" href="/static/vendor/z-dash/fonts/google-sans-latin-opsz-normal.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="stylesheet" href="/static/vendor/z-dash/fonts/fonts.css">
 <link rel="stylesheet" href="/static/ds/ds.bundle.css">
@@ -96,8 +96,7 @@
             <p class="ds-page-head__lead">Everything about Socrates on this machine. Settings are kept once you save them; accounts, the backup, the tunnel and the password take effect at once.</p>
           </header>
 
-          <!-- A message about the whole page: the welcome after setup, or a
-               tunnel that could not be started on the way in. -->
+          <!-- A message about the whole page: the welcome after setup. -->
           <div class="so-admin-notice" id="notice" hidden></div>
 
           <!-- ── Agents ───────────────────────────────────────────────── -->
@@ -347,72 +346,22 @@
 
           <!-- ── Access ───────────────────────────────────────────────── -->
 
+          <!-- Remote access (cloudflare.js): a Cloudflare tunnel that
+               Socrates sets up with an API token, drawn from GET
+               /api/cloudflare. Its actions count at once, not with Save. -->
           <section class="ds-card" id="tunnelCard" aria-labelledby="tunnelTitle">
             <h2 class="ds-card__title" id="tunnelTitle">Remote access</h2>
-            <p class="ds-muted">Publish Socrates on the internet through a Cloudflare tunnel — no open port, no router configuration. It keeps serving on its local address either way, which is the address you point Cloudflare at.</p>
-            <div class="so-state" id="tunnelStatus" aria-live="polite">
-              <span class="so-state__line"><span class="ds-status"><span class="ds-spinner ds-status__spinner" aria-hidden="true"></span><span>Loading</span></span></span>
-              <span class="so-state__tip"></span>
+            <p class="ds-muted">Reach Socrates from anywhere through a Cloudflare tunnel: no open port, no router setup. Socrates creates the tunnel, its address and the login for you. Through the tunnel, Cloudflare Access signs you in with your e-mail address; the password stays for the local address, which keeps working either way.</p>
+            <div id="cloudflare">
+              <div class="ds-cluster" role="status"><span class="ds-status"><span class="ds-spinner ds-status__spinner" aria-hidden="true"></span><span>Loading</span></span></div>
             </div>
-            <div class="ds-alert ds-tone-error" id="tunnelErrorBox" hidden data-icon="alertCircle" data-icon-place="start"><span class="ds-alert__text" id="tunnelError"></span></div>
-            <div class="ds-form">
-              <div class="ds-form-grid ds-form-grid--2">
-                <div class="ds-field">
-                  <label class="ds-field__label" for="tunnelMode">Tunnel type</label>
-                  <select class="ds-input" id="tunnelMode" aria-describedby="tunnelModeHint">
-                    <option value="quick">Quick tunnel</option>
-                    <option value="token">Named tunnel</option>
-                  </select>
-                  <small class="ds-field__hint" id="tunnelModeHint"></small>
-                </div>
-                <div class="ds-field">
-                  <label class="ds-field__label" for="tunnelHostname">Public hostname</label>
-                  <input class="ds-input" type="text" id="tunnelHostname" placeholder="socrates.example.com" spellcheck="false" aria-describedby="tunnelHostnameHint">
-                  <small class="ds-field__hint" id="tunnelHostnameHint">The hostname you mapped to this tunnel in the Cloudflare dashboard.</small>
-                </div>
-                <div class="ds-field">
-                  <label class="ds-field__label" for="tunnelToken">Tunnel token</label>
-                  <input class="ds-input" type="password" id="tunnelToken" autocomplete="off" placeholder="eyJhIjoi…" aria-describedby="tunnelTokenHint">
-                  <small class="ds-field__hint" id="tunnelTokenHint">Zero Trust → Networks → Tunnels → your tunnel → Install connector. Copy the token out of the shown command.</small>
-                </div>
-                <div class="ds-field">
-                  <label class="ds-field__label" for="tunnelCommand">cloudflared path</label>
-                  <input class="ds-input" type="text" id="tunnelCommand" placeholder="cloudflared" spellcheck="false" aria-describedby="tunnelInstallHint">
-                  <small class="ds-field__hint" id="tunnelInstallHint"></small>
-                </div>
-                <div class="ds-field ds-field--full">
-                  <label class="ds-field__label" for="tunnelArgs">Extra arguments</label>
-                  <input class="ds-input" type="text" id="tunnelArgs" placeholder="--loglevel debug" spellcheck="false">
-                </div>
-              </div>
-              <div class="ds-form-actions">
-                <button class="ds-btn ds-btn--tonal" id="tunnelStart" type="button">
-                  <span class="ds-btn__faces">
-                    <span class="ds-btn__face">Start tunnel</span>
-                    <span class="ds-btn__face ds-btn__face--busy" aria-hidden="true"><span class="ds-spinner ds-spinner--ink ds-sm"></span>Starting</span>
-                  </span>
-                </button>
-                <button class="ds-btn" id="tunnelStop" type="button">
-                  <span class="ds-btn__faces">
-                    <span class="ds-btn__face">Stop tunnel</span>
-                    <span class="ds-btn__face ds-btn__face--busy" aria-hidden="true"><span class="ds-spinner ds-spinner--ink ds-sm"></span>Stopping</span>
-                  </span>
-                </button>
-                <button class="ds-btn" id="tunnelInstall" type="button" hidden>
-                  <span class="ds-btn__faces">
-                    <span class="ds-btn__face">Download cloudflared</span>
-                    <span class="ds-btn__face ds-btn__face--busy" aria-hidden="true"><span class="ds-spinner ds-spinner--ink ds-sm"></span>Downloading</span>
-                  </span>
-                </button>
-                <button class="ds-btn ds-btn--text" id="tunnelLogToggle" type="button" aria-expanded="false" aria-controls="tunnelLog">Show log</button>
-              </div>
-            </div>
-            <pre class="ds-code-block ds-code-block--wrap so-log" id="tunnelLog" tabindex="0" aria-label="Tunnel log" hidden></pre>
           </section>
 
           <section class="ds-card" id="passwordCard" aria-labelledby="passwordTitle">
             <h2 class="ds-card__title" id="passwordTitle">Password</h2>
             <p class="ds-muted">Changing it signs out every other browser.</p>
+            <!-- Through the tunnel: who Cloudflare Access signed in (admin.js). -->
+            <div class="ds-alert" id="pwViaBox" role="status" hidden data-icon="info" data-icon-place="start"><span class="ds-alert__text" id="pwVia"></span></div>
             <div class="ds-form">
               <div class="ds-form-grid ds-form-grid--2">
                 <div class="ds-field">

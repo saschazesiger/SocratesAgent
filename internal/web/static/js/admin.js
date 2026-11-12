@@ -32,6 +32,7 @@ import * as harnesses from './harnesses.js';
 import * as accounts from './accounts.js';
 import * as mcpCard from './adminmcp.js';
 import * as githubCard from './admingithub.js';
+import { mountCloudflare } from './cloudflare.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -80,11 +81,6 @@ const FIELDS = [
   ['googleVoiceEn', 'voice.google_voice_en'],
   ['googleVoiceDe', 'voice.google_voice_de'],
   ['ttsRate', 'voice.tts_rate', 'number'],
-  ['tunnelMode', 'tunnel.mode'],
-  ['tunnelToken', 'tunnel.token'],
-  ['tunnelHostname', 'tunnel.hostname'],
-  ['tunnelCommand', 'tunnel.command'],
-  ['tunnelArgs', 'tunnel.extra_args', 'args'],
 ];
 
 const WINDOW_SIZE_HINTS = {
@@ -95,9 +91,8 @@ const WINDOW_SIZE_HINTS = {
 
 const HARNESS_ORDER = ['shell', 'claude', 'codex', 'opencode', 'vscode'];
 
-let tunnelTimer = null;
-let installHints = {};
-let localURL = '';
+// The Remote access card (cloudflare.js), once the page has loaded.
+let remote = null;
 
 function getPath(object, path) {
   return path.split('.').reduce((acc, key) => (acc == null ? acc : acc[key]), object);
@@ -239,16 +234,10 @@ async function load() {
   refreshUpdates();
   watchUpdatesCard();
   refreshBackup(true);
-  if (data.local_url) localURL = data.local_url;
-  refreshTunnel();
+  if (!remote) remote = mountCloudflare($('cloudflare'), { log: true, local: data.local_url || '', onChange: showSignedIn });
   if (new URLSearchParams(location.search).get('welcome')) {
     showNotice('Welcome. Sign the agents in under Accounts below, add your OpenRouter key if you want to '
       + 'dictate, then head back to the sessions. The terminal engine and the setup check are at the bottom.', 'ok');
-  }
-  const tunnelError = sessionStorage.getItem('socrates.tunnel_error');
-  if (tunnelError) {
-    sessionStorage.removeItem('socrates.tunnel_error');
-    showNotice('The tunnel could not be started: ' + tunnelError, 'error');
   }
   settleHash();
 }
@@ -259,7 +248,6 @@ function fillForm() {
     if (!node) continue;
     const value = getPath(settings, path);
     if (type === 'bool') node.checked = !!value;
-    else if (type === 'args') node.value = (value || []).join(' ');
     else {
       // A value set through the API that the list does not offer is shown
       // as it is, so that saving the page does not change it.
@@ -284,7 +272,6 @@ function collect() {
     if (type === 'bool') setPath(next, path, node.checked);
     else if (type === 'int') setPath(next, path, Math.round(Number(node.value) || 0));
     else if (type === 'number') setPath(next, path, Number(node.value) || 0);
-    else if (type === 'args') setPath(next, path, splitArgs(node.value));
     else setPath(next, path, node.value);
   }
   next.mcp = { ...(next.mcp || {}), ...mcpCard.collect() };
@@ -1366,11 +1353,6 @@ function bind() {
   mcpCard.mountMCP({ save, dirty: isDirty });
   githubCard.mountGitHub({ save, dirty: isDirty });
   $('windowSize').addEventListener('change', renderWindowSizeHint);
-  $('tunnelStart').addEventListener('click', startTunnel);
-  $('tunnelStop').addEventListener('click', stopTunnel);
-  $('tunnelMode').addEventListener('change', renderTunnelMode);
-  $('tunnelInstall').addEventListener('click', installCloudflared);
-  $('tunnelLogToggle').addEventListener('click', () => toggleLog('tunnelLogToggle', 'tunnelLog', refreshTunnel));
   $('updatesRun').addEventListener('click', runUpdates);
   $('updatesLogToggle').addEventListener('click', () => toggleLog('updatesLogToggle', 'updatesLog', refreshUpdates));
   $('checkVoiceKey').addEventListener('click', checkVoiceKey);
@@ -1417,7 +1399,6 @@ async function save() {
     // The cards are drawn from the settings they just wrote, so they have to
     // follow whatever the server normalised them into.
     renderHarnesses('');
-    refreshTunnel();
     for (const warning of data.warnings || []) toast(warning);
     toast('Settings saved', 'success');
     return true;
@@ -1445,16 +1426,6 @@ function field(label, control, hintText, id) {
     hintText ? el('small', { class: 'ds-field__hint', text: hintText }) : null);
 }
 
-// splitArgs understands simple quoting so paths with spaces survive.
-function splitArgs(value) {
-  const out = [];
-  const pattern = /"([^"]*)"|'([^']*)'|(\S+)/g;
-  let match;
-  while ((match = pattern.exec(value)) !== null) {
-    out.push(match[1] ?? match[2] ?? match[3]);
-  }
-  return out;
-}
 
 
 /* ------------------------------------------------------------- the voice */
@@ -1513,160 +1484,27 @@ async function checkVoiceKey() {
   }
 }
 
-/* ------------------------------------------------------------ the tunnel */
+/* ------------------------------------------------------- remote access */
 
-function tunnelForm() {
-  return {
-    enabled: true,
-    mode: $('tunnelMode').value,
-    token: $('tunnelToken').value.trim(),
-    hostname: $('tunnelHostname').value.trim(),
-    command: $('tunnelCommand').value.trim() || 'cloudflared',
-    extra_args: splitArgs($('tunnelArgs').value),
-  };
-}
-
-function renderTunnelMode() {
-  const named = $('tunnelMode').value === 'token';
-  $('tunnelToken').closest('.ds-field').hidden = !named;
-  $('tunnelHostname').closest('.ds-field').hidden = !named;
-  const local = localURL || 'the local address shown above';
-  // The choices are short, so that a phone shows them whole; what each one
-  // means is said here.
-  $('tunnelModeHint').textContent = named
-    ? 'Your own hostname, with a token from your Cloudflare account. In the Cloudflare dashboard, point its public hostname at ' + local + '.'
-    : 'A random trycloudflare.com address, free and instant, but it changes every restart and anyone with the link can reach the login page.';
-}
-
-const TUNNEL_CHIP = {
-  running: ['ok', 'Up'],
-  starting: ['running', 'Connecting'],
-  installing: ['running', 'Downloading cloudflared'],
-  failed: ['error', 'Failed'],
-  stopped: ['off', 'Off'],
-};
-
-function renderTunnelStatus(status) {
-  const [kind, label] = TUNNEL_CHIP[status.state] || ['waiting', status.state || 'Unknown'];
-  const facts = [];
-  if (status.url) facts.push(html`<a href="${status.url}" target="_blank" rel="noopener" class="so-break">${status.url}</a>`);
-  facts.push('local: ' + (status.local_url || 'http://127.0.0.1:8080'));
-  if (!status.installed) {
-    facts.push(status.can_install ? 'cloudflared is downloaded on start' : 'cloudflared is not installed');
-  }
-  if (status.restarts) facts.push(status.restarts + ' restarts');
-  // Which build and where it lives are state, behind the "i".
-  const tip = [];
-  if (status.installed && status.version) tip.push(status.version);
-  if (status.installed && status.path) tip.push(status.path);
-  renderState($('tunnelStatus'), { kind, label, state: status.state || '', facts, tip, tipLabel: 'cloudflared details' });
-  showAlert('tunnelErrorBox', 'tunnelError', status.error || '');
-
-  const log = $('tunnelLog');
-  if (!log.hidden) {
-    log.textContent = (status.logs || []).join('\n') || 'no output yet';
-    log.scrollTop = log.scrollHeight;
-  }
-  M.setLabel($('tunnelStart'), status.state === 'stopped' ? 'Start tunnel' : 'Restart tunnel');
-  $('tunnelStop').disabled = status.state === 'stopped';
-
-  const installButton = $('tunnelInstall');
-  installButton.hidden = status.installed || !status.can_install;
-  if (status.installed) {
-    $('tunnelInstallHint').textContent = status.managed
-      ? 'Managed by Socrates.'
-      : 'Found on your PATH.';
-  } else if (status.can_install) {
-    $('tunnelInstallHint').textContent = 'Not installed yet. Socrates downloads it automatically when you start the tunnel.';
-  } else {
-    const platform = navigator.platform.toLowerCase();
-    const key = platform.includes('mac') ? 'macos' : platform.includes('win') ? 'windows' : 'linux';
-    $('tunnelInstallHint').textContent = 'No build for this platform. Install it yourself: ' + (installHints[key] || installHints.docs);
-  }
-
-  const live = status.state === 'running' || status.state === 'starting' ||
-    status.state === 'installing' || status.state === 'failed';
-  clearTimeout(tunnelTimer);
-  if (live || !log.hidden) tunnelTimer = setTimeout(refreshTunnel, 3000);
+// The Remote access card draws itself (cloudflare.js). What it reads also
+// says who is signed in: through the tunnel, Cloudflare Access's user, for
+// whom the password is not what signs in.
+function showSignedIn(data) {
+  const email = data && data.via === 'tunnel' ? data.email : '';
+  showAlert('pwViaBox', 'pwVia', email
+    ? 'Signed in as ' + email + ' through Cloudflare Access. The password is only needed on the local address.'
+    : '');
 }
 
 onWake(() => {
   if (document.visibilityState === 'hidden' || !settings) return;
-  // Back from a sign-in page, or from another device.
+  // Back from a sign-in page, or from another device. The Remote access
+  // card asks again by itself.
   loadAccounts();
-  refreshTunnel();
   refreshTmux();
   refreshUpdates();
   refreshBackup();
 });
-
-async function refreshTunnel() {
-  try {
-    const data = await api('/api/tunnel');
-    installHints = data.install || installHints;
-    if (data.status && data.status.local_url) localURL = data.status.local_url;
-    if (data.tunnel) {
-      settings.tunnel = data.tunnel;
-      $('tunnelMode').value = data.tunnel.mode || 'quick';
-      $('tunnelCommand').value = data.tunnel.command || 'cloudflared';
-      if (document.activeElement !== $('tunnelHostname')) $('tunnelHostname').value = data.tunnel.hostname || '';
-      if (document.activeElement !== $('tunnelToken')) $('tunnelToken').value = data.tunnel.token || '';
-      if (document.activeElement !== $('tunnelArgs')) $('tunnelArgs').value = (data.tunnel.extra_args || []).join(' ');
-    }
-    renderTunnelMode();
-    renderTunnelStatus(data.status || {});
-  } catch (err) {
-    clearTimeout(tunnelTimer);
-    // A poll that could not reach the server is not worth a message - the
-    // connection bar already says so - but it must not stop polling either,
-    // or the page would sit on a status that is no longer true.
-    if (isOffline(err)) {
-      tunnelTimer = setTimeout(refreshTunnel, 5000);
-      return;
-    }
-    toast(errorMessage(err), 'error');
-  }
-}
-
-async function startTunnel() {
-  try {
-    const data = await M.busy($('tunnelStart'), api('/api/tunnel/start', { method: 'POST', body: { tunnel: tunnelForm() } }));
-    settings.tunnel = data.tunnel;
-    renderTunnelStatus(data.status || {});
-    toast('Tunnel starting');
-    setTimeout(refreshTunnel, 1200);
-  } catch (err) {
-    toast(errorMessage(err), 'error');
-  }
-}
-
-async function installCloudflared() {
-  if ($('tunnelLog').hidden) toggleLog('tunnelLogToggle', 'tunnelLog', refreshTunnel);
-  else refreshTunnel();
-  try {
-    const data = await M.busy($('tunnelInstall'), api('/api/tunnel/install', { method: 'POST', body: {} }));
-    renderTunnelStatus(data.status || {});
-    toast('cloudflared installed', 'success');
-  } catch (err) {
-    toast(errorMessage(err), 'error');
-  } finally {
-    refreshTunnel();
-  }
-}
-
-async function stopTunnel() {
-  try {
-    const data = await M.busy($('tunnelStop'), api('/api/tunnel/stop', { method: 'POST', body: {} }));
-    settings.tunnel = data.tunnel;
-    renderTunnelStatus(data.status || {});
-    toast('Tunnel stopped');
-  } catch (err) {
-    toast(errorMessage(err), 'error');
-  } finally {
-    // renderTunnelStatus decides whether this button belongs enabled at all.
-    refreshTunnel();
-  }
-}
 
 /* ---------------------------------------------------------------- backup */
 

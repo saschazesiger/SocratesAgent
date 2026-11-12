@@ -36,7 +36,7 @@ const (
 
 // chatStream is one open stream, as the hub knows it for revoke.
 type chatStream struct {
-	token string
+	login streamLogin
 	gone  chan struct{}
 	once  sync.Once
 
@@ -60,13 +60,12 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusTooManyRequests, err.Error())
 		return
 	}
-	cookie, err := r.Cookie(sessionCookie)
-	if err != nil {
+	login, ok := s.loginOf(r)
+	if !ok {
 		writeError(w, http.StatusUnauthorized, "not signed in")
 		return
 	}
-	token := cookie.Value
-	if !s.allowRate("chat "+loginKey(token), eventsHandshakeBurst) {
+	if !s.allowRate("chat "+login.key(), eventsHandshakeBurst) {
 		writeError(w, http.StatusTooManyRequests, "too many chat connections; slow down")
 		return
 	}
@@ -82,13 +81,13 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 	// A chat whose folder was lost while its row knows the conversation
 	// gets its history back from the CLI's transcript as it is opened.
 	p.rebuildIfLost(row)
-	if err := s.serveChatStream(conn, token, p); err != nil && !errors.Is(err, context.Canceled) {
+	if err := s.serveChatStream(conn, login, p); err != nil && !errors.Is(err, context.Canceled) {
 		log.Printf("chat stream %s: %v", p.id, err)
 	}
 }
 
 // serveChatStream runs one stream from hello to close.
-func (s *Server) serveChatStream(conn *websocket.Conn, token string, p *chatPeer) error {
+func (s *Server) serveChatStream(conn *websocket.Conn, login streamLogin, p *chatPeer) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -114,7 +113,7 @@ func (s *Server) serveChatStream(conn *websocket.Conn, token string, p *chatPeer
 	}
 	since := max(hello.Since, 0)
 
-	st := &chatStream{token: token, gone: make(chan struct{})}
+	st := &chatStream{login: login, gone: make(chan struct{})}
 	h := p.hub
 	h.mu.Lock()
 	h.streams[st] = struct{}{}
@@ -226,7 +225,7 @@ func (s *Server) serveChatStream(conn *websocket.Conn, token string, p *chatPeer
 		case pong := <-replies:
 			pongs = append(pongs, pong)
 		case <-tick.C:
-			if !s.store.ValidLogin(token) {
+			if !s.stillSignedIn(login) {
 				_ = conn.Close(eventsSignedOut, "signed out")
 				return nil
 			}

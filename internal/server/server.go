@@ -20,13 +20,13 @@ import (
 	"github.com/saschazesiger/SocratesAgent/internal/backup"
 	"github.com/saschazesiger/SocratesAgent/internal/catalog"
 	"github.com/saschazesiger/SocratesAgent/internal/chattests"
+	"github.com/saschazesiger/SocratesAgent/internal/cloudflare"
 	"github.com/saschazesiger/SocratesAgent/internal/config"
 	"github.com/saschazesiger/SocratesAgent/internal/github"
 	"github.com/saschazesiger/SocratesAgent/internal/mcpserver"
 	"github.com/saschazesiger/SocratesAgent/internal/repos"
 	"github.com/saschazesiger/SocratesAgent/internal/store"
 	"github.com/saschazesiger/SocratesAgent/internal/termux"
-	"github.com/saschazesiger/SocratesAgent/internal/tunnel"
 	"github.com/saschazesiger/SocratesAgent/internal/web"
 )
 
@@ -39,7 +39,8 @@ const SettingsKey = "settings"
 // Server wires storage, the terminal sessions and the HTTP handlers together.
 type Server struct {
 	store   *store.Store
-	tunnel  *tunnel.Manager
+	cf      *cloudflare.Service
+	tun     tunnelState
 	manager *termux.Manager
 	catalog *catalog.Catalog
 
@@ -224,7 +225,7 @@ func New(st *store.Store, dataDir string) (*Server, error) {
 	// OpenCode's models are its accounts' providers'.
 	s.catalog.UseAccounts(catalogAccounts{s})
 
-	s.tunnel = tunnel.New(s.Settings, s.LocalURL, filepath.Join(dataDir, "bin"))
+	s.cf = s.newCloudflare()
 
 	s.routes()
 	return s, nil
@@ -309,14 +310,12 @@ func (s *Server) Settings() config.Settings {
 func (s *Server) saveSettings(next config.Settings) error {
 	next.Normalize()
 	before := s.Settings()
-	previous := before.Tunnel
 	if err := s.store.SetJSON(SettingsKey, next); err != nil {
 		return err
 	}
 	s.mu.Lock()
 	s.settings = next
 	s.mu.Unlock()
-	s.reconcileTunnel(previous, next.Tunnel)
 	// The outcomes switched off: the verdicts there are go with them, and a
 	// notification waiting for one goes out without it.
 	if s.digests != nil && before.OpenRouter.Outcomes && !next.OpenRouter.Outcomes {
@@ -325,32 +324,9 @@ func (s *Server) saveSettings(next config.Settings) error {
 	return nil
 }
 
-// reconcileTunnel applies a settings change to the running tunnel.
-func (s *Server) reconcileTunnel(previous, next config.TunnelSettings) {
-	if s.tunnel == nil {
-		return
-	}
-	switch {
-	case !next.Enabled:
-		if s.tunnel.Running() {
-			s.tunnel.Stop()
-		}
-	case !s.tunnel.Running(), !sameTunnel(previous, next):
-		if err := s.tunnel.Start(); err != nil {
-			log.Printf("cloudflare tunnel: %v", err)
-		}
-	}
-}
-
-func sameTunnel(a, b config.TunnelSettings) bool {
-	return a.Enabled == b.Enabled && a.Mode == b.Mode && a.Token == b.Token &&
-		a.Hostname == b.Hostname && a.Command == b.Command &&
-		strings.Join(a.ExtraArgs, "\x00") == strings.Join(b.ExtraArgs, "\x00")
-}
-
-// SetLocalURL records the loopback address Socrates listens on. It is what the
-// Cloudflare tunnel publishes and what you enter when configuring a named
-// tunnel in the Cloudflare dashboard.
+// SetLocalURL records the loopback address Socrates listens on: what its own
+// agents and tools call (MCP proxy, hooks); the Cloudflare tunnel reaches
+// Socrates through a socket of its own instead (TunnelSocket).
 func (s *Server) SetLocalURL(url string) {
 	s.mu.Lock()
 	s.localURL = url
@@ -363,21 +339,6 @@ func (s *Server) LocalURL() string {
 	defer s.mu.RUnlock()
 	return s.localURL
 }
-
-// StartTunnelIfEnabled brings the Cloudflare tunnel up when it is configured.
-func (s *Server) StartTunnelIfEnabled() {
-	if !s.Settings().Tunnel.Enabled {
-		return
-	}
-	if err := s.tunnel.Start(); err != nil {
-		log.Printf("cloudflare tunnel: %v", err)
-		return
-	}
-	log.Print("cloudflare tunnel: starting")
-}
-
-// StopTunnel shuts the tunnel down, used on graceful shutdown.
-func (s *Server) StopTunnel() { s.tunnel.Stop() }
 
 // Handler returns the root HTTP handler.
 func (s *Server) Handler() http.Handler { return s.mux }
@@ -544,10 +505,11 @@ func (s *Server) routes() {
 	mux.HandleFunc("POST /api/updates/run", s.auth(s.handleUpdatesRun))
 
 	// Cloudflare tunnel
-	mux.HandleFunc("GET /api/tunnel", s.auth(s.handleTunnelStatus))
-	mux.HandleFunc("POST /api/tunnel/start", s.auth(s.handleTunnelStart))
-	mux.HandleFunc("POST /api/tunnel/stop", s.auth(s.handleTunnelStop))
-	mux.HandleFunc("POST /api/tunnel/install", s.auth(s.handleTunnelInstall))
+	mux.HandleFunc("GET /api/cloudflare", s.auth(s.handleCloudflare))
+	mux.HandleFunc("POST /api/cloudflare/check", s.auth(s.handleCloudflareCheck))
+	mux.HandleFunc("POST /api/cloudflare/setup", s.auth(s.handleCloudflareSetup))
+	mux.HandleFunc("PUT /api/cloudflare/emails", s.auth(s.handleCloudflareEmails))
+	mux.HandleFunc("POST /api/cloudflare/remove", s.auth(s.handleCloudflareRemove))
 
 	// Voice
 	mux.HandleFunc("POST /api/voice/transcribe", s.auth(s.handleTranscribe))

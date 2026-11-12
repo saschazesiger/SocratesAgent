@@ -1,4 +1,4 @@
-package tunnel
+package cloudflare
 
 import (
 	"bytes"
@@ -11,8 +11,6 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
-
-	"github.com/saschazesiger/SocratesAgent/internal/config"
 )
 
 // releasePayload builds what Cloudflare would serve for this architecture.
@@ -149,64 +147,28 @@ func TestAssetFor(t *testing.T) {
 	}
 }
 
-func TestManagerInstallsCloudflaredOnDemand(t *testing.T) {
+func TestServiceInstallsCloudflaredOnDemand(t *testing.T) {
 	// An empty PATH makes the lookup miss deterministically.
 	t.Setenv("PATH", t.TempDir())
-
 	server := releaseServer(t, releasePayload(t, "9.9.9"), nil)
-
-	settings := config.Default()
-	settings.Tunnel = config.TunnelSettings{Enabled: true, Mode: config.TunnelQuick, Command: "cloudflared"}
-	settings.Normalize()
-
 	dir := filepath.Join(t.TempDir(), "bin")
-	m := New(func() config.Settings { return settings }, func() string { return "http://127.0.0.1:9999" }, dir)
-	m.installer.BaseURL = server.URL
-	t.Cleanup(m.Stop)
-
-	path, err := m.Install(context.Background())
-	if err != nil {
-		t.Fatalf("install: %v", err)
+	s := New(Options{KV: &memKV{m: map[string]string{}}, Sealer: fakeSealer{}, Origin: testOrigin, BinDir: dir})
+	s.installer.BaseURL = server.URL
+	if b := s.Status().Cloudflared; b.Installed {
+		t.Fatalf("cloudflared = %+v before the download", b)
 	}
-	if path != filepath.Join(dir, "cloudflared") {
-		t.Fatalf("installed to %q", path)
-	}
-	installed, version, resolved := m.Probe()
-	if !installed || !strings.Contains(version, "9.9.9") || resolved != path {
-		t.Fatalf("probe = %v %q %q", installed, version, resolved)
-	}
-	status := m.Status()
-	if !status.Managed || !status.Installed {
-		t.Fatalf("status = %#v", status)
-	}
-}
-
-// A configured path that does not exist must not become a dead end: the whole
-// point of the managed copy is that remote access works anyway.
-func TestResolveFallsBackWhenConfiguredCommandIsMissing(t *testing.T) {
-	t.Setenv("PATH", t.TempDir())
-	server := releaseServer(t, releasePayload(t, "9.9.9"), nil)
-
-	// A path that is certainly missing: /usr/local/bin/cloudflared is there
-	// on many a machine the tests run on.
-	missing := filepath.Join(t.TempDir(), "cloudflared")
-	settings := config.Default()
-	settings.Tunnel = config.TunnelSettings{
-		Enabled: true, Mode: config.TunnelQuick, Command: missing,
-	}
-	dir := filepath.Join(t.TempDir(), "bin")
-	m := New(func() config.Settings { return settings }, func() string { return "" }, dir)
-	m.installer.BaseURL = server.URL
-
-	path, err := m.Resolve(context.Background())
+	path, err := s.resolve(context.Background())
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
 	if path != filepath.Join(dir, "cloudflared") {
-		t.Fatalf("resolved to %q", path)
+		t.Fatalf("installed to %q", path)
 	}
-	logs := strings.Join(m.Status().Logs, "\n")
-	if !strings.Contains(logs, missing+" was not found") {
-		t.Errorf("the fallback should be visible in the log: %s", logs)
+	b := s.Status().Cloudflared
+	if !b.Installed || !b.Managed || !strings.Contains(b.Version, "9.9.9") || b.Path != path {
+		t.Fatalf("cloudflared = %+v", b)
+	}
+	if logs := strings.Join(s.Status().Logs, "\n"); !strings.Contains(logs, "downloading") {
+		t.Errorf("the download should be in the log: %s", logs)
 	}
 }

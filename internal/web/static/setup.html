@@ -16,7 +16,7 @@
 <meta name="apple-mobile-web-app-title" content="Socrates">
 <link rel="icon" href="/favicon.png">
 <link rel="apple-touch-icon" sizes="180x180" href="/static/img/apple-touch-icon.png">
-<link rel="manifest" href="/static/manifest.json">
+<link rel="manifest" href="/static/manifest.json" crossorigin="use-credentials">
 <link rel="preload" href="/static/vendor/z-dash/fonts/google-sans-latin-opsz-normal.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="stylesheet" href="/static/vendor/z-dash/fonts/fonts.css">
 <link rel="stylesheet" href="/static/ds/ds.bundle.css">
@@ -56,27 +56,6 @@
             <small class="ds-field__hint" id="keyHint">It transcribes what you dictate and writes the spoken status and the chats' names, and with the turn outcome switched on it checks each chat's turn — which sends the chat's last instruction, answer, calls and task list to OpenRouter. The coding agents bring their own accounts, and the voice that reads answers out loud has a key of its own in Admin → Voice. Get one at openrouter.ai/keys — you can also add it later.</small>
           </div>
         </div>
-        <div class="ds-card__section">
-          <div class="ds-field">
-            <label class="ds-field__label" for="tunnelMode">Reach it from outside <span class="ds-field__optional">· optional</span></label>
-            <select class="ds-input" id="tunnelMode" aria-describedby="tunnelHint">
-              <option value="off">Local only</option>
-              <option value="quick">Quick tunnel</option>
-              <option value="token">Named tunnel</option>
-            </select>
-            <small class="ds-field__hint" id="tunnelHint">Socrates always keeps serving locally, so you can change this later in the admin dashboard.</small>
-          </div>
-          <div class="ds-field" id="tunnelNamed" hidden>
-            <label class="ds-field__label" for="tunnelToken">Tunnel token</label>
-            <input class="ds-input" type="password" id="tunnelToken" autocomplete="off" enterkeyhint="next" placeholder="eyJhIjoi…" aria-describedby="tunnelTokenError tunnelTokenHint">
-            <small class="ds-field__hint ds-field__hint--error" id="tunnelTokenError" hidden></small>
-            <small class="ds-field__hint" id="tunnelTokenHint">Cloudflare Zero Trust → Networks → Tunnels → Create a tunnel → Cloudflared. Name it and save; the token is in the install command Cloudflare shows next. Point the tunnel's public hostname at <code data-local-url>http://localhost:8080</code>.</small>
-          </div>
-          <div class="ds-field" id="tunnelHost" hidden>
-            <label class="ds-field__label" for="tunnelHostname">Public hostname</label>
-            <input class="ds-input" type="text" id="tunnelHostname" placeholder="socrates.example.com" spellcheck="false" enterkeyhint="done">
-          </div>
-        </div>
         <div id="notice"></div>
         <button class="ds-btn ds-btn--filled so-auth__submit" type="submit" id="submit">
           <span class="ds-btn__faces">
@@ -91,6 +70,19 @@
         <p class="ds-muted">Moving Socrates to this machine? Restore it from its backup instead: the settings, the password, the chats and the accounts' sign-ins come back with it.</p>
         <button class="ds-btn" type="button" id="restoreOpen" data-icon="history" data-icon-size="16" data-icon-place="start">Restore from a backup</button>
       </div>
+    </section>
+
+    <!-- The second, optional step once the workspace exists (the browser is
+         signed in by then): reaching Socrates from anywhere through a
+         Cloudflare tunnel (cloudflare.js). -->
+    <section id="remoteStep" aria-labelledby="remoteTitle" hidden>
+      <header class="ds-page-head">
+        <h1 class="ds-page-head__title" id="remoteTitle" tabindex="-1">Reach Socrates from anywhere</h1>
+        <p class="ds-page-head__lead">Optional. Socrates is ready on <span class="so-break" data-local-url>this address</span>. To open it from your phone or another network too, Socrates sets up a Cloudflare tunnel with a login by e-mail. You can also do this later in Admin → Remote access.</p>
+      </header>
+      <div id="cloudflare"></div>
+      <a class="ds-btn ds-btn--filled so-auth__submit" id="remoteDone" href="/admin?welcome=1" hidden>Continue</a>
+      <a class="ds-btn ds-btn--text" id="remoteSkip" href="/admin?welcome=1">Skip — use it on this address only</a>
     </section>
 
     <!-- A moved installation: from its backup. -->
@@ -182,13 +174,16 @@
 <script type="module">
 import { api, errorMessage, infoTip } from '/static/js/api.js';
 import { DS, M, icon, html, raw, morph } from '/static/js/ui.js';
+import { mountCloudflare } from '/static/js/cloudflare.js';
 
 const $ = (id) => document.getElementById(id);
 
 // The page sets up a new installation: with a password (the form), or from
 // the backup of one that is moving here, which the server offers only while
-// this data directory holds nothing it would overwrite. A finished setup
-// redirects /setup to /login on the server side.
+// this data directory holds nothing it would overwrite. Once the password
+// is set, the same page offers remote access through Cloudflare as an
+// optional second step. A finished setup redirects /setup to /login on the
+// server side.
 
 // readState reads /api/state with a plain fetch: during the restart after a
 // restore there is no server for a moment, and that is an ordinary answer
@@ -293,50 +288,16 @@ async function boot() {
 
 const form = $('form');
 const submit = $('submit');
-const mode = $('tunnelMode');
-const hint = $('tunnelHint');
 
-let cloudflared = { installed: false };
-let localURL = 'http://localhost:8080';
+// The address this browser reached Socrates on, which keeps working with
+// the password whatever the second step does.
+const localURL = location.origin;
 
 function showPassword(state) {
   $('restoreStep').hidden = true;
   $('passwordStep').hidden = false;
-  cloudflared = (state && state.cloudflared) || cloudflared;
-  if (state && state.local_url) localURL = state.local_url;
   $('restoreOffer').hidden = !(state && state.restore_available);
-  showLocalURL();
-  renderTunnel();
   $('password').focus();
-}
-
-// The address this instance really serves on: -addr can move it off 8080,
-// and a setup page that names the wrong port sends the first visit nowhere.
-function showLocalURL() {
-  document.querySelectorAll('[data-local-url]').forEach((node) => { node.textContent = localURL; });
-}
-
-mode.addEventListener('change', renderTunnel);
-
-// The choices are short, so that a phone shows them whole; what each one
-// means is the hint under them.
-function renderTunnel() {
-  $('tunnelNamed').hidden = mode.value !== 'token';
-  $('tunnelHost').hidden = mode.value !== 'token';
-  if (mode.value === 'off') {
-    morph(hint, html`Only at ${localURL}. Socrates always keeps serving there, so you can turn this on later in the admin dashboard.`);
-    return;
-  }
-  const about = mode.value === 'quick'
-    ? html`A random trycloudflare.com address, made at startup: handy for a quick test, but anyone with the link reaches your login page.`
-    : html`Your own hostname, through your Cloudflare account. Point the tunnel at ${localURL}.`;
-  if (!cloudflared.installed) {
-    morph(hint, html`${about} ${cloudflared.can_install === false
-      ? html`It needs the <code>cloudflared</code> binary and there is no published build for this platform. Install it yourself and set the path in the admin dashboard.`
-      : html`Socrates downloads <code>cloudflared</code> for you when you finish setup, about 35 MB. Nothing to install by hand.`}`);
-    return;
-  }
-  morph(hint, about);
 }
 
 form.addEventListener('submit', async (e) => {
@@ -352,31 +313,35 @@ form.addEventListener('submit', async (e) => {
   }
   if (password !== $('repeat').value) { fieldError('repeat', 'The two passwords do not match.'); return; }
   const body = { password, openrouter_key: $('key').value.trim() };
-  if (mode.value !== 'off') {
-    body.tunnel = {
-      enabled: true,
-      mode: mode.value,
-      token: $('tunnelToken').value.trim(),
-      hostname: $('tunnelHostname').value.trim(),
-      command: 'cloudflared',
-    };
-    if (mode.value === 'token' && !body.tunnel.token) {
-      fieldError('tunnelToken', 'A named tunnel needs its tunnel token.');
-      return;
-    }
-  }
-  let result;
   try {
-    result = await M.busy(submit, () => api('/api/setup', { method: 'POST', body }));
+    await M.busy(submit, () => api('/api/setup', { method: 'POST', body }));
   } catch (err) {
     notice($('notice'), errorMessage(err));
     return;
   }
-  if (result && result.tunnel_error) {
-    sessionStorage.setItem('socrates.tunnel_error', result.tunnel_error);
-  }
-  location.href = '/admin?welcome=1';
+  showRemote();
 });
+
+/* --------------------------------------------------------- remote access */
+
+// showRemote is the second step: the workspace exists and this browser is
+// signed in, so the Cloudflare setup can run. It is optional; Skip and
+// Continue go on to Admin's welcome.
+function showRemote() {
+  $('passwordStep').hidden = true;
+  $('remoteStep').hidden = false;
+  document.querySelectorAll('[data-local-url]').forEach((node) => { node.textContent = localURL; });
+  mountCloudflare($('cloudflare'), { level: 2, local: localURL, onChange: remoteChanged });
+  $('remoteTitle').focus();
+}
+
+// Once the tunnel is set up, Continue takes Skip's place.
+function remoteChanged(data) {
+  const st = (data && data.status) || {};
+  const ready = !!st.configured && !(st.job && st.job.running);
+  $('remoteDone').hidden = !ready;
+  $('remoteSkip').hidden = ready;
+}
 
 /* -------------------------------------------------------------- restore */
 

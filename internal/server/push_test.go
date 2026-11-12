@@ -506,9 +506,10 @@ func TestAskingSetIsHomesQuestions(t *testing.T) {
 // write. And with a tunnel address, that is the contact every push carries.
 func TestPushSubscriptionReplacesTheOldOne(t *testing.T) {
 	env := signedIn(t)
-	env.srv.mu.Lock()
-	env.srv.settings.Tunnel.Hostname = "socrates.example.org"
-	env.srv.mu.Unlock()
+	if err := env.store.SetKV("cloudflare:state", `{"ready":true,"hostname":"socrates.example.org"}`); err != nil {
+		t.Fatal(err)
+	}
+	env.srv.cf = env.srv.newCloudflare()
 	for _, e := range []string{"https://push.example.net/old", "https://push.example.net/other"} {
 		body, _ := json.Marshal(map[string]any{"subscription": testSubscription(e)})
 		if res, _ := env.do(t, env.client, "POST", "/api/push/subscribe", string(body)); res.StatusCode != http.StatusOK {

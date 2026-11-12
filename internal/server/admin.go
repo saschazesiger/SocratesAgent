@@ -14,7 +14,6 @@ import (
 	"github.com/saschazesiger/SocratesAgent/internal/googletts"
 	"github.com/saschazesiger/SocratesAgent/internal/openrouter"
 	"github.com/saschazesiger/SocratesAgent/internal/termux"
-	"github.com/saschazesiger/SocratesAgent/internal/tunnel"
 )
 
 func orLocal(url string) string {
@@ -216,7 +215,7 @@ func (s *Server) handleDiagnostics(w http.ResponseWriter, r *http.Request) {
 
 	// Remote access, the updater that keeps all of the above current, and
 	// then the disk everything above writes to.
-	results = append(results, s.tunnelCheck(settings))
+	results = append(results, s.tunnelCheck())
 	results = append(results, s.updatesCheck(r.Context()))
 	results = append(results, diskCheck(s.dataDir))
 
@@ -345,31 +344,34 @@ func clean(text string) string {
 	return text
 }
 
-// tunnelCheck is the remote-access row, unchanged in substance from the one
-// the dashboard has always shown.
-func (s *Server) tunnelCheck(settings config.Settings) checkResult {
-	installed, version, _ := s.tunnel.Probe()
+// tunnelCheck is the remote-access row.
+func (s *Server) tunnelCheck() checkResult {
+	st := s.cf.Status()
+	var detail []string
+	if st.PublicURL != "" {
+		detail = append(detail, st.PublicURL)
+	}
+	if st.Cloudflared.Version != "" {
+		detail = append(detail, clean(st.Cloudflared.Version))
+	}
+	if st.Error != "" {
+		detail = append(detail, st.Error)
+	}
 	switch {
-	case !settings.Tunnel.Enabled:
+	case !st.Configured && st.Partial:
+		return checkResult{Name: "Remote access", OK: false, Summary: "set up half way",
+			Detail: "run the setup again in Admin → Remote access, or remove it"}
+	case !st.Configured:
 		return checkResult{Name: "Remote access", OK: true, Summary: "tunnel off",
 			Detail: "reachable at " + orLocal(s.LocalURL())}
-	case !installed:
-		return checkResult{Name: "Remote access", OK: false, Summary: "cloudflared missing",
-			Detail: "it is downloaded when the tunnel starts"}
+	case st.Connected && st.Verified && st.Error == "":
+		return checkResult{Name: "Remote access", OK: true, Summary: "running", Detail: strings.Join(detail, " · ")}
+	case st.Connected:
+		return checkResult{Name: "Remote access", OK: st.Error == "", Summary: "connected, not checked from outside yet",
+			Detail: strings.Join(detail, " · ")}
+	default:
+		return checkResult{Name: "Remote access", OK: false, Summary: "not connected", Detail: strings.Join(detail, " · ")}
 	}
-	status := s.tunnel.Status()
-	var detail []string
-	if status.URL != "" {
-		detail = append(detail, status.URL)
-	}
-	if version != "" {
-		detail = append(detail, clean(version))
-	}
-	if status.Error != "" {
-		detail = append(detail, status.Error)
-	}
-	return checkResult{Name: "Remote access", OK: status.State == tunnel.StateRunning,
-		Summary: status.State, Detail: strings.Join(detail, " · ")}
 }
 
 // diskCheck is how much room the journals, the generated files and the

@@ -1,4 +1,4 @@
-package tunnel
+package cloudflare
 
 import (
 	"context"
@@ -160,7 +160,7 @@ func assetFor(goarch string) (asset string, err error) {
 	case "386":
 		return "cloudflared-linux-386", nil
 	}
-	return "", fmt.Errorf("Cloudflare publishes no cloudflared build for linux/%s - install it yourself and set the path in the admin dashboard", goarch)
+	return "", fmt.Errorf("Cloudflare publishes no cloudflared build for linux/%s - install it yourself and put it on the PATH of Socrates (or set SOCRATES_CLOUDFLARED to its path)", goarch)
 }
 
 // countingReader reports download progress at a readable pace.

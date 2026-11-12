@@ -256,7 +256,7 @@ func TestEventHubDropsASlowSubscriberWithoutBlocking(t *testing.T) {
 	e := signedIn(t)
 	hub := e.srv.events
 
-	sub, _, err := hub.subscribe("")
+	sub, _, err := hub.subscribe(streamLogin{})
 	if err != nil {
 		t.Fatal(err)
 	}

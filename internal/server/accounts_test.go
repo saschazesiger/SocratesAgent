@@ -384,7 +384,7 @@ func TestALimitStopsTheChatOrSwitchesIt(t *testing.T) {
 // newsFrames is every "news" frame on the event stream, as a page hears it.
 func (c *chatEnv) newsFrames(t *testing.T) <-chan map[string]any {
 	t.Helper()
-	sub, _, err := c.srv.events.subscribe("")
+	sub, _, err := c.srv.events.subscribe(streamLogin{})
 	if err != nil {
 		t.Fatal(err)
 	}

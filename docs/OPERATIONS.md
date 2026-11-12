@@ -106,7 +106,29 @@ The settings live in `/etc/socrates.env`:
 | `SOCRATES_CLAUDE_CHANNEL` | `latest` | Claude Code's release channel |
 | `SOCRATES_REPO` / `SOCRATES_BRANCH` | this repo / `main` | Where Socrates is built from |
 | `SOCRATES_GITHUB_API` / `SOCRATES_GITHUB_WEB` / `SOCRATES_GITHUB_GIT` | `https://api.github.com` / `https://github.com` / `https://github.com` | Where GitHub is (only the tests change these) |
+| `SOCRATES_CLOUDFLARED` | `cloudflared` | The cloudflared to run; when it is not found, Socrates downloads its own to `<data>/bin` |
 | `SOCRATES_FOLDER_CHATS` | unset | `1` lets `POST /api/chats` still start a chat in a preset or typed folder (the test suites); the sheet never offers it |
+
+---
+
+## 🌍 Remote access (Cloudflare)
+
+Socrates sets up a Cloudflare Tunnel with Cloudflare Access in front by itself: no open port, and only the e-mail
+addresses you name get in ([📐 design](design/CLOUDFLARE.md)). Without it, Socrates stays on its local address with
+the password.
+
+| | |
+| --- | --- |
+| 📋 **Needs** | A Cloudflare account with a domain on Cloudflare DNS, and Zero Trust enabled on it (the free plan is enough: <https://one.dash.cloudflare.com/>, choose a team name and *Free*). Outgoing connections to Cloudflare on port 7844 (UDP and TCP) and to `api.cloudflare.com` |
+| 🔑 **API token** | **Admin → Remote access → Create the token on Cloudflare** opens Cloudflare's form with the permissions filled in: Account · *Cloudflare Tunnel* Edit, *Access: Apps and Policies* Edit, *Access: Organizations, Identity Providers, and Groups* Edit; Zone · *DNS* Edit, *Zone* Read; optional User · *User Details* Read (shows whose token it is and suggests that address). Pick the account and the domain, create it, paste it, **Check token** |
+| 🏗️ **Setup** | Choose the domain, the subdomain and who may sign in, then **Set up the tunnel**. Socrates downloads cloudflared if needed, creates the tunnel, its DNS record and two Access applications (the address, and a *Bypass* one for `/docs` and `/artifact-kit`, the pages shown in sandboxed frames), starts cloudflared and checks from outside that the address asks for a login. The same is offered as the second step of the first setup |
+| ♻️ **Taken address** | A DNS record or an Access application on the address that Socrates did not make stops the setup and is named; **Replace** deletes it and goes on. A hand-made tunnel the record pointed at is left alone: delete it under *Zero Trust → Networks → Tunnels* |
+| 🙋 **Signing in** | From outside, Cloudflare Access mails a one-time code to a listed address; the session lasts 30 days. Socrates checks Access' signed token on every request and signs you in **without the password**; the page shows the address. **Sign out** ends the Access session. The password is for the local address only |
+| ✉️ **Addresses** | **Admin → Remote access → Who may sign in**: one per line, **Save addresses**. From outside you cannot take your own address off |
+| 🔧 **Repair** | **Repair** runs the setup again with the stored token (or a new one): it recreates what is missing and corrects what differs, also a new subdomain. Socrates checks from outside every 10 minutes and restarts cloudflared by itself |
+| 🗑️ **Remove** | **Remove…** stops cloudflared and deletes the Access applications, the policies, the DNS record and the tunnel, then forgets the token |
+| 🔐 **Where** | Tokens sealed with the data directory's key in the database (`cloudflare:*` in `kv`), cloudflared at `<data>/bin/cloudflared` (updated by the updater), the socket the tunnel reaches Socrates through at `<data>/run/tunnel.sock` |
+| 🚚 **Moving** | A restore keeps the tunnel: the new machine points its routing at itself when it starts. Stop the old Socrates first, or both serve the address |
 
 ---
 
@@ -179,7 +201,7 @@ Chats from before this change keep their folder.
 | 📂 **What** | A project folder's Markdown files, read where they are (nothing is copied or stored). Hidden folders, `node_modules`, `vendor`, `dist`, `build` and the like are skipped; at most 2000 files are listed |
 | 🌐 **Addresses** | A file is served at `/docs/<token>/<path>`: the token is made from a key kept in the database and is only handed to a signed-in browser. Only Markdown and pictures inside the folder are served, never code, `.env` or a hidden folder |
 | 🌐 **Mermaid** | Diagrams load Mermaid from `cdn.jsdelivr.net` in the person's browser; the page kit is served at `/artifact-kit/` |
-| 🚪 **Login proxy** | Behind Cloudflare Access or another login gateway, let `/docs/` and `/artifact-kit/` through (Access: an app of their own for these paths with a *Bypass* policy). A page runs in a sandboxed frame and its requests carry no cookie: blocked, the kit gets the proxy's login page and a page stays white. The token (only a signed-in browser gets it) still guards the files |
+| 🚪 **Login proxy** | A page runs in a sandboxed frame and its requests carry no cookie, so a login gateway in front must let `/docs/` and `/artifact-kit/` through, or a page stays white. Socrates' own Cloudflare setup does that (a *Bypass* Access application for these paths); put the same in front of another gateway. The token (only a signed-in browser gets it) still guards the files |
 
 ---
 

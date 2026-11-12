@@ -149,6 +149,6 @@ if [ "$(health_json | json_field mode)" = connect ]; then
    then http://localhost:$port - connect the S3 bucket and choose a password.
 2. Sign the agents in, once, in a terminal here or in a Shell session:
      claude      codex login --device-auth      opencode auth login
-3. Remote access: Admin -> Cloudflare tunnel.
+3. Remote access: Admin -> Remote access (a Cloudflare API token; Socrates sets up the tunnel itself).
 EOF
 fi

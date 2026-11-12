@@ -356,8 +356,7 @@ the protocol fakes standing in for the three agents; the messages in the
 pictures are words, which `claude.scripts.json` beside the fake maps onto its
 scripts.
 `SOCRATES_LIVE_AGENTS=1` takes the Admin pictures against the real CLIs, and
-nothing else does. `docs/screenshot-tunnel.png` is hand-made and is not
-regenerated. It is not part of `make e2e`: the pictures are committed, so this
+nothing else does. It is not part of `make e2e`: the pictures are committed, so this
 is only run when they need redoing.
 
 ### Browser IDE

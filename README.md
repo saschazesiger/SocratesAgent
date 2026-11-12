@@ -88,7 +88,7 @@ You can run it again at any time to repair or update the installation.
 | :---: | --- | --- |
 | 1️⃣ | **Open it** | `ssh -L 8080:localhost:8080 root@your-server`, then go to <http://localhost:8080> and choose a password. |
 | 2️⃣ | **Sign in the agents** | **Admin → Accounts**: Claude Code and Codex with their own sign-in, OpenCode in its own terminal (`/connect`), or any agent with an API key. |
-| 3️⃣ | **Reach it from anywhere** | **Admin → Remote access**: a Cloudflare tunnel, with Cloudflare Access in front. |
+| 3️⃣ | **Reach it from anywhere** | **Admin → Remote access** (or right after step 1): paste a Cloudflare API token, pick a subdomain and who may sign in. Socrates sets up the tunnel and Cloudflare Access itself; from outside you sign in with a code by e-mail, no password. |
 | 4️⃣ | **Connect GitHub** | **Admin → GitHub → Connect GitHub**, then pick the repositories the chats work in. |
 
 > 💡 Moving from another server? In step 1, choose **Restore from a backup** instead.

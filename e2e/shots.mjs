@@ -7,8 +7,7 @@
 // docs/screenshot-home.png (Home), docs/screenshot-phone.png (a question on
 // a phone), docs/screenshot-admin.png (Admin's accounts),
 // docs/screenshot-backup.png (Admin's backup) and docs/screenshot-tests.png
-// (a chat with its tests beside it), and nothing else -
-// docs/screenshot-tunnel.png is hand-made and stays where it is. It is not
+// (a chat with its tests beside it), and nothing else. It is not
 // part of `make e2e`: the pictures are committed, so this is only run when
 // they need redoing. Names on the command line take only those pictures:
 //

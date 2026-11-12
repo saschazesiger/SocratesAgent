@@ -798,7 +798,7 @@ Settings remain **one JSON document** in `kv` under the existing key, decoded in
 type Settings struct {
     OpenRouter OpenRouterSettings `json:"openrouter"` // kept verbatim (dictation + titles)
     Voice      VoiceSettings      `json:"voice"`      // kept verbatim (TTS stays configurable)
-    Tunnel     TunnelSettings     `json:"tunnel"`     // kept verbatim
+    Tunnel     TunnelSettings     `json:"tunnel"`     // later removed: the tunnel is internal/cloudflare (CLOUDFLARE.md)
     Workspace  WorkspaceSettings  `json:"workspace"`  // new
     Terminal   TerminalSettings   `json:"terminal"`   // new
     Harnesses  HarnessSettings    `json:"harnesses"`  // new; replaces Agents
@@ -1938,7 +1938,7 @@ GET/PUT /api/settings, POST /api/settings/password                unchanged shap
 GET    /api/tmux                           {installed, path, version, ok, manager, log}
 POST   /api/tmux/install                   starts the installer
 GET    /api/tmux/events                    SSE, installer progress (see §F.1)
-GET    /api/tunnel, POST /api/tunnel/*     unchanged
+GET    /api/cloudflare, POST /api/cloudflare/*   (CLOUDFLARE.md; replaced /api/tunnel)
 POST   /api/voice/transcribe, /speak, /check                       (see the note at the top:
                                            /speak renders at Google, /check proves the key)
 GET    /api/health                         unchanged
@@ -2707,9 +2707,8 @@ the key either works at Google or it does not, and the two buttons are what ask.
 
 ## F.6 Remote access — `#tunnelCard`
 
-Unchanged: `#tunnelStatus`, `#tunnelMode`, `#tunnelHostname`, `#tunnelToken`, `#tunnelCommand`,
-`#tunnelArgs`, `#tunnelStart`, `#tunnelStop`, `#tunnelInstall`, `#tunnelLogToggle`, `#tunnelLog`.
-`internal/tunnel` is untouched.
+Superseded: Socrates sets the tunnel up itself with a Cloudflare API token, and Cloudflare Access signs in
+from outside ([CLOUDFLARE.md](CLOUDFLARE.md)). `internal/tunnel` became `internal/cloudflare`.
 
 ## F.7 Diagnostics — `#checksCard`
 

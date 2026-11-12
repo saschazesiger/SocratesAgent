@@ -214,13 +214,17 @@ func main() {
 	log.Printf("data directory: %s", *dataDir)
 	log.Printf("open %s in your browser", displayURL(listener.Addr()))
 	if isLoopback(listener.Addr()) {
-		log.Print("listening on loopback only - reachable from this machine, and through the Cloudflare tunnel in /admin")
+		log.Print("listening on loopback only - reachable from this machine, and through the Cloudflare tunnel (Admin -> Remote access)")
 	} else {
 		log.Printf("listening on %s - reachable from the network. Anyone who gets past the password can run commands here; "+
 			"set SOCRATES_ADDR=127.0.0.1:8080 to keep it local and publish it through the Cloudflare tunnel instead", listener.Addr())
 	}
 
-	srv.StartTunnelIfEnabled()
+	// The tunnel reaches Socrates through a socket of its own; the local
+	// address above serves whatever happens to it.
+	if err := srv.StartTunnel(); err != nil {
+		log.Printf("cloudflare tunnel: %v", err)
+	}
 
 	<-life.Done()
 	log.Print("shutting down")

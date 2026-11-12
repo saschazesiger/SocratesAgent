@@ -610,7 +610,7 @@ func hostOf(endpoint string) string {
 // origin, which is a real address too; anything else gets a mailto that is at
 // least well formed.
 func (s *Server) pushSubject(r *http.Request) string {
-	if public := s.Settings().Tunnel.PublicURL(); public != "" {
+	if public := s.cf.PublicURL(); public != "" {
 		return public
 	}
 	if origin := r.Header.Get("Origin"); strings.HasPrefix(origin, "https://") {

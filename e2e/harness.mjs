@@ -653,9 +653,10 @@ export async function setup(page, url) {
   await page.goto(url + '/setup', { waitUntil: 'domcontentloaded' });
   await page.fill('#password', PASSWORD);
   await page.fill('#repeat', PASSWORD);
-  await page.selectOption('#tunnelMode', 'off').catch(() => {});
   await page.click('#submit');
-  await page.waitForFunction(() => !location.pathname.startsWith('/setup'), null, { timeout: 25000 });
+  // The workspace exists once the optional second step (remote access
+  // through Cloudflare) shows; it is skipped by going on.
+  await page.waitForSelector('#remoteStep:not([hidden])', { timeout: 25000 });
   await page.goto(url + '/', { waitUntil: 'domcontentloaded' });
   // Attached rather than visible: on a phone it is in the modal drawer,
   // which is hidden until it is opened.

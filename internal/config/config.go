@@ -42,7 +42,6 @@ const (
 type Settings struct {
 	OpenRouter OpenRouterSettings `json:"openrouter"`
 	Voice      VoiceSettings      `json:"voice"`
-	Tunnel     TunnelSettings     `json:"tunnel"`
 	Workspace  WorkspaceSettings  `json:"workspace"`
 	Terminal   TerminalSettings   `json:"terminal"`
 	Harnesses  HarnessSettings    `json:"harnesses"`
@@ -291,23 +290,6 @@ func NormalizeEffort(level string) string {
 	return EffortDefault
 }
 
-// Tunnel modes.
-const (
-	TunnelQuick = "quick" // free *.trycloudflare.com URL, no account needed
-	TunnelToken = "token" // named tunnel, driven by a Zero Trust tunnel token
-)
-
-// TunnelSettings configures the managed Cloudflare tunnel. Socrates keeps
-// listening locally either way; the tunnel simply publishes that local address.
-type TunnelSettings struct {
-	Enabled   bool     `json:"enabled"`
-	Mode      string   `json:"mode"`
-	Token     string   `json:"token"`
-	Hostname  string   `json:"hostname"`
-	Command   string   `json:"command"`
-	ExtraArgs []string `json:"extra_args"`
-}
-
 // Default returns a fresh settings document, seeded from the environment where
 // that is useful.
 func Default() Settings {
@@ -328,11 +310,6 @@ func Default() Settings {
 			GoogleVoiceEN: googletts.DefaultVoiceEN,
 			GoogleVoiceDE: googletts.DefaultVoiceDE,
 			TTSRate:       1,
-		},
-		Tunnel: TunnelSettings{
-			Enabled: false,
-			Mode:    TunnelQuick,
-			Command: "cloudflared",
 		},
 		Workspace: WorkspaceSettings{
 			Root:           DefaultWorkspaceRoot(),
@@ -417,20 +394,6 @@ func (s *Settings) Normalize() {
 	s.Harnesses.normalize()
 	s.MCP.normalize()
 	s.GitHub.normalize()
-	if s.Tunnel.Mode != TunnelToken {
-		s.Tunnel.Mode = TunnelQuick
-	}
-	if strings.TrimSpace(s.Tunnel.Command) == "" {
-		s.Tunnel.Command = d.Tunnel.Command
-	}
-	s.Tunnel.Token = strings.TrimSpace(s.Tunnel.Token)
-	s.Tunnel.Hostname = strings.TrimSpace(strings.TrimPrefix(
-		strings.TrimPrefix(s.Tunnel.Hostname, "https://"), "http://"))
-	s.Tunnel.Hostname = strings.TrimSuffix(s.Tunnel.Hostname, "/")
-	if s.Tunnel.Mode == TunnelToken && s.Tunnel.Token == "" {
-		// A named tunnel without its token can never connect.
-		s.Tunnel.Enabled = false
-	}
 }
 
 // normalizeWorkspace keeps the two facts a session is created from usable: a
@@ -493,14 +456,6 @@ func (s *Settings) Validate() error {
 		return err
 	}
 	return s.MCP.validate()
-}
-
-// PublicURL is the address the tunnel publishes, when it is known upfront.
-func (t TunnelSettings) PublicURL() string {
-	if t.Hostname == "" {
-		return ""
-	}
-	return "https://" + t.Hostname
 }
 
 // Slug turns arbitrary text into a safe identifier.

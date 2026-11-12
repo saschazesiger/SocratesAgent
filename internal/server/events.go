@@ -120,7 +120,7 @@ type eventSub struct {
 	frames chan []byte
 	gone   chan struct{}
 	once   sync.Once
-	token  string
+	login  streamLogin
 
 	// code and reason are what the socket is closed with, set once, before
 	// gone is closed.
@@ -204,10 +204,10 @@ func (h *eventHub) count() int {
 // subscribe registers a stream and answers it with the state it starts from.
 // The subscriber exists before the state is read, so nothing that changes in
 // between is lost: it is in the hello, in the queue behind it, or both.
-func (h *eventHub) subscribe(token string) (*eventSub, map[string]any, error) {
+func (h *eventHub) subscribe(login streamLogin) (*eventSub, map[string]any, error) {
 	h.listMu.Lock()
 	defer h.listMu.Unlock()
-	sub := &eventSub{frames: make(chan []byte, h.bufferSize()), gone: make(chan struct{}), token: token}
+	sub := &eventSub{frames: make(chan []byte, h.bufferSize()), gone: make(chan struct{}), login: login}
 	h.mu.Lock()
 	h.subs[sub] = struct{}{}
 	if h.stopWatch == nil {
@@ -265,7 +265,7 @@ func (h *eventHub) revoke() {
 	// The store is read outside the lock: publish takes it from the
 	// detector's tick, and must never wait for a query.
 	for _, sub := range subs {
-		if !h.srv.store.ValidLogin(sub.token) {
+		if !h.srv.stillSignedIn(sub.login) {
 			h.unsubscribe(sub)
 			sub.dropWith(eventsSignedOut, "signed out")
 		}
@@ -386,18 +386,17 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusTooManyRequests, err.Error())
 		return
 	}
-	// The auth wrapper has checked the cookie, so it is there and valid.
-	cookie, err := r.Cookie(sessionCookie)
-	if err != nil {
+	// The auth wrapper has checked the login, so it is there and valid.
+	login, ok := s.loginOf(r)
+	if !ok {
 		writeError(w, http.StatusUnauthorized, "not signed in")
 		return
 	}
-	token := cookie.Value
 	// A ceiling like the terminal's handshakes, counted apart from them - a
 	// page reconnecting its stream must not use up the handshakes that open
 	// terminals, and the other way round - and per login, with room for a
 	// person who switches tabs (eventsHandshakeBurst).
-	if !s.allowRate("events "+loginKey(token), eventsHandshakeBurst) {
+	if !s.allowRate("events "+login.key(), eventsHandshakeBurst) {
 		writeError(w, http.StatusTooManyRequests, "too many event connections; slow down")
 		return
 	}
@@ -411,7 +410,7 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	conn.SetReadLimit(eventsReadLimit)
-	if err := s.serveEvents(conn, token); err != nil && !errors.Is(err, context.Canceled) {
+	if err := s.serveEvents(conn, login); err != nil && !errors.Is(err, context.Canceled) {
 		log.Printf("events: %v", err)
 	}
 }
@@ -429,11 +428,11 @@ func loginKey(token string) string {
 // The login it was opened with is checked again on every tick, and revoke
 // ends it at once when somebody signs out: the stream is read only, but what
 // it reads is every session's title, summary and question.
-func (s *Server) serveEvents(conn *websocket.Conn, token string) error {
+func (s *Server) serveEvents(conn *websocket.Conn, login streamLogin) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	sub, hello, err := s.events.subscribe(token)
+	sub, hello, err := s.events.subscribe(login)
 	if err != nil {
 		_ = conn.Close(websocket.StatusInternalError, truncateReason(err.Error()))
 		return err
@@ -487,7 +486,7 @@ func (s *Server) serveEvents(conn *websocket.Conn, token string) error {
 				}
 			}
 		case <-tick.C:
-			if !s.store.ValidLogin(token) {
+			if !s.stillSignedIn(login) {
 				_ = conn.Close(eventsSignedOut, "signed out")
 				return nil
 			}

@@ -15,9 +15,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/saschazesiger/SocratesAgent/internal/config"
+	"github.com/saschazesiger/SocratesAgent/internal/cloudflare"
 	"github.com/saschazesiger/SocratesAgent/internal/store"
-	"github.com/saschazesiger/SocratesAgent/internal/tunnel"
 )
 
 const (
@@ -72,7 +71,13 @@ func (s *Server) hasPassword() bool {
 	return err == nil && strings.TrimSpace(v) != ""
 }
 
+// authenticated is a signed-in request: one that came through the tunnel
+// with a valid Cloudflare Access token (TunnelHandler checked it), or one
+// with a Socrates login cookie.
 func (s *Server) authenticated(r *http.Request) bool {
+	if id := via(r); id.Via == "tunnel" && id.Email != "" {
+		return true
+	}
 	c, err := r.Cookie(sessionCookie)
 	if err != nil {
 		return false
@@ -217,16 +222,20 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 		payload["restore"] = s.restoreJob.snapshot()
 	}
 	if setupRequired || s.authenticated(r) {
-		// The setup wizard asks two things about cloudflared: is it here, and
-		// could it be fetched if it is not. Which binary it is and what version
-		// it reports is a dashboard question, and the dashboard has
-		// /api/tunnel for it.
-		installed, _, _ := s.tunnel.Probe()
+		// The setup page offers the tunnel as its second step, and says
+		// whether cloudflared would have to be downloaded for it.
+		st := s.cf.Status()
 		payload["cloudflared"] = map[string]any{
-			"installed":   installed,
-			"can_install": tunnel.Supported(),
+			"installed":   st.Cloudflared.Installed,
+			"can_install": cloudflare.Supported(),
 		}
 		payload["local_url"] = s.LocalURL()
+	}
+	// Who is signed in: through the tunnel, the Cloudflare Access user.
+	id := via(r)
+	payload["via"] = id.Via
+	if s.authenticated(r) && id.Email != "" {
+		payload["email"] = id.Email
 	}
 	writeJSON(w, http.StatusOK, payload)
 }
@@ -245,9 +254,8 @@ func (s *Server) handleSetup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		Password      string                 `json:"password"`
-		OpenRouterKey string                 `json:"openrouter_key"`
-		Tunnel        *config.TunnelSettings `json:"tunnel"`
+		Password      string `json:"password"`
+		OpenRouterKey string `json:"openrouter_key"`
 	}
 	if !readJSON(w, r, &body) {
 		return
@@ -266,16 +274,8 @@ func (s *Server) handleSetup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	settings := s.Settings()
-	changed := false
 	if v := strings.TrimSpace(body.OpenRouterKey); v != "" {
 		settings.OpenRouter.APIKey = v
-		changed = true
-	}
-	if body.Tunnel != nil {
-		settings.Tunnel = *body.Tunnel
-		changed = true
-	}
-	if changed {
 		if err := s.saveSettings(settings); err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
@@ -285,16 +285,7 @@ func (s *Server) handleSetup(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-
-	// A tunnel requested during setup starts right away, so the operator sees
-	// the public URL on the very next screen.
-	tunnelErr := ""
-	if s.Settings().Tunnel.Enabled && !s.tunnel.Running() {
-		if err := s.tunnel.Start(); err != nil {
-			tunnelErr = err.Error()
-		}
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "tunnel_error": tunnelErr})
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
@@ -351,7 +342,13 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 		s.chats.revoke()
 	}
 	http.SetCookie(w, &http.Cookie{Name: sessionCookie, Value: "", Path: "/", MaxAge: -1, HttpOnly: true})
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+	// Through the tunnel the person is signed in by Cloudflare Access, so
+	// signing out ends that session; the page goes there next.
+	if via(r).Via == "tunnel" {
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "next": accessLogout})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "next": "/login"})
 }
 
 func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {

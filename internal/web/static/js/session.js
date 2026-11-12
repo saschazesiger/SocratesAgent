@@ -4403,8 +4403,15 @@ function wire() {
     // next.
     await forgetAll();
     forgetAllSent();
-    try { await api('/api/logout', { method: 'POST' }); } catch { /* going anyway */ }
-    location.href = '/login';
+    // Locally the sign-in page is next; through the tunnel, Cloudflare
+    // Access's own sign-out, which ends the session that signed this
+    // browser in.
+    let next = '/login';
+    try {
+      const out = await api('/api/logout', { method: 'POST' });
+      if (out && typeof out.next === 'string' && out.next.startsWith('/')) next = out.next;
+    } catch { /* going anyway */ }
+    location.href = next;
   });
   // Home is a link, so a middle click opens it in a tab of its own; a plain
   // click is the page's.
@@ -4676,17 +4683,27 @@ async function boot() {
   // On a short screen the drawer's foot is one row of its icons alone (DS
   // .ds-drawer__foot--rail), so that the session list keeps the height:
   // their names, which are their labels anyway, are their tips as well.
+  // Signed in through the tunnel, Sign out names who: the Cloudflare Access
+  // user, in its label and always in its tip.
   const shortDrawer = window.matchMedia('(max-height: 500px)');
+  let signedInAs = '';
   const footTips = () => {
     const foot = dom.sidebar.querySelector('.ds-drawer__foot');
     if (foot) foot.classList.toggle('ds-drawer__foot--rail', shortDrawer.matches);
     for (const item of dom.sidebar.querySelectorAll('.ds-drawer__foot > .ds-drawer__item')) {
-      if (shortDrawer.matches) item.setAttribute('data-tip', item.getAttribute('aria-label') || item.textContent.trim());
-      else item.removeAttribute('data-tip');
+      if (shortDrawer.matches || (item === dom.logout && signedInAs)) {
+        item.setAttribute('data-tip', item.getAttribute('aria-label') || item.textContent.trim());
+      } else item.removeAttribute('data-tip');
     }
   };
   shortDrawer.addEventListener('change', footTips);
   footTips();
+  api('/api/state', { attempts: 2, timeout: 8000 }).then((s) => {
+    signedInAs = s && s.via === 'tunnel' && s.email ? String(s.email) : '';
+    if (!signedInAs) return;
+    dom.logout.setAttribute('aria-label', 'Sign out ' + signedInAs);
+    footTips();
+  }).catch(() => { /* the plain label stays */ });
   // A key bar that changes height - a phone turned on its side - takes the
   // snackbars with it, and so do a keyboard that comes or goes, the drawer
   // opened or closed, and a message more or less (the drawer's reserve).
