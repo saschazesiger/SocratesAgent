@@ -12754,6 +12754,10 @@ async function chattools() {
     const input = await page.$eval('#chat .so-tool[open] .so-code code', (n) => n.textContent).catch(() => '');
     ok(/--- PASS: TestHandleGet/.test(output) && input === 'go test ./server/...',
       'and opens to the command it ran and what it printed', oneLine(input + ' | ' + output));
+    const fields = await page.$$eval('#chat .so-tool[open] .so-tool__input > div',
+      (n) => n.map((d) => [d.querySelector('dt').textContent, d.querySelector('dd').textContent])).catch(() => []);
+    ok(fields.length === 1 && fields[0][0] === 'description' && fields[0][1] === 'Run the server tests',
+      'with every other field of the call under its name', JSON.stringify(fields));
 
     const diffs = await page.$$eval('#chat .so-tool[data-kind="diff"]', (n) => n.map((one) => ({
       open: one.open,
@@ -12787,6 +12791,39 @@ async function chattools() {
     })).catch(() => null);
     ok(!!group && group.open && group.name === 'Task' && group.nested.join(',') === 'text,tool' && /Looking around/.test(group.text),
       'a subagent is a group with what it said and did nested inside', JSON.stringify(group));
+
+    // A call the model is still writing shows what it has written so far,
+    // field by field; written, it is its diff, its input a fold beside it.
+    const sofar = await answersOn(page);
+    await say(page, '/draft 4000');
+    await openNextWork(page, sofar);
+    const drafting = await page.waitForFunction(() => [...document.querySelectorAll('#chat .so-tool[data-kind="diff"][data-state="running"]')].pop() || null,
+      null, { timeout: 10000 }).then((h) => h.asElement(), () => null);
+    if (drafting) await drafting.$eval(':scope > summary', (n) => n.click());
+    const draft = drafting ? await drafting.evaluate((row) => new Promise((resolve) => {
+      const look = () => {
+        const keys = [...row.querySelectorAll('.so-tool__input dt')].map((n) => n.textContent);
+        return { running: row.dataset.state === 'running', words: (row.querySelector('[data-draft]') || {}).textContent, keys };
+      };
+      const tick = () => { const seen = look(); if (seen.keys.includes('file_path') || !seen.running) resolve(seen); else setTimeout(tick, 50); };
+      tick();
+    })) : null;
+    ok(!!draft && draft.running && draft.words === 'Writing the call…' && draft.keys.includes('file_path'),
+      'a call still being written shows its input as far as it is written', JSON.stringify(draft));
+    await awaitLog(page, 'Wrote the notes.', 15000);
+    const written = drafting ? await drafting.evaluate((row) => ({
+      state: row.dataset.state, draft: !!row.querySelector('[data-draft]'), diff: !!row.querySelector('.so-diff'),
+      more: [...row.querySelectorAll('.so-tool__more > summary')].map((n) => n.textContent),
+    })) : null;
+    ok(!!written && written.state === 'done' && !written.draft && written.diff && written.more.includes('Input'),
+      'written, the call is its diff, with its whole input folded beside it', JSON.stringify(written));
+    if (drafting) await drafting.$eval('.so-tool__more > summary', (n) => n.click());
+    const whole = drafting ? await page.waitForFunction((row) => {
+      const values = [...row.querySelectorAll('.so-tool__more .so-tool__input dd')].map((n) => n.textContent);
+      return values.length ? values : null;
+    }, drafting, { timeout: 5000 }).then((h) => h.jsonValue(), () => null) : null;
+    ok(!!whole && whole.some((v) => v.includes('# Notes\n\nThe handler returns 404')),
+      'and the input opens whole, a file\u2019s content in its lines', JSON.stringify(whole));
 
     // A workflow: its phases, and every agent's live state.
     let before = await answersOn(page);

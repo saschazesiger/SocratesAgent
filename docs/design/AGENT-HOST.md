@@ -92,7 +92,11 @@ the person looks for (projection.go `part`, chatfold.js `applyPart`).
 Part kinds: `text`, `reasoning`, `tool`, `diff`, `plan`, `todo`, `image`, `file`, `notice`. Part
 states: `streaming`, `running`, `done`, `error`, `interrupted`. `content` is kind-specific JSON
 whose shape the adapters define (WP3–5 must document theirs here); a tool part's **streamed output
-goes into `text`** so that every stream is a `part.delta`. A `todo` part is the one the recorder
+goes into `text`** so that every stream is a `part.delta`. So does a call's input while the model
+still writes it: a part whose content says `drafting: true` holds the input's JSON so far in its
+text, and the part that brings the whole input (with `drafting` gone) replaces it. The chat reads the
+draft field by field (`chatparts.js` `draftInput`) and shows a call's input whole, every field under
+its name. A `todo` part is the one the recorder
 rewrites: each task's estimate comes out of its title into `estimate_s` and it gains `added_at`,
 `started_at` and `done_at` (`agent.TimeTodos`, HARNESS-POLICY.md "Task lists").
 
@@ -526,7 +530,7 @@ cumulative per process). `usage.context` = the last request's prompt + answer, `
 | part | id | kind | content |
 |---|---|---|---|
 | text / thinking block | `t_<api msg>_<index>` / `r_…` (streamed); `t_<frame uuid>_<i>` (subagent) | `text` / `reasoning` | reasoning: `{duration_ms, redacted?}` |
-| tool call | `tool_use` id | `tool`; `diff` for Edit/Write/MultiEdit; `plan` for ExitPlanMode | `{tool, tool_use_id, input, summary, command?, path?, diff?, added?, removed?, is_error?, duration_ms, result?, task?, agent?, workflow?, plan?}`; the output is the part's `text` |
+| tool call | `tool_use` id | `tool`; `diff` for Edit/Write/MultiEdit; `plan` for ExitPlanMode | `{tool, tool_use_id, input, summary, command?, path?, diff?, added?, removed?, is_error?, duration_ms, result?, task?, agent?, workflow?, plan?, drafting?}`; the output is the part's `text`. From its `content_block_start` (not ExitPlanMode's) the call is `drafting` and its `input_json_delta`s are deltas of its text, until the whole block arrives |
 | subagent (Task/Agent) | its `tool_use` id | `tool`, stays `running` until `task_notification` | `agent: {id, type, description, prompt, model, status: running\|completed\|failed\|killed, background, tokens, tool_uses, duration_ms, last_tool, activity, summary}`; its blocks are parts with `parent_part_id` = this part |
 | workflow (Workflow) | its `tool_use` id | `tool`, `running` until `task_notification` | `workflow: {name, description, task_id, run_id, status, phases: [{index, title}], agents, agents_done, tokens, duration_ms, summary}` |
 | workflow agent | `<workflow part>_a<index>` | `tool` (`tool: "WorkflowAgent"`), nested in the workflow | `agent: {…, label, phase}`; its calls (read from `<transcriptDir>/agent-<id>.jsonl`) are nested in it |
@@ -1310,6 +1314,7 @@ message text:
 | `/plan` | a `plan` part and an `ask{payload.kind: "plan"}`; `{"decision":"approve"}` approves it, `keep_planning` with a `note` sends it back (`plan.decision`, `plan.note` on the part) |
 | `/md [ms]` | a streamed `reasoning` part, then a long Markdown answer (a heading, a list, Go code, a table, a quote, a link, a very long line) |
 | `/tools` | Read, a Bash call with streamed output, an Edit `diff` part, a two-file `diff` in Codex's `changes` shape, and a Grep that fails |
+| `/draft [ms]` | a Write `diff` part drafting (`content.drafting`), its input's JSON streamed into its text over ms (default 1500), then whole and done |
 | `/todo [ms]` | a `todo` part replaced as each of three tasks is done |
 | `/workflow [ms]` | a `Workflow` part with three phases and four `WorkflowAgent` parts nested in it, each with a text part of its own |
 | `/dividers` | `notice{compacted}`, `account.switched`, `model.changed`, `error{send_failed}` |

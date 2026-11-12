@@ -1161,6 +1161,7 @@
 .so-work > summary,
 .so-reasoning > summary,
 .so-tool > summary,
+.so-tool__more > summary,
 .so-diff__file > summary,
 .so-ask-context > summary {
   --ds-pressable-radius: var(--ds-radius-md);
@@ -1174,6 +1175,7 @@
 .so-work > summary::-webkit-details-marker,
 .so-reasoning > summary::-webkit-details-marker,
 .so-tool > summary::-webkit-details-marker,
+.so-tool__more > summary::-webkit-details-marker,
 .so-diff__file > summary::-webkit-details-marker,
 .so-ask-context > summary::-webkit-details-marker {
   display: none;
@@ -1182,6 +1184,7 @@
 .so-work > summary .ds-chevron,
 .so-reasoning > summary .ds-chevron,
 .so-tool > summary .ds-chevron,
+.so-tool__more > summary .ds-chevron,
 .so-diff__file > summary .ds-chevron,
 .so-ask-context > summary .ds-chevron {
   flex: none;
@@ -1520,6 +1523,34 @@
 
 .so-tool__wait {
   margin: 0;
+}
+
+/* A call's input, every field under its name, and a value whole in its
+   lines: a file's content, a prompt, a script wrap rather than run off. */
+.so-tool__input {
+  gap: var(--ds-space-2);
+}
+
+.so-tool__value {
+  max-height: var(--so-chat-output-max);
+  overflow-y: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.so-tool__label {
+  margin: 0;
+}
+
+/* What a call has beside its body - an edit's input, a tool's structured
+   result - shut until it is asked for. */
+.so-tool__more-head {
+  color: var(--ds-text-2);
+  font: var(--ds-font-label);
+}
+
+.so-tool__more-body {
+  padding-top: var(--ds-space-2);
 }
 
 .so-tool__prompt,

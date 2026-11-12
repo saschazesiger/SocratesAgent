@@ -681,9 +681,90 @@ function toolHtml(part, view, { diff = false } = {}) {
     statusMark(state)
   }<span class="so-tool__time"${part.at ? html` data-tip="${'Started ' + clock(part.at, true)}"` : ''}>${took}</span>${chevron()}</summary>${
     open ? html`<div class="so-tool__body">${
-      part.lite || part.held ? detailsHtml(part, view) : bodyWithInfo(part, tool, view, { diff, group, files, info: infoButton(facts, 'Call details') })
+      part.lite || part.held ? detailsHtml(part, view)
+        : tool.content.drafting ? html`${draftHtml(part)}${infoButton(facts, 'Call details')}`
+          : bodyWithInfo(part, tool, view, { diff, group, files, info: infoButton(facts, 'Call details') })
     }</div>` : ''
   }</details>`;
+}
+
+/* ------------------------------------------------------- a call's input */
+
+// inputEntries is a call's input as its fields, [name, value], leaving out
+// those the body draws already (a command in its block, an agent's prompt
+// as prose); an input that is no object is one field.
+function inputEntries(input, skip = []) {
+  if (input === null || input === undefined || input === '') return [];
+  if (typeof input !== 'object' || Array.isArray(input)) return [['input', input]];
+  return Object.entries(input).filter(([key, value]) => !skip.includes(key) && value !== undefined);
+}
+
+// fieldsHtml is a call's input, every field whole under its name as the
+// model wrote it: a file's content, a prompt, a script keep their lines.
+function fieldsHtml(entries, label = 'Input') {
+  if (!entries.length) return '';
+  return html`<dl class="ds-facts ds-facts--stacked so-tool__input" aria-label="${label}">${entries.map(([key, value]) => html`<div><dt>${key}</dt><dd><pre class="so-mono so-tool__value">${pretty(value)}</pre></dd></div>`)}</dl>`;
+}
+
+// moreHtml is a part of a call's body that is shut until it is asked for:
+// the input under a workflow's phases or an edit's diff, a tool's
+// structured result.
+function moreHtml(key, label, view, body) {
+  const open = view.isOpen(key, false);
+  return html`<details class="ds-collapsible so-tool__more" data-ds-key="${key}" data-open-key="${key}"${open ? html` open` : ''}><summary class="ds-pressable so-tool__more-head"><span>${label}</span>${chevron()}</summary>${
+    open ? html`<div class="so-tool__more-body">${body()}</div>` : ''
+  }</details>`;
+}
+
+/**
+ * draftInput is the input of a call the model is still writing, read from
+ * the JSON it has written so far (content.drafting, the part's text): the
+ * open string, arrays and objects closed, a key without its value dropped.
+ * null when the text cannot be read so.
+ */
+export function draftInput(text) {
+  const src = String(text || '');
+  const closers = [];
+  let inString = false;
+  let escaped = false;
+  for (const ch of src) {
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (ch === '\\') escaped = true;
+      else if (ch === '"') inString = false;
+    } else if (ch === '"') inString = true;
+    else if (ch === '{') closers.push('}');
+    else if (ch === '[') closers.push(']');
+    else if (ch === '}' || ch === ']') closers.pop();
+  }
+  let body = src;
+  if (inString) body = body.replace(/\\u[0-9a-fA-F]{0,3}$/, '').replace(/(^|[^\\])((?:\\\\)*)\\$/, '$1$2') + '"';
+  const tail = closers.reverse().join('');
+  const tries = [
+    body.replace(/\s+$/, '').replace(/,$/, '').replace(/:$/, ': null'),
+    // A key that has no value yet, or a number or word cut short.
+    body.replace(/,?\s*"[^"]*"\s*:?\s*$/, ''),
+    body.replace(/,?\s*"[^"]*"\s*:\s*[^,{}\[\]"]*$/, ''),
+  ];
+  for (const t of tries) {
+    try {
+      const value = JSON.parse(t + tail);
+      if (value && typeof value === 'object') return value;
+    } catch { /* the next way */ }
+  }
+  return null;
+}
+
+// draftHtml is a call the model is still writing (or stopped writing): its
+// input so far, field by field when it can be read, else as it came.
+function draftHtml(part) {
+  const running = part.state === 'running';
+  const word = running ? 'Writing the call…' : 'The call as far as it was written';
+  const text = String(part.text || '');
+  const head = html`<p class="so-tool__wait ds-meta" data-draft>${word}</p>`;
+  if (!text) return head;
+  const entries = inputEntries(draftInput(text));
+  return html`${head}${entries.length ? fieldsHtml(entries) : html`<pre class="so-mono so-tool__value">${text}</pre>`}`;
 }
 
 // detailsHtml stands for the body of a part sent light while it is asked
@@ -703,7 +784,7 @@ function detailsHtml(part, view) {
 // that want the whole width, and on a phone would lose a finger's width at
 // every level - it closes the body in a line no taller than a line of meta.
 function bodyWithInfo(part, tool, view, { diff, group, files, info }) {
-  if (diff && files.length === 1) return diffViewer(part, view, info);
+  if (diff && files.length === 1) return html`${diffViewer(part, view, info)}${inputMore(part, tool, view)}`;
   if (!diff && !group && !tool.workflow && tool.command) return toolBody(part, tool, view, { diff, group, info });
   const body = toolBody(part, tool, view, { diff, group });
   if (diff || tool.workflow || !proseFirst(part, tool, group)) return html`${body}${info}`;
@@ -711,7 +792,8 @@ function bodyWithInfo(part, tool, view, { diff, group, files, info }) {
 }
 
 // proseFirst says whether a call's body opens with words - an agent's prompt
-// or its summary, or "No output yet." - beside which its "i" can stand.
+// or its summary, or "Running, no output yet." - beside which its "i" can
+// stand.
 function proseFirst(part, tool, group) {
   if (group) {
     if (tool.agent && tool.agent.prompt) return true;
@@ -719,27 +801,52 @@ function proseFirst(part, tool, group) {
     if (part.children.length) return part.children.every((child) => child.kind === 'text');
     return !!((tool.agent && tool.agent.summary) || (part.state !== 'running' ? part.text : ''));
   }
-  if (tool.input && Object.keys(tool.input).length) return false;
+  if (inputEntries(tool.input).length) return false;
   return !part.text && part.state === 'running';
 }
 
 function toolBody(part, tool, view, { diff, group, info = '' }) {
-  if (diff) return diffViewer(part, view);
-  if (tool.workflow) return workflowBody(part, tool, view);
+  if (diff) return html`${diffViewer(part, view)}${inputMore(part, tool, view)}`;
+  if (tool.workflow) return html`${workflowBody(part, tool, view)}${inputMore(part, tool, view)}`;
   const blocks = [];
   if (group) {
-    if (tool.agent && tool.agent.prompt) blocks.push(html`<div class="so-tool__prompt so-md">${markdown(tool.agent.prompt)}</div>`);
+    const prompt = tool.agent && tool.agent.prompt;
+    if (prompt) blocks.push(html`<div class="so-tool__prompt so-md">${markdown(prompt)}</div>`);
+    // The rest of what the agent was started with: its type, its model,
+    // whether it runs in the background.
+    blocks.push(fieldsHtml(inputEntries(tool.input, prompt ? ['prompt'] : [])));
     if (part.children.length) blocks.push(html`<div class="so-group">${part.children.map((child) => partHtml(child, view))}</div>`);
     const summary = (tool.agent && tool.agent.summary) || (part.state !== 'running' ? part.text : '');
     if (summary) blocks.push(html`<div class="so-tool__result so-md">${markdown(summary)}</div>`);
     return html`${blocks}`;
   }
+  // The call as the model wrote it, every field: a command in its block,
+  // the rest (its description, its timeout ...) under it by name.
   if (tool.command) blocks.push(codeBlock(tool.command, 'shell', info));
-  else if (tool.input && Object.keys(tool.input).length) blocks.push(html`<pre class="so-mono">${pretty(tool.input)}</pre>`);
-  if (part.text) blocks.push(html`<pre class="so-mono so-tool__out" data-state="${part.state}">${part.text}</pre>`);
-  else if (part.state === 'running') blocks.push(html`<p class="so-tool__wait ds-meta">No output yet.</p>`);
+  const entries = inputEntries(tool.input, tool.command ? ['command'] : []);
+  blocks.push(fieldsHtml(entries));
+  const labelled = !!(tool.command || entries.length);
+  if (part.text) {
+    blocks.push(html`${labelled ? html`<p class="ds-meta so-tool__label">Output</p>` : ''}<pre class="so-mono so-tool__out" data-state="${part.state}">${part.text}</pre>`);
+  } else if (part.state === 'running') {
+    blocks.push(html`<p class="so-tool__wait ds-meta">Running, no output yet.</p>`);
+  } else if (!part.children.length) {
+    blocks.push(html`<p class="so-tool__wait ds-meta">No output.</p>`);
+  }
+  const result = tool.content.result;
+  if (result && typeof result === 'object' && Object.keys(result).length) {
+    blocks.push(moreHtml('res:' + part.id, 'Structured result', view, () => html`<pre class="so-mono so-tool__value">${pretty(result)}</pre>`));
+  }
   if (part.children.length) blocks.push(html`<div class="so-group">${part.children.map((child) => partHtml(child, view))}</div>`);
   return html`${blocks}`;
+}
+
+// inputMore is the input of a call whose body shows something else - an
+// edit its diff, a workflow its phases - shut until it is asked for.
+function inputMore(part, tool, view) {
+  const entries = inputEntries(tool.input);
+  if (!entries.length) return '';
+  return moreHtml('in:' + part.id, 'Input', view, () => fieldsHtml(entries));
 }
 
 const PHASE_WORDS = { done: 'Done', running: 'Running', pending: 'Waiting', error: 'Failed' };

@@ -480,6 +480,12 @@ func (f *fakeAdapter) turn(ctx context.Context, msg Outgoing, n int) {
 			return
 		}
 		t.say("Done with the tools.")
+	case "/draft":
+		if !f.draft(ctx, t, time.Duration(fakeInt(fields, 0, 1500))*time.Millisecond) {
+			t.end(OutcomeInterrupted, "")
+			return
+		}
+		t.say("Wrote the notes.")
 	case "/bigtool":
 		lines := make([]string, 100)
 		for i := range lines {

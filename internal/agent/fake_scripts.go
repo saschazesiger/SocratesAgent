@@ -204,6 +204,31 @@ func (f *fakeAdapter) tools(ctx context.Context, t *fakeTurn) bool {
 		[]string{"grep: /srv/app/vendor: Permission denied"}, PartError, map[string]any{"is_error": true})
 }
 
+// draft is a Write call the model writes for a while: drafting, its input's
+// JSON streamed into its text in pieces over `over` (as Claude's adapter
+// streams input_json_delta), then the input whole and the call done.
+func (f *fakeAdapter) draft(ctx context.Context, t *fakeTurn, over time.Duration) bool {
+	id := t.msgID + "_draft"
+	input := map[string]any{"file_path": "/srv/app/NOTES.md", "content": "# Notes\n\nThe handler returns 404 for an unknown id.\n"}
+	start, _ := json.Marshal(map[string]any{"tool": "Write", "tool_use_id": id, "drafting": true})
+	f.out.Emit(Event{Type: TypePart, MessageID: t.msgID, PartID: id, Kind: PartDiff, State: PartRunning, Content: start})
+	raw, _ := json.Marshal(input)
+	const pieces = 6
+	step := (len(raw) + pieces - 1) / pieces
+	for i := 0; i < len(raw); i += step {
+		if !fakeWait(ctx, over/pieces) {
+			return false
+		}
+		f.out.Delta(t.msgID, id, string(raw[i:min(len(raw), i+step)]))
+	}
+	done, _ := json.Marshal(map[string]any{"tool": "Write", "tool_use_id": id, "input": input, "summary": input["file_path"],
+		"path": input["file_path"], "duration_ms": 40, "added": 3, "removed": 0,
+		"diff": "--- /dev/null\n+++ b/NOTES.md\n@@ -0,0 +1,3 @@\n+# Notes\n+\n+The handler returns 404 for an unknown id.\n"})
+	f.out.Emit(Event{Type: TypePart, MessageID: t.msgID, PartID: id, Kind: PartDiff, State: PartDone, Content: done,
+		Text: "File created successfully at: /srv/app/NOTES.md"})
+	return true
+}
+
 // todoContent is Claude's task list with the first `done` tasks completed and
 // the next one in progress.
 func todoContent(done int) json.RawMessage {
