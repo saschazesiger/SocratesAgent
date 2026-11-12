@@ -376,8 +376,10 @@
    of the wheel under the white wave (so-motion.css), as the answer's live
    line; a workflow's thin bar; and one meta line of what it is and what it
    has used. No tile, no chip, no spinner: the wave says it is at work. */
+/* A card's padding hook is one length: DS computes the padding from it with
+   calc() (density), so two lengths would void it and leave no padding. */
 .so-agentcard {
-  --ds-card-padding: var(--ds-space-3) var(--ds-space-4);
+  --ds-card-padding: var(--ds-space-3);
   --ds-card-padding-sm: var(--ds-space-3);
   display: flex;
   flex-direction: column;
@@ -608,7 +610,7 @@
 }
 
 .so-job__open {
-  --ds-pressable-radius: 0;
+  --ds-pressable-radius: 0px;
   display: flex;
   flex: 1 1 auto;
   align-items: center;
@@ -887,12 +889,18 @@
 }
 
 .so-peer {
-  --ds-card-padding: var(--ds-space-3) var(--ds-space-4);
+  --ds-card-padding: var(--ds-space-4);
   --ds-card-padding-sm: var(--ds-space-3);
   display: flex;
   flex-direction: column;
   gap: var(--ds-space-2);
   max-width: var(--so-chat-bubble-max);
+}
+
+/* The flex gap is the card's rhythm here: who, what agent and the words
+   read as one message, not as a card's separate blocks. */
+.so-peer > * + * {
+  margin-top: 0;
 }
 
 .so-peer__title {
@@ -1208,16 +1216,17 @@
   overflow-wrap: anywhere;
 }
 
+.so-md :is(p, ul, ol, blockquote, table, pre, .so-code) {
+  margin: 0 0 var(--ds-space-3);
+}
+
+/* After the blocks' margins: the :is() above weighs as much as these. */
 .so-md > :first-child {
   margin-top: 0;
 }
 
 .so-md > :last-child {
   margin-bottom: 0;
-}
-
-.so-md :is(p, ul, ol, blockquote, table, pre, .so-code) {
-  margin: 0 0 var(--ds-space-3);
 }
 
 .so-md :is(ul, ol) {

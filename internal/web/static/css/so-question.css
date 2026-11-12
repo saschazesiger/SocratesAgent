@@ -451,8 +451,8 @@
   }
 
   .so-q-option {
-    --ds-card-padding: var(--ds-space-2) var(--ds-space-4);
-    --ds-card-padding-sm: var(--ds-space-2) var(--ds-space-4);
+    --ds-card-padding: var(--ds-space-3);
+    --ds-card-padding-sm: var(--ds-space-3);
   }
 
   .so-q-actions {
