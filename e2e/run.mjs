@@ -5003,6 +5003,30 @@ async function design() {
     const want = Math.round(parseFloat(tone.beat) * (/ms$/.test(tone.beat) ? 1 : 1000));
     ok(beat > 0 && beat === want, 'and it turns at the pace of every DS spinner', beat + ' ms (--ds-loop-spin ' + tone.beat + ')');
 
+    // Every busy ring stands at the same angle, however much later it was
+    // drawn: each turn is pinned to the page's clock. A copy of the ring is
+    // drawn a third of a turn after this one, beside it, and the two are read
+    // in the same frame.
+    const inStep = await s.page.evaluate(async (sel) => {
+      const first = document.querySelector(sel + ' .so-mark');
+      await new Promise((done) => setTimeout(done, 300));
+      const later = first.cloneNode(true);
+      document.getElementById('sessionList').append(later);
+      await new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done)));
+      const turnOf = (mark) => mark.getAnimations({ subtree: true }).find((a) => a.animationName === 'ds-spin');
+      const a = turnOf(first);
+      const b = turnOf(later);
+      const out = a && b
+        ? { first: Number(a.currentTime), later: Number(b.currentTime), starts: [Number(a.startTime), Number(b.startTime)] }
+        : null;
+      later.remove();
+      return out;
+    }, rowSel(working));
+    ok(!!inStep && Math.abs(inStep.first - inStep.later) < 1,
+      'and a ring drawn later turns in step with it, at the same angle',
+      inStep ? Math.round(inStep.first) + ' ms and ' + Math.round(inStep.later) + ' ms into the turn, started at '
+        + inStep.starts.join(' and ') : 'no ring');
+
     // And it keeps turning through a re-render: the ring is drawn on the mark
     // the row already has, so a list refresh does not start it again.
     // The animation's start is what a restart would move; its clock is read

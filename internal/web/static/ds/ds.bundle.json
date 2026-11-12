@@ -297,7 +297,7 @@
     },
     {
       "name": "icons",
-      "reason": "static/js/ui.js:88 DS.icons"
+      "reason": "static/js/ui.js:115 DS.icons"
     },
     {
       "name": "position",

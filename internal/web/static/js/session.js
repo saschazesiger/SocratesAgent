@@ -46,7 +46,7 @@ import {
 } from './outcome.js';
 import {
   DS, icon, html, raw, morph, flipMorph, showOverlay, hideOverlay, overlayOpen, M,
-  faces, iconEl, paced,
+  faces, iconEl, paced, ringsInStep,
 } from './ui.js';
 import { mountBackupNotice } from './backup.js';
 import { mountDrawerWidth } from './drawerwidth.js';
@@ -3983,8 +3983,12 @@ function updateStale() {
   // grace.
   const stale = chatShown() ? state.chat.stale() : !state.live
     && (navigator.onLine === false || Date.now() - (state.lostAt || Date.now()) >= CONNECTION_GRACE);
+  const was = document.body.hasAttribute('data-stale');
   document.body.toggleAttribute('data-stale', stale);
   dom.termWrap.toggleAttribute('data-stale', stale);
+  // The stale page held the busy rings still; let go, they turn on from
+  // where they were held, so they are put back on the page's clock.
+  if (was && !stale) ringsInStep();
 }
 
 /* --------------------------------------------------------------- routing */

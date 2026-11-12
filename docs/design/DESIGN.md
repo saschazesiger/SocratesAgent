@@ -2571,7 +2571,10 @@ Every UI package is reviewed against these; a package that breaks one is rejecte
    the pair of marks whose whole meaning is "this is happening right now": the busy ring on a
    session row (rev 6) and <!-- rev 8 --> the ring a working button wears. Both keep turning at
    900 ms under reduced motion, because drawn still they say the opposite of what they are there
-   to say, and both were read that way.
+   to say, and both were read that way. Every busy ring turns in step with the others, at the same
+   angle however much later it was drawn: `ui.js` `ringsInStep()` pins each turn to the page's
+   clock (its start is moment 0 of the document timeline) as it starts, and again when a stale
+   page lets the rings go.
 5. **Everything in English.**
 6. The `design` e2e scenario asserts 1, 2, 3 and 4 by measurement, not by screenshot.
 

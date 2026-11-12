@@ -28,6 +28,33 @@ export function startUI() {
   DS.ripple.attach(document);
   DS.overlay.tooltips(document);
   fillIcons(document);
+  document.addEventListener('animationstart', (event) => {
+    if (event.animationName === 'ds-spin' && event.target instanceof Element && event.target.matches('.so-mark')) {
+      ringsInStep(event.target);
+    }
+  }, true);
+}
+
+/* ---------------------------------------------------------- busy rings */
+
+/**
+ * ringsInStep pins the turn of every busy ring (`.so-mark[data-ring="busy"]`,
+ * the ring around an agent's mark in the sidebar and on Home) under `root` to
+ * the page's clock: its start is moment 0 of the document timeline, so all of
+ * them stand at the same angle, whenever each was drawn. startUI calls it
+ * for each ring as it starts turning (a row drawn, a row turning busy); a
+ * page that paused the rings and lets them go again calls it for all of
+ * them, because a ring let go turns on from where it was held, not from
+ * where the clock is. Reading the animations brings the styles up to date,
+ * so a ring let go a moment ago is running already.
+ */
+export function ringsInStep(root = document) {
+  const marks = root instanceof Element && root.matches('.so-mark') ? [root] : root.querySelectorAll('.so-mark');
+  for (const mark of marks) {
+    for (const turn of mark.getAnimations({ subtree: true })) {
+      if (turn.animationName === 'ds-spin' && turn.playState === 'running' && turn.startTime !== 0) turn.startTime = 0;
+    }
+  }
 }
 
 /* ----------------------------------------------------------- touch mode */
