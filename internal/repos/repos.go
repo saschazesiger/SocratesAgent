@@ -589,10 +589,27 @@ func (m *Manager) addLocked(ctx context.Context, fullName, cache, path, branch, 
 		out.Existing = true
 		out.Start, _ = m.resolve(ctx, cache, remote)
 	default:
+		empty, err := m.emptyRemote(ctx, cache)
+		if err != nil {
+			return Checkout{}, err
+		}
+		if base == "" && empty {
+			base = firstBranch
+			out.Base = base
+		}
 		if base == "" {
 			return Checkout{}, fmt.Errorf("the branch %s is not on GitHub, and there is no base to make it from", branch)
 		}
 		start, ok := m.resolve(ctx, cache, "refs/remotes/origin/"+base)
+		if !ok && empty {
+			// A new repository: its first branch is made, so that the
+			// chat's branch has something to start from and a base to be
+			// merged into.
+			if start, err = m.seedLocked(ctx, fullName, cache, base); err != nil {
+				return Checkout{}, err
+			}
+			ok = true
+		}
 		if !ok {
 			return Checkout{}, fmt.Errorf("the base branch %s is not on GitHub", base)
 		}
@@ -605,6 +622,64 @@ func (m *Manager) addLocked(ctx context.Context, fullName, cache, path, branch, 
 		return Checkout{}, err
 	}
 	return out, nil
+}
+
+// firstBranch is the base of a chat in a repository that has no branch at
+// all and names no default one.
+const firstBranch = "main"
+
+// SeedMessage is the message of the first commit Socrates makes in a
+// repository that has none.
+const SeedMessage = "Initial commit"
+
+// emptyRemote says whether GitHub has no branch of the repository at all, as
+// of the cache's last fetch: a repository made on GitHub without a README.
+func (m *Manager) emptyRemote(ctx context.Context, cache string) (bool, error) {
+	out, err := m.local(ctx, cache, "for-each-ref", "--count=1", "--format=%(refname)", "refs/remotes/origin/")
+	if err != nil {
+		return false, err
+	}
+	return strings.TrimSpace(out) == "", nil
+}
+
+// seedLocked makes the first branch of a repository that has none: an empty
+// commit (SeedMessage), pushed to GitHub as base, which GitHub then takes for
+// the repository's default branch. The push only makes the branch, never
+// moves one: when somebody pushed meanwhile, their branch is fetched and used
+// instead. It returns the base's commit.
+func (m *Manager) seedLocked(ctx context.Context, fullName, cache, base string) (string, error) {
+	tree, err := m.local(ctx, cache, "mktree")
+	if err != nil {
+		return "", err
+	}
+	args := append(m.identity(ctx, cache), "commit-tree", strings.TrimSpace(tree), "-m", SeedMessage)
+	sha, err := m.local(ctx, cache, args...)
+	if err != nil {
+		return "", err
+	}
+	sha = strings.TrimSpace(sha)
+	ref := "refs/heads/" + base
+	if _, perr := m.remote(ctx, fullName, cache, "push", "--quiet", "--force-with-lease="+ref+":", "origin", sha+":"+ref); perr != nil {
+		if err := m.fetchLocked(ctx, fullName, cache); err == nil {
+			if theirs, ok := m.resolve(ctx, cache, "refs/remotes/origin/"+base); ok {
+				return theirs, nil
+			}
+		}
+		return "", fmt.Errorf("the repository is empty, and its first branch %s could not be made on GitHub: %w", base, perr)
+	}
+	if _, err := m.local(ctx, cache, "update-ref", "refs/remotes/origin/"+base, sha); err != nil {
+		return "", err
+	}
+	return sha, nil
+}
+
+// identity is what goes before a commit Socrates makes itself: nothing when
+// git has an identity in dir, Socrates' own when it has none.
+func (m *Manager) identity(ctx context.Context, dir string) []string {
+	if out, _ := m.local(ctx, dir, "config", "user.email"); strings.TrimSpace(out) != "" {
+		return nil
+	}
+	return []string{"-c", "user.name=Socrates", "-c", "user.email=socrates@localhost"}
 }
 
 // checkedOut is the worktree that has the branch checked out, "" for none.
@@ -1116,10 +1191,7 @@ func (m *Manager) snapshot(ctx context.Context, path, message string) (string, [
 	if len(left) > 0 {
 		message += "\n\nLeft out (they look like secrets or are over 10 MB), still in " + path + ":\n- " + strings.Join(left, "\n- ")
 	}
-	args := []string{"commit-tree", tree, "-p", head, "-m", message}
-	if out, _ := m.local(ctx, path, "config", "user.email"); strings.TrimSpace(out) == "" {
-		args = append([]string{"-c", "user.name=Socrates", "-c", "user.email=socrates@localhost"}, args...)
-	}
+	args := append(m.identity(ctx, path), "commit-tree", tree, "-p", head, "-m", message)
 	sha, err := m.local(ctx, path, args...)
 	if err != nil {
 		return "", nil, err

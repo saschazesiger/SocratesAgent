@@ -242,6 +242,15 @@ gone). With a repository the handler:
    checked out in another chat's worktree answers 409 naming that chat. *As built:* a branch name Socrates
    generated (the request named none) that the cache or GitHub has already gets `-<id8>` appended instead of
    continuing that branch; only a name the person gives continues an existing branch.
+   *As built:* a **new, empty repository** (made on GitHub without a README: no commit, no branch) gets its base
+   first. The cache has no `origin/*` ref after the fetch, so Socrates makes an empty commit (`Initial commit`, the
+   empty tree, the server's git identity or Socrates' own) and pushes it as `<base>` (the default branch GitHub
+   names, `main` when it names none) with `--force-with-lease=refs/heads/<base>:`, which only creates the branch.
+   GitHub takes that first branch as the repository's default, so the chat's branch, pushed later, never becomes
+   it. When somebody pushed meanwhile, the push is refused, the cache is fetched again and the chat starts from
+   their branch; any other refusal is the request's error. A base GitHub does not have in a repository that has
+   branches is still an error. The sheet says *The repository is empty: main is made on GitHub with an empty first
+   commit* under the base, and the preview of a base that does not exist yet is no folder, without a log line.
 4. Writes the worktree's own git configuration (`extensions.worktreeConfig`, `git config --worktree`):
    `remote.origin.url` stays the plain HTTPS URL; the credentials come from the helper (§5.2).
    *As built:* nothing is written per worktree. The cache's configuration (shared by its worktrees) has the
@@ -401,7 +410,8 @@ start of a Claude chat of a repository on an account, the memory of an older fol
 - `internal/github`: JWT (signature checked with the public key), token cache and scoping, manifest conversion,
   installation and repository listing, pull request creation, all against an `httptest` server.
 - Repository workspaces: cache creation and fetch, worktree for a new and an existing branch, the 409 for a branch
-  in use, turn-end push only when ahead, done/reopen/delete with clean, dirty and unpushed worktrees, the WIP
+  in use, a new empty repository (its base made on GitHub, never over a branch pushed meanwhile, a refused push),
+  turn-end push only when ahead, done/reopen/delete with clean, dirty and unpushed worktrees, the WIP
   commit, setup success, failure and timeout. All against bare repositories in a temp folder (`file://`).
 - The credential helper end to end: a `git push` through it reaches the fake with the token, a different
   repository gets nothing.

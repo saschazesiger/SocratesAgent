@@ -1712,7 +1712,7 @@
     "ds-status__spinner": "static/admin.html:152",
     "ds-switch": "static/index.html:255",
     "ds-switch-list": "static/js/harnesses.js:618",
-    "ds-switch__hint": "static/js/harnesses.js:1071",
+    "ds-switch__hint": "static/js/harnesses.js:1075",
     "ds-switch__label": "static/index.html:256",
     "ds-switch__off": "static/index.html:257",
     "ds-switch__on": "static/index.html:257",

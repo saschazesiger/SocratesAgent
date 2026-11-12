@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"log"
 	"path/filepath"
 	"strings"
@@ -64,7 +65,11 @@ func (s *Server) previewRepo(ctx context.Context, repo, base string) repoPreview
 	defer cancel()
 	dir, _, err := s.repos.Preview(gitCtx, repo, base, previewRoots(), previewFile)
 	if err != nil {
-		log.Printf("repos: the configuration of %s at %s could not be looked at: %v", repo, base, err)
+		// A base GitHub does not have yet (a new, empty repository) has
+		// no configuration to look at, and is no failure.
+		if !errors.Is(err, repos.ErrNoBranch) {
+			log.Printf("repos: the configuration of %s at %s could not be looked at: %v", repo, base, err)
+		}
 		return repoPreview{}
 	}
 	return repoPreview{dir: dir, repo: repo, base: base}

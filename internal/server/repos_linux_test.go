@@ -719,3 +719,29 @@ func TestAFailedDeleteIsTriedAgain(t *testing.T) {
 		t.Fatal("the WIP commit is not on GitHub")
 	}
 }
+
+// A chat in a repository made on GitHub without a commit starts: main is made
+// there with an empty first commit, and the chat's branch is made from it.
+func TestAChatInAnEmptyRepositoryStarts(t *testing.T) {
+	f := newFakeGitHub(t)
+	testGit(t, f.dir, "init", "--quiet", "--bare", "-b", "main", filepath.Join(f.dir, "octo", "new.git"))
+	c := newRepoEnv(t, f, "")
+	res, body := c.do(t, c.client, "GET", "/api/github/repos/octo/new/branches", "")
+	if list, ok := body["branches"].([]any); res.StatusCode != http.StatusOK || body["default"] != "main" || !ok || len(list) != 0 {
+		t.Fatalf("the branches of an empty repository: %d %v", res.StatusCode, body)
+	}
+	code, body := c.createIn(t, "repo-new", map[string]any{"repo": "octo/new", "title": "Start",
+		"message": map[string]any{"client_id": "m1", "text": "Start the project"}})
+	if code != http.StatusCreated {
+		t.Fatalf("create: %d %v", code, body)
+	}
+	session := sessionOf(t, body)
+	if session["base"] != "main" || session["branch"] != "socrates/start-the-project" {
+		t.Fatalf("the chat: %v", session)
+	}
+	seed := f.remoteBranch("octo/new", "main")
+	if seed == "" || testGit(t, session["workdir"].(string), "rev-parse", "HEAD") != seed {
+		t.Fatalf("main on GitHub %q is not where the chat starts", seed)
+	}
+	c.waitJournal(t, session["id"].(string), 15*time.Second, "the first turn", turnsEnded(1))
+}

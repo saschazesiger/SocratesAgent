@@ -3080,6 +3080,8 @@ async function sheetmcp() {
 // scenario), the sheet lists the repositories, preselects the default
 // branch, offers a branch of its own, says when a typed one exists already,
 // and asks for {repo, base, branch} instead of a folder.
+// A repository GitHub has no branch of yet says under the base that its base is
+// made with an empty first commit.
 async function repochat() {
   const s = await chatServer();
   const { page } = s;
@@ -3139,7 +3141,8 @@ async function repochat() {
     await page.route('**/api/github', (route) => route.fulfill({ json: github }));
     await page.route('**/api/github/repos/*/*/branches', (route) => {
       const repo = new URL(route.request().url()).pathname.split('/').slice(4, 6).join('/');
-      return route.fulfill({ json: repo === 'acme/web' ? branches : { default: 'main', branches: [{ name: 'main', sha: 'd'.repeat(40), date: '2026-11-01T10:00:00Z' }] } });
+      // acme/api is new on GitHub: no commit, no branch yet.
+      return route.fulfill({ json: repo === 'acme/web' ? branches : { default: 'main', branches: [] } });
     });
     await page.route('**/api/chats', (route) => {
       if (route.request().method() !== 'POST') return route.fallback();
@@ -3219,6 +3222,14 @@ async function repochat() {
     await page.waitForFunction(() => document.querySelector('#nsBase .ds-combo__input').textContent.trim() === 'main', null, { timeout: 10000 });
     const searched = await page.$eval('#nsRepo .ds-combo__input', (n) => n.value);
     ok(searched === 'acme/api', 'and a match found is taken with the keyboard, its base with it', searched);
+    await page.waitForFunction(() => !document.getElementById('nsBaseHint').hidden
+      && /empty/.test(document.getElementById('nsBaseHint').textContent), null, { timeout: 10000 }).catch(() => {});
+    const empty = await page.evaluate(() => ({
+      hint: document.getElementById('nsBaseHint').hidden ? '' : document.getElementById('nsBaseHint').textContent,
+      start: document.getElementById('nsStart').disabled,
+    }));
+    ok(/^The repository is empty: main is made on GitHub/.test(empty.hint) && !empty.start,
+      'a repository with no branch yet says that its base is made, and can be started', JSON.stringify(empty));
     // The stubbed refusal of the chat is this scenario's own 400.
     const quiet = /@ \S*\/api\/chats$/;
     ok(unexpected(s.errors, quiet).length === 0, 'no console errors', unexpected(s.errors, quiet).join(' | ') || '0');

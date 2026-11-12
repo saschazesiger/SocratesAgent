@@ -206,6 +206,134 @@ func TestWorktreesForNewAndExistingBranches(t *testing.T) {
 	}
 }
 
+// newEmptyFake makes octo/app on the fake GitHub as GitHub makes a new
+// repository without a README: no commit and no branch.
+func newEmptyFake(t *testing.T) fakeGitHub {
+	t.Helper()
+	testEnv(t)
+	f := fakeGitHub{dir: t.TempDir()}
+	bare := filepath.Join(f.dir, "octo", "app.git")
+	if err := os.MkdirAll(filepath.Dir(bare), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	git(t, f.dir, "init", "--quiet", "--bare", "-b", "main", bare)
+	return f
+}
+
+// A repository with no branch at all gets its base made on GitHub, as an
+// empty first commit, and the chat's branch starts there; a base GitHub does
+// not have in a repository that has branches is still refused.
+func TestAnEmptyRepositoryGetsItsFirstBranch(t *testing.T) {
+	f := newEmptyFake(t)
+	m := newManager(t, f)
+	ctx := context.Background()
+	list, err := m.Branches(ctx, "octo/app")
+	if err != nil || len(list) != 0 {
+		t.Fatalf("the branches of an empty repository: %+v %v", list, err)
+	}
+	co, err := m.Create(ctx, "octo/app", "abcdef1234567890", "socrates/first", "main", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seed := remoteHas(t, f, "main")
+	if seed == "" || co.Start != seed || co.Existing || co.Base != "main" {
+		t.Fatalf("checkout %+v, main on GitHub %q", co, seed)
+	}
+	if got := git(t, co.Path, "log", "--format=%s", "HEAD"); got != SeedMessage {
+		t.Fatalf("the worktree's history: %q", got)
+	}
+	if got := git(t, co.Path, "ls-tree", "HEAD"); got != "" {
+		t.Fatalf("the first commit is not empty: %q", got)
+	}
+	if got := git(t, co.Path, "branch", "--show-current"); got != "socrates/first" {
+		t.Fatalf("branch %q", got)
+	}
+	if remoteHas(t, f, "socrates/first") != "" {
+		t.Fatal("the chat's branch was pushed before it had a commit")
+	}
+
+	// The chat's work goes to GitHub on its own branch, made from main.
+	writeFile(t, filepath.Join(co.Path, "hello.txt"), "hello\n")
+	git(t, co.Path, "add", ".")
+	git(t, co.Path, "commit", "--quiet", "-m", "hello")
+	if pushed, err := m.Push(ctx, chatOf(co, "abcdef1234567890")); err != nil || !pushed {
+		t.Fatalf("push: %v %v", pushed, err)
+	}
+	if got := git(t, co.Path, "rev-parse", "HEAD"); remoteHas(t, f, "socrates/first") != got {
+		t.Fatal("the chat's commit is not on GitHub")
+	}
+	if remoteHas(t, f, "main") != seed {
+		t.Fatal("main moved")
+	}
+
+	// The next chat finds main and starts from it, without a new seed.
+	next, err := m.Create(ctx, "octo/app", "1111111199999999", "socrates/second", "main", false)
+	if err != nil || next.Start != seed {
+		t.Fatalf("the second chat: %+v %v", next, err)
+	}
+	// Now that the repository has branches, a base it does not have is
+	// refused.
+	if _, err := m.Create(ctx, "octo/app", "2222222299999999", "socrates/third", "develop", false); err == nil {
+		t.Fatal("a base GitHub does not have was taken")
+	}
+}
+
+// A repository with no branch and no default branch named starts on main.
+func TestAnEmptyRepositoryWithoutABaseStartsOnMain(t *testing.T) {
+	f := newEmptyFake(t)
+	m := newManager(t, f)
+	co, err := m.Create(context.Background(), "octo/app", "abcdef1234567890", "socrates/first", "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if co.Base != "main" || remoteHas(t, f, "main") == "" || co.Start != remoteHas(t, f, "main") {
+		t.Fatalf("checkout %+v", co)
+	}
+}
+
+// When main cannot be made on GitHub, no worktree is made and the error
+// says why.
+func TestAnEmptyRepositoryThatRefusesThePush(t *testing.T) {
+	f := newEmptyFake(t)
+	m := newManager(t, f)
+	ctx := context.Background()
+	// GitHub refusing it: the fake takes no pack at all.
+	git(t, filepath.Join(f.dir, "octo", "app.git"), "config", "receive.maxInputSize", "1")
+	_, err := m.Create(ctx, "octo/app", "abcdef1234567890", "socrates/first", "main", false)
+	if err == nil || !strings.Contains(err.Error(), "the repository is empty") {
+		t.Fatalf("the error: %v", err)
+	}
+	if _, serr := os.Stat(m.WorktreeDir("octo/app", "abcdef1234567890")); serr == nil {
+		t.Fatal("a worktree was made")
+	}
+}
+
+// A main somebody pushed after the cache's fetch is never overwritten: the
+// chat starts from it.
+func TestAnEmptyRepositorysFirstBranchIsNeverOverwritten(t *testing.T) {
+	f := newEmptyFake(t)
+	m := newManager(t, f)
+	ctx := context.Background()
+	cache := m.CacheDir("octo/app")
+	if err := m.Fetch(ctx, "octo/app"); err != nil {
+		t.Fatal(err)
+	}
+	work := t.TempDir()
+	git(t, work, "init", "--quiet", "-b", "main")
+	writeFile(t, filepath.Join(work, "README.md"), "theirs\n")
+	git(t, work, "add", ".")
+	git(t, work, "commit", "--quiet", "-m", "theirs")
+	git(t, work, "push", "--quiet", filepath.Join(f.dir, "octo", "app.git"), "main")
+	theirs := remoteHas(t, f, "main")
+	co, err := m.addLocked(ctx, "octo/app", cache, m.WorktreeDir("octo/app", "abcdef1234567890"), "socrates/first", "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if remoteHas(t, f, "main") != theirs || co.Start != theirs || git(t, co.Path, "rev-parse", "HEAD") != theirs {
+		t.Fatalf("main was overwritten or not used: %+v", co)
+	}
+}
+
 // The branch is pushed when it has commits GitHub does not have, and only
 // then; a commit somebody else pushed meanwhile is never overwritten.
 func TestPushOnlyWhenAhead(t *testing.T) {

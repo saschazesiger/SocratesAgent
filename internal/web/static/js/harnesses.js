@@ -970,6 +970,10 @@ export function settingsForm(options = {}) {
     } else if (pick.branchesError) {
       baseHint.hidden = false;
       baseHint.textContent = 'The branches could not be listed: ' + pick.branchesError;
+    } else if (!continues && !pick.branches.branches.length) {
+      // A new repository without a commit: the chat's start makes its base.
+      baseHint.hidden = false;
+      baseHint.textContent = 'The repository is empty: ' + (pick.base || 'main') + ' is made on GitHub with an empty first commit.';
     } else {
       baseHint.hidden = !continues;
       baseHint.textContent = continues ? 'Not used: the branch exists already.' : '';
