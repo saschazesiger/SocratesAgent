@@ -139,6 +139,12 @@ and Admin's own. An own server has, beside its transport fields:
 | `tool_timeout` | seconds one call may take: Claude Code `timeout`, Codex `tool_timeout_sec`, OpenCode `timeout` |
 | `disabled_tools` | tools no agent gets: Claude Code `--disallowedTools mcp__<server>__<tool>`, Codex `disabled_tools`, OpenCode `tools: {"<server>_<tool>": false}` |
 
+Saving (`PUT /api/settings`) replaces the list as a whole (`config.Settings.Overlay`): each server is
+built from what the page sends, so a deleted server's headers, sign-in or note never pass to the one
+that takes its place, and a header removed in Admin is gone. Until 2026-11-12 the request was decoded
+over the live list, element by element, which did both (and changed the live settings even when the
+save was refused).
+
 **Test** (`POST /api/mcp/test`, `internal/mcpclient`) connects as an agent would (stdio, streamable
 HTTP or SSE; `${VAR}` filled in from Socrates' environment), runs `initialize`, lists the tools,
 prompts and resources, and shows the server's name, version, protocol, instructions and latency, or

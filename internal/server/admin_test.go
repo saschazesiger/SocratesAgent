@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"strings"
 	"testing"
@@ -372,5 +373,57 @@ func TestDiagnosticsCountsTheSessionsThatWereTakenIn(t *testing.T) {
 	}
 	if summary := row("Recovered sessions")["summary"]; summary != "none" {
 		t.Fatalf("a renamed session is still counted: %q", summary)
+	}
+}
+
+// A server deleted in Admin takes its token and its sign-in with it, a header
+// cleared there goes, and a save that is refused changes nothing: the request
+// is laid over the live settings, never decoded into their lists.
+func TestSavingMCPServersReplacesTheList(t *testing.T) {
+	env := adminEnv(t)
+	servers := func(data map[string]any) []any {
+		return data["settings"].(map[string]any)["mcp"].(map[string]any)["servers"].([]any)
+	}
+	res, saved := putSettings(t, env, func(settings map[string]any) {
+		settings["mcp"].(map[string]any)["servers"] = []any{
+			map[string]any{"name": "a", "url": "https://a.example/mcp", "headers": map[string]any{"Authorization": "Bearer a"}, "auth": "oauth", "description": "A"},
+			map[string]any{"name": "b", "url": "https://b.example/mcp", "headers": map[string]any{"X-Key": "b"}},
+		}
+	})
+	if res.StatusCode != http.StatusOK || len(servers(saved)) != 2 {
+		t.Fatalf("answered %d: %#v", res.StatusCode, saved)
+	}
+
+	// A refused save leaves the live headers alone.
+	res, _ = putSettings(t, env, func(settings map[string]any) {
+		settings["workspace"].(map[string]any)["root"] = "relative"
+		list := settings["mcp"].(map[string]any)["servers"].([]any)
+		list[1].(map[string]any)["headers"] = map[string]any{"X-Key": "changed"}
+	})
+	if res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("answered %d, want 400", res.StatusCode)
+	}
+	_, data := env.do(t, env.client, "GET", "/api/settings", "")
+	if got := servers(data)[1].(map[string]any)["headers"]; !reflect.DeepEqual(got, map[string]any{"X-Key": "b"}) {
+		t.Fatalf("a refused save changed the headers: %#v", got)
+	}
+
+	// Delete a and clear b's headers, the way the page sends it.
+	res, saved = putSettings(t, env, func(settings map[string]any) {
+		list := settings["mcp"].(map[string]any)["servers"].([]any)
+		b := list[1].(map[string]any)
+		b["headers"] = map[string]any{}
+		settings["mcp"].(map[string]any)["servers"] = []any{b}
+	})
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("answered %d: %#v", res.StatusCode, saved)
+	}
+	left := servers(saved)
+	if len(left) != 1 {
+		t.Fatalf("servers = %#v", left)
+	}
+	b := left[0].(map[string]any)
+	if b["name"] != "b" || b["headers"] != nil || b["auth"] != nil || b["description"] != nil {
+		t.Fatalf("b inherited from a or kept its header: %#v", b)
 	}
 }

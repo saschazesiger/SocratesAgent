@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -62,13 +63,19 @@ func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 	// zero value it would arrive with every switch off, and Normalize does not
 	// put switches back. That is how Shell would vanish from the picker and
 	// Codex would come up blocked on its trust prompt, with nothing logged.
-	body := struct {
-		Settings config.Settings `json:"settings"`
-	}{Settings: s.Settings()}
+	// A list or a map the request carries replaces the live one (Overlay):
+	// decoded over it, a deleted MCP server's token went to the next one.
+	var body struct {
+		Settings json.RawMessage `json:"settings"`
+	}
 	if !readJSON(w, r, &body) {
 		return
 	}
-	next := body.Settings
+	next := s.Settings()
+	if err := next.Overlay(body.Settings); len(body.Settings) > 0 && err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid JSON: %v", err))
+		return
+	}
 	next.Normalize()
 	if err := next.Validate(); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
