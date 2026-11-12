@@ -71,7 +71,8 @@ func TestTheLayoutIsAbsoluteForARelativeDataFolder(t *testing.T) {
 }
 
 // The config allows what OpenCode would ask about, denies its question tool,
-// and never adds a "*" that would lift plan mode's edit deny.
+// never adds a "*" that would lift plan mode's edit deny, and turns off
+// OpenCode's own session naming.
 func TestTheConfigAllowsEverythingButQuestions(t *testing.T) {
 	raw, err := configContent(agent.StartSpec{Model: "fake/model"})
 	if err != nil {
@@ -82,12 +83,20 @@ func TestTheConfigAllowsEverythingButQuestions(t *testing.T) {
 		Autoupdate *bool             `json:"autoupdate"`
 		Model      string            `json:"model"`
 		Permission map[string]string `json:"permission"`
+		Agent      map[string]struct {
+			Disable bool `json:"disable"`
+		} `json:"agent"`
 	}
 	if err := json.Unmarshal(raw, &doc); err != nil {
 		t.Fatal(err)
 	}
 	if doc.Share != "disabled" || doc.Autoupdate == nil || *doc.Autoupdate || doc.Model != "fake/model" {
 		t.Fatalf("config %s", raw)
+	}
+	// OpenCode names no session itself: the title is Socrates' own, from
+	// OpenRouter. The other agents are left to OpenCode and the folder.
+	if len(doc.Agent) != 1 || !doc.Agent["title"].Disable {
+		t.Fatalf("agent %s", raw)
 	}
 	want := map[string]string{"external_directory": "allow", "doom_loop": "allow", "read": "allow", "question": "deny"}
 	if len(doc.Permission) != len(want) {

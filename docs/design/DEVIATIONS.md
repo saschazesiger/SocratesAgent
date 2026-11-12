@@ -3108,5 +3108,6 @@ what it is in the CLI in that folder.
   (`chatModelIn`, which waits up to 20 s for a first discovery and falls back to the dashboard's
   default).
 - **Subagents are OpenCode's.** The serve process runs in the chat's folder and
-  `OPENCODE_CONFIG_CONTENT` sets no `agent`, so `agent.general.model` and the other agents' models
-  of the folder's config apply as in the CLI; Socrates only shows them.
+  `OPENCODE_CONFIG_CONTENT` sets no `agent` but `title.disable` (OpenCode's own naming is off: the
+  name comes from OpenRouter), and OpenCode merges `agent` key by key, so `agent.general.model` and the
+  other agents' models of the folder's config apply as in the CLI; Socrates only shows them.

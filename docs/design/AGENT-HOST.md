@@ -838,7 +838,10 @@ environment is `StartSpec.Env` without `OPENCODE_*`/`XDG_*` (except `OPENCODE_AU
 the layout, `OPENCODE_SERVER_USERNAME/PASSWORD` (32 random bytes per process),
 `OPENCODE_CONFIG_CONTENT` (share disabled, autoupdate off, `permission`: `external_directory`,
 `doom_loop`, `read` allow and `question` deny over OpenCode's own `"*": allow` — no `"*"` of ours,
-which would also lift plan mode's edit deny — plus `mcp`: ask_user's server, below, the folder's
+which would also lift plan mode's edit deny — `agent.title.disable`, so OpenCode never names a
+session with a model call of its own on the chat's provider (a chat's name comes from Socrates' title
+model on OpenRouter only; verified against 1.19.5: without the agent the naming request is not made
+and the session keeps OpenCode's placeholder title), plus `mcp`: ask_user's server, below, the folder's
 MCP servers (`local` with the command and its arguments, `remote` for http and SSE) and
 `{enabled: false}` for every server an `opencode.json[c]` or `.opencode/opencode.json[c]` of the
 workdir or a folder above it defines, since OpenCode merges this config into those key by key

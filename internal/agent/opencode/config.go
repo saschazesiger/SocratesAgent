@@ -58,6 +58,17 @@ func permission() map[string]any {
 	}
 }
 
+// noTitles turns off OpenCode's hidden "title" agent. Left on, OpenCode
+// names every new session itself, with a model call of its own on the chat's
+// provider (its small model, else the chat's model) that Socrates never shows:
+// a chat's name comes from Socrates' title model on OpenRouter only. Without
+// the agent OpenCode skips the naming (1.19.5: `ensureTitle` returns when
+// `get("title")` finds nothing). OpenCode merges `agent` key by key, so a
+// folder's own agents and their models still apply.
+func noTitles() map[string]any {
+	return map[string]any{"title": map[string]any{"disable": true}}
+}
+
 // configContent is OPENCODE_CONFIG_CONTENT: merged last of every source, so
 // it is the one that reliably wins.
 func configContent(spec agent.StartSpec) ([]byte, error) {
@@ -66,6 +77,7 @@ func configContent(spec agent.StartSpec) ([]byte, error) {
 		"share":      "disabled",
 		"autoupdate": false,
 		"permission": permission(),
+		"agent":      noTitles(),
 	}
 	if spec.Model != "" {
 		doc["model"] = spec.Model
