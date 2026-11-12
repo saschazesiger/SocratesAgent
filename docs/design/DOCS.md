@@ -16,7 +16,7 @@ file opens it beside the chat. Decided with the owner the same day:
 
 ## 1. The sidebar
 
-- A project folder's head has its **+** and a **⋮** (`.so-folder__more`, session.js `folderMoreHtml`).
+- A project folder's head has its **+** and a **⋮** (a GitHub repository's group too, §7) (`.so-folder__more`, session.js `folderMoreHtml`).
   The ⋮ opens the row menu's element (`#sessionMenu`) drawn for the folder (`openFolderMenu`):
   **Notes** (the board, BOARDS.md), **Docs** (when the folder has Markdown), **Open VS Code** / **VS Code
   (open)** (where VS Code is available or the folder has one). A phone, or a menu too tall, gets the
@@ -168,8 +168,10 @@ of Socrates Artifacts, which it was made for (removed 2026-11-11, PAGES.md).
 
 | Where | What |
 |---|---|
-| `internal/docs` | Scan, Has, Resolve, Page, RepoOf |
+| `internal/docs` | Scan, Has, Resolve, Page, RepoOf, Listed |
 | `internal/server/docs.go` | The routes, the token, the allowed folders |
+| `internal/server/docsrepo.go` | A repository's group: its docs folder, who may see it (§7) |
+| `internal/repos/docs.go` | A repository's docs written out per commit (§7) |
 | `internal/agent/docsguide.go` | `DocsGuidance` |
 | `internal/web/static/js/docview.js` | Listing, probe, addresses, glyphs, frame messages |
 | `internal/web/static/js/docs.js` | The Docs page |
@@ -178,5 +180,44 @@ of Socrates Artifacts, which it was made for (removed 2026-11-11, PAGES.md).
 | `internal/web/static/css/so-docs.css` | Both |
 | `internal/web/static/artifact-kit/kit.js` | Docs mode, anchors, alerts |
 
-Tested by `go test ./internal/docs ./internal/server -run 'Docs'` and `node e2e/run.mjs docs` (the
-boards and VS Code scenarios open their pages through the folder's ⋮).
+Tested by `go test ./internal/docs ./internal/repos ./internal/server -run 'Docs'` and `node e2e/run.mjs docs` (the
+boards and VS Code scenarios open their pages through the folder's ⋮; `repoflow` opens a repository's Docs and
+fetches a commit pushed meanwhile).
+
+## 7. A GitHub repository's group (2026-11-12)
+
+Since chats work in GitHub repositories (REPOS.md), a project's chats are grouped by their repository
+(`github:<owner>/<name>`), each in a worktree of its own, and the group had no Docs. Asked for by the owner on
+2026-11-12, "best directly via GitHub": the group's Docs are the repository's **default branch as GitHub has
+it**, not any chat's worktree.
+
+- **Where**: the group's ⋮ has Notes and Docs (no VS Code: each chat has a worktree of its own). The probe
+  answers for the key without asking GitHub: true for a repository a chat works in while GitHub is
+  connected, or, once its docs were written, whether they have Markdown.
+- **From GitHub**: the listing (`GET /api/docs?folder=github:<owner>/<name>`) fetches the repository's cache
+  (`<root>/.repos/<owner>/<name>.git`, the one the chats share) when it last fetched longer than a minute ago,
+  and *Read the files again* asks with `&fetch=1`, which fetches now. A fetch that fails shows what was
+  fetched last. Not the REST API: one `git fetch` brings every file and picture, and the cache is there
+  anyway.
+- **Written out per commit** (`repos.Manager.Docs`): the Markdown files and pictures of the branch's newest
+  commit that the Docs view would list (`docs.Listed`: no hidden or skipped folder, within the size bounds;
+  no symlink or submodule) go into `<root>/.repos/<owner>/<name>.docs/<commit>/`, at most 5000 files and
+  256 MB, read with `git cat-file --batch`. A file whose blob the folder before had is linked from it, so it
+  keeps its time and the page on screen is not drawn again; a changed file gets the commit's time. The last
+  three commits are kept. Every route of the view then reads that folder as it reads a project folder.
+- **The token** signs the key (`github:<owner>/<name>`), not the commit's folder, so a page's address
+  outlives the next commit. A page and a stat read the folder written last (without the repository's lock,
+  which a chat's push may hold for a while); only the listing goes to GitHub.
+- **Who**: GitHub connected and some chat working in the repository (whatever the case of its name).
+  Without GitHub the pages are 404.
+- **The page's head** names the branch (`· main`) beside the repository and, where the clone URL is a web
+  address, has *Open on GitHub* for the file on screen; a link in a page to a file that is not Markdown
+  offers the same in its snackbar.
+- `locate` and the links in a chat are unchanged: a chat's links resolve in its own worktree, which is a
+  folder like any other.
+
+| Route | For a repository's group |
+|---|---|
+| `GET /api/docs?folder=github:<owner>/<name>[&fetch=1]` | As for a folder, plus `repo: {name, branch, web}` (`web` the branch's files on GitHub, `https://github.com/<owner>/<name>/blob/<branch>/`) |
+| `GET /api/docs/stat`, `GET /docs/{token}/{path}` | The folder written last |
+| `POST /api/docs/probe` | As above, no `repos` entry |

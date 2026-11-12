@@ -361,13 +361,14 @@ what Socrates hands out, it is not a sandbox.
 | Sidebar group | the folder | the repository (`owner/name`, shown as `name`); "+" starts a chat in it |
 | `list_chats`, peers note | same git working tree (`chatScope`) | same repository; each entry names its branch and whether it is on the base |
 | Notes board | `board:<folder>` | `board:github:<owner>/<name>` |
-| Docs of a group | Markdown files of the folder | Markdown files on the default branch, read from the cache (`git ls-tree`, `git show`); a chat's links resolve in its own worktree |
+| Docs of a group | Markdown files of the folder | Markdown files on the default branch as GitHub has it, fetched into the cache and written out per commit (DOCS.md §7); a chat's links resolve in its own worktree |
 | Folder agent config and MCP of the folder | read from the folder | read from the worktree (unchanged code: the worktree is a folder); before it exists, from the preview of the base branch (§4.1) |
 | Info dialog | Folder | Repository, Branch, Base, Pull request, Worktree |
 | Header | — | a chip with the branch, linking to the pull request or the branch on GitHub |
 
-Not built yet, on purpose: **Docs of a repository group** (the group's ⋮ offers Notes only; a chat's own links
-to Markdown files still open beside it).
+*As built (2026-11-12):* **Docs of a repository group** came a day later than the rest, asked for by the owner
+("directly from GitHub"): the group's ⋮ offers Notes and Docs, the Docs page shows the default branch on GitHub
+(DOCS.md §7).
 
 ## 6. What stays as it was
 
