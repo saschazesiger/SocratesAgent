@@ -742,10 +742,10 @@ export function openAskDialog({ items, start = 0, watch, openChat, closed, more 
       sectionsHtml('qsec:' + q.id, sectionsOf(q))}${stepsHtml('qsteps:' + q.id, q.steps)}${
       hintWords ? html`<p class="so-q-detail">${hintWords}</p>` : ''
     }${options.length ? html`<div class="so-q-options" role="group" aria-label="${q.question || 'Options'}">${options.map((option, i) => optionHtml(q, option, i, multi, a))}</div>` : ''}${
-      kind === 'text' ? fieldHtml(q.id, 'other', 'Your answer', a.other, 3, last ? 'done' : 'next') : ''
-    }${kind === 'number' ? numberHtml(q, a, !!problem, last ? 'done' : 'next') : ''}${
-      other && (a.othering || a.other) ? fieldHtml(q.id, 'other', 'In your own words', a.other, 2, last ? 'done' : 'next') : ''
-    }${a.noting || a.note ? fieldHtml(q.id, 'note', 'A note to the agent', a.note, 2) : ''}${
+      kind === 'text' ? fieldHtml(q.id, 'other', 'Your answer', a.other, 3, last ? 'send' : 'next') : ''
+    }${kind === 'number' ? numberHtml(q, a, !!problem, last ? 'send' : 'next') : ''}${
+      other && (a.othering || a.other) ? fieldHtml(q.id, 'other', 'In your own words', a.other, 2, last ? 'send' : 'next') : ''
+    }${a.noting || a.note ? fieldHtml(q.id, 'note', 'A note to the agent', a.note, 2, last ? 'send' : 'next') : ''}${
       problem ? html`<div class="ds-alert ds-tone-error so-ask-problem" role="alert">${raw(icon('alertCircle', 20))}<span class="ds-alert__text">${problem}</span></div>` : ''
     }<div class="so-ask-extras">${
       delegate ? html`<button class="ds-btn ds-btn--quiet so-ask-delegate" type="button" data-action="delegate" data-q="${q.id}" aria-pressed="${a.delegated ? 'true' : 'false'}">${raw(icon('sparkles', 16))}You decide</button>` : ''
@@ -775,19 +775,19 @@ export function openAskDialog({ items, start = 0, watch, openChat, closed, more 
     }</div>`;
   }
 
-  // A field of one's own words, with its microphone. An answer's field
-  // moves on with the keyboard's own key (`key`: "next", or "done" on the
-  // last question, which puts the keyboard away); a note keeps Enter for
-  // its lines.
-  function fieldHtml(qid, field, label, value, rows, key = 'enter') {
+  // A field of one's own words, with its microphone. Enter in it presses
+  // the dialog's main button (`key` names it for the keyboard: "next" on
+  // Next, "send" on Send answers or Send question); Shift+Enter is a new
+  // line.
+  function fieldHtml(qid, field, label, value, rows, key = 'send') {
     const fid = 'ask-' + qid + '-' + field;
-    return html`<div class="ds-field so-q-own" data-ds-key="${fid}"><label class="ds-field__label" for="${fid}">${label}</label><div class="ds-field__row ds-field__row--top"><textarea class="ds-input so-q-own-field" id="${fid}" rows="${rows}" enterkeyhint="${key}" data-q="${qid}" data-field="${field}"${key !== 'enter' ? html` data-moves-on` : ''}>${value || ''}</textarea><button class="ds-btn ds-btn--quiet ds-btn--icon so-mic" type="button" data-action="dictate" data-target="${fid}" aria-label="${'Dictate ' + label.charAt(0).toLowerCase() + label.slice(1)}" data-tip="Dictate">${faces(raw(icon('mic', 20)), '')}</button></div></div>`;
+    return html`<div class="ds-field so-q-own" data-ds-key="${fid}"><label class="ds-field__label" for="${fid}">${label}</label><div class="ds-field__row ds-field__row--top"><textarea class="ds-input so-q-own-field" id="${fid}" rows="${rows}" enterkeyhint="${key}" data-q="${qid}" data-field="${field}">${value || ''}</textarea><button class="ds-btn ds-btn--quiet ds-btn--icon so-mic" type="button" data-action="dictate" data-target="${fid}" aria-label="${'Dictate ' + label.charAt(0).toLowerCase() + label.slice(1)}" data-tip="Dictate">${faces(raw(icon('mic', 20)), '')}</button></div></div>`;
   }
 
   function numberHtml(q, a, invalid, key) {
     const fid = 'ask-' + q.id + '-other';
     const range = [q.min !== undefined ? 'at least ' + q.min : '', q.max !== undefined ? 'at most ' + q.max : ''].filter(Boolean).join(', ');
-    return html`<div class="ds-field so-q-own" data-ds-key="${fid}"><label class="ds-field__label" for="${fid}">A number${range ? html` <span class="so-ask-range">${'(' + range + ')'}</span>` : ''}</label><input class="ds-input so-ask-number" id="${fid}" type="text" inputmode="decimal" enterkeyhint="${key}" autocomplete="off" data-q="${q.id}" data-field="other" data-moves-on value="${a.other || ''}"${invalid ? html` aria-invalid="true"` : ''}></div>`;
+    return html`<div class="ds-field so-q-own" data-ds-key="${fid}"><label class="ds-field__label" for="${fid}">A number${range ? html` <span class="so-ask-range">${'(' + range + ')'}</span>` : ''}</label><input class="ds-input so-ask-number" id="${fid}" type="text" inputmode="decimal" enterkeyhint="${key}" autocomplete="off" data-q="${q.id}" data-field="other" value="${a.other || ''}"${invalid ? html` aria-invalid="true"` : ''}></div>`;
   }
 
   function generalHtml() {
@@ -1065,18 +1065,13 @@ export function openAskDialog({ items, start = 0, watch, openChat, closed, more 
 
   dialog.addEventListener('close', () => close());
   dialog.addEventListener('keydown', (event) => {
-    // The keyboard's own key on an answer's field: "next" goes on to the
-    // next question, as Next does, and "done" on the last one takes the
-    // focus to Send answers, which puts a phone's keyboard away (Shift+Enter
-    // is still a new line). That key is a touch screen's: at a desk Enter in
-    // a field of several lines is a new line, and Ctrl or Cmd+Enter moves
-    // on; a one-line field (a number) moves on with Enter.
-    const moving = event.target.closest('[data-moves-on]');
-    if (moving && event.key === 'Enter' && !event.shiftKey && !event.isComposing && st.phase === 'ask') {
-      if (moving.localName === 'textarea' && !touchScreen() && !event.ctrlKey && !event.metaKey) return;
+    // Enter in a field of the dialog presses its main button - Next, Send
+    // answers or Send question - as everywhere a message is written;
+    // Shift+Enter is a new line.
+    if (event.key === 'Enter' && !event.shiftKey && !event.isComposing && st.phase === 'ask'
+      && event.target.closest('.so-q-own-field, .so-ask-number')) {
       event.preventDefault();
-      if (moving.getAttribute('enterkeyhint') === 'next') shell.querySelector('[data-action="forward"]')?.click();
-      else (shell.querySelector('[data-action="send"]') || shell).focus();
+      shell.querySelector('.so-q-send')?.click();
       return;
     }
     if (event.target.closest('textarea, input') || st.phase !== 'ask') return;

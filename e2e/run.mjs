@@ -12304,7 +12304,7 @@ const leaveComposer = (page, id) => page.evaluate((next) => {
   if (input && location.hash.slice(1) !== next) input.dataset.e2eLeft = '1';
 }, id);
 
-// say writes a message and sends it: Enter at a desk, Send on a touch screen.
+// say writes a message and sends it with Enter, or with Send (`button`).
 async function say(page, text, { button = false } = {}) {
   // On a touch screen a field the page focused by itself (the composer after
   // a chat starts, or after a menu gave the focus back) waits for a finger:
@@ -14144,7 +14144,8 @@ async function answerAll(page) {
   await page.click('dialog.so-askdlg .so-q-option[data-option="sqlite"]');
   await page.click('dialog.so-askdlg [data-action="note"]');
   await page.fill('#ask-db-note', 'keep it small');
-  await page.click('dialog.so-askdlg [data-action="forward"]');
+  // Enter in a field presses the dialog's main button: Next here.
+  await page.press('#ask-db-note', 'Enter');
   // 2. multi, 1 to 3: three chosen, a fourth refused.
   await page.waitForSelector('dialog.so-askdlg .so-q-option[data-option="dark"]', { timeout: 5000 });
   const hint = await page.$eval('dialog.so-askdlg .so-q-detail', (n) => n.textContent);
@@ -14161,7 +14162,7 @@ async function answerAll(page) {
   // 3. text.
   await page.waitForSelector('#ask-name-other', { timeout: 5000 });
   await page.fill('#ask-name-other', 'Atlas');
-  await page.click('dialog.so-askdlg [data-action="forward"]');
+  await page.press('#ask-name-other', 'Enter');
   // 4. confirm, Yes preselected: No.
   await page.waitForSelector('dialog.so-askdlg .so-q-option[data-option="no"]', { timeout: 5000 });
   const confirmDefault = await page.$$eval('dialog.so-askdlg .so-q-option[aria-pressed="true"]', (n) => n.map((one) => one.dataset.option));
@@ -14188,7 +14189,8 @@ async function answerAll(page) {
   const focusKept = await page.evaluate(() => document.activeElement && document.activeElement.id);
   await page.click('dialog.so-askdlg [data-action="general"]');
   await page.fill('#ask-all-general', 'ship it on Friday');
-  await page.click('dialog.so-askdlg [data-action="send"]');
+  // and Send answers on the last question.
+  await page.press('#ask-all-general', 'Enter');
   return { first, details, hint, multi, otherCounted, confirmDefault, numberDefault, refused, retyped, corrected, focusKept };
 }
 
@@ -14286,27 +14288,37 @@ async function chatask() {
     await page.click('dialog.so-askdlg [data-action="delegate"]');
     const pressed = await page.$eval('dialog.so-askdlg [data-action="delegate"]', (n) => n.getAttribute('aria-pressed'));
     await page.click('dialog.so-askdlg [data-action="ask-back"]');
+    // Shift+Enter is a new line in the question, and Enter sends it.
     await page.fill('#ask-all-followUp', 'What does A cost?');
-    await page.click('dialog.so-askdlg [data-action="send"]');
+    await page.press('#ask-all-followUp', 'Shift+Enter');
+    const followLines = await page.$eval('#ask-all-followUp', (n) => n.value);
+    await page.press('#ask-all-followUp', 'Backspace');
+    await page.press('#ask-all-followUp', 'Enter');
     await page.waitForSelector('dialog.so-askdlg', { state: 'detached', timeout: 10000 }).catch(() => {});
     const back = await awaitLog(page, 'you answered:', 15000);
     const asks = (await historyOf(s, id)).asks || [];
     const counter = asks[asks.length - 1].answer;
     ok(pressed === 'true' && back && counter.follow_up === 'What does A cost?' && counter.answers.q1.delegated === true,
       '"You decide" and a counter-question go back to the agent', JSON.stringify(counter));
+    ok(followLines === 'What does A cost?\n', 'Shift+Enter is a new line in the dialog’s field, and Enter sends it', JSON.stringify(followLines));
 
     // A plan: sent back with a note, then approved.
     await say(page, '/plan');
     await page.waitForSelector('#chat .so-plan[data-decision="pending"] [data-action="plan-note"]', { timeout: 15000 });
     const planCard = await page.$eval('#chat .so-plan[data-decision="pending"]', (n) => n.innerText);
     await page.click('#chat .so-plan [data-action="plan-note"]');
+    // Shift+Enter is a new line in the note, and Enter is Send back.
     await page.fill('#chat .so-plan__input', 'add a test first');
-    await page.click('#chat .so-plan [data-action="plan-send"]');
+    await page.press('#chat .so-plan__input', 'Shift+Enter');
+    const noteLines = await page.$eval('#chat .so-plan__input', (n) => n.value);
+    await page.press('#chat .so-plan__input', 'Backspace');
+    await page.press('#chat .so-plan__input', 'Enter');
     const sentBack = await awaitLog(page, 'Planning on: add a test first', 15000);
     const decided = await page.$eval('#chat .so-plan', (n) => ({ decision: n.dataset.decision, text: n.innerText }));
     ok(/Add the `?404`? branch|Add the 404 branch/.test(planCard) && sentBack && decided.decision === 'keep_planning'
       && /Note: add a test first/.test(decided.text),
       'a plan is a card: Keep planning with a note sends it back, and the card says so', oneLine(JSON.stringify(decided)));
+    ok(noteLines === 'add a test first\n', 'Shift+Enter is a new line in a plan’s note, and Enter sends it back', JSON.stringify(noteLines));
     await say(page, '/plan');
     await page.waitForSelector('#chat .so-plan[data-decision="pending"] [data-action="plan-approve"]', { timeout: 15000 });
     await page.click('#chat .so-plan[data-decision="pending"] [data-action="plan-approve"]');
@@ -14515,6 +14527,21 @@ async function chatphone() {
     const keys = await page.evaluate(() => !!document.getElementById('kbBtn')?.checkVisibility());
     ok(mode && shut && typing && !keys, 'a phone is in touch mode by itself, a tap on the composer opens it for typing, and there is no Keys button beside a chat',
       JSON.stringify({ mode, shut, typing, keys }));
+
+    // The keys are a desk's on a phone too: Shift+Enter is a new line, and
+    // Enter sends.
+    await page.fill('#chat .so-composer__input', 'first line');
+    await page.press('#chat .so-composer__input', 'Shift+Enter');
+    await page.keyboard.type('second line');
+    const lines = await page.$eval('#chat .so-composer__input', (n) => ({ value: n.value, key: n.getAttribute('enterkeyhint') }));
+    await page.press('#chat .so-composer__input', 'Enter');
+    const sentLines = await page.waitForFunction(() => [...document.querySelectorAll('#chat .so-msg[data-role="user"] .so-msg__text')]
+      .map((n) => n.textContent).find((t) => t.includes('second line')) || null, null, { timeout: 15000 }).then((h) => h.jsonValue(), () => '');
+    const emptied = await page.$eval('#chat .so-composer__input', (n) => n.value);
+    ok(lines.value === 'first line\nsecond line' && lines.key === 'send' && /first line\s+second line/.test(sentLines) && emptied === '',
+      'on a phone Shift+Enter is a new line in the composer and Enter sends it, its key saying Send',
+      JSON.stringify({ lines, sentLines, emptied }));
+    await awaitChat(s, id, idle);
 
     await say(page, '/md 5', { button: true });
     await awaitLog(page, 'The tests in', 20000);

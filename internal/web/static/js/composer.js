@@ -18,7 +18,7 @@ import { api, el, toast, errorMessage, clientKey, onWake, alertDialog, openDialo
 import { DS, html, raw, icon, morph, faces, showOverlay, hideOverlay } from './ui.js';
 import { combobox } from './combobox.js';
 import * as harnesses from './harnesses.js';
-import { guard, touchScreen, micButton } from './keyboard.js';
+import { guard, micButton } from './keyboard.js';
 import { queueMessage, queueCommand, queueModel, pendingModel, settled, chatOutbox, failedItem } from './chatoutbox.js';
 
 const DRAFT_DEBOUNCE = 600;
@@ -273,8 +273,7 @@ export function mountComposer(host, ctx) {
 
   // The bar's last slot is the action: Send, Stop while a turn runs and
   // nothing is written, both while something written waits for the turn.
-  // Enter is a new line on a touch screen, where Send is the button, and
-  // sends at a desk: the keyboard's key says which.
+  // Enter sends and Shift+Enter is a new line, on every screen.
   morph(host, html`<div class="so-composer" data-ds-key="${'composer:' + id}">
     <div class="so-composer__conflict" hidden></div>
     <ul class="so-composer__palette" role="listbox" aria-label="Commands" hidden></ul>
@@ -282,7 +281,7 @@ export function mountComposer(host, ctx) {
     <div class="so-composer__field">
       <label class="ds-sr" for="${'composer-' + id}">Message</label>
       <textarea class="ds-input so-composer__input" id="${'composer-' + id}" rows="1" spellcheck="true"
-        placeholder="Message" enterkeyhint="${touchScreen() ? 'enter' : 'send'}" aria-describedby="${'composer-hint-' + id}"></textarea>
+        placeholder="Message" enterkeyhint="send" aria-describedby="${'composer-hint-' + id}"></textarea>
     </div>
     <p class="so-composer__hint ds-meta" id="${'composer-hint-' + id}" role="status"></p>
     <div class="so-composer__bar">
@@ -377,9 +376,8 @@ export function mountComposer(host, ctx) {
       }
     }
     if (event.key !== 'Enter' || event.isComposing) return;
-    // Ctrl or Cmd with Enter sends everywhere; Enter alone sends at a desk,
-    // and is a new line on a touch screen, where Send is a button.
-    if (event.ctrlKey || event.metaKey || (!event.shiftKey && !touchScreen())) {
+    // Enter sends (with Ctrl or Cmd too); Shift+Enter is a new line.
+    if (!event.shiftKey) {
       event.preventDefault();
       send();
     }
@@ -814,8 +812,6 @@ export function mountComposer(host, ctx) {
     sendBtn.hidden = busy && empty;
     if (interrupting) stopBtn.setAttribute('aria-busy', 'true'); else stopBtn.removeAttribute('aria-busy');
     sendBtn.disabled = empty || !ready();
-    const keyHint = touchScreen() ? 'enter' : 'send';
-    if (input.getAttribute('enterkeyhint') !== keyHint) input.setAttribute('enterkeyhint', keyHint);
     // A phone's bar says the model's name; its effort is in the menu.
     const now = current();
     const name = now.model ? modelLabel(now.model) : 'Model';

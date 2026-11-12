@@ -1420,6 +1420,15 @@ export function mountChat(ctx) {
     const field = event.target.closest('[data-plan-note]');
     if (field) writePlanNote(field.dataset.planNote, field.value);
   });
+  // Enter in a plan's note is Send back, as everywhere a message is
+  // written; Shift+Enter is a new line.
+  host.addEventListener('keydown', (event) => {
+    if (event.key !== 'Enter' || event.shiftKey || event.isComposing) return;
+    const field = event.target.closest('[data-plan-note]');
+    if (!field) return;
+    event.preventDefault();
+    host.querySelector('[data-action="plan-send"][data-ask="' + CSS.escape(field.dataset.planNote) + '"]')?.click();
+  });
 
   log.addEventListener('pointerover', warm);
   log.addEventListener('pointerdown', warm);

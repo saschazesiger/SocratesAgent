@@ -468,3 +468,15 @@ Markdown file and link it would do. Decided with the owner ([PAGES.md](PAGES.md)
   Code row has no `⋮`: it has no status. *Why:* the owner wanted the list to be the place to sort the
   work in; the same eleven items in two menus were one menu too many, and a session is opened
   before it is renamed or deleted.
+
+## Revision 16 — Enter sends, everywhere a message is written, 2026-11-12
+
+- **Enter sends and Shift+Enter is a new line, on every screen.** The composer, the question
+  dialog's fields (its main button: Next, Send answers, Send question), a plan's note (Send back) and
+  the question about a passage all take Enter the same way; Ctrl or Cmd+Enter sends too. *Why:* the
+  owner found Enter sending in one field and breaking the line in the next. Before, a touch screen's
+  Enter was a new line in the composer, a note's was a new line everywhere, and an answer's moved
+  on only on a touch screen. A phone's keyboard has no Shift+Enter, so a new line there comes from
+  pasted or dictated text.
+- **Fields that hold data, not a message, keep Enter as a new line**: a repository's setup script,
+  pasted MCP JSON, e-mail lists, a test's steps, a board card's subtitle.
