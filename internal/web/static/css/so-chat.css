@@ -64,6 +64,8 @@
  *                          at work are, .so-footfold)
  *   .so-image              an image the agent made or viewed, its prompt
  *                          under it (.so-image__caption)
+ *   .so-thumb              an image drawn small, a button that opens the
+ *                          lightbox (--sm: a message's attachment)
  *   .so-plan, .so-ask      the plan card and the question card (DS cards)
  *   .so-line               a line between messages: a notice, a command, a
  *                          model or an account change, an interrupted turn
@@ -1072,8 +1074,9 @@
   color: var(--ds-text-2);
 }
 
-/* An image a part shows: as wide as the answer, as tall as most of a
-   screen, and the prompt it was made from under it in the meta type. */
+/* An image a part shows: small, as a thumbnail that opens it large in the
+   lightbox (.so-thumb), and the prompt it was made from under it in the
+   meta type. */
 .so-image {
   display: grid;
   justify-items: start;
@@ -1081,14 +1084,46 @@
   margin: 0;
 }
 
-.so-image__img {
-  display: block;
-  max-width: 100%;
-  max-height: min(60vh, calc(var(--ds-viewport-height, 100dvh) * 0.6));
-  height: auto;
+/* A thumbnail: a tool's screenshot, an image the agent showed in its text,
+   a file the person attached. As tall as --so-thumb-height at most and as
+   wide as the image is at that height, never wider than the column; a
+   message's attachments (.so-thumb--sm) are small squares. */
+.so-thumb {
+  --ds-pressable-radius: var(--ds-radius-md);
+  display: inline-flex;
+  vertical-align: top;
+  max-width: min(100%, var(--so-thumb-max-width));
+  padding: 0;
+  overflow: hidden;
   border: 1px solid var(--ds-line);
   border-radius: var(--ds-radius-md);
-  background: var(--ds-surface);
+  background: var(--ds-surface-high);
+  color: inherit;
+  cursor: zoom-in;
+}
+
+.so-thumb__img {
+  display: block;
+  max-width: 100%;
+  max-height: var(--so-thumb-height);
+  width: auto;
+  height: auto;
+  object-fit: contain;
+}
+
+.so-thumb--sm .so-thumb__img {
+  width: var(--so-thumb-sm-size);
+  height: var(--so-thumb-sm-size);
+  max-height: none;
+  object-fit: cover;
+}
+
+.so-md .so-thumb {
+  margin-block: var(--ds-space-1);
+}
+
+.so-msg__file {
+  display: flex;
 }
 
 .so-image__caption {
@@ -1958,6 +1993,15 @@
 }
 
 /* A long name wraps; the chip's own buttons keep their width. */
+/* An image's preview in place of its glyph, as tall as the row's text. */
+.so-composer__preview {
+  flex: none;
+  width: var(--ds-space-6);
+  height: var(--ds-space-6);
+  border-radius: var(--ds-radius-sm);
+  object-fit: cover;
+}
+
 .so-composer__file-name {
   min-width: 0;
 }
@@ -2424,4 +2468,33 @@
   .so-ask-body {
     gap: var(--ds-space-2);
   }
+}
+
+/* ── The lightbox ────────────────────────────────────────────────────── */
+
+/* Images large, one at a time (lightbox.js): a chat's, and a test run's
+   screenshots. */
+.so-lightbox__figure {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--ds-space-2);
+  margin: 0;
+}
+
+.so-lightbox__img {
+  display: block;
+  max-width: 100%;
+  max-height: var(--so-lightbox-img-max);
+  object-fit: contain;
+  border: 1px solid var(--ds-line);
+  border-radius: var(--ds-radius-md);
+  background: var(--ds-surface-high);
+}
+
+.so-lightbox__caption {
+  max-width: 100%;
+  color: var(--ds-text-2);
+  overflow-wrap: anywhere;
+  text-align: center;
 }

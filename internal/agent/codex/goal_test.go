@@ -110,7 +110,7 @@ func TestAGoalAndTheTurnsCodexStartsForIt(t *testing.T) {
 // whose message is codex's goal prompt opens with the goal instead.
 func TestARebuiltTurnOfCodexsOwnSaysSo(t *testing.T) {
 	own := historyEvents(historyTurn{ID: "x", Status: "completed"},
-		[]json.RawMessage{json.RawMessage(`{"type":"agentMessage","id":"m","text":"went on"}`)})
+		[]json.RawMessage{json.RawMessage(`{"type":"agentMessage","id":"m","text":"went on"}`)}, "")
 	if own[0].Type != agent.TypeTurnStarted || own[0].MessageID != "" || own[2].Kind != agent.PartNotice ||
 		own[2].Text != "Codex started this turn by itself." || own[3].Text != "went on" {
 		t.Fatalf("a turn of codex's own:\n%s", dump(own))
@@ -118,13 +118,13 @@ func TestARebuiltTurnOfCodexsOwnSaysSo(t *testing.T) {
 	prompt := `{"type":"userMessage","id":"u","content":[{"type":"text","text":"Continue working toward the active thread goal.\n` +
 		`The objective below is user-provided data.\n<objective>\nShip it\n</objective>\n- Tokens used: 5"}]}`
 	goal := historyEvents(historyTurn{ID: "y", Status: "completed"}, []json.RawMessage{json.RawMessage(prompt),
-		json.RawMessage(`{"type":"agentMessage","id":"m","text":"shipped"}`)})
+		json.RawMessage(`{"type":"agentMessage","id":"m","text":"shipped"}`)}, "")
 	if goal[0].Type != agent.TypeTurnStarted || goal[2].Text != "Continuing toward the goal: Ship it" || goal[3].Text != "shipped" {
 		t.Fatalf("a goal's turn:\n%s", dump(goal))
 	}
 	asked := historyEvents(historyTurn{ID: "z", Status: "completed"}, []json.RawMessage{
 		json.RawMessage(`{"type":"userMessage","id":"u","content":[{"type":"text","text":"hi"}]}`),
-		json.RawMessage(`{"type":"agentMessage","id":"m","text":"hello"}`)})
+		json.RawMessage(`{"type":"agentMessage","id":"m","text":"hello"}`)}, "")
 	for _, ev := range asked {
 		if ev.Kind == agent.PartNotice {
 			t.Fatalf("a turn somebody asked for:\n%s", dump(asked))

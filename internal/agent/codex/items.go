@@ -107,6 +107,9 @@ type mapped struct {
 	state   string
 	text    *string
 	content json.RawMessage
+	// images are the images an MCP tool call's result held, each a part of
+	// its own inside the call's (imageEvents).
+	images []toolImage
 }
 
 // itemState is an item status as a part state.
@@ -189,9 +192,10 @@ func mapItem(it item, raw json.RawMessage, completed bool) mapped {
 		return mapped{kind: agent.PartDiff, state: itemState(it.Status, completed),
 			content: jsonOf(map[string]any{"tool": "file_change", "changes": changes, "status": it.Status})}
 	case "mcpToolCall":
-		return mapped{kind: agent.PartTool, state: itemState(it.Status, completed),
+		images, result := mcpImages(it.Result)
+		return mapped{kind: agent.PartTool, state: itemState(it.Status, completed), images: images,
 			content: jsonOf(map[string]any{"tool": "mcp", "server": it.Server, "name": it.Tool, "arguments": it.Arguments,
-				"result": it.Result, "error": it.Error, "status": it.Status, "duration_ms": it.DurationMs})}
+				"result": result, "error": it.Error, "status": it.Status, "duration_ms": it.DurationMs})}
 	case "dynamicToolCall":
 		return mapped{kind: agent.PartTool, state: itemState(it.Status, completed),
 			content: jsonOf(map[string]any{"tool": "dynamic", "namespace": it.Namespace, "name": it.Tool, "arguments": it.Arguments,

@@ -49,6 +49,46 @@ func TestProjectionNestsPartsUnderTheirParent(t *testing.T) {
 	}
 }
 
+// An image a tool call returned stands beside the call: at the top of the
+// message for a call there, inside the agent for a call of a subagent. It
+// keeps the call's id, and a replay sends it although the call holds back
+// what is nested in it.
+func TestAToolsImageStandsBesideTheCall(t *testing.T) {
+	events := []Event{
+		{Seq: 1, Type: TypeTurnStarted, TurnID: "t"},
+		{Seq: 2, Type: TypePart, MessageID: "m", PartID: "shot", Kind: PartTool, State: PartDone},
+		{Seq: 3, Type: TypePart, PartID: "shot_img0", ParentPartID: "shot", Kind: PartImage, State: PartDone, Content: json.RawMessage(`{"path":"/x.png"}`)},
+		{Seq: 4, Type: TypePart, MessageID: "m", PartID: "task", Kind: PartTool, State: PartRunning},
+		{Seq: 5, Type: TypePart, MessageID: "m", PartID: "sub", ParentPartID: "task", Kind: PartTool, State: PartDone},
+		{Seq: 6, Type: TypePart, MessageID: "m", PartID: "sub_img0", ParentPartID: "sub", Kind: PartImage, State: PartDone},
+	}
+	p := Fold(events)
+	var top []string
+	for _, part := range p.Message("m").Parts {
+		top = append(top, part.ID)
+	}
+	if strings.Join(top, ",") != "shot,shot_img0,task" {
+		t.Fatalf("top-level parts %v", top)
+	}
+	if img := p.Part("shot_img0"); img.MessageID != "m" || img.ParentID != "shot" || len(p.Part("shot").Children) != 0 {
+		t.Fatalf("the image %+v, the call's children %d", img, len(p.Part("shot").Children))
+	}
+	var inTask []string
+	for _, part := range p.Part("task").Children {
+		inTask = append(inTask, part.ID)
+	}
+	if strings.Join(inTask, ",") != "sub,sub_img0" {
+		t.Fatalf("the agent's parts %v", inTask)
+	}
+	sent := map[string]bool{}
+	for _, ev := range Lighten(events, 0, p) {
+		sent[ev.PartID] = true
+	}
+	if !sent["shot_img0"] {
+		t.Fatal("a replay held back the image of a call at the top")
+	}
+}
+
 func TestAnAskCanAskForItsAnswerAsTheNextMessage(t *testing.T) {
 	p := Fold([]Event{{Seq: 1, Type: TypeAsk, AskID: "k", Via: ViaMessage}, {Seq: 2, Type: TypeAsk, AskID: "j"}})
 	if p.Ask("k").Deliver != ViaMessage || p.Ask("j").Deliver != "" {

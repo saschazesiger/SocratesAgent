@@ -92,3 +92,79 @@ func TestAnImagePartsFileIsServed(t *testing.T) {
 		t.Fatalf("a file that is gone: %d", res.StatusCode)
 	}
 }
+
+// An image a message carries is served by its name from the chat's
+// attachments, to who may read the chat; a file there that is not an image,
+// a name that leaves the folder and a hidden one are not.
+func TestAnAttachedImageIsServedByItsName(t *testing.T) {
+	c := newChatEnv(t, time.Hour)
+	id := c.create(t)
+	var b bytes.Buffer
+	if err := png.Encode(&b, image.NewRGBA(image.Rect(0, 0, 3, 3))); err != nil {
+		t.Fatal(err)
+	}
+	if code, body := c.upload(t, id, map[string]string{"shot.png": b.String(), "fake.png": "<html><script>x</script>"}); code != http.StatusOK {
+		t.Fatalf("upload: %d %v", code, body)
+	}
+	url := "/api/chats/" + id + "/attachments/"
+	res, _ := c.do(t, c.client, "GET", url+"shot.png", "")
+	got, _ := io.ReadAll(res.Body)
+	if res.StatusCode != http.StatusOK || res.Header.Get("Content-Type") != "image/png" || !bytes.Equal(got, b.Bytes()) {
+		t.Fatalf("the attached image: %d %q %d bytes", res.StatusCode, res.Header.Get("Content-Type"), len(got))
+	}
+	if res, _ := c.do(t, c.anon, "GET", url+"shot.png", ""); res.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("signed out: %d", res.StatusCode)
+	}
+	if res, _ := c.do(t, c.client, "GET", url+"fake.png", ""); res.StatusCode != http.StatusUnsupportedMediaType {
+		t.Fatalf("a file that is not an image: %d", res.StatusCode)
+	}
+	if err := os.WriteFile(filepath.Join(c.srv.chatAttachments(id), ".hidden.png"), b.Bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, bad := range []string{"..%2Fevents.jsonl", ".hidden.png", "missing.png"} {
+		if res, _ := c.do(t, c.client, "GET", url+bad, ""); res.StatusCode != http.StatusNotFound {
+			t.Fatalf("%s: %d", bad, res.StatusCode)
+		}
+	}
+}
+
+// An image the agent showed in what it wrote (a Markdown image of a file on
+// this machine) is served, by its absolute path or one relative to the
+// chat's folder; a path no text of the agent's names is not, image or not.
+func TestAnImageTheAgentShowedIsServed(t *testing.T) {
+	c := newChatEnv(t, time.Hour)
+	id := c.create(t)
+	dir := t.TempDir()
+	var b bytes.Buffer
+	if err := png.Encode(&b, image.NewRGBA(image.Rect(0, 0, 5, 5))); err != nil {
+		t.Fatal(err)
+	}
+	shown := filepath.Join(dir, "chart.png")
+	other := filepath.Join(dir, "other.png")
+	inFolder := filepath.Join(c.data, "out", "plot.png")
+	_ = os.MkdirAll(filepath.Dir(inFolder), 0o755)
+	for _, p := range []string{shown, other, inFolder} {
+		if err := os.WriteFile(p, b.Bytes(), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// The scripted agent says back what it is told: its answer names both.
+	c.send(t, id, "m1", "Here: ![the chart]("+shown+") and ![](out/plot.png)")
+	c.waitJournal(t, id, 15*time.Second, "the answer", turnsEnded(1))
+	url := "/api/chats/" + id + "/image?path="
+	for _, p := range []string{shown, "out/plot.png"} {
+		res, _ := c.do(t, c.client, "GET", url+p, "")
+		got, _ := io.ReadAll(res.Body)
+		if res.StatusCode != http.StatusOK || res.Header.Get("Content-Type") != "image/png" || !bytes.Equal(got, b.Bytes()) {
+			t.Fatalf("%s: %d %q", p, res.StatusCode, res.Header.Get("Content-Type"))
+		}
+	}
+	for _, p := range []string{other, "/etc/passwd", inFolder, ""} {
+		if res, _ := c.do(t, c.client, "GET", url+p, ""); res.StatusCode != http.StatusNotFound {
+			t.Fatalf("%q: %d", p, res.StatusCode)
+		}
+	}
+	if res, _ := c.do(t, c.anon, "GET", url+shown, ""); res.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("signed out: %d", res.StatusCode)
+	}
+}

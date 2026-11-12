@@ -391,6 +391,9 @@ func (a *Adapter) emitPartLocked(id, msg, parent string, c converted) {
 	sp.kind, sp.state, sp.text, sp.content = c.kind, c.state, c.text, c.content
 	a.out.Emit(agent.Event{Type: agent.TypePart, MessageID: sp.msg, PartID: id, ParentPartID: sp.parent,
 		Kind: c.kind, State: c.state, Text: c.text, Content: c.content})
+	if !live(c.state) && len(c.images) > 0 {
+		a.out.Emit(imageEvents(a.spec.StateDir, sp.msg, id, c.images)...)
+	}
 }
 
 // live is a part state that has not ended.

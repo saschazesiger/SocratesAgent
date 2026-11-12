@@ -590,6 +590,9 @@ func (a *adapter) item(p notification, completed bool) {
 		pt.text.WriteString(*m.text)
 	}
 	a.emitPart(t, pt, m.state)
+	if completed && len(m.images) > 0 {
+		a.out.Emit(imageEvents(a.spec.StateDir, t.msgID, pt.id, m.images)...)
+	}
 	if completed && it.Type == "agentMessage" && it.Delivery != nil && *it.Delivery == "async" && !pt.asked {
 		a.asyncQuestions(t, pt, it.Questions)
 	}

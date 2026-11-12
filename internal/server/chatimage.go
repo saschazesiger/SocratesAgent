@@ -44,15 +44,77 @@ func (s *Server) handleChatPartImage(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "the chat has no such image")
 		return
 	}
-	// A regular file only, looked at before it is opened - opening a FIFO
-	// would wait for a writer - and again once open (O_NONBLOCK, should it
-	// have been swapped for one in between), the same file both times.
-	before, err := os.Stat(c.Path)
+	serveImage(w, r, c.Path)
+}
+
+// handleChatAttachmentImage is an image a message of the chat carries, GET
+// /api/chats/{id}/attachments/{name}: the file the upload route kept in the
+// chat's attachments directory under that name (chatcompose.go), and only
+// when it is an image by its bytes. The composer's message names it before
+// the journal has it, so it is found by its name rather than by its message.
+func (s *Server) handleChatAttachmentImage(w http.ResponseWriter, r *http.Request) {
+	row, _, ok := s.chatOf(w, r)
+	if !ok {
+		return
+	}
+	name := r.PathValue("name")
+	if name == "" || name != filepath.Base(name) || strings.HasPrefix(name, ".") {
+		writeError(w, http.StatusNotFound, "the chat has no such file")
+		return
+	}
+	serveImage(w, r, filepath.Join(s.chatAttachments(row.ID), name))
+}
+
+// handleChatShownImage is an image the agent showed in what it wrote, GET
+// /api/chats/{id}/image?path=...: a Markdown image (![what](path)) of a file
+// on this machine, which the chat draws in place (md.js). The path is the
+// one the Markdown names, absolute or relative to the chat's folder, and it
+// is served only when a text of the agent's in this chat names it as it was
+// asked for and it is an image by its bytes: the route shows what the agent
+// showed, never any file a browser asks for.
+func (s *Server) handleChatShownImage(w http.ResponseWriter, r *http.Request) {
+	row, p, ok := s.chatOf(w, r)
+	if !ok {
+		return
+	}
+	raw := r.URL.Query().Get("path")
+	path := strings.TrimPrefix(raw, "file://")
+	if raw == "" || strings.ContainsRune(raw, 0) || len(raw) > 4096 {
+		writeError(w, http.StatusNotFound, "the chat has no such image")
+		return
+	}
+	if !filepath.IsAbs(path) {
+		if row.Workdir == "" {
+			writeError(w, http.StatusNotFound, "the chat has no such image")
+			return
+		}
+		path = filepath.Join(row.Workdir, path)
+	}
+	named := false
+	if err := p.view(func(proj *agent.Projection) { named = proj.AgentNames(raw) }); err != nil {
+		writeError(w, http.StatusInternalServerError, "the chat could not be read")
+		return
+	}
+	if !named {
+		writeError(w, http.StatusNotFound, "the chat has no such image")
+		return
+	}
+	serveImage(w, r, filepath.Clean(path))
+}
+
+// serveImage answers the image file at path. A regular file only, looked
+// at before it is opened - opening a FIFO would wait for a writer - and
+// again once open (O_NONBLOCK, should it have been swapped for one in
+// between), the same file both times; and an image by its bytes, never by
+// its name, so that nothing a page could run (an SVG, an HTML file named
+// .png) is ever served this way.
+func serveImage(w http.ResponseWriter, r *http.Request, path string) {
+	before, err := os.Stat(path)
 	if err != nil || !before.Mode().IsRegular() || before.Size() > imageMax {
 		writeError(w, http.StatusNotFound, "the image is no longer there")
 		return
 	}
-	f, err := os.OpenFile(c.Path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "the image is no longer there")
 		return
@@ -67,7 +129,7 @@ func (s *Server) handleChatPartImage(w http.ResponseWriter, r *http.Request) {
 	n, _ := io.ReadFull(f, head)
 	mime := http.DetectContentType(head[:n])
 	if !strings.HasPrefix(mime, "image/") {
-		writeError(w, http.StatusUnsupportedMediaType, "the part's file is not an image")
+		writeError(w, http.StatusUnsupportedMediaType, "the file is not an image")
 		return
 	}
 	w.Header().Set("Content-Type", mime)

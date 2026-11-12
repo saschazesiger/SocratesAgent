@@ -1,6 +1,9 @@
 package agent
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"strings"
+)
 
 // Projection is a journal folded into the chat as it stands: the messages and
 // their parts, the open questions, whether a turn is running, and the few
@@ -424,7 +427,22 @@ func (p *Projection) part(ev Event) {
 	// the parent's when the event names none. A parent that is not there
 	// (yet) leaves the part at the top of its message, still carrying the
 	// parent's id: adapters emit the parent first.
-	if parent := p.parts[ev.ParentPartID]; parent != nil && parent != part && !parent.within(part) {
+	parent := p.parts[ev.ParentPartID]
+	if parent != nil && ev.Kind == PartImage && parent.Kind == PartTool {
+		// An image a tool call returned (a screenshot, a picture it read)
+		// stands beside the call, where the call is, rather than inside it:
+		// a call is folded away, its image is what the person looks for.
+		// It keeps the call's id as its parent. chatfold.js applyPart does
+		// the same.
+		if part.MessageID == "" {
+			part.MessageID = parent.MessageID
+		}
+		parent = p.parts[parent.ParentID]
+		if parent == nil {
+			ev.MessageID = part.MessageID
+		}
+	}
+	if parent != nil && parent != part && !parent.within(part) {
 		if part.MessageID == "" {
 			part.MessageID = parent.MessageID
 		}
@@ -495,6 +513,21 @@ func (p *Projection) Seen(clientID string) (int64, bool) {
 
 // Message is one message by id.
 func (p *Projection) Message(id string) *Message { return p.messages[id] }
+
+// AgentNames says whether a text the agent wrote in this chat (a text part,
+// at any depth) has s in it: what the chat may show of a file the agent
+// named (server handleChatShownImage).
+func (p *Projection) AgentNames(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, part := range p.parts {
+		if part.Kind == PartText && strings.Contains(part.Text, s) {
+			return true
+		}
+	}
+	return false
+}
 
 // Part is one part by id.
 func (p *Projection) Part(id string) *Part { return p.parts[id] }

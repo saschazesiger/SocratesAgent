@@ -13,6 +13,7 @@
 
 import { html, raw, icon, faces } from './ui.js';
 import { markdown, codeBlock } from './md.js';
+import { thumbHtml } from './thumb.js';
 import { fmtTokens } from './api.js';
 import { agentMarkHtml } from './logos.js';
 
@@ -529,7 +530,7 @@ export function todoClock(part, view) {
 export function partHtml(part, view) {
   switch (part.kind) {
     case 'text':
-      return html`<div class="so-part so-md" data-ds-key="${'p:' + part.id}" data-kind="text" data-state="${part.state}">${markdown(part.text, { keep: part.state !== 'streaming' })}</div>`;
+      return html`<div class="so-part so-md" data-ds-key="${'p:' + part.id}" data-kind="text" data-state="${part.state}">${markdown(part.text, { keep: part.state !== 'streaming', images: view && view.shownImages })}</div>`;
     case 'reasoning':
       return reasoningHtml(part, view);
     case 'tool':
@@ -593,9 +594,11 @@ function reasoningHtml(part, view) {
 const IMAGE_WORDS = { running: 'Making an image…', streaming: 'Making an image…', error: 'The image could not be made' };
 
 /**
- * imageHtml is an image the agent made or viewed, drawn from its file on the
- * server (GET /api/chats/{id}/parts/{part}/image), with the prompt it was
- * made from under it; one that has no file yet, or will not, is a row.
+ * imageHtml is an image the agent made, viewed or got back from a tool (a
+ * screenshot), drawn small from its file on the server (GET
+ * /api/chats/{id}/parts/{part}/image) and opened large in the lightbox, with
+ * the prompt it was made from under it; one that has no file yet, or will
+ * not, is a row.
  */
 function imageHtml(part, view) {
   const c = part.content || {};
@@ -603,7 +606,7 @@ function imageHtml(part, view) {
   if (!src) return fileHtml(part);
   const prompt = typeof c.prompt === 'string' ? c.prompt.trim() : '';
   const name = String(c.path).split('/').pop();
-  return html`<figure class="so-part so-image" data-ds-key="${'p:' + part.id}" data-kind="image"><img class="so-image__img" src="${src}" alt="${prompt || name}" loading="lazy" decoding="async">${
+  return html`<figure class="so-part so-image" data-ds-key="${'p:' + part.id}" data-kind="image">${thumbHtml(src, prompt || name)}${
     prompt ? html`<figcaption class="so-image__caption">${prompt}</figcaption>` : ''
   }</figure>`;
 }
@@ -947,9 +950,16 @@ function withdrawButton(withdraw) {
   return html`<button class="ds-btn ds-btn--quiet ds-sm so-msg__withdraw" type="button" ${target} data-tip="Take this message back: the agent never reads it">${raw(icon('undo', 16))}<span>Withdraw</span></button>`;
 }
 
-function attachmentsHtml(list) {
+// attachmentsHtml is the files a message carries: an image the server can
+// draw (fileSrc) small, to open in the lightbox, any other file by its name.
+function attachmentsHtml(list, fileSrc) {
   if (!list || !list.length) return '';
-  return html`<ul class="so-msg__files">${list.map((file, i) => html`<li class="so-attachment" data-ds-key="${'f' + i}">${raw(icon(String(file.mime || '').startsWith('image/') ? 'image' : 'file', 16))}<span class="so-break">${file.name}</span></li>`)}</ul>`;
+  return html`<ul class="so-msg__files">${list.map((file, i) => {
+    const image = String(file.mime || '').startsWith('image/');
+    const src = image && fileSrc ? fileSrc(file) : '';
+    if (src) return html`<li class="so-msg__file" data-ds-key="${'f' + i}">${thumbHtml(src, file.name, { small: true })}</li>`;
+    return html`<li class="so-attachment" data-ds-key="${'f' + i}">${raw(icon(image ? 'image' : 'file', 16))}<span class="so-break">${file.name}</span></li>`;
+  })}</ul>`;
 }
 
 // A message from another chat's agent in a journal from before the agent's
@@ -964,14 +974,15 @@ const FROM_CHAT = /^\[(?:A message from the chat|From Socrates Tests:) [^\n]*\]\
  * userMessage is what the person sent: the text as written, the files, and -
  * while it is not the agent's yet - where it is. `sendNow` offers, for a
  * message that waits behind a running turn, to stop that turn so this one
- * goes at once, and `withdraw` to take it back (withdrawButton).
+ * goes at once, and `withdraw` to take it back (withdrawButton). `fileSrc`
+ * is where an attached image is drawn from.
  */
-export function userMessage({ key, text, attachments, state, answerTo, error, sendNow = false, withdraw = null }) {
+export function userMessage({ key, text, attachments, state, answerTo, error, sendNow = false, withdraw = null, fileSrc = null }) {
   const chip = USER_STATE[state];
   text = String(text || '').replace(FROM_CHAT, '');
   return html`<article class="so-msg" data-ds-key="${key}" data-role="user" data-state="${state || 'delivered'}"><div class="so-msg__bubble">${
     answerTo ? html`<p class="so-msg__label ds-meta">Answer to a question</p>` : ''
-  }${text ? html`<p class="so-msg__text">${text}</p>` : ''}${attachmentsHtml(attachments)}</div>${
+  }${text ? html`<p class="so-msg__text">${text}</p>` : ''}${attachmentsHtml(attachments, fileSrc)}</div>${
     chip || sendNow || withdraw ? html`<div class="so-msg__queue">${
       chip ? html`<span class="${state === 'failed' ? 'ds-status ds-tone-error so-msg__chip' : 'ds-status so-msg__chip'}" data-chip="${state}">${raw(icon(chip.glyph, 16))}<span>${chip.word}</span></span>` : ''
     }${withdrawButton(withdraw)}${

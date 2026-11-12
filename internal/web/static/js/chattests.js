@@ -15,6 +15,7 @@ import { api, el, toast, errorMessage, confirmDialog, clientKey } from './api.js
 import { M, html, raw, icon, morph, flipMorph, showOverlay, hideOverlay, tone } from './ui.js';
 import { markdown } from './md.js';
 import { clock } from './chatparts.js';
+import { lightbox } from './lightbox.js';
 
 // Over this width the panel is a column beside the chat; narrower it is a
 // side sheet over it (on a phone, DS's sheet rises from the bottom).
@@ -702,7 +703,8 @@ function testViewer({ chat, id, opener, onGone }) {
   body.addEventListener('click', (event) => {
     const shot = event.target.closest('[data-shot]');
     if (shot && shot.getAttribute('data-shot') !== '') {
-      lightbox(imagesOf(runOf()), Number(shot.getAttribute('data-shot')), chat, id, shot);
+      const shots = imagesOf(runOf()).map((ev) => ({ src: fileUrl(chat, id, ev.file), name: ev.caption || ev.file.split('/').pop(), meta: ev.step ? 'Step ' + ev.step : '' }));
+      lightbox(shots, Number(shot.getAttribute('data-shot')), shot, { noun: 'Screenshot' });
       return;
     }
     const copy = event.target.closest('[data-action="copy-code"]');
@@ -726,59 +728,6 @@ function testViewer({ chat, id, opener, onGone }) {
 /** verdictStatus is the status a finished run's verdict gives (chattests.VerdictStatus). */
 function verdictStatus(verdict) {
   return { pass: 'passed', issue: 'issue', fail: 'failed', blocked: 'blocked', na: 'passed' }[verdict] || 'blocked';
-}
-
-/* ============================================================== lightbox */
-
-/**
- * lightbox shows the images of a run large, one at a time: ← and → (the
- * buttons and the keys) go through them, Escape closes.
- */
-function lightbox(images, start, chat, test, opener) {
-  if (!images.length) return;
-  let at = Math.max(0, Math.min(images.length - 1, start || 0));
-  const titleId = 'lightboxTitle' + (++viewerSeq);
-  const title = el('h2', { class: 'ds-dialog__title', id: titleId });
-  const close = el('button', { class: 'ds-btn ds-btn--quiet ds-btn--icon', type: 'button', 'data-ds-close': true, 'aria-label': 'Close', 'data-tip': 'Close' });
-  morph(close, html`${raw(icon('close', 20))}`);
-  const figure = el('figure', { class: 'so-lightbox__figure' });
-  const prev = el('button', { class: 'ds-btn', type: 'button', 'data-go': '-1' });
-  morph(prev, html`${raw(icon('arrowLeft', 18))}<span>Previous</span>`);
-  const next = el('button', { class: 'ds-btn', type: 'button', 'data-go': '1' });
-  morph(next, html`<span>Next</span>${raw(icon('arrowRight', 18))}`);
-  const dialog = el('dialog', { class: 'ds-dialog ds-dialog--full so-lightbox', 'aria-labelledby': titleId },
-    el('div', { class: 'ds-dialog__backdrop', 'data-ds-close': true }),
-    el('div', { class: 'ds-dialog__box' },
-      el('div', { class: 'ds-dialog__head' }, close, title),
-      el('div', { class: 'ds-dialog__body so-lightbox__body' }, figure),
-      el('div', { class: 'ds-dialog__actions so-lightbox__actions' }, prev, next)));
-
-  const draw = () => {
-    const ev = images[at];
-    const name = ev.caption || ev.file.split('/').pop();
-    title.textContent = 'Screenshot ' + (at + 1) + ' of ' + images.length;
-    morph(figure, html`<img class="so-lightbox__img" src="${fileUrl(chat, test, ev.file)}" alt="${name}"><figcaption class="so-lightbox__caption">${ev.step ? html`<span class="ds-meta">${'Step ' + ev.step + ' \u00b7 '}</span>` : ''}${name}</figcaption>`);
-    for (const [b, off] of [[prev, at === 0], [next, at === images.length - 1]]) {
-      if (off) b.setAttribute('aria-disabled', 'true'); else b.removeAttribute('aria-disabled');
-    }
-  };
-  const go = (step) => {
-    const to = at + step;
-    if (to < 0 || to >= images.length) return;
-    at = to;
-    draw();
-  };
-  dialog.addEventListener('click', (event) => {
-    const b = event.target.closest('[data-go]');
-    if (b && b.getAttribute('aria-disabled') !== 'true') go(Number(b.getAttribute('data-go')));
-  });
-  dialog.addEventListener('keydown', (event) => {
-    if (event.key === 'ArrowLeft') { event.preventDefault(); go(-1); }
-    if (event.key === 'ArrowRight') { event.preventDefault(); go(1); }
-  });
-  dialog.addEventListener('close', () => hideOverlay(dialog, { remove: true }), { once: true });
-  draw();
-  showOverlay(dialog, opener);
 }
 
 /* =============================================================== dialogs */

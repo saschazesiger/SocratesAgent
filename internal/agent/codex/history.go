@@ -85,7 +85,7 @@ func (a *adapter) rebuild(ctx context.Context, thread string) error {
 		if err != nil {
 			return err
 		}
-		a.out.Emit(historyEvents(ht, items)...)
+		a.out.Emit(historyEvents(ht, items, a.spec.StateDir)...)
 	}
 	// Always said, as StartSpec.Rebuild has it, even when there was no turn
 	// to read back.
@@ -94,8 +94,9 @@ func (a *adapter) rebuild(ctx context.Context, thread string) error {
 	return nil
 }
 
-// historyEvents is one stored turn as journal events.
-func historyEvents(ht historyTurn, items []json.RawMessage) []agent.Event {
+// historyEvents is one stored turn as journal events. The images of its MCP
+// tool calls are kept under stateDir.
+func historyEvents(ht historyTurn, items []json.RawMessage, stateDir string) []agent.Event {
 	turnID := "t_" + ht.ID
 	msgID := turnID + "_a"
 	outcome, state, msgState := agent.OutcomeCompleted, agent.PartDone, agent.MessageDone
@@ -109,12 +110,18 @@ func historyEvents(ht historyTurn, items []json.RawMessage) []agent.Event {
 		outcome, state, msgState = agent.OutcomeInterrupted, agent.PartInterrupted, agent.MessageInterrupted
 	}
 	var users, parts []agent.Event
+	// n numbers the turn's parts; an image of a call takes its call's id.
+	n := 0
+	next := func() string {
+		n++
+		return fmt.Sprintf("%s_p%d", msgID, n)
+	}
 	opener := func(code, text, detail string) {
 		c := map[string]any{"code": code}
 		if detail != "" {
 			c["detail"] = detail
 		}
-		parts = append(parts, agent.Event{Type: agent.TypePart, MessageID: msgID, PartID: fmt.Sprintf("%s_p%d", msgID, len(parts)+1),
+		parts = append(parts, agent.Event{Type: agent.TypePart, MessageID: msgID, PartID: next(),
 			Kind: agent.PartNotice, State: agent.PartDone, Text: text, Content: jsonOf(c)})
 	}
 	// A turn nobody asked for - no message, and no command's (a compaction,
@@ -146,12 +153,13 @@ func historyEvents(ht historyTurn, items []json.RawMessage) []agent.Event {
 		if outcome != agent.OutcomeCompleted && (st == agent.PartRunning || st == agent.PartStreaming) {
 			st = state
 		}
-		ev := agent.Event{Type: agent.TypePart, MessageID: msgID, PartID: fmt.Sprintf("%s_p%d", msgID, len(parts)+1),
+		ev := agent.Event{Type: agent.TypePart, MessageID: msgID, PartID: next(),
 			Kind: m.kind, State: st, Content: m.content}
 		if m.text != nil {
 			ev.Text = *m.text
 		}
 		parts = append(parts, ev)
+		parts = append(parts, imageEvents(stateDir, msgID, ev.PartID, m.images)...)
 	}
 	first := ""
 	if len(users) > 0 {

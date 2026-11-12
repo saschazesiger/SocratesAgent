@@ -25,7 +25,6 @@
  *   .so-evidence       a step's or the run's files: .so-shot (a screenshot's
  *                      thumbnail, a .ds-pressable button) and .so-file (a
  *                      link to any other file)
- *   .so-lightbox       the run's images large, one at a time
  *   .so-testform       the Edit and Override dialogs: __fields; .so-tedit
  *                      the steps of Edit, each a row with its tools
  */
@@ -353,33 +352,6 @@
   flex: none;
   color: var(--ds-text-2);
   font: var(--ds-font-meta);
-}
-
-/* ── The lightbox ────────────────────────────────────────────────────── */
-
-.so-lightbox__figure {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: var(--ds-space-2);
-  margin: 0;
-}
-
-.so-lightbox__img {
-  display: block;
-  max-width: 100%;
-  max-height: var(--so-lightbox-img-max);
-  object-fit: contain;
-  border: 1px solid var(--ds-line);
-  border-radius: var(--ds-radius-md);
-  background: var(--ds-surface-high);
-}
-
-.so-lightbox__caption {
-  max-width: 100%;
-  color: var(--ds-text-2);
-  overflow-wrap: anywhere;
-  text-align: center;
 }
 
 /* ── Edit and Override ───────────────────────────────────────────────── */

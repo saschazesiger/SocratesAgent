@@ -90,6 +90,9 @@ type converted struct {
 	paths []string
 	// child is the subagent session a task tool runs.
 	child string
+	// images are what a completed call returned as images, each a part of
+	// its own inside the call's (imageEvents).
+	images []toolImage
 }
 
 // emptyTodos is a todo part's content with no task.
@@ -218,6 +221,9 @@ func convertTool(p ocPart) converted {
 		tc.Exit = meta.Exit
 	}
 	c := converted{kind: agent.PartTool, state: state, text: text}
+	if st.Status == toolCompleted {
+		c.images = toolImages(st.Attachments)
+	}
 	if p.Tool == "task" {
 		tc.SessionID, tc.Agent = meta.SessionID, input.SubagentType
 		if tc.Title == "" {

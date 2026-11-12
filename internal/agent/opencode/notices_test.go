@@ -362,7 +362,7 @@ func TestARebuildShowsAStepsChanges(t *testing.T) {
 		t.Fatal(err)
 	}
 	var diffs []string
-	for _, ev := range historyEvents(msgs, "/w/repo/pkg", nil) {
+	for _, ev := range historyEvents(msgs, "/w/repo/pkg", "", nil) {
 		if ev.Type == agent.TypePart && ev.Kind == agent.PartDiff {
 			dc := decode[DiffContent](t, ev.Content)
 			for _, f := range dc.Files {

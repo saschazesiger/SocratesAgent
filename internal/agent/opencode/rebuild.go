@@ -25,12 +25,13 @@ func (a *Adapter) history(ctx context.Context, cl *client, msgs []ocMessageWithP
 		}
 		return out
 	}
-	return historyEvents(msgs, a.spec.Workdir, child)
+	return historyEvents(msgs, a.spec.Workdir, a.spec.StateDir, child)
 }
 
 // historyEvents is history without the HTTP, for the chat's folder
-// workdir: child reads a subagent's session.
-func historyEvents(msgs []ocMessageWithParts, workdir string, child func(session string) []ocMessageWithParts) []agent.Event {
+// workdir: child reads a subagent's session. The images tool calls returned
+// are kept under stateDir.
+func historyEvents(msgs []ocMessageWithParts, workdir, stateDir string, child func(session string) []ocMessageWithParts) []agent.Event {
 	var events []agent.Event
 	var turn *rebuiltTurn
 	end := func() {
@@ -44,7 +45,7 @@ func historyEvents(msgs []ocMessageWithParts, workdir string, child func(session
 		switch m.Info.Role {
 		case "user":
 			end()
-			turn = &rebuiltTurn{id: "t_" + m.Info.ID, outcome: agent.OutcomeCompleted, usage: &agent.Usage{}}
+			turn = &rebuiltTurn{id: "t_" + m.Info.ID, outcome: agent.OutcomeCompleted, usage: &agent.Usage{}, stateDir: stateDir}
 			turn.changes.workdir = workdir
 			if diffs, ok := summaryDiffs(m.Info.Summary); ok {
 				turn.changes.summary(diffs)
@@ -55,7 +56,7 @@ func historyEvents(msgs []ocMessageWithParts, workdir string, child func(session
 				agent.Event{Type: agent.TypeTurnStarted, TurnID: turn.id, MessageID: m.Info.ID})
 		case "assistant":
 			if turn == nil {
-				turn = &rebuiltTurn{id: "t_" + m.Info.ID, outcome: agent.OutcomeCompleted, usage: &agent.Usage{}}
+				turn = &rebuiltTurn{id: "t_" + m.Info.ID, outcome: agent.OutcomeCompleted, usage: &agent.Usage{}, stateDir: stateDir}
 				turn.changes.workdir = workdir
 				events = append(events, agent.Event{Type: agent.TypeTurnStarted, TurnID: turn.id})
 			}
@@ -82,6 +83,8 @@ type rebuiltTurn struct {
 	answer string
 	parent string
 	state  string
+	// stateDir is where the images of tool calls are kept.
+	stateDir string
 }
 
 func (t *rebuiltTurn) end() []agent.Event {
@@ -165,8 +168,10 @@ func (t *rebuiltTurn) finalParts(msg, parent string, parts []ocPart, complete bo
 		if state == agent.PartStreaming || state == agent.PartRunning {
 			state = agent.PartInterrupted
 		}
-		events = append(events, agent.Event{Type: agent.TypePart, MessageID: msg, PartID: partID(p, c, msg, parent), ParentPartID: parent,
+		id := partID(p, c, msg, parent)
+		events = append(events, agent.Event{Type: agent.TypePart, MessageID: msg, PartID: id, ParentPartID: parent,
 			Kind: c.kind, State: state, Text: c.text, Content: c.content})
+		events = append(events, imageEvents(t.stateDir, msg, id, c.images)...)
 		if c.child != "" && depth < maxNesting && child != nil {
 			for _, cm := range child(c.child) {
 				if cm.Info.Role != "assistant" || !ranFor(p, cm.Info) {

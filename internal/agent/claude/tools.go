@@ -3,13 +3,9 @@
 package claude
 
 import (
-	"crypto/sha256"
 	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"os"
-	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -548,27 +544,12 @@ func (s *state) imagePart(id, parent string, img block) {
 	if img.Source == nil || img.Source.Data == "" {
 		return
 	}
-	data, err := base64.StdEncoding.DecodeString(img.Source.Data)
-	if err != nil {
-		return
-	}
-	sum := sha256.Sum256(data)
-	ext := ".png"
-	switch img.Source.MediaType {
-	case "image/jpeg":
-		ext = ".jpg"
-	case "image/gif":
-		ext = ".gif"
-	case "image/webp":
-		ext = ".webp"
-	}
-	dir := filepath.Join(s.spec.StateDir, "images")
-	path := filepath.Join(dir, hex.EncodeToString(sum[:12])+ext)
-	if err := os.MkdirAll(dir, 0o700); err != nil || os.WriteFile(path, data, 0o600) != nil {
+	path, size, ok := agent.SaveImage(s.spec.StateDir, img.Source.MediaType, img.Source.Data)
+	if !ok {
 		return
 	}
 	p := s.newPart(id, agent.PartImage, parent, agent.PartDone)
-	p.extra = map[string]any{"mime": img.Source.MediaType, "path": path, "size": len(data)}
+	p.extra = map[string]any{"mime": img.Source.MediaType, "path": path, "size": size}
 	s.emitPart(p)
 	delete(s.parts, id)
 }

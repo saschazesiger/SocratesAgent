@@ -123,6 +123,13 @@
   --so-testv-width: 760px;
   --so-lightbox-img-max: calc(var(--ds-viewport-height, 100dvh) - 220px);
 
+  /* A chat's images drawn small (so-chat.css .so-thumb): how tall and how
+     wide a screenshot or a picture the agent showed may be, and the square
+     of an image a message carries. */
+  --so-thumb-height: 160px;
+  --so-thumb-max-width: 320px;
+  --so-thumb-sm-size: 72px;
+
   /* A Markdown file beside a chat (so-docs.css .so-docside): about half
      the stage. */
   --so-docside-width: 50%;

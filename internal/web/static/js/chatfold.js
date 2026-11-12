@@ -173,7 +173,15 @@ function applyPart(chat, ev) {
     lite: !!ev.lite, held: Number(ev.held) || 0, seq: Number(ev.seq) || 0,
   };
   chat.parts.set(part.id, part);
-  const parent = part.parentId ? chat.parts.get(part.parentId) : null;
+  let parent = part.parentId ? chat.parts.get(part.parentId) : null;
+  if (parent && part.kind === 'image' && parent.kind === 'tool') {
+    // An image a tool call returned stands beside the call, where the call
+    // is, rather than inside it (projection.go part).
+    if (!part.messageId) part.messageId = parent.messageId;
+    const call = parent;
+    parent = call.parentId ? chat.parts.get(call.parentId) || null : null;
+    if (!parent) ev = { ...ev, message_id: part.messageId };
+  }
   if (parent && parent !== part && !within(chat, parent, part)) {
     if (!part.messageId) part.messageId = parent.messageId;
     parent.children.push(part);

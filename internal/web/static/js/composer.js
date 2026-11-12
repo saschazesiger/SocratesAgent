@@ -448,12 +448,19 @@ export function mountComposer(host, ctx) {
   function addFiles(list) {
     for (const file of list) {
       if (!file) continue;
-      const entry = { key: clientKey(), file, state: 'uploading', attachment: null, error: '' };
+      const entry = { key: clientKey(), file, state: 'uploading', attachment: null, error: '', preview: '' };
+      // An image shows itself small while the message is written.
+      if (String(file.type || '').startsWith('image/') && file.type !== 'image/svg+xml') entry.preview = URL.createObjectURL(file);
       files.push(entry);
       upload(entry);
     }
     drawFiles();
     paint();
+  }
+
+  // dropFiles lets go of the previews of files the composer no longer has.
+  function dropFiles(list) {
+    for (const entry of list) if (entry.preview) URL.revokeObjectURL(entry.preview);
   }
 
   const FILE_WORDS = { uploading: 'Uploading', failed: 'Not uploaded' };
@@ -462,7 +469,8 @@ export function mountComposer(host, ctx) {
     fileList.hidden = !files.length;
     morph(fileList, html`${files.map((entry) => html`<li class="so-attachment so-composer__file" data-ds-key="${entry.key}" data-state="${entry.state}">${
       entry.state === 'uploading' ? html`<span class="ds-spinner" aria-hidden="true"></span>`
-        : raw(icon(entry.state === 'failed' ? 'alertCircle' : (entry.file.type || '').startsWith('image/') ? 'image' : 'file', 16))
+        : entry.state !== 'failed' && entry.preview ? html`<img class="so-composer__preview" src="${entry.preview}" alt="">`
+          : raw(icon(entry.state === 'failed' ? 'alertCircle' : (entry.file.type || '').startsWith('image/') ? 'image' : 'file', 16))
     }<span class="so-break so-composer__file-name">${entry.file.name || 'Pasted image'}</span>${
       FILE_WORDS[entry.state] ? html`<span class="ds-meta">${FILE_WORDS[entry.state]}</span>` : ''
     }${entry.state === 'failed' ? html`<button class="ds-btn ds-btn--quiet ds-btn--icon ds-sm" type="button" data-action="file-retry" data-key="${entry.key}" aria-label="${'Upload ' + (entry.file.name || 'the file') + ' again'}" data-tip="${'Upload again' + (entry.error ? ' (' + entry.error + ')' : '')}">${raw(icon('sync', 18))}</button>` : ''}<button class="ds-btn ds-btn--quiet ds-btn--icon ds-sm" type="button" data-action="file-remove" data-key="${entry.key}" aria-label="${'Remove ' + (entry.file.name || 'the file')}" data-tip="Remove">${raw(icon('close', 16))}</button></li>`)}`);
@@ -723,7 +731,7 @@ export function mountComposer(host, ctx) {
     if (known) queueCommand(id, m[1], (m[2] || '').trim(), text);
     else queueMessage(id, text, attached);
     input.value = '';
-    files.length = 0;
+    dropFiles(files.splice(0));
     drawFiles();
     palette.hidden = true;
     grow();
@@ -764,7 +772,7 @@ export function mountComposer(host, ctx) {
         break;
       case 'file-remove': {
         const at = files.findIndex((entry) => entry.key === target.dataset.key);
-        if (at >= 0) files.splice(at, 1);
+        if (at >= 0) dropFiles(files.splice(at, 1));
         drawFiles();
         paint();
         input.focus();

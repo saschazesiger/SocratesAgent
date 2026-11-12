@@ -120,6 +120,9 @@ type ocToolState struct {
 		Start int64 `json:"start"`
 		End   int64 `json:"end"`
 	} `json:"time"`
+	// Attachments are the files a completed call returned (file parts):
+	// an MCP tool's images, as data: URLs.
+	Attachments []ocPart `json:"attachments"`
 }
 
 // Tool states.

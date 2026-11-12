@@ -15,18 +15,41 @@
 import { Marked } from '../vendor/markdown/marked.esm.js';
 import DOMPurify from '../vendor/markdown/purify.es.js';
 import { html, raw, icon } from './ui.js';
+import { thumbHtml } from './thumb.js';
 
 // A path to a Markdown file, nothing else in the span (`docs/X.md`,
 // `./README.md#setup`, `/abs/path/NOTES.md`): no spaces, no placeholders.
 const MD_PATH = /^(?:\.{0,2}\/)?[\w@+-][\w@+.\/-]*\.(?:md|markdown)(?:#[\w-]*)?$/i;
+
+// An image of a file on this machine, by its path: absolute, relative to
+// the chat's folder, or a file:// URL - never a URL of another scheme, and
+// only a picture by its name. The server draws it only when a text of the
+// agent's names it (server handleChatShownImage).
+const LOCAL_IMAGE = /^(?:file:\/\/\/|\/|\.{0,2}\/?[\w@+-])(?!.*:\/\/)[^\s?#]*\.(?:png|jpe?g|gif|webp|avif|bmp)$/i;
+
+// While a text is turned into markup: how its images are drawn, and the
+// thumbnails it drew so far, each standing in the markup as SLOT and its
+// number until DOMPurify is done with it. SLOT is new on every load, so no
+// text can write one.
+let drawing = null;
+let slots = [];
+const SLOT = 'soimg' + Math.random().toString(36).slice(2, 10) + '_';
+const SLOTS = new RegExp(SLOT + '(\\d+)_', 'g');
 
 const marked = new Marked({
   gfm: true,
   breaks: false,
   renderer: {
     // An image is a link to it: the page fetches nothing the person did not
-    // ask for.
+    // ask for. One of a file on this machine that the chat can draw
+    // (`images`, the agent showing a screenshot it took or a chart it made)
+    // is drawn small in place, as a slot filled in once the text is clean.
     image({ href, text }) {
+      const src = drawing && LOCAL_IMAGE.test(href || '') ? drawing.src(href) : '';
+      if (src) {
+        slots.push(thumbHtml(src, text || String(href).split('/').pop()));
+        return SLOT + (slots.length - 1) + '_';
+      }
       return html`<a href="${href || ''}">${text || href || ''}</a>`.toString();
     },
     // A Markdown file named as a `code` path is a link to it, which the chat
@@ -64,9 +87,13 @@ DOMPurify.addHook('afterSanitizeAttributes', (node) => {
   }
 });
 
-/** sanitize makes a piece of HTML from marked safe for the page. */
+/**
+ * sanitize makes a piece of HTML from marked safe for the page, and then
+ * puts the thumbnails the page drew itself where their slots are.
+ */
 function sanitize(markup) {
-  return DOMPurify.sanitize(markup, PURIFY);
+  const clean = DOMPurify.sanitize(markup, PURIFY);
+  return slots.length ? clean.replace(SLOTS, (all, n) => (slots[n] ? String(slots[n]) : '')) : clean;
 }
 
 /**
@@ -101,10 +128,12 @@ function remember(source, out) {
 /**
  * markdown is a text as safe markup, ready for html``. `keep: false` is for
  * a text that is still being written: each of its states is drawn once and
- * never again, so none is kept.
+ * never again, so none is kept. `images` draws the images of files on this
+ * machine the text shows: { key, src(path) } - the key of the chat they are
+ * drawn for, and where one is drawn from ('' to keep it a link).
  */
-export function markdown(text, { keep = true } = {}) {
-  const source = String(text || '');
+export function markdown(text, { keep = true, images = null } = {}) {
+  const source = (images ? images.key + '\n' : '') + String(text || '');
   const hit = cache.get(source);
   if (hit) {
     cache.delete(source);
@@ -112,8 +141,10 @@ export function markdown(text, { keep = true } = {}) {
     return hit;
   }
   let out;
+  drawing = images;
+  slots = [];
   try {
-    const tokens = marked.lexer(source);
+    const tokens = marked.lexer(String(text || ''));
     // A `code` path that is already a link's text stays plain code: a link
     // in a link is no link at all.
     marked.walkTokens(tokens, (token) => {
@@ -138,7 +169,10 @@ export function markdown(text, { keep = true } = {}) {
     flush();
     out = html`${blocks}`;
   } catch {
-    out = html`<p>${source}</p>`;
+    out = html`<p>${String(text || '')}</p>`;
+  } finally {
+    drawing = null;
+    slots = [];
   }
   if (keep) remember(source, out);
   return out;

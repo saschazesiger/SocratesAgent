@@ -42,6 +42,7 @@ import { askProgress, askDraftsRev, forgetAskDraft } from './askdialog.js';
 import { record, recPhase } from './dictate.js';
 import { typeHere } from './keyboard.js';
 import { speak, stopSpeaking } from './voice.js';
+import { lightbox } from './lightbox.js';
 
 // How many chats keep their fold in memory, so that going back to one does
 // not replay its whole journal.
@@ -363,6 +364,9 @@ export function mountChat(ctx) {
 
   /* ---------------------------------------------------------- the view */
 
+  // The image drawer of the chat shown (view.shownImages), one per chat so
+  // that Markdown's cache keeps what it drew.
+  let shown = null;
   const view = {
     get chat() { return chat; },
     isOpen(key, fallback) { return open.has(key) ? open.get(key) : fallback; },
@@ -406,6 +410,20 @@ export function mountChat(ctx) {
     // it at the path the part names (chatparts.js imageHtml).
     imageSrc: (part) => (session
       ? '/api/chats/' + encodeURIComponent(session.id) + '/parts/' + encodeURIComponent(part.id) + '/image' : ''),
+    // fileSrc is where an image a message carries is drawn from: the
+    // chat's attachments, by the name the upload gave it.
+    fileSrc: (file) => (session && file && file.path && String(file.path).includes('/attachments/')
+      ? '/api/chats/' + encodeURIComponent(session.id) + '/attachments/' + encodeURIComponent(String(file.path).split('/').pop()) : ''),
+    // shownImages draws the images of files on this machine an agent's
+    // text shows (md.js): the server serves one its text names.
+    get shownImages() {
+      if (!session) return null;
+      const id = session.id;
+      return shown && shown.key === id ? shown : (shown = {
+        key: id,
+        src: (href) => '/api/chats/' + encodeURIComponent(id) + '/image?path=' + encodeURIComponent(decodePath(href)),
+      });
+    },
     // Whether the chat goes on by itself once a limit renews (on unless
     // switched off), and whether a limit card is the chat's newest word.
     autoContinue: () => !!session && session.options?.auto_continue !== false,
@@ -517,7 +535,7 @@ export function mountChat(ctx) {
           make = () => userMessage({
             key: entry.key, text: message.text, attachments: message.attachments,
             state: message.state === 'delivered' ? '' : message.state, answerTo: message.answerTo,
-            sendNow: waits && !interrupting, withdraw,
+            sendNow: waits && !interrupting, withdraw, fileSrc: view.fileSrc,
           });
         }
       } else {
@@ -596,7 +614,7 @@ export function mountChat(ctx) {
         key: 'o:' + item.payload.client_id,
         markup: String(html`${userMessage({
           key: 'o:' + item.payload.client_id, text: item.payload.text, attachments: item.payload.attachments, state,
-          error: failed ? item.error : '',
+          error: failed ? item.error : '', fileSrc: view.fileSrc,
           // Never tried for want of a connection: it can still stay unsaid.
           // One tried already may have reached the server, its answer lost.
           withdraw: state === 'local' && !item.attempts ? { outbox: item.id } : null,
@@ -607,7 +625,7 @@ export function mountChat(ctx) {
       if (one.payload.chat !== session.id) continue;
       out.push({
         key: 'o:' + clientId,
-        markup: String(userMessage({ key: 'o:' + clientId, text: one.payload.text, attachments: one.payload.attachments, state: 'pending' })),
+        markup: String(userMessage({ key: 'o:' + clientId, text: one.payload.text, attachments: one.payload.attachments, state: 'pending', fileSrc: view.fileSrc })),
       });
     }
     return out;
@@ -1458,6 +1476,12 @@ export function mountChat(ctx) {
     const target = event.target.closest('[data-action]');
     if (!target || !host.contains(target)) return;
     switch (target.dataset.action) {
+      case 'image': {
+        // Every image of the conversation, in its order, from this one.
+        const all = [...log.querySelectorAll('[data-action="image"]')];
+        lightbox(all.map((one) => ({ src: one.dataset.src, name: one.dataset.name })), Math.max(0, all.indexOf(target)), target);
+        break;
+      }
       case 'copy-code': {
         const code = target.closest('.so-code')?.querySelector('code');
         if (!code) return;
@@ -1980,4 +2004,11 @@ export function mountChat(ctx) {
     /** noticeBox is where a notice about the chat is drawn. */
     noticeBox: () => noticeBox,
   };
+}
+
+// decodePath is a Markdown image's path as the agent wrote it: marked
+// percent-encodes what a URL may not hold (a space), which the text names
+// plain.
+function decodePath(href) {
+  try { return decodeURI(String(href || '')); } catch { return String(href || ''); }
 }
