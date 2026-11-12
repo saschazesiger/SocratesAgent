@@ -714,7 +714,9 @@ func (s *state) stream(f *frame) {
 			s.newPart(id, agent.PartReasoning, "", agent.PartStreaming)
 		case "tool_use":
 			id = b.ID
-			s.toolUse(*b, "")
+			start := *b
+			start.streamed = true
+			s.toolUse(start, "")
 		default:
 			return
 		}
@@ -730,7 +732,13 @@ func (s *state) stream(f *frame) {
 		if d.Type == "thinking_delta" {
 			text = d.Thinking
 		}
-		if (d.Type == "text_delta" || d.Type == "thinking_delta") && text != "" {
+		if d.Type == "input_json_delta" {
+			text = ""
+			if p.tool != nil && p.tool.Drafting {
+				text = d.PartialJSON
+			}
+		}
+		if (d.Type == "text_delta" || d.Type == "thinking_delta" || d.Type == "input_json_delta") && text != "" {
 			p.text += text
 			s.a.out.Delta(p.msgID, p.id, text)
 		}

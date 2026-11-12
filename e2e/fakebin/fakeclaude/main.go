@@ -663,6 +663,8 @@ func (t *turnRun) script() {
 			"File created successfully at: "+path, map[string]any{"type": "create", "filePath": path,
 				"content": "hello\nworld\n", "structuredPatch": []any{}, "originalFile": nil}, false, "")
 		t.say("Wrote new.txt.")
+	case "/draft":
+		t.draft(time.Duration(floatArg(fields, 0, 2) * float64(time.Second)))
 	case "/sh":
 		t.shell(rest)
 	case "/todo":
@@ -884,6 +886,7 @@ func (t *turnRun) tool(name string, input map[string]any, result string, structu
 		}
 		t.f.out(t.se(map[string]any{"type": "content_block_start", "index": t.index,
 			"content_block": map[string]any{"type": "tool_use", "id": id, "name": name, "input": map[string]any{}}}))
+		t.writeInput(input, 0)
 	}
 	t.assistant(map[string]any{"type": "tool_use", "id": id, "name": name, "input": input}, parent)
 	if parent == "" {
@@ -892,6 +895,26 @@ func (t *turnRun) tool(name string, input map[string]any, result string, structu
 	}
 	t.result(id, result, structured, isError, parent)
 	return id
+}
+
+// writeInput streams a call's input as the model writes it: its JSON in
+// input_json_delta pieces, spread over the given time.
+func (t *turnRun) writeInput(input map[string]any, over time.Duration) {
+	raw, _ := json.Marshal(input)
+	const pieces = 8
+	step := (len(raw) + pieces - 1) / pieces
+	for i := 0; i < len(raw) && !t.cut; i += step {
+		end := min(len(raw), i+step)
+		t.f.out(t.se(map[string]any{"type": "content_block_delta", "index": t.index,
+			"delta": map[string]any{"type": "input_json_delta", "partial_json": string(raw[i:end])}}))
+		if over > 0 {
+			select {
+			case <-t.ctx.Done():
+				t.cut = true
+			case <-time.After(over / pieces):
+			}
+		}
+	}
 }
 
 func (t *turnRun) result(id, result string, structured any, isError bool, parent string) {
@@ -1998,4 +2021,30 @@ func newUUID() string {
 	b[8] = b[8]&0x3f | 0x80
 	h := hex.EncodeToString(b[:])
 	return h[:8] + "-" + h[8:12] + "-" + h[12:16] + "-" + h[16:20] + "-" + h[20:]
+}
+
+// draft is a Write call whose input the model writes for a while, piece by
+// piece, before it runs.
+func (t *turnRun) draft(over time.Duration) {
+	t.closeText()
+	if t.apiMsg == "" {
+		t.msgStart()
+	}
+	path := filepath.Join(t.f.cwd, "draft.txt")
+	content := "first line\nsecond line\n"
+	input := map[string]any{"file_path": path, "content": content}
+	id := "toolu_fake_" + randHex(10)
+	t.f.out(t.se(map[string]any{"type": "content_block_start", "index": t.index,
+		"content_block": map[string]any{"type": "tool_use", "id": id, "name": "Write", "input": map[string]any{}}}))
+	t.writeInput(input, over)
+	if t.cut {
+		return
+	}
+	t.assistant(map[string]any{"type": "tool_use", "id": id, "name": "Write", "input": input}, "")
+	t.f.out(t.se(map[string]any{"type": "content_block_stop", "index": t.index}))
+	t.index++
+	_ = os.WriteFile(path, []byte(content), 0o644)
+	t.result(id, "File created successfully at: "+path, map[string]any{"type": "create", "filePath": path,
+		"content": content, "structuredPatch": []any{}, "originalFile": nil}, false, "")
+	t.say("Wrote draft.txt.")
 }

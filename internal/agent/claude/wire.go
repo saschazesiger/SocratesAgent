@@ -186,6 +186,9 @@ type streamDelta struct {
 	Type     string `json:"type"`
 	Text     string `json:"text"`
 	Thinking string `json:"thinking"`
+	// PartialJSON is the next piece of a tool call's input as the model
+	// writes it (input_json_delta).
+	PartialJSON string `json:"partial_json"`
 }
 
 // message is an assistant or user message body.
@@ -213,6 +216,9 @@ type block struct {
 		MediaType string `json:"media_type"`
 		Data      string `json:"data"`
 	} `json:"source"`
+	// streamed is a tool_use block as its content_block_start brought it:
+	// the model is about to write its input.
+	streamed bool
 }
 
 // blocks is a message's content as blocks; a string content is one text

@@ -36,6 +36,10 @@ type toolContent struct {
 	Agent    *subagentInfo `json:"agent,omitempty"`
 	Workflow *workflowInfo `json:"workflow,omitempty"`
 	Plan     *planInfo     `json:"plan,omitempty"`
+	// Drafting is a call the model is still writing: until its input is
+	// whole, the part's text is the input as JSON so far, streamed as
+	// deltas (state.go stream).
+	Drafting bool `json:"drafting,omitempty"`
 }
 
 type taskInfo struct {
@@ -127,6 +131,10 @@ func (s *state) toolUse(b block, parent string) *part {
 		}
 		p = &part{id: b.ID, kind: kind, parent: parent, state: agent.PartRunning, started: time.Now(),
 			tool: &toolContent{Tool: b.Name, ToolUseID: b.ID}, group: agentTool(b.Name) || b.Name == "Workflow"}
+		// The model writes a call's input for a while (a file, a prompt, a
+		// workflow's script): the part shows it as it comes (state.go
+		// stream), until the whole block arrives. A plan's text is its plan.
+		p.tool.Drafting = b.streamed && kind != agent.PartPlan && (len(b.Input) == 0 || string(b.Input) == "{}")
 		p.msgID, p.turnID = s.messageFor(parent)
 		s.parts[b.ID] = p
 	}
@@ -138,6 +146,10 @@ func (s *state) toolUse(b block, parent string) *part {
 		p.tool.Workflow = &workflowInfo{Status: "running"}
 	}
 	if len(b.Input) > 0 && string(b.Input) != "{}" {
+		if p.tool.Drafting {
+			// The input is whole: the draft that stood for it goes.
+			p.tool.Drafting, p.text = false, ""
+		}
 		p.tool.Input = b.Input
 		p.tool.Summary, p.tool.Command, p.tool.Path = summarize(b.Name, b.Input)
 		if b.Name == "ExitPlanMode" {
@@ -270,6 +282,7 @@ func (s *state) toolResult(b block, structured json.RawMessage, parent string) {
 	started := ""
 	text, images := resultText(b.Content)
 	p.text = text
+	c.Drafting = false
 	c.IsError = b.IsError
 	c.DurationMS = time.Since(p.started).Milliseconds()
 	p.state = agent.PartDone

@@ -1223,3 +1223,50 @@ func TestTheConfiguredBinaryIsRun(t *testing.T) {
 		t.Fatal("a missing configured binary started")
 	}
 }
+
+// A call the model is still writing shows its input as it comes: the part
+// is drafting and its text the JSON so far, until the whole block replaces
+// the draft with the input.
+func TestACallShowsItsInputWhileItIsWritten(t *testing.T) {
+	e := newEnv(t)
+	a, r := start(t, e, "")
+	send(t, a, "m1", "/draft 0.3")
+	r.turnsEnded(t, 1)
+	r.mu.Lock()
+	events, deltas := append([]agent.Event(nil), r.events...), append([]agent.Delta(nil), r.deltas...)
+	r.mu.Unlock()
+	var id string
+	var drafted, whole bool
+	for _, ev := range events {
+		if ev.Type != agent.TypePart || ev.Kind != agent.PartDiff {
+			continue
+		}
+		var c toolContent
+		_ = json.Unmarshal(ev.Content, &c)
+		switch {
+		case c.Drafting:
+			id, drafted = ev.PartID, true
+			if len(c.Input) > 0 || ev.Text != "" {
+				t.Fatalf("a draft starts empty: %+v", ev)
+			}
+		case len(c.Input) > 0:
+			whole = true
+			if ev.Text != "" && !strings.HasPrefix(ev.Text, "File created") {
+				t.Fatalf("the draft stayed beside the input: %q", ev.Text)
+			}
+		}
+	}
+	if !drafted || !whole {
+		t.Fatalf("drafted %v, whole %v\n%s", drafted, whole, dump(events))
+	}
+	var draft strings.Builder
+	for _, d := range deltas {
+		if d.PartID == id {
+			draft.WriteString(d.Text)
+		}
+	}
+	var in map[string]any
+	if err := json.Unmarshal([]byte(draft.String()), &in); err != nil || in["content"] != "first line\nsecond line\n" {
+		t.Fatalf("the streamed draft = %q (%v)", draft.String(), err)
+	}
+}
