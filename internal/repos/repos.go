@@ -134,6 +134,12 @@ type Manager struct {
 
 	mu    sync.Mutex
 	locks map[string]*sync.Mutex
+	// fetched is when each repository's cache last fetched from GitHub
+	// (lower case), so that the docs ask GitHub again only after a while.
+	fetched map[string]time.Time
+	// docs is the newest docs folder made of each repository (lower case,
+	// DocsShown).
+	docs map[string]string
 }
 
 // lock takes the repository's lock and returns its release.
@@ -382,8 +388,28 @@ func (m *Manager) fetchLocked(ctx context.Context, fullName, cache string) error
 	if err := m.configure(ctx, fullName, cache); err != nil {
 		return err
 	}
-	_, err = m.remote(ctx, fullName, cache, "fetch", "--prune", "--quiet", "origin")
-	return err
+	if _, err = m.remote(ctx, fullName, cache, "fetch", "--prune", "--quiet", "origin"); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	if m.fetched == nil {
+		m.fetched = map[string]time.Time{}
+	}
+	m.fetched[strings.ToLower(fullName)] = time.Now()
+	m.mu.Unlock()
+	return nil
+}
+
+// fetchedAgo is how long ago the repository's cache last fetched from
+// GitHub in this process, -1 for not yet.
+func (m *Manager) fetchedAgo(fullName string) time.Duration {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	at, ok := m.fetched[strings.ToLower(fullName)]
+	if !ok {
+		return -1
+	}
+	return time.Since(at)
 }
 
 // configure puts the cache's configuration back as Socrates wants it, every

@@ -340,6 +340,11 @@ func (s *Server) handleDocsProbe(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		asked[folder] = true
+		if repo, ok := strings.CutPrefix(folder, "github:"); ok {
+			// A repository's group: its forge address is the chats' own.
+			answers[i] = docsProbed{has: s.repoDocsProbe(repo)}
+			continue
+		}
 		if p, ok := s.docsProbeCached(folder); ok {
 			answers[i] = p
 			continue
@@ -450,11 +455,12 @@ func (s *Server) handleDocs(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if !s.docsAllowed(folder, nil) {
-		writeError(w, http.StatusNotFound, "there are no docs for that folder")
+	root, repo, err := s.docsRoot(r.Context(), folder, nil, true)
+	if err != nil {
+		writeError(w, http.StatusNotFound, docsRootMissing(err))
 		return
 	}
-	list, err := docs.Scan(folder)
+	list, err := docs.Scan(root)
 	if err != nil {
 		writeError(w, http.StatusNotFound, err.Error())
 		return
@@ -468,17 +474,21 @@ func (s *Server) handleDocs(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Query().Get("titles") == "1" && len(list.Files) <= maxDocsTitles {
 		titled := make([]titledFile, len(list.Files))
 		for i, f := range list.Files {
-			titled[i] = titledFile{File: f, Title: docs.Title(folder, f.Path)}
+			titled[i] = titledFile{File: f, Title: docs.Title(root, f.Path)}
 		}
 		files = titled
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
+	out := map[string]any{
 		"folder":    folder,
 		"files":     files,
 		"truncated": list.Truncated,
 		"base":      "/docs/" + token + "/",
-		"readme":    docsHome(folder, list.Files),
-	})
+		"readme":    docsHome(root, list.Files),
+	}
+	if repo != nil {
+		out["repo"] = repo
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 // handleDocsStat answers one file's size and time, so that a page can tell
@@ -495,13 +505,14 @@ func (s *Server) handleDocsStat(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if !s.docsAllowed(folder, nil) {
-		writeError(w, http.StatusNotFound, "there are no docs for that folder")
+	root, _, err := s.docsRoot(r.Context(), folder, nil, false)
+	if err != nil {
+		writeError(w, http.StatusNotFound, docsRootMissing(err))
 		return
 	}
-	t, err := docs.Resolve(folder, q.Get("path"))
+	t, err := docs.Resolve(root, q.Get("path"))
 	if err == nil && t.Redirect {
-		t, err = docs.Resolve(folder, t.Rel)
+		t, err = docs.Resolve(root, t.Rel)
 	}
 	if err != nil || t.Redirect {
 		writeError(w, http.StatusNotFound, docsMissing(err))
@@ -614,8 +625,13 @@ func (s *Server) handleDocsPage(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Referrer-Policy", "no-referrer")
 	token := r.PathValue("token")
-	folder, ok := s.docsTokenFolder(token)
-	if !ok || !utf8.ValidString(folder) || strings.ContainsRune(folder, 0) || !s.docsAllowed(folder, nil) {
+	key, ok := s.docsTokenFolder(token)
+	if !ok || !utf8.ValidString(key) || strings.ContainsRune(key, 0) {
+		http.Error(w, "There are no such docs.", http.StatusNotFound)
+		return
+	}
+	folder, _, err := s.docsRoot(r.Context(), key, nil, false)
+	if err != nil {
 		http.Error(w, "There are no such docs.", http.StatusNotFound)
 		return
 	}

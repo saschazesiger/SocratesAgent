@@ -282,6 +282,19 @@ func limitOf(k Kind) int64 {
 	return MaxImageSize
 }
 
+// Listed is whether a file of a repository, by its slash-separated path
+// and its size, is one a folder's docs would list or show: Markdown or a
+// picture, in no hidden or skipped directory, within its kind's size. A
+// repository's docs (internal/repos Docs) are written with these files only.
+func Listed(rel string, size int64) bool {
+	parts, err := cleanRel(rel)
+	if err != nil || strings.Join(parts, "/") != rel {
+		return false
+	}
+	kind := KindOf(rel)
+	return kind != "" && size <= limitOf(kind)
+}
+
 // Target is a file found for serving.
 type Target struct {
 	// Abs is the file's real path, symbolic links resolved.
