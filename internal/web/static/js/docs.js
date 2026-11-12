@@ -1,7 +1,9 @@
 // A project folder's documentation on the stage (docs/design/DOCS.md): every
 // Markdown file of the folder in its own tree of folders, the file chosen
 // drawn by the page kit in a sandboxed frame (Mermaid diagrams, tables,
-// GitHub's alerts), and the headings of the page beside it. The address is
+// GitHub's alerts), and the headings of the page beside it. A repository's
+// group (`github:<owner>/<name>`) shows its default branch as GitHub has it,
+// with a link to each file there. The address is
 // `#docs=<folder>&page=<path>`; session.js puts the page on the stage and
 // takes it off again, as it does a folder's notes.
 //
@@ -175,20 +177,32 @@ export function mountDocs({ host, onPage }) {
     return html`<nav class="ds-breadcrumbs so-docs__crumbs" aria-label="Where this file is"><ol>${items}</ol></nav>`;
   }
 
+  // onGitHub is a file's address on GitHub, for a repository's docs whose
+  // remote is a web address; '' for any other.
+  function onGitHub(path) {
+    const repo = st.data && st.data.repo;
+    return repo && repo.web && path ? repo.web + String(path).split('/').map(encodeURIComponent).join('/') : '';
+  }
+
   function drawHead() {
     const url = st.data && st.page ? pageUrl(st.data.base, st.page) : '';
+    const repo = st.data && st.data.repo;
+    const github = onGitHub(st.page);
     morph(head, html`<header class="ds-page-head">
       ${crumbsHtml()}
       <div class="ds-page-head__row">
         <div class="ds-page-head__text">
           <h1 class="ds-page-head__title so-docs__title" tabindex="-1">Docs</h1>
-          <p class="ds-page-head__lead"><span class="so-docs__folder" data-tip="${st.folder}">${st.label}</span>${
+          <p class="ds-page-head__lead"><span class="so-docs__folder" data-tip="${repo ? repo.name : st.folder}">${st.label}</span>${
+            repo ? html`<span class="ds-meta so-docs__branch"> · ${raw(icon('gitBranch', 14))}<span data-tip="The branch shown, as on GitHub">${repo.branch}</span></span>` : ''
+          }${
             st.data && st.data.truncated ? html`<span class="ds-meta so-docs__more"> · the first ${st.data.files.length} files</span>` : ''
           }</p>
         </div>
         <div class="ds-page-head__actions">
           <button class="ds-btn so-docs__files-btn" type="button" data-docs="files" aria-haspopup="dialog" aria-controls="docsSheet" aria-expanded="false">${raw(icon('list', 16))}Files</button>
           <button class="ds-btn ds-btn--quiet ds-btn--icon" type="button" data-docs="reload" aria-label="Read the files again" data-tip="Read the files again">${raw(icon('sync', 20))}</button>
+          ${github ? html`<a class="ds-btn ds-btn--quiet ds-btn--icon" href="${github}" target="_blank" rel="noopener noreferrer" aria-label="Open on GitHub" data-tip="Open on GitHub">${raw(icon('github', 20))}</a>` : ''}
           ${url ? html`<a class="ds-btn ds-btn--quiet ds-btn--icon" href="${url}" target="_blank" rel="noopener noreferrer" aria-label="Open in a new tab" data-tip="Open in a new tab">${raw(icon('external', 20))}</a>` : ''}
         </div>
       </div>
@@ -246,7 +260,9 @@ export function mountDocs({ host, onPage }) {
         ? html`<div class="ds-empty"><span class="ds-empty__disc" aria-hidden="true">${raw(icon('alertCircle', 24))}</span><p class="ds-empty__title">The files could not be read</p><p class="ds-empty__text">${st.error}</p><button class="ds-btn ds-btn--tonal" type="button" data-docs="reload">Try again</button></div>`
         : html`<div class="so-docs__loading"><span class="ds-spinner" role="status" aria-label="Reading the files"></span></div>`;
     } else if (!st.data.files.length) {
-      markup = html`<div class="ds-empty"><span class="ds-empty__disc" aria-hidden="true">${raw(icon('fileText', 24))}</span><p class="ds-empty__title">No Markdown here</p><p class="ds-empty__text">This folder has no .md files yet. A README.md at its top is where the docs start.</p></div>`;
+      markup = html`<div class="ds-empty"><span class="ds-empty__disc" aria-hidden="true">${raw(icon('fileText', 24))}</span><p class="ds-empty__title">No Markdown here</p><p class="ds-empty__text">${st.data.repo
+        ? 'The branch ' + st.data.repo.branch + ' of this repository has no .md files on GitHub yet. A README.md at its top is where the docs start.'
+        : 'This folder has no .md files yet. A README.md at its top is where the docs start.'}</p></div>`;
     }
     morph(state, html`${markup}`);
     state.hidden = !markup;
@@ -292,11 +308,11 @@ export function mountDocs({ host, onPage }) {
     return st.data.readme || (files[0] && files[0].path) || '';
   }
 
-  async function load({ fresh = false, page = '', at = '' } = {}) {
+  async function load({ fresh = false, fetch = false, page = '', at = '' } = {}) {
     const my = ++st.gen;
     const folder = st.folder;
     try {
-      const data = await listing(folder, { fresh });
+      const data = await listing(folder, { fresh, fetch });
       if (my !== st.gen || folder !== st.folder) return;
       const had = st.data;
       st.data = data;
@@ -339,7 +355,9 @@ export function mountDocs({ host, onPage }) {
     } else if (m.t === 'scroll') {
       st.y = Number(m.y) || 0;
     } else if (m.t === 'file') {
-      toast('“' + fileName(m.path) + '” is not a Markdown file: only Markdown is shown here.');
+      const github = onGitHub(m.path);
+      toast('“' + fileName(m.path) + '” is not a Markdown file: only Markdown is shown here.', 'info',
+        github ? { action: { label: 'Open on GitHub', run: () => window.open(github, '_blank', 'noopener,noreferrer') } } : {});
     } else if (m.t === 'outside') {
       toast('That link leads out of this folder.');
     }
@@ -410,8 +428,12 @@ export function mountDocs({ host, onPage }) {
     if (b) {
       const what = b.getAttribute('data-docs');
       if (what === 'reload') {
-        load({ fresh: true });
-        if (st.data && st.page) frame.src = pageUrl(st.data.base, st.page, { y: st.y });
+        // A repository's docs are fetched from GitHub now; the file on
+        // screen is drawn again once they are in.
+        const y = st.y;
+        load({ fresh: true, fetch: true }).then(() => {
+          if (st.data && st.page) frame.src = pageUrl(st.data.base, st.page, { y });
+        });
       } else if (what === 'files') {
         showOverlay(sheet, b);
       }

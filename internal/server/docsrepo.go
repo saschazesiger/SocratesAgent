@@ -25,6 +25,10 @@ import (
 // the listing asks GitHub again.
 const docsRepoAge = time.Minute
 
+// docsShownOnly is docsRoot's age for a page or a stat: the docs as last
+// fetched, GitHub asked only when there are none yet.
+const docsShownOnly = -1
+
 // errNoDocs is a folder or a repository whose docs may not be shown.
 var errNoDocs = errors.New("there are no docs for that folder")
 
@@ -39,12 +43,12 @@ type docsRepoInfo struct {
 }
 
 // docsRoot is the folder a docs key shows the files of: a project folder
-// itself (docsAllowed), or the folder of a repository's docs. fetch says
-// that the listing asks, which brings a repository's docs up to date with
-// GitHub when they were fetched longer than docsRepoAge ago; a page or a
-// stat reads what was fetched last. info is the repository's, nil for a
-// folder or when it is not known.
-func (s *Server) docsRoot(ctx context.Context, key string, workdirs map[string]bool, fetch bool) (string, *docsRepoInfo, error) {
+// itself (docsAllowed), or the folder of a repository's docs. age is how
+// old a repository's fetch may be before GitHub is asked again: the
+// listing's docsRepoAge, 0 for the page's *Read the files again*; a page or
+// a stat passes docsShownOnly and reads what was fetched last. info is the
+// repository's, nil for a folder or when it is not known.
+func (s *Server) docsRoot(ctx context.Context, key string, workdirs map[string]bool, age time.Duration) (string, *docsRepoInfo, error) {
 	repo, ok := strings.CutPrefix(key, "github:")
 	if !ok {
 		if !s.docsAllowed(key, workdirs) {
@@ -55,7 +59,7 @@ func (s *Server) docsRoot(ctx context.Context, key string, workdirs map[string]b
 	if !s.repoDocsAllowed(repo) {
 		return "", nil, errNoDocs
 	}
-	if !fetch {
+	if age == docsShownOnly {
 		if dir := s.repos.DocsShown(repo); dir != "" {
 			return dir, nil, nil
 		}
@@ -75,10 +79,6 @@ func (s *Server) docsRoot(ctx context.Context, key string, workdirs map[string]b
 	name := repo
 	if repos.ValidName(remote.FullName) {
 		name = remote.FullName
-	}
-	age := docsRepoAge
-	if !fetch {
-		age = -1
 	}
 	// A first look clones the repository, which must not stop half way
 	// because the browser gave up.

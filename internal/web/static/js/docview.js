@@ -36,13 +36,15 @@ const listings = new Map();
  * mtime}], truncated, base, readme}. `fresh` asks the server even when a
  * recent answer is kept; `titles` asks for each file's first heading too
  * (`title`, "" when it has none). A listing with titles serves a caller
- * that does not want them, not the other way round.
+ * that does not want them, not the other way round. `fetch` has a
+ * repository's docs (`github:<owner>/<name>`) fetched from GitHub now rather
+ * than at most once a minute; it implies `fresh`.
  */
-export function listing(folder, { fresh = false, titles = false } = {}) {
+export function listing(folder, { fresh = false, titles = false, fetch = false } = {}) {
   const kept = listings.get(folder);
   if (kept && kept.pending && (!titles || kept.pendingTitles)) return kept.pending;
-  if (kept && kept.data && !fresh && (!titles || kept.titles) && Date.now() - kept.at < LISTING_FRESH) return Promise.resolve(kept.data);
-  const pending = api('/api/docs?folder=' + encodeURIComponent(folder) + (titles ? '&titles=1' : ''), { attempts: 2 })
+  if (kept && kept.data && !fresh && !fetch && (!titles || kept.titles) && Date.now() - kept.at < LISTING_FRESH) return Promise.resolve(kept.data);
+  const pending = api('/api/docs?folder=' + encodeURIComponent(folder) + (titles ? '&titles=1' : '') + (fetch ? '&fetch=1' : ''), { attempts: 2 })
     .then((data) => {
       listings.set(folder, { at: Date.now(), data, titles });
       noteProbe(folder, !!(data && data.files && data.files.length));

@@ -3,7 +3,6 @@
 package server
 
 import (
-	"context"
 	"io"
 	"net/http"
 	"net/url"
@@ -11,7 +10,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/saschazesiger/SocratesAgent/internal/docs"
 	"github.com/saschazesiger/SocratesAgent/internal/store"
 )
 
@@ -102,8 +100,14 @@ func TestTheDocsOfARepositoryGroup(t *testing.T) {
 
 	// A new commit on GitHub is shown once fetched, under the same token.
 	f.pushDocs(t, "octo/app", map[string]string{"docs/DESIGN.md": "# Design, again\n"})
-	if _, _, err := c.srv.repos.Docs(context.Background(), "octo/app", "main", 0, docs.Listed); err != nil {
-		t.Fatal(err)
+	if res, _ := list("github:octo/app"); res.StatusCode != http.StatusOK {
+		t.Fatalf("listing again: %d", res.StatusCode)
+	}
+	if after := stat(); after["size"] != before["size"] {
+		t.Fatalf("GitHub was asked again within the minute: %v, was %v", after, before)
+	}
+	if res, _ := c.do(t, c.client, "GET", "/api/docs?folder=github:octo/app&fetch=1", ""); res.StatusCode != http.StatusOK {
+		t.Fatalf("listing with fetch=1: %d", res.StatusCode)
 	}
 	if after := stat(); after["size"] == before["size"] {
 		t.Fatalf("the stat did not follow the commit: %v, was %v", after, before)

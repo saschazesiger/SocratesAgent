@@ -1007,10 +1007,9 @@ function drawList() {
   // the bottom, shut, so the projects being worked on are all there is.
   const all = foldersOf(wanted, placeOf);
   // Which project folders have docs, for their menus: asked in one request
-  // for the folders not asked about lately (docview.js).
-  // A repository's group has no docs yet (REPOS.md §5.3 reads them from
-  // its cache; not asked for here until the server has them).
-  probeDocs(all.filter((folder) => folder.key !== MORE_KEY && !folder.repo).map((folder) => folder.key));
+  // for the folders not asked about lately (docview.js). A repository's
+  // group is asked by its key: its docs are its default branch on GitHub.
+  probeDocs(all.filter((folder) => folder.key !== MORE_KEY).map((folder) => folder.key));
   const finished = all.filter((folder) => folder.finished);
   const markup = all.filter((folder) => !folder.finished).map((folder) => folderHtml(folder));
   if (finished.length) {
@@ -2791,17 +2790,18 @@ async function openFolderMenu(anchor, key) {
   if (!(await menuReady(anchor, menu))) return;
   // Whether the folder has docs is mostly known (the list asks for every
   // folder); a folder asked about for the first time waits for the answer.
-  // A repository's group has its notes only, for now: no docs, and no VS
-  // Code, which is a folder's and each chat has a worktree of its own.
+  // A repository's group has its notes and its docs (its default branch on
+  // GitHub), but no VS Code, which is a folder's: each chat has a worktree
+  // of its own.
   const repo = !!folder.repo;
-  if (!repo && knownDocs(key) === undefined) await hasDocs(key);
+  if (knownDocs(key) === undefined) await hasDocs(key);
   const items = [];
   const add = (action, label, glyph, run) => {
     menuActions.set(action, run);
     items.push(menuItemHtml(action, label, glyph));
   };
   add('notes', 'Notes', 'columns', () => showBoard(key));
-  if (!repo && knownDocs(key)) add('docs', 'Docs', 'fileText', () => showDocs(key));
+  if (knownDocs(key)) add('docs', 'Docs', 'fileText', () => showDocs(key));
   const ide = folder.ide;
   const running = !!ide && (ide.state === 'running' || ide.state === 'starting');
   if (!repo && (ide || harnesses.ideAvailable())) {

@@ -3468,6 +3468,44 @@ async function repoflow() {
       'the sidebar groups the chat under its repository', JSON.stringify(placed));
     ok(placed.chip === branch && placed.kind === 'branch', 'the header’s chip shows the branch', JSON.stringify(placed));
 
+    // The repository's ⋮ has Docs: its default branch as GitHub has it, and
+    // Read the files again fetches a commit pushed meanwhile.
+    await page.click('#sessionList .so-folder__more[data-folder-more="github:acme/widget"]');
+    await page.waitForSelector('#sessionMenu:not([hidden]) [data-action]');
+    const repoActions = await page.$$eval('#sessionMenu [data-action]', (items) => items.map((i) => i.dataset.action));
+    ok(repoActions.join('|') === 'notes|docs', 'a repository’s ⋮ has Notes and Docs', repoActions.join('|'));
+    await page.click('#sessionMenu [data-action="docs"]');
+    await page.waitForSelector('#docs:not([hidden]) .so-docs__row[data-doc]', { timeout: 30000 });
+    const docsView = '#docs iframe.so-docs__view';
+    const docsH1 = () => page.frameLocator(docsView).locator('h1').first().textContent({ timeout: 10000 }).catch(() => '');
+    const docsHead = await page.evaluate(() => ({
+      hash: decodeURIComponent(location.hash),
+      label: document.querySelector('#docs .so-docs__folder')?.textContent.trim() || '',
+      branch: document.querySelector('#docs .so-docs__branch')?.textContent.replace(/\s+/g, ' ').trim() || '',
+      files: [...document.querySelectorAll('#docs .so-docs__nav [data-doc]')].map((b) => b.dataset.doc).join(','),
+    }));
+    ok((await docsH1()) === 'widget' && docsHead.hash === '#docs=github:acme/widget&page=README.md' && docsHead.label === 'widget'
+      && docsHead.branch === '· main' && docsHead.files === 'README.md',
+      'Docs shows the repository’s README from main, and says which branch', JSON.stringify(docsHead));
+    const docsSeed = join(git, 'docs-seed');
+    sh(git, 'clone', '-q', bare, docsSeed);
+    writeFileSync(join(docsSeed, 'README.md'), '# widget, documented\n');
+    sh(docsSeed, 'commit', '-q', '-am', 'Document it');
+    sh(docsSeed, 'push', '-q', 'origin', 'main');
+    rmSync(docsSeed, { recursive: true, force: true });
+    await page.click('#docs [data-docs="reload"]');
+    let fetchedH1 = '';
+    for (let i = 0; i < 40 && fetchedH1 !== 'widget, documented'; i += 1) {
+      await new Promise((r) => setTimeout(r, 250));
+      fetchedH1 = await docsH1();
+    }
+    ok(fetchedH1 === 'widget, documented', 'Read the files again shows the commit GitHub got meanwhile', fetchedH1);
+    await shot(page, 'repoflow-docs');
+    // main as it was, for what follows.
+    sh(bare, 'update-ref', 'refs/heads/main', first);
+    await page.click('#sessionList .so-row[data-id="' + id + '"] .so-row__open');
+    await chatUp(page, 30000);
+
     // The agent commits; the turn's end pushes.
     const said = await answerTo(s, id, '/sh printf "hello\\n" > hello.txt && git add hello.txt'
       + ' && git -c user.name=Agent -c user.email=agent@example.invalid commit -q -m "Add hello.txt" && git rev-parse HEAD', 40000);

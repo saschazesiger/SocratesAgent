@@ -340,3 +340,12 @@
   top: calc(-1 * var(--ds-space-1));
   right: calc(-1 * var(--ds-space-1));
 }
+
+/* A repository's docs name the branch they show, beside its name. */
+.so-docs__branch {
+  white-space: nowrap;
+}
+
+.so-docs__branch svg {
+  vertical-align: text-bottom;
+}

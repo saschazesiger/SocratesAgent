@@ -436,8 +436,12 @@ type titledFile struct {
 // handleDocs lists a folder's Markdown:
 //
 //	GET /api/docs?folder=/root/project[&titles=1]
-//	  {"folder", "files": [{"path", "size", "mtime"[, "title"]}], "truncated", "base", "readme"}
+//	GET /api/docs?folder=github:owner/name[&fetch=1]
+//	  {"folder", "files": [{"path", "size", "mtime"[, "title"]}], "truncated", "base", "readme"[, "repo"]}
 //
+// A repository's group (docsRoot) lists its default branch as GitHub has
+// it, fetched at most once a minute or now with fetch=1; "repo" says which
+// branch it is and where its files are on GitHub.
 // base is where the pages are served, "/docs/<token>/": a file's page is
 // base + its path, each segment escaped. titles=1 gives every file its
 // title, the text of its first "# " heading or "", when the listing has at
@@ -455,7 +459,7 @@ func (s *Server) handleDocs(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	root, repo, err := s.docsRoot(r.Context(), folder, nil, true)
+	root, repo, err := s.docsRoot(r.Context(), folder, nil, docsListAge(r))
 	if err != nil {
 		writeError(w, http.StatusNotFound, docsRootMissing(err))
 		return
@@ -491,6 +495,16 @@ func (s *Server) handleDocs(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
+// docsListAge is how old a repository's fetch may be for a listing:
+// docsRepoAge, or none at all for fetch=1 (the page's *Read the files
+// again*).
+func docsListAge(r *http.Request) time.Duration {
+	if r.URL.Query().Get("fetch") == "1" {
+		return 0
+	}
+	return docsRepoAge
+}
+
 // handleDocsStat answers one file's size and time, so that a page can tell
 // a file changed on disk:
 //
@@ -505,7 +519,7 @@ func (s *Server) handleDocsStat(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	root, _, err := s.docsRoot(r.Context(), folder, nil, false)
+	root, _, err := s.docsRoot(r.Context(), folder, nil, docsShownOnly)
 	if err != nil {
 		writeError(w, http.StatusNotFound, docsRootMissing(err))
 		return
@@ -630,7 +644,7 @@ func (s *Server) handleDocsPage(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "There are no such docs.", http.StatusNotFound)
 		return
 	}
-	folder, _, err := s.docsRoot(r.Context(), key, nil, false)
+	folder, _, err := s.docsRoot(r.Context(), key, nil, docsShownOnly)
 	if err != nil {
 		http.Error(w, "There are no such docs.", http.StatusNotFound)
 		return
