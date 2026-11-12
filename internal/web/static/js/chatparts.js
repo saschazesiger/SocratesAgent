@@ -529,8 +529,10 @@ export function todoClock(part, view) {
 /** partHtml is one part, wherever it is: in a message or inside a group. */
 export function partHtml(part, view) {
   switch (part.kind) {
+    // A text's images of files here are drawn once it is written: the
+    // server serves one only once the chat's journal has the text naming it.
     case 'text':
-      return html`<div class="so-part so-md" data-ds-key="${'p:' + part.id}" data-kind="text" data-state="${part.state}">${markdown(part.text, { keep: part.state !== 'streaming', images: view && view.shownImages })}</div>`;
+      return html`<div class="so-part so-md" data-ds-key="${'p:' + part.id}" data-kind="text" data-state="${part.state}">${markdown(part.text, { keep: part.state !== 'streaming', images: part.state !== 'streaming' && view ? view.shownImages : null })}</div>`;
     case 'reasoning':
       return reasoningHtml(part, view);
     case 'tool':

@@ -107,6 +107,8 @@ const SHELL = [
   '/static/js/mcpview.js',
   '/static/js/accountpicker.js',
   '/static/js/md.js',
+  '/static/js/thumb.js',
+  '/static/js/lightbox.js',
   '/static/js/chattests.js',
   '/static/js/boards.js',
   '/static/js/docs.js',

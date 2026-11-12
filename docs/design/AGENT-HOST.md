@@ -84,6 +84,10 @@ is by part, independent of the message; a nested part without `message_id` takes
 projection puts it in the parent's `children` (in creation order, any depth) and **not** in the
 message's `parts`. The parent must be emitted first; a part whose parent is unknown stays at the top
 of its message, keeping `parent_part_id`. A replacing `part` event keeps the part where it is.
+One exception: an `image` part whose parent is a `tool` part (a screenshot an MCP tool returned, an
+image Read) goes where that call is - its call's parent's `children`, or the top of the message -
+right after the call, keeping `parent_part_id`: a call is folded away in the chat, its image is what
+the person looks for (projection.go `part`, chatfold.js `applyPart`).
 
 Part kinds: `text`, `reasoning`, `tool`, `diff`, `plan`, `todo`, `image`, `file`, `notice`. Part
 states: `streaming`, `running`, `done`, `error`, `interrupted`. `content` is kind-specific JSON
@@ -528,7 +532,7 @@ cumulative per process). `usage.context` = the last request's prompt + answer, `
 | workflow agent | `<workflow part>_a<index>` | `tool` (`tool: "WorkflowAgent"`), nested in the workflow | `agent: {…, label, phase}`; its calls (read from `<transcriptDir>/agent-<id>.jsonl`) are nested in it |
 | background shell | the Bash call | `tool` | `task: {id, status}` |
 | task list | `todo_<assistant message>` | `todo` | `{items: [{id, subject, description, active_form, status}]}`, the whole list; TaskCreate/TaskUpdate make no rows of their own. Every adapter's list gains its times in the recorder (HARNESS-POLICY.md, "Task lists") |
-| image from a tool | `<call>_img<n>`, nested in the call | `image` | `{mime, path, size}`; the file is under `chats/<id>/agent/images/` |
+| image from a tool (an MCP screenshot, a Read image) | `<call>_img<n>`, `parent_part_id` = the call (standing beside it, §2) | `image` | `{mime, path, size}`; the file is under `chats/<id>/agent/images/` (`agent.SaveImage`) |
 | local command output, API error text | `n_<uuid>` | `notice` | `{code: command_output\|<error>\|claude}` |
 | why a turn of the CLI's own started | `n_<transcript line uuid>`, the turn's first part | `notice` | `{code: wakeup\|cron\|task\|monitor\|peer, detail?}`: the text is the line ("Woke up as scheduled: <prompt>", "A scheduled task ran: <prompt>", the task's summary, `Monitor "<description>": <event>`, "A message from the agent “<name>”: …"), `detail` all of the prompt, result, event or message |
 
@@ -750,7 +754,7 @@ turns' `commandExecution` items.
 | `fileChange` | `diff` | running → done \| error | `{tool: "file_change", status, changes: [{path, kind: add\|delete\|update, move_path, diff}]}` |
 | `turn/diff/updated` | `diff` | running → done (at most 1/s while it changes) | `{tool: "turn_diff", diff}`: the turn's whole unified diff |
 | `turn/plan/updated` | `todo` | running | `{explanation, steps: [{step, status}]}` |
-| `mcpToolCall` | `tool` | running → … | `{tool: "mcp", server, name, arguments, result, error, status, duration_ms}` |
+| `mcpToolCall` | `tool` | running → … | `{tool: "mcp", server, name, arguments, result, error, status, duration_ms}`; `result` without the base64 of its blocks; each `image` block of a completed call is an `image` part `<call>_img<n>` after it (`{mime, path, size}`, the file under the state dir's `images/`), live and rebuilt alike |
 | `dynamicToolCall` | `tool` | running → … | `{tool: "dynamic", namespace, name, arguments, content_items, success, status, duration_ms}` |
 | `collabAgentToolCall` | `tool` | running → … | `{tool: "collab", name, prompt, sender, receivers, model, effort, agents, status}` |
 | `subAgentActivity` started | `tool` (group) | running while the subagent works, done when idle/completed, interrupted | `{tool: "subagent", thread_id, path, name, model, effort, status}`; every item of that thread (and of its own subagents) is a part with `parent_part_id` = the group |
@@ -926,6 +930,7 @@ sees an ask_user answer: the host routes it (§4.4).
 |---|---|---|---|
 | `text`, `reasoning` (not synthetic) | `text`, `reasoning` | the text (deltas) | – |
 | `tool` | `tool` | output (bash streams `metadata.output`), or the error | `ToolContent{tool, call_id, title, input, error, started_at, ended_at, duration_ms, exit, session_id, agent}` |
+| a completed `tool`'s image `state.attachments` (an MCP tool's image, a `data:` URL) | `image`, `<tool part>_img<n>`, `parent_part_id` = the call | – | `{mime, path, size}`: the file under the state dir's `images/`, live and rebuilt alike |
 | `tool` todowrite | `todo` | – | `TodoContent{todos:[{content, status, priority}]}` |
 | completed edit / apply_patch / write of a new file | `diff`: the tool part itself becomes it, one row as Claude's Edit (journals from before have a `tool` part and a `diff` `<tool part>-diff` beside it) | the output | `EditContent{` the `ToolContent` `, title (the files), path (the file, when one), files:[{path, patch, additions, deletions, status}]}` |
 | `patch` of the chat's own step (below) | `diff`, id the patch part's | – | `DiffContent{tool: "changes", title, files}`: the step's files no edit call of the turn showed |
@@ -1179,7 +1184,15 @@ question names, or anything above them. What is live after `synced` goes whole. 
 hovered or, for the groups of the last answers, idle. `GET /api/chats/{id}/parts/{part}/image` is
 the file an `image` part names (`content.path`, absolute, the adapter's), when its bytes are an
 image (sniffed; never an SVG), up to 32 MiB, `nosniff`: the chat draws image parts with it
-(chatparts.js `imageHtml`); anything else is 404, or 415 for a file that is not an image. A hello with `"batch":true` gets a replay
+(chatparts.js `imageHtml`); anything else is 404, or 415 for a file that is not an image. Two more
+routes serve images the same way (`serveImage`): `GET /api/chats/{id}/attachments/{name}`, a file a
+message carries, by the name the upload route gave it in `chats/<id>/attachments/` (the bubble and
+the outbox draw an attached image small with it), and `GET /api/chats/{id}/image?path=<path>`, an
+image the agent showed in its text as a Markdown image of a file on this machine (absolute, or
+relative to the chat's folder), served only when a text part of the chat has that path in it as asked
+for - never any file a browser names (md.js draws a finished text's local images with it; the agent
+is told how in `agent.DocsGuidance`). Every image of a chat is drawn small (`.so-thumb`) and opens in
+the lightbox (lightbox.js), which goes through all of them. A hello with `"batch":true` gets a replay
 of more than one event as `{"t":"evs","evs":[…]}` frames of about 256 KiB: a browser handles a
 frame per task, and a thousand of them cost it more than the events did.
 

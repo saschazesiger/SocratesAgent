@@ -14465,10 +14465,10 @@ async function chatattach() {
     const ready = await page.waitForFunction(() => {
       const files = [...document.querySelectorAll('#chat .so-composer__file')];
       return files.length === 3 && files.every((f) => f.dataset.state === 'ready')
-        ? files.map((f) => f.querySelector('.so-composer__file-name').textContent) : null;
+        ? files.map((f) => f.querySelector('.so-composer__file-name').textContent + (f.querySelector('img.so-composer__preview') ? ' (preview)' : '')) : null;
     }, null, { timeout: 20000 }).then((h) => h.jsonValue(), () => null);
-    ok(!!ready && ready.join(',') === 'notes.txt,table.csv,pasted.png',
-      'a file from the button, one dropped on the chat and a pasted image are uploaded before sending', JSON.stringify(ready));
+    ok(!!ready && ready.join(',') === 'notes.txt,table.csv,pasted.png (preview)',
+      'a file from the button, one dropped on the chat and a pasted image (previewed) are uploaded before sending', JSON.stringify(ready));
 
     await say(page, 'here are three files');
     const reply = await awaitLog(page, 'with 3 attachment(s)', 20000);
@@ -14483,7 +14483,12 @@ async function chatattach() {
       'with their types', JSON.stringify(files.map((f) => f.mime)));
     const shown = await page.$$eval('#chat .so-msg[data-role="user"] .so-msg__files .so-attachment', (n) => n.map((one) => one.innerText.trim()));
     const cleared = await page.$$eval('#chat .so-composer__file', (n) => n.length);
-    ok(shown.length === 3 && cleared === 0, 'the bubble lists the files, and the composer is empty again', JSON.stringify({ shown, cleared }));
+    const thumb = await page.waitForFunction(() => {
+      const img = document.querySelector('#chat .so-msg[data-role="user"] .so-msg__files .so-thumb img');
+      return img && img.complete && img.naturalWidth > 0 ? img.alt : null;
+    }, null, { timeout: 10000 }).then((h) => h.jsonValue(), () => null);
+    ok(shown.join(',') === 'notes.txt,table.csv' && thumb === 'pasted.png' && cleared === 0,
+      'the bubble lists the files and draws the image small, and the composer is empty again', JSON.stringify({ shown, thumb, cleared }));
 
     // A path the server did not hand out is refused.
     const forged = await s.context.request.post(s.url + '/api/chats/' + id + '/messages', {
@@ -14506,6 +14511,76 @@ async function chatattach() {
     ok(desk === null && android === 'image/*,video/*,application/octet-stream',
       'the picker names no types at a desk, and on Android Chrome no audio type (no microphone prompt) and the generic one',
       JSON.stringify({ desk, android }));
+    ok(unexpected(s.errors).length === 0, 'no console errors', unexpected(s.errors).join(' | ') || '0');
+  } finally { await s.stop(); }
+}
+
+// chat-images: what a chat shows of images. A screenshot a tool returned
+// stands beside its call, outside the fold, drawn small; an image the agent
+// shows in its text (a Markdown image of a file here) is drawn small in
+// place; a click opens every image of the chat large, one at a time.
+async function chatimages() {
+  const s = await chatServer();
+  const { page } = s;
+  try {
+    // Claude Code's Read of an image: a tool call whose result is the image.
+    const id = await startChat(page, 'claude');
+    await say(page, '/image');
+    await awaitLog(page, 'A red square.', 20000);
+    const beside = await page.waitForFunction(() => {
+      const fig = document.querySelector('#chat .so-image');
+      const btn = fig && fig.querySelector('.so-thumb');
+      return btn ? { folded: !!fig.closest('details, .so-tool__body, .so-group'), thumb: !!btn.querySelector('img') } : null;
+    }, null, { timeout: 10000 }).then((h) => h.jsonValue(), () => null);
+    ok(!!beside && !beside.folded && beside.thumb, 'a tool\u2019s image stands beside its call, not folded inside it', JSON.stringify(beside));
+    const parts = ((await historyOf(s, id)).messages || []).flatMap((m) => m.parts || []);
+    const image = parts.find((p) => p.kind === 'image');
+    ok(!!image && !!image.parent_part_id, 'and keeps its call\u2019s id', JSON.stringify(image && { id: image.id, parent: image.parent_part_id }));
+
+    // The scripted agent: an image part of a real file, and an answer that
+    // shows another as Markdown (it says back what it is told).
+    const chat = await startChat(page);
+    const png = (w, h) => {
+      // A w×h PNG, drawn by the page's own canvas.
+      return page.evaluate(([w, h]) => {
+        const c = document.createElement('canvas');
+        c.width = w; c.height = h;
+        const g = c.getContext('2d');
+        g.fillStyle = '#c33'; g.fillRect(0, 0, w, h);
+        return c.toDataURL('image/png').split(',')[1];
+      }, [w, h]).then((b64) => Buffer.from(b64, 'base64'));
+    };
+    const shotFile = join(s.data, 'shot.png');
+    const chart = join(s.data, 'chart.png');
+    writeFileSync(shotFile, await png(800, 600));
+    writeFileSync(chart, await png(400, 1200));
+    await say(page, '/image ' + shotFile);
+    await say(page, 'Here it is: ![the chart](' + chart + ')');
+    const drawn = await page.waitForFunction(() => {
+      const imgs = [...document.querySelectorAll('#chat .so-thumb img')];
+      const loaded = imgs.filter((img) => img.complete && img.naturalWidth > 0);
+      return imgs.length === 2 && loaded.length === 2
+        ? loaded.map((img) => ({ alt: img.alt, w: Math.round(img.getBoundingClientRect().width), h: Math.round(img.getBoundingClientRect().height), md: !!img.closest('.so-md') })) : null;
+    }, null, { timeout: 20000 }).then((h) => h.jsonValue(), () => null);
+    ok(!!drawn && drawn[0].h <= 160 && drawn[0].w <= 320 && drawn[1].md && drawn[1].alt === 'the chart' && drawn[1].h <= 160,
+      'an image part and an image the agent shows in its text are drawn small', JSON.stringify(drawn));
+    const refused = await s.context.request.get(s.url + '/api/chats/' + chat + '/image?path=' + encodeURIComponent('/etc/passwd'));
+    ok(refused.status() === 404, 'a file no text of the agent\u2019s names is not served', String(refused.status()));
+
+    await shot(page, 'chat-images-small');
+    await page.click('#chat .so-thumb');
+    await page.waitForSelector('.so-lightbox[open]', { timeout: 5000 });
+    const first = await page.$eval('.so-lightbox .ds-dialog__title', (n) => n.textContent);
+    await page.click('.so-lightbox [data-go="1"]');
+    const second = await page.waitForFunction(() => {
+      const t = document.querySelector('.so-lightbox .ds-dialog__title').textContent;
+      const img = document.querySelector('.so-lightbox__img');
+      return t.endsWith('2 of 2') && img.complete && img.naturalWidth === 400 ? t : null;
+    }, null, { timeout: 5000 }).then((h) => h.jsonValue(), () => null);
+    await shot(page, 'chat-images');
+    await page.keyboard.press('Escape');
+    await page.waitForSelector('.so-lightbox', { state: 'detached', timeout: 5000 });
+    ok(first === 'Image 1 of 2' && second === 'Image 2 of 2', 'a click opens the chat\u2019s images large, and Next goes to the next', JSON.stringify({ first, second }));
     ok(unexpected(s.errors).length === 0, 'no console errors', unexpected(s.errors).join(' | ') || '0');
   } finally { await s.stop(); }
 }
@@ -15985,6 +16060,7 @@ const ALL = [
   ['chat-offline', 'what a chat is told offline (two tabs, a model, an answer), or whose answer was lost, or left across a reload: delivered once', chatoffline],
   ['chat-ask', 'questions: the card and the dialog, every kind, a plan, a counter-question, Home, two devices', chatask],
   ['chat-attach', 'files from the button, dropped and pasted, at paths the server chose', chatattach],
+  ['chat-images', 'a tool\u2019s screenshot beside its call, an image the agent shows, drawn small and opened large', chatimages],
   ['chat-phone', 'a chat on a phone: touch targets, no sideways scroll, the keyboard, the dialog as the screen', chatphone],
   ['chat-home', 'Home reads a chat from its journal: what it does, Running and Finished, its question on the card, at a desk and on a phone', chathome],
   ['chat-push', 'a chat\u2019s notification and badge: the question\u2019s words, how a turn ended, nothing for a Stop, a limit once', chatpush],

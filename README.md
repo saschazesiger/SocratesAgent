@@ -35,6 +35,7 @@
 | 👥 **Several accounts** | Work and private side by side. Chats pick an unused account first, else the one with the most usage left. |
 | 🧪 **Tests in every chat** | The agent writes and runs its own tests, step by step with screenshots, and you watch them pass or fail live beside the chat. |
 | 🗂️ **Notes per project** | A Kanban board for every repository (and older project folder), in its **⋮** beside the **+**: your own columns, cards with a title and a subtitle, and colours you name (Bug, Idea …). Saved on the server and backed up. |
+| 🖼️ **Images in the chat** | A screenshot a tool takes (a browser MCP's), an image the agent shows you and the files you attach are drawn small right in the chat; a tap opens them large, one after another. |
 | 📚 **Docs per project** | Every Markdown file of a project in its own folder tree, opening on the README (for a GitHub repository: its default branch, straight from GitHub): Mermaid diagrams, tables, pictures and GitHub's notes drawn, the page's headings beside it, redrawn live when an agent edits it. A link to a `.md` file in a chat opens it right beside the chat ([📐 spec](docs/design/DOCS.md)). |
 | 💾 **Encrypted backups** | Your whole setup is backed up to any S3 bucket, encrypted. Moving to a new server is a single restore. |
 | 🔄 **Updates itself** | Every night, with a self-test and automatic rollback. |
