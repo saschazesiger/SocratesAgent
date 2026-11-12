@@ -233,6 +233,13 @@ classes built at run time (`'ds-status--' + tone`) went through `tone()` by hand
 scan sees them. Neither `.ds-touch`'s own sizes nor any per-size hook were read by Socrates, so the options model and
 the opt-in touch sizes changed no project rule.
 
+One change the migration missed, because neither tool nor check reads a hook's value: 3.0 computes a card's padding
+with `calc(var(--ds-card-padding) + var(--ds-density) * 2px)`, so the two-length values Socrates had given
+`--ds-card-padding` (the peer messages, the agents' cards, a short phone's question options) voided the declaration
+and those cards had no padding at all. A hook DS reads in `calc()` takes one length, and a zero has its unit
+(`--ds-pressable-radius: 0px`, which `calc(0 * 1)` would make a bare number). A wish for Z-Dash: `check-project.mjs`
+flagging a multi-value or unitless value on a hook it reads in `calc()`.
+
 The bundle's report (`ds.bundle.json`) names the line each class was first found on, so it changes with any edit of a
 page or script: `make ds-check` and CI rebuild the bundle and fail only when its stylesheet or script differ from the
 committed ones, and do not compare the report. A wish for Z-Dash: a `bundle.mjs --check` that leaves the report's line
