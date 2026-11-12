@@ -202,7 +202,7 @@ export function mountDocs({ host, onPage }) {
         <div class="ds-page-head__actions">
           <button class="ds-btn so-docs__files-btn" type="button" data-docs="files" aria-haspopup="dialog" aria-controls="docsSheet" aria-expanded="false">${raw(icon('list', 16))}Files</button>
           <button class="ds-btn ds-btn--quiet ds-btn--icon" type="button" data-docs="reload" aria-label="Read the files again" data-tip="Read the files again">${raw(icon('sync', 20))}</button>
-          ${github ? html`<a class="ds-btn ds-btn--quiet ds-btn--icon" href="${github}" target="_blank" rel="noopener noreferrer" aria-label="Open on GitHub" data-tip="Open on GitHub">${raw(icon('github', 20))}</a>` : ''}
+          ${github ? html`<a class="ds-btn so-docs__github" href="${github}" target="_blank" rel="noopener noreferrer" data-tip="This file on GitHub">${raw(icon('external', 16))}GitHub</a>` : ''}
           ${url ? html`<a class="ds-btn ds-btn--quiet ds-btn--icon" href="${url}" target="_blank" rel="noopener noreferrer" aria-label="Open in a new tab" data-tip="Open in a new tab">${raw(icon('external', 20))}</a>` : ''}
         </div>
       </div>

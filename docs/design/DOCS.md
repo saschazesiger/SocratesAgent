@@ -213,7 +213,7 @@ it**, not any chat's worktree.
 - **Who**: GitHub connected and some chat working in the repository (whatever the case of its name).
   Without GitHub the pages are 404.
 - **The page's head** names the branch (`· main`) beside the repository and, where the clone URL is a web
-  address, has *Open on GitHub* for the file on screen; a link in a page to a file that is not Markdown
+  address, has a *GitHub* button (Z-Dash has no GitHub glyph: the external-link one and the word) for the file on screen; a link in a page to a file that is not Markdown
   offers the same in its snackbar.
 - `locate` and the links in a chat are unchanged: a chat's links resolve in its own worktree, which is a
   folder like any other.
