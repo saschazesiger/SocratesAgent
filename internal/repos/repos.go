@@ -391,13 +391,19 @@ func (m *Manager) fetchLocked(ctx context.Context, fullName, cache string) error
 	if _, err = m.remote(ctx, fullName, cache, "fetch", "--prune", "--quiet", "origin"); err != nil {
 		return err
 	}
+	m.noteFetched(fullName)
+	return nil
+}
+
+// noteFetched notes that the repository's cache fetched (or, for the docs,
+// tried to) just now.
+func (m *Manager) noteFetched(fullName string) {
 	m.mu.Lock()
+	defer m.mu.Unlock()
 	if m.fetched == nil {
 		m.fetched = map[string]time.Time{}
 	}
 	m.fetched[strings.ToLower(fullName)] = time.Now()
-	m.mu.Unlock()
-	return nil
 }
 
 // fetchedAgo is how long ago the repository's cache last fetched from

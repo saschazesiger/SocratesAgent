@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -121,6 +122,18 @@ func TestTheDocsOfARepositoryGroup(t *testing.T) {
 	answers, _ := probed["docs"].(map[string]any)
 	if code != http.StatusOK || answers["github:octo/app"] != true || answers["github:octo/other"] != false {
 		t.Fatalf("probe: %d %v", code, probed)
+	}
+
+	// A repository the App no longer reaches: its docs as fetched are not
+	// shown either.
+	if err := os.Rename(filepath.Join(f.dir, "octo", "app.git"), filepath.Join(f.dir, "octo", "gone.git")); err != nil {
+		t.Fatal(err)
+	}
+	if res, _ := list("github:octo/app"); res.StatusCode != http.StatusNotFound {
+		t.Fatalf("a repository out of reach: %d", res.StatusCode)
+	}
+	if code, _ := get(base + "README.md"); code != http.StatusNotFound {
+		t.Fatalf("a page of a repository out of reach: %d", code)
 	}
 
 	// Without GitHub, the docs are not shown.

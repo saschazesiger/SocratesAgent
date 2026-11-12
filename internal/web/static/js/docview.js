@@ -42,7 +42,7 @@ const listings = new Map();
  */
 export function listing(folder, { fresh = false, titles = false, fetch = false } = {}) {
   const kept = listings.get(folder);
-  if (kept && kept.pending && (!titles || kept.pendingTitles)) return kept.pending;
+  if (kept && kept.pending && !fetch && (!titles || kept.pendingTitles)) return kept.pending;
   if (kept && kept.data && !fresh && !fetch && (!titles || kept.titles) && Date.now() - kept.at < LISTING_FRESH) return Promise.resolve(kept.data);
   const pending = api('/api/docs?folder=' + encodeURIComponent(folder) + (titles ? '&titles=1' : '') + (fetch ? '&fetch=1' : ''), { attempts: 2 })
     .then((data) => {

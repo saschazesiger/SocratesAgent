@@ -159,7 +159,7 @@ func (m *Manager) writePreview(ctx context.Context, cache, sha, dir string, root
 // inside the folder it is written into: relative, no "." or ".." part, no
 // .git part, nothing git or the file system would read another way.
 func safeRel(rel string) bool {
-	if rel == "" || strings.ContainsAny(rel, "\\\x00") || !filepath.IsLocal(filepath.FromSlash(rel)) {
+	if rel == "" || strings.ContainsAny(rel, "\\\x00\n\r") || !filepath.IsLocal(filepath.FromSlash(rel)) {
 		return false
 	}
 	for _, part := range strings.Split(rel, "/") {

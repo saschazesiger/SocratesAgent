@@ -58,6 +58,14 @@ func (m *Manager) DocsShown(fullName string) string {
 	return dir
 }
 
+// ForgetDocs forgets the docs folder DocsShown answers for the repository:
+// they are no longer to be shown as they were.
+func (m *Manager) ForgetDocs(fullName string) {
+	m.mu.Lock()
+	delete(m.docs, strings.ToLower(fullName))
+	m.mu.Unlock()
+}
+
 // Docs is a folder with the files of the repository's branch that want
 // takes (by their slash-separated path in the repository and their size), as
 // they are at the branch's newest commit on GitHub. The cache is fetched
@@ -87,6 +95,9 @@ func (m *Manager) Docs(ctx context.Context, fullName, branch string, maxAge time
 				return "", "", err
 			}
 			log.Printf("repos: the docs of %s are shown as last fetched, GitHub could not be reached: %v", fullName, err)
+			// Tried: the next listing waits maxAge as after a fetch, rather
+			// than holding the repository's lock for another try at once.
+			m.noteFetched(fullName)
 		} else if sha, ok = m.resolve(ctx, cache, ref); !ok {
 			return "", "", fmt.Errorf("%w: %s", ErrNoBranch, branch)
 		}

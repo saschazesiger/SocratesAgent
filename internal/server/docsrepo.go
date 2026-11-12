@@ -65,16 +65,22 @@ func (s *Server) docsRoot(ctx context.Context, key string, workdirs map[string]b
 		}
 	}
 	gh := s.github()
+	if gh == nil {
+		return "", nil, errNoDocs
+	}
 	remote, ok, err := gh.Reaches(ctx, repo)
-	if err != nil || !ok || remote.DefaultBranch == "" {
+	if err != nil {
 		// GitHub out of reach: what was fetched last, if anything.
 		if dir := s.repos.DocsShown(repo); dir != "" {
 			return dir, nil, nil
 		}
-		if err == nil {
-			err = errNoDocs
-		}
 		return "", nil, err
+	}
+	if !ok || remote.DefaultBranch == "" {
+		// The App no longer reaches it: what was fetched is not shown
+		// either (the pages are served outside the login).
+		s.repos.ForgetDocs(repo)
+		return "", nil, errNoDocs
 	}
 	name := repo
 	if repos.ValidName(remote.FullName) {

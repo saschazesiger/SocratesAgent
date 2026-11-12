@@ -430,9 +430,9 @@ export function mountDocs({ host, onPage }) {
       if (what === 'reload') {
         // A repository's docs are fetched from GitHub now; the file on
         // screen is drawn again once they are in.
-        const y = st.y;
+        const { folder, page, y } = st;
         load({ fresh: true, fetch: true }).then(() => {
-          if (st.data && st.page) frame.src = pageUrl(st.data.base, st.page, { y });
+          if (st.data && st.page && st.folder === folder && st.page === page) frame.src = pageUrl(st.data.base, page, { y });
         });
       } else if (what === 'files') {
         showOverlay(sheet, b);

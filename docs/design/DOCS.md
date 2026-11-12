@@ -197,7 +197,9 @@ it**, not any chat's worktree.
 - **From GitHub**: the listing (`GET /api/docs?folder=github:<owner>/<name>`) fetches the repository's cache
   (`<root>/.repos/<owner>/<name>.git`, the one the chats share) when it last fetched longer than a minute ago,
   and *Read the files again* asks with `&fetch=1`, which fetches now. A fetch that fails shows what was
-  fetched last. Not the REST API: one `git fetch` brings every file and picture, and the cache is there
+  fetched last, and is tried again only after the same minute (a GitHub that hangs must not hold the
+  repository's lock for every listing); a repository the App no longer reaches is not shown at all, what was
+  fetched included. Not the REST API: one `git fetch` brings every file and picture, and the cache is there
   anyway.
 - **Written out per commit** (`repos.Manager.Docs`): the Markdown files and pictures of the branch's newest
   commit that the Docs view would list (`docs.Listed`: no hidden or skipped folder, within the size bounds;

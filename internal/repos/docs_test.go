@@ -36,6 +36,7 @@ func TestTheDocsOfARepository(t *testing.T) {
 		"node_modules/x/README.md":    "theirs\n",
 		".env":                        "SECRET=1\n",
 		"docs/deep/nested/CHANGES.md": "## 1.0\n",
+		"docs/odd\nname.md":           "# odd\n",
 	})
 	dir, got, err := m.Docs(ctx, "octo/app", "main", time.Minute, docsWant)
 	if err != nil {
