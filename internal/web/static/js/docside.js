@@ -79,6 +79,21 @@ export function outsideTarget(href, folder) {
 }
 
 /**
+ * outsideHref is a link in a file shown beside the chat (`path` in `folder`)
+ * that leads out of the folder, as an absolute path with its heading: one
+ * relative to the file is joined to the file's own folder. '' for anything
+ * that is no path to a Markdown file.
+ */
+export function outsideHref(href, folder, path) {
+  const ref = String(href || '').trim();
+  if (!isPathLink(ref) || !folder) return '';
+  const dir = String(path || '').split('/').slice(0, -1).join('/');
+  const base = folder.replace(/\/+$/, '') + (dir ? '/' + dir : '');
+  const target = outsideTarget(ref, base);
+  return target ? target.path + (target.at ? '#' + target.at : '') : '';
+}
+
+/**
  * forgeLinkTarget is a link to a file of the folder by its address on the
  * repository's forge - https://github.com/owner/name/blob/main/docs/x.md,
  * GitLab's /-/blob/ - as docLinkTarget's {path, at}, when `repo` (docview.js
@@ -136,8 +151,10 @@ export function fileIn(files, path) {
  * mountChatDocside wires the column (`panel`, #docsidePanel) and the
  * dialog. `onColumnOpen()` is called when the column opens (the tests'
  * column shuts then); `onPage(folder, path)` each time the frame shows a
- * file (opened, followed to by a link, drawn again after a change). It
- * answers
+ * file (opened, followed to by a link, drawn again after a change);
+ * `follow(href)` with a link in the file that leads out of its folder, as an
+ * absolute path, answering whether it took it (else a snackbar says it
+ * leads out). It answers
  *   open(folder, path, {at, opener})   a file of a chat's folder (or of
  *                                      another working tree of its repository)
  *   openOutside(folder, href, {opener}) a path link out of the folder, when
@@ -147,7 +164,7 @@ export function fileIn(files, path) {
  *   isOpen()                           whether a file is shown
  *   shown()                            {folder, path} of the file shown, or null
  */
-export function mountChatDocside({ panel, onColumnOpen, onPage }) {
+export function mountChatDocside({ panel, onColumnOpen, onPage, follow: onFollow = null }) {
   // What is shown: {folder, path, base, mtime, y, title}, or null.
   let doc = null;
   let dlg = null;
@@ -272,7 +289,11 @@ export function mountChatDocside({ panel, onColumnOpen, onPage }) {
     } else if (m.t === 'file') {
       toast('“' + fileName(m.path) + '” is not a Markdown file: only Markdown is shown here.');
     } else if (m.t === 'outside') {
-      toast('That link leads out of this folder.');
+      // Out of the folder shown: a page's link to a file of the chat's
+      // working directory, by its absolute path, or a path with ".." out of
+      // a working tree. It goes where the same link in the chat would.
+      const href = outsideHref(String(m.href || ''), doc.folder, doc.path);
+      if (!href || !onFollow || !onFollow(href)) toast('That link leads out of this folder.');
     }
   });
 

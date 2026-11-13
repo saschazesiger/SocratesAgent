@@ -90,12 +90,20 @@ file opens it beside the chat. Decided with the owner the same day:
   *Close*. Narrower it is a full screen dialog with the same head. A link in it to another Markdown
   file stays in it; the file is drawn again when it changes on disk. Another chat on the stage closes
   it.
+- **A link in the file beside the chat** that leads out of its folder (the viewer's kit says
+  `outside`) goes where the same link in the chat would (docside.js `outsideHref`, session.js
+  `chatDocLink`): a page (PAGES.md) links a file of the working directory by its absolute path, and a
+  path with `..` out of a working tree may lead into another. Only a link nothing can open gets the
+  snackbar "That link leads out of this folder".
 - Chat agents are told (`agent.DocsGuidance`, appended to Claude Code's system prompt, Codex's
   developer instructions and the instructions of the ask server other agents get): every time a
   Markdown file of the working directory is mentioned (in a list, a table, the closing summary), as a
-  Markdown link with its path relative to the working directory, optionally with a `#heading`; never
-  only as a `code` path or a bare name, never by a GitHub, web or `file://` address. A file it wrote in
-  another working tree (a `git worktree` outside the working directory) by its absolute path.
+  Markdown link; never only as a `code` path or a bare name, never by a GitHub, web or `file://`
+  address. In a reply or a question the path is relative to the working directory, optionally with a
+  `#heading`. Inside a Markdown file it is relative to that file, as Markdown has it, and a page of the
+  pages folder, which lies outside the working directory, links a file of it by its absolute path (a
+  chat once linked one there by a path the page could not follow). A file it wrote in another working
+  tree (a `git worktree` outside the working directory) by its absolute path.
 
 ## 4. Server
 

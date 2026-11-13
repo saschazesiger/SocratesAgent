@@ -17,8 +17,10 @@ func TestPagesGuidance(t *testing.T) {
 		"[The plan](/d/chats/c1/pages/plan.md). Socrates lists the chat's pages beside the chat and shows them " +
 		"rendered, with Mermaid diagrams (flowcharts, sequence, pie and xy charts ...), tables and GitHub alerts " +
 		"(> [!NOTE]), and draws a page again when you change it: edit the same file rather than writing a new one " +
-		"for the same subject. Start a page with a # title. Not for a few lines of text. The pages are deleted with " +
-		"the chat."
+		"for the same subject. Start a page with a # title. In a page, link a Markdown file of the working " +
+		"directory by its absolute path, never by a path relative to the working directory (in a page that means " +
+		"the pages folder) and never only as a `code` path; another page by its name, e.g. [The plan](plan.md). " +
+		"Not for a few lines of text. The pages are deleted with the chat."
 	if got := PagesGuidance(dir); got != want {
 		t.Fatalf("guidance:\n%s", got)
 	}

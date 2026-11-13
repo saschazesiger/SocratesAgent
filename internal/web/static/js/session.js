@@ -864,6 +864,38 @@ function deleteWords(session) {
 function sessionOf(id) { return state.sessions.find((s) => s.id === id) || null; }
 
 /**
+ * chatDocLink opens what a link in a chat (or in a page beside it) means
+ * beside the chat (docside.js), and answers whether it did: a page of the
+ * chat's pages folder by its absolute path (pages.js), a Markdown file of
+ * the chat's folder by its path or by its address on the folder's own forge
+ * repository, and a file in another working tree of the folder's
+ * repository. A path to one that is not there is said so; any other link is
+ * the browser's (false).
+ */
+function chatDocLink(href, session, opener) {
+  if (!state.docside) return false;
+  const pages = session.pages_dir || '';
+  const page = pages && String(href || '').trim().replace(/^file:\/\/(localhost)?/i, '').startsWith('/')
+    ? docLinkTarget(href, pages) : null;
+  if (page) {
+    state.docside.open(pages, page.path, { at: page.at, opener });
+    return true;
+  }
+  const folder = dirOf(session.workdir || '');
+  if (!folder) return false;
+  const target = docLinkTarget(href, folder) || forgeLinkTarget(href, knownRepo(folder));
+  if (target) {
+    state.docside.open(folder, target.path, { at: target.at, opener });
+    return true;
+  }
+  if (!isPathLink(href)) return false;
+  // A path out of the folder: another working tree of its repository
+  // may have the file; else a snackbar says so.
+  state.docside.openOutside(folder, href, { opener });
+  return true;
+}
+
+/**
  * isChat says whether a session is a chat: an agent driven through its
  * protocol and drawn by the chat view, not a terminal.
  */
@@ -4590,33 +4622,8 @@ async function boot() {
     openAsk: (chatId, askId) => showChatQuestions(chatId, { askId, only: true }),
     toastRoom: (room) => { chatToastRoom = room; placeToasts(); },
     // A link to a Markdown file of the chat's folder opens it beside the
-    // chat (docside.js): by its path, or by its address on the folder's own
-    // forge repository; so does a page of the chat's pages folder, by its
-    // absolute path (pages.js), and a file in another working tree of the
-    // folder's repository. A path to one that is not there is said so;
-    // any other link is the browser's.
-    docLink: (href, session, opener) => {
-      if (!state.docside) return false;
-      const pages = session.pages_dir || '';
-      const page = pages && String(href || '').trim().replace(/^file:\/\/(localhost)?/i, '').startsWith('/')
-        ? docLinkTarget(href, pages) : null;
-      if (page) {
-        state.docside.open(pages, page.path, { at: page.at, opener });
-        return true;
-      }
-      const folder = dirOf(session.workdir || '');
-      if (!folder) return false;
-      const target = docLinkTarget(href, folder) || forgeLinkTarget(href, knownRepo(folder));
-      if (target) {
-        state.docside.open(folder, target.path, { at: target.at, opener });
-        return true;
-      }
-      if (!isPathLink(href)) return false;
-      // A path out of the folder: another working tree of its repository
-      // may have the file; else a snackbar says so.
-      state.docside.openOutside(folder, href, { opener });
-      return true;
-    },
+    // chat (docside.js, chatDocLink).
+    docLink: (href, session, opener) => chatDocLink(href, session, opener),
   });
   chatOutbox().pump();
   // The chat's tests: the button, the column at a desk and the sheet
@@ -4640,6 +4647,13 @@ async function boot() {
       if (state.tests) state.tests.shut();
     },
     onPage: (folder, path) => { if (state.pages) state.pages.seen(folder, path); },
+    // A link in a page that leads out of the pages folder - a file of the
+    // chat's working directory, by its absolute path - goes where the same
+    // link in the chat would.
+    follow: (href) => {
+      const session = state.current ? sessionOf(state.current.id) || state.current : null;
+      return !!session && chatDocLink(href, session, null);
+    },
   });
   // The chat's pages: the Pages button, its badge and its menu, which opens
   // one beside the chat.

@@ -31,13 +31,20 @@ Code's system prompt, in Codex's developer instructions and in the instructions 
 for the other agents) where its pages folder is and when to use it: something easier to take in as a
 document than as chat text (an explanation, a plan, a comparison, a report, a diagram), not a few lines
 of text; start the page with a `# title`; link it with its absolute path; edit the same file rather
-than write a new one for the same subject. The folder exists from the moment the chat's agent starts.
+than write a new one for the same subject; in a page, link a Markdown file of the working directory by
+its absolute path (a path relative to the working directory would mean the pages folder there) and
+never only as a `code` path, another page by its name. The folder exists from the moment the chat's agent starts.
 
 ## The chat page
 
 - **A link** to a page (its absolute path, `[The plan](/…/chats/<chat>/pages/plan.md)`) opens it
   beside the chat as a link to a Markdown file of the chat's working directory does (DOCS.md §3): the
   chat knows its pages folder (`pages_dir` of the session).
+- **A link in a page** to a file of the chat's working directory, by its absolute path, leads out of the
+  pages folder: the viewer's kit says so (`outside`), and docside.js `outsideHref` and session.js
+  `chatDocLink` take it where the same link in the chat would go (the file beside the chat, or one in
+  another working tree). Only a link nothing can open gets the snackbar "That link leads out of this
+  folder". A relative link stays in the pages folder: another page.
 - **The Pages button** in the chat's head (pages.js) is shown while the folder has Markdown. It opens
   a menu of the pages, newest first, by their `# title` (else the file name) with when they last
   changed; choosing one opens it beside the chat. Its badge counts the pages new or changed since this
@@ -65,6 +72,7 @@ than write a new one for the same subject. The folder exists from the moment the
 | `internal/agent/docsguide.go`, `pagesguide.go` | `DocsGuidance`, `PagesGuidance` |
 | `internal/server/docs.go` | The pages folder among the allowed folders, the titles |
 | `internal/web/static/js/pages.js` | The Pages button and its list |
-| `internal/web/static/js/session.js` | `docLink`: a link into the pages folder |
+| `internal/web/static/js/session.js` | `chatDocLink`: a link into the pages folder, and a page's link out of it |
+| `internal/web/static/js/docside.js` | `outsideHref`: a link out of the file shown, as an absolute path |
 
 Tested by `go test ./internal/agent/... ./internal/server -run 'Docs|Pages'` and `node e2e/run.mjs chatpages`.

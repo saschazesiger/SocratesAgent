@@ -108,6 +108,23 @@ export async function pages() {
     }
     ok(h1 === 'Notes on the API, revised', 'a page changed by the agent is drawn again', h1);
     await shot(page, 'pages-chat');
+
+    // A page links a file of the chat's working directory by its absolute
+    // path (agent.DocsGuidance): the page lies outside it, and the link opens
+    // the file beside the chat rather than saying it leads out.
+    mkdirSync(join(work, 'docs'));
+    writeFileSync(join(work, 'docs', 'open.md'), '# Still open\n');
+    writeFileSync(join(dir, 'notes.md'), `# Notes on the API, revised\n\nWhat is left: [open.md](${work}/docs/open.md).\n`);
+    const out = page.frameLocator(VIEW).locator(`a[href="${work}/docs/open.md"]`).first();
+    await out.waitFor({ timeout: 12000 });
+    await out.click();
+    h1 = '';
+    for (let i = 0; i < 40; i++) {
+      h1 = await frameText(page, VIEW, 'h1');
+      if (h1 === 'Still open') break;
+      await wait(250);
+    }
+    ok(h1 === 'Still open', "a page's link to a file of the working directory opens it beside the chat", h1);
   } finally {
     await s.stop();
     rmSync(scratch, { recursive: true, force: true });
