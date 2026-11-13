@@ -13897,6 +13897,29 @@ async function chatwithdraw() {
   } finally { await s.stop(); }
 }
 
+// chat-auto-retry: a turn that failed on an error worth trying again (a
+// Cloudflare challenge in front of the API) is tried again by the server's
+// clock after its first backoff, some 30 s (server retry.go). The page shows
+// the failure, then Socrates' card "after the turn failed", and the agent's
+// answer to it.
+async function chatautoretry() {
+  const s = await chatServer();
+  const { page } = s;
+  try {
+    await startChat(page);
+    await say(page, '/fail Failed to authenticate. API Error: 403 Attention Required! | Cloudflare');
+    const failed = await page.waitForSelector('#chat [data-kind="failed"]', { timeout: 20000 }).then((n) => n.innerText(), () => '');
+    ok(/The turn failed\. .*Cloudflare/.test(oneLine(failed)), 'the failure is shown', oneLine(failed));
+    const card = await page.waitForSelector('#chat [data-from="socrates"]', { timeout: 60000 }).then((n) => n.innerText(), () => '');
+    ok(/after the turn failed, not from you/.test(oneLine(card)) && /Continue where you left off\./.test(card),
+      'Socrates’ card says it tried again after the failure', oneLine(card));
+    const answered = await page.waitForFunction(() => /you said: Continue where you left off\./.test(document.querySelector('#chat')?.innerText || ''),
+      null, { timeout: 20000 }).then(() => true, () => false);
+    ok(answered, 'the agent went on', String(answered));
+    ok(unexpected(s.errors).length === 0, 'no console errors', unexpected(s.errors).join(' | ') || '0');
+  } finally { await s.stop(); }
+}
+
 // chat-auto-continue: a chat stopped by a limit goes on by itself a minute
 // after the limit renews (the server's clock, in minutes; its Go tests run
 // it). What the page shows of it: the limit's card says so, and the row's
@@ -16154,6 +16177,7 @@ const ALL = [
   ['chat-poll', 'a chat whose stream never gets through is polled, says so, and shows what is answered; the stream back, the polling stops', chatpoll],
   ['chat-send-now', 'a message waiting behind a turn, sent now: the turn interrupted, the message answered next', chatsendnow],
   ['chat-withdraw', 'a message waiting behind a turn, withdrawn: it says so, and the agent never answers it', chatwithdraw],
+  ['chat-auto-retry', 'a failed turn is tried again by itself, shown as Socrates’ card', chatautoretry],
   ['chat-auto-continue', 'a limit\u2019s card says the chat goes on by itself, and the ⋮ switches that off and on', chatautocontinue],
   ['chat-offline', 'what a chat is told offline (two tabs, a model, an answer), or whose answer was lost, or left across a reload: delivered once', chatoffline],
   ['chat-ask', 'questions: the card and the dialog, every kind, a plan, a counter-question, Home, two devices', chatask],

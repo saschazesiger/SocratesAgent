@@ -443,7 +443,7 @@
     },
     {
       "name": "chevronLeft",
-      "reason": "static/js/chatparts.js:1736"
+      "reason": "static/js/chatparts.js:1738"
     },
     {
       "name": "chevronFirst",
@@ -599,7 +599,7 @@
     },
     {
       "name": "volume",
-      "reason": "static/js/chatparts.js:2040"
+      "reason": "static/js/chatparts.js:2042"
     },
     {
       "name": "mail",
@@ -759,7 +759,7 @@
     },
     {
       "name": "user",
-      "reason": "static/js/chatparts.js:2131"
+      "reason": "static/js/chatparts.js:2134"
     },
     {
       "name": "users",
@@ -1548,7 +1548,7 @@
     "ds-card": "static/admin.html:104",
     "ds-card--elevated": "static/login.html:31",
     "ds-card--interactive": "static/js/askdialog.js:776",
-    "ds-card__action": "static/js/chatparts.js:1582",
+    "ds-card__action": "static/js/chatparts.js:1584",
     "ds-card__more": "static/js/admingithub.js:229",
     "ds-card__row": "static/admin.html:140",
     "ds-card__section": "static/admin.html:257",
@@ -1601,8 +1601,8 @@
     "ds-dialog__title": "static/index.html:252",
     "ds-disclosure": "static/admin.html:301",
     "ds-disclosure__body": "static/admin.html:303",
-    "ds-divider": "static/js/chatparts.js:2106",
-    "ds-divider--label": "static/js/chatparts.js:2106",
+    "ds-divider": "static/js/chatparts.js:2109",
+    "ds-divider--label": "static/js/chatparts.js:2109",
     "ds-drawer": "static/admin.html:54",
     "ds-drawer__action": "static/js/session.js:1422",
     "ds-drawer__actions": "static/index.html:155",
@@ -1698,11 +1698,11 @@
     "ds-pressable--inset": "static/js/boards.js:176",
     "ds-pressable--lg": "static/js/session.js:1262",
     "ds-progress": "static/admin.html:405",
-    "ds-progress--flat": "static/js/chatparts.js:1541",
+    "ds-progress--flat": "static/js/chatparts.js:1543",
     "ds-progress--indeterminate": "static/admin.html:405",
     "ds-progress__bar": "static/admin.html:407",
     "ds-progress__detail": "static/js/statusmodal.js:154",
-    "ds-progress__label": "static/js/chatparts.js:1541",
+    "ds-progress__label": "static/js/chatparts.js:1543",
     "ds-progress__track": "static/admin.html:406",
     "ds-prose": "static/js/mcpview.js:138",
     "ds-prose--dense": "static/js/mcpview.js:138",
@@ -1763,7 +1763,7 @@
     "ds-timeline__meta": "static/js/chattests.js:599",
     "ds-timeline__text": "static/js/chattests.js:599",
     "ds-timeline__title": "static/js/chattests.js:599",
-    "ds-toast": "static/js/session.js:3697",
+    "ds-toast": "static/js/session.js:3698",
     "ds-toasts": "static/admin.html:585",
     "ds-tone-error": "static/js/accounts.js:116",
     "ds-tone-neutral": "static/js/admingithub.js:195",
@@ -1778,8 +1778,8 @@
   },
   "unknown": [
     "static/index.html:170 module DS.ds",
-    "static/js/chatparts.js:1444 icon background",
-    "static/js/chatparts.js:1591 icon stop",
+    "static/js/chatparts.js:1446 icon background",
+    "static/js/chatparts.js:1593 icon stop",
     "static/js/home.js:340 icon waiting"
   ]
 }
