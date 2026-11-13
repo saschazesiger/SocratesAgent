@@ -92,8 +92,9 @@ type Server struct {
 	// two taps on the same folder cannot start two editors on it.
 	ideMu sync.Mutex
 
-	// sched is the chats' clock: scheduled starts and the automatic
-	// continue after a limit (schedule.go).
+	// sched is the chats' clock: scheduled starts, the automatic continue
+	// after a limit and the automatic retry after a failed turn (schedule.go,
+	// retry.go).
 	sched *scheduler
 
 	// backup is the engine that backs the data directory up (backup.go),
@@ -207,7 +208,14 @@ func New(st *store.Store, dataDir string) (*Server, error) {
 	s.repos = s.newRepoManager()
 	s.chats = newChatHub(s)
 	// A chat's push says what its journal says.
-	s.push.chatAsk, s.push.chatTurn = s.chats.askWords, s.chats.turnWords
+	// A failed turn the clock will try again is no news yet (retry.go).
+	s.push.chatAsk = s.chats.askWords
+	s.push.chatTurn = func(id string) (string, bool) {
+		if s.willRetry(id) {
+			return "", false
+		}
+		return s.chats.turnWords(id)
+	}
 	s.accounts = newAccountHub(s)
 	s.chatTests = s.newChatTests()
 	s.mcp = s.newMCPRegistry()

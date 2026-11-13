@@ -17,7 +17,7 @@ import (
 	"github.com/saschazesiger/SocratesAgent/internal/webpush"
 )
 
-// The chats' clock: the two things a chat does by itself at a time.
+// The chats' clock: the three things a chat does by itself at a time.
 //
 //   - A scheduled start. A chat nobody has written to yet can be given a
 //     time (start_at); then its draft - what its large first field holds -
@@ -27,6 +27,9 @@ import (
 //     and that nobody has done anything with since, is told to go on
 //     (agenthost.ContinueText) a minute after the limit renews, unless its
 //     auto_continue option is off.
+//   - The automatic retry. A chat whose last turn failed on an error worth
+//     trying again (an API that refused or did not answer, an agent that
+//     died) is told to go on in the same way, with a backoff (retry.go).
 //
 //	PUT /api/chats/{id}/start_at      {"start_at": ms}  → {"session"}
 //	                                  0 clears; a time has to be in the
@@ -70,8 +73,9 @@ type scheduler struct {
 	wake chan struct{}
 
 	mu sync.Mutex
-	// continued is the limits this run has told a chat to go on from, by
-	// continueKey: a send that failed is not tried again every pass.
+	// continued is the limits and failed turns this run has told a chat to
+	// go on from, by continueKey and retryKey: a send that failed is not
+	// tried again every pass.
 	continued map[string]bool
 }
 
@@ -136,6 +140,9 @@ func (sc *scheduler) runDue(ctx context.Context, now time.Time) (done int) {
 		if due, limit := sc.continueAt(row); due > 0 && due <= at && sc.continueOne(ctx, row, limit) {
 			done++
 		}
+		if due, failure := sc.retryAt(row); due > 0 && due <= at && sc.retryOne(ctx, row, failure) {
+			done++
+		}
 	}
 	return done
 }
@@ -152,7 +159,8 @@ func (sc *scheduler) nextDue() int64 {
 		if !row.IsChat() {
 			continue
 		}
-		for _, at := range []int64{row.StartAt, first(sc.continueAt(row))} {
+		retry, _ := sc.retryAt(row)
+		for _, at := range []int64{row.StartAt, first(sc.continueAt(row)), retry} {
 			if at > 0 && (next == 0 || at < next) {
 				next = at
 			}

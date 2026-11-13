@@ -1222,11 +1222,13 @@ function peerQueue(state, sendNow, withdraw) {
 const SOCRATES_WHY = {
   switch: 'after the account switch',
   limit: 'after the limit renewed',
+  retry: 'after the turn failed',
 };
 
 /**
  * socratesMessage is a message Socrates sent the agent itself - go on after
- * an account switch or a renewed limit, start stopped background work again -
+ * an account switch, a renewed limit or a failed turn, start stopped
+ * background work again -
  * as a card of Socrates' on the agent's side, as another chat's is, never a
  * bubble of the person's.
  */
@@ -2063,6 +2065,7 @@ const NOTICE_WORDS = {
   codex_reasoning_dropped: 'The agent’s earlier reasoning was left behind to go on with another account.',
   codex_handoff: 'The conversation went on in a new thread, with the transcript handed over.',
   auto_continued: 'Continued after the limit renewed.',
+  auto_retried: 'Tried again after the turn failed.',
   scheduled_start: 'Sent at the time it was scheduled for.',
   elicitation_declined: 'A request of a tool was declined.',
   question_declined: 'A question the agent asked its own way was declined.',

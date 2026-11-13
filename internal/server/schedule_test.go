@@ -312,3 +312,82 @@ func TestLimitOfIsTheAccountsItRunsOn(t *testing.T) {
 		t.Fatalf("a renewal in the past: %+v", l)
 	}
 }
+
+// A chat whose turn failed on an error worth trying again - a Cloudflare
+// challenge in front of the API - is told to go on by itself after the
+// backoff: once, with a notice, and the failure is no news while the retry
+// is ahead. A failure that would fail again is left for the person, and so
+// is a failure with the option off.
+func TestAFailedTurnIsTriedAgain(t *testing.T) {
+	c := newChatEnv(t, time.Hour)
+	id := c.create(t)
+	c.send(t, id, "m1", "/fail Failed to authenticate. API Error: 403 Attention Required! | Cloudflare")
+	c.waitJournal(t, id, 10*time.Second, "the failed turn", turnsEnded(1))
+	var brief chatBrief
+	waitForCond(t, 10*time.Second, "the server to have the failure", func() bool {
+		brief, _ = c.srv.chats.briefOfChat(id)
+		return brief.Failure != nil
+	})
+	if brief.Failure.Retries != 0 {
+		t.Fatalf("the failure: %+v", brief.Failure)
+	}
+	if !c.srv.willRetry(id) {
+		t.Fatal("the clock does not mean to try again")
+	}
+	if _, news := c.srv.push.chatTurn(id); news {
+		t.Fatal("a failure that will be tried again is news")
+	}
+
+	due := time.UnixMilli(brief.Failure.EndedAt).Add(retryDelay(0, id+brief.Failure.Turn))
+	if next := c.srv.sched.nextDue(); next != due.UnixMilli() {
+		t.Fatalf("next due %d, want %d", next, due.UnixMilli())
+	}
+	if n := c.srv.sched.runDue(context.Background(), due.Add(-time.Second)); n != 0 {
+		t.Fatalf("before the time, %d things were done", n)
+	}
+	if n := c.srv.sched.runDue(context.Background(), due); n != 1 {
+		t.Fatalf("at the time, %d things were done", n)
+	}
+	events := c.waitJournal(t, id, 20*time.Second, "the retried turn", turnsEnded(2))
+	if !noticeBefore(events, agent.NoticeAutoRetried, agenthost.ContinueText) {
+		t.Fatal("no notice before the retry")
+	}
+	if !strings.Contains(lastText(events), "you said: "+agenthost.ContinueText) {
+		t.Fatalf("the agent said %q", lastText(events))
+	}
+	waitForCond(t, 10*time.Second, "the failure to be gone", func() bool {
+		brief, _ := c.srv.chats.briefOfChat(id)
+		return brief.Failure == nil
+	})
+	if n := c.srv.sched.runDue(context.Background(), due.Add(time.Hour)); n != 0 {
+		t.Fatalf("tried again twice: %d", n)
+	}
+
+	// A prompt too long is too long the next time too.
+	c.send(t, id, "m2", "/fail API Error: 400 prompt is too long: 210000 tokens > 200000 maximum")
+	c.waitJournal(t, id, 10*time.Second, "the permanent failure", turnsEnded(3))
+	time.Sleep(200 * time.Millisecond)
+	if brief, _ := c.srv.chats.briefOfChat(id); brief.Failure != nil || c.srv.willRetry(id) {
+		t.Fatalf("a permanent failure is tried again: %+v", brief.Failure)
+	}
+	if _, news := c.srv.push.chatTurn(id); !news {
+		t.Fatal("a failure nobody tries again is no news")
+	}
+
+	// With the option off the person decides.
+	c.send(t, id, "m3", "/fail API Error: 529 Overloaded")
+	c.waitJournal(t, id, 10*time.Second, "the overloaded turn", turnsEnded(4))
+	waitForCond(t, 10*time.Second, "the server to have the failure", func() bool {
+		brief, _ := c.srv.chats.briefOfChat(id)
+		return brief.Failure != nil
+	})
+	if res, body := c.do(t, c.client, "PUT", "/api/chats/"+id+"/auto-continue", `{"on":false}`); res.StatusCode != http.StatusOK {
+		t.Fatalf("off: %d %v", res.StatusCode, body)
+	}
+	if c.srv.willRetry(id) {
+		t.Fatal("with the option off the clock means to try again")
+	}
+	if n := c.srv.sched.runDue(context.Background(), time.Now().Add(2*retryCap)); n != 0 {
+		t.Fatalf("with the option off, %d things were done", n)
+	}
+}

@@ -13918,8 +13918,8 @@ async function chatautocontinue() {
       });
     };
     const on = await itemOf();
-    ok(!!on && on.role === 'menuitemcheckbox' && on.checked === 'true' && on.text.startsWith('Go on when a limit renews'),
-      'the chat’s ⋮ has Go on when a limit renews, on', JSON.stringify(on));
+    ok(!!on && on.role === 'menuitemcheckbox' && on.checked === 'true' && on.text.startsWith('Go on by itself after a limit or error'),
+      'the chat’s ⋮ has Go on by itself after a limit or error, on', JSON.stringify(on));
     await page.click(MENU + ' [data-action="auto-continue"]');
     let row = null;
     for (let i = 0; i < 30 && !(row && row.options && row.options.auto_continue === false); i += 1) {

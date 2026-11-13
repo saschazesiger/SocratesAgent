@@ -2950,6 +2950,18 @@ Asked for by the product owner on 2026-10-25, on branch `ui-simplify`.
   for this one's, and the chat waited days instead of five hours), if nothing happened in the chat
   since the limited turn, the server sends `agenthost.ContinueText` (client_id `auto-continue-<id>-<turn>`) and
   journals `notice{auto_continued}`. The limit is kept in the chat's brief, so a restart keeps it.
+- **A chat tries a failed turn again by itself** (2026-11-13, owner: "the agent should be as
+  autonomous as possible"), with the same option. A turn that ended `failed` on an error worth
+  trying again - anything but the request or the account being wrong (`retryableFailure` in
+  `internal/server/retry.go`: a prompt too long, no credit, an unknown key, `invalid_request_error`,
+  `permission_error`, API errors 400/404/413) - with nothing happening in the chat since, gets
+  `agenthost.ContinueText` with `notice{auto_retried}` after a backoff: 30 s, doubled each time,
+  at most 30 min, plus up to a tenth by chat and turn so that chats an outage hit together do not
+  all come back in one second; 12 retries in a row, then the person is told as for any failed turn.
+  The client_id `auto-retry-<n>-<turn>` carries which retry it is, so the chain lives in the journal
+  (the chat's brief keeps the failure and its count, `chatBrief.Failure`) and survives a restart; a
+  message of the person's starts a new chain. While a retry is ahead the failure is no news: no
+  push, no verdict. The chat shows the retry as a card "From Socrates", "after the turn failed".
 - **A limit's card offers every account, not the few with room.** REBUILD §4.3 has one-tap
   "Continue with <account>" buttons for the accounts with room. The card has one "Continue with…"
   instead, a menu of all the agent's accounts in the order to take them (the server's `rank`),

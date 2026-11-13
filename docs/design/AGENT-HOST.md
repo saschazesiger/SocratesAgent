@@ -362,7 +362,7 @@ agent has taken nothing up since: a second "Continue with", one from another dev
 automatic switch on top of one by hand does not make the agent continue twice. Every message a switch sends (the restart, the
 continue) has `notice{switch_message}` right before it and a `client_id` ending in `:continue`: the chat
 shows it as a card "From Socrates" on the agent's side, as it shows another chat's message, never
-as the person's bubble (so is the Continue after a limit renewed, `auto-continue-…`). An `after_turn` switch also waits for
+as the person's bubble (so are the Continue after a limit renewed, `auto-continue-…`, and the one after a failed turn, `auto-retry-…`). An `after_turn` switch also waits for
 the background work, so that it stops nothing and sends nothing: the agent goes on as if nothing
 had happened. Once that work ends, it waits `switchSettle` (2 s) more since the last `tasks`
 event: Claude Code starts a turn of its own about what the work brought a few milliseconds later,

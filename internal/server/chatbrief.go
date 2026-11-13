@@ -47,7 +47,7 @@ const (
 // briefVersion is the shape of a brief this build writes. A brief of
 // another one is not believed, and the journal is read again: a brief from
 // before a fact was added does not have it.
-const briefVersion = 2
+const briefVersion = 3
 
 // chatBrief is a chat in a few facts, true as of Seq.
 type chatBrief struct {
@@ -65,6 +65,10 @@ type chatBrief struct {
 	// nobody has done anything with since: what the automatic continue waits
 	// on (schedule.go).
 	Limit *chatLimit `json:"limit,omitempty"`
+	// Failure is a chat whose last turn failed on an error worth trying
+	// again, and that nobody has done anything with since: what the
+	// automatic retry waits on (retry.go).
+	Failure *chatFailure `json:"failure,omitempty"`
 }
 
 // chatLimit is the turn a limit stopped and when the limit renews, in
@@ -80,6 +84,7 @@ func briefOf(p *agent.Projection) chatBrief {
 	b := chatBrief{V: briefVersion, Seq: p.LastSeq, Summary: p.Summary(), Line: chatLine(p), Question: chatQuestion(waitingAsk(p))}
 	b.News = newsOf(p, b.Question)
 	b.Limit = limitOf(p)
+	b.Failure = failureOf(p)
 	return b
 }
 

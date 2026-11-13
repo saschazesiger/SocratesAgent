@@ -193,6 +193,11 @@ const (
 	// the limit renewed the server told the agent to go on (the message
 	// after the notice). It is the server's, through the send it comes with.
 	NoticeAutoContinued = "auto_continued"
+	// NoticeAutoRetried: the last turn failed on an error worth trying
+	// again (the API refused or did not answer, the agent died), and after a
+	// backoff the server told the agent to go on (the message after the
+	// notice). It is the server's, through the send it comes with.
+	NoticeAutoRetried = "auto_retried"
 	// NoticeScheduledStart: the message after it is the chat's first,
 	// sent by itself at the time it was given.
 	NoticeScheduledStart = "scheduled_start"

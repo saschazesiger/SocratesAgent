@@ -2792,9 +2792,10 @@ async function openSessionMenu(anchor, id) {
     const on = !!session.options?.auto_switch;
     add('auto-switch', 'Switch accounts at a limit', '', () => setAutoSwitch(session, !on), on, 'menuitemcheckbox');
     // On unless switched off, per chat: a turn stopped by a limit goes on
-    // by itself once the limit has renewed.
+    // by itself once the limit has renewed, and a failed one is tried again
+    // with a backoff (server retry.go).
     const goOn = session.options?.auto_continue !== false;
-    add('auto-continue', 'Go on when a limit renews', '', () => setAutoContinue(session, !goOn), goOn, 'menuitemcheckbox');
+    add('auto-continue', 'Go on by itself after a limit or error', '', () => setAutoContinue(session, !goOn), goOn, 'menuitemcheckbox');
   } else {
     add('journal', editor ? 'Download server log' : 'Download scrollback', 'download', () => downloadJournal(session));
   }

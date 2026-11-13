@@ -196,10 +196,11 @@ func (d *digester) outcomeEdge(id string, a termux.Activity) (judge func()) {
 		// The row is read without the lock: a store read under it would hold
 		// up every frame the digester publishes. Only a chat takes turns, and
 		// a turn the person stopped themselves gets no verdict
-		// (chatHub.judgeable).
+		// (chatHub.judgeable), nor a failed one the clock will try again
+		// (Server.willRetry).
 		row, err := d.srv.store.GetSession(id)
 		starts = err == nil && row.IsChat() && row.State == store.StateRunning &&
-			(d.srv.chats == nil || d.srv.chats.judgeable(id))
+			(d.srv.chats == nil || d.srv.chats.judgeable(id)) && !d.srv.willRetry(id)
 	}
 
 	d.mu.Lock()

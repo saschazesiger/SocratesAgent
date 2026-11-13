@@ -242,18 +242,20 @@ function fromChat(ev) {
 
 // A message Socrates sent the agent itself, not the person: the Continue or
 // the restart of an account switch (client_id "<switch>:continue") and the
-// Continue after a limit renewed ("auto-continue-…"). It is a card of
-// Socrates' (chatparts.js socratesMessage) that says why, so the notice
-// before it says nothing more.
-const SOCRATES_SENT = { switch_message: 'switch', auto_continued: 'limit' };
+// Continue after a limit renewed ("auto-continue-…") and after a failed turn
+// ("auto-retry-…", server retry.go). It is a card of Socrates'
+// (chatparts.js socratesMessage) that says why, so the notice before it
+// says nothing more.
+const SOCRATES_SENT = { switch_message: 'switch', auto_continued: 'limit', auto_retried: 'retry' };
 
-// fromSocrates is why Socrates sent a user message: 'switch' or 'limit', or
-// '' for one of the person's or another chat's.
+// fromSocrates is why Socrates sent a user message: 'switch', 'limit' or
+// 'retry', or '' for one of the person's or another chat's.
 function fromSocrates(ev) {
   if (ev.role !== 'user') return '';
   const id = String(ev.client_id || '');
   if (id.endsWith(':continue')) return 'switch';
   if (id.startsWith('auto-continue-')) return 'limit';
+  if (id.startsWith('auto-retry-')) return 'retry';
   return '';
 }
 

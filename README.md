@@ -107,6 +107,7 @@ You can run it again at any time to repair or update the installation.
 | 📊 **Limits** | Below the top bar: the account in use, its usage and when it resets. |
 | 📨 **Queue** | Messages written while the agent works wait as *Queued*. **Send now** interrupts the turn, **Withdraw** takes a message back before the agent reads it. |
 | ⏯️ **Resume** | A turn stopped by a usage limit continues on its own once the limit resets. |
+| 🔁 **Retry** | A turn that failed on an API error (a Cloudflare block, an overloaded or unreachable service, a crashed agent) is tried again on its own, waiting longer each time (30 s up to 30 min, 12 times). |
 | 📎 **Files** | Attach, drop or paste them into the chat or the Shell. |
 | ⚡ **Ultracode** | Claude Code with dynamic workflows on every task, switched on per chat. |
 | 🤝 **Chats talk** | Agents of chats in the same repository list, read and message each other — Claude Code, Codex and OpenCode alike, on any account. |
