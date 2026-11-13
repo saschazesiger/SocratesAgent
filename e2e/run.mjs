@@ -14634,12 +14634,14 @@ async function chatimages() {
     await page.waitForSelector('dialog.ds-lightbox[open]', { timeout: 5000 });
     await wait(400);
     const first = await page.$eval('dialog.ds-lightbox .ds-lightbox__count', (n) => n.textContent);
-    // Zoom and pan: a double click zooms in there, a drag moves it, Escape
-    // goes back to the fit before it closes.
+    // Zoom and pan: a click zooms in there to the image's own pixels, a drag
+    // moves it (and is no click), the wheel moves it, the next click fits it
+    // again, and Escape too before it closes; the bar links to the image.
     const frameBox = await page.$eval('dialog.ds-lightbox .ds-lightbox__frame', (n) => { const r = n.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; });
     const view = () => page.$eval('dialog.ds-lightbox .ds-lightbox__frame', (n) => ({
-      zoom: Number(n.style.getPropertyValue('--ds-lightbox-zoom') || 1), x: parseFloat(n.style.getPropertyValue('--ds-lightbox-x') || '0') }));
-    await page.mouse.dblclick(frameBox.x, frameBox.y);
+      zoom: Number(n.style.getPropertyValue('--ds-lightbox-zoom') || 1), x: parseFloat(n.style.getPropertyValue('--ds-lightbox-x') || '0'),
+      y: parseFloat(n.style.getPropertyValue('--ds-lightbox-y') || '0'), own: n.querySelector('img').naturalWidth / n.querySelector('img').offsetWidth }));
+    await page.mouse.click(frameBox.x, frameBox.y);
     await wait(400);
     const zoomed = await view();
     await page.mouse.move(frameBox.x, frameBox.y);
@@ -14647,12 +14649,25 @@ async function chatimages() {
     await page.mouse.move(frameBox.x + 80, frameBox.y, { steps: 6 });
     await page.mouse.up();
     const panned = await view();
-    await page.keyboard.press('Escape');
+    await page.mouse.wheel(0, 30);
+    await wait(400);
+    const wheeled = await view();
+    await page.mouse.click(frameBox.x, frameBox.y);
     await wait(400);
     const fit = await view();
+    await page.mouse.dblclick(frameBox.x, frameBox.y);
+    await wait(400);
+    const again = await view();
+    await page.keyboard.press('Escape');
+    await wait(400);
+    const escaped = await view();
     const open = await page.evaluate(() => !!document.querySelector('dialog.ds-lightbox[open]'));
-    ok(zoomed.zoom >= 2 && panned.zoom === zoomed.zoom && panned.x > zoomed.x && fit.zoom === 1 && open,
-      'a double click zooms in, a drag pans the zoomed image, Escape fits it again first', JSON.stringify({ zoomed, panned, fit, open }));
+    const link = await page.$eval('dialog.ds-lightbox a[target="_blank"]', (n) => ({ name: n.getAttribute('aria-label'), href: n.getAttribute('href'), src: n.closest('dialog').querySelector('.ds-lightbox__image').getAttribute('src') }));
+    ok(Math.abs(zoomed.zoom - Math.min(4, Math.max(2, zoomed.own))) < 0.02 && panned.zoom === zoomed.zoom && panned.x > zoomed.x
+      && wheeled.zoom === zoomed.zoom && wheeled.y !== panned.y && fit.zoom === 1 && again.zoom > 1 && escaped.zoom === 1 && open
+      && link.name === 'Open the image' && link.href === link.src,
+    'a click zooms in to the image\u2019s own pixels, a drag and the wheel pan it, the next click fits it again, a double click zooms once, Escape fits it first; the bar opens the image on its own',
+    JSON.stringify({ zoomed, panned, wheeled, fit, again, escaped, open, link }));
     await page.click('dialog.ds-lightbox .ds-lightbox__nav--next');
     const second = await page.waitForFunction(() => {
       const t = document.querySelector('dialog.ds-lightbox .ds-lightbox__count').textContent;

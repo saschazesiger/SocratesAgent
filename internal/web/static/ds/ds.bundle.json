@@ -1,6 +1,6 @@
 {
   "name": "z-dash",
-  "version": "3.0.1",
+  "version": "3.1.0",
   "entry": "bundle",
   "minify": true,
   "js": "classic",
@@ -12,8 +12,8 @@
     },
     "js": {
       "file": "ds.bundle.js",
-      "bytes": 856128,
-      "gzip": 206914
+      "bytes": 857736,
+      "gzip": 207331
     },
     "properties": {
       "file": "properties.css",

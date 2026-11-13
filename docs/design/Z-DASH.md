@@ -245,6 +245,14 @@ page or script: `make ds-check` and CI rebuild the bundle and fail only when its
 committed ones, and do not compare the report. A wish for Z-Dash: a `bundle.mjs --check` that leaves the report's line
 numbers out of "stale".
 
+## Z-Dash 3.1 (November 2026)
+
+3.1.0 (vendored at `e600007`) added to `DS.lightbox` what Socrates' images needed, and Socrates' own lightbox (a
+`.ds-dialog--full` with `.so-lightbox__*`) went: `lightbox.js` opens `DS.lightbox.show()` for a chat's images, a
+question's and a test run's screenshots. A click of the mouse zooms in to the image's own pixels (`detailZoom()`) and
+the next one back, a double tap does the same on touch, a zoomed image pans with a drag, the wheel or two fingers on a
+trackpad, and `original: true` puts a link to the image on its own in the bar (the string `openImage`).
+
 ## Proposed to Z-Dash
 
 Parts Socrates built itself because DS has nothing like them yet, written the way a DS component is (header

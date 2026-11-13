@@ -1200,8 +1200,9 @@ a finished text's local images with it, and the question dialog and the plan car
 is told how in `agent.DocsGuidance`). Every image of a chat is drawn small (`.so-thumb`) and opens in
 the lightbox (lightbox.js, on Z-Dash's `DS.lightbox`), which goes through all of them - the chat's, a
 question's, a test run's - with thumbnails, the arrow keys and swipe, and zooms and pans on every
-device: a double click or a double tap, a pinch, Ctrl with the wheel, the buttons and `+` `-` `0`;
-zoomed, a drag moves the image. A hello with `"batch":true` gets a replay
+device: a click or a double tap (to the image's own pixels, and back), a pinch, Ctrl with the wheel,
+the buttons and `+` `-` `0`; zoomed, a drag, the wheel or two fingers on a trackpad move the image. Its
+bar links to the image on its own (Z-Dash 3.1 `original`). A hello with `"batch":true` gets a replay
 of more than one event as `{"t":"evs","evs":[…]}` frames of about 256 KiB: a browser handles a
 frame per task, and a thousand of them cost it more than the events did.
 

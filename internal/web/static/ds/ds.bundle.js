@@ -1,4 +1,4 @@
-/*! Z-Dash 3.0.1 | MIT License | https://github.com/saschazesiger/Z-Dash | bundle "bundle" (ds.bundle.json) */
+/*! Z-Dash 3.1.0 | MIT License | https://github.com/saschazesiger/Z-Dash | bundle "bundle" (ds.bundle.json) */
 /*
  * Z-Dash bundle "bundle" (tools/bundle.mjs; do not edit): window.DS with
  * DS.core, DS.motion, DS.indicator, DS.dom, DS.ripple, DS.icons, DS.position, DS.overlay, DS.a11y, DS.format, DS.store, DS.virtual, DS.dnd, DS.badge, DS.chart, DS.composer, DS.dialog, DS.form, DS.formatted, DS.highlight, DS.code, DS.lightbox, DS.list, DS.listbox, DS.combobox, DS.menu, DS.page, DS.sheet, DS.shell, DS.toast, DS.tooltip and 276 icons.
@@ -8,7 +8,7 @@
  */
 (function (root) {
   'use strict';
-  var version = '3.0.1';
+  var version = '3.1.0';
   // DashboardStyle: the deprecated name from before the rename (3.0), the same object.
   var registry = root.ZDash || root.DashboardStyle || {};
   root.ZDash = registry;
@@ -31,7 +31,7 @@
   };
 
   add('core', ['runtime', 'define', 'get', 'manage', 'init', 'destroy', 'emit', 'config', 't', 'safeHref'], function () {
-    /*! Z-Dash 3.0.1 | MIT License | https://github.com/saschazesiger/Z-Dash */
+    /*! Z-Dash 3.1.0 | MIT License | https://github.com/saschazesiger/Z-Dash */
     const registry = globalThis.ZDash ?? globalThis.DashboardStyle ?? {};
     globalThis.ZDash = registry;
     globalThis.DashboardStyle ??= registry;
@@ -431,6 +431,7 @@
     images: 'Images',
     zoomIn: 'Zoom in',
     zoomOut: 'Zoom out',
+    openImage: 'Open the image',
     imageFailed: 'The image could not be loaded.',
     resizeSheet: 'Resize the sheet',
     sheetDetent: 'Sheet at {percent} percent of the screen',
@@ -970,7 +971,7 @@
   });
 
   add('motion', ['MOTION_FALLBACKS', 'LOADER_DELAY_MS', 'LOADER_MIN_VISIBLE_MS', 'STAGGER_MAX', 'motionDuration', 'motionEasing', 'travelDuration', 'resyncScroll', 'stagger', 'replay', 'settled', 'enter', 'leave', 'cancel', 'enterAll', 'staggerOnce', 'loaderHoldMs', 'settleLoader', 'refresh', 'guard', 'setLabel', 'busy', 'COUNT_UP_MS', 'countUp', 'originFrom', 'roll', 'crossfade', 'flip', 'sortable', 'transition'], function () {
-    /*! Z-Dash 3.0.1 | MIT License | https://github.com/saschazesiger/Z-Dash */
+    /*! Z-Dash 3.1.0 | MIT License | https://github.com/saschazesiger/Z-Dash */
     const define = DS.core.define, runtime = DS.core.runtime;
     const MOTION_FALLBACKS = Object.freeze({
     '--ds-dur-micro': 50,
@@ -3192,7 +3193,7 @@
   });
 
   add('indicator', ['OVERSHOOT', 'create'], function () {
-    /*! Z-Dash 3.0.1 | MIT License | https://github.com/saschazesiger/Z-Dash */
+    /*! Z-Dash 3.1.0 | MIT License | https://github.com/saschazesiger/Z-Dash */
     const define = DS.core.define, emit = DS.core.emit;
     const motionDuration = DS.motion.motionDuration, travelDuration = DS.motion.travelDuration;
     const OVERSHOOT = 0.05;
@@ -3740,7 +3741,7 @@
   });
 
   add('dom', ['morphChildren', 'morphHtml', 'own', 'disown', 'watchScrolled', 'scrollEdges', 'progress', 'roving', 'typesText', 'followViewport', 'followEnd', 'autosize', 'dropzone'], function () {
-    /*! Z-Dash 3.0.1 | MIT License | https://github.com/saschazesiger/Z-Dash */
+    /*! Z-Dash 3.1.0 | MIT License | https://github.com/saschazesiger/Z-Dash */
     const resyncScroll = DS.motion.resyncScroll;
     const LOOKAHEAD = 8;
     const RUNTIME_CLASS = /^ds-(?:enter|leave)(?:--[\w-]+)?$|^ds-(?:has-indicator|pressed|ripples)$/;
@@ -4925,7 +4926,7 @@
   });
 
   add('ripple', ['RIPPLE_HOSTS', 'attach'], function () {
-    /*! Z-Dash 3.0.1 | MIT License | https://github.com/saschazesiger/Z-Dash */
+    /*! Z-Dash 3.1.0 | MIT License | https://github.com/saschazesiger/Z-Dash */
     const define = DS.core.define, runtime = DS.core.runtime;
     const flip = DS.motion.flip, guard = DS.motion.guard, motionDuration = DS.motion.motionDuration, motionEasing = DS.motion.motionEasing, settled = DS.motion.settled, travelDuration = DS.motion.travelDuration;
     const RIPPLE_HOSTS = [
@@ -5480,7 +5481,7 @@
   });
 
   add('icons', ['arrowRight', 'arrowLeft', 'arrowUp', 'arrowDown', 'chevronDown', 'chevronUp', 'chevronRight', 'chevronLeft', 'chevronFirst', 'chevronLast', 'cornerDownLeft', 'external', 'plus', 'close', 'minimize', 'menu', 'moreVertical', 'moreHorizontal', 'grip', 'search', 'filter', 'sort', 'compose', 'pencil', 'save', 'reset', 'sync', 'undo', 'history', 'copy', 'download', 'upload', 'clipboard', 'paperclip', 'printer', 'play', 'pause', 'stopCircle', 'trash', 'archive', 'logout', 'chat', 'send', 'bell', 'mic', 'micOff', 'volume', 'mail', 'phone', 'globe', 'link', 'flag', 'thumbUp', 'thumbDown', 'check', 'checkCircle', 'alert', 'alertCircle', 'info', 'helpCircle', 'eye', 'eyeOff', 'clock', 'ban', 'calendar', 'activity', 'wifi', 'wifiOff', 'home', 'panelLeft', 'keyboard', 'terminal', 'tag', 'sun', 'moon', 'overview', 'apps', 'list', 'columns', 'rows', 'barChart', 'settings', 'cpu', 'lock', 'key', 'shield', 'user', 'users', 'userOff', 'userPlus', 'ticket', 'file', 'fileText', 'fileCode', 'folder', 'box', 'building', 'mapPin', 'laptop', 'monitor', 'hardDrive', 'server', 'graduationCap', 'presentation', 'camera', 'video', 'image', 'leaf', 'wrench', 'sparkles', 'fileImage', 'fileArchive', 'fileSpreadsheet', 'fileJson', 'filePlus', 'fileCheck', 'fileDown', 'fileUp', 'files', 'folderOpen', 'folderPlus', 'cloudUpload', 'cloudDownload', 'lineChart', 'areaChart', 'barChartHorizontal', 'pieChart', 'donutChart', 'scatterChart', 'gauge', 'trendingUp', 'trendingDown', 'table', 'tableProperties', 'filterX', 'sortAscending', 'sortDescending', 'group', 'layoutGrid', 'listTree', 'kanban', 'bold', 'italic', 'code', 'quote', 'heading', 'listOrdered', 'unlink', 'redo', 'cut', 'paste', 'duplicate', 'gripHorizontal', 'move', 'resize', 'expandAll', 'collapseAll', 'fullscreen', 'fullscreenExit', 'splitView', 'panelRight', 'wrapText', 'shieldCheck', 'shieldAlert', 'unlock', 'fingerprint', 'verified', 'bug', 'bookmark', 'pin', 'star', 'starHalf', 'heart', 'smilePlus', 'bellOff', 'volumeOff', 'circleX', 'octagonAlert', 'circle', 'circleDot', 'square', 'squareCheck', 'squareMinus', 'toggleOn', 'toggleOff', 'userMinus', 'userCheck', 'userX', 'userCircle', 'idCard', 'network', 'database', 'cloud', 'cloudOff', 'memory', 'router', 'smartphone', 'tablet', 'terminalSquare', 'braces', 'gitBranch', 'gitCommit', 'gitMerge', 'gitPullRequest', 'gitCompare', 'webhook', 'plug', 'power', 'qrCode', 'barcode', 'scan', 'calendarDays', 'calendarCheck', 'calendarPlus', 'calendarRange', 'timer', 'hourglass', 'refresh', 'repeat', 'arrowUpRight', 'arrowUpLeft', 'arrowDownRight', 'arrowDownLeft', 'arrowLeftRight', 'cornerUpLeft', 'chevronsLeft', 'chevronsRight', 'login', 'launch', 'sparkle', 'wand', 'bot', 'chatText', 'chatDots', 'reply', 'audioLines', 'videoOff', 'skipForward', 'skipBack', 'atSign', 'creditCard', 'receipt', 'wallet', 'coupon', 'tags', 'cart', 'truck', 'map', 'route', 'compass', 'anchor', 'languages', 'palette', 'brush', 'contrast', 'mailOpen', 'inbox', 'archiveRestore', 'clipboardCheck', 'share', 'sliders', 'layers', 'stack', 'puzzle', 'rocket', 'lightbulb', 'beaker', 'book', 'newspaper', 'megaphone', 'gift', 'trophy', 'medal', 'target', 'zap', 'scrollText', 'ICON_SIZE', 'icon', 'iconElement', 'fill'], function () {
-    /*! Z-Dash 3.0.1 | MIT License | https://github.com/saschazesiger/Z-Dash */
+    /*! Z-Dash 3.1.0 | MIT License | https://github.com/saschazesiger/Z-Dash */
     const arrowRight = '<path d="M5 12h14"/><path d="m12 5 7 7-7 7"/>';
     const arrowLeft = '<path d="M19 12H5"/><path d="m12 19-7-7 7-7"/>';
     const arrowUp = '<path d="m5 12 7-7 7 7"/><path d="M12 19V5"/>';
@@ -6120,7 +6121,7 @@
   });
 
   add('position', ['round', 'pxOf', 'computePlacement', 'viewportBounds', 'clippedBounds', 'fixedOrigin', 'dropProbe', 'place', 'supportsAnchoring', 'claimAnchor', 'releaseAnchor', 'anchorPopup'], function () {
-    /*! Z-Dash 3.0.1 | MIT License | https://github.com/saschazesiger/Z-Dash */
+    /*! Z-Dash 3.1.0 | MIT License | https://github.com/saschazesiger/Z-Dash */
     const viewOf = (element) => element.ownerDocument?.defaultView ?? globalThis;
     const OWNED = Symbol.for('ds.owned');
     function own(element, kind, name) {
@@ -6315,7 +6316,7 @@
   });
 
   add('overlay', ['TOAST_MS', 'TOAST_MAX_MS', 'TOAST_LIMIT', 'TOOLTIP_DELAY_MS', 'TOOLTIP_SKIP_MS', 'TOOLTIP_HIDE_MS', 'DISMISS_DELAY_MS', 'DRAWER_QUERY', 'FOCUSABLE', 'canFocus', 'holdInert', 'lockScroll', 'unlockScroll', 'typeAhead', 'open', 'close', 'topmost', 'layerAt', 'savebar', 'confirm', 'alert', 'prompt', 'toastRegion', 'announce', 'toast', 'closeToasts', 'tooltips', 'internals'], function () {
-    /*! Z-Dash 3.0.1 | MIT License | https://github.com/saschazesiger/Z-Dash */
+    /*! Z-Dash 3.1.0 | MIT License | https://github.com/saschazesiger/Z-Dash */
     const define = DS.core.define, emit = DS.core.emit, runtime = DS.core.runtime;
     const motionDuration = DS.motion.motionDuration, originFrom = DS.motion.originFrom, settled = DS.motion.settled, transition = DS.motion.transition;
     const scrollEdges = DS.dom.scrollEdges, watchScrolled = DS.dom.watchScrolled;
@@ -7716,7 +7717,7 @@
   });
 
   add('a11y', ['canTakeFocus', 'tabbables', 'readsKeys', 'trap', 'roving', 'typeaheadMatch', 'typeahead', 'announce', 'inert'], function () {
-    /*! Z-Dash 3.0.1 | MIT License | https://github.com/saschazesiger/Z-Dash */
+    /*! Z-Dash 3.1.0 | MIT License | https://github.com/saschazesiger/Z-Dash */
     const runtime = DS.core.runtime;
     const motionDuration = DS.motion.motionDuration;
     const rovingOf = DS.dom.roving, typesText = DS.dom.typesText;
@@ -7916,7 +7917,7 @@
   });
 
   add('format', ['number', 'percent', 'currency', 'bytes', 'duration', 'list', 'plural', 'relative', 'absolute', 'clock', 'time'], function () {
-    /*! Z-Dash 3.0.1 | MIT License | https://github.com/saschazesiger/Z-Dash */
+    /*! Z-Dash 3.1.0 | MIT License | https://github.com/saschazesiger/Z-Dash */
     const config = DS.core.config, define = DS.core.define, runtime = DS.core.runtime;
     const SECOND = 1000;
     const MINUTE = 60 * SECOND;
@@ -8308,7 +8309,7 @@
   });
 
   add('store', ['available', 'open'], function () {
-    /*! Z-Dash 3.0.1 | MIT License | https://github.com/saschazesiger/Z-Dash */
+    /*! Z-Dash 3.1.0 | MIT License | https://github.com/saschazesiger/Z-Dash */
     const emit = DS.core.emit, runtime = DS.core.runtime;
     const PREFIX = 'ds';
     const shared = runtime.state('store', () => ({
@@ -8499,7 +8500,7 @@
   });
 
   add('virtual', ['sizes', 'create'], function () {
-    /*! Z-Dash 3.0.1 | MIT License | https://github.com/saschazesiger/Z-Dash */
+    /*! Z-Dash 3.1.0 | MIT License | https://github.com/saschazesiger/Z-Dash */
     const emit = DS.core.emit;
     const morphHtml = DS.dom.morphHtml;
     const ESTIMATE = 44;
@@ -9068,7 +9069,7 @@
   });
 
   add('dnd', ['create'], function () {
-    /*! Z-Dash 3.0.1 | MIT License | https://github.com/saschazesiger/Z-Dash */
+    /*! Z-Dash 3.1.0 | MIT License | https://github.com/saschazesiger/Z-Dash */
     const emit = DS.core.emit, runtime = DS.core.runtime, t = DS.core.t;
     const flip = DS.motion.flip, motionDuration = DS.motion.motionDuration, motionEasing = DS.motion.motionEasing, travelDuration = DS.motion.travelDuration;
     const DRAG_THRESHOLD = 4;
@@ -9735,7 +9736,7 @@
   });
 
   add('badge', ['format', 'create'], function () {
-    /*! Z-Dash 3.0.1 | MIT License | https://github.com/saschazesiger/Z-Dash */
+    /*! Z-Dash 3.1.0 | MIT License | https://github.com/saschazesiger/Z-Dash */
     const define = DS.core.define, emit = DS.core.emit;
     const enter = DS.motion.enter, leave = DS.motion.leave;
     const DEFAULT_MAX = 99;
@@ -9819,7 +9820,7 @@
   });
 
   add('chart', ['ticks', 'timeTicks', 'scale', 'path', 'stack', 'nearest', 'parse', 'layout', 'create'], function () {
-    /*! Z-Dash 3.0.1 | MIT License | https://github.com/saschazesiger/Z-Dash */
+    /*! Z-Dash 3.1.0 | MIT License | https://github.com/saschazesiger/Z-Dash */
     const define = DS.core.define, emit = DS.core.emit, t = DS.core.t;
     const countUp = DS.motion.countUp, enterAll = DS.motion.enterAll, motionDuration = DS.motion.motionDuration, motionEasing = DS.motion.motionEasing;
     const own = DS.dom.own;
@@ -11853,7 +11854,7 @@
   });
 
   add('composer', ['query', 'create'], function () {
-    /*! Z-Dash 3.0.1 | MIT License | https://github.com/saschazesiger/Z-Dash */
+    /*! Z-Dash 3.1.0 | MIT License | https://github.com/saschazesiger/Z-Dash */
     const define = DS.core.define, emit = DS.core.emit, t = DS.core.t;
     const leave = DS.motion.leave, enter = DS.motion.enter;
     const autosize = DS.dom.autosize, dropzone = DS.dom.dropzone;
@@ -12462,7 +12463,7 @@
   });
 
   add('dialog', ['open', 'close', 'confirm', 'alert', 'prompt', 'form', 'create'], function () {
-    /*! Z-Dash 3.0.1 | MIT License | https://github.com/saschazesiger/Z-Dash */
+    /*! Z-Dash 3.1.0 | MIT License | https://github.com/saschazesiger/Z-Dash */
     const define = DS.core.define, emit = DS.core.emit, t = DS.core.t;
     const busy = DS.motion.busy;
     const alertCircle = DS.icons.alertCircle, iconElement = DS.icons.iconElement;
@@ -12796,7 +12797,7 @@
   });
 
   add('form', ['count', 'counter'], function () {
-    /*! Z-Dash 3.0.1 | MIT License | https://github.com/saschazesiger/Z-Dash */
+    /*! Z-Dash 3.1.0 | MIT License | https://github.com/saschazesiger/Z-Dash */
     const define = DS.core.define, emit = DS.core.emit, t = DS.core.t;
     const autosize = DS.dom.autosize, own = DS.dom.own, disown = DS.dom.disown;
     const announce = DS.a11y.announce;
@@ -12903,7 +12904,7 @@
   });
 
   add('formatted', ['text', 'exact', 'create'], function () {
-    /*! Z-Dash 3.0.1 | MIT License | https://github.com/saschazesiger/Z-Dash */
+    /*! Z-Dash 3.1.0 | MIT License | https://github.com/saschazesiger/Z-Dash */
     const define = DS.core.define, emit = DS.core.emit;
     const own = DS.dom.own, disown = DS.dom.disown;
     const number = DS.format.number, percent = DS.format.percent, currency = DS.format.currency, bytes = DS.format.bytes, duration = DS.format.duration;
@@ -13094,7 +13095,7 @@
   });
 
   add('highlight', ['KINDS', 'register', 'language', 'languages', 'tokenize', 'use', 'highlight', 'lines', 'create'], function () {
-    /*! Z-Dash 3.0.1 | MIT License | https://github.com/saschazesiger/Z-Dash */
+    /*! Z-Dash 3.1.0 | MIT License | https://github.com/saschazesiger/Z-Dash */
     const define = DS.core.define, emit = DS.core.emit, runtime = DS.core.runtime;
     const morphHtml = DS.dom.morphHtml;
     const shared = runtime.state('highlight', () => ({ languages: new Map(), aliases: new Map(), external: null }));
@@ -13661,7 +13662,7 @@
   });
 
   add('code', ['parseLines', 'linesHtml', 'create'], function () {
-    /*! Z-Dash 3.0.1 | MIT License | https://github.com/saschazesiger/Z-Dash */
+    /*! Z-Dash 3.1.0 | MIT License | https://github.com/saschazesiger/Z-Dash */
     const define = DS.core.define, emit = DS.core.emit, runtime = DS.core.runtime, t = DS.core.t;
     const disown = DS.dom.disown, morphHtml = DS.dom.morphHtml, own = DS.dom.own, roving = DS.dom.roving;
     const enter = DS.motion.enter, motionDuration = DS.motion.motionDuration;
@@ -13986,11 +13987,11 @@
     });
   });
 
-  add('lightbox', ['MAX_ZOOM', 'nextZoom', 'clampPan', 'create', 'open', 'close', 'show'], function () {
-    /*! Z-Dash 3.0.1 | MIT License | https://github.com/saschazesiger/Z-Dash */
+  add('lightbox', ['MAX_ZOOM', 'nextZoom', 'detailZoom', 'clampPan', 'create', 'open', 'close', 'show'], function () {
+    /*! Z-Dash 3.1.0 | MIT License | https://github.com/saschazesiger/Z-Dash */
     const define = DS.core.define, emit = DS.core.emit, t = DS.core.t;
     const enter = DS.motion.enter, motionDuration = DS.motion.motionDuration;
-    const chevronLeft = DS.icons.chevronLeft, chevronRight = DS.icons.chevronRight, closeIcon = DS.icons.close, alertCircle = DS.icons.alertCircle, minimize = DS.icons.minimize, plus = DS.icons.plus, iconElement = DS.icons.iconElement;
+    const chevronLeft = DS.icons.chevronLeft, chevronRight = DS.icons.chevronRight, closeIcon = DS.icons.close, alertCircle = DS.icons.alertCircle, external = DS.icons.external, minimize = DS.icons.minimize, plus = DS.icons.plus, iconElement = DS.icons.iconElement;
     const openOverlay = DS.overlay.open, closeOverlay = DS.overlay.close, internals = DS.overlay.internals;
     const announce = DS.a11y.announce, roving = DS.a11y.roving;
     const { overlays } = internals;
@@ -14000,6 +14001,10 @@
     if (direction === 0) return 1;
     const next = direction > 0 ? zoom * 2 : zoom / 2;
     return Math.min(MAX_ZOOM, Math.max(1, Math.round(next * 100) / 100));
+    }
+    function detailZoom(natural, fitted) {
+    const own = natural > 0 && fitted > 0 ? natural / fitted : 0;
+    return Math.min(MAX_ZOOM, Math.max(2, Math.round(own * 100) / 100));
     }
     function clampPan(x, y, size, frame, zoom) {
     const reach = (length, room) => Math.max(0, (length * zoom - room) / 2);
@@ -14016,11 +14021,12 @@
     alt: thumb?.getAttribute('alt') || item.getAttribute('aria-label') || '',
     caption: item.getAttribute('data-caption') ?? '',
     thumb: thumb?.getAttribute('src') ?? '',
+    href: item.getAttribute('href') ?? '',
     item,
     };
     });
     }
-    function buildViewer(home, label) {
+    function buildViewer(home, label, original) {
     const doc = home.ownerDocument;
     const make = (tag, className) => {
     const node = doc.createElement(tag);
@@ -14052,7 +14058,15 @@
     const zoomIn = button('', t('zoomIn'), plus);
     const closer = button('', t('close'), closeIcon);
     closer.setAttribute('data-ds-close', '');
-    bar.append(count, zoomOut, zoomIn, closer);
+    let opener = null;
+    if (original) {
+    opener = make('a', 'ds-btn ds-btn--ghost ds-btn--icon');
+    opener.target = '_blank';
+    opener.rel = 'noopener';
+    opener.setAttribute('aria-label', t('openImage'));
+    opener.append(iconElement(external, 20, undefined, doc));
+    }
+    bar.append(count, ...(opener ? [opener] : []), zoomOut, zoomIn, closer);
     const stage = make('div', 'ds-lightbox__stage');
     const prev = button('ds-lightbox__nav ds-lightbox__nav--prev', t('previous'), chevronLeft);
     const next = button('ds-lightbox__nav ds-lightbox__nav--next', t('next'), chevronRight);
@@ -14077,7 +14091,7 @@
     const theme = home.closest('.ds-theme');
     const parent = !theme || theme === doc.documentElement ? doc.body : theme;
     parent.append(dialog);
-    return { dialog, box, count, zoomIn, zoomOut, closer, prev, next, figure, frame, image, caption, thumbs };
+    return { dialog, box, count, original: opener, zoomIn, zoomOut, closer, prev, next, figure, frame, image, caption, thumbs };
     }
     const OPTIONS = ['--ds-size-step', '--ds-size-font', '--ds-density', '--ds-shape', '--ds-target-min'];
     function carryOptions(home, dialog) {
@@ -14100,12 +14114,12 @@
     const signal = abort.signal;
     const listeners = [];
     const list = () => (typeof options.images === 'function' ? options.images() : imagesOf(gallery));
-    const state = { index: 0, zoom: 1, x: 0, y: 0, images: ([]), viewer: (null), rover: (null), pointers: new Map(), gesture: (null), lastTap: 0 };
+    const state = { index: 0, zoom: 1, x: 0, y: 0, images: ([]), viewer: (null), rover: (null), pointers: new Map(), gesture: (null), lastTap: 0, pointerType: '', dragged: false };
     const homeOf = () => options.home ?? (gallery.isConnected ? gallery : gallery.ownerDocument?.body ?? globalThis.document.body);
     const viewer = () => {
     if (state.viewer?.dialog.isConnected) return state.viewer;
     const label = options.label ?? gallery.getAttribute?.('aria-label') ?? t('images');
-    state.viewer = buildViewer(homeOf(), label);
+    state.viewer = buildViewer(homeOf(), label, Boolean(options.original));
     wireViewer(state.viewer);
     return state.viewer;
     };
@@ -14139,6 +14153,10 @@
     state.y = pan.y;
     paintTransform();
     if (before !== next) emit(gallery, 'zoom', { zoom: next });
+    };
+    const toggleZoom = (point) => {
+    const { image } = state.viewer;
+    zoomTo(state.zoom > 1 ? 1 : detailZoom(image.naturalWidth, image.offsetWidth), point);
     };
     const panBy = (dx, dy) => {
     const { frame, size } = measure();
@@ -14198,6 +14216,7 @@
     if (v.image.getAttribute('src') !== image.src) v.image.src = image.src;
     else if (v.image.complete) done();
     v.caption.textContent = image.caption ?? '';
+    if (v.original) v.original.href = image.href || image.src;
     v.count.textContent = t('imageOf', { index: state.index + 1, total });
     v.prev.hidden = total < 2;
     v.next.hidden = total < 2;
@@ -14257,14 +14276,28 @@
     const box = frame.getBoundingClientRect();
     return { x: event.clientX - box.left - box.width / 2, y: event.clientY - box.top - box.height / 2 };
     };
-    frame.addEventListener('dblclick', (event) => zoomTo(state.zoom > 1 ? 1 : 2, centre(event)), { signal });
+    frame.addEventListener('click', ( event) => {
+    if (state.pointerType !== 'mouse' || event.button !== 0 || event.detail > 1 || state.dragged) return;
+    toggleZoom(centre(event));
+    }, { signal });
     frame.addEventListener('wheel', ( event) => {
-    if (!event.ctrlKey) return;
+    if (event.ctrlKey) {
     event.preventDefault();
     zoomTo(state.zoom * Math.exp(-event.deltaY / 200), centre(event));
+    return;
+    }
+    if (state.zoom <= 1) return;
+    event.preventDefault();
+    const unit = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? frame.clientHeight : 1;
+    let dx = event.deltaX * unit;
+    let dy = event.deltaY * unit;
+    if (event.shiftKey && !dx) [dx, dy] = [dy, 0];
+    panBy(-dx, -dy);
     }, { signal, passive: false });
     frame.addEventListener('pointerdown', ( event) => {
     if (event.button !== 0 || state.images.length === 0) return;
+    state.pointerType = event.pointerType;
+    state.dragged = false;
     try {
     frame.setPointerCapture?.(event.pointerId);
     } catch {
@@ -14321,17 +14354,21 @@
     state.gesture = null;
     frame.removeAttribute('data-dragging');
     if (!gesture) return;
-    if (gesture.kind === 'swipe' && gesture.touch) {
+    state.dragged = Boolean(gesture.moved);
+    if (gesture.touch && !gesture.moved && gesture.kind !== 'pinch') {
+    if (event.type !== 'pointerup') return;
+    const now = event.timeStamp;
+    if (now - state.lastTap < motionDuration(frame, '--ds-delay-dismiss')) {
+    toggleZoom(centre(event));
+    state.lastTap = 0;
+    } else state.lastTap = now;
+    } else if (gesture.kind === 'swipe' && gesture.touch) {
     const dx = event.clientX - gesture.start.x;
     const width = frame.getBoundingClientRect().width;
-    if (gesture.moved && Math.abs(dx) > width / 5 && state.images.length > 1) show(state.index + (dx < 0 ? 1 : -1));
-    else if (gesture.moved) {
+    if (Math.abs(dx) > width / 5 && state.images.length > 1) show(state.index + (dx < 0 ? 1 : -1));
+    else {
     state.x = 0;
     paintTransform();
-    } else {
-    const now = event.timeStamp;
-    if (now - state.lastTap < motionDuration(frame, '--ds-delay-dismiss')) zoomTo(state.zoom > 1 ? 1 : 2, centre(event));
-    state.lastTap = now;
     }
     }
     };
@@ -14414,7 +14451,7 @@
     const home = options.opener ?? doc.querySelector('.ds-theme') ?? doc.body;
     const key = doc.createElement('div');
     if (options.label) key.setAttribute('aria-label', options.label);
-    const controller = create(key, { images: () => images.slice(), label: options.label, home });
+    const controller = create(key, { images: () => images.slice(), label: options.label, home, original: options.original });
     key.addEventListener('ds:close', () => controller.destroy(), { once: true });
     controller.open(options.index ?? 0, options.opener ?? null);
     return controller;
@@ -14427,6 +14464,7 @@
     return Object.freeze({
       MAX_ZOOM: MAX_ZOOM,
       nextZoom: nextZoom,
+      detailZoom: detailZoom,
       clampPan: clampPan,
       create: create,
       open: open,
@@ -14436,7 +14474,7 @@
   });
 
   add('list', ['rangeKeys', 'allState', 'create', 'facts'], function () {
-    /*! Z-Dash 3.0.1 | MIT License | https://github.com/saschazesiger/Z-Dash */
+    /*! Z-Dash 3.1.0 | MIT License | https://github.com/saschazesiger/Z-Dash */
     const define = DS.core.define, emit = DS.core.emit, t = DS.core.t;
     const motionDuration = DS.motion.motionDuration;
     const announce = DS.a11y.announce;
@@ -14841,7 +14879,7 @@
   });
 
   add('listbox', ['VIRTUAL_FROM', 'fuzzy', 'filter', 'highlight', 'create'], function () {
-    /*! Z-Dash 3.0.1 | MIT License | https://github.com/saschazesiger/Z-Dash */
+    /*! Z-Dash 3.1.0 | MIT License | https://github.com/saschazesiger/Z-Dash */
     const define = DS.core.define, emit = DS.core.emit;
     const motionDuration = DS.motion.motionDuration;
     const morphHtml = DS.dom.morphHtml, own = DS.dom.own, disown = DS.dom.disown, scrollEdges = DS.dom.scrollEdges;
@@ -15520,7 +15558,7 @@
   });
 
   add('combobox', ['create', 'open', 'close'], function () {
-    /*! Z-Dash 3.0.1 | MIT License | https://github.com/saschazesiger/Z-Dash */
+    /*! Z-Dash 3.1.0 | MIT License | https://github.com/saschazesiger/Z-Dash */
     const define = DS.core.define, emit = DS.core.emit, t = DS.core.t;
     const motionDuration = DS.motion.motionDuration;
     const openOverlay = DS.overlay.open, closeOverlay = DS.overlay.close;
@@ -16091,7 +16129,7 @@
   });
 
   add('menu', ['open', 'openAt', 'close', 'create'], function () {
-    /*! Z-Dash 3.0.1 | MIT License | https://github.com/saschazesiger/Z-Dash */
+    /*! Z-Dash 3.1.0 | MIT License | https://github.com/saschazesiger/Z-Dash */
     const define = DS.core.define, emit = DS.core.emit, t = DS.core.t;
     const motionDuration = DS.motion.motionDuration, originFrom = DS.motion.originFrom, settled = DS.motion.settled;
     const computePlacement = DS.position.computePlacement, place = DS.position.place, pxOf = DS.position.pxOf, releaseAnchor = DS.position.releaseAnchor, round = DS.position.round, viewportBounds = DS.position.viewportBounds;
@@ -16665,7 +16703,7 @@
   });
 
   add('page', ['fold', 'create'], function () {
-    /*! Z-Dash 3.0.1 | MIT License | https://github.com/saschazesiger/Z-Dash */
+    /*! Z-Dash 3.1.0 | MIT License | https://github.com/saschazesiger/Z-Dash */
     const define = DS.core.define, emit = DS.core.emit, t = DS.core.t;
     const own = DS.dom.own, disown = DS.dom.disown;
     const iconElement = DS.icons.iconElement, moreVertical = DS.icons.moreVertical;
@@ -16995,7 +17033,7 @@
   });
 
   add('sheet', ['MIN_WIDTH', 'open', 'close', 'clampWidth', 'dragWidth', 'resizable', 'create'], function () {
-    /*! Z-Dash 3.0.1 | MIT License | https://github.com/saschazesiger/Z-Dash */
+    /*! Z-Dash 3.1.0 | MIT License | https://github.com/saschazesiger/Z-Dash */
     const define = DS.core.define, emit = DS.core.emit, t = DS.core.t;
     const own = DS.dom.own, watchScrolled = DS.dom.watchScrolled;
     const internals = DS.overlay.internals, openOverlay = DS.overlay.open, closeOverlay = DS.overlay.close;
@@ -17223,7 +17261,7 @@
   });
 
   add('shell', ['SEARCH_QUERY', 'matchText', 'create', 'drawer', 'searchSheet', 'launcher', 'setScheme', 'schemeSwitch', 'fitCrumbs', 'breadcrumbs'], function () {
-    /*! Z-Dash 3.0.1 | MIT License | https://github.com/saschazesiger/Z-Dash */
+    /*! Z-Dash 3.1.0 | MIT License | https://github.com/saschazesiger/Z-Dash */
     const define = DS.core.define, emit = DS.core.emit, get = DS.core.get, runtime = DS.core.runtime, t = DS.core.t;
     const motionDuration = DS.motion.motionDuration;
     const disown = DS.dom.disown, own = DS.dom.own, scrollEdges = DS.dom.scrollEdges, watchScrolled = DS.dom.watchScrolled;
@@ -18018,7 +18056,7 @@
   });
 
   add('toast', ['toastRegion', 'announce', 'toast', 'closeToasts', 'promise', 'progress'], function () {
-    /*! Z-Dash 3.0.1 | MIT License | https://github.com/saschazesiger/Z-Dash */
+    /*! Z-Dash 3.1.0 | MIT License | https://github.com/saschazesiger/Z-Dash */
     const t = DS.core.t;
     const flip = DS.motion.flip, settled = DS.motion.settled;
     const alertCircle = DS.icons.alertCircle, checkCircle = DS.icons.checkCircle, closeGlyph = DS.icons.close, iconElement = DS.icons.iconElement, info = DS.icons.info;
@@ -18969,7 +19007,7 @@
   });
 
   add('tooltip', ['tooltips'], function () {
-    /*! Z-Dash 3.0.1 | MIT License | https://github.com/saschazesiger/Z-Dash */
+    /*! Z-Dash 3.1.0 | MIT License | https://github.com/saschazesiger/Z-Dash */
     const define = DS.core.define;
     const motionDuration = DS.motion.motionDuration, originFrom = DS.motion.originFrom, settled = DS.motion.settled;
     const claimAnchor = DS.position.claimAnchor, dropProbe = DS.position.dropProbe, positionPlace = DS.position.place, pxOf = DS.position.pxOf, releaseAnchor = DS.position.releaseAnchor, supportsAnchoring = DS.position.supportsAnchoring;
