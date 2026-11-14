@@ -114,7 +114,7 @@ You can run it again at any time to repair or update the installation.
 | 🔌 **MCP** | Set up MCP servers in **Admin** for every chat, on or off by default, and switch them per chat on the new session sheet or later in its ⋮ → **MCP servers**. **Test** a server to see its tools, sign in to remote ones with **OAuth**, switch single tools off. A folder's `.mcp.json` adds its own, with any agent; its `.socrates/mcp.json` adds servers only Socrates sees and turns any `off` by default. |
 | 🧪 **Socrates Tests** | Built in, nothing to set up: switch it on in a chat and its agent writes, runs and documents its own tests ([🧪 Tests](#-tests)). |
 | 📄 **Pages** | Every chat's agent can explain with a page — diagrams, charts, tables — shown beside the chat ([📄 Pages](#-pages)). |
-| 📱 **BrowserStack** | Built in: real phones, tablets and desktop browsers for any chat, its screenshots the evidence of the chat's tests. Add the accounts in **Admin** (checked against BrowserStack), switch the server on where you need it; each account carries one session at a time. |
+| 📱 **BrowserStack** | Built in: real phones, tablets and desktop browsers for any chat, its screenshots the evidence of the chat's tests. Add the accounts in **Admin** (checked against BrowserStack), switch the server on where you need it. A chat may run several devices at once; each account carries as many sessions as its BrowserStack plan allows in parallel. |
 
 ---
 

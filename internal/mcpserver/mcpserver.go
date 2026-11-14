@@ -138,8 +138,8 @@ type Lease struct {
 	Label string `json:"label"`
 }
 
-// Pool is a server whose accounts are leased, one holder at a time per
-// account: a chat when it starts using one.
+// Pool is a server whose accounts are leased to holders: a chat (or one of
+// its devices) when it starts using one.
 type Pool interface {
 	// Lease takes a free account for holder (the one it holds already, if
 	// any); a zero Lease and why when none is free.

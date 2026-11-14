@@ -19,7 +19,9 @@ import (
 
 // A device is what the qa daemon was: one BrowserStack session of one chat,
 // held between the agent's calls, kept alive while it thinks and closed on
-// stop, when the chat is deleted, or after 20 minutes without a call. Its calls run one at a time.
+// stop, when the chat is deleted, or after 20 minutes without a call. Its
+// calls run one at a time. A chat may run several devices at once, one of
+// each device id (deviceKey); their actions go to the chat's one evidence.
 
 // The daemon's limits (config.ts).
 const (
@@ -42,8 +44,8 @@ const (
 
 type device struct {
 	srv     *Server
-	session string
-	holder  string
+	session string // the chat
+	key     string // the chat and the device id (deviceKey), also its lease's holder
 	account string // the account's id
 	user    string
 	dev     driver.Device
@@ -86,8 +88,8 @@ func (d *device) readyText() string {
 	if locale == "" {
 		locale = "none"
 	}
-	return fmt.Sprintf("device ready: %s (%s), locale %s, consent %s, BrowserStack account %s, session %s",
-		d.dev.Label, d.dev.Kind, locale, d.consent, d.user, d.ds.ID())
+	return fmt.Sprintf("device ready: %s (%s, device %s), locale %s, consent %s, BrowserStack account %s, session %s",
+		d.dev.Label, d.dev.Kind, d.dev.ID, locale, d.consent, d.user, d.ds.ID())
 }
 
 // setup is what a session's start resolves before it leases: the device,
@@ -147,11 +149,19 @@ func (s *Server) resolve(sess mcpserver.Session, a args) (*setup, error) {
 	return st, nil
 }
 
-// start is qa start: it starts the session's device unless one runs, then
-// waits for it at most startWait.
+// start is qa start: it starts the device the call names unless the chat
+// runs it already, then waits for it at most startWait. The chat's other
+// devices keep running.
 func (s *Server) start(ctx context.Context, sess mcpserver.Session, a args) mcpserver.Result {
 	until := time.Now().Add(startWait)
-	d := s.device(sess.ID)
+	if a.Device == "" {
+		return mcpserver.Error("start needs a device: " + deviceIDs())
+	}
+	dev, err := driver.DeviceByID(a.Device)
+	if err != nil {
+		return mcpserver.Error(err.Error())
+	}
+	d := s.device(deviceKey(sess.ID, dev.ID))
 	if d == nil {
 		// One holder's device goes and the next starts one after the
 		// other: a lease taken while the last device is dropped would be
@@ -205,7 +215,7 @@ func (s *Server) launch(sess mcpserver.Session, st *setup, lease mcpserver.Lease
 	if err != nil {
 		return nil, err
 	}
-	ev, err := driver.NewEvidence(st.evidence, Name)
+	ev, err := s.evidenceOf(sess.ID, st.evidence)
 	if err != nil {
 		return nil, err
 	}
@@ -222,20 +232,21 @@ func (s *Server) launch(sess mcpserver.Session, st *setup, lease mcpserver.Lease
 		cfg.Address = m.Address
 	}
 	ctx, cancel := context.WithCancel(context.Background())
+	key := deviceKey(sess.ID, st.dev.ID)
 	d := &device{
-		srv: s, session: sess.ID, holder: sess.Holder(), account: acct.ID, user: acct.Values["user"],
+		srv: s, session: sess.ID, key: key, account: acct.ID, user: acct.Values["user"],
 		dev: st.dev, locale: st.locale, consent: st.consent, repo: st.repo, logConf: st.conf.Logs,
 		evidence: ev, cmd: make(chan struct{}, 1), ready: make(chan struct{}), cancel: cancel,
 		state: "starting", stopping: make(chan struct{}), last: time.Now(),
 	}
 	s.mu.Lock()
-	if have := s.devices[sess.ID]; have != nil {
+	if have := s.devices[key]; have != nil {
 		// Two starts at once: the first one's device.
 		s.mu.Unlock()
 		cancel()
 		return have, nil
 	}
-	s.devices[sess.ID] = d
+	s.devices[key] = d
 	s.mu.Unlock()
 	go d.run(ctx, cfg)
 	return d, nil
@@ -281,7 +292,7 @@ func (d *device) run(ctx context.Context, cfg driver.Config) {
 		d.mu.Unlock()
 		switch {
 		case idle > idleExit:
-			go d.srv.stop(context.Background(), d.session, fmt.Sprintf("no command for %d min", int(idle.Minutes())))
+			go d.srv.stop(context.Background(), d.key, fmt.Sprintf("no command for %d min", int(idle.Minutes())))
 			return
 		case idle > keepAliveAfter:
 			select {
@@ -324,10 +335,10 @@ func (d *device) command(ctx context.Context, f func(*driver.Session) mcpserver.
 	return res
 }
 
-// stop is qa stop: it closes the session's device, whatever state it is in,
-// writes its links into the evidence and gives back a chat's account.
-func (s *Server) stop(ctx context.Context, session, reason string) string {
-	d := s.device(session)
+// stop is qa stop: it closes a device (by deviceKey), whatever state it is
+// in, writes its links into the evidence and gives back its account.
+func (s *Server) stop(ctx context.Context, key, reason string) string {
+	d := s.device(key)
 	if d == nil {
 		return "no device session"
 	}
@@ -360,10 +371,10 @@ func (s *Server) stop(ctx context.Context, session, reason string) string {
 		}
 	}
 	if ds == nil {
-		text = fmt.Sprintf("stopped before the device started (%s)", reason)
+		text = fmt.Sprintf("%s stopped before the device started (%s)", d.dev.ID, reason)
 	} else {
 		d.close(ctx, ds)
-		text = fmt.Sprintf("stopped: the BrowserStack session %s is closed (%s); its video and logs are in links.json", ds.ID(), reason)
+		text = fmt.Sprintf("%s stopped: the BrowserStack session %s is closed (%s); its video and logs are in links.json", d.dev.ID, ds.ID(), reason)
 	}
 	d.mu.Lock()
 	d.stopText = text
@@ -378,7 +389,7 @@ func (d *device) close(ctx context.Context, ds *driver.Session) {
 	d.closeOnce.Do(func() {
 		sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), stopWait)
 		defer cancel()
-		_ = d.evidence.WriteLinks(ds.Stop(sctx))
+		_ = d.evidence.AddLinks(d.dev.Label+": ", ds.Stop(sctx))
 	})
 }
 
@@ -390,7 +401,7 @@ func (d *device) stoppedOrTimeout() <-chan struct{} {
 		defer close(done)
 		until := time.Now().Add(stopWait)
 		for time.Now().Before(until) {
-			if d.srv.device(d.session) != d {
+			if d.srv.device(d.key) != d {
 				return
 			}
 			time.Sleep(200 * time.Millisecond)
@@ -399,26 +410,27 @@ func (d *device) stoppedOrTimeout() <-chan struct{} {
 	return done
 }
 
-// startDevice leases an account for the session and launches its device,
-// under the holder's lock (holderLock) unless a device is there by then; a
+// startDevice leases an account for the chat's device and launches it,
+// under the holder's lock (holderLock) unless the device is there by then; a
 // result instead when it cannot.
 func (s *Server) startDevice(ctx context.Context, sess mcpserver.Session, a args, until time.Time) (*device, *mcpserver.Result) {
-	lock := s.holderLock(sess.Holder())
-	lock.Lock()
-	defer lock.Unlock()
-	if d := s.device(sess.ID); d != nil {
-		return d, nil
-	}
 	st, err := s.resolve(sess, a)
 	if err != nil {
 		return nil, ptr(mcpserver.Error(err.Error()))
+	}
+	key := deviceKey(sess.ID, st.dev.ID)
+	lock := s.holderLock(key)
+	lock.Lock()
+	defer lock.Unlock()
+	if d := s.device(key); d != nil {
+		return d, nil
 	}
 	// An account first: a chat waits here for one to be free. The lease
 	// is the device's to give back when it stops.
 	var lease mcpserver.Lease
 	for {
 		var why string
-		lease, why = s.pool.Lease(sess.Holder())
+		lease, why = s.pool.Lease(key)
 		if lease.Account != "" {
 			break
 		}
@@ -434,8 +446,8 @@ func (s *Server) startDevice(ctx context.Context, sess mcpserver.Session, a args
 	d, err := s.launch(sess, st, lease)
 	if err != nil {
 		// Unless a start beside this one runs a device on it.
-		if s.device(sess.ID) == nil {
-			s.pool.Release(sess.Holder())
+		if s.device(key) == nil {
+			s.pool.Release(key)
 		}
 		return nil, ptr(mcpserver.Error("the device did not start: " + err.Error()))
 	}
@@ -451,19 +463,19 @@ func (s *Server) holderLock(holder string) *sync.Mutex {
 	return l.(*sync.Mutex)
 }
 
-// drop takes a device off the server, gives back a chat's account and
-// forgets the session's facts.
+// drop takes a device off the server, gives back its account and forgets
+// its session's facts.
 func (s *Server) drop(d *device) {
-	lock := s.holderLock(d.holder)
+	lock := s.holderLock(d.key)
 	lock.Lock()
 	s.mu.Lock()
-	if s.devices[d.session] == d {
-		delete(s.devices, d.session)
+	if s.devices[d.key] == d {
+		delete(s.devices, d.key)
 	}
 	s.mu.Unlock()
-	d.dropOnce.Do(func() { s.pool.Release(d.holder) })
+	d.dropOnce.Do(func() { s.pool.Release(d.key) })
 	lock.Unlock()
-	s.forget(d.session)
+	s.forget(d.key)
 }
 
 // logs is qa logs: the application's warnings and errors since the device
@@ -515,9 +527,9 @@ func (d *device) logs(ctx context.Context) mcpserver.Result {
 
 // ------------------------------------------------------------- orphans
 
-// The sessions open now are written down, so that a server that stopped
-// without closing them (an update, a crash) closes them when it starts
-// again, as `qa stop` closed what a dead daemon left.
+// The sessions open now are written down (by deviceKey), so that a server
+// that stopped without closing them (an update, a crash) closes them when
+// it starts again, as `qa stop` closed what a dead daemon left.
 
 type openSession struct {
 	Session string `json:"session"`
@@ -551,12 +563,12 @@ func (s *Server) editOpen(f func(map[string]openSession)) {
 
 func (s *Server) remember(d *device) {
 	s.editOpen(func(open map[string]openSession) {
-		open[d.session] = openSession{Session: d.ds.ID(), Account: d.account}
+		open[d.key] = openSession{Session: d.ds.ID(), Account: d.account}
 	})
 }
 
-func (s *Server) forget(session string) {
-	s.editOpen(func(open map[string]openSession) { delete(open, session) })
+func (s *Server) forget(key string) {
+	s.editOpen(func(open map[string]openSession) { delete(open, key) })
 }
 
 func (s *Server) closeOrphans() {

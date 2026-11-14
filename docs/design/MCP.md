@@ -44,7 +44,7 @@ any of these:
 | Interface | What it adds |
 |---|---|
 | `Accounts` | accounts kept by Admin: their fields (secret ones masked in the browser), label and check against the service; stored sealed with the data directory's key in the kv table (`mcp.<name>.accounts`) |
-| `Pool` | leases of those accounts, one holder each: a chat takes one when it starts using one |
+| `Pool` | leases of those accounts: a holder takes one when it starts using one (BrowserStack: each device of a chat is a holder, and an account carries as many as its plan allows parallel sessions) |
 | `Ender` | what it keeps for a chat is closed when the chat is deleted |
 | `Reporter` | what is in use, for Admin |
 | `Recorder` | the folder where it records a chat's actions (`actions.jsonl` and the screenshots its lines name), which the chat's tests take their evidence from (Socrates Tests) |
@@ -63,13 +63,19 @@ table below went with it.
 |---|---|
 | `qa start`, `qa stop`, `qa open`, `find`, `tap`, `type`, `key`, `keyboard`, `scroll`, `rotate`, `back`, `forward`, `reload`, `wait`, `look`, `shot`, `env`, `address`, `mail`, `logs` | tools of the same names, with the same options as arguments (`tap {text, role, nth, exact, any, css, native, force}` …), the same answers and the same evidence; every action's answer also carries its screenshot (a JPEG at most 1568 px, the PNG stays in the evidence) |
 | the daemon per session (`qa.sock`), keep-alive every minute, 20 min idle stop, 8 min `start` wait then "still queued", 40 min device start limit, 2 h warning | a device per session in the server (`device.go`), same limits |
-| `BROWSERSTACK_ACCOUNTS` in the vault, the test pool, `qa pool-status` | Admin's accounts, the server's pool (busy accounts read from Automate's plan once a minute go last), a chat's lease through `Pool` |
+| `BROWSERSTACK_ACCOUNTS` in the vault, the test pool, `qa pool-status` | Admin's accounts, the server's pool (busy accounts read from Automate's plan once a minute go last; an account carries as many leases as the plan's parallel sessions, one until it is read), a lease per device of a chat through `Pool` |
 | `SOCRATES_TEST_DIM_DEVICE`/`_LOCALE`, `SOCRATES_TEST_PARAM_CONSENT` | `start {device, locale, consent, base_url}` |
 | `QA_BASE_URL`, locales, `QA_*` logins from `secretctl`, the mailbox (`bin/bp beta db`), OneUptime logs (`infra/logs`), project name | the repository's `.socrates/mcp.json`, `browserstack` (below) |
 | `qa stop` as the cell's end hook, closing an orphaned session | `Ender.End` when the chat is deleted; sessions open at a restart are written to `<data>/run/mcp/browserstack/sessions.json` and closed when the server starts again |
 | evidence in `$SOCRATES_TEST_EVIDENCE` | `<data>/mcp/browserstack/chats/<chat>/`, removed with the chat; the server is a `Recorder`, so a chat's tests take their screenshots from it |
 
 The device list is the driver's (`driver.Devices`).
+
+A chat may run several devices at once, one of each id: `start {device}` starts another beside
+those that run, each on its own lease (its holder is `<chat>/<device>`). Every other tool takes
+`device` too, needed only while more than one runs (with one, calls go to it); `stop` without a
+device closes them all. Their actions go into the chat's one evidence folder, numbered in one row;
+`links.json` gets each device's links under its label (`iPhone 15 · Safari: Video`).
 
 ### `.socrates/mcp.json`, `browserstack`
 

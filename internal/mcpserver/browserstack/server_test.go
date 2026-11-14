@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -11,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/saschazesiger/SocratesAgent/internal/mcpserver"
 	"github.com/saschazesiger/SocratesAgent/internal/mcpserver/browserstack/driver"
@@ -50,8 +52,9 @@ func (f *fakeBrowserStack) start(t *testing.T) {
 			_ = json.NewDecoder(r.Body).Decode(&body)
 			f.mu.Lock()
 			f.created = append(f.created, body)
+			id := fmt.Sprintf("s-%d", len(f.created))
 			f.mu.Unlock()
-			_, _ = w.Write([]byte(`{"value":{"sessionId":"s-1","capabilities":{}}}`))
+			_, _ = w.Write([]byte(`{"value":{"sessionId":"` + id + `","capabilities":{}}}`))
 		case r.Method == http.MethodDelete && strings.HasPrefix(r.URL.Path, "/wd/hub/session/"):
 			f.mu.Lock()
 			f.quit = append(f.quit, strings.TrimPrefix(r.URL.Path, "/wd/hub/session/"))
@@ -113,6 +116,22 @@ func TestTheAccountsAreLeasedOneHolderEach(t *testing.T) {
 	}
 }
 
+// An account carries as many sessions as its plan allows parallel ones.
+func TestAnAccountCarriesItsPlansParallelSessions(t *testing.T) {
+	s := newServer(t, acct("a", "ann"))
+	s.pool.mu.Lock()
+	s.pool.plans["a"], s.pool.readAt = &driver.Plan{Running: 0, Max: 2}, time.Now()
+	s.pool.mu.Unlock()
+	first, _ := s.Lease("chat-1/iphone")
+	second, _ := s.Lease("chat-1/pixel")
+	if first.Account != "a" || second.Account != "a" {
+		t.Fatalf("two leases on a plan of two: %+v %+v", first, second)
+	}
+	if third, why := s.Lease("chat-2/iphone"); third.Account != "" || why == "" {
+		t.Fatalf("a third lease on a plan of two: %+v", third)
+	}
+}
+
 func TestAccountsAreCheckedWithTheirPlan(t *testing.T) {
 	f := &fakeBrowserStack{refused: "eve", plans: map[string][2]int{"ann": {1, 2}}}
 	f.start(t)
@@ -156,7 +175,7 @@ func TestAChatStartsUsesAndStopsADevice(t *testing.T) {
 		t.Fatalf("a locale the site has not: %v", text(r))
 	}
 	r := s.Call(ctx, sess, "start", json.RawMessage(`{"device":"win-chrome"}`))
-	if r.IsError || !strings.Contains(text(r), "device ready: Windows · Chrome (desktop), locale en, consent accept, BrowserStack account ann, session s-1") {
+	if r.IsError || !strings.Contains(text(r), "device ready: Windows · Chrome (desktop, device win-chrome), locale en, consent accept, BrowserStack account ann, session s-1") {
 		t.Fatalf("start: %v", text(r))
 	}
 	caps := f.created[0]["capabilities"].(map[string]any)["alwaysMatch"].(map[string]any)
@@ -188,6 +207,61 @@ func TestAChatStartsUsesAndStopsADevice(t *testing.T) {
 	s.End(ctx, "chat-1")
 	if _, err := os.Stat(s.chatEvidence("chat-1")); !os.IsNotExist(err) {
 		t.Fatalf("the chat's evidence is still there: %v", err)
+	}
+}
+
+// A chat runs several devices at once: each on its own lease, every call
+// names the one it acts on while more than one runs, and stop without a
+// device closes them all.
+func TestAChatRunsSeveralDevicesAtOnce(t *testing.T) {
+	f := &fakeBrowserStack{}
+	f.start(t)
+	s := newServer(t, acct("a", "ann"), acct("b", "bob"))
+	sess := mcpserver.Session{ID: "chat-1", Title: "Two devices", Workdir: t.TempDir()}
+	ctx := context.Background()
+	for _, dev := range []string{"win-chrome", "win-firefox"} {
+		if r := s.Call(ctx, sess, "start", json.RawMessage(`{"device":"`+dev+`"}`)); r.IsError || !strings.Contains(text(r), "device ready") {
+			t.Fatalf("start %s: %v", dev, text(r))
+		}
+	}
+	if uses := s.Uses(); len(uses) != 2 || uses[0].Account == uses[1].Account || uses[0].Session != "chat-1" || uses[1].Session != "chat-1" {
+		t.Fatalf("uses: %+v", uses)
+	}
+	// Starting one again is the one that runs.
+	if r := s.Call(ctx, sess, "start", json.RawMessage(`{"device":"win-firefox"}`)); r.IsError || !strings.Contains(text(r), "session s-2") {
+		t.Fatalf("start again: %v", text(r))
+	}
+	if r := s.Call(ctx, sess, "env", nil); !r.IsError || !strings.Contains(text(r), "win-chrome, win-firefox") {
+		t.Fatalf("a call without a device: %v", text(r))
+	}
+	if r := s.Call(ctx, sess, "env", json.RawMessage(`{"device":"iphone"}`)); !r.IsError || !strings.Contains(text(r), "no device iphone") {
+		t.Fatalf("a call to a device that does not run: %v", text(r))
+	}
+	if r := s.Call(ctx, sess, "devices", nil); !strings.Contains(text(r), "win-firefox: Windows · Firefox, desktop (this chat runs it)") {
+		t.Fatalf("devices: %v", text(r))
+	}
+	if r := s.Call(ctx, sess, "stop", json.RawMessage(`{"device":"win-chrome"}`)); !strings.Contains(text(r), "win-chrome stopped: the BrowserStack session s-1 is closed") {
+		t.Fatalf("stop one: %v", text(r))
+	}
+	// One left: calls go to it without naming it.
+	if d, why := s.pick("chat-1", ""); d == nil || d.dev.ID != "win-firefox" {
+		t.Fatalf("the device left: %v", why)
+	}
+	if r := s.Call(ctx, sess, "start", json.RawMessage(`{"device":"win-chrome"}`)); r.IsError {
+		t.Fatalf("start again after stop: %v", text(r))
+	}
+	r := s.Call(ctx, sess, "stop", nil)
+	if !strings.Contains(text(r), "win-chrome stopped") || !strings.Contains(text(r), "win-firefox stopped") || len(s.chatDevices("chat-1")) != 0 {
+		t.Fatalf("stop all: %v", text(r))
+	}
+	links, err := os.ReadFile(filepath.Join(s.chatEvidence("chat-1"), "links.json"))
+	if err != nil || !strings.Contains(string(links), "Windows · Chrome: ") || !strings.Contains(string(links), "Windows · Firefox: ") {
+		t.Fatalf("links of both devices: %s %v", links, err)
+	}
+	for _, id := range []string{"a", "b"} {
+		if len(s.pool.holdersOf(id)) != 0 {
+			t.Fatalf("account %s is still leased", id)
+		}
 	}
 }
 

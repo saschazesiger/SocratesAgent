@@ -2,6 +2,7 @@ package browserstack
 
 import (
 	"context"
+	"slices"
 	"sync"
 	"time"
 
@@ -9,12 +10,13 @@ import (
 	"github.com/saschazesiger/SocratesAgent/internal/mcpserver/browserstack/driver"
 )
 
-// The pool: every account Admin keeps carries one session at a time
-// (BrowserStack's plans of these accounts allow one parallel session), held
-// by a lease. A chat leases when it starts a device and gives it back when
-// it stops. Accounts BrowserStack
-// itself calls busy (a team member uses one, outside Socrates) go last: a
-// session started on one waits in BrowserStack's own queue.
+// The pool: every account Admin keeps carries as many sessions at a time as
+// its Automate plan allows parallel sessions (one until the plan is read),
+// each held by a lease. Every device of a chat leases when it starts (its
+// holder is the chat and the device, so one chat may run several) and gives
+// the lease back when it stops. Accounts BrowserStack itself calls busy (a
+// team member uses one, outside Socrates) go last: a session started on one
+// waits in BrowserStack's own queue.
 
 // busyEvery is how long a reading of the accounts' plans is used.
 const busyEvery = time.Minute
@@ -50,16 +52,17 @@ func (p *pool) usable() []mcpserver.Account {
 	return out
 }
 
-// Lease takes a free account for holder: the one it holds, else the first
-// free one BrowserStack does not call busy, else the first free one.
+// Lease takes an account with a free session for holder: the one it holds,
+// else the first one BrowserStack does not call busy, else the first one
+// with a session left.
 func (p *pool) Lease(holder string) (mcpserver.Lease, string) {
 	list := p.usable()
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.refreshLocked()
-	held := map[string]bool{}
+	held := map[string]int{}
 	for h, id := range p.leases {
-		held[id] = true
+		held[id]++
 		if h == holder {
 			for _, a := range list {
 				if a.ID == id {
@@ -73,7 +76,7 @@ func (p *pool) Lease(holder string) (mcpserver.Lease, string) {
 	}
 	for pass := 0; pass < 2; pass++ {
 		for _, a := range list {
-			if held[a.ID] || pass == 0 && p.busy[a.ID] {
+			if held[a.ID] >= p.capacityLocked(a.ID) || pass == 0 && p.busy[a.ID] {
 				continue
 			}
 			p.leases[holder] = a.ID
@@ -83,6 +86,15 @@ func (p *pool) Lease(holder string) (mcpserver.Lease, string) {
 	return mcpserver.Lease{}, "every BrowserStack account is in use"
 }
 
+// capacityLocked is how many sessions an account carries at a time: its
+// plan's parallel sessions, one while the plan is not known.
+func (p *pool) capacityLocked(id string) int {
+	if plan := p.plans[id]; plan != nil && plan.Max > 1 {
+		return plan.Max
+	}
+	return 1
+}
+
 // Release gives back what holder holds.
 func (p *pool) Release(holder string) {
 	p.mu.Lock()
@@ -90,16 +102,18 @@ func (p *pool) Release(holder string) {
 	p.mu.Unlock()
 }
 
-// holderOf is who holds an account, "" for nobody.
-func (p *pool) holderOf(account string) string {
+// holdersOf is who holds an account, sorted; none for nobody.
+func (p *pool) holdersOf(account string) []string {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	var out []string
 	for h, id := range p.leases {
 		if id == account {
-			return h
+			out = append(out, h)
 		}
 	}
-	return ""
+	slices.Sort(out)
+	return out
 }
 
 // leaseOf is the account holder holds, "" for none.

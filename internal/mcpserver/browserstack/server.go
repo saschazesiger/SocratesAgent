@@ -2,8 +2,9 @@
 // real phones, tablets and desktop browsers on BrowserStack Automate, driven
 // one action at a time by a chat's agent, with every action recorded with
 // its screenshot (which the chat's tests take as evidence,
-// mcpserver.Recorder). Admin keeps the accounts; each carries one session at
-// a time, leased to the chat that uses it.
+// mcpserver.Recorder). A chat may run several devices at once. Admin keeps
+// the accounts; each carries as many sessions as its plan allows parallel
+// sessions, every one leased to the device of the chat that uses it.
 //
 // It is the `qa` driver of browser.lol's Device QA, moved into Socrates:
 // the commands are its tools, the daemon that held a device between them is
@@ -20,6 +21,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -46,14 +48,25 @@ type Server struct {
 	deps Deps
 	pool *pool
 
-	mu      sync.Mutex
-	devices map[string]*device // by session
-	holders sync.Map           // holder → *sync.Mutex (holderLock)
+	mu       sync.Mutex
+	devices  map[string]*device          // by deviceKey
+	evidence map[string]*driver.Evidence // by chat: its devices record into one
+	holders  sync.Map                    // holder → *sync.Mutex (holderLock)
+}
+
+// deviceKey is a chat's device: the chat and the device id. It is the
+// device's place in Server.devices and the holder of its lease.
+func deviceKey(chat, device string) string { return chat + "/" + device }
+
+// chatOf is the chat of a deviceKey.
+func chatOf(key string) string {
+	chat, _, _ := strings.Cut(key, "/")
+	return chat
 }
 
 // New is the server; it closes what a server before it left open.
 func New(deps Deps) *Server {
-	s := &Server{deps: deps, devices: map[string]*device{}}
+	s := &Server{deps: deps, devices: map[string]*device{}, evidence: map[string]*driver.Evidence{}}
 	s.pool = newPool(s)
 	if deps.DataDir != "" {
 		go s.closeOrphans()
@@ -79,7 +92,8 @@ func (s *Server) Name() string  { return Name }
 func (s *Server) Title() string { return "BrowserStack" }
 func (s *Server) Description() string {
 	return "Real phones, tablets and desktop browsers on BrowserStack: the agent opens pages, taps, types and " +
-		"judges screenshots; every action is recorded. Each account carries one session at a time."
+		"judges screenshots, on several devices at once if it likes; every action is recorded. Each account carries " +
+		"as many sessions at a time as its plan allows parallel sessions."
 }
 
 // --------------------------------------------------------------- accounts
@@ -146,15 +160,14 @@ func (s *Server) Uses() []mcpserver.Use {
 		if !since.IsZero() {
 			what += " since " + since.Format("15:04")
 		}
-		seen[d.account] = true
+		seen[d.key] = true
 		out = append(out, mcpserver.Use{Account: d.account, Session: d.session, What: what})
 	}
 	for _, a := range s.accounts() {
-		if seen[a.ID] {
-			continue
-		}
-		if h := s.pool.holderOf(a.ID); h != "" {
-			out = append(out, mcpserver.Use{Account: a.ID, Session: h, What: "leased, no device running"})
+		for _, h := range s.pool.holdersOf(a.ID) {
+			if !seen[h] {
+				out = append(out, mcpserver.Use{Account: a.ID, Session: chatOf(h), What: "leased, no device running"})
+			}
 		}
 	}
 	return out
@@ -190,18 +203,25 @@ func (s *Server) Tools() []mcpserver.Tool {
 		}
 		return props
 	}
-	none := obj(map[string]any{})
-	return []mcpserver.Tool{
-		{Name: "start", Title: "Start the device", Description: "Starts the device and answers `device ready: ...`. When BrowserStack queues the device (the account " +
+	// on is every tool's own device argument: which of the chat's devices it
+	// acts on, needed only while more than one runs.
+	on := func(schema map[string]any) map[string]any {
+		schema["properties"].(map[string]any)["device"] = str("Which of this chat's devices (its id, as given to start); needed only while more than one runs.")
+		return schema
+	}
+	none := func() map[string]any { return on(obj(map[string]any{})) }
+	tools := []mcpserver.Tool{
+		{Name: "start", Title: "Start a device", Description: "Starts a device and answers `device ready: ...`. A chat may run several devices " +
+			"at once, one of each id: start each, then name it with device in every call while more than one runs. When BrowserStack queues the device (the account " +
 			"is busy elsewhere) or every account is in use, it answers `still queued` after about 8 minutes while Socrates keeps " +
 			"waiting: call start again, as often as it says so.",
 			Schema: obj(map[string]any{
-				"device":   str("The device (see devices): iphone, pixel, win-chrome, ... Required in a chat."),
+				"device":   str("The device (see devices): iphone, pixel, win-chrome, ... Required."),
 				"locale":   str("The locale paths are opened in (en, de, ...), when the repository's site has locales."),
 				"consent":  map[string]any{"type": "string", "enum": consents, "description": "How the ad consent dialog is answered after every action (default accept)."},
 				"base_url": str("The site paths are opened on, when the repository does not name one (https://...)."),
 			})},
-		{Name: "devices", Title: "List the devices", Description: "Lists the devices start takes, with their ids.", Schema: none},
+		{Name: "devices", Title: "List the devices", Description: "Lists the devices start takes, with their ids, and those this chat runs.", Schema: obj(map[string]any{})},
 		{Name: "open", Title: "Open a page", Description: "Opens a page: the session's locale is put in front of a path " +
 			"(/create opens /es/create), a path that names a locale or a full URL is taken as it is. mail_link opens link n of " +
 			"the last mail read, so a magic link never passes through you.",
@@ -230,27 +250,33 @@ func (s *Server) Tools() []mcpserver.Tool {
 			}))},
 		{Name: "key", Title: "Press a key", Description: "Presses enter, tab, escape, backspace, up, down, left, right or space.",
 			Schema: obj(map[string]any{"name": map[string]any{"type": "string", "enum": []string{"enter", "tab", "escape", "backspace", "up", "down", "left", "right", "space"}}}, "name")},
-		{Name: "keyboard", Title: "Close the keyboard", Description: "Closes the on-screen keyboard as a person would (Done on iOS, Back on Android).", Schema: none},
+		{Name: "keyboard", Title: "Close the keyboard", Description: "Closes the on-screen keyboard as a person would (Done on iOS, Back on Android).", Schema: obj(map[string]any{})},
 		{Name: "scroll", Title: "Scroll", Description: "Scrolls by most of a screen, or to the top or bottom.",
 			Schema: obj(map[string]any{"where": map[string]any{"type": "string", "enum": []string{"down", "up", "top", "bottom"}}}, "where")},
 		{Name: "rotate", Title: "Rotate", Description: "Rotates a phone or tablet (refused on a desktop).",
 			Schema: obj(map[string]any{"orientation": map[string]any{"type": "string", "enum": []string{"portrait", "landscape"}}}, "orientation")},
-		{Name: "back", Title: "Go back", Description: "Browser back.", Schema: none},
-		{Name: "forward", Title: "Go forward", Description: "Browser forward.", Schema: none},
-		{Name: "reload", Title: "Reload", Description: "Reloads the page.", Schema: none},
+		{Name: "back", Title: "Go back", Description: "Browser back.", Schema: obj(map[string]any{})},
+		{Name: "forward", Title: "Go forward", Description: "Browser forward.", Schema: obj(map[string]any{})},
+		{Name: "reload", Title: "Reload", Description: "Reloads the page.", Schema: obj(map[string]any{})},
 		{Name: "wait", Title: "Wait", Description: "Waits, keeping the session alive.",
 			Schema: obj(map[string]any{"seconds": map[string]any{"type": "number", "minimum": 0, "maximum": 600}}, "seconds")},
-		{Name: "look", Title: "Look", Description: "A screenshot and the controls on screen: role, name, state, what covers them.", Schema: none},
-		{Name: "shot", Title: "Screenshot", Description: "A screenshot only, without waiting for the page.", Schema: none},
-		{Name: "env", Title: "Device facts", Description: "The device facts: user agent, viewport, pixel ratio, system language.", Schema: none},
-		{Name: "address", Title: "Mailbox address", Description: "This session's own mailbox address, fresh per session.", Schema: none},
+		{Name: "look", Title: "Look", Description: "A screenshot and the controls on screen: role, name, state, what covers them.", Schema: obj(map[string]any{})},
+		{Name: "shot", Title: "Screenshot", Description: "A screenshot only, without waiting for the page.", Schema: obj(map[string]any{})},
+		{Name: "env", Title: "Device facts", Description: "The device facts: user agent, viewport, pixel ratio, system language.", Schema: obj(map[string]any{})},
+		{Name: "address", Title: "Mailbox address", Description: "This session's own mailbox address, fresh per session.", Schema: obj(map[string]any{})},
 		{Name: "mail", Title: "Read mail", Description: "Waits (90 s by default) for the newest mail to this session's address, " +
 			"or to `to`, and shows sender, subject, code and links.",
 			Schema: obj(map[string]any{"to": str("Another address to read."), "wait": map[string]any{"type": "integer", "minimum": 0, "maximum": 600, "description": "Seconds to wait, 90 when left out."}})},
-		{Name: "logs", Title: "Application logs", Description: "The application's WARN and ERROR lines since the device started; kept in the evidence.", Schema: none},
-		{Name: "stop", Title: "Stop the device", Description: "Closes the device session. Socrates closes it when the chat is deleted and " +
-			"after 20 minutes without a command; you need it only to start over with start.", Schema: none},
+		{Name: "logs", Title: "Application logs", Description: "The application's WARN and ERROR lines since the device started; kept in the evidence.", Schema: obj(map[string]any{})},
+		{Name: "stop", Title: "Stop a device", Description: "Closes a device session; without device, every device of this chat. Socrates closes them when the chat is deleted and " +
+			"after 20 minutes without a command; you need it only to start over with start or to free the account.", Schema: none()},
 	}
+	for i := range tools {
+		if name := tools[i].Name; name != "start" && name != "devices" && name != "stop" {
+			on(tools[i].Schema)
+		}
+	}
+	return tools
 }
 
 // Instructions is TOOL.md's guidance for the agent, with the tools' names.
@@ -310,21 +336,28 @@ func (s *Server) Call(ctx context.Context, sess mcpserver.Session, tool string, 
 	case "start":
 		return s.start(ctx, sess, a)
 	case "stop":
-		return mcpserver.Text(s.stop(ctx, sess.ID, "stop"))
+		return s.stopTool(ctx, sess.ID, a.Device)
 	case "devices":
+		running := map[string]bool{}
+		for _, d := range s.chatDevices(sess.ID) {
+			running[d.dev.ID] = true
+		}
 		var b strings.Builder
 		for _, d := range driver.Devices {
 			extra := ""
 			if d.Extra {
 				extra = " (outside the usual matrix)"
 			}
+			if running[d.ID] {
+				extra += " (this chat runs it)"
+			}
 			fmt.Fprintf(&b, "%s: %s, %s%s\n", d.ID, d.Label, d.Kind, extra)
 		}
 		return mcpserver.Text(strings.TrimSpace(b.String()))
 	}
-	d := s.device(sess.ID)
+	d, why := s.pick(sess.ID, a.Device)
 	if d == nil {
-		return mcpserver.Error("no device session: call start first")
+		return mcpserver.Error(why)
 	}
 	if tool == "logs" {
 		return d.logs(ctx)
@@ -419,22 +452,112 @@ func (d *device) result(ds *driver.Session, act *driver.Action) mcpserver.Result
 	return res
 }
 
-// End closes the device of a session, whatever state it is in.
+// End closes every device of a chat, whatever state it is in.
 func (s *Server) End(ctx context.Context, session string) string {
-	what := ""
-	if s.device(session) != nil {
-		what = s.stop(ctx, session, "the session ended")
+	var what []string
+	for _, d := range s.chatDevices(session) {
+		what = append(what, s.stop(ctx, d.key, "the session ended"))
 	}
 	s.forgetChat(session)
-	return what
+	return strings.Join(what, "\n")
+}
+
+// stopTool is the stop tool: the device named, or every device of the chat.
+func (s *Server) stopTool(ctx context.Context, chat, device string) mcpserver.Result {
+	if device != "" {
+		d, why := s.pick(chat, device)
+		if d == nil {
+			return mcpserver.Error(why)
+		}
+		return mcpserver.Text(s.stop(ctx, d.key, "stop"))
+	}
+	devices := s.chatDevices(chat)
+	if len(devices) == 0 {
+		return mcpserver.Text("no device session")
+	}
+	texts := make([]string, len(devices))
+	var wg sync.WaitGroup
+	for i, d := range devices {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			texts[i] = s.stop(ctx, d.key, "stop")
+		}()
+	}
+	wg.Wait()
+	return mcpserver.Text(strings.Join(texts, "\n"))
+}
+
+// chatDevices is the devices a chat runs, by device id.
+func (s *Server) chatDevices(chat string) []*device {
+	s.mu.Lock()
+	var out []*device
+	for _, d := range s.devices {
+		if d.session == chat {
+			out = append(out, d)
+		}
+	}
+	s.mu.Unlock()
+	slices.SortFunc(out, func(a, b *device) int { return strings.Compare(a.dev.ID, b.dev.ID) })
+	return out
+}
+
+// pick is the device of the chat a call acts on: the one it names, else the
+// only one the chat runs; nil and why when there is none or it is unclear.
+func (s *Server) pick(chat, device string) (*device, string) {
+	devices := s.chatDevices(chat)
+	if device != "" {
+		for _, d := range devices {
+			if d.dev.ID == device {
+				return d, ""
+			}
+		}
+		if len(devices) == 0 {
+			return nil, "no device session: call start first"
+		}
+		return nil, "this chat runs no device " + device + " (it runs " + idsOf(devices) + "): call start with device " + device + " first"
+	}
+	switch len(devices) {
+	case 0:
+		return nil, "no device session: call start first"
+	case 1:
+		return devices[0], ""
+	}
+	return nil, "this chat runs several devices (" + idsOf(devices) + "): name one with device"
+}
+
+func idsOf(devices []*device) string {
+	ids := make([]string, len(devices))
+	for i, d := range devices {
+		ids[i] = d.dev.ID
+	}
+	return strings.Join(ids, ", ")
 }
 
 func isUnauthorized(err error) bool { return errors.Is(err, driver.ErrUnauthorized) }
 
-func (s *Server) device(session string) *device {
+func (s *Server) device(key string) *device {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.devices[session]
+	return s.devices[key]
+}
+
+// evidenceOf is the chat's evidence, which all its devices record into, so
+// that their actions are numbered in one row.
+func (s *Server) evidenceOf(chat, dir string) (*driver.Evidence, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if ev := s.evidence[chat]; ev != nil {
+		if _, err := os.Stat(ev.Dir); err == nil {
+			return ev, nil
+		}
+	}
+	ev, err := driver.NewEvidence(dir, Name)
+	if err != nil {
+		return nil, err
+	}
+	s.evidence[chat] = ev
+	return ev, nil
 }
 
 // chatEvidence is where a chat's actions are recorded.
@@ -453,6 +576,9 @@ func (s *Server) EvidenceDir(session string) string {
 
 // forgetChat removes what a chat's devices recorded: it is gone.
 func (s *Server) forgetChat(session string) {
+	s.mu.Lock()
+	delete(s.evidence, session)
+	s.mu.Unlock()
 	if s.deps.DataDir != "" && session != "" && !strings.ContainsAny(session, `/\.`) {
 		_ = os.RemoveAll(s.chatEvidence(session))
 	}

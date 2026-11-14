@@ -192,7 +192,7 @@ type accountOfMCP struct {
 	Label  string            `json:"label"`
 	Values map[string]string `json:"values"`
 	Check  *mcpserver.Check  `json:"check,omitempty"`
-	// InUse says who uses it now, "" for nobody.
+	// InUse says who uses it now ("; " between several sessions), "" for nobody.
 	InUse string `json:"in_use,omitempty"`
 }
 
@@ -218,11 +218,13 @@ func (s *Server) builtinViews() []builtinView {
 					}
 					view.Values[f.Name] = val
 				}
+				var inUse []string
 				for _, u := range v.Uses {
 					if u.Account == a.ID {
-						view.InUse = s.useWords(u)
+						inUse = append(inUse, s.useWords(u))
 					}
 				}
+				view.InUse = strings.Join(inUse, "; ")
 				v.Accounts = append(v.Accounts, view)
 			}
 		}

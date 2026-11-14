@@ -374,7 +374,9 @@ management to be reworked (OAuth, testing a connection, the tools, more settings
 - **Built-in MCP servers are components in the server process** (`internal/mcpserver`), reached by
   the agents through `socrates mcp-server <name>` on stdio; what they hold outlives a parked agent.
 - **Admin keeps their accounts**, sealed, checked against the service when added and on demand; a
-  pool leases one account per chat (or test cell, while test mode lasted).
+  pool leases one account per chat (or test cell, while test mode lasted). Since 2026-11-14 a
+  lease is per device of a chat, so one chat may run several devices at once, and an account
+  carries as many leases as its Automate plan allows parallel sessions (one until it is read).
 - **Repository specifics stay in the repository** (`.socrates/mcp/browserstack.json`: the site, its
   logins' command, mailbox and logs commands); the BrowserStack accounts are Socrates'.
 - **OAuth is Socrates' own**: it signs in once in Admin and an agent reaches the server through a

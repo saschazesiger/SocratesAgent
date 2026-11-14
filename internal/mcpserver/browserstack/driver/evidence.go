@@ -214,10 +214,25 @@ func (e *Evidence) Append(a *Action) error {
 
 // WriteLinks writes links.json: label to URL, empty values left out.
 func (e *Evidence) WriteLinks(links map[string]string) error {
+	return e.writeLinks(map[string]string{}, "", links)
+}
+
+// AddLinks adds links to links.json, each label after prefix (the device,
+// when several devices record into one folder), keeping those it has.
+func (e *Evidence) AddLinks(prefix string, links map[string]string) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
 	kept := map[string]string{}
+	if raw, err := os.ReadFile(filepath.Join(e.Dir, "links.json")); err == nil {
+		_ = json.Unmarshal(raw, &kept)
+	}
+	return e.writeLinks(kept, prefix, links)
+}
+
+func (e *Evidence) writeLinks(kept map[string]string, prefix string, links map[string]string) error {
 	for label, url := range links {
 		if url != "" {
-			kept[label] = url
+			kept[prefix+label] = url
 		}
 	}
 	data, err := marshalJSON(kept, " ")
