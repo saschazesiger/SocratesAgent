@@ -1,0 +1,57 @@
+1794819630.858866 client started (316631): version 3.6, socket /tmp/tmux-0/gmailprobe2, protocol 8
+1794819630.858891 on Linux 7.0.0-38-generic #38-Ubuntu SMP PREEMPT_DYNAMIC Fri Sep  4 09:10:14 UTC 2026
+1794819630.858894 using libevent 2.1.12-stable poll
+1794819630.858897 using ncurses 6.6 20251231
+1794819630.858919 flags are 0x18010000
+1794819630.858929 socket is /tmp/tmux-0/gmailprobe2
+1794819630.858942 trying connect
+1794819630.858959 connect failed: No such file or directory
+1794819630.858968 lock file is /tmp/tmux-0/gmailprobe2.lock
+1794819630.858983 flock succeeded
+1794819630.858988 got lock (6)
+1794819630.858993 trying connect
+1794819630.859000 connect failed: No such file or directory
+1794819630.859269 add peer 0x7fee274341c0: 7 ((nil))
+1794819630.859432 sending message 111 to peer 0x7fee274341c0 (8 bytes)
+1794819630.859445 sending message 111 to peer 0x7fee274341c0 (8 bytes)
+1794819630.859449 sending message 101 to peer 0x7fee274341c0 (1 bytes)
+1794819630.859452 sending message 109 to peer 0x7fee274341c0 (4 bytes)
+1794819630.859454 sending message 102 to peer 0x7fee274341c0 (1 bytes)
+1794819630.859456 sending message 108 to peer 0x7fee274341c0 (40 bytes)
+1794819630.859460 sending message 104 to peer 0x7fee274341c0 (0 bytes)
+1794819630.859465 sending message 110 to peer 0x7fee274341c0 (0 bytes)
+1794819630.859468 sending message 107 to peer 0x7fee274341c0 (4 bytes)
+1794819630.859473 sending message 105 to peer 0x7fee274341c0 (16 bytes)
+1794819630.859476 sending message 105 to peer 0x7fee274341c0 (13 bytes)
+1794819630.859479 sending message 105 to peer 0x7fee274341c0 (27 bytes)
+1794819630.859483 sending message 105 to peer 0x7fee274341c0 (28 bytes)
+1794819630.859485 sending message 105 to peer 0x7fee274341c0 (35 bytes)
+1794819630.859490 sending message 105 to peer 0x7fee274341c0 (60 bytes)
+1794819630.859497 sending message 105 to peer 0x7fee274341c0 (18 bytes)
+1794819630.859504 sending message 105 to peer 0x7fee274341c0 (19 bytes)
+1794819630.859507 sending message 105 to peer 0x7fee274341c0 (85 bytes)
+1794819630.859513 sending message 105 to peer 0x7fee274341c0 (44 bytes)
+1794819630.859519 sending message 105 to peer 0x7fee274341c0 (37 bytes)
+1794819630.859521 sending message 105 to peer 0x7fee274341c0 (13 bytes)
+1794819630.859524 sending message 105 to peer 0x7fee274341c0 (11 bytes)
+1794819630.859526 sending message 105 to peer 0x7fee274341c0 (13 bytes)
+1794819630.859530 sending message 105 to peer 0x7fee274341c0 (31 bytes)
+1794819630.859532 sending message 105 to peer 0x7fee274341c0 (60 bytes)
+1794819630.859537 sending message 105 to peer 0x7fee274341c0 (10 bytes)
+1794819630.859539 sending message 105 to peer 0x7fee274341c0 (8 bytes)
+1794819630.859542 sending message 105 to peer 0x7fee274341c0 (16 bytes)
+1794819630.859547 sending message 105 to peer 0x7fee274341c0 (31 bytes)
+1794819630.859550 sending message 105 to peer 0x7fee274341c0 (26 bytes)
+1794819630.859552 sending message 105 to peer 0x7fee274341c0 (64 bytes)
+1794819630.859554 sending message 105 to peer 0x7fee274341c0 (93 bytes)
+1794819630.859570 sending message 105 to peer 0x7fee274341c0 (32 bytes)
+1794819630.859576 sending message 105 to peer 0x7fee274341c0 (16 bytes)
+1794819630.859571 fatal: No such device: daemon failed
+1794819630.859579 sending message 106 to peer 0x7fee274341c0 (0 bytes)
+1794819630.859607 cmd_pack_argv: argv[0]=new-session
+1794819630.859615 cmd_pack_argv: argv[1]=-d
+1794819630.859626 cmd_pack_argv: argv[2]=sleep 2
+1794819630.859637 sending message 200 to peer 0x7fee274341c0 (27 bytes)
+1794819630.859643 client loop enter
+1794819630.859662 client_signal: Child exited
+1794819630.860046 client loop exit

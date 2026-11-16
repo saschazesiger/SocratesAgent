@@ -219,9 +219,10 @@ Chats from before this change keep their folder.
 
 | | |
 | --- | --- |
-| 🧩 **Built in** | `socrates mcp-server <name>` is what an agent starts for a built-in server (BrowserStack, Socrates Tests); it talks to the server over `<data>/run/` sockets. Off in every chat until Admin or the chat switches it on |
+| 🧩 **Built in** | `socrates mcp-server <name>` is what an agent starts for a built-in server (BrowserStack, Gmail, Socrates Tests); it talks to the server over `<data>/run/` sockets. Off in every chat until Admin or the chat switches it on |
 | 🔑 **Accounts and sign-ins** | Built-in servers' accounts and OAuth sign-ins are in the database's `kv` table, sealed with `secrets.key`, so they are in the backup |
 | 📱 **BrowserStack** | A chat's screenshots in `<data>/mcp/browserstack/chats/<chat>/` (removed with the chat), the evidence a chat's tests take theirs from. Sessions open when the server stopped are listed in `<data>/run/mcp/browserstack/sessions.json` and closed at the next start. A repository describes its site in `.socrates/mcp.json`, `browserstack` (docs/design/MCP.md) |
+| 📧 **Gmail** | Connects to `imap.gmail.com:993` with the account's app password (Admin → MCP servers → Gmail; the Google account needs 2-Step Verification). Attachments an agent saves are in `<data>/mcp/gmail/chats/<chat>/` (removed with the chat). A signed-in connection is kept for 4 minutes after a call |
 | 🔐 **OAuth** | The authorization server sends the browser back to `<the address Admin is open at>/api/mcp/oauth/callback`; agents reach such a server through `/mcp-proxy/<name>` on Socrates' local address |
 
 ---

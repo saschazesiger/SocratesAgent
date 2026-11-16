@@ -482,3 +482,16 @@ Markdown file and link it would do. Decided with the owner ([PAGES.md](PAGES.md)
   pasted or dictated text.
 - **Fields that hold data, not a message, keep Enter as a new line**: a repository's setup script,
   pasted MCP JSON, e-mail lists, a test's steps, a board card's subtitle.
+
+## Revision 17 — Gmail built in, 2026-11-16
+
+The owner asked for a Gmail MCP server that they can switch on and off for the agents. Decided with the
+owner ([MCP.md](MCP.md), "Gmail"):
+
+- **A built-in server, not one of Admin's**: it gets Admin's row with its account and the *In every
+  chat* switch, and every chat's switch, like BrowserStack; off until switched on.
+- **An app password over IMAP, not Google OAuth**: set up in a minute, with no Google Cloud project, no
+  consent screen and no tokens that run out after seven days while the app is in testing. *Cost:* Google
+  limits nothing (an app password reaches the whole mailbox), so the tools are the limit.
+- **Read, drafts and labels; never send or delete**: the agent prepares answers as drafts, which the
+  owner reviews and sends in Gmail. Trash, spam and the other system folders cannot be set as labels.

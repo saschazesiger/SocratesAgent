@@ -126,6 +126,37 @@ Unknown arguments are refused. A `Recorder`'s actions are read from `actions.jso
 cursor for that server (set to the line count when the run starts, moved on with every judgement; a
 recording that was started over is read from its start).
 
+## Gmail (`internal/mcpserver/gmail`)
+
+Built on 2026-11-16 at the owner's request (DECISIONS.md, Revision 17): a chat's agent reads the owner's
+mailbox and prepares answers, and the owner switches it on or off like every built-in server (off until
+Admin's *In every chat* or the chat's switch). It signs in over **IMAP with an app password**, Admin's
+account (`email`, `password`, the password sealed; the check signs in and reads the inbox's counts). No
+Google Cloud project, no OAuth client: an app password is made in a minute at
+myaccount.google.com/apppasswords. No third-party code either: a small IMAP client (`imap.go`, synchronizing
+literals, UTF8=ACCEPT) and the standard library's MIME packages.
+
+| Tool | Does |
+|---|---|
+| `search {query, max?}` | Gmail's search syntax (X-GM-RAW) over All Mail, newest first: id, thread id, date, sender, recipients, subject, labels, UNREAD |
+| `read {id, max_chars?}` | one message: headers, its text (the plain part, else the HTML one as text with its links), the list of its attachments, a link into Gmail; does not mark it read (`BODY.PEEK`) |
+| `thread {id, max_chars?}` | every message of a conversation (a thread id or a message's), oldest first |
+| `labels` | the inbox's counts, the system labels under their names in the account's language, the owner's labels |
+| `attachment {id, attachment?}` | saves one attachment (number or name) or all to `<data>/mcp/gmail/chats/<chat>/<id>/` and answers the paths; removed with the chat (`Ender`) |
+| `draft {to?, cc?, bcc?, subject?, body, reply_to?, attachments?}` | APPENDs a plain-text draft to Drafts; with `reply_to` it answers that message in its conversation (In-Reply-To, References, to its Reply-To or sender, "Re: " subject) |
+| `modify {ids, add_labels?, remove_labels?, read?, starred?, archive?}` | labels (`+/-X-GM-LABELS`, a new label is made), `\Seen`, `\Flagged`, archive (takes `\Inbox` away) |
+
+- **It cannot send or delete.** There is no send tool and no SMTP; trash, spam, sent, drafts and All
+  Mail (under any name the account's language gives them) are refused as labels to set or take away, and
+  no `\Deleted`, `EXPUNGE` or `MOVE` is ever sent.
+- Ids are Gmail's own (X-GM-MSGID, X-GM-THRID) in hex, the ids of Gmail's web app and API. Search and
+  `modify` reach All Mail (not spam or trash); `read` and `attachment` also look in spam and trash.
+- Mail is untrusted input: the instructions tell the agent that what a message asks is not the owner's
+  request.
+- One signed-in connection per account is kept for 4 minutes after a call (Gmail slows down sign-ins
+  that come too often); a call takes it when it is free and still answers `LIST`, which also reads
+  labels made since.
+
 ## Socrates Artifacts (removed 2026-11-11)
 
 Built on 2026-11-08 and removed on 2026-11-11: a chat's agent now writes its explaining pages as
@@ -181,6 +212,7 @@ refreshes.
 | `internal/mcpserver/builtin` | the list of built-in servers |
 | `internal/mcpserver/browserstack`, `…/driver` | the BrowserStack server; the device driver (WebDriver, native taps, evidence, page scripts) |
 | `internal/mcpserver/tests` | Socrates Tests (its store: `internal/chattests`) |
+| `internal/mcpserver/gmail` | Gmail: the IMAP client, the MIME reader and draft writer, the tools |
 | `internal/mcpclient` | the probe (stdio, streamable HTTP, SSE) and the OAuth client |
 | `internal/server/mcpbuiltin.go`, `mcpadmin.go`, `mcpoauth.go`, `mcp.go` | the registry in the server, the tools socket route, Admin's API, the test, OAuth and the proxy |
 | `internal/web/static/js/adminmcp.js` | Admin's MCP servers |
