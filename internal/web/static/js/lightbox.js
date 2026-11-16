@@ -4,7 +4,9 @@
 // (DS.lightbox): thumbnails, the arrow keys, swipe, and zoom and pan on every
 // device - a click (a double tap) zooms in there to the image's own pixels
 // and back, a drag, the wheel or two fingers on a trackpad pan, a pinch or
-// Ctrl with the wheel zooms freely, the buttons and + - 0 step it.
+// Ctrl with the wheel zooms freely, the buttons and + - 0 step it. A tall
+// image (a full-page screenshot) fits the width, opens at its top and pans
+// up and down without a zoom.
 
 /**
  * lightbox shows `images` - { src, name, meta } each: where the image is

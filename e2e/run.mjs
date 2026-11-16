@@ -14772,6 +14772,37 @@ async function chatimages() {
       return t.endsWith('2 of 2') && img.complete && img.naturalWidth === 400 ? t : null;
     }, null, { timeout: 5000 }).then((h) => h.jsonValue(), () => null);
     await wait(400);
+    // The chart is three times as high as wide, as a full-page screenshot
+    // is: it fits the width, opens at its top and pans up and down without
+    // a zoom (the wheel, a drag, PageDown), never past its bottom.
+    const place = () => page.$eval('dialog.ds-lightbox .ds-lightbox__frame', (n) => {
+      const f = n.getBoundingClientRect();
+      const i = n.querySelector('img').getBoundingClientRect();
+      return { tall: n.hasAttribute('data-tall'), zoom: Number(n.style.getPropertyValue('--ds-lightbox-zoom') || 1),
+        top: Math.round(i.top - f.top), bottom: Math.round(i.bottom - f.bottom), wide: Math.round(i.width) };
+    });
+    const tallOpen = await place();
+    await page.mouse.move(frameBox.x, frameBox.y);
+    await page.mouse.wheel(0, 200);
+    await wait(400);
+    const tallWheeled = await place();
+    await page.mouse.down();
+    await page.mouse.move(frameBox.x, frameBox.y - 100, { steps: 6 });
+    await page.mouse.up();
+    await wait(400);
+    const tallDragged = await place();
+    for (let i = 0; i < 10; i += 1) await page.keyboard.press('PageDown');
+    await wait(400);
+    const tallEnd = await place();
+    ok(tallOpen.tall && tallOpen.zoom === 1 && tallOpen.wide === 400 && Math.abs(tallOpen.top) <= 1 && tallOpen.bottom > 100
+      && tallWheeled.top < tallOpen.top - 150 && tallDragged.zoom === 1 && tallDragged.top < tallWheeled.top - 50
+      && tallEnd.zoom === 1 && Math.abs(tallEnd.bottom) <= 1,
+    'a tall image opens at its top and moves up and down without a zoom: the wheel, a drag, PageDown to its bottom',
+    JSON.stringify({ tallOpen, tallWheeled, tallDragged, tallEnd }));
+    await page.keyboard.press('Home');
+    await wait(400);
+    await page.keyboard.press('End');
+    await wait(400);
     await shot(page, 'chat-images');
     await page.keyboard.press('Escape');
     await page.waitForSelector('dialog.ds-lightbox', { state: 'detached', timeout: 5000 });

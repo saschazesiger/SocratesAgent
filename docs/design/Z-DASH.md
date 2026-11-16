@@ -253,6 +253,14 @@ question's and a test run's screenshots. A click of the mouse zooms in to the im
 the next one back, a double tap does the same on touch, a zoomed image pans with a drag, the wheel or two fingers on a
 trackpad, and `original: true` puts a link to the image on its own in the bar (the string `openImage`).
 
+## Z-Dash 3.2 (November 2026)
+
+3.2.0 fixed the fit of a tall image: an image higher than the frame was cropped (the frame's grid row grew with it)
+and could not be moved until it was zoomed, which hid most of a full-page screenshot. Now an image at least twice as
+high as wide (`isTall()`) fits the frame's width, opens at its top and pans up and down at the fit - a drag, the wheel,
+ArrowUp and ArrowDown, PageUp and PageDown, an upright finger - while a sideways swipe still goes to the next image;
+every other image fits whole. Socrates needed no change of its own for it.
+
 ## Proposed to Z-Dash
 
 Parts Socrates built itself because DS has nothing like them yet, written the way a DS component is (header

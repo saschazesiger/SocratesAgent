@@ -1201,8 +1201,9 @@ is told how in `agent.DocsGuidance`). Every image of a chat is drawn small (`.so
 the lightbox (lightbox.js, on Z-Dash's `DS.lightbox`), which goes through all of them - the chat's, a
 question's, a test run's - with thumbnails, the arrow keys and swipe, and zooms and pans on every
 device: a click or a double tap (to the image's own pixels, and back), a pinch, Ctrl with the wheel,
-the buttons and `+` `-` `0`; zoomed, a drag, the wheel or two fingers on a trackpad move the image. Its
-bar links to the image on its own (Z-Dash 3.1 `original`). A hello with `"batch":true` gets a replay
+the buttons and `+` `-` `0`; zoomed, a drag, the wheel or two fingers on a trackpad move the image. A
+tall image (a full-page screenshot, Z-Dash 3.2) fits the width, opens at its top and moves up and down
+the same way without a zoom. Its bar links to the image on its own (Z-Dash 3.1 `original`). A hello with `"batch":true` gets a replay
 of more than one event as `{"t":"evs","evs":[…]}` frames of about 256 KiB: a browser handles a
 frame per task, and a thousand of them cost it more than the events did.
 
