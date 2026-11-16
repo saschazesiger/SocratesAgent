@@ -59,8 +59,8 @@ import { mountChatTests } from './chattests.js';
 import { mountChatPages } from './pages.js';
 import { mountBoard } from './boards.js';
 import { mountDocs, docsHash, parseDocsRoute } from './docs.js';
-import { probeDocs, knownDocs, hasDocs, knownRepo } from './docview.js';
-import { mountChatDocside, docLinkTarget, forgeLinkTarget, isPathLink } from './docside.js';
+import { probeDocs, knownDocs, hasDocs, knownRepo, pageUrl } from './docview.js';
+import { mountChatDocside, docLinkTarget, forgeLinkTarget, isPathLink, findDoc, findOutside } from './docside.js';
 
 /* ------------------------------------------------------------- transport */
 
@@ -864,34 +864,67 @@ function deleteWords(session) {
 function sessionOf(id) { return state.sessions.find((s) => s.id === id) || null; }
 
 /**
- * chatDocLink opens what a link in a chat (or in a page beside it) means
- * beside the chat (docside.js), and answers whether it did: a page of the
- * chat's pages folder by its absolute path (pages.js), a Markdown file of
- * the chat's folder by its path or by its address on the folder's own forge
- * repository, and a file in another working tree of the folder's
- * repository. A path to one that is not there is said so; any other link is
- * the browser's (false).
+ * chatDocTarget is what a link in a chat (in its conversation, in a page
+ * beside it, in one of its questions) means: {folder, path, at} for a page
+ * of the chat's pages folder by its absolute path (pages.js) or a Markdown
+ * file of the chat's folder by its path or by its address on the folder's
+ * own forge repository; {outside: folder} for a path out of the folder,
+ * which another working tree of the folder's repository may have; null for
+ * any other link, the browser's.
  */
-function chatDocLink(href, session, opener) {
-  if (!state.docside) return false;
+function chatDocTarget(href, session) {
   const pages = session.pages_dir || '';
   const page = pages && String(href || '').trim().replace(/^file:\/\/(localhost)?/i, '').startsWith('/')
     ? docLinkTarget(href, pages) : null;
-  if (page) {
-    state.docside.open(pages, page.path, { at: page.at, opener });
-    return true;
-  }
+  if (page) return { folder: pages, path: page.path, at: page.at };
   const folder = dirOf(session.workdir || '');
-  if (!folder) return false;
+  if (!folder) return null;
   const target = docLinkTarget(href, folder) || forgeLinkTarget(href, knownRepo(folder));
-  if (target) {
-    state.docside.open(folder, target.path, { at: target.at, opener });
+  if (target) return { folder, path: target.path, at: target.at };
+  return isPathLink(href) ? { outside: folder } : null;
+}
+
+/**
+ * chatDocLink opens what a link in a chat (or in a page beside it) means
+ * beside the chat (docside.js), and answers whether it did. A path to a
+ * file that is not there is said so; any other link is the browser's
+ * (false).
+ */
+function chatDocLink(href, session, opener) {
+  if (!state.docside) return false;
+  const target = chatDocTarget(href, session);
+  if (!target) return false;
+  if (target.outside) state.docside.openOutside(target.outside, href, { opener });
+  else state.docside.open(target.folder, target.path, { at: target.at, opener });
+  return true;
+}
+
+/**
+ * chatDocTab opens what a link in a chat's question means in a new tab, as
+ * the column's "Open in a new tab" does: the question dialog covers the
+ * chat, so there is no column beside it to open it in. The tab is opened at
+ * once, while the click still allows it, and sent to the file once it is
+ * found; a link to nothing there shuts it again and says so. Any other link
+ * is the browser's (false).
+ */
+function chatDocTab(href, session) {
+  const target = session && chatDocTarget(href, session);
+  if (!target) return false;
+  const tab = window.open('', '_blank');
+  if (!tab) {
+    toast('The browser did not let Socrates open a new tab.', 'error');
     return true;
   }
-  if (!isPathLink(href)) return false;
-  // A path out of the folder: another working tree of its repository
-  // may have the file; else a snackbar says so.
-  state.docside.openOutside(folder, href, { opener });
+  tab.opener = null;
+  const finding = target.outside ? findOutside(target.outside, href) : findDoc(target.folder, target.path);
+  finding.then((found) => {
+    if (found.error) {
+      tab.close();
+      toast(found.error, 'error');
+      return;
+    }
+    tab.location.replace(pageUrl(found.base, found.path, { hash: found.at || target.at || '' }));
+  });
   return true;
 }
 
@@ -2041,6 +2074,8 @@ function showChatQuestions(chatId, { askId = '', only = false } = {}) {
     },
     // Home's connection line, which the dialog over it says too.
     connection: () => connectionLine(streamConnection(), state.reachable),
+     // A link to a page or a Markdown file of the chat: in a new tab.
+    docLink: (href, id) => chatDocTab(href, sessionOf(id)),
   });
 }
 

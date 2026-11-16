@@ -148,6 +148,63 @@ export function fileIn(files, path) {
 }
 
 /**
+ * findDoc is the file a link to `path` in `folder` means, as the column and
+ * a new tab show it: {folder, path, base} (`base` the folder's address,
+ * docview.js pageUrl), or {error} with the words that say why there is none.
+ * A path the listing does not have is the one file it may mean, a file
+ * written since the listing kept was read, or (`elsewhere`) the file in
+ * another working tree of the folder's repository, where the chat's agent
+ * may have written it.
+ */
+export async function findDoc(folder, path, { elsewhere = true } = {}) {
+  const unread = { error: 'The files of this folder could not be read.' };
+  const missing = { error: `${path} is not a Markdown file of this chat's folder.` };
+  let data;
+  try {
+    data = await listing(folder);
+  } catch { return unread; }
+  let found = fileIn(data.files, path);
+  if (!found && !data.truncated) {
+    try {
+      data = await listing(folder, { fresh: true });
+    } catch { return unread; }
+    found = fileIn(data.files, path);
+  }
+  // A listing cut short may not name a file the folder has.
+  if (!found && data.truncated) {
+    try {
+      const s = await stat(folder, path);
+      if (s) found = s.path;
+    } catch { /* looked for below */ }
+  }
+  if (found) return { folder, path: found, base: data.base };
+  if (!elsewhere) return missing;
+  let there = null;
+  try {
+    there = await locate(folder, path);
+  } catch { /* said below */ }
+  if (!there) return missing;
+  if (there.folder !== folder) return findDoc(there.folder, there.path, { elsewhere: false });
+  return { folder, path: there.path, base: data.base };
+}
+
+/**
+ * findOutside is findDoc for a link out of the folder, by an absolute path
+ * or one with "..": the file when it lies in another working tree of the
+ * folder's repository, with the heading the link names ({..., at}).
+ */
+export async function findOutside(folder, href) {
+  const target = outsideTarget(href, folder);
+  let there = null;
+  if (target) {
+    try { there = await locate(folder, target.path); } catch { /* said below */ }
+  }
+  if (!there) return { error: `${href} is not a Markdown file of this chat's folder.` };
+  const found = await findDoc(there.folder, there.path, { elsewhere: false });
+  return found.error ? found : { ...found, at: target.at };
+}
+
+/**
  * mountChatDocside wires the column (`panel`, #docsidePanel) and the
  * dialog. `onColumnOpen()` is called when the column opens (the tests'
  * column shuts then); `onPage(folder, path)` each time the frame shows a
@@ -301,62 +358,17 @@ export function mountChatDocside({ panel, onColumnOpen, onPage, follow: onFollow
 
   async function open(folder, path, { at = '', opener = null, elsewhere = true } = {}) {
     const my = ++gen;
-    let data;
-    try {
-      data = await listing(folder);
-    } catch {
-      toast('The files of this folder could not be read.', 'error');
-      return;
-    }
+    const found = await findDoc(folder, path, { elsewhere });
     if (my !== gen) return;
-    // A path the listing does not have: the one file it may mean, or a file
-    // written since the listing kept was read; else a word (a listing cut
-    // short may not have every file).
-    let found = fileIn(data.files, path);
-    if (!found && !data.truncated) {
-      try {
-        data = await listing(folder, { fresh: true });
-      } catch {
-        toast('The files of this folder could not be read.', 'error');
-        return;
-      }
-      if (my !== gen) return;
-      found = fileIn(data.files, path);
-    }
-    // A listing cut short may not name a file the folder has.
-    if (!found && data.truncated) {
-      try {
-        const s = await stat(folder, path);
-        if (s) found = s.path;
-      } catch { /* looked for below */ }
-      if (my !== gen) return;
-    }
-    if (found) path = found;
-    else if (elsewhere) {
-      // Not in the folder: the file in another working tree of its
-      // repository, where the chat's agent may have written it.
-      let there = null;
-      try {
-        there = await locate(folder, path);
-      } catch { /* said below */ }
-      if (my !== gen) return;
-      if (!there) {
-        toast(`${path} is not a Markdown file of this chat's folder.`, 'error');
-        return;
-      }
-      if (there.folder !== folder) {
-        open(there.folder, there.path, { at, opener, elsewhere: false });
-        return;
-      }
-      path = there.path;
-    } else {
-      toast(`${path} is not a Markdown file of this chat's folder.`, 'error');
+    if (found.error) {
+      toast(found.error, 'error');
       return;
     }
+    ({ folder, path } = found);
     // sent: the file the frame was sent to, until it says it shows it (a
     // frame the browser gives its old address back is sent there again).
-    doc = { folder, path, base: data.base, mtime: 0, y: 0, title: '', sent: path };
-    frame.src = pageUrl(data.base, path, { hash: at });
+    doc = { folder, path, base: found.base, mtime: 0, y: 0, title: '', sent: path };
+    frame.src = pageUrl(found.base, path, { hash: at });
     if (WIDE.matches) {
       if (dlg) hideOverlay(dlg.dialog);
       showColumn();
@@ -375,18 +387,14 @@ export function mountChatDocside({ panel, onColumnOpen, onPage, follow: onFollow
   // A link out of the folder, by an absolute path or one with "..": the
   // file when it lies in another working tree of the folder's repository.
   async function openOutside(folder, href, { opener = null } = {}) {
-    const target = outsideTarget(href, folder);
     const my = ++gen;
-    let there = null;
-    if (target) {
-      try { there = await locate(folder, target.path); } catch { /* said below */ }
-    }
+    const found = await findOutside(folder, href);
     if (my !== gen) return;
-    if (!there) {
-      toast(`${href} is not a Markdown file of this chat's folder.`, 'error');
+    if (found.error) {
+      toast(found.error, 'error');
       return;
     }
-    open(there.folder, there.path, { at: target.at, opener, elsewhere: false });
+    open(found.folder, found.path, { at: found.at, opener, elsewhere: false });
   }
 
   function close() {

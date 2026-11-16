@@ -297,7 +297,7 @@ async function collect({ sessions, chatId = '', askId = '', view }) {
  *   connection()  the page's connection line (home.js connectionLine), which
  *              the dialog says too: it is a modal over Home's
  */
-export async function openChatAsks({ sessions, chatId, askId = '', view, openChat, unreachable, asking, connection }) {
+export async function openChatAsks({ sessions, chatId, askId = '', view, openChat, unreachable, asking, connection, docLink = null }) {
   const { all, items, failed } = await collect({ sessions, chatId, askId, view });
   if (!items.length) {
     if (all.some((item) => item.chatId === chatId) && openChat) openChat(chatId);
@@ -326,6 +326,7 @@ export async function openChatAsks({ sessions, chatId, askId = '', view, openCha
     closed: () => { if (view) view.redraw(); },
     more: asking ? async () => (await collect({ sessions: asking(), view })).items : null,
     connection,
+    docLink,
   });
 }
 
@@ -368,7 +369,7 @@ export function closeAskDialog() { if (current) current.close(); }
  *               is not live the dialog says so under its top bar, that the
  *               question may already have been answered, and dims it
  */
-export function openAskDialog({ items, start = 0, watch, openChat, closed, more = null, connection = null }) {
+export function openAskDialog({ items, start = 0, watch, openChat, closed, more = null, connection = null, docLink = null }) {
   if (current) { current.jump(items, start); return current; }
   const opener = document.activeElement;
   const dialog = document.createElement('dialog');
@@ -938,6 +939,16 @@ export function openAskDialog({ items, start = 0, watch, openChat, closed, more 
   }
 
   shell.addEventListener('click', async (event) => {
+    // A link in the agent's text to a page or a Markdown file of the chat
+    // opens in a new tab (session.js chatDocTab): the dialog covers the chat
+    // and the column beside it, and the browser alone would ask Socrates for
+    // a file path as if it were one of its own pages.
+    const link = event.target.closest('.so-md a[href]');
+    if (link && docLink && event.button === 0 && !event.shiftKey && !event.altKey && item()
+      && docLink(link.getAttribute('href'), item().chatId)) {
+      event.preventDefault();
+      return;
+    }
     // Opening and closing a context is the dialog's own state, so that a
     // redraw keeps it the way the person left it.
     const summary = event.target.closest('summary');

@@ -10312,6 +10312,80 @@ async function asktexts() {
   }
 }
 
+// ask-links: a link in a question to a page of the chat's pages folder, by
+// its absolute path, or to a Markdown file of its working directory opens in
+// a new tab as the Docs viewer draws it (session.js chatDocTab): the dialog
+// covers the chat and the column beside it, and the browser alone would ask
+// Socrates for the file's path as one of its own pages. The question stays.
+async function asklinks() {
+  const s = await homeChats();
+  const work = join(s.data, 'ask-links-work');
+  mkdirSync(join(work, 'docs'), { recursive: true });
+  writeFileSync(join(work, 'docs', 'guide.md'), '# The guide\n');
+  try {
+    await awaitHome(s.page, (h) => h.shown, 10000);
+    const id = await makeChat(s, 'claude', { title: 'Findings', workdir_mode: 'custom', workdir: work });
+    let pages = '';
+    for (let i = 0; i < 100 && !pages; i++) {
+      const list = await (await s.context.request.get(s.url + '/api/sessions')).json().catch(() => ({}));
+      const row = (Array.isArray(list) ? list : (list.sessions || [])).find((x) => x.id === id);
+      if (row && row.pages_dir && existsSync(row.pages_dir)) pages = row.pages_dir;
+      else await wait(200);
+    }
+    ok(!!pages, 'the chat has a pages folder', pages);
+    writeFileSync(join(pages, 'findings.md'), '# Findings and target\n\nAll of it.\n');
+    const ask = {
+      title: 'The redesign',
+      context: `The findings are in [the page](${pages}/findings.md), the rules in [the guide](docs/guide.md) and in \`docs/gone.md\`.`,
+      questions: [{ id: 'go', header: 'Go', question: 'Go ahead?', kind: 'confirm' }],
+    };
+    const said = await tellChat(s, id, '/askuser ' + JSON.stringify(ask));
+    ok(said === 200 && !!(await openAskOf(s, id, 20000)), 'the chat asks', String(said));
+    await awaitHome(s.page, (h) => h.counts.questions === 1 && h.asking, 10000);
+    await s.page.click('.so-home__q-action');
+    await awaitAsk(s.page, (d) => !!d && d.question === 'Go ahead?', 10000);
+    await askSettled(s.page);
+    // The batch's context folds under its title on a desktop.
+    const fold = await s.page.$eval('dialog.so-askdlg .so-md a[href="docs/guide.md"]', (a) => {
+      const d = a.closest('details');
+      return d ? d.open : true;
+    }).catch((e) => String(e));
+    if (fold === false) await s.page.click('dialog.so-askdlg details.so-ask-context:has(a[href="docs/guide.md"]) > summary');
+    const opens = async (href) => {
+      const [tab] = await Promise.all([
+        s.context.waitForEvent('page', { timeout: 8000 }),
+        s.page.click(`dialog.so-askdlg .so-md a[href="${href}"]`),
+      ]);
+      await tab.waitForURL(/\/docs\//, { timeout: 8000 }).catch(() => {});
+      const h1 = await tab.locator('h1').first().textContent({ timeout: 8000 }).catch(() => '');
+      const at = new URL(tab.url()).pathname;
+      await tab.close();
+      return { h1, at };
+    };
+    const page = await opens(`${pages}/findings.md`);
+    ok(page.h1 === 'Findings and target' && page.at.startsWith('/docs/') && page.at.endsWith('/findings.md'),
+      "a link to a page of the chat's pages folder opens it in a new tab", JSON.stringify(page));
+    const guide = await opens('docs/guide.md');
+    ok(guide.h1 === 'The guide' && guide.at.endsWith('/docs/guide.md'),
+      'a link to a Markdown file of the working directory opens it in a new tab', JSON.stringify(guide));
+    const before = s.context.pages().length;
+    await s.page.click('dialog.so-askdlg .so-md a[href="docs/gone.md"]');
+    const told = await s.page.waitForFunction(() => [...document.querySelectorAll('.ds-toast')]
+      .map((n) => n.innerText).find((t) => /docs\/gone\.md is not a Markdown file/.test(t)) || null, null, { timeout: 8000 })
+      .then((h) => h.jsonValue(), () => null);
+    await wait(300);
+    ok(!!told && s.context.pages().length === before, 'a link to a file that is not there shuts its tab and says so',
+      JSON.stringify({ told, tabs: s.context.pages().length - before }));
+    const still = await s.page.evaluate(() => !!document.querySelector('dialog.so-askdlg[open]') && location.pathname === '/');
+    ok(still, 'the question stays open where it was', String(still));
+    // The file looked for in the other working trees is not there either.
+    const gone = /\/api\/docs\/locate\?.*gone\.md/;
+    ok(unexpected(s.errors, gone).length === 0, 'no console errors', unexpected(s.errors, gone).join(' | ') || '0');
+  } finally {
+    await s.stop();
+  }
+}
+
 // home-question: the Questions card, the dialog, a tap, and the answer at the
 // agent - Claude Code's ask_user returning the person's choice.
 async function homequestion() {
@@ -16202,6 +16276,7 @@ const ALL = [
   ['home-live', 'the numbers on Home move by themselves, with no terminal attached', homelive],
   ['many-chats', 'sixty chats at work on a slow CPU: Home and an open chat still answer at once', manychats],
   ['outcome', 'a turn\'s end is judged: the hourglass while it is read, then the verdict everywhere', outcome],
+  ['ask-links', 'a link in a question to a page or a Markdown file of the chat opens in a new tab, and one to nothing says so', asklinks],
   ['ask-texts', 'the steps, warnings, sections and images an agent writes around its questions, in the dialog', asktexts],
   ['home-question', 'a chat\u2019s question answered with a tap, and the choice at the agent', homequestion],
   ['home-own-answer', 'an answer of one\u2019s own, typed into the question dialog', homeownanswer],

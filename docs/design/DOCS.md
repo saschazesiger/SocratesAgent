@@ -95,6 +95,14 @@ file opens it beside the chat. Decided with the owner the same day:
   `chatDocLink`): a page (PAGES.md) links a file of the working directory by its absolute path, and a
   path with `..` out of a working tree may lead into another. Only a link nothing can open gets the
   snackbar "That link leads out of this folder".
+- **A link in the question dialog** (askdialog.js, over Home or the chat) means what the same link in
+  the chat means (session.js `chatDocTarget`), but the dialog covers the chat and the column beside it:
+  the file opens in a new tab, at the address *Open in a new tab* has (`chatDocTab`, found with
+  docside.js `findDoc` / `findOutside`), and the question stays as it was. The tab is opened at the
+  click, which the browser allows, and sent there once the file is found; a link nothing can open shuts
+  it again and gets the snackbar. Before this the browser took such a path as one of Socrates' own
+  addresses (`https://<host>/var/lib/…/pages/x.md`), which shows nothing. A question's card in the
+  chat opens it beside the chat, as any link there.
 - Chat agents are told (`agent.DocsGuidance`, appended to Claude Code's system prompt, Codex's
   developer instructions and the instructions of the ask server other agents get): every time a
   Markdown file of the working directory is mentioned (in a list, a table, the closing summary), as a

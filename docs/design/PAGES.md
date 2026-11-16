@@ -39,7 +39,8 @@ never only as a `code` path, another page by its name. The folder exists from th
 
 - **A link** to a page (its absolute path, `[The plan](/…/chats/<chat>/pages/plan.md)`) opens it
   beside the chat as a link to a Markdown file of the chat's working directory does (DOCS.md §3): the
-  chat knows its pages folder (`pages_dir` of the session).
+  chat knows its pages folder (`pages_dir` of the session). In the question dialog, which covers the
+  chat, it opens in a new tab (DOCS.md §3, "A link in the question dialog").
 - **A link in a page** to a file of the chat's working directory, by its absolute path, leads out of the
   pages folder: the viewer's kit says so (`outside`), and docside.js `outsideHref` and session.js
   `chatDocLink` take it where the same link in the chat would go (the file beside the chat, or one in
@@ -75,4 +76,4 @@ never only as a `code` path, another page by its name. The folder exists from th
 | `internal/web/static/js/session.js` | `chatDocLink`: a link into the pages folder, and a page's link out of it |
 | `internal/web/static/js/docside.js` | `outsideHref`: a link out of the file shown, as an absolute path |
 
-Tested by `go test ./internal/agent/... ./internal/server -run 'Docs|Pages'` and `node e2e/run.mjs chatpages`.
+Tested by `go test ./internal/agent/... ./internal/server -run 'Docs|Pages'` and `node e2e/run.mjs chatpages ask-links`.
