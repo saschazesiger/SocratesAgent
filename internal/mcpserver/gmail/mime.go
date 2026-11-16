@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"html"
 	"io"
@@ -113,7 +114,11 @@ func parseMessage(raw []byte) (*message, error) {
 
 func (m *message) walk(h textproto.MIMEHeader, body io.Reader, depth int) {
 	ctype, params, err := mime.ParseMediaType(h.Get("Content-Type"))
-	if err != nil || ctype == "" {
+	if errors.Is(err, mime.ErrInvalidMediaParameter) && ctype != "" {
+		// A parameter Go will not read (an unquoted boundary with = in
+		// it): keep the type and take the boundary and charset as written.
+		params = looseParams(h.Get("Content-Type"))
+	} else if err != nil || ctype == "" {
 		ctype, params = "text/plain", map[string]string{"charset": "utf-8"}
 	}
 	if strings.HasPrefix(ctype, "multipart/") && depth < maxDepth {
@@ -161,6 +166,22 @@ func (m *message) walk(h textproto.MIMEHeader, body io.Reader, depth int) {
 	}
 	m.Attachments = append(m.Attachments, attachment{Name: filepath.Base(strings.ReplaceAll(name, `\`, "/")), Type: ctype,
 		Inline: disp == "inline" || (disp == "" && h.Get("Content-Id") != ""), Data: data})
+}
+
+var reParam = regexp.MustCompile(`(?i);\s*(boundary|charset|name)\s*=\s*("([^"]*)"|[^;\s]+)`)
+
+// looseParams reads the parameters of a Content-Type that the mime
+// package refuses.
+func looseParams(v string) map[string]string {
+	out := map[string]string{}
+	for _, m := range reParam.FindAllStringSubmatch(v, -1) {
+		val := m[2]
+		if m[3] != "" || strings.HasPrefix(val, `"`) {
+			val = m[3]
+		}
+		out[strings.ToLower(m[1])] = val
+	}
+	return out
 }
 
 // transferDecoder decodes a part's Content-Transfer-Encoding.

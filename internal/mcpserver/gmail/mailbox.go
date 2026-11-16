@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"net/mail"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -54,7 +55,11 @@ type summary struct {
 	From, To, Cc, Subject string
 	MessageID, References string
 	ReplyTo               string
-	Size                  int
+	// RawFrom, RawTo and RawReplyTo are the headers as written (encoded
+	// words and all), which addresses are read from: a decoded name may
+	// have a comma in it.
+	RawFrom, RawTo, RawReplyTo string
+	Size                       int
 }
 
 // fetched is a message fetched: its summary and, when asked for, the whole
@@ -82,6 +87,10 @@ func openMailbox(ctx context.Context, dial dialFunc, email, password string) (*m
 		}
 	}()
 	if _, err := c.run(ctx, "LOGIN", c.str(email), c.str(strings.ReplaceAll(password, " ", ""))); err != nil {
+		var refused *imapError
+		if errors.As(err, &refused) && refused.Kind == "NO" {
+			return nil, &loginRefused{refused}
+		}
 		return nil, err
 	}
 	rs, err := c.run(ctx, "CAPABILITY")
@@ -294,6 +303,7 @@ func (s *summary) headers(raw []byte) {
 	if t, err := mail.ParseDate(h.Get("Date")); err == nil {
 		s.Date = t
 	}
+	s.RawFrom, s.RawTo, s.RawReplyTo = h.Get("From"), h.Get("To"), h.Get("Reply-To")
 	s.From = decodeHeader(h.Get("From"))
 	s.To = decodeHeader(h.Get("To"))
 	s.Cc = decodeHeader(h.Get("Cc"))
@@ -302,6 +312,9 @@ func (s *summary) headers(raw []byte) {
 	s.MessageID = strings.TrimSpace(h.Get("Message-Id"))
 	s.References = strings.Join(strings.Fields(h.Get("References")), " ")
 }
+
+// systemFlag is a flag or system label, which goes as an atom (\Seen).
+var systemFlag = regexp.MustCompile(`^\\[A-Za-z]+$`)
 
 // store changes labels or flags of messages in All Mail: item is
 // +X-GM-LABELS, -X-GM-LABELS, +FLAGS or -FLAGS.
@@ -314,7 +327,7 @@ func (m *mailbox) store(ctx context.Context, uids []uint32, item string, values 
 	}
 	var list []string
 	for _, v := range values {
-		if strings.HasPrefix(v, `\`) && !strings.ContainsAny(v, " ()\"") {
+		if systemFlag.MatchString(v) {
 			list = append(list, v)
 			continue
 		}

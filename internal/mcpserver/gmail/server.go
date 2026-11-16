@@ -19,6 +19,7 @@ import (
 	"net"
 	"net/http"
 	"net/mail"
+	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
@@ -497,7 +498,7 @@ func dateWords(t time.Time) string {
 
 // webLink opens a message in Gmail's web app, in the right account.
 func (c *call) webLink(id uint64) string {
-	return "https://mail.google.com/mail/?authuser=" + c.email + "#all/" + hexID(id)
+	return "https://mail.google.com/mail/?authuser=" + url.QueryEscape(c.email) + "#all/" + hexID(id)
 }
 
 func (c *call) search(ctx context.Context, args json.RawMessage) (string, error) {
@@ -653,7 +654,10 @@ func (c *call) thread(ctx context.Context, args json.RawMessage) (string, error)
 		}
 		if len(uids) == 0 {
 			var b strings.Builder
-			c.writeMessage(&b, f, max(a.MaxChars, defaultChars))
+			if a.MaxChars <= 0 {
+				a.MaxChars = defaultChars
+			}
+			c.writeMessage(&b, f, a.MaxChars)
 			return b.String(), nil
 		}
 	}
@@ -662,7 +666,9 @@ func (c *call) thread(ctx context.Context, args json.RawMessage) (string, error)
 		more = len(uids) - threadMessages
 		uids = uids[len(uids)-threadMessages:]
 	}
-	got, err := c.m.fetch(ctx, uids, true)
+	// The headers of all first, then each message whole, one at a time: a
+	// conversation with large attachments is never in memory at once.
+	got, err := c.m.fetch(ctx, uids, false)
 	if err != nil {
 		return "", err
 	}
@@ -677,11 +683,18 @@ func (c *call) thread(ctx context.Context, args json.RawMessage) (string, error)
 		fmt.Fprintf(&b, " The first %d are left out.", more)
 	}
 	b.WriteString("\n\n")
-	for i, f := range got {
+	for i, h := range got {
 		if i > 0 {
 			b.WriteString("\n---\n\n")
 		}
-		c.writeMessage(&b, f, each)
+		whole, err := c.m.fetch(ctx, []uint32{h.UID}, true)
+		if err != nil {
+			return "", err
+		}
+		if len(whole) == 0 {
+			continue
+		}
+		c.writeMessage(&b, whole[0], each)
 	}
 	return b.String(), nil
 }
@@ -767,26 +780,70 @@ func (c *call) attachment(ctx context.Context, args json.RawMessage) (string, er
 		}
 	}
 	into := filepath.Join(dir, hexID(f.MsgID))
-	if err := os.MkdirAll(into, 0o755); err != nil {
+	if err := os.MkdirAll(into, 0o700); err != nil {
 		return "", err
 	}
 	var b strings.Builder
 	b.WriteString("Saved:\n")
 	used := map[string]bool{}
 	for _, x := range pick {
-		name := safeName(x.Name)
+		base := safeName(x.Name)
+		ext := filepath.Ext(base)
+		name := base
 		for i := 2; used[name]; i++ {
-			ext := filepath.Ext(x.Name)
-			name = safeName(strings.TrimSuffix(x.Name, ext) + "-" + strconv.Itoa(i) + ext)
+			name = strings.TrimSuffix(base, ext) + "-" + strconv.Itoa(i) + ext
 		}
 		used[name] = true
 		path := filepath.Join(into, name)
-		if err := os.WriteFile(path, x.Data, 0o644); err != nil {
+		if err := writePrivate(path, x.Data); err != nil {
 			return "", err
 		}
 		fmt.Fprintf(&b, "- %s (%s, %s)\n", path, x.Type, sizeWords(len(x.Data)))
 	}
 	return b.String(), nil
+}
+
+// private is whether a file may not go into a draft: anything in the data
+// directory (the database, its key, other chats) but this chat's saved
+// attachments.
+func (s *Server) private(path, session string) bool {
+	if s.deps.DataDir == "" {
+		return false
+	}
+	data, err := filepath.EvalSymlinks(s.deps.DataDir)
+	if err != nil {
+		data = s.deps.DataDir
+	}
+	within := func(dir string) bool {
+		rel, err := filepath.Rel(dir, path)
+		return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+	}
+	if !within(data) {
+		return false
+	}
+	if own := s.chatDir(session); own != "" {
+		if dir, err := filepath.EvalSymlinks(own); err == nil && within(dir) {
+			return false
+		}
+	}
+	return true
+}
+
+// writePrivate writes a file only its owner reads (it is someone's mail),
+// a new one: what was there, a link too, is removed first.
+func writePrivate(path string, data []byte) error {
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return err
+	}
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		return err
+	}
+	return f.Close()
 }
 
 // safeName is a file name that stays in its folder.
@@ -836,13 +893,13 @@ func (c *call) draft(ctx context.Context, args json.RawMessage) (string, error) 
 			return "", err
 		}
 		if d.To == "" {
-			d.To = f.ReplyTo
-			if d.To == "" {
-				d.To = f.From
+			d.To = f.RawReplyTo
+			if strings.TrimSpace(d.To) == "" {
+				d.To = f.RawFrom
 			}
 			// An answer to one's own message goes to whom it went to.
-			if addr, err := mail2(f.From); err == nil && strings.EqualFold(addr, c.email) {
-				d.To = f.To
+			if addr, err := mail2(f.RawFrom); err == nil && strings.EqualFold(addr, c.email) {
+				d.To = f.RawTo
 			}
 		}
 		if a.Subject == nil {
@@ -864,6 +921,13 @@ func (c *call) draft(ctx context.Context, args json.RawMessage) (string, error) 
 				return "", fmt.Errorf("%s: a relative path needs the chat's folder; give an absolute one", p)
 			}
 			path = filepath.Join(c.sess.Workdir, path)
+		}
+		path, err := filepath.EvalSymlinks(path)
+		if err != nil {
+			return "", fmt.Errorf("the attachment %s cannot be read: %v", p, err)
+		}
+		if c.s.private(path, c.sess.ID) {
+			return "", fmt.Errorf("the attachment %s is in Socrates' data directory, which holds its secrets", p)
 		}
 		st, err := os.Stat(path)
 		if err != nil {
@@ -920,14 +984,23 @@ func mail2(from string) (string, error) {
 
 // forbidden is whether a label may not be set or taken away by an agent:
 // it would trash, report, send or unmake a message.
+// Only INBOX, IMPORTANT and STARRED of the system labels may be set; any
+// other name with a backslash, under Gmail's own folder ([Gmail]/…, in some
+// countries [Google Mail]/…) or of a special-use mailbox is refused. label
+// is trimmed already.
 func (c *call) forbidden(label string) bool {
-	low := strings.ToLower(strings.TrimSpace(label))
+	low := strings.ToLower(label)
 	switch low {
-	case `\trash`, `\spam`, `\sent`, `\draft`, `\drafts`, `\all`, `\junk`, "trash", "spam", "sent", "draft", "drafts":
+	case "inbox", `\inbox`, "important", `\important`, "starred", `\starred`:
+		return false
+	case "trash", "spam", "sent", "draft", "drafts", "all", "junk", "[gmail]", "[google mail]":
+		return true
+	}
+	if strings.HasPrefix(low, `\`) || strings.HasPrefix(low, "[gmail]/") || strings.HasPrefix(low, "[google mail]/") {
 		return true
 	}
 	for _, x := range c.m.boxes {
-		if x.Special != "" && x.Special != `\Important` && x.Special != `\Flagged` && strings.EqualFold(x.Name, label) {
+		if x.Special != "" && strings.EqualFold(x.Name, label) {
 			return true
 		}
 	}
@@ -971,7 +1044,7 @@ func (c *call) modify(ctx context.Context, args json.RawMessage) (string, error)
 	}
 	var add, remove []string
 	for _, l := range a.Add {
-		if strings.TrimSpace(l) == "" {
+		if l = strings.TrimSpace(l); l == "" {
 			continue
 		}
 		if c.forbidden(l) {
@@ -980,7 +1053,7 @@ func (c *call) modify(ctx context.Context, args json.RawMessage) (string, error)
 		add = append(add, labelArg(l))
 	}
 	for _, l := range a.Remove {
-		if strings.TrimSpace(l) == "" {
+		if l = strings.TrimSpace(l); l == "" {
 			continue
 		}
 		if c.forbidden(l) {

@@ -52,8 +52,19 @@ type imapError struct {
 
 func (e *imapError) Error() string { return "the mail server answered " + e.Kind + ": " + e.Text }
 
+// loginRefused is the server refusing LOGIN: a wrong address or password,
+// or the account's password where an app password is needed.
+type loginRefused struct{ err *imapError }
+
+func (e *loginRefused) Error() string { return e.err.Error() }
+func (e *loginRefused) Unwrap() error { return e.err }
+
 // authFailed is whether err is the server refusing the login.
 func authFailed(err error) bool {
+	var lr *loginRefused
+	if errors.As(err, &lr) {
+		return true
+	}
 	var ie *imapError
 	if !errors.As(err, &ie) {
 		return false
@@ -225,7 +236,7 @@ func (c *imapConn) read() (*response, error) {
 			return nil, err
 		}
 		n, start := literalTail(line)
-		if n < 0 {
+		if n < 0 || (len(text) == 0 && statusLine(line)) {
 			text = append(text, line...)
 			break
 		}
@@ -254,11 +265,29 @@ func (c *imapConn) readLine() ([]byte, error) {
 		if !errors.Is(err, bufio.ErrBufferFull) {
 			return nil, err
 		}
-		if len(line) > 1<<20 {
+		if len(line) > maxLiteral {
 			return nil, errors.New("the mail server sent a line too long")
 		}
 	}
 	return bytes.TrimRight(line, "\r\n"), nil
+}
+
+// statusLine is whether a line is a status response (OK, NO, BAD, BYE,
+// PREAUTH, or a continuation), whose text is text: a {5} at its end is no
+// literal.
+func statusLine(line []byte) bool {
+	f := strings.Fields(string(line))
+	if len(f) > 0 && f[0] == "+" {
+		return true
+	}
+	if len(f) < 2 {
+		return false
+	}
+	switch strings.ToUpper(f[1]) {
+	case "OK", "NO", "BAD", "BYE", "PREAUTH":
+		return true
+	}
+	return false
 }
 
 // literalTail is the size of the literal a line announces at its end

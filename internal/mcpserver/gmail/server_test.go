@@ -384,7 +384,7 @@ func TestSearchAndRead(t *testing.T) {
 
 	out = e.call(Read, `{"id":"1a00000000000002"}`, false)
 	must(t, out, "# Bitte bestätigen", "Reply-To: help@shop.example", "Bitte hier (https://shop.example/ok) bestätigen.",
-		"authuser=janis@example.com#all/1a00000000000002")
+		"authuser=janis%40example.com#all/1a00000000000002")
 	if slices.Contains(e.fake.msg(0x1a00000000000002).flags, `\Seen`) {
 		t.Fatal("reading marked the message read")
 	}
@@ -518,5 +518,67 @@ func TestToolsAreDescribed(t *testing.T) {
 	}
 	if !mcpserver.NameRE.MatchString(s.Name()) {
 		t.Fatal(s.Name())
+	}
+}
+
+func TestReviewFindings(t *testing.T) {
+	e := newGmailEnv(t)
+	// Spaces around a name, Gmail's own folders under any name, and any
+	// other system label are refused.
+	for _, l := range []string{"[Gmail]/Papierkorb ", " " + fakeTrash, "[Gmail]/Spam", "[Google Mail]/Trash", `\Junk`, "[Gmail]"} {
+		must(t, e.call(Modify, `{"ids":["1a00000000000001"],"add_labels":[`+strconv.Quote(l)+`]}`, true), "cannot be set")
+	}
+	must(t, e.call(Modify, `{"ids":["1a00000000000001"],"add_labels":[" Rechnung "]}`, false), "Rechnung")
+
+	// Two attachments of one long name are saved under two names, and
+	// promptly.
+	long := strings.Repeat("x", 230) + ".pdf"
+	e.fake.mu.Lock()
+	e.fake.add(0x1a00000000000009, 0x1a00000000000009, nil, nil, "From: a@example.com\r\nSubject: two\r\n"+
+		"Content-Type: multipart/mixed; boundary=----=_Part_0_1.2\r\n\r\n------=_Part_0_1.2\r\nContent-Type: text/plain\r\n\r\nzwei\r\n"+
+		"------=_Part_0_1.2\r\nContent-Disposition: attachment; filename=\""+long+"\"\r\n\r\nA\r\n"+
+		"------=_Part_0_1.2\r\nContent-Disposition: attachment; filename=\""+long+"\"\r\n\r\nB\r\n------=_Part_0_1.2--\r\n")
+	e.fake.mu.Unlock()
+	out := e.call(Attachment, `{"id":"1a00000000000009"}`, false)
+	if strings.Count(out, "\n- ") != 2 || !strings.Contains(out, "-2.pdf") {
+		t.Fatalf("%s", out)
+	}
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n")[1:] {
+		path := strings.TrimPrefix(strings.Fields(line)[1], "")
+		if st, err := os.Stat(path); err != nil || st.Mode().Perm() != 0o600 {
+			t.Fatalf("%s: %v %v", path, st, err)
+		}
+	}
+	// The unquoted boundary with = in it was read: the text is the text.
+	must(t, e.call(Read, `{"id":"1a00000000000009"}`, false), "\nzwei\n", "2. ")
+
+	// Nothing of the data directory goes into a draft but the chat's own
+	// attachments.
+	secret := filepath.Join(e.data, "socrates.db")
+	os.WriteFile(secret, []byte("secret"), 0o600)
+	must(t, e.call(Draft, `{"to":"x@example.com","body":"x","attachments":[`+strconv.Quote(secret)+`]}`, true), "data directory")
+	os.Symlink(secret, filepath.Join(e.sess.Workdir, "link.db"))
+	must(t, e.call(Draft, `{"to":"x@example.com","body":"x","attachments":["link.db"]}`, true), "data directory")
+	saved := strings.Fields(strings.Split(out, "\n")[1])[1]
+	e.call(Draft, `{"to":"x@example.com","body":"x","attachments":[`+strconv.Quote(saved)+`]}`, false)
+
+	// A sender whose encoded name has a comma is answered.
+	e.fake.mu.Lock()
+	e.fake.add(0x1a0000000000000a, 0x1a0000000000000a, []string{`\Inbox`}, nil,
+		"From: =?utf-8?q?M=C3=BCller=2C_Hans?= <hans@example.com>\r\nSubject: Frage\r\nMessage-ID: <q@example.com>\r\n\r\nHallo\r\n")
+	e.fake.mu.Unlock()
+	must(t, e.call(Draft, `{"reply_to":"1a0000000000000a","body":"Antwort"}`, false), "hans@example.com", "Subject: Re: Frage")
+}
+
+func TestLoginRefusedIsInvalid(t *testing.T) {
+	if !authFailed(&loginRefused{&imapError{Kind: "NO", Text: "[ALERT] Application-specific password required"}}) {
+		t.Fatal("an account password where an app password is needed is not a failed sign-in")
+	}
+	r, err := parseResponse("* OK [ALERT] mind the {5}", nil)
+	if err != nil || r.Kind != "OK" {
+		t.Fatal(r, err)
+	}
+	if !statusLine([]byte("* OK [ALERT] mind the {5}")) || statusLine([]byte("* 1 FETCH (BODY[] {5}")) {
+		t.Fatal("status lines")
 	}
 }
