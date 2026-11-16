@@ -3702,7 +3702,7 @@ async function mcpcard() {
     await page.waitForSelector('dialog .so-mcp-switches input[data-name="fake"]', { timeout: 10000 });
     const listed = await page.$$eval('dialog .so-mcp-switches .ds-switch', (list) => list.map((r) =>
       r.querySelector('.ds-switch__label').textContent + ':' + r.querySelector('input').checked));
-    ok(listed.join(' ') === 'broken:false BrowserStack:true context7:true fake:false linear:false Socrates Tests:false',
+    ok(listed.join(' ') === 'broken:false BrowserStack:true context7:true fake:false Gmail:false linear:false Socrates Tests:false',
       'the chat lists the servers, the built-in ones by their titles and on as Admin says', listed.join(' '));
     await page.click('dialog .so-mcp-switch[data-name="fake"] button[data-test]');
     await page.waitForSelector('dialog .so-mcp-probe .ds-alert.ds-tone-success', { timeout: 30000 });
