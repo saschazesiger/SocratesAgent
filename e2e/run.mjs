@@ -2916,7 +2916,7 @@ async function sharedmcp() {
     await s.page.waitForSelector('dialog .so-mcp-switches input[data-name="search"]', { timeout: 10000 });
     const listed = await s.page.$$eval('dialog .so-mcp-switches .ds-switch', (list) => list.map((row) =>
       row.querySelector('input').dataset.name + ':' + row.querySelector('input').checked));
-    ok(listed.join(' ') === 'browserstack:false db:true github:true gmail:false search:false socrates-tests:false',
+    ok(listed.join(' ') === 'bing-webmaster:false browserstack:false db:true github:true gmail:false search:false search-console:false socrates-tests:false',
       'the chat’s dialog lists every server with its state, the built-in ones off', listed.join(' '));
     await s.page.click('dialog label.ds-switch:has(input[data-name="search"])');
     await s.page.waitForFunction(() => /search is on/.test(document.body.textContent), null, { timeout: 10000 });
@@ -3033,7 +3033,7 @@ async function sheetmcp() {
       r.querySelector('input').dataset.name + ':' + r.querySelector('input').checked));
     await page.waitForSelector('#nsMcpField:not([hidden]) #nsMcp input[data-name="search"]', { timeout: 10000 });
     let listed = await switches();
-    ok(listed.join(' ') === 'browserstack:false github:true gmail:false search:false socrates-tests:false',
+    ok(listed.join(' ') === 'bing-webmaster:false browserstack:false github:true gmail:false search:false search-console:false socrates-tests:false',
       'the sheet offers Admin’s MCP servers, each on its default, and the built-in ones off', listed.join(' '));
     const builtin = await page.$eval('#nsMcp .ds-switch:has(input[data-name="browserstack"])', (r) =>
       r.querySelector('.ds-switch__label').textContent + ' / ' + r.querySelector('.ds-switch__hint').textContent);
@@ -3041,7 +3041,7 @@ async function sheetmcp() {
     await page.click('#nsMcp label.ds-switch:has(input[data-name="search"])');
     await page.click('#nsMcp label.ds-switch:has(input[data-name="github"])');
     listed = await switches();
-    ok(listed.join(' ') === 'browserstack:false github:false gmail:false search:true socrates-tests:false', 'a switch is moved on the sheet', listed.join(' '));
+    ok(listed.join(' ') === 'bing-webmaster:false browserstack:false github:false gmail:false search:true search-console:false socrates-tests:false', 'a switch is moved on the sheet', listed.join(' '));
     await shot(page, 'sheet-mcp');
     // The shell has none of it.
     await page.click('#newSessionSheet .so-settings__program[data-value="shell"]');
@@ -3052,7 +3052,7 @@ async function sheetmcp() {
     await page.click('#newSessionSheet .so-settings__program[data-value="claude"]');
     await page.waitForSelector('#nsMcpField:not([hidden])', { timeout: 10000 });
     listed = await switches();
-    ok(listed.join(' ') === 'browserstack:false github:false gmail:false search:true socrates-tests:false', 'back on the agent, the switches are as they were', listed.join(' '));
+    ok(listed.join(' ') === 'bing-webmaster:false browserstack:false github:false gmail:false search:true search-console:false socrates-tests:false', 'back on the agent, the switches are as they were', listed.join(' '));
 
     await page.click('#nsStart');
     await page.waitForSelector('#newSessionSheet[open]', { state: 'detached', timeout: 30000 });
@@ -3702,7 +3702,7 @@ async function mcpcard() {
     await page.waitForSelector('dialog .so-mcp-switches input[data-name="fake"]', { timeout: 10000 });
     const listed = await page.$$eval('dialog .so-mcp-switches .ds-switch', (list) => list.map((r) =>
       r.querySelector('.ds-switch__label').textContent + ':' + r.querySelector('input').checked));
-    ok(listed.join(' ') === 'broken:false BrowserStack:true context7:true fake:false Gmail:false linear:false Socrates Tests:false',
+    ok(listed.join(' ') === 'Bing Webmaster Tools:false broken:false BrowserStack:true context7:true fake:false Gmail:false linear:false Google Search Console:false Socrates Tests:false',
       'the chat lists the servers, the built-in ones by their titles and on as Admin says', listed.join(' '));
     await page.click('dialog .so-mcp-switch[data-name="fake"] button[data-test]');
     await page.waitForSelector('dialog .so-mcp-probe .ds-alert.ds-tone-success', { timeout: 30000 });

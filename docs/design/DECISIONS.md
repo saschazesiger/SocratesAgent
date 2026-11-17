@@ -495,3 +495,18 @@ owner ([MCP.md](MCP.md), "Gmail"):
   limits nothing (an app password reaches the whole mailbox), so the tools are the limit.
 - **Read, drafts and labels; never send or delete**: the agent prepares answers as drafts, which the
   owner reviews and sends in Gmail. Trash, spam and the other system folders cannot be set as labels.
+
+## Revision 18 — Google Search Console and Bing Webmaster Tools built in, 2026-11-17
+
+The owner asked for a Google Search Console MCP server that uses a service account they gave, and one for
+Bing Webmaster Tools with an API key, both for Browser.lol. Decided with the owner ([MCP.md](MCP.md),
+"Google Search Console", "Bing Webmaster Tools"):
+
+- **Built-in servers with named accounts, not a server per site**: the servers are *Google Search
+  Console* and *Bing Webmaster Tools*; each account in Admin has a name (Browser.lol), which the agent
+  picks it by (`account`). Another site is another account, not another server. *Cost:* a chat that has
+  the server reaches every account of it.
+- **A service account's JSON key for Google, no OAuth**: pasted once in Admin, sealed like every
+  account; Socrates signs the JWT itself (standard library) and keeps the access token for its hour.
+- **Read-only**: Search Console's `webmasters.readonly` scope; Bing's tools call no method that
+  submits or changes anything.

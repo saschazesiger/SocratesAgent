@@ -157,6 +157,49 @@ literals, UTF8=ACCEPT) and the standard library's MIME packages.
   that come too often); a call takes it when it is free and still answers `LIST`, which also reads
   labels made since.
 
+## Google Search Console (`internal/mcpserver/searchconsole`)
+
+Built on 2026-11-17 at the owner's request (DECISIONS.md, Revision 18). It reads Search Console as a
+**Google Cloud service account**: Admin's account has a `name` (what Admin and the agent call it,
+Browser.lol) and the service account's JSON `key` (sealed). The service account's address is added as
+a user of each property in Search Console (Restricted is enough), and the project needs the Search
+Console API enabled. The check signs in anew and lists the properties. No third-party code: the JWT
+(RS256) is signed with the standard library, traded at `oauth2.googleapis.com/token` for a token of
+the read-only scope `webmasters.readonly`, kept for its hour, fetched again when the API answers 401.
+
+| Tool | Does |
+|---|---|
+| `sites` | the properties with the account's permission on each (an unverified one has no data) |
+| `query {site?, start_date?, end_date?, days?, dimensions?, filters?, type?, data_state?, aggregation?, row_limit?, start_row?, save?}` | the Performance report (`searchAnalytics.query`): clicks, impressions, CTR, position by query, page, country, device, searchAppearance, date, hour; filters ANDed. Default the last 28 days of final data (Pacific Time days, ending two days ago; with `data_state` all, today). A table of at most 500 rows; more, or `save`, go into a CSV in `<data>/mcp/search-console/chats/<chat>/` (removed with the chat, `Ender`) and the first 50 are shown |
+| `inspect {url, site?, language?}` | the URL Inspection: verdict, coverage, robots.txt, indexing, fetch, last crawl, canonicals, sitemaps, referring URLs, rich results, AMP, a link into Search Console |
+| `sitemaps {site?}` | the submitted sitemaps: pending, errors, warnings, submitted and read, counts by kind |
+
+- `site` is a property as `sites` names it, or a domain or URL: a bare domain picks the domain property
+  (`sc-domain:`) that covers it, a URL the longest URL-prefix property it starts with, else the domain
+  property; with one property it may be left out. `inspect` picks the property of its URL.
+- `account` names an account by its name or its service account's address; the first when left out.
+
+## Bing Webmaster Tools (`internal/mcpserver/bingwebmaster`)
+
+Built with Google Search Console (Revision 18). Admin's account has a `name` and the `key` (Bing
+Webmaster Tools → Settings → API access), sealed; the check lists the key's sites. Every call is a GET of
+the JSON API (`ssl.bing.com/webmaster/api.svc/json/<Method>?apikey=…`); the key is in the address, so no
+error ever quotes the address. Only methods that read are called.
+
+| Tool | Bing's method | Does |
+|---|---|---|
+| `sites` | `GetUserSites` | the sites, verified or not |
+| `queries {site?, page?, days?, max?}` | `GetQueryStats`, `GetPageQueryStats` | the top queries (of one page), summed over the last days (28): clicks, impressions, CTR, position weighted by impressions |
+| `pages {site?, query?, days?, max?}` | `GetPageStats`, `GetQueryPageStats` | the top pages (shown for one query), the same way |
+| `traffic {site?, days?}` | `GetRankAndTrafficStats` | clicks and impressions by day, with the totals |
+| `crawl {site?, days?}` | `GetCrawlStats` | pages crawled, errors, in index, robots.txt, HTTP codes, inbound links by day (Bing keeps six months) |
+| `crawl_issues {site?, max?}` | `GetCrawlIssues` | the URLs with crawl issues |
+| `url_info {url, site?}` | `GetUrlInfo` | found, last crawled, HTTP status, size, anchors (a date of year 1 is "never") |
+| `sitemaps {site?}` | `GetFeeds` | the sitemaps: status, URLs, submitted, crawled |
+
+Bing gives query and page statistics **by week** (a row per query and week, its top rows of each week);
+the tools sum the weeks that start within the days asked for and say which weeks those were.
+
 ## Socrates Artifacts (removed 2026-11-11)
 
 Built on 2026-11-08 and removed on 2026-11-11: a chat's agent now writes its explaining pages as
@@ -213,6 +256,7 @@ refreshes.
 | `internal/mcpserver/browserstack`, `…/driver` | the BrowserStack server; the device driver (WebDriver, native taps, evidence, page scripts) |
 | `internal/mcpserver/tests` | Socrates Tests (its store: `internal/chattests`) |
 | `internal/mcpserver/gmail` | Gmail: the IMAP client, the MIME reader and draft writer, the tools |
+| `internal/mcpserver/searchconsole`, `…/bingwebmaster` | Google Search Console (the service account's sign-in, the API) and Bing Webmaster Tools |
 | `internal/mcpclient` | the probe (stdio, streamable HTTP, SSE) and the OAuth client |
 | `internal/server/mcpbuiltin.go`, `mcpadmin.go`, `mcpoauth.go`, `mcp.go` | the registry in the server, the tools socket route, Admin's API, the test, OAuth and the proxy |
 | `internal/web/static/js/adminmcp.js` | Admin's MCP servers |

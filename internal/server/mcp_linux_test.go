@@ -174,8 +174,17 @@ func TestAdminKeepsTheBuiltInServersAccounts(t *testing.T) {
 		t.Fatalf("stored: %q", kv)
 	}
 	_, over := e.do(t, e.client, "GET", "/api/mcp/overview", "")
-	if b := over["builtin"].([]any); len(b) != 3 || b[1].(map[string]any)["name"] != "gmail" || b[0].(map[string]any)["name"] != "browserstack" ||
-		len(b[0].(map[string]any)["accounts"].([]any)) != 1 {
+	var names []string
+	var bs map[string]any
+	for _, v := range over["builtin"].([]any) {
+		m := v.(map[string]any)
+		names = append(names, m["name"].(string))
+		if m["name"] == "browserstack" {
+			bs = m
+		}
+	}
+	if strings.Join(names, " ") != "bing-webmaster browserstack gmail search-console socrates-tests" || bs == nil ||
+		len(bs["accounts"].([]any)) != 1 {
 		t.Fatalf("overview: %v", over)
 	}
 	res, body = e.do(t, e.client, "DELETE", "/api/mcp/builtin/browserstack/accounts/"+a["id"].(string), "")
