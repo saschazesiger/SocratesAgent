@@ -3590,7 +3590,7 @@ async function mcpcard() {
     }));
     ok(builtin.name.startsWith('BrowserStack') && builtin.state === 'none' && !builtin.on,
       'the built-in server is a row of its own: no account yet, off in every chat', JSON.stringify(builtin));
-    await page.click('#mcpBuiltin button[data-action="manage"]');
+    await page.click('#mcpBuiltin .so-mcp[data-builtin="browserstack"] button[data-action="manage"]');
     await page.waitForSelector('#mcpSheet[open] .ds-empty', { timeout: 5000 });
     const sheet = await page.$eval('#mcpSheet', (n) => ({
       title: n.querySelector('.ds-sheet__title').textContent, add: !!n.querySelector('[data-action="account-add"]'),
@@ -3600,7 +3600,7 @@ async function mcpcard() {
       'its sheet offers to add an account and lists its tools', JSON.stringify(sheet));
     await page.click('#mcpSheet .ds-sheet__head [data-ds-close]');
     await page.waitForSelector('#mcpSheet', { state: 'hidden', timeout: 5000 });
-    await page.click('#mcpBuiltin label.ds-switch');
+    await page.click('#mcpBuiltin .so-mcp[data-builtin="browserstack"] label.ds-switch');
 
     // A common server from the gallery, prefilled.
     await page.click('#mcpAdd');
