@@ -79,16 +79,21 @@ sudo /usr/local/lib/socrates/update.sh
 ## 🚢 Deploy on every push
 
 ```bash
-sudo scripts/deploy-runner.sh
+sudo TS_AUTHKEY=tskey-auth-… scripts/deploy-access.sh
 ```
 
-This registers a GitHub Actions runner on the server. It only connects out, so it works behind NAT.
+Every job runs on GitHub-hosted runners; nothing of GitHub runs on the server. The deploy job joins your [Tailscale](https://tailscale.com) tailnet as an ephemeral device and sends the binary over SSH to the server's tailnet address, so the server needs no open port beyond the tailnet.
 
 ```
-push to main ──▶ GitHub builds + attests ──▶ runner ──▶ deploy.sh verifies attestation ──▶ smoke test · health check · rollback
+push to main ──▶ GitHub builds + attests ──▶ GitHub runner joins the tailnet ──▶ ssh ──▶ deploy.sh verifies attestation ──▶ smoke test · health check · rollback
 ```
 
-The runner's user may run `deploy.sh` as root, and nothing else.
+| | |
+| --- | --- |
+| 🔑 **The key** | `deploy-access.sh` makes an SSH key for the user `socrates-deploy`: only from the tailnet (`100.64.0.0/10`), only `deploy-ssh.sh`, which may run `deploy.sh` as root and nothing else |
+| 🐙 **GitHub** | It sets the repository's secrets `DEPLOY_SSH_KEY` and `TS_AUTHKEY` (a **reusable** auth key) and variables `DEPLOY_HOST` and `DEPLOY_KNOWN_HOSTS`; it needs `gh` logged in as an admin of the repository and `tailscale up` on the server |
+| 🔁 **Again** | Running it again makes a new key; without `TS_AUTHKEY` the stored one is kept. A self-hosted runner of the earlier setup is removed |
+| 🧹 **Remove** | `sudo scripts/deploy-access.sh --remove`: pushes are then installed by the nightly update |
 
 ---
 

@@ -345,7 +345,7 @@ restore_units() {
 install_scripts() {
 	local from=$1 f stage=$LIBEXEC.new
 	rm -rf "$stage" && mkdir -p "$stage" || return 1
-	for f in lib.sh deps.sh update.sh install.sh deploy.sh; do
+	for f in lib.sh deps.sh update.sh install.sh deploy.sh deploy-ssh.sh; do
 		install -m 755 "$from/scripts/$f" "$stage/$f" && bash -n "$stage/$f" ||
 			{ warn "scripts/$f does not parse; the installed updater stays"; rm -rf "$stage"; return 1; }
 	done
@@ -355,7 +355,7 @@ install_scripts() {
 		return 1
 	fi
 	mkdir -p "$LIBEXEC/previous"
-	for f in lib.sh deps.sh update.sh install.sh deploy.sh; do
+	for f in lib.sh deps.sh update.sh install.sh deploy.sh deploy-ssh.sh; do
 		[ -f "$LIBEXEC/$f" ] && cp -p "$LIBEXEC/$f" "$LIBEXEC/previous/$f"
 		mv -f "$stage/$f" "$LIBEXEC/$f"
 	done

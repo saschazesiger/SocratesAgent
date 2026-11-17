@@ -168,7 +168,7 @@ numbers.
 
 - **Install and update**: `scripts/install.sh` (README "Install"); everything updates itself
   nightly and after a boot (`socrates-update.timer`), and a new Socrates that does not answer its
-  health check is rolled back. `scripts/deploy-runner.sh` installs every push to `main`.
+  health check is rolled back. `scripts/deploy-access.sh` installs every push to `main` (a GitHub-hosted runner in the tailnet, over SSH).
 - **First start after the merge**: the migration of §2.1 runs by itself. Check the log
   (`journalctl -u socrates`) for each source it moved, and Admin → Accounts for the accounts it
   made; an account whose sign-in was lost says "Sign in again". The tar beside the data folder

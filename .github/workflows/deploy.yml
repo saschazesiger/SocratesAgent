@@ -1,7 +1,11 @@
-# Every push to main reaches the running Socrates: GitHub builds the binary,
-# attests where it came from, and the self-hosted runner on the server hands it
-# to scripts/deploy.sh, which installs it with update.sh's smoke test, health
-# check and rollback. scripts/deploy-runner.sh sets up that runner once.
+# Every push to main reaches the running Socrates: GitHub builds the binary and
+# attests where it came from; the deploy job, also on a GitHub-hosted runner,
+# joins the tailnet as an ephemeral device and sends the binary over SSH to the
+# server, whose deploy key may run scripts/deploy-ssh.sh only. That hands it to
+# scripts/deploy.sh, which installs it with update.sh's smoke test, health
+# check and rollback. scripts/deploy-access.sh sets the server and the
+# repository's secrets (DEPLOY_SSH_KEY, TS_AUTHKEY) and variables
+# (DEPLOY_HOST, DEPLOY_KNOWN_HOSTS) up once.
 #
 # The test suite is not a gate here: ci.yml runs it on the same push. What
 # stands between a commit and the service is that it builds, starts on a
@@ -62,7 +66,7 @@ jobs:
 
   deploy:
     needs: build
-    runs-on: [self-hosted, socrates-deploy]
+    runs-on: ubuntu-latest
     # One at a time; a push that lands while one runs replaces any that waits.
     concurrency:
       group: deploy-socrates
@@ -75,5 +79,26 @@ jobs:
         with:
           name: socrates-linux-amd64
           path: dist
+      # An ephemeral device: its state is in memory only, and the tailnet
+      # forgets it when it goes offline at the end of the job.
+      - name: Join the tailnet
+        uses: tailscale/github-action@v3
+        with:
+          authkey: ${{ secrets.TS_AUTHKEY }}
+          hostname: github-deploy-${{ github.run_id }}
       - name: Install on the server
-        run: sudo -n /usr/local/lib/socrates/deploy.sh "$GITHUB_SHA" "$PWD/dist/socrates"
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
+          DEPLOY_KNOWN_HOSTS: ${{ vars.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/deploy
+          chmod 600 ~/.ssh/deploy
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          ssh -i ~/.ssh/deploy -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+            -o ConnectTimeout=60 -o ServerAliveInterval=30 -o ServerAliveCountMax=20 \
+            "socrates-deploy@$DEPLOY_HOST" "$GITHUB_SHA" < dist/socrates
+      - name: Forget the key
+        if: always()
+        run: rm -f ~/.ssh/deploy

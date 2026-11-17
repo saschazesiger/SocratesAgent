@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # Install the Socrates that .github/workflows/deploy.yml built from a push to
-# the branch this machine follows. The workflow's last step runs it on the
-# self-hosted runner, whose user may run this as root and nothing else
-# (scripts/deploy-runner.sh):
+# the branch this machine follows. The workflow's deploy job sends it over
+# SSH from the tailnet to scripts/deploy-ssh.sh, whose user may run this as
+# root and nothing else (scripts/deploy-access.sh):
 #
 #   sudo /usr/local/lib/socrates/deploy.sh COMMIT BINARY
 #
-# A job from somebody's pull request can end up on that runner too, so neither
-# argument is taken on trust. BINARY has to carry GitHub's attestation that
+# Whoever holds the deploy key could send anything, so neither argument is
+# taken on trust. BINARY has to carry GitHub's attestation that
 # deploy.yml built it from COMMIT of the branch on a GitHub-hosted runner, and
 # update.sh then installs it only if COMMIT is on the branch, with the smoke
 # test, health check and rollback of any update. An update that is already
