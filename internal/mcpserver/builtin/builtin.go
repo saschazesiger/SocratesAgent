@@ -6,8 +6,10 @@ package builtin
 import (
 	"github.com/saschazesiger/SocratesAgent/internal/config"
 	"github.com/saschazesiger/SocratesAgent/internal/mcpserver"
+	"github.com/saschazesiger/SocratesAgent/internal/mcpserver/bingwebmaster"
 	"github.com/saschazesiger/SocratesAgent/internal/mcpserver/browserstack"
 	"github.com/saschazesiger/SocratesAgent/internal/mcpserver/gmail"
+	"github.com/saschazesiger/SocratesAgent/internal/mcpserver/searchconsole"
 	"github.com/saschazesiger/SocratesAgent/internal/mcpserver/tests"
 )
 
@@ -25,6 +27,8 @@ func servers(dataDir string, accounts func(server string) []mcpserver.Account, d
 	list := []mcpserver.Server{
 		browserstack.New(browserstack.Deps{DataDir: dataDir, Accounts: func() []mcpserver.Account { return accounts(browserstack.Name) }}),
 		gmail.New(gmail.Deps{DataDir: dataDir, Accounts: func() []mcpserver.Account { return accounts(gmail.Name) }}),
+		searchconsole.New(searchconsole.Deps{DataDir: dataDir, Accounts: func() []mcpserver.Account { return accounts(searchconsole.Name) }}),
+		bingwebmaster.New(bingwebmaster.Deps{Accounts: func() []mcpserver.Account { return accounts(bingwebmaster.Name) }}),
 	}
 	var recorders []tests.NamedRecorder
 	for _, s := range list {
