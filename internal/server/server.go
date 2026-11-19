@@ -132,6 +132,8 @@ type Server struct {
 	chatTests *chattests.Store
 	// docsKeep is the Docs view's token key and probe answers (docs.go).
 	docsKeep docsState
+	// linked keeps each chat's linked files a little while (chatfile.go).
+	linked linkedState
 	// The sign-ins of Admin's OAuth MCP servers (mcpoauth.go) and the last
 	// test of each (mcpadmin.go), made when first used.
 	oauthOnce sync.Once
@@ -434,6 +436,9 @@ func (s *Server) routes() {
 	mux.HandleFunc("GET /api/chats/{id}/parts/{part}", s.auth(s.handleChatPart))
 	mux.HandleFunc("GET /api/chats/{id}/parts/{part}/image", s.auth(s.handleChatPartImage))
 	mux.HandleFunc("GET /api/chats/{id}/image", s.auth(s.handleChatShownImage))
+	mux.HandleFunc("GET /api/chats/{id}/file", s.auth(s.handleChatFile))
+	mux.HandleFunc("GET /api/chats/{id}/file/info", s.auth(s.handleChatFileInfo))
+	mux.HandleFunc("GET /api/chats/{id}/files", s.auth(s.handleChatLinkedFiles))
 	mux.HandleFunc("GET /api/chats/{id}/attachments/{name}", s.auth(s.handleChatAttachmentImage))
 	mux.HandleFunc("POST /api/chats/{id}/model", s.auth(s.handleChatModel))
 	mux.HandleFunc("POST /api/chats/{id}/command", s.auth(s.handleChatCommand))

@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"math"
 	"os"
 	"path"
 	"path/filepath"
@@ -88,13 +89,16 @@ func ContentType(name string) string {
 	return imageTypes[strings.ToLower(path.Ext(name))]
 }
 
-// File is a Markdown file of a listing.
+// File is a Markdown file of a listing, or any file of a listing of every
+// file (ScanAll).
 type File struct {
 	// Path is relative to the folder, with slashes.
 	Path string `json:"path"`
 	Size int64  `json:"size"`
 	// Mtime is when it last changed, in unix milliseconds.
 	Mtime int64 `json:"mtime"`
+	// Kind is how it is shown (FileKind), in a listing of every file only.
+	Kind Kind `json:"kind,omitempty"`
 }
 
 // Listing is a folder's Markdown files, sorted by path.
@@ -132,10 +136,10 @@ func openRoot(root string) (string, error) {
 // walk visits the tree under root breadth first, so that when a bound cuts
 // it short the files nearest the top are the ones seen. It never follows a
 // symbolic link and never enters a hidden directory. visit gets every
-// Markdown file with its path relative to root, and stops the walk by
-// returning false. walk reports whether a bound (max entries, MaxDepth) cut
+// Markdown file (every regular file that is not hidden, with all) with its
+// path relative to root, and stops the walk by returning false. walk reports whether a bound (max entries, MaxDepth) cut
 // the walk short; a directory that cannot be read is passed over.
-func walk(root string, max int, visit func(rel string, d fs.DirEntry) bool) bool {
+func walk(root string, max int, all bool, visit func(rel string, d fs.DirEntry) bool) bool {
 	type dir struct {
 		rel   string
 		depth int
@@ -175,7 +179,7 @@ func walk(root string, max int, visit func(rel string, d fs.DirEntry) bool) bool
 					}
 					queue = append(queue, dir{rel, d.depth + 1})
 				case t.IsRegular():
-					if KindOf(name) == Markdown && !visit(rel, e) {
+					if (all || KindOf(name) == Markdown) && !visit(rel, e) {
 						f.Close()
 						return truncated
 					}
@@ -194,14 +198,21 @@ func walk(root string, max int, visit func(rel string, d fs.DirEntry) bool) bool
 // sorted by path. Symbolic links are left out, and hidden and skipped
 // directories are not entered. A root that is not there is an error
 // wrapping fs.ErrNotExist.
-func Scan(root string) (Listing, error) {
+func Scan(root string) (Listing, error) { return scan(root, false) }
+
+// ScanAll lists every regular file under root that is not hidden, each with
+// its Kind, as Scan lists Markdown: a chat's pages folder, where its agent
+// puts whatever it wants to show.
+func ScanAll(root string) (Listing, error) { return scan(root, true) }
+
+func scan(root string, all bool) (Listing, error) {
 	real, err := openRoot(root)
 	if err != nil {
 		return Listing{}, err
 	}
 	out := Listing{Files: []File{}}
 	full := false
-	cut := walk(real, MaxEntries, func(rel string, d fs.DirEntry) bool {
+	cut := walk(real, MaxEntries, all, func(rel string, d fs.DirEntry) bool {
 		if len(out.Files) >= MaxFiles {
 			full = true
 			return false
@@ -210,7 +221,11 @@ func Scan(root string) (Listing, error) {
 		if err != nil || !info.Mode().IsRegular() {
 			return true
 		}
-		out.Files = append(out.Files, File{Path: rel, Size: info.Size(), Mtime: info.ModTime().UnixMilli()})
+		f := File{Path: rel, Size: info.Size(), Mtime: info.ModTime().UnixMilli()}
+		if all {
+			f.Kind = FileKind(rel)
+		}
+		out.Files = append(out.Files, f)
 		return true
 	})
 	// cut: the walk met a bound of its own; full: the files' bound, which
@@ -229,7 +244,7 @@ func Has(root string) bool {
 		return false
 	}
 	found := false
-	walk(real, hasEntries, func(string, fs.DirEntry) bool {
+	walk(real, hasEntries, false, func(string, fs.DirEntry) bool {
 		found = true
 		return false
 	})
@@ -274,12 +289,17 @@ func readmeIn(dir string) string {
 	return best
 }
 
-// limitOf is the largest file of a kind that is served.
+// limitOf is the largest file of a kind that is served: a Markdown page is
+// read whole, an image of a project's docs is bounded; any other file (of a
+// chat's pages folder) is streamed whatever its size.
 func limitOf(k Kind) int64 {
-	if k == Markdown {
+	switch k {
+	case Markdown:
 		return MaxMarkdownSize
+	case Image:
+		return MaxImageSize
 	}
-	return MaxImageSize
+	return math.MaxInt64
 }
 
 // Listed is whether a file of a repository, by its slash-separated path
@@ -312,6 +332,17 @@ type Target struct {
 	// root and inside are the folder's real path and the file's, relative
 	// to it, as checked: Open opens it inside the folder only.
 	root, inside string
+	// all: found by ResolveAll, whose pictures are not bounded.
+	all bool
+}
+
+// limitFor is limitOf, with the pictures of a folder whose every file is
+// served (ResolveAll) streamed whatever their size.
+func limitFor(k Kind, all bool) int64 {
+	if all && k == Image {
+		return math.MaxInt64
+	}
+	return limitOf(k)
 }
 
 // cleanRel is a slash-separated path asked for, cleaned into its
@@ -345,7 +376,14 @@ func cleanRel(rel string) ([]string, error) {
 // ErrNotServed. A directory resolves to its README (or index.md) with
 // Redirect set, and is not found without one; a file that is not there is
 // an error wrapping fs.ErrNotExist.
-func Resolve(root, rel string) (Target, error) {
+func Resolve(root, rel string) (Target, error) { return resolve(root, rel, false) }
+
+// ResolveAll is Resolve for a folder whose every file is served (a chat's
+// pages folder): any regular file that is not hidden, its Kind by FileKind.
+// A picture is not bounded by MaxImageSize there.
+func ResolveAll(root, rel string) (Target, error) { return resolve(root, rel, true) }
+
+func resolve(root, rel string, all bool) (Target, error) {
 	parts, err := cleanRel(rel)
 	if err != nil {
 		return Target{}, err
@@ -395,14 +433,19 @@ func Resolve(root, rel string) (Target, error) {
 		return Target{Rel: clean + "/" + name, Redirect: true}, nil
 	}
 	kind := KindOf(clean)
-	if !info.Mode().IsRegular() || kind == "" || KindOf(real) != kind {
+	if all {
+		kind = FileKind(clean)
+		if !info.Mode().IsRegular() {
+			return Target{}, ErrNotServed
+		}
+	} else if !info.Mode().IsRegular() || kind == "" || KindOf(real) != kind {
 		return Target{}, ErrNotServed
 	}
-	if info.Size() > limitOf(kind) {
+	if info.Size() > limitFor(kind, all) {
 		return Target{}, ErrTooLarge
 	}
 	return Target{Abs: real, Rel: clean, Kind: kind, Size: info.Size(), Mtime: info.ModTime().UnixMilli(), info: info,
-		root: realRoot, inside: inside}, nil
+		root: realRoot, inside: inside, all: all}, nil
 }
 
 // Open opens the file Resolve found, and refuses it when what is at its
@@ -421,7 +464,7 @@ func (t Target) Open() (*os.File, fs.FileInfo, error) {
 		f.Close()
 		return nil, nil, fmt.Errorf("%s is not there: %w", t.Rel, fs.ErrNotExist)
 	}
-	if info.Size() > limitOf(t.Kind) {
+	if info.Size() > limitFor(t.Kind, t.all) {
 		f.Close()
 		return nil, nil, ErrTooLarge
 	}

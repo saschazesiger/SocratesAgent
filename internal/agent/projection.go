@@ -535,6 +535,40 @@ func (p *Projection) AgentNames(s string) bool {
 	return false
 }
 
+// AgentTexts calls fn with every text the agent wrote in this chat, as
+// AgentNames reads them (its text parts, every string of its questions),
+// each with when it was written: what the chat's linked files are found in
+// (server handleChatLinkedFiles).
+func (p *Projection) AgentTexts(fn func(text string, at int64)) {
+	for _, part := range p.parts {
+		if part.Kind == PartText && part.Text != "" {
+			fn(part.Text, part.UpdatedAt)
+		}
+	}
+	for _, a := range p.Asks {
+		var v any
+		if json.Unmarshal(a.Payload, &v) != nil {
+			continue
+		}
+		var walk func(any)
+		walk = func(v any) {
+			switch t := v.(type) {
+			case string:
+				fn(t, a.At)
+			case []any:
+				for _, e := range t {
+					walk(e)
+				}
+			case map[string]any:
+				for _, e := range t {
+					walk(e)
+				}
+			}
+		}
+		walk(v)
+	}
+}
+
 // payloadNames says whether a string anywhere in a question's payload has s
 // in it. The strings are decoded first: the JSON may escape what the text
 // names plain (a non-ASCII letter as \u00fc, a slash as \/).

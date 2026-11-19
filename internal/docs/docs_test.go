@@ -305,10 +305,10 @@ func TestWalkBound(t *testing.T) {
 		t.Fatal("Has looked past its bound")
 	}
 	n := 0
-	if !walk(root, 10, func(string, fs.DirEntry) bool { n++; return true }) || n != 0 {
+	if !walk(root, 10, false, func(string, fs.DirEntry) bool { n++; return true }) || n != 0 {
 		t.Fatalf("a walk cut short by its bound: visited %d", n)
 	}
-	if walk(root, hasEntries+10, func(string, fs.DirEntry) bool { n++; return true }) || n != 1 {
+	if walk(root, hasEntries+10, false, func(string, fs.DirEntry) bool { n++; return true }) || n != 1 {
 		t.Fatalf("a whole walk: visited %d", n)
 	}
 }

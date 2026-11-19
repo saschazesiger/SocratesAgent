@@ -464,10 +464,20 @@ func (s *Server) handleDocs(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, docsRootMissing(err))
 		return
 	}
-	list, err := docs.Scan(root)
+	all := s.docsAllFiles(folder)
+	scan := docs.Scan
+	if all {
+		scan = docs.ScanAll
+	}
+	list, err := scan(root)
 	if err != nil {
 		writeError(w, http.StatusNotFound, err.Error())
 		return
+	}
+	if all && len(list.Files) <= maxDocsTitles {
+		for i, f := range list.Files {
+			list.Files[i].Kind = docsSniffKind(root, f)
+		}
 	}
 	token, err := s.docsToken(folder)
 	if err != nil {
@@ -493,6 +503,41 @@ func (s *Server) handleDocs(w http.ResponseWriter, r *http.Request) {
 		out["repo"] = repo
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// docsAllFiles is whether every file of a folder is listed and served, not
+// only its Markdown and pictures: a chat's pages folder, where its agent puts
+// what it wants to show (a video, a recording, a PDF, a report).
+func (s *Server) docsAllFiles(folder string) bool {
+	_, ok := s.chatOfPages(folder)
+	return ok
+}
+
+// docsResolve is docs.Resolve, or docs.ResolveAll for a folder whose every
+// file is served.
+func docsResolve(all bool, root, rel string) (docs.Target, error) {
+	if all {
+		return docs.ResolveAll(root, rel)
+	}
+	return docs.Resolve(root, rel)
+}
+
+// docsSniffKind is a listed file's kind, a file whose name says nothing
+// looked at by its first bytes (docs.SniffKind).
+func docsSniffKind(root string, f docs.File) docs.Kind {
+	if f.Kind != docs.Other {
+		return f.Kind
+	}
+	t, err := docs.ResolveAll(root, f.Path)
+	if err != nil {
+		return f.Kind
+	}
+	file, _, err := t.Open()
+	if err != nil {
+		return f.Kind
+	}
+	defer file.Close()
+	return docs.SniffKind(file, f.Kind)
 }
 
 // docsListAge is how old a repository's fetch may be for a listing:
@@ -524,15 +569,20 @@ func (s *Server) handleDocsStat(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, docsRootMissing(err))
 		return
 	}
-	t, err := docs.Resolve(root, q.Get("path"))
+	all := s.docsAllFiles(folder)
+	t, err := docsResolve(all, root, q.Get("path"))
 	if err == nil && t.Redirect {
-		t, err = docs.Resolve(root, t.Rel)
+		t, err = docsResolve(all, root, t.Rel)
 	}
 	if err != nil || t.Redirect {
 		writeError(w, http.StatusNotFound, docsMissing(err))
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"path": t.Rel, "size": t.Size, "mtime": t.Mtime, "kind": t.Kind})
+	kind := t.Kind
+	if kind == docs.Other {
+		kind = docsSniffKind(root, docs.File{Path: t.Rel, Kind: kind})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"path": t.Rel, "size": t.Size, "mtime": t.Mtime, "kind": kind})
 }
 
 // handleDocsLocate finds a Markdown file a chat links that is not in the
@@ -664,7 +714,8 @@ func (s *Server) handleDocsPage(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, docsPageURL(token, home), http.StatusFound)
 		return
 	}
-	t, err := docs.Resolve(folder, rel)
+	all := s.docsAllFiles(key)
+	t, err := docsResolve(all, folder, rel)
 	if err != nil {
 		http.Error(w, docsMissing(err), http.StatusNotFound)
 		return
@@ -680,6 +731,10 @@ func (s *Server) handleDocsPage(w http.ResponseWriter, r *http.Request) {
 	}
 	defer f.Close()
 	w.Header().Set("Cache-Control", "private, no-cache")
+	if all && (t.Kind != docs.Markdown || r.URL.Query().Get("download") == "1") {
+		serveChatFile(w, r, f, info, t.Rel, t.Kind, true)
+		return
+	}
 	if t.Kind == docs.Image || r.URL.Query().Get("raw") == "1" {
 		// A file by itself (an SVG opened in a tab, the text) runs
 		// nothing. A picture may be read by any origin (the page's is
