@@ -14,7 +14,7 @@
 //	terminals/<id>/           a Shell terminal's journal
 //	sessions/<id>/            today's per-session files (plan.json, journal.raw, ...)
 //	profiles/<id>/            today's per-profile CLI state, until accounts replace it
-//	vscode/, vscode-extensions/  the editor's state per folder and its extensions
+//	vscode/, vscode-extensions/  the editors' kept settings and their extensions
 //	backup.json               where the backup goes and its passphrase (not backed up)
 //	run/                      sockets, locks, pids (not backed up)
 //	cache/                    anything that can be made again (not backed up)
@@ -171,9 +171,9 @@ var NotBackedUp = []string{
 	Sessions + "/*/journal.raw*",
 	// The older journal files a sink rotates to (termux.rotatedPath).
 	Sessions + "/*/journal.*.raw",
-	VSCode + "/*/logs",
-	VSCode + "/*/CachedData",
-	VSCode + "/*/CachedProfilesData",
+	// An editor's user data dir, which goes with the editor: only the
+	// settings it keeps in VSCode outlive it (harnesses.VSCodeDataDir).
+	Sessions + "/*/vscode-data",
 	// OpenCode's shared XDG_CACHE_HOME, which the tools an OpenCode chat runs
 	// inherit too (Go's build cache, pip's, uv's).
 	Agents + "/opencode/cache",

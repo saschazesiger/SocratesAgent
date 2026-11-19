@@ -365,9 +365,13 @@ is only run when they need redoing.
 ### Browser IDE
 
 The optional `vscode-check.mjs` smoke test uses a real code-server installation.
-It checks loading the embedded workbench, editing and saving a project file,
-switching between IDE and shell, surviving a Socrates restart, and resuming
-following loss of the tmux server. It creates and removes its own sessions.
+It checks loading the workbench in a tab of its own, editing and saving a
+project file, the integrated terminal, an open editor surviving a Socrates
+restart, the browser asking before a tab with unsaved changes is closed, and
+that an editor is ephemeral: once its tab is closed it is deleted (after the
+server's grace of a minute), the next one starts afresh, and a setting changed
+in the first is in the next. It creates and removes its own sessions, and
+takes about three minutes.
 
 ```bash
 CODE_SERVER_BINARY=/absolute/path/to/code-server node e2e/vscode-check.mjs

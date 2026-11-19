@@ -26,7 +26,7 @@
 
 | | |
 | --- | --- |
-| 🤖 **Three agents, one place** | Claude Code, Codex and OpenCode as chats, plus a real **Shell** (tmux) and **VS Code** in the browser. |
+| 🤖 **Three agents, one place** | Claude Code, Codex and OpenCode as chats, plus a real **Shell** (tmux) and **VS Code** in the browser: fresh every time you open it, with your settings kept. |
 | 🐙 **GitHub repositories** | Connect GitHub once, pick your repositories, and every chat works in its own copy on its own branch, pushed as it goes. The repository's `AGENTS.md` decides: pull request or straight into `main` ([📐 spec](docs/design/REPOS.md)). |
 | 🔁 **Never lose a session** | Closed tab, dead phone, lost network, update: the agent keeps working on the server. |
 | 🏠 **Home dashboard** | See at a glance what's running, what's finished and what needs you. |

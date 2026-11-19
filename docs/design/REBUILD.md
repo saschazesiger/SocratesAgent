@@ -370,7 +370,8 @@ agents/opencode/            OpenCode data dir (opencode.db, storage/) and config
 accounts/<id>/              per account: CLAUDE_CONFIG_DIR | CODEX_HOME | OpenCode auth
                             (shared folders above are relative symlinks)
 terminals/<id>/             Shell journal
-vscode/, vscode-extensions/
+vscode/, vscode-extensions/  the editors' kept settings (User/settings.json, keybindings, tasks, snippets)
+                            and extensions; an editor's own data is sessions/<id>/vscode-data (not backed up)
 backup.json                 S3 target + passphrase, 0600            (not backed up)
 run/                        sockets, pids                          (not backed up)
 cache/                      cloudflared, catalog, codex logs       (not backed up)

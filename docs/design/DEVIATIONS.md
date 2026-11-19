@@ -1982,6 +1982,10 @@ folder some session already works in. The editor is not a row: `foldersOf`
 puts it on `folder.ide`, and its mark is grey, coloured while it runs, and
 pressed while it is on screen. "More Chats" has none.
 
+> **Superseded (2026-11-19):** an editor no longer remembers anything per
+> folder and its id is no longer the folder's; see "VS Code is ephemeral"
+> at the end of this file.
+
 - **What the editor remembers is kept per folder.** The user-data-dir is
   `<data>/vscode/<sha256(folder)[:8]>` rather than the session's directory,
   which a delete removes; a session-era `vscode-data` is moved there once. A
@@ -3123,3 +3127,39 @@ what it is in the CLI in that folder.
   `OPENCODE_CONFIG_CONTENT` sets no `agent` but `title.disable` (OpenCode's own naming is off: the
   name comes from OpenRouter), and OpenCode merges `agent` key by key, so `agent.general.model` and the
   other agents' models of the folder's config apply as in the CLI; Socrates only shows them.
+
+## VS Code is ephemeral (2026-11-19)
+
+The owner: VS Code should be opened, used and closed, and once it is closed that session is gone;
+only the settings should carry over from one to the next. This replaces the editor that kept per
+folder what it remembered ("One VS Code per folder", above).
+
+- **Closing the tab closes the editor.** `handleVSCode` counts each editor's WebSockets (the
+  workbench holds one for as long as its tab is open) and notes when it was last asked anything
+  (`ideUse`, memory only). `reapIDEs`, every 15 s, deletes an editor with no WebSocket for longer
+  than `ideGrace` (a minute) - long enough for a reload, a restart of Socrates or a network that
+  drops for a moment, after which the workbench connects again by itself. An editor nothing is
+  known of counts from the later of its creation and the start of the process, so editors left
+  from before a restart or a reboot are closed a minute after it unless a tab comes back. "Close
+  VS Code" in its menu is still there and closes it at once.
+- **Nothing it had open survives it.** Its user-data-dir is `sessions/<id>/vscode-data`
+  (`harnesses.VSCodeDataDir`), which the delete removes; its id is random (`NewVSCodeID`), so the
+  browser - which keeps the workbench's layout and open editors in IndexedDB under a name made
+  from `/ide/<id>/` - has never seen it either. A folder still has one editor at a time
+  (`POST /api/ide` answers the open one), the empty editor is a new one on every tap.
+- **Unsaved changes are asked about.** The person's first settings.json has
+  `"files.hotExit": "off"` (an application setting, read from the user settings only): with hot
+  exit on, which is the web default, the tab closes without a word and its backup goes with the
+  editor. Off, the browser asks before a tab with unsaved changes is closed.
+- **The settings are kept.** `<data>/vscode/` holds, laid out like a user-data-dir,
+  `User/settings.json`, `keybindings.json`, `tasks.json` and `snippets/`; a new editor is given
+  them (`vscodeSeed`, as files of its plan, never over a file a resumed editor has already), and
+  `SyncVSCodeProfile` takes back a file the editor changed - newer than the kept copy and
+  different from it, so an editor that was only open does not undo another's change - on every
+  reaper tick and before the editor is deleted. Extensions were shared already
+  (`vscode-extensions/`).
+- **The editors of before are retired** the first time an editor is planned: of the per-folder
+  `vscode/<sha256(folder)[:8]>/` folders, the kept files of the newest one somebody changed (its
+  settings.json is not exactly the old defaults) become the kept settings, unless there are some,
+  and the folders are removed. `sessions/*/vscode-data` is not backed up; `vscode/*/logs` and the
+  caches are no longer there to leave out.

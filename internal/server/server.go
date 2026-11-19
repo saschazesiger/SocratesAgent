@@ -91,6 +91,9 @@ type Server struct {
 	// ideMu makes finding or creating the editor of a folder one step, so
 	// two taps on the same folder cannot start two editors on it.
 	ideMu sync.Mutex
+	// ides is what is known of the editors' open tabs, which is what decides
+	// when an editor is closed (vscode.go, reapIDEs).
+	ides *ideUse
 
 	// sched is the chats' clock: scheduled starts, the automatic continue
 	// after a limit and the automatic retry after a failed turn (schedule.go,
@@ -163,6 +166,7 @@ func New(st *store.Store, dataDir string) (*Server, error) {
 		pingTimeout:  defaultPingTimeout,
 		writeTimeout: defaultWriteTimeout,
 		loginFail:    map[string]*attempt{},
+		ides:         newIDEUse(),
 		wsRate:       map[string]*attempt{},
 		usageHTTP:    &http.Client{Timeout: 8 * time.Second},
 		usageURL:     "https://api.anthropic.com/api/oauth/usage",
@@ -291,6 +295,7 @@ func (s *Server) StartSessions(ctx context.Context) error {
 	// sessions that survived the last run rather than an empty server.
 	s.manager.StartActivity(ctx)
 	s.startSweep(ctx)
+	s.startIDEReaper(ctx)
 	return nil
 }
 

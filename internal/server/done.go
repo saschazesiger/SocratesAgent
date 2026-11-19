@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/saschazesiger/SocratesAgent/internal/config"
+	"github.com/saschazesiger/SocratesAgent/internal/harnesses"
 	"github.com/saschazesiger/SocratesAgent/internal/store"
 )
 
@@ -62,9 +63,16 @@ func (s *Server) deleteSession(ctx context.Context, id string) error {
 	if err == nil && row.IsChat() {
 		s.chats.remove(ctx, id)
 	}
+	// An editor's settings outlive it; nothing else of it does.
+	if err == nil && row.Harness == config.HarnessVSCode {
+		if err := harnesses.SyncVSCodeProfile(s.dataDir, id); err != nil {
+			log.Printf("vscode: could not keep the settings of editor %s: %v", id, err)
+		}
+	}
 	if err := s.manager.Delete(ctx, id); err != nil {
 		return err
 	}
+	s.ides.forget(id)
 	// The host is gone: a chat in a repository leaves its work on GitHub
 	// and its worktree goes (repoDelete).
 	if row != nil && row.IsChat() && row.Repo != "" {

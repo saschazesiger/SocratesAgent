@@ -4,9 +4,11 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"github.com/coder/websocket"
 	"io"
+	"io/fs"
 	"net"
 	"net/http"
 	"os"
@@ -118,9 +120,10 @@ func TestVSCodeProxy(t *testing.T) {
 
 }
 
-// TestFolderIDE holds a folder to one editor: the sheet cannot make one, the
-// folder's mark makes it once and finds it after that, and a folder no
-// session works in is not a folder the route will open.
+// TestFolderIDE holds a folder to one open editor: the sheet cannot make
+// one, the folder's mark makes it once and finds it while it is open, a
+// closed one is gone and the next is new, and a folder no session works in
+// is not a folder the route will open.
 func TestFolderIDE(t *testing.T) {
 	e := newSessionEnv(t)
 	res, payload := e.do(t, e.client, "PUT", "/api/settings", `{"settings":{"harnesses":{"vscode":{"binary":"/bin/sh"}}}}`)
@@ -154,32 +157,20 @@ func TestFolderIDE(t *testing.T) {
 	if res.StatusCode != http.StatusOK || sessionID(t, again) != sessionID(t, first) {
 		t.Fatalf("a folder has one editor: %d %v and %v", res.StatusCode, again["id"], first["id"])
 	}
-	// Closing the editor and opening it again gives the same id, which is
-	// the address the browser keeps the workbench's memory under.
-	if sessionID(t, first) != harnesses.VSCodeSessionID(project) {
-		t.Fatalf("the editor's id is not the folder's: %v", first["id"])
-	}
 	if res, _ := e.do(t, e.client, "DELETE", "/api/sessions/"+sessionID(t, first), ""); res.StatusCode != http.StatusOK {
 		t.Fatalf("close: %d", res.StatusCode)
 	}
+	if _, err := os.Stat(harnesses.VSCodeDataDir(e.srv.dataDir, sessionID(t, first))); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("a closed editor's data must be gone: %v", err)
+	}
+	// A new address too: the browser keeps the workbench's memory under it.
 	res, reopened := open(project)
-	if res.StatusCode != http.StatusCreated || sessionID(t, reopened) != sessionID(t, first) {
-		t.Fatalf("a reopened editor must keep its address: %d %v", res.StatusCode, reopened["id"])
+	if res.StatusCode != http.StatusCreated || sessionID(t, reopened) == sessionID(t, first) {
+		t.Fatalf("a reopened editor must be a new one: %d %v", res.StatusCode, reopened["id"])
 	}
 }
 
-func TestVSCodeDataIsPerFolder(t *testing.T) {
-	data := t.TempDir()
-	if harnesses.VSCodeDataDir(data, "/srv/a/") != harnesses.VSCodeDataDir(data, "/srv/a") {
-		t.Fatal("two spellings of one folder must share an editor state")
-	}
-	if harnesses.VSCodeDataDir(data, "/srv/a") == harnesses.VSCodeDataDir(data, "/srv/b") {
-		t.Fatal("two folders must not share an editor state")
-	}
-}
-
-// TestBlankIDE: the empty editor is made once, found after that, works in a
-// directory of its own, and comes back under the same address once closed.
+// TestBlankIDE: every empty editor is a new one, in a directory of its own.
 func TestBlankIDE(t *testing.T) {
 	e := newSessionEnv(t)
 	res, payload := e.do(t, e.client, "PUT", "/api/settings", `{"settings":{"harnesses":{"vscode":{"binary":"/bin/sh"}}}}`)
@@ -196,21 +187,67 @@ func TestBlankIDE(t *testing.T) {
 	if res.StatusCode != http.StatusCreated || first["harness"] != "vscode" || first["workdir_mode"] != "dynamic" {
 		t.Fatalf("first open: %d %#v", res.StatusCode, first)
 	}
-	if sessionID(t, first) != harnesses.VSCodeBlankID {
-		t.Fatalf("the empty editor's id is not fixed: %v", first["id"])
-	}
 	if info, err := os.Stat(first["workdir"].(string)); err != nil || !info.IsDir() {
 		t.Fatalf("the empty editor has no directory: %v", err)
 	}
-	res, again := open()
-	if res.StatusCode != http.StatusOK || sessionID(t, again) != sessionID(t, first) {
-		t.Fatalf("there is one empty editor: %d %v and %v", res.StatusCode, again["id"], first["id"])
+	res, second := open()
+	if res.StatusCode != http.StatusCreated || sessionID(t, second) == sessionID(t, first) || second["workdir"] == first["workdir"] {
+		t.Fatalf("every empty editor is a new one: %d %#v and %#v", res.StatusCode, second, first)
 	}
-	if res, _ := e.do(t, e.client, "DELETE", "/api/sessions/"+sessionID(t, first), ""); res.StatusCode != http.StatusOK {
-		t.Fatalf("close: %d", res.StatusCode)
+}
+
+// TestIDEReaper: an editor with a tab open stays, one whose last tab closed
+// longer than ideGrace ago is deleted, and its settings are kept for the next.
+func TestIDEReaper(t *testing.T) {
+	e := newSessionEnv(t)
+	res, payload := e.do(t, e.client, "PUT", "/api/settings", `{"settings":{"harnesses":{"vscode":{"binary":"/bin/sh"}}}}`)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("settings: %d %#v", res.StatusCode, payload)
 	}
-	res, reopened := open()
-	if res.StatusCode != http.StatusCreated || sessionID(t, reopened) != sessionID(t, first) {
-		t.Fatalf("a reopened empty editor must keep its address: %d %v", res.StatusCode, reopened["id"])
+	clock := time.Now()
+	e.srv.ides.now = func() time.Time { return clock }
+	e.srv.ides.start = clock
+	_, payload = e.do(t, e.client, "POST", "/api/ide/blank", "")
+	open, _ := payload["session"].(map[string]any)
+	_, payload = e.do(t, e.client, "POST", "/api/ide/blank", "")
+	closed, _ := payload["session"].(map[string]any)
+	openID, closedID := sessionID(t, open), sessionID(t, closed)
+
+	// The open editor has a tab: a WebSocket through the proxy.
+	done := e.srv.ides.use(openID, true)
+	// The closed one's tab changed a setting before it went.
+	settings := filepath.Join(harnesses.VSCodeDataDir(e.srv.dataDir, closedID), "User", "settings.json")
+	if err := os.MkdirAll(filepath.Dir(settings), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(settings, []byte(`{"editor.fontSize": 17}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	e.srv.ides.use(closedID, true)()
+
+	clock = clock.Add(ideGrace / 2)
+	e.srv.reapIDEs(context.Background())
+	for _, id := range []string{openID, closedID} {
+		if _, err := e.store.GetSession(id); err != nil {
+			t.Fatalf("an editor inside its grace must stay: %s %v", id, err)
+		}
+	}
+	clock = clock.Add(ideGrace)
+	e.srv.reapIDEs(context.Background())
+	if _, err := e.store.GetSession(openID); err != nil {
+		t.Fatalf("an editor with a tab open must stay: %v", err)
+	}
+	if _, err := e.store.GetSession(closedID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("an editor with no tab must be closed: %v", err)
+	}
+	kept, err := os.ReadFile(filepath.Join(harnesses.VSCodeProfileDir(e.srv.dataDir), "User", "settings.json"))
+	if err != nil || string(kept) != `{"editor.fontSize": 17}` {
+		t.Fatalf("the closed editor's settings were not kept: %q %v", kept, err)
+	}
+	done()
+	clock = clock.Add(ideGrace + time.Second)
+	e.srv.reapIDEs(context.Background())
+	if _, err := e.store.GetSession(openID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("an editor whose last tab closed must be closed: %v", err)
 	}
 }

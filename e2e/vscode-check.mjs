@@ -1,9 +1,10 @@
 // Optional real-IDE smoke test: CODE_SERVER_BINARY=/path/to/code-server node e2e/vscode-check.mjs
 import assert from 'node:assert/strict';
-import { writeFileSync, readFileSync, mkdirSync } from 'node:fs';
+import { writeFileSync, readFileSync, mkdirSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { start, setup, killTmux, totals } from './harness.mjs';
+import { start, setup, totals } from './harness.mjs';
 const binary = process.env.CODE_SERVER_BINARY;
+const readIf = (path) => existsSync(path) ? readFileSync(path, 'utf8') : '';
 if (!binary) throw new Error('Set CODE_SERVER_BINARY to an installed code-server');
 const s = await start({ viewport: { width: 1440, height: 1000 } });
 try {
@@ -75,55 +76,58 @@ try {
  await s.page.waitForTimeout(1000);
  assert.equal(readFileSync(join(project,'terminal-check.txt'),'utf8'),'terminal works');
  console.log('Integrated terminal executed a command');
+ // A setting changed in the editor is the person's, and outlives it.
+ await tab.keyboard.press('F1');
+ await tab.keyboard.type('View: Toggle Minimap', {delay:30});
+ await tab.keyboard.press('Enter');
+ const userSettings = (id) => join(s.data,'sessions',id,'vscode-data','User','settings.json');
+ const settingBy = Date.now() + 10000;
+ while (!/minimap/.test(readIf(userSettings(row.id))) && Date.now() < settingBy) await s.page.waitForTimeout(250);
+ assert.match(readIf(userSettings(row.id)), /"editor\.minimap\.enabled": false/);
+ assert.match(readIf(userSettings(row.id)), /"files\.hotExit": "off"/);
+ console.log('A setting changed in the editor is in its user settings');
  await tab.screenshot({path:'e2e/out/vscode.png'});
  await s.restart();
  await tab.reload();
  await tab.locator('.monaco-workbench').waitFor({timeout:90000});
- await tab.close();
- await s.page.reload();
- console.log('IDE survived Socrates restart');
- await s.page.locator('.so-row[data-id="'+shell.session.id+'"]').click();
- await s.page.locator('.xterm-screen').waitFor();
- console.log('Switch to shell passed');
- tab = await openTab(() => ideButton.click());
- // The shell stays on the stage: the editor is beside it, in its tab.
- assert(await s.page.locator('.xterm-screen').isVisible());
- await tab.close();
- const again = (await (await s.context.request.get(s.url+'/api/sessions')).json()).sessions.filter((one)=>one.harness==='vscode');
- assert.equal(again.length,1);
- console.log('Switch back to the same IDE passed');
- s.server.kill('SIGTERM');
- await s.exited;
- killTmux(s.data);
- await s.restart();
- await s.page.reload();
- tab = await openTab(() => ideButton.click());
- await tab.locator('.tab', {hasText:'smoke.txt'}).waitFor({timeout:30000});
- await tab.close();
- console.log('IDE resumed after tmux loss, with its open editor restored');
- // The empty editor opens in a tab from the drawer, and so does its row.
- tab = await openTab(() => s.page.locator('#blankIDE').click());
- assert.match(tab.url(), /\/ide\/[^/]+\/\?ew=true/);
- await tab.close();
- const blank = (await (await s.context.request.get(s.url+'/api/sessions')).json()).sessions.find((one)=>one.harness==='vscode'&&one.workdir_mode==='dynamic');
- await s.page.reload();
- const blankRow = s.page.locator('.so-row[data-id="'+blank.id+'"] .so-row__open');
- const more = s.page.locator('.so-folder[data-folder="#more"]');
- await more.waitFor();
- if (await more.getAttribute('data-open') === null) await more.locator('.so-folder__head').click();
- await blankRow.waitFor();
- tab = await openTab(() => blankRow.click());
- await tab.close();
- assert.notEqual(new URL(s.page.url()).hash, '#'+blank.id);
- console.log('The empty editor opens in a new tab from the drawer and from its row');
- assert((await s.context.request.delete(s.url+'/api/sessions/'+blank.id)).ok());
- // Closing the editor keeps what it remembers for the folder.
- assert((await s.context.request.delete(s.url+'/api/sessions/'+row.id)).ok());
+ console.log('An open IDE survives a Socrates restart');
+ // Unsaved changes are not kept, so closing their tab asks first.
+ await tab.locator('.tab', {hasText:'smoke.txt'}).click({timeout:30000});
+ await tab.locator('.monaco-editor .view-line').filter({hasText:'hello from Socrates'}).click();
+ await tab.keyboard.type('never saved', {delay:30});
+ const asked = tab.waitForEvent('dialog', {timeout:10000});
+ await tab.close({runBeforeUnload:true});
+ const dialog = await asked;
+ assert.equal(dialog.type(), 'beforeunload');
+ await dialog.accept();
+ console.log('Closing a tab with unsaved changes asks first');
+ // Once its tab is closed, the editor is gone, and its settings are kept.
+ const goneBy = Date.now() + 150000;
+ const editors = async () => (await (await s.context.request.get(s.url+'/api/sessions')).json()).sessions.filter((one)=>one.harness==='vscode');
+ while ((await editors()).length && Date.now() < goneBy) await s.page.waitForTimeout(2000);
+ assert.equal((await editors()).length, 0);
+ assert(!existsSync(join(s.data,'sessions',row.id)));
+ assert.match(readIf(join(s.data,'vscode','User','settings.json')), /"editor\.minimap\.enabled": false/);
+ assert.equal(readFileSync(join(project,'smoke.txt'),'utf8'),'hello from Socrates\nsaved inside the embedded IDE');
+ console.log('A closed editor is deleted, and its settings are kept');
  await s.page.reload();
  tab = await openTab(() => ideButton.click(), 60000);
- await tab.locator('.tab', {hasText:'smoke.txt'}).waitFor({timeout:60000});
+ const next = (await editors())[0];
+ assert(next && next.id !== row.id);
+ await tab.waitForTimeout(4000);
+ assert.equal(await tab.locator('.tab', {hasText:'smoke.txt'}).count(), 0);
+ assert.match(readIf(userSettings(next.id)), /"editor\.minimap\.enabled": false/);
+ console.log('The next editor starts afresh, with the kept settings');
+ // Every tap on the empty editor's mark is a new one.
+ const blankTab = await openTab(() => s.page.locator('#blankIDE').click());
+ assert.match(blankTab.url(), /\/ide\/[^/]+\/\?ew=true/);
+ const blankTab2 = await openTab(() => s.page.locator('#blankIDE').click());
+ const blanks = (await editors()).filter((one)=>one.workdir_mode==='dynamic');
+ assert.equal(blanks.length, 2);
+ await blankTab.close();
+ await blankTab2.close();
  await tab.close();
- console.log('A new editor on the same folder restored its state');
+ console.log('Every empty editor is a new one');
  const last = (await (await s.context.request.get(s.url+'/api/sessions')).json()).sessions;
  for (const one of last) assert((await s.context.request.delete(s.url+'/api/sessions/'+one.id)).ok());
 } catch (err) {

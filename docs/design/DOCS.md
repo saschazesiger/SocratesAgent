@@ -19,8 +19,9 @@ file opens it beside the chat. Decided with the owner the same day:
 - A project folder's head has its **+** and a **⋮** (a GitHub repository's group too, §7) (`.so-folder__more`, session.js `folderMoreHtml`).
   The ⋮ opens the row menu's element (`#sessionMenu`) drawn for the folder (`openFolderMenu`):
   **Notes** (the board, BOARDS.md), **Docs** (when the folder has Markdown), **Open VS Code** / **VS Code
-  (open)** (where VS Code is available or the folder has one). A phone, or a menu too tall, gets the
-  same items in an action sheet. VS Code opens inside the tap (a tab of its own).
+  (open)** (where VS Code is available or the folder has one open). A phone, or a menu too tall, gets
+  the same items in an action sheet. VS Code opens inside the tap (a tab of its own). An editor is
+  ephemeral: it is deleted once its last tab is closed (DEVIATIONS.md, "VS Code is ephemeral").
 - While the folder's VS Code runs, the ⋮ wears a dot in VS Code's colour (`.so-folder__running`) and
   says so in its name. This replaces the separate notes and VS Code marks of before.
 - Whether a folder has Markdown is asked for every folder of the list in one request

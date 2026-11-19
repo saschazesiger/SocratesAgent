@@ -1358,9 +1358,10 @@ async function openIDETab(key, find) {
 }
 
 // askIDE is a session the server was asked to start an editor for: it
-// answers with the one it has if another tab made it in the meantime, so
-// there is still only ever one per folder, and the empty editor is one
-// shared by every tab.
+// answers with the folder's open one if another tab made it in the
+// meantime, so there is only ever one per folder at a time. An editor is
+// ephemeral: once its last tab is closed the server deletes it, and the
+// next one starts afresh with only the settings kept.
 async function askIDE(path, body) {
   const data = await api(path, { method: 'POST', attempts: 2, timeout: 60000, body });
   replaceSession(data.session);
@@ -1370,8 +1371,8 @@ async function askIDE(path, body) {
 
 /**
  * openFolderIDE is the VS Code mark of a folder: the folder's editor, in a
- * new tab. A folder that has one opens it, and one that does not asks the
- * server for it.
+ * new tab. A folder whose editor is open in another tab opens that one, and
+ * one that has none asks the server for a new one.
  */
 function openFolderIDE(key) {
   const found = ideOf(state.sessions, key);
@@ -1379,9 +1380,9 @@ function openFolderIDE(key) {
 }
 
 /**
- * openBlankIDE is the VS Code mark at the top of the drawer: an editor with
- * no folder open, in a new tab. It is listed under "More Chats", where it can
- * be stopped.
+ * openBlankIDE is the VS Code mark at the top of the drawer: a new editor
+ * with no folder open, in a new tab. It is listed under "More Chats" while
+ * its tab is open, where it can be closed.
  */
 function openBlankIDE() {
   openIDETab('blank', () => askIDE('/api/ide/blank'));
@@ -2411,7 +2412,7 @@ async function deleteSession(session) {
   const yes = await confirmDialog({
     title: editor ? 'Close VS Code?' : 'Delete “' + session.title + '”?',
     body: editor
-      ? 'The editor is stopped. What it remembers - open files, unsaved changes, layout - is kept for this folder and comes back the next time it is opened.'
+      ? 'The editor is stopped and everything it had open goes with it, unsaved changes too. Your settings, keybindings, snippets and extensions are kept for the next one.'
       : isChat(session)
           ? 'The agent is stopped and the conversation is removed. The working directory and everything in it are kept.'
           : 'The terminal is closed and the session is removed. The working directory and everything in it are kept.',
@@ -2434,7 +2435,7 @@ async function deleteSession(session) {
     // After the view let it go, which writes it one last time.
     forgetChat(session.id);
     renderList();
-    toast(editor ? 'VS Code was closed. Its state was kept.'
+    toast(editor ? 'VS Code was closed. Your settings were kept.'
       : 'Deleted. The working directory was kept.');
   } catch (err) {
     toast(actionFailed(err, 'That session could not be deleted.'), 'error');
@@ -2779,7 +2780,7 @@ async function openSessionMenu(anchor, id) {
   if (!session || !menu) return;
   if (!(await menuReady(anchor, menu))) return;
   // A folder's editor is not work that is filed: it is open or it is not, and
-  // closing it keeps everything it remembers, which is kept per folder.
+  // closing it throws away everything but the settings (server vscode.go).
   const editor = session.harness === IDE;
   // A chat has no scrollback either: its conversation is its history, and
   // compacting it is something to ask of its agent.
