@@ -60,7 +60,7 @@ import { mountChatPages } from './pages.js';
 import { mountBoard } from './boards.js';
 import { mountDocs, docsHash, parseDocsRoute } from './docs.js';
 import { probeDocs, knownDocs, hasDocs, knownRepo, pageUrl } from './docview.js';
-import { mountChatDocside, docLinkTarget, forgeLinkTarget, isPathLink, findDoc, findOutside } from './docside.js';
+import { mountChatDocside, docLinkTarget, forgeLinkTarget, isPathLink, findDoc, findOutside, fileLinkRef, folderFile, chatFile } from './docside.js';
 
 /* ------------------------------------------------------------- transport */
 
@@ -869,19 +869,27 @@ function sessionOf(id) { return state.sessions.find((s) => s.id === id) || null;
  * of the chat's pages folder by its absolute path (pages.js) or a Markdown
  * file of the chat's folder by its path or by its address on the folder's
  * own forge repository; {outside: folder} for a path out of the folder,
- * which another working tree of the folder's repository may have; null for
- * any other link, the browser's.
+ * which another working tree of the folder's repository may have;
+ * {file: {folder, path}} for any other file of the pages folder and
+ * {file: {chatId, ref}} for any other file the link names by its path
+ * (fileview.js shows it); null for any other link, the browser's.
  */
 function chatDocTarget(href, session) {
   const pages = session.pages_dir || '';
-  const page = pages && String(href || '').trim().replace(/^file:\/\/(localhost)?/i, '').startsWith('/')
-    ? docLinkTarget(href, pages) : null;
+  const abs = String(href || '').trim().replace(/^file:\/\/(localhost)?/i, '').startsWith('/');
+  const page = pages && abs ? docLinkTarget(href, pages) : null;
   if (page) return { folder: pages, path: page.path, at: page.at };
+  const ref = fileLinkRef(href);
+  if (ref && pages && ref.startsWith(pages.replace(/\/+$/, '') + '/')) {
+    return { file: { folder: pages, path: ref.slice(pages.replace(/\/+$/, '').length + 1) } };
+  }
   const folder = dirOf(session.workdir || '');
-  if (!folder) return null;
-  const target = docLinkTarget(href, folder) || forgeLinkTarget(href, knownRepo(folder));
-  if (target) return { folder, path: target.path, at: target.at };
-  return isPathLink(href) ? { outside: folder } : null;
+  if (folder) {
+    const target = docLinkTarget(href, folder) || forgeLinkTarget(href, knownRepo(folder));
+    if (target) return { folder, path: target.path, at: target.at };
+    if (isPathLink(href)) return { outside: folder };
+  }
+  return ref && session.id ? { file: { chatId: session.id, ref } } : null;
 }
 
 /**
@@ -894,7 +902,8 @@ function chatDocLink(href, session, opener) {
   if (!state.docside) return false;
   const target = chatDocTarget(href, session);
   if (!target) return false;
-  if (target.outside) state.docside.openOutside(target.outside, href, { opener });
+  if (target.file) state.docside.openFile(target.file, { opener });
+  else if (target.outside) state.docside.openOutside(target.outside, href, { opener });
   else state.docside.open(target.folder, target.path, { at: target.at, opener });
   return true;
 }
@@ -916,6 +925,18 @@ function chatDocTab(href, session) {
     return true;
   }
   tab.opener = null;
+  if (target.file) {
+    const f = target.file;
+    (f.chatId ? chatFile(f.chatId, f.ref) : folderFile(f.folder, f.path)).then((found) => {
+      if (found.error) {
+        tab.close();
+        toast(found.error, 'error');
+        return;
+      }
+      tab.location.replace(found.src);
+    });
+    return true;
+  }
   const finding = target.outside ? findOutside(target.outside, href) : findDoc(target.folder, target.path);
   finding.then((found) => {
     if (found.error) {
@@ -4698,6 +4719,7 @@ async function boot() {
     button: dom.pagesBtn,
     menu: (anchor, title, entries) => openListMenu(anchor, title, entries),
     open: (folder, path, opener) => state.docside.open(folder, path, { opener }),
+    openFile: (source, opener) => state.docside.openFile(source, { opener }),
     shown: () => state.docside.shown(),
   });
   // A project folder's notes: a board of columns and cards (boards.js).

@@ -68,7 +68,10 @@ func namedFile(p *chatPeer, raw string) (bool, error) {
 		return false, nil
 	}
 	named := false
-	err := p.view(func(proj *agent.Projection) { named = proj.AgentNames(raw) })
+	err := p.view(func(proj *agent.Projection) {
+		// A path with a space is named percent-encoded in a link as often.
+		named = proj.AgentNames(raw) || strings.Contains(raw, " ") && proj.AgentNames(strings.ReplaceAll(raw, " ", "%20"))
+	})
 	return named, err
 }
 

@@ -18,7 +18,13 @@
  *                       folder that opens and closes, __glyph its icon,
  *                       __name, __where a found file's folder
  *   .so-docs-sheet      the tree in a side sheet, under 900px
- *   .so-docside         a Markdown file beside a chat (the chat's column)
+ *   .so-docside         a Markdown file beside a chat (the chat's column);
+ *                       __stage holds the frame or __file, any other file
+ *   .so-fileview        a file that is not Markdown (fileview.js): --video,
+ *                       --audio, --image (__picture its press), --frame (a
+ *                       PDF or a web page, __frame), --text (__pre, a
+ *                       CSV's __table, __note); __empty a file it cannot
+ *                       show, with its download
  *   .so-pages-btn       the top bar's Pages button (pages.js); __badge its
  *                       count of new or changed pages, on the button's corner
  */
@@ -321,6 +327,112 @@
 .so-docside__dialog-body {
   position: relative;
   padding: 0;
+}
+
+/* What the column or its dialog shows: the frame of a Markdown file, or the
+   view of any other file (fileview.js). */
+.so-docside__stage,
+.so-docside__file {
+  position: absolute;
+  inset: 0;
+}
+
+.so-docside__file {
+  overflow: auto;
+  background: var(--ds-surface);
+}
+
+.so-fileview {
+  display: flex;
+  flex-direction: column;
+  min-height: 100%;
+}
+
+.so-fileview--video,
+.so-fileview--image {
+  align-items: center;
+  justify-content: center;
+  background: var(--ds-surface-high);
+}
+
+.so-fileview--video {
+  height: 100%;
+}
+
+.so-fileview__video {
+  display: block;
+  width: 100%;
+  max-height: 100%;
+}
+
+.so-fileview--audio {
+  justify-content: center;
+  gap: var(--ds-space-4);
+  padding: var(--ds-space-6);
+}
+
+.so-fileview__audio {
+  width: 100%;
+}
+
+.so-fileview--image {
+  height: 100%;
+  padding: var(--ds-space-4);
+}
+
+.so-fileview__picture {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  background: none;
+  cursor: zoom-in;
+}
+
+.so-fileview__img {
+  display: block;
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+}
+
+.so-fileview--frame {
+  position: relative;
+  height: 100%;
+}
+
+.so-fileview__frame {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border: 0;
+}
+
+.so-fileview--text {
+  gap: var(--ds-space-2);
+  padding: var(--ds-space-3);
+}
+
+.so-fileview__pre {
+  flex: 1 1 auto;
+}
+
+.so-fileview__table {
+  flex: 1 1 auto;
+}
+
+.so-fileview__note {
+  margin: 0;
+  color: var(--ds-text-2);
+  font: var(--ds-font-meta);
+}
+
+.so-fileview__empty {
+  margin: auto;
 }
 
 /* A finger gets rows of the touch size (touch mode, ui.js). */

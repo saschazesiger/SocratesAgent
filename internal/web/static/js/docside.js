@@ -9,10 +9,11 @@
 // working in a `git worktree` of its own links what it wrote there.
 // "Open in Docs" takes it to the folder's Docs page with its tree.
 
-import { el, toast } from './api.js';
+import { api, el, toast } from './api.js';
 import { html, raw, icon, iconEl, morph, showOverlay, hideOverlay } from './ui.js';
 import { SANDBOX, frameName, listing, pageUrl, stat, locate, listenFrame, fileName, isMarkdown } from './docview.js';
 import { docsHash } from './docs.js';
+import { mountFileView, kindGlyph, kindWord, sizeText, withVersion } from './fileview.js';
 
 // Over this width the file is a column beside the chat (as the tests').
 const WIDE = window.matchMedia('(min-width: 1101px)');
@@ -135,6 +136,25 @@ export function isPathLink(href) {
 }
 
 /**
+ * fileLinkRef is the path a link names when it is a path to a file that is
+ * not Markdown (a video, a PDF, a log): absolute, a file:// address, or
+ * relative to the chat's folder, as the agent wrote it (percent-encoding
+ * undone, as marked adds it), without a query or a heading. '' for an
+ * address of another scheme, a Markdown file, or a name with no extension.
+ */
+export function fileLinkRef(href) {
+  let ref = String(href || '').trim();
+  if (!ref || ref.startsWith('#') || ref.startsWith('//')) return '';
+  if (/^file:\/\//i.test(ref)) ref = ref.replace(/^file:\/\/(localhost)?/i, '');
+  else if (/^[a-z][a-z0-9+.-]*:/i.test(ref)) return '';
+  ref = ref.split(/[?#]/)[0];
+  try { ref = decodeURI(ref); } catch { /* as it is */ }
+  const name = ref.split('/').pop();
+  if (!name || !/\.[a-z0-9]{1,12}$/i.test(name) || isMarkdown(ref) || ref.startsWith('~')) return '';
+  return ref;
+}
+
+/**
  * fileIn is the listed file a link's path means: the path itself, else -
  * an agent naming a file by its name or the end of its path - the one file
  * whose path ends in it. null when there is none or more than one.
@@ -205,6 +225,50 @@ export async function findOutside(folder, href) {
 }
 
 /**
+ * folderFile is a file of a folder the Docs routes serve every file of (a
+ * chat's pages folder) as the viewer beside the chat shows it: {src,
+ * download, name, kind, size, mtime, folder, path} - `src` its address,
+ * `download` the one that saves it - or {error}.
+ */
+export async function folderFile(folder, path) {
+  let data;
+  let s = null;
+  try {
+    data = await listing(folder);
+    s = await stat(folder, path);
+  } catch {
+    return { error: 'The files of this folder could not be read.' };
+  }
+  if (!s) return { error: `${fileName(path)} is not there.` };
+  const src = pageUrl(data.base, s.path);
+  return {
+    src, download: src + '?download=1', name: fileName(s.path), kind: s.kind || 'file',
+    size: s.size, mtime: s.mtime, folder, path: s.path,
+  };
+}
+
+/**
+ * chatFile is a file the chat's agent named, wherever on the machine it
+ * lies (`ref` as the agent wrote it: absolute, file://, or relative to the
+ * chat's folder), as folderFile has it, from the chat's file route; or
+ * {error}.
+ */
+export async function chatFile(chatId, ref) {
+  const q = '?path=' + encodeURIComponent(ref);
+  const base = '/api/chats/' + encodeURIComponent(chatId) + '/file';
+  let info;
+  try {
+    info = await api(base + '/info' + q, { attempts: 1 });
+  } catch (err) {
+    return { error: err && err.status === 404 ? `${ref.split('/').pop()} is not there, or the chat never named it.` : 'The file could not be read.' };
+  }
+  return {
+    src: base + q, download: base + q + '&download=1', name: info.name, kind: info.kind || 'file',
+    size: info.size, mtime: info.mtime, chatId, ref, abs: info.path,
+  };
+}
+
+/**
  * mountChatDocside wires the column (`panel`, #docsidePanel) and the
  * dialog. `onColumnOpen()` is called when the column opens (the tests'
  * column shuts then); `onPage(folder, path)` each time the frame shows a
@@ -216,6 +280,10 @@ export async function findOutside(folder, href) {
  *                                      another working tree of its repository)
  *   openOutside(folder, href, {opener}) a path link out of the folder, when
  *                                      another working tree has the file
+ *   openFile(source, {opener})         any other file, in a player or viewer
+ *                                      for its kind (fileview.js): source is
+ *                                      {folder, path} of a pages folder or
+ *                                      {chatId, ref} of a file the agent named
  *   hide()                             the chat left the stage
  *   shut()                             another column opened
  *   isOpen()                           whether a file is shown
@@ -224,6 +292,9 @@ export async function findOutside(folder, href) {
 export function mountChatDocside({ panel, onColumnOpen, onPage, follow: onFollow = null }) {
   // What is shown: {folder, path, base, mtime, y, title}, or null.
   let doc = null;
+  // Or a file that is not Markdown (fileview.js): {src, download, name,
+  // kind, size, mtime, ...source}, or null.
+  let file = null;
   let dlg = null;
   let timer = null;
   let gen = 0;
@@ -235,18 +306,35 @@ export function mountChatDocside({ panel, onColumnOpen, onPage, follow: onFollow
     'aria-label': 'Close the file', 'data-tip': 'Close the file',
   }, iconEl('close', 18));
   const frame = el('iframe', { class: 'so-docs__view', title: 'Document', sandbox: SANDBOX, referrerpolicy: 'no-referrer', name: frameName() });
-  const box = el('div', { class: 'so-docside__frame' }, frame);
-  panel.replaceChildren(el('div', { class: 'so-docside__head' }, el('span', { class: 'so-docside__glyph', 'aria-hidden': 'true' }, iconEl('fileText', 18)), title, actions, closeBtn), box);
+  const view = el('div', { class: 'so-docside__file', hidden: true });
+  const viewer = mountFileView(view);
+  // What the column or the dialog shows: the frame or the file's view.
+  const stage = el('div', { class: 'so-docside__stage' }, frame, view);
+  const box = el('div', { class: 'so-docside__frame' }, stage);
+  const glyph = el('span', { class: 'so-docside__glyph', 'aria-hidden': 'true' }, iconEl('fileText', 18));
+  panel.replaceChildren(el('div', { class: 'so-docside__head' }, glyph, title, actions, closeBtn), box);
+  let glyphName = 'fileText';
+
+  function fileActionsHtml() {
+    return html`<a class="ds-btn ds-btn--quiet ds-btn--icon ds-sm" href="${file.download}" download="${file.name}" aria-label="${'Download ' + file.name}" data-tip="Download">${raw(icon('download', 18))}</a><a class="ds-btn ds-btn--quiet ds-btn--icon ds-sm" href="${withVersion(file.src, file.mtime)}" target="_blank" rel="noopener noreferrer" aria-label="Open in a new tab" data-tip="Open in a new tab">${raw(icon('external', 18))}</a>`;
+  }
 
   function actionsHtml() {
+    if (file) return fileActionsHtml();
     if (!doc) return '';
     return html`<a class="ds-btn ds-btn--quiet ds-btn--icon ds-sm" href="${docsHash(doc.folder, doc.path)}" data-docside="docs" aria-label="Open in Docs, with every file of the folder" data-tip="Open in Docs">${raw(icon('list', 18))}</a><a class="ds-btn ds-btn--quiet ds-btn--icon ds-sm" href="${pageUrl(doc.base, doc.path)}" target="_blank" rel="noopener noreferrer" aria-label="Open in a new tab" data-tip="Open in a new tab">${raw(icon('external', 18))}</a>`;
   }
 
   function drawHead(heading) {
-    const words = doc ? (doc.title || fileName(doc.path)) : 'Docs';
+    const words = file ? file.name : doc ? (doc.title || fileName(doc.path)) : 'Docs';
     if (heading.textContent !== words) heading.textContent = words;
-    if (doc) heading.setAttribute('data-tip', doc.path);
+    if (file) heading.setAttribute('data-tip', kindWord(file.kind) + ' · ' + sizeText(file.size) + ' · ' + (file.abs || file.path || file.name));
+    else if (doc) heading.setAttribute('data-tip', doc.path);
+    const want = file ? kindGlyph(file.kind, file.name) : 'fileText';
+    if (want !== glyphName) {
+      glyphName = want;
+      glyph.replaceChildren(iconEl(want, 18));
+    }
   }
 
   function draw() {
@@ -260,7 +348,7 @@ export function mountChatDocside({ panel, onColumnOpen, onPage, follow: onFollow
   function showColumn() {
     if (onColumnOpen) onColumnOpen();
     panel.hidden = false;
-    box.append(frame);
+    box.append(stage);
   }
 
   function shutColumn() {
@@ -276,7 +364,7 @@ export function mountChatDocside({ panel, onColumnOpen, onPage, follow: onFollow
     const heading = el('h2', { class: 'ds-dialog__title so-docside__title', id: 'docsideDialogTitle' });
     const head = el('div', { class: 'so-docside__actions' });
     const back = el('button', { class: 'ds-btn ds-btn--quiet ds-btn--icon', type: 'button', 'data-ds-close': true, 'aria-label': 'Back', 'data-tip': 'Back' }, iconEl('arrowLeft', 20));
-    const body = el('div', { class: 'ds-dialog__body so-docside__dialog-body' }, frame);
+    const body = el('div', { class: 'ds-dialog__body so-docside__dialog-body' }, stage);
     const dialog = el('dialog', { class: 'ds-dialog ds-dialog--full so-docside-dialog', 'aria-labelledby': 'docsideDialogTitle' },
       el('div', { class: 'ds-dialog__backdrop', 'data-ds-close': true }),
       el('div', { class: 'ds-dialog__box' },
@@ -307,6 +395,10 @@ export function mountChatDocside({ panel, onColumnOpen, onPage, follow: onFollow
   /* ------------------------------------------------------------ watching */
 
   async function look() {
+    if (file) {
+      lookFile();
+      return;
+    }
     if (!doc || document.hidden) return;
     const shown = doc;
     try {
@@ -317,12 +409,49 @@ export function mountChatDocside({ panel, onColumnOpen, onPage, follow: onFollow
     } catch { /* offline: the next look tries again */ }
   }
 
+  // A file that is not Markdown, looked at again: drawn again when it
+  // changed on disk (a player where it was).
+  async function lookFile() {
+    if (!file || document.hidden) return;
+    const shown = file;
+    const now = shown.chatId ? await chatFile(shown.chatId, shown.ref) : await folderFile(shown.folder, shown.path);
+    if (file !== shown || now.error) return;
+    if (now.mtime !== shown.mtime || now.size !== shown.size || now.kind !== shown.kind) {
+      file = now;
+      viewer.reload(now);
+      draw();
+    }
+  }
+
   function stop() {
     clearInterval(timer);
     timer = null;
     doc = null;
     gen += 1;
     frame.removeAttribute('src');
+    if (file) {
+      file = null;
+      viewer.clear();
+    }
+    frame.hidden = false;
+    view.hidden = true;
+  }
+
+  // showFrame and showView put the frame (a Markdown file) or the file's
+  // view on the stage.
+  function showFrame() {
+    if (file) {
+      file = null;
+      viewer.clear();
+    }
+    view.hidden = true;
+    frame.hidden = false;
+  }
+
+  function showView() {
+    frame.removeAttribute('src');
+    frame.hidden = true;
+    view.hidden = false;
   }
 
   listenFrame(frame, (m) => {
@@ -344,7 +473,13 @@ export function mountChatDocside({ panel, onColumnOpen, onPage, follow: onFollow
     } else if (m.t === 'scroll') {
       doc.y = Number(m.y) || 0;
     } else if (m.t === 'file') {
-      toast('“' + fileName(m.path) + '” is not a Markdown file: only Markdown is shown here.');
+      // A file of the folder that is not Markdown: shown here when the
+      // folder serves every file (a chat's pages folder), else where the
+      // same link in the chat would go (a file the agent named).
+      const folder = doc.folder;
+      const path = String(m.path || '');
+      const abs = folder.replace(/\/+$/, '') + '/' + path;
+      openFile({ folder, path }, { fallback: () => (onFollow && onFollow(abs)) });
     } else if (m.t === 'outside') {
       // Out of the folder shown: a page's link to a file of the chat's
       // working directory, by its absolute path, or a path with ".." out of
@@ -365,10 +500,17 @@ export function mountChatDocside({ panel, onColumnOpen, onPage, follow: onFollow
       return;
     }
     ({ folder, path } = found);
+    showFrame();
     // sent: the file the frame was sent to, until it says it shows it (a
     // frame the browser gives its old address back is sent there again).
     doc = { folder, path, base: found.base, mtime: 0, y: 0, title: '', sent: path };
     frame.src = pageUrl(found.base, path, { hash: at });
+    present(opener);
+  }
+
+  // present shows what is on the stage: the column at a desk, the dialog
+  // narrower; and watches it for changes on disk.
+  function present(opener) {
     if (WIDE.matches) {
       if (dlg) hideOverlay(dlg.dialog);
       showColumn();
@@ -382,6 +524,30 @@ export function mountChatDocside({ panel, onColumnOpen, onPage, follow: onFollow
     clearInterval(timer);
     timer = setInterval(look, WATCH);
     look();
+  }
+
+  // Any file that is not Markdown (fileview.js): of a folder the Docs
+  // routes serve every file of ({folder, path}), or one the chat's agent
+  // named ({chatId, ref}). A Markdown file goes to the frame. `fallback` is
+  // tried when the folder does not serve it, before the snackbar.
+  async function openFile(source, { opener = null, fallback = null } = {}) {
+    const my = ++gen;
+    const found = source.chatId ? await chatFile(source.chatId, source.ref) : await folderFile(source.folder, source.path);
+    if (my !== gen) return;
+    if (found.error) {
+      if (!(fallback && fallback())) toast(found.error, 'error');
+      return;
+    }
+    if (found.kind === 'markdown' && found.folder) {
+      open(found.folder, found.path, { opener, elsewhere: false });
+      return;
+    }
+    doc = null;
+    file = found;
+    showView();
+    viewer.show(found);
+    present(opener);
+    if (onPage && found.folder) onPage(found.folder, found.path);
   }
 
   // A link out of the folder, by an absolute path or one with "..": the
@@ -405,7 +571,7 @@ export function mountChatDocside({ panel, onColumnOpen, onPage, follow: onFollow
 
   // A window that crosses the column's width takes the file along.
   WIDE.addEventListener('change', () => {
-    if (!doc) return;
+    if (!doc && !file) return;
     if (WIDE.matches && dlg) {
       const was = dlg;
       dlg = null;
@@ -421,11 +587,13 @@ export function mountChatDocside({ panel, onColumnOpen, onPage, follow: onFollow
   return {
     open,
     openOutside,
+    openFile,
     hide: close,
     shut() {
       if (!panel.hidden) close();
     },
-    isOpen: () => !!doc,
-    shown: () => (doc ? { folder: doc.folder, path: doc.path } : null),
+    isOpen: () => !!doc || !!file,
+    shown: () => (doc ? { folder: doc.folder, path: doc.path }
+      : file ? (file.folder ? { folder: file.folder, path: file.path } : { chatId: file.chatId, ref: file.ref, abs: file.abs }) : null),
   };
 }

@@ -21,6 +21,12 @@ import { thumbHtml } from './thumb.js';
 // `./README.md#setup`, `/abs/path/NOTES.md`): no spaces, no placeholders.
 const MD_PATH = /^(?:\.{0,2}\/)?[\w@+-][\w@+.\/-]*\.(?:md|markdown)(?:#[\w-]*)?$/i;
 
+// A path to a file to look at or listen to, nothing else in the span
+// (`out/demo.mp4`, `/tmp/report.pdf`, `review/voice-a.mp3`): the chat shows
+// it beside itself (fileview.js) when the agent named it. Source files and
+// notes named this way stay code: a coding chat names them all the time.
+const SHOWN_PATH = /^(?:file:\/\/|\.{0,2}\/)?[\w@+-][\w@+.\/-]*\.(?:mp4|m4v|webm|mov|ogv|mkv|mp3|wav|ogg|oga|opus|m4a|aac|flac|weba|pdf|html?|png|jpe?g|gif|svg|webp|avif)$/i;
+
 // An image of a file on this machine, by its path: absolute, relative to
 // the chat's folder, or a file:// URL - never a URL of another scheme, and
 // only a picture by its name. The server draws it only when a text of the
@@ -55,9 +61,10 @@ const marked = new Marked({
     // A Markdown file named as a `code` path is a link to it, which the chat
     // opens beside itself when the file is in its folder (session.js
     // docLink): agents name files that way out of habit, however they are
-    // told to link them.
+    // told to link them. So is a video, a recording, a PDF, a picture or a
+    // web page (SHOWN_PATH), which opens in the viewer beside the chat.
     codespan({ text, inLink }) {
-      if (inLink || !MD_PATH.test(text)) return false;
+      if (inLink || !(MD_PATH.test(text) || SHOWN_PATH.test(text))) return false;
       return html`<a href="${text}"><code>${text}</code></a>`.toString();
     },
     // A task list's box is a mark, not a form field: nothing in an agent's
