@@ -275,7 +275,8 @@ export async function chatFile(chatId, ref) {
  * file (opened, followed to by a link, drawn again after a change);
  * `follow(href)` with a link in the file that leads out of its folder, as an
  * absolute path, answering whether it took it (else a snackbar says it
- * leads out). It answers
+ * leads out); `allFiles(folder)` whether a folder serves every file (a
+ * chat's pages folder), whose other files open in the file viewer. It answers
  *   open(folder, path, {at, opener})   a file of a chat's folder (or of
  *                                      another working tree of its repository)
  *   openOutside(folder, href, {opener}) a path link out of the folder, when
@@ -289,7 +290,7 @@ export async function chatFile(chatId, ref) {
  *   isOpen()                           whether a file is shown
  *   shown()                            {folder, path} of the file shown, or null
  */
-export function mountChatDocside({ panel, onColumnOpen, onPage, follow: onFollow = null }) {
+export function mountChatDocside({ panel, onColumnOpen, onPage, follow: onFollow = null, allFiles = () => false }) {
   // What is shown: {folder, path, base, mtime, y, title}, or null.
   let doc = null;
   // Or a file that is not Markdown (fileview.js): {src, download, name,
@@ -478,8 +479,10 @@ export function mountChatDocside({ panel, onColumnOpen, onPage, follow: onFollow
       // same link in the chat would go (a file the agent named).
       const folder = doc.folder;
       const path = String(m.path || '');
-      const abs = folder.replace(/\/+$/, '') + '/' + path;
-      openFile({ folder, path }, { fallback: () => (onFollow && onFollow(abs)) });
+      if (allFiles(folder)) openFile({ folder, path });
+      else if (!(folder.startsWith('/') && onFollow && onFollow(folder.replace(/\/+$/, '') + '/' + path))) {
+        toast('“' + fileName(path) + '” is not a Markdown file: only Markdown is shown here.');
+      }
     } else if (m.t === 'outside') {
       // Out of the folder shown: a page's link to a file of the chat's
       // working directory, by its absolute path, or a path with ".." out of

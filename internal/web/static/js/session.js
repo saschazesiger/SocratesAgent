@@ -4712,6 +4712,10 @@ async function boot() {
       const session = state.current ? sessionOf(state.current.id) || state.current : null;
       return !!session && chatDocLink(href, session, null);
     },
+    allFiles: (folder) => {
+      const session = state.current ? sessionOf(state.current.id) || state.current : null;
+      return !!session && !!session.pages_dir && session.pages_dir === folder;
+    },
   });
   // The chat's pages: the Pages button, its badge and its menu, which opens
   // one beside the chat.

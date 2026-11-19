@@ -59,25 +59,10 @@ func chatFileTarget(row *store.Session, raw string) (string, bool) {
 	return filepath.Clean(ref), true
 }
 
-// namedFile is whether raw is a path the agent named in the chat, long and
-// specific enough to be one: a file name with an extension, so that a
-// question for "a" or "/" never matches every text.
-func namedFile(p *chatPeer, raw string) (bool, error) {
-	base := path.Base(strings.TrimRight(raw, "/"))
-	if len(raw) < 4 || !strings.Contains(strings.TrimPrefix(base, "."), ".") {
-		return false, nil
-	}
-	named := false
-	err := p.view(func(proj *agent.Projection) {
-		// A path with a space is named percent-encoded in a link as often.
-		named = proj.AgentNames(raw) || strings.Contains(raw, " ") && proj.AgentNames(strings.ReplaceAll(raw, " ", "%20"))
-	})
-	return named, err
-}
-
 // chatNamedFile answers the file a request's ?path= names, open, when the
-// agent named it in the chat and it is a regular file; else it has said why
-// not.
+// agent named that path in the chat as a whole (chatRefs: a link's target, a
+// `code` path, a bare absolute path - never any part of its text) and it is
+// a regular file; else it has said why not.
 func (s *Server) chatNamedFile(w http.ResponseWriter, r *http.Request) (*os.File, os.FileInfo, string, bool) {
 	row, p, ok := s.chatOf(w, r)
 	if !ok {
@@ -85,34 +70,32 @@ func (s *Server) chatNamedFile(w http.ResponseWriter, r *http.Request) (*os.File
 	}
 	raw := r.URL.Query().Get("path")
 	abs, ok := chatFileTarget(row, raw)
-	if !ok {
+	if !ok || !hasExt(raw) {
 		writeError(w, http.StatusNotFound, "the chat names no such file")
 		return nil, nil, "", false
 	}
-	named, err := namedFile(p, raw)
+	refs, err := s.chatRefs(row.ID, p)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "the chat could not be read")
 		return nil, nil, "", false
 	}
-	if !named {
+	if !refs.names[raw] {
 		writeError(w, http.StatusNotFound, "the chat names no such file")
 		return nil, nil, "", false
 	}
 	f, info, err := docs.OpenFile(abs)
-	if err != nil && strings.Contains(raw, "%") {
-		// A link's path as marked has it: percent-encoded.
-		if dec, derr := url.PathUnescape(raw); derr == nil {
-			if a, ok := chatFileTarget(row, dec); ok {
-				abs = a
-				f, info, err = docs.OpenFile(abs)
-			}
-		}
-	}
 	if err != nil {
 		writeError(w, http.StatusNotFound, "That file is not there.")
 		return nil, nil, "", false
 	}
 	return f, info, abs, true
+}
+
+// hasExt is whether a path ends in a file name with an extension: what a
+// file the chat shows is named by.
+func hasExt(ref string) bool {
+	base := path.Base(strings.TrimRight(ref, "/"))
+	return len(ref) >= 4 && strings.Contains(strings.TrimPrefix(base, "."), ".")
 }
 
 // handleChatFile serves a file the agent named, as its kind is shown
@@ -206,10 +189,28 @@ type linkedSeen struct {
 	files   []linkedFile
 }
 
-// linkedState keeps each chat's linked files for linkedTTL.
+// chatRef is a path the agent's texts name as a whole: when it was named
+// last, and whether by a link.
+type chatRef struct {
+	at     int64
+	linked bool
+}
+
+// refsSeen is every path a chat's agent named, as of a seq: refs as
+// written, names each of them also without file:// and percent-decoded,
+// as the viewer asks for them.
+type refsSeen struct {
+	seq   int64
+	refs  map[string]chatRef
+	names map[string]bool
+}
+
+// linkedState keeps each chat's named paths while its conversation does
+// not change, and its linked files for linkedTTL.
 type linkedState struct {
 	mu    sync.Mutex
 	chats map[string]linkedSeen
+	refs  map[string]refsSeen
 }
 
 var (
@@ -232,38 +233,33 @@ func shownKind(k docs.Kind) bool {
 	return false
 }
 
-// linkedRefs adds the paths a text links or names to refs (ref -> when),
-// each as written: a link's target of any kind but Markdown (the Docs view's,
-// listed by the folder), and a `code` path or a bare absolute path of a kind
-// to look at (shownKind).
-func linkedRefs(text string, at int64, refs map[string]int64) {
+// plainRef is a ref without its file:// scheme.
+func plainRef(ref string) string {
+	return strings.TrimPrefix(strings.TrimPrefix(ref, "file://localhost"), "file://")
+}
+
+// textRefs calls fn with every path a text names as a whole, as written: a
+// link's target (linked), a `code` span that is a path, a bare absolute
+// path; without a heading or a query, trailing punctuation or what is no
+// file's path on this machine (another scheme, a placeholder, a pattern).
+func textRefs(text string, fn func(ref string, linked bool)) {
 	add := func(ref string, linked bool) {
 		ref = strings.TrimRight(ref, ".,;:!?")
 		if i := strings.IndexAny(ref, "#?"); i >= 0 {
 			ref = ref[:i]
 		}
-		if ref == "" || len(ref) > 4096 {
+		if ref == "" || len(ref) > 4096 || !hasExt(ref) {
 			return
 		}
-		plain := strings.TrimPrefix(strings.TrimPrefix(ref, "file://localhost"), "file://")
+		plain := plainRef(ref)
 		if strings.Contains(plain, "://") || strings.HasPrefix(plain, "//") || strings.HasPrefix(plain, "~") ||
-			strings.HasPrefix(plain, "#") || strings.Contains(plain, "${") || strings.ContainsAny(plain, "*<>|") {
+			strings.Contains(plain, "${") || strings.ContainsAny(plain, "*<>|\x00") {
 			return
 		}
 		if i := strings.IndexByte(plain, ':'); i >= 0 && !strings.HasPrefix(plain, "/") {
 			return // mailto:, data:, C:...
 		}
-		base := path.Base(plain)
-		if !strings.Contains(strings.TrimPrefix(base, "."), ".") {
-			return
-		}
-		k := docs.FileKind(base)
-		if k == docs.Markdown || (!linked && !shownKind(k)) {
-			return
-		}
-		if at > refs[ref] {
-			refs[ref] = at
-		}
+		fn(ref, linked)
 	}
 	for _, m := range linkedLinkRe.FindAllStringSubmatch(text, -1) {
 		add(m[1]+m[2], true)
@@ -274,6 +270,69 @@ func linkedRefs(text string, at int64, refs map[string]int64) {
 	for _, m := range linkedBareRe.FindAllStringSubmatch(text, -1) {
 		add(m[1], false)
 	}
+}
+
+// listedRef is whether a named path counts among the chat's linked files: a
+// link's target of any kind but Markdown (the Docs view's), a `code` path or
+// a bare path of a kind to look at (shownKind).
+func listedRef(ref string, linked bool) bool {
+	k := docs.FileKind(path.Base(plainRef(ref)))
+	return k != docs.Markdown && (linked || shownKind(k))
+}
+
+// linkedRefs adds the paths a text links or names that count among the
+// chat's linked files to refs (ref -> when), each as written.
+func linkedRefs(text string, at int64, refs map[string]int64) {
+	textRefs(text, func(ref string, linked bool) {
+		if listedRef(ref, linked) && at > refs[ref] {
+			refs[ref] = at
+		}
+	})
+}
+
+// chatRefs is every path the chat's agent named (refsSeen), read again
+// only when the conversation changed.
+func (s *Server) chatRefs(id string, p *chatPeer) (refsSeen, error) {
+	var seq int64
+	if err := p.view(func(proj *agent.Projection) { seq = proj.LastSeq }); err != nil {
+		return refsSeen{}, err
+	}
+	k := &s.linked
+	k.mu.Lock()
+	seen, ok := k.refs[id]
+	k.mu.Unlock()
+	if ok && seen.seq == seq {
+		return seen, nil
+	}
+	seen = refsSeen{refs: map[string]chatRef{}, names: map[string]bool{}}
+	if err := p.view(func(proj *agent.Projection) {
+		seen.seq = proj.LastSeq
+		proj.AgentTexts(func(text string, at int64) {
+			textRefs(text, func(ref string, linked bool) {
+				was := seen.refs[ref]
+				seen.refs[ref] = chatRef{at: max(was.at, at), linked: was.linked || linked}
+			})
+		})
+	}); err != nil {
+		return refsSeen{}, err
+	}
+	for ref := range seen.refs {
+		plain := plainRef(ref)
+		seen.names[ref], seen.names[plain] = true, true
+		if dec, err := url.PathUnescape(plain); err == nil {
+			seen.names[dec] = true
+		}
+	}
+	k.mu.Lock()
+	if k.refs == nil {
+		k.refs = map[string]refsSeen{}
+	}
+	if len(k.refs) > 200 {
+		clear(k.refs)
+	}
+	k.refs[id] = seen
+	k.mu.Unlock()
+	return seen, nil
 }
 
 // handleChatLinkedFiles lists the files the agent linked or named in the
@@ -289,8 +348,8 @@ func (s *Server) handleChatLinkedFiles(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	var seq int64
-	if err := p.view(func(proj *agent.Projection) { seq = proj.LastSeq }); err != nil {
+	named, err := s.chatRefs(row.ID, p)
+	if err != nil {
 		writeError(w, http.StatusInternalServerError, "the chat could not be read")
 		return
 	}
@@ -298,25 +357,20 @@ func (s *Server) handleChatLinkedFiles(w http.ResponseWriter, r *http.Request) {
 	k.mu.Lock()
 	seen, ok := k.chats[row.ID]
 	k.mu.Unlock()
-	if ok && seen.seq == seq && seen.workdir == row.Workdir && time.Since(seen.at) <= linkedTTL {
+	if ok && seen.seq == named.seq && seen.workdir == row.Workdir && time.Since(seen.at) <= linkedTTL {
 		writeJSON(w, http.StatusOK, map[string]any{"files": seen.files})
 		return
 	}
-	refs := map[string]int64{}
-	if err := p.view(func(proj *agent.Projection) {
-		seq = proj.LastSeq
-		proj.AgentTexts(func(text string, at int64) { linkedRefs(text, at, refs) })
-	}); err != nil {
-		writeError(w, http.StatusInternalServerError, "the chat could not be read")
-		return
-	}
-	order := make([]string, 0, len(refs))
-	for ref := range refs {
-		order = append(order, ref)
+	order := make([]string, 0, len(named.refs))
+	for ref, one := range named.refs {
+		if listedRef(ref, one.linked) {
+			order = append(order, ref)
+		}
 	}
 	sort.Slice(order, func(i, j int) bool {
-		if refs[order[i]] != refs[order[j]] {
-			return refs[order[i]] > refs[order[j]]
+		a, b := named.refs[order[i]].at, named.refs[order[j]].at
+		if a != b {
+			return a > b
 		}
 		return order[i] < order[j]
 	})
@@ -327,26 +381,22 @@ func (s *Server) handleChatLinkedFiles(w http.ResponseWriter, r *http.Request) {
 	files := []linkedFile{}
 	have := map[string]bool{}
 	for _, ref := range order {
+		// As written, else percent-decoded as a link's path has it: the
+		// ref the viewer asks for is the one that is there.
+		var info os.FileInfo
 		abs, ok := chatFileTarget(row, ref)
-		if !ok {
-			// A link's path as marked has it: percent-encoded.
-			if dec, err := url.PathUnescape(ref); err == nil && dec != ref {
-				abs, ok = chatFileTarget(row, dec)
-			}
+		if ok {
+			info, err = os.Stat(abs)
 		}
-		if !ok || have[abs] {
-			continue
-		}
-		info, err := os.Stat(abs)
-		if err != nil && strings.Contains(ref, "%") {
-			if dec, derr := url.PathUnescape(ref); derr == nil {
-				if a, ok := chatFileTarget(row, dec); ok {
-					abs = a
+		if (!ok || err != nil) && strings.Contains(ref, "%") {
+			if dec, derr := url.PathUnescape(plainRef(ref)); derr == nil {
+				if abs, ok = chatFileTarget(row, dec); ok {
+					ref = dec
 					info, err = os.Stat(abs)
 				}
 			}
 		}
-		if err != nil || !info.Mode().IsRegular() || have[abs] {
+		if !ok || err != nil || !info.Mode().IsRegular() || have[abs] {
 			continue
 		}
 		if pages != "" && strings.HasPrefix(abs, pages+string(filepath.Separator)) {
@@ -371,7 +421,7 @@ func (s *Server) handleChatLinkedFiles(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	k.chats[row.ID] = linkedSeen{seq: seq, workdir: row.Workdir, at: time.Now(), files: files}
+	k.chats[row.ID] = linkedSeen{seq: named.seq, workdir: row.Workdir, at: time.Now(), files: files}
 	k.mu.Unlock()
 	writeJSON(w, http.StatusOK, map[string]any{"files": files})
 }

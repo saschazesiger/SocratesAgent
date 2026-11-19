@@ -420,8 +420,11 @@ func docsHome(folder string, files []docs.File) string {
 	if readme := docs.RootReadme(folder); readme != "" {
 		return readme
 	}
-	if len(files) > 0 {
-		return files[0].Path
+	for _, f := range files {
+		// A chat's pages folder lists every file: it opens on a page.
+		if f.Kind == "" || f.Kind == docs.Markdown {
+			return f.Path
+		}
 	}
 	return ""
 }
@@ -703,6 +706,7 @@ func (s *Server) handleDocsPage(w http.ResponseWriter, r *http.Request) {
 	if strings.Trim(rel, "/") == "" {
 		home := docs.RootReadme(folder)
 		if home == "" {
+			// docs.Scan: Markdown only, whatever the folder serves.
 			if list, err := docs.Scan(folder); err == nil && len(list.Files) > 0 {
 				home = list.Files[0].Path
 			}

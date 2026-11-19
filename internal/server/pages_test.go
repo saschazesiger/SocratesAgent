@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/saschazesiger/SocratesAgent/internal/agenthost"
@@ -218,6 +219,10 @@ func TestAChatsPagesFolderServesEveryFile(t *testing.T) {
 	if err := os.Symlink(outside, filepath.Join(dir, "linked.mp4")); err != nil {
 		t.Fatal(err)
 	}
+	// A pipe would hold a request that opened it until a writer came.
+	if err := syscall.Mkfifo(filepath.Join(dir, "pipe.mp4"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	res, body := e.do(t, e.client, "GET", "/api/docs?folder="+url.QueryEscape(dir)+"&titles=1", "")
 	if res.StatusCode != http.StatusOK {
 		t.Fatalf("list: %d %v", res.StatusCode, body)
@@ -268,7 +273,7 @@ func TestAChatsPagesFolderServesEveryFile(t *testing.T) {
 	if res.StatusCode != http.StatusOK || st["kind"] != "video" {
 		t.Fatalf("stat: %d %v", res.StatusCode, st)
 	}
-	for _, bad := range []string{".hidden.mp4", "linked.mp4", "..%2Fpages%2F.hidden.mp4", "report/..%2F.hidden.mp4", "nothing.mp4"} {
+	for _, bad := range []string{".hidden.mp4", "linked.mp4", "pipe.mp4", "..%2Fpages%2F.hidden.mp4", "report/..%2F.hidden.mp4", "nothing.mp4"} {
 		if res, _ := get(t, e, base+bad); res.StatusCode != http.StatusNotFound {
 			t.Fatalf("%s: %d", bad, res.StatusCode)
 		}

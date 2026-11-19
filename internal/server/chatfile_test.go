@@ -90,7 +90,10 @@ func TestFilesTheAgentNamesAreServed(t *testing.T) {
 	}
 	// Never what it did not name, nor anything that is no file's path, nor
 	// a pipe (which would hang the request), nor to a stranger.
-	for _, bad := range []string{filepath.Join(dir, "other.mp4"), "/etc/passwd", "a", "/", "", fifo, "out", "http://example.com/x.mp4"} {
+	// Nor a part of a path it named: a named path is a whole one.
+	tail := video[len(filepath.Dir(dir)):]
+	for _, bad := range []string{filepath.Join(dir, "other.mp4"), "/etc/passwd", "a", "/", "", fifo, "out", "http://example.com/x.mp4",
+		tail, "demo.mp4", "ut/notes.txt"} {
 		if res, _ := c.do(t, c.client, "GET", base+url.QueryEscape(bad), ""); res.StatusCode != http.StatusNotFound {
 			t.Fatalf("%q: %d", bad, res.StatusCode)
 		}

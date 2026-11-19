@@ -20,6 +20,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 )
 
 // The bounds of a scan. A repository with more Markdown than MaxFiles is
@@ -412,7 +413,7 @@ func resolve(root, rel string, all bool) (Target, error) {
 	// out of it is followed), and where the opened file really is is checked
 	// again: a directory swapped for a link after the check above does not
 	// lead anywhere the listing could not name.
-	f, err := os.OpenInRoot(realRoot, inside)
+	f, err := openInRoot(realRoot, inside)
 	if err != nil {
 		return Target{}, fmt.Errorf("%s is not there: %w", clean, fs.ErrNotExist)
 	}
@@ -455,7 +456,7 @@ func (t Target) Open() (*os.File, fs.FileInfo, error) {
 	if t.info == nil {
 		return nil, nil, ErrNotServed
 	}
-	f, err := os.OpenInRoot(t.root, t.inside)
+	f, err := openInRoot(t.root, t.inside)
 	if err != nil {
 		return nil, nil, fmt.Errorf("%s is not there: %w", t.Rel, fs.ErrNotExist)
 	}
@@ -469,6 +470,19 @@ func (t Target) Open() (*os.File, fs.FileInfo, error) {
 		return nil, nil, ErrTooLarge
 	}
 	return f, info, nil
+}
+
+// openInRoot opens name inside root as os.OpenInRoot does (no link out of
+// it is followed), and without blocking: a FIFO put in the folder (a chat's
+// pages folder serves any file) would otherwise hold the request until a
+// writer came. Resolve and Open refuse it once it is open.
+func openInRoot(root, name string) (*os.File, error) {
+	r, err := os.OpenRoot(root)
+	if err != nil {
+		return nil, err
+	}
+	defer r.Close()
+	return r.OpenFile(name, os.O_RDONLY|syscall.O_NONBLOCK, 0)
 }
 
 // openedPath is where an open file really is, on a system that says so

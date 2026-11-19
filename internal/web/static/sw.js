@@ -114,6 +114,7 @@ const SHELL = [
   '/static/js/docs.js',
   '/static/js/docview.js',
   '/static/js/docside.js',
+  '/static/js/fileview.js',
   '/static/js/pages.js',
   '/static/vendor/markdown/marked.esm.js',
   '/static/vendor/markdown/purify.es.js',

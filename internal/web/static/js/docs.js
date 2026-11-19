@@ -312,9 +312,12 @@ export function mountDocs({ host, onPage }) {
     const my = ++st.gen;
     const folder = st.folder;
     try {
-      const data = await listing(folder, { fresh, fetch });
+      const listed = await listing(folder, { fresh, fetch });
       if (my !== st.gen || folder !== st.folder) return;
       const had = st.data;
+      // A chat's pages folder lists every file (PAGES.md, "Any file"): the
+      // Docs page is its Markdown.
+      const data = { ...listed, files: (listed.files || []).filter((f) => !f.kind || f.kind === 'markdown') };
       st.data = data;
       st.error = '';
       st.relisted = Date.now();

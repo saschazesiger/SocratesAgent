@@ -167,15 +167,16 @@ export function mountChatPages(ctx) {
     try {
       data = await listing(folder, { fresh: true, titles: true });
     } catch {
-      // No folder (yet), or offline: no pages.
-      data = { files: [] };
+      // No folder (yet), or offline: the pages as they were, and what was
+      // seen of them kept.
+      data = null;
     }
     const links = await linking;
     if (my !== gen || !chat || chat.id !== id) return;
     const nextLinked = links && Array.isArray(links.files) ? links.files : linked;
     const linkedChanged = !sameLinked(linked, nextLinked);
     linked = nextLinked;
-    const next = ((data && data.files) || []).slice().sort((a, b) => (b.mtime || 0) - (a.mtime || 0) || a.path.localeCompare(b.path));
+    const next = !data ? files : (data.files || []).slice().sort((a, b) => (b.mtime || 0) - (a.mtime || 0) || a.path.localeCompare(b.path));
     const changed = !sameFiles(files, next);
     files = next;
     if (changed) pruneSeen(id, files);
