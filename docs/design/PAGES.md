@@ -89,7 +89,7 @@ day: as broad as a browser goes, no setup for the agent.
 | Topic | Decision |
 |---|---|
 | The pages folder | Holds any file now, not only Markdown: every regular file that is not hidden is listed (`docs.ScanAll`, each with its `kind`) and served (`docs.ResolveAll`), whatever its size, in ranges |
-| Anywhere else | A file the agent links or names in its text, wherever it lies (its working directory, `/tmp`), opens beside the chat too, served by the chat's file route - only when a text of the agent's in this chat names that path, as the image route does (`AgentNames`) |
+| Anywhere else | A file the agent links or names in its text, wherever it lies (its working directory, `/tmp`), opens beside the chat too, served by the chat's file route - only when a text of the agent's in this chat names that path as a whole: a link's target, a `code` path or a bare absolute path, as written, without `file://` or percent-decoded (`chatRefs`, kept while the chat does not change); never a part of a path it named |
 | Listed | The menu, now **Pages and files**, lists the folder's files and the files the agent linked elsewhere (*Linked*), newest first. The badge still counts the folder's files only |
 | Kinds | By name (`docs.FileKind`, mirrored in fileview.js `fileKind`), a file whose name says nothing by its first bytes (`docs.SniffKind`): Markdown, image, video, audio, PDF, HTML, text, and any other file |
 | The viewer | fileview.js, in the column beside the chat (docside.js) or its full screen dialog: the browser's own player for a video and a recording (where it was, when the file changes), a picture (the lightbox on a press), the browser's PDF viewer, an HTML page in a sandboxed frame, text as a code block (JSON indented, the first 1 MB), a CSV or TSV as a table (500 rows), anything else a card to download it. A file the browser cannot play says so, with the download. The head has *Download* and *Open in a new tab* |
@@ -108,6 +108,7 @@ What a file may do when the browser shows it is held by its headers (`serveChatF
 | Text, Markdown as a file | `text/plain; charset=utf-8`, sandbox: never a script or a page |
 | Any other | Its registered type unless that is one a browser would render (HTML, XML, SVG, script, text), else `application/octet-stream`; always `Content-Disposition: attachment` |
 
+Only a regular file is served, opened without blocking (a pipe put in the pages folder never holds a request).
 Every answer has `nosniff`, `Referrer-Policy: no-referrer` and a `Content-Disposition` with the file's name
 (`?download=1` makes it an attachment). The pages folder's files also have `Access-Control-Allow-Origin: *`, so
 that an HTML report there can read its own data files (its origin is opaque).
