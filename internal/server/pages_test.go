@@ -190,3 +190,100 @@ func TestAChatsChoiceOfTheGoneArtifactsServerIsPassedOver(t *testing.T) {
 		t.Fatal("Socrates Artifacts is still built in")
 	}
 }
+
+// A chat's pages folder lists and serves every file that is not hidden, each
+// as its kind is shown (PAGES.md, "Any file"); a project's folder still only
+// Markdown and pictures; a link out of the folder or a hidden file never.
+func TestAChatsPagesFolderServesEveryFile(t *testing.T) {
+	e := signedIn(t)
+	chat := pagesChat(t, e, "c1")
+	row, _ := e.store.GetSession(chat)
+	dir := e.srv.view(row).PagesDir
+	outside := filepath.Join(t.TempDir(), "secret.mp4")
+	if err := os.WriteFile(outside, []byte("secret"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := agenthost.MakePages(e.srv.dataDir, chat); err != nil {
+		t.Fatal(err)
+	}
+	writeTree(t, dir, map[string]string{
+		"demo.webm":         "\x1a\x45\xdf\xa3" + strings.Repeat("w", 40),
+		"report/index.html": "<h1>Report</h1>",
+		"report/data.json":  `{"a":1}`,
+		"app.js":            "alert(1)",
+		"bundle.zip":        "PK\x03\x04zip",
+		".hidden.mp4":       "hidden",
+		"plan.md":           "# Plan\n",
+	})
+	if err := os.Symlink(outside, filepath.Join(dir, "linked.mp4")); err != nil {
+		t.Fatal(err)
+	}
+	res, body := e.do(t, e.client, "GET", "/api/docs?folder="+url.QueryEscape(dir)+"&titles=1", "")
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("list: %d %v", res.StatusCode, body)
+	}
+	kinds := map[string]string{}
+	for _, f := range body["files"].([]any) {
+		m := f.(map[string]any)
+		kinds[m["path"].(string)] = fmt.Sprint(m["kind"])
+	}
+	want := map[string]string{"demo.webm": "video", "report/index.html": "html", "report/data.json": "text",
+		"app.js": "text", "bundle.zip": "file", "plan.md": "markdown"}
+	if len(kinds) != len(want) {
+		t.Fatalf("listed: %v", kinds)
+	}
+	for p, k := range want {
+		if kinds[p] != k {
+			t.Fatalf("%s: %q in %v", p, kinds[p], kinds)
+		}
+	}
+	base := body["base"].(string)
+	type served struct{ ctype, csp, cors string }
+	for p, w := range map[string]served{
+		"demo.webm":         {"video/webm", "sandbox", "*"},
+		"report/index.html": {"text/html; charset=utf-8", "sandbox allow-scripts", "*"},
+		"report/data.json":  {"text/plain; charset=utf-8", "sandbox", "*"},
+		"app.js":            {"text/plain; charset=utf-8", "sandbox", "*"},
+		"bundle.zip":        {"application/zip", "sandbox", "*"},
+	} {
+		res, _ := get(t, e, base+p)
+		h := res.Header
+		if res.StatusCode != http.StatusOK || h.Get("Content-Type") != w.ctype || !strings.HasPrefix(h.Get("Content-Security-Policy"), w.csp) ||
+			h.Get("Access-Control-Allow-Origin") != w.cors || h.Get("X-Content-Type-Options") != "nosniff" {
+			t.Fatalf("%s: %d %q %q %q", p, res.StatusCode, h.Get("Content-Type"), h.Get("Content-Security-Policy"), h.Get("Access-Control-Allow-Origin"))
+		}
+	}
+	if res, _ := get(t, e, base+"bundle.zip"); !strings.HasPrefix(res.Header.Get("Content-Disposition"), "attachment") {
+		t.Fatalf("a zip is a download: %q", res.Header.Get("Content-Disposition"))
+	}
+	// Markdown is still a page, and its text or a download on request.
+	if res, page := get(t, e, base+"plan.md"); res.StatusCode != http.StatusOK || !strings.Contains(page, "data-docs") {
+		t.Fatalf("a page: %d", res.StatusCode)
+	}
+	if res, _ := get(t, e, base+"plan.md?download=1"); !strings.HasPrefix(res.Header.Get("Content-Disposition"), "attachment") {
+		t.Fatalf("a page saved: %q", res.Header.Get("Content-Disposition"))
+	}
+	// The stat names the kind.
+	res, st := e.do(t, e.client, "GET", "/api/docs/stat?folder="+url.QueryEscape(dir)+"&path=demo.webm", "")
+	if res.StatusCode != http.StatusOK || st["kind"] != "video" {
+		t.Fatalf("stat: %d %v", res.StatusCode, st)
+	}
+	for _, bad := range []string{".hidden.mp4", "linked.mp4", "..%2Fpages%2F.hidden.mp4", "report/..%2F.hidden.mp4", "nothing.mp4"} {
+		if res, _ := get(t, e, base+bad); res.StatusCode != http.StatusNotFound {
+			t.Fatalf("%s: %d", bad, res.StatusCode)
+		}
+	}
+
+	// A project folder: Markdown and pictures only, as before.
+	work := row.Workdir
+	writeTree(t, work, map[string]string{"README.md": "# Hi\n", "demo.webm": "video", "main.go": "package main\n"})
+	pbase, pbody := docsBase(t, e, work)
+	if n := len(pbody["files"].([]any)); n != 1 {
+		t.Fatalf("a project folder lists only its Markdown: %v", pbody["files"])
+	}
+	for _, p := range []string{"demo.webm", "main.go"} {
+		if res, _ := get(t, e, pbase+p); res.StatusCode != http.StatusNotFound {
+			t.Fatalf("a project's %s: %d", p, res.StatusCode)
+		}
+	}
+}

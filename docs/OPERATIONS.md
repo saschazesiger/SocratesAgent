@@ -193,8 +193,8 @@ Chats from before this change keep their folder.
 
 | | |
 | --- | --- |
-| 📂 **Where** | `<data>/chats/<chat>/pages/`: the Markdown files (and their pictures) a chat's agent writes to explain things. Made when the chat's agent starts, removed with the chat, in the backup |
-| 🌐 **Addresses** | Served like a project's docs, at `/docs/<token>/<path>` (below) |
+| 📂 **Where** | `<data>/chats/<chat>/pages/`: the Markdown files a chat's agent writes to explain things, and any other file it keeps there to show (a video, a recording, a PDF, a report). Made when the chat's agent starts, removed with the chat, in the backup: a large video there makes the backup larger |
+| 🌐 **Addresses** | Served like a project's docs, at `/docs/<token>/<path>` (below), every file that is not hidden. A file the agent names elsewhere on the machine is served to the signed-in person at `/api/chats/<chat>/file?path=...`, only when the agent's own text in that chat names it |
 | 🗑️ **Artifacts** | Socrates Artifacts, which they replaced, is gone: the first start of this build deletes every `<data>/chats/<chat>/artifacts/` |
 
 ---

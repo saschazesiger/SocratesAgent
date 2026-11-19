@@ -312,3 +312,41 @@ func TestWalkBound(t *testing.T) {
 		t.Fatalf("a whole walk: visited %d", n)
 	}
 }
+
+// A file's kind is told by its name, and one whose name says nothing by its
+// first bytes; what a browser would run is never served as such.
+func TestFileKinds(t *testing.T) {
+	for name, want := range map[string]Kind{
+		"a/demo.MP4": Video, "x.webm": Video, "take.mp3": Audio, "v.wav": Audio, "r.pdf": PDF,
+		"index.html": HTML, "x.htm": HTML, "data.csv": Text, "main.go": Text, "Makefile": Text,
+		"x.png": Image, "x.svg": Image, "NOTES.md": Markdown, "a.zip": Other, "noext": Other,
+	} {
+		if got := FileKind(name); got != want {
+			t.Fatalf("%s: %q, want %q", name, got, want)
+		}
+	}
+	for name, want := range map[string]string{
+		"x.js": "text/plain; charset=utf-8", "x.html": "text/html; charset=utf-8", "x.mp4": "video/mp4",
+		"x.zip": "application/zip", "x.xml": "text/plain; charset=utf-8", "x.xhtml2": "application/octet-stream",
+	} {
+		if got := FileContentType(name, FileKind(name)); got != want {
+			t.Fatalf("%s: %q, want %q", name, got, want)
+		}
+	}
+	dir := t.TempDir()
+	for name, content := range map[string]string{"words": "just text\n", "bin": "\x00\x01\x02", "doc": "%PDF-1.4\n"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for name, want := range map[string]Kind{"words": Text, "bin": Other, "doc": PDF} {
+		f, err := os.Open(filepath.Join(dir, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := SniffKind(f, Other); got != want {
+			t.Fatalf("%s sniffed: %q, want %q", name, got, want)
+		}
+		f.Close()
+	}
+}

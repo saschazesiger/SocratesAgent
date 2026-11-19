@@ -77,3 +77,70 @@ never only as a `code` path, another page by its name. The folder exists from th
 | `internal/web/static/js/docside.js` | `outsideHref`: a link out of the file shown, as an absolute path |
 
 Tested by `go test ./internal/agent/... ./internal/server -run 'Docs|Pages'` and `node e2e/run.mjs chatpages ask-links`.
+
+## Any file (2026-11-19)
+
+Asked for by the owner on 2026-11-19: "every file a browser can open" - a video, a picture, a text file,
+whatever - should be shown under the chat's pages and linkable in the chat so that it opens. Agents cut demo
+videos (`out/guardch-chatgpt-demo.mp4`) and mixed voice-overs (`review/voice-a.mp3`) that the person could only
+see by downloading them, and one chat built a frontend of its own on the tailnet to share MP3s. Decided the same
+day: as broad as a browser goes, no setup for the agent.
+
+| Topic | Decision |
+|---|---|
+| The pages folder | Holds any file now, not only Markdown: every regular file that is not hidden is listed (`docs.ScanAll`, each with its `kind`) and served (`docs.ResolveAll`), whatever its size, in ranges |
+| Anywhere else | A file the agent links or names in its text, wherever it lies (its working directory, `/tmp`), opens beside the chat too, served by the chat's file route - only when a text of the agent's in this chat names that path, as the image route does (`AgentNames`) |
+| Listed | The menu, now **Pages and files**, lists the folder's files and the files the agent linked elsewhere (*Linked*), newest first. The badge still counts the folder's files only |
+| Kinds | By name (`docs.FileKind`, mirrored in fileview.js `fileKind`), a file whose name says nothing by its first bytes (`docs.SniffKind`): Markdown, image, video, audio, PDF, HTML, text, and any other file |
+| The viewer | fileview.js, in the column beside the chat (docside.js) or its full screen dialog: the browser's own player for a video and a recording (where it was, when the file changes), a picture (the lightbox on a press), the browser's PDF viewer, an HTML page in a sandboxed frame, text as a code block (JSON indented, the first 1 MB), a CSV or TSV as a table (500 rows), anything else a card to download it. A file the browser cannot play says so, with the download. The head has *Download* and *Open in a new tab* |
+| Which links | A Markdown link to a file path (absolute, `file://`, relative to the working directory) that is not Markdown; and, as for Markdown, a `code` path, but only of a kind to look at or listen to (video, audio, picture, PDF, HTML): a coding chat names its source files as `code` all the time |
+| Linked files | `GET /api/chats/<id>/files`: from the agent's texts, every link's target of any kind but Markdown, and `code` paths and bare absolute paths of a kind to look at; that are regular files now, outside the pages folder; at most 100, from the 400 newest paths; kept 10 s while the chat does not change |
+
+### Served how
+
+What a file may do when the browser shows it is held by its headers (`serveChatFile`), for both routes:
+
+| Kind | Served as |
+|---|---|
+| Video, audio, picture | Its type, `Content-Security-Policy: sandbox`, ranges (`http.ServeContent`) |
+| PDF | `application/pdf` with `frame-ancestors 'self'` only: the browser's PDF viewer does not run in a sandbox |
+| HTML | `text/html` with `sandbox allow-scripts allow-popups allow-popups-to-escape-sandbox allow-modals allow-downloads allow-forms`: its scripts run, in an opaque origin, without the person's cookie; the frame has the same sandbox |
+| Text, Markdown as a file | `text/plain; charset=utf-8`, sandbox: never a script or a page |
+| Any other | Its registered type unless that is one a browser would render (HTML, XML, SVG, script, text), else `application/octet-stream`; always `Content-Disposition: attachment` |
+
+Every answer has `nosniff`, `Referrer-Policy: no-referrer` and a `Content-Disposition` with the file's name
+(`?download=1` makes it an attachment). The pages folder's files also have `Access-Control-Allow-Origin: *`, so
+that an HTML report there can read its own data files (its origin is opaque).
+
+An HTML page of the pages folder loads its pictures, styles and scripts from the folder by relative paths, as the
+token in its address covers the folder. Its scripts could carry that address away (to a server of their own),
+and with it the folder's files: what is in the folder is what the agent put there to show, and the page is the
+agent's own or one it copied. An HTML file elsewhere is served by the chat's file route alone: it shows, its
+scripts run, but its relative files do not load (the agent is told to copy the page and its files into the
+pages folder).
+
+### The agent
+
+`agent.PagesGuidance` has a second paragraph, *Files*: Socrates shows any other file beside the chat and lists
+what it links; to show the person a file, link it with its absolute path (or one relative to the working
+directory), never only as a `code` path, and never through a web server, a tunnel or a share of its own; copy
+what is worth keeping into the pages folder (an HTML page with the files it loads), where a page can play it
+with `<video>` or `<audio>`; make what the person should watch or hear in a format every browser plays (MP4 with
+H.264 and AAC, WebM, MP3, M4A, WAV).
+
+### Code and tests
+
+| Where | What |
+|---|---|
+| `internal/docs/files.go` | `FileKind`, `FileContentType`, `SniffKind`, `OpenFile` |
+| `internal/docs/docs.go` | `ScanAll`, `ResolveAll` |
+| `internal/server/docs.go` | The pages folder listed and served whole (`docsAllFiles`) |
+| `internal/server/chatfile.go` | `/api/chats/{id}/file`, `/file/info`, `/files`; `serveChatFile` |
+| `internal/agent/projection.go` | `AgentTexts`, what the linked files are found in |
+| `internal/web/static/js/fileview.js` | The viewer and the kinds |
+| `internal/web/static/js/docside.js` | `openFile`, `folderFile`, `chatFile`, `fileLinkRef` |
+| `internal/web/static/js/session.js` | `chatDocTarget`: `{file}` for a file that is not Markdown |
+| `internal/web/static/js/pages.js` | Every file of the folder and the linked ones in the menu |
+| `internal/web/static/js/md.js` | `SHOWN_PATH`: a `code` path to a file to look at as a link |
+
+Tested by `go test ./internal/docs ./internal/server -run 'Files|Docs|Pages|Linked'` and `node e2e/run.mjs chatpages`.

@@ -195,6 +195,21 @@ async function files(s, chat, dir, work) {
   ok(ranged.status() === 206 && (ranged.headers()['content-type'] || '').startsWith('video/webm'), 'a video is served in ranges, as a video', ranged.status() + ' ' + ranged.headers()['content-type']);
   await shot(page, 'pages-video');
 
+  // A page plays a video of the folder (agent.PagesGuidance).
+  if (made) {
+    writeFileSync(join(dir, 'watch.md'), '# Watch it\n\n<video src="demo.webm" controls></video>\n');
+    await tell(s, chat, `Watch [it](${dir}/watch.md).`);
+    const watch = `#chat a[href="${dir}/watch.md"]`;
+    await page.waitForSelector(watch, { timeout: 20000 });
+    await page.click(watch);
+    const inPage = await page.frameLocator(VIEW).locator('video').evaluate((v) => new Promise((resolve) => {
+      if (v.readyState >= 1) resolve(v.duration);
+      v.addEventListener('loadedmetadata', () => resolve(v.duration));
+      setTimeout(() => resolve(0), 6000);
+    })).catch(() => 0);
+    ok(inPage > 0, 'a page plays a video of the pages folder', inPage);
+  }
+
   // A CSV: a table.
   await page.click('#pagesBtn');
   await page.click(`${menu} [data-action="page:numbers.csv"]`);

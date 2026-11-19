@@ -66,8 +66,9 @@ file opens it beside the chat. Decided with the owner the same day:
 - A link in a chat's conversation whose target is a Markdown file inside the chat's working
   directory opens the file beside the chat (docside.js `docLinkTarget`, chatview.js `ctx.docLink`):
   a path relative to the folder (`docs/ARCH.md`, `./README.md#setup`), an absolute path inside it, or
-  a `file://` address of one. A web address, a file outside the folder or one that is not Markdown is
-  left to the browser. A modified or middle click is the browser's too.
+  a `file://` address of one. A web address is left to the browser, and so is a modified or middle
+  click. A path to a file that is not Markdown opens in the file viewer beside the chat (PAGES.md,
+  "Any file").
 - **A `code` path** to a Markdown file (`` `docs/ARCH.md` ``, `` `./README.md#setup` ``, an absolute path;
   nothing else in the span) is drawn as a link to it (md.js `codespan`, not inside a link's text), and
   opens the same way. A path the folder's listing does not have opens the one file whose path ends in
@@ -154,7 +155,7 @@ file opens it beside the chat. Decided with the owner the same day:
   kept in the database (`kv` `docs.key`, so in the backup). Only a signed-in caller gets it (`GET
   /api/docs`). The frame's own requests carry no cookie (its origin is opaque), so `/docs/` asks for the
   token and not the login.
-- **What is served**: a Markdown file or a picture (`png jpg jpeg gif svg webp avif ico bmp`) inside
+- **What is served** (a chat's pages folder serves every file that is not hidden, PAGES.md "Any file"): a Markdown file or a picture (`png jpg jpeg gif svg webp avif ico bmp`) inside
   the folder, by a path with no `..`, no part starting with `.` and none of the skipped folders, that
   resolves (symbolic links followed) inside the folder; Markdown up to 5 MB, a picture up to 20 MB. A
   folder is redirected to its README.md (or index.md). Everything else is a 404: source code, `.env`,

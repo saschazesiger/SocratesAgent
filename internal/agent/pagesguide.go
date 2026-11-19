@@ -27,7 +27,9 @@ func (s StartSpec) PagesDir() string { return PagesDir(s.DataDir, s.ChatID) }
 
 // PagesGuidance is the instruction every chat gets about its pages folder
 // dir: what to write there instead of a long chat answer, and how to point
-// to it. It is "" without a folder.
+// to it; and how to show the person any other file (a video, a recording, a
+// PDF), which the chat opens beside itself (docs/design/PAGES.md, "Any
+// file"). It is "" without a folder.
 func PagesGuidance(dir string) string {
 	if dir == "" {
 		return ""
@@ -44,7 +46,16 @@ const pagesGuidance = "Pages: when something is easier to take in as a document 
 	"for the same subject. Start a page with a # title. In a page, link a Markdown file of the working " +
 	"directory by its absolute path, never by a path relative to the working directory (in a page that means " +
 	"the pages folder) and never only as a `code` path; another page by its name, e.g. [The plan](plan.md). " +
-	"Not for a few lines of text. The pages are deleted with the chat."
+	"Not for a few lines of text. The pages are deleted with the chat.\n\n" +
+	"Files: Socrates shows any other file beside the chat too - a video, a recording, a picture, a PDF, an " +
+	"HTML page, a CSV, a log - in a player or a viewer for its kind, and lists every file you link with the " +
+	"pages. To show the person a file, link it in your reply as a Markdown link with its absolute path (or one " +
+	"relative to the working directory), e.g. [The demo](/srv/app/out/demo.mp4): never only as a `code` path, " +
+	"and never through a web server, a tunnel or a share of your own. What is worth keeping with the chat " +
+	"(a final video, a report) can go into the pages folder: copy it there, an HTML page with the files it " +
+	"loads, and a page can play it, <video src=\"demo.mp4\" controls></video> or <audio src=\"take.mp3\" " +
+	"controls></audio>. Make what the person should watch or hear in a format every browser plays: MP4 " +
+	"(H.264 and AAC) or WebM video, MP3, M4A or WAV audio."
 
 // WithPagesGuidance is prompt with PagesGuidance(dir) after it, a blank
 // line between, or prompt as it is without a folder.

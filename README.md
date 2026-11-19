@@ -113,7 +113,7 @@ You can run it again at any time to repair or update the installation.
 | 🤝 **Chats talk** | Agents of chats in the same repository list, read and message each other — Claude Code, Codex and OpenCode alike, on any account. |
 | 🔌 **MCP** | Set up MCP servers in **Admin** for every chat, on or off by default, and switch them per chat on the new session sheet or later in its ⋮ → **MCP servers**. **Test** a server to see its tools, sign in to remote ones with **OAuth**, switch single tools off. A folder's `.mcp.json` adds its own, with any agent; its `.socrates/mcp.json` adds servers only Socrates sees and turns any `off` by default. |
 | 🧪 **Socrates Tests** | Built in, nothing to set up: switch it on in a chat and its agent writes, runs and documents its own tests ([🧪 Tests](#-tests)). |
-| 📄 **Pages** | Every chat's agent can explain with a page — diagrams, charts, tables — shown beside the chat ([📄 Pages](#-pages)). |
+| 📄 **Pages & files** | Every chat's agent can explain with a page — diagrams, charts, tables — and show any file it made: videos, recordings, pictures, PDFs, HTML reports, CSVs, logs, played or shown beside the chat ([📄 Pages](#-pages)). |
 | 📧 **Gmail** | Built in: switch it on and the agent searches and reads your mail, saves attachments, writes drafts and sets labels. It never sends or deletes: a draft waits in Gmail for you. Add the address and an [app password](https://myaccount.google.com/apppasswords) in **Admin**. |
 | 🔎 **Search Console & Bing** | Built in: the agent reads **Google Search Console** (clicks, impressions, CTR and positions by query, page, country, device and date, URL inspection, sitemaps) and **Bing Webmaster Tools** (top queries and pages, traffic, crawl statistics, URL facts, sitemaps). Read-only. Add a Google service account's JSON key or a Bing API key in **Admin**, each under a name such as your site's. |
 | 📱 **BrowserStack** | Built in: real phones, tablets and desktop browsers for any chat, its screenshots the evidence of the chat's tests. Add the accounts in **Admin** (checked against BrowserStack), switch the server on where you need it. A chat may run several devices at once; each account carries as many sessions as its BrowserStack plan allows in parallel. |
@@ -159,6 +159,7 @@ Every chat's agent can show instead of tell: a page with a diagram of the archit
 | 👀 **Beside the chat** | Click the link in the chat, or pick it from **Pages** in the chat's head; it stands next to the conversation (full screen on the phone). |
 | 🔄 **Live** | When the agent changes a page, you see it at once; the badge counts what you have not seen. |
 | 🔗 **Docs too** | Any Markdown file of the project the agent mentions opens the same way. |
+| 🎬 **Any file** | A video, a recording, a picture, a PDF, an HTML report, a CSV or a log the agent links opens beside the chat in a player or viewer for it; anything else can be downloaded. **Pages and files** in the chat's head lists them all. |
 
 How it works: [docs/design/PAGES.md](docs/design/PAGES.md).
 
