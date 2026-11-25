@@ -343,10 +343,6 @@ func (c *termConn) takeAck() (uint64, bool) {
 // machine.
 func (s *Server) handleSessionWS(w http.ResponseWriter, r *http.Request) {
 	ip := clientIP(r)
-	if err := s.throttle(ip); err != nil {
-		writeError(w, http.StatusTooManyRequests, err.Error())
-		return
-	}
 
 	row, ok := s.session(w, r)
 	if !ok {

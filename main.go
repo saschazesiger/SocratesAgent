@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"log"
 	"net"
-	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -116,6 +115,10 @@ func main() {
 	}
 
 	server.Version = version
+	// The Z-Dash server would sign everybody in without a password with this
+	// set (its switch for demos); Socrates runs commands for whoever is
+	// signed in and has no such mode.
+	os.Unsetenv("SOCRATES_OPEN")
 
 	// The watchdog comes first, before anything that can hang, so a hung
 	// start is restarted like a crashed one. Its loop is not tied to life: a
@@ -161,7 +164,7 @@ func main() {
 	life, restartForRestore := context.WithCancel(life)
 	var restarting atomic.Bool
 
-	srv, err := server.New(st, *dataDir)
+	srv, err := server.New(st, *dataDir, *addr)
 	if err != nil {
 		log.Fatalf("could not start: %v", err)
 	}
@@ -191,49 +194,55 @@ func main() {
 		log.Printf("terminal sessions are unavailable: %v", err)
 	}
 
-	listener, err := listen(*addr)
-	if err != nil {
-		log.Fatalf("could not listen on %s: %v", *addr, err)
-	}
-	httpServer := &http.Server{
-		Handler:           srv.Handler(),
-		ReadHeaderTimeout: 20 * time.Second,
-		// No write timeout: a terminal connection stays open for a long time.
-	}
+	// The Z-Dash server listens: on the local address, and on a socket of its
+	// own for the Cloudflare tunnel, which it supervises. The local address
+	// serves whatever happens to the tunnel.
+	local := listenAddr(*addr)
+	srv.SetLocalURL(localBaseURL(local))
+	served := make(chan error, 1)
+	go func() { served <- srv.Run(life) }()
+	// From the first answer on a ping has to be earned: it is fed only while
+	// the server answers its own health check.
+	probe := sdnotify.HTTPProbe(local, "/api/health")
 	go func() {
-		if err := httpServer.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			log.Fatalf("server error: %v", err)
+		for life.Err() == nil {
+			ctx, cancel := context.WithTimeout(life, 3*time.Second)
+			err := probe(ctx)
+			cancel()
+			if err == nil {
+				watchdog.Serving(probe)
+				announce(local, *dataDir)
+				return
+			}
+			select {
+			case <-life.Done():
+			case <-time.After(100 * time.Millisecond):
+			}
 		}
 	}()
-	// From here a ping has to be earned: it is fed only while the server
-	// answers its own health check.
-	watchdog.Serving(sdnotify.HTTPProbe(listener.Addr(), "/api/health"))
-	srv.SetLocalURL(localBaseURL(listener.Addr()))
 
-	log.Printf("Socrates %s", version)
-	log.Printf("data directory: %s", *dataDir)
-	log.Printf("open %s in your browser", displayURL(listener.Addr()))
-	if isLoopback(listener.Addr()) {
-		log.Print("listening on loopback only - reachable from this machine, and through the Cloudflare tunnel (Admin -> Remote access)")
-	} else {
-		log.Printf("listening on %s - reachable from the network. Anyone who gets past the password can run commands here; "+
-			"set SOCRATES_ADDR=127.0.0.1:8080 to keep it local and publish it through the Cloudflare tunnel instead", listener.Addr())
+	var serveErr error
+	select {
+	case <-life.Done():
+		log.Print("shutting down")
+		watchdog.Stopping()
+		// Run stops cloudflared and the listeners, and lets the requests
+		// under way finish for a few seconds.
+		serveErr = <-served
+	case serveErr = <-served:
+		// The listener could not be opened, or stopped serving.
+		watchdog.Stopping()
 	}
-
-	// The tunnel reaches Socrates through a socket of its own; the local
-	// address above serves whatever happens to it.
-	if err := srv.StartTunnel(); err != nil {
-		log.Printf("cloudflare tunnel: %v", err)
-	}
-
-	<-life.Done()
-	log.Print("shutting down")
-	watchdog.Stopping()
-	srv.StopTunnel()
 	// The tmux server and every session on it are deliberately left running.
 	stopSessions()
 	srv.StopSessions()
-	shutdownHTTP(httpServer)
+	if serveErr != nil && !restarting.Load() {
+		// Nothing writes any more; the database is closed like after a stop,
+		// and the exit says why.
+		_ = st.Close()
+		unlock()
+		log.Fatalf("could not serve on %s: %v", *addr, serveErr)
+	}
 	if restarting.Load() {
 		// The data directory is about to be replaced by the restore: what
 		// is here is not worth a backup, and must not become the newest
@@ -275,10 +284,27 @@ func warnAfter() time.Duration {
 	return d
 }
 
-func shutdownHTTP(httpServer *http.Server) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	_ = httpServer.Shutdown(ctx)
+// listenAddr is the address the server listens on, as far as its text says:
+// what the health check asks and the log names.
+func listenAddr(addr string) net.Addr {
+	tcp, err := net.ResolveTCPAddr("tcp", addr)
+	if err != nil {
+		return &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 8080}
+	}
+	return tcp
+}
+
+// announce says where Socrates is, once it answers there.
+func announce(addr net.Addr, dataDir string) {
+	log.Printf("Socrates %s", version)
+	log.Printf("data directory: %s", dataDir)
+	log.Printf("open %s in your browser", displayURL(addr))
+	if isLoopback(addr) {
+		log.Print("listening on loopback only - reachable from this machine, and through the Cloudflare tunnel (Admin -> Remote access)")
+	} else {
+		log.Printf("listening on %s - reachable from the network. Anyone who gets past the password can run commands here; "+
+			"set SOCRATES_ADDR=127.0.0.1:8080 to keep it local and publish it through the Cloudflare tunnel instead", addr)
+	}
 }
 
 // journalSink is the sink tmux pipes a pane's output into. It is a subcommand

@@ -153,7 +153,7 @@ func TestManyChatsStartFromTheirBriefs(t *testing.T) {
 	}
 	before := heapInUse()
 	start := func() (*Server, time.Duration) {
-		srv, err := New(e.store, data)
+		srv, err := New(e.store, data, "127.0.0.1:0")
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -543,6 +543,10 @@ export async function start(options = {}) {
     // prompt. Nothing else changes for the scenarios that do not ask.
     args: ['--no-sandbox', ...(options.args || [])],
   });
+  // Every context a scenario makes sends the scenario's own API calls the
+  // way the pages do (guardRequests).
+  const newContext = browser.newContext.bind(browser);
+  browser.newContext = async (contextOptions) => guardRequests(await newContext(contextOptions));
   const context = await browser.newContext({
     viewport: options.viewport || { width: 390, height: 844 },
     // A phone is a coarse pointer, and the key bar decides whether it is
@@ -645,6 +649,21 @@ export async function start(options = {}) {
   };
 
   return s;
+}
+
+// CSRF is the header the server's CSRF guard wants on every request that
+// changes something; the pages send it themselves (net.js CSRF_HEADER).
+export const CSRF = Object.freeze({ 'X-Z-Dash': '1' });
+
+// guardRequests makes a context's own API client (context.request, which a
+// scenario uses in place of the page) send that header. The pages' requests
+// are not touched: a page that forgets the header must fail its scenario.
+function guardRequests(context) {
+  for (const verb of ['post', 'put', 'patch', 'delete', 'fetch']) {
+    const send = context.request[verb].bind(context.request);
+    context.request[verb] = (target, options = {}) => send(target, { ...options, headers: { ...CSRF, ...(options.headers || {}) } });
+  }
+  return context;
 }
 
 // setup drives the setup page the way a person would, and lands on the session

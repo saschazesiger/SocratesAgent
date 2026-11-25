@@ -381,11 +381,6 @@ func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
 // reason the terminal socket gives: cookies travel on a cross-origin
 // handshake, and this stream carries every session's title and question.
 func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
-	ip := clientIP(r)
-	if err := s.throttle(ip); err != nil {
-		writeError(w, http.StatusTooManyRequests, err.Error())
-		return
-	}
 	// The auth wrapper has checked the login, so it is there and valid.
 	login, ok := s.loginOf(r)
 	if !ok {

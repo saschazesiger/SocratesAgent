@@ -35,6 +35,7 @@ func (c *chatEnv) upload(t *testing.T, id string, files map[string]string) (int,
 		t.Fatal(err)
 	}
 	req.Header.Set("Content-Type", mw.FormDataContentType())
+	req.Header.Set("X-Z-Dash", "1")
 	res, err := c.client.Do(req)
 	if err != nil {
 		t.Fatal(err)

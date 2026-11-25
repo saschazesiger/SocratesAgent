@@ -216,7 +216,7 @@ export function mountEvents(ctx) {
 
   function url() {
     const base = location.protocol === 'https:' ? 'wss://' : 'ws://';
-    return base + location.host + '/api/events';
+    return base + location.host + '/api/stream';
   }
 
   function open() {

@@ -383,9 +383,9 @@ func HoldsStore(dataDir string) (bool, string, error) {
 }
 
 // storeContents reads, without writing anything, whether a database has a
-// password and how many sessions. The names are internal/store's (and
-// internal/server's PasswordKey); a database without those tables has
-// neither.
+// password and how many sessions. The names are internal/store's, the
+// Z-Dash server's auth.password and internal/server's PasswordKey; a
+// database without those tables has neither.
 func storeContents(db string) (bool, int, error) {
 	dsn := (&url.URL{Scheme: "file", Path: db, RawQuery: "mode=ro&_pragma=busy_timeout(10000)"}).String()
 	conn, err := sql.Open("sqlite", dsn)
@@ -401,7 +401,9 @@ func storeContents(db string) (bool, int, error) {
 		return false, 0, nil
 	}
 	var hash string
-	err = conn.QueryRow(`SELECT value FROM kv WHERE key = 'password_hash'`).Scan(&hash)
+	// The password as the Z-Dash server keeps it, or as the builds before
+	// it did (internal/server/app.go).
+	err = conn.QueryRow(`SELECT value FROM kv WHERE key IN ('auth.password', 'password_hash') AND TRIM(value) != '' LIMIT 1`).Scan(&hash)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return false, 0, err
 	}

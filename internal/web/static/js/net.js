@@ -470,6 +470,13 @@ export class RetryLater extends Error {
   }
 }
 
+/**
+ * CSRF_HEADER goes on every request that is not a GET, whoever sends it:
+ * the Z-Dash server refuses one without it (403) before it looks at the
+ * session.
+ */
+export const CSRF_HEADER = Object.freeze({ 'X-Z-Dash': '1' });
+
 const RETRYABLE_STATUS = new Set([408, 425, 429, 500, 502, 503, 504, 522, 523, 524]);
 
 function shouldRetry(err) {
@@ -524,7 +531,9 @@ export async function request(path, options = {}) {
     attempts,
   } = options;
 
-  const headers = {};
+  // The server's CSRF guard: a request that changes something must carry
+  // this header, which a form on another site cannot set (CSRF_HEADER).
+  const headers = { ...CSRF_HEADER };
   let payload;
   if (body !== undefined) {
     headers['Content-Type'] = 'application/json';

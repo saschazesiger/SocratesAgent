@@ -2,46 +2,32 @@ package server
 
 import (
 	"crypto/pbkdf2"
-	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
-	"encoding/hex"
-	"errors"
-	"fmt"
 	"net"
 	"net/http"
 	"strconv"
 	"strings"
-	"time"
 
-	"github.com/saschazesiger/SocratesAgent/internal/store"
+	zdash "github.com/saschazesiger/Z-Dash/server"
 	"github.com/saschazesiger/Z-Dash/server/cloudflare"
 )
 
-const (
-	// PasswordKey holds the PBKDF2 hash of the password.
-	PasswordKey    = "password_hash"
-	sessionCookie  = "socrates_session"
-	sessionTTL     = 30 * 24 * time.Hour
-	pbkdf2Rounds   = 210000
-	minPasswordLen = 6
-)
+// The password and the sessions are the Z-Dash server's (app.go): it hashes
+// the password with Argon2id under auth.password, keeps the sessions, limits
+// the sign-in attempts and answers /api/login, /api/logout and /api/password.
+// What is here is Socrates' own around it: the setup page's first step, the
+// state every page starts from, and the password of the builds before.
 
-func hashPassword(password string) (string, error) {
-	salt := make([]byte, 16)
-	if _, err := rand.Read(salt); err != nil {
-		return "", err
-	}
-	key, err := pbkdf2.Key(sha256.New, password, salt, pbkdf2Rounds, 32)
-	if err != nil {
-		return "", err
-	}
-	return fmt.Sprintf("pbkdf2-sha256$%d$%s$%s", pbkdf2Rounds,
-		base64.RawStdEncoding.EncodeToString(salt),
-		base64.RawStdEncoding.EncodeToString(key)), nil
-}
+// PasswordKey holds the PBKDF2 hash of a password set before the Z-Dash
+// server kept it. It still signs in; the first sign-in with it stores the
+// password in the server's format and deletes this key (app.go,
+// LegacyPassword).
+const PasswordKey = "password_hash"
 
+// verifyPassword checks a password against a hash of the builds before the
+// Z-Dash server ("pbkdf2-sha256$rounds$salt$key").
 func verifyPassword(encoded, password string) bool {
 	parts := strings.Split(encoded, "$")
 	if len(parts) != 4 || parts[0] != "pbkdf2-sha256" {
@@ -66,27 +52,32 @@ func verifyPassword(encoded, password string) bool {
 	return subtle.ConstantTimeCompare(got, want) == 1
 }
 
-func (s *Server) hasPassword() bool {
-	v, err := s.store.GetKV(PasswordKey)
-	return err == nil && strings.TrimSpace(v) != ""
-}
+func (s *Server) hasPassword() bool { return s.app.HasPassword() }
 
 // authenticated is a signed-in request: one that came through the tunnel
-// with a valid Cloudflare Access token (TunnelHandler checked it), or one
-// with a Socrates login cookie.
-func (s *Server) authenticated(r *http.Request) bool {
-	if id := via(r); id.Via == "tunnel" && id.Email != "" {
-		return true
+// with a valid Cloudflare Access token, or one with a session's cookie.
+func (s *Server) authenticated(r *http.Request) bool { return s.app.SignedIn(r) }
+
+// auth is what every signed-in route of Socrates adds to the Z-Dash server's
+// own checks (the session, the CSRF guard): nothing is served before the
+// setup is finished, which a person who came through the tunnel could
+// otherwise skip.
+func (s *Server) auth(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		// The server marks every API answer no-store; Socrates' handlers say
+		// themselves what may be kept (a chat's images, its files).
+		w.Header().Del("Cache-Control")
+		if !s.hasPassword() {
+			writeError(w, http.StatusForbidden, "setup is not finished yet")
+			return
+		}
+		next(w, r)
 	}
-	c, err := r.Cookie(sessionCookie)
-	if err != nil {
-		return false
-	}
-	return s.store.ValidLogin(c.Value)
 }
 
-// auth wraps an API handler with session and CSRF checks.
-func (s *Server) auth(next http.HandlerFunc) http.HandlerFunc {
+// signedIn guards a page that is no API route (the editor's proxy): the
+// session, and the origin of a request that changes something.
+func (s *Server) signedIn(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if !s.hasPassword() {
 			writeError(w, http.StatusForbidden, "setup is not finished yet")
@@ -104,34 +95,12 @@ func (s *Server) auth(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-// startLogin hands the browser a fresh cookie. The cookie is still called
-// socrates_session, because renaming a cookie signs everybody out and the
-// table it came from is the only thing that was renamed.
-func (s *Server) startLogin(w http.ResponseWriter, r *http.Request) error {
-	raw := make([]byte, 32)
-	if _, err := rand.Read(raw); err != nil {
-		return err
+// open is a route anybody may call, with the handler's own caching.
+func open(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Del("Cache-Control")
+		next(w, r)
 	}
-	token := hex.EncodeToString(raw)
-	if err := s.store.CreateLogin(token, sessionTTL); err != nil {
-		return err
-	}
-	http.SetCookie(w, &http.Cookie{
-		Name:     sessionCookie,
-		Value:    token,
-		Path:     "/",
-		HttpOnly: true,
-		// Lax, not Strict. A WebSocket handshake is not a top level
-		// navigation, so Lax already withholds this cookie from a cross site
-		// request; Strict would add nothing to the transport's CSRF story -
-		// the origin check inside websocket.Accept is what defends it - and
-		// would cost the one case people actually meet, a link to the tunnel
-		// opened from another app landing on the login page.
-		SameSite: http.SameSiteLaxMode,
-		Secure:   r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https"),
-		MaxAge:   int(sessionTTL.Seconds()),
-	})
-	return nil
 }
 
 func clientIP(r *http.Request) string {
@@ -167,42 +136,6 @@ func forwarder(host string) bool {
 	return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast()
 }
 
-// throttle slows down password guessing.
-func (s *Server) throttle(ip string) error {
-	s.loginMu.Lock()
-	defer s.loginMu.Unlock()
-	a := s.loginFail[ip]
-	if a == nil {
-		return nil
-	}
-	if time.Now().Before(a.until) {
-		return fmt.Errorf("too many attempts, try again in %d seconds", int(time.Until(a.until).Seconds())+1)
-	}
-	return nil
-}
-
-func (s *Server) noteLogin(ip string, ok bool) {
-	s.loginMu.Lock()
-	defer s.loginMu.Unlock()
-	if ok {
-		delete(s.loginFail, ip)
-		return
-	}
-	a := s.loginFail[ip]
-	if a == nil {
-		a = &attempt{}
-		s.loginFail[ip] = a
-	}
-	a.count++
-	if a.count >= 5 {
-		delay := time.Duration(a.count-4) * 15 * time.Second
-		if delay > 10*time.Minute {
-			delay = 10 * time.Minute
-		}
-		a.until = time.Now().Add(delay)
-	}
-}
-
 // ---------------------------------------------------------------- handlers
 
 func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
@@ -224,7 +157,7 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 	if setupRequired || s.authenticated(r) {
 		// The setup page offers the tunnel as its second step, and says
 		// whether cloudflared would have to be downloaded for it.
-		st := s.cf.Status()
+		st := s.app.Tunnel().Status()
 		payload["cloudflared"] = map[string]any{
 			"installed":   st.Cloudflared.Installed,
 			"can_install": cloudflare.Supported(),
@@ -232,7 +165,7 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 		payload["local_url"] = s.LocalURL()
 	}
 	// Who is signed in: through the tunnel, the Cloudflare Access user.
-	id := via(r)
+	id := zdash.Who(r)
 	payload["via"] = id.Via
 	if s.authenticated(r) && id.Email != "" {
 		payload["email"] = id.Email
@@ -240,13 +173,11 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, payload)
 }
 
+// handleSetup is the setup page's first step: the first password, with the
+// OpenRouter key when the person has one, and the browser signed in.
 func (s *Server) handleSetup(w http.ResponseWriter, r *http.Request) {
 	if s.hasPassword() {
 		writeError(w, http.StatusConflict, "a password is already set")
-		return
-	}
-	if !sameOrigin(r) {
-		writeError(w, http.StatusForbidden, "cross origin request rejected")
 		return
 	}
 	if s.restoreJob.restoring() {
@@ -260,17 +191,14 @@ func (s *Server) handleSetup(w http.ResponseWriter, r *http.Request) {
 	if !readJSON(w, r, &body) {
 		return
 	}
-	if len([]rune(body.Password)) < minPasswordLen {
-		writeError(w, http.StatusBadRequest, fmt.Sprintf("the password needs at least %d characters", minPasswordLen))
-		return
-	}
-	hash, err := hashPassword(body.Password)
+	won, err := s.app.SetFirstPassword(body.Password)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		// The server's rule, in its words: "Use at least 10 characters."
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if err := s.store.SetKV(PasswordKey, hash); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+	if !won {
+		writeError(w, http.StatusConflict, "a password is already set")
 		return
 	}
 	settings := s.Settings()
@@ -281,121 +209,6 @@ func (s *Server) handleSetup(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if err := s.startLogin(w, r); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
-}
-
-func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
-	if !s.hasPassword() {
-		writeError(w, http.StatusConflict, "no password is set yet")
-		return
-	}
-	if !sameOrigin(r) {
-		writeError(w, http.StatusForbidden, "cross origin request rejected")
-		return
-	}
-	ip := clientIP(r)
-	if err := s.throttle(ip); err != nil {
-		writeError(w, http.StatusTooManyRequests, err.Error())
-		return
-	}
-	var body struct {
-		Password string `json:"password"`
-	}
-	if !readJSON(w, r, &body) {
-		return
-	}
-	stored, err := s.store.GetKV(PasswordKey)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "could not read the stored password")
-		return
-	}
-	if !verifyPassword(stored, body.Password) {
-		s.noteLogin(ip, false)
-		writeError(w, http.StatusUnauthorized, "wrong password")
-		return
-	}
-	s.noteLogin(ip, true)
-	_ = s.store.PurgeExpiredLogins()
-	if err := s.startLogin(w, r); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
-}
-
-func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
-	// Signing out is a state change like every other one, and it is the single
-	// endpoint that sits outside the wrapper which normally says so.
-	if !sameOrigin(r) {
-		writeError(w, http.StatusForbidden, "cross origin request rejected")
-		return
-	}
-	if c, err := r.Cookie(sessionCookie); err == nil {
-		_ = s.store.DeleteLogin(c.Value)
-		// Every open event stream of this login stops now, not when its
-		// socket happens to drop.
-		s.events.revoke()
-		s.chats.revoke()
-	}
-	http.SetCookie(w, &http.Cookie{Name: sessionCookie, Value: "", Path: "/", MaxAge: -1, HttpOnly: true})
-	// Through the tunnel the person is signed in by Cloudflare Access, so
-	// signing out ends that session; the page goes there next.
-	if via(r).Via == "tunnel" {
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "next": accessLogout})
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "next": "/login"})
-}
-
-func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
-	var body struct {
-		Current string `json:"current"`
-		Next    string `json:"next"`
-	}
-	if !readJSON(w, r, &body) {
-		return
-	}
-	stored, err := s.store.GetKV(PasswordKey)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "could not read the stored password")
-		return
-	}
-	// 403, not 401: the person is signed in, and the web client takes any 401
-	// outside /api/login for a lost session and sends the page to the sign-in.
-	if !verifyPassword(stored, body.Current) {
-		writeError(w, http.StatusForbidden, "the current password is wrong")
-		return
-	}
-	if len([]rune(body.Next)) < minPasswordLen {
-		writeError(w, http.StatusBadRequest, fmt.Sprintf("the new password needs at least %d characters", minPasswordLen))
-		return
-	}
-	hash, err := hashPassword(body.Next)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	if err := s.store.SetKV(PasswordKey, hash); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	err = s.store.DeleteAllLogins()
-	// Whatever the delete answered, the streams of the logins it removed are
-	// closed: a phone left on Home must stop hearing every question the moment
-	// its owner signs everybody out.
-	s.events.revoke()
-	s.chats.revoke()
-	if err != nil && !errors.Is(err, store.ErrNotFound) {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	if err := s.startLogin(w, r); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
+	s.app.StartSession(w, r)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }

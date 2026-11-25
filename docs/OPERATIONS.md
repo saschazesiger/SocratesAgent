@@ -104,6 +104,9 @@ The settings live in `/etc/socrates.env`:
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `SOCRATES_ADDR` | `127.0.0.1:8080` | Listen address |
+| `SOCRATES_HOSTS` | unset | Names the local address answers to besides IP addresses, single-label names (`localhost`, `nas`) and private ones (`.local`, `.lan`, `.internal`, `.home.arpa`, `.ts.net` …): comma-separated, `*` for any. A reverse proxy that sends a public name needs its name here, or the answer is *403 Socrates does not know the name* |
+| `SOCRATES_ADMIN_PASSWORD` | unset | Sets the password at every start and signs everybody out: the way back in when it is lost. Take it out again afterwards. At least 10 characters |
+| `SOCRATES_TUNNEL_LISTEN` | unset | A loopback address (`127.0.0.1:8081`) for cloudflared instead of the socket `<data>/run/tunnel.sock` |
 | `SOCRATES_DATA_DIR` | `/var/lib/socrates` | Data directory |
 | `SOCRATES_AUTO_UPDATE` | `all` | `all` · `deps` (tools only) · `off` (repairs only) |
 | `SOCRATES_NODE_MAJOR` | `lts` | Pin Node to a major version, e.g. `22` |
@@ -113,6 +116,15 @@ The settings live in `/etc/socrates.env`:
 | `SOCRATES_GITHUB_API` / `SOCRATES_GITHUB_WEB` / `SOCRATES_GITHUB_GIT` | `https://api.github.com` / `https://github.com` / `https://github.com` | Where GitHub is (only the tests change these) |
 | `SOCRATES_CLOUDFLARED` | `cloudflared` | The cloudflared to run; when it is not found, Socrates downloads its own to `<data>/bin` |
 | `SOCRATES_FOLDER_CHATS` | unset | `1` lets `POST /api/chats` still start a chat in a preset or typed folder (the test suites); the sheet never offers it |
+
+---
+
+**The password.** One password, no user name; it is for the local address (through the tunnel, Cloudflare Access
+signs you in). A new one needs at least 10 characters; a shorter one set by an older version keeps working until it is
+changed. It is stored as an Argon2id hash (`auth.password` in `kv`), the sessions as hashes of their cookies
+(`auth.sessions`), 30 days each. Five wrong passwords from one address, then a wait that doubles from 30 seconds to
+15 minutes. **Admin → Password** changes it and signs every other browser out. Lost: set `SOCRATES_ADMIN_PASSWORD`
+in `/etc/socrates.env`, restart, sign in, remove the line ([📐 design](design/SERVER.md)).
 
 ---
 

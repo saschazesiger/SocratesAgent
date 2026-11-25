@@ -15,12 +15,16 @@ import (
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/coder/websocket"
 
+	"github.com/saschazesiger/SocratesAgent/internal/paths"
+	"github.com/saschazesiger/SocratesAgent/internal/store"
+	zdash "github.com/saschazesiger/Z-Dash/server"
 	"github.com/saschazesiger/Z-Dash/server/cloudflare"
 )
 
@@ -34,11 +38,11 @@ func TestCloudflareEndpoints(t *testing.T) {
 	if status == nil || status["configured"] != false || status["partial"] != false {
 		t.Fatalf("a fresh install should have no tunnel: %#v", data)
 	}
-	if !strings.HasPrefix(data["token_url"].(string), "https://dash.cloudflare.com/profile/api-tokens?") ||
+	if !strings.HasPrefix(data["tokenUrl"].(string), "https://dash.cloudflare.com/profile/api-tokens?") ||
 		len(data["permissions"].([]any)) != 6 || data["via"] != "local" {
 		t.Fatalf("payload = %#v", data)
 	}
-	if res, _ := env.do(t, env.client, "POST", "/api/cloudflare/check", `{"api_token":""}`); res.StatusCode != http.StatusBadRequest {
+	if res, _ := env.do(t, env.client, "POST", "/api/cloudflare/check", `{"apiToken":""}`); res.StatusCode != http.StatusBadRequest {
 		t.Fatalf("checking without a stored token = %d", res.StatusCode)
 	}
 	if res, _ := env.do(t, env.client, "POST", "/api/cloudflare/setup", `{"apiToken":"x","zoneId":"z","hostname":"a.example.com","emails":[]}`); res.StatusCode != http.StatusBadRequest {
@@ -61,7 +65,7 @@ type accessFixture struct {
 	tunnel *httptest.Server
 }
 
-func newAccessFixture(t *testing.T, env *testEnv) *accessFixture {
+func newAccessFixture(t *testing.T) (*testEnv, *accessFixture) {
 	t.Helper()
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
@@ -75,18 +79,24 @@ func newAccessFixture(t *testing.T, env *testEnv) *accessFixture {
 		}}})
 	}))
 	t.Cleanup(certs.Close)
-	state, _ := json.Marshal(map[string]any{
-		"ready": true, "hostname": "socrates.example.com", "team_domain": "team.cloudflareaccess.com",
-		"app_aud": "aud-main", "emails": []string{"owner@example.com"}, "origin": "unix:" + env.srv.TunnelSocket(),
+	// The tunnel was set up by the run before this start.
+	env := newEnvSeeded(t, false, func(st *store.Store, dataDir string) {
+		state, _ := json.Marshal(map[string]any{
+			"ready": true, "hostname": "socrates.example.com", "team_domain": "team.cloudflareaccess.com",
+			"app_aud": "aud-main", "emails": []string{"owner@example.com"},
+			"origin": "unix:" + filepath.Join(dataDir, paths.TunnelSocket),
+		})
+		if err := st.SetKV("cloudflare:state", string(state)); err != nil {
+			t.Fatal(err)
+		}
 	})
-	if err := env.store.SetKV("cloudflare:state", string(state)); err != nil {
-		t.Fatal(err)
+	if res, _ := env.do(t, env.client, "POST", "/api/setup", `{"password":"a-good-password"}`); res.StatusCode != http.StatusOK {
+		t.Fatalf("setup: %d", res.StatusCode)
 	}
-	env.srv.cf = env.srv.newCloudflare()
-	env.srv.cf.CertsURL = func(string) string { return certs.URL }
+	env.srv.app.Tunnel().(*cloudflare.Service).CertsURL = func(string) string { return certs.URL }
 	f := &accessFixture{key: key, tunnel: httptest.NewServer(env.srv.TunnelHandler())}
 	t.Cleanup(f.tunnel.Close)
-	return f
+	return env, f
 }
 
 func (f *accessFixture) token(t *testing.T, email string) string {
@@ -116,6 +126,9 @@ func (f *accessFixture) call(t *testing.T, client *http.Client, method, path, jw
 		req.Header.Set("Cf-Access-Jwt-Assertion", jwt)
 	}
 	req.Header.Set("Cf-Connecting-Ip", "198.51.100.7")
+	if method != http.MethodGet {
+		req.Header.Set(zdash.CSRFHeader, "1")
+	}
 	if body != "" {
 		req.Header.Set("Content-Type", "application/json")
 	}
@@ -132,8 +145,7 @@ func (f *accessFixture) call(t *testing.T, client *http.Client, method, path, jw
 // the person in without the password, anything else is refused, and the
 // sandboxed pages pass with their own tokens.
 func TestTunnelSignsInWithCloudflareAccess(t *testing.T) {
-	env := signedIn(t)
-	f := newAccessFixture(t, env)
+	env, f := newAccessFixture(t)
 	jar, _ := cookiejar.New(nil)
 	browser := &http.Client{Jar: jar, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 
@@ -168,7 +180,7 @@ func TestTunnelSignsInWithCloudflareAccess(t *testing.T) {
 	// hello, with no Socrates cookie anywhere.
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	ws, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(f.tunnel.URL, "http")+"/api/events", &websocket.DialOptions{
+	ws, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(f.tunnel.URL, "http")+"/api/stream", &websocket.DialOptions{
 		HTTPHeader: http.Header{"Cf-Access-Jwt-Assertion": {jwt}, "Origin": {f.tunnel.URL}},
 	})
 	if err != nil {
@@ -179,7 +191,7 @@ func TestTunnelSignsInWithCloudflareAccess(t *testing.T) {
 		t.Fatalf("first frame = %s, %v", hello, err)
 	}
 	_ = ws.Close(websocket.StatusNormalClosure, "")
-	if !env.srv.stillSignedIn(streamLogin{email: "owner@example.com"}) || env.srv.stillSignedIn(streamLogin{email: "mallory@example.com"}) {
+	if tunnel := env.srv.app.Tunnel(); !tunnel.Allows("owner@example.com") || tunnel.Allows("mallory@example.com") {
 		t.Error("a stream's Access login is judged wrong")
 	}
 

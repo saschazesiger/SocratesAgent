@@ -40,13 +40,13 @@
       <form class="ds-form" id="form" novalidate>
         <div class="ds-field">
           <label class="ds-field__label" for="password">Password</label>
-          <input class="ds-input" type="password" id="password" autocomplete="new-password" enterkeyhint="next" minlength="6" required aria-describedby="passwordError passwordHint">
+          <input class="ds-input" type="password" id="password" autocomplete="new-password" enterkeyhint="next" minlength="10" required aria-describedby="passwordError passwordHint">
           <small class="ds-field__hint ds-field__hint--error" id="passwordError" hidden></small>
-          <small class="ds-field__hint" id="passwordHint">At least 6 characters. There is one password and no user name.</small>
+          <small class="ds-field__hint" id="passwordHint">At least 10 characters. There is one password and no user name.</small>
         </div>
         <div class="ds-field">
           <label class="ds-field__label" for="repeat">Repeat password</label>
-          <input class="ds-input" type="password" id="repeat" autocomplete="new-password" enterkeyhint="next" minlength="6" required aria-describedby="repeatError">
+          <input class="ds-input" type="password" id="repeat" autocomplete="new-password" enterkeyhint="next" minlength="10" required aria-describedby="repeatError">
           <small class="ds-field__hint ds-field__hint--error" id="repeatError" hidden></small>
         </div>
         <div class="ds-card__section">
@@ -173,6 +173,7 @@
 <div class="ds-toasts" id="toasts"></div>
 <script type="module">
 import { api, errorMessage, infoTip } from '/static/js/api.js';
+import { CSRF_HEADER } from '/static/js/net.js';
 import { DS, M, icon, html, raw, morph } from '/static/js/ui.js';
 import { mountCloudflare } from '/static/js/cloudflare.js';
 
@@ -200,7 +201,7 @@ async function post(path, body) {
   try {
     const res = await fetch(path, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { ...CSRF_HEADER, 'Content-Type': 'application/json' },
       body: JSON.stringify(body || {}),
       credentials: 'same-origin',
       cache: 'no-store',
@@ -306,7 +307,7 @@ form.addEventListener('submit', async (e) => {
   const password = $('password').value;
   // The hint under the field says the rule; the error says what is wrong
   // with what was typed, rather than the rule a second time.
-  if (password.length < 6) {
+  if ([...password].length < 10) {
     fieldError('password', !password.length ? 'Choose a password.'
       : 'Too short: ' + password.length + (password.length === 1 ? ' character.' : ' characters.'));
     return;

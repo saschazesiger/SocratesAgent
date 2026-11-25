@@ -38,7 +38,7 @@ as they are, one implementer pass + one Fable review per package.
 ## 2. Architecture overview
 
 ```
-browser ── /api/events (WS, as today: list, activity, home, push badge)
+browser ── /api/stream (WS, as today: list, activity, home, push badge)
         ── /api/chats/{id}/stream (WS, new: one open chat, seq replay)
         ── /api/terminals/{id}/ws (socrates.term.v1, unchanged, Shell only)
    │
@@ -108,7 +108,7 @@ One model for all three agents, so the UI, Home, push, titles and outcomes only 
 ### 2.3 Browser transport
 
 - `/api/chats/{id}/stream`: WebSocket, `hello{since}` → journal replay → live. Same resilience
-  rules as `/api/events` (handshake deadline, quiet ping, hidden grace, 4401 on revoked login).
+  rules as `/api/stream` (handshake deadline, quiet ping, hidden grace, 4401 on revoked login).
   Live text deltas are sent uncoalesced to an attached browser.
 - Sending: the composer uses the existing (currently unused) `Outbox` in `net.js`. Every message
   has a `client_id`; `POST /api/chats/{id}/messages` is idempotent on it. Messages typed offline

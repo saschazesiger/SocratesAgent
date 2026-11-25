@@ -257,7 +257,7 @@
     },
     {
       "name": "composer",
-      "reason": "static/js/transfer.js:206 data-ds-dragover",
+      "reason": "static/js/transfer.js:207 data-ds-dragover",
       "bytes": 7077,
       "gzip": 1739
     },
@@ -703,7 +703,7 @@
     },
     {
       "name": "tag",
-      "reason": "static/js/boards.js:221"
+      "reason": "static/js/boards.js:222"
     },
     {
       "name": "sun",
@@ -727,7 +727,7 @@
     },
     {
       "name": "columns",
-      "reason": "static/js/boards.js:194"
+      "reason": "static/js/boards.js:195"
     },
     {
       "name": "rows",
@@ -1561,9 +1561,9 @@
     "ds-chip__body": "static/js/accounts.js:441",
     "ds-chip__check": "static/js/accounts.js:441",
     "ds-chip__input": "static/js/accounts.js:441",
-    "ds-chip__label": "static/js/boards.js:439",
+    "ds-chip__label": "static/js/boards.js:440",
     "ds-chips": "static/admin.html:168",
-    "ds-chips--wrap": "static/js/boards.js:440",
+    "ds-chips--wrap": "static/js/boards.js:441",
     "ds-cluster": "static/admin.html:356",
     "ds-code-block": "static/admin.html:425",
     "ds-code-block--wrap": "static/admin.html:425",
@@ -1589,7 +1589,7 @@
     "ds-dialog--bottom": "static/js/session.js:2697",
     "ds-dialog--contained": "static/index.html:202",
     "ds-dialog--full": "static/js/askdialog.js:379",
-    "ds-dialog--full-narrow": "static/js/boards.js:391",
+    "ds-dialog--full-narrow": "static/js/boards.js:392",
     "ds-dialog--lg": "static/js/admin.js:1337",
     "ds-dialog__actions": "static/index.html:282",
     "ds-dialog__backdrop": "static/index.html:203",
@@ -1628,7 +1628,7 @@
     "ds-facts--rows": "static/js/adminmcp.js:544",
     "ds-facts--stacked": "static/js/chatparts.js:706",
     "ds-field": "static/admin.html:161",
-    "ds-field--full": "static/js/boards.js:415",
+    "ds-field--full": "static/js/boards.js:416",
     "ds-field__hint": "static/admin.html:131",
     "ds-field__hint--error": "static/js/adminmcp.js:892",
     "ds-field__hint--success": "static/js/adminmcp.js:911",
@@ -1698,7 +1698,7 @@
     "ds-plain-list": "static/js/adminmcp.js:511",
     "ds-presence": "static/costs.html:141",
     "ds-pressable": "static/js/askdialog.js:709",
-    "ds-pressable--inset": "static/js/boards.js:176",
+    "ds-pressable--inset": "static/js/boards.js:177",
     "ds-pressable--lg": "static/js/session.js:1316",
     "ds-progress": "static/admin.html:405",
     "ds-progress--flat": "static/js/chatparts.js:1543",

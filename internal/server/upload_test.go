@@ -44,6 +44,7 @@ func upload(t *testing.T, env *testEnv, client *http.Client, id string, files ma
 	form.Close()
 	req, _ := http.NewRequest("POST", env.server.URL+"/api/sessions/"+id+"/upload", &buf)
 	req.Header.Set("Content-Type", form.FormDataContentType())
+	req.Header.Set("X-Z-Dash", "1")
 	res, err := client.Do(req)
 	if err != nil {
 		t.Fatal(err)

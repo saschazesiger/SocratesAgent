@@ -15,6 +15,7 @@
 //     until then.
 
 import { api, el, toast, errorMessage, clientKey, onWake, alertDialog, openDialog, ANY_FILE } from './api.js';
+import { CSRF_HEADER } from './net.js';
 import { DS, html, raw, icon, morph, faces, showOverlay, hideOverlay } from './ui.js';
 import { combobox } from './combobox.js';
 import * as harnesses from './harnesses.js';
@@ -57,7 +58,7 @@ async function call(method, path, body) {
   try {
     res = await fetch(path, {
       method,
-      headers: body === undefined ? {} : { 'Content-Type': 'application/json' },
+      headers: body === undefined ? CSRF_HEADER : { ...CSRF_HEADER, 'Content-Type': 'application/json' },
       body: body === undefined ? undefined : JSON.stringify(body),
       credentials: 'same-origin', cache: 'no-store', signal: AbortSignal.timeout(15000),
     });
@@ -430,7 +431,7 @@ export function mountComposer(host, ctx) {
     form.append('file', entry.file, entry.file.name || 'pasted.png');
     try {
       const res = await fetch('/api/chats/' + encodeURIComponent(id) + '/attachments', {
-        method: 'POST', body: form, credentials: 'same-origin', signal: AbortSignal.timeout(120000),
+        method: 'POST', body: form, credentials: 'same-origin', headers: CSRF_HEADER, signal: AbortSignal.timeout(120000),
       });
       if (res.status === 401) { location.href = '/login'; return; }
       const data = await res.json().catch(() => ({}));

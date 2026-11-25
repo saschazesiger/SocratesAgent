@@ -56,10 +56,6 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if err := s.throttle(clientIP(r)); err != nil {
-		writeError(w, http.StatusTooManyRequests, err.Error())
-		return
-	}
 	login, ok := s.loginOf(r)
 	if !ok {
 		writeError(w, http.StatusUnauthorized, "not signed in")

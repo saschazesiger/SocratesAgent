@@ -51,7 +51,7 @@ One JSON document per folder:
 - Stored in the database's `kv` table under `board:<folder>` (store/boards.go), the board with its
   revision and time: always read and written whole. Being in `socrates.db`, it is in every backup
   of the data directory to S3 and comes back with a restore.
-- Every save publishes `{"t":"board","folder","rev"}` on `/api/events`; a page showing that folder's
+- Every save publishes `{"t":"board","folder","rev"}` on `/api/stream`; a page showing that folder's
   board, with nothing of its own unsaved, reads it again.
 
 ## 4. The page

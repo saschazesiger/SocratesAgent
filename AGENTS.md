@@ -47,13 +47,23 @@ Then `git push origin HEAD:main` (from a chat's own branch; never
 force-push `main`). When any of this fails or is in doubt, fix it first; when
 it cannot be fixed, ask the person instead of merging.
 
-## Remote access: the Z-Dash server's Cloudflare package
+## The HTTP foundation: the Z-Dash server
 
-The Cloudflare tunnel (setup through the API, cloudflared, the Access token check) is the `cloudflare` package of the
-Z-Dash server module, `github.com/saschazesiger/Z-Dash/server/cloudflare`, shared with the other apps on Z-Dash.
-`internal/server/cloudflare.go` configures it for Socrates (`docs/design/CLOUDFLARE.md`). A fix to the tunnel goes to
-Z-Dash (its `server/`), then `go get github.com/saschazesiger/Z-Dash/server@main && go mod tidy` here. Its stored state
-(`cloudflare:*` in the kv table) is the format Socrates has always written.
+The listeners (the local address and the tunnel's socket), the admin password, the sessions, the request guards (Host
+check, CSRF) and the Cloudflare tunnel with its API are the Z-Dash server module,
+`github.com/saschazesiger/Z-Dash/server`, shared with the other apps on Z-Dash. `internal/server/app.go` configures
+it for Socrates and `routes()` in `internal/server/server.go` registers the routes (`docs/design/SERVER.md`,
+`docs/design/CLOUDFLARE.md`). A fix to any of it goes to Z-Dash (its `server/`), then
+`go get github.com/saschazesiger/Z-Dash/server@main && go mod tidy` here. Its stored state (`auth.password`,
+`auth.sessions` and `cloudflare:*` in the kv table) is an interface: installations keep their password, sessions and
+tunnel through it.
+
+- A new API route is `private(...)` in `routes()` (signed in, CSRF guard) unless it has a reason to be `public`, a
+  page or a sandboxed page; SERVER.md says what each checks.
+- Every request of the web client that is not a GET sends `X-Z-Dash: 1`: `api()` / `net.js` `request()` do, a bare
+  `fetch` adds `CSRF_HEADER` from `net.js`. A form post or `sendBeacon` cannot, so neither is used.
+- Who sent a request is `zdash.Who(r)` (`Via`, `Email`); a long-lived stream checks `s.stillSignedIn(login)` on its
+  tick and ends in `Config.OnSignOut`.
 
 ## Design system: Z-Dash
 

@@ -987,16 +987,23 @@ func TestRestoreIsRefusedIntoAStore(t *testing.T) {
 		INSERT INTO kv VALUES ('password_hash', 'pbkdf2-sha256$1$a$b')`); err != nil {
 		t.Fatal(err)
 	}
+	// The password as the Z-Dash server keeps it.
+	withNewPassword := t.TempDir()
+	newDB := openDB(t, filepath.Join(withNewPassword, paths.DB), false)
+	if _, err := newDB.Exec(`CREATE TABLE kv(key TEXT PRIMARY KEY, value TEXT); CREATE TABLE sessions(id TEXT);
+		INSERT INTO kv VALUES ('auth.password', '{"salt":"a","hash":"b"}'), ('auth.sessions', '{}')`); err != nil {
+		t.Fatal(err)
+	}
 	withChats := t.TempDir()
 	write(t, filepath.Join(withChats, "chats/c9/events.jsonl"), []byte("mine"), 0o600)
 	fresh := t.TempDir()
 	freshDB := openDB(t, filepath.Join(fresh, paths.DB), false)
 	if _, err := freshDB.Exec(`CREATE TABLE kv(key TEXT PRIMARY KEY, value TEXT); CREATE TABLE sessions(id TEXT);
-		INSERT INTO kv VALUES ('settings', '{}')`); err != nil {
+		INSERT INTO kv VALUES ('settings', '{}'), ('auth.sessions', '{}')`); err != nil {
 		t.Fatal(err)
 	}
 
-	for name, dir := range map[string]string{"a password": withPassword, "chats": withChats} {
+	for name, dir := range map[string]string{"a password": withPassword, "a password of the Z-Dash server": withNewPassword, "chats": withChats} {
 		_, err := Restore(context.Background(), RestoreOptions{Config: b.config(""), DataDir: dir})
 		if !errors.Is(err, ErrNotEmpty) {
 			t.Fatalf("a restore into a directory with %s: %v", name, err)

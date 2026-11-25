@@ -142,7 +142,7 @@ starts, so only that run's actions are taken.
 | `DELETE /api/chats/{id}/tests/{test}` | Deletes it |
 | `GET /api/chats/{id}/tests/{test}/files/{file…}` | An evidence file (`Evidence.file`, a regular file under the test's `files/`): an image or a video as itself, text as `text/plain`, anything else as a download; `nosniff`, `sandbox`, `private` |
 
-Every change (agent or person) publishes `{t: "chattests", session, rev}` on `/api/events`; the
+Every change (agent or person) publishes `{t: "chattests", session, rev}` on `/api/stream`; the
 chat page reads the tests again when the frame names the chat it shows.
 
 ## The chat page

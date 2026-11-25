@@ -15,7 +15,7 @@
 //
 // Once it runs, the card shows the tunnel's state, its address, who may sign
 // in (PUT /api/cloudflare/emails), Repair (the setup again, with the token
-// Socrates keeps) and Remove (POST /api/cloudflare/remove, in the background
+// Socrates keeps) and Remove (DELETE /api/cloudflare, in the background
 // too). Everything is drawn with morph(), so the fields keep what is typed
 // into them while the status changes under them.
 
@@ -315,7 +315,7 @@ export function mountCloudflare(host, { level = 3, log = false, local = '', onCh
       <section class="ds-card__section" aria-labelledby="cfStep1" data-ds-key="step1">
         <${raw(h)} class="ds-card__subtitle" id="cfStep1">1. Create an API token</${raw(h)}>
         <p>The link opens Cloudflare with the permissions filled in. Choose the account and the domain there, then create the token and copy it.</p>
-        <div class="ds-cluster"><a class="ds-btn" href="${data.token_url}" target="_blank" rel="noopener">${raw(icon('external', 16))}<span>Create the token at Cloudflare</span></a></div>
+        <div class="ds-cluster"><a class="ds-btn" href="${data.tokenUrl}" target="_blank" rel="noopener">${raw(icon('external', 16))}<span>Create the token at Cloudflare</span></a></div>
         <div class="ds-table-wrap">
           <table class="ds-table ds-density-tight">
             <caption class="ds-sr">Permissions of the API token</caption>
@@ -406,7 +406,7 @@ export function mountCloudflare(host, { level = 3, log = false, local = '', onCh
       setError('cfToken', 'Paste the API token first.');
       return;
     }
-    const work = api('/api/cloudflare/check', { method: 'POST', body: { api_token: token }, attempts: 1, timeout: 70000 });
+    const work = api('/api/cloudflare/check', { method: 'POST', body: { apiToken: token }, attempts: 1, timeout: 70000 });
     if (!button) { checking = true; render(); }
     try {
       const res = button ? await M.busy(button, work, { done: false }) : await work;
@@ -506,7 +506,7 @@ export function mountCloudflare(host, { level = 3, log = false, local = '', onCh
     if (!yes) return;
     notice = '';
     try {
-      const res = await M.busy(button, api('/api/cloudflare/remove', { method: 'POST', body: {}, attempts: 1 }), { done: false });
+      const res = await M.busy(button, api('/api/cloudflare', { method: 'DELETE', attempts: 1 }), { done: false });
       watching = true;
       editing = false;
       take(res);

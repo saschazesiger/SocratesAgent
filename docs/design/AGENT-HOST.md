@@ -1165,7 +1165,7 @@ Chats appear in
 `GET /api/sessions` and the event stream like every session, with `kind: "chat"` and their
 `activity`, and `workdir_missing` when their folder is not on this machine.
 
-**Stream** (`socrates.chat.v1`): the same per-login handshake ceiling as `/api/events`, origin
+**Stream** (`socrates.chat.v1`): the same per-login handshake ceiling as `/api/stream`, origin
 check, compression. Client's first frame within 10 s: `{"t":"hello","since":<seq>}` (else closed
 1008). Server: `{"t":"hello","chat":<summary>,"last_seq","base","now"}`, then `ev` frames for every event
 after `since`, then `{"t":"synced","seq"}` once the replay is through, then live `ev` and `delta`

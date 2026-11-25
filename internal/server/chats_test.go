@@ -73,7 +73,7 @@ func (c *chatEnv) restart(t *testing.T, down time.Duration, before func()) {
 		before()
 	}
 	time.Sleep(down)
-	srv, err := New(c.store, c.data)
+	srv, err := New(c.store, c.data, "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -1,7 +1,12 @@
 package server
 
 import (
+	"crypto/pbkdf2"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"flag"
 	"net/http"
 	"net/http/cookiejar"
@@ -10,11 +15,13 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/saschazesiger/SocratesAgent/internal/agenthost"
 	"github.com/saschazesiger/SocratesAgent/internal/store"
 	"github.com/saschazesiger/SocratesAgent/internal/termux"
 	"github.com/saschazesiger/SocratesAgent/internal/testhome"
+	zdash "github.com/saschazesiger/Z-Dash/server"
 )
 
 // TestMain dispatches the subcommands the terminal substrate calls this
@@ -104,6 +111,14 @@ func newEnv(t *testing.T) *testEnv {
 // directory, so that a restore into one never replaces an open database.
 func newEnvWith(t *testing.T, inData bool) *testEnv {
 	t.Helper()
+	return newEnvSeeded(t, inData, nil)
+}
+
+// newEnvSeeded is newEnvWith on a store that seed has written first: what a
+// start finds from the run before it (a tunnel's state, the logins and the
+// password of an older build).
+func newEnvSeeded(t *testing.T, inData bool, seed func(st *store.Store, dataDir string)) *testEnv {
+	t.Helper()
 	// One root for the whole environment, taken first so that its removal is
 	// the last cleanup to run. Everything the server keeps on disk lives under
 	// it, and the cleanup registered below - which stops the server, the
@@ -119,14 +134,16 @@ func newEnvWith(t *testing.T, inData bool) *testEnv {
 	if err != nil {
 		t.Fatalf("store: %v", err)
 	}
-	srv, err := New(st, filepath.Join(root, "data"))
+	if seed != nil {
+		seed(st, filepath.Join(root, "data"))
+	}
+	srv, err := New(st, filepath.Join(root, "data"), "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("server: %v", err)
 	}
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(func() {
 		ts.Close()
-		srv.StopTunnel()
 		// A question still waiting for its words would be pushed from a
 		// closed store when its timer fired.
 		srv.push.stop()
@@ -158,6 +175,10 @@ func (e *testEnv) do(t *testing.T, client *http.Client, method, path, body strin
 	}
 	if body != "" {
 		req.Header.Set("Content-Type", "application/json")
+	}
+	// What api.js sends with everything that changes something.
+	if method != http.MethodGet {
+		req.Header.Set(zdash.CSRFHeader, "1")
 	}
 	res, err := client.Do(req)
 	if err != nil {
@@ -202,7 +223,7 @@ func TestSetupAndTheAuthWall(t *testing.T) {
 		t.Fatalf("root should render after setup, got %d", res.StatusCode)
 	}
 
-	res, _ = env.do(t, env.client, "POST", "/api/setup", `{"password":"another"}`)
+	res, _ = env.do(t, env.client, "POST", "/api/setup", `{"password":"another-good-password"}`)
 	if res.StatusCode != http.StatusConflict {
 		t.Fatalf("setup must only run once, got %d", res.StatusCode)
 	}
@@ -246,15 +267,20 @@ func TestTheChatRoutesAreGone(t *testing.T) {
 func TestLoginLogout(t *testing.T) {
 	env := newEnv(t)
 	env.do(t, env.client, "POST", "/api/setup", `{"password":"a-good-password"}`)
-	env.do(t, env.client, "POST", "/api/logout", "")
+	if res, out := env.do(t, env.client, "POST", "/api/logout", ""); res.StatusCode != http.StatusOK || out["next"] != "" {
+		t.Fatalf("logout on the local address = %d %#v", res.StatusCode, out)
+	}
 
 	res, _ := env.do(t, env.client, "GET", "/api/settings", "")
 	if res.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("logout did not end the session: %d", res.StatusCode)
 	}
-	res, _ = env.do(t, env.client, "POST", "/api/login", `{"password":"wrong"}`)
-	if res.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("wrong password accepted: %d", res.StatusCode)
+	// A wrong password is an error under its field, never a 401: the web
+	// client takes a 401 for a lost session.
+	res, out := env.do(t, env.client, "POST", "/api/login", `{"password":"wrong"}`)
+	fields, _ := out["fields"].(map[string]any)
+	if res.StatusCode != http.StatusBadRequest || fields["password"] == nil {
+		t.Fatalf("a wrong password = %d %#v", res.StatusCode, out)
 	}
 	res, _ = env.do(t, env.client, "POST", "/api/login", `{"password":"a-good-password"}`)
 	if res.StatusCode != http.StatusOK {
@@ -266,19 +292,59 @@ func TestLoginLogout(t *testing.T) {
 	}
 }
 
+// A request that changes something needs the header a form on another site
+// cannot send, and an Origin that is this host.
+func TestTheCSRFGuard(t *testing.T) {
+	env := signedIn(t)
+	send := func(header, origin string) int {
+		req, _ := http.NewRequest("PUT", env.server.URL+"/api/boards", strings.NewReader(`{}`))
+		req.Header.Set("Content-Type", "application/json")
+		if header != "" {
+			req.Header.Set(zdash.CSRFHeader, header)
+		}
+		if origin != "" {
+			req.Header.Set("Origin", origin)
+		}
+		res, err := env.client.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		res.Body.Close()
+		return res.StatusCode
+	}
+	if got := send("", ""); got != http.StatusForbidden {
+		t.Errorf("without the header = %d, want 403", got)
+	}
+	if got := send("1", "https://evil.example"); got != http.StatusForbidden {
+		t.Errorf("from another origin = %d, want 403", got)
+	}
+	if got := send("1", env.server.URL); got == http.StatusForbidden || got == http.StatusUnauthorized {
+		t.Errorf("from the page itself = %d", got)
+	}
+	// The setup page's requests are guarded too, before there is a password.
+	fresh := newEnv(t)
+	req, _ := http.NewRequest("POST", fresh.server.URL+"/api/setup", strings.NewReader(`{"password":"a-good-password"}`))
+	res, err := fresh.client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res.Body.Close()
+	if res.StatusCode != http.StatusForbidden || fresh.srv.hasPassword() {
+		t.Errorf("a setup without the header = %d, password set: %v", res.StatusCode, fresh.srv.hasPassword())
+	}
+}
+
 // A wrong current password is refused without looking like a lost session:
 // the client sends any 401 to the sign-in, and the message would never show.
 func TestChangePasswordWrongCurrent(t *testing.T) {
 	env := newEnv(t)
 	env.do(t, env.client, "POST", "/api/setup", `{"password":"a-good-password"}`)
 
-	res, payload := env.do(t, env.client, "POST", "/api/settings/password",
-		`{"current":"not-the-password","next":"another-good-password"}`)
-	if res.StatusCode != http.StatusForbidden {
-		t.Fatalf("a wrong current password answered %d, want 403", res.StatusCode)
-	}
-	if msg, _ := payload["error"].(string); msg != "The current password is wrong." {
-		t.Fatalf("message: %#v", payload)
+	res, payload := env.do(t, env.client, "POST", "/api/password",
+		`{"current":"not-the-password","password":"another-good-password"}`)
+	fields, _ := payload["fields"].(map[string]any)
+	if res.StatusCode != http.StatusBadRequest || fields["current"] != "The current password is wrong." {
+		t.Fatalf("a wrong current password answered %d %#v", res.StatusCode, payload)
 	}
 	res, _ = env.do(t, env.client, "GET", "/api/settings", "")
 	if res.StatusCode != http.StatusOK {
@@ -287,6 +353,157 @@ func TestChangePasswordWrongCurrent(t *testing.T) {
 	res, _ = env.do(t, env.client, "POST", "/api/login", `{"password":"a-good-password"}`)
 	if res.StatusCode != http.StatusOK {
 		t.Fatalf("the old password no longer works: %d", res.StatusCode)
+	}
+}
+
+// The setup page's first step takes the OpenRouter key with the password,
+// and signs the browser in.
+func TestSetupKeepsTheOpenRouterKey(t *testing.T) {
+	env := newEnv(t)
+	res, _ := env.do(t, env.client, "POST", "/api/setup", `{"password":"a-good-password","openrouter_key":" sk-or-test "}`)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("setup = %d", res.StatusCode)
+	}
+	if got := env.srv.Settings().OpenRouter.APIKey; got != "sk-or-test" {
+		t.Fatalf("the key = %q", got)
+	}
+	if _, state := env.do(t, env.client, "GET", "/api/state", ""); state["authenticated"] != true || state["setup_required"] != false {
+		t.Fatalf("state after the setup = %#v", state)
+	}
+	// The password is the Z-Dash server's, in its format; nothing is written
+	// in the old one.
+	if v, err := env.store.GetKV("auth.password"); err != nil || !strings.Contains(v, `"salt"`) {
+		t.Fatalf("auth.password = %q, %v", v, err)
+	}
+	if _, err := env.store.GetKV(PasswordKey); err == nil {
+		t.Fatal("a new password was written in the old format")
+	}
+}
+
+// legacyHash is a password as the builds before the Z-Dash server stored it.
+func legacyHash(t *testing.T, password string) string {
+	t.Helper()
+	salt := []byte("0123456789abcdef")
+	key, err := pbkdf2.Key(sha256.New, password, salt, 1000, 32)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return "pbkdf2-sha256$1000$" + base64.RawStdEncoding.EncodeToString(salt) + "$" + base64.RawStdEncoding.EncodeToString(key)
+}
+
+// A data directory of a build before the Z-Dash server: its password still
+// signs in, however short, and the first sign-in moves it to the server's
+// format; until then nobody can set a first password over it.
+func TestTheOldPasswordSignsInAndMoves(t *testing.T) {
+	env := newEnvSeeded(t, false, func(st *store.Store, _ string) {
+		if err := st.SetKV(PasswordKey, legacyHash(t, "secret")); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if _, state := env.do(t, env.client, "GET", "/api/state", ""); state["setup_required"] != false {
+		t.Fatalf("an old password is a password: %#v", state)
+	}
+	if res, _ := env.do(t, env.client, "GET", "/", ""); res.Header.Get("Location") != "/login" {
+		t.Fatalf("root = %d %s, want the sign-in", res.StatusCode, res.Header.Get("Location"))
+	}
+	if res, _ := env.do(t, env.client, "POST", "/api/setup", `{"password":"another-good-password"}`); res.StatusCode != http.StatusConflict {
+		t.Fatalf("a setup over the old password = %d", res.StatusCode)
+	}
+	if res, _ := env.do(t, env.client, "POST", "/api/setup/password", `{"password":"another-good-password"}`); res.StatusCode != http.StatusConflict {
+		t.Fatalf("a first password over the old one = %d", res.StatusCode)
+	}
+	if res, _ := env.do(t, env.client, "POST", "/api/login", `{"password":"wrong!"}`); res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("a wrong password = %d", res.StatusCode)
+	}
+	if _, err := env.store.GetKV(PasswordKey); err != nil {
+		t.Fatalf("a wrong password dropped the old one: %v", err)
+	}
+	if res, _ := env.do(t, env.client, "POST", "/api/login", `{"password":"secret"}`); res.StatusCode != http.StatusOK {
+		t.Fatalf("the old password = %d", res.StatusCode)
+	}
+	if res, _ := env.do(t, env.client, "GET", "/api/settings", ""); res.StatusCode != http.StatusOK {
+		t.Fatalf("signed in with the old password, settings = %d", res.StatusCode)
+	}
+	if _, err := env.store.GetKV(PasswordKey); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("the old password is still stored: %v", err)
+	}
+	if _, err := env.store.GetKV("auth.password"); err != nil {
+		t.Fatalf("the password was not moved: %v", err)
+	}
+	// And it keeps signing in from its new place.
+	env.do(t, env.client, "POST", "/api/logout", "")
+	if res, _ := env.do(t, env.client, "POST", "/api/login", `{"password":"secret"}`); res.StatusCode != http.StatusOK {
+		t.Fatalf("the moved password = %d", res.StatusCode)
+	}
+}
+
+// The logins of a build before the Z-Dash server are its sessions after the
+// update: the browser's cookie still signs in, an expired one does not, and
+// signing out ends it.
+func TestTheOldLoginsCarryOver(t *testing.T) {
+	env := newEnvSeeded(t, false, func(st *store.Store, _ string) {
+		if err := st.SetKV(PasswordKey, legacyHash(t, "secret")); err != nil {
+			t.Fatal(err)
+		}
+		if err := st.AddLogin("live-token", time.Now().Add(time.Hour).UnixMilli()); err != nil {
+			t.Fatal(err)
+		}
+		if err := st.AddLogin("stale-token", time.Now().Add(-time.Hour).UnixMilli()); err != nil {
+			t.Fatal(err)
+		}
+	})
+	get := func(token string) int {
+		req, _ := http.NewRequest("GET", env.server.URL+"/api/settings", nil)
+		req.AddCookie(&http.Cookie{Name: sessionCookie, Value: token})
+		res, err := env.anon.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		res.Body.Close()
+		return res.StatusCode
+	}
+	if got := get("live-token"); got != http.StatusOK {
+		t.Fatalf("the old login = %d, want 200", got)
+	}
+	if got := get("stale-token"); got != http.StatusUnauthorized {
+		t.Fatalf("an expired login = %d, want 401", got)
+	}
+	if got := get("made-up"); got != http.StatusUnauthorized {
+		t.Fatalf("an unknown cookie = %d, want 401", got)
+	}
+	// The store holds the hash of the token, not the token.
+	raw, err := env.store.GetKV(sessionsKey)
+	sum := sha256.Sum256([]byte("live-token"))
+	if err != nil || !strings.Contains(raw, hex.EncodeToString(sum[:])) || strings.Contains(raw, "live-token") {
+		t.Fatalf("auth.sessions = %s, %v", raw, err)
+	}
+	// Signing out ends the carried-over session like any other.
+	req, _ := http.NewRequest("POST", env.server.URL+"/api/logout", nil)
+	req.Header.Set(zdash.CSRFHeader, "1")
+	req.AddCookie(&http.Cookie{Name: sessionCookie, Value: "live-token"})
+	res, err := env.anon.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res.Body.Close()
+	if got := get("live-token"); got != http.StatusUnauthorized {
+		t.Fatalf("after signing out = %d, want 401", got)
+	}
+}
+
+// The import happens once: sessions the server already keeps are never
+// replaced by the old table.
+func TestTheOldLoginsAreImportedOnce(t *testing.T) {
+	env := newEnvSeeded(t, false, func(st *store.Store, _ string) {
+		if err := st.SetKV(sessionsKey, `{}`); err != nil {
+			t.Fatal(err)
+		}
+		if err := st.AddLogin("signed-out-since", time.Now().Add(time.Hour).UnixMilli()); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if raw, err := env.store.GetKV(sessionsKey); err != nil || raw != `{}` {
+		t.Fatalf("auth.sessions = %s, %v", raw, err)
 	}
 }
 
@@ -313,10 +530,7 @@ func TestSettingsRoundTrip(t *testing.T) {
 }
 
 func TestPasswordHashing(t *testing.T) {
-	hash, err := hashPassword("correct horse")
-	if err != nil {
-		t.Fatal(err)
-	}
+	hash := legacyHash(t, "correct horse")
 	if !verifyPassword(hash, "correct horse") {
 		t.Error("valid password rejected")
 	}
@@ -325,9 +539,6 @@ func TestPasswordHashing(t *testing.T) {
 	}
 	if verifyPassword("garbage", "correct horse") {
 		t.Error("malformed hash accepted")
-	}
-	if strings.Contains(hash, "correct") {
-		t.Error("hash leaks the password")
 	}
 }
 

@@ -704,6 +704,19 @@ func (s *Store) SetKV(key, value string) error {
 	return err
 }
 
+// SetKVIfMissing writes a value only when the key holds none, and reports
+// whether it wrote: the first of two writers wins, in one statement.
+func (s *Store) SetKVIfMissing(key, value string) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	res, err := s.db.Exec(`INSERT INTO kv(key, value) VALUES(?, ?) ON CONFLICT(key) DO NOTHING`, key, value)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n > 0, err
+}
+
 // DeleteKV removes a value, and says nothing when there was none: the callers
 // are cleanups after a session that may never have had one.
 func (s *Store) DeleteKV(key string) error {

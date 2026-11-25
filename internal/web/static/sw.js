@@ -430,7 +430,8 @@ self.addEventListener('pushsubscriptionchange', (event) => {
     await fetch('/api/push/subscribe', {
       method: 'POST',
       credentials: 'same-origin',
-      headers: { 'Content-Type': 'application/json' },
+      // X-Z-Dash: the server's CSRF guard (net.js CSRF_HEADER).
+      headers: { 'Content-Type': 'application/json', 'X-Z-Dash': '1' },
       body: JSON.stringify(body),
     });
   })().catch(() => { /* the page subscribes again on its next load */ }));

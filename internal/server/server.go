@@ -27,7 +27,7 @@ import (
 	"github.com/saschazesiger/SocratesAgent/internal/store"
 	"github.com/saschazesiger/SocratesAgent/internal/termux"
 	"github.com/saschazesiger/SocratesAgent/internal/web"
-	"github.com/saschazesiger/Z-Dash/server/cloudflare"
+	zdash "github.com/saschazesiger/Z-Dash/server"
 )
 
 // Version is stamped at build time.
@@ -38,11 +38,15 @@ const SettingsKey = "settings"
 
 // Server wires storage, the terminal sessions and the HTTP handlers together.
 type Server struct {
-	store   *store.Store
-	cf      *cloudflare.Service
-	tun     tunnelState
-	manager *termux.Manager
-	catalog *catalog.Catalog
+	store *store.Store
+	// app is the Z-Dash server: the listeners, the password and the
+	// sessions, the guards and the Cloudflare tunnel (app.go). pages is
+	// what it serves at /, sandboxed the chats' pages outside the login.
+	app       *zdash.App
+	pages     *http.ServeMux
+	sandboxed *http.ServeMux
+	manager   *termux.Manager
+	catalog   *catalog.Catalog
 
 	dataDir  string
 	localURL string
@@ -80,13 +84,10 @@ type Server struct {
 	events  *eventHub
 	digests *digester
 
-	mux *http.ServeMux
-
-	loginMu   sync.Mutex
-	loginFail map[string]*attempt
 	// wsRate is the per address ceiling on WebSocket handshakes, guarded by
-	// loginMu because it is the same kind of defence.
-	wsRate map[string]*attempt
+	// loginMu.
+	loginMu sync.Mutex
+	wsRate  map[string]*attempt
 
 	// ideMu makes finding or creating the editor of a folder one step, so
 	// two taps on the same folder cannot start two editors on it.
@@ -158,8 +159,12 @@ type attempt struct {
 }
 
 // New builds a server around an open store. dataDir is where Socrates keeps
-// its own files, including a cloudflared it downloads itself.
-func New(st *store.Store, dataDir string) (*Server, error) {
+// its own files, including a cloudflared it downloads itself; addr is the
+// local address Run listens on.
+func New(st *store.Store, dataDir, addr string) (*Server, error) {
+	if abs, err := filepath.Abs(dataDir); err == nil {
+		dataDir = abs
+	}
 	s := &Server{
 		store:        st,
 		dataDir:      dataDir,
@@ -167,7 +172,6 @@ func New(st *store.Store, dataDir string) (*Server, error) {
 		pingEvery:    defaultPingEvery,
 		pingTimeout:  defaultPingTimeout,
 		writeTimeout: defaultWriteTimeout,
-		loginFail:    map[string]*attempt{},
 		ides:         newIDEUse(),
 		wsRate:       map[string]*attempt{},
 		usageHTTP:    &http.Client{Timeout: 8 * time.Second},
@@ -239,8 +243,11 @@ func New(st *store.Store, dataDir string) (*Server, error) {
 	// OpenCode's models are its accounts' providers'.
 	s.catalog.UseAccounts(catalogAccounts{s})
 
-	s.cf = s.newCloudflare()
-
+	app, err := s.newApp(addr)
+	if err != nil {
+		return nil, err
+	}
+	s.app = app
 	s.routes()
 	return s, nil
 }
@@ -355,216 +362,222 @@ func (s *Server) LocalURL() string {
 	return s.localURL
 }
 
-// Handler returns the root HTTP handler.
-func (s *Server) Handler() http.Handler { return s.mux }
-
+// routes registers everything Socrates serves. The Z-Dash server brings its
+// own beside them: /api/login, /api/logout, /api/password, /api/session, the
+// tunnel's API under /api/cloudflare and Z-Dash itself under /z-dash/.
+//
+//   - private is a route of a signed-in person. The server checks the session
+//     and its CSRF guard (the header X-Z-Dash: 1 on every request that is not
+//     a GET, which api.js sends, and an Origin that is this host).
+//   - public is one anybody on the local address may call, behind the same
+//     CSRF guard: the setup page before there is a password.
+//   - pages are served at /, behind the Host check only: each gates itself.
+//   - sandboxed are the chats' pages, which Cloudflare Access lets through
+//     without a login and which guard themselves with a token.
 func (s *Server) routes() {
-	mux := http.NewServeMux()
+	pages := http.NewServeMux()
+	sandboxed := http.NewServeMux()
+	private := func(pattern string, h http.HandlerFunc) { s.app.HandleFunc(pattern, s.auth(h)) }
+	public := func(pattern string, h http.HandlerFunc) { s.app.Public(pattern, open(h)) }
 
 	// Pages
-	mux.HandleFunc("GET /{$}", s.page("index.html"))
-	mux.HandleFunc("GET /admin", s.page("admin.html"))
-	mux.HandleFunc("GET /costs", s.page("costs.html"))
-	mux.HandleFunc("GET /login", s.pageLogin)
-	mux.HandleFunc("GET /setup", s.pageSetup)
-	mux.Handle("GET /static/", http.StripPrefix("/static/", web.Static()))
-	mux.HandleFunc("GET /favicon.png", web.Favicon)
+	pages.HandleFunc("GET /{$}", s.page("index.html"))
+	pages.HandleFunc("GET /admin", s.page("admin.html"))
+	pages.HandleFunc("GET /costs", s.page("costs.html"))
+	pages.HandleFunc("GET /login", s.pageLogin)
+	pages.HandleFunc("GET /setup", s.pageSetup)
+	pages.Handle("GET /static/", http.StripPrefix("/static/", web.Static()))
+	pages.HandleFunc("GET /favicon.png", web.Favicon)
 	// iOS asks the root for the home screen icon in some flows whatever the
 	// page's head says, and asks before anybody has signed in.
-	mux.HandleFunc("GET /apple-touch-icon.png", web.AppleTouchIcon)
-	mux.HandleFunc("GET /apple-touch-icon-precomposed.png", web.AppleTouchIcon)
+	pages.HandleFunc("GET /apple-touch-icon.png", web.AppleTouchIcon)
+	pages.HandleFunc("GET /apple-touch-icon-precomposed.png", web.AppleTouchIcon)
 	// The offline shell worker is deliberately outside the auth wall: it holds
 	// no data, and it has to be reachable to be updated.
-	mux.HandleFunc("GET /sw.js", web.ServiceWorker)
+	pages.HandleFunc("GET /sw.js", web.ServiceWorker)
 
 	// Session
-	mux.HandleFunc("GET /api/state", s.handleState)
-	mux.HandleFunc("POST /api/setup", s.handleSetup)
-	mux.HandleFunc("POST /api/login", s.handleLogin)
-	mux.HandleFunc("POST /api/logout", s.handleLogout)
+	public("GET /api/state", s.handleState)
+	public("POST /api/setup", s.handleSetup)
 
-	mux.HandleFunc("/ide/{id}/", s.auth(s.handleVSCode))
-	mux.HandleFunc("POST /api/ide", s.auth(s.handleFolderIDE))
-	mux.HandleFunc("POST /api/ide/blank", s.auth(s.handleBlankIDE))
+	// The editor is a page with requests of its own, which carry no CSRF
+	// header: it is served like a page and checks the session itself.
+	pages.HandleFunc("/ide/{id}/", s.signedIn(s.handleVSCode))
+	private("POST /api/ide", s.handleFolderIDE)
+	private("POST /api/ide/blank", s.handleBlankIDE)
 
 	// Terminal sessions
-	mux.HandleFunc("GET /api/sessions", s.auth(s.handleListSessions))
-	mux.HandleFunc("POST /api/sessions", s.auth(s.handleCreateSession))
-	mux.HandleFunc("GET /api/sessions/{id}", s.auth(s.handleGetSession))
-	mux.HandleFunc("PATCH /api/sessions/{id}", s.auth(s.handleRenameSession))
-	mux.HandleFunc("PUT /api/sessions/{id}/workdir", s.auth(s.handleSetWorkdir))
-	mux.HandleFunc("GET /api/sessions/{id}/mcp", s.auth(s.handleSessionMCP))
+	private("GET /api/sessions", s.handleListSessions)
+	private("POST /api/sessions", s.handleCreateSession)
+	private("GET /api/sessions/{id}", s.handleGetSession)
+	private("PATCH /api/sessions/{id}", s.handleRenameSession)
+	private("PUT /api/sessions/{id}/workdir", s.handleSetWorkdir)
+	private("GET /api/sessions/{id}/mcp", s.handleSessionMCP)
 	// A new name, from a model, because somebody asked for one.
-	mux.HandleFunc("POST /api/sessions/{id}/title", s.auth(s.handleRetitleSession))
-	mux.HandleFunc("DELETE /api/sessions/{id}", s.auth(s.endingViewers(s.handleDeleteSession)))
-	mux.HandleFunc("POST /api/sessions/{id}/file", s.auth(s.handleSetStatus))
-	mux.HandleFunc("POST /api/sessions/{id}/resume", s.auth(s.terminal(s.handleResumeSession)))
-	mux.HandleFunc("POST /api/sessions/{id}/restart", s.auth(s.terminal(s.handleRestartSession)))
+	private("POST /api/sessions/{id}/title", s.handleRetitleSession)
+	private("DELETE /api/sessions/{id}", s.endingViewers(s.handleDeleteSession))
+	private("POST /api/sessions/{id}/file", s.handleSetStatus)
+	private("POST /api/sessions/{id}/resume", s.terminal(s.handleResumeSession))
+	private("POST /api/sessions/{id}/restart", s.terminal(s.handleRestartSession))
 	// A chat's draft: what its composer holds (drafts.go).
-	mux.HandleFunc("GET /api/sessions/{id}/draft", s.auth(s.handleGetDraft))
-	mux.HandleFunc("PUT /api/sessions/{id}/draft", s.auth(s.handlePutDraft))
-	mux.HandleFunc("POST /api/sessions/{id}/ack-resume", s.auth(s.handleAckResume))
-	mux.HandleFunc("POST /api/sessions/{id}/read", s.auth(s.handleMarkRead))
+	private("GET /api/sessions/{id}/draft", s.handleGetDraft)
+	private("PUT /api/sessions/{id}/draft", s.handlePutDraft)
+	private("POST /api/sessions/{id}/ack-resume", s.handleAckResume)
+	private("POST /api/sessions/{id}/read", s.handleMarkRead)
 	// What every conversation on this machine cost, for the costs page.
-	mux.HandleFunc("GET /api/costs", s.auth(s.handleCosts))
+	private("GET /api/costs", s.handleCosts)
 	// A project folder's board of notes (boards.go).
-	mux.HandleFunc("GET /api/github/repos/{owner}/{name}/branches", s.auth(s.handleRepoBranches))
+	private("GET /api/github/repos/{owner}/{name}/branches", s.handleRepoBranches)
 
-	mux.HandleFunc("GET /api/boards", s.auth(s.handleGetBoard))
-	mux.HandleFunc("PUT /api/boards", s.auth(s.handlePutBoard))
+	private("GET /api/boards", s.handleGetBoard)
+	private("PUT /api/boards", s.handlePutBoard)
 	// What a terminal is doing, said out loud.
-	mux.HandleFunc("POST /api/sessions/{id}/status", s.auth(s.handleSessionStatus))
+	private("POST /api/sessions/{id}/status", s.handleSessionStatus)
 	// A question about a passage of a chat, answered beside it (chatask.go).
-	mux.HandleFunc("POST /api/sessions/{id}/ask", s.auth(s.handleSessionAsk))
-	// Home: the event stream, and its hello as a poll.
-	mux.HandleFunc("GET /api/events", s.auth(s.handleEvents))
-	mux.HandleFunc("GET /api/home", s.auth(s.handleHome))
-	mux.HandleFunc("GET /api/sessions/{id}/journal", s.auth(s.terminal(s.handleJournal)))
-	mux.HandleFunc("POST /api/sessions/{id}/upload", s.auth(s.handleUpload))
-	mux.HandleFunc("GET /api/sessions/{id}/ws", s.auth(s.terminal(s.handleSessionWS)))
+	private("POST /api/sessions/{id}/ask", s.handleSessionAsk)
+	// Home: the event stream, and its hello as a poll. (/api/events is the
+	// Z-Dash server's own stream, which Socrates' pages do not use.)
+	private("GET /api/stream", s.handleEvents)
+	private("GET /api/home", s.handleHome)
+	private("GET /api/sessions/{id}/journal", s.terminal(s.handleJournal))
+	private("POST /api/sessions/{id}/upload", s.handleUpload)
+	private("GET /api/sessions/{id}/ws", s.terminal(s.handleSessionWS))
 
 	// Chats: agents driven through their protocols, by a host per chat.
-	mux.HandleFunc("POST /api/chats", s.auth(s.handleCreateChat))
-	mux.HandleFunc("GET /api/chats/{id}", s.auth(s.handleGetChat))
-	mux.HandleFunc("POST /api/chats/{id}/messages", s.auth(s.handleChatMessage))
-	mux.HandleFunc("POST /api/chats/{id}/interrupt", s.auth(s.handleChatInterrupt))
-	mux.HandleFunc("POST /api/chats/{id}/tasks/{task}/stop", s.auth(s.handleChatStopTask))
-	mux.HandleFunc("POST /api/chats/{id}/messages/{message}/withdraw", s.auth(s.handleChatWithdraw))
-	mux.HandleFunc("POST /api/chats/{id}/asks/{ask}/answer", s.auth(s.handleChatAnswer))
-	mux.HandleFunc("GET /api/chats/{id}/stream", s.auth(s.handleChatStream))
-	mux.HandleFunc("GET /api/chats/{id}/events", s.auth(s.handleChatEvents))
-	mux.HandleFunc("GET /api/chats/{id}/parts/{part}", s.auth(s.handleChatPart))
-	mux.HandleFunc("GET /api/chats/{id}/parts/{part}/image", s.auth(s.handleChatPartImage))
-	mux.HandleFunc("GET /api/chats/{id}/image", s.auth(s.handleChatShownImage))
-	mux.HandleFunc("GET /api/chats/{id}/file", s.auth(s.handleChatFile))
-	mux.HandleFunc("GET /api/chats/{id}/file/info", s.auth(s.handleChatFileInfo))
-	mux.HandleFunc("GET /api/chats/{id}/files", s.auth(s.handleChatLinkedFiles))
-	mux.HandleFunc("GET /api/chats/{id}/attachments/{name}", s.auth(s.handleChatAttachmentImage))
-	mux.HandleFunc("POST /api/chats/{id}/model", s.auth(s.handleChatModel))
-	mux.HandleFunc("POST /api/chats/{id}/command", s.auth(s.handleChatCommand))
-	mux.HandleFunc("POST /api/chats/{id}/attachments", s.auth(s.handleChatAttachments))
-	mux.HandleFunc("POST /api/chats/{id}/options", s.auth(s.handleChatOptions))
-	mux.HandleFunc("POST /api/chats/{id}/mcp", s.auth(s.handleChatMCP))
-	mux.HandleFunc("GET /api/chats/{id}/tests", s.auth(s.handleChatTests))
-	mux.HandleFunc("GET /api/chats/{id}/tests/{test}", s.auth(s.handleChatTest))
-	mux.HandleFunc("PATCH /api/chats/{id}/tests/{test}", s.auth(s.handleChatTestPatch))
-	mux.HandleFunc("DELETE /api/chats/{id}/tests/{test}", s.auth(s.handleChatTestDelete))
-	mux.HandleFunc("POST /api/chats/{id}/tests/{test}/override", s.auth(s.handleChatTestOverride))
-	mux.HandleFunc("POST /api/chats/{id}/tests/{test}/rerun", s.auth(s.handleChatTestRerun))
-	mux.HandleFunc("GET /api/chats/{id}/tests/{test}/files/{file...}", s.auth(s.handleChatTestFile))
+	private("POST /api/chats", s.handleCreateChat)
+	private("GET /api/chats/{id}", s.handleGetChat)
+	private("POST /api/chats/{id}/messages", s.handleChatMessage)
+	private("POST /api/chats/{id}/interrupt", s.handleChatInterrupt)
+	private("POST /api/chats/{id}/tasks/{task}/stop", s.handleChatStopTask)
+	private("POST /api/chats/{id}/messages/{message}/withdraw", s.handleChatWithdraw)
+	private("POST /api/chats/{id}/asks/{ask}/answer", s.handleChatAnswer)
+	private("GET /api/chats/{id}/stream", s.handleChatStream)
+	private("GET /api/chats/{id}/events", s.handleChatEvents)
+	private("GET /api/chats/{id}/parts/{part}", s.handleChatPart)
+	private("GET /api/chats/{id}/parts/{part}/image", s.handleChatPartImage)
+	private("GET /api/chats/{id}/image", s.handleChatShownImage)
+	private("GET /api/chats/{id}/file", s.handleChatFile)
+	private("GET /api/chats/{id}/file/info", s.handleChatFileInfo)
+	private("GET /api/chats/{id}/files", s.handleChatLinkedFiles)
+	private("GET /api/chats/{id}/attachments/{name}", s.handleChatAttachmentImage)
+	private("POST /api/chats/{id}/model", s.handleChatModel)
+	private("POST /api/chats/{id}/command", s.handleChatCommand)
+	private("POST /api/chats/{id}/attachments", s.handleChatAttachments)
+	private("POST /api/chats/{id}/options", s.handleChatOptions)
+	private("POST /api/chats/{id}/mcp", s.handleChatMCP)
+	private("GET /api/chats/{id}/tests", s.handleChatTests)
+	private("GET /api/chats/{id}/tests/{test}", s.handleChatTest)
+	private("PATCH /api/chats/{id}/tests/{test}", s.handleChatTestPatch)
+	private("DELETE /api/chats/{id}/tests/{test}", s.handleChatTestDelete)
+	private("POST /api/chats/{id}/tests/{test}/override", s.handleChatTestOverride)
+	private("POST /api/chats/{id}/tests/{test}/rerun", s.handleChatTestRerun)
+	private("GET /api/chats/{id}/tests/{test}/files/{file...}", s.handleChatTestFile)
 	// A project folder's docs, and a chat's pages folder (docs.go): which
 	// folders have any, a folder's Markdown, one file's time, and the pages,
 	// outside the login with a token of their own (their requests carry no
 	// cookie), with the kit that renders them.
-	mux.Handle("GET /artifact-kit/{name}", web.ArtifactKit())
-	mux.HandleFunc("POST /api/docs/probe", s.auth(s.handleDocsProbe))
-	mux.HandleFunc("GET /api/docs", s.auth(s.handleDocs))
-	mux.HandleFunc("GET /api/docs/stat", s.auth(s.handleDocsStat))
-	mux.HandleFunc("GET /api/docs/locate", s.auth(s.handleDocsLocate))
-	mux.HandleFunc("GET /docs/{token}/{path...}", s.handleDocsPage)
+	sandboxed.Handle("GET /artifact-kit/{name}", web.ArtifactKit())
+	private("POST /api/docs/probe", s.handleDocsProbe)
+	private("GET /api/docs", s.handleDocs)
+	private("GET /api/docs/stat", s.handleDocsStat)
+	private("GET /api/docs/locate", s.handleDocsLocate)
+	sandboxed.HandleFunc("GET /docs/{token}/{path...}", s.handleDocsPage)
 	// The MCP servers a chat about to be made would have, for the sheet.
-	mux.HandleFunc("GET /api/mcp", s.auth(s.handleNewChatMCP))
+	private("GET /api/mcp", s.handleNewChatMCP)
 	// The MCP servers built into Socrates, their accounts (mcpbuiltin.go).
-	mux.HandleFunc("GET /api/mcp/builtin", s.auth(s.handleBuiltinMCP))
+	private("GET /api/mcp/builtin", s.handleBuiltinMCP)
 	// Testing a server, its sign-in, and the proxy that adds the sign-in's
 	// token for an agent (mcpadmin.go, mcpoauth.go).
-	mux.HandleFunc("GET /api/mcp/overview", s.auth(s.handleMCPOverview))
-	mux.HandleFunc("POST /api/mcp/test", s.auth(s.handleMCPTest))
-	mux.HandleFunc("POST /api/sessions/{id}/mcp/test", s.auth(s.handleChatMCPTest))
-	mux.HandleFunc("POST /api/mcp/oauth/start", s.auth(s.handleMCPOAuthStart))
-	mux.HandleFunc("GET /api/mcp/oauth/callback", s.auth(s.handleMCPOAuthCallback))
-	mux.HandleFunc("GET /api/mcp/oauth", s.auth(s.handleMCPOAuthStatus))
-	mux.HandleFunc("DELETE /api/mcp/oauth", s.auth(s.handleMCPOAuthDisconnect))
-	mux.HandleFunc("/mcp-proxy/{name}", s.handleMCPProxy)
-	mux.HandleFunc("POST /api/mcp/builtin/{name}/accounts", s.auth(s.handleBuiltinMCPAccountAdd))
-	mux.HandleFunc("POST /api/mcp/builtin/{name}/accounts/{id}/check", s.auth(s.handleBuiltinMCPAccountCheck))
-	mux.HandleFunc("DELETE /api/mcp/builtin/{name}/accounts/{id}", s.auth(s.handleBuiltinMCPAccountDelete))
+	private("GET /api/mcp/overview", s.handleMCPOverview)
+	private("POST /api/mcp/test", s.handleMCPTest)
+	private("POST /api/sessions/{id}/mcp/test", s.handleChatMCPTest)
+	private("POST /api/mcp/oauth/start", s.handleMCPOAuthStart)
+	private("GET /api/mcp/oauth/callback", s.handleMCPOAuthCallback)
+	private("GET /api/mcp/oauth", s.handleMCPOAuthStatus)
+	private("DELETE /api/mcp/oauth", s.handleMCPOAuthDisconnect)
+	pages.HandleFunc("/mcp-proxy/{name}", s.handleMCPProxy)
+	private("POST /api/mcp/builtin/{name}/accounts", s.handleBuiltinMCPAccountAdd)
+	private("POST /api/mcp/builtin/{name}/accounts/{id}/check", s.handleBuiltinMCPAccountCheck)
+	private("DELETE /api/mcp/builtin/{name}/accounts/{id}", s.handleBuiltinMCPAccountDelete)
 	// GitHub: the App, its installations and repositories (github.go).
-	mux.HandleFunc("GET /api/github", s.auth(s.handleGitHub))
-	mux.HandleFunc("POST /api/github/app/start", s.auth(s.handleGitHubAppStart))
-	mux.HandleFunc("GET /api/github/app/created", s.auth(s.handleGitHubAppCreated))
-	mux.HandleFunc("GET /api/github/app/install", s.auth(s.handleGitHubAppInstall))
-	mux.HandleFunc("GET /api/github/app/installed", s.handleGitHubAppInstalled)
-	mux.HandleFunc("DELETE /api/github/app", s.auth(s.handleGitHubAppDelete))
-	mux.HandleFunc("POST /api/github/installations/{id}/accept", s.auth(s.handleGitHubInstallationAccept))
-	mux.HandleFunc("DELETE /api/github/installations/{id}", s.auth(s.handleGitHubInstallationDelete))
-	mux.HandleFunc("PUT /api/github/repos/{owner}/{name}/settings", s.auth(s.handleGitHubRepoSettings))
-	mux.HandleFunc("POST /api/chats/{id}/account", s.auth(s.handleChatAccount))
-	mux.HandleFunc("POST /api/chats/{id}/spoken", s.auth(s.handleChatSpoken))
-	mux.HandleFunc("PUT /api/chats/{id}/auto-switch", s.auth(s.handleChatAutoSwitch))
+	private("GET /api/github", s.handleGitHub)
+	private("POST /api/github/app/start", s.handleGitHubAppStart)
+	private("GET /api/github/app/created", s.handleGitHubAppCreated)
+	private("GET /api/github/app/install", s.handleGitHubAppInstall)
+	public("GET /api/github/app/installed", s.handleGitHubAppInstalled)
+	private("DELETE /api/github/app", s.handleGitHubAppDelete)
+	private("POST /api/github/installations/{id}/accept", s.handleGitHubInstallationAccept)
+	private("DELETE /api/github/installations/{id}", s.handleGitHubInstallationDelete)
+	private("PUT /api/github/repos/{owner}/{name}/settings", s.handleGitHubRepoSettings)
+	private("POST /api/chats/{id}/account", s.handleChatAccount)
+	private("POST /api/chats/{id}/spoken", s.handleChatSpoken)
+	private("PUT /api/chats/{id}/auto-switch", s.handleChatAutoSwitch)
 	// The chats' clock (schedule.go).
-	mux.HandleFunc("PUT /api/chats/{id}/start_at", s.auth(s.handleChatStartAt))
-	mux.HandleFunc("PUT /api/chats/{id}/auto-continue", s.auth(s.handleChatAutoContinue))
+	private("PUT /api/chats/{id}/start_at", s.handleChatStartAt)
+	private("PUT /api/chats/{id}/auto-continue", s.handleChatAutoContinue)
 
 	// The harness catalogue: what can be started, and where.
-	mux.HandleFunc("GET /api/harnesses", s.auth(s.handleHarnesses))
-	mux.HandleFunc("GET /api/harnesses/folder", s.auth(s.handleFolderHarnesses))
-	mux.HandleFunc("POST /api/harnesses/refresh", s.auth(s.handleRefreshHarnesses))
-	mux.HandleFunc("GET /api/accounts", s.auth(s.handleListAccounts))
-	mux.HandleFunc("POST /api/accounts", s.auth(s.handleCreateAccount))
-	mux.HandleFunc("PUT /api/accounts/order", s.auth(s.handleReorderAccounts))
-	mux.HandleFunc("PATCH /api/accounts/{id}", s.auth(s.handlePatchAccount))
-	mux.HandleFunc("DELETE /api/accounts/{id}", s.auth(s.handleDeleteAccount))
-	mux.HandleFunc("POST /api/accounts/{id}/signin", s.auth(s.handleAccountSignIn))
-	mux.HandleFunc("GET /api/accounts/{id}/signin", s.auth(s.handleGetAccountSignIn))
-	mux.HandleFunc("POST /api/accounts/{id}/signin/code", s.auth(s.handleAccountSignInCode))
-	mux.HandleFunc("DELETE /api/accounts/{id}/signin", s.auth(s.handleCancelAccountSignIn))
+	private("GET /api/harnesses", s.handleHarnesses)
+	private("GET /api/harnesses/folder", s.handleFolderHarnesses)
+	private("POST /api/harnesses/refresh", s.handleRefreshHarnesses)
+	private("GET /api/accounts", s.handleListAccounts)
+	private("POST /api/accounts", s.handleCreateAccount)
+	private("PUT /api/accounts/order", s.handleReorderAccounts)
+	private("PATCH /api/accounts/{id}", s.handlePatchAccount)
+	private("DELETE /api/accounts/{id}", s.handleDeleteAccount)
+	private("POST /api/accounts/{id}/signin", s.handleAccountSignIn)
+	private("GET /api/accounts/{id}/signin", s.handleGetAccountSignIn)
+	private("POST /api/accounts/{id}/signin/code", s.handleAccountSignInCode)
+	private("DELETE /api/accounts/{id}/signin", s.handleCancelAccountSignIn)
 
 	// Admin
-	mux.HandleFunc("GET /api/settings", s.auth(s.handleGetSettings))
-	mux.HandleFunc("PUT /api/settings", s.auth(s.handlePutSettings))
-	mux.HandleFunc("POST /api/settings/password", s.auth(s.handleChangePassword))
-	mux.HandleFunc("GET /api/preferences", s.auth(s.handlePreferences))
-	mux.HandleFunc("POST /api/diagnostics", s.auth(s.handleDiagnostics))
+	private("GET /api/settings", s.handleGetSettings)
+	private("PUT /api/settings", s.handlePutSettings)
+	private("GET /api/preferences", s.handlePreferences)
+	private("POST /api/diagnostics", s.handleDiagnostics)
 
 	// The terminal engine: is tmux here and can it run a session.
-	mux.HandleFunc("GET /api/tmux", s.auth(s.handleTmux))
+	private("GET /api/tmux", s.handleTmux)
 
 	// Updates: what the updater did last, and a run started now.
-	mux.HandleFunc("GET /api/updates", s.auth(s.handleUpdates))
-	mux.HandleFunc("POST /api/updates/run", s.auth(s.handleUpdatesRun))
-
-	// Cloudflare tunnel
-	mux.HandleFunc("GET /api/cloudflare", s.auth(s.handleCloudflare))
-	mux.HandleFunc("POST /api/cloudflare/check", s.auth(s.handleCloudflareCheck))
-	mux.HandleFunc("POST /api/cloudflare/setup", s.auth(s.handleCloudflareSetup))
-	mux.HandleFunc("PUT /api/cloudflare/emails", s.auth(s.handleCloudflareEmails))
-	mux.HandleFunc("POST /api/cloudflare/remove", s.auth(s.handleCloudflareRemove))
+	private("GET /api/updates", s.handleUpdates)
+	private("POST /api/updates/run", s.handleUpdatesRun)
 
 	// Voice
-	mux.HandleFunc("POST /api/voice/transcribe", s.auth(s.handleTranscribe))
-	mux.HandleFunc("POST /api/voice/speak", s.auth(s.handleSpeak))
-	mux.HandleFunc("POST /api/voice/check", s.auth(s.handleVoiceCheck))
+	private("POST /api/voice/transcribe", s.handleTranscribe)
+	private("POST /api/voice/speak", s.handleSpeak)
+	private("POST /api/voice/check", s.handleVoiceCheck)
 
 	// Web Push
-	mux.HandleFunc("GET /api/push", s.auth(s.handlePushKey))
-	mux.HandleFunc("POST /api/push/subscribe", s.auth(s.handlePushSubscribe))
-	mux.HandleFunc("POST /api/push/unsubscribe", s.auth(s.handlePushUnsubscribe))
-	mux.HandleFunc("POST /api/push/test", s.auth(s.handlePushTest))
+	private("GET /api/push", s.handlePushKey)
+	private("POST /api/push/subscribe", s.handlePushSubscribe)
+	private("POST /api/push/unsubscribe", s.handlePushUnsubscribe)
+	private("POST /api/push/test", s.handlePushTest)
 
 	// Backup: the Backup card (backup.go).
-	mux.HandleFunc("GET /api/backup", s.auth(s.handleBackupStatus))
-	mux.HandleFunc("POST /api/backup/run", s.auth(s.handleBackupRun))
-	mux.HandleFunc("GET /api/backup/snapshots", s.auth(s.handleBackupSnapshots))
-	mux.HandleFunc("GET /api/backup/legacy", s.auth(s.handleBackupLegacy))
-	mux.HandleFunc("DELETE /api/backup/legacy", s.auth(s.handleBackupLegacyDelete))
-	mux.HandleFunc("POST /api/backup/test", s.auth(s.handleBackupTest))
-	mux.HandleFunc("PUT /api/backup/config", s.auth(s.handleBackupConfig))
-	mux.HandleFunc("DELETE /api/backup/config", s.auth(s.handleBackupOff))
+	private("GET /api/backup", s.handleBackupStatus)
+	private("POST /api/backup/run", s.handleBackupRun)
+	private("GET /api/backup/snapshots", s.handleBackupSnapshots)
+	private("GET /api/backup/legacy", s.handleBackupLegacy)
+	private("DELETE /api/backup/legacy", s.handleBackupLegacyDelete)
+	private("POST /api/backup/test", s.handleBackupTest)
+	private("PUT /api/backup/config", s.handleBackupConfig)
+	private("DELETE /api/backup/config", s.handleBackupOff)
 	// Restore: a new machine, from the setup page, before there is a
 	// password (backup.go says when it is allowed).
-	mux.HandleFunc("POST /api/restore/snapshots", s.handleRestoreSnapshots)
-	mux.HandleFunc("POST /api/restore", s.handleRestoreStart)
-	mux.HandleFunc("GET /api/restore", s.handleRestoreStatus)
+	public("POST /api/restore/snapshots", s.handleRestoreSnapshots)
+	public("POST /api/restore", s.handleRestoreStart)
+	public("GET /api/restore", s.handleRestoreStatus)
 
 	// Liveness, and the one endpoint nothing in the browser calls:
 	// scripts/update.sh asks it after a restart, because a process that is
 	// running is not the same thing as a server that answers.
-	mux.HandleFunc("GET /api/health", func(w http.ResponseWriter, r *http.Request) {
+	// It answers whatever name it is asked by, like the scripts that ask it.
+	s.app.Unguarded("GET /api/health", open(func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "version": Version})
-	})
+	}))
 
-	s.mux = mux
+	s.pages, s.sandboxed = pages, sandboxed
 }
 
 // ------------------------------------------------------------------- pages

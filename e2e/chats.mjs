@@ -30,7 +30,7 @@ async function boot(data, port, cookie) {
   await waitForHealth(url, 25000, run);
   if (!cookie) {
     const res = await fetch(url + '/api/setup', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password: PASSWORD }),
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Z-Dash': '1' }, body: JSON.stringify({ password: PASSWORD }),
     });
     cookie = (res.headers.get('set-cookie') || '').split(';')[0];
   }

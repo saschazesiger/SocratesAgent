@@ -10036,7 +10036,7 @@ async function homelive() {
       && cards.needsWaiting === true && cards.needsPutAway === false,
       'unread work is Finished even when stopped, but only a running session is in Needs you; a background chat is Ready, even while it asks; a chat not started is that until it works; a done or background session is never in Needs you, whatever its last turn said',
       JSON.stringify(cards));
-    ok(sockets.length > 0 && sockets.every((url) => url.includes('/api/events')),
+    ok(sockets.length > 0 && sockets.every((url) => url.includes('/api/stream')),
       'and with nothing attached: the only socket is the event stream', sockets.join(' '));
     ok(unexpected(s.errors).length === 0, 'no console errors', unexpected(s.errors).join(' | ') || '0');
   } finally { await s.stop(); }
@@ -10835,7 +10835,7 @@ async function homereconnect() {
     // A quick look at another app keeps the stream: no new handshake, and
     // Home never says Reconnecting… when it is looked at again.
     const sockets = [];
-    s.page.on('websocket', (socket) => { if (socket.url().includes('/api/events')) sockets.push(socket.url()); });
+    s.page.on('websocket', (socket) => { if (socket.url().includes('/api/stream')) sockets.push(socket.url()); });
     await s.page.evaluate(() => { window.__conn = []; });
     const shownAs = (state) => s.page.evaluate((hidden) => {
       Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => (hidden ? 'hidden' : 'visible') });
@@ -10858,7 +10858,7 @@ async function homereconnect() {
     const signedIn = await leaver.request.post(s.url + '/api/login', { data: { password: PASSWORD } });
     ok(signedIn.ok(), 'a second device signs in with a login of its own', String(signedIn.status()));
     const closes = [];
-    await leaver.exposeFunction('__streamClosed', (code, url) => { if (String(url).includes('/api/events')) closes.push(code); });
+    await leaver.exposeFunction('__streamClosed', (code, url) => { if (String(url).includes('/api/stream')) closes.push(code); });
     await leaver.addInitScript(() => {
       const Native = window.WebSocket;
       window.WebSocket = class extends Native {
@@ -10875,8 +10875,8 @@ async function homereconnect() {
     const bothLive = await awaitHome(staying, (h) => h.shown && h.conn === 'live', 15000);
     ok(bothLive.ok, 'both of its tabs show Home live', bothLive.seen && bothLive.seen.conn);
     const mine = [];
-    s.page.on('websocket', (socket) => { if (socket.url().includes('/api/events')) mine.push(socket.url()); });
-    const out = await leaving.evaluate(() => fetch('/api/logout', { method: 'POST' }).then((r) => r.status));
+    s.page.on('websocket', (socket) => { if (socket.url().includes('/api/stream')) mine.push(socket.url()); });
+    const out = await leaving.evaluate(() => fetch('/api/logout', { method: 'POST', headers: { 'X-Z-Dash': '1' } }).then((r) => r.status));
     const toLogin = await staying.waitForURL(/\/login/, { timeout: 15000 }).then(() => true, () => false);
     ok(out < 300 && toLogin && closes.includes(4401), 'signing out closes the other tab’s stream with 4401, and it goes to the sign-in',
       JSON.stringify({ logout: out, url: staying.url(), closes }));
@@ -10885,26 +10885,27 @@ async function homereconnect() {
     await leaver.close();
 
     // A new password signs every other login out. The device whose login it
-    // was goes to the sign-in; the page that changed it was handed a new
-    // login, and its stream - closed with the others - comes back Live.
+    // was goes to the sign-in; the page that changed it keeps its login and
+    // its stream.
     const other = await deviceOf(s, { viewport: { width: 1024, height: 700 } });
     await other.page.goto(s.url + '/', { waitUntil: 'domcontentloaded' });
     const otherLive = await awaitHome(other.page, (h) => h.shown && h.conn === 'live', 15000);
     ok(otherLive.ok, 'a second device shows Home live', otherLive.seen && otherLive.seen.conn);
     await s.page.evaluate(() => { window.__conn = []; });
     const changed = await s.page.evaluate(async (current) => {
-      const res = await fetch('/api/settings/password', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ current, next: current + '-2' }),
+      const res = await fetch('/api/password', {
+        method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Z-Dash': '1' },
+        body: JSON.stringify({ current, password: current + '-2' }),
       });
       return res.status;
     }, PASSWORD);
     ok(changed === 200, 'the password is changed', String(changed));
     const signedOut = await other.page.waitForURL(/\/login/, { timeout: 15000 }).then(() => true, () => false);
     ok(signedOut, 'the signed out device goes to the sign-in by itself', other.page.url());
-    const back = await s.page.waitForFunction(() => window.__conn.some((c) => c.startsWith('connecting'))
-      && window.__conn[window.__conn.length - 1].startsWith('live'), null, { timeout: 15000 }).then(() => true, () => false);
-    ok(back && /#home$/.test(s.page.url()), 'the device that changed it stays on Home and is Live again',
+    await s.page.waitForTimeout(1500);
+    const kept = await s.page.evaluate(() => !window.__conn.some((c) => c.startsWith('connecting')));
+    const stillLive = await awaitHome(s.page, (h) => h.conn === 'live', 3000);
+    ok(kept && stillLive.ok && /#home$/.test(s.page.url()), 'the device that changed it stays on Home, signed in and Live',
       JSON.stringify({ url: s.page.url(), conn: await s.page.evaluate(() => window.__conn.slice()) }));
     await other.context.close();
     ok(unexpected(s.errors, RESTART_NOISE).length === 0, 'no unexpected console errors',
@@ -11451,7 +11452,7 @@ async function streamProxy(s) {
   });
   proxy.on('upgrade', (req, sock, head) => {
     sock.on('error', () => {});
-    if (req.url.includes('/api/events')) p.upgrades.push({ at: Date.now(), mode: p.mode });
+    if (req.url.includes('/api/stream')) p.upgrades.push({ at: Date.now(), mode: p.mode });
     if (p.mode === 'hang') { p.held.push(sock); return; }
     if (p.mode !== 'pass') { sock.end('HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n'); return; }
     const up = net.connect(Number(backend.port), backend.hostname, () => {

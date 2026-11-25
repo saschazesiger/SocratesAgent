@@ -36,6 +36,7 @@ func (c *chatEnv) rawCall(t *testing.T, method, path string, body any) (int, str
 		t.Fatal(err)
 	}
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Z-Dash", "1")
 	res, err := c.client.Do(req)
 	if err != nil {
 		t.Fatal(err)

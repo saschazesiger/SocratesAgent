@@ -21,6 +21,7 @@
 // way by its head, or moved with the Position of its dialog.
 
 import { el, toast, confirmDialog, promptDialog } from './api.js';
+import { CSRF_HEADER } from './net.js';
 import { M, html, raw, icon, iconEl, morph, ms, showOverlay, hideOverlay } from './ui.js';
 
 // The colours a label can be, in the order the pickers offer them. The
@@ -65,7 +66,7 @@ async function call(method, path, body) {
   try {
     res = await fetch(path, {
       method,
-      headers: body === undefined ? {} : { 'Content-Type': 'application/json' },
+      headers: body === undefined ? CSRF_HEADER : { ...CSRF_HEADER, 'Content-Type': 'application/json' },
       body: body === undefined ? undefined : JSON.stringify(body),
       credentials: 'same-origin', cache: 'no-store', signal: AbortSignal.timeout(15000),
     });
@@ -126,7 +127,7 @@ let seq = 0;
  *   hide()                off the stage; what is unsaved goes on saving
  *   shown()               whether it is on the stage
  *   folder()              whose board it is
- *   frame(frame)          a board frame of /api/events
+ *   frame(frame)          a board frame of /api/stream
  *   resync()              read again (the stream came back)
  *   flush()               save now what waits
  */

@@ -505,11 +505,14 @@ func TestAskingSetIsHomesQuestions(t *testing.T) {
 // says which one it had: the old one is gone from the list in the same
 // write. And with a tunnel address, that is the contact every push carries.
 func TestPushSubscriptionReplacesTheOldOne(t *testing.T) {
-	env := signedIn(t)
-	if err := env.store.SetKV("cloudflare:state", `{"ready":true,"hostname":"socrates.example.org"}`); err != nil {
-		t.Fatal(err)
+	env := newEnvSeeded(t, false, func(st *store.Store, _ string) {
+		if err := st.SetKV("cloudflare:state", `{"ready":true,"hostname":"socrates.example.org"}`); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if res, _ := env.do(t, env.client, "POST", "/api/setup", `{"password":"a-good-password"}`); res.StatusCode != http.StatusOK {
+		t.Fatalf("setup: %d", res.StatusCode)
 	}
-	env.srv.cf = env.srv.newCloudflare()
 	for _, e := range []string{"https://push.example.net/old", "https://push.example.net/other"} {
 		body, _ := json.Marshal(map[string]any{"subscription": testSubscription(e)})
 		if res, _ := env.do(t, env.client, "POST", "/api/push/subscribe", string(body)); res.StatusCode != http.StatusOK {

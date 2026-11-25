@@ -474,7 +474,7 @@ func TestAdoptAcrossARestart(t *testing.T) {
 
 	// The restart. Nothing tmux owns is stopped.
 	e.srv.StopSessions()
-	next, err := New(e.store, e.srv.dataDir)
+	next, err := New(e.store, e.srv.dataDir, "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("second server: %v", err)
 	}
@@ -551,6 +551,7 @@ func TestSessionAPIRequiresAuth(t *testing.T) {
 		t.Fatal(err)
 	}
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Z-Dash", "1")
 	req.Header.Set("Origin", "https://evil.example")
 	res, err := e.client.Do(req)
 	if err != nil {

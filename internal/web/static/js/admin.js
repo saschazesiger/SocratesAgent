@@ -1903,7 +1903,7 @@ async function changePassword() {
   }
   if (passwordSaid) passwordSaid.close();
   try {
-    await M.busy($('changePw'), api('/api/settings/password', { method: 'POST', body: { current, next } }));
+    await M.busy($('changePw'), api('/api/password', { method: 'POST', body: { current, password: next } }));
     $('pwCurrent').value = '';
     $('pwNext').value = '';
     sayPassword('Password changed', 'success');

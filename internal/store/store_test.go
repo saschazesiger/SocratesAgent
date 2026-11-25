@@ -372,35 +372,32 @@ func TestWritesBumpTheRevision(t *testing.T) {
 
 func TestLogins(t *testing.T) {
 	st := openTest(t)
-	if err := st.CreateLogin("token", time.Hour); err != nil {
+	live := time.Now().Add(time.Hour).UnixMilli()
+	if err := st.AddLogin("token", live); err != nil {
 		t.Fatal(err)
 	}
-	if !st.ValidLogin("token") {
-		t.Fatal("login should be valid")
-	}
-	if st.ValidLogin("other") || st.ValidLogin("") {
-		t.Fatal("an unknown token must not validate")
-	}
-	if err := st.DeleteLogin("token"); err != nil {
+	if err := st.AddLogin("expired", time.Now().Add(-time.Hour).UnixMilli()); err != nil {
 		t.Fatal(err)
 	}
-	if st.ValidLogin("token") {
-		t.Fatal("deleted login still valid")
-	}
-	_ = st.CreateLogin("expired", -time.Hour)
-	if st.ValidLogin("expired") {
-		t.Fatal("expired login must not validate")
-	}
-	if err := st.PurgeExpiredLogins(); err != nil {
+	got, err := st.Logins()
+	if err != nil {
 		t.Fatal(err)
 	}
-	_ = st.CreateLogin("one", time.Hour)
-	_ = st.CreateLogin("two", time.Hour)
-	if err := st.DeleteAllLogins(); err != nil {
-		t.Fatal(err)
+	if len(got) != 1 || got[0].Token != "token" || got[0].ExpiresAt != live {
+		t.Fatalf("the logins that still hold = %#v", got)
 	}
-	if st.ValidLogin("one") || st.ValidLogin("two") {
-		t.Fatal("changing the password left a browser signed in")
+}
+
+func TestSetKVIfMissing(t *testing.T) {
+	st := openTest(t)
+	if won, err := st.SetKVIfMissing("first", "a"); err != nil || !won {
+		t.Fatalf("the first writer = %v, %v", won, err)
+	}
+	if won, err := st.SetKVIfMissing("first", "b"); err != nil || won {
+		t.Fatalf("the second writer = %v, %v", won, err)
+	}
+	if v, _ := st.GetKV("first"); v != "a" {
+		t.Fatalf("value = %q", v)
 	}
 }
 
@@ -493,8 +490,8 @@ func TestMigrationDropsChatsAndRenamesSessions(t *testing.T) {
 		t.Fatalf("logins is missing (%v)", err)
 	}
 	// The rows came with the name change: nobody is signed out by an upgrade.
-	if !st.ValidLogin("tok") {
-		t.Error("the login did not survive the rename")
+	if logins, err := st.Logins(); err != nil || len(logins) != 1 || logins[0].Token != "tok" {
+		t.Errorf("the login did not survive the rename: %v %v", logins, err)
 	}
 	// And `sessions` is now the terminal table, which the new columns prove.
 	if err := st.CreateSession(newSession("a1")); err != nil {

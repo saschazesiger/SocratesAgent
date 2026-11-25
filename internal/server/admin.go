@@ -353,7 +353,7 @@ func clean(text string) string {
 
 // tunnelCheck is the remote-access row.
 func (s *Server) tunnelCheck() checkResult {
-	st := s.cf.Status()
+	st := s.app.Tunnel().Status()
 	var detail []string
 	if st.PublicURL != "" {
 		detail = append(detail, st.PublicURL)

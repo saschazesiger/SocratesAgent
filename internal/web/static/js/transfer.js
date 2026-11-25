@@ -15,6 +15,7 @@
 // take the same road.
 
 import { el, toast, errorMessage, ANY_FILE } from './api.js';
+import { CSRF_HEADER } from './net.js';
 import { DS, M, showOverlay, hideOverlay } from './ui.js';
 import { copyText, forgetRefusal, pasteClipboard } from './term.js';
 
@@ -172,7 +173,7 @@ export function mountTransfer(ctx) {
     const form = new FormData();
     for (const file of list) form.append('file', file, file.name || 'pasted.png');
     const res = await fetch('/api/sessions/' + encodeURIComponent(session.id) + '/upload', {
-      method: 'POST', body: form, credentials: 'same-origin',
+      method: 'POST', body: form, credentials: 'same-origin', headers: CSRF_HEADER,
     });
     let data = null;
     try { data = await res.json(); } catch { /* answered below */ }

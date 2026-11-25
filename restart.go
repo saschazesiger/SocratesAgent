@@ -2,10 +2,8 @@ package main
 
 import (
 	"errors"
-	"net"
 	"os"
 	"os/exec"
-	"time"
 )
 
 // executable is the binary to start again: the running one, or - when it has
@@ -18,20 +16,6 @@ func executable() (string, error) {
 		}
 	}
 	return exec.LookPath(os.Args[0])
-}
-
-// listen opens the listener, trying again for a moment: the process before a
-// restart may still be letting go of the port.
-func listen(addr string) (net.Listener, error) {
-	var err error
-	for i := 0; i < 10; i++ {
-		var ln net.Listener
-		if ln, err = net.Listen("tcp", addr); err == nil {
-			return ln, nil
-		}
-		time.Sleep(250 * time.Millisecond)
-	}
-	return nil, err
 }
 
 // errLocked is a data directory another Socrates is using.

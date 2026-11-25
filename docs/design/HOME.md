@@ -53,7 +53,7 @@ Admin → the "Status & naming" card (`#assistCard`) gets two more model pickers
 ("Home summaries and questions") and `#orOperator` ("Answering questions"), added to
 `MODEL_PICKERS` in admin.js exactly like `#orStatus`.
 
-### 1.2 The event stream: `GET /api/events`
+### 1.2 The event stream: `GET /api/stream`
 
 A WebSocket (coder/websocket, already a dependency), subprotocol `socrates.events.v1`, under
 `s.auth`, `OriginPatterns: [r.Host]`, read limit 64 KiB. An address the sign-in has locked out
@@ -408,7 +408,7 @@ state (digester `start`), so an idle question in prose is in the set without a p
 
 ### 2.2 Live, always
 
-`events.js` opens `/api/events` while the page is visible; reconnects with backoff 0.5 s → 8 s
+`events.js` opens `/api/stream` while the page is visible; reconnects with backoff 0.5 s → 8 s
 (reset after a `hello`), on `onWake`, `online` and when no frame (including `tick`) arrived for
 35 s. While it is down the page polls `GET /api/home` every 5 s (Home or the dialog shown) or
 15 s (otherwise). Every `hello`/`sessions` frame goes through the same path `refreshList` takes

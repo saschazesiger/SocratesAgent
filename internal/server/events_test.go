@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/cookiejar"
 	"net/http/httptest"
 	"net/url"
 	"strings"
@@ -32,7 +33,7 @@ import (
 
 // eventsURL is the stream's address on a test server.
 func (e *testEnv) eventsURL() string {
-	return "ws" + strings.TrimPrefix(e.server.URL, "http") + "/api/events"
+	return "ws" + strings.TrimPrefix(e.server.URL, "http") + "/api/stream"
 }
 
 // eventsHeader is the cookie of the signed in client, as a browser sends it
@@ -512,48 +513,52 @@ func (c *wsClient) closeCode(within time.Duration) websocket.StatusCode {
 	return websocket.CloseStatus(c.readErr)
 }
 
-// Signing out, or every login being revoked by a new password, ends every
-// stream of those logins at once and says why; one whose login lapsed some
-// other way ends at its next tick. A stream that is still open carries every
+// Signing out ends the streams of that browser at once and says why, and a
+// new password ends those of every other browser: it signs them out, and
+// keeps the one that changed it. A stream that is still open carries every
 // session's title, summary and question.
 func TestEventStreamEndsWithItsLogin(t *testing.T) {
 	e := signedIn(t)
 	e.srv.events.tickEvery = 100 * time.Millisecond
-	first := e.dialEvents(t)
-	first.hello()
+	// A second browser, signed in with the password.
+	mine := e.client
+	jar, _ := cookiejar.New(nil)
+	other := &http.Client{Jar: jar, CheckRedirect: mine.CheckRedirect}
+	if res, _ := e.do(t, other, "POST", "/api/login", `{"password":"a-good-password"}`); res.StatusCode != http.StatusOK {
+		t.Fatalf("login of the second browser: %d", res.StatusCode)
+	}
+	e.client = other
+	theirs := e.dialEvents(t)
+	theirs.hello()
+	e.client = mine
+	kept := e.dialEvents(t)
+	kept.hello()
 
-	// A new password signs everybody out - this page gets a new login, and
-	// its old stream ends with the others.
-	res, _ := e.do(t, e.client, "POST", "/api/settings/password",
-		`{"current":"a-good-password","next":"another-good-password"}`)
+	res, _ := e.do(t, e.client, "POST", "/api/password",
+		`{"current":"a-good-password","password":"another-good-password"}`)
 	if res.StatusCode != http.StatusOK {
 		t.Fatalf("change the password: %d", res.StatusCode)
 	}
-	if code := first.closeCode(5 * time.Second); code != eventsSignedOut {
+	if code := theirs.closeCode(5 * time.Second); code != eventsSignedOut {
 		t.Fatalf("a revoked stream was closed with %d", code)
 	}
+	if res, _ := e.do(t, other, "GET", "/api/settings", ""); res.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("the other browser is still signed in: %d", res.StatusCode)
+	}
+	// The browser that changed the password keeps its session and its
+	// stream, through the ticks that check it again.
+	time.Sleep(300 * time.Millisecond)
+	select {
+	case <-kept.closed:
+		t.Fatal("the stream of the browser that changed the password was closed")
+	default:
+	}
 
-	second := e.dialEvents(t)
-	second.hello()
 	if res, _ := e.do(t, e.client, "POST", "/api/logout", ""); res.StatusCode != http.StatusOK {
 		t.Fatalf("logout: %d", res.StatusCode)
 	}
-	if code := second.closeCode(5 * time.Second); code != eventsSignedOut {
+	if code := kept.closeCode(5 * time.Second); code != eventsSignedOut {
 		t.Fatalf("a signed out stream was closed with %d", code)
-	}
-
-	// A login that is gone without anybody signing out - expired, or deleted
-	// under the server - is found at the stream's next tick.
-	if res, _ := e.do(t, e.client, "POST", "/api/login", `{"password":"another-good-password"}`); res.StatusCode != http.StatusOK {
-		t.Fatalf("login: %d", res.StatusCode)
-	}
-	third := e.dialEvents(t)
-	third.hello()
-	if err := e.store.DeleteAllLogins(); err != nil {
-		t.Fatal(err)
-	}
-	if code := third.closeCode(5 * time.Second); code != eventsSignedOut {
-		t.Fatalf("a stream whose login lapsed was closed with %d", code)
 	}
 }
 

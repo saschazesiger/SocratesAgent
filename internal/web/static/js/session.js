@@ -4499,6 +4499,7 @@ function wire() {
     let next = '/login';
     try {
       const out = await api('/api/logout', { method: 'POST' });
+      // "" on the local address: the sign-in page.
       if (out && typeof out.next === 'string' && out.next.startsWith('/')) next = out.next;
     } catch { /* going anyway */ }
     location.href = next;

@@ -23,7 +23,7 @@ import (
 // writes and runs its own tests, kept in its folder (internal/chattests).
 // The agent works them through the server's tools (internal/mcpserver/tests);
 // the chat's page reads and changes them here, and every change of either
-// is a chattests frame on /api/events.
+// is a chattests frame on /api/stream.
 
 // newChatTests is the store of every chat's tests, in the chat's folder:
 // they go with the chat and are backed up with it.

@@ -5,7 +5,9 @@ Access is the login for everybody who comes through it. This replaced the quick 
 named tunnel driven by a connector token pasted by hand; nothing of either is left, and a server that used them sets
 the tunnel up again. The code is the `cloudflare` package of the Z-Dash server module
 (`github.com/saschazesiger/Z-Dash/server/cloudflare`), which grew out of this one and is shared with the other apps on
-Z-Dash; Socrates configures it (name, bypass paths, login duration) in `internal/server/cloudflare.go`. A fix to the
+Z-Dash. Since Socrates runs on the whole Z-Dash server ([SERVER.md](SERVER.md)), the module also owns the socket's
+listener, the check of the Access token in front of every route and the `/api/cloudflare` endpoints; Socrates only
+names what is its own (`Config` in `internal/server/app.go`: name, bypass paths, login duration). A fix to the
 tunnel goes to Z-Dash, then `go get github.com/saschazesiger/Z-Dash/server@main` here.
 
 Without Cloudflare, Socrates works as before: the local address (`SOCRATES_ADDR`, `127.0.0.1:8080` by default) with
@@ -17,7 +19,7 @@ the password. That is also how a test instance runs.
 flowchart LR
   B[Browser] -- HTTPS --> E[Cloudflare edge<br/>Access login]
   E -- tunnel --> C[cloudflared<br/>child of Socrates]
-  C -- unix socket<br/>run/tunnel.sock --> T[TunnelHandler<br/>checks the Access token]
+  C -- unix socket<br/>run/tunnel.sock --> T[the module's tunnel gate<br/>checks the Access token]
   T --> M[the same routes]
   L[Browser on the local address] -- password --> M
 ```
@@ -30,7 +32,8 @@ flowchart LR
 | | `jwt.go` | `Authenticate`: the `Cf-Access-Jwt-Assertion` header, RS256 only, the team's keys (cached, refetched at most every 30 s), issuer, audience, expiry, allowed address |
 | | `verify.go` | the check from outside: `/` must redirect to the Access login, `/artifact-kit/` must reach Socrates (`X-Z-Dash-Tunnel`) |
 | | `install.go` | downloads a pinned `cloudflared` into `<data>/bin` when it is not on the `PATH`, installed only when its SHA-256 is the published one (`SOCRATES_CLOUDFLARED` names another binary); it inherits no `SOCRATES_*` variable |
-| `internal/server/cloudflare.go` | | the service's options (`Name: "Socrates"`, `BypassPaths`, `720h`), the socket listener, `TunnelHandler`, the `/api/cloudflare` endpoints |
+| the module's `server` | `server.go`, `http.go`, `tunnel.go` | builds the service from the app's `Config`, listens on the socket, checks the Access token in front of every route (`tunnelGate`), answers `/api/cloudflare` |
+| `internal/server/app.go` | | the `Config`: `Name: "Socrates"`, `Slug: "socrates"`, `Bypass` (`/docs/`, `/artifact-kit/`), `BypassLabel`, `AccessSession: "720h"` |
 | `internal/web/static/js/cloudflare.js` | | the flow in Admin → Remote access and the setup page's second step |
 
 ## The tunnel's own way in
@@ -42,10 +45,11 @@ not backed up), and the tunnel's routing is `unix:<that path>`. So:
 - a request on the socket came through Cloudflare, so `Cf-Connecting-Ip` is the caller (rate limits, logs);
 - two Socrates on one machine never fight over a port.
 
-`TunnelHandler` lets the sandboxed pages through (`/docs/`, `/artifact-kit/`, `BypassPaths` in `internal/server/cloudflare.go`), which guard
-their files with tokens of their own, and asks every other request for a valid Access token. The token signs the
-person in: `authenticated()` is true and `/api/state` says `via: "tunnel"` and the e-mail address. No Socrates cookie
-is made and no password asked. Signing out answers `next: "/cdn-cgi/access/logout"`, which ends the Access session.
+The module's tunnel gate lets the sandboxed pages through (`/docs/`, `/artifact-kit/`, `Config.Bypass` in
+`internal/server/app.go`), which guard their files with tokens of their own, and asks every other request for a valid
+Access token. The token signs the person in: `server.Who(r)` is `{Via: "tunnel", Email}`, `authenticated()` is true
+and `/api/state` says `via: "tunnel"` and the e-mail address. No Socrates cookie is made and no password asked.
+Signing out answers `next: "/cdn-cgi/access/logout"`, which ends the Access session.
 
 ## What the setup creates
 
@@ -91,8 +95,10 @@ refuses a list without the caller's own address, so nobody locks themselves out 
 
 | Endpoint | |
 | --- | --- |
-| `GET /api/cloudflare` | `{status, token_url, permissions, via, email}`; `status.job` is the running or last setup or removal |
-| `POST /api/cloudflare/check` | `{api_token}` (empty: the stored one) → `{zones, user, stored}` |
-| `POST /api/cloudflare/setup` | `{api_token, zone_id, hostname, emails, replace}`, runs in the background |
+| `GET /api/cloudflare` | `{status, tokenUrl, permissions, bypass, via, email}`; `status.job` is the running or last setup or removal |
+| `POST /api/cloudflare/check` | `{apiToken}` (empty: the stored one) → `{zones, user, stored}` |
+| `POST /api/cloudflare/setup` | `{apiToken, zoneId, hostname, emails, replace}`, runs in the background |
 | `PUT /api/cloudflare/emails` | `{emails}` |
-| `POST /api/cloudflare/remove` | runs in the background; deletes apps, policies, record and tunnel, then forgets them |
+| `DELETE /api/cloudflare` | runs in the background; deletes apps, policies, record and tunnel, then forgets them |
+
+They are the module's (`tunnel.go`): a refusal that belongs to a field carries `fields` beside `error`.

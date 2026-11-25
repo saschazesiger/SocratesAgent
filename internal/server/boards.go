@@ -21,7 +21,7 @@ import (
 // revision (store/boards.go): a page saves the board it edited together
 // with the revision it started from, and a save from an older one is
 // refused with the current board, which the page then shows. Every save is a
-// board frame on /api/events, so another page showing the folder's board
+// board frame on /api/stream, so another page showing the folder's board
 // reads it again.
 
 // The colours a label can be. They are names, not colours: the page maps
