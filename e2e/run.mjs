@@ -1472,8 +1472,8 @@ async function adminoptions() {
     const wrongSaid = await toastTexts();
     ok(emptySaid.join() === 'Fill in both password fields.' && wrongSaid.join(' | ') === 'The current password is wrong.',
       'the password card says one refusal at a time, as a sentence', emptySaid.join(' | ') + ' -> ' + wrongSaid.join(' | '));
-    // The refusal is a 403 the browser logs; it was asked for.
-    for (let i = s.errors.length - 1; i >= 0; i -= 1) if (/403 .*\/api\/settings\/password/.test(s.errors[i])) s.errors.splice(i, 1);
+    // The refusal is a 400 the browser logs; it was asked for.
+    for (let i = s.errors.length - 1; i >= 0; i -= 1) if (/400 .*\/api\/password/.test(s.errors[i])) s.errors.splice(i, 1);
     const rows = await s.page.$$eval('#checks .so-check', (nodes) => nodes.map((node) => ({
       name: node.querySelector('.so-check__label').textContent.trim(),
       visible: node.querySelector('.so-check__summary').textContent.trim(),
