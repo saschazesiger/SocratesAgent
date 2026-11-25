@@ -21,7 +21,7 @@ import (
 
 	"github.com/coder/websocket"
 
-	"github.com/saschazesiger/SocratesAgent/internal/cloudflare"
+	"github.com/saschazesiger/Z-Dash/server/cloudflare"
 )
 
 func TestCloudflareEndpoints(t *testing.T) {
@@ -41,7 +41,7 @@ func TestCloudflareEndpoints(t *testing.T) {
 	if res, _ := env.do(t, env.client, "POST", "/api/cloudflare/check", `{"api_token":""}`); res.StatusCode != http.StatusBadRequest {
 		t.Fatalf("checking without a stored token = %d", res.StatusCode)
 	}
-	if res, _ := env.do(t, env.client, "POST", "/api/cloudflare/setup", `{"api_token":"x","zone_id":"z","hostname":"a.example.com","emails":[]}`); res.StatusCode != http.StatusBadRequest {
+	if res, _ := env.do(t, env.client, "POST", "/api/cloudflare/setup", `{"apiToken":"x","zoneId":"z","hostname":"a.example.com","emails":[]}`); res.StatusCode != http.StatusBadRequest {
 		t.Fatalf("a setup without addresses = %d", res.StatusCode)
 	}
 	if res, _ := env.do(t, env.client, "PUT", "/api/cloudflare/emails", `{"emails":["a@example.com"]}`); res.StatusCode != http.StatusBadRequest {

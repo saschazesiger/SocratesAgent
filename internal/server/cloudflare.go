@@ -14,9 +14,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/saschazesiger/SocratesAgent/internal/cloudflare"
 	"github.com/saschazesiger/SocratesAgent/internal/paths"
 	"github.com/saschazesiger/SocratesAgent/internal/store"
+	"github.com/saschazesiger/Z-Dash/server/cloudflare"
 )
 
 // identity says how a request reached Socrates.
@@ -54,9 +54,25 @@ func (s *Server) newCloudflare() *cloudflare.Service {
 		Sealer: keySealer{s},
 		Origin: "unix:" + sock,
 		BinDir: filepath.Join(s.dataDir, paths.Bin),
-		Logf:   log.Printf,
+		// The names the objects on Cloudflare already carry: "Socrates
+		// <host>" applications and policies, the tunnel socrates-<host>,
+		// the DNS record "Managed by Socrates (Cloudflare Tunnel)".
+		Name: "Socrates",
+		Slug: "socrates",
+		// The pages a chat shows in a sandboxed frame: requests from such a
+		// frame carry no cookie, so a login would leave them white. Each
+		// guards its files with a token of its own.
+		Bypass:          BypassPaths,
+		BypassLabel:     "sandboxed pages",
+		SessionDuration: "720h", // as long as a Socrates login, so a phone does not ask every day
+		Command:         os.Getenv("SOCRATES_CLOUDFLARED"),
+		EnvPrefix:       "SOCRATES_",
+		Logf:            log.Printf,
 	})
 }
+
+// BypassPaths are the paths Cloudflare Access lets through without a login.
+var BypassPaths = []string{"/docs/", "/artifact-kit/"}
 
 // TunnelSocket is the Unix socket cloudflared sends the requests to.
 func (s *Server) TunnelSocket() string {
@@ -140,7 +156,7 @@ func listenUnix(path string) (net.Listener, error) {
 }
 
 // TunnelHandler serves what comes through the tunnel. The sandboxed pages
-// (cloudflare.BypassPaths) pass as they are, guarded by their own tokens;
+// (BypassPaths) pass as they are, guarded by their own tokens;
 // every other request needs a valid Cloudflare Access token, which signs the
 // person in without the password.
 func (s *Server) TunnelHandler() http.Handler {
@@ -152,7 +168,7 @@ func (s *Server) TunnelHandler() http.Handler {
 		if ip := net.ParseIP(strings.TrimSpace(r.Header.Get("Cf-Connecting-Ip"))); ip != nil {
 			r.RemoteAddr = net.JoinHostPort(ip.String(), "0")
 		}
-		if cloudflare.Bypassed(r.URL.Path) {
+		if s.cf.Bypassed(r.URL.Path) {
 			ctx := context.WithValue(r.Context(), identityKeyT{}, identity{Via: "tunnel"})
 			s.mux.ServeHTTP(w, r.WithContext(ctx))
 			return
@@ -235,7 +251,7 @@ func (s *Server) cloudflarePayload(r *http.Request) map[string]any {
 	id := via(r)
 	return map[string]any{
 		"status":      s.cf.Status(),
-		"token_url":   cloudflare.TokenURL(),
+		"token_url":   s.cf.TokenURL(),
 		"permissions": cloudflare.Permissions(),
 		"via":         id.Via,
 		"email":       id.Email,

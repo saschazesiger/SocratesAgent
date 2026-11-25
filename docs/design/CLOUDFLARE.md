@@ -3,7 +3,10 @@
 Socrates reaches the internet through a Cloudflare Tunnel that it sets up itself with an API token, and Cloudflare
 Access is the login for everybody who comes through it. This replaced the quick tunnel (`*.trycloudflare.com`) and the
 named tunnel driven by a connector token pasted by hand; nothing of either is left, and a server that used them sets
-the tunnel up again. The design follows CI-Plane's (`internal/cloudflare` there).
+the tunnel up again. The code is the `cloudflare` package of the Z-Dash server module
+(`github.com/saschazesiger/Z-Dash/server/cloudflare`), which grew out of this one and is shared with the other apps on
+Z-Dash; Socrates configures it (name, bypass paths, login duration) in `internal/server/cloudflare.go`. A fix to the
+tunnel goes to Z-Dash, then `go get github.com/saschazesiger/Z-Dash/server@main` here.
 
 Without Cloudflare, Socrates works as before: the local address (`SOCRATES_ADDR`, `127.0.0.1:8080` by default) with
 the password. That is also how a test instance runs.
@@ -21,13 +24,13 @@ flowchart LR
 
 | Piece | Where | What it does |
 | --- | --- | --- |
-| `internal/cloudflare` | `cloudflare.go` | state, sealed secrets, `Status`, `Check` (token → domains and, with *User Details: Read*, the token's user) |
+| the module's `cloudflare` | `cloudflare.go` | state, sealed secrets, `Status`, `Check` (token → domains and, with *User Details: Read*, the token's user) |
 | | `setup.go` | `Setup` / `StartSetup` (background job with steps), conflicts and *Replace*, `SetEmails`, `Remove` / `StartRemove` |
 | | `supervisor.go` | `Run`: starts `cloudflared tunnel --no-autoupdate --metrics <loopback> run` with `TUNNEL_TOKEN` in the environment, polls `/ready`, restarts with backoff, checks from outside every 10 minutes, points the routing at a moved socket |
 | | `jwt.go` | `Authenticate`: the `Cf-Access-Jwt-Assertion` header, RS256 only, the team's keys (cached, refetched at most every 30 s), issuer, audience, expiry, allowed address |
-| | `verify.go` | the check from outside: `/` must redirect to the Access login, `/artifact-kit/` must reach Socrates (`X-Socrates-Tunnel`) |
-| | `install.go` | downloads `cloudflared` into `<data>/bin` when it is not on the `PATH` (`SOCRATES_CLOUDFLARED` names another binary) |
-| `internal/server/cloudflare.go` | | the socket listener, `TunnelHandler`, the `/api/cloudflare` endpoints |
+| | `verify.go` | the check from outside: `/` must redirect to the Access login, `/artifact-kit/` must reach Socrates (`X-Z-Dash-Tunnel`) |
+| | `install.go` | downloads a pinned `cloudflared` into `<data>/bin` when it is not on the `PATH`, installed only when its SHA-256 is the published one (`SOCRATES_CLOUDFLARED` names another binary); it inherits no `SOCRATES_*` variable |
+| `internal/server/cloudflare.go` | | the service's options (`Name: "Socrates"`, `BypassPaths`, `720h`), the socket listener, `TunnelHandler`, the `/api/cloudflare` endpoints |
 | `internal/web/static/js/cloudflare.js` | | the flow in Admin → Remote access and the setup page's second step |
 
 ## The tunnel's own way in
@@ -39,7 +42,7 @@ not backed up), and the tunnel's routing is `unix:<that path>`. So:
 - a request on the socket came through Cloudflare, so `Cf-Connecting-Ip` is the caller (rate limits, logs);
 - two Socrates on one machine never fight over a port.
 
-`TunnelHandler` lets the sandboxed pages through (`/docs/`, `/artifact-kit/`, `cloudflare.BypassPaths`), which guard
+`TunnelHandler` lets the sandboxed pages through (`/docs/`, `/artifact-kit/`, `BypassPaths` in `internal/server/cloudflare.go`), which guard
 their files with tokens of their own, and asks every other request for a valid Access token. The token signs the
 person in: `authenticated()` is true and `/api/state` says `via: "tunnel"` and the e-mail address. No Socrates cookie
 is made and no password asked. Signing out answers `next: "/cdn-cgi/access/logout"`, which ends the Access session.

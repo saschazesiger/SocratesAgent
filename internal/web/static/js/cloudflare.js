@@ -205,7 +205,7 @@ export function mountCloudflare(host, { level = 3, log = false, local = '', onCh
   function stateHtml(st) {
     const [kind, label, word] = stateOf(st);
     const facts = [];
-    if (st.configured && st.public_url) facts.push(html`<a href="${st.public_url}" target="_blank" rel="noopener" class="so-break">${st.public_url}</a>`);
+    if (st.configured && st.publicUrl) facts.push(html`<a href="${st.publicUrl}" target="_blank" rel="noopener" class="so-break">${st.publicUrl}</a>`);
     return html`<div class="ds-cluster" role="status" data-ds-key="state">${chip(kind, label, word)}${facts.length
       ? html`<span class="ds-parts"><span class="ds-parts__list">${facts.map((f) => html`<span>${f}</span>`)}</span></span>` : ''}</div>`;
   }
@@ -219,7 +219,7 @@ export function mountCloudflare(host, { level = 3, log = false, local = '', onCh
     const title = job.kind === 'remove' ? 'Removing remote access' : 'Setting up remote access';
     const tail = job.running ? '' : job.ok
       ? (job.kind === 'remove' ? alertHtml('ok', 'Removed. Socrates is on its local address only now.', 'job-ok')
-        : html`<div class="ds-alert ds-tone-success" role="status" data-ds-key="alert-job-ok">${raw(icon('checkCircle', 20))}<span class="ds-alert__text">Socrates is at <a href="${st.public_url}" target="_blank" rel="noopener" class="so-break">${st.public_url}</a>. Opening it asks for a Cloudflare login: a one-time code goes by e-mail to the addresses that may sign in.</span></div>`)
+        : html`<div class="ds-alert ds-tone-success" role="status" data-ds-key="alert-job-ok">${raw(icon('checkCircle', 20))}<span class="ds-alert__text">Socrates is at <a href="${st.publicUrl}" target="_blank" rel="noopener" class="so-break">${st.publicUrl}</a>. Opening it asks for a Cloudflare login: a one-time code goes by e-mail to the addresses that may sign in.</span></div>`)
       : job.error && !(job.conflicts || []).length ? alertHtml('error', sentence(job.error), 'job-error') : '';
     return html`<div class="ds-stack" data-ds-key="${'job-' + (job.kind || 'none')}">
       <div class="ds-tasks__head"><${raw(h)} class="ds-card__subtitle">${title}</${raw(h)}><p class="ds-meta">${plural(done.length + (job.ok && job.step ? 1 : 0), 'step', 'steps')} done</p></div>
@@ -244,7 +244,7 @@ export function mountCloudflare(host, { level = 3, log = false, local = '', onCh
     const bin = st.cloudflared || {};
     const binary = bin.installed
       ? [bin.version || 'installed', bin.managed ? 'downloaded by Socrates' : bin.path].filter(Boolean).join(' · ')
-      : (bin.can_install ? 'not installed; Socrates downloads it' : 'not installed');
+      : (bin.canInstall ? 'not installed; Socrates downloads it' : 'not installed');
     const facts = [
       ['Cloudflare account', st.account || '—'],
       ['Domain', st.zone || '—'],
@@ -307,9 +307,9 @@ export function mountCloudflare(host, { level = 3, log = false, local = '', onCh
 
   function formHtml(st) {
     const perms = data.permissions || [];
-    const stored = !!st.has_token;
+    const stored = !!st.hasToken;
     const zones = (checked && checked.zones) || [];
-    const accounts = [...new Set(zones.map((z) => z.account_name).filter(Boolean))];
+    const accounts = [...new Set(zones.map((z) => z.accountName).filter(Boolean))];
     const zone = zoneOf(form.zoneId);
     return html`<div class="ds-stack" data-ds-key="form">
       <section class="ds-card__section" aria-labelledby="cfStep1" data-ds-key="step1">
@@ -402,7 +402,7 @@ export function mountCloudflare(host, { level = 3, log = false, local = '', onCh
     const st = data.status || {};
     errors = {};
     notice = '';
-    if (!token && !st.has_token) {
+    if (!token && !st.hasToken) {
       setError('cfToken', 'Paste the API token first.');
       return;
     }
@@ -445,7 +445,7 @@ export function mountCloudflare(host, { level = 3, log = false, local = '', onCh
       setError('cfEmails', 'Keep your own address (' + data.email + ') on the list, or you lock yourself out.');
       return null;
     }
-    return { api_token: form.token.trim(), zone_id: zone.id, hostname: sub + '.' + zone.name, emails };
+    return { apiToken: form.token.trim(), zoneId: zone.id, hostname: sub + '.' + zone.name, emails };
   }
 
   async function setup(button, replace = false) {
@@ -501,7 +501,7 @@ export function mountCloudflare(host, { level = 3, log = false, local = '', onCh
       body: 'Socrates stops the tunnel and deletes it on Cloudflare, with its DNS record and its Access applications. '
         + 'Socrates stays reachable on its local address' + (local ? ' (' + local + ')' : '') + ' with the password.'
         + (away ? ' You came through the tunnel: this page loses its connection once the tunnel is gone.' : ''),
-      confirmLabel: 'Remove' + (st.public_url ? ' ' + st.hostname : ''), danger: true, opener: button,
+      confirmLabel: 'Remove' + (st.publicUrl ? ' ' + st.hostname : ''), danger: true, opener: button,
     });
     if (!yes) return;
     notice = '';
@@ -522,14 +522,14 @@ export function mountCloudflare(host, { level = 3, log = false, local = '', onCh
     errors = {};
     notice = '';
     form.token = '';
-    if (st.zone_id) form.zoneId = st.zone_id;
+    if (st.zoneId) form.zoneId = st.zoneId;
     if (st.hostname && st.zone && st.hostname.endsWith('.' + st.zone)) form.sub = st.hostname.slice(0, -st.zone.length - 1);
     if ((st.emails || []).length) form.emails = st.emails.join('\n');
     checked = null;
     watching = false;
-    if (!st.has_token) focusField = 'cfToken';
+    if (!st.hasToken) focusField = 'cfToken';
     render();
-    if (st.has_token) check(null, { quiet: true });
+    if (st.hasToken) check(null, { quiet: true });
   }
 
   function onClick(event) {

@@ -20,7 +20,6 @@ import (
 	"github.com/saschazesiger/SocratesAgent/internal/backup"
 	"github.com/saschazesiger/SocratesAgent/internal/catalog"
 	"github.com/saschazesiger/SocratesAgent/internal/chattests"
-	"github.com/saschazesiger/SocratesAgent/internal/cloudflare"
 	"github.com/saschazesiger/SocratesAgent/internal/config"
 	"github.com/saschazesiger/SocratesAgent/internal/github"
 	"github.com/saschazesiger/SocratesAgent/internal/mcpserver"
@@ -28,6 +27,7 @@ import (
 	"github.com/saschazesiger/SocratesAgent/internal/store"
 	"github.com/saschazesiger/SocratesAgent/internal/termux"
 	"github.com/saschazesiger/SocratesAgent/internal/web"
+	"github.com/saschazesiger/Z-Dash/server/cloudflare"
 )
 
 // Version is stamped at build time.

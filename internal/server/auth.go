@@ -15,8 +15,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/saschazesiger/SocratesAgent/internal/cloudflare"
 	"github.com/saschazesiger/SocratesAgent/internal/store"
+	"github.com/saschazesiger/Z-Dash/server/cloudflare"
 )
 
 const (

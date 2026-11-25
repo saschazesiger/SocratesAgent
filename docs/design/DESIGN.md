@@ -798,7 +798,7 @@ Settings remain **one JSON document** in `kv` under the existing key, decoded in
 type Settings struct {
     OpenRouter OpenRouterSettings `json:"openrouter"` // kept verbatim (dictation + titles)
     Voice      VoiceSettings      `json:"voice"`      // kept verbatim (TTS stays configurable)
-    Tunnel     TunnelSettings     `json:"tunnel"`     // later removed: the tunnel is internal/cloudflare (CLOUDFLARE.md)
+    Tunnel     TunnelSettings     `json:"tunnel"`     // later removed: the tunnel is the Z-Dash server's cloudflare package (CLOUDFLARE.md)
     Workspace  WorkspaceSettings  `json:"workspace"`  // new
     Terminal   TerminalSettings   `json:"terminal"`   // new
     Harnesses  HarnessSettings    `json:"harnesses"`  // new; replaces Agents

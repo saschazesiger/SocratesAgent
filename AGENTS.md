@@ -47,6 +47,14 @@ Then `git push origin HEAD:main` (from a chat's own branch; never
 force-push `main`). When any of this fails or is in doubt, fix it first; when
 it cannot be fixed, ask the person instead of merging.
 
+## Remote access: the Z-Dash server's Cloudflare package
+
+The Cloudflare tunnel (setup through the API, cloudflared, the Access token check) is the `cloudflare` package of the
+Z-Dash server module, `github.com/saschazesiger/Z-Dash/server/cloudflare`, shared with the other apps on Z-Dash.
+`internal/server/cloudflare.go` configures it for Socrates (`docs/design/CLOUDFLARE.md`). A fix to the tunnel goes to
+Z-Dash (its `server/`), then `go get github.com/saschazesiger/Z-Dash/server@main && go mod tidy` here. Its stored state
+(`cloudflare:*` in the kv table) is the format Socrates has always written.
+
 ## Design system: Z-Dash
 
 The web interface follows Z-Dash's rules for a project (its `AGENTS.md`, "Using Z-Dash in a project"; Z-Dash was
