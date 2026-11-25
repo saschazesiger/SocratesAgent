@@ -45,8 +45,12 @@ type Server struct {
 	app       *zdash.App
 	pages     *http.ServeMux
 	sandboxed *http.ServeMux
-	manager   *termux.Manager
-	catalog   *catalog.Catalog
+	// serving is closed by the first health check this process answers
+	// (Serving).
+	serving     chan struct{}
+	servingOnce sync.Once
+	manager     *termux.Manager
+	catalog     *catalog.Catalog
 
 	dataDir  string
 	localURL string
@@ -169,6 +173,7 @@ func New(st *store.Store, dataDir, addr string) (*Server, error) {
 		store:        st,
 		dataDir:      dataDir,
 		hub:          newTermHub(),
+		serving:      make(chan struct{}),
 		pingEvery:    defaultPingEvery,
 		pingTimeout:  defaultPingTimeout,
 		writeTimeout: defaultWriteTimeout,
@@ -574,6 +579,7 @@ func (s *Server) routes() {
 	// running is not the same thing as a server that answers.
 	// It answers whatever name it is asked by, like the scripts that ask it.
 	s.app.Unguarded("GET /api/health", open(func(w http.ResponseWriter, r *http.Request) {
+		s.servingOnce.Do(func() { close(s.serving) })
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "version": Version})
 	}))
 

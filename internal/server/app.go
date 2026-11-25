@@ -109,6 +109,10 @@ func ownHeaders(h http.Header) {
 // and supervises cloudflared whenever a tunnel is set up.
 func (s *Server) Run(ctx context.Context) error { return s.app.Run(ctx) }
 
+// Serving is closed once this server has answered a health check: its own
+// listener serves, and not another process that holds the address.
+func (s *Server) Serving() <-chan struct{} { return s.serving }
+
 // Handler is what the local address serves, for the tests.
 func (s *Server) Handler() http.Handler { return s.app.Handler() }
 

@@ -202,20 +202,22 @@ func main() {
 	served := make(chan error, 1)
 	go func() { served <- srv.Run(life) }()
 	// From the first answer on a ping has to be earned: it is fed only while
-	// the server answers its own health check.
+	// the server answers its own health check. The first one is asked here,
+	// until this process is the one that answers it (not another that still
+	// holds the address).
 	probe := sdnotify.HTTPProbe(local, "/api/health")
 	go func() {
-		for life.Err() == nil {
+		for {
 			ctx, cancel := context.WithTimeout(life, 3*time.Second)
-			err := probe(ctx)
+			_ = probe(ctx)
 			cancel()
-			if err == nil {
+			select {
+			case <-srv.Serving():
 				watchdog.Serving(probe)
 				announce(local, *dataDir)
 				return
-			}
-			select {
 			case <-life.Done():
+				return
 			case <-time.After(100 * time.Millisecond):
 			}
 		}
