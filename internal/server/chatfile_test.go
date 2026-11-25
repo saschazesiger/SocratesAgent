@@ -1,4 +1,4 @@
-//go:build !windows
+//go:build linux
 
 package server
 
@@ -28,6 +28,7 @@ func TestFilesTheAgentNamesAreServed(t *testing.T) {
 		video:                             "\x00\x00\x00\x18ftypmp42" + strings.Repeat("v", 100),
 		filepath.Join(dir, "other.mp4"):   "never named",
 		filepath.Join(dir, "my take.mp3"): "ID3" + strings.Repeat("a", 50),
+
 		filepath.Join(c.data, "out", "report.html"):    "<h1>Report</h1><script>1</script>",
 		filepath.Join(c.data, "out", "notes.txt"):      "plain notes\n",
 		filepath.Join(c.data, "out", "data.bin"):       "\x00\x01\x02binary",
