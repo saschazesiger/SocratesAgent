@@ -39,7 +39,7 @@ async function boot(data, port, cookie) {
 
 async function call(srv, method, path, body) {
   const res = await fetch(srv.url + path, {
-    method, headers: { 'Content-Type': 'application/json', Cookie: srv.cookie },
+    method, headers: { 'Content-Type': 'application/json', 'X-Z-Dash': '1', Cookie: srv.cookie },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   let json = null;
