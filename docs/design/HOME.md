@@ -107,8 +107,9 @@ Server → client frames (JSON text, key `t`):
   own notification and chime say it, as for a turn's end, where Web Push does not.
 - `tick` every 15 s, so the client can tell a dead connection from a quiet one (§2.2).
 - **Signed out.** The login the stream was opened with is checked again on every `tick`
-  (`ValidLogin`), and signing out or a new password calls `s.events.revoke()`, which ends every
-  stream whose login is no longer valid at once. Either way the socket is closed with the
+  (`app.StillSignedIn`, SERVER.md), and signing out or a new password calls `s.events.revoke()`
+  (the Z-Dash server's `OnSignOut`), which ends every stream whose login is no longer valid at
+  once; the browser that changed the password keeps its login and its stream. Either way the socket is closed with the
   application code **4401** "signed out" (a stream dropped for being slow is
   `StatusPolicyViolation` "too slow"): the stream carries every session's title, summary and
   question, and a lost phone left on Home must stop hearing them when its owner signs everybody
@@ -472,8 +473,8 @@ its regenerate button disabled, until a reload. A naming whose end is not heard 
 **Signed out.** A close with code 4401 is never reconnected at once (a handshake with a login
 that is gone is refused, and refusals in a row read as a blocked stream). The page asks
 `GET /api/home` first: a 401 takes it to `/login` the way every other request of the app does
-for an expired login (net.js); an answer - the device that changed the password and was handed a
-new login - is drawn as a `hello` and the stream is opened again from the start of the backoff;
+for an expired login (net.js); an answer - a device that is signed in after all - is drawn as a
+`hello` and the stream is opened again from the start of the backoff;
 no answer is the ordinary backoff, with the poll running. The same holds for a 4401 sent at a
 `tick` for a login that simply expired.
 

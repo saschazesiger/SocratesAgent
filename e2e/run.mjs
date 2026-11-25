@@ -10728,7 +10728,7 @@ async function homedeeplink() {
     const stale = await deviceOf(s, { viewport: { width: 1024, height: 700 } });
     let blocked = false;
     const sockets = [];
-    await stale.page.routeWebSocket(/\/api\/events/, (ws) => {
+    await stale.page.routeWebSocket(/\/api\/stream/, (ws) => {
       if (blocked) { ws.close(); return; }
       ws.connectToServer();
       sockets.push(ws);
@@ -10887,7 +10887,10 @@ async function homereconnect() {
     // A new password signs every other login out. The device whose login it
     // was goes to the sign-in; the page that changed it keeps its login and
     // its stream.
-    const other = await deviceOf(s, { viewport: { width: 1024, height: 700 } });
+    const other = { context: await s.browser.newContext({ colorScheme: 'light', viewport: { width: 1024, height: 700 } }) };
+    const otherIn = await other.context.request.post(s.url + '/api/login', { data: { password: PASSWORD } });
+    ok(otherIn.ok(), 'a second device signs in with a login of its own', String(otherIn.status()));
+    other.page = await other.context.newPage();
     await other.page.goto(s.url + '/', { waitUntil: 'domcontentloaded' });
     const otherLive = await awaitHome(other.page, (h) => h.shown && h.conn === 'live', 15000);
     ok(otherLive.ok, 'a second device shows Home live', otherLive.seen && otherLive.seen.conn);

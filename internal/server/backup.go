@@ -295,10 +295,6 @@ func (j *restoreJob) restoring() bool {
 // restoreAllowed answers whether this machine may be restored onto, and
 // writes the refusal when it may not.
 func (s *Server) restoreAllowed(w http.ResponseWriter, r *http.Request) bool {
-	if r.Method != http.MethodGet && !sameOrigin(r) {
-		writeError(w, http.StatusForbidden, "cross origin request rejected")
-		return false
-	}
 	if s.hasPassword() {
 		writeError(w, http.StatusConflict, "this Socrates is already set up; a backup is restored onto a new one")
 		return false

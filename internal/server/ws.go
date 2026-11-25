@@ -436,9 +436,9 @@ func wsSize(r *http.Request, row *store.Session) (cols, rows int, err error) {
 }
 
 // allowHandshake is the per-address ceiling on sockets that start a new
-// terminal. It is separate from the password throttle above it - which this
-// handler also honours - and it exists because a broken client must not be
-// able to start a tmux client twenty times a second.
+// terminal. It is separate from the limit on wrong passwords, which is the
+// Z-Dash server's, and it exists because a broken client must not be able to
+// start a tmux client twenty times a second.
 //
 // A reconnect of a viewer the hub still remembers does not count against it.
 // That is the whole design: a phone in a car drops several times a minute, and

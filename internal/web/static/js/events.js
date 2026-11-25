@@ -272,8 +272,9 @@ export function mountEvents(ctx) {
   // page is signed out too is the server's to say, and a plain request asks
   // it the way every other request of the app does: a 401 - and api() takes
   // the page to the sign-in, as it does for an expired login anywhere else -
-  // or, on the device that changed the password and was handed a new login,
-  // the state, which is drawn, and the stream is opened again. Nothing is
+  // or, on a device that is still signed in after all (a tunnel address
+  // put back on the list), the state, which is drawn, and the stream is
+  // opened again. Nothing is
   // reconnected before the answer: a handshake with a login that is gone is
   // refused, and refusals in a row are what "the stream is blocked" means.
   async function checkLogin() {

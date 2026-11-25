@@ -731,12 +731,11 @@ func readJSON(w http.ResponseWriter, r *http.Request, dst any) bool {
 	return true
 }
 
-// sameOrigin is a lightweight CSRF guard for state changing requests. The
-// session cookie is SameSite=Lax (auth.go, and DEVIATIONS says why: Strict
-// would sign a person out of every link into the app), so this is not a second
-// line of defence but a real one; the WebSocket handshake has the same check
-// inside websocket.Accept, which is where it has to be because a GET is not
-// covered here.
+// sameOrigin is the CSRF guard of the editor's proxy, whose requests are the
+// editor's own and carry no X-Z-Dash header (the API routes are behind the
+// Z-Dash server's guard, SERVER.md). The session cookie is SameSite=Lax
+// (app.go says why), so this is not a second line of defence but a real one;
+// a WebSocket handshake has the same check inside websocket.Accept.
 func sameOrigin(r *http.Request) bool {
 	origin := r.Header.Get("Origin")
 	if origin == "" {
