@@ -6,7 +6,6 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"flag"
 	"net/http"
 	"net/http/cookiejar"
@@ -410,8 +409,8 @@ func TestTheOldPasswordSignsInAndMoves(t *testing.T) {
 	if res, _ := env.do(t, env.client, "POST", "/api/setup", `{"password":"another-good-password"}`); res.StatusCode != http.StatusConflict {
 		t.Fatalf("a setup over the old password = %d", res.StatusCode)
 	}
-	if res, _ := env.do(t, env.client, "POST", "/api/setup/password", `{"password":"another-good-password"}`); res.StatusCode != http.StatusConflict {
-		t.Fatalf("a first password over the old one = %d", res.StatusCode)
+	if res, _ := env.do(t, env.client, "POST", "/api/setup/password", `{"password":"another-good-password"}`); res.StatusCode != http.StatusNotFound {
+		t.Fatalf("the server's first-password route is served = %d", res.StatusCode)
 	}
 	if res, _ := env.do(t, env.client, "POST", "/api/login", `{"password":"wrong!"}`); res.StatusCode != http.StatusBadRequest {
 		t.Fatalf("a wrong password = %d", res.StatusCode)
@@ -425,8 +424,9 @@ func TestTheOldPasswordSignsInAndMoves(t *testing.T) {
 	if res, _ := env.do(t, env.client, "GET", "/api/settings", ""); res.StatusCode != http.StatusOK {
 		t.Fatalf("signed in with the old password, settings = %d", res.StatusCode)
 	}
-	if _, err := env.store.GetKV(PasswordKey); !errors.Is(err, store.ErrNotFound) {
-		t.Fatalf("the old password is still stored: %v", err)
+	// The old one stays for an older build started again by hand.
+	if _, err := env.store.GetKV(PasswordKey); err != nil {
+		t.Fatalf("the old password was dropped: %v", err)
 	}
 	if _, err := env.store.GetKV("auth.password"); err != nil {
 		t.Fatalf("the password was not moved: %v", err)
@@ -477,6 +477,10 @@ func TestTheOldLoginsCarryOver(t *testing.T) {
 	sum := sha256.Sum256([]byte("live-token"))
 	if err != nil || !strings.Contains(raw, hex.EncodeToString(sum[:])) || strings.Contains(raw, "live-token") {
 		t.Fatalf("auth.sessions = %s, %v", raw, err)
+	}
+	// The old table is emptied once it was carried over.
+	if left, err := env.store.Logins(); err != nil || len(left) != 0 {
+		t.Fatalf("old logins left = %d, %v", len(left), err)
 	}
 	// Signing out ends the carried-over session like any other.
 	req, _ := http.NewRequest("POST", env.server.URL+"/api/logout", nil)

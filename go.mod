@@ -6,7 +6,7 @@ require (
 	github.com/coder/websocket v1.8.15
 	github.com/creack/pty v1.1.24
 	github.com/google/uuid v1.6.0
-	github.com/saschazesiger/Z-Dash/server v0.0.0-20261125183934-2d4cb32a27f8
+	github.com/saschazesiger/Z-Dash/server v0.0.0-20261125203622-146b8eaf3da8
 	golang.org/x/sys v0.50.0
 	modernc.org/sqlite v1.62.0
 )

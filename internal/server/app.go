@@ -68,6 +68,10 @@ func (s *Server) newApp(addr string) (*zdash.App, error) {
 		// land in Socrates and not on its sign-in page. The CSRF guard and
 		// the WebSockets' origin check do not lean on the cookie's mode.
 		SameSite: http.SameSiteLaxMode,
+		// The first password is set on Socrates' setup page (/api/setup),
+		// which also takes the OpenRouter key and refuses while a backup is
+		// being restored; the server's own first-password route is not served.
+		OwnSetup: true,
 		LegacyPassword: &zdash.LegacyPassword{
 			Has: func() bool {
 				v, err := s.store.GetKV(PasswordKey)
@@ -77,7 +81,11 @@ func (s *Server) newApp(addr string) (*zdash.App, error) {
 				v, err := s.store.GetKV(PasswordKey)
 				return err == nil && verifyPassword(v, password)
 			},
-			Drop: func() error { return s.store.DeleteKV(PasswordKey) },
+			// Kept, not dropped: the server signs in from auth.password once it
+			// is there, and an older build started again by hand still finds
+			// a password instead of offering its setup page to the first
+			// visitor.
+			Drop: func() error { return nil },
 		},
 		// Every open stream of a login that ended stops now, not when its
 		// socket happens to drop: a phone left on Home must stop hearing
@@ -144,8 +152,14 @@ func importLogins(st *store.Store) error {
 	if err != nil {
 		return err
 	}
-	if _, err := st.SetKVIfMissing(sessionsKey, string(raw)); err != nil {
+	wrote, err := st.SetKVIfMissing(sessionsKey, string(raw))
+	if err != nil {
 		return err
+	}
+	if wrote {
+		if err := st.ClearLogins(); err != nil {
+			return err
+		}
 	}
 	if len(logins) > 0 {
 		log.Printf("carried %d logins over to the Z-Dash server's sessions", len(logins))

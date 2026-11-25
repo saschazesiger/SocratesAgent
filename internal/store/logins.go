@@ -30,6 +30,16 @@ func (s *Store) Logins() ([]Login, error) {
 	return out, rows.Err()
 }
 
+// ClearLogins empties the old logins table once it was carried over: its
+// tokens were kept in the clear, and an older build started again must not
+// take back a login that was ended since.
+func (s *Store) ClearLogins() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err := s.db.Exec(`DELETE FROM logins`)
+	return err
+}
+
 // AddLogin writes a row of the old logins table, for the tests of carrying
 // them over.
 func (s *Store) AddLogin(token string, expiresAt int64) error {
