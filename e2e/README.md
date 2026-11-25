@@ -43,6 +43,11 @@ minutes on four CPUs.
   skipped: the Fetch standard calls them bad ports, and Node's fetch and the
   browser refuse to talk to them.
 
+A scenario's own API calls (`s.context.request`, in any context it makes) carry `X-Z-Dash: 1`, the header the
+server's CSRF guard wants on every request that changes something: the harness adds it (`guardRequests`). The
+pages' own requests are left alone, so a page that forgets the header fails its scenario; a `fetch` evaluated in a
+page sets it itself.
+
 Pages are always waited for with `waitUntil: 'domcontentloaded'`. Never
 `networkidle`: a chat stream and a terminal socket never idle, so `networkidle`
 would hang until it timed out on every single navigation.
@@ -288,7 +293,7 @@ touch mode, except `options`, which measures the narrowest phone in use,
 | `home-queue` | two chats' questions walked oldest first ("1 of 2"), named as toggles and buttons, the next taking the dialog after an answer |
 | `home-elsewhere` | a question answered on another device while the dialog shows it ("Answered on another device", nothing sent); an answer to a question already answered, or to none, refused; an answer on its way overtaken by another device's; a chat whose agent died under its question still asks it |
 | `home-deeplink` | `#q=<id>` opens a chat's question on boot and `#open=<id>` the session; a chat that asks nothing, a Shell, a chat that is gone each say so; a tab offline since before the question waits for the connection and opens the question it was asked for; signed out, `#q=` goes through the sign-in and opens the question after it |
-| `home-reconnect` | the server restarted under an open Home: "Reconnecting…", then "Live" and the right numbers on the same page; a page hidden for 3 s keeps its stream; signing out or a new password closes that login's other tabs with 4401 while another login is untouched |
+| `home-reconnect` | the server restarted under an open Home: "Reconnecting…", then "Live" and the right numbers on the same page; a page hidden for 3 s keeps its stream; signing out closes that login's other tabs with 4401 while another login is untouched, and a new password signs every other login out while the page that changed it stays signed in and Live |
 | `home-touch` | a Tesla's user agent at 1280×800 and a phone at 390×844: touch mode, a dialog that is the whole screen, options at least 64 px high, no copy of the keyboard button over the dialog, nothing wider than the phone, and on a phone on its side the first option whole on screen; a double tap on Send sends once, and a double tap on the Questions card chooses nothing while a deliberate tap a moment later chooses |
 | `home-focus` | the field of one's own answer keeps the keyboard and its words while another chat asks, the chat is renamed and the dialog is drawn again; Send sends the words; with no Text-to-Speech key Read aloud says where one goes and sends nothing; a Read aloud or dictation that fails is said in the dialog and stays said |
 | `home-retry` | an answer refused for good says why and gives the questions back to send again; one the server could not take just now (503) is tried again by itself and goes in once; one to a chat deleted on its way says it was not taken, never "another device" |

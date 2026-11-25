@@ -295,7 +295,8 @@ func TestLoginLogout(t *testing.T) {
 // A request that changes something needs the header a form on another site
 // cannot send, and an Origin that is this host.
 func TestTheCSRFGuard(t *testing.T) {
-	env := signedIn(t)
+	env := newEnv(t)
+	env.do(t, env.client, "POST", "/api/setup", `{"password":"a-good-password"}`)
 	send := func(header, origin string) int {
 		req, _ := http.NewRequest("PUT", env.server.URL+"/api/boards", strings.NewReader(`{}`))
 		req.Header.Set("Content-Type", "application/json")
