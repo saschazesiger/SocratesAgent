@@ -653,10 +653,17 @@ func (h *accountHub) noteRefused(id string) {
 // onLimit is REBUILD.md §4.3's limit: with the chat's automatic switch on,
 // the chat goes on with the recommended account of its agent that still has
 // headroom, telling it to continue; otherwise - or with no such account -
-// it stops with the card, and the person is told.
+// it stops with the card, and the person is told. A chat the person already
+// moves to another account ("After this turn", which the host makes at the
+// limit and which carries the turn on) is left to that switch: the automatic
+// one would replace the account the person chose, and the push would say the
+// chat stopped when it goes on.
 func (h *accountHub) onLimit(p *chatPeer, from, turnID string, until int64) {
 	row, err := h.srv.store.GetSession(p.id)
 	if err != nil {
+		return
+	}
+	if p.movingFrom(from) {
 		return
 	}
 	fromLabel := from
@@ -702,6 +709,24 @@ func (h *accountHub) onLimit(p *chatPeer, from, turnID string, until int64) {
 	// The page's own notification, on a device without Web Push, says the
 	// same at the same moment: the turn's end was no news (newsOf).
 	h.srv.events.publish(map[string]any{"t": "news", "id": p.id, "body": body, "kind": pushFinished})
+}
+
+// movingFrom reports whether the chat is leaving the account from: a switch
+// to another account waits in its outbox (one after the turn stays there
+// until the host has made it), or the journal has it on another one already.
+func (p *chatPeer) movingFrom(from string) bool {
+	pending, err := p.hub.srv.store.Outbox(p.id)
+	if err == nil {
+		for _, e := range pending {
+			var cmd agenthost.Command
+			if json.Unmarshal(e.Command, &cmd) == nil && cmd.Op == agenthost.OpSwitchAccount && cmd.Account != from {
+				return true
+			}
+		}
+	}
+	moved := false
+	_ = p.view(func(proj *agent.Projection) { moved = proj.Account != "" && proj.Account != from })
+	return moved
 }
 
 // renewsIn is a wait as "2 h 10 min".

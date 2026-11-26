@@ -59,7 +59,7 @@ func EnableFake() {
 //	/bgagent S       the same with a background subagent
 //	/schedule S      a turn that schedules a wakeup S seconds later, which
 //	                 is pending until then (Scheduler)
-//	/limit           the account's limit stops the turn
+//	/limit [S]       the account's limit stops the turn (after S seconds)
 //	/refused         the provider refuses the account's sign-in (an error of code auth)
 //	/fail TEXT       the turn fails with TEXT as its error (an API that refused or did not answer)
 //	/account         which account the CLI runs on, and whether it has a key
@@ -546,6 +546,10 @@ func (f *fakeAdapter) turn(ctx context.Context, msg Outgoing, n int) {
 		f.background(time.Duration(seconds*float64(time.Second)), true)
 		t.say("started a background subagent")
 	case "/limit":
+		if !fakeWait(ctx, time.Duration(fakeFloat(fields, 0, 0)*float64(time.Second))) {
+			t.end(OutcomeInterrupted, "")
+			return
+		}
 		f.out.Emit(
 			Event{Type: TypeRateLimit, Window: "five_hour", Used: 1, ResetsAt: time.Now().Add(2 * time.Hour).Unix()},
 			Event{Type: TypeError, Code: "rate_limit", Text: "The usage limit of this account is reached."},

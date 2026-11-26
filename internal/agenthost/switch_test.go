@@ -641,3 +641,65 @@ func TestASwitchAfterBackgroundWorkLetsItSettle(t *testing.T) {
 		t.Fatalf("switched %d ms after the background work ended", switched-ended)
 	}
 }
+
+// A switch after the turn, chosen while the turn runs on an account whose
+// limit then stops it, is made at the limit and carries the turn on: the
+// agent goes on on the new account without the person saying "continue".
+func TestASwitchAfterTheTurnGoesOnWhenTheLimitEndsIt(t *testing.T) {
+	r := newSwitchRig(t)
+	r.launchOn("acct-a", "", "")
+	cl := r.dial(0)
+	cl.send("m1", "/limit 1")
+	cl.until(10*time.Second, isType(agent.TypeTurnStarted))
+	cl.switchTo("s1", "acct-b", "", r, WhenAfterTurn, false)
+	if first := cl.ack("s1", 5*time.Second); !first.Pending {
+		t.Fatalf("the switch waiting for the turn was made at once: %+v", first)
+	}
+	delete(cl.acks, "s1")
+	cl.until(15*time.Second, func(ev agent.Event) bool {
+		return ev.Type == agent.TypeTurnEnded && ev.Outcome == agent.OutcomeCompleted
+	})
+	if final := cl.ack("s1", 10*time.Second); final.Pending {
+		t.Fatalf("the switch made was not acknowledged for good: %+v", final)
+	}
+	events := r.journal()
+	if got := strings.Join(userTexts(events), "|"); got != "/limit 1|"+ContinueText {
+		t.Fatalf("the agent was told %q", got)
+	}
+	if accounts := strings.Join(turnAccounts(events), ","); accounts != "acct-a,acct-b" {
+		t.Fatalf("the turns ran on %s", accounts)
+	}
+}
+
+// The limit does not wait for background work either: the agent can go on
+// only on the other account, so the switch is made at once and the agent is
+// told to start the work again and to go on.
+func TestASwitchAfterTheTurnAtTheLimitDoesNotWaitForBackgroundWork(t *testing.T) {
+	r := newSwitchRig(t)
+	r.launchOn("acct-a", "", "")
+	cl := r.dial(0)
+	if got := cl.reply("m1", "/bg 60"); got != "started a background task" {
+		t.Fatalf("reply %q", got)
+	}
+	cl.send("m2", "/limit 1")
+	cl.until(10*time.Second, isType(agent.TypeTurnStarted))
+	cl.switchTo("s1", "acct-b", "", r, WhenAfterTurn, false)
+	if first := cl.ack("s1", 5*time.Second); !first.Pending {
+		t.Fatalf("the switch waiting for the turn was made at once: %+v", first)
+	}
+	cl.until(20*time.Second, isType(agent.TypeAccountSwitched))
+	cl.until(15*time.Second, func(ev agent.Event) bool {
+		return ev.Type == agent.TypeTurnEnded && ev.Outcome == agent.OutcomeCompleted
+	})
+	events := r.journal()
+	said := false
+	for _, ev := range events {
+		said = said || (ev.Type == agent.TypeNotice && ev.Code == agent.NoticeBackgroundStopped)
+	}
+	if !said {
+		t.Fatal("no notice says the background work stopped")
+	}
+	if got := strings.Join(userTexts(events), "|"); got != "/bg 60|/limit 1|"+ContinueText {
+		t.Fatalf("the agent was told %q", got)
+	}
+}

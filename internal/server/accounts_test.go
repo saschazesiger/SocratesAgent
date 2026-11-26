@@ -476,6 +476,54 @@ func TestALimitIsToldToThePhoneAndThePage(t *testing.T) {
 	}
 }
 
+// A switch after the turn that the limit then meets is the one made: the
+// chat goes on with the account the person chose, whichever the automatic
+// switch would have chosen, and nobody is told of a limit it went on past.
+func TestASwitchAfterTheTurnTakesTheLimit(t *testing.T) {
+	for _, pick := range []string{"B", "C"} {
+		t.Run(pick, func(t *testing.T) {
+			c := newChatEnv(t, time.Hour)
+			sent := catch(c.srv.push)
+			if err := c.srv.push.add(pushSub{Subscription: testSubscription("https://push.example.net/a")}); err != nil {
+				t.Fatal(err)
+			}
+			a := c.newAccount(t, "A", accounts.Subscription, "")
+			ids := map[string]string{"B": c.newAccount(t, "B", accounts.Subscription, ""), "C": c.newAccount(t, "C", accounts.Subscription, "")}
+			to := ids[pick]
+			id := c.chatOn(t, a, true)
+			c.send(t, id, "m1", "/limit 1")
+			c.waitJournal(t, id, 10*time.Second, "the turn", func(evs []agent.Event) bool {
+				return count(evs, isEv(agent.TypeTurnStarted)) == 1
+			})
+			res, payload := c.do(t, c.client, "POST", "/api/chats/"+id+"/account",
+				`{"client_id":"s1","account":"`+to+`","when":"after_turn"}`)
+			if res.StatusCode != http.StatusOK {
+				t.Fatalf("the switch: %d %v", res.StatusCode, payload)
+			}
+			events := c.waitJournal(t, id, 20*time.Second, "the switch and the continue", func(evs []agent.Event) bool {
+				return count(evs, isEv(agent.TypeAccountSwitched)) >= 1 &&
+					strings.HasPrefix(lastText(evs), "you said: "+agenthost.ContinueText)
+			})
+			// What the automatic switch would have done comes within a second.
+			time.Sleep(time.Second)
+			events = c.journal(t, id)
+			if n := count(events, isEv(agent.TypeAccountSwitched)); n != 1 {
+				t.Fatalf("%d account switches", n)
+			}
+			if p := agent.Fold(events); p.Account != to {
+				t.Fatalf("the chat is on %s, not %s", p.Account, to)
+			}
+			select {
+			case one := <-sent:
+				if strings.HasPrefix(one.note.Body, "Limit reached") {
+					t.Fatalf("a limit the chosen switch went on past was told: %+v", one.note)
+				}
+			default:
+			}
+		})
+	}
+}
+
 // A switch after the turn waits in the outbox, not only in the host: a host
 // killed before the turn ends is followed by one on the new account, with
 // the divider, and the switch is not lost.

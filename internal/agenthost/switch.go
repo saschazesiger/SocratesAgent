@@ -179,11 +179,15 @@ func (h *host) switchCmd(cmd Command) any {
 // queue after a limited turn), which waits for the switch. What it waits for
 // is what lets the switch go unnoticed by the agent: no turn stopped, nothing
 // to tell it. A schedule is not waited for (a loop's next wakeup would never
-// let it go): the agent is asked to schedule it again.
+// let it go): the agent is asked to schedule it again. Nor is background work
+// once the limit has stopped the agent: it can go on only on the other
+// account, which is what the person chose the switch for, so the switch is
+// made at once and the agent told to start the work again (a shell left
+// running would otherwise hold the chat at the limit for as long as it runs).
 func (h *host) busy() bool {
 	busy := false
 	h.rec.View(func(p *agent.Projection) {
-		busy = p.Turn != nil || p.Tasks > 0 || (len(p.Undelivered()) > 0 && !heldByLimit(p))
+		busy = p.Turn != nil || (!heldByLimit(p) && (p.Tasks > 0 || len(p.Undelivered()) > 0))
 	})
 	return busy
 }
