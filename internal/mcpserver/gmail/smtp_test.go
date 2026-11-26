@@ -24,6 +24,9 @@ type fakeSMTP struct {
 	password string
 	// refuseRcpt is an address RCPT TO refuses.
 	refuseRcpt string
+	// drop ends the connection after a message's data, without an answer;
+	// lose does not file it either (Gmail did not take it).
+	drop, lose bool
 
 	mu   sync.Mutex
 	sent []sentMail
@@ -104,10 +107,16 @@ func (f *fakeSMTP) serve(nc net.Conn) {
 				b.WriteString(strings.TrimPrefix(l, "."))
 			}
 			m.data = b.String()
+			if f.lose {
+				return
+			}
 			f.mu.Lock()
 			f.sent = append(f.sent, m)
 			f.mu.Unlock()
 			f.file(m.data)
+			if f.drop {
+				return
+			}
 			out("250 2.0.0 OK")
 		case "QUIT":
 			out("221 2.0.0 closing connection")
@@ -223,5 +232,42 @@ func TestLongReferencesAreFolded(t *testing.T) {
 	s.headers(raw)
 	if s.References != strings.Join(refs, " ") {
 		t.Fatalf("References read back as %q", s.References)
+	}
+}
+
+func TestSendWithoutAnswer(t *testing.T) {
+	// The connection breaks after the data: in Sent, it was sent.
+	e, smtp := newSendEnv(t)
+	smtp.drop = true
+	must(t, e.call(Send, `{"to":"x@example.com","subject":"Hallo","body":"x"}`, false), "Sent from janis@example.com", "To: <x@example.com>")
+	// Not in Sent: not known, and the agent is told not to send it again.
+	e, smtp = newSendEnv(t)
+	smtp.lose = true
+	must(t, e.call(Send, `{"to":"x@example.com","body":"x"}`, true), "not known whether the message was sent", "Do not send it again", "rfc822msgid:")
+}
+
+func TestLongAddressListsAreFolded(t *testing.T) {
+	e, smtp := newSendEnv(t)
+	many := make([]string, maxRecipients)
+	for i := range many {
+		many[i] = fmt.Sprintf("Jürg Müller-Nummer %d <person.number.%d@example.com>", i, i)
+	}
+	out := e.call(Send, `{"to":"`+strings.Join(many, ", ")+`","body":"x"}`, false)
+	if strings.Contains(out, "\r") {
+		t.Fatalf("the answer has a folded header:\n%s", out)
+	}
+	m := smtp.mails()[0]
+	if len(m.rcpt) != maxRecipients {
+		t.Fatalf("%d recipients", len(m.rcpt))
+	}
+	for _, l := range strings.Split(m.data, "\r\n") {
+		if len(l) > 998 {
+			t.Fatalf("a line of %d characters", len(l))
+		}
+	}
+	var s summary
+	s.headers([]byte(m.data))
+	if !strings.Contains(s.To, "Jürg Müller-Nummer 49 <person.number.49@example.com>") {
+		t.Fatalf("To read back as %q", s.To)
 	}
 }

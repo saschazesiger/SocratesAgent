@@ -25,6 +25,23 @@ type smtpRefused struct{ err error }
 func (e *smtpRefused) Error() string { return "Gmail refused the sign-in to send: " + e.err.Error() }
 func (e *smtpRefused) Unwrap() error { return e.err }
 
+// sendUnknown is a send that failed after the message was handed over,
+// without Gmail's answer: it may have been sent.
+type sendUnknown struct{ err error }
+
+func (e *sendUnknown) Error() string { return e.err.Error() }
+func (e *sendUnknown) Unwrap() error { return e.err }
+
+// afterData is an error once the message's data went out: Gmail refusing
+// it (a reply) means it was not sent; anything else leaves that unknown.
+func afterData(err error) error {
+	var te *textproto.Error
+	if errors.As(err, &te) {
+		return fmt.Errorf("Gmail refused the message, and nothing was sent: %w", err)
+	}
+	return &sendUnknown{err}
+}
+
 // plainAuth is SMTP AUTH PLAIN. smtp.PlainAuth refuses a connection it did
 // not see TLS on; this one is only used on a connection that is TLS from
 // its start (or a test's).
@@ -90,10 +107,10 @@ func (s *Server) sendMail(ctx context.Context, email, password string, rcpt []st
 		return fmt.Errorf("Gmail refused the message, and nothing was sent: %w", err)
 	}
 	if _, err := w.Write(msg); err != nil {
-		return fmt.Errorf("the message could not be handed to Gmail, and was not sent: %w", err)
+		return afterData(err)
 	}
 	if err := w.Close(); err != nil {
-		return fmt.Errorf("Gmail refused the message, and nothing was sent: %w", err)
+		return afterData(err)
 	}
 	// It is sent once DATA is taken; a failed QUIT changes nothing.
 	_ = c.Quit()

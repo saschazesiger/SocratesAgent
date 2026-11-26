@@ -285,8 +285,15 @@ func formatAddresses(list string) (string, error) {
 		return "", fmt.Errorf("%q is not a list of addresses: %v", list, err)
 	}
 	out := make([]string, len(addrs))
+	n := 0
 	for i, a := range addrs {
 		out[i] = a.String()
+		n += len(out[i]) + 2
+	}
+	// A long list goes one address a line: a line stays under 998
+	// characters.
+	if n > 900 {
+		return strings.Join(out, ",\r\n "), nil
 	}
 	return strings.Join(out, ", "), nil
 }
