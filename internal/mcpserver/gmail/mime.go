@@ -261,11 +261,16 @@ func htmlToText(s string) string {
 	return strings.TrimSpace(s)
 }
 
-// draft is a message to write into Drafts.
+// draft is a message to write into Drafts or to send.
 type draft struct {
 	From, To, Cc, Bcc, Subject, Body string
 	InReplyTo, References            string
 	Files                            []attachment
+	// MessageID is its Message-ID; one is made when "".
+	MessageID string
+	// NoBcc leaves the Bcc header out: a message that is sent names its
+	// blind copies only in the envelope.
+	NoBcc bool
 }
 
 // formatAddresses checks a list of addresses and writes it as a header
@@ -290,6 +295,17 @@ func headerSafe(s string) string {
 	return strings.Join(strings.Fields(strings.NewReplacer("\r", " ", "\n", " ").Replace(s)), " ")
 }
 
+// newMessageID is a new Message-ID in the sender's domain.
+func newMessageID(from string) string {
+	var id [12]byte
+	_, _ = rand.Read(id[:])
+	domain := "socrates.local"
+	if _, after, ok := strings.Cut(from, "@"); ok {
+		domain = strings.Trim(after, "> ")
+	}
+	return "<socrates." + hex.EncodeToString(id[:]) + "@" + domain + ">"
+}
+
 // build writes the draft as a message (RFC 5322): plain text in UTF-8,
 // quoted-printable, with its files after it.
 func (d draft) build(now time.Time) ([]byte, error) {
@@ -309,19 +325,20 @@ func (d draft) build(now time.Time) ([]byte, error) {
 		if err != nil {
 			return nil, err
 		}
-		hdr(f.k, v)
+		if f.k != "Bcc" || !d.NoBcc {
+			hdr(f.k, v)
+		}
 	}
 	hdr("Subject", mime.QEncoding.Encode("utf-8", headerSafe(d.Subject)))
 	hdr("Date", now.Format(time.RFC1123Z))
-	var id [12]byte
-	_, _ = rand.Read(id[:])
-	domain := "socrates.local"
-	if _, after, ok := strings.Cut(d.From, "@"); ok {
-		domain = strings.Trim(after, "> ")
+	if d.MessageID == "" {
+		d.MessageID = newMessageID(d.From)
 	}
-	hdr("Message-ID", "<socrates."+hex.EncodeToString(id[:])+"@"+domain+">")
+	hdr("Message-ID", headerSafe(d.MessageID))
 	hdr("In-Reply-To", headerSafe(d.InReplyTo))
-	hdr("References", headerSafe(d.References))
+	// One id a line: a long conversation's References stays under a line's
+	// 998 characters.
+	hdr("References", strings.Join(strings.Fields(headerSafe(d.References)), "\r\n "))
 	hdr("MIME-Version", "1.0")
 	body := strings.ReplaceAll(strings.ReplaceAll(d.Body, "\r\n", "\n"), "\n", "\r\n")
 	writeText := func(w io.Writer) error {

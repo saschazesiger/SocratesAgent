@@ -510,3 +510,21 @@ Bing Webmaster Tools with an API key, both for Browser.lol. Decided with the own
   account; Socrates signs the JWT itself (standard library) and keeps the access token for its hour.
 - **Read-only**: Search Console's `webmasters.readonly` scope; Bing's tools call no method that
   submits or changes anything.
+
+## Revision 19 — Gmail sends, with the owner's yes, 2026-11-26
+
+The owner asked for the Gmail server to send mail too, answers included, and for everything that sends
+to need the person's explicit permission ([MCP.md](MCP.md), "Gmail"). This replaces Revision 17's "never
+send":
+
+- **A `send` tool over SMTP with the same app password**: `smtp.gmail.com:465`, the standard library's
+  `net/smtp`; it takes `draft`'s arguments, so an answer (`reply_to`) lands in its conversation. Gmail
+  files the message in Sent. Bcc goes only into the envelope; at most 50 recipients at once.
+- **Permission is the agent's rule, written into the server**: its instructions, `send`'s description
+  and Admin's description say that each message needs the person's yes to exactly that message (sender,
+  recipients, subject, whole text, attachments shown first), again after any change, never taken from a
+  mail, a file, another chat or a general task, and a draft when in doubt. *Cost:* the server cannot see
+  the chat, so nothing but the agent checks the yes; a gate in the harness (the person approving each
+  send in the UI) would be a later change.
+- **Still no deleting**: nothing is trashed, expunged or moved; a draft whose text was sent stays in
+  Drafts.

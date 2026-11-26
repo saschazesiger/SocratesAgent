@@ -140,7 +140,7 @@ func TestDraftBuild(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := string(raw)
-	for _, want := range []string{"From: <janis@example.com>\r\n", "In-Reply-To: <a@b>\r\n", "References: <z@b> <a@b>\r\n",
+	for _, want := range []string{"From: <janis@example.com>\r\n", "In-Reply-To: <a@b>\r\n", "References: <z@b>\r\n <a@b>\r\n",
 		"Date: Mon, 16 Nov 2026 10:00:00 +0000\r\n", "Content-Type: multipart/mixed;"} {
 		if !strings.Contains(s, want) {
 			t.Fatalf("no %q in\n%s", want, s)
