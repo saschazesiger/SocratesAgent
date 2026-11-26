@@ -239,7 +239,8 @@ async function choose({ session, chat, error }, id, opener) {
 // askWhen is the question a switch during a turn (or while background work
 // runs) asks: "now" or "after_turn", or null for neither. After the turn the
 // switch waits for the agent and its background work, and the agent goes on
-// without being told anything.
+// without being told anything; a limit that stops the agent first makes the
+// switch at once, and the new account carries the turn on.
 async function askWhen(from, to, opener, turn) {
   const cancel = el('button', { class: 'ds-btn ds-btn--text', type: 'button', 'data-ds-close': true, text: 'Cancel' });
   const now = el('button', { class: 'ds-btn ds-btn--tonal', type: 'button', 'data-when': 'now', text: 'Switch now' });
@@ -247,7 +248,8 @@ async function askWhen(from, to, opener, turn) {
   const { dialog, shown } = openDialog({
     title: 'Switch to ' + to.label + '?',
     body: (turn ? 'A turn is running' : 'The agent has background work running') + (from ? ' on ' + from.label : '') + '. Switch now stops it, and '
-      + to.label + ' is told to go on. After this turn waits until the agent is done, then switches quietly: the agent goes on as if nothing happened.',
+      + to.label + ' is told to go on. After this turn waits until the agent is done, then switches quietly: the agent goes on as if nothing happened. If '
+      + (from ? from.label + '’s' : 'the') + ' limit stops it first, it switches then and ' + to.label + ' carries on.',
     actions: [cancel, now, later],
     opener,
   });

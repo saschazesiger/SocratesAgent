@@ -381,7 +381,7 @@ function free(node) {
 
 /**
  * typeHere is a field the person has just asked to type into: Rename, the
- * question dialog's "Other", "Add a note", "Anything else?" and "Ask the
+ * question dialog's "Add a note" (of a number question), "Anything else?" and "Ask the
  * agent back", a plan's "Keep planning", the sheet's "Custom path…". A tap on
  * a button that brings a field is a request for the keyboard, unlike a focus
  * the page gives a field by itself (a dialog that opens on one, the

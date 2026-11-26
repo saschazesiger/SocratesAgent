@@ -2885,7 +2885,7 @@ the four final audits (a desk, a phone, a deploy rehearsal, the real binaries) f
   and below the session's status and the outcome beside the name are their glyph alone too.
 - **Touch mode's fields.** A tap on any field but the terminal's types at once; a focus the page
   gives by itself (a dialog opening on its field, the composer of a chat that opens) raises no
-  keyboard; a button that brings a field to type in (Rename, Other, Add a note, Anything else,
+  keyboard; a button that brings a field to type in (Rename, Add a note, Anything else,
   Ask the agent back, Keep planning, Custom path) gives it the keyboard with that tap and
   brings it into sight (`keyboard.js` `typeHere`). The keyboard switch is the terminal's alone.
 - **A session's menu on a phone is an action sheet** under the session's name, and so it is on
@@ -3163,3 +3163,22 @@ folder what it remembered ("One VS Code per folder", above).
   settings.json is not exactly the old defaults) become the kept settings, unless there are some,
   and the folders are removed. `sessions/*/vscode-data` is not backed up; `vscode/*/logs` and the
   caches are no longer there to leave out.
+
+## The question's one field, and "After this turn" at a limit (2026-11-26)
+
+- **One field for the person's words.** A question of options (single, multi, confirm) had
+  "Other" (words instead of an option, which took the place of the chosen one) and "Add a note"
+  (words beside it): two fields, and the person had to decide which one first. Now there is one,
+  always under the options, and the choice decides: with nothing chosen the words are the answer
+  (`other`), with an option or "You decide" they are its `note` (`askdialog.js` `wordsOf`). Its
+  label says which ("Or answer in your own words" / "A note to the agent (optional)"); choosing
+  keeps what was written; a second tap on the chosen option of a single or confirm question lets
+  it go (a preselected default too). The answer's shape (REBUILD §5.2) is unchanged. A number
+  question keeps "Add a note" beside its number, a text question has its answer field alone.
+- **"After this turn" takes the limit.** A switch after the turn, chosen while the turn ran, was
+  already made when the limit ended the turn, and carried it on. Two things got in its way: a
+  chat with the automatic switch was switched again by the server, to the account it recommended
+  rather than the one the person chose, and a chat without it was pushed "Limit reached" while it
+  went on. `onLimit` now leaves a chat that is moving to another account to that switch. And the
+  switch no longer waits for background work once the limit has stopped the agent: a shell left
+  running held the chat at the limit for as long as it ran.

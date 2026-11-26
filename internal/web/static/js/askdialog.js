@@ -10,11 +10,15 @@
 //     general_note, follow_up }
 //
 // `selected` holds the ids of the chosen options ("yes" or "no" for a
-// confirm question); `other` is the person's own words: "Other" beside the
-// options, the whole answer of a text question, and a number question's
-// number as it was typed. A question can be answered, delegated ("You
-// decide"), given a note, or skipped; instead of answering, the person can
-// ask back (follow_up), which the agent answers before it asks again.
+// confirm question); `other` is the person's own words instead of an option,
+// the whole answer of a text question, and a number question's number as it
+// was typed. A question of options has one field for the person's words:
+// with an option chosen (or "You decide") they go as its `note`, with none
+// as the answer itself (`other`) - nobody has to choose between "Other" and
+// "Add a note" first. A number question keeps "Add a note" beside its number.
+// A question can be answered, delegated ("You decide"), given a note, or
+// skipped; instead of answering, the person can ask back (follow_up), which
+// the agent answers before it asks again.
 //
 // What is being answered is kept in this browser while it is written, so
 // the card in the chat can say how far it is and a dialog that was closed
@@ -107,12 +111,13 @@ function sectionsOf(of) {
 function chatsWord(n) { return n + (n === 1 ? ' more chat' : ' more chats'); }
 
 // An answer as the dialog keeps it: what is sent (selected, other, note,
-// delegated), whether its fields are open, and whether the person has had
+// delegated; a question of options keeps its one field in `other`, wordsOf),
+// whether the note of a number question is open, and whether the person has had
 // it in hand - changed it, or moved past it - which is what the card's
 // "2 of 5 answered" counts: a preselected default the person never saw is
 // not an answer they gave yet.
 function emptyAnswer() {
-  return { selected: [], other: '', note: '', delegated: false, noting: false, othering: false, touched: false };
+  return { selected: [], other: '', note: '', delegated: false, noting: false, touched: false };
 }
 
 /** kindOf is a question's kind, read the way the schema means it. */
@@ -122,9 +127,33 @@ export function kindOf(q) {
   return (q.options || []).length ? 'single' : 'text';
 }
 
+// hasOptions is whether a question is answered by choosing (single, multi,
+// confirm): its one field is the person's words, an answer or a note.
+const hasOptions = (q) => ['single', 'multi', 'confirm'].includes(kindOf(q));
+
+// ownAllowed is whether a question of options takes the person's words
+// instead of an option; where it does not, they are always a note.
+const ownAllowed = (q) => q.allow_other !== false && kindOf(q) !== 'confirm';
+
+/**
+ * wordsOf is what the person wrote to one question, as the agent gets it:
+ * `other` (their words instead of an option) and `note`. To a question of
+ * options the words are the answer while nothing is chosen, and a note to
+ * the choice once something is (or "You decide").
+ */
+function wordsOf(q, a) {
+  const own = String(a.other || '').trim();
+  const note = String(a.note || '').trim();
+  if (!hasOptions(q) || !own) return { other: a.delegated ? '' : own, note };
+  if (a.delegated || a.selected.length > 0 || !ownAllowed(q)) {
+    return { other: '', note: [own, note].filter(Boolean).join('\n\n') };
+  }
+  return { other: own, note };
+}
+
 /** answered says whether one question has an answer of any kind. */
-function answered(a) {
-  return !!a && (a.delegated || a.selected.length > 0 || !!String(a.other || '').trim());
+function answered(q, a) {
+  return !!a && (a.delegated || a.selected.length > 0 || !!wordsOf(q, a).other);
 }
 
 /**
@@ -135,8 +164,9 @@ export function askProgress(ask) {
   const draft = readDraft(ask.id);
   const set = new Set();
   if (draft) {
-    for (const [id, a] of Object.entries(draft.answers)) {
-      if (a && a.touched && answered({ ...emptyAnswer(), ...a })) set.add(id);
+    for (const q of askQuestions(ask)) {
+      const a = draft.answers[q.id];
+      if (a && a.touched && answered(q, { ...emptyAnswer(), ...a })) set.add(q.id);
     }
   }
   return { answered: set, count: set.size };
@@ -164,13 +194,13 @@ export function answerOf(ask, draft) {
   const out = {};
   for (const q of askQuestions(ask)) {
     const a = { ...emptyAnswer(), ...(draft.answers[q.id] || {}) };
-    const own = String(a.other || '').trim();
+    const words = wordsOf(q, a);
     out[q.id] = {
       selected: a.delegated ? [] : a.selected.map(String),
-      other: a.delegated || !own ? null : own,
-      note: String(a.note || '').trim() || null,
+      other: words.other || null,
+      note: words.note || null,
       delegated: !!a.delegated,
-      skipped: !answered(a),
+      skipped: !answered(q, a),
     };
   }
   const followUp = String(draft.followUp || '').trim();
@@ -197,16 +227,17 @@ export function problemOf(q, a, { final = false } = {}) {
     if (q.min !== undefined && value < Number(q.min)) return 'The smallest number it takes is ' + q.min + '.';
     if (q.max !== undefined && value > Number(q.max)) return 'The largest number it takes is ' + q.max + '.';
   }
-  // "Other" is one of the choices of a multi-select, for its least and its
-  // most alike.
-  const chosen = a.selected.length + (own ? 1 : 0);
-  if (kind === 'multi' && chosen) {
+  // The person's words count as one choice of a multi-select towards its
+  // least (an agent may ask for more than its options, allow_other), never
+  // towards its most: beside chosen options they are a note.
+  const words = own && ownAllowed(q) ? 1 : 0;
+  if (kind === 'multi' && (a.selected.length || words)) {
     const min = Number(q.min) || 0;
     const max = Number(q.max) || 0;
-    if (min && chosen < min) return 'Choose at least ' + min + '.';
-    if (max && chosen > max) return 'Choose up to ' + max + ', your own words count as one.';
+    if (min && a.selected.length + words < min) return 'Choose at least ' + min + '.';
+    if (max && a.selected.length > max) return 'Choose up to ' + max + '.';
   }
-  if (final && q.required === true && !answered(a)) return 'This question needs an answer, or “You decide”.';
+  if (final && q.required === true && !answered(q, a)) return 'This question needs an answer, or “You decide”.';
   return '';
 }
 
@@ -740,7 +771,6 @@ export function openAskDialog({ items, start = 0, watch, openChat, closed, more 
       : (q.options || []).slice(0, 12);
     const multi = kind === 'multi';
     const delegate = q.allow_delegate !== false;
-    const other = q.allow_other !== false && (kind === 'single' || kind === 'multi');
     const hintWords = multi ? multiHint(q) : '';
     const problem = st.problem && st.problem.q === q.id ? st.problem.text : '';
     return html`<div class="so-q-step">${total > 1 ? html`<span>${'Question ' + (step + 1) + ' of ' + total}</span>` : ''}${q.header ? html`<span class="so-q-chip">${q.header}</span>` : ''}${q.required === true ? html`<span class="so-q-chip">Required</span>` : ''}</div>
@@ -750,13 +780,12 @@ export function openAskDialog({ items, start = 0, watch, openChat, closed, more 
     }${options.length ? html`<div class="so-q-options" role="group" aria-label="${q.question || 'Options'}">${options.map((option, i) => optionHtml(q, option, i, multi, a))}</div>` : ''}${
       kind === 'text' ? fieldHtml(q.id, 'other', 'Your answer', a.other, 3, last ? 'send' : 'next') : ''
     }${kind === 'number' ? numberHtml(q, a, !!problem, last ? 'send' : 'next') : ''}${
-      other && (a.othering || a.other) ? fieldHtml(q.id, 'other', 'In your own words', a.other, 2, last ? 'send' : 'next') : ''
-    }${a.noting || a.note ? fieldHtml(q.id, 'note', 'A note to the agent', a.note, 2, last ? 'send' : 'next') : ''}${
+      hasOptions(q) ? wordsHtml(q, a, last ? 'send' : 'next') : ''
+    }${kind === 'number' && (a.noting || a.note) ? fieldHtml(q.id, 'note', 'A note to the agent', a.note, 2, last ? 'send' : 'next') : ''}${
       problem ? html`<div class="ds-alert ds-tone-error so-ask-problem" role="alert">${raw(icon('alertCircle', 20))}<span class="ds-alert__text">${problem}</span></div>` : ''
     }<div class="so-ask-extras">${
       delegate ? html`<button class="ds-btn ds-btn--quiet so-ask-delegate" type="button" data-action="delegate" data-q="${q.id}" aria-pressed="${a.delegated ? 'true' : 'false'}">${raw(icon('sparkles', 16))}You decide</button>` : ''
-    }${other && !(a.othering || a.other) ? html`<button class="ds-btn ds-btn--quiet so-ask-other" type="button" data-action="other" data-q="${q.id}">${raw(icon('pencil', 16))}Other</button>` : ''}${
-      !(a.noting || a.note) ? html`<button class="ds-btn ds-btn--quiet so-ask-note" type="button" data-action="note" data-q="${q.id}">${raw(icon('compose', 16))}Add a note</button>` : ''
+    }${kind === 'number' && !(a.noting || a.note) ? html`<button class="ds-btn ds-btn--quiet so-ask-note" type="button" data-action="note" data-q="${q.id}">${raw(icon('compose', 16))}Add a note</button>` : ''
     }</div>`;
   }
 
@@ -788,6 +817,15 @@ export function openAskDialog({ items, start = 0, watch, openChat, closed, more 
   function fieldHtml(qid, field, label, value, rows, key = 'send') {
     const fid = 'ask-' + qid + '-' + field;
     return html`<div class="ds-field so-q-own" data-ds-key="${fid}"><label class="ds-field__label" for="${fid}">${label}</label><div class="ds-field__row ds-field__row--top"><textarea class="ds-input so-q-own-field" id="${fid}" rows="${rows}" enterkeyhint="${key}" data-q="${qid}" data-field="${field}">${value || ''}</textarea><button class="ds-btn ds-btn--quiet ds-btn--icon so-mic" type="button" data-action="dictate" data-target="${fid}" aria-label="${'Dictate ' + label.charAt(0).toLowerCase() + label.slice(1)}" data-tip="Dictate">${faces(raw(icon('mic', 20)), '')}</button></div></div>`;
+  }
+
+  // wordsHtml is a question of options' one field for the person's words.
+  // Its label says what they are taken as: the answer while nothing is
+  // chosen, a note to the choice once something is (wordsOf).
+  function wordsHtml(q, a, key) {
+    const note = a.delegated || a.selected.length > 0 || !ownAllowed(q);
+    const label = note ? 'A note to the agent (optional)' : 'Or answer in your own words';
+    return fieldHtml(q.id, 'other', label, a.other, 2, key);
   }
 
   function numberHtml(q, a, invalid, key) {
@@ -926,12 +964,13 @@ export function openAskDialog({ items, start = 0, watch, openChat, closed, more 
     if (kindOf(q) === 'multi') {
       const at = a.selected.indexOf(optionId);
       if (at >= 0) a.selected.splice(at, 1);
-      else if (!(Number(q.max) && a.selected.length + (String(a.other || '').trim() ? 1 : 0) >= Number(q.max))) a.selected.push(optionId);
+      else if (!(Number(q.max) && a.selected.length >= Number(q.max))) a.selected.push(optionId);
       else toast('Choose up to ' + q.max + '.');
     } else {
-      a.selected = [optionId];
-      // One answer to a question of one: an option is not also one's own words.
-      if (kindOf(q) === 'single') { a.other = ''; a.othering = false; }
+      // A second tap lets the option go again (a preselected default too):
+      // what was written is then the answer, not a note (wordsOf). What was
+      // written stays either way.
+      a.selected = a.selected.length === 1 && a.selected[0] === optionId ? [] : [optionId];
     }
     if (st.problem && st.problem.q === qid) st.problem = null;
     save();
@@ -976,13 +1015,14 @@ export function openAskDialog({ items, start = 0, watch, openChat, closed, more 
         const a = st.draft.answers[qid];
         a.delegated = !a.delegated;
         a.touched = true;
-        if (a.delegated) { a.selected = []; a.other = ''; a.othering = false; }
+        // What was written stays, as a note to "You decide" (wordsOf); a
+        // text or number answer goes with the answer it was.
+        if (a.delegated) { a.selected = []; if (!hasOptions(questionsOf().find((one) => one.id === qid))) a.other = ''; }
         st.problem = null;
         save();
         draw();
         break;
       }
-      case 'other': st.draft.answers[qid].othering = true; draw(); focusField('ask-' + qid + '-other'); break;
       case 'note': st.draft.answers[qid].noting = true; draw(); focusField('ask-' + qid + '-note'); break;
       case 'general': st.details.add('general'); draw(); focusField('ask-all-general'); break;
       case 'details': {
@@ -1027,7 +1067,7 @@ export function openAskDialog({ items, start = 0, watch, openChat, closed, more 
     }
   });
 
-  // focusField is a field a button just brought (Other, Add a note,
+  // focusField is a field a button just brought (Add a note,
   // Anything else?, Ask the agent back): asked for by a tap, so it takes the
   // keyboard at once, not at a second tap, and comes into sight with it.
   function focusField(fid) {
@@ -1052,11 +1092,11 @@ export function openAskDialog({ items, start = 0, watch, openChat, closed, more 
     a[name] = field.value;
     a.touched = true;
     let redraw = false;
-    if (name === 'other' && field.value.trim()) {
-      redraw = a.delegated || (kindOf(q) === 'single' && a.selected.length > 0);
+    // A text or number answer typed takes the place of "You decide"; to a
+    // question of options the words go beside the choice (wordsOf).
+    if (name === 'other' && field.value.trim() && !hasOptions(q) && a.delegated) {
       a.delegated = false;
-      // One's own words to a question of one take the place of an option.
-      if (kindOf(q) === 'single') a.selected = [];
+      redraw = true;
     }
     // A problem said about this answer is asked again as it is typed, the
     // way it was asked at first: once the answer is right it goes, and the

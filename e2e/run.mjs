@@ -9628,7 +9628,7 @@ const askLook = (page) => page.evaluate(() => {
     status: text('.so-q-status'),
     refused: text('.so-refused'),
     actions: [...dialog.querySelectorAll('.so-q-actions [data-action]')].map((b) => b.dataset.action),
-    other: !!dialog.querySelector('[data-action="other"]'),
+    other: dialog.querySelectorAll('.so-q-own-field').length === 1 && !dialog.querySelector('[data-action="note"]'),
     open: !!dialog.querySelector('[data-action="open-chat"]'),
     read: !!dialog.querySelector('[data-action="read"]'),
     kb: kb ? kb.checkVisibility() : false,
@@ -10410,7 +10410,7 @@ async function homequestion() {
     ok(shown.ok && look.options.every((o) => o.h >= 64 && o.size === '20px'),
       'each option is a big button: at least 64 px high, 20 px type', JSON.stringify(look.options && look.options.map((o) => o.h + 'px/' + o.size)));
     ok(look.other && look.read && look.actions.includes('send'),
-      'there is Other for an answer of one’s own, Read aloud, and Send', JSON.stringify({ other: look.other, read: look.read, actions: look.actions }));
+      'there is one field for an answer of one’s own or a note, Read aloud, and Send', JSON.stringify({ other: look.other, read: look.read, actions: look.actions }));
     await askSettled(s.page);
     await shot(s.page, 'home-question-desktop');
 
@@ -10439,7 +10439,9 @@ async function homequestion() {
   } finally { await s.stop(); }
 }
 
-// home-own-answer: an answer the options do not have, written under Other.
+// home-own-answer: an answer the options do not have, written in the
+// question's one field: an answer while nothing is chosen, a note once an
+// option is, and an answer again when the option is let go.
 async function homeownanswer() {
   const s = await homeChats();
   try {
@@ -10450,13 +10452,19 @@ async function homeownanswer() {
     await s.page.click('.so-home__card[data-id="' + id + '"] .so-home__answer');
     await awaitAsk(s.page, (d) => !!d && d.options.length === 2, 10000);
 
-    await s.page.click('dialog.so-askdlg .so-q-option[data-option="postgres"]');
-    await s.page.click('dialog.so-askdlg [data-action="other"]');
+    const label = () => s.page.$eval('label[for="ask-db-other"]', (n) => n.textContent);
+    const fields = await s.page.$$eval('dialog.so-askdlg .so-q-own-field', (n) => n.length);
+    const before = await label();
     await s.page.fill('#ask-db-other', 'MariaDB, please');
+    await s.page.click('dialog.so-askdlg .so-q-option[data-option="postgres"]');
+    const chosen = await label();
+    const kept = await s.page.$eval('#ask-db-other', (n) => n.value);
+    await s.page.click('dialog.so-askdlg .so-q-option[data-option="postgres"]');
     const typed = await askLook(s.page);
-    ok(typed.options.every((o) => o.pressed === 'false'),
-      'writing an answer of one’s own takes the place of the chosen option',
-      JSON.stringify(typed.options.map((o) => o.id + '=' + o.pressed)));
+    ok(fields === 1 && before === 'Or answer in your own words' && chosen === 'A note to the agent (optional)'
+      && kept === 'MariaDB, please' && typed.options.every((o) => o.pressed === 'false') && (await label()) === before,
+    'one field: the answer while nothing is chosen, a note beside a choice, the answer again when the option is let go',
+    JSON.stringify({ fields, before, chosen, kept, options: typed.options.map((o) => o.id + '=' + o.pressed) }));
     await s.page.click('dialog.so-askdlg [data-action="send"]');
 
     const got = await returned(s, id);
@@ -11099,8 +11107,7 @@ async function homefocus() {
 
     await s.page.click('.so-home__q-action');
     await awaitAsk(s.page, (d) => !!d && d.session === 'Alpha asks' && d.options.length === 2, 10000);
-    await s.page.click('dialog.so-askdlg [data-action="other"]');
-    await s.page.waitForSelector('#ask-db-other', { timeout: 5000 });
+    await s.page.click('#ask-db-other');
     await s.page.keyboard.type('Use MariaDB, ');
     // A third question joins the walk: the counter changes, the field must
     // not.
@@ -11166,7 +11173,6 @@ async function homefocus() {
     // Dictation on a server with no OpenRouter key: nothing is recorded that
     // could not be transcribed, and the press is answered before it, in a
     // dialog over the question's (dictate.js explainNoKey).
-    await s.page.click('dialog.so-askdlg [data-action="other"]');
     await s.page.waitForSelector('dialog.so-askdlg .so-q-own .so-mic', { timeout: 5000 });
     await s.page.click('dialog.so-askdlg .so-q-own .so-mic');
     const onTop = () => s.page.evaluate(() => {
@@ -11384,7 +11390,6 @@ async function homeopencode() {
     await awaitHome(s.page, (h) => h.rows.some((r) => r.id === id && r.answer), 10000);
     await s.page.click('.so-home__card[data-id="' + id + '"] .so-home__answer');
     await awaitAsk(s.page, (d) => !!d && d.options.length === 2, 10000);
-    await s.page.click('dialog.so-askdlg [data-action="other"]');
     await s.page.fill('#ask-db-other', OWN);
     await s.page.click('dialog.so-askdlg [data-action="send"]');
     const ownAt = Date.now();
@@ -14289,9 +14294,9 @@ async function chatoffline() {
 }
 
 // answerAll walks the dialog through the full ask_user call of the scripted
-// agent (/askmany): every kind of question, with a detail opened, a note,
-// Other beside two options (beside three it is one too many), a refused
-// number, and a general note.
+// agent (/askmany): every kind of question, with a detail opened, a note
+// beside an option, words beside three options (a note: they are not a
+// fourth), a refused number, and a general note.
 async function answerAll(page) {
   // 1. single, PostgreSQL preselected (its default): details, context, then SQLite and a note.
   await page.waitForSelector('dialog.so-askdlg .so-q-text', { timeout: 10000 });
@@ -14305,22 +14310,17 @@ async function answerAll(page) {
   const details = await page.waitForSelector('dialog.so-askdlg .so-ask-details', { timeout: 5000 }).then((n) => n.innerText(), () => '');
   await page.click('dialog.so-askdlg .so-q-body > .so-ask-context:last-of-type > summary').catch(() => {});
   await page.click('dialog.so-askdlg .so-q-option[data-option="sqlite"]');
-  await page.click('dialog.so-askdlg [data-action="note"]');
-  await page.fill('#ask-db-note', 'keep it small');
+  await page.fill('#ask-db-other', 'keep it small');
   // Enter in a field presses the dialog's main button: Next here.
-  await page.press('#ask-db-note', 'Enter');
+  await page.press('#ask-db-other', 'Enter');
   // 2. multi, 1 to 3: three chosen, a fourth refused.
   await page.waitForSelector('dialog.so-askdlg .so-q-option[data-option="dark"]', { timeout: 5000 });
   const hint = await page.$eval('dialog.so-askdlg .so-q-detail', (n) => n.textContent);
   for (const one of ['dark', 'search', 'export', 'offline']) await page.click('dialog.so-askdlg .so-q-option[data-option="' + one + '"]');
   const multi = await page.$$eval('dialog.so-askdlg .so-q-option[aria-pressed="true"]', (n) => n.map((one) => one.dataset.option));
-  // One in the person's own words is a fourth as well, until one of the
-  // three is let go.
-  await page.click('dialog.so-askdlg [data-action="other"]');
+  // Words beside the three chosen are a note to them, not a fourth.
   await page.fill('#ask-features-other', 'an audit log');
-  await page.click('dialog.so-askdlg [data-action="forward"]');
-  const otherCounted = await page.waitForSelector('dialog.so-askdlg .so-ask-problem', { timeout: 5000 }).then((n) => n.innerText(), () => '');
-  await page.click('dialog.so-askdlg .so-q-option[data-option="export"]');
+  const otherCounted = await page.$eval('label[for="ask-features-other"]', (n) => n.textContent);
   await page.click('dialog.so-askdlg [data-action="forward"]');
   // 3. text.
   await page.waitForSelector('#ask-name-other', { timeout: 5000 });
@@ -14361,7 +14361,7 @@ async function answerAll(page) {
 const ANSWER_ALL = {
   answers: {
     db: { selected: ['sqlite'], other: null, note: 'keep it small', delegated: false, skipped: false },
-    features: { selected: ['dark', 'search'], other: 'an audit log', note: null, delegated: false, skipped: false },
+    features: { selected: ['dark', 'search', 'export'], other: null, note: 'an audit log', delegated: false, skipped: false },
     name: { selected: [], other: 'Atlas', note: null, delegated: false, skipped: false },
     migrate: { selected: ['no'], other: null, note: null, delegated: false, skipped: false },
     replicas: { selected: [], other: '3', note: null, delegated: false, skipped: false },
@@ -14422,8 +14422,8 @@ async function chatask() {
     ok(walk.first.title === 'Deployment setup' && /Question 1 of 5/.test(walk.first.step) && walk.first.recommended,
       'one question per step, with the batch’s title and the recommended option marked', JSON.stringify(walk.first));
     ok(/JSONB/.test(walk.details), 'an option opens to its details', oneLine(walk.details));
-    ok(walk.hint === 'Choose 1 to 3.' && walk.multi.join(',') === 'dark,search,export' && /Choose up to 3/.test(walk.otherCounted),
-      'a multi-select says how many, and takes no more than its maximum, its own words counted as one',
+    ok(walk.hint === 'Choose 1 to 3.' && walk.multi.join(',') === 'dark,search,export' && walk.otherCounted === 'A note to the agent (optional)',
+      'a multi-select says how many, and takes no more than its maximum; words beside the choice are a note',
       JSON.stringify({ hint: walk.hint, multi: walk.multi, other: walk.otherCounted }));
     ok(walk.confirmDefault.join(',') === 'yes' && walk.numberDefault === '2', 'a question’s default is preselected',
       JSON.stringify({ confirm: walk.confirmDefault, number: walk.numberDefault }));

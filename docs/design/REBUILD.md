@@ -349,7 +349,9 @@ note to any answer, or reply with a counter-question instead of an answer.
   open question.
 - Touch mode / phone: the existing full-screen question dialog, one question per step, 64 px
   options, expandable option details, context collapsible, "Read aloud" (Google TTS) for question
-  and context, dictation for free text and notes, Back/Next, "Send answers" at the end.
+  and context, dictation for free text and notes, Back/Next, "Send answers" at the end. A
+  question of options has one field for the person's words: the answer (`other`) while nothing is
+  chosen, a note to the choice (`note`) once something is.
 - Steps show as a numbered list "Before you answer" above the questions (the batch's on the first
   step, a question's above its options); sections fold under their own titles (open ones and
   warnings show unfolded, a warning as a warning alert).

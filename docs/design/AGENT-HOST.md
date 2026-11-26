@@ -364,7 +364,9 @@ continue) has `notice{switch_message}` right before it and a `client_id` ending 
 shows it as a card "From Socrates" on the agent's side, as it shows another chat's message, never
 as the person's bubble (so are the Continue after a limit renewed, `auto-continue-…`, and the one after a failed turn, `auto-retry-…`). An `after_turn` switch also waits for
 the background work, so that it stops nothing and sends nothing: the agent goes on as if nothing
-had happened. Once that work ends, it waits `switchSettle` (2 s) more since the last `tasks`
+had happened - unless the limit stops the agent first: then the switch is made at once, background
+work or not (only the other account can carry the agent on; a shell left running would hold the
+chat at the limit), and carries the limited turn on like any switch after a limit. Once that work ends, it waits `switchSettle` (2 s) more since the last `tasks`
 event: Claude Code starts a turn of its own about what the work brought a few milliseconds later,
 and a switch made in between killed the CLI with that turn unstarted and the work's report lost. Schedules are not waited for (a loop would never let it go); they are named in the
 restart. A host that boots with a spec whose `account` differs from the journal's last
@@ -1246,7 +1248,9 @@ sent yet" / "Sending", an answer on its question's card (and in the dialog) inst
 good says so with Try again (a command the journal has but the agent refused shows as "Not run"
 on its line, to the browser that sent it, until dismissed). An answer to `ask_user` is REBUILD §5.2's object, every question
 present: `selected` holds option ids (`"yes"`/`"no"` for a confirm question), `other` the person's
-own words (a text question's answer, a number question's number as typed, or "Other"), `note`,
+own words (a text question's answer, a number question's number as typed, or the words written to a
+question of options while none is chosen), `note` (a number question's note; to a question of
+options, the words written beside a choice or "You decide": the dialog's one field is either, `askdialog.js` `wordsOf`),
 `delegated` ("You decide") and `skipped` (neither answered nor delegated); `general_note` and
 `follow_up` (a counter-question instead of answers) are `null` when empty. A plan
 (`payload.kind: "plan"`) is answered from its card, `{decision: "approve"}` or `{decision:
@@ -1281,8 +1285,13 @@ question is drawn its buttons take no tap, so the second tap of a double tap (on
 Next, on Send) chooses nothing; a key is never a stray tap. On a phone on its side (under 500 px)
 the question is scrolled up to the top of the dialog. A question left asking the agent back (the
 draft keeps it) opens on that question's field instead, scrolled into sight with the line under
-it, and at a desk with the focus in it; a field a button brings (Other, Add a note, Anything
-else?, Ask back) comes into sight with its focus. While the page's connection is not live (its
+it, and at a desk with the focus in it; a field a button brings (a number question's Add a note,
+Anything else?, Ask back) comes into sight with its focus. A question of options (single, multi,
+confirm) has one field under them, always there: its label says what the words are taken as - "Or
+answer in your own words" while nothing is chosen (and the question takes them, `allow_other`), "A
+note to the agent (optional)" once an option or "You decide" is - so choosing never throws away
+what was written; a second tap on the chosen option of a single or confirm question (a preselected
+default too) lets it go. The words count towards a multi-select's least, never towards its most. While the page's connection is not live (its
 first connect aside: the dialog read its questions as it opened) the dialog says Home's connection
 line under its top bar ("Offline · updated 40 s ago"), that a
 question still to answer may already have been answered, and dims it, said again every 2 s; an
@@ -1590,7 +1599,10 @@ else when the latest of the account's windows read as used up renews (`limitRene
 the chat's brief keeps for the automatic continue and the limit card says); that is the account's
 `limited_until` (an hour when nothing says). A chat with `auto_switch` (off unless set, from the
 sheet or the chat's ⋮) is switched by the server to the recommended other account, `when: now`,
-`continue: true`, `client_id` `auto-<turn>`, reason "The limit of <label> was reached."; without
+`continue: true`, `client_id` `auto-<turn>`, reason "The limit of <label> was reached.". A chat the
+person already moves to another account (a switch to it in the outbox, as an "After this turn"
+stays until the host makes it at the limit, or the journal on it already: `chatPeer.movingFrom`)
+is left to that switch: neither the automatic switch nor the push. Without
 it, or with no account to go to, the person is told by push and on the page ("Limit reached — renews
 in … (<label>)", §3 "Badge and push"; not for a chat filed Background) and the limit card offers
 "Continue with…", a menu of every account of the agent in `rank` order with all its windows and
