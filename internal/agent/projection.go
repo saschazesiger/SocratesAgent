@@ -726,7 +726,7 @@ type Summary struct {
 	// while its turn runs on.
 	Questions int `json:"questions,omitempty"`
 	Tasks     int `json:"tasks,omitempty"`
-	Agents      int    `json:"agents,omitempty"`
+	Agents    int `json:"agents,omitempty"`
 	// Schedules is how many turns the agent will start by itself later,
 	// and WakesAt when the first of them is due (Unix ms; 0 when none says
 	// a time).
