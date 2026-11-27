@@ -24,7 +24,7 @@
       "reason": "Wrapping: a tile's note is one line with an ellipsis (its tip has the whole), and on a phone it gives way, so the rows of tiles keep one height." },
     { "rule": "restyle", "file": "internal/web/static/css/so-chat.css", "selector": ".so-plan__answer .ds-meta",
       "reason": "Wrapping: the answer's words are the person's, a path among them; they break anywhere rather than widen the card." },
-    { "rule": "restyle", "file": "internal/web/static/css/so-chat.css", "selector": ".so-plan > .ds-card__row, .so-ask > .ds-card__row, .so-plan__answer > .ds-card__row",
+    { "rule": "restyle", "file": "internal/web/static/css/so-chat.css", "selector": ".so-plan > .ds-card__row, .so-plan__answer > .ds-card__row",
       "reason": "Spacing: a card head holds a status chip, which DS (2.1) sits on the title's line; a chip that wraps under a long title stands a chip's gap under it, not the larger row gap DS keeps for a button that hangs out of the line." },
     { "rule": "restyle", "file": "internal/web/static/css/so-chat.css", "selector": ".so-plan__answer > .ds-card__row",
       "reason": "Layout: the answer's chip and its words read as one line, not as two ends of the row; its words are a meta line, which DS hangs out of the line like a button, onto the chip when a long answer wraps." },

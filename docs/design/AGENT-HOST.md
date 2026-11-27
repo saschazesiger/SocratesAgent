@@ -415,7 +415,9 @@ as a message.
 
 **Closing.** An `ask_user` question (`via: "message"`) stays open until it is answered or the agent
 withdraws it (`withdraw_question`: `ask.closed{withdrawn, text: reason}`); neither a message of the
-person's nor a Stop closes it, because the agent never stopped for it. For the asks a call waits
+person's nor a Stop closes it, because the agent never stopped for it. So that the agent withdraws
+what a message settles, the host writes its open questions into the `note` of the person's message
+and of an answer it delivers as a message (`askuser.OpenNote`; REBUILD §5.3). For the asks a call waits
 on: interrupts and recovery leave them open. A user message (`send`) closes every such ask no
 call waits on any more (`Unwaited()`, journaled as `ask.closed` with the message): the person moved
 on, having pressed Stop and written something else, or written instead of answering a question
@@ -1497,8 +1499,9 @@ attachment(s): …`).
 - ask_user (WP6) for the views (WP8): an `ask` payload is `askuser.Payload` (§2, Asks) or Claude's
   plan card (`kind: "plan"`); `source` says when the questions came from one of the agent's own
   mechanisms (an elicitation offers no "You decide", `allow_delegate: false`); `part_id` names the
-  tool part the call belongs to, at which the view draws the ask card (§7); an ask with `closed`
-  (`ask.closed`) is shown as not answered, and can still be answered. For the feeds (WP9): read
+  tool part the call belongs to (the view draws no card for it: the top bar's Questions counts the
+  open asks and opens the dialog at them, REBUILD §7.1); an ask with `closed` (`ask.closed`) is
+  not open any more, and can still be answered. For the feeds (WP9): read
   `OpenAsks()` and `Summary()` — an open ask outside a running turn keeps the chat `waiting` while
   no turn runs, until it is answered or the person sends a message, which closes it (§4.4).
   Claude's ask_user is unverified against a real CLI here (no Claude login for tests): the

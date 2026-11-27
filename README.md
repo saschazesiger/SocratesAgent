@@ -30,7 +30,7 @@
 | 🐙 **GitHub repositories** | Connect GitHub once, pick your repositories, and every chat works in its own copy on its own branch, pushed as it goes. The repository's `AGENTS.md` decides: pull request or straight into `main` ([📐 spec](docs/design/REPOS.md)). |
 | 🔁 **Never lose a session** | Closed tab, dead phone, lost network, update: the agent keeps working on the server. |
 | 🏠 **Home dashboard** | See at a glance what's running, what's finished and what needs you. |
-| 🙋 **Questions, not guesswork** | Agents ask you with buttons (`ask_user`) and keep working on everything that does not need your answer. Answer on any device, even offline, whenever you have time. |
+| 🙋 **Questions, not guesswork** | Agents ask you with buttons (`ask_user`) and keep working on everything that does not need your answer. The questions never scroll away: ❓ in the top bar counts them and opens them. Answer on any device, even offline, whenever you have time; agents withdraw a question as soon as it is settled. |
 | 📱 **Made for the phone** | Full-screen questions, big buttons, dictation, read-aloud and push notifications. |
 | 👥 **Several accounts** | Work and private side by side. Chats pick an unused account first, else the one with the most usage left. |
 | 🧪 **Tests in every chat** | The agent writes and runs its own tests, step by step with screenshots, and you watch them pass or fail live beside the chat. |

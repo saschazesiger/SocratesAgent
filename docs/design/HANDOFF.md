@@ -67,9 +67,11 @@ Binding documents, in order:
   task list, the plan card, attachments, a slash palette and the model and account pickers.
 - **ask_user** (WP6): one tool for all three agents. Since 2026-11-27 it never waits: one question
   per call goes into the person's queue, the agent works on and ends its turn, and the answer
-  arrives as a message (`check_questions`, `withdraw_question` beside it). Its card
-  stands where the agent asked, inside the answer, with what the agent said afterwards under it;
-  the dialog is the whole screen on a phone and in a car. Native question tools are off; what
+  arrives as a message (`check_questions`, `withdraw_question` beside it). Since the same day the
+  questions are not in the conversation: the top bar's Questions, with their count, opens the
+  dialog at them, and an answer is a quiet line in the chat. The agent is told its open questions
+  with every message and answer, and withdraws those that are settled. The dialog is the whole
+  screen on a phone and in a car. Native question tools are off; what
   still arrives (Codex's plan mode, elicitations, OpenCode's question tool) is converted to the
   same questions. Permissions are always allowed.
 - **Accounts** (WP7): subscriptions and API keys per agent, signed in from Admin → Accounts, the

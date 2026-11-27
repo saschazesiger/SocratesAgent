@@ -304,8 +304,8 @@ ask_user({
 ```
 
 `askuser.Parse` turns it into the `ask` payload of one question (`Payload.Questions[0]`, its
-`header` the chip, `blocks` the payload's own field), so the journal, the dialog and the cards keep
-one shape. A call in the earlier batch shape (`{title?, context?, steps?, sections?, questions:
+`header` the chip, `blocks` the payload's own field), so the journal, the dialog and the answer line
+keep one shape. A call in the earlier batch shape (`{title?, context?, steps?, sections?, questions:
 [...]}`) is still taken, unadvertised, for a conversation that started before.
 
 A call stands on its own: the person often answers from a notification or Home's list of
@@ -317,7 +317,7 @@ Beside it, on the same `socrates` server:
 | Tool | Arguments | Returns at once |
 |---|---|---|
 | `check_questions` | none | the chat's `ask_user` questions, newest last (at most 20): id, state (`open`, `answered`, `withdrawn`, `closed`), the question, what it blocks, and an answered one's answer in words; with open ones, the reminder that answers arrive by themselves and are not to be polled for |
-| `withdraw_question` | `question_id`, `reason` | takes an open question out of the person's queue (`ask.closed{code: withdrawn, text: reason}`): the agent found the answer itself, or the plan changed |
+| `withdraw_question` | `question_id`, `reason` | takes an open question out of the person's queue (`ask.closed{code: withdrawn, text: reason}`): a message or an answer settled it, the agent found the answer itself, the plan changed, or a new question replaces it |
 
 ### 5.2 Answer (what the model gets back)
 
@@ -331,6 +331,10 @@ decision that is easy to undo: then go on with the option you recommended and sa
 assumed it. When only work that waits for open questions is left, end your turn with a short
 summary of what is done and what waits for which question.
 ```
+
+With other questions of the chat still open, the text goes on with them (`askuser.Queued`), one
+line each (`- ask_…: the question`), and says to withdraw any that the new one replaces or that no
+longer matter: the person should only see questions the agent still needs answered.
 
 The answer arrives as a user message (`askuser.MessageText`): "The person answered your question
 ask_3fa9c1d2", the question and the answer in words, what was waiting for it, then the JSON:
@@ -364,7 +368,14 @@ counter-question instead of an answer.
   that is easy to undo (a name, a default, a layout), which goes ahead with the recommended option
   and is said to be assumed - never for what is hard to undo (deleting, pushing to a shared branch,
   deploying, sending, migrating, paying); end the turn with what is done and what waits for which
-  question; withdraw a question that no longer matters; never end a reply with a question in text.
+  question; keep the open questions current - withdraw one the moment a message, an answer, the
+  agent's own findings, a change of plan or a new question settles it; never end a reply with a
+  question in text.
+- **The open questions go with every message.** A message of the person's and an answer that goes
+  to the agent carry, in Socrates' note (`<socrates-note>`, `agent.AgentText`), the agent's open
+  `ask_user` questions but the one answered (`askuser.OpenNote`, written by the host into the
+  message's `note`), with the reminder to withdraw those the message settles. Another chat's
+  message and a scheduled start carry none.
 - **Subagents do not ask.** An answer reaches the main thread only, so a subagent's call is
   refused with "Only the main agent can ask the person: put this question into your result for
   the main agent." Claude: a call whose tool part has a parent (a subagent's); Codex: a call from
@@ -476,8 +487,12 @@ Full inventory: research `02-feature-inventory.md`. Summary:
   that expand to input/output; file edits as a diff viewer; commands with their output; todo list
   pinned above the composer while a turn runs and its own place in the conversation is less than
   half in view; subagents and workflow agents as nested collapsible
-  groups (a workflow shows its phases and every agent's live status, like `/workflows`); plan card;
-  ask card.
+  groups (a workflow shows its phases and every agent's live status, like `/workflows`); plan card.
+  A question is never drawn in the conversation, where it scrolled away while the agent worked on:
+  the top bar's Questions (`#questionsBtn`, shown while the chat has open questions, their count on
+  its badge) opens the question dialog at them. Its answer is one quiet line where it was given
+  (`answerLine`: "Answered: …", the questions and answers behind its "i"), not a message of the
+  person's; an answer of this browser on its way is that line at the end, with its chip.
 - Header: agent mark, title, model + effort picker, account picker with usage, Status (spoken),
   ⋮ (the chat's own menu - rename, statuses, compact, download, switch accounts at a limit,
   Ultracode, delete - with "This device…" last; an action sheet on a phone).
