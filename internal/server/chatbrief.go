@@ -463,11 +463,12 @@ func (h *chatHub) judgeable(id string) bool {
 	return !ok || b.News != "" || b.Summary.LastOutcome == agent.OutcomeLimited
 }
 
-// waiting is whether a chat waits for the person: an open ask it is stopped
-// on, by its brief.
+// waiting is whether a chat waits for the person, by its brief: an open ask
+// it is stopped on, or an ask_user question while it works on
+// (agent.Summary.PersonWaits).
 func (h *chatHub) waiting(id string) bool {
 	b, ok := h.briefOfChat(id)
-	return ok && b.Summary.Activity == agent.ActivityWaiting
+	return ok && b.Summary.PersonWaits()
 }
 
 /* ------------------------------------------------- the namer and Status */

@@ -383,8 +383,9 @@ counter-question instead of an answer.
 - In the chat: an inline card with the title, a progress line ("2 of 5 answered") and the first
   open question; a question's `blocks` shows under it as "Waiting for this: …". A question the
   agent withdrew says so, with its reason, and can no longer be answered.
-- A chat whose turn runs is `busy` even with open questions; it is `waiting` once no turn runs and
-  a question is open (AGENT-HOST.md §3).
+- A question reaches the person the moment it is asked: a chat with an open question counts as
+  waiting for the person (Home's Questions card, the badge, the push, the chat list) even while its
+  turn runs on; inside, the projection keeps the turn `busy` (AGENT-HOST.md §3).
 - Touch mode / phone: the existing full-screen question dialog, one question per step, 64 px
   options, expandable option details, context collapsible, "Read aloud" (Google TTS) for question
   and context, dictation for free text and notes, Back/Next, "Send answers" at the end. A

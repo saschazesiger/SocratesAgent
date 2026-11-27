@@ -754,17 +754,18 @@ func (p *chatPeer) report() {
 	defer p.reportMu.Unlock()
 	p.mu.Lock()
 	s := p.brief.Summary
-	if s.Activity == p.reported && s.Asked == p.asked {
+	activity := s.PersonActivity()
+	if activity == p.reported && s.Asked == p.asked {
 		p.mu.Unlock()
 		return
 	}
-	p.reported, p.asked = s.Activity, s.Asked
+	p.reported, p.asked = activity, s.Asked
 	p.mu.Unlock()
 	note := ""
-	if s.Activity == agent.ActivityWaiting {
+	if activity == agent.ActivityWaiting {
 		note = "question"
 	}
-	p.hub.srv.manager.ReportActivity(p.id, termux.State(s.Activity), note, s.Asked)
+	p.hub.srv.manager.ReportActivity(p.id, termux.State(activity), note, s.Asked)
 }
 
 func (p *chatPeer) reply(clientID string, r chatReply, done bool) {

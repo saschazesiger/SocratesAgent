@@ -198,9 +198,13 @@ what `check_questions` reads.
 
 **Summary / activity** (`Projection.Summary()`): `activity` is `waiting` while an open ask a call
 waits on belongs to the running turn (or has no turn), or while any ask is open and no turn runs
-(an open `via: "message"` ask leaves a running turn `busy`: the agent went on); else `busy` while
+(an open `via: "message"` ask leaves a running turn `busy`: the agent went on, and the host's watch
+still sees a turn that goes quiet); else `busy` while
 a turn runs (an open ask of an earlier turn does not hide it), else `tasks` while background tasks
-run, else `idle`. `open_asks` counts every open ask.
+run, else `idle`. `open_asks` counts every open ask. `questions` counts the open `via: "message"` asks;
+`PersonWaits()` (activity `waiting`, or a question open) is what the person is shown: the server
+reports `PersonActivity()` to the detector, and the asking set (badge, push, Home's Questions card)
+counts it, so a question reaches the person the moment it is asked, while the agent works on.
 The server reports it to the terminal detector with `termux.ReportActivity` (committed exactly, no
 debounce; note `question` for waiting; `asked` = the chat has a user message). The unread mark, row
 ordering (`MovesRow`), refiling into in-progress, the `activity` frames and push are the terminals'.

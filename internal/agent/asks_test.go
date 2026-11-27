@@ -85,8 +85,9 @@ func TestAnAskUserQuestionDoesNotHoldTheAgentUp(t *testing.T) {
 		{Seq: 5, Type: TypeAskAnswered, AskID: "ask_1", Answer: json.RawMessage(`{"general_note":"yes"}`)},
 		{Seq: 6, Type: TypeAskClosed, AskID: "ask_2", Code: AskClosedWithdrawn, Text: "found it"},
 	})
-	if s := p.Summary(); s.Activity != ActivityBusy || s.OpenAsks != 1 {
-		t.Fatalf("while the turn runs: %s, %d open", s.Activity, s.OpenAsks)
+	if s := p.Summary(); s.Activity != ActivityBusy || s.OpenAsks != 1 || s.Questions != 1 || !s.PersonWaits() ||
+		s.PersonActivity() != ActivityWaiting {
+		t.Fatalf("while the turn runs: %s, %d open, %d questions", s.Activity, s.OpenAsks, s.Questions)
 	}
 	var got []string
 	for _, q := range p.AskedQuestions() {

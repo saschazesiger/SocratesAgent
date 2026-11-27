@@ -721,7 +721,11 @@ type Summary struct {
 	Activity    string `json:"activity"`
 	TurnRunning bool   `json:"turn_running"`
 	OpenAsks    int    `json:"open_asks"`
-	Tasks       int    `json:"tasks,omitempty"`
+	// Questions is how many of them are ask_user questions, which never
+	// hold the agent up: the chat waits for the person (PersonWaits) even
+	// while its turn runs on.
+	Questions int `json:"questions,omitempty"`
+	Tasks     int `json:"tasks,omitempty"`
 	Agents      int    `json:"agents,omitempty"`
 	// Schedules is how many turns the agent will start by itself later,
 	// and WakesAt when the first of them is due (Unix ms; 0 when none says
@@ -782,6 +786,9 @@ func (p *Projection) Summary() Summary {
 	waiting := false
 	for _, a := range p.OpenAsks() {
 		waiting = waiting || p.Turn == nil || a.Deliver != ViaMessage && (a.TurnID == "" || a.TurnID == p.Turn.ID)
+		if a.Deliver == ViaMessage {
+			s.Questions++
+		}
 	}
 	switch {
 	case waiting:
@@ -796,6 +803,22 @@ func (p *Projection) Summary() Summary {
 		s.Activity = ActivityIdle
 	}
 	return s
+}
+
+// PersonWaits says whether the chat waits for its person, as the person is
+// shown it (Home, the badge, a push, the chat list): its activity is
+// waiting, or an ask_user question is open while the agent works on. The
+// activity itself stays busy then, so that the host's watch still sees a
+// turn that has gone quiet.
+func (s Summary) PersonWaits() bool { return s.Activity == ActivityWaiting || s.Questions > 0 }
+
+// PersonActivity is the activity as the person is shown it: waiting while
+// PersonWaits, else the activity.
+func (s Summary) PersonActivity() string {
+	if s.PersonWaits() {
+		return ActivityWaiting
+	}
+	return s.Activity
 }
 
 // agentsLookBack is how many messages from the end agentsAtWork reads: a
