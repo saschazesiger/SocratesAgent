@@ -169,13 +169,16 @@ func TestLiveAskUserStandsOnItsOwn(t *testing.T) {
 			if c.name == "login" {
 				_ = os.WriteFile(filepath.Join(ce.work, ".stagingctl-token"), []byte("t\n"), 0o600)
 			}
+			// ask_user returns at once: the turn ends, and the answer starts
+			// the next one. Whatever else it asks on the way is answered
+			// alike, once its turn has ended.
+			liveWait(t, r, 1, 4*time.Minute)
 			answer(t, a, *ask, c.answer)
-			// Whatever else it asks on the way is answered alike.
 			done := map[string]bool{ask.AskID: true}
-			deadline = time.Now().Add(4 * time.Minute)
-			for time.Now().Before(deadline) {
+			turns := 2
+			for n := 0; n < 4; n++ {
+				liveWait(t, r, turns, 4*time.Minute)
 				r.mu.Lock()
-				ended := count(r.events, agent.TypeTurnEnded)
 				var next *agent.Event
 				for _, ev := range r.events {
 					if ev.Type == agent.TypeAsk && !done[ev.AskID] {
@@ -184,38 +187,130 @@ func TestLiveAskUserStandsOnItsOwn(t *testing.T) {
 					}
 				}
 				r.mu.Unlock()
-				if ended > 0 {
+				if next == nil {
 					break
 				}
-				if next != nil {
-					done[next.AskID] = true
-					pretty, _ := json.MarshalIndent(json.RawMessage(next.Payload), "", "  ")
-					t.Logf("%s asked again:\n%s", c.name, pretty)
-					answer(t, a, *next, c.answer)
-				}
-				time.Sleep(300 * time.Millisecond)
+				done[next.AskID] = true
+				pretty, _ := json.MarshalIndent(json.RawMessage(next.Payload), "", "  ")
+				t.Logf("%s asked again:\n%s", c.name, pretty)
+				answer(t, a, *next, c.answer)
+				turns++
 			}
-			liveWait(t, r, 1, 4*time.Minute)
 		})
 	}
 }
 
-// answer answers every question of an ask with the same words (a confirm
-// with yes).
-func answer(t *testing.T, a *Adapter, ask agent.Event, words string) {
+// answer delivers the person's answer to an ask as the host does: a user
+// message (agent.AnswerText). raw is the answer's JSON, or words that answer
+// every question of the ask alike (a confirm with yes).
+func answer(t *testing.T, a *Adapter, ask agent.Event, raw string) {
 	t.Helper()
-	answers := map[string]any{}
-	if p := askuser.Decode(ask.Payload); p != nil {
-		for _, q := range p.Questions {
-			one := map[string]any{"other": words}
-			if q.Kind == askuser.KindConfirm {
-				one["selected"] = []string{"yes"}
+	body := json.RawMessage(raw)
+	if !json.Valid(body) {
+		answers := map[string]any{}
+		if p := askuser.Decode(ask.Payload); p != nil {
+			for _, q := range p.Questions {
+				one := map[string]any{"other": raw}
+				if q.Kind == askuser.KindConfirm {
+					one["selected"] = []string{"yes"}
+				}
+				answers[q.ID] = one
 			}
-			answers[q.ID] = one
+		}
+		body, _ = json.Marshal(map[string]any{"answers": answers})
+	}
+	text := agent.AnswerText(&agent.Ask{ID: ask.AskID, Payload: ask.Payload}, body)
+	if err := a.Send(t.Context(), agent.Outgoing{MessageID: "m_" + ask.AskID, Text: text, AnswerTo: ask.AskID}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// The real model, with a task of three parts of which one needs the person,
+// asks about that one, does the other two in the same turn rather than
+// waiting, and ends its turn; the answer, arriving as a message, lets it do
+// the last part. Whether it asked before or after the independent work, and
+// whether it guessed the name meanwhile, is logged.
+func TestLiveAskUserWorksOnMeanwhile(t *testing.T) {
+	e := liveEnv(t)
+	model := os.Getenv("SOCRATES_CLAUDE_LIVE_MODEL")
+	if model == "" {
+		model = "haiku"
+	}
+	files := map[string]string{
+		"README.md":    "# Shop\n\n## Instalation\n\nRun `python3 main.py`.\n",
+		"CHANGELOG.md": "# Changelog\n\n## 1.4\n\n## 1.3\n\n- Fixed the cart\n",
+		"util.py":      "def calc(items):\n    return sum(items)\n",
+		"main.py":      "from util import calc\n\nprint(calc([1, 2, 3]))\n",
+	}
+	for name, body := range files {
+		if err := os.WriteFile(filepath.Join(e.work, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
 		}
 	}
-	raw, _ := json.Marshal(map[string]any{"answers": answers})
-	if err := a.Answer(t.Context(), ask.AskID, raw); err != nil {
-		t.Fatal(err)
+	git := exec.Command("sh", "-c", "git init -q -b main && git config user.email t@t && git config user.name t && git add -A && git commit -qm init")
+	git.Dir = e.work
+	if out, err := git.CombinedOutput(); err != nil {
+		t.Fatalf("git: %v %s", err, out)
+	}
+	a := New(Options{})
+	r := newRec()
+	spec := e.spec("")
+	spec.Model, spec.Effort = model, ""
+	if err := a.Start(t.Context(), spec, r); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	t.Cleanup(func() { _ = a.Stop() })
+	send(t, a, "m1", "Three things in this repository: fix the spelling mistake in README.md; add the line "+
+		"\"- Faster startup\" under \"## 1.4\" in CHANGELOG.md; and rename the function calc in util.py, and where it is "+
+		"used, to the name the team agreed on in yesterday's meeting - I don't remember it, my colleague Mara knows it.")
+	evs := liveWait(t, r, 1, 5*time.Minute)
+	var ask *agent.Event
+	asked, edited := int64(0), int64(0)
+	for i, ev := range evs {
+		if ev.Type == agent.TypeAsk && ask == nil {
+			ask, asked = &evs[i], ev.Seq
+		}
+		if ev.Type == agent.TypePart && ev.Kind == agent.PartTool && edited == 0 && strings.Contains(string(ev.Content), "README") {
+			edited = ev.Seq
+		}
+	}
+	read := func(name string) string {
+		b, _ := os.ReadFile(filepath.Join(e.work, name))
+		return string(b)
+	}
+	if ask == nil {
+		r.view(func(p *agent.Projection) {
+			var said []string
+			for _, part := range partsOf(lastAssistant(p), agent.PartText) {
+				said = append(said, part.Text)
+			}
+			t.Fatalf("the first turn ended without ask_user; the agent said:\n%s", strings.Join(said, "\n---\n"))
+		})
+	}
+	pretty, _ := json.MarshalIndent(json.RawMessage(ask.Payload), "", "  ")
+	t.Logf("asked (seq %d; first README tool part at seq %d):\n%s", asked, edited, pretty)
+	if p := askuser.Decode(ask.Payload); p == nil || p.Blocks == "" {
+		t.Errorf("the call says nothing about what waits for it: %s", ask.Payload)
+	}
+	if !strings.Contains(read("README.md"), "Installation") {
+		t.Errorf("the README was not fixed in the first turn:\n%s", read("README.md"))
+	}
+	if !strings.Contains(read("CHANGELOG.md"), "Faster startup") {
+		t.Errorf("the changelog was not written in the first turn:\n%s", read("CHANGELOG.md"))
+	}
+	if !strings.Contains(read("util.py"), "def calc(") {
+		t.Logf("it renamed calc before the answer (an assumption it should have said):\n%s", read("util.py"))
+	}
+	r.view(func(p *agent.Projection) {
+		var said []string
+		for _, part := range partsOf(lastAssistant(p), agent.PartText) {
+			said = append(said, part.Text)
+		}
+		t.Logf("the first turn ended with:\n%s", strings.Join(said, "\n---\n"))
+	})
+	answer(t, a, *ask, "total_price")
+	liveWait(t, r, 2, 5*time.Minute)
+	if !strings.Contains(read("util.py"), "def total_price(") || !strings.Contains(read("main.py"), "total_price") {
+		t.Errorf("the answer was not acted on:\nutil.py:\n%s\nmain.py:\n%s", read("util.py"), read("main.py"))
 	}
 }

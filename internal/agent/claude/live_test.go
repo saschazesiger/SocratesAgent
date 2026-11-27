@@ -225,63 +225,35 @@ func liveAsk(t *testing.T, r *rec, n int, within time.Duration) agent.Event {
 }
 
 // ask_user against the real claude: the in-process server's handshake, the
-// call tied to its tool part by _meta claudecode/toolUseId, a call that
-// blocks the turn until the answer, which the model reads back, and an
-// interrupt that withdraws a waiting call, whose cancel reaches its handler.
+// call tied to its tool part by _meta claudecode/toolUseId and returning at
+// once with the question's id, the turn that goes on and ends while the
+// question is open, and the answer that arrives as a message, which the model
+// reads.
 func TestLiveAskUser(t *testing.T) {
 	e := liveEnv(t)
 	a, r := liveStart(t, e, "")
-	send(t, a, "m1", "Call the ask_user tool now, once, with one question: id \"colour\", kind \"single\", "+
-		"question \"Which colour?\", options with ids red and blue. When it returns, reply with the id of the option "+
-		"the person chose and nothing else.")
+	send(t, a, "m1", "Call the ask_user tool now, once, with the question \"Which colour?\", kind \"single\", "+
+		"options with ids red and blue, and blocks \"the colour of the logo\". Then end your turn. When the person's "+
+		"answer arrives, reply with the id of the option they chose and nothing else.")
 	ask := liveAsk(t, r, 1, 3*time.Minute)
 	p := askuser.Decode(ask.Payload)
-	if p == nil || p.Questions[0].ID != "colour" || p.PartID == "" || ask.AskID != "ask_"+p.PartID || ask.TurnID == "" {
+	if p == nil || len(p.Questions) != 1 || p.PartID == "" || !strings.HasPrefix(ask.AskID, "ask_") || ask.TurnID == "" ||
+		ask.Via != agent.ViaMessage || p.Blocks == "" {
 		t.Fatalf("ask %+v\n%s", ask, ask.Payload)
 	}
+	liveWait(t, r, 1, 3*time.Minute)
 	r.view(func(pr *agent.Projection) {
-		if part := pr.Part(p.PartID); part == nil || part.Kind != agent.PartTool || part.State != agent.PartRunning {
+		part := pr.Part(p.PartID)
+		if part == nil || part.Kind != agent.PartTool || part.State != agent.PartDone {
 			t.Fatalf("the call's tool part: %+v", part)
 		}
 	})
-	time.Sleep(3 * time.Second)
-	r.mu.Lock()
-	ended := count(r.events, agent.TypeTurnEnded)
-	r.mu.Unlock()
-	if ended != 0 {
-		t.Fatal("the turn ended while the question waited")
-	}
-	if err := a.Answer(context.Background(), ask.AskID, json.RawMessage(`{"answers":{"colour":{"selected":["blue"]}}}`)); err != nil {
-		t.Fatal(err)
-	}
-	evs := liveWait(t, r, 1, 3*time.Minute)
+	answer(t, a, ask, `{"answers":{"q1":{"selected":["blue"]}}}`)
+	evs := liveWait(t, r, 2, 3*time.Minute)
 	r.view(func(pr *agent.Projection) {
 		text := partsOf(lastAssistant(pr), agent.PartText)
 		if len(text) == 0 || !strings.Contains(strings.ToLower(text[len(text)-1].Text), "blue") {
 			t.Fatalf("the model did not read the answer:\n%s", dump(evs))
 		}
 	})
-
-	send(t, a, "m2", "Call the ask_user tool once more with the same question.")
-	second := liveAsk(t, r, 2, 3*time.Minute)
-	if err := a.Interrupt(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	if err := a.Answer(context.Background(), second.AskID, json.RawMessage(`{"answers":{}}`)); !errors.Is(err, agent.ErrAskGone) {
-		t.Fatalf("an answer after the interrupt: %v", err)
-	}
-	liveWait(t, r, 2, 3*time.Minute)
-	deadline := time.Now().Add(30 * time.Second)
-	for {
-		a.ctlMu.Lock()
-		n := len(a.handling)
-		a.ctlMu.Unlock()
-		if n == 0 {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("%d handlers still wait after the interrupt: the CLI's cancel did not reach them", n)
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
 }
