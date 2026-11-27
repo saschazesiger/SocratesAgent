@@ -24,9 +24,9 @@ type MCPServer struct {
 }
 
 // askTimeout is the per-call timeout of the ask_user server, in
-// milliseconds: a day. The server reports progress every
-// askuser.ProgressEvery, which resets it, so a question waits for as long as
-// the person takes; the timeout only bounds a server that stopped talking.
+// milliseconds: a day. Its tools return at once (ask_user never waits,
+// REBUILD.md §5.3), so the timeout only bounds a server that stopped
+// talking.
 const askTimeout = 24 * 60 * 60 * 1000
 
 // mcpServers is the chat's `mcp` config: the folder's servers (folderMCP),

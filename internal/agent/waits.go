@@ -9,8 +9,9 @@ import (
 	"github.com/saschazesiger/SocratesAgent/internal/agent/askuser"
 )
 
-// Waits are an adapter's calls that wait for the person (ask_user, and the
-// CLI's own questions converted to it), by ask id: Wait emits a call's ask
+// Waits are an adapter's calls that wait for the person (the CLI's own
+// questions converted to ask_user's payload: elicitations, Codex's
+// request_user_input; ask_user itself never waits), by ask id: Wait emits a call's ask
 // and blocks, Answer hands it the answer from the host. The two sides agree
 // on every answer: Answer reports it delivered only when the call took it
 // while the CLI still waited, and ErrAskGone when the call had ended or been
