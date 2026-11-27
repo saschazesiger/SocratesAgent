@@ -494,18 +494,14 @@ func (t *chatToolServer) send(ctx context.Context, row *store.Session, args json
 	if len([]rune(text)) > chattools.MaxText {
 		return chattools.Response{Text: fmt.Sprintf("The message is longer than %d characters.", chattools.MaxText), Error: true}
 	}
-	// An agent that has asked its person and not heard back yet does not
-	// answer for them: a code-mode Codex model, whose ask_user returns at
-	// once, went on to tell the other chat "Yes" while the question was
-	// open - or answered, its answer waiting as the next message.
+	// An agent that has asked its person and not heard back yet goes on
+	// with its work, which may need another chat (ask_user never waits,
+	// REBUILD.md §5.3), but does not answer for its person: a code-mode
+	// Codex model told the other chat "Yes" while the question was open. The
+	// result says so (openNote).
+	open := ""
 	if self, err := t.srv.chats.peer(row.ID); err == nil {
-		open := false
-		_ = self.view(func(proj *agent.Projection) { open = awaitsAnswer(proj) })
-		if open {
-			return chattools.Response{Text: "Your person has not answered your question yet. Do not send anything for them " +
-				"before they have: end your turn now; their answer arrives as your next message, and you can write to " +
-				"the other chat then.", Error: true}
-		}
+		_ = self.view(func(proj *agent.Projection) { open = openNote(proj) })
 	}
 	other, p, err := t.peer(row, chat)
 	if err != nil {
@@ -533,8 +529,8 @@ func (t *chatToolServer) send(ctx context.Context, row *store.Session, args json
 	switch code {
 	case http.StatusOK, http.StatusAccepted:
 		t.srv.events.poke()
-		const wait = " If you need its answer, end your turn now and say what you wait for: the answer arrives as " +
-			"your next message. Do not wait for it in a loop or check for it with " + chattools.Read + "."
+		wait := " If you need its answer, end your turn now and say what you wait for: the answer arrives as " +
+			"your next message. Do not wait for it in a loop or check for it with " + chattools.Read + "." + open
 		switch {
 		case running:
 			return chattools.Response{Text: "Delivered to " + chatName(other) + ". Its agent is in the middle of a turn " +
@@ -550,6 +546,16 @@ func (t *chatToolServer) send(ctx context.Context, row *store.Session, args json
 		msg = http.StatusText(code)
 	}
 	return chattools.Response{Text: "The message could not be delivered: " + msg, Error: true}
+}
+
+// openNote is what send_to_chat adds while the sender's own questions to its
+// person are open: nothing it sends may answer for the person.
+func openNote(proj *agent.Projection) string {
+	if !awaitsAnswer(proj) {
+		return ""
+	}
+	return " Your own question to your person is still open: nothing you send another chat may answer for your person " +
+		"or depend on their answer before it has arrived."
 }
 
 // awaitsAnswer says whether a chat's agent waits for its person's answer: a

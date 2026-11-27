@@ -155,8 +155,9 @@ func TestTheChatsOfARepositoryReachEachOther(t *testing.T) {
 		t.Fatalf("read: %+v", res)
 	}
 
-	// While the agent's own question to its person is open, it does not
-	// answer the other chat for them.
+	// While the agent's own question to its person is open, it may still
+	// write to the other chat (ask_user never waits), and is told not to
+	// answer for its person.
 	c.send(t, web, "ask-web", "/asknext")
 	c.waitJournal(t, web, 15*time.Second, "the question", turnsEnded(4))
 	// The server's own view of the chat follows the journal.
@@ -179,10 +180,11 @@ func TestTheChatsOfARepositoryReachEachOther(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res := call(webEP, chattools.Send, map[string]any{"chat": api, "text": "Yes"}); !res.Error ||
-		!strings.Contains(res.Text, "Your person has not answered your question yet") {
+	if res := call(webEP, chattools.Send, map[string]any{"chat": aside, "text": "Is the login route done?"}); res.Error ||
+		!strings.Contains(res.Text, "Your own question to your person is still open") {
 		t.Fatalf("a send while a question is open: %+v", res)
 	}
+	c.waitJournal(t, aside, 15*time.Second, "the message's turn", turnsEnded(2))
 
 	// A message of the person's own tells the agent which chats are active
 	// beside it, and what each is doing; a shell line goes as it is.

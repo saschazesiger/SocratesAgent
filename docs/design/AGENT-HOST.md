@@ -124,21 +124,24 @@ from one of the agent's own mechanisms, converted into the same shape: `request_
 Plan mode), `async_question` (Codex code mode), `elicitation` (an MCP elicitation form: one
 question per field, no delegating; a form without fields is one `confirm`), `question` (OpenCode's
 own tool). A converted payload keeps every question and option its mechanism sent: the limits of
-§5.1 (20 questions, 12 options) bind the model's calls only. The `answer` of `ask.answered` is what
+§5.1 (one question, 12 options) bind the model's calls only. The `answer` of `ask.answered` is what
 the browser sends; the shape is REBUILD §5.2, `{answers: {<id>: {selected, other, note, delegated,
 skipped, value?}}, general_note, follow_up}` (`askuser.ReadAnswer` normalises it: every question
 gets an entry, selections name only the question's options, a confirm is `selected: ["yes"|"no"]`
 with `value: true|false`, a number its `value`; a bare JSON string is taken as the general note).
-The model gets that JSON as the tool's result, followed by a line for a follow-up, delegated or
-skipped questions (`askuser.ToolResult`); a converted question's answer goes back in its
-mechanism's own shape. An elicitation form has no place for the person's own words: when the
+An `ask_user` call returns at once (`askuser.QueuedText`: the id, and what to do meanwhile), and
+the answer reaches the model as a message; a converted question that waits gets that JSON as its
+result, followed by a line for a follow-up, delegated or skipped questions (`askuser.ToolResult`),
+or its answer in its mechanism's own shape. An elicitation form has no place for the person's own words: when the
 answer has a note, a general note, a question back, a choice in their own words or a delegation
 (`askuser.SaysMore`), the form gets the values it takes and `Answer` reports `ErrAskDeferred`, so
 that the whole answer also goes as a message (§4.4). An answer that arrives as a message is
-`askuser.MessageText`: the questions and the answers in words, then the same JSON.
+`askuser.MessageText`: "The person answered your question <id>", the question and the answer in
+words, what waited for it (`blocks`), then the same JSON.
 
-**Waiting calls** (`agent.Waits`). The Claude, Codex and fake adapters keep the calls that wait on
-the person in one `agent.Waits`: `Wait` emits the call's `ask` and blocks until the answer or the
+**Waiting calls** (`agent.Waits`). No `ask_user` call waits; the Claude, Codex and fake adapters
+keep the calls that still do (elicitations, Codex's `request_user_input`, the fake's `/ask`) in one
+`agent.Waits`: `Wait` emits the call's `ask` and blocks until the answer or the
 end of its context (the CLI withdrew the call, or exited); `Answer` hands the answer over. The
 waiting call alone decides: `Answer` reports success only when the call took the answer while its
 context still ran, otherwise `ErrAskGone`, so an answer is never journaled as delivered through
@@ -441,9 +444,11 @@ Rules every adapter keeps:
    event). A message left `pending` or `queued` when a host dies is handed to the next one.
 5. For every turn: `turn.started` (with the user `message_id`), an assistant `message`, parts, and
    `turn.ended`. End every part with a full `part` event. Tool output streams as `part.delta`.
-6. Offer `ask_user` (§2, Asks) and emit `ask{turn_id}` for each call, with the payload the call
-   normalised to; emit `ask{via:"message"}` (or return `ErrAskDeferred` from `Answer`) for an ask
-   whose answer is meant to start the next turn. Set `parent_part_id` on everything a subagent or
+6. Offer `ask_user`, `check_questions` and `withdraw_question` (§2, Asks; REBUILD §5) and emit
+   `ask{turn_id, via:"message"}` for each `ask_user` call, with the payload the call normalised to
+   and an id from `askuser.NewID`, returning at once; refuse a subagent's call
+   (`askuser.ErrSubagent`). A native question that waits emits `ask{turn_id}` (or returns
+   `ErrAskDeferred` from `Answer` when its answer is to go as a message as well). Set `parent_part_id` on everything a subagent or
    workflow produces. Report `ErrAskGone` from `Answer` when the blocking call is not there — and
    once the CLI has withdrawn it (an interrupt, a timeout, its exit), even if a goroutine of the
    adapter still holds it (`agent.Waits` does this); a carrier of MCP calls ends a call's context
@@ -460,7 +465,7 @@ Rules every adapter keeps:
 | turn end | `result` (`is_error`, `terminal_reason`) | `turn/completed` status | `session.idle` (outcome from `session.error` / `info.error` / the limit) |
 | limits | `rate_limit_event` → `rate_limit` | `account/rateLimits/updated` | `session.status retry` with `action.reason`, or a 429 error |
 | usage | `result.usage`, `total_cost_usd` delta; each main-thread `assistant`'s `message.usage` → `usage` (the context; the window as the last result said) | `thread/tokenUsage/updated` | `step-finish` → `usage`; assistant `info.tokens`/`cost` summed per turn (`output` = OpenCode's output + reasoning, which it counts apart) |
-| `ask_user` (WP6) | in-process MCP server `socrates` over the control protocol (`mcp__socrates__ask_user`), blocking | dynamic tool `ask_user`, blocking; code-mode models: returns at once, `via:"message"` | local MCP server `socrates mcp-ask` (`socrates_ask_user`), waiting in the host (§4.4), with progress |
+| `ask_user` (WP6) | in-process MCP server `socrates` over the control protocol (`mcp__socrates__ask_user`, with `check_questions` and `withdraw_question`), returns at once, `via:"message"`; a subagent's call is refused | dynamic tools `ask_user`, `check_questions`, `withdraw_question`, the same on every model; a subagent thread's call is refused | local MCP server `socrates mcp-ask` (`socrates_ask_user` …), through the host's `ask` op with `via: "message"` and its `questions` and `withdraw_ask` ops (§4.1) |
 | guidance | `--append-system-prompt` | the thread's developer instructions | the MCP server's `instructions` (OpenCode puts them into the system prompt) |
 | own questions | `AskUserQuestion` disallowed; MCP elicitations asked as forms | `request_user_input`, async questions, MCP elicitation forms asked; tool-call approvals accepted | `question` denied; one that arrives is asked |
 
@@ -816,8 +821,8 @@ answered in the form's shape and reported `ErrAskDeferred` (§2, Asks).
 
 | what | asked as | the answer goes back as |
 |---|---|---|
-| dynamic tool `ask_user` (`item/tool/call`) | `ask{payload, part_id}` of the turn, blocking; a call `askuser.Parse` refuses → `success: false` with what to fix | `contentItems: [{inputText: askuser.ToolResult}]` |
-| the same on a code-mode model (`gpt-6*`, whose tools run inside `exec` and would be polled every ~30 s) | `ask{via: "message"}`; the tool returns at once `"Questions delivered. End your turn now; the answers arrive as the next message."` | the next user message (§4.4) |
+| dynamic tool `ask_user` (`item/tool/call`), on every model | `ask{payload, part_id, via: "message"}` of the turn; the tool returns at once `askuser.QueuedText`, and the same question again in the turn `AskedText` without asking twice; a call `askuser.Parse` refuses → `success: false` with what to fix; a subagent thread's → `askuser.SubagentText` | a user message (§4.4) |
+| dynamic tools `check_questions`, `withdraw_question` | `StartSpec.Questions` (the host's journal) | their text at once |
 | `item/tool/requestUserInput` (Plan mode) | `source: request_user_input`, labels as option ids, `isSecret` → `secret` | `{answers: {<id>: {answers: [labels, own words, "Note: …"]}}}` |
 | an agent message with `delivery: "async"` and `questions` (`request_user_input_async`) | `ask{via: "message", source: async_question}` once the item completes; the turn goes on | the next user message |
 | `mcpServer/elicitation/request`, mode `form` | `source: elicitation`, one question per field | `{action: accept, content}`, or `decline` when nothing was answered; a URL or device verification → `decline` + `notice{elicitation_declined}` |
@@ -1425,7 +1430,7 @@ attachment(s): …`).
   host: `mcp-ask` answered through the host, and an aborted call answered as a message.
   `e2e/asks.mjs`: the real binary with the three fakes as the CLIs, the answer route with the
   dialog's §5.2 body for each agent, a second device, the answer after an interrupt, Codex code
-  mode. Real binaries: `SOCRATES_REAL_CODEX=1` (ask_user blocking, code mode deferred, Plan mode
+  mode. Real binaries: `SOCRATES_REAL_CODEX=1` (ask_user returning at once on a classic and a code-mode model, Plan mode
   `request_user_input`, `request_user_input_async`, an MCP server's elicitation through the
   granular policy, the guidance in the developer instructions, kept once by a thread resumed
   twice), `SOCRATES_OPENCODE_REAL=1` (serve

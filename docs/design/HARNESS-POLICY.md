@@ -404,8 +404,10 @@ Socrates' own MCP server (`internal/agent/chattools`).
 - **Forgiving calls.** `send_to_chat` takes the names an agent guesses
   before it has loaded the tool (`chat_id`, `message` ...; Claude Code
   defers MCP tools), and a call it cannot read says how to call it. An
-  agent whose own question to its person is still open cannot send: a
-  code-mode Codex model, whose `ask_user` returns at once, told the other
+  agent whose own question to its person is still open may send (its
+  `ask_user` never waits, and its work may need the other chat), but the
+  result tells it that nothing it sends may answer for its person or
+  depend on their answer: a code-mode Codex model once told the other
   chat "Yes" before its person had answered. Its answer says the message was
   delivered, or will be once the other agent's turn ends or its agent has
   started, and that the answer comes as the next message: end the turn,

@@ -2299,7 +2299,7 @@ a yes/no: a confirm answer is `selected: ["yes"|"no"]` with `value: true|false`,
 carries `value`, and `min`/`max` bound a number question's value too. The payload carries `part_id`
 (the tool part of the call) and `source` (when the questions came from the agent's own
 mechanism); an MCP elicitation's questions offer no "You decide", and a form without fields is one
-yes-or-no question (accept or decline). The limits of §5.1 (20 questions, 12 options) bind the
+yes-or-no question (accept or decline). The limits of §5.1 (one question, 12 options) bind the
 model's calls only: a converted payload keeps every field and choice, because one cut off could not
 be answered the way its mechanism requires. A question left without an id is `q<n>` by place, never
 an id the model gave another one. An elicitation form has no place for a note, a general note or a

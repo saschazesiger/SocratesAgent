@@ -65,7 +65,9 @@ Binding documents, in order:
   that dies is noticed, its turn closed as interrupted, and the conversation resumed by the next
   host. The chat view streams Markdown, reasoning, tool rows, diffs, subagents and workflows, the
   task list, the plan card, attachments, a slash palette and the model and account pickers.
-- **ask_user** (WP6): one tool for all three agents, which always waits for the answer. Its card
+- **ask_user** (WP6): one tool for all three agents. Since 2026-11-27 it never waits: one question
+  per call goes into the person's queue, the agent works on and ends its turn, and the answer
+  arrives as a message (`check_questions`, `withdraw_question` beside it). Its card
   stands where the agent asked, inside the answer, with what the agent said afterwards under it;
   the dialog is the whole screen on a phone and in a car. Native question tools are off; what
   still arrives (Codex's plan mode, elicitations, OpenCode's question tool) is converted to the
