@@ -628,6 +628,11 @@ func (f *fake) turn(ctx context.Context, j job) {
 
 func (t *turnRun) script() {
 	text := strings.TrimSpace(t.job.text)
+	if strings.HasPrefix(text, "<socrates-note>") {
+		if _, after, ok := strings.Cut(text, "</socrates-note>"); ok {
+			text = strings.TrimSpace(after)
+		}
+	}
 	if line, ok := scripted()[text]; ok {
 		text = line
 	}

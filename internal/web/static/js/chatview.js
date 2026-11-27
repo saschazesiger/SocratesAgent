@@ -562,11 +562,17 @@ export function mountChat(ctx) {
         forgetAskDraft(ask.id);
       }
       // Only a plan is drawn where it was asked; every other question waits
-      // in the questions dialog (the top bar's Questions), and its answer is
-      // a line of its own.
-      if (!ask.payload || ask.payload.kind !== 'plan') return '';
-      rev = ask.rev + ':' + local;
-      make = () => askCard(ask, view);
+      // in the questions dialog (the top bar's Questions). Its answer is a
+      // line: the answer's message draws it for a question answered as a
+      // message (every ask_user question), and the question itself for one
+      // a call waited on, whose answer went back to that call.
+      if (ask.payload && ask.payload.kind === 'plan') {
+        rev = ask.rev + ':' + local;
+        make = () => askCard(ask, view);
+      } else if (ask.answered && ask.deliver !== 'message' && ask.delivered !== 'message') {
+        rev = ask.rev + ':answered';
+        make = () => answerLine({ key: entry.key, ask });
+      } else return '';
     } else if (entry.line && entry.line.kind === 'turn' && entry.line.outcome === 'limited') {
       // "Renews in" moves with the clock.
       return String(lineHtml(entry, view));
@@ -744,7 +750,9 @@ export function mountChat(ctx) {
   // but a plan, which its card in the chat answers.
   function drawQuestions() {
     if (!ctx.questions) return;
-    const count = synced ? openAsks(chat).filter((ask) => !ask.payload || ask.payload.kind !== 'plan').length : 0;
+    // An answer of this browser's still on its way has answered its
+    // question already: the line at the end of the chat says where it is.
+    const count = synced ? openAsks(chat).filter((ask) => (!ask.payload || ask.payload.kind !== 'plan') && !view.pendingAnswer(ask)).length : 0;
     ctx.questions(session.id, count);
   }
 

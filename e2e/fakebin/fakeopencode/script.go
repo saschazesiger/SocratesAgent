@@ -456,6 +456,11 @@ func (t *turn) tool(name string, input map[string]any, lines []string, meta map[
 
 // play writes the answer to text.
 func (t *turn) play(text string) error {
+	// Socrates' note to the agent (the open questions, the other chats)
+	// comes before the person's words; the directive is after it.
+	if _, after, ok := strings.Cut(text, "</socrates-note>"); ok && strings.HasPrefix(strings.TrimSpace(text), "<socrates-note>") {
+		text = after
+	}
 	word, args, _ := strings.Cut(strings.TrimSpace(text), " ")
 	fields := strings.Fields(args)
 	t.step()

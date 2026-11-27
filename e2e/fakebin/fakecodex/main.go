@@ -863,6 +863,11 @@ func atof(fields []string, i int, fallback float64) float64 {
 
 // script runs one turn's directive and returns its status and error.
 func (c *tcx) script(text string) (string, map[string]any) {
+	// Socrates' note to the agent (the open questions, the other chats)
+	// comes before the person's words; the directive is after it.
+	if _, after, ok := strings.Cut(text, "</socrates-note>"); ok && strings.HasPrefix(strings.TrimSpace(text), "<socrates-note>") {
+		text = after
+	}
 	word, rest, _ := strings.Cut(strings.TrimSpace(text), " ")
 	fields := strings.Fields(rest)
 	ok := true
