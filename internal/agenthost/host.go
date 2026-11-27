@@ -467,7 +467,7 @@ func (h *host) boot() {
 	spec := agent.StartSpec{
 		ChatID: h.opts.ChatID, Workdir: h.spec.Workdir, StateDir: filepath.Join(h.dir, stateDir),
 		DataDir: h.opts.DataDir, Env: env, Account: h.spec.Account, Model: h.spec.Model, Effort: h.spec.Effort,
-		ResumeID: resume, Rebuild: rebuild, Held: held, Spawn: h.spawn, Binary: h.spec.Binary, AskCommand: h.askCommand(), Instructions: h.spec.Instructions,
+		ResumeID: resume, Rebuild: rebuild, Held: held, Spawn: h.spawn, Binary: h.spec.Binary, AskCommand: h.askCommand(), Questions: hostQuestions{h}, Instructions: h.spec.Instructions,
 		MCPServers: h.chatMCP(env), ChatTools: h.spec.ChatTools,
 	}
 	if resume == "" && len(pending) > 0 {
@@ -719,6 +719,10 @@ func (h *host) handle(c *hostConn, cmd Command) any {
 		return h.answer(ctx, cmd)
 	case OpAsk:
 		return h.toolAsk(c, cmd)
+	case OpQuestions:
+		return Ack{T: FrameAck, ClientID: cmd.ClientID, Op: cmd.Op, Asks: h.questions()}
+	case OpWithdrawAsk:
+		return h.withdrawAsk(cmd)
 	case OpInterrupt, OpSetModel, OpCommand, OpPark, OpStopTask:
 		return h.control(ctx, cmd)
 	case OpSwitchAccount:
@@ -797,7 +801,7 @@ func (h *host) send(ctx context.Context, cmd Command) any {
 		if !person {
 			return
 		}
-		for _, a := range p.OpenAsks() {
+		for _, a := range p.Waited() {
 			if !unwaited[a.ID] {
 				waited = append(waited, *a)
 				batch = append(batch, agent.Event{Type: agent.TypeAskClosed, AskID: a.ID, Code: agent.AskClosedMessage})
@@ -892,6 +896,16 @@ func (h *host) toolAsk(c *hostConn, cmd Command) any {
 			ev.TurnID = p.Turn.ID
 		}
 	})
+	if cmd.Via == agent.ViaMessage {
+		// An ask_user question: nothing waits for it, and its answer goes
+		// as a message (REBUILD.md §5.3).
+		ev.AskID, ev.Via = askuser.NewID(), agent.ViaMessage
+		events, err := h.rec.EmitDurable(ev)
+		if err != nil {
+			return fail(cmd, CodeFailed, "the question could not be journaled: "+err.Error())
+		}
+		return Ack{T: FrameAck, ClientID: cmd.ClientID, Op: cmd.Op, Seq: events[0].Seq, AskID: ev.AskID}
+	}
 	if ev.TurnID == "" {
 		return fail(cmd, CodeBadRequest, "no turn is running, so nothing can wait for an answer")
 	}
@@ -1076,7 +1090,7 @@ func (h *host) control(ctx context.Context, cmd Command) any {
 		// answers any more, so the chat stops waiting on them. An answer that
 		// still comes goes as a message.
 		h.rec.View(func(p *agent.Projection) {
-			for _, a := range p.OpenAsks() {
+			for _, a := range p.Waited() {
 				if p.Turn != nil && a.TurnID == p.Turn.ID {
 					batch = append(batch, agent.Event{Type: agent.TypeAskClosed, AskID: a.ID, Code: agent.AskClosedStopped})
 				}
@@ -1505,4 +1519,56 @@ func withUltracode(spec []string, on bool) []string {
 		env = append(env, UltracodeEnv+"=1")
 	}
 	return env
+}
+
+// questions is the chat's ask_user questions, oldest first: what
+// check_questions reads (OpQuestions, hostQuestions.List).
+func (h *host) questions() []askuser.Asked {
+	var out []askuser.Asked
+	h.rec.View(func(p *agent.Projection) { out = p.AskedQuestions() })
+	return out
+}
+
+// withdrawQuestion closes the open ask_user question id at the agent's
+// request (withdraw_question): ask.closed{withdrawn} with the reason. It
+// reports false for an id that is not such a question.
+func (h *host) withdrawQuestion(id, reason string) (bool, error) {
+	open := false
+	h.rec.View(func(p *agent.Projection) {
+		for _, q := range p.AskedQuestions() {
+			if q.ID == id && q.State == askuser.StateOpen {
+				open = true
+			}
+		}
+	})
+	if !open {
+		return false, nil
+	}
+	_, err := h.rec.EmitDurable(agent.Event{Type: agent.TypeAskClosed, AskID: id, Code: agent.AskClosedWithdrawn, Text: reason})
+	return err == nil, err
+}
+
+// withdrawAsk is OpWithdrawAsk, withdraw_question for `socrates mcp-ask`.
+func (h *host) withdrawAsk(cmd Command) any {
+	if cmd.AskID == "" {
+		return fail(cmd, CodeBadRequest, "a withdraw_ask needs an ask_id")
+	}
+	ok, err := h.withdrawQuestion(cmd.AskID, cmd.Reason)
+	switch {
+	case err != nil:
+		return fail(cmd, CodeFailed, "the withdrawal could not be journaled: "+err.Error())
+	case !ok:
+		return fail(cmd, CodeUnknownAsk, "this chat has no open question "+cmd.AskID)
+	}
+	return Ack{T: FrameAck, ClientID: cmd.ClientID, Op: cmd.Op}
+}
+
+// hostQuestions is the host's questions as an adapter serves them in-process
+// (StartSpec.Questions).
+type hostQuestions struct{ h *host }
+
+func (q hostQuestions) List(context.Context) ([]askuser.Asked, error) { return q.h.questions(), nil }
+
+func (q hostQuestions) Withdraw(_ context.Context, id, reason string) (bool, error) {
+	return q.h.withdrawQuestion(id, reason)
 }

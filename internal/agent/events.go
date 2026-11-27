@@ -153,6 +153,9 @@ const (
 	AskClosedMessage = "message"
 	// AskClosedStopped is the person stopping the turn that asked.
 	AskClosedStopped = "stopped"
+	// AskClosedWithdrawn is the agent withdrawing its question
+	// (withdraw_question); the event's Text is its reason.
+	AskClosedWithdrawn = "withdrawn"
 )
 
 // Process states.

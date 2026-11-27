@@ -3,6 +3,8 @@ package agent
 import (
 	"encoding/json"
 	"strings"
+
+	"github.com/saschazesiger/SocratesAgent/internal/agent/askuser"
 )
 
 // Projection is a journal folded into the chat as it stands: the messages and
@@ -161,8 +163,11 @@ type Ask struct {
 	// though it may still come.
 	Closed   bool  `json:"closed,omitempty"`
 	ClosedAt int64 `json:"closed_at,omitempty"`
-	// ClosedBy is why it was closed: AskClosedMessage or AskClosedStopped.
-	ClosedBy string `json:"closed_by,omitempty"`
+	// ClosedBy is why it was closed: AskClosedMessage, AskClosedStopped or
+	// AskClosedWithdrawn, and ClosedReason the agent's reason of a
+	// withdrawn one.
+	ClosedBy     string `json:"closed_by,omitempty"`
+	ClosedReason string `json:"closed_reason,omitempty"`
 }
 
 // RateLimit is the last reading of one usage window.
@@ -245,6 +250,9 @@ func (p *Projection) Apply(ev Event) {
 	case TypeAskClosed:
 		if a := p.asks[ev.AskID]; a != nil && !a.Answered && !a.Closed {
 			a.Closed, a.ClosedAt, a.ClosedBy = true, ev.At, ev.Code
+			if ev.Code == AskClosedWithdrawn {
+				a.ClosedReason = ev.Text
+			}
 			if a.ClosedBy == "" {
 				a.ClosedBy = AskClosedMessage
 			}
@@ -618,18 +626,56 @@ func (p *Projection) OpenAsks() []*Ask {
 	return out
 }
 
-// Unwaited is every open question no call waits on any more: its turn has
-// ended (an interrupt, a host that died) or it was answered as the next
-// message by design. A message from the person closes them (ask.closed),
-// because they moved on. An ask without a turn is left alone: the adapter
-// did not say what it belongs to, so a call may still wait on it.
+// Unwaited is every open question a call waited on and no longer does: its
+// turn has ended (an interrupt, a host that died). A message from the person
+// closes them (ask.closed), because they moved on. An ask answered as a
+// message by design (every ask_user question) is never among them: nothing
+// waited on it, and it stays open until it is answered or withdrawn. An ask
+// without a turn is left alone: the adapter did not say what it belongs to,
+// so a call may still wait on it.
 func (p *Projection) Unwaited() []*Ask {
 	var out []*Ask
 	for _, a := range p.OpenAsks() {
 		ended := a.TurnID != "" && (p.Turn == nil || p.Turn.ID != a.TurnID)
-		if a.Deliver == ViaMessage || ended {
+		if a.Deliver != ViaMessage && ended {
 			out = append(out, a)
 		}
+	}
+	return out
+}
+
+// Waited is every open question a call may still wait on: not one answered
+// as a message by design.
+func (p *Projection) Waited() []*Ask {
+	var out []*Ask
+	for _, a := range p.OpenAsks() {
+		if a.Deliver != ViaMessage {
+			out = append(out, a)
+		}
+	}
+	return out
+}
+
+// AskedQuestions is the chat's ask_user questions, oldest first, as
+// check_questions reads them (REBUILD.md §5.1): every ask the agent put with
+// its own tool, not one converted from another mechanism, nor a plan card.
+func (p *Projection) AskedQuestions() []askuser.Asked {
+	var out []askuser.Asked
+	for _, a := range p.Asks {
+		pl := askuser.Decode(a.Payload)
+		if pl == nil || pl.Source != "" || len(pl.Questions) == 0 {
+			continue
+		}
+		q := askuser.Asked{ID: a.ID, Payload: a.Payload, State: askuser.StateOpen}
+		switch {
+		case a.Answered:
+			q.State, q.Answer = askuser.StateAnswered, a.Answer
+		case a.Closed && a.ClosedBy == AskClosedWithdrawn:
+			q.State, q.Reason = askuser.StateWithdrawn, a.ClosedReason
+		case a.Closed:
+			q.State = askuser.StateClosed
+		}
+		out = append(out, q)
 	}
 	return out
 }
@@ -729,12 +775,13 @@ func (p *Projection) Summary() Summary {
 			s.Queued++
 		}
 	}
-	// An open question outranks a running turn only when the turn is the
-	// one that asked: a turn of its own means the agent went on, and the
-	// question waits for the person without holding the agent up.
+	// An open question outranks a running turn only when a call of that
+	// turn waits on it: a turn of its own means the agent went on, and so
+	// does an ask_user question, which never holds the agent up (REBUILD.md
+	// §5.3).
 	waiting := false
 	for _, a := range p.OpenAsks() {
-		waiting = waiting || p.Turn == nil || a.TurnID == "" || a.TurnID == p.Turn.ID
+		waiting = waiting || p.Turn == nil || a.Deliver != ViaMessage && (a.TurnID == "" || a.TurnID == p.Turn.ID)
 	}
 	switch {
 	case waiting:

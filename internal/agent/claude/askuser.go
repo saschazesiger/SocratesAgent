@@ -21,25 +21,28 @@ const chatsPrefix = "mcp__" + askuser.ServerName + "__"
 // askGuidance is the system-prompt text every chat gets (REBUILD.md §5.3).
 // Claude Code defers MCP tools behind ToolSearch, which the model finds on
 // its own; saying so saves it a turn of looking.
-var askGuidance = askuser.Guidance(AskTool) +
-	" If the tool is not loaded yet, load it with ToolSearch (select:" + AskTool + ") first."
+var askGuidance = askuser.Guidance(AskTool, chatsPrefix) +
+	" If the tools are not loaded yet, load them with ToolSearch (select:" + AskTool + "," + chatsPrefix + askuser.CheckName +
+	"," + chatsPrefix + askuser.WithdrawName + ") first."
 
 // todoGuidance is how a chat keeps its task list (agent.TodoGuidance): the
 // TaskCreate calls of a new list go out in one message.
 var todoGuidance = agent.TodoGuidance("TaskCreate (all entries in one message) and TaskUpdate")
 
-// askServerConfig is the server's sdkMcpServerConfigs entry. An in-process
-// server has no idle timeout, only the wall-clock one, which is set as high
-// as the CLI takes it (2^31-1 ms, almost 25 days), so that a question waits
-// for as long as the person takes (verified 20 minutes, research/03 §4.4).
-// disableAutoBackground keeps the CLI from moving a waiting call into the
-// background: "meant for a server whose calls wait on a person".
+// askServerConfig is the server's sdkMcpServerConfigs entry. ask_user
+// returns at once, but an elicitation the server forwards waits for the
+// person: an in-process server has no idle timeout, only the wall-clock one,
+// which is set as high as the CLI takes it (2^31-1 ms, almost 25 days).
+// disableAutoBackground keeps the CLI from moving a call into the
+// background.
 var askServerConfig = json.RawMessage(`{"timeout":2147483647,"disableAutoBackground":true}`)
 
-// askServer is ask_user as the chat's in-process MCP server: the CLI reaches
-// it over the control protocol (mcp_message), a call becomes an ask event
-// and blocks until Answer brings the person's answer, which the model gets
-// in the shape of REBUILD.md §5.2.
+// askServer is the chat's in-process MCP server "socrates": the CLI reaches
+// it over the control protocol (mcp_message). ask_user puts its question
+// as an ask the answer of which goes to the agent as a message, and returns
+// at once; check_questions and withdraw_question read and close the
+// journal's questions (StartSpec.Questions); the chat tools reach the
+// server. An elicitation the CLI forwards waits for its answer (waits).
 type askServer struct {
 	a     *Adapter
 	mcp   *askuser.MCP
@@ -49,11 +52,9 @@ type askServer struct {
 func newAskServer(a *Adapter) *askServer {
 	s := &askServer{a: a}
 	a.mu.Lock()
-	chats := a.spec.ChatTools
+	chats, questions := a.spec.ChatTools, a.spec.Questions
 	a.mu.Unlock()
-	// The chat tools are on the same server: they reach Socrates directly and return at once, so they
-	// need no wait of their own.
-	s.mcp = &askuser.MCP{Ask: s.ask, Chats: chats}
+	s.mcp = &askuser.MCP{Put: s.put, Chats: chats, Questions: questions}
 	return s
 }
 
@@ -64,50 +65,45 @@ func (s *askServer) Handle(ctx context.Context, message json.RawMessage) (json.R
 	return s.mcp.Handle(ctx, message), nil
 }
 
-// ask puts one call to the person. Its id is the tool call's, so that a view
-// can draw the ask with the tool part it belongs to.
-func (s *askServer) ask(ctx context.Context, call askuser.Call) (json.RawMessage, error) {
-	id := "ask_" + randomID()
-	if call.ToolUseID != "" {
-		id = "ask_" + call.ToolUseID
-		call.Payload.PartID = call.ToolUseID
+// put puts one ask_user question into the person's queue: an ask of the
+// running turn with via message, drawn at its tool part. A subagent's call
+// is refused (askuser.ErrSubagent): the answer would reach only the main
+// agent.
+func (s *askServer) put(_ context.Context, call askuser.Call) (string, error) {
+	id := askuser.NewID()
+	s.a.mu.Lock()
+	turnID, out := "", s.a.out
+	if st := s.a.st; st != nil {
+		if st.turn != nil {
+			turnID = st.turn.id
+		}
+		if p := st.parts[call.ToolUseID]; call.ToolUseID != "" && p != nil && p.parent != "" {
+			s.a.mu.Unlock()
+			return "", askuser.ErrSubagent
+		}
 	}
-	return s.wait(ctx, id, call.ToolUseID, call.Payload.JSON())
+	s.a.mu.Unlock()
+	call.Payload.PartID = call.ToolUseID
+	out.Emit(agent.Event{Type: agent.TypeAsk, AskID: id, TurnID: turnID, Payload: call.Payload.JSON(), Via: agent.ViaMessage})
+	return id, nil
 }
 
 // wait emits an ask of the running turn and blocks until its answer or the
 // end of ctx: the CLI withdrew the call (an interrupt, a timeout) or exited.
-// part is the tool part of the call, "" for an elicitation.
-func (s *askServer) wait(ctx context.Context, id, part string, payload json.RawMessage) (json.RawMessage, error) {
+func (s *askServer) wait(ctx context.Context, id string, payload json.RawMessage) (json.RawMessage, error) {
 	s.a.mu.Lock()
 	turnID, out := "", s.a.out
 	if s.a.st != nil && s.a.st.turn != nil {
 		turnID = s.a.st.turn.id
 	}
 	s.a.mu.Unlock()
-	return s.waits.Wait(ctx, out, agent.Event{Type: agent.TypeAsk, AskID: id, TurnID: turnID, Payload: payload}, part)
+	return s.waits.Wait(ctx, out, agent.Event{Type: agent.TypeAsk, AskID: id, TurnID: turnID, Payload: payload}, "")
 }
 
 // Answer hands an answer to the call waiting on it, and reports
 // agent.ErrAskGone when none is (agent.Waits).
 func (s *askServer) Answer(_ context.Context, askID string, answer json.RawMessage) error {
 	return s.waits.Answer(askID, answer)
-}
-
-// withdraw is an interrupt the CLI acknowledged: it has stopped the turn,
-// and with it the main agent's ask_user calls in that turn, even while the
-// cancels of those calls are still on their way. A call a subagent made, or
-// an elicitation, is left to its cancel, because a subagent in the
-// background outlives the turn; a call whose part the turn's end has already
-// dropped was not one of those. The caller holds a.mu.
-func (s *askServer) withdraw(turnID string) {
-	if turnID == "" {
-		return
-	}
-	s.waits.Withdraw(func(turn, part string) bool {
-		p := s.a.st.parts[part]
-		return turn == turnID && part != "" && (p == nil || p.parent == "")
-	})
 }
 
 // elicit is an MCP elicitation the CLI forwards (a form a server wants the
@@ -126,7 +122,7 @@ func (s *askServer) elicit(ctx context.Context, id string, req controlRequest) m
 			Text: "The MCP server " + req.MCPServerName + " asked for something Socrates cannot show, so it was declined: " + message})
 		return map[string]any{"action": "decline"}
 	}
-	answer, err := s.wait(ctx, "ask_elicit_"+id, "", p.JSON())
+	answer, err := s.wait(ctx, "ask_elicit_"+id, p.JSON())
 	if err != nil {
 		return nil
 	}

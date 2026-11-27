@@ -845,26 +845,11 @@ func isImage(mime string) bool {
 	return false
 }
 
-// Interrupt ends the running turn gracefully: what was written stays. Once
-// the CLI has acknowledged it, the turn's ask_user calls are withdrawn: an
-// answer from then on goes as a message, even if the cancel of its call has
-// not been read yet.
+// Interrupt ends the running turn gracefully: what was written stays. No
+// ask_user call waits (REBUILD.md §5.3), so nothing is left to withdraw.
 func (a *Adapter) Interrupt(ctx context.Context) error {
-	a.mu.Lock()
-	turnID := ""
-	if a.st != nil && a.st.turn != nil {
-		turnID = a.st.turn.id
-	}
-	a.mu.Unlock()
-	if _, err := a.request(ctx, map[string]any{"subtype": "interrupt"}); err != nil {
-		return err
-	}
-	a.mu.Lock()
-	if a.ask != nil {
-		a.ask.withdraw(turnID)
-	}
-	a.mu.Unlock()
-	return nil
+	_, err := a.request(ctx, map[string]any{"subtype": "interrupt"})
+	return err
 }
 
 // Answer delivers an answer: to the plan card waiting on ExitPlanMode, or to

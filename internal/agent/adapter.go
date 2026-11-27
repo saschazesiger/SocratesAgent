@@ -201,6 +201,11 @@ type StartSpec struct {
 	// ask_user, in-process or through AskCommand (chattools.Endpoint.Env).
 	// The zero value offers none.
 	ChatTools chattools.Endpoint
+	// Questions is the chat's ask_user questions in the host's journal,
+	// which check_questions reads and withdraw_question closes (REBUILD.md
+	// §5.1), for an adapter that serves them in-process (Claude, Codex).
+	// Nil outside a host.
+	Questions askuser.Questions
 	// Spawn starts a CLI child: on the host's locked main thread, in a
 	// process group of its own, with SIGKILL as its parent-death signal, so
 	// that a host that dies takes its CLI with it (REBUILD.md §2.1). An

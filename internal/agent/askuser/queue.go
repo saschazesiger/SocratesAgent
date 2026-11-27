@@ -52,13 +52,13 @@ const (
 
 // Asked is one question of the chat as check_questions reads it.
 type Asked struct {
-	ID      string
-	Payload json.RawMessage
-	State   string
+	ID      string          `json:"id"`
+	Payload json.RawMessage `json:"payload"`
+	State   string          `json:"state"`
 	// Answer is the person's answer of an answered question; Reason the
 	// agent's reason of a withdrawn one.
-	Answer json.RawMessage
-	Reason string
+	Answer json.RawMessage `json:"answer,omitempty"`
+	Reason string          `json:"reason,omitempty"`
 }
 
 // MaxChecked is how many questions check_questions lists, the newest.

@@ -14,6 +14,7 @@ import (
 	"errors"
 
 	"github.com/saschazesiger/SocratesAgent/internal/agent"
+	"github.com/saschazesiger/SocratesAgent/internal/agent/askuser"
 )
 
 // The host protocol's versions. A server speaks every version from
@@ -22,9 +23,10 @@ import (
 // busy for a day - is still understood. Version 2 added the ask op of a local
 // tool (`socrates mcp-ask`); version 3 a send's Note and Sender, which the
 // server puts into the text for a host of an older build (FoldNote); version
-// 4 the withdraw op; version 5 the notice op.
+// 4 the withdraw op; version 5 the notice op; version 6 the ask op's via and
+// the questions and withdraw_ask ops.
 const (
-	Protocol    = 5
+	Protocol    = 6
 	MinProtocol = 1
 	// AskProtocol is the first version with OpAsk.
 	AskProtocol = 2
@@ -34,6 +36,9 @@ const (
 	WithdrawProtocol = 4
 	// NoticeProtocol is the first version with OpNotice.
 	NoticeProtocol = 5
+	// QuestionsProtocol is the first version with Command.Via on OpAsk and
+	// with OpQuestions and OpWithdrawAsk.
+	QuestionsProtocol = 6
 )
 
 // NoEvents is the since of a connection that wants no events at all, beyond
@@ -71,6 +76,12 @@ const (
 	// an ask of the running turn, acknowledges it with its ask id, and sends
 	// the answer on the same connection, as an answer frame, when it comes.
 	OpAsk = "ask"
+	// OpQuestions reads the chat's ask_user questions for check_questions
+	// (protocol 6): acknowledged with Asks, journaling nothing.
+	OpQuestions = "questions"
+	// OpWithdrawAsk is withdraw_question (protocol 6): the open ask_user
+	// question AskID is closed with Reason (ask.closed{withdrawn}).
+	OpWithdrawAsk = "withdraw_ask"
 	// OpNotice is a line the server has to say in the chat (protocol 5):
 	// the host journals a notice with Notice as its code and Text as its
 	// words, and acknowledges it. It needs no agent, and no client_id: a
@@ -146,8 +157,11 @@ type Command struct {
 	Effort      string             `json:"effort,omitempty"`
 	Name        string             `json:"name,omitempty"`
 	Args        string             `json:"args,omitempty"`
-	// Payload is an ask op's question: an ask_user payload.
+	// Payload is an ask op's question: an ask_user payload. Via is
+	// agent.ViaMessage for a question the tool does not wait for (every
+	// ask_user call, protocol 6): its answer goes to the agent as a message.
 	Payload json.RawMessage `json:"payload,omitempty"`
+	Via     string          `json:"via,omitempty"`
 	// Task is a stop_task's task id.
 	Task string `json:"task,omitempty"`
 	// Message is a withdraw's message id.
@@ -221,6 +235,8 @@ type Ack struct {
 	// Withdrawn is a withdraw that took the message back: false is a
 	// message the agent has taken up already.
 	Withdrawn bool `json:"withdrawn,omitempty"`
+	// Asks is a questions op's answer: the chat's ask_user questions.
+	Asks []askuser.Asked `json:"asks,omitempty"`
 }
 
 // Answer is the answer to an ask a connection asked (OpAsk).

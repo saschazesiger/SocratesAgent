@@ -25,10 +25,10 @@ const MCPAskTool = askuser.ServerName + "_" + askuser.Name
 // MCPAskMain is the `socrates mcp-ask --socket <host socket> [--pages
 // <dir>]` subcommand, and its exit code: ask_user as an MCP server on stdin
 // and stdout, for an agent CLI that runs its MCP servers as processes of its
-// own (OpenCode). Every call reaches the chat's agent host over its socket
-// (OpAsk) and waits there for the answer, sending progress notifications
-// meanwhile, so that the CLI's call timeout never runs out (research/05
-// §4.3). The chat tools are served beside it when the environment names
+// own (OpenCode). Every call reaches the chat's agent host over its socket:
+// ask_user puts its question (OpAsk with via message) and returns at once,
+// check_questions and withdraw_question read and close the chat's questions
+// (OpQuestions, OpWithdrawAsk; REBUILD.md §5.3). The chat tools are served beside it when the environment names
 // their endpoint (chattools.FromEnv). --pages is the chat's pages folder, which the
 // server's instructions name (agent.PagesGuidance).
 func MCPAskMain(args []string, version string) int {
@@ -71,10 +71,10 @@ func ServeMCPAsk(ctx context.Context, sock, version string, chats chattools.Endp
 	var instructions string
 	switch {
 	case chats.Usable():
-		instructions = askuser.Guidance(MCPAskTool) + "\n\n" + chats.Guidance(askuser.ServerName+"_", false) +
+		instructions = askuser.Guidance(MCPAskTool, askuser.ServerName+"_") + "\n\n" + chats.Guidance(askuser.ServerName+"_", false) +
 			"\n\n" + agent.TodoGuidance("todowrite")
 	default:
-		instructions = askuser.Guidance(MCPAskTool) + "\n\n" + agent.TodoGuidance("todowrite")
+		instructions = askuser.Guidance(MCPAskTool, askuser.ServerName+"_") + "\n\n" + agent.TodoGuidance("todowrite")
 	}
 	// How to link a Markdown file so that it opens beside the chat (DOCS.md
 	// §3), and the chat's pages folder.
@@ -83,10 +83,10 @@ func ServeMCPAsk(ctx context.Context, sock, version string, chats chattools.Endp
 		Version:      version,
 		Instructions: instructions,
 		Chats:        chats,
-		Ask: func(ctx context.Context, call askuser.Call) (json.RawMessage, error) {
+		Put: func(ctx context.Context, call askuser.Call) (string, error) {
 			return askHost(ctx, sock, call.Payload)
 		},
-		Progress: func(token json.RawMessage, n int) { write(askuser.ProgressNotification(token, n)) },
+		Questions: socketQuestions{sock},
 	}
 	var calls sync.WaitGroup
 	var cmu sync.Mutex
@@ -136,21 +136,54 @@ func ServeMCPAsk(ctx context.Context, sock, version string, chats chattools.Endp
 	}
 }
 
-// askHost puts one question to the chat through its host and waits for the
-// answer on that connection. The connection asks for no events: a since far
-// beyond any journal.
-func askHost(ctx context.Context, sock string, payload askuser.Payload) (json.RawMessage, error) {
+// askHost puts one question into the chat's queue through its host and
+// returns its ask id: the answer goes to the agent as a message (REBUILD.md
+// §5.3). The connection asks for no events: a since far beyond any journal.
+func askHost(ctx context.Context, sock string, payload askuser.Payload) (string, error) {
+	ack, err := hostCommand(ctx, sock, Command{Op: OpAsk, Payload: payload.JSON(), Via: agent.ViaMessage})
+	if err != nil {
+		return "", err
+	}
+	return ack.AskID, nil
+}
+
+// socketQuestions is check_questions and withdraw_question through the
+// chat's host.
+type socketQuestions struct{ sock string }
+
+func (q socketQuestions) List(ctx context.Context) ([]askuser.Asked, error) {
+	ack, err := hostCommand(ctx, q.sock, Command{Op: OpQuestions})
+	if err != nil {
+		return nil, err
+	}
+	return ack.Asks, nil
+}
+
+func (q socketQuestions) Withdraw(ctx context.Context, id, reason string) (bool, error) {
+	_, err := hostCommand(ctx, q.sock, Command{Op: OpWithdrawAsk, AskID: id, Reason: reason})
+	if errors.Is(err, errUnknownAsk) {
+		return false, nil
+	}
+	return err == nil, err
+}
+
+// errUnknownAsk is the host's unknown_ask.
+var errUnknownAsk = errors.New("unknown question")
+
+// hostCommand sends one command of a local tool to the chat's host and
+// returns its ack.
+func hostCommand(ctx context.Context, sock string, cmd Command) (*Ack, error) {
 	c, err := Dial(ctx, sock, NoEvents)
 	if err != nil {
 		return nil, fmt.Errorf("the chat is not reachable: %w", err)
 	}
 	defer c.Close()
-	if c.Hello.Proto < AskProtocol {
-		return nil, errors.New("the chat's agent host is too old to ask; the question can be asked again after the chat restarts")
+	if c.Hello.Proto < QuestionsProtocol {
+		return nil, errors.New("the chat's agent host is too old for this; it can be done again after the chat restarts")
 	}
 	stop := context.AfterFunc(ctx, func() { c.Close() })
 	defer stop()
-	if err := c.Send(Command{Op: OpAsk, Payload: payload.JSON()}); err != nil {
+	if err := c.Send(cmd); err != nil {
 		return nil, err
 	}
 	for {
@@ -159,14 +192,15 @@ func askHost(ctx context.Context, sock string, payload askuser.Payload) (json.Ra
 			if ctx.Err() != nil {
 				return nil, ctx.Err()
 			}
-			return nil, fmt.Errorf("the chat went away before the answer: %w", err)
+			return nil, fmt.Errorf("the chat went away before it answered: %w", err)
 		}
 		switch {
+		case f.Fail != nil && f.Fail.Code == CodeUnknownAsk:
+			return nil, errUnknownAsk
 		case f.Fail != nil:
-			return nil, fmt.Errorf("the chat refused the question: %s", f.Fail.Msg)
-		case f.Answer != nil:
-			// A connection asks one question, so its answer is the one.
-			return f.Answer.Answer, nil
+			return nil, fmt.Errorf("the chat refused it: %s", f.Fail.Msg)
+		case f.Ack != nil:
+			return f.Ack, nil
 		}
 	}
 }

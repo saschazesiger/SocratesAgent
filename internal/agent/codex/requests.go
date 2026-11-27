@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/saschazesiger/SocratesAgent/internal/agent"
+	"github.com/saschazesiger/SocratesAgent/internal/agent/askuser"
 	"github.com/saschazesiger/SocratesAgent/internal/agent/chattools"
 )
 
@@ -45,7 +46,7 @@ func (c *Call) Ask(ctx context.Context, payload json.RawMessage) (json.RawMessag
 // (`ask{via: "message"}`), for a call that returns at once by design (code
 // mode, REBUILD.md §5.3). It returns the ask's id.
 func (c *Call) Defer(payload json.RawMessage) string {
-	id := newID("ask_")
+	id := askuser.NewID()
 	c.a.out.Emit(agent.Event{Type: agent.TypeAsk, AskID: id, TurnID: c.Turn, Payload: payload, Via: agent.ViaMessage})
 	return id
 }

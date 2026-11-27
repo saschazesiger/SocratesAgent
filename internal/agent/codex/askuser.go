@@ -5,40 +5,38 @@ package codex
 import (
 	"context"
 	"encoding/json"
-	"strings"
 
 	"github.com/saschazesiger/SocratesAgent/internal/agent"
 	"github.com/saschazesiger/SocratesAgent/internal/agent/askuser"
 )
 
-// ask_user in Codex (REBUILD.md §5.3): a dynamic tool on every thread, and
-// codex's own ways of asking the person - Plan mode's request_user_input,
-// the async questions of the code-mode models and MCP elicitations - asked
-// as the same payload and answered in each one's own shape.
+// ask_user in Codex (REBUILD.md §5.3): a dynamic tool on every thread that
+// puts its question and returns at once, check_questions and
+// withdraw_question beside it, and codex's own ways of asking the person -
+// Plan mode's request_user_input and MCP elicitations - asked as the same
+// payload, waited for and answered in each one's own shape.
 
 func init() {
 	RegisterTool(Tool{Name: askuser.Name, Spec: askToolSpec(), Handle: askUserTool})
+	RegisterTool(Tool{Name: askuser.CheckName, Spec: toolSpec(askuser.CheckName, askuser.CheckDescription, askuser.CheckSchema), Handle: questionTool})
+	RegisterTool(Tool{Name: askuser.WithdrawName, Spec: toolSpec(askuser.WithdrawName, askuser.WithdrawDescription, askuser.WithdrawSchema), Handle: questionTool})
 	HandleRequest("item/tool/requestUserInput", requestUserInput)
 	HandleRequest("mcpServer/elicitation/request", elicitationRequest)
 }
 
-// DeferredText is what ask_user returns at once to a code-mode model, whose
-// tool calls run inside a script it would otherwise poll every half minute
-// for as long as the person takes (research/04 §3.1). The answer starts the
-// next turn.
-const DeferredText = "Questions delivered. End your turn now; the answers arrive as the next message."
-
-// AskedText is what ask_user returns to a code-mode model that asks again
-// what it has already handed over in the turn: a small model that does not
-// end its turn otherwise asks, sleeps and asks again, a question each time.
-const AskedText = "These questions are already with the person and still open. Do not ask again: end your turn now; " +
-	"the answers arrive as the next message."
+// AskedText is what ask_user returns to a model that asks again in a turn
+// what it has already put: a small model that does not end its turn
+// otherwise asks, sleeps and asks again, a question each time.
+func AskedText(id string) string {
+	return "This question is already with the person as " + id + " and still open. Do not ask it again: go on with " +
+		"the work that does not depend on it, or end your turn; the answer arrives by itself as a message."
+}
 
 // askGuidance begins the developer instructions of every thread the adapter
 // starts: codex's equivalent of the system prompt (REBUILD.md §5.3). A thread
 // started before has only the tool's description, which says the same in
 // short.
-var askGuidance = askuser.Guidance(askuser.Name)
+var askGuidance = askuser.Guidance(askuser.Name, "")
 
 // todoGuidance is how a thread keeps its task list: Codex's plan
 // (agent.TodoGuidance).
@@ -46,16 +44,13 @@ var todoGuidance = agent.TodoGuidance("update_plan")
 
 // askToolSpec is ask_user as a DynamicToolSpec.
 func askToolSpec() json.RawMessage {
-	raw, _ := json.Marshal(map[string]any{"type": "function", "name": askuser.Name,
-		"description": askuser.Description, "inputSchema": askuser.Schema()})
-	return raw
+	return toolSpec(askuser.Name, askuser.Description, askuser.Schema())
 }
 
-// codeMode reports whether a model runs its tools in code mode: the gpt-6
-// models get exec and wait, and every other tool inside exec's script
-// (research/04 §3.0).
-func codeMode(model string) bool {
-	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(model)), "gpt-6")
+// toolSpec is a DynamicToolSpec.
+func toolSpec(name, description string, schema json.RawMessage) json.RawMessage {
+	raw, _ := json.Marshal(map[string]any{"type": "function", "name": name, "description": description, "inputSchema": schema})
+	return raw
 }
 
 // toolResult is a DynamicToolCallResponse with one text.
@@ -63,10 +58,9 @@ func toolResult(text string, success bool) map[string]any {
 	return map[string]any{"contentItems": []any{map[string]any{"type": "inputText", "text": text}}, "success": success}
 }
 
-// askUserTool is the dynamic tool: a call that passes askuser.Parse is asked
-// and waited for, or on a code-mode model delivered and answered as the next
-// message; one that does not goes back to the model to fix.
-func askUserTool(ctx context.Context, c *Call) (any, error) {
+// arguments is a dynamic tool call's arguments; arguments that arrive as a
+// JSON string hold the object.
+func arguments(c *Call) json.RawMessage {
 	var p struct {
 		Arguments json.RawMessage `json:"arguments"`
 	}
@@ -74,36 +68,58 @@ func askUserTool(ctx context.Context, c *Call) (any, error) {
 	args := p.Arguments
 	var s string
 	if json.Unmarshal(args, &s) == nil {
-		// Arguments that arrive as a JSON string hold the object.
 		args = json.RawMessage(s)
 	}
-	payload, err := askuser.Parse(args)
+	return args
+}
+
+// askUserTool is the dynamic tool: a call that passes askuser.Parse is put
+// into the person's queue and returns at once, its answer to arrive as a
+// message; one that does not goes back to the model to fix, and a subagent
+// thread's is refused.
+func askUserTool(ctx context.Context, c *Call) (any, error) {
+	payload, err := askuser.Parse(arguments(c))
 	if err != nil {
 		return toolResult(err.Error(), false), nil
 	}
-	if codeMode(c.Model) {
-		asked := c.Turn + "\x00" + string(payload.JSON())
-		c.a.mu.Lock()
-		again := c.a.deferred[asked]
-		if c.a.deferred == nil {
-			c.a.deferred = map[string]bool{}
-		}
-		c.a.deferred[asked] = true
-		c.a.mu.Unlock()
-		if again {
-			return toolResult(AskedText, true), nil
-		}
-		payload.PartID = c.PartID
-		c.Defer(payload.JSON())
-		return toolResult(DeferredText, true), nil
+	c.a.mu.Lock()
+	sub := c.ThreadID != "" && c.a.thread != "" && c.ThreadID != c.a.thread
+	c.a.mu.Unlock()
+	if sub {
+		return toolResult(askuser.SubagentText, false), nil
+	}
+	asked := c.Turn + "\x00" + string(payload.JSON())
+	c.a.mu.Lock()
+	id := c.a.deferred[asked]
+	c.a.mu.Unlock()
+	if id != "" {
+		return toolResult(AskedText(id), true), nil
 	}
 	payload.PartID = c.PartID
-	answer, err := c.Ask(ctx, payload.JSON())
-	if err != nil {
-		// Codex no longer waits for this call; the answer goes as a message.
-		return toolResult("The question was withdrawn before it was answered.", false), nil
+	id = c.Defer(payload.JSON())
+	c.a.mu.Lock()
+	if c.a.deferred == nil {
+		c.a.deferred = map[string]string{}
 	}
-	return toolResult(askuser.ToolResult(&payload, answer), true), nil
+	c.a.deferred[asked] = id
+	c.a.mu.Unlock()
+	return toolResult(askuser.QueuedText(id, &payload), true), nil
+}
+
+// questionTool is check_questions and withdraw_question.
+func questionTool(ctx context.Context, c *Call) (any, error) {
+	var p struct {
+		Tool string `json:"tool"`
+	}
+	_ = json.Unmarshal(c.Params, &p)
+	c.a.mu.Lock()
+	q := c.a.spec.Questions
+	c.a.mu.Unlock()
+	if q == nil {
+		return toolResult("The questions cannot be reached from here.", false), nil
+	}
+	text, failed := askuser.RunQuestionTool(ctx, q, p.Tool, arguments(c))
+	return toolResult(text, !failed), nil
 }
 
 // requestUserInput is Plan mode's request_user_input: asked, and answered as
