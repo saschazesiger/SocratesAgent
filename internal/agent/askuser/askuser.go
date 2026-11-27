@@ -74,8 +74,12 @@ type Payload struct {
 	// Steps is what the person has to do before they can answer, in order
 	// (a command to run, a login, a check on a device), and Sections the
 	// agent's further texts, each under a title of its own.
-	Steps     []string   `json:"steps,omitempty"`
-	Sections  []Section  `json:"sections,omitempty"`
+	Steps    []string  `json:"steps,omitempty"`
+	Sections []Section `json:"sections,omitempty"`
+	// Blocks is what the agent says waits for the answer: an ask_user
+	// call's own field (REBUILD.md §5.1), "" in a payload of the batch shape
+	// or converted from another mechanism.
+	Blocks    string     `json:"blocks,omitempty"`
 	Questions []Question `json:"questions"`
 	// PartID is the tool part the call belongs to, when the adapter knows
 	// it, so that a chat view can draw the two together.
@@ -136,42 +140,71 @@ type Option struct {
 // Description is what the model reads about the tool. It carries the rules
 // that matter most, because a tool description reaches the model in every
 // agent, a system prompt not always.
-const Description = "Ask the person one or more questions and wait for the answers. " +
-	"Use this tool whenever you need a decision, a piece of information or an action from the person " +
+const Description = "Put one question to the person. It never waits: it returns at once with the question's id, and the " +
+	"person's answer arrives later by itself as a message, maybe hours later. " +
+	"Use it whenever you need a decision, a piece of information or an action from the person " +
 	"(a login, a command only they can run, a check on their device, an approval), and whenever you are unsure " +
-	"how to go on and a wrong guess would cost work; never ask in plain text and never use another question tool: " +
-	"a reply that would end with a question to the person is this call instead. " +
-	"The person often answers from a notification or a list of questions without the chat in front of them, " +
-	"so every call must stand on its own: put everything they need to answer into the call itself " +
-	"(what you found, file paths, commands, errors, the options with their trade-offs, your recommendation) " +
+	"how to go on and a wrong guess would cost work. Ask as soon as you see the need, not only at the end. " +
+	"Never ask in plain text and never use another question tool. " +
+	"One question per call: for several questions, call it once for each. " +
+	"blocks says in one sentence which of your work waits for the answer. " +
+	"The person often answers from a notification without the chat in front of them, " +
+	"so the call must stand on its own: put everything they need into it " +
+	"(what you found, file paths, commands, errors, the options with their trade-offs, your recommendation marked recommended) " +
 	"and never refer to earlier messages (\"as above\", \"the error I mentioned\"). " +
-	"context is the background for all questions; steps is what the person has to do before they can answer, in order " +
+	"context is the background; steps is what the person has to do before they can answer, in order " +
 	"(each step with the exact command, page or setting; answering is not a step); sections are further texts of your own, each under its own " +
-	"title (what you tried, a log, risks; tone warning for what they must not miss); each question has its own " +
-	"context, steps and sections too. " +
-	"Put everything you need to know into one call (up to 20 questions). " +
-	"The call blocks until the person answers, which can take minutes or hours; then continue from the answers. " +
-	"The person may skip a question, leave it to you (delegated: decide yourself and say what you chose), " +
-	"add a note, or ask a question back (follow_up: answer it first)."
+	"title (what you tried, a log, risks; tone warning for what they must not miss). " +
+	"After the call, go on with all the work that does not depend on the answer; when only work that waits for answers is left, " +
+	"end your turn with a short summary of what is done and what waits for which question. " +
+	"The person may skip the question, leave it to you (delegated: decide yourself and say what you chose), " +
+	"add a note, or ask a question back (follow_up: answer it first). " +
+	"Only the main agent asks: a subagent puts its question into its result for the main agent instead."
+
+// Tool names of the two tools beside ask_user (REBUILD.md §5.1).
+const (
+	CheckName    = "check_questions"
+	WithdrawName = "withdraw_question"
+)
+
+// CheckDescription and WithdrawDescription are what the model reads about
+// check_questions and withdraw_question.
+const (
+	CheckDescription = "Lists the questions you asked the person in this chat with " + Name + ", newest last: each one's id, " +
+		"whether it is open, answered, withdrawn or closed, and an answered one's answer. It never waits. " +
+		"Answers arrive by themselves as messages, so do not call this to wait for one: use it when you lost track of " +
+		"your questions (after a summary of the conversation, or a long stretch of work)."
+	WithdrawDescription = "Withdraws an open question you asked with " + Name + ": it leaves the person's queue and they " +
+		"can no longer answer it. Use it when the question no longer matters: you found the answer yourself, or the plan changed."
+)
 
 // Guidance is the system-prompt text that steers the model to ask_user. tool
-// is the name the model knows the tool by in that agent.
-func Guidance(tool string) string {
-	return "When you need a decision, any information or an action from the person, call the " + tool + " tool: " +
-		"also when you are unsure how to go on and a wrong guess would cost work, and when only the person can do " +
-		"something (log in, run a command on their machine, test on a device, approve a change). " +
-		"Never ask questions in plain text, and never use another question tool. " +
-		"This holds at the end of your work too: when you stop because something needs the person's decision or answer, " +
-		"the last thing you do is call " + tool + "; a reply that ends with a question or a choice for the person " +
-		"(\"Should I …?\", \"Which do you want?\") is wrong. " +
-		"Each call must stand on its own: the person may answer it from a notification without reading the chat, " +
-		"so put all the context the questions need into the call (its context, steps and sections, and each question's " +
-		"context and options), never \"see above\". " +
+// is the name the model knows the tool by in that agent; prefix is what the
+// agent puts before the names of the socrates server's tools, so that the
+// guidance can name check_questions and withdraw_question.
+func Guidance(tool, prefix string) string {
+	check, withdraw := prefix+CheckName, prefix+WithdrawName
+	return "Questions to the person go through the " + tool + " tool. It never waits: it puts one question into the " +
+		"person's queue and returns at once, and their answer arrives later by itself as a message (they may be away or asleep). " +
+		"1. When you need a decision, any information or an action from the person, call " + tool + " as soon as you see the need: " +
+		"also when you are unsure how to go on and a wrong guess would cost work, and when only the person can do something " +
+		"(log in, run a command on their machine, test on a device, approve a change). One question per call; " +
+		"never ask in plain text, never use another question tool, and never end a reply with a question or a choice " +
+		"for the person (\"Should I …?\", \"Which do you want?\"): that is a call to " + tool + " instead. " +
+		"2. Each call must stand on its own: the person may answer it from a notification without reading the chat, " +
+		"so put all the context the question needs into the call (its context, steps and sections, and its options), never \"see above\". " +
 		"What the person has to do before they can answer goes into steps, in order and exact (answering is not a step). " +
-		"Ask everything you need in one call, with the context and the options that make each question " +
-		"easy to answer, and mark the option you recommend. " +
-		"The person always answers, possibly much later: wait for the answer and continue from it; " +
-		"do not stop the work to ask in a message instead."
+		"Offer the options that make it easy to answer and mark the one you recommend. blocks names the work that waits for the answer. " +
+		"3. Then do all the work that does not depend on the answer. Do not build on a guessed answer. The one exception is a small " +
+		"decision that is easy to undo (a name, a default value, a layout): go ahead with the option you recommended, say that you " +
+		"assumed it, and change it if the answer differs. Never assume for what is hard to undo: deleting, pushing to a shared branch, " +
+		"deploying, sending messages or mail, migrating data, spending money. " +
+		"4. When only work that waits for open questions is left, end your turn with a short summary: what is done, and what waits " +
+		"for which question. Do not wait or poll for answers. When an answer arrives (\"The person answered your question …\"), " +
+		"go on with what waited for it. " +
+		"5. " + check + " lists your questions and their answers, for when you lost track; " + withdraw + " withdraws a question " +
+		"that no longer matters. " +
+		"6. Only the main agent asks: a subagent never calls " + tool + " but puts its question into its result."
 }
 
 // schema is the input schema of the tool (REBUILD.md §5.1). The steps and
@@ -180,58 +213,44 @@ func Guidance(tool string) string {
 var schema = `{
   "type": "object",
   "properties": {
-    "title": {"type": "string", "description": "What this batch of questions is about, in a few words."},
-    "context": {"type": "string", "description": "Markdown background for all questions, complete enough to answer without the chat: what you found, what is at stake, the paths, commands and errors involved."},
-    "steps": ` + stepsSchema + `,
-    "sections": ` + sectionsSchema + `,
-    "questions": {
-      "type": "array", "minItems": 1, "maxItems": 20,
+    "question": {"type": "string", "description": "The question, as one sentence."},
+    "blocks": {"type": "string", "description": "Which of your work waits for the answer, in one sentence. Everything else you go on with meanwhile."},
+    "header": {"type": "string", "maxLength": 24, "description": "A short label shown as a chip, at most 24 characters."},
+    "kind": {"type": "string", "enum": ["single", "multi", "text", "confirm", "number"],
+      "description": "single: pick one option; multi: pick several; text: a free answer; confirm: yes or no; number: a number. Default: single with options, text without."},
+    "options": {
+      "type": "array", "maxItems": 12, "description": "The choices of a single or multi question.",
       "items": {
         "type": "object",
         "properties": {
-          "id": {"type": "string", "description": "A stable id; the answer is keyed by it."},
-          "header": {"type": "string", "maxLength": 24, "description": "A short label shown as a chip, at most 24 characters."},
-          "question": {"type": "string", "description": "The question, as one sentence."},
-          "context": {"type": "string", "description": "Markdown: why it matters, trade-offs, code, links."},
-          "steps": ` + stepsSchema + `,
-          "sections": ` + sectionsSchema + `,
-          "kind": {"type": "string", "enum": ["single", "multi", "text", "confirm", "number"],
-            "description": "single: pick one option; multi: pick several; text: a free answer; confirm: yes or no; number: a number."},
-          "options": {
-            "type": "array", "maxItems": 12, "description": "The choices of a single or multi question.",
-            "items": {
-              "type": "object",
-              "properties": {
-                "id": {"type": "string", "description": "A stable id; the answer names the chosen ids."},
-                "label": {"type": "string", "description": "A few words."},
-                "description": {"type": "string", "description": "One line."},
-                "details": {"type": "string", "description": "Markdown shown when the option is opened: snippets, diffs, pros and cons."},
-                "recommended": {"type": "boolean", "description": "The option you recommend."}
-              },
-              "required": ["id", "label"]
-            }
-          },
-          "min": {"type": "number", "description": "multi: the fewest options to pick; number: the smallest value."},
-          "max": {"type": "number", "description": "multi: the most options to pick; number: the largest value."},
-          "allow_other": {"type": "boolean", "description": "Whether the person may answer in their own words instead. Default true."},
-          "allow_delegate": {"type": "boolean", "description": "Whether the person may answer \"You decide\". Default true."},
-          "default": {
-            "description": "Preselected: an option id (single), a list of option ids (multi), true or false (confirm), a number (number), a text (text).",
-            "anyOf": [{"type": "string"}, {"type": "number"}, {"type": "boolean"}, {"type": "array", "items": {"type": "string"}}]
-          },
-          "required": {"type": "boolean", "description": "Whether you cannot go on without this answer. Default true."}
+          "id": {"type": "string", "description": "A stable id; the answer names the chosen ids."},
+          "label": {"type": "string", "description": "A few words."},
+          "description": {"type": "string", "description": "One line."},
+          "details": {"type": "string", "description": "Markdown shown when the option is opened: snippets, diffs, pros and cons."},
+          "recommended": {"type": "boolean", "description": "The option you recommend."}
         },
-        "required": ["id", "question"]
+        "required": ["id", "label"]
       }
-    }
+    },
+    "min": {"type": "number", "description": "multi: the fewest options to pick; number: the smallest value."},
+    "max": {"type": "number", "description": "multi: the most options to pick; number: the largest value."},
+    "default": {
+      "description": "Preselected: an option id (single), a list of option ids (multi), true or false (confirm), a number (number), a text (text).",
+      "anyOf": [{"type": "string"}, {"type": "number"}, {"type": "boolean"}, {"type": "array", "items": {"type": "string"}}]
+    },
+    "allow_other": {"type": "boolean", "description": "Whether the person may answer in their own words instead. Default true."},
+    "allow_delegate": {"type": "boolean", "description": "Whether the person may answer \"You decide\". Default true."},
+    "context": {"type": "string", "description": "Markdown background, complete enough to answer without the chat: what you found, what is at stake, the paths, commands and errors involved, the trade-offs."},
+    "steps": ` + stepsSchema + `,
+    "sections": ` + sectionsSchema + `
   },
-  "required": ["questions"]
+  "required": ["question", "blocks"]
 }`
 
 // stepsSchema is the steps of a call or a question.
 const stepsSchema = `{
   "type": "array", "maxItems": 20, "items": {"type": "string"},
-  "description": "What the person has to do before they can answer, in order, one Markdown step each: the exact command, page, setting or device. Shown as a numbered list above the questions. Answering is not a step."
+  "description": "What the person has to do before they can answer, in order, one Markdown step each: the exact command, page, setting or device. Shown as a numbered list above the question. Answering is not a step."
 }`
 
 // sectionsSchema is the sections of a call or a question.
@@ -314,6 +333,13 @@ func (p problems) err() error {
 // cannot be asked is an error wrapping ErrInvalid that says everything that
 // is wrong with it.
 func Parse(args json.RawMessage) (Payload, error) {
+	var shape map[string]json.RawMessage
+	if err := json.Unmarshal(bytes.TrimSpace(args), &shape); err != nil {
+		return Payload{}, fmt.Errorf("%w: the arguments are not a JSON object (%v). Fix the call and call %s again.", ErrInvalid, err, Name)
+	}
+	if _, batch := shape["questions"]; !batch {
+		return parseOne(args)
+	}
 	var raw struct {
 		Title     any             `json:"title"`
 		Context   any             `json:"context"`
@@ -367,7 +393,35 @@ func Parse(args json.RawMessage) (Payload, error) {
 	return p, nil
 }
 
+// parseOne reads a call of one question (REBUILD.md §5.1): the question's
+// fields at the top, with blocks beside them, as a payload of that one
+// question.
+func parseOne(args json.RawMessage) (Payload, error) {
+	var raw struct {
+		Title  any `json:"title"`
+		Blocks any `json:"blocks"`
+	}
+	_ = json.Unmarshal(bytes.TrimSpace(args), &raw)
+	var probs problems
+	p := Payload{Title: text(raw.Title, "title", &probs), Blocks: text(raw.Blocks, "blocks", &probs)}
+	q := parseQuestion(-1, args, &probs)
+	if q.ID == "" {
+		q.ID = "q1"
+	}
+	if p.Blocks == "" {
+		probs.add("blocks is missing: say in one sentence which of your work waits for the answer")
+	}
+	p.Questions = []Question{q}
+	if err := probs.err(); err != nil {
+		return Payload{}, err
+	}
+	return p, nil
+}
+
 func where(i int, id string) string {
+	if i < 0 {
+		return "the question"
+	}
 	if id != "" {
 		return fmt.Sprintf("question %d (%q)", i+1, id)
 	}
@@ -429,7 +483,7 @@ func parseQuestion(i int, raw json.RawMessage, probs *problems) Question {
 		probs.add("question %d must be an object", i+1)
 		return Question{}
 	}
-	q := Question{ID: text(rq.ID, fmt.Sprintf("question %d: id", i+1), probs)}
+	q := Question{ID: text(rq.ID, where(i, "")+": id", probs)}
 	at := where(i, q.ID)
 	q.Question = text(rq.Question, at+": question", probs)
 	q.Header = text(rq.Header, at+": header", probs)

@@ -16,7 +16,7 @@ func TestDismissalSkipsEveryQuestionAndKeepsPlanning(t *testing.T) {
 		t.Fatalf("the tool result %q", got)
 	}
 	plan := Dismissal(json.RawMessage(`{"kind":"plan","plan":"Do it."}`))
-	if text := MessageText(json.RawMessage(`{"kind":"plan"}`), plan); !strings.Contains(text, "keep planning") {
+	if text := MessageText("", json.RawMessage(`{"kind":"plan"}`), plan); !strings.Contains(text, "keep planning") {
 		t.Fatalf("the plan's dismissal reads %q", text)
 	}
 }

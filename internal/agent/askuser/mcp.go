@@ -5,19 +5,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"time"
 
 	"github.com/saschazesiger/SocratesAgent/internal/agent/chattools"
 )
-
-// ProgressEvery is how often a waiting call reports progress to an MCP
-// client that asked for it. A progress notification resets the client's
-// timeout (OpenCode's, research/05 §4.3; Claude Code's idle clock,
-// research/03 §4.4), so a question can wait for as long as the person takes.
-const ProgressEvery = 30 * time.Second
-
-// progressEvery is ProgressEvery, shorter in tests.
-var progressEvery = ProgressEvery
 
 // protocolVersions are the MCP versions the server speaks, newest first.
 // OpenCode 1.19.4 and Claude Code 2.1.309 ask for 2025-11-25.
@@ -31,15 +21,29 @@ type Call struct {
 	ToolUseID string
 }
 
-// MCP is ask_user as an MCP server: it answers the JSON-RPC messages of the
-// Model Context Protocol one at a time, whatever carries them (the control
-// protocol of Claude Code, the stdio of `socrates mcp-ask`). Handle may be
-// called from many goroutines at once: a tools/call blocks until the person
-// answers. The carrier ends a call's context when the client withdraws it
-// (notifications/cancelled, which Cancelled reads), because only the carrier
-// reads the client's messages in order: a cancel that follows its call at
-// once is then never missed, as it could be by a call still on its way into
-// Handle.
+// ErrSubagent is what Put reports for a call a subagent made: nothing was
+// asked, because an answer would reach only the main agent (REBUILD.md
+// §5.3).
+var ErrSubagent = errors.New("only the main agent can ask the person")
+
+// Questions is where check_questions and withdraw_question reach the chat's
+// questions: the agent host's journal.
+type Questions interface {
+	// List is the chat's ask_user questions, oldest first.
+	List(ctx context.Context) ([]Asked, error)
+	// Withdraw takes an open question back, and reports false for an id that
+	// is not an open ask_user question of the chat.
+	Withdraw(ctx context.Context, id, reason string) (bool, error)
+}
+
+// MCP is ask_user as an MCP server, with check_questions and
+// withdraw_question beside it: it answers the JSON-RPC messages of the Model
+// Context Protocol, whatever carries them (the control protocol of Claude
+// Code, the stdio of `socrates mcp-ask`). Handle may be called from many
+// goroutines at once. No call waits for the person: ask_user puts its
+// question and returns (REBUILD.md §5.3). The carrier ends a call's context
+// when the client withdraws it (notifications/cancelled, which Cancelled
+// reads).
 type MCP struct {
 	// Version is the server's own version in initialize's serverInfo, "1"
 	// when empty.
@@ -48,14 +52,14 @@ type MCP struct {
 	// agent puts into its system prompt (OpenCode does); empty for an agent
 	// that gets the guidance another way.
 	Instructions string
-	// Ask puts a call to the person and returns their answer. An error is
-	// what the model is told instead (the call is gone, the chat is not
-	// reachable); a context cancelled by the client is not reported at all.
-	Ask func(ctx context.Context, call Call) (json.RawMessage, error)
-	// Progress, when set, is told every ProgressEvery while a call waits, for
-	// a client that sent a progress token, and never once Handle has
-	// returned the call's response.
-	Progress func(token json.RawMessage, progress int)
+	// Put puts a call's question into the person's queue and returns the
+	// ask's id at once; the answer goes to the agent as a message later.
+	// ErrSubagent refuses a subagent's call; another error is what the
+	// model is told instead (the chat is not reachable).
+	Put func(ctx context.Context, call Call) (string, error)
+	// Questions serves check_questions and withdraw_question; they are not
+	// offered without it.
+	Questions Questions
 	// Chats is where the chat tools (list_chats, read_chat, send_to_chat)
 	// reach the server; the server offers them only when it is usable.
 	Chats chattools.Endpoint
@@ -83,6 +87,11 @@ func (m *MCP) Handle(ctx context.Context, raw json.RawMessage) json.RawMessage {
 		return rpcResult(msg.ID, map[string]any{})
 	case "tools/list":
 		tools := []any{Tool()}
+		if m.Questions != nil {
+			for _, t := range Tools() {
+				tools = append(tools, t)
+			}
+		}
 		if m.Chats.Usable() {
 			for _, d := range m.Chats.Tools() {
 				tools = append(tools, map[string]any{"name": d.Name, "title": d.Title, "description": d.Description, "inputSchema": d.Schema})
@@ -141,6 +150,10 @@ func (m *MCP) call(ctx context.Context, msg rpcMessage) json.RawMessage {
 	if err := json.Unmarshal(msg.Params, &p); err != nil {
 		return rpcError(msg.ID, -32602, "unreadable tools/call parameters")
 	}
+	if m.Questions != nil && (p.Name == CheckName || p.Name == WithdrawName) {
+		text, failed := m.questions(ctx, p.Name, p.Arguments)
+		return rpcResult(msg.ID, toolResult(text, failed))
+	}
 	if p.Name != Name {
 		if m.Chats.Usable() && m.Chats.Has(p.Name) {
 			res := m.Chats.Call(ctx, p.Name, p.Arguments)
@@ -152,28 +165,15 @@ func (m *MCP) call(ctx context.Context, msg rpcMessage) json.RawMessage {
 	if err != nil {
 		return rpcResult(msg.ID, toolResult(err.Error(), true))
 	}
-	if m.Ask == nil {
+	if m.Put == nil {
 		return rpcResult(msg.ID, toolResult("The person cannot be asked from here.", true))
 	}
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
-	if m.Progress != nil && len(p.Meta.ProgressToken) > 0 && string(p.Meta.ProgressToken) != "null" {
-		ticking := make(chan struct{})
-		go func() {
-			defer close(ticking)
-			m.progress(ctx, p.Meta.ProgressToken)
-		}()
-		// No progress after the response: the ticks stop, and one being
-		// written is done, before the response is returned.
-		defer func() {
-			cancel()
-			<-ticking
-		}()
-	}
-	answer, err := m.Ask(ctx, Call{Payload: payload, ToolUseID: p.Meta.ToolUseID})
+	id, err := m.Put(ctx, Call{Payload: payload, ToolUseID: p.Meta.ToolUseID})
 	switch {
 	case err == nil:
-		return rpcResult(msg.ID, toolResult(ToolResult(&payload, answer), false))
+		return rpcResult(msg.ID, toolResult(QueuedText(id, &payload), false))
+	case errors.Is(err, ErrSubagent):
+		return rpcResult(msg.ID, toolResult(SubagentText, true))
 	case ctx.Err() != nil && errors.Is(err, context.Canceled):
 		// The client withdrew the call; it expects no answer.
 		return nil
@@ -181,20 +181,38 @@ func (m *MCP) call(ctx context.Context, msg rpcMessage) json.RawMessage {
 	return rpcResult(msg.ID, toolResult("The question could not be put to the person: "+err.Error(), true))
 }
 
-func (m *MCP) progress(ctx context.Context, token json.RawMessage) {
-	tick := time.NewTicker(progressEvery)
-	defer tick.Stop()
-	for n := 1; ; n++ {
-		select {
-		case <-ctx.Done():
-			return
-		case <-tick.C:
-			if ctx.Err() != nil {
-				return
-			}
-			m.Progress(token, n)
+// questions runs check_questions or withdraw_question: the text the model
+// gets, and whether it is an error.
+func (m *MCP) questions(ctx context.Context, name string, args json.RawMessage) (string, bool) {
+	return RunQuestionTool(ctx, m.Questions, name, args)
+}
+
+// RunQuestionTool runs check_questions or withdraw_question against q, for
+// every carrier (the MCP server, Codex's dynamic tools): the text the model
+// gets, and whether it is an error.
+func RunQuestionTool(ctx context.Context, q Questions, name string, args json.RawMessage) (string, bool) {
+	switch name {
+	case CheckName:
+		list, err := q.List(ctx)
+		if err != nil {
+			return "The questions could not be read: " + err.Error(), true
 		}
+		return QuestionsText(list), false
+	case WithdrawName:
+		id, reason, problem := WithdrawArgs(args)
+		if problem != "" {
+			return problem, true
+		}
+		ok, err := q.Withdraw(ctx, id, reason)
+		switch {
+		case err != nil:
+			return "The question could not be withdrawn: " + err.Error(), true
+		case !ok:
+			return NotWithdrawnText(id), true
+		}
+		return WithdrawnText(id), false
 	}
+	return "socrates has no tool " + name, true
 }
 
 // RequestID is the id of a JSON-RPC request, a message with a method that
@@ -232,14 +250,6 @@ func idKey(id json.RawMessage) (string, bool) {
 		return "", false
 	}
 	return b.String(), true
-}
-
-// ProgressNotification is the notifications/progress message for a token.
-func ProgressNotification(token json.RawMessage, progress int) json.RawMessage {
-	raw, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "method": "notifications/progress",
-		"params": map[string]any{"progressToken": token, "progress": progress,
-			"message": "Waiting for the person to answer."}})
-	return raw
 }
 
 func toolResult(text string, isError bool) map[string]any {

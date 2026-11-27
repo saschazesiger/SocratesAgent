@@ -298,8 +298,9 @@ func Harnesses() []string {
 // the answer rather than taking it for a new request.
 func AnswerText(ask *Ask, answer json.RawMessage) string {
 	var payload json.RawMessage
+	id := ""
 	if ask != nil {
-		payload = ask.Payload
+		payload, id = ask.Payload, ask.ID
 	}
-	return askuser.MessageText(payload, answer)
+	return askuser.MessageText(id, payload, answer)
 }

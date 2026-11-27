@@ -272,11 +272,13 @@ func hints(a Answer) []string {
 }
 
 // MessageText is the user message an answer becomes when the call that
-// asked has returned or is gone (AGENT-HOST.md §4.4): what was asked and what
-// the person answered, readable, and then the answer exactly as ask_user
-// would have returned it. A plan card's answer reads as the decision; a
-// payload that is neither is passed on as it came.
-func MessageText(payload, raw json.RawMessage) string {
+// asked has returned or is gone (AGENT-HOST.md §4.4), and the way every
+// answer to an ask_user question arrives (REBUILD.md §5.2): which question
+// it answers (id, the ask's id, "" when unknown), what was asked and what the
+// person answered, readable, what waited for it, and then the answer exactly
+// as ask_user's JSON. A plan card's answer reads as the decision; a payload
+// that is neither is passed on as it came.
+func MessageText(id string, payload, raw json.RawMessage) string {
 	var plan struct {
 		Kind string `json:"kind"`
 	}
@@ -297,13 +299,24 @@ func MessageText(payload, raw json.RawMessage) string {
 	}
 	a := ReadAnswer(p, raw)
 	var b strings.Builder
-	b.WriteString("Answer to your earlier question")
+	if id != "" && p.Source == "" {
+		b.WriteString("The person answered your question " + id)
+	} else {
+		b.WriteString("Answer to your earlier question")
+	}
 	if p.Title != "" {
 		fmt.Fprintf(&b, " (%s)", p.Title)
 	}
 	b.WriteString(":\n")
 	for i, q := range p.Questions {
+		if len(p.Questions) == 1 {
+			fmt.Fprintf(&b, "\nQuestion: %s\nAnswer: %s\n", q.Question, readable(&q, a.Answers[q.ID]))
+			continue
+		}
 		fmt.Fprintf(&b, "\n%d. %s\n   %s\n", i+1, q.Question, readable(&q, a.Answers[q.ID]))
+	}
+	if p.Blocks != "" {
+		fmt.Fprintf(&b, "\nWhat waited for it: %s\n", p.Blocks)
 	}
 	if a.GeneralNote != nil {
 		fmt.Fprintf(&b, "\nNote from the person: %s\n", *a.GeneralNote)
@@ -315,7 +328,7 @@ func MessageText(payload, raw json.RawMessage) string {
 		b.WriteString("\n")
 		b.WriteString(hint)
 	}
-	b.WriteString("\n\nThe answer as " + Name + " returns it:\n")
+	b.WriteString("\n\nThe answer as JSON:\n")
 	b.Write(a.JSON())
 	return b.String()
 }

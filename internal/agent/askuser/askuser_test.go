@@ -8,7 +8,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -200,27 +199,43 @@ func TestParseKeepsTheStepsAndSections(t *testing.T) {
 
 func TestTheSchemaHasTheLimits(t *testing.T) {
 	var s struct {
-		Properties struct {
-			Questions struct {
-				MaxItems int `json:"maxItems"`
-				Items    struct {
-					Properties map[string]struct {
-						MaxLength int `json:"maxLength"`
-						MaxItems  int `json:"maxItems"`
-						Enum      []string
-					} `json:"properties"`
-				} `json:"items"`
-			} `json:"questions"`
+		Properties map[string]struct {
+			MaxLength int `json:"maxLength"`
+			MaxItems  int `json:"maxItems"`
+			Enum      []string
 		} `json:"properties"`
+		Required []string `json:"required"`
 	}
 	if err := json.Unmarshal(Schema(), &s); err != nil {
 		t.Fatal(err)
 	}
-	q := s.Properties.Questions
-	if q.MaxItems != MaxQuestions || q.Items.Properties["header"].MaxLength != MaxHeader ||
-		q.Items.Properties["options"].MaxItems != MaxOptions || len(q.Items.Properties["kind"].Enum) != 5 ||
-		q.Items.Properties["steps"].MaxItems != MaxSteps || q.Items.Properties["sections"].MaxItems != MaxSections {
+	q := s.Properties
+	if q["header"].MaxLength != MaxHeader || q["options"].MaxItems != MaxOptions || len(q["kind"].Enum) != 5 ||
+		q["steps"].MaxItems != MaxSteps || q["sections"].MaxItems != MaxSections {
 		t.Fatalf("schema %+v", q)
+	}
+	if _, batch := q["questions"]; batch || strings.Join(s.Required, ",") != "question,blocks" {
+		t.Fatalf("the schema is not of one question: %+v %v", q, s.Required)
+	}
+}
+
+// A call of one question (REBUILD.md §5.1) becomes a payload of that one
+// question with blocks beside it; a call without blocks is the model's to fix.
+func TestParseTakesOneQuestion(t *testing.T) {
+	p := mustParse(t, `{"question":"Which database?","blocks":"The migration","header":"Database",
+	  "options":[{"id":"pg","label":"PostgreSQL","recommended":true},{"label":"SQLite"}],"context":"We need one.",
+	  "steps":["Open the console"],"sections":[{"title":"Tried","body":"both"}]}`)
+	if p.Blocks != "The migration" || len(p.Questions) != 1 {
+		t.Fatalf("payload %+v", p)
+	}
+	q := p.Questions[0]
+	if q.ID != "q1" || q.Header != "Database" || q.Kind != KindSingle || len(q.Options) != 2 || q.Context != "We need one." ||
+		len(q.Steps) != 1 || len(q.Sections) != 1 || !q.Required {
+		t.Fatalf("question %+v", q)
+	}
+	_, err := Parse(json.RawMessage(`{"question":"Go?","kind":"maybe"}`))
+	if err == nil || !strings.Contains(err.Error(), "blocks is missing") || !strings.Contains(err.Error(), `the question: kind "maybe"`) {
+		t.Fatalf("error = %v", err)
 	}
 }
 
@@ -295,7 +310,7 @@ func TestReadAnswerTakesPlainValues(t *testing.T) {
 // it.
 func TestMessageTextReadsAsTheAnswer(t *testing.T) {
 	p := mustParse(t, fullCall)
-	text := MessageText(p.JSON(), json.RawMessage(`{"answers":{"db":{"selected":["pg"],"note":"16"},
+	text := MessageText("", p.JSON(), json.RawMessage(`{"answers":{"db":{"selected":["pg"],"note":"16"},
 	  "replicas":{"delegated":true}},"general_note":"ship it"}`))
 	for _, want := range []string{"Answer to your earlier question (Deployment setup)", "1. Which database should the service use?",
 		"PostgreSQL [pg] Note: 16", "You decide.", "(not answered)", "Note from the person: ship it", `"general_note":"ship it"`} {
@@ -303,12 +318,20 @@ func TestMessageTextReadsAsTheAnswer(t *testing.T) {
 			t.Errorf("the message does not say %q:\n%s", want, text)
 		}
 	}
-	plan := MessageText(json.RawMessage(`{"kind":"plan","plan":"x"}`), json.RawMessage(`{"decision":"keep_planning","note":"smaller"}`))
+	plan := MessageText("", json.RawMessage(`{"kind":"plan","plan":"x"}`), json.RawMessage(`{"decision":"keep_planning","note":"smaller"}`))
 	if !strings.Contains(plan, "keep planning") || !strings.Contains(plan, "smaller") {
 		t.Fatalf("plan %s", plan)
 	}
-	if other := MessageText(json.RawMessage(`{"x":1}`), json.RawMessage(`"blue"`)); !strings.HasSuffix(other, "blue") {
+	if other := MessageText("", json.RawMessage(`{"x":1}`), json.RawMessage(`"blue"`)); !strings.HasSuffix(other, "blue") {
 		t.Fatalf("other %s", other)
+	}
+	one := mustParse(t, `{"question":"Which database?","blocks":"The migration","options":[{"id":"pg","label":"PostgreSQL"}]}`)
+	text = MessageText("ask_1a2b3c4d", one.JSON(), json.RawMessage(`{"answers":{"q1":{"selected":["pg"]}}}`))
+	for _, want := range []string{"The person answered your question ask_1a2b3c4d:", "Question: Which database?",
+		"Answer: PostgreSQL [pg]", "What waited for it: The migration", `"q1":{"selected":["pg"]`} {
+		if !strings.Contains(text, want) {
+			t.Errorf("the message does not say %q:\n%s", want, text)
+		}
 	}
 }
 
@@ -481,22 +504,17 @@ func handle(t *testing.T, m *MCP, ctx context.Context, msg string) map[string]an
 
 // The MCP server answers the handshake, lists ask_user, and a call blocks
 // until the person answers; the model then gets §5.2 as text.
-func TestMCPAsksAndWaits(t *testing.T) {
+func TestMCPPutsAndReturnsAtOnce(t *testing.T) {
 	asked := make(chan Call, 1)
-	answer := make(chan json.RawMessage, 1)
-	m := &MCP{Version: "test", Instructions: Guidance("socrates_ask_user"),
-		Ask: func(ctx context.Context, c Call) (json.RawMessage, error) {
+	m := &MCP{Version: "test", Instructions: Guidance("socrates_ask_user", "socrates_"),
+		Put: func(ctx context.Context, c Call) (string, error) {
 			asked <- c
-			select {
-			case a := <-answer:
-				return a, nil
-			case <-ctx.Done():
-				return nil, ctx.Err()
-			}
+			return "ask_1a2b3c4d", nil
 		}}
 	init := handle(t, m, context.Background(), `{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{}}}`)
 	res := init["result"].(map[string]any)
-	if res["protocolVersion"] != "2025-06-18" || !strings.Contains(res["instructions"].(string), "socrates_ask_user") {
+	if res["protocolVersion"] != "2025-06-18" || !strings.Contains(res["instructions"].(string), "socrates_ask_user") ||
+		!strings.Contains(res["instructions"].(string), "socrates_withdraw_question") {
 		t.Fatalf("initialize %v", init)
 	}
 	if handle(t, m, context.Background(), `{"jsonrpc":"2.0","method":"notifications/initialized"}`) != nil {
@@ -505,27 +523,18 @@ func TestMCPAsksAndWaits(t *testing.T) {
 	list := handle(t, m, context.Background(), `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`)
 	tools := list["result"].(map[string]any)["tools"].([]any)
 	if len(tools) != 1 || tools[0].(map[string]any)["name"] != Name {
-		t.Fatalf("tools/list %v", list)
+		t.Fatalf("tools/list without questions %v", list)
 	}
-	done := make(chan map[string]any, 1)
-	go func() {
-		done <- handle(t, m, context.Background(), `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"ask_user",`+
-			`"arguments":{"questions":[{"id":"go","question":"Go?","kind":"confirm"}]},"_meta":{"claudecode/toolUseId":"toolu_1","progressToken":2}}}`)
-	}()
+	r := handle(t, m, context.Background(), `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"ask_user",`+
+		`"arguments":{"question":"Go?","kind":"confirm","blocks":"The deploy"},"_meta":{"claudecode/toolUseId":"toolu_1"}}}`)
 	c := <-asked
-	if c.ToolUseID != "toolu_1" || c.Payload.Questions[0].ID != "go" {
+	if c.ToolUseID != "toolu_1" || c.Payload.Questions[0].Question != "Go?" || c.Payload.Blocks != "The deploy" {
 		t.Fatalf("call %+v", c)
 	}
-	select {
-	case r := <-done:
-		t.Fatalf("returned before the answer: %v", r)
-	case <-time.After(50 * time.Millisecond):
-	}
-	answer <- json.RawMessage(`{"answers":{"go":{"selected":["yes"]}}}`)
-	r := <-done
 	result := r["result"].(map[string]any)
 	text := result["content"].([]any)[0].(map[string]any)["text"].(string)
-	if result["isError"] != false || !strings.Contains(text, `"go":{"selected":["yes"]`) {
+	if result["isError"] != false || !strings.Contains(text, "Question ask_1a2b3c4d is now with the person") ||
+		!strings.Contains(text, "waiting for it: The deploy") {
 		t.Fatalf("result %v", r)
 	}
 	// A bad call is the model's to fix: a tool error, nothing asked.
@@ -536,34 +545,94 @@ func TestMCPAsksAndWaits(t *testing.T) {
 	if unknown := handle(t, m, context.Background(), `{"jsonrpc":"2.0","id":4,"method":"resources/list"}`); unknown["error"] == nil {
 		t.Fatalf("unknown method %v", unknown)
 	}
+	// A subagent's call asks nothing and tells it why.
+	m.Put = func(context.Context, Call) (string, error) { return "", ErrSubagent }
+	sub := handle(t, m, context.Background(), `{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"ask_user",`+
+		`"arguments":{"question":"Go?","blocks":"x"}}}`)
+	if res := sub["result"].(map[string]any); res["isError"] != true ||
+		!strings.Contains(res["content"].([]any)[0].(map[string]any)["text"].(string), "only the main agent") {
+		t.Fatalf("subagent call %v", sub)
+	}
 }
 
-// A call whose context the carrier ends (the client's notifications/cancelled,
-// which Cancelled reads) answers nothing, and a waiting call reports
-// progress until it returns, never after.
-func TestMCPCancelAndProgress(t *testing.T) {
-	var mu sync.Mutex
-	var progress []int
-	returned := false
+// fakeQuestions is a chat's questions for check_questions and
+// withdraw_question.
+type fakeQuestions struct {
+	list      []Asked
+	withdrawn map[string]string
+}
+
+func (f *fakeQuestions) List(context.Context) ([]Asked, error) { return f.list, nil }
+
+func (f *fakeQuestions) Withdraw(_ context.Context, id, reason string) (bool, error) {
+	for i := range f.list {
+		if f.list[i].ID == id && f.list[i].State == StateOpen {
+			f.list[i].State, f.list[i].Reason = StateWithdrawn, reason
+			f.withdrawn[id] = reason
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// check_questions lists the questions with their state and answers and says
+// not to poll; withdraw_question takes an open one back and refuses the rest.
+func TestMCPChecksAndWithdrawsQuestions(t *testing.T) {
+	one := func(q, blocks string) json.RawMessage {
+		return mustParse(t, `{"question":"`+q+`","blocks":"`+blocks+`","options":[{"id":"pg","label":"PostgreSQL"}]}`).JSON()
+	}
+	f := &fakeQuestions{withdrawn: map[string]string{}, list: []Asked{
+		{ID: "ask_00000001", Payload: one("Which database?", "The migration"), State: StateAnswered,
+			Answer: json.RawMessage(`{"answers":{"q1":{"selected":["pg"]}}}`)},
+		{ID: "ask_00000002", Payload: one("Deploy now?", "The release"), State: StateOpen},
+	}}
+	m := &MCP{Questions: f}
+	list := handle(t, m, context.Background(), `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`)
+	var names []string
+	for _, tool := range list["result"].(map[string]any)["tools"].([]any) {
+		names = append(names, tool.(map[string]any)["name"].(string))
+	}
+	if strings.Join(names, ",") != "ask_user,check_questions,withdraw_question" {
+		t.Fatalf("tools %v", names)
+	}
+	call := func(id int, name, args string) (string, bool) {
+		r := handle(t, m, context.Background(), fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"tools/call","params":{"name":%q,"arguments":%s}}`, id, name, args))
+		res := r["result"].(map[string]any)
+		return res["content"].([]any)[0].(map[string]any)["text"].(string), res["isError"] == true
+	}
+	text, failed := call(2, CheckName, `{}`)
+	for _, want := range []string{"- ask_00000001 [answered] Which database?", "Answer: PostgreSQL [pg]",
+		"- ask_00000002 [open] Deploy now?", "Waiting for it: The release", "1 open.", "do not call check_questions again"} {
+		if failed || !strings.Contains(text, want) {
+			t.Errorf("check_questions does not say %q:\n%s", want, text)
+		}
+	}
+	if text, failed := call(3, WithdrawName, `{"question_id":"ask_00000002","reason":"Found it"}`); failed ||
+		!strings.Contains(text, "is withdrawn") || f.withdrawn["ask_00000002"] != "Found it" {
+		t.Fatalf("withdraw: %s %v", text, f.withdrawn)
+	}
+	if text, failed := call(4, WithdrawName, `{"question_id":"ask_00000001","reason":"x"}`); !failed || !strings.Contains(text, "not an open question") {
+		t.Fatalf("withdraw of an answered one: %s", text)
+	}
+	if text, failed := call(5, WithdrawName, `{"reason":"x"}`); !failed || !strings.Contains(text, "question_id is missing") {
+		t.Fatalf("withdraw without an id: %s", text)
+	}
+	if text, _ := call(6, CheckName, `{}`); strings.Contains(text, "open.") || !strings.Contains(text, "Withdrawn because: Found it") {
+		t.Fatalf("check after the withdraw:\n%s", text)
+	}
+}
+
+// A call whose context the carrier ends answers nothing; the carrier reads a
+// call's id and a cancel's in order.
+func TestMCPCancel(t *testing.T) {
 	m := &MCP{
-		Ask: func(ctx context.Context, c Call) (json.RawMessage, error) {
+		Put: func(ctx context.Context, c Call) (string, error) {
 			<-ctx.Done()
-			return nil, ctx.Err()
-		},
-		Progress: func(token json.RawMessage, n int) {
-			mu.Lock()
-			defer mu.Unlock()
-			if returned {
-				t.Error("progress after the call returned")
-			}
-			progress = append(progress, n)
+			return "", ctx.Err()
 		},
 	}
-	old := progressEvery
-	progressEvery = 2 * time.Millisecond
-	defer func() { progressEvery = old }()
 	call := json.RawMessage(`{"jsonrpc":"2.0","id":"c7","method":"tools/call",` +
-		`"params":{"name":"ask_user","arguments":{"questions":[{"question":"Q"}]},"_meta":{"progressToken":"p"}}}`)
+		`"params":{"name":"ask_user","arguments":{"question":"Q","blocks":"x"}}}`)
 	if id, ok := RequestID(call); !ok || id != `"c7"` {
 		t.Fatalf("request id %q %v", id, ok)
 	}
@@ -579,26 +648,7 @@ func TestMCPCancelAndProgress(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan json.RawMessage, 1)
-	go func() {
-		r := m.Handle(ctx, call)
-		mu.Lock()
-		returned = true
-		mu.Unlock()
-		done <- r
-	}()
-	deadline := time.Now().Add(2 * time.Second)
-	for {
-		mu.Lock()
-		n := len(progress)
-		mu.Unlock()
-		if n >= 2 {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("no progress while waiting")
-		}
-		time.Sleep(time.Millisecond)
-	}
+	go func() { done <- m.Handle(ctx, call) }()
 	if m.Handle(context.Background(), cancelled) != nil {
 		t.Fatal("the cancel was answered")
 	}
@@ -610,11 +660,6 @@ func TestMCPCancelAndProgress(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("the cancel did not end the call")
-	}
-	time.Sleep(20 * time.Millisecond)
-	note := ProgressNotification(json.RawMessage(`"p"`), 3)
-	if !strings.Contains(string(note), `"method":"notifications/progress"`) || !strings.Contains(string(note), `"progressToken":"p"`) {
-		t.Fatalf("notification %s", note)
 	}
 }
 
