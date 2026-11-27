@@ -57,12 +57,12 @@ func TestFakeEchoesTheTextWithoutItsNote(t *testing.T) {
 	f := &fakeAdapter{}
 	note := "This message is from another agent, not from your person."
 	spec := StartSpec{ChatID: "c1", Workdir: t.TempDir(), StateDir: t.TempDir(), Model: "fake-small",
-		First: &Outgoing{MessageID: "m1", Text: AgentText(note, "please check the login route")}}
+		First: &Outgoing{MessageID: "m1", Text: AgentText(note, "please check the login route", "")}}
 	if err := f.Start(t.Context(), spec, out); err != nil {
 		t.Fatal(err)
 	}
 	defer f.Stop()
-	for i, text := range []string{AgentText("Other chats are active.", "/note"), "/note"} {
+	for i, text := range []string{AgentText("Other chats are active.", "/note", ""), "/note"} {
 		if err := f.Send(t.Context(), Outgoing{MessageID: "m" + strconv.Itoa(i+2), Text: text}); err != nil {
 			t.Fatal(err)
 		}
@@ -102,10 +102,10 @@ func TestFakeEchoesTheTextWithoutItsNote(t *testing.T) {
 // A message without a note has none to tell.
 func TestFakeAgentNote(t *testing.T) {
 	for text, want := range map[string]string{
-		"hello":                        "",
-		AgentText("a note", "hello"):   "a note",
-		AgentText("", "hello"):         "",
-		"<socrates-note> never closed": "",
+		"hello":                          "",
+		AgentText("a note", "hello", ""): "a note",
+		AgentText("", "hello", ""):       "",
+		"<socrates-note> never closed":   "",
 	} {
 		if got := fakeAgentNote(text); got != want {
 			t.Errorf("fakeAgentNote(%q) = %q, want %q", text, got, want)

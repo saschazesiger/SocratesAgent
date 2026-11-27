@@ -639,12 +639,12 @@ func TestTheOpenQuestionsAreNamedToBeWithdrawn(t *testing.T) {
 	if text := Queued(context.Background(), nil, "ask_00000003", nil); strings.Contains(text, "other open") {
 		t.Fatalf("queued without questions:\n%s", text)
 	}
-	note := OpenNote(f.list, "ask_00000002", "This answer")
+	note := OpenNote(f.list, "ask_00000002", "this answer")
 	if !strings.Contains(note, "- ask_00000003: Which port?") || strings.Contains(note, "ask_00000002") ||
-		!strings.Contains(note, "This answer may answer one of them") || !strings.Contains(note, WithdrawName) {
+		!strings.Contains(note, "only when this answer settles it") || !strings.Contains(note, WithdrawName) {
 		t.Fatalf("note:\n%s", note)
 	}
-	if note := OpenNote(f.list[:2], "ask_00000002", "This answer"); note != "" {
+	if note := OpenNote(f.list[:2], "ask_00000002", "this answer"); note != "" {
 		t.Fatalf("a note with nothing else open: %q", note)
 	}
 }

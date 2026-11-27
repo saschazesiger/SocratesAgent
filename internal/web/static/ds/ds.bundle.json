@@ -77,7 +77,7 @@
     },
     {
       "name": "tasks",
-      "reason": "static/js/chatparts.js:480 ds-tasks",
+      "reason": "static/js/chatparts.js:483 ds-tasks",
       "bytes": 1864,
       "gzip": 686
     },
@@ -95,7 +95,7 @@
     },
     {
       "name": "switch",
-      "reason": "static/index.html:263 ds-switch",
+      "reason": "static/index.html:265 ds-switch",
       "bytes": 13984,
       "gzip": 2262
     },
@@ -143,7 +143,7 @@
     },
     {
       "name": "menu",
-      "reason": "static/index.html:255 ds-menu",
+      "reason": "static/index.html:257 ds-menu",
       "bytes": 8287,
       "gzip": 2087
     },
@@ -155,7 +155,7 @@
     },
     {
       "name": "badge",
-      "reason": "static/index.html:102 ds-badge",
+      "reason": "static/index.html:111 ds-badge",
       "bytes": 3304,
       "gzip": 896
     },
@@ -167,7 +167,7 @@
     },
     {
       "name": "dialog",
-      "reason": "static/index.html:209 ds-dialog",
+      "reason": "static/index.html:211 ds-dialog",
       "bytes": 15933,
       "gzip": 2468
     },
@@ -423,7 +423,7 @@
     },
     {
       "name": "arrowUp",
-      "reason": "static/js/chatparts.js:1127"
+      "reason": "static/js/chatparts.js:1142"
     },
     {
       "name": "arrowDown",
@@ -443,7 +443,7 @@
     },
     {
       "name": "chevronLeft",
-      "reason": "static/js/chatparts.js:1719"
+      "reason": "static/js/chatparts.js:1734"
     },
     {
       "name": "chevronFirst",
@@ -479,7 +479,7 @@
     },
     {
       "name": "moreVertical",
-      "reason": "static/index.html:153"
+      "reason": "static/index.html:155"
     },
     {
       "name": "moreHorizontal",
@@ -503,7 +503,7 @@
     },
     {
       "name": "compose",
-      "reason": "static/js/askdialog.js:805"
+      "reason": "static/js/askdialog.js:820"
     },
     {
       "name": "pencil",
@@ -523,7 +523,7 @@
     },
     {
       "name": "undo",
-      "reason": "static/js/askdialog.js:873"
+      "reason": "static/js/askdialog.js:888"
     },
     {
       "name": "history",
@@ -563,7 +563,7 @@
     },
     {
       "name": "stopCircle",
-      "reason": "static/index.html:129"
+      "reason": "static/index.html:131"
     },
     {
       "name": "trash",
@@ -575,7 +575,7 @@
     },
     {
       "name": "logout",
-      "reason": "static/index.html:183"
+      "reason": "static/index.html:185"
     },
     {
       "name": "chat",
@@ -591,7 +591,7 @@
     },
     {
       "name": "mic",
-      "reason": "static/index.html:138"
+      "reason": "static/index.html:140"
     },
     {
       "name": "micOff",
@@ -599,7 +599,7 @@
     },
     {
       "name": "volume",
-      "reason": "static/js/chatparts.js:2019"
+      "reason": "static/js/chatparts.js:2034"
     },
     {
       "name": "mail",
@@ -619,11 +619,11 @@
     },
     {
       "name": "flag",
-      "reason": "static/js/chatparts.js:947"
+      "reason": "static/js/chatparts.js:950"
     },
     {
       "name": "thumbUp",
-      "reason": "static/js/askdialog.js:832"
+      "reason": "static/js/askdialog.js:847"
     },
     {
       "name": "thumbDown",
@@ -635,7 +635,7 @@
     },
     {
       "name": "checkCircle",
-      "reason": "static/index.html:109"
+      "reason": "static/index.html:111"
     },
     {
       "name": "alert",
@@ -651,7 +651,7 @@
     },
     {
       "name": "helpCircle",
-      "reason": "static/index.html:102"
+      "reason": "config \"icons\": \"all\""
     },
     {
       "name": "eye",
@@ -687,7 +687,7 @@
     },
     {
       "name": "home",
-      "reason": "static/index.html:171"
+      "reason": "static/index.html:173"
     },
     {
       "name": "panelLeft",
@@ -695,7 +695,7 @@
     },
     {
       "name": "keyboard",
-      "reason": "static/index.html:147"
+      "reason": "static/index.html:149"
     },
     {
       "name": "terminal",
@@ -739,7 +739,7 @@
     },
     {
       "name": "settings",
-      "reason": "static/index.html:182"
+      "reason": "static/index.html:184"
     },
     {
       "name": "cpu",
@@ -759,7 +759,7 @@
     },
     {
       "name": "user",
-      "reason": "static/js/chatparts.js:2111"
+      "reason": "static/js/chatparts.js:2126"
     },
     {
       "name": "users",
@@ -783,7 +783,7 @@
     },
     {
       "name": "fileText",
-      "reason": "static/index.html:117"
+      "reason": "static/index.html:119"
     },
     {
       "name": "fileCode",
@@ -1347,7 +1347,7 @@
     },
     {
       "name": "chatDots",
-      "reason": "config \"icons\": \"all\""
+      "reason": "static/index.html:104"
     },
     {
       "name": "reply",
@@ -1530,7 +1530,7 @@
     "ds-auth": "static/js/net.js:361",
     "ds-auth__alert": "static/login.html:30",
     "ds-auth__card": "static/login.html:31",
-    "ds-badge": "static/index.html:102",
+    "ds-badge": "static/index.html:111",
     "ds-base": "static/admin.html:2",
     "ds-brand": "static/admin.html:36",
     "ds-brand__name": "static/admin.html:36",
@@ -1540,21 +1540,21 @@
     "ds-btn--icon": "static/admin.html:34",
     "ds-btn--quiet": "static/admin.html:34",
     "ds-btn--text": "static/admin.html:128",
-    "ds-btn--tonal": "static/js/accountpicker.js:246",
+    "ds-btn--tonal": "static/index.html:102",
     "ds-btn__face": "static/admin.html:43",
     "ds-btn__face--busy": "static/admin.html:44",
     "ds-btn__face--done": "static/admin.html:45",
     "ds-btn__faces": "static/admin.html:42",
     "ds-card": "static/admin.html:104",
     "ds-card--elevated": "static/login.html:31",
-    "ds-card--interactive": "static/js/askdialog.js:830",
-    "ds-card__action": "static/js/chatparts.js:1565",
+    "ds-card--interactive": "static/js/askdialog.js:845",
+    "ds-card__action": "static/js/chatparts.js:1580",
     "ds-card__more": "static/js/admingithub.js:229",
     "ds-card__row": "static/admin.html:140",
     "ds-card__section": "static/admin.html:257",
     "ds-card__subtitle": "static/admin.html:123",
     "ds-card__title": "static/admin.html:105",
-    "ds-center": "static/index.html:324",
+    "ds-center": "static/index.html:326",
     "ds-check": "static/admin.html:216",
     "ds-chevron": "static/js/admin.js:1370",
     "ds-chip": "static/js/accounts.js:441",
@@ -1585,29 +1585,29 @@
     "ds-combo__value": "static/js/combobox.js:376",
     "ds-content": "static/admin.html:92",
     "ds-density-tight": "static/admin.html:411",
-    "ds-dialog": "static/index.html:209",
-    "ds-dialog--bottom": "static/js/session.js:2723",
-    "ds-dialog--contained": "static/index.html:209",
+    "ds-dialog": "static/index.html:211",
+    "ds-dialog--bottom": "static/js/session.js:2726",
+    "ds-dialog--contained": "static/index.html:211",
     "ds-dialog--full": "static/js/askdialog.js:413",
     "ds-dialog--full-narrow": "static/js/boards.js:392",
     "ds-dialog--lg": "static/js/admin.js:1337",
-    "ds-dialog__actions": "static/index.html:289",
-    "ds-dialog__backdrop": "static/index.html:210",
+    "ds-dialog__actions": "static/index.html:291",
+    "ds-dialog__backdrop": "static/index.html:212",
     "ds-dialog__body": "static/js/adminmcp.js:858",
-    "ds-dialog__box": "static/index.html:211",
+    "ds-dialog__box": "static/index.html:213",
     "ds-dialog__head": "static/js/chattests.js:527",
-    "ds-dialog__list": "static/js/session.js:2723",
-    "ds-dialog__text": "static/index.html:336",
-    "ds-dialog__title": "static/index.html:260",
+    "ds-dialog__list": "static/js/session.js:2726",
+    "ds-dialog__text": "static/index.html:338",
+    "ds-dialog__title": "static/index.html:262",
     "ds-disclosure": "static/admin.html:301",
     "ds-disclosure__body": "static/admin.html:303",
-    "ds-divider": "static/js/chatparts.js:1007",
-    "ds-divider--label": "static/js/chatparts.js:1007",
+    "ds-divider": "static/js/chatparts.js:1018",
+    "ds-divider--label": "static/js/chatparts.js:1018",
     "ds-drawer": "static/admin.html:54",
     "ds-drawer__action": "static/js/session.js:1477",
-    "ds-drawer__actions": "static/index.html:163",
-    "ds-drawer__foot": "static/index.html:177",
-    "ds-drawer__foot--rail": "static/index.html:179",
+    "ds-drawer__actions": "static/index.html:165",
+    "ds-drawer__foot": "static/index.html:179",
+    "ds-drawer__foot--rail": "static/index.html:181",
     "ds-drawer__group": "static/admin.html:58",
     "ds-drawer__head": "static/admin.html:55",
     "ds-drawer__heading": "static/admin.html:59",
@@ -1626,7 +1626,7 @@
     "ds-empty__title": "static/costs.html:63",
     "ds-facts": "static/js/adminmcp.js:544",
     "ds-facts--rows": "static/js/adminmcp.js:544",
-    "ds-facts--stacked": "static/js/chatparts.js:707",
+    "ds-facts--stacked": "static/js/chatparts.js:710",
     "ds-field": "static/admin.html:161",
     "ds-field--full": "static/js/boards.js:416",
     "ds-field__hint": "static/admin.html:131",
@@ -1635,7 +1635,7 @@
     "ds-field__label": "static/admin.html:162",
     "ds-field__optional": "static/js/adminmcp.js:809",
     "ds-field__row": "static/js/admin.js:1305",
-    "ds-field__row--top": "static/js/askdialog.js:843",
+    "ds-field__row--top": "static/js/askdialog.js:858",
     "ds-filters": "static/costs.html:75",
     "ds-form": "static/admin.html:160",
     "ds-form-actions": "static/admin.html:376",
@@ -1645,9 +1645,9 @@
     "ds-grid-2": "static/costs.html:123",
     "ds-grip": "static/js/admin.js:547",
     "ds-hover-actions": "static/js/session.js:1477",
-    "ds-icon-swap": "static/index.html:129",
-    "ds-icon-swap__a": "static/index.html:129",
-    "ds-icon-swap__b": "static/index.html:129",
+    "ds-icon-swap": "static/index.html:131",
+    "ds-icon-swap__a": "static/index.html:131",
+    "ds-icon-swap__b": "static/index.html:131",
     "ds-input": "static/admin.html:163",
     "ds-input--filled": "static/costs.html:78",
     "ds-input-group": "static/js/cloudflare.js:361",
@@ -1671,13 +1671,13 @@
     "ds-list__title": "static/js/adminmcp.js:488",
     "ds-loader": "static/admin.html:116",
     "ds-loading": "static/admin.html:116",
-    "ds-menu": "static/index.html:255",
+    "ds-menu": "static/index.html:257",
     "ds-menu__check": "static/js/accountpicker.js:184",
     "ds-menu__divider": "static/js/accountpicker.js:144",
-    "ds-menu__heading": "static/js/session.js:2797",
+    "ds-menu__heading": "static/js/session.js:2800",
     "ds-menu__item": "static/js/accountpicker.js:144",
     "ds-menu__label": "static/js/accountpicker.js:144",
-    "ds-menu__meta": "static/js/session.js:2679",
+    "ds-menu__meta": "static/js/session.js:2682",
     "ds-meta": "static/admin.html:108",
     "ds-meter": "static/js/costs.js:650",
     "ds-mono": "static/js/admingithub.js:336",
@@ -1701,11 +1701,11 @@
     "ds-pressable--inset": "static/js/boards.js:177",
     "ds-pressable--lg": "static/js/session.js:1316",
     "ds-progress": "static/admin.html:405",
-    "ds-progress--flat": "static/js/chatparts.js:1524",
+    "ds-progress--flat": "static/js/chatparts.js:1539",
     "ds-progress--indeterminate": "static/admin.html:405",
     "ds-progress__bar": "static/admin.html:407",
     "ds-progress__detail": "static/js/statusmodal.js:154",
-    "ds-progress__label": "static/js/chatparts.js:1524",
+    "ds-progress__label": "static/js/chatparts.js:1539",
     "ds-progress__track": "static/admin.html:406",
     "ds-prose": "static/js/mcpview.js:138",
     "ds-prose--dense": "static/js/mcpview.js:138",
@@ -1735,14 +1735,14 @@
     "ds-status": "static/admin.html:151",
     "ds-status--running": "static/js/admin.js:152",
     "ds-status__spinner": "static/admin.html:151",
-    "ds-switch": "static/index.html:263",
+    "ds-switch": "static/index.html:265",
     "ds-switch-list": "static/js/harnesses.js:618",
     "ds-switch__hint": "static/js/harnesses.js:1075",
-    "ds-switch__label": "static/index.html:264",
-    "ds-switch__off": "static/index.html:265",
-    "ds-switch__on": "static/index.html:265",
-    "ds-switch__state": "static/index.html:265",
-    "ds-switch__track": "static/index.html:264",
+    "ds-switch__label": "static/index.html:266",
+    "ds-switch__off": "static/index.html:267",
+    "ds-switch__on": "static/index.html:267",
+    "ds-switch__state": "static/index.html:267",
+    "ds-switch__track": "static/index.html:266",
     "ds-table": "static/admin.html:411",
     "ds-table--bordered": "static/js/fileview.js:192",
     "ds-table--interactive": "static/js/costs.js:657",
@@ -1750,11 +1750,11 @@
     "ds-table__row--selected": "static/js/costs.js:649",
     "ds-table__row-link": "static/js/costs.js:632",
     "ds-tag": "static/js/admingithub.js:195",
-    "ds-tasks": "static/js/chatparts.js:480",
-    "ds-tasks__head": "static/js/chatparts.js:501",
-    "ds-tasks__item": "static/js/chatparts.js:494",
-    "ds-tasks__mark": "static/js/chatparts.js:494",
-    "ds-tasks__text": "static/js/chatparts.js:497",
+    "ds-tasks": "static/js/chatparts.js:483",
+    "ds-tasks__head": "static/js/chatparts.js:504",
+    "ds-tasks__item": "static/js/chatparts.js:497",
+    "ds-tasks__mark": "static/js/chatparts.js:497",
+    "ds-tasks__text": "static/js/chatparts.js:500",
     "ds-theme": "static/admin.html:2",
     "ds-tile": "static/costs.html:97",
     "ds-tile__label": "static/costs.html:97",
@@ -1767,7 +1767,7 @@
     "ds-timeline__meta": "static/js/chattests.js:599",
     "ds-timeline__text": "static/js/chattests.js:599",
     "ds-timeline__title": "static/js/chattests.js:599",
-    "ds-toast": "static/js/session.js:3781",
+    "ds-toast": "static/js/session.js:3784",
     "ds-toasts": "static/admin.html:585",
     "ds-tone-error": "static/js/accounts.js:116",
     "ds-tone-neutral": "static/js/admingithub.js:195",
@@ -1778,12 +1778,12 @@
     "ds-topbar__menu": "static/admin.html:34",
     "ds-touch": "static/js/keyboard.js:72",
     "ds-view": "static/admin.html:91",
-    "ds-view--fixed": "static/index.html:197"
+    "ds-view--fixed": "static/index.html:199"
   },
   "unknown": [
-    "static/index.html:178 module DS.ds",
-    "static/js/chatparts.js:1427 icon background",
-    "static/js/chatparts.js:1574 icon stop",
+    "static/index.html:180 module DS.ds",
+    "static/js/chatparts.js:1442 icon background",
+    "static/js/chatparts.js:1589 icon stop",
     "static/js/home.js:340 icon waiting"
   ]
 }

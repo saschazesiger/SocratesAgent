@@ -18,12 +18,17 @@ const (
 	agentNoteClose = "</socrates-note>"
 )
 
-// AgentText is a user message as its agent is given it: Socrates' note for
-// the agent alone (Message.Note: who sent it, which other chats work beside
-// it) before the text. The journal and the chat keep the text without it.
-func AgentText(note, text string) string {
-	if note = strings.TrimSpace(note); note == "" {
-		return text
+// AgentText is a user message as its agent is given it: Socrates' notes for
+// the agent alone around the text - before it (Message.Note: who sent it,
+// which other chats work beside it), and after it (Message.NoteAfter: the
+// agent's open questions, read right after the words that may settle them).
+// The journal and the chat keep the text without them.
+func AgentText(note, text, after string) string {
+	if note = strings.TrimSpace(note); note != "" {
+		text = WithNote(agentNoteOpen+"\n"+note+"\n"+agentNoteClose, text)
 	}
-	return WithNote(agentNoteOpen+"\n"+note+"\n"+agentNoteClose, text)
+	if after = strings.TrimSpace(after); after != "" {
+		text += "\n\n" + agentNoteOpen + "\n" + after + "\n" + agentNoteClose
+	}
+	return text
 }

@@ -868,6 +868,11 @@ func (c *tcx) script(text string) (string, map[string]any) {
 	if _, after, ok := strings.Cut(text, "</socrates-note>"); ok && strings.HasPrefix(strings.TrimSpace(text), "<socrates-note>") {
 		text = after
 	}
+	if t := strings.TrimSpace(text); strings.HasSuffix(t, "</socrates-note>") {
+		if at := strings.LastIndex(t, "<socrates-note>"); at > 0 {
+			text = t[:at]
+		}
+	}
 	word, rest, _ := strings.Cut(strings.TrimSpace(text), " ")
 	fields := strings.Fields(rest)
 	ok := true

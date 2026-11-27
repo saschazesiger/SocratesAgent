@@ -372,9 +372,13 @@ counter-question instead of an answer.
   agent's own findings, a change of plan or a new question settles it; never end a reply with a
   question in text.
 - **The open questions go with every message.** A message of the person's and an answer that goes
-  to the agent carry, in Socrates' note (`<socrates-note>`, `agent.AgentText`), the agent's open
-  `ask_user` questions but the one answered (`askuser.OpenNote`, written by the host into the
-  message's `note`), with the reminder to withdraw those the message settles. Another chat's
+  to the agent carry, in a Socrates note after the text (`<socrates-note>`, `agent.AgentText`), the
+  agent's open `ask_user` questions but the one answered (`askuser.OpenNote`, written by the host
+  into the message's `note_after`), with the rule: withdraw a question only when the message settles
+  it (gives the answer, decides the same thing, drops the work it was for); something else asked or
+  said settles nothing. After the text, because weak models read a note before it as boilerplate
+  and act on the words alone; the rule against withdrawing too much, because they took "may settle"
+  as an order (measured with `TestLiveQuestionsStayCurrent`, below). Another chat's
   message and a scheduled start carry none.
 - **Subagents do not ask.** An answer reaches the main thread only, so a subagent's call is
   refused with "Only the main agent can ask the person: put this question into your result for

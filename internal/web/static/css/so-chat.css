@@ -1786,15 +1786,32 @@
 
 /* ── The top bar's Questions ─────────────────────────────────────────── */
 
+/* An amber pill (the tone of what waits for the person, as the line above
+   the composer): its glyph, the count and "questions". A tonal button takes
+   no tone class, so the pill sets its hooks. */
 .so-questions-btn {
-  position: relative;
+  --ds-btn-bg: var(--ds-warning-container);
+  --ds-btn-color: var(--ds-on-warning-container);
+  flex: none;
+  gap: var(--ds-space-1);
 }
 
-/* The count sits on the button's corner, as the Tests button's does. */
-.so-questions-btn__badge {
-  position: absolute;
-  top: calc(-1 * var(--ds-space-1));
-  right: calc(-1 * var(--ds-space-1));
+.so-questions-btn__count {
+  font-variant-numeric: tabular-nums;
+}
+
+/* On a phone the bar is the title's: the line above the composer says what
+   waits, with its own Answer. */
+@media (max-width: 600px) {
+  .so-questions-btn {
+    display: none;
+  }
+}
+
+/* The questions' line above the composer (chatview.js drawState): the count
+   and Answer, which a long line keeps on its row. */
+.so-chat__asking .ds-btn {
+  flex: none;
 }
 
 /* ── The plan card ───────────────────────────────────────────────────── */
@@ -1897,6 +1914,15 @@
   min-width: 0;
   overflow-wrap: anywhere;
   text-align: center;
+}
+
+/* The answer to a question says what was chosen in one line; the rest is
+   behind its "i" and in its tooltip. */
+.so-answer .so-line__text {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  overflow-wrap: normal;
 }
 
 .so-line__command {

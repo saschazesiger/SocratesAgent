@@ -210,7 +210,7 @@ func TestAMessageOfThePersonsListsTheOpenQuestions(t *testing.T) {
 	notes := map[string]string{}
 	for _, ev := range r.journal() {
 		if ev.Type == agent.TypeMessage && ev.Role == agent.RoleUser {
-			notes[ev.ClientID] = ev.Note
+			notes[ev.ClientID] = ev.Note + ev.NoteAfter
 		}
 	}
 	if n := notes["m2"]; !strings.Contains(n, "- "+ask.AskID+": ") || !strings.Contains(n, askuser.WithdrawName) {

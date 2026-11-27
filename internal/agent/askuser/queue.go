@@ -52,8 +52,8 @@ func Queued(ctx context.Context, q Questions, id string, p *Payload) string {
 		return text
 	}
 	if others := OpenList(list, id); others != "" {
-		text += "\n\nYour other open questions:\n" + others + "\nIf this question replaces one of them, or one no longer matters, " +
-			"withdraw it now with " + WithdrawName + ": the person should only see questions you still need answered."
+		text += "\n\nYour other open questions:\n" + others + "If this question replaces one of them, or you no longer need one, " +
+			"withdraw that one with " + WithdrawName + ". Leave the others open."
 	}
 	return text
 }
@@ -73,16 +73,18 @@ func OpenList(list []Asked, except string) string {
 
 // OpenNote is Socrates' note on a message for an agent that has open
 // questions (list, but `except`): what they are, and to withdraw those the
-// message settles. `why` says what the message is ("This message", "This
-// answer"). "" when no other question is open.
-func OpenNote(list []Asked, except, why string) string {
+// message settles and only those. `what` names the message ("this message",
+// "this answer"). "" when no other question is open.
+func OpenNote(list []Asked, except, what string) string {
 	open := OpenList(list, except)
 	if open == "" {
 		return ""
 	}
-	return "Your open questions to the person (" + Name + "), which they still see as waiting for an answer:\n" + open +
-		why + " may answer one of them or make it moot: then withdraw it now with " + WithdrawName +
-		" (its reason says why), so that the person only sees questions you still need answered."
+	return "Your open questions to the person (" + Name + "), still waiting for their answer:\n" + open +
+		"Withdraw a question (" + WithdrawName + ") only when " + what + " settles it - it gives the answer, decides " +
+		"the same thing, or drops the work the question was for - with a reason that says what settled it. " +
+		"Something else asked or said settles nothing: leave those questions open, do not ask them again, and go on; " +
+		"their answers will come."
 }
 
 // questionLine is an ask's questions as one line.

@@ -717,7 +717,7 @@ export function openAskDialog({ items, start = 0, watch, openChat, closed, more 
 <div class="so-q-scroll" data-ds-key="${'scroll:' + ask.id}">${settled ? doneHtml(ask) : html`<div class="so-q-body so-ask-body" data-ds-key="${'q:' + ask.id + ':' + step}"${st.phase === 'sent' ? html` data-state="pending"` : ''}>${
       step === 0 && payload.context ? contextHtml('ctx', payload.context, payload.title || 'About these questions', !!payload.title)
         : step === 0 && payload.title ? html`<p class="so-ask-title">${payload.title}</p>` : ''
-    }${step === 0 ? sectionsHtml('sec', sectionsOf(payload)) : ''}${step === 0 ? stepsHtml('steps', payload.steps) : ''}${st.refused ? html`<div class="ds-alert ds-tone-error so-refused" role="alert">${raw(icon('alertCircle', 20))}<span class="ds-alert__text">${'Your answer was not taken: ' + (st.refused.error || 'the server refused it.') + ' Send it again, or change it first.'}</span></div>` : ''}${q ? questionHtml(q, questions.length, step, last) : ''}${
+    }${step === 0 ? sectionsHtml('sec', sectionsOf(payload)) : ''}${step === 0 ? stepsHtml('steps', payload.steps) : ''}${st.refused ? html`<div class="ds-alert ds-tone-error so-refused" role="alert">${raw(icon('alertCircle', 20))}<span class="ds-alert__text">${'Your answer was not taken: ' + (st.refused.error || 'the server refused it.') + ' Send it again, or change it first.'}</span></div>` : ''}${q ? questionHtml(q, place(one, step, questions.length), step, last) : ''}${
       st.draft.asking ? followUpHtml() : ''
     }${last && !st.draft.asking ? generalHtml() : ''}</div>`}${
       st.phase === 'sent' ? html`<div class="ds-alert so-q-status" role="status">${raw(icon('clock', 20))}<span class="ds-alert__text">${navigator.onLine === false ? 'Saved. Your answer goes out when the connection is back.' : 'Sending your answer…'}</span></div>` : ''
@@ -780,7 +780,22 @@ export function openAskDialog({ items, start = 0, watch, openChat, closed, more 
     });
   }
 
-  function questionHtml(q, total, step, last) {
+  // place is where the question on screen stands among this chat's
+  // questions in the walk, every ask of the chat counted: "Question 2 of
+  // 3" when the agent asked three times, as the top bar's count says.
+  function place(one, step, count) {
+    const mine = st.items.filter((other) => other.chatId === one.chatId);
+    let before = 0;
+    let total = 0;
+    for (const other of mine) {
+      const n = other === one ? count : Math.max(1, ((other.ask.payload || {}).questions || []).length);
+      if (mine.indexOf(other) < mine.indexOf(one)) before += n;
+      total += n;
+    }
+    return { n: before + step + 1, of: total };
+  }
+
+  function questionHtml(q, at, step, last) {
     const a = st.draft.answers[q.id];
     const kind = kindOf(q);
     const options = kind === 'confirm'
@@ -790,7 +805,7 @@ export function openAskDialog({ items, start = 0, watch, openChat, closed, more 
     const delegate = q.allow_delegate !== false;
     const hintWords = multi ? multiHint(q) : '';
     const problem = st.problem && st.problem.q === q.id ? st.problem.text : '';
-    return html`<div class="so-q-step">${total > 1 ? html`<span>${'Question ' + (step + 1) + ' of ' + total}</span>` : ''}${q.header ? html`<span class="so-q-chip">${q.header}</span>` : ''}${q.required === true ? html`<span class="so-q-chip">Required</span>` : ''}</div>
+    return html`<div class="so-q-step">${at.of > 1 ? html`<span>${'Question ' + at.n + ' of ' + at.of}</span>` : ''}${q.header ? html`<span class="so-q-chip">${q.header}</span>` : ''}${q.required === true ? html`<span class="so-q-chip">Required</span>` : ''}</div>
 <h2 class="so-q-text" tabindex="-1">${q.question || q.header || ''}</h2>${blocksHtml()}${q.context ? contextHtml('qctx:' + q.id, q.context, 'Why this matters') : ''}${
       sectionsHtml('qsec:' + q.id, sectionsOf(q))}${stepsHtml('qsteps:' + q.id, q.steps)}${
       hintWords ? html`<p class="so-q-detail">${hintWords}</p>` : ''

@@ -749,11 +749,20 @@ export function mountChat(ctx) {
   // wait for an answer, for the top bar's Questions: every open question
   // but a plan, which its card in the chat answers.
   function drawQuestions() {
-    if (!ctx.questions) return;
-    // An answer of this browser's still on its way has answered its
-    // question already: the line at the end of the chat says where it is.
-    const count = synced ? openAsks(chat).filter((ask) => (!ask.payload || ask.payload.kind !== 'plan') && !view.pendingAnswer(ask)).length : 0;
-    ctx.questions(session.id, count);
+    if (ctx.questions) ctx.questions(session.id, waitingAsks());
+  }
+
+  // waitingAsks is how many questions of the chat wait for the person's
+  // answer: every open question but a plan (its card answers it) and one
+  // this browser's answer is on its way to (the line at the end of the
+  // chat says where it is) - unless the server refused that answer.
+  function waitingAsks() {
+    if (!synced) return 0;
+    return openAsks(chat).filter((ask) => {
+      if (ask.payload && ask.payload.kind === 'plan') return false;
+      const pending = view.pendingAnswer(ask);
+      return !pending || outboxState(pending) === 'failed';
+    }).length;
   }
 
   // drawEarlier draws the entries before the ones on screen, a few at a time
@@ -876,7 +885,12 @@ export function mountChat(ctx) {
     } else if (chat.process === 'starting') {
       line = html`<div class="ds-alert" data-ds-key="starting"><span class="so-chat__spin" aria-hidden="true"><span class="ds-spinner"></span></span><span class="ds-alert__text">Starting the agent…</span></div>`;
     }
-    morph(stateLine, html`${said}${line}`);
+    // The questions that wait for the person stand above the composer for
+    // as long as they wait: a question is never in the conversation, so
+    // this is where the eye finds it, beside the top bar's Questions.
+    const waiting = waitingAsks();
+    const asking = waiting ? html`<div class="ds-alert ds-tone-warning so-chat__asking" data-ds-key="asking" role="status">${raw(icon('chatDots', 20))}<span class="ds-alert__text">${waiting === 1 ? 'A question waits for your answer.' : waiting + ' questions wait for your answer.'}</span><button class="ds-btn ds-btn--filled ds-sm" type="button" data-action="questions-open">Answer</button></div>` : '';
+    morph(stateLine, html`${said}${line}${asking}`);
   }
 
   // limitWindows is the chat's account's usage windows - 5-hour and weekly
@@ -1568,7 +1582,8 @@ export function mountChat(ctx) {
         break;
       }
       case 'ask-open':
-        ctx.openAsk(session.id, target.dataset.ask);
+      case 'questions-open':
+        ctx.openAsk(session.id, target.dataset.ask || '');
         break;
       case 'plan-approve':
         queueAnswer(session.id, target.dataset.ask, { decision: 'approve' });
@@ -1603,12 +1618,6 @@ export function mountChat(ctx) {
         break;
       case 'outbox-drop':
         chatOutbox().drop(target.dataset.id);
-        break;
-      case 'ask-again':
-        // The refused answer is let go; the dialog opens on the draft it
-        // was written from, which is kept until the question is answered.
-        chatOutbox().drop(target.dataset.id);
-        ctx.openAsk(session.id, target.dataset.ask);
         break;
       case 'outbox-edit': {
         const item = chatOutbox().items.find((one) => one.id === target.dataset.id);

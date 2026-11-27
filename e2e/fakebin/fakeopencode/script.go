@@ -461,6 +461,11 @@ func (t *turn) play(text string) error {
 	if _, after, ok := strings.Cut(text, "</socrates-note>"); ok && strings.HasPrefix(strings.TrimSpace(text), "<socrates-note>") {
 		text = after
 	}
+	if t := strings.TrimSpace(text); strings.HasSuffix(t, "</socrates-note>") {
+		if at := strings.LastIndex(t, "<socrates-note>"); at > 0 {
+			text = t[:at]
+		}
+	}
 	word, args, _ := strings.Cut(strings.TrimSpace(text), " ")
 	fields := strings.Fields(args)
 	t.step()

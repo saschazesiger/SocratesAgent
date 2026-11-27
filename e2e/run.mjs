@@ -12399,17 +12399,22 @@ async function askwithdrawn() {
     const two = await awaitQuestions(page, 2);
     ok(!!second && two.ok && two.seen.label === '2 questions wait for your answer',
       'a second question while the first waits is counted with it', JSON.stringify(two.seen));
+    const row = await page.waitForFunction(() => {
+      const n = document.querySelector('#chat .so-chat__state .so-chat__asking');
+      return n && /2 questions wait for your answer/.test(n.innerText) ? n.innerText.replace(/\s+/g, ' ').trim() : false;
+    }, null, { timeout: 10000 }).then((h) => h.jsonValue(), () => '');
+    ok(!!row && /Answer$/.test(row), 'above the composer a line says so, with Answer', row);
     const answered = second ? (await answerFrom(s, id, second, { db: ['redis'] })).status() : 0;
     const back = await awaitQuestions(page, 1);
     const line = await awaitAnswerLine(page, (l) => !l.state && /Database: Redis/.test(l.text), 10000);
-    ok(answered === 200 && back.ok && !!line && /^Answered: /.test(line.text),
+    ok(answered === 200 && back.ok && !!line && /^Answered · /.test(line.text),
       'an answer takes it off again, and the chat shows the answer as a line', oneLine(JSON.stringify({ answered, back: back.seen, line })));
 
-    await openQuestions(page);
+    await page.click('#chat .so-chat__asking [data-action="questions-open"]');
     const shown = await askLook(page);
     const blocks = await page.waitForSelector('dialog.so-askdlg .so-q-blocks', { timeout: 10000 }).then((n) => n.innerText(), () => '');
     ok(!!shown && shown.question === 'Which database?' && blocks === 'Waiting for this: The schema',
-      'Questions opens the dialog at the question, with what waits for its answer under it', JSON.stringify({ question: shown && shown.question, blocks }));
+      'Answer in that line opens the dialog at the question, with what waits for its answer under it', JSON.stringify({ question: shown && shown.question, blocks }));
     await page.click('dialog.so-askdlg .so-q-option[data-option="sqlite"]');
 
     // The agent withdraws it while the dialog shows it, half answered.
@@ -12425,8 +12430,9 @@ async function askwithdrawn() {
     ok(shut.ok, 'and it closes', shut.said);
 
     const hidden = await awaitQuestions(page, 0);
-    const left = { cards: await askCards(page), lines: (await answerLines(page)).length, log: await logText(page) };
-    ok(hidden.ok && left.cards === 0 && left.lines === 1 && !/withdrew|Answer anyway/i.test(left.log),
+    const left = { cards: await askCards(page), lines: (await answerLines(page)).length, log: await logText(page),
+      row: await page.$('#chat .so-chat__asking').then((n) => !!n) };
+    ok(hidden.ok && left.cards === 0 && left.lines === 1 && !left.row && !/withdrew|Answer anyway/i.test(left.log),
       'withdrawn, it leaves Questions, which hides with nothing left, and the chat shows nothing of it to answer',
       oneLine(JSON.stringify({ hidden: hidden.seen, cards: left.cards, lines: left.lines })));
     const drafts = await page.evaluate((ask) => localStorage.getItem('socrates.ask.' + ask), askId);
@@ -13453,7 +13459,7 @@ async function chatwatch() {
       && order.lastBelow && /Went on after the answer/.test(order.lastText),
     'the work after a question goes on in its answer’s fold, its words under that, and the question is on Questions, not in the chat',
     JSON.stringify({ answered, questions: waits.seen, ...order }));
-    ok(/^Answered: Database: Postgres/.test(order.line) && order.lineAfter, 'its answer is a line after that work', JSON.stringify({ line: order.line, after: order.lineAfter }));
+    ok(/^Answered · Database: Postgres/.test(order.line) && order.lineAfter, 'its answer is a line after that work', JSON.stringify({ line: order.line, after: order.lineAfter }));
     ok(/\d{1,2}:\d{2}/.test(order.meta), 'the fold says by the clock when its work was done', JSON.stringify(order.meta));
 
     // A background job, stopped by itself from its dialog.
@@ -14327,10 +14333,10 @@ async function chatoffline() {
     await page.unroute('**/api/chats/*/asks/*/answer');
     await page.evaluate(() => window.dispatchEvent(new Event('online')));
     await awaitChat(s, id, idle, 30000);
-    const answeredLine = await awaitAnswerLine(page, (l) => !l.state && /^Answered: /.test(l.text), 30000);
+    const answeredLine = await awaitAnswerLine(page, (l) => !l.state && /^Answered · /.test(l.text), 30000);
     const leftLocal = (await answerLines(page)).filter((l) => l.key === lineKey).length;
     const given = await askOf(s, id, offAsk);
-    ok(!!waitingLine && /Not sent yet/.test(waitingLine.chip) && /^Answered: /.test(waitingLine.text) && !waitingLine.bubble
+    ok(!!waitingLine && /Not sent yet/.test(waitingLine.chip) && /^Your answer · /.test(waitingLine.text) && !waitingLine.bubble
       && !!reopened && leftLocal === 0 && !!given && given.answered
       && JSON.stringify(given.answer.answers.q1.selected) === '["a"]',
       'an answer given offline is a line at the end of the chat, not sent yet - after a reload too - and is delivered once',
@@ -14358,11 +14364,12 @@ async function chatoffline() {
     await awaitChat(s, id, idle);
 
     // An answer the server refuses for good: the dialog gives the question
-    // back with the reason, its line says it was not sent, and Answer again
-    // opens on what was chosen.
+    // back with the reason, its line says it was not sent and why behind its
+    // "i", the question is counted again, and the questions' Answer opens on
+    // what was chosen.
     await say(page, '/ask');
     const refusedAsk = await awaitQuestion(s, id, page);
-    const refusedSel = '#chat .so-answer[data-kind="answer"][data-state="failed"]:has([data-action="ask-again"][data-ask="' + refusedAsk + '"])';
+    const refusedSel = '#chat .so-answer[data-kind="answer"][data-state="failed"][data-ds-key="oq:' + refusedAsk + '"]';
     await page.route('**/api/chats/*/asks/*/answer', (route) => route.fulfill({ status: 404, contentType: 'application/json',
       body: JSON.stringify({ error: 'this chat never asked that question' }) }));
     await openQuestions(page);
@@ -14375,10 +14382,11 @@ async function chatoffline() {
     await page.waitForSelector('dialog.so-askdlg', { state: 'detached', timeout: 5000 });
     const onLine = await page.waitForSelector(refusedSel, { timeout: 5000 }).then((n) => n.evaluate((el) => ({
       key: el.dataset.dsKey, text: el.innerText.replace(/\s+/g, ' ').trim(),
-      why: (el.querySelector('.so-info[aria-label="Why it was not taken"]') || { dataset: {} }).dataset.tip || '',
-      retry: !!el.querySelector('[data-action="outbox-retry"]'),
+      why: (el.querySelector('.so-info') || { dataset: {} }).dataset.facts || '',
+      buttons: el.querySelectorAll('button:not(.so-info)').length,
     })), () => null);
-    await page.click(refusedSel + ' [data-action="ask-again"]');
+    const recounted = await awaitQuestions(page, 1, 5000);
+    await openQuestions(page);
     const keptChoice = await page.waitForSelector('dialog.so-askdlg .so-q-option[data-option="b"][aria-pressed="true"]', { timeout: 10000 })
       .then(() => true, () => false);
     await page.click('dialog.so-askdlg [data-action="send"]');
@@ -14387,9 +14395,10 @@ async function chatoffline() {
       && !(await answerLines(page)).some((l) => l.key === 'oq:' + refusedAsk);
     const refusedGiven = await askOf(s, id, refusedAsk);
     ok(/never asked that question/.test(inDialog) && !!onLine && onLine.key === 'oq:' + refusedAsk && /Not sent/.test(onLine.text)
-      && /never asked that question/.test(onLine.why) && onLine.retry && keptChoice && settledLine && !!refusedGiven && refusedGiven.answered,
-    'an answer refused for good says why, in the dialog and on its line in the chat, and is answered again from what was chosen',
-    oneLine(JSON.stringify({ inDialog, onLine, keptChoice, settledLine })));
+      && /Not taken/.test(onLine.why) && /never asked that question/.test(onLine.why) && onLine.buttons === 0 && recounted.ok
+      && keptChoice && settledLine && !!refusedGiven && refusedGiven.answered,
+    'an answer refused for good says why, in the dialog and behind its line\'s "i", is counted on Questions again, and is answered again from what was chosen',
+    oneLine(JSON.stringify({ inDialog, onLine, recounted: recounted.seen, keptChoice, settledLine })));
 
     // The connections this scenario cut, and the refusal it made up, are its
     // own doing.
@@ -14482,16 +14491,23 @@ async function askOf(s, id, askId) {
   return (history.asks || []).find((a) => a.id === askId) || null;
 }
 
-// questionsOf is the top bar's Questions as it is drawn: whether it is
-// shown, the count on its badge (0 while it is hidden) and its label. A
-// question is never drawn in the chat itself: it waits there.
+// questionsOf is the chat's questions as the page says them: the top bar's
+// Questions at a desk (its count and label), and on a phone, where the pill
+// gives the title its room, the line above the composer. `shown` is whether
+// either says a question waits, `pill` and `row` which. A question is never
+// drawn in the chat itself.
 const questionsOf = (page) => page.evaluate(() => {
   const button = document.getElementById('questionsBtn');
-  const badge = button && button.querySelector('.so-questions-btn__badge');
-  const shown = !!button && !button.hidden && button.checkVisibility();
+  const number = button && button.querySelector('.so-questions-btn__count');
+  const pill = !!button && !button.hidden && button.checkVisibility();
+  const line = document.querySelector('#chat .so-chat__asking');
+  const words = line ? line.innerText.replace(/\s+/g, ' ').trim() : '';
+  const m = /^(A|\d+) questions? wait/.exec(words);
+  const fromRow = m ? (m[1] === 'A' ? 1 : Number(m[1])) : 0;
+  const count = pill && number ? Number(number.textContent) : fromRow;
   return {
-    shown, count: shown && badge && !badge.hidden ? Number(badge.textContent) : 0,
-    label: shown ? button.getAttribute('aria-label') : '',
+    shown: pill || !!line, pill, row: words, count: pill || line ? count : 0,
+    label: pill ? button.getAttribute('aria-label') : words.replace(/\.? ?Answer$/, ''),
   };
 });
 
@@ -14521,8 +14537,9 @@ async function awaitQuestion(s, id, page, count = 1) {
 // openQuestions opens the question dialog at the chat's questions, from the
 // top bar's Questions.
 async function openQuestions(page) {
-  await page.waitForSelector('#questionsBtn:not([hidden])', { timeout: 15000 });
-  await page.click('#questionsBtn');
+  await page.waitForSelector('#chat .so-chat__asking [data-action="questions-open"]', { timeout: 15000 });
+  if ((await questionsOf(page)).pill) await page.click('#questionsBtn');
+  else await page.click('#chat .so-chat__asking [data-action="questions-open"]');
   await page.waitForSelector('dialog.so-askdlg[open] .so-q-text', { timeout: 10000 });
 }
 
@@ -14621,7 +14638,7 @@ async function chatask() {
     ok(reply && gone.ok && (await askCards(page)) === 0, 'the agent goes on, and Questions goes with nothing left in the chat to answer', oneLine(JSON.stringify({ reply, gone: gone.seen })));
     // The scripted agent's question is answered inside its turn (no answer
     // message), as an in-turn question of Codex or OpenCode is.
-    ok(!!done && /^Answered: /.test(done.text) && !done.state && !done.bubble,
+    ok(!!done && /^Answered · /.test(done.text) && !done.state && !done.bubble,
       'the answer is a quiet line in the chat that says what was answered', oneLine(JSON.stringify(done)));
     const factOf = (q) => ((done && done.facts) || []).find((f) => f[0] === q) || [];
     ok(factOf('Which database should the service use?')[1] === 'SQLite · Note: keep it small' && factOf('What should the service be called?')[1] === 'Atlas'
@@ -14728,7 +14745,7 @@ async function chatask() {
     await other.click('dialog.so-askdlg [data-action="next"]').catch(() => {});
     await page.waitForSelector('dialog.so-askdlg', { state: 'detached', timeout: 10000 }).catch(() => {});
     await openChat(page, id);
-    const otherLine = await awaitAnswerLine(other, (l) => !l.state && /^Answered: /.test(l.text) && /: A\b/.test(l.text), 10000);
+    const otherLine = await awaitAnswerLine(other, (l) => !l.state && /^Answered · /.test(l.text) && / · (.*: )?A\b/.test(l.text), 10000);
     const otherGone = await awaitQuestions(other, 0, 10000);
     const homeGiven = await askOf(s, id, homeAsk);
     ok(otherGone.ok && !!homeGiven && homeGiven.answered && (await askCards(other)) === 0,
@@ -15218,25 +15235,24 @@ async function chatphone() {
     await wait(300);
 
     // The question dialog: the whole screen, one question, big options.
-    // It is opened from the top bar's Questions, a whole target on screen.
+    // On a phone the top bar keeps its room for the title: the line above
+    // the composer says the question waits, and its Answer is a whole
+    // target on screen.
     await say(page, '/askmany', { button: true });
     await awaitQuestion(s, id, page);
-    // It pops in: measured once that is over.
-    await page.waitForFunction(() => document.getElementById('questionsBtn').getAnimations({ subtree: true })
-      .every((a) => a.playState !== 'running'), null, { timeout: 5000 }).catch(() => {});
     const asking = await page.evaluate(() => {
-      const r = document.getElementById('questionsBtn').getBoundingClientRect();
+      const answer = document.querySelector('#chat .so-chat__asking [data-action="questions-open"]');
+      const r = answer.getBoundingClientRect();
       const root = document.scrollingElement;
-      // Its neighbours in the top bar, the size it should share.
-      const others = [...document.getElementById('questionsBtn').parentElement.querySelectorAll(':scope > .ds-btn--icon')]
-        .filter((n) => n.id !== 'questionsBtn' && n.checkVisibility()).map((n) => n.getBoundingClientRect())
-        .map((b) => Math.round(b.width) + 'x' + Math.round(b.height));
-      return { w: r.width, h: r.height, left: Math.round(r.left), right: Math.round(r.right), vw: innerWidth, others,
+      return { w: r.width, h: r.height, left: Math.round(r.left), right: Math.round(r.right), vw: innerWidth,
+        pill: document.getElementById('questionsBtn').checkVisibility(),
+        title: Math.round(document.getElementById('sessionTitle').getBoundingClientRect().width),
         cards: document.querySelectorAll('#chat .so-ask').length, wide: root.scrollWidth - root.clientWidth };
     });
-    ok(asking.w >= 48 && asking.h >= 48 && asking.left >= 0 && asking.right <= asking.vw && asking.cards === 0 && asking.wide <= 0,
-      'a question is counted on the top bar’s Questions, a 48 px target whole on screen, and not drawn in the chat', JSON.stringify(asking));
-    await page.tap('#questionsBtn');
+    ok(asking.w >= 48 && asking.h >= 48 && asking.left >= 0 && asking.right <= asking.vw && !asking.pill && asking.title >= 100
+      && asking.cards === 0 && asking.wide <= 0,
+      'a question is said above the composer with Answer, a 48 px target whole on screen; the top bar keeps the title, and the chat draws no card', JSON.stringify(asking));
+    await page.tap('#chat .so-chat__asking [data-action="questions-open"]');
     await page.waitForSelector('dialog.so-askdlg .so-q-option', { timeout: 10000 });
     await wait(400);
     const dialog = await page.evaluate(() => {

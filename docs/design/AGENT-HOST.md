@@ -55,7 +55,7 @@ is one `agent.Event`: a flat JSON object, all fields optional except `seq`, `at`
 |---|---|---|
 | `turn.started` | `turn_id`, `message_id`?, `account`? | the agent took up a user message (or started on its own). `account` is the account the turn runs on (WP7): the host stamps it on every turn, so a turn's cost belongs to the account that paid for it (the cost ledger, WP9). A journal written before accounts has none |
 | `turn.ended` | `turn_id`, `outcome` (`completed`\|`interrupted`\|`failed`\|`limited`), `usage`, `cost_usd`, `text` (why), `window`? and `resets_at`? (Unix s) on a `limited` one | end of the turn. A `limited` turn says which window refused and when it renews where the agent said (Claude's rejected `rate_limit_event`) |
-| `message` | `message_id`, `role` (`user`\|`assistant`), `state`, `client_id`?, `text`?, `attachments`?, `answer_to`?, `turn_id`?, `model`? | creates a message. **User messages carry text and attachments inline**; assistant messages are containers for parts |
+| `message` | `message_id`, `role` (`user`\|`assistant`), `state`, `client_id`?, `text`?, `attachments`?, `answer_to`?, `turn_id`?, `model`?, `note`?, `note_after`?, `sender`? | creates a message. **User messages carry text and attachments inline**; assistant messages are containers for parts |
 | `message.state` | `message_id`, `state`, `via`? | user: `pending` (journaled by the host) → `queued` (the agent holds it behind a running turn; `via: "turn"` when it holds it inside that turn already, Codex's steer, where it can no longer be withdrawn) → `delivered` (taken up), or `cancelled` (the agent dropped it unread; not handed to it again), or `withdrawn` (the person took it back before the agent took it up, `withdraw` §4.3; not handed to it again either). Assistant: `streaming` → `done`\|`interrupted` |
 | `part` | `message_id`, `part_id`, `parent_part_id`?, `kind`, `state`, `text`, `content` | creates **or replaces whole** the part with that id (kind, state, text, content); `parent_part_id` nests it (below) |
 | `part.delta` | `message_id`, `part_id`, `offset`, `text` | appends `text` to the part's text; `offset` is where it starts, in **UTF-16 code units** |
@@ -416,8 +416,9 @@ as a message.
 **Closing.** An `ask_user` question (`via: "message"`) stays open until it is answered or the agent
 withdraws it (`withdraw_question`: `ask.closed{withdrawn, text: reason}`); neither a message of the
 person's nor a Stop closes it, because the agent never stopped for it. So that the agent withdraws
-what a message settles, the host writes its open questions into the `note` of the person's message
-and of an answer it delivers as a message (`askuser.OpenNote`; REBUILD §5.3). For the asks a call waits
+what a message settles, the host writes its open questions into the `note_after` of the person's
+message and of an answer it delivers as a message, which the agent reads after the text
+(`askuser.OpenNote`, `agent.AgentText`; REBUILD §5.3). For the asks a call waits
 on: interrupts and recovery leave them open. A user message (`send`) closes every such ask no
 call waits on any more (`Unwaited()`, journaled as `ask.closed` with the message): the person moved
 on, having pressed Stop and written something else, or written instead of answering a question

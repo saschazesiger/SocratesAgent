@@ -633,6 +633,12 @@ func (t *turnRun) script() {
 			text = strings.TrimSpace(after)
 		}
 	}
+	// And the one after it (the open questions).
+	if strings.HasSuffix(text, "</socrates-note>") {
+		if at := strings.LastIndex(text, "<socrates-note>"); at > 0 {
+			text = strings.TrimSpace(text[:at])
+		}
+	}
 	if line, ok := scripted()[text]; ok {
 		text = line
 	}

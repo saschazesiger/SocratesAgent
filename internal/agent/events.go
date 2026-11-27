@@ -313,6 +313,11 @@ type Event struct {
 	// person or Socrates sent.
 	Note   string  `json:"note,omitempty"`
 	Sender *Sender `json:"sender,omitempty"`
+	// NoteAfter is Socrates' note that goes after a user message's text
+	// rather than before it (AgentText): the agent's open questions
+	// (askuser.OpenNote), which a model reads last, right after the words
+	// that may settle them.
+	NoteAfter string `json:"note_after,omitempty"`
 
 	Outcome string  `json:"outcome,omitempty"`
 	Usage   *Usage  `json:"usage,omitempty"`

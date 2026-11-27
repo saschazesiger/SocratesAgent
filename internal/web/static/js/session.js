@@ -2113,18 +2113,21 @@ let questionsChat = '';
 function drawQuestionsBtn(chatId, count) {
   questionsChat = count > 0 ? chatId : '';
   const button = dom.questionsBtn;
-  const badge = button.querySelector('.so-questions-btn__badge');
-  const shown = !button.hidden;
+  const counted = button.hidden ? 0 : Number(button.dataset.count || 0);
   button.hidden = count <= 0;
+  button.dataset.count = String(Math.max(0, count));
   if (count <= 0) return;
   const label = count === 1 ? 'A question waits for your answer' : count + ' questions wait for your answer';
   if (button.getAttribute('aria-label') !== label) button.setAttribute('aria-label', label);
   if (button.getAttribute('data-tip') !== label) button.setAttribute('data-tip', label);
-  const text = String(count);
-  if (badge.textContent !== text) badge.textContent = text;
-  badge.hidden = false;
-  // A button that appears pops in; the number itself changes at once.
-  if (!shown) M.enter(button, 'pop');
+  const number = button.querySelector('.so-questions-btn__count');
+  const words = button.querySelector('.so-questions-btn__words');
+  if (number.textContent !== String(count)) number.textContent = String(count);
+  const noun = count === 1 ? 'question' : 'questions';
+  if (words.textContent !== noun) words.textContent = noun;
+  // A question that comes pops the pill in, the first and every next one:
+  // the count going up is what says that the agent asked again.
+  if (count > counted) M.enter(button, 'pop');
 }
 
 /**

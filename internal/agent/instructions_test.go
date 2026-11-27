@@ -56,13 +56,20 @@ func TestStripModelNote(t *testing.T) {
 		t.Fatalf("stripped = %q", got)
 	}
 	// Socrates' own note comes off as well, after the model's or alone.
-	if got := StripModelNote(WithNote(n.Switch("a"), AgentText("From the chat “API”.", "go on"))); got != "go on" {
+	if got := StripModelNote(WithNote(n.Switch("a"), AgentText("From the chat “API”.", "go on", ""))); got != "go on" {
 		t.Fatalf("stripped both = %q", got)
 	}
-	if got := StripModelNote(AgentText("From the chat “API”.", "go on")); got != "go on" {
+	if got := StripModelNote(AgentText("From the chat “API”.", "go on", "")); got != "go on" {
 		t.Fatalf("stripped Socrates' note = %q", got)
 	}
-	if got := AgentText("  ", "go on"); got != "go on" {
+	// The note after the text (the open questions) is stripped as well.
+	if got := StripModelNote(AgentText("From the chat “API”.", "go on", "Your open questions: …")); got != "go on" {
+		t.Fatalf("with a note after: %q", got)
+	}
+	if got := AgentText("", "go on", "after"); got != "go on\n\n<socrates-note>\nafter\n</socrates-note>" {
+		t.Fatalf("the note after: %q", got)
+	}
+	if got := AgentText("  ", "go on", ""); got != "go on" {
 		t.Fatalf("an empty note = %q", got)
 	}
 	for _, text := range []string{"hello", "<model-instructions> never closed", "x <model-instructions></model-instructions>",

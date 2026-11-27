@@ -197,7 +197,7 @@ func FoldNote(cmd Command, proto int) Command {
 	if proto >= NoteProtocol || cmd.Op != OpSend || cmd.Note == "" {
 		return cmd
 	}
-	cmd.Text, cmd.Note = agent.AgentText(cmd.Note, cmd.Text), ""
+	cmd.Text, cmd.Note = agent.AgentText(cmd.Note, cmd.Text, ""), ""
 	return cmd
 }
 

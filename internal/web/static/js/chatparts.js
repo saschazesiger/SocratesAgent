@@ -129,7 +129,10 @@ export function infoButton(lines, label = 'Details') {
 
 /** factLine is one fact as a line of text: "Label: value", or the line itself. */
 function factLine(fact) {
-  return Array.isArray(fact) ? fact[0] + ': ' + fact[1] : String(fact);
+  if (!Array.isArray(fact)) return String(fact);
+  // A question as the label ends in its own mark: "Which database? Postgres".
+  const label = String(fact[0]).trim();
+  return /[?？]$/.test(label) ? label + ' ' + fact[1] : label.replace(/\s*[:：]$/, '') + ': ' + fact[1];
 }
 
 function chevron() {
@@ -995,20 +998,26 @@ export function askCard(ask, view) {
  * (null when the chat does not have it), `answer` the answer when the ask
  * does not carry it yet (one this browser has on its way). An answer on its
  * way says where it is (`state`, an outbox state), and one the server
- * refused (`pending`, its outbox item) offers to answer again.
+ * refused (`pending`, its outbox item) says why behind its "i".
  */
 export function answerLine({ key, ask, answer = null, state = '', pending = null }) {
   const shown = ask ? { ...ask, answer: answer || ask.answer } : null;
   const summary = shown ? answerSummary(shown) : '';
   const title = ask ? String((ask.payload && ask.payload.title) || '').trim() : '';
-  const words = summary ? 'Answered: ' + summary : title ? 'Answered: ' + title : 'Answered a question';
   const chip = state && state !== 'delivered' ? USER_STATE[state] : null;
+  // An answer on its way is not given yet: it says so, and its glyph is
+  // its chip's, not the check of an answer the agent has.
+  const lead = chip ? 'Your answer' : 'Answered';
+  const words = summary ? lead + ' \u00b7 ' + summary : title ? lead + ' \u00b7 ' + title : chip ? 'Your answer' : 'Answered a question';
+  // A refused answer says why behind its "i"; answering again is the
+  // questions' line above the composer, which counts it again, and the
+  // dialog there says why too.
   const failed = state === 'failed' && pending;
-  return html`<div class="${chip ? 'so-line so-line--row so-answer' : 'ds-divider ds-divider--label so-line so-answer'}" data-ds-key="${key}" data-kind="answer"${chip ? html` data-state="${state}"` : ''}>${raw(icon('check', 16))}<span class="so-line__text">${words}</span>${
-    chip ? html`<span class="${failed ? 'ds-status ds-tone-error' : 'ds-status'}" data-chip="${state}">${raw(icon(chip.glyph, 16))}<span>${chip.word}</span></span>` : ''
-  }${infoButton(shown ? answerFacts(shown) : [], 'The question and the answer')}${
-    failed ? html`${infoButton([pending.error || 'The server refused it.'], 'Why it was not taken')}<button class="ds-btn ds-btn--quiet ds-btn--icon ds-sm" type="button" data-action="outbox-retry" data-id="${pending.id}" aria-label="Send the answer again" data-tip="Send again">${raw(icon('sync', 18))}</button><button class="ds-btn ds-sm" type="button" data-action="ask-again" data-ask="${ask.id}" data-id="${pending.id}">Answer again</button>` : ''
-  }</div>`;
+  const facts = shown ? answerFacts(shown) : [];
+  if (failed) facts.unshift(['Not taken', pending.error || 'The server refused it.']);
+  return html`<div class="${chip ? 'so-line so-line--row so-answer' : 'ds-divider ds-divider--label so-line so-answer'}" data-ds-key="${key}" data-kind="answer"${chip ? html` data-state="${state}"` : ''}>${raw(icon(chip ? chip.glyph : 'check', 16))}<span class="so-line__text">${words}</span>${
+    chip ? html`<span class="${failed ? 'ds-status ds-tone-error' : 'ds-status'}" data-chip="${state}"><span>${chip.word}</span></span>` : ''
+  }${infoButton(facts, failed ? 'Why your answer was not taken' : 'The question and the answer')}</div>`;
 }
 
 // answerFacts is an answered ask as the rows behind its line's "i": each
@@ -1049,18 +1058,24 @@ function answerSummary(ask) {
   const questions = askQuestions(ask);
   // A header that is the question itself ("What is it called?") loses its
   // own mark before the colon: "What is it called: Atlas", not "?: Atlas".
-  const named = (q) => String(q.header || q.id).trim().replace(/\s*[?:？：]+$/, '');
+  // A header cut short ("Cache for the produ…") names nothing: the answer
+  // goes alone, and its question is behind the line's "i".
+  const named = (q) => {
+    const header = String(q.header || '').trim();
+    return header && !/(\u2026|\.\.\.)$/.test(header) ? header.replace(/\s*[?:？：]+$/, '') : '';
+  };
   const words = questions.map((q) => {
     const a = answers[q.id];
     if (!a) return '';
-    if (a.delegated) return named(q) + ': you decide';
+    const label = (words) => (named(q) ? named(q) + ': ' + words : words);
+    if (a.delegated) return label('you decide');
     if (a.skipped) return '';
     const labels = (a.selected || []).map((id) => {
       const option = (q.options || []).find((o) => String(o.id) === String(id));
       return option ? option.label : String(id);
     });
     if (a.other) labels.push(a.other);
-    return labels.length ? named(q) + ': ' + labels.join(', ') : '';
+    return labels.length ? label(labels.join(', ')) : '';
   }).filter(Boolean);
   return words.join(' · ');
 }

@@ -105,7 +105,7 @@ func TestFoldNote(t *testing.T) {
 		t.Fatalf("a host that knows notes: %+v", got)
 	}
 	got := FoldNote(cmd, AskProtocol)
-	if got.Note != "" || got.Text != agent.AgentText(cmd.Note, "go on") {
+	if got.Note != "" || got.Text != agent.AgentText(cmd.Note, "go on", "") {
 		t.Fatalf("an older host: %+v", got)
 	}
 	if got := FoldNote(Command{Op: OpCommand, Text: "compact", Note: "n"}, 1); got.Text != "compact" {

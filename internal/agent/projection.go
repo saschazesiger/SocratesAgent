@@ -99,12 +99,13 @@ type Message struct {
 	AnswerTo    string       `json:"answer_to,omitempty"`
 	// Note and Sender are the message event's: what the agent was told with
 	// a user message, and the chat whose agent sent it.
-	Note   string  `json:"note,omitempty"`
-	Sender *Sender `json:"sender,omitempty"`
-	TurnID string  `json:"turn_id,omitempty"`
-	Model  string  `json:"model,omitempty"`
-	At     int64   `json:"at"`
-	Parts  []*Part `json:"parts,omitempty"`
+	Note      string  `json:"note,omitempty"`
+	NoteAfter string  `json:"note_after,omitempty"`
+	Sender    *Sender `json:"sender,omitempty"`
+	TurnID    string  `json:"turn_id,omitempty"`
+	Model     string  `json:"model,omitempty"`
+	At        int64   `json:"at"`
+	Parts     []*Part `json:"parts,omitempty"`
 	// AfterTurn is, for a user message, the turn that had ended last when
 	// it was journaled, empty when none had: its place in the journal's
 	// order, which goes to the adapter with it (Outgoing.AfterTurn).
@@ -386,12 +387,12 @@ func (p *Projection) message(ev Event) {
 		// A message is created once; a repeat replaces what it says and keeps
 		// the parts that are already under it.
 		m.Role, m.State, m.Text, m.Attachments = ev.Role, ev.State, ev.Text, ev.Attachments
-		m.AnswerTo, m.Model, m.Note, m.Sender = ev.AnswerTo, ev.Model, ev.Note, ev.Sender
+		m.AnswerTo, m.Model, m.Note, m.NoteAfter, m.Sender = ev.AnswerTo, ev.Model, ev.Note, ev.NoteAfter, ev.Sender
 		return
 	}
 	m := &Message{
 		ID: ev.MessageID, Role: ev.Role, State: ev.State, ClientID: ev.ClientID, Text: ev.Text,
-		Attachments: ev.Attachments, AnswerTo: ev.AnswerTo, Note: ev.Note, Sender: ev.Sender, TurnID: ev.TurnID,
+		Attachments: ev.Attachments, AnswerTo: ev.AnswerTo, Note: ev.Note, NoteAfter: ev.NoteAfter, Sender: ev.Sender, TurnID: ev.TurnID,
 		Model: ev.Model, At: ev.At,
 	}
 	if m.Role == RoleUser && p.LastTurn != nil {

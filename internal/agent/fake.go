@@ -612,17 +612,24 @@ func (f *fakeAdapter) turn(ctx context.Context, msg Outgoing, n int) {
 	t.end(OutcomeCompleted, "")
 }
 
-// fakeAgentNote is the text of Socrates' note before a message (AgentText),
-// without its tags; "" when it has none.
+// fakeAgentNote is the text of Socrates' notes around a message
+// (AgentText), without their tags, the one before first; "" when it has
+// none.
 func fakeAgentNote(text string) string {
-	rest := StripModelNote(text)
-	head := strings.TrimSuffix(text, rest)
-	start := strings.Index(head, agentNoteOpen)
-	end := strings.LastIndex(head, agentNoteClose)
-	if start < 0 || end < start {
-		return ""
+	var notes []string
+	for {
+		start := strings.Index(text, agentNoteOpen)
+		if start < 0 {
+			break
+		}
+		end := strings.Index(text[start:], agentNoteClose)
+		if end < 0 {
+			break
+		}
+		notes = append(notes, strings.TrimSpace(text[start+len(agentNoteOpen):start+end]))
+		text = text[start+end+len(agentNoteClose):]
 	}
-	return strings.TrimSpace(head[start+len(agentNoteOpen) : end])
+	return strings.Join(notes, "\n\n")
 }
 
 // tool is one tool call: running, three lines of output, done.

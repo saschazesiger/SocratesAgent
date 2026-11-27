@@ -93,13 +93,15 @@
             </span>
           </button>
         </div>
-        <!-- The questions of the chat on screen that wait for an answer,
-             their count on the badge: shown while there are any. It opens
-             the question dialog at them (session.js drawQuestionsBtn); the
-             chat itself never shows a question, only the answer. -->
-        <button class="ds-btn ds-btn--quiet ds-btn--icon so-questions-btn" id="questionsBtn" type="button" hidden
+        <!-- The questions of the chat on screen that wait for an answer, as
+             an amber pill with their count ("2 questions"): shown while there
+             are any, at a desk. On a narrow screen the line above the
+             composer says it, and the title keeps the room. It opens the question
+             dialog at them (session.js drawQuestionsBtn); the conversation
+             never shows a question, only its answer. -->
+        <button class="ds-btn ds-btn--tonal ds-sm so-questions-btn" id="questionsBtn" type="button" hidden
                 aria-label="Questions" data-tip="Questions" aria-haspopup="dialog"
-                data-icon="helpCircle" data-icon-place="start"><span class="ds-badge ds-tone-warning so-questions-btn__badge" hidden></span></button>
+                data-icon="chatDots" data-icon-size="18" data-icon-place="start"><span class="so-questions-btn__count"></span><span class="so-questions-btn__words"></span></button>
         <!-- A chat's tests (chattests.js): shown for a chat with Socrates
              Tests on or with tests, its badge the problems (else the running
              ones). At a desk it opens the column beside the chat, narrower

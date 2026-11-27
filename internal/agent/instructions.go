@@ -158,8 +158,9 @@ func WithNote(note, text string) string {
 }
 
 // StripModelNote is a user message's text as read back from a CLI's
-// transcript, without the notes put before it: an adapter's model
-// instructions, then Socrates' own note (AgentText).
+// transcript, without the notes put around it: an adapter's model
+// instructions and Socrates' own note before it, and Socrates' note after it
+// (AgentText).
 func StripModelNote(text string) string {
 	for _, tag := range [][2]string{{modelNoteOpen, modelNoteClose}, {agentNoteOpen, agentNoteClose}} {
 		if !strings.HasPrefix(text, tag[0]) {
@@ -170,6 +171,11 @@ func StripModelNote(text string) string {
 			return text
 		}
 		text = strings.TrimLeft(text[end+len(tag[1]):], "\n")
+	}
+	if trimmed := strings.TrimRight(text, "\n"); strings.HasSuffix(trimmed, agentNoteClose) {
+		if at := strings.LastIndex(trimmed, "\n\n"+agentNoteOpen); at >= 0 {
+			text = trimmed[:at]
+		}
 	}
 	return text
 }
