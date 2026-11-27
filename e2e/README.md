@@ -127,10 +127,14 @@ devices answering one question. `chat-restart` in `run.mjs` is the same restart
 as the browser sees it.
 
 `node e2e/asks.mjs` drives ask_user for each of the three agents through the
-protocol fakes: the model's call, the answer through
-`POST /api/chats/{id}/asks/{ask}/answer` back to the model by its own transport,
-an answer after an interrupt delivered as a message, and a second device told
-the question was answered.
+protocol fakes: the model's call of one question, which returns at once with
+the question's id while the turn ends; the answer through
+`POST /api/chats/{id}/asks/{ask}/answer`, which reaches the model as a message
+that starts a turn, and a second device told the question was answered; a
+question that stays open through a message and a Stop, and a chat shown
+waiting for it while a turn runs on (the turn itself stays busy); and
+`withdraw_question` and
+`check_questions` on the chat's questions.
 
 ## Reading the terminal
 
@@ -258,7 +262,7 @@ touch mode, except `options`, which measures the narrowest phone in use,
 | `docs` | a project folder's docs (DOCS.md): Docs in the ⋮ only of a folder with Markdown, the README first with the address `#docs=<folder>&page=README.md`, the tree without hidden folders and node_modules, glyphs of their own for well-known names, the page's headings beside it, a GitHub alert as a callout, a link in the page followed in the frame and the address, a link to code refused with a snackbar, a file changed on disk drawn again, the filter, a reload, the frame's sandbox and nothing outside the docs served (code, `.env`, a hidden folder, `..`, a forged token), a link in a chat opening the file beside the chat and Open in Docs; at 390×800 the tree in a sheet |
 | `chat-tools` | an answer's calls folded in one line that says a call failed; opened, tool rows that open to their input and output, a failed one, the diff viewer, a subagent's group, a workflow, and the task list pinned while it runs |
 | `chat-fold` | an answer's work (Claude Code's `/readme`) is one shut line: while it works "Working: …", turning; then how long it worked, what it did, its steps and tokens; under it stands the final answer and nothing of the work; opened, every part, and it stays open as the next answer is drawn; a question asked after work (`/toolask`) stands under the shut line |
-| `chat-watch` | nothing in a chat hangs unseen (AGENT-HOST.md §6, on a short clock: `SOCRATES_CHAT_WATCH_MS`): the work after an answered question (`/asktool`) goes on under its card in a fold of its own, which says by the clock when it was done; a background job (`/bg 120`) says since when it runs and Stop this job stops it; a turn that goes quiet (`/hang`) is said in the dock with when the agent was last heard from, and a Stop it ignores ends the agent, which takes the next message on the same conversation |
+| `chat-watch` | nothing in a chat hangs unseen (AGENT-HOST.md §6, on a short clock: `SOCRATES_CHAT_WATCH_MS`): the work after a question (`/asktool`, whose ask_user returns at once) goes on under its card in a fold of its own, which says by the clock when it was done; a background job (`/bg 120`) says since when it runs and Stop this job stops it; a turn that goes quiet (`/hang`) is said in the dock with when the agent was last heard from, and a Stop it ignores ends the agent, which takes the next message on the same conversation |
 | `chat-sub` | the line under a chat's bar: its account, "No background jobs", then a background task counted (`/bg 30`) with a dialog that lists it, and after `/limit` the 5-hour window full with when it renews |
 | `chat-wakeups` | what the agent starts by itself: a wakeup it scheduled (`/wakeup 6`) is a folded line at the foot of the chat - when, and why - whose row says the prompt and in how long, and the summary counts it with `wakes_at`; the turn it starts opens with "Woke up as scheduled: <prompt>" and the line at the foot goes; a Monitor's event (`/monitor 1`) opens its turn with the event |
 | `chat-agents` | a subagent (`/subagent bg`) or a workflow (`/workflow`) at work beside the chat is a card of its own at the foot, not one more background job: what it was sent to do, its kind and type, a watch that goes on with no turn running, a workflow's agents done on a bar with the phase it is in; the card opens the dialog on its job, where the agents stand as cards with Stop over the other jobs; on a phone it fits and stays low, and two at once stand side by side |
@@ -288,7 +292,7 @@ touch mode, except `options`, which measures the narrowest phone in use,
 | `home-live` | chats made on another device are counted, and one that starts working, one that asks, a Shell that ends and a chat that finishes unseen move Home's numbers within seconds — with no reload and no socket but the event stream; a card filters the list, a second tap shows everything |
 | `many-chats` | sixty chats take turns four times a second on a CPU slowed down six times: a timer the page sets every 50 ms is late by less than a second (p95) on Home and with a chat open, and once the turns are over every row is drawn idle and a row kept its element through every reorder |
 | `outcome` | with the outcomes on, a Claude Code chat's turn is judged from its journal (the instruction, the answer, its task list): the hourglass while it is read, the chime and the notification waiting for it, the verdict on the row, on Home, in the notification and the header's tag, across a reload, and gone with the next turn or the switch |
-| `home-question` | the Questions card opens the dialog at a chat's question: its context, the question and its options as 64 px buttons in 20 px type; a tap and Send reach the agent (Claude Code's ask_user returns the choice), and the dialog says so and closes |
+| `home-question` | the Questions card opens the dialog at a chat's question: its context, the question and its options as 64 px buttons in 20 px type; a tap and Send reach the agent (Claude Code's ask_user returns at once, and the choice reaches it as a message), and the dialog says so and closes |
 | `home-own-answer` | an answer of one's own takes the place of the chosen option, and the agent gets the words and no option |
 | `home-queue` | two chats' questions walked oldest first ("1 of 2"), named as toggles and buttons, the next taking the dialog after an answer |
 | `home-elsewhere` | a question answered on another device while the dialog shows it ("Answered on another device", nothing sent); an answer to a question already answered, or to none, refused; an answer on its way overtaken by another device's; a chat whose agent died under its question still asks it |
@@ -306,6 +310,7 @@ touch mode, except `options`, which measures the narrowest phone in use,
 | `home-restart` | a server restart under an open dialog on three chats' questions: Home counts all three throughout, the walk stays "of 3" and never says they went, each keeps the time it started waiting, and a choice made before the restart is still chosen and goes in |
 | `home-devices` | two devices on one chat's question: the second follows the first's answer ("Answered on another device"); a Send from a device whose stream had not passed the answer on, and one on a slow uplink that the other's answer overtook, are told the same and add nothing; a second tab of the same browser says "Answered", never another device |
 | `home-followup` | the agent asks its next question right after the dialog's answer: the open dialog takes the follow-up up rather than closing under it, and the follow-up gets only the answer given to it |
+| `ask-withdrawn` | a Claude Code question in the chat and the dialog with what waits for its answer ("Waiting for this: …"); the agent withdraws it (`withdraw_question`) while the dialog shows it half answered: the dialog says so with the agent's reason and offers nothing to answer, the card says it was withdrawn and why with no "Answer anyway", the draft is let go and the chat stops waiting |
 | `livesession` | one real chat against the real Claude Code CLI, with no model turn (gated) |
 
 `lighttheme` measures the colours the renderer actually **drew** rather than the

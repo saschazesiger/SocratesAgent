@@ -9527,8 +9527,9 @@ async function optionsmenu() {
 // numbers that move by themselves, and an answer that goes from a tap to the
 // agent. A question is a chat's: Claude Code calling ask_user, which
 // fakeclaude's /askuser hands to the in-process MCP server with the call's
-// JSON, blocking until the answer comes back and saying it in the
-// conversation ("ask_user returned: ..."). The chats are made the way another
+// JSON. The call returns at once and the turn ends; the answer comes to the
+// agent as a message, which the fake says back ("you said: The person
+// answered your question ..."; returned). The chats are made the way another
 // device would make them, so that the page under test is only ever on Home
 // unless a scenario puts it somewhere else; the dialog is the chats' own
 // (askdialog.js).
@@ -9577,17 +9578,28 @@ function answerFrom(s, id, askId, picks, device = 'phone') {
   });
 }
 
-// returned is what the agent said it got back from ask_user, once it has.
+// answersSaid is every answer the agent got to its ask_user questions, in
+// order: ask_user returns at once, and an answer comes as a message of its
+// own (askuser.MessageText), which the fake says back ("you said: ...") -
+// the answer as JSON at its end.
+async function answersSaid(s, id) {
+  const mark = 'The answer as JSON:';
+  const messages = (await historyOf(s, id)).messages || [];
+  return messages.filter((m) => m.role === 'assistant').map(textOf)
+    .filter((t) => t.includes('The person answered your question') && t.includes(mark))
+    .map((said) => {
+      // OpenCode's fake says the turn after it: "... (turn 2 of ses_...)".
+      const line = said.slice(said.indexOf(mark) + mark.length).trim().split('\n')[0];
+      try { return JSON.parse(line.slice(0, line.lastIndexOf('}') + 1)); } catch { return said; }
+    });
+}
+
+// returned is the first answer the agent got, once it has (answersSaid).
 async function returned(s, id, timeout = 15000) {
   const end = Date.now() + timeout;
   while (Date.now() < end) {
-    const messages = (await historyOf(s, id)).messages || [];
-    const said = messages.filter((m) => m.role === 'assistant').map(textOf).find((t) => t.startsWith('ask_user returned: '));
-    if (said) {
-      // The answer as JSON, then a line for the model on what it holds
-      // besides answers (askuser.ToolResult).
-      try { return JSON.parse(said.slice('ask_user returned: '.length).split('\n')[0]); } catch { return said; }
-    }
+    const said = await answersSaid(s, id);
+    if (said.length) return said[0];
     await wait(200);
   }
   return null;
@@ -10387,7 +10399,7 @@ async function asklinks() {
 }
 
 // home-question: the Questions card, the dialog, a tap, and the answer at the
-// agent - Claude Code's ask_user returning the person's choice.
+// agent - Claude Code's ask_user, whose answer reaches it as a message.
 async function homequestion() {
   const s = await homeChats();
   try {
@@ -10422,7 +10434,7 @@ async function homequestion() {
 
     const got = await returned(s, id);
     ok(!!got && got.answers && got.answers.db && got.answers.db.selected.join(',') === 'sqlite' && got.answers.db.skipped === false,
-      'Claude Code’s ask_user returned SQLite, as REBUILD §5.2 has it', JSON.stringify(got));
+      'Claude Code got SQLite as a message, as REBUILD §5.2 has it', JSON.stringify(got));
     const left = await awaitChat(s, id, (b) => (b.asks || []).length === 0 && idle(b), 10000);
     ok((left.asks || []).length === 0 && left.chat.activity !== 'waiting', 'and the chat is no longer waiting', left.chat.activity);
     const ask = await askOf(s, id, askId);
@@ -11395,9 +11407,8 @@ async function homeopencode() {
     const ownAt = Date.now();
     let own = null;
     while (!own && Date.now() - ownAt < 20000) {
-      const said = ((await historyOf(s, id)).messages || []).filter((m) => m.role === 'assistant').map(textOf)
-        .filter((t) => t.startsWith('ask_user returned: '));
-      if (said.length === 2) own = JSON.parse(said[1].slice('ask_user returned: '.length).split('\n')[0]);
+      const said = await answersSaid(s, id);
+      if (said.length === 2) own = said[1];
       else await wait(200);
     }
     ok(!!again && !!own && own.answers.db.other === OWN && own.answers.db.selected.length === 0,
@@ -12291,10 +12302,10 @@ async function homedevices() {
   }
 }
 
-// home-followup: the agent asks its next question right after the dialog's
-// answer - the next message in its queue asks again - and the open dialog
-// takes the follow-up up rather than closing under it; the follow-up gets the
-// answer given to it, and only that.
+// home-followup: the agent asks its next question right after the first -
+// ask_user returns at once, and the next message in its queue asks again -
+// and the open dialog takes the follow-up up after the answer rather than
+// closing under it; the follow-up gets the answer given to it, and only that.
 async function homefollowup() {
   const s = await homeChats();
   let stop = false;
@@ -12303,10 +12314,11 @@ async function homefollowup() {
     await awaitHome(s.page, (h) => h.shown, 10000);
     const { id } = await askingChat(s, 'Asks a follow-up');
     const followAsk = askFor('And which cache should it use?', ['Redis', 'Memcached']);
-    // Queued behind the turn that asks, so it asks the moment that turn
-    // ends: right after the answer.
+    // The turn that asked ended at once: the chat asks again, and has two
+    // questions open.
     const queued = await tellChat(s, id, '/askuser ' + JSON.stringify(followAsk));
-    ok(queued === 200, 'the follow-up waits in the chat’s queue', 'HTTP ' + queued);
+    const both = queued === 200 ? await awaitChat(s, id, (b) => (b.asks || []).length === 2 && idle(b), 15000) : {};
+    ok((both.asks || []).length === 2, 'the follow-up is asked while the first is still open', 'HTTP ' + queued + ', ' + (both.asks || []).length + ' open');
     await awaitHome(s.page, (h) => h.counts.questions === 1, 10000);
     await s.page.click('.so-home__q-action');
     await awaitAsk(s.page, (d) => !!d && d.options.length === 2, 10000);
@@ -12337,9 +12349,8 @@ async function homefollowup() {
     await s.page.click('dialog.so-askdlg [data-action="send"]');
     let second = null;
     for (const end = Date.now() + 15000; Date.now() < end && !second; await wait(200)) {
-      const said = ((await historyOf(s, id)).messages || []).filter((m) => m.role === 'assistant').map(textOf)
-        .filter((t) => t.startsWith('ask_user returned: '));
-      if (said.length >= 2) second = JSON.parse(said[1].slice('ask_user returned: '.length).split('\n')[0]);
+      const said = await answersSaid(s, id);
+      if (said.length >= 2) second = said[1];
     }
     const asks = (await historyOf(s, id)).asks || [];
     ok(!!second && second.answers.db.selected.join() === 'redis' && asks.length === 2 && asks.every((a) => a.answered),
@@ -12352,6 +12363,63 @@ async function homefollowup() {
     if (loop) await loop.catch(() => {});
     await s.stop();
   }
+}
+
+// ask-withdrawn: Claude Code's ask_user question in the chat and the
+// dialog with what waits for its answer ("Waiting for this: ..."), and the
+// agent withdrawing it (withdraw_question) while the dialog shows it: the
+// dialog and the card say so with the agent's reason, and neither offers to
+// answer it any more (REBUILD.md §5.1, §5.4).
+async function askwithdrawn() {
+  const s = await homeChats();
+  const { page } = s;
+  try {
+    await awaitHome(page, (h) => h.shown, 10000);
+    const id = await makeChat(s, 'claude', { title: 'Withdrawn question' });
+    // fakeclaude's own call: "Which database?", blocking "The schema".
+    const said = await tellChat(s, id, '/askuser');
+    const askId = said === 200 ? await openAskOf(s, id, 20000) : '';
+    const asked = await awaitChat(s, id, (b) => !b.chat.turn_running && (b.asks || []).length === 1, 15000);
+    ok(!!askId && asked.chat && asked.chat.activity === 'waiting',
+      'the call returns at once, the turn ends, and the chat waits for the answer', JSON.stringify({ askId, activity: asked.chat && asked.chat.activity }));
+
+    await openChat(page, id);
+    const cardSel = '#chat .so-ask[data-ask="' + askId + '"]';
+    await page.waitForSelector(cardSel + '[data-state="open"]', { timeout: 15000 });
+    const card = await page.$eval(cardSel, (n) => ({
+      question: (n.querySelector('.so-ask__question') || {}).textContent || '',
+      blocks: (n.querySelector('.so-ask__blocks') || {}).textContent || '',
+    }));
+    ok(card.question === 'Which database?' && card.blocks === 'Waiting for this: The schema',
+      'the card says the question and what waits for its answer', JSON.stringify(card));
+
+    await page.click(cardSel + ' .so-ask__open');
+    const blocks = await page.waitForSelector('dialog.so-askdlg .so-q-blocks', { timeout: 10000 }).then((n) => n.innerText(), () => '');
+    ok(blocks === 'Waiting for this: The schema', 'the dialog says it under the question too', blocks);
+    await page.click('dialog.so-askdlg .so-q-option[data-option="sqlite"]');
+
+    // The agent withdraws it while the dialog shows it, half answered.
+    const reason = 'Found it in the README';
+    await tellChat(s, id, '/mcptool withdraw_question ' + JSON.stringify({ question_id: askId, reason }));
+    const told = await awaitAsk(page, (d) => !!d && d.finished === 'The agent withdrew this question', 15000);
+    const look = told.seen || {};
+    ok(told.ok && look.finishedText === reason && look.actions.join(',') === 'next' && look.options.length === 0,
+      'the open dialog says the agent withdrew the question, with its reason, and offers nothing to answer',
+      JSON.stringify({ finished: look.finished, text: look.finishedText, actions: look.actions }));
+    await page.click('dialog.so-askdlg [data-action="next"]');
+    const shut = await askClosed(page, 10000);
+    ok(shut.ok, 'and it closes', shut.said);
+
+    const gone = await page.waitForSelector(cardSel + '[data-state="closed"]', { timeout: 15000 })
+      .then((n) => n.evaluate((el) => ({ text: el.innerText, answer: !!el.querySelector('[data-action="ask-open"]') })), () => null);
+    ok(!!gone && /Withdrawn/.test(gone.text) && /The agent withdrew this question: Found it in the README/.test(gone.text) && !gone.answer,
+      'the card says it was withdrawn and why, with no Answer anyway', oneLine(JSON.stringify(gone)));
+    const drafts = await page.evaluate((ask) => localStorage.getItem('socrates.ask.' + ask), askId);
+    ok(drafts === null, 'the half-written answer is let go', String(drafts));
+    const after = await awaitChat(s, id, (b) => !b.chat.turn_running && (b.asks || []).length === 0 && b.chat.activity !== 'waiting', 15000);
+    ok((after.asks || []).length === 0 && after.chat.activity !== 'waiting', 'the chat no longer waits', after.chat && after.chat.activity);
+    ok(unexpected(s.errors).length === 0, 'no console errors', unexpected(s.errors).join(' | ') || '0');
+  } finally { await s.stop(); }
 }
 
 // The chat scenarios run against the scripted agent (internal/agent/fake.go,
@@ -13332,15 +13400,19 @@ async function chatwatch() {
   const { s, id } = await claudeChat({ env: { SOCRATES_CHAT_WATCH_MS: '1500,2500,0' } });
   const { page } = s;
   try {
-    // A question, answered, and the work the agent does after it.
+    // A question, the work the agent does after it (ask_user returns at
+    // once), and the answer, which comes as a turn of its own.
     await say(page, '/asktool ' + JSON.stringify(DB_ASK));
     const askId = await openAskOf(s, id, 20000);
     await page.waitForSelector('#chat .so-ask', { timeout: 10000 }).catch(() => {});
-    const answered = askId ? (await answerFrom(s, id, askId, { db: ['postgres'] })).status() : 0;
     await awaitLog(page, 'Went on after the answer.', 20000);
     await awaitChat(s, id, idle);
-    const order = await page.evaluate(() => {
-      const msg = [...document.querySelectorAll('#chat .so-msg[data-role="assistant"]')].pop();
+    const answered = askId ? (await answerFrom(s, id, askId, { db: ['postgres'] })).status() : 0;
+    await awaitLog(page, 'The person answered your question', 20000);
+    await awaitChat(s, id, idle);
+    const order = await page.evaluate((ask) => {
+      const at = document.querySelector('#chat .so-ask[data-ask="' + ask + '"]');
+      const msg = at && at.closest('.so-msg[data-role="assistant"]');
       const card = msg && msg.querySelector('.so-ask');
       const folds = msg ? [...msg.querySelectorAll('.so-work')] : [];
       const after = folds.filter((f) => card && (card.compareDocumentPosition(f) & Node.DOCUMENT_POSITION_FOLLOWING));
@@ -13353,10 +13425,10 @@ async function chatwatch() {
         lastBelow: !!card && !!last && !!(card.compareDocumentPosition(last) & Node.DOCUMENT_POSITION_FOLLOWING),
         lastText: last ? last.innerText.trim() : '',
       };
-    });
+    }, askId);
     ok(answered === 200 && order.card && order.after === 1 && /ran 1 command/i.test(order.afterTitle)
       && order.lastBelow && /Went on after the answer/.test(order.lastText),
-    'the work after an answered question goes on under its card, in a fold of its own, and its words under that', JSON.stringify({ answered, ...order }));
+    'the work after a question goes on under its card, in a fold of its own, and its words under that', JSON.stringify({ answered, ...order }));
     ok(/\d{1,2}:\d{2}/.test(order.afterMeta), 'the fold says by the clock when its work was done', JSON.stringify(order.afterMeta));
 
     // A background job, stopped by itself from its dialog.
@@ -16331,6 +16403,7 @@ const ALL = [
   ['home-restart', 'a server restart under an open dialog: every chat\u2019s question kept in the walk, its choice and its age', homerestart],
   ['home-devices', 'two devices on one chat\u2019s question: the second follows the first\u2019s answer, is told when its Send crossed it, and a second tab is the same device', homedevices],
   ['home-followup', 'a follow-up asked right after the answer, slower to read than "Answered" lasts', homefollowup],
+  ['ask-withdrawn', 'a question with what waits for it, withdrawn by the agent while the dialog shows it: the dialog and the card say why, and offer no answer', askwithdrawn],
   ['livesession', 'one real chat against the real Claude Code CLI, with no model turn', livesession, { live: true }],
 ];
 
