@@ -35,6 +35,21 @@ import (
 //	                         line (CLAUDE_CONFIG_DIR, OPENCODE_AUTH_CONTENT …)
 //	SOCRATES_LIVE_CASES      the cases, comma separated (all by default)
 //	SOCRATES_LIVE_RUNS       how often each case runs (1)
+//
+// The weak models of 2026-11-27, each on its CLI:
+//
+//   - Claude Code on haiku: SOCRATES_LIVE_ENV=CLAUDE_CONFIG_DIR=<an account's
+//     folder>.
+//   - OpenCode on OpenRouter (openrouter/deepseek/deepseek-v4-flash,
+//     openrouter/mistralai/mistral-small-3.2-24b-instruct,
+//     openrouter/openai/gpt-oss-120b): HOME=<an empty folder> and
+//     OPENCODE_AUTH_CONTENT={"openrouter":{"type":"api","key":"…"}}.
+//   - Codex on OpenRouter (openai/gpt-5.4-nano): HOME=<an empty folder>,
+//     OPENROUTER_API_KEY=… and CODEX_HOME=<a folder> whose config.toml says
+//     model_provider = "openrouter" and [model_providers.openrouter] with
+//     base_url = "https://openrouter.ai/api/v1", env_key =
+//     "OPENROUTER_API_KEY", wire_api = "responses". Never a real account's
+//     CODEX_HOME: its login would be refreshed under the server's feet.
 
 // liveStep is one thing the person does once the agent is idle: write a
 // message, or answer the question `ask` names (a word of its text).

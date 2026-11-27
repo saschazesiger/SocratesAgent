@@ -380,6 +380,19 @@ counter-question instead of an answer.
   and act on the words alone; the rule against withdrawing too much, because they took "may settle"
   as an order (measured with `TestLiveQuestionsStayCurrent`, below). Another chat's
   message and a scheduled start carry none.
+- **A question is asked once.** An `ask_user` call that asks, word for word (case, spacing and the
+  closing mark aside), what an open question of the chat asks puts nothing into the person's queue
+  and returns "Nothing new was asked: question ask_… asks this already" (`askuser.AlreadyAsked`, in
+  the MCP server and Codex's dynamic tool). A weak model (Mistral Small) went round asking the same
+  question, withdrawing the last one as "replaced", and asking again; every lap was a notification.
+- **Measured on real weak models.** `TestLiveQuestionsStayCurrent` (internal/agenthost, gated by
+  `SOCRATES_LIVE_QUESTIONS=1`) runs the built binary's agent host with the real CLI on a real model
+  through five cases: the person writes the answers as a message (withdraw them), writes about
+  something else (keep the question), changes the plan (withdraw), answers one question with a note
+  that settles another (withdraw that one), and makes the question wrong with a message that needs
+  a new one (withdraw the old). Its doc comment says how to run it on Claude, on Codex and OpenCode
+  through OpenRouter; a model is not a function, so it logs what the agent did and repeats a case
+  with `SOCRATES_LIVE_RUNS`.
 - **Subagents do not ask.** An answer reaches the main thread only, so a subagent's call is
   refused with "Only the main agent can ask the person: put this question into your result for
   the main agent." Claude: a call whose tool part has a parent (a subagent's); Codex: a call from

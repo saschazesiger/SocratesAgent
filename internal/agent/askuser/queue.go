@@ -52,10 +52,45 @@ func Queued(ctx context.Context, q Questions, id string, p *Payload) string {
 		return text
 	}
 	if others := OpenList(list, id); others != "" {
-		text += "\n\nYour other open questions:\n" + others + "If this question replaces one of them, or you no longer need one, " +
-			"withdraw that one with " + WithdrawName + ". Leave the others open."
+		text += "\n\nYour other open questions, still with the person (do not ask them again):\n" + others +
+			"If this new question replaces one of them, withdraw that one with " + WithdrawName + "; leave the others open."
 	}
 	return text
+}
+
+// AlreadyAsked is the id of an open question of q that asks what p asks,
+// word for word (case, spacing and the closing mark aside), "" when there is
+// none or q is nil. A weak model asks the same thing again, and again: the
+// person gets it once (AlreadyAskedText).
+func AlreadyAsked(ctx context.Context, q Questions, p *Payload) string {
+	if q == nil || p == nil || len(p.Questions) == 0 {
+		return ""
+	}
+	list, err := q.List(ctx)
+	if err != nil {
+		return ""
+	}
+	want := sameWords(questionLine(p.JSON()))
+	for _, one := range list {
+		if one.State == StateOpen && want != "" && sameWords(questionLine(one.Payload)) == want {
+			return one.ID
+		}
+	}
+	return ""
+}
+
+// AlreadyAskedText is what ask_user returns for a question that is open
+// already (AlreadyAsked): nothing new was asked.
+func AlreadyAskedText(id string) string {
+	return "Nothing new was asked: question " + id + " asks this already and is still open with the person. " +
+		"Do not ask it again; its answer arrives by itself as a message. Go on with the work that does not depend on it, " +
+		"or end your turn when only such work is left."
+}
+
+// sameWords is a question as AlreadyAsked compares it.
+func sameWords(s string) string {
+	s = strings.ToLower(strings.Join(strings.Fields(s), " "))
+	return strings.TrimRight(s, "?.!:;\u2026 ")
 }
 
 // OpenList is the open questions of list but `except`, one line each

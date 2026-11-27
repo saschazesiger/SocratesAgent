@@ -649,6 +649,28 @@ func TestTheOpenQuestionsAreNamedToBeWithdrawn(t *testing.T) {
 	}
 }
 
+// A question that is open already, word for word, is not asked again: the
+// call says which one asks it, and nothing goes to the person.
+func TestTheSameQuestionIsAskedOnce(t *testing.T) {
+	f := &fakeQuestions{withdrawn: map[string]string{}, list: []Asked{
+		{ID: "ask_00000001", Payload: mustParse(t, `{"question":"Which cloud provider do we use?","blocks":"x"}`).JSON(), State: StateOpen},
+		{ID: "ask_00000002", Payload: mustParse(t, `{"question":"Which port?","blocks":"x"}`).JSON(), State: StateWithdrawn},
+	}}
+	put := 0
+	m := &MCP{Questions: f, Put: func(context.Context, Call) (string, error) { put++; return "ask_00000003", nil }}
+	call := func(q string) string {
+		r := handle(t, m, context.Background(), `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"ask_user","arguments":{"question":"`+q+`","blocks":"x"}}}`)
+		return r["result"].(map[string]any)["content"].([]any)[0].(map[string]any)["text"].(string)
+	}
+	if text := call("which cloud provider do we  use"); put != 0 || !strings.Contains(text, "question ask_00000001 asks this already") {
+		t.Fatalf("asked again (%d): %s", put, text)
+	}
+	if text := call("Which port?"); put != 1 || !strings.Contains(text, "ask_00000003 is now with the person") ||
+		!strings.Contains(text, "- ask_00000001: Which cloud provider do we use?") {
+		t.Fatalf("a withdrawn question is asked anew (%d): %s", put, text)
+	}
+}
+
 // A call whose context the carrier ends answers nothing; the carrier reads a
 // call's id and a cancel's in order.
 func TestMCPCancel(t *testing.T) {

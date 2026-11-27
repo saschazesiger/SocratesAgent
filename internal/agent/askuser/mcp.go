@@ -168,6 +168,9 @@ func (m *MCP) call(ctx context.Context, msg rpcMessage) json.RawMessage {
 	if m.Put == nil {
 		return rpcResult(msg.ID, toolResult("The person cannot be asked from here.", true))
 	}
+	if id := AlreadyAsked(ctx, m.Questions, &payload); id != "" {
+		return rpcResult(msg.ID, toolResult(AlreadyAskedText(id), false))
+	}
 	id, err := m.Put(ctx, Call{Payload: payload, ToolUseID: p.Meta.ToolUseID})
 	switch {
 	case err == nil:

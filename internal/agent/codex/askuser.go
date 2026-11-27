@@ -95,6 +95,12 @@ func askUserTool(ctx context.Context, c *Call) (any, error) {
 	if id != "" {
 		return toolResult(AskedText(id), true), nil
 	}
+	c.a.mu.Lock()
+	q := c.a.spec.Questions
+	c.a.mu.Unlock()
+	if open := askuser.AlreadyAsked(ctx, q, &payload); open != "" {
+		return toolResult(askuser.AlreadyAskedText(open), true), nil
+	}
 	payload.PartID = c.PartID
 	id = c.Defer(payload.JSON())
 	c.a.mu.Lock()
@@ -102,7 +108,6 @@ func askUserTool(ctx context.Context, c *Call) (any, error) {
 		c.a.deferred = map[string]string{}
 	}
 	c.a.deferred[asked] = id
-	q := c.a.spec.Questions
 	c.a.mu.Unlock()
 	return toolResult(askuser.Queued(ctx, q, id, &payload), true), nil
 }
