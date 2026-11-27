@@ -59,10 +59,10 @@ is one `agent.Event`: a flat JSON object, all fields optional except `seq`, `at`
 | `message.state` | `message_id`, `state`, `via`? | user: `pending` (journaled by the host) → `queued` (the agent holds it behind a running turn; `via: "turn"` when it holds it inside that turn already, Codex's steer, where it can no longer be withdrawn) → `delivered` (taken up), or `cancelled` (the agent dropped it unread; not handed to it again), or `withdrawn` (the person took it back before the agent took it up, `withdraw` §4.3; not handed to it again either). Assistant: `streaming` → `done`\|`interrupted` |
 | `part` | `message_id`, `part_id`, `parent_part_id`?, `kind`, `state`, `text`, `content` | creates **or replaces whole** the part with that id (kind, state, text, content); `parent_part_id` nests it (below) |
 | `part.delta` | `message_id`, `part_id`, `offset`, `text` | appends `text` to the part's text; `offset` is where it starts, in **UTF-16 code units** |
-| `ask` | `ask_id`, `turn_id`, `payload` (an `ask_user` payload, below, or Claude's plan card, §5.1), `via`? | a question the agent waits for. `via: "message"`: the call already returned by design (Codex code mode, REBUILD §5.3) and the answer is to be sent as the next user message (§4.4) |
+| `ask` | `ask_id`, `turn_id`, `payload` (an `ask_user` payload, below, or Claude's plan card, §5.1), `via`? | a question to the person. `via: "message"`: the call returned at once by design (every `ask_user` call, REBUILD §5.3) and the answer is to be sent as a user message (§4.4); without it, a call waits for the answer (Claude's plan card, Codex's `request_user_input`, MCP elicitations) |
 | `ask.answered` | `ask_id`, `answer`, `by_device`, `client_id` | the first answer; later ones are refused (§4.4) |
 | `ask.delivered` | `ask_id`, `via` (`tool`\|`message`) | how the answer reached the agent |
-| `ask.closed` | `ask_id` | nobody waits for the answer any more: the person sent a message after the call was gone (§4.4). It is no longer open, and can still be answered (as a message) |
+| `ask.closed` | `ask_id`, `code`?, `text`? | the question is no longer open (§4.4). `code`: `message` (the default: the person sent a message after a waiting call was gone), `stopped` (the person stopped the turn whose call waited), `withdrawn` (the agent withdrew it with `withdraw_question`; `text` is its reason). A closed ask can still be answered (as a message), except a withdrawn one, which the page no longer offers |
 | `account.switched` | `from`, `to` (account ids), `reason` | the chat runs on another account from here on (WP7, §11): a line between the turns. `from` is empty for the first account a journal names |
 | `model.changed` | `model`, `effort` | for the turns that follow |
 | `rate_limit` | `window`, `used` (0..1), `resets_at` (Unix s) | one usage window |
@@ -107,13 +107,16 @@ was reasoning.
 Attachment: `name`, `path` (absolute), `mime`, `size`.
 
 **Asks** (WP6, `internal/agent/askuser`). Every agent asks with Socrates' own tool, `ask_user`
-(REBUILD §5): one definition (`askuser.Schema()`, what the model sees; `askuser.Parse`, which
+(REBUILD §5), one question per call, which never waits: its `ask` has `via: "message"` and an id
+`ask_` + 8 hex digits, which the call returns to the model, and its answer arrives as a user
+message. One definition (`askuser.Schema()`, what the model sees; `askuser.Parse`, which
 checks a call and sends a bad one back to the model with everything that is wrong with it), the
 same in all three agents. The `ask` payload is the call normalised (`askuser.Payload`):
-`{title?, context?, questions: [{id, header (≤ 24, filled from the question when missing),
+`{title?, context?, steps?, sections?, blocks?, questions: [{id, header (≤ 24, filled from the question when missing),
 question, context?, kind: single|multi|text|confirm|number, options?: [{id, label, description?,
 details?, recommended?}], min?, max?, allow_other, allow_delegate, default?, required, secret?}],
-part_id?, source?}`. Defaults are applied (`allow_other`, `allow_delegate`, `required`: true), ids
+part_id?, source?}`; `blocks` is what the agent says waits for the answer (an `ask_user` call's
+own field, REBUILD §5.1). Defaults are applied (`allow_other`, `allow_delegate`, `required`: true), ids
 filled in (`q<n>` by place, never an id the model gave another question; an option's from its
 label), the kind inferred from the options, a `default` that fits nothing dropped. `part_id` is the
 tool part the call belongs to, when the adapter knows it. `source` is set when the questions came
@@ -184,12 +187,15 @@ host's dedupe set). Rules:
   `ask.delivered`. A new host hands both to the agent (§6).
 
 **Asks** in the projection: `OpenAsks()` are the asks neither answered nor closed. `Unwaited()` are
-the open asks no call waits on: the asks of a turn that has ended (an interrupt, a host that died)
-and those with `via: "message"`; an ask without a `turn_id` is never among them, because a call
-may still wait on it.
+the open asks a call waited on and no longer does: the asks of a turn that has ended (an
+interrupt, a host that died). An ask with `via: "message"` is never among them (nothing waited on
+it, and it stays open until it is answered or withdrawn), nor one without a `turn_id`, because a
+call may still wait on it. `AskedQuestions()` are the `ask_user` asks (no `source`), oldest first:
+what `check_questions` reads.
 
-**Summary / activity** (`Projection.Summary()`): `activity` is `waiting` while an open ask belongs
-to the running turn (or has no turn), or while any ask is open and no turn runs; else `busy` while
+**Summary / activity** (`Projection.Summary()`): `activity` is `waiting` while an open ask a call
+waits on belongs to the running turn (or has no turn), or while any ask is open and no turn runs
+(an open `via: "message"` ask leaves a running turn `busy`: the agent went on); else `busy` while
 a turn runs (an open ask of an earlier turn does not hide it), else `tasks` while background tasks
 run, else `idle`. `open_asks` counts every open ask.
 The server reports it to the terminal detector with `termux.ReportActivity` (committed exactly, no
@@ -280,6 +286,8 @@ agent cannot take a message back until it has restarted), and one for a chat wit
 added the `notice` op; to a host of an older version the server sends none (the line is lost, the
 chat goes on). A connection asks for no events with `since` = `NoEvents`
 (`1<<62`, beyond any journal), which is what a tool's connection does; it gets no deltas either.
+Version 6 added the `ask` op's `via` and the `questions` and `withdraw_ask` ops, which only
+`socrates mcp-ask` sends; it says so to a host of an older version instead of asking.
 
 ### 4.2 Host → client
 
@@ -288,10 +296,11 @@ chat goes on). A connection asks for no events with `since` = `NoEvents`
   slow client only slows itself (write deadline 30 s, then dropped; reconnect with `since`).
 - `{"t":"delta","message_id","part_id","offset","text"}` – live, never journaled, never ahead of
   the event that created its part; dropped for a client more than 4096 behind.
-- `{"t":"ack","client_id","op","seq","dup","answered_elsewhere","by_device","ask_id","withdrawn"}` – the
+- `{"t":"ack","client_id","op","seq","dup","answered_elsewhere","by_device","ask_id","withdrawn","asks"}` – the
   command's events are journaled **and synced**. `seq` is the first event it produced; a repeat
   gets the same seq with `dup:true`. An ack is written after every event before it. `ask_id` is
-  the id an `ask` op's question was journaled under; `withdrawn` says a `withdraw` was in time.
+  the id an `ask` op's question was journaled under; `withdrawn` says a `withdraw` was in time;
+`asks` is a `questions` op's answer (`AskedQuestions()`).
 - `{"t":"answer","ask_id","answer"}` (version 2) – the answer to the connection's own `ask`, sent
   on that connection only, possibly before the ask's ack.
 - `{"t":"err","client_id","op","code","msg"}` – codes: `bad_request`, `protocol`, `not_running`,
@@ -312,7 +321,9 @@ chat goes on). A connection asks for no events with `since` = `NoEvents`
 | `stop_task` | `client_id`, `task` | journals `command{args: task}`, `agent.TaskStopper.StopTask` (Claude: the control request `stop_task`, §5.1): one background task - a shell, a subagent, a workflow - by the id its part's content names (`task.id`, `agent.id`, `workflow.task_id`); the agent reports its end as any other. An adapter without it: `unsupported` |
 | `withdraw` (version 4) | `client_id`, `message` (required) | takes back a user message the agent has not taken up: journals `command{message_id}`; for a message still `pending` or `queued`, `agent.MessageWithdrawer.Withdraw` (Claude: the control request `cancel_async_message`, §5.1; Codex and OpenCode: out of the adapter's own queue, §5.2, §5.3), and when that gave it back `message.state{withdrawn}`, acked `withdrawn: true`. A message the agent has taken up (or holds inside its turn, or dropped) is acked without `withdrawn`; a repeat is answered from the journal. Without an adapter the journal is all that holds it, so it is withdrawn there. An unknown message (or another role's): `unknown_message`; an adapter without it: `unsupported` |
 | `notice` (version 5) | `notice` (a code), `text` | a line the server has to say in the chat (`agent.NoticeRepository`: a failed setup, a failed push, a worktree that stays after done; REPOS.md §4): journals `notice{code, text}` and acks with its seq. Needs no agent and no `client_id`; the server holds the notices of a chat without a host and sends them first to the next one |
-| `ask` (version 2) | `payload` (an `ask_user` payload) | a local tool's question (`socrates mcp-ask`, §5.3): journals `ask{turn_id: the running turn}` and acks with its `ask_id`; the answer comes back on this connection as an `answer` frame (§4.4). Refused (`bad_request`) on a connection that said hello with protocol 1, without a payload, or while no turn runs (the CLI calls tools only inside a turn, so such a question comes from a call already withdrawn), `not_running` without an agent |
+| `ask` (version 2) | `payload` (an `ask_user` payload), `via`? (version 6) | a local tool's question (`socrates mcp-ask`, §5.3): journals `ask{turn_id: the running turn}` and acks with its `ask_id`. With `via: "message"` (every `ask_user` call) the ask is journaled so and the connection is done; without it the answer comes back on this connection as an `answer` frame (§4.4). Refused (`bad_request`) on a connection that said hello with protocol 1, without a payload, or while no turn runs (the CLI calls tools only inside a turn, so such a question comes from a call already withdrawn), `not_running` without an agent |
+| `questions` (version 6) | none | the chat's `ask_user` questions for `check_questions` (`socrates mcp-ask`): acked with `asks`, journals nothing |
+| `withdraw_ask` (version 6) | `ask_id`, `reason` | `withdraw_question` (`socrates mcp-ask`): journals `ask.closed{code: withdrawn, text: reason}` for an open `ask_user` question and acks with its seq; `unknown_ask` for a question this chat never asked or that is no longer open |
 
 | `switch_account` | `client_id`, `account`, `env` (required), `secret_env`, `reason`?, `when` (`now`\|`after_turn`), `continue`? | WP7, §11: journals `command{to, reason}`; `after_turn` while a turn runs, background work runs (`tasks` above 0) or a message waits that a limit does not hold keeps it until the turn ends and acks it `pending` at once, then once more without `pending` when it is made or a newer switch replaces it; otherwise interrupts a running turn and waits for its end (30 s), moves the agent to the account, journals `account.switched` and acks. Without `env`: `bad_request` |
 
@@ -395,7 +406,10 @@ Unknown `ask_id` → `unknown_ask`. Already answered with another `client_id` �
 expires; it survives parks, host deaths and reboots, and an answer to it after any of those arrives
 as a message.
 
-**Closing.** Interrupts and recovery leave asks open. A user message (`send`) closes every ask no
+**Closing.** An `ask_user` question (`via: "message"`) stays open until it is answered or the agent
+withdraws it (`withdraw_question`: `ask.closed{withdrawn, text: reason}`); neither a message of the
+person's nor a Stop closes it, because the agent never stopped for it. For the asks a call waits
+on: interrupts and recovery leave them open. A user message (`send`) closes every such ask no
 call waits on any more (`Unwaited()`, journaled as `ask.closed` with the message): the person moved
 on, having pressed Stop and written something else, or written instead of answering a question
 meant for the next message. A message sent while the call still waits closes nothing (it queues

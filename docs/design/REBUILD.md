@@ -28,7 +28,7 @@ than any agent's built-in one.
 | Permissions | **Always allow everything** (as today's HARNESS-POLICY). No approval UI for tool use. |
 | Limit reached | Per-chat option "Switch account automatically when a limit is reached", **off by default**. Off: the chat stops with a one-tap "Continue with <account>" card and a push. |
 | Existing agent sessions | **Clean cut.** Claude/Codex/OpenCode terminal sessions are not carried over; Shell sessions stay. |
-| `ask_user` | **Always waits.** The agent stops until the person answers; there is no "keep working" mode. |
+| `ask_user` | **Never blocks** (revised 2026-11-27; it always waited before). A question goes into the person's queue and the call returns at once; the agent does all the work that does not depend on the answer, then ends its turn, and the answer arrives as a message (§5). |
 | Outside multi-account setups | `~/.codex-multi` and `~/.config/opencode-multi-auth` are **ignored**; accounts are created in Socrates. |
 
 Unchanged from earlier decisions: English everywhere in the product, phone-in-a-car first (offline
@@ -274,79 +274,117 @@ Socrates tool, the same in all three agents, removes the limits and gives one UI
 
 ### 5.1 Schema (what the model sees)
 
+One question per call (revised 2026-11-27: a call held up to 20 before). A small model fills a flat
+schema far more reliably than a nested batch, and the person's queue is global anyway: Home and
+the question dialog walk the open questions of every chat, oldest first.
+
 ```jsonc
 ask_user({
-  "title": "Deployment setup",              // optional: what this batch is about
-  "context": "markdown",                     // optional: background for all questions
-  "steps": ["markdown", "..."],              // optional, 0..20: what the person must do before
-                                             // answering, in order (a command, a login, a device)
-  "sections": [                              // optional, 0..10: further texts of the agent's own
-    { "title": "What I tried", "body": "markdown",
-      "tone": "note" | "info" | "warning" | "success",  // warning always shows; note is the default
-      "open": false }                        // unfolded rather than under its title
+  "question": "Which database should the service use?",   // required, one sentence
+  "blocks": "The schema migration and everything after it", // required: the work that waits for
+                                             // the answer, in one sentence
+  "header": "Database",                      // optional chip, ≤ 24 chars
+  "kind": "single" | "multi" | "text" | "confirm" | "number",
+  "options": [                               // 0..12 (single/multi)
+    { "id": "pg", "label": "PostgreSQL", "description": "one line",
+      "details": "markdown shown when expanded (snippets, diffs, pros/cons)",
+      "recommended": true }
   ],
-  "questions": [                             // 1..20
-    {
-      "id": "db",                            // stable id, used in the answer
-      "header": "Database",                  // short chip, ≤ 24 chars
-      "question": "Which database should the service use?",
-      "context": "markdown",                 // why it matters, trade-offs, code, links
-      "steps": [], "sections": [],           // the question's own, as above
-      "kind": "single" | "multi" | "text" | "confirm" | "number",
-      "options": [                           // 0..12 (single/multi)
-        { "id": "pg", "label": "PostgreSQL", "description": "one line",
-          "details": "markdown shown when expanded (snippets, diffs, pros/cons)",
-          "recommended": true }
-      ],
-      "min": 1, "max": 3,                    // multi only
-      "allow_other": true,                   // free-text answer (default true)
-      "allow_delegate": true,                // "You decide" button (default true)
-      "default": "pg",                       // preselected
-      "required": true
-    }
+  "min": 1, "max": 3,                        // multi: how many; number: the range
+  "default": "pg",                           // preselected
+  "allow_other": true,                       // free-text answer (default true)
+  "allow_delegate": true,                    // "You decide" button (default true)
+  "context": "markdown",                     // why it matters, trade-offs, code, links
+  "steps": ["markdown", "..."],              // 0..20: what the person must do before answering
+  "sections": [                              // 0..10: further texts of the agent's own
+    { "title": "What I tried", "body": "markdown",
+      "tone": "note" | "info" | "warning" | "success", "open": false }
   ]
 })
 ```
+
+`askuser.Parse` turns it into the `ask` payload of one question (`Payload.Questions[0]`, its
+`header` the chip, `blocks` the payload's own field), so the journal, the dialog and the cards keep
+one shape. A call in the earlier batch shape (`{title?, context?, steps?, sections?, questions:
+[...]}`) is still taken, unadvertised, for a conversation that started before.
 
 A call stands on its own: the person often answers from a notification or Home's list of
 questions without the chat in front of them, so the tool description and the guidance tell the
 model to put everything an answer needs into the call and never to point at earlier messages.
 
+Beside it, on the same `socrates` server:
+
+| Tool | Arguments | Returns at once |
+|---|---|---|
+| `check_questions` | none | the chat's `ask_user` questions, newest last (at most 20): id, state (`open`, `answered`, `withdrawn`, `closed`), the question, what it blocks, and an answered one's answer in words; with open ones, the reminder that answers arrive by themselves and are not to be polled for |
+| `withdraw_question` | `question_id`, `reason` | takes an open question out of the person's queue (`ask.closed{code: withdrawn, text: reason}`): the agent found the answer itself, or the plan changed |
+
 ### 5.2 Answer (what the model gets back)
 
+The call itself returns only the question's id (`ask_` and 8 hex digits) and what to do now:
+
+```text
+Question ask_3fa9c1d2 is now with the person. Their answer arrives by itself as a message, maybe
+hours from now: do not wait for it and do not check for it. Now do all the work that does not
+depend on it (waiting for it: <blocks>). Do not build on a guessed answer, except for a small
+decision that is easy to undo: then go on with the option you recommended and say that you
+assumed it. When only work that waits for open questions is left, end your turn with a short
+summary of what is done and what waits for which question.
+```
+
+The answer arrives as a user message (`askuser.MessageText`): "The person answered your question
+ask_3fa9c1d2", the question and the answer in words, what was waiting for it, then the JSON:
+
 ```jsonc
-{ "answers": { "db": { "selected": ["pg"], "other": null, "note": "keep it on 16",
+{ "answers": { "q1": { "selected": ["pg"], "other": null, "note": "keep it on 16",
                        "delegated": false, "skipped": false } },
   "general_note": "markdown or dictated text",
   "follow_up": null      // or a counter-question from the person, which the model must answer
 }
 ```
-The person may answer some questions and skip others, delegate a question ("You decide"), add a
-note to any answer, or reply with a counter-question instead of an answer.
+The person may skip the question, delegate it ("You decide"), add a note, or reply with a
+counter-question instead of an answer.
 
 ### 5.3 Delivery
 
-- **Claude:** in-process MCP tool over the control protocol, blocking (verified 20 min, no idle
-  timeout).
-- **Codex:** dynamic tool, blocking on classic models (verified, no extra model calls while
-  waiting). Code-mode models (gpt-6-*) would poll a blocking tool every ~30 s, so there the tool
-  returns "Questions delivered. End your turn now; the answers arrive as the next message." and
-  the answer starts the next turn. For the person it is the same: the agent waits.
-- **OpenCode:** local MCP server `socrates mcp-ask`, blocking with progress notifications (verified
-  75 s with progress; 24 h timeout configured).
-- The agent always waits for the answer (decision §1). The system prompt says so: ask everything
-  needed in one call, then wait.
-- **Robustness:** a question survives everything. It is stored in the journal when asked. If the
-  blocking call is gone when the answer comes (host parked, reboot, agent interrupted), the answer
-  is delivered as a user message instead and the agent continues from there.
-- Native question tools are disabled (Claude `--disallowedTools AskUserQuestion`, OpenCode
-  `question: deny`) and the system prompt points at `ask_user`. Whatever native question still
-  arrives (Codex plan mode, elicitations) is converted to the same payload and rendered the same way.
+- **Every agent, every `ask_user` call:** the adapter journals `ask{via: "message"}` and the call
+  returns the text above at once; the answer goes as a user message (AGENT-HOST.md §4.4). Claude
+  Code takes a message that comes during a turn at its next tool boundary, Codex as a steer, and
+  OpenCode after the turn; an answer to an idle chat starts a turn. Nothing holds a tool call open
+  for hours, so a parked host, a reboot or an interrupt changes nothing for a question.
+  - **Claude:** the in-process MCP server; `check_questions` and `withdraw_question` read and
+    close the host's asks directly (`agent.Questions`, `StartSpec.Questions`).
+  - **Codex:** dynamic tools, the same on every model (the code-mode models had this already).
+  - **OpenCode:** `socrates mcp-ask` sends the `ask` op with `via: "message"` and gets the ask id in
+    the ack; `questions` and `withdraw_ask` (host protocol 6) serve the other two tools.
+- **Waiting is ending the turn.** There is no tool that waits for an answer, so no model can poll.
+  `check_questions` says that answers are not to be polled for.
+- **Guidance** (`askuser.Guidance`, in every system prompt): ask as soon as the need shows, one
+  question per call; then do all independent work; never build on a guess except a small decision
+  that is easy to undo (a name, a default, a layout), which goes ahead with the recommended option
+  and is said to be assumed - never for what is hard to undo (deleting, pushing to a shared branch,
+  deploying, sending, migrating, paying); end the turn with what is done and what waits for which
+  question; withdraw a question that no longer matters; never end a reply with a question in text.
+- **Subagents do not ask.** An answer reaches the main thread only, so a subagent's call is
+  refused with "Only the main agent can ask the person: put this question into your result for
+  the main agent." Claude: a call whose tool part has a parent (a subagent's); Codex: a call from
+  a subagent thread. OpenCode cannot tell a subagent's call from the main agent's at the MCP
+  server, so there only the description and the guidance say it.
+- **Native questions** stay disabled (Claude `--disallowedTools AskUserQuestion`, OpenCode
+  `question: deny`) and the system prompt points at `ask_user`. What still arrives (Codex Plan
+  mode's `request_user_input`, MCP elicitations) is converted to the same payload and waited for
+  as before: those mechanisms need their answer in their call.
+- **Robustness:** a question survives everything. It is journaled when asked and stays open until
+  it is answered or withdrawn: neither a message of the person's nor a Stop closes it, because the
+  agent did not stop for it.
 
 ### 5.4 UI
 
 - In the chat: an inline card with the title, a progress line ("2 of 5 answered") and the first
-  open question.
+  open question; a question's `blocks` shows under it as "Waiting for this: …". A question the
+  agent withdrew says so, with its reason, and can no longer be answered.
+- A chat whose turn runs is `busy` even with open questions; it is `waiting` once no turn runs and
+  a question is open (AGENT-HOST.md §3).
 - Touch mode / phone: the existing full-screen question dialog, one question per step, 64 px
   options, expandable option details, context collapsible, "Read aloud" (Google TTS) for question
   and context, dictation for free text and notes, Back/Next, "Send answers" at the end. A
