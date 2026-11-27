@@ -190,6 +190,40 @@ func TestAMessageOrAStopLeavesAnAskUserQuestionOpen(t *testing.T) {
 	}
 }
 
+// The person's message carries the agent's open ask_user questions in
+// Socrates' note, so that the agent withdraws those it settles; another
+// chat's message does not.
+func TestAMessageOfThePersonsListsTheOpenQuestions(t *testing.T) {
+	r := newRig(t, time.Hour)
+	r.launch()
+	cl := r.dial(0)
+	cl.send("m1", "/asknext")
+	ask := cl.until(5*time.Second, isType(agent.TypeAsk))
+	cl.until(5*time.Second, isType(agent.TypeTurnEnded))
+	cl.send("m2", "use SQLite")
+	cl.until(5*time.Second, isType(agent.TypeTurnEnded))
+	if err := cl.c.Send(Command{Op: OpSend, ClientID: "m3", Text: "hello from next door", Notice: agent.NoticeChatMessage,
+		Sender: &agent.Sender{Chat: "c_other", Title: "Other"}}); err != nil {
+		t.Fatal(err)
+	}
+	cl.ack("m3", 5*time.Second)
+	notes := map[string]string{}
+	for _, ev := range r.journal() {
+		if ev.Type == agent.TypeMessage && ev.Role == agent.RoleUser {
+			notes[ev.ClientID] = ev.Note
+		}
+	}
+	if n := notes["m2"]; !strings.Contains(n, "- "+ask.AskID+": ") || !strings.Contains(n, askuser.WithdrawName) {
+		t.Fatalf("the person's message has the note %q", n)
+	}
+	if n := notes["m3"]; strings.Contains(n, ask.AskID) {
+		t.Fatalf("another chat's message has the note %q", n)
+	}
+	if notes["m1"] != "" {
+		t.Fatalf("a message with no question open has the note %q", notes["m1"])
+	}
+}
+
 // A message the person did not write - another chat's - leaves a question
 // the call waits on open: the person has not moved on.
 func TestAnotherChatsMessageLeavesTheQuestionOpen(t *testing.T) {

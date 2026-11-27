@@ -171,7 +171,7 @@ func (m *MCP) call(ctx context.Context, msg rpcMessage) json.RawMessage {
 	id, err := m.Put(ctx, Call{Payload: payload, ToolUseID: p.Meta.ToolUseID})
 	switch {
 	case err == nil:
-		return rpcResult(msg.ID, toolResult(QueuedText(id, &payload), false))
+		return rpcResult(msg.ID, toolResult(Queued(ctx, m.Questions, id, &payload), false))
 	case errors.Is(err, ErrSubagent):
 		return rpcResult(msg.ID, toolResult(SubagentText, true))
 	case ctx.Err() != nil && errors.Is(err, context.Canceled):

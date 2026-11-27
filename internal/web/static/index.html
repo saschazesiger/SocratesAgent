@@ -93,6 +93,13 @@
             </span>
           </button>
         </div>
+        <!-- The questions of the chat on screen that wait for an answer,
+             their count on the badge: shown while there are any. It opens
+             the question dialog at them (session.js drawQuestionsBtn); the
+             chat itself never shows a question, only the answer. -->
+        <button class="ds-btn ds-btn--quiet ds-btn--icon so-questions-btn" id="questionsBtn" type="button" hidden
+                aria-label="Questions" data-tip="Questions" aria-haspopup="dialog"
+                data-icon="helpCircle" data-icon-place="start"><span class="ds-badge ds-tone-warning so-questions-btn__badge" hidden></span></button>
         <!-- A chat's tests (chattests.js): shown for a chat with Socrates
              Tests on or with tests, its badge the problems (else the running
              ones). At a desk it opens the column beside the chat, narrower

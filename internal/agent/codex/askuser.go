@@ -102,8 +102,9 @@ func askUserTool(ctx context.Context, c *Call) (any, error) {
 		c.a.deferred = map[string]string{}
 	}
 	c.a.deferred[asked] = id
+	q := c.a.spec.Questions
 	c.a.mu.Unlock()
-	return toolResult(askuser.QueuedText(id, &payload), true), nil
+	return toolResult(askuser.Queued(ctx, q, id, &payload), true), nil
 }
 
 // questionTool is check_questions and withdraw_question.

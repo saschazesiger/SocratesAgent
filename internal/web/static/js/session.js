@@ -757,7 +757,7 @@ const ids = ['sidebar', 'navScrim', 'menuBtn', 'blankIDE', 'homeBtn', 'sideColla
   'statusBtn', 'passageBtn', 'kbBtn', 'optionsBtn',
   'stage', 'termWrap', 'term', 'termOverlay', 'termLines', 'termNotice',
   'termTicker', 'tickerWindow',
-  'micBtn', 'testsBtn', 'testsPanel', 'pagesBtn',
+  'micBtn', 'questionsBtn', 'testsBtn', 'testsPanel', 'pagesBtn',
   'recSheet', 'recMeter', 'recTime', 'recSend', 'recCancel',
   'keybar', 'logout', 'chat', 'home', 'board', 'docs', 'docsidePanel'];
 for (const id of ids) dom[id] = document.getElementById(id);
@@ -2099,6 +2099,32 @@ function showChatQuestions(chatId, { askId = '', only = false } = {}) {
      // A link to a page or a Markdown file of the chat: in a new tab.
     docLink: (href, id) => chatDocTab(href, sessionOf(id)),
   });
+}
+
+// The chat whose questions the top bar's Questions opens, '' for none.
+let questionsChat = '';
+
+/**
+ * drawQuestionsBtn shows the top bar's Questions while the chat on screen
+ * has questions waiting for an answer, their count on its badge. A question
+ * is never drawn in the conversation, where it would scroll away while the
+ * agent works on: it waits here, and the dialog it opens answers it.
+ */
+function drawQuestionsBtn(chatId, count) {
+  questionsChat = count > 0 ? chatId : '';
+  const button = dom.questionsBtn;
+  const badge = button.querySelector('.so-questions-btn__badge');
+  const shown = !button.hidden;
+  button.hidden = count <= 0;
+  if (count <= 0) return;
+  const label = count === 1 ? 'A question waits for your answer' : count + ' questions wait for your answer';
+  if (button.getAttribute('aria-label') !== label) button.setAttribute('aria-label', label);
+  if (button.getAttribute('data-tip') !== label) button.setAttribute('data-tip', label);
+  const text = String(count);
+  if (badge.textContent !== text) badge.textContent = text;
+  badge.hidden = false;
+  // A button that appears pops in; the number itself changes at once.
+  if (!shown) M.enter(button, 'pop');
 }
 
 /**
@@ -4679,12 +4705,18 @@ async function boot() {
     sessionOf: (id) => sessionOf(id),
     status: () => updateStale(),
     openAsk: (chatId, askId) => showChatQuestions(chatId, { askId, only: true }),
+    questions: (chatId, count) => drawQuestionsBtn(chatId, count),
     toastRoom: (room) => { chatToastRoom = room; placeToasts(); },
     // A link to a Markdown file of the chat's folder opens it beside the
     // chat (docside.js, chatDocLink).
     docLink: (href, session, opener) => chatDocLink(href, session, opener),
   });
   chatOutbox().pump();
+  // The top bar's Questions: the questions of the chat on screen, in the
+  // question dialog.
+  dom.questionsBtn.addEventListener('click', () => {
+    if (questionsChat) showChatQuestions(questionsChat, { only: true });
+  });
   // The chat's tests: the button, the column at a desk and the sheet
   // narrower; switching the server on goes through the chat's MCP dialog.
   // The Tests column and the file beside the chat are never open together:

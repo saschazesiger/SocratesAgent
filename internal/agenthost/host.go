@@ -771,9 +771,16 @@ func (h *host) send(ctx context.Context, cmd Command) any {
 	if h.adapter == nil {
 		return fail(cmd, CodeNotRunning, "the agent is not running")
 	}
+	person := cmd.Notice == "" && cmd.Sender == nil
+	note := cmd.Note
+	if person {
+		// The agent's open questions go with the person's message, so that it
+		// withdraws those the message settles (askuser.OpenNote).
+		note = joinNote(note, askuser.OpenNote(h.questions(), "", "This message"))
+	}
 	msg := agent.Event{Type: agent.TypeMessage, MessageID: newID("m_"), Role: agent.RoleUser,
 		State: agent.MessagePending, ClientID: cmd.ClientID, Text: cmd.Text, Attachments: cmd.Attachments,
-		Note: cmd.Note, Sender: cmd.Sender}
+		Note: note, Sender: cmd.Sender}
 	// A question no call waits on any more is left behind by this message:
 	// the person moved on (pressed Stop and wrote something else, or wrote
 	// instead of answering a question meant for the next message). It stops
@@ -790,7 +797,6 @@ func (h *host) send(ctx context.Context, cmd Command) any {
 		batch = []agent.Event{{Type: agent.TypeNotice, Code: cmd.Notice, Text: cmd.Reason}, msg}
 		at = 1
 	}
-	person := cmd.Notice == "" && cmd.Sender == nil
 	var waited []agent.Ask
 	h.rec.View(func(p *agent.Projection) {
 		unwaited := map[string]bool{}
@@ -815,7 +821,7 @@ func (h *host) send(ctx context.Context, cmd Command) any {
 	if journaledHook != nil {
 		journaledHook()
 	}
-	out := agent.Outgoing{MessageID: msg.MessageID, ClientID: cmd.ClientID, Text: agent.AgentText(cmd.Note, cmd.Text), Attachments: cmd.Attachments,
+	out := agent.Outgoing{MessageID: msg.MessageID, ClientID: cmd.ClientID, Text: agent.AgentText(msg.Note, cmd.Text), Attachments: cmd.Attachments,
 		AfterTurn: h.afterTurn(msg.MessageID)}
 	if err := h.adapter.Send(ctx, out); err != nil {
 		// Journaled and acknowledged all the same: it stays pending, and the
@@ -977,8 +983,11 @@ func (h *host) deliver(ctx context.Context, ask *agent.Ask, answer json.RawMessa
 // asked was gone, which the chat says in a notice; an answer that was meant to
 // arrive this way needs none.
 func (h *host) deliverAsMessage(ctx context.Context, ask *agent.Ask, answer json.RawMessage, lost bool) {
+	// The questions still open besides this one go with the answer, so that
+	// the agent withdraws those the answer settles (askuser.OpenNote).
 	msg := agent.Event{Type: agent.TypeMessage, MessageID: newID("m_"), Role: agent.RoleUser,
-		State: agent.MessagePending, Text: agent.AnswerText(ask, answer), AnswerTo: ask.ID}
+		State: agent.MessagePending, Text: agent.AnswerText(ask, answer), AnswerTo: ask.ID,
+		Note: askuser.OpenNote(h.questions(), ask.ID, "This answer")}
 	events := []agent.Event{msg, {Type: agent.TypeAskDelivered, AskID: ask.ID, Via: agent.ViaMessage}}
 	if lost {
 		events = append(events, agent.Event{Type: agent.TypeNotice, Code: agent.NoticeAnswerAsMessage, AskID: ask.ID,
@@ -991,7 +1000,7 @@ func (h *host) deliverAsMessage(ctx context.Context, ask *agent.Ask, answer json
 	if h.adapter == nil {
 		return
 	}
-	out := agent.Outgoing{MessageID: msg.MessageID, Text: msg.Text, AnswerTo: ask.ID, AfterTurn: h.afterTurn(msg.MessageID)}
+	out := agent.Outgoing{MessageID: msg.MessageID, Text: agent.AgentText(msg.Note, msg.Text), AnswerTo: ask.ID, AfterTurn: h.afterTurn(msg.MessageID)}
 	if err := h.adapter.Send(ctx, out); err != nil {
 		h.record(agent.Event{Type: agent.TypeError, Code: "send_failed", MessageID: msg.MessageID, Text: err.Error()})
 	}
@@ -1571,4 +1580,16 @@ func (q hostQuestions) List(context.Context) ([]askuser.Asked, error) { return q
 
 func (q hostQuestions) Withdraw(_ context.Context, id, reason string) (bool, error) {
 	return q.h.withdrawQuestion(id, reason)
+}
+
+// joinNote puts two parts of Socrates' note to the agent together, either
+// of them possibly empty.
+func joinNote(a, b string) string {
+	switch {
+	case a == "":
+		return b
+	case b == "":
+		return a
+	}
+	return a + "\n\n" + b
 }

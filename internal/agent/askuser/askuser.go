@@ -175,7 +175,9 @@ const (
 		"Answers arrive by themselves as messages, so do not call this to wait for one: use it when you lost track of " +
 		"your questions (after a summary of the conversation, or a long stretch of work)."
 	WithdrawDescription = "Withdraws an open question you asked with " + Name + ": it leaves the person's queue and they " +
-		"can no longer answer it. Use it when the question no longer matters: you found the answer yourself, or the plan changed."
+		"can no longer answer it. Use it as soon as a question no longer needs an answer: a message or an answer of the " +
+		"person's settled it, you found the answer yourself, the plan changed, or a new question replaces it. " +
+		"Only questions you still need answered should stay open."
 )
 
 // Guidance is the system-prompt text that steers the model to ask_user. tool
@@ -202,8 +204,11 @@ func Guidance(tool, prefix string) string {
 		"4. When only work that waits for open questions is left, end your turn with a short summary: what is done, and what waits " +
 		"for which question. Do not wait or poll for answers. When an answer arrives (\"The person answered your question …\"), " +
 		"go on with what waited for it. " +
-		"5. " + check + " lists your questions and their answers, for when you lost track; " + withdraw + " withdraws a question " +
-		"that no longer matters. " +
+		"5. Keep your open questions current: the person sees every open one as waiting for an answer. The moment one no " +
+		"longer needs an answer - a message or an answer of the person's settled it, you found the answer yourself, the plan " +
+		"changed, or a new question replaces it - withdraw it with " + withdraw + ", saying why. Socrates lists your open " +
+		"questions with each message of the person's and each answer; " + check + " lists them all with their answers, for " +
+		"when you lost track. " +
 		"6. Only the main agent asks: a subagent never calls " + tool + " but puts its question into its result."
 }
 

@@ -1,6 +1,7 @@
 package askuser
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -35,6 +36,66 @@ func QueuedText(id string, p *Payload) string {
 		"Do not build on a guessed answer, except for a small decision that is easy to undo: then go on with the option you " +
 		"recommended and say that you assumed it. When only work that waits for open questions is left, end your turn with a " +
 		"short summary of what is done and what waits for which question."
+}
+
+// Queued is what an ask_user call returns at once (QueuedText), with the
+// asker's other open questions after it (OthersText): a new question often
+// replaces an older one, which is then withdrawn rather than left in the
+// person's queue. q may be nil; a list that cannot be read adds nothing.
+func Queued(ctx context.Context, q Questions, id string, p *Payload) string {
+	text := QueuedText(id, p)
+	if q == nil {
+		return text
+	}
+	list, err := q.List(ctx)
+	if err != nil {
+		return text
+	}
+	if others := OpenList(list, id); others != "" {
+		text += "\n\nYour other open questions:\n" + others + "\nIf this question replaces one of them, or one no longer matters, " +
+			"withdraw it now with " + WithdrawName + ": the person should only see questions you still need answered."
+	}
+	return text
+}
+
+// OpenList is the open questions of list but `except`, one line each
+// ("- ask_…: the question"), "" when there are none.
+func OpenList(list []Asked, except string) string {
+	var b strings.Builder
+	for _, q := range list {
+		if q.State != StateOpen || q.ID == except {
+			continue
+		}
+		fmt.Fprintf(&b, "- %s: %s\n", q.ID, questionLine(q.Payload))
+	}
+	return b.String()
+}
+
+// OpenNote is Socrates' note on a message for an agent that has open
+// questions (list, but `except`): what they are, and to withdraw those the
+// message settles. `why` says what the message is ("This message", "This
+// answer"). "" when no other question is open.
+func OpenNote(list []Asked, except, why string) string {
+	open := OpenList(list, except)
+	if open == "" {
+		return ""
+	}
+	return "Your open questions to the person (" + Name + "), which they still see as waiting for an answer:\n" + open +
+		why + " may answer one of them or make it moot: then withdraw it now with " + WithdrawName +
+		" (its reason says why), so that the person only sees questions you still need answered."
+}
+
+// questionLine is an ask's questions as one line.
+func questionLine(raw json.RawMessage) string {
+	p := Decode(raw)
+	if p == nil || len(p.Questions) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(p.Questions))
+	for _, one := range p.Questions {
+		parts = append(parts, one.Question)
+	}
+	return strings.Join(parts, " / ")
 }
 
 // SubagentText is what a subagent's ask_user call returns: nothing was
@@ -84,15 +145,7 @@ func QuestionsText(list []Asked) string {
 	open := 0
 	for _, q := range list {
 		p := Decode(q.Payload)
-		question := ""
-		if p != nil && len(p.Questions) > 0 {
-			parts := make([]string, 0, len(p.Questions))
-			for _, one := range p.Questions {
-				parts = append(parts, one.Question)
-			}
-			question = strings.Join(parts, " / ")
-		}
-		fmt.Fprintf(&b, "\n- %s [%s] %s", q.ID, q.State, question)
+		fmt.Fprintf(&b, "\n- %s [%s] %s", q.ID, q.State, questionLine(q.Payload))
 		if p != nil && p.Blocks != "" && q.State == StateOpen {
 			fmt.Fprintf(&b, "\n  Waiting for it: %s", p.Blocks)
 		}

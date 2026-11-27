@@ -26,19 +26,19 @@ import { agentMarkHtml } from './logos.js';
 import * as harnesses from './harnesses.js';
 import * as accounts from './accounts.js';
 import { drawAccount, chooseAccount } from './accountpicker.js';
-import { newChat, apply, applyLive, busy, currentTodo, seenClient, compact, fill, touchPart, askWithdrawn } from './chatfold.js';
+import { newChat, apply, applyLive, busy, currentTodo, seenClient, compact, fill, touchPart, askWithdrawn, openAsks } from './chatfold.js';
 import { ChatStream, POLL_EVERY } from './chatstream.js';
 import { loadChat, saveChat } from './chatcache.js';
 import {
-  assistantMessage, userMessage, lineHtml, askCard, askPlaces, todoList, todoItems, renewsIn, seconds, outboxState,
+  assistantMessage, userMessage, lineHtml, askCard, answerLine, todoList, todoItems, renewsIn, seconds, outboxState,
   backgroundJobs, jobsList, jobDetail, agentsFold, jobsFold, schedulesFold, clock, infoButton, tickLive,
   peerMessage,
   socratesMessage,
 } from './chatparts.js';
 import { mountComposer } from './composer.js';
 import { wheelHooks } from './wheel.js';
-import { chatOutbox, pendingFor, pendingAnswer, pendingModel, failedItem, queueAnswer, answeredHere, keptSent, forgetSent } from './chatoutbox.js';
-import { askProgress, askDraftsRev, forgetAskDraft } from './askdialog.js';
+import { chatOutbox, pendingFor, pendingAnswer, pendingModel, failedItem, queueAnswer, keptSent, forgetSent } from './chatoutbox.js';
+import { forgetAskDraft } from './askdialog.js';
 import { record, recPhase } from './dictate.js';
 import { typeHere } from './keyboard.js';
 import { speak, stopSpeaking } from './voice.js';
@@ -151,6 +151,8 @@ function writePlanNote(askId, text) {
  * `ctx`:
  *   status()           the stream's state moved (for the page's stale marks)
  *   openAsk(id, askId) open the question dialog at one ask of this chat
+ *   questions(id, n)   chat `id` on screen has n questions waiting for an
+ *                      answer ('' and 0: no chat on screen)
  *   toastRoom(px)      the room the snackbars need at the bottom of the
  *                      app while the chat shows (0 when it does not)
  */
@@ -379,8 +381,6 @@ export function mountChat(ctx) {
       return state || 'loading';
     },
     planNote: (askId) => readPlanNote(askId),
-    askProgress,
-    mine: (ask) => answeredHere(ask.clientId),
     pendingAnswer: (ask) => pendingAnswer(session.id, ask.id) || sentAnswers.get(ask.id) || null,
     failedItem: (clientId) => failedItem(clientId),
     modelLabel(model) {
@@ -526,10 +526,15 @@ export function mountChat(ctx) {
             key: entry.key, sender: message.sender, text: message.text, view,
             state: message.state === 'delivered' ? '' : message.state, sendNow: waits && !interrupting, withdraw,
           });
+        } else if (message.answerTo) {
+          // An answer to a question is a quiet line, not a message of the
+          // person's: what was chosen, the rest behind its "i".
+          rev += ':' + chat.askRev;
+          make = () => answerLine({ key: entry.key, ask: chat.asks.get(message.answerTo) || null });
         } else {
           make = () => userMessage({
             key: entry.key, text: message.text, attachments: message.attachments,
-            state: message.state === 'delivered' ? '' : message.state, answerTo: message.answerTo,
+            state: message.state === 'delivered' ? '' : message.state,
             sendNow: waits && !interrupting, withdraw, fileSrc: view.fileSrc,
           });
         }
@@ -538,9 +543,7 @@ export function mountChat(ctx) {
         // answer this browser has on its way to it; so is a question card
         // drawn at its call, and from this browser's draft of it as well.
         rev = message.rev + ':' + chat.askRev + ':' + peersRev + (message.state === 'streaming' ? ':' + tick : '');
-        if (message.parts.some((part) => part.kind === 'plan') || askPlaces(chat).byMessage.has(message.id)) {
-          rev += ':' + local + ':' + askDraftsRev();
-        }
+        if (message.parts.some((part) => part.kind === 'plan')) rev += ':' + local;
         make = () => assistantMessage(message, view, entry.segment || 0);
       }
     } else if (entry.type === 'ask') {
@@ -558,12 +561,11 @@ export function mountChat(ctx) {
         withdrawnAsks.add(ask.id);
         forgetAskDraft(ask.id);
       }
-      // A question that names its call is drawn inside the answer, where
-      // the call is (askPlaces), not here.
-      if (askPlaces(chat).ids.has(ask.id)) return '';
-      // "2 of 5 answered" is read from this browser's draft of the answer,
-      // which the dialog writes.
-      rev = ask.rev + ':' + askDraftsRev() + ':' + local;
+      // Only a plan is drawn where it was asked; every other question waits
+      // in the questions dialog (the top bar's Questions), and its answer is
+      // a line of its own.
+      if (!ask.payload || ask.payload.kind !== 'plan') return '';
+      rev = ask.rev + ':' + local;
       make = () => askCard(ask, view);
     } else if (entry.line && entry.line.kind === 'turn' && entry.line.outcome === 'limited') {
       // "Renews in" moves with the clock.
@@ -619,6 +621,18 @@ export function mountChat(ctx) {
           // One tried already may have reached the server, its answer lost.
           withdraw: state === 'local' && !item.attempts ? { outbox: item.id } : null,
         })}${failed ? html`<div class="so-msg__actions" data-ds-key="${'oa:' + item.payload.client_id}"><button class="ds-btn ds-btn--quiet ds-btn--icon ds-sm" type="button" data-action="outbox-edit" data-id="${item.id}" aria-label="Edit the message" data-tip="Edit">${raw(icon('pencil', 18))}</button><button class="ds-btn ds-btn--tonal ds-btn--icon ds-sm" type="button" data-action="outbox-retry" data-id="${item.id}" aria-label="Send again" data-tip="Send again">${raw(icon('sync', 18))}</button></div>` : ''}`),
+      });
+    }
+    // An answer of this browser's the journal does not have yet: where it
+    // is, and, refused, what can be done about it.
+    for (const ask of chat.asks.values()) {
+      if (ask.answered || (ask.payload && ask.payload.kind === 'plan')) continue;
+      const pending = view.pendingAnswer(ask);
+      if (!pending) continue;
+      const state = outboxState(pending);
+      out.push({
+        key: 'oq:' + ask.id,
+        markup: String(answerLine({ key: 'oq:' + ask.id, ask, answer: pending.payload.answer, state, pending: state === 'failed' ? pending : null })),
       });
     }
     for (const [clientId, one] of sent) {
@@ -716,12 +730,22 @@ export function mountChat(ctx) {
     }
     drawTodo();
     drawState();
+    drawQuestions();
     if (composer) composer.paint();
     if (follow) {
       scroller.scrollTop = scroller.scrollHeight;
       lastTop = scroller.scrollTop;
     }
     showJump(!atEnd());
+  }
+
+  // drawQuestions tells the page how many questions of the chat on screen
+  // wait for an answer, for the top bar's Questions: every open question
+  // but a plan, which its card in the chat answers.
+  function drawQuestions() {
+    if (!ctx.questions) return;
+    const count = synced ? openAsks(chat).filter((ask) => !ask.payload || ask.payload.kind !== 'plan').length : 0;
+    ctx.questions(session.id, count);
   }
 
   // drawEarlier draws the entries before the ones on screen, a few at a time
@@ -1930,6 +1954,7 @@ export function mountChat(ctx) {
     hide() {
       stop();
       session = null;
+      if (ctx.questions) ctx.questions('', 0);
       host.hidden = true;
       host.removeAttribute('data-stale');
       connectionSaidElsewhere(false);

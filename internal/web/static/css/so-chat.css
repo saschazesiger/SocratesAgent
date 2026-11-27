@@ -66,11 +66,13 @@
  *                          under it (.so-image__caption)
  *   .so-thumb              an image drawn small, a button that opens the
  *                          lightbox (--sm: a message's attachment)
- *   .so-plan, .so-ask      the plan card and the question card (DS cards)
+ *   .so-plan               the plan card (a DS card)
  *   .so-line               a line between messages: a notice, a command, a
  *                          model or an account change, an interrupted turn
- *                          (DS's labelled divider); .so-line--row a refused
- *                          command, a row with its chip and buttons;
+ *                          (DS's labelled divider), the answer to a
+ *                          question (.so-answer); .so-line--row a refused
+ *                          command or an answer on its way, a row with
+ *                          its chip and buttons;
  *                          .so-line-alert for the ones that are alerts
  *   .so-status-mark        a part's state as an icon or the spinner
  *   .so-composer           the field (.so-composer__field), its files, the
@@ -87,7 +89,7 @@
  * (the hidden file input), .so-composer__attach, .so-model-menu (the model
  * and effort menu, a DS menu), .so-account-menu (the account menu of
  * accountpicker.js, a DS menu), .so-chat__account-btn, .so-ask-back, .so-ask-delegate, .so-ask-note,
- * .so-q-back, .so-q-close, .so-q-own-field, .so-ask__open,
+ * .so-q-back, .so-q-close, .so-q-own-field,
  * .so-refused (a DS alert: the server would not take an answer).
  */
 
@@ -866,10 +868,6 @@
   font: var(--ds-font-reading);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-}
-
-.so-msg__label {
-  margin: 0;
 }
 
 /* Not the agent's yet, or never to be (taken back): the bubble says so with
@@ -1786,10 +1784,22 @@
   margin-inline-start: 0;
 }
 
-/* ── The plan and the question cards ─────────────────────────────────── */
+/* ── The top bar's Questions ─────────────────────────────────────────── */
 
-.so-plan,
-.so-ask {
+.so-questions-btn {
+  position: relative;
+}
+
+/* The count sits on the button's corner, as the Tests button's does. */
+.so-questions-btn__badge {
+  position: absolute;
+  top: calc(-1 * var(--ds-space-1));
+  right: calc(-1 * var(--ds-space-1));
+}
+
+/* ── The plan card ───────────────────────────────────────────────────── */
+
+.so-plan {
   display: flex;
   flex-direction: column;
   gap: var(--ds-space-3);
@@ -1797,24 +1807,19 @@
 
 /* A title, a note and an answer are the agent's or the person's words, a
    path or a German compound among them: they wrap, anywhere if they must. */
-.so-plan__title,
-.so-ask__title {
+.so-plan__title {
   display: inline-flex;
   align-items: center;
   gap: var(--ds-space-2);
   min-width: 0;
 }
 
-.so-plan__title > span,
-.so-ask__title > span {
+.so-plan__title > span {
   min-width: 0;
   overflow-wrap: anywhere;
 }
 
-.so-plan__note,
-.so-ask__progress,
-.so-ask__blocks,
-.so-ask__done {
+.so-plan__note {
   margin: 0;
   overflow-wrap: anywhere;
 }
@@ -1829,7 +1834,6 @@
    a long title stands a chip's gap under it rather than the larger gap DS
    keeps for a button that hangs out of the line. */
 .so-plan > .ds-card__row,
-.so-ask > .ds-card__row,
 .so-plan__answer > .ds-card__row {
   row-gap: var(--ds-space-2);
 }
@@ -1857,12 +1861,6 @@
 
 .so-plan__input {
   resize: vertical;
-}
-
-.so-ask__question {
-  margin: 0;
-  font: var(--ds-font-subtitle);
-  overflow-wrap: anywhere;
 }
 
 /* ── Lines between messages ──────────────────────────────────────────── */

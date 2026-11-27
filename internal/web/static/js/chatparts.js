@@ -219,8 +219,9 @@ export function toolOf(part) {
 
 // isAskTool says whether a tool part is a call of Socrates' own question
 // tool, ask_user, as each agent names it (mcp__socrates__ask_user,
-// socrates_ask_user, ask_user): the question card in the chat is that call,
-// so its row is not drawn beside it.
+// socrates_ask_user, ask_user): its question waits in the questions dialog
+// (the top bar's Questions) and its answer is a line of the chat
+// (answerLine), so the call draws no row of its own.
 export function isAskTool(part) {
   const c = (part.content && typeof part.content === 'object') ? part.content : {};
   return [c.tool, c.name].some((name) => /(^|[_.:/])ask_user$/.test(String(name || '')));
@@ -970,64 +971,72 @@ export function askBlocks(ask) {
   return said.trim();
 }
 
-/** askCard is a question in the chat: its title, how far it is, and the first open question. */
+/**
+ * askCard is what the chat draws of a question: a plan the plan part does
+ * not draw itself. Every other question waits in the questions dialog (the
+ * top bar's Questions), not in the conversation, and is drawn here only by
+ * its answer (answerLine).
+ */
 export function askCard(ask, view) {
   const payload = ask.payload || {};
-  if (payload.kind === 'plan') {
-    // The plan card answers it, when the plan part is there; on its own it
-    // is a plan card of its own.
-    for (const part of view.chat.parts.values()) {
-      if (part.kind === 'plan' && planAskOf(part, view.chat) === ask) return '';
-    }
-    return planHtml({ id: 'ask-' + ask.id, kind: 'plan', text: payload.plan || '', content: { plan: { ask_id: ask.id } } }, view);
+  if (payload.kind !== 'plan') return '';
+  // The plan card answers it, when the plan part is there; on its own it
+  // is a plan card of its own.
+  for (const part of view.chat.parts.values()) {
+    if (part.kind === 'plan' && planAskOf(part, view.chat) === ask) return '';
   }
-  const questions = askQuestions(ask);
-  const title = payload.title || (questions.length === 1 ? 'A question' : 'Questions');
-  // An answer this browser gave that the server does not have yet: the
-  // card says where it is, and what it says, rather than asking again.
-  const pending = ask.answered ? null : view.pendingAnswer(ask);
-  let state = 'open';
-  if (ask.answered) state = view.mine(ask) ? 'answered' : 'elsewhere';
-  else if (pending) state = outboxState(pending);
-  else if (ask.closed) state = 'closed';
-  const withdrawn = state === 'closed' && ask.closedBy === 'withdrawn';
-  const blocks = askBlocks(ask);
-  const head = html`<div class="ds-card__row"><h3 class="ds-card__title so-ask__title">${raw(icon('chat', 18))}<span>${title}</span></h3>${
-    state === 'open' ? html`<span class="ds-status ds-tone-warning">${raw(icon('clock', 16))}<span>Waiting for you</span></span>`
-      : withdrawn ? html`<span class="ds-status">${raw(icon('undo', 16))}<span>Withdrawn</span></span>`
-      : state === 'closed' ? html`<span class="ds-status">${raw(icon('chat', 16))}<span>Not answered</span></span>`
-      : ANSWER_ON_ITS_WAY[state] ? onItsWayChip(state)
-        : html`<span class="ds-status ds-tone-success">${raw(icon('check', 16))}<span>${state === 'elsewhere' ? 'Answered on another device' : 'Answered'}</span></span>`
+  return planHtml({ id: 'ask-' + ask.id, kind: 'plan', text: payload.plan || '', content: { plan: { ask_id: ask.id } } }, view);
+}
+
+/**
+ * answerLine is the answer to a question as the chat shows it: one quiet
+ * line - what was chosen or said - with the questions and their answers
+ * behind its "i", never a message of the person's. `ask` is the question
+ * (null when the chat does not have it), `answer` the answer when the ask
+ * does not carry it yet (one this browser has on its way). An answer on its
+ * way says where it is (`state`, an outbox state), and one the server
+ * refused (`pending`, its outbox item) offers to answer again.
+ */
+export function answerLine({ key, ask, answer = null, state = '', pending = null }) {
+  const shown = ask ? { ...ask, answer: answer || ask.answer } : null;
+  const summary = shown ? answerSummary(shown) : '';
+  const title = ask ? String((ask.payload && ask.payload.title) || '').trim() : '';
+  const words = summary ? 'Answered: ' + summary : title ? 'Answered: ' + title : 'Answered a question';
+  const chip = state && state !== 'delivered' ? USER_STATE[state] : null;
+  const failed = state === 'failed' && pending;
+  return html`<div class="${chip ? 'so-line so-line--row so-answer' : 'ds-divider ds-divider--label so-line so-answer'}" data-ds-key="${key}" data-kind="answer"${chip ? html` data-state="${state}"` : ''}>${raw(icon('check', 16))}<span class="so-line__text">${words}</span>${
+    chip ? html`<span class="${failed ? 'ds-status ds-tone-error' : 'ds-status'}" data-chip="${state}">${raw(icon(chip.glyph, 16))}<span>${chip.word}</span></span>` : ''
+  }${infoButton(shown ? answerFacts(shown) : [], 'The question and the answer')}${
+    failed ? html`${infoButton([pending.error || 'The server refused it.'], 'Why it was not taken')}<button class="ds-btn ds-btn--quiet ds-btn--icon ds-sm" type="button" data-action="outbox-retry" data-id="${pending.id}" aria-label="Send the answer again" data-tip="Send again">${raw(icon('sync', 18))}</button><button class="ds-btn ds-sm" type="button" data-action="ask-again" data-ask="${ask.id}" data-id="${pending.id}">Answer again</button>` : ''
   }</div>`;
-  let body;
-  if (state === 'open') {
-    const progress = view.askProgress(ask);
-    const first = questions.find((q) => !progress.answered.has(q.id)) || questions[0];
-    body = html`<p class="so-ask__progress ds-meta">${questions.length > 1 ? progress.count + ' of ' + questions.length + ' answered' : 'One question'}</p>${
-      first ? html`<p class="so-ask__question">${first.question || first.header || ''}</p>` : ''
-    }${blocks ? html`<p class="so-ask__blocks ds-meta">${'Waiting for this: ' + blocks}</p>` : ''}<div class="ds-form-actions"><button class="ds-btn ds-btn--filled so-ask__open" type="button" data-action="ask-open" data-ask="${ask.id}">Answer</button></div>`;
-  } else if (pending) {
-    const summary = answerSummary({ ...ask, answer: pending.payload.answer });
-    body = html`${summary ? html`<p class="so-ask__done ds-meta">${summary}</p>` : ''}${
-      state === 'failed' ? refusedHtml(pending, html`<button class="ds-btn" type="button" data-action="ask-again" data-ask="${ask.id}" data-id="${pending.id}">Answer again</button>`)
-        : state === 'local' ? html`<p class="so-ask__progress ds-meta">It goes out when the connection is back.</p>` : ''
-    }`;
-  } else if (withdrawn) {
-    // The agent took the question back (withdraw_question): there is
-    // nothing to answer any more, not even anyway.
-    const first = questions[0];
-    body = html`${first ? html`<p class="so-ask__question">${first.question || first.header || ''}</p>` : ''}<p class="so-ask__done ds-meta">${
-      'The agent withdrew this question' + (ask.closedReason ? ': ' + ask.closedReason : '.')
-    }</p>`;
-  } else if (state === 'closed') {
-    // A message or a Stop moved the chat on; an answer can still be sent,
-    // as a message.
-    const why = ask.closedBy === 'stopped' ? 'You stopped the agent before answering.' : 'You wrote something else instead.';
-    body = html`<p class="so-ask__done ds-meta">${why} The agent no longer waits for this.</p><div class="ds-form-actions"><button class="ds-btn ds-btn--tonal so-ask__open" type="button" data-action="ask-open" data-ask="${ask.id}">Answer anyway</button></div>`;
-  } else {
-    body = html`<p class="so-ask__done ds-meta">${answerSummary(ask)}</p>`;
-  }
-  return html`<section class="ds-card so-ask" data-ds-key="${'a:' + ask.id}" data-ask="${ask.id}" data-state="${state}">${head}${body}</section>`;
+}
+
+// answerFacts is an answered ask as the rows behind its line's "i": each
+// question with what was answered to it, the note, and a question back.
+function answerFacts(ask) {
+  const answer = ask.answer && typeof ask.answer === 'object' ? ask.answer : {};
+  const answers = answer.answers || {};
+  const facts = askQuestions(ask).map((q) => {
+    const a = answers[q.id];
+    let said = '';
+    if (a && a.delegated) said = 'You decide';
+    else if (a && a.skipped) said = 'Skipped';
+    else if (a) {
+      const labels = (a.selected || []).map((id) => {
+        const option = (q.options || []).find((o) => String(o.id) === String(id));
+        return option ? option.label : String(id);
+      });
+      if (a.other) labels.push(a.other);
+      if (a.value !== undefined && a.value !== null && a.value !== '') labels.push(String(a.value));
+      said = labels.join(', ');
+      if (a.note) said += (said ? ' · ' : '') + 'Note: ' + a.note;
+    }
+    return [String(q.question || q.header || q.id), said || 'No answer'];
+  });
+  if (typeof ask.answer === 'string' && ask.answer) facts.push(['Answer', ask.answer]);
+  if (answer.general_note) facts.push(['Note', answer.general_note]);
+  if (answer.follow_up) facts.push(['Asked back', answer.follow_up]);
+  return facts;
 }
 
 // answerSummary is an answered ask in one line: what was chosen or said.
@@ -1108,12 +1117,10 @@ const FROM_CHAT = /^\[(?:A message from the chat|From Socrates Tests:) [^\n]*\]\
  * goes at once, and `withdraw` to take it back (withdrawButton). `fileSrc`
  * is where an attached image is drawn from.
  */
-export function userMessage({ key, text, attachments, state, answerTo, error, sendNow = false, withdraw = null, fileSrc = null }) {
+export function userMessage({ key, text, attachments, state, error, sendNow = false, withdraw = null, fileSrc = null }) {
   const chip = USER_STATE[state];
   text = String(text || '').replace(FROM_CHAT, '');
-  return html`<article class="so-msg" data-ds-key="${key}" data-role="user" data-state="${state || 'delivered'}"><div class="so-msg__bubble">${
-    answerTo ? html`<p class="so-msg__label ds-meta">Answer to a question</p>` : ''
-  }${text ? html`<p class="so-msg__text">${text}</p>` : ''}${attachmentsHtml(attachments, fileSrc)}</div>${
+  return html`<article class="so-msg" data-ds-key="${key}" data-role="user" data-state="${state || 'delivered'}"><div class="so-msg__bubble">${text ? html`<p class="so-msg__text">${text}</p>` : ''}${attachmentsHtml(attachments, fileSrc)}</div>${
     chip || sendNow || withdraw ? html`<div class="so-msg__queue">${
       chip ? html`<span class="${state === 'failed' ? 'ds-status ds-tone-error so-msg__chip' : 'ds-status so-msg__chip'}" data-chip="${state}">${raw(icon(chip.glyph, 16))}<span>${chip.word}</span></span>` : ''
     }${withdrawButton(withdraw)}${
@@ -1300,8 +1307,8 @@ export function turnFacts(message, view = null, { outcome = true } = {}) {
 
 // shownParts is what an answer shows (of `list`, a piece of its parts): its
 // parts, less a text that has no words (an agent opens one before it knows
-// whether it will say anything), the ask_user call its question card stands
-// for, and the agent's own notice of a limit or failure that the line after
+// whether it will say anything), the ask_user call (its question waits in
+// the questions dialog), and the agent's own notice of a limit or failure that the line after
 // it says (lineHtml).
 function shownParts(message, list = message.parts) {
   const ended = message.turn && (message.turn.outcome === 'limited' || message.turn.outcome === 'failed')
@@ -1335,53 +1342,10 @@ function laterInTurn(message, view) {
   return false;
 }
 
-// Where the questions are drawn, by the chat's revision: a part or a
-// question that came changes it.
-const placed = new WeakMap();
-
-/**
- * askPlaces is where each question that names its tool part is drawn: right
- * after the part of its answer that holds the call - the hidden ask_user
- * call itself, or the subagent or workflow it was made in - rather than at
- * the end of the turn, where whatever the agent did after the answer went
- * above it. A plan is its plan part's (planHtml), and a question whose part
- * the chat does not have stays an entry of its own (chatfold.js cutAtAsk).
- * It answers { byPart: top part id -> asks, byMessage: message id -> asks,
- * ids: the asks so placed }.
- */
-export function askPlaces(chat) {
-  const hit = placed.get(chat);
-  if (hit && hit.rev === chat.rev) return hit.places;
-  const places = { byPart: new Map(), byMessage: new Map(), ids: new Set() };
-  const asks = [...chat.asks.values()].sort((a, b) => a.seq - b.seq);
-  for (const ask of asks) {
-    const payload = ask.payload && typeof ask.payload === 'object' ? ask.payload : {};
-    if (payload.kind === 'plan' || !payload.part_id) continue;
-    let top = chat.parts.get(payload.part_id);
-    const seen = new Set();
-    while (top && top.parentId && !seen.has(top.id)) {
-      seen.add(top.id);
-      const parent = chat.parts.get(top.parentId);
-      if (!parent) break;
-      top = parent;
-    }
-    const message = top ? chat.messages.get(top.messageId) : null;
-    if (!message || !message.parts.includes(top)) continue;
-    for (const [map, key] of [[places.byPart, top.id], [places.byMessage, message.id]]) {
-      if (!map.has(key)) map.set(key, []);
-      map.get(key).push(ask);
-    }
-    places.ids.add(ask.id);
-  }
-  placed.set(chat, { rev: chat.rev, places });
-  return places;
-}
-
 // pieces is an answer cut where questions were asked (chatfold.js cutAtAsk):
-// for each piece, its parts, those it shows, and the question cards drawn
-// at them.
-function pieces(message, chat) {
-  const places = askPlaces(chat);
+// for each piece, its parts and those it shows. A question is never drawn
+// in the chat: it waits in the questions dialog (the top bar's Questions).
+function pieces(message) {
   const cuts = message.cuts || [];
   const out = [];
   let from = 0;
@@ -1389,12 +1353,7 @@ function pieces(message, chat) {
     const to = i < cuts.length ? Math.max(from, cuts[i]) : message.parts.length;
     const list = message.parts.slice(from, to);
     const shown = new Set(shownParts(message, list));
-    let cards = 0;
-    for (const part of list) {
-      const asks = places.byPart.get(part.id);
-      if (asks) cards += asks.length;
-    }
-    out.push({ list, shown, cards, said: shown.size + cards });
+    out.push({ list, shown, said: shown.size });
     from = to;
   }
   return out;
@@ -1778,17 +1737,16 @@ function stands(part) {
 }
 
 /**
- * runsOf cuts a piece's parts after each part a question card is drawn at
- * (askPlaces) and after each shown part that stands (STANDS: a plan to
- * approve, a notice): each run is folded on its own, so that the work done
- * after a question or a plan comes under it, in the order it happened.
+ * runsOf cuts a piece's parts after each shown part that stands (STANDS: a
+ * plan to approve, a notice): each run is folded on its own, so that the
+ * work done after a plan comes under it, in the order it happened.
  */
-function runsOf(piece, places) {
+function runsOf(piece) {
   const runs = [];
   let run = [];
   for (const part of piece.list) {
     run.push(part);
-    if (places.byPart.has(part.id) || (piece.shown.has(part) && stands(part))) {
+    if (piece.shown.has(part) && stands(part)) {
       runs.push(run);
       run = [];
     }
@@ -1986,15 +1944,14 @@ export function tickLive(root) {
 
 /**
  * assistantMessage is an answer - or the piece of it after a question, the
- * segment-th (chatfold.js cutAtAsk): its parts in order, the question cards
- * where they were asked, Copy for its text, and what it cost behind the "i",
+ * segment-th (chatfold.js cutAtAsk): its parts in order, Copy for its text, and what it cost behind the "i",
  * under the last piece that says anything. How a turn ended other than done
  * is the line after it (lineHtml), said once: not again on the answer, and
  * not by the agent's own notice of the same words (Claude's "usage limit
  * reached").
  */
 export function assistantMessage(message, view, segment = 0) {
-  const all = pieces(message, view.chat);
+  const all = pieces(message);
   const piece = all[segment];
   if (!piece) return '';
   const last = all.length - 1;
@@ -2016,24 +1973,21 @@ export function assistantMessage(message, view, segment = 0) {
   // row of its own with an "i" that said the next one's usage again.
   const facts = segment === foot && !silent && !laterInTurn(message, view) ? turnFacts(message, view) : [];
   // A running answer ends in its live line - unless it waits for the
-  // person, which its question card says.
+  // person, which the state line and the top bar's Questions say.
   // An ask_user question (answered as a message, deliver 'message') holds
   // nothing up: the turn goes on working after it.
   const asking = [...view.chat.asks.values()].some((ask) => !ask.answered && !ask.closed && ask.deliver !== 'message'
     && ask.turnId && ask.turnId === message.turnId);
   const working = segment === last && message.state === 'streaming' && !asking;
   if (!piece.said && !working && !facts.length) return '';
-  const places = askPlaces(view.chat);
   const copyable = segment === foot && message.state !== 'streaming'
     && message.parts.some((part) => part.kind === 'text' && String(part.text || '').trim());
   const key = 'm:' + message.id + (segment ? '#' + (segment + 1) : '');
   // The work is folded behind one line where it began (workHtml); the
-  // questions asked in it, and the answer after it, stand. A question card,
-  // or a part that stands, ends a run of work: what the agent does after it
-  // goes on under it, in a fold of its own, never in the fold above it - an
-  // answered question is not left at the bottom while the work grows over
-  // it.
-  const runs = runsOf(piece, places);
+  // answer after it stands. A part that stands (a plan) ends a run of work:
+  // what the agent does after it goes on under it, in a fold of its own,
+  // never in the fold above it.
+  const runs = runsOf(piece);
   const works = runs.map((run) => workOf({ list: run, shown: piece.shown }));
   let lastWork = -1;
   works.forEach((work, i) => { if (work.size) lastWork = i; });
@@ -2056,9 +2010,7 @@ export function assistantMessage(message, view, segment = 0) {
         usage: i === lastWork && segment === foot && !laterInTurn(message, view),
       });
     };
-    return run.map((part) => html`${partAt(part)}${
-      (places.byPart.get(part.id) || []).map((ask) => askCard(ask, view))
-    }`);
+    return run.map((part) => partAt(part));
   };
   return html`<article class="so-msg" data-ds-key="${key}" data-role="assistant" data-state="${message.state}">${
     runs.map(runHtml)

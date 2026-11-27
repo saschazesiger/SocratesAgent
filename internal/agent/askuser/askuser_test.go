@@ -622,6 +622,33 @@ func TestMCPChecksAndWithdrawsQuestions(t *testing.T) {
 	}
 }
 
+// ask_user's result names the asker's other open questions, and OpenNote
+// the open ones but the one answered; with none open they say nothing.
+func TestTheOpenQuestionsAreNamedToBeWithdrawn(t *testing.T) {
+	one := func(q string) json.RawMessage { return mustParse(t, `{"question":"`+q+`","blocks":"x"}`).JSON() }
+	f := &fakeQuestions{withdrawn: map[string]string{}, list: []Asked{
+		{ID: "ask_00000001", Payload: one("Which database?"), State: StateAnswered},
+		{ID: "ask_00000002", Payload: one("Deploy now?"), State: StateOpen},
+		{ID: "ask_00000003", Payload: one("Which port?"), State: StateOpen},
+	}}
+	text := Queued(context.Background(), f, "ask_00000003", nil)
+	if !strings.Contains(text, "Question ask_00000003 is now with the person") || !strings.Contains(text, "- ask_00000002: Deploy now?") ||
+		strings.Contains(text, "- ask_00000003") || strings.Contains(text, "ask_00000001") || !strings.Contains(text, WithdrawName) {
+		t.Fatalf("queued:\n%s", text)
+	}
+	if text := Queued(context.Background(), nil, "ask_00000003", nil); strings.Contains(text, "other open") {
+		t.Fatalf("queued without questions:\n%s", text)
+	}
+	note := OpenNote(f.list, "ask_00000002", "This answer")
+	if !strings.Contains(note, "- ask_00000003: Which port?") || strings.Contains(note, "ask_00000002") ||
+		!strings.Contains(note, "This answer may answer one of them") || !strings.Contains(note, WithdrawName) {
+		t.Fatalf("note:\n%s", note)
+	}
+	if note := OpenNote(f.list[:2], "ask_00000002", "This answer"); note != "" {
+		t.Fatalf("a note with nothing else open: %q", note)
+	}
+}
+
 // A call whose context the carrier ends answers nothing; the carrier reads a
 // call's id and a cancel's in order.
 func TestMCPCancel(t *testing.T) {
