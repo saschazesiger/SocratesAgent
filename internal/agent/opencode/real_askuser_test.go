@@ -82,8 +82,8 @@ func TestRealOpenCodeStartsTheAskUserServer(t *testing.T) {
 			t.Errorf("opencode did not send %s", want)
 		}
 	}
-	for _, want := range []string{`"protocolVersion":"2025-11-25"`, `"instructions":"When you need a decision`,
-		`"name":"ask_user"`, `"inputSchema"`} {
+	for _, want := range []string{`"protocolVersion":"2025-11-25"`, `"instructions":"Questions to the person go through`,
+		`"name":"ask_user"`, `"name":"check_questions"`, `"name":"withdraw_question"`, `"inputSchema"`} {
 		if !strings.Contains(string(out), want) {
 			t.Errorf("the server did not answer %s:\n%s", want, out)
 		}
@@ -130,8 +130,9 @@ func TestRealOpenCodeFolderMCPServers(t *testing.T) {
 	}
 }
 
-// A free model on a real opencode, inside a real host, asks with ask_user and
-// goes on from the answer. Free models do not always follow the prompt, so
+// A free model on a real opencode, inside a real host, asks with ask_user,
+// which returns at once, and goes on from the answer, which arrives as a
+// message. Free models do not always follow the prompt, so
 // this one says what happened when it fails.
 func TestRealOpenCodeModelAsksWithAskUser(t *testing.T) {
 	h := newHostRig(t)
@@ -146,7 +147,7 @@ func TestRealOpenCodeModelAsksWithAskUser(t *testing.T) {
 	cn := h.dial()
 	cn.until("ready", func(ev agent.Event) bool { return ev.Type == agent.TypeProcess && ev.State == agent.ProcessReady })
 	cn.send("m1", "Ask me with the "+agenthost.MCPAskTool+" tool which colour I like, as one single-choice question "+
-		"with the options red and blue. After I answer, reply with only the colour I chose, in capitals.")
+		"with the options red and blue, then end your turn. When my answer arrives, reply with only the colour I chose, in capitals.")
 	ask := cn.until("the ask or the turn's end", func(ev agent.Event) bool {
 		return ev.Type == agent.TypeAsk || ev.Type == agent.TypeTurnEnded
 	})
@@ -173,20 +174,20 @@ func TestRealOpenCodeModelAsksWithAskUser(t *testing.T) {
 	}
 	raw, _ := json.Marshal(answer)
 	t.Logf("asked %s; answering %s", ask.Payload, raw)
+	if first := cn.until("the asking turn's end", turnEnded); first.Outcome == agent.OutcomeLimited {
+		t.Skipf("the free model %s ran out of quota after asking (%s)", model, first.Text)
+	}
 	if err := cn.c.Send(agenthost.Command{Op: agenthost.OpAnswer, ClientID: "a1", AskID: ask.AskID, Answer: raw}); err != nil {
 		t.Fatal(err)
 	}
-	if ev := cn.until("the delivery", func(ev agent.Event) bool { return ev.Type == agent.TypeAskDelivered }); ev.Via != agent.ViaTool {
+	if ev := cn.until("the delivery", func(ev agent.Event) bool { return ev.Type == agent.TypeAskDelivered }); ev.Via != agent.ViaMessage {
 		t.Fatalf("delivered %+v\n%s", ev, journalDump(t, h))
 	}
-	end := cn.until("the turn's end", turnEnded)
+	end := cn.until("the answer's turn's end", turnEnded)
 	text := journalText(t, h)
-	if !strings.Contains(text, "tool done: "+`{"answers":{"`+q.ID+`":{"selected":["`) {
-		t.Fatalf("the tool did not return the answer:\n%s", text)
-	}
 	if end.Outcome == agent.OutcomeLimited {
-		// The answer reached the model's tool call; the free quota ran out on
-		// the request that would have read it.
+		// The answer reached the model; the free quota ran out on the
+		// request that would have read it.
 		t.Skipf("the free model %s ran out of quota after the answer (%s)", model, end.Text)
 	}
 	if end.Outcome != agent.OutcomeCompleted || !strings.Contains(text, "BLUE") {

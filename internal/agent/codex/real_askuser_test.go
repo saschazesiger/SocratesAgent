@@ -15,59 +15,37 @@ import (
 	"github.com/saschazesiger/SocratesAgent/internal/agent/askuser"
 )
 
-// The real codex offers ask_user to a classic model as a top-level tool, and
-// a call blocks until the answer, which the model reads back.
-func TestRealAskUserBlocksUntilTheAnswer(t *testing.T) {
-	lab := newRealLab(t)
-	r := newRecorder()
-	a := lab.start(lab.spec(lab.home("a", "", "gpt-5.5"), filepath.Join(lab.root, "state"), ""), r)
-	_, n := send(t, a, r, "ASK:")
-	ask := r.waitFor(t, n, "the ask", isType(agent.TypeAsk), 30*time.Second)
-	p := askuser.Decode(ask.Payload)
-	if p == nil || len(p.Questions) != 2 || ask.Via != "" || p.PartID == "" {
-		t.Fatalf("ask %+v\n%s", ask, dump(r.since(n)))
-	}
-	if log := lab.modelLog(t); !strings.Contains(log, `"name":"ask_user"`) ||
-		!strings.Contains(log, "When you need a decision, any information or an action from the person, call the ask_user tool") {
-		t.Fatal("the model was not offered ask_user, or not told to use it")
-	}
-	time.Sleep(time.Second)
-	for _, ev := range r.since(n) {
-		if ev.Type == agent.TypeTurnEnded {
-			t.Fatalf("the turn ended while the question waited\n%s", dump(r.since(n)))
-		}
-	}
-	if err := a.Answer(context.Background(), ask.AskID, json.RawMessage(`{"answers":{"db":{"selected":["sqlite"]},"name":{"other":"Atlas"}}}`)); err != nil {
-		t.Fatal(err)
-	}
-	end := r.turnEnd(t, n, 30*time.Second)
-	got := lastTurnText(r.projection())
-	if end.Outcome != agent.OutcomeCompleted || !strings.Contains(got, `done. tool said: {"answers":{"db":{"selected":["sqlite"]`) {
-		t.Fatalf("the model got %q\n%s", got, dump(r.since(n)))
-	}
-}
-
-// A code-mode model runs ask_user inside its script: the call is delivered
-// at once, the turn ends, and the answer is meant to come as the next
-// message.
-func TestRealAskUserOnACodeModeModelIsDeferred(t *testing.T) {
-	lab := newRealLab(t)
-	r := newRecorder()
-	a := lab.start(lab.spec(lab.home("a", "", "gpt-6-astra"), filepath.Join(lab.root, "state"), ""), r)
-	_, n := send(t, a, r, "ASK:")
-	ask := r.waitFor(t, n, "the ask", isType(agent.TypeAsk), 30*time.Second)
-	if ask.Via != agent.ViaMessage {
-		t.Fatalf("ask %+v", ask)
-	}
-	end := r.turnEnd(t, n, 30*time.Second)
-	if got := lastTurnText(r.projection()); end.Outcome != agent.OutcomeCompleted || !strings.Contains(got, "Questions delivered") {
-		t.Fatalf("the model got %q\n%s", got, dump(r.since(n)))
-	}
-	answer := agent.AnswerText(&agent.Ask{ID: ask.AskID, Payload: ask.Payload}, json.RawMessage(`{"answers":{"db":{"selected":["pg"]}}}`))
-	_, n = send(t, a, r, answer)
-	r.turnEnd(t, n, 30*time.Second)
-	if !strings.Contains(lab.modelLog(t), "Answer to your earlier question (Setup)") {
-		t.Fatal("the answer did not reach the model as a message")
+// The real codex offers ask_user, check_questions and withdraw_question to
+// a classic model as top-level tools and to a code-mode model inside its
+// script: a call is put at once, the turn ends, and the answer reaches the
+// model as the next message.
+func TestRealAskUserReturnsAtOnce(t *testing.T) {
+	for _, model := range []string{"gpt-5.5", "gpt-6-astra"} {
+		t.Run(model, func(t *testing.T) {
+			lab := newRealLab(t)
+			r := newRecorder()
+			a := lab.start(lab.spec(lab.home("a", "", model), filepath.Join(lab.root, "state"), ""), r)
+			_, n := send(t, a, r, "ASK:")
+			ask := r.waitFor(t, n, "the ask", isType(agent.TypeAsk), 30*time.Second)
+			p := askuser.Decode(ask.Payload)
+			if p == nil || len(p.Questions) != 1 || ask.Via != agent.ViaMessage || p.PartID == "" {
+				t.Fatalf("ask %+v\n%s", ask, dump(r.since(n)))
+			}
+			if log := lab.modelLog(t); !strings.Contains(log, "ask_user") || !strings.Contains(log, "check_questions") ||
+				!strings.Contains(log, "Questions to the person go through the ask_user tool") {
+				t.Fatal("the model was not offered the question tools, or not told to use them")
+			}
+			end := r.turnEnd(t, n, 30*time.Second)
+			if got := lastTurnText(r.projection()); end.Outcome != agent.OutcomeCompleted || !strings.Contains(got, "is now with the person") {
+				t.Fatalf("the model got %q\n%s", got, dump(r.since(n)))
+			}
+			answer := agent.AnswerText(&agent.Ask{ID: ask.AskID, Payload: ask.Payload}, json.RawMessage(`{"answers":{"q1":{"selected":["pg"]}}}`))
+			_, n = send(t, a, r, answer)
+			r.turnEnd(t, n, 30*time.Second)
+			if !strings.Contains(lab.modelLog(t), "The person answered your question "+ask.AskID) {
+				t.Fatal("the answer did not reach the model as a message")
+			}
+		})
 	}
 }
 

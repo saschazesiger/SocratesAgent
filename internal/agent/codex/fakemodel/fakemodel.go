@@ -9,7 +9,7 @@
 //	PATCH: <file>   an apply_patch that adds <file>
 //	SPAWN: <task>   a collaboration.spawn_agent call whose agent is told "SAY sub"
 //	ASK: [JSON]     an ask_user call (the dynamic tool) with these arguments, or
-//	                a call of two questions
+//	                a call of one question
 //	INPUT           a request_user_input call of one question (Plan mode)
 //	ASYNC           a request_user_input_async call of one question (code mode)
 //	CALL: <tool> [JSON]  a call of any tool with these arguments
@@ -293,10 +293,8 @@ func (t *turn) answer(text string) {
 	case strings.Contains(text, "ASK:"):
 		args := map[string]any{}
 		if json.Unmarshal([]byte(strings.TrimSpace(after(text, "ASK:"))), &args) != nil || len(args) == 0 {
-			args = map[string]any{"title": "Setup", "questions": []any{
-				map[string]any{"id": "db", "header": "Database", "question": "Which database?", "kind": "single",
-					"options": []any{map[string]any{"id": "pg", "label": "PostgreSQL"}, map[string]any{"id": "sqlite", "label": "SQLite"}}},
-				map[string]any{"id": "name", "question": "What is it called?", "kind": "text"}}}
+			args = map[string]any{"header": "Database", "question": "Which database?", "kind": "single", "blocks": "The schema",
+				"options": []any{map[string]any{"id": "pg", "label": "PostgreSQL"}, map[string]any{"id": "sqlite", "label": "SQLite"}}}
 		}
 		t.call("ask_user", args)
 	case strings.Contains(text, "INPUT"):
