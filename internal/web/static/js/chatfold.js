@@ -446,7 +446,7 @@ export function apply(chat, ev) {
         chat.asks.set(ev.ask_id, {
           id: ev.ask_id, turnId: ev.turn_id || '', payload: ev.payload || {}, at: ev.at, seq,
           answered: false, answer: null, byDevice: '', clientId: '', delivered: '', deliver: ev.via || '', closed: false,
-          closedBy: '',
+          closedBy: '', closedReason: '',
           rev: 0,
         });
         add(chat, { key: 'a:' + ev.ask_id, type: 'ask', id: ev.ask_id });
@@ -476,11 +476,13 @@ export function apply(chat, ev) {
     case 'ask.closed': {
       // The person wrote something else instead, or stopped the turn that
       // asked (code 'stopped'): nobody waits for the answer any more, though
-      // it may still come.
+      // it may still come. The agent withdrew it (code 'withdrawn', its
+      // reason in the text): it is no longer to be answered.
       const ask = chat.asks.get(ev.ask_id);
       if (ask && !ask.answered && !ask.closed) {
         ask.closed = true;
         ask.closedBy = ev.code || 'message';
+        ask.closedReason = ask.closedBy === 'withdrawn' ? String(ev.text || '') : '';
         touchAsk(chat, ev.ask_id);
       }
       break;
@@ -720,6 +722,15 @@ export function fill(chat, detail) {
   part.held = 0;
   touchPart(chat, part);
   return true;
+}
+
+/**
+ * askWithdrawn says whether the agent took a question back
+ * (withdraw_question) before anybody answered it: it is no longer to be
+ * answered, not even "anyway".
+ */
+export function askWithdrawn(ask) {
+  return !!ask && !ask.answered && !!ask.closed && ask.closedBy === 'withdrawn';
 }
 
 /** openAsks is every question nobody has answered or closed yet, oldest first. */

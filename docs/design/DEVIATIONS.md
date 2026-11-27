@@ -2280,7 +2280,10 @@ the host journals `ask.closed` with the message. A message sent while the call s
 nothing. A closed ask is not open (not `waiting`, not on the badge or Home), and still takes an
 answer, which goes as a message: nothing typed is refused. `waiting` also now means an open ask of
 the running turn, or any open ask while no turn runs: an ask of an earlier turn no longer hides a
-running one. The chat card shows a closed ask as "Not answered" with "Answer anyway".
+running one. The chat card shows a closed ask as "Not answered" with "Answer anyway" - except
+one the agent withdrew (`withdraw_question`, code `withdrawn`): its card says "The agent withdrew
+this question" with the agent's reason, the question dialog settles on the same words, and
+neither offers to answer it.
 
 **WP6 / §2.1 — host protocol 2: one op for a local tool.** OpenCode runs its MCP servers as its own
 children, so its `socrates mcp-ask` has to reach the host: the `ask` op journals an ask of the

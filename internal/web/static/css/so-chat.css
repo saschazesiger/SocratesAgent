@@ -1813,6 +1813,7 @@
 
 .so-plan__note,
 .so-ask__progress,
+.so-ask__blocks,
 .so-ask__done {
   margin: 0;
   overflow-wrap: anywhere;

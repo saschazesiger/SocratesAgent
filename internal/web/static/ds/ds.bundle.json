@@ -423,11 +423,11 @@
     },
     {
       "name": "arrowUp",
-      "reason": "static/js/chatparts.js:1098"
+      "reason": "static/js/chatparts.js:1120"
     },
     {
       "name": "arrowDown",
-      "reason": "static/js/chatview.js:267"
+      "reason": "static/js/chatview.js:269"
     },
     {
       "name": "chevronDown",
@@ -443,7 +443,7 @@
     },
     {
       "name": "chevronLeft",
-      "reason": "static/js/chatparts.js:1738"
+      "reason": "static/js/chatparts.js:1760"
     },
     {
       "name": "chevronFirst",
@@ -503,7 +503,7 @@
     },
     {
       "name": "compose",
-      "reason": "static/js/askdialog.js:788"
+      "reason": "static/js/askdialog.js:805"
     },
     {
       "name": "pencil",
@@ -523,7 +523,7 @@
     },
     {
       "name": "undo",
-      "reason": "static/js/chatparts.js:1059"
+      "reason": "static/js/askdialog.js:873"
     },
     {
       "name": "history",
@@ -599,7 +599,7 @@
     },
     {
       "name": "volume",
-      "reason": "static/js/chatparts.js:2042"
+      "reason": "static/js/chatparts.js:2067"
     },
     {
       "name": "mail",
@@ -623,7 +623,7 @@
     },
     {
       "name": "thumbUp",
-      "reason": "static/js/askdialog.js:808"
+      "reason": "static/js/askdialog.js:832"
     },
     {
       "name": "thumbDown",
@@ -663,7 +663,7 @@
     },
     {
       "name": "clock",
-      "reason": "static/js/askdialog.js:706"
+      "reason": "static/js/askdialog.js:723"
     },
     {
       "name": "ban",
@@ -683,7 +683,7 @@
     },
     {
       "name": "wifiOff",
-      "reason": "static/js/askdialog.js:664"
+      "reason": "static/js/askdialog.js:681"
     },
     {
       "name": "home",
@@ -723,7 +723,7 @@
     },
     {
       "name": "list",
-      "reason": "static/js/askdialog.js:748"
+      "reason": "static/js/askdialog.js:765"
     },
     {
       "name": "columns",
@@ -759,7 +759,7 @@
     },
     {
       "name": "user",
-      "reason": "static/js/chatparts.js:2134"
+      "reason": "static/js/chatparts.js:2159"
     },
     {
       "name": "users",
@@ -1547,8 +1547,8 @@
     "ds-btn__faces": "static/admin.html:42",
     "ds-card": "static/admin.html:104",
     "ds-card--elevated": "static/login.html:31",
-    "ds-card--interactive": "static/js/askdialog.js:806",
-    "ds-card__action": "static/js/chatparts.js:1584",
+    "ds-card--interactive": "static/js/askdialog.js:830",
+    "ds-card__action": "static/js/chatparts.js:1606",
     "ds-card__more": "static/js/admingithub.js:229",
     "ds-card__row": "static/admin.html:140",
     "ds-card__section": "static/admin.html:257",
@@ -1588,7 +1588,7 @@
     "ds-dialog": "static/index.html:202",
     "ds-dialog--bottom": "static/js/session.js:2697",
     "ds-dialog--contained": "static/index.html:202",
-    "ds-dialog--full": "static/js/askdialog.js:410",
+    "ds-dialog--full": "static/js/askdialog.js:413",
     "ds-dialog--full-narrow": "static/js/boards.js:392",
     "ds-dialog--lg": "static/js/admin.js:1337",
     "ds-dialog__actions": "static/index.html:282",
@@ -1601,8 +1601,8 @@
     "ds-dialog__title": "static/index.html:253",
     "ds-disclosure": "static/admin.html:301",
     "ds-disclosure__body": "static/admin.html:303",
-    "ds-divider": "static/js/chatparts.js:2109",
-    "ds-divider--label": "static/js/chatparts.js:2109",
+    "ds-divider": "static/js/chatparts.js:2134",
+    "ds-divider--label": "static/js/chatparts.js:2134",
     "ds-drawer": "static/admin.html:54",
     "ds-drawer__action": "static/js/session.js:1477",
     "ds-drawer__actions": "static/index.html:156",
@@ -1635,7 +1635,7 @@
     "ds-field__label": "static/admin.html:162",
     "ds-field__optional": "static/js/adminmcp.js:809",
     "ds-field__row": "static/js/admin.js:1305",
-    "ds-field__row--top": "static/js/askdialog.js:819",
+    "ds-field__row--top": "static/js/askdialog.js:843",
     "ds-filters": "static/costs.html:75",
     "ds-form": "static/admin.html:160",
     "ds-form-actions": "static/admin.html:376",
@@ -1697,15 +1697,15 @@
     "ds-parts__list": "static/js/admin.js:176",
     "ds-plain-list": "static/js/adminmcp.js:511",
     "ds-presence": "static/costs.html:141",
-    "ds-pressable": "static/js/askdialog.js:740",
+    "ds-pressable": "static/js/askdialog.js:757",
     "ds-pressable--inset": "static/js/boards.js:177",
     "ds-pressable--lg": "static/js/session.js:1316",
     "ds-progress": "static/admin.html:405",
-    "ds-progress--flat": "static/js/chatparts.js:1543",
+    "ds-progress--flat": "static/js/chatparts.js:1565",
     "ds-progress--indeterminate": "static/admin.html:405",
     "ds-progress__bar": "static/admin.html:407",
     "ds-progress__detail": "static/js/statusmodal.js:154",
-    "ds-progress__label": "static/js/chatparts.js:1543",
+    "ds-progress__label": "static/js/chatparts.js:1565",
     "ds-progress__track": "static/admin.html:406",
     "ds-prose": "static/js/mcpview.js:138",
     "ds-prose--dense": "static/js/mcpview.js:138",
@@ -1782,8 +1782,8 @@
   },
   "unknown": [
     "static/index.html:171 module DS.ds",
-    "static/js/chatparts.js:1446 icon background",
-    "static/js/chatparts.js:1593 icon stop",
+    "static/js/chatparts.js:1468 icon background",
+    "static/js/chatparts.js:1615 icon stop",
     "static/js/home.js:340 icon waiting"
   ]
 }

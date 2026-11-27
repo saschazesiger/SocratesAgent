@@ -958,6 +958,18 @@ export function askQuestions(ask) {
   return Array.isArray(payload.questions) ? payload.questions : [];
 }
 
+/**
+ * askBlocks is what an ask_user question says waits for its answer
+ * (REBUILD.md §5.1 `blocks`), one sentence, or ''.
+ */
+export function askBlocks(ask) {
+  const payload = ask && ask.payload && typeof ask.payload === 'object' ? ask.payload : {};
+  const first = askQuestions(ask)[0];
+  const said = typeof payload.blocks === 'string' ? payload.blocks
+    : first && typeof first.blocks === 'string' ? first.blocks : '';
+  return said.trim();
+}
+
 /** askCard is a question in the chat: its title, how far it is, and the first open question. */
 export function askCard(ask, view) {
   const payload = ask.payload || {};
@@ -978,8 +990,11 @@ export function askCard(ask, view) {
   if (ask.answered) state = view.mine(ask) ? 'answered' : 'elsewhere';
   else if (pending) state = outboxState(pending);
   else if (ask.closed) state = 'closed';
+  const withdrawn = state === 'closed' && ask.closedBy === 'withdrawn';
+  const blocks = askBlocks(ask);
   const head = html`<div class="ds-card__row"><h3 class="ds-card__title so-ask__title">${raw(icon('chat', 18))}<span>${title}</span></h3>${
     state === 'open' ? html`<span class="ds-status ds-tone-warning">${raw(icon('clock', 16))}<span>Waiting for you</span></span>`
+      : withdrawn ? html`<span class="ds-status">${raw(icon('undo', 16))}<span>Withdrawn</span></span>`
       : state === 'closed' ? html`<span class="ds-status">${raw(icon('chat', 16))}<span>Not answered</span></span>`
       : ANSWER_ON_ITS_WAY[state] ? onItsWayChip(state)
         : html`<span class="ds-status ds-tone-success">${raw(icon('check', 16))}<span>${state === 'elsewhere' ? 'Answered on another device' : 'Answered'}</span></span>`
@@ -990,13 +1005,20 @@ export function askCard(ask, view) {
     const first = questions.find((q) => !progress.answered.has(q.id)) || questions[0];
     body = html`<p class="so-ask__progress ds-meta">${questions.length > 1 ? progress.count + ' of ' + questions.length + ' answered' : 'One question'}</p>${
       first ? html`<p class="so-ask__question">${first.question || first.header || ''}</p>` : ''
-    }<div class="ds-form-actions"><button class="ds-btn ds-btn--filled so-ask__open" type="button" data-action="ask-open" data-ask="${ask.id}">Answer</button></div>`;
+    }${blocks ? html`<p class="so-ask__blocks ds-meta">${'Waiting for this: ' + blocks}</p>` : ''}<div class="ds-form-actions"><button class="ds-btn ds-btn--filled so-ask__open" type="button" data-action="ask-open" data-ask="${ask.id}">Answer</button></div>`;
   } else if (pending) {
     const summary = answerSummary({ ...ask, answer: pending.payload.answer });
     body = html`${summary ? html`<p class="so-ask__done ds-meta">${summary}</p>` : ''}${
       state === 'failed' ? refusedHtml(pending, html`<button class="ds-btn" type="button" data-action="ask-again" data-ask="${ask.id}" data-id="${pending.id}">Answer again</button>`)
         : state === 'local' ? html`<p class="so-ask__progress ds-meta">It goes out when the connection is back.</p>` : ''
     }`;
+  } else if (withdrawn) {
+    // The agent took the question back (withdraw_question): there is
+    // nothing to answer any more, not even anyway.
+    const first = questions[0];
+    body = html`${first ? html`<p class="so-ask__question">${first.question || first.header || ''}</p>` : ''}<p class="so-ask__done ds-meta">${
+      'The agent withdrew this question' + (ask.closedReason ? ': ' + ask.closedReason : '.')
+    }</p>`;
   } else if (state === 'closed') {
     // A message or a Stop moved the chat on; an answer can still be sent,
     // as a message.
@@ -1995,7 +2017,10 @@ export function assistantMessage(message, view, segment = 0) {
   const facts = segment === foot && !silent && !laterInTurn(message, view) ? turnFacts(message, view) : [];
   // A running answer ends in its live line - unless it waits for the
   // person, which its question card says.
-  const asking = [...view.chat.asks.values()].some((ask) => !ask.answered && ask.turnId && ask.turnId === message.turnId);
+  // An ask_user question (answered as a message, deliver 'message') holds
+  // nothing up: the turn goes on working after it.
+  const asking = [...view.chat.asks.values()].some((ask) => !ask.answered && !ask.closed && ask.deliver !== 'message'
+    && ask.turnId && ask.turnId === message.turnId);
   const working = segment === last && message.state === 'streaming' && !asking;
   if (!piece.said && !working && !facts.length) return '';
   const places = askPlaces(view.chat);

@@ -26,7 +26,7 @@ import { agentMarkHtml } from './logos.js';
 import * as harnesses from './harnesses.js';
 import * as accounts from './accounts.js';
 import { drawAccount, chooseAccount } from './accountpicker.js';
-import { newChat, apply, applyLive, busy, currentTodo, seenClient, compact, fill, touchPart } from './chatfold.js';
+import { newChat, apply, applyLive, busy, currentTodo, seenClient, compact, fill, touchPart, askWithdrawn } from './chatfold.js';
 import { ChatStream, POLL_EVERY } from './chatstream.js';
 import { loadChat, saveChat } from './chatcache.js';
 import {
@@ -254,6 +254,8 @@ export function mountChat(ctx) {
   let continuing = '';
   // The asks whose answer has been seen, whose draft has been let go.
   const settledAsks = new Set();
+  // The asks the agent withdrew whose draft has been let go.
+  const withdrawnAsks = new Set();
   // What the person asked for that did not happen - a model refused, a Stop
   // that did not reach the agent: said in the dock, beside the composer,
   // for a while (NOTE_MS), never over Send. { text, timer } or null.
@@ -549,6 +551,11 @@ export function mountChat(ctx) {
       if (ask.answered && !settledAsks.has(ask.id)) {
         settledAsks.add(ask.id);
         sentAnswers.delete(ask.id);
+        forgetAskDraft(ask.id);
+      }
+      // Nor does one the agent withdrew: it is not to be answered.
+      if (askWithdrawn(ask) && !withdrawnAsks.has(ask.id)) {
+        withdrawnAsks.add(ask.id);
         forgetAskDraft(ask.id);
       }
       // A question that names its call is drawn inside the answer, where

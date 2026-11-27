@@ -29,16 +29,18 @@
 // question to answer again.
 //
 // A plan (payload.kind "plan") is not a question: the plan card in the chat
-// answers it, and this dialog leaves it out.
+// answers it, and this dialog leaves it out. Nor is a question the agent
+// withdrew (withdraw_question): one withdrawn while it is shown says so, as
+// one answered on another device does, and is not answered any more.
 
 import { api, restoreFocus, toast, errorMessage, isOffline } from './api.js';
 import { html, raw, icon, morph, showOverlay, hideOverlay, M, faces } from './ui.js';
 import { markdown, chatImages } from './md.js';
 import { lightbox } from './lightbox.js';
 import { agentMarkHtml } from './logos.js';
-import { askQuestions } from './chatparts.js';
+import { askQuestions, askBlocks } from './chatparts.js';
 import { queueAnswer, answeredHere, onOutbox, pendingAnswer, chatOutbox } from './chatoutbox.js';
-import { newChat, apply, openAsks } from './chatfold.js';
+import { newChat, apply, openAsks, askWithdrawn } from './chatfold.js';
 import { ChatStream } from './chatstream.js';
 import { record, recPhase, explainNoKey } from './dictate.js';
 import { touchScreen, typeHere } from './keyboard.js';
@@ -249,6 +251,7 @@ function fromServer(a) {
     id: a.id, turnId: a.turn_id || '', payload: a.payload || {}, at: a.at || 0, seq: Number(a.seq) || 0,
     answered: !!a.answered, answer: a.answer === undefined ? null : a.answer, byDevice: a.by_device || '',
     clientId: a.client_id || '', delivered: a.delivered || '', deliver: a.deliver || '',
+    closed: !!a.closed, closedBy: a.closed_by || '', closedReason: a.closed_reason || '',
   };
 }
 
@@ -290,12 +293,12 @@ async function collect({ sessions, chatId = '', askId = '', view }) {
     if (live) {
       const asks = openAsks(live);
       const closed = session.id === chatId && askId ? live.asks.get(askId) : null;
-      if (closed && closed.closed && !closed.answered) asks.unshift(closed);
+      if (closed && closed.closed && !closed.answered && !askWithdrawn(closed)) asks.unshift(closed);
       return asks.map((ask) => ({ chatId: session.id, session, ask }));
     }
     try {
       const data = await api('/api/chats/' + encodeURIComponent(session.id), { attempts: 2, timeout: 12000 });
-      return (data.asks || []).map(fromServer).filter((ask) => !ask.answered)
+      return (data.asks || []).map(fromServer).filter((ask) => !ask.answered && !askWithdrawn(ask))
         .sort((a, b) => a.seq - b.seq)
         .map((ask) => ({ chatId: session.id, session: data.session || session, ask }));
     } catch (err) {
@@ -467,7 +470,14 @@ export function openAskDialog({ items, start = 0, watch, openChat, closed, more 
   function md(text) { return markdown(text, { images: chatImages((item() || {}).chatId) }); }
 
   function settledPhase(ask) {
+    if (!ask.answered && askWithdrawn(ask)) return 'withdrawn';
     return answeredHere(ask.clientId) ? 'answered' : 'elsewhere';
+  }
+
+  // settledNow says whether the question shown is no longer to be answered
+  // here: answered, here or on another device, or withdrawn by the agent.
+  function settledNow() {
+    return st.phase === 'answered' || st.phase === 'elsewhere' || st.phase === 'withdrawn';
   }
 
   function load() {
@@ -481,7 +491,7 @@ export function openAskDialog({ items, start = 0, watch, openChat, closed, more 
     const asked = one.ask.payload && typeof one.ask.payload === 'object' ? one.ask.payload : {};
     sectionsOf(asked).forEach((sec, i) => { if (sec.open) st.details.add('sec:' + i); });
     askQuestions(one.ask).forEach((q) => sectionsOf(q).forEach((sec, i) => { if (sec.open) st.details.add('qsec:' + q.id + ':' + i); }));
-    st.phase = one.ask.answered ? settledPhase(one.ask) : 'ask';
+    st.phase = one.ask.answered || askWithdrawn(one.ask) ? settledPhase(one.ask) : 'ask';
     // An answer from here is already on its way: the dialog says so. One
     // the server refused is said above the questions, to be sent again.
     const pending = one.ask.answered ? null : pendingAnswer(one.chatId, one.ask.id);
@@ -490,11 +500,18 @@ export function openAskDialog({ items, start = 0, watch, openChat, closed, more 
     st.unwatch = watch ? watch(one, (ask) => {
       if (st.closed || item() !== one) return;
       one.ask = ask;
-      if (ask.answered && (st.phase === 'ask' || st.phase === 'sent')) {
+      if (ask.answered && (st.phase === 'ask' || st.phase === 'sent' || st.phase === 'withdrawn')) {
         st.phase = settledPhase(ask);
         forgetDraft(ask.id);
         draw();
         if (st.phase === 'answered') moveOnSoon();
+      } else if (askWithdrawn(ask) && st.phase === 'ask') {
+        // The agent took the question back while it was being answered:
+        // the draft goes, and the dialog says why. An answer already on
+        // its way is left to land.
+        st.phase = 'withdrawn';
+        forgetDraft(ask.id);
+        draw();
       } else if (st.phase === 'elsewhere') {
         draw();
       }
@@ -678,7 +695,7 @@ export function openAskDialog({ items, start = 0, watch, openChat, closed, more 
     const last = step >= questions.length - 1;
     const session = one.session || {};
     const others = waitingAfter(one);
-    const settled = st.phase === 'answered' || st.phase === 'elsewhere';
+    const settled = settledNow();
     const conn = settled ? null : doubt();
     st.connSaid = conn ? conn.kind + ':' + conn.words + ':' + st.phase : '';
     shell.toggleAttribute('data-stale', !!conn);
@@ -774,7 +791,7 @@ export function openAskDialog({ items, start = 0, watch, openChat, closed, more 
     const hintWords = multi ? multiHint(q) : '';
     const problem = st.problem && st.problem.q === q.id ? st.problem.text : '';
     return html`<div class="so-q-step">${total > 1 ? html`<span>${'Question ' + (step + 1) + ' of ' + total}</span>` : ''}${q.header ? html`<span class="so-q-chip">${q.header}</span>` : ''}${q.required === true ? html`<span class="so-q-chip">Required</span>` : ''}</div>
-<h2 class="so-q-text" tabindex="-1">${q.question || q.header || ''}</h2>${q.context ? contextHtml('qctx:' + q.id, q.context, 'Why this matters') : ''}${
+<h2 class="so-q-text" tabindex="-1">${q.question || q.header || ''}</h2>${blocksHtml()}${q.context ? contextHtml('qctx:' + q.id, q.context, 'Why this matters') : ''}${
       sectionsHtml('qsec:' + q.id, sectionsOf(q))}${stepsHtml('qsteps:' + q.id, q.steps)}${
       hintWords ? html`<p class="so-q-detail">${hintWords}</p>` : ''
     }${options.length ? html`<div class="so-q-options" role="group" aria-label="${q.question || 'Options'}">${options.map((option, i) => optionHtml(q, option, i, multi, a))}</div>` : ''}${
@@ -787,6 +804,13 @@ export function openAskDialog({ items, start = 0, watch, openChat, closed, more 
       delegate ? html`<button class="ds-btn ds-btn--quiet so-ask-delegate" type="button" data-action="delegate" data-q="${q.id}" aria-pressed="${a.delegated ? 'true' : 'false'}">${raw(icon('sparkles', 16))}You decide</button>` : ''
     }${kind === 'number' && !(a.noting || a.note) ? html`<button class="ds-btn ds-btn--quiet so-ask-note" type="button" data-action="note" data-q="${q.id}">${raw(icon('compose', 16))}Add a note</button>` : ''
     }</div>`;
+  }
+
+  // blocksHtml is what waits for the answer, as the agent said it
+  // (askBlocks): one line under the question.
+  function blocksHtml() {
+    const blocks = askBlocks(item().ask);
+    return blocks ? html`<p class="so-q-detail so-q-blocks">${'Waiting for this: ' + blocks}</p>` : '';
   }
 
   function multiHint(q) {
@@ -845,6 +869,11 @@ export function openAskDialog({ items, start = 0, watch, openChat, closed, more 
   }
 
   function doneHtml(ask) {
+    if (st.phase === 'withdrawn') {
+      return html`<div class="ds-empty so-q-finished" role="status" data-ds-key="withdrawn"><span class="ds-empty__disc" aria-hidden="true">${raw(icon('undo', 24))}</span><p class="ds-empty__title">The agent withdrew this question</p><p class="ds-empty__text">${
+        ask.closedReason ? ask.closedReason : 'It no longer needs an answer.'
+      }</p></div>`;
+    }
     const elsewhere = st.phase === 'elsewhere';
     return html`<div class="ds-empty so-q-finished" role="status" data-ds-key="done"><span class="ds-empty__disc" aria-hidden="true">${raw(icon('check', 24))}</span><p class="ds-empty__title">${elsewhere ? 'Answered on another device' : 'Answered'}</p>${
       elsewhere ? html`<p class="ds-empty__text">${(ask.byDevice ? 'On ' + ask.byDevice + '. ' : '') + 'Nothing was sent from here.'}</p>` : ''
@@ -857,7 +886,7 @@ export function openAskDialog({ items, start = 0, watch, openChat, closed, more 
     // as Speak's and Status's do for OpenRouter's.
     const readTip = !st.speaking && ttsKey() === false ? 'Needs a Text-to-Speech key (Admin, Voice)' : reading;
     const read = html`<button class="ds-btn ds-btn--icon so-q-big so-q-read" type="button" data-action="read" aria-pressed="${st.speaking ? 'true' : 'false'}" aria-label="${reading}" data-tip="${readTip}">${raw(icon(st.speaking ? 'stop' : 'speak', 20))}</button>`;
-    if (st.phase === 'answered' || st.phase === 'elsewhere') {
+    if (settledNow()) {
       return html`<button class="ds-btn ds-btn--filled so-q-big so-q-send" type="button" data-action="next">${st.at < st.items.length - 1 ? 'Next question' : 'Close'}</button>`;
     }
     if (st.phase === 'sent') {
@@ -885,6 +914,8 @@ export function openAskDialog({ items, start = 0, watch, openChat, closed, more 
     if (step === 0) parts.push(payload.title || '', payload.context || '', ...sayableExtras(payload));
     if (q) {
       parts.push(q.question || q.header || '');
+      const blocks = askBlocks(one.ask);
+      if (blocks) parts.push('Waiting for this: ' + blocks);
       if (q.context) parts.push(q.context);
       parts.push(...sayableExtras(q));
       const options = kindOf(q) === 'confirm' ? [{ label: 'Yes' }, { label: 'No' }] : (q.options || []);
@@ -1160,7 +1191,7 @@ export function openAskDialog({ items, start = 0, watch, openChat, closed, more 
   if (connection) {
     st.connTimer = setInterval(() => {
       if (st.closed || !item()) return;
-      const conn = st.phase === 'answered' || st.phase === 'elsewhere' ? null : doubt();
+      const conn = settledNow() ? null : doubt();
       if ((conn ? conn.kind + ':' + conn.words + ':' + st.phase : '') !== st.connSaid) draw();
     }, CONN_EVERY);
   }
