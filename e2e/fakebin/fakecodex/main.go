@@ -905,6 +905,16 @@ func (c *tcx) script(text string) (string, map[string]any) {
 	case "/subagent":
 		c.subagent()
 		ok = c.say([]string{"spawned"}, 0)
+	case "/subask":
+		// A subagent thread calls ask_user; the turn says what it got.
+		child := newUUID()
+		args := json.RawMessage(`{"question":"Which database?","blocks":"The schema"}`)
+		r, err := c.s.ask(c.ctx, "item/tool/call", map[string]any{"threadId": child, "turnId": newUUID(),
+			"callId": c.id("call"), "namespace": nil, "tool": "ask_user", "arguments": args})
+		if err != nil {
+			return "interrupted", nil
+		}
+		ok = c.say([]string{"subagent tool said: " + string(r.Result)}, 0)
 	case "/plan":
 		id := c.t.id + "-plan"
 		c.started(map[string]any{"type": "plan", "id": id, "text": ""})
@@ -1014,9 +1024,8 @@ func (c *tcx) script(text string) (string, map[string]any) {
 		if _, js, found := strings.Cut(rest, " "); found && strings.TrimSpace(js) != "" {
 			args = json.RawMessage(strings.TrimSpace(js))
 		} else if name == "ask_user" {
-			args = json.RawMessage(`{"title":"Setup","questions":[{"id":"db","header":"Database","question":"Which database?",` +
-				`"kind":"single","options":[{"id":"pg","label":"PostgreSQL"},{"id":"sqlite","label":"SQLite"}]},` +
-				`{"id":"name","question":"What is it called?","kind":"text"}]}`)
+			args = json.RawMessage(`{"header":"Database","question":"Which database?","blocks":"The schema",` +
+				`"kind":"single","options":[{"id":"pg","label":"PostgreSQL"},{"id":"sqlite","label":"SQLite"}]}`)
 		}
 		var said []string
 		for i := 0; i < calls; i++ {

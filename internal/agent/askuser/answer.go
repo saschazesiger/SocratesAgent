@@ -328,9 +328,7 @@ func MessageText(id string, payload, raw json.RawMessage) string {
 		b.WriteString("\n")
 		b.WriteString(hint)
 	}
-	b.WriteString("\n\nThe answer as JSON:\n")
-	b.Write(a.JSON())
-	return b.String()
+	return strings.TrimRight(b.String(), "\n") + "\n\nThe answer as JSON:\n" + string(a.JSON())
 }
 
 // readable is one answer in words.

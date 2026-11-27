@@ -257,10 +257,8 @@ func (s *srv) mcpStatus() string {
 }
 
 // askUserCall is the call /askuser makes without arguments.
-const askUserCall = `{"title":"Setup","questions":[` +
-	`{"id":"db","header":"Database","question":"Which database?","kind":"single",` +
-	`"options":[{"id":"pg","label":"PostgreSQL","recommended":true},{"id":"sqlite","label":"SQLite"}]},` +
-	`{"id":"name","question":"What is it called?","kind":"text"}]}`
+const askUserCall = `{"header":"Database","question":"Which database?","kind":"single","blocks":"The schema",` +
+	`"options":[{"id":"pg","label":"PostgreSQL","recommended":true},{"id":"sqlite","label":"SQLite"}]}`
 
 // askUser is the model calling socrates_ask_user: a tool part that runs for
 // as long as the call does, and the call over MCP.

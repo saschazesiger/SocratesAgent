@@ -64,8 +64,8 @@ import (
 //	/mcptool NAME [JSON] the model calling another tool of the "socrates"
 //	                 server (list_chats, read_chat, send_to_chat); then
 //	                 "NAME returned: <result>" or "NAME failed: <result>"
-//	/askuser [JSON]  the model calling socrates_ask_user (a call of two
-//	                 questions, or the arguments given) on the "socrates"
+//	/askuser [JSON]  the model calling socrates_ask_user (a call of one
+//	                 question, or the arguments given) on the "socrates"
 //	                 server: a running tool part until the call returns, then
 //	                 "ask_user returned: <result>"; an abort withdraws the call
 //	                 with notifications/cancelled

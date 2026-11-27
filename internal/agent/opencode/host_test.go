@@ -243,9 +243,9 @@ func TestAHostStartsFreshWhenTheSessionIsGone(t *testing.T) {
 }
 
 // ask_user runs as the local MCP server `socrates mcp-ask` OpenCode starts
-// from its config: listed with its instructions and a day's timeout, a call
-// is an ask of the running turn whose answer goes back on the call, and the
-// model gets §5.2.
+// from its config, with check_questions and withdraw_question beside it: a
+// call puts an ask of the running turn and returns its id at once, and the
+// answer reaches the agent as a message.
 func TestAskUserIsALocalMCPServerThatReachesTheHost(t *testing.T) {
 	h := newHostRig(t)
 	h.launch("")
@@ -255,7 +255,8 @@ func TestAskUserIsALocalMCPServerThatReachesTheHost(t *testing.T) {
 	status := cn.until("the MCP status", func(ev agent.Event) bool {
 		return ev.Type == agent.TypePart && ev.State == agent.PartDone && strings.HasPrefix(ev.Text, "socrates:")
 	}).Text
-	if !strings.Contains(status, "socrates: connected timeout=86400000 tools="+agenthost.MCPAskTool+" instructions=When you need") {
+	tools := agenthost.MCPAskTool + ",socrates_check_questions,socrates_withdraw_question"
+	if !strings.Contains(status, "socrates: connected timeout=86400000 tools="+tools+" instructions=Questions to the person") {
 		t.Fatalf("status %q", status)
 	}
 	cn.until("its end", turnEnded)
@@ -263,56 +264,28 @@ func TestAskUserIsALocalMCPServerThatReachesTheHost(t *testing.T) {
 	cn.send("m2", "/askuser")
 	ask := cn.until("the ask", func(ev agent.Event) bool { return ev.Type == agent.TypeAsk })
 	p := askuser.Decode(ask.Payload)
-	if p == nil || len(p.Questions) != 2 || ask.TurnID == "" || ask.Via != "" {
+	if p == nil || len(p.Questions) != 1 || p.Blocks != "The schema" || ask.TurnID == "" || ask.Via != agent.ViaMessage {
 		t.Fatalf("ask %+v", ask)
 	}
-	answer := json.RawMessage(`{"answers":{"db":{"selected":["sqlite"]},"name":{"other":"Atlas"}},"general_note":"thanks"}`)
+	text := cn.until("the call's result", func(ev agent.Event) bool {
+		return ev.Type == agent.TypePart && ev.State == agent.PartDone && strings.HasPrefix(ev.Text, "ask_user returned:")
+	}).Text
+	if !strings.Contains(text, "Question "+ask.AskID+" is now with the person") {
+		t.Fatalf("the model got %q", text)
+	}
+	cn.until("its end", turnEnded)
+	answer := json.RawMessage(`{"answers":{"q1":{"selected":["sqlite"]}},"general_note":"thanks"}`)
 	if err := cn.c.Send(agenthost.Command{Op: agenthost.OpAnswer, ClientID: "a1", AskID: ask.AskID, Answer: answer, Device: "phone"}); err != nil {
 		t.Fatal(err)
 	}
 	delivered := cn.until("the delivery", func(ev agent.Event) bool { return ev.Type == agent.TypeAskDelivered })
-	if delivered.Via != agent.ViaTool {
+	if delivered.Via != agent.ViaMessage {
 		t.Fatalf("delivered %+v\n%s", delivered, journalDump(t, h))
 	}
-	text := cn.until("the answer", func(ev agent.Event) bool {
-		return ev.Type == agent.TypePart && ev.State == agent.PartDone && strings.HasPrefix(ev.Text, "ask_user returned:")
-	}).Text
-	if !strings.Contains(text, `{"answers":{"db":{"selected":["sqlite"]`) || !strings.Contains(text, `"general_note":"thanks"`) {
-		t.Fatalf("the model got %q", text)
-	}
-	if ev := cn.until("its end", turnEnded); ev.Outcome != agent.OutcomeCompleted {
-		t.Fatalf("turn %+v", ev)
-	}
-}
-
-// An abort withdraws the call: the mcp-ask process lets go of its question,
-// the ask stays open, and its answer reaches the agent as a message.
-func TestAnAbortedAskUserCallIsAnsweredAsAMessage(t *testing.T) {
-	h := newHostRig(t)
-	h.launch("")
-	cn := h.dial()
-	cn.send("m1", "/askuser")
-	ask := cn.until("the ask", func(ev agent.Event) bool { return ev.Type == agent.TypeAsk })
-	if err := cn.c.Send(agenthost.Command{Op: agenthost.OpInterrupt, ClientID: "i1"}); err != nil {
-		t.Fatal(err)
-	}
-	if ev := cn.until("the turn's end", turnEnded); ev.Outcome != agent.OutcomeInterrupted {
-		t.Fatalf("turn %+v", ev)
-	}
-	if err := cn.c.Send(agenthost.Command{Op: agenthost.OpAnswer, ClientID: "a1", AskID: ask.AskID,
-		Answer: json.RawMessage(`{"answers":{"db":{"selected":["pg"]}}}`)}); err != nil {
-		t.Fatal(err)
-	}
-	if ev := cn.until("the delivery", func(ev agent.Event) bool { return ev.Type == agent.TypeAskDelivered }); ev.Via != agent.ViaMessage {
-		t.Fatalf("delivered %+v", ev)
-	}
-	cn.until("the notice", func(ev agent.Event) bool {
-		return ev.Type == agent.TypeNotice && ev.Code == agent.NoticeAnswerAsMessage
-	})
 	reply := cn.until("the answer's turn", func(ev agent.Event) bool {
-		return ev.Type == agent.TypePart && ev.State == agent.PartDone && strings.HasPrefix(ev.Text, "you said: Answer to your earlier question (Setup)")
+		return ev.Type == agent.TypePart && ev.State == agent.PartDone && strings.HasPrefix(ev.Text, "you said: The person answered your question "+ask.AskID)
 	})
-	if !strings.Contains(reply.Text, "PostgreSQL [pg]") {
+	if !strings.Contains(reply.Text, "SQLite [sqlite]") || !strings.Contains(reply.Text, "Note from the person: thanks") {
 		t.Fatalf("the agent got %q", reply.Text)
 	}
 }

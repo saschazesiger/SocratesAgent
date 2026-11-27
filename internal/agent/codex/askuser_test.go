@@ -14,10 +14,11 @@ import (
 	"github.com/saschazesiger/SocratesAgent/internal/agent/chattools"
 )
 
-// ask_user is a dynamic tool of every thread: a call is asked as the ask of
-// its turn, drawn with its tool part, and the model gets §5.2 back.
-func TestAskUserIsADynamicToolThatWaits(t *testing.T) {
-	if !strings.Contains(string(askToolSpec()), `"name":"ask_user"`) || !strings.Contains(string(askToolSpec()), `"maxItems":20`) {
+// ask_user is a dynamic tool of every thread: a call is put as an ask of
+// its turn, drawn with its tool part, whose answer goes as a message; the
+// call returns the question's id at once.
+func TestAskUserIsADynamicToolThatReturnsAtOnce(t *testing.T) {
+	if !strings.Contains(string(askToolSpec()), `"name":"ask_user"`) || !strings.Contains(string(askToolSpec()), `"required":["question","blocks"]`) {
 		t.Fatalf("spec %s", askToolSpec())
 	}
 	lab := newFakeLab(t)
@@ -26,26 +27,15 @@ func TestAskUserIsADynamicToolThatWaits(t *testing.T) {
 	_, n := send(t, a, r, "/tool ask_user")
 	ask := r.waitFor(t, n, "the ask", isType(agent.TypeAsk), wait)
 	p := askuser.Decode(ask.Payload)
-	if p == nil || len(p.Questions) != 2 || ask.Via != "" || ask.TurnID == "" || p.PartID == "" {
+	if p == nil || len(p.Questions) != 1 || p.Blocks != "The schema" || ask.Via != agent.ViaMessage || ask.TurnID == "" || p.PartID == "" {
 		t.Fatalf("ask %+v", ask)
 	}
-	var tool *agent.Part
-	for _, pt := range partsOf(r.projection()) {
-		if pt.ID == p.PartID {
-			tool = pt
-		}
-	}
-	if tool == nil || tool.Kind != agent.PartTool || tool.State != agent.PartRunning {
-		t.Fatalf("the ask's part %+v", tool)
-	}
-	if err := a.Answer(context.Background(), ask.AskID, json.RawMessage(`{"answers":{"db":{"selected":["pg"]},"name":{"delegated":true}}}`)); err != nil {
-		t.Fatal(err)
-	}
 	r.turnEnd(t, n, wait)
-	got := lastTurnText(r.projection())
-	if !strings.HasPrefix(got, `tool said: {"answers":{"db":{"selected":["pg"]`) || !strings.Contains(got, `"delegated":true`) ||
-		!strings.Contains(got, "decide them yourself") {
+	if got := lastTurnText(r.projection()); got != "tool said: "+askuser.QueuedText(ask.AskID, p) {
 		t.Fatalf("the model got %q", got)
+	}
+	if err := a.Answer(context.Background(), ask.AskID, json.RawMessage(`{}`)); !errors.Is(err, agent.ErrAskGone) {
+		t.Fatalf("an ask answered through the tool: %v", err)
 	}
 
 	// A call the schema does not allow goes back to the model.
@@ -59,6 +49,56 @@ func TestAskUserIsADynamicToolThatWaits(t *testing.T) {
 			t.Fatal("a bad call was asked")
 		}
 	}
+
+	// A subagent thread's call asks nothing.
+	_, n = send(t, a, r, "/subask")
+	r.turnEnd(t, n, wait)
+	if got := lastTurnText(r.projection()); !strings.Contains(got, "only the main agent can ask the person") {
+		t.Fatalf("a subagent's call: %q", got)
+	}
+	for _, ev := range r.since(n) {
+		if ev.Type == agent.TypeAsk {
+			t.Fatal("a subagent's call was asked")
+		}
+	}
+}
+
+// check_questions and withdraw_question are dynamic tools that reach the
+// host's questions.
+func TestTheQuestionToolsAreDynamicTools(t *testing.T) {
+	lab := newFakeLab(t)
+	r := newRecorder()
+	spec := lab.spec("a", "")
+	q := &fakeQuestions{}
+	spec.Questions = q
+	a := lab.start(spec, r)
+	_, n := send(t, a, r, `/tool withdraw_question {"question_id":"ask_00000001","reason":"found it"}`)
+	r.turnEnd(t, n, wait)
+	if got := lastTurnText(r.projection()); !strings.Contains(got, "is withdrawn") || q.withdrawn != "ask_00000001:found it" {
+		t.Fatalf("withdraw: %q %q", got, q.withdrawn)
+	}
+	_, n = send(t, a, r, "/tool check_questions")
+	r.turnEnd(t, n, wait)
+	if got := lastTurnText(r.projection()); !strings.Contains(got, "ask_00000001 [withdrawn] Which database?") {
+		t.Fatalf("check: %q", got)
+	}
+}
+
+// fakeQuestions is a host's questions with one question.
+type fakeQuestions struct{ withdrawn string }
+
+func (f *fakeQuestions) List(context.Context) ([]askuser.Asked, error) {
+	p, _ := askuser.Parse(json.RawMessage(`{"question":"Which database?","blocks":"x"}`))
+	state := askuser.StateOpen
+	if f.withdrawn != "" {
+		state = askuser.StateWithdrawn
+	}
+	return []askuser.Asked{{ID: "ask_00000001", Payload: p.JSON(), State: state}}, nil
+}
+
+func (f *fakeQuestions) Withdraw(_ context.Context, id, reason string) (bool, error) {
+	f.withdrawn = id + ":" + reason
+	return true, nil
 }
 
 // A chat's thread has the chat tools beside ask_user and both guidances,
@@ -83,43 +123,27 @@ func TestAChatsThreadHasTheChatToolsBesideAskUser(t *testing.T) {
 	}
 }
 
-// A code-mode model would poll a blocking tool for as long as the person
-// takes, so there the call is delivered at once and the answer starts the
-// next turn.
-func TestAskUserOnACodeModeModelIsAnsweredAsTheNextMessage(t *testing.T) {
+// Asked again in the same turn, a question is not asked twice: the model
+// is told it is already with the person.
+func TestTheSameQuestionTwiceInATurnIsAskedOnce(t *testing.T) {
 	lab := newFakeLab(t)
 	r := newRecorder()
 	spec := lab.spec("a", "")
 	spec.Model = "gpt-6-astra"
 	a := lab.start(spec, r)
-	_, n := send(t, a, r, "/tool ask_user")
-	ask := r.waitFor(t, n, "the ask", isType(agent.TypeAsk), wait)
-	if ask.Via != agent.ViaMessage {
-		t.Fatalf("ask %+v", ask)
-	}
+	_, n := send(t, a, r, "/tooltwice ask_user")
 	r.turnEnd(t, n, wait)
-	if got := lastTurnText(r.projection()); got != "tool said: "+DeferredText {
-		t.Fatalf("the model got %q", got)
-	}
-	if err := a.Answer(context.Background(), ask.AskID, json.RawMessage(`{}`)); !errors.Is(err, agent.ErrAskGone) {
-		t.Fatalf("a deferred ask answered through the tool: %v", err)
-	}
-
-	// Asked again in the same turn, the questions are not asked twice: the
-	// model is told they are already with the person.
-	_, n = send(t, a, r, "/tooltwice ask_user")
-	r.turnEnd(t, n, wait)
-	if got := lastTurnText(r.projection()); got != "tool said: "+DeferredText+" "+AskedText {
-		t.Fatalf("the model got %q", got)
-	}
-	asks := 0
+	var asks []agent.Event
 	for _, ev := range r.since(n) {
 		if ev.Type == agent.TypeAsk {
-			asks++
+			asks = append(asks, ev)
 		}
 	}
-	if asks != 1 {
-		t.Fatalf("%d asks for the same questions in one turn", asks)
+	if len(asks) != 1 {
+		t.Fatalf("%d asks for the same question in one turn", len(asks))
+	}
+	if got := lastTurnText(r.projection()); got != "tool said: "+askuser.QueuedText(asks[0].AskID, askuser.Decode(asks[0].Payload))+" "+AskedText(asks[0].AskID) {
+		t.Fatalf("the model got %q", got)
 	}
 }
 

@@ -759,7 +759,7 @@ func TestChatAnswerAfterTheCallIsGoneBecomesAMessage(t *testing.T) {
 	if a := p.Ask(ask); a.Delivered != agent.ViaMessage {
 		t.Fatalf("delivered %q", a.Delivered)
 	}
-	if got := lastText(events); !strings.Contains(got, "Answer to your earlier question (Fake question):") {
+	if got := lastText(events); !strings.Contains(got, "The person answered your question "+ask+" (Fake question):") {
 		t.Fatalf("the agent got %q", got)
 	}
 }

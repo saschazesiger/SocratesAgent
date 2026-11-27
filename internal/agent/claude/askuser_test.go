@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 
@@ -67,7 +66,8 @@ func TestAskUserIsAnInProcessServerOfEveryChat(t *testing.T) {
 			t.Errorf("the MCP setup lacks %q:\n%s", want, mcp)
 		}
 	}
-	if !strings.Contains(argv, "--append-system-prompt When you need a decision, any information or an action from the person, call the "+AskTool) {
+	if !strings.Contains(argv, "--append-system-prompt Questions to the person go through the "+AskTool+" tool. It never waits") ||
+		!strings.Contains(argv, "select:"+AskTool+","+chatsPrefix+"check_questions,"+chatsPrefix+"withdraw_question") {
 		t.Errorf("the system prompt does not point at ask_user:\n%s", argv)
 	}
 }
@@ -115,42 +115,107 @@ func TestAChatGetsTheChatToolsBesideAskUser(t *testing.T) {
 	}
 }
 
-// A call becomes an ask of the running turn, named after its tool call; it
-// blocks until the answer, and the model gets §5.2 back.
-func TestAskUserWaitsForTheAnswer(t *testing.T) {
+// A call becomes an ask of the running turn, drawn at its tool call, whose
+// answer goes as a message; the call returns at once with the question's id
+// and the turn goes on.
+func TestAskUserReturnsAtOnce(t *testing.T) {
 	e := newEnv(t)
 	a, r := start(t, e, "")
 	send(t, a, "m1", "/askuser")
 	ask := askEvent(t, r, 1)
 	p := askuser.Decode(ask.Payload)
-	if p == nil || p.Title != "Setup" || len(p.Questions) != 2 || !p.Questions[1].AllowOther || p.Questions[1].Header == "" {
+	if p == nil || len(p.Questions) != 1 || p.Questions[0].Header != "Database" || p.Blocks != "The schema" {
 		t.Fatalf("payload %s", ask.Payload)
 	}
-	if !strings.HasPrefix(ask.AskID, "ask_toolu_fake_") || p.PartID != strings.TrimPrefix(ask.AskID, "ask_") || ask.TurnID == "" {
+	if !strings.HasPrefix(ask.AskID, "ask_") || len(ask.AskID) != len("ask_")+8 || !strings.HasPrefix(p.PartID, "toolu_fake_") ||
+		ask.TurnID == "" || ask.Via != agent.ViaMessage {
 		t.Fatalf("ask %+v", ask)
 	}
-	var running bool
-	r.view(func(pr *agent.Projection) { running = pr.Turn != nil && pr.Turn.ID == ask.TurnID })
-	if !running {
-		t.Fatal("the ask is not of the running turn")
-	}
-	time.Sleep(100 * time.Millisecond)
-	if count(r.waitFor(t, "", func([]agent.Event) bool { return true }), agent.TypeTurnEnded) != 0 {
-		t.Fatal("the turn ended before the answer")
-	}
-	answer := json.RawMessage(`{"answers":{"db":{"selected":["sqlite"],"note":"one file"},"name":{"other":"Atlas"}},"general_note":null,"follow_up":null}`)
-	if err := a.Answer(context.Background(), ask.AskID, answer); err != nil {
-		t.Fatal(err)
-	}
 	r.turnsEnded(t, 1)
-	text := lastText(t, r)
-	if !strings.Contains(text, `ask_user returned: {"answers":{"db":{"selected":["sqlite"],"other":null,"note":"one file"`) ||
-		!strings.Contains(text, `"name":{"selected":[],"other":"Atlas"`) {
+	if text := lastText(t, r); !strings.Contains(text, "ask_user returned: Question "+ask.AskID+" is now with the person") {
 		t.Fatalf("the model got %q", text)
 	}
-	if err := a.Answer(context.Background(), ask.AskID, answer); !errors.Is(err, agent.ErrAskGone) {
-		t.Fatalf("a second answer: %v", err)
+	var open int
+	r.view(func(pr *agent.Projection) { open = len(pr.OpenAsks()) })
+	if open != 1 {
+		t.Fatalf("%d open asks after the turn", open)
 	}
+	if err := a.Answer(context.Background(), ask.AskID, json.RawMessage(`{}`)); !errors.Is(err, agent.ErrAskGone) {
+		t.Fatalf("an answer through the tool: %v", err)
+	}
+}
+
+// A subagent's call asks nothing: its answer would reach only the main
+// agent, so the subagent is told to hand the question back.
+func TestASubagentCannotAsk(t *testing.T) {
+	e := newEnv(t)
+	a, r := start(t, e, "")
+	send(t, a, "m1", "/subask")
+	evs := r.turnsEnded(t, 1)
+	if count(evs, agent.TypeAsk) != 0 {
+		t.Fatal("a subagent's call was asked")
+	}
+	var said bool
+	for _, ev := range evs {
+		said = said || strings.Contains(ev.Text+string(ev.Content), "Nothing was asked: only the main agent can ask the person")
+	}
+	if !said {
+		t.Fatal("the subagent was not told why")
+	}
+}
+
+// check_questions and withdraw_question reach the host's questions.
+func TestTheQuestionToolsReachTheHost(t *testing.T) {
+	e := newEnv(t)
+	spec := e.spec("")
+	q := &fakeQuestions{}
+	spec.Questions = q
+	a := New(Options{})
+	r := newRec()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := a.Start(ctx, spec, r); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = a.Stop() })
+	send(t, a, "m1", "/mcp")
+	send(t, a, "m2", `/mcptool withdraw_question {"question_id":"ask_00000001","reason":"found it"}`)
+	send(t, a, "m3", "/mcptool check_questions")
+	r.turnsEnded(t, 3)
+	var texts []string
+	r.view(func(p *agent.Projection) {
+		for _, m := range p.Messages {
+			for _, part := range partsOf(m, agent.PartText) {
+				texts = append(texts, part.Text)
+			}
+		}
+	})
+	if !strings.Contains(texts[0], "tools: "+AskTool+","+chatsPrefix+"check_questions,"+chatsPrefix+"withdraw_question") {
+		t.Errorf("tools:\n%s", texts[0])
+	}
+	if q.withdrawn != "ask_00000001:found it" || !strings.Contains(texts[1], "is withdrawn") {
+		t.Errorf("withdraw: %q, %s", q.withdrawn, texts[1])
+	}
+	if !strings.Contains(texts[2], "ask_00000001 [withdrawn]") {
+		t.Errorf("check: %s", texts[2])
+	}
+}
+
+// fakeQuestions is a host's questions with one open question.
+type fakeQuestions struct{ withdrawn string }
+
+func (f *fakeQuestions) List(context.Context) ([]askuser.Asked, error) {
+	p, _ := askuser.Parse(json.RawMessage(`{"question":"Which database?","blocks":"x"}`))
+	state := askuser.StateOpen
+	if f.withdrawn != "" {
+		state = askuser.StateWithdrawn
+	}
+	return []askuser.Asked{{ID: "ask_00000001", Payload: p.JSON(), State: state}}, nil
+}
+
+func (f *fakeQuestions) Withdraw(_ context.Context, id, reason string) (bool, error) {
+	f.withdrawn = id + ":" + reason
+	return true, nil
 }
 
 // A call the schema does not allow is the model's to fix: nothing is asked.
@@ -166,37 +231,6 @@ func TestABadAskUserCallGoesBackToTheModel(t *testing.T) {
 		!strings.Contains(text, `kind "single" needs options`) {
 		t.Fatalf("the model got %q", text)
 	}
-}
-
-// An interrupt withdraws the call: the ask stays open, and an answer to it
-// is reported gone from the moment the CLI took the interrupt, before the
-// call's own cancel has come, so the host sends it as a message.
-func TestAnInterruptedAskUserCallIsGone(t *testing.T) {
-	e := newEnv(t)
-	a, r := start(t, e, "")
-	send(t, a, "m1", "/askuser")
-	ask := askEvent(t, r, 1)
-	if err := a.Interrupt(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	if err := a.Answer(context.Background(), ask.AskID, json.RawMessage(`{"answers":{}}`)); !errors.Is(err, agent.ErrAskGone) {
-		t.Fatalf("the answer right after the interrupt: %v", err)
-	}
-	evs := r.turnsEnded(t, 1)
-	if end := evs[len(evs)-1]; end.Type == agent.TypeTurnEnded && end.Outcome != agent.OutcomeInterrupted {
-		t.Fatalf("outcome %q", end.Outcome)
-	}
-	waitHandled(t, a)
-	if err := a.Answer(context.Background(), ask.AskID, json.RawMessage(`{"answers":{}}`)); !errors.Is(err, agent.ErrAskGone) {
-		t.Fatalf("the answer after the interrupt: %v", err)
-	}
-	var open bool
-	r.view(func(p *agent.Projection) { open = len(p.OpenAsks()) == 1 })
-	if !open {
-		t.Fatal("the ask was closed by the interrupt")
-	}
-	send(t, a, "m2", "again")
-	r.turnsEnded(t, 2)
 }
 
 // A call the CLI withdraws the moment it made it (notifications/cancelled
@@ -218,24 +252,6 @@ func TestACallWithdrawnAtOnceEndsItsHandler(t *testing.T) {
 		if err := a.Answer(context.Background(), id, json.RawMessage(`{"answers":{}}`)); !errors.Is(err, agent.ErrAskGone) {
 			t.Fatalf("the answer to a withdrawn call: %v", err)
 		}
-	}
-}
-
-// A CLI that dies ends every handler waiting on it, and its asks are gone.
-func TestACLIThatExitsEndsItsWaitingCalls(t *testing.T) {
-	e := newEnv(t)
-	a, r := start(t, e, "")
-	send(t, a, "m1", "/askuser")
-	ask := askEvent(t, r, 1)
-	_ = syscall.Kill(a.PID(), syscall.SIGKILL)
-	select {
-	case <-r.exited:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the exit was not reported")
-	}
-	waitHandled(t, a)
-	if err := a.Answer(context.Background(), ask.AskID, json.RawMessage(`{"answers":{}}`)); !errors.Is(err, agent.ErrAskGone) {
-		t.Fatalf("the answer after the exit: %v", err)
 	}
 }
 

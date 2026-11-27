@@ -65,10 +65,12 @@
 //	                 started for the call as the CLI starts it, and says
 //	                 "TOOL returned: <result>" or "TOOL failed: <result>";
 //	                 several calls may follow, one per line
-//	/askuser [JSON]  calls the socrates server's ask_user (a call of two
-//	                 questions, or the JSON given) through mcp_message, waits
+//	/askuser [JSON]  calls the socrates server's ask_user (a call of one
+//	                 question, or the JSON given) through mcp_message, waits
 //	                 for the result and says it; an interrupt withdraws the
 //	                 call (notifications/cancelled, then control_cancel_request)
+//	/subask          a foreground subagent that calls ask_user, and says what
+//	                 the call returned
 //	/toolask [JSON]  a Bash call, then /askuser: a question asked after work
 //	/asktool [JSON]  /askuser, then a Bash call and a line: work after a
 //	                 question
@@ -743,6 +745,12 @@ func (t *turnRun) script() {
 		t.say(text)
 	case "/askuser":
 		t.askUser(rest)
+	case "/subask":
+		id, agentID := t.agentCall(false)
+		t.askUserIn(askCall, id)
+		t.system(map[string]any{"subtype": "task_notification", "task_id": agentID, "tool_use_id": id, "status": "completed", "summary": "asked"})
+		t.setBG(agentID, "")
+		t.result(id, "[Subagent hand-back] asked", map[string]any{"status": "completed", "agentId": agentID}, false, "")
 	case "/mcptool":
 		t.mcpTool(rest)
 	case "/mcpcall":
@@ -1433,30 +1441,38 @@ func (t *turnRun) plan() {
 }
 
 // askCall is the ask_user call /askuser makes without arguments.
-const askCall = `{"title":"Setup","questions":[` +
-	`{"id":"db","header":"Database","question":"Which database?","kind":"single",` +
-	`"options":[{"id":"pg","label":"PostgreSQL","recommended":true},{"id":"sqlite","label":"SQLite"}]},` +
-	`{"id":"name","question":"What is it called?","kind":"text"}]}`
+const askCall = `{"header":"Database","question":"Which database?","kind":"single","blocks":"The schema",` +
+	`"options":[{"id":"pg","label":"PostgreSQL","recommended":true},{"id":"sqlite","label":"SQLite"}]}`
 
 // askUser is the model calling the socrates server's ask_user: the tool_use,
 // then the call over mcp_message, which blocks until the host answers it.
 func (t *turnRun) askUser(arg string) {
+	if strings.TrimSpace(arg) == "" {
+		arg = askCall
+	}
+	t.askUserIn(arg, "")
+}
+
+// askUserIn is an ask_user call with the arguments arg, of the main agent
+// (parent "") or of the subagent whose Agent call parent is.
+func (t *turnRun) askUserIn(arg, parent string) {
 	f := t.f
 	t.closeText()
 	if t.apiMsg == "" {
 		t.msgStart()
 	}
-	input := json.RawMessage(askCall)
-	if strings.TrimSpace(arg) != "" {
-		input = json.RawMessage(arg)
-	}
+	input := json.RawMessage(arg)
 	id := "toolu_fake_" + randHex(10)
 	name := "mcp__socrates__ask_user"
-	f.out(t.se(map[string]any{"type": "content_block_start", "index": t.index,
-		"content_block": map[string]any{"type": "tool_use", "id": id, "name": name, "input": map[string]any{}}}))
-	t.assistant(map[string]any{"type": "tool_use", "id": id, "name": name, "input": input}, "")
-	f.out(t.se(map[string]any{"type": "content_block_stop", "index": t.index}))
-	t.index++
+	if parent == "" {
+		f.out(t.se(map[string]any{"type": "content_block_start", "index": t.index,
+			"content_block": map[string]any{"type": "tool_use", "id": id, "name": name, "input": map[string]any{}}}))
+	}
+	t.assistant(map[string]any{"type": "tool_use", "id": id, "name": name, "input": input}, parent)
+	if parent == "" {
+		f.out(t.se(map[string]any{"type": "content_block_stop", "index": t.index}))
+		t.index++
+	}
 	raw, ok := f.mcpRequest(t.ctx, "socrates", "tools/call", map[string]any{"name": "ask_user", "arguments": input,
 		"_meta": map[string]any{"claudecode/toolUseId": id, "progressToken": 7}}, false)
 	if !ok {
@@ -1483,7 +1499,11 @@ func (t *turnRun) askUser(arg string) {
 	if resp.Error != nil {
 		text, resp.Result.IsError = resp.Error.Message, true
 	}
-	t.result(id, text, nil, resp.Result.IsError, "")
+	t.result(id, text, nil, resp.Result.IsError, parent)
+	if parent != "" {
+		t.assistant(map[string]any{"type": "text", "text": "ask_user said: " + text}, parent)
+		return
+	}
 	if resp.Result.IsError {
 		t.say("ask_user failed: " + text)
 		return

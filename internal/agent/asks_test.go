@@ -1,6 +1,12 @@
 package agent
 
-import "testing"
+import (
+	"encoding/json"
+	"strings"
+	"testing"
+
+	"github.com/saschazesiger/SocratesAgent/internal/agent/askuser"
+)
 
 // A question outranks a running turn only when that turn asked it: an ask
 // left by an interrupted turn does not make the agent's next turn look
@@ -33,9 +39,10 @@ func TestAQuestionWaitsOnlyWhileItsTurnHoldsTheAgent(t *testing.T) {
 	}
 }
 
-// What a message from the person leaves behind: questions answered as the
-// next message by design and those of ended turns, not one a running call
-// waits on, and not one the adapter tied to no turn.
+// What a message from the person leaves behind: the questions of ended
+// turns, not one a running call waits on, not one the adapter tied to no
+// turn, and never an ask_user question (answered as a message by design),
+// which stays open until it is answered or withdrawn.
 func TestUnwaitedIsWhatNoCallWaitsOn(t *testing.T) {
 	p := Fold([]Event{
 		{Seq: 1, Type: TypeTurnStarted, TurnID: "t1"},
@@ -45,13 +52,52 @@ func TestUnwaitedIsWhatNoCallWaitsOn(t *testing.T) {
 		{Seq: 5, Type: TypeAsk, AskID: "old", TurnID: "t0"},
 		{Seq: 6, Type: TypeAsk, AskID: "done", TurnID: "t0"},
 		{Seq: 7, Type: TypeAskAnswered, AskID: "done"},
+		{Seq: 8, Type: TypeAsk, AskID: "earlier", TurnID: "t0", Via: ViaMessage},
 	})
-	var ids []string
+	var ids, waited []string
 	for _, a := range p.Unwaited() {
 		ids = append(ids, a.ID)
 	}
-	if len(ids) != 2 || ids[0] != "next" || ids[1] != "old" {
-		t.Fatalf("unwaited %v", ids)
+	for _, a := range p.Waited() {
+		waited = append(waited, a.ID)
+	}
+	if strings.Join(ids, ",") != "old" || strings.Join(waited, ",") != "waits,loose,old" {
+		t.Fatalf("unwaited %v, waited %v", ids, waited)
+	}
+}
+
+// An ask_user question leaves a running turn busy, because the agent went
+// on; once no turn runs, the chat waits for the person. check_questions
+// reads each one's state, and a withdrawn one keeps its reason.
+func TestAnAskUserQuestionDoesNotHoldTheAgentUp(t *testing.T) {
+	one := func(q string) json.RawMessage {
+		p, err := askuser.Parse(json.RawMessage(`{"question":"` + q + `","blocks":"x"}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return p.JSON()
+	}
+	p := Fold([]Event{
+		{Seq: 1, Type: TypeTurnStarted, TurnID: "t1"},
+		{Seq: 2, Type: TypeAsk, AskID: "ask_1", TurnID: "t1", Via: ViaMessage, Payload: one("A?")},
+		{Seq: 3, Type: TypeAsk, AskID: "ask_2", TurnID: "t1", Via: ViaMessage, Payload: one("B?")},
+		{Seq: 4, Type: TypeAsk, AskID: "ask_3", TurnID: "t1", Via: ViaMessage, Payload: one("C?")},
+		{Seq: 5, Type: TypeAskAnswered, AskID: "ask_1", Answer: json.RawMessage(`{"general_note":"yes"}`)},
+		{Seq: 6, Type: TypeAskClosed, AskID: "ask_2", Code: AskClosedWithdrawn, Text: "found it"},
+	})
+	if s := p.Summary(); s.Activity != ActivityBusy || s.OpenAsks != 1 {
+		t.Fatalf("while the turn runs: %s, %d open", s.Activity, s.OpenAsks)
+	}
+	var got []string
+	for _, q := range p.AskedQuestions() {
+		got = append(got, q.ID+":"+q.State+":"+q.Reason)
+	}
+	if strings.Join(got, ",") != "ask_1:answered:,ask_2:withdrawn:found it,ask_3:open:" {
+		t.Fatalf("questions %v", got)
+	}
+	p.Apply(Event{Seq: 7, Type: TypeTurnEnded, TurnID: "t1", Outcome: OutcomeCompleted})
+	if s := p.Summary(); s.Activity != ActivityWaiting {
+		t.Fatalf("after the turn: %s", s.Activity)
 	}
 }
 

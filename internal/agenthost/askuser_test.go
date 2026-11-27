@@ -6,6 +6,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net"
 	"strings"
@@ -102,7 +103,7 @@ func TestAnAskOfAnInterruptedTurnLetsTheHostParkAndIsAnsweredAsAMessage(t *testi
 	next.answer("a1", ask.AskID, "phone", json.RawMessage(`{"answers":{"q1":{"selected":["a"]}}}`))
 	next.seen(5*time.Second, isNotice(agent.NoticeAnswerAsMessage))
 	next.seen(5*time.Second, isType(agent.TypeTurnEnded))
-	if got := lastReply(r.journal()); !strings.HasPrefix(got, "you said: Answer to your earlier question (Fake question)") ||
+	if got := lastReply(r.journal()); !strings.HasPrefix(got, "you said: The person answered your question "+ask.AskID+" (Fake question)") ||
 		!strings.Contains(got, "A [a]") {
 		t.Fatalf("the agent got %q", got)
 	}
@@ -149,6 +150,44 @@ func TestAMessageWhileTheCallWaitsClosesTheQuestion(t *testing.T) {
 		t.Fatalf("delivered %+v", ev)
 	}
 	cl.seen(5*time.Second, isNotice(agent.NoticeAnswerAsMessage))
+}
+
+// An ask_user question (answered as a message by design) stays open through
+// a message of the person's and a Stop: the agent never stopped for it. Its
+// answer then goes as a message, without a notice.
+func TestAMessageOrAStopLeavesAnAskUserQuestionOpen(t *testing.T) {
+	r := newRig(t, time.Hour)
+	r.launch()
+	cl := r.dial(0)
+	cl.send("m1", "/asknext")
+	ask := cl.until(5*time.Second, isType(agent.TypeAsk))
+	cl.until(5*time.Second, isType(agent.TypeTurnEnded))
+	cl.send("m2", "also do X")
+	cl.until(5*time.Second, isType(agent.TypeTurnEnded))
+	cl.send("m3", "/sleep 30")
+	cl.until(5*time.Second, isType(agent.TypeTurnStarted))
+	if err := cl.c.Send(Command{Op: OpInterrupt, ClientID: "i1"}); err != nil {
+		t.Fatal(err)
+	}
+	cl.ack("i1", 5*time.Second)
+	cl.until(5*time.Second, isType(agent.TypeTurnEnded))
+	p := agent.Fold(r.journal())
+	if a := p.Ask(ask.AskID); a.Closed || len(p.OpenAsks()) != 1 || p.Summary().Activity != agent.ActivityWaiting {
+		t.Fatalf("after a message and a stop: %+v, %d open, %s", a, len(p.OpenAsks()), p.Summary().Activity)
+	}
+	cl.answer("a1", ask.AskID, "phone", json.RawMessage(`{"answers":{"q1":{"selected":["a"]}}}`))
+	if ev := cl.seen(5*time.Second, isType(agent.TypeAskDelivered)); ev.Via != agent.ViaMessage {
+		t.Fatalf("delivered %+v", ev)
+	}
+	cl.until(5*time.Second, isType(agent.TypeTurnEnded))
+	for _, ev := range r.journal() {
+		if ev.Type == agent.TypeNotice && ev.Code == agent.NoticeAnswerAsMessage {
+			t.Fatal("a notice for an answer meant to go as a message")
+		}
+	}
+	if got := lastReply(r.journal()); !strings.HasPrefix(got, "you said: The person answered your question "+ask.AskID) {
+		t.Fatalf("the agent got %q", got)
+	}
 }
 
 // A message the person did not write - another chat's - leaves a question
@@ -375,19 +414,34 @@ func TestMCPAskServesAskUserThroughTheHost(t *testing.T) {
 	if _, err := io.WriteString(inW, `{"jsonrpc":"2.0","method":"notifications/initialized"}`+"\n"); err != nil {
 		t.Fatal(err)
 	}
-	answered := make(chan Ack, 1)
-	go func() {
-		ask := cl.until(5*time.Second, isType(agent.TypeAsk))
-		answered <- cl.answer("a1", ask.AskID, "phone", json.RawMessage(`{"answers":{"db":{"selected":["sqlite"],"note":"one file"}}}`))
-	}()
-	res := rpc(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"ask_user","arguments":` + string(askPayload) + `}}`)
-	if ack := <-answered; ack.Seq == 0 {
-		t.Fatalf("the answer's ack %+v", ack)
-	}
+	call := `{"question":"Which database?","blocks":"The schema","options":[{"id":"pg","label":"PostgreSQL"}]}`
+	res := rpc(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"ask_user","arguments":` + call + `}}`)
+	ask := cl.until(5*time.Second, isType(agent.TypeAsk))
 	result := res["result"].(map[string]any)
 	text := result["content"].([]any)[0].(map[string]any)["text"].(string)
-	if result["isError"] != false || !strings.HasPrefix(text, `{"answers":{"db":{"selected":["sqlite"],"other":null,"note":"one file"`) {
-		t.Fatalf("the model got %v", res)
+	if result["isError"] != false || text != askuser.QueuedText(ask.AskID, askuser.Decode(ask.Payload)) || ask.Via != agent.ViaMessage {
+		t.Fatalf("the model got %v for %+v", res, ask)
+	}
+	tool := func(id int, name, args string) string {
+		t.Helper()
+		res := rpc(fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"tools/call","params":{"name":%q,"arguments":%s}}`, id, name, args))
+		return res["result"].(map[string]any)["content"].([]any)[0].(map[string]any)["text"].(string)
+	}
+	if got := tool(2, askuser.CheckName, `{}`); !strings.Contains(got, ask.AskID+" [open] Which database?") {
+		t.Fatalf("check_questions: %s", got)
+	}
+	if got := tool(3, askuser.WithdrawName, `{"question_id":"`+ask.AskID+`","reason":"found it"}`); !strings.Contains(got, "is withdrawn") {
+		t.Fatalf("withdraw_question: %s", got)
+	}
+	closed := cl.until(5*time.Second, isType(agent.TypeAskClosed))
+	if closed.AskID != ask.AskID || closed.Code != agent.AskClosedWithdrawn || closed.Text != "found it" {
+		t.Fatalf("closed %+v", closed)
+	}
+	if got := tool(4, askuser.WithdrawName, `{"question_id":"`+ask.AskID+`","reason":"again"}`); !strings.Contains(got, "not an open question") {
+		t.Fatalf("a second withdraw: %s", got)
+	}
+	if got := tool(5, askuser.CheckName, `{}`); !strings.Contains(got, ask.AskID+" [withdrawn]") || !strings.Contains(got, "Withdrawn because: found it") {
+		t.Fatalf("check_questions after it: %s", got)
 	}
 	inW.Close()
 	select {
@@ -422,7 +476,7 @@ func TestMCPAskInstructsAChat(t *testing.T) {
 	}
 	prefix := askuser.ServerName + "_"
 	chat := chattools.Endpoint{Socket: "/nonexistent/chat-tools.sock", Token: "c.x"}
-	base := askuser.Guidance(MCPAskTool) + "\n\n" + chattools.Guidance(prefix) + "\n\n" + agent.TodoGuidance("todowrite") + "\n\n" + agent.DocsGuidance
+	base := askuser.Guidance(MCPAskTool, prefix) + "\n\n" + chattools.Guidance(prefix) + "\n\n" + agent.TodoGuidance("todowrite") + "\n\n" + agent.DocsGuidance
 	if got := instructions(chat, ""); got != base {
 		t.Fatalf("a chat's instructions:\n%s", got)
 	}
